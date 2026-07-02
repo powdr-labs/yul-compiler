@@ -1,0 +1,18 @@
+name = "yul-evm-compiler"
+version = "0.1.0"
+defaultTargets = ["YulEvmCompiler"]
+
+# Source-language semantics: the Yul big-step judgment this compiler is proved against.
+[[require]]
+name = "yul-semantics"
+git = "https://github.com/powdr-labs/yul-semantics"
+rev = "dc76dd51d7b6174f9d3a86c6fa6d4c1a7916ebc7"
+
+# Target-language semantics: the EVM small-step/big-step relations.
+[[require]]
+name = "evm_semantics"
+git = "https://github.com/powdr-labs/evm-semantics"
+rev = "81e2ab7c0f69df0d1f0ac4b8f26a9ee5d97ee582"
+
+[[lean_lib]]
+name = "YulEvmCompiler"
