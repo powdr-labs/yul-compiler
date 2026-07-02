@@ -244,6 +244,118 @@ theorem stopStep {code : ByteArray} {yst : EvmState} {s : State}
   exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec),
     ⟨hm.mem, hm.stor, hm.tstor⟩, hf.callStack, rfl, rfl⟩
 
+/-! ### Variable-access steps: `DUPn`, `SWAPn`, `POP` -/
+
+private theorem dup_base_le (n : Fin 16) :
+    Gas.baseCost .Osaka (.Dup ⟨n⟩) ≤ 40000 := by
+  revert n; decide
+
+private theorem swap_base_le (n : Fin 16) :
+    Gas.baseCost .Osaka (.Swap ⟨n⟩) ≤ 40000 := by
+  revert n; decide
+
+/-- Executing an embedded `DUP(n+1)` duplicates `stack[n]` onto the top. -/
+theorem dupStep {code : ByteArray} {pre post : List UInt8} {n : Fin 16}
+    {v : UInt256} {yst : EvmState} {s : State}
+    (hcode : code = mkCode (pre ++ (Instr.op (.Dup ⟨n⟩)).bytes ++ post))
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat pre.length)
+    (hget : s.stack[n.val]? = some v)
+    (hgas : 40000 ≤ s.gasAvailable) :
+    ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = UInt256.ofNat (pre.length + 1)
+      ∧ s'.stack = v :: s.stack
+      ∧ s.gasAvailable - 40000 ≤ s'.gasAvailable := by
+  obtain ⟨hb, hplain, havail⟩ := dup_roundtrip n
+  have hdec := decoded_op hf hcode hpc hb hplain havail
+  have hfork : s.fork = .Osaka := hf.fork
+  have hgas' : Gas.baseCost s.fork (.Dup ⟨n⟩) ≤ s.gasAvailable := by
+    rw [hfork]
+    have := dup_base_le n
+    omega
+  refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+    (StepRunning.dup s n v hdec hgas' hget),
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      hf.running⟩,
+    ⟨hm.mem, hm.stor, hm.tstor⟩, ?_, rfl, ?_⟩
+  · show s.pc.succ = _
+    rw [hpc]; apply succ_ofNat
+    have hsz : code.size = pre.length + 1 + post.length := by
+      subst hcode; simp [Instr.bytes]; omega
+    have := hf.codeSmall; omega
+  · show s.gasAvailable - Gas.baseCost s.fork (.Dup ⟨n⟩) ≥ s.gasAvailable - 40000
+    apply Nat.sub_le_sub_left
+    rw [hfork]
+    exact dup_base_le n
+
+/-- Executing an embedded `SWAP(n+1)` exchanges the top with `stack[n+1]`. -/
+theorem swapStep {code : ByteArray} {pre post : List UInt8} {n : Fin 16}
+    {stk' : List UInt256} {yst : EvmState} {s : State}
+    (hcode : code = mkCode (pre ++ (Instr.op (.Swap ⟨n⟩)).bytes ++ post))
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat pre.length)
+    (hswap : s.stack.exchange 0 (n.val + 1) = some stk')
+    (hgas : 40000 ≤ s.gasAvailable) :
+    ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = UInt256.ofNat (pre.length + 1)
+      ∧ s'.stack = stk'
+      ∧ s.gasAvailable - 40000 ≤ s'.gasAvailable := by
+  obtain ⟨hb, hplain, havail⟩ := swap_roundtrip n
+  have hdec := decoded_op hf hcode hpc hb hplain havail
+  have hfork : s.fork = .Osaka := hf.fork
+  have hgas' : Gas.baseCost s.fork (.Swap ⟨n⟩) ≤ s.gasAvailable := by
+    rw [hfork]
+    have := swap_base_le n
+    omega
+  refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+    (StepRunning.swap s n stk' hdec hgas' hswap),
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      hf.running⟩,
+    ⟨hm.mem, hm.stor, hm.tstor⟩, ?_, rfl, ?_⟩
+  · show s.pc.succ = _
+    rw [hpc]; apply succ_ofNat
+    have hsz : code.size = pre.length + 1 + post.length := by
+      subst hcode; simp [Instr.bytes]; omega
+    have := hf.codeSmall; omega
+  · show s.gasAvailable - Gas.baseCost s.fork (.Swap ⟨n⟩) ≥ s.gasAvailable - 40000
+    apply Nat.sub_le_sub_left
+    rw [hfork]
+    exact swap_base_le n
+
+/-- Executing an embedded `POP` drops the top of the stack. -/
+theorem popStep {code : ByteArray} {pre post : List UInt8}
+    {a : UInt256} {rest : List UInt256} {yst : EvmState} {s : State}
+    (hcode : code = mkCode (pre ++ (Instr.op .POP).bytes ++ post))
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat pre.length)
+    (hstk : s.stack = a :: rest)
+    (hgas : 40000 ≤ s.gasAvailable) :
+    ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = UInt256.ofNat (pre.length + 1)
+      ∧ s'.stack = rest
+      ∧ s.gasAvailable - 40000 ≤ s'.gasAvailable := by
+  obtain ⟨hb, hplain, havail⟩ := pop_roundtrip
+  have hdec := decoded_op hf hcode hpc hb hplain havail
+  have hfork : s.fork = .Osaka := hf.fork
+  have hgas' : Gas.baseCost s.fork .POP ≤ s.gasAvailable := by
+    rw [hfork]
+    have : Gas.baseCost .Osaka Operation.POP ≤ 40000 := by decide
+    omega
+  refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+    (StepRunning.pop s a rest hdec hgas' hstk),
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      hf.running⟩,
+    ⟨hm.mem, hm.stor, hm.tstor⟩, ?_, rfl, ?_⟩
+  · show s.pc.succ = _
+    rw [hpc]; apply succ_ofNat
+    have hsz : code.size = pre.length + 1 + post.length := by
+      subst hcode; simp [Instr.bytes]; omega
+    have := hf.codeSmall; omega
+  · show s.gasAvailable - Gas.baseCost s.fork .POP ≥ s.gasAvailable - 40000
+    apply Nat.sub_le_sub_left
+    rw [hfork]
+    decide
+
 /-! ### Generic per-arity helpers for the pure built-ins -/
 
 section PureHelpers

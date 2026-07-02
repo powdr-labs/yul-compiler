@@ -75,6 +75,8 @@ def opByte : Operation → UInt8
   | .POP => 0x50 | .MLOAD => 0x51 | .SLOAD => 0x54 | .SSTORE => 0x55
   | .JUMP => 0x56 | .JUMPI => 0x57 | .JUMPDEST => 0x5b
   | .TLOAD => 0x5c | .TSTORE => 0x5d
+  | .Dup d => UInt8.ofNat (0x80 + d.idx.val)
+  | .Swap s => UInt8.ofNat (0x90 + s.idx.val)
   | .RETURN => 0xf3 | .REVERT => 0xfd | .INVALID => 0xfe
   | _ => 0xfe
 
@@ -93,6 +95,11 @@ def size (i : Instr) : Nat := i.bytes.length
 @[simp] theorem size_op (o : Operation) : (Instr.op o).size = 1 := rfl
 @[simp] theorem size_dupN (n : Fin 256) : (Instr.dupN n).size = 2 := rfl
 @[simp] theorem size_swapN (n : Fin 256) : (Instr.swapN n).size = 2 := rfl
+
+@[simp] theorem length_bytes_op (o : Operation) : (Instr.op o).bytes.length = 1 := rfl
+
+@[simp] theorem length_bytes_push (v : UInt256) : (Instr.push v).bytes.length = 33 := by
+  simp [bytes]
 
 end Instr
 

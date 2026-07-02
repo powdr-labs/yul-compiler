@@ -238,4 +238,26 @@ theorem opTable_available {yop : YulSemantics.EVM.Op} {o : Operation}
     (Operation.Push ⟨32, by decide⟩).availableInFork .Osaka = true := by
   decide
 
+/-- `DUP1..DUP16` round-trip through their bytes (they are classic opcodes,
+available on every fork — no EIP-8024 dependency). -/
+theorem dup_roundtrip (n : Fin 16) :
+    Decode.opcodeOf (Instr.opByte (.Dup ⟨n⟩)) = some (.Dup ⟨n⟩) ∧
+      plainOp (Operation.Dup ⟨n⟩) ∧
+      (Operation.Dup ⟨n⟩).availableInFork .Osaka = true := by
+  refine ⟨?_, trivial, ?_⟩ <;> revert n <;> decide
+
+/-- `SWAP1..SWAP16` round-trip through their bytes. -/
+theorem swap_roundtrip (n : Fin 16) :
+    Decode.opcodeOf (Instr.opByte (.Swap ⟨n⟩)) = some (.Swap ⟨n⟩) ∧
+      plainOp (Operation.Swap ⟨n⟩) ∧
+      (Operation.Swap ⟨n⟩).availableInFork .Osaka = true := by
+  refine ⟨?_, trivial, ?_⟩ <;> revert n <;> decide
+
+/-- `POP` round-trips (needed for direct emission by `assign`/block exits,
+independently of the Yul `pop` built-in). -/
+theorem pop_roundtrip :
+    Decode.opcodeOf (Instr.opByte .POP) = some .POP ∧ plainOp Operation.POP ∧
+      Operation.POP.availableInFork .Osaka = true :=
+  ⟨by decide, trivial, by decide⟩
+
 end YulEvmCompiler
