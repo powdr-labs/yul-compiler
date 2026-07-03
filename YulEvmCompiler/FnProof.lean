@@ -188,6 +188,60 @@ theorem popsSteps : ∀ (k : Nat) (code : ByteArray) (pre post : List UInt8)
     · rw [hstk2]
     · rw [Nat.mul_succ]; exact gsub2 hg1 hg2
 
+/-- **The callee return sequence is correct.** From a matching state whose stack
+is `paramvals ++ rvals ++ retaddr :: σ` (|paramvals| = n, |rvals| = m ≤ 16),
+executing the embedded epilogue `POP×n ; SWAP1..SWAPm ; JUMP` drops the `n`
+parameters, rotates `retaddr` to the top, and jumps to it — reaching pc =
+`retaddr` with the `m` return values `rvals` on top. Assumes `retaddr` is a
+valid `JUMPDEST` (the landing pad the caller scaffold placed). -/
+theorem calleeEpilogueSteps (code : ByteArray) (pre post : List UInt8)
+    (n m : Nat) (hm : m ≤ 16) (paramvals rvals σ : List UInt256) (retaddr : UInt256)
+    (yst : EvmState) (s : State)
+    (hplen : paramvals.length = n) (hrlen : rvals.length = m)
+    (hcode : code = mkCode (pre ++ assembleBytes (List.replicate n (.op .POP)
+        ++ retSwaps m ++ [.op .JUMP]) ++ post))
+    (hf : FrameOK code s) (hmatch : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat pre.length)
+    (hstk : s.stack = paramvals ++ rvals ++ retaddr :: σ)
+    (hvalid : Decode.isValidJumpDest code retaddr.toNat = true)
+    (hgas : 40000 * n + (40000 * m + 40000) ≤ s.gasAvailable) :
+    ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = retaddr ∧ s'.stack = rvals ++ σ
+      ∧ s.gasAvailable - (40000 * n + (40000 * m + 40000)) ≤ s'.gasAvailable := by
+  have hAB : assembleBytes (List.replicate n (.op .POP) ++ retSwaps m ++ [.op .JUMP])
+      = assembleBytes (List.replicate n (.op .POP)) ++ assembleBytes (retSwaps m)
+        ++ (Instr.op .JUMP).bytes := by
+    simp only [assembleBytes_append, assembleBytes_cons, assembleBytes_nil, List.append_nil]
+  -- POP×n : drop the parameters
+  have hcode1 : code = mkCode (pre ++ assembleBytes (List.replicate n (.op .POP))
+      ++ (assembleBytes (retSwaps m) ++ (Instr.op .JUMP).bytes ++ post)) := by
+    rw [hcode, hAB]; simp [List.append_assoc]
+  obtain ⟨s1, st1, hf1, hm1, hpc1, hstk1, hg1⟩ :=
+    popsSteps n code pre (assembleBytes (retSwaps m) ++ (Instr.op .JUMP).bytes ++ post)
+      paramvals (rvals ++ retaddr :: σ) yst s hplen hcode1 hf hmatch hpc
+      (by rw [hstk]; simp [List.append_assoc]) (gstrip hgas)
+  -- SWAP1..SWAPm : rotate retaddr to the top
+  have hcode2 : code = mkCode ((pre ++ assembleBytes (List.replicate n (.op .POP)))
+      ++ assembleBytes (retSwaps m) ++ ((Instr.op .JUMP).bytes ++ post)) := by
+    rw [hcode, hAB]; simp [List.append_assoc]
+  have hpc1' : s1.pc = UInt256.ofNat (pre ++ assembleBytes (List.replicate n (.op .POP))).length := by
+    rw [hpc1, List.length_append, length_assembleBytes_replicate_pop]
+  obtain ⟨s2, st2, hf2, hm2, hpc2, hstk2, hg2⟩ :=
+    retSwapsSteps m hm code (pre ++ assembleBytes (List.replicate n (.op .POP)))
+      ((Instr.op .JUMP).bytes ++ post) rvals retaddr σ yst s1 hrlen hcode2 hf1 hm1 hpc1'
+      hstk1 (gstrip (genough hgas hg1))
+  -- JUMP : return to the caller's landing pad
+  have hcode3 : code = mkCode ((pre ++ assembleBytes (List.replicate n (.op .POP))
+      ++ assembleBytes (retSwaps m)) ++ (Instr.op .JUMP).bytes ++ post) := by
+    rw [hcode, hAB]; simp [List.append_assoc]
+  have hpc2' : s2.pc = UInt256.ofNat (pre ++ assembleBytes (List.replicate n (.op .POP))
+      ++ assembleBytes (retSwaps m)).length := by
+    rw [hpc2]; congr 1
+    simp only [List.length_append, length_assembleBytes_retSwaps]
+  obtain ⟨s3, jstep, hf3, hm3, hpc3, hstk3, hg3⟩ :=
+    jumpStep hcode3 hf2 hm2 hpc2' hstk2 hvalid (genough (genough hgas hg1) hg2)
+  exact ⟨s3, (st1.append st2).snoc jstep, hf3, hm3, hpc3, hstk3, gsub2 hg1 (gsub2 hg2 hg3)⟩
+
 /-! ## Phase 1.3 — layout arithmetic (position/entry length-independence) -/
 
 /-- `m` stacked identical pushes assemble to `33·m` bytes. -/
