@@ -172,15 +172,40 @@ its own green commit:
       does on the call-free fragment. With `SimSP.toSimSPC` this carries every
       `Correctness.sim` result into `SimSPC`, so `simF` only has to *add* the
       call case (`SimCallProc`).
-    - [ ] `simF` — the induction over the source `Step` producing `SimSPC` for
-      `compileStmtF`: `callOk` → `SimCallProc` (body-sim from the body
-      sub-derivation IH — this discharges recursion); every other rule composes
-      via `SimSPC.comp`/`SimSPC.nil`, reusing `sim`+`compileStmtF_extends`+
-      `toSimSPC` for call-free sub-parts. Then the top-level `compileProgF`
-      theorem, and the `+params`/`+returns` generalisations (`pushZerosSteps`,
-      args-sim via a code-fixed `SimEC`, `popsSteps`, `retSwapsSteps`,
-      `calleeEpilogueSteps`). **All inputs are now proven and committed;** this
-      is the remaining induction assembly.
+    - [x] case combinators (all committed, `sorry`-free): `simSPC_nil`/
+      `simSPC_cons` (sequences), `simF_call` (procedure call scaffold via
+      `SimCallProc`), `SimSPC_ifTrue` + `simSP_ifFalse` (conditionals, via
+      `compileStmtF_cond_inv`), `SimSPC_block` (blocks, via
+      `compileStmtsF_suffix`), `stmtF_reuse` + `compileExprF_rev` (call-free
+      leaves reuse `Correctness.sim`), `compileStmtF_outcome` (a compiled body
+      can't `break`/`continue`/`leave`), and the `FunAgree` funenv invariant.
+    - [x] **`simF`** — the whole induction over the source `Step` producing
+      `SimSPC` for `compileStmtF` (`FnSimInduction.lean`). `callOk` →
+      `simF_call` with the callee body-sim from the body sub-derivation IH
+      (this discharges recursion) and the embedding/`JUMPDEST`-validity from
+      `ProgLayout`+`lookupFun_realFt_corr`; every other rule uses the
+      combinators above; `switch`/`for`/`break`/`continue`/`leave` compile to
+      `none` (vacuous).
+    - [x] **`simProg_correct`** — the end-to-end top-level theorem: a source
+      `Run` to a normal outcome is simulated by the assembled bytecode running
+      to `.Success` (inverts the top-level `block`, runs `simF` on the body,
+      extracts the EVM `Steps` from the `SimSPC`, terminates on the explicit
+      `STOP` after `main` via the new `stopExplicitStep`).
+
+  **Milestone reached — procedures with recursion, machine-checked.** `simF`
+  and `simProg_correct` are `sorry`-free and depend only on
+  `[propext, Classical.choice, Quot.sound]`. The proven fragment (Phase 5a):
+  top-level 0-param/0-ret procedures, recursion allowed, calls in statement
+  position, with `let`/`assign`/`exprStmt`/`block`/`if`/`funDef` bodies. The
+  sound-fragment side conditions are explicit hypotheses of `simProg_correct`:
+  `hproc` (top-level functions are procedures), `hcons` (blocks hoist no
+  functions ⇒ no nested/shadowing definitions), `hsize` (entries in range).
+
+  Remaining (Phase 5b–5d, future work): discharge `simProg_correct`'s
+  hypotheses directly from `compileProgF prog = some fullIs` (the
+  `compileProgF_layout`↔`realFtOf` entries bridge), then the `+params` /
+  `+single-return` / `+multi-return` generalisations (`pushZerosSteps`,
+  args-sim via `SimEC`, `popsSteps`, `retSwapsSteps`, `calleeEpilogueSteps`).
 
   Note: "implemented and working" is already done — `compileProgF` is executable
   and `FunctionsExamples` runs recursion/procedures/multi-return/nested calls on
