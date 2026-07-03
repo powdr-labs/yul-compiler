@@ -19,7 +19,7 @@ namespace YulEvmCompiler
 
 open EvmSemantics EvmSemantics.EVM
 open YulSemantics.EVM (EvmState U256)
-open YulSemantics (VEnv)
+open YulSemantics (VEnv FunEnv)
 open YulSemantics (Expr Stmt Block Ident)
 open YulSemantics.EVM (Op)
 
@@ -387,5 +387,95 @@ theorem SimCallProc (code : ByteArray) (pcc entry retaddr : Nat)
   · rw [hpc5, hplen, hslen]
   · rw [hstk5, hstk4]
   · exact gsub2 hgP (gsub2 hg2 (gsub2 hg3 (gsub2 hg4 hg5)))
+
+/-- Motive: a *compiled* statement/sequence can only finish `normal` or `halt`
+— never `break`/`continue`/`leave`, since those statements compile to `none`. -/
+private def OutMotive (ft : FnTable) :
+    YulSemantics.Code Op → YulSemantics.Res yul → Prop
+  | .stmt st, .sres _ _ o =>
+      ∀ pc Γ is Γ', compileStmtF ft pc Γ st = some (is, Γ') → o = .normal ∨ o = .halt
+  | .stmts ss, .sres _ _ o =>
+      ∀ pc Γ is Γ', compileStmtsF ft pc Γ ss = some (is, Γ') → o = .normal ∨ o = .halt
+  | _, _ => True
+
+private theorem compileStmtF_outcome (ft : FnTable) {funs : FunEnv yul} {V : VEnv yul}
+    {yst : EvmState} {cd : YulSemantics.Code Op} {res : YulSemantics.Res yul}
+    (h : YulSemantics.Step yul funs V yst cd res) : OutMotive ft cd res := by
+  induction h with
+  | funDef => intro pc Γ is Γ' _; exact Or.inl rfl
+  | @block funs V yst body Vb stb o hbody ihbody =>
+      intro pc Γ is Γ' hc
+      rw [compileStmtF] at hc
+      simp only [Nat.add_zero, Option.bind_eq_bind, Option.bind_eq_some_iff] at hc
+      obtain ⟨⟨isb, Γb⟩, hbs, _⟩ := hc
+      exact ihbody _ _ _ _ hbs
+  | letZero => intro pc Γ is Γ' _; exact Or.inl rfl
+  | letVal _ _ _ => intro pc Γ is Γ' _; exact Or.inl rfl
+  | letHalt _ _ => intro pc Γ is Γ' _; exact Or.inr rfl
+  | assignVal _ _ _ => intro pc Γ is Γ' _; exact Or.inl rfl
+  | assignHalt _ _ => intro pc Γ is Γ' _; exact Or.inr rfl
+  | exprStmt _ _ => intro pc Γ is Γ' _; exact Or.inl rfl
+  | exprStmtHalt _ _ => intro pc Γ is Γ' _; exact Or.inr rfl
+  | @ifTrue funs V yst c body cv st1 V' st2 o hcstep hcv hblock ihc ihblock =>
+      intro pc Γ is Γ' hc
+      rw [compileStmtF] at hc
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at hc
+      obtain ⟨cCode, _, ⟨bodyCode, Γb⟩, hbc, _⟩ := hc
+      have : compileStmtF ft (pc + (assembleBytes cCode).length + 35) Γ (.block body)
+          = some (bodyCode ++ List.replicate (Γb.length - Γ.length) (.op .POP), Γ) := by
+        rw [compileStmtF]
+        simp only [Nat.add_zero, Option.bind_eq_bind, hbc, Option.bind_some, Option.pure_def]
+      exact ihblock _ _ _ _ this
+  | ifFalse _ _ _ => intro pc Γ is Γ' _; exact Or.inl rfl
+  | ifHalt _ _ => intro pc Γ is Γ' _; exact Or.inr rfl
+  | switchExec _ _ _ _ => intro pc Γ is Γ' hc; simp [compileStmtF] at hc
+  | switchHalt _ _ => intro pc Γ is Γ' _; exact Or.inr rfl
+  | forLoop _ _ _ _ => intro pc Γ is Γ' hc; simp [compileStmtF] at hc
+  | forInitHalt _ _ => intro pc Γ is Γ' _; exact Or.inr rfl
+  | «break» => intro pc Γ is Γ' hc; simp [compileStmtF] at hc
+  | «continue» => intro pc Γ is Γ' hc; simp [compileStmtF] at hc
+  | leave => intro pc Γ is Γ' hc; simp [compileStmtF] at hc
+  | seqNil => intro pc Γ is Γ' _; exact Or.inl rfl
+  | @seqCons funs V yst s rest V1 st1 V2 st2 o hs hrest ihs ihrest =>
+      intro pc Γ is Γ' hc
+      rw [compileStmtsF] at hc
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at hc
+      obtain ⟨⟨is1, Γ1⟩, _, ⟨is2, Γ2⟩, hr, _⟩ := hc
+      exact ihrest _ _ _ _ hr
+  | @seqStop funs V yst s rest V1 st1 o hs hne ihs =>
+      intro pc Γ is Γ' hc
+      rw [compileStmtsF] at hc
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at hc
+      obtain ⟨⟨is1, Γ1⟩, hs1, _⟩ := hc
+      exact ihs _ _ _ _ hs1
+  | lit => trivial
+  | var => trivial
+  | builtinOk => trivial
+  | builtinHalt => trivial
+  | builtinArgsHalt => trivial
+  | callOk _ _ _ _ _ => trivial
+  | callHalt => trivial
+  | callArgsHalt => trivial
+  | argsNil => trivial
+  | argsCons => trivial
+  | argsRestHalt => trivial
+  | argsHeadHalt => trivial
+  | loopDone _ _ => trivial
+  | loopCondHalt _ => trivial
+  | loopStep _ _ _ _ _ _ _ _ _ _ => trivial
+  | loopPostHalt _ _ _ _ _ _ _ _ => trivial
+  | loopBreak _ _ _ _ _ => trivial
+  | loopLeave _ _ _ _ _ => trivial
+  | loopBodyHalt _ _ _ _ _ => trivial
+
+/-- **A compiled statement finishes `normal` or `halt`** — never
+`break`/`continue`/`leave`, which the compiler rejects. In particular a
+procedure body that compiles cannot `leave`. -/
+theorem compileStmtF_step_outcome (ft : FnTable) {funs : FunEnv yul} {V V' : VEnv yul}
+    {yst yst' : EvmState} {st : Stmt Op} {o : YulSemantics.Outcome}
+    {pc : Nat} {Γ : List Ident} {is : List Instr} {Γ' : List Ident}
+    (h : YulSemantics.Step yul funs V yst (.stmt st) (.sres V' yst' o))
+    (hc : compileStmtF ft pc Γ st = some (is, Γ')) : o = .normal ∨ o = .halt :=
+  compileStmtF_outcome ft h pc Γ is Γ' hc
 
 end YulEvmCompiler
