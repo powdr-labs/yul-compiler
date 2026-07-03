@@ -21,6 +21,12 @@ open EvmSemantics EvmSemantics.EVM
 open YulSemantics.EVM (EvmState)
 open YulSemantics (VEnv)
 
+private theorem gsub2 {a b c k₁ k₂ : Nat} (h₁ : a - k₁ ≤ b) (h₂ : b - k₂ ≤ c) :
+    a - (k₁ + k₂) ≤ c := by omega
+private theorem genough {a s₁ k₁ k₂ : Nat} (hb : k₁ + k₂ ≤ a) (h₁ : a - k₁ ≤ s₁) :
+    k₂ ≤ s₁ := by omega
+private theorem gstrip {x y z : Nat} (h : x + y ≤ z) : x ≤ z := by omega
+
 /-- Code-fixed, position-aware statement simulation: like `SimSP`, but the whole
 program `code` is a fixed parameter rather than universally quantified, so a
 `ProgLayout code` side-hypothesis can be used to reach callees. -/
@@ -76,5 +82,62 @@ theorem SimSPC.nil {code : ByteArray} {pcc : Nat} {yst : EvmState} {V : VEnv yul
     SimSPC code pcc yst V [] yst V := by
   refine ⟨0, fun preIs post σ s _ _ hf hm hpc hstk _ => ?_⟩
   exact ⟨s, .refl s, hf, hm, by simpa using hpc, hstk, by omega⟩
+
+
+
+/-- **The callee side of a procedure call executes correctly.** A procedure body
+compiles to `JUMPDEST ++ bodyCode ++ [JUMP]` (no params/rets ⇒ no POPs, no
+reshuffle). Given the body simulates (`SimSPC` with the empty variable region)
+and the return address is a valid `JUMPDEST`, running from the callee entry
+reaches `retaddr` with the caller's stack `rest` restored, in the post-body
+state `st2`. -/
+theorem calleeRunProc (code : ByteArray) (preIs bodyCode postIs : List Instr)
+    (entry : Nat) (retaddr : UInt256) (rest : List UInt256) (yst st2 : EvmState)
+    (hcode : code = mkCode (assembleBytes preIs
+        ++ assembleBytes ([.op .JUMPDEST] ++ bodyCode ++ [.op .JUMP]) ++ assembleBytes postIs))
+    (hentry : (assembleBytes preIs).length = entry)
+    (hbody : SimSPC code (entry + 1) yst [] bodyCode st2 [])
+    (hretvalid : Decode.isValidJumpDest code retaddr.toNat = true) :
+    ∃ b, ∀ (s : State), FrameOK code s → StateMatch yst s →
+      s.pc = UInt256.ofNat entry → s.stack = retaddr :: rest → b ≤ s.gasAvailable →
+      ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch st2 s'
+        ∧ s'.pc = retaddr ∧ s'.stack = rest ∧ s.gasAvailable - b ≤ s'.gasAvailable := by
+  obtain ⟨bb, Hbody⟩ := hbody
+  -- assembled callee body: JUMPDEST ++ bodyCode ++ JUMP
+  have hAB : assembleBytes ([.op .JUMPDEST] ++ bodyCode ++ [.op .JUMP])
+      = (Instr.op .JUMPDEST).bytes ++ assembleBytes bodyCode ++ (Instr.op .JUMP).bytes := by
+    simp only [assembleBytes_append, assembleBytes_cons, assembleBytes_nil, List.append_nil]
+  refine ⟨40000 + (bb + 40000), fun s hf hm hpc hstk hgas => ?_⟩
+  -- 1) execute the entry JUMPDEST
+  have hcode1 : code = mkCode (assembleBytes preIs ++ (Instr.op .JUMPDEST).bytes
+      ++ (assembleBytes bodyCode ++ (Instr.op .JUMP).bytes ++ assembleBytes postIs)) := by
+    rw [hcode, hAB]; congr 1; simp [List.append_assoc]
+  obtain ⟨s1, hstep1, hf1, hm1, hpc1, hstk1, hg1⟩ :=
+    jumpdestStep hcode1 hf hm (by rw [hpc, hentry]) (gstrip hgas)
+  -- 2) run the body
+  have hcode2 : code = mkCode (assembleBytes (preIs ++ [.op .JUMPDEST]) ++ assembleBytes bodyCode
+      ++ ((Instr.op .JUMP).bytes ++ assembleBytes postIs)) := by
+    rw [hcode, hAB, assembleBytes_append, assembleBytes_cons, assembleBytes_nil]
+    simp [List.append_assoc]
+  have hpre2 : (assembleBytes (preIs ++ [.op .JUMPDEST])).length = entry + 1 := by
+    rw [assembleBytes_append, List.length_append, hentry, assembleBytes_cons, assembleBytes_nil]
+    simp [Instr.length_bytes_op]
+  obtain ⟨s2, st2steps, hf2, hm2, hpc2, hstk2, hg2⟩ :=
+    Hbody (preIs ++ [.op .JUMPDEST]) ((Instr.op .JUMP).bytes ++ assembleBytes postIs)
+      (retaddr :: rest) s1 hcode2 hpre2 hf1 hm1 (by rw [hpc1, hentry])
+      (by rw [hstk1, hstk]; simp [vimg]) (gstrip (genough hgas hg1))
+  -- 3) execute the return JUMP
+  have hcode3 : code = mkCode ((assembleBytes (preIs ++ [.op .JUMPDEST]) ++ assembleBytes bodyCode)
+      ++ (Instr.op .JUMP).bytes ++ assembleBytes postIs) := by
+    rw [hcode2]; simp [List.append_assoc]
+  have hpc2' : s2.pc = UInt256.ofNat
+      (assembleBytes (preIs ++ [.op .JUMPDEST]) ++ assembleBytes bodyCode).length := by
+    rw [hpc2, List.length_append, hpre2]
+  have hstk2' : s2.stack = retaddr :: rest := by rw [hstk2]; simp [vimg]
+  obtain ⟨s3, hstep3, hf3, hm3, hpc3, hstk3, hg3⟩ :=
+    jumpStep hcode3 hf2 hm2 hpc2' hstk2' hretvalid
+      (genough (genough hgas hg1) hg2)
+  exact ⟨s3, .trans hstep1 (st2steps.snoc hstep3), hf3, hm3, hpc3, hstk3,
+    gsub2 hg1 (gsub2 hg2 hg3)⟩
 
 end YulEvmCompiler
