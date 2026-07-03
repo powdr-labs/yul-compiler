@@ -132,4 +132,49 @@ theorem assembleBytes_flatten_embed (cs : List (List Instr)) (i : Nat)
   · rw [flatten_split cs i hi, assembleBytes_append, assembleBytes_append]
   · rw [length_assembleBytes_flatten]
 
+/-! ### Two-pass length agreement -/
+
+set_option maxHeartbeats 1000000 in
+/-- The pass-2 function codes have exactly the pass-1 recorded lengths: for each
+function, `compileFn` at the real entry and at entry `0` produce equal-length
+code (Phase-1.3 `compileFn_lenSig`, transported across the signature-equivalent
+tables `hsig`). -/
+theorem fnCodes_lens_eq (dummyFt realFt : FnTable) (hsig : FnTable.SigEq dummyFt realFt)
+    (fns : List (Ident × List Ident × List Ident × Block Op)) :
+    ∀ (entries : List Nat) (lens : List Nat) (fnCodes : List (List Instr)),
+      entries.length = fns.length →
+      fns.mapM (fun p => (compileFn dummyFt 0 p.2.1 p.2.2.1 p.2.2.2).map
+        (fun c => (assembleBytes c).length)) = some lens →
+      (fns.zip entries).mapM
+        (fun x => compileFn realFt x.2 x.1.2.1 x.1.2.2.1 x.1.2.2.2) = some fnCodes →
+      fnCodes.map (fun c => (assembleBytes c).length) = lens := by
+  induction fns with
+  | nil =>
+      intro entries lens fnCodes _ hl hf
+      simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at hl
+      simp only [List.zip_nil_left, List.mapM_nil, Option.pure_def, Option.some.injEq] at hf
+      subst hl; subst hf; rfl
+  | cons p rest ih =>
+      intro entries lens fnCodes hlen hl hf
+      cases entries with
+      | nil => simp at hlen
+      | cons e erest =>
+          simp only [List.length_cons, Nat.add_right_cancel_iff] at hlen
+          rw [List.mapM_cons] at hl
+          simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.map_eq_some_iff,
+            Option.pure_def, Option.some.injEq] at hl
+          obtain ⟨b, ⟨a, ha, hab⟩, bs, hbs, hlens_eq⟩ := hl
+          rw [List.zip_cons_cons, List.mapM_cons] at hf
+          simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+            Option.some.injEq] at hf
+          obtain ⟨fc1, hfc1, restCodes, hrc, hfc_eq⟩ := hf
+          subst hab; subst hlens_eq; subst hfc_eq
+          obtain ⟨fc1', hfc1', hlen1⟩ := compileFn_lenSig dummyFt realFt hsig 0 e
+            p.2.1 p.2.2.1 p.2.2.2 a ha
+          rw [hfc1] at hfc1'
+          simp only [Option.some.injEq] at hfc1'
+          subst hfc1'
+          simp only [List.map_cons]
+          rw [ih erest bs restCodes hlen hbs hrc, hlen1]
+
 end YulEvmCompiler
