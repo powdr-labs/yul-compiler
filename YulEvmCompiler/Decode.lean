@@ -260,4 +260,158 @@ theorem pop_roundtrip :
       Operation.POP.availableInFork .Osaka = true :=
   ⟨by decide, trivial, by decide⟩
 
+/-! ### Jumpdest analysis
+
+The analysis walk (`Decode.validJumpDestFrom`) advances one instruction at a
+time over our assembled code: every emitted instruction is either a single
+byte or `PUSH32`, whose immediate the walk skips. So instruction boundaries
+are exactly the walk's footprints, and a `JUMPDEST` we emit at a boundary is
+accepted. -/
+
+private theorem bytes_pos (i : Instr) : 1 ≤ i.bytes.length := by
+  cases i <;> simp
+
+private theorem length_le_assembleBytes (is : List Instr) :
+    is.length ≤ (assembleBytes is).length := by
+  induction is with
+  | nil => simp
+  | cons i is ih =>
+    have := bytes_pos i
+    simp
+    omega
+
+/-- No emitted opcode byte decodes as a `PUSH` (so the walk never skips over
+parts of our single-byte instructions). -/
+private theorem opcodeOf_opByte_not_push (o : Operation) :
+    (match Decode.opcodeOf (Instr.opByte o) with
+     | some (.Push p) => p.width.val
+     | _ => 0) = 0 := by
+  cases o with
+  | StopArith op => cases op <;> rfl
+  | CompBit op => cases op <;> rfl
+  | Keccak op => cases op <;> rfl
+  | Env op => cases op <;> rfl
+  | Block op => cases op <;> rfl
+  | StackMemFlow op => cases op <;> rfl
+  | Push p => rfl
+  | Dup d =>
+    obtain ⟨⟨n, hn⟩⟩ := d
+    rw [(dup_roundtrip ⟨n, hn⟩).1]
+  | Swap s =>
+    obtain ⟨⟨n, hn⟩⟩ := s
+    rw [(swap_roundtrip ⟨n, hn⟩).1]
+  | DupN d => rfl
+  | SwapN s => rfl
+  | Exchange e => rfl
+  | Log l => rfl
+  | System op => cases op <;> rfl
+
+/-- The walk's step at an instruction boundary is the instruction's width. -/
+private theorem pushDataSize_at (i : Instr) (pre rest : List UInt8) :
+    Decode.pushDataSize (mkCode (pre ++ i.bytes ++ rest)) pre.length
+      = i.bytes.length - 1 := by
+  have hsz : pre.length < (mkCode (pre ++ i.bytes ++ rest)).size := by
+    have := bytes_pos i
+    simp
+    omega
+  unfold Decode.pushDataSize
+  rw [dif_pos hsz]
+  cases i with
+  | push v =>
+    have hb : (mkCode (pre ++ (Instr.push v).bytes ++ rest))[pre.length]'hsz = 0x7f :=
+      getElem_boundary pre rest 0x7f (natToBE v.toNat 32) hsz
+    rw [hb, show Decode.opcodeOf 0x7f = some (.Push ⟨32, by decide⟩) from by decide]
+    simp
+  | op o =>
+    have hb : (mkCode (pre ++ (Instr.op o).bytes ++ rest))[pre.length]'hsz
+        = Instr.opByte o :=
+      getElem_boundary pre rest (Instr.opByte o) [] hsz
+    rw [hb]
+    exact opcodeOf_opByte_not_push o
+
+private theorem walk_through :
+    ∀ (is : List Instr) (pre rest : List UInt8) (fuel : Nat),
+      is.length + 1 ≤ fuel →
+      Decode.validJumpDestFrom (mkCode (pre ++ assembleBytes is ++ 0x5b :: rest))
+        (pre.length + (assembleBytes is).length) pre.length fuel = true := by
+  intro is
+  induction is with
+  | nil =>
+    intro pre rest fuel hfuel
+    cases fuel with
+    | zero => omega
+    | succ f =>
+      unfold Decode.validJumpDestFrom
+      rw [if_pos (by simp)]
+      have hsz : pre.length
+          < (mkCode (pre ++ assembleBytes ([] : List Instr) ++ 0x5b :: rest)).size := by
+        simp
+      rw [dif_pos hsz]
+      have hb : (mkCode (pre ++ assembleBytes ([] : List Instr)
+          ++ 0x5b :: rest))[pre.length]'hsz = 0x5b := by
+        have := getElem_boundary pre rest 0x5b [] (by simpa using hsz)
+        simpa using this
+      simp only [decide_eq_true_eq]
+      simpa using hb
+  | cons i is ih =>
+    intro pre rest fuel hfuel
+    cases fuel with
+    | zero => omega
+    | succ f =>
+      have hpos := bytes_pos i
+      have hlist : pre ++ assembleBytes (i :: is) ++ 0x5b :: rest
+          = (pre ++ i.bytes) ++ assembleBytes is ++ 0x5b :: rest := by
+        simp
+      have hlen1 : (assembleBytes (i :: is)).length
+          = i.bytes.length + (assembleBytes is).length := by simp
+      have hsz1 : pre.length + (assembleBytes (i :: is)).length
+          < (mkCode (pre ++ assembleBytes (i :: is) ++ 0x5b :: rest)).size := by
+        rw [size_mkCode]
+        simp
+      unfold Decode.validJumpDestFrom
+      rw [if_neg (by omega)]
+      rw [if_neg (by
+        rw [not_or]
+        exact ⟨by omega, by omega⟩)]
+      have hstep : Decode.pushDataSize
+          (mkCode (pre ++ assembleBytes (i :: is) ++ 0x5b :: rest)) pre.length
+          = i.bytes.length - 1 := by
+        rw [show pre ++ assembleBytes (i :: is) ++ 0x5b :: rest
+            = pre ++ i.bytes ++ (assembleBytes is ++ 0x5b :: rest) from by simp]
+        exact pushDataSize_at i pre _
+      rw [hstep]
+      rw [show pre.length + 1 + (i.bytes.length - 1) = (pre ++ i.bytes).length from by
+        simp
+        omega]
+      rw [show pre.length + (assembleBytes (i :: is)).length
+          = (pre ++ i.bytes).length + (assembleBytes is).length from by
+        simp
+        omega]
+      rw [show mkCode (pre ++ assembleBytes (i :: is) ++ 0x5b :: rest)
+          = mkCode ((pre ++ i.bytes) ++ assembleBytes is ++ 0x5b :: rest) from by
+        rw [hlist]]
+      exact ih (pre ++ i.bytes) rest f (by
+        have hl : (i :: is).length = is.length + 1 := rfl
+        omega)
+
+/-- A `JUMPDEST` we emit at an instruction boundary passes the jumpdest
+analysis, regardless of the (unreached) bytes after it. -/
+theorem isValidJumpDest_boundary (isPre : List Instr) (rest : List UInt8) :
+    Decode.isValidJumpDest
+      (mkCode (assembleBytes isPre ++ (Instr.op .JUMPDEST).bytes ++ rest))
+      (assembleBytes isPre).length = true := by
+  unfold Decode.isValidJumpDest
+  have hcode : assembleBytes isPre ++ (Instr.op .JUMPDEST).bytes ++ rest
+      = [] ++ assembleBytes isPre ++ 0x5b :: rest := by
+    show _ ++ (0x5b :: []) ++ _ = _
+    simp
+  rw [hcode]
+  have h := walk_through isPre [] rest
+    ((mkCode ([] ++ assembleBytes isPre ++ 0x5b :: rest)).size + 1)
+    (by
+      have h1 := length_le_assembleBytes isPre
+      simp
+      omega)
+  simpa using h
+
 end YulEvmCompiler

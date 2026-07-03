@@ -119,9 +119,12 @@ end
 
 mutual
 
-/-- Compile a statement against layout `Γ`; returns the code and the layout
-after the statement. -/
-def compileStmt (Γ : List Ident) : Stmt Op → Option (List Instr × List Ident)
+/-- Compile a statement at absolute byte position `pc` against layout `Γ`;
+returns the code and the layout after the statement. `pc` is what makes
+jump targets computable: every instruction has a fixed width, so the
+position of the `JUMPDEST` closing an `if` is known as soon as its pieces
+are compiled. -/
+def compileStmt (pc : Nat) (Γ : List Ident) : Stmt Op → Option (List Instr × List Ident)
   | .exprStmt e => do
       let is ← compileExpr Γ 0 e
       return (is, Γ)
@@ -144,16 +147,25 @@ def compileStmt (Γ : List Ident) : Stmt Op → Option (List Instr × List Ident
             none                    -- too deep for SWAP16 (needs EIP-8024)
       | _ => none
   | .block body => do
-      let (isb, Γ') ← compileStmts Γ body
+      let (isb, Γ') ← compileStmts pc Γ body
       return (isb ++ List.replicate (Γ'.length - Γ.length) (.op .POP), Γ)
+  | .cond c body => do
+      let cCode ← compileExpr Γ 0 c
+      -- cCode ; ISZERO ; PUSH32 dest ; JUMPI ; body ; pops ; JUMPDEST(dest)
+      let pcBody := pc + (assembleBytes cCode).length + 35
+      let (bodyCode, Γb) ← compileStmts pcBody Γ body
+      let pops := Γb.length - Γ.length
+      let dest := pcBody + (assembleBytes bodyCode).length + pops
+      return (cCode ++ [.op .ISZERO, .push (EvmSemantics.UInt256.ofNat dest), .op .JUMPI]
+        ++ bodyCode ++ List.replicate pops (.op .POP) ++ [.op .JUMPDEST], Γ)
   | _ => none
 
-/-- Compile a statement sequence, threading the layout. -/
-def compileStmts (Γ : List Ident) : List (Stmt Op) → Option (List Instr × List Ident)
+/-- Compile a statement sequence, threading position and layout. -/
+def compileStmts (pc : Nat) (Γ : List Ident) : List (Stmt Op) → Option (List Instr × List Ident)
   | [] => some ([], Γ)
   | s :: rest => do
-      let (is1, Γ1) ← compileStmt Γ s
-      let (is2, Γ2) ← compileStmts Γ1 rest
+      let (is1, Γ1) ← compileStmt pc Γ s
+      let (is2, Γ2) ← compileStmts (pc + (assembleBytes is1).length) Γ1 rest
       return (is1 ++ is2, Γ2)
 
 end
@@ -161,6 +173,6 @@ end
 /-- Compile a whole straight-line program (a top-level block, starting from
 the empty layout). -/
 def compileProgram (prog : Block Op) : Option (List Instr) :=
-  (compileStmts [] prog).map (·.1)
+  (compileStmts 0 [] prog).map (·.1)
 
 end YulEvmCompiler
