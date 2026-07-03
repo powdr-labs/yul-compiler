@@ -1185,4 +1185,39 @@ theorem jumpiTakenStep {code : ByteArray} {pre post : List UInt8}
     rw [hfork]
     decide
 
+/-- Executing an embedded unconditional `JUMP` to a statically-valid
+`JUMPDEST` target: control moves to `dest`, popping it. This is the return
+jump (`dest` = a caller-pushed return address) and the call jump (`dest` = a
+function entry) of the calling convention — in both, `dest` is a compile-time
+constant, so its jumpdest validity is discharged by
+`isValidJumpDest_boundary`. -/
+theorem jumpStep {code : ByteArray} {pre post : List UInt8}
+    {dest : UInt256} {rest : List UInt256} {yst : EvmState} {s : State}
+    (hcode : code = mkCode (pre ++ (Instr.op .JUMP).bytes ++ post))
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat pre.length)
+    (hstk : s.stack = dest :: rest)
+    (hvalid : Decode.isValidJumpDest code dest.toNat = true)
+    (hgas : 40000 ≤ s.gasAvailable) :
+    ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = dest
+      ∧ s'.stack = rest
+      ∧ s.gasAvailable - 40000 ≤ s'.gasAvailable := by
+  have hdec := decoded_op hf hcode hpc (by decide) trivial (by decide)
+  have hfork : s.fork = .Osaka := hf.fork
+  have hgas' : Gas.baseCost s.fork .JUMP ≤ s.gasAvailable := by
+    rw [hfork]
+    have : Gas.baseCost .Osaka Operation.JUMP ≤ 40000 := by decide
+    omega
+  refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+    (StepRunning.jump s dest rest hdec hgas' hstk
+      (by rw [hf.hcode]; exact hvalid)),
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      hf.running⟩,
+    ⟨hm.mem, hm.stor, hm.tstor⟩, rfl, rfl, ?_⟩
+  · show s.gasAvailable - Gas.baseCost s.fork .JUMP ≥ s.gasAvailable - 40000
+    apply Nat.sub_le_sub_left
+    rw [hfork]
+    decide
+
 end YulEvmCompiler
