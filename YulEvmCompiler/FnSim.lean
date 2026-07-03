@@ -47,6 +47,36 @@ def SimSPC (code : ByteArray) (pcc : Nat) (yst : EvmState) (V : VEnv yul)
       ∧ s'.stack = vimg V' ++ σ
       ∧ s.gasAvailable - b ≤ s'.gasAvailable
 
+/-- Code-fixed, position-aware *expression* simulation: like `SimE`, but with the
+whole program `code` a fixed parameter (so callees in argument position can be
+located via `ProgLayout`). The variable region `vimg V` is fixed, `τ` are the
+`off` temporaries above it, and the fragment pushes `out`. -/
+def SimEC (code : ByteArray) (pcc off : Nat) (yst : EvmState) (V : VEnv yul)
+    (is : List Instr) (out : List YulSemantics.EVM.U256) (yst' : EvmState) : Prop :=
+  ∃ b : Nat, ∀ (preIs : List Instr) (post : List UInt8) (τ σ : List UInt256) (s : State),
+    code = mkCode (assembleBytes preIs ++ assembleBytes is ++ post) →
+    (assembleBytes preIs).length = pcc →
+    FrameOK code s → StateMatch yst s →
+    s.pc = UInt256.ofNat pcc →
+    s.stack = τ ++ vimg V ++ σ →
+    τ.length = off →
+    b ≤ s.gasAvailable →
+    ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst' s'
+      ∧ s'.pc = UInt256.ofNat (pcc + (assembleBytes is).length)
+      ∧ s'.stack = out.map conv ++ τ ++ vimg V ++ σ
+      ∧ s.gasAvailable - b ≤ s'.gasAvailable
+
+/-- Every code-quantified `SimE` result specializes to `SimEC` at any concrete
+`code` and position. -/
+theorem SimE.toSimEC {off : Nat} {yst : EvmState} {V : VEnv yul} {is : List Instr}
+    {out : List YulSemantics.EVM.U256} {yst' : EvmState} (h : SimE yst V off is out yst')
+    (code : ByteArray) (pcc : Nat) : SimEC code pcc off yst V is out yst' := by
+  obtain ⟨b, H⟩ := h
+  refine ⟨b, fun preIs post τ σ s hcode hpre hf hm hpc hstk hτ hg => ?_⟩
+  obtain ⟨s', hsteps, hf', hm', hpc', hstk', hg'⟩ :=
+    H code (assembleBytes preIs) post τ σ s hcode hf hm (by rw [hpc, hpre]) hstk hτ hg
+  exact ⟨s', hsteps, hf', hm', by rw [hpc', hpre], hstk', hg'⟩
+
 /-- Every code-quantified `SimSP` result specializes to `SimSPC` at any concrete
 `code`. This is the bridge that carries the function-free fragment (proved via
 the existing `Correctness.sim`) into the code-fixed setting. -/
