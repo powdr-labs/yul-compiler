@@ -72,5 +72,7 @@ its own green commit:
 ## Status
 
 - [x] Codegen implemented + execution-validated (`Functions.lean`, committed).
-- [ ] Phase 1.1 `jumpStep` — **in progress**.
+- [x] Phase 1.1 `jumpStep` (`OpStep.lean`).
+- [x] Phase 1.2 `retSwapsSteps` return-value reshuffle (`FnProof.lean`).
+- [ ] Phase 1.3 layout arithmetic — **next**.
 - [ ] everything else.

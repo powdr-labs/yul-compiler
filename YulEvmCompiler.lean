@@ -8,3 +8,4 @@ import YulEvmCompiler.Correctness
 import YulEvmCompiler.Examples
 import YulEvmCompiler.Functions
 import YulEvmCompiler.FunctionsExamples
+import YulEvmCompiler.FnProof
