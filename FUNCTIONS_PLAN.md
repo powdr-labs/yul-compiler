@@ -151,3 +151,27 @@ its own green commit:
 
   All the mechanical lemmas these three steps consume are already proven and
   committed; Phase 4 is the architectural assembly.
+
+  **Phase 4 progress (`FnSim.lean`):**
+    - [x] `SimSPC` — the code-fixed statement simulation + `SimSP.toSimSPC`
+      bridge + `SimSPC.comp` + `SimSPC.nil`.
+    - [x] `calleeRunProc` — **the callee half of a procedure call is proven**:
+      run entry `JUMPDEST` → body (`SimSPC` over the empty region) → return
+      `JUMP`, reaching `retaddr` with the caller stack restored. This is the
+      first machine-checked "a function call executes correctly" (no
+      params/rets).
+    - [ ] `SimCallProc` — the caller half: `pushStep`(retaddr)·`pushStep`(entry)
+      ·`jumpStep`→entry (`ProgLayout` embed + `entry_isValidJumpDest`)·
+      `calleeRunProc`·land on the scaffold `JUMPDEST`. The pushed-address
+      `toNat` round-trip follows the existing `cond`/`JUMPI` pattern
+      (`toNat_ofNat_of_lt` + `codeSmall`).
+    - [ ] `simF` — the induction over the source `Step` producing `SimSPC` for
+      `compileStmtF`, supplying the body-sim to `SimCallProc` (recursion via the
+      body sub-derivation), then the `+params`/`+returns` generalisations
+      (`pushZerosSteps`, args-sim via a code-fixed `SimEC`, `popsSteps`,
+      `retSwapsSteps`, `calleeEpilogueSteps`).
+
+  Note: "implemented and working" is already done — `compileProgF` is executable
+  and `FunctionsExamples` runs recursion/procedures/multi-return/nested calls on
+  the evm-semantics EVM with the expected results. The remaining work is purely
+  the machine-checked proof (`SimCallProc` → `simF` → top-level theorem).
