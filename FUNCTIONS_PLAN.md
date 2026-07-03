@@ -98,20 +98,25 @@ its own green commit:
         `lookupFun [hoist prog] fn` ↔ `realFt.get? fn` correspondence, plus
         `JUMPDEST`-validity of entries at the call site (via
         `isValidJumpDest_boundary` on the `ProgLayout` embedding).
-- [~] Phase 3 SimCall (`FnLayout.lean`) — ingredients landed:
-      - [x] `compileFn_head_jumpdest` + `entry_isValidJumpDest` — a function's
-        recorded entry is a valid `JUMPDEST`, so the scaffold's `JUMP` to a
-        callee fires (`jumpStep`).
-      - [x] `lookupFun_single`, `find?_hoist_get?`, `lookupFun_realFt_corr` —
-        the dynamic funenv↔table bridge: a call the source resolves against
-        `hoist yul prog` resolves in `compileProgF`'s table to an `FnInfo` with
-        the same signature/body, so the compiled callee is the one the source
-        runs.
-      - [ ] the `SimCall` combinator itself — the call fragment `Steps`: push
-        retaddr + `m` zeros + args, `JUMP` to entry, run the callee body via the
-        body simulation hypothesis, `POP` params, `retSwaps`, `JUMP` back. This
-        composes the above + `jumpStep` + `retSwapsSteps` + `SimE`/`SimSP`, and
-        is co-designed with Phase 4 (which supplies the body hypothesis).
+- [~] Phase 3 SimCall — all discrete step-lemmas landed:
+      - [x] `compileFn_head_jumpdest` + `entry_isValidJumpDest` (`FnLayout`) —
+        a function's recorded entry is a valid `JUMPDEST`, so the scaffold's
+        `JUMP` to a callee fires (`jumpStep`).
+      - [x] `lookupFun_single`, `find?_hoist_get?`, `lookupFun_realFt_corr`
+        (`FnLayout`) — the dynamic funenv↔table bridge: a call the source
+        resolves against `hoist yul prog` resolves in `compileProgF`'s table to
+        an `FnInfo` with the same signature/body.
+      - [x] `pushZerosSteps` (`FnProof`) — prologue return-slot zero-init.
+      - [x] `popsSteps` (`FnProof`) — parameter drop.
+      - [x] `calleeEpilogueSteps` (`FnProof`) — the whole return sequence
+        `POP×n ; SWAP1..SWAPm ; JUMP`, composing `popsSteps` + `retSwapsSteps` +
+        `jumpStep` end to end.
+      - [ ] the `SimCall` combinator itself — compose prologue
+        (`pushStep` retaddr, `pushZerosSteps`, args-sim, `pushStep` entry),
+        `jumpStep` to entry (via the `ProgLayout` embedding +
+        `entry_isValidJumpDest`), the callee body (body-sim), and
+        `calleeEpilogueSteps`. The args-sim and body-sim hypotheses are supplied
+        by Phase 4's `simF`, so `SimCall` is finished together with it.
 - [ ] Phases 4–5 — integrate into `sim` (a new `simF` induction over the source
       `Step` threading the `FnTable` + `ProgLayout`, extending `Motive` to the
       `compileStmtF` compiler; recursion via the body sub-derivation IH), then
