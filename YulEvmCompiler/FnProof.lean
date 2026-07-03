@@ -299,4 +299,263 @@ theorem compileCallStmt_lenSig (ft₁ ft₂ : FnTable) (Γ : List Ident)
           rw [length_assembleBytes_callScaffold, length_assembleBytes_callScaffold, hlen, hf.2]
   · exact absurd he (by simp)
 
+set_option maxHeartbeats 1000000 in
+
+/-- **Statement/statement-sequence codegen length is position- and
+entry-independent**, and the resulting layout `Γ'` is identical. -/
+theorem compileStmtF_lenSig (ft₁ ft₂ : FnTable) (h : FnTable.SigEq ft₁ ft₂)
+    (pc : Nat) (Γ : List Ident) (s : Stmt Op) (pc' : Nat) (is₁ : List Instr)
+    (Γ' : List Ident) (he : compileStmtF ft₁ pc Γ s = some (is₁, Γ')) :
+    ∃ is₂, compileStmtF ft₂ pc' Γ s = some (is₂, Γ') ∧
+           (assembleBytes is₂).length = (assembleBytes is₁).length := by
+  refine compileStmtF.induct
+    (motive_1 := fun pc Γ s => ∀ (pc' : Nat) (is₁ : List Instr) (Γ' : List Ident),
+      compileStmtF ft₁ pc Γ s = some (is₁, Γ') →
+      ∃ is₂, compileStmtF ft₂ pc' Γ s = some (is₂, Γ') ∧
+             (assembleBytes is₂).length = (assembleBytes is₁).length)
+    (motive_2 := fun pc Γ ss => ∀ (pc' : Nat) (is₁ : List Instr) (Γ' : List Ident),
+      compileStmtsF ft₁ pc Γ ss = some (is₁, Γ') →
+      ∃ is₂, compileStmtsF ft₂ pc' Γ ss = some (is₂, Γ') ∧
+             (assembleBytes is₂).length = (assembleBytes is₁).length)
+    ?funDef ?exprCall ?exprOther ?letNone ?letCall ?letSingle ?letOther
+    ?assignSingle ?assignOther ?block ?cond ?catchAll ?stmtsNil ?stmtsCons
+    pc Γ s pc' is₁ Γ' he
+  case funDef =>
+      intro pc Γ name params rets body pc' is₁ Γ' he
+      simp only [compileStmtF, Option.some.injEq, Prod.mk.injEq] at he
+      obtain ⟨hcode, hΓ⟩ := he
+      subst hcode; subst hΓ
+      exact ⟨[], by simp only [compileStmtF], rfl⟩
+  case exprCall =>
+      intro pc Γ f args pc' is₁ Γ' he
+      simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff] at he
+      obtain ⟨⟨code, m⟩, hcall, he⟩ := he
+      split at he
+      · rename_i hm0
+        simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at he
+        obtain ⟨hcode, hΓ⟩ := he
+        subst hcode; subst hΓ
+        obtain ⟨code₂, hcall₂, hlen⟩ :=
+          compileCallStmt_lenSig ft₁ ft₂ Γ h pc 0 f args pc' code m hcall
+        refine ⟨code₂, ?_, hlen⟩
+        simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+        refine ⟨(code₂, m), hcall₂, ?_⟩
+        show (if m = 0 then some (code₂, Γ) else none) = some (code₂, Γ)
+        rw [if_pos hm0]
+      · exact absurd he (by simp)
+  case exprOther =>
+      intro pc Γ e hne pc' is₁ Γ' he
+      cases e
+      case call f args => exact absurd rfl (hne f args)
+      all_goals
+        simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff] at he
+        obtain ⟨is, his, heq⟩ := he
+        simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at heq
+        obtain ⟨hcode, hΓ⟩ := heq
+        subst hcode; subst hΓ
+        obtain ⟨is₂, hce₂, hlen⟩ := compileExprF_lenSig ft₁ ft₂ Γ h pc 0 _ pc' is his
+        refine ⟨is₂, ?_, hlen⟩
+        simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+        exact ⟨is₂, hce₂, rfl⟩
+  case letNone =>
+      intro pc Γ xs pc' is₁ Γ' he
+      simp only [compileStmtF, Option.pure_def, Option.some.injEq, Prod.mk.injEq] at he
+      obtain ⟨hcode, hΓ⟩ := he
+      subst hcode; subst hΓ
+      exact ⟨List.replicate xs.length (.push (conv 0)),
+        by simp only [compileStmtF, Option.pure_def], rfl⟩
+  case letCall =>
+      intro pc Γ xs f args pc' is₁ Γ' he
+      simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff] at he
+      obtain ⟨⟨code, m⟩, hcall, he⟩ := he
+      split at he
+      · rename_i hmx
+        simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at he
+        obtain ⟨hcode, hΓ⟩ := he
+        subst hcode; subst hΓ
+        obtain ⟨code₂, hcall₂, hlen⟩ :=
+          compileCallStmt_lenSig ft₁ ft₂ Γ h pc 0 f args pc' code m hcall
+        refine ⟨code₂, ?_, hlen⟩
+        simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+        refine ⟨(code₂, m), hcall₂, ?_⟩
+        show (if m = xs.length then some (code₂, xs ++ Γ) else none) = some (code₂, xs ++ Γ)
+        rw [if_pos hmx]
+      · exact absurd he (by simp)
+  case letSingle =>
+      intro pc Γ x e hne pc' is₁ Γ' he
+      cases e
+      case call f args => exact absurd rfl (hne f args)
+      all_goals
+        simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff] at he
+        obtain ⟨is, his, heq⟩ := he
+        simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at heq
+        obtain ⟨hcode, hΓ⟩ := heq
+        subst hcode; subst hΓ
+        obtain ⟨is₂, hce₂, hlen⟩ := compileExprF_lenSig ft₁ ft₂ Γ h pc 0 _ pc' is his
+        refine ⟨is₂, ?_, hlen⟩
+        simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+        exact ⟨is₂, hce₂, rfl⟩
+  case letOther =>
+      intro pc Γ vars val hnecall hnesingle pc' is₁ Γ' he
+      cases val
+      case call f args => exact absurd rfl (hnecall f args)
+      all_goals
+        cases vars with
+        | nil => exact absurd he (by simp [compileStmtF])
+        | cons x xs =>
+            cases xs with
+            | nil => exact absurd rfl (hnesingle x)
+            | cons y ys => exact absurd he (by simp [compileStmtF])
+  case assignSingle =>
+      intro pc Γ x e pc' is₁ Γ' he
+      simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff] at he
+      obtain ⟨is, his, idx, hidx, he⟩ := he
+      split at he
+      · rename_i hlt
+        simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at he
+        obtain ⟨hcode, hΓ⟩ := he
+        subst hΓ
+        obtain ⟨is₂, hce₂, hlen⟩ := compileExprF_lenSig ft₁ ft₂ Γ h pc 0 e pc' is his
+        refine ⟨is₂ ++ [.op (.Swap ⟨idx, hlt⟩), .op .POP], ?_, ?_⟩
+        · simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+          refine ⟨is₂, hce₂, idx, hidx, ?_⟩
+          rw [dif_pos hlt]
+        · subst hcode
+          simp only [assembleBytes_append, List.length_append, hlen]
+      · exact absurd he (by simp)
+  case assignOther =>
+      intro pc Γ vars val hnesingle pc' is₁ Γ' he
+      cases vars with
+      | nil => exact absurd he (by simp [compileStmtF])
+      | cons x xs =>
+          cases xs with
+          | nil => exact absurd rfl (hnesingle x)
+          | cons y ys => exact absurd he (by simp [compileStmtF])
+  case block =>
+      intro pc Γ body hbody pc' is₁ Γ' he
+      simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff] at he
+      obtain ⟨⟨isb, Γb⟩, hbc, he⟩ := he
+      simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at he
+      obtain ⟨hcode, hΓ⟩ := he
+      subst hΓ
+      obtain ⟨is₂b, hbc₂, hlen⟩ := hbody (pc' + 0) isb Γb hbc
+      refine ⟨is₂b ++ List.replicate (Γb.length - Γ.length) (.op .POP), ?_, ?_⟩
+      · simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+        exact ⟨(is₂b, Γb), hbc₂, rfl⟩
+      · subst hcode
+        simp only [assembleBytes_append, List.length_append, hlen]
+  case cond =>
+      intro pc Γ c body hbody pc' is₁ Γ' he
+      simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff] at he
+      obtain ⟨cCode, hc, ⟨bodyCode, Γb⟩, hbc, he⟩ := he
+      simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at he
+      obtain ⟨hcode, hΓ⟩ := he
+      subst hΓ
+      obtain ⟨cCode₂, hc₂, hclen⟩ := compileExprF_lenSig ft₁ ft₂ Γ h pc 0 c pc' cCode hc
+      obtain ⟨bodyCode₂, hbc₂, hblen⟩ :=
+        hbody cCode (pc' + (assembleBytes cCode₂).length + 35) bodyCode Γb hbc
+      refine ⟨cCode₂ ++ [.op .ISZERO, .push (EvmSemantics.UInt256.ofNat
+          (pc' + (assembleBytes cCode₂).length + 35 + (assembleBytes bodyCode₂).length
+            + (Γb.length - Γ.length))), .op .JUMPI] ++ bodyCode₂
+          ++ List.replicate (Γb.length - Γ.length) (.op .POP) ++ [.op .JUMPDEST], ?_, ?_⟩
+      · simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+        exact ⟨cCode₂, hc₂, (bodyCode₂, Γb), hbc₂, rfl⟩
+      · subst hcode
+        simp only [assembleBytes_append, assembleBytes_cons, List.length_append,
+          List.length_cons, List.length_nil, Instr.length_bytes_push, Instr.length_bytes_op,
+          length_assembleBytes_replicate_push, hclen, hblen]
+  case catchAll =>
+      intro t pc Γ hg1 _ hg3 hg4 _ _ hg7 _ hg9 hg10 hg11 pc' is₁ Γ' he
+      cases t with
+      | funDef n p r b => exact absurd rfl (hg1 n p r b)
+      | exprStmt e => exact absurd rfl (hg3 e)
+      | letDecl xs v =>
+          cases v with
+          | none => exact absurd rfl (hg4 xs)
+          | some val => exact absurd rfl (hg7 xs val)
+      | assign vars val => exact absurd rfl (hg9 vars val)
+      | block body => exact absurd rfl (hg10 body)
+      | cond c body => exact absurd rfl (hg11 c body)
+      | switch c cs d => exact absurd he (by simp [compileStmtF])
+      | forLoop i c p b => exact absurd he (by simp [compileStmtF])
+      | «break» => exact absurd he (by simp [compileStmtF])
+      | «continue» => exact absurd he (by simp [compileStmtF])
+      | leave => exact absurd he (by simp [compileStmtF])
+  case stmtsNil =>
+      intro pc Γ pc' is₁ Γ' he
+      simp only [compileStmtsF, Option.some.injEq, Prod.mk.injEq] at he
+      obtain ⟨hcode, hΓ⟩ := he
+      subst hcode; subst hΓ
+      exact ⟨[], by simp only [compileStmtsF], rfl⟩
+  case stmtsCons =>
+      intro pc Γ s rest hs hrest pc' is₁ Γ' he
+      simp only [compileStmtsF, Option.bind_eq_bind, Option.bind_eq_some_iff] at he
+      obtain ⟨⟨is1, Γ1⟩, hs1, ⟨is2, Γ2⟩, hs2, he⟩ := he
+      simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at he
+      obtain ⟨hcode, hΓ⟩ := he
+      subst hΓ
+      obtain ⟨is1', hs1', hlen1⟩ := hs pc' is1 Γ1 hs1
+      obtain ⟨is2', hs2', hlen2⟩ :=
+        hrest is1 Γ1 (pc' + (assembleBytes is1').length) is2 Γ2 hs2
+      refine ⟨is1' ++ is2', ?_, ?_⟩
+      · simp only [compileStmtsF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+        exact ⟨(is1', Γ1), hs1', (is2', Γ2), hs2', rfl⟩
+      · subst hcode
+        simp only [assembleBytes_append, List.length_append, hlen1, hlen2]
+
+/-- **Statement-sequence codegen length is position- and entry-independent**
+(list induction over `compileStmtF_lenSig`). -/
+theorem compileStmtsF_lenSig (ft₁ ft₂ : FnTable) (h : FnTable.SigEq ft₁ ft₂)
+    (pc : Nat) (Γ : List Ident) (ss : List (Stmt Op)) (pc' : Nat) (is₁ : List Instr)
+    (Γ' : List Ident) :
+    compileStmtsF ft₁ pc Γ ss = some (is₁, Γ') →
+    ∃ is₂, compileStmtsF ft₂ pc' Γ ss = some (is₂, Γ') ∧
+           (assembleBytes is₂).length = (assembleBytes is₁).length := by
+  induction ss generalizing pc Γ pc' is₁ Γ' with
+  | nil =>
+      intro he
+      simp only [compileStmtsF, Option.some.injEq, Prod.mk.injEq] at he
+      obtain ⟨hcode, hΓ⟩ := he
+      subst hcode; subst hΓ
+      exact ⟨[], by simp only [compileStmtsF], rfl⟩
+  | cons s rest ih =>
+      intro he
+      simp only [compileStmtsF, Option.bind_eq_bind, Option.bind_eq_some_iff] at he
+      obtain ⟨⟨is1, Γ1⟩, hs1, ⟨is2, Γ2⟩, hs2, he⟩ := he
+      simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at he
+      obtain ⟨hcode, hΓ⟩ := he
+      subst hΓ
+      obtain ⟨is1', hs1', hlen1⟩ := compileStmtF_lenSig ft₁ ft₂ h pc Γ s pc' is1 Γ1 hs1
+      obtain ⟨is2', hs2', hlen2⟩ :=
+        ih (pc + (assembleBytes is1).length) Γ1 (pc' + (assembleBytes is1').length) is2 Γ2 hs2
+      refine ⟨is1' ++ is2', ?_, ?_⟩
+      · simp only [compileStmtsF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+        exact ⟨(is1', Γ1), hs1', (is2', Γ2), hs2', rfl⟩
+      · subst hcode
+        simp only [assembleBytes_append, List.length_append, hlen1, hlen2]
+
+/-- **A compiled function body has a position- and entry-independent length.**
+The entry byte-position `e` flows only into the body's PUSH32s, so `compileFn`
+at two entries yields equal-length code (with the same success/failure). -/
+theorem compileFn_lenSig (ft₁ ft₂ : FnTable) (h : FnTable.SigEq ft₁ ft₂)
+    (e₁ e₂ : Nat) (ps rs : List Ident) (b : Block Op) (is₁ : List Instr)
+    (he : compileFn ft₁ e₁ ps rs b = some is₁) :
+    ∃ is₂, compileFn ft₂ e₂ ps rs b = some is₂ ∧
+           (assembleBytes is₂).length = (assembleBytes is₁).length := by
+  simp only [compileFn, Option.bind_eq_bind, Option.bind_eq_some_iff] at he
+  obtain ⟨⟨bodyCode, Γb⟩, hbc, he⟩ := he
+  split at he
+  · rename_i hrs
+    simp only [Option.pure_def, Option.some.injEq] at he
+    obtain ⟨bodyCode₂, hbc₂, hlen⟩ :=
+      compileStmtF_lenSig ft₁ ft₂ h (e₁ + 1) (ps ++ rs) (.block b) (e₂ + 1) bodyCode Γb hbc
+    refine ⟨[.op .JUMPDEST] ++ bodyCode₂ ++ List.replicate ps.length (.op .POP)
+      ++ retSwaps rs.length ++ [.op .JUMP], ?_, ?_⟩
+    · simp only [compileFn, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+      exact ⟨(bodyCode₂, Γb), hbc₂, by rw [if_pos hrs]⟩
+    · subst he
+      simp only [assembleBytes_append, List.length_append, hlen]
+  · exact absurd he (by simp)
+
+
 end YulEvmCompiler

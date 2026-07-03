@@ -74,5 +74,10 @@ its own green commit:
 - [x] Codegen implemented + execution-validated (`Functions.lean`, committed).
 - [x] Phase 1.1 `jumpStep` (`OpStep.lean`).
 - [x] Phase 1.2 `retSwapsSteps` return-value reshuffle (`FnProof.lean`).
-- [ ] Phase 1.3 layout arithmetic — **next**.
+- [x] Phase 1.3 layout arithmetic: position/entry length-independence at every
+      codegen level — `length_assembleBytes_{replicate_push,callScaffold}`,
+      `FnTable.SigEq`, and `compile{ExprF,ArgsF,CallStmt,StmtF,StmtsF,Fn}_lenSig`
+      (`FnProof.lean`). The `entryPositions` offset arithmetic (a small pure
+      computation over these lengths) folds into Phase 2's `ProgLayout`.
+- [ ] Phase 2 `ProgLayout` — **next**.
 - [ ] everything else.
