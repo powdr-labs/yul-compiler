@@ -301,4 +301,25 @@ theorem compileProgF_layout (prog : Block Op) (fullIs : List Instr)
         simp only [List.length_append, hmainlen, hprelen, hsum, assembleBytes_cons,
           assembleBytes_nil, List.length_nil, Instr.length_bytes_op]
 
+/-! ### Source/compile-time function-environment correspondence -/
+
+/-- `collectFns` collects exactly the top-level function definitions, in order,
+matching the source semantics' `hoist` (up to `FDecl`/tuple packaging). This is
+the static half of the funenv↔`FnTable` correspondence: at the top level the
+source resolves calls against `hoist yul prog`, whose entries are precisely the
+param/return/body triples that `compileProgF`'s table is built from. -/
+theorem hoist_eq_collectFns (prog : Block Op) :
+    YulSemantics.hoist yul prog
+      = (collectFns prog).map
+          (fun p => (p.1, (⟨p.2.1, p.2.2.1, p.2.2.2⟩ : YulSemantics.FDecl yul))) := by
+  unfold YulSemantics.hoist
+  induction prog with
+  | nil => rfl
+  | cons s rest ih =>
+      cases s
+      case funDef n ps rs b =>
+          simp only [List.filterMap_cons]
+          rw [ih]; rfl
+      all_goals (simp only [List.filterMap_cons]; exact ih)
+
 end YulEvmCompiler

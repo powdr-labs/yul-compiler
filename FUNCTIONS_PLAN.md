@@ -79,20 +79,27 @@ its own green commit:
       `FnTable.SigEq`, and `compile{ExprF,ArgsF,CallStmt,StmtF,StmtsF,Fn}_lenSig`
       (`FnProof.lean`). The `entryPositions` offset arithmetic (a small pure
       computation over these lengths) folds into Phase 2's `ProgLayout`.
-- [~] Phase 2 `ProgLayout` — **in progress** (`FnLayout.lean`):
-      - [x] `entryPositions_{nil,cons,length}` — the two-pass entry-offset
-        recursion (induct over the function list head-first).
-      - [x] `sigEq_dummy_real` — pass-1 (dummy entries) and pass-2 (real
-        entries) tables are `FnTable.SigEq`, so the Phase-1.3 `*_lenSig`
-        lemmas transfer pass-1 lengths to pass-2 lengths.
-      - [ ] `ProgLayout code prog`: decompose `compileProgF` output as
-        `main ++ [STOP] ++ fnCodes.flatten`, show each `fnCodes[i]` sits at
-        its recorded `entryᵢ` (offset-match via the two lemmas above +
-        `compileFn_lenSig`/`compileStmtsF_lenSig`), and each `entryᵢ` is a
-        valid `JUMPDEST` (`isValidJumpDest_boundary`).
-      - [ ] funenv↔`FnTable` correspondence: relate the source `hoist prog`
-        (`FScope`/`FDecl`) to the compile-time `collectFns`/`realFt`, so
-        `lookupFun [hoist prog] fn` agrees with `realFt.get? fn`.
-- [ ] Phases 3–5 — SimCall, integrate into `sim` (extend `Motive` to the
-      `FnTable` compiler), turn on acceptance by generality. These extend the
-      core simulation framework and are the largest remaining pieces.
+- [x] Phase 2 `ProgLayout` (`FnLayout.lean`):
+      - [x] `entryPositions_{nil,cons,length}` — two-pass entry-offset recursion.
+      - [x] `sigEq_dummy_real` — pass-1/pass-2 tables are `FnTable.SigEq`.
+      - [x] offset machinery — `entryPositions_getElem?`,
+        `length_assembleBytes_flatten`, `flatten_split`,
+        `assembleBytes_flatten_embed`.
+      - [x] `fnCodes_lens_eq` + `mapM_option_{getElem?,length}` — pass-1 =
+        pass-2 function code lengths.
+      - [x] **`ProgLayout` / `compileProgF_layout`** — from
+        `compileProgF prog = some fullIs`: the pass-2 `mainCode` is the prefix,
+        and every `ft.get?`-resolved function's compiled body is embedded at
+        exactly its recorded entry byte-position.
+      - [x] `hoist_eq_collectFns` — static funenv↔table correspondence: the
+        source's `hoist yul prog` equals the `collectFns` table (up to
+        `FDecl`/tuple packaging).
+      - Deferred to Phase 3 (needs the threaded funenv): the *dynamic*
+        `lookupFun [hoist prog] fn` ↔ `realFt.get? fn` correspondence, plus
+        `JUMPDEST`-validity of entries at the call site (via
+        `isValidJumpDest_boundary` on the `ProgLayout` embedding).
+- [ ] Phases 3–5 — **next**: SimCall (the call fragment steps through the
+      callee body via the body IH; `ProgLayout` supplies the entry embedding),
+      integrate into `sim` (extend `Motive` to the `FnTable` compiler), turn on
+      acceptance by generality. Largest remaining pieces; extend the core
+      simulation framework.
