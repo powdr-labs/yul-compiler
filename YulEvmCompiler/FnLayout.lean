@@ -15,6 +15,7 @@ namespace YulEvmCompiler
 
 open YulSemantics (Expr Stmt Block Ident)
 open YulSemantics.EVM (Op)
+open EvmSemantics EvmSemantics.EVM
 
 /-- The `entryPositions` accumulator only prepends: folding from `(acc, cur)`
 gives `acc` followed by the fold from `([], cur)`. -/
@@ -213,11 +214,11 @@ has its compiled body embedded at exactly its recorded entry byte-position. -/
 def ProgLayout (prog : Block Op) (fullIs : List Instr) : Prop :=
   ∃ (ft : FnTable) (mainCode : List Instr) (mainΓ : List Ident),
     compileStmtsF ft 0 [] prog = some (mainCode, mainΓ) ∧
-    (∃ post, assembleBytes fullIs = assembleBytes mainCode ++ post) ∧
+    (∃ post, fullIs = mainCode ++ post) ∧
     (∀ fn info, ft.get? fn = some info →
       ∃ code, compileFn ft info.entry info.params info.rets info.body = some code ∧
-        ∃ pre post, assembleBytes fullIs = pre ++ assembleBytes code ++ post
-          ∧ pre.length = info.entry)
+        ∃ preIs postIs, fullIs = preIs ++ code ++ postIs
+          ∧ (assembleBytes preIs).length = info.entry)
 
 theorem compileProgF_layout (prog : Block Op) (fullIs : List Instr)
     (hcomp : compileProgF prog = some fullIs) : ProgLayout prog fullIs := by
@@ -246,8 +247,8 @@ theorem compileProgF_layout (prog : Block Op) (fullIs : List Instr)
   have hmaps : fnCodes.map (fun c => (assembleBytes c).length) = lens :=
     fnCodes_lens_eq dummyFt realFt hsig fns entries lens fnCodes hentries_len hlens hfn
   refine ⟨realFt, mainCode, Γm, hmain,
-    ⟨assembleBytes ([Instr.op .STOP] ++ fnCodes.flatten), ?_⟩, ?_⟩
-  · rw [← hfull, List.append_assoc, assembleBytes_append]
+    ⟨[Instr.op .STOP] ++ fnCodes.flatten, ?_⟩, ?_⟩
+  · rw [← hfull, List.append_assoc]
   · intro fn info hget
     -- locate the index of fn in the zipped list
     unfold FnTable.get? at hget
@@ -288,18 +289,17 @@ theorem compileProgF_layout (prog : Block Op) (fullIs : List Instr)
     have hsum : ((fnCodes.take i).map (fun c => (assembleBytes c).length)).sum
         = (lens.take i).sum := by
       rw [List.map_take, hmaps]
-    -- embed fnCodes[i] in the flattened code
-    obtain ⟨pre', post', hsplit, hprelen⟩ := assembleBytes_flatten_embed fnCodes i hi_fc
+    -- embed fnCodes[i] in the flattened code (instruction level)
     refine ⟨fnCodes[i], ?_, ?_⟩
     · rw [hinfo]; exact hfnc
-    · refine ⟨assembleBytes mainCode ++ assembleBytes [Instr.op .STOP] ++ pre', post', ?_, ?_⟩
-      · rw [← hfull]
-        simp only [assembleBytes_append]
-        rw [hsplit]
+    · refine ⟨mainCode ++ [Instr.op .STOP] ++ (fnCodes.take i).flatten,
+        (fnCodes.drop (i + 1)).flatten, ?_, ?_⟩
+      · rw [← hfull, flatten_split fnCodes i hi_fc]
         simp only [List.append_assoc]
       · rw [show info.entry = entries[i] from by rw [hinfo], hentry_val]
-        simp only [List.length_append, hmainlen, hprelen, hsum, assembleBytes_cons,
-          assembleBytes_nil, List.length_nil, Instr.length_bytes_op]
+        simp only [assembleBytes_append, List.length_append, hmainlen,
+          length_assembleBytes_flatten, hsum, assembleBytes_cons, assembleBytes_nil,
+          List.length_nil, Instr.length_bytes_op]
 
 /-! ### Source/compile-time function-environment correspondence -/
 
@@ -321,5 +321,41 @@ theorem hoist_eq_collectFns (prog : Block Op) :
           simp only [List.filterMap_cons]
           rw [ih]; rfl
       all_goals (simp only [List.filterMap_cons]; exact ih)
+
+/-! ### Function entries are valid jump destinations -/
+
+/-- A compiled function body begins with a `JUMPDEST` byte. -/
+theorem compileFn_head_jumpdest {ft : FnTable} {entry : Nat} {ps rs : List Ident}
+    {b : Block Op} {code : List Instr} (h : compileFn ft entry ps rs b = some code) :
+    ∃ rest, assembleBytes code = (Instr.op .JUMPDEST).bytes ++ rest := by
+  simp only [compileFn, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+  obtain ⟨⟨bodyCode, Γb⟩, hbc, h⟩ := h
+  split at h
+  · rename_i hrs
+    simp only [Option.pure_def, Option.some.injEq] at h
+    subst h
+    simp only [assembleBytes_append, assembleBytes_cons, assembleBytes_nil,
+      List.append_nil, List.append_assoc]
+    exact ⟨_, rfl⟩
+  · exact absurd h (by simp)
+
+/-- **A function entry is a valid `JUMPDEST`.** Whenever the whole program
+`fullIs` decomposes as `preIs ++ code ++ postIs` with `code` a compiled function
+body, the byte position `(assembleBytes preIs).length` is a valid jump
+destination — exactly the recorded entry the call scaffold jumps to. -/
+theorem entry_isValidJumpDest {ft : FnTable} {entry : Nat} {ps rs : List Ident}
+    {b : Block Op} {code preIs postIs fullIs : List Instr}
+    (hcode : compileFn ft entry ps rs b = some code)
+    (hfull : fullIs = preIs ++ code ++ postIs) :
+    Decode.isValidJumpDest (assemble fullIs) (assembleBytes preIs).length = true := by
+  obtain ⟨rest, hrest⟩ := compileFn_head_jumpdest hcode
+  have hrw : assemble fullIs
+      = mkCode (assembleBytes preIs ++ (Instr.op .JUMPDEST).bytes
+          ++ (rest ++ assembleBytes postIs)) := by
+    show mkCode (assembleBytes fullIs) = _
+    rw [hfull, assembleBytes_append, assembleBytes_append, hrest]
+    simp only [List.append_assoc]
+  rw [hrw]
+  exact isValidJumpDest_boundary preIs (rest ++ assembleBytes postIs)
 
 end YulEvmCompiler
