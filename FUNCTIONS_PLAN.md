@@ -79,5 +79,20 @@ its own green commit:
       `FnTable.SigEq`, and `compile{ExprF,ArgsF,CallStmt,StmtF,StmtsF,Fn}_lenSig`
       (`FnProof.lean`). The `entryPositions` offset arithmetic (a small pure
       computation over these lengths) folds into Phase 2's `ProgLayout`.
-- [ ] Phase 2 `ProgLayout` — **next**.
-- [ ] everything else.
+- [~] Phase 2 `ProgLayout` — **in progress** (`FnLayout.lean`):
+      - [x] `entryPositions_{nil,cons,length}` — the two-pass entry-offset
+        recursion (induct over the function list head-first).
+      - [x] `sigEq_dummy_real` — pass-1 (dummy entries) and pass-2 (real
+        entries) tables are `FnTable.SigEq`, so the Phase-1.3 `*_lenSig`
+        lemmas transfer pass-1 lengths to pass-2 lengths.
+      - [ ] `ProgLayout code prog`: decompose `compileProgF` output as
+        `main ++ [STOP] ++ fnCodes.flatten`, show each `fnCodes[i]` sits at
+        its recorded `entryᵢ` (offset-match via the two lemmas above +
+        `compileFn_lenSig`/`compileStmtsF_lenSig`), and each `entryᵢ` is a
+        valid `JUMPDEST` (`isValidJumpDest_boundary`).
+      - [ ] funenv↔`FnTable` correspondence: relate the source `hoist prog`
+        (`FScope`/`FDecl`) to the compile-time `collectFns`/`realFt`, so
+        `lookupFun [hoist prog] fn` agrees with `realFt.get? fn`.
+- [ ] Phases 3–5 — SimCall, integrate into `sim` (extend `Motive` to the
+      `FnTable` compiler), turn on acceptance by generality. These extend the
+      core simulation framework and are the largest remaining pieces.
