@@ -416,4 +416,20 @@ theorem entry_isValidJumpDest {ft : FnTable} {entry : Nat} {ps rs : List Ident}
   rw [hrw]
   exact isValidJumpDest_boundary preIs (rest ++ assembleBytes postIs)
 
+/-- **A `JUMPDEST` at any instruction boundary is a valid jump destination.**
+Whenever the program decomposes as `preIs ++ [JUMPDEST] ++ backIs`, the byte
+position `(assembleBytes preIs).length` is a valid jump target. This covers both
+a function entry and the call scaffold's trailing landing pad (where the callee
+returns). -/
+theorem isValidJumpDest_of_split (preIs backIs fullIs : List Instr)
+    (h : fullIs = preIs ++ [Instr.op .JUMPDEST] ++ backIs) :
+    Decode.isValidJumpDest (assemble fullIs) (assembleBytes preIs).length = true := by
+  have hrw : assemble fullIs
+      = mkCode (assembleBytes preIs ++ (Instr.op .JUMPDEST).bytes ++ assembleBytes backIs) := by
+    show mkCode (assembleBytes fullIs) = _
+    rw [h]
+    simp only [assembleBytes_append, assembleBytes_cons, assembleBytes_nil, List.append_nil]
+  rw [hrw]
+  exact isValidJumpDest_boundary preIs (assembleBytes backIs)
+
 end YulEvmCompiler
