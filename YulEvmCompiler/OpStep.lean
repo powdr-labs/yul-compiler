@@ -1084,4 +1084,105 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       (.revert, YulSemantics.EVM.readBytes yst.memory p.toNat n.toNat), rfl,
       rfl, (hm.mem.readBytes p.toNat n.toNat).symm⟩
 
+/-! ### Control-flow steps: `JUMPDEST`, `JUMPI` -/
+
+/-- Executing an embedded `JUMPDEST`: a no-op that advances the pc. -/
+theorem jumpdestStep {code : ByteArray} {pre post : List UInt8}
+    {yst : EvmState} {s : State}
+    (hcode : code = mkCode (pre ++ (Instr.op .JUMPDEST).bytes ++ post))
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat pre.length)
+    (hgas : 40000 ≤ s.gasAvailable) :
+    ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = UInt256.ofNat (pre.length + 1)
+      ∧ s'.stack = s.stack
+      ∧ s.gasAvailable - 40000 ≤ s'.gasAvailable := by
+  have hdec := decoded_op hf hcode hpc (by decide) trivial (by decide)
+  have hfork : s.fork = .Osaka := hf.fork
+  have hgas' : Gas.baseCost s.fork .JUMPDEST ≤ s.gasAvailable := by
+    rw [hfork]
+    have : Gas.baseCost .Osaka Operation.JUMPDEST ≤ 40000 := by decide
+    omega
+  refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+    (StepRunning.jumpdest s hdec hgas'),
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      hf.running⟩,
+    ⟨hm.mem, hm.stor, hm.tstor⟩, ?_, rfl, ?_⟩
+  · show s.pc.succ = _
+    rw [hpc]; apply succ_ofNat
+    have hsz : code.size = pre.length + 1 + post.length := by
+      subst hcode; simp [Instr.bytes]; omega
+    have := hf.codeSmall; omega
+  · show s.gasAvailable - Gas.baseCost s.fork .JUMPDEST ≥ s.gasAvailable - 40000
+    apply Nat.sub_le_sub_left
+    rw [hfork]
+    decide
+
+/-- Executing an embedded `JUMPI` whose condition is zero: fall through. -/
+theorem jumpiNotTakenStep {code : ByteArray} {pre post : List UInt8}
+    {dest cond : UInt256} {rest : List UInt256} {yst : EvmState} {s : State}
+    (hcode : code = mkCode (pre ++ (Instr.op .JUMPI).bytes ++ post))
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat pre.length)
+    (hstk : s.stack = dest :: cond :: rest)
+    (hcond : cond.toNat = 0)
+    (hgas : 40000 ≤ s.gasAvailable) :
+    ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = UInt256.ofNat (pre.length + 1)
+      ∧ s'.stack = rest
+      ∧ s.gasAvailable - 40000 ≤ s'.gasAvailable := by
+  have hdec := decoded_op hf hcode hpc (by decide) trivial (by decide)
+  have hfork : s.fork = .Osaka := hf.fork
+  have hgas' : Gas.baseCost s.fork .JUMPI ≤ s.gasAvailable := by
+    rw [hfork]
+    have : Gas.baseCost .Osaka Operation.JUMPI ≤ 40000 := by decide
+    omega
+  refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+    (StepRunning.jumpi_notTaken s dest cond rest hdec hgas' hstk
+      (by simp [UInt256.isTrue, hcond])),
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      hf.running⟩,
+    ⟨hm.mem, hm.stor, hm.tstor⟩, ?_, rfl, ?_⟩
+  · show s.pc.succ = _
+    rw [hpc]; apply succ_ofNat
+    have hsz : code.size = pre.length + 1 + post.length := by
+      subst hcode; simp [Instr.bytes]; omega
+    have := hf.codeSmall; omega
+  · show s.gasAvailable - Gas.baseCost s.fork .JUMPI ≥ s.gasAvailable - 40000
+    apply Nat.sub_le_sub_left
+    rw [hfork]
+    decide
+
+/-- Executing an embedded `JUMPI` with a nonzero condition: jump to `dest`
+(which must pass the jumpdest analysis). -/
+theorem jumpiTakenStep {code : ByteArray} {pre post : List UInt8}
+    {dest cond : UInt256} {rest : List UInt256} {yst : EvmState} {s : State}
+    (hcode : code = mkCode (pre ++ (Instr.op .JUMPI).bytes ++ post))
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat pre.length)
+    (hstk : s.stack = dest :: cond :: rest)
+    (hcond : cond.toNat ≠ 0)
+    (hvalid : Decode.isValidJumpDest code dest.toNat = true)
+    (hgas : 40000 ≤ s.gasAvailable) :
+    ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = dest
+      ∧ s'.stack = rest
+      ∧ s.gasAvailable - 40000 ≤ s'.gasAvailable := by
+  have hdec := decoded_op hf hcode hpc (by decide) trivial (by decide)
+  have hfork : s.fork = .Osaka := hf.fork
+  have hgas' : Gas.baseCost s.fork .JUMPI ≤ s.gasAvailable := by
+    rw [hfork]
+    have : Gas.baseCost .Osaka Operation.JUMPI ≤ 40000 := by decide
+    omega
+  refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+    (StepRunning.jumpi_taken s dest cond rest hdec hgas' hstk hcond
+      (by rw [hf.hcode]; exact hvalid)),
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      hf.running⟩,
+    ⟨hm.mem, hm.stor, hm.tstor⟩, rfl, rfl, ?_⟩
+  · show s.gasAvailable - Gas.baseCost s.fork .JUMPI ≥ s.gasAvailable - 40000
+    apply Nat.sub_le_sub_left
+    rw [hfork]
+    decide
+
 end YulEvmCompiler

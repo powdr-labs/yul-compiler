@@ -1,4 +1,5 @@
 import YulEvmCompiler.Correctness
+import YulSemantics.Syntax
 
 /-!
 # YulEvmCompiler.Examples
@@ -61,6 +62,31 @@ def usesSdiv : Block Op :=
 #guard (compileProgram deep16).isSome
 #guard (compileProgram deep17).isNone
 #guard (compileProgram usesSdiv).isNone
+
+/-- Written in the yul-semantics concrete-syntax DSL: `if` with a variable. -/
+def maxStore : Block Op := yul% {
+  let a := 3
+  let b := 5
+  if lt(a, b) { a := b }
+  sstore(0, a)
+}
+
+/-- Nested `if`s, blocks, and an early `return`. -/
+def guarded : Block Op := yul% {
+  let x := sload(0)
+  if iszero(x) { revert(0, 0) }
+  if gt(x, 100) {
+    let capped := 100
+    sstore(1, capped)
+    return(0, 0)
+  }
+  sstore(1, x)
+}
+
+#guard (compileProgram maxStore).isSome
+#guard (compileProgram guarded).isSome
+
+#eval (compileProgram maxStore).map hex
 
 #eval (compileProgram storeSum).map hex
 #eval (compileProgram letAssign).map hex

@@ -16,8 +16,11 @@ as they are* — nothing is re-encoded.
 
 A non-optimizing compiler for **straight-line programs with variables and
 nested blocks**: `let` declarations (initialized or zeroed), single-variable
-assignments, built-in expression statements, and `{ … }` scoping — no
-user-defined functions and no control flow yet. Literals compile to `PUSH32`; a built-in call compiles its arguments
+assignments, built-in expression statements, `{ … }` scoping, and
+**`if` statements** (compiled to `ISZERO; PUSH32 dest; JUMPI … JUMPDEST`,
+with the jumpdest-analysis acceptance of every emitted target proved) — no
+user-defined functions, `switch`, or `for` yet; they reuse exactly this jump
+machinery. Literals compile to `PUSH32`; a built-in call compiles its arguments
 right-to-left (Yul's evaluation order, which also puts the first argument on
 top of the stack) followed by the built-in's opcode; a program that falls off
 the end of its bytecode performs the EVM's implicit `STOP`, matching Yul's

@@ -13,12 +13,6 @@ Each constructor assembles to a *fixed* byte sequence, so the decode lemmas
   layout arithmetic trivial (`|push v| = 33`).
 * `op o`    — a single-byte opcode (an `EvmSemantics.Operation` with no
   immediate bytes, e.g. `ADD`, `SLOAD`, `RETURN`).
-* `dupN n` / `swapN n` — the EIP-8024 two-byte instructions `0xe6 n` / `0xe7 n`.
-  Reserved for the variables milestone (they are the compiled form of Yul
-  variable reads and assignments). NOTE: evm-semantics currently activates
-  them on **no** fork (`Operation.availableInFork` is `false` for `.DupN`/
-  `.SwapN` everywhere), so emitting them requires an upstream fork-table
-  entry first; the milestone-1 compiler never emits them.
 -/
 
 namespace YulEvmCompiler
@@ -41,12 +35,10 @@ def natToBE (n : Nat) : Nat → List UInt8
 inductive Instr
   /-- `PUSH32 v`: `0x7f` + 32 immediate bytes. -/
   | push  (v : UInt256)
-  /-- A single-byte operation (no immediate). -/
+  /-- A single-byte operation (no immediate). Every emitted instruction is
+  immediate-free or `PUSH32`, so instruction boundaries coincide with the
+  jumpdest analysis' walk — see `Decode.isValidJumpDest_boundary`. -/
   | op    (o : Operation)
-  /-- EIP-8024 `DUPN n` (`0xe6 n`). -/
-  | dupN  (n : Fin 256)
-  /-- EIP-8024 `SWAPN n` (`0xe7 n`). -/
-  | swapN (n : Fin 256)
   deriving Repr
 
 namespace Instr
@@ -84,8 +76,6 @@ def opByte : Operation → UInt8
 def bytes : Instr → List UInt8
   | .push v  => 0x7f :: natToBE v.toNat 32
   | .op o    => [opByte o]
-  | .dupN n  => [0xe6, UInt8.ofNat n.val]
-  | .swapN n => [0xe7, UInt8.ofNat n.val]
 
 /-- The byte length of an instruction. -/
 def size (i : Instr) : Nat := i.bytes.length
@@ -93,8 +83,6 @@ def size (i : Instr) : Nat := i.bytes.length
 @[simp] theorem size_push (v : UInt256) : (Instr.push v).size = 33 := by
   simp [size, bytes]
 @[simp] theorem size_op (o : Operation) : (Instr.op o).size = 1 := rfl
-@[simp] theorem size_dupN (n : Fin 256) : (Instr.dupN n).size = 2 := rfl
-@[simp] theorem size_swapN (n : Fin 256) : (Instr.swapN n).size = 2 := rfl
 
 @[simp] theorem length_bytes_op (o : Operation) : (Instr.op o).bytes.length = 1 := rfl
 
