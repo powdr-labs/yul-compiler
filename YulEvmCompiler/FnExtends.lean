@@ -202,4 +202,138 @@ theorem compileExprF_rev (ft : FnTable)
       simp only [Option.bind_eq_bind, Option.bind_eq_some_iff]
       exact ⟨restCode, ihrest restCode hrest, eCode, ihe restCode eCode he, his⟩
 
+private theorem exprStmtF_suffix (ft : FnTable) {pc Γ} {e : Expr Op} {is Γ'}
+    (h : compileStmtF ft pc Γ (.exprStmt e) = some (is, Γ')) : Γ' = Γ := by
+  cases e with
+  | call f args =>
+      rw [compileStmtF] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+      obtain ⟨⟨c, m⟩, _, hb⟩ := h
+      split at hb
+      · simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at hb
+        exact hb.2.symm
+      · exact absurd hb (by simp)
+  | lit l =>
+      simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨_, _, _, hΓ⟩ := h; exact hΓ.symm
+  | var x =>
+      simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨_, _, _, hΓ⟩ := h; exact hΓ.symm
+  | builtin op args =>
+      simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨_, _, _, hΓ⟩ := h; exact hΓ.symm
+
+private theorem letValF_suffix (ft : FnTable) {pc Γ} {x} {e : Expr Op} {is Γ'}
+    (h : compileStmtF ft pc Γ (.letDecl [x] (some e)) = some (is, Γ')) : Γ' = x :: Γ := by
+  cases e with
+  | call f args =>
+      rw [compileStmtF] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+      obtain ⟨⟨c, m⟩, _, hb⟩ := h
+      split at hb
+      · simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at hb
+        exact hb.2.symm
+      · exact absurd hb (by simp)
+  | lit l =>
+      simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨_, _, _, hΓ⟩ := h; exact hΓ.symm
+  | var z =>
+      simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨_, _, _, hΓ⟩ := h; exact hΓ.symm
+  | builtin op args =>
+      simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨_, _, _, hΓ⟩ := h; exact hΓ.symm
+
+private theorem letDeclF_suffix (ft : FnTable) {pc Γ} {xs} {e : Expr Op} {is Γ'}
+    (h : compileStmtF ft pc Γ (.letDecl xs (some e)) = some (is, Γ')) : ∃ Δ, Γ' = Δ ++ Γ := by
+  match xs, e with
+  | xs', .call f args =>
+      rw [compileStmtF] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+      obtain ⟨⟨c, m⟩, _, hb⟩ := h
+      split at hb
+      · simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at hb
+        exact ⟨xs', hb.2.symm⟩
+      · exact absurd hb (by simp)
+  | [x], .lit l => exact ⟨[x], letValF_suffix ft h⟩
+  | [x], .var z => exact ⟨[x], letValF_suffix ft h⟩
+  | [x], .builtin op args => exact ⟨[x], letValF_suffix ft h⟩
+  | [], .lit l => simp [compileStmtF] at h
+  | [], .var z => simp [compileStmtF] at h
+  | [], .builtin op args => simp [compileStmtF] at h
+  | x :: y :: t, .lit l => simp [compileStmtF] at h
+  | x :: y :: t, .var z => simp [compileStmtF] at h
+  | x :: y :: t, .builtin op args => simp [compileStmtF] at h
+
+/-- Every statement the function-aware compiler accepts only *extends* the
+layout (`Γ' = Δ ++ Γ`); a block therefore restores its outer layout by dropping
+exactly `Δ`. -/
+theorem compileStmtF_suffix (ft : FnTable) {pc : Nat} {Γ : List Ident} {s : Stmt Op}
+    {is : List Instr} {Γ' : List Ident}
+    (h : compileStmtF ft pc Γ s = some (is, Γ')) : ∃ Δ, Γ' = Δ ++ Γ := by
+  cases s with
+  | funDef n ps rs b =>
+      rw [compileStmtF] at h; simp only [Option.some.injEq, Prod.mk.injEq] at h
+      exact ⟨[], by simp [h.2]⟩
+  | exprStmt e => exact ⟨[], by simp [exprStmtF_suffix ft h]⟩
+  | letDecl xs val =>
+      cases val with
+      | none =>
+          rw [compileStmtF] at h
+          simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at h
+          exact ⟨xs, h.2.symm⟩
+      | some e => exact letDeclF_suffix ft h
+  | assign xs e =>
+      cases xs with
+      | nil => simp [compileStmtF] at h
+      | cons x t => cases t with
+        | nil =>
+            rw [compileStmtF] at h
+            simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+            obtain ⟨_, _, idx, _, hb⟩ := h
+            split at hb
+            · simp only [Option.pure_def, Option.some.injEq, Prod.mk.injEq] at hb
+              exact ⟨[], by simp [hb.2]⟩
+            · exact absurd hb (by simp)
+        | cons y t => simp [compileStmtF] at h
+  | block body =>
+      rw [compileStmtF] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨_, _, _, h2⟩ := h; exact ⟨[], by simp [h2]⟩
+  | cond c body =>
+      rw [compileStmtF] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨_, _, _, _, h2⟩ := h; exact ⟨[], by simp [h2]⟩
+  | switch c cases dflt => simp [compileStmtF] at h
+  | forLoop init c post body => simp [compileStmtF] at h
+  | «break» => simp [compileStmtF] at h
+  | «continue» => simp [compileStmtF] at h
+  | leave => simp [compileStmtF] at h
+
+/-- Sequence version of `compileStmtF_suffix`. -/
+theorem compileStmtsF_suffix (ft : FnTable) {ss : List (Stmt Op)} :
+    ∀ {pc Γ is Γ'}, compileStmtsF ft pc Γ ss = some (is, Γ') → ∃ Δ, Γ' = Δ ++ Γ := by
+  induction ss with
+  | nil =>
+    intro pc Γ is Γ' h
+    rw [compileStmtsF] at h; simp only [Option.some.injEq, Prod.mk.injEq] at h
+    exact ⟨[], h.2.symm⟩
+  | cons st rest ih =>
+    intro pc Γ is Γ' h
+    rw [compileStmtsF] at h
+    simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+      Option.some.injEq, Prod.mk.injEq] at h
+    obtain ⟨⟨is1, Γ1⟩, hs, ⟨is2, Γ2⟩, hr, _, rfl⟩ := h
+    obtain ⟨Δ1, rfl⟩ := compileStmtF_suffix ft hs
+    obtain ⟨Δ2, rfl⟩ := ih hr
+    exact ⟨Δ2 ++ Δ1, by simp⟩
+
 end YulEvmCompiler
