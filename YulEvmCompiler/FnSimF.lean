@@ -136,4 +136,36 @@ theorem simF_call (code : ByteArray) (ft : FnTable) (f : Ident) (info : FnInfo)
   exact SimCallProc code pc info.entry (pc + 67) calleePre bodyCode calleePost V yst yst'
     rfl hembed hcentry hbodysim hentryvalid hentrylt
 
+/-- **Code-fixed block.** Given the body sequence simulates (the `SimSPC` the
+`simF` sequence IH supplies, at the outer layout `names V`), the compiled block
+— body code followed by `POP`s dropping the block-locals — simulates to the
+restored outer environment `restore V Vb`. Mirrors `Correctness.sim`'s block
+case with `SimSPC` in place of `SimSP`; the block-local drop count matches
+`restore` by the `compileStmtsF_suffix` layout arithmetic. -/
+theorem SimSPC_block (code : ByteArray) (ft : FnTable) {body : Block Op}
+    {pc : Nat} {yst stb : EvmState} {V Vb : VEnv yul} {is : List Instr} {Γ' : List Ident}
+    (hbody : ∀ isb Γb, compileStmtsF ft pc (names V) body = some (isb, Γb) →
+      Γb = names Vb ∧ SimSPC code pc yst V isb stb Vb)
+    (hc : compileStmtF ft pc (names V) (.block body) = some (is, Γ')) :
+    Γ' = names (YulSemantics.restore V Vb) ∧
+      SimSPC code pc yst V is stb (YulSemantics.restore V Vb) := by
+  rw [compileStmtF] at hc
+  simp only [Nat.add_zero, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+    Option.some.injEq, Prod.mk.injEq] at hc
+  obtain ⟨⟨isb, Γb⟩, hbs, rfl, rfl⟩ := hc
+  obtain ⟨hΓb, hS⟩ := hbody isb Γb hbs
+  obtain ⟨Δ, hΔ⟩ := compileStmtsF_suffix ft hbs
+  have hVbΓ : Vb.length = Γb.length := by rw [hΓb]; simp [names]
+  have hΔlen : Γb.length = Δ.length + V.length := by rw [hΔ]; simp
+  have hnames : names (YulSemantics.restore V Vb) = names V := by
+    show names (Vb.drop (Vb.length - V.length)) = _
+    have hmapdrop : names (Vb.drop (Vb.length - V.length))
+        = (names Vb).drop (Vb.length - V.length) := by simp [names, List.map_drop]
+    rw [hmapdrop, ← hΓb, hΔ]
+    rw [List.drop_left' (show Δ.length = Vb.length - V.length from by omega)]
+  refine ⟨hnames.symm, ?_⟩
+  rw [show Γb.length - (names V).length = Vb.length - V.length from by simp [names]; omega]
+  show SimSPC code pc yst V _ stb (Vb.drop (Vb.length - V.length))
+  exact hS.comp (((simS_dropPops _ Vb (by omega)).toSimSP _).toSimSPC code)
+
 end YulEvmCompiler
