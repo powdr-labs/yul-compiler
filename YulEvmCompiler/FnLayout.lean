@@ -322,6 +322,64 @@ theorem hoist_eq_collectFns (prog : Block Op) :
           rw [ih]; rfl
       all_goals (simp only [List.filterMap_cons]; exact ih)
 
+/-- `lookupFun` against a single scope is just `find?` on that scope. -/
+theorem lookupFun_single (scope : YulSemantics.FScope yul) (fn : Ident) :
+    YulSemantics.lookupFun [scope] fn
+      = (scope.find? (fun p => p.1 = fn)).map
+          (fun q => (q.2, ([scope] : YulSemantics.FunEnv yul))) := by
+  cases h : scope.find? (fun p => p.1 = fn) with
+  | none => simp [YulSemantics.lookupFun, h]
+  | some q => simp [YulSemantics.lookupFun, h]
+
+/-- Core name-lookup correspondence: a name found in the `FDecl` scope built
+from `fns` is also found in the `FnInfo` table built from `fns.zip entries`,
+with matching param/return/body. -/
+theorem find?_hoist_get? (fns : List (Ident × List Ident × List Ident × Block Op))
+    (fn : Ident) :
+    ∀ (entries : List Nat), entries.length = fns.length →
+    ∀ (q : Ident × YulSemantics.FDecl yul),
+      (fns.map (fun p => (p.1, (⟨p.2.1, p.2.2.1, p.2.2.2⟩ : YulSemantics.FDecl yul)))).find?
+        (fun q => q.1 = fn) = some q →
+      ∃ info, FnTable.get? ((fns.zip entries).map
+          (fun x => (x.1.1, (⟨x.1.2.1, x.1.2.2.1, x.1.2.2.2, x.2⟩ : FnInfo)))) fn = some info ∧
+        info.params = q.2.params ∧ info.rets = q.2.rets ∧ info.body = q.2.body := by
+  induction fns with
+  | nil => intro entries _ q hq; simp at hq
+  | cons p rest ih =>
+      intro entries hlen q hq
+      cases entries with
+      | nil => simp at hlen
+      | cons e erest =>
+          simp only [List.length_cons, Nat.add_right_cancel_iff] at hlen
+          simp only [List.map_cons, List.find?_cons] at hq
+          simp only [List.zip_cons_cons, List.map_cons, FnTable.get?_cons]
+          split at hq
+          · rename_i hc
+            simp only [Option.some.injEq] at hq
+            subst hq
+            have hpn : p.1 = fn := of_decide_eq_true hc
+            exact ⟨⟨p.2.1, p.2.2.1, p.2.2.2, e⟩, by rw [if_pos hpn], rfl, rfl, rfl⟩
+          · rename_i hc
+            rw [if_neg (of_decide_eq_false hc)]
+            exact ih erest hlen q hq
+
+/-- **Dynamic funenv↔table correspondence.** A call the source resolves against
+the top-level scope `hoist yul prog` resolves, in the `compileProgF` table
+(built from `collectFns prog` at the given entry positions), to an `FnInfo` with
+the same param/return/body. -/
+theorem lookupFun_realFt_corr (prog : Block Op) (entries : List Nat)
+    (hlen : entries.length = (collectFns prog).length) (fn : Ident)
+    (decl : YulSemantics.FDecl yul) (cenv : YulSemantics.FunEnv yul)
+    (h : YulSemantics.lookupFun [YulSemantics.hoist yul prog] fn = some (decl, cenv)) :
+    ∃ info, FnTable.get? ((collectFns prog).zip entries |>.map
+        (fun x => (x.1.1, (⟨x.1.2.1, x.1.2.2.1, x.1.2.2.2, x.2⟩ : FnInfo)))) fn = some info ∧
+      info.params = decl.params ∧ info.rets = decl.rets ∧ info.body = decl.body := by
+  rw [hoist_eq_collectFns, lookupFun_single, Option.map_eq_some_iff] at h
+  obtain ⟨q, hq, hqeq⟩ := h
+  simp only [Prod.mk.injEq] at hqeq
+  obtain ⟨info, hinfo, hp, hr, hb⟩ := find?_hoist_get? (collectFns prog) fn entries hlen q hq
+  exact ⟨info, hinfo, by rw [hp, hqeq.1], by rw [hr, hqeq.1], by rw [hb, hqeq.1]⟩
+
 /-! ### Function entries are valid jump destinations -/
 
 /-- A compiled function body begins with a `JUMPDEST` byte. -/
