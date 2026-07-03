@@ -140,4 +140,64 @@ theorem calleeRunProc (code : ByteArray) (preIs bodyCode postIs : List Instr)
   exact ⟨s3, .trans hstep1 (st2steps.snoc hstep3), hf3, hm3, hpc3, hstk3,
     gsub2 hg1 (gsub2 hg2 hg3)⟩
 
+
+set_option maxHeartbeats 1000000 in
+
+/-- **The caller prologue reaches the callee entry.** For a procedure the
+scaffold prologue is `PUSH retaddr ; PUSH entry ; JUMP`; executing it pushes the
+return address, then jumps to `entry`, leaving `retaddr` (as a word) on top of
+the caller's stack. -/
+theorem callerReachEntry (code : ByteArray) (preIs : List Instr) (post : List UInt8)
+    (entry retaddr : Nat) (σ : List UInt256) (yst : EvmState) (s : State)
+    (hcode : code = mkCode (assembleBytes preIs
+      ++ assembleBytes [.push (UInt256.ofNat retaddr), .push (UInt256.ofNat entry), .op .JUMP]
+      ++ post))
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat (assembleBytes preIs).length)
+    (hstk : s.stack = σ)
+    (hentryvalid : Decode.isValidJumpDest code entry = true)
+    (hentrylt : entry < 2 ^ 256)
+    (hgas : 40000 + (40000 + 40000) ≤ s.gasAvailable) :
+    ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = UInt256.ofNat entry
+      ∧ s'.stack = UInt256.ofNat retaddr :: σ
+      ∧ s.gasAvailable - (40000 + (40000 + 40000)) ≤ s'.gasAvailable := by
+  have hbytes : assembleBytes [.push (UInt256.ofNat retaddr), .push (UInt256.ofNat entry), .op .JUMP]
+      = (Instr.push (conv (BitVec.ofNat 256 retaddr))).bytes
+        ++ (Instr.push (conv (BitVec.ofNat 256 entry))).bytes ++ (Instr.op .JUMP).bytes := by
+    simp only [assembleBytes_cons, assembleBytes_nil, List.append_nil, List.append_assoc, conv_ofNat]
+  -- 1) PUSH retaddr
+  have hcode1 : code = mkCode (assembleBytes preIs ++ (Instr.push (conv (BitVec.ofNat 256 retaddr))).bytes
+      ++ ((Instr.push (conv (BitVec.ofNat 256 entry))).bytes ++ (Instr.op .JUMP).bytes ++ post)) := by
+    rw [hcode, hbytes]; simp only [List.append_assoc]
+  obtain ⟨s1, hstep1, hf1, hm1, hpc1, hstk1, hg1⟩ :=
+    pushStep hcode1 hf hm hpc hstk (gstrip hgas)
+  simp only [List.map_cons, List.map_nil, conv_ofNat] at hstk1
+  -- 2) PUSH entry
+  have hcode2 : code = mkCode ((assembleBytes preIs ++ (Instr.push (conv (BitVec.ofNat 256 retaddr))).bytes)
+      ++ (Instr.push (conv (BitVec.ofNat 256 entry))).bytes ++ ((Instr.op .JUMP).bytes ++ post)) := by
+    rw [hcode, hbytes]; simp only [List.append_assoc]
+  have hpc1' : s1.pc = UInt256.ofNat (assembleBytes preIs
+      ++ (Instr.push (conv (BitVec.ofNat 256 retaddr))).bytes).length := by
+    rw [hpc1, List.length_append, Instr.length_bytes_push]
+  obtain ⟨s2, hstep2, hf2, hm2, hpc2, hstk2, hg2⟩ :=
+    pushStep hcode2 hf1 hm1 hpc1' hstk1 (gstrip (genough hgas hg1))
+  simp only [List.map_cons, List.map_nil, conv_ofNat] at hstk2
+  -- 3) JUMP to entry
+  have hcode3 : code = mkCode ((assembleBytes preIs
+      ++ (Instr.push (conv (BitVec.ofNat 256 retaddr))).bytes
+      ++ (Instr.push (conv (BitVec.ofNat 256 entry))).bytes) ++ (Instr.op .JUMP).bytes ++ post) := by
+    rw [hcode, hbytes]; simp only [List.append_assoc]
+  have hpc2' : s2.pc = UInt256.ofNat (assembleBytes preIs
+      ++ (Instr.push (conv (BitVec.ofNat 256 retaddr))).bytes
+      ++ (Instr.push (conv (BitVec.ofNat 256 entry))).bytes).length := by
+    rw [hpc2, List.length_append, List.length_append, Instr.length_bytes_push,
+      Instr.length_bytes_push, List.length_append, Instr.length_bytes_push]
+  have hjvalid : Decode.isValidJumpDest code (UInt256.ofNat entry).toNat = true := by
+    rw [toNat_ofNat_of_lt hentrylt]; exact hentryvalid
+  obtain ⟨s3, hstep3, hf3, hm3, hpc3, hstk3, hg3⟩ :=
+    jumpStep hcode3 hf2 hm2 hpc2' hstk2 hjvalid (genough (genough hgas hg1) hg2)
+  exact ⟨s3, Steps.trans hstep1 (Steps.trans hstep2 (.trans hstep3 (.refl _))), hf3, hm3,
+    hpc3, hstk3, gsub2 hg1 (gsub2 hg2 hg3)⟩
+
 end YulEvmCompiler
