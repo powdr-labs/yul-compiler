@@ -5,6 +5,7 @@ namespace YulEvmCompiler
 
 open YulSemantics (Expr Stmt Block Ident)
 open YulSemantics.EVM (Op)
+open EvmSemantics EvmSemantics.EVM
 
 set_option maxHeartbeats 1000000
 
@@ -335,5 +336,38 @@ theorem compileStmtsF_suffix (ft : FnTable) {ss : List (Stmt Op)} :
     obtain ⟨Δ1, rfl⟩ := compileStmtF_suffix ft hs
     obtain ⟨Δ2, rfl⟩ := ih hr
     exact ⟨Δ2 ++ Δ1, by simp⟩
+
+/-- Inversion for the function-aware `if` compiler: the `.block body` part is a
+single sublist `(bodyCode ++ pops)`, matching the shape the control-flow
+combinators (`SimSPC_ifTrue`, `simSP_ifFalse`) compose against. -/
+theorem compileStmtF_cond_inv (ft : FnTable) {pc : Nat} {Γ : List Ident}
+    {c : Expr Op} {body : Block Op} {is : List Instr} {Γ' : List Ident}
+    (h : compileStmtF ft pc Γ (.cond c body) = some (is, Γ')) :
+    ∃ cCode bodyCode Γb,
+      compileExprF ft pc Γ 0 c = some cCode ∧
+      compileStmtsF ft (pc + (assembleBytes cCode).length + 35) Γ body = some (bodyCode, Γb) ∧
+      is = cCode
+        ++ [.op .ISZERO,
+            .push (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
+              + (assembleBytes bodyCode).length + (Γb.length - Γ.length))),
+            .op .JUMPI]
+        ++ (bodyCode ++ List.replicate (Γb.length - Γ.length) (.op .POP))
+        ++ [.op .JUMPDEST] ∧
+      Γ' = Γ := by
+  rw [compileStmtF] at h
+  cases hcc : compileExprF ft pc Γ 0 c with
+  | none => rw [hcc] at h; simp at h
+  | some cCode =>
+    rw [hcc] at h
+    simp only [Option.bind_eq_bind, Option.bind_some] at h
+    cases hbc : compileStmtsF ft (pc + (assembleBytes cCode).length + 35) Γ body with
+    | none => rw [hbc] at h; simp at h
+    | some p =>
+      obtain ⟨bodyCode, Γb⟩ := p
+      rw [hbc] at h
+      simp only [Option.bind_eq_bind, Option.bind_some, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      refine ⟨cCode, bodyCode, Γb, rfl, hbc, ?_, h.2.symm⟩
+      rw [h.1.symm]; simp [List.append_assoc]
 
 end YulEvmCompiler

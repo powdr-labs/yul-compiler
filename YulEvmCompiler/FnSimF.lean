@@ -63,9 +63,9 @@ def MotiveF (code : ByteArray) (ft : FnTable) (prog : Block Op)
       FunAgree prog funs → ∀ pc is Γ', compileStmtsF ft pc (names V) ss = some (is, Γ') →
         Γ' = names V' ∧ SimSPC code pc yst V is yst' V'
   | .expr (.call fn args), .eres (.vals _ yst') =>
-      FunAgree prog funs → ∀ pc info, ft.get? fn = some info →
-        info.params = [] → info.rets = [] → args = [] →
-        SimSPC code pc yst V (callScaffold (pc + 67) info.entry 0 []) yst' V
+      FunAgree prog funs → ∀ pc is Γ',
+        compileStmtF ft pc (names V) (.exprStmt (.call fn args)) = some (is, Γ') →
+        Γ' = names V ∧ SimSPC code pc yst V is yst' V
   | _, _ => True
 
 /-- The `stmtsNil` case: the empty sequence compiles to `[]` and simulates
