@@ -84,4 +84,52 @@ theorem sigEq_dummy_real
           · simp only [hpn, if_false]
             exact ih erest hlen n
 
+/-! ### Flattened-layout offset lemmas -/
+
+/-- Indexed characterization of `entryPositions`: the `i`-th entry is
+`mainLen + 1 + (sum of the first i function lengths)`. -/
+theorem entryPositions_getElem? (mainLen : Nat) (lens : List Nat) (i : Nat)
+    (hi : i < lens.length) :
+    (entryPositions mainLen lens)[i]? = some (mainLen + 1 + (lens.take i).sum) := by
+  induction lens generalizing mainLen i with
+  | nil => simp at hi
+  | cons len rest ih =>
+      rw [entryPositions_cons]
+      cases i with
+      | zero => simp
+      | succ k =>
+          simp only [List.getElem?_cons_succ, List.take_succ_cons, List.sum_cons]
+          rw [ih (mainLen + len) k (by simpa using hi)]
+          congr 1
+          omega
+
+/-- The assembled length of a flattened chunk list is the sum of the chunks'
+assembled lengths. -/
+theorem length_assembleBytes_flatten (cs : List (List Instr)) :
+    (assembleBytes cs.flatten).length
+      = (cs.map (fun c => (assembleBytes c).length)).sum := by
+  induction cs with
+  | nil => rfl
+  | cons c rest ih =>
+      rw [List.flatten_cons, assembleBytes_append, List.length_append, ih,
+        List.map_cons, List.sum_cons]
+
+/-- Splitting a chunk list's flatten at index `i`. -/
+theorem flatten_split {α} (cs : List (List α)) (i : Nat) (hi : i < cs.length) :
+    cs.flatten = (cs.take i).flatten ++ cs[i] ++ (cs.drop (i + 1)).flatten := by
+  conv_lhs => rw [← List.take_append_drop i cs]
+  rw [List.flatten_append, List.append_assoc]
+  congr 1
+  rw [List.drop_eq_getElem_cons hi, List.flatten_cons]
+
+/-- **Each chunk sits at a known byte offset in the flattened, assembled code.**
+Chunk `i` is preceded by exactly the assembled lengths of the earlier chunks. -/
+theorem assembleBytes_flatten_embed (cs : List (List Instr)) (i : Nat)
+    (hi : i < cs.length) :
+    ∃ pre post, assembleBytes cs.flatten = pre ++ assembleBytes cs[i] ++ post
+      ∧ pre.length = ((cs.take i).map (fun c => (assembleBytes c).length)).sum := by
+  refine ⟨assembleBytes (cs.take i).flatten, assembleBytes (cs.drop (i + 1)).flatten, ?_, ?_⟩
+  · rw [flatten_split cs i hi, assembleBytes_append, assembleBytes_append]
+  · rw [length_assembleBytes_flatten]
+
 end YulEvmCompiler
