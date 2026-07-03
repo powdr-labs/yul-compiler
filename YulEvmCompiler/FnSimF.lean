@@ -70,4 +70,40 @@ theorem simSPC_cons (code : ByteArray) (ft : FnTable) {V V1 V2 : VEnv yul}
   obtain ⟨hΓ2, hsp2⟩ := htail (pc + (assembleBytes is1).length) is2 Γ2 hs2
   exact ⟨hΓ2, hsp1.comp hsp2⟩
 
+/-- **The call case of `simF`.** For a 0-param/0-ret procedure call
+`exprStmt (f())`, given the callee body is embedded at its entry (from
+`ProgLayout`), the entry is a valid `JUMPDEST`, and the body simulates
+(`SimSPC`, from the recursion on the body sub-derivation), the compiled call
+scaffold simulates via `SimCallProc`, leaving the variable region unchanged. -/
+theorem simF_call (code : ByteArray) (ft : FnTable) (f : Ident) (info : FnInfo)
+    (V : VEnv yul) (yst yst' : EvmState) (pc : Nat) (is : List Instr) (Γ' : List Ident)
+    (hget : ft.get? f = some info) (hparams : info.params = []) (hrets : info.rets = [])
+    (calleePre bodyCode calleePost : List Instr)
+    (hembed : code = mkCode (assembleBytes calleePre
+        ++ assembleBytes ([.op .JUMPDEST] ++ bodyCode ++ [.op .JUMP]) ++ assembleBytes calleePost))
+    (hcentry : (assembleBytes calleePre).length = info.entry)
+    (hentryvalid : Decode.isValidJumpDest code info.entry = true)
+    (hentrylt : info.entry < 2 ^ 256)
+    (hbodysim : SimSPC code (info.entry + 1) yst [] bodyCode yst' [])
+    (hc : compileStmtF ft pc (names V) (.exprStmt (.call f [])) = some (is, Γ')) :
+    Γ' = names V ∧ SimSPC code pc yst V is yst' V := by
+  -- compute the compiled call to the scaffold
+  have hcc : compileCallStmt ft pc (names V) 0 f [] =
+      some (callScaffold (pc + 67) info.entry 0 [], 0) := by
+    unfold compileCallStmt
+    rw [hget]
+    simp only [Option.bind_eq_bind, Option.bind_some, hrets, hparams, List.length_nil,
+      Nat.mul_zero, Nat.add_zero, compileArgsF, Option.pure_def,
+      assembleBytes_nil, List.length_nil]
+    norm_num
+  have hstmt : compileStmtF ft pc (names V) (.exprStmt (.call f [])) =
+      some (callScaffold (pc + 67) info.entry 0 [], names V) := by
+    rw [compileStmtF, hcc]; rfl
+  rw [hstmt] at hc
+  simp only [Option.some.injEq, Prod.mk.injEq] at hc
+  obtain ⟨rfl, rfl⟩ := hc
+  refine ⟨rfl, ?_⟩
+  exact SimCallProc code pc info.entry (pc + 67) calleePre bodyCode calleePost V yst yst'
+    rfl hembed hcentry hbodysim hentryvalid hentrylt
+
 end YulEvmCompiler
