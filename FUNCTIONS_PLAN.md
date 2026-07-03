@@ -117,8 +117,37 @@ its own green commit:
         `entry_isValidJumpDest`), the callee body (body-sim), and
         `calleeEpilogueSteps`. The args-sim and body-sim hypotheses are supplied
         by Phase 4's `simF`, so `SimCall` is finished together with it.
-- [ ] Phases 4–5 — integrate into `sim` (a new `simF` induction over the source
-      `Step` threading the `FnTable` + `ProgLayout`, extending `Motive` to the
-      `compileStmtF` compiler; recursion via the body sub-derivation IH), then
-      turn on compiler acceptance by generality (procedures → +params → +single
-      → +multi-return). Largest remaining pieces; reworks the core simulation.
+- [ ] Phases 4–5 — the `simF` induction + `SimCall`, then turn on acceptance by
+      generality (procedures → +params → +single → +multi-return).
+
+  **Key architectural finding (before writing `simF`):** the existing `SimE` /
+  `SimSP` relations are *code-quantified* — `∃ b, ∀ code preIs post …, code =
+  mkCode (… ++ is ++ post) → …`. That is exactly what makes them
+  position-independent and composable for the function-free fragment, but it
+  also means they **cannot express a call**: the callee body lives inside the
+  universally-quantified `post`, so the relation has no way to know it is there
+  or to jump to it. Therefore `simF`'s statement/expression motive must be
+  relative to a **fixed** whole-program `code` that satisfies `ProgLayout`
+  (which locates every callee), rather than the code-quantified `SimSP`.
+
+  Concretely Phase 4 needs:
+    1. a code-fixed simulation relation `SimSPC code pcc yst V is yst' V'`
+       (like `SimSP` but with `code` fixed and a `ProgLayout code` hypothesis),
+       plus its composition lemmas (`comp`, embargo of `pushStep`/etc. lifted to
+       fixed code) — most existing step lemmas already take a concrete `code`,
+       so they lift directly;
+    2. the `SimCall` combinator, now a wiring of the proven step-lemmas —
+       `pushStep`(retaddr) · `pushZerosSteps` · args-sim · `pushStep`(entry) ·
+       `jumpStep`→entry (`ProgLayout` embed + `entry_isValidJumpDest`) ·
+       callee body-sim · `calleeEpilogueSteps` · land on the scaffold `JUMPDEST`
+       (`isValidJumpDest_of_split`); the args-sim and body-sim come from the
+       `simF` IH;
+    3. a funenv↔table invariant threaded through `simF` so every *compiled*
+       call resolves in the source to the matching `decl`
+       (`lookupFun_realFt_corr` gives the top-level case; nested/shadowing
+       function definitions must be excluded — the compiler already fails to
+       resolve calls to non-top-level functions, so the accepted fragment has
+       `funs` agreeing with `realFt`).
+
+  All the mechanical lemmas these three steps consume are already proven and
+  committed; Phase 4 is the architectural assembly.
