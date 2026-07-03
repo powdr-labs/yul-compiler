@@ -98,8 +98,22 @@ its own green commit:
         `lookupFun [hoist prog] fn` ↔ `realFt.get? fn` correspondence, plus
         `JUMPDEST`-validity of entries at the call site (via
         `isValidJumpDest_boundary` on the `ProgLayout` embedding).
-- [ ] Phases 3–5 — **next**: SimCall (the call fragment steps through the
-      callee body via the body IH; `ProgLayout` supplies the entry embedding),
-      integrate into `sim` (extend `Motive` to the `FnTable` compiler), turn on
-      acceptance by generality. Largest remaining pieces; extend the core
-      simulation framework.
+- [~] Phase 3 SimCall (`FnLayout.lean`) — ingredients landed:
+      - [x] `compileFn_head_jumpdest` + `entry_isValidJumpDest` — a function's
+        recorded entry is a valid `JUMPDEST`, so the scaffold's `JUMP` to a
+        callee fires (`jumpStep`).
+      - [x] `lookupFun_single`, `find?_hoist_get?`, `lookupFun_realFt_corr` —
+        the dynamic funenv↔table bridge: a call the source resolves against
+        `hoist yul prog` resolves in `compileProgF`'s table to an `FnInfo` with
+        the same signature/body, so the compiled callee is the one the source
+        runs.
+      - [ ] the `SimCall` combinator itself — the call fragment `Steps`: push
+        retaddr + `m` zeros + args, `JUMP` to entry, run the callee body via the
+        body simulation hypothesis, `POP` params, `retSwaps`, `JUMP` back. This
+        composes the above + `jumpStep` + `retSwapsSteps` + `SimE`/`SimSP`, and
+        is co-designed with Phase 4 (which supplies the body hypothesis).
+- [ ] Phases 4–5 — integrate into `sim` (a new `simF` induction over the source
+      `Step` threading the `FnTable` + `ProgLayout`, extending `Motive` to the
+      `compileStmtF` compiler; recursion via the body sub-derivation IH), then
+      turn on compiler acceptance by generality (procedures → +params → +single
+      → +multi-return). Largest remaining pieces; reworks the core simulation.
