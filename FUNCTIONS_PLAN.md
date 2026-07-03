@@ -167,11 +167,20 @@ its own green commit:
       landing `JUMPDEST`. The first fully machine-checked "a function call is
       correct." Landing validity via `isValidJumpDest_boundary` +
       `toNat_ofNat_of_lt`/`codeSmall`.
+    - [x] `compileExprF_extends` / `compileStmtF_extends` (`FnExtends.lean`) —
+      the function-aware compiler produces exactly what the function-free one
+      does on the call-free fragment. With `SimSP.toSimSPC` this carries every
+      `Correctness.sim` result into `SimSPC`, so `simF` only has to *add* the
+      call case (`SimCallProc`).
     - [ ] `simF` — the induction over the source `Step` producing `SimSPC` for
-      `compileStmtF`, supplying the body-sim to `SimCallProc` (recursion via the
-      body sub-derivation), then the `+params`/`+returns` generalisations
-      (`pushZerosSteps`, args-sim via a code-fixed `SimEC`, `popsSteps`,
-      `retSwapsSteps`, `calleeEpilogueSteps`).
+      `compileStmtF`: `callOk` → `SimCallProc` (body-sim from the body
+      sub-derivation IH — this discharges recursion); every other rule composes
+      via `SimSPC.comp`/`SimSPC.nil`, reusing `sim`+`compileStmtF_extends`+
+      `toSimSPC` for call-free sub-parts. Then the top-level `compileProgF`
+      theorem, and the `+params`/`+returns` generalisations (`pushZerosSteps`,
+      args-sim via a code-fixed `SimEC`, `popsSteps`, `retSwapsSteps`,
+      `calleeEpilogueSteps`). **All inputs are now proven and committed;** this
+      is the remaining induction assembly.
 
   Note: "implemented and working" is already done — `compileProgF` is executable
   and `FunctionsExamples` runs recursion/procedures/multi-return/nested calls on
