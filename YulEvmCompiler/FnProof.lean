@@ -130,6 +130,15 @@ theorem retSwapsSteps : ∀ (m : Nat), m ≤ 16 →
     · rw [hstk2, hsplit]; simp
     · rw [Nat.mul_succ]; exact gsub2 hg1 hg2
 
+/-- `m` stacked identical pushes assemble to `33·m` bytes. -/
+theorem length_assembleBytes_replicate_push (m : Nat) (v : EvmSemantics.UInt256) :
+    (assembleBytes (List.replicate m (Instr.push v))).length = 33 * m := by
+  induction m with
+  | zero => rfl
+  | succ k ih =>
+    rw [List.replicate_succ, assembleBytes_cons, List.length_append, Instr.length_bytes_push, ih]
+    omega
+
 /-- `POP×k` assembles to exactly `k` (single-byte) instructions. -/
 theorem length_assembleBytes_replicate_pop (k : Nat) :
     (assembleBytes (List.replicate k (Instr.op .POP))).length = k := by
@@ -188,6 +197,49 @@ theorem popsSteps : ∀ (k : Nat) (code : ByteArray) (pre post : List UInt8)
     · rw [hstk2]
     · rw [Nat.mul_succ]; exact gsub2 hg1 hg2
 
+/-- **`PUSH32 0` repeated `m` times pushes `m` zero words.** The caller scaffold's
+return-slot initialisation: from stack `σ`, executing the embedded `PUSH32 0 ×m`
+reaches stack `replicate m 0 ++ σ`, pc advanced by `33·m`. -/
+theorem pushZerosSteps : ∀ (m : Nat) (code : ByteArray) (pre post : List UInt8)
+    (σ : List UInt256) (yst : EvmState) (s : State),
+    code = mkCode (pre ++ assembleBytes (List.replicate m (.push (conv 0))) ++ post) →
+    FrameOK code s → StateMatch yst s →
+    s.pc = UInt256.ofNat pre.length →
+    s.stack = σ →
+    40000 * m ≤ s.gasAvailable →
+    ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = UInt256.ofNat (pre.length + 33 * m)
+      ∧ s'.stack = List.replicate m (conv 0) ++ σ
+      ∧ s.gasAvailable - 40000 * m ≤ s'.gasAvailable := by
+  intro m
+  induction m with
+  | zero =>
+    intro code pre post σ yst s hcode hf hm hpc hstk hgas
+    exact ⟨s, .refl s, hf, hm, by simpa using hpc, by simpa using hstk, by omega⟩
+  | succ k ih =>
+    intro code pre post σ yst s hcode hf hm hpc hstk hgas
+    have hgas' : 40000 * k + 40000 ≤ s.gasAvailable := by rw [← Nat.mul_succ]; exact hgas
+    have hcode1 : code = mkCode (pre ++ assembleBytes (List.replicate k (.push (conv 0)))
+        ++ ((Instr.push (conv 0)).bytes ++ post)) := by
+      rw [hcode, List.replicate_succ', assembleBytes_append]
+      congr 1; simp [List.append_assoc]
+    obtain ⟨s1, st1, hf1, hm1, hpc1, hstk1, hg1⟩ :=
+      ih code pre ((Instr.push (conv 0)).bytes ++ post) σ yst s hcode1 hf hm hpc hstk (gstrip hgas')
+    have hcode2 : code = mkCode ((pre ++ assembleBytes (List.replicate k (.push (conv 0))))
+        ++ (Instr.push (conv 0)).bytes ++ post) := by
+      rw [hcode1]; simp [List.append_assoc]
+    have hpc1' : s1.pc
+        = UInt256.ofNat (pre ++ assembleBytes (List.replicate k (.push (conv 0)))).length := by
+      rw [hpc1]; congr 1; simp [length_assembleBytes_replicate_push]
+    obtain ⟨s2, hstep2, hf2, hm2, hpc2, hstk2, hg2⟩ :=
+      pushStep (u := 0) hcode2 hf1 hm1 hpc1' hstk1 (genough hgas' hg1)
+    refine ⟨s2, st1.snoc hstep2, hf2, hm2, ?_, ?_, ?_⟩
+    · rw [hpc2]; congr 1
+      simp only [List.length_append, length_assembleBytes_replicate_push, Nat.mul_succ,
+        Nat.add_assoc]
+    · rw [hstk2, List.replicate_succ]; simp
+    · rw [Nat.mul_succ]; exact gsub2 hg1 hg2
+
 /-- **The callee return sequence is correct.** From a matching state whose stack
 is `paramvals ++ rvals ++ retaddr :: σ` (|paramvals| = n, |rvals| = m ≤ 16),
 executing the embedded epilogue `POP×n ; SWAP1..SWAPm ; JUMP` drops the `n`
@@ -243,15 +295,6 @@ theorem calleeEpilogueSteps (code : ByteArray) (pre post : List UInt8)
   exact ⟨s3, (st1.append st2).snoc jstep, hf3, hm3, hpc3, hstk3, gsub2 hg1 (gsub2 hg2 hg3)⟩
 
 /-! ## Phase 1.3 — layout arithmetic (position/entry length-independence) -/
-
-/-- `m` stacked identical pushes assemble to `33·m` bytes. -/
-theorem length_assembleBytes_replicate_push (m : Nat) (v : EvmSemantics.UInt256) :
-    (assembleBytes (List.replicate m (Instr.push v))).length = 33 * m := by
-  induction m with
-  | zero => rfl
-  | succ k ih =>
-    rw [List.replicate_succ, assembleBytes_cons, List.length_append, Instr.length_bytes_push, ih]
-    omega
 
 /-- A call scaffold's byte length is `scaffoldLen`, independent of the pushed
 return address and entry point. -/
