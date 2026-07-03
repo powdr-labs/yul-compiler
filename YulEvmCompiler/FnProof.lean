@@ -22,6 +22,8 @@ namespace YulEvmCompiler
 
 open EvmSemantics EvmSemantics.EVM
 open YulSemantics.EVM (EvmState)
+open YulSemantics (Expr Stmt Block Ident)
+open YulSemantics.EVM (Op litValue)
 
 /-- Chain two gas-consumption bounds (proved in a tiny context, so no `omega`
 recursion over large ambient hypotheses). -/
@@ -98,7 +100,7 @@ theorem retSwapsSteps : ∀ (m : Nat), m ≤ 16 →
         ++ ((Instr.op (.Swap ⟨k % 16, Nat.mod_lt _ (by decide)⟩)).bytes ++ post)) := by
       rw [hcode, retSwaps, assembleBytes_append]
       congr 1
-      simp [assembleBytes_append, List.append_assoc]
+      simp [List.append_assoc]
     have hgas' : 40000 * k + 40000 ≤ s.gasAvailable := by rw [← Nat.mul_succ]; exact hgas
     -- IH: run retSwaps k, treating x as the element below the k values
     obtain ⟨s1, st1, hf1, hm1, hpc1, hstk1, hg1⟩ :=
@@ -127,5 +129,174 @@ theorem retSwapsSteps : ∀ (m : Nat), m ≤ 16 →
     · rw [hpc2]; congr 1; simp [length_assembleBytes_retSwaps, Nat.add_assoc]
     · rw [hstk2, hsplit]; simp
     · rw [Nat.mul_succ]; exact gsub2 hg1 hg2
+
+/-! ## Phase 1.3 — layout arithmetic (position/entry length-independence) -/
+
+/-- `m` stacked identical pushes assemble to `33·m` bytes. -/
+theorem length_assembleBytes_replicate_push (m : Nat) (v : EvmSemantics.UInt256) :
+    (assembleBytes (List.replicate m (Instr.push v))).length = 33 * m := by
+  induction m with
+  | zero => rfl
+  | succ k ih =>
+    rw [List.replicate_succ, assembleBytes_cons, List.length_append, Instr.length_bytes_push, ih]
+    omega
+
+/-- A call scaffold's byte length is `scaffoldLen`, independent of the pushed
+return address and entry point. -/
+theorem length_assembleBytes_callScaffold (retaddr entry m : Nat) (argCode : List Instr) :
+    (assembleBytes (callScaffold retaddr entry m argCode)).length
+      = scaffoldLen m (assembleBytes argCode).length := by
+  unfold callScaffold scaffoldLen
+  simp only [assembleBytes_cons, assembleBytes_append, List.length_append,
+    Instr.length_bytes_push, length_assembleBytes_replicate_push, Instr.length_bytes_op,
+    assembleBytes_nil, List.length_nil]
+
+/-- Two function tables are *signature-equivalent* when every name resolves to
+infos of the same param/return arity. Compiled **lengths** depend on the table
+only through these arities (entry positions flow solely into fixed-width
+`PUSH32`s), so signature-equivalent tables yield equal-length code. -/
+def FnTable.SigEq (ft₁ ft₂ : FnTable) : Prop :=
+  ∀ n, (ft₁.get? n).map (fun i => (i.params.length, i.rets.length))
+     = (ft₂.get? n).map (fun i => (i.params.length, i.rets.length))
+
+/-- **Expression codegen length is position- and entry-independent.** Under
+signature-equivalent tables and *any* two byte positions, a successful
+`compileExprF` on the left yields a successful one on the right of exactly the
+same assembled length. -/
+theorem compileExprF_lenSig (ft₁ ft₂ : FnTable) (Γ : List Ident)
+    (h : FnTable.SigEq ft₁ ft₂) (pc off : Nat) (e : Expr Op) (pc' : Nat)
+    (is₁ : List Instr) (he : compileExprF ft₁ pc Γ off e = some is₁) :
+    ∃ is₂, compileExprF ft₂ pc' Γ off e = some is₂ ∧
+           (assembleBytes is₂).length = (assembleBytes is₁).length := by
+  refine compileExprF.induct
+    (motive_1 := fun pc off e => ∀ (pc' : Nat) (is₁ : List Instr),
+      compileExprF ft₁ pc Γ off e = some is₁ →
+      ∃ is₂, compileExprF ft₂ pc' Γ off e = some is₂ ∧
+             (assembleBytes is₂).length = (assembleBytes is₁).length)
+    (motive_2 := fun pc off args => ∀ (pc' : Nat) (is₁ : List Instr),
+      compileArgsF ft₁ pc Γ off args = some is₁ →
+      ∃ is₂, compileArgsF ft₂ pc' Γ off args = some is₂ ∧
+             (assembleBytes is₂).length = (assembleBytes is₁).length)
+    ?lit ?var ?builtin ?call ?argsNil ?argsCons pc off e pc' is₁ he
+  case lit =>
+      intro pc off l pc' is₁ he
+      exact ⟨is₁, by simpa only [compileExprF] using he, rfl⟩
+  case var =>
+      intro pc off x pc' is₁ he
+      refine ⟨is₁, ?_, rfl⟩
+      simp only [compileExprF] at he ⊢; exact he
+  case builtin =>
+      intro pc off op args ihargs pc' is₁ he
+      simp only [compileExprF, Option.bind_eq_bind, Option.bind_eq_some_iff,
+        Option.pure_def, Option.some.injEq] at he
+      obtain ⟨argCode₁, hargs₁, o, ho, his₁⟩ := he
+      obtain ⟨argCode₂, hac₂, hlen⟩ := ihargs pc' argCode₁ hargs₁
+      refine ⟨argCode₂ ++ [.op o], ?_, ?_⟩
+      · simp only [compileExprF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+        exact ⟨argCode₂, hac₂, o, ho, rfl⟩
+      · subst his₁
+        simp only [assembleBytes_append, List.length_append, hlen]
+  case call =>
+      intro pc off f args ihargs pc' is₁ he
+      simp only [compileExprF, Option.bind_eq_bind, Option.bind_eq_some_iff] at he
+      obtain ⟨info₁, hg1, he⟩ := he
+      split at he
+      · rename_i hcond
+        simp only [Option.bind_eq_some_iff, Option.pure_def, Option.some.injEq] at he
+        obtain ⟨argCode₁, hargs₁, his₁⟩ := he
+        obtain ⟨argCode₂, hac₂, hlen⟩ := ihargs (pc' + 33 + 33 * 1) argCode₁ hargs₁
+        have hf := h f
+        rw [hg1] at hf
+        cases hg2 : ft₂.get? f with
+        | none => rw [hg2] at hf; simp at hf
+        | some info₂ =>
+            rw [hg2] at hf
+            simp only [Option.map_some, Option.some.injEq, Prod.mk.injEq] at hf
+            refine ⟨callScaffold (pc' + 33 + 33 * 1 + (assembleBytes argCode₂).length + 33 + 1)
+              info₂.entry 1 argCode₂, ?_, ?_⟩
+            · simp only [compileExprF, Option.bind_eq_bind, Option.bind_eq_some_iff]
+              refine ⟨info₂, hg2, ?_⟩
+              rw [if_pos (by rw [← hf.1, ← hf.2]; exact hcond), Option.bind_eq_some_iff]
+              exact ⟨argCode₂, hac₂, rfl⟩
+            · subst his₁
+              rw [length_assembleBytes_callScaffold, length_assembleBytes_callScaffold, hlen]
+      · exact absurd he (by simp)
+  case argsNil =>
+      intro pc off pc' is₁ he
+      exact ⟨is₁, by simpa only [compileArgsF] using he, rfl⟩
+  case argsCons =>
+      intro pc off e rest ihrest ihe pc' is₁ he
+      simp only [compileArgsF, Option.bind_eq_bind, Option.bind_eq_some_iff,
+        Option.pure_def, Option.some.injEq] at he
+      obtain ⟨restCode₁, hrest₁, eCode₁, he₁, his₁⟩ := he
+      obtain ⟨restCode₂, hrc₂, hrlen⟩ := ihrest pc' restCode₁ hrest₁
+      obtain ⟨eCode₂, hec₂, helen⟩ :=
+        ihe restCode₁ (pc' + (assembleBytes restCode₂).length) eCode₁ he₁
+      refine ⟨restCode₂ ++ eCode₂, ?_, ?_⟩
+      · simp only [compileArgsF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+        exact ⟨restCode₂, hrc₂, eCode₂, hec₂, rfl⟩
+      · subst his₁
+        simp only [assembleBytes_append, List.length_append, hrlen, helen]
+
+/-- **Argument-list codegen length is position- and entry-independent** (list
+induction over `compileExprF_lenSig`). -/
+theorem compileArgsF_lenSig (ft₁ ft₂ : FnTable) (Γ : List Ident)
+    (h : FnTable.SigEq ft₁ ft₂) (pc off : Nat) (args : List (Expr Op)) (pc' : Nat)
+    (is₁ : List Instr) :
+    compileArgsF ft₁ pc Γ off args = some is₁ →
+    ∃ is₂, compileArgsF ft₂ pc' Γ off args = some is₂ ∧
+           (assembleBytes is₂).length = (assembleBytes is₁).length := by
+  induction args generalizing pc off pc' is₁ with
+  | nil => intro he; exact ⟨is₁, by simpa only [compileArgsF] using he, rfl⟩
+  | cons e rest ihrest =>
+      intro he
+      simp only [compileArgsF, Option.bind_eq_bind, Option.bind_eq_some_iff,
+        Option.pure_def, Option.some.injEq] at he
+      obtain ⟨restCode₁, hrest₁, eCode₁, he₁, his₁⟩ := he
+      obtain ⟨restCode₂, hrc₂, hrlen⟩ := ihrest pc off pc' restCode₁ hrest₁
+      obtain ⟨eCode₂, hec₂, helen⟩ :=
+        compileExprF_lenSig ft₁ ft₂ Γ h _ _ e (pc' + (assembleBytes restCode₂).length) eCode₁ he₁
+      refine ⟨restCode₂ ++ eCode₂, ?_, ?_⟩
+      · simp only [compileArgsF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+        exact ⟨restCode₂, hrc₂, eCode₂, hec₂, rfl⟩
+      · subst his₁
+        simp only [assembleBytes_append, List.length_append, hrlen, helen]
+
+/-- **Call-statement codegen length is position- and entry-independent**; the
+return-arity `m` is also preserved (it is read from the callee's signature). -/
+theorem compileCallStmt_lenSig (ft₁ ft₂ : FnTable) (Γ : List Ident)
+    (h : FnTable.SigEq ft₁ ft₂) (pc off : Nat) (f : Ident) (args : List (Expr Op))
+    (pc' : Nat) (is₁ : List Instr) (m₁ : Nat)
+    (he : compileCallStmt ft₁ pc Γ off f args = some (is₁, m₁)) :
+    ∃ is₂, compileCallStmt ft₂ pc' Γ off f args = some (is₂, m₁) ∧
+           (assembleBytes is₂).length = (assembleBytes is₁).length := by
+  simp only [compileCallStmt, Option.bind_eq_bind, Option.bind_eq_some_iff] at he
+  obtain ⟨info₁, hg1, he⟩ := he
+  split at he
+  · rename_i hcond
+    simp only [Option.bind_eq_some_iff, Option.pure_def, Option.some.injEq, Prod.mk.injEq] at he
+    obtain ⟨argCode₁, hargs₁, hcs, hm⟩ := he
+    have hf := h f
+    rw [hg1] at hf
+    cases hg2 : ft₂.get? f with
+    | none => rw [hg2] at hf; simp at hf
+    | some info₂ =>
+        rw [hg2] at hf
+        simp only [Option.map_some, Option.some.injEq, Prod.mk.injEq] at hf
+        obtain ⟨argCode₂, hac₂, hlen⟩ :=
+          compileArgsF_lenSig ft₁ ft₂ Γ h (pc + 33 + 33 * info₂.rets.length)
+            (off + 1 + info₂.rets.length) args
+            (pc' + 33 + 33 * info₂.rets.length) argCode₁ (by rw [← hf.2]; exact hargs₁)
+        refine ⟨callScaffold (pc' + 33 + 33 * info₂.rets.length +
+          (assembleBytes argCode₂).length + 33 + 1) info₂.entry info₂.rets.length argCode₂, ?_, ?_⟩
+        · simp only [compileCallStmt, Option.bind_eq_bind, Option.bind_eq_some_iff]
+          refine ⟨info₂, hg2, ?_⟩
+          rw [if_pos (by rw [← hf.1, ← hf.2]; exact hcond), Option.bind_eq_some_iff]
+          refine ⟨argCode₂, hac₂, ?_⟩
+          rw [Option.pure_def, Option.some.injEq, Prod.mk.injEq]
+          exact ⟨rfl, by rw [← hf.2]; exact hm⟩
+        · subst hcs
+          rw [length_assembleBytes_callScaffold, length_assembleBytes_callScaffold, hlen, hf.2]
+  · exact absurd he (by simp)
 
 end YulEvmCompiler
