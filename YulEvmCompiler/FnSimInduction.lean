@@ -332,4 +332,76 @@ theorem simF (code : ByteArray) (prog : Block Op) (entries : List Nat) (fullIs :
   | loopLeave _ _ _ _ _ => trivial
   | loopBodyHalt _ _ _ _ _ => trivial
 
+/-- Executing an **explicit** `STOP` byte embedded in the code (not merely
+running off the end) halts with `.Success`. `compileProgF` lays out
+`main ; STOP ; f₁ ; …`, so `main`'s terminating `STOP` is a real instruction. -/
+theorem stopExplicitStep {code : ByteArray} {yst : EvmState} {s : State}
+    {pre post : List UInt8}
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hcodes : code = mkCode (pre ++ (Instr.op .STOP).bytes ++ post))
+    (hpc : s.pc = UInt256.ofNat pre.length) :
+    ∃ s', EVM.Step s s' ∧ StateMatch yst s' ∧ s'.callStack = []
+      ∧ s'.halt = .Success ∧ s'.hReturn = .empty := by
+  have hsz : pre.length < code.size := by rw [hcodes]; simp
+  have hlen : pre.length < 2 ^ 256 := by have := hf.codeSmall; omega
+  have hdec : s.decodedOp = some .STOP := by
+    apply State.decoded_to_op (imm := none)
+    unfold State.decoded
+    rw [hf.hcode, hpc, toNat_ofNat_of_lt hlen, hcodes,
+      decodeAt_op pre post .STOP (by decide) (by simp [plainOp])]
+    have hfork : s.fork = .Osaka := hf.fork
+    simp [Option.bind, hfork]
+    decide
+  exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec),
+    ⟨hm.mem, hm.stor, hm.tstor⟩, hf.callStack, rfl, rfl⟩
+
+/-- **Top-level correctness for the procedure fragment.** With the program's
+`main` fragment `mainCode` followed by `STOP` then the compiled function bodies
+(the `ProgLayout` shape `ht`), a top-level table of procedures (`hproc`) at
+in-range entries (`hsize`), block entry preserving funenv agreement (`hcons` —
+no nested/shadowing function definitions), and `main` compiled by `hmain`: a
+source `Run` to a normal outcome is simulated by the assembled bytecode running
+to `.Success` from every matching initial state with enough gas. -/
+theorem simProg_correct (prog : Block Op) (entries : List Nat)
+    (mainCode : List Instr) (mainΓ : List Ident) (rest : List Instr)
+    (ht : ∀ fn info, FnTable.get? (realFtOf prog entries) fn = some info →
+      ∃ c, compileFn (realFtOf prog entries) info.entry info.params info.rets info.body = some c ∧
+        ∃ preIs postIs, (mainCode ++ [.op .STOP] ++ rest) = preIs ++ c ++ postIs
+          ∧ (assembleBytes preIs).length = info.entry)
+    (hlen : entries.length = (collectFns prog).length)
+    (hproc : ∀ n info, FnTable.get? (realFtOf prog entries) n = some info →
+      info.params = [] ∧ info.rets = [])
+    (hsize : ∀ n info, FnTable.get? (realFtOf prog entries) n = some info → info.entry < 2 ^ 256)
+    (hcons : ∀ (b : Block Op) (fs : FunEnv yul), FunAgree prog fs →
+      FunAgree prog (YulSemantics.hoist yul b :: fs))
+    (hmain : compileStmtsF (realFtOf prog entries) 0 [] prog = some (mainCode, mainΓ))
+    {yst0 : EvmState} {V' : VEnv yul} {yst' : EvmState}
+    (hrun : YulSemantics.Run yul prog yst0 V' yst' .normal) :
+    ∃ b : Nat, ∀ s0 : State,
+      FrameOK (assemble (mainCode ++ [.op .STOP] ++ rest)) s0 → StateMatch yst0 s0 →
+      s0.pc = UInt256.ofNat 0 → s0.stack = [] → b ≤ s0.gasAvailable →
+      ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst' s' ∧
+        s'.halt = .Success ∧ s'.hReturn = .empty := by
+  cases hrun with
+  | @block _ _ _ _ Vb _ _ hbody =>
+    have hsim := simF (assemble (mainCode ++ [.op .STOP] ++ rest)) prog entries
+      (mainCode ++ [.op .STOP] ++ rest) ht rfl hlen hproc hsize hcons hbody
+    obtain ⟨_, hspc⟩ := hsim (FunAgree.top prog) 0 mainCode mainΓ hmain
+    obtain ⟨b, H⟩ := hspc
+    refine ⟨b, ?_⟩
+    intro s0 hf hm hpc hstk hgas
+    have hcodeeq : assemble (mainCode ++ [.op .STOP] ++ rest)
+        = mkCode (assembleBytes ([] : List Instr) ++ assembleBytes mainCode
+            ++ assembleBytes ([.op .STOP] ++ rest)) := by
+      simp [assemble, mkCode, assembleBytes_append]
+    obtain ⟨s1, hsteps, hf1, hm1, hpc1, hstk1, hg1⟩ :=
+      H [] (assembleBytes ([.op .STOP] ++ rest)) [] s0 hcodeeq rfl hf hm
+        (by simpa using hpc) (by rw [hstk]; simp [vimg]) hgas
+    obtain ⟨s2, hstep2, hm2, hcs2, hhalt2, hret2⟩ :=
+      stopExplicitStep (pre := assembleBytes mainCode) (post := assembleBytes rest)
+        hf1 hm1
+        (by rw [hcodeeq]; simp)
+        (by rw [hpc1]; simp)
+    exact ⟨s2, hsteps.snoc hstep2, hcs2, hm2, hhalt2, hret2⟩
+
 end YulEvmCompiler
