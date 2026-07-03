@@ -130,6 +130,64 @@ theorem retSwapsSteps : ∀ (m : Nat), m ≤ 16 →
     · rw [hstk2, hsplit]; simp
     · rw [Nat.mul_succ]; exact gsub2 hg1 hg2
 
+/-- `POP×k` assembles to exactly `k` (single-byte) instructions. -/
+theorem length_assembleBytes_replicate_pop (k : Nat) :
+    (assembleBytes (List.replicate k (Instr.op .POP))).length = k := by
+  induction k with
+  | zero => rfl
+  | succ n ih =>
+    rw [List.replicate_succ, assembleBytes_cons, List.length_append, Instr.length_bytes_op, ih]
+    omega
+
+/-- **`POP` repeated `k` times drops the top `k` stack elements.** From a matching
+state whose stack is `drop ++ σ` (with `drop.length = k`), executing the embedded
+`POP×k` reaches a matching state with stack `σ`, pc advanced by `k`. Used for the
+callee epilogue that discards the `n` parameters before the return reshuffle. -/
+theorem popsSteps : ∀ (k : Nat) (code : ByteArray) (pre post : List UInt8)
+    (drop σ : List UInt256) (yst : EvmState) (s : State),
+    drop.length = k →
+    code = mkCode (pre ++ assembleBytes (List.replicate k (.op .POP)) ++ post) →
+    FrameOK code s → StateMatch yst s →
+    s.pc = UInt256.ofNat pre.length →
+    s.stack = drop ++ σ →
+    40000 * k ≤ s.gasAvailable →
+    ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = UInt256.ofNat (pre.length + k)
+      ∧ s'.stack = σ
+      ∧ s.gasAvailable - 40000 * k ≤ s'.gasAvailable := by
+  intro k
+  induction k with
+  | zero =>
+    intro code pre post drop σ yst s hlen hcode hf hm hpc hstk hgas
+    rw [List.length_eq_zero_iff] at hlen; subst hlen
+    exact ⟨s, .refl s, hf, hm, by simpa using hpc, by simpa using hstk, by omega⟩
+  | succ k ih =>
+    intro code pre post drop σ yst s hlen hcode hf hm hpc hstk hgas
+    -- peel the last (deepest) element popped: drop = dinit ++ [x]
+    have hne : drop ≠ [] := by intro h; rw [h] at hlen; simp at hlen
+    obtain ⟨x, dinit, hsplit⟩ : ∃ x dinit, drop = dinit ++ [x] :=
+      ⟨drop.getLast hne, drop.dropLast, (List.dropLast_append_getLast hne).symm⟩
+    have hinit : dinit.length = k := by have := hlen; rw [hsplit] at this; simpa using this
+    have hgas' : 40000 * k + 40000 ≤ s.gasAvailable := by rw [← Nat.mul_succ]; exact hgas
+    have hcode1 : code = mkCode (pre ++ assembleBytes (List.replicate k (.op .POP))
+        ++ ((Instr.op .POP).bytes ++ post)) := by
+      rw [hcode, List.replicate_succ', assembleBytes_append]
+      congr 1; simp [List.append_assoc]
+    obtain ⟨s1, st1, hf1, hm1, hpc1, hstk1, hg1⟩ :=
+      ih code pre ((Instr.op .POP).bytes ++ post) dinit (x :: σ) yst s hinit hcode1 hf hm hpc
+        (by rw [hstk, hsplit]; simp) (gstrip hgas')
+    have hcode2 : code = mkCode ((pre ++ assembleBytes (List.replicate k (.op .POP)))
+        ++ (Instr.op .POP).bytes ++ post) := by
+      rw [hcode1]; simp [List.append_assoc]
+    have hpc1' : s1.pc = UInt256.ofNat (pre ++ assembleBytes (List.replicate k (.op .POP))).length := by
+      rw [hpc1]; congr 1; simp [length_assembleBytes_replicate_pop]
+    obtain ⟨s2, hstep2, hf2, hm2, hpc2, hstk2, hg2⟩ :=
+      popStep hcode2 hf1 hm1 hpc1' (by rw [hstk1]) (genough hgas' hg1)
+    refine ⟨s2, st1.snoc hstep2, hf2, hm2, ?_, ?_, ?_⟩
+    · rw [hpc2]; congr 1; simp [length_assembleBytes_replicate_pop, Nat.add_assoc]
+    · rw [hstk2]
+    · rw [Nat.mul_succ]; exact gsub2 hg1 hg2
+
 /-! ## Phase 1.3 — layout arithmetic (position/entry length-independence) -/
 
 /-- `m` stacked identical pushes assemble to `33·m` bytes. -/
