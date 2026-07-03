@@ -157,4 +157,49 @@ theorem compileStmtF_extends (ft : FnTable) :
       simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
       exact ⟨(is1, Γ1), ihs is1 Γ1 hs1, (is2, Γ2), ihrest is1 Γ1 is2 Γ2 hs2, rfl⟩
 
+
+
+/-- **Reverse of `extends` for expressions, in a table with no single-return
+functions.** When `ft` has no function of return-arity 1, `compileExprF` can
+only succeed on call-free expressions (the `.call` case requires
+`rets.length = 1`), where it agrees with the function-free `compileExpr`. -/
+theorem compileExprF_rev (ft : FnTable)
+    (hft : ∀ n info, ft.get? n = some info → info.rets.length ≠ 1) (Γ : List Ident)
+    (pc off : Nat) (e : Expr Op) (is : List Instr)
+    (h : compileExprF ft pc Γ off e = some is) : compileExpr Γ off e = some is := by
+  refine compileExprF.induct
+    (motive_1 := fun pc off e => ∀ is, compileExprF ft pc Γ off e = some is →
+      compileExpr Γ off e = some is)
+    (motive_2 := fun pc off args => ∀ is, compileArgsF ft pc Γ off args = some is →
+      compileArgs Γ off args = some is)
+    ?lit ?var ?builtin ?call ?argsNil ?argsCons pc off e is h
+  case lit => intro pc off l is h; rw [compileExpr]; rw [compileExprF] at h; exact h
+  case var => intro pc off x is h; rw [compileExpr]; rw [compileExprF] at h; exact h
+  case builtin =>
+      intro pc off op args ihargs is h
+      rw [compileExprF] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+      obtain ⟨argCode, hargs, o, ho, his⟩ := h
+      rw [compileExpr]
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff]
+      exact ⟨argCode, ihargs argCode hargs, o, ho, his⟩
+  case call =>
+      intro pc off f args _ is h
+      rw [compileExprF] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+      obtain ⟨info, hget, h⟩ := h
+      split at h
+      · rename_i hcond
+        exact absurd hcond.1 (hft f info hget)
+      · exact absurd h (by simp)
+  case argsNil => intro pc off is h; rw [compileArgs]; rw [compileArgsF] at h; exact h
+  case argsCons =>
+      intro pc off e rest ihrest ihe is h
+      rw [compileArgsF] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+      obtain ⟨restCode, hrest, eCode, he, his⟩ := h
+      rw [compileArgs]
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff]
+      exact ⟨restCode, ihrest restCode hrest, eCode, ihe restCode eCode he, his⟩
+
 end YulEvmCompiler
