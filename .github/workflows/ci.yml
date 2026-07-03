@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Report a status for the merge queue's temporary branch, so the queue does
+  # not wait forever for a check that never runs.
+  merge_group:
+  workflow_dispatch:
+
+# Keep only the latest run per branch/PR; cancel superseded ones.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Cache the compiled oleans of the two (large) semantics dependencies so
+      # they are not recompiled from source every run — lean-action only caches
+      # Mathlib. Keyed on the toolchain + pinned dependency revisions
+      # (lake-manifest.json); on a miss, or if `lake`'s own trace hashing finds
+      # the restored build stale, it simply rebuilds — so this is safe.
+      - name: Cache dependency builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake/packages/yul-semantics/.lake/build
+            .lake/packages/evm_semantics/.lake/build
+          key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+
+      # lean-action installs the toolchain pinned in `lean-toolchain`, fetches
+      # the prebuilt Mathlib olean cache (so Mathlib is not recompiled from
+      # source), and runs `lake build` — which type-checks the whole
+      # `YulEvmCompiler` library, including every proof and the `#eval`/`#guard`
+      # examples. The semantics dependencies come from the cache step above (or
+      # are compiled on a cache miss).
+      - name: Build (fetch Mathlib cache + lake build)
+        uses: leanprover/lean-action@v1
+        with:
+          use-mathlib-cache: "true"
+          build: "true"
+          test: "false"
+          lint: "false"
+
+      # `lake build` treats `sorry` as a warning, not an error, so guard against
+      # an incomplete proof slipping in with a plain textual scan of the library
+      # sources. (Checks.lean is excluded: it legitimately names `sorry` in its
+      # docstrings, and any `sorry` reachable from the theorems would anyway be
+      # caught by the axiom check below via `sorryAx`.)
+      - name: Reject sorry in library sources
+        run: |
+          if grep -rn --include='*.lean' -w 'sorry' YulEvmCompiler; then
+            echo "::error::found a sorry in YulEvmCompiler"
+            exit 1
+          fi
+
+      # The project's headline guarantee: the correctness theorems are proved
+      # with no `sorry` and only the three standard classical axioms. `Checks.lean`
+      # pins that axiom set with `#guard_msgs`, so this step fails if it ever
+      # changes (e.g. a `sorryAx` or a new axiom appears).
+      - name: Verify axiom footprint (sorry-free, standard axioms only)
+        run: lake env lean Checks.lean
