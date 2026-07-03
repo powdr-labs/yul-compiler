@@ -18,7 +18,7 @@ code-quantified `SimSP` result lifts into `SimSPC` for any concrete code
 namespace YulEvmCompiler
 
 open EvmSemantics EvmSemantics.EVM
-open YulSemantics.EVM (EvmState)
+open YulSemantics.EVM (EvmState U256)
 open YulSemantics (VEnv)
 open YulSemantics (Expr Stmt Block Ident)
 open YulSemantics.EVM (Op)
@@ -140,6 +140,27 @@ theorem stmtsF_reuse (code : ByteArray) {funs : YulSemantics.FunEnv yul} {V V' :
   rcases sim h pc is Γ' hc with ⟨_, hΓ, hsp⟩ | ⟨ho, _⟩
   · exact ⟨hΓ, hsp.toSimSPC code⟩
   · exact absurd ho (by simp)
+
+/-- **Code-fixed `if c { body }`, truthy branch.** The prologue
+(`cCode; ISZERO; PUSH dest; JUMPI`, which falls through since `iszero cv = 0`)
+and the trailing `JUMPDEST` are call-free, so they lift from `SimSP` via
+`toSimSPC`; the body simulation is the code-fixed `SimSPC` the `simF` block IH
+supplies (so a call inside the branch is handled). This is how `simF` discharges
+a conditional whose body contains a call — the pattern recursion needs. -/
+theorem SimSPC_ifTrue (code : ByteArray) {pcc : Nat} {yst yst1 yst2 : EvmState}
+    {V V2 : VEnv yul} {cCode bodyIs : List Instr} {dest : Nat} {cv : U256}
+    (hpfx : SimE yst V 0 (cCode ++ [.op .ISZERO] ++ [.push (UInt256.ofNat dest)])
+      [BitVec.ofNat 256 dest, YulSemantics.EVM.b2w (cv = 0)] yst1)
+    (hcondz : (conv (YulSemantics.EVM.b2w (cv = 0))).toNat = 0)
+    (hbody : SimSPC code (pcc + (assembleBytes cCode).length + 35) yst1 V bodyIs yst2 V2) :
+    SimSPC code pcc yst V
+      (cCode ++ [.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI]
+        ++ bodyIs ++ [.op .JUMPDEST]) yst2 V2 := by
+  have hlen : (assembleBytes (cCode
+      ++ [.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI])).length
+      = (assembleBytes cCode).length + 35 := by simp [assembleBytes_append]
+  exact (((simSP_condFall hpfx hcondz).toSimSPC code).comp (hlen ▸ hbody)).comp
+    (simSP_jumpdest.toSimSPC code)
 
 
 
