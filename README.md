@@ -12,15 +12,25 @@ Both repos are ordinary Lake dependencies (same toolchain `v4.31.0`, same
 Mathlib revision), so the correctness theorem quantifies over *both semantics
 as they are* — nothing is re-encoded.
 
-## Current scope (milestone 1)
+## Current scope
 
-A non-optimizing compiler for **straight-line programs**: sequences of built-in
-expression statements — no variables, no user-defined functions, no control
-flow. Literals compile to `PUSH32`; a built-in call compiles its arguments
+A non-optimizing compiler for **straight-line programs with variables and
+nested blocks**: `let` declarations (initialized or zeroed), single-variable
+assignments, built-in expression statements, and `{ … }` scoping — no
+user-defined functions and no control flow yet. Literals compile to `PUSH32`; a built-in call compiles its arguments
 right-to-left (Yul's evaluation order, which also puts the first argument on
 top of the stack) followed by the built-in's opcode; a program that falls off
 the end of its bytecode performs the EVM's implicit `STOP`, matching Yul's
 `.normal` outcome.
+
+Variables live on the operand stack: the compile-time layout mirrors the
+semantics' `VEnv` exactly. Reads compile to `DUP(off+idx+1)`, assignments to
+`SWAP(idx+1); POP`, `let x := e` is free (the value stays put), and block
+exit pops the block's locals. Because EIP-8024 (`DUPN`/`SWAPN`) is not yet
+activated on any fork modeled by evm-semantics, accesses deeper than
+`DUP16`/`SWAP16` are **rejected at compile time** (`compileProgram = none`);
+lifting that restriction is a codegen-only change once the fork table
+activates EIP-8024.
 
 The verified built-in set (the domain of `opTable` in
 `YulEvmCompiler/Compile.lean`):

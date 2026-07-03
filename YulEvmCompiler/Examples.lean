@@ -3,8 +3,8 @@ import YulEvmCompiler.Correctness
 /-!
 # YulEvmCompiler.Examples
 
-Sample straight-line programs run through the compiler, with their emitted
-bytecode. Everything here is `#eval`-checked at build time.
+Sample programs run through the compiler, with their emitted bytecode.
+Everything here is `#eval`/`#guard`-checked at build time.
 -/
 
 namespace YulEvmCompiler.Examples
@@ -26,33 +26,44 @@ def storeSum : Block Op :=
       [.lit (.number 0), .builtin .add [.lit (.number 1), .lit (.number 2)]]),
     .exprStmt (.builtin .ret [.lit (.number 0), .lit (.number 0)]) ]
 
-/-- `tstore(42, eq(mload(0), 7))` — falls off the end (implicit STOP). -/
-def transientFlag : Block Op :=
-  [ .exprStmt (.builtin .tstore
-      [.lit (.number 42),
-       .builtin .eq [.builtin .mload [.lit (.number 0)], .lit (.number 7)]]) ]
+/-- `let x := 7  x := add(x, 1)  sstore(0, x)` — declaration, read, assign. -/
+def letAssign : Block Op :=
+  [ .letDecl ["x"] (some (.lit (.number 7))),
+    .assign ["x"] (.builtin .add [.var "x", .lit (.number 1)]),
+    .exprStmt (.builtin .sstore [.lit (.number 0), .var "x"]) ]
 
-/-- `revert(0, 32)` -/
-def alwaysRevert : Block Op :=
-  [ .exprStmt (.builtin .revert [.lit (.number 0), .lit (.number 32)]) ]
+/-- `let a, b  { let c := 1  a := c }  sstore(0, a)` — nested block scoping. -/
+def blockScope : Block Op :=
+  [ .letDecl ["a", "b"] none,
+    .block
+      [ .letDecl ["c"] (some (.lit (.number 1))),
+        .assign ["a"] (.var "c") ],
+    .exprStmt (.builtin .sstore [.lit (.number 0), .var "a"]) ]
+
+/-- 16 declarations, then a read of the deepest — exactly `DUP16`. -/
+def deep16 : Block Op :=
+  ((List.range 16).map fun i => .letDecl [s!"x{i}"] (some (.lit (.number i))))
+    ++ [.exprStmt (.builtin .pop [.var "x0"])]
+
+/-- 17 declarations, then a read of the deepest — beyond `DUP16`, rejected
+(EIP-8024's `DUPN` would lift this once evm-semantics activates it). -/
+def deep17 : Block Op :=
+  ((List.range 17).map fun i => .letDecl [s!"x{i}"] (some (.lit (.number i))))
+    ++ [.exprStmt (.builtin .pop [.var "x0"])]
 
 /-- A program using a not-yet-verified built-in (`sdiv`) is rejected. -/
 def usesSdiv : Block Op :=
   [ .exprStmt (.builtin .pop [.builtin .sdiv [.lit (.number 1), .lit (.number 2)]]) ]
 
-/-- A program with variables is rejected (milestone 2). -/
-def usesVars : Block Op :=
-  [ .letDecl ["x"] (some (.lit (.number 1))) ]
-
--- PUSH32 2, PUSH32 1, ADD, PUSH32 0, SSTORE, PUSH32 0, PUSH32 0, RETURN
 #guard (compileProgram storeSum).isSome
-#guard (compileProgram transientFlag).isSome
-#guard (compileProgram alwaysRevert).isSome
+#guard (compileProgram letAssign).isSome
+#guard (compileProgram blockScope).isSome
+#guard (compileProgram deep16).isSome
+#guard (compileProgram deep17).isNone
 #guard (compileProgram usesSdiv).isNone
-#guard (compileProgram usesVars).isNone
 
 #eval (compileProgram storeSum).map hex
-#eval (compileProgram transientFlag).map hex
-#eval (compileProgram alwaysRevert).map hex
+#eval (compileProgram letAssign).map hex
+#eval (compileProgram blockScope).map hex
 
 end YulEvmCompiler.Examples
