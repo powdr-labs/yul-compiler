@@ -12,3 +12,4 @@ import YulEvmCompiler.FnExtends
 import YulEvmCompiler.FnProof
 import YulEvmCompiler.FnLayout
 import YulEvmCompiler.FnSim
+import YulEvmCompiler.FnSimF
