@@ -26,16 +26,46 @@ def realFtOf (prog : Block Op) (entries : List Nat) : FnTable :=
   (collectFns prog).zip entries |>.map
     (fun x => (x.1.1, (⟨x.1.2.1, x.1.2.2.1, x.1.2.2.2, x.2⟩ : FnInfo)))
 
+/-- The runtime funenv resolves every function name exactly as the top-level
+scope `[hoist prog]` does. Holds at the top level and is preserved by entering
+any block whose hoisted scope is empty (no nested function definitions). This
+is the invariant that lets a *compiled* call — resolved against the
+top-level-only `realFt` — match the source's `lookupFun`. -/
+def FunAgree (prog : Block Op) (funs : FunEnv yul) : Prop :=
+  ∀ fn, YulSemantics.lookupFun funs fn = YulSemantics.lookupFun [YulSemantics.hoist yul prog] fn
+
+/-- The top-level funenv agrees with itself. -/
+theorem FunAgree.top (prog : Block Op) : FunAgree prog [YulSemantics.hoist yul prog] :=
+  fun _ => rfl
+
+/-- Entering a block that hoists no functions preserves `FunAgree`. -/
+theorem FunAgree.cons_empty {prog : Block Op} {funs : FunEnv yul} {body : Block Op}
+    (hempty : YulSemantics.hoist yul body = []) (h : FunAgree prog funs) :
+    FunAgree prog (YulSemantics.hoist yul body :: funs) := by
+  intro fn
+  rw [hempty, YulSemantics.lookupFun]
+  simp only [List.find?_nil]
+  exact h fn
+
 /-- Motive for the function-aware simulation, restricted to the procedure
-fragment (normal outcomes). -/
+fragment (normal outcomes). Threads `FunAgree` so a call resolves in the source
+exactly as the compiler's top-level table expects. The expression case carries
+the *call scaffold's* simulation, established in the `callOk` case from the
+callee body's induction hypothesis (this is where recursion is discharged) and
+consumed in the `exprStmt` case. -/
 def MotiveF (code : ByteArray) (ft : FnTable) (prog : Block Op)
-    (V : VEnv yul) (yst : EvmState) : YulSemantics.Code Op → YulSemantics.Res yul → Prop
+    (funs : FunEnv yul) (V : VEnv yul) (yst : EvmState) :
+    YulSemantics.Code Op → YulSemantics.Res yul → Prop
   | .stmt st, .sres V' yst' .normal =>
-      ∀ pc is Γ', compileStmtF ft pc (names V) st = some (is, Γ') →
+      FunAgree prog funs → ∀ pc is Γ', compileStmtF ft pc (names V) st = some (is, Γ') →
         Γ' = names V' ∧ SimSPC code pc yst V is yst' V'
   | .stmts ss, .sres V' yst' .normal =>
-      ∀ pc is Γ', compileStmtsF ft pc (names V) ss = some (is, Γ') →
+      FunAgree prog funs → ∀ pc is Γ', compileStmtsF ft pc (names V) ss = some (is, Γ') →
         Γ' = names V' ∧ SimSPC code pc yst V is yst' V'
+  | .expr (.call fn args), .eres (.vals _ yst') =>
+      FunAgree prog funs → ∀ pc info, ft.get? fn = some info →
+        info.params = [] → info.rets = [] → args = [] →
+        SimSPC code pc yst V (callScaffold (pc + 67) info.entry 0 []) yst' V
   | _, _ => True
 
 /-- The `stmtsNil` case: the empty sequence compiles to `[]` and simulates
