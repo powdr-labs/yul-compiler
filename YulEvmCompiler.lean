@@ -6,3 +6,5 @@ import YulEvmCompiler.StateRel
 import YulEvmCompiler.OpStep
 import YulEvmCompiler.Correctness
 import YulEvmCompiler.Examples
+import YulEvmCompiler.Functions
+import YulEvmCompiler.FunctionsExamples
