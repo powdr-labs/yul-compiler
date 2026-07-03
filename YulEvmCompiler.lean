@@ -9,3 +9,4 @@ import YulEvmCompiler.Examples
 import YulEvmCompiler.Functions
 import YulEvmCompiler.FunctionsExamples
 import YulEvmCompiler.FnProof
+import YulEvmCompiler.FnLayout
