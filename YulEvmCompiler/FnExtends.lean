@@ -1,0 +1,160 @@
+import YulEvmCompiler.Functions
+import YulEvmCompiler.Compile
+
+namespace YulEvmCompiler
+
+open YulSemantics (Expr Stmt Block Ident)
+open YulSemantics.EVM (Op)
+
+set_option maxHeartbeats 1000000
+
+/-- The function-aware expression compiler extends the function-free one: whatever
+`compileExpr` produces (which is only ever call-free code), `compileExprF`
+produces identically, for any table and byte position. -/
+theorem compileExprF_extends (ft : FnTable) (Γ : List Ident) (pc off : Nat) (e : Expr Op)
+    (is : List Instr) (h : compileExpr Γ off e = some is) :
+    compileExprF ft pc Γ off e = some is := by
+  refine compileExprF.induct
+    (motive_1 := fun pc off e => ∀ is, compileExpr Γ off e = some is →
+      compileExprF ft pc Γ off e = some is)
+    (motive_2 := fun pc off args => ∀ is, compileArgs Γ off args = some is →
+      compileArgsF ft pc Γ off args = some is)
+    ?lit ?var ?builtin ?call ?argsNil ?argsCons pc off e is h
+  case lit => intro pc off l is h; rw [compileExprF]; rw [compileExpr] at h; exact h
+  case var => intro pc off x is h; rw [compileExprF]; rw [compileExpr] at h; exact h
+  case builtin =>
+      intro pc off op args ihargs is h
+      rw [compileExpr] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+      obtain ⟨argCode, hargs, o, ho, his⟩ := h
+      rw [compileExprF]
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff]
+      exact ⟨argCode, ihargs argCode hargs, o, ho, his⟩
+  case call => intro pc off f args _ is h; rw [compileExpr] at h; exact absurd h (by simp)
+  case argsNil => intro pc off is h; rw [compileArgsF]; rw [compileArgs] at h; exact h
+  case argsCons =>
+      intro pc off e rest ihrest ihe is h
+      rw [compileArgs] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+      obtain ⟨restCode, hrest, eCode, he, his⟩ := h
+      rw [compileArgsF]
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff]
+      exact ⟨restCode, ihrest restCode hrest, eCode, ihe restCode eCode he, his⟩
+
+
+/-- The function-aware statement compiler extends the function-free one. -/
+theorem compileStmtF_extends (ft : FnTable) :
+    ∀ (pc : Nat) (Γ : List Ident) (s : Stmt Op) (is : List Instr) (Γ' : List Ident),
+      compileStmt pc Γ s = some (is, Γ') → compileStmtF ft pc Γ s = some (is, Γ') := by
+  refine compileStmtF.induct
+    (motive_1 := fun pc Γ s => ∀ is Γ', compileStmt pc Γ s = some (is, Γ') →
+      compileStmtF ft pc Γ s = some (is, Γ'))
+    (motive_2 := fun pc Γ ss => ∀ is Γ', compileStmts pc Γ ss = some (is, Γ') →
+      compileStmtsF ft pc Γ ss = some (is, Γ'))
+    ?funDef ?exprCall ?exprOther ?letNone ?letCall ?letSingle ?letOther
+    ?assignSingle ?assignOther ?block ?cond ?catchAll ?stmtsNil ?stmtsCons
+  case funDef => intro pc Γ n p r b is Γ' h; simp [compileStmt] at h
+  case exprCall => intro pc Γ f args is Γ' h; simp [compileStmt, compileExpr] at h
+  case exprOther =>
+      intro pc Γ e hne is Γ' h
+      rw [compileStmt] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨c, hc, rfl, rfl⟩ := h
+      cases e
+      case call f args => exact absurd rfl (hne f args)
+      all_goals
+        simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+        exact ⟨c, compileExprF_extends ft Γ pc 0 _ c hc, rfl⟩
+  case letNone => intro pc Γ xs is Γ' h; rw [compileStmt] at h; rw [compileStmtF]; exact h
+  case letCall =>
+      intro pc Γ xs f args is Γ' h
+      cases xs with
+      | nil => simp [compileStmt] at h
+      | cons x xs =>
+          cases xs with
+          | nil => simp [compileStmt, compileExpr] at h
+          | cons y ys => simp [compileStmt] at h
+  case letSingle =>
+      intro pc Γ x e hne is Γ' h
+      rw [compileStmt] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨c, hc, rfl, rfl⟩ := h
+      cases e
+      case call f args => exact absurd rfl (hne f args)
+      all_goals
+        simp only [compileStmtF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+        exact ⟨c, compileExprF_extends ft Γ pc 0 _ c hc, rfl⟩
+  case letOther =>
+      intro pc Γ vars val hnecall hnesingle is Γ' h
+      cases vars with
+      | nil => simp [compileStmt] at h
+      | cons x xs =>
+          cases xs with
+          | nil => exact absurd rfl (hnesingle x)
+          | cons y ys => simp [compileStmt] at h
+  case assignSingle =>
+      intro pc Γ x e is Γ' h
+      rw [compileStmt] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+      obtain ⟨c, hc, idx, hidx, h⟩ := h
+      rw [compileStmtF]
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff]
+      exact ⟨c, compileExprF_extends ft Γ pc 0 e c hc, idx, hidx, h⟩
+  case assignOther =>
+      intro pc Γ vars val hnesingle is Γ' h
+      cases vars with
+      | nil => simp [compileStmt] at h
+      | cons x xs =>
+          cases xs with
+          | nil => exact absurd rfl (hnesingle x)
+          | cons y ys => simp [compileStmt] at h
+  case block =>
+      intro pc Γ body ihbody is Γ' h
+      rw [compileStmt] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨⟨isb, Γb⟩, hbc, rfl, rfl⟩ := h
+      rw [compileStmtF]
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+      exact ⟨(isb, Γb), ihbody isb Γb hbc, rfl⟩
+  case cond =>
+      intro pc Γ c body ihbody is Γ' h
+      rw [compileStmt] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨cCode, hc, ⟨bodyCode, Γb⟩, hbc, rfl, rfl⟩ := h
+      rw [compileStmtF]
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+      exact ⟨cCode, compileExprF_extends ft Γ pc 0 c cCode hc, (bodyCode, Γb),
+        ihbody cCode bodyCode Γb hbc, rfl⟩
+  case catchAll =>
+      intro t pc Γ hg1 _ hg3 hg4 _ _ hg7 _ hg9 hg10 hg11 is Γ' h
+      cases t with
+      | funDef n p r b => exact absurd rfl (hg1 n p r b)
+      | exprStmt e => exact absurd rfl (hg3 e)
+      | letDecl xs v => cases v with
+          | none => exact absurd rfl (hg4 xs)
+          | some val => exact absurd rfl (hg7 xs val)
+      | assign vars val => exact absurd rfl (hg9 vars val)
+      | block body => exact absurd rfl (hg10 body)
+      | cond c body => exact absurd rfl (hg11 c body)
+      | switch c cs d => simp [compileStmt] at h
+      | forLoop i c p b => simp [compileStmt] at h
+      | «break» => simp [compileStmt] at h
+      | «continue» => simp [compileStmt] at h
+      | leave => simp [compileStmt] at h
+  case stmtsNil =>
+      intro pc Γ is Γ' h; rw [compileStmts] at h; rw [compileStmtsF]; exact h
+  case stmtsCons =>
+      intro pc Γ s rest ihs ihrest is Γ' h
+      rw [compileStmts] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨⟨is1, Γ1⟩, hs1, ⟨is2, Γ2⟩, hs2, rfl, rfl⟩ := h
+      rw [compileStmtsF]
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def]
+      exact ⟨(is1, Γ1), ihs is1 Γ1 hs1, (is2, Γ2), ihrest is1 Γ1 is2 Γ2 hs2, rfl⟩
+
+end YulEvmCompiler

@@ -8,6 +8,7 @@ import YulEvmCompiler.Correctness
 import YulEvmCompiler.Examples
 import YulEvmCompiler.Functions
 import YulEvmCompiler.FunctionsExamples
+import YulEvmCompiler.FnExtends
 import YulEvmCompiler.FnProof
 import YulEvmCompiler.FnLayout
 import YulEvmCompiler.FnSim
