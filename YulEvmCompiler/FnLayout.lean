@@ -143,8 +143,8 @@ theorem fnCodes_lens_eq (dummyFt realFt : FnTable) (hsig : FnTable.SigEq dummyFt
     (fns : List (Ident × List Ident × List Ident × Block Op)) :
     ∀ (entries : List Nat) (lens : List Nat) (fnCodes : List (List Instr)),
       entries.length = fns.length →
-      fns.mapM (fun p => (compileFn dummyFt 0 p.2.1 p.2.2.1 p.2.2.2).map
-        (fun c => (assembleBytes c).length)) = some lens →
+      fns.mapM (fun p => (compileFn dummyFt 0 p.2.1 p.2.2.1 p.2.2.2).bind
+        (fun code => some (assembleBytes code).length)) = some lens →
       (fns.zip entries).mapM
         (fun x => compileFn realFt x.2 x.1.2.1 x.1.2.2.1 x.1.2.2.2) = some fnCodes →
       fnCodes.map (fun c => (assembleBytes c).length) = lens := by
@@ -161,7 +161,7 @@ theorem fnCodes_lens_eq (dummyFt realFt : FnTable) (hsig : FnTable.SigEq dummyFt
       | cons e erest =>
           simp only [List.length_cons, Nat.add_right_cancel_iff] at hlen
           rw [List.mapM_cons] at hl
-          simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.map_eq_some_iff,
+          simp only [Option.bind_eq_bind, Option.bind_eq_some_iff,
             Option.pure_def, Option.some.injEq] at hl
           obtain ⟨b, ⟨a, ha, hab⟩, bs, hbs, hlens_eq⟩ := hl
           rw [List.zip_cons_cons, List.mapM_cons] at hf
@@ -176,5 +176,129 @@ theorem fnCodes_lens_eq (dummyFt realFt : FnTable) (hsig : FnTable.SigEq dummyFt
           subst hfc1'
           simp only [List.map_cons]
           rw [ih erest bs restCodes hlen hbs hrc, hlen1]
+
+
+/-! ### `mapM` indexing helpers and the whole-program layout invariant -/
+
+theorem mapM_option_getElem? {α β} (f : α → Option β) (l : List α) (r : List β)
+    (h : l.mapM f = some r) (i : Nat) : r[i]? = (l[i]?).bind f := by
+  induction l generalizing r i with
+  | nil => simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at h; subst h; simp
+  | cons a l ih =>
+      rw [List.mapM_cons] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq] at h
+      obtain ⟨b, hb, rs, hrs, rfl⟩ := h
+      cases i with
+      | zero => simp [hb]
+      | succ k => simpa using ih rs hrs k
+
+theorem mapM_option_length {α β} (f : α → Option β) (l : List α) (r : List β)
+    (h : l.mapM f = some r) : r.length = l.length := by
+  induction l generalizing r with
+  | nil => simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at h; subst h; rfl
+  | cons a l ih =>
+      rw [List.mapM_cons] at h
+      simp only [Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+        Option.some.injEq] at h
+      obtain ⟨b, hb, rs, hrs, rfl⟩ := h
+      simp [ih rs hrs]
+
+set_option maxHeartbeats 2000000
+
+/-- The whole-program layout established by a successful `compileProgF`:
+there is a function table `ft` such that (1) the pass-2 `mainCode` compiled
+against `ft` is the prefix of `fullIs`, and (2) every function `ft` resolves
+has its compiled body embedded at exactly its recorded entry byte-position. -/
+def ProgLayout (prog : Block Op) (fullIs : List Instr) : Prop :=
+  ∃ (ft : FnTable) (mainCode : List Instr) (mainΓ : List Ident),
+    compileStmtsF ft 0 [] prog = some (mainCode, mainΓ) ∧
+    (∃ post, assembleBytes fullIs = assembleBytes mainCode ++ post) ∧
+    (∀ fn info, ft.get? fn = some info →
+      ∃ code, compileFn ft info.entry info.params info.rets info.body = some code ∧
+        ∃ pre post, assembleBytes fullIs = pre ++ assembleBytes code ++ post
+          ∧ pre.length = info.entry)
+
+theorem compileProgF_layout (prog : Block Op) (fullIs : List Instr)
+    (hcomp : compileProgF prog = some fullIs) : ProgLayout prog fullIs := by
+  simp only [compileProgF, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.pure_def,
+    Option.some.injEq] at hcomp
+  obtain ⟨⟨mainCode0, Γ0⟩, hmain0, lens, hlens, ⟨mainCode, Γm⟩, hmain, fnCodes, hfn, hfull⟩ := hcomp
+  set fns := collectFns prog with hfns
+  set dummyFt : FnTable :=
+    fns.map (fun p => (p.1, (⟨p.2.1, p.2.2.1, p.2.2.2, 0⟩ : FnInfo))) with hdummy
+  set mainLen0 := (assembleBytes mainCode0).length with hmainLen0
+  set entries := entryPositions mainLen0 lens with hentries
+  set realFt : FnTable :=
+    (fns.zip entries).map (fun x => (x.1.1, (⟨x.1.2.1, x.1.2.2.1, x.1.2.2.2, x.2⟩ : FnInfo)))
+    with hrealFt
+  have hlens_len : lens.length = fns.length := mapM_option_length _ _ _ hlens
+  have hentries_len : entries.length = fns.length := by
+    rw [hentries, entryPositions_length, hlens_len]
+  have hsig : FnTable.SigEq dummyFt realFt := sigEq_dummy_real fns entries hentries_len
+  have hfnCodes_len : fnCodes.length = fns.length := by
+    rw [mapM_option_length _ _ _ hfn, List.length_zip, hentries_len, Nat.min_self]
+  have hmainlen : (assembleBytes mainCode).length = mainLen0 := by
+    obtain ⟨is₂, his₂, hl⟩ := compileStmtsF_lenSig dummyFt realFt hsig 0 [] prog 0 mainCode0 Γ0 hmain0
+    rw [hmain] at his₂
+    simp only [Option.some.injEq, Prod.mk.injEq] at his₂
+    rw [hmainLen0, his₂.1]; exact hl
+  have hmaps : fnCodes.map (fun c => (assembleBytes c).length) = lens :=
+    fnCodes_lens_eq dummyFt realFt hsig fns entries lens fnCodes hentries_len hlens hfn
+  refine ⟨realFt, mainCode, Γm, hmain,
+    ⟨assembleBytes ([Instr.op .STOP] ++ fnCodes.flatten), ?_⟩, ?_⟩
+  · rw [← hfull, List.append_assoc, assembleBytes_append]
+  · intro fn info hget
+    -- locate the index of fn in the zipped list
+    unfold FnTable.get? at hget
+    rw [Option.map_eq_some_iff] at hget
+    obtain ⟨p, hfindp, hp2⟩ := hget
+    have hpred : p.1 = fn := by have := List.find?_some hfindp; simpa using this
+    have hpmem : p ∈ realFt := List.mem_of_find?_eq_some hfindp
+    obtain ⟨i, hi, hpi⟩ := List.mem_iff_getElem.mp hpmem
+    have hrealFt_len : realFt.length = fns.length := by
+      rw [hrealFt, List.length_map, List.length_zip, hentries_len, Nat.min_self]
+    have hi_fns : i < fns.length := by rw [hrealFt_len] at hi; exact hi
+    have hi_ent : i < entries.length := by rw [hentries_len]; exact hi_fns
+    have hi_fc : i < fnCodes.length := by rw [hfnCodes_len]; exact hi_fns
+    have hi_lens : i < lens.length := by rw [hlens_len]; exact hi_fns
+    have hi_zip : i < (fns.zip entries).length := by
+      rw [List.length_zip, hentries_len, Nat.min_self]; exact hi_fns
+    -- realFt[i] as an explicit pair
+    have hrealFt_i : realFt[i] =
+        (fns[i].1, (⟨fns[i].2.1, fns[i].2.2.1, fns[i].2.2.2, entries[i]⟩ : FnInfo)) := by
+      simp only [hrealFt, List.getElem_map, List.getElem_zip]
+    -- so info is the second component
+    have hpeq : p = (fns[i].1, (⟨fns[i].2.1, fns[i].2.2.1, fns[i].2.2.2, entries[i]⟩ : FnInfo)) := by
+      rw [← hpi, hrealFt_i]
+    have hinfo : info = ⟨fns[i].2.1, fns[i].2.2.1, fns[i].2.2.2, entries[i]⟩ := by
+      rw [← hp2, hpeq]
+    -- fnCodes[i] is compileFn realFt entries[i] (fns[i] sig) …
+    have hfnc : compileFn realFt entries[i] fns[i].2.1 fns[i].2.2.1 fns[i].2.2.2 = some fnCodes[i] := by
+      have hget := mapM_option_getElem? _ _ _ hfn i
+      rw [List.getElem?_eq_getElem hi_fc, List.getElem?_eq_getElem hi_zip,
+        List.getElem_zip] at hget
+      exact hget.symm
+    -- entry offset
+    have hentry_val : entries[i] = mainLen0 + 1 + (lens.take i).sum := by
+      have := entryPositions_getElem? mainLen0 lens i hi_lens
+      rw [← hentries, List.getElem?_eq_getElem hi_ent, Option.some.injEq] at this
+      exact this
+    -- prefix-sum of function code lengths = prefix-sum of recorded lens
+    have hsum : ((fnCodes.take i).map (fun c => (assembleBytes c).length)).sum
+        = (lens.take i).sum := by
+      rw [List.map_take, hmaps]
+    -- embed fnCodes[i] in the flattened code
+    obtain ⟨pre', post', hsplit, hprelen⟩ := assembleBytes_flatten_embed fnCodes i hi_fc
+    refine ⟨fnCodes[i], ?_, ?_⟩
+    · rw [hinfo]; exact hfnc
+    · refine ⟨assembleBytes mainCode ++ assembleBytes [Instr.op .STOP] ++ pre', post', ?_, ?_⟩
+      · rw [← hfull]
+        simp only [assembleBytes_append]
+        rw [hsplit]
+        simp only [List.append_assoc]
+      · rw [show info.entry = entries[i] from by rw [hinfo], hentry_val]
+        simp only [List.length_append, hmainlen, hprelen, hsum, assembleBytes_cons,
+          assembleBytes_nil, List.length_nil, Instr.length_bytes_op]
 
 end YulEvmCompiler
