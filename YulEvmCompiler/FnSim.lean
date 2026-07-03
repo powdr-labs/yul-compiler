@@ -20,6 +20,8 @@ namespace YulEvmCompiler
 open EvmSemantics EvmSemantics.EVM
 open YulSemantics.EVM (EvmState)
 open YulSemantics (VEnv)
+open YulSemantics (Expr Stmt Block Ident)
+open YulSemantics.EVM (Op)
 
 private theorem gsub2 {a b c k₁ k₂ : Nat} (h₁ : a - k₁ ≤ b) (h₂ : b - k₂ ≤ c) :
     a - (k₁ + k₂) ≤ c := by omega
@@ -83,6 +85,31 @@ theorem SimSPC.nil {code : ByteArray} {pcc : Nat} {yst : EvmState} {V : VEnv yul
     SimSPC code pcc yst V [] yst V := by
   refine ⟨0, fun preIs post σ s _ _ hf hm hpc hstk _ => ?_⟩
   exact ⟨s, .refl s, hf, hm, by simpa using hpc, hstk, by omega⟩
+
+/-- **Reuse the function-free simulation for a call-free statement.** If the
+source executes statement `st` normally and the *function-free* compiler
+accepts it (so `st` contains no calls), then `Correctness.sim` gives its
+`SimSP`, which lifts to `SimSPC` for any concrete `code`. This is how `simF`
+discharges every call-free statement — the function-aware compiler produces the
+same code (`compileStmtF_extends`). -/
+theorem stmtF_reuse (code : ByteArray) {funs : YulSemantics.FunEnv yul} {V V' : VEnv yul}
+    {yst yst' : EvmState} {st : Stmt Op} {pc : Nat} {is : List Instr} {Γ' : List Ident}
+    (h : YulSemantics.Step yul funs V yst (.stmt st) (.sres V' yst' .normal))
+    (hc : compileStmt pc (names V) st = some (is, Γ')) :
+    Γ' = names V' ∧ SimSPC code pc yst V is yst' V' := by
+  rcases sim h pc is Γ' hc with ⟨_, hΓ, hsp⟩ | ⟨ho, _⟩
+  · exact ⟨hΓ, hsp.toSimSPC code⟩
+  · exact absurd ho (by simp)
+
+/-- Statement-sequence version of `stmtF_reuse`. -/
+theorem stmtsF_reuse (code : ByteArray) {funs : YulSemantics.FunEnv yul} {V V' : VEnv yul}
+    {yst yst' : EvmState} {ss : List (Stmt Op)} {pc : Nat} {is : List Instr} {Γ' : List Ident}
+    (h : YulSemantics.Step yul funs V yst (.stmts ss) (.sres V' yst' .normal))
+    (hc : compileStmts pc (names V) ss = some (is, Γ')) :
+    Γ' = names V' ∧ SimSPC code pc yst V is yst' V' := by
+  rcases sim h pc is Γ' hc with ⟨_, hΓ, hsp⟩ | ⟨ho, _⟩
+  · exact ⟨hΓ, hsp.toSimSPC code⟩
+  · exact absurd ho (by simp)
 
 
 
