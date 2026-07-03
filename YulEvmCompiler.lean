@@ -13,3 +13,4 @@ import YulEvmCompiler.FnProof
 import YulEvmCompiler.FnLayout
 import YulEvmCompiler.FnSim
 import YulEvmCompiler.FnSimF
+import YulEvmCompiler.FnSimInduction
