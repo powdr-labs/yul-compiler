@@ -160,11 +160,13 @@ its own green commit:
       `JUMP`, reaching `retaddr` with the caller stack restored. This is the
       first machine-checked "a function call executes correctly" (no
       params/rets).
-    - [ ] `SimCallProc` — the caller half: `pushStep`(retaddr)·`pushStep`(entry)
-      ·`jumpStep`→entry (`ProgLayout` embed + `entry_isValidJumpDest`)·
-      `calleeRunProc`·land on the scaffold `JUMPDEST`. The pushed-address
-      `toNat` round-trip follows the existing `cond`/`JUMPI` pattern
-      (`toNat_ofNat_of_lt` + `codeSmall`).
+    - [x] `callerReachEntry` — the prologue `PUSH retaddr ; PUSH entry ; JUMP`
+      reaches the callee entry with `retaddr` on top.
+    - [x] **`SimCallProc`** — the *whole* procedure call scaffold as a `SimSPC`:
+      prologue → callee entry `JUMPDEST` → body (`SimSPC`) → return `JUMP` →
+      landing `JUMPDEST`. The first fully machine-checked "a function call is
+      correct." Landing validity via `isValidJumpDest_boundary` +
+      `toNat_ofNat_of_lt`/`codeSmall`.
     - [ ] `simF` — the induction over the source `Step` producing `SimSPC` for
       `compileStmtF`, supplying the body-sim to `SimCallProc` (recursion via the
       body sub-derivation), then the `+params`/`+returns` generalisations
