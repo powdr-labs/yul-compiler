@@ -14,6 +14,7 @@ assembled code — the foundation for the `ProgLayout` invariant.
 namespace YulEvmCompiler
 
 open YulSemantics (Expr Stmt Block Ident)
+open YulSemantics.EVM (Op)
 
 /-- The `entryPositions` accumulator only prepends: folding from `(acc, cur)`
 gives `acc` followed by the fold from `([], cur)`. -/
@@ -47,5 +48,40 @@ theorem entryPositions_cons (mainLen len : Nat) (lens : List Nat) :
   induction lens generalizing mainLen with
   | nil => rfl
   | cons len rest ih => rw [entryPositions_cons]; simp [ih]
+
+/-- `FnTable.get?` on a cons. -/
+theorem FnTable.get?_cons (k : Ident) (v : FnInfo) (t : FnTable) (n : Ident) :
+    FnTable.get? ((k, v) :: t) n = if k = n then some v else FnTable.get? t n := by
+  unfold FnTable.get?
+  rw [List.find?_cons]
+  by_cases h : k = n
+  · simp [h]
+  · simp [h]
+
+/-- The two passes' function tables built by `compileProgF` are
+signature-equivalent: they share names and per-function param/return arities,
+differing only in the recorded entry position (`0` in pass 1 vs. the real
+offset in pass 2). This is what lets the Phase-1.3 `*_lenSig` lemmas transfer
+pass-1 code lengths to pass-2 code lengths. -/
+theorem sigEq_dummy_real
+    (fns : List (Ident × List Ident × List Ident × Block Op)) :
+    ∀ (entries : List Nat), entries.length = fns.length →
+      FnTable.SigEq
+        (fns.map (fun p => (p.1, (⟨p.2.1, p.2.2.1, p.2.2.2, 0⟩ : FnInfo))))
+        ((fns.zip entries).map
+          (fun pe => (pe.1.1, (⟨pe.1.2.1, pe.1.2.2.1, pe.1.2.2.2, pe.2⟩ : FnInfo)))) := by
+  induction fns with
+  | nil => intro entries _ n; rfl
+  | cons p rest ih =>
+      intro entries hlen n
+      cases entries with
+      | nil => simp at hlen
+      | cons e erest =>
+          simp only [List.length_cons, Nat.add_right_cancel_iff] at hlen
+          simp only [List.map_cons, List.zip_cons_cons, FnTable.get?_cons]
+          by_cases hpn : p.1 = n
+          · simp [hpn]
+          · simp only [hpn, if_false]
+            exact ih erest hlen n
 
 end YulEvmCompiler
