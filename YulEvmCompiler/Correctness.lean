@@ -468,6 +468,50 @@ private theorem set_append_left {α : Type} (l₁ l₂ : List α) (i : Nat) (a :
       rw [ih _ (by simpa using h)]
       rfl
 
+/-! ### Arithmetic helpers
+
+Gas bookkeeping and program-counter equalities are the only linear-arithmetic
+obligations in the simulation proofs, and they arise in contexts crowded with
+large `++`-nested bytecode terms. `omega`/`simp` recursively traverse *every*
+hypothesis, so calling them there is both slow (heartbeats) and deep
+(recursion). These helpers take exactly the needed facts as explicit
+arguments, so each discharges its goal in a tiny context — keeping the
+call-site proofs free of `set_option` overrides. -/
+
+/-- Chain two "consumed at most `k` gas" bounds. -/
+private theorem gasChain₂ {a b c k₁ k₂ : Nat}
+    (h₁ : a - k₁ ≤ b) (h₂ : b - k₂ ≤ c) : a - (k₁ + k₂) ≤ c := by omega
+
+/-- Chain three "consumed at most `k` gas" bounds. -/
+private theorem gasChain₃ {a b c d k₁ k₂ k₃ : Nat}
+    (h₁ : a - k₁ ≤ b) (h₂ : b - k₂ ≤ c) (h₃ : c - k₃ ≤ d) :
+    a - (k₁ + k₂ + k₃) ≤ d := by omega
+
+/-- Chain four bounds (four-instruction fragments, e.g. the taken `if`). -/
+private theorem gasChain₄ {a b c d e k₁ k₂ k₃ k₄ : Nat}
+    (h₁ : a - k₁ ≤ b) (h₂ : b - k₂ ≤ c) (h₃ : c - k₃ ≤ d) (h₄ : d - k₄ ≤ e) :
+    a - (k₁ + k₂ + k₃ + k₄) ≤ e := by omega
+
+/-- Strip a summand from a `≤` upper bound (pure term mode, no `omega`, so it
+never scans the ambient context). -/
+private theorem le_of_add_le {x y z : Nat} (h : x + y ≤ z) : x ≤ z :=
+  Nat.le_trans (Nat.le_add_right x y) h
+
+/-- After one step (`h₁`) the remaining gas covers a later step's need `k`,
+given the budget `b + k' + k` was available up front (`k'` reserved for the
+step just taken and anything before it). -/
+private theorem gasEnough₁ {a s₁ b k : Nat}
+    (hbudget : b + k ≤ a) (h₁ : a - b ≤ s₁) : k ≤ s₁ := by omega
+
+/-- Same, after two steps. -/
+private theorem gasEnough₂ {a s₁ s₂ b k₁ k₂ : Nat} (hbudget : b + k₁ + k₂ ≤ a)
+    (h₁ : a - b ≤ s₁) (h₂ : s₁ - k₁ ≤ s₂) : k₂ ≤ s₂ := by omega
+
+/-- Same, after three steps. -/
+private theorem gasEnough₃ {a s₁ s₂ s₃ b k₁ k₂ k₃ : Nat}
+    (hbudget : b + k₁ + k₂ + k₃ ≤ a)
+    (h₁ : a - b ≤ s₁) (h₂ : s₁ - k₁ ≤ s₂) (h₃ : s₂ - k₂ ≤ s₃) : k₃ ≤ s₃ := by omega
+
 theorem SimOk.nil {yst : EvmState} {ins : List U256} :
     SimOk yst [] ins ins yst := by
   refine ⟨0, ?_⟩
@@ -577,7 +621,6 @@ theorem simE_var {yst : EvmState} {V : VEnv yul} {x : Ident} {v : U256}
   · rw [hstk', hstk]
     rfl
 
-set_option maxRecDepth 100000 in
 /-- Assigning a variable: the compiled expression's value gets swapped into
 the slot and the old value popped. -/
 theorem simS_assign {yst yst' : EvmState} {V : VEnv yul} {x : Ident} {v : U256}
@@ -597,7 +640,7 @@ theorem simS_assign {yst yst' : EvmState} {V : VEnv yul} {x : Ident} {v : U256}
       (assembleBytes [Instr.op (.Swap ⟨⟨idx, h16⟩⟩), Instr.op .POP] ++ post)
       [] σ s
       (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf hm hpc
-      (by simpa using hstk) rfl (by omega)
+      (by simpa using hstk) rfl (le_of_add_le (le_of_add_le hgas))
   have hstk1' : s1.stack = conv v :: (vimg V ++ σ) := by simpa using hstk1
   have hwit : (vimg V ++ σ)[idx]?
       = some ((vimg V ++ σ)[idx]'(by simp; omega)) :=
@@ -623,7 +666,7 @@ theorem simS_assign {yst yst' : EvmState} {V : VEnv yul} {x : Ident} {v : U256}
   obtain ⟨s2, st2, hf2, hm2, hpc2, hstk2, hg2⟩ :=
     swapStep (pre := pre ++ assembleBytes is)
       (post := (Instr.op .POP).bytes ++ post) (n := ⟨idx, h16⟩)
-      hcode2 hf1 hm1 hpc1' hswap (by omega)
+      hcode2 hf1 hm1 hpc1' hswap (gasEnough₁ (le_of_add_le hgas) hg1)
   have hcode3 : code = mkCode ((pre ++ assembleBytes is
       ++ (Instr.op (.Swap ⟨⟨idx, h16⟩⟩)).bytes)
       ++ (Instr.op .POP).bytes ++ post) := by
@@ -636,13 +679,11 @@ theorem simS_assign {yst yst' : EvmState} {V : VEnv yul} {x : Ident} {v : U256}
     congr 1
     simp
     omega
-  have hgas3 : 40000 ≤ s2.gasAvailable := by omega
   obtain ⟨s3, st3, hf3, hm3, hpc3, hstk3, hg3⟩ :=
     popStep (pre := pre ++ assembleBytes is
         ++ (Instr.op (.Swap ⟨⟨idx, h16⟩⟩)).bytes) (post := post)
-      hcode3 hf2 hm2 hpc2' hstk2 hgas3
-  have hgfin : s.gasAvailable - (b + 40000 + 40000) ≤ s3.gasAvailable := by omega
-  refine ⟨s3, (st1.snoc st2).snoc st3, hf3, hm3, ?_, ?_, hgfin⟩
+      hcode3 hf2 hm2 hpc2' hstk2 (gasEnough₂ hgas hg1 hg2)
+  refine ⟨s3, (st1.snoc st2).snoc st3, hf3, hm3, ?_, ?_, gasChain₃ hg1 hg2 hg3⟩
   · rw [hpc3]
     congr 1
     simp [assembleBytes_append]
@@ -880,6 +921,10 @@ private theorem compileStmts_cons_inv {pc : Nat} {Γ : List Ident}
         Option.some.injEq, Prod.mk.injEq] at h
       exact ⟨is1, Γ1, is2, rfl, by rw [← h.2]; exact hr, h.1.symm⟩
 
+/-- Inversion for `if`. The instruction list is grouped so the `.block body`
+part is a single sublist `(bodyCode ++ pops)` — matching the shape the
+extracted control-flow lemmas compose against — while the jump destination
+keeps the compiler's form. -/
 private theorem compileStmt_cond_inv {pc : Nat} {Γ : List Ident}
     {c : YulSemantics.Expr Op} {body : List (YulSemantics.Stmt Op)}
     {is : List Instr} {Γ' : List Ident}
@@ -893,7 +938,7 @@ private theorem compileStmt_cond_inv {pc : Nat} {Γ : List Ident}
             .push (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
               + (assembleBytes bodyCode).length + (Γb.length - Γ.length))),
             .op .JUMPI]
-        ++ bodyCode ++ List.replicate (Γb.length - Γ.length) (.op .POP)
+        ++ (bodyCode ++ List.replicate (Γb.length - Γ.length) (.op .POP))
         ++ [.op .JUMPDEST] ∧
       Γ' = Γ := by
   simp only [compileStmt] at h
@@ -909,7 +954,8 @@ private theorem compileStmt_cond_inv {pc : Nat} {Γ : List Ident}
       rw [hbc] at h
       simp only [Option.bind_eq_bind, Option.bind_some, Option.pure_def,
         Option.some.injEq, Prod.mk.injEq] at h
-      exact ⟨cCode, bodyCode, Γb, rfl, hbc, h.1.symm, h.2.symm⟩
+      refine ⟨cCode, bodyCode, Γb, rfl, hbc, ?_, h.2.symm⟩
+      rw [h.1.symm]; simp [List.append_assoc]
 
 /-- The layout only ever grows by prepending. -/
 private theorem compileStmt_suffix {pc : Nat} {Γ : List Ident} {s : YulSemantics.Stmt Op}
@@ -1091,6 +1137,203 @@ theorem SimSHaltP.extend {pcc : Nat} {yst : EvmState} {V : VEnv yul}
     (by rw [hcode]; congr 1; simp [assembleBytes_append]) hpre hf hm hpc hstk
     hgas
 
+/-! ### Control-flow building blocks
+
+The `if` cases of the induction were the only place needing raised elaboration
+limits: inlined, they chain four raw byte-level step lemmas, so `omega`/`simp`
+run in contexts full of large `++`-nested terms carrying the fully-expanded
+jump destination `pc + |cCode| + 35 + |bodyCode| + pops`. Factoring them out
+fixes both problems at once — each lemma elaborates in its own (small) context,
+and the destination is kept as an opaque variable `dest`, so the recurring
+terms stay small. The sequential pieces compose through `SimSP.comp` /
+`SimSHaltP.extend`, which already discharge the position bookkeeping once. -/
+
+/-- The `if` prologue as a `SimE`: given the condition's own `SimE` (producing
+`[cv]`), append `ISZERO` and `PUSH dest` to produce `[dest, iszero cv]` on top
+(destination on top, ready for `JUMPI`). -/
+theorem ifPrologueSimE {yst yst1 : EvmState} {V : VEnv yul} {cCode : List Instr}
+    {cv : U256} {dest : Nat} (hc : SimE yst V 0 cCode [cv] yst1) :
+    SimE yst V 0 (cCode ++ [.op .ISZERO] ++ [.push (UInt256.ofNat dest)])
+      [BitVec.ofNat 256 dest, YulSemantics.EVM.b2w (cv = 0)] yst1 := by
+  refine SimE.compArgs (k := 1) rfl
+    (hc.compOk (simOk_op (yop := .iszero) rfl rfl)) ?_
+  rw [← conv_ofNat]
+  exact (simOk_push _).toSimE V 1
+
+/-- The compiled condition of a *truthy* branch (`cv ≠ 0`): `iszero cv` is
+`0`, so the `JUMPI` falls through. -/
+theorem b2w_toNat_eq_zero {cv : U256}
+    (h : ¬(decide (cv = (0 : U256)) = true)) :
+    (conv (YulSemantics.EVM.b2w (cv = 0))).toNat = 0 := by
+  rw [show YulSemantics.EVM.b2w (cv = 0) = (0 : U256) from by
+    unfold YulSemantics.EVM.b2w; rw [if_neg h]]
+  rfl
+
+/-- The compiled condition of a *falsy* branch (`cv = 0`): `iszero cv` is `1`,
+so the `JUMPI` is taken. -/
+theorem b2w_toNat_ne_zero {cv : U256}
+    (h : decide (cv = (0 : U256)) = true) :
+    (conv (YulSemantics.EVM.b2w (cv = 0))).toNat ≠ 0 := by
+  rw [show YulSemantics.EVM.b2w (cv = 0) = (1 : U256) from by
+    unfold YulSemantics.EVM.b2w; rw [if_pos h]]
+  decide
+
+/-- `JUMPDEST` is a positioned no-op fragment. -/
+theorem simSP_jumpdest {p : Nat} {yst : EvmState} {V : VEnv yul} :
+    SimSP p yst V [.op .JUMPDEST] yst V := by
+  refine ⟨40000, ?_⟩
+  intro code preIs post σ s hcode hpre hf hm hpc hstk hgas
+  obtain ⟨s', hstep, hf', hm', hpc', hstk', hg'⟩ :=
+    jumpdestStep (pre := assembleBytes preIs) (post := post)
+      (by rw [hcode]; congr 1) hf hm
+      (by rw [hpc, hpre]) hgas
+  refine ⟨s', .trans hstep (.refl _), hf', hm', ?_, by rw [hstk', hstk], hg'⟩
+  rw [hpc']; congr 1; simp [hpre]
+
+/-- The `if` prologue `cCode; ISZERO; PUSH dest; JUMPI` when the condition is
+nonzero (so `iszero cv = 0` and the branch falls through): it consumes the
+computed condition and destination and restores the variable region. -/
+theorem simSP_condFall {pcc : Nat} {yst yst1 : EvmState} {V : VEnv yul}
+    {cCode : List Instr} {dest : Nat} {cv : U256}
+    (hpfx : SimE yst V 0 (cCode ++ [.op .ISZERO] ++ [.push (UInt256.ofNat dest)])
+      [BitVec.ofNat 256 dest, YulSemantics.EVM.b2w (cv = 0)] yst1)
+    (hcondz : (conv (YulSemantics.EVM.b2w (cv = 0))).toNat = 0) :
+    SimSP pcc yst V
+      (cCode ++ [.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI]) yst1 V := by
+  obtain ⟨bP, HP⟩ := hpfx
+  refine ⟨bP + 40000, ?_⟩
+  intro code preIs post σ s hcode hpre hf hm hpc hstk hgas
+  obtain ⟨s1, st1, hf1, hm1, hpc1, hstk1, hg1⟩ :=
+    HP code (assembleBytes preIs) (assembleBytes [Instr.op .JUMPI] ++ post) [] σ s
+      (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf hm
+      (by rw [hpc, hpre]) (by rw [hstk]; rfl) rfl (le_of_add_le hgas)
+  obtain ⟨s2, st2, hf2, hm2, hpc2, hstk2, hg2⟩ :=
+    jumpiNotTakenStep
+      (pre := assembleBytes preIs
+        ++ assembleBytes (cCode ++ [.op .ISZERO] ++ [.push (UInt256.ofNat dest)]))
+      (post := post)
+      (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf1 hm1
+      (by rw [hpc1]; congr 1; simp [assembleBytes_append])
+      (by rw [hstk1]; rfl) hcondz (gasEnough₁ hgas hg1)
+  refine ⟨s2, st1.snoc st2, hf2, hm2, ?_, by rw [hstk2]; simp, gasChain₂ hg1 hg2⟩
+  rw [hpc2]
+  congr 1
+  simp [assembleBytes_append, hpre]
+  omega
+
+/-- `if c { body }` where the condition is truthy (`cv ≠ 0`) and the body runs
+to a normal outcome: fall through the `JUMPI`, run the body, land on the
+trailing `JUMPDEST`. -/
+theorem simSP_ifTrue_norm {pcc : Nat} {yst yst1 yst2 : EvmState}
+    {V V2 : VEnv yul} {cCode bodyIs : List Instr} {dest : Nat} {cv : U256}
+    (hpfx : SimE yst V 0 (cCode ++ [.op .ISZERO] ++ [.push (UInt256.ofNat dest)])
+      [BitVec.ofNat 256 dest, YulSemantics.EVM.b2w (cv = 0)] yst1)
+    (hcondz : (conv (YulSemantics.EVM.b2w (cv = 0))).toNat = 0)
+    (hbody : SimSP (pcc + (assembleBytes cCode).length + 35) yst1 V bodyIs yst2 V2) :
+    SimSP pcc yst V
+      (cCode ++ [.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI]
+        ++ bodyIs ++ [.op .JUMPDEST]) yst2 V2 := by
+  have hlen : (assembleBytes (cCode
+      ++ [.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI])).length
+      = (assembleBytes cCode).length + 35 := by simp [assembleBytes_append]
+  exact ((simSP_condFall hpfx hcondz).comp (hlen ▸ hbody)).comp simSP_jumpdest
+
+/-- `if c { body }` with truthy condition where the body *halts*: fall through
+the `JUMPI`, run the body, which halts before the trailing `JUMPDEST`. -/
+theorem simSHaltP_ifTrue_halt {pcc : Nat} {yst yst1 yst2 : EvmState}
+    {V : VEnv yul} {cCode bodyIs : List Instr} {dest : Nat} {cv : U256}
+    (hpfx : SimE yst V 0 (cCode ++ [.op .ISZERO] ++ [.push (UInt256.ofNat dest)])
+      [BitVec.ofNat 256 dest, YulSemantics.EVM.b2w (cv = 0)] yst1)
+    (hcondz : (conv (YulSemantics.EVM.b2w (cv = 0))).toNat = 0)
+    (hbody : SimSHaltP (pcc + (assembleBytes cCode).length + 35) yst1 V bodyIs yst2) :
+    SimSHaltP pcc yst V
+      (cCode ++ [.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI]
+        ++ bodyIs ++ [.op .JUMPDEST]) yst2 := by
+  have hlen : (assembleBytes (cCode
+      ++ [.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI])).length
+      = (assembleBytes cCode).length + 35 := by simp [assembleBytes_append]
+  exact ((simSP_condFall hpfx hcondz).compHalt (hlen ▸ hbody)).extend [.op .JUMPDEST]
+
+/-- `if c { body }` where the condition is falsy (`cv = 0`, so `iszero cv = 1`):
+the `JUMPI` is taken, jumping over the body directly to the trailing
+`JUMPDEST`. The jump target's validity comes from `isValidJumpDest_boundary`
+(the `JUMPDEST` sits at an instruction boundary of the assembled code). -/
+theorem simSP_ifFalse {pcc : Nat} {yst yst1 : EvmState} {V : VEnv yul}
+    {cCode bodyIs : List Instr} {dest : Nat} {cv : U256}
+    (hpfx : SimE yst V 0 (cCode ++ [.op .ISZERO] ++ [.push (UInt256.ofNat dest)])
+      [BitVec.ofNat 256 dest, YulSemantics.EVM.b2w (cv = 0)] yst1)
+    (hcond1 : (conv (YulSemantics.EVM.b2w (cv = 0))).toNat ≠ 0)
+    (hdest : dest = pcc + (assembleBytes cCode).length + 35
+      + (assembleBytes bodyIs).length) :
+    SimSP pcc yst V
+      (cCode ++ [.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI]
+        ++ bodyIs ++ [.op .JUMPDEST]) yst1 V := by
+  obtain ⟨bP, HP⟩ := hpfx
+  refine ⟨bP + 40000 + 40000, ?_⟩
+  intro code preIs post σ s hcode hpre hf hm hpc hstk hgas
+  obtain ⟨s1, st1, hf1, hm1, hpc1, hstk1, hg1⟩ :=
+    HP code (assembleBytes preIs)
+      (assembleBytes ([.op .JUMPI] ++ bodyIs ++ [.op .JUMPDEST]) ++ post) [] σ s
+      (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf hm
+      (by rw [hpc, hpre]) (by rw [hstk]; rfl) rfl (le_of_add_le (le_of_add_le hgas))
+  -- the jump target is the trailing JUMPDEST, at an instruction boundary
+  have hdlt : dest < 2 ^ 256 := by
+    have hsz := hf.codeSmall
+    rw [hcode] at hsz
+    simp only [size_mkCode] at hsz
+    simp [assembleBytes_append, hpre] at hsz
+    rw [hdest]; omega
+  have hvalid :
+      Decode.isValidJumpDest code (conv (BitVec.ofNat 256 dest)).toNat = true := by
+    rw [conv_ofNat, toNat_ofNat_of_lt hdlt]
+    have hb := isValidJumpDest_boundary
+      (preIs ++ cCode ++ [.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI]
+        ++ bodyIs) post
+    rw [show (assembleBytes (preIs ++ cCode
+          ++ [.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI]
+          ++ bodyIs)).length = dest from by
+        rw [hdest]; simp [assembleBytes_append, hpre]; omega] at hb
+    rw [show mkCode (assembleBytes (preIs ++ cCode
+          ++ [.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI] ++ bodyIs)
+          ++ (Instr.op .JUMPDEST).bytes ++ post) = code from by
+        rw [hcode]; congr 1; simp [assembleBytes_append]] at hb
+    exact hb
+  obtain ⟨s2, st2, hf2, hm2, hpc2, hstk2, hg2⟩ :=
+    jumpiTakenStep
+      (pre := assembleBytes preIs
+        ++ assembleBytes (cCode ++ [.op .ISZERO] ++ [.push (UInt256.ofNat dest)]))
+      (post := assembleBytes (bodyIs ++ [.op .JUMPDEST]) ++ post)
+      (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf1 hm1
+      (by rw [hpc1]; congr 1; simp [assembleBytes_append])
+      (by rw [hstk1]; rfl) hcond1 hvalid
+      (gasEnough₁ (le_of_add_le hgas) hg1)
+  -- now at `dest`, the JUMPDEST
+  obtain ⟨s3, st3, hf3, hm3, hpc3, hstk3, hg3⟩ :=
+    jumpdestStep
+      (pre := assembleBytes preIs ++ assembleBytes (cCode
+        ++ [.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI] ++ bodyIs))
+      (post := post)
+      (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf2 hm2
+      (by rw [hpc2, conv_ofNat]; congr 1; rw [hdest]
+          simp [assembleBytes_append, hpre]; omega)
+      (gasEnough₂ hgas hg1 hg2)
+  refine ⟨s3, (st1.snoc st2).snoc st3, hf3, hm3, ?_, by rw [hstk3, hstk2]; simp,
+    gasChain₃ hg1 hg2 hg3⟩
+  rw [hpc3]; congr 1; simp [assembleBytes_append, hpre]; omega
+
+/-- `if c { body }` where evaluating the condition itself halts: the body and
+branch instructions are never reached. -/
+theorem simSHaltP_ifCondHalt {pcc : Nat} {yst yst1 : EvmState} {V : VEnv yul}
+    {cCode bodyIs : List Instr} {dest : Nat}
+    (hch : SimEHalt yst V 0 cCode yst1) :
+    SimSHaltP pcc yst V
+      (cCode ++ [.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI]
+        ++ bodyIs ++ [.op .JUMPDEST]) yst1 := by
+  have h := hch.extend ([.op .ISZERO, .push (UInt256.ofNat dest), .op .JUMPI]
+    ++ bodyIs ++ [.op .JUMPDEST])
+  simp only [← List.append_assoc] at h
+  exact (h.toSimSHalt).toSimSHaltP pcc
+
 /-! ### The simulation induction -/
 
 /-- The induction motive: what a source derivation for each syntactic class
@@ -1117,8 +1360,6 @@ def Motive (V : VEnv yul) (yst : EvmState) :
         (o = .halt ∧ SimSHaltP pc yst V is yst')
   | _, _ => True
 
-set_option maxRecDepth 100000 in
-set_option maxHeartbeats 3000000 in
 /-- Every source derivation over compiled syntax is simulated by the target. -/
 theorem sim {funs : YulSemantics.FunEnv yul} {V : VEnv yul}
     {yst : EvmState} {c : YulSemantics.Code Op} {res : YulSemantics.Res yul}
@@ -1242,227 +1483,36 @@ theorem sim {funs : YulSemantics.FunEnv yul} {V : VEnv yul}
   | @ifTrue funs V yst c body cv yst1 V2 yst2 o hcstep hcv hblock ihc ihblock =>
     intro pc is Γ' hcomp
     obtain ⟨cCode, bodyCode, Γb, hcc, hbc, rfl, rfl⟩ := compileStmt_cond_inv hcomp
-    have hpfx : SimE yst V 0
-        (cCode ++ [.op .ISZERO] ++ [.push (UInt256.ofNat (pc
-          + (assembleBytes cCode).length + 35 + (assembleBytes bodyCode).length
-          + (Γb.length - (names V).length)))])
-        [BitVec.ofNat 256 (pc + (assembleBytes cCode).length + 35
-          + (assembleBytes bodyCode).length + (Γb.length - (names V).length)),
-         YulSemantics.EVM.b2w (cv = 0)] yst1 := by
-      refine SimE.compArgs (k := 1) rfl
-        ((ihc 0 cCode hcc).compOk (simOk_op (yop := .iszero) rfl rfl)) ?_
-      rw [← conv_ofNat]
-      exact (simOk_push _).toSimE V 1
-    have hcondz : (conv (YulSemantics.EVM.b2w (cv = 0))).toNat = 0 := by
-      rw [show YulSemantics.EVM.b2w (cv = 0) = (0 : U256) from by
-        unfold YulSemantics.EVM.b2w
-        rw [if_neg (show ¬(decide (cv = (0 : U256)) = true) from
-          fun hd => hcv (of_decide_eq_true hd))]]
-      rfl
+    have hcondz : (conv (YulSemantics.EVM.b2w (cv = 0))).toNat = 0 :=
+      b2w_toNat_eq_zero (fun hd => hcv (of_decide_eq_true hd))
     have hblockc : compileStmt (pc + (assembleBytes cCode).length + 35) (names V)
         (.block body) = some (bodyCode
           ++ List.replicate (Γb.length - (names V).length) (.op .POP), names V) := by
-      simp only [compileStmt]
-      rw [hbc]
-      rfl
+      simp only [compileStmt, hbc, Option.bind_eq_bind, Option.bind_some,
+        Option.pure_def]
     rcases ihblock (pc + (assembleBytes cCode).length + 35) _ _ hblockc
         with ⟨ho, hΓ, hSP⟩ | ⟨ho, hHP⟩
-    · subst ho
-      refine Or.inl ⟨rfl, hΓ, ?_⟩
-      obtain ⟨bP, HP⟩ := hpfx
-      obtain ⟨bB, HB⟩ := hSP
-      refine ⟨bP + 40000 + bB + 40000, ?_⟩
-      intro code preIs post σ s hcode hpre hf hm hpc hstk hgas
-      obtain ⟨s1, st1, hf1, hm1, hpc1, hstk1, hg1⟩ :=
-        HP code (assembleBytes preIs)
-          (assembleBytes ([.op .JUMPI] ++ bodyCode
-            ++ List.replicate (Γb.length - (names V).length) (.op .POP)
-            ++ [.op .JUMPDEST]) ++ post) [] σ s
-          (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf hm
-          (by rw [hpc, hpre]) (by rw [hstk]; rfl) rfl (by omega)
-      obtain ⟨s2, st2, hf2, hm2, hpc2, hstk2, hg2⟩ :=
-        jumpiNotTakenStep
-          (pre := assembleBytes preIs ++ assembleBytes (cCode ++ [.op .ISZERO]
-            ++ [.push (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
-              + (assembleBytes bodyCode).length
-              + (Γb.length - (names V).length)))]))
-          (post := assembleBytes (bodyCode
-            ++ List.replicate (Γb.length - (names V).length) (.op .POP)
-            ++ [.op .JUMPDEST]) ++ post)
-          (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf1 hm1
-          (by rw [hpc1]; congr 1; simp [assembleBytes_append])
-          (by rw [hstk1]; rfl) hcondz (by omega)
-      obtain ⟨s3, st3, hf3, hm3, hpc3, hstk3, hg3⟩ :=
-        HB code (preIs ++ (cCode ++ [.op .ISZERO]
-            ++ [.push (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
-              + (assembleBytes bodyCode).length
-              + (Γb.length - (names V).length)))] ++ [.op .JUMPI]))
-          (assembleBytes [Instr.op .JUMPDEST] ++ post) σ s2
-          (by rw [hcode]; congr 1; simp [assembleBytes_append])
-          (by simp [assembleBytes_append, hpre]; omega) hf2 hm2
-          (by rw [hpc2]; congr 1; simp [assembleBytes_append]; omega)
-          hstk2 (by omega)
-      obtain ⟨s4, st4, hf4, hm4, hpc4, hstk4, hg4⟩ :=
-        jumpdestStep
-          (pre := assembleBytes preIs ++ assembleBytes (cCode ++ [.op .ISZERO]
-            ++ [.push (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
-              + (assembleBytes bodyCode).length
-              + (Γb.length - (names V).length)))] ++ [.op .JUMPI] ++ bodyCode
-            ++ List.replicate (Γb.length - (names V).length) (.op .POP)))
-          (post := post)
-          (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf3 hm3
-          (by rw [hpc3]; congr 1; simp [assembleBytes_append]; omega)
-          (by omega)
-      refine ⟨s4, ((st1.snoc st2).append st3).snoc st4, hf4, hm4, ?_,
-        by rw [hstk4, hstk3], by omega⟩
-      rw [hpc4]
-      congr 1
-      simp [assembleBytes_append]
-      omega
-    · refine Or.inr ⟨ho, ?_⟩
-      obtain ⟨bP, HP⟩ := hpfx
-      obtain ⟨bB, HB⟩ := hHP
-      refine ⟨bP + 40000 + bB, ?_⟩
-      intro code preIs post σ s hcode hpre hf hm hpc hstk hgas
-      obtain ⟨s1, st1, hf1, hm1, hpc1, hstk1, hg1⟩ :=
-        HP code (assembleBytes preIs)
-          (assembleBytes ([.op .JUMPI] ++ bodyCode
-            ++ List.replicate (Γb.length - (names V).length) (.op .POP)
-            ++ [.op .JUMPDEST]) ++ post) [] σ s
-          (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf hm
-          (by rw [hpc, hpre]) (by rw [hstk]; rfl) rfl (by omega)
-      obtain ⟨s2, st2, hf2, hm2, hpc2, hstk2, hg2⟩ :=
-        jumpiNotTakenStep
-          (pre := assembleBytes preIs ++ assembleBytes (cCode ++ [.op .ISZERO]
-            ++ [.push (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
-              + (assembleBytes bodyCode).length
-              + (Γb.length - (names V).length)))]))
-          (post := assembleBytes (bodyCode
-            ++ List.replicate (Γb.length - (names V).length) (.op .POP)
-            ++ [.op .JUMPDEST]) ++ post)
-          (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf1 hm1
-          (by rw [hpc1]; congr 1; simp [assembleBytes_append])
-          (by rw [hstk1]; rfl) hcondz (by omega)
-      obtain ⟨s3, st3, hm3, hcs3, hhm3⟩ :=
-        HB code (preIs ++ (cCode ++ [.op .ISZERO]
-            ++ [.push (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
-              + (assembleBytes bodyCode).length
-              + (Γb.length - (names V).length)))] ++ [.op .JUMPI]))
-          (assembleBytes [Instr.op .JUMPDEST] ++ post) σ s2
-          (by rw [hcode]; congr 1; simp [assembleBytes_append])
-          (by simp [assembleBytes_append, hpre]; omega) hf2 hm2
-          (by rw [hpc2]; congr 1; simp [assembleBytes_append]; omega)
-          hstk2 (by omega)
-      exact ⟨s3, (st1.snoc st2).append st3, hm3, hcs3, hhm3⟩
+    · exact Or.inl ⟨ho, hΓ,
+        simSP_ifTrue_norm (ifPrologueSimE (ihc 0 cCode hcc)) hcondz hSP⟩
+    · exact Or.inr ⟨ho,
+        simSHaltP_ifTrue_halt (ifPrologueSimE (ihc 0 cCode hcc)) hcondz hHP⟩
   | @ifFalse funs V yst c body cv yst1 hcstep hcv ihc =>
     intro pc is Γ' hcomp
     obtain ⟨cCode, bodyCode, Γb, hcc, hbc, rfl, rfl⟩ := compileStmt_cond_inv hcomp
-    have hpfx : SimE yst V 0
-        (cCode ++ [.op .ISZERO] ++ [.push (UInt256.ofNat (pc
-          + (assembleBytes cCode).length + 35 + (assembleBytes bodyCode).length
-          + (Γb.length - (names V).length)))])
-        [BitVec.ofNat 256 (pc + (assembleBytes cCode).length + 35
-          + (assembleBytes bodyCode).length + (Γb.length - (names V).length)),
-         YulSemantics.EVM.b2w (cv = 0)] yst1 := by
-      refine SimE.compArgs (k := 1) rfl
-        ((ihc 0 cCode hcc).compOk (simOk_op (yop := .iszero) rfl rfl)) ?_
-      rw [← conv_ofNat]
-      exact (simOk_push _).toSimE V 1
-    have hcond1 : (conv (YulSemantics.EVM.b2w (cv = 0))).toNat ≠ 0 := by
-      rw [show YulSemantics.EVM.b2w (cv = 0) = (1 : U256) from by
-        unfold YulSemantics.EVM.b2w
-        rw [if_pos (decide_eq_true (show cv = (0 : U256) from hcv))]]
-      decide
-    refine Or.inl ⟨rfl, rfl, ?_⟩
-    obtain ⟨bP, HP⟩ := hpfx
-    refine ⟨bP + 40000 + 40000, ?_⟩
-    intro code preIs post σ s hcode hpre hf hm hpc hstk hgas
-    obtain ⟨s1, st1, hf1, hm1, hpc1, hstk1, hg1⟩ :=
-      HP code (assembleBytes preIs)
-        (assembleBytes ([.op .JUMPI] ++ bodyCode
-          ++ List.replicate (Γb.length - (names V).length) (.op .POP)
-          ++ [.op .JUMPDEST]) ++ post) [] σ s
-        (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf hm
-        (by rw [hpc, hpre]) (by rw [hstk]; rfl) rfl (by omega)
-    have hdlt : pc + (assembleBytes cCode).length + 35
+    have hcond1 : (conv (YulSemantics.EVM.b2w (cv = 0))).toNat ≠ 0 :=
+      b2w_toNat_ne_zero (decide_eq_true (show cv = (0 : U256) from hcv))
+    have hdest : pc + (assembleBytes cCode).length + 35
         + (assembleBytes bodyCode).length + (Γb.length - (names V).length)
-        < 2 ^ 256 := by
-      have hsz := hf.codeSmall
-      rw [hcode] at hsz
-      simp [assembleBytes_append, hpre] at hsz
-      simp
-      omega
-    have hvalid : Decode.isValidJumpDest code
-        (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
-          + (assembleBytes bodyCode).length
-          + (Γb.length - (names V).length))).toNat = true := by
-      rw [toNat_ofNat_of_lt hdlt]
-      have hb := isValidJumpDest_boundary
-        (preIs ++ (cCode ++ [.op .ISZERO]
-          ++ [.push (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
-            + (assembleBytes bodyCode).length
-            + (Γb.length - (names V).length)))] ++ [.op .JUMPI] ++ bodyCode
-          ++ List.replicate (Γb.length - (names V).length) (.op .POP))) post
-      rw [show (assembleBytes (preIs ++ (cCode ++ [.op .ISZERO]
-            ++ [.push (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
-              + (assembleBytes bodyCode).length
-              + (Γb.length - (names V).length)))] ++ [.op .JUMPI] ++ bodyCode
-            ++ List.replicate (Γb.length - (names V).length) (.op .POP)))).length
-          = pc + (assembleBytes cCode).length + 35
-          + (assembleBytes bodyCode).length + (Γb.length - (names V).length)
-          from by simp [assembleBytes_append, hpre]; omega] at hb
-      rw [show mkCode (assembleBytes (preIs ++ (cCode ++ [.op .ISZERO]
-          ++ [.push (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
-            + (assembleBytes bodyCode).length
-            + (Γb.length - (names V).length)))] ++ [.op .JUMPI] ++ bodyCode
-          ++ List.replicate (Γb.length - (names V).length) (.op .POP)))
-          ++ (Instr.op .JUMPDEST).bytes ++ post) = code from by
-        rw [hcode]; congr 1; simp [assembleBytes_append]] at hb
-      exact hb
-    obtain ⟨s2, st2, hf2, hm2, hpc2, hstk2, hg2⟩ :=
-      jumpiTakenStep
-        (pre := assembleBytes preIs ++ assembleBytes (cCode ++ [.op .ISZERO]
-          ++ [.push (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
-            + (assembleBytes bodyCode).length
-            + (Γb.length - (names V).length)))]))
-        (post := assembleBytes (bodyCode
-          ++ List.replicate (Γb.length - (names V).length) (.op .POP)
-          ++ [.op .JUMPDEST]) ++ post)
-        (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf1 hm1
-        (by rw [hpc1]; congr 1; simp [assembleBytes_append])
-        (by rw [hstk1]; rfl) hcond1 hvalid (by omega)
-    obtain ⟨s3, st3, hf3, hm3, hpc3, hstk3, hg3⟩ :=
-      jumpdestStep
-        (pre := assembleBytes preIs ++ assembleBytes (cCode ++ [.op .ISZERO]
-          ++ [.push (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
-            + (assembleBytes bodyCode).length
-            + (Γb.length - (names V).length)))] ++ [.op .JUMPI] ++ bodyCode
-          ++ List.replicate (Γb.length - (names V).length) (.op .POP)))
-        (post := post)
-        (by rw [hcode]; congr 1; simp [assembleBytes_append]) hf2 hm2
-        (by rw [hpc2]; congr 1; simp [assembleBytes_append, hpre]; omega)
-        (by omega)
-    refine ⟨s3, (st1.snoc st2).snoc st3, hf3, hm3, ?_, by rw [hstk3, hstk2]; simp, by omega⟩
-    rw [hpc3]
-    congr 1
-    simp [assembleBytes_append, hpre]
-    omega
+        = pc + (assembleBytes cCode).length + 35
+        + (assembleBytes (bodyCode
+            ++ List.replicate (Γb.length - (names V).length) (.op .POP))).length := by
+      simp [assembleBytes_append]; omega
+    exact Or.inl ⟨rfl, rfl,
+      simSP_ifFalse (ifPrologueSimE (ihc 0 cCode hcc)) hcond1 hdest⟩
   | @ifHalt funs V yst c body yst1 hcstep ihc =>
     intro pc is Γ' hcomp
     obtain ⟨cCode, bodyCode, Γb, hcc, hbc, rfl, rfl⟩ := compileStmt_cond_inv hcomp
-    have h := (ihc 0 cCode hcc).extend ([.op .ISZERO,
-      .push (UInt256.ofNat (pc + (assembleBytes cCode).length + 35
-        + (assembleBytes bodyCode).length + (Γb.length - (names V).length))),
-      .op .JUMPI] ++ bodyCode
-      ++ List.replicate (Γb.length - (names V).length) (.op .POP)
-      ++ [.op .JUMPDEST])
-    refine Or.inr ⟨rfl, ?_⟩
-    have h2 := (h.toSimSHalt).toSimSHaltP pc
-    refine ⟨h2.choose, ?_⟩
-    intro code preIs post σ s hcode hpre hf hm hpc hstk hgas
-    exact h2.choose_spec code preIs post σ s
-      (by rw [hcode]; congr 1; simp [assembleBytes_append]) hpre hf hm hpc hstk
-      hgas
+    exact Or.inr ⟨rfl, simSHaltP_ifCondHalt (ihc 0 cCode hcc)⟩
   | switchExec _ _ _ _ =>
     intro pc is Γ' hc
     simp [compileStmt] at hc
