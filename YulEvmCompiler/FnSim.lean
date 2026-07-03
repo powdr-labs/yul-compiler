@@ -26,6 +26,7 @@ private theorem gsub2 {a b c k₁ k₂ : Nat} (h₁ : a - k₁ ≤ b) (h₂ : b 
 private theorem genough {a s₁ k₁ k₂ : Nat} (hb : k₁ + k₂ ≤ a) (h₁ : a - k₁ ≤ s₁) :
     k₂ ≤ s₁ := by omega
 private theorem gstrip {x y z : Nat} (h : x + y ≤ z) : x ≤ z := by omega
+private theorem p67 (n : Nat) : n + 67 + 1 = n + 68 := by omega
 
 /-- Code-fixed, position-aware statement simulation: like `SimSP`, but the whole
 program `code` is a fixed parameter rather than universally quantified, so a
@@ -199,5 +200,114 @@ theorem callerReachEntry (code : ByteArray) (preIs : List Instr) (post : List UI
     jumpStep hcode3 hf2 hm2 hpc2' hstk2 hjvalid (genough (genough hgas hg1) hg2)
   exact ⟨s3, Steps.trans hstep1 (Steps.trans hstep2 (.trans hstep3 (.refl _))), hf3, hm3,
     hpc3, hstk3, gsub2 hg1 (gsub2 hg2 hg3)⟩
+
+
+set_option maxHeartbeats 4000000 in
+
+/-- **A procedure call is correct.** The call scaffold `PUSH retaddr ; PUSH entry
+; JUMP ; JUMPDEST` (no args/params/rets) simulates the source `callOk` step:
+given the callee body simulates (`SimSPC` over the empty region) and the entry
+is a valid `JUMPDEST`, the whole scaffold advances the program to just past the
+landing pad, leaving the caller's variable region and stack unchanged, in the
+post-body state. -/
+theorem SimCallProc (code : ByteArray) (pcc entry retaddr : Nat)
+    (calleePre bodyCode calleePost : List Instr) (V : VEnv yul) (yst st2 : EvmState)
+    (hretaddr : retaddr = pcc + 67)
+    (hcallee : code = mkCode (assembleBytes calleePre
+        ++ assembleBytes ([.op .JUMPDEST] ++ bodyCode ++ [.op .JUMP]) ++ assembleBytes calleePost))
+    (hcentry : (assembleBytes calleePre).length = entry)
+    (hbody : SimSPC code (entry + 1) yst [] bodyCode st2 [])
+    (hentryvalid : Decode.isValidJumpDest code entry = true)
+    (hentrylt : entry < 2 ^ 256) :
+    SimSPC code pcc yst V (callScaffold retaddr entry 0 []) st2 V := by
+  obtain ⟨bb, Hbody⟩ := hbody
+  have hscaf : callScaffold retaddr entry 0 []
+      = [.push (UInt256.ofNat retaddr), .push (UInt256.ofNat entry)] ++ [.op .JUMP] ++ [.op .JUMPDEST] := by
+    simp [callScaffold]
+  refine ⟨(40000 + (40000 + 40000)) + (40000 + (bb + (40000 + 40000))),
+    fun preIs post σ s hcode hpre hf hm hpc hstk hgas => ?_⟩
+  -- decompose the scaffold: prologue (2 pushes + JUMP) then the landing JUMPDEST
+  set prologue : List Instr := [.push (UInt256.ofNat retaddr), .push (UInt256.ofNat entry), .op .JUMP]
+    with hprol
+  have hcodescaf : assembleBytes (callScaffold retaddr entry 0 [])
+      = assembleBytes prologue ++ (Instr.op .JUMPDEST).bytes := by
+    rw [hscaf, hprol]; simp only [assembleBytes_append, assembleBytes_cons, assembleBytes_nil,
+      List.append_nil, List.append_assoc]
+  -- 1) prologue: reach the callee entry (retaddr word on top)
+  have hcodeP : code = mkCode (assembleBytes preIs ++ assembleBytes prologue
+      ++ ((Instr.op .JUMPDEST).bytes ++ post)) := by
+    rw [hcode, hcodescaf]; simp only [List.append_assoc]
+  obtain ⟨s1, stP, hfP, hmP, hpcP, hstkP, hgP⟩ :=
+    callerReachEntry code preIs ((Instr.op .JUMPDEST).bytes ++ post) entry retaddr
+      (vimg V ++ σ) yst s hcodeP hf hm (by rw [hpc, hpre]) hstk hentryvalid hentrylt
+      (gstrip hgas)
+  -- 2a) callee entry JUMPDEST
+  have hcode1 : code = mkCode (assembleBytes calleePre ++ (Instr.op .JUMPDEST).bytes
+      ++ (assembleBytes bodyCode ++ (Instr.op .JUMP).bytes ++ assembleBytes calleePost)) := by
+    rw [hcallee]; congr 1
+    simp only [assembleBytes_append, assembleBytes_cons, assembleBytes_nil, List.append_nil,
+      List.append_assoc]
+  obtain ⟨s2, hstep2, hf2, hm2, hpc2, hstk2, hg2⟩ :=
+    jumpdestStep hcode1 hfP hmP (by rw [hpcP, hcentry]) (gstrip (genough hgas hgP))
+  -- 2b) body
+  have hcode2 : code = mkCode (assembleBytes (calleePre ++ [.op .JUMPDEST]) ++ assembleBytes bodyCode
+      ++ ((Instr.op .JUMP).bytes ++ assembleBytes calleePost)) := by
+    rw [hcallee]; congr 1
+    simp only [assembleBytes_append, assembleBytes_cons, assembleBytes_nil, List.append_nil,
+      List.append_assoc]
+  have hpre2 : (assembleBytes (calleePre ++ [.op .JUMPDEST])).length = entry + 1 := by
+    rw [assembleBytes_append, List.length_append, hcentry, assembleBytes_cons, assembleBytes_nil]
+    simp [Instr.length_bytes_op]
+  obtain ⟨s3, st3, hf3, hm3, hpc3, hstk3, hg3⟩ :=
+    Hbody (calleePre ++ [.op .JUMPDEST]) ((Instr.op .JUMP).bytes ++ assembleBytes calleePost)
+      (UInt256.ofNat retaddr :: vimg V ++ σ) s2 hcode2 hpre2 hf2 hm2 (by rw [hpc2, hcentry])
+      (by rw [hstk2, hstkP]; simp [vimg]) (gstrip (genough (genough hgas hgP) hg2))
+  -- 2c) return JUMP — lands on the scaffold JUMPDEST at retaddr
+  have hcode3 : code = mkCode ((assembleBytes (calleePre ++ [.op .JUMPDEST]) ++ assembleBytes bodyCode)
+      ++ (Instr.op .JUMP).bytes ++ assembleBytes calleePost) := by
+    rw [hcode2]; simp only [List.append_assoc]
+  have hpc3' : s3.pc = UInt256.ofNat
+      (assembleBytes (calleePre ++ [.op .JUMPDEST]) ++ assembleBytes bodyCode).length := by
+    rw [hpc3, List.length_append, hpre2]
+  -- retaddr < 2^256 and the landing JUMPDEST is valid
+  have hretlt : retaddr < 2 ^ 256 := by
+    have hsz := hf.codeSmall
+    rw [hcode] at hsz; simp only [size_mkCode] at hsz
+    rw [hscaf] at hsz
+    simp only [assembleBytes_append, assembleBytes_cons, assembleBytes_nil, List.append_nil,
+      List.length_append, Instr.length_bytes_push, Instr.length_bytes_op, hpre] at hsz
+    omega
+  have hlandvalid : Decode.isValidJumpDest code (UInt256.ofNat retaddr).toNat = true := by
+    rw [toNat_ofNat_of_lt hretlt]
+    have hb := isValidJumpDest_boundary (preIs ++ prologue) post
+    rw [show (assembleBytes (preIs ++ prologue)).length = retaddr from by
+        rw [assembleBytes_append, List.length_append, hpre, hprol]
+        simp [assembleBytes_cons, assembleBytes_nil, Instr.length_bytes_push,
+          Instr.length_bytes_op, hretaddr]] at hb
+    rw [show mkCode (assembleBytes (preIs ++ prologue) ++ (Instr.op .JUMPDEST).bytes ++ post)
+        = code from by
+        rw [hcode, hcodescaf, assembleBytes_append]; congr 1; simp [List.append_assoc]] at hb
+    exact hb
+  have hstk3' : s3.stack = UInt256.ofNat retaddr :: (vimg V ++ σ) := by rw [hstk3]; simp [vimg]
+  obtain ⟨s4, hstep4, hf4, hm4, hpc4, hstk4, hg4⟩ :=
+    jumpStep hcode3 hf3 hm3 hpc3' hstk3' hlandvalid
+      (gstrip (genough (genough (genough hgas hgP) hg2) hg3))
+  -- 3) landing JUMPDEST
+  have hplen : (assembleBytes (preIs ++ prologue)).length = pcc + 67 := by
+    rw [assembleBytes_append, List.length_append, hpre, hprol]
+    simp [assembleBytes_cons, assembleBytes_nil, Instr.length_bytes_push, Instr.length_bytes_op]
+  have hslen : (assembleBytes (callScaffold retaddr entry 0 [])).length = 68 := by
+    rw [length_assembleBytes_callScaffold]; simp [scaffoldLen, assembleBytes_nil]
+  have hcodeL : code = mkCode (assembleBytes (preIs ++ prologue) ++ (Instr.op .JUMPDEST).bytes ++ post) := by
+    rw [hcode, hcodescaf, assembleBytes_append]; congr 1; simp [List.append_assoc]
+  have hpc4' : s4.pc = UInt256.ofNat (assembleBytes (preIs ++ prologue)).length := by
+    rw [hpc4, hretaddr, hplen]
+  obtain ⟨s5, hstep5, hf5, hm5, hpc5, hstk5, hg5⟩ :=
+    jumpdestStep hcodeL hf4 hm4 hpc4' (genough (genough (genough (genough hgas hgP) hg2) hg3) hg4)
+  refine ⟨s5, stP.append (Steps.trans hstep2 (st3.append (Steps.trans hstep4 (.trans hstep5 (.refl _))))),
+    hf5, hm5, ?_, ?_, ?_⟩
+  · rw [hpc5, hplen, hslen]
+  · rw [hstk5, hstk4]
+  · exact gsub2 hgP (gsub2 hg2 (gsub2 hg3 (gsub2 hg4 hg5)))
 
 end YulEvmCompiler
