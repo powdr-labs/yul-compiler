@@ -126,7 +126,13 @@ lake build           # builds both semantics deps + the compiler + proofs
 ```
 
 `YulEvmCompiler/ExamplesAsm.lean` compiles a few sample programs at build time
-(`#guard`/`#eval`), including a `for` loop and a recursive function.
+(`#guard`/`#eval`), including a `for` loop, a recursive function, and an
+iterative Fibonacci over storage — each run **differentially** through both
+the Yul interpreter and evm-semantics' `stepF` on the compiled bytecode, with
+storage compared. It also references yul-semantics' own `FibExample.fibContract`
+(the calldata/memory Fibonacci contract proved correct upstream) to show it is
+correctly *rejected* at lowering: `calldataload`/`mstore` are outside the
+verified op set, so `compileA` returns `none` rather than emit unverified code.
 
 ## Roadmap
 

@@ -61,13 +61,14 @@ Design decisions baked into that statement:
 **yul-semantics** (`YulSemantics.*`):
 - `Ast.lean`: `Expr Op` (lit / var / builtin / call), `Stmt Op`, `Outcome`.
 - `Dialect.lean`: dialect interface; `BuiltinResult` (`ok rets st` / `halt st`).
-- `Dialect/EVM.lean` (rev `dc76dd5`, "Add more opcodes"): `Op` enum covering the
+- `Dialect/EVM.lean` (rev `f4e6187`, `main`): `Op` enum covering the
   full user-facing Yul EVM dialect — arithmetic/comparison/bitwise/`clz`,
   `keccak256` (via an **opaque** `keccakBytes`), `pop`, memory
   (`mload/mstore/mstore8/mcopy`), storage + transient storage, calldata/code/
   returndata reads and copies, environment readers (`address` … `blobbasefee`),
   world-state reads (`balance`/`extcodesize`/…, as abstract maps in `ExecEnv`),
-  `log0`–`log4`, halting ops; `gas`/calls/creates/`selfdestruct`/`msize` are
+  `log0`–`log4`, the object-data ops (`dataoffset`/`datasize`/`datacopy`),
+  halting ops; `gas`/calls/creates/`selfdestruct`/`msize` are
   enumerated but unmodeled (`stepOp = none`). `EvmState` is
   `memory : Nat → UInt8`, `storage/transient : U256 → U256`, `env : ExecEnv`,
   `returndata : List UInt8`, `logs : List LogEntry`,

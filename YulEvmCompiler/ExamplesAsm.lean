@@ -1,6 +1,7 @@
 import YulEvmCompiler.CompileAsm
 import YulSemantics.Syntax
 import YulSemantics.Interp
+import YulSemantics.FibExample
 import EvmSemantics.EVM.StepF
 
 /-!
@@ -113,6 +114,23 @@ def breakNested : Block Op := yul% {
   sstore(0, r)
 }
 
+/-- The `n`-th Fibonacci number into storage slot 0, iteratively — the same
+loop as yul-semantics' `FibExample.fibContract`, but reading `n` and writing
+the result through **storage** (`sload`/`sstore`) instead of calldata/memory,
+so it lands inside the verified op set. Here `n = 10`, so slot 0 ends at
+`fib 10 = 55`. -/
+def fibStorage : Block Op := yul% {
+  let n := 10
+  let a := 0
+  let b := 1
+  for { let i := 0 } lt(i, n) { i := add(i, 1) } {
+    let t := add(a, b)
+    a := b
+    b := t
+  }
+  sstore(0, a)
+}
+
 #guard (compileProgramAsm sumLoop).isSome
 #guard (compileProgramAsm breakContinue).isSome
 #guard (compileProgramAsm funCall).isSome
@@ -120,8 +138,27 @@ def breakNested : Block Op := yul% {
 #guard (compileProgramAsm leaveEarly).isSome
 #guard (compileProgramAsm nested).isSome
 #guard (compileProgramAsm breakNested).isSome
+#guard (compileProgramAsm fibStorage).isSome
 #guard (compileA sumLoop).isSome
 #guard (compileA factorial).isSome
+#guard (compileA fibStorage).isSome
+
+/-! ### The upstream Fibonacci contract
+
+`YulSemantics.FibExample.fibContract` (the `n`-th Fibonacci contract proved
+correct in yul-semantics) reads `n` from **calldata** (`calldataload`) and
+returns the result from **memory** (`mstore` + `return`). Both `calldataload`
+and `mstore` are *outside* the currently verified op set (`opTable`): memory
+writes are blocked upstream by `MachineState.writeBytes` being a `partial
+def`, and calldata reads simply have no correctness lemma yet.
+
+The labeled-assembly stage is purely *syntactic* — `opTable` is consulted only
+at **lowering** — so `compileProgramAsm` happily produces `Asm` for it, but
+`compileA` (which lowers to bytecode) correctly **rejects** it rather than
+emitting unverified code. The identical loop over storage (`fibStorage` above)
+lowers all the way to bytecode. -/
+#guard (compileProgramAsm FibExample.fibContract).isSome
+#guard (compileA FibExample.fibContract).isNone
 
 /-! ### Differential execution: Yul interpreter vs. compiled bytecode -/
 
@@ -174,6 +211,7 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn leaveEarly [0, 1]
 #guard agreeOn nested [0]
 #guard agreeOn breakNested [0]
+#guard agreeOn fibStorage [0]
 
 -- The Yul interpreter's view of the expected values (documentation).
 #guard (runYul 100000 sumLoop).map (fun st => (st.storage 0).toNat) = some 15
@@ -184,6 +222,7 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
     (fun st => ((st.storage 0).toNat, (st.storage 1).toNat)) = some (1, 2)
 #guard (runYul 100000 nested).map (fun st => (st.storage 0).toNat) = some 30
 #guard (runYul 100000 breakNested).map (fun st => (st.storage 0).toNat) = some 9
+#guard (runYul 100000 fibStorage).map (fun st => (st.storage 0).toNat) = some 55
 
 #eval (compileA factorial).map hex
 
