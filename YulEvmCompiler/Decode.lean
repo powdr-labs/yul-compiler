@@ -289,7 +289,9 @@ private theorem opcodeOf_opByte_not_push (o : Operation) :
   cases o with
   | StopArith op => cases op <;> rfl
   | CompBit op => cases op <;> rfl
-  | Keccak op => cases op <;> rfl
+  | Keccak op =>
+    cases op
+    rfl
   | Env op => cases op <;> rfl
   | Block op => cases op <;> rfl
   | StackMemFlow op => cases op <;> rfl
@@ -349,7 +351,7 @@ private theorem walk_through :
       rw [dif_pos hsz]
       have hb : (mkCode (pre ++ assembleBytes ([] : List Instr)
           ++ 0x5b :: rest))[pre.length]'hsz = 0x5b := by
-        have := getElem_boundary pre rest 0x5b [] (by simpa using hsz)
+        have := getElem_boundary pre rest 0x5b [] (by simp)
         simpa using this
       simp only [decide_eq_true_eq]
       simpa using hb

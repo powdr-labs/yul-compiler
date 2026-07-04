@@ -19,11 +19,11 @@ control-flow and calling-convention reasoning is byte- and gas-free, while all
 gas/decode/layout arithmetic is a single generic per-instruction simulation:
 
 ```
-Yul --compileStmtsA--> List Asm --lowerProg--> List Instr --assemble--> ByteArray
+Yul --compileStmts--> List Asm --lowerProg--> List Instr --assemble--> ByteArray
         (phase A proof)            (phase B proof)          (Decode lemmas)
 ```
 
-`compileA` is the full pipeline; `compileProgramAsm` produces the labeled
+`compile` is the full pipeline; `compileProgram` produces the labeled
 assembly (and runs a decidable `wfCheck` on it, which hands the proof unique
 and defined jump labels with zero freshness bookkeeping).
 
@@ -53,7 +53,7 @@ semantics' `VEnv` exactly. Reads compile to `DUP(off+idx+1)`, assignments to
 `SWAP(idx+1); POP`, `let x := e` is free (the value stays put), and block
 exit pops the block's locals. Because EIP-8024 (`DUPN`/`SWAPN`) is not yet
 activated on any fork modeled by evm-semantics, accesses deeper than
-`DUP16`/`SWAP16` are **rejected at compile time** (`compileA = none`);
+`DUP16`/`SWAP16` are **rejected at compile time** (`compile = none`);
 lifting that restriction is a codegen-only change once the fork table
 activates EIP-8024.
 
@@ -73,15 +73,15 @@ The verified built-in set (the domain of `opTable` in
 | memory     | `mload` |
 | halting    | `stop return revert invalid` |
 
-Everything else is rejected (`compileA = none`) — see `PLAN.md` for exactly
+Everything else is rejected (`compile = none`) — see `PLAN.md` for exactly
 why each remaining op is deferred (four are plain proof debt; the rest are
 blocked on upstream issues found during this work).
 
 ## The theorem
 
-`YulEvmCompiler.compileA_correct` (in `YulEvmCompiler/CorrectnessAsm.lean`):
+`YulEvmCompiler.compile_correct` (in `YulEvmCompiler/CorrectnessAsm.lean`):
 
-> If `compileA prog = some is` and the Yul semantics runs `prog` from
+> If `compile prog = some is` and the Yul semantics runs `prog` from
 > machine state `st₀` to `st'` with outcome `o`
 > (`YulSemantics.Run yul prog st₀ V' st' o`), then there is a gas bound `b`
 > such that from **every** initial EVM state that matches `st₀`
@@ -92,7 +92,7 @@ blocked on upstream issues found during this work).
 > recorded in `st'.halted` (`stop`/`return`+payload/`revert`+payload/
 > `invalid`) for `o = .halt`.
 
-`compileA_correct_eval` restates the conclusion through evm-semantics'
+`compile_correct_eval` restates the conclusion through evm-semantics'
 result-level big-step judgment: `Eval s₀ .success`, resp.
 `Eval s₀ (resultOf hk)`.
 
@@ -132,7 +132,7 @@ the Yul interpreter and evm-semantics' `stepF` on the compiled bytecode, with
 storage compared. It also references yul-semantics' own `FibExample.fibContract`
 (the calldata/memory Fibonacci contract proved correct upstream) to show it is
 correctly *rejected* at lowering: `calldataload`/`mstore` are outside the
-verified op set, so `compileA` returns `none` rather than emit unverified code.
+verified op set, so `compile` returns `none` rather than emit unverified code.
 
 ## Roadmap
 

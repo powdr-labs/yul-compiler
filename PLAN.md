@@ -232,8 +232,8 @@ Deliverables:
    - storage: `sload sstore tload tstore`,
    - memory reads: `mload`,
    - halting: `stop return revert invalid`.
-   Ops outside the set compile to `none`; the table in `Compile.lean` is the single
-   source of truth. **Remaining proof debt** (each is one `conv_*` lemma in
+   Ops outside the set compile to `none`; the `opTable` in `OpTable.lean` is the
+   single source of truth. **Remaining proof debt** (each is one `conv_*` lemma in
    `Value.lean` plus one `opTable` row + one `opStep` case): `sdiv`, `smod`,
    `signextend`, `sar` — the two's-complement agreements between `BitVec` ops and
    evm-semantics' `Int.tdiv`/`tmod`-based definitions. Mechanical follow-ups with
@@ -256,7 +256,7 @@ statement mentions only `YulSemantics.Run`, `compile`, `assemble`, and
 ## Milestones 3–4 — loops and functions via a labeled assembly layer
 
 Status: **complete** (phase A + phase B sorry-free; the end-to-end theorems
-`compileA_correct`/`compileA_correct_eval` are proved in
+`compile_correct`/`compile_correct_eval` are proved in
 `YulEvmCompiler/CorrectnessAsm.lean`, with axiom sets pinned in `Checks.lean`).
 This section is the working design document; keep it updated as decisions
 change.
@@ -455,17 +455,17 @@ and **`hoist_ok`**.
    `funDef`'s label through `find?`; `find?_suffix_nodup` (Nodup +
    suffix ⇒ `find?` hits the entry) makes the compiled `lookupF` label and
    the hoisted entry coincide, so no counter arithmetic is needed. Each
-   `funDef`'s inline `FunOK` comes from `stmtA_funDef_inv` +
+   `funDef`'s inline `FunOK` comes from `stmt_funDef_inv` +
    fragment-infix reasoning.
-2. `callOk`: `exprA_call_inv` → `.pushLabel`/`push_zeros`/args-IH prologue →
+2. `callOk`: `expr_call_inv` → `.pushLabel`/`push_zeros`/args-IH prologue →
    `jump info.entry` into the body (`FunOK.placed` + `findLabel_boundary`) →
    body-IH; normal and leave outcomes converge at the exit label
    (`block_len_le` makes leave's `trim |Γf|` a no-op), then `asim_epilogue`
    returns to the call site with `wimg_rets`-agreeing values.
 3. `callHalt`: same prologue, body-IH halt arm.
 
-After `sim`: the top-level theorems `compileA_correct` /
-`compileA_correct_eval` (`YulEvmCompiler/CorrectnessAsm.lean`) are **done**.
+After `sim`: the top-level theorems `compile_correct` /
+`compile_correct_eval` (`YulEvmCompiler/CorrectnessAsm.lean`) are **done**.
 They invert the pipeline (`compileProgramAsm_inv`; `wfCheck` ⇒ `Nodup`),
 take the `Run` = block rule to a `.stmts prog` derivation, establish the
 initial `FEnvOK` via `hoist_ok`, run phase A `sim`, compose with phase B's
@@ -516,13 +516,13 @@ Phase A definitions (`SimAsm.lean`), all under section hypotheses
   compile time — needed so the epilogue's stack region agrees with
   `VEnv.get`-based return values), and `placed`: the fragment
   `.label info.entry :: bodyAsm ++ .label lexit :: pops ++ swap? ++
-  [.dynJump]` is an **infix** of `prog`, with the body's `compileBlockA
+  [.dynJump]` is an **infix** of `prog`, with the body's `compileBlock
   Φv (params ++ rets) (some ⟨lexit, |params|+|rets|⟩) none` equation.
 * **`FEnvOK prog : FunEnv yul → FMap → Prop`** — inductive, scopewise
   `List.Forall₂` with `Φv := scopeI :: restI` for every entry (matching
   `lookupFun`'s returned `cenv`). Key lemmas: lookup consistency
   (`lookupFun`/`lookupF` results correspond) and **`hoist_ok`** (at block
-  entry, `hoistInfos` + the block's `compileStmtsA` success + placement of
+  entry, `hoistInfos` + the block's `compileStmts` success + placement of
   the block's asm in `prog` ⇒ `FEnvOK (hoist body :: funs) (scope :: Φ)`)
   — proved by walking the block's statements, collecting each `funDef`'s
   inline fragment.

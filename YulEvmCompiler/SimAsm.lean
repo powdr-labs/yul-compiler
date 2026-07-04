@@ -729,7 +729,7 @@ def FunOK (prog : List Asm) (decl : YulSemantics.FDecl yulD)
     ∧ decl.rets.length ≤ 1
     ∧ (decl.params ++ decl.rets).Nodup
     ∧ ∃ (lexit n₀ n₁ : Nat) (bodyAsm : List Asm),
-        compileBlockA Φv (decl.params ++ decl.rets)
+        compileBlock Φv (decl.params ++ decl.rets)
           (some ⟨lexit, (decl.params ++ decl.rets).length⟩) none n₀ decl.body
           = some (bodyAsm, n₁)
         ∧ (.label info.entry :: bodyAsm
@@ -1042,58 +1042,58 @@ def Motive (prog : List Asm) (funs : YulSemantics.FunEnv yulD)
     YulSemantics.Code Op → YulSemantics.Res yulD → Prop
   | .expr e, .eres (.vals vs yst') =>
       ∀ Φ off n asm n',
-        compileExprA Φ (names V) off n e = some (asm, n') →
+        compileExpr Φ (names V) off n e = some (asm, n') →
         FEnvOK prog funs Φ → ASimE prog yst V off asm vs yst'
   | .expr e, .eres (.halt yst') =>
       ∀ Φ off n asm n',
-        compileExprA Φ (names V) off n e = some (asm, n') →
+        compileExpr Φ (names V) off n e = some (asm, n') →
         FEnvOK prog funs Φ → ASimEHalt prog yst V off asm yst'
   | .args es, .eres (.vals vs yst') =>
       ∀ Φ off n asm n',
-        compileArgsA Φ (names V) off n es = some (asm, n') →
+        compileArgs Φ (names V) off n es = some (asm, n') →
         vs.length = es.length
           ∧ (FEnvOK prog funs Φ → ASimE prog yst V off asm vs yst')
   | .args es, .eres (.halt yst') =>
       ∀ Φ off n asm n',
-        compileArgsA Φ (names V) off n es = some (asm, n') →
+        compileArgs Φ (names V) off n es = some (asm, n') →
         FEnvOK prog funs Φ → ASimEHalt prog yst V off asm yst'
   | .stmt s, .sres V' yst' o =>
       ∀ Φ F L n asm Γ' n',
         FDepthOK F V → LDepthOK L V →
-        compileStmtA Φ (names V) F L n s = some (asm, Γ', n') →
+        compileStmt Φ (names V) F L n s = some (asm, Γ', n') →
         SOut prog funs Φ yst V asm V' yst' o F L Γ'
   | .stmts ss, .sres V' yst' o =>
       ∀ Φ F L n asm Γ' n',
         FDepthOK F V → LDepthOK L V →
-        compileStmtsA Φ (names V) F L n ss = some (asm, Γ', n') →
+        compileStmts Φ (names V) F L n ss = some (asm, Γ', n') →
         SOut prog funs Φ yst V asm V' yst' o F L Γ'
   | .loop c post body, .sres V' yst' o =>
       ∀ Φ F lcond lpost lexit cCode bodyAsm postAsm n₁ n₂ n₃ n₄,
         FDepthOK F V →
-        compileExprA Φ (names V) 0 n₁ c = some (cCode, n₂) →
-        compileBlockA Φ (names V) F (some ⟨lexit, lpost, V.length⟩) n₂ body
+        compileExpr Φ (names V) 0 n₁ c = some (cCode, n₂) →
+        compileBlock Φ (names V) F (some ⟨lexit, lpost, V.length⟩) n₂ body
           = some (bodyAsm, n₃) →
-        compileBlockA Φ (names V) F none n₃ post = some (postAsm, n₄) →
+        compileBlock Φ (names V) F none n₃ post = some (postAsm, n₄) →
         LOut prog funs Φ yst V V' yst' o F lcond lpost lexit
           cCode bodyAsm postAsm
   | _, _ => True
 
 /-! ### Compile-equation inversions -/
 
-private theorem exprA_lit_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
+private theorem expr_lit_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
     {l : YulSemantics.Literal} {asm : List Asm} {n' : Nat}
-    (h : compileExprA Φ Γ off n (.lit l) = some (asm, n')) :
+    (h : compileExpr Φ Γ off n (.lit l) = some (asm, n')) :
     asm = [.push (litValue l)] ∧ n' = n := by
-  simp only [compileExprA, Option.some.injEq, Prod.mk.injEq] at h
+  simp only [compileExpr, Option.some.injEq, Prod.mk.injEq] at h
   exact ⟨h.1.symm, h.2.symm⟩
 
-private theorem exprA_var_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
+private theorem expr_var_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
     {x : Ident} {asm : List Asm} {n' : Nat}
-    (h : compileExprA Φ Γ off n (.var x) = some (asm, n')) :
+    (h : compileExpr Φ Γ off n (.var x) = some (asm, n')) :
     ∃ (idx : Nat) (h16 : off + idx < 16),
       Γ.findIdx? (fun y => y = x) = some idx
       ∧ asm = [.dup ⟨off + idx, h16⟩] ∧ n' = n := by
-  simp only [compileExprA, Option.bind_eq_bind] at h
+  simp only [compileExpr, Option.bind_eq_bind] at h
   obtain ⟨idx, hidx, h2⟩ := Option.bind_eq_some_iff.mp h
   by_cases h16 : off + idx < 16
   · rw [dif_pos h16] at h2
@@ -1102,94 +1102,94 @@ private theorem exprA_var_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
   · rw [dif_neg h16] at h2
     exact absurd h2 (by simp)
 
-private theorem exprA_builtin_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
+private theorem expr_builtin_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
     {op : Op} {args : List (Expr Op)} {asm : List Asm} {n' : Nat}
-    (h : compileExprA Φ Γ off n (.builtin op args) = some (asm, n')) :
-    ∃ argCode, compileArgsA Φ Γ off n args = some (argCode, n')
+    (h : compileExpr Φ Γ off n (.builtin op args) = some (asm, n')) :
+    ∃ argCode, compileArgs Φ Γ off n args = some (argCode, n')
       ∧ asm = argCode ++ [.op op] := by
-  simp only [compileExprA, Option.bind_eq_bind] at h
+  simp only [compileExpr, Option.bind_eq_bind] at h
   obtain ⟨⟨argCode, n1⟩, hargs, h2⟩ := Option.bind_eq_some_iff.mp h
   simp only [Option.some.injEq, Prod.mk.injEq] at h2
   exact ⟨argCode, h2.2 ▸ hargs, h2.1.symm⟩
 
-private theorem exprA_call_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
+private theorem expr_call_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
     {f : Ident} {args : List (Expr Op)} {asm : List Asm} {n' : Nat}
-    (h : compileExprA Φ Γ off n (.call f args) = some (asm, n')) :
+    (h : compileExpr Φ Γ off n (.call f args) = some (asm, n')) :
     ∃ (info : FunInfo) (Φv : FMap) (argCode : List Asm),
       lookupF Φ f = some (info, Φv)
-      ∧ compileArgsA Φ Γ (off + 1 + info.rets) (n + 1) args
+      ∧ compileArgs Φ Γ (off + 1 + info.rets) (n + 1) args
           = some (argCode, n')
       ∧ asm = .pushLabel n :: (List.replicate info.rets (.push 0)
           ++ argCode ++ [.jump info.entry, .label n]) := by
-  simp only [compileExprA, Option.bind_eq_bind] at h
+  simp only [compileExpr, Option.bind_eq_bind] at h
   obtain ⟨⟨info, Φv⟩, hlk, h2⟩ := Option.bind_eq_some_iff.mp h
   obtain ⟨⟨argCode, n1⟩, hargs, h3⟩ := Option.bind_eq_some_iff.mp h2
   simp only [Option.some.injEq, Prod.mk.injEq] at h3
   exact ⟨info, Φv, argCode, hlk, h3.2 ▸ hargs, h3.1.symm⟩
 
-private theorem argsA_nil_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
+private theorem args_nil_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
     {asm : List Asm} {n' : Nat}
-    (h : compileArgsA Φ Γ off n [] = some (asm, n')) :
+    (h : compileArgs Φ Γ off n [] = some (asm, n')) :
     asm = [] ∧ n' = n := by
-  simp only [compileArgsA, Option.some.injEq, Prod.mk.injEq] at h
+  simp only [compileArgs, Option.some.injEq, Prod.mk.injEq] at h
   exact ⟨h.1.symm, h.2.symm⟩
 
-private theorem argsA_cons_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
+private theorem args_cons_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
     {e : Expr Op} {rest : List (Expr Op)} {asm : List Asm} {n' : Nat}
-    (h : compileArgsA Φ Γ off n (e :: rest) = some (asm, n')) :
+    (h : compileArgs Φ Γ off n (e :: rest) = some (asm, n')) :
     ∃ (restCode : List Asm) (n1 : Nat) (eCode : List Asm),
-      compileArgsA Φ Γ off n rest = some (restCode, n1)
-      ∧ compileExprA Φ Γ (off + rest.length) n1 e = some (eCode, n')
+      compileArgs Φ Γ off n rest = some (restCode, n1)
+      ∧ compileExpr Φ Γ (off + rest.length) n1 e = some (eCode, n')
       ∧ asm = restCode ++ eCode := by
-  simp only [compileArgsA, Option.bind_eq_bind] at h
+  simp only [compileArgs, Option.bind_eq_bind] at h
   obtain ⟨⟨restCode, n1⟩, hrest, h2⟩ := Option.bind_eq_some_iff.mp h
   obtain ⟨⟨eCode, n2⟩, he, h3⟩ := Option.bind_eq_some_iff.mp h2
   simp only [Option.some.injEq, Prod.mk.injEq] at h3
   exact ⟨restCode, n1, eCode, hrest, h3.2 ▸ he, h3.1.symm⟩
 
-private theorem stmtA_exprStmt_inv {Φ : FMap} {Γ : List Ident}
+private theorem stmt_exprStmt_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat} {e : Expr Op}
     {asm : List Asm} {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtA Φ Γ F L n (.exprStmt e) = some (asm, Γ', n')) :
-    compileExprA Φ Γ 0 n e = some (asm, n') ∧ Γ' = Γ := by
-  simp only [compileStmtA, Option.bind_eq_bind] at h
+    (h : compileStmt Φ Γ F L n (.exprStmt e) = some (asm, Γ', n')) :
+    compileExpr Φ Γ 0 n e = some (asm, n') ∧ Γ' = Γ := by
+  simp only [compileStmt, Option.bind_eq_bind] at h
   obtain ⟨⟨eCode, n1⟩, he, h2⟩ := Option.bind_eq_some_iff.mp h
   simp only [Option.some.injEq, Prod.mk.injEq] at h2
   obtain ⟨h3, h4, h5⟩ := h2
   exact ⟨h3 ▸ h5 ▸ he, h4.symm⟩
 
-private theorem stmtA_letNone_inv {Φ : FMap} {Γ : List Ident}
+private theorem stmt_letNone_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat} {xs : List Ident}
     {asm : List Asm} {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtA Φ Γ F L n (.letDecl xs none) = some (asm, Γ', n')) :
+    (h : compileStmt Φ Γ F L n (.letDecl xs none) = some (asm, Γ', n')) :
     asm = List.replicate xs.length (.push 0) ∧ Γ' = xs ++ Γ ∧ n' = n := by
-  simp only [compileStmtA, Option.some.injEq, Prod.mk.injEq] at h
+  simp only [compileStmt, Option.some.injEq, Prod.mk.injEq] at h
   exact ⟨h.1.symm, h.2.1.symm, h.2.2.symm⟩
 
-private theorem stmtA_letSome_inv {Φ : FMap} {Γ : List Ident}
+private theorem stmt_letSome_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat} {xs : List Ident}
     {e : Expr Op} {asm : List Asm} {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtA Φ Γ F L n (.letDecl xs (some e)) = some (asm, Γ', n')) :
-    ∃ x, xs = [x] ∧ compileExprA Φ Γ 0 n e = some (asm, n')
+    (h : compileStmt Φ Γ F L n (.letDecl xs (some e)) = some (asm, Γ', n')) :
+    ∃ x, xs = [x] ∧ compileExpr Φ Γ 0 n e = some (asm, n')
       ∧ Γ' = x :: Γ := by
   rcases xs with _ | ⟨x, _ | ⟨y, xs⟩⟩ <;>
-    simp only [compileStmtA, Option.bind_eq_bind] at h
+    simp only [compileStmt, Option.bind_eq_bind] at h
   case nil => exact absurd h (by simp)
   case cons.cons => exact absurd h (by simp)
   obtain ⟨⟨eCode, n1⟩, he, h2⟩ := Option.bind_eq_some_iff.mp h
   simp only [Option.some.injEq, Prod.mk.injEq] at h2
   exact ⟨x, rfl, h2.1 ▸ h2.2.2 ▸ he, h2.2.1.symm⟩
 
-private theorem stmtA_assign_inv {Φ : FMap} {Γ : List Ident}
+private theorem stmt_assign_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat} {xs : List Ident}
     {e : Expr Op} {asm : List Asm} {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtA Φ Γ F L n (.assign xs e) = some (asm, Γ', n')) :
+    (h : compileStmt Φ Γ F L n (.assign xs e) = some (asm, Γ', n')) :
     ∃ (x : Ident) (eCode : List Asm) (idx : Nat) (h16 : idx < 16),
-      xs = [x] ∧ compileExprA Φ Γ 0 n e = some (eCode, n')
+      xs = [x] ∧ compileExpr Φ Γ 0 n e = some (eCode, n')
       ∧ Γ.findIdx? (fun y => y = x) = some idx
       ∧ asm = eCode ++ [.swap ⟨idx, h16⟩, .pop] ∧ Γ' = Γ := by
   rcases xs with _ | ⟨x, _ | ⟨y, xs⟩⟩ <;>
-    simp only [compileStmtA, Option.bind_eq_bind] at h
+    simp only [compileStmt, Option.bind_eq_bind] at h
   case nil => exact absurd h (by simp)
   case cons.cons => exact absurd h (by simp)
   obtain ⟨⟨eCode, n1⟩, he, h2⟩ := Option.bind_eq_some_iff.mp h
@@ -1201,59 +1201,59 @@ private theorem stmtA_assign_inv {Φ : FMap} {Γ : List Ident}
   · rw [dif_neg h16] at h3
     exact absurd h3 (by simp)
 
-private theorem stmtA_break_inv {Φ : FMap} {Γ : List Ident}
+private theorem stmt_break_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat}
     {asm : List Asm} {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtA Φ Γ F L n .break = some (asm, Γ', n')) :
+    (h : compileStmt Φ Γ F L n .break = some (asm, Γ', n')) :
     ∃ lc, L = some lc
       ∧ asm = List.replicate (Γ.length - lc.depth) .pop ++ [.jump lc.brk]
       ∧ Γ' = Γ ∧ n' = n := by
-  simp only [compileStmtA, Option.bind_eq_bind] at h
+  simp only [compileStmt, Option.bind_eq_bind] at h
   obtain ⟨lc, hlc, h2⟩ := Option.bind_eq_some_iff.mp h
   simp only [Option.some.injEq, Prod.mk.injEq] at h2
   exact ⟨lc, hlc, h2.1.symm, h2.2.1.symm, h2.2.2.symm⟩
 
-private theorem stmtA_continue_inv {Φ : FMap} {Γ : List Ident}
+private theorem stmt_continue_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat}
     {asm : List Asm} {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtA Φ Γ F L n .continue = some (asm, Γ', n')) :
+    (h : compileStmt Φ Γ F L n .continue = some (asm, Γ', n')) :
     ∃ lc, L = some lc
       ∧ asm = List.replicate (Γ.length - lc.depth) .pop ++ [.jump lc.cont]
       ∧ Γ' = Γ ∧ n' = n := by
-  simp only [compileStmtA, Option.bind_eq_bind] at h
+  simp only [compileStmt, Option.bind_eq_bind] at h
   obtain ⟨lc, hlc, h2⟩ := Option.bind_eq_some_iff.mp h
   simp only [Option.some.injEq, Prod.mk.injEq] at h2
   exact ⟨lc, hlc, h2.1.symm, h2.2.1.symm, h2.2.2.symm⟩
 
-private theorem stmtA_leave_inv {Φ : FMap} {Γ : List Ident}
+private theorem stmt_leave_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat}
     {asm : List Asm} {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtA Φ Γ F L n .leave = some (asm, Γ', n')) :
+    (h : compileStmt Φ Γ F L n .leave = some (asm, Γ', n')) :
     ∃ fc, F = some fc
       ∧ asm = List.replicate (Γ.length - fc.depth) .pop ++ [.jump fc.exit]
       ∧ Γ' = Γ ∧ n' = n := by
-  simp only [compileStmtA, Option.bind_eq_bind] at h
+  simp only [compileStmt, Option.bind_eq_bind] at h
   obtain ⟨fc, hfc, h2⟩ := Option.bind_eq_some_iff.mp h
   simp only [Option.some.injEq, Prod.mk.injEq] at h2
   exact ⟨fc, hfc, h2.1.symm, h2.2.1.symm, h2.2.2.symm⟩
 
-private theorem stmtsA_nil_inv {Φ : FMap} {Γ : List Ident}
+private theorem stmts_nil_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat}
     {asm : List Asm} {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtsA Φ Γ F L n [] = some (asm, Γ', n')) :
+    (h : compileStmts Φ Γ F L n [] = some (asm, Γ', n')) :
     asm = [] ∧ Γ' = Γ ∧ n' = n := by
-  simp only [compileStmtsA, Option.some.injEq, Prod.mk.injEq] at h
+  simp only [compileStmts, Option.some.injEq, Prod.mk.injEq] at h
   exact ⟨h.1.symm, h.2.1.symm, h.2.2.symm⟩
 
-private theorem stmtsA_cons_inv {Φ : FMap} {Γ : List Ident}
+private theorem stmts_cons_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat} {s : Stmt Op}
     {rest : List (Stmt Op)} {asm : List Asm} {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtsA Φ Γ F L n (s :: rest) = some (asm, Γ', n')) :
+    (h : compileStmts Φ Γ F L n (s :: rest) = some (asm, Γ', n')) :
     ∃ (is1 : List Asm) (Γ1 : List Ident) (n1 : Nat) (is2 : List Asm),
-      compileStmtA Φ Γ F L n s = some (is1, Γ1, n1)
-      ∧ compileStmtsA Φ Γ1 F L n1 rest = some (is2, Γ', n')
+      compileStmt Φ Γ F L n s = some (is1, Γ1, n1)
+      ∧ compileStmts Φ Γ1 F L n1 rest = some (is2, Γ', n')
       ∧ asm = is1 ++ is2 := by
-  simp only [compileStmtsA, Option.bind_eq_bind] at h
+  simp only [compileStmts, Option.bind_eq_bind] at h
   obtain ⟨⟨is1, Γ1, n1⟩, h1, h2⟩ := Option.bind_eq_some_iff.mp h
   obtain ⟨⟨is2, Γ2, n2⟩, h3, h4⟩ := Option.bind_eq_some_iff.mp h2
   simp only [Option.some.injEq, Prod.mk.injEq] at h4
@@ -1281,18 +1281,18 @@ theorem names_bindZeros (xs : List Ident) :
     show x :: names (YulSemantics.bindZeros yulD xs) = x :: xs
     rw [ih]
 
-private theorem blockA_inv {Φ : FMap} {Γ : List Ident} {F : Option FunCtx}
+private theorem block_inv {Φ : FMap} {Γ : List Ident} {F : Option FunCtx}
     {L : Option LoopCtx} {n : Nat} {body : List (Stmt Op)}
     {asm : List Asm} {n' : Nat}
-    (h : compileBlockA Φ Γ F L n body = some (asm, n')) :
+    (h : compileBlock Φ Γ F L n body = some (asm, n')) :
     ∃ (scope : FScopeInfo) (n1 : Nat) (stmtsAsm : List Asm)
       (Γb : List Ident) (n2 : Nat),
       hoistInfos n body = (scope, n1)
       ∧ (scope.map Prod.fst).Nodup
-      ∧ compileStmtsA (scope :: Φ) Γ F L n1 body = some (stmtsAsm, Γb, n2)
+      ∧ compileStmts (scope :: Φ) Γ F L n1 body = some (stmtsAsm, Γb, n2)
       ∧ asm = stmtsAsm ++ List.replicate (Γb.length - Γ.length) .pop
       ∧ n' = n2 := by
-  rw [compileBlockA] at h
+  rw [compileBlock] at h
   rcases hh : hoistInfos n body with ⟨scope, n1⟩
   rw [hh] at h
   dsimp only at h
@@ -1304,39 +1304,39 @@ private theorem blockA_inv {Φ : FMap} {Γ : List Ident} {F : Option FunCtx}
   · rw [if_neg hnd] at h
     exact absurd h (by simp)
 
-private theorem stmtA_block_inv {Φ : FMap} {Γ : List Ident}
+private theorem stmt_block_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat}
     {body : List (Stmt Op)} {asm : List Asm} {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtA Φ Γ F L n (.block body) = some (asm, Γ', n')) :
-    compileBlockA Φ Γ F L n body = some (asm, n') ∧ Γ' = Γ := by
-  simp only [compileStmtA, Option.bind_eq_bind] at h
+    (h : compileStmt Φ Γ F L n (.block body) = some (asm, Γ', n')) :
+    compileBlock Φ Γ F L n body = some (asm, n') ∧ Γ' = Γ := by
+  simp only [compileStmt, Option.bind_eq_bind] at h
   obtain ⟨⟨is, n1⟩, hb, h2⟩ := Option.bind_eq_some_iff.mp h
   simp only [Option.some.injEq, Prod.mk.injEq] at h2
   exact ⟨h2.1 ▸ h2.2.2 ▸ hb, h2.2.1.symm⟩
 
-private theorem stmtA_cond_inv {Φ : FMap} {Γ : List Ident}
+private theorem stmt_cond_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat} {ce : Expr Op}
     {body : List (Stmt Op)} {asm : List Asm} {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtA Φ Γ F L n (.cond ce body) = some (asm, Γ', n')) :
+    (h : compileStmt Φ Γ F L n (.cond ce body) = some (asm, Γ', n')) :
     ∃ (cCode : List Asm) (n1 : Nat) (bodyCode : List Asm),
-      compileExprA Φ Γ 0 (n + 1) ce = some (cCode, n1)
-      ∧ compileBlockA Φ Γ F L n1 body = some (bodyCode, n')
+      compileExpr Φ Γ 0 (n + 1) ce = some (cCode, n1)
+      ∧ compileBlock Φ Γ F L n1 body = some (bodyCode, n')
       ∧ asm = cCode ++ [.op .iszero, .jumpi n] ++ bodyCode ++ [.label n]
       ∧ Γ' = Γ := by
-  simp only [compileStmtA, Option.bind_eq_bind] at h
+  simp only [compileStmt, Option.bind_eq_bind] at h
   obtain ⟨⟨cCode, n1⟩, hce, h2⟩ := Option.bind_eq_some_iff.mp h
   obtain ⟨⟨bodyCode, n2⟩, hb, h3⟩ := Option.bind_eq_some_iff.mp h2
   simp only [Option.some.injEq, Prod.mk.injEq] at h3
   exact ⟨cCode, n1, bodyCode, hce, h3.2.2 ▸ hb, h3.1.symm, h3.2.1.symm⟩
 
-/-- Turn a `compileBlockA` equation into the `compileStmtA (.block …)`
+/-- Turn a `compileBlock` equation into the `compileStmt (.block …)`
 form the statement motive consumes. -/
-private theorem stmtA_of_blockA {Φ : FMap} {Γ : List Ident}
+private theorem stmt_of_block {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat}
     {body : List (Stmt Op)} {asm : List Asm} {n' : Nat}
-    (h : compileBlockA Φ Γ F L n body = some (asm, n')) :
-    compileStmtA Φ Γ F L n (.block body) = some (asm, Γ, n') := by
-  simp only [compileStmtA, h, Option.bind_eq_bind, Option.bind_some]
+    (h : compileBlock Φ Γ F L n body = some (asm, n')) :
+    compileStmt Φ Γ F L n (.block body) = some (asm, Γ, n') := by
+  simp only [compileStmt, h, Option.bind_eq_bind, Option.bind_some]
 
 /-- The dialect zero, as the truthiness test sees it. -/
 private theorem ne_zero_of_ne_dzero {cv : U256} (h : cv ≠ yulD.zero) :
@@ -1407,7 +1407,7 @@ private theorem funOK_entry {prog : List Asm}
     {decl : YulSemantics.FDecl yulD} {info : FunInfo} {Φv : FMap}
     (hok : FunOK prog decl info Φv) :
     ∃ (lexit n₀ n₁ : Nat) (bodyAsm : List Asm) (s t : List Asm),
-      compileBlockA Φv (decl.params ++ decl.rets)
+      compileBlock Φv (decl.params ++ decl.rets)
         (some ⟨lexit, (decl.params ++ decl.rets).length⟩) none n₀ decl.body
         = some (bodyAsm, n₁)
       ∧ prog = s ++ .label info.entry
@@ -1428,20 +1428,20 @@ private theorem funOK_entry {prog : List Asm}
     rw [hsplit]
     exact findLabel_boundary (by rw [← hsplit]; exact hnodup)
 
-private theorem stmtA_funDef_inv {Φ : FMap} {Γ : List Ident}
+private theorem stmt_funDef_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat} {f : Ident}
     {ps rs : List Ident} {body : List (Stmt Op)}
     {asm : List Asm} {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtA Φ Γ F L n (.funDef f ps rs body) = some (asm, Γ', n')) :
+    (h : compileStmt Φ Γ F L n (.funDef f ps rs body) = some (asm, Γ', n')) :
     ∃ (info : FunInfo) (Φv : FMap) (bodyCode : List Asm),
       lookupF Φ f = some (info, Φv)
       ∧ rs.length ≤ 1 ∧ (ps ++ rs).Nodup
-      ∧ compileBlockA Φ (ps ++ rs) (some ⟨n, (ps ++ rs).length⟩) none
+      ∧ compileBlock Φ (ps ++ rs) (some ⟨n, (ps ++ rs).length⟩) none
           (n + 2) body = some (bodyCode, n')
       ∧ asm = .jump (n + 1) :: .label info.entry :: bodyCode
           ++ .label n :: epilogue ps.length rs.length ++ [.label (n + 1)]
       ∧ Γ' = Γ := by
-  simp only [compileStmtA, Option.bind_eq_bind] at h
+  simp only [compileStmt, Option.bind_eq_bind] at h
   obtain ⟨⟨info, Φv⟩, hlk, h2⟩ := Option.bind_eq_some_iff.mp h
   by_cases hg : rs.length ≤ 1 ∧ (ps ++ rs).Nodup
   · rw [if_pos hg] at h2
@@ -1454,33 +1454,33 @@ private theorem stmtA_funDef_inv {Φ : FMap} {Γ : List Ident}
     exact absurd h2 (by simp)
 
 /-- Layouts only grow across statements. -/
-private theorem stmtA_suffix {Φ : FMap} {Γ : List Ident} {F : Option FunCtx}
+private theorem stmt_suffix {Φ : FMap} {Γ : List Ident} {F : Option FunCtx}
     {L : Option LoopCtx} {n : Nat} {s : Stmt Op} {asm : List Asm}
     {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtA Φ Γ F L n s = some (asm, Γ', n')) :
+    (h : compileStmt Φ Γ F L n s = some (asm, Γ', n')) :
     ∃ Δ, Γ' = Δ ++ Γ := by
   cases s with
-  | exprStmt e => exact ⟨[], ((stmtA_exprStmt_inv h).2).symm ▸ rfl⟩
+  | exprStmt e => exact ⟨[], ((stmt_exprStmt_inv h).2).symm ▸ rfl⟩
   | letDecl xs v =>
     cases v with
     | none =>
-      obtain ⟨-, rfl, -⟩ := stmtA_letNone_inv h
+      obtain ⟨-, rfl, -⟩ := stmt_letNone_inv h
       exact ⟨xs, rfl⟩
     | some e =>
-      obtain ⟨x, rfl, -, rfl⟩ := stmtA_letSome_inv h
+      obtain ⟨x, rfl, -, rfl⟩ := stmt_letSome_inv h
       exact ⟨[x], rfl⟩
   | assign xs e =>
-    obtain ⟨x, eCode, idx, h16, rfl, -, -, -, rfl⟩ := stmtA_assign_inv h
+    obtain ⟨x, eCode, idx, h16, rfl, -, -, -, rfl⟩ := stmt_assign_inv h
     exact ⟨[], rfl⟩
-  | block body => exact ⟨[], ((stmtA_block_inv h).2).symm ▸ rfl⟩
+  | block body => exact ⟨[], ((stmt_block_inv h).2).symm ▸ rfl⟩
   | cond c body =>
-    obtain ⟨-, -, -, -, -, -, rfl⟩ := stmtA_cond_inv h
+    obtain ⟨-, -, -, -, -, -, rfl⟩ := stmt_cond_inv h
     exact ⟨[], rfl⟩
   | funDef f ps rs body =>
-    obtain ⟨-, -, -, -, -, -, -, -, rfl⟩ := stmtA_funDef_inv h
+    obtain ⟨-, -, -, -, -, -, -, -, rfl⟩ := stmt_funDef_inv h
     exact ⟨[], rfl⟩
   | forLoop init c post body =>
-    simp only [compileStmtA] at h
+    simp only [compileStmt] at h
     rcases hh : hoistInfos n init with ⟨scope, n0⟩
     rw [hh] at h
     dsimp only at h
@@ -1495,32 +1495,32 @@ private theorem stmtA_suffix {Φ : FMap} {Γ : List Ident} {F : Option FunCtx}
     · rw [if_pos (by simp [hnd])] at h
       exact absurd h (by simp)
   | «break» =>
-    obtain ⟨-, -, -, rfl, -⟩ := stmtA_break_inv h
+    obtain ⟨-, -, -, rfl, -⟩ := stmt_break_inv h
     exact ⟨[], rfl⟩
   | «continue» =>
-    obtain ⟨-, -, -, rfl, -⟩ := stmtA_continue_inv h
+    obtain ⟨-, -, -, rfl, -⟩ := stmt_continue_inv h
     exact ⟨[], rfl⟩
   | leave =>
-    obtain ⟨-, -, -, rfl, -⟩ := stmtA_leave_inv h
+    obtain ⟨-, -, -, rfl, -⟩ := stmt_leave_inv h
     exact ⟨[], rfl⟩
-  | switch c cases dflt => simp [compileStmtA] at h
+  | switch c cases dflt => simp [compileStmt] at h
 
-private theorem stmtsA_suffix {Φ : FMap} {F : Option FunCtx}
+private theorem stmts_suffix {Φ : FMap} {F : Option FunCtx}
     {L : Option LoopCtx} :
     ∀ {ss : List (Stmt Op)} {Γ : List Ident} {n : Nat} {asm : List Asm}
       {Γ' : List Ident} {n' : Nat},
-      compileStmtsA Φ Γ F L n ss = some (asm, Γ', n') →
+      compileStmts Φ Γ F L n ss = some (asm, Γ', n') →
       ∃ Δ, Γ' = Δ ++ Γ := by
   intro ss
   induction ss with
   | nil =>
     intro Γ n asm Γ' n' h
-    obtain ⟨-, rfl, -⟩ := stmtsA_nil_inv h
+    obtain ⟨-, rfl, -⟩ := stmts_nil_inv h
     exact ⟨[], rfl⟩
   | cons s rest ih =>
     intro Γ n asm Γ' n' h
-    obtain ⟨is1, Γ1, n1, is2, h1, h2, rfl⟩ := stmtsA_cons_inv h
-    obtain ⟨Δ1, rfl⟩ := stmtA_suffix h1
+    obtain ⟨is1, Γ1, n1, is2, h1, h2, rfl⟩ := stmts_cons_inv h
+    obtain ⟨Δ1, rfl⟩ := stmt_suffix h1
     obtain ⟨Δ2, rfl⟩ := ih h2
     exact ⟨Δ2 ++ Δ1, by simp⟩
 
@@ -1599,7 +1599,7 @@ private theorem hoist_forall2 {prog : List Asm} {Φ : FMap}
     (hnd : (scope_top.map Prod.fst).Nodup) :
     ∀ (body : List (Stmt Op)) (Γ : List Ident) (nc : Nat) (asm : List Asm)
       (Γ' : List Ident) (nc' : Nat) (nh : Nat),
-      compileStmtsA (scope_top :: Φ) Γ F L nc body = some (asm, Γ', nc') →
+      compileStmts (scope_top :: Φ) Γ F L nc body = some (asm, Γ', nc') →
       asm <:+: prog →
       (hoistInfos nh body).1 <:+ scope_top →
       List.Forall₂
@@ -1613,7 +1613,7 @@ private theorem hoist_forall2 {prog : List Asm} {Φ : FMap}
     exact List.Forall₂.nil
   | cons s rest ih =>
     intro Γ nc asm Γ' nc' nh hcs hplace hsuf
-    obtain ⟨is1, Γ1, n1, is2, his1, hcs2, rfl⟩ := stmtsA_cons_inv hcs
+    obtain ⟨is1, Γ1, n1, is2, his1, hcs2, rfl⟩ := stmts_cons_inv hcs
     have his1p : is1 <:+: prog :=
       List.IsInfix.trans List.infix_append_left hplace
     have his2p : is2 <:+: prog :=
@@ -1623,7 +1623,7 @@ private theorem hoist_forall2 {prog : List Asm} {Φ : FMap}
       have hsuf' : (f, (⟨nh, ps.length, rs.length⟩ : FunInfo))
           :: (hoistInfos (nh + 1) rest).1 <:+ scope_top := hsuf
       obtain ⟨info', Φv', bodyCode, hlk', hrs1, hndpr, hbodyC', hasm, -⟩ :=
-        stmtA_funDef_inv his1
+        stmt_funDef_inv his1
       have hlkval : lookupF (scope_top :: Φ) f
           = some (⟨nh, ps.length, rs.length⟩, scope_top :: Φ) := by
         simp only [lookupF, find?_suffix_nodup hnd hsuf']
@@ -1637,7 +1637,7 @@ private theorem hoist_forall2 {prog : List Asm} {Φ : FMap}
         rw [hasm]; simp
       · exact ih Γ1 n1 is2 Γ' nc' (nh + 1) hcs2 his2p
           ((List.suffix_cons _ _).trans hsuf')
-    case switch c cs d => exact absurd his1 (by simp [compileStmtA])
+    case switch c cs d => exact absurd his1 (by simp [compileStmt])
     all_goals exact ih Γ1 n1 is2 Γ' nc' nh hcs2 his2p hsuf
 
 /-- **Entering a block**: the hoisted compile-time scope agrees with the
@@ -1651,7 +1651,7 @@ theorem hoist_ok {prog : List Asm} {funs : YulSemantics.FunEnv yulD}
     {asm : List Asm} {Γ' : List Ident} {n' : Nat}
     (hh : hoistInfos n body = (scope, n0))
     (hnd : (scope.map Prod.fst).Nodup)
-    (hcs : compileStmtsA (scope :: Φ) Γ F L nc body = some (asm, Γ', n'))
+    (hcs : compileStmts (scope :: Φ) Γ F L nc body = some (asm, Γ', n'))
     (hplace : asm <:+: prog) :
     FEnvOK prog (YulSemantics.hoist yulD body :: funs) (scope :: Φ) := by
   have hf2 := hoist_forall2 (Φ := Φ) (scope_top := scope) (F := F) (L := L)
@@ -1660,30 +1660,30 @@ theorem hoist_ok {prog : List Asm} {funs : YulSemantics.FunEnv yulD}
   simp only [hh] at hf2
   exact FEnvOK.cons hf2 hΦ
 
-private theorem stmtA_forLoop_inv {Φ : FMap} {Γ : List Ident}
+private theorem stmt_forLoop_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat} {init : List (Stmt Op)}
     {ce : Expr Op} {post body : List (Stmt Op)}
     {asm : List Asm} {Γ' : List Ident} {n' : Nat}
-    (h : compileStmtA Φ Γ F L n (.forLoop init ce post body)
+    (h : compileStmt Φ Γ F L n (.forLoop init ce post body)
       = some (asm, Γ', n')) :
     ∃ (scope : FScopeInfo) (n0 : Nat) (initCode : List Asm) (Γi : List Ident)
       (n1 : Nat) (cCode : List Asm) (n2 : Nat) (bodyCode : List Asm)
       (n3 : Nat) (postCode : List Asm),
       hoistInfos n init = (scope, n0)
       ∧ (scope.map Prod.fst).Nodup
-      ∧ compileStmtsA (scope :: Φ) Γ F L (n0 + 3) init
+      ∧ compileStmts (scope :: Φ) Γ F L (n0 + 3) init
           = some (initCode, Γi, n1)
-      ∧ compileExprA (scope :: Φ) Γi 0 n1 ce = some (cCode, n2)
-      ∧ compileBlockA (scope :: Φ) Γi F (some ⟨n0 + 2, n0 + 1, Γi.length⟩)
+      ∧ compileExpr (scope :: Φ) Γi 0 n1 ce = some (cCode, n2)
+      ∧ compileBlock (scope :: Φ) Γi F (some ⟨n0 + 2, n0 + 1, Γi.length⟩)
           n2 body = some (bodyCode, n3)
-      ∧ compileBlockA (scope :: Φ) Γi F none n3 post = some (postCode, n')
+      ∧ compileBlock (scope :: Φ) Γi F none n3 post = some (postCode, n')
       ∧ asm = initCode
           ++ .label n0 :: cCode ++ [.op .iszero, .jumpi (n0 + 2)]
           ++ bodyCode ++ .label (n0 + 1) :: postCode ++ .jump n0
           :: .label (n0 + 2)
           :: List.replicate (Γi.length - Γ.length) .pop
       ∧ Γ' = Γ := by
-  simp only [compileStmtA] at h
+  simp only [compileStmt] at h
   rcases hh : hoistInfos n init with ⟨scope, n0⟩
   rw [hh] at h
   dsimp only at h
@@ -1761,28 +1761,28 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
   induction h with
   | lit =>
     intro Φ off n asm n' hc hΦ
-    obtain ⟨rfl, rfl⟩ := exprA_lit_inv hc
+    obtain ⟨rfl, rfl⟩ := expr_lit_inv hc
     exact asimE_push _
   | var hget =>
     intro Φ off n asm n' hc hΦ
-    obtain ⟨idx, h16, hidx, rfl, rfl⟩ := exprA_var_inv hc
+    obtain ⟨idx, h16, hidx, rfl, rfl⟩ := expr_var_inv hc
     exact asimE_var h16 hget hidx
   | builtinOk hargs hb ihargs =>
     intro Φ off n asm n' hc hΦ
-    obtain ⟨argCode, hargs', rfl⟩ := exprA_builtin_inv hc
+    obtain ⟨argCode, hargs', rfl⟩ := expr_builtin_inv hc
     exact asimE_op ((ihargs Φ off n argCode n' hargs').2 hΦ) hb
   | builtinHalt hargs hb ihargs =>
     intro Φ off n asm n' hc hΦ
-    obtain ⟨argCode, hargs', rfl⟩ := exprA_builtin_inv hc
+    obtain ⟨argCode, hargs', rfl⟩ := expr_builtin_inv hc
     exact asimE_opHalt ((ihargs Φ off n argCode n' hargs').2 hΦ) hb
   | builtinArgsHalt hargs ihargs =>
     intro Φ off n asm n' hc hΦ
-    obtain ⟨argCode, hargs', rfl⟩ := exprA_builtin_inv hc
+    obtain ⟨argCode, hargs', rfl⟩ := expr_builtin_inv hc
     exact (ihargs Φ off n argCode n' hargs' hΦ).extend _
   | callOk hargs hlk harity hbody ho ihargs ihbody =>
     rename_i funs0 V0 st0 fn args0 argvals st1 decl cenv Vend st2 o
     intro Φ off n asm n' hc hΦ
-    obtain ⟨info, Φv, argCode, hlkF, hargsC, rfl⟩ := exprA_call_inv hc
+    obtain ⟨info, Φv, argCode, hlkF, hargsC, rfl⟩ := expr_call_inv hc
     obtain ⟨info', Φv', hlkF', hok, hΦv⟩ := lookupF_ok hΦ hlk
     have hpair := hlkF.symm.trans hlkF'
     injection hpair with hpair
@@ -1796,7 +1796,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
       (rs := decl.rets) harity
     obtain ⟨hlenA, hsimA⟩ := ihargs Φ (off + 1 + info.rets) (n + 1) argCode
       n' hargsC
-    have hbodyStmt : compileStmtA Φv
+    have hbodyStmt : compileStmt Φv
         (names (decl.params.zip argvals
           ++ YulSemantics.bindZeros yulD decl.rets))
         (some ⟨lexit, (decl.params ++ decl.rets).length⟩) none n₀
@@ -1805,7 +1805,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
             names (decl.params.zip argvals
               ++ YulSemantics.bindZeros yulD decl.rets), n₁) := by
       rw [hnamesV₀]
-      exact stmtA_of_blockA hbodyC
+      exact stmt_of_block hbodyC
     have hFd : FDepthOK (some ⟨lexit, (decl.params ++ decl.rets).length⟩)
         (decl.params.zip argvals ++ YulSemantics.bindZeros yulD decl.rets) := by
       show (decl.params ++ decl.rets).length ≤ _
@@ -1949,7 +1949,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
   | callHalt hargs hlk harity hbody ihargs ihbody =>
     rename_i funs0 V0 st0 fn args0 argvals st1 decl cenv Vend st2
     intro Φ off n asm n' hc hΦ
-    obtain ⟨info, Φv, argCode, hlkF, hargsC, rfl⟩ := exprA_call_inv hc
+    obtain ⟨info, Φv, argCode, hlkF, hargsC, rfl⟩ := expr_call_inv hc
     obtain ⟨info', Φv', hlkF', hok, hΦv⟩ := lookupF_ok hΦ hlk
     have hpair := hlkF.symm.trans hlkF'
     injection hpair with hpair
@@ -1961,7 +1961,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
       (rs := decl.rets) harity
     obtain ⟨hlenA, hsimA⟩ := ihargs Φ (off + 1 + info.rets) (n + 1) argCode
       n' hargsC
-    have hbodyStmt : compileStmtA Φv
+    have hbodyStmt : compileStmt Φv
         (names (decl.params.zip argvals
           ++ YulSemantics.bindZeros yulD decl.rets))
         (some ⟨lexit, (decl.params ++ decl.rets).length⟩) none n₀
@@ -1970,7 +1970,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
             names (decl.params.zip argvals
               ++ YulSemantics.bindZeros yulD decl.rets), n₁) := by
       rw [hnamesV₀]
-      exact stmtA_of_blockA hbodyC
+      exact stmt_of_block hbodyC
     have hFd : FDepthOK (some ⟨lexit, (decl.params ++ decl.rets).length⟩)
         (decl.params.zip argvals ++ YulSemantics.bindZeros yulD decl.rets) := by
       show (decl.params ++ decl.rets).length ≤ _
@@ -2040,7 +2040,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
   | callArgsHalt hargs ihargs =>
     rename_i funs0 V0 st0 f0 args0 st1
     intro Φ off n asm n' hc hΦ
-    obtain ⟨info, Φv, argCode, hlk, hargsC, rfl⟩ := exprA_call_inv hc
+    obtain ⟨info, Φv, argCode, hlk, hargsC, rfl⟩ := expr_call_inv hc
     intro pre c τ σ hp hτ
     have hdef : n ∈ labelDefs prog :=
       mem_labelDefs_of_split (pre := pre ++ .pushLabel n
@@ -2081,23 +2081,23 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     simpa [List.append_assoc] using hsteps
   | argsNil =>
     intro Φ off n asm n' hc
-    obtain ⟨rfl, rfl⟩ := argsA_nil_inv hc
+    obtain ⟨rfl, rfl⟩ := args_nil_inv hc
     refine ⟨rfl, fun hΦ pre c τ σ hp hτ => ?_⟩
     exact .refl _
   | argsCons hrest hhead ihrest ihhead =>
     intro Φ off n asm n' hc
-    obtain ⟨restCode, n1, eCode, hr, he, rfl⟩ := argsA_cons_inv hc
+    obtain ⟨restCode, n1, eCode, hr, he, rfl⟩ := args_cons_inv hc
     obtain ⟨hlen, hR⟩ := ihrest Φ off n restCode n1 hr
     refine ⟨by simpa using hlen, fun hΦ => ?_⟩
     exact ASimE.compArgs hlen (hR hΦ)
       (by simpa [hlen] using ihhead Φ (off + _) n1 eCode n' he hΦ)
   | argsRestHalt hrest ihrest =>
     intro Φ off n asm n' hc hΦ
-    obtain ⟨restCode, n1, eCode, hr, he, rfl⟩ := argsA_cons_inv hc
+    obtain ⟨restCode, n1, eCode, hr, he, rfl⟩ := args_cons_inv hc
     exact (ihrest Φ off n restCode n1 hr hΦ).extend _
   | argsHeadHalt hrest hhead ihrest ihhead =>
     intro Φ off n asm n' hc hΦ
-    obtain ⟨restCode, n1, eCode, hr, he, rfl⟩ := argsA_cons_inv hc
+    obtain ⟨restCode, n1, eCode, hr, he, rfl⟩ := args_cons_inv hc
     obtain ⟨hlen, hR⟩ := ihrest Φ off n restCode n1 hr
     exact ASimE.compArgsHalt hlen (hR hΦ)
       (by simpa [hlen] using ihhead Φ (off + _) n1 eCode n' he hΦ)
@@ -2105,7 +2105,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     rename_i funs1 V1 st1 f1 ps1 rs1 b1
     intro Φ F L n asm Γ' n' hF hL hc
     obtain ⟨info, Φv, bodyCode, hlk, hrs, hnd, hb, rfl, rfl⟩ :=
-      stmtA_funDef_inv hc
+      stmt_funDef_inv hc
     refine ⟨rfl, Nat.le_refl _, fun hΦ => ?_⟩
     intro pre c σ hp
     have hfind : findLabel (n + 1) prog = some c := by
@@ -2120,11 +2120,11 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
   | block hbody ihbody =>
     rename_i funs0 V0 st0 body0 Vb stb o
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨hblockA, rfl⟩ := stmtA_block_inv hc
+    obtain ⟨hblockA, rfl⟩ := stmt_block_inv hc
     obtain ⟨scope, n1, stmtsAsm, Γb, n2, hh, hnd, hcs, rfl, rfl⟩ :=
-      blockA_inv hblockA
+      block_inv hblockA
     have hout := ihbody (scope :: Φ) F L n1 stmtsAsm Γb n' hF hL hcs
-    obtain ⟨Δ, hΔ⟩ := stmtsA_suffix hcs
+    obtain ⟨Δ, hΔ⟩ := stmts_suffix hcs
     match o, hout with
     | .normal, ⟨hΓb, hlenb, hsimb⟩ =>
       have hΓblen : Γb.length = Vb.length := by
@@ -2215,22 +2215,22 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
           (trim_restore hd hlenb)) pre c cL σ hp hfind
   | letZero =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨rfl, rfl, rfl⟩ := stmtA_letNone_inv hc
+    obtain ⟨rfl, rfl, rfl⟩ := stmt_letNone_inv hc
     refine ⟨?_, by simp, fun hΦ => asimS_letZero _⟩
     rw [names_append, names_bindZeros]
   | letVal hexp hlen ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨x, rfl, he, rfl⟩ := stmtA_letSome_inv hc
+    obtain ⟨x, rfl, he, rfl⟩ := stmt_letSome_inv hc
     rename_i vals _
     rcases vals with _ | ⟨v, _ | ⟨v2, t⟩⟩ <;> simp at hlen
     exact ⟨rfl, by simp, fun hΦ => (ihexp Φ 0 n asm n' he hΦ).toASimSLet⟩
   | letHalt hexp ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨x, rfl, he, rfl⟩ := stmtA_letSome_inv hc
+    obtain ⟨x, rfl, he, rfl⟩ := stmt_letSome_inv hc
     exact fun hΦ => (ihexp Φ 0 n asm n' he hΦ).toASimSHalt
   | assignVal hexp hlen ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨x, eCode, idx, h16, rfl, he, hidx, rfl, rfl⟩ := stmtA_assign_inv hc
+    obtain ⟨x, eCode, idx, h16, rfl, he, hidx, rfl, rfl⟩ := stmt_assign_inv hc
     rename_i vals _
     rcases vals with _ | ⟨v, _ | ⟨v2, t⟩⟩ <;> simp at hlen
     have hsm : YulSemantics.VEnv.setMany ‹VEnv yulD› [x] [v]
@@ -2245,22 +2245,22 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     omega
   | assignHalt hexp ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨x, eCode, idx, h16, rfl, he, hidx, rfl, rfl⟩ := stmtA_assign_inv hc
+    obtain ⟨x, eCode, idx, h16, rfl, he, hidx, rfl, rfl⟩ := stmt_assign_inv hc
     exact fun hΦ =>
       ((ihexp Φ 0 n eCode n' he hΦ).toASimSHalt).extend _
   | exprStmt hexp ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨he, rfl⟩ := stmtA_exprStmt_inv hc
+    obtain ⟨he, rfl⟩ := stmt_exprStmt_inv hc
     exact ⟨rfl, Nat.le_refl _, fun hΦ => (ihexp Φ 0 n asm n' he hΦ).toASimS⟩
   | exprStmtHalt hexp ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨he, rfl⟩ := stmtA_exprStmt_inv hc
+    obtain ⟨he, rfl⟩ := stmt_exprStmt_inv hc
     exact fun hΦ => (ihexp Φ 0 n asm n' he hΦ).toASimSHalt
   | ifTrue hcstep hcv hblock ihc ihblock =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨cCode, n1, bodyCode, hce, hb, rfl, rfl⟩ := stmtA_cond_inv hc
+    obtain ⟨cCode, n1, bodyCode, hce, hb, rfl, rfl⟩ := stmt_cond_inv hc
     have hcv' := ne_zero_of_ne_dzero hcv
-    have hout := ihblock Φ F L n1 bodyCode _ n' hF hL (stmtA_of_blockA hb)
+    have hout := ihblock Φ F L n1 bodyCode _ n' hF hL (stmt_of_block hb)
     rename_i o
     match o, hout with
     | .normal, ⟨hΓb, hlenb, hsimb⟩ =>
@@ -2280,28 +2280,28 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
         asimS_ifTrueNL (ihc Φ 0 (n + 1) cCode n1 hce hΦ) hcv' (hsimb hΦ)⟩
   | ifFalse hcstep hcv ihc =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨cCode, n1, bodyCode, hce, hb, rfl, rfl⟩ := stmtA_cond_inv hc
+    obtain ⟨cCode, n1, bodyCode, hce, hb, rfl, rfl⟩ := stmt_cond_inv hc
     exact ⟨rfl, Nat.le_refl _, fun hΦ =>
       asimS_ifFalse hnodup (ihc Φ 0 (n + 1) cCode n1 hce hΦ) hcv⟩
   | ifHalt hcstep ihc =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨cCode, n1, bodyCode, hce, hb, rfl, rfl⟩ := stmtA_cond_inv hc
+    obtain ⟨cCode, n1, bodyCode, hce, hb, rfl, rfl⟩ := stmt_cond_inv hc
     exact fun hΦ =>
       asimS_ifCondHalt (ihc Φ 0 (n + 1) cCode n1 hce hΦ)
   | switchExec _ _ _ _ =>
     intro Φ F L n asm Γ' n' hF hL hc
-    simp [compileStmtA] at hc
+    simp [compileStmt] at hc
   | switchHalt _ _ =>
     intro Φ F L n asm Γ' n' hF hL hc
-    simp [compileStmtA] at hc
+    simp [compileStmt] at hc
   | forLoop hinit hloop ihinit ihloop =>
     rename_i funs0 V0 st0 init0 ce post0 body0 Vinit stinit Vend stend o
     intro Φ F L n asm Γ' n' hF hL hc
     obtain ⟨scope, n0, initCode, Γi, n1, cCode, n2, bodyCode, n3, postCode,
-      hh, hnd, hinitC, hce, hbA, hpA, rfl, rfl⟩ := stmtA_forLoop_inv hc
+      hh, hnd, hinitC, hce, hbA, hpA, rfl, rfl⟩ := stmt_forLoop_inv hc
     obtain ⟨hΓi, hlenI, hsimI⟩ := ihinit (scope :: Φ) F L (n0 + 3) initCode
       Γi n1 hF hL hinitC
-    obtain ⟨Δi, hΔi⟩ := stmtsA_suffix hinitC
+    obtain ⟨Δi, hΔi⟩ := stmts_suffix hinitC
     have hnVinit : names Vinit = Δi ++ names V0 := by rw [← hΓi, hΔi]
     have hlVinit : Vinit.length = Δi.length + V0.length := by
       have := congrArg List.length hnVinit
@@ -2485,7 +2485,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     rename_i funs0 V0 st0 init0 ce post0 body0 Vinit stinit
     intro Φ F L n asm Γ' n' hF hL hc
     obtain ⟨scope, n0, initCode, Γi, n1, cCode, n2, bodyCode, n3, postCode,
-      hh, hnd, hinitC, hce, hbA, hpA, rfl, rfl⟩ := stmtA_forLoop_inv hc
+      hh, hnd, hinitC, hce, hbA, hpA, rfl, rfl⟩ := stmt_forLoop_inv hc
     have hsimI := ihinit (scope :: Φ) F L (n0 + 3) initCode Γi n1 hF hL hinitC
     intro hΦ pre c σ hp
     have hΦ' : FEnvOK prog (YulSemantics.hoist yulD init0 :: funs0)
@@ -2514,35 +2514,35 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     exact hsteps
   | «break» =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨lc, rfl, rfl, rfl, rfl⟩ := stmtA_break_inv hc
+    obtain ⟨lc, rfl, rfl, rfl, rfl⟩ := stmt_break_inv hc
     refine ⟨lc, rfl, Nat.le_refl _, names_trim_self _ _, fun hΦ => ?_⟩
     have := asimNL_exit (prog := prog) (yst := ‹EvmState›)
       (V := ‹VEnv yulD›) lc.brk lc.depth
     simpa using this
   | «continue» =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨lc, rfl, rfl, rfl, rfl⟩ := stmtA_continue_inv hc
+    obtain ⟨lc, rfl, rfl, rfl, rfl⟩ := stmt_continue_inv hc
     refine ⟨lc, rfl, Nat.le_refl _, names_trim_self _ _, fun hΦ => ?_⟩
     have := asimNL_exit (prog := prog) (yst := ‹EvmState›)
       (V := ‹VEnv yulD›) lc.cont lc.depth
     simpa using this
   | leave =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨fc, rfl, rfl, rfl, rfl⟩ := stmtA_leave_inv hc
+    obtain ⟨fc, rfl, rfl, rfl, rfl⟩ := stmt_leave_inv hc
     refine ⟨fc, rfl, Nat.le_refl _, names_trim_self _ _, fun hΦ => ?_⟩
     have := asimNL_exit (prog := prog) (yst := ‹EvmState›)
       (V := ‹VEnv yulD›) fc.exit fc.depth
     simpa using this
   | seqNil =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨rfl, rfl, rfl⟩ := stmtsA_nil_inv hc
+    obtain ⟨rfl, rfl, rfl⟩ := stmts_nil_inv hc
     exact ⟨rfl, Nat.le_refl _, fun _ => ASimS.nil⟩
   | seqCons hs hrest ihs ihrest =>
     rename_i V0 st0 s0 rest0 V1 st1 V2 st2 o
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨is1, Γ1, n1, is2, h1, h2, rfl⟩ := stmtsA_cons_inv hc
+    obtain ⟨is1, Γ1, n1, is2, h1, h2, rfl⟩ := stmts_cons_inv hc
     obtain ⟨hΓ1, hlen1, hsim1⟩ := ihs Φ F L n is1 Γ1 n1 hF hL h1
-    obtain ⟨Δ, hΔ⟩ := stmtA_suffix h1
+    obtain ⟨Δ, hΔ⟩ := stmt_suffix h1
     have hnV1 : names V1 = Δ ++ names V0 := by rw [← hΓ1, hΔ]
     have hlV1 : V1.length = Δ.length + V0.length := by
       have := congrArg List.length hnV1
@@ -2585,7 +2585,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
         fun hΦ => (hsim1 hΦ).compNL (hsim2 hΦ)⟩
   | seqStop hs hne ihs =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨is1, Γ1, n1, is2, h1, h2, rfl⟩ := stmtsA_cons_inv hc
+    obtain ⟨is1, Γ1, n1, is2, h1, h2, rfl⟩ := stmts_cons_inv hc
     have hout := ihs Φ F L n is1 Γ1 n1 hF hL h1
     rename_i o
     match o, hout with
@@ -2642,8 +2642,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
   | loopCondHalt hc ihc =>
     rename_i funs0 V0 st0 ce post0 body0 st1
     intro Φ F lcond lpost lexit cCode bodyAsm postAsm n₁ n₂ n₃ n₄
-      hF hce hbA hpA
-    intro cRest hcond hΦ σ
+      hF hce hbA hpA cRest hcond hΦ σ
     obtain ⟨preI, hpreI⟩ := findLabel_suffix hcond
     obtain ⟨conf, hsteps, hhalt⟩ := (ihc Φ 0 n₁ cCode n₂ hce hΦ) preI
       ([.op .iszero, .jumpi lexit] ++ bodyAsm ++ .label lpost :: postAsm
@@ -2669,7 +2668,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
         simp
         omega
     have hout := ihbody Φ F (some ⟨lexit, lpost, V0.length⟩) n₂ bodyAsm
-      (names V0) n₃ hF (Nat.le_refl _) (stmtA_of_blockA hbA)
+      (names V0) n₃ hF (Nat.le_refl _) (stmt_of_block hbA)
     -- layout: the body ends with the loop-scope names
     have hnVb : names Vb = names V0 := by
       rcases hob with rfl | rfl
@@ -2688,10 +2687,10 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     have hlVb : Vb.length = V0.length := by
       have := congrArg List.length hnVb
       simpa using this
-    have hpA' : compileStmtA Φ (names Vb) F none n₃ (.block post0)
+    have hpA' : compileStmt Φ (names Vb) F none n₃ (.block post0)
         = some (postAsm, names Vb, n₄) := by
       rw [hnVb]
-      exact stmtA_of_blockA hpA
+      exact stmt_of_block hpA
     obtain ⟨hΓp, hlenp, hsimp'⟩ := ihpost Φ F none n₃ postAsm (names Vb) n₄
       (hF.mono (Nat.le_of_eq hlVb.symm)) trivial hpA'
     have hnVp : names Vp = names V0 := by rw [← hΓp, hnVb]
@@ -2821,7 +2820,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
         simp
         omega
     have hout := ihbody Φ F (some ⟨lexit, lpost, V0.length⟩) n₂ bodyAsm
-      (names V0) n₃ hF (Nat.le_refl _) (stmtA_of_blockA hbA)
+      (names V0) n₃ hF (Nat.le_refl _) (stmt_of_block hbA)
     have hnVb : names Vb = names V0 := by
       rcases hob with rfl | rfl
       · exact hout.1.symm
@@ -2839,10 +2838,10 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     have hlVb : Vb.length = V0.length := by
       have := congrArg List.length hnVb
       simpa using this
-    have hpA' : compileStmtA Φ (names Vb) F none n₃ (.block post0)
+    have hpA' : compileStmt Φ (names Vb) F none n₃ (.block post0)
         = some (postAsm, names Vb, n₄) := by
       rw [hnVb]
-      exact stmtA_of_blockA hpA
+      exact stmt_of_block hpA
     have hsimp' := ihpost Φ F none n₃ postAsm (names Vb) n₄
       (hF.mono (Nat.le_of_eq hlVb.symm)) trivial hpA'
     intro cRest hcond hΦ σ
@@ -2928,7 +2927,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     intro Φ F lcond lpost lexit cCode bodyAsm postAsm n₁ n₂ n₃ n₄
       hF hce hbA hpA
     have hout := ihbody Φ F (some ⟨lexit, lpost, V0.length⟩) n₂ bodyAsm
-      (names V0) n₃ hF (Nat.le_refl _) (stmtA_of_blockA hbA)
+      (names V0) n₃ hF (Nat.le_refl _) (stmt_of_block hbA)
     obtain ⟨lc, hlc, hlenB, hnmB, hsimB⟩ := hout
     obtain rfl : (⟨lexit, lpost, V0.length⟩ : LoopCtx) = lc := by
       injection hlc
@@ -3004,7 +3003,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     intro Φ F lcond lpost lexit cCode bodyAsm postAsm n₁ n₂ n₃ n₄
       hF hce hbA hpA
     have hout := ihbody Φ F (some ⟨lexit, lpost, V0.length⟩) n₂ bodyAsm
-      (names V0) n₃ hF (Nat.le_refl _) (stmtA_of_blockA hbA)
+      (names V0) n₃ hF (Nat.le_refl _) (stmt_of_block hbA)
     obtain ⟨fc, hfc, hlenB, hnmB, hsimB⟩ := hout
     refine ⟨fc, hfc, hlenB, hnmB, fun cRest hcond hΦ σ cL hfindEx => ?_⟩
     obtain ⟨preI, hpreI⟩ := findLabel_suffix hcond
@@ -3056,7 +3055,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     intro Φ F lcond lpost lexit cCode bodyAsm postAsm n₁ n₂ n₃ n₄
       hF hce hbA hpA
     have hsimB := ihbody Φ F (some ⟨lexit, lpost, V0.length⟩) n₂ bodyAsm
-      (names V0) n₃ hF (Nat.le_refl _) (stmtA_of_blockA hbA)
+      (names V0) n₃ hF (Nat.le_refl _) (stmt_of_block hbA)
     intro cRest hcond hΦ σ
     obtain ⟨preI, hpreI⟩ := findLabel_suffix hcond
     have hcv0 : cv ≠ (0 : U256) := hcv

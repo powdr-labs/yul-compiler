@@ -7,8 +7,8 @@ import EvmSemantics.EVM.StepF
 /-!
 # YulEvmCompiler.ExamplesAsm
 
-Sanity checks for the labeled-assembly pipeline (`compileProgramAsm` /
-`compileA`): loops, `break`/`continue`, user-defined functions (including
+Sanity checks for the labeled-assembly pipeline (`compileProgram` /
+`compile`): loops, `break`/`continue`, user-defined functions (including
 recursion), and `leave`.
 
 Beyond "it compiles", the interesting checks here are **differential**: each
@@ -131,17 +131,17 @@ def fibStorage : Block Op := yul% {
   sstore(0, a)
 }
 
-#guard (compileProgramAsm sumLoop).isSome
-#guard (compileProgramAsm breakContinue).isSome
-#guard (compileProgramAsm funCall).isSome
-#guard (compileProgramAsm factorial).isSome
-#guard (compileProgramAsm leaveEarly).isSome
-#guard (compileProgramAsm nested).isSome
-#guard (compileProgramAsm breakNested).isSome
-#guard (compileProgramAsm fibStorage).isSome
-#guard (compileA sumLoop).isSome
-#guard (compileA factorial).isSome
-#guard (compileA fibStorage).isSome
+#guard (compileProgram sumLoop).isSome
+#guard (compileProgram breakContinue).isSome
+#guard (compileProgram funCall).isSome
+#guard (compileProgram factorial).isSome
+#guard (compileProgram leaveEarly).isSome
+#guard (compileProgram nested).isSome
+#guard (compileProgram breakNested).isSome
+#guard (compileProgram fibStorage).isSome
+#guard (compile sumLoop).isSome
+#guard (compile factorial).isSome
+#guard (compile fibStorage).isSome
 
 /-! ### The upstream Fibonacci contract
 
@@ -153,12 +153,12 @@ writes are blocked upstream by `MachineState.writeBytes` being a `partial
 def`, and calldata reads simply have no correctness lemma yet.
 
 The labeled-assembly stage is purely *syntactic* — `opTable` is consulted only
-at **lowering** — so `compileProgramAsm` happily produces `Asm` for it, but
-`compileA` (which lowers to bytecode) correctly **rejects** it rather than
+at **lowering** — so `compileProgram` happily produces `Asm` for it, but
+`compile` (which lowers to bytecode) correctly **rejects** it rather than
 emitting unverified code. The identical loop over storage (`fibStorage` above)
 lowers all the way to bytecode. -/
-#guard (compileProgramAsm FibExample.fibContract).isSome
-#guard (compileA FibExample.fibContract).isNone
+#guard (compileProgram FibExample.fibContract).isSome
+#guard (compile FibExample.fibContract).isNone
 
 /-! ### Differential execution: Yul interpreter vs. compiled bytecode -/
 
@@ -193,7 +193,7 @@ def runEvm : Nat → EvmSemantics.EVM.State → EvmSemantics.EVM.State
 /-- Compile `prog`, run both sides, and compare the storage values at
 `keys` (plus that the EVM run actually finished without an exception). -/
 def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
-  match compileA prog, runYul 100000 prog with
+  match compile prog, runYul 100000 prog with
   | some is, some yst =>
       let s := runEvm 100000 (evmInit (assemble is))
       s.isDone
@@ -224,6 +224,6 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard (runYul 100000 breakNested).map (fun st => (st.storage 0).toNat) = some 9
 #guard (runYul 100000 fibStorage).map (fun st => (st.storage 0).toNat) = some 55
 
-#eval (compileA factorial).map hex
+#eval (compile factorial).map hex
 
 end YulEvmCompiler.ExamplesAsm

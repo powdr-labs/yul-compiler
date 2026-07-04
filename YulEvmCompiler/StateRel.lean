@@ -156,7 +156,7 @@ private theorem bitvec_fold_eq (l : List UInt8) :
     have hmul_lt : acc.toNat * 256 + b.toNat < 2 ^ 256 := by
       have h1 : acc.toNat * 256 + b.toNat < (acc.toNat + 1) * 256 := by omega
       have h2 : (acc.toNat + 1) * 256 ≤ 256 ^ (32 - (l.length + 1)) * 256 :=
-        mul_le_mul_right' hacc 256
+        Nat.mul_le_mul_right 256 hacc
       omega
     have hstep : ((acc <<< (8 : Nat)) ||| BitVec.ofNat 256 b.toNat).toNat
         = acc.toNat * 256 + b.toNat := by
@@ -177,7 +177,7 @@ private theorem bitvec_fold_eq (l : List UInt8) :
       rw [hstep]
       have h1 : acc.toNat * 256 + b.toNat < (acc.toNat + 1) * 256 := by omega
       have h2 : (acc.toNat + 1) * 256 ≤ 256 ^ (32 - (l.length + 1)) * 256 :=
-        mul_le_mul_right' hacc 256
+        Nat.mul_le_mul_right 256 hacc
       omega)]
     rw [hstep, List.foldl_cons]
 

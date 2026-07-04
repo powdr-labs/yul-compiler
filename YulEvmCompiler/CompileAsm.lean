@@ -125,7 +125,7 @@ mutual
 /-- Compile an expression at layout `Γ` with `off` temporaries above the
 variable region (temporaries include pending return addresses and return
 slots of enclosing calls). -/
-def compileExprA (Φ : FMap) (Γ : List Ident) (off : Nat) (n : Nat) :
+def compileExpr (Φ : FMap) (Γ : List Ident) (off : Nat) (n : Nat) :
     Expr Op → Option (List Asm × Nat)
   | .lit l => some ([.push (litValue l)], n)
   | .var x => do
@@ -135,24 +135,24 @@ def compileExprA (Φ : FMap) (Γ : List Ident) (off : Nat) (n : Nat) :
       else
         none                      -- too deep for DUP16 (needs EIP-8024)
   | .builtin op args => do
-      let (argCode, n1) ← compileArgsA Φ Γ off n args
+      let (argCode, n1) ← compileArgs Φ Γ off n args
       some (argCode ++ [.op op], n1)
   | .call f args => do
       let (info, _) ← lookupF Φ f
       let lret := n
-      let (argCode, n1) ← compileArgsA Φ Γ (off + 1 + info.rets) (n + 1) args
+      let (argCode, n1) ← compileArgs Φ Γ (off + 1 + info.rets) (n + 1) args
       some (.pushLabel lret :: (List.replicate info.rets (.push 0)
         ++ argCode ++ [.jump info.entry, .label lret]), n1)
 
 /-- Compile an argument list, last argument first (Yul's right-to-left
 order); each pending argument value deepens `off` for the ones still to
 be compiled. -/
-def compileArgsA (Φ : FMap) (Γ : List Ident) (off : Nat) (n : Nat) :
+def compileArgs (Φ : FMap) (Γ : List Ident) (off : Nat) (n : Nat) :
     List (Expr Op) → Option (List Asm × Nat)
   | [] => some ([], n)
   | e :: rest => do
-      let (restCode, n1) ← compileArgsA Φ Γ off n rest
-      let (eCode, n2) ← compileExprA Φ Γ (off + rest.length) n1 e
+      let (restCode, n1) ← compileArgs Φ Γ off n rest
+      let (eCode, n2) ← compileExpr Φ Γ (off + rest.length) n1 e
       some (restCode ++ eCode, n2)
 
 end
@@ -163,36 +163,36 @@ mutual
 Φ-scope, compile the body under it, pop the block's locals on exit. The
 layout is unchanged across the block (mirroring the semantics'
 `restore`). -/
-def compileBlockA (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
+def compileBlock (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
     (L : Option LoopCtx) (n : Nat) (body : List (Stmt Op)) :
     Option (List Asm × Nat) := do
   let (scope, n1) := hoistInfos n body
   if (scope.map Prod.fst).Nodup then    -- Yul forbids duplicate functions
-    let (isb, Γ', n2) ← compileStmtsA (scope :: Φ) Γ F L n1 body
+    let (isb, Γ', n2) ← compileStmts (scope :: Φ) Γ F L n1 body
     some (isb ++ List.replicate (Γ'.length - Γ.length) .pop, n2)
   else
     none
 
 /-- Compile a statement at layout `Γ` under contexts `F`/`L`; returns the
 code and the layout after the statement. -/
-def compileStmtA (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
+def compileStmt (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
     (L : Option LoopCtx) (n : Nat) :
     Stmt Op → Option (List Asm × List Ident × Nat)
   | .exprStmt e => do
-      let (is, n1) ← compileExprA Φ Γ 0 n e
+      let (is, n1) ← compileExpr Φ Γ 0 n e
       some (is, Γ, n1)
   | .letDecl xs none =>
       some (List.replicate xs.length (.push 0), xs ++ Γ, n)
   | .letDecl xs (some e) =>
       match xs with
       | [x] => do
-          let (is, n1) ← compileExprA Φ Γ 0 n e
+          let (is, n1) ← compileExpr Φ Γ 0 n e
           some (is, x :: Γ, n1)
       | _ => none                 -- multi-value `let` still unsupported
   | .assign xs e =>
       match xs with
       | [x] => do
-          let (is, n1) ← compileExprA Φ Γ 0 n e
+          let (is, n1) ← compileExpr Φ Γ 0 n e
           let idx ← Γ.findIdx? (fun y => y = x)
           if h : idx < 16 then
             some (is ++ [.swap ⟨idx, h⟩, .pop], Γ, n1)
@@ -200,12 +200,12 @@ def compileStmtA (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
             none                  -- too deep for SWAP16 (needs EIP-8024)
       | _ => none
   | .block body => do
-      let (is, n1) ← compileBlockA Φ Γ F L n body
+      let (is, n1) ← compileBlock Φ Γ F L n body
       some (is, Γ, n1)
   | .cond c body => do
       let lend := n
-      let (cCode, n1) ← compileExprA Φ Γ 0 (n + 1) c
-      let (bodyCode, n2) ← compileBlockA Φ Γ F L n1 body
+      let (cCode, n1) ← compileExpr Φ Γ 0 (n + 1) c
+      let (bodyCode, n2) ← compileBlock Φ Γ F L n1 body
       some (cCode ++ [.op .iszero, .jumpi lend] ++ bodyCode
         ++ [.label lend], Γ, n2)
   | .forLoop init c post body => do
@@ -215,11 +215,11 @@ def compileStmtA (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
       let lcond := n0
       let lpost := n0 + 1
       let lexit := n0 + 2
-      let (initCode, Γi, n1) ← compileStmtsA Φ' Γ F L (n0 + 3) init
-      let (cCode, n2) ← compileExprA Φ' Γi 0 n1 c
+      let (initCode, Γi, n1) ← compileStmts Φ' Γ F L (n0 + 3) init
+      let (cCode, n2) ← compileExpr Φ' Γi 0 n1 c
       let (bodyCode, n3) ←
-        compileBlockA Φ' Γi F (some ⟨lexit, lpost, Γi.length⟩) n2 body
-      let (postCode, n4) ← compileBlockA Φ' Γi F none n3 post
+        compileBlock Φ' Γi F (some ⟨lexit, lpost, Γi.length⟩) n2 body
+      let (postCode, n4) ← compileBlock Φ' Γi F none n3 post
       some (initCode
         ++ [.label lcond] ++ cCode ++ [.op .iszero, .jumpi lexit]
         ++ bodyCode
@@ -236,7 +236,7 @@ def compileStmtA (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
         let lskip := n + 1
         let Γf := _ps ++ rs
         let (bodyCode, n1) ←
-          compileBlockA Φ Γf (some ⟨lexit, Γf.length⟩) none (n + 2) body
+          compileBlock Φ Γf (some ⟨lexit, Γf.length⟩) none (n + 2) body
         some (.jump lskip :: .label info.entry :: bodyCode
           ++ [.label lexit]
           ++ List.replicate _ps.length .pop
@@ -256,13 +256,13 @@ def compileStmtA (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
   | _ => none                     -- switch: later
 
 /-- Compile a statement sequence, threading layout and counter. -/
-def compileStmtsA (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
+def compileStmts (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
     (L : Option LoopCtx) (n : Nat) :
     List (Stmt Op) → Option (List Asm × List Ident × Nat)
   | [] => some ([], Γ, n)
   | s :: rest => do
-      let (is1, Γ1, n1) ← compileStmtA Φ Γ F L n s
-      let (is2, Γ2, n2) ← compileStmtsA Φ Γ1 F L n1 rest
+      let (is1, Γ1, n1) ← compileStmt Φ Γ F L n s
+      let (is2, Γ2, n2) ← compileStmts Φ Γ1 F L n1 rest
       some (is1 ++ is2, Γ2, n2)
 
 end
@@ -272,15 +272,15 @@ compile from the empty layout with no enclosing contexts, then **check
 label well-formedness** and lower to the byte-level IR. The check is what
 hands the correctness proof unique/defined labels with zero freshness
 bookkeeping. -/
-def compileProgramAsm (prog : Block Op) : Option (List Asm) := do
+def compileProgram (prog : Block Op) : Option (List Asm) := do
   let (scope, n0) := hoistInfos 0 prog
   if !(scope.map Prod.fst).Nodup then none else
-  let (asm, _, _) ← compileStmtsA [scope] [] none none n0 prog
+  let (asm, _, _) ← compileStmts [scope] [] none none n0 prog
   if wfCheck asm then some asm else none
 
 /-- The full pipeline: Yul → labeled assembly → byte-level IR. -/
-def compileA (prog : Block Op) : Option (List Instr) := do
-  let asm ← compileProgramAsm prog
+def compile (prog : Block Op) : Option (List Instr) := do
+  let asm ← compileProgram prog
   lowerProg asm
 
 end YulEvmCompiler

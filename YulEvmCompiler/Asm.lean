@@ -25,7 +25,7 @@ Design points (see `PLAN.md`, "Milestones 3–4"):
 * Label well-formedness (`WFProg`) is **checked, not proved**: the compiler
   runs the decidable `wfCheck` on its output and rejects on failure, so the
   correctness proof gets uniqueness/definedness of labels for free from
-  `compileA = some _`, with no freshness bookkeeping.
+  `compile = some _`, with no freshness bookkeeping.
 -/
 
 namespace YulEvmCompiler
@@ -290,7 +290,7 @@ theorem mem_labelDefs_iff_findLabel {l : Label} :
 
 /-- The label well-formedness the correctness proof relies on. The compiler
 *checks* this (decidably, `wfCheck`) on its final output, so downstream
-proofs get it from `compileA = some _` without any freshness
+proofs get it from `compile = some _` without any freshness
 reasoning. -/
 structure WFProg (p : List Asm) : Prop where
   /-- Each label is defined at most once (jump targets are unambiguous). -/
