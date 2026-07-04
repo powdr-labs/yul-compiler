@@ -13,7 +13,7 @@ The file provides:
 * the per-op gas bound `opBound` and the lemmas capping every dynamic cost;
 * decode-at-layout lemmas lifted to `State.decoded`;
 * `OkStep`/`HaltStep`, the two conclusion shapes;
-* `opStep` — the main per-built-in case analysis — and `pushStep`.
+* `opStep` — the main per-built-in case analysis — and `pushStepU`.
 -/
 
 namespace YulEvmCompiler
@@ -185,16 +185,19 @@ theorem sstoreCold_le (s : State) (k : UInt256) : Gas.sstoreColdSurcharge s k �
 
 /-! ### The `PUSH32` step -/
 
-/-- Executing an embedded `PUSH32 (conv u)` pushes `u`'s image and advances
-the pc by 33. `StateMatch` is untouched (the instruction is pure). -/
-theorem pushStep {code : ByteArray} {pre post : List UInt8} {u : U256}
+/-- Executing an embedded `PUSH32 u` for an arbitrary target word `u` (e.g.
+a resolved label address): pushes `u`, advances the pc by 33. -/
+theorem pushStepU {code : ByteArray} {pre post : List UInt8} {u : UInt256}
     {yst : EvmState} {σ : List UInt256} {s : State}
-    (hcode : code = mkCode (pre ++ (Instr.push (conv u)).bytes ++ post))
+    (hcode : code = mkCode (pre ++ (Instr.push u).bytes ++ post))
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = σ)
     (hgas : 40000 ≤ s.gasAvailable) :
-    OkStep code s 40000 [u] yst pre.length 33 σ := by
+    ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = UInt256.ofNat (pre.length + 33)
+      ∧ s'.stack = u :: σ
+      ∧ s.gasAvailable - 40000 ≤ s'.gasAvailable := by
   have hsz : code.size = pre.length + 33 + post.length := by
     subst hcode; simp [Instr.bytes]; omega
   have hdec := decoded_push hf hcode hpc
@@ -204,15 +207,14 @@ theorem pushStep {code : ByteArray} {pre post : List UInt8} {u : U256}
     have : Gas.baseCost .Osaka (.Push ⟨(32 : Fin 33), by decide⟩) ≤ 40000 := by decide
     omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-    (StepRunning.pushN s ⟨32, by decide⟩ (conv u) 32 (by decide) hdec hgas'),
+    (StepRunning.pushN s ⟨32, by decide⟩ u 32 (by decide) hdec hgas'),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor⟩, ?_, ?_, ?_⟩
   · show s.pc + UInt256.ofNat (32 + 1) = _
     rw [hpc, ofNat_add_ofNat (by have := hf.codeSmall; omega)]
-  · show conv u :: s.stack = [u].map conv ++ σ
+  · show u :: s.stack = u :: σ
     rw [hstk]
-    rfl
   · show s.gasAvailable - Gas.baseCost s.fork (.Push ⟨(32 : Fin 33), by decide⟩)
       ≥ s.gasAvailable - 40000
     apply Nat.sub_le_sub_left
@@ -1114,6 +1116,37 @@ theorem jumpdestStep {code : ByteArray} {pre post : List UInt8}
       subst hcode; simp [Instr.bytes]; omega
     have := hf.codeSmall; omega
   · show s.gasAvailable - Gas.baseCost s.fork .JUMPDEST ≥ s.gasAvailable - 40000
+    apply Nat.sub_le_sub_left
+    rw [hfork]
+    decide
+
+/-- Executing an embedded `JUMP`: jump to `dest` (which must pass the
+jumpdest analysis). -/
+theorem jumpStep {code : ByteArray} {pre post : List UInt8}
+    {dest : UInt256} {rest : List UInt256} {yst : EvmState} {s : State}
+    (hcode : code = mkCode (pre ++ (Instr.op .JUMP).bytes ++ post))
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat pre.length)
+    (hstk : s.stack = dest :: rest)
+    (hvalid : Decode.isValidJumpDest code dest.toNat = true)
+    (hgas : 40000 ≤ s.gasAvailable) :
+    ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = dest
+      ∧ s'.stack = rest
+      ∧ s.gasAvailable - 40000 ≤ s'.gasAvailable := by
+  have hdec := decoded_op hf hcode hpc (by decide) trivial (by decide)
+  have hfork : s.fork = .Osaka := hf.fork
+  have hgas' : Gas.baseCost s.fork .JUMP ≤ s.gasAvailable := by
+    rw [hfork]
+    have : Gas.baseCost .Osaka Operation.JUMP ≤ 40000 := by decide
+    omega
+  refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+    (StepRunning.jump s dest rest hdec hgas' hstk
+      (by rw [hf.hcode]; exact hvalid)),
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      hf.running⟩,
+    ⟨hm.mem, hm.stor, hm.tstor⟩, rfl, rfl, ?_⟩
+  · show s.gasAvailable - Gas.baseCost s.fork .JUMP ≥ s.gasAvailable - 40000
     apply Nat.sub_le_sub_left
     rw [hfork]
     decide
