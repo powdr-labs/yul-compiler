@@ -6,9 +6,9 @@ import YulEvmCompiler.StateRel
 import YulEvmCompiler.OpStep
 import YulEvmCompiler.Asm
 import YulEvmCompiler.AsmSem
-import YulEvmCompiler.CompileAsm
-import YulEvmCompiler.ExamplesAsm
+import YulEvmCompiler.Compile
+import YulEvmCompiler.Examples
 import YulEvmCompiler.LowerDefs
 import YulEvmCompiler.LowerCorrect
 import YulEvmCompiler.SimAsm
-import YulEvmCompiler.CorrectnessAsm
+import YulEvmCompiler.Correctness

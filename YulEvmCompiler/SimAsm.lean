@@ -1,5 +1,5 @@
 import YulEvmCompiler.AsmSem
-import YulEvmCompiler.CompileAsm
+import YulEvmCompiler.Compile
 import YulSemantics.BigStep
 
 /-!

@@ -1,7 +1,7 @@
 import YulEvmCompiler.Asm
 
 /-!
-# YulEvmCompiler.CompileAsm
+# YulEvmCompiler.Compile
 
 The compiler from Yul to the labeled assembly layer, now covering
 **`for` loops (with `break`/`continue`) and user-defined functions (with

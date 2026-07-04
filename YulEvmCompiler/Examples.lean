@@ -1,11 +1,11 @@
-import YulEvmCompiler.CompileAsm
+import YulEvmCompiler.Compile
 import YulSemantics.Syntax
 import YulSemantics.Interp
 import YulSemantics.FibExample
 import EvmSemantics.EVM.StepF
 
 /-!
-# YulEvmCompiler.ExamplesAsm
+# YulEvmCompiler.Examples
 
 Sanity checks for the labeled-assembly pipeline (`compileProgram` /
 `compile`): loops, `break`/`continue`, user-defined functions (including
@@ -19,7 +19,7 @@ whole pipeline (labels, lowering, the calling convention) long before the
 correctness proof covers it.
 -/
 
-namespace YulEvmCompiler.ExamplesAsm
+namespace YulEvmCompiler.Examples
 
 open YulSemantics
 open YulSemantics.EVM (Op EvmState)
@@ -226,4 +226,4 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 
 #eval (compile factorial).map hex
 
-end YulEvmCompiler.ExamplesAsm
+end YulEvmCompiler.Examples

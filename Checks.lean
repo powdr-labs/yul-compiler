@@ -1,4 +1,4 @@
-import YulEvmCompiler.CorrectnessAsm
+import YulEvmCompiler.Correctness
 
 /-!
 # Checks

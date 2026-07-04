@@ -79,7 +79,7 @@ blocked on upstream issues found during this work).
 
 ## The theorem
 
-`YulEvmCompiler.compile_correct` (in `YulEvmCompiler/CorrectnessAsm.lean`):
+`YulEvmCompiler.compile_correct` (in `YulEvmCompiler/Correctness.lean`):
 
 > If `compile prog = some is` and the Yul semantics runs `prog` from
 > machine state `st₀` to `st'` with outcome `o`
@@ -125,7 +125,7 @@ lake exe cache get   # prebuilt Mathlib oleans
 lake build           # builds both semantics deps + the compiler + proofs
 ```
 
-`YulEvmCompiler/ExamplesAsm.lean` compiles a few sample programs at build time
+`YulEvmCompiler/Examples.lean` compiles a few sample programs at build time
 (`#guard`/`#eval`), including a `for` loop, a recursive function, and an
 iterative Fibonacci over storage — each run **differentially** through both
 the Yul interpreter and evm-semantics' `stepF` on the compiled bytecode, with

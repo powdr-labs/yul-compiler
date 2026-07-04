@@ -257,7 +257,7 @@ statement mentions only `YulSemantics.Run`, `compile`, `assemble`, and
 
 Status: **complete** (phase A + phase B sorry-free; the end-to-end theorems
 `compile_correct`/`compile_correct_eval` are proved in
-`YulEvmCompiler/CorrectnessAsm.lean`, with axiom sets pinned in `Checks.lean`).
+`YulEvmCompiler/Correctness.lean`, with axiom sets pinned in `Checks.lean`).
 This section is the working design document; keep it updated as decisions
 change.
 
@@ -336,7 +336,7 @@ a `.code l`. `label` is a no-op step. The current code is always a suffix of
 `prog`, which determines the byte position uniquely (suffixes of a list are
 determined by their length).
 
-### Compilation scheme (`YulEvmCompiler/CompileAsm.lean`)
+### Compilation scheme (`YulEvmCompiler/Compile.lean`)
 
 Compilation threads: layout `Γ : List Ident` (as today), a fresh-label
 counter `n : Nat`, a **function-info environment** `Φ : List (List (Ident ×
@@ -465,7 +465,7 @@ and **`hoist_ok`**.
 3. `callHalt`: same prologue, body-IH halt arm.
 
 After `sim`: the top-level theorems `compile_correct` /
-`compile_correct_eval` (`YulEvmCompiler/CorrectnessAsm.lean`) are **done**.
+`compile_correct_eval` (`YulEvmCompiler/Correctness.lean`) are **done**.
 They invert the pipeline (`compileProgramAsm_inv`; `wfCheck` ⇒ `Nodup`),
 take the `Run` = block rule to a `.stmts prog` derivation, establish the
 initial `FEnvOK` via `hoist_ok`, run phase A `sim`, compose with phase B's
@@ -546,9 +546,9 @@ Phase A definitions (`SimAsm.lean`), all under section hypotheses
   rule; compile with `L := none` there).
 * Old `Compile.lean`/`Correctness.lean`/`Examples.lean` have been **removed**
   now that the new pipeline's top-level theorem landed. The active file set is
-  `OpTable.lean`, `Asm.lean`, `AsmSem.lean`, `CompileAsm.lean`,
-  `LowerDefs.lean`, `LowerCorrect.lean`, `SimAsm.lean`, `CorrectnessAsm.lean`,
-  and `ExamplesAsm.lean`; `Instr/Decode/Value/StateRel/OpStep` survive
+  `OpTable.lean`, `Asm.lean`, `AsmSem.lean`, `Compile.lean`,
+  `LowerDefs.lean`, `LowerCorrect.lean`, `SimAsm.lean`, `Correctness.lean`,
+  and `Examples.lean`; `Instr/Decode/Value/StateRel/OpStep` survive
   (`OpStep` gained `pushStepU`/`jumpStep`, and the shared `opTable` moved from
   the old `Compile.lean` into `OpTable.lean`).
 
