@@ -1,4 +1,4 @@
-import YulEvmCompiler.Compile
+import YulEvmCompiler.OpTable
 import Batteries.Data.ByteArray
 
 /-!

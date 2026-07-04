@@ -1,0 +1,190 @@
+import YulEvmCompiler.CompileAsm
+import YulSemantics.Syntax
+import YulSemantics.Interp
+import EvmSemantics.EVM.StepF
+
+/-!
+# YulEvmCompiler.ExamplesAsm
+
+Sanity checks for the labeled-assembly pipeline (`compileProgramAsm` /
+`compileA`): loops, `break`/`continue`, user-defined functions (including
+recursion), and `leave`.
+
+Beyond "it compiles", the interesting checks here are **differential**: each
+program is run through yul-semantics' fuel-indexed interpreter *and* the
+compiled bytecode is run through evm-semantics' executable step function
+(`stepF`), and the final storage values are compared. This exercises the
+whole pipeline (labels, lowering, the calling convention) long before the
+correctness proof covers it.
+-/
+
+namespace YulEvmCompiler.ExamplesAsm
+
+open YulSemantics
+open YulSemantics.EVM (Op EvmState)
+open YulEvmCompiler
+
+/-- Render assembled bytes as a hex string. -/
+def hex (is : List Instr) : String :=
+  (assembleBytes is).foldl
+    (fun acc b =>
+      let d := Nat.toDigits 16 b.toNat
+      acc ++ (if d.length = 1 then "0" else "") ++ String.ofList d) ""
+
+/-! ### Test programs -/
+
+/-- A counting loop: `1 + 2 + … + 5` into storage slot 0. -/
+def sumLoop : Block Op := yul% {
+  let sum := 0
+  for { let i := 1 } lt(i, 6) { i := add(i, 1) } {
+    sum := add(sum, i)
+  }
+  sstore(0, sum)
+}
+
+/-- `continue` skips 3, `break` stops at 6: `0+1+2+4+5 = 12` in slot 0. -/
+def breakContinue : Block Op := yul% {
+  let s := 0
+  for { let i := 0 } lt(i, 10) { i := add(i, 1) } {
+    if eq(i, 3) { continue }
+    if eq(i, 6) { break }
+    s := add(s, i)
+  }
+  sstore(0, s)
+}
+
+/-- A simple function: `double(21) = 42` in slot 0. -/
+def funCall : Block Op := yul% {
+  function double(x) -> y {
+    y := add(x, x)
+  }
+  sstore(0, double(21))
+}
+
+/-- A *recursive* function: `fact(5) = 120` in slot 0. -/
+def factorial : Block Op := yul% {
+  function fact(n) -> f {
+    f := 1
+    if gt(n, 1) {
+      f := mul(n, fact(sub(n, 1)))
+    }
+  }
+  sstore(0, fact(5))
+}
+
+/-- `leave` returns early: `f(0) = 1` in slot 0, `f(7) = 2` in slot 1. -/
+def leaveEarly : Block Op := yul% {
+  function f(a) -> r {
+    r := 1
+    if eq(a, 0) { leave }
+    r := 2
+  }
+  sstore(0, f(0))
+  sstore(1, f(7))
+}
+
+/-- Functions calling functions, calls nested inside expressions and loop
+conditions; a zero-return function used as a statement. -/
+def nested : Block Op := yul% {
+  function sq(x) -> y {
+    y := mul(x, x)
+  }
+  function store(k, v) {
+    sstore(k, v)
+  }
+  let acc := 0
+  for { let i := 1 } lt(i, add(sq(2), 1)) { i := add(i, 1) } {
+    acc := add(acc, sq(i))
+  }
+  store(0, acc)
+}
+
+/-- A `for` whose body declares locals and `break`s from inside a nested
+block (the pops must unwind both the inner block and the body). -/
+def breakNested : Block Op := yul% {
+  let r := 0
+  for { let i := 0 } lt(i, 100) { i := add(i, 1) } {
+    let d := add(i, i)
+    {
+      let e := add(d, 1)
+      if gt(e, 7) { r := e break }
+    }
+  }
+  sstore(0, r)
+}
+
+#guard (compileProgramAsm sumLoop).isSome
+#guard (compileProgramAsm breakContinue).isSome
+#guard (compileProgramAsm funCall).isSome
+#guard (compileProgramAsm factorial).isSome
+#guard (compileProgramAsm leaveEarly).isSome
+#guard (compileProgramAsm nested).isSome
+#guard (compileProgramAsm breakNested).isSome
+#guard (compileA sumLoop).isSome
+#guard (compileA factorial).isSome
+
+/-! ### Differential execution: Yul interpreter vs. compiled bytecode -/
+
+/-- Run the Yul-side interpreter to a final machine state. -/
+def runYul (fuel : Nat) (prog : Block Op) : Option EvmState :=
+  match Interp.run YulSemantics.EVM.exec fuel prog EvmState.init with
+  | .ok (_, st, _) => some st
+  | _ => none
+
+/-- A minimal EVM state executing `code` on Osaka with plenty of gas. -/
+def evmInit (code : ByteArray) : EvmSemantics.EVM.State :=
+  let env : EvmSemantics.ExecutionEnv := Inhabited.default
+  let s : EvmSemantics.EVM.State := Inhabited.default
+  { s with
+      pc := 0
+      stack := []
+      execLength := 0
+      halt := .Running
+      callStack := []
+      gasAvailable := 100000000
+      executionEnv := { env with
+          code := code
+          fork := .Osaka
+          permitStateMutation := true } }
+
+/-- Drive `stepF` until done (fuel-bounded). -/
+def runEvm : Nat → EvmSemantics.EVM.State → EvmSemantics.EVM.State
+  | 0, s => s
+  | fuel + 1, s =>
+    if s.isDone then s else runEvm fuel (EvmSemantics.EVM.stepF s)
+
+/-- Compile `prog`, run both sides, and compare the storage values at
+`keys` (plus that the EVM run actually finished without an exception). -/
+def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
+  match compileA prog, runYul 100000 prog with
+  | some is, some yst =>
+      let s := runEvm 100000 (evmInit (assemble is))
+      s.isDone
+        && (s.halt matches .Success)
+        && keys.all (fun k =>
+          (yst.storage (BitVec.ofNat 256 k)).toNat
+            == ((s.accountMap s.executionEnv.address).storage.get
+                  (EvmSemantics.UInt256.ofNat k)).toNat)
+  | _, _ => false
+
+#guard agreeOn sumLoop [0]
+#guard agreeOn breakContinue [0]
+#guard agreeOn funCall [0]
+#guard agreeOn factorial [0]
+#guard agreeOn leaveEarly [0, 1]
+#guard agreeOn nested [0]
+#guard agreeOn breakNested [0]
+
+-- The Yul interpreter's view of the expected values (documentation).
+#guard (runYul 100000 sumLoop).map (fun st => (st.storage 0).toNat) = some 15
+#guard (runYul 100000 breakContinue).map (fun st => (st.storage 0).toNat) = some 12
+#guard (runYul 100000 funCall).map (fun st => (st.storage 0).toNat) = some 42
+#guard (runYul 100000 factorial).map (fun st => (st.storage 0).toNat) = some 120
+#guard (runYul 100000 leaveEarly).map
+    (fun st => ((st.storage 0).toNat, (st.storage 1).toNat)) = some (1, 2)
+#guard (runYul 100000 nested).map (fun st => (st.storage 0).toNat) = some 30
+#guard (runYul 100000 breakNested).map (fun st => (st.storage 0).toNat) = some 9
+
+#eval (compileA factorial).map hex
+
+end YulEvmCompiler.ExamplesAsm

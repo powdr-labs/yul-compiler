@@ -1,4 +1,4 @@
-import YulEvmCompiler.Correctness
+import YulEvmCompiler.CorrectnessAsm
 
 /-!
 # Checks
@@ -18,10 +18,10 @@ The expected set is Lean's three standard classical-mathematics axioms
 (`propext`, `Classical.choice`, `Quot.sound`) — the same ones Mathlib itself
 depends on, and notably *not* `sorryAx`. -/
 
-/-- info: 'YulEvmCompiler.compile_correct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+/-- info: 'YulEvmCompiler.compileA_correct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
-#print axioms YulEvmCompiler.compile_correct
+#print axioms YulEvmCompiler.compileA_correct
 
-/-- info: 'YulEvmCompiler.compile_correct_eval' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+/-- info: 'YulEvmCompiler.compileA_correct_eval' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
-#print axioms YulEvmCompiler.compile_correct_eval
+#print axioms YulEvmCompiler.compileA_correct_eval
