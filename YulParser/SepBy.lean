@@ -39,6 +39,20 @@ theorem sepBy1_sound {α : Type} {p : Parser α} {pr : α → List Char} (hp : S
   obtain ⟨x, xs⟩ := a
   simp only [printSepList, fws_append, fws_sep, List.append_nil]
 
+/-- One-or-more, returning the head and tail *separately* so the result is
+nonempty by construction (used where an empty list must be distinguishable from
+absence, e.g. function return lists after `->`). -/
+def sepBy1P {α : Type} (p : Parser α) : Parser (α × List α) :=
+  andThen p (manyP (commaElem p))
+
+/-- Printer for `sepBy1P` (head then comma-tail). -/
+def printSepList1 {α : Type} (pr : α → List Char) (x : α × List α) : List Char :=
+  pr x.1 ++ sep ++ printMany (fun z => ',' :: sep ++ pr z) x.2
+
+theorem sepBy1P_sound {α : Type} {p : Parser α} {pr : α → List Char} (hp : Sound p pr) :
+    Sound (sepBy1P p) (printSepList1 pr) :=
+  andThen_sound hp (manyP_sound (commaElem_sound hp))
+
 theorem sepBy0_sound {α : Type} {p : Parser α} {pr : α → List Char} (hp : Sound p pr) :
     Sound (sepBy0 p) (printSepList pr) := by
   apply pmap_sound (opt_sound (sepBy1_sound hp))
