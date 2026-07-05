@@ -1,16 +1,16 @@
-import YulSemParser.SoundC
+import YulParser.SoundC
 import YulSemantics.Ast
 
 /-!
-# YulSemParser.Atoms
+# YulParser.Atoms
 
 Atomic parsers producing `yul-semantics` values (`Literal`, identifiers as
-`String`), plus keyword/punctuation tokens and the discarded type annotation.
+`String`), plus keyword and punctuation tokens.
 Each atom prints its token followed by a delimiting space (so the printed form
 is `Closed`), and is proven `SoundC`.
 -/
 
-namespace YulSemParser
+namespace YulParser
 
 open YulParser (Parser token pWhile1 pstr isWs isIdStart isIdCont isDigitC isHexDigitC pchar
   pWhile0 keyword notIdCont satisfy pmap)
@@ -37,7 +37,7 @@ def pIdentChars : Parser (List Char) := token (pWhile1 isIdStart isIdCont)
 theorem pIdentChars_soundC : SoundC pIdentChars (fun d => d ++ [' ']) := by
   intro cs d rest h
   simp only [pIdentChars, token] at h
-  set cs' := cs.dropWhile isWs with hcs'
+  set cs' := YulParser.skipTrivia cs with hcs'
   cases hc : cs' with
   | nil => rw [hc] at h; simp [pWhile1] at h
   | cons c r =>
@@ -60,7 +60,7 @@ theorem pIdentChars_soundC : SoundC pIdentChars (fun d => d ++ [' ']) := by
         rw [canon_ws (by decide : isWs ' ' = true), canon_nil]
       -- canon cs splits as that ident followed by the remainder
       have hcanon_cs : canon cs = CTok.ident (c :: ts) :: canon (r.dropWhile isIdCont) := by
-        rw [← canon_dropWhile_ws cs, ← hcs', hc,
+        rw [← canon_skipTrivia cs, ← hcs', hc,
           canon_ident (idStart_not_ws hfirst) (idStart_not_quote hfirst) hfirst]
       rw [hcanon_cs, tokEq, List.singleton_append]
     · exact absurd h (by simp)
@@ -252,7 +252,7 @@ theorem keywordC {c : Char} {ts : List Char} (hc : isIdStart c = true)
     SoundC (keyword (c :: ts)) (fun _ => (c :: ts) ++ [' ']) := by
   intro cs a rest h
   simp only [keyword, token, pmap, YulParser.andThen, Option.bind_eq_bind] at h
-  cases hp : pstr (c :: ts) (cs.dropWhile isWs) with
+  cases hp : pstr (c :: ts) (YulParser.skipTrivia cs) with
   | none => rw [hp] at h; simp at h
   | some pr1 =>
     rw [hp] at h; simp only [Option.bind_some] at h
@@ -266,9 +266,9 @@ theorem keywordC {c : Char} {ts : List Char} (hc : isIdStart c = true)
       rw [Option.some.injEq, Prod.mk.injEq] at h
       obtain ⟨-, rfl⟩ := h
       obtain ⟨hr21, htk, hdw⟩ := notIdCont_boundary hn
-      have hcons : cs.dropWhile isWs = (c :: ts) ++ r1 := pstr_consumes _ _ _ hp
+      have hcons : YulParser.skipTrivia cs = (c :: ts) ++ r1 := pstr_consumes _ _ _ hp
       refine ⟨?_, closed_ident hc hts⟩
-      rw [hr21, canon_ident_space hc hts, ← canon_dropWhile_ws cs, hcons,
+      rw [hr21, canon_ident_space hc hts, ← canon_skipTrivia cs, hcons,
         canon_ident_boundary hc hts htk hdw, List.singleton_append]
 
 /-- Punctuation-shaped symbol (self-delimiting); needs the bare token to be `Closed`. -/
@@ -278,7 +278,7 @@ theorem symbolC {s : List Char} (hcs : Closed s) :
   simp only [token] at h
   have hcons := pstr_consumes s _ _ h
   refine ⟨?_, closed_append hcs (closed_ws (by decide))⟩
-  rw [← canon_dropWhile_ws cs, hcons, hcs rest, hcs [' '], canon_ws (by decide : isWs ' ' = true),
+  rw [← canon_skipTrivia cs, hcons, hcs rest, hcs [' '], canon_ws (by decide : isWs ' ' = true),
     canon_nil, List.append_nil]
 
 /-! ### Number and string literals -/
@@ -293,7 +293,7 @@ theorem pNum_soundC : SoundC pNum printLitC := by
   obtain ⟨⟨d, r'⟩, hpw, heq⟩ := h
   simp only [Option.some.injEq, Prod.mk.injEq] at heq
   obtain ⟨rfl, rfl⟩ := heq
-  set cs' := cs.dropWhile isWs with hcs'
+  set cs' := YulParser.skipTrivia cs with hcs'
   cases hc : cs' with
   | nil => rw [hc] at hpw; simp [pWhile1] at hpw
   | cons c r =>
@@ -308,7 +308,7 @@ theorem pNum_soundC : SoundC pNum printLitC := by
       refine ⟨?_, closed_decDigits _⟩
       have hcanon_cs : canon cs
           = CTok.num (numVal (c :: ts)) :: canon (r.dropWhile isNumCont) := by
-        rw [← canon_dropWhile_ws cs, ← hcs', hc,
+        rw [← canon_skipTrivia cs, ← hcs', hc,
           canon_num (digit_not_ws hfirst) (digit_not_quote hfirst) (digit_not_idStart hfirst)
             hfirst]
       show canon (printLitC (Literal.number (numVal (c :: ts)))) ++ _ = _
@@ -343,7 +343,7 @@ theorem pStr_soundC : SoundC pStr printLitC := by
           Bool.false_eq_true, if_false, List.append_nil, List.tail_cons]
         rw [canon_ws (by decide : isWs ' ' = true), canon_nil]
       have hcanon_cs : canon cs = CTok.str content :: canon rest' := by
-        rw [← canon_dropWhile_ws cs, heqd, canon_str, heqi]
+        rw [← canon_skipTrivia cs, heqd, canon_str, heqi]
         simp only [List.tail_cons, ← hcont]
       refine ⟨?_, ?_⟩
       · show canon (printLitC (Literal.string (String.ofList content))) ++ _ = _
@@ -372,4 +372,4 @@ def pLit : Parser Literal := YulParser.orElse pNum (YulParser.orElse pBool pStr)
 theorem pLit_soundC : SoundC pLit printLitC :=
   orElseC pNum_soundC (orElseC pBool_soundC pStr_soundC)
 
-end YulSemParser
+end YulParser

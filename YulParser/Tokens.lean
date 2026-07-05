@@ -3,13 +3,12 @@ import YulParser.Combinators
 /-!
 # YulParser.Tokens
 
-Literal strings (`pstr`), whitespace skipping (`skipWs`, `token`), and
-repetition (`many`, with its printer `printMany`), each with soundness lemmas.
+Literal-string matching (`pstr`), trivia skipping (`skipTrivia`: whitespace and C++-style `//`
+line and `/* … */` block comments), whitespace-absorbing tokens (`token`), and repetition
+(`many`/`manyP`).
 -/
 
 namespace YulParser
-
-/-! ### Literal strings -/
 
 /-- Consume the exact character list `s`. -/
 def pstr : List Char → Parser Unit
@@ -19,63 +18,49 @@ def pstr : List Char → Parser Unit
     | some (_, r) => pstr cs r
     | none => none
 
-theorem pstr_sound (s : List Char) : Sound (pstr s) (fun _ => s) := by
-  induction s with
-  | nil => intro cs a rest h; simp only [pstr] at h; exact ppure_sound () cs a rest h
-  | cons c cs ih =>
-    intro input a rest h
-    simp only [pstr] at h
-    cases hc : pchar c input with
-    | none => rw [hc] at h; simp at h
-    | some ar =>
-      obtain ⟨x, r⟩ := ar
-      rw [hc] at h
-      have e1 := pchar_sound c input x r hc
-      have e2 := ih r a rest h
-      -- fws (c :: cs) = fws [c] ++ fws cs
-      have : fws (c :: cs) = fws [c] ++ fws cs := by
-        rw [show c :: cs = [c] ++ cs from rfl, fws_append]
-      rw [this, List.append_assoc, e2, e1]
-
-/-! ### Whitespace -/
-
-theorem fws_dropWhile_isWs (cs : List Char) : fws (cs.dropWhile isWs) = fws cs := by
-  induction cs with
-  | nil => rfl
-  | cons c cs' ih =>
-    simp only [List.dropWhile]
-    split
-    · rename_i hw; rw [ih]; exact (fws_cons_ws hw cs').symm
-    · rfl
-
 /-- Skip leading whitespace. -/
 def skipWs : Parser Unit := fun cs => some ((), cs.dropWhile isWs)
 
-theorem skipWs_sound : Sound skipWs (fun _ => []) := by
-  intro cs a rest h
-  simp only [skipWs, Option.some.injEq, Prod.mk.injEq] at h
-  obtain ⟨_, rfl⟩ := h
-  rw [fws_dropWhile_isWs]; simp
+/-- `dropWhile` never lengthens a list. -/
+theorem dropWhile_le {α} (l : List α) (p : α → Bool) : (l.dropWhile p).length ≤ l.length := by
+  have h : (l.takeWhile p ++ l.dropWhile p).length = l.length := by
+    rw [List.takeWhile_append_dropWhile]
+  rw [List.length_append] at h; omega
 
-/-- Run `p` after skipping leading whitespace. A *token* thus absorbs the
-whitespace that precedes it. -/
-def token {α : Type} (p : Parser α) : Parser α := fun cs => p (cs.dropWhile isWs)
+/-- The suffix following the first `*/` (all of the list if there is none). -/
+def afterBlockComment : List Char → List Char
+  | [] => []
+  | '*' :: '/' :: r => r
+  | _ :: r => afterBlockComment r
 
-theorem token_sound {α : Type} {p : Parser α} {pr : α → List Char} (hp : Sound p pr) :
-    Sound (token p) pr := by
-  intro cs a rest h
-  simp only [token] at h
-  rw [hp _ a rest h, fws_dropWhile_isWs]
+theorem afterBlockComment_le (l : List Char) : (afterBlockComment l).length ≤ l.length := by
+  fun_induction afterBlockComment l <;> simp_all <;> omega
 
-/-- A keyword / symbol token: skip leading whitespace, then match `s`. -/
-def kw (s : List Char) : Parser Unit := token (pstr s)
+/-- Drop leading whitespace and comments (`//…` to end of line, `/* … */`), repeatedly. -/
+def skipTrivia (cs : List Char) : List Char :=
+  match cs with
+  | [] => []
+  | c :: rest =>
+    if isWs c then skipTrivia rest
+    else if c == '/' then
+      match rest with
+      | '/' :: r => skipTrivia (r.dropWhile (· != '\n'))
+      | '*' :: r => skipTrivia (afterBlockComment r)
+      | _ => c :: rest
+    else c :: rest
+  termination_by cs.length
+  decreasing_by
+    all_goals simp_wf
+    all_goals
+      first
+        | omega
+        | (refine Nat.lt_of_le_of_lt (dropWhile_le _ _) ?_; omega)
+        | (refine Nat.lt_of_le_of_lt (afterBlockComment_le _) ?_; omega)
 
-theorem kw_sound (s : List Char) : Sound (kw s) (fun _ => s) := token_sound (pstr_sound s)
+/-- Run `p` after skipping leading trivia (whitespace and comments). -/
+def token {α : Type} (p : Parser α) : Parser α := fun cs => p (skipTrivia cs)
 
-/-! ### Repetition -/
-
-/-- Zero-or-more, greedy; always succeeds. Stops when `p` fails or fails to make
-progress (so it is total). -/
+/-- Zero-or-more, greedy; always succeeds. Stops when `p` fails or fails to make progress. -/
 def many {α : Type} (p : Parser α) : List Char → List α × List Char := fun cs =>
   match p cs with
   | none => ([], cs)
@@ -88,36 +73,5 @@ decreasing_by all_goals exact h
 
 /-- `many` as a (always-succeeding) parser. -/
 def manyP {α : Type} (p : Parser α) : Parser (List α) := fun cs => some (many p cs)
-
-/-- Printer for a list: each element printed, separated by whitespace. -/
-def printMany {α : Type} (pr : α → List Char) : List α → List Char
-  | [] => []
-  | a :: as => pr a ++ sep ++ printMany pr as
-
-theorem fws_printMany_cons {α : Type} (pr : α → List Char) (a : α) (as : List α) :
-    fws (printMany pr (a :: as)) = fws (pr a) ++ fws (printMany pr as) := by
-  simp only [printMany]; rw [fws_glue]
-
-/-- The core soundness fact for `many`, phrased on the raw `many` result. -/
-theorem many_fws {α : Type} {p : Parser α} {pr : α → List Char} (hp : Sound p pr)
-    (cs : List Char) :
-    fws (printMany pr (many p cs).1) ++ fws (many p cs).2 = fws cs := by
-  fun_induction many p cs with
-  | case1 cs hpc => simp [hpc, printMany]
-  | case2 cs a rest hpc hlt ih =>
-    simp only [hpc, dif_pos hlt]
-    rw [fws_printMany_cons, List.append_assoc, ih]
-    exact hp cs a rest hpc
-  | case3 cs a rest hpc hlt =>
-    simp only [hpc, dif_neg hlt, printMany]
-    rw [fws_glue]
-    simpa using hp cs a rest hpc
-
-theorem manyP_sound {α : Type} {p : Parser α} {pr : α → List Char} (hp : Sound p pr) :
-    Sound (manyP p) (printMany pr) := by
-  intro cs a rest h
-  simp only [manyP, Option.some.injEq] at h
-  have hm := many_fws hp cs
-  rw [h] at hm; exact hm
 
 end YulParser

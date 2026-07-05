@@ -19,6 +19,3 @@ name = "YulEvmCompiler"
 
 [[lean_lib]]
 name = "YulParser"
-
-[[lean_lib]]
-name = "YulSemParser"

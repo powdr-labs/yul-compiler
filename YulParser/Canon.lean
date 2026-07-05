@@ -2,17 +2,16 @@ import Mathlib
 import YulParser.Lexer
 
 /-!
-# YulSemParser.Canon
+# YulParser.Canon
 
 An **independent** syntactic canonical form for Yul source, defined with no reference to the
 parser: a total maximal-munch lexer `canon : List Char → List CTok` that
 
-* drops all whitespace,
-* evaluates every number literal (decimal or `0x…` hex) to its `Nat` value, and
-* strips type annotations (`:ident`).
+* drops all whitespace and C++-style comments (`//…` line, `/* … */` block), and
+* evaluates every number literal (decimal or `0x…` hex) to its `Nat` value.
 
 Everything else (identifiers, strings, punctuation, `:=`) is preserved verbatim. Two sources are
-"the same modulo whitespace / number-base / types" exactly when they have the same `canon`.
+"the same modulo whitespace / comments / number-base" exactly when they have the same `canon`.
 
 The load-bearing structural notion is `Closed x := ∀ y, canon (x ++ y) = canon x ++ canon y`: a
 character list that never interacts with whatever follows it. `Closed` is closed under append, and
@@ -20,11 +19,12 @@ every complete token followed by a delimiter is `Closed`, so distributivity over
 printed forms follows compositionally (no per-seam reasoning).
 -/
 
-namespace YulSemParser
+namespace YulParser
 
-open YulParser (isWs isIdStart isIdCont isDigitC isHexDigitC)
+open YulParser (isWs isIdStart isIdCont isDigitC isHexDigitC afterBlockComment afterBlockComment_le
+  skipTrivia dropWhile_le)
 
-/-- A normalized token. Numbers are stored by value; whitespace and type annotations produce no
+/-- A normalized token. Numbers are stored by value; whitespace and comments produce no
 token at all. -/
 inductive CTok
   | ident (s : List Char)
@@ -87,10 +87,12 @@ def canon (cs : List Char) : List CTok :=
     else if c == ':' then
       match rest with
       | '=' :: r => CTok.punct [':', '='] :: canon r
-      | d :: r =>
-        if isIdStart d then canon (r.dropWhile isIdCont)      -- `:ident` type annotation, dropped
-        else CTok.punct [':'] :: canon (d :: r)
-      | [] => [CTok.punct [':']]
+      | other => CTok.punct [':'] :: canon other
+    else if c == '/' then
+      match rest with
+      | '/' :: r => canon (r.dropWhile (· != '\n'))          -- `//` line comment, dropped
+      | '*' :: r => canon (afterBlockComment r)              -- `/* … */` block comment, dropped
+      | other => CTok.punct ['/'] :: canon other
     else
       CTok.punct [c] :: canon rest
   termination_by cs.length
@@ -101,10 +103,16 @@ def canon (cs : List Char) : List CTok :=
         | omega
         | exact dwle _ _
         | exact Nat.le_succ_of_le (dwle _ _)
+        | exact Nat.le_succ_of_le (Nat.le_succ_of_le (dwle _ _))
+        | exact afterBlockComment_le _
+        | exact Nat.le_succ_of_le (afterBlockComment_le _)
+        | exact Nat.le_succ_of_le (Nat.le_succ_of_le (afterBlockComment_le _))
         | exact Nat.le_trans (tail_le _) (dwle _ _)
         | exact Nat.le_succ_of_le (Nat.le_trans (tail_le _) (dwle _ _))
         | exact Nat.lt_of_le_of_lt (dwle _ _) (Nat.lt_succ_self _)
         | exact Nat.lt_succ_of_le (Nat.le_trans (tail_le _) (dwle _ _))
+        | (refine Nat.lt_of_le_of_lt (dwle _ _) ?_; omega)
+        | (refine Nat.lt_of_le_of_lt (afterBlockComment_le _) ?_; omega)
 
 @[simp] theorem canon_nil : canon [] = [] := by rw [canon.eq_def]
 
@@ -128,9 +136,9 @@ theorem canon_num {c : Char} {rest : List Char}
 
 theorem canon_punct {c : Char} {rest : List Char}
     (hw : isWs c = false) (hq : (c == '"') = false) (hi : isIdStart c = false)
-    (hd : isDigitC c = false) (hc : (c == ':') = false) :
+    (hd : isDigitC c = false) (hc : (c == ':') = false) (hs : (c == '/') = false) :
     canon (c :: rest) = CTok.punct [c] :: canon rest := by
-  rw [canon.eq_def]; simp [hw, hq, hi, hd, hc]
+  rw [canon.eq_def]; simp [hw, hq, hi, hd, hc, hs]
 
 theorem canon_assign {r : List Char} :
     canon (':' :: '=' :: r) = CTok.punct [':', '='] :: canon r := by
@@ -140,6 +148,24 @@ theorem canon_str {rest : List Char} :
     canon ('"' :: rest)
       = CTok.str (rest.takeWhile (· != '"')) :: canon (rest.dropWhile (· != '"')).tail := by
   rw [canon.eq_def]; simp [isWs]
+
+/-- `//` line comment: skip to end of line. -/
+theorem canon_line_comment {r : List Char} :
+    canon ('/' :: '/' :: r) = canon (r.dropWhile (· != '\n')) := by
+  rw [canon.eq_def]; simp [isWs, isIdStart, isDigitC]
+
+/-- `/* … */` block comment: skip past the terminator. -/
+theorem canon_block_comment {r : List Char} :
+    canon ('/' :: '*' :: r) = canon (afterBlockComment r) := by
+  rw [canon.eq_def]; simp [isWs, isIdStart, isDigitC]
+
+/-- `canon` ignores leading trivia (whitespace and comments) — it skips exactly what
+`skipTrivia` removes. -/
+theorem canon_skipTrivia (cs : List Char) : canon (skipTrivia cs) = canon cs := by
+  fun_induction skipTrivia cs <;> simp_all
+  · exact (canon_ws (by assumption)).symm
+  · exact canon_line_comment.symm
+  · exact canon_block_comment.symm
 
 /-! ### `Closed`: prefixes that do not interact with their continuation -/
 
@@ -217,10 +243,11 @@ theorem closed_ws {c : Char} (h : isWs c = true) : Closed [c] := by
 
 /-- A single punctuation character is closed (self-delimiting). -/
 theorem closed_punct {c : Char} (hw : isWs c = false) (hq : (c == '"') = false)
-    (hi : isIdStart c = false) (hd : isDigitC c = false) (hc : (c == ':') = false) :
-    Closed [c] := by
+    (hi : isIdStart c = false) (hd : isDigitC c = false) (hc : (c == ':') = false)
+    (hs : (c == '/') = false) : Closed [c] := by
   intro y
-  rw [List.singleton_append, canon_punct hw hq hi hd hc, canon_punct hw hq hi hd hc, canon_nil]
+  rw [List.singleton_append, canon_punct hw hq hi hd hc hs, canon_punct hw hq hi hd hc hs,
+    canon_nil]
   simp
 
 /-- The assignment token `:=` is closed. -/
@@ -278,4 +305,4 @@ theorem closed_str {content : List Char} (hcont : ∀ x ∈ content, (x != '"') 
   have e2 : '"' :: (content ++ '"' :: [' ']) = '"' :: (content ++ '"' :: ' ' :: []) := by simp
   rw [e1, key y, e2, key [], canon_nil]; simp
 
-end YulSemParser
+end YulParser

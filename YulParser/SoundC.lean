@@ -1,8 +1,8 @@
-import YulSemParser.Canon
+import YulParser.Canon
 import YulParser.Tokens
 
 /-!
-# YulSemParser.SoundC
+# YulParser.SoundC
 
 The `canon`-level soundness invariant and its combinator lemmas, mirroring
 `YulParser.Sound` but with `canon` in place of `fws`. Because `canon` is not a
@@ -13,7 +13,7 @@ token *followed by a delimiting space*, so combinators just concatenate (no
 separators inserted).
 -/
 
-namespace YulSemParser
+namespace YulParser
 
 open YulParser (Parser andThen pmap orElse opt token skipWs many manyP isWs)
 
@@ -22,15 +22,6 @@ open YulParser (Parser andThen pmap orElse opt token skipWs many manyP isWs)
 def SoundC {α : Type} (p : Parser α) (pr : α → List Char) : Prop :=
   ∀ cs a rest, p cs = some (a, rest) → canon (pr a) ++ canon rest = canon cs ∧ Closed (pr a)
 
-/-- `canon` ignores leading whitespace. -/
-theorem canon_dropWhile_ws (cs : List Char) : canon (cs.dropWhile isWs) = canon cs := by
-  induction cs with
-  | nil => rfl
-  | cons c cs ih =>
-    simp only [List.dropWhile]
-    split
-    · rename_i hw; rw [ih, canon_ws hw]
-    · rfl
 
 /-! ### Sequencing -/
 
@@ -104,7 +95,7 @@ theorem tokenC {α : Type} {p : Parser α} {pr : α → List Char} (hp : SoundC 
   intro cs a rest h
   simp only [token] at h
   obtain ⟨e, c⟩ := hp _ a rest h
-  exact ⟨by rw [e, canon_dropWhile_ws], c⟩
+  exact ⟨by rw [e, canon_skipTrivia], c⟩
 
 /-! ### Repetition -/
 
@@ -147,4 +138,4 @@ theorem manyC {α : Type} {p : Parser α} {pr : α → List Char} (hp : SoundC p
   subst ha hr
   exact manyC_raw hp cs
 
-end YulSemParser
+end YulParser
