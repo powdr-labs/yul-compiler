@@ -281,4 +281,95 @@ theorem symbolC {s : List Char} (hcs : Closed s) :
   rw [← canon_dropWhile_ws cs, hcons, hcs rest, hcs [' '], canon_ws (by decide : isWs ' ' = true),
     canon_nil, List.append_nil]
 
+/-! ### Number and string literals -/
+
+/-- A number literal (decimal or `0x…` hex), producing `Literal.number` of its value. -/
+def pNum : Parser Literal :=
+  token (pmap (fun d => Literal.number (numVal d)) (pWhile1 isDigitC isNumCont))
+
+theorem pNum_soundC : SoundC pNum printLitC := by
+  intro cs a rest h
+  simp only [pNum, token, pmap, Option.bind_eq_some_iff] at h
+  obtain ⟨⟨d, r'⟩, hpw, heq⟩ := h
+  simp only [Option.some.injEq, Prod.mk.injEq] at heq
+  obtain ⟨rfl, rfl⟩ := heq
+  set cs' := cs.dropWhile isWs with hcs'
+  cases hc : cs' with
+  | nil => rw [hc] at hpw; simp [pWhile1] at hpw
+  | cons c r =>
+    rw [hc] at hpw
+    simp only [pWhile1] at hpw
+    split at hpw
+    · rename_i hfirst
+      simp only [Option.some.injEq, Prod.mk.injEq] at hpw
+      obtain ⟨rfl, rfl⟩ := hpw
+      set ts := r.takeWhile isNumCont with hts
+      have htsAll : ∀ x ∈ ts, isNumCont x = true := fun x hx => List.mem_takeWhile_imp hx
+      refine ⟨?_, closed_decDigits _⟩
+      have hcanon_cs : canon cs
+          = CTok.num (numVal (c :: ts)) :: canon (r.dropWhile isNumCont) := by
+        rw [← canon_dropWhile_ws cs, ← hcs', hc,
+          canon_num (digit_not_ws hfirst) (digit_not_quote hfirst) (digit_not_idStart hfirst)
+            hfirst]
+      show canon (printLitC (Literal.number (numVal (c :: ts)))) ++ _ = _
+      rw [printLitC, canon_decDigits, hcanon_cs, List.singleton_append]
+    · exact absurd hpw (by simp)
+
+/-- A string literal `"…"` (no escapes; body is any run of non-quote characters),
+producing `Literal.string`. Structured to mirror `canon`'s string rule. -/
+def pStr : Parser Literal := token (fun cs =>
+  match cs with
+  | '"' :: rest =>
+    match rest.dropWhile (· != '"') with
+    | '"' :: rest' => some (Literal.string (String.ofList (rest.takeWhile (· != '"'))), rest')
+    | _ => none
+  | _ => none)
+
+theorem pStr_soundC : SoundC pStr printLitC := by
+  intro cs a rest h
+  simp only [pStr, token] at h
+  split at h
+  · rename_i body heqd
+    split at h
+    · rename_i rest' heqi
+      simp only [Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      set content := body.takeWhile (· != '"') with hcont
+      have hcontQ : ∀ x ∈ content, (x != '"') = true :=
+        fun x hx => by simpa using List.mem_takeWhile_imp hx
+      have hprint : canon ('"' :: (content ++ '"' :: [' '])) = [CTok.str content] := by
+        rw [canon_str, takeWhile_append_all hcontQ, dropWhile_append_all hcontQ]
+        simp only [List.takeWhile_cons, List.dropWhile_cons, (by decide : ('"' != '"') = false),
+          Bool.false_eq_true, if_false, List.append_nil, List.tail_cons]
+        rw [canon_ws (by decide : isWs ' ' = true), canon_nil]
+      have hcanon_cs : canon cs = CTok.str content :: canon rest' := by
+        rw [← canon_dropWhile_ws cs, heqd, canon_str, heqi]
+        simp only [List.tail_cons, ← hcont]
+      refine ⟨?_, ?_⟩
+      · show canon (printLitC (Literal.string (String.ofList content))) ++ _ = _
+        rw [printLitC, String.toList_ofList, hprint, hcanon_cs, List.singleton_append]
+      · show Closed (printLitC (Literal.string (String.ofList content)))
+        rw [printLitC, String.toList_ofList]; exact closed_str hcontQ
+    · exact absurd h (by simp)
+  · exact absurd h (by simp)
+
+/-! ### Booleans and the combined literal parser -/
+
+/-- The `true` / `false` literals (parsed as boundary-checked keywords). -/
+def pBool : Parser Literal :=
+  YulParser.orElse (pmap (fun _ => Literal.bool true) (keyword ['t', 'r', 'u', 'e']))
+    (pmap (fun _ => Literal.bool false) (keyword ['f', 'a', 'l', 's', 'e']))
+
+theorem pBool_soundC : SoundC pBool printLitC :=
+  orElseC
+    (pmapC_eq (keywordC (by decide) (by intro x hx; fin_cases hx <;> decide)) (fun _ => rfl))
+    (pmapC_eq (keywordC (by decide) (by intro x hx; fin_cases hx <;> decide)) (fun _ => rfl))
+
+/-- Any literal: number, boolean, or string. (Type annotations are not accepted — a documented
+deferral shared with the `yul-semantics` DSL, which is single-sorted.) -/
+def pLit : Parser Literal := YulParser.orElse pNum (YulParser.orElse pBool pStr)
+
+theorem pLit_soundC : SoundC pLit printLitC :=
+  orElseC pNum_soundC (orElseC pBool_soundC pStr_soundC)
+
 end YulSemParser
