@@ -165,10 +165,10 @@ theorem pFalse_sound : Sound pFalse printLit :=
 
 /-- Any literal. Hex is tried before decimal (so `0x…` is not read as `0`). -/
 def pLit : Parser Lit :=
-  orElse pHex (orElse pDec (orElse pHexStr (orElse pStr (orElse pTrue pFalse))))
+  token (orElse pHex (orElse pDec (orElse pHexStr (orElse pStr (orElse pTrue pFalse)))))
 
 theorem pLit_sound : Sound pLit printLit :=
-  orElse_sound pHex_sound (orElse_sound pDec_sound (orElse_sound pHexStr_sound
-    (orElse_sound pStr_sound (orElse_sound pTrue_sound pFalse_sound))))
+  token_sound (orElse_sound pHex_sound (orElse_sound pDec_sound (orElse_sound pHexStr_sound
+    (orElse_sound pStr_sound (orElse_sound pTrue_sound pFalse_sound)))))
 
 end YulParser
