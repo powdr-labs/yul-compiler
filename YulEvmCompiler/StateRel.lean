@@ -246,10 +246,30 @@ theorem MemMatch.storeWord {ymem : Nat → UInt8} {m : ByteArray}
   · rw [if_neg hw, if_neg hw, getD_eq_dite]
     exact h a
 
+/-- Correspondence of the frame's scalar environment/block readers between the
+two semantics, indexed by the *execution environments* alone (not the full
+state) so it is preserved definitionally across steps that leave
+`executionEnv` untouched — which is every supported op. Each field is the
+agreement consumed by one nullary reader (`CALLER`, `TIMESTAMP`, …). -/
+structure EnvMatch (ye : YulSemantics.EVM.ExecEnv) (se : ExecutionEnv) : Prop where
+  address    : conv ye.address    = se.address.toUInt256
+  origin     : conv ye.origin     = se.origin.toUInt256
+  caller     : conv ye.caller     = se.caller.toUInt256
+  callvalue  : conv ye.callvalue  = se.weiValue
+  gasprice   : conv ye.gasprice   = se.gasPrice
+  coinbase   : conv ye.coinbase   = se.header.coinbase.toUInt256
+  timestamp  : conv ye.timestamp  = se.header.timestamp
+  number     : conv ye.number     = se.header.number
+  prevrandao : conv ye.prevrandao = se.header.prevRandao
+  gaslimit   : conv ye.gaslimit   = se.header.gasLimit
+  chainid    : conv ye.chainid    = se.header.chainId
+  basefee    : conv ye.basefee    = se.header.baseFeePerGas
+  blobbasefee : conv ye.blobbasefee = se.header.blobBaseFee
+
 /-- The machine-state correspondence: memory pointwise, and the executing
 account's (transient) storage pointwise. yul-semantics' flat `storage` is the
-storage of the target's `executionEnv.address`. The environment/returndata/
-logs components are unconstrained until the corresponding ops enter the
+storage of the target's `executionEnv.address`. The returndata/logs
+components are unconstrained until the corresponding ops enter the
 supported set. -/
 structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop where
   mem : MemMatch yst.memory s.memory
@@ -262,6 +282,8 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   frame's `ByteArray` calldata — i.e. `MemMatch` at the `byteFrom` view. No
   supported op mutates calldata, so this is threaded unchanged. -/
   cd : MemMatch (YulSemantics.EVM.byteFrom yst.env.calldata) s.executionEnv.calldata
+  /-- Scalar environment/block reader agreement (see `EnvMatch`). -/
+  env : EnvMatch yst.env s.executionEnv
 
 /-- Frame-level side conditions preserved by every step of a straight-line
 execution. `code` is the full assembled program. -/

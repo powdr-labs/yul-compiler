@@ -227,23 +227,30 @@ Deliverables:
    (no variables, no user functions, statements are built-in expression statements).
 3. The main theorem, **proved without `sorry`** (`#print axioms` shows only
    `propext`, `Classical.choice`, `Quot.sound`), for the supported op set:
-   - arithmetic: `add sub mul div mod addmod mulmod exp clz`,
+   - arithmetic: `add sub mul div sdiv mod smod addmod mulmod exp clz`,
    - comparison: `lt gt slt sgt eq iszero`,
-   - bitwise: `and or xor not byte shl shr`,
+   - bitwise: `and or xor not byte shl shr sar`,
    - stack: `pop`,
    - storage: `sload sstore tload tstore`,
-   - memory reads: `mload`,
+   - memory: `mload mstore`,
+   - calldata: `calldataload`,
+   - env/block readers: `address origin caller callvalue gasprice coinbase
+     timestamp number prevrandao gaslimit chainid basefee blobbasefee`,
    - halting: `stop return revert invalid`.
    Ops outside the set compile to `none`; the `opTable` in `OpTable.lean` is the
-   single source of truth. **Remaining proof debt** (each is one `conv_*` lemma in
-   `Value.lean` plus one `opTable` row + one `opStep` case): `sdiv`, `smod`,
-   `signextend`, `sar` — the two's-complement agreements between `BitVec` ops and
-   evm-semantics' `Int.tdiv`/`tmod`-based definitions. Mechanical follow-ups with
-   the same proof shape: the nullary environment readers `address … blobbasefee`,
-   `calldatasize`/`codesize`/`returndatasize`,
-   `balance`/`extcodesize`/`extcodehash`/`blockhash`/`blobhash` (`calldataload`
-   and `mstore` are now covered). Excluded until further work: the remaining
-   memory/state writes through `writeBytes`
+   single source of truth. The signed arithmetic ops `sdiv`, `smod`, `sar` are
+   covered (their `conv_*` lemmas bridge `BitVec.sdiv`/`srem`/`sshiftRight` to
+   evm-semantics' `toSignedNat`/`ofSignedInt` via `BitVec.toInt`); the scalar
+   environment/block readers go through the `EnvMatch` bundle in `StateMatch`.
+   **Remaining proof debt** (one `conv_*` lemma in `Value.lean` + one `opTable`
+   row + one `opStep` case each): `signextend` — a two-formulation bit-blast
+   between Yul's `getLsbD`/mask form and evm-semantics' `toNat`-shift/mask form
+   (blocked on a Nat all-ones-xor/complement lemma not in the pinned Mathlib).
+   Follow-ups needing a further `StateMatch` extension: the size readers
+   `calldatasize`/`codesize`/`returndatasize` (need length correspondences),
+   `selfbalance`/`balance`/`extcodesize`/`extcodehash`/`blockhash`/`blobhash`
+   (need account-map / abstract-map correspondences). Excluded until further
+   work: the remaining memory/state writes through `writeBytes`
    (`mstore8 mcopy calldatacopy codecopy returndatacopy extcodecopy` — each
    needs its own byte-layout lemma, following `mstore`), `keccak256`
    (finding 4), `log*` (needs a log correspondence; addable later),

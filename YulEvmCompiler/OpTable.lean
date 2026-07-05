@@ -34,7 +34,8 @@ Deliberately *not* covered so far:
 def opTable : Op → Option Operation
   -- arithmetic
   | .add => some .ADD | .sub => some .SUB | .mul => some .MUL | .div => some .DIV
-  | .mod => some .MOD
+  | .sdiv => some .SDIV
+  | .mod => some .MOD | .smod => some .SMOD
   | .addmod => some .ADDMOD | .mulmod => some .MULMOD | .exp => some .EXP
   | .clz => some .CLZ
   -- comparison
@@ -43,6 +44,7 @@ def opTable : Op → Option Operation
   -- bitwise / shifts
   | .and => some .AND | .or => some .OR | .xor => some .XOR | .not => some .NOT
   | .byte => some .BYTE | .shl => some .SHL | .shr => some .SHR
+  | .sar => some .SAR
   -- value discard
   | .pop => some .POP
   -- memory read
@@ -51,6 +53,13 @@ def opTable : Op → Option Operation
   | .mstore => some .MSTORE
   -- calldata read
   | .calldataload => some .CALLDATALOAD
+  -- scalar environment / block readers
+  | .address => some .ADDRESS | .origin => some .ORIGIN | .caller => some .CALLER
+  | .callvalue => some .CALLVALUE | .gasprice => some .GASPRICE
+  | .coinbase => some .COINBASE | .timestamp => some .TIMESTAMP
+  | .number => some .NUMBER | .prevrandao => some .PREVRANDAO
+  | .gaslimit => some .GASLIMIT | .chainid => some .CHAINID
+  | .basefee => some .BASEFEE | .blobbasefee => some .BLOBBASEFEE
   -- storage / transient storage
   | .sload => some .SLOAD | .sstore => some .SSTORE
   | .tload => some .TLOAD | .tstore => some .TSTORE

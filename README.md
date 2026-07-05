@@ -65,13 +65,14 @@ The verified built-in set (the domain of `opTable` in
 
 | group      | ops |
 |------------|-----|
-| arithmetic | `add sub mul div mod addmod mulmod exp clz` |
+| arithmetic | `add sub mul div sdiv mod smod addmod mulmod exp clz` |
 | comparison | `lt gt slt sgt eq iszero` |
-| bitwise    | `and or xor not byte shl shr` |
+| bitwise    | `and or xor not byte shl shr sar` |
 | stack      | `pop` |
 | storage    | `sload sstore tload tstore` |
 | memory     | `mload mstore` |
 | calldata   | `calldataload` |
+| env/block  | `address origin caller callvalue gasprice coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee` |
 | halting    | `stop return revert invalid` |
 
 Everything else is rejected (`compile = none`) — see `PLAN.md` for exactly
