@@ -77,10 +77,12 @@ The verified built-in set (the domain of `opTable` in
 Everything else is rejected (`compile = none`) — see `PLAN.md` for exactly
 why each remaining op is deferred (some are plain proof debt; the rest are
 blocked on upstream issues found during this work). The `MSTORE` correctness
-proof rests on two `ByteArray` reduction facts about evm-semantics' total
-`writeBytes`/`natToBytesPadded`, currently assumed as `YulEvmCompiler.Assumed`
-axioms pending their move upstream (see `notes/writeBytes-lemmas.md`); they
-show up in the `#print axioms` footprint until then.
+proof rests on two `ByteArray` reduction facts about evm-semantics'
+`natToBytesPadded`, proved in `YulEvmCompiler.BytesLemmas`, plus the
+`writeBytes` read-after-write lemma that now lives upstream
+(`EvmSemantics.MachineState.writeBytes_getElem?_getD`). No project-specific
+axioms remain — the `#print axioms` footprint is just the standard classical
+axioms.
 
 ## The theorem
 
@@ -119,11 +121,11 @@ bounded because yul-semantics deliberately does not model gas. Per-instruction
 facts live in `OpStep.lean`, byte-level decoding facts in `Decode.lean`, and
 the `BitVec 256` ↔ `UInt256` arithmetic agreements in `Value.lean`.
 
-Both theorems check with no `sorry`. Their `#print axioms` footprint is the
-three standard classical axioms (`propext`, `Classical.choice`, `Quot.sound`)
-plus the three `YulEvmCompiler.Assumed.*` byte-array facts used by `MSTORE`
-(pending their move upstream; see `notes/writeBytes-lemmas.md`); `Checks.lean`
-pins that exact set in CI.
+Both theorems check with no `sorry`. Their `#print axioms` footprint is exactly
+the three standard classical axioms (`propext`, `Classical.choice`,
+`Quot.sound`) and nothing else — the `ByteArray` facts used by `MSTORE` are all
+genuine theorems (`writeBytes` upstream, the two `natToBytesPadded` lemmas in
+`YulEvmCompiler.BytesLemmas`). `Checks.lean` pins that exact set in CI.
 
 ## Building
 
@@ -146,10 +148,10 @@ compiled code returns the same bytes as the interpreter for several inputs.
 See `PLAN.md` for the full design, the upstream findings (EIP-8024
 `DUPN`/`SWAPN` not yet activated on any modeled fork; the two repos' distinct
 opaque keccaks; and the `writeBytes`/`natToBytesPadded` byte-array lemmas that
-`MSTORE` needs, currently local `Assumed` axioms pending their move upstream),
-and the remaining milestones: `switch` and multi-value returns,
-objects/`datacopy`/constructors, then verified optimization passes on the Yul
-side.
+`MSTORE` needs — `writeBytes` now upstream, `natToBytesPadded` proved locally in
+`YulEvmCompiler.BytesLemmas`), and the remaining milestones: `switch` and
+multi-value returns, objects/`datacopy`/constructors, then verified
+optimization passes on the Yul side.
 
 ## License
 

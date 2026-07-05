@@ -1,6 +1,6 @@
 import YulEvmCompiler.Decode
 import YulEvmCompiler.Value
-import YulEvmCompiler.Assumed
+import YulEvmCompiler.BytesLemmas
 import EvmSemantics.EVM.BigStep
 
 /-!
@@ -236,13 +236,13 @@ theorem MemMatch.storeWord {ymem : Nat → UInt8} {m : ByteArray}
       (MachineState.writeBytes m
         (Data.Bytes.natToBytesPadded (conv v).toNat 32) p) := by
   intro a
-  rw [← getD_eq_dite, Assumed.writeBytes_getElem?_getD,
-    Assumed.natToBytesPadded_size]
+  rw [← getD_eq_dite, MachineState.writeBytes_getElem?_getD,
+    BytesLemmas.natToBytesPadded_size]
   simp only [YulSemantics.EVM.storeWord]
   by_cases hw : p ≤ a ∧ a < p + 32
   · rw [if_pos hw, if_pos hw]
     have hk : a - p < 32 := by omega
-    rw [Assumed.natToBytesPadded_getElem?_getD _ _ _ hk, byteAt_eq, conv_toNat]
+    rw [BytesLemmas.natToBytesPadded_getElem?_getD _ _ _ hk, byteAt_eq, conv_toNat]
   · rw [if_neg hw, if_neg hw, getD_eq_dite]
     exact h a
 
