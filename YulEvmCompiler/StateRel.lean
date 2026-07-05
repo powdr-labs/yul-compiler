@@ -1,5 +1,6 @@
 import YulEvmCompiler.Decode
 import YulEvmCompiler.Value
+import YulEvmCompiler.Assumed
 import EvmSemantics.EVM.BigStep
 
 /-!
@@ -210,6 +211,41 @@ theorem MemMatch.loadWord {ymem : Nat → UInt8} {m : ByteArray}
   rw [Nat.mod_eq_of_lt (by rw [h32] at hlt; exact hlt)]
   rfl
 
+/-- Zero-padded read as the `dite` form of `MemMatch`. -/
+theorem getD_eq_dite (m : ByteArray) (a : Nat) :
+    m[a]?.getD 0 = if h : a < m.size then m[a] else 0 := by
+  rw [getElem?_def]; split <;> rfl
+
+/-- Yul's big-endian byte extractor as a divide-mod on the underlying `Nat`. -/
+theorem byteAt_eq (v : YulSemantics.EVM.U256) (j : Nat) :
+    YulSemantics.EVM.byteAt v j = UInt8.ofNat (v.toNat / 256 ^ j % 256) := by
+  unfold YulSemantics.EVM.byteAt
+  rw [BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow,
+    show (2 : Nat) ^ (8 * j) = 256 ^ j from by rw [pow_mul]; norm_num,
+    UInt8.ofNat_mod_size']
+
+/-- `MSTORE` agreement: writing a word big-endian into matching memories keeps
+them matching. Yul's `storeWord` sets the 32-byte window `[p, p+32)` from the
+value's big-endian bytes; the target's `writeBytes` of `natToBytesPadded` does
+the same, and the two byte encoders agree (`byteAt_eq` vs.
+`natToBytesPadded_getElem?_getD`). Outside the window both read the old
+memory. -/
+theorem MemMatch.storeWord {ymem : Nat → UInt8} {m : ByteArray}
+    (h : MemMatch ymem m) (p : Nat) (v : YulSemantics.EVM.U256) :
+    MemMatch (YulSemantics.EVM.storeWord ymem p v)
+      (MachineState.writeBytes m
+        (Data.Bytes.natToBytesPadded (conv v).toNat 32) p) := by
+  intro a
+  rw [← getD_eq_dite, Assumed.writeBytes_getElem?_getD,
+    Assumed.natToBytesPadded_size]
+  simp only [YulSemantics.EVM.storeWord]
+  by_cases hw : p ≤ a ∧ a < p + 32
+  · rw [if_pos hw, if_pos hw]
+    have hk : a - p < 32 := by omega
+    rw [Assumed.natToBytesPadded_getElem?_getD _ _ _ hk, byteAt_eq, conv_toNat]
+  · rw [if_neg hw, if_neg hw, getD_eq_dite]
+    exact h a
+
 /-- The machine-state correspondence: memory pointwise, and the executing
 account's (transient) storage pointwise. yul-semantics' flat `storage` is the
 storage of the target's `executionEnv.address`. The environment/returndata/
@@ -221,6 +257,11 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
     = (s.accountMap s.executionEnv.address).storage.get (conv k)
   tstor : ∀ k, conv (yst.transient k)
     = (s.accountMap s.executionEnv.address).tstorage.get (conv k)
+  /-- Calldata agreement: Yul reads its `List UInt8` calldata via `byteFrom`
+  (`data.getD i 0`), which is pointwise the zero-padded read of the target
+  frame's `ByteArray` calldata — i.e. `MemMatch` at the `byteFrom` view. No
+  supported op mutates calldata, so this is threaded unchanged. -/
+  cd : MemMatch (YulSemantics.EVM.byteFrom yst.env.calldata) s.executionEnv.calldata
 
 /-- Frame-level side conditions preserved by every step of a straight-line
 execution. `code` is the full assembled program. -/

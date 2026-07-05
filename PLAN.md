@@ -108,12 +108,14 @@ Design decisions baked into that statement:
    this does not block it; **milestone 2 (variables) requires an upstream change**
    (e.g. an `Amsterdam` fork entry activating EIP-8024). The compiler IR and the
    planned stack-layout scheme already use them.
-2. **`MachineState.writeBytes` is a `partial def`** and therefore opaque to the
-   kernel: no lemma about the memory contents after `MSTORE`/`MSTORE8`(/`MCOPY`)
-   is provable against the pinned evm-semantics. Until it is totalized upstream
-   (the recursion is trivially structural) and equipped with a `getElem` lemma,
-   `mstore`/`mstore8` cannot be in the *verified* op set. They remain in the IR
-   and the compiler; `compile` simply reports them as unsupported for now.
+2. **`MachineState.writeBytes` is now a total `def`** (kernel-transparent) in
+   the pinned evm-semantics, so memory-write proofs *are* possible: `mstore`
+   is in the verified op set, its `MemMatch` preservation resting on a
+   read-after-write lemma for `writeBytes` and a big-endian indexing lemma for
+   `natToBytesPadded`. Those two `ByteArray` facts are currently local
+   `YulEvmCompiler.Assumed` axioms (provable; see `notes/writeBytes-lemmas.md`)
+   pending their move upstream. `mstore8`/`mcopy` and the copy family remain
+   out until their own byte-layout lemmas are added.
 3. Reads are unaffected: `readPadded`/`readWord` are total, so `mload`,
    `return(p,s)`, `revert(p,s)` **are** verifiable (their payloads only read
    memory), as long as no memory *write* precedes them.
@@ -238,12 +240,14 @@ Deliverables:
    `signextend`, `sar` — the two's-complement agreements between `BitVec` ops and
    evm-semantics' `Int.tdiv`/`tmod`-based definitions. Mechanical follow-ups with
    the same proof shape: the nullary environment readers `address … blobbasefee`,
-   `calldatasize`/`codesize`/`returndatasize`, `calldataload`,
-   `balance`/`extcodesize`/`extcodehash`/`blockhash`/`blobhash`. Excluded until
-   upstream changes land: memory/state writes through `writeBytes`
-   (`mstore mstore8 mcopy calldatacopy codecopy returndatacopy extcodecopy`,
-   upstream finding 2), `keccak256` (finding 4), `log*` (needs a log
-   correspondence; addable later), `msize`/`gas`/calls/creates/`selfdestruct`
+   `calldatasize`/`codesize`/`returndatasize`,
+   `balance`/`extcodesize`/`extcodehash`/`blockhash`/`blobhash` (`calldataload`
+   and `mstore` are now covered). Excluded until further work: the remaining
+   memory/state writes through `writeBytes`
+   (`mstore8 mcopy calldatacopy codecopy returndatacopy extcodecopy` — each
+   needs its own byte-layout lemma, following `mstore`), `keccak256`
+   (finding 4), `log*` (needs a log correspondence; addable later),
+   `msize`/`gas`/calls/creates/`selfdestruct`
    (unmodeled in yul-semantics — no source derivation exists, so nothing to
    preserve).
 4. Examples: compiled snippets (e.g. `sstore(0, add(1, 2)); return(0, 0)`) with

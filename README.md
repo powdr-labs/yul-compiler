@@ -58,7 +58,7 @@ lifting that restriction is a codegen-only change once the fork table
 activates EIP-8024.
 
 Still out of scope: `switch` (an if-chain, mechanical), multi-value returns,
-and the memory/hash/log/environment ops blocked upstream.
+and the hash/log/environment ops and further memory writers not yet covered.
 
 The verified built-in set (the domain of `opTable` in
 `YulEvmCompiler/OpTable.lean`):
@@ -70,12 +70,17 @@ The verified built-in set (the domain of `opTable` in
 | bitwise    | `and or xor not byte shl shr` |
 | stack      | `pop` |
 | storage    | `sload sstore tload tstore` |
-| memory     | `mload` |
+| memory     | `mload mstore` |
+| calldata   | `calldataload` |
 | halting    | `stop return revert invalid` |
 
 Everything else is rejected (`compile = none`) — see `PLAN.md` for exactly
-why each remaining op is deferred (four are plain proof debt; the rest are
-blocked on upstream issues found during this work).
+why each remaining op is deferred (some are plain proof debt; the rest are
+blocked on upstream issues found during this work). The `MSTORE` correctness
+proof rests on two `ByteArray` reduction facts about evm-semantics' total
+`writeBytes`/`natToBytesPadded`, currently assumed as `YulEvmCompiler.Assumed`
+axioms pending their move upstream (see `notes/writeBytes-lemmas.md`); they
+show up in the `#print axioms` footprint until then.
 
 ## The theorem
 
@@ -108,15 +113,17 @@ The proof is a two-phase forward simulation:
   the execution.
 
 The correspondence `StateMatch` relates memory pointwise (total function vs.
-zero-padded `ByteArray`), and Yul's flat storage/transient storage to the
-executing account's storage. Gas is existentially bounded because
-yul-semantics deliberately does not model gas. Per-instruction facts live in
-`OpStep.lean`, byte-level decoding facts in `Decode.lean`, and the
-`BitVec 256` ↔ `UInt256` arithmetic agreements in `Value.lean`.
+zero-padded `ByteArray`), Yul's flat storage/transient storage to the
+executing account's storage, and calldata pointwise. Gas is existentially
+bounded because yul-semantics deliberately does not model gas. Per-instruction
+facts live in `OpStep.lean`, byte-level decoding facts in `Decode.lean`, and
+the `BitVec 256` ↔ `UInt256` arithmetic agreements in `Value.lean`.
 
-Both theorems check with no `sorry` and no extra axioms
-(`#print axioms` → `propext`, `Classical.choice`, `Quot.sound`); `Checks.lean`
-pins that axiom set in CI.
+Both theorems check with no `sorry`. Their `#print axioms` footprint is the
+three standard classical axioms (`propext`, `Classical.choice`, `Quot.sound`)
+plus the three `YulEvmCompiler.Assumed.*` byte-array facts used by `MSTORE`
+(pending their move upstream; see `notes/writeBytes-lemmas.md`); `Checks.lean`
+pins that exact set in CI.
 
 ## Building
 
@@ -129,17 +136,18 @@ lake build           # builds both semantics deps + the compiler + proofs
 (`#guard`/`#eval`), including a `for` loop, a recursive function, and an
 iterative Fibonacci over storage — each run **differentially** through both
 the Yul interpreter and evm-semantics' `stepF` on the compiled bytecode, with
-storage compared. It also references yul-semantics' own `FibExample.fibContract`
-(the calldata/memory Fibonacci contract proved correct upstream) to show it is
-correctly *rejected* at lowering: `calldataload`/`mstore` are outside the
-verified op set, so `compile` returns `none` rather than emit unverified code.
+storage compared. It also compiles yul-semantics' own
+`FibExample.fibContract` (the calldata/memory Fibonacci contract proved
+correct upstream) all the way to bytecode and checks, differentially, that the
+compiled code returns the same bytes as the interpreter for several inputs.
 
 ## Roadmap
 
 See `PLAN.md` for the full design, the upstream findings (EIP-8024
-`DUPN`/`SWAPN` not yet activated on any modeled fork; `writeBytes` being a
-`partial def` blocks all memory-write proofs; the two repos' distinct opaque
-keccaks), and the remaining milestones: `switch` and multi-value returns,
+`DUPN`/`SWAPN` not yet activated on any modeled fork; the two repos' distinct
+opaque keccaks; and the `writeBytes`/`natToBytesPadded` byte-array lemmas that
+`MSTORE` needs, currently local `Assumed` axioms pending their move upstream),
+and the remaining milestones: `switch` and multi-value returns,
 objects/`datacopy`/constructors, then verified optimization passes on the Yul
 side.
 

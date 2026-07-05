@@ -146,19 +146,12 @@ def fibStorage : Block Op := yul% {
 /-! ### The upstream Fibonacci contract
 
 `YulSemantics.FibExample.fibContract` (the `n`-th Fibonacci contract proved
-correct in yul-semantics) reads `n` from **calldata** (`calldataload`) and
-returns the result from **memory** (`mstore` + `return`). Both `calldataload`
-and `mstore` are *outside* the currently verified op set (`opTable`): memory
-writes are blocked upstream by `MachineState.writeBytes` being a `partial
-def`, and calldata reads simply have no correctness lemma yet.
-
-The labeled-assembly stage is purely *syntactic* — `opTable` is consulted only
-at **lowering** — so `compileProgram` happily produces `Asm` for it, but
-`compile` (which lowers to bytecode) correctly **rejects** it rather than
-emitting unverified code. The identical loop over storage (`fibStorage` above)
-lowers all the way to bytecode. -/
+correct in yul-semantics) reads `n` from **calldata** (`calldataload`),
+computes `fib n` in a `for` loop, writes it to **memory** (`mstore`), and
+`return`s it. With `calldataload` and `mstore` now in the verified op set
+(`opTable`) it compiles all the way to bytecode. -/
 #guard (compileProgram FibExample.fibContract).isSome
-#guard (compile FibExample.fibContract).isNone
+#guard (compile FibExample.fibContract).isSome
 
 /-! ### Differential execution: Yul interpreter vs. compiled bytecode -/
 
@@ -212,6 +205,30 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn nested [0]
 #guard agreeOn breakNested [0]
 #guard agreeOn fibStorage [0]
+
+/-- Compile `prog`, run both sides with `cd` as calldata, and compare the
+returned byte payload (for contracts that halt via `return`, like the
+calldata/memory Fibonacci contract). -/
+def agreeReturn (prog : Block Op) (cd : List UInt8) : Bool :=
+  let yst0 : EvmState :=
+    { EvmState.init with env := { EvmState.init.env with calldata := cd } }
+  match compile prog, Interp.run YulSemantics.EVM.exec 100000 prog yst0 with
+  | some is, .ok (_, yst, _) =>
+      let s0 := evmInit (assemble is)
+      let s := runEvm 100000
+        { s0 with executionEnv := { s0.executionEnv with calldata := ⟨cd.toArray⟩ } }
+      s.isDone
+        && (match yst.halted, s.halt with
+            | some (.ret, ybytes), .Returned => ybytes == s.hReturn.toList
+            | _, _ => false)
+  | _, _ => false
+
+-- The compiled calldata/memory Fibonacci contract returns the same bytes as
+-- the Yul interpreter, for several inputs (`fib 0/1/7/10`).
+#guard agreeReturn FibExample.fibContract (List.replicate 31 0 ++ [0])
+#guard agreeReturn FibExample.fibContract (List.replicate 31 0 ++ [1])
+#guard agreeReturn FibExample.fibContract (List.replicate 31 0 ++ [7])
+#guard agreeReturn FibExample.fibContract (List.replicate 31 0 ++ [10])
 
 -- The Yul interpreter's view of the expected values (documentation).
 #guard (runYul 100000 sumLoop).map (fun st => (st.storage 0).toNat) = some 15
