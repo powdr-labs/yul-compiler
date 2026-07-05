@@ -6,7 +6,7 @@ defaultTargets = ["YulEvmCompiler"]
 [[require]]
 name = "yul-semantics"
 git = "https://github.com/powdr-labs/yul-semantics"
-rev = "dc76dd51d7b6174f9d3a86c6fa6d4c1a7916ebc7"
+rev = "f4e6187d684c0ebaee751750c5c368a4226abb73"
 
 # Target-language semantics: the EVM small-step/big-step relations.
 [[require]]

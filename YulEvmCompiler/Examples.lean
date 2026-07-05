@@ -1,17 +1,28 @@
-import YulEvmCompiler.Correctness
+import YulEvmCompiler.Compile
 import YulSemantics.Syntax
+import YulSemantics.Interp
+import YulSemantics.FibExample
+import EvmSemantics.EVM.StepF
 
 /-!
 # YulEvmCompiler.Examples
 
-Sample programs run through the compiler, with their emitted bytecode.
-Everything here is `#eval`/`#guard`-checked at build time.
+Sanity checks for the labeled-assembly pipeline (`compileProgram` /
+`compile`): loops, `break`/`continue`, user-defined functions (including
+recursion), and `leave`.
+
+Beyond "it compiles", the interesting checks here are **differential**: each
+program is run through yul-semantics' fuel-indexed interpreter *and* the
+compiled bytecode is run through evm-semantics' executable step function
+(`stepF`), and the final storage values are compared. This exercises the
+whole pipeline (labels, lowering, the calling convention) long before the
+correctness proof covers it.
 -/
 
 namespace YulEvmCompiler.Examples
 
 open YulSemantics
-open YulSemantics.EVM (Op)
+open YulSemantics.EVM (Op EvmState)
 open YulEvmCompiler
 
 /-- Render assembled bytes as a hex string. -/
@@ -19,77 +30,200 @@ def hex (is : List Instr) : String :=
   (assembleBytes is).foldl
     (fun acc b =>
       let d := Nat.toDigits 16 b.toNat
-      acc ++ (if d.length = 1 then "0" else "") ++ String.mk d) ""
+      acc ++ (if d.length = 1 then "0" else "") ++ String.ofList d) ""
 
-/-- `sstore(0, add(1, 2))  return(0, 0)` -/
-def storeSum : Block Op :=
-  [ .exprStmt (.builtin .sstore
-      [.lit (.number 0), .builtin .add [.lit (.number 1), .lit (.number 2)]]),
-    .exprStmt (.builtin .ret [.lit (.number 0), .lit (.number 0)]) ]
+/-! ### Test programs -/
 
-/-- `let x := 7  x := add(x, 1)  sstore(0, x)` — declaration, read, assign. -/
-def letAssign : Block Op :=
-  [ .letDecl ["x"] (some (.lit (.number 7))),
-    .assign ["x"] (.builtin .add [.var "x", .lit (.number 1)]),
-    .exprStmt (.builtin .sstore [.lit (.number 0), .var "x"]) ]
+/-- A counting loop: `1 + 2 + … + 5` into storage slot 0. -/
+def sumLoop : Block Op := yul% {
+  let sum := 0
+  for { let i := 1 } lt(i, 6) { i := add(i, 1) } {
+    sum := add(sum, i)
+  }
+  sstore(0, sum)
+}
 
-/-- `let a, b  { let c := 1  a := c }  sstore(0, a)` — nested block scoping. -/
-def blockScope : Block Op :=
-  [ .letDecl ["a", "b"] none,
-    .block
-      [ .letDecl ["c"] (some (.lit (.number 1))),
-        .assign ["a"] (.var "c") ],
-    .exprStmt (.builtin .sstore [.lit (.number 0), .var "a"]) ]
+/-- `continue` skips 3, `break` stops at 6: `0+1+2+4+5 = 12` in slot 0. -/
+def breakContinue : Block Op := yul% {
+  let s := 0
+  for { let i := 0 } lt(i, 10) { i := add(i, 1) } {
+    if eq(i, 3) { continue }
+    if eq(i, 6) { break }
+    s := add(s, i)
+  }
+  sstore(0, s)
+}
 
-/-- 16 declarations, then a read of the deepest — exactly `DUP16`. -/
-def deep16 : Block Op :=
-  ((List.range 16).map fun i => .letDecl [s!"x{i}"] (some (.lit (.number i))))
-    ++ [.exprStmt (.builtin .pop [.var "x0"])]
+/-- A simple function: `double(21) = 42` in slot 0. -/
+def funCall : Block Op := yul% {
+  function double(x) -> y {
+    y := add(x, x)
+  }
+  sstore(0, double(21))
+}
 
-/-- 17 declarations, then a read of the deepest — beyond `DUP16`, rejected
-(EIP-8024's `DUPN` would lift this once evm-semantics activates it). -/
-def deep17 : Block Op :=
-  ((List.range 17).map fun i => .letDecl [s!"x{i}"] (some (.lit (.number i))))
-    ++ [.exprStmt (.builtin .pop [.var "x0"])]
+/-- A *recursive* function: `fact(5) = 120` in slot 0. -/
+def factorial : Block Op := yul% {
+  function fact(n) -> f {
+    f := 1
+    if gt(n, 1) {
+      f := mul(n, fact(sub(n, 1)))
+    }
+  }
+  sstore(0, fact(5))
+}
 
-/-- A program using a not-yet-verified built-in (`sdiv`) is rejected. -/
-def usesSdiv : Block Op :=
-  [ .exprStmt (.builtin .pop [.builtin .sdiv [.lit (.number 1), .lit (.number 2)]]) ]
+/-- `leave` returns early: `f(0) = 1` in slot 0, `f(7) = 2` in slot 1. -/
+def leaveEarly : Block Op := yul% {
+  function f(a) -> r {
+    r := 1
+    if eq(a, 0) { leave }
+    r := 2
+  }
+  sstore(0, f(0))
+  sstore(1, f(7))
+}
 
-#guard (compileProgram storeSum).isSome
-#guard (compileProgram letAssign).isSome
-#guard (compileProgram blockScope).isSome
-#guard (compileProgram deep16).isSome
-#guard (compileProgram deep17).isNone
-#guard (compileProgram usesSdiv).isNone
+/-- Functions calling functions, calls nested inside expressions and loop
+conditions; a zero-return function used as a statement. -/
+def nested : Block Op := yul% {
+  function sq(x) -> y {
+    y := mul(x, x)
+  }
+  function store(k, v) {
+    sstore(k, v)
+  }
+  let acc := 0
+  for { let i := 1 } lt(i, add(sq(2), 1)) { i := add(i, 1) } {
+    acc := add(acc, sq(i))
+  }
+  store(0, acc)
+}
 
-/-- Written in the yul-semantics concrete-syntax DSL: `if` with a variable. -/
-def maxStore : Block Op := yul% {
-  let a := 3
-  let b := 5
-  if lt(a, b) { a := b }
+/-- A `for` whose body declares locals and `break`s from inside a nested
+block (the pops must unwind both the inner block and the body). -/
+def breakNested : Block Op := yul% {
+  let r := 0
+  for { let i := 0 } lt(i, 100) { i := add(i, 1) } {
+    let d := add(i, i)
+    {
+      let e := add(d, 1)
+      if gt(e, 7) { r := e break }
+    }
+  }
+  sstore(0, r)
+}
+
+/-- The `n`-th Fibonacci number into storage slot 0, iteratively — the same
+loop as yul-semantics' `FibExample.fibContract`, but reading `n` and writing
+the result through **storage** (`sload`/`sstore`) instead of calldata/memory,
+so it lands inside the verified op set. Here `n = 10`, so slot 0 ends at
+`fib 10 = 55`. -/
+def fibStorage : Block Op := yul% {
+  let n := 10
+  let a := 0
+  let b := 1
+  for { let i := 0 } lt(i, n) { i := add(i, 1) } {
+    let t := add(a, b)
+    a := b
+    b := t
+  }
   sstore(0, a)
 }
 
-/-- Nested `if`s, blocks, and an early `return`. -/
-def guarded : Block Op := yul% {
-  let x := sload(0)
-  if iszero(x) { revert(0, 0) }
-  if gt(x, 100) {
-    let capped := 100
-    sstore(1, capped)
-    return(0, 0)
-  }
-  sstore(1, x)
-}
+#guard (compileProgram sumLoop).isSome
+#guard (compileProgram breakContinue).isSome
+#guard (compileProgram funCall).isSome
+#guard (compileProgram factorial).isSome
+#guard (compileProgram leaveEarly).isSome
+#guard (compileProgram nested).isSome
+#guard (compileProgram breakNested).isSome
+#guard (compileProgram fibStorage).isSome
+#guard (compile sumLoop).isSome
+#guard (compile factorial).isSome
+#guard (compile fibStorage).isSome
 
-#guard (compileProgram maxStore).isSome
-#guard (compileProgram guarded).isSome
+/-! ### The upstream Fibonacci contract
 
-#eval (compileProgram maxStore).map hex
+`YulSemantics.FibExample.fibContract` (the `n`-th Fibonacci contract proved
+correct in yul-semantics) reads `n` from **calldata** (`calldataload`) and
+returns the result from **memory** (`mstore` + `return`). Both `calldataload`
+and `mstore` are *outside* the currently verified op set (`opTable`): memory
+writes are blocked upstream by `MachineState.writeBytes` being a `partial
+def`, and calldata reads simply have no correctness lemma yet.
 
-#eval (compileProgram storeSum).map hex
-#eval (compileProgram letAssign).map hex
-#eval (compileProgram blockScope).map hex
+The labeled-assembly stage is purely *syntactic* — `opTable` is consulted only
+at **lowering** — so `compileProgram` happily produces `Asm` for it, but
+`compile` (which lowers to bytecode) correctly **rejects** it rather than
+emitting unverified code. The identical loop over storage (`fibStorage` above)
+lowers all the way to bytecode. -/
+#guard (compileProgram FibExample.fibContract).isSome
+#guard (compile FibExample.fibContract).isNone
+
+/-! ### Differential execution: Yul interpreter vs. compiled bytecode -/
+
+/-- Run the Yul-side interpreter to a final machine state. -/
+def runYul (fuel : Nat) (prog : Block Op) : Option EvmState :=
+  match Interp.run YulSemantics.EVM.exec fuel prog EvmState.init with
+  | .ok (_, st, _) => some st
+  | _ => none
+
+/-- A minimal EVM state executing `code` on Osaka with plenty of gas. -/
+def evmInit (code : ByteArray) : EvmSemantics.EVM.State :=
+  let env : EvmSemantics.ExecutionEnv := Inhabited.default
+  let s : EvmSemantics.EVM.State := Inhabited.default
+  { s with
+      pc := 0
+      stack := []
+      execLength := 0
+      halt := .Running
+      callStack := []
+      gasAvailable := 100000000
+      executionEnv := { env with
+          code := code
+          fork := .Osaka
+          permitStateMutation := true } }
+
+/-- Drive `stepF` until done (fuel-bounded). -/
+def runEvm : Nat → EvmSemantics.EVM.State → EvmSemantics.EVM.State
+  | 0, s => s
+  | fuel + 1, s =>
+    if s.isDone then s else runEvm fuel (EvmSemantics.EVM.stepF s)
+
+/-- Compile `prog`, run both sides, and compare the storage values at
+`keys` (plus that the EVM run actually finished without an exception). -/
+def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
+  match compile prog, runYul 100000 prog with
+  | some is, some yst =>
+      let s := runEvm 100000 (evmInit (assemble is))
+      s.isDone
+        && (s.halt matches .Success)
+        && keys.all (fun k =>
+          (yst.storage (BitVec.ofNat 256 k)).toNat
+            == ((s.accountMap s.executionEnv.address).storage.get
+                  (EvmSemantics.UInt256.ofNat k)).toNat)
+  | _, _ => false
+
+#guard agreeOn sumLoop [0]
+#guard agreeOn breakContinue [0]
+#guard agreeOn funCall [0]
+#guard agreeOn factorial [0]
+#guard agreeOn leaveEarly [0, 1]
+#guard agreeOn nested [0]
+#guard agreeOn breakNested [0]
+#guard agreeOn fibStorage [0]
+
+-- The Yul interpreter's view of the expected values (documentation).
+#guard (runYul 100000 sumLoop).map (fun st => (st.storage 0).toNat) = some 15
+#guard (runYul 100000 breakContinue).map (fun st => (st.storage 0).toNat) = some 12
+#guard (runYul 100000 funCall).map (fun st => (st.storage 0).toNat) = some 42
+#guard (runYul 100000 factorial).map (fun st => (st.storage 0).toNat) = some 120
+#guard (runYul 100000 leaveEarly).map
+    (fun st => ((st.storage 0).toNat, (st.storage 1).toNat)) = some (1, 2)
+#guard (runYul 100000 nested).map (fun st => (st.storage 0).toNat) = some 30
+#guard (runYul 100000 breakNested).map (fun st => (st.storage 0).toNat) = some 9
+#guard (runYul 100000 fibStorage).map (fun st => (st.storage 0).toNat) = some 55
+
+#eval (compile factorial).map hex
 
 end YulEvmCompiler.Examples
