@@ -25,13 +25,6 @@ open YulSemantics
 open YulSemantics.EVM (Op EvmState)
 open YulEvmCompiler
 
-/-- Render assembled bytes as a hex string. -/
-def hex (is : List Instr) : String :=
-  (assembleBytes is).foldl
-    (fun acc b =>
-      let d := Nat.toDigits 16 b.toNat
-      acc ++ (if d.length = 1 then "0" else "") ++ String.ofList d) ""
-
 /-! ### Test programs -/
 
 /-- A counting loop: `1 + 2 + … + 5` into storage slot 0. -/
@@ -240,7 +233,5 @@ def agreeReturn (prog : Block Op) (cd : List UInt8) : Bool :=
 #guard (runYul 100000 nested).map (fun st => (st.storage 0).toNat) = some 30
 #guard (runYul 100000 breakNested).map (fun st => (st.storage 0).toNat) = some 9
 #guard (runYul 100000 fibStorage).map (fun st => (st.storage 0).toNat) = some 55
-
-#eval (compile factorial).map hex
 
 end YulEvmCompiler.Examples
