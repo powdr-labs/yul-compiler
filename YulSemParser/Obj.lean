@@ -1,0 +1,190 @@
+import YulSemParser.Stmt
+import YulSemantics.Object
+
+/-!
+# YulSemParser.Obj
+
+Object parser producing `Object EVM.Op`, and the top-level `parseObject` with the main
+round-trip theorem `parse_canon_obj`: if the parser accepts `s`, then re-printing the resulting
+AST (with the faithful renderer `printObjC`) is `canon`-equal to `s` — i.e. the parser preserves
+every token except whitespace, number base, and type annotations.
+
+Scope notes (documented deferrals): sub-objects are parsed before data segments (the
+`Object` AST — and `yul-semantics`' own pretty-printer — do not preserve source interleaving of
+the two), and `data` segments are string-valued (`hex"…"` data would require `canon` to also
+normalize hex-string literals to bytes, since `Data.ofHex`/`toHex` canonicalise them).
+-/
+
+namespace YulSemParser
+
+open YulParser (Parser andThen orElse opt pmap token ppure manyP symbol keyword isWs)
+open YulSemantics (Literal Stmt Object Data)
+open YulSemantics.EVM (Op)
+
+/-! ### String content (object / data names, string data) -/
+
+/-- Parse a `"…"` string literal, returning its content as a `String`. -/
+def pName : Parser String := token (fun cs =>
+  match cs with
+  | '"' :: rest =>
+    match rest.dropWhile (· != '"') with
+    | '"' :: rest' => some (String.ofList (rest.takeWhile (· != '"')), rest')
+    | _ => none
+  | _ => none)
+
+/-- Printer for a string token. -/
+def printNameC (s : String) : List Char := '"' :: (s.toList ++ '"' :: [' '])
+
+theorem pName_soundC : SoundC pName printNameC := by
+  intro cs a rest h
+  simp only [pName, token] at h
+  split at h
+  · rename_i body heqd
+    split at h
+    · rename_i rest' heqi
+      simp only [Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      set content := body.takeWhile (· != '"') with hcont
+      have hcontQ : ∀ x ∈ content, (x != '"') = true :=
+        fun x hx => by simpa using List.mem_takeWhile_imp hx
+      have hprint : canon ('"' :: (content ++ '"' :: [' '])) = [CTok.str content] := by
+        rw [canon_str, takeWhile_append_all hcontQ, dropWhile_append_all hcontQ]
+        simp only [List.takeWhile_cons, List.dropWhile_cons, (by decide : ('"' != '"') = false),
+          Bool.false_eq_true, if_false, List.append_nil, List.tail_cons]
+        rw [canon_ws (by decide : isWs ' ' = true), canon_nil]
+      have hcanon_cs : canon cs = CTok.str content :: canon rest' := by
+        rw [← canon_dropWhile_ws cs, heqd, canon_str, heqi]
+        simp only [List.tail_cons, ← hcont]
+      refine ⟨?_, ?_⟩
+      · show canon (printNameC (String.ofList content)) ++ _ = _
+        rw [printNameC, String.toList_ofList, hprint, hcanon_cs, List.singleton_append]
+      · show Closed (printNameC (String.ofList content))
+        rw [printNameC, String.toList_ofList]; exact closed_str hcontQ
+    · exact absurd h (by simp)
+  · exact absurd h (by simp)
+
+/-! ### Data segments (string-valued) -/
+
+/-- Parse `data "name" "content"` into a named string data segment. -/
+def pData : Parser (String × Data) :=
+  pmap (fun p => (p.2.1, Data.string p.2.2))
+    (andThen (keyword ['d','a','t','a']) (andThen pName pName))
+
+/-- Printer for a named data segment. -/
+def printDataC : String × Data → List Char
+  | (name, .string content) =>
+      (['d','a','t','a'] ++ [' ']) ++ (printNameC name ++ printNameC content)
+  | (name, .hex bytes) =>  -- not produced by the parser; total-function placeholder
+      (['d','a','t','a'] ++ [' ']) ++ (printNameC name ++ ('h' :: 'e' :: 'x' :: printNameC ""))
+
+theorem pData_soundC : SoundC pData printDataC := by
+  refine pmapC_eq (andThenC (keywordC (by decide) (by intro x hx; fin_cases hx <;> decide))
+    (andThenC pName_soundC pName_soundC)) ?_
+  intro a; obtain ⟨_, name, content⟩ := a; rfl
+
+/-! ### Printer -/
+
+mutual
+/-- Re-print an object (`code`, then sub-objects, then data). -/
+def printObjC : Object Op → List Char
+  | .mk name code subs datas =>
+      ['o','b','j','e','c','t'] ++ [' '] ++ printNameC name ++ ['{'] ++ [' '] ++
+        ['c','o','d','e'] ++ [' '] ++ ['{'] ++ [' '] ++ printStmtsC code ++ ['}'] ++ [' '] ++
+        printSubsC subs ++ printDatasC datas ++ ['}'] ++ [' ']
+/-- Sub-object list. -/
+def printSubsC : List (Object Op) → List Char
+  | [] => []
+  | o :: os => printObjC o ++ printSubsC os
+/-- Data-segment list. -/
+def printDatasC : List (String × Data) → List Char
+  | [] => []
+  | nd :: nds => printDataC nd ++ printDatasC nds
+end
+
+theorem printSubsC_eq (os : List (Object Op)) : printSubsC os = printManyC printObjC os := by
+  induction os with
+  | nil => rfl
+  | cons o os ih => simp only [printSubsC, printManyC, ih]
+
+theorem printDatasC_eq (nds : List (String × Data)) :
+    printDatasC nds = printManyC printDataC nds := by
+  induction nds with
+  | nil => rfl
+  | cons nd nds ih => simp only [printDatasC, printManyC, ih]
+
+/-! ### Parser -/
+
+/-- `data` segment closed fact. -/
+theorem closed_data : Closed (['d','a','t','a'] ++ [' ']) :=
+  closed_ident (by decide) (by intro x hx; fin_cases hx <;> decide)
+
+mutual
+/-- Object parser, fuel-bounded; sub-objects recurse at one lower fuel. -/
+def pObjF : Nat → Parser (Object Op)
+  | 0 => fun _ => none
+  | n + 1 =>
+    pmap (fun p => Object.mk p.2.1 p.2.2.2.2.2.1 p.2.2.2.2.2.2.2.1 p.2.2.2.2.2.2.2.2.1)
+      (andThen (keyword ['o','b','j','e','c','t'])
+        (andThen pName (andThen (symbol ['{'])
+          (andThen (keyword ['c','o','d','e']) (andThen (symbol ['{'])
+            (andThen (pStmtsF n) (andThen (symbol ['}'])
+              (andThen (pSubsF n) (andThen (manyP pData) (symbol ['}']))))))))))
+/-- Sub-object list. -/
+def pSubsF : Nat → Parser (List (Object Op)) := fun n => manyP (pObjF n)
+end
+
+theorem pObjF_soundC : ∀ n, SoundC (pObjF n) printObjC := by
+  intro n
+  induction n with
+  | zero => intro cs a rest h; simp [pObjF] at h
+  | succ n ih =>
+    have hsubs : SoundC (pSubsF n) printSubsC := by
+      simp only [pSubsF, funext printSubsC_eq]; exact manyC ih
+    have hdatas : SoundC (manyP pData) printDatasC := by
+      rw [funext printDatasC_eq]; exact manyC pData_soundC
+    have hstmts : SoundC (pStmtsF n) printStmtsC := pStmtsF_soundC n
+    simp only [pObjF]
+    refine pmapC_eq (andThenC (keywordC (by decide) (by intro x hx; fin_cases hx <;> decide))
+      (andThenC pName_soundC (andThenC (symbolC closed_lbrace)
+        (andThenC (keywordC (by decide) (by intro x hx; fin_cases hx <;> decide))
+          (andThenC (symbolC closed_lbrace) (andThenC hstmts (andThenC (symbolC closed_rbrace)
+            (andThenC hsubs (andThenC hdatas (symbolC closed_rbrace)))))))))) ?_
+    intro a
+    obtain ⟨_, name, _, _, _, code, _, subs, datas, _⟩ := a
+    simp only [printObjC, List.append_assoc]
+
+/-! ### Top level -/
+
+/-- Parse a full Yul object; the entire input must be consumed up to trailing whitespace. -/
+def parseObject (s : String) : Option (Object Op) :=
+  let cs := s.toList
+  match pObjF cs.length cs with
+  | some (o, rest) => if rest.all isWs then some o else none
+  | none => none
+
+/-- A list is all-whitespace exactly when `canon` empties it. -/
+theorem canon_all_ws (cs : List Char) (h : cs.all isWs = true) : canon cs = [] := by
+  induction cs with
+  | nil => exact canon_nil
+  | cons c cs ih =>
+    simp only [List.all_cons, Bool.and_eq_true] at h
+    exact (canon_ws h.1).trans (ih h.2)
+
+/-- **Main theorem.** If `parseObject` accepts `s`, then re-printing the resulting AST is
+`canon`-equal to `s`: the parser preserves every token except whitespace, number base, and type
+annotations. -/
+theorem parse_canon_obj (s : String) (o : Object Op) (h : parseObject s = some o) :
+    canon (printObjC o) = canon s.toList := by
+  unfold parseObject at h
+  simp only at h
+  split at h
+  · rename_i o' rest heq
+    split at h
+    · rename_i hrest
+      simp only [Option.some.injEq] at h; subst h
+      obtain ⟨he, _⟩ := pObjF_soundC s.toList.length s.toList o' rest heq
+      rw [← he, canon_all_ws rest hrest, List.append_nil]
+    · exact absurd h (by simp)
+  · exact absurd h (by simp)
+
+end YulSemParser
