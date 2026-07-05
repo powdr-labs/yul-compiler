@@ -24,9 +24,10 @@ Deliberately *not* covered so far:
   `BitVec` ↔ `UInt256` agreement lemmas (`conv_*` in `Value.lean`) are still
   open; each is enabled by adding its lemma, its row here, and its `opStep`
   case;
-* memory/state writers that go through evm-semantics' `partial def writeBytes`
-  (`mstore`, `mstore8`, `mcopy`, the copy family) — nothing about them is
-  provable until `writeBytes` is totalized upstream;
+* `mstore8`/`mcopy` and the calldata/code copy family — further memory writers
+  (`mstore` itself *is* covered, via the `writeBytes` read-after-write lemma
+  and the `natToBytesPadded` byte lemmas in `BytesLemmas.lean`; the others just
+  need their own byte-layout lemmas);
 * `keccak256` — the two repos each declare their own unrelated `opaque` hash;
 * `log0`–`log4` — need a log-series correspondence (mechanical, later);
 * `msize`, `gas`, calls/creates, `selfdestruct` — unmodeled in yul-semantics
@@ -47,6 +48,10 @@ def opTable : Op → Option Operation
   | .pop => some .POP
   -- memory read
   | .mload => some .MLOAD
+  -- memory write
+  | .mstore => some .MSTORE
+  -- calldata read
+  | .calldataload => some .CALLDATALOAD
   -- storage / transient storage
   | .sload => some .SLOAD | .sstore => some .SSTORE
   | .tload => some .TLOAD | .tstore => some .TSTORE
