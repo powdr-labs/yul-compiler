@@ -20,13 +20,14 @@ open EvmSemantics (Operation)
 the built-in is not (yet) in the verified fragment.
 
 Deliberately *not* covered so far:
-* `sdiv`/`smod`/`signextend`/`sar` — plain proof debt: their two's-complement
-  `BitVec` ↔ `UInt256` agreement lemmas (`conv_*` in `Value.lean`) are still
-  open; each is enabled by adding its lemma, its row here, and its `opStep`
-  case;
+* `signextend` — plain proof debt: needs an all-ones-xor / complement fact
+  (`(2^n-1) ^^^ m = 2^n-1-m`) on `Nat` that isn't in the pinned Mathlib;
+  `sdiv`/`smod`/`sar` are *now covered* (their two's-complement `conv_*`
+  agreement lemmas live in `Value.lean`);
 * `mstore8`/`mcopy` and the calldata/code copy family — further memory writers
   (`mstore` itself *is* covered, via the `writeBytes` read-after-write lemma
-  through `Assumed.lean`; the others just need their own byte-layout lemmas);
+  and the `natToBytesPadded` byte lemmas in `BytesLemmas.lean`; the others just
+  need their own byte-layout lemmas);
 * `keccak256` — the two repos each declare their own unrelated `opaque` hash;
 * `log0`–`log4` — need a log-series correspondence (mechanical, later);
 * `msize`, `gas`, calls/creates, `selfdestruct` — unmodeled in yul-semantics

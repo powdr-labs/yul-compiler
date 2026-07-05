@@ -14,30 +14,20 @@ printed message changes, `#guard_msgs` reports a mismatch, and elaboration
 fails. So this file failing to compile is a hard signal that the compiler is
 no longer proved correct on the terms recorded here.
 
-The expected set is Lean's three standard classical-mathematics axioms
+The expected set is exactly Lean's three standard classical-mathematics axioms
 (`propext`, `Classical.choice`, `Quot.sound`) — the same ones Mathlib itself
-depends on, and notably *not* `sorryAx` — **plus** the three
-`YulEvmCompiler.Assumed.*` axioms. The latter are `ByteArray` reduction facts
-about evm-semantics' total `writeBytes` / `natToBytesPadded` (needed for the
-verified `MSTORE`); they are provable and slated to move upstream into
-`EvmSemantics` (see `notes/writeBytes-lemmas.md`), at which point they drop
-out of this list. Their presence is the honest statement "the compiler is
-correct, modulo these pending-upstream byte-array lemmas". -/
+depends on, and notably *not* `sorryAx`. There are no project-specific axioms:
+the `ByteArray` reduction facts about evm-semantics' `writeBytes` and
+`natToBytesPadded` that `MSTORE` needs are all genuine theorems — `writeBytes`
+upstream as `EvmSemantics.MachineState.writeBytes_getElem?_getD`, and the two
+`natToBytesPadded` facts proved locally in `YulEvmCompiler.BytesLemmas`. So the
+footprint below is the strongest honest statement: the compiler is correct
+modulo only the standard classical axioms. -/
 
-/-- info: 'YulEvmCompiler.compile_correct' depends on axioms: [propext,
- Classical.choice,
- Quot.sound,
- YulEvmCompiler.Assumed.natToBytesPadded_getElem?_getD,
- YulEvmCompiler.Assumed.natToBytesPadded_size,
- YulEvmCompiler.Assumed.writeBytes_getElem?_getD] -/
+/-- info: 'YulEvmCompiler.compile_correct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms YulEvmCompiler.compile_correct
 
-/-- info: 'YulEvmCompiler.compile_correct_eval' depends on axioms: [propext,
- Classical.choice,
- Quot.sound,
- YulEvmCompiler.Assumed.natToBytesPadded_getElem?_getD,
- YulEvmCompiler.Assumed.natToBytesPadded_size,
- YulEvmCompiler.Assumed.writeBytes_getElem?_getD] -/
+/-- info: 'YulEvmCompiler.compile_correct_eval' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms YulEvmCompiler.compile_correct_eval

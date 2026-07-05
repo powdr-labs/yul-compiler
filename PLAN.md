@@ -112,10 +112,11 @@ Design decisions baked into that statement:
    the pinned evm-semantics, so memory-write proofs *are* possible: `mstore`
    is in the verified op set, its `MemMatch` preservation resting on a
    read-after-write lemma for `writeBytes` and a big-endian indexing lemma for
-   `natToBytesPadded`. Those two `ByteArray` facts are currently local
-   `YulEvmCompiler.Assumed` axioms (provable; see `notes/writeBytes-lemmas.md`)
-   pending their move upstream. `mstore8`/`mcopy` and the copy family remain
-   out until their own byte-layout lemmas are added.
+   `natToBytesPadded`. The `writeBytes` lemma now lives upstream
+   (`EvmSemantics.MachineState.writeBytes_getElem?_getD`); the two
+   `natToBytesPadded` facts are proved locally in `YulEvmCompiler.BytesLemmas`
+   (do-loop reasoning), so no axioms are involved. `mstore8`/`mcopy` and the
+   copy family remain out until their own byte-layout lemmas are added.
 3. Reads are unaffected: `readPadded`/`readWord` are total, so `mload`,
    `return(p,s)`, `revert(p,s)` **are** verifiable (their payloads only read
    memory), as long as no memory *write* precedes them.
