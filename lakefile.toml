@@ -16,3 +16,6 @@ rev = "d33a7801a55b18058cd94d2ac9df3dee32e6c6fd"
 
 [[lean_lib]]
 name = "YulEvmCompiler"
+
+[[lean_lib]]
+name = "YulParser"
