@@ -89,6 +89,8 @@ def opBound (op : Op) (args : List U256) : Nat :=
     | .mstore, [p, _] => memBound p.toNat 32
     | .ret, [p, n] => memBound p.toNat n.toNat
     | .revert, [p, n] => memBound p.toNat n.toNat
+    | .codecopy, [d, _, n] => memBound d.toNat n.toNat + 3 * ((n.toNat + 31) / 32)
+    | .datacopy, [d, _, n] => memBound d.toNat n.toNat + 3 * ((n.toNat + 31) / 32)
     | _, _ => 0
 
 theorem le_opBound (op : Op) (args : List U256) : 40000 ≤ opBound op args :=
@@ -576,6 +578,7 @@ end PureHelpers
 
 /-! ### The per-built-in step -/
 
+set_option maxHeartbeats 800000 in
 open YulSemantics.EVM in
 /-- Executing the single compiled instruction of a supported built-in from a
 matching state: one target `Step` to a matching state (with `rets` replacing
@@ -1003,6 +1006,82 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have h3 : opBound Op.calldataload [p] = 40000 := rfl
       have : Gas.baseCost s.fork .CALLDATALOAD ≤ 40000 := by rw [hfork]; decide
       omega
+  case codecopy =>
+    rcases args with _ | ⟨d, _ | ⟨s0, _ | ⟨nn, _ | ⟨e, args⟩⟩⟩⟩ <;> simp [stepOp] at hyul
+    subst hyul
+    show OkStep code s (opBound .codecopy [d, s0, nn]) []
+      { yst with memory :=
+          YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.code }
+      pre.length 1 σ
+    obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .codecopy) rfl
+    have hdec := decoded_op hf hcode hpc hb' hplain (opTable_available (yop := .codecopy) rfl)
+    have hstk' : s.stack = conv d :: conv s0 :: conv nn :: σ := by simpa using hstk
+    have h3 : opBound Op.codecopy [d, s0, nn]
+        = 40000 + (memBound d.toNat nn.toNat + 3 * ((nn.toNat + 31) / 32)) := rfl
+    have h4 : Gas.copyWordCost (conv nn) = 3 * ((nn.toNat + 31) / 32) := by
+      unfold Gas.copyWordCost; rw [conv_toNat]
+    have h1 : Gas.baseCost s.executionEnv.fork Operation.CODECOPY ≤ 3 := by rw [hf.fork]; decide
+    have h2 := memExpansionDelta_le_memBound s.activeWords.toNat (conv d).toNat (conv nn).toNat
+    rw [conv_toNat d, conv_toNat nn] at h2
+    have hgas' : Gas.codecopyTotal s (conv d) (conv nn) ≤ s.gasAvailable := by
+      unfold Gas.codecopyTotal; rw [conv_toNat d, conv_toNat nn, h4]; omega
+    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+      (StepRunning.codecopy s (conv d) (conv s0) (conv nn) σ hdec hstk' hgas'),
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        hf.running⟩,
+      ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen⟩, ?_, rfl, ?_⟩
+    · show MemMatch (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.code)
+        (MachineState.writeBytes s.memory
+          (MachineState.readPadded s.executionEnv.code (conv s0).toNat (conv nn).toNat)
+            (conv d).toNat)
+      rw [conv_toNat d, conv_toNat s0, conv_toNat nn]
+      exact hm.mem.copyFromCode hm.codeBytes d.toNat s0.toNat nn.toNat
+    · show s.pc.succ = _
+      rw [hpc]; apply succ_ofNat
+      have hsz : code.size = pre.length + 1 + post.length := by
+        subst hcode; simp [Instr.bytes]; omega
+      have := hf.codeSmall; omega
+    · show s.gasAvailable - Gas.codecopyTotal s (conv d) (conv nn)
+        ≥ s.gasAvailable - opBound .codecopy [d, s0, nn]
+      unfold Gas.codecopyTotal; rw [conv_toNat d, conv_toNat nn, h4, h3]; omega
+  case datacopy =>
+    rcases args with _ | ⟨d, _ | ⟨s0, _ | ⟨nn, _ | ⟨e, args⟩⟩⟩⟩ <;> simp [stepOp] at hyul
+    subst hyul
+    show OkStep code s (opBound .datacopy [d, s0, nn]) []
+      { yst with memory :=
+          YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.code }
+      pre.length 1 σ
+    obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .datacopy) rfl
+    have hdec := decoded_op hf hcode hpc hb' hplain (opTable_available (yop := .datacopy) rfl)
+    have hstk' : s.stack = conv d :: conv s0 :: conv nn :: σ := by simpa using hstk
+    have h3 : opBound Op.datacopy [d, s0, nn]
+        = 40000 + (memBound d.toNat nn.toNat + 3 * ((nn.toNat + 31) / 32)) := rfl
+    have h4 : Gas.copyWordCost (conv nn) = 3 * ((nn.toNat + 31) / 32) := by
+      unfold Gas.copyWordCost; rw [conv_toNat]
+    have h1 : Gas.baseCost s.executionEnv.fork Operation.CODECOPY ≤ 3 := by rw [hf.fork]; decide
+    have h2 := memExpansionDelta_le_memBound s.activeWords.toNat (conv d).toNat (conv nn).toNat
+    rw [conv_toNat d, conv_toNat nn] at h2
+    have hgas' : Gas.codecopyTotal s (conv d) (conv nn) ≤ s.gasAvailable := by
+      unfold Gas.codecopyTotal; rw [conv_toNat d, conv_toNat nn, h4]; omega
+    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+      (StepRunning.codecopy s (conv d) (conv s0) (conv nn) σ hdec hstk' hgas'),
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        hf.running⟩,
+      ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen⟩, ?_, rfl, ?_⟩
+    · show MemMatch (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.code)
+        (MachineState.writeBytes s.memory
+          (MachineState.readPadded s.executionEnv.code (conv s0).toNat (conv nn).toNat)
+            (conv d).toNat)
+      rw [conv_toNat d, conv_toNat s0, conv_toNat nn]
+      exact hm.mem.copyFromCode hm.codeBytes d.toNat s0.toNat nn.toNat
+    · show s.pc.succ = _
+      rw [hpc]; apply succ_ofNat
+      have hsz : code.size = pre.length + 1 + post.length := by
+        subst hcode; simp [Instr.bytes]; omega
+      have := hf.codeSmall; omega
+    · show s.gasAvailable - Gas.codecopyTotal s (conv d) (conv nn)
+        ≥ s.gasAvailable - opBound .datacopy [d, s0, nn]
+      unfold Gas.codecopyTotal; rw [conv_toNat d, conv_toNat nn, h4, h3]; omega
   case codesize =>
     have hnlt : yst.env.code.length < 2 ^ 256 := by
       rw [hm.codeLen, hf.hcode]; exact hf.codeSmall

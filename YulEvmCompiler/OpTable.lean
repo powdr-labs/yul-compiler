@@ -54,8 +54,11 @@ def opTable : Op → Option Operation
   | .mstore => some .MSTORE
   -- calldata read
   | .calldataload => some .CALLDATALOAD
-  -- code (own account): size
+  -- code (own account): size and copy-to-memory; `datacopy` is `codecopy`
+  -- (deployed bytecode carries data segments appended to the code)
   | .codesize => some .CODESIZE
+  | .codecopy => some .CODECOPY
+  | .datacopy => some .CODECOPY
   -- scalar environment / block readers
   | .address => some .ADDRESS | .origin => some .ORIGIN | .caller => some .CALLER
   | .callvalue => some .CALLVALUE | .gasprice => some .GASPRICE
