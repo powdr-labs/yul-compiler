@@ -54,6 +54,8 @@ def opTable : Op → Option Operation
   | .mstore => some .MSTORE
   -- calldata read
   | .calldataload => some .CALLDATALOAD
+  -- code (own account): size
+  | .codesize => some .CODESIZE
   -- scalar environment / block readers
   | .address => some .ADDRESS | .origin => some .ORIGIN | .caller => some .CALLER
   | .callvalue => some .CALLVALUE | .gasprice => some .GASPRICE

@@ -284,6 +284,11 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   cd : MemMatch (YulSemantics.EVM.byteFrom yst.env.calldata) s.executionEnv.calldata
   /-- Scalar environment/block reader agreement (see `EnvMatch`). -/
   env : EnvMatch yst.env s.executionEnv
+  /-- Code agreement (for `codesize`/`codecopy`/`datacopy`): like calldata, a
+  zero-padded pointwise read of the frame's `ByteArray` code, plus a length
+  match. No supported op mutates code, so this is threaded unchanged. -/
+  codeBytes : MemMatch (YulSemantics.EVM.byteFrom yst.env.code) s.executionEnv.code
+  codeLen : yst.env.code.length = s.executionEnv.code.size
 
 /-- Frame-level side conditions preserved by every step of a straight-line
 execution. `code` is the full assembled program. -/
