@@ -195,6 +195,49 @@ theorem ASimE.toASimSLet {prog : List Asm} {yst yst' : EvmState}
     ⟨c, .word v :: (wimg V ++ σ), yst'⟩
   simpa using h pre c [] σ hp rfl
 
+/-- Zipping names with equally-many values gives the values' stack image. -/
+theorem wimg_zip : ∀ (xs : List Ident) (vs : List U256),
+    xs.length = vs.length → wimg (xs.zip vs) = words vs := by
+  intro xs
+  induction xs with
+  | nil => intro vs h; cases vs with | nil => rfl | cons => simp at h
+  | cons x xs ih =>
+    intro vs h
+    cases vs with
+    | nil => simp at h
+    | cons v vs =>
+      have hlen : xs.length = vs.length := by simpa using h
+      show wimg ((x, v) :: xs.zip vs) = words (v :: vs)
+      rw [wimg_cons, ih vs hlen]
+      rfl
+
+/-- Zipping names with equally-many values keeps the names as the layout. -/
+theorem names_zip : ∀ (xs : List Ident) (vs : List U256),
+    xs.length = vs.length → names (xs.zip vs) = xs := by
+  intro xs
+  induction xs with
+  | nil => intro vs _; rfl
+  | cons x xs ih =>
+    intro vs h
+    cases vs with
+    | nil => simp at h
+    | cons v vs =>
+      have hlen : xs.length = vs.length := by simpa using h
+      show names ((x, v) :: xs.zip vs) = x :: xs
+      rw [names_cons, ih vs hlen]
+
+/-- `let x₁, …, xₖ := e`: the produced values become the innermost
+variables, already in layout order. -/
+theorem ASimE.toASimSLetMany {prog : List Asm} {yst yst' : EvmState}
+    {V : VEnv yulD} {asm : List Asm} {xs : List Ident} {vs : List U256}
+    (hlen : xs.length = vs.length)
+    (h : ASimE prog yst V 0 asm vs yst') :
+    ASimS prog yst V asm yst' (xs.zip vs ++ V) := by
+  intro pre c σ hp
+  have hsteps := h pre c [] σ hp rfl
+  rw [wimg_append, wimg_zip xs vs hlen]
+  simpa using hsteps
+
 /-- A halting expression fragment in statement position. -/
 theorem ASimEHalt.toASimSHalt {prog : List Asm} {yst yst' : EvmState}
     {V : VEnv yulD} {asm : List Asm}
@@ -350,6 +393,24 @@ theorem names_set (V : VEnv yulD) (x : Ident) (v : U256) :
       show y :: names (YulSemantics.VEnv.set V x v) = y :: names V
       rw [ih]
 
+/-- `VEnv.setMany` keeps the layout (it is a fold of `set`). -/
+theorem names_setMany (V : VEnv yulD) (xs : List Ident) (vs : List U256) :
+    names (YulSemantics.VEnv.setMany V xs vs) = names V := by
+  have h : ∀ (l : List (Ident × U256)) (W : VEnv yulD),
+      names (l.foldl (fun acc p => YulSemantics.VEnv.set acc p.1 p.2) W)
+        = names W := by
+    intro l
+    induction l with
+    | nil => intro W; rfl
+    | cons p l ih => intro W; rw [List.foldl_cons, ih]; exact names_set W p.1 p.2
+  exact h (xs.zip vs) V
+
+/-- `VEnv.setMany` keeps the region length. -/
+theorem length_setMany (V : VEnv yulD) (xs : List Ident) (vs : List U256) :
+    (YulSemantics.VEnv.setMany V xs vs).length = V.length := by
+  have := congrArg List.length (names_setMany V xs vs)
+  simpa using this
+
 /-- `VEnv.set` updates the stack image at the compiled index. -/
 theorem wimg_set {V : VEnv yulD} {x : Ident} (v : U256) {idx : Nat}
     (hidx : (names V).findIdx? (fun y => y = x) = some idx) :
@@ -480,6 +541,111 @@ theorem asimS_assign {prog : List Asm} {yst yst' : EvmState} {V : VEnv yulD}
   rw [hstk]
   exact (ASteps.single hswap).trans ((ASteps.single hpop).trans
     (by rw [hfinal]; exact .refl _))
+
+/-- Executing a multi-assignment's store sequence: with `xs.length` values
+`vs` stacked on top of the region (first target's value on top), each
+`swap;pop` writes one into its slot, ending at `setMany V xs vs`. -/
+theorem assigns_exec {prog : List Asm} {yst : EvmState} :
+    ∀ (xs : List Ident) (vs : List U256) (V : VEnv yulD) (acode : List Asm),
+      xs.length = vs.length →
+      compileAssigns (names V) xs = some acode →
+      ∀ (pre c : List Asm) (σ : List AVal),
+        prog = pre ++ acode ++ c →
+        ASteps prog ⟨acode ++ c, words vs ++ wimg V ++ σ, yst⟩
+          ⟨c, wimg (YulSemantics.VEnv.setMany V xs vs) ++ σ, yst⟩ := by
+  intro xs
+  induction xs with
+  | nil =>
+    intro vs V acode hlen hac pre c σ hp
+    cases vs with
+    | cons v vs => simp at hlen
+    | nil =>
+      simp only [compileAssigns, Option.some.injEq] at hac
+      subst hac
+      show ASteps prog ⟨[] ++ c, words [] ++ wimg V ++ σ, yst⟩
+        ⟨c, wimg (YulSemantics.VEnv.setMany V [] []) ++ σ, yst⟩
+      simp only [words, List.map_nil, List.nil_append]
+      exact .refl _
+  | cons x xs ih =>
+    intro vs V acode hlen hac pre c σ hp
+    cases vs with
+    | nil => simp at hlen
+    | cons v vs =>
+      have hlen' : xs.length = vs.length := by simpa using hlen
+      simp only [compileAssigns, Option.bind_eq_bind] at hac
+      obtain ⟨idx, hidx, hac2⟩ := Option.bind_eq_some_iff.mp hac
+      by_cases h16 : idx + xs.length < 16
+      · rw [dif_pos h16] at hac2
+        obtain ⟨rest, hrest, hac3⟩ := Option.bind_eq_some_iff.mp hac2
+        simp only [Option.some.injEq] at hac3
+        subst hac3
+        -- locate `x`'s slot inside the region image
+        have hlt : idx < (wimg V).length := by
+          have := findIdx?_lt _ hidx; simpa using this
+        obtain ⟨w, hw⟩ : ∃ w, (wimg V)[idx]? = some w :=
+          ⟨(wimg V)[idx]'hlt, List.getElem?_eq_getElem _⟩
+        obtain ⟨hsplitV, hlenV⟩ := split_at_getElem hw
+        -- the store index reaches past the `vs` still stacked above
+        have hAlen : (words vs ++ (wimg V).take idx).length = idx + xs.length := by
+          simp only [List.length_append, hlenV, words, List.length_map]
+          omega
+        -- decompose the stack: `word v` on top, target slot `w` at depth idx+|vs|
+        have hstk : words (v :: vs) ++ wimg V ++ σ
+            = .word v :: ((words vs ++ (wimg V).take idx)
+                ++ w :: ((wimg V).drop (idx + 1) ++ σ)) := by
+          conv_lhs => rw [show words (v :: vs) = .word v :: words vs from rfl, hsplitV]
+          simp [List.append_assoc]
+        have hswap : AStep prog
+            ⟨.swap ⟨idx + xs.length, h16⟩ :: (.pop :: (rest ++ c)),
+              .word v :: ((words vs ++ (wimg V).take idx)
+                ++ w :: ((wimg V).drop (idx + 1) ++ σ)), yst⟩
+            ⟨.pop :: (rest ++ c),
+              w :: ((words vs ++ (wimg V).take idx)
+                ++ .word v :: ((wimg V).drop (idx + 1) ++ σ)), yst⟩ :=
+          .swap (by simp [hAlen])
+        have hpop : AStep prog
+            ⟨.pop :: (rest ++ c),
+              w :: ((words vs ++ (wimg V).take idx)
+                ++ .word v :: ((wimg V).drop (idx + 1) ++ σ)), yst⟩
+            ⟨rest ++ c,
+              (words vs ++ (wimg V).take idx)
+                ++ .word v :: ((wimg V).drop (idx + 1) ++ σ), yst⟩ := .pop
+        -- the stack after the pop is exactly `words vs ++ wimg (set V x v) ++ σ`
+        have hset : wimg (YulSemantics.VEnv.set V x v)
+            = (wimg V).take idx ++ .word v :: (wimg V).drop (idx + 1) := by
+          rw [wimg_set v hidx]
+          conv_lhs => rw [hsplitV]
+          rw [set_at_append' hlenV]
+        have hmid : (words vs ++ (wimg V).take idx)
+              ++ .word v :: ((wimg V).drop (idx + 1) ++ σ)
+            = words vs ++ wimg (YulSemantics.VEnv.set V x v) ++ σ := by
+          rw [hset]; simp [List.append_assoc]
+        have hnames := names_set V x v
+        have hih := ih vs (YulSemantics.VEnv.set V x v) rest hlen'
+          (by rw [hnames]; exact hrest)
+          (pre ++ [.swap ⟨idx + xs.length, h16⟩, .pop]) c σ (by rw [hp]; simp)
+        rw [hstk]
+        refine .head hswap (.head hpop ?_)
+        rw [hmid, show YulSemantics.VEnv.setMany V (x :: xs) (v :: vs)
+          = YulSemantics.VEnv.setMany (YulSemantics.VEnv.set V x v) xs vs from rfl]
+        exact hih
+      · rw [dif_neg h16] at hac2; exact absurd hac2 (by simp)
+
+/-- `x₁, …, xₖ := e`: evaluate `e` (leaving its `k` values on top), then
+store each into its variable and pop. -/
+theorem asimS_assigns {prog : List Asm} {yst yst' : EvmState} {V : VEnv yulD}
+    {xs : List Ident} {vs : List U256} {eCode acode : List Asm}
+    (hlen : xs.length = vs.length)
+    (hac : compileAssigns (names V) xs = some acode)
+    (he : ASimE prog yst V 0 eCode vs yst') :
+    ASimS prog yst V (eCode ++ acode) yst' (YulSemantics.VEnv.setMany V xs vs) := by
+  intro pre c σ hp
+  have h1 := he pre (acode ++ c) [] σ (by rw [hp]; simp [List.append_assoc]) rfl
+  have h2 := assigns_exec (prog := prog) (yst := yst') xs vs V acode hlen hac
+    (pre ++ eCode) c σ (by rw [hp]; simp [List.append_assoc])
+  rw [List.append_assoc]
+  refine ASteps.trans ?_ h2
+  simpa [List.append_assoc] using h1
 
 /-! ### Statement leaves: declarations, pops, labels, non-local exits -/
 
@@ -1498,36 +1664,25 @@ private theorem stmt_letSome_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat} {xs : List Ident}
     {e : Expr Op} {asm : List Asm} {Γ' : List Ident} {n' : Nat}
     (h : compileStmt Φ Γ F L n (.letDecl xs (some e)) = some (asm, Γ', n')) :
-    ∃ x, xs = [x] ∧ compileExpr Φ Γ 0 n e = some (asm, n')
-      ∧ Γ' = x :: Γ := by
-  rcases xs with _ | ⟨x, _ | ⟨y, xs⟩⟩ <;>
-    simp only [compileStmt, Option.bind_eq_bind] at h
-  case nil => exact absurd h (by simp)
-  case cons.cons => exact absurd h (by simp)
+    compileExpr Φ Γ 0 n e = some (asm, n') ∧ Γ' = xs ++ Γ := by
+  simp only [compileStmt, Option.bind_eq_bind] at h
   obtain ⟨⟨eCode, n1⟩, he, h2⟩ := Option.bind_eq_some_iff.mp h
   simp only [Option.some.injEq, Prod.mk.injEq] at h2
-  exact ⟨x, rfl, h2.1 ▸ h2.2.2 ▸ he, h2.2.1.symm⟩
+  exact ⟨h2.1 ▸ h2.2.2 ▸ he, h2.2.1.symm⟩
 
 private theorem stmt_assign_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat} {xs : List Ident}
     {e : Expr Op} {asm : List Asm} {Γ' : List Ident} {n' : Nat}
     (h : compileStmt Φ Γ F L n (.assign xs e) = some (asm, Γ', n')) :
-    ∃ (x : Ident) (eCode : List Asm) (idx : Nat) (h16 : idx < 16),
-      xs = [x] ∧ compileExpr Φ Γ 0 n e = some (eCode, n')
-      ∧ Γ.findIdx? (fun y => y = x) = some idx
-      ∧ asm = eCode ++ [.swap ⟨idx, h16⟩, .pop] ∧ Γ' = Γ := by
-  rcases xs with _ | ⟨x, _ | ⟨y, xs⟩⟩ <;>
-    simp only [compileStmt, Option.bind_eq_bind] at h
-  case nil => exact absurd h (by simp)
-  case cons.cons => exact absurd h (by simp)
+    ∃ (eCode acode : List Asm),
+      compileExpr Φ Γ 0 n e = some (eCode, n')
+      ∧ compileAssigns Γ xs = some acode
+      ∧ asm = eCode ++ acode ∧ Γ' = Γ := by
+  simp only [compileStmt, Option.bind_eq_bind] at h
   obtain ⟨⟨eCode, n1⟩, he, h2⟩ := Option.bind_eq_some_iff.mp h
-  obtain ⟨idx, hidx, h3⟩ := Option.bind_eq_some_iff.mp h2
-  by_cases h16 : idx < 16
-  · rw [dif_pos h16] at h3
-    simp only [Option.some.injEq, Prod.mk.injEq] at h3
-    exact ⟨x, eCode, idx, h16, rfl, h3.2.2 ▸ he, hidx, h3.1.symm, h3.2.1.symm⟩
-  · rw [dif_neg h16] at h3
-    exact absurd h3 (by simp)
+  obtain ⟨acode, hac, h3⟩ := Option.bind_eq_some_iff.mp h2
+  simp only [Option.some.injEq, Prod.mk.injEq] at h3
+  exact ⟨eCode, acode, h3.2.2 ▸ he, hac, h3.1.symm, h3.2.1.symm⟩
 
 private theorem stmt_break_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat}
@@ -1848,10 +2003,10 @@ private theorem stmt_suffix {Φ : FMap} {Γ : List Ident} {F : Option FunCtx}
       obtain ⟨-, rfl, -⟩ := stmt_letNone_inv h
       exact ⟨xs, rfl⟩
     | some e =>
-      obtain ⟨x, rfl, -, rfl⟩ := stmt_letSome_inv h
-      exact ⟨[x], rfl⟩
+      obtain ⟨-, rfl⟩ := stmt_letSome_inv h
+      exact ⟨xs, rfl⟩
   | assign xs e =>
-    obtain ⟨x, eCode, idx, h16, rfl, -, -, -, rfl⟩ := stmt_assign_inv h
+    obtain ⟨-, -, -, -, -, rfl⟩ := stmt_assign_inv h
     exact ⟨[], rfl⟩
   | block body => exact ⟨[], ((stmt_block_inv h).2).symm ▸ rfl⟩
   | cond c body =>
@@ -2602,34 +2757,23 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     rw [names_append, names_bindZeros]
   | letVal hexp hlen ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨x, rfl, he, rfl⟩ := stmt_letSome_inv hc
-    rename_i vals _
-    rcases vals with _ | ⟨v, _ | ⟨v2, t⟩⟩ <;> simp at hlen
-    exact ⟨rfl, by simp, fun hΦ => (ihexp Φ 0 n asm n' he hΦ).toASimSLet⟩
+    obtain ⟨he, rfl⟩ := stmt_letSome_inv hc
+    refine ⟨?_, ?_, fun hΦ => (ihexp Φ 0 n asm n' he hΦ).toASimSLetMany hlen.symm⟩
+    · rw [names_append, names_zip _ _ hlen.symm]
+    · rw [List.length_append]; omega
   | letHalt hexp ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨x, rfl, he, rfl⟩ := stmt_letSome_inv hc
+    obtain ⟨he, rfl⟩ := stmt_letSome_inv hc
     exact fun hΦ => (ihexp Φ 0 n asm n' he hΦ).toASimSHalt
   | assignVal hexp hlen ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨x, eCode, idx, h16, rfl, he, hidx, rfl, rfl⟩ := stmt_assign_inv hc
-    rename_i vals _
-    rcases vals with _ | ⟨v, _ | ⟨v2, t⟩⟩ <;> simp at hlen
-    have hsm : YulSemantics.VEnv.setMany ‹VEnv yulD› [x] [v]
-        = YulSemantics.VEnv.set ‹VEnv yulD› x v := rfl
-    rw [hsm]
-    refine ⟨(names_set _ _ _).symm, ?_, fun hΦ =>
-      asimS_assign h16 hidx (ihexp Φ 0 n eCode n' he hΦ)⟩
-    have hle : (YulSemantics.VEnv.set ‹VEnv yulD› x v).length
-        = List.length ‹VEnv yulD› := by
-      have := congrArg List.length (names_set ‹VEnv yulD› x v)
-      simpa using this
-    omega
+    obtain ⟨eCode, acode, he, hac, rfl, rfl⟩ := stmt_assign_inv hc
+    exact ⟨(names_setMany _ _ _).symm, (length_setMany _ _ _).ge,
+      fun hΦ => asimS_assigns hlen.symm hac (ihexp Φ 0 n eCode n' he hΦ)⟩
   | assignHalt hexp ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨x, eCode, idx, h16, rfl, he, hidx, rfl, rfl⟩ := stmt_assign_inv hc
-    exact fun hΦ =>
-      ((ihexp Φ 0 n eCode n' he hΦ).toASimSHalt).extend _
+    obtain ⟨eCode, acode, he, hac, rfl, rfl⟩ := stmt_assign_inv hc
+    exact fun hΦ => ((ihexp Φ 0 n eCode n' he hΦ).toASimSHalt).extend _
   | exprStmt hexp ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
     obtain ⟨he, rfl⟩ := stmt_exprStmt_inv hc

@@ -120,6 +120,22 @@ def hoistInfos (n : Nat) : List (Stmt Op) → FScopeInfo × Nat
       ((f, ⟨n, ps.length, rs.length⟩) :: scope, n1)
   | _ :: rest => hoistInfos n rest
 
+/-- Compile a multi-assignment's store sequence. With the `xs.length`
+right-hand values on top of the stack (the first target's value on top),
+store each into its variable's slot and pop it. Each `swap` reaches past
+the values still stacked above it (`xs.length` shrinks by one per step),
+so the store index is `idx + (remaining values below the top one)`. For a
+single target this is exactly `[swap idx, pop]`. -/
+def compileAssigns (Γ : List Ident) : List Ident → Option (List Asm)
+  | [] => some []
+  | x :: xs => do
+      let idx ← Γ.findIdx? (fun y => y = x)
+      if h : idx + xs.length < 16 then
+        let rest ← compileAssigns Γ xs
+        some (.swap ⟨idx + xs.length, h⟩ :: .pop :: rest)
+      else
+        none                        -- too deep for SWAP16 (needs EIP-8024)
+
 mutual
 
 /-- Compile an expression at layout `Γ` with `off` temporaries above the
@@ -184,22 +200,13 @@ def compileStmt (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
       some (is, Γ, n1)
   | .letDecl xs none =>
       some (List.replicate xs.length (.push 0), xs ++ Γ, n)
-  | .letDecl xs (some e) =>
-      match xs with
-      | [x] => do
-          let (is, n1) ← compileExpr Φ Γ 0 n e
-          some (is, x :: Γ, n1)
-      | _ => none                 -- multi-value `let` still unsupported
-  | .assign xs e =>
-      match xs with
-      | [x] => do
-          let (is, n1) ← compileExpr Φ Γ 0 n e
-          let idx ← Γ.findIdx? (fun y => y = x)
-          if h : idx < 16 then
-            some (is ++ [.swap ⟨idx, h⟩, .pop], Γ, n1)
-          else
-            none                  -- too deep for SWAP16 (needs EIP-8024)
-      | _ => none
+  | .letDecl xs (some e) => do
+      let (is, n1) ← compileExpr Φ Γ 0 n e
+      some (is, xs ++ Γ, n1)     -- values land already in layout order
+  | .assign xs e => do
+      let (is, n1) ← compileExpr Φ Γ 0 n e
+      let acode ← compileAssigns Γ xs
+      some (is ++ acode, Γ, n1)
   | .block body => do
       let (is, n1) ← compileBlock Φ Γ F L n body
       some (is, Γ, n1)
