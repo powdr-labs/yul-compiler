@@ -38,15 +38,19 @@ jump Lcond
 label Lexit:  pop × (|Γi| − |Γ|)
 ```
 
-`function f(p₁…pₙ) -> r { body }` (emitted inline where declared, jumped
-over; `rets ≤ 1` for now):
+`function f(p₁…pₙ) -> r₁…r_k { body }` (emitted inline where declared,
+jumped over; `k ≤ 16`):
 
 ```
 jump Lskip
 label Lentry:  <body>         -- Γf := params ++ rets; F := ⟨Lexit, n+k⟩
-label Lexit:   pop × n ; (swap1 if k = 1) ; dynJump
+label Lexit:   pop × n ; retRot k ; dynJump
 label Lskip:
 ```
+
+`retRot k` (`SWAP1…SWAPk`) rotates the return address — which sits just
+below the `k` return values — to the top for `dynJump`, leaving `r₁…r_k`
+in order.
 
 A call `f(a₁…aₙ)` pushes the frame the callee expects — return address
 below `k` zero-initialized return slots below the arguments (first
@@ -119,6 +123,15 @@ def hoistInfos (n : Nat) : List (Stmt Op) → FScopeInfo × Nat
       let (scope, n1) := hoistInfos (n + 1) rest
       ((f, ⟨n, ps.length, rs.length⟩) :: scope, n1)
   | _ :: rest => hoistInfos n rest
+
+/-- The return-value rotation `SWAP1; SWAP2; …; SWAPk`. After the params
+are popped the stack is `r₁ … r_k, retAddr, …`; this brings `retAddr` to the
+top (ready for `dynJump`) while preserving the returns' order below it. For
+`k = 0` it is empty and for `k = 1` it is `[swap 0]` — the previous
+single-return epilogue. -/
+def retRot : Nat → List Asm
+  | 0 => []
+  | k + 1 => retRot k ++ [.swap ⟨k % 16, Nat.mod_lt k (by omega)⟩]
 
 /-- Compile a multi-assignment's store sequence. With the `xs.length`
 right-hand values on top of the stack (the first target's value on top),
@@ -239,7 +252,7 @@ def compileStmt (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
       -- `Nodup`: params may not shadow rets (or each other) — the epilogue
       -- reads return values off the stack region by *position*, which only
       -- agrees with the semantics' name-based `VEnv.get` without shadowing.
-      if rs.length ≤ 1 ∧ (_ps ++ rs).Nodup then
+      if rs.length ≤ 16 ∧ (_ps ++ rs).Nodup then
         let lexit := n
         let lskip := n + 1
         let Γf := _ps ++ rs
@@ -248,10 +261,10 @@ def compileStmt (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
         some (.jump lskip :: .label info.entry :: bodyCode
           ++ [.label lexit]
           ++ List.replicate _ps.length .pop
-          ++ (if rs.length = 1 then [.swap 0] else [])
+          ++ retRot rs.length
           ++ [.dynJump, .label lskip], Γ, n1)
       else
-        none                      -- multi-value returns unsupported
+        none                      -- > 16 return values need SWAP17+ (EIP-8024)
   | .break => do
       let l ← L
       some (List.replicate (Γ.length - l.depth) .pop ++ [.jump l.brk], Γ, n)

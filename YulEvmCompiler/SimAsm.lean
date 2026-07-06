@@ -1209,9 +1209,7 @@ theorem asimS_switchTailNL {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
 
 /-- The epilogue instructions of a compiled function. -/
 def epilogue (nps nrs : Nat) : List Asm :=
-  List.replicate nps .pop
-    ++ (if nrs = 1 then [.swap 0] else [])
-    ++ [.dynJump]
+  List.replicate nps .pop ++ retRot nrs ++ [.dynJump]
 
 /-- What the compiler emitted for one function, somewhere in the program:
 entry label, compiled body (against the scopes visible at the definition
@@ -1220,7 +1218,7 @@ def FunOK (prog : List Asm) (decl : YulSemantics.FDecl yulD)
     (info : FunInfo) (Φv : FMap) : Prop :=
   info.arity = decl.params.length
     ∧ info.rets = decl.rets.length
-    ∧ decl.rets.length ≤ 1
+    ∧ decl.rets.length ≤ 16
     ∧ (decl.params ++ decl.rets).Nodup
     ∧ ∃ (lexit n₀ n₁ : Nat) (bodyAsm : List Asm),
         compileBlock Φv (decl.params ++ decl.rets)
@@ -1381,14 +1379,51 @@ theorem wimg_rets {Vend : VEnv yulD} {ps rs : List Ident}
     get_self (by rw [hnB]; exact (List.nodup_append.mp hnodup).2.1)]
   simp [wimg, words]
 
+/-- `retRot k` (`SWAP1…SWAPk`) rotates the single element `Y` sitting just
+below the `k`-element block `as` to the top, preserving the block's order. -/
+theorem retRot_exec {prog : List Asm} {yst : EvmState} :
+    ∀ (k : Nat) (as : List AVal) (Y : AVal) (ρ : List AVal) (pre c : List Asm),
+      as.length = k → k ≤ 16 →
+      prog = pre ++ retRot k ++ c →
+      ASteps prog ⟨retRot k ++ c, as ++ Y :: ρ, yst⟩ ⟨c, Y :: (as ++ ρ), yst⟩ := by
+  intro k
+  induction k with
+  | zero =>
+    intro as Y ρ pre c hlen hk hp
+    obtain rfl : as = [] := List.length_eq_zero_iff.mp hlen
+    show ASteps prog ⟨retRot 0 ++ c, [] ++ Y :: ρ, yst⟩ ⟨c, Y :: ([] ++ ρ), yst⟩
+    simp only [retRot, List.nil_append]
+    exact .refl _
+  | succ k ih =>
+    intro as Y ρ pre c hlen hk hp
+    have hne : as ≠ [] := by rintro rfl; simp at hlen
+    obtain ⟨front, alast, rfl⟩ : ∃ front alast, as = front ++ [alast] :=
+      ⟨as.dropLast, as.getLast hne, (List.dropLast_append_getLast hne).symm⟩
+    have hfront : front.length = k := by
+      have := hlen; simp at this; omega
+    have hk16 : k % 16 = k := Nat.mod_eq_of_lt (by omega)
+    have hrr : retRot (k + 1)
+        = retRot k ++ [Asm.swap ⟨k % 16, Nat.mod_lt k (by omega)⟩] := rfl
+    rw [hrr, List.append_assoc,
+      show (front ++ [alast]) ++ Y :: ρ = front ++ alast :: (Y :: ρ) from by simp,
+      show ((front ++ [alast]) ++ ρ) = front ++ alast :: ρ from by simp]
+    have h1 := ih front alast (Y :: ρ) pre
+      (Asm.swap ⟨k % 16, Nat.mod_lt k (by omega)⟩ :: c) hfront (by omega)
+      (by rw [hp, hrr]; simp [List.append_assoc])
+    have hswap : AStep prog
+        ⟨Asm.swap ⟨k % 16, Nat.mod_lt k (by omega)⟩ :: c,
+          alast :: (front ++ Y :: ρ), yst⟩
+        ⟨c, Y :: (front ++ alast :: ρ), yst⟩ := .swap (by rw [hfront]; exact hk16.symm)
+    exact h1.trans (.single hswap)
+
 /-- Executing the epilogue from just after the exit label: pop the
-parameters, bring the return address to the top, jump back to the call
+parameters, rotate the return address to the top, jump back to the call
 site with the return values (read off the stack region — which agrees with
 the semantics' name-based reads thanks to `Nodup`). -/
 theorem asim_epilogue {prog : List Asm} {yst : EvmState}
     {Vend : VEnv yulD} {ps rs : List Ident} {lret : Label} {cRet : List Asm}
     (hnames : names Vend = ps ++ rs) (hnodup : (ps ++ rs).Nodup)
-    (hrs1 : rs.length ≤ 1)
+    (hrs1 : rs.length ≤ 16)
     (hfind : findLabel lret prog = some cRet) :
     ∀ (pre c : List Asm) (σc : List AVal),
       prog = pre ++ epilogue ps.length rs.length ++ c →
@@ -1398,58 +1433,37 @@ theorem asim_epilogue {prog : List Asm} {yst : EvmState}
             (YulSemantics.VEnv.get Vend r).getD yulD.zero)) ++ σc, yst⟩ := by
   intro pre c σc hp
   have hlenV : Vend.length = ps.length + rs.length := by
-    have := congrArg List.length hnames
-    simpa using this
-  -- pop the parameters
+    have := congrArg List.length hnames; simpa using this
   have hsplitV : Vend = Vend.take ps.length ++ Vend.drop ps.length :=
     (List.take_append_drop _ _).symm
   have htake : (Vend.take ps.length).length = ps.length := by
-    simp
-    omega
+    rw [List.length_take]; omega
+  -- pop the parameters
   have hpops : ASteps prog
-      ⟨List.replicate ps.length .pop
-          ++ ((if rs.length = 1 then [.swap 0] else [])
-            ++ [.dynJump] ++ c),
+      ⟨List.replicate ps.length .pop ++ (retRot rs.length ++ [.dynJump] ++ c),
         wimg Vend ++ (.code lret :: σc), yst⟩
-      ⟨(if rs.length = 1 then [.swap 0] else []) ++ [.dynJump] ++ c,
+      ⟨retRot rs.length ++ [.dynJump] ++ c,
         wimg (Vend.drop ps.length) ++ (.code lret :: σc), yst⟩ := by
     have h := asimS_pops (prog := prog) (yst := yst)
       (Vend.take ps.length) (Vend.drop ps.length)
     rw [htake] at h
-    have := h pre ((if rs.length = 1 then [.swap 0] else [])
-        ++ [.dynJump] ++ c) (.code lret :: σc)
-      (by rw [hp]; simp [epilogue])
+    have := h pre (retRot rs.length ++ [.dynJump] ++ c) (.code lret :: σc)
+      (by rw [hp]; simp [epilogue, List.append_assoc])
     rw [← hsplitV] at this
     exact this
-  have hcode : epilogue ps.length rs.length ++ c
-      = List.replicate ps.length .pop
-        ++ ((if rs.length = 1 then [.swap 0] else []) ++ [.dynJump] ++ c) := by
-    simp [epilogue]
-  rw [hcode]
   rw [wimg_rets hnames hnodup] at hpops
-  -- return-value shuffling depends on the arity (0 or 1)
-  rcases rs with _ | ⟨r, rs'⟩
-  · -- no return values: straight to the dynJump
-    refine hpops.trans ?_
-    show ASteps prog ⟨.dynJump :: c, .code lret :: σc, yst⟩ _
-    exact .single (.dynJump hfind)
-  · rcases rs' with _ | ⟨r2, rs''⟩
-    · -- one return value: swap it past the return address
-      refine hpops.trans ?_
-      show ASteps prog
-        ⟨.swap 0 :: (.dynJump :: c),
-          .word ((YulSemantics.VEnv.get Vend r).getD yulD.zero)
-            :: (.code lret :: σc), yst⟩ _
-      have hswap : AStep prog
-          ⟨.swap 0 :: (.dynJump :: c),
-            .word ((YulSemantics.VEnv.get Vend r).getD yulD.zero)
-              :: ([] ++ .code lret :: σc), yst⟩
-          ⟨.dynJump :: c,
-            .code lret :: ([] ++ .word ((YulSemantics.VEnv.get Vend r).getD
-              yulD.zero) :: σc), yst⟩ := .swap rfl
-      refine .head (by simpa using hswap) ?_
-      exact .single (.dynJump hfind)
-    · simp at hrs1
+  have hcode : epilogue ps.length rs.length ++ c
+      = List.replicate ps.length .pop ++ (retRot rs.length ++ [.dynJump] ++ c) := by
+    simp [epilogue, List.append_assoc]
+  rw [hcode]
+  refine hpops.trans ?_
+  -- rotate the return address up and jump
+  rw [show retRot rs.length ++ [.dynJump] ++ c = retRot rs.length ++ (.dynJump :: c) from by simp]
+  refine (retRot_exec (prog := prog) (yst := yst) rs.length
+      (words (rs.map (fun r => (YulSemantics.VEnv.get Vend r).getD yulD.zero)))
+      (.code lret) σc (pre ++ List.replicate ps.length .pop) (.dynJump :: c)
+      (by simp [words]) hrs1 (by rw [hp]; simp [epilogue, List.append_assoc])).trans ?_
+  exact .single (.dynJump hfind)
 
 /-! ### Depth guards and the induction motive -/
 
@@ -1971,7 +1985,7 @@ private theorem stmt_funDef_inv {Φ : FMap} {Γ : List Ident}
     (h : compileStmt Φ Γ F L n (.funDef f ps rs body) = some (asm, Γ', n')) :
     ∃ (info : FunInfo) (Φv : FMap) (bodyCode : List Asm),
       lookupF Φ f = some (info, Φv)
-      ∧ rs.length ≤ 1 ∧ (ps ++ rs).Nodup
+      ∧ rs.length ≤ 16 ∧ (ps ++ rs).Nodup
       ∧ compileBlock Φ (ps ++ rs) (some ⟨n, (ps ++ rs).length⟩) none
           (n + 2) body = some (bodyCode, n')
       ∧ asm = .jump (n + 1) :: .label info.entry :: bodyCode
@@ -1979,7 +1993,7 @@ private theorem stmt_funDef_inv {Φ : FMap} {Γ : List Ident}
       ∧ Γ' = Γ := by
   simp only [compileStmt, Option.bind_eq_bind] at h
   obtain ⟨⟨info, Φv⟩, hlk, h2⟩ := Option.bind_eq_some_iff.mp h
-  by_cases hg : rs.length ≤ 1 ∧ (ps ++ rs).Nodup
+  by_cases hg : rs.length ≤ 16 ∧ (ps ++ rs).Nodup
   · rw [if_pos hg] at h2
     obtain ⟨⟨bodyCode, n1⟩, hb, h3⟩ := Option.bind_eq_some_iff.mp h2
     simp only [Option.some.injEq, Prod.mk.injEq] at h3
@@ -2325,7 +2339,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     injection hpair with hpair
     cases hpair
     have hrs : info.rets = decl.rets.length := hok.2.1
-    have hrs1 : decl.rets.length ≤ 1 := hok.2.2.1
+    have hrs1 : decl.rets.length ≤ 16 := hok.2.2.1
     have hnodupPR : (decl.params ++ decl.rets).Nodup := hok.2.2.2.1
     obtain ⟨lexit, n₀, n₁, bodyAsm, s, t, hbodyC, hsplitP, hfindEntry⟩ :=
       funOK_entry hnodup hok
