@@ -172,6 +172,7 @@ def compileBlock (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
     some (isb ++ List.replicate (Γ'.length - Γ.length) .pop, n2)
   else
     none
+  termination_by 2 * sizeOf body + 1
 
 /-- Compile a statement at layout `Γ` under contexts `F`/`L`; returns the
 code and the layout after the statement. -/
@@ -253,7 +254,18 @@ def compileStmt (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
   | .leave => do
       let f ← F
       some (List.replicate (Γ.length - f.depth) .pop ++ [.jump f.exit], Γ, n)
-  | _ => none                     -- switch: later
+  | .switch c cases dflt => do
+      -- `lend` (fresh, smallest) marks the merge point; evaluate `c` (leaving the scrutinee
+      -- on the stack), dispatch through the case comparisons, else run the default block.
+      let lend := n
+      let (cCode, n1) ← compileExpr Φ Γ 0 (n + 1) c
+      let (casesAsm, n2) ← compileSwitchCases Φ Γ F L lend n1 cases
+      let (defAsm, n3) ← compileBlock Φ Γ F L n2 (match dflt with | some b => b | none => [])
+      some (cCode ++ casesAsm ++ .pop :: defAsm ++ [.label lend], Γ, n3)
+  termination_by s => 2 * sizeOf s
+  decreasing_by
+    all_goals simp_wf
+    all_goals (first | omega | (cases dflt <;> simp_all <;> omega))
 
 /-- Compile a statement sequence, threading layout and counter. -/
 def compileStmts (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
@@ -264,6 +276,23 @@ def compileStmts (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
       let (is1, Γ1, n1) ← compileStmt Φ Γ F L n s
       let (is2, Γ2, n2) ← compileStmts Φ Γ1 F L n1 rest
       some (is1 ++ is2, Γ2, n2)
+  termination_by ss => 2 * sizeOf ss
+
+/-- Compile a `switch`'s case-dispatch chain, with the scrutinee value on top of the stack.
+Each case compares `dup;push v;eq`; on a match it falls through the `jumpi`, pops the scrutinee,
+runs the case body (a block at `Γ`), and jumps to `lend`; on a mismatch it skips to the next case
+label. Falling off the end leaves the scrutinee on the stack for the caller's default handling. -/
+def compileSwitchCases (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
+    (L : Option LoopCtx) (lend : Label) (n : Nat) :
+    List (YulSemantics.Literal × Block Op) → Option (List Asm × Nat)
+  | [] => some ([], n)
+  | (v, b) :: rest => do
+      let lnext := n
+      let (bAsm, n1) ← compileBlock Φ Γ F L (n + 1) b
+      let (restAsm, n2) ← compileSwitchCases Φ Γ F L lend n1 rest
+      some ([.dup 0, .push (litValue v), .op .eq, .op .iszero, .jumpi lnext, .pop]
+        ++ bAsm ++ [.jump lend, .label lnext] ++ restAsm, n2)
+  termination_by cs => 2 * sizeOf cs + 1
 
 end
 

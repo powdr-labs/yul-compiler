@@ -47,6 +47,25 @@ def breakContinue : Block Op := yul% {
   sstore(0, s)
 }
 
+/-- `switch` dispatch: `x = 2` selects the matching case, `7*3 = 21` in slot 0. -/
+def switchMatch : Block Op := yul% {
+  let x := 2
+  switch x
+  case 1 { sstore(0, 10) }
+  case 2 { sstore(0, mul(7, 3)) }
+  case 3 { sstore(0, 30) }
+  default { sstore(0, 99) }
+}
+
+/-- `switch` fall-through to `default` when no case matches: `99` in slot 0. -/
+def switchDefault : Block Op := yul% {
+  let x := 5
+  switch x
+  case 1 { sstore(0, 10) }
+  case 2 { sstore(0, 20) }
+  default { sstore(0, 99) }
+}
+
 /-- A simple function: `double(21) = 42` in slot 0. -/
 def funCall : Block Op := yul% {
   function double(x) -> y {
@@ -192,6 +211,8 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 
 #guard agreeOn sumLoop [0]
 #guard agreeOn breakContinue [0]
+#guard agreeOn switchMatch [0]
+#guard agreeOn switchDefault [0]
 #guard agreeOn funCall [0]
 #guard agreeOn factorial [0]
 #guard agreeOn leaveEarly [0, 1]
@@ -226,6 +247,8 @@ def agreeReturn (prog : Block Op) (cd : List UInt8) : Bool :=
 -- The Yul interpreter's view of the expected values (documentation).
 #guard (runYul 100000 sumLoop).map (fun st => (st.storage 0).toNat) = some 15
 #guard (runYul 100000 breakContinue).map (fun st => (st.storage 0).toNat) = some 12
+#guard (runYul 100000 switchMatch).map (fun st => (st.storage 0).toNat) = some 21
+#guard (runYul 100000 switchDefault).map (fun st => (st.storage 0).toNat) = some 99
 #guard (runYul 100000 funCall).map (fun st => (st.storage 0).toNat) = some 42
 #guard (runYul 100000 factorial).map (fun st => (st.storage 0).toNat) = some 120
 #guard (runYul 100000 leaveEarly).map
