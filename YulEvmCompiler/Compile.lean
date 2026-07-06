@@ -38,15 +38,19 @@ jump Lcond
 label Lexit:  pop × (|Γi| − |Γ|)
 ```
 
-`function f(p₁…pₙ) -> r { body }` (emitted inline where declared, jumped
-over; `rets ≤ 1` for now):
+`function f(p₁…pₙ) -> r₁…r_k { body }` (emitted inline where declared,
+jumped over; `k ≤ 16`):
 
 ```
 jump Lskip
 label Lentry:  <body>         -- Γf := params ++ rets; F := ⟨Lexit, n+k⟩
-label Lexit:   pop × n ; (swap1 if k = 1) ; dynJump
+label Lexit:   pop × n ; retRot k ; dynJump
 label Lskip:
 ```
+
+`retRot k` (`SWAP1…SWAPk`) rotates the return address — which sits just
+below the `k` return values — to the top for `dynJump`, leaving `r₁…r_k`
+in order.
 
 A call `f(a₁…aₙ)` pushes the frame the callee expects — return address
 below `k` zero-initialized return slots below the arguments (first
@@ -120,6 +124,31 @@ def hoistInfos (n : Nat) : List (Stmt Op) → FScopeInfo × Nat
       ((f, ⟨n, ps.length, rs.length⟩) :: scope, n1)
   | _ :: rest => hoistInfos n rest
 
+/-- The return-value rotation `SWAP1; SWAP2; …; SWAPk`. After the params
+are popped the stack is `r₁ … r_k, retAddr, …`; this brings `retAddr` to the
+top (ready for `dynJump`) while preserving the returns' order below it. For
+`k = 0` it is empty and for `k = 1` it is `[swap 0]` — the previous
+single-return epilogue. -/
+def retRot : Nat → List Asm
+  | 0 => []
+  | k + 1 => retRot k ++ [.swap ⟨k % 16, Nat.mod_lt k (by omega)⟩]
+
+/-- Compile a multi-assignment's store sequence. With the `xs.length`
+right-hand values on top of the stack (the first target's value on top),
+store each into its variable's slot and pop it. Each `swap` reaches past
+the values still stacked above it (`xs.length` shrinks by one per step),
+so the store index is `idx + (remaining values below the top one)`. For a
+single target this is exactly `[swap idx, pop]`. -/
+def compileAssigns (Γ : List Ident) : List Ident → Option (List Asm)
+  | [] => some []
+  | x :: xs => do
+      let idx ← Γ.findIdx? (fun y => y = x)
+      if h : idx + xs.length < 16 then
+        let rest ← compileAssigns Γ xs
+        some (.swap ⟨idx + xs.length, h⟩ :: .pop :: rest)
+      else
+        none                        -- too deep for SWAP16 (needs EIP-8024)
+
 mutual
 
 /-- Compile an expression at layout `Γ` with `off` temporaries above the
@@ -184,22 +213,13 @@ def compileStmt (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
       some (is, Γ, n1)
   | .letDecl xs none =>
       some (List.replicate xs.length (.push 0), xs ++ Γ, n)
-  | .letDecl xs (some e) =>
-      match xs with
-      | [x] => do
-          let (is, n1) ← compileExpr Φ Γ 0 n e
-          some (is, x :: Γ, n1)
-      | _ => none                 -- multi-value `let` still unsupported
-  | .assign xs e =>
-      match xs with
-      | [x] => do
-          let (is, n1) ← compileExpr Φ Γ 0 n e
-          let idx ← Γ.findIdx? (fun y => y = x)
-          if h : idx < 16 then
-            some (is ++ [.swap ⟨idx, h⟩, .pop], Γ, n1)
-          else
-            none                  -- too deep for SWAP16 (needs EIP-8024)
-      | _ => none
+  | .letDecl xs (some e) => do
+      let (is, n1) ← compileExpr Φ Γ 0 n e
+      some (is, xs ++ Γ, n1)     -- values land already in layout order
+  | .assign xs e => do
+      let (is, n1) ← compileExpr Φ Γ 0 n e
+      let acode ← compileAssigns Γ xs
+      some (is ++ acode, Γ, n1)
   | .block body => do
       let (is, n1) ← compileBlock Φ Γ F L n body
       some (is, Γ, n1)
@@ -232,7 +252,7 @@ def compileStmt (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
       -- `Nodup`: params may not shadow rets (or each other) — the epilogue
       -- reads return values off the stack region by *position*, which only
       -- agrees with the semantics' name-based `VEnv.get` without shadowing.
-      if rs.length ≤ 1 ∧ (_ps ++ rs).Nodup then
+      if rs.length ≤ 16 ∧ (_ps ++ rs).Nodup then
         let lexit := n
         let lskip := n + 1
         let Γf := _ps ++ rs
@@ -241,10 +261,10 @@ def compileStmt (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
         some (.jump lskip :: .label info.entry :: bodyCode
           ++ [.label lexit]
           ++ List.replicate _ps.length .pop
-          ++ (if rs.length = 1 then [.swap 0] else [])
+          ++ retRot rs.length
           ++ [.dynJump, .label lskip], Γ, n1)
       else
-        none                      -- multi-value returns unsupported
+        none                      -- > 16 return values need SWAP17+ (EIP-8024)
   | .break => do
       let l ← L
       some (List.replicate (Γ.length - l.depth) .pop ++ [.jump l.brk], Γ, n)

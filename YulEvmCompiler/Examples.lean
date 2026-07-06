@@ -66,6 +66,46 @@ def switchDefault : Block Op := yul% {
   default { sstore(0, 99) }
 }
 
+/-- A multi-value-return function feeding a multi-value `let`:
+`divmod(17, 5) = (3, 2)` into slots 0 and 1. -/
+def multiRet : Block Op := yul% {
+  function divmod(a, b) -> q, r {
+    q := div(a, b)
+    r := mod(a, b)
+  }
+  let x, y := divmod(17, 5)
+  sstore(0, x)
+  sstore(1, y)
+}
+
+/-- A multi-value-return function feeding a multi-value assignment (the
+targets already exist): `x, y := swap2(x, y)` swaps `1, 2` to `2, 1`. -/
+def multiAssign : Block Op := yul% {
+  function swap2(a, b) -> c, d {
+    c := b
+    d := a
+  }
+  let x := 1
+  let y := 2
+  x, y := swap2(x, y)
+  sstore(0, x)
+  sstore(1, y)
+}
+
+/-- A three-value return, exercising the full `SWAP1;SWAP2;SWAP3` rotation:
+`first3() = (7, 8, 9)` into slots 0, 1, 2. -/
+def multiRet3 : Block Op := yul% {
+  function first3() -> a, b, c {
+    a := 7
+    b := 8
+    c := 9
+  }
+  let x, y, z := first3()
+  sstore(0, x)
+  sstore(1, y)
+  sstore(2, z)
+}
+
 /-- A simple function: `double(21) = 42` in slot 0. -/
 def funCall : Block Op := yul% {
   function double(x) -> y {
@@ -213,6 +253,9 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn breakContinue [0]
 #guard agreeOn switchMatch [0]
 #guard agreeOn switchDefault [0]
+#guard agreeOn multiRet [0, 1]
+#guard agreeOn multiAssign [0, 1]
+#guard agreeOn multiRet3 [0, 1, 2]
 #guard agreeOn funCall [0]
 #guard agreeOn factorial [0]
 #guard agreeOn leaveEarly [0, 1]
@@ -249,6 +292,11 @@ def agreeReturn (prog : Block Op) (cd : List UInt8) : Bool :=
 #guard (runYul 100000 breakContinue).map (fun st => (st.storage 0).toNat) = some 12
 #guard (runYul 100000 switchMatch).map (fun st => (st.storage 0).toNat) = some 21
 #guard (runYul 100000 switchDefault).map (fun st => (st.storage 0).toNat) = some 99
+#guard (runYul 100000 multiRet).map (fun st => (st.storage 0).toNat) = some 3
+#guard (runYul 100000 multiRet).map (fun st => (st.storage 1).toNat) = some 2
+#guard (runYul 100000 multiAssign).map (fun st => (st.storage 0).toNat) = some 2
+#guard (runYul 100000 multiAssign).map (fun st => (st.storage 1).toNat) = some 1
+#guard (runYul 100000 multiRet3).map (fun st => (st.storage 2).toNat) = some 9
 #guard (runYul 100000 funCall).map (fun st => (st.storage 0).toNat) = some 42
 #guard (runYul 100000 factorial).map (fun st => (st.storage 0).toNat) = some 120
 #guard (runYul 100000 leaveEarly).map
