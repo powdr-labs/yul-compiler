@@ -11,12 +11,12 @@ assembled EVM bytecode as lowercase hex.
 
 open YulParser YulEvmCompiler
 
-private def hexDigits : Array Char :=
+private def outputHexDigits : Array Char :=
   #['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
 
 private def byteHex (b : UInt8) : String :=
   let n := b.toNat
-  String.ofList [hexDigits[n / 16]!, hexDigits[n % 16]!]
+  String.ofList [outputHexDigits[n / 16]!, outputHexDigits[n % 16]!]
 
 private def codeHex (is : List Instr) : String :=
   String.join ((assembleBytes is).map byteHex)

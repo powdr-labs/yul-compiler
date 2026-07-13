@@ -59,4 +59,19 @@ def solidityCompatObject : String :=
 
 #guard (parseSource solidityCompatObject).isSome
 
+/-! The source entry point also runs Solidity-compatible validation after the
+grammar has produced an AST.  These checks pin representative scope, arity,
+control-flow, literal, switch, object, and EVM-version rules locally; CI covers
+the complete upstream syntax corpus. -/
+
+#guard (parseSource "{ function f(a) -> r { r := a } let x := f(1) }").isSome
+#guard (parseSource "{ let x := add(1) }").isNone
+#guard (parseSource "{ break }").isNone
+#guard (parseSource "{ let x := 1 let x := 2 }").isNone
+#guard (parseSource "{ switch 0 case 0 {} case \"\" {} }").isNone
+#guard (parseSource "{ let x := 0100 }").isNone
+#guard (parseSource "object \"A\" { code { pop(datasize(\"missing\")) } }").isNone
+#guard (parseSource ("{ function mcopy() {} mcopy() }\n" ++
+  "// ====\n// EVMVersion: <cancun\n// ----\n")).isSome
+
 end YulParser.Examples
