@@ -69,8 +69,8 @@ jobs:
       - name: Verify axiom footprint (sorry-free, standard axioms only)
         run: lake env lean Checks.lean
 
-      # Fetch only the two Yul test directories used below. The syntax mismatch
-      # list and interpreter manifest make the tested upstream surface explicit.
+      # Fetch only the two Yul test directories used below. Checked-in baselines
+      # make current parser/compiler gaps explicit and detect stale entries.
       - name: Fetch Solidity Yul tests
         run: |
           git clone --depth 1 --filter=blob:none --sparse --branch develop \
@@ -85,8 +85,8 @@ jobs:
             /tmp/solidity/test/libyul/yulSyntaxTests \
             test/solidity-yul-syntax-known-mismatches.txt
 
-      - name: Compile and execute selected Solidity Yul interpreter tests
+      - name: Compile and execute all Solidity Yul interpreter tests
         run: |
           lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
             /tmp/solidity/test/libyul/yulInterpreterTests \
-            test/solidity-yul-interpreter-tests.txt
+            test/solidity-yul-interpreter-known-failures.txt
