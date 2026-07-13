@@ -146,7 +146,27 @@ YulEvmCompiler/
   OpStep.lean       -- per-op EVM simulation lemmas and gas bounds
   Correctness.lean  -- end-to-end compile_correct / compile_correct_eval
   Examples.lean     -- compile-time and differential execution checks
+YulParser/
+  Canon.lean        -- independent canonical token stream for round-trip proofs
+  Atoms.lean        -- identifiers and literal parsers
+  Expr.lean         -- fuel-bounded expression parser
+  Stmt.lean         -- statements, block entry point, and round-trip theorem
+  Obj.lean          -- object entry point and round-trip theorem
+  Source.lean       -- common block/object source entry point
+  Compile.lean      -- brace-delimited source-to-compiler connection
+scripts/
+  CheckSoliditySyntaxTests.lean -- Solidity corpus expectation/mismatch runner
+test/
+  solidity-yul-syntax-known-mismatches.txt -- exact corpus disagreement set
 ```
+
+The parser is syntax-only and targets the lossy, single-sorted
+`yul-semantics` AST. Its public entry points use at most 256 units of recursive
+grammar fuel. Acceptance has verified canonical round-trip theorems, but does
+not imply Solidity name resolution, scope/control-context validity, built-in
+arity validity, or any other semantic check. CI exercises Solidity's complete
+`yulSyntaxTests` directory from `develop` and requires its exact set of known
+accept/reject disagreements to match the checked-in baseline.
 
 ### The IR and the compilation scheme
 
@@ -201,8 +221,11 @@ names, non-unique parameter/return names, more than 16 returns, classic
 
 * **Objects / `dataoffset` / `datasize` / `datacopy` / constructors.** Add a
   verified layout and connect object execution to the existing block compiler.
-* **Source parser.** Integrate the verified parser work with the current AST
-  compiler without regressing the merged control-flow and multi-return support.
+* **Parser compatibility and validation.** Reduce the Solidity syntax-corpus
+  mismatch baseline: add escaped and hex-string literals, support object/data
+  source forms that the current AST can represent, and decide which Solidity
+  semantic checks belong in a separate validation pass. Preserve the verified
+  canonical round-trip guarantee as the accepted grammar expands.
 * **Built-in coverage.** Discharge the proof and state-correspondence debt listed
   in Milestone 1 below; bridge the two opaque Keccak definitions upstream.
 * **Deep stack access.** Use EIP-8024 after the target semantics activates it,
