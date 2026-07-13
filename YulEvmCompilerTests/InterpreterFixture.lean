@@ -119,22 +119,57 @@ def parseExpectedState (source : String) : Except String ExpectedState := do
 
 private def word (n : Nat) : UInt256 := UInt256.ofNat n
 
+/-- Fixed current block number in Solidity's `InterpreterState`:
+https://github.com/argotorg/solidity/blob/960c6e969dd3b9133d06cddcd958698ac6d23aea/test/tools/yulInterpreter/Interpreter.h#L95-L105 -/
+private def solidityBlockNumber : Nat := 1024
+
+/-- Solidity's synthetic `BLOCKHASH` implementation uses the real EVM
+256-block lookback window and `0xaaaaaaaa` as a recognizable base value:
+https://github.com/argotorg/solidity/blob/960c6e969dd3b9133d06cddcd958698ac6d23aea/test/tools/yulInterpreter/EVMInstructionInterpreter.cpp#L294-L298 -/
+private def solidityBlockHashWindow : Nat := 256
+private def solidityBlockHashBase : UInt256 := word 0xaaaaaaaa
+
 private def solidityBlockHash (number : UInt256) : UInt256 :=
-  if number.toNat >= 1024 || number.toNat + 256 < 1024 then
+  if number.toNat >= solidityBlockNumber ||
+      number.toNat + solidityBlockHashWindow < solidityBlockNumber then
     0
   else
-    word 0xaaaaaaaa + (number - word 1024 - word 256)
+    solidityBlockHashBase +
+      (number - word solidityBlockNumber - word solidityBlockHashWindow)
 
-/-- Solidity's fixed environment for `YulInterpreterTest`. -/
+/-- Harness-local gas budget. Solidity's AST interpreter ignores gas; the
+compiled-code runner needs a finite EVM budget. This matches the ample budget
+used by the repository's existing differential EVM examples:
+https://github.com/powdr-labs/yul-compiler/blob/30c11c566abef27ff97169897cb2e77a20c846bf/YulEvmCompiler/Examples.lean#L216-L230 -/
+private def executionGas : Nat := 100000000
+
+/-- Harness-local instruction fuel, likewise matching the existing executable
+EVM checks (it is intentionally not Solidity's 512 AST-step limit):
+https://github.com/powdr-labs/yul-compiler/blob/30c11c566abef27ff97169897cb2e77a20c846bf/YulEvmCompiler/Examples.lean#L232-L243 -/
+private def executionFuel : Nat := 100000
+
+/-- Solidity's fixed environment for `YulInterpreterTest`.
+
+The address, balances, origin, caller, call value, gas price, and all block
+fields below come from `InterpreterState`:
+https://github.com/argotorg/solidity/blob/960c6e969dd3b9133d06cddcd958698ac6d23aea/test/tools/yulInterpreter/Interpreter.h#L77-L121
+
+Unlike Solidity's AST interpreter, this EVM run necessarily installs the
+freshly compiled bytecode as the executing account's code. -/
 def initialState (code : ByteArray) : EVM.State :=
   let address := Hex.hexToAddress "11111111"
+  -- Solidity gives every non-self address balance 0x22222222. Its corpus
+  -- probes that rule specifically with `address() + 1`:
+  -- https://github.com/argotorg/solidity/blob/960c6e969dd3b9133d06cddcd958698ac6d23aea/test/libyul/yulInterpreterTests/self_balance.yul#L1-L15
   let otherAddress := AccountAddress.ofNat (address.val + 1)
   let header : BlockHeader := {
     coinbase := Hex.hexToAddress "77777777"
     timestamp := Hex.hexToUInt256 "88888888"
-    number := word 1024
+    number := word solidityBlockNumber
+    -- `(1 << 64) + 1` is Solidity's deliberately nontrivial PREVRANDAO value.
     prevRandao := word (2 ^ 64 + 1)
     gasLimit := word 4000000
+    -- Solidity documents 7 and 1 as the minimum base fee and blob base fee.
     baseFeePerGas := word 7
     chainId := word 1
     blockHash := solidityBlockHash
@@ -152,7 +187,12 @@ def initialState (code : ByteArray) : EVM.State :=
     header
     depth := 0
     permitStateMutation := true
+    -- Solidity derives two versioned blob hashes from commitments 0x01 and
+    -- 0x02 (Interpreter.h, linked above). `blobhash` is outside the compiler's
+    -- current verified op set, so this concrete EVM environment leaves the
+    -- list empty until that opcode becomes testable.
     blobVersionedHashes := #[]
+    -- Osaka enables every opcode currently emitted by the verified compiler.
     fork := .Osaka
   }
   let selfAccount : Account := {
@@ -176,7 +216,7 @@ def initialState (code : ByteArray) : EVM.State :=
     execLength := 0
     halt := .Running
     callStack := []
-    gasAvailable := 100000000
+    gasAvailable := executionGas
     activeWords := 0
     memory := .empty
     returnData := .empty
@@ -194,9 +234,12 @@ def runEvm : Nat → EVM.State → EVM.State
 
 private def memoryEntries (memory : ByteArray) : Array Entry := Id.run do
   let mut entries := #[]
-  let wordCount := (memory.size + 31) / 32
+  -- Solidity groups bytes into aligned 0x20-byte words and omits zero words:
+  -- https://github.com/argotorg/solidity/blob/960c6e969dd3b9133d06cddcd958698ac6d23aea/test/tools/yulInterpreter/Interpreter.cpp#L60-L79
+  let evmWordBytes := 32
+  let wordCount := (memory.size + evmWordBytes - 1) / evmWordBytes
   for index in [:wordCount] do
-    let offset := index * 32
+    let offset := index * evmWordBytes
     let value := MachineState.readWord memory offset
     if value.toNat != 0 then
       entries := entries.push { key := word offset, value }
@@ -228,7 +271,7 @@ private def compareSection (name : String) (expected actual : Array Entry) : Exc
       s!"\n  actual:   {describeEntries actual}")
 
 /-- Compile, execute, and check one complete Solidity Yul interpreter fixture. -/
-def checkFixture (source : String) (fuel : Nat := 100000) : Except String Unit := do
+def checkFixture (source : String) (fuel : Nat := executionFuel) : Except String Unit := do
   let expected ← parseExpectedState source
   let instructions ← match compileSource source with
     | some instructions => pure instructions
