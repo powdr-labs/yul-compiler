@@ -173,12 +173,16 @@ theorem closed_decDigits (n : Nat) : Closed (decDigits n ++ [' ']) := by
 
 /-! ### The literal printer -/
 
+/-- Escape-preserving quoted-string printer shared by literals and object names. -/
+def printStringC (content : List Char) : List Char :=
+  '"' :: (content ++ '"' :: [' '])
+
 /-- Internal printer for literals: each token followed by a delimiting space. -/
 def printLitC : Literal → List Char
   | .number k => decDigits k ++ [' ']
   | .bool true => ['t', 'r', 'u', 'e', ' ']
   | .bool false => ['f', 'a', 'l', 's', 'e', ' ']
-  | .string s => '"' :: (s.toList ++ '"' :: [' '])
+  | .string s => printStringC s.toList
 
 /-! ### `pstr` / `notIdCont` facts -/
 
@@ -283,6 +287,22 @@ theorem symbolC {s : List Char} (hcs : Closed s) :
 
 /-! ### Number and string literals -/
 
+/-- A quoted string token, retaining the source spelling of escapes. -/
+def pStringChars : Parser (List Char) := token pQuotedChars
+
+theorem pStringChars_soundC : SoundC pStringChars printStringC := by
+  intro cs content rest h
+  simp only [pStringChars, token] at h
+  have hbody := pQuotedChars_body h
+  have hp : pQuotedChars (printStringC content) = some (content, [' ']) := by
+    show quotedBody (content ++ '"' :: [' ']) = some (content, [' '])
+    exact hbody.scan [' ']
+  have hprint : canon (printStringC content) = [CTok.str content] := by
+    rw [canon_pQuotedChars hp, canon_ws (by decide : isWs ' ' = true), canon_nil]
+  have hinput := canon_pQuotedChars h
+  refine ⟨?_, closed_str hbody⟩
+  rw [hprint, ← canon_skipTrivia cs, hinput, List.singleton_append]
+
 /-- A number literal (decimal or `0x…` hex), producing `Literal.number` of its value. -/
 def pNum : Parser Literal :=
   token (pmap (fun d => Literal.number (numVal d)) (pWhile1 isDigitC isNumCont))
@@ -315,43 +335,15 @@ theorem pNum_soundC : SoundC pNum printLitC := by
       rw [printLitC, canon_decDigits, hcanon_cs, List.singleton_append]
     · exact absurd hpw (by simp)
 
-/-- A string literal `"…"` (no escapes; body is any run of non-quote characters),
-producing `Literal.string`. Structured to mirror `canon`'s string rule. -/
-def pStr : Parser Literal := token (fun cs =>
-  match cs with
-  | '"' :: rest =>
-    match rest.dropWhile (· != '"') with
-    | '"' :: rest' => some (Literal.string (String.ofList (rest.takeWhile (· != '"'))), rest')
-    | _ => none
-  | _ => none)
+/-- A string literal `"…"`, including backslash-escaped quotes and control
+sequences, producing `Literal.string` with the escape spelling retained. -/
+def pStr : Parser Literal :=
+  pmap (fun content => Literal.string (String.ofList content)) pStringChars
 
 theorem pStr_soundC : SoundC pStr printLitC := by
-  intro cs a rest h
-  simp only [pStr, token] at h
-  split at h
-  · rename_i body heqd
-    split at h
-    · rename_i rest' heqi
-      simp only [Option.some.injEq, Prod.mk.injEq] at h
-      obtain ⟨rfl, rfl⟩ := h
-      set content := body.takeWhile (· != '"') with hcont
-      have hcontQ : ∀ x ∈ content, (x != '"') = true :=
-        fun x hx => by simpa using List.mem_takeWhile_imp hx
-      have hprint : canon ('"' :: (content ++ '"' :: [' '])) = [CTok.str content] := by
-        rw [canon_str, takeWhile_append_all hcontQ, dropWhile_append_all hcontQ]
-        simp only [List.takeWhile_cons, List.dropWhile_cons, (by decide : ('"' != '"') = false),
-          Bool.false_eq_true, if_false, List.append_nil, List.tail_cons]
-        rw [canon_ws (by decide : isWs ' ' = true), canon_nil]
-      have hcanon_cs : canon cs = CTok.str content :: canon rest' := by
-        rw [← canon_skipTrivia cs, heqd, canon_str, heqi]
-        simp only [List.tail_cons, ← hcont]
-      refine ⟨?_, ?_⟩
-      · show canon (printLitC (Literal.string (String.ofList content))) ++ _ = _
-        rw [printLitC, String.toList_ofList, hprint, hcanon_cs, List.singleton_append]
-      · show Closed (printLitC (Literal.string (String.ofList content)))
-        rw [printLitC, String.toList_ofList]; exact closed_str hcontQ
-    · exact absurd h (by simp)
-  · exact absurd h (by simp)
+  apply pmapC_eq pStringChars_soundC
+  intro content
+  simp [printLitC, printStringC]
 
 /-! ### Booleans and the combined literal parser -/
 

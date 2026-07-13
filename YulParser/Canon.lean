@@ -79,7 +79,9 @@ def canon (cs : List Char) : List CTok :=
   | c :: rest =>
     if isWs c then canon rest
     else if c == '"' then
-      CTok.str (rest.takeWhile (· != '"')) :: canon (rest.dropWhile (· != '"')).tail
+      match scanQuoted (c :: rest) with
+      | some scanned => CTok.str scanned.body :: canon scanned.rest
+      | none => CTok.punct [c] :: canon rest
     else if isIdStart c then
       CTok.ident (c :: rest.takeWhile isIdCont) :: canon (rest.dropWhile isIdCont)
     else if isDigitC c then
@@ -106,6 +108,7 @@ def canon (cs : List Char) : List CTok :=
         | exact Nat.le_succ_of_le (Nat.le_succ_of_le (dwle _ _))
         | exact afterBlockComment_le _
         | exact Nat.le_succ_of_le (afterBlockComment_le _)
+        | have hh := scanned.shorter; simp at hh; omega
 
 @[simp] theorem canon_nil : canon [] = [] := by rw [canon.eq_def]
 
@@ -137,10 +140,34 @@ theorem canon_assign {r : List Char} :
     canon (':' :: '=' :: r) = CTok.punct [':', '='] :: canon r := by
   rw [canon.eq_def]; simp [isWs, isIdStart, isDigitC]
 
-theorem canon_str {rest : List Char} :
-    canon ('"' :: rest)
-      = CTok.str (rest.takeWhile (· != '"')) :: canon (rest.dropWhile (· != '"')).tail := by
-  rw [canon.eq_def]; simp [isWs]
+theorem canon_str {input body rest : List Char}
+    (h : pQuotedChars ('"' :: input) = some (body, rest)) :
+    canon ('"' :: input) = CTok.str body :: canon rest := by
+  have hs : scanQuoted ('"' :: input) =
+      some ⟨body, rest, pQuotedChars_rest_lt h⟩ := by
+    unfold scanQuoted
+    split
+    · rename_i parsed heq
+      have hp := Option.some.inj (heq.symm.trans h)
+      cases hp
+      rfl
+    · rename_i heq
+      rw [heq] at h
+      contradiction
+  rw [canon.eq_def]; simp [isWs, hs]
+
+theorem canon_pQuotedChars {input body rest : List Char}
+    (h : pQuotedChars input = some (body, rest)) :
+    canon input = CTok.str body :: canon rest := by
+  cases input with
+  | nil => simp [pQuotedChars] at h
+  | cons c input =>
+      simp only [pQuotedChars] at h
+      split at h
+      · rename_i start tail heq
+        rw [heq]
+        exact canon_str h
+      · contradiction
 
 /-- `//` line comment: skip to end of line. -/
 theorem canon_line_comment {r : List Char} :
@@ -289,14 +316,14 @@ theorem closed_num {c : Char} {ns : List Char} (hc : isDigitC c = true)
   have e2 : c :: (ns ++ [' ']) = c :: (ns ++ ' ' :: []) := by simp
   rw [e1, key y, e2, key [], canon_nil]; simp
 
-/-- A string token `"…"` (followed by a delimiting space) is closed. -/
-theorem closed_str {content : List Char} (hcont : ∀ x ∈ content, (x != '"') = true) :
+/-- A valid string token `"…"` (followed by a delimiting space) is closed. -/
+theorem closed_str {content : List Char} (hcont : QuotedBody content) :
     Closed ('"' :: (content ++ '"' :: [' '])) := by
   have key : ∀ y, canon ('"' :: (content ++ '"' :: ' ' :: y)) = CTok.str content :: canon y := by
     intro y
-    rw [canon_str, takeWhile_append_all hcont, dropWhile_append_all hcont]
-    simp only [List.takeWhile_cons, List.dropWhile_cons, (by decide : ('"' != '"') = false),
-      Bool.false_eq_true, if_false, List.append_nil, List.tail_cons]
+    rw [canon_str (by
+      show quotedBody (content ++ '"' :: ' ' :: y) = some (content, ' ' :: y)
+      exact hcont.scan (' ' :: y))]
     rw [canon_ws (by decide : isWs ' ' = true)]
   intro y
   have e1 : '"' :: (content ++ '"' :: [' ']) ++ y = '"' :: (content ++ '"' :: ' ' :: y) := by simp

@@ -9,11 +9,12 @@ round-trip theorem `parse_canon_obj`: if the parser accepts `s`, then re-printin
 AST (with the faithful renderer `printObjC`) is `canon`-equal to `s` — i.e. the parser preserves
 every token except whitespace, comments, and number base.
 
-Scope notes (documented deferrals): sub-objects are parsed before data segments (the
+Scope notes for this verified parser: sub-objects are parsed before data segments (the
 `Object` AST — and `yul-semantics`' own pretty-printer — do not preserve source interleaving of
 the two), and `data` segments are string-valued (`hex"…"` data would require `canon` to also
 normalize hex-string literals to bytes, since `Data.ofHex`/`toHex` canonicalise them). Type
-annotations are not part of the accepted syntax (`yul-semantics` is single-sorted).
+annotations are not part of the accepted syntax (`yul-semantics` is single-sorted). The public
+`parseSource` entry point provides a documented lossy fallback for the first two restrictions.
 -/
 
 namespace YulParser
@@ -24,45 +25,16 @@ open YulSemantics.EVM (Op)
 
 /-! ### String content (object / data names, string data) -/
 
-/-- Parse a `"…"` string literal, returning its content as a `String`. -/
-def pName : Parser String := token (fun cs =>
-  match cs with
-  | '"' :: rest =>
-    match rest.dropWhile (· != '"') with
-    | '"' :: rest' => some (String.ofList (rest.takeWhile (· != '"')), rest')
-    | _ => none
-  | _ => none)
+/-- Parse a `"…"` name, retaining the spelling of backslash escapes. -/
+def pName : Parser String := pmap String.ofList pStringChars
 
 /-- Printer for a string token. -/
-def printNameC (s : String) : List Char := '"' :: (s.toList ++ '"' :: [' '])
+def printNameC (s : String) : List Char := printStringC s.toList
 
 theorem pName_soundC : SoundC pName printNameC := by
-  intro cs a rest h
-  simp only [pName, token] at h
-  split at h
-  · rename_i body heqd
-    split at h
-    · rename_i rest' heqi
-      simp only [Option.some.injEq, Prod.mk.injEq] at h
-      obtain ⟨rfl, rfl⟩ := h
-      set content := body.takeWhile (· != '"') with hcont
-      have hcontQ : ∀ x ∈ content, (x != '"') = true :=
-        fun x hx => by simpa using List.mem_takeWhile_imp hx
-      have hprint : canon ('"' :: (content ++ '"' :: [' '])) = [CTok.str content] := by
-        rw [canon_str, takeWhile_append_all hcontQ, dropWhile_append_all hcontQ]
-        simp only [List.takeWhile_cons, List.dropWhile_cons, (by decide : ('"' != '"') = false),
-          Bool.false_eq_true, if_false, List.append_nil, List.tail_cons]
-        rw [canon_ws (by decide : isWs ' ' = true), canon_nil]
-      have hcanon_cs : canon cs = CTok.str content :: canon rest' := by
-        rw [← canon_skipTrivia cs, heqd, canon_str, heqi]
-        simp only [List.tail_cons, ← hcont]
-      refine ⟨?_, ?_⟩
-      · show canon (printNameC (String.ofList content)) ++ _ = _
-        rw [printNameC, String.toList_ofList, hprint, hcanon_cs, List.singleton_append]
-      · show Closed (printNameC (String.ofList content))
-        rw [printNameC, String.toList_ofList]; exact closed_str hcontQ
-    · exact absurd h (by simp)
-  · exact absurd h (by simp)
+  apply pmapC_eq pStringChars_soundC
+  intro content
+  simp [printNameC, printStringC]
 
 /-! ### Data segments (string-valued) -/
 

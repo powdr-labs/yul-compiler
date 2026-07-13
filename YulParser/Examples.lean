@@ -39,4 +39,24 @@ def solidityObject : String :=
 
 #guard (parseSource solidityObject).isSome
 
+/-- Hex expression literals use Solidity's byte-string left alignment and can
+be compiled through the source entry point. -/
+def solidityHexExpression : String := "{ pop(hex\"2233\") }"
+
+#guard hexLiteralValue "2233".toList = 0x2233 * 2 ^ (8 * 30)
+#guard (parseSource solidityHexExpression).isSome
+#guard (compileSource solidityHexExpression).isSome
+
+/-- Object compatibility covers escaped names, hex data, and data/sub-object
+interleaving even though the current AST stores the two item classes apart. -/
+def solidityCompatObject : String :=
+  "object \"root\\\"name\" {\n" ++
+  "  code {}\n" ++
+  "  data \"first\" hex\"001122\"\n" ++
+  "  object \"child\" { code {} }\n" ++
+  "  data \"last\" \"text\"\n" ++
+  "}\n"
+
+#guard (parseSource solidityCompatObject).isSome
+
 end YulParser.Examples

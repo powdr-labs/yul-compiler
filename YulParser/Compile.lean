@@ -12,9 +12,10 @@ supported by the compiler.
 
 namespace YulParser
 
-/-- Parse and compile a complete brace-delimited Yul source program. -/
+/-- Parse and compile a complete brace-delimited Yul source program, using the
+hex-literal compatibility parser when the verified parser does not apply. -/
 def compileSource (source : String) : Option (List YulEvmCompiler.Instr) := do
-  let block ← parseBlock source
+  let block ← parseBlock source <|> parseBlockCompat source
   YulEvmCompiler.compile block
 
 end YulParser
