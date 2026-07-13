@@ -60,8 +60,8 @@ theorem compileProgramAsm_inv {prog : YulSemantics.Block Op} {asm : List Asm}
 /-! ### The main theorem -/
 
 /-- **Compiler correctness** (Yul → labeled assembly → EVM bytecode; with
-variables, nested blocks, `if`, `for`/`break`/`continue`, and
-`function`/`leave`/calls, single-value returns). If `compile` accepts
+variables, nested blocks, `if`, `switch`, `for`/`break`/`continue`, and
+`function`/`leave`/calls with up to 16 return values). If `compile` accepts
 `prog` and the Yul big-step semantics runs `prog` from `yst0` to `yst'` with
 outcome `o`, then there is a gas bound `b` such that from *every* initial EVM
 state that matches `yst0`, runs the assembled bytecode from `pc = 0` with an

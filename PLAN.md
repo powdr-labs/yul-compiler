@@ -49,8 +49,9 @@ Design decisions baked into that statement:
     (`stop ↦ Success`, `return ↦ Returned+payload`, `revert ↦ Reverted+payload`,
     `invalid ↦ Exception InvalidInstruction`; `none ↦ Running`);
   - plus frame-level side conditions: `callStack = []`, `permitStateMutation = true`,
-    `codeAddr` is not a precompile, `fork = Cancun` (all supported ops are active
-    there; parameterizing over `fork ≥ Cancun` is a later generalization).
+    `codeAddr` is not a precompile, `fork = Osaka` (all supported ops are active
+    there; parameterizing over a range of compatible forks is a later
+    generalization).
 * A Yul `.normal` outcome means the compiled code runs off the end of the bytecode;
   `Decode.decodeAt` yields an implicit `STOP` there (Yellow-Paper zero padding), so the
   target halts with `.Success` — i.e. straight-line Yul that falls through behaves
@@ -104,10 +105,10 @@ Design decisions baked into that statement:
    `Operation.availableInFork` returns `false` for all three on every `Fork`
    (Frontier … Osaka), and `State.decoded` gates on it, so bytes `0xe6..0xe8`
    always halt with `InvalidInstruction`. The `Step`/`stepF` rules for them exist
-   and are exercised nowhere. Milestone 1 (no variables) emits no DUPN/SWAPN, so
-   this does not block it; **milestone 2 (variables) requires an upstream change**
-   (e.g. an `Amsterdam` fork entry activating EIP-8024). The compiler IR and the
-   planned stack-layout scheme already use them.
+   and are exercised nowhere. The current compiler therefore uses classic
+   `DUP1`–`DUP16` and `SWAP1`–`SWAP16`, rejecting accesses beyond that range.
+   Activating EIP-8024 upstream would allow a later code-generation extension
+   to remove this depth restriction.
 2. **`MachineState.writeBytes` is now a total `def`** (kernel-transparent) in
    the pinned evm-semantics, so memory-write proofs *are* possible: `mstore`
    is in the verified op set, its `MemMatch` preservation resting on a
@@ -118,8 +119,8 @@ Design decisions baked into that statement:
    (do-loop reasoning), so no axioms are involved. `mstore8`/`mcopy` and the
    copy family remain out until their own byte-layout lemmas are added.
 3. Reads are unaffected: `readPadded`/`readWord` are total, so `mload`,
-   `return(p,s)`, `revert(p,s)` **are** verifiable (their payloads only read
-   memory), as long as no memory *write* precedes them.
+   `return(p,s)`, and `revert(p,s)` are verified. They also compose with the
+   verified `mstore`, whose proof preserves `MemMatch`.
 4. **`keccak256` is opaque on both sides, but they are *different* opaques**:
    yul-semantics has `opaque keccakBytes : List UInt8 → U256`, evm-semantics has
    `opaque keccak256 : ByteArray → UInt256`. No agreement between two unrelated
@@ -131,46 +132,50 @@ Design decisions baked into that statement:
 
 ```
 YulEvmCompiler/
-  Instr.lean        -- the tiny IR: PUSH32 v | plain single-byte op | DUPN n | SWAPN n
-                    --   + assemble : List Instr → ByteArray
-  Compile.lean      -- compileExpr / compileStmt / compileProgram : … → Option (List Instr)
-  Decode.lean       -- layout lemmas: decoding assembled code at instruction boundaries
-  Value.lean        -- conv : BitVec 256 → UInt256 + per-op agreement lemmas
-                    --   (yul stepOp op ⟷ evm-semantics UInt256 ops)
-  StateRel.lean     -- the match relation st ∼ s, init/final match, frame invariant
-  Correctness.lean  -- gas-bound invariant + the simulation induction + main theorem
-  Examples.lean     -- #eval'd sample programs and sanity checks
+  Asm.lean          -- labeled control-flow IR + label resolution/lowering
+  AsmSem.lean       -- byte-free, gas-free semantics of labeled assembly
+  Compile.lean      -- Yul AST → labeled assembly (Option-valued)
+  SimAsm.lean       -- phase A: Yul execution → assembly execution
+  Instr.lean        -- tiny byte-level IR: PUSH32 or one-byte operation
+  Decode.lean       -- assembled-code decoding and jump-destination lemmas
+  LowerDefs.lean    -- assembly/EVM configuration correspondence
+  LowerCorrect.lean -- phase B: assembly execution → EVM execution
+  OpTable.lean      -- exact verified built-in set
+  Value.lean        -- BitVec 256 ↔ UInt256 operation agreements
+  StateRel.lean     -- memory/storage/calldata/environment correspondence
+  OpStep.lean       -- per-op EVM simulation lemmas and gas bounds
+  Correctness.lean  -- end-to-end compile_correct / compile_correct_eval
+  Examples.lean     -- compile-time and differential execution checks
 ```
 
 ### The IR and the compilation scheme
 
-`Instr` is deliberately minimal and *loss-free to assemble* (each constructor maps to
-a fixed byte sequence, so decode lemmas are per-constructor):
+Compilation uses two IRs. `Asm` carries symbolic labels, classic stack
+operations, Yul built-ins, and function return addresses. Every constructor
+has a fixed lowered width:
 
 ```
-inductive Instr
-  | push  (v : UInt256)   -- PUSH32 (0x7f) + 32-byte big-endian immediate; non-optimizing
-  | op    (o : Operation) -- any zero-immediate opcode, e.g. ADD, SLOAD, RETURN
-  | dupN  (n : Fin 256)   -- 0xe6 n   (reserved for milestone 2: variable reads)
-  | swapN (n : Fin 256)   -- 0xe7 n   (reserved for milestone 2: assignments)
+inductive Asm
+  | push | op | dup (Fin 16) | swap (Fin 16) | pop
+  | label | jump | jumpi | pushLabel | dynJump
 ```
 
-Compilation (milestone 1, straight-line fragment):
+`lowerProg` resolves labels and maps `Asm` to the deliberately tiny
+byte-level `Instr` (`push UInt256 | op Operation`), which `assemble` encodes
+as EVM bytecode.
 
-* `lit l` ⇒ `push (conv (litValue l))` — the compiler pushes the *interpreted* literal,
-  so all literal forms (number/bool/string) are supported without well-formedness
-  side conditions.
-* `builtin op [a₁, …, aₙ]` ⇒ `code(aₙ) … code(a₁) ; OP` — arguments are emitted last
-  arg first, matching Yul's specified **right-to-left** argument evaluation *and*
-  leaving `a₁`'s value on top, which is the EVM operand order (`sub(a,b)` compiles to
-  a stack `[a, b]` and `SUB` computes `a - b`).
-* `exprStmt e` ⇒ `code(e)` (the semantics guarantees `e` yields zero values).
-* A program (list of statements) concatenates; falling off the end is the implicit
-  `STOP`.
-* `var` / `call` / control flow / declarations ⇒ `none` (later milestones).
+The compiler currently covers literals, variables, built-ins, calls, nested
+blocks, zero- and value-initialized `let`, multi-value declarations and
+assignments, `if`, `switch`, `for`, `break`/`continue`, functions, recursion,
+and `leave`. Functions may return up to 16 values. Arguments are evaluated
+right-to-left, matching Yul semantics. A program that falls through reaches
+the EVM's implicit `STOP`.
 
 Everything is `Option`-valued: the compiler *rejects* what it cannot yet verify, so
-the repo stays sorry-free while coverage grows op by op.
+the repo stays sorry-free while coverage grows. Rejection includes unsupported
+built-ins, unresolved identifiers, invalid control context, duplicate function
+names, non-unique parameter/return names, more than 16 returns, classic
+`DUP`/`SWAP` depth overflow, or failed label well-formedness.
 
 ### The simulation proof, decomposed
 
@@ -186,40 +191,26 @@ the repo stays sorry-free while coverage grows op by op.
    compiler's supported set exactly when its lemma exists.
 3. **State correspondence** (`StateRel.lean`) as described above, plus preservation
    lemmas for each state-touching op (storage via the `Std.HashMap` simp lemmas).
-4. **Simulation** (`Correctness.lean`). One induction over the Yul `Step` derivation
-   with per-syntactic-class motives:
-   - `args es ⇓ vals vs, st'` ⟹ compiled arg block takes any matching `s` (pc at
-     block start, stack σ, gas ≥ bound) to `pc + len`, stack `map conv vs ++ σ`,
-     matching `st'`, consuming ≤ bound.
-   - `expr e ⇓ …` similarly (one pushed value, or a halted target state for `.halt`).
-   - `stmt/stmts ⇓ …` with outcome `normal` (reach block end) or `halt` (target
-     halted mid-way, matching payload).
-   - Main theorem = the `stmts` case wrapped by `Run`, plus the implicit-`STOP`
-     step for the `.normal` outcome, packaged into `Steps`/`Eval`.
+4. **Two-phase simulation.** `SimAsm.lean` inducts over the Yul derivation and
+   proves execution of the compiled labeled assembly. `LowerCorrect.lean`
+   generically simulates each assembly trace with EVM steps, adding gas bounds
+   and decode/layout facts. `Correctness.lean` composes the phases and adds the
+   implicit `STOP` for a normal fall-through.
 
-### Extension path (how this design scales to full Yul)
+### Remaining extension path
 
-* **Variables (milestone 2).** Standard stack scheduling for a non-optimizing
-  compiler: the compile-time context is a stack layout `List Ident` mirroring the
-  runtime operand stack. `var x` ⇒ `DUPN (depth x)`; `assign x` ⇒ `SWAPN (depth x); POP`;
-  `let` grows the layout; block exit pops. DUPN/SWAPN's `Fin 256` range removes
-  DUP16/SWAP16 ceiling concerns without slot spilling. The simulation invariant
-  gains "runtime stack realizes the layout under `VEnv`". *Blocked on upstream
-  finding 1.*
-* **Control flow (milestone 3).** `if`/`switch`/`for` compile to
-  `JUMPI`/`JUMP`/`JUMPDEST` with a label-then-resolve assembler pass; the decode
-  lemmas extend to `isValidJumpDest` facts (jumpdest analysis over assembled code).
-  `break`/`continue` need a compile-time loop-context; the Yul outcomes
-  `break/continue/leave` enter the simulation motives.
-* **Functions (milestone 4).** Non-optimizing calling convention: caller pushes a
-  return label + args, `JUMP` to the function's `JUMPDEST`; callee body runs with a
-  fresh layout; `leave` jumps to the epilogue that reorders rets and jumps back.
-  Yul's scoping (functions see no outer variables) matches the fresh-layout scheme.
-* **Objects / `datacopy` / constructors (milestone 5),** then optimization passes
-  (each pass verified against the Yul semantics only, reusing
-  `YulSemantics.Equiv`/`Rewrites`; the backend theorem composes at the end).
+* **Objects / `dataoffset` / `datasize` / `datacopy` / constructors.** Add a
+  verified layout and connect object execution to the existing block compiler.
+* **Source parser.** Integrate the verified parser work with the current AST
+  compiler without regressing the merged control-flow and multi-return support.
+* **Built-in coverage.** Discharge the proof and state-correspondence debt listed
+  in Milestone 1 below; bridge the two opaque Keccak definitions upstream.
+* **Deep stack access.** Use EIP-8024 after the target semantics activates it,
+  or introduce spilling before then.
+* **Optimization passes.** Prove each pass against Yul semantics and compose it
+  with the existing backend theorem.
 
-## Milestone 1 — this iteration
+## Historical milestone 1 — verified straight-line foundation
 
 Deliverables:
 
@@ -353,7 +344,7 @@ determined by their length).
 Compilation threads: layout `Γ : List Ident` (as today), a fresh-label
 counter `n : Nat`, a **function-info environment** `Φ : List (List (Ident ×
 FunInfo))` mirroring the semantics' `FunEnv` scope stack
-(`FunInfo = {entry : Label, arity n, rets k}`, `k ≤ 1` for now), and optional
+(`FunInfo = {entry : Label, arity n, rets k}`, `k ≤ 16`), and optional
 control contexts `F : Option FunCtx` (`exitLbl`, `depth = |Γ| of the function
 frame`) and `L : Option LoopCtx` (`brkLbl`, `contLbl`, `depth = |Γ| at loop
 scope`).
@@ -375,7 +366,7 @@ scope`).
   ```
   jump Lskip
   label Lentry: <body as block, Γf = ps ++ rs, F := {exit Lexit, depth |ps|+|rs|}, L := none>
-  label Lexit: pop × |ps| ; (if k=1: swap1) ; dynJump
+  label Lexit: pop × |ps| ; SWAP1 … SWAPk ; dynJump
   label Lskip:
   ```
   Callee stack frame on entry: `[p1..pn, r1..rk (zeros), .code Lret, callerσ]`
@@ -384,13 +375,17 @@ scope`).
   it, in the callee's arbitrary `σ`.
 * **`leave`**: `pop × (|Γ| - F.depth); jump F.exitLbl` (locals above the
   function frame are statically known at each site).
-* **`call f args`** (expression position; `k = rets f ≤ 1`):
+* **`call f args`** (expression position; `k = rets f ≤ 16`):
   ```
   pushLabel Lret; push 0 × k; <args right-to-left>; jump Lentry
   label Lret:                                -- stack: [r1..rk, τ, vars, σ]
   ```
 * Everything else compiles as before (with `.op yop` now carrying the *Yul*
   op; `opTable` is consulted only at lowering).
+* **`switch c cases default`** evaluates `c` once, keeps the scrutinee on the
+  stack, and emits a chain of `DUP1; PUSH case; EQ; ISZERO; JUMPI next` blocks.
+  A matched case pops the scrutinee, executes its block, and jumps to the
+  common end; falling through executes the optional default.
 * `compileProgram`: compile → **check `WFProg` (decidable)** → `lowerProg`.
 
 ### Phase A statement shapes (`YulEvmCompiler/SimAsm.lean`)
@@ -455,8 +450,8 @@ and sorry-free.** All definitions, composition lemmas, leaf lemmas
 compile-equation inversions, and the motive are in place. The `sim`
 induction is proved for every case: lit, var, builtin{Ok,Halt,ArgsHalt},
 args{Nil,Cons,RestHalt,HeadHalt}, funDef, block, letZero, letVal, letHalt,
-assignVal, assignHalt, exprStmt(SHalt), ifTrue/ifFalse/ifHalt, switch
-(vacuous), break, continue, leave, seqNil, seqCons, seqStop, forLoop,
+assignVal, assignHalt, exprStmt(SHalt), ifTrue/ifFalse/ifHalt, all `switch`
+dispatch/outcome cases, break, continue, leave, seqNil, seqCons, seqStop, forLoop,
 forInitHalt, all 7 loop-class cases, callArgsHalt, **`callOk`, `callHalt`**,
 and **`hoist_ok`**.
 
@@ -482,11 +477,10 @@ They invert the pipeline (`compileProgramAsm_inv`; `wfCheck` ⇒ `Nodup`),
 take the `Run` = block rule to a `.stmts prog` derivation, establish the
 initial `FEnvOK` via `hoist_ok`, run phase A `sim`, compose with phase B's
 `asteps_sim`/`arun_halt_sim`, and cap a fall-through `.normal` with the
-implicit-STOP `stopStep`. Axioms pinned in `Checks.lean` (classical only,
-no `sorryAx`). The old milestone-1/2 pipeline has been **removed**:
-`Compile.lean`/`Correctness.lean`/`Examples.lean` are gone, the shared
-`opTable` moved to `OpTable.lean`, and `Checks.lean`/`README.md` now track
-only the `compileA_*` theorems.
+implicit-STOP `stopStep`. Axioms are pinned in `Checks.lean` (classical only,
+no `sorryAx`). The old direct-to-`Instr` milestone-1/2 pipeline has been
+replaced by the labeled-assembly pipeline; the active top-level theorems are
+`compile_correct` and `compile_correct_eval`.
 
 Phase A definitions (`SimAsm.lean`), all under section hypotheses
 `prog : List Asm` and `hnodup : (labelDefs prog).Nodup`:
@@ -524,10 +518,10 @@ Phase A definitions (`SimAsm.lean`), all under section hypotheses
   applies verbatim). Conclusion for `o = normal`: reach that exit suffix
   with `wimg Vend ++ σ`; halt/leave analogous.
 * **`FunOK prog decl info Φv`**: `info.arity = decl.params.length`,
-  `info.rets = decl.rets.length ≤ 1`, `(params ++ rets).Nodup` (guarded at
+  `info.rets = decl.rets.length ≤ 16`, `(params ++ rets).Nodup` (guarded at
   compile time — needed so the epilogue's stack region agrees with
   `VEnv.get`-based return values), and `placed`: the fragment
-  `.label info.entry :: bodyAsm ++ .label lexit :: pops ++ swap? ++
+  `.label info.entry :: bodyAsm ++ .label lexit :: pops ++ retRot k ++
   [.dynJump]` is an **infix** of `prog`, with the body's `compileBlock
   Φv (params ++ rets) (some ⟨lexit, |params|+|rets|⟩) none` equation.
 * **`FEnvOK prog : FunEnv yul → FMap → Prop`** — inductive, scopewise
@@ -543,21 +537,21 @@ Phase A definitions (`SimAsm.lean`), all under section hypotheses
   `off + 1 + k` · `jump entry` (via `FunOK.placed` + `findLabel_boundary`)
   · body-IH (`Γf = params ++ rets`, `F = ⟨lexit, |Γf|⟩`, `L = none`;
   `names (params.zip argvals ++ bindZeros rets) = params ++ rets` needs the
-  arity premise) · epilogue: `|params|` pops, `swap 0` if `k = 1`,
-  `dynJump` back to `lret`'s suffix. Normal and leave outcomes converge at
+  arity premise) · epilogue: `|params|` pops, `retRot k`, then `dynJump`
+  back to `lret`'s suffix. Normal and leave outcomes converge at
   the exit label (leave's `trim |Γf|` is a no-op since the restored VEnv
   has length `|Γf|`).
-* `break`/`continue` in a loop's `post`, and `switch`, stay rejected.
+* `break`/`continue` in a loop's `post` stay rejected because compilation
+  deliberately supplies no loop context there.
 
 ### Scope decisions
 
-* Function return arity `k ≤ 1` (multi-value returns need multi-value
-  `let`/assign machinery and a swap-network epilogue; deferred).
-* `switch` still rejected (if-chains; mechanical, later).
+* Function return arity is `k ≤ 16`; multi-value `let`, assignment, calls,
+  and the `retRot` epilogue are verified.
+* `switch` with literal cases and an optional default is verified.
 * `break`/`continue` inside a loop's `post` block: rejected (no semantics
   rule; compile with `L := none` there).
-* Old `Compile.lean`/`Correctness.lean`/`Examples.lean` have been **removed**
-  now that the new pipeline's top-level theorem landed. The active file set is
+* The active file set is
   `OpTable.lean`, `Asm.lean`, `AsmSem.lean`, `Compile.lean`,
   `LowerDefs.lean`, `LowerCorrect.lean`, `SimAsm.lean`, `Correctness.lean`,
   and `Examples.lean`; `Instr/Decode/Value/StateRel/OpStep` survive

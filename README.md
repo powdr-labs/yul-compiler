@@ -30,17 +30,20 @@ and defined jump labels with zero freshness bookkeeping).
 ## Current scope
 
 A non-optimizing compiler for programs with **variables, nested blocks,
-`if`, `for` loops (with `break`/`continue`), and user-defined `function`s
-(with `leave`, recursion, and calls, single return value)**:
+`if`, `switch`, `for` loops (with `break`/`continue`), and user-defined
+`function`s (with `leave`, recursion, calls, and up to 16 return values)**:
 
-* `let` declarations (initialized or zeroed), single-variable assignments,
-  built-in expression statements, `{ … }` scoping;
+* `let` declarations (initialized or zeroed), single- and multi-variable
+  assignments, built-in expression statements, `{ … }` scoping;
 * `if` → `ISZERO; PUSH32 dest; JUMPI … JUMPDEST`;
+* `switch` → a verified chain of literal comparisons and conditional jumps,
+  with an optional `default` block;
 * `for {init} c {post} {body}` with backward jumps, `break`/`continue`
   compiling to statically-known `pop`s down to the loop scope + a `jump`;
 * `function f(ps) -> rs { body }` compiled inline (jumped over), called with a
   pushed return address (`pushLabel`) and a `dynJump` back; `leave` pops to
-  the function frame and jumps to the epilogue.
+  the function frame and jumps to the epilogue; a `SWAP1 … SWAPk` rotation
+  returns `k ≤ 16` values in source order.
 
 Literals compile to `PUSH32`; a built-in call compiles its arguments
 right-to-left (Yul's evaluation order, which also puts the first argument on
@@ -57,8 +60,10 @@ activated on any fork modeled by evm-semantics, accesses deeper than
 lifting that restriction is a codegen-only change once the fork table
 activates EIP-8024.
 
-Still out of scope: `switch` (an if-chain, mechanical), multi-value returns,
-and the hash/log/environment ops and further memory writers not yet covered.
+Still out of scope: the object/layout layer (`dataoffset`/`datasize`/
+`datacopy` and constructors), a source-text parser, verified optimization
+passes, and the hash/log/environment ops and further memory writers not yet
+covered.
 
 The verified built-in set (the domain of `opTable` in
 `YulEvmCompiler/OpTable.lean`):
@@ -135,11 +140,12 @@ lake exe cache get   # prebuilt Mathlib oleans
 lake build           # builds both semantics deps + the compiler + proofs
 ```
 
-`YulEvmCompiler/Examples.lean` compiles a few sample programs at build time
-(`#guard`/`#eval`), including a `for` loop, a recursive function, and an
-iterative Fibonacci over storage — each run **differentially** through both
-the Yul interpreter and evm-semantics' `stepF` on the compiled bytecode, with
-storage compared. It also compiles yul-semantics' own
+`YulEvmCompiler/Examples.lean` compiles sample programs at build time
+(`#guard`/`#eval`), including `switch`, multi-value returns and assignments,
+a `for` loop, a recursive function, and an iterative Fibonacci over storage —
+each run **differentially** through both the Yul interpreter and
+evm-semantics' `stepF` on the compiled bytecode, with storage compared. It
+also compiles yul-semantics' own
 `FibExample.fibContract` (the calldata/memory Fibonacci contract proved
 correct upstream) all the way to bytecode and checks, differentially, that the
 compiled code returns the same bytes as the interpreter for several inputs.
@@ -150,9 +156,9 @@ See `PLAN.md` for the full design, the upstream findings (EIP-8024
 `DUPN`/`SWAPN` not yet activated on any modeled fork; the two repos' distinct
 opaque keccaks; and the `writeBytes`/`natToBytesPadded` byte-array lemmas that
 `MSTORE` needs — `writeBytes` now upstream, `natToBytesPadded` proved locally in
-`YulEvmCompiler.BytesLemmas`), and the remaining milestones: `switch` and
-multi-value returns, objects/`datacopy`/constructors, then verified
-optimization passes on the Yul side.
+`YulEvmCompiler.BytesLemmas`). The next integration milestones are the
+object/layout layer (`datacopy` and constructors), the verified parser, and
+then verified optimization passes on the Yul side.
 
 ## License
 
