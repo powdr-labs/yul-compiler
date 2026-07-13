@@ -30,17 +30,20 @@ and defined jump labels with zero freshness bookkeeping).
 ## Current scope
 
 A non-optimizing compiler for programs with **variables, nested blocks,
-`if`, `for` loops (with `break`/`continue`), and user-defined `function`s
-(with `leave`, recursion, and calls, single return value)**:
+`if`, `switch`, `for` loops (with `break`/`continue`), and user-defined
+`function`s (with `leave`, recursion, calls, and up to 16 return values)**:
 
-* `let` declarations (initialized or zeroed), single-variable assignments,
-  built-in expression statements, `{ … }` scoping;
+* `let` declarations (initialized or zeroed), single- and multi-variable
+  assignments, built-in expression statements, `{ … }` scoping;
 * `if` → `ISZERO; PUSH32 dest; JUMPI … JUMPDEST`;
+* `switch` → a verified chain of literal comparisons and conditional jumps,
+  with an optional `default` block;
 * `for {init} c {post} {body}` with backward jumps, `break`/`continue`
   compiling to statically-known `pop`s down to the loop scope + a `jump`;
 * `function f(ps) -> rs { body }` compiled inline (jumped over), called with a
   pushed return address (`pushLabel`) and a `dynJump` back; `leave` pops to
-  the function frame and jumps to the epilogue.
+  the function frame and jumps to the epilogue; a `SWAP1 … SWAPk` rotation
+  returns `k ≤ 16` values in source order.
 
 Literals compile to `PUSH32`; a built-in call compiles its arguments
 right-to-left (Yul's evaluation order, which also puts the first argument on
@@ -57,8 +60,26 @@ activated on any fork modeled by evm-semantics, accesses deeper than
 lifting that restriction is a codegen-only change once the fork table
 activates EIP-8024.
 
-Still out of scope: `switch` (an if-chain, mechanical), multi-value returns,
-and the hash/log/environment ops and further memory writers not yet covered.
+Still out of scope: the object/layout layer (`dataoffset`/`datasize`/
+`datacopy` and constructors), verified optimization passes, and the
+hash/log/environment ops and further memory writers not yet covered.
+
+`YulParser.parseSource` parses brace-delimited programs and object-rooted files
+in the supported grammar into the `yul-semantics` AST. `parseBlock` and
+`parseObject` have verified canonical round-trip theorems: input accepted by
+those parsers is preserved up to whitespace, comments, and number base,
+including the source spelling of string escapes. The public source entry point
+additionally has a compatibility fallback for `hex"..."` expression literals
+and object data, and interleaved sub-objects/data. Hex expression literals are
+lowered to their left-aligned 256-bit numeric value; interleaved items are normalized into the
+AST's separate sub-object and data lists. This lossy fallback is intentionally
+outside the canonical round-trip theorem. Public entry points cap recursive
+grammar fuel at 256, rejecting excessively nested input. Parsing remains
+mostly syntactic: it does not generally perform name resolution, scope or
+control-context checks, built-in arity checking, or other Solidity semantic
+validation. Type annotations are still deferred.
+`YulParser.compileSource` connects brace-delimited programs directly to
+`compile`; object layout is still required before object roots can be compiled.
 
 The verified built-in set (the domain of `opTable` in
 `YulEvmCompiler/OpTable.lean`):
@@ -133,13 +154,39 @@ genuine theorems (`writeBytes` upstream, the two `natToBytesPadded` lemmas in
 ```sh
 lake exe cache get   # prebuilt Mathlib oleans
 lake build           # builds both semantics deps + the compiler + proofs
+lake env lean --run YulParserMain.lean --parse-only program.yul
 ```
 
-`YulEvmCompiler/Examples.lean` compiles a few sample programs at build time
-(`#guard`/`#eval`), including a `for` loop, a recursive function, and an
-iterative Fibonacci over storage — each run **differentially** through both
-the Yul interpreter and evm-semantics' `stepF` on the compiled bytecode, with
-storage compared. It also compiles yul-semantics' own
+The last command checks either accepted top-level source form without the
+native executable build. `lake build yulc` additionally builds a CLI that
+emits compiled bytecode for brace-delimited programs.
+
+CI also sparse-checks out Solidity's moving `develop` version of
+`test/libyul/yulSyntaxTests` and runs `parseSource` on every fixture. A fixture
+is treated as an expected rejection when its expectation section after
+`// ----` contains an `*Error` diagnostic; warnings remain expected successes.
+This deliberately includes Solidity semantic and code-generation errors even
+though this project currently provides only a syntax parser. The exact set of
+known disagreements is pinned in
+`test/solidity-yul-syntax-known-mismatches.txt`: CI fails if a new mismatch
+appears or an existing entry becomes stale. The comparison logic lives in
+`scripts/CheckSoliditySyntaxTests.lean`.
+
+CI also attempts to compile and execute every upstream Yul interpreter fixture.
+The exact set that does not yet pass is pinned in
+`test/solidity-yul-interpreter-known-failures.txt`; CI fails for both new
+failures and stale entries. The reusable runner in
+`YulEvmCompilerTests/InterpreterFixture.lean` constructs Solidity's fixed Yul
+test environment, runs the assembled bytecode with `evm-semantics`, and
+exactly compares every nonzero memory word, persistent-storage entry, and
+transient-storage entry with the dumps embedded after `// ----`.
+
+`YulEvmCompiler/Examples.lean` compiles sample programs at build time
+(`#guard`/`#eval`), including `switch`, multi-value returns and assignments,
+a `for` loop, a recursive function, and an iterative Fibonacci over storage —
+each run **differentially** through both the Yul interpreter and
+evm-semantics' `stepF` on the compiled bytecode, with storage compared. It
+also compiles yul-semantics' own
 `FibExample.fibContract` (the calldata/memory Fibonacci contract proved
 correct upstream) all the way to bytecode and checks, differentially, that the
 compiled code returns the same bytes as the interpreter for several inputs.
@@ -150,9 +197,10 @@ See `PLAN.md` for the full design, the upstream findings (EIP-8024
 `DUPN`/`SWAPN` not yet activated on any modeled fork; the two repos' distinct
 opaque keccaks; and the `writeBytes`/`natToBytesPadded` byte-array lemmas that
 `MSTORE` needs — `writeBytes` now upstream, `natToBytesPadded` proved locally in
-`YulEvmCompiler.BytesLemmas`), and the remaining milestones: `switch` and
-multi-value returns, objects/`datacopy`/constructors, then verified
-optimization passes on the Yul side.
+`YulEvmCompiler.BytesLemmas`). The next integration milestones are the
+object/layout layer (`datacopy` and constructors), typed parser syntax and
+verification of the lossy compatibility path, and then verified optimization
+passes on the Yul side.
 
 ## License
 

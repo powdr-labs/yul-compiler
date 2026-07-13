@@ -56,8 +56,9 @@ jobs:
       # caught by the axiom check below via `sorryAx`.)
       - name: Reject sorry in library sources
         run: |
-          if grep -rn --include='*.lean' -w 'sorry' YulEvmCompiler; then
-            echo "::error::found a sorry in YulEvmCompiler"
+          if grep -rn --include='*.lean' -w 'sorry' \
+              YulEvmCompiler YulParser YulEvmCompilerTests; then
+            echo "::error::found a sorry in compiler, parser, or test-framework sources"
             exit 1
           fi
 
@@ -67,3 +68,25 @@ jobs:
       # changes (e.g. a `sorryAx` or a new axiom appears).
       - name: Verify axiom footprint (sorry-free, standard axioms only)
         run: lake env lean Checks.lean
+
+      # Fetch only the two Yul test directories used below. Checked-in baselines
+      # make current parser/compiler gaps explicit and detect stale entries.
+      - name: Fetch Solidity Yul tests
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse --branch develop \
+            https://github.com/argotorg/solidity.git /tmp/solidity
+          git -C /tmp/solidity sparse-checkout set \
+            test/libyul/yulSyntaxTests \
+            test/libyul/yulInterpreterTests
+
+      - name: Check parser against Solidity syntax corpus
+        run: |
+          lake env lean --run scripts/CheckSoliditySyntaxTests.lean \
+            /tmp/solidity/test/libyul/yulSyntaxTests \
+            test/solidity-yul-syntax-known-mismatches.txt
+
+      - name: Compile and execute all Solidity Yul interpreter tests
+        run: |
+          lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
+            /tmp/solidity/test/libyul/yulInterpreterTests \
+            test/solidity-yul-interpreter-known-failures.txt
