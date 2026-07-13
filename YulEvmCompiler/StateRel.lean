@@ -246,6 +246,37 @@ theorem MemMatch.storeWord {ymem : Nat → UInt8} {m : ByteArray}
   · rw [if_neg hw, if_neg hw, getD_eq_dite]
     exact h a
 
+/-- Copying `n` bytes from the code region to memory (`codecopy`/`datacopy`):
+Yul's `copyInto … env.code` matches the target's
+`writeBytes … (readPadded code …)`, using the code-region agreement. Inside the
+copied window both read the segment byte (via the `readBytes` characterization);
+outside, both leave memory unchanged. -/
+theorem MemMatch.copyFromCode {ymem : Nat → UInt8} {m : ByteArray}
+    {ycode : List UInt8} {mcode : ByteArray}
+    (hmem : MemMatch ymem m)
+    (hcode : MemMatch (YulSemantics.EVM.byteFrom ycode) mcode)
+    (dst src n : Nat) :
+    MemMatch (YulSemantics.EVM.copyInto ymem dst src n ycode)
+      (MachineState.writeBytes m (MachineState.readPadded mcode src n) dst) := by
+  have hrb := hcode.readBytes src n
+  have hsz : (MachineState.readPadded mcode src n).size = n := by
+    have h := congrArg List.length hrb
+    simp only [YulSemantics.EVM.readBytes, List.length_map, List.length_range,
+      ByteArray.toList_eq_data, Array.length_toList] at h
+    exact h.symm
+  intro a
+  rw [← getD_eq_dite, MachineState.writeBytes_getElem?_getD, hsz]
+  simp only [YulSemantics.EVM.copyInto]
+  by_cases hw : dst ≤ a ∧ a < dst + n
+  · have hk : a - dst < (List.range n).length := by simp; omega
+    rw [if_pos hw, if_pos hw,
+      show (MachineState.readPadded mcode src n)[a - dst]?
+          = (MachineState.readPadded mcode src n).toList[a - dst]? from by
+        rw [ByteArray.toList_eq_data, Array.getElem?_toList]; rfl, ← hrb]
+    simp only [YulSemantics.EVM.readBytes, List.getElem?_map,
+      List.getElem?_eq_getElem hk, List.getElem_range, Option.map_some, Option.getD_some]
+  · rw [if_neg hw, if_neg hw, getD_eq_dite]; exact hmem a
+
 /-- Correspondence of the frame's scalar environment/block readers between the
 two semantics, indexed by the *execution environments* alone (not the full
 state) so it is preserved definitionally across steps that leave
@@ -284,6 +315,11 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   cd : MemMatch (YulSemantics.EVM.byteFrom yst.env.calldata) s.executionEnv.calldata
   /-- Scalar environment/block reader agreement (see `EnvMatch`). -/
   env : EnvMatch yst.env s.executionEnv
+  /-- Code agreement (for `codesize`/`codecopy`/`datacopy`): like calldata, a
+  zero-padded pointwise read of the frame's `ByteArray` code, plus a length
+  match. No supported op mutates code, so this is threaded unchanged. -/
+  codeBytes : MemMatch (YulSemantics.EVM.byteFrom yst.env.code) s.executionEnv.code
+  codeLen : yst.env.code.length = s.executionEnv.code.size
 
 /-- Frame-level side conditions preserved by every step of a straight-line
 execution. `code` is the full assembled program. -/

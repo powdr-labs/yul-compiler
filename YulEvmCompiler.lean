@@ -13,3 +13,4 @@ import YulEvmCompiler.LowerDefs
 import YulEvmCompiler.LowerCorrect
 import YulEvmCompiler.SimAsm
 import YulEvmCompiler.Correctness
+import YulEvmCompiler.ObjectCompile

@@ -60,9 +60,16 @@ activated on any fork modeled by evm-semantics, accesses deeper than
 lifting that restriction is a codegen-only change once the fork table
 activates EIP-8024.
 
-Still out of scope: the object/layout layer (`dataoffset`/`datasize`/
-`datacopy` and constructors), verified optimization passes, and the
-hash/log/environment ops and further memory writers not yet covered.
+The object layer has a verified foundation in
+`YulEvmCompiler/ObjectCompile.lean`: `compileObject` appends an object's data
+segments to its compiled code, builds the layout maps, and proves that every
+segment is placed at its recorded offset and size. `codesize`, `codecopy`, and
+`datacopy` are verified built-ins. Full object execution is still out of
+scope: references to `dataoffset`/`datasize` are not yet resolved to layout
+constants inside compiled code, nested sub-object bytecode is not laid out,
+and the end-to-end EVM theorem does not yet admit a trailing data suffix.
+Verified optimization passes and the remaining hash/log/environment ops and
+memory writers are also deferred.
 
 `YulParser.parseSource` parses brace-delimited programs and object-rooted files
 in the supported grammar into the `yul-semantics` AST. `parseBlock` and
@@ -79,7 +86,9 @@ mostly syntactic: it does not generally perform name resolution, scope or
 control-context checks, built-in arity checking, or other Solidity semantic
 validation. Type annotations are still deferred.
 `YulParser.compileSource` connects brace-delimited programs directly to
-`compile`; object layout is still required before object roots can be compiled.
+`compile`. Object roots can be passed as ASTs to the foundational
+`compileObject`, but the source entry point deliberately remains block-only
+until layout-reference resolution and nested-object layout are implemented.
 
 The verified built-in set (the domain of `opTable` in
 `YulEvmCompiler/OpTable.lean`):
@@ -93,6 +102,7 @@ The verified built-in set (the domain of `opTable` in
 | storage    | `sload sstore tload tstore` |
 | memory     | `mload mstore` |
 | calldata   | `calldataload` |
+| code       | `codesize codecopy datacopy` |
 | env/block  | `address origin caller callvalue gasprice coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee` |
 | halting    | `stop return revert invalid` |
 
@@ -138,10 +148,11 @@ The proof is a two-phase forward simulation:
 
 The correspondence `StateMatch` relates memory pointwise (total function vs.
 zero-padded `ByteArray`), Yul's flat storage/transient storage to the
-executing account's storage, and calldata pointwise. Gas is existentially
-bounded because yul-semantics deliberately does not model gas. Per-instruction
-facts live in `OpStep.lean`, byte-level decoding facts in `Decode.lean`, and
-the `BitVec 256` ↔ `UInt256` arithmetic agreements in `Value.lean`.
+executing account's storage, and calldata and executing code pointwise (with
+an exact code-length agreement). Gas is existentially bounded because
+yul-semantics deliberately does not model gas. Per-instruction facts live in
+`OpStep.lean`, byte-level decoding facts in `Decode.lean`, and the
+`BitVec 256` ↔ `UInt256` arithmetic agreements in `Value.lean`.
 
 Both theorems check with no `sorry`. Their `#print axioms` footprint is exactly
 the three standard classical axioms (`propext`, `Classical.choice`,
@@ -199,10 +210,10 @@ See `PLAN.md` for the full design, the upstream findings (EIP-8024
 `DUPN`/`SWAPN` not yet activated on any modeled fork; the two repos' distinct
 opaque keccaks; and the `writeBytes`/`natToBytesPadded` byte-array lemmas that
 `MSTORE` needs — `writeBytes` now upstream, `natToBytesPadded` proved locally in
-`YulEvmCompiler.BytesLemmas`). The next integration milestones are the
-object/layout layer (`datacopy` and constructors), typed parser syntax and
-verification of the lossy compatibility path, and then verified optimization
-passes on the Yul side.
+`YulEvmCompiler.BytesLemmas`). The next integration milestones are completing
+the object pipeline (layout-reference resolution, nested objects, trailing
+data, and constructors), typed parser syntax and verification of the lossy
+compatibility path, and then verified optimization passes on the Yul side.
 
 ## License
 
