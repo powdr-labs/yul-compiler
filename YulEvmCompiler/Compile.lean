@@ -74,7 +74,7 @@ structure FunInfo where
   entry : Label
   /-- Number of parameters. -/
   arity : Nat
-  /-- Number of return values (`≤ 1` in the verified fragment). -/
+  /-- Number of return values (`≤ 16` in the verified fragment). -/
   rets : Nat
   deriving Repr, DecidableEq
 

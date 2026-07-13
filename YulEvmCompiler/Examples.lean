@@ -8,8 +8,8 @@ import EvmSemantics.EVM.StepF
 # YulEvmCompiler.Examples
 
 Sanity checks for the labeled-assembly pipeline (`compileProgram` /
-`compile`): loops, `break`/`continue`, user-defined functions (including
-recursion), and `leave`.
+`compile`): loops, `break`/`continue`, `switch`, user-defined functions
+(including recursion), multi-value returns/assignments, and `leave`.
 
 Beyond "it compiles", the interesting checks here are **differential**: each
 program is run through yul-semantics' fuel-indexed interpreter *and* the
