@@ -160,7 +160,7 @@ theorem pObjF_soundC : ∀ n, SoundC (pObjF n) printObjC := by
 whitespace and comments. -/
 def parseObject (s : String) : Option (Object Op) :=
   let cs := s.toList
-  match pObjF cs.length cs with
+  match pObjF (min cs.length maxParserFuel) cs with
   | some (o, rest) => if skipTrivia rest = [] then some o else none
   | none => none
 
@@ -176,7 +176,8 @@ theorem parse_canon_obj (s : String) (o : Object Op) (h : parseObject s = some o
     split at h
     · rename_i hrest
       simp only [Option.some.injEq] at h; subst h
-      obtain ⟨he, _⟩ := pObjF_soundC s.toList.length s.toList o' rest heq
+      obtain ⟨he, _⟩ :=
+        pObjF_soundC (min s.toList.length maxParserFuel) s.toList o' rest heq
       rw [← he, canon_eq_nil_of_skipTrivia_eq_nil hrest, List.append_nil]
     · exact absurd h (by simp)
   · exact absurd h (by simp)

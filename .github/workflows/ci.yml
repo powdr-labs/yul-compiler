@@ -67,3 +67,18 @@ jobs:
       # changes (e.g. a `sorryAx` or a new axiom appears).
       - name: Verify axiom footprint (sorry-free, standard axioms only)
         run: lake env lean Checks.lean
+
+      # Fetch only the Yul syntax-test working-tree blobs from Solidity. The
+      # checked-in mismatch list makes upstream additions and parser behavior
+      # changes visible instead of silently accepting either.
+      - name: Fetch Solidity Yul syntax tests
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse --branch develop \
+            https://github.com/argotorg/solidity.git /tmp/solidity
+          git -C /tmp/solidity sparse-checkout set test/libyul/yulSyntaxTests
+
+      - name: Check parser against Solidity syntax corpus
+        run: |
+          lake env lean --run scripts/CheckSoliditySyntaxTests.lean \
+            /tmp/solidity/test/libyul/yulSyntaxTests \
+            test/solidity-yul-syntax-known-mismatches.txt

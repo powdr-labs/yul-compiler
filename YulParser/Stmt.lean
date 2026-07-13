@@ -294,6 +294,10 @@ theorem pStmtsF_soundC (n : Nat) : SoundC (pStmtsF n) printStmtsC := by
 
 /-! ### Top level -/
 
+/-- Maximum recursive grammar depth. Besides bounding work on adversarial
+input, this matches Solidity's behavior of rejecting excessively nested Yul. -/
+def maxParserFuel : Nat := 256
+
 /-- Re-print a brace-delimited Yul block. -/
 def printBlockC (body : List (Stmt Op)) : List Char :=
   ['{'] ++ [' '] ++ (printStmtsC body ++ (['}'] ++ [' ']))
@@ -302,7 +306,7 @@ def printBlockC (body : List (Stmt Op)) : List Char :=
 and comments. This is the source form used by solc's `yulInterpreterTests`. -/
 def parseBlock (s : String) : Option (List (Stmt Op)) :=
   let cs := s.toList
-  match pBlockBody (pStmtsF cs.length) cs with
+  match pBlockBody (pStmtsF (min cs.length maxParserFuel)) cs with
   | some (body, rest) => if skipTrivia rest = [] then some body else none
   | none => none
 
@@ -318,7 +322,8 @@ theorem parse_canon_block (s : String) (body : List (Stmt Op))
       simp only [Option.some.injEq] at h
       subst h
       obtain ⟨he, _⟩ :=
-        pBlockBody_soundC (pStmtsF_soundC s.toList.length) s.toList body' rest heq
+        pBlockBody_soundC (pStmtsF_soundC (min s.toList.length maxParserFuel))
+          s.toList body' rest heq
       simp only [printBlockC]
       rw [← he, canon_eq_nil_of_skipTrivia_eq_nil hrest, List.append_nil]
     · exact absurd h (by simp)
