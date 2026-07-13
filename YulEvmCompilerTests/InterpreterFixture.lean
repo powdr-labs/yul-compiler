@@ -177,12 +177,29 @@ def initialState (code : ByteArray) : EVM.State :=
   }
   let env : ExecutionEnv := {
     address
+    -- `InterpreterState::origin`:
+    -- https://github.com/argotorg/solidity/blob/960c6e969dd3b9133d06cddcd958698ac6d23aea/test/tools/yulInterpreter/Interpreter.h#L89
     origin := Hex.hexToAddress "33333333"
+    -- `InterpreterState::caller`:
+    -- https://github.com/argotorg/solidity/blob/960c6e969dd3b9133d06cddcd958698ac6d23aea/test/tools/yulInterpreter/Interpreter.h#L90
     caller := Hex.hexToAddress "44444444"
+    -- `InterpreterState::callvalue`:
+    -- https://github.com/argotorg/solidity/blob/960c6e969dd3b9133d06cddcd958698ac6d23aea/test/tools/yulInterpreter/Interpreter.h#L91
     weiValue := Hex.hexToUInt256 "55555555"
+    -- Solidity's default-constructed `InterpreterState::calldata` is empty:
+    -- https://github.com/argotorg/solidity/blob/960c6e969dd3b9133d06cddcd958698ac6d23aea/test/tools/yulInterpreter/Interpreter.h#L79
     calldata := .empty
+    -- Solidity's AST interpreter uses the dummy deployed value
+    -- `codecodecodecodecode`; this bytecode runner must instead execute the
+    -- code produced by `compileSource`:
+    -- https://github.com/argotorg/solidity/blob/960c6e969dd3b9133d06cddcd958698ac6d23aea/test/tools/yulInterpreter/Interpreter.h#L92-L93
     code
+    -- `codeAddr` has no AST-interpreter counterpart. evm-semantics uses it to
+    -- identify the account from which `code` was loaded, so it is the same as
+    -- the fixture's executing `address`.
     codeAddr := address
+    -- `InterpreterState::gasprice`:
+    -- https://github.com/argotorg/solidity/blob/960c6e969dd3b9133d06cddcd958698ac6d23aea/test/tools/yulInterpreter/Interpreter.h#L94
     gasPrice := Hex.hexToUInt256 "66666666"
     header
     depth := 0
