@@ -1,4 +1,4 @@
-import YulParser.Compat
+import YulParser.Validate
 
 /-!
 # YulParser.Source
@@ -19,13 +19,23 @@ The verified block/object parsers are tried first, followed by the documented
 lossy Solidity-compatibility parsers. -/
 def parseSource (source : String) : Option Source :=
   match parseBlock source with
-  | some statements => some (.block statements)
+  | some statements =>
+      if validateBlockSource source statements then some (.block statements)
+      else (parseBlockCompat source).bind fun compat =>
+        if validateBlockSource source compat then some (.block compat) else none
   | none =>
       match parseBlockCompat source with
-      | some statements => some (.block statements)
+      | some statements =>
+          if validateBlockSource source statements then some (.block statements) else none
       | none =>
           match parseObject source with
-          | some value => some (.object value)
-          | none => (parseObjectCompat source).map .object
+          | some value =>
+              if validateObjectSource source value then some (.object value)
+              else (parseObjectCompat source).bind fun compat =>
+                if validateObjectSource source compat then some (.object compat) else none
+          | none =>
+              match parseObjectCompat source with
+              | some value => if validateObjectSource source value then some (.object value) else none
+              | none => none
 
 end YulParser

@@ -1,7 +1,9 @@
 # Upstream Yul tests
 
-`solidity-yul-syntax-known-mismatches.txt` records the expected differences
-between this parser and Solidity's complete Yul syntax corpus.
+`solidity-yul-syntax-known-mismatches.txt` records expected differences between
+this parser/validator and Solidity's complete Yul syntax corpus. It is currently
+empty: every upstream success is accepted and every fixture containing an
+`*Error` expectation is rejected.
 
 `solidity-yul-interpreter-known-failures.txt` records the fixtures that do not
 yet work from Solidity's complete `test/libyul/yulInterpreterTests` corpus.
@@ -17,8 +19,16 @@ block number, timestamp, fees, chain ID, and other block fields. The executing
 account's code is the bytecode produced by this compiler, rather than the dummy
 `codecodecodecodecode` value used by Solidity's AST interpreter.
 
-Remove a relative fixture path from the baseline as soon as it passes. A local
-checkout can be checked with:
+Remove a relative fixture path from either baseline as soon as it passes. A
+local checkout can be checked with:
+
+```sh
+lake env lean --run scripts/CheckSoliditySyntaxTests.lean \
+  /path/to/solidity/test/libyul/yulSyntaxTests \
+  test/solidity-yul-syntax-known-mismatches.txt
+```
+
+Interpreter fixtures can be checked with:
 
 ```sh
 lake env lean --run scripts/CheckSolidityInterpreterTests.lean \

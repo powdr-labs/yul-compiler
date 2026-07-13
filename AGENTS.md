@@ -133,7 +133,7 @@ The parser is a separate Lean library targeting the upstream AST:
 - Public recursive grammar entry points have a fuel cap of 256.
 - `parseBlock` and `parseObject` have canonical round-trip theorems. Preserve escape spelling and canonical-token behavior when changing their accepted grammar.
 - `parseBlockCompat`/`parseObjectCompat` handle lossy Solidity compatibility such as hex literals and interleaved object/data items. Keep lossy normalization isolated and documented; it is outside the canonical theorem unless a new proof is added.
-- Parsing is mostly syntactic. Do not claim that acceptance matches Solidity's name resolution, scope/control checks, built-in arity validation, or type checks.
+- `parseSource` follows either grammar with `YulParser.Validate`'s strict-assembly checks: lexical and identifier validity, scopes and function signatures, control placement, built-in arities/direct literals, switch cases, object references, immutables, and version-gated built-in names. The moving Solidity syntax corpus currently has no known mismatches. Keep the validator independent of the canonical round-trip theorems, and update the exact baseline when upstream behavior changes.
 - If canonical parser behavior changes, update its proof and `Checks.lean` expectations if and only if the genuine axiom footprint changes. A new axiom is not an acceptable update.
 
 ## Testing and verification
@@ -180,7 +180,7 @@ lake env lean --run scripts/CheckSoliditySyntaxTests.lean \
   test/solidity-yul-syntax-known-mismatches.txt
 ```
 
-`test/solidity-yul-syntax-known-mismatches.txt` is an exact, sorted set, not a skip list. The run fails if there is a new mismatch or if a listed mismatch has become stale. Review unexpected cases individually. Add an entry only for an understood, intentionally deferred difference; remove it as soon as the parser agrees.
+`test/solidity-yul-syntax-known-mismatches.txt` is an exact, sorted set, not a skip list. It is currently empty. The run fails if there is a new mismatch or if a listed mismatch has become stale. Review unexpected cases individually. Add an entry only for an understood, intentionally deferred difference; remove it as soon as the parser agrees.
 
 ### Solidity interpreter corpus
 

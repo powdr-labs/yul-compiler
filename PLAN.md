@@ -153,7 +153,8 @@ YulParser/
   Stmt.lean         -- statements, block entry point, and round-trip theorem
   Obj.lean          -- object entry point and round-trip theorem
   Compat.lean       -- lossy Solidity hex/interleaved-object compatibility path
-  Source.lean       -- common block/object source entry point
+  Validate.lean     -- strict-assembly scope/signature/object validation
+  Source.lean       -- common parsed-and-validated block/object entry point
   Compile.lean      -- brace-delimited source-to-compiler connection
 scripts/
   CheckSoliditySyntaxTests.lean -- Solidity corpus expectation/mismatch runner
@@ -161,17 +162,17 @@ test/
   solidity-yul-syntax-known-mismatches.txt -- exact corpus disagreement set
 ```
 
-The parser is syntax-only and targets the lossy, single-sorted
-`yul-semantics` AST. Its public entry points use at most 256 units of recursive
-grammar fuel. The statement and ordered-object parsers have verified canonical
-round-trip theorems, including escape-preserving strings. `parseSource` also
-has a deliberately lossy compatibility fallback: it lowers hex expression
-literals to left-aligned numbers, decodes hex data, and normalizes interleaved
-object/data items into the AST's separate lists. Acceptance generally does not imply
-Solidity name resolution, scope/control-context validity, or built-in arity
-validity. CI exercises Solidity's complete `yulSyntaxTests` directory from
-`develop` and requires its exact set of known accept/reject disagreements to
-match the checked-in baseline.
+The parser targets the lossy, single-sorted `yul-semantics` AST. Its grammar
+entry points use at most 256 units of recursive fuel. The statement and
+ordered-object parsers have verified canonical round-trip theorems, including
+escape-preserving strings. `parseSource` also has a deliberately lossy
+compatibility fallback: it lowers hex expression literals to left-aligned
+numbers, decodes hex data, and normalizes interleaved object/data items into the
+AST's separate lists. It then runs strict-assembly validation for lexical and
+identifier rules, scopes and signatures, control-flow placement, built-in
+calls, switches, object/data references, immutables, and version-gated names.
+CI exercises Solidity's complete `yulSyntaxTests` directory from `develop`; the
+accept/reject mismatch baseline is currently empty.
 
 ### The IR and the compilation scheme
 
@@ -226,11 +227,9 @@ names, non-unique parameter/return names, more than 16 returns, classic
 
 * **Objects / `dataoffset` / `datasize` / `datacopy` / constructors.** Add a
   verified layout and connect object execution to the existing block compiler.
-* **Parser compatibility and validation.** Reduce the Solidity syntax-corpus
-  mismatch baseline further: add typed identifiers and move the compatibility
-  path's narrowly targeted checks into a separate validation pass. Either
-  enrich the AST so hex/interleaved forms can join the canonical round-trip
-  theorem, or verify their documented normalization directly.
+* **Parser representation proofs.** Add typed identifiers, and either enrich
+  the AST so hex/interleaved forms can join the canonical round-trip theorem or
+  verify their documented normalization and the post-parse validator directly.
 * **Built-in coverage.** Discharge the proof and state-correspondence debt listed
   in Milestone 1 below; bridge the two opaque Keccak definitions upstream.
 * **Deep stack access.** Use EIP-8024 after the target semantics activates it,

@@ -165,11 +165,13 @@ CI also sparse-checks out Solidity's moving `develop` version of
 `test/libyul/yulSyntaxTests` and runs `parseSource` on every fixture. A fixture
 is treated as an expected rejection when its expectation section after
 `// ----` contains an `*Error` diagnostic; warnings remain expected successes.
-This deliberately includes Solidity semantic and code-generation errors even
-though this project currently provides only a syntax parser. The exact set of
-known disagreements is pinned in
-`test/solidity-yul-syntax-known-mismatches.txt`: CI fails if a new mismatch
-appears or an existing entry becomes stale. The comparison logic lives in
+`parseSource` follows parsing with the strict-assembly validation needed for
+these fixtures: identifier and literal rules, scopes and function signatures,
+builtin arities and direct-literal arguments, control-flow placement, switch
+cases, object names/data references, immutable references, and version-gated
+builtin names. The mismatch baseline is currently empty. CI fails if a new
+entry appears or a stale entry remains in
+`test/solidity-yul-syntax-known-mismatches.txt`; the comparison logic lives in
 `scripts/CheckSoliditySyntaxTests.lean`.
 
 CI also attempts to compile and execute every upstream Yul interpreter fixture.
