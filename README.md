@@ -65,14 +65,19 @@ Still out of scope: the object/layout layer (`dataoffset`/`datasize`/
 hash/log/environment ops and further memory writers not yet covered.
 
 `YulParser.parseSource` parses brace-delimited programs and object-rooted files
-in the supported grammar into the `yul-semantics` AST. Its statement and
-object entry points have verified canonical round-trip theorems: accepted
-input is preserved up to whitespace, comments, and number base. The public
-entry points cap recursive grammar fuel at 256, rejecting excessively nested
-input. Parsing is syntactic only: it does not perform name resolution, scope
-or control-context checks, built-in arity checking, or other Solidity semantic
-validation. Type annotations, escaped string literals, `hex"..."` literals and
-data, and interleaved sub-objects/data are intentionally deferred.
+in the supported grammar into the `yul-semantics` AST. `parseBlock` and
+`parseObject` have verified canonical round-trip theorems: input accepted by
+those parsers is preserved up to whitespace, comments, and number base,
+including the source spelling of string escapes. The public source entry point
+additionally has a compatibility fallback for `hex"..."` expression literals
+and object data, and interleaved sub-objects/data. Hex expression literals are
+lowered to their left-aligned 256-bit numeric value; interleaved items are normalized into the
+AST's separate sub-object and data lists. This lossy fallback is intentionally
+outside the canonical round-trip theorem. Public entry points cap recursive
+grammar fuel at 256, rejecting excessively nested input. Parsing remains
+mostly syntactic: it does not generally perform name resolution, scope or
+control-context checks, built-in arity checking, or other Solidity semantic
+validation. Type annotations are still deferred.
 `YulParser.compileSource` connects brace-delimited programs directly to
 `compile`; object layout is still required before object roots can be compiled.
 
@@ -193,9 +198,9 @@ See `PLAN.md` for the full design, the upstream findings (EIP-8024
 opaque keccaks; and the `writeBytes`/`natToBytesPadded` byte-array lemmas that
 `MSTORE` needs — `writeBytes` now upstream, `natToBytesPadded` proved locally in
 `YulEvmCompiler.BytesLemmas`). The next integration milestones are the
-object/layout layer (`datacopy` and constructors), broader parser syntax
-(typed identifiers, escaped strings, and hex data), and then verified
-optimization passes on the Yul side.
+object/layout layer (`datacopy` and constructors), typed parser syntax and
+verification of the lossy compatibility path, and then verified optimization
+passes on the Yul side.
 
 ## License
 
