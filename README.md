@@ -61,9 +61,20 @@ lifting that restriction is a codegen-only change once the fork table
 activates EIP-8024.
 
 Still out of scope: the object/layout layer (`dataoffset`/`datasize`/
-`datacopy` and constructors), a source-text parser, verified optimization
-passes, and the hash/log/environment ops and further memory writers not yet
-covered.
+`datacopy` and constructors), verified optimization passes, and the
+hash/log/environment ops and further memory writers not yet covered.
+
+`YulParser.parseSource` parses brace-delimited programs and object-rooted files
+in the supported grammar into the `yul-semantics` AST. Its statement and
+object entry points have verified canonical round-trip theorems: accepted
+input is preserved up to whitespace, comments, and number base. The public
+entry points cap recursive grammar fuel at 256, rejecting excessively nested
+input. Parsing is syntactic only: it does not perform name resolution, scope
+or control-context checks, built-in arity checking, or other Solidity semantic
+validation. Type annotations, escaped string literals, `hex"..."` literals and
+data, and interleaved sub-objects/data are intentionally deferred.
+`YulParser.compileSource` connects brace-delimited programs directly to
+`compile`; object layout is still required before object roots can be compiled.
 
 The verified built-in set (the domain of `opTable` in
 `YulEvmCompiler/OpTable.lean`):
@@ -138,7 +149,23 @@ genuine theorems (`writeBytes` upstream, the two `natToBytesPadded` lemmas in
 ```sh
 lake exe cache get   # prebuilt Mathlib oleans
 lake build           # builds both semantics deps + the compiler + proofs
+lake env lean --run YulParserMain.lean --parse-only program.yul
 ```
+
+The last command checks either accepted top-level source form without the
+native executable build. `lake build yulc` additionally builds a CLI that
+emits compiled bytecode for brace-delimited programs.
+
+CI also sparse-checks out Solidity's moving `develop` version of
+`test/libyul/yulSyntaxTests` and runs `parseSource` on every fixture. A fixture
+is treated as an expected rejection when its expectation section after
+`// ----` contains an `*Error` diagnostic; warnings remain expected successes.
+This deliberately includes Solidity semantic and code-generation errors even
+though this project currently provides only a syntax parser. The exact set of
+known disagreements is pinned in
+`test/solidity-yul-syntax-known-mismatches.txt`: CI fails if a new mismatch
+appears or an existing entry becomes stale. The comparison logic lives in
+`scripts/CheckSoliditySyntaxTests.lean`.
 
 `YulEvmCompiler/Examples.lean` compiles sample programs at build time
 (`#guard`/`#eval`), including `switch`, multi-value returns and assignments,
@@ -157,8 +184,9 @@ See `PLAN.md` for the full design, the upstream findings (EIP-8024
 opaque keccaks; and the `writeBytes`/`natToBytesPadded` byte-array lemmas that
 `MSTORE` needs — `writeBytes` now upstream, `natToBytesPadded` proved locally in
 `YulEvmCompiler.BytesLemmas`). The next integration milestones are the
-object/layout layer (`datacopy` and constructors), the verified parser, and
-then verified optimization passes on the Yul side.
+object/layout layer (`datacopy` and constructors), broader parser syntax
+(typed identifiers, escaped strings, and hex data), and then verified
+optimization passes on the Yul side.
 
 ## License
 

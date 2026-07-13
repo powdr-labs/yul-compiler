@@ -1,6 +1,6 @@
 name = "yul-evm-compiler"
 version = "0.1.0"
-defaultTargets = ["YulEvmCompiler"]
+defaultTargets = ["YulEvmCompiler", "YulParser"]
 
 # Source-language semantics: the Yul big-step judgment this compiler is proved against.
 [[require]]
@@ -16,3 +16,10 @@ rev = "fcf5c24b3994a61e9f9aa8b1704525e9c7b38cb4"
 
 [[lean_lib]]
 name = "YulEvmCompiler"
+
+[[lean_lib]]
+name = "YulParser"
+
+[[lean_exe]]
+name = "yulc"
+root = "YulParserMain"
