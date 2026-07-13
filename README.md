@@ -167,6 +167,15 @@ known disagreements is pinned in
 appears or an existing entry becomes stale. The comparison logic lives in
 `scripts/CheckSoliditySyntaxTests.lean`.
 
+CI also compiles and executes the upstream interpreter fixtures selected in
+`test/solidity-yul-interpreter-tests.txt`. The reusable runner in
+`YulEvmCompilerTests/InterpreterFixture.lean` constructs Solidity's fixed Yul
+test environment, runs the assembled bytecode with `evm-semantics`, and
+exactly compares every nonzero memory word, persistent-storage entry, and
+transient-storage entry with the dumps embedded after `// ----`. The initial
+selection covers `loop.yul`, the fixed `prevrandao` block field, and transient
+storage; adding a supported upstream fixture is a one-line manifest change.
+
 `YulEvmCompiler/Examples.lean` compiles sample programs at build time
 (`#guard`/`#eval`), including `switch`, multi-value returns and assignments,
 a `for` loop, a recursive function, and an iterative Fibonacci over storage —

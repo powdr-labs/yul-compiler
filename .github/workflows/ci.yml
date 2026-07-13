@@ -56,8 +56,9 @@ jobs:
       # caught by the axiom check below via `sorryAx`.)
       - name: Reject sorry in library sources
         run: |
-          if grep -rn --include='*.lean' -w 'sorry' YulEvmCompiler YulParser; then
-            echo "::error::found a sorry in compiler or parser sources"
+          if grep -rn --include='*.lean' -w 'sorry' \
+              YulEvmCompiler YulParser YulEvmCompilerTests; then
+            echo "::error::found a sorry in compiler, parser, or test-framework sources"
             exit 1
           fi
 
@@ -68,17 +69,24 @@ jobs:
       - name: Verify axiom footprint (sorry-free, standard axioms only)
         run: lake env lean Checks.lean
 
-      # Fetch only the Yul syntax-test working-tree blobs from Solidity. The
-      # checked-in mismatch list makes upstream additions and parser behavior
-      # changes visible instead of silently accepting either.
-      - name: Fetch Solidity Yul syntax tests
+      # Fetch only the two Yul test directories used below. The syntax mismatch
+      # list and interpreter manifest make the tested upstream surface explicit.
+      - name: Fetch Solidity Yul tests
         run: |
           git clone --depth 1 --filter=blob:none --sparse --branch develop \
             https://github.com/argotorg/solidity.git /tmp/solidity
-          git -C /tmp/solidity sparse-checkout set test/libyul/yulSyntaxTests
+          git -C /tmp/solidity sparse-checkout set \
+            test/libyul/yulSyntaxTests \
+            test/libyul/yulInterpreterTests
 
       - name: Check parser against Solidity syntax corpus
         run: |
           lake env lean --run scripts/CheckSoliditySyntaxTests.lean \
             /tmp/solidity/test/libyul/yulSyntaxTests \
             test/solidity-yul-syntax-known-mismatches.txt
+
+      - name: Compile and execute selected Solidity Yul interpreter tests
+        run: |
+          lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
+            /tmp/solidity/test/libyul/yulInterpreterTests \
+            test/solidity-yul-interpreter-tests.txt

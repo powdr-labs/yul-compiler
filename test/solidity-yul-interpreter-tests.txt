@@ -1,0 +1,6 @@
+# Paths relative to Solidity's test/libyul/yulInterpreterTests directory.
+# Each selected fixture must compile to EVM bytecode and exactly match its
+# embedded nonzero memory, storage, and transient-storage post-state.
+loop.yul
+prevrandao.yul
+transient_storage.yul
