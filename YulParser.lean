@@ -9,5 +9,6 @@ import YulParser.Expr
 import YulParser.Stmt
 import YulParser.Obj
 import YulParser.Compat
+import YulParser.Validate
 import YulParser.Compile
 import YulParser.Examples

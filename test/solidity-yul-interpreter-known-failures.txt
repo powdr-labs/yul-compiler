@@ -16,7 +16,6 @@ external_call_unexecuted.yul
 external_callcode_unexecuted.yul
 external_delegatecall_unexecuted.yul
 external_staticcall_unexecuted.yul
-hex_literals.yul
 infinite_recursion.yul
 infinite_recursion_tracelimit.yul
 isoltestTesting/linkersymbol.yul
