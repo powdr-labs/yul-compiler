@@ -24,10 +24,12 @@ Deliberately *not* covered so far:
   (`(2^n-1) ^^^ m = 2^n-1-m`) on `Nat` that isn't in the pinned Mathlib;
   `sdiv`/`smod`/`sar` are *now covered* (their two's-complement `conv_*`
   agreement lemmas live in `Value.lean`);
-* `mstore8`/`mcopy` and the calldata/code copy family — further memory writers
+* `mstore8`/`mcopy` and the remaining copy family — further memory writers
   (`mstore` itself *is* covered, via the `writeBytes` read-after-write lemma
-  and the `natToBytesPadded` byte lemmas in `BytesLemmas.lean`; the others just
-  need their own byte-layout lemmas);
+  and the `natToBytesPadded` byte lemmas in `BytesLemmas.lean`; `codecopy` and
+  `datacopy` are also covered by `MemMatch.copyFromCode`, while calldata,
+  returndata, and external-code copies still need their own correspondence
+  lemmas);
 * `keccak256` — the two repos each declare their own unrelated `opaque` hash;
 * `log0`–`log4` — need a log-series correspondence (mechanical, later);
 * `msize`, `gas`, calls/creates, `selfdestruct` — unmodeled in yul-semantics

@@ -1,4 +1,5 @@
 import YulEvmCompiler.Correctness
+import YulEvmCompiler.ObjectCompile
 import YulParser
 
 /-!
@@ -32,6 +33,14 @@ modulo only the standard classical axioms. -/
 /-- info: 'YulEvmCompiler.compile_correct_eval' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms YulEvmCompiler.compile_correct_eval
+
+/-- info: 'YulEvmCompiler.compileObject_consistent' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms YulEvmCompiler.compileObject_consistent
+
+/-- info: 'YulEvmCompiler.compiled_constructor_returns' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms YulEvmCompiler.compiled_constructor_returns
 
 /-- info: 'YulParser.parse_canon_block' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in

@@ -116,8 +116,10 @@ Design decisions baked into that statement:
    `natToBytesPadded`. The `writeBytes` lemma now lives upstream
    (`EvmSemantics.MachineState.writeBytes_getElem?_getD`); the two
    `natToBytesPadded` facts are proved locally in `YulEvmCompiler.BytesLemmas`
-   (do-loop reasoning), so no axioms are involved. `mstore8`/`mcopy` and the
-   copy family remain out until their own byte-layout lemmas are added.
+   (do-loop reasoning), so no axioms are involved. `codecopy`/`datacopy` are
+   now covered by the code-region agreement and `MemMatch.copyFromCode`;
+   `mstore8`/`mcopy` and the remaining copy family stay out until their own
+   byte-layout/correspondence lemmas are added.
 3. Reads are unaffected: `readPadded`/`readWord` are total, so `mload`,
    `return(p,s)`, and `revert(p,s)` are verified. They also compose with the
    verified `mstore`, whose proof preserves `MemMatch`.
@@ -145,6 +147,7 @@ YulEvmCompiler/
   StateRel.lean     -- memory/storage/calldata/environment correspondence
   OpStep.lean       -- per-op EVM simulation lemmas and gas bounds
   Correctness.lean  -- end-to-end compile_correct / compile_correct_eval
+  ObjectCompile.lean -- foundational object/data layout + consistency proof
   Examples.lean     -- compile-time and differential execution checks
 YulParser/
   Canon.lean        -- independent canonical token stream for round-trip proofs
@@ -224,8 +227,12 @@ names, non-unique parameter/return names, more than 16 returns, classic
 
 ### Remaining extension path
 
-* **Objects / `dataoffset` / `datasize` / `datacopy` / constructors.** Add a
-  verified layout and connect object execution to the existing block compiler.
+* **Finish objects / `dataoffset` / `datasize` / constructors.**
+  `ObjectCompile.lean` now builds a flat code-plus-data layout and proves data
+  consistency; `datacopy` is verified as `CODECOPY`. Still required: resolve
+  `dataoffset`/`datasize` to constants, lay out nested sub-object bytecode,
+  generalize backend correctness to code with a trailing data suffix, connect
+  object-rooted source compilation, and prove `RunObject` to EVM execution.
 * **Parser compatibility and validation.** Reduce the Solidity syntax-corpus
   mismatch baseline further: add typed identifiers and move the compatibility
   path's narrowly targeted checks into a separate validation pass. Either
@@ -267,12 +274,13 @@ Deliverables:
    between Yul's `getLsbD`/mask form and evm-semantics' `toNat`-shift/mask form
    (blocked on a Nat all-ones-xor/complement lemma not in the pinned Mathlib).
    Follow-ups needing a further `StateMatch` extension: the size readers
-   `calldatasize`/`codesize`/`returndatasize` (need length correspondences),
+   `calldatasize`/`returndatasize` (need length correspondences; `codesize` is
+   now covered by the code-region fields),
    `selfbalance`/`balance`/`extcodesize`/`extcodehash`/`blockhash`/`blobhash`
    (need account-map / abstract-map correspondences). Excluded until further
    work: the remaining memory/state writes through `writeBytes`
-   (`mstore8 mcopy calldatacopy codecopy returndatacopy extcodecopy` — each
-   needs its own byte-layout lemma, following `mstore`), `keccak256`
+   (`mstore8 mcopy calldatacopy returndatacopy extcodecopy` — each needs its
+   own byte-layout/correspondence lemma; `codecopy`/`datacopy` are covered), `keccak256`
    (finding 4), `log*` (needs a log correspondence; addable later),
    `msize`/`gas`/calls/creates/`selfdestruct`
    (unmodeled in yul-semantics — no source derivation exists, so nothing to

@@ -42,6 +42,7 @@ Important files:
 - `YulEvmCompiler/LowerDefs.lean`: Phase B configuration/stack correspondence and bytecode location lemmas.
 - `YulEvmCompiler/LowerCorrect.lean`: Phase B simulation, one `Asm` constructor at a time, then trace composition.
 - `YulEvmCompiler/Correctness.lean`: composition into the public correctness theorems.
+- `YulEvmCompiler/ObjectCompile.lean`: foundational object/data layout and its data-segment consistency theorem; full object execution remains incomplete.
 - `YulEvmCompiler/Examples.lean`: build-time compilation guards and executable differential tests between both semantics.
 - `YulParser/`: parser library. `Canon.lean` supports verified canonical round trips; `Compat.lean` is an intentionally lossy Solidity-compatibility fallback.
 - `YulEvmCompilerTests/InterpreterFixture.lean`: runner for Solidity's Yul interpreter fixtures.
@@ -124,7 +125,12 @@ There is currently no verified optimizer in front of the backend. A new source-t
 
 For an Asm-to-Asm optimization, preserve `AStep` behavior, symbolic control flow, stack shape, label well-formedness, and fixed-width location assumptions, or state and prove the replacement invariants. Bytecode peepholes are especially sensitive to jump addresses and valid `JUMPDEST` analysis.
 
-Object parsing is not object compilation. Supporting object-rooted input requires a verified layout/data/constructor pass and semantics for `dataoffset`, `datasize`, and `datacopy`; do not make `compileSource` discard object structure and compile only a nested block.
+Object parsing is not end-to-end object compilation. `ObjectCompile.lean`
+provides the flat code-plus-data layout foundation and proves data-segment
+consistency, but object-rooted source still requires layout-reference
+resolution, nested-object layout, trailing-data backend correctness, and a
+`RunObject`-to-EVM theorem. Do not make `compileSource` discard object
+structure and compile only a nested block.
 
 ## Parser changes
 
