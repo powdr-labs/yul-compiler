@@ -65,11 +65,11 @@ def many {α : Type} (p : Parser α) : List Char → List α × List Char := fun
   match p cs with
   | none => ([], cs)
   | some (a, rest) =>
-    if h : rest.length < cs.length then
+    if _h : rest.length < cs.length then
       ((a :: (many p rest).1), (many p rest).2)
     else ([a], rest)
 termination_by cs => cs.length
-decreasing_by all_goals exact h
+decreasing_by all_goals exact _h
 
 /-- `many` as a (always-succeeding) parser. -/
 def manyP {α : Type} (p : Parser α) : Parser (List α) := fun cs => some (many p cs)

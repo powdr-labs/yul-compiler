@@ -8,3 +8,5 @@ import YulParser.Atoms
 import YulParser.Expr
 import YulParser.Stmt
 import YulParser.Obj
+import YulParser.Compile
+import YulParser.Examples

@@ -30,7 +30,7 @@ theorem andThenC {α β : Type} {p : Parser α} {q : Parser β}
     (hp : SoundC p pr1) (hq : SoundC q pr2) :
     SoundC (andThen p q) (fun ab => pr1 ab.1 ++ pr2 ab.2) := by
   intro cs ab rest h
-  simp only [andThen, Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+  simp only [andThen, Option.bind_eq_some_iff] at h
   obtain ⟨⟨a, r1⟩, hp', ⟨b, r2⟩, hq', heq⟩ := h
   simp only [Option.some.injEq, Prod.mk.injEq] at heq
   obtain ⟨rfl, rfl⟩ := heq
@@ -119,13 +119,13 @@ theorem manyC_raw {α : Type} {p : Parser α} {pr : α → List Char} (hp : Soun
   fun_induction many p cs with
   | case1 cs hpc => simp [printManyC, closed_nil]
   | case2 cs a rest hpc hlt ih =>
-    simp only [hpc, dif_pos hlt, printManyC]
+    simp only [printManyC]
     obtain ⟨e, c⟩ := hp cs a rest hpc
     obtain ⟨ih1, ih2⟩ := ih
     refine ⟨?_, closed_append c ih2⟩
     rw [c (printManyC pr (many p rest).1), List.append_assoc, ih1, e]
   | case3 cs a rest hpc hlt =>
-    simp only [hpc, dif_neg hlt, printManyC]
+    simp only [printManyC]
     obtain ⟨e, c⟩ := hp cs a rest hpc
     exact ⟨by rw [List.append_nil]; exact e, by rw [List.append_nil]; exact c⟩
 

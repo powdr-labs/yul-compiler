@@ -27,7 +27,7 @@ theorem takeWhile_dropWhile_nil {α} (p : α → Bool) (l : List α) :
     rw [List.dropWhile_cons]
     split
     · exact ih
-    · rename_i hpa; simp [List.takeWhile_cons, hpa]
+    · rename_i hpa; simp [hpa]
 
 /-! ### Identifiers -/
 
@@ -251,7 +251,7 @@ theorem keywordC {c : Char} {ts : List Char} (hc : isIdStart c = true)
     (hts : ∀ x ∈ ts, isIdCont x = true) :
     SoundC (keyword (c :: ts)) (fun _ => (c :: ts) ++ [' ']) := by
   intro cs a rest h
-  simp only [keyword, token, pmap, YulParser.andThen, Option.bind_eq_bind] at h
+  simp only [keyword, token, pmap, YulParser.andThen] at h
   cases hp : pstr (c :: ts) (YulParser.skipTrivia cs) with
   | none => rw [hp] at h; simp at h
   | some pr1 =>

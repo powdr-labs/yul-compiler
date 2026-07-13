@@ -259,9 +259,9 @@ theorem pStmtF_soundC : ∀ n, SoundC (pStmtF n) printStmtC := by
       intro a; obtain ⟨_, vars, oval⟩ := a
       cases oval with
       | none => simp [printStmtC]
-      | some ve => obtain ⟨_, e⟩ := ve; simp [printStmtC, List.append_assoc]
+      | some ve => obtain ⟨_, e⟩ := ve; simp [printStmtC]
     case ifs =>
-      refine pmapC_eq (andThenC (keywordC (by decide) (by intro x hx; fin_cases hx <;> decide))
+      refine pmapC_eq (andThenC (keywordC (by decide) (by intro x hx; (fin_cases hx; rfl)))
         (andThenC hexp (andThenC (symbolC closed_lbrace)
           (andThenC hstmts (symbolC closed_rbrace))))) ?_
       intro a; obtain ⟨_, c, _, body, _⟩ := a; rfl
@@ -273,7 +273,7 @@ theorem pStmtF_soundC : ∀ n, SoundC (pStmtF n) printStmtC := by
       intro a; obtain ⟨_, c, cases, odflt⟩ := a
       cases odflt with
       | none => simp [printStmtC]
-      | some d => obtain ⟨_, _, body, _⟩ := d; simp [printStmtC, List.append_assoc]
+      | some d => obtain ⟨_, _, body, _⟩ := d; simp [printStmtC]
     case forl =>
       refine pmapC_eq (andThenC (keywordC (by decide) (by intro x hx; fin_cases hx <;> decide))
         (andThenC hblk (andThenC hexp (andThenC hblk hblk)))) ?_
@@ -291,5 +291,37 @@ theorem pStmtF_soundC : ∀ n, SoundC (pStmtF n) printStmtC := by
 
 theorem pStmtsF_soundC (n : Nat) : SoundC (pStmtsF n) printStmtsC := by
   simp only [pStmtsF, funext printStmtsC_eq]; exact manyC (pStmtF_soundC n)
+
+/-! ### Top level -/
+
+/-- Re-print a brace-delimited Yul block. -/
+def printBlockC (body : List (Stmt Op)) : List Char :=
+  ['{'] ++ [' '] ++ (printStmtsC body ++ (['}'] ++ [' ']))
+
+/-- Parse a complete brace-delimited Yul block, accepting trailing whitespace
+and comments. This is the source form used by solc's `yulInterpreterTests`. -/
+def parseBlock (s : String) : Option (List (Stmt Op)) :=
+  let cs := s.toList
+  match pBlockBody (pStmtsF cs.length) cs with
+  | some (body, rest) => if skipTrivia rest = [] then some body else none
+  | none => none
+
+/-- A successfully parsed block reprints to the same canonical token stream. -/
+theorem parse_canon_block (s : String) (body : List (Stmt Op))
+    (h : parseBlock s = some body) : canon (printBlockC body) = canon s.toList := by
+  unfold parseBlock at h
+  simp only at h
+  split at h
+  · rename_i body' rest heq
+    split at h
+    · rename_i hrest
+      simp only [Option.some.injEq] at h
+      subst h
+      obtain ⟨he, _⟩ :=
+        pBlockBody_soundC (pStmtsF_soundC s.toList.length) s.toList body' rest heq
+      simp only [printBlockC]
+      rw [← he, canon_eq_nil_of_skipTrivia_eq_nil hrest, List.append_nil]
+    · exact absurd h (by simp)
+  · exact absurd h (by simp)
 
 end YulParser

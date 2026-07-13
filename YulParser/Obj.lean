@@ -75,7 +75,7 @@ def pData : Parser (String × Data) :=
 def printDataC : String × Data → List Char
   | (name, .string content) =>
       (['d','a','t','a'] ++ [' ']) ++ (printNameC name ++ printNameC content)
-  | (name, .hex bytes) =>  -- not produced by the parser; total-function placeholder
+  | (name, .hex _bytes) =>  -- not produced by the parser; total-function placeholder
       (['d','a','t','a'] ++ [' ']) ++ (printNameC name ++ ('h' :: 'e' :: 'x' :: printNameC ""))
 
 theorem pData_soundC : SoundC pData printDataC := by
@@ -156,20 +156,13 @@ theorem pObjF_soundC : ∀ n, SoundC (pObjF n) printObjC := by
 
 /-! ### Top level -/
 
-/-- Parse a full Yul object; the entire input must be consumed up to trailing whitespace. -/
+/-- Parse a full Yul object; the entire input must be consumed up to trailing
+whitespace and comments. -/
 def parseObject (s : String) : Option (Object Op) :=
   let cs := s.toList
   match pObjF cs.length cs with
-  | some (o, rest) => if rest.all isWs then some o else none
+  | some (o, rest) => if skipTrivia rest = [] then some o else none
   | none => none
-
-/-- A list is all-whitespace exactly when `canon` empties it. -/
-theorem canon_all_ws (cs : List Char) (h : cs.all isWs = true) : canon cs = [] := by
-  induction cs with
-  | nil => exact canon_nil
-  | cons c cs ih =>
-    simp only [List.all_cons, Bool.and_eq_true] at h
-    exact (canon_ws h.1).trans (ih h.2)
 
 /-- **Main theorem.** If `parseObject` accepts `s`, then re-printing the resulting AST is
 `canon`-equal to `s`: the parser preserves every token except whitespace, comments, and number
@@ -184,7 +177,7 @@ theorem parse_canon_obj (s : String) (o : Object Op) (h : parseObject s = some o
     · rename_i hrest
       simp only [Option.some.injEq] at h; subst h
       obtain ⟨he, _⟩ := pObjF_soundC s.toList.length s.toList o' rest heq
-      rw [← he, canon_all_ws rest hrest, List.append_nil]
+      rw [← he, canon_eq_nil_of_skipTrivia_eq_nil hrest, List.append_nil]
     · exact absurd h (by simp)
   · exact absurd h (by simp)
 

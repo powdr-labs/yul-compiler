@@ -56,8 +56,8 @@ jobs:
       # caught by the axiom check below via `sorryAx`.)
       - name: Reject sorry in library sources
         run: |
-          if grep -rn --include='*.lean' -w 'sorry' YulEvmCompiler; then
-            echo "::error::found a sorry in YulEvmCompiler"
+          if grep -rn --include='*.lean' -w 'sorry' YulEvmCompiler YulParser; then
+            echo "::error::found a sorry in compiler or parser sources"
             exit 1
           fi
 

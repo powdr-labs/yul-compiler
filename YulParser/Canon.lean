@@ -106,13 +106,6 @@ def canon (cs : List Char) : List CTok :=
         | exact Nat.le_succ_of_le (Nat.le_succ_of_le (dwle _ _))
         | exact afterBlockComment_le _
         | exact Nat.le_succ_of_le (afterBlockComment_le _)
-        | exact Nat.le_succ_of_le (Nat.le_succ_of_le (afterBlockComment_le _))
-        | exact Nat.le_trans (tail_le _) (dwle _ _)
-        | exact Nat.le_succ_of_le (Nat.le_trans (tail_le _) (dwle _ _))
-        | exact Nat.lt_of_le_of_lt (dwle _ _) (Nat.lt_succ_self _)
-        | exact Nat.lt_succ_of_le (Nat.le_trans (tail_le _) (dwle _ _))
-        | (refine Nat.lt_of_le_of_lt (dwle _ _) ?_; omega)
-        | (refine Nat.lt_of_le_of_lt (afterBlockComment_le _) ?_; omega)
 
 @[simp] theorem canon_nil : canon [] = [] := by rw [canon.eq_def]
 
@@ -166,6 +159,11 @@ theorem canon_skipTrivia (cs : List Char) : canon (skipTrivia cs) = canon cs := 
   · exact (canon_ws (by assumption)).symm
   · exact canon_line_comment.symm
   · exact canon_block_comment.symm
+
+/-- If only trivia remains, its canonical token stream is empty. -/
+theorem canon_eq_nil_of_skipTrivia_eq_nil {cs : List Char} (h : skipTrivia cs = []) :
+    canon cs = [] := by
+  rw [← canon_skipTrivia cs, h, canon_nil]
 
 /-! ### `Closed`: prefixes that do not interact with their continuation -/
 
