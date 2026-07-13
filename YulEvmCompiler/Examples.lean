@@ -8,8 +8,8 @@ import EvmSemantics.EVM.StepF
 # YulEvmCompiler.Examples
 
 Sanity checks for the labeled-assembly pipeline (`compileProgram` /
-`compile`): loops, `break`/`continue`, user-defined functions (including
-recursion), and `leave`.
+`compile`): loops, `break`/`continue`, `switch`, user-defined functions
+(including recursion), multi-value returns/assignments, and `leave`.
 
 Beyond "it compiles", the interesting checks here are **differential**: each
 program is run through yul-semantics' fuel-indexed interpreter *and* the
@@ -24,13 +24,6 @@ namespace YulEvmCompiler.Examples
 open YulSemantics
 open YulSemantics.EVM (Op EvmState)
 open YulEvmCompiler
-
-/-- Render assembled bytes as a hex string. -/
-def hex (is : List Instr) : String :=
-  (assembleBytes is).foldl
-    (fun acc b =>
-      let d := Nat.toDigits 16 b.toNat
-      acc ++ (if d.length = 1 then "0" else "") ++ String.ofList d) ""
 
 /-! ### Test programs -/
 
@@ -52,6 +45,65 @@ def breakContinue : Block Op := yul% {
     s := add(s, i)
   }
   sstore(0, s)
+}
+
+/-- `switch` dispatch: `x = 2` selects the matching case, `7*3 = 21` in slot 0. -/
+def switchMatch : Block Op := yul% {
+  let x := 2
+  switch x
+  case 1 { sstore(0, 10) }
+  case 2 { sstore(0, mul(7, 3)) }
+  case 3 { sstore(0, 30) }
+  default { sstore(0, 99) }
+}
+
+/-- `switch` fall-through to `default` when no case matches: `99` in slot 0. -/
+def switchDefault : Block Op := yul% {
+  let x := 5
+  switch x
+  case 1 { sstore(0, 10) }
+  case 2 { sstore(0, 20) }
+  default { sstore(0, 99) }
+}
+
+/-- A multi-value-return function feeding a multi-value `let`:
+`divmod(17, 5) = (3, 2)` into slots 0 and 1. -/
+def multiRet : Block Op := yul% {
+  function divmod(a, b) -> q, r {
+    q := div(a, b)
+    r := mod(a, b)
+  }
+  let x, y := divmod(17, 5)
+  sstore(0, x)
+  sstore(1, y)
+}
+
+/-- A multi-value-return function feeding a multi-value assignment (the
+targets already exist): `x, y := swap2(x, y)` swaps `1, 2` to `2, 1`. -/
+def multiAssign : Block Op := yul% {
+  function swap2(a, b) -> c, d {
+    c := b
+    d := a
+  }
+  let x := 1
+  let y := 2
+  x, y := swap2(x, y)
+  sstore(0, x)
+  sstore(1, y)
+}
+
+/-- A three-value return, exercising the full `SWAP1;SWAP2;SWAP3` rotation:
+`first3() = (7, 8, 9)` into slots 0, 1, 2. -/
+def multiRet3 : Block Op := yul% {
+  function first3() -> a, b, c {
+    a := 7
+    b := 8
+    c := 9
+  }
+  let x, y, z := first3()
+  sstore(0, x)
+  sstore(1, y)
+  sstore(2, z)
 }
 
 /-- A simple function: `double(21) = 42` in slot 0. -/
@@ -146,19 +198,12 @@ def fibStorage : Block Op := yul% {
 /-! ### The upstream Fibonacci contract
 
 `YulSemantics.FibExample.fibContract` (the `n`-th Fibonacci contract proved
-correct in yul-semantics) reads `n` from **calldata** (`calldataload`) and
-returns the result from **memory** (`mstore` + `return`). Both `calldataload`
-and `mstore` are *outside* the currently verified op set (`opTable`): memory
-writes are blocked upstream by `MachineState.writeBytes` being a `partial
-def`, and calldata reads simply have no correctness lemma yet.
-
-The labeled-assembly stage is purely *syntactic* — `opTable` is consulted only
-at **lowering** — so `compileProgram` happily produces `Asm` for it, but
-`compile` (which lowers to bytecode) correctly **rejects** it rather than
-emitting unverified code. The identical loop over storage (`fibStorage` above)
-lowers all the way to bytecode. -/
+correct in yul-semantics) reads `n` from **calldata** (`calldataload`),
+computes `fib n` in a `for` loop, writes it to **memory** (`mstore`), and
+`return`s it. With `calldataload` and `mstore` now in the verified op set
+(`opTable`) it compiles all the way to bytecode. -/
 #guard (compileProgram FibExample.fibContract).isSome
-#guard (compile FibExample.fibContract).isNone
+#guard (compile FibExample.fibContract).isSome
 
 /-! ### Differential execution: Yul interpreter vs. compiled bytecode -/
 
@@ -206,6 +251,11 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 
 #guard agreeOn sumLoop [0]
 #guard agreeOn breakContinue [0]
+#guard agreeOn switchMatch [0]
+#guard agreeOn switchDefault [0]
+#guard agreeOn multiRet [0, 1]
+#guard agreeOn multiAssign [0, 1]
+#guard agreeOn multiRet3 [0, 1, 2]
 #guard agreeOn funCall [0]
 #guard agreeOn factorial [0]
 #guard agreeOn leaveEarly [0, 1]
@@ -213,9 +263,40 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn breakNested [0]
 #guard agreeOn fibStorage [0]
 
+/-- Compile `prog`, run both sides with `cd` as calldata, and compare the
+returned byte payload (for contracts that halt via `return`, like the
+calldata/memory Fibonacci contract). -/
+def agreeReturn (prog : Block Op) (cd : List UInt8) : Bool :=
+  let yst0 : EvmState :=
+    { EvmState.init with env := { EvmState.init.env with calldata := cd } }
+  match compile prog, Interp.run YulSemantics.EVM.exec 100000 prog yst0 with
+  | some is, .ok (_, yst, _) =>
+      let s0 := evmInit (assemble is)
+      let s := runEvm 100000
+        { s0 with executionEnv := { s0.executionEnv with calldata := ⟨cd.toArray⟩ } }
+      s.isDone
+        && (match yst.halted, s.halt with
+            | some (.ret, ybytes), .Returned => ybytes == s.hReturn.toList
+            | _, _ => false)
+  | _, _ => false
+
+-- The compiled calldata/memory Fibonacci contract returns the same bytes as
+-- the Yul interpreter, for several inputs (`fib 0/1/7/10`).
+#guard agreeReturn FibExample.fibContract (List.replicate 31 0 ++ [0])
+#guard agreeReturn FibExample.fibContract (List.replicate 31 0 ++ [1])
+#guard agreeReturn FibExample.fibContract (List.replicate 31 0 ++ [7])
+#guard agreeReturn FibExample.fibContract (List.replicate 31 0 ++ [10])
+
 -- The Yul interpreter's view of the expected values (documentation).
 #guard (runYul 100000 sumLoop).map (fun st => (st.storage 0).toNat) = some 15
 #guard (runYul 100000 breakContinue).map (fun st => (st.storage 0).toNat) = some 12
+#guard (runYul 100000 switchMatch).map (fun st => (st.storage 0).toNat) = some 21
+#guard (runYul 100000 switchDefault).map (fun st => (st.storage 0).toNat) = some 99
+#guard (runYul 100000 multiRet).map (fun st => (st.storage 0).toNat) = some 3
+#guard (runYul 100000 multiRet).map (fun st => (st.storage 1).toNat) = some 2
+#guard (runYul 100000 multiAssign).map (fun st => (st.storage 0).toNat) = some 2
+#guard (runYul 100000 multiAssign).map (fun st => (st.storage 1).toNat) = some 1
+#guard (runYul 100000 multiRet3).map (fun st => (st.storage 2).toNat) = some 9
 #guard (runYul 100000 funCall).map (fun st => (st.storage 0).toNat) = some 42
 #guard (runYul 100000 factorial).map (fun st => (st.storage 0).toNat) = some 120
 #guard (runYul 100000 leaveEarly).map
@@ -223,7 +304,5 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard (runYul 100000 nested).map (fun st => (st.storage 0).toNat) = some 30
 #guard (runYul 100000 breakNested).map (fun st => (st.storage 0).toNat) = some 9
 #guard (runYul 100000 fibStorage).map (fun st => (st.storage 0).toNat) = some 55
-
-#eval (compile factorial).map hex
 
 end YulEvmCompiler.Examples

@@ -319,4 +319,90 @@ theorem conv_shr (shift v : U256) :
     rw [Nat.mod_eq_of_lt
       (lt_of_le_of_lt (Nat.shiftRight_le _ _) v.isLt)]
 
+/-! ### Signed operations (`sdiv`, `smod`, `sar`, `signextend`)
+
+Bridged through `BitVec.toInt` ↔ evm-semantics' `toSignedNat`/`ofSignedInt`.
+The two representations of a signed 256-bit word agree, and each signed op is
+`BitVec.ofInt` of the corresponding `Int` operation on the signed views. -/
+
+open EvmSemantics (UInt256)
+
+/-- evm-semantics' signed reading of a converted word is the `BitVec.toInt`. -/
+theorem conv_toSignedNat (a : U256) : (conv a).toSignedNat = a.toInt := by
+  have hs : UInt256.size = 2 ^ 256 := rfl
+  rw [BitVec.toInt_eq_toNat_cond]
+  simp only [UInt256.toSignedNat, conv_toNat, hs]
+  split_ifs with h1 h2 <;> first | rfl | omega
+
+/-- `ofSignedInt` factors through `BitVec.ofInt` and `conv`. -/
+theorem conv_ofSignedInt (z : Int) :
+    UInt256.ofSignedInt z = conv (BitVec.ofInt 256 z) := by
+  apply u256ext
+  rw [conv_toNat, BitVec.toNat_ofInt]
+  unfold UInt256.ofSignedInt
+  show (UInt256.ofNat ((z % (UInt256.size : Int)).toNat)).toNat = _
+  rw [toNat_u256_ofNat]
+  have hsize : (UInt256.size : Int) = ((2 ^ 256 : Nat) : Int) := rfl
+  rw [hsize]
+  have hlt : (z % ((2 ^ 256 : Nat) : Int)).toNat < 2 ^ 256 := by
+    have hpos : (0 : Int) < ((2 ^ 256 : Nat) : Int) := by positivity
+    have := Int.emod_lt_of_pos z hpos
+    have hnn := Int.emod_nonneg z (ne_of_gt hpos)
+    omega
+  rw [Nat.mod_eq_of_lt hlt]
+
+/-- `BitVec.ofInt` only sees its argument modulo `2 ^ 256`, so `bmod` is
+invisible to it. -/
+private theorem ofInt_bmod (z : Int) :
+    BitVec.ofInt 256 (z.bmod (2 ^ 256)) = BitVec.ofInt 256 z := by
+  apply BitVec.eq_of_toNat_eq
+  rw [BitVec.toNat_ofInt, BitVec.toNat_ofInt, Int.bmod_emod]
+
+theorem conv_sdiv (a b : U256) :
+    conv (if b = 0 then 0 else BitVec.sdiv a b) = UInt256.sdiv (conv a) (conv b) := by
+  unfold UInt256.sdiv
+  by_cases hb : b = 0
+  · subst hb; rfl
+  · rw [if_neg hb, if_neg (show ¬(conv b).toNat = 0 from fun hc => toNat_ne_zero hb hc),
+      conv_toSignedNat, conv_toSignedNat, conv_ofSignedInt]
+    congr 1
+    rw [← BitVec.ofInt_toInt (x := BitVec.sdiv a b), BitVec.toInt_sdiv, ofInt_bmod]
+
+theorem conv_smod (a b : U256) :
+    conv (if b = 0 then 0 else BitVec.srem a b) = UInt256.smod (conv a) (conv b) := by
+  unfold UInt256.smod
+  by_cases hb : b = 0
+  · subst hb; rfl
+  · rw [if_neg hb, if_neg (show ¬(conv b).toNat = 0 from fun hc => toNat_ne_zero hb hc),
+      conv_toSignedNat, conv_toSignedNat, conv_ofSignedInt]
+    congr 1
+    rw [← BitVec.ofInt_toInt (x := BitVec.srem a b), BitVec.toInt_srem]
+
+/-- `conv` of a word is `ofSignedInt` of its signed value. -/
+theorem conv_eq_ofSignedInt (w : U256) : conv w = UInt256.ofSignedInt w.toInt := by
+  rw [conv_ofSignedInt, BitVec.ofInt_toInt]
+
+/-- `ofSignedInt 0` is the zero word. -/
+private theorem ofSignedInt_zero : UInt256.ofSignedInt 0 = ⟨0⟩ := rfl
+
+theorem conv_sar (shift val : U256) :
+    conv (BitVec.sshiftRight val shift.toNat)
+      = UInt256.sar (conv val) (conv shift) := by
+  rw [conv_eq_ofSignedInt, BitVec.toInt_sshiftRight, Int.shiftRight_eq_div_pow]
+  unfold UInt256.sar
+  simp only [conv_toSignedNat, conv_toNat, Nat.cast_pow, Nat.cast_ofNat]
+  by_cases h : shift.toNat ≥ 256
+  · rw [if_pos h]
+    have hlt : val.toInt < 2 ^ 255 := BitVec.toInt_lt
+    have hge : -2 ^ 255 ≤ val.toInt := BitVec.le_toInt val
+    have hpow : (2 : Int) ^ 255 < 2 ^ shift.toNat :=
+      pow_lt_pow_right₀ (by norm_num) (by omega)
+    by_cases hneg : val.toInt < 0
+    · rw [if_pos hneg]
+      congr 1
+      rw [Int.ediv_eq_neg_one_of_neg_of_le hneg (by omega)]
+    · rw [if_neg hneg]
+      rw [Int.ediv_eq_zero_of_lt (by omega) (by omega), ofSignedInt_zero]
+  · rw [if_neg h]
+
 end YulEvmCompiler

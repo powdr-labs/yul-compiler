@@ -1,5 +1,6 @@
 import YulEvmCompiler.Instr
 import YulEvmCompiler.Value
+import YulEvmCompiler.BytesLemmas
 import YulEvmCompiler.OpTable
 import YulEvmCompiler.Decode
 import YulEvmCompiler.StateRel

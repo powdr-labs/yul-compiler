@@ -195,6 +195,49 @@ theorem ASimE.toASimSLet {prog : List Asm} {yst yst' : EvmState}
     ⟨c, .word v :: (wimg V ++ σ), yst'⟩
   simpa using h pre c [] σ hp rfl
 
+/-- Zipping names with equally-many values gives the values' stack image. -/
+theorem wimg_zip : ∀ (xs : List Ident) (vs : List U256),
+    xs.length = vs.length → wimg (xs.zip vs) = words vs := by
+  intro xs
+  induction xs with
+  | nil => intro vs h; cases vs with | nil => rfl | cons => simp at h
+  | cons x xs ih =>
+    intro vs h
+    cases vs with
+    | nil => simp at h
+    | cons v vs =>
+      have hlen : xs.length = vs.length := by simpa using h
+      show wimg ((x, v) :: xs.zip vs) = words (v :: vs)
+      rw [wimg_cons, ih vs hlen]
+      rfl
+
+/-- Zipping names with equally-many values keeps the names as the layout. -/
+theorem names_zip : ∀ (xs : List Ident) (vs : List U256),
+    xs.length = vs.length → names (xs.zip vs) = xs := by
+  intro xs
+  induction xs with
+  | nil => intro vs _; rfl
+  | cons x xs ih =>
+    intro vs h
+    cases vs with
+    | nil => simp at h
+    | cons v vs =>
+      have hlen : xs.length = vs.length := by simpa using h
+      show names ((x, v) :: xs.zip vs) = x :: xs
+      rw [names_cons, ih vs hlen]
+
+/-- `let x₁, …, xₖ := e`: the produced values become the innermost
+variables, already in layout order. -/
+theorem ASimE.toASimSLetMany {prog : List Asm} {yst yst' : EvmState}
+    {V : VEnv yulD} {asm : List Asm} {xs : List Ident} {vs : List U256}
+    (hlen : xs.length = vs.length)
+    (h : ASimE prog yst V 0 asm vs yst') :
+    ASimS prog yst V asm yst' (xs.zip vs ++ V) := by
+  intro pre c σ hp
+  have hsteps := h pre c [] σ hp rfl
+  rw [wimg_append, wimg_zip xs vs hlen]
+  simpa using hsteps
+
 /-- A halting expression fragment in statement position. -/
 theorem ASimEHalt.toASimSHalt {prog : List Asm} {yst yst' : EvmState}
     {V : VEnv yulD} {asm : List Asm}
@@ -350,6 +393,24 @@ theorem names_set (V : VEnv yulD) (x : Ident) (v : U256) :
       show y :: names (YulSemantics.VEnv.set V x v) = y :: names V
       rw [ih]
 
+/-- `VEnv.setMany` keeps the layout (it is a fold of `set`). -/
+theorem names_setMany (V : VEnv yulD) (xs : List Ident) (vs : List U256) :
+    names (YulSemantics.VEnv.setMany V xs vs) = names V := by
+  have h : ∀ (l : List (Ident × U256)) (W : VEnv yulD),
+      names (l.foldl (fun acc p => YulSemantics.VEnv.set acc p.1 p.2) W)
+        = names W := by
+    intro l
+    induction l with
+    | nil => intro W; rfl
+    | cons p l ih => intro W; rw [List.foldl_cons, ih]; exact names_set W p.1 p.2
+  exact h (xs.zip vs) V
+
+/-- `VEnv.setMany` keeps the region length. -/
+theorem length_setMany (V : VEnv yulD) (xs : List Ident) (vs : List U256) :
+    (YulSemantics.VEnv.setMany V xs vs).length = V.length := by
+  have := congrArg List.length (names_setMany V xs vs)
+  simpa using this
+
 /-- `VEnv.set` updates the stack image at the compiled index. -/
 theorem wimg_set {V : VEnv yulD} {x : Ident} (v : U256) {idx : Nat}
     (hidx : (names V).findIdx? (fun y => y = x) = some idx) :
@@ -480,6 +541,111 @@ theorem asimS_assign {prog : List Asm} {yst yst' : EvmState} {V : VEnv yulD}
   rw [hstk]
   exact (ASteps.single hswap).trans ((ASteps.single hpop).trans
     (by rw [hfinal]; exact .refl _))
+
+/-- Executing a multi-assignment's store sequence: with `xs.length` values
+`vs` stacked on top of the region (first target's value on top), each
+`swap;pop` writes one into its slot, ending at `setMany V xs vs`. -/
+theorem assigns_exec {prog : List Asm} {yst : EvmState} :
+    ∀ (xs : List Ident) (vs : List U256) (V : VEnv yulD) (acode : List Asm),
+      xs.length = vs.length →
+      compileAssigns (names V) xs = some acode →
+      ∀ (pre c : List Asm) (σ : List AVal),
+        prog = pre ++ acode ++ c →
+        ASteps prog ⟨acode ++ c, words vs ++ wimg V ++ σ, yst⟩
+          ⟨c, wimg (YulSemantics.VEnv.setMany V xs vs) ++ σ, yst⟩ := by
+  intro xs
+  induction xs with
+  | nil =>
+    intro vs V acode hlen hac pre c σ hp
+    cases vs with
+    | cons v vs => simp at hlen
+    | nil =>
+      simp only [compileAssigns, Option.some.injEq] at hac
+      subst hac
+      show ASteps prog ⟨[] ++ c, words [] ++ wimg V ++ σ, yst⟩
+        ⟨c, wimg (YulSemantics.VEnv.setMany V [] []) ++ σ, yst⟩
+      simp only [words, List.map_nil, List.nil_append]
+      exact .refl _
+  | cons x xs ih =>
+    intro vs V acode hlen hac pre c σ hp
+    cases vs with
+    | nil => simp at hlen
+    | cons v vs =>
+      have hlen' : xs.length = vs.length := by simpa using hlen
+      simp only [compileAssigns, Option.bind_eq_bind] at hac
+      obtain ⟨idx, hidx, hac2⟩ := Option.bind_eq_some_iff.mp hac
+      by_cases h16 : idx + xs.length < 16
+      · rw [dif_pos h16] at hac2
+        obtain ⟨rest, hrest, hac3⟩ := Option.bind_eq_some_iff.mp hac2
+        simp only [Option.some.injEq] at hac3
+        subst hac3
+        -- locate `x`'s slot inside the region image
+        have hlt : idx < (wimg V).length := by
+          have := findIdx?_lt _ hidx; simpa using this
+        obtain ⟨w, hw⟩ : ∃ w, (wimg V)[idx]? = some w :=
+          ⟨(wimg V)[idx]'hlt, List.getElem?_eq_getElem _⟩
+        obtain ⟨hsplitV, hlenV⟩ := split_at_getElem hw
+        -- the store index reaches past the `vs` still stacked above
+        have hAlen : (words vs ++ (wimg V).take idx).length = idx + xs.length := by
+          simp only [List.length_append, hlenV, words, List.length_map]
+          omega
+        -- decompose the stack: `word v` on top, target slot `w` at depth idx+|vs|
+        have hstk : words (v :: vs) ++ wimg V ++ σ
+            = .word v :: ((words vs ++ (wimg V).take idx)
+                ++ w :: ((wimg V).drop (idx + 1) ++ σ)) := by
+          conv_lhs => rw [show words (v :: vs) = .word v :: words vs from rfl, hsplitV]
+          simp [List.append_assoc]
+        have hswap : AStep prog
+            ⟨.swap ⟨idx + xs.length, h16⟩ :: (.pop :: (rest ++ c)),
+              .word v :: ((words vs ++ (wimg V).take idx)
+                ++ w :: ((wimg V).drop (idx + 1) ++ σ)), yst⟩
+            ⟨.pop :: (rest ++ c),
+              w :: ((words vs ++ (wimg V).take idx)
+                ++ .word v :: ((wimg V).drop (idx + 1) ++ σ)), yst⟩ :=
+          .swap (by simp [hAlen])
+        have hpop : AStep prog
+            ⟨.pop :: (rest ++ c),
+              w :: ((words vs ++ (wimg V).take idx)
+                ++ .word v :: ((wimg V).drop (idx + 1) ++ σ)), yst⟩
+            ⟨rest ++ c,
+              (words vs ++ (wimg V).take idx)
+                ++ .word v :: ((wimg V).drop (idx + 1) ++ σ), yst⟩ := .pop
+        -- the stack after the pop is exactly `words vs ++ wimg (set V x v) ++ σ`
+        have hset : wimg (YulSemantics.VEnv.set V x v)
+            = (wimg V).take idx ++ .word v :: (wimg V).drop (idx + 1) := by
+          rw [wimg_set v hidx]
+          conv_lhs => rw [hsplitV]
+          rw [set_at_append' hlenV]
+        have hmid : (words vs ++ (wimg V).take idx)
+              ++ .word v :: ((wimg V).drop (idx + 1) ++ σ)
+            = words vs ++ wimg (YulSemantics.VEnv.set V x v) ++ σ := by
+          rw [hset]; simp [List.append_assoc]
+        have hnames := names_set V x v
+        have hih := ih vs (YulSemantics.VEnv.set V x v) rest hlen'
+          (by rw [hnames]; exact hrest)
+          (pre ++ [.swap ⟨idx + xs.length, h16⟩, .pop]) c σ (by rw [hp]; simp)
+        rw [hstk]
+        refine .head hswap (.head hpop ?_)
+        rw [hmid, show YulSemantics.VEnv.setMany V (x :: xs) (v :: vs)
+          = YulSemantics.VEnv.setMany (YulSemantics.VEnv.set V x v) xs vs from rfl]
+        exact hih
+      · rw [dif_neg h16] at hac2; exact absurd hac2 (by simp)
+
+/-- `x₁, …, xₖ := e`: evaluate `e` (leaving its `k` values on top), then
+store each into its variable and pop. -/
+theorem asimS_assigns {prog : List Asm} {yst yst' : EvmState} {V : VEnv yulD}
+    {xs : List Ident} {vs : List U256} {eCode acode : List Asm}
+    (hlen : xs.length = vs.length)
+    (hac : compileAssigns (names V) xs = some acode)
+    (he : ASimE prog yst V 0 eCode vs yst') :
+    ASimS prog yst V (eCode ++ acode) yst' (YulSemantics.VEnv.setMany V xs vs) := by
+  intro pre c σ hp
+  have h1 := he pre (acode ++ c) [] σ (by rw [hp]; simp [List.append_assoc]) rfl
+  have h2 := assigns_exec (prog := prog) (yst := yst') xs vs V acode hlen hac
+    (pre ++ eCode) c σ (by rw [hp]; simp [List.append_assoc])
+  rw [List.append_assoc]
+  refine ASteps.trans ?_ h2
+  simpa [List.append_assoc] using h1
 
 /-! ### Statement leaves: declarations, pops, labels, non-local exits -/
 
@@ -711,13 +877,339 @@ theorem asimS_ifCondHalt {prog : List Asm} {yst yst1 : EvmState}
         ++ [Asm.label lend]) from by simp]
   exact (hc.extend _).toASimSHalt
 
+/-! ### `switch`: the case-comparison prologue -/
+
+/-- `DUP1` reads the innermost variable (the `switch` scrutinee, modelled as a
+let-bound temp). -/
+theorem asimE_dup0 {prog : List Asm} {yst : EvmState} {V : VEnv yulD}
+    (x : Ident) (v : U256) :
+    ASimE prog yst ((x, v) :: V) 0 [.dup 0] [v] yst := by
+  intro pre c τ σ hp hτ
+  obtain rfl := List.eq_nil_of_length_eq_zero hτ
+  have hstep : AStep prog
+      ⟨.dup (0 : Fin 16) :: c, .word v :: (wimg V ++ σ), yst⟩
+      ⟨c, .word v :: (.word v :: (wimg V ++ σ)), yst⟩ :=
+    AStep.dup (n := (0 : Fin 16)) (v := .word v) (τ := []) (ρ := wimg V ++ σ) (by simp)
+  exact ASteps.single hstep
+
+/-- The `switch` case comparison `DUP1 ; PUSH w ; EQ ; ISZERO`, reading the
+scrutinee `cv` (the innermost temp): it computes the *skip* condition
+`b2w (b2w (w = cv) = 0)` (nonzero ⇔ no match), leaving `cv` beneath. -/
+theorem asimE_switchCmp {prog : List Asm} {yst : EvmState} {V : VEnv yulD}
+    (x : Ident) (w cv : U256) :
+    ASimE prog yst ((x, cv) :: V) 0 [.dup 0, .push w, .op .eq, .op .iszero]
+      [YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (w = cv) = 0)] yst := by
+  have h2 : ASimE prog yst ((x, cv) :: V) 0 [.dup 0, .push w] [w, cv] yst :=
+    ASimE.compArgs (k := 1) rfl (asimE_dup0 x cv) (asimE_push w)
+  have heq : stepOp .eq [w, cv] yst
+      = some (.ok [YulSemantics.EVM.b2w (w = cv)] yst) := rfl
+  have h3 := asimE_op h2 heq
+  have hiz : stepOp .iszero [YulSemantics.EVM.b2w (w = cv)] yst
+      = some (.ok [YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (w = cv) = 0)] yst) := rfl
+  have h4 := asimE_op h3 hiz
+  simpa using h4
+
+/-- After a fragment `A` (bringing `V` to `V'`), `jump lend` reaches the
+fragment's own trailing `label lend`, skipping the intervening `B`. -/
+theorem asimS_jumpToEnd {prog : List Asm} {yst yst' : EvmState}
+    {V V' : VEnv yulD} {A B : List Asm} {lend : Label}
+    (hnodup : (labelDefs prog).Nodup)
+    (hA : ASimS prog yst V A yst' V') :
+    ASimS prog yst V (A ++ .jump lend :: B ++ [.label lend]) yst' V' := by
+  intro pre c σ hp
+  have hsplit : prog = (pre ++ A ++ .jump lend :: B) ++ .label lend :: c := by
+    rw [hp]; simp
+  have hfind : findLabel lend prog = some c := by
+    rw [hsplit]; exact findLabel_boundary (by rw [← hsplit]; exact hnodup)
+  have hA' := hA pre (.jump lend :: (B ++ [.label lend] ++ c)) σ (by rw [hp]; simp)
+  have hstep : AStep prog
+      ⟨.jump lend :: (B ++ [.label lend] ++ c), wimg V' ++ σ, yst'⟩
+      ⟨c, wimg V' ++ σ, yst'⟩ := .jump hfind
+  simpa using hA'.trans (.single hstep)
+
+/-- The case comparison, when the scrutinee matches: it falls through the
+`jumpi`, leaving the scrutinee for the following `pop`. -/
+theorem asimS_cmpFall {prog : List Asm} {yst : EvmState} {V : VEnv yulD}
+    (x : Ident) (w cv : U256) (lnext : Label) (hmatch : cv = w) :
+    ASimS prog yst ((x, cv) :: V)
+      [.dup 0, .push w, .op .eq, .op .iszero, .jumpi lnext] yst ((x, cv) :: V) := by
+  have hz : YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (w = cv) = 0) = 0 := by
+    subst hmatch; simp [YulSemantics.EVM.b2w]
+  intro pre c σ hp
+  have hc := asimE_switchCmp (prog := prog) (yst := yst) (V := V) x w cv
+    pre (.jumpi lnext :: c) [] σ (by rw [hp]; simp) rfl
+  have hjmp : AStep prog
+      ⟨.jumpi lnext :: c,
+        .word (YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (w = cv) = 0))
+          :: (wimg ((x, cv) :: V) ++ σ), yst⟩
+      ⟨c, wimg ((x, cv) :: V) ++ σ, yst⟩ := .jumpiFall hz
+  have hcode : ([.dup 0, .push w, .op .eq, .op .iszero, .jumpi lnext] : List Asm) ++ c
+      = [.dup 0, .push w, .op .eq, .op .iszero] ++ (.jumpi lnext :: c) := by simp
+  rw [hcode]
+  refine (?_ : ASteps prog _ _).trans (.single hjmp)
+  simpa using hc
+
+/-- Normal-outcome dispatch: the compiled case chain (plus its default tail)
+runs `compileBlock (selectSwitch cv cases dflt)` and reaches `lend`, with the
+scrutinee consumed. By induction on `cases`. -/
+theorem asimS_switchTailNormal {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
+    {Φ : FMap} {F : Option FunCtx} {L : Option LoopCtx}
+    {yst1 yst2 : EvmState} {V V' : VEnv yulD} {cv : U256} (dummy : Ident)
+    {lend : Label} {defAsm : List Asm} {n2 n3 : Nat}
+    {dflt : Option (Block Op)}
+    (hdef : compileBlock Φ (names V) F L n2 (dflt.getD []) = some (defAsm, n3)) :
+    ∀ (cases : List (YulSemantics.Literal × Block Op)) {chainAsm : List Asm} {n1 : Nat},
+      compileSwitchCases Φ (names V) F L lend n1 cases = some (chainAsm, n2) →
+      (∀ m bAsm m',
+        compileBlock Φ (names V) F L m (YulSemantics.selectSwitch yulD cv cases dflt) = some (bAsm, m') →
+        ASimS prog yst1 V bAsm yst2 V') →
+      ASimS prog yst1 ((dummy, cv) :: V)
+        (chainAsm ++ .pop :: defAsm ++ [.label lend]) yst2 V' := by
+  intro cases
+  induction cases with
+  | nil =>
+    intro chainAsm n1 hchain hblk
+    simp only [compileSwitchCases, Option.some.injEq, Prod.mk.injEq] at hchain
+    obtain ⟨rfl, rfl⟩ := hchain
+    have hb : ASimS prog yst1 V defAsm yst2 V' := hblk _ defAsm n3 hdef
+    have hpop : ASimS prog yst1 ((dummy, cv) :: V) [.pop] yst1 V := by
+      simpa using asimS_pops (prog := prog) (yst := yst1) [(dummy, cv)] V
+    simpa using (hpop.comp hb).comp (asimS_label lend)
+  | cons vb rest ih =>
+    intro chainAsm n1 hchain hblk
+    obtain ⟨v, b⟩ := vb
+    simp only [compileSwitchCases, Option.bind_eq_bind] at hchain
+    obtain ⟨⟨bAsm, m1⟩, hb, h2⟩ := Option.bind_eq_some_iff.mp hchain
+    obtain ⟨⟨restAsm, m2⟩, hrest, h3⟩ := Option.bind_eq_some_iff.mp h2
+    simp only [Option.some.injEq, Prod.mk.injEq] at h3
+    obtain ⟨rfl, rfl⟩ := h3
+    by_cases hmatch : cv = litValue v
+    · -- matched case: run its body, jump to the end
+      have hsel : YulSemantics.selectSwitch yulD cv ((v, b) :: rest) dflt = b := by
+        simp [YulSemantics.selectSwitch, hmatch]
+      have hbody : ASimS prog yst1 V bAsm yst2 V' :=
+        hblk (n1 + 1) bAsm m1 (by rw [hsel]; exact hb)
+      have hpop : ASimS prog yst1 ((dummy, cv) :: V) [.pop] yst1 V := by
+        simpa using asimS_pops (prog := prog) (yst := yst1) [(dummy, cv)] V
+      have hA : ASimS prog yst1 ((dummy, cv) :: V)
+          ([.dup 0, .push (litValue v), .op .eq, .op .iszero, .jumpi n1] ++ [.pop] ++ bAsm)
+          yst2 V' :=
+        ((asimS_cmpFall dummy (litValue v) cv n1 hmatch).comp hpop).comp hbody
+      have := asimS_jumpToEnd (lend := lend) (B := .label n1 :: restAsm ++ .pop :: defAsm)
+        hnodup hA
+      simpa using this
+    · -- unmatched case: skip to the next case, recurse
+      have hsel : YulSemantics.selectSwitch yulD cv ((v, b) :: rest) dflt = YulSemantics.selectSwitch yulD cv rest dflt := by
+        simp [YulSemantics.selectSwitch, hmatch]
+      have hIH : ASimS prog yst1 ((dummy, cv) :: V)
+          (restAsm ++ .pop :: defAsm ++ [.label lend]) yst2 V' :=
+        ih hrest (fun m bAsm' m' hc' => hblk m bAsm' m' (by rw [hsel]; exact hc'))
+      intro pre c σ hp
+      -- find the next-case label
+      have hsplit : prog = (pre ++ [.dup 0, .push (litValue v), .op .eq, .op .iszero,
+          .jumpi n1, .pop] ++ bAsm ++ [.jump lend]) ++ .label n1 ::
+          (restAsm ++ .pop :: defAsm ++ [.label lend] ++ c) := by rw [hp]; simp
+      have hfind : findLabel n1 prog
+          = some (restAsm ++ .pop :: defAsm ++ [.label lend] ++ c) := by
+        rw [hsplit]; exact findLabel_boundary (by rw [← hsplit]; exact hnodup)
+      have hnz : YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (litValue v = cv) = 0) ≠ 0 := by
+        have h1 : litValue v ≠ cv := fun h => hmatch h.symm
+        simp [YulSemantics.EVM.b2w, h1]
+      -- prologue produces the (nonzero) skip condition; jumpi is taken
+      have hc := asimE_switchCmp (prog := prog) (yst := yst1) (V := V) dummy (litValue v) cv
+        pre (.jumpi n1 :: (.pop :: bAsm ++ [.jump lend, .label n1] ++ restAsm
+          ++ .pop :: defAsm ++ [.label lend]) ++ c) [] σ (by rw [hp]; simp) rfl
+      have hjmp : AStep prog
+          ⟨.jumpi n1 :: (.pop :: bAsm ++ [.jump lend, .label n1] ++ restAsm
+            ++ .pop :: defAsm ++ [.label lend]) ++ c,
+            .word (YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (litValue v = cv) = 0))
+              :: (wimg ((dummy, cv) :: V) ++ σ), yst1⟩
+          ⟨restAsm ++ .pop :: defAsm ++ [.label lend] ++ c, wimg ((dummy, cv) :: V) ++ σ, yst1⟩ :=
+        .jumpiTaken hnz hfind
+      have hstep := hIH (pre ++ [.dup 0, .push (litValue v), .op .eq, .op .iszero, .jumpi n1, .pop]
+        ++ bAsm ++ [.jump lend, .label n1]) c σ (by rw [hp]; simp)
+      have hcode : (([.dup 0, .push (litValue v), .op .eq, .op .iszero, .jumpi n1, .pop] ++ bAsm
+            ++ [.jump lend, .label n1] ++ restAsm) ++ .pop :: defAsm ++ [.label lend]) ++ c
+          = [.dup 0, .push (litValue v), .op .eq, .op .iszero]
+            ++ (.jumpi n1 :: (.pop :: bAsm ++ [.jump lend, .label n1] ++ restAsm
+              ++ .pop :: defAsm ++ [.label lend]) ++ c) := by simp
+      rw [hcode]
+      refine (?_ : ASteps prog _ _).trans (ASteps.head hjmp ?_)
+      · exact hc
+      · simpa using hstep
+
+/-- Halting-outcome dispatch: the selected block halts; the trailing code is
+never reached. -/
+theorem asimS_switchTailHalt {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
+    {Φ : FMap} {F : Option FunCtx} {L : Option LoopCtx}
+    {yst1 yst2 : EvmState} {V : VEnv yulD} {cv : U256} (dummy : Ident)
+    {lend : Label} {defAsm : List Asm} {n2 n3 : Nat}
+    {dflt : Option (Block Op)}
+    (hdef : compileBlock Φ (names V) F L n2 (dflt.getD []) = some (defAsm, n3)) :
+    ∀ (cases : List (YulSemantics.Literal × Block Op)) {chainAsm : List Asm} {n1 : Nat},
+      compileSwitchCases Φ (names V) F L lend n1 cases = some (chainAsm, n2) →
+      (∀ m bAsm m',
+        compileBlock Φ (names V) F L m (YulSemantics.selectSwitch yulD cv cases dflt) = some (bAsm, m') →
+        ASimSHalt prog yst1 V bAsm yst2) →
+      ASimSHalt prog yst1 ((dummy, cv) :: V)
+        (chainAsm ++ .pop :: defAsm ++ [.label lend]) yst2 := by
+  intro cases
+  induction cases with
+  | nil =>
+    intro chainAsm n1 hchain hblk
+    simp only [compileSwitchCases, Option.some.injEq, Prod.mk.injEq] at hchain
+    obtain ⟨rfl, rfl⟩ := hchain
+    have hb : ASimSHalt prog yst1 V defAsm yst2 := hblk _ defAsm n3 hdef
+    have hpop : ASimS prog yst1 ((dummy, cv) :: V) [.pop] yst1 V := by
+      simpa using asimS_pops (prog := prog) (yst := yst1) [(dummy, cv)] V
+    simpa using (hpop.compHalt hb).extend [.label lend]
+  | cons vb rest ih =>
+    intro chainAsm n1 hchain hblk
+    obtain ⟨v, b⟩ := vb
+    simp only [compileSwitchCases, Option.bind_eq_bind] at hchain
+    obtain ⟨⟨bAsm, m1⟩, hb, h2⟩ := Option.bind_eq_some_iff.mp hchain
+    obtain ⟨⟨restAsm, m2⟩, hrest, h3⟩ := Option.bind_eq_some_iff.mp h2
+    simp only [Option.some.injEq, Prod.mk.injEq] at h3
+    obtain ⟨rfl, rfl⟩ := h3
+    by_cases hmatch : cv = litValue v
+    · have hsel : YulSemantics.selectSwitch yulD cv ((v, b) :: rest) dflt = b := by
+        simp [YulSemantics.selectSwitch, hmatch]
+      have hbody : ASimSHalt prog yst1 V bAsm yst2 := hblk (n1 + 1) bAsm m1 (by rw [hsel]; exact hb)
+      have hpop : ASimS prog yst1 ((dummy, cv) :: V) [.pop] yst1 V := by
+        simpa using asimS_pops (prog := prog) (yst := yst1) [(dummy, cv)] V
+      have hA : ASimSHalt prog yst1 ((dummy, cv) :: V)
+          ([.dup 0, .push (litValue v), .op .eq, .op .iszero, .jumpi n1] ++ [.pop] ++ bAsm) yst2 :=
+        ((asimS_cmpFall dummy (litValue v) cv n1 hmatch).comp hpop).compHalt hbody
+      have heq : ([.dup 0, .push (litValue v), .op .eq, .op .iszero, .jumpi n1, .pop] ++ bAsm
+            ++ [.jump lend, .label n1] ++ restAsm) ++ .pop :: defAsm ++ [.label lend]
+          = ([.dup 0, .push (litValue v), .op .eq, .op .iszero, .jumpi n1] ++ [.pop] ++ bAsm)
+            ++ ([.jump lend, .label n1] ++ restAsm ++ .pop :: defAsm ++ [.label lend]) := by simp
+      rw [heq]; exact hA.extend _
+    · have hsel : YulSemantics.selectSwitch yulD cv ((v, b) :: rest) dflt
+          = YulSemantics.selectSwitch yulD cv rest dflt := by simp [YulSemantics.selectSwitch, hmatch]
+      have hIH : ASimSHalt prog yst1 ((dummy, cv) :: V)
+          (restAsm ++ .pop :: defAsm ++ [.label lend]) yst2 :=
+        ih hrest (fun m bAsm' m' hc' => hblk m bAsm' m' (by rw [hsel]; exact hc'))
+      intro pre c σ hp
+      have hsplit : prog = (pre ++ [.dup 0, .push (litValue v), .op .eq, .op .iszero,
+          .jumpi n1, .pop] ++ bAsm ++ [.jump lend]) ++ .label n1 ::
+          (restAsm ++ .pop :: defAsm ++ [.label lend] ++ c) := by rw [hp]; simp
+      have hfind : findLabel n1 prog
+          = some (restAsm ++ .pop :: defAsm ++ [.label lend] ++ c) := by
+        rw [hsplit]; exact findLabel_boundary (by rw [← hsplit]; exact hnodup)
+      have hnz : YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (litValue v = cv) = 0) ≠ 0 := by
+        have h1 : litValue v ≠ cv := fun h => hmatch h.symm
+        simp [YulSemantics.EVM.b2w, h1]
+      have hc := asimE_switchCmp (prog := prog) (yst := yst1) (V := V) dummy (litValue v) cv
+        pre (.jumpi n1 :: (.pop :: bAsm ++ [.jump lend, .label n1] ++ restAsm
+          ++ .pop :: defAsm ++ [.label lend]) ++ c) [] σ (by rw [hp]; simp) rfl
+      have hjmp : AStep prog
+          ⟨.jumpi n1 :: (.pop :: bAsm ++ [.jump lend, .label n1] ++ restAsm
+            ++ .pop :: defAsm ++ [.label lend]) ++ c,
+            .word (YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (litValue v = cv) = 0))
+              :: (wimg ((dummy, cv) :: V) ++ σ), yst1⟩
+          ⟨restAsm ++ .pop :: defAsm ++ [.label lend] ++ c, wimg ((dummy, cv) :: V) ++ σ, yst1⟩ :=
+        .jumpiTaken hnz hfind
+      obtain ⟨conf, hsteps, hhalt⟩ := hIH (pre ++ [.dup 0, .push (litValue v), .op .eq, .op .iszero,
+        .jumpi n1, .pop] ++ bAsm ++ [.jump lend, .label n1]) c σ (by rw [hp]; simp)
+      refine ⟨conf, ?_, hhalt⟩
+      have hcode : (([.dup 0, .push (litValue v), .op .eq, .op .iszero, .jumpi n1, .pop] ++ bAsm
+            ++ [.jump lend, .label n1] ++ restAsm) ++ .pop :: defAsm ++ [.label lend]) ++ c
+          = [.dup 0, .push (litValue v), .op .eq, .op .iszero]
+            ++ (.jumpi n1 :: (.pop :: bAsm ++ [.jump lend, .label n1] ++ restAsm
+              ++ .pop :: defAsm ++ [.label lend]) ++ c) := by simp
+      rw [hcode]
+      exact hc.trans (ASteps.head hjmp (by simpa using hsteps))
+
+/-- Non-local-exit dispatch (`break`/`continue`/`leave`): the selected block
+exits to the context label `l`. -/
+theorem asimS_switchTailNL {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
+    {Φ : FMap} {F : Option FunCtx} {L : Option LoopCtx}
+    {yst1 yst2 : EvmState} {V V' : VEnv yulD} {cv : U256} (dummy : Ident)
+    {lend l : Label} {depth : Nat} {defAsm : List Asm} {n2 n3 : Nat}
+    {dflt : Option (Block Op)}
+    (hdef : compileBlock Φ (names V) F L n2 (dflt.getD []) = some (defAsm, n3)) :
+    ∀ (cases : List (YulSemantics.Literal × Block Op)) {chainAsm : List Asm} {n1 : Nat},
+      compileSwitchCases Φ (names V) F L lend n1 cases = some (chainAsm, n2) →
+      (∀ m bAsm m',
+        compileBlock Φ (names V) F L m (YulSemantics.selectSwitch yulD cv cases dflt) = some (bAsm, m') →
+        ASimNL prog yst1 V bAsm yst2 V' l depth) →
+      ASimNL prog yst1 ((dummy, cv) :: V)
+        (chainAsm ++ .pop :: defAsm ++ [.label lend]) yst2 V' l depth := by
+  intro cases
+  induction cases with
+  | nil =>
+    intro chainAsm n1 hchain hblk
+    simp only [compileSwitchCases, Option.some.injEq, Prod.mk.injEq] at hchain
+    obtain ⟨rfl, rfl⟩ := hchain
+    have hb : ASimNL prog yst1 V defAsm yst2 V' l depth := hblk _ defAsm n3 hdef
+    have hpop : ASimS prog yst1 ((dummy, cv) :: V) [.pop] yst1 V := by
+      simpa using asimS_pops (prog := prog) (yst := yst1) [(dummy, cv)] V
+    simpa using (hpop.compNL hb).extend [.label lend]
+  | cons vb rest ih =>
+    intro chainAsm n1 hchain hblk
+    obtain ⟨v, b⟩ := vb
+    simp only [compileSwitchCases, Option.bind_eq_bind] at hchain
+    obtain ⟨⟨bAsm, m1⟩, hb, h2⟩ := Option.bind_eq_some_iff.mp hchain
+    obtain ⟨⟨restAsm, m2⟩, hrest, h3⟩ := Option.bind_eq_some_iff.mp h2
+    simp only [Option.some.injEq, Prod.mk.injEq] at h3
+    obtain ⟨rfl, rfl⟩ := h3
+    by_cases hmatch : cv = litValue v
+    · have hsel : YulSemantics.selectSwitch yulD cv ((v, b) :: rest) dflt = b := by
+        simp [YulSemantics.selectSwitch, hmatch]
+      have hbody : ASimNL prog yst1 V bAsm yst2 V' l depth :=
+        hblk (n1 + 1) bAsm m1 (by rw [hsel]; exact hb)
+      have hpop : ASimS prog yst1 ((dummy, cv) :: V) [.pop] yst1 V := by
+        simpa using asimS_pops (prog := prog) (yst := yst1) [(dummy, cv)] V
+      have hA : ASimNL prog yst1 ((dummy, cv) :: V)
+          ([.dup 0, .push (litValue v), .op .eq, .op .iszero, .jumpi n1] ++ [.pop] ++ bAsm)
+          yst2 V' l depth :=
+        ((asimS_cmpFall dummy (litValue v) cv n1 hmatch).comp hpop).compNL hbody
+      have heq : ([.dup 0, .push (litValue v), .op .eq, .op .iszero, .jumpi n1, .pop] ++ bAsm
+            ++ [.jump lend, .label n1] ++ restAsm) ++ .pop :: defAsm ++ [.label lend]
+          = ([.dup 0, .push (litValue v), .op .eq, .op .iszero, .jumpi n1] ++ [.pop] ++ bAsm)
+            ++ ([.jump lend, .label n1] ++ restAsm ++ .pop :: defAsm ++ [.label lend]) := by simp
+      rw [heq]; exact hA.extend _
+    · have hsel : YulSemantics.selectSwitch yulD cv ((v, b) :: rest) dflt
+          = YulSemantics.selectSwitch yulD cv rest dflt := by simp [YulSemantics.selectSwitch, hmatch]
+      have hIH : ASimNL prog yst1 ((dummy, cv) :: V)
+          (restAsm ++ .pop :: defAsm ++ [.label lend]) yst2 V' l depth :=
+        ih hrest (fun m bAsm' m' hc' => hblk m bAsm' m' (by rw [hsel]; exact hc'))
+      intro pre c cL σ hp hfindL
+      have hsplit : prog = (pre ++ [.dup 0, .push (litValue v), .op .eq, .op .iszero,
+          .jumpi n1, .pop] ++ bAsm ++ [.jump lend]) ++ .label n1 ::
+          (restAsm ++ .pop :: defAsm ++ [.label lend] ++ c) := by rw [hp]; simp
+      have hfind : findLabel n1 prog
+          = some (restAsm ++ .pop :: defAsm ++ [.label lend] ++ c) := by
+        rw [hsplit]; exact findLabel_boundary (by rw [← hsplit]; exact hnodup)
+      have hnz : YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (litValue v = cv) = 0) ≠ 0 := by
+        have h1 : litValue v ≠ cv := fun h => hmatch h.symm
+        simp [YulSemantics.EVM.b2w, h1]
+      have hc := asimE_switchCmp (prog := prog) (yst := yst1) (V := V) dummy (litValue v) cv
+        pre (.jumpi n1 :: (.pop :: bAsm ++ [.jump lend, .label n1] ++ restAsm
+          ++ .pop :: defAsm ++ [.label lend]) ++ c) [] σ (by rw [hp]; simp) rfl
+      have hjmp : AStep prog
+          ⟨.jumpi n1 :: (.pop :: bAsm ++ [.jump lend, .label n1] ++ restAsm
+            ++ .pop :: defAsm ++ [.label lend]) ++ c,
+            .word (YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (litValue v = cv) = 0))
+              :: (wimg ((dummy, cv) :: V) ++ σ), yst1⟩
+          ⟨restAsm ++ .pop :: defAsm ++ [.label lend] ++ c, wimg ((dummy, cv) :: V) ++ σ, yst1⟩ :=
+        .jumpiTaken hnz hfind
+      have hstep := hIH (pre ++ [.dup 0, .push (litValue v), .op .eq, .op .iszero, .jumpi n1, .pop]
+        ++ bAsm ++ [.jump lend, .label n1]) c cL σ (by rw [hp]; simp) hfindL
+      have hcode : (([.dup 0, .push (litValue v), .op .eq, .op .iszero, .jumpi n1, .pop] ++ bAsm
+            ++ [.jump lend, .label n1] ++ restAsm) ++ .pop :: defAsm ++ [.label lend]) ++ c
+          = [.dup 0, .push (litValue v), .op .eq, .op .iszero]
+            ++ (.jumpi n1 :: (.pop :: bAsm ++ [.jump lend, .label n1] ++ restAsm
+              ++ .pop :: defAsm ++ [.label lend]) ++ c) := by simp
+      rw [hcode]
+      exact hc.trans (ASteps.head hjmp (by simpa using hstep))
+
 /-! ### Functions: the compile-time/semantic environment agreement -/
 
 /-- The epilogue instructions of a compiled function. -/
 def epilogue (nps nrs : Nat) : List Asm :=
-  List.replicate nps .pop
-    ++ (if nrs = 1 then [.swap 0] else [])
-    ++ [.dynJump]
+  List.replicate nps .pop ++ retRot nrs ++ [.dynJump]
 
 /-- What the compiler emitted for one function, somewhere in the program:
 entry label, compiled body (against the scopes visible at the definition
@@ -726,7 +1218,7 @@ def FunOK (prog : List Asm) (decl : YulSemantics.FDecl yulD)
     (info : FunInfo) (Φv : FMap) : Prop :=
   info.arity = decl.params.length
     ∧ info.rets = decl.rets.length
-    ∧ decl.rets.length ≤ 1
+    ∧ decl.rets.length ≤ 16
     ∧ (decl.params ++ decl.rets).Nodup
     ∧ ∃ (lexit n₀ n₁ : Nat) (bodyAsm : List Asm),
         compileBlock Φv (decl.params ++ decl.rets)
@@ -887,14 +1379,51 @@ theorem wimg_rets {Vend : VEnv yulD} {ps rs : List Ident}
     get_self (by rw [hnB]; exact (List.nodup_append.mp hnodup).2.1)]
   simp [wimg, words]
 
+/-- `retRot k` (`SWAP1…SWAPk`) rotates the single element `Y` sitting just
+below the `k`-element block `as` to the top, preserving the block's order. -/
+theorem retRot_exec {prog : List Asm} {yst : EvmState} :
+    ∀ (k : Nat) (as : List AVal) (Y : AVal) (ρ : List AVal) (pre c : List Asm),
+      as.length = k → k ≤ 16 →
+      prog = pre ++ retRot k ++ c →
+      ASteps prog ⟨retRot k ++ c, as ++ Y :: ρ, yst⟩ ⟨c, Y :: (as ++ ρ), yst⟩ := by
+  intro k
+  induction k with
+  | zero =>
+    intro as Y ρ pre c hlen hk hp
+    obtain rfl : as = [] := List.length_eq_zero_iff.mp hlen
+    show ASteps prog ⟨retRot 0 ++ c, [] ++ Y :: ρ, yst⟩ ⟨c, Y :: ([] ++ ρ), yst⟩
+    simp only [retRot, List.nil_append]
+    exact .refl _
+  | succ k ih =>
+    intro as Y ρ pre c hlen hk hp
+    have hne : as ≠ [] := by rintro rfl; simp at hlen
+    obtain ⟨front, alast, rfl⟩ : ∃ front alast, as = front ++ [alast] :=
+      ⟨as.dropLast, as.getLast hne, (List.dropLast_append_getLast hne).symm⟩
+    have hfront : front.length = k := by
+      have := hlen; simp at this; omega
+    have hk16 : k % 16 = k := Nat.mod_eq_of_lt (by omega)
+    have hrr : retRot (k + 1)
+        = retRot k ++ [Asm.swap ⟨k % 16, Nat.mod_lt k (by omega)⟩] := rfl
+    rw [hrr, List.append_assoc,
+      show (front ++ [alast]) ++ Y :: ρ = front ++ alast :: (Y :: ρ) from by simp,
+      show ((front ++ [alast]) ++ ρ) = front ++ alast :: ρ from by simp]
+    have h1 := ih front alast (Y :: ρ) pre
+      (Asm.swap ⟨k % 16, Nat.mod_lt k (by omega)⟩ :: c) hfront (by omega)
+      (by rw [hp, hrr]; simp [List.append_assoc])
+    have hswap : AStep prog
+        ⟨Asm.swap ⟨k % 16, Nat.mod_lt k (by omega)⟩ :: c,
+          alast :: (front ++ Y :: ρ), yst⟩
+        ⟨c, Y :: (front ++ alast :: ρ), yst⟩ := .swap (by rw [hfront]; exact hk16.symm)
+    exact h1.trans (.single hswap)
+
 /-- Executing the epilogue from just after the exit label: pop the
-parameters, bring the return address to the top, jump back to the call
+parameters, rotate the return address to the top, jump back to the call
 site with the return values (read off the stack region — which agrees with
 the semantics' name-based reads thanks to `Nodup`). -/
 theorem asim_epilogue {prog : List Asm} {yst : EvmState}
     {Vend : VEnv yulD} {ps rs : List Ident} {lret : Label} {cRet : List Asm}
     (hnames : names Vend = ps ++ rs) (hnodup : (ps ++ rs).Nodup)
-    (hrs1 : rs.length ≤ 1)
+    (hrs1 : rs.length ≤ 16)
     (hfind : findLabel lret prog = some cRet) :
     ∀ (pre c : List Asm) (σc : List AVal),
       prog = pre ++ epilogue ps.length rs.length ++ c →
@@ -904,58 +1433,37 @@ theorem asim_epilogue {prog : List Asm} {yst : EvmState}
             (YulSemantics.VEnv.get Vend r).getD yulD.zero)) ++ σc, yst⟩ := by
   intro pre c σc hp
   have hlenV : Vend.length = ps.length + rs.length := by
-    have := congrArg List.length hnames
-    simpa using this
-  -- pop the parameters
+    have := congrArg List.length hnames; simpa using this
   have hsplitV : Vend = Vend.take ps.length ++ Vend.drop ps.length :=
     (List.take_append_drop _ _).symm
   have htake : (Vend.take ps.length).length = ps.length := by
-    simp
-    omega
+    rw [List.length_take]; omega
+  -- pop the parameters
   have hpops : ASteps prog
-      ⟨List.replicate ps.length .pop
-          ++ ((if rs.length = 1 then [.swap 0] else [])
-            ++ [.dynJump] ++ c),
+      ⟨List.replicate ps.length .pop ++ (retRot rs.length ++ [.dynJump] ++ c),
         wimg Vend ++ (.code lret :: σc), yst⟩
-      ⟨(if rs.length = 1 then [.swap 0] else []) ++ [.dynJump] ++ c,
+      ⟨retRot rs.length ++ [.dynJump] ++ c,
         wimg (Vend.drop ps.length) ++ (.code lret :: σc), yst⟩ := by
     have h := asimS_pops (prog := prog) (yst := yst)
       (Vend.take ps.length) (Vend.drop ps.length)
     rw [htake] at h
-    have := h pre ((if rs.length = 1 then [.swap 0] else [])
-        ++ [.dynJump] ++ c) (.code lret :: σc)
-      (by rw [hp]; simp [epilogue])
+    have := h pre (retRot rs.length ++ [.dynJump] ++ c) (.code lret :: σc)
+      (by rw [hp]; simp [epilogue, List.append_assoc])
     rw [← hsplitV] at this
     exact this
-  have hcode : epilogue ps.length rs.length ++ c
-      = List.replicate ps.length .pop
-        ++ ((if rs.length = 1 then [.swap 0] else []) ++ [.dynJump] ++ c) := by
-    simp [epilogue]
-  rw [hcode]
   rw [wimg_rets hnames hnodup] at hpops
-  -- return-value shuffling depends on the arity (0 or 1)
-  rcases rs with _ | ⟨r, rs'⟩
-  · -- no return values: straight to the dynJump
-    refine hpops.trans ?_
-    show ASteps prog ⟨.dynJump :: c, .code lret :: σc, yst⟩ _
-    exact .single (.dynJump hfind)
-  · rcases rs' with _ | ⟨r2, rs''⟩
-    · -- one return value: swap it past the return address
-      refine hpops.trans ?_
-      show ASteps prog
-        ⟨.swap 0 :: (.dynJump :: c),
-          .word ((YulSemantics.VEnv.get Vend r).getD yulD.zero)
-            :: (.code lret :: σc), yst⟩ _
-      have hswap : AStep prog
-          ⟨.swap 0 :: (.dynJump :: c),
-            .word ((YulSemantics.VEnv.get Vend r).getD yulD.zero)
-              :: ([] ++ .code lret :: σc), yst⟩
-          ⟨.dynJump :: c,
-            .code lret :: ([] ++ .word ((YulSemantics.VEnv.get Vend r).getD
-              yulD.zero) :: σc), yst⟩ := .swap rfl
-      refine .head (by simpa using hswap) ?_
-      exact .single (.dynJump hfind)
-    · simp at hrs1
+  have hcode : epilogue ps.length rs.length ++ c
+      = List.replicate ps.length .pop ++ (retRot rs.length ++ [.dynJump] ++ c) := by
+    simp [epilogue, List.append_assoc]
+  rw [hcode]
+  refine hpops.trans ?_
+  -- rotate the return address up and jump
+  rw [show retRot rs.length ++ [.dynJump] ++ c = retRot rs.length ++ (.dynJump :: c) from by simp]
+  refine (retRot_exec (prog := prog) (yst := yst) rs.length
+      (words (rs.map (fun r => (YulSemantics.VEnv.get Vend r).getD yulD.zero)))
+      (.code lret) σc (pre ++ List.replicate ps.length .pop) (.dynJump :: c)
+      (by simp [words]) hrs1 (by rw [hp]; simp [epilogue, List.append_assoc])).trans ?_
+  exact .single (.dynJump hfind)
 
 /-! ### Depth guards and the induction motive -/
 
@@ -1170,36 +1678,25 @@ private theorem stmt_letSome_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat} {xs : List Ident}
     {e : Expr Op} {asm : List Asm} {Γ' : List Ident} {n' : Nat}
     (h : compileStmt Φ Γ F L n (.letDecl xs (some e)) = some (asm, Γ', n')) :
-    ∃ x, xs = [x] ∧ compileExpr Φ Γ 0 n e = some (asm, n')
-      ∧ Γ' = x :: Γ := by
-  rcases xs with _ | ⟨x, _ | ⟨y, xs⟩⟩ <;>
-    simp only [compileStmt, Option.bind_eq_bind] at h
-  case nil => exact absurd h (by simp)
-  case cons.cons => exact absurd h (by simp)
+    compileExpr Φ Γ 0 n e = some (asm, n') ∧ Γ' = xs ++ Γ := by
+  simp only [compileStmt, Option.bind_eq_bind] at h
   obtain ⟨⟨eCode, n1⟩, he, h2⟩ := Option.bind_eq_some_iff.mp h
   simp only [Option.some.injEq, Prod.mk.injEq] at h2
-  exact ⟨x, rfl, h2.1 ▸ h2.2.2 ▸ he, h2.2.1.symm⟩
+  exact ⟨h2.1 ▸ h2.2.2 ▸ he, h2.2.1.symm⟩
 
 private theorem stmt_assign_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat} {xs : List Ident}
     {e : Expr Op} {asm : List Asm} {Γ' : List Ident} {n' : Nat}
     (h : compileStmt Φ Γ F L n (.assign xs e) = some (asm, Γ', n')) :
-    ∃ (x : Ident) (eCode : List Asm) (idx : Nat) (h16 : idx < 16),
-      xs = [x] ∧ compileExpr Φ Γ 0 n e = some (eCode, n')
-      ∧ Γ.findIdx? (fun y => y = x) = some idx
-      ∧ asm = eCode ++ [.swap ⟨idx, h16⟩, .pop] ∧ Γ' = Γ := by
-  rcases xs with _ | ⟨x, _ | ⟨y, xs⟩⟩ <;>
-    simp only [compileStmt, Option.bind_eq_bind] at h
-  case nil => exact absurd h (by simp)
-  case cons.cons => exact absurd h (by simp)
+    ∃ (eCode acode : List Asm),
+      compileExpr Φ Γ 0 n e = some (eCode, n')
+      ∧ compileAssigns Γ xs = some acode
+      ∧ asm = eCode ++ acode ∧ Γ' = Γ := by
+  simp only [compileStmt, Option.bind_eq_bind] at h
   obtain ⟨⟨eCode, n1⟩, he, h2⟩ := Option.bind_eq_some_iff.mp h
-  obtain ⟨idx, hidx, h3⟩ := Option.bind_eq_some_iff.mp h2
-  by_cases h16 : idx < 16
-  · rw [dif_pos h16] at h3
-    simp only [Option.some.injEq, Prod.mk.injEq] at h3
-    exact ⟨x, eCode, idx, h16, rfl, h3.2.2 ▸ he, hidx, h3.1.symm, h3.2.1.symm⟩
-  · rw [dif_neg h16] at h3
-    exact absurd h3 (by simp)
+  obtain ⟨acode, hac, h3⟩ := Option.bind_eq_some_iff.mp h2
+  simp only [Option.some.injEq, Prod.mk.injEq] at h3
+  exact ⟨eCode, acode, h3.2.2 ▸ he, hac, h3.1.symm, h3.2.1.symm⟩
 
 private theorem stmt_break_inv {Φ : FMap} {Γ : List Ident}
     {F : Option FunCtx} {L : Option LoopCtx} {n : Nat}
@@ -1329,6 +1826,59 @@ private theorem stmt_cond_inv {Φ : FMap} {Γ : List Ident}
   simp only [Option.some.injEq, Prod.mk.injEq] at h3
   exact ⟨cCode, n1, bodyCode, hce, h3.2.2 ▸ hb, h3.1.symm, h3.2.1.symm⟩
 
+private theorem stmt_switch_inv {Φ : FMap} {Γ : List Ident}
+    {F : Option FunCtx} {L : Option LoopCtx} {n : Nat} {c : Expr Op}
+    {cases : List (YulSemantics.Literal × Block Op)} {dflt : Option (Block Op)}
+    {asm : List Asm} {Γ' : List Ident} {n' : Nat}
+    (h : compileStmt Φ Γ F L n (.switch c cases dflt) = some (asm, Γ', n')) :
+    ∃ (cCode : List Asm) (n1 : Nat) (casesAsm : List Asm) (n2 : Nat) (defAsm : List Asm),
+      compileExpr Φ Γ 0 (n + 1) c = some (cCode, n1)
+      ∧ compileSwitchCases Φ Γ F L n n1 cases = some (casesAsm, n2)
+      ∧ compileBlock Φ Γ F L n2 (dflt.getD []) = some (defAsm, n')
+      ∧ asm = cCode ++ casesAsm ++ .pop :: defAsm ++ [.label n]
+      ∧ Γ' = Γ := by
+  rw [compileStmt.eq_def] at h
+  simp only [Option.bind_eq_bind, Option.bind_eq_some_iff] at h
+  obtain ⟨⟨cCode, n1⟩, hce, h2⟩ := h
+  obtain ⟨⟨casesAsm, n2⟩, hcs, h3⟩ := h2
+  obtain ⟨⟨defAsm, n3⟩, hdef, h4⟩ := h3
+  simp only [Option.some.injEq, Prod.mk.injEq] at h4
+  refine ⟨cCode, n1, casesAsm, n2, defAsm, hce, hcs, ?_, h4.1.symm, h4.2.1.symm⟩
+  rw [← h4.2.2]
+  cases dflt <;> exact hdef
+
+/-- The block `selectSwitch` runs is always compiled (as some case body, or the
+default). Provides the `compileBlock` witness the switch simulation feeds to the
+block's induction hypothesis. -/
+private theorem selectSwitch_compiled {Φ : FMap} {Γ : List Ident}
+    {F : Option FunCtx} {L : Option LoopCtx} {lend : Label} {cv : U256}
+    {defAsm : List Asm} {n2 n3 : Nat} {dflt : Option (Block Op)}
+    (hdef : compileBlock Φ Γ F L n2 (dflt.getD []) = some (defAsm, n3)) :
+    ∀ (cases : List (YulSemantics.Literal × Block Op)) {casesAsm : List Asm} {n1 : Nat},
+      compileSwitchCases Φ Γ F L lend n1 cases = some (casesAsm, n2) →
+      ∃ m bAsm m',
+        compileBlock Φ Γ F L m (YulSemantics.selectSwitch yulD cv cases dflt) = some (bAsm, m') := by
+  intro cases
+  induction cases with
+  | nil => intro casesAsm n1 hcs; exact ⟨n2, defAsm, n3, hdef⟩
+  | cons vb rest ih =>
+    intro casesAsm n1 hcs
+    obtain ⟨v, b⟩ := vb
+    simp only [compileSwitchCases, Option.bind_eq_bind] at hcs
+    obtain ⟨⟨bAsm, m1⟩, hb, h2⟩ := Option.bind_eq_some_iff.mp hcs
+    obtain ⟨⟨restAsm, m2⟩, hrest, h3⟩ := Option.bind_eq_some_iff.mp h2
+    simp only [Option.some.injEq, Prod.mk.injEq] at h3
+    obtain ⟨rfl, rfl⟩ := h3
+    by_cases hmatch : cv = litValue v
+    · exact ⟨n1 + 1, bAsm, m1, by
+        rw [show YulSemantics.selectSwitch yulD cv ((v, b) :: rest) dflt = b from by
+          simp [YulSemantics.selectSwitch, hmatch]]; exact hb⟩
+    · obtain ⟨m, bAsm', m', hbc⟩ := ih hrest
+      exact ⟨m, bAsm', m', by
+        rw [show YulSemantics.selectSwitch yulD cv ((v, b) :: rest) dflt
+          = YulSemantics.selectSwitch yulD cv rest dflt from by
+          simp [YulSemantics.selectSwitch, hmatch]]; exact hbc⟩
+
 /-- Turn a `compileBlock` equation into the `compileStmt (.block …)`
 form the statement motive consumes. -/
 private theorem stmt_of_block {Φ : FMap} {Γ : List Ident}
@@ -1435,7 +1985,7 @@ private theorem stmt_funDef_inv {Φ : FMap} {Γ : List Ident}
     (h : compileStmt Φ Γ F L n (.funDef f ps rs body) = some (asm, Γ', n')) :
     ∃ (info : FunInfo) (Φv : FMap) (bodyCode : List Asm),
       lookupF Φ f = some (info, Φv)
-      ∧ rs.length ≤ 1 ∧ (ps ++ rs).Nodup
+      ∧ rs.length ≤ 16 ∧ (ps ++ rs).Nodup
       ∧ compileBlock Φ (ps ++ rs) (some ⟨n, (ps ++ rs).length⟩) none
           (n + 2) body = some (bodyCode, n')
       ∧ asm = .jump (n + 1) :: .label info.entry :: bodyCode
@@ -1443,7 +1993,7 @@ private theorem stmt_funDef_inv {Φ : FMap} {Γ : List Ident}
       ∧ Γ' = Γ := by
   simp only [compileStmt, Option.bind_eq_bind] at h
   obtain ⟨⟨info, Φv⟩, hlk, h2⟩ := Option.bind_eq_some_iff.mp h
-  by_cases hg : rs.length ≤ 1 ∧ (ps ++ rs).Nodup
+  by_cases hg : rs.length ≤ 16 ∧ (ps ++ rs).Nodup
   · rw [if_pos hg] at h2
     obtain ⟨⟨bodyCode, n1⟩, hb, h3⟩ := Option.bind_eq_some_iff.mp h2
     simp only [Option.some.injEq, Prod.mk.injEq] at h3
@@ -1467,10 +2017,10 @@ private theorem stmt_suffix {Φ : FMap} {Γ : List Ident} {F : Option FunCtx}
       obtain ⟨-, rfl, -⟩ := stmt_letNone_inv h
       exact ⟨xs, rfl⟩
     | some e =>
-      obtain ⟨x, rfl, -, rfl⟩ := stmt_letSome_inv h
-      exact ⟨[x], rfl⟩
+      obtain ⟨-, rfl⟩ := stmt_letSome_inv h
+      exact ⟨xs, rfl⟩
   | assign xs e =>
-    obtain ⟨x, eCode, idx, h16, rfl, -, -, -, rfl⟩ := stmt_assign_inv h
+    obtain ⟨-, -, -, -, -, rfl⟩ := stmt_assign_inv h
     exact ⟨[], rfl⟩
   | block body => exact ⟨[], ((stmt_block_inv h).2).symm ▸ rfl⟩
   | cond c body =>
@@ -1503,7 +2053,9 @@ private theorem stmt_suffix {Φ : FMap} {Γ : List Ident} {F : Option FunCtx}
   | leave =>
     obtain ⟨-, -, -, rfl, -⟩ := stmt_leave_inv h
     exact ⟨[], rfl⟩
-  | switch c cases dflt => simp [compileStmt] at h
+  | switch c cases dflt =>
+    obtain ⟨-, -, -, -, -, -, -, -, -, rfl⟩ := stmt_switch_inv h
+    exact ⟨[], rfl⟩
 
 private theorem stmts_suffix {Φ : FMap} {F : Option FunCtx}
     {L : Option LoopCtx} :
@@ -1637,7 +2189,6 @@ private theorem hoist_forall2 {prog : List Asm} {Φ : FMap}
         rw [hasm]; simp
       · exact ih Γ1 n1 is2 Γ' nc' (nh + 1) hcs2 his2p
           ((List.suffix_cons _ _).trans hsuf')
-    case switch c cs d => exact absurd his1 (by simp [compileStmt])
     all_goals exact ih Γ1 n1 is2 Γ' nc' nh hcs2 his2p hsuf
 
 /-- **Entering a block**: the hoisted compile-time scope agrees with the
@@ -1788,7 +2339,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     injection hpair with hpair
     cases hpair
     have hrs : info.rets = decl.rets.length := hok.2.1
-    have hrs1 : decl.rets.length ≤ 1 := hok.2.2.1
+    have hrs1 : decl.rets.length ≤ 16 := hok.2.2.1
     have hnodupPR : (decl.params ++ decl.rets).Nodup := hok.2.2.2.1
     obtain ⟨lexit, n₀, n₁, bodyAsm, s, t, hbodyC, hsplitP, hfindEntry⟩ :=
       funOK_entry hnodup hok
@@ -2220,34 +2771,23 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     rw [names_append, names_bindZeros]
   | letVal hexp hlen ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨x, rfl, he, rfl⟩ := stmt_letSome_inv hc
-    rename_i vals _
-    rcases vals with _ | ⟨v, _ | ⟨v2, t⟩⟩ <;> simp at hlen
-    exact ⟨rfl, by simp, fun hΦ => (ihexp Φ 0 n asm n' he hΦ).toASimSLet⟩
+    obtain ⟨he, rfl⟩ := stmt_letSome_inv hc
+    refine ⟨?_, ?_, fun hΦ => (ihexp Φ 0 n asm n' he hΦ).toASimSLetMany hlen.symm⟩
+    · rw [names_append, names_zip _ _ hlen.symm]
+    · rw [List.length_append]; omega
   | letHalt hexp ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨x, rfl, he, rfl⟩ := stmt_letSome_inv hc
+    obtain ⟨he, rfl⟩ := stmt_letSome_inv hc
     exact fun hΦ => (ihexp Φ 0 n asm n' he hΦ).toASimSHalt
   | assignVal hexp hlen ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨x, eCode, idx, h16, rfl, he, hidx, rfl, rfl⟩ := stmt_assign_inv hc
-    rename_i vals _
-    rcases vals with _ | ⟨v, _ | ⟨v2, t⟩⟩ <;> simp at hlen
-    have hsm : YulSemantics.VEnv.setMany ‹VEnv yulD› [x] [v]
-        = YulSemantics.VEnv.set ‹VEnv yulD› x v := rfl
-    rw [hsm]
-    refine ⟨(names_set _ _ _).symm, ?_, fun hΦ =>
-      asimS_assign h16 hidx (ihexp Φ 0 n eCode n' he hΦ)⟩
-    have hle : (YulSemantics.VEnv.set ‹VEnv yulD› x v).length
-        = List.length ‹VEnv yulD› := by
-      have := congrArg List.length (names_set ‹VEnv yulD› x v)
-      simpa using this
-    omega
+    obtain ⟨eCode, acode, he, hac, rfl, rfl⟩ := stmt_assign_inv hc
+    exact ⟨(names_setMany _ _ _).symm, (length_setMany _ _ _).ge,
+      fun hΦ => asimS_assigns hlen.symm hac (ihexp Φ 0 n eCode n' he hΦ)⟩
   | assignHalt hexp ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
-    obtain ⟨x, eCode, idx, h16, rfl, he, hidx, rfl, rfl⟩ := stmt_assign_inv hc
-    exact fun hΦ =>
-      ((ihexp Φ 0 n eCode n' he hΦ).toASimSHalt).extend _
+    obtain ⟨eCode, acode, he, hac, rfl, rfl⟩ := stmt_assign_inv hc
+    exact fun hΦ => ((ihexp Φ 0 n eCode n' he hΦ).toASimSHalt).extend _
   | exprStmt hexp ihexp =>
     intro Φ F L n asm Γ' n' hF hL hc
     obtain ⟨he, rfl⟩ := stmt_exprStmt_inv hc
@@ -2288,12 +2828,59 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     obtain ⟨cCode, n1, bodyCode, hce, hb, rfl, rfl⟩ := stmt_cond_inv hc
     exact fun hΦ =>
       asimS_ifCondHalt (ihc Φ 0 (n + 1) cCode n1 hce hΦ)
-  | switchExec _ _ _ _ =>
+  | switchExec hcstep hblock ihc ihblock =>
     intro Φ F L n asm Γ' n' hF hL hc
-    simp [compileStmt] at hc
-  | switchHalt _ _ =>
+    obtain ⟨cCode, n1, casesAsm, n2, defAsm, hce, hcs, hdef, rfl, rfl⟩ := stmt_switch_inv hc
+    obtain ⟨m0, bAsm0, m0', hbc0⟩ := selectSwitch_compiled hdef _ hcs
+    have hout0 := ihblock Φ F L m0 bAsm0 _ m0' hF hL (stmt_of_block hbc0)
+    rename_i o
+    match o, hout0 with
+    | .normal, ⟨hΓ, hlen, _⟩ =>
+      refine ⟨hΓ, hlen, fun hΦ => ?_⟩
+      have hd := asimS_switchTailNormal hnodup "" hdef _ hcs
+        (fun m bAsm m' hbc =>
+          ((ihblock Φ F L m bAsm _ m' hF hL (stmt_of_block hbc)).2.2 hΦ))
+      simpa using ((ihc Φ 0 (n + 1) cCode n1 hce hΦ).toASimSLet (x := "")).comp hd
+    | .halt, _ =>
+      refine fun hΦ => ?_
+      have hd := asimS_switchTailHalt hnodup "" hdef _ hcs
+        (fun m bAsm m' hbc =>
+          ((ihblock Φ F L m bAsm _ m' hF hL (stmt_of_block hbc)) hΦ))
+      simpa using ((ihc Φ 0 (n + 1) cCode n1 hce hΦ).toASimSLet (x := "")).compHalt hd
+    | .break, ⟨lc, hlc, hlen, hnm, _⟩ =>
+      refine ⟨lc, hlc, hlen, hnm, fun hΦ => ?_⟩
+      have hd := asimS_switchTailNL (l := lc.brk) (depth := lc.depth) hnodup "" hdef _ hcs
+        (fun m bAsm m' hbc => by
+          obtain ⟨lc', hlc', _, _, hsim'⟩ := ihblock Φ F L m bAsm _ m' hF hL (stmt_of_block hbc)
+          obtain rfl : lc = lc' := Option.some.inj (hlc.symm.trans hlc')
+          exact hsim' hΦ)
+      simpa using ((ihc Φ 0 (n + 1) cCode n1 hce hΦ).toASimSLet (x := "")).compNL hd
+    | .continue, ⟨lc, hlc, hlen, hnm, _⟩ =>
+      refine ⟨lc, hlc, hlen, hnm, fun hΦ => ?_⟩
+      have hd := asimS_switchTailNL (l := lc.cont) (depth := lc.depth) hnodup "" hdef _ hcs
+        (fun m bAsm m' hbc => by
+          obtain ⟨lc', hlc', _, _, hsim'⟩ := ihblock Φ F L m bAsm _ m' hF hL (stmt_of_block hbc)
+          obtain rfl : lc = lc' := Option.some.inj (hlc.symm.trans hlc')
+          exact hsim' hΦ)
+      simpa using ((ihc Φ 0 (n + 1) cCode n1 hce hΦ).toASimSLet (x := "")).compNL hd
+    | .leave, ⟨fc, hfc, hlen, hnm, _⟩ =>
+      refine ⟨fc, hfc, hlen, hnm, fun hΦ => ?_⟩
+      have hd := asimS_switchTailNL (l := fc.exit) (depth := fc.depth) hnodup "" hdef _ hcs
+        (fun m bAsm m' hbc => by
+          obtain ⟨fc', hfc', _, _, hsim'⟩ := ihblock Φ F L m bAsm _ m' hF hL (stmt_of_block hbc)
+          obtain rfl : fc = fc' := Option.some.inj (hfc.symm.trans hfc')
+          exact hsim' hΦ)
+      simpa using ((ihc Φ 0 (n + 1) cCode n1 hce hΦ).toASimSLet (x := "")).compNL hd
+  | switchHalt hcstep ihc =>
     intro Φ F L n asm Γ' n' hF hL hc
-    simp [compileStmt] at hc
+    obtain ⟨cCode, n1, casesAsm, n2, defAsm, hce, hcs, hdef, rfl, rfl⟩ := stmt_switch_inv hc
+    refine fun hΦ => ?_
+    have h := ((ihc Φ 0 (n + 1) cCode n1 hce hΦ).toASimSHalt).extend
+        (casesAsm ++ .pop :: defAsm ++ [.label n])
+    have he : cCode ++ (casesAsm ++ .pop :: defAsm ++ [.label n])
+        = cCode ++ casesAsm ++ .pop :: defAsm ++ [.label n] := by
+      simp [List.append_assoc]
+    rwa [he] at h
   | forLoop hinit hloop ihinit ihloop =>
     rename_i funs0 V0 st0 init0 ce post0 body0 Vinit stinit Vend stend o
     intro Φ F L n asm Γ' n' hF hL hc
