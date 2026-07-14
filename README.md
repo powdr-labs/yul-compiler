@@ -96,6 +96,7 @@ The verified built-in set (the domain of `opTable` in
 | arithmetic | `add sub mul div sdiv mod smod addmod mulmod exp signextend clz` |
 | comparison | `lt gt slt sgt eq iszero` |
 | bitwise    | `and or xor not byte shl shr sar` |
+| hashing    | `keccak256` |
 | stack      | `pop` |
 | storage    | `sload sstore tload tstore` |
 | memory     | `mload mstore mstore8 mcopy msize` |
@@ -129,7 +130,7 @@ axioms.
 > (`Steps`) a final state that matches `st'` and halts the way `o` prescribes:
 > `.Success` via the implicit `STOP` for `o = .normal`, or exactly the halt
 > recorded in `st'.halted` (`stop`/`return`+payload/`revert`+payload/
-> `invalid`) for `o = .halt`.
+> `invalid`/`invalidMemoryAccess`) for `o = .halt`.
 
 `compile_correct_eval` restates the conclusion through evm-semantics'
 result-level big-step judgment: `Eval s₀ .success`, resp.
@@ -159,7 +160,9 @@ zero-padded `ByteArray`) and its active-word high-water mark, Yul's flat
 storage/transient storage to the executing account's storage, calldata and
 executing code pointwise (with exact lengths), external-account code bytes,
 lengths and hashes through the account map, historical block hashes, plus
-returndata byte-for-byte with its exact length. Gas is
+returndata byte-for-byte with its exact length. `EnvMatch` also requires the
+source environment's configurable Keccak oracle to agree pointwise with the
+target hash primitive. Gas is
 existentially bounded because yul-semantics deliberately does not model gas.
 Per-instruction facts live in
 `OpStep.lean`, byte-level decoding facts in `Decode.lean`, and the
@@ -205,7 +208,7 @@ failures and stale entries. The reusable runner in
 test environment, runs the assembled bytecode with `evm-semantics`, and
 exactly compares every nonzero memory word, persistent-storage entry, and
 transient-storage entry with the dumps embedded after `// ----`. Object roots
-go through the production object compiler. The current baseline contains 24
+go through the production object compiler. The current baseline contains 23
 fixtures; three of those are object fixtures whose AST-interpreter dumps
 deliberately use synthetic hash offsets/sizes and a dummy code buffer rather
 than the state produced by compiled object bytecode. The remaining entries are
@@ -219,16 +222,16 @@ each run **differentially** through both the Yul interpreter and
 evm-semantics' `stepF` on the compiled bytecode, with storage compared. It
 also compiles yul-semantics' own
 `FibExample.fibContract` (the calldata/memory Fibonacci contract proved
-correct upstream) all the way to bytecode and checks, differentially, that the
-compiled code returns the same bytes as the interpreter for several inputs.
+correct upstream) all the way to bytecode, differentially checks a concrete
+`keccak256("abc")`, and checks that the compiled Fibonacci code returns the
+same bytes as the interpreter for several inputs.
 
 ## Roadmap
 
-See `PLAN.md` for the full design, the upstream findings (EIP-8024
-`DUPN`/`SWAPN` not yet activated on any modeled fork; the two repos' distinct
-opaque keccaks; and the `writeBytes`/`natToBytesPadded` byte-array lemmas that
-`MSTORE` needs — `writeBytes` now upstream, `natToBytesPadded` proved locally in
-`YulEvmCompiler.BytesLemmas`). The next integration milestones are typed parser
+See `PLAN.md` for the full design and upstream findings (including EIP-8024
+`DUPN`/`SWAPN` not yet being activated on any modeled fork, and the
+`writeBytes`/`natToBytesPadded` byte-array lemmas used by `MSTORE`). The next
+integration milestones are typed parser
 syntax and verification of the lossy compatibility path, broader built-in
 coverage, and then verified optimization passes on the Yul side.
 

@@ -253,6 +253,10 @@ theorem compile_correct_eval {prog : YulSemantics.Block Op} {is : List Instr}
           have hhalt : s'.halt = .Exception .InvalidInstruction := hhmatch
           exact ⟨by rw [hhalt]; simp, by
             rw [State.toResult_exception s' _ hhalt]; rfl⟩
+        | invalidMemoryAccess =>
+          have hhalt : s'.halt = .Exception .InvalidMemoryAccess := hhmatch
+          exact ⟨by rw [hhalt]; simp, by
+            rw [State.toResult_exception s' _ hhalt]; rfl⟩
       rw [← hdone.2]
       exact Eval.iff_steps_halted.mpr ⟨s', hsteps, hdone.1, hcs', rfl⟩
 

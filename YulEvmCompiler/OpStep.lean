@@ -122,6 +122,8 @@ def opBound (op : Op) (args : List U256) : Nat :=
     | .mload, [p] => memBound p.toNat 32
     | .mstore, [p, _] => memBound p.toNat 32
     | .mstore8, [p, _] => memBound p.toNat 1
+    | .keccak256, [p, n] =>
+        memBound p.toNat n.toNat + 6 * ((n.toNat + 31) / 32)
     | .mcopy, [d, s, n] =>
         memBound d.toNat n.toNat + memBound s.toNat n.toNat
           + 3 * ((n.toNat + 31) / 32)
@@ -941,6 +943,58 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         ≥ s.gasAvailable - opBound .exp [a, b]
       have h3 : opBound Op.exp [a, b] = 40000 := rfl
       omega
+  case keccak256 =>
+    rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨c, args⟩⟩⟩ <;> simp [stepOp] at hyul
+    subst hyul
+    show OkStep code s (opBound .keccak256 [p, n])
+      [yst.env.keccakOf (YulSemantics.EVM.readBytes yst.memory p.toNat n.toNat)]
+      (YulSemantics.EVM.touchMemory yst p.toNat n.toNat) pre.length 1 σ
+    obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .keccak256) rfl
+    have hdec := decoded_op hf hcode hpc hb' hplain
+      (opTable_available (yop := .keccak256) rfl)
+    have hstk' : s.stack = conv p :: conv n :: σ := by simpa using hstk
+    have h3 : opBound Op.keccak256 [p, n] =
+        40000 + (memBound p.toNat n.toNat + 6 * ((n.toNat + 31) / 32)) := rfl
+    have h4 : Gas.keccakWordCost (conv n) = 6 * ((n.toNat + 31) / 32) := by
+      unfold Gas.keccakWordCost
+      rw [conv_toNat]
+    have h1 : Gas.baseCost s.executionEnv.fork Operation.KECCAK256 ≤ 30 := by
+      rw [hf.fork]
+      decide
+    have h2 := memExpansionDelta_le_memBound s.activeWords.toNat
+      (conv p).toNat (conv n).toNat
+    rw [conv_toNat p, conv_toNat n] at h2
+    have hgas' : Gas.keccakTotal s (conv p) (conv n) ≤ s.gasAvailable := by
+      unfold Gas.keccakTotal
+      rw [conv_toNat p, conv_toNat n, h4]
+      omega
+    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+      (StepRunning.keccak256 s (conv p) (conv n) σ hdec hstk' hgas'),
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        hf.running⟩,
+      ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
+        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode⟩,
+      ?_, ?_, ?_⟩
+    · simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords p.toNat n.toNat
+    · show s.pc.succ = _
+      rw [hpc]
+      apply succ_ofNat
+      have hsz : code.size = pre.length + 1 + post.length := by
+        subst hcode
+        simp [Instr.bytes]
+        omega
+      have := hf.codeSmall
+      omega
+    · have hhash := hm.env.keccak
+          (YulSemantics.EVM.readBytes yst.memory p.toNat n.toNat)
+      rw [hm.mem.readBytes p.toNat n.toNat, mkCode_toList] at hhash
+      rw [hm.mem.readBytes p.toNat n.toNat]
+      simpa using hhash.symm
+    · show s.gasAvailable - Gas.keccakTotal s (conv p) (conv n)
+        ≥ s.gasAvailable - opBound .keccak256 [p, n]
+      unfold Gas.keccakTotal
+      rw [conv_toNat p, conv_toNat n, h4, h3]
+      omega
   case pop =>
     rcases args with _ | ⟨a, _ | ⟨b, args⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
@@ -1268,66 +1322,92 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         hcode hf hm hpc hstk hgas40).elim
   case returndatacopy =>
     rcases args with _ | ⟨d, _ | ⟨s0, _ | ⟨nn, _ | ⟨e, args⟩⟩⟩⟩ <;>
-      simp [stepOp] at hyul
-    rcases hyul with ⟨hbound, hyul⟩
-    subst hyul
-    show OkStep code s (opBound .returndatacopy [d, s0, nn]) []
-      { YulSemantics.EVM.touchMemory yst d.toNat nn.toNat with memory :=
-          (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat
-            yst.returndata) }
-      pre.length 1 σ
-    obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .returndatacopy) rfl
-    have hdec := decoded_op hf hcode hpc hb' hplain
-      (opTable_available (yop := .returndatacopy) rfl)
-    have hstk' : s.stack = conv d :: conv s0 :: conv nn :: σ := by simpa using hstk
-    have hin : (conv s0).toNat + (conv nn).toNat ≤ s.returnData.size := by
-      rw [conv_toNat, conv_toNat, ← hm.retDataLen]
-      exact hbound
-    have h3 : opBound Op.returndatacopy [d, s0, nn]
-        = 40000 + (memBound d.toNat nn.toNat + 3 * ((nn.toNat + 31) / 32)) := rfl
-    have h4 : Gas.copyWordCost (conv nn) = 3 * ((nn.toNat + 31) / 32) := by
-      unfold Gas.copyWordCost
-      rw [conv_toNat]
-    have h1 : Gas.baseCost s.executionEnv.fork Operation.RETURNDATACOPY ≤ 3 := by
-      rw [hf.fork]
-      decide
-    have h2 := memExpansionDelta_le_memBound s.activeWords.toNat
-      (conv d).toNat (conv nn).toNat
-    rw [conv_toNat d, conv_toNat nn] at h2
-    have hgas' : Gas.returndatacopyTotal s (conv d) (conv nn) ≤ s.gasAvailable := by
-      unfold Gas.returndatacopyTotal
-      rw [conv_toNat d, conv_toNat nn, h4]
-      omega
-    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.returndatacopy s (conv d) (conv s0) (conv nn) σ
-        hdec hstk' hin hgas'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
-        hf.running⟩,
-      ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
-    · show MemMatch
-        (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat
-          yst.returndata)
-        (MachineState.writeBytes s.memory
-          (MachineState.readPadded s.returnData
-            (conv s0).toNat (conv nn).toNat) (conv d).toNat)
-      rw [conv_toNat d, conv_toNat s0, conv_toNat nn]
-      exact hm.mem.copyFromBytes hm.retData d.toNat s0.toNat nn.toNat
-    · simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords d.toNat nn.toNat
-    · show s.pc.succ = _
-      rw [hpc]
-      apply succ_ofNat
-      have hsz : code.size = pre.length + 1 + post.length := by
-        subst hcode
-        simp [Instr.bytes]
+      simp only [stepOp] at hyul
+    all_goals try contradiction
+    by_cases hbound : s0.toNat + nn.toNat ≤ yst.returndata.length
+    · simp [hbound] at hyul
+      subst hyul
+      show OkStep code s (opBound .returndatacopy [d, s0, nn]) []
+        { YulSemantics.EVM.touchMemory yst d.toNat nn.toNat with memory :=
+            (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat
+              yst.returndata) }
+        pre.length 1 σ
+      obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .returndatacopy) rfl
+      have hdec := decoded_op hf hcode hpc hb' hplain
+        (opTable_available (yop := .returndatacopy) rfl)
+      have hstk' : s.stack = conv d :: conv s0 :: conv nn :: σ := by simpa using hstk
+      have hin : (conv s0).toNat + (conv nn).toNat ≤ s.returnData.size := by
+        rw [conv_toNat, conv_toNat, ← hm.retDataLen]
+        exact hbound
+      have h3 : opBound Op.returndatacopy [d, s0, nn]
+          = 40000 + (memBound d.toNat nn.toNat + 3 * ((nn.toNat + 31) / 32)) := rfl
+      have h4 : Gas.copyWordCost (conv nn) = 3 * ((nn.toNat + 31) / 32) := by
+        unfold Gas.copyWordCost
+        rw [conv_toNat]
+      have h1 : Gas.baseCost s.executionEnv.fork Operation.RETURNDATACOPY ≤ 3 := by
+        rw [hf.fork]
+        decide
+      have h2 := memExpansionDelta_le_memBound s.activeWords.toNat
+        (conv d).toNat (conv nn).toNat
+      rw [conv_toNat d, conv_toNat nn] at h2
+      have hgas' : Gas.returndatacopyTotal s (conv d) (conv nn) ≤ s.gasAvailable := by
+        unfold Gas.returndatacopyTotal
+        rw [conv_toNat d, conv_toNat nn, h4]
         omega
-      have := hf.codeSmall
-      omega
-    · show s.gasAvailable - Gas.returndatacopyTotal s (conv d) (conv nn)
-        ≥ s.gasAvailable - opBound .returndatacopy [d, s0, nn]
-      unfold Gas.returndatacopyTotal
-      rw [conv_toNat d, conv_toNat nn, h4, h3]
-      omega
+      refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+        (StepRunning.returndatacopy s (conv d) (conv s0) (conv nn) σ
+          hdec hstk' hin hgas'),
+        ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+          hf.running⟩,
+        ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
+          hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode⟩,
+        ?_, rfl, ?_⟩
+      · show MemMatch
+          (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat
+            yst.returndata)
+          (MachineState.writeBytes s.memory
+            (MachineState.readPadded s.returnData
+              (conv s0).toNat (conv nn).toNat) (conv d).toNat)
+        rw [conv_toNat d, conv_toNat s0, conv_toNat nn]
+        exact hm.mem.copyFromBytes hm.retData d.toNat s0.toNat nn.toNat
+      · simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords d.toNat nn.toNat
+      · show s.pc.succ = _
+        rw [hpc]
+        apply succ_ofNat
+        have hsz : code.size = pre.length + 1 + post.length := by
+          subst hcode
+          simp [Instr.bytes]
+          omega
+        have := hf.codeSmall
+        omega
+      · show s.gasAvailable - Gas.returndatacopyTotal s (conv d) (conv nn)
+          ≥ s.gasAvailable - opBound .returndatacopy [d, s0, nn]
+        unfold Gas.returndatacopyTotal
+        rw [conv_toNat d, conv_toNat nn, h4, h3]
+        omega
+    · simp [hbound] at hyul
+      subst hyul
+      show HaltStep s
+        { yst with halted := some (.invalidMemoryAccess, []) }
+      obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .returndatacopy) rfl
+      have hdec := decoded_op hf hcode hpc hb' hplain
+        (opTable_available (yop := .returndatacopy) rfl)
+      have hstk' : s.stack = conv d :: conv s0 :: conv nn :: σ := by simpa using hstk
+      have hgas' : Gas.baseCost s.fork Operation.RETURNDATACOPY ≤ s.gasAvailable := by
+        have hbase : Gas.baseCost s.fork Operation.RETURNDATACOPY ≤ 3 := by
+          rw [hfork]
+          decide
+        omega
+      have hoob : (conv s0).toNat + (conv nn).toNat > s.returnData.size := by
+        rw [conv_toNat, conv_toNat, ← hm.retDataLen]
+        omega
+      refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+        (StepRunning.returndatacopyOob s (conv d) (conv s0) (conv nn) σ
+          hdec hgas' hstk' hoob), ?_, hf.callStack, ?_⟩
+      · exact ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
+          hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
+          hm.externalCode⟩
+      · exact ⟨(.invalidMemoryAccess, []), rfl, rfl⟩
   case codecopy =>
     rcases args with _ | ⟨d, _ | ⟨s0, _ | ⟨nn, _ | ⟨e, args⟩⟩⟩⟩ <;> simp [stepOp] at hyul
     subst hyul

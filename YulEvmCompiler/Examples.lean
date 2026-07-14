@@ -1,4 +1,5 @@
 import YulEvmCompiler.Compile
+import YulEvmCompiler.StateRel
 import YulSemantics.Syntax
 import YulSemantics.Interp
 import YulSemantics.FibExample
@@ -240,6 +241,17 @@ def memorySizeOps : Block Op := yul% {
   sstore(4, msize())
 }
 
+/-- Hash the three bytes `"abc"`, then record the memory expansion caused by
+the read. The source interpreter is configured below with the target
+semantics' concrete Keccak implementation. -/
+def keccakOps : Block Op := yul% {
+  mstore8(0, 0x61)
+  mstore8(1, 0x62)
+  mstore8(2, 0x63)
+  sstore(0, keccak256(0, 3))
+  sstore(1, msize())
+}
+
 /-- Account and transaction-context reads: the executing balance, another
 account's balance, one in-range blob hash, and one out-of-range blob hash. -/
 def accountAndBlobReads : Block Op := yul% {
@@ -280,6 +292,8 @@ def externalCodeAndBlockReads : Block Op := yul% {
 #guard (compile returndataOps).isSome
 #guard (compileProgram memorySizeOps).isSome
 #guard (compile memorySizeOps).isSome
+#guard (compileProgram keccakOps).isSome
+#guard (compile keccakOps).isSome
 #guard (compileProgram accountAndBlobReads).isSome
 #guard (compile accountAndBlobReads).isSome
 #guard (compileProgram externalCodeAndBlockReads).isSome
@@ -331,7 +345,7 @@ values (plus that the EVM run actually finished without an exception). -/
 def agreeOnWithInputs (prog : Block Op) (cd rd : List UInt8) (keys : List Nat) : Bool :=
   let yst0 : EvmState :=
     { EvmState.init with
-      env := { EvmState.init.env with calldata := cd }
+      env := { EvmState.init.env with calldata := cd, keccakOf := targetKeccakOracle }
       returndata := rd }
   match compile prog, Interp.run YulSemantics.EVM.exec 100000 prog yst0 with
   | some is, .ok (_, yst, _) =>
@@ -376,6 +390,7 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOnWithCalldata calldataOps [0xaa, 0xbb, 0xcc] [0, 1, 2]
 #guard agreeOnWithInputs returndataOps [] [0xaa, 0xbb, 0xcc, 0xdd] [0, 1, 2, 3, 4]
 #guard agreeOn memorySizeOps [0, 1, 2, 3, 4]
+#guard agreeOn keccakOps [0, 1]
 
 /-- Differential check with the source's abstract balance/blob oracles and the
 target's concrete account map/blob list initialized to matching values. -/
@@ -457,7 +472,8 @@ returned byte payload (for contracts that halt via `return`, like the
 calldata/memory Fibonacci contract). -/
 def agreeReturn (prog : Block Op) (cd : List UInt8) : Bool :=
   let yst0 : EvmState :=
-    { EvmState.init with env := { EvmState.init.env with calldata := cd } }
+    { EvmState.init with env := { EvmState.init.env with
+        calldata := cd, keccakOf := targetKeccakOracle } }
   match compile prog, Interp.run YulSemantics.EVM.exec 100000 prog yst0 with
   | some is, .ok (_, yst, _) =>
       let s0 := evmInit (assemble is)
