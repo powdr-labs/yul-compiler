@@ -125,12 +125,13 @@ There is currently no verified optimizer in front of the backend. A new source-t
 
 For an Asm-to-Asm optimization, preserve `AStep` behavior, symbolic control flow, stack shape, label well-formedness, and fixed-width location assumptions, or state and prove the replacement invariants. Bytecode peepholes are especially sensitive to jump addresses and valid `JUMPDEST` analysis.
 
-Object parsing is not end-to-end object compilation. `ObjectCompile.lean`
-provides the flat code-plus-data layout foundation and proves data-segment
-consistency, but object-rooted source still requires layout-reference
-resolution, nested-object layout, trailing-data backend correctness, and a
-`RunObject`-to-EVM theorem. Do not make `compileSource` discard object
-structure and compile only a nested block.
+`ObjectCompile.lean` recursively lays out object trees, resolves layout
+references, and proves both direct-data consistency and the full
+`RunObject`-to-EVM simulation (`compileObject_correct`); `compileSource`
+preserves the object structure and emits the complete bytecode. Object changes
+must preserve the `ObjectResolve.lean` semantic-preservation proof, the
+payload-aware backend simulation, and the exact axiom guard for the composed
+theorem in `Checks.lean`.
 
 ## Parser changes
 
@@ -190,7 +191,8 @@ lake env lean --run scripts/CheckSoliditySyntaxTests.lean \
 
 ### Solidity interpreter corpus
 
-CI also attempts every fixture under `test/libyul/yulInterpreterTests`:
+CI also attempts every fixture under `test/libyul/yulInterpreterTests` whose
+`EVMVersion` range includes the latest supported fork (currently Osaka):
 
 ```sh
 lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
@@ -201,14 +203,20 @@ lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
 For each fixture, `checkFixture`:
 
 1. parses the required memory, storage, and transient-storage dumps after `// ----`;
-2. parses and compiles the brace-delimited source with `compileSource`;
+2. parses and compiles the source with `compileSource`; block roots use the
+   ordinary pipeline and object roots use the production recursive layout;
 3. assembles it and executes `EVM.stepF` in a concrete environment matching Solidity's fixed Yul interpreter defaults, with 100,000,000 gas and 100,000 instruction fuel;
 4. rejects nontermination, remaining `.Running`, and EVM exceptions; and
 5. exactly compares sorted nonzero state: memory as aligned 32-byte words, plus persistent and transient storage entries.
 
-The harness installs compiled bytecode as the executing account's code, unlike Solidity's AST interpreter dummy code. Calldata, memory, and storage start empty. Consult `InterpreterFixture.initialState` before diagnosing environment-reader differences.
+The harness installs compiled bytecode as the executing account's code, unlike Solidity's AST interpreter dummy code. Calldata, memory, and storage start empty. Object roots therefore use actual emitted offsets, sizes, and code bytes. Solidity's three object-layout interpreter fixtures deliberately expect synthetic hashes/dummy-code copies; keep those understood post-state mismatches distinct from compilation failures. Consult `InterpreterFixture.initialState` before diagnosing environment-reader differences.
 
-`test/solidity-yul-interpreter-known-failures.txt` is also an exact baseline: every fixture still runs, known failures are allowed, unexpected failures fail, and stale entries fail. A newly supported feature should normally remove baseline paths. Never update either baseline just to make CI green without explaining the semantic or unsupported-feature reason.
+`test/solidity-yul-interpreter-known-failures.txt` is also an exact baseline for
+the latest-fork-compatible fixtures: every eligible fixture still runs, known
+failures are allowed, unexpected failures fail, and stale entries fail. A
+newly supported feature should normally remove baseline paths. Never update
+either baseline just to make CI green without explaining the semantic or
+unsupported-feature reason.
 
 To reproduce CI's corpus checkout:
 

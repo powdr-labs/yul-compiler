@@ -17,11 +17,12 @@ open YulSemantics.EVM (U256 EvmState Op stepOp)
 /-- **Phase B, one step**: each Asm step is simulated by 1–3 EVM steps on
 the lowered bytecode, preserving the configuration correspondence, with an
 existential gas bound. -/
-theorem astep_sim {prog : List Asm} {is : List Instr}
+theorem astep_sim {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg prog = some is)
     {a b : AConf} (hstep : AStep prog a b) (hsuf : a.code <:+ prog) :
-    ∃ bnd : Nat, ∀ s : State, ConfMatch prog is a s → bnd ≤ s.gasAvailable →
-      ∃ s', Steps s s' ∧ ConfMatch prog is b s'
+    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
+      bnd ≤ s.gasAvailable →
+      ∃ s', Steps s s' ∧ ConfMatch (payload := payload) prog is b s'
         ∧ s.gasAvailable - bnd ≤ s'.gasAvailable := by
   cases hstep with
   | @push v c σ yst =>
@@ -36,8 +37,8 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
       omega
     obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ :=
       pushStepU (u := conv v)
-        (pre := assembleBytes isPre) (post := assembleBytes isC)
-        (assemble_at₁ hbytes)
+        (pre := assembleBytes isPre) (post := assembleBytes isC ++ payload)
+        (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         hm.stack hgas
@@ -61,7 +62,7 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
       omega
     have hok := opStep hop hstepOp
       (σ := mapStk prog σ)
-      (assemble_at₁ hbytes)
+      (assembleWithPayload_at₁ hbytes payload)
       hm.frame hm.smatch
       (by rw [hm.pc, hpos, hlenPre])
       (by rw [hm.stack, mapStk_words]) hgas
@@ -91,7 +92,7 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
       rfl
     obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ :=
       dupStep (n := n)
-        (assemble_at₁ hbytes)
+        (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         hget hgas
@@ -123,7 +124,7 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
       rw [mapStk_cons, mapStk_append, mapStk_cons]
     obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ :=
       swapStep (n := n)
-        (assemble_at₁ hbytes)
+        (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         hswap hgas
@@ -145,7 +146,7 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
       omega
     obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ :=
       popStep
-        (assemble_at₁ hbytes)
+        (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         (by rw [hm.stack]; rfl) hgas
@@ -167,7 +168,7 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
       omega
     obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ :=
       jumpdestStep
-        (assemble_at₁ hbytes)
+        (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre]) hgas
     refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, by rw [hstk', hm.stack]⟩, hg'⟩
@@ -180,7 +181,7 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
     obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
       locate hlow hsuf
     obtain ⟨aL, isPreL, isC', hres, hposL, hbytesL, hlenPreL, hvalid⟩ :=
-      locate_label hlow hfind
+      locate_label_withPayload hlow hfind payload
     simp only [lowerInstr, hres] at hI
     obtain rfl : [Instr.push (UInt256.ofNat aL), Instr.op .JUMP] = isI := by
       simpa using hI
@@ -195,16 +196,16 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
     obtain ⟨s1, st1, hf1, hsm1, hpc1, hstk1, hg1⟩ :=
       pushStepU (u := UInt256.ofNat aL)
         (pre := assembleBytes isPre)
-        (post := (Instr.op .JUMP).bytes ++ assembleBytes isC)
-        (assemble_at₂ hbytes)
+        (post := (Instr.op .JUMP).bytes ++ assembleBytes isC ++ payload)
+        (assembleWithPayload_at₂ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         hm.stack (by omega)
     obtain ⟨s2, st2, hf2, hsm2, hpc2, hstk2, hg2⟩ :=
       jumpStep (dest := UInt256.ofNat aL)
         (pre := assembleBytes isPre ++ (Instr.push (UInt256.ofNat aL)).bytes)
-        (post := assembleBytes isC)
-        (assemble_at₂' hbytes)
+        (post := assembleBytes isC ++ payload)
+        (assembleWithPayload_at₂' hbytes payload)
         hf1 hsm1
         (by rw [hpc1]
             exact congrArg UInt256.ofNat
@@ -214,8 +215,10 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
         (by omega)
     obtain ⟨s3, st3, hf3, hsm3, hpc3, hstk3, hg3⟩ :=
       jumpdestStep
-        (pre := assembleBytes isPreL) (post := assembleBytes isC')
-        (by rw [assemble_eq_mkCode, hbytesL])
+        (pre := assembleBytes isPreL) (post := assembleBytes isC' ++ payload)
+        (by
+          rw [assembleWithPayload, hbytesL]
+          simp only [List.append_assoc])
         hf2 hsm2
         (by rw [hpc2, hlenPreL]) (by omega)
     refine ⟨s3, .trans st1 (.trans st2 (.trans st3 (.refl _))),
@@ -228,7 +231,7 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
     obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
       locate hlow hsuf
     obtain ⟨aL, isPreL, isC', hres, hposL, hbytesL, hlenPreL, hvalid⟩ :=
-      locate_label hlow hfind
+      locate_label_withPayload hlow hfind payload
     simp only [lowerInstr, hres] at hI
     obtain rfl : [Instr.push (UInt256.ofNat aL), Instr.op .JUMPI] = isI := by
       simpa using hI
@@ -243,8 +246,8 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
     obtain ⟨s1, st1, hf1, hsm1, hpc1, hstk1, hg1⟩ :=
       pushStepU (u := UInt256.ofNat aL)
         (pre := assembleBytes isPre)
-        (post := (Instr.op .JUMPI).bytes ++ assembleBytes isC)
-        (assemble_at₂ hbytes)
+        (post := (Instr.op .JUMPI).bytes ++ assembleBytes isC ++ payload)
+        (assembleWithPayload_at₂ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         hm.stack (by omega)
@@ -257,8 +260,8 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
     obtain ⟨s2, st2, hf2, hsm2, hpc2, hstk2, hg2⟩ :=
       jumpiTakenStep (dest := UInt256.ofNat aL) (cond := conv v)
         (pre := assembleBytes isPre ++ (Instr.push (UInt256.ofNat aL)).bytes)
-        (post := assembleBytes isC)
-        (assemble_at₂' hbytes)
+        (post := assembleBytes isC ++ payload)
+        (assembleWithPayload_at₂' hbytes payload)
         hf1 hsm1
         (by rw [hpc1]
             exact congrArg UInt256.ofNat
@@ -269,8 +272,10 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
         (by omega)
     obtain ⟨s3, st3, hf3, hsm3, hpc3, hstk3, hg3⟩ :=
       jumpdestStep
-        (pre := assembleBytes isPreL) (post := assembleBytes isC')
-        (by rw [assemble_eq_mkCode, hbytesL])
+        (pre := assembleBytes isPreL) (post := assembleBytes isC' ++ payload)
+        (by
+          rw [assembleWithPayload, hbytesL]
+          simp only [List.append_assoc])
         hf2 hsm2
         (by rw [hpc2, hlenPreL]) (by omega)
     refine ⟨s3, .trans st1 (.trans st2 (.trans st3 (.refl _))),
@@ -293,8 +298,8 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
     obtain ⟨s1, st1, hf1, hsm1, hpc1, hstk1, hg1⟩ :=
       pushStepU (u := UInt256.ofNat aL)
         (pre := assembleBytes isPre)
-        (post := (Instr.op .JUMPI).bytes ++ assembleBytes isC)
-        (assemble_at₂ hbytes)
+        (post := (Instr.op .JUMPI).bytes ++ assembleBytes isC ++ payload)
+        (assembleWithPayload_at₂ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         hm.stack (by omega)
@@ -304,8 +309,8 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
     obtain ⟨s2, st2, hf2, hsm2, hpc2, hstk2, hg2⟩ :=
       jumpiNotTakenStep (dest := UInt256.ofNat aL) (cond := conv v)
         (pre := assembleBytes isPre ++ (Instr.push (UInt256.ofNat aL)).bytes)
-        (post := assembleBytes isC)
-        (assemble_at₂' hbytes)
+        (post := assembleBytes isC ++ payload)
+        (assembleWithPayload_at₂' hbytes payload)
         hf1 hsm1
         (by rw [hpc1]
             exact congrArg UInt256.ofNat
@@ -333,8 +338,8 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
     obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ :=
       pushStepU (u := UInt256.ofNat aL)
         (pre := assembleBytes isPre)
-        (post := assembleBytes isC)
-        (assemble_at₁ hbytes)
+        (post := assembleBytes isC ++ payload)
+        (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         hm.stack hgas
@@ -353,7 +358,7 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
     obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
       locate hlow hsuf
     obtain ⟨aL, isPreL, isC', hres, hposL, hbytesL, hlenPreL, hvalid⟩ :=
-      locate_label hlow hfind
+      locate_label_withPayload hlow hfind payload
     obtain rfl : [Instr.op .JUMP] = isI := by
       simpa [lowerInstr] using hI
     refine ⟨40000 + 40000, ?_⟩
@@ -372,8 +377,8 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
     obtain ⟨s1, st1, hf1, hsm1, hpc1, hstk1, hg1⟩ :=
       jumpStep (dest := UInt256.ofNat aL)
         (pre := assembleBytes isPre)
-        (post := assembleBytes isC)
-        (assemble_at₁ hbytes)
+        (post := assembleBytes isC ++ payload)
+        (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         hstktop
@@ -381,8 +386,10 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
         (by omega)
     obtain ⟨s2, st2, hf2, hsm2, hpc2, hstk2, hg2⟩ :=
       jumpdestStep
-        (pre := assembleBytes isPreL) (post := assembleBytes isC')
-        (by rw [assemble_eq_mkCode, hbytesL])
+        (pre := assembleBytes isPreL) (post := assembleBytes isC' ++ payload)
+        (by
+          rw [assembleWithPayload, hbytesL]
+          simp only [List.append_assoc])
         hf1 hsm1
         (by rw [hpc1, hlenPreL]) (by omega)
     refine ⟨s2, .trans st1 (.trans st2 (.refl _)), ⟨hf2, hsm2, ?_, ?_⟩,
@@ -394,11 +401,12 @@ theorem astep_sim {prog : List Asm} {is : List Instr}
 
 /-- **Phase B, halting step**: a halting built-in maps to one halting EVM
 step. -/
-theorem ahalt_sim {prog : List Asm} {is : List Instr}
+theorem ahalt_sim {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg prog = some is)
     {a : AConf} {yst' : EvmState} (hstep : AHalt prog a yst')
     (hsuf : a.code <:+ prog) :
-    ∃ bnd : Nat, ∀ s : State, ConfMatch prog is a s → bnd ≤ s.gasAvailable →
+    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
+      bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ StateMatch yst' s' ∧ s'.callStack = []
         ∧ HaltedMatch yst' s' := by
   cases hstep with
@@ -414,7 +422,7 @@ theorem ahalt_sim {prog : List Asm} {is : List Instr}
       omega
     have hhalt := opStep hop hstepOp
       (σ := mapStk prog σ)
-      (assemble_at₁ hbytes)
+      (assembleWithPayload_at₁ hbytes payload)
       hm.frame hm.smatch
       (by rw [hm.pc, hpos, hlenPre])
       (by rw [hm.stack, mapStk_words]) hgas
@@ -422,11 +430,12 @@ theorem ahalt_sim {prog : List Asm} {is : List Instr}
     exact ⟨s', .trans hstep (.refl _), hsm', hcs', hhm'⟩
 
 /-- **Phase B, many steps**: bounds add along an Asm execution. -/
-theorem asteps_sim {prog : List Asm} {is : List Instr}
+theorem asteps_sim {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg prog = some is)
     {a b : AConf} (hsteps : ASteps prog a b) (hsuf : a.code <:+ prog) :
-    ∃ bnd : Nat, ∀ s : State, ConfMatch prog is a s → bnd ≤ s.gasAvailable →
-      ∃ s', Steps s s' ∧ ConfMatch prog is b s'
+    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
+      bnd ≤ s.gasAvailable →
+      ∃ s', Steps s s' ∧ ConfMatch (payload := payload) prog is b s'
         ∧ s.gasAvailable - bnd ≤ s'.gasAvailable := by
   induction hsteps with
   | refl a =>
@@ -442,12 +451,13 @@ theorem asteps_sim {prog : List Asm} {is : List Instr}
 
 /-- **Phase B, halting run**: an Asm execution ending in a halt maps to an
 EVM execution ending in the matching halted state. -/
-theorem arun_halt_sim {prog : List Asm} {is : List Instr}
+theorem arun_halt_sim {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg prog = some is)
     {a b : AConf} {yst' : EvmState}
     (hsteps : ASteps prog a b) (hhalt : AHalt prog b yst')
     (hsuf : a.code <:+ prog) :
-    ∃ bnd : Nat, ∀ s : State, ConfMatch prog is a s → bnd ≤ s.gasAvailable →
+    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
+      bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ StateMatch yst' s' ∧ s'.callStack = []
         ∧ HaltedMatch yst' s' := by
   obtain ⟨b1, H1⟩ := asteps_sim hlow hsteps hsuf

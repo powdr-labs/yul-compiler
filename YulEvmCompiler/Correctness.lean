@@ -108,12 +108,14 @@ theorem compile_correct {prog : YulSemantics.Block Op} {is : List Instr}
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
         have hcm0 : ConfMatch asm is ⟨asm, [], yst0⟩ s0 :=
-          ⟨hf, hm, by rw [hpc]; simp, by rw [hstk]; simp⟩
+          ⟨by simpa using hf, hm, by rw [hpc]; simp, by rw [hstk]; simp⟩
         obtain ⟨s1, hsteps1, hcm1, -⟩ := Hb s0 hcm0 hgas
         have hpc1 : s1.pc = UInt256.ofNat (assembleBytes is).length := by
           rw [hcm1.pc]; simp [hlen]
+        have hframe1 : FrameOK (assemble is) s1 := by
+          simpa using hcm1.frame
         obtain ⟨s2, hstep2, hsm2, hcs2, hhalt2, hret2⟩ :=
-          stopStep (is := is) hcm1.frame hcm1.smatch (assemble_eq_mkCode is) hpc1
+          stopStep (is := is) hframe1 hcm1.smatch (assemble_eq_mkCode is) hpc1
         exact ⟨s2, hsteps1.snoc hstep2, hcs2, hsm2, Or.inl ⟨rfl, hhalt2, hret2⟩⟩
       | halt =>
         have hAS := hout hΦ0
@@ -123,6 +125,72 @@ theorem compile_correct {prog : YulSemantics.Block Op} {is : List Instr}
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
         have hcm0 : ConfMatch asm is ⟨asm, [], yst0⟩ s0 :=
+          ⟨by simpa using hf, hm, by rw [hpc]; simp, by rw [hstk]; simp⟩
+        obtain ⟨s', hsteps', hsm', hcs', hhm'⟩ := Hb s0 hcm0 hgas
+        exact ⟨s', hsteps', hcs', hsm', Or.inr ⟨rfl, hhm'⟩⟩
+      | «break» => rcases hout with ⟨lc, hlc, -⟩; exact absurd hlc (by simp)
+      | «continue» => rcases hout with ⟨lc, hlc, -⟩; exact absurd hlc (by simp)
+      | leave => rcases hout with ⟨fc, hfc, -⟩; exact absurd hfc (by simp)
+
+/-- **Compiler correctness with an object payload.** This is the ordinary
+block theorem executed as the prefix of
+`assembleBytes is ++ 0x00 :: payload`. All compiled instructions and jumps
+remain in the prefix; a normal Yul fall-through executes the explicit `STOP`
+seam, while a source halt preserves its exact halt result before reaching the
+payload. -/
+theorem compile_correct_withPayload
+    {prog : YulSemantics.Block Op} {is : List Instr} {payload : List UInt8}
+    (hcomp : compile prog = some is)
+    {yst0 : EvmState} {V' : VEnv yul} {yst' : EvmState} {o : Outcome}
+    (hrun : YulSemantics.Run yul prog yst0 V' yst' o) :
+    ∃ b : Nat, ∀ s0 : State,
+      FrameOK (assembleWithPayload is (0 :: payload)) s0 → StateMatch yst0 s0 →
+      s0.pc = UInt256.ofNat 0 → s0.stack = [] → b ≤ s0.gasAvailable →
+      ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst' s' ∧
+        ((o = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
+         (o = .halt ∧ HaltedMatch yst' s')) := by
+  rcases hpa : compileProgram prog with _ | asm
+  · simp [compile, hpa] at hcomp
+  · simp only [compile, hpa] at hcomp
+    obtain ⟨scope, n0, Γ', n', hh, hnd, hcs, hwf⟩ := compileProgramAsm_inv hpa
+    have hnodup : (labelDefs asm).Nodup := (wfCheck_iff.mp hwf).nodup
+    cases hrun with
+    | block hbody =>
+      have hM := SimA.sim hnodup hbody
+      have hout := hM [scope] none none n0 asm Γ' n' trivial trivial hcs
+      have hΦ0 : SimA.FEnvOK asm (YulSemantics.hoist yul prog :: []) [scope] :=
+        SimA.hoist_ok SimA.FEnvOK.nil hh hnd hcs (List.infix_refl asm)
+      have hlen : (assembleBytes is).length = codeSize asm := lowerFrag_length hcomp
+      cases o with
+      | normal =>
+        obtain ⟨-, -, hsimS⟩ := hout
+        have hsteps0 := (hsimS hΦ0) [] [] [] (by simp)
+        simp only [List.append_nil] at hsteps0
+        obtain ⟨bnd, Hb⟩ :=
+          asteps_sim (payload := 0 :: payload) hcomp hsteps0 (List.suffix_refl asm)
+        refine ⟨bnd, ?_⟩
+        intro s0 hf hm hpc hstk hgas
+        have hcm0 : ConfMatch (payload := 0 :: payload)
+            asm is ⟨asm, [], yst0⟩ s0 :=
+          ⟨hf, hm, by rw [hpc]; simp, by rw [hstk]; simp⟩
+        obtain ⟨s1, hsteps1, hcm1, -⟩ := Hb s0 hcm0 hgas
+        have hpc1 : s1.pc = UInt256.ofNat (assembleBytes is).length := by
+          rw [hcm1.pc]
+          simp [hlen]
+        obtain ⟨s2, hstep2, hsm2, hcs2, hhalt2, hret2⟩ :=
+          stopSeamStep hcm1.frame hcm1.smatch hpc1
+        exact ⟨s2, hsteps1.snoc hstep2, hcs2, hsm2,
+          Or.inl ⟨rfl, hhalt2, hret2⟩⟩
+      | halt =>
+        have hAS := hout hΦ0
+        obtain ⟨conf, hsteps0, hhalt0⟩ := hAS [] [] [] (by simp)
+        simp only [List.append_nil] at hsteps0
+        obtain ⟨bnd, Hb⟩ := arun_halt_sim (payload := 0 :: payload)
+          hcomp hsteps0 hhalt0 (List.suffix_refl asm)
+        refine ⟨bnd, ?_⟩
+        intro s0 hf hm hpc hstk hgas
+        have hcm0 : ConfMatch (payload := 0 :: payload)
+            asm is ⟨asm, [], yst0⟩ s0 :=
           ⟨hf, hm, by rw [hpc]; simp, by rw [hstk]; simp⟩
         obtain ⟨s', hsteps', hsm', hcs', hhm'⟩ := Hb s0 hcm0 hgas
         exact ⟨s', hsteps', hcs', hsm', Or.inr ⟨rfl, hhm'⟩⟩

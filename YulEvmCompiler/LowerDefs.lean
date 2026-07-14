@@ -136,6 +136,17 @@ theorem AStep.stkOK {prog : List Asm} {a b : AConf}
 theorem assemble_eq_mkCode (is : List Instr) :
     assemble is = mkCode (assembleBytes is) := rfl
 
+/-- A lowered executable prefix followed by bytes that are not part of the
+symbolic program.  Yul objects use the payload for their explicit `STOP`
+seam, recursively compiled children, and data segments. -/
+def assembleWithPayload (is : List Instr) (payload : List UInt8) : ByteArray :=
+  mkCode (assembleBytes is ++ payload)
+
+@[simp] theorem assembleWithPayload_nil (is : List Instr) :
+    assembleWithPayload is [] = assemble is := by
+  rw [assemble_eq_mkCode]
+  simp [assembleWithPayload]
+
 /-- Splitting the lowered program at a code suffix `i :: c`: the bytes
 decompose around `i`'s lowering, with the prefix's byte length equal to the
 suffix's byte position. -/
@@ -198,6 +209,27 @@ theorem locate_label {prog : List Asm} {is : List Instr}
     rw [assemble_eq_mkCode, hbytes, hJ, ← hlenPre]
     exact hvalid
 
+/-- `locate_label`, with the valid-jump-destination fact checked in a full
+object bytecode image. Appending a payload cannot change decoding at a label
+inside the lowered executable prefix. -/
+theorem locate_label_withPayload {prog : List Asm} {is : List Instr}
+    (hlow : lowerProg prog = some is) {l : Label} {c' : List Asm}
+    (hfind : findLabel l prog = some c') (payload : List UInt8) :
+    ∃ (a : Nat) (isPreL isC' : List Instr),
+      resolve l prog = some a
+      ∧ a + 1 + codeSize c' = codeSize prog
+      ∧ assembleBytes is
+        = assembleBytes isPreL ++ (Instr.op .JUMPDEST).bytes
+          ++ assembleBytes isC'
+      ∧ (assembleBytes isPreL).length = a
+      ∧ Decode.isValidJumpDest (assembleWithPayload is payload) a = true := by
+  obtain ⟨a, isPreL, isC', hres, hpos, hbytes, hlen, -⟩ :=
+    locate_label hlow hfind
+  refine ⟨a, isPreL, isC', hres, hpos, hbytes, hlen, ?_⟩
+  have hvalid := isValidJumpDest_boundary isPreL (assembleBytes isC' ++ payload)
+  rw [assembleWithPayload, hbytes, ← hlen]
+  simpa only [List.append_assoc] using hvalid
+
 /-! ### Small arithmetic helpers (local copies; the originals live in the
 milestone-2 `Correctness.lean`, which this pipeline replaces) -/
 
@@ -253,20 +285,39 @@ theorem exchange_swap {α : Type} (x y : α) (τ ρ : List α) :
 /-- The phase-B invariant between an Asm configuration and an EVM state
 running the lowered bytecode. -/
 structure ConfMatch (prog : List Asm) (is : List Instr) (a : AConf)
-    (s : State) : Prop where
-  frame : FrameOK (assemble is) s
+    (s : State) (payload : List UInt8 := []) : Prop where
+  frame : FrameOK (assembleWithPayload is payload) s
   smatch : StateMatch a.yst s
   pc : s.pc = UInt256.ofNat (codeSize prog - codeSize a.code)
   stack : s.stack = mapStk prog a.stk
 
 /-- The lowered program's byte size is `codeSize prog` (bounded by the
 frame invariant). -/
-theorem codeSize_lt {prog : List Asm} {is : List Instr}
+theorem codeSize_lt {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg prog = some is) {s : State}
-    (hf : FrameOK (assemble is) s) : codeSize prog < 2 ^ 256 := by
+    (hf : FrameOK (assembleWithPayload is payload) s) : codeSize prog < 2 ^ 256 := by
   have h := hf.codeSmall
-  rw [assemble_eq_mkCode, size_mkCode, lowerFrag_length hlow] at h
-  exact h
+  rw [assembleWithPayload, size_mkCode, List.length_append,
+    lowerFrag_length hlow] at h
+  omega
+
+/-- Falling through the executable prefix of an object executes its explicit
+`STOP` seam. Bytes after that seam are unreachable on normal fall-through. -/
+theorem stopSeamStep {is : List Instr} {payload : List UInt8}
+    {yst : EvmState} {s : State}
+    (hf : FrameOK (assembleWithPayload is (0 :: payload)) s)
+    (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat (assembleBytes is).length) :
+    ∃ s', EVM.Step s s' ∧ StateMatch yst s' ∧ s'.callStack = []
+      ∧ s'.halt = .Success ∧ s'.hReturn = .empty := by
+  have hcode : assembleWithPayload is (0 :: payload) =
+      mkCode (assembleBytes is ++ (Instr.op .STOP).bytes ++ payload) := by
+    simp [assembleWithPayload, Instr.bytes, Instr.opByte, List.append_assoc]
+  have hdec : s.decodedOp = some .STOP := by
+    exact decoded_op hf hcode hpc (by decide) trivial (by decide)
+  exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec),
+    ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen⟩,
+    hf.callStack, rfl, rfl⟩
 
 /-! ### Reshaping the located bytes for the per-instruction step lemmas
 
@@ -302,6 +353,50 @@ theorem assemble_at₂' {is isPre isC : List Instr} {i j : Instr}
     assemble is
       = mkCode ((assembleBytes isPre ++ i.bytes) ++ j.bytes ++ assembleBytes isC) := by
   rw [assemble_eq_mkCode, hbytes]
+  refine congrArg mkCode ?_
+  simp only [assembleBytes_cons, assembleBytes_nil, List.append_nil,
+    List.append_assoc]
+
+/-- A one-instruction location inside an executable prefix with trailing
+payload. -/
+theorem assembleWithPayload_at₁ {is isPre isC : List Instr} {i : Instr}
+    (hbytes : assembleBytes is
+      = assembleBytes isPre ++ assembleBytes [i] ++ assembleBytes isC)
+    (payload : List UInt8) :
+    assembleWithPayload is payload =
+      mkCode (assembleBytes isPre ++ i.bytes ++ (assembleBytes isC ++ payload)) := by
+  unfold assembleWithPayload
+  rw [hbytes]
+  refine congrArg mkCode ?_
+  simp only [assembleBytes_cons, assembleBytes_nil, List.append_nil,
+    List.append_assoc]
+
+/-- A two-instruction location, shaped around the first instruction, inside
+an executable prefix with trailing payload. -/
+theorem assembleWithPayload_at₂ {is isPre isC : List Instr} {i j : Instr}
+    (hbytes : assembleBytes is
+      = assembleBytes isPre ++ assembleBytes [i, j] ++ assembleBytes isC)
+    (payload : List UInt8) :
+    assembleWithPayload is payload =
+      mkCode (assembleBytes isPre ++ i.bytes ++
+        (j.bytes ++ assembleBytes isC ++ payload)) := by
+  unfold assembleWithPayload
+  rw [hbytes]
+  refine congrArg mkCode ?_
+  simp only [assembleBytes_cons, assembleBytes_nil, List.append_nil,
+    List.append_assoc]
+
+/-- A two-instruction location, shaped around the second instruction, inside
+an executable prefix with trailing payload. -/
+theorem assembleWithPayload_at₂' {is isPre isC : List Instr} {i j : Instr}
+    (hbytes : assembleBytes is
+      = assembleBytes isPre ++ assembleBytes [i, j] ++ assembleBytes isC)
+    (payload : List UInt8) :
+    assembleWithPayload is payload =
+      mkCode ((assembleBytes isPre ++ i.bytes) ++ j.bytes ++
+        (assembleBytes isC ++ payload)) := by
+  unfold assembleWithPayload
+  rw [hbytes]
   refine congrArg mkCode ?_
   simp only [assembleBytes_cons, assembleBytes_nil, List.append_nil,
     List.append_assoc]

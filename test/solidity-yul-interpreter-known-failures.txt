@@ -1,15 +1,18 @@
 # Paths relative to Solidity's test/libyul/yulInterpreterTests directory.
-# Every upstream fixture is run. Keep exactly the fixtures that do not yet
-# parse, compile, execute, or match their embedded post-state expectation.
+# Every fixture whose EVMVersion range includes Osaka is run. Keep exactly the
+# fixtures that do not yet parse, compile, execute, or match their embedded
+# post-state expectation.
 access_large_memory_offsets.yul
 and_create.yul
 and_create2.yul
 blobhash.yul
 create2.yul
+# These compile as real objects. Solidity's AST-interpreter expectations use
+# synthetic hash offsets/sizes and a dummy code buffer, so they are not the
+# post-state of emitted object bytecode.
 datacopy.yul
 dataoffset.yul
 datasize.yul
-difficulty.yul
 expr_nesting_depth_exceeded.yul
 external_call_to_self.yul
 external_call_unexecuted.yul
@@ -21,7 +24,6 @@ infinite_recursion_tracelimit.yul
 isoltestTesting/linkersymbol.yul
 isoltestTesting/loadimmutable.yul
 isoltestTesting/setimmutable_stub.yul
-long_object_name.yul
 mcopy.yul
 mcopy_memory_access_out_of_range.yul
 mcopy_memory_expansion_on_read.yul

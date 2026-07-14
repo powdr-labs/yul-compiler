@@ -85,7 +85,7 @@ jobs:
             /tmp/solidity/test/libyul/yulSyntaxTests \
             test/solidity-yul-syntax-known-mismatches.txt
 
-      - name: Compile and execute all Solidity Yul interpreter tests
+      - name: Compile and execute latest-fork Solidity Yul interpreter tests
         run: |
           lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
             /tmp/solidity/test/libyul/yulInterpreterTests \

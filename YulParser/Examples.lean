@@ -38,6 +38,7 @@ def solidityObject : String :=
   "// ----\n// Trace:\n"
 
 #guard (parseSource solidityObject).isSome
+#guard (compileSource solidityObject).isSome
 
 /-- Hex expression literals use Solidity's byte-string left alignment and can
 be compiled through the source entry point. -/
@@ -58,6 +59,7 @@ def solidityCompatObject : String :=
   "}\n"
 
 #guard (parseSource solidityCompatObject).isSome
+#guard (compileSource solidityCompatObject).isSome
 
 /-! The source entry point also runs Solidity-compatible validation after the
 grammar has produced an AST.  These checks pin representative scope, arity,

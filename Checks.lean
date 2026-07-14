@@ -34,6 +34,14 @@ modulo only the standard classical axioms. -/
 #guard_msgs in
 #print axioms YulEvmCompiler.compile_correct_eval
 
+/-- info: 'YulEvmCompiler.compile_correct_withPayload' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms YulEvmCompiler.compile_correct_withPayload
+
+/-- info: 'YulEvmCompiler.compileObject_correct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms YulEvmCompiler.compileObject_correct
+
 /-- info: 'YulEvmCompiler.compileObject_consistent' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms YulEvmCompiler.compileObject_consistent
