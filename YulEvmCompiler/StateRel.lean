@@ -10,8 +10,8 @@ The correspondence between the two machine states:
 
 * `MemMatch`   — yul-semantics' total `Nat → UInt8` memory vs. evm-semantics'
   `ByteArray` with zero-padded reads;
-* `StateMatch` — memory, calldata/environment data, account balances, and
-  (transient) storage of the executing account;
+* `StateMatch` — memory contents and active size, calldata/environment data,
+  account balances, and (transient) storage of the executing account;
 * `FrameOK`    — the frame-level side conditions that hold throughout a
   straight-line execution (fixed code, Osaka fork, mutation permitted, not a
   precompile frame, no suspended callers, still running);
@@ -19,7 +19,7 @@ The correspondence between the two machine states:
   state's `halt`/`hReturn`.
 
 The memory representation lemmas cover word reads, writes, overlapping copies,
-and zero-padded copies from immutable byte regions.
+zero-padded copies from immutable byte regions, and active-memory expansion.
 -/
 
 namespace YulEvmCompiler
@@ -328,6 +328,69 @@ theorem MemMatch.copyFromBytes {ymem : Nat → UInt8} {m : ByteArray}
       List.getElem?_eq_getElem hk, List.getElem_range, Option.map_some, Option.getD_some]
   · rw [if_neg hw, if_neg hw, getD_eq_dite]; exact hmem a
 
+/-! ### Active-memory high-water-mark agreement -/
+
+/-- A memory range whose current word count, offset, and size are words cannot
+produce an active-word count outside a word. The division by 32 leaves ample
+headroom even when `offset + size` itself needs 257 bits. -/
+theorem activeWordsAfter_lt (curr offset size : Nat)
+    (hcurr : curr < 2 ^ 256) (hoffset : offset < 2 ^ 256)
+    (hsize : size < 2 ^ 256) :
+    YulSemantics.EVM.activeWordsAfter curr offset size < 2 ^ 256 := by
+  unfold YulSemantics.EVM.activeWordsAfter
+  split
+  · exact hcurr
+  · rw [Nat.max_lt]
+    exact ⟨hcurr, by omega⟩
+
+/-- A source `touchMemory` and the target's one-range active-word update
+produce the same wrapped word count from matching starting counts. -/
+theorem activeWordsAfter_eq {yst : YulSemantics.EVM.EvmState} {s : EVM.State}
+    (h : conv yst.activeWords = s.activeWords) (offset size : Nat) :
+    conv (YulSemantics.EVM.touchMemory yst offset size).activeWords
+      = s.activeWordsAfterUInt256 offset size := by
+  have hnat : yst.activeWords.toNat = s.activeWords.toNat := by
+    have := congrArg UInt256.toNat h
+    simpa only [conv_toNat] using this
+  unfold YulSemantics.EVM.touchMemory State.activeWordsAfterUInt256
+  apply u256ext
+  rw [conv_toNat, BitVec.toNat_ofNat, toNat_u256_ofNat, hnat]
+  rfl
+
+/-- Two-range active-memory agreement, used by `mcopy` for its source and
+destination ranges. -/
+theorem activeWordsAfter2_eq {yst : YulSemantics.EVM.EvmState} {s : EVM.State}
+    (h : conv yst.activeWords = s.activeWords)
+    (offset₁ size₁ offset₂ size₂ : Nat)
+    (hoffset₁ : offset₁ < 2 ^ 256) (hsize₁ : size₁ < 2 ^ 256) :
+    conv (YulSemantics.EVM.touchMemory2 yst offset₁ size₁ offset₂ size₂).activeWords
+      = s.activeWordsAfterUInt256_2 offset₁ size₁ offset₂ size₂ := by
+  have hnat : yst.activeWords.toNat = s.activeWords.toNat := by
+    have := congrArg UInt256.toNat h
+    simpa only [conv_toNat] using this
+  have hmid : YulSemantics.EVM.activeWordsAfter
+      yst.activeWords.toNat offset₁ size₁ < 2 ^ 256 :=
+    activeWordsAfter_lt _ _ _ yst.activeWords.isLt hoffset₁ hsize₁
+  unfold YulSemantics.EVM.touchMemory2 YulSemantics.EVM.touchMemory
+    State.activeWordsAfterUInt256_2
+  apply u256ext
+  simp only [conv_toNat, BitVec.toNat_ofNat, toNat_u256_ofNat,
+    Nat.mod_eq_of_lt hmid]
+  rw [hnat]
+  rfl
+
+/-- `msize` agreement: both semantics expose 32 times the matching active-word
+count, wrapped to a machine word. -/
+theorem memorySize_eq {yst : YulSemantics.EVM.EvmState} {s : EVM.State}
+    (h : conv yst.activeWords = s.activeWords) :
+    conv (YulSemantics.EVM.memorySize yst) = MachineState.msize s.toMachineState := by
+  have hnat : yst.activeWords.toNat = s.activeWords.toNat := by
+    have := congrArg UInt256.toNat h
+    simpa only [conv_toNat] using this
+  unfold YulSemantics.EVM.memorySize MachineState.msize
+  apply u256ext
+  rw [conv_toNat, BitVec.toNat_ofNat, toNat_u256_ofNat, hnat]
+
 /-- Correspondence of immutable frame environment data between the two
 semantics, indexed by the *execution environments* alone (not the full state)
 so it is preserved definitionally across steps that leave `executionEnv`
@@ -382,6 +445,9 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   target account lookup. Words are truncated to EVM addresses on both sides. -/
   balanceOf : ∀ a, conv (yst.env.balanceOf a)
     = (s.accountMap (AccountAddress.ofUInt256 (conv a))).balance
+  /-- The active-memory high-water mark agrees. This is separate from
+  `MemMatch`: zero-valued reads and writes still expand memory for `msize`. -/
+  activeWords : conv yst.activeWords = s.activeWords
 
 /-- Frame-level side conditions preserved by every step of a straight-line
 execution. `code` is the full assembled program. -/

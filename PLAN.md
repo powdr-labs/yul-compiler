@@ -43,6 +43,8 @@ Design decisions baked into that statement:
 * **Match relation** `st ∼ s` between `YulSemantics.EVM.EvmState` and
   `EvmSemantics.EVM.State`:
   - memory: `st.memory a = (s.memory[a] or 0 beyond size)` pointwise;
+  - active memory: `st.activeWords = s.activeWords`, so zero-valued accesses
+    that expand memory and `msize` agree even when the memory bytes do not change;
   - storage / transient storage: `st.storage k = (s.accountMap s.executionEnv.address).storage (conv k)`
     pointwise (Yul's single flat storage is the *executing account's* storage);
   - halt: `st.halted` corresponds to `s.halt`/`s.hReturn`
@@ -62,16 +64,18 @@ Design decisions baked into that statement:
 **yul-semantics** (`YulSemantics.*`):
 - `Ast.lean`: `Expr Op` (lit / var / builtin / call), `Stmt Op`, `Outcome`.
 - `Dialect.lean`: dialect interface; `BuiltinResult` (`ok rets st` / `halt st`).
-- `Dialect/EVM.lean` (rev `f4e6187`, `main`): `Op` enum covering the
+- `Dialect/EVM.lean` (rev `124c172`, `main`): `Op` enum covering the
   full user-facing Yul EVM dialect — arithmetic/comparison/bitwise/`clz`,
   `keccak256` (via an **opaque** `keccakBytes`), `pop`, memory
-  (`mload/mstore/mstore8/mcopy`), storage + transient storage, calldata/code/
+  (`mload/mstore/mstore8/mcopy/msize`, with an active-memory high-water mark),
+  storage + transient storage, calldata/code/
   returndata reads and copies, environment readers (`address` … `blobbasefee`),
   world-state reads (`balance`/`extcodesize`/…, as abstract maps in `ExecEnv`),
   `log0`–`log4`, the object-data ops (`dataoffset`/`datasize`/`datacopy`),
-  halting ops; `gas`/calls/creates/`selfdestruct`/`msize` are
+  halting ops; `gas`/calls/creates/`selfdestruct` are
   enumerated but unmodeled (`stepOp = none`). `EvmState` is
-  `memory : Nat → UInt8`, `storage/transient : U256 → U256`, `env : ExecEnv`,
+  `memory : Nat → UInt8`, `activeWords : U256`,
+  `storage/transient : U256 → U256`, `env : ExecEnv`,
   `returndata : List UInt8`, `logs : List LogEntry`,
   `halted : Option (HaltKind × List UInt8)`; `evm : Dialect` has
   `Builtin op args st r ↔ stepOp op args st = some r`.
@@ -262,7 +266,7 @@ Deliverables:
    - bitwise: `and or xor not byte shl shr sar`,
    - stack: `pop`,
    - storage: `sload sstore tload tstore`,
-   - memory: `mload mstore mstore8 mcopy`,
+   - memory: `mload mstore mstore8 mcopy msize`,
    - calldata: `calldataload calldatasize calldatacopy`,
    - env/block readers: `address origin caller callvalue gasprice selfbalance
      coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee`,
@@ -285,7 +289,7 @@ Deliverables:
    (`returndatacopy extcodecopy` — each needs its own state correspondence;
    `mstore8`/`mcopy` and calldata/code/object-data copies are covered), `keccak256`
    (finding 4), `log*` (needs a log correspondence; addable later),
-   `msize`/`gas`/calls/creates/`selfdestruct`
+   `gas`/calls/creates/`selfdestruct`
    (unmodeled in yul-semantics — no source derivation exists, so nothing to
    preserve).
 4. Examples: compiled snippets (e.g. `sstore(0, add(1, 2)); return(0, 0)`) with

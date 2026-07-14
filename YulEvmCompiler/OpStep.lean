@@ -259,7 +259,7 @@ theorem pushStepU {code : ByteArray} {pre post : List UInt8} {u : UInt256}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, ?_, ?_⟩
   · show s.pc + UInt256.ofNat (32 + 1) = _
     rw [hpc, ofNat_add_ofNat (by have := hf.codeSmall; omega)]
   · show u :: s.stack = u :: σ
@@ -294,7 +294,7 @@ theorem stopStep {code : ByteArray} {yst : EvmState} {s : State}
     decide
   exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec),
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, hf.callStack, rfl, rfl⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, hf.callStack, rfl, rfl⟩
 
 /-! ### Variable-access steps: `DUPn`, `SWAPn`, `POP` -/
 
@@ -330,7 +330,7 @@ theorem dupStep {code : ByteArray} {pre post : List UInt8} {n : Fin 16}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, rfl, ?_⟩
   · show s.pc.succ = _
     rw [hpc]; apply succ_ofNat
     have hsz : code.size = pre.length + 1 + post.length := by
@@ -365,7 +365,7 @@ theorem swapStep {code : ByteArray} {pre post : List UInt8} {n : Fin 16}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, rfl, ?_⟩
   · show s.pc.succ = _
     rw [hpc]; apply succ_ofNat
     have hsz : code.size = pre.length + 1 + post.length := by
@@ -400,7 +400,7 @@ theorem popStep {code : ByteArray} {pre post : List UInt8}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, rfl, ?_⟩
   · show s.pc.succ = _
     rw [hpc]; apply succ_ofNat
     have hsz : code.size = pre.length + 1 + post.length := by
@@ -460,7 +460,7 @@ private theorem binPure
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, ?_, ?_⟩
   · show s.pc.succ = _
     rw [hpc]
     apply succ_ofNat
@@ -508,7 +508,7 @@ private theorem nullaryRead {yv : U256} {sv : UInt256}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, ?_, ?_⟩
   · show s.pc.succ = _
     rw [hpc]; apply succ_ofNat
     have hsz : code.size = pre.length + 1 + post.length := by
@@ -559,7 +559,7 @@ private theorem unPure
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, ?_, ?_⟩
   · show s.pc.succ = _
     rw [hpc]
     apply succ_ofNat
@@ -613,7 +613,7 @@ private theorem terPure
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, ?_, ?_⟩
   · show s.pc.succ = _
     rw [hpc]
     apply succ_ofNat
@@ -925,7 +925,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, ?_, ?_⟩
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -953,7 +953,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, rfl, ?_⟩
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -967,7 +967,8 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     rcases args with _ | ⟨p, _ | ⟨b, args⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
     show OkStep code s (opBound .mload [p])
-      [YulSemantics.EVM.loadWord yst.memory p.toNat] yst pre.length 1 σ
+      [YulSemantics.EVM.loadWord yst.memory p.toNat]
+      (YulSemantics.EVM.touchMemory yst p.toNat 32) pre.length 1 σ
     obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .mload) rfl
     have hdec := decoded_op hf hcode hpc hb' hplain
       (opTable_available (yop := .mload) rfl)
@@ -984,7 +985,8 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_⟩, ?_, ?_, ?_⟩
+    · simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords p.toNat 32
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1003,7 +1005,8 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     rcases args with _ | ⟨p, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
     show OkStep code s (opBound .mstore [p, v]) []
-      { yst with memory := YulSemantics.EVM.storeWord yst.memory p.toNat v }
+      { YulSemantics.EVM.touchMemory yst p.toNat 32 with
+        memory := YulSemantics.EVM.storeWord yst.memory p.toNat v }
       pre.length 1 σ
     obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .mstore) rfl
     have hdec := decoded_op hf hcode hpc hb' hplain
@@ -1021,12 +1024,13 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_⟩, ?_, rfl, ?_⟩
     · show MemMatch (YulSemantics.EVM.storeWord yst.memory p.toNat v)
         (MachineState.writeBytes s.memory
           (Data.Bytes.natToBytesPadded (conv v).toNat 32) (conv p).toNat)
       rw [show (conv p).toNat = p.toNat from conv_toNat p]
       exact hm.mem.storeWord p.toNat v
+    · simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords p.toNat 32
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1044,7 +1048,8 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     rcases args with _ | ⟨p, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
     show OkStep code s (opBound .mstore8 [p, v]) []
-      { yst with memory := YulSemantics.EVM.storeByte yst.memory p.toNat v }
+      { YulSemantics.EVM.touchMemory yst p.toNat 1 with
+        memory := YulSemantics.EVM.storeByte yst.memory p.toNat v }
       pre.length 1 σ
     obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .mstore8) rfl
     have hdec := decoded_op hf hcode hpc hb' hplain
@@ -1062,12 +1067,13 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_⟩, ?_, rfl, ?_⟩
     · show MemMatch (YulSemantics.EVM.storeByte yst.memory p.toNat v)
         (MachineState.writeBytes s.memory
           (ByteArray.mk #[UInt8.ofNat ((conv v).toNat % 256)]) (conv p).toNat)
       rw [show (conv p).toNat = p.toNat from conv_toNat p]
       exact hm.mem.storeByte p.toNat v
+    · simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords p.toNat 1
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1086,7 +1092,8 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       simp [stepOp] at hyul
     subst hyul
     show OkStep code s (opBound .mcopy [d, src, n]) []
-      { yst with memory :=
+      { YulSemantics.EVM.touchMemory2 yst d.toNat n.toNat src.toNat n.toNat with
+        memory :=
           YulSemantics.EVM.copyWithin yst.memory d.toNat src.toNat n.toNat }
       pre.length 1 σ
     obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .mcopy) rfl
@@ -1112,7 +1119,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_⟩, ?_, rfl, ?_⟩
     · show MemMatch
         (YulSemantics.EVM.copyWithin yst.memory d.toNat src.toNat n.toNat)
         (MachineState.writeBytes s.memory
@@ -1120,6 +1127,8 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
             (conv d).toNat)
       rw [conv_toNat d, conv_toNat src, conv_toNat n]
       exact hm.mem.copyWithin d.toNat src.toNat n.toNat
+    · simpa only [conv_toNat] using activeWordsAfter2_eq hm.activeWords
+        d.toNat n.toNat src.toNat n.toNat d.isLt n.isLt
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1130,6 +1139,17 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       unfold Gas.mcopyTotal
       rw [conv_toNat d, conv_toNat src, conv_toNat n, h4, h3]
       omega
+  case msize =>
+    have hval := memorySize_eq hm.activeWords
+    cases r with
+    | ok rets yst' =>
+      exact (nullaryRead rfl (by decide) hval hyul rfl
+        (fun h1 h2 => .msize s h1 h2)
+        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+    | halt yst' =>
+      exact (nullaryRead rfl (by decide) hval hyul rfl
+        (fun h1 h2 => .msize s h1 h2)
+        hcode hf hm hpc hstk hgas40).elim
   case calldataload =>
     rcases args with _ | ⟨p, _ | ⟨b, args⟩⟩ <;> simp [stepOp, YulSemantics.EVM.rd1] at hyul
     subst hyul
@@ -1148,7 +1168,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, ?_, ?_⟩
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1183,8 +1203,9 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     rcases args with _ | ⟨d, _ | ⟨s0, _ | ⟨nn, _ | ⟨e, args⟩⟩⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
     show OkStep code s (opBound .calldatacopy [d, s0, nn]) []
-      { yst with memory :=
-          YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.calldata }
+      { YulSemantics.EVM.touchMemory yst d.toNat nn.toNat with memory :=
+          (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat
+            yst.env.calldata) }
       pre.length 1 σ
     obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .calldatacopy) rfl
     have hdec := decoded_op hf hcode hpc hb' hplain
@@ -1208,7 +1229,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_⟩, ?_, rfl, ?_⟩
     · show MemMatch
         (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.calldata)
         (MachineState.writeBytes s.memory
@@ -1216,6 +1237,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
             (conv s0).toNat (conv nn).toNat) (conv d).toNat)
       rw [conv_toNat d, conv_toNat s0, conv_toNat nn]
       exact hm.mem.copyFromBytes hm.cd d.toNat s0.toNat nn.toNat
+    · simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords d.toNat nn.toNat
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1230,8 +1252,9 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     rcases args with _ | ⟨d, _ | ⟨s0, _ | ⟨nn, _ | ⟨e, args⟩⟩⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
     show OkStep code s (opBound .codecopy [d, s0, nn]) []
-      { yst with memory :=
-          YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.code }
+      { YulSemantics.EVM.touchMemory yst d.toNat nn.toNat with memory :=
+          (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat
+            yst.env.code) }
       pre.length 1 σ
     obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .codecopy) rfl
     have hdec := decoded_op hf hcode hpc hb' hplain (opTable_available (yop := .codecopy) rfl)
@@ -1250,13 +1273,14 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_⟩, ?_, rfl, ?_⟩
     · show MemMatch (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.code)
         (MachineState.writeBytes s.memory
           (MachineState.readPadded s.executionEnv.code (conv s0).toNat (conv nn).toNat)
             (conv d).toNat)
       rw [conv_toNat d, conv_toNat s0, conv_toNat nn]
       exact hm.mem.copyFromBytes hm.codeBytes d.toNat s0.toNat nn.toNat
+    · simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords d.toNat nn.toNat
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1269,8 +1293,9 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     rcases args with _ | ⟨d, _ | ⟨s0, _ | ⟨nn, _ | ⟨e, args⟩⟩⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
     show OkStep code s (opBound .datacopy [d, s0, nn]) []
-      { yst with memory :=
-          YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.code }
+      { YulSemantics.EVM.touchMemory yst d.toNat nn.toNat with memory :=
+          (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat
+            yst.env.code) }
       pre.length 1 σ
     obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .datacopy) rfl
     have hdec := decoded_op hf hcode hpc hb' hplain (opTable_available (yop := .datacopy) rfl)
@@ -1289,13 +1314,14 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_⟩, ?_, rfl, ?_⟩
     · show MemMatch (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.code)
         (MachineState.writeBytes s.memory
           (MachineState.readPadded s.executionEnv.code (conv s0).toNat (conv nn).toNat)
             (conv d).toNat)
       rw [conv_toNat d, conv_toNat s0, conv_toNat nn]
       exact hm.mem.copyFromBytes hm.codeBytes d.toNat s0.toNat nn.toNat
+    · simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords d.toNat nn.toNat
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1483,7 +1509,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, ?_, ?_⟩
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1519,7 +1545,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-          hm.selfBalance, hm.balanceOf⟩, ?_, ?_, ?_⟩
+          hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, ?_, ?_⟩
       · show s.pc.succ = _
         rw [hpc]; apply succ_ofNat
         have hsz : code.size = pre.length + 1 + post.length := by
@@ -1540,7 +1566,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-          hm.selfBalance, hm.balanceOf⟩, ?_, ?_, ?_⟩
+          hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, ?_, ?_⟩
       · show s.pc.succ = _
         rw [hpc]; apply succ_ofNat
         have hsz : code.size = pre.length + 1 + post.length := by
@@ -1572,7 +1598,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, ?_, ?_⟩
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1651,6 +1677,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
           simpa using hba
         · rw [AccountMap.get_set_other _ _ _ _ ha]
           exact hm.balanceOf a
+      · exact hm.activeWords
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1684,7 +1711,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, ?_, ?_⟩
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1745,6 +1772,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
           simpa using hba
         · rw [AccountMap.get_set_other _ _ _ _ ha]
           exact hm.balanceOf a
+      · exact hm.activeWords
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1764,7 +1792,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       (opTable_available (yop := .stop) rfl)
     exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec),
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, hf.callStack, (.stop, []), rfl, rfl⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, hf.callStack, (.stop, []), rfl, rfl⟩
   case invalid =>
     rcases args with _ | ⟨a, args⟩ <;> simp [stepOp] at hyul
     subst hyul
@@ -1775,11 +1803,11 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     exact ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.invalidOpcode s hdec),
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, hf.callStack, (.invalid, []), rfl, rfl⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, hf.callStack, (.invalid, []), rfl, rfl⟩
   case ret =>
     rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨c, args⟩⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
-    show HaltStep s { yst with
+    show HaltStep s { YulSemantics.EVM.touchMemory yst p.toNat n.toNat with
       halted := some (.ret, YulSemantics.EVM.readBytes yst.memory p.toNat n.toNat) }
     obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .ret) rfl
     have hdec := decoded_op hf hcode hpc hb' hplain
@@ -1794,13 +1822,15 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     exact ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.return_ s (conv p) (conv n) σ hdec hstk' hgas'),
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, hf.callStack,
+        hm.selfBalance, hm.balanceOf,
+        by simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords p.toNat n.toNat⟩,
+      hf.callStack,
       (.ret, YulSemantics.EVM.readBytes yst.memory p.toNat n.toNat), rfl,
       rfl, (hm.mem.readBytes p.toNat n.toNat).symm⟩
   case revert =>
     rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨c, args⟩⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
-    show HaltStep s { yst with
+    show HaltStep s { YulSemantics.EVM.touchMemory yst p.toNat n.toNat with
       halted := some (.revert, YulSemantics.EVM.readBytes yst.memory p.toNat n.toNat) }
     obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .revert) rfl
     have hdec := decoded_op hf hcode hpc hb' hplain
@@ -1815,7 +1845,9 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     exact ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.revert s (conv p) (conv n) σ hdec hstk' hgas'),
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, hf.callStack,
+        hm.selfBalance, hm.balanceOf,
+        by simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords p.toNat n.toNat⟩,
+      hf.callStack,
       (.revert, YulSemantics.EVM.readBytes yst.memory p.toNat n.toNat), rfl,
       rfl, (hm.mem.readBytes p.toNat n.toNat).symm⟩
 
@@ -1843,7 +1875,7 @@ theorem jumpdestStep {code : ByteArray} {pre post : List UInt8}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, rfl, ?_⟩
   · show s.pc.succ = _
     rw [hpc]; apply succ_ofNat
     have hsz : code.size = pre.length + 1 + post.length := by
@@ -1880,7 +1912,7 @@ theorem jumpStep {code : ByteArray} {pre post : List UInt8}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, rfl, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, rfl, rfl, ?_⟩
   · show s.gasAvailable - Gas.baseCost s.fork .JUMP ≥ s.gasAvailable - 40000
     apply Nat.sub_le_sub_left
     rw [hfork]
@@ -1911,7 +1943,7 @@ theorem jumpiNotTakenStep {code : ByteArray} {pre post : List UInt8}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, ?_, rfl, ?_⟩
   · show s.pc.succ = _
     rw [hpc]; apply succ_ofNat
     have hsz : code.size = pre.length + 1 + post.length := by
@@ -1949,7 +1981,7 @@ theorem jumpiTakenStep {code : ByteArray} {pre post : List UInt8}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf⟩, rfl, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords⟩, rfl, rfl, ?_⟩
   · show s.gasAvailable - Gas.baseCost s.fork .JUMPI ≥ s.gasAvailable - 40000
     apply Nat.sub_le_sub_left
     rw [hfork]

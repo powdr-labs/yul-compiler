@@ -27,7 +27,7 @@ Deliberately *not* covered so far:
 * `log0`–`log4` — need a log-series correspondence (mechanical, later);
 * remaining world-state readers (`extcode*`, `blockhash`) — need their
   account/code/header map correspondences;
-* `msize`, `gas`, calls/creates, `selfdestruct` — unmodeled in yul-semantics
+* `gas`, calls/creates, `selfdestruct` — unmodeled in yul-semantics
   (`stepOp` returns `none`), so no source derivation exists to preserve. -/
 def opTable : Op → Option Operation
   -- arithmetic
@@ -45,8 +45,8 @@ def opTable : Op → Option Operation
   | .sar => some .SAR
   -- value discard
   | .pop => some .POP
-  -- memory read
-  | .mload => some .MLOAD
+  -- memory read / active-size read
+  | .mload => some .MLOAD | .msize => some .MSIZE
   -- memory write / copy
   | .mstore => some .MSTORE | .mstore8 => some .MSTORE8
   | .mcopy => some .MCOPY
