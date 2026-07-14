@@ -67,7 +67,7 @@ def opByte : Operation → UInt8
   | .BLOBHASH => 0x49 | .BLOBBASEFEE => 0x4a
   | .POP => 0x50 | .MLOAD => 0x51 | .MSTORE => 0x52 | .MSTORE8 => 0x53
   | .SLOAD => 0x54 | .SSTORE => 0x55
-  | .JUMP => 0x56 | .JUMPI => 0x57 | .JUMPDEST => 0x5b
+  | .JUMP => 0x56 | .JUMPI => 0x57 | .MSIZE => 0x59 | .JUMPDEST => 0x5b
   | .TLOAD => 0x5c | .TSTORE => 0x5d | .MCOPY => 0x5e
   | .Dup d => UInt8.ofNat (0x80 + d.idx.val)
   | .Swap s => UInt8.ofNat (0x90 + s.idx.val)

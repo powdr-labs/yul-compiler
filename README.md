@@ -98,7 +98,7 @@ The verified built-in set (the domain of `opTable` in
 | bitwise    | `and or xor not byte shl shr sar` |
 | stack      | `pop` |
 | storage    | `sload sstore tload tstore` |
-| memory     | `mload mstore mstore8 mcopy` |
+| memory     | `mload mstore mstore8 mcopy msize` |
 | calldata   | `calldataload calldatasize calldatacopy` |
 | code       | `codesize codecopy datacopy` |
 | env/block  | `address origin caller callvalue gasprice selfbalance coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee` |
@@ -154,10 +154,11 @@ The proof is a two-phase forward simulation:
   the execution.
 
 The correspondence `StateMatch` relates memory pointwise (total function vs.
-zero-padded `ByteArray`), Yul's flat storage/transient storage to the
-executing account's storage, and calldata and executing code pointwise (with
-an exact code-length agreement). Gas is existentially bounded because
-yul-semantics deliberately does not model gas. Per-instruction facts live in
+zero-padded `ByteArray`) and its active-word high-water mark, Yul's flat
+storage/transient storage to the executing account's storage, and calldata and
+executing code pointwise (with an exact code-length agreement). Gas is
+existentially bounded because yul-semantics deliberately does not model gas.
+Per-instruction facts live in
 `OpStep.lean`, byte-level decoding facts in `Decode.lean`, and the
 `BitVec 256` ↔ `UInt256` arithmetic agreements in `Value.lean`.
 
@@ -201,7 +202,7 @@ failures and stale entries. The reusable runner in
 test environment, runs the assembled bytecode with `evm-semantics`, and
 exactly compares every nonzero memory word, persistent-storage entry, and
 transient-storage entry with the dumps embedded after `// ----`. Object roots
-go through the production object compiler. The current baseline contains 32
+go through the production object compiler. The current baseline contains 24
 fixtures; three of those are object fixtures whose AST-interpreter dumps
 deliberately use synthetic hash offsets/sizes and a dummy code buffer rather
 than the state produced by compiled object bytecode. The remaining entries are

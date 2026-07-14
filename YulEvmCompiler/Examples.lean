@@ -211,6 +211,22 @@ def calldataOps : Block Op := yul% {
   sstore(2, mload(32))
 }
 
+/-- `msize` reports the active-memory high-water mark in bytes. This covers
+word reads, byte writes, both ranges of `mcopy`, and the EVM rule that a
+zero-length range does not expand memory even at the maximum offset. The
+values stored in slots 0 through 4 are `0`, `64`, `128`, `256`, and `256`. -/
+def memorySizeOps : Block Op := yul% {
+  sstore(0, msize())
+  pop(mload(32))
+  sstore(1, msize())
+  mstore8(96, 0)
+  sstore(2, msize())
+  mcopy(160, 224, 1)
+  sstore(3, msize())
+  calldatacopy(not(0), 0, 0)
+  sstore(4, msize())
+}
+
 /-- Account and transaction-context reads: the executing balance, another
 account's balance, one in-range blob hash, and one out-of-range blob hash. -/
 def accountAndBlobReads : Block Op := yul% {
@@ -236,6 +252,8 @@ def accountAndBlobReads : Block Op := yul% {
 #guard (compile signExtendCases).isSome
 #guard (compileProgram calldataOps).isSome
 #guard (compile calldataOps).isSome
+#guard (compileProgram memorySizeOps).isSome
+#guard (compile memorySizeOps).isSome
 #guard (compileProgram accountAndBlobReads).isSome
 #guard (compile accountAndBlobReads).isSome
 
@@ -318,6 +336,7 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn byteAndOverlapCopy [0, 1]
 #guard agreeOn signExtendCases [0, 1, 2]
 #guard agreeOnWithCalldata calldataOps [0xaa, 0xbb, 0xcc] [0, 1, 2]
+#guard agreeOn memorySizeOps [0, 1, 2, 3, 4]
 
 /-- Differential check with the source's abstract balance/blob oracles and the
 target's concrete account map/blob list initialized to matching values. -/
@@ -400,5 +419,9 @@ def agreeReturn (prog : Block Op) (cd : List UInt8) : Bool :=
 #guard (runYul 100000 signExtendCases).map
     (fun st => ((st.storage 0).toInt, (st.storage 1).toNat, (st.storage 2).toNat)) =
       some (-128, 127, 128)
+#guard (runYul 100000 memorySizeOps).map
+    (fun st => ((st.storage 0).toNat, (st.storage 1).toNat,
+      (st.storage 2).toNat, (st.storage 3).toNat, (st.storage 4).toNat)) =
+      some (0, 64, 128, 256, 256)
 
 end YulEvmCompiler.Examples
