@@ -25,7 +25,6 @@ isoltestTesting/loadimmutable.yul
 isoltestTesting/setimmutable_stub.yul
 mcopy_memory_access_out_of_range.yul
 pop_byte_shr_call.yul
-recursive_function_for_loop.yul
 side_effect_free.yul
 zero_length_reads.yul
 zero_length_reads_and_revert.yul

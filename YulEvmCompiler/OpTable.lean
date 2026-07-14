@@ -20,7 +20,6 @@ open EvmSemantics (Operation)
 the built-in is not (yet) in the verified fragment.
 
 Deliberately *not* covered so far:
-* `keccak256` — the two repos each declare their own unrelated `opaque` hash;
 * `log0`–`log4` — need a log-series correspondence (mechanical, later);
 * `gas`, calls/creates, `selfdestruct` — unmodeled in yul-semantics
   (`stepOp` returns `none`), so no source derivation exists to preserve. -/
@@ -38,8 +37,8 @@ def opTable : Op → Option Operation
   | .and => some .AND | .or => some .OR | .xor => some .XOR | .not => some .NOT
   | .byte => some .BYTE | .shl => some .SHL | .shr => some .SHR
   | .sar => some .SAR
-  -- value discard
-  | .pop => some .POP
+  -- hashing / value discard
+  | .keccak256 => some .KECCAK256 | .pop => some .POP
   -- memory read / active-size read
   | .mload => some .MLOAD | .msize => some .MSIZE
   -- memory write / copy

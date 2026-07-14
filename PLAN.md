@@ -67,9 +67,10 @@ Design decisions baked into that statement:
 **yul-semantics** (`YulSemantics.*`):
 - `Ast.lean`: `Expr Op` (lit / var / builtin / call), `Stmt Op`, `Outcome`.
 - `Dialect.lean`: dialect interface; `BuiltinResult` (`ok rets st` / `halt st`).
-- `Dialect/EVM.lean` (rev `2556d86`, `main`): `Op` enum covering the
+- `Dialect/EVM.lean` (rev `a55fcb4`, `agent/keccak-oracle`): `Op` enum covering the
   full user-facing Yul EVM dialect — arithmetic/comparison/bitwise/`clz`,
-  `keccak256` (via an **opaque** `keccakBytes`), `pop`, memory
+  `keccak256` (via the configurable `ExecEnv.keccakOf` oracle, with opaque
+  `keccakBytes` as its standalone default), `pop`, memory
   (`mload/mstore/mstore8/mcopy/msize`, with an active-memory high-water mark),
   storage + transient storage, calldata/code/
   returndata reads and copies, environment readers (`address` … `blobbasefee`),
@@ -132,12 +133,14 @@ Design decisions baked into that statement:
 3. Reads are unaffected: `readPadded`/`readWord` are total, so `mload`,
    `return(p,s)`, and `revert(p,s)` are verified. They also compose with the
    verified `mstore`, whose proof preserves `MemMatch`.
-4. **`keccak256` is opaque on both sides, but they are *different* opaques**:
-   yul-semantics has `opaque keccakBytes : List UInt8 → U256`, evm-semantics has
-   `opaque keccak256 : ByteArray → UInt256`. No agreement between two unrelated
-   opaque constants is provable, so `keccak256` support needs either (a) an
-   explicit agreement hypothesis on the main theorem, or (b) an upstream bridge
-   (e.g. yul-semantics parameterizing the hash). Deferred.
+4. **The Keccak representation boundary is explicit and proved.**
+   yul-semantics keeps its standalone default abstract, but `ExecEnv.keccakOf`
+   lets a client supply the hash function. `EnvMatch.keccak` states pointwise
+   agreement between that oracle and evm-semantics' `keccak256` on the same
+   bytes. `targetKeccakOracle_agrees` constructs and proves a concrete matching
+   oracle for executable tests, and `opStep` uses the agreement field to prove
+   the `KECCAK256` instruction while separately preserving memory expansion and
+   bounding its per-word gas.
 
 ## Architecture of this repo
 
@@ -268,6 +271,7 @@ Deliverables:
    - arithmetic: `add sub mul div sdiv mod smod addmod mulmod exp signextend clz`,
    - comparison: `lt gt slt sgt eq iszero`,
    - bitwise: `and or xor not byte shl shr sar`,
+   - hashing: `keccak256`,
    - stack: `pop`,
    - storage: `sload sstore tload tstore`,
    - memory: `mload mstore mstore8 mcopy msize`,
@@ -291,9 +295,9 @@ Deliverables:
    `extcodecopy`, and `extcodehash` use the pointwise external-code/account-map
    relation; `blockhash` uses the historical-header lookup in `EnvMatch`.
    `selfbalance`, `balance`, and `blobhash` are covered by the account-map and
-   transaction blob-list fields of `StateMatch`/`EnvMatch`. Excluded until
-   further work: `keccak256`
-   (finding 4), `log*` (needs a log correspondence; addable later),
+   transaction blob-list fields of `StateMatch`/`EnvMatch`. `keccak256` uses
+   the hash-oracle agreement described in finding 4. Excluded until further
+   work: `log*` (needs a log correspondence; addable later),
    `gas`/calls/creates/`selfdestruct`
    (unmodeled in yul-semantics — no source derivation exists, so nothing to
    preserve).

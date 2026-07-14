@@ -11,8 +11,8 @@ The correspondence between the two machine states:
 * `MemMatch`   — yul-semantics' total `Nat → UInt8` memory vs. evm-semantics'
   `ByteArray` with zero-padded reads;
 * `StateMatch` — memory contents and active size, calldata/code/returndata,
-  environment data, account balances and external code, and (transient)
-  storage of the executing account;
+  environment data (including the hash-oracle agreement), account balances
+  and external code, and (transient) storage of the executing account;
 * `FrameOK`    — the frame-level side conditions that hold throughout a
   straight-line execution (fixed code, Osaka fork, mutation permitted, not a
   precompile frame, no suspended callers, still running);
@@ -43,6 +43,18 @@ theorem mkCode_toList (b : ByteArray) : mkCode b.toList = b := by
   rw [ByteArray.toList_eq_data]
   show ByteArray.mk b.data.toList.toArray = b
   rw [Array.toArray_toList]
+
+/-- A concrete source-side oracle obtained from the target semantics' Keccak
+primitive. This is used by executable differential tests; the correctness
+theorem itself only requires the pointwise agreement recorded in `EnvMatch`. -/
+def targetKeccakOracle (bytes : List UInt8) : YulSemantics.EVM.U256 :=
+  BitVec.ofNat 256 (EvmSemantics.keccak256 (mkCode bytes)).toNat
+
+theorem targetKeccakOracle_agrees (bytes : List UInt8) :
+    conv (targetKeccakOracle bytes) = EvmSemantics.keccak256 (mkCode bytes) := by
+  apply u256ext
+  rw [conv_toNat, targetKeccakOracle, BitVec.toNat_ofNat]
+  exact Nat.mod_eq_of_lt (EvmSemantics.keccak256 (mkCode bytes)).val.isLt
 
 /-! ### `RETURN`/`REVERT` payload agreement -/
 
@@ -398,6 +410,9 @@ so it is preserved definitionally across steps that leave `executionEnv`
 untouched — which is every supported op. -/
 structure EnvMatch (ye : YulSemantics.EVM.ExecEnv) (se : ExecutionEnv) : Prop where
   calldataLen : ye.calldata.length = se.calldata.size
+  /-- The source's abstract, configurable Keccak oracle agrees with the
+  target semantics' hash primitive on the same byte sequence. -/
+  keccak : ∀ bytes, conv (ye.keccakOf bytes) = EvmSemantics.keccak256 (mkCode bytes)
   address    : conv ye.address    = se.address.toUInt256
   origin     : conv ye.origin     = se.origin.toUInt256
   caller     : conv ye.caller     = se.caller.toUInt256
@@ -530,6 +545,7 @@ def HaltMatch (hk : YulSemantics.EVM.HaltKind × List UInt8) (s : EVM.State) : P
   | .ret     => s.halt = .Returned ∧ s.hReturn.toList = hk.2
   | .revert  => s.halt = .Reverted ∧ s.hReturn.toList = hk.2
   | .invalid => s.halt = .Exception .InvalidInstruction
+  | .invalidMemoryAccess => s.halt = .Exception .InvalidMemoryAccess
 
 /-- The `ExecutionResult` a yul-semantics halt corresponds to. -/
 def resultOf (hk : YulSemantics.EVM.HaltKind × List UInt8) : ExecutionResult :=
@@ -538,5 +554,6 @@ def resultOf (hk : YulSemantics.EVM.HaltKind × List UInt8) : ExecutionResult :=
   | .ret     => .returned (mkCode hk.2)
   | .revert  => .reverted (mkCode hk.2)
   | .invalid => .exception .InvalidInstruction
+  | .invalidMemoryAccess => .exception .InvalidMemoryAccess
 
 end YulEvmCompiler
