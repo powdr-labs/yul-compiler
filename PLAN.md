@@ -67,7 +67,7 @@ Design decisions baked into that statement:
 **yul-semantics** (`YulSemantics.*`):
 - `Ast.lean`: `Expr Op` (lit / var / builtin / call), `Stmt Op`, `Outcome`.
 - `Dialect.lean`: dialect interface; `BuiltinResult` (`ok rets st` / `halt st`).
-- `Dialect/EVM.lean` (rev `a55fcb4`, `agent/keccak-oracle`): `Op` enum covering the
+- `Dialect/EVM.lean` (rev `a55fcb4`, `main`): `Op` enum covering the
   full user-facing Yul EVM dialect — arithmetic/comparison/bitwise/`clz`,
   `keccak256` (via the configurable `ExecEnv.keccakOf` oracle, with opaque
   `keccakBytes` as its standalone default), `pop`, memory
