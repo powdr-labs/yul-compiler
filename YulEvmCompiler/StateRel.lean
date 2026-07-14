@@ -10,15 +10,16 @@ The correspondence between the two machine states:
 
 * `MemMatch`   — yul-semantics' total `Nat → UInt8` memory vs. evm-semantics'
   `ByteArray` with zero-padded reads;
-* `StateMatch` — memory + (transient) storage of the executing account;
+* `StateMatch` — memory, calldata/environment data, and (transient) storage of
+  the executing account;
 * `FrameOK`    — the frame-level side conditions that hold throughout a
   straight-line execution (fixed code, Osaka fork, mutation permitted, not a
   precompile frame, no suspended callers, still running);
 * `HaltMatch`  — how a yul-semantics halt payload shows up in the target
   state's `halt`/`hReturn`.
 
-Plus the two memory read-agreement lemmas (`MLOAD`, and the `RETURN`/`REVERT`
-payloads), which are the only place the two memory representations meet.
+The memory representation lemmas cover word reads, writes, overlapping copies,
+and zero-padded copies from immutable byte regions.
 -/
 
 namespace YulEvmCompiler
@@ -296,20 +297,20 @@ theorem MemMatch.copyWithin {ymem : Nat → UInt8} {m : ByteArray}
   · rw [if_neg hw, if_neg hw, getD_eq_dite]
     exact hmem a
 
-/-- Copying `n` bytes from the code region to memory (`codecopy`/`datacopy`):
-Yul's `copyInto … env.code` matches the target's
-`writeBytes … (readPadded code …)`, using the code-region agreement. Inside the
-copied window both read the segment byte (via the `readBytes` characterization);
-outside, both leave memory unchanged. -/
-theorem MemMatch.copyFromCode {ymem : Nat → UInt8} {m : ByteArray}
-    {ycode : List UInt8} {mcode : ByteArray}
+/-- Copying `n` bytes from an immutable byte region to memory
+(`calldatacopy`/`codecopy`/`datacopy`): Yul's `copyInto` matches the target's
+`writeBytes … (readPadded data …)`, using the region's pointwise agreement.
+Inside the copied window both read the same zero-padded byte; outside, both
+leave memory unchanged. -/
+theorem MemMatch.copyFromBytes {ymem : Nat → UInt8} {m : ByteArray}
+    {ydata : List UInt8} {mdata : ByteArray}
     (hmem : MemMatch ymem m)
-    (hcode : MemMatch (YulSemantics.EVM.byteFrom ycode) mcode)
+    (hdata : MemMatch (YulSemantics.EVM.byteFrom ydata) mdata)
     (dst src n : Nat) :
-    MemMatch (YulSemantics.EVM.copyInto ymem dst src n ycode)
-      (MachineState.writeBytes m (MachineState.readPadded mcode src n) dst) := by
-  have hrb := hcode.readBytes src n
-  have hsz : (MachineState.readPadded mcode src n).size = n := by
+    MemMatch (YulSemantics.EVM.copyInto ymem dst src n ydata)
+      (MachineState.writeBytes m (MachineState.readPadded mdata src n) dst) := by
+  have hrb := hdata.readBytes src n
+  have hsz : (MachineState.readPadded mdata src n).size = n := by
     have h := congrArg List.length hrb
     simp only [YulSemantics.EVM.readBytes, List.length_map, List.length_range,
       ByteArray.toList_eq_data, Array.length_toList] at h
@@ -320,19 +321,19 @@ theorem MemMatch.copyFromCode {ymem : Nat → UInt8} {m : ByteArray}
   by_cases hw : dst ≤ a ∧ a < dst + n
   · have hk : a - dst < (List.range n).length := by simp; omega
     rw [if_pos hw, if_pos hw,
-      show (MachineState.readPadded mcode src n)[a - dst]?
-          = (MachineState.readPadded mcode src n).toList[a - dst]? from by
+      show (MachineState.readPadded mdata src n)[a - dst]?
+          = (MachineState.readPadded mdata src n).toList[a - dst]? from by
         rw [ByteArray.toList_eq_data, Array.getElem?_toList]; rfl, ← hrb]
     simp only [YulSemantics.EVM.readBytes, List.getElem?_map,
       List.getElem?_eq_getElem hk, List.getElem_range, Option.map_some, Option.getD_some]
   · rw [if_neg hw, if_neg hw, getD_eq_dite]; exact hmem a
 
-/-- Correspondence of the frame's scalar environment/block readers between the
-two semantics, indexed by the *execution environments* alone (not the full
-state) so it is preserved definitionally across steps that leave
-`executionEnv` untouched — which is every supported op. Each field is the
-agreement consumed by one nullary reader (`CALLER`, `TIMESTAMP`, …). -/
+/-- Correspondence of immutable frame environment data between the two
+semantics, indexed by the *execution environments* alone (not the full state)
+so it is preserved definitionally across steps that leave `executionEnv`
+untouched — which is every supported op. -/
 structure EnvMatch (ye : YulSemantics.EVM.ExecEnv) (se : ExecutionEnv) : Prop where
+  calldataLen : ye.calldata.length = se.calldata.size
   address    : conv ye.address    = se.address.toUInt256
   origin     : conv ye.origin     = se.origin.toUInt256
   caller     : conv ye.caller     = se.caller.toUInt256
@@ -363,7 +364,7 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   frame's `ByteArray` calldata — i.e. `MemMatch` at the `byteFrom` view. No
   supported op mutates calldata, so this is threaded unchanged. -/
   cd : MemMatch (YulSemantics.EVM.byteFrom yst.env.calldata) s.executionEnv.calldata
-  /-- Scalar environment/block reader agreement (see `EnvMatch`). -/
+  /-- Immutable environment data agreement (see `EnvMatch`). -/
   env : EnvMatch yst.env s.executionEnv
   /-- Code agreement (for `codesize`/`codecopy`/`datacopy`): like calldata, a
   zero-padded pointwise read of the frame's `ByteArray` code, plus a length

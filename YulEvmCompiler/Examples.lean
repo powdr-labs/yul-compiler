@@ -202,6 +202,15 @@ def signExtendCases : Block Op := yul% {
   sstore(2, signextend(32, 0x80))
 }
 
+/-- Record calldata size, then copy a range across a word boundary. The final
+byte is deliberately beyond the input and must be zero-padded. -/
+def calldataOps : Block Op := yul% {
+  sstore(0, calldatasize())
+  calldatacopy(31, 1, 3)
+  sstore(1, mload(0))
+  sstore(2, mload(32))
+}
+
 #guard (compileProgram sumLoop).isSome
 #guard (compileProgram breakContinue).isSome
 #guard (compileProgram funCall).isSome
@@ -216,6 +225,8 @@ def signExtendCases : Block Op := yul% {
 #guard (compile byteAndOverlapCopy).isSome
 #guard (compileProgram signExtendCases).isSome
 #guard (compile signExtendCases).isSome
+#guard (compileProgram calldataOps).isSome
+#guard (compile calldataOps).isSome
 
 /-! ### The upstream Fibonacci contract
 
@@ -257,12 +268,17 @@ def runEvm : Nat → EvmSemantics.EVM.State → EvmSemantics.EVM.State
   | fuel + 1, s =>
     if s.isDone then s else runEvm fuel (EvmSemantics.EVM.stepF s)
 
-/-- Compile `prog`, run both sides, and compare the storage values at
-`keys` (plus that the EVM run actually finished without an exception). -/
-def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
-  match compile prog, runYul 100000 prog with
-  | some is, some yst =>
-      let s := runEvm 100000 (evmInit (assemble is))
+/-- Compile `prog`, run both sides with `cd` as calldata, and compare the
+storage values at `keys` (plus that the EVM run actually finished without an
+exception). -/
+def agreeOnWithCalldata (prog : Block Op) (cd : List UInt8) (keys : List Nat) : Bool :=
+  let yst0 : EvmState :=
+    { EvmState.init with env := { EvmState.init.env with calldata := cd } }
+  match compile prog, Interp.run YulSemantics.EVM.exec 100000 prog yst0 with
+  | some is, .ok (_, yst, _) =>
+      let s0 := evmInit (assemble is)
+      let s := runEvm 100000
+        { s0 with executionEnv := { s0.executionEnv with calldata := ⟨cd.toArray⟩ } }
       s.isDone
         && (s.halt matches .Success)
         && keys.all (fun k =>
@@ -270,6 +286,10 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
             == ((s.accountMap s.executionEnv.address).storage.get
                   (EvmSemantics.UInt256.ofNat k)).toNat)
   | _, _ => false
+
+/-- Empty-calldata specialization used by the existing storage examples. -/
+def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
+  agreeOnWithCalldata prog [] keys
 
 #guard agreeOn sumLoop [0]
 #guard agreeOn breakContinue [0]
@@ -286,6 +306,7 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn fibStorage [0]
 #guard agreeOn byteAndOverlapCopy [0, 1]
 #guard agreeOn signExtendCases [0, 1, 2]
+#guard agreeOnWithCalldata calldataOps [0xaa, 0xbb, 0xcc] [0, 1, 2]
 
 /-- Compile `prog`, run both sides with `cd` as calldata, and compare the
 returned byte payload (for contracts that halt via `return`, like the

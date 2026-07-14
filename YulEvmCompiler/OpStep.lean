@@ -125,6 +125,8 @@ def opBound (op : Op) (args : List U256) : Nat :=
     | .mcopy, [d, s, n] =>
         memBound d.toNat n.toNat + memBound s.toNat n.toNat
           + 3 * ((n.toNat + 31) / 32)
+    | .calldatacopy, [d, _, n] =>
+        memBound d.toNat n.toNat + 3 * ((n.toNat + 31) / 32)
     | .ret, [p, n] => memBound p.toNat n.toNat
     | .revert, [p, n] => memBound p.toNat n.toNat
     | .codecopy, [d, _, n] => memBound d.toNat n.toNat + 3 * ((n.toNat + 31) / 32)
@@ -1142,6 +1144,66 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have h3 : opBound Op.calldataload [p] = 40000 := rfl
       have : Gas.baseCost s.fork .CALLDATALOAD ≤ 40000 := by rw [hfork]; decide
       omega
+  case calldatasize =>
+    have hval : conv (BitVec.ofNat 256 yst.env.calldata.length)
+        = UInt256.ofNat s.executionEnv.calldata.size := by
+      apply u256ext
+      rw [conv_toNat, BitVec.toNat_ofNat, toNat_u256_ofNat, hm.env.calldataLen]
+    cases r with
+    | ok rets yst' =>
+      exact (nullaryRead rfl (by decide) hval hyul rfl
+        (fun h1 h2 => .calldatasize s h1 h2)
+        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+    | halt yst' =>
+      exact (nullaryRead rfl (by decide) hval hyul rfl
+        (fun h1 h2 => .calldatasize s h1 h2)
+        hcode hf hm hpc hstk hgas40).elim
+  case calldatacopy =>
+    rcases args with _ | ⟨d, _ | ⟨s0, _ | ⟨nn, _ | ⟨e, args⟩⟩⟩⟩ <;> simp [stepOp] at hyul
+    subst hyul
+    show OkStep code s (opBound .calldatacopy [d, s0, nn]) []
+      { yst with memory :=
+          YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.calldata }
+      pre.length 1 σ
+    obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .calldatacopy) rfl
+    have hdec := decoded_op hf hcode hpc hb' hplain
+      (opTable_available (yop := .calldatacopy) rfl)
+    have hstk' : s.stack = conv d :: conv s0 :: conv nn :: σ := by simpa using hstk
+    have h3 : opBound Op.calldatacopy [d, s0, nn]
+        = 40000 + (memBound d.toNat nn.toNat + 3 * ((nn.toNat + 31) / 32)) := rfl
+    have h4 : Gas.copyWordCost (conv nn) = 3 * ((nn.toNat + 31) / 32) := by
+      unfold Gas.copyWordCost; rw [conv_toNat]
+    have h1 : Gas.baseCost s.executionEnv.fork Operation.CALLDATACOPY ≤ 3 := by
+      rw [hf.fork]; decide
+    have h2 := memExpansionDelta_le_memBound s.activeWords.toNat
+      (conv d).toNat (conv nn).toNat
+    rw [conv_toNat d, conv_toNat nn] at h2
+    have hgas' : Gas.calldatacopyTotal s (conv d) (conv nn) ≤ s.gasAvailable := by
+      unfold Gas.calldatacopyTotal
+      rw [conv_toNat d, conv_toNat nn, h4]
+      omega
+    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+      (StepRunning.calldatacopy s (conv d) (conv s0) (conv nn) σ hdec hstk' hgas'),
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        hf.running⟩,
+      ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen⟩, ?_, rfl, ?_⟩
+    · show MemMatch
+        (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.calldata)
+        (MachineState.writeBytes s.memory
+          (MachineState.readPadded s.executionEnv.calldata
+            (conv s0).toNat (conv nn).toNat) (conv d).toNat)
+      rw [conv_toNat d, conv_toNat s0, conv_toNat nn]
+      exact hm.mem.copyFromBytes hm.cd d.toNat s0.toNat nn.toNat
+    · show s.pc.succ = _
+      rw [hpc]; apply succ_ofNat
+      have hsz : code.size = pre.length + 1 + post.length := by
+        subst hcode; simp [Instr.bytes]; omega
+      have := hf.codeSmall; omega
+    · show s.gasAvailable - Gas.calldatacopyTotal s (conv d) (conv nn)
+        ≥ s.gasAvailable - opBound .calldatacopy [d, s0, nn]
+      unfold Gas.calldatacopyTotal
+      rw [conv_toNat d, conv_toNat nn, h4, h3]
+      omega
   case codecopy =>
     rcases args with _ | ⟨d, _ | ⟨s0, _ | ⟨nn, _ | ⟨e, args⟩⟩⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
@@ -1171,7 +1233,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
           (MachineState.readPadded s.executionEnv.code (conv s0).toNat (conv nn).toNat)
             (conv d).toNat)
       rw [conv_toNat d, conv_toNat s0, conv_toNat nn]
-      exact hm.mem.copyFromCode hm.codeBytes d.toNat s0.toNat nn.toNat
+      exact hm.mem.copyFromBytes hm.codeBytes d.toNat s0.toNat nn.toNat
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1209,7 +1271,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
           (MachineState.readPadded s.executionEnv.code (conv s0).toNat (conv nn).toNat)
             (conv d).toNat)
       rw [conv_toNat d, conv_toNat s0, conv_toNat nn]
-      exact hm.mem.copyFromCode hm.codeBytes d.toNat s0.toNat nn.toNat
+      exact hm.mem.copyFromBytes hm.codeBytes d.toNat s0.toNat nn.toNat
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by

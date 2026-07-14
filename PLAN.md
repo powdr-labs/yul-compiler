@@ -118,9 +118,9 @@ Design decisions baked into that statement:
    `natToBytesPadded` facts are proved locally in `YulEvmCompiler.BytesLemmas`
    (do-loop reasoning), so no axioms are involved. `mstore8` is covered by a
    low-byte write lemma, and `mcopy` by an overlap-safe intermediate-buffer
-   correspondence plus a two-range gas bound. `codecopy`/`datacopy` are
-   covered by the code-region agreement and `MemMatch.copyFromCode`; calldata,
-   returndata, and external-code copies still need their own correspondence.
+   correspondence plus a two-range gas bound. `calldatacopy`/`codecopy`/
+   `datacopy` share the immutable-region agreement in `MemMatch.copyFromBytes`;
+   returndata and external-code copies still need their own state correspondence.
 3. Reads are unaffected: `readPadded`/`readWord` are total, so `mload`,
    `return(p,s)`, and `revert(p,s)` are verified. They also compose with the
    verified `mstore`, whose proof preserves `MemMatch`.
@@ -263,7 +263,7 @@ Deliverables:
    - stack: `pop`,
    - storage: `sload sstore tload tstore`,
    - memory: `mload mstore mstore8 mcopy`,
-   - calldata: `calldataload`,
+   - calldata: `calldataload calldatasize calldatacopy`,
    - env/block readers: `address origin caller callvalue gasprice coinbase
      timestamp number prevrandao gaslimit chainid basefee blobbasefee`,
    - halting: `stop return revert invalid`.
@@ -272,15 +272,15 @@ Deliverables:
    `signextend` are covered: their `conv_*` lemmas bridge the source `BitVec`
    formulations to evm-semantics' signed and Nat-mask formulations. The scalar
    environment/block readers go through the `EnvMatch` bundle in `StateMatch`.
-   Follow-ups needing a further `StateMatch` extension: the size readers
-   `calldatasize`/`returndatasize` (need length correspondences; `codesize` is
-   now covered by the code-region fields),
+   `calldatasize` uses the calldata length correspondence in `EnvMatch`, and
+   `calldatacopy` uses the pointwise calldata relation already consumed by
+   `calldataload`. Follow-ups needing a further `StateMatch` extension include
+   `returndatasize` (needs a returndata length correspondence),
    `selfbalance`/`balance`/`extcodesize`/`extcodehash`/`blockhash`/`blobhash`
    (need account-map / abstract-map correspondences). Excluded until further
    work: the remaining memory/state writes through `writeBytes`
-   (`calldatacopy returndatacopy extcodecopy` — each needs its own
-   byte-layout/correspondence lemma; `mstore8`/`mcopy` and
-   `codecopy`/`datacopy` are covered), `keccak256`
+   (`returndatacopy extcodecopy` — each needs its own state correspondence;
+   `mstore8`/`mcopy` and calldata/code/object-data copies are covered), `keccak256`
    (finding 4), `log*` (needs a log correspondence; addable later),
    `msize`/`gas`/calls/creates/`selfdestruct`
    (unmodeled in yul-semantics — no source derivation exists, so nothing to
