@@ -98,7 +98,7 @@ The verified built-in set (the domain of `opTable` in
 | bitwise    | `and or xor not byte shl shr sar` |
 | stack      | `pop` |
 | storage    | `sload sstore tload tstore` |
-| memory     | `mload mstore` |
+| memory     | `mload mstore mstore8 mcopy` |
 | calldata   | `calldataload` |
 | code       | `codesize codecopy datacopy` |
 | env/block  | `address origin caller callvalue gasprice coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee` |
@@ -106,11 +106,11 @@ The verified built-in set (the domain of `opTable` in
 
 Everything else is rejected (`compile = none`) — see `PLAN.md` for exactly
 why each remaining op is deferred (some are plain proof debt; the rest are
-blocked on upstream issues found during this work). The `MSTORE` correctness
-proof rests on two `ByteArray` reduction facts about evm-semantics'
-`natToBytesPadded`, proved in `YulEvmCompiler.BytesLemmas`, plus the
-`writeBytes` read-after-write lemma that now lives upstream
-(`EvmSemantics.MachineState.writeBytes_getElem?_getD`). No project-specific
+blocked on upstream issues found during this work). The memory-write proofs
+use the `writeBytes` read-after-write lemma that now lives upstream
+(`EvmSemantics.MachineState.writeBytes_getElem?_getD`); `MSTORE` additionally
+rests on two `ByteArray` reduction facts about evm-semantics'
+`natToBytesPadded`, proved in `YulEvmCompiler.BytesLemmas`. No project-specific
 axioms remain — the `#print axioms` footprint is just the standard classical
 axioms.
 

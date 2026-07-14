@@ -24,12 +24,10 @@ infinite_recursion_tracelimit.yul
 isoltestTesting/linkersymbol.yul
 isoltestTesting/loadimmutable.yul
 isoltestTesting/setimmutable_stub.yul
-mcopy.yul
 mcopy_memory_access_out_of_range.yul
 mcopy_memory_expansion_on_read.yul
 mcopy_memory_expansion_on_write.yul
 mcopy_memory_expansion_zero_size.yul
-mcopy_overlap.yul
 pop_byte_shr_call.yul
 recursive_function_for_loop.yul
 self_balance.yul

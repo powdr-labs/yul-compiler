@@ -80,6 +80,40 @@ theorem memExpansionDelta_le_memBound (curr p n : Nat) :
     · rw [Nat.max_eq_left hle]
       simp
 
+private theorem activeWordsAfter_ge (curr p n : Nat) :
+    curr ≤ MachineState.activeWordsAfter curr p n := by
+  unfold MachineState.activeWordsAfter
+  split
+  · exact le_rfl
+  · exact Nat.le_max_left _ _
+
+private theorem memCost_mono {a b : Nat} (h : a ≤ b) :
+    MachineState.memCost a ≤ MachineState.memCost b := by
+  unfold MachineState.memCost
+  have hmul : 3 * a ≤ 3 * b := Nat.mul_le_mul_left 3 h
+  have hpow : a ^ 2 ≤ b ^ 2 := Nat.pow_le_pow_left h 2
+  have hdiv : a ^ 2 / 512 ≤ b ^ 2 / 512 := Nat.div_le_div_right hpow
+  omega
+
+/-- Expanding for two memory ranges costs no more than expanding from empty
+memory for each range separately. This state-independent cap is used by
+`MCOPY`, whose source and destination both affect the active-memory bound. -/
+theorem memExpansionDelta2_le_memBounds (curr p₁ n₁ p₂ n₂ : Nat) :
+    MachineState.memExpansionDelta2 curr p₁ n₁ p₂ n₂ ≤
+      memBound p₁ n₁ + memBound p₂ n₂ := by
+  let mid := MachineState.activeWordsAfter curr p₁ n₁
+  let final := MachineState.activeWordsAfter mid p₂ n₂
+  have hcurr : MachineState.memCost curr ≤ MachineState.memCost mid :=
+    memCost_mono (activeWordsAfter_ge curr p₁ n₁)
+  have hmid : MachineState.memCost mid ≤ MachineState.memCost final :=
+    memCost_mono (activeWordsAfter_ge mid p₂ n₂)
+  have h₁ := memExpansionDelta_le_memBound curr p₁ n₁
+  have h₂ := memExpansionDelta_le_memBound mid p₂ n₂
+  change MachineState.memCost final - MachineState.memCost curr ≤ _
+  change MachineState.memCost mid - MachineState.memCost curr ≤ memBound p₁ n₁ at h₁
+  change MachineState.memCost final - MachineState.memCost mid ≤ memBound p₂ n₂ at h₂
+  omega
+
 /-- Worst-case gas consumed by the single instruction compiled for `op` on
 argument values `args`. -/
 def opBound (op : Op) (args : List U256) : Nat :=
@@ -87,6 +121,10 @@ def opBound (op : Op) (args : List U256) : Nat :=
     match op, args with
     | .mload, [p] => memBound p.toNat 32
     | .mstore, [p, _] => memBound p.toNat 32
+    | .mstore8, [p, _] => memBound p.toNat 1
+    | .mcopy, [d, s, n] =>
+        memBound d.toNat n.toNat + memBound s.toNat n.toNat
+          + 3 * ((n.toNat + 31) / 32)
     | .ret, [p, n] => memBound p.toNat n.toNat
     | .revert, [p, n] => memBound p.toNat n.toNat
     | .codecopy, [d, _, n] => memBound d.toNat n.toNat + 3 * ((n.toNat + 31) / 32)
@@ -971,6 +1009,94 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have h2 := memExpansionDelta_le_memBound s.activeWords.toNat (conv p).toNat 32
       have h3 : opBound Op.mstore [p, v] = 40000 + memBound (conv p).toNat 32 := rfl
       unfold Gas.mstoreTotal
+      omega
+  case mstore8 =>
+    rcases args with _ | ⟨p, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;> simp [stepOp] at hyul
+    subst hyul
+    show OkStep code s (opBound .mstore8 [p, v]) []
+      { yst with memory := YulSemantics.EVM.storeByte yst.memory p.toNat v }
+      pre.length 1 σ
+    obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .mstore8) rfl
+    have hdec := decoded_op hf hcode hpc hb' hplain
+      (opTable_available (yop := .mstore8) rfl)
+    have hstk' : s.stack = conv p :: conv v :: σ := by simpa using hstk
+    have hgas' : Gas.mstore8Total s (conv p) ≤ s.gasAvailable := by
+      unfold Gas.mstore8Total
+      have h1 : Gas.baseCost s.executionEnv.fork Operation.MSTORE8 ≤ 3 := by
+        rw [hf.fork]; decide
+      have h2 := memExpansionDelta_le_memBound s.activeWords.toNat (conv p).toNat 1
+      have h3 : opBound Op.mstore8 [p, v] = 40000 + memBound (conv p).toNat 1 := rfl
+      omega
+    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+      (StepRunning.mstore8 s (conv p) (conv v) σ hdec hstk' hgas'),
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        hf.running⟩,
+      ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen⟩, ?_, rfl, ?_⟩
+    · show MemMatch (YulSemantics.EVM.storeByte yst.memory p.toNat v)
+        (MachineState.writeBytes s.memory
+          (ByteArray.mk #[UInt8.ofNat ((conv v).toNat % 256)]) (conv p).toNat)
+      rw [show (conv p).toNat = p.toNat from conv_toNat p]
+      exact hm.mem.storeByte p.toNat v
+    · show s.pc.succ = _
+      rw [hpc]; apply succ_ofNat
+      have hsz : code.size = pre.length + 1 + post.length := by
+        subst hcode; simp [Instr.bytes]; omega
+      have := hf.codeSmall; omega
+    · show s.gasAvailable - Gas.mstore8Total s (conv p)
+        ≥ s.gasAvailable - opBound .mstore8 [p, v]
+      have h1 : Gas.baseCost s.executionEnv.fork Operation.MSTORE8 ≤ 3 := by
+        rw [hf.fork]; decide
+      have h2 := memExpansionDelta_le_memBound s.activeWords.toNat (conv p).toNat 1
+      have h3 : opBound Op.mstore8 [p, v] = 40000 + memBound (conv p).toNat 1 := rfl
+      unfold Gas.mstore8Total
+      omega
+  case mcopy =>
+    rcases args with _ | ⟨d, _ | ⟨src, _ | ⟨n, _ | ⟨e, args⟩⟩⟩⟩ <;>
+      simp [stepOp] at hyul
+    subst hyul
+    show OkStep code s (opBound .mcopy [d, src, n]) []
+      { yst with memory :=
+          YulSemantics.EVM.copyWithin yst.memory d.toNat src.toNat n.toNat }
+      pre.length 1 σ
+    obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .mcopy) rfl
+    have hdec := decoded_op hf hcode hpc hb' hplain
+      (opTable_available (yop := .mcopy) rfl)
+    have hstk' : s.stack = conv d :: conv src :: conv n :: σ := by simpa using hstk
+    have h3 : opBound Op.mcopy [d, src, n] =
+        40000 + (memBound d.toNat n.toNat + memBound src.toNat n.toNat
+          + 3 * ((n.toNat + 31) / 32)) := rfl
+    have h4 : Gas.copyWordCost (conv n) = 3 * ((n.toNat + 31) / 32) := by
+      unfold Gas.copyWordCost; rw [conv_toNat]
+    have h1 : Gas.baseCost s.executionEnv.fork Operation.MCOPY ≤ 3 := by
+      rw [hf.fork]; decide
+    have h2 := memExpansionDelta2_le_memBounds s.activeWords.toNat
+      (conv d).toNat (conv n).toNat (conv src).toNat (conv n).toNat
+    rw [conv_toNat d, conv_toNat src, conv_toNat n] at h2
+    have hgas' : Gas.mcopyTotal s (conv d) (conv src) (conv n) ≤ s.gasAvailable := by
+      unfold Gas.mcopyTotal
+      rw [conv_toNat d, conv_toNat src, conv_toNat n, h4]
+      omega
+    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+      (StepRunning.mcopy s (conv d) (conv src) (conv n) σ hdec hstk' hgas'),
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        hf.running⟩,
+      ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen⟩, ?_, rfl, ?_⟩
+    · show MemMatch
+        (YulSemantics.EVM.copyWithin yst.memory d.toNat src.toNat n.toNat)
+        (MachineState.writeBytes s.memory
+          (MachineState.readPadded s.memory (conv src).toNat (conv n).toNat)
+            (conv d).toNat)
+      rw [conv_toNat d, conv_toNat src, conv_toNat n]
+      exact hm.mem.copyWithin d.toNat src.toNat n.toNat
+    · show s.pc.succ = _
+      rw [hpc]; apply succ_ofNat
+      have hsz : code.size = pre.length + 1 + post.length := by
+        subst hcode; simp [Instr.bytes]; omega
+      have := hf.codeSmall; omega
+    · show s.gasAvailable - Gas.mcopyTotal s (conv d) (conv src) (conv n)
+        ≥ s.gasAvailable - opBound .mcopy [d, src, n]
+      unfold Gas.mcopyTotal
+      rw [conv_toNat d, conv_toNat src, conv_toNat n, h4, h3]
       omega
   case calldataload =>
     rcases args with _ | ⟨p, _ | ⟨b, args⟩⟩ <;> simp [stepOp, YulSemantics.EVM.rd1] at hyul

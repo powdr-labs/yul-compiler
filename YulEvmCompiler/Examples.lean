@@ -183,6 +183,17 @@ def fibStorage : Block Op := yul% {
   sstore(0, a)
 }
 
+/-- Low-byte storage followed by an overlapping memory copy. `MCOPY` must read
+its complete source from the old memory before writing the destination. -/
+def byteAndOverlapCopy : Block Op := yul% {
+  mstore(0,
+    0x112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00)
+  mstore8(0, 0xaa)
+  mcopy(8, 0, 24)
+  sstore(0, mload(0))
+  sstore(1, mload(8))
+}
+
 #guard (compileProgram sumLoop).isSome
 #guard (compileProgram breakContinue).isSome
 #guard (compileProgram funCall).isSome
@@ -194,6 +205,7 @@ def fibStorage : Block Op := yul% {
 #guard (compile sumLoop).isSome
 #guard (compile factorial).isSome
 #guard (compile fibStorage).isSome
+#guard (compile byteAndOverlapCopy).isSome
 
 /-! ### The upstream Fibonacci contract
 
@@ -262,6 +274,7 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn nested [0]
 #guard agreeOn breakNested [0]
 #guard agreeOn fibStorage [0]
+#guard agreeOn byteAndOverlapCopy [0, 1]
 
 /-- Compile `prog`, run both sides with `cd` as calldata, and compare the
 returned byte payload (for contracts that halt via `return`, like the
