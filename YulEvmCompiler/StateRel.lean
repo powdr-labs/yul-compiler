@@ -246,6 +246,56 @@ theorem MemMatch.storeWord {ymem : Nat → UInt8} {m : ByteArray}
   · rw [if_neg hw, if_neg hw, getD_eq_dite]
     exact h a
 
+/-- `MSTORE8` agreement: writing the least-significant byte at `p` keeps the
+functional Yul memory and the target `ByteArray` memory matching. -/
+theorem MemMatch.storeByte {ymem : Nat → UInt8} {m : ByteArray}
+    (h : MemMatch ymem m) (p : Nat) (v : YulSemantics.EVM.U256) :
+    MemMatch (YulSemantics.EVM.storeByte ymem p v)
+      (MachineState.writeBytes m
+        (ByteArray.mk #[UInt8.ofNat ((conv v).toNat % 256)]) p) := by
+  have hsize : (ByteArray.mk #[UInt8.ofNat ((conv v).toNat % 256)]).size = 1 := rfl
+  intro a
+  rw [← getD_eq_dite, MachineState.writeBytes_getElem?_getD, hsize]
+  simp only [YulSemantics.EVM.storeByte]
+  by_cases hw : a = p
+  · subst a
+    rw [if_pos rfl, if_pos (by omega)]
+    simp [getElem?_def, byteAt_eq, conv_toNat]
+    rw [dif_pos (by simp [ByteArray.size])]
+    rfl
+  · have hwindow : ¬ (p ≤ a ∧ a < p + 1) := by omega
+    rw [if_neg hw, if_neg hwindow, getD_eq_dite]
+    exact h a
+
+/-- `MCOPY` agreement: reading the source range before writing the destination
+matches Yul's intermediate-buffer `copyWithin`, including overlapping ranges
+and zero padding past the previous end of memory. -/
+theorem MemMatch.copyWithin {ymem : Nat → UInt8} {m : ByteArray}
+    (hmem : MemMatch ymem m) (dst src n : Nat) :
+    MemMatch (YulSemantics.EVM.copyWithin ymem dst src n)
+      (MachineState.writeBytes m (MachineState.readPadded m src n) dst) := by
+  have hrb := hmem.readBytes src n
+  have hsz : (MachineState.readPadded m src n).size = n := by
+    have h := congrArg List.length hrb
+    simp only [YulSemantics.EVM.readBytes, List.length_map, List.length_range,
+      ByteArray.toList_eq_data, Array.length_toList] at h
+    exact h.symm
+  intro a
+  rw [← getD_eq_dite, MachineState.writeBytes_getElem?_getD, hsz]
+  simp only [YulSemantics.EVM.copyWithin]
+  by_cases hw : dst ≤ a ∧ a < dst + n
+  · have hk : a - dst < (List.range n).length := by simp; omega
+    rw [if_pos hw, if_pos hw,
+      show (MachineState.readPadded m src n)[a - dst]? =
+          (MachineState.readPadded m src n).toList[a - dst]? from by
+        rw [ByteArray.toList_eq_data, Array.getElem?_toList]; rfl,
+      ← hrb]
+    simp only [YulSemantics.EVM.readBytes, List.getElem?_map,
+      List.getElem?_eq_getElem hk, List.getElem_range, Option.map_some,
+      Option.getD_some]
+  · rw [if_neg hw, if_neg hw, getD_eq_dite]
+    exact hmem a
+
 /-- Copying `n` bytes from the code region to memory (`codecopy`/`datacopy`):
 Yul's `copyInto … env.code` matches the target's
 `writeBytes … (readPadded code …)`, using the code-region agreement. Inside the

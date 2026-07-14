@@ -116,10 +116,11 @@ Design decisions baked into that statement:
    `natToBytesPadded`. The `writeBytes` lemma now lives upstream
    (`EvmSemantics.MachineState.writeBytes_getElem?_getD`); the two
    `natToBytesPadded` facts are proved locally in `YulEvmCompiler.BytesLemmas`
-   (do-loop reasoning), so no axioms are involved. `codecopy`/`datacopy` are
-   now covered by the code-region agreement and `MemMatch.copyFromCode`;
-   `mstore8`/`mcopy` and the remaining copy family stay out until their own
-   byte-layout/correspondence lemmas are added.
+   (do-loop reasoning), so no axioms are involved. `mstore8` is covered by a
+   low-byte write lemma, and `mcopy` by an overlap-safe intermediate-buffer
+   correspondence plus a two-range gas bound. `codecopy`/`datacopy` are
+   covered by the code-region agreement and `MemMatch.copyFromCode`; calldata,
+   returndata, and external-code copies still need their own correspondence.
 3. Reads are unaffected: `readPadded`/`readWord` are total, so `mload`,
    `return(p,s)`, and `revert(p,s)` are verified. They also compose with the
    verified `mstore`, whose proof preserves `MemMatch`.
@@ -261,7 +262,7 @@ Deliverables:
    - bitwise: `and or xor not byte shl shr sar`,
    - stack: `pop`,
    - storage: `sload sstore tload tstore`,
-   - memory: `mload mstore`,
+   - memory: `mload mstore mstore8 mcopy`,
    - calldata: `calldataload`,
    - env/block readers: `address origin caller callvalue gasprice coinbase
      timestamp number prevrandao gaslimit chainid basefee blobbasefee`,
@@ -281,8 +282,9 @@ Deliverables:
    `selfbalance`/`balance`/`extcodesize`/`extcodehash`/`blockhash`/`blobhash`
    (need account-map / abstract-map correspondences). Excluded until further
    work: the remaining memory/state writes through `writeBytes`
-   (`mstore8 mcopy calldatacopy returndatacopy extcodecopy` — each needs its
-   own byte-layout/correspondence lemma; `codecopy`/`datacopy` are covered), `keccak256`
+   (`calldatacopy returndatacopy extcodecopy` — each needs its own
+   byte-layout/correspondence lemma; `mstore8`/`mcopy` and
+   `codecopy`/`datacopy` are covered), `keccak256`
    (finding 4), `log*` (needs a log correspondence; addable later),
    `msize`/`gas`/calls/creates/`selfdestruct`
    (unmodeled in yul-semantics — no source derivation exists, so nothing to
