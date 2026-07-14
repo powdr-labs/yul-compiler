@@ -205,10 +205,12 @@ def initialState (code : ByteArray) : EVM.State :=
     depth := 0
     permitStateMutation := true
     -- Solidity derives two versioned blob hashes from commitments 0x01 and
-    -- 0x02 (Interpreter.h, linked above). `blobhash` is outside the compiler's
-    -- current verified op set, so this concrete EVM environment leaves the
-    -- list empty until that opcode becomes testable.
-    blobVersionedHashes := #[]
+    -- 0x02. These are the exact values asserted by its `blobhash` fixture:
+    -- https://github.com/argotorg/solidity/blob/960c6e969dd3b9133d06cddcd958698ac6d23aea/test/libyul/yulInterpreterTests/blobhash.yul#L1-L15
+    blobVersionedHashes := #[
+      Hex.hexToUInt256 "014916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5",
+      Hex.hexToUInt256 "0167d3dbed802941483f1afa2a6bc68de5f653128aca9bf1461c5d0a3ad36ed2"
+    ]
     -- Osaka enables every opcode currently emitted by the verified compiler.
     fork := .Osaka
   }

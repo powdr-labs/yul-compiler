@@ -101,7 +101,8 @@ The verified built-in set (the domain of `opTable` in
 | memory     | `mload mstore mstore8 mcopy` |
 | calldata   | `calldataload calldatasize calldatacopy` |
 | code       | `codesize codecopy datacopy` |
-| env/block  | `address origin caller callvalue gasprice coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee` |
+| env/block  | `address origin caller callvalue gasprice selfbalance coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee` |
+| world/tx   | `balance blobhash` |
 | halting    | `stop return revert invalid` |
 
 Everything else is rejected (`compile = none`) — see `PLAN.md` for exactly
