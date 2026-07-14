@@ -226,15 +226,17 @@ names, non-unique parameter/return names, more than 16 returns, classic
    and decode/layout facts. `Correctness.lean` composes the phases and adds the
    implicit `STOP` for a normal fall-through.
 
+### Completed object execution proof
+
+`ObjectResolve.lean` proves that replacing `dataoffset`/`datasize` references
+with the generated layout values preserves every Yul derivation, the backend
+simulation admits the explicit `STOP` plus recursively embedded payload, and
+`compileObject_correct` composes them into the `RunObject`-to-EVM theorem.
+Direct-data placement remains covered separately by
+`compileObject_consistent`.
+
 ### Remaining extension path
 
-* **Finish the object execution proof.** `ObjectCompile.lean` now resolves
-  `dataoffset`/`datasize`, recursively lays out child bytecode and data,
-  connects object-rooted source compilation, and proves direct-data layout
-  consistency; `datacopy` is verified as `CODECOPY`. Still required: prove the
-  reference-resolution pass against the selected layout, generalize backend
-  correctness to code with a trailing payload, and compose the resulting
-  `RunObject`-to-EVM theorem.
 * **Parser representation proofs.** Add typed identifiers, and either enrich
   the AST so hex/interleaved forms can join the canonical round-trip theorem or
   verify their documented normalization and the post-parse validator directly.

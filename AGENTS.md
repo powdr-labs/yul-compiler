@@ -126,11 +126,12 @@ There is currently no verified optimizer in front of the backend. A new source-t
 For an Asm-to-Asm optimization, preserve `AStep` behavior, symbolic control flow, stack shape, label well-formedness, and fixed-width location assumptions, or state and prove the replacement invariants. Bytecode peepholes are especially sensitive to jump addresses and valid `JUMPDEST` analysis.
 
 `ObjectCompile.lean` recursively lays out object trees, resolves layout
-references, and proves direct-data consistency; `compileSource` preserves the
-object structure and emits the complete bytecode. The remaining proof boundary
-is explicit: trailing-payload backend correctness plus semantic preservation of
-reference resolution must land before claiming a full `RunObject`-to-EVM
-theorem.
+references, and proves both direct-data consistency and the full
+`RunObject`-to-EVM simulation (`compileObject_correct`); `compileSource`
+preserves the object structure and emits the complete bytecode. Object changes
+must preserve the `ObjectResolve.lean` semantic-preservation proof, the
+payload-aware backend simulation, and the exact axiom guard for the composed
+theorem in `Checks.lean`.
 
 ## Parser changes
 

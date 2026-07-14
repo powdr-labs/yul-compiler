@@ -1,5 +1,5 @@
-import YulEvmCompiler.Compile
-import YulSemantics.ObjectRun
+import YulEvmCompiler.Correctness
+import YulEvmCompiler.ObjectResolve
 
 /-!
 # YulEvmCompiler.ObjectCompile
@@ -17,17 +17,17 @@ Its maps include self, child, nested, and data references under the same
 string-literal keys the Yul built-ins consume. Key collisions and layouts that
 do not fit a word are rejected.
 
-`compileObject_consistent` discharges `Layout.Consistent`, which — composed
-with the semantics' already-proven `constructorCode_returns_of_consistent` —
-gives an end-to-end statement: under the compiler's layout, the canonical
-constructor for any data segment returns exactly that segment's bytes
-(`compiled_constructor_returns`).
+`compileObject_correct` is the full execution theorem: a `RunObject` derivation
+under the produced layout is simulated by the emitted EVM bytecode, including
+ordinary fall-through at the `STOP` seam and exact source-level halts. Its proof
+composes semantic preservation of layout-reference resolution with a backend
+simulation that admits embedded children and data as a trailing payload.
 
-The executable layout and direct-data consistency proof are complete. The
-remaining proof debt is the stronger `RunObject`-to-EVM simulation theorem:
-the block compiler's backend theorem still needs to admit the object payload
-as a trailing code suffix, and the reference-resolution pass needs a semantic
-preservation theorem against the selected layout.
+`compileObject_consistent` separately discharges `Layout.Consistent`, which —
+composed with the semantics' already-proven
+`constructorCode_returns_of_consistent` — shows that the canonical constructor
+for any direct data segment returns exactly that segment's bytes
+(`compiled_constructor_returns`).
 -/
 
 namespace YulEvmCompiler
@@ -73,16 +73,13 @@ mutual
       YulSemantics.Expr Op → Option (YulSemantics.Expr Op)
     | .lit literal => some (.lit literal)
     | .var name => some (.var name)
-    | .builtin op args => do
-        let args ← resolveObjectExprs resolve args
+    | .builtin op args =>
         match op, args with
         | .dataoffset, [.lit (.string name)] =>
-            let entry ← resolve name
-            some (.lit (.number entry.1))
+            (resolve name).map fun entry => .lit (.number entry.1)
         | .datasize, [.lit (.string name)] =>
-            let entry ← resolve name
-            some (.lit (.number entry.2))
-        | _, _ => some (.builtin op args)
+            (resolve name).map fun entry => .lit (.number entry.2)
+        | _, _ => (resolveObjectExprs resolve args).map (.builtin op)
     | .call name args => return .call name (← resolveObjectExprs resolve args)
 
   private def resolveObjectExprs (resolve : RefResolver) :
@@ -107,13 +104,15 @@ mutual
     | .assign names value => return .assign names (← resolveObjectExpr resolve value)
     | .cond condition body =>
         return .cond (← resolveObjectExpr resolve condition) (← resolveObjectStmts resolve body)
-    | .switch condition cases fallback => do
+    | .switch condition cases none => do
         let condition ← resolveObjectExpr resolve condition
         let cases ← resolveObjectCases resolve cases
-        let fallback ← match fallback with
-          | none => some none
-          | some body => (resolveObjectStmts resolve body).map some
-        return .switch condition cases fallback
+        return .switch condition cases none
+    | .switch condition cases (some body) => do
+        let condition ← resolveObjectExpr resolve condition
+        let cases ← resolveObjectCases resolve cases
+        let body ← resolveObjectStmts resolve body
+        return .switch condition cases (some body)
     | .forLoop init condition post body =>
         return .forLoop (← resolveObjectStmts resolve init)
           (← resolveObjectExpr resolve condition) (← resolveObjectStmts resolve post)
@@ -141,6 +140,258 @@ end
 
 private def placeholderResolver : RefResolver := fun _ => some (0, 0)
 
+/-- A partial planning resolver agrees with the total maps exposed by a
+compiled layout whenever the partial resolver accepts a name. -/
+private def ResolverAgrees (resolve : RefResolver) (L : Layout) : Prop :=
+  ∀ name entry, resolve name = some entry →
+    (L.dataOffset (litValue (.string name))).toNat = entry.1 ∧
+    (L.dataSize (litValue (.string name))).toNat = entry.2
+
+mutual
+  /-- Successful partial expression resolution is exactly the total
+  layout-based transformation when their reference maps agree. -/
+  private theorem resolveObjectExpr_eq_layout {resolve : RefResolver} {L : Layout}
+      (hagree : ResolverAgrees resolve L) :
+      ∀ expression resolved,
+        resolveObjectExpr resolve expression = some resolved →
+          resolved = resolveForLayoutExpr L expression := by
+    intro expression resolved h
+    cases expression with
+    | lit literal =>
+        simp [resolveObjectExpr] at h
+        subst resolved
+        rfl
+    | var name =>
+        simp [resolveObjectExpr] at h
+        subst resolved
+        rfl
+    | call name args =>
+        simp only [resolveObjectExpr] at h
+        cases hargs : resolveObjectExprs resolve args with
+        | none => simp [hargs] at h
+        | some args' =>
+            simp [hargs] at h
+            subst resolved
+            rw [resolveForLayoutExpr]
+            congr 1
+            exact resolveObjectExprs_eq_layout hagree args args' hargs
+    | builtin op args =>
+        simp only [resolveObjectExpr] at h
+        split at h
+        · rename_i name
+          obtain ⟨entry, href, rfl⟩ := Option.map_eq_some_iff.mp h
+          have ha := hagree name entry href
+          rw [resolveForLayoutExpr]
+          congr 2
+          exact ha.1.symm
+        · rename_i name
+          obtain ⟨entry, href, rfl⟩ := Option.map_eq_some_iff.mp h
+          have ha := hagree name entry href
+          rw [resolveForLayoutExpr]
+          congr 2
+          exact ha.2.symm
+        · cases hargs : resolveObjectExprs resolve args with
+          | none => simp [hargs] at h
+          | some args' =>
+              have hresolved := resolveObjectExprs_eq_layout hagree args args' hargs
+              simp_all [resolveForLayoutExpr]
+
+  private theorem resolveObjectExprs_eq_layout {resolve : RefResolver} {L : Layout}
+      (hagree : ResolverAgrees resolve L) :
+      ∀ expressions resolved,
+        resolveObjectExprs resolve expressions = some resolved →
+          resolved = resolveForLayoutExprs L expressions := by
+    intro expressions resolved h
+    cases expressions with
+    | nil => simp [resolveObjectExprs] at h; subst resolved; rfl
+    | cons expression expressions =>
+        simp only [resolveObjectExprs] at h
+        cases hhead : resolveObjectExpr resolve expression with
+        | none => simp [hhead] at h
+        | some head =>
+            cases htail : resolveObjectExprs resolve expressions with
+            | none => simp [hhead, htail] at h
+            | some tail =>
+                simp [hhead, htail] at h
+                subst resolved
+                rw [resolveForLayoutExprs]
+                congr
+                · exact resolveObjectExpr_eq_layout hagree expression head hhead
+                · exact resolveObjectExprs_eq_layout hagree expressions tail htail
+end
+
+mutual
+  private theorem resolveObjectStmt_eq_layout {resolve : RefResolver} {L : Layout}
+      (hagree : ResolverAgrees resolve L) :
+      ∀ statement resolved,
+        resolveObjectStmt resolve statement = some resolved →
+          resolved = resolveForLayoutStmt L statement := by
+    intro statement resolved h
+    cases statement with
+    | block body =>
+        cases hb : resolveObjectStmts resolve body with
+        | none => simp [resolveObjectStmt, hb] at h
+        | some body' =>
+            simp [resolveObjectStmt, hb] at h
+            subst resolved
+            rw [resolveForLayoutStmt_block]
+            congr 1
+            exact resolveObjectStmts_eq_layout hagree body body' hb
+    | funDef name params returns body =>
+        cases hb : resolveObjectStmts resolve body with
+        | none => simp [resolveObjectStmt, hb] at h
+        | some body' =>
+            simp [resolveObjectStmt, hb] at h
+            subst resolved
+            rw [resolveForLayoutStmt_funDef]
+            congr 1
+            exact resolveObjectStmts_eq_layout hagree body body' hb
+    | letDecl names value =>
+        cases value with
+        | none => simp [resolveObjectStmt] at h; subst resolved; simp
+        | some expression =>
+            cases he : resolveObjectExpr resolve expression with
+            | none => simp [resolveObjectStmt, he] at h
+            | some expression' =>
+                simp [resolveObjectStmt, he] at h
+                subst resolved
+                rw [resolveForLayoutStmt_letDecl]
+                congr 2
+                exact resolveObjectExpr_eq_layout hagree expression expression' he
+    | assign names value =>
+        cases he : resolveObjectExpr resolve value with
+        | none => simp [resolveObjectStmt, he] at h
+        | some value' =>
+            simp [resolveObjectStmt, he] at h
+            subst resolved
+            rw [resolveForLayoutStmt_assign]
+            congr 1
+            exact resolveObjectExpr_eq_layout hagree value value' he
+    | cond condition body =>
+        cases hc : resolveObjectExpr resolve condition with
+        | none => simp [resolveObjectStmt, hc] at h
+        | some condition' =>
+            cases hb : resolveObjectStmts resolve body with
+            | none => simp [resolveObjectStmt, hc, hb] at h
+            | some body' =>
+                simp [resolveObjectStmt, hc, hb] at h
+                subst resolved
+                rw [resolveForLayoutStmt_cond]
+                congr
+                · exact resolveObjectExpr_eq_layout hagree condition condition' hc
+                · exact resolveObjectStmts_eq_layout hagree body body' hb
+    | «switch» condition cases fallback =>
+        cases fallback with
+        | none =>
+            cases hc : resolveObjectExpr resolve condition with
+            | none => simp [resolveObjectStmt, hc] at h
+            | some condition' =>
+                cases hcases : resolveObjectCases resolve cases with
+                | none => simp [resolveObjectStmt, hc, hcases] at h
+                | some cases' =>
+                    simp [resolveObjectStmt, hc, hcases] at h
+                    subst resolved
+                    rw [resolveForLayoutStmt_switch]
+                    congr
+                    · exact resolveObjectExpr_eq_layout hagree condition condition' hc
+                    · exact resolveObjectCases_eq_layout hagree cases cases' hcases
+        | some fallback =>
+            cases hc : resolveObjectExpr resolve condition with
+            | none => simp [resolveObjectStmt, hc] at h
+            | some condition' =>
+                cases hcases : resolveObjectCases resolve cases with
+                | none => simp [resolveObjectStmt, hc, hcases] at h
+                | some cases' =>
+                    cases hf : resolveObjectStmts resolve fallback with
+                    | none => simp [resolveObjectStmt, hc, hcases, hf] at h
+                    | some fallback' =>
+                        simp [resolveObjectStmt, hc, hcases, hf] at h
+                        subst resolved
+                        rw [resolveForLayoutStmt_switch]
+                        congr
+                        · exact resolveObjectExpr_eq_layout hagree condition condition' hc
+                        · exact resolveObjectCases_eq_layout hagree cases cases' hcases
+                        · exact resolveObjectStmts_eq_layout hagree fallback fallback' hf
+    | forLoop init condition post body =>
+        cases hi : resolveObjectStmts resolve init with
+        | none => simp [resolveObjectStmt, hi] at h
+        | some init' =>
+            cases hc : resolveObjectExpr resolve condition with
+            | none => simp [resolveObjectStmt, hi, hc] at h
+            | some condition' =>
+                cases hp : resolveObjectStmts resolve post with
+                | none => simp [resolveObjectStmt, hi, hc, hp] at h
+                | some post' =>
+                    cases hb : resolveObjectStmts resolve body with
+                    | none => simp [resolveObjectStmt, hi, hc, hp, hb] at h
+                    | some body' =>
+                        simp [resolveObjectStmt, hi, hc, hp, hb] at h
+                        subst resolved
+                        rw [resolveForLayoutStmt_forLoop]
+                        congr
+                        · exact resolveObjectStmts_eq_layout hagree init init' hi
+                        · exact resolveObjectExpr_eq_layout hagree condition condition' hc
+                        · exact resolveObjectStmts_eq_layout hagree post post' hp
+                        · exact resolveObjectStmts_eq_layout hagree body body' hb
+    | exprStmt expression =>
+        cases he : resolveObjectExpr resolve expression with
+        | none => simp [resolveObjectStmt, he] at h
+        | some expression' =>
+            simp [resolveObjectStmt, he] at h
+            subst resolved
+            rw [resolveForLayoutStmt_exprStmt]
+            congr 1
+            exact resolveObjectExpr_eq_layout hagree expression expression' he
+    | «break» => simp [resolveObjectStmt] at h; subst resolved; simp
+    | «continue» => simp [resolveObjectStmt] at h; subst resolved; simp
+    | «leave» => simp [resolveObjectStmt] at h; subst resolved; simp
+
+  private theorem resolveObjectStmts_eq_layout {resolve : RefResolver} {L : Layout}
+      (hagree : ResolverAgrees resolve L) :
+      ∀ statements resolved,
+        resolveObjectStmts resolve statements = some resolved →
+          resolved = resolveForLayoutStmts L statements := by
+    intro statements resolved h
+    cases statements with
+    | nil => simp [resolveObjectStmts] at h; subst resolved; rw [resolveForLayoutStmts_nil]
+    | cons statement statements =>
+        cases hhead : resolveObjectStmt resolve statement with
+        | none => simp [resolveObjectStmts, hhead] at h
+        | some head =>
+            cases htail : resolveObjectStmts resolve statements with
+            | none => simp [resolveObjectStmts, hhead, htail] at h
+            | some tail =>
+                simp [resolveObjectStmts, hhead, htail] at h
+                subst resolved
+                rw [resolveForLayoutStmts_cons]
+                congr
+                · exact resolveObjectStmt_eq_layout hagree statement head hhead
+                · exact resolveObjectStmts_eq_layout hagree statements tail htail
+
+  private theorem resolveObjectCases_eq_layout {resolve : RefResolver} {L : Layout}
+      (hagree : ResolverAgrees resolve L) :
+      ∀ cases resolved,
+        resolveObjectCases resolve cases = some resolved →
+          resolved = resolveForLayoutCases L cases := by
+    intro cases resolved h
+    cases cases with
+    | nil => simp [resolveObjectCases] at h; subst resolved; rw [resolveForLayoutCases]
+    | cons head cases =>
+        rcases head with ⟨literal, body⟩
+        cases hb : resolveObjectStmts resolve body with
+        | none => simp [resolveObjectCases, hb] at h
+        | some body' =>
+            cases ht : resolveObjectCases resolve cases with
+            | none => simp [resolveObjectCases, hb, ht] at h
+            | some tail =>
+                simp [resolveObjectCases, hb, ht] at h
+                subst resolved
+                rw [resolveForLayoutCases]
+                congr
+                · exact resolveObjectStmts_eq_layout hagree body body' hb
+                · exact resolveObjectCases_eq_layout hagree cases tail ht
+end
+
 private def shiftChildEntries (base : Nat) (child : ObjectPlan) : List ObjectEntry :=
   child.entries.map fun entry =>
     if entry.name == child.name then
@@ -160,17 +411,13 @@ private def dataEntries : Nat → List (String × Data) → List ObjectEntry
   | base, (name, value) :: values =>
       { name, offset := base, size := value.size } :: dataEntries (base + value.size) values
 
-private def canonicalRef (plan : ObjectPlan) (name : String) : String :=
-  let ownPrefix := plan.name ++ "."
-  if name.startsWith ownPrefix then (name.drop ownPrefix.length).copy else name
-
 private def findEntry (plan : ObjectPlan) (name : String) : Option ObjectEntry :=
-  let name := canonicalRef plan name
   plan.entries.find? (fun entry => entry.name == name)
 
 private def planResolver (plan : ObjectPlan) : RefResolver := fun name => do
   let entry ← findEntry plan name
-  some (entry.offset, entry.size)
+  some ((BitVec.ofNat 256 entry.offset).toNat,
+    (BitVec.ofNat 256 entry.size).toNat)
 
 mutual
   /-- Plan all object sizes and named byte ranges. Every object contains one
@@ -222,17 +469,19 @@ private def entryMap (project : ObjectEntry → Nat) : List ObjectEntry → U256
       if key = entryKey entry then BitVec.ofNat 256 (project entry)
       else entryMap project entries key
 
+private def layoutOfPlan (plan : ObjectPlan) : Layout := {
+  code := plan.bytecode
+  dataOffset := entryMap (·.offset) plan.entries
+  dataSize := entryMap (·.size) plan.entries
+}
+
 /-- Compile a complete object tree to executable EVM bytecode plus real
 object-layout maps. References are actual offsets/sizes in the emitted bytes,
 not Solidity's synthetic AST-interpreter values. -/
 def compileResolvedObject (o : Object Op) : Option Layout := do
   let plan ← planObject o
   if !(plan.entries.map entryKey).Nodup then none else
-  some {
-    code := plan.bytecode
-    dataOffset := entryMap (·.offset) plan.entries
-    dataSize := entryMap (·.size) plan.entries
-  }
+  some (layoutOfPlan plan)
 
 /-! ### Consistency -/
 
@@ -301,6 +550,59 @@ private theorem entryMap_of_mem (project : ObjectEntry → Nat) :
           exact hnodup.1 (heq ▸ List.mem_map_of_mem h)
         simp only [entryMap, if_neg hne]
         exact ih hnodup.2 entry h
+
+/-- The resolver used to compile a plan returns exactly the values exposed by
+that plan's public layout maps. This is the semantic link between the partial
+reference-resolution pass and `dataoffset`/`datasize` in `RunObject`. -/
+private theorem planResolver_agrees (plan : ObjectPlan)
+    (hnodup : (plan.entries.map entryKey).Nodup) :
+    ResolverAgrees (planResolver plan) (layoutOfPlan plan) := by
+  intro name value href
+  simp only [planResolver, Option.bind_eq_bind] at href
+  obtain ⟨entry, hfind, hvalue⟩ := Option.bind_eq_some_iff.mp href
+  simp only [Option.some.injEq] at hvalue
+  subst value
+  have hmem : entry ∈ plan.entries := List.mem_of_find?_eq_some hfind
+  have hname : entry.name = name := by
+    have hselected := List.find?_some hfind
+    simpa [findEntry] using hselected
+  have hoff := entryMap_of_mem (·.offset) plan.entries hnodup entry hmem
+  have hsize := entryMap_of_mem (·.size) plan.entries hnodup entry hmem
+  constructor
+  · simpa [layoutOfPlan, entryKey, hname] using congrArg BitVec.toNat hoff
+  · simpa [layoutOfPlan, entryKey, hname] using congrArg BitVec.toNat hsize
+
+/-- A successful plan retains the resolved source and instruction stream that
+produced its executable prefix. Everything after the explicit zero byte is an
+opaque payload to the block compiler's simulation theorem. -/
+private theorem planObject_compileWitness {o : Object Op} {plan : ObjectPlan}
+    (h : planObject o = some plan) :
+    ∃ resolved instructions payload,
+      resolveObjectStmts (planResolver plan) o.codeBlock = some resolved ∧
+      compile resolved = some instructions ∧
+      plan.bytecode = assembleBytes instructions ++ 0 :: payload := by
+  cases o with
+  | mk name code subObjects dataSegs =>
+      simp only [planObject, Option.bind_eq_bind] at h
+      obtain ⟨subPlans, -, h⟩ := Option.bind_eq_some_iff.mp h
+      obtain ⟨placeholderCode, -, h⟩ := Option.bind_eq_some_iff.mp h
+      obtain ⟨placeholderInstructions, -, h⟩ := Option.bind_eq_some_iff.mp h
+      split at h
+      · obtain ⟨resolved, hresolved, h⟩ := Option.bind_eq_some_iff.mp h
+        obtain ⟨instructions, hinstructions, h⟩ := Option.bind_eq_some_iff.mp h
+        split at h
+        · cases h
+        · split at h
+          · simp only [Option.some.injEq] at h
+            subst plan
+            refine ⟨resolved, instructions,
+              (subPlans.map (·.bytecode)).flatten ++ dataRegion dataSegs, ?_,
+              hinstructions, ?_⟩
+            · change resolveObjectStmts (planResolver _) code = some resolved
+              exact hresolved
+            · simp [List.append_assoc]
+          · cases h
+      · cases h
 
 /-- Successful planning places every direct data segment in the recorded
 bytecode and records a matching entry for it. -/
@@ -397,7 +699,7 @@ theorem compileResolvedObject_consistent {o : Object Op} {L : Layout}
     have hoff := entryMap_of_mem (·.offset) plan.entries hnodup entry hentry
     have hsz := entryMap_of_mem (·.size) plan.entries hnodup entry hentry
     constructor
-    · simpa [entryKey, hname, hsize] using hsz
+    · simpa [layoutOfPlan, entryKey, hname, hsize] using hsz
     · have hkey : litValue (.string p.1) = entryKey entry := by
         simp [entryKey, hname]
       change readBytes (byteFrom plan.bytecode)
@@ -405,6 +707,31 @@ theorem compileResolvedObject_consistent {o : Object Op} {L : Layout}
           p.2.size = p.2.bytes
       rw [hkey, hoff, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hoffset]
       exact hbytes
+
+/-- Successful object compilation exposes an instruction stream for the total
+layout-resolved source, followed by the explicit `STOP` seam and an arbitrary
+embedded payload. -/
+private theorem compileResolvedObject_compileWitness {o : Object Op} {L : Layout}
+    (h : compileResolvedObject o = some L) :
+    ∃ resolved instructions payload,
+      resolved = resolveForLayoutStmts L o.codeBlock ∧
+      compile resolved = some instructions ∧
+      L.code = assembleBytes instructions ++ 0 :: payload := by
+  simp only [compileResolvedObject, Option.bind_eq_bind] at h
+  obtain ⟨plan, hplan, h⟩ := Option.bind_eq_some_iff.mp h
+  split at h
+  · cases h
+  · rename_i hkeys
+    simp only [Option.some.injEq] at h
+    subst L
+    have hnodup : (plan.entries.map entryKey).Nodup := by
+      simpa using hkeys
+    obtain ⟨resolved, instructions, payload, hresolved, hinstructions, hcode⟩ :=
+      planObject_compileWitness hplan
+    have hresolved' :=
+      resolveObjectStmts_eq_layout (planResolver_agrees plan hnodup)
+        o.codeBlock resolved hresolved
+    exact ⟨resolved, instructions, payload, hresolved', hinstructions, hcode⟩
 
 /-- Public object compiler: recursively resolved object bytecode and its
 layout maps. -/
@@ -415,14 +742,46 @@ theorem compileObject_consistent {o : Object Op} {L : Layout}
     (h : compileObject o = some L) : L.Consistent o :=
   compileResolvedObject_consistent h
 
-/-! ### End-to-end capstone
+/-! ### End-to-end capstones -/
 
-Composing consistency with the semantics' `constructorCode_returns_of_consistent`:
-under the compiler-produced layout, the canonical constructor for any data
-segment of the object halts, returning exactly that segment's bytes. -/
+open EvmSemantics
+open EvmSemantics.EVM
+open YulSemantics (VEnv Run Outcome)
+open YulSemantics.EVM
+  (EvmState evm RunObject constructorCode constructorCode_returns_of_consistent)
 
-open YulSemantics (VEnv Run)
-open YulSemantics.EVM (EvmState evm constructorCode constructorCode_returns_of_consistent)
+/-- **Object compiler correctness.** If the original object executes under the
+layout produced by `compileObject`, then the emitted EVM bytecode simulates the
+same execution. The theorem covers both ordinary fall-through through the
+compiler-inserted `STOP` seam and source-level halts; recursively compiled
+children and data are present in the frame as an inert trailing payload. -/
+theorem compileObject_correct {o : Object Op} {L : Layout}
+    (hcomp : compileObject o = some L)
+    {V : VEnv evm} {yst : EvmState} {out : Outcome}
+    (hrun : RunObject o L V yst out) :
+    ∃ b : Nat, ∀ s0 : State,
+      FrameOK (mkCode L.code) s0 → StateMatch L.initState s0 →
+      s0.pc = UInt256.ofNat 0 → s0.stack = [] → b ≤ s0.gasAvailable →
+      ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst s' ∧
+        ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
+         (out = .halt ∧ HaltedMatch yst s')) := by
+  obtain ⟨resolved, instructions, payload, hresolved, hinstructions, hcode⟩ :=
+    compileResolvedObject_compileWitness hcomp
+  have huses : UsesLayout L L.initState := by
+    simp [UsesLayout, Layout.initState, Layout.env]
+  have hrun' : Run evm resolved L.initState V yst out := by
+    rw [hresolved]
+    exact resolveForLayout_run L huses hrun
+  obtain ⟨bound, hsim⟩ :=
+    compile_correct_withPayload (payload := payload) hinstructions hrun'
+  refine ⟨bound, ?_⟩
+  intro s0 hframe hmatch hpc hstack hgas
+  apply hsim s0
+  · simpa [assembleWithPayload, hcode] using hframe
+  · exact hmatch
+  · exact hpc
+  · exact hstack
+  · exact hgas
 
 /-- Under the layout `compileObject` produces, the canonical deploy-code for
 any data segment `n` (of the object) returns exactly its bytes. -/
