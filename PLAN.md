@@ -264,8 +264,9 @@ Deliverables:
    - storage: `sload sstore tload tstore`,
    - memory: `mload mstore mstore8 mcopy`,
    - calldata: `calldataload calldatasize calldatacopy`,
-   - env/block readers: `address origin caller callvalue gasprice coinbase
-     timestamp number prevrandao gaslimit chainid basefee blobbasefee`,
+   - env/block readers: `address origin caller callvalue gasprice selfbalance
+     coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee`,
+   - world/transaction readers: `balance blobhash`,
    - halting: `stop return revert invalid`.
    Ops outside the set compile to `none`; the `opTable` in `OpTable.lean` is the
    single source of truth. The signed operations `sdiv`, `smod`, `sar`, and
@@ -276,8 +277,10 @@ Deliverables:
    `calldatacopy` uses the pointwise calldata relation already consumed by
    `calldataload`. Follow-ups needing a further `StateMatch` extension include
    `returndatasize` (needs a returndata length correspondence),
-   `selfbalance`/`balance`/`extcodesize`/`extcodehash`/`blockhash`/`blobhash`
-   (need account-map / abstract-map correspondences). Excluded until further
+   `extcodesize`/`extcodehash`/`blockhash`
+   (need further account-map / abstract-map correspondences). `selfbalance`,
+   `balance`, and `blobhash` are covered by the account-map and transaction
+   blob-list fields of `StateMatch`/`EnvMatch`. Excluded until further
    work: the remaining memory/state writes through `writeBytes`
    (`returndatacopy extcodecopy` — each needs its own state correspondence;
    `mstore8`/`mcopy` and calldata/code/object-data copies are covered), `keccak256`

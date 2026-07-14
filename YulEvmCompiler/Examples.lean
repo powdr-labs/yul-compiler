@@ -211,6 +211,15 @@ def calldataOps : Block Op := yul% {
   sstore(2, mload(32))
 }
 
+/-- Account and transaction-context reads: the executing balance, another
+account's balance, one in-range blob hash, and one out-of-range blob hash. -/
+def accountAndBlobReads : Block Op := yul% {
+  sstore(0, selfbalance())
+  sstore(1, balance(1))
+  sstore(2, blobhash(0))
+  sstore(3, blobhash(1))
+}
+
 #guard (compileProgram sumLoop).isSome
 #guard (compileProgram breakContinue).isSome
 #guard (compileProgram funCall).isSome
@@ -227,6 +236,8 @@ def calldataOps : Block Op := yul% {
 #guard (compile signExtendCases).isSome
 #guard (compileProgram calldataOps).isSome
 #guard (compile calldataOps).isSome
+#guard (compileProgram accountAndBlobReads).isSome
+#guard (compile accountAndBlobReads).isSome
 
 /-! ### The upstream Fibonacci contract
 
@@ -307,6 +318,43 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn byteAndOverlapCopy [0, 1]
 #guard agreeOn signExtendCases [0, 1, 2]
 #guard agreeOnWithCalldata calldataOps [0xaa, 0xbb, 0xcc] [0, 1, 2]
+
+/-- Differential check with the source's abstract balance/blob oracles and the
+target's concrete account map/blob list initialized to matching values. -/
+def agreeAccountAndBlobReads : Bool :=
+  let ySelf : BitVec 256 := BitVec.ofNat 256 0x22223333
+  let yOther : BitVec 256 := BitVec.ofNat 256 0x22222222
+  let yBlob : BitVec 256 := BitVec.ofNat 256 0x123456
+  let yst0 : EvmState :=
+    { EvmState.init with env := { EvmState.init.env with
+        selfBalance := ySelf
+        balanceOf := fun a => if a = 1 then yOther else 0
+        blobHashOf := fun i => if i = 0 then yBlob else 0 } }
+  match compile accountAndBlobReads,
+      Interp.run YulSemantics.EVM.exec 100000 accountAndBlobReads yst0 with
+  | some is, .ok (_, yst, _) =>
+      let s0 := evmInit (assemble is)
+      let selfAccount : EvmSemantics.Account :=
+        { EvmSemantics.Account.empty with balance := EvmSemantics.UInt256.ofNat ySelf.toNat }
+      let otherAccount : EvmSemantics.Account :=
+        { EvmSemantics.Account.empty with balance := EvmSemantics.UInt256.ofNat yOther.toNat }
+      let otherAddress := EvmSemantics.AccountAddress.ofUInt256 (EvmSemantics.UInt256.ofNat 1)
+      let accounts := EvmSemantics.AccountMap.empty
+        |>.set s0.executionEnv.address selfAccount
+        |>.set otherAddress otherAccount
+      let s := runEvm 100000 { s0 with
+        accountMap := accounts
+        executionEnv := { s0.executionEnv with
+          blobVersionedHashes := #[EvmSemantics.UInt256.ofNat yBlob.toNat] } }
+      s.isDone
+        && (s.halt matches .Success)
+        && [0, 1, 2, 3].all (fun k =>
+          (yst.storage (BitVec.ofNat 256 k)).toNat
+            == ((s.accountMap s.executionEnv.address).storage.get
+                  (EvmSemantics.UInt256.ofNat k)).toNat)
+  | _, _ => false
+
+#guard agreeAccountAndBlobReads
 
 /-- Compile `prog`, run both sides with `cd` as calldata, and compare the
 returned byte payload (for contracts that halt via `return`, like the

@@ -10,8 +10,8 @@ The correspondence between the two machine states:
 
 * `MemMatch`   — yul-semantics' total `Nat → UInt8` memory vs. evm-semantics'
   `ByteArray` with zero-padded reads;
-* `StateMatch` — memory, calldata/environment data, and (transient) storage of
-  the executing account;
+* `StateMatch` — memory, calldata/environment data, account balances, and
+  (transient) storage of the executing account;
 * `FrameOK`    — the frame-level side conditions that hold throughout a
   straight-line execution (fixed code, Osaka fork, mutation permitted, not a
   precompile frame, no suspended callers, still running);
@@ -347,12 +347,15 @@ structure EnvMatch (ye : YulSemantics.EVM.ExecEnv) (se : ExecutionEnv) : Prop wh
   chainid    : conv ye.chainid    = se.header.chainId
   basefee    : conv ye.basefee    = se.header.baseFeePerGas
   blobbasefee : conv ye.blobbasefee = se.header.blobBaseFee
+  /-- Blob-versioned-hash agreement, including the EVM's zero result for an
+  index outside the transaction's finite hash list. -/
+  blobHash : ∀ i, conv (ye.blobHashOf i)
+    = se.blobVersionedHashes[(conv i).toNat]?.getD 0
 
-/-- The machine-state correspondence: memory pointwise, and the executing
-account's (transient) storage pointwise. yul-semantics' flat `storage` is the
-storage of the target's `executionEnv.address`. The returndata/logs
-components are unconstrained until the corresponding ops enter the
-supported set. -/
+/-- The machine-state correspondence: memory and balances pointwise, plus the
+executing account's (transient) storage. yul-semantics' flat `storage` is the
+storage of the target's `executionEnv.address`. The returndata/logs components
+are unconstrained until the corresponding ops enter the supported set. -/
 structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop where
   mem : MemMatch yst.memory s.memory
   stor : ∀ k, conv (yst.storage k)
@@ -371,6 +374,14 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   match. No supported op mutates code, so this is threaded unchanged. -/
   codeBytes : MemMatch (YulSemantics.EVM.byteFrom yst.env.code) s.executionEnv.code
   codeLen : yst.env.code.length = s.executionEnv.code.size
+  /-- The source environment's immutable self-balance view agrees with the
+  executing account in the target world state. -/
+  selfBalance : conv yst.env.selfBalance
+    = (s.accountMap s.executionEnv.address).balance
+  /-- The source environment's abstract balance oracle agrees pointwise with
+  target account lookup. Words are truncated to EVM addresses on both sides. -/
+  balanceOf : ∀ a, conv (yst.env.balanceOf a)
+    = (s.accountMap (AccountAddress.ofUInt256 (conv a))).balance
 
 /-- Frame-level side conditions preserved by every step of a straight-line
 execution. `code` is the full assembled program. -/

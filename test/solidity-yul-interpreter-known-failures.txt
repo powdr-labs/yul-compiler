@@ -5,7 +5,6 @@
 access_large_memory_offsets.yul
 and_create.yul
 and_create2.yul
-blobhash.yul
 create2.yul
 # These compile as real objects. Solidity's AST-interpreter expectations use
 # synthetic hash offsets/sizes and a dummy code buffer, so they are not the
@@ -30,7 +29,6 @@ mcopy_memory_expansion_on_write.yul
 mcopy_memory_expansion_zero_size.yul
 pop_byte_shr_call.yul
 recursive_function_for_loop.yul
-self_balance.yul
 side_effect_free.yul
 zero_length_reads.yul
 zero_length_reads_and_revert.yul

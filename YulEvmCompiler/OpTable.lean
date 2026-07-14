@@ -25,6 +25,8 @@ Deliberately *not* covered so far:
   need their own state correspondence;
 * `keccak256` — the two repos each declare their own unrelated `opaque` hash;
 * `log0`–`log4` — need a log-series correspondence (mechanical, later);
+* remaining world-state readers (`extcode*`, `blockhash`) — need their
+  account/code/header map correspondences;
 * `msize`, `gas`, calls/creates, `selfdestruct` — unmodeled in yul-semantics
   (`stepOp` returns `none`), so no source derivation exists to preserve. -/
 def opTable : Op → Option Operation
@@ -59,10 +61,13 @@ def opTable : Op → Option Operation
   -- scalar environment / block readers
   | .address => some .ADDRESS | .origin => some .ORIGIN | .caller => some .CALLER
   | .callvalue => some .CALLVALUE | .gasprice => some .GASPRICE
+  | .selfbalance => some .SELFBALANCE
   | .coinbase => some .COINBASE | .timestamp => some .TIMESTAMP
   | .number => some .NUMBER | .prevrandao => some .PREVRANDAO
   | .gaslimit => some .GASLIMIT | .chainid => some .CHAINID
   | .basefee => some .BASEFEE | .blobbasefee => some .BLOBBASEFEE
+  -- account / transaction readers
+  | .balance => some .BALANCE | .blobhash => some .BLOBHASH
   -- storage / transient storage
   | .sload => some .SLOAD | .sstore => some .SSTORE
   | .tload => some .TLOAD | .tstore => some .TSTORE

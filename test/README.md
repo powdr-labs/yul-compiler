@@ -16,12 +16,13 @@ makes CI fail; malformed version metadata also fails the run.
 
 The initial state has empty calldata, memory, storage, and transient storage.
 It also reproduces Solidity's fixed address, caller, call value, balances,
-block number, timestamp, fees, chain ID, and other block fields. The executing
-account's code is always the bytecode produced by this compiler, including for
-object roots. Solidity's AST interpreter instead uses synthetic hash-derived
-object offsets/sizes and a dummy `codecodecodecodecode` buffer. Consequently,
-the three fixtures that assert those synthetic values compile successfully but
-remain explicit post-state mismatches in the baseline.
+versioned blob hashes, block number, timestamp, fees, chain ID, and other block
+fields. The executing account's code is always the bytecode produced by this
+compiler, including for object roots. Solidity's AST interpreter instead uses
+synthetic hash-derived object offsets/sizes and a dummy
+`codecodecodecodecode` buffer. Consequently, the three fixtures that assert
+those synthetic values compile successfully but remain explicit post-state
+mismatches in the baseline.
 
 Remove a relative fixture path from either baseline as soon as it passes. A
 local checkout can be checked with:
