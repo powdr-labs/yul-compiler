@@ -194,6 +194,14 @@ def byteAndOverlapCopy : Block Op := yul% {
   sstore(1, mload(8))
 }
 
+/-- Sign extension covers a negative byte, a positive byte, and an index at
+which the EVM operation is the identity. -/
+def signExtendCases : Block Op := yul% {
+  sstore(0, signextend(0, 0x80))
+  sstore(1, signextend(0, 0x7f))
+  sstore(2, signextend(32, 0x80))
+}
+
 #guard (compileProgram sumLoop).isSome
 #guard (compileProgram breakContinue).isSome
 #guard (compileProgram funCall).isSome
@@ -206,6 +214,8 @@ def byteAndOverlapCopy : Block Op := yul% {
 #guard (compile factorial).isSome
 #guard (compile fibStorage).isSome
 #guard (compile byteAndOverlapCopy).isSome
+#guard (compileProgram signExtendCases).isSome
+#guard (compile signExtendCases).isSome
 
 /-! ### The upstream Fibonacci contract
 
@@ -275,6 +285,7 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn breakNested [0]
 #guard agreeOn fibStorage [0]
 #guard agreeOn byteAndOverlapCopy [0, 1]
+#guard agreeOn signExtendCases [0, 1, 2]
 
 /-- Compile `prog`, run both sides with `cd` as calldata, and compare the
 returned byte payload (for contracts that halt via `return`, like the
@@ -317,5 +328,8 @@ def agreeReturn (prog : Block Op) (cd : List UInt8) : Bool :=
 #guard (runYul 100000 nested).map (fun st => (st.storage 0).toNat) = some 30
 #guard (runYul 100000 breakNested).map (fun st => (st.storage 0).toNat) = some 9
 #guard (runYul 100000 fibStorage).map (fun st => (st.storage 0).toNat) = some 55
+#guard (runYul 100000 signExtendCases).map
+    (fun st => ((st.storage 0).toInt, (st.storage 1).toNat, (st.storage 2).toNat)) =
+      some (-128, 127, 128)
 
 end YulEvmCompiler.Examples

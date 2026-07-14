@@ -216,8 +216,8 @@ names, non-unique parameter/return names, more than 16 returns, classic
 2. **Value agreement** (`Value.lean`). `conv : BitVec 256 → UInt256` (`toNat`-based,
    an injection) with one lemma per supported op, e.g.
    `conv (a + b) = conv a + conv b`, `conv (yul.b2w (a.ult b)) = UInt256.lt (conv a) (conv b)`, ….
-   These are the only number-theoretic proofs, and each is independent. The hairy ones
-   (`sdiv`, `smod`, `sar`, `signextend`) can land incrementally; an op enters the
+   These are the only number-theoretic proofs, and each is independent. The hairy signed
+   operations (`sdiv`, `smod`, `sar`, `signextend`) are all covered; an op enters the
    compiler's supported set exactly when its lemma exists.
 3. **State correspondence** (`StateRel.lean`) as described above, plus preservation
    lemmas for each state-touching op (storage via the `Std.HashMap` simp lemmas).
@@ -257,7 +257,7 @@ Deliverables:
    (no variables, no user functions, statements are built-in expression statements).
 3. The main theorem, **proved without `sorry`** (`#print axioms` shows only
    `propext`, `Classical.choice`, `Quot.sound`), for the supported op set:
-   - arithmetic: `add sub mul div sdiv mod smod addmod mulmod exp clz`,
+   - arithmetic: `add sub mul div sdiv mod smod addmod mulmod exp signextend clz`,
    - comparison: `lt gt slt sgt eq iszero`,
    - bitwise: `and or xor not byte shl shr sar`,
    - stack: `pop`,
@@ -268,14 +268,10 @@ Deliverables:
      timestamp number prevrandao gaslimit chainid basefee blobbasefee`,
    - halting: `stop return revert invalid`.
    Ops outside the set compile to `none`; the `opTable` in `OpTable.lean` is the
-   single source of truth. The signed arithmetic ops `sdiv`, `smod`, `sar` are
-   covered (their `conv_*` lemmas bridge `BitVec.sdiv`/`srem`/`sshiftRight` to
-   evm-semantics' `toSignedNat`/`ofSignedInt` via `BitVec.toInt`); the scalar
+   single source of truth. The signed operations `sdiv`, `smod`, `sar`, and
+   `signextend` are covered: their `conv_*` lemmas bridge the source `BitVec`
+   formulations to evm-semantics' signed and Nat-mask formulations. The scalar
    environment/block readers go through the `EnvMatch` bundle in `StateMatch`.
-   **Remaining proof debt** (one `conv_*` lemma in `Value.lean` + one `opTable`
-   row + one `opStep` case each): `signextend` — a two-formulation bit-blast
-   between Yul's `getLsbD`/mask form and evm-semantics' `toNat`-shift/mask form
-   (blocked on a Nat all-ones-xor/complement lemma not in the pinned Mathlib).
    Follow-ups needing a further `StateMatch` extension: the size readers
    `calldatasize`/`returndatasize` (need length correspondences; `codesize` is
    now covered by the code-region fields),

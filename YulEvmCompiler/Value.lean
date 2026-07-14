@@ -405,4 +405,70 @@ theorem conv_sar (shift val : U256) :
       rw [Int.ediv_eq_zero_of_lt (by omega) (by omega), ofSignedInt_zero]
   · rw [if_neg h]
 
+/-- XOR with an all-ones 256-bit mask is subtraction from that mask. This is
+the Nat-level bridge between the target's explicit XOR mask and BitVec's
+fixed-width complement. -/
+private theorem allOnes_xor_eq_sub {m : Nat} (hm : m < 2 ^ 256) :
+    (2 ^ 256 - 1) ^^^ m = 2 ^ 256 - 1 - m := by
+  have h := BitVec.toNat_not (x := BitVec.ofNat 256 m)
+  rw [BitVec.not_def, BitVec.toNat_xor, BitVec.toNat_allOnes,
+    BitVec.toNat_ofNat, Nat.mod_eq_of_lt hm] at h
+  exact h
+
+/-- Yul's fixed-width mask formulation of `signextend` agrees with the
+target semantics' Nat mask formulation. -/
+theorem conv_signextend (i x : U256) :
+    conv (YulSemantics.EVM.signExtend i x) = UInt256.signExtend (conv i) (conv x) := by
+  apply u256ext
+  unfold YulSemantics.EVM.signExtend UInt256.signExtend
+  by_cases hk : 31 ≤ i.toNat
+  · rw [if_pos hk]
+    have hkt : (conv i).toNat ≥ 31 := hk
+    rw [if_pos hkt]
+  · rw [if_neg hk]
+    have hkt : ¬(conv i).toNat ≥ 31 := hk
+    rw [if_neg hkt]
+    dsimp only
+    let bits := 8 * (i.toNat + 1)
+    have hbits : bits < 256 := by simp only [bits]; omega
+    have hidx : 8 * i.toNat + 7 = bits - 1 := by simp only [bits]; omega
+    have hsucc : (8 * i.toNat + 7).succ = bits := by simp only [bits]; omega
+    have hpow : 2 ^ bits < 2 ^ 256 := Nat.pow_lt_pow_right (by omega) hbits
+    have hshift : ((1 : U256) <<< bits).toNat = 2 ^ bits := by
+      rw [BitVec.toNat_shiftLeft]
+      change (1 <<< bits) % 2 ^ 256 = 2 ^ bits
+      rw [Nat.one_shiftLeft, Nat.mod_eq_of_lt hpow]
+    have hlow : (((1 : U256) <<< bits) - 1).toNat = 2 ^ bits - 1 := by
+      rw [BitVec.toNat_sub, hshift]
+      have hone : ((1 : U256).toNat) = 1 := rfl
+      rw [hone]
+      have hrearr : 2 ^ 256 - 1 + 2 ^ bits = (2 ^ bits - 1) + 2 ^ 256 := by
+        have := Nat.two_pow_pos bits
+        omega
+      rw [hrearr, Nat.add_mod_right, Nat.mod_eq_of_lt]
+      omega
+    have hmask : (1 <<< (8 * (conv i).toNat + 7).succ) - 1 = 2 ^ bits - 1 := by
+      rw [conv_toNat, hsucc, Nat.one_shiftLeft]
+    have hmasklt : 2 ^ bits - 1 < 2 ^ 256 := by omega
+    have hsign :
+        decide (((conv x).toNat >>> (8 * (conv i).toNat + 7)) &&& 1 = 1) =
+          x.getLsbD (bits - 1) := by
+      rw [conv_toNat, conv_toNat, hidx]
+      simp only [Nat.and_one_is_mod, Nat.shiftRight_eq_div_pow,
+        BitVec.getLsbD, Nat.testBit_eq_decide_div_mod_eq]
+    rw [hmask, hsign]
+    by_cases hs : x.getLsbD (bits - 1) = true
+    · rw [if_pos hs, if_pos hs]
+      change (x ||| ~~~(((1 : U256) <<< bits) - 1)).toNat =
+        (x.toNat ||| ((2 ^ 256 - 1) ^^^ (2 ^ bits - 1))) % 2 ^ 256
+      rw [BitVec.toNat_or, BitVec.toNat_not, hlow]
+      rw [allOnes_xor_eq_sub hmasklt]
+      rw [Nat.mod_eq_of_lt]
+      exact Nat.or_lt_two_pow x.isLt (by omega)
+    · rw [if_neg hs, if_neg hs]
+      change (x &&& (((1 : U256) <<< bits) - 1)).toNat =
+        (x.toNat &&& (2 ^ bits - 1)) % 2 ^ 256
+      rw [BitVec.toNat_and, hlow,
+        Nat.mod_eq_of_lt (Nat.and_lt_two_pow x.toNat hmasklt)]
+
 end YulEvmCompiler
