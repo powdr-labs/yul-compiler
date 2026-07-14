@@ -20,9 +20,9 @@ open EvmSemantics (Operation)
 the built-in is not (yet) in the verified fragment.
 
 Deliberately *not* covered so far:
-* returndata and external-code copies — calldata, code, and object-data copies
-  are covered by `MemMatch.copyFromBytes`, while the remaining sources still
-  need their own state correspondence;
+* external-code copies — calldata, code, returndata, and object-data copies are
+  covered by `MemMatch.copyFromBytes`, while external account code still needs
+  its own state correspondence;
 * `keccak256` — the two repos each declare their own unrelated `opaque` hash;
 * `log0`–`log4` — need a log-series correspondence (mechanical, later);
 * remaining world-state readers (`extcode*`, `blockhash`) — need their
@@ -53,6 +53,9 @@ def opTable : Op → Option Operation
   -- calldata read / copy
   | .calldataload => some .CALLDATALOAD | .calldatasize => some .CALLDATASIZE
   | .calldatacopy => some .CALLDATACOPY
+  -- returndata read / copy
+  | .returndatasize => some .RETURNDATASIZE
+  | .returndatacopy => some .RETURNDATACOPY
   -- code (own account): size and copy-to-memory; `datacopy` is `codecopy`
   -- (deployed bytecode carries data segments appended to the code)
   | .codesize => some .CODESIZE

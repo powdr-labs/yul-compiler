@@ -64,7 +64,7 @@ Design decisions baked into that statement:
 **yul-semantics** (`YulSemantics.*`):
 - `Ast.lean`: `Expr Op` (lit / var / builtin / call), `Stmt Op`, `Outcome`.
 - `Dialect.lean`: dialect interface; `BuiltinResult` (`ok rets st` / `halt st`).
-- `Dialect/EVM.lean` (rev `124c172`, `main`): `Op` enum covering the
+- `Dialect/EVM.lean` (rev `2556d86`, `main`): `Op` enum covering the
   full user-facing Yul EVM dialect — arithmetic/comparison/bitwise/`clz`,
   `keccak256` (via an **opaque** `keccakBytes`), `pop`, memory
   (`mload/mstore/mstore8/mcopy/msize`, with an active-memory high-water mark),
@@ -123,8 +123,9 @@ Design decisions baked into that statement:
    (do-loop reasoning), so no axioms are involved. `mstore8` is covered by a
    low-byte write lemma, and `mcopy` by an overlap-safe intermediate-buffer
    correspondence plus a two-range gas bound. `calldatacopy`/`codecopy`/
-   `datacopy` share the immutable-region agreement in `MemMatch.copyFromBytes`;
-   returndata and external-code copies still need their own state correspondence.
+   `datacopy`/`returndatacopy` share the immutable-region agreement in
+   `MemMatch.copyFromBytes`; external-code copies still need their own state
+   correspondence.
 3. Reads are unaffected: `readPadded`/`readWord` are total, so `mload`,
    `return(p,s)`, and `revert(p,s)` are verified. They also compose with the
    verified `mstore`, whose proof preserves `MemMatch`.
@@ -149,7 +150,7 @@ YulEvmCompiler/
   LowerCorrect.lean -- phase B: assembly execution → EVM execution
   OpTable.lean      -- exact verified built-in set
   Value.lean        -- BitVec 256 ↔ UInt256 operation agreements
-  StateRel.lean     -- memory/storage/calldata/environment correspondence
+  StateRel.lean     -- memory/storage/byte-region/environment correspondence
   OpStep.lean       -- per-op EVM simulation lemmas and gas bounds
   Correctness.lean  -- end-to-end compile_correct / compile_correct_eval
   ObjectCompile.lean -- foundational object/data layout + consistency proof
@@ -268,6 +269,7 @@ Deliverables:
    - storage: `sload sstore tload tstore`,
    - memory: `mload mstore mstore8 mcopy msize`,
    - calldata: `calldataload calldatasize calldatacopy`,
+   - returndata: `returndatasize returndatacopy`,
    - env/block readers: `address origin caller callvalue gasprice selfbalance
      coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee`,
    - world/transaction readers: `balance blobhash`,
@@ -279,14 +281,14 @@ Deliverables:
    environment/block readers go through the `EnvMatch` bundle in `StateMatch`.
    `calldatasize` uses the calldata length correspondence in `EnvMatch`, and
    `calldatacopy` uses the pointwise calldata relation already consumed by
-   `calldataload`. Follow-ups needing a further `StateMatch` extension include
-   `returndatasize` (needs a returndata length correspondence),
-   `extcodesize`/`extcodehash`/`blockhash`
+   `calldataload`. `returndatasize`/`returndatacopy` similarly use exact-length
+   and pointwise returndata fields in `StateMatch`. Follow-ups needing a further
+   `StateMatch` extension include `extcodesize`/`extcodehash`/`blockhash`
    (need further account-map / abstract-map correspondences). `selfbalance`,
    `balance`, and `blobhash` are covered by the account-map and transaction
    blob-list fields of `StateMatch`/`EnvMatch`. Excluded until further
    work: the remaining memory/state writes through `writeBytes`
-   (`returndatacopy extcodecopy` — each needs its own state correspondence;
+   (`extcodecopy` needs an external-code correspondence;
    `mstore8`/`mcopy` and calldata/code/object-data copies are covered), `keccak256`
    (finding 4), `log*` (needs a log correspondence; addable later),
    `gas`/calls/creates/`selfdestruct`
