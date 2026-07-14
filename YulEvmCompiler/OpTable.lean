@@ -20,10 +20,9 @@ open EvmSemantics (Operation)
 the built-in is not (yet) in the verified fragment.
 
 Deliberately *not* covered so far:
-* the remaining copy family — `mstore`, `mstore8`, and overlap-safe `mcopy`
-  are covered by `MemMatch` preservation lemmas over `writeBytes`;
-  `codecopy`/`datacopy` are covered by `MemMatch.copyFromCode`, while calldata,
-  returndata, and external-code copies still need their own correspondence;
+* returndata and external-code copies — calldata, code, and object-data copies
+  are covered by `MemMatch.copyFromBytes`, while the remaining sources still
+  need their own state correspondence;
 * `keccak256` — the two repos each declare their own unrelated `opaque` hash;
 * `log0`–`log4` — need a log-series correspondence (mechanical, later);
 * `msize`, `gas`, calls/creates, `selfdestruct` — unmodeled in yul-semantics
@@ -49,8 +48,9 @@ def opTable : Op → Option Operation
   -- memory write / copy
   | .mstore => some .MSTORE | .mstore8 => some .MSTORE8
   | .mcopy => some .MCOPY
-  -- calldata read
-  | .calldataload => some .CALLDATALOAD
+  -- calldata read / copy
+  | .calldataload => some .CALLDATALOAD | .calldatasize => some .CALLDATASIZE
+  | .calldatacopy => some .CALLDATACOPY
   -- code (own account): size and copy-to-memory; `datacopy` is `codecopy`
   -- (deployed bytecode carries data segments appended to the code)
   | .codesize => some .CODESIZE

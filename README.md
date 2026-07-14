@@ -99,7 +99,7 @@ The verified built-in set (the domain of `opTable` in
 | stack      | `pop` |
 | storage    | `sload sstore tload tstore` |
 | memory     | `mload mstore mstore8 mcopy` |
-| calldata   | `calldataload` |
+| calldata   | `calldataload calldatasize calldatacopy` |
 | code       | `codesize codecopy datacopy` |
 | env/block  | `address origin caller callvalue gasprice coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee` |
 | halting    | `stop return revert invalid` |
