@@ -129,6 +129,8 @@ def opBound (op : Op) (args : List U256) : Nat :=
         memBound d.toNat n.toNat + 3 * ((n.toNat + 31) / 32)
     | .returndatacopy, [d, _, n] =>
         memBound d.toNat n.toNat + 3 * ((n.toNat + 31) / 32)
+    | .extcodecopy, [_, d, _, n] =>
+        memBound d.toNat n.toNat + 3 * ((n.toNat + 31) / 32)
     | .ret, [p, n] => memBound p.toNat n.toNat
     | .revert, [p, n] => memBound p.toNat n.toNat
     | .codecopy, [d, _, n] => memBound d.toNat n.toNat + 3 * ((n.toNat + 31) / 32)
@@ -261,7 +263,7 @@ theorem pushStepU {code : ByteArray} {pre post : List UInt8} {u : UInt256}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, ?_, ?_⟩
   · show s.pc + UInt256.ofNat (32 + 1) = _
     rw [hpc, ofNat_add_ofNat (by have := hf.codeSmall; omega)]
   · show u :: s.stack = u :: σ
@@ -296,7 +298,7 @@ theorem stopStep {code : ByteArray} {yst : EvmState} {s : State}
     decide
   exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec),
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, hf.callStack, rfl, rfl⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, hf.callStack, rfl, rfl⟩
 
 /-! ### Variable-access steps: `DUPn`, `SWAPn`, `POP` -/
 
@@ -332,7 +334,7 @@ theorem dupStep {code : ByteArray} {pre post : List UInt8} {n : Fin 16}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
   · show s.pc.succ = _
     rw [hpc]; apply succ_ofNat
     have hsz : code.size = pre.length + 1 + post.length := by
@@ -367,7 +369,7 @@ theorem swapStep {code : ByteArray} {pre post : List UInt8} {n : Fin 16}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
   · show s.pc.succ = _
     rw [hpc]; apply succ_ofNat
     have hsz : code.size = pre.length + 1 + post.length := by
@@ -402,7 +404,7 @@ theorem popStep {code : ByteArray} {pre post : List UInt8}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
   · show s.pc.succ = _
     rw [hpc]; apply succ_ofNat
     have hsz : code.size = pre.length + 1 + post.length := by
@@ -462,7 +464,7 @@ private theorem binPure
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, ?_, ?_⟩
   · show s.pc.succ = _
     rw [hpc]
     apply succ_ofNat
@@ -510,7 +512,7 @@ private theorem nullaryRead {yv : U256} {sv : UInt256}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, ?_, ?_⟩
   · show s.pc.succ = _
     rw [hpc]; apply succ_ofNat
     have hsz : code.size = pre.length + 1 + post.length := by
@@ -561,7 +563,7 @@ private theorem unPure
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, ?_, ?_⟩
   · show s.pc.succ = _
     rw [hpc]
     apply succ_ofNat
@@ -615,7 +617,7 @@ private theorem terPure
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, ?_, ?_⟩
   · show s.pc.succ = _
     rw [hpc]
     apply succ_ofNat
@@ -634,7 +636,7 @@ end PureHelpers
 
 /-! ### The per-built-in step -/
 
-set_option maxHeartbeats 800000 in
+set_option maxHeartbeats 1600000 in
 open YulSemantics.EVM in
 /-- Executing the single compiled instruction of a supported built-in from a
 matching state: one target `Step` to a matching state (with `rets` replacing
@@ -927,7 +929,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, ?_, ?_⟩
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -955,7 +957,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -987,7 +989,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, ?_, ?_⟩
     · simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords p.toNat 32
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
@@ -1026,7 +1028,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
     · show MemMatch (YulSemantics.EVM.storeWord yst.memory p.toNat v)
         (MachineState.writeBytes s.memory
           (Data.Bytes.natToBytesPadded (conv v).toNat 32) (conv p).toNat)
@@ -1069,7 +1071,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
     · show MemMatch (YulSemantics.EVM.storeByte yst.memory p.toNat v)
         (MachineState.writeBytes s.memory
           (ByteArray.mk #[UInt8.ofNat ((conv v).toNat % 256)]) (conv p).toNat)
@@ -1121,7 +1123,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
     · show MemMatch
         (YulSemantics.EVM.copyWithin yst.memory d.toNat src.toNat n.toNat)
         (MachineState.writeBytes s.memory
@@ -1170,7 +1172,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, ?_, ?_⟩
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1231,7 +1233,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
     · show MemMatch
         (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.calldata)
         (MachineState.writeBytes s.memory
@@ -1302,7 +1304,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
     · show MemMatch
         (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat
           yst.returndata)
@@ -1351,7 +1353,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
     · show MemMatch (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.code)
         (MachineState.writeBytes s.memory
           (MachineState.readPadded s.executionEnv.code (conv s0).toNat (conv nn).toNat)
@@ -1392,7 +1394,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
     · show MemMatch (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat yst.env.code)
         (MachineState.writeBytes s.memory
           (MachineState.readPadded s.executionEnv.code (conv s0).toNat (conv nn).toNat)
@@ -1587,7 +1589,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, ?_, ?_⟩
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1600,6 +1602,198 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have h3 : opBound Op.balance [a] = 40000 := rfl
       rw [h3]
       exact Nat.sub_le_sub_left htotal s.gasAvailable
+  case extcodesize =>
+    rcases args with _ | ⟨a, _ | ⟨b, args⟩⟩ <;>
+      simp [stepOp, YulSemantics.EVM.rd1] at hyul
+    subst hyul
+    show OkStep code s (opBound .extcodesize [a])
+      [BitVec.ofNat 256 (yst.env.extCodeOf a).length] yst pre.length 1 σ
+    obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .extcodesize) rfl
+    have hdec := decoded_op hf hcode hpc hb' hplain
+      (opTable_available (yop := .extcodesize) rfl)
+    have hstk' : s.stack = conv a :: σ := by simpa using hstk
+    have htotal : Gas.extcodesizeTotal s (conv a) ≤ 40000 := by
+      unfold Gas.extcodesizeTotal
+      have hbase : Gas.baseCost s.executionEnv.fork Operation.EXTCODESIZE ≤ 100 := by
+        rw [hf.fork]
+        decide
+      have hcold := accountCold_le s (AccountAddress.ofUInt256 (conv a))
+      omega
+    have hgas' : Gas.extcodesizeTotal s (conv a) ≤ s.gasAvailable :=
+      le_trans htotal hgas40
+    have hval : conv (BitVec.ofNat 256 (yst.env.extCodeOf a).length)
+        = UInt256.ofNat (s.accountMap (AccountAddress.ofUInt256 (conv a))).code.size := by
+      apply u256ext
+      rw [conv_toNat, BitVec.toNat_ofNat, toNat_u256_ofNat,
+        hm.externalCode.length a]
+    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+      (StepRunning.extcodesize s (conv a) σ hdec hgas' hstk'),
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        hf.running⟩,
+      ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
+        hm.externalCode⟩, ?_, ?_, ?_⟩
+    · show s.pc.succ = _
+      rw [hpc]
+      apply succ_ofNat
+      have hsz : code.size = pre.length + 1 + post.length := by
+        subst hcode
+        simp [Instr.bytes]
+        omega
+      have := hf.codeSmall
+      omega
+    · show UInt256.ofNat
+          (s.accountMap (AccountAddress.ofUInt256 (conv a))).code.size :: σ = _
+      simp [hval]
+    · show s.gasAvailable - Gas.extcodesizeTotal s (conv a)
+          ≥ s.gasAvailable - opBound .extcodesize [a]
+      have h3 : opBound Op.extcodesize [a] = 40000 := rfl
+      rw [h3]
+      exact Nat.sub_le_sub_left htotal s.gasAvailable
+  case extcodecopy =>
+    rcases args with _ | ⟨a, _ | ⟨d, _ | ⟨s0, _ | ⟨nn, _ | ⟨e, args⟩⟩⟩⟩⟩ <;>
+      simp [stepOp] at hyul
+    subst hyul
+    show OkStep code s (opBound .extcodecopy [a, d, s0, nn]) []
+      { YulSemantics.EVM.touchMemory yst d.toNat nn.toNat with memory :=
+          (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat
+            (yst.env.extCodeOf a)) }
+      pre.length 1 σ
+    obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .extcodecopy) rfl
+    have hdec := decoded_op hf hcode hpc hb' hplain
+      (opTable_available (yop := .extcodecopy) rfl)
+    have hstk' : s.stack = conv a :: conv d :: conv s0 :: conv nn :: σ := by
+      simpa using hstk
+    have h3 : opBound Op.extcodecopy [a, d, s0, nn]
+        = 40000 + (memBound d.toNat nn.toNat + 3 * ((nn.toNat + 31) / 32)) := rfl
+    have h4 : Gas.copyWordCost (conv nn) = 3 * ((nn.toNat + 31) / 32) := by
+      unfold Gas.copyWordCost
+      rw [conv_toNat]
+    have hbase : Gas.baseCost s.executionEnv.fork Operation.EXTCODECOPY ≤ 100 := by
+      rw [hf.fork]
+      decide
+    have hmem := memExpansionDelta_le_memBound s.activeWords.toNat
+      (conv d).toNat (conv nn).toNat
+    rw [conv_toNat d, conv_toNat nn] at hmem
+    have hcold := accountCold_le s (AccountAddress.ofUInt256 (conv a))
+    have hgas' : Gas.extcodecopyTotal s (conv a) (conv d) (conv nn)
+        ≤ s.gasAvailable := by
+      unfold Gas.extcodecopyTotal
+      rw [conv_toNat d, conv_toNat nn, h4]
+      omega
+    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+      (StepRunning.extcodecopy s (conv a) (conv d) (conv s0) (conv nn) σ
+        hdec hstk' hgas'),
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        hf.running⟩,
+      ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
+        hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen,
+        hm.externalCode⟩, ?_, rfl, ?_⟩
+    · show MemMatch
+        (YulSemantics.EVM.copyInto yst.memory d.toNat s0.toNat nn.toNat
+          (yst.env.extCodeOf a))
+        (MachineState.writeBytes s.memory
+          (MachineState.readPadded
+            (s.accountMap (AccountAddress.ofUInt256 (conv a))).code
+            (conv s0).toNat (conv nn).toNat) (conv d).toNat)
+      rw [conv_toNat d, conv_toNat s0, conv_toNat nn]
+      exact hm.mem.copyFromBytes (hm.externalCode.bytes a) d.toNat s0.toNat nn.toNat
+    · simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords d.toNat nn.toNat
+    · show s.pc.succ = _
+      rw [hpc]
+      apply succ_ofNat
+      have hsz : code.size = pre.length + 1 + post.length := by
+        subst hcode
+        simp [Instr.bytes]
+        omega
+      have := hf.codeSmall
+      omega
+    · show s.gasAvailable - Gas.extcodecopyTotal s (conv a) (conv d) (conv nn)
+          ≥ s.gasAvailable - opBound .extcodecopy [a, d, s0, nn]
+      unfold Gas.extcodecopyTotal
+      rw [conv_toNat d, conv_toNat nn, h4, h3]
+      omega
+  case extcodehash =>
+    rcases args with _ | ⟨a, _ | ⟨b, args⟩⟩ <;>
+      simp [stepOp, YulSemantics.EVM.rd1] at hyul
+    subst hyul
+    show OkStep code s (opBound .extcodehash [a]) [yst.env.extCodeHashOf a]
+      yst pre.length 1 σ
+    obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .extcodehash) rfl
+    have hdec := decoded_op hf hcode hpc hb' hplain
+      (opTable_available (yop := .extcodehash) rfl)
+    have hstk' : s.stack = conv a :: σ := by simpa using hstk
+    have htotal : Gas.extcodehashTotal s (conv a) ≤ 40000 := by
+      unfold Gas.extcodehashTotal
+      have hbase : Gas.baseCost s.executionEnv.fork Operation.EXTCODEHASH ≤ 100 := by
+        rw [hf.fork]
+        decide
+      have hcold := accountCold_le s (AccountAddress.ofUInt256 (conv a))
+      omega
+    have hgas' : Gas.extcodehashTotal s (conv a) ≤ s.gasAvailable :=
+      le_trans htotal hgas40
+    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+      (StepRunning.extcodehash s (conv a) σ hdec hgas' hstk'),
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        hf.running⟩,
+      ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
+        hm.externalCode⟩, ?_, ?_, ?_⟩
+    · show s.pc.succ = _
+      rw [hpc]
+      apply succ_ofNat
+      have hsz : code.size = pre.length + 1 + post.length := by
+        subst hcode
+        simp [Instr.bytes]
+        omega
+      have := hf.codeSmall
+      omega
+    · show (s.accountMap (AccountAddress.ofUInt256 (conv a))).codeHash :: σ = _
+      simp [hm.externalCode.hash a]
+    · show s.gasAvailable - Gas.extcodehashTotal s (conv a)
+          ≥ s.gasAvailable - opBound .extcodehash [a]
+      have h3 : opBound Op.extcodehash [a] = 40000 := rfl
+      rw [h3]
+      exact Nat.sub_le_sub_left htotal s.gasAvailable
+  case blockhash =>
+    rcases args with _ | ⟨n, _ | ⟨b, args⟩⟩ <;>
+      simp [stepOp, YulSemantics.EVM.rd1] at hyul
+    subst hyul
+    show OkStep code s (opBound .blockhash [n]) [yst.env.blockHashOf n]
+      yst pre.length 1 σ
+    obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .blockhash) rfl
+    have hdec := decoded_op hf hcode hpc hb' hplain
+      (opTable_available (yop := .blockhash) rfl)
+    have hstk' : s.stack = conv n :: σ := by simpa using hstk
+    have hgas' : Gas.baseCost s.fork .BLOCKHASH ≤ s.gasAvailable := by
+      rw [hfork]
+      have : Gas.baseCost .Osaka Operation.BLOCKHASH ≤ 40000 := by decide
+      omega
+    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+      (StepRunning.blockhash s (conv n) σ hdec hgas' hstk'),
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        hf.running⟩,
+      ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
+        hm.externalCode⟩, ?_, ?_, ?_⟩
+    · show s.pc.succ = _
+      rw [hpc]
+      apply succ_ofNat
+      have hsz : code.size = pre.length + 1 + post.length := by
+        subst hcode
+        simp [Instr.bytes]
+        omega
+      have := hf.codeSmall
+      omega
+    · show s.executionEnv.header.blockHash (conv n) :: σ = _
+      simp [hm.env.blockHash n]
+    · show s.gasAvailable - Gas.baseCost s.fork .BLOCKHASH
+          ≥ s.gasAvailable - opBound .blockhash [n]
+      have h3 : opBound Op.blockhash [n] = 40000 := rfl
+      rw [h3]
+      apply Nat.sub_le_sub_left
+      rw [hfork]
+      decide
   case blobhash =>
     rcases args with _ | ⟨i, _ | ⟨b, args⟩⟩ <;>
       simp [stepOp, YulSemantics.EVM.rd1] at hyul
@@ -1623,7 +1817,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-          hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, ?_, ?_⟩
+          hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, ?_, ?_⟩
       · show s.pc.succ = _
         rw [hpc]; apply succ_ofNat
         have hsz : code.size = pre.length + 1 + post.length := by
@@ -1644,7 +1838,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-          hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, ?_, ?_⟩
+          hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, ?_, ?_⟩
       · show s.pc.succ = _
         rw [hpc]; apply succ_ofNat
         have hsz : code.size = pre.length + 1 + post.length := by
@@ -1676,7 +1870,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, ?_, ?_⟩
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1758,6 +1952,10 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       · exact hm.activeWords
       · exact hm.retData
       · exact hm.retDataLen
+      · exact hm.externalCode.setAccount s.executionEnv.address
+          { s.accountMap s.executionEnv.address with
+            storage := (s.accountMap s.executionEnv.address).storage.set (conv k) (conv v) }
+          rfl rfl rfl
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1791,7 +1989,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, ?_, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, ?_, ?_⟩
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1855,6 +2053,10 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       · exact hm.activeWords
       · exact hm.retData
       · exact hm.retDataLen
+      · exact hm.externalCode.setAccount s.executionEnv.address
+          { s.accountMap s.executionEnv.address with
+            tstorage := (s.accountMap s.executionEnv.address).tstorage.set (conv k) (conv v) }
+          rfl rfl rfl
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
       have hsz : code.size = pre.length + 1 + post.length := by
@@ -1874,7 +2076,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       (opTable_available (yop := .stop) rfl)
     exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec),
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, hf.callStack, (.stop, []), rfl, rfl⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, hf.callStack, (.stop, []), rfl, rfl⟩
   case invalid =>
     rcases args with _ | ⟨a, args⟩ <;> simp [stepOp] at hyul
     subst hyul
@@ -1885,7 +2087,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     exact ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.invalidOpcode s hdec),
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, hf.callStack, (.invalid, []), rfl, rfl⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, hf.callStack, (.invalid, []), rfl, rfl⟩
   case ret =>
     rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨c, args⟩⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
@@ -1906,7 +2108,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf,
         by simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords p.toNat n.toNat,
-        hm.retData, hm.retDataLen⟩,
+        hm.retData, hm.retDataLen, hm.externalCode⟩,
       hf.callStack,
       (.ret, YulSemantics.EVM.readBytes yst.memory p.toNat n.toNat), rfl,
       rfl, (hm.mem.readBytes p.toNat n.toNat).symm⟩
@@ -1930,7 +2132,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf,
         by simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords p.toNat n.toNat,
-        hm.retData, hm.retDataLen⟩,
+        hm.retData, hm.retDataLen, hm.externalCode⟩,
       hf.callStack,
       (.revert, YulSemantics.EVM.readBytes yst.memory p.toNat n.toNat), rfl,
       rfl, (hm.mem.readBytes p.toNat n.toNat).symm⟩
@@ -1959,7 +2161,7 @@ theorem jumpdestStep {code : ByteArray} {pre post : List UInt8}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
   · show s.pc.succ = _
     rw [hpc]; apply succ_ofNat
     have hsz : code.size = pre.length + 1 + post.length := by
@@ -1996,7 +2198,7 @@ theorem jumpStep {code : ByteArray} {pre post : List UInt8}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, rfl, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, rfl, rfl, ?_⟩
   · show s.gasAvailable - Gas.baseCost s.fork .JUMP ≥ s.gasAvailable - 40000
     apply Nat.sub_le_sub_left
     rw [hfork]
@@ -2027,7 +2229,7 @@ theorem jumpiNotTakenStep {code : ByteArray} {pre post : List UInt8}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, ?_, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, ?_, rfl, ?_⟩
   · show s.pc.succ = _
     rw [hpc]; apply succ_ofNat
     have hsz : code.size = pre.length + 1 + post.length := by
@@ -2065,7 +2267,7 @@ theorem jumpiTakenStep {code : ByteArray} {pre post : List UInt8}
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen⟩, rfl, rfl, ?_⟩
+        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode⟩, rfl, rfl, ?_⟩
   · show s.gasAvailable - Gas.baseCost s.fork .JUMPI ≥ s.gasAvailable - 40000
     apply Nat.sub_le_sub_left
     rw [hfork]

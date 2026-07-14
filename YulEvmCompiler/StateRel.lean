@@ -11,8 +11,8 @@ The correspondence between the two machine states:
 * `MemMatch`   — yul-semantics' total `Nat → UInt8` memory vs. evm-semantics'
   `ByteArray` with zero-padded reads;
 * `StateMatch` — memory contents and active size, calldata/code/returndata,
-  environment data, account balances, and (transient) storage of the executing
-  account;
+  environment data, account balances and external code, and (transient)
+  storage of the executing account;
 * `FrameOK`    — the frame-level side conditions that hold throughout a
   straight-line execution (fixed code, Osaka fork, mutation permitted, not a
   precompile frame, no suspended callers, still running);
@@ -415,9 +415,60 @@ structure EnvMatch (ye : YulSemantics.EVM.ExecEnv) (se : ExecutionEnv) : Prop wh
   index outside the transaction's finite hash list. -/
   blobHash : ∀ i, conv (ye.blobHashOf i)
     = se.blobVersionedHashes[(conv i).toNat]?.getD 0
+  /-- Historical-block-hash agreement. Both semantics leave the validity
+  window/default-zero policy to the supplied lookup function. -/
+  blockHash : ∀ n, conv (ye.blockHashOf n) = se.header.blockHash (conv n)
+
+/-- Agreement between yul-semantics' abstract external-code oracles and the
+target's concrete account map. Exact byte and length relations serve
+`extcodecopy` and `extcodesize`; the hash relation serves `extcodehash` and
+accounts for the target's EIP-161 empty-account rule. -/
+structure ExternalCodeMatch (ye : YulSemantics.EVM.ExecEnv) (accounts : AccountMap) : Prop where
+  bytes : ∀ a, MemMatch (YulSemantics.EVM.byteFrom (ye.extCodeOf a))
+    (accounts (AccountAddress.ofUInt256 (conv a))).code
+  length : ∀ a, (ye.extCodeOf a).length
+    = (accounts (AccountAddress.ofUInt256 (conv a))).code.size
+  hash : ∀ a, conv (ye.extCodeHashOf a)
+    = (accounts (AccountAddress.ofUInt256 (conv a))).codeHash
+
+/-- Updating one account while preserving the fields observed by external-code
+operations preserves `ExternalCodeMatch`. Storage and transient-storage
+updates satisfy these premises definitionally. -/
+theorem ExternalCodeMatch.setAccount {ye : YulSemantics.EVM.ExecEnv} {accounts : AccountMap}
+    (h : ExternalCodeMatch ye accounts) (addr : AccountAddress) (acc : Account)
+    (hnonce : acc.nonce = (accounts addr).nonce)
+    (hbalance : acc.balance = (accounts addr).balance)
+    (hcode : acc.code = (accounts addr).code) :
+    ExternalCodeMatch ye (accounts.set addr acc) := by
+  constructor
+  · intro a
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same]
+      have hold := h.bytes a
+      rw [ha] at hold
+      simpa [hcode] using hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.bytes a
+  · intro a
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same]
+      have hold := h.length a
+      rw [ha] at hold
+      simpa [hcode] using hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.length a
+  · intro a
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same]
+      have hold := h.hash a
+      rw [ha] at hold
+      simpa [Account.codeHash, Account.isEmpty, hnonce, hbalance, hcode] using hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.hash a
 
 /-- The machine-state correspondence: memory and byte regions pointwise, plus
-balances and the executing account's (transient) storage. yul-semantics' flat
+balances, external code, and the executing account's (transient) storage.
+yul-semantics' flat
 `storage` is the storage of the target's `executionEnv.address`. Logs remain
 unconstrained until the corresponding ops enter the supported set. -/
 structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop where
@@ -455,6 +506,8 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   /-- Exact return-data length agreement, used by `returndatasize` and the
   in-bounds premise of `returndatacopy`. -/
   retDataLen : yst.returndata.length = s.returnData.size
+  /-- External account code bytes, lengths, and hashes agree pointwise. -/
+  externalCode : ExternalCodeMatch yst.env s.accountMap
 
 /-- Frame-level side conditions preserved by every step of a straight-line
 execution. `code` is the full assembled program. -/

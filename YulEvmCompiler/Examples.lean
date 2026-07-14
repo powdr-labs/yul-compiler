@@ -249,6 +249,17 @@ def accountAndBlobReads : Block Op := yul% {
   sstore(3, blobhash(1))
 }
 
+/-- External-account code and historical block reads. The copy starts one
+byte into the external code and straddles a memory-word boundary. -/
+def externalCodeAndBlockReads : Block Op := yul% {
+  sstore(0, extcodesize(1))
+  extcodecopy(1, 31, 1, 3)
+  sstore(1, mload(0))
+  sstore(2, mload(32))
+  sstore(3, extcodehash(1))
+  sstore(4, blockhash(7))
+}
+
 #guard (compileProgram sumLoop).isSome
 #guard (compileProgram breakContinue).isSome
 #guard (compileProgram funCall).isSome
@@ -271,6 +282,8 @@ def accountAndBlobReads : Block Op := yul% {
 #guard (compile memorySizeOps).isSome
 #guard (compileProgram accountAndBlobReads).isSome
 #guard (compile accountAndBlobReads).isSome
+#guard (compileProgram externalCodeAndBlockReads).isSome
+#guard (compile externalCodeAndBlockReads).isSome
 
 /-! ### The upstream Fibonacci contract
 
@@ -400,6 +413,44 @@ def agreeAccountAndBlobReads : Bool :=
   | _, _ => false
 
 #guard agreeAccountAndBlobReads
+
+/-- Differential check with an external account's code, its concrete
+EIP-161-aware target code hash, and a historical block hash initialized
+consistently on both sides. -/
+def agreeExternalCodeAndBlockReads : Bool :=
+  let extBytes : List UInt8 := [0xaa, 0xbb, 0xcc, 0xdd, 0xee]
+  let yBlock : BitVec 256 := BitVec.ofNat 256 0x123456
+  let extAccount : EvmSemantics.Account :=
+    { EvmSemantics.Account.empty with code := ⟨extBytes.toArray⟩ }
+  let yExtHash : BitVec 256 := BitVec.ofNat 256 extAccount.codeHash.toNat
+  let yst0 : EvmState :=
+    { EvmState.init with env := { EvmState.init.env with
+        extCodeOf := fun a => if a = 1 then extBytes else []
+        extCodeHashOf := fun a => if a = 1 then yExtHash else 0
+        blockHashOf := fun n => if n = 7 then yBlock else 0 } }
+  match compile externalCodeAndBlockReads,
+      Interp.run YulSemantics.EVM.exec 100000 externalCodeAndBlockReads yst0 with
+  | some is, .ok (_, yst, _) =>
+      let s0 := evmInit (assemble is)
+      let extAddress :=
+        EvmSemantics.AccountAddress.ofUInt256 (EvmSemantics.UInt256.ofNat 1)
+      let header := { s0.executionEnv.header with
+        blockHash := fun n =>
+          if n = EvmSemantics.UInt256.ofNat 7
+          then EvmSemantics.UInt256.ofNat yBlock.toNat else 0 }
+      let s := runEvm 100000 { s0 with
+        accountMap := EvmSemantics.AccountMap.empty.set extAddress extAccount
+        executionEnv := { s0.executionEnv with header := header } }
+      s.isDone
+        && (s.halt matches .Success)
+        && yst.activeWords.toNat == s.activeWords.toNat
+        && [0, 1, 2, 3, 4].all (fun k =>
+          (yst.storage (BitVec.ofNat 256 k)).toNat
+            == ((s.accountMap s.executionEnv.address).storage.get
+                  (EvmSemantics.UInt256.ofNat k)).toNat)
+  | _, _ => false
+
+#guard agreeExternalCodeAndBlockReads
 
 /-- Compile `prog`, run both sides with `cd` as calldata, and compare the
 returned byte payload (for contracts that halt via `return`, like the
