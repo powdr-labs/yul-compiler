@@ -1,22 +1,27 @@
 import YulParser.Source
-import YulEvmCompiler.Compile
+import YulEvmCompiler.ObjectCompile
 
 /-!
 # YulParser.Compile
 
-The source-text entry point for the verified compiler. Compilation currently
-accepts the brace-delimited form used by most solc Yul interpreter tests;
-`parseSource` also accepts object-rooted files, whose layout is not yet
-supported by the compiler.
+The source-text entry point for the compiler. Brace-delimited programs assemble
+directly. Object-rooted programs are recursively laid out with their child
+objects and data bytes, and `dataoffset`/`datasize` are resolved to constants
+in that concrete layout.
 -/
 
 namespace YulParser
 
-/-- Parse and compile a complete brace-delimited Yul source program, using the
-hex-literal compatibility parser when the verified parser does not apply. -/
-def compileSource (source : String) : Option (List YulEvmCompiler.Instr) := do
+/-- Parse and compile a complete Yul source program to executable EVM bytecode,
+using the documented compatibility parser when the verified parser does not
+apply. -/
+def compileSource (source : String) : Option ByteArray := do
   match parseSource source with
-  | some (.block block) => YulEvmCompiler.compile block
-  | _ => none
+  | some (.block block) =>
+      return YulEvmCompiler.assemble (← YulEvmCompiler.compile block)
+  | some (.object o) =>
+      let layout ← YulEvmCompiler.compileObject o
+      return ByteArray.mk layout.code.toArray
+  | none => none
 
 end YulParser

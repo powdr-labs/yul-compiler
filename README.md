@@ -60,16 +60,15 @@ activated on any fork modeled by evm-semantics, accesses deeper than
 lifting that restriction is a codegen-only change once the fork table
 activates EIP-8024.
 
-The object layer has a verified foundation in
-`YulEvmCompiler/ObjectCompile.lean`: `compileObject` appends an object's data
-segments to its compiled code, builds the layout maps, and proves that every
-segment is placed at its recorded offset and size. `codesize`, `codecopy`, and
-`datacopy` are verified built-ins. Full object execution is still out of
-scope: references to `dataoffset`/`datasize` are not yet resolved to layout
-constants inside compiled code, nested sub-object bytecode is not laid out,
-and the end-to-end EVM theorem does not yet admit a trailing data suffix.
-Verified optimization passes and the remaining hash/log/environment ops and
-memory writers are also deferred.
+The object layer in `YulEvmCompiler/ObjectCompile.lean` recursively compiles
+sub-objects, resolves `dataoffset`/`datasize` to actual layout constants, emits
+a `STOP` seam before embedded child/data bytes, and exposes real offset/size
+maps. `compileObject_consistent` proves that every direct data segment is at
+its recorded byte range. `codesize`, `codecopy`, and `datacopy` are verified
+built-ins. The remaining object proof debt is the stronger
+`RunObject`-to-EVM theorem: backend correctness must be generalized to the
+trailing payload and the reference-resolution pass must be related to the
+chosen layout.
 
 `YulParser.parseSource` parses brace-delimited programs and object-rooted files
 in the supported grammar into the `yul-semantics` AST. `parseBlock` and
@@ -85,10 +84,8 @@ grammar fuel at 256, rejecting excessively nested input. Parsing remains
 mostly syntactic: it does not generally perform name resolution, scope or
 control-context checks, built-in arity checking, or other Solidity semantic
 validation. Type annotations are still deferred.
-`YulParser.compileSource` connects brace-delimited programs directly to
-`compile`. Object roots can be passed as ASTs to the foundational
-`compileObject`, but the source entry point deliberately remains block-only
-until layout-reference resolution and nested-object layout are implemented.
+`YulParser.compileSource` compiles either brace-delimited programs or complete
+object roots and returns executable EVM bytecode.
 
 The verified built-in set (the domain of `opTable` in
 `YulEvmCompiler/OpTable.lean`):
@@ -185,14 +182,19 @@ entry appears or a stale entry remains in
 `test/solidity-yul-syntax-known-mismatches.txt`; the comparison logic lives in
 `scripts/CheckSoliditySyntaxTests.lean`.
 
-CI also attempts to compile and execute every upstream Yul interpreter fixture.
-The exact set that does not yet pass is pinned in
+CI also attempts to compile and execute every upstream Yul interpreter fixture
+whose `EVMVersion` range includes the latest supported fork (Osaka). The exact
+set that does not yet pass is pinned in
 `test/solidity-yul-interpreter-known-failures.txt`; CI fails for both new
 failures and stale entries. The reusable runner in
 `YulEvmCompilerTests/InterpreterFixture.lean` constructs Solidity's fixed Yul
 test environment, runs the assembled bytecode with `evm-semantics`, and
 exactly compares every nonzero memory word, persistent-storage entry, and
-transient-storage entry with the dumps embedded after `// ----`.
+transient-storage entry with the dumps embedded after `// ----`. Object roots
+go through the production object compiler. Three Solidity fixtures remain in
+the baseline because their AST-interpreter dumps deliberately use synthetic
+hash offsets/sizes and a dummy code buffer rather than the state produced by
+compiled object bytecode.
 
 `YulEvmCompiler/Examples.lean` compiles sample programs at build time
 (`#guard`/`#eval`), including `switch`, multi-value returns and assignments,
@@ -211,8 +213,8 @@ See `PLAN.md` for the full design, the upstream findings (EIP-8024
 opaque keccaks; and the `writeBytes`/`natToBytesPadded` byte-array lemmas that
 `MSTORE` needs — `writeBytes` now upstream, `natToBytesPadded` proved locally in
 `YulEvmCompiler.BytesLemmas`). The next integration milestones are completing
-the object pipeline (layout-reference resolution, nested objects, trailing
-data, and constructors), typed parser syntax and verification of the lossy
+the object execution proof (reference-lowering preservation and trailing-code
+backend correctness), typed parser syntax and verification of the lossy
 compatibility path, and then verified optimization passes on the Yul side.
 
 ## License

@@ -158,7 +158,7 @@ YulParser/
   Compat.lean       -- lossy Solidity hex/interleaved-object compatibility path
   Validate.lean     -- strict-assembly scope/signature/object validation
   Source.lean       -- common parsed-and-validated block/object entry point
-  Compile.lean      -- brace-delimited source-to-compiler connection
+  Compile.lean      -- block/object source-to-bytecode connection
 scripts/
   CheckSoliditySyntaxTests.lean -- Solidity corpus expectation/mismatch runner
 test/
@@ -228,12 +228,13 @@ names, non-unique parameter/return names, more than 16 returns, classic
 
 ### Remaining extension path
 
-* **Finish objects / `dataoffset` / `datasize` / constructors.**
-  `ObjectCompile.lean` now builds a flat code-plus-data layout and proves data
-  consistency; `datacopy` is verified as `CODECOPY`. Still required: resolve
-  `dataoffset`/`datasize` to constants, lay out nested sub-object bytecode,
-  generalize backend correctness to code with a trailing data suffix, connect
-  object-rooted source compilation, and prove `RunObject` to EVM execution.
+* **Finish the object execution proof.** `ObjectCompile.lean` now resolves
+  `dataoffset`/`datasize`, recursively lays out child bytecode and data,
+  connects object-rooted source compilation, and proves direct-data layout
+  consistency; `datacopy` is verified as `CODECOPY`. Still required: prove the
+  reference-resolution pass against the selected layout, generalize backend
+  correctness to code with a trailing payload, and compose the resulting
+  `RunObject`-to-EVM theorem.
 * **Parser representation proofs.** Add typed identifiers, and either enrich
   the AST so hex/interleaved forms can join the canonical round-trip theorem or
   verify their documented normalization and the post-parse validator directly.

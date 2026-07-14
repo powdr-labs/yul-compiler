@@ -290,10 +290,10 @@ private def compareSection (name : String) (expected actual : Array Entry) : Exc
 /-- Compile, execute, and check one complete Solidity Yul interpreter fixture. -/
 def checkFixture (source : String) (fuel : Nat := executionFuel) : Except String Unit := do
   let expected ← parseExpectedState source
-  let instructions ← match compileSource source with
-    | some instructions => pure instructions
+  let code ← match compileSource source with
+    | some code => pure code
     | none => throw "Yul parsing or compilation failed"
-  let state := runEvm fuel (initialState (assemble instructions))
+  let state := runEvm fuel (initialState code)
   if !state.isDone then
     throw s!"EVM execution did not halt within {fuel} steps"
   match state.halt with
@@ -304,5 +304,25 @@ def checkFixture (source : String) (fuel : Nat := executionFuel) : Except String
   compareSection "memory" expected.memory actual.memory
   compareSection "storage" expected.storage actual.storage
   compareSection "transient storage" expected.transientStorage actual.transientStorage
+
+/-- Production object-layout regression: `datacopy` reads the actual embedded
+data bytes at the offset resolved by `compileObject`. -/
+private def embeddedDataFixture : String :=
+  "object \"main\" {\n" ++
+  "  code {\n" ++
+  "    datacopy(0, dataoffset(\"blob\"), datasize(\"blob\"))\n" ++
+  "    sstore(0, mload(0))\n" ++
+  "  }\n" ++
+  "  data \"blob\" hex\"deadbeef\"\n" ++
+  "}\n" ++
+  "// ----\n" ++
+  "// Trace:\n" ++
+  "// Memory dump:\n" ++
+  "//   0: deadbeef00000000000000000000000000000000000000000000000000000000\n" ++
+  "// Storage dump:\n" ++
+  "//   0: deadbeef00000000000000000000000000000000000000000000000000000000\n" ++
+  "// Transient storage dump:\n"
+
+example : checkFixture embeddedDataFixture = .ok () := by native_decide
 
 end YulEvmCompilerTests.InterpreterFixture
