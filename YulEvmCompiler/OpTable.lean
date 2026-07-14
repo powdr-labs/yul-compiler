@@ -20,10 +20,6 @@ open EvmSemantics (Operation)
 the built-in is not (yet) in the verified fragment.
 
 Deliberately *not* covered so far:
-* `signextend` — plain proof debt: needs an all-ones-xor / complement fact
-  (`(2^n-1) ^^^ m = 2^n-1-m`) on `Nat` that isn't in the pinned Mathlib;
-  `sdiv`/`smod`/`sar` are *now covered* (their two's-complement `conv_*`
-  agreement lemmas live in `Value.lean`);
 * the remaining copy family — `mstore`, `mstore8`, and overlap-safe `mcopy`
   are covered by `MemMatch` preservation lemmas over `writeBytes`;
   `codecopy`/`datacopy` are covered by `MemMatch.copyFromCode`, while calldata,
@@ -38,7 +34,7 @@ def opTable : Op → Option Operation
   | .sdiv => some .SDIV
   | .mod => some .MOD | .smod => some .SMOD
   | .addmod => some .ADDMOD | .mulmod => some .MULMOD | .exp => some .EXP
-  | .clz => some .CLZ
+  | .signextend => some .SIGNEXTEND | .clz => some .CLZ
   -- comparison
   | .lt => some .LT | .gt => some .GT | .slt => some .SLT | .sgt => some .SGT
   | .eq => some .EQ | .iszero => some .ISZERO

@@ -730,6 +730,16 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       exact (terPure _ _ (fun _ _ => rfl) conv_mulmod rfl (by decide)
         (fun s a b c rest h1 h2 h3 => .mulmod s a b c rest h1 h2 h3)
         hyul hcode hf hm hpc hstk hgas40).elim
+  case signextend =>
+    cases r with
+    | ok rets yst' =>
+      exact (binPure _ _ (fun _ _ => rfl) conv_signextend rfl (by decide)
+        (fun s a b rest h1 h2 h3 => .signextend s a b rest h1 h2 h3)
+        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+    | halt yst' =>
+      exact (binPure _ _ (fun _ _ => rfl) conv_signextend rfl (by decide)
+        (fun s a b rest h1 h2 h3 => .signextend s a b rest h1 h2 h3)
+        hyul hcode hf hm hpc hstk hgas40).elim
   case clz =>
     cases r with
     | ok rets yst' =>

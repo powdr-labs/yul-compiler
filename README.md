@@ -93,7 +93,7 @@ The verified built-in set (the domain of `opTable` in
 
 | group      | ops |
 |------------|-----|
-| arithmetic | `add sub mul div sdiv mod smod addmod mulmod exp clz` |
+| arithmetic | `add sub mul div sdiv mod smod addmod mulmod exp signextend clz` |
 | comparison | `lt gt slt sgt eq iszero` |
 | bitwise    | `and or xor not byte shl shr sar` |
 | stack      | `pop` |
