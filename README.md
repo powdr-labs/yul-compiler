@@ -101,8 +101,8 @@ The verified built-in set (the domain of `opTable` in
 | memory     | `mload mstore mstore8 mcopy msize` |
 | calldata   | `calldataload calldatasize calldatacopy` |
 | returndata | `returndatasize returndatacopy` |
-| code       | `codesize codecopy datacopy` |
-| env/block  | `address origin caller callvalue gasprice selfbalance coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee` |
+| code       | `codesize codecopy datacopy extcodesize extcodecopy extcodehash` |
+| env/block  | `address origin caller callvalue gasprice selfbalance coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee blockhash` |
 | world/tx   | `balance blobhash` |
 | halting    | `stop return revert invalid` |
 
@@ -156,9 +156,10 @@ The proof is a two-phase forward simulation:
 
 The correspondence `StateMatch` relates memory pointwise (total function vs.
 zero-padded `ByteArray`) and its active-word high-water mark, Yul's flat
-storage/transient storage to the executing account's storage, and calldata and
-executing code pointwise (with exact lengths), plus returndata byte-for-byte
-with its exact length. Gas is
+storage/transient storage to the executing account's storage, calldata and
+executing code pointwise (with exact lengths), external-account code bytes,
+lengths and hashes through the account map, historical block hashes, plus
+returndata byte-for-byte with its exact length. Gas is
 existentially bounded because yul-semantics deliberately does not model gas.
 Per-instruction facts live in
 `OpStep.lean`, byte-level decoding facts in `Decode.lean`, and the

@@ -47,6 +47,9 @@ Design decisions baked into that statement:
     that expand memory and `msize` agree even when the memory bytes do not change;
   - storage / transient storage: `st.storage k = (s.accountMap s.executionEnv.address).storage (conv k)`
     pointwise (Yul's single flat storage is the *executing account's* storage);
+  - external code: `ExecEnv.extCodeOf` agrees with account-map code byte-for-byte
+    and in length, while `extCodeHashOf` agrees with the target's EIP-161-aware
+    `Account.codeHash`; `blockHashOf` agrees with the header lookup;
   - halt: `st.halted` corresponds to `s.halt`/`s.hReturn`
     (`stop ↦ Success`, `return ↦ Returned+payload`, `revert ↦ Reverted+payload`,
     `invalid ↦ Exception InvalidInstruction`; `none ↦ Running`);
@@ -124,8 +127,8 @@ Design decisions baked into that statement:
    low-byte write lemma, and `mcopy` by an overlap-safe intermediate-buffer
    correspondence plus a two-range gas bound. `calldatacopy`/`codecopy`/
    `datacopy`/`returndatacopy` share the immutable-region agreement in
-   `MemMatch.copyFromBytes`; external-code copies still need their own state
-   correspondence.
+   `MemMatch.copyFromBytes`; `extcodecopy` uses the analogous external-code
+   account-map correspondence.
 3. Reads are unaffected: `readPadded`/`readWord` are total, so `mload`,
    `return(p,s)`, and `revert(p,s)` are verified. They also compose with the
    verified `mstore`, whose proof preserves `MemMatch`.
@@ -271,7 +274,9 @@ Deliverables:
    - calldata: `calldataload calldatasize calldatacopy`,
    - returndata: `returndatasize returndatacopy`,
    - env/block readers: `address origin caller callvalue gasprice selfbalance
-     coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee`,
+     coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee
+     blockhash`,
+   - external code: `extcodesize extcodecopy extcodehash`,
    - world/transaction readers: `balance blobhash`,
    - halting: `stop return revert invalid`.
    Ops outside the set compile to `none`; the `opTable` in `OpTable.lean` is the
@@ -282,14 +287,12 @@ Deliverables:
    `calldatasize` uses the calldata length correspondence in `EnvMatch`, and
    `calldatacopy` uses the pointwise calldata relation already consumed by
    `calldataload`. `returndatasize`/`returndatacopy` similarly use exact-length
-   and pointwise returndata fields in `StateMatch`. Follow-ups needing a further
-   `StateMatch` extension include `extcodesize`/`extcodehash`/`blockhash`
-   (need further account-map / abstract-map correspondences). `selfbalance`,
-   `balance`, and `blobhash` are covered by the account-map and transaction
-   blob-list fields of `StateMatch`/`EnvMatch`. Excluded until further
-   work: the remaining memory/state writes through `writeBytes`
-   (`extcodecopy` needs an external-code correspondence;
-   `mstore8`/`mcopy` and calldata/code/object-data copies are covered), `keccak256`
+   and pointwise returndata fields in `StateMatch`. `extcodesize`,
+   `extcodecopy`, and `extcodehash` use the pointwise external-code/account-map
+   relation; `blockhash` uses the historical-header lookup in `EnvMatch`.
+   `selfbalance`, `balance`, and `blobhash` are covered by the account-map and
+   transaction blob-list fields of `StateMatch`/`EnvMatch`. Excluded until
+   further work: `keccak256`
    (finding 4), `log*` (needs a log correspondence; addable later),
    `gas`/calls/creates/`selfdestruct`
    (unmodeled in yul-semantics — no source derivation exists, so nothing to
