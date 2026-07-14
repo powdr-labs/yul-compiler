@@ -10,8 +10,9 @@ The correspondence between the two machine states:
 
 * `MemMatch`   — yul-semantics' total `Nat → UInt8` memory vs. evm-semantics'
   `ByteArray` with zero-padded reads;
-* `StateMatch` — memory contents and active size, calldata/environment data,
-  account balances, and (transient) storage of the executing account;
+* `StateMatch` — memory contents and active size, calldata/code/returndata,
+  environment data, account balances, and (transient) storage of the executing
+  account;
 * `FrameOK`    — the frame-level side conditions that hold throughout a
   straight-line execution (fixed code, Osaka fork, mutation permitted, not a
   precompile frame, no suspended callers, still running);
@@ -415,10 +416,10 @@ structure EnvMatch (ye : YulSemantics.EVM.ExecEnv) (se : ExecutionEnv) : Prop wh
   blobHash : ∀ i, conv (ye.blobHashOf i)
     = se.blobVersionedHashes[(conv i).toNat]?.getD 0
 
-/-- The machine-state correspondence: memory and balances pointwise, plus the
-executing account's (transient) storage. yul-semantics' flat `storage` is the
-storage of the target's `executionEnv.address`. The returndata/logs components
-are unconstrained until the corresponding ops enter the supported set. -/
+/-- The machine-state correspondence: memory and byte regions pointwise, plus
+balances and the executing account's (transient) storage. yul-semantics' flat
+`storage` is the storage of the target's `executionEnv.address`. Logs remain
+unconstrained until the corresponding ops enter the supported set. -/
 structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop where
   mem : MemMatch yst.memory s.memory
   stor : ∀ k, conv (yst.storage k)
@@ -448,6 +449,12 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   /-- The active-memory high-water mark agrees. This is separate from
   `MemMatch`: zero-valued reads and writes still expand memory for `msize`. -/
   activeWords : conv yst.activeWords = s.activeWords
+  /-- Return-data agreement: the source list and target byte array have the
+  same bytes, with zero-padded reads used by the copy proof. -/
+  retData : MemMatch (YulSemantics.EVM.byteFrom yst.returndata) s.returnData
+  /-- Exact return-data length agreement, used by `returndatasize` and the
+  in-bounds premise of `returndatacopy`. -/
+  retDataLen : yst.returndata.length = s.returnData.size
 
 /-- Frame-level side conditions preserved by every step of a straight-line
 execution. `code` is the full assembled program. -/

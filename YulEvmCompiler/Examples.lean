@@ -211,6 +211,19 @@ def calldataOps : Block Op := yul% {
   sstore(2, mload(32))
 }
 
+/-- Record return-data size, then copy three in-bounds bytes across a memory
+word boundary. A zero-length copy from exactly the end of the return buffer is
+also in bounds and must not expand memory at its maximum destination offset. -/
+def returndataOps : Block Op := yul% {
+  sstore(0, returndatasize())
+  returndatacopy(31, 1, 3)
+  sstore(1, mload(0))
+  sstore(2, mload(32))
+  sstore(3, msize())
+  returndatacopy(not(0), 4, 0)
+  sstore(4, msize())
+}
+
 /-- `msize` reports the active-memory high-water mark in bytes. This covers
 word reads, byte writes, both ranges of `mcopy`, and the EVM rule that a
 zero-length range does not expand memory even at the maximum offset. The
@@ -252,6 +265,8 @@ def accountAndBlobReads : Block Op := yul% {
 #guard (compile signExtendCases).isSome
 #guard (compileProgram calldataOps).isSome
 #guard (compile calldataOps).isSome
+#guard (compileProgram returndataOps).isSome
+#guard (compile returndataOps).isSome
 #guard (compileProgram memorySizeOps).isSome
 #guard (compile memorySizeOps).isSome
 #guard (compileProgram accountAndBlobReads).isSome
@@ -297,24 +312,34 @@ def runEvm : Nat → EvmSemantics.EVM.State → EvmSemantics.EVM.State
   | fuel + 1, s =>
     if s.isDone then s else runEvm fuel (EvmSemantics.EVM.stepF s)
 
-/-- Compile `prog`, run both sides with `cd` as calldata, and compare the
-storage values at `keys` (plus that the EVM run actually finished without an
-exception). -/
-def agreeOnWithCalldata (prog : Block Op) (cd : List UInt8) (keys : List Nat) : Bool :=
+/-- Compile `prog`, run both sides with matching calldata and return-data
+buffers, and compare the buffers, active-memory size, and selected storage
+values (plus that the EVM run actually finished without an exception). -/
+def agreeOnWithInputs (prog : Block Op) (cd rd : List UInt8) (keys : List Nat) : Bool :=
   let yst0 : EvmState :=
-    { EvmState.init with env := { EvmState.init.env with calldata := cd } }
+    { EvmState.init with
+      env := { EvmState.init.env with calldata := cd }
+      returndata := rd }
   match compile prog, Interp.run YulSemantics.EVM.exec 100000 prog yst0 with
   | some is, .ok (_, yst, _) =>
       let s0 := evmInit (assemble is)
       let s := runEvm 100000
-        { s0 with executionEnv := { s0.executionEnv with calldata := ⟨cd.toArray⟩ } }
+        { s0 with
+          executionEnv := { s0.executionEnv with calldata := ⟨cd.toArray⟩ }
+          returnData := ⟨rd.toArray⟩ }
       s.isDone
         && (s.halt matches .Success)
+        && yst.returndata == s.returnData.toList
+        && yst.activeWords.toNat == s.activeWords.toNat
         && keys.all (fun k =>
           (yst.storage (BitVec.ofNat 256 k)).toNat
             == ((s.accountMap s.executionEnv.address).storage.get
                   (EvmSemantics.UInt256.ofNat k)).toNat)
   | _, _ => false
+
+/-- Calldata-only specialization used by calldata examples. -/
+def agreeOnWithCalldata (prog : Block Op) (cd : List UInt8) (keys : List Nat) : Bool :=
+  agreeOnWithInputs prog cd [] keys
 
 /-- Empty-calldata specialization used by the existing storage examples. -/
 def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
@@ -336,6 +361,7 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn byteAndOverlapCopy [0, 1]
 #guard agreeOn signExtendCases [0, 1, 2]
 #guard agreeOnWithCalldata calldataOps [0xaa, 0xbb, 0xcc] [0, 1, 2]
+#guard agreeOnWithInputs returndataOps [] [0xaa, 0xbb, 0xcc, 0xdd] [0, 1, 2, 3, 4]
 #guard agreeOn memorySizeOps [0, 1, 2, 3, 4]
 
 /-- Differential check with the source's abstract balance/blob oracles and the

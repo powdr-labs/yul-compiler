@@ -69,7 +69,7 @@ Preserve these invariants unless the change deliberately redesigns them and upda
 - Labels are generated with a counter but freshness is not threaded through proofs. `compileProgram` runs `wfCheck`, which must continue to guarantee unique definitions, defined references, and code size below `2^256`.
 - Literal and label-address pushes are always `PUSH32`. Do not introduce shorter pushes as a local peephole change: instruction width, decode, jump positions, and proofs all depend on the current encoding.
 - Phase A is intentionally byte-free and gas-free. Built-ins execute via the source `stepOp`; byte decoding, `UInt256` conversion, target state layout, and gas belong in Phase B.
-- `StateMatch` currently relates memory contents and the active-memory high-water mark, calldata, environment readers, and the executing account's persistent/transient storage. Extend it before proving operations that observe or mutate other state such as returndata, logs, account data, or code sizes.
+- `StateMatch` currently relates memory contents and the active-memory high-water mark, calldata, code, returndata, environment readers, and the executing account's persistent/transient storage. Extend it before proving operations that observe or mutate other state such as logs, further account data, or external code.
 - The correctness theorem is a forward simulation with an existential gas bound. Yul semantics has no gas, and target `Step` is not used as a deterministic equivalence.
 - Normal source fall-through becomes the EVM's implicit past-the-end `STOP`; source halts must preserve the exact halt kind and payload.
 - This repository must remain free of `sorry` and project-specific axioms. Do not use `axiom`, `unsafe`, or an opaque bridge to bypass proof obligations.
