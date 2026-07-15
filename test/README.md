@@ -34,16 +34,18 @@ source mappings are solc-specific and are deliberately not compared. Every
 fixture is attempted, and either a new failure or a stale baseline entry fails
 the run.
 
-The two `solidity-yul-*-known-solc-differential-failures.txt` files track
-behavioral differences from pinned solc for the `objectCompiler` and
-`evmCodeTransform` suites. Each source is compiled independently by solc and
-this compiler, then both bytecode sequences run through the same
-`evm-semantics` interpreter under two deterministic initial environments. The
-comparison includes halt kind, output and returndata, nonzero memory, account
-balances/nonces/storage, logs, self-destructs, and storage refunds. Exact
-bytecode, current-account code presence, PCs, internal stacks, gas remaining,
-and zero-only memory allocation are intentionally ignored because correct
-compilers may differ there.
+The three `solidity-yul-*-known-solc-differential-failures.txt` files track
+behavioral differences from pinned solc for the `yulOptimizerTests`,
+`objectCompiler`, and `evmCodeTransform` suites. Each source is compiled
+independently by solc and this compiler, then both bytecode sequences run
+through the same `evm-semantics` interpreter under two deterministic initial
+environments. The comparison includes halt kind, output and returndata,
+nonzero memory, account balances/nonces/storage, logs, self-destructs, and
+storage refunds. Exact bytecode, current-account code presence, PCs, internal
+stacks, gas remaining, and zero-only memory allocation are intentionally
+ignored because correct compilers may differ there. Optimizer fixtures supply
+additional source programs only: this check does not apply their configured
+optimization step or compare their expected optimized Yul.
 
 Remove a relative fixture path from any baseline as soon as it passes. A
 local checkout can be checked with:
@@ -76,8 +78,8 @@ run with:
 
 ```sh
 lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
-  object-compiler \
-  /path/to/solidity/test/libyul/objectCompiler \
-  test/solidity-yul-object-compiler-known-solc-differential-failures.txt \
+  optimizer \
+  /path/to/solidity/test/libyul/yulOptimizerTests \
+  test/solidity-yul-optimizer-known-solc-differential-failures.txt \
   "$(svm which 0.8.35)" 0.8.35
 ```
