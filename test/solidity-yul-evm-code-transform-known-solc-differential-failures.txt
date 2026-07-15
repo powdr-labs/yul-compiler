@@ -1,0 +1,11 @@
+# Paths relative to Solidity's test/libyul/evmCodeTransform directory.
+# Keep exactly the Osaka-applicable fixtures for which our compiler cannot yet
+# match the observable behavior of bytecode emitted by pinned solc.
+# Current reasons are unsupported/deep-stack constructs, returned compiler
+# bytecode whose encoding is intentionally different, and one recursive program
+# where our return stack overflows while solc remains running at the fuel bound.
+early_push_on_deep_swap.yul
+literal_loop.yul
+stackReuse/function_many_arguments.yul
+stackReuse/reuse_too_deep_slot.yul
+unassigned_return_variable.yul

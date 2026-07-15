@@ -18,6 +18,9 @@ jobs:
   build:
     name: Build & verify
     runs-on: ubuntu-latest
+    env:
+      SVM_VERSION: "0.5.26"
+      SOLC_VERSION: "0.8.35"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -109,4 +112,41 @@ jobs:
             EVM-code-transform \
             /tmp/solidity/test/libyul/evmCodeTransform \
             test/solidity-yul-evm-code-transform-known-compile-failures.txt || status=1
+          exit "$status"
+
+      - name: Cache pinned svm and solc
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/svm
+            ~/.cargo/bin/solc
+            ~/.local/share/svm/${{ env.SOLC_VERSION }}
+          key: svm-${{ runner.os }}-${{ runner.arch }}-${{ env.SVM_VERSION }}-solc-${{ env.SOLC_VERSION }}
+
+      - name: Install pinned solc with svm
+        run: |
+          if ! command -v svm >/dev/null 2>&1 || \
+              ! svm --version | grep -q "^svm $SVM_VERSION "; then
+            cargo install svm-rs --locked --version "$SVM_VERSION" --force
+          fi
+          if ! svm which "$SOLC_VERSION" >/dev/null 2>&1; then
+            svm install "$SOLC_VERSION"
+          fi
+          solc_path="$(svm which "$SOLC_VERSION")"
+          test -x "$solc_path"
+          echo "SOLC_PATH=$solc_path" >> "$GITHUB_ENV"
+
+      - name: Differentially execute Solidity compiler corpora against solc
+        run: |
+          status=0
+          lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+            object-compiler \
+            /tmp/solidity/test/libyul/objectCompiler \
+            test/solidity-yul-object-compiler-known-solc-differential-failures.txt \
+            "$SOLC_PATH" "$SOLC_VERSION" || status=1
+          lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+            EVM-code-transform \
+            /tmp/solidity/test/libyul/evmCodeTransform \
+            test/solidity-yul-evm-code-transform-known-solc-differential-failures.txt \
+            "$SOLC_PATH" "$SOLC_VERSION" || status=1
           exit "$status"
