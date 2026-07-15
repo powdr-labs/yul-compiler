@@ -111,7 +111,11 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         · rw [hstk', mapStk_words]
       · have hnotExternal : ¬ IsExternalOp yop := by
           intro h
-          exact h.elim hcall hcreate
+          rcases h with hcall' | hcreate' | hgas
+          · exact hcall hcall'
+          · exact hcreate hcreate'
+          · subst yop
+            simp [opTable] at hop
         have hlocal :=
           (builtinWithExternal_iff_stepOp_of_not_external hnotExternal).mp hstepOp
         refine ⟨opBound yop args, ?_⟩
@@ -468,24 +472,32 @@ theorem ahalt_sim [model : ExternalModel]
         ∧ HaltedMatch yst' s' := by
   cases hstep with
   | @op yop args c σ yst yst'' hstepOp =>
-    have hstepLocal := builtinWithExternal_halt_iff_stepOp.mp hstepOp
     obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
       locate hlow hsuf
     simp only [lowerInstr] at hI
     obtain ⟨o, hop, rfl⟩ := Option.map_eq_some_iff.mp hI
-    refine ⟨opBound yop args, ?_⟩
-    intro s hm hgas
-    have hpos : codeSize prog - codeSize (Asm.op yop :: c) = codeSize pre := by
-      rw [codeSize_cons]
-      omega
-    have hhalt := opStep hop hstepLocal
-      (σ := mapStk prog σ)
-      (assembleWithPayload_at₁ hbytes payload)
-      hm.frame hm.smatch
-      (by rw [hm.pc, hpos, hlenPre])
-      (by rw [hm.stack, mapStk_words]) hgas
-    obtain ⟨s', hstep, hsm', hcs', hhm'⟩ := hhalt
-    exact ⟨s', .trans hstep (.refl _), hsm', hcs', hhm'⟩
+    by_cases hexternal : IsExternalOp yop
+    · refine ⟨0, ?_⟩
+      intro s hm hgas
+      have hstatic := builtinWithExternal_halt_external_imp_static hexternal hstepOp
+      have hnotStatic : yst.env.static = false := by
+        simpa [hm.frame.perm] using hm.smatch.env.static
+      simp [hnotStatic] at hstatic
+    · have hstepLocal :=
+        (builtinWithExternal_halt_iff_stepOp_of_not_external hexternal).mp hstepOp
+      refine ⟨opBound yop args, ?_⟩
+      intro s hm hgas
+      have hpos : codeSize prog - codeSize (Asm.op yop :: c) = codeSize pre := by
+        rw [codeSize_cons]
+        omega
+      have hhalt := opStep hop hstepLocal
+        (σ := mapStk prog σ)
+        (assembleWithPayload_at₁ hbytes payload)
+        hm.frame hm.smatch
+        (by rw [hm.pc, hpos, hlenPre])
+        (by rw [hm.stack, mapStk_words]) hgas
+      obtain ⟨s', hstep, hsm', hcs', hhm'⟩ := hhalt
+      exact ⟨s', .trans hstep (.refl _), hsm', hcs', hhm'⟩
 
 /-- **Phase B, many steps**: bounds add along an Asm execution. -/
 theorem asteps_sim [model : ExternalModel] (hexternal : ExternalsRealized model)

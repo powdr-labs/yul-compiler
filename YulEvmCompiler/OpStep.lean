@@ -793,6 +793,11 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     | .halt yst' => HaltStep s yst' := by
   have hgas40 : 40000 ≤ s.gasAvailable := le_trans (le_opBound yop args) hgas
   have hfork : s.fork = .Osaka := hf.fork
+  have hstatic : yst.env.static = false := by
+    simpa [hf.perm] using hm.env.static
+  have hguard (act : YulSemantics.BuiltinResult U256 EvmState) :
+      YulSemantics.EVM.guardStatic yst act = some act := by
+    simp [YulSemantics.EVM.guardStatic, hstatic]
   -- common decode facts (only usable once `o` is concrete, but stated here
   -- for the bespoke cases)
   cases yop <;> simp only [opTable, Option.some.injEq, reduceCtorEq] at hop <;>
@@ -1932,7 +1937,8 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     rcases args with _ | ⟨a, _ | ⟨b, args⟩⟩ <;>
       simp [stepOp, YulSemantics.EVM.rd1] at hyul
     subst hyul
-    show OkStep code s (opBound .extcodehash [a]) [yst.env.extCodeHashOf a]
+    show OkStep code s (opBound .extcodehash [a])
+      [YulSemantics.EVM.projectedCodeHash yst.env yst.env.balanceOf a]
       yst pre.length 1 σ
     obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .extcodehash) rfl
     have hdec := decoded_op hf hcode hpc hb' hplain
@@ -2068,31 +2074,33 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         omega
   case log0 =>
     rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨extra, args⟩⟩⟩ <;>
-      simp [stepOp] at hyul
+      simp [stepOp, hguard] at hyul
     subst hyul
     exact logStep (yop := .log0) (topicCount := 0) rfl rfl rfl
       hcode hf hm hpc hstk hgas
   case log1 =>
     rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨extra, args⟩⟩⟩⟩ <;>
-      simp [stepOp] at hyul
+      simp [stepOp, hguard] at hyul
     subst hyul
     exact logStep (yop := .log1) (topicCount := 1) rfl rfl rfl
       hcode hf hm hpc hstk hgas
   case log2 =>
     rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨t2, _ | ⟨extra, args⟩⟩⟩⟩⟩ <;>
-      simp [stepOp] at hyul
+      simp [stepOp, hguard] at hyul
     subst hyul
     exact logStep (yop := .log2) (topicCount := 2) rfl rfl rfl
       hcode hf hm hpc hstk hgas
   case log3 =>
     rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨t2, _ | ⟨t3,
-      _ | ⟨extra, args⟩⟩⟩⟩⟩⟩ <;> simp [stepOp] at hyul
+      _ | ⟨extra, args⟩⟩⟩⟩⟩⟩ <;>
+      simp [stepOp, hguard] at hyul
     subst hyul
     exact logStep (yop := .log3) (topicCount := 3) rfl rfl rfl
       hcode hf hm hpc hstk hgas
   case log4 =>
     rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨t2, _ | ⟨t3,
-      _ | ⟨t4, _ | ⟨extra, args⟩⟩⟩⟩⟩⟩⟩ <;> simp [stepOp] at hyul
+      _ | ⟨t4, _ | ⟨extra, args⟩⟩⟩⟩⟩⟩⟩ <;>
+      simp [stepOp, hguard] at hyul
     subst hyul
     exact logStep (yop := .log4) (topicCount := 4) rfl rfl rfl
       hcode hf hm hpc hstk hgas
@@ -2132,7 +2140,8 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       unfold Gas.sloadTotal
       omega
   case sstore =>
-    rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;> simp [stepOp] at hyul
+    rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;>
+      simp [stepOp, hguard] at hyul
     subst hyul
     show OkStep code s (opBound .sstore [k, v]) []
       { yst with
@@ -2254,7 +2263,8 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have h3 : opBound Op.tload [k] = 40000 := rfl
       omega
   case tstore =>
-    rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;> simp [stepOp] at hyul
+    rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;>
+      simp [stepOp, hguard] at hyul
     subst hyul
     show OkStep code s (opBound .tstore [k, v]) []
       { yst with
@@ -2332,7 +2342,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
   case create2 => simp [stepOp] at hyul
   case selfdestruct =>
     rcases args with _ | ⟨beneficiary, _ | ⟨extra, args⟩⟩ <;>
-      simp [stepOp] at hyul
+      simp [stepOp, hguard] at hyul
     subst hyul
     exact selfdestructStep hcode hf hm hpc hstk hgas40
   case stop =>

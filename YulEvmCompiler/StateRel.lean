@@ -440,6 +440,9 @@ structure EnvMatch (ye : YulSemantics.EVM.ExecEnv) (se : ExecutionEnv) : Prop wh
   caller     : conv ye.caller     = se.caller.toUInt256
   callvalue  : conv ye.callvalue  = se.weiValue
   gasprice   : conv ye.gasprice   = se.gasPrice
+  /-- Source static-call context agrees with the target frame's permission to
+  mutate state. -/
+  static     : ye.static = !se.permitStateMutation
   coinbase   : conv ye.coinbase   = se.header.coinbase.toUInt256
   timestamp  : conv ye.timestamp  = se.header.timestamp
   number     : conv ye.number     = se.header.number
@@ -497,7 +500,7 @@ structure ExternalCodeMatch (ye : YulSemantics.EVM.ExecEnv) (accounts : AccountM
     (accounts (AccountAddress.ofUInt256 (conv a))).code
   length : ∀ a, (ye.extCodeOf a).length
     = (accounts (AccountAddress.ofUInt256 (conv a))).code.size
-  hash : ∀ a, conv (ye.extCodeHashOf a)
+  hash : ∀ a, conv (YulSemantics.EVM.projectedCodeHash ye ye.balanceOf a)
     = (accounts (AccountAddress.ofUInt256 (conv a))).codeHash
   nonce : ∀ a, conv (ye.nonceOf a)
     = (accounts (AccountAddress.ofUInt256 (conv a))).nonce
@@ -950,23 +953,28 @@ theorem LogsMatch.append {ys : List YulSemantics.EVM.LogEntry} {ts : EvmSemantic
   rw [Array.toList_push]
   exact List.rel_append h (.cons he .nil)
 
-/-- One source scheduled-destruction address agrees with one concrete target address. -/
+/-- One source scheduled-destruction record agrees with one concrete target
+address and with the target transaction's created-this-transaction test. -/
 def SelfdestructEntryMatch
-    (y : YulSemantics.EVM.U256) (t : AccountAddress) : Prop :=
-  conv y = t.toUInt256
+    (original : AccountMap) (y : YulSemantics.EVM.U256 × Bool)
+    (t : AccountAddress) : Prop :=
+  conv y.1 = t.toUInt256 ∧ y.2 = !(original t).isContract
 
 /-- Scheduled destructions agree in execution order. Actual deletion is a later transaction-level
 operation in the target semantics. -/
 def SelfdestructsMatch
-    (ys : List YulSemantics.EVM.U256) (ts : Array AccountAddress) : Prop :=
-  List.Forall₂ SelfdestructEntryMatch ys ts.toList
+    (ys : List (YulSemantics.EVM.U256 × Bool)) (ts : Array AccountAddress)
+    (original : AccountMap) : Prop :=
+  List.Forall₂ (SelfdestructEntryMatch original) ys ts.toList
 
 /-- Appending matching scheduled destructions preserves the correspondence. -/
 theorem SelfdestructsMatch.append
-    {ys : List YulSemantics.EVM.U256} {ts : Array AccountAddress}
-    {y : YulSemantics.EVM.U256} {t : AccountAddress}
-    (h : SelfdestructsMatch ys ts) (he : SelfdestructEntryMatch y t) :
-    SelfdestructsMatch (ys ++ [y]) (ts.push t) := by
+    {ys : List (YulSemantics.EVM.U256 × Bool)} {ts : Array AccountAddress}
+    {original : AccountMap} {y : YulSemantics.EVM.U256 × Bool}
+    {t : AccountAddress}
+    (h : SelfdestructsMatch ys ts original)
+    (he : SelfdestructEntryMatch original y t) :
+    SelfdestructsMatch (ys ++ [y]) (ts.push t) original := by
   unfold SelfdestructsMatch at h ⊢
   rw [Array.toList_push]
   exact List.rel_append h (.cons he .nil)
@@ -1015,7 +1023,8 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   /-- Emitted logs agree in order, retaining each emitting frame's address. -/
   logs : LogsMatch yst.logs s.substate.logSeries
   /-- Scheduled destruction records agree in execution order. -/
-  selfdestructs : SelfdestructsMatch yst.selfdestructs s.substate.selfDestructList
+  selfdestructs : SelfdestructsMatch yst.selfdestructs
+    s.substate.selfDestructList s.substate.originalAccountMap
   /-- The source's Cancun self-beneficiary selector agrees with the pinned target semantics'
   transaction-initial-world test. -/
   createdThisTx : yst.env.createdThisTx =
@@ -1094,7 +1103,10 @@ theorem StateMatch.finishSelfdestruct_of
       rfl, htstorage]
     exact hm.tstor k
   · simpa [yst', s', YulSemantics.EVM.finishSelfdestruct, State.selfDestructTo] using
-      SelfdestructsMatch.append hm.selfdestructs hm.env.address
+      SelfdestructsMatch.append hm.selfdestructs
+        (show SelfdestructEntryMatch s.substate.originalAccountMap
+          (yst.env.address, yst.env.createdThisTx) s.executionEnv.address from
+          ⟨hm.env.address, hm.createdThisTx⟩)
 
 /-- The deterministic source `SELFDESTRUCT` transition exactly matches the target opcode's
 post-gas world update, including low-160-bit aliases and the Cancun self-beneficiary rule. -/
