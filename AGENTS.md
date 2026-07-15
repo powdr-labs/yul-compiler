@@ -245,8 +245,8 @@ and both unexpected failures and stale entries fail the run.
 ### solc behavioral differential
 
 CI installs pinned solc 0.8.35 through pinned `svm-rs` 0.5.26, then
-differentially executes every applicable `objectCompiler` and
-`evmCodeTransform` fixture that both compilers can emit:
+differentially executes every applicable `yulOptimizerTests`, `objectCompiler`,
+and `evmCodeTransform` fixture that both compilers can emit:
 
 ```sh
 lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
@@ -261,9 +261,12 @@ environments. Compare observable termination/output, returndata, nonzero
 memory, account state, logs, self-destructs, and storage refunds. Never compare
 exact bytecode, PCs, internal stacks, remaining gas, or the executing
 account's code representation: those legitimately depend on compiler layout
-and encoding choices. The two differential failure files are exact baselines;
-layout-introspection and bounded-divergence cases must remain documented rather
-than being presented as semantic equivalence.
+and encoding choices. The three differential failure files are exact
+baselines; layout-introspection and bounded-divergence cases must remain
+documented rather than being presented as semantic equivalence. For optimizer
+fixtures this compiles the original source section and does not reproduce the
+fixture's configured optimization step, so it is backend coverage rather than
+a claim about optimizer equivalence.
 
 To reproduce CI's corpus checkout:
 

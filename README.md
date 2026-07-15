@@ -248,17 +248,19 @@ those are implementation-specific, while accepting and compiling the same
 valid Yul source is the compatibility property being tracked. New failures
 and stale baseline entries both fail CI.
 
-For the `objectCompiler` and `evmCodeTransform` suites, CI also performs an
-independent behavioral comparison against solc 0.8.35, installed with pinned
+For all three suites, CI also performs an independent behavioral comparison
+against solc 0.8.35, installed with pinned
 [`svm-rs`](https://github.com/alloy-rs/svm-rs) 0.5.26. Both compilers receive
 the same Yul source; their bytecode executes in `evm-semantics` from both the
 Solidity interpreter-test environment and a second environment with patterned
 calldata and seeded storage. The runner compares termination, return/revert
 bytes, returndata, nonzero memory, account state, logs, self-destructs, and
 storage refunds. It deliberately ignores exact code bytes, PCs, operand
-stacks, remaining gas, and zero-only memory expansion. Exact baselines track
-unsupported programs, layout-introspection differences, and bounded-divergence
-differences; a new failure or stale entry fails CI.
+stacks, remaining gas, and zero-only memory expansion. For `yulOptimizerTests`
+this checks backend behavior over the original fixture source; it does not run
+the configured solc optimization step or claim optimizer equivalence. Exact
+baselines track unsupported programs, layout-introspection differences, and
+bounded-divergence differences; a new failure or stale entry fails CI.
 
 `YulEvmCompiler/Examples.lean` compiles sample programs at build time
 (`#guard`/`#eval`), including `switch`, multi-value returns and assignments,
