@@ -1,14 +1,12 @@
 # Paths relative to Solidity's test/libyul/yulOptimizerTests directory.
 # Every fixture whose EVMVersion range includes Osaka is compiled by both
-# compilers and executed under both differential environments. Keep exactly
+# compilers and executed under all six differential environments. Keep exactly
 # the fixtures whose observable behavior does not yet agree.
 #
-# Of these 56 fixtures, 43 are the same unsupported inputs tracked by the
-# compile-failure baseline. Nine recursive programs overflow the EVM stack in
-# our generated code while solc is still running at the fuel bound. The two
-# fullInliner fixtures expose a halt-kind and nonzero-memory mismatch; the last
-# two differences are a storage-state mismatch and bounded termination versus
-# out-of-gas behavior.
+# Of these 59 fixtures, 43 are the same unsupported inputs tracked by the
+# compile-failure baseline. The remaining 16 expose understood runtime debt:
+# recursive stack/resource divergence plus halt, memory, and storage mismatches
+# under the fixed or fixture-seeded environments.
 circularReferencesPruner/called_from_non_function.yul
 commonSubexpressionEliminator/long_literals_as_builtin_args.yul
 commonSubexpressionEliminator/non_movable_instr2.yul
@@ -32,11 +30,14 @@ fakeStackLimitEvader/same_variable_in_lhs_and_rhs.yul
 fakeStackLimitEvader/stub.yul
 fullInliner/double_inline.yul
 fullInliner/multi_fun_callback.yul
+fullInliner/no_inline_into_big_global_context.yul
 fullSuite/abi2.yul
 fullSuite/aztec.yul
 fullSuite/stack_shuffler_bring_up_target_slot_bfs_dedup.yul
 loadResolver/verbatim_mload.yul
 loadResolver/verbatim_sload.yul
+loopInvariantCodeMotion/move_memory_function.yul
+loopInvariantCodeMotion/move_state_function.yul
 loopInvariantCodeMotion/no_move_gas.yul
 loopInvariantCodeMotion/no_move_recursive_function.yul
 loopInvariantCodeMotion/no_move_state.yul

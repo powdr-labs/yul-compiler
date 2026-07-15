@@ -11,6 +11,10 @@ baseline: new failures and stale entries both fail the run.
 This runner intentionally compares behavior rather than bytecode. solc uses
 different PUSH widths, labels, stack allocation, object layout, and optional
 normalization while remaining semantically equivalent.
+
+The optional shard arguments select fixtures by the same stable fixture-name
+hash that seeds generated EVM states. Known failures are filtered by that hash
+too, so every shard independently rejects new and stale baseline entries.
 -/
 
 open System YulParser
@@ -56,20 +60,37 @@ private def checkSolcVersion (solcPath expectedVersion : String) : IO (Except St
     return .error (s!"expected solc {expectedVersion}, got:\n" ++ output.stdout.trimAscii.copy)
   return .ok ()
 
+private structure Shard where
+  index : Nat
+  count : Nat
+
+private def Shard.contains (shard : Shard) (name : String) : Bool :=
+  fixtureSeed name % shard.count == shard.index
+
+private def selected (shard : Option Shard) (name : String) : Bool :=
+  match shard with
+  | none => true
+  | some shard => shard.contains name
+
+private def shardDescription : Option Shard → String
+  | none => ""
+  | some shard => s!" shard {shard.index + 1}/{shard.count}"
+
 private def run (suiteName : String) (corpusDir knownFailuresFile : FilePath)
-    (solcPath expectedSolcVersion : String) : IO UInt32 := do
+    (solcPath expectedSolcVersion : String) (shard : Option Shard) : IO UInt32 := do
   match ← checkSolcVersion solcPath expectedSolcVersion with
   | .error message =>
       IO.eprintln message
       return 1
   | .ok () => pure ()
   let paths ← corpusDir.walkDir
-  let files := paths.filter (fun path => path.extension == some "yul")
+  let allFiles := paths.filter (fun path => path.extension == some "yul")
     |>.qsort (fun a b => relativeName corpusDir a < relativeName corpusDir b)
-  if files.isEmpty then
+  if allFiles.isEmpty then
     IO.eprintln s!"{corpusDir}: found no .yul fixtures"
     return 1
-  let allowed ← readKnownFailures knownFailuresFile
+  let files := allFiles.filter (fun path => selected shard (relativeName corpusDir path))
+  let allowed := (← readKnownFailures knownFailuresFile).filter (selected shard)
   let mut failures : Array (String × String) := #[]
   let mut metadataErrors : Array (String × String) := #[]
   let mut checked := 0
@@ -89,7 +110,7 @@ private def run (suiteName : String) (corpusDir knownFailuresFile : FilePath)
             match ← compileWithSolc solcPath source with
             | .error message => failures := failures.push (name, message)
             | .ok solc =>
-                match compareBytecode ours solc with
+                match compareBytecode ours solc (scenarioSeed := fixtureSeed name) with
                 | .ok () => pure ()
                 | .error message => failures := failures.push (name, message)
 
@@ -97,7 +118,8 @@ private def run (suiteName : String) (corpusDir knownFailuresFile : FilePath)
   let unexpected := failures.filter (fun failure => !allowed.contains failure.1)
   let stale := allowed.filter (!failureNames.contains ·)
   let knownFailureCount := failures.size - unexpected.size
-  IO.println (s!"Differentially checked {checked} latest-fork Solidity {suiteName} tests " ++
+  IO.println (s!"Differentially checked {checked} latest-fork Solidity {suiteName}" ++
+    s!"{shardDescription shard} tests " ++
     s!"against solc {expectedSolcVersion}: {checked - failures.size} matched, " ++
     s!"{failures.size} failed ({knownFailureCount} known); " ++
     s!"skipped {skipped} outside Osaka.")
@@ -114,12 +136,33 @@ private def run (suiteName : String) (corpusDir knownFailuresFile : FilePath)
 
 private def usage : String :=
   "usage: CheckSoliditySolcDifferential <suite-name> <corpus-dir> " ++
-    "<known-failures.txt> <solc-path> <expected-solc-version>"
+    "<known-failures.txt> <solc-path> <expected-solc-version> " ++
+    "[<shard-index> <shard-count>]"
+
+private def parseShard (rawIndex rawCount : String) : Except String Shard := do
+  let index ← match rawIndex.toNat? with
+    | some index => pure index
+    | none => throw s!"invalid shard index: {rawIndex}"
+  let count ← match rawCount.toNat? with
+    | some count => pure count
+    | none => throw s!"invalid shard count: {rawCount}"
+  if count == 0 then throw "shard count must be positive"
+  if index >= count then throw s!"shard index {index} is outside count {count}"
+  return { index, count }
 
 def main (args : List String) : IO UInt32 :=
   match args with
   | [suiteName, corpusDir, knownFailuresFile, solcPath, expectedSolcVersion] =>
-      run suiteName corpusDir knownFailuresFile solcPath expectedSolcVersion
+      run suiteName corpusDir knownFailuresFile solcPath expectedSolcVersion none
+  | [suiteName, corpusDir, knownFailuresFile, solcPath, expectedSolcVersion,
+      rawShardIndex, rawShardCount] => do
+      match parseShard rawShardIndex rawShardCount with
+      | .ok shard =>
+          run suiteName corpusDir knownFailuresFile solcPath expectedSolcVersion (some shard)
+      | .error message =>
+          IO.eprintln message
+          IO.eprintln usage
+          return 64
   | _ => do
       IO.eprintln usage
       return 64
