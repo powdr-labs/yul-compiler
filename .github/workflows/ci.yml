@@ -136,22 +136,109 @@ jobs:
           test -x "$solc_path"
           echo "SOLC_PATH=$solc_path" >> "$GITHUB_ENV"
 
-      - name: Differentially execute Solidity compiler corpora against solc
+  solc-differential:
+    name: solc differential (${{ matrix.name }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: direct corpora
+            kind: direct
+            shard_index: 0
+            shard_count: 1
+          - name: optimizer 1/4
+            kind: optimizer
+            shard_index: 0
+            shard_count: 4
+          - name: optimizer 2/4
+            kind: optimizer
+            shard_index: 1
+            shard_count: 4
+          - name: optimizer 3/4
+            kind: optimizer
+            shard_index: 2
+            shard_count: 4
+          - name: optimizer 4/4
+            kind: optimizer
+            shard_index: 3
+            shard_count: 4
+    env:
+      SVM_VERSION: "0.5.26"
+      SOLC_VERSION: "0.8.35"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache dependency builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake/packages/yul-semantics/.lake/build
+            .lake/packages/evm_semantics/.lake/build
+          key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+
+      - name: Build differential runner
+        uses: leanprover/lean-action@v1
+        with:
+          use-mathlib-cache: "true"
+          build: "true"
+          test: "false"
+          lint: "false"
+
+      - name: Cache pinned svm and solc
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/svm
+            ~/.cargo/bin/solc
+            ~/.local/share/svm/${{ env.SOLC_VERSION }}
+          key: svm-${{ runner.os }}-${{ runner.arch }}-${{ env.SVM_VERSION }}-solc-${{ env.SOLC_VERSION }}
+
+      - name: Install pinned solc with svm
         run: |
-          status=0
-          lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
-            object-compiler \
-            /tmp/solidity/test/libyul/objectCompiler \
-            test/solidity-yul-object-compiler-known-solc-differential-failures.txt \
-            "$SOLC_PATH" "$SOLC_VERSION" || status=1
-          lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
-            EVM-code-transform \
-            /tmp/solidity/test/libyul/evmCodeTransform \
-            test/solidity-yul-evm-code-transform-known-solc-differential-failures.txt \
-            "$SOLC_PATH" "$SOLC_VERSION" || status=1
-          lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
-            optimizer \
-            /tmp/solidity/test/libyul/yulOptimizerTests \
-            test/solidity-yul-optimizer-known-solc-differential-failures.txt \
-            "$SOLC_PATH" "$SOLC_VERSION" || status=1
-          exit "$status"
+          if ! command -v svm >/dev/null 2>&1 || \
+              ! svm --version | grep -q "^svm $SVM_VERSION "; then
+            cargo install svm-rs --locked --version "$SVM_VERSION" --force
+          fi
+          if ! svm which "$SOLC_VERSION" >/dev/null 2>&1; then
+            svm install "$SOLC_VERSION"
+          fi
+          solc_path="$(svm which "$SOLC_VERSION")"
+          test -x "$solc_path"
+          echo "SOLC_PATH=$solc_path" >> "$GITHUB_ENV"
+
+      - name: Fetch Solidity compiler corpora
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse --branch develop \
+            https://github.com/argotorg/solidity.git /tmp/solidity
+          git -C /tmp/solidity sparse-checkout set \
+            test/libyul/yulOptimizerTests \
+            test/libyul/objectCompiler \
+            test/libyul/evmCodeTransform
+
+      - name: Differentially execute against solc
+        run: |
+          if [[ "${{ matrix.kind }}" == "optimizer" ]]; then
+            lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+              optimizer \
+              /tmp/solidity/test/libyul/yulOptimizerTests \
+              test/solidity-yul-optimizer-known-solc-differential-failures.txt \
+              "$SOLC_PATH" "$SOLC_VERSION" \
+              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}"
+          else
+            status=0
+            lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+              object-compiler \
+              /tmp/solidity/test/libyul/objectCompiler \
+              test/solidity-yul-object-compiler-known-solc-differential-failures.txt \
+              "$SOLC_PATH" "$SOLC_VERSION" 0 1 || status=1
+            lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+              EVM-code-transform \
+              /tmp/solidity/test/libyul/evmCodeTransform \
+              test/solidity-yul-evm-code-transform-known-solc-differential-failures.txt \
+              "$SOLC_PATH" "$SOLC_VERSION" 0 1 || status=1
+            exit "$status"
+          fi

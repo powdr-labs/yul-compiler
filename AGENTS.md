@@ -256,17 +256,22 @@ lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
   "$(svm which 0.8.35)" 0.8.35
 ```
 
-Both bytecode sequences run in `evm-semantics` from the same two fixed
-environments. Compare observable termination/output, returndata, nonzero
-memory, account state, logs, self-destructs, and storage refunds. Never compare
-exact bytecode, PCs, internal stacks, remaining gas, or the executing
-account's code representation: those legitimately depend on compiler layout
-and encoding choices. The three differential failure files are exact
-baselines; layout-introspection and bounded-divergence cases must remain
-documented rather than being presented as semantic equivalence. For optimizer
-fixtures this compiles the original source section and does not reproduce the
-fixture's configured optimization step, so it is backend coverage rather than
-a claim about optimizer equivalence.
+Both bytecode sequences run in `evm-semantics` from the same six environments:
+the Solidity default, a fixed patterned state, and four fixture-path-seeded
+states covering calldata lengths 1, 31, 32, and 33 with varied call values,
+balances, persistent storage, and transient storage. Compare observable
+termination/output, returndata, nonzero memory, account state, logs,
+self-destructs, and storage refunds. Never compare exact bytecode, PCs,
+internal stacks, remaining gas, or the executing account's code
+representation: those legitimately depend on compiler layout and encoding
+choices. The three differential failure files are exact baselines;
+layout-introspection and bounded-divergence cases must remain documented rather
+than being presented as semantic equivalence. For optimizer fixtures this
+compiles the original source section and does not reproduce the fixture's
+configured optimization step, so it is backend coverage rather than a claim
+about optimizer equivalence. CI assigns fixture paths and their baseline
+entries to stable hash-based shards; all shards together must cover the corpus
+exactly once.
 
 To reproduce CI's corpus checkout:
 

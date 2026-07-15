@@ -242,16 +242,21 @@ and stale baseline entries both fail CI.
 For all three suites, CI also performs an independent behavioral comparison
 against solc 0.8.35, installed with pinned
 [`svm-rs`](https://github.com/alloy-rs/svm-rs) 0.5.26. Both compilers receive
-the same Yul source; their bytecode executes in `evm-semantics` from both the
-Solidity interpreter-test environment and a second environment with patterned
-calldata and seeded storage. The runner compares termination, return/revert
-bytes, returndata, nonzero memory, account state, logs, self-destructs, and
-storage refunds. It deliberately ignores exact code bytes, PCs, operand
-stacks, remaining gas, and zero-only memory expansion. For `yulOptimizerTests`
-this checks backend behavior over the original fixture source; it does not run
-the configured solc optimization step or claim optimizer equivalence. Exact
-baselines track unsupported programs, layout-introspection differences, and
-bounded-divergence differences; a new failure or stale entry fails CI.
+the same Yul source; their bytecode executes in `evm-semantics` from six
+identical pre-states: Solidity's interpreter-test default, one fixed patterned
+state, and four states derived reproducibly from the fixture path. The latter
+cover calldata lengths 1, 31, 32, and 33 plus varied call values, balances,
+persistent storage, and transient storage. The runner compares termination,
+return/revert bytes, returndata, nonzero memory, account state, logs,
+self-destructs, and storage refunds. It deliberately ignores exact code bytes,
+PCs, operand stacks, remaining gas, and zero-only memory expansion. For
+`yulOptimizerTests` this checks backend behavior over the original fixture
+source; it does not run the configured solc optimization step or claim
+optimizer equivalence. Exact baselines track unsupported programs,
+layout-introspection differences, and bounded-divergence differences; a new
+failure or stale entry fails CI. Deterministic hash-based CI shards cover each
+fixture and baseline entry exactly once while running the expanded suite in
+parallel.
 
 `YulEvmCompiler/Examples.lean` compiles sample programs at build time
 (`#guard`/`#eval`), including `switch`, multi-value returns and assignments,

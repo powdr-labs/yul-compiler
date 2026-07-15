@@ -38,14 +38,19 @@ The three `solidity-yul-*-known-solc-differential-failures.txt` files track
 behavioral differences from pinned solc for the `yulOptimizerTests`,
 `objectCompiler`, and `evmCodeTransform` suites. Each source is compiled
 independently by solc and this compiler, then both bytecode sequences run
-through the same `evm-semantics` interpreter under two deterministic initial
-environments. The comparison includes halt kind, output and returndata,
-nonzero memory, account balances/nonces/storage, logs, self-destructs, and
-storage refunds. Exact bytecode, current-account code presence, PCs, internal
-stacks, gas remaining, and zero-only memory allocation are intentionally
-ignored because correct compilers may differ there. Optimizer fixtures supply
-additional source programs only: this check does not apply their configured
-optimization step or compare their expected optimized Yul.
+through the same `evm-semantics` interpreter under six deterministic initial
+environments. These are the Solidity default, a fixed patterned state, and
+four fixture-path-seeded states with calldata lengths 1, 31, 32, and 33 plus
+varied call values, balances, persistent storage, and transient storage. The
+comparison includes halt kind, output and returndata, nonzero memory, account
+balances/nonces/storage, logs, self-destructs, and storage refunds. Exact
+bytecode, current-account code presence, PCs, internal stacks, gas remaining,
+and zero-only memory allocation are intentionally ignored because correct
+compilers may differ there. Optimizer fixtures supply additional source
+programs only: this check does not apply their configured optimization step or
+compare their expected optimized Yul. CI partitions the expensive optimizer
+run by a stable fixture-name hash; the same hash filters each shard's exact
+baseline entries, so stale and unexpected failures remain enforced per shard.
 
 Remove a relative fixture path from any baseline as soon as it passes. A
 local checkout can be checked with:
@@ -81,5 +86,9 @@ lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
   optimizer \
   /path/to/solidity/test/libyul/yulOptimizerTests \
   test/solidity-yul-optimizer-known-solc-differential-failures.txt \
-  "$(svm which 0.8.35)" 0.8.35
+  "$(svm which 0.8.35)" 0.8.35 \
+  0 4
 ```
+
+Omit the final shard index/count pair to run the complete suite locally; use
+indices `0` through `3` with count `4` to reproduce the four CI shards.

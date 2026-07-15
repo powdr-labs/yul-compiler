@@ -10,10 +10,11 @@ memory expansion: those may differ between correct compilers. It compares
 termination, returned/revert bytes, returndata, nonzero memory, account
 existence/nonces/balances/storage, logs, self-destructs, and storage refunds.
 
-Each program runs both from Solidity's interpreter-test default environment and
-from a second state with patterned calldata plus pre-populated persistent and
-transient storage. This exercises input-dependent branches without assuming a
-particular source fixture format beyond valid Yul.
+Each program runs from Solidity's interpreter-test default environment, a
+fixed patterned state, and four states derived deterministically from its
+fixture name. The generated states exercise calldata boundaries plus varied
+call values and persistent/transient storage without making the moving corpus
+non-reproducible.
 -/
 
 namespace YulEvmCompilerTests.SolcDifferential
@@ -48,6 +49,17 @@ structure Observation where
   deriving BEq
 
 private def word (n : Nat) : UInt256 := UInt256.ofNat n
+
+/-- Stable fixture-name hash used for both generated states and CI sharding.
+This deliberately avoids the runtime's implementation-dependent hash table
+hash, so a failure always reproduces from its checked-in relative path. -/
+def fixtureSeed (name : String) : Nat :=
+  name.toList.foldl
+    (fun hash char => (hash * 16777619 + char.toNat) % (2 ^ 64))
+    2166136261
+
+private def mixSeed (seed salt : Nat) : Nat :=
+  (seed * 1664525 + salt * 1013904223 + 0x9e3779b9) % (2 ^ 64)
 
 private def sortEntries (entries : Array Entry) : Array Entry :=
   entries.qsort (fun a b => a.key.toNat < b.key.toNat)
@@ -133,9 +145,65 @@ private def patternedState (code : ByteArray) : EVM.State :=
     }
   }
 
-private def scenarios : Array (String × (ByteArray → EVM.State)) := #[
+private def generatedCalldata (seed variant length : Nat) : ByteArray := Id.run do
+  let mut calldata := .empty
+  for index in [:length] do
+    calldata := calldata.push (UInt8.ofNat (mixSeed seed (variant * 257 + index) % 256))
+  return calldata
+
+/-- A reproducible nontrivial world derived from the fixture path. The four
+variants cover calldata immediately below, at, and immediately above an EVM
+word boundary, while seeding both common and sparse storage slots. -/
+private def generatedState
+    (seed variant calldataLength : Nat) (code : ByteArray) : EVM.State :=
+  let state := initialState code
+  let address := state.executionEnv.address
+  let account := state.accountMap address
+  let sparseSlot := word (0x100 + mixSeed seed (variant + 41) % 0x10000)
+  let boundaryValue := match variant with
+    | 0 => word (2 ^ 256 - 1)
+    | 1 => word (2 ^ 255)
+    | 2 => word 1
+    | _ => word (2 ^ 128 + mixSeed seed 53)
+  let storage := account.storage
+    |>.set (word 0) boundaryValue
+    |>.set (word (31 + variant)) (word (mixSeed seed (variant + 59)))
+    |>.set sparseSlot (word (mixSeed seed (variant + 61)))
+  let tstorage := account.tstorage
+    |>.set (word variant) (word (mixSeed seed (variant + 67)))
+    |>.set sparseSlot (word (mixSeed seed (variant + 71)))
+  let weiValue := match variant with
+    | 0 => word 0
+    | 1 => word 1
+    | 2 => word (2 ^ 128)
+    | _ => word (2 ^ 256 - 1)
+  -- Keep the post-transfer executing balance at least as large as CALLVALUE,
+  -- so every generated state is a coherent transaction environment.
+  let balance := match variant with
+    | 0 => word 0
+    | 1 => word (1 + mixSeed seed 73)
+    | 2 => word (2 ^ 128 + mixSeed seed 73)
+    | _ => word (2 ^ 256 - 1)
+  let accounts := state.accountMap.set address { account with balance, storage, tstorage }
+  {
+    state with
+    accountMap := accounts
+    substate := { state.substate with originalAccountMap := accounts }
+    executionEnv := {
+      state.executionEnv with
+      calldata := generatedCalldata seed variant calldataLength
+      weiValue
+      gasPrice := word (mixSeed seed (variant + 79))
+    }
+  }
+
+private def scenarios (seed : Nat) : Array (String × (ByteArray → EVM.State)) := #[
   ("default", initialState),
-  ("patterned-input", patternedState)
+  ("patterned-input", patternedState),
+  ("seeded-1-byte", generatedState seed 0 1),
+  ("seeded-31-byte", generatedState seed 1 31),
+  ("seeded-32-byte", generatedState seed 2 32),
+  ("seeded-33-byte", generatedState seed 3 33)
 ]
 
 private inductive RunResult where
@@ -148,7 +216,8 @@ private def runToResult
   if state.isDone then .halted (observe state) else .timedOut
 
 private def mismatchSection (ours solc : Observation) : String :=
-  if ours.halt != solc.halt then "halt kind"
+  if ours.halt != solc.halt then
+    s!"halt kind (Yul compiler: {repr ours.halt}; solc: {repr solc.halt})"
   else if ours.output != solc.output then "return/revert output"
   else if ours.returnData != solc.returnData then "returndata"
   else if ours.memory != solc.memory then "nonzero memory"
@@ -159,11 +228,12 @@ private def mismatchSection (ours solc : Observation) : String :=
   else "unknown observation"
 
 /-- Compare the observable behavior of two bytecode sequences under every
-fixed scenario. The first bytecode is conventionally this compiler's output
-and the second is solc's output. -/
+fixed and fixture-seeded scenario. The first bytecode is conventionally this
+compiler's output and the second is solc's output. -/
 def compareBytecode
-    (ours solc : ByteArray) (fuel : Nat := 100000) : Except String Unit := do
-  for (name, scenario) in scenarios do
+    (ours solc : ByteArray) (fuel : Nat := 100000)
+    (scenarioSeed : Nat := 0) : Except String Unit := do
+  for (name, scenario) in scenarios scenarioSeed do
     match runToResult scenario ours fuel, runToResult scenario solc fuel with
     | .timedOut, .timedOut => pure ()
     | .timedOut, .halted solcObservation =>
@@ -180,6 +250,9 @@ def compareBytecode
 /-- Empty bytecode and an explicit STOP are behaviorally equivalent even
 though the executing account's code representation differs. -/
 example : compareBytecode .empty (Hex.hexToBytes "00") 10 = .ok () := by
+  native_decide
+
+example : fixtureSeed "objectCompiler/example.yul" != fixtureSeed "optimizer/example.yul" := by
   native_decide
 
 end YulEvmCompilerTests.SolcDifferential
