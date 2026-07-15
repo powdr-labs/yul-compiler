@@ -20,7 +20,6 @@ open EvmSemantics (Operation)
 the built-in is not (yet) in the verified fragment.
 
 Deliberately *not* covered so far:
-* `log0`–`log4` — need a log-series correspondence (mechanical, later);
 * `gas`, calls/creates, `selfdestruct` — unmodeled in yul-semantics
   (`stepOp` returns `none`), so no source derivation exists to preserve. -/
 def opTable : Op → Option Operation
@@ -68,6 +67,10 @@ def opTable : Op → Option Operation
   | .extcodesize => some .EXTCODESIZE | .extcodecopy => some .EXTCODECOPY
   | .extcodehash => some .EXTCODEHASH | .blockhash => some .BLOCKHASH
   | .blobhash => some .BLOBHASH
+  -- event logs
+  | .log0 => some (.Log ⟨0⟩) | .log1 => some (.Log ⟨1⟩)
+  | .log2 => some (.Log ⟨2⟩) | .log3 => some (.Log ⟨3⟩)
+  | .log4 => some (.Log ⟨4⟩)
   -- storage / transient storage
   | .sload => some .SLOAD | .sstore => some .SSTORE
   | .tload => some .TLOAD | .tstore => some .TSTORE

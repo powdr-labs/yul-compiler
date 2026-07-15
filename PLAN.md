@@ -252,8 +252,10 @@ Direct-data placement remains covered separately by
 * **Parser representation proofs.** Add typed identifiers, and either enrich
   the AST so hex/interleaved forms can join the canonical round-trip theorem or
   verify their documented normalization and the post-parse validator directly.
-* **Built-in coverage.** Discharge the proof and state-correspondence debt listed
-  in Milestone 1 below; bridge the two opaque Keccak definitions upstream.
+* **Built-in coverage.** The Keccak boundary and event-log correspondence are
+  now explicit and proved. The remaining operations (`gas`, calls/creates, and
+  `selfdestruct`) need source semantics before they can enter the verified
+  fragment.
 * **Deep stack access.** Use EIP-8024 after the target semantics activates it,
   or introduce spilling before then.
 * **Optimization passes.** Prove each pass against Yul semantics and compose it
@@ -282,6 +284,7 @@ Deliverables:
      blockhash`,
    - external code: `extcodesize extcodecopy extcodehash`,
    - world/transaction readers: `balance blobhash`,
+   - logging: `log0 log1 log2 log3 log4`,
    - halting: `stop return revert invalid`.
    Ops outside the set compile to `none`; the `opTable` in `OpTable.lean` is the
    single source of truth. The signed operations `sdiv`, `smod`, `sar`, and
@@ -296,8 +299,9 @@ Deliverables:
    relation; `blockhash` uses the historical-header lookup in `EnvMatch`.
    `selfbalance`, `balance`, and `blobhash` are covered by the account-map and
    transaction blob-list fields of `StateMatch`/`EnvMatch`. `keccak256` uses
-   the hash-oracle agreement described in finding 4. Excluded until further
-   work: `log*` (needs a log correspondence; addable later),
+   the hash-oracle agreement described in finding 4. `log0`–`log4` preserve an
+   ordered correspondence over the emitting address, topics, and memory-slice
+   data, including active-memory expansion. Excluded until further work:
    `gas`/calls/creates/`selfdestruct`
    (unmodeled in yul-semantics — no source derivation exists, so nothing to
    preserve).

@@ -71,6 +71,7 @@ def opByte : Operation → UInt8
   | .TLOAD => 0x5c | .TSTORE => 0x5d | .MCOPY => 0x5e
   | .Dup d => UInt8.ofNat (0x80 + d.idx.val)
   | .Swap s => UInt8.ofNat (0x90 + s.idx.val)
+  | .Log l => UInt8.ofNat (0xa0 + l.topics.val)
   | .RETURN => 0xf3 | .REVERT => 0xfd | .INVALID => 0xfe
   | _ => 0xfe
 

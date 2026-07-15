@@ -15,7 +15,7 @@ Sanity checks for the labeled-assembly pipeline (`compileProgram` /
 Beyond "it compiles", the interesting checks here are **differential**: each
 program is run through yul-semantics' fuel-indexed interpreter *and* the
 compiled bytecode is run through evm-semantics' executable step function
-(`stepF`), and the final storage values are compared. This exercises the
+(`stepF`), and the affected final state is compared. This exercises the
 whole pipeline (labels, lowering, the calling convention) long before the
 correctness proof covers it.
 -/
@@ -272,6 +272,19 @@ def externalCodeAndBlockReads : Block Op := yul% {
   sstore(4, blockhash(7))
 }
 
+/-- Emit every LOG arity over the same two-byte memory slice. This checks
+opcode selection, topic order, data extraction across a word boundary, and
+the memory expansion caused by reading log data. -/
+def logOps : Block Op := yul% {
+  mstore8(31, 0xaa)
+  mstore8(32, 0xbb)
+  log0(31, 2)
+  log1(31, 2, 0x11)
+  log2(31, 2, 0x21, 0x22)
+  log3(31, 2, 0x31, 0x32, 0x33)
+  log4(31, 2, 0x41, 0x42, 0x43, 0x44)
+}
+
 #guard (compileProgram sumLoop).isSome
 #guard (compileProgram breakContinue).isSome
 #guard (compileProgram funCall).isSome
@@ -298,6 +311,8 @@ def externalCodeAndBlockReads : Block Op := yul% {
 #guard (compile accountAndBlobReads).isSome
 #guard (compileProgram externalCodeAndBlockReads).isSome
 #guard (compile externalCodeAndBlockReads).isSome
+#guard (compileProgram logOps).isSome
+#guard (compile logOps).isSome
 
 /-! ### The upstream Fibonacci contract
 
@@ -339,9 +354,22 @@ def runEvm : Nat → EvmSemantics.EVM.State → EvmSemantics.EVM.State
   | fuel + 1, s =>
     if s.isDone then s else runEvm fuel (EvmSemantics.EVM.stepF s)
 
+/-- A representation-independent view of source logs for differential
+comparison: emitting address, ordered topics, and exact data bytes. -/
+def yulLogView (st : EvmState) : List (Nat × List Nat × List UInt8) :=
+  st.logs.map fun entry =>
+    (st.env.address.toNat, entry.topics.map BitVec.toNat, entry.data)
+
+/-- The corresponding view of the target EVM log series. -/
+def evmLogView (s : EvmSemantics.EVM.State) : List (Nat × List Nat × List UInt8) :=
+  s.substate.logSeries.toList.map fun entry =>
+    (entry.address.toUInt256.toNat, entry.topics.toList.map EvmSemantics.UInt256.toNat,
+      entry.data.toList)
+
 /-- Compile `prog`, run both sides with matching calldata and return-data
-buffers, and compare the buffers, active-memory size, and selected storage
-values (plus that the EVM run actually finished without an exception). -/
+buffers, and compare the buffers, active-memory size, full log series, and
+selected storage values (plus that the EVM run actually finished without an
+exception). -/
 def agreeOnWithInputs (prog : Block Op) (cd rd : List UInt8) (keys : List Nat) : Bool :=
   let yst0 : EvmState :=
     { EvmState.init with
@@ -358,6 +386,7 @@ def agreeOnWithInputs (prog : Block Op) (cd rd : List UInt8) (keys : List Nat) :
         && (s.halt matches .Success)
         && yst.returndata == s.returnData.toList
         && yst.activeWords.toNat == s.activeWords.toNat
+        && yulLogView yst == evmLogView s
         && keys.all (fun k =>
           (yst.storage (BitVec.ofNat 256 k)).toNat
             == ((s.accountMap s.executionEnv.address).storage.get
@@ -391,6 +420,7 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOnWithInputs returndataOps [] [0xaa, 0xbb, 0xcc, 0xdd] [0, 1, 2, 3, 4]
 #guard agreeOn memorySizeOps [0, 1, 2, 3, 4]
 #guard agreeOn keccakOps [0, 1]
+#guard agreeOn logOps []
 
 /-- Differential check with the source's abstract balance/blob oracles and the
 target's concrete account map/blob list initialized to matching values. -/

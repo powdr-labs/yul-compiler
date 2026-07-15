@@ -105,11 +105,14 @@ The verified built-in set (the domain of `opTable` in
 | code       | `codesize codecopy datacopy extcodesize extcodecopy extcodehash` |
 | env/block  | `address origin caller callvalue gasprice selfbalance coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee blockhash` |
 | world/tx   | `balance blobhash` |
+| logging    | `log0 log1 log2 log3 log4` |
 | halting    | `stop return revert invalid` |
 
-Everything else is rejected (`compile = none`) — see `PLAN.md` for exactly
-why each remaining op is deferred (some are plain proof debt; the rest are
-blocked on upstream issues found during this work). The memory-write proofs
+Everything else in the direct built-in path is rejected (`compile = none`).
+Object-relative `dataoffset`/`datasize` calls are resolved separately by the
+verified object compiler; `gas`, calls/creates, and `selfdestruct` remain
+blocked because the source semantics does not model their execution. The
+memory-write proofs
 use the `writeBytes` read-after-write lemma that now lives upstream
 (`EvmSemantics.MachineState.writeBytes_getElem?_getD`); `MSTORE` additionally
 rests on two `ByteArray` reduction facts about evm-semantics'
@@ -159,10 +162,10 @@ The correspondence `StateMatch` relates memory pointwise (total function vs.
 zero-padded `ByteArray`) and its active-word high-water mark, Yul's flat
 storage/transient storage to the executing account's storage, calldata and
 executing code pointwise (with exact lengths), external-account code bytes,
-lengths and hashes through the account map, historical block hashes, plus
-returndata byte-for-byte with its exact length. `EnvMatch` also requires the
-source environment's configurable Keccak oracle to agree pointwise with the
-target hash primitive. Gas is
+lengths and hashes through the account map, historical block hashes, emitted
+logs in order (address, topics, and data), plus returndata byte-for-byte with
+its exact length. `EnvMatch` also requires the source environment's
+configurable Keccak oracle to agree pointwise with the target hash primitive. Gas is
 existentially bounded because yul-semantics deliberately does not model gas.
 Per-instruction facts live in
 `OpStep.lean`, byte-level decoding facts in `Decode.lean`, and the
@@ -219,12 +222,13 @@ are listed explicitly in the baseline file.
 (`#guard`/`#eval`), including `switch`, multi-value returns and assignments,
 a `for` loop, a recursive function, and an iterative Fibonacci over storage —
 each run **differentially** through both the Yul interpreter and
-evm-semantics' `stepF` on the compiled bytecode, with storage compared. It
+evm-semantics' `stepF` on the compiled bytecode, with affected state compared. It
 also compiles yul-semantics' own
 `FibExample.fibContract` (the calldata/memory Fibonacci contract proved
 correct upstream) all the way to bytecode, differentially checks a concrete
-`keccak256("abc")`, and checks that the compiled Fibonacci code returns the
-same bytes as the interpreter for several inputs.
+`keccak256("abc")`, checks all five log arities including exact emitted log
+contents, and checks that the compiled Fibonacci code returns the same bytes
+as the interpreter for several inputs.
 
 ## Roadmap
 
