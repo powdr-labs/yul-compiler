@@ -2257,6 +2257,10 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have h1 : Gas.baseCost s.fork .TSTORE ≤ 100 := by rw [hfork]; decide
       have h3 : opBound Op.tstore [k, v] = 40000 := rfl
       omega
+  case call => simp [stepOp] at hyul
+  case callcode => simp [stepOp] at hyul
+  case delegatecall => simp [stepOp] at hyul
+  case staticcall => simp [stepOp] at hyul
   case stop =>
     rcases args with _ | ⟨a, args⟩ <;> simp [stepOp] at hyul
     subst hyul

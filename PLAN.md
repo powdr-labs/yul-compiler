@@ -67,7 +67,7 @@ Design decisions baked into that statement:
 **yul-semantics** (`YulSemantics.*`):
 - `Ast.lean`: `Expr Op` (lit / var / builtin / call), `Stmt Op`, `Outcome`.
 - `Dialect.lean`: dialect interface; `BuiltinResult` (`ok rets st` / `halt st`).
-- `Dialect/EVM.lean` (rev `a55fcb4`, `main`): `Op` enum covering the
+- `Dialect/EVM.lean` (rev `e702825`, `main`): `Op` enum covering the
   full user-facing Yul EVM dialect — arithmetic/comparison/bitwise/`clz`,
   `keccak256` (via the configurable `ExecEnv.keccakOf` oracle, with opaque
   `keccakBytes` as its standalone default), `pop`, memory
@@ -76,13 +76,15 @@ Design decisions baked into that statement:
   returndata reads and copies, environment readers (`address` … `blobbasefee`),
   world-state reads (`balance`/`extcodesize`/…, as abstract maps in `ExecEnv`),
   `log0`–`log4`, the object-data ops (`dataoffset`/`datasize`/`datacopy`),
-  halting ops; `gas`/calls/creates/`selfdestruct` are
-  enumerated but unmodeled (`stepOp = none`). `EvmState` is
+  halting ops; the four CALL-family operations use the open-world
+  `ExternalCalls` relation, while `gas`/creates/`selfdestruct` remain
+  unmodeled by `stepOp`. `EvmState` is
   `memory : Nat → UInt8`, `activeWords : U256`,
   `storage/transient : U256 → U256`, `env : ExecEnv`,
   `returndata : List UInt8`, `logs : List LogEntry`,
   `halted : Option (HaltKind × List UInt8)`; `evm : Dialect` has
-  `Builtin op args st r ↔ stepOp op args st = some r`.
+  `evmWithCalls external : Dialect`; its built-in relation delegates calls to
+  `external` and retains `stepOp` for local operations.
 - `BigStep.lean`: single indexed inductive `Step D funs V st code res` covering
   expressions, argument lists (**right-to-left**), statements, sequences, loops;
   `Run` for whole programs. Induction over a derivation is a standard
@@ -244,8 +246,25 @@ names, non-unique parameter/return names, more than 16 returns, classic
 with the generated layout values preserves every Yul derivation, the backend
 simulation admits the explicit `STOP` plus recursively embedded payload, and
 `compileObject_correct` composes them into the `RunObject`-to-EVM theorem.
+The open-world `compileObject_correct` form consumes an already
+layout-resolved object execution.
 Direct-data placement remains covered separately by
 `compileObject_consistent`.
+
+### Open-world CALL-family correctness
+
+The source and Asm semantics are parameterized by `ExternalCalls`. Phase B
+separates local opcodes from CALL-family instructions. Local ops retain their
+one-step `opStep` proof; `call`, `callcode`, `delegatecall`, and `staticcall`
+use `CallsRealized`, which supplies a complete target `Steps` trace from the
+caller immediately before the opcode to the same caller after return.
+
+Only trace endpoints are constrained (`FrameOK`, `StateMatch`, next `pc`, and
+the returned success flag). Intermediate states are unrestricted, so the
+trace may execute unknown code, perform arbitrarily nested calls, and re-enter
+the caller. `compile_correct` quantifies over the external relation and assumes
+this realization property for every response it admits. `CallsRealized.none`
+provides the vacuous realization for the no-external-response model.
 
 ### Remaining extension path
 
@@ -253,7 +272,8 @@ Direct-data placement remains covered separately by
   the AST so hex/interleaved forms can join the canonical round-trip theorem or
   verify their documented normalization and the post-parse validator directly.
 * **Built-in coverage.** The Keccak boundary and event-log correspondence are
-  now explicit and proved. The remaining operations (`gas`, calls/creates, and
+  now explicit and proved, and CALL-family operations use the open-world
+  realization interface above. The remaining operations (`gas`, creates, and
   `selfdestruct`) need source semantics before they can enter the verified
   fragment.
 * **Deep stack access.** Use EIP-8024 after the target semantics activates it,
@@ -285,6 +305,7 @@ Deliverables:
    - external code: `extcodesize extcodecopy extcodehash`,
    - world/transaction readers: `balance blobhash`,
    - logging: `log0 log1 log2 log3 log4`,
+   - calls: `call callcode delegatecall staticcall`,
    - halting: `stop return revert invalid`.
    Ops outside the set compile to `none`; the `opTable` in `OpTable.lean` is the
    single source of truth. The signed operations `sdiv`, `smod`, `sar`, and
@@ -301,8 +322,9 @@ Deliverables:
    transaction blob-list fields of `StateMatch`/`EnvMatch`. `keccak256` uses
    the hash-oracle agreement described in finding 4. `log0`–`log4` preserve an
    ordered correspondence over the emitting address, topics, and memory-slice
-   data, including active-memory expansion. Excluded until further work:
-   `gas`/calls/creates/`selfdestruct`
+   data, including active-memory expansion. CALL-family operations use the
+   open-world `CallsRealized` interface described above. Excluded until further
+   work: `gas`/creates/`selfdestruct`
    (unmodeled in yul-semantics — no source derivation exists, so nothing to
    preserve).
 4. Examples: compiled snippets (e.g. `sstore(0, add(1, 2)); return(0, 0)`) with
