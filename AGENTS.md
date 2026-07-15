@@ -46,7 +46,9 @@ Important files:
 - `YulEvmCompiler/Examples.lean`: build-time compilation guards and executable differential tests between both semantics.
 - `YulParser/`: parser library. `Canon.lean` supports verified canonical round trips; `Compat.lean` is an intentionally lossy Solidity-compatibility fallback.
 - `YulEvmCompilerTests/InterpreterFixture.lean`: runner for Solidity's Yul interpreter fixtures.
-- `scripts/CheckSoliditySyntaxTests.lean` and `scripts/CheckSolidityInterpreterTests.lean`: corpus/baseline drivers used by CI.
+- `scripts/CheckSoliditySyntaxTests.lean`,
+  `scripts/CheckSolidityInterpreterTests.lean`, and
+  `scripts/CheckSolidityCompileTests.lean`: corpus/baseline drivers used by CI.
 - `Checks.lean`: exact axiom-footprint checks for the headline compiler and parser theorems.
 - `README.md`: user-facing current scope. `PLAN.md`: design rationale, proof architecture, blockers, and roadmap.
 
@@ -215,8 +217,27 @@ The harness installs compiled bytecode as the executing account's code, unlike S
 the latest-fork-compatible fixtures: every eligible fixture still runs, known
 failures are allowed, unexpected failures fail, and stale entries fail. A
 newly supported feature should normally remove baseline paths. Never update
-either baseline just to make CI green without explaining the semantic or
+a baseline just to make CI green without explaining the semantic or
 unsupported-feature reason.
+
+### Solidity positive compiler corpora
+
+CI compiles every latest-fork fixture in Solidity's `yulOptimizerTests`,
+`objectCompiler`, and `evmCodeTransform` directories:
+
+```sh
+lake env lean --run scripts/CheckSolidityCompileTests.lean \
+  object-compiler \
+  /path/to/solidity/test/libyul/objectCompiler \
+  test/solidity-yul-object-compiler-known-compile-failures.txt
+```
+
+The runner extracts only the source section and calls the production
+`compileSource` entry point. It intentionally ignores the expected optimizer
+output, assembly, bytecode, opcodes, and source mappings because those encode
+solc-specific implementation choices. Each of the three known-failure files
+is an exact baseline, not a skip list: every applicable source is attempted,
+and both unexpected failures and stale entries fail the run.
 
 To reproduce CI's corpus checkout:
 
@@ -225,7 +246,10 @@ git clone --depth 1 --filter=blob:none --sparse --branch develop \
   https://github.com/argotorg/solidity.git /tmp/solidity
 git -C /tmp/solidity sparse-checkout set \
   test/libyul/yulSyntaxTests \
-  test/libyul/yulInterpreterTests
+  test/libyul/yulInterpreterTests \
+  test/libyul/yulOptimizerTests \
+  test/libyul/objectCompiler \
+  test/libyul/evmCodeTransform
 ```
 
 ## Change discipline
