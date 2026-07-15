@@ -149,4 +149,9 @@ jobs:
             /tmp/solidity/test/libyul/evmCodeTransform \
             test/solidity-yul-evm-code-transform-known-solc-differential-failures.txt \
             "$SOLC_PATH" "$SOLC_VERSION" || status=1
+          lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+            optimizer \
+            /tmp/solidity/test/libyul/yulOptimizerTests \
+            test/solidity-yul-optimizer-known-solc-differential-failures.txt \
+            "$SOLC_PATH" "$SOLC_VERSION" || status=1
           exit "$status"
