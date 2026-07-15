@@ -328,7 +328,7 @@ private theorem rd1_sameEnv (f : U256 → U256) (args : List U256)
 private theorem stepOp_sameEnv {op : Op} {args : List U256}
     {st : EvmState} {r} (h : stepOp op args st = some r) :
     SameEnvResult st r := by
-  cases op <;> simp only [stepOp] at h <;>
+  cases op <;> simp only [stepOp, YulSemantics.EVM.guardStatic] at h <;>
     first
     | exact un_sameEnv _ _ _ h
     | exact bin_sameEnv _ _ _ h

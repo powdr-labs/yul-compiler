@@ -74,8 +74,8 @@ Preserve these invariants unless the change deliberately redesigns them and upda
 - Labels are generated with a counter but freshness is not threaded through proofs. `compileProgram` runs `wfCheck`, which must continue to guarantee unique definitions, defined references, and code size below `2^256`.
 - Literal and label-address pushes are always `PUSH32`. Do not introduce shorter pushes as a local peephole change: instruction width, decode, jump positions, and proofs all depend on the current encoding.
 - Phase A is intentionally byte-free and gas-free. Built-ins execute via the source's combined local/external relation (local operations reduce to `stepOp`); byte decoding, `UInt256` conversion, target state layout, and gas belong in Phase B.
-- `StateMatch` currently relates memory contents and the active-memory high-water mark, calldata, executing code, returndata, environment/header readers, the configurable Keccak oracle, account balances, every account's code/nonce/persistent/transient storage, the ordered log series (each emitter address, topics, data), the ordered self-destruct schedule, and the EIP-6780 created-this-transaction selector. Extend it before proving operations that observe or mutate further account or substate data.
-- The correctness theorem is a forward simulation with an existential gas bound. Yul semantics has no gas, and target `Step` is not used as a deterministic equivalence.
+- `StateMatch` currently relates memory contents and the active-memory high-water mark, calldata, executing code, returndata, environment/header readers, the configurable Keccak oracle, the source static-context flag to target mutation permission, account balances, every account's code/nonce/persistent/transient storage, the ordered log series (each emitter address, topics, data), the ordered self-destruct schedule (address plus EIP-6780 created-this-transaction bit), and the executing frame's EIP-6780 selector. Extend it before proving operations that observe or mutate further account or substate data.
+- The correctness theorem is a forward simulation with an existential gas bound. Yul semantics has no gas accounting (its `gas()` built-in is an open-world oracle), and target `Step` is not used as a deterministic equivalence.
 - Normal source fall-through becomes the EVM's implicit past-the-end `STOP`; source halts must preserve the exact halt kind and payload.
 - This repository must remain free of `sorry` and project-specific axioms. Do not use `axiom`, `unsafe`, or an opaque bridge to bypass proof obligations.
 
@@ -95,7 +95,7 @@ Start by classifying the feature. The required files differ substantially for a 
 
 Adding a direct local built-in normally requires no Phase A case: `.builtin` already compiles to `.op`, and `AsmSem.AStep.op` uses the same source relation. It does require Phase B because `opTable` and `opStep` justify the concrete opcode. External-boundary operations additionally require a `CallsRealized`/`CreatesRealized`-style complete-trace obligation instead of a single-op `opStep` case.
 
-For `keccak256`, preserve the `EnvMatch.keccak` agreement between the source environment's configurable oracle and the target primitive; executable tests use the proved `targetKeccakOracle` adapter. Operations unmodeled by source `stepOp` cannot be justified by a source execution derivation. See `OpTable.lean` and `PLAN.md` for current blockers before starting.
+For `keccak256`, preserve the `EnvMatch.keccak` agreement between the source environment's configurable oracle and the target primitive; executable tests use the proved `targetKeccakOracle` adapter. Operations absent from deterministic source `stepOp` need an explicit open-world source relation and a corresponding target realization argument; they cannot be routed through the single-op `opStep` proof. See `OpTable.lean` and `PLAN.md` for current blockers before starting.
 
 ### Adding a Yul expression or statement form
 

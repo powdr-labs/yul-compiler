@@ -500,11 +500,10 @@ def agreeExternalCodeAndBlockReads : Bool :=
   let yBlock : BitVec 256 := BitVec.ofNat 256 0x123456
   let extAccount : EvmSemantics.Account :=
     { EvmSemantics.Account.empty with code := ⟨extBytes.toArray⟩ }
-  let yExtHash : BitVec 256 := BitVec.ofNat 256 extAccount.codeHash.toNat
   let yst0 : EvmState :=
     { EvmState.init with env := { EvmState.init.env with
         extCodeOf := fun a => if a = 1 then extBytes else []
-        extCodeHashOf := fun a => if a = 1 then yExtHash else 0
+        keccakOf := targetKeccakOracle
         blockHashOf := fun n => if n = 7 then yBlock else 0 } }
   match compile externalCodeAndBlockReads,
       Interp.run YulSemantics.EVM.exec 100000 externalCodeAndBlockReads yst0 with
@@ -577,8 +576,10 @@ def agreeSelfdestruct (beneficiary : Nat) (createdThisTx : Bool) : Bool :=
         && yst.halted == some (.selfdestruct, [])
         && yst.env.balanceOf self == (s.accountMap selfAddr).balance.toNat
         && yst.env.balanceOf ben == (s.accountMap benAddr).balance.toNat
-        && yst.selfdestructs.map YulSemantics.EVM.accountKey ==
-          s.substate.selfDestructList.toList.map (fun a => a.val)
+        && yst.selfdestructs.map (fun entry =>
+          (YulSemantics.EVM.accountKey entry.1, entry.2)) ==
+          s.substate.selfDestructList.toList.map (fun a =>
+            (a.val, !(s.substate.originalAccountMap a).isContract))
         && yst.storage 0 == 0
         && (s.accountMap selfAddr).storage 0 == 0
   | _, _ => false

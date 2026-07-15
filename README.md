@@ -113,8 +113,10 @@ The verified built-in set (the domain of `opTable` in
 Everything else in the direct built-in path is rejected (`compile = none`).
 Object-relative `dataoffset`/`datasize` calls are resolved separately by the
 verified object compiler; `gas` remains blocked because the source semantics
-does not model its execution. CALL- and CREATE-family
-operations use the open-world relational model described below. The
+models it as a nondeterministic open-world oracle rather than a `stepOp`.
+Verifying it requires a realization condition tying the oracle's chosen word
+to the target frame's actual remaining gas. CALL- and CREATE-family operations
+use the open-world relational model described below. The
 memory-write proofs
 use the `writeBytes` read-after-write lemma that now lives upstream
 (`EvmSemantics.MachineState.writeBytes_getElem?_getD`); `MSTORE` additionally
@@ -173,12 +175,13 @@ zero-padded `ByteArray`) and its active-word high-water mark, Yul's flat
 storage/transient storage to the executing account's storage, calldata and
 executing code pointwise (with exact lengths), and every account's nonce,
 persistent/transient storage, code bytes, lengths, and hashes through the
-account map. It also relates historical block hashes and emitted
-logs and scheduled self-destructing addresses in order, plus returndata
-byte-for-byte with its exact length. `EnvMatch` also requires the source
-environment's
-configurable Keccak oracle to agree pointwise with the target hash primitive. Gas is
-existentially bounded because yul-semantics deliberately does not model gas.
+account map. It also relates historical block hashes, the source static-context
+flag to the target frame's mutation permission, emitted logs, and scheduled
+self-destruct records (address plus the EIP-6780 `createdThisTx` bit) in order,
+plus returndata byte-for-byte with its exact length. `EnvMatch` also requires
+the source environment's configurable Keccak oracle to agree pointwise with
+the target hash primitive. Gas is existentially bounded because yul-semantics
+does not track execution gas as machine state.
 Per-instruction facts live in
 `OpStep.lean`, byte-level decoding facts in `Decode.lean`, and the
 `BitVec 256` ↔ `UInt256` arithmetic agreements in `Value.lean`.

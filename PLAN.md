@@ -67,7 +67,7 @@ Design decisions baked into that statement:
 **yul-semantics** (`YulSemantics.*`):
 - `Ast.lean`: `Expr Op` (lit / var / builtin / call), `Stmt Op`, `Outcome`.
 - `Dialect.lean`: dialect interface; `BuiltinResult` (`ok rets st` / `halt st`).
-- `Dialect/EVM.lean` (rev `acaa675`, `main`): `Op` enum covering the
+- `Dialect/EVM.lean` (rev `5cfcdc8`, `main`): `Op` enum covering the
   full user-facing Yul EVM dialect — arithmetic/comparison/bitwise/`clz`,
   `keccak256` (via the configurable `ExecEnv.keccakOf` oracle, with opaque
   `keccakBytes` as its standalone default), `pop`, memory
@@ -78,11 +78,13 @@ Design decisions baked into that statement:
   `log0`–`log4`, the object-data ops (`dataoffset`/`datasize`/`datacopy`),
   halting ops, including deterministic Osaka/Cancun `selfdestruct`; CALL- and
   CREATE-family operations use the open-world `ExternalCalls`/`ExternalCreates`
-  relations, while `gas` remains unmodeled by `stepOp`. `EvmState` is
+  relations; `gas` is a nondeterministic oracle in that open-world relation
+  and deliberately remains absent from deterministic `stepOp`. Static-context
+  write protection is represented by `ExecEnv.static`. `EvmState` is
   `memory : Nat → UInt8`, `activeWords : U256`,
   `storage/transient : U256 → U256`, `env : ExecEnv`,
   `returndata : List UInt8`, `logs : List LogEntry`, scheduled
-  `selfdestructs : List U256`,
+  `selfdestructs : List (U256 × Bool)` (address and `createdThisTx` bit),
   `halted : Option (HaltKind × List UInt8)`; `evm : Dialect` has
   `evmWithExternal calls creates : Dialect`; its built-in relation delegates
   calls/creations to those relations and retains `stepOp` for local operations.
@@ -282,8 +284,10 @@ both external relations and assumes realization for every response they admit.
   now explicit and proved, and CALL-/CREATE-family operations use the open-world
   realization interface above. `selfdestruct` is proved against the local
   EIP-6780 transition, including its created-this-transaction distinction and
-  scheduled-deletion record. The remaining operation, `gas`, needs source
-  semantics before it can enter the verified fragment.
+  scheduled-deletion record. The remaining operation, `gas`, now has
+  nondeterministic source semantics; it needs a target realization condition
+  connecting the chosen oracle value to the concrete EVM gas counter before it
+  can enter the verified fragment.
 * **Deep stack access.** Use EIP-8024 after the target semantics activates it,
   or introduce spilling before then.
 * **Optimization passes.** Prove each pass against Yul semantics and compose it
@@ -335,8 +339,8 @@ Deliverables:
    relates the immediate balance update, EIP-6780 same-beneficiary behavior,
    and ordered scheduled-destruction record; end-of-transaction account deletion
    remains the target transaction semantics' finalization step. Excluded until
-   further work: `gas` (unmodeled in yul-semantics — no source derivation exists,
-   so nothing to preserve).
+   further work: `gas` (modeled as an arbitrary open-world oracle result, which
+   still needs a realization proof against the target frame's remaining gas).
 4. Examples: compiled snippets (e.g. `sstore(0, add(1, 2)); return(0, 0)`) with
    `#eval` byte dumps.
 
