@@ -226,6 +226,16 @@ than the state produced by compiled object bytecode. The remaining entries are
 unsupported operations, resource-limit cases, or environment/runner gaps and
 are listed explicitly in the baseline file.
 
+CI additionally compiles every latest-fork source fixture in Solidity's
+positive `yulOptimizerTests`, `objectCompiler`, and `evmCodeTransform`
+corpora. `scripts/CheckSolidityCompileTests.lean` strips solc's settings and
+golden-output sections, invokes the production `compileSource` entry point,
+and compares all failures with three exact baselines under `test/`. The check
+does not require our optimizer output, assembly, or bytecode to match solc:
+those are implementation-specific, while accepting and compiling the same
+valid Yul source is the compatibility property being tracked. New failures
+and stale baseline entries both fail CI.
+
 `YulEvmCompiler/Examples.lean` compiles sample programs at build time
 (`#guard`/`#eval`), including `switch`, multi-value returns and assignments,
 a `for` loop, a recursive function, and an iterative Fibonacci over storage —

@@ -24,7 +24,17 @@ synthetic hash-derived object offsets/sizes and a dummy
 those synthetic values compile successfully but remain explicit post-state
 mismatches in the baseline.
 
-Remove a relative fixture path from either baseline as soon as it passes. A
+The three `solidity-yul-*-known-compile-failures.txt` files cover Solidity's
+positive `yulOptimizerTests`, `objectCompiler`, and `evmCodeTransform`
+corpora. CI extracts the source before the fixture settings or expectation
+section and runs the production `compileSource` entry point on every fixture
+whose `EVMVersion` range includes Osaka. These tests establish compilation
+compatibility only: optimizer output, exact assembly, bytecode, opcodes, and
+source mappings are solc-specific and are deliberately not compared. Every
+fixture is attempted, and either a new failure or a stale baseline entry fails
+the run.
+
+Remove a relative fixture path from any baseline as soon as it passes. A
 local checkout can be checked with:
 
 ```sh
@@ -39,4 +49,13 @@ Interpreter fixtures can be checked with:
 lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
   /path/to/solidity/test/libyul/yulInterpreterTests \
   test/solidity-yul-interpreter-known-failures.txt
+```
+
+One of the positive compiler corpora can be checked with:
+
+```sh
+lake env lean --run scripts/CheckSolidityCompileTests.lean \
+  object-compiler \
+  /path/to/solidity/test/libyul/objectCompiler \
+  test/solidity-yul-object-compiler-known-compile-failures.txt
 ```

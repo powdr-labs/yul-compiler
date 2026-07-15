@@ -69,7 +69,7 @@ jobs:
       - name: Verify axiom footprint (sorry-free, standard axioms only)
         run: lake env lean Checks.lean
 
-      # Fetch only the two Yul test directories used below. Checked-in baselines
+      # Fetch only the Yul test directories used below. Checked-in baselines
       # make current parser/compiler gaps explicit and detect stale entries.
       - name: Fetch Solidity Yul tests
         run: |
@@ -77,7 +77,10 @@ jobs:
             https://github.com/argotorg/solidity.git /tmp/solidity
           git -C /tmp/solidity sparse-checkout set \
             test/libyul/yulSyntaxTests \
-            test/libyul/yulInterpreterTests
+            test/libyul/yulInterpreterTests \
+            test/libyul/yulOptimizerTests \
+            test/libyul/objectCompiler \
+            test/libyul/evmCodeTransform
 
       - name: Check parser against Solidity syntax corpus
         run: |
@@ -90,3 +93,20 @@ jobs:
           lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
             /tmp/solidity/test/libyul/yulInterpreterTests \
             test/solidity-yul-interpreter-known-failures.txt
+
+      - name: Compile latest-fork Solidity positive compiler corpora
+        run: |
+          status=0
+          lake env lean --run scripts/CheckSolidityCompileTests.lean \
+            optimizer \
+            /tmp/solidity/test/libyul/yulOptimizerTests \
+            test/solidity-yul-optimizer-known-compile-failures.txt || status=1
+          lake env lean --run scripts/CheckSolidityCompileTests.lean \
+            object-compiler \
+            /tmp/solidity/test/libyul/objectCompiler \
+            test/solidity-yul-object-compiler-known-compile-failures.txt || status=1
+          lake env lean --run scripts/CheckSolidityCompileTests.lean \
+            EVM-code-transform \
+            /tmp/solidity/test/libyul/evmCodeTransform \
+            test/solidity-yul-evm-code-transform-known-compile-failures.txt || status=1
+          exit "$status"
