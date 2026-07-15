@@ -12,7 +12,8 @@ The correspondence between the two machine states:
   `ByteArray` with zero-padded reads;
 * `StateMatch` — memory contents and active size, calldata/code/returndata,
   environment data (including the hash-oracle agreement), account balances
-  and external code, (transient) storage, and emitted logs;
+  and external code, (transient) storage, emitted logs, and scheduled
+  destructions;
 * `FrameOK`    — the frame-level side conditions that hold throughout a
   straight-line execution (fixed code, Osaka fork, mutation permitted, not a
   precompile frame, no suspended callers, still running);
@@ -126,6 +127,27 @@ theorem MemMatch.readBytes {ymem : Nat → UInt8} {m : ByteArray}
       simp only [List.length_append, List.length_take, List.length_drop,
         List.length_replicate, hlenm]
       omega)]
+
+/-- A finite source byte list whose zero-padded view matches a target byte array of the same
+length is exactly that array. -/
+theorem MemMatch.mkCode_eq {bytes : List UInt8} {code : ByteArray}
+    (h : MemMatch (YulSemantics.EVM.byteFrom bytes) code)
+    (hlen : bytes.length = code.size) : mkCode bytes = code := by
+  rw [← mkCode_toList code]
+  congr 1
+  apply List.ext_getElem
+  · simpa [ByteArray.toList_eq_data] using hlen
+  · intro i hi hti
+    have hci : i < code.size := by
+      simpa [ByteArray.toList_eq_data] using hti
+    have hm := h i
+    rw [dif_pos hci] at hm
+    convert hm using 1 <;>
+      simp [YulSemantics.EVM.byteFrom, List.getD, hi,
+        ByteArray.toList_eq_data, ByteArray.getElem_eq_getElem_data]
+    all_goals
+      apply congrArg (fun proof => code.data[i]'proof)
+      apply Subsingleton.elim
 
 /-! ### `MLOAD` agreement -/
 
@@ -452,6 +474,20 @@ theorem EnvMatch.setTransientOf {ye : YulSemantics.EVM.ExecEnv} {se : ExecutionE
   cases h
   constructor <;> assumption
 
+/-- Updating mutable balance/code-hash world projections and the cached self balance preserves the
+immutable frame-environment correspondence. -/
+theorem EnvMatch.setBalanceWorld {ye : YulSemantics.EVM.ExecEnv} {se : ExecutionEnv}
+    (h : EnvMatch ye se) (selfBalance : YulSemantics.EVM.U256)
+    (balanceOf extCodeHashOf : YulSemantics.EVM.U256 → YulSemantics.EVM.U256) :
+    EnvMatch
+      { ye with
+        selfBalance
+        balanceOf
+        extCodeHashOf }
+      se := by
+  cases h
+  constructor <;> assumption
+
 /-- Agreement between yul-semantics' global account projections and the
 target's concrete account map. Besides external code, this pins every account
 nonce and persistent/transient storage slot, making open-world call/create
@@ -499,6 +535,201 @@ theorem accountAddress_eq_iff_accountKey (a b : YulSemantics.EVM.U256) :
         a.val % AccountAddress.size := Nat.mod_eq_of_lt
           (Nat.mod_lt _ (by unfold AccountAddress.size; omega))
     _ = a.val := Nat.mod_eq_of_lt a.isLt
+
+/-- Replacing only account balances, while recomputing the source `EXTCODEHASH` projection from
+the unchanged nonce/code projections, preserves the full external-account correspondence. -/
+theorem ExternalCodeMatch.rebalance
+    {ye : YulSemantics.EVM.ExecEnv} {accounts accounts' : AccountMap}
+    {balances : YulSemantics.EVM.U256 → YulSemantics.EVM.U256}
+    (h : ExternalCodeMatch ye accounts)
+    (selfBalance : YulSemantics.EVM.U256)
+    (hkeccak : ∀ bytes, conv (ye.keccakOf bytes) = EvmSemantics.keccak256 (mkCode bytes))
+    (hbalance : ∀ a, conv (balances a) =
+      (accounts' (AccountAddress.ofUInt256 (conv a))).balance)
+    (hnonce : ∀ a, (accounts' a).nonce = (accounts a).nonce)
+    (hcode : ∀ a, (accounts' a).code = (accounts a).code)
+    (hstorage : ∀ a, (accounts' a).storage = (accounts a).storage)
+    (htstorage : ∀ a, (accounts' a).tstorage = (accounts a).tstorage) :
+    ExternalCodeMatch
+      { ye with
+        selfBalance := selfBalance
+        balanceOf := balances
+        extCodeHashOf := YulSemantics.EVM.projectedCodeHash ye balances }
+      accounts' := by
+  constructor
+  · intro a
+    simpa [hcode] using h.bytes a
+  · intro a
+    simpa [hcode] using h.length a
+  · intro a
+    let addr := AccountAddress.ofUInt256 (conv a)
+    have hn : (ye.nonceOf a).toNat = (accounts' addr).nonce.toNat := by
+      have hold := congrArg UInt256.toNat (h.nonce a)
+      rw [hnonce] at ⊢
+      simpa only [conv_toNat] using hold
+    have hb : (balances a).toNat = (accounts' addr).balance.toNat := by
+      have hold := congrArg UInt256.toNat (hbalance a)
+      simpa only [conv_toNat] using hold
+    have hc : (ye.extCodeOf a).length = (accounts' addr).code.size := by
+      rw [hcode]
+      exact h.length a
+    have hbytes : mkCode (ye.extCodeOf a) = (accounts' addr).code := by
+      rw [hcode]
+      exact (h.bytes a).mkCode_eq (h.length a)
+    change conv (YulSemantics.EVM.projectedCodeHash ye balances a) =
+      (accounts' addr).codeHash
+    unfold YulSemantics.EVM.projectedCodeHash Account.codeHash Account.isEmpty
+    simp only [Bool.and_eq_true, decide_eq_true_eq]
+    by_cases hz : (ye.nonceOf a).toNat = 0 ∧ (balances a).toNat = 0 ∧
+        (ye.extCodeOf a).length = 0
+    · rw [if_pos hz]
+      have ht : ((accounts' addr).nonce.toNat = 0 ∧
+          (accounts' addr).balance.toNat = 0) ∧ (accounts' addr).code.size = 0 := by
+        rcases hz with ⟨hn0, hb0, hc0⟩
+        exact ⟨⟨hn.symm.trans hn0, hb.symm.trans hb0⟩, hc.symm.trans hc0⟩
+      rw [if_pos ht]
+      exact conv_zero
+    · rw [if_neg hz]
+      have hne : ¬((accounts' addr).nonce.toNat = 0 ∧
+          (accounts' addr).balance.toNat = 0 ∧ (accounts' addr).code.size = 0) := by
+        simpa [hn, hb, hc] using hz
+      have hnt : ¬(((accounts' addr).nonce.toNat = 0 ∧
+          (accounts' addr).balance.toNat = 0) ∧ (accounts' addr).code.size = 0) := by
+        intro ht
+        exact hne ⟨ht.1.1, ht.1.2, ht.2⟩
+      rw [if_neg hnt, hkeccak, hbytes]
+  · intro a
+    rw [hnonce]
+    exact h.nonce a
+  · intro a k
+    rw [hstorage]
+    exact h.storage a k
+  · intro a k
+    rw [htstorage]
+    exact h.tstorage a k
+
+/-- Updating one account's balance preserves any balance-insensitive account field. -/
+theorem AccountMap.setBalance_field {α : Type} (f : Account → α)
+    (hf : ∀ account balance, f { account with balance := balance } = f account)
+    (accounts : AccountMap) (updated address : AccountAddress) (balance : UInt256) :
+    f ((accounts.set updated { accounts updated with balance := balance }) address) =
+      f (accounts address) := by
+  by_cases h : address = updated
+  · subst address
+    simp [hf]
+  · rw [AccountMap.get_set_other _ _ _ _ h]
+
+/-- A balance transfer preserves any balance-insensitive account field at every address. -/
+theorem AccountMap.transfer_field {α : Type} (f : Account → α)
+    (hf : ∀ account balance, f { account with balance := balance } = f account)
+    (accounts : AccountMap) (src dst address : AccountAddress) (value : UInt256) :
+    f ((accounts.transfer src dst value) address) = f (accounts address) := by
+  unfold AccountMap.transfer
+  by_cases hd : address = dst
+  · subst address
+    simp only [AccountMap.get_set_same, hf]
+    by_cases hds : dst = src
+    · subst dst
+      simp only [AccountMap.get_set_same, hf]
+    · exact congrArg f (AccountMap.get_set_other accounts src dst
+        { accounts src with balance := (accounts src).balance - value } hds)
+  · rw [AccountMap.get_set_other _ _ _ _ hd]
+    by_cases hs : address = src
+    · subst address
+      simp [hf]
+    · rw [AccountMap.get_set_other _ _ _ _ hs]
+
+/-- A source low-160-bit scalar update agrees with setting the corresponding concrete account's
+balance. -/
+theorem updAccountValue_balance_set
+    {balances : YulSemantics.EVM.U256 → YulSemantics.EVM.U256}
+    {accounts : AccountMap} (hbalance : ∀ a, conv (balances a) =
+      (accounts (AccountAddress.ofUInt256 (conv a))).balance)
+    (yaddr : YulSemantics.EVM.U256) (addr : AccountAddress)
+    (haddr : AccountAddress.ofUInt256 (conv yaddr) = addr) :
+    ∀ a, conv (YulSemantics.EVM.updAccountValue balances yaddr 0 a) =
+      ((accounts.set addr { accounts addr with balance := 0 })
+        (AccountAddress.ofUInt256 (conv a))).balance := by
+  intro a
+  by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+  · have hkey : YulSemantics.EVM.accountKey a = YulSemantics.EVM.accountKey yaddr :=
+      (accountAddress_eq_iff_accountKey a yaddr).mp (ha.trans haddr.symm)
+    simp only [YulSemantics.EVM.updAccountValue, hkey, if_pos,
+      ha, AccountMap.get_set_same]
+    exact conv_zero
+  · have hkey : YulSemantics.EVM.accountKey a ≠ YulSemantics.EVM.accountKey yaddr := by
+      intro heq
+      apply ha
+      exact ((accountAddress_eq_iff_accountKey a yaddr).mpr heq).trans haddr
+    rw [YulSemantics.EVM.updAccountValue, if_neg hkey,
+      AccountMap.get_set_other _ _ _ _ ha]
+    exact hbalance a
+
+/-- The pair of source balance updates used by distinct-beneficiary `SELFDESTRUCT` agrees with the
+target account-map transfer. -/
+theorem updAccountValue_balance_transfer
+    {balances : YulSemantics.EVM.U256 → YulSemantics.EVM.U256}
+    {accounts : AccountMap} (hbalance : ∀ a, conv (balances a) =
+      (accounts (AccountAddress.ofUInt256 (conv a))).balance)
+    (yself ybeneficiary : YulSemantics.EVM.U256)
+    (self beneficiary : AccountAddress)
+    (hself : AccountAddress.ofUInt256 (conv yself) = self)
+    (hbeneficiary : AccountAddress.ofUInt256 (conv ybeneficiary) = beneficiary)
+    (hne : beneficiary ≠ self)
+    (hselfBalance : conv (balances yself) = (accounts self).balance) :
+    ∀ a,
+      conv (YulSemantics.EVM.updAccountValue
+        (YulSemantics.EVM.updAccountValue balances yself 0)
+        ybeneficiary (balances ybeneficiary + balances yself) a) =
+      ((accounts.transfer self beneficiary (accounts self).balance)
+        (AccountAddress.ofUInt256 (conv a))).balance := by
+  intro a
+  let address := AccountAddress.ofUInt256 (conv a)
+  by_cases hb : address = beneficiary
+  · have hbkey : YulSemantics.EVM.accountKey a =
+        YulSemantics.EVM.accountKey ybeneficiary :=
+      (accountAddress_eq_iff_accountKey a ybeneficiary).mp (hb.trans hbeneficiary.symm)
+    have hskey : YulSemantics.EVM.accountKey a ≠ YulSemantics.EVM.accountKey yself := by
+      intro heq
+      apply hne
+      exact hb.symm.trans (((accountAddress_eq_iff_accountKey a yself).mpr heq).trans hself)
+    subst address
+    simp [YulSemantics.EVM.updAccountValue, hbkey, AccountMap.transfer, hne,
+      hb, hbeneficiary, hself, conv_add, hbalance]
+  · by_cases hs : address = self
+    · have hskey : YulSemantics.EVM.accountKey a = YulSemantics.EVM.accountKey yself :=
+        (accountAddress_eq_iff_accountKey a yself).mp (hs.trans hself.symm)
+      have hbkey : YulSemantics.EVM.accountKey a ≠
+          YulSemantics.EVM.accountKey ybeneficiary := by
+        intro heq
+        apply hb
+        exact ((accountAddress_eq_iff_accountKey a ybeneficiary).mpr heq).trans hbeneficiary
+      have hyne : YulSemantics.EVM.accountKey yself ≠
+          YulSemantics.EVM.accountKey ybeneficiary := by
+        intro heq
+        apply hne
+        exact hbeneficiary.symm.trans
+          (((accountAddress_eq_iff_accountKey yself ybeneficiary).mpr heq).symm.trans hself)
+      subst address
+      simp [YulSemantics.EVM.updAccountValue, hskey, hyne,
+        AccountMap.transfer, hne, hne.symm, hs]
+      rw [← hselfBalance, ← conv_sub]
+      simp
+    · have hskey : YulSemantics.EVM.accountKey a ≠ YulSemantics.EVM.accountKey yself := by
+        intro heq
+        apply hs
+        exact ((accountAddress_eq_iff_accountKey a yself).mpr heq).trans hself
+      have hbkey : YulSemantics.EVM.accountKey a ≠
+          YulSemantics.EVM.accountKey ybeneficiary := by
+        intro heq
+        apply hb
+        exact ((accountAddress_eq_iff_accountKey a ybeneficiary).mpr heq).trans hbeneficiary
+      unfold AccountMap.transfer
+      rw [YulSemantics.EVM.updAccountValue, if_neg hbkey,
+        YulSemantics.EVM.updAccountValue, if_neg hskey,
+        AccountMap.get_set_other _ _ _ _ hb,
+        AccountMap.get_set_other _ _ _ _ hs]
+      exact hbalance a
 
 /-- Updating one account while preserving the fields observed by external-code
 operations preserves `ExternalCodeMatch`. Storage and transient-storage
@@ -719,10 +950,31 @@ theorem LogsMatch.append {ys : List YulSemantics.EVM.LogEntry} {ts : EvmSemantic
   rw [Array.toList_push]
   exact List.rel_append h (.cons he .nil)
 
+/-- One source scheduled-destruction address agrees with one concrete target address. -/
+def SelfdestructEntryMatch
+    (y : YulSemantics.EVM.U256) (t : AccountAddress) : Prop :=
+  conv y = t.toUInt256
+
+/-- Scheduled destructions agree in execution order. Actual deletion is a later transaction-level
+operation in the target semantics. -/
+def SelfdestructsMatch
+    (ys : List YulSemantics.EVM.U256) (ts : Array AccountAddress) : Prop :=
+  List.Forall₂ SelfdestructEntryMatch ys ts.toList
+
+/-- Appending matching scheduled destructions preserves the correspondence. -/
+theorem SelfdestructsMatch.append
+    {ys : List YulSemantics.EVM.U256} {ts : Array AccountAddress}
+    {y : YulSemantics.EVM.U256} {t : AccountAddress}
+    (h : SelfdestructsMatch ys ts) (he : SelfdestructEntryMatch y t) :
+    SelfdestructsMatch (ys ++ [y]) (ts.push t) := by
+  unfold SelfdestructsMatch at h ⊢
+  rw [Array.toList_push]
+  exact List.rel_append h (.cons he .nil)
+
 /-- The machine-state correspondence: memory and byte regions pointwise, plus
-balances, external code, the executing account's (transient) storage, and the
-ordered log series. yul-semantics' flat `storage` is the storage of the
-target's `executionEnv.address`. -/
+balances, external code, the executing account's (transient) storage, ordered
+logs and scheduled destructions. yul-semantics' flat `storage` is the storage
+of the target's `executionEnv.address`. -/
 structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop where
   mem : MemMatch yst.memory s.memory
   stor : ∀ k, conv (yst.storage k)
@@ -762,6 +1014,197 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   externalCode : ExternalCodeMatch yst.env s.accountMap
   /-- Emitted logs agree in order, retaining each emitting frame's address. -/
   logs : LogsMatch yst.logs s.substate.logSeries
+  /-- Scheduled destruction records agree in execution order. -/
+  selfdestructs : SelfdestructsMatch yst.selfdestructs s.substate.selfDestructList
+  /-- The source's Cancun self-beneficiary selector agrees with the pinned target semantics'
+  transaction-initial-world test. -/
+  createdThisTx : yst.env.createdThisTx =
+    !(s.substate.originalAccountMap s.executionEnv.address).isContract
+
+/-- Lift the balance/account-map facts specific to one `SELFDESTRUCT` branch into the complete
+machine-state correspondence. -/
+theorem StateMatch.finishSelfdestruct_of
+    {yst : YulSemantics.EVM.EvmState} {s : EVM.State}
+    (hm : StateMatch yst s) (beneficiary : YulSemantics.EVM.U256)
+    (hbalance : ∀ a,
+      conv ((YulSemantics.EVM.finishSelfdestruct yst beneficiary).env.balanceOf a) =
+        ((s.selfDestructTo (AccountAddress.ofUInt256 (conv beneficiary))).accountMap
+          (AccountAddress.ofUInt256 (conv a))).balance)
+    (hselfBalance :
+      conv (YulSemantics.EVM.finishSelfdestruct yst beneficiary).env.selfBalance =
+        ((s.selfDestructTo (AccountAddress.ofUInt256 (conv beneficiary))).accountMap
+          s.executionEnv.address).balance)
+    (hnonce : ∀ a,
+      ((s.selfDestructTo (AccountAddress.ofUInt256 (conv beneficiary))).accountMap a).nonce =
+        (s.accountMap a).nonce)
+    (hcode : ∀ a,
+      ((s.selfDestructTo (AccountAddress.ofUInt256 (conv beneficiary))).accountMap a).code =
+        (s.accountMap a).code)
+    (hstorage : ∀ a,
+      ((s.selfDestructTo (AccountAddress.ofUInt256 (conv beneficiary))).accountMap a).storage =
+        (s.accountMap a).storage)
+    (htstorage : ∀ a,
+      ((s.selfDestructTo (AccountAddress.ofUInt256 (conv beneficiary))).accountMap a).tstorage =
+        (s.accountMap a).tstorage) :
+    StateMatch (YulSemantics.EVM.finishSelfdestruct yst beneficiary)
+      (s.selfDestructTo (AccountAddress.ofUInt256 (conv beneficiary))) := by
+  let yst' := YulSemantics.EVM.finishSelfdestruct yst beneficiary
+  let s' := s.selfDestructTo (AccountAddress.ofUInt256 (conv beneficiary))
+  have henv : EnvMatch yst'.env s'.executionEnv := by
+    simpa [yst', s', YulSemantics.EVM.finishSelfdestruct, State.selfDestructTo] using
+      hm.env.setBalanceWorld yst'.env.selfBalance yst'.env.balanceOf yst'.env.extCodeHashOf
+  have hext : ExternalCodeMatch yst'.env s'.accountMap := by
+    simpa [yst', YulSemantics.EVM.finishSelfdestruct] using
+      hm.externalCode.rebalance yst'.env.selfBalance hm.env.keccak hbalance
+        hnonce hcode hstorage htstorage
+  refine {
+    mem := by simpa [yst', s', YulSemantics.EVM.finishSelfdestruct,
+      State.selfDestructTo] using hm.mem
+    stor := ?_
+    tstor := ?_
+    cd := by simpa [yst', s', YulSemantics.EVM.finishSelfdestruct,
+      State.selfDestructTo] using hm.cd
+    env := henv
+    codeBytes := by simpa [yst', s', YulSemantics.EVM.finishSelfdestruct,
+      State.selfDestructTo] using hm.codeBytes
+    codeLen := by simpa [yst', s', YulSemantics.EVM.finishSelfdestruct,
+      State.selfDestructTo] using hm.codeLen
+    selfBalance := hselfBalance
+    balanceOf := hbalance
+    activeWords := by simpa [yst', s', YulSemantics.EVM.finishSelfdestruct,
+      State.selfDestructTo] using hm.activeWords
+    retData := by simpa [yst', s', YulSemantics.EVM.finishSelfdestruct,
+      State.selfDestructTo] using hm.retData
+    retDataLen := by simpa [yst', s', YulSemantics.EVM.finishSelfdestruct,
+      State.selfDestructTo] using hm.retDataLen
+    externalCode := hext
+    logs := by simpa [yst', s', YulSemantics.EVM.finishSelfdestruct,
+      State.selfDestructTo] using hm.logs
+    selfdestructs := ?_
+    createdThisTx := by simpa [yst', s', YulSemantics.EVM.finishSelfdestruct,
+      State.selfDestructTo] using hm.createdThisTx }
+  · intro k
+    change conv (yst.storage k) = (s'.accountMap s'.executionEnv.address).storage.get (conv k)
+    rw [show s'.executionEnv.address = s.executionEnv.address by
+      rfl, hstorage]
+    exact hm.stor k
+  · intro k
+    change conv (yst.transient k) = (s'.accountMap s'.executionEnv.address).tstorage.get (conv k)
+    rw [show s'.executionEnv.address = s.executionEnv.address by
+      rfl, htstorage]
+    exact hm.tstor k
+  · simpa [yst', s', YulSemantics.EVM.finishSelfdestruct, State.selfDestructTo] using
+      SelfdestructsMatch.append hm.selfdestructs hm.env.address
+
+/-- The deterministic source `SELFDESTRUCT` transition exactly matches the target opcode's
+post-gas world update, including low-160-bit aliases and the Cancun self-beneficiary rule. -/
+theorem StateMatch.finishSelfdestruct
+    {yst : YulSemantics.EVM.EvmState} {s : EVM.State}
+    (hm : StateMatch yst s) (beneficiary : YulSemantics.EVM.U256) :
+    StateMatch (YulSemantics.EVM.finishSelfdestruct yst beneficiary)
+      (s.selfDestructTo (AccountAddress.ofUInt256 (conv beneficiary))) := by
+  let self := s.executionEnv.address
+  let ben := AccountAddress.ofUInt256 (conv beneficiary)
+  have hself : AccountAddress.ofUInt256 (conv yst.env.address) = self := by
+    rw [hm.env.address, accountAddress_ofUInt256_toUInt256]
+  have hsameIff : ben = self ↔
+      YulSemantics.EVM.accountKey beneficiary =
+        YulSemantics.EVM.accountKey yst.env.address := by
+    simpa [ben, self, hself] using
+      accountAddress_eq_iff_accountKey beneficiary yst.env.address
+  by_cases hsame : ben = self
+  · have hysame := hsameIff.mp hsame
+    by_cases hcreated : (s.substate.originalAccountMap self).isContract = false
+    · have hycreated : yst.env.createdThisTx = true := by
+        exact hm.createdThisTx.trans (by simp [self, hcreated])
+      have hbalance : ∀ a,
+          conv ((YulSemantics.EVM.finishSelfdestruct yst beneficiary).env.balanceOf a) =
+            ((s.selfDestructTo ben).accountMap
+              (AccountAddress.ofUInt256 (conv a))).balance := by
+        simpa [YulSemantics.EVM.finishSelfdestruct, State.selfDestructTo,
+          ben, self, hsame, hysame, hcreated, hycreated] using
+          updAccountValue_balance_set hm.balanceOf yst.env.address self hself
+      apply hm.finishSelfdestruct_of beneficiary hbalance
+      · simpa [YulSemantics.EVM.finishSelfdestruct,
+          YulSemantics.EVM.updAccountValue, hysame, hself, hycreated] using
+          hbalance yst.env.address
+      · intro a
+        simpa [State.selfDestructTo, ben, self, hsame, hcreated] using
+          AccountMap.setBalance_field (·.nonce) (by intros; rfl)
+            s.accountMap self a 0
+      · intro a
+        simpa [State.selfDestructTo, ben, self, hsame, hcreated] using
+          AccountMap.setBalance_field (·.code) (by intros; rfl)
+            s.accountMap self a 0
+      · intro a
+        simpa [State.selfDestructTo, ben, self, hsame, hcreated] using
+          AccountMap.setBalance_field (·.storage) (by intros; rfl)
+            s.accountMap self a 0
+      · intro a
+        simpa [State.selfDestructTo, ben, self, hsame, hcreated] using
+          AccountMap.setBalance_field (·.tstorage) (by intros; rfl)
+            s.accountMap self a 0
+    · have hcontract : (s.substate.originalAccountMap self).isContract = true := by
+        cases h : (s.substate.originalAccountMap self).isContract <;> simp_all
+      have hycreated : yst.env.createdThisTx = false := by
+        exact hm.createdThisTx.trans (by simp [self, hcontract])
+      apply hm.finishSelfdestruct_of beneficiary
+      · intro a
+        simpa [YulSemantics.EVM.finishSelfdestruct, State.selfDestructTo,
+          ben, self, hsame, hysame, hcontract, hycreated] using hm.balanceOf a
+      · simpa [YulSemantics.EVM.finishSelfdestruct, State.selfDestructTo,
+          ben, self, hsame, hysame, hcontract, hycreated] using hm.selfBalance
+      · intro a
+        simp [State.selfDestructTo, ben, self, hsame, hcontract]
+      · intro a
+        simp [State.selfDestructTo, ben, self, hsame, hcontract]
+      · intro a
+        simp [State.selfDestructTo, ben, self, hsame, hcontract]
+      · intro a
+        simp [State.selfDestructTo, ben, self, hsame, hcontract]
+  · have hyne : YulSemantics.EVM.accountKey beneficiary ≠
+        YulSemantics.EVM.accountKey yst.env.address := by
+      exact fun h => hsame (hsameIff.mpr h)
+    have hynesym : YulSemantics.EVM.accountKey yst.env.address ≠
+        YulSemantics.EVM.accountKey beneficiary := Ne.symm hyne
+    have hselfBalanceOf : conv (yst.env.balanceOf yst.env.address) =
+        (s.accountMap self).balance := by
+      simpa [self, hself] using hm.balanceOf yst.env.address
+    have hysb : yst.env.selfBalance = yst.env.balanceOf yst.env.address := by
+      apply conv_inj.mp
+      exact hm.selfBalance.trans hselfBalanceOf.symm
+    have hbalance : ∀ a,
+        conv ((YulSemantics.EVM.finishSelfdestruct yst beneficiary).env.balanceOf a) =
+          ((s.selfDestructTo ben).accountMap
+            (AccountAddress.ofUInt256 (conv a))).balance := by
+      simpa [YulSemantics.EVM.finishSelfdestruct, State.selfDestructTo,
+        ben, self, hsame, hyne, hysb] using
+        updAccountValue_balance_transfer hm.balanceOf yst.env.address beneficiary
+          self ben hself rfl hsame hselfBalanceOf
+    apply hm.finishSelfdestruct_of beneficiary hbalance
+    · have hyselfzero :
+          (YulSemantics.EVM.finishSelfdestruct yst beneficiary).env.selfBalance = 0 := by
+        simp [YulSemantics.EVM.finishSelfdestruct, hyne]
+      rw [hyselfzero]
+      simpa [YulSemantics.EVM.finishSelfdestruct,
+        YulSemantics.EVM.updAccountValue, hyne, hynesym, hself] using
+        hbalance yst.env.address
+    · intro a
+      simpa [State.selfDestructTo, ben, self, hsame] using
+        AccountMap.transfer_field (·.nonce) (by intros; rfl)
+          s.accountMap self ben a (s.accountMap self).balance
+    · intro a
+      simpa [State.selfDestructTo, ben, self, hsame] using
+        AccountMap.transfer_field (·.code) (by intros; rfl)
+          s.accountMap self ben a (s.accountMap self).balance
+    · intro a
+      simpa [State.selfDestructTo, ben, self, hsame] using
+        AccountMap.transfer_field (·.storage) (by intros; rfl)
+          s.accountMap self ben a (s.accountMap self).balance
+    · intro a
+      simpa [State.selfDestructTo, ben, self, hsame] using
+        AccountMap.transfer_field (·.tstorage) (by intros; rfl)
+          s.accountMap self ben a (s.accountMap self).balance
 
 /-- Frame-level side conditions preserved by every step of a straight-line
 execution. `code` is the full assembled program. -/
@@ -785,6 +1228,7 @@ def HaltMatch (hk : YulSemantics.EVM.HaltKind × List UInt8) (s : EVM.State) : P
   | .revert  => s.halt = .Reverted ∧ s.hReturn.toList = hk.2
   | .invalid => s.halt = .Exception .InvalidInstruction
   | .invalidMemoryAccess => s.halt = .Exception .InvalidMemoryAccess
+  | .selfdestruct => s.halt = .Success ∧ s.hReturn = .empty
 
 /-- The `ExecutionResult` a yul-semantics halt corresponds to. -/
 def resultOf (hk : YulSemantics.EVM.HaltKind × List UInt8) : ExecutionResult :=
@@ -794,5 +1238,6 @@ def resultOf (hk : YulSemantics.EVM.HaltKind × List UInt8) : ExecutionResult :=
   | .revert  => .reverted (mkCode hk.2)
   | .invalid => .exception .InvalidInstruction
   | .invalidMemoryAccess => .exception .InvalidMemoryAccess
+  | .selfdestruct => .success
 
 end YulEvmCompiler

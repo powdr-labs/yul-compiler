@@ -20,7 +20,7 @@ open EvmSemantics (Operation)
 the built-in is not (yet) in the verified fragment.
 
 Deliberately *not* covered so far:
-* `gas` and `selfdestruct` — still unmodeled in yul-semantics;
+* `gas` — still unmodeled in yul-semantics;
 * calls and creations are relational and are discharged by endpoint-realization
   assumptions rather than the deterministic single-step proof for local built-ins. -/
 def opTable : Op → Option Operation
@@ -82,7 +82,7 @@ def opTable : Op → Option Operation
   | .create => some .CREATE | .create2 => some .CREATE2
   -- halting
   | .stop => some .STOP | .ret => some .RETURN | .revert => some .REVERT
-  | .invalid => some .INVALID
+  | .invalid => some .INVALID | .selfdestruct => some .SELFDESTRUCT
   -- everything else: not yet in the verified fragment
   | _ => none
 

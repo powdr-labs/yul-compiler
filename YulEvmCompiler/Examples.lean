@@ -305,6 +305,13 @@ def externalCreates : Block Op := yul% {
   sstore(0, add(a, b))
 }
 
+/-- A terminal world-state update. The unreachable store makes the halting behavior observable
+in addition to the balance transfer and scheduled-destruction record checked below. -/
+def selfdestructOps : Block Op := yul% {
+  selfdestruct(1)
+  sstore(0, 0xff)
+}
+
 #guard (compileProgram sumLoop).isSome
 #guard (compileProgram breakContinue).isSome
 #guard (compileProgram funCall).isSome
@@ -337,6 +344,8 @@ def externalCreates : Block Op := yul% {
 #guard (compile externalCalls).isSome
 #guard (compileProgram externalCreates).isSome
 #guard (compile externalCreates).isSome
+#guard (compileProgram selfdestructOps).isSome
+#guard (compile selfdestructOps).isSome
 
 /-! ### The upstream Fibonacci contract
 
@@ -520,6 +529,63 @@ def agreeExternalCodeAndBlockReads : Bool :=
   | _, _ => false
 
 #guard agreeExternalCodeAndBlockReads
+
+/-- End-to-end `SELFDESTRUCT` comparison, including both EIP-6780 same-beneficiary branches.
+`createdThisTx` selects whether the transaction-initial target world contains the executing
+contract; the current world always does. -/
+def agreeSelfdestruct (beneficiary : Nat) (createdThisTx : Bool) : Bool :=
+  let self : BitVec 256 := 0
+  let ben : BitVec 256 := BitVec.ofNat 256 beneficiary
+  let initialBalance (a : BitVec 256) : BitVec 256 :=
+    if YulSemantics.EVM.accountKey a = YulSemantics.EVM.accountKey self then 7
+    else if YulSemantics.EVM.accountKey a = YulSemantics.EVM.accountKey ben then 3
+    else 0
+  let yst0 : EvmState :=
+    { EvmState.init with env := { EvmState.init.env with
+        address := self
+        selfBalance := 7
+        balanceOf := initialBalance
+        createdThisTx := createdThisTx } }
+  match compile selfdestructOps,
+      Interp.run YulSemantics.EVM.exec 100000 selfdestructOps yst0 with
+  | some is, .ok (_, yst, _) =>
+      let code := assemble is
+      let s0 := evmInit code
+      let selfAddr := s0.executionEnv.address
+      let benAddr := EvmSemantics.AccountAddress.ofNat beneficiary
+      let selfAccount : EvmSemantics.Account :=
+        { EvmSemantics.Account.empty with
+          balance := EvmSemantics.UInt256.ofNat 7
+          code := code }
+      let benAccount : EvmSemantics.Account :=
+        { EvmSemantics.Account.empty with balance := EvmSemantics.UInt256.ofNat 3 }
+      let accounts :=
+        if benAddr = selfAddr then
+          EvmSemantics.AccountMap.empty.set selfAddr selfAccount
+        else
+          EvmSemantics.AccountMap.empty
+            |>.set selfAddr selfAccount
+            |>.set benAddr benAccount
+      let original :=
+        if createdThisTx then EvmSemantics.AccountMap.empty
+        else EvmSemantics.AccountMap.empty.set selfAddr selfAccount
+      let s := runEvm 100000 { s0 with
+        accountMap := accounts
+        substate := { s0.substate with originalAccountMap := original } }
+      s.isDone
+        && (s.halt matches .Success)
+        && yst.halted == some (.selfdestruct, [])
+        && yst.env.balanceOf self == (s.accountMap selfAddr).balance.toNat
+        && yst.env.balanceOf ben == (s.accountMap benAddr).balance.toNat
+        && yst.selfdestructs.map YulSemantics.EVM.accountKey ==
+          s.substate.selfDestructList.toList.map (fun a => a.val)
+        && yst.storage 0 == 0
+        && (s.accountMap selfAddr).storage 0 == 0
+  | _, _ => false
+
+#guard agreeSelfdestruct 1 false
+#guard agreeSelfdestruct 0 false
+#guard agreeSelfdestruct 0 true
 
 /-- Compile `prog`, run both sides with `cd` as calldata, and compare the
 returned byte payload (for contracts that halt via `return`, like the
