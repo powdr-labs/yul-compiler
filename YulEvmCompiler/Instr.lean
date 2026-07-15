@@ -74,7 +74,7 @@ def opByte : Operation → UInt8
   | .Log l => UInt8.ofNat (0xa0 + l.topics.val)
   | .CREATE => 0xf0 | .CALL => 0xf1 | .CALLCODE => 0xf2 | .RETURN => 0xf3
   | .DELEGATECALL => 0xf4 | .CREATE2 => 0xf5 | .STATICCALL => 0xfa
-  | .REVERT => 0xfd | .INVALID => 0xfe
+  | .REVERT => 0xfd | .INVALID => 0xfe | .SELFDESTRUCT => 0xff
   | _ => 0xfe
 
 /-- The bytes an instruction assembles to. -/

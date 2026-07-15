@@ -437,7 +437,7 @@ theorem stopSeamStep {is : List Instr} {payload : List UInt8}
   exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec),
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
-        hm.externalCode, hm.logs⟩,
+        hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩,
     hf.callStack, rfl, rfl⟩
 
 /-! ### Reshaping the located bytes for the per-instruction step lemmas

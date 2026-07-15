@@ -108,12 +108,12 @@ The verified built-in set (the domain of `opTable` in
 | logging    | `log0 log1 log2 log3 log4` |
 | calls      | `call callcode delegatecall staticcall` |
 | creation   | `create create2` |
-| halting    | `stop return revert invalid` |
+| halting    | `stop return revert invalid selfdestruct` |
 
 Everything else in the direct built-in path is rejected (`compile = none`).
 Object-relative `dataoffset`/`datasize` calls are resolved separately by the
-verified object compiler; `gas` and `selfdestruct` remain blocked because the
-source semantics does not model their execution. CALL- and CREATE-family
+verified object compiler; `gas` remains blocked because the source semantics
+does not model its execution. CALL- and CREATE-family
 operations use the open-world relational model described below. The
 memory-write proofs
 use the `writeBytes` read-after-write lemma that now lives upstream
@@ -137,7 +137,7 @@ axioms.
 > (`Steps`) a final state that matches `st'` and halts the way `o` prescribes:
 > `.Success` via the implicit `STOP` for `o = .normal`, or exactly the halt
 > recorded in `st'.halted` (`stop`/`return`+payload/`revert`+payload/
-> `invalid`/`invalidMemoryAccess`) for `o = .halt`.
+> `invalid`/`invalidMemoryAccess`/`selfdestruct`) for `o = .halt`.
 
 `compile_correct_eval` restates the conclusion through evm-semantics'
 result-level big-step judgment: `Eval s₀ .success`, resp.
@@ -174,13 +174,22 @@ storage/transient storage to the executing account's storage, calldata and
 executing code pointwise (with exact lengths), and every account's nonce,
 persistent/transient storage, code bytes, lengths, and hashes through the
 account map. It also relates historical block hashes and emitted
-logs in order (address, topics, and data), plus returndata byte-for-byte with
-its exact length. `EnvMatch` also requires the source environment's
+logs and scheduled self-destructing addresses in order, plus returndata
+byte-for-byte with its exact length. `EnvMatch` also requires the source
+environment's
 configurable Keccak oracle to agree pointwise with the target hash primitive. Gas is
 existentially bounded because yul-semantics deliberately does not model gas.
 Per-instruction facts live in
 `OpStep.lean`, byte-level decoding facts in `Decode.lean`, and the
 `BitVec 256` ↔ `UInt256` arithmetic agreements in `Value.lean`.
+
+`selfdestruct` follows the pinned Osaka/Cancun EIP-6780 behavior: the opcode
+immediately transfers (or, for a same-address beneficiary, conditionally
+retains/burns) the executing account's balance, records the address for
+transaction cleanup, and halts successfully. The proof covers both contracts
+created in the current transaction and pre-existing contracts. Actual account
+deletion is a transaction-finalization operation in evm-semantics and lies
+outside this frame-level compiler theorem.
 
 The headline theorems check with no `sorry`. Their `#print axioms` footprint is
 exactly the three standard classical axioms (`propext`, `Classical.choice`,

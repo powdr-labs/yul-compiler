@@ -274,6 +274,10 @@ theorem compile_correct_eval (hexternal : ExternalsRealized model)
           have hhalt : s'.halt = .Exception .InvalidMemoryAccess := hhmatch
           exact ⟨by rw [hhalt]; simp, by
             rw [State.toResult_exception s' _ hhalt]; rfl⟩
+        | selfdestruct =>
+          obtain ⟨hhalt, _⟩ := hhmatch
+          exact ⟨by rw [hhalt]; simp, by
+            rw [State.toResult_success s' hhalt]; rfl⟩
       rw [← hdone.2]
       exact Eval.iff_steps_halted.mpr ⟨s', hsteps, hdone.1, hcs', rfl⟩
 

@@ -67,7 +67,7 @@ Design decisions baked into that statement:
 **yul-semantics** (`YulSemantics.*`):
 - `Ast.lean`: `Expr Op` (lit / var / builtin / call), `Stmt Op`, `Outcome`.
 - `Dialect.lean`: dialect interface; `BuiltinResult` (`ok rets st` / `halt st`).
-- `Dialect/EVM.lean` (rev `57de275`, `main`): `Op` enum covering the
+- `Dialect/EVM.lean` (rev `3680942`, `main`): `Op` enum covering the
   full user-facing Yul EVM dialect — arithmetic/comparison/bitwise/`clz`,
   `keccak256` (via the configurable `ExecEnv.keccakOf` oracle, with opaque
   `keccakBytes` as its standalone default), `pop`, memory
@@ -76,12 +76,13 @@ Design decisions baked into that statement:
   returndata reads and copies, environment readers (`address` … `blobbasefee`),
   world-state reads (`balance`/`extcodesize`/…, as abstract maps in `ExecEnv`),
   `log0`–`log4`, the object-data ops (`dataoffset`/`datasize`/`datacopy`),
-  halting ops; CALL- and CREATE-family operations use the open-world
-  `ExternalCalls`/`ExternalCreates` relations, while `gas`/`selfdestruct`
-  remain unmodeled by `stepOp`. `EvmState` is
+  halting ops, including deterministic Osaka/Cancun `selfdestruct`; CALL- and
+  CREATE-family operations use the open-world `ExternalCalls`/`ExternalCreates`
+  relations, while `gas` remains unmodeled by `stepOp`. `EvmState` is
   `memory : Nat → UInt8`, `activeWords : U256`,
   `storage/transient : U256 → U256`, `env : ExecEnv`,
-  `returndata : List UInt8`, `logs : List LogEntry`,
+  `returndata : List UInt8`, `logs : List LogEntry`, scheduled
+  `selfdestructs : List U256`,
   `halted : Option (HaltKind × List UInt8)`; `evm : Dialect` has
   `evmWithExternal calls creates : Dialect`; its built-in relation delegates
   calls/creations to those relations and retains `stepOp` for local operations.
@@ -279,8 +280,10 @@ both external relations and assumes realization for every response they admit.
   verify their documented normalization and the post-parse validator directly.
 * **Built-in coverage.** The Keccak boundary and event-log correspondence are
   now explicit and proved, and CALL-/CREATE-family operations use the open-world
-  realization interface above. The remaining operations (`gas` and
-  `selfdestruct`) need source semantics before they can enter the verified fragment.
+  realization interface above. `selfdestruct` is proved against the local
+  EIP-6780 transition, including its created-this-transaction distinction and
+  scheduled-deletion record. The remaining operation, `gas`, needs source
+  semantics before it can enter the verified fragment.
 * **Deep stack access.** Use EIP-8024 after the target semantics activates it,
   or introduce spilling before then.
 * **Optimization passes.** Prove each pass against Yul semantics and compose it
@@ -311,7 +314,7 @@ Deliverables:
    - world/transaction readers: `balance blobhash`,
    - logging: `log0 log1 log2 log3 log4`,
    - calls: `call callcode delegatecall staticcall`,
-   - halting: `stop return revert invalid`.
+   - halting: `stop return revert invalid selfdestruct`.
    Ops outside the set compile to `none`; the `opTable` in `OpTable.lean` is the
    single source of truth. The signed operations `sdiv`, `smod`, `sar`, and
    `signextend` are covered: their `conv_*` lemmas bridge the source `BitVec`
@@ -328,10 +331,12 @@ Deliverables:
    the hash-oracle agreement described in finding 4. `log0`–`log4` preserve an
    ordered correspondence over the emitting address, topics, and memory-slice
    data, including active-memory expansion. CALL-/CREATE-family operations use
-   the open-world `ExternalsRealized` interface described above. Excluded until
-   further work: `gas`/`selfdestruct`
-   (unmodeled in yul-semantics — no source derivation exists, so nothing to
-   preserve).
+   the open-world `ExternalsRealized` interface described above. `selfdestruct`
+   relates the immediate balance update, EIP-6780 same-beneficiary behavior,
+   and ordered scheduled-destruction record; end-of-transaction account deletion
+   remains the target transaction semantics' finalization step. Excluded until
+   further work: `gas` (unmodeled in yul-semantics — no source derivation exists,
+   so nothing to preserve).
 4. Examples: compiled snippets (e.g. `sstore(0, add(1, 2)); return(0, 0)`) with
    `#eval` byte dumps.
 
