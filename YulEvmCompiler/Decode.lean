@@ -305,7 +305,9 @@ private theorem opcodeOf_opByte_not_push (o : Operation) :
   | DupN d => rfl
   | SwapN s => rfl
   | Exchange e => rfl
-  | Log l => rfl
+  | Log l =>
+    obtain ⟨⟨n, hn⟩⟩ := l
+    interval_cases n <;> rfl
   | System op => cases op <;> rfl
 
 /-- The walk's step at an instruction boundary is the instruction's width. -/

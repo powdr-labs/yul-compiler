@@ -12,7 +12,7 @@ The correspondence between the two machine states:
   `ByteArray` with zero-padded reads;
 * `StateMatch` — memory contents and active size, calldata/code/returndata,
   environment data (including the hash-oracle agreement), account balances
-  and external code, and (transient) storage of the executing account;
+  and external code, (transient) storage, and emitted logs;
 * `FrameOK`    — the frame-level side conditions that hold throughout a
   straight-line execution (fixed code, Osaka fork, mutation permitted, not a
   precompile frame, no suspended callers, still running);
@@ -481,11 +481,34 @@ theorem ExternalCodeMatch.setAccount {ye : YulSemantics.EVM.ExecEnv} {accounts :
     · rw [AccountMap.get_set_other _ _ _ _ ha]
       exact h.hash a
 
+/-- One source log entry agrees with one target entry. The emitting address is
+implicit on the Yul side (all entries belong to the current frame), while the
+EVM records it in every entry. -/
+def LogEntryMatch (yaddr : YulSemantics.EVM.U256)
+    (yl : YulSemantics.EVM.LogEntry) (tl : EvmSemantics.LogEntry) : Prop :=
+  conv yaddr = tl.address.toUInt256 ∧
+    yl.topics.map conv = tl.topics.toList ∧
+    yl.data = tl.data.toList
+
+/-- The emitted logs agree in order, including address, topics, and data. -/
+def LogsMatch (yaddr : YulSemantics.EVM.U256)
+    (ys : List YulSemantics.EVM.LogEntry) (ts : EvmSemantics.LogSeries) : Prop :=
+  List.Forall₂ (LogEntryMatch yaddr) ys ts.toList
+
+/-- Appending matching entries preserves log-series agreement. -/
+theorem LogsMatch.append {yaddr : YulSemantics.EVM.U256}
+    {ys : List YulSemantics.EVM.LogEntry} {ts : EvmSemantics.LogSeries}
+    {yl : YulSemantics.EVM.LogEntry} {tl : EvmSemantics.LogEntry}
+    (h : LogsMatch yaddr ys ts) (he : LogEntryMatch yaddr yl tl) :
+    LogsMatch yaddr (ys ++ [yl]) (ts.push tl) := by
+  unfold LogsMatch at h ⊢
+  rw [Array.toList_push]
+  exact List.rel_append h (.cons he .nil)
+
 /-- The machine-state correspondence: memory and byte regions pointwise, plus
-balances, external code, and the executing account's (transient) storage.
-yul-semantics' flat
-`storage` is the storage of the target's `executionEnv.address`. Logs remain
-unconstrained until the corresponding ops enter the supported set. -/
+balances, external code, the executing account's (transient) storage, and the
+ordered log series. yul-semantics' flat `storage` is the storage of the
+target's `executionEnv.address`. -/
 structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop where
   mem : MemMatch yst.memory s.memory
   stor : ∀ k, conv (yst.storage k)
@@ -523,6 +546,8 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   retDataLen : yst.returndata.length = s.returnData.size
   /-- External account code bytes, lengths, and hashes agree pointwise. -/
   externalCode : ExternalCodeMatch yst.env s.accountMap
+  /-- Emitted logs agree in order, including the current frame's address. -/
+  logs : LogsMatch yst.env.address yst.logs s.substate.logSeries
 
 /-- Frame-level side conditions preserved by every step of a straight-line
 execution. `code` is the full assembled program. -/
