@@ -73,8 +73,8 @@ Preserve these invariants unless the change deliberately redesigns them and upda
 - Every `Asm` constructor has a fixed lowered byte width in `Asm.size`. Phase B locates a suffix by `codeSize prog - codeSize suffix`; variable-width lowering breaks that invariant.
 - Labels are generated with a counter but freshness is not threaded through proofs. `compileProgram` runs `wfCheck`, which must continue to guarantee unique definitions, defined references, and code size below `2^256`.
 - Literal and label-address pushes are always `PUSH32`. Do not introduce shorter pushes as a local peephole change: instruction width, decode, jump positions, and proofs all depend on the current encoding.
-- Phase A is intentionally byte-free and gas-free. Built-ins execute via the source `stepOp`; byte decoding, `UInt256` conversion, target state layout, and gas belong in Phase B.
-- `StateMatch` currently relates memory contents and the active-memory high-water mark, calldata, executing and external code, returndata, environment/header readers, the configurable Keccak oracle, account balances, the executing account's persistent/transient storage, and the ordered log series (address, topics, data). Extend it before proving operations that observe or mutate further account or substate data.
+- Phase A is intentionally byte-free and gas-free. Built-ins execute via the source's combined local/external relation (local operations reduce to `stepOp`); byte decoding, `UInt256` conversion, target state layout, and gas belong in Phase B.
+- `StateMatch` currently relates memory contents and the active-memory high-water mark, calldata, executing code, returndata, environment/header readers, the configurable Keccak oracle, account balances, every account's code/nonce/persistent/transient storage, and the ordered log series (each emitter address, topics, data). Extend it before proving operations that observe or mutate further account or substate data.
 - The correctness theorem is a forward simulation with an existential gas bound. Yul semantics has no gas, and target `Step` is not used as a deterministic equivalence.
 - Normal source fall-through becomes the EVM's implicit past-the-end `STOP`; source halts must preserve the exact halt kind and payload.
 - This repository must remain free of `sorry` and project-specific axioms. Do not use `axiom`, `unsafe`, or an opaque bridge to bypass proof obligations.
@@ -85,7 +85,7 @@ Start by classifying the feature. The required files differ substantially for a 
 
 ### Adding a Yul built-in that lowers to one EVM opcode
 
-1. Confirm that the pinned `yul-semantics` `stepOp` models the operation and that the pinned `evm-semantics` opcode has an executable and relational rule and is available in the `.Osaka` fork. If either side lacks semantics, the operation cannot enter the verified fragment here.
+1. Confirm that pinned `yul-semantics` models the operation (`stepOp` for a local operation, or an explicit open-world relation plus endpoint semantics for an external boundary) and that pinned `evm-semantics` has the corresponding opcode rules in `.Osaka`. If either side lacks semantics, the operation cannot enter the verified fragment here.
 2. For a pure word operation, prove a `conv_*` agreement lemma in `Value.lean`. Reuse the `unPure`, `binPure`, or `terPure` helpers in `OpStep.lean` when their stack/result shape fits.
 3. For a read or state mutation, first extend `EnvMatch`/`StateMatch` and prove the representation-specific lemmas in `StateRel.lean`. Byte writes normally need explicit `ByteArray` layout/read-after-write lemmas, following `MemMatch.storeWord` and `BytesLemmas.lean`.
 4. Add any dynamic memory or opcode cost to `opBound` and prove a target-state-independent upper bound. The bound may depend on source argument values, but not on arbitrary target state.
@@ -93,7 +93,7 @@ Start by classifying the feature. The required files differ substantially for a 
 6. Only after the proof case exists, add the `Op -> Operation` row to `opTable`. Its round-trip and fork-availability lemmas in `Decode.lean` are designed to discharge from a concrete successful `opTable` equation.
 7. Add a focused program and differential `#guard` in `Examples.lean`, then see whether one or more Solidity interpreter baseline entries now pass.
 
-Adding a direct built-in normally requires no Phase A case: `.builtin` already compiles to `.op`, and `AsmSem.AStep.op` uses the same source `stepOp`. It does require Phase B because `opTable` and `opStep` are what justify the concrete opcode.
+Adding a direct local built-in normally requires no Phase A case: `.builtin` already compiles to `.op`, and `AsmSem.AStep.op` uses the same source relation. It does require Phase B because `opTable` and `opStep` justify the concrete opcode. External-boundary operations additionally require a `CallsRealized`/`CreatesRealized`-style complete-trace obligation instead of a single-op `opStep` case.
 
 For `keccak256`, preserve the `EnvMatch.keccak` agreement between the source environment's configurable oracle and the target primitive; executable tests use the proved `targetKeccakOracle` adapter. Operations unmodeled by source `stepOp` cannot be justified by a source execution derivation. See `OpTable.lean` and `PLAN.md` for current blockers before starting.
 

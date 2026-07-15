@@ -19,9 +19,10 @@ to EVM states `s` with
 
 Each local `AStep` then maps to 1–3 EVM `Step`s (label pushes and jumps
 expand to `PUSH32 addr`, `JUMP`/`JUMPI`, and the landing `JUMPDEST`). An
-external-call step instead maps to an arbitrary finite `Steps` trace through
-the `CallsRealized` interface. Only its endpoints are constrained, so the
-trace may enter arbitrary contracts, nest calls, and reenter the caller.
+external call/create step instead maps to an arbitrary finite `Steps` trace
+through `ExternalsRealized`. Only its endpoints are constrained, so the trace
+may enter arbitrary init or runtime code, nest calls/creations, and reenter
+the caller or creator.
 Both cases have an existential gas bound; bounds add along `ASteps`. All gas
 accounting and byte/decode arithmetic lives in this phase.
 -/
@@ -293,7 +294,7 @@ structure ConfMatch (prog : List Asm) (is : List Instr) (a : AConf)
   pc : s.pc = UInt256.ofNat (codeSize prog - codeSize a.code)
   stack : s.stack = mapStk prog a.stk
 
-/-! ### Open-world call realization
+/-! ### Open-world call and creation realization
 
 The source semantics deliberately does not choose a callee implementation.
 Instead, `CallsRealized external` says that every response admitted by the
@@ -301,7 +302,8 @@ source relation is realized by a *complete* target call-and-return execution.
 Only the two endpoints are constrained.  In particular, the `Steps` witness
 has no invariant requiring an empty call stack between them: it may enter
 arbitrary contracts, make nested calls, and re-enter this caller any number of
-times before the original call returns. -/
+times before the original call returns. `CreatesRealized` below imposes the
+same endpoint-only discipline on arbitrary init-code executions. -/
 
 /-- Target realization of an open-world source call relation.  The restored
 endpoint is again the original running frame with an empty call stack, the
@@ -343,9 +345,70 @@ theorem CallsRealized.none :
   constructor
   intro yop hcall o hop args rets yst yst' hsource
   cases yop <;>
-    simp [IsCallOp, YulSemantics.EVM.builtin, YulSemantics.EVM.externalCall,
+    simp [IsCallOp, YulSemantics.EVM.builtin,
+      YulSemantics.EVM.builtinWithExternal, YulSemantics.EVM.externalCall,
       YulSemantics.EVM.ExternalCalls.none] at hcall hsource
   all_goals split at hsource <;> contradiction
+
+/-- Target realization of an open-world source CREATE/CREATE2 relation. The
+finite target trace is intentionally unrestricted between its endpoints: it
+may execute arbitrary init code, call arbitrary contracts, and re-enter the
+creator before returning to the instruction after CREATE. -/
+structure CreatesRealized (external : YulSemantics.EVM.ExternalCreates) : Prop where
+  create {yop : Op} (hcreate : IsCreateOp yop) {o : Operation}
+      (hop : opTable yop = some o) {args rets : List U256}
+      {yst yst' : EvmState}
+      (hsource : YulSemantics.EVM.builtinWithExternal
+        YulSemantics.EVM.ExternalCalls.none external yop args yst (.ok rets yst')) :
+      ∃ bnd : Nat, ∀ {code : ByteArray} {s : State} {σ : List UInt256},
+        FrameOK code s → StateMatch yst s →
+        s.decodedOp = some o → s.stack = args.map conv ++ σ →
+        bnd ≤ s.gasAvailable →
+        ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst' s' ∧
+          s'.pc = s.pc.succ ∧ s'.stack = rets.map conv ++ σ ∧
+          s.gasAvailable - bnd ≤ s'.gasAvailable
+
+/-- The unrestricted realization premise is the formal coverage point for
+arbitrary init-code behavior, including nested calls and reentrancy. -/
+theorem CreatesRealized.complete_allows_initcode_reentrancy
+    {external : YulSemantics.EVM.ExternalCreates} (h : CreatesRealized external)
+    {yop : Op} (hcreate : IsCreateOp yop) {o : Operation}
+    (hop : opTable yop = some o) {args rets : List U256} {yst yst' : EvmState}
+    (hsource : YulSemantics.EVM.builtinWithExternal
+      YulSemantics.EVM.ExternalCalls.none external yop args yst (.ok rets yst')) :
+    ∃ bnd : Nat, ∀ {code : ByteArray} {s : State} {σ : List UInt256},
+      FrameOK code s → StateMatch yst s →
+      s.decodedOp = some o → s.stack = args.map conv ++ σ →
+      bnd ≤ s.gasAvailable →
+      ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst' s' ∧
+        s'.pc = s.pc.succ ∧ s'.stack = rets.map conv ++ σ ∧
+        s.gasAvailable - bnd ≤ s'.gasAvailable :=
+  h.create hcreate hop hsource
+
+/-- No CREATE response can be selected from the empty relation. -/
+theorem CreatesRealized.none :
+    CreatesRealized YulSemantics.EVM.ExternalCreates.none := by
+  constructor
+  intro yop hcreate o hop args rets yst yst' hsource
+  cases yop <;>
+    simp [IsCreateOp, YulSemantics.EVM.builtinWithExternal,
+      YulSemantics.EVM.externalCreate,
+      YulSemantics.EVM.ExternalCreates.none] at hcreate hsource
+  all_goals split at hsource <;> contradiction
+
+/-- The complete open-world obligations used by compiler correctness. Calls
+and creations are separated so clients can instantiate either relation
+independently while the compiler theorem quantifies over both. -/
+structure ExternalsRealized (model : ExternalModel) : Prop where
+  calls : CallsRealized model.calls
+  creates : CreatesRealized model.creates
+
+/-- The fully closed executable model has no external transitions. -/
+theorem ExternalsRealized.none :
+    ExternalsRealized
+      { calls := YulSemantics.EVM.ExternalCalls.none
+        creates := YulSemantics.EVM.ExternalCreates.none } :=
+  ⟨CallsRealized.none, CreatesRealized.none⟩
 
 /-- The lowered program's byte size is `codeSize prog` (bounded by the
 frame invariant). -/

@@ -2078,7 +2078,11 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
     show OkStep code s (opBound .sstore [k, v]) []
-      { yst with storage := YulSemantics.EVM.upd yst.storage k v } pre.length 1 σ
+      { yst with
+          storage := YulSemantics.EVM.upd yst.storage k v
+          env := { yst.env with storageOf :=
+            YulSemantics.EVM.updAccount yst.env.storageOf yst.env.address k v } }
+      pre.length 1 σ
     obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .sstore) rfl
     have hdec := decoded_op hf hcode hpc hb' hplain
       (opTable_available (yop := .sstore) rfl)
@@ -2124,7 +2128,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         rw [AccountMap.get_set_same]
         exact hm.tstor k'
       · exact hm.cd
-      · exact hm.env
+      · exact hm.env.setStorageOf _
       · exact hm.codeBytes
       · exact hm.codeLen
       · rw [AccountMap.get_set_same]
@@ -2140,10 +2144,9 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       · exact hm.activeWords
       · exact hm.retData
       · exact hm.retDataLen
-      · exact hm.externalCode.setAccount s.executionEnv.address
-          { s.accountMap s.executionEnv.address with
-            storage := (s.accountMap s.executionEnv.address).storage.set (conv k) (conv v) }
-          rfl rfl rfl
+      · apply hm.externalCode.setStorage yst.env.address s.executionEnv.address k v
+        rw [hm.env.address]
+        exact accountAddress_ofUInt256_toUInt256 _
       · exact hm.logs
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
@@ -2195,7 +2198,11 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
     show OkStep code s (opBound .tstore [k, v]) []
-      { yst with transient := YulSemantics.EVM.upd yst.transient k v } pre.length 1 σ
+      { yst with
+          transient := YulSemantics.EVM.upd yst.transient k v
+          env := { yst.env with transientOf :=
+            YulSemantics.EVM.updAccount yst.env.transientOf yst.env.address k v } }
+      pre.length 1 σ
     obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .tstore) rfl
     have hdec := decoded_op hf hcode hpc hb' hplain
       (opTable_available (yop := .tstore) rfl)
@@ -2226,7 +2233,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
           rw [Storage.get_set_other _ _ _ _ (by simpa [conv_inj] using hk)]
           exact hm.tstor k'
       · exact hm.cd
-      · exact hm.env
+      · exact hm.env.setTransientOf _
       · exact hm.codeBytes
       · exact hm.codeLen
       · rw [AccountMap.get_set_same]
@@ -2242,10 +2249,9 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       · exact hm.activeWords
       · exact hm.retData
       · exact hm.retDataLen
-      · exact hm.externalCode.setAccount s.executionEnv.address
-          { s.accountMap s.executionEnv.address with
-            tstorage := (s.accountMap s.executionEnv.address).tstorage.set (conv k) (conv v) }
-          rfl rfl rfl
+      · apply hm.externalCode.setTransient yst.env.address s.executionEnv.address k v
+        rw [hm.env.address]
+        exact accountAddress_ofUInt256_toUInt256 _
       · exact hm.logs
     · show s.pc.succ = _
       rw [hpc]; apply succ_ofNat
@@ -2261,6 +2267,8 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
   case callcode => simp [stepOp] at hyul
   case delegatecall => simp [stepOp] at hyul
   case staticcall => simp [stepOp] at hyul
+  case create => simp [stepOp] at hyul
+  case create2 => simp [stepOp] at hyul
   case stop =>
     rcases args with _ | ⟨a, args⟩ <;> simp [stepOp] at hyul
     subst hyul

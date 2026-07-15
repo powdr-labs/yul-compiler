@@ -42,6 +42,12 @@ modulo only the standard classical axioms. -/
 #guard_msgs in
 #print axioms YulEvmCompiler.CallsRealized.complete_allows_reentrancy
 
+/-- info: 'YulEvmCompiler.CreatesRealized.complete_allows_initcode_reentrancy' depends on axioms: [propext,
+ Classical.choice,
+ Quot.sound] -/
+#guard_msgs in
+#print axioms YulEvmCompiler.CreatesRealized.complete_allows_initcode_reentrancy
+
 /-- info: 'YulEvmCompiler.compileObject_correct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms YulEvmCompiler.compileObject_correct

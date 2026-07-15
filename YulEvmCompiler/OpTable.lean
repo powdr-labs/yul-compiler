@@ -20,9 +20,9 @@ open EvmSemantics (Operation)
 the built-in is not (yet) in the verified fragment.
 
 Deliberately *not* covered so far:
-* `gas`, creates, `selfdestruct` — still unmodeled in yul-semantics;
-* calls are relational and are discharged by `CallsRealized`, rather than by
-  the deterministic single-step proof used for local built-ins. -/
+* `gas` and `selfdestruct` — still unmodeled in yul-semantics;
+* calls and creations are relational and are discharged by endpoint-realization
+  assumptions rather than the deterministic single-step proof for local built-ins. -/
 def opTable : Op → Option Operation
   -- arithmetic
   | .add => some .ADD | .sub => some .SUB | .mul => some .MUL | .div => some .DIV
@@ -78,6 +78,8 @@ def opTable : Op → Option Operation
   -- open-world calls (proved by a complete call/return macro step)
   | .call => some .CALL | .callcode => some .CALLCODE
   | .delegatecall => some .DELEGATECALL | .staticcall => some .STATICCALL
+  -- open-world contract creation (proved by a complete init-code macro step)
+  | .create => some .CREATE | .create2 => some .CREATE2
   -- halting
   | .stop => some .STOP | .ret => some .RETURN | .revert => some .REVERT
   | .invalid => some .INVALID
@@ -92,6 +94,57 @@ def IsCallOp : Op → Prop
 instance (op : Op) : Decidable (IsCallOp op) := by
   cases op <;> simp [IsCallOp] <;> infer_instance
 
+/-- The source operations whose execution crosses a contract-creation boundary. -/
+def IsCreateOp : Op → Prop
+  | .create | .create2 => True
+  | _ => False
+
+instance (op : Op) : Decidable (IsCreateOp op) := by
+  cases op <;> simp [IsCreateOp] <;> infer_instance
+
+/-- All operations implemented by an unrestricted target macro trace. -/
+def IsExternalOp (op : Op) : Prop := IsCallOp op ∨ IsCreateOp op
+
+instance (op : Op) : Decidable (IsExternalOp op) := by
+  unfold IsExternalOp
+  infer_instance
+
+/-- Away from calls and creations, the combined relation is exactly `stepOp`. -/
+theorem builtinWithExternal_iff_stepOp_of_not_external
+    {calls : YulSemantics.EVM.ExternalCalls}
+    {creates : YulSemantics.EVM.ExternalCreates}
+    {op : Op} (hlocal : ¬ IsExternalOp op) {args : List YulSemantics.EVM.U256}
+    {st : YulSemantics.EVM.EvmState}
+    {r : YulSemantics.BuiltinResult YulSemantics.EVM.U256 YulSemantics.EVM.EvmState} :
+    YulSemantics.EVM.builtinWithExternal calls creates op args st r ↔
+      YulSemantics.EVM.stepOp op args st = some r := by
+  cases op <;> simp_all [IsExternalOp, IsCallOp, IsCreateOp,
+    YulSemantics.EVM.builtinWithExternal]
+
+/-- The combined relation agrees with the compatibility call-only relation on call operations. -/
+theorem builtinWithExternal_iff_builtin_of_call
+    {calls : YulSemantics.EVM.ExternalCalls}
+    {creates : YulSemantics.EVM.ExternalCreates}
+    {op : Op} (hcall : IsCallOp op) {args : List YulSemantics.EVM.U256}
+    {st : YulSemantics.EVM.EvmState}
+    {r : YulSemantics.BuiltinResult YulSemantics.EVM.U256 YulSemantics.EVM.EvmState} :
+    YulSemantics.EVM.builtinWithExternal calls creates op args st r ↔
+      YulSemantics.EVM.builtin calls op args st r := by
+  cases op <;> simp_all [IsCallOp, YulSemantics.EVM.builtin,
+    YulSemantics.EVM.builtinWithExternal]
+
+/-- On CREATE-family operations, calls are irrelevant. -/
+theorem builtinWithExternal_iff_createOnly_of_create
+    {calls : YulSemantics.EVM.ExternalCalls}
+    {creates : YulSemantics.EVM.ExternalCreates}
+    {op : Op} (hcreate : IsCreateOp op) {args : List YulSemantics.EVM.U256}
+    {st : YulSemantics.EVM.EvmState}
+    {r : YulSemantics.BuiltinResult YulSemantics.EVM.U256 YulSemantics.EVM.EvmState} :
+    YulSemantics.EVM.builtinWithExternal calls creates op args st r ↔
+      YulSemantics.EVM.builtinWithExternal YulSemantics.EVM.ExternalCalls.none
+        creates op args st r := by
+  cases op <;> simp_all [IsCreateOp, YulSemantics.EVM.builtinWithExternal]
+
 /-- Away from the four call-family operations, the relational built-in graph
 is exactly the old executable `stepOp` graph. -/
 theorem builtin_iff_stepOp_of_not_call {external : YulSemantics.EVM.ExternalCalls}
@@ -100,18 +153,51 @@ theorem builtin_iff_stepOp_of_not_call {external : YulSemantics.EVM.ExternalCall
     {r : YulSemantics.BuiltinResult YulSemantics.EVM.U256 YulSemantics.EVM.EvmState} :
     YulSemantics.EVM.builtin external op args st r ↔
       YulSemantics.EVM.stepOp op args st = some r := by
-  cases op <;> simp_all [IsCallOp, YulSemantics.EVM.builtin]
+  cases op <;> simp_all [IsCallOp, YulSemantics.EVM.builtin,
+    YulSemantics.EVM.builtinWithExternal, YulSemantics.EVM.externalCreate,
+    YulSemantics.EVM.ExternalCreates.none]
+  all_goals
+    rcases args with _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, _ | ⟨e, rest⟩⟩⟩⟩⟩ <;>
+      simp [YulSemantics.EVM.stepOp]
 
-/-- Call-family built-ins only return normally; every relational halt is
-therefore a halt of the executable local semantics. -/
+/-- Call/create built-ins only return normally; every relational halt is a local `stepOp` halt. -/
+theorem builtinWithExternal_halt_iff_stepOp
+    {calls : YulSemantics.EVM.ExternalCalls}
+    {creates : YulSemantics.EVM.ExternalCreates}
+    {op : Op} {args : List YulSemantics.EVM.U256}
+    {st st' : YulSemantics.EVM.EvmState} :
+    YulSemantics.EVM.builtinWithExternal calls creates op args st (.halt st') ↔
+      YulSemantics.EVM.stepOp op args st = some (.halt st') := by
+  cases op <;>
+    simp [YulSemantics.EVM.builtinWithExternal, YulSemantics.EVM.externalCall,
+      YulSemantics.EVM.externalCreate, YulSemantics.EVM.stepOp]
+  all_goals
+    intro h
+    split at h <;> contradiction
+
+/-- Compatibility specialization for the call-only relation. -/
 theorem builtin_halt_iff_stepOp {external : YulSemantics.EVM.ExternalCalls}
     {op : Op} {args : List YulSemantics.EVM.U256}
     {st st' : YulSemantics.EVM.EvmState} :
     YulSemantics.EVM.builtin external op args st (.halt st') ↔
       YulSemantics.EVM.stepOp op args st = some (.halt st') := by
+  simpa [YulSemantics.EVM.builtin] using
+    (builtinWithExternal_halt_iff_stepOp
+      (calls := external) (creates := YulSemantics.EVM.ExternalCreates.none)
+      (op := op) (args := args) (st := st) (st' := st'))
+
+/-- With no external calls or creations, the combined dialect is the executable dialect. -/
+theorem evmWithExternal_none_eq_evm :
+    YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
+        YulSemantics.EVM.ExternalCreates.none = YulSemantics.EVM.evm := by
+  unfold YulSemantics.EVM.evmWithExternal YulSemantics.EVM.evm
+  congr 1
+  funext op args st r
+  apply propext
   cases op <;>
-    simp [YulSemantics.EVM.builtin, YulSemantics.EVM.externalCall,
-      YulSemantics.EVM.stepOp]
+    simp [YulSemantics.EVM.builtinWithExternal, YulSemantics.EVM.externalCall,
+      YulSemantics.EVM.externalCreate, YulSemantics.EVM.ExternalCalls.none,
+      YulSemantics.EVM.ExternalCreates.none, YulSemantics.EVM.stepOp]
   all_goals
     intro h
     split at h <;> contradiction
@@ -121,15 +207,6 @@ the original executable EVM dialect. -/
 theorem evmWithCalls_none_eq_evm :
     YulSemantics.EVM.evmWithCalls YulSemantics.EVM.ExternalCalls.none =
       YulSemantics.EVM.evm := by
-  unfold YulSemantics.EVM.evmWithCalls YulSemantics.EVM.evm
-  congr 1
-  funext op args st r
-  apply propext
-  cases op <;>
-    simp [YulSemantics.EVM.builtin, YulSemantics.EVM.externalCall,
-      YulSemantics.EVM.ExternalCalls.none, YulSemantics.EVM.stepOp]
-  all_goals
-    intro h
-    split at h <;> contradiction
+  exact evmWithExternal_none_eq_evm
 
 end YulEvmCompiler

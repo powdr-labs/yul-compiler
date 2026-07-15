@@ -3,9 +3,10 @@ import YulEvmCompiler.LowerDefs
 # YulEvmCompiler.LowerCorrect
 
 **Phase B**, the simulation theorems: each local Asm step maps to 1–3 EVM
-steps on the lowered bytecode. An external-call step maps to an arbitrary
-finite EVM trace supplied by `CallsRealized`; placing no invariant on its
-intermediate states is what admits nested calls and reentrancy. Both cases
+steps on the lowered bytecode. An external call/create step maps to an
+arbitrary finite EVM trace supplied by `ExternalsRealized`; placing no
+invariant on its intermediate states admits arbitrary init/callee code,
+nested calls and creations, and reentrancy. Both cases
 preserve the configuration correspondence (`ConfMatch`, see
 `YulEvmCompiler.LowerDefs`) and have existential gas bounds that add along
 executions.
@@ -15,13 +16,13 @@ namespace YulEvmCompiler
 
 open EvmSemantics
 open EvmSemantics.EVM
-open YulSemantics.EVM (U256 EvmState Op stepOp builtin)
+open YulSemantics.EVM (U256 EvmState Op stepOp builtinWithExternal)
 
 /-- **Phase B, one step**: each local Asm step is simulated by 1–3 EVM steps;
-an external call is simulated by the unrestricted finite trace provided by
-`CallsRealized`. The endpoint preserves the configuration correspondence and
+an external call or creation is simulated by the unrestricted finite trace
+provided by `ExternalsRealized`. The endpoint preserves the configuration correspondence and
 each case has an existential gas bound. -/
-theorem astep_sim [model : ExternalModel] (hcalls : CallsRealized model.calls)
+theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg prog = some is)
     {a b : AConf} (hstep : AStep prog a b) (hsuf : a.code <:+ prog) :
@@ -64,7 +65,8 @@ theorem astep_sim [model : ExternalModel] (hcalls : CallsRealized model.calls)
       rw [codeSize_cons]
       omega
     by_cases hcall : IsCallOp yop
-    · obtain ⟨bnd, H⟩ := hcalls.call hcall hop hstepOp
+    · have hsource := (builtinWithExternal_iff_builtin_of_call hcall).mp hstepOp
+      obtain ⟨bnd, H⟩ := hexternal.calls.call hcall hop hsource
       refine ⟨bnd, ?_⟩
       intro s hm hgas
       have hdec := decoded_op hm.frame (assembleWithPayload_at₁ hbytes payload)
@@ -84,23 +86,50 @@ theorem astep_sim [model : ExternalModel] (hcalls : CallsRealized model.calls)
         congr 1
         omega
       · rw [hstk', mapStk_words]
-    · have hlocal := (builtin_iff_stepOp_of_not_call hcall).mp hstepOp
-      refine ⟨opBound yop args, ?_⟩
-      intro s hm hgas
-      have hok := opStep hop hlocal
-        (σ := mapStk prog σ)
-        (assembleWithPayload_at₁ hbytes payload)
-        hm.frame hm.smatch
-        (by rw [hm.pc, hpos, hlenPre])
-        (by rw [hm.stack, mapStk_words]) hgas
-      obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ := hok
-      refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_⟩, hg'⟩
-      · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
-        rw [hpc', hlenPre]
-        exact congrArg UInt256.ofNat (by
+    · by_cases hcreate : IsCreateOp yop
+      · have hsource :=
+          (builtinWithExternal_iff_createOnly_of_create hcreate).mp hstepOp
+        obtain ⟨bnd, H⟩ := hexternal.creates.create hcreate hop hsource
+        refine ⟨bnd, ?_⟩
+        intro s hm hgas
+        have hdec := decoded_op hm.frame (assembleWithPayload_at₁ hbytes payload)
+          (by rw [hm.pc, hpos, hlenPre])
+          (opTable_roundtrip hop).1 (opTable_roundtrip hop).2
+          (opTable_available hop)
+        obtain ⟨s', hsteps, hf', hsm', hpc', hstk', hg'⟩ :=
+          H hm.frame hm.smatch hdec (by rw [hm.stack, mapStk_words]) hgas
+        refine ⟨s', hsteps, ⟨hf', hsm', ?_, ?_⟩, hg'⟩
+        · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
+          rw [hpc', hm.pc, hpos]
+          have := hf'.codeSmall
+          rw [assembleWithPayload, size_mkCode, List.length_append,
+            lowerFrag_length hlow] at this
           simp only [Asm.size] at hsize
-          omega)
-      · rw [hstk', mapStk_words]
+          rw [succ_ofNat (by omega)]
+          congr 1
+          omega
+        · rw [hstk', mapStk_words]
+      · have hnotExternal : ¬ IsExternalOp yop := by
+          intro h
+          exact h.elim hcall hcreate
+        have hlocal :=
+          (builtinWithExternal_iff_stepOp_of_not_external hnotExternal).mp hstepOp
+        refine ⟨opBound yop args, ?_⟩
+        intro s hm hgas
+        have hok := opStep hop hlocal
+          (σ := mapStk prog σ)
+          (assembleWithPayload_at₁ hbytes payload)
+          hm.frame hm.smatch
+          (by rw [hm.pc, hpos, hlenPre])
+          (by rw [hm.stack, mapStk_words]) hgas
+        obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ := hok
+        refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_⟩, hg'⟩
+        · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
+          rw [hpc', hlenPre]
+          exact congrArg UInt256.ofNat (by
+            simp only [Asm.size] at hsize
+            omega)
+        · rw [hstk', mapStk_words]
   | @dup n v τ ρ c yst hτ =>
     obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
       locate hlow hsuf
@@ -439,7 +468,7 @@ theorem ahalt_sim [model : ExternalModel]
         ∧ HaltedMatch yst' s' := by
   cases hstep with
   | @op yop args c σ yst yst'' hstepOp =>
-    have hstepLocal := builtin_halt_iff_stepOp.mp hstepOp
+    have hstepLocal := builtinWithExternal_halt_iff_stepOp.mp hstepOp
     obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
       locate hlow hsuf
     simp only [lowerInstr] at hI
@@ -459,7 +488,7 @@ theorem ahalt_sim [model : ExternalModel]
     exact ⟨s', .trans hstep (.refl _), hsm', hcs', hhm'⟩
 
 /-- **Phase B, many steps**: bounds add along an Asm execution. -/
-theorem asteps_sim [model : ExternalModel] (hcalls : CallsRealized model.calls)
+theorem asteps_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg prog = some is)
     {a b : AConf} (hsteps : ASteps prog a b) (hsuf : a.code <:+ prog) :
@@ -471,7 +500,7 @@ theorem asteps_sim [model : ExternalModel] (hcalls : CallsRealized model.calls)
   | refl a =>
     exact ⟨0, fun s hm _ => ⟨s, .refl _, hm, by omega⟩⟩
   | @head a₁ a₂ a₃ hstep hrest ih =>
-    obtain ⟨b1, H1⟩ := astep_sim hcalls hlow hstep hsuf
+    obtain ⟨b1, H1⟩ := astep_sim hexternal hlow hstep hsuf
     obtain ⟨b2, H2⟩ := ih (hstep.suffix hsuf)
     refine ⟨b1 + b2, ?_⟩
     intro s hm hgas
@@ -481,7 +510,7 @@ theorem asteps_sim [model : ExternalModel] (hcalls : CallsRealized model.calls)
 
 /-- **Phase B, halting run**: an Asm execution ending in a halt maps to an
 EVM execution ending in the matching halted state. -/
-theorem arun_halt_sim [model : ExternalModel] (hcalls : CallsRealized model.calls)
+theorem arun_halt_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg prog = some is)
     {a b : AConf} {yst' : EvmState}
@@ -491,7 +520,7 @@ theorem arun_halt_sim [model : ExternalModel] (hcalls : CallsRealized model.call
       bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ StateMatch yst' s' ∧ s'.callStack = []
         ∧ HaltedMatch yst' s' := by
-  obtain ⟨b1, H1⟩ := asteps_sim hcalls hlow hsteps hsuf
+  obtain ⟨b1, H1⟩ := asteps_sim hexternal hlow hsteps hsuf
   obtain ⟨b2, H2⟩ := ahalt_sim hlow hhalt (hsteps.suffix hsuf)
   refine ⟨b1 + b2, ?_⟩
   intro s hm hgas

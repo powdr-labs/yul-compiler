@@ -3,9 +3,10 @@
 # fixtures that do not yet parse, compile, execute, or match their embedded
 # post-state expectation.
 access_large_memory_offsets.yul
+# Solidity's AST interpreter trace gives repeated CREATE operations a mocked
+# result; concrete EVM execution derives nonce/salt-dependent addresses.
 and_create.yul
 and_create2.yul
-create2.yul
 # These compile as real objects. Solidity's AST-interpreter expectations use
 # synthetic hash offsets/sizes and a dummy code buffer, so they are not the
 # post-state of emitted object bytecode.
