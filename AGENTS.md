@@ -46,9 +46,12 @@ Important files:
 - `YulEvmCompiler/Examples.lean`: build-time compilation guards and executable differential tests between both semantics.
 - `YulParser/`: parser library. `Canon.lean` supports verified canonical round trips; `Compat.lean` is an intentionally lossy Solidity-compatibility fallback.
 - `YulEvmCompilerTests/InterpreterFixture.lean`: runner for Solidity's Yul interpreter fixtures.
+- `YulEvmCompilerTests/SolcDifferential.lean`: common-state behavioral comparison of this compiler's and solc's bytecode.
+- `YulEvmCompilerTests/SolidityCorpus.lean`: shared Solidity fixture, baseline, source-section, and EVM-version helpers.
 - `scripts/CheckSoliditySyntaxTests.lean`,
-  `scripts/CheckSolidityInterpreterTests.lean`, and
-  `scripts/CheckSolidityCompileTests.lean`: corpus/baseline drivers used by CI.
+  `scripts/CheckSolidityInterpreterTests.lean`,
+  `scripts/CheckSolidityCompileTests.lean`, and
+  `scripts/CheckSoliditySolcDifferential.lean`: corpus/baseline drivers used by CI.
 - `Checks.lean`: exact axiom-footprint checks for the headline compiler and parser theorems.
 - `README.md`: user-facing current scope. `PLAN.md`: design rationale, proof architecture, blockers, and roadmap.
 
@@ -238,6 +241,29 @@ output, assembly, bytecode, opcodes, and source mappings because those encode
 solc-specific implementation choices. Each of the three known-failure files
 is an exact baseline, not a skip list: every applicable source is attempted,
 and both unexpected failures and stale entries fail the run.
+
+### solc behavioral differential
+
+CI installs pinned solc 0.8.35 through pinned `svm-rs` 0.5.26, then
+differentially executes every applicable `objectCompiler` and
+`evmCodeTransform` fixture that both compilers can emit:
+
+```sh
+lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+  object-compiler \
+  /path/to/solidity/test/libyul/objectCompiler \
+  test/solidity-yul-object-compiler-known-solc-differential-failures.txt \
+  "$(svm which 0.8.35)" 0.8.35
+```
+
+Both bytecode sequences run in `evm-semantics` from the same two fixed
+environments. Compare observable termination/output, returndata, nonzero
+memory, account state, logs, self-destructs, and storage refunds. Never compare
+exact bytecode, PCs, internal stacks, remaining gas, or the executing
+account's code representation: those legitimately depend on compiler layout
+and encoding choices. The two differential failure files are exact baselines;
+layout-introspection and bounded-divergence cases must remain documented rather
+than being presented as semantic equivalence.
 
 To reproduce CI's corpus checkout:
 

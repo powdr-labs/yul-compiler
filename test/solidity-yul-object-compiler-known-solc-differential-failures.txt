@@ -1,0 +1,19 @@
+# Paths relative to Solidity's test/libyul/objectCompiler directory.
+# Keep exactly the Osaka-applicable fixtures for which our compiler cannot yet
+# match the observable behavior of bytecode emitted by pinned solc.
+# Current reasons are implementation-dependent object offsets/sizes/code bytes,
+# unsupported immutable/linker/verbatim operations, and one recursive program
+# where our return stack overflows while solc remains running at the fuel bound.
+datacopy.yul
+dataoffset_code.yul
+dataoffset_data.yul
+datasize_code.yul
+datasize_self.yul
+identical_subobjects_with_subject_references.yul
+immutable_long_name_does_not_end_up_in_bytecode.yul
+linkersymbol.yul
+manySubObjects.yul
+prune_unreachable_function_recursion.yul
+sourceLocations.yul
+subObjectAccess.yul
+verbatim_bug.yul
