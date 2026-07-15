@@ -748,14 +748,14 @@ open EvmSemantics
 open EvmSemantics.EVM
 open YulSemantics (VEnv Run Outcome)
 open YulSemantics.EVM
-  (EvmState evm evmWithCalls constructorCode constructorCode_returns_of_consistent)
+  (EvmState evm evmWithExternal constructorCode constructorCode_returns_of_consistent)
 
 variable [model : ExternalModel]
-local notation "yulD" => evmWithCalls model.calls
+local notation "yulD" => evmWithExternal model.calls model.creates
 set_option linter.unusedSectionVars false
 
-/-- Object execution after layout references have been resolved, using an
-open-world external-call relation. -/
+/-- Object execution after layout references have been resolved, using
+open-world external call/create relations. -/
 def RunResolvedObject (o : Object Op) (L : Layout)
     (V : VEnv yulD) (st : EvmState) (out : Outcome) : Prop :=
   Run yulD (resolveForLayoutStmts L o.codeBlock) L.initState V st out
@@ -765,7 +765,7 @@ under the open-world dialect, then the emitted EVM bytecode simulates the same
 execution. The theorem covers both ordinary fall-through through the
 compiler-inserted `STOP` seam and source-level halts; recursively compiled
 children and data are present in the frame as an inert trailing payload. -/
-theorem compileObject_correct (hcalls : CallsRealized model.calls)
+theorem compileObject_correct (hexternal : ExternalsRealized model)
     {o : Object Op} {L : Layout}
     (hcomp : compileObject o = some L)
     {V : VEnv yulD} {yst : EvmState} {out : Outcome}
@@ -782,7 +782,7 @@ theorem compileObject_correct (hcalls : CallsRealized model.calls)
     rw [hresolved]
     exact hrun
   obtain ⟨bound, hsim⟩ :=
-    compile_correct_withPayload hcalls (payload := payload) hinstructions hrun'
+    compile_correct_withPayload hexternal (payload := payload) hinstructions hrun'
   refine ⟨bound, ?_⟩
   intro s0 hframe hmatch hpc hstack hgas
   apply hsim s0

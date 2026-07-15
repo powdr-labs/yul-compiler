@@ -8,9 +8,9 @@ import YulSemantics.BigStep
 **Phase A**: the simulation from the Yul big-step semantics to the Asm
 semantics. Everything here is byte-free and gas-free: fragments are placed
 by list appends (`prog = pre ++ asm ++ c`), jumps land at labels via
-`findLabel`, and built-ins use the dialect's relational `builtin` semantics.
-Local operations reduce through `stepOp`; external calls use the chosen
-open-world `ExternalCalls` relation.
+`findLabel`, and built-ins use the dialect's combined relational semantics.
+Local operations reduce through `stepOp`; external calls and creations use
+the chosen open-world relations.
 
 The fragment-execution shapes (`ASimE`/`ASimS`/… below) mirror the
 milestone-2 `SimE`/`SimS`, with two new ingredients:
@@ -30,32 +30,36 @@ set_option linter.unusedSectionVars false
 open YulEvmCompiler
 open YulSemantics (Expr Stmt Block Ident VEnv Outcome)
 open YulSemantics.EVM
-  (U256 EvmState Op ExternalCalls builtin evmWithCalls litValue stepOp)
+  (U256 EvmState Op ExternalCalls ExternalCreates builtinWithExternal evmWithExternal
+    litValue stepOp)
 
 variable [model : ExternalModel]
 local notation "extCalls" => model.calls
+local notation "extCreates" => model.creates
 
-/-- The Yul EVM dialect with the external-call relation being simulated. -/
-local notation "yulD" => evmWithCalls model.calls
+/-- The Yul EVM dialect with the external relations being simulated. -/
+local notation "yulD" => evmWithExternal model.calls model.creates
 
 /-- The Asm-stack image of a variable environment: the values as words,
 innermost binding on top. -/
-def wimgFor (ext : ExternalCalls) (V : VEnv (evmWithCalls ext)) : List AVal :=
+def wimgFor (calls : ExternalCalls) (creates : ExternalCreates)
+    (V : VEnv (evmWithExternal calls creates)) : List AVal :=
   V.map (fun p => .word p.2)
 
 /-- The layout a variable environment realizes: its names. -/
-def namesFor (ext : ExternalCalls) (V : VEnv (evmWithCalls ext)) : List Ident :=
+def namesFor (calls : ExternalCalls) (creates : ExternalCreates)
+    (V : VEnv (evmWithExternal calls creates)) : List Ident :=
   V.map Prod.fst
 
 /-- Keep the outermost `depth` bindings (the semantics' `restore`, by
 target length). -/
-def trimFor (ext : ExternalCalls) (depth : Nat) (V : VEnv (evmWithCalls ext)) :
-    VEnv (evmWithCalls ext) :=
+def trimFor (calls : ExternalCalls) (creates : ExternalCreates) (depth : Nat)
+    (V : VEnv (evmWithExternal calls creates)) : VEnv (evmWithExternal calls creates) :=
   V.drop (V.length - depth)
 
-local notation "wimg" => wimgFor extCalls
-local notation "names" => namesFor extCalls
-local notation "vtrim" => trimFor extCalls
+local notation "wimg" => wimgFor extCalls extCreates
+local notation "names" => namesFor extCalls extCreates
+local notation "vtrim" => trimFor extCalls extCreates
 local notation "dzero" => YulSemantics.Dialect.zero yulD
 
 @[simp] theorem wimg_nil : wimg [] = [] := rfl
@@ -323,7 +327,7 @@ theorem asimE_op {prog : List Asm} {yst yst1 yst2 : EvmState}
     {V : VEnv yulD} {off : Nat} {asm : List Asm} {yop : Op}
     {args rets : List U256}
     (hargs : ASimE prog yst V off asm args yst1)
-    (hstep : builtin extCalls yop args yst1 (.ok rets yst2)) :
+    (hstep : builtinWithExternal extCalls extCreates yop args yst1 (.ok rets yst2)) :
     ASimE prog yst V off (asm ++ [.op yop]) rets yst2 := by
   intro pre c τ σ hp hτ
   rw [List.append_assoc]
@@ -338,7 +342,7 @@ theorem asimE_opHalt {prog : List Asm} {yst yst1 yst2 : EvmState}
     {V : VEnv yulD} {off : Nat} {asm : List Asm} {yop : Op}
     {args : List U256}
     (hargs : ASimE prog yst V off asm args yst1)
-    (hstep : builtin extCalls yop args yst1 (.halt yst2)) :
+    (hstep : builtinWithExternal extCalls extCreates yop args yst1 (.halt yst2)) :
     ASimEHalt prog yst V off (asm ++ [.op yop]) yst2 := by
   intro pre c τ σ hp hτ
   refine ⟨_, ?_, .op (c := c) (σ := τ ++ wimg V ++ σ) hstep⟩
@@ -745,8 +749,9 @@ theorem stepOp_iszero (v : U256) (st : EvmState) :
       = some (.ok [YulSemantics.EVM.b2w (v = 0)] st) := rfl
 
 theorem builtin_iszero (v : U256) (st : EvmState) :
-    builtin extCalls .iszero [v] st (.ok [YulSemantics.EVM.b2w (v = 0)] st) := by
-  simpa [builtin] using stepOp_iszero v st
+    builtinWithExternal extCalls extCreates .iszero [v] st
+      (.ok [YulSemantics.EVM.b2w (v = 0)] st) := by
+  simpa [builtinWithExternal] using stepOp_iszero v st
 
 /-- The compiled condition prologue `cCode ; ISZERO`. -/
 theorem asimE_condPrologue {prog : List Asm} {yst yst1 : EvmState}
@@ -923,9 +928,9 @@ theorem asimE_switchCmp {prog : List Asm} {yst : EvmState} {V : VEnv yulD}
       [YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (w = cv) = 0)] yst := by
   have h2 : ASimE prog yst ((x, cv) :: V) 0 [.dup 0, .push w] [w, cv] yst :=
     ASimE.compArgs (k := 1) rfl (asimE_dup0 x cv) (asimE_push w)
-  have heq : builtin extCalls .eq [w, cv] yst
+  have heq : builtinWithExternal extCalls extCreates .eq [w, cv] yst
       (.ok [YulSemantics.EVM.b2w (w = cv)] yst) := by
-    simp [builtin, stepOp, YulSemantics.EVM.bin]
+    simp [builtinWithExternal, stepOp, YulSemantics.EVM.bin]
   have h3 := asimE_op h2 heq
   have hiz := builtin_iszero (YulSemantics.EVM.b2w (w = cv)) yst
   have h4 := asimE_op h3 hiz

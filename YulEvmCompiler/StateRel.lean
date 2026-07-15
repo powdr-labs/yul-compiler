@@ -434,10 +434,28 @@ structure EnvMatch (ye : YulSemantics.EVM.ExecEnv) (se : ExecutionEnv) : Prop wh
   window/default-zero policy to the supplied lookup function. -/
   blockHash : ∀ n, conv (ye.blockHashOf n) = se.header.blockHash (conv n)
 
-/-- Agreement between yul-semantics' abstract external-code oracles and the
-target's concrete account map. Exact byte and length relations serve
-`extcodecopy` and `extcodesize`; the hash relation serves `extcodehash` and
-accounts for the target's EIP-161 empty-account rule. -/
+/-- Updating the mutable global persistent-storage projection does not change
+the immutable execution-environment fields related by `EnvMatch`. -/
+theorem EnvMatch.setStorageOf {ye : YulSemantics.EVM.ExecEnv} {se : ExecutionEnv}
+    (h : EnvMatch ye se) (storageOf : YulSemantics.EVM.U256 → YulSemantics.EVM.U256 →
+      YulSemantics.EVM.U256) :
+    EnvMatch { ye with storageOf := storageOf } se := by
+  cases h
+  constructor <;> assumption
+
+/-- Updating the global transient-storage projection likewise preserves the
+immutable frame environment relation. -/
+theorem EnvMatch.setTransientOf {ye : YulSemantics.EVM.ExecEnv} {se : ExecutionEnv}
+    (h : EnvMatch ye se) (transientOf : YulSemantics.EVM.U256 → YulSemantics.EVM.U256 →
+      YulSemantics.EVM.U256) :
+    EnvMatch { ye with transientOf := transientOf } se := by
+  cases h
+  constructor <;> assumption
+
+/-- Agreement between yul-semantics' global account projections and the
+target's concrete account map. Besides external code, this pins every account
+nonce and persistent/transient storage slot, making open-world call/create
+responses stable across all matching target states. -/
 structure ExternalCodeMatch (ye : YulSemantics.EVM.ExecEnv) (accounts : AccountMap) : Prop where
   bytes : ∀ a, MemMatch (YulSemantics.EVM.byteFrom (ye.extCodeOf a))
     (accounts (AccountAddress.ofUInt256 (conv a))).code
@@ -445,6 +463,42 @@ structure ExternalCodeMatch (ye : YulSemantics.EVM.ExecEnv) (accounts : AccountM
     = (accounts (AccountAddress.ofUInt256 (conv a))).code.size
   hash : ∀ a, conv (ye.extCodeHashOf a)
     = (accounts (AccountAddress.ofUInt256 (conv a))).codeHash
+  nonce : ∀ a, conv (ye.nonceOf a)
+    = (accounts (AccountAddress.ofUInt256 (conv a))).nonce
+  storage : ∀ a k, conv (ye.storageOf a k)
+    = (accounts (AccountAddress.ofUInt256 (conv a))).storage.get (conv k)
+  tstorage : ∀ a k, conv (ye.transientOf a k)
+    = (accounts (AccountAddress.ofUInt256 (conv a))).tstorage.get (conv k)
+
+/-- Source account keys and target account addresses use the same low-160-bit
+projection. This is what makes all 256-bit aliases of an EVM address agree. -/
+theorem accountAddress_eq_iff_accountKey (a b : YulSemantics.EVM.U256) :
+    AccountAddress.ofUInt256 (conv a) = AccountAddress.ofUInt256 (conv b) ↔
+      YulSemantics.EVM.accountKey a = YulSemantics.EVM.accountKey b := by
+  constructor
+  · intro h
+    have hv := congrArg Fin.val h
+    simpa [AccountAddress.ofUInt256, AccountAddress.size,
+      YulSemantics.EVM.accountKey] using hv
+  · intro h
+    apply Fin.ext
+    simpa [AccountAddress.ofUInt256, AccountAddress.size,
+      YulSemantics.EVM.accountKey] using h
+
+@[simp] theorem accountAddress_ofUInt256_toUInt256 (a : AccountAddress) :
+    AccountAddress.ofUInt256 a.toUInt256 = a := by
+  apply Fin.ext
+  simp only [AccountAddress.ofUInt256, AccountAddress.toUInt256,
+    toNat_u256_ofNat, Fin.val_ofNat]
+  have h256 : a.val < 2 ^ 256 := lt_trans a.isLt (by
+    unfold AccountAddress.size
+    omega)
+  rw [Nat.mod_eq_of_lt h256]
+  calc
+    a.val % AccountAddress.size % AccountAddress.size =
+        a.val % AccountAddress.size := Nat.mod_eq_of_lt
+          (Nat.mod_lt _ (by unfold AccountAddress.size; omega))
+    _ = a.val := Nat.mod_eq_of_lt a.isLt
 
 /-- Updating one account while preserving the fields observed by external-code
 operations preserves `ExternalCodeMatch`. Storage and transient-storage
@@ -453,7 +507,9 @@ theorem ExternalCodeMatch.setAccount {ye : YulSemantics.EVM.ExecEnv} {accounts :
     (h : ExternalCodeMatch ye accounts) (addr : AccountAddress) (acc : Account)
     (hnonce : acc.nonce = (accounts addr).nonce)
     (hbalance : acc.balance = (accounts addr).balance)
-    (hcode : acc.code = (accounts addr).code) :
+    (hcode : acc.code = (accounts addr).code)
+    (hstorage : acc.storage = (accounts addr).storage)
+    (htstorage : acc.tstorage = (accounts addr).tstorage) :
     ExternalCodeMatch ye (accounts.set addr acc) := by
   constructor
   · intro a
@@ -480,27 +536,185 @@ theorem ExternalCodeMatch.setAccount {ye : YulSemantics.EVM.ExecEnv} {accounts :
       simpa [Account.codeHash, Account.isEmpty, hnonce, hbalance, hcode] using hold
     · rw [AccountMap.get_set_other _ _ _ _ ha]
       exact h.hash a
+  · intro a
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same, hnonce]
+      have hold := h.nonce a
+      rwa [ha] at hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.nonce a
+  · intro a k
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same, hstorage]
+      have hold := h.storage a k
+      rwa [ha] at hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.storage a k
+  · intro a k
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same, htstorage]
+      have hold := h.tstorage a k
+      rwa [ha] at hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.tstorage a k
 
-/-- One source log entry agrees with one target entry. The emitting address is
-implicit on the Yul side (all entries belong to the current frame), while the
-EVM records it in every entry. -/
-def LogEntryMatch (yaddr : YulSemantics.EVM.U256)
+/-- A local persistent-storage write preserves the global-world relation,
+including every high-bit alias of the current 160-bit account address. -/
+theorem ExternalCodeMatch.setStorage {ye : YulSemantics.EVM.ExecEnv}
+    {accounts : AccountMap} (h : ExternalCodeMatch ye accounts)
+    (yaddr : YulSemantics.EVM.U256) (addr : AccountAddress)
+    (key value : YulSemantics.EVM.U256)
+    (haddr : AccountAddress.ofUInt256 (conv yaddr) = addr) :
+    ExternalCodeMatch
+      { ye with storageOf := YulSemantics.EVM.updAccount ye.storageOf yaddr key value }
+      (accounts.set addr
+        { accounts addr with storage := (accounts addr).storage.set (conv key) (conv value) }) := by
+  constructor
+  · intro a
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same]
+      have hold := h.bytes a
+      rwa [ha] at hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.bytes a
+  · intro a
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same]
+      have hold := h.length a
+      rwa [ha] at hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.length a
+  · intro a
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same]
+      have hold := h.hash a
+      rwa [ha] at hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.hash a
+  · intro a
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same]
+      have hold := h.nonce a
+      rw [ha] at hold
+      exact hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.nonce a
+  · intro a k
+    change conv (YulSemantics.EVM.updAccount ye.storageOf yaddr key value a k) = _
+    unfold YulSemantics.EVM.updAccount
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · have hkey : YulSemantics.EVM.accountKey a = YulSemantics.EVM.accountKey yaddr :=
+        (accountAddress_eq_iff_accountKey a yaddr).mp (ha.trans haddr.symm)
+      rw [if_pos hkey, ha, AccountMap.get_set_same]
+      by_cases hk : k = key
+      · subst hk
+        rw [if_pos rfl, Storage.get_set_same]
+      · rw [if_neg hk, Storage.get_set_other _ _ _ _ (by simpa [conv_inj] using hk)]
+        have hold := h.storage a k
+        rw [ha] at hold
+        exact hold
+    · have hkey : YulSemantics.EVM.accountKey a ≠ YulSemantics.EVM.accountKey yaddr := by
+        intro heq
+        apply ha
+        exact ((accountAddress_eq_iff_accountKey a yaddr).mpr heq).trans haddr
+      rw [if_neg hkey, AccountMap.get_set_other _ _ _ _ ha]
+      exact h.storage a k
+  · intro a k
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same]
+      have hold := h.tstorage a k
+      rw [ha] at hold
+      exact hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.tstorage a k
+
+/-- A local transient-storage write preserves the full global-world relation. -/
+theorem ExternalCodeMatch.setTransient {ye : YulSemantics.EVM.ExecEnv}
+    {accounts : AccountMap} (h : ExternalCodeMatch ye accounts)
+    (yaddr : YulSemantics.EVM.U256) (addr : AccountAddress)
+    (key value : YulSemantics.EVM.U256)
+    (haddr : AccountAddress.ofUInt256 (conv yaddr) = addr) :
+    ExternalCodeMatch
+      { ye with transientOf := YulSemantics.EVM.updAccount ye.transientOf yaddr key value }
+      (accounts.set addr
+        { accounts addr with tstorage := (accounts addr).tstorage.set (conv key) (conv value) }) := by
+  constructor
+  · intro a
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same]
+      have hold := h.bytes a
+      rwa [ha] at hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.bytes a
+  · intro a
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same]
+      have hold := h.length a
+      rwa [ha] at hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.length a
+  · intro a
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same]
+      have hold := h.hash a
+      rwa [ha] at hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.hash a
+  · intro a
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same]
+      have hold := h.nonce a
+      rw [ha] at hold
+      exact hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.nonce a
+  · intro a k
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · rw [ha, AccountMap.get_set_same]
+      have hold := h.storage a k
+      rw [ha] at hold
+      exact hold
+    · rw [AccountMap.get_set_other _ _ _ _ ha]
+      exact h.storage a k
+  · intro a k
+    change conv (YulSemantics.EVM.updAccount ye.transientOf yaddr key value a k) = _
+    unfold YulSemantics.EVM.updAccount
+    by_cases ha : AccountAddress.ofUInt256 (conv a) = addr
+    · have hkey : YulSemantics.EVM.accountKey a = YulSemantics.EVM.accountKey yaddr :=
+        (accountAddress_eq_iff_accountKey a yaddr).mp (ha.trans haddr.symm)
+      rw [if_pos hkey, ha, AccountMap.get_set_same]
+      by_cases hk : k = key
+      · subst hk
+        rw [if_pos rfl, Storage.get_set_same]
+      · rw [if_neg hk, Storage.get_set_other _ _ _ _ (by simpa [conv_inj] using hk)]
+        have hold := h.tstorage a k
+        rw [ha] at hold
+        exact hold
+    · have hkey : YulSemantics.EVM.accountKey a ≠ YulSemantics.EVM.accountKey yaddr := by
+        intro heq
+        apply ha
+        exact ((accountAddress_eq_iff_accountKey a yaddr).mpr heq).trans haddr
+      rw [if_neg hkey, AccountMap.get_set_other _ _ _ _ ha]
+      exact h.tstorage a k
+
+/-- One source log entry agrees with one target entry, including the address
+of an arbitrary caller, callee, or init-code frame that emitted it. -/
+def LogEntryMatch
     (yl : YulSemantics.EVM.LogEntry) (tl : EvmSemantics.LogEntry) : Prop :=
-  conv yaddr = tl.address.toUInt256 ∧
+  conv yl.address = tl.address.toUInt256 ∧
     yl.topics.map conv = tl.topics.toList ∧
     yl.data = tl.data.toList
 
 /-- The emitted logs agree in order, including address, topics, and data. -/
-def LogsMatch (yaddr : YulSemantics.EVM.U256)
+def LogsMatch
     (ys : List YulSemantics.EVM.LogEntry) (ts : EvmSemantics.LogSeries) : Prop :=
-  List.Forall₂ (LogEntryMatch yaddr) ys ts.toList
+  List.Forall₂ LogEntryMatch ys ts.toList
 
 /-- Appending matching entries preserves log-series agreement. -/
-theorem LogsMatch.append {yaddr : YulSemantics.EVM.U256}
-    {ys : List YulSemantics.EVM.LogEntry} {ts : EvmSemantics.LogSeries}
+theorem LogsMatch.append {ys : List YulSemantics.EVM.LogEntry} {ts : EvmSemantics.LogSeries}
     {yl : YulSemantics.EVM.LogEntry} {tl : EvmSemantics.LogEntry}
-    (h : LogsMatch yaddr ys ts) (he : LogEntryMatch yaddr yl tl) :
-    LogsMatch yaddr (ys ++ [yl]) (ts.push tl) := by
+    (h : LogsMatch ys ts) (he : LogEntryMatch yl tl) :
+    LogsMatch (ys ++ [yl]) (ts.push tl) := by
   unfold LogsMatch at h ⊢
   rw [Array.toList_push]
   exact List.rel_append h (.cons he .nil)
@@ -546,8 +760,8 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   retDataLen : yst.returndata.length = s.returnData.size
   /-- External account code bytes, lengths, and hashes agree pointwise. -/
   externalCode : ExternalCodeMatch yst.env s.accountMap
-  /-- Emitted logs agree in order, including the current frame's address. -/
-  logs : LogsMatch yst.env.address yst.logs s.substate.logSeries
+  /-- Emitted logs agree in order, retaining each emitting frame's address. -/
+  logs : LogsMatch yst.logs s.substate.logSeries
 
 /-- Frame-level side conditions preserved by every step of a straight-line
 execution. `code` is the full assembled program. -/

@@ -264,8 +264,10 @@ private theorem selectSwitch_resolveForLayout (L : Layout) (value : U256)
 
 private def SameEnvResult (st : EvmState) :
     BuiltinResult U256 EvmState → Prop
-  | .ok _ st' => st'.env = st.env
-  | .halt st' => st'.env = st.env
+  | .ok _ st' => st'.env.dataOffset = st.env.dataOffset ∧
+      st'.env.dataSize = st.env.dataSize
+  | .halt st' => st'.env.dataOffset = st.env.dataOffset ∧
+      st'.env.dataSize = st.env.dataSize
 
 private theorem un_sameEnv (f : U256 → U256) (args : List U256)
     (st : EvmState) {r} (h : YulSemantics.EVM.un f args st = some r) :
@@ -274,7 +276,7 @@ private theorem un_sameEnv (f : U256 → U256) (args : List U256)
   | nil => simp [YulSemantics.EVM.un] at h
   | cons a rest =>
       cases rest with
-      | nil => simp [YulSemantics.EVM.un] at h; subst r; rfl
+      | nil => simp [YulSemantics.EVM.un] at h; cases h; exact ⟨rfl, rfl⟩
       | cons => simp [YulSemantics.EVM.un] at h
 
 private theorem bin_sameEnv (f : U256 → U256 → U256) (args : List U256)
@@ -287,7 +289,7 @@ private theorem bin_sameEnv (f : U256 → U256 → U256) (args : List U256)
       | nil => simp [YulSemantics.EVM.bin] at h
       | cons b rest =>
           cases rest with
-          | nil => simp [YulSemantics.EVM.bin] at h; subst r; rfl
+          | nil => simp [YulSemantics.EVM.bin] at h; cases h; exact ⟨rfl, rfl⟩
           | cons => simp [YulSemantics.EVM.bin] at h
 
 private theorem ter_sameEnv (f : U256 → U256 → U256 → U256)
@@ -303,14 +305,14 @@ private theorem ter_sameEnv (f : U256 → U256 → U256 → U256)
           | nil => simp [YulSemantics.EVM.ter] at h
           | cons c rest =>
               cases rest with
-              | nil => simp [YulSemantics.EVM.ter] at h; subst r; rfl
+              | nil => simp [YulSemantics.EVM.ter] at h; cases h; exact ⟨rfl, rfl⟩
               | cons => simp [YulSemantics.EVM.ter] at h
 
 private theorem rd0_sameEnv (value : U256) (args : List U256)
     (st : EvmState) {r} (h : YulSemantics.EVM.rd0 value args st = some r) :
     SameEnvResult st r := by
   cases args with
-  | nil => simp [YulSemantics.EVM.rd0] at h; subst r; rfl
+  | nil => simp [YulSemantics.EVM.rd0] at h; cases h; exact ⟨rfl, rfl⟩
   | cons => simp [YulSemantics.EVM.rd0] at h
 
 private theorem rd1_sameEnv (f : U256 → U256) (args : List U256)
@@ -320,7 +322,7 @@ private theorem rd1_sameEnv (f : U256 → U256) (args : List U256)
   | nil => simp [YulSemantics.EVM.rd1] at h
   | cons a rest =>
       cases rest with
-      | nil => simp [YulSemantics.EVM.rd1] at h; subst r; rfl
+      | nil => simp [YulSemantics.EVM.rd1] at h; cases h; exact ⟨rfl, rfl⟩
       | cons => simp [YulSemantics.EVM.rd1] at h
 
 private theorem stepOp_sameEnv {op : Op} {args : List U256}
@@ -335,28 +337,35 @@ private theorem stepOp_sameEnv {op : Op} {args : List U256}
     | exact rd1_sameEnv _ _ _ h
     | (repeat' split at h) <;>
         simp_all [SameEnvResult, YulSemantics.EVM.appendLog] <;>
-        try { subst r; rfl }
+        try { cases h; exact ⟨rfl, rfl⟩ }
 
 private theorem stepOp_ok_env {op : Op} {args returns : List U256}
     {st st' : EvmState} (h : stepOp op args st = some (.ok returns st')) :
-    st'.env = st.env := stepOp_sameEnv h
+    st'.env.dataOffset = st.env.dataOffset ∧
+      st'.env.dataSize = st.env.dataSize := stepOp_sameEnv h
 
 private theorem stepOp_halt_env {op : Op} {args : List U256}
     {st st' : EvmState} (h : stepOp op args st = some (.halt st')) :
-    st'.env = st.env := stepOp_sameEnv h
+    st'.env.dataOffset = st.env.dataOffset ∧
+      st'.env.dataSize = st.env.dataSize := stepOp_sameEnv h
 
-/-- Every relational Yul step preserves the immutable execution environment. -/
+/-- Every executable Yul step preserves the immutable object-layout maps. -/
 theorem evmStep_env {funs : FunEnv evm} {V : VEnv evm} {st : EvmState}
     {code : Code Op} {res : Res evm} (h : Step evm funs V st code res) :
     match res with
-    | .eres (.vals _ st') => st'.env = st.env
-    | .eres (.halt st') => st'.env = st.env
-    | .sres _ st' _ => st'.env = st.env := by
+    | .eres (.vals _ st') => st'.env.dataOffset = st.env.dataOffset ∧
+        st'.env.dataSize = st.env.dataSize
+    | .eres (.halt st') => st'.env.dataOffset = st.env.dataOffset ∧
+        st'.env.dataSize = st.env.dataSize
+    | .sres _ st' _ => st'.env.dataOffset = st.env.dataOffset ∧
+        st'.env.dataSize = st.env.dataSize := by
   induction h <;> simp_all
   case builtinOk hargs hbuiltin ih =>
-    exact (stepOp_ok_env hbuiltin).trans ih
+    exact ⟨(stepOp_ok_env hbuiltin).1.trans ih.1,
+      (stepOp_ok_env hbuiltin).2.trans ih.2⟩
   case builtinHalt hargs hbuiltin ih =>
-    exact (stepOp_halt_env hbuiltin).trans ih
+    exact ⟨(stepOp_halt_env hbuiltin).1.trans ih.1,
+      (stepOp_halt_env hbuiltin).2.trans ih.2⟩
 
 private theorem resolveForLayoutExpr_builtin_other (L : Layout) (op : Op)
     (args : List (Expr Op))
@@ -407,9 +416,7 @@ private theorem UsesLayout.after_vals {L : Layout} {funs : FunEnv evm}
     (h : Step evm funs V st (.args expressions) (.eres (.vals values st'))) :
     UsesLayout L st' := by
   have henv := evmStep_env h
-  constructor <;> rw [henv]
-  · exact hL.1
-  · exact hL.2
+  exact ⟨henv.1.trans hL.1, henv.2.trans hL.2⟩
 
 private theorem UsesLayout.after_expr_vals {L : Layout} {funs : FunEnv evm}
     {V : VEnv evm} {st st' : EvmState} {expression : Expr Op} {values}
@@ -417,9 +424,7 @@ private theorem UsesLayout.after_expr_vals {L : Layout} {funs : FunEnv evm}
     (h : Step evm funs V st (.expr expression) (.eres (.vals values st'))) :
     UsesLayout L st' := by
   have henv := evmStep_env h
-  constructor <;> rw [henv]
-  · exact hL.1
-  · exact hL.2
+  exact ⟨henv.1.trans hL.1, henv.2.trans hL.2⟩
 
 private theorem UsesLayout.after_stmt {L : Layout} {funs : FunEnv evm}
     {V V' : VEnv evm} {st st' : EvmState} {statement : Stmt Op} {outcome}
@@ -427,9 +432,7 @@ private theorem UsesLayout.after_stmt {L : Layout} {funs : FunEnv evm}
     (h : Step evm funs V st (.stmt statement) (.sres V' st' outcome)) :
     UsesLayout L st' := by
   have henv := evmStep_env h
-  constructor <;> rw [henv]
-  · exact hL.1
-  · exact hL.2
+  exact ⟨henv.1.trans hL.1, henv.2.trans hL.2⟩
 
 private theorem UsesLayout.after_stmts {L : Layout} {funs : FunEnv evm}
     {V V' : VEnv evm} {st st' : EvmState} {statements : Block Op} {outcome}
@@ -437,9 +440,7 @@ private theorem UsesLayout.after_stmts {L : Layout} {funs : FunEnv evm}
     (h : Step evm funs V st (.stmts statements) (.sres V' st' outcome)) :
     UsesLayout L st' := by
   have henv := evmStep_env h
-  constructor <;> rw [henv]
-  · exact hL.1
-  · exact hL.2
+  exact ⟨henv.1.trans hL.1, henv.2.trans hL.2⟩
 
 private theorem UsesLayout.after_loop {L : Layout} {funs : FunEnv evm}
     {V V' : VEnv evm} {st st' : EvmState} {condition : Expr Op}
@@ -448,9 +449,7 @@ private theorem UsesLayout.after_loop {L : Layout} {funs : FunEnv evm}
     (h : Step evm funs V st (.loop condition post body) (.sres V' st' outcome)) :
     UsesLayout L st' := by
   have henv := evmStep_env h
-  constructor <;> rw [henv]
-  · exact hL.1
-  · exact hL.2
+  exact ⟨henv.1.trans hL.1, henv.2.trans hL.2⟩
 
 private theorem not_offset_ref {op : Op} {args : List (Expr Op)}
     (h : ¬ ∃ name, op = .dataoffset ∧ args = [.lit (.string name)]) :

@@ -107,12 +107,13 @@ The verified built-in set (the domain of `opTable` in
 | world/tx   | `balance blobhash` |
 | logging    | `log0 log1 log2 log3 log4` |
 | calls      | `call callcode delegatecall staticcall` |
+| creation   | `create create2` |
 | halting    | `stop return revert invalid` |
 
 Everything else in the direct built-in path is rejected (`compile = none`).
 Object-relative `dataoffset`/`datasize` calls are resolved separately by the
-verified object compiler; `gas`, creates, and `selfdestruct` remain blocked
-because the source semantics does not model their execution. CALL-family
+verified object compiler; `gas` and `selfdestruct` remain blocked because the
+source semantics does not model their execution. CALL- and CREATE-family
 operations use the open-world relational model described below. The
 memory-write proofs
 use the `writeBytes` read-after-write lemma that now lives upstream
@@ -128,7 +129,7 @@ axioms.
 
 > If `compile prog = some is` and the Yul semantics runs `prog` from
 > machine state `st₀` to `st'` with outcome `o`
-> under an external-call relation whose responses are realized by complete
+> under external call/create relations whose responses are realized by complete
 > target executions, then there is a gas bound `b`
 > such that from **every** initial EVM state that matches `st₀`
 > (`StateMatch`), executes `assemble is` (`FrameOK`), starts at `pc = 0` with
@@ -157,20 +158,22 @@ The proof is a two-phase forward simulation:
   resolve labels to code suffixes; function environments are tracked by
   `FEnvOK`, established at each block via `hoist_ok`.
 * **Phase B** (`YulEvmCompiler/LowerCorrect.lean`, `asteps_sim`/
-  `arun_halt_sim`): each local Asm step maps to 1–3 EVM steps; a call maps to
-  a complete call/return `Steps` trace. `ConfMatch` is restored at the caller,
-  and existential gas bounds add along the execution.
+  `arun_halt_sim`): each local Asm step maps to 1–3 EVM steps; a call or
+  creation maps to a complete `Steps` trace. `ConfMatch` is restored at the
+  caller/creator, and existential gas bounds add along the execution.
 
-`CallsRealized` is deliberately an endpoint condition: it constrains the
-state before the CALL-family opcode and the restored caller afterward, but
-does not constrain intermediate call stacks. Consequently the theorem covers
-arbitrary callee code, nested calls, and reentrant executions of the caller.
+`ExternalsRealized` packages the endpoint conditions `CallsRealized` and
+`CreatesRealized`: they constrain the state before a CALL/CREATE-family opcode
+and the restored caller/creator afterward, but do not constrain intermediate
+call stacks. Consequently the theorem covers arbitrary callee and init code,
+nested calls and creations, and reentrant executions of the creator.
 
 The correspondence `StateMatch` relates memory pointwise (total function vs.
 zero-padded `ByteArray`) and its active-word high-water mark, Yul's flat
 storage/transient storage to the executing account's storage, calldata and
-executing code pointwise (with exact lengths), external-account code bytes,
-lengths and hashes through the account map, historical block hashes, emitted
+executing code pointwise (with exact lengths), and every account's nonce,
+persistent/transient storage, code bytes, lengths, and hashes through the
+account map. It also relates historical block hashes and emitted
 logs in order (address, topics, and data), plus returndata byte-for-byte with
 its exact length. `EnvMatch` also requires the source environment's
 configurable Keccak oracle to agree pointwise with the target hash primitive. Gas is
@@ -219,7 +222,7 @@ failures and stale entries. The reusable runner in
 test environment, runs the assembled bytecode with `evm-semantics`, and
 exactly compares every nonzero memory word, persistent-storage entry, and
 transient-storage entry with the dumps embedded after `// ----`. Object roots
-go through the production object compiler. The current baseline contains 23
+go through the production object compiler. The current baseline contains 21
 fixtures; three of those are object fixtures whose AST-interpreter dumps
 deliberately use synthetic hash offsets/sizes and a dummy code buffer rather
 than the state produced by compiled object bytecode. The remaining entries are
@@ -257,8 +260,8 @@ also compiles yul-semantics' own
 `FibExample.fibContract` (the calldata/memory Fibonacci contract proved
 correct upstream) all the way to bytecode, differentially checks a concrete
 `keccak256("abc")`, checks all five log arities including exact emitted log
-contents, and checks that the compiled Fibonacci code returns the same bytes
-as the interpreter for several inputs.
+contents, checks CREATE/CREATE2 compilation, and checks that the compiled
+Fibonacci code returns the same bytes as the interpreter for several inputs.
 
 ## Roadmap
 

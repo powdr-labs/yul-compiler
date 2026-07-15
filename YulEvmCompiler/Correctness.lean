@@ -14,7 +14,8 @@ simulations:
 * **Phase B** (`asteps_sim`/`arun_halt_sim`): the Asm machine is simulated by
   the EVM small-step semantics on the assembled bytecode, with an
   existential gas bound. Local operations take their fixed short traces;
-  external calls take arbitrary finite traces satisfying `CallsRealized`,
+  external calls and creations take arbitrary finite traces satisfying
+  `ExternalsRealized`,
   including traces with nested calls and reentrancy.
 
 The top-level Yul program is a block, so `Run` decomposes (block rule) into a
@@ -29,11 +30,11 @@ set_option linter.unusedSectionVars false
 
 open EvmSemantics
 open EvmSemantics.EVM
-open YulSemantics.EVM (U256 EvmState Op stepOp evmWithCalls)
+open YulSemantics.EVM (U256 EvmState Op stepOp evmWithExternal)
 open YulSemantics (Outcome Ident VEnv)
 
 variable [model : ExternalModel]
-local notation "yulD" => evmWithCalls model.calls
+local notation "yulD" => evmWithExternal model.calls model.creates
 
 /-- Invert a successful `compileProgram`: it hoisted the top scope,
 checked its names `Nodup`, compiled the statements, and passed `wfCheck`. -/
@@ -79,11 +80,12 @@ state:
   `.Success`;
 * `o = .halt` — the code halts exactly as `yst'.halted` records.
 
-The theorem is uniform in the external-call relation. `hcalls` requires each
-response chosen by that relation to be realized by a complete target
-call/return trace. Those traces have no restriction on intermediate call
-stacks, so arbitrary nested calls and reentrant executions are included. -/
-theorem compile_correct (hcalls : CallsRealized model.calls)
+The theorem is uniform in the external call/create relations. `hexternal`
+requires each selected response to be realized by a complete target trace.
+Those traces have no restriction on intermediate call stacks, so arbitrary
+callee/init code, nested calls/creations, and reentrant executions are
+included. -/
+theorem compile_correct (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List Instr}
     (hcomp : compile prog = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
@@ -117,7 +119,7 @@ theorem compile_correct (hcalls : CallsRealized model.calls)
         obtain ⟨-, -, hsimS⟩ := hout
         have hsteps0 := (hsimS hΦ0) [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
-        obtain ⟨bnd, Hb⟩ := asteps_sim hcalls hcomp hsteps0 (List.suffix_refl asm)
+        obtain ⟨bnd, Hb⟩ := asteps_sim hexternal hcomp hsteps0 (List.suffix_refl asm)
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
         have hcm0 : ConfMatch asm is ⟨asm, [], yst0⟩ s0 :=
@@ -135,7 +137,7 @@ theorem compile_correct (hcalls : CallsRealized model.calls)
         obtain ⟨conf, hsteps0, hhalt0⟩ := hAS [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
         obtain ⟨bnd, Hb⟩ :=
-          arun_halt_sim hcalls hcomp hsteps0 hhalt0 (List.suffix_refl asm)
+          arun_halt_sim hexternal hcomp hsteps0 hhalt0 (List.suffix_refl asm)
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
         have hcm0 : ConfMatch asm is ⟨asm, [], yst0⟩ s0 :=
@@ -152,7 +154,7 @@ block theorem executed as the prefix of
 remain in the prefix; a normal Yul fall-through executes the explicit `STOP`
 seam, while a source halt preserves its exact halt result before reaching the
 payload. -/
-theorem compile_correct_withPayload (hcalls : CallsRealized model.calls)
+theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List Instr} {payload : List UInt8}
     (hcomp : compile prog = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
@@ -181,7 +183,7 @@ theorem compile_correct_withPayload (hcalls : CallsRealized model.calls)
         have hsteps0 := (hsimS hΦ0) [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
         obtain ⟨bnd, Hb⟩ :=
-          asteps_sim hcalls (payload := 0 :: payload) hcomp hsteps0 (List.suffix_refl asm)
+          asteps_sim hexternal (payload := 0 :: payload) hcomp hsteps0 (List.suffix_refl asm)
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
         have hcm0 : ConfMatch (payload := 0 :: payload)
@@ -199,7 +201,7 @@ theorem compile_correct_withPayload (hcalls : CallsRealized model.calls)
         have hAS := hout hΦ0
         obtain ⟨conf, hsteps0, hhalt0⟩ := hAS [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
-        obtain ⟨bnd, Hb⟩ := arun_halt_sim hcalls (payload := 0 :: payload)
+        obtain ⟨bnd, Hb⟩ := arun_halt_sim hexternal (payload := 0 :: payload)
           hcomp hsteps0 hhalt0 (List.suffix_refl asm)
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
@@ -215,7 +217,7 @@ theorem compile_correct_withPayload (hcalls : CallsRealized model.calls)
 /-- Result-level corollary: the compiled bytecode `Eval`s to the
 `ExecutionResult` the Yul outcome corresponds to (`.success` for a program
 that falls through; `resultOf` of the recorded halt otherwise). -/
-theorem compile_correct_eval (hcalls : CallsRealized model.calls)
+theorem compile_correct_eval (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List Instr}
     (hcomp : compile prog = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
@@ -225,7 +227,7 @@ theorem compile_correct_eval (hcalls : CallsRealized model.calls)
       s0.pc = UInt256.ofNat 0 → s0.stack = [] → b ≤ s0.gasAvailable →
       (o = .normal → Eval s0 .success) ∧
       (o = .halt → ∃ hk, yst'.halted = some hk ∧ Eval s0 (resultOf hk)) := by
-  obtain ⟨b, H⟩ := compile_correct hcalls hcomp hrun
+  obtain ⟨b, H⟩ := compile_correct hexternal hcomp hrun
   refine ⟨b, ?_⟩
   intro s0 hf hm hpc hstk hgas
   obtain ⟨s', hsteps, hcs', hm', hres⟩ := H s0 hf hm hpc hstk hgas

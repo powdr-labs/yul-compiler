@@ -295,6 +295,16 @@ def externalCalls : Block Op := yul% {
   sstore(0, add(add(a, b), add(c, d)))
 }
 
+/-- Both open-world creation forms. The copied byte is deliberately arbitrary
+init code: compilation and correctness depend only on the realization
+interface, not on knowing which contract it deploys. -/
+def externalCreates : Block Op := yul% {
+  mstore8(0, 0)
+  let a := create(0, 0, 1)
+  let b := create2(0, 0, 1, 7)
+  sstore(0, add(a, b))
+}
+
 #guard (compileProgram sumLoop).isSome
 #guard (compileProgram breakContinue).isSome
 #guard (compileProgram funCall).isSome
@@ -325,6 +335,8 @@ def externalCalls : Block Op := yul% {
 #guard (compile logOps).isSome
 #guard (compileProgram externalCalls).isSome
 #guard (compile externalCalls).isSome
+#guard (compileProgram externalCreates).isSome
+#guard (compile externalCreates).isSome
 
 /-! ### The upstream Fibonacci contract
 

@@ -67,7 +67,7 @@ Design decisions baked into that statement:
 **yul-semantics** (`YulSemantics.*`):
 - `Ast.lean`: `Expr Op` (lit / var / builtin / call), `Stmt Op`, `Outcome`.
 - `Dialect.lean`: dialect interface; `BuiltinResult` (`ok rets st` / `halt st`).
-- `Dialect/EVM.lean` (rev `e702825`, `main`): `Op` enum covering the
+- `Dialect/EVM.lean` (rev `57de275`, `main`): `Op` enum covering the
   full user-facing Yul EVM dialect — arithmetic/comparison/bitwise/`clz`,
   `keccak256` (via the configurable `ExecEnv.keccakOf` oracle, with opaque
   `keccakBytes` as its standalone default), `pop`, memory
@@ -76,15 +76,15 @@ Design decisions baked into that statement:
   returndata reads and copies, environment readers (`address` … `blobbasefee`),
   world-state reads (`balance`/`extcodesize`/…, as abstract maps in `ExecEnv`),
   `log0`–`log4`, the object-data ops (`dataoffset`/`datasize`/`datacopy`),
-  halting ops; the four CALL-family operations use the open-world
-  `ExternalCalls` relation, while `gas`/creates/`selfdestruct` remain
-  unmodeled by `stepOp`. `EvmState` is
+  halting ops; CALL- and CREATE-family operations use the open-world
+  `ExternalCalls`/`ExternalCreates` relations, while `gas`/`selfdestruct`
+  remain unmodeled by `stepOp`. `EvmState` is
   `memory : Nat → UInt8`, `activeWords : U256`,
   `storage/transient : U256 → U256`, `env : ExecEnv`,
   `returndata : List UInt8`, `logs : List LogEntry`,
   `halted : Option (HaltKind × List UInt8)`; `evm : Dialect` has
-  `evmWithCalls external : Dialect`; its built-in relation delegates calls to
-  `external` and retains `stepOp` for local operations.
+  `evmWithExternal calls creates : Dialect`; its built-in relation delegates
+  calls/creations to those relations and retains `stepOp` for local operations.
 - `BigStep.lean`: single indexed inductive `Step D funs V st code res` covering
   expressions, argument lists (**right-to-left**), statements, sequences, loops;
   `Run` for whole programs. Induction over a derivation is a standard
@@ -251,20 +251,26 @@ layout-resolved object execution.
 Direct-data placement remains covered separately by
 `compileObject_consistent`.
 
-### Open-world CALL-family correctness
+### Open-world CALL- and CREATE-family correctness
 
-The source and Asm semantics are parameterized by `ExternalCalls`. Phase B
-separates local opcodes from CALL-family instructions. Local ops retain their
-one-step `opStep` proof; `call`, `callcode`, `delegatecall`, and `staticcall`
-use `CallsRealized`, which supplies a complete target `Steps` trace from the
-caller immediately before the opcode to the same caller after return.
+The source and Asm semantics are parameterized by `ExternalCalls` and
+`ExternalCreates`. Phase B separates local opcodes from external instructions.
+Local ops retain their one-step `opStep` proof. The CALL family uses
+`CallsRealized`; `create` and `create2` use `CreatesRealized`. Each supplies a
+complete target `Steps` trace from immediately before the opcode to the
+restored caller/creator after return.
 
 Only trace endpoints are constrained (`FrameOK`, `StateMatch`, next `pc`, and
-the returned success flag). Intermediate states are unrestricted, so the
-trace may execute unknown code, perform arbitrarily nested calls, and re-enter
-the caller. `compile_correct` quantifies over the external relation and assumes
-this realization property for every response it admits. `CallsRealized.none`
-provides the vacuous realization for the no-external-response model.
+the returned flag/address word). Intermediate states are unrestricted, so a
+trace may execute unknown runtime or init code, perform arbitrarily nested
+calls and creations, and re-enter the caller/creator. `StateMatch` relates the
+full account projection—nonce, code, persistent storage, and transient storage
+for every 160-bit address—so hidden callee state and CREATE address/collision
+inputs cannot vary between matching worlds. Log correspondence also retains
+each emitting frame's address, including callee and init-code logs.
+`compile_correct` quantifies over
+both external relations and assumes realization for every response they admit.
+`ExternalsRealized.none` provides the vacuous closed-world realization.
 
 ### Remaining extension path
 
@@ -272,10 +278,9 @@ provides the vacuous realization for the no-external-response model.
   the AST so hex/interleaved forms can join the canonical round-trip theorem or
   verify their documented normalization and the post-parse validator directly.
 * **Built-in coverage.** The Keccak boundary and event-log correspondence are
-  now explicit and proved, and CALL-family operations use the open-world
-  realization interface above. The remaining operations (`gas`, creates, and
-  `selfdestruct`) need source semantics before they can enter the verified
-  fragment.
+  now explicit and proved, and CALL-/CREATE-family operations use the open-world
+  realization interface above. The remaining operations (`gas` and
+  `selfdestruct`) need source semantics before they can enter the verified fragment.
 * **Deep stack access.** Use EIP-8024 after the target semantics activates it,
   or introduce spilling before then.
 * **Optimization passes.** Prove each pass against Yul semantics and compose it
@@ -322,9 +327,9 @@ Deliverables:
    transaction blob-list fields of `StateMatch`/`EnvMatch`. `keccak256` uses
    the hash-oracle agreement described in finding 4. `log0`–`log4` preserve an
    ordered correspondence over the emitting address, topics, and memory-slice
-   data, including active-memory expansion. CALL-family operations use the
-   open-world `CallsRealized` interface described above. Excluded until further
-   work: `gas`/creates/`selfdestruct`
+   data, including active-memory expansion. CALL-/CREATE-family operations use
+   the open-world `ExternalsRealized` interface described above. Excluded until
+   further work: `gas`/`selfdestruct`
    (unmodeled in yul-semantics — no source derivation exists, so nothing to
    preserve).
 4. Examples: compiled snippets (e.g. `sstore(0, add(1, 2)); return(0, 0)`) with

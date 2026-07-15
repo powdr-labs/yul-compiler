@@ -72,8 +72,8 @@ def opByte : Operation → UInt8
   | .Dup d => UInt8.ofNat (0x80 + d.idx.val)
   | .Swap s => UInt8.ofNat (0x90 + s.idx.val)
   | .Log l => UInt8.ofNat (0xa0 + l.topics.val)
-  | .CALL => 0xf1 | .CALLCODE => 0xf2 | .RETURN => 0xf3
-  | .DELEGATECALL => 0xf4 | .STATICCALL => 0xfa
+  | .CREATE => 0xf0 | .CALL => 0xf1 | .CALLCODE => 0xf2 | .RETURN => 0xf3
+  | .DELEGATECALL => 0xf4 | .CREATE2 => 0xf5 | .STATICCALL => 0xfa
   | .REVERT => 0xfd | .INVALID => 0xfe
   | _ => 0xfe
 
