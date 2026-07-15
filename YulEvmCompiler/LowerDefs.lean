@@ -17,11 +17,13 @@ to EVM states `s` with
   label address* on code addresses),
 * `FrameOK`/`StateMatch` as in the milestone-1/2 proof.
 
-Each `AStep` then maps to 1–3 EVM `Step`s (label pushes and jumps expand to
-`PUSH32 addr`, `JUMP`/`JUMPI`, and the landing `JUMPDEST`), with an
-existential gas bound; bounds add along `ASteps`. All gas accounting and
-all byte/decode arithmetic of the compiler correctness proof lives in this
-file — phase A never sees it.
+Each local `AStep` then maps to 1–3 EVM `Step`s (label pushes and jumps
+expand to `PUSH32 addr`, `JUMP`/`JUMPI`, and the landing `JUMPDEST`). An
+external-call step instead maps to an arbitrary finite `Steps` trace through
+the `CallsRealized` interface. Only its endpoints are constrained, so the
+trace may enter arbitrary contracts, nest calls, and reenter the caller.
+Both cases have an existential gas bound; bounds add along `ASteps`. All gas
+accounting and byte/decode arithmetic lives in this phase.
 -/
 
 namespace YulEvmCompiler
@@ -99,7 +101,7 @@ theorem StkOK.append_right {prog : List Asm} {τ σ : List AVal}
 
 /-- Every step preserves the code-addresses-defined invariant (purely
 Asm-side; no EVM state involved). -/
-theorem AStep.stkOK {prog : List Asm} {a b : AConf}
+theorem AStep.stkOK [model : ExternalModel] {prog : List Asm} {a b : AConf}
     (h : AStep prog a b) (ha : StkOK prog a.stk) : StkOK prog b.stk := by
   cases h with
   | push => exact ha.cons_word
@@ -290,6 +292,60 @@ structure ConfMatch (prog : List Asm) (is : List Instr) (a : AConf)
   smatch : StateMatch a.yst s
   pc : s.pc = UInt256.ofNat (codeSize prog - codeSize a.code)
   stack : s.stack = mapStk prog a.stk
+
+/-! ### Open-world call realization
+
+The source semantics deliberately does not choose a callee implementation.
+Instead, `CallsRealized external` says that every response admitted by the
+source relation is realized by a *complete* target call-and-return execution.
+Only the two endpoints are constrained.  In particular, the `Steps` witness
+has no invariant requiring an empty call stack between them: it may enter
+arbitrary contracts, make nested calls, and re-enter this caller any number of
+times before the original call returns. -/
+
+/-- Target realization of an open-world source call relation.  The restored
+endpoint is again the original running frame with an empty call stack, the
+source-selected response installed, and its success flag on the stack. -/
+structure CallsRealized (external : YulSemantics.EVM.ExternalCalls) : Prop where
+  call {yop : Op} (hcall : IsCallOp yop) {o : Operation}
+      (hop : opTable yop = some o) {args rets : List U256}
+      {yst yst' : EvmState}
+      (hsource : YulSemantics.EVM.builtin external yop args yst (.ok rets yst')) :
+      ∃ bnd : Nat, ∀ {code : ByteArray} {s : State} {σ : List UInt256},
+        FrameOK code s → StateMatch yst s →
+        s.decodedOp = some o → s.stack = args.map conv ++ σ →
+        bnd ≤ s.gasAvailable →
+        ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst' s' ∧
+          s'.pc = s.pc.succ ∧ s'.stack = rets.map conv ++ σ ∧
+          s.gasAvailable - bnd ≤ s'.gasAvailable
+
+/-- The theorem-facing form of call realization.  Its trace is deliberately
+unrestricted at intermediate states, which is the formal reason reentrant
+executions are included in compiler correctness. -/
+theorem CallsRealized.complete_allows_reentrancy
+    {external : YulSemantics.EVM.ExternalCalls} (h : CallsRealized external)
+    {yop : Op} (hcall : IsCallOp yop) {o : Operation}
+    (hop : opTable yop = some o) {args rets : List U256} {yst yst' : EvmState}
+    (hsource : YulSemantics.EVM.builtin external yop args yst (.ok rets yst')) :
+    ∃ bnd : Nat, ∀ {code : ByteArray} {s : State} {σ : List UInt256},
+      FrameOK code s → StateMatch yst s →
+      s.decodedOp = some o → s.stack = args.map conv ++ σ →
+      bnd ≤ s.gasAvailable →
+      ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst' s' ∧
+        s'.pc = s.pc.succ ∧ s'.stack = rets.map conv ++ σ ∧
+        s.gasAvailable - bnd ≤ s'.gasAvailable :=
+  h.call hcall hop hsource
+
+/-- The empty external relation is realized vacuously: no source call can
+choose a response. This recovers the pre-call executable-dialect theorems. -/
+theorem CallsRealized.none :
+    CallsRealized YulSemantics.EVM.ExternalCalls.none := by
+  constructor
+  intro yop hcall o hop args rets yst yst' hsource
+  cases yop <;>
+    simp [IsCallOp, YulSemantics.EVM.builtin, YulSemantics.EVM.externalCall,
+      YulSemantics.EVM.ExternalCalls.none] at hcall hsource
+  all_goals split at hsource <;> contradiction
 
 /-- The lowered program's byte size is `codeSize prog` (bounded by the
 frame invariant). -/

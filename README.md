@@ -106,12 +106,14 @@ The verified built-in set (the domain of `opTable` in
 | env/block  | `address origin caller callvalue gasprice selfbalance coinbase timestamp number prevrandao gaslimit chainid basefee blobbasefee blockhash` |
 | world/tx   | `balance blobhash` |
 | logging    | `log0 log1 log2 log3 log4` |
+| calls      | `call callcode delegatecall staticcall` |
 | halting    | `stop return revert invalid` |
 
 Everything else in the direct built-in path is rejected (`compile = none`).
 Object-relative `dataoffset`/`datasize` calls are resolved separately by the
-verified object compiler; `gas`, calls/creates, and `selfdestruct` remain
-blocked because the source semantics does not model their execution. The
+verified object compiler; `gas`, creates, and `selfdestruct` remain blocked
+because the source semantics does not model their execution. CALL-family
+operations use the open-world relational model described below. The
 memory-write proofs
 use the `writeBytes` read-after-write lemma that now lives upstream
 (`EvmSemantics.MachineState.writeBytes_getElem?_getD`); `MSTORE` additionally
@@ -126,7 +128,8 @@ axioms.
 
 > If `compile prog = some is` and the Yul semantics runs `prog` from
 > machine state `st₀` to `st'` with outcome `o`
-> (`YulSemantics.Run yul prog st₀ V' st' o`), then there is a gas bound `b`
+> under an external-call relation whose responses are realized by complete
+> target executions, then there is a gas bound `b`
 > such that from **every** initial EVM state that matches `st₀`
 > (`StateMatch`), executes `assemble is` (`FrameOK`), starts at `pc = 0` with
 > an empty stack, and holds at least `b` gas, the EVM semantics reaches
@@ -154,9 +157,14 @@ The proof is a two-phase forward simulation:
   resolve labels to code suffixes; function environments are tracked by
   `FEnvOK`, established at each block via `hoist_ok`.
 * **Phase B** (`YulEvmCompiler/LowerCorrect.lean`, `asteps_sim`/
-  `arun_halt_sim`): each Asm step maps to 1–3 EVM steps on the assembled
-  bytecode, preserving `ConfMatch`, with existential gas bounds that add along
-  the execution.
+  `arun_halt_sim`): each local Asm step maps to 1–3 EVM steps; a call maps to
+  a complete call/return `Steps` trace. `ConfMatch` is restored at the caller,
+  and existential gas bounds add along the execution.
+
+`CallsRealized` is deliberately an endpoint condition: it constrains the
+state before the CALL-family opcode and the restored caller afterward, but
+does not constrain intermediate call stacks. Consequently the theorem covers
+arbitrary callee code, nested calls, and reentrant executions of the caller.
 
 The correspondence `StateMatch` relates memory pointwise (total function vs.
 zero-padded `ByteArray`) and its active-word high-water mark, Yul's flat

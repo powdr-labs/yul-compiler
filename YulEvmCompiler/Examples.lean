@@ -285,6 +285,16 @@ def logOps : Block Op := yul% {
   log4(31, 2, 0x41, 0x42, 0x43, 0x44)
 }
 
+/-- All four open-world call forms. Execution needs an external model, but
+compilation and opcode selection are independent of the callee code. -/
+def externalCalls : Block Op := yul% {
+  let a := call(100000, 1, 0, 0, 0, 0, 0)
+  let b := callcode(100000, 2, 0, 0, 0, 0, 0)
+  let c := delegatecall(100000, 3, 0, 0, 0, 0)
+  let d := staticcall(100000, 4, 0, 0, 0, 0)
+  sstore(0, add(add(a, b), add(c, d)))
+}
+
 #guard (compileProgram sumLoop).isSome
 #guard (compileProgram breakContinue).isSome
 #guard (compileProgram funCall).isSome
@@ -313,6 +323,8 @@ def logOps : Block Op := yul% {
 #guard (compile externalCodeAndBlockReads).isSome
 #guard (compileProgram logOps).isSome
 #guard (compile logOps).isSome
+#guard (compileProgram externalCalls).isSome
+#guard (compile externalCalls).isSome
 
 /-! ### The upstream Fibonacci contract
 

@@ -8,7 +8,9 @@ import YulSemantics.BigStep
 **Phase A**: the simulation from the Yul big-step semantics to the Asm
 semantics. Everything here is byte-free and gas-free: fragments are placed
 by list appends (`prog = pre ++ asm ++ c`), jumps land at labels via
-`findLabel`, and built-ins step by the dialect's own `stepOp`.
+`findLabel`, and built-ins use the dialect's relational `builtin` semantics.
+Local operations reduce through `stepOp`; external calls use the chosen
+open-world `ExternalCalls` relation.
 
 The fragment-execution shapes (`ASimE`/`ASimS`/… below) mirror the
 milestone-2 `SimE`/`SimS`, with two new ingredients:
@@ -23,49 +25,62 @@ See `PLAN.md` § "Phase A detailed design" for the roadmap.
 
 namespace YulEvmCompiler.SimA
 
+set_option linter.unusedSectionVars false
+
 open YulEvmCompiler
 open YulSemantics (Expr Stmt Block Ident VEnv Outcome)
-open YulSemantics.EVM (U256 EvmState Op stepOp litValue)
+open YulSemantics.EVM
+  (U256 EvmState Op ExternalCalls builtin evmWithCalls litValue stepOp)
 
-/-- The Yul EVM dialect (as in `OpStep.yul`, redeclared to keep phase A
-independent of the EVM-side modules). -/
-abbrev yulD : YulSemantics.Dialect := YulSemantics.EVM.evm
+variable [model : ExternalModel]
+local notation "extCalls" => model.calls
+
+/-- The Yul EVM dialect with the external-call relation being simulated. -/
+local notation "yulD" => evmWithCalls model.calls
 
 /-- The Asm-stack image of a variable environment: the values as words,
 innermost binding on top. -/
-def wimg (V : VEnv yulD) : List AVal := V.map (fun p => .word p.2)
+def wimgFor (ext : ExternalCalls) (V : VEnv (evmWithCalls ext)) : List AVal :=
+  V.map (fun p => .word p.2)
 
 /-- The layout a variable environment realizes: its names. -/
-def names (V : VEnv yulD) : List Ident := V.map Prod.fst
+def namesFor (ext : ExternalCalls) (V : VEnv (evmWithCalls ext)) : List Ident :=
+  V.map Prod.fst
 
 /-- Keep the outermost `depth` bindings (the semantics' `restore`, by
 target length). -/
-def trim (depth : Nat) (V : VEnv yulD) : VEnv yulD :=
+def trimFor (ext : ExternalCalls) (depth : Nat) (V : VEnv (evmWithCalls ext)) :
+    VEnv (evmWithCalls ext) :=
   V.drop (V.length - depth)
+
+local notation "wimg" => wimgFor extCalls
+local notation "names" => namesFor extCalls
+local notation "vtrim" => trimFor extCalls
+local notation "dzero" => YulSemantics.Dialect.zero yulD
 
 @[simp] theorem wimg_nil : wimg [] = [] := rfl
 @[simp] theorem wimg_cons (p : Ident × U256) (V : VEnv yulD) :
     wimg (p :: V) = .word p.2 :: wimg V := rfl
 @[simp] theorem wimg_length (V : VEnv yulD) : (wimg V).length = V.length := by
-  simp [wimg]
+  simp [wimgFor]
 theorem wimg_append (V W : VEnv yulD) : wimg (V ++ W) = wimg V ++ wimg W := by
-  simp [wimg]
+  simp [wimgFor]
 
 @[simp] theorem names_nil : names [] = [] := rfl
 @[simp] theorem names_cons (p : Ident × U256) (V : VEnv yulD) :
     names (p :: V) = p.1 :: names V := rfl
 @[simp] theorem names_length (V : VEnv yulD) : (names V).length = V.length := by
-  simp [names]
+  simp [namesFor]
 theorem names_append (V W : VEnv yulD) : names (V ++ W) = names V ++ names W := by
-  simp [names]
+  simp [namesFor]
 
 theorem wimg_drop (n : Nat) (V : VEnv yulD) :
     wimg (V.drop n) = (wimg V).drop n := by
-  simp [wimg, List.map_drop]
+  simp [wimgFor, List.map_drop]
 
 theorem names_drop (n : Nat) (V : VEnv yulD) :
     names (V.drop n) = (names V).drop n := by
-  simp [names, List.map_drop]
+  simp [namesFor, List.map_drop]
 
 /-! ### Fragment-execution shapes
 
@@ -87,7 +102,8 @@ def ASimEHalt (prog : List Asm) (yst : EvmState) (V : VEnv yulD) (off : Nat)
     (asm : List Asm) (yst' : EvmState) : Prop :=
   ∀ (pre c : List Asm) (τ σ : List AVal),
     prog = pre ++ asm ++ c → τ.length = off →
-    ∃ conf, ASteps prog ⟨asm ++ c, τ ++ wimg V ++ σ, yst⟩ conf
+    ∃ conf, ASteps prog
+      ⟨asm ++ c, τ ++ wimg V ++ σ, yst⟩ conf
       ∧ AHalt prog conf yst'
 
 /-- A compiled *statement* fragment with a normal outcome: the variable
@@ -96,14 +112,16 @@ def ASimS (prog : List Asm) (yst : EvmState) (V : VEnv yulD)
     (asm : List Asm) (yst' : EvmState) (V' : VEnv yulD) : Prop :=
   ∀ (pre c : List Asm) (σ : List AVal),
     prog = pre ++ asm ++ c →
-    ASteps prog ⟨asm ++ c, wimg V ++ σ, yst⟩ ⟨c, wimg V' ++ σ, yst'⟩
+    ASteps prog
+      ⟨asm ++ c, wimg V ++ σ, yst⟩ ⟨c, wimg V' ++ σ, yst'⟩
 
 /-- Like `ASimS`, but execution halts. -/
 def ASimSHalt (prog : List Asm) (yst : EvmState) (V : VEnv yulD)
     (asm : List Asm) (yst' : EvmState) : Prop :=
   ∀ (pre c : List Asm) (σ : List AVal),
     prog = pre ++ asm ++ c →
-    ∃ conf, ASteps prog ⟨asm ++ c, wimg V ++ σ, yst⟩ conf
+    ∃ conf, ASteps prog
+      ⟨asm ++ c, wimg V ++ σ, yst⟩ conf
       ∧ AHalt prog conf yst'
 
 /-- A *non-local exit* (`break`/`continue`/`leave`): pop the region down
@@ -116,7 +134,7 @@ def ASimNL (prog : List Asm) (yst : EvmState) (V : VEnv yulD)
   ∀ (pre c cL : List Asm) (σ : List AVal),
     prog = pre ++ asm ++ c → findLabel l prog = some cL →
     ASteps prog ⟨asm ++ c, wimg V ++ σ, yst⟩
-      ⟨cL, wimg (trim depth V') ++ σ, yst'⟩
+      ⟨cL, wimg (vtrim depth V') ++ σ, yst'⟩
 
 /-! ### Structural composition -/
 
@@ -305,7 +323,7 @@ theorem asimE_op {prog : List Asm} {yst yst1 yst2 : EvmState}
     {V : VEnv yulD} {off : Nat} {asm : List Asm} {yop : Op}
     {args rets : List U256}
     (hargs : ASimE prog yst V off asm args yst1)
-    (hstep : stepOp yop args yst1 = some (.ok rets yst2)) :
+    (hstep : builtin extCalls yop args yst1 (.ok rets yst2)) :
     ASimE prog yst V off (asm ++ [.op yop]) rets yst2 := by
   intro pre c τ σ hp hτ
   rw [List.append_assoc]
@@ -320,7 +338,7 @@ theorem asimE_opHalt {prog : List Asm} {yst yst1 yst2 : EvmState}
     {V : VEnv yulD} {off : Nat} {asm : List Asm} {yop : Op}
     {args : List U256}
     (hargs : ASimE prog yst V off asm args yst1)
-    (hstep : stepOp yop args yst1 = some (.halt yst2)) :
+    (hstep : builtin extCalls yop args yst1 (.halt yst2)) :
     ASimEHalt prog yst V off (asm ++ [.op yop]) yst2 := by
   intro pre c τ σ hp hτ
   refine ⟨_, ?_, .op (c := c) (σ := τ ++ wimg V ++ σ) hstep⟩
@@ -650,7 +668,7 @@ theorem asimS_assigns {prog : List Asm} {yst yst' : EvmState} {V : VEnv yulD}
 /-! ### Statement leaves: declarations, pops, labels, non-local exits -/
 
 /-- The dialect's zero is the `0` word the compiler pushes. -/
-theorem yulD_zero : yulD.zero = (0 : U256) := rfl
+theorem yulD_zero : dzero = (0 : U256) := rfl
 
 /-- `let x₁, …, xₙ` — one zero push per name. -/
 theorem asimS_letZero {prog : List Asm} {yst : EvmState} {V : VEnv yulD}
@@ -664,7 +682,7 @@ theorem asimS_letZero {prog : List Asm} {yst : EvmState} {V : VEnv yulD}
     rw [List.replicate_succ']
     have hlast : ASimS prog yst (YulSemantics.bindZeros yulD xs ++ V)
         [.push 0] yst
-        ((x, yulD.zero) :: (YulSemantics.bindZeros yulD xs ++ V)) := by
+        ((x, dzero) :: (YulSemantics.bindZeros yulD xs ++ V)) := by
       rw [yulD_zero]
       exact (asimE_push 0).toASimSLet
     exact ih.comp hlast
@@ -682,11 +700,11 @@ theorem asimS_pops {prog : List Asm} {yst : EvmState} :
     have := ih V (pre ++ [.pop]) c σ (by rw [hp]; simp [List.replicate_succ])
     simpa using this
 
-/-- Popping down to `trim depth` (saturating: no-op when `depth ≥ |V|`). -/
+/-- Popping down to `vtrim depth` (saturating: no-op when `depth ≥ |V|`). -/
 theorem asimS_trim {prog : List Asm} {yst : EvmState} (depth : Nat)
     (V : VEnv yulD) :
     ASimS prog yst V (List.replicate (V.length - depth) .pop) yst
-      (trim depth V) := by
+      (vtrim depth V) := by
   have h := asimS_pops (prog := prog) (yst := yst)
     (V.take (V.length - depth)) (V.drop (V.length - depth))
   rw [List.take_append_drop] at h
@@ -726,13 +744,17 @@ theorem stepOp_iszero (v : U256) (st : EvmState) :
     stepOp .iszero [v] st
       = some (.ok [YulSemantics.EVM.b2w (v = 0)] st) := rfl
 
+theorem builtin_iszero (v : U256) (st : EvmState) :
+    builtin extCalls .iszero [v] st (.ok [YulSemantics.EVM.b2w (v = 0)] st) := by
+  simpa [builtin] using stepOp_iszero v st
+
 /-- The compiled condition prologue `cCode ; ISZERO`. -/
 theorem asimE_condPrologue {prog : List Asm} {yst yst1 : EvmState}
     {V : VEnv yulD} {cCode : List Asm} {cv : U256}
     (hc : ASimE prog yst V 0 cCode [cv] yst1) :
     ASimE prog yst V 0 (cCode ++ [.op .iszero])
       [YulSemantics.EVM.b2w (cv = 0)] yst1 :=
-  asimE_op hc (stepOp_iszero cv yst1)
+  asimE_op hc (builtin_iszero cv yst1)
 
 /-- Truthy `if`, body runs normally: fall through the `jumpi`, run the
 body, step over the trailing label. -/
@@ -901,11 +923,11 @@ theorem asimE_switchCmp {prog : List Asm} {yst : EvmState} {V : VEnv yulD}
       [YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (w = cv) = 0)] yst := by
   have h2 : ASimE prog yst ((x, cv) :: V) 0 [.dup 0, .push w] [w, cv] yst :=
     ASimE.compArgs (k := 1) rfl (asimE_dup0 x cv) (asimE_push w)
-  have heq : stepOp .eq [w, cv] yst
-      = some (.ok [YulSemantics.EVM.b2w (w = cv)] yst) := rfl
+  have heq : builtin extCalls .eq [w, cv] yst
+      (.ok [YulSemantics.EVM.b2w (w = cv)] yst) := by
+    simp [builtin, stepOp, YulSemantics.EVM.bin]
   have h3 := asimE_op h2 heq
-  have hiz : stepOp .iszero [YulSemantics.EVM.b2w (w = cv)] yst
-      = some (.ok [YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (w = cv) = 0)] yst) := rfl
+  have hiz := builtin_iszero (YulSemantics.EVM.b2w (w = cv)) yst
   have h4 := asimE_op h3 hiz
   simpa using h4
 
@@ -1312,7 +1334,7 @@ private theorem get_append_right {A B : VEnv yulD} {r : Ident}
 /-- On an environment with distinct names, name-based lookup reads the
 values in order. -/
 private theorem get_self {B : VEnv yulD} (hnodup : (names B).Nodup) :
-    (names B).map (fun r => (YulSemantics.VEnv.get B r).getD yulD.zero)
+    (names B).map (fun r => (YulSemantics.VEnv.get B r).getD dzero)
       = B.map Prod.snd := by
   induction B with
   | nil => rfl
@@ -1324,7 +1346,7 @@ private theorem get_self {B : VEnv yulD} (hnodup : (names B).Nodup) :
       exact this.1
     rw [List.map_cons, List.map_cons]
     congr 1
-    · show (YulSemantics.VEnv.get ((y, w) :: B) y).getD yulD.zero = w
+    · show (YulSemantics.VEnv.get ((y, w) :: B) y).getD dzero = w
       unfold YulSemantics.VEnv.get
       rw [List.find?_cons_of_pos (by simp)]
       rfl
@@ -1342,7 +1364,7 @@ theorem wimg_rets {Vend : VEnv yulD} {ps rs : List Ident}
     (hnames : names Vend = ps ++ rs) (hnodup : (ps ++ rs).Nodup) :
     wimg (Vend.drop ps.length)
       = words (rs.map (fun r =>
-          (YulSemantics.VEnv.get Vend r).getD yulD.zero)) := by
+          (YulSemantics.VEnv.get Vend r).getD dzero)) := by
   -- split Vend at the parameter/return boundary
   have hlenV : Vend.length = ps.length + rs.length := by
     have := congrArg List.length hnames
@@ -1370,14 +1392,14 @@ theorem wimg_rets {Vend : VEnv yulD} {ps rs : List Ident}
     rw [hnA]
     intro hmem
     exact (List.disjoint_of_nodup_append hnodup) hmem hr
-  have : rs.map (fun r => (YulSemantics.VEnv.get (A ++ B) r).getD yulD.zero)
-      = rs.map (fun r => (YulSemantics.VEnv.get B r).getD yulD.zero) := by
+  have : rs.map (fun r => (YulSemantics.VEnv.get (A ++ B) r).getD dzero)
+      = rs.map (fun r => (YulSemantics.VEnv.get B r).getD dzero) := by
     apply List.map_congr_left
     intro r hr
     rw [hget r hr]
   rw [this, ← hnB,
     get_self (by rw [hnB]; exact (List.nodup_append.mp hnodup).2.1)]
-  simp [wimg, words]
+  simp [wimgFor, words]
 
 /-- `retRot k` (`SWAP1…SWAPk`) rotates the single element `Y` sitting just
 below the `k`-element block `as` to the top, preserving the block's order. -/
@@ -1430,7 +1452,7 @@ theorem asim_epilogue {prog : List Asm} {yst : EvmState}
       ASteps prog ⟨epilogue ps.length rs.length ++ c,
           wimg Vend ++ (.code lret :: σc), yst⟩
         ⟨cRet, words (rs.map (fun r =>
-            (YulSemantics.VEnv.get Vend r).getD yulD.zero)) ++ σc, yst⟩ := by
+            (YulSemantics.VEnv.get Vend r).getD dzero)) ++ σc, yst⟩ := by
   intro pre c σc hp
   have hlenV : Vend.length = ps.length + rs.length := by
     have := congrArg List.length hnames; simpa using this
@@ -1460,7 +1482,7 @@ theorem asim_epilogue {prog : List Asm} {yst : EvmState}
   -- rotate the return address up and jump
   rw [show retRot rs.length ++ [.dynJump] ++ c = retRot rs.length ++ (.dynJump :: c) from by simp]
   refine (retRot_exec (prog := prog) (yst := yst) rs.length
-      (words (rs.map (fun r => (YulSemantics.VEnv.get Vend r).getD yulD.zero)))
+      (words (rs.map (fun r => (YulSemantics.VEnv.get Vend r).getD dzero)))
       (.code lret) σc (pre ++ List.replicate ps.length .pop) (.dynJump :: c)
       (by simp [words]) hrs1 (by rw [hp]; simp [epilogue, List.append_assoc])).trans ?_
   exact .single (.dynJump hfind)
@@ -1492,15 +1514,15 @@ def SOut (prog : List Asm) (funs : YulSemantics.FunEnv yulD) (Φ : FMap)
       ∧ (FEnvOK prog funs Φ → ASimS prog yst V asm yst' V')
   | .halt => FEnvOK prog funs Φ → ASimSHalt prog yst V asm yst'
   | .break => ∃ lc, L = some lc ∧ V.length ≤ V'.length
-      ∧ names (trim lc.depth V') = (names V).drop (V.length - lc.depth)
+      ∧ names (vtrim lc.depth V') = (names V).drop (V.length - lc.depth)
       ∧ (FEnvOK prog funs Φ →
           ASimNL prog yst V asm yst' V' lc.brk lc.depth)
   | .continue => ∃ lc, L = some lc ∧ V.length ≤ V'.length
-      ∧ names (trim lc.depth V') = (names V).drop (V.length - lc.depth)
+      ∧ names (vtrim lc.depth V') = (names V).drop (V.length - lc.depth)
       ∧ (FEnvOK prog funs Φ →
           ASimNL prog yst V asm yst' V' lc.cont lc.depth)
   | .leave => ∃ fc, F = some fc ∧ V.length ≤ V'.length
-      ∧ names (trim fc.depth V') = (names V).drop (V.length - fc.depth)
+      ∧ names (vtrim fc.depth V') = (names V).drop (V.length - fc.depth)
       ∧ (FEnvOK prog funs Φ →
           ASimNL prog yst V asm yst' V' fc.exit fc.depth)
 
@@ -1531,7 +1553,7 @@ def LOut (prog : List Asm) (funs : YulSemantics.FunEnv yulD) (Φ : FMap)
           wimg V ++ σ, yst⟩ conf
         ∧ AHalt prog conf yst'
   | .leave => ∃ fc, F = some fc ∧ V.length ≤ V'.length
-      ∧ names (trim fc.depth V') = (names V).drop (V.length - fc.depth)
+      ∧ names (vtrim fc.depth V') = (names V).drop (V.length - fc.depth)
       ∧ (∀ cRest, findLabel lcond prog
             = some (loopIter lcond lpost lexit cCode bodyAsm postAsm cRest) →
           FEnvOK prog funs Φ →
@@ -1539,7 +1561,7 @@ def LOut (prog : List Asm) (funs : YulSemantics.FunEnv yulD) (Φ : FMap)
             ASteps prog
               ⟨loopIter lcond lpost lexit cCode bodyAsm postAsm cRest,
                 wimg V ++ σ, yst⟩
-              ⟨cL, wimg (trim fc.depth V') ++ σ, yst'⟩)
+              ⟨cL, wimg (vtrim fc.depth V') ++ σ, yst'⟩)
   | _ => True
 
 /-- The induction motive: what a source derivation for each syntactic
@@ -1889,7 +1911,7 @@ private theorem stmt_of_block {Φ : FMap} {Γ : List Ident}
   simp only [compileStmt, h, Option.bind_eq_bind, Option.bind_some]
 
 /-- The dialect zero, as the truthiness test sees it. -/
-private theorem ne_zero_of_ne_dzero {cv : U256} (h : cv ≠ yulD.zero) :
+private theorem ne_zero_of_ne_dzero {cv : U256} (h : cv ≠ dzero) :
     cv ≠ 0 := h
 
 /-- A label placed anywhere in the program is defined. -/
@@ -1938,7 +1960,7 @@ private theorem callee_frame {ps rs : List Ident} {vs : List U256}
     induction rs with
     | nil => rfl
     | cons r rs ih =>
-      show AVal.word yulD.zero :: wimg (YulSemantics.bindZeros yulD rs) = _
+      show AVal.word dzero :: wimg (YulSemantics.bindZeros yulD rs) = _
       rw [ih, yulD_zero]
       rfl
   refine ⟨?_, ?_, ?_⟩
@@ -1947,7 +1969,7 @@ private theorem callee_frame {ps rs : List Ident} {vs : List U256}
   · have h1 : (ps.zip vs).length = ps.length := by
       rw [List.length_zip, hlen, Nat.min_self]
     have h2 : (YulSemantics.bindZeros yulD rs).length = rs.length := by
-      have := congrArg List.length (names_bindZeros rs)
+      have := congrArg List.length (names_bindZeros (model := model) rs)
       simpa using this
     rw [List.length_append, h1, h2]
 
@@ -2080,8 +2102,8 @@ private theorem stmts_suffix {Φ : FMap} {F : Option FunCtx}
 region). -/
 theorem trim_restore {V Vb : VEnv yulD} {d : Nat} (hd : d ≤ V.length)
     (hlen : V.length ≤ Vb.length) :
-    trim d (YulSemantics.restore V Vb) = trim d Vb := by
-  unfold trim YulSemantics.restore
+    vtrim d (YulSemantics.restore V Vb) = vtrim d Vb := by
+  unfold trimFor YulSemantics.restore
   rw [List.drop_drop]
   congr 1
   rw [List.length_drop]
@@ -2100,15 +2122,15 @@ private theorem drop_append_plus {α : Type} (Δ Γ : List α) (k : Nat) :
 
 /-- The bare non-local exits leave the environment unchanged. -/
 private theorem names_trim_self (d : Nat) (V : VEnv yulD) :
-    names (trim d V) = (names V).drop (V.length - d) := by
-  unfold trim
+    names (vtrim d V) = (names V).drop (V.length - d) := by
+  unfold trimFor
   rw [names_drop]
 
-/-- Retarget a non-local exit at a `trim`-equal environment. -/
+/-- Retarget a non-local exit at a `vtrim`-equal environment. -/
 theorem ASimNL.retarget {prog : List Asm} {yst yst' : EvmState}
     {V W W' : VEnv yulD} {asm : List Asm} {l : Label} {d : Nat}
     (h : ASimNL prog yst V asm yst' W l d)
-    (heq : trim d W' = trim d W) :
+    (heq : vtrim d W' = vtrim d W) :
     ASimNL prog yst V asm yst' W' l d := by
   intro pre c cL σ hp hfind
   rw [heq]
@@ -2205,7 +2227,8 @@ theorem hoist_ok {prog : List Asm} {funs : YulSemantics.FunEnv yulD}
     (hcs : compileStmts (scope :: Φ) Γ F L nc body = some (asm, Γ', n'))
     (hplace : asm <:+: prog) :
     FEnvOK prog (YulSemantics.hoist yulD body :: funs) (scope :: Φ) := by
-  have hf2 := hoist_forall2 (Φ := Φ) (scope_top := scope) (F := F) (L := L)
+  have hf2 := hoist_forall2 (model := model) (Φ := Φ) (scope_top := scope)
+    (F := F) (L := L)
     hnd body Γ nc asm Γ' n' n hcs hplace
     (by simp only [hh]; exact List.suffix_refl _)
   simp only [hh] at hf2
@@ -2397,7 +2420,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
         ⟨List.replicate info.rets (.push 0)
             ++ (argCode ++ [.jump info.entry, .label n] ++ c),
           .code n :: (τ ++ wimg V0 ++ σ), st0⟩ := .pushLabel hdef
-    have h2 := push_zeros (prog := prog) (yst := st0) info.rets
+    have h2 := push_zeros (model := model) (prog := prog) (yst := st0) info.rets
       (.code n :: (τ ++ wimg V0 ++ σ))
       (argCode ++ [.jump info.entry, .label n] ++ c)
     have h3 : ASteps prog
@@ -2426,7 +2449,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
             ++ YulSemantics.bindZeros yulD decl.rets)
             ++ (.code n :: (τ ++ wimg V0 ++ σ)), st1⟩
         ⟨c, words (decl.rets.map (fun r =>
-            (YulSemantics.VEnv.get Vend r).getD yulD.zero))
+            (YulSemantics.VEnv.get Vend r).getD dzero))
           ++ (τ ++ wimg V0 ++ σ), st2⟩ := by
       rcases ho with rfl | rfl
       · -- normal completion: run body, step past the exit label, epilogue
@@ -2460,8 +2483,8 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
           rw [List.length_append]
           rw [hlenV₀] at hVendLe hlenB
           omega
-        have htrim : trim (decl.params ++ decl.rets).length Vend = Vend := by
-          unfold trim
+        have htrim : vtrim (decl.params ++ decl.rets).length Vend = Vend := by
+          unfold trimFor
           rw [show Vend.length - (decl.params ++ decl.rets).length = 0 by omega]
           simp
         have hzero : (decl.params.zip argvals
@@ -2721,7 +2744,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
       · show V0.length ≤ (Vb.drop (Vb.length - V0.length)).length
         simp
         omega
-      · show names (trim lc.depth (YulSemantics.restore V0 Vb)) = _
+      · show names (vtrim lc.depth (YulSemantics.restore V0 Vb)) = _
         rw [trim_restore hd hlenb]
         exact hnmb
       · have hplace : stmtsAsm <:+: prog :=
@@ -2738,7 +2761,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
       · show V0.length ≤ (Vb.drop (Vb.length - V0.length)).length
         simp
         omega
-      · show names (trim lc.depth (YulSemantics.restore V0 Vb)) = _
+      · show names (vtrim lc.depth (YulSemantics.restore V0 Vb)) = _
         rw [trim_restore hd hlenb]
         exact hnmb
       · have hplace : stmtsAsm <:+: prog :=
@@ -2755,7 +2778,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
       · show V0.length ≤ (Vb.drop (Vb.length - V0.length)).length
         simp
         omega
-      · show names (trim fc.depth (YulSemantics.restore V0 Vb)) = _
+      · show names (vtrim fc.depth (YulSemantics.restore V0 Vb)) = _
         rw [trim_restore hd hlenb]
         exact hnmb
       · have hplace : stmtsAsm <:+: prog :=
@@ -3028,7 +3051,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
       · show V0.length ≤ (Vend.drop (Vend.length - V0.length)).length
         simp
         omega
-      · show names (trim fc.depth (YulSemantics.restore V0 Vend)) = _
+      · show names (vtrim fc.depth (YulSemantics.restore V0 Vend)) = _
         rw [trim_restore hd hVle, hnmL, hnVinit, hlVinit]
         rw [show Δi.length + V0.length - fc.depth
             = Δi.length + (V0.length - fc.depth) from by omega,
@@ -3065,8 +3088,8 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
               bodyCode postCode
               (List.replicate (Γi.length - (names V0).length) .pop ++ c)) := by
           simp
-        rw [hshape, show trim fc.depth (YulSemantics.restore V0 Vend)
-            = trim fc.depth Vend from trim_restore hd hVle]
+        rw [hshape, show vtrim fc.depth (YulSemantics.restore V0 Vend)
+            = vtrim fc.depth Vend from trim_restore hd hVle]
         exact (h1.trans (.head .label (.refl _))).trans h2
   | forInitHalt hinit ihinit =>
     rename_i funs0 V0 st0 init0 ce post0 body0 Vinit stinit
@@ -3136,8 +3159,8 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
       simpa using this
     rw [hΓ1] at h2
     have hnmProp : ∀ (d : Nat) (W : VEnv yulD), d ≤ V0.length →
-        names (trim d W) = (names V1).drop (V1.length - d) →
-        names (trim d W) = (names V0).drop (V0.length - d) := by
+        names (vtrim d W) = (names V1).drop (V1.length - d) →
+        names (vtrim d W) = (names V0).drop (V0.length - d) := by
       intro d W hd hW
       rw [hW, hnV1,
         show V1.length - d = Δ.length + (V0.length - d) from by omega,
@@ -3263,8 +3286,8 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
       · obtain ⟨lc, hlc, hlenB, hnmB, hsimB⟩ := hout
         obtain rfl : (⟨lexit, lpost, V0.length⟩ : LoopCtx) = lc := by
           injection hlc
-        have htrim : trim V0.length Vb = Vb := by
-          unfold trim
+        have htrim : vtrim V0.length Vb = Vb := by
+          unfold trimFor
           rw [show Vb.length - V0.length = 0 from by omega]
           exact List.drop_zero
         rw [htrim] at hnmB
@@ -3325,8 +3348,8 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
         · obtain ⟨lc, hlc, hlenB, hnmB, hsimB⟩ := hout
           obtain rfl : (⟨lexit, lpost, V0.length⟩ : LoopCtx) = lc := by
             injection hlc
-          have htrim : trim V0.length Vb = Vb := by
-            unfold trim
+          have htrim : vtrim V0.length Vb = Vb := by
+            unfold trimFor
             rw [show Vb.length - V0.length = 0 from by omega]
             exact List.drop_zero
           have h := (hsimB hΦ) (preI ++ cCode ++ [.op .iszero, .jumpi lexit])
@@ -3414,8 +3437,8 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
       · obtain ⟨lc, hlc, hlenB, hnmB, hsimB⟩ := hout
         obtain rfl : (⟨lexit, lpost, V0.length⟩ : LoopCtx) = lc := by
           injection hlc
-        have htrim : trim V0.length Vb = Vb := by
-          unfold trim
+        have htrim : vtrim V0.length Vb = Vb := by
+          unfold trimFor
           rw [show Vb.length - V0.length = 0 from by omega]
           exact List.drop_zero
         rw [htrim] at hnmB
@@ -3458,8 +3481,8 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
       · obtain ⟨lc, hlc, hlenB, hnmB, hsimB⟩ := hout
         obtain rfl : (⟨lexit, lpost, V0.length⟩ : LoopCtx) = lc := by
           injection hlc
-        have htrim : trim V0.length Vb = Vb := by
-          unfold trim
+        have htrim : vtrim V0.length Vb = Vb := by
+          unfold trimFor
           rw [show Vb.length - V0.length = 0 from by omega]
           exact List.drop_zero
         have h := (hsimB hΦ) (preI ++ cCode ++ [.op .iszero, .jumpi lexit])
@@ -3525,8 +3548,8 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
         unfold YulSemantics.restore
         simp
         omega
-    have htrim : trim V0.length Vb = Vb := by
-      unfold trim
+    have htrim : vtrim V0.length Vb = Vb := by
+      unfold trimFor
       rw [show Vb.length - V0.length = 0 from by omega]
       exact List.drop_zero
     rw [htrim] at hnmB
@@ -3573,7 +3596,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
         ⟨bodyAsm ++ (.label lpost :: postAsm
             ++ .jump lcond :: .label lexit :: cRest),
           wimg V0 ++ σ, st1⟩
-        ⟨cRest, wimg (trim V0.length Vb) ++ σ, stb⟩ :=
+        ⟨cRest, wimg (vtrim V0.length Vb) ++ σ, stb⟩ :=
       (hsimB hΦ) (preI ++ cCode ++ [.op .iszero, .jumpi lexit])
         (.label lpost :: postAsm ++ .jump lcond :: .label lexit :: cRest)
         cRest σ (by rw [← hpreI]; simp) hfindExit
@@ -3626,7 +3649,7 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
         ⟨bodyAsm ++ (.label lpost :: postAsm
             ++ .jump lcond :: .label lexit :: cRest),
           wimg V0 ++ σ, st1⟩
-        ⟨cL, wimg (trim fc.depth Vb) ++ σ, stb⟩ :=
+        ⟨cL, wimg (vtrim fc.depth Vb) ++ σ, stb⟩ :=
       (hsimB hΦ) (preI ++ cCode ++ [.op .iszero, .jumpi lexit])
         (.label lpost :: postAsm ++ .jump lcond :: .label lexit :: cRest)
         cL σ (by rw [← hpreI]; simp) hfindEx
