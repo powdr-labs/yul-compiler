@@ -52,25 +52,22 @@ compare their expected optimized Yul. CI partitions the expensive optimizer
 run by a stable fixture-name hash; the same hash filters each shard's exact
 baseline entries, so stale and unexpected failures remain enforced per shard.
 
-## Gas comparison
+The same differential run also compares *gas*. For every fixture whose two
+bytecode sequences are behaviorally comparable, it sums the execution gas this
+compiler and solc spend across the comparable scenarios and checks this
+compiler's total against a per-suite baseline
+(`solidity-yul-*-gas-baseline.txt`). CI **fails if this compiler's total rises
+above the pinned figure**. Because the corpora track upstream `develop`, a
+fixture's source can change and move our gas for reasons unrelated to codegen;
+solc's pinned total is used as a content fingerprint, so a rise only counts as a
+regression when solc's total is unchanged. A changed solc total, a new fixture,
+or a removed one is a re-pin notice rather than a failure, and only genuine
+regressions fail. The baselines are sharded by the same fixture-name hash as the
+known-failure lists. Re-pin after an intended codegen or solc change with:
 
-Two runners compare the *execution gas* of this compiler's bytecode against
-solc's. Both reuse the differential's deterministic scenarios and its exact
-behavior gate: gas is only measured where both compilers reach identical
-observable behavior, and a non-optimizing compiler is expected to spend more
-gas, so gas is a measurement rather than an equality target.
-
-`gas-benchmarks.txt` pins the exact per-scenario gas of the small, in-repo
-benchmark suite in `test/gas/` (Tier A). `scripts/CheckGasBenchmarks.lean`
-recompiles each benchmark with both toolchains, re-measures, and fails if the
-result differs from the committed baseline; `scripts/update-gas.sh` re-pins it
-after an intended codegen or solc change. See `test/gas/README.md`.
-
-`scripts/ReportSolcGas.lean` is the non-gating Tier B report: it measures gas
-overhead across a whole upstream corpus (skipping the differential's
-known-failure entries) and prints the aggregate and worst-case ratios. It has
-no baseline because the upstream corpora and solc numbers churn, and it is run
-on demand rather than in CI — it is a measurement with no pass/fail meaning.
+```sh
+scripts/update-gas.sh          # regenerates test/solidity-yul-*-gas-baseline.txt
+```
 
 Remove a relative fixture path from any baseline as soon as it passes. A
 local checkout can be checked with:
@@ -98,33 +95,20 @@ lake env lean --run scripts/CheckSolidityCompileTests.lean \
   test/solidity-yul-object-compiler-known-compile-failures.txt
 ```
 
-After installing solc 0.8.35 with `svm-rs`, its behavioral differential can be
-run with:
+After installing solc 0.8.35 with `svm-rs`, its behavioral-plus-gas differential
+can be run with:
 
 ```sh
 lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
   optimizer \
   /path/to/solidity/test/libyul/yulOptimizerTests \
   test/solidity-yul-optimizer-known-solc-differential-failures.txt \
+  test/solidity-yul-optimizer-gas-baseline.txt \
   "$(svm which 0.8.35)" 0.8.35 \
   0 4
 ```
 
 Omit the final shard index/count pair to run the complete suite locally; use
-indices `0` through `3` with count `4` to reproduce the four CI shards.
-
-The Tier A gas baseline can be checked (and the Tier B report produced) with:
-
-```sh
-lake env lean --run scripts/CheckGasBenchmarks.lean \
-  test/gas test/gas-benchmarks.txt "$(svm which 0.8.35)" 0.8.35
-
-lake env lean --run scripts/ReportSolcGas.lean \
-  object-compiler \
-  /path/to/solidity/test/libyul/objectCompiler \
-  test/solidity-yul-object-compiler-known-solc-differential-failures.txt \
-  "$(svm which 0.8.35)" 0.8.35
-```
-
-Pass `--update` to `CheckGasBenchmarks.lean` (or run `scripts/update-gas.sh`)
-to re-pin the baseline after an intended change.
+indices `0` through `3` with count `4` to reproduce the four CI shards. Re-pin
+the gas baselines after an intended change with `scripts/update-gas.sh` (it
+regenerates all three suites from `SOLIDITY_DIR`, default `/tmp/solidity`).

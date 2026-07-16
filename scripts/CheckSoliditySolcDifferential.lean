@@ -1,6 +1,7 @@
 import YulParser.Compile
 import YulEvmCompilerTests.Solc
 import YulEvmCompilerTests.SolcDifferential
+import YulEvmCompilerTests.CorpusGas
 import YulEvmCompilerTests.SolidityCorpus
 
 /-!
@@ -22,6 +23,7 @@ open System YulParser
 open EvmSemantics
 open YulEvmCompilerTests.Solc
 open YulEvmCompilerTests.SolcDifferential
+open YulEvmCompilerTests.CorpusGas
 open YulEvmCompilerTests.SolidityCorpus
 
 private structure Shard where
@@ -40,13 +42,16 @@ private def shardDescription : Option Shard → String
   | none => ""
   | some shard => s!" shard {shard.index + 1}/{shard.count}"
 
-private def run (suiteName : String) (corpusDir knownFailuresFile : FilePath)
+private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFile : FilePath)
     (solcPath expectedSolcVersion : String) (shard : Option Shard) : IO UInt32 := do
   match ← checkSolcVersion solcPath expectedSolcVersion with
   | .error message =>
       IO.eprintln message
       return 1
   | .ok () => pure ()
+  let gasBaseline ← match ← readBaseline gasBaselineFile with
+    | .ok rows => pure (rows.filter (fun row => selected shard row.fixture))
+    | .error message => IO.eprintln s!"{gasBaselineFile}: {message}"; return 1
   let paths ← corpusDir.walkDir
   let allFiles := paths.filter (fun path => path.extension == some "yul")
     |>.qsort (fun a b => relativeName corpusDir a < relativeName corpusDir b)
@@ -57,6 +62,7 @@ private def run (suiteName : String) (corpusDir knownFailuresFile : FilePath)
   let allowed := (← readKnownFailures knownFailuresFile).filter (selected shard)
   let mut failures : Array (String × String) := #[]
   let mut metadataErrors : Array (String × String) := #[]
+  let mut measuredGas : Array GasRow := #[]
   let mut checked := 0
   let mut skipped := 0
   for path in files do
@@ -75,18 +81,46 @@ private def run (suiteName : String) (corpusDir knownFailuresFile : FilePath)
             | .error message => failures := failures.push (name, message)
             | .ok solc =>
                 match compareBytecode ours solc (scenarioSeed := fixtureSeed name) with
-                | .ok () => pure ()
                 | .error message => failures := failures.push (name, message)
+                | .ok () =>
+                    match fixtureTotalGas name ours solc with
+                    | some (ours, solc) => measuredGas := measuredGas.push { fixture := name, ours, solc }
+                    | none => pure ()
 
   let failureNames := failures.map (·.1)
   let unexpected := failures.filter (fun failure => !allowed.contains failure.1)
   let stale := allowed.filter (!failureNames.contains ·)
   let knownFailureCount := failures.size - unexpected.size
+
+  -- Gas dimension: classify each measured fixture against its pinned row. Only
+  -- a genuine regression (ours above the pin while solc is unchanged) fails;
+  -- upstream/solc changes and new fixtures are re-pin notices, not failures.
+  let mut gasRegressions : Array String := #[]
+  let mut gasImproved : Array String := #[]
+  let mut gasChanged : Array String := #[]
+  let mut gasUnpinned : Array String := #[]
+  for row in measuredGas do
+    match find gasBaseline row.fixture with
+    | none => gasUnpinned := gasUnpinned.push row.fixture
+    | some pinned =>
+        let detail := s!"{row.fixture}: ours {row.ours} vs pinned {pinned.ours} (solc {row.solc})"
+        let changed := s!"{row.fixture}: solc {row.solc} vs pinned {pinned.solc}"
+        match classify row pinned with
+        | .regression => gasRegressions := gasRegressions.push detail
+        | .improved => gasImproved := gasImproved.push detail
+        | .changed => gasChanged := gasChanged.push changed
+        | .ok => pure ()
+  let measuredNames := measuredGas.map (·.fixture)
+  let gasStale := (gasBaseline.filter (fun row => !measuredNames.contains row.fixture)).map (·.fixture)
+
   IO.println (s!"Differentially checked {checked} latest-fork Solidity {suiteName}" ++
     s!"{shardDescription shard} tests " ++
     s!"against solc {expectedSolcVersion}: {checked - failures.size} matched, " ++
     s!"{failures.size} failed ({knownFailureCount} known); " ++
     s!"skipped {skipped} outside Osaka.")
+  IO.println (s!"Gas: {measuredGas.size} comparable, {gasRegressions.size} regressions, " ++
+    s!"{gasImproved.size} improved, {gasChanged.size} changed upstream, " ++
+    s!"{gasUnpinned.size} unpinned, {gasStale.size} stale.")
   unless metadataErrors.isEmpty do
     IO.eprintln s!"Invalid {suiteName} EVMVersion metadata:"
     for (name, message) in metadataErrors do
@@ -96,11 +130,20 @@ private def run (suiteName : String) (corpusDir knownFailuresFile : FilePath)
     for (name, message) in unexpected do
       IO.eprintln s!"  {name}: {message}"
   printNames s!"Stale {suiteName} solc-differential entries (remove after review):" stale
-  return if unexpected.isEmpty && stale.isEmpty && metadataErrors.isEmpty then 0 else 1
+  printNames s!"{suiteName} gas improved — re-pin with scripts/update-gas.sh to tighten:" gasImproved
+  printNames s!"{suiteName} fixtures changed upstream — re-pin with scripts/update-gas.sh:" gasChanged
+  printNames s!"{suiteName} gas-unpinned fixtures — re-pin with scripts/update-gas.sh:" gasUnpinned
+  printNames s!"Stale {suiteName} gas entries — re-pin with scripts/update-gas.sh:" gasStale
+  unless gasRegressions.isEmpty do
+    IO.eprintln s!"{suiteName} GAS REGRESSIONS (this compiler now spends more gas):"
+    for detail in gasRegressions do
+      IO.eprintln s!"  {detail}"
+  return if unexpected.isEmpty && stale.isEmpty && metadataErrors.isEmpty
+    && gasRegressions.isEmpty then 0 else 1
 
 private def usage : String :=
   "usage: CheckSoliditySolcDifferential <suite-name> <corpus-dir> " ++
-    "<known-failures.txt> <solc-path> <expected-solc-version> " ++
+    "<known-failures.txt> <gas-baseline.txt> <solc-path> <expected-solc-version> " ++
     "[<shard-index> <shard-count>]"
 
 private def parseShard (rawIndex rawCount : String) : Except String Shard := do
@@ -116,13 +159,14 @@ private def parseShard (rawIndex rawCount : String) : Except String Shard := do
 
 def main (args : List String) : IO UInt32 :=
   match args with
-  | [suiteName, corpusDir, knownFailuresFile, solcPath, expectedSolcVersion] =>
-      run suiteName corpusDir knownFailuresFile solcPath expectedSolcVersion none
-  | [suiteName, corpusDir, knownFailuresFile, solcPath, expectedSolcVersion,
+  | [suiteName, corpusDir, knownFailuresFile, gasBaselineFile, solcPath, expectedSolcVersion] =>
+      run suiteName corpusDir knownFailuresFile gasBaselineFile solcPath expectedSolcVersion none
+  | [suiteName, corpusDir, knownFailuresFile, gasBaselineFile, solcPath, expectedSolcVersion,
       rawShardIndex, rawShardCount] => do
       match parseShard rawShardIndex rawShardCount with
       | .ok shard =>
-          run suiteName corpusDir knownFailuresFile solcPath expectedSolcVersion (some shard)
+          run suiteName corpusDir knownFailuresFile gasBaselineFile solcPath expectedSolcVersion
+            (some shard)
       | .error message =>
           IO.eprintln message
           IO.eprintln usage

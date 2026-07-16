@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
 #
-# update-gas.sh — re-pin the Tier A gas benchmark baseline (test/gas-benchmarks.txt).
+# update-gas.sh — re-pin the per-suite gas baselines checked by the solc
+# differential (test/solidity-yul-*-gas-baseline.txt).
 #
 # Run this ONLY after a *legitimate, intended* change that moves the numbers: a
-# change to this compiler's codegen, to the benchmark programs in test/gas/, to
-# the execution scenarios, or a bump of the pinned solc version. It recompiles
-# every benchmark with both this compiler and the pinned solc, re-measures gas,
-# and rewrites the baseline.
+# change to this compiler's codegen, to the execution scenarios, a bump of the
+# pinned solc version, or an upstream fixture edit. For every latest-fork corpus
+# fixture that is not a known differential failure and compiles on both
+# toolchains, it re-measures the total gas this compiler and the pinned solc
+# spend and rewrites the baseline.
 #
-# The resulting `git diff` is the review artifact: it shows exactly how gas moved
-# on each benchmark and scenario. Confirm the change is intended (our numbers
-# should generally only move when codegen does), then commit the new baseline.
+# The resulting `git diff` is the review artifact: it shows how gas moved on
+# each fixture. The differential then fails CI if this compiler's total later
+# rises above the pinned figure while solc's is unchanged.
+#
+# Point it at a Solidity checkout with the Yul corpora (SOLIDITY_DIR, default
+# /tmp/solidity — the same tree CI's differential fetches).
 #
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 SOLC_VERSION="${SOLC_VERSION:-0.8.35}"
+SOLIDITY_DIR="${SOLIDITY_DIR:-/tmp/solidity}"
 
-# Resolve solc: honor an explicit SOLC_PATH, else ask svm for the pinned build.
 if [[ -n "${SOLC_PATH:-}" ]]; then
   solc_path="$SOLC_PATH"
 elif command -v svm >/dev/null 2>&1; then
@@ -28,10 +33,24 @@ else
 fi
 test -x "$solc_path"
 
-echo "==> Re-measuring gas benchmarks with solc $SOLC_VERSION"
-lake env lean --run scripts/CheckGasBenchmarks.lean \
-  test/gas test/gas-benchmarks.txt "$solc_path" "$SOLC_VERSION" --update
+# suite-name  corpus-subdir  known-failures-file  gas-baseline-file
+suites=(
+  "optimizer yulOptimizerTests solidity-yul-optimizer-known-solc-differential-failures.txt solidity-yul-optimizer-gas-baseline.txt"
+  "object-compiler objectCompiler solidity-yul-object-compiler-known-solc-differential-failures.txt solidity-yul-object-compiler-gas-baseline.txt"
+  "EVM-code-transform evmCodeTransform solidity-yul-evm-code-transform-known-solc-differential-failures.txt solidity-yul-evm-code-transform-gas-baseline.txt"
+)
+
+for entry in "${suites[@]}"; do
+  read -r suite subdir known baseline <<<"$entry"
+  echo "==> Re-measuring $suite gas with solc $SOLC_VERSION"
+  lake env lean --run scripts/UpdateCorpusGas.lean \
+    "$suite" \
+    "$SOLIDITY_DIR/test/libyul/$subdir" \
+    "test/$known" \
+    "test/$baseline" \
+    "$solc_path" "$SOLC_VERSION"
+done
 
 echo
 echo "==> Done. Review the diff — this is the review artifact:"
-git --no-pager diff --stat -- test/gas-benchmarks.txt
+git --no-pager diff --stat -- 'test/solidity-yul-*-gas-baseline.txt'
