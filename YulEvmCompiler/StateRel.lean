@@ -1030,6 +1030,25 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   createdThisTx : yst.env.createdThisTx =
     !(s.substate.originalAccountMap s.executionEnv.address).isContract
 
+/-- The target frame's mutation permission is the negation of the source
+static flag (a direct consequence of `EnvMatch.static`). -/
+theorem StateMatch.permitStateMutation_eq
+    {yst : YulSemantics.EVM.EvmState} {s : EVM.State} (hm : StateMatch yst s) :
+    s.executionEnv.permitStateMutation = !yst.env.static := by
+  rw [hm.env.static, Bool.not_not]
+
+/-- A non-static source frame corresponds to a mutation-permitting target frame. -/
+theorem StateMatch.perm_of_static_false
+    {yst : YulSemantics.EVM.EvmState} {s : EVM.State} (hm : StateMatch yst s)
+    (h : yst.env.static = false) : s.executionEnv.permitStateMutation = true := by
+  simp [hm.permitStateMutation_eq, h]
+
+/-- A static source frame corresponds to a mutation-forbidding target frame. -/
+theorem StateMatch.perm_of_static_true
+    {yst : YulSemantics.EVM.EvmState} {s : EVM.State} (hm : StateMatch yst s)
+    (h : yst.env.static = true) : s.executionEnv.permitStateMutation = false := by
+  simp [hm.permitStateMutation_eq, h]
+
 /-- Lift the balance/account-map facts specific to one `SELFDESTRUCT` branch into the complete
 machine-state correspondence. -/
 theorem StateMatch.finishSelfdestruct_of
@@ -1225,7 +1244,6 @@ structure FrameOK (code : ByteArray) (s : EVM.State) : Prop where
   /-- Positions in the code fit in a word, so `pc` arithmetic never wraps. -/
   codeSmall : code.size < 2 ^ 256
   fork : s.executionEnv.fork = .Osaka
-  perm : s.executionEnv.permitStateMutation = true
   noPrecompile : Precompile.isPrecompile s.executionEnv.fork s.executionEnv.codeAddr
     = false
   callStack : s.callStack = []
@@ -1240,6 +1258,7 @@ def HaltMatch (hk : YulSemantics.EVM.HaltKind × List UInt8) (s : EVM.State) : P
   | .revert  => s.halt = .Reverted ∧ s.hReturn.toList = hk.2
   | .invalid => s.halt = .Exception .InvalidInstruction
   | .invalidMemoryAccess => s.halt = .Exception .InvalidMemoryAccess
+  | .staticViolation => s.halt = .Exception .StaticModeViolation
   | .selfdestruct => s.halt = .Success ∧ s.hReturn = .empty
 
 /-- The `ExecutionResult` a yul-semantics halt corresponds to. -/
@@ -1250,6 +1269,7 @@ def resultOf (hk : YulSemantics.EVM.HaltKind × List UInt8) : ExecutionResult :=
   | .revert  => .reverted (mkCode hk.2)
   | .invalid => .exception .InvalidInstruction
   | .invalidMemoryAccess => .exception .InvalidMemoryAccess
+  | .staticViolation => .exception .StaticModeViolation
   | .selfdestruct => .success
 
 end YulEvmCompiler

@@ -194,6 +194,19 @@ created in the current transaction and pre-existing contracts. Actual account
 deletion is a transaction-finalization operation in evm-semantics and lies
 outside this frame-level compiler theorem.
 
+**Static-call context.** The theorem covers both ordinary and static
+(`STATICCALL`) frames with no carve-out — `FrameOK` no longer constrains
+`permitStateMutation` at all. In a static frame every state-modifying built-in
+that the source forbids halts with `Exception .StaticModeViolation`, matching
+the source's `.staticViolation`: the local writers
+`sstore`/`tstore`/`log0`–`log4`/`selfdestruct` fire the target's generic static
+gate, and the open-world `call` (value-bearing) / `create` / `create2` gates
+fire their dedicated target static rules. The value-free calls
+`callcode`/`delegatecall`/`staticcall` execute normally, propagating the static
+flag into the callee (a value-bearing `callcode` is a self-transfer — a
+world-state no-op — so, matching EIP-214 / the EVM, it is not rejected in a
+static frame).
+
 The headline theorems check with no `sorry`. Their `#print axioms` footprint is
 exactly the three standard classical axioms (`propext`, `Classical.choice`,
 `Quot.sound`) and nothing else — the `ByteArray` facts used by `MSTORE` are all
