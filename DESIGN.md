@@ -345,7 +345,27 @@ arbitrarily nested calls and creations, and re-enter the caller/creator.
 callee state and CREATE collision inputs cannot vary between matching worlds.
 `compile_correct` quantifies over both external relations and assumes realization
 for every response they admit (`ExternalsRealized`). The empty closed-world
-model `ExternalsRealized.none` provides the vacuous realization.
+model `ExternalsRealized.none` provides the vacuous realization (its relation
+admits no response).
+
+The interface is also demonstrably inhabited by a real EVM behavior, not just
+vacuously: the library proves `ExternalsRealized.insufficientBalanceCall`, a
+genuinely non-empty witness. Its `insufficientBalanceCalls` relation admits, for
+a value-bearing `call` whose caller balance is below the transferred value,
+exactly the EVM's immediate-fail response — success flag `0`, empty return data,
+world unchanged — and `CallsRealized.insufficientBalance` realizes it with a
+single concrete `StepRunning.callFail` step (no callee frame, no `StepReturn`
+resume), discharging the real interface: matching `StateMatch`/`FrameOK` at both
+endpoints, `pc + 1`, the `0` result word on the stack, and the existential gas
+bound. The insufficient-balance trigger is keyed on the caller `selfBalance`,
+which is observable from the source state, so `callFail`'s `balance < value`
+precondition is derivable; the other silent-fail trigger, the 1024-frame depth
+limit, is invisible to a source-state relation (the source `EvmState` has no
+depth). This witness therefore covers the insufficient-balance `.call` fail class
+only. Fully general realization (arbitrary callee/init code with
+success-and-return, nested calls, reentrancy) remains the client's
+responsibility, so end-to-end open-world call/create coverage is still
+conditional on supplying such a model.
 
 ## The verified built-in set
 
@@ -417,9 +437,12 @@ genuine theorems. `Checks.lean` pins that exact set for each theorem in CI:
 * **Open-world call/create coverage is conditional.** The CALL/CREATE/selfdestruct
   correctness is real and general, but it is *conditional on* the
   `ExternalsRealized` hypothesis — it requires every source-admitted call/create
-  response to be realized by a real target `Steps` trace. The only model of that
-  interface exhibited in-repo is the empty closed-world `ExternalsRealized.none`,
-  so end-to-end open-world coverage is conditional on supplying a realization.
+  response to be realized by a real target `Steps` trace. Two models are
+  exhibited in-repo: the vacuous `ExternalsRealized.none`, and the genuinely
+  non-empty `ExternalsRealized.insufficientBalanceCall` (the insufficient-balance
+  `.call` fail class, realized by a real `StepRunning.callFail` trace — see the
+  open-world section above). A fully general model is still the client's job, so
+  end-to-end open-world coverage remains conditional on supplying one.
 * **Deep stack access.** Variable reads use up to `DUP16` and stores up to
   `SWAP16`; functions return up to 16 values. Deeper accesses are *rejected*
   (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not

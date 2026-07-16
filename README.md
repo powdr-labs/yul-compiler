@@ -135,10 +135,17 @@ operations are different**: their correctness is *conditional on* the
   assumes an `ExternalsRealized` hypothesis: every source-admitted call/create
   response must be realized by a complete target `Steps` trace (with no
   restriction on intermediate call stacks, so arbitrary callee/init code, nested
-  calls/creations, and reentrancy are covered). But the only *model* of that
-  interface exhibited in-repo is the empty closed-world `ExternalsRealized.none`,
-  so end-to-end open-world call/create coverage is conditional on supplying a
-  realization. This is a genuine distinction from the flat built-ins above.
+  calls/creations, and reentrancy are covered). The interface is inhabited by a
+  real EVM behavior, not just satisfiable in principle: besides the vacuous
+  closed-world `ExternalsRealized.none`, the library proves the *genuinely
+  non-empty* `ExternalsRealized.insufficientBalanceCall` — its relation admits
+  the EVM's immediate-fail response for a value-bearing `call` the caller cannot
+  afford (success flag `0`, empty return data, world unchanged), realized by a
+  single concrete `StepRunning.callFail` step. That witness covers the
+  insufficient-balance `.call` fail class only; a fully general model (arbitrary
+  callee/init code with success-and-return) is still the client's responsibility,
+  so end-to-end open-world call/create coverage remains conditional on supplying
+  such a realization. This is a genuine distinction from the flat built-ins above.
 - **Deep stack access.** Variable reads use up to `DUP16`, stores up to
   `SWAP16`, and functions return up to 16 values. Deeper accesses are *rejected*
   (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
