@@ -459,6 +459,90 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
       exact congrArg UInt256.ofNat (by omega)
     · rw [hstk2, hstk1]
 
+/-- **Phase B, open-world static halt**: a state-modifying external built-in
+attempted in a static frame. `call` (value-bearing) / `create` / `create2`
+halt with `Exception .StaticModeViolation` via their dedicated target static
+gates, matching the source's `.staticViolation`. `callcode` is ruled out by
+`FrameOK.perm` (the target EVM semantics deliberately has no `callcodeStatic`
+rule — a self-transfer is a world-state no-op — so the two semantics disagree
+on that one opcode). `delegatecall` / `staticcall` / `gas` never produce a
+relational halt. -/
+theorem externalStaticHaltStep [model : ExternalModel]
+    {yop : Op} {o : Operation} (hop : opTable yop = some o)
+    (hexternal : IsExternalOp yop)
+    {args : List U256} {yst yst' : EvmState}
+    (hhalt : builtinWithExternal model.calls model.creates yop args yst (.halt yst'))
+    {code : ByteArray} {pre post : List UInt8} {σ : List UInt256} {s : State}
+    (hcode : code = mkCode (pre ++ (Instr.op o).bytes ++ post))
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat pre.length)
+    (hstk : s.stack = args.map conv ++ σ) :
+    HaltStep s yst' := by
+  have hstatic : yst.env.static = true :=
+    builtinWithExternal_halt_external_imp_static hexternal hhalt
+  have hperm : s.executionEnv.permitStateMutation = false :=
+    hm.perm_of_static_true hstatic
+  obtain ⟨hb, hplain⟩ := opTable_roundtrip hop
+  have hdec : s.decodedOp = some o :=
+    decoded_op hf hcode hpc hb hplain (opTable_available hop)
+  cases yop
+  case call =>
+    obtain rfl : o = .CALL := by simpa [opTable] using hop.symm
+    rcases args with _|⟨g,_|⟨t,_|⟨val,_|⟨ao,_|⟨al,_|⟨ro,_|⟨rl,_|⟨e,rest⟩⟩⟩⟩⟩⟩⟩⟩ <;>
+      simp only [builtinWithExternal, hstatic, true_and] at hhalt
+    split at hhalt
+    · rename_i hval
+      obtain rfl : yst' = { yst with halted := some (.staticViolation, []) } := by
+        simpa using hhalt
+      have hstk7 : s.stack = conv g :: conv t :: conv val :: conv ao :: conv al ::
+          conv ro :: conv rl :: σ := by simpa using hstk
+      exact staticHaltStepGen hm hf.callStack
+        (EVM.Step.running hf.running hf.noPrecompile
+          (StepRunning.callStatic s (conv g) (conv t) (conv val) (conv ao) (conv al)
+            (conv ro) (conv rl) σ hdec hstk7 hperm
+            (by rw [conv_toNat]; intro h; exact hval (BitVec.toNat_injective (by simpa using h)))))
+    · exfalso
+      obtain ⟨resp, -, heq⟩ := hhalt
+      simp at heq
+  case callcode =>
+    obtain rfl : o = .CALLCODE := by simpa [opTable] using hop.symm
+    exfalso
+    rcases hf.perm with hp | hnocc
+    · rw [hp] at hperm; simp at hperm
+    · exact hnocc (by rw [hcode, toList_mkCode]; simp [Instr.bytes, Instr.opByte])
+  case create =>
+    obtain rfl : o = .CREATE := by simpa [opTable] using hop.symm
+    rcases args with _|⟨val,_|⟨off,_|⟨sz,_|⟨e,rest⟩⟩⟩⟩ <;>
+      simp only [builtinWithExternal, hstatic, if_true] at hhalt
+    obtain rfl : yst' = { yst with halted := some (.staticViolation, []) } := by
+      simpa using hhalt
+    have hstk3 : s.stack = conv val :: conv off :: conv sz :: σ := by simpa using hstk
+    exact staticHaltStepGen hm hf.callStack
+      (EVM.Step.running hf.running hf.noPrecompile
+        (StepRunning.createStatic s (conv val) (conv off) (conv sz) σ hdec hstk3 hperm))
+  case create2 =>
+    obtain rfl : o = .CREATE2 := by simpa [opTable] using hop.symm
+    rcases args with _|⟨val,_|⟨off,_|⟨sz,_|⟨salt,_|⟨e,rest⟩⟩⟩⟩⟩ <;>
+      simp only [builtinWithExternal, hstatic, if_true] at hhalt
+    obtain rfl : yst' = { yst with halted := some (.staticViolation, []) } := by
+      simpa using hhalt
+    have hstk4 : s.stack = conv val :: conv off :: conv sz :: conv salt :: σ := by
+      simpa using hstk
+    exact staticHaltStepGen hm hf.callStack
+      (EVM.Step.running hf.running hf.noPrecompile
+        (StepRunning.create2Static s (conv val) (conv off) (conv sz) (conv salt) σ
+          hdec hstk4 hperm))
+  case delegatecall =>
+    exfalso
+    rcases args with _|⟨g,_|⟨t,_|⟨io,_|⟨isz,_|⟨oo,_|⟨ol,_|⟨e,rest⟩⟩⟩⟩⟩⟩⟩ <;>
+      simp [builtinWithExternal, YulSemantics.EVM.externalCall] at hhalt
+  case staticcall =>
+    exfalso
+    rcases args with _|⟨g,_|⟨t,_|⟨io,_|⟨isz,_|⟨oo,_|⟨ol,_|⟨e,rest⟩⟩⟩⟩⟩⟩⟩ <;>
+      simp [builtinWithExternal, YulSemantics.EVM.externalCall] at hhalt
+  case gas => simp [opTable] at hop
+  all_goals exact absurd hexternal (by decide)
+
 /-- **Phase B, halting step**: a halting built-in maps to one halting EVM
 step. -/
 theorem ahalt_sim [model : ExternalModel]
@@ -479,10 +563,17 @@ theorem ahalt_sim [model : ExternalModel]
     by_cases hexternal : IsExternalOp yop
     · refine ⟨0, ?_⟩
       intro s hm hgas
-      have hstatic := builtinWithExternal_halt_external_imp_static hexternal hstepOp
-      have hnotStatic : yst.env.static = false := by
-        simpa [hm.frame.perm] using hm.smatch.env.static
-      simp [hnotStatic] at hstatic
+      have hpos : codeSize prog - codeSize (Asm.op yop :: c) = codeSize pre := by
+        rw [codeSize_cons]
+        omega
+      have hhalt := externalStaticHaltStep hop hexternal hstepOp
+        (σ := mapStk prog σ)
+        (assembleWithPayload_at₁ hbytes payload)
+        hm.frame hm.smatch
+        (by rw [hm.pc, hpos, hlenPre])
+        (by rw [hm.stack, mapStk_words])
+      obtain ⟨s', hstep, hsm', hcs', hhm'⟩ := hhalt
+      exact ⟨s', .trans hstep (.refl _), hsm', hcs', hhm'⟩
     · have hstepLocal :=
         (builtinWithExternal_halt_iff_stepOp_of_not_external hexternal).mp hstepOp
       refine ⟨opBound yop args, ?_⟩

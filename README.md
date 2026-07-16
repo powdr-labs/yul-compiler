@@ -194,6 +194,23 @@ created in the current transaction and pre-existing contracts. Actual account
 deletion is a transaction-finalization operation in evm-semantics and lies
 outside this frame-level compiler theorem.
 
+**Static-call context.** The theorem covers both ordinary and static
+(`STATICCALL`) frames — `FrameOK` no longer fixes `permitStateMutation = true`.
+In a static frame every state-modifying built-in that the source forbids halts
+with `Exception .StaticModeViolation`, matching the source's `.staticViolation`:
+the local writers `sstore`/`tstore`/`log0`–`log4`/`selfdestruct` fire the
+target's generic static gate, and the open-world `call` (value-bearing) /
+`create` / `create2` gates fire their dedicated target static rules.
+`delegatecall`/`staticcall` (value-free) execute normally, propagating the
+static flag into the callee. The **one** exclusion is `CALLCODE`: the source
+halts a value-bearing `CALLCODE` in a static frame with `.staticViolation`, but
+the target EVM semantics deliberately has *no* `callcodeStatic` rule (a
+self-transfer is a world-state no-op, so the opcode is not rejected there) — the
+two genuinely disagree on that single opcode. `FrameOK.perm` therefore requires
+`permitStateMutation = true ∨` the code contains no `CALLCODE` byte, which is
+free (`Or.inl rfl`) for every ordinary frame and only constrains a static frame
+to be `CALLCODE`-free. `CALLCODE` in ordinary frames is unaffected.
+
 The headline theorems check with no `sorry`. Their `#print axioms` footprint is
 exactly the three standard classical axioms (`propext`, `Classical.choice`,
 `Quot.sound`) and nothing else — the `ByteArray` facts used by `MSTORE` are all

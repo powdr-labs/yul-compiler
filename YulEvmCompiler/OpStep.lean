@@ -672,6 +672,7 @@ private theorem logStep {yop : Op} {topicCount : Fin 5}
     {σ : List UInt256} {s : State}
     (hcode : code = mkCode (pre ++ (Instr.op (.Log ⟨topicCount⟩)).bytes ++ post))
     (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hperm : s.executionEnv.permitStateMutation = true)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = (p :: n :: topics).map conv ++ σ)
     (hgas : opBound yop (p :: n :: topics) ≤ s.gasAvailable) :
@@ -696,7 +697,7 @@ private theorem logStep {yop : Op} {topicCount : Fin 5}
     le_trans hcost hgas
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.log s topicCount (conv p) (conv n) (topics.map conv) σ
-      hdec hf.perm (by simpa using htopics) hstk' hgas'),
+      hdec hperm (by simpa using htopics) hstk' hgas'),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
       hf.running⟩, ?_, ?_, rfl, ?_⟩
   · constructor
@@ -740,6 +741,7 @@ theorem selfdestructStep {code : ByteArray} {pre post : List UInt8}
     {beneficiary : U256} {yst : EvmState} {σ : List UInt256} {s : State}
     (hcode : code = mkCode (pre ++ (Instr.op .SELFDESTRUCT).bytes ++ post))
     (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hperm : s.executionEnv.permitStateMutation = true)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = [beneficiary].map conv ++ σ)
     (hgas : 40000 ≤ s.gasAvailable) :
@@ -766,12 +768,47 @@ theorem selfdestructStep {code : ByteArray} {pre post : List UInt8}
       hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩
   have hm' := hmGas.finishSelfdestruct beneficiary
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-    (StepRunning.selfDestruct s (conv beneficiary) σ hdec hstk' hf.perm hgas'),
+    (StepRunning.selfDestruct s (conv beneficiary) σ hdec hstk' hperm hgas'),
     hm', ?_, ?_⟩
   · simpa [sGas, State.selfDestructTo] using hf.callStack
   · refine ⟨(.selfdestruct, []), ?_, ?_⟩
     · simp [YulSemantics.EVM.finishSelfdestruct]
     · simp [HaltMatch, State.selfDestructTo]
+
+/-- Package a target step that halts with `StaticModeViolation` (leaving all
+state fields untouched) into a `HaltStep` matching the source's
+`.staticViolation`. The source side only sets `halted` and the target gate
+halts before mutating, so the `StateMatch` carries over unchanged. -/
+theorem staticHaltStepGen {s : State} {yst : EvmState} (hm : StateMatch yst s)
+    (hcs : s.callStack = [])
+    (hstep : EVM.Step s { s with halt := .Exception .StaticModeViolation }) :
+    HaltStep s { yst with halted := some (.staticViolation, []) } :=
+  ⟨_, hstep,
+    ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
+      hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
+      hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩,
+    hcs, (.staticViolation, []), rfl, rfl⟩
+
+/-- A state-modifying built-in attempted in a static target frame
+(`permitStateMutation = false`) halts the frame with `StaticModeViolation`,
+matching the source's `.staticViolation`. Used by the local guarded ops
+(`sstore`/`tstore`/`log`/`selfdestruct`), all of which are `isStateMutating`
+and so fire the target's generic static gate. Neither side mutates world
+state: the source's `guardStatic` only sets `halted`, and the target gate
+halts before writing. -/
+theorem staticViolationStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
+    {code : ByteArray} {pre post : List UInt8} {s : State} {yst : EvmState}
+    (hcode : code = mkCode (pre ++ (Instr.op o).bytes ++ post))
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat pre.length)
+    (hmut : o.isStateMutating = true)
+    (hperm : s.executionEnv.permitStateMutation = false) :
+    HaltStep s { yst with halted := some (.staticViolation, []) } := by
+  obtain ⟨hb, hplain⟩ := opTable_roundtrip hop
+  have hdec := decoded_op hf hcode hpc hb hplain (opTable_available hop)
+  exact staticHaltStepGen hm hf.callStack
+    (EVM.Step.running hf.running hf.noPrecompile
+      (StepRunning.staticModeViolation s o hdec hmut hperm))
 
 set_option maxHeartbeats 1600000 in
 open YulSemantics.EVM in
@@ -793,11 +830,6 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     | .halt yst' => HaltStep s yst' := by
   have hgas40 : 40000 ≤ s.gasAvailable := le_trans (le_opBound yop args) hgas
   have hfork : s.fork = .Osaka := hf.fork
-  have hstatic : yst.env.static = false := by
-    simpa [hf.perm] using hm.env.static
-  have hguard (act : YulSemantics.BuiltinResult U256 EvmState) :
-      YulSemantics.EVM.guardStatic yst act = some act := by
-    simp [YulSemantics.EVM.guardStatic, hstatic]
   -- common decode facts (only usable once `o` is concrete, but stated here
   -- for the bespoke cases)
   cases yop <;> simp only [opTable, Option.some.injEq, reduceCtorEq] at hop <;>
@@ -2073,37 +2105,109 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         have : Gas.baseCost s.fork .BLOBHASH ≤ 40000 := by rw [hfork]; decide
         omega
   case log0 =>
-    rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨extra, args⟩⟩⟩ <;>
-      simp [stepOp, hguard] at hyul
-    subst hyul
-    exact logStep (yop := .log0) (topicCount := 0) rfl rfl rfl
-      hcode hf hm hpc hstk hgas
+    cases hst : yst.env.static with
+    | false =>
+      have hperm : s.executionEnv.permitStateMutation = true :=
+        hm.perm_of_static_false hst
+      have hguard (act : YulSemantics.BuiltinResult U256 EvmState) :
+          YulSemantics.EVM.guardStatic yst act = some act := by
+        simp [YulSemantics.EVM.guardStatic, hst]
+      rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨extra, args⟩⟩⟩ <;>
+        simp [stepOp, hguard] at hyul
+      subst hyul
+      exact logStep (yop := .log0) (topicCount := 0) rfl rfl rfl
+        hcode hf hm hperm hpc hstk hgas
+    | true =>
+      have hperm : s.executionEnv.permitStateMutation = false :=
+        hm.perm_of_static_true hst
+      rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨extra, args⟩⟩⟩ <;>
+        simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
+      subst hyul
+      exact staticViolationStep (yop := .log0) rfl hcode hf hm hpc (by decide) hperm
   case log1 =>
-    rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨extra, args⟩⟩⟩⟩ <;>
-      simp [stepOp, hguard] at hyul
-    subst hyul
-    exact logStep (yop := .log1) (topicCount := 1) rfl rfl rfl
-      hcode hf hm hpc hstk hgas
+    cases hst : yst.env.static with
+    | false =>
+      have hperm : s.executionEnv.permitStateMutation = true :=
+        hm.perm_of_static_false hst
+      have hguard (act : YulSemantics.BuiltinResult U256 EvmState) :
+          YulSemantics.EVM.guardStatic yst act = some act := by
+        simp [YulSemantics.EVM.guardStatic, hst]
+      rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨extra, args⟩⟩⟩⟩ <;>
+        simp [stepOp, hguard] at hyul
+      subst hyul
+      exact logStep (yop := .log1) (topicCount := 1) rfl rfl rfl
+        hcode hf hm hperm hpc hstk hgas
+    | true =>
+      have hperm : s.executionEnv.permitStateMutation = false :=
+        hm.perm_of_static_true hst
+      rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨extra, args⟩⟩⟩⟩ <;>
+        simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
+      subst hyul
+      exact staticViolationStep (yop := .log1) rfl hcode hf hm hpc (by decide) hperm
   case log2 =>
-    rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨t2, _ | ⟨extra, args⟩⟩⟩⟩⟩ <;>
-      simp [stepOp, hguard] at hyul
-    subst hyul
-    exact logStep (yop := .log2) (topicCount := 2) rfl rfl rfl
-      hcode hf hm hpc hstk hgas
+    cases hst : yst.env.static with
+    | false =>
+      have hperm : s.executionEnv.permitStateMutation = true :=
+        hm.perm_of_static_false hst
+      have hguard (act : YulSemantics.BuiltinResult U256 EvmState) :
+          YulSemantics.EVM.guardStatic yst act = some act := by
+        simp [YulSemantics.EVM.guardStatic, hst]
+      rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨t2, _ | ⟨extra, args⟩⟩⟩⟩⟩ <;>
+        simp [stepOp, hguard] at hyul
+      subst hyul
+      exact logStep (yop := .log2) (topicCount := 2) rfl rfl rfl
+        hcode hf hm hperm hpc hstk hgas
+    | true =>
+      have hperm : s.executionEnv.permitStateMutation = false :=
+        hm.perm_of_static_true hst
+      rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨t2, _ | ⟨extra, args⟩⟩⟩⟩⟩ <;>
+        simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
+      subst hyul
+      exact staticViolationStep (yop := .log2) rfl hcode hf hm hpc (by decide) hperm
   case log3 =>
-    rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨t2, _ | ⟨t3,
-      _ | ⟨extra, args⟩⟩⟩⟩⟩⟩ <;>
-      simp [stepOp, hguard] at hyul
-    subst hyul
-    exact logStep (yop := .log3) (topicCount := 3) rfl rfl rfl
-      hcode hf hm hpc hstk hgas
+    cases hst : yst.env.static with
+    | false =>
+      have hperm : s.executionEnv.permitStateMutation = true :=
+        hm.perm_of_static_false hst
+      have hguard (act : YulSemantics.BuiltinResult U256 EvmState) :
+          YulSemantics.EVM.guardStatic yst act = some act := by
+        simp [YulSemantics.EVM.guardStatic, hst]
+      rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨t2, _ | ⟨t3,
+        _ | ⟨extra, args⟩⟩⟩⟩⟩⟩ <;>
+        simp [stepOp, hguard] at hyul
+      subst hyul
+      exact logStep (yop := .log3) (topicCount := 3) rfl rfl rfl
+        hcode hf hm hperm hpc hstk hgas
+    | true =>
+      have hperm : s.executionEnv.permitStateMutation = false :=
+        hm.perm_of_static_true hst
+      rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨t2, _ | ⟨t3,
+        _ | ⟨extra, args⟩⟩⟩⟩⟩⟩ <;>
+        simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
+      subst hyul
+      exact staticViolationStep (yop := .log3) rfl hcode hf hm hpc (by decide) hperm
   case log4 =>
-    rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨t2, _ | ⟨t3,
-      _ | ⟨t4, _ | ⟨extra, args⟩⟩⟩⟩⟩⟩⟩ <;>
-      simp [stepOp, hguard] at hyul
-    subst hyul
-    exact logStep (yop := .log4) (topicCount := 4) rfl rfl rfl
-      hcode hf hm hpc hstk hgas
+    cases hst : yst.env.static with
+    | false =>
+      have hperm : s.executionEnv.permitStateMutation = true :=
+        hm.perm_of_static_false hst
+      have hguard (act : YulSemantics.BuiltinResult U256 EvmState) :
+          YulSemantics.EVM.guardStatic yst act = some act := by
+        simp [YulSemantics.EVM.guardStatic, hst]
+      rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨t2, _ | ⟨t3,
+        _ | ⟨t4, _ | ⟨extra, args⟩⟩⟩⟩⟩⟩⟩ <;>
+        simp [stepOp, hguard] at hyul
+      subst hyul
+      exact logStep (yop := .log4) (topicCount := 4) rfl rfl rfl
+        hcode hf hm hperm hpc hstk hgas
+    | true =>
+      have hperm : s.executionEnv.permitStateMutation = false :=
+        hm.perm_of_static_true hst
+      rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨t2, _ | ⟨t3,
+        _ | ⟨t4, _ | ⟨extra, args⟩⟩⟩⟩⟩⟩⟩ <;>
+        simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
+      subst hyul
+      exact staticViolationStep (yop := .log4) rfl hcode hf hm hpc (by decide) hperm
   case sload =>
     rcases args with _ | ⟨k, _ | ⟨b, args⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
@@ -2140,98 +2244,112 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       unfold Gas.sloadTotal
       omega
   case sstore =>
-    rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;>
-      simp [stepOp, hguard] at hyul
-    subst hyul
-    show OkStep code s (opBound .sstore [k, v]) []
-      { yst with
-          storage := YulSemantics.EVM.upd yst.storage k v
-          env := { yst.env with storageOf :=
-            YulSemantics.EVM.updAccount yst.env.storageOf yst.env.address k v } }
-      pre.length 1 σ
-    obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .sstore) rfl
-    have hdec := decoded_op hf hcode hpc hb' hplain
-      (opTable_available (yop := .sstore) rfl)
-    have hstk' : s.stack = conv k :: conv v :: σ := by simpa using hstk
-    have hsent : Gas.sstoreSentry s.fork
-        (s.gasAvailable - Gas.baseCost s.fork .SSTORE) = false := by
-      show Gas.sstoreSentry s.executionEnv.fork
-        (s.gasAvailable - Gas.baseCost s.executionEnv.fork Operation.SSTORE) = false
-      rw [hf.fork]
-      unfold Gas.sstoreSentry
-      rw [if_pos (by decide)]
-      apply decide_eq_false
-      have hb0 : Gas.baseCost Fork.Osaka Operation.SSTORE = 0 := by decide
-      omega
-    have hgas' : Gas.sstoreTotal s (conv k) (conv v) ≤ s.gasAvailable := by
-      unfold Gas.sstoreTotal
-      have h1 := sstoreCost_le s.executionEnv.fork
-        (s.substate.originalStorage s.executionEnv.address (conv k))
-        ((s.accountMap s.executionEnv.address).storage (conv k)) (conv v)
-      have h2 := sstoreCold_le s (conv k)
-      have hb0 : Gas.baseCost s.executionEnv.fork Operation.SSTORE = 0 := by
-        rw [hf.fork]; decide
-      omega
-    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.sstore s (conv k) (conv v) σ hdec hf.perm hstk' hsent hgas'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
-        hf.running⟩,
-      ?_, ?_, rfl, ?_⟩
-    · constructor
-      · exact hm.mem
-      · intro k'
-        show conv (YulSemantics.EVM.upd yst.storage k v k') = _
-        unfold YulSemantics.EVM.upd
-        rw [AccountMap.get_set_same]
-        by_cases hk : k' = k
-        · subst hk
-          rw [if_pos rfl]
-          exact (Storage.get_set_same _ _ _).symm
-        · rw [if_neg hk]
-          rw [Storage.get_set_other _ _ _ _ (by simpa [conv_inj] using hk)]
-          exact hm.stor k'
-      · intro k'
-        rw [AccountMap.get_set_same]
-        exact hm.tstor k'
-      · exact hm.cd
-      · exact hm.env.setStorageOf _
-      · exact hm.codeBytes
-      · exact hm.codeLen
-      · rw [AccountMap.get_set_same]
-        exact hm.selfBalance
-      · intro a
-        by_cases ha : AccountAddress.ofUInt256 (conv a) = s.executionEnv.address
-        · rw [ha, AccountMap.get_set_same]
-          have hba := hm.balanceOf a
-          rw [ha] at hba
-          simpa using hba
-        · rw [AccountMap.get_set_other _ _ _ _ ha]
-          exact hm.balanceOf a
-      · exact hm.activeWords
-      · exact hm.retData
-      · exact hm.retDataLen
-      · apply hm.externalCode.setStorage yst.env.address s.executionEnv.address k v
-        rw [hm.env.address]
-        exact accountAddress_ofUInt256_toUInt256 _
-      · exact hm.logs
-      · exact hm.selfdestructs
-      · exact hm.createdThisTx
-    · show s.pc.succ = _
-      rw [hpc]; apply succ_ofNat
-      have hsz : code.size = pre.length + 1 + post.length := by
-        subst hcode; simp [Instr.bytes]; omega
-      have := hf.codeSmall; omega
-    · show s.gasAvailable - Gas.sstoreTotal s (conv k) (conv v)
-        ≥ s.gasAvailable - opBound .sstore [k, v]
-      have h1 := sstoreCost_le s.executionEnv.fork
-        (s.substate.originalStorage s.executionEnv.address (conv k))
-        ((s.accountMap s.executionEnv.address).storage (conv k)) (conv v)
-      have h2 := sstoreCold_le s (conv k)
-      have h3 : opBound Op.sstore [k, v] = 40000 := rfl
-      have hb0 : Gas.baseCost s.executionEnv.fork Operation.SSTORE = 0 := by
-        rw [hf.fork]; decide
-      unfold Gas.sstoreTotal
-      omega
+    cases hst : yst.env.static with
+    | true =>
+      have hperm : s.executionEnv.permitStateMutation = false :=
+        hm.perm_of_static_true hst
+      rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;>
+        simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
+      subst hyul
+      exact staticViolationStep (yop := .sstore) rfl hcode hf hm hpc (by decide) hperm
+    | false =>
+      have hperm : s.executionEnv.permitStateMutation = true :=
+        hm.perm_of_static_false hst
+      have hguard (act : YulSemantics.BuiltinResult U256 EvmState) :
+          YulSemantics.EVM.guardStatic yst act = some act := by
+        simp [YulSemantics.EVM.guardStatic, hst]
+      rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;>
+        simp [stepOp, hguard] at hyul
+      subst hyul
+      show OkStep code s (opBound .sstore [k, v]) []
+        { yst with
+            storage := YulSemantics.EVM.upd yst.storage k v
+            env := { yst.env with storageOf :=
+              YulSemantics.EVM.updAccount yst.env.storageOf yst.env.address k v } }
+        pre.length 1 σ
+      obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .sstore) rfl
+      have hdec := decoded_op hf hcode hpc hb' hplain
+        (opTable_available (yop := .sstore) rfl)
+      have hstk' : s.stack = conv k :: conv v :: σ := by simpa using hstk
+      have hsent : Gas.sstoreSentry s.fork
+          (s.gasAvailable - Gas.baseCost s.fork .SSTORE) = false := by
+        show Gas.sstoreSentry s.executionEnv.fork
+          (s.gasAvailable - Gas.baseCost s.executionEnv.fork Operation.SSTORE) = false
+        rw [hf.fork]
+        unfold Gas.sstoreSentry
+        rw [if_pos (by decide)]
+        apply decide_eq_false
+        have hb0 : Gas.baseCost Fork.Osaka Operation.SSTORE = 0 := by decide
+        omega
+      have hgas' : Gas.sstoreTotal s (conv k) (conv v) ≤ s.gasAvailable := by
+        unfold Gas.sstoreTotal
+        have h1 := sstoreCost_le s.executionEnv.fork
+          (s.substate.originalStorage s.executionEnv.address (conv k))
+          ((s.accountMap s.executionEnv.address).storage (conv k)) (conv v)
+        have h2 := sstoreCold_le s (conv k)
+        have hb0 : Gas.baseCost s.executionEnv.fork Operation.SSTORE = 0 := by
+          rw [hf.fork]; decide
+        omega
+      refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+        (StepRunning.sstore s (conv k) (conv v) σ hdec hperm hstk' hsent hgas'),
+        ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+          hf.running⟩,
+        ?_, ?_, rfl, ?_⟩
+      · constructor
+        · exact hm.mem
+        · intro k'
+          show conv (YulSemantics.EVM.upd yst.storage k v k') = _
+          unfold YulSemantics.EVM.upd
+          rw [AccountMap.get_set_same]
+          by_cases hk : k' = k
+          · subst hk
+            rw [if_pos rfl]
+            exact (Storage.get_set_same _ _ _).symm
+          · rw [if_neg hk]
+            rw [Storage.get_set_other _ _ _ _ (by simpa [conv_inj] using hk)]
+            exact hm.stor k'
+        · intro k'
+          rw [AccountMap.get_set_same]
+          exact hm.tstor k'
+        · exact hm.cd
+        · exact hm.env.setStorageOf _
+        · exact hm.codeBytes
+        · exact hm.codeLen
+        · rw [AccountMap.get_set_same]
+          exact hm.selfBalance
+        · intro a
+          by_cases ha : AccountAddress.ofUInt256 (conv a) = s.executionEnv.address
+          · rw [ha, AccountMap.get_set_same]
+            have hba := hm.balanceOf a
+            rw [ha] at hba
+            simpa using hba
+          · rw [AccountMap.get_set_other _ _ _ _ ha]
+            exact hm.balanceOf a
+        · exact hm.activeWords
+        · exact hm.retData
+        · exact hm.retDataLen
+        · apply hm.externalCode.setStorage yst.env.address s.executionEnv.address k v
+          rw [hm.env.address]
+          exact accountAddress_ofUInt256_toUInt256 _
+        · exact hm.logs
+        · exact hm.selfdestructs
+        · exact hm.createdThisTx
+      · show s.pc.succ = _
+        rw [hpc]; apply succ_ofNat
+        have hsz : code.size = pre.length + 1 + post.length := by
+          subst hcode; simp [Instr.bytes]; omega
+        have := hf.codeSmall; omega
+      · show s.gasAvailable - Gas.sstoreTotal s (conv k) (conv v)
+          ≥ s.gasAvailable - opBound .sstore [k, v]
+        have h1 := sstoreCost_le s.executionEnv.fork
+          (s.substate.originalStorage s.executionEnv.address (conv k))
+          ((s.accountMap s.executionEnv.address).storage (conv k)) (conv v)
+        have h2 := sstoreCold_le s (conv k)
+        have h3 : opBound Op.sstore [k, v] = 40000 := rfl
+        have hb0 : Gas.baseCost s.executionEnv.fork Operation.SSTORE = 0 := by
+          rw [hf.fork]; decide
+        unfold Gas.sstoreTotal
+        omega
   case tload =>
     rcases args with _ | ⟨k, _ | ⟨b, args⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
@@ -2263,77 +2381,91 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have h3 : opBound Op.tload [k] = 40000 := rfl
       omega
   case tstore =>
-    rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;>
-      simp [stepOp, hguard] at hyul
-    subst hyul
-    show OkStep code s (opBound .tstore [k, v]) []
-      { yst with
-          transient := YulSemantics.EVM.upd yst.transient k v
-          env := { yst.env with transientOf :=
-            YulSemantics.EVM.updAccount yst.env.transientOf yst.env.address k v } }
-      pre.length 1 σ
-    obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .tstore) rfl
-    have hdec := decoded_op hf hcode hpc hb' hplain
-      (opTable_available (yop := .tstore) rfl)
-    have hstk' : s.stack = conv k :: conv v :: σ := by simpa using hstk
-    have hgas' : Gas.baseCost s.fork .TSTORE ≤ s.gasAvailable := by
-      rw [hfork]
-      have : Gas.baseCost .Osaka Operation.TSTORE ≤ 40000 := by decide
-      omega
-    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.tstore s (conv k) (conv v) σ hdec hf.perm hgas' hstk'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
-        hf.running⟩,
-      ?_, ?_, rfl, ?_⟩
-    · constructor
-      · exact hm.mem
-      · intro k'
-        rw [AccountMap.get_set_same]
-        exact hm.stor k'
-      · intro k'
-        show conv (YulSemantics.EVM.upd yst.transient k v k') = _
-        unfold YulSemantics.EVM.upd
-        rw [AccountMap.get_set_same]
-        by_cases hk : k' = k
-        · subst hk
-          rw [if_pos rfl]
-          exact (Storage.get_set_same _ _ _).symm
-        · rw [if_neg hk]
-          rw [Storage.get_set_other _ _ _ _ (by simpa [conv_inj] using hk)]
-          exact hm.tstor k'
-      · exact hm.cd
-      · exact hm.env.setTransientOf _
-      · exact hm.codeBytes
-      · exact hm.codeLen
-      · rw [AccountMap.get_set_same]
-        exact hm.selfBalance
-      · intro a
-        by_cases ha : AccountAddress.ofUInt256 (conv a) = s.executionEnv.address
-        · rw [ha, AccountMap.get_set_same]
-          have hba := hm.balanceOf a
-          rw [ha] at hba
-          simpa using hba
-        · rw [AccountMap.get_set_other _ _ _ _ ha]
-          exact hm.balanceOf a
-      · exact hm.activeWords
-      · exact hm.retData
-      · exact hm.retDataLen
-      · apply hm.externalCode.setTransient yst.env.address s.executionEnv.address k v
-        rw [hm.env.address]
-        exact accountAddress_ofUInt256_toUInt256 _
-      · exact hm.logs
-      · exact hm.selfdestructs
-      · exact hm.createdThisTx
-    · show s.pc.succ = _
-      rw [hpc]; apply succ_ofNat
-      have hsz : code.size = pre.length + 1 + post.length := by
-        subst hcode; simp [Instr.bytes]; omega
-      have := hf.codeSmall; omega
-    · show s.gasAvailable - Gas.baseCost s.fork .TSTORE
-        ≥ s.gasAvailable - opBound .tstore [k, v]
-      have h1 : Gas.baseCost s.fork .TSTORE ≤ 100 := by rw [hfork]; decide
-      have h3 : opBound Op.tstore [k, v] = 40000 := rfl
-      omega
+    cases hst : yst.env.static with
+    | true =>
+      have hperm : s.executionEnv.permitStateMutation = false :=
+        hm.perm_of_static_true hst
+      rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;>
+        simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
+      subst hyul
+      exact staticViolationStep (yop := .tstore) rfl hcode hf hm hpc (by decide) hperm
+    | false =>
+      have hperm : s.executionEnv.permitStateMutation = true :=
+        hm.perm_of_static_false hst
+      have hguard (act : YulSemantics.BuiltinResult U256 EvmState) :
+          YulSemantics.EVM.guardStatic yst act = some act := by
+        simp [YulSemantics.EVM.guardStatic, hst]
+      rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;>
+        simp [stepOp, hguard] at hyul
+      subst hyul
+      show OkStep code s (opBound .tstore [k, v]) []
+        { yst with
+            transient := YulSemantics.EVM.upd yst.transient k v
+            env := { yst.env with transientOf :=
+              YulSemantics.EVM.updAccount yst.env.transientOf yst.env.address k v } }
+        pre.length 1 σ
+      obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .tstore) rfl
+      have hdec := decoded_op hf hcode hpc hb' hplain
+        (opTable_available (yop := .tstore) rfl)
+      have hstk' : s.stack = conv k :: conv v :: σ := by simpa using hstk
+      have hgas' : Gas.baseCost s.fork .TSTORE ≤ s.gasAvailable := by
+        rw [hfork]
+        have : Gas.baseCost .Osaka Operation.TSTORE ≤ 40000 := by decide
+        omega
+      refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+        (StepRunning.tstore s (conv k) (conv v) σ hdec hperm hgas' hstk'),
+        ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+          hf.running⟩,
+        ?_, ?_, rfl, ?_⟩
+      · constructor
+        · exact hm.mem
+        · intro k'
+          rw [AccountMap.get_set_same]
+          exact hm.stor k'
+        · intro k'
+          show conv (YulSemantics.EVM.upd yst.transient k v k') = _
+          unfold YulSemantics.EVM.upd
+          rw [AccountMap.get_set_same]
+          by_cases hk : k' = k
+          · subst hk
+            rw [if_pos rfl]
+            exact (Storage.get_set_same _ _ _).symm
+          · rw [if_neg hk]
+            rw [Storage.get_set_other _ _ _ _ (by simpa [conv_inj] using hk)]
+            exact hm.tstor k'
+        · exact hm.cd
+        · exact hm.env.setTransientOf _
+        · exact hm.codeBytes
+        · exact hm.codeLen
+        · rw [AccountMap.get_set_same]
+          exact hm.selfBalance
+        · intro a
+          by_cases ha : AccountAddress.ofUInt256 (conv a) = s.executionEnv.address
+          · rw [ha, AccountMap.get_set_same]
+            have hba := hm.balanceOf a
+            rw [ha] at hba
+            simpa using hba
+          · rw [AccountMap.get_set_other _ _ _ _ ha]
+            exact hm.balanceOf a
+        · exact hm.activeWords
+        · exact hm.retData
+        · exact hm.retDataLen
+        · apply hm.externalCode.setTransient yst.env.address s.executionEnv.address k v
+          rw [hm.env.address]
+          exact accountAddress_ofUInt256_toUInt256 _
+        · exact hm.logs
+        · exact hm.selfdestructs
+        · exact hm.createdThisTx
+      · show s.pc.succ = _
+        rw [hpc]; apply succ_ofNat
+        have hsz : code.size = pre.length + 1 + post.length := by
+          subst hcode; simp [Instr.bytes]; omega
+        have := hf.codeSmall; omega
+      · show s.gasAvailable - Gas.baseCost s.fork .TSTORE
+          ≥ s.gasAvailable - opBound .tstore [k, v]
+        have h1 : Gas.baseCost s.fork .TSTORE ≤ 100 := by rw [hfork]; decide
+        have h3 : opBound Op.tstore [k, v] = 40000 := rfl
+        omega
   case call => simp [stepOp] at hyul
   case callcode => simp [stepOp] at hyul
   case delegatecall => simp [stepOp] at hyul
@@ -2341,10 +2473,25 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
   case create => simp [stepOp] at hyul
   case create2 => simp [stepOp] at hyul
   case selfdestruct =>
-    rcases args with _ | ⟨beneficiary, _ | ⟨extra, args⟩⟩ <;>
-      simp [stepOp, hguard] at hyul
-    subst hyul
-    exact selfdestructStep hcode hf hm hpc hstk hgas40
+    cases hst : yst.env.static with
+    | true =>
+      have hperm : s.executionEnv.permitStateMutation = false :=
+        hm.perm_of_static_true hst
+      rcases args with _ | ⟨beneficiary, _ | ⟨extra, args⟩⟩ <;>
+        simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
+      subst hyul
+      exact staticViolationStep (yop := .selfdestruct) rfl hcode hf hm hpc
+        (by decide) hperm
+    | false =>
+      have hperm : s.executionEnv.permitStateMutation = true :=
+        hm.perm_of_static_false hst
+      have hguard (act : YulSemantics.BuiltinResult U256 EvmState) :
+          YulSemantics.EVM.guardStatic yst act = some act := by
+        simp [YulSemantics.EVM.guardStatic, hst]
+      rcases args with _ | ⟨beneficiary, _ | ⟨extra, args⟩⟩ <;>
+        simp [stepOp, hguard] at hyul
+      subst hyul
+      exact selfdestructStep hcode hf hm hperm hpc hstk hgas40
   case stop =>
     rcases args with _ | ⟨a, args⟩ <;> simp [stepOp] at hyul
     subst hyul

@@ -52,11 +52,16 @@ Design decisions baked into that statement:
     `Account.codeHash`; `blockHashOf` agrees with the header lookup;
   - halt: `st.halted` corresponds to `s.halt`/`s.hReturn`
     (`stop ↦ Success`, `return ↦ Returned+payload`, `revert ↦ Reverted+payload`,
-    `invalid ↦ Exception InvalidInstruction`; `none ↦ Running`);
-  - plus frame-level side conditions: `callStack = []`, `permitStateMutation = true`,
-    `codeAddr` is not a precompile, `fork = Osaka` (all supported ops are active
-    there; parameterizing over a range of compatible forks is a later
-    generalization).
+    `invalid ↦ Exception InvalidInstruction`,
+    `staticViolation ↦ Exception StaticModeViolation`; `none ↦ Running`);
+  - plus frame-level side conditions: `callStack = []`, `codeAddr` is not a
+    precompile, `fork = Osaka` (all supported ops are active there; parameterizing
+    over a range of compatible forks is a later generalization). The frame's
+    mutation permission is **not** fixed: both ordinary
+    (`permitStateMutation = true`) and static (`= false`) frames are covered.
+    `FrameOK.perm` only requires `permitStateMutation = true ∨` the code contains
+    no `CALLCODE` byte — a static frame is admitted as long as it contains no
+    `CALLCODE` (see the static-context note below).
 * A Yul `.normal` outcome means the compiled code runs off the end of the bytecode;
   `Decode.decodeAt` yields an implicit `STOP` there (Yellow-Paper zero padding), so the
   target halts with `.Success` — i.e. straight-line Yul that falls through behaves

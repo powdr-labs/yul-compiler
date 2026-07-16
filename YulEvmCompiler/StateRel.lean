@@ -1030,6 +1030,25 @@ structure StateMatch (yst : YulSemantics.EVM.EvmState) (s : EVM.State) : Prop wh
   createdThisTx : yst.env.createdThisTx =
     !(s.substate.originalAccountMap s.executionEnv.address).isContract
 
+/-- The target frame's mutation permission is the negation of the source
+static flag (a direct consequence of `EnvMatch.static`). -/
+theorem StateMatch.permitStateMutation_eq
+    {yst : YulSemantics.EVM.EvmState} {s : EVM.State} (hm : StateMatch yst s) :
+    s.executionEnv.permitStateMutation = !yst.env.static := by
+  rw [hm.env.static, Bool.not_not]
+
+/-- A non-static source frame corresponds to a mutation-permitting target frame. -/
+theorem StateMatch.perm_of_static_false
+    {yst : YulSemantics.EVM.EvmState} {s : EVM.State} (hm : StateMatch yst s)
+    (h : yst.env.static = false) : s.executionEnv.permitStateMutation = true := by
+  simp [hm.permitStateMutation_eq, h]
+
+/-- A static source frame corresponds to a mutation-forbidding target frame. -/
+theorem StateMatch.perm_of_static_true
+    {yst : YulSemantics.EVM.EvmState} {s : EVM.State} (hm : StateMatch yst s)
+    (h : yst.env.static = true) : s.executionEnv.permitStateMutation = false := by
+  simp [hm.permitStateMutation_eq, h]
+
 /-- Lift the balance/account-map facts specific to one `SELFDESTRUCT` branch into the complete
 machine-state correspondence. -/
 theorem StateMatch.finishSelfdestruct_of
@@ -1225,7 +1244,24 @@ structure FrameOK (code : ByteArray) (s : EVM.State) : Prop where
   /-- Positions in the code fit in a word, so `pc` arithmetic never wraps. -/
   codeSmall : code.size < 2 ^ 256
   fork : s.executionEnv.fork = .Osaka
+  /-- Either the frame permits state mutation (an ordinary, non-static frame),
+  or the code contains no `CALLCODE` opcode byte (`0xf2`).
+
+  Every state-modifying built-in that a static frame forbids is now covered:
+  the local writers (`sstore`/`tstore`/`log0`–`log4`/`selfdestruct`) halt with
+  `StaticModeViolation` via the target's generic static gate, and the external
+  `call`/`create`/`create2` gates halt via their dedicated static rules. The
+  sole exception is `CALLCODE`: a value-bearing `CALLCODE` in a static frame
+  halts the *source* with `.staticViolation`, but the target EVM semantics has
+  no `callcodeStatic` rule (a self-transfer is a world-state no-op, so the
+  opcode is deliberately *not* rejected there). The two semantics genuinely
+  disagree on that one opcode, so it is excluded here. This disjunct is free
+  (`Or.inl rfl`) for every ordinary frame, and only constrains a static frame
+  to contain no `CALLCODE`. Both disjuncts are frame-invariant (neither
+  `permitStateMutation` nor `code` changes along a straight-line execution), so
+  the field threads through every step unchanged. -/
   perm : s.executionEnv.permitStateMutation = true
+    ∨ (0xf2 : UInt8) ∉ code.toList
   noPrecompile : Precompile.isPrecompile s.executionEnv.fork s.executionEnv.codeAddr
     = false
   callStack : s.callStack = []
