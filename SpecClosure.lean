@@ -286,6 +286,29 @@ def sortedNodes (m : Std.HashMap Name Node) : Array Node :=
   let arr := m.toArray.map (·.2)
   arr.qsort (fun a b => a.name.toString < b.name.toString)
 
+/-- Repo-relative source path of a module: `YulEvmCompiler.Correctness` ↦
+`YulEvmCompiler/Correctness.lean`. -/
+def modulePath (m : Name) : String :=
+  String.intercalate "/" (m.components.map (·.toString)) ++ ".lean"
+
+/-- Declaration's 1-based source line, from the range stored in the olean. -/
+def declLine? (env : Environment) (n : Name) : Option Nat :=
+  let ranges? := match Lean.declRangeExt.find? (level := .exported) env n with
+    | some r => some r
+    | none   => Lean.declRangeExt.find? (level := .server) env n
+  match ranges? with
+  | some dr => some dr.range.pos.line
+  | none    => none
+
+/-- Repo-relative `path#Lline` reference for a this-repo declaration — a Markdown
+link target that GitHub (and most editors) resolve straight to the source line. -/
+def srcRef? (env : Environment) (n : Name) : Option String := do
+  let idx ← env.getModuleIdxFor? n
+  let path := modulePath env.allImportedModuleNames[idx]!
+  match declLine? env n with
+  | some ln => pure s!"{path}#L{ln}"
+  | none    => pure path
+
 /-- Combined hash over the external boundary (order-independent via sort). -/
 def boundaryHash (ext : Std.HashMap Name Node) : UInt64 :=
   (sortedNodes ext).foldl (fun acc nd => mix acc (mix nd.name.hash nd.hash)) 1469598103934665603
@@ -369,10 +392,13 @@ def report (env : Environment) : String := Id.run do
     g := g.push ""
     g := g.push desc
     g := g.push ""
-    g := g.push "| declaration | hash |"
-    g := g.push "|---|---|"
+    g := g.push "| declaration | source | hash |"
+    g := g.push "|---|---|---|"
     for nd in ns do
-      g := g.push s!"| `{nd.name}` | `{hex nd.hash}` |"
+      let src := match srcRef? env nd.name with
+        | some ref => s!"[{ref}]({ref})"
+        | none     => "—"
+      g := g.push s!"| `{nd.name}` | {src} | `{hex nd.hash}` |"
     g := g.push ""
     return g
   o := o.push "## Audited this-repo surface"
