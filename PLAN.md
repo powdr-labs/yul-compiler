@@ -57,11 +57,11 @@ Design decisions baked into that statement:
   - plus frame-level side conditions: `callStack = []`, `codeAddr` is not a
     precompile, `fork = Osaka` (all supported ops are active there; parameterizing
     over a range of compatible forks is a later generalization). The frame's
-    mutation permission is **not** fixed: both ordinary
-    (`permitStateMutation = true`) and static (`= false`) frames are covered.
-    `FrameOK.perm` only requires `permitStateMutation = true ∨` the code contains
-    no `CALLCODE` byte — a static frame is admitted as long as it contains no
-    `CALLCODE` (see the static-context note below).
+    mutation permission is **not** constrained: `FrameOK` says nothing about
+    `permitStateMutation`, so both ordinary (`= true`) and static (`= false`)
+    frames are covered with no carve-out. In a static frame the state-modifying
+    built-ins the source forbids (`sstore`/`tstore`/`log0`–`log4`/`selfdestruct`,
+    value-bearing `call`, `create`/`create2`) halt with `StaticModeViolation`.
 * A Yul `.normal` outcome means the compiled code runs off the end of the bytecode;
   `Decode.decodeAt` yields an implicit `STOP` there (Yellow-Paper zero padding), so the
   target halts with `.Success` — i.e. straight-line Yul that falls through behaves

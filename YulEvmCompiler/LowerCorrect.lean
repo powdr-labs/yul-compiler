@@ -462,11 +462,10 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
 /-- **Phase B, open-world static halt**: a state-modifying external built-in
 attempted in a static frame. `call` (value-bearing) / `create` / `create2`
 halt with `Exception .StaticModeViolation` via their dedicated target static
-gates, matching the source's `.staticViolation`. `callcode` is ruled out by
-`FrameOK.perm` (the target EVM semantics deliberately has no `callcodeStatic`
-rule — a self-transfer is a world-state no-op — so the two semantics disagree
-on that one opcode). `delegatecall` / `staticcall` / `gas` never produce a
-relational halt. -/
+gates, matching the source's `.staticViolation`. `callcode` (value-bearing
+`callcode` is a self-transfer, a world-state no-op, so it is *not* rejected in
+a static frame — matching EIP-214 / the EVM), `delegatecall`, `staticcall`, and
+`gas` never produce a relational halt. -/
 theorem externalStaticHaltStep [model : ExternalModel]
     {yop : Op} {o : Operation} (hop : opTable yop = some o)
     (hexternal : IsExternalOp yop)
@@ -505,11 +504,9 @@ theorem externalStaticHaltStep [model : ExternalModel]
       obtain ⟨resp, -, heq⟩ := hhalt
       simp at heq
   case callcode =>
-    obtain rfl : o = .CALLCODE := by simpa [opTable] using hop.symm
     exfalso
-    rcases hf.perm with hp | hnocc
-    · rw [hp] at hperm; simp at hperm
-    · exact hnocc (by rw [hcode, toList_mkCode]; simp [Instr.bytes, Instr.opByte])
+    rcases args with _|⟨g,_|⟨t,_|⟨val,_|⟨ao,_|⟨al,_|⟨ro,_|⟨rl,_|⟨e,rest⟩⟩⟩⟩⟩⟩⟩⟩ <;>
+      simp [builtinWithExternal, YulSemantics.EVM.externalCall] at hhalt
   case create =>
     obtain rfl : o = .CREATE := by simpa [opTable] using hop.symm
     rcases args with _|⟨val,_|⟨off,_|⟨sz,_|⟨e,rest⟩⟩⟩⟩ <;>

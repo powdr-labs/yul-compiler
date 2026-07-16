@@ -282,7 +282,7 @@ theorem pushStepU {code : ByteArray} {pre post : List UInt8} {u : UInt256}
     omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.pushN s ⟨32, by decide⟩ u 32 (by decide) hdec hgas'),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
@@ -354,7 +354,7 @@ theorem dupStep {code : ByteArray} {pre post : List UInt8} {n : Fin 16}
     omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.dup s n v hdec hgas' hget),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, rfl, ?_⟩
@@ -389,7 +389,7 @@ theorem swapStep {code : ByteArray} {pre post : List UInt8} {n : Fin 16}
     omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.swap s n stk' hdec hgas' hswap),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, rfl, ?_⟩
@@ -424,7 +424,7 @@ theorem popStep {code : ByteArray} {pre post : List UInt8}
     omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.pop s a rest hdec hgas' hstk),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, rfl, ?_⟩
@@ -484,7 +484,7 @@ private theorem binPure
     rw [hfork]; omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (mk s (conv a) (conv b) σ hdec hgas' hstk'),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
@@ -532,7 +532,7 @@ private theorem nullaryRead {yv : U256} {sv : UInt256}
   have hstk0 : s.stack = σ := by simpa using hstk
   have hgas' : Gas.baseCost s.fork o ≤ s.gasAvailable := by rw [hfork]; omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile (mk hdec hgas'),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
@@ -583,7 +583,7 @@ private theorem unPure
     rw [hfork]; omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (mk s (conv a) σ hdec hgas' hstk'),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
@@ -637,7 +637,7 @@ private theorem terPure
     rw [hfork]; omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (mk s (conv a) (conv b) (conv c) σ hdec hgas' hstk'),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
@@ -698,7 +698,7 @@ private theorem logStep {yop : Op} {topicCount : Fin 5}
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.log s topicCount (conv p) (conv n) (topics.map conv) σ
       hdec hperm (by simpa using htopics) hstk' hgas'),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩, ?_, ?_, rfl, ?_⟩
   · constructor
     · exact hm.mem
@@ -1100,7 +1100,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         ≤ s.gasAvailable := by omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.exp s (conv a) (conv b) σ hdec hgas' hstk'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
@@ -1142,7 +1142,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.keccak256 s (conv p) (conv n) σ hdec hstk' hgas'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩,
@@ -1180,7 +1180,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.pop s (conv a) σ hdec hgas' hstk'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, rfl, ?_⟩
@@ -1212,7 +1212,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.mload s (conv p) σ hdec hstk' hgas'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
@@ -1251,7 +1251,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.mstore s (conv p) (conv v) σ hdec hstk' hgas'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, rfl, ?_⟩
@@ -1294,7 +1294,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.mstore8 s (conv p) (conv v) σ hdec hstk' hgas'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, rfl, ?_⟩
@@ -1346,7 +1346,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.mcopy s (conv d) (conv src) (conv n) σ hdec hstk' hgas'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, rfl, ?_⟩
@@ -1395,7 +1395,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.calldataload s (conv p) σ hdec hgas' hstk'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
@@ -1456,7 +1456,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.calldatacopy s (conv d) (conv s0) (conv nn) σ hdec hstk' hgas'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, rfl, ?_⟩
@@ -1529,7 +1529,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
         (StepRunning.returndatacopy s (conv d) (conv s0) (conv nn) σ
           hdec hstk' hin hgas'),
-        ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
           hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩,
@@ -1602,7 +1602,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       unfold Gas.codecopyTotal; rw [conv_toNat d, conv_toNat nn, h4]; omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.codecopy s (conv d) (conv s0) (conv nn) σ hdec hstk' hgas'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, rfl, ?_⟩
@@ -1643,7 +1643,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       unfold Gas.codecopyTotal; rw [conv_toNat d, conv_toNat nn, h4]; omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.codecopy s (conv d) (conv s0) (conv nn) σ hdec hstk' hgas'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, rfl, ?_⟩
@@ -1838,7 +1838,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       le_trans htotal hgas40
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.balance s (conv a) σ hdec hgas' hstk'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
@@ -1880,7 +1880,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         hm.externalCode.length a]
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.extcodesize s (conv a) σ hdec hgas' hstk'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
@@ -1936,7 +1936,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.extcodecopy s (conv a) (conv d) (conv s0) (conv nn) σ
         hdec hstk' hgas'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, ?_, hm.retData, hm.retDataLen,
@@ -1987,7 +1987,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       le_trans htotal hgas40
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.extcodehash s (conv a) σ hdec hgas' hstk'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
@@ -2024,7 +2024,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.blockhash s (conv n) σ hdec hgas' hstk'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
@@ -2067,7 +2067,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       rw [hlookup] at hval
       refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
         (StepRunning.blobhash_oob s (conv i) σ hdec hgas' hstk' hlookup),
-        ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
           hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
@@ -2088,7 +2088,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       rw [hlookup] at hval
       refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
         (StepRunning.blobhash s (conv i) σ h hdec hgas' hstk' hlookup),
-        ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
           hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
@@ -2224,7 +2224,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.sload s (conv k) σ hdec hgas' hstk'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
@@ -2292,7 +2292,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         omega
       refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
         (StepRunning.sstore s (conv k) (conv v) σ hdec hperm hstk' hsent hgas'),
-        ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ?_, ?_, rfl, ?_⟩
       · constructor
@@ -2364,7 +2364,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.tload s (conv k) σ hdec hgas' hstk'),
-      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
@@ -2414,7 +2414,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         omega
       refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
         (StepRunning.tstore s (conv k) (conv v) σ hdec hperm hgas' hstk'),
-        ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+        ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ?_, ?_, rfl, ?_⟩
       · constructor
@@ -2583,7 +2583,7 @@ theorem jumpdestStep {code : ByteArray} {pre post : List UInt8}
     omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.jumpdest s hdec hgas'),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, rfl, ?_⟩
@@ -2620,7 +2620,7 @@ theorem jumpStep {code : ByteArray} {pre post : List UInt8}
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.jump s dest rest hdec hgas' hstk
       (by rw [hf.hcode]; exact hvalid)),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, rfl, rfl, ?_⟩
@@ -2651,7 +2651,7 @@ theorem jumpiNotTakenStep {code : ByteArray} {pre post : List UInt8}
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.jumpi_notTaken s dest cond rest hdec hgas' hstk
       (by simp [UInt256.isTrue, hcond])),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, rfl, ?_⟩
@@ -2689,7 +2689,7 @@ theorem jumpiTakenStep {code : ByteArray} {pre post : List UInt8}
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.jumpi_taken s dest cond rest hdec hgas' hstk hcond
       (by rw [hf.hcode]; exact hvalid)),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.perm, hf.noPrecompile, hf.callStack,
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, rfl, rfl, ?_⟩

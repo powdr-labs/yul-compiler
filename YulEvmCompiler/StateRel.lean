@@ -1244,24 +1244,6 @@ structure FrameOK (code : ByteArray) (s : EVM.State) : Prop where
   /-- Positions in the code fit in a word, so `pc` arithmetic never wraps. -/
   codeSmall : code.size < 2 ^ 256
   fork : s.executionEnv.fork = .Osaka
-  /-- Either the frame permits state mutation (an ordinary, non-static frame),
-  or the code contains no `CALLCODE` opcode byte (`0xf2`).
-
-  Every state-modifying built-in that a static frame forbids is now covered:
-  the local writers (`sstore`/`tstore`/`log0`–`log4`/`selfdestruct`) halt with
-  `StaticModeViolation` via the target's generic static gate, and the external
-  `call`/`create`/`create2` gates halt via their dedicated static rules. The
-  sole exception is `CALLCODE`: a value-bearing `CALLCODE` in a static frame
-  halts the *source* with `.staticViolation`, but the target EVM semantics has
-  no `callcodeStatic` rule (a self-transfer is a world-state no-op, so the
-  opcode is deliberately *not* rejected there). The two semantics genuinely
-  disagree on that one opcode, so it is excluded here. This disjunct is free
-  (`Or.inl rfl`) for every ordinary frame, and only constrains a static frame
-  to contain no `CALLCODE`. Both disjuncts are frame-invariant (neither
-  `permitStateMutation` nor `code` changes along a straight-line execution), so
-  the field threads through every step unchanged. -/
-  perm : s.executionEnv.permitStateMutation = true
-    ∨ (0xf2 : UInt8) ∉ code.toList
   noPrecompile : Precompile.isPrecompile s.executionEnv.fork s.executionEnv.codeAddr
     = false
   callStack : s.callStack = []
