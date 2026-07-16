@@ -286,7 +286,13 @@ private partial def sourceNumbersWF : List Char → Bool
       | some (_, after) => sourceNumbersWF after
       | none => false
   | c :: rest =>
-      if isDigitC c then
+      if isIdStart c then
+        -- Skip a whole identifier so digits inside it (e.g. the hex suffix of
+        -- solc-generated names like `revert_error_42b3…`) are not mis-lexed as
+        -- number tokens. Identifiers never start with a digit, so real number
+        -- literals are still scanned by the branch below.
+        sourceNumbersWF (rest.dropWhile isIdCont)
+      else if isDigitC c then
         let token := c :: rest.takeWhile isNumCont
         validNumberToken token && sourceNumbersWF (rest.dropWhile isNumCont)
       else sourceNumbersWF rest

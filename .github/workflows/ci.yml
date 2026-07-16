@@ -238,7 +238,8 @@ jobs:
           git -C /tmp/solidity sparse-checkout set \
             test/libyul/yulOptimizerTests \
             test/libyul/objectCompiler \
-            test/libyul/evmCodeTransform
+            test/libyul/evmCodeTransform \
+            test/libsolidity/gasTests
 
       # The same run checks behavior AND gas: each differential invocation also
       # takes a per-suite gas baseline and fails if this compiler's total gas
@@ -270,3 +271,14 @@ jobs:
               "$SOLC_PATH" "$SOLC_VERSION" 0 1 || status=1
             exit "$status"
           fi
+
+      # Solidity gasTests: compile each contract through solc's --via-ir pipeline
+      # with the Yul optimizer on, then gas-compare the optimized runtime against
+      # solc's. Fails if a contract stops compiling or its gas rises above the pin.
+      - name: Compile and gas-check Solidity gasTests
+        if: matrix.kind == 'direct'
+        run: |
+          lake env lean --run scripts/CheckSolidityGas.lean \
+            /tmp/solidity/test/libsolidity/gasTests \
+            test/solidity-gas-baseline.txt \
+            "$SOLC_PATH" "$SOLC_VERSION"

@@ -7,18 +7,7 @@ disambiguator/similar_literals.yul
 disambiguator/string_as_hex_and_hex_as_string.yul
 equalStoreEliminator/verbatim.yul
 equivalentFunctionCombiner/constant_representation_datasize.yul
-fakeStackLimitEvader/connected.yul
-fakeStackLimitEvader/function_arg.yul
-fakeStackLimitEvader/multi_variable_declaration_without_value.yul
-fakeStackLimitEvader/outer_block.yul
-fakeStackLimitEvader/return_leave.yul
-fakeStackLimitEvader/return_one.yul
-fakeStackLimitEvader/return_one_with_args.yul
-fakeStackLimitEvader/same_variable_in_lhs_and_rhs.yul
-fakeStackLimitEvader/stub.yul
-fullSuite/abi2.yul
 fullSuite/aztec.yul
-fullSuite/stack_shuffler_bring_up_target_slot_bfs_dedup.yul
 loadResolver/verbatim_mload.yul
 loadResolver/verbatim_sload.yul
 loopInvariantCodeMotion/no_move_gas.yul
@@ -42,5 +31,4 @@ stackLimitEvader/verbatim_many_arguments_and_returns.yul
 stackLimitEvader/verbatim_many_returns.yul
 unusedFunctionParameterPruner/too_many_arguments.yul
 unusedPruner/verbatim.yul
-unusedStoreEliminator/memoryguard.yul
 unusedStoreEliminator/store_before_terminating_verbatim_revert.yul
