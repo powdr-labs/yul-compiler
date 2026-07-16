@@ -428,6 +428,41 @@ genuine theorems. `Checks.lean` pins that exact set for each theorem in CI:
   `CreatesRealized.complete_allows_initcode_reentrancy` — that the open-world
   realization interface admits reentrant traces.
 
+## The audited specification boundary
+
+`Checks.lean` pins what the proofs are trusted *modulo* (the axiom base).
+`SpecClosure.lean` pins the dual: the **specification** the theorems are stated
+*in terms of* — the minimal set of declarations a human must read and agree with
+to believe the guarantees say what they should. It walks each headline theorem's
+*statement* (never its proof), so the hundreds of preservation lemmas drop out
+automatically; what remains is the match relations (`StateMatch`, `FrameOK`,
+`HaltMatch`, …), the outcome maps (`resultOf`), the AST/target data types, the
+external-call model (`ExternalsRealized`), and the entry points of the two
+pinned semantics the guarantee quantifies over.
+
+The extraction is emitted to [`SPEC.md`](./SPEC.md) (a manifest plus a tiered
+boundary diagram) and its compact signature is pinned by a `#guard_msgs` block,
+exactly as `Checks.lean` pins the axiom set. CI (`lake env lean SpecClosure.lean`
+plus a `git diff` on `SPEC.md`) fails if a declaration enters or leaves the
+audited surface, or an audited declaration's meaning changes — but **not** when
+the compiler algorithm or any proof changes. That is the intended contract for
+automated refactoring: code and proofs may change freely; the audited spec is
+the fixed point that must be re-approved by a human when it moves.
+
+When a change to the specification is intended, a maintainer runs
+[`scripts/update-spec.sh`](./scripts/update-spec.sh), which regenerates `SPEC.md`
+and re-pins `SpecClosure.lean` in one step; the resulting diff is the audit
+artifact to review. The trust-boundary files (`SpecClosure.lean`, `SPEC.md`,
+`Checks.lean`, the updater, the workflow, and the semantics pins) are guarded by
+[`.github/CODEOWNERS`](./.github/CODEOWNERS) and flagged human-approval-only in
+`AGENTS.md`, so an automated agent cannot re-pin a spec change to approve it.
+
+This is a "does nothing it shouldn't" guarantee. The complementary "does
+everything it should" side — that compilation is not vacuously rejecting
+programs — is not part of the spec closure; it is enforced separately by the
+Solidity differential corpora and their checked-in baselines (below and in
+CI), which must stay in sync as coverage grows.
+
 ## What is not done, and why
 
 * **`gas`.** yul-semantics models `gas()` as a nondeterministic open-world

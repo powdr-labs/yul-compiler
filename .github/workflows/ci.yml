@@ -72,6 +72,27 @@ jobs:
       - name: Verify axiom footprint (sorry-free, standard axioms only)
         run: lake env lean Checks.lean
 
+      # The audited *specification* boundary — the dual of the axiom check.
+      # `SpecClosure.lean` walks each headline theorem's statement (never its
+      # proof) to pin the exact set of match relations, frame conditions,
+      # outcome maps, data types, and external-semantics entry points the
+      # guarantee is phrased in terms of. Its `#guard_msgs` block fails if a
+      # declaration enters or leaves the audited surface, or an audited
+      # declaration's meaning changes — the signal that a human must re-audit
+      # the spec. Elaborating it also regenerates SPEC.md (checked next). This
+      # does NOT fire when the compiler algorithm or any proof changes: under
+      # autoresearch, code and proofs may change freely as long as the pinned
+      # spec surface does not.
+      - name: Verify specification closure (audited spec surface pinned)
+        run: lake env lean SpecClosure.lean
+
+      - name: Specification manifest (SPEC.md) is up to date
+        run: |
+          if ! git diff --exit-code -- SPEC.md; then
+            echo "::error::SPEC.md is stale — run 'lake env lean SpecClosure.lean' and commit the result"
+            exit 1
+          fi
+
       # Fetch only the Yul test directories used below. Checked-in baselines
       # make current parser/compiler gaps explicit and detect stale entries.
       - name: Fetch Solidity Yul tests
