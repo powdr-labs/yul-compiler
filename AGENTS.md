@@ -42,7 +42,7 @@ Important files:
 - `YulEvmCompiler/LowerDefs.lean`: Phase B configuration/stack correspondence and bytecode location lemmas.
 - `YulEvmCompiler/LowerCorrect.lean`: Phase B simulation, one `Asm` constructor at a time, then trace composition.
 - `YulEvmCompiler/Correctness.lean`: composition into the public correctness theorems.
-- `YulEvmCompiler/ObjectCompile.lean`: foundational object/data layout and its data-segment consistency theorem; full object execution remains incomplete.
+- `YulEvmCompiler/ObjectCompile.lean`: object/data layout, its data-segment consistency theorem (`compileObject_consistent`), and the full object-execution theorem (`compileObject_correct`), which simulates every `RunObject` derivation under the generated layout with the emitted EVM bytecode. Both are axiom-pinned in `Checks.lean`.
 - `YulEvmCompiler/Examples.lean`: build-time compilation guards and executable differential tests between both semantics.
 - `YulParser/`: parser library. `Canon.lean` supports verified canonical round trips; `Compat.lean` is an intentionally lossy Solidity-compatibility fallback.
 - `YulEvmCompilerTests/InterpreterFixture.lean`: runner for Solidity's Yul interpreter fixtures.
@@ -53,7 +53,7 @@ Important files:
   `scripts/CheckSolidityCompileTests.lean`, and
   `scripts/CheckSoliditySolcDifferential.lean`: corpus/baseline drivers used by CI.
 - `Checks.lean`: exact axiom-footprint checks for the headline compiler and parser theorems.
-- `README.md`: user-facing current scope. `PLAN.md`: design rationale, proof architecture, blockers, and roadmap.
+- `README.md`: user-facing current scope. `DESIGN.md`: design rationale and proof architecture.
 
 The source and target semantics are ordinary pinned Lake dependencies in `lakefile.toml`; inspect their actual definitions under `.lake/packages/yul-semantics` and `.lake/packages/evm_semantics` instead of guessing their AST, opcode, gas, or state APIs.
 
@@ -95,7 +95,7 @@ Start by classifying the feature. The required files differ substantially for a 
 
 Adding a direct local built-in normally requires no Phase A case: `.builtin` already compiles to `.op`, and `AsmSem.AStep.op` uses the same source relation. It does require Phase B because `opTable` and `opStep` justify the concrete opcode. External-boundary operations additionally require a `CallsRealized`/`CreatesRealized`-style complete-trace obligation instead of a single-op `opStep` case.
 
-For `keccak256`, preserve the `EnvMatch.keccak` agreement between the source environment's configurable oracle and the target primitive; executable tests use the proved `targetKeccakOracle` adapter. Operations absent from deterministic source `stepOp` need an explicit open-world source relation and a corresponding target realization argument; they cannot be routed through the single-op `opStep` proof. See `OpTable.lean` and `PLAN.md` for current blockers before starting.
+For `keccak256`, preserve the `EnvMatch.keccak` agreement between the source environment's configurable oracle and the target primitive; executable tests use the proved `targetKeccakOracle` adapter. Operations absent from deterministic source `stepOp` need an explicit open-world source relation and a corresponding target realization argument; they cannot be routed through the single-op `opStep` proof. See `OpTable.lean` and `DESIGN.md` for which operations are outside the verified fragment before starting.
 
 ### Adding a Yul expression or statement form
 
@@ -107,7 +107,7 @@ The AST lives in `yul-semantics`; first verify the constructor and its source bi
 4. In `SimAsm.lean`, add inversion lemmas for the successful compiler equation. Extend `Motive`, `SOut`, or `LOut` if the source result shape is new, then handle the corresponding constructor in `SimA.sim` using small reusable execution lemmas.
 5. Use the successful final `wfCheck`/label `Nodup` fact with `findLabel_boundary`; do not introduce a parallel label-freshness proof unless the architecture is intentionally changing.
 6. Add both compile-acceptance and differential-execution examples. Include nested scopes and non-local outcomes when relevant, not just the happy straight-line case.
-7. Update the supported-fragment text in `README.md`, theorem doc comments, and the current design in `PLAN.md` if behavior or scope changed.
+7. Update the supported-fragment text in `README.md`, theorem doc comments, and `DESIGN.md` if behavior or scope changed.
 
 Phase A is a large induction, so keep additions local: compiler-equation inversion, a small Asm execution lemma, then one induction branch. Avoid unfolding the whole compiler repeatedly inside `SimA.sim`.
 
@@ -292,5 +292,5 @@ git -C /tmp/solidity sparse-checkout set \
 - Prefer small named lemmas at representation boundaries over large tactic blocks in the end-to-end theorem.
 - Match existing namespaces, theorem naming, module doc comments, and explicit stack/state shapes.
 - Preserve unrelated working-tree changes.
-- Update `README.md` when supported syntax/opcodes or commands change, and update `PLAN.md` when an architectural decision, blocker, or milestone changes.
+- Update `README.md` when supported syntax/opcodes or commands change, and update `DESIGN.md` when an architectural decision or the scope of the proof changes.
 - When a failure comes from a pinned upstream semantics definition, document the exact blocker rather than approximating different behavior locally.

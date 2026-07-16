@@ -12,15 +12,16 @@ by list appends (`prog = pre ++ asm ++ c`), jumps land at labels via
 Local operations reduce through `stepOp`; external calls and creations use
 the chosen open-world relations.
 
-The fragment-execution shapes (`ASimE`/`ASimS`/… below) mirror the
-milestone-2 `SimE`/`SimS`, with two new ingredients:
+The fragment-execution shapes (`ASimE`/`ASimS`/… below) relate a compiled
+fragment to the source derivation, with two ingredients specific to the
+labeled-assembly layer:
 
 * stack values are `AVal`s — expression temporaries `τ` may contain
   function return addresses, so only their *length* is constrained;
 * the non-local outcomes (`break`/`continue`/`leave`) get their own shape
   `ASimNL`: pop down to the context's depth, jump to the context's label.
 
-See `PLAN.md` § "Phase A detailed design" for the roadmap.
+See `DESIGN.md` for the proof structure.
 -/
 
 namespace YulEvmCompiler.SimA
