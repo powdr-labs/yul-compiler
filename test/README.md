@@ -69,7 +69,8 @@ after an intended codegen or solc change. See `test/gas/README.md`.
 `scripts/ReportSolcGas.lean` is the non-gating Tier B report: it measures gas
 overhead across a whole upstream corpus (skipping the differential's
 known-failure entries) and prints the aggregate and worst-case ratios. It has
-no baseline because the upstream corpora and solc numbers churn.
+no baseline because the upstream corpora and solc numbers churn, and it is run
+on demand rather than in CI — it is a measurement with no pass/fail meaning.
 
 Remove a relative fixture path from any baseline as soon as it passes. A
 local checkout can be checked with:
