@@ -1,18 +1,18 @@
 # yul-evm-compiler
 
-A **verified compiler from Yul to EVM bytecode**, written in Lean 4.
+A **verified non-optimizing compiler for a fragment of Yul to EVM bytecode**,
+written in Lean 4.
 
 * Source semantics: [powdr-labs/yul-semantics] — the big-step relational
-  judgment `YulSemantics.Step` over the gas-free EVM dialect
+  judgment `YulSemantics.Run`/`Step` over the gas-free EVM dialect
   (`Value := BitVec 256`).
 * Target semantics: [powdr-labs/evm-semantics] — the small-step relation
-  `EvmSemantics.EVM.Step` and its big-step closure `Eval`.
+  `EvmSemantics.EVM.Step` and its big-step closure `Eval`, a real EVM with gas.
 
 Both repos are ordinary Lake dependencies (same toolchain `v4.31.0`, same
-Mathlib revision), so the correctness theorem quantifies over *both semantics
-as they are* — nothing is re-encoded.
-
-## Pipeline
+Mathlib revision), so the correctness theorem quantifies over *both semantics as
+they are* — nothing is re-encoded. See [`DESIGN.md`](./DESIGN.md) for the full
+design, proof structure, and rationale.
 
 Compilation goes through a **labeled-assembly intermediate layer**, so all
 control-flow and calling-convention reasoning is byte- and gas-free, while all
@@ -20,76 +20,81 @@ gas/decode/layout arithmetic is a single generic per-instruction simulation:
 
 ```
 Yul --compileStmts--> List Asm --lowerProg--> List Instr --assemble--> ByteArray
-        (phase A proof)            (phase B proof)          (Decode lemmas)
+        (Phase A proof)          (Phase B proof)          (Decode lemmas)
 ```
 
-`compile` is the full pipeline; `compileProgram` produces the labeled
-assembly (and runs a decidable `wfCheck` on it, which hands the proof unique
-and defined jump labels with zero freshness bookkeeping).
+Compilation is `Option`-valued: it **rejects** what it cannot yet verify
+(`compile = none`) rather than emitting unverified code. Rejection is never
+miscompilation.
 
-## Current scope
+## Building
 
-A non-optimizing compiler for programs with **variables, nested blocks,
-`if`, `switch`, `for` loops (with `break`/`continue`), and user-defined
-`function`s (with `leave`, recursion, calls, and up to 16 return values)**:
+```sh
+lake exe cache get   # prebuilt Mathlib oleans
+lake build           # builds both semantics deps + the compiler + proofs
+lake env lean Checks.lean         # re-checks the axiom footprint
+lake env lean --run YulParserMain.lean --parse-only program.yul
+lake build yulc                   # CLI that emits compiled bytecode
+```
 
-* `let` declarations (initialized or zeroed), single- and multi-variable
+`lake build` also executes the `#guard`/`#eval` differential checks in
+`Examples.lean`. Requires the Lean toolchain pinned in
+[`lean-toolchain`](./lean-toolchain) (managed by
+[`elan`](https://github.com/leanprover/elan)).
+
+## What is implemented
+
+A non-optimizing compiler for programs with **variables, nested blocks, `if`,
+`switch`, `for` loops (with `break`/`continue`), and user-defined `function`s
+(with `leave`, recursion, calls, and up to 16 return values)**:
+
+- `let` declarations (initialized or zeroed), single- and multi-variable
   assignments, built-in expression statements, `{ … }` scoping;
-* `if` → `ISZERO; PUSH32 dest; JUMPI … JUMPDEST`;
-* `switch` → a verified chain of literal comparisons and conditional jumps,
-  with an optional `default` block;
-* `for {init} c {post} {body}` with backward jumps, `break`/`continue`
-  compiling to statically-known `pop`s down to the loop scope + a `jump`;
-* `function f(ps) -> rs { body }` compiled inline (jumped over), called with a
-  pushed return address (`pushLabel`) and a `dynJump` back; `leave` pops to
-  the function frame and jumps to the epilogue; a `SWAP1 … SWAPk` rotation
-  returns `k ≤ 16` values in source order.
+- `if` → `ISZERO; PUSH32 dest; JUMPI … JUMPDEST`;
+- `switch` → a verified chain of literal comparisons and conditional jumps, with
+  an optional `default` block;
+- `for {init} c {post} {body}` with backward jumps; `break`/`continue` compile
+  to statically-known `pop`s down to the loop scope plus a `jump`;
+- `function f(ps) -> rs { body }` compiled inline (jumped over), called with a
+  pushed return address (`pushLabel`) and a `dynJump` back; `leave` pops to the
+  function frame and jumps to the epilogue; a `SWAP1 … SWAPk` rotation returns
+  `k ≤ 16` values in source order.
 
 Literals compile to `PUSH32`; a built-in call compiles its arguments
-right-to-left (Yul's evaluation order, which also puts the first argument on
-top of the stack) followed by the built-in's opcode; a program that falls off
-the end of its bytecode performs the EVM's implicit `STOP`, matching Yul's
-`.normal` outcome.
+right-to-left (Yul's evaluation order, which puts the first argument on top of
+the stack) followed by the built-in's opcode; a program that falls off the end
+of its bytecode performs the EVM's implicit `STOP`, matching Yul's `.normal`
+outcome. Variables live on the operand stack, mirroring the semantics' `VEnv`
+exactly: reads compile to `DUP(off+idx+1)`, assignments to `SWAP(idx+1); POP`,
+`let x := e` is free, and block exit pops the block's locals.
 
-Variables live on the operand stack: the compile-time layout mirrors the
-semantics' `VEnv` exactly. Reads compile to `DUP(off+idx+1)`, assignments to
-`SWAP(idx+1); POP`, `let x := e` is free (the value stays put), and block
-exit pops the block's locals. Because EIP-8024 (`DUPN`/`SWAPN`) is not yet
-activated on any fork modeled by evm-semantics, accesses deeper than
-`DUP16`/`SWAP16` are **rejected at compile time** (`compile = none`);
-lifting that restriction is a codegen-only change once the fork table
-activates EIP-8024.
+**Full static support.** The theorem covers both ordinary and static
+(`STATICCALL`) frames with no carve-out — `FrameOK` no longer constrains
+`permitStateMutation` at all. In a static frame every state-modifying built-in
+the source forbids (`sstore`/`tstore`/`log0`–`log4`/`selfdestruct`,
+value-bearing `call`, `create`/`create2`) halts with
+`Exception .StaticModeViolation`, matching the source's `HaltKind.staticViolation`;
+the value-free calls `callcode`/`delegatecall`/`staticcall` proceed, propagating
+the static flag into the callee.
 
-The object layer in `YulEvmCompiler/ObjectCompile.lean` recursively compiles
-sub-objects, resolves `dataoffset`/`datasize` to actual layout constants, emits
-a `STOP` seam before embedded child/data bytes, and exposes real offset/size
-maps. `compileObject_consistent` proves that every direct data segment is at
-its recorded byte range. `codesize`, `codecopy`, and `datacopy` are verified
-built-ins. `compileObject_correct` proves the complete execution statement:
-every `RunObject` derivation under the generated layout is simulated by the
-emitted EVM bytecode. The proof covers layout-reference resolution, the
-executable prefix, normal fall-through through the `STOP` seam, exact
-source-level halts, and recursively embedded child/data payload bytes.
+The object layer (`YulEvmCompiler/ObjectCompile.lean`) recursively compiles
+sub-objects, resolves `dataoffset`/`datasize` to layout constants, emits a `STOP`
+seam before embedded child/data bytes, and exposes real offset/size maps.
+`compileObject_correct` proves the complete execution statement: every
+`RunObject` derivation under the generated layout is simulated by the emitted
+EVM bytecode. `compileObject_consistent` proves every direct data segment sits
+at its recorded byte range.
 
 `YulParser.parseSource` parses brace-delimited programs and object-rooted files
-in the supported grammar into the `yul-semantics` AST. `parseBlock` and
-`parseObject` have verified canonical round-trip theorems: input accepted by
-those parsers is preserved up to whitespace, comments, and number base,
-including the source spelling of string escapes. The public source entry point
-additionally has a compatibility fallback for `hex"..."` expression literals
-and object data, and interleaved sub-objects/data. Hex expression literals are
-lowered to their left-aligned 256-bit numeric value; interleaved items are normalized into the
-AST's separate sub-object and data lists. This lossy fallback is intentionally
-outside the canonical round-trip theorem. Public entry points cap recursive
-grammar fuel at 256, rejecting excessively nested input. Parsing remains
-mostly syntactic: it does not generally perform name resolution, scope or
-control-context checks, built-in arity checking, or other Solidity semantic
-validation. Type annotations are still deferred.
-`YulParser.compileSource` compiles either brace-delimited programs or complete
-object roots and returns executable EVM bytecode.
+into the `yul-semantics` AST. `parseBlock` and `parseObject` have verified
+canonical round-trip theorems (`parse_canon_block`, `parse_canon_obj`): accepted
+input is preserved up to whitespace, comments, and number base, including string
+escape spelling. A lossy compatibility fallback handles `hex"..."` literals and
+interleaved sub-objects/data (intentionally outside the round-trip theorem).
+`YulParser.compileSource` compiles either form to executable bytecode.
 
-The verified built-in set (the domain of `opTable` in
-`YulEvmCompiler/OpTable.lean`):
+The **verified built-in set** is the domain of `opTable`
+(`YulEvmCompiler/OpTable.lean`):
 
 | group      | ops |
 |------------|-----|
@@ -110,102 +115,136 @@ The verified built-in set (the domain of `opTable` in
 | creation   | `create create2` |
 | halting    | `stop return revert invalid selfdestruct` |
 
-Everything else in the direct built-in path is rejected (`compile = none`).
-Object-relative `dataoffset`/`datasize` calls are resolved separately by the
-verified object compiler; `gas` remains blocked because the source semantics
-models it as a nondeterministic open-world oracle rather than a `stepOp`.
-Verifying it requires a realization condition tying the oracle's chosen word
-to the target frame's actual remaining gas. CALL- and CREATE-family operations
-use the open-world relational model described below. The
-memory-write proofs
-use the `writeBytes` read-after-write lemma that now lives upstream
-(`EvmSemantics.MachineState.writeBytes_getElem?_getD`); `MSTORE` additionally
-rests on two `ByteArray` reduction facts about evm-semantics'
-`natToBytesPadded`, proved in `YulEvmCompiler.BytesLemmas`. No project-specific
-axioms remain — the `#print axioms` footprint is just the standard classical
-axioms.
+The pure word operations (including the signed `sdiv`/`smod`/`sar`/`signextend`)
+and the local state operations are verified as flat single-op simulations, on
+the same footing as `add`. **The CALL-, CREATE-, and `selfdestruct`-family
+operations are different**: their correctness is *conditional on* the
+`ExternalsRealized` hypothesis — see the next section.
+
+## What is not (yet) done, and why
+
+- **`gas`.** yul-semantics models `gas()` as a nondeterministic open-world
+  oracle; verifying it needs a realization condition tying the chosen oracle word
+  to the target frame's actual remaining gas. Until then it compiles to `none`.
+  (`datasize`/`dataoffset` are also outside `opTable`, but only because the
+  object compiler resolves them to layout constants at compile time rather than
+  runtime opcodes.)
+- **Open-world call/create coverage is conditional.** The
+  CALL/CREATE/`selfdestruct` correctness is sound and general — the theorem
+  quantifies over the external `ExternalCalls`/`ExternalCreates` relations and
+  assumes an `ExternalsRealized` hypothesis: every source-admitted call/create
+  response must be realized by a complete target `Steps` trace (with no
+  restriction on intermediate call stacks, so arbitrary callee/init code, nested
+  calls/creations, and reentrancy are covered). But the only *model* of that
+  interface exhibited in-repo is the empty closed-world `ExternalsRealized.none`,
+  so end-to-end open-world call/create coverage is conditional on supplying a
+  realization. This is a genuine distinction from the flat built-ins above.
+- **Deep stack access.** Variable reads use up to `DUP16`, stores up to
+  `SWAP16`, and functions return up to 16 values. Deeper accesses are *rejected*
+  (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
+  activated on any fork modeled by evm-semantics. Lifting the restriction is a
+  codegen-only change once the fork table activates EIP-8024, or a spilling pass.
+- **Non-optimizing.** There is no verified optimizer in front of the backend. A
+  source-to-source pass would be a separate total transformation proved against
+  `YulSemantics.Run` and composed with `compile_correct`; `compile` never
+  silently calls an unproved transformation.
+- **Fork range.** The theorem fixes `fork = .Osaka`. Function/param/return names
+  must be `Nodup`.
+- **Gas is existentially bounded, not closed-form.** By design (yul-semantics is
+  gas-free, evm-semantics charges gas), the guarantee holds for all sufficiently
+  large initial gas; no closed-form gas equivalence is claimed.
+- **Parser coverage.** The lossy `hex"..."`/interleaved-object compatibility
+  fallback is outside the canonical round-trip theorems; typed identifiers and a
+  verified compatibility path are future work.
+
+## Tests
+
+Correctness is carried by the theorems below. In addition:
+
+- `YulEvmCompiler/Examples.lean` compiles sample programs at build time
+  (`#guard`/`#eval`) — `switch`, multi-value returns and assignments, a `for`
+  loop, a recursive function, an iterative Fibonacci over storage,
+  CREATE/CREATE2 compilation, all five log arities with exact emitted contents,
+  and a concrete `keccak256("abc")` — each run **differentially** through both
+  the Yul interpreter and evm-semantics' `stepF` on the compiled bytecode, with
+  affected state compared. It also compiles yul-semantics' own
+  `FibExample.fibContract` all the way to bytecode and checks it returns the
+  interpreter's bytes for several inputs.
+- CI checks every `.yul` fixture in Solidity's `yulSyntaxTests` (accept/reject
+  expectations), with an exact mismatch baseline.
+- CI runs the Solidity Yul interpreter fixtures whose `EVMVersion` range includes
+  Osaka: it compiles and executes each with evm-semantics and compares nonzero
+  memory words and persistent/transient storage against the embedded dumps. The
+  baseline lists the fixtures that do not pass, with reasons (unsupported ops,
+  resource limits, and three object fixtures whose AST-interpreter dumps use
+  synthetic hash offsets/sizes and a dummy code buffer rather than real compiled
+  state).
+- CI compiles every latest-fork fixture in Solidity's positive
+  `yulOptimizerTests`, `objectCompiler`, and `evmCodeTransform` corpora
+  (compilation acceptance), and separately runs a **behavioral differential
+  against solc 0.8.35** over six identical pre-states per fixture (Solidity's
+  default, one patterned state, and four path-seeded states covering calldata
+  lengths 1/31/32/33 with varied call values, balances, and storage). It
+  compares termination, return/revert bytes, returndata, nonzero memory, account
+  state, logs, self-destructs, and storage refunds, and deliberately ignores
+  exact bytecode, PCs, operand stacks, and remaining gas.
+
+The differential baselines track **genuine behavioral mismatches vs solc** —
+halt/memory/storage differences under the seeded states and a
+return-stack-overflow divergence — alongside unsupported constructs, deep-stack
+rejections, layout-introspection differences, and synthetic-value fixtures. Each
+baseline is exact: a new failure or a stale entry fails CI. This is a
+source-compatibility and behavioral check; it does **not** claim optimizer or
+bytecode equivalence with solc. For `yulOptimizerTests` it compiles the original
+source and does not reproduce the fixture's configured optimization step.
 
 ## The theorem
 
 `YulEvmCompiler.compile_correct` (in `YulEvmCompiler/Correctness.lean`):
 
-> If `compile prog = some is` and the Yul semantics runs `prog` from
-> machine state `st₀` to `st'` with outcome `o`
-> under external call/create relations whose responses are realized by complete
-> target executions, then there is a gas bound `b`
-> such that from **every** initial EVM state that matches `st₀`
-> (`StateMatch`), executes `assemble is` (`FrameOK`), starts at `pc = 0` with
-> an empty stack, and holds at least `b` gas, the EVM semantics reaches
-> (`Steps`) a final state that matches `st'` and halts the way `o` prescribes:
-> `.Success` via the implicit `STOP` for `o = .normal`, or exactly the halt
-> recorded in `st'.halted` (`stop`/`return`+payload/`revert`+payload/
-> `invalid`/`invalidMemoryAccess`/`selfdestruct`) for `o = .halt`.
+> If `compile prog = some is` and the Yul semantics runs `prog` from machine
+> state `yst0` to `yst'` with outcome `o` (under external call/create relations
+> whose responses are realized by complete target executions), then there is a
+> gas bound `b` such that from **every** initial EVM state that matches `yst0`
+> (`StateMatch`), executes `assemble is` (`FrameOK`), starts at `pc = 0` with an
+> empty stack, and holds at least `b` gas, the EVM semantics reaches (`Steps`) a
+> final state that matches `yst'` and halts the way `o` prescribes: `.Success`
+> via the implicit `STOP` for `o = .normal`, or exactly the halt recorded in
+> `yst'.halted` for `o = .halt`.
+
+Its **remaining preconditions** are all honest scoping, not modeling gaps:
+`fork = .Osaka`, an empty call stack (top-level frame), a non-precompile
+executing address, `pc = 0`, an empty initial stack, and sufficient gas.
+`FrameOK` does **not** constrain `permitStateMutation`, so static and non-static
+frames are both covered (see "Full static support" above).
 
 `compile_correct_eval` restates the conclusion through evm-semantics'
-result-level big-step judgment: `Eval s₀ .success`, resp.
-`Eval s₀ (resultOf hk)`.
+result-level big-step judgment; `compile_correct_withPayload` exposes the
+returned/reverted payload bytes.
 
 `YulEvmCompiler.compileObject_correct` lifts the same guarantee to recursively
-compiled objects. If `compileObject o = some L` and `RunObject o L V st' out`,
-then EVM execution of the complete `L.code` simulates that run. The proof first
-replaces `dataoffset`/`datasize` by the exact words in `L`, then runs the block
-simulation on the executable prefix; normal fall-through executes the explicit
-`STOP` seam, while children and data remain available as the trailing code
-payload used by `codesize`, `codecopy`, and `datacopy`.
+compiled objects.
 
-The proof is a two-phase forward simulation:
+The proof is a **two-phase forward simulation**:
 
-* **Phase A** (`YulEvmCompiler/SimAsm.lean`, `SimA.sim`): the Yul derivation
-  is simulated by the byte-free, gas-free Asm machine (`AsmSem.lean`). Jumps
-  resolve labels to code suffixes; function environments are tracked by
-  `FEnvOK`, established at each block via `hoist_ok`.
-* **Phase B** (`YulEvmCompiler/LowerCorrect.lean`, `asteps_sim`/
-  `arun_halt_sim`): each local Asm step maps to 1–3 EVM steps; a call or
-  creation maps to a complete `Steps` trace. `ConfMatch` is restored at the
-  caller/creator, and existential gas bounds add along the execution.
+- **Phase A** (`SimAsm.lean`, `SimA.sim`): the Yul derivation is simulated by the
+  byte-free, gas-free Asm machine. Jumps resolve labels to code suffixes;
+  function environments are tracked by `FEnvOK`, established at each block via
+  `hoist_ok`.
+- **Phase B** (`LowerCorrect.lean`, `asteps_sim`/`arun_halt_sim`): each local Asm
+  step maps to 1–3 EVM steps; a call or creation maps to a complete `Steps`
+  trace. Existential gas bounds add along the execution.
 
-`ExternalsRealized` packages the endpoint conditions `CallsRealized` and
-`CreatesRealized`: they constrain the state before a CALL/CREATE-family opcode
-and the restored caller/creator afterward, but do not constrain intermediate
-call stacks. Consequently the theorem covers arbitrary callee and init code,
-nested calls and creations, and reentrant executions of the creator.
-
-The correspondence `StateMatch` relates memory pointwise (total function vs.
-zero-padded `ByteArray`) and its active-word high-water mark, Yul's flat
-storage/transient storage to the executing account's storage, calldata and
-executing code pointwise (with exact lengths), and every account's nonce,
-persistent/transient storage, code bytes, lengths, and hashes through the
-account map. It also relates historical block hashes, the source static-context
-flag to the target frame's mutation permission, emitted logs, and scheduled
-self-destruct records (address plus the EIP-6780 `createdThisTx` bit) in order,
-plus returndata byte-for-byte with its exact length. `EnvMatch` also requires
-the source environment's configurable Keccak oracle to agree pointwise with
-the target hash primitive. Gas is existentially bounded because yul-semantics
-does not track execution gas as machine state.
-Per-instruction facts live in
-`OpStep.lean`, byte-level decoding facts in `Decode.lean`, and the
-`BitVec 256` ↔ `UInt256` arithmetic agreements in `Value.lean`.
-
-`selfdestruct` follows the pinned Osaka/Cancun EIP-6780 behavior: the opcode
-immediately transfers (or, for a same-address beneficiary, conditionally
-retains/burns) the executing account's balance, records the address for
-transaction cleanup, and halts successfully. The proof covers both contracts
-created in the current transaction and pre-existing contracts. Actual account
-deletion is a transaction-finalization operation in evm-semantics and lies
-outside this frame-level compiler theorem.
-
-**Static-call context.** The theorem covers both ordinary and static
-(`STATICCALL`) frames with no carve-out — `FrameOK` no longer constrains
-`permitStateMutation` at all. In a static frame every state-modifying built-in
-that the source forbids halts with `Exception .StaticModeViolation`, matching
-the source's `.staticViolation`: the local writers
-`sstore`/`tstore`/`log0`–`log4`/`selfdestruct` fire the target's generic static
-gate, and the open-world `call` (value-bearing) / `create` / `create2` gates
-fire their dedicated target static rules. The value-free calls
-`callcode`/`delegatecall`/`staticcall` execute normally, propagating the static
-flag into the callee (a value-bearing `callcode` is a self-transfer — a
-world-state no-op — so, matching EIP-214 / the EVM, it is not rejected in a
-static frame).
+`StateMatch` is comprehensive: memory (total function vs. zero-padded `ByteArray`)
+and its active-word high-water mark, Yul's flat storage/transient storage to the
+executing account's storage, calldata and executing code pointwise (with exact
+lengths), every account's nonce/storage/transient/code/hashes through the account
+map, historical block hashes, the source static flag against the target mutation
+permission, ordered logs, ordered self-destruct records (address plus the
+EIP-6780 `createdThisTx` bit), returndata byte-for-byte, and the configurable
+Keccak oracle against the target hash primitive — all via the faithful injective
+`conv : BitVec 256 → UInt256`. Gas is existentially bounded because yul-semantics
+does not track execution gas.
 
 The headline theorems check with no `sorry`. Their `#print axioms` footprint is
 exactly the three standard classical axioms (`propext`, `Classical.choice`,
@@ -213,96 +252,15 @@ exactly the three standard classical axioms (`propext`, `Classical.choice`,
 genuine theorems (`writeBytes` upstream, the two `natToBytesPadded` lemmas in
 `YulEvmCompiler.BytesLemmas`). `Checks.lean` pins that exact set in CI.
 
-## Building
+## Worked examples
 
-```sh
-lake exe cache get   # prebuilt Mathlib oleans
-lake build           # builds both semantics deps + the compiler + proofs
-lake env lean --run YulParserMain.lean --parse-only program.yul
-```
-
-The last command checks either accepted top-level source form without the
-native executable build. `lake build yulc` additionally builds a CLI that
-emits compiled bytecode for brace-delimited programs.
-
-CI also sparse-checks out Solidity's moving `develop` version of
-`test/libyul/yulSyntaxTests` and runs `parseSource` on every fixture. A fixture
-is treated as an expected rejection when its expectation section after
-`// ----` contains an `*Error` diagnostic; warnings remain expected successes.
-`parseSource` follows parsing with the strict-assembly validation needed for
-these fixtures: identifier and literal rules, scopes and function signatures,
-builtin arities and direct-literal arguments, control-flow placement, switch
-cases, object names/data references, immutable references, and version-gated
-builtin names. The mismatch baseline is currently empty. CI fails if a new
-entry appears or a stale entry remains in
-`test/solidity-yul-syntax-known-mismatches.txt`; the comparison logic lives in
-`scripts/CheckSoliditySyntaxTests.lean`.
-
-CI also attempts to compile and execute every upstream Yul interpreter fixture
-whose `EVMVersion` range includes the latest supported fork (Osaka). The exact
-set that does not yet pass is pinned in
-`test/solidity-yul-interpreter-known-failures.txt`; CI fails for both new
-failures and stale entries. The reusable runner in
-`YulEvmCompilerTests/InterpreterFixture.lean` constructs Solidity's fixed Yul
-test environment, runs the assembled bytecode with `evm-semantics`, and
-exactly compares every nonzero memory word, persistent-storage entry, and
-transient-storage entry with the dumps embedded after `// ----`. Object roots
-go through the production object compiler. The current baseline contains 21
-fixtures; three of those are object fixtures whose AST-interpreter dumps
-deliberately use synthetic hash offsets/sizes and a dummy code buffer rather
-than the state produced by compiled object bytecode. The remaining entries are
-unsupported operations, resource-limit cases, or environment/runner gaps and
-are listed explicitly in the baseline file.
-
-CI additionally compiles every latest-fork source fixture in Solidity's
-positive `yulOptimizerTests`, `objectCompiler`, and `evmCodeTransform`
-corpora. `scripts/CheckSolidityCompileTests.lean` strips solc's settings and
-golden-output sections, invokes the production `compileSource` entry point,
-and compares all failures with three exact baselines under `test/`. The check
-does not require our optimizer output, assembly, or bytecode to match solc:
-those are implementation-specific, while accepting and compiling the same
-valid Yul source is the compatibility property being tracked. New failures
-and stale baseline entries both fail CI.
-
-For all three suites, CI also performs an independent behavioral comparison
-against solc 0.8.35, installed with pinned
-[`svm-rs`](https://github.com/alloy-rs/svm-rs) 0.5.26. Both compilers receive
-the same Yul source; their bytecode executes in `evm-semantics` from six
-identical pre-states: Solidity's interpreter-test default, one fixed patterned
-state, and four states derived reproducibly from the fixture path. The latter
-cover calldata lengths 1, 31, 32, and 33 plus varied call values, balances,
-persistent storage, and transient storage. The runner compares termination,
-return/revert bytes, returndata, nonzero memory, account state, logs,
-self-destructs, and storage refunds. It deliberately ignores exact code bytes,
-PCs, operand stacks, remaining gas, and zero-only memory expansion. For
-`yulOptimizerTests` this checks backend behavior over the original fixture
-source; it does not run the configured solc optimization step or claim
-optimizer equivalence. Exact baselines track unsupported programs,
-layout-introspection differences, and bounded-divergence differences; a new
-failure or stale entry fails CI. Deterministic hash-based CI shards cover each
-fixture and baseline entry exactly once while running the expanded suite in
-parallel.
-
-`YulEvmCompiler/Examples.lean` compiles sample programs at build time
-(`#guard`/`#eval`), including `switch`, multi-value returns and assignments,
-a `for` loop, a recursive function, and an iterative Fibonacci over storage —
-each run **differentially** through both the Yul interpreter and
-evm-semantics' `stepF` on the compiled bytecode, with affected state compared. It
-also compiles yul-semantics' own
-`FibExample.fibContract` (the calldata/memory Fibonacci contract proved
-correct upstream) all the way to bytecode, differentially checks a concrete
-`keccak256("abc")`, checks all five log arities including exact emitted log
-contents, checks CREATE/CREATE2 compilation, and checks that the compiled
-Fibonacci code returns the same bytes as the interpreter for several inputs.
-
-## Roadmap
-
-See `PLAN.md` for the full design and upstream findings (including EIP-8024
-`DUPN`/`SWAPN` not yet being activated on any modeled fork, and the
-`writeBytes`/`natToBytesPadded` byte-array lemmas used by `MSTORE`). The next
-integration milestones are typed parser
-syntax and verification of the lossy compatibility path, broader built-in
-coverage, and then verified optimization passes on the Yul side.
+`YulEvmCompiler/Examples.lean` compiles and differentially executes sample
+programs at build time, including `switch`, multi-value returns and assignments,
+a `for` loop, a recursive function, and an iterative Fibonacci over storage. It
+also compiles yul-semantics' own `FibExample.fibContract` — the calldata/memory
+Fibonacci contract proved correct upstream — all the way to bytecode and checks
+that the compiled code returns the same bytes as the interpreter for several
+inputs.
 
 ## License
 

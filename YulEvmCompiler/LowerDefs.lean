@@ -15,7 +15,7 @@ to EVM states `s` with
   well-defined because a suffix is determined by its length),
 * `s.stack` the pointwise image of `σ` (`conv` on words, the *resolved
   label address* on code addresses),
-* `FrameOK`/`StateMatch` as in the milestone-1/2 proof.
+* `FrameOK`/`StateMatch` as in `StateRel.lean`.
 
 Each local `AStep` then maps to 1–3 EVM `Step`s (label pushes and jumps
 expand to `PUSH32 addr`, `JUMP`/`JUMPI`, and the landing `JUMPDEST`). An
@@ -233,8 +233,7 @@ theorem locate_label_withPayload {prog : List Asm} {is : List Instr}
   rw [assembleWithPayload, hbytes, ← hlen]
   simpa only [List.append_assoc] using hvalid
 
-/-! ### Small arithmetic helpers (local copies; the originals live in the
-milestone-2 `Correctness.lean`, which this pipeline replaces) -/
+/-! ### Small arithmetic helpers -/
 
 theorem conv_ofNat' (n : Nat) :
     conv (BitVec.ofNat 256 n) = UInt256.ofNat n := by
