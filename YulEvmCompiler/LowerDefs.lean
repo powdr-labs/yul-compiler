@@ -410,6 +410,318 @@ theorem ExternalsRealized.none :
         creates := YulSemantics.EVM.ExternalCreates.none } :=
   ⟨CallsRealized.none, CreatesRealized.none⟩
 
+/-! ### A non-trivial realized model: the insufficient-balance CALL failure
+
+`ExternalsRealized.none` satisfies the open-world interface only *vacuously*
+(its source relation admits no response). The model below is genuinely
+non-empty: it admits, for a value-bearing `call` whose caller cannot afford the
+transferred value, exactly the immediate-fail response the EVM performs — push
+`0`, expose no return data, leave the world unchanged. This is realized by a
+single real evm-semantics `StepRunning.callFail` step (no callee frame, no
+`StepReturn`), so the interface is demonstrably inhabited by a real EVM
+behavior.
+
+Fully general realization (arbitrary callee execution and reentrancy) remains
+the client's responsibility, as documented; this witness discharges the
+insufficient-balance `.call` failure class only. -/
+
+/-- `activeWordsAfter` factors through the empty high-water mark: touching a
+range from `curr` is `curr` joined with touching it from `0`. -/
+private theorem activeWordsAfter_split (curr offset size : Nat) :
+    MachineState.activeWordsAfter curr offset size
+      = Nat.max curr (MachineState.activeWordsAfter 0 offset size) := by
+  unfold MachineState.activeWordsAfter
+  by_cases h : size = 0 <;> simp [h]
+
+/-- The two-range high-water mark factors the same way. -/
+private theorem activeWordsAfter2_split (curr o1 s1 o2 s2 : Nat) :
+    MachineState.activeWordsAfter (MachineState.activeWordsAfter curr o1 s1) o2 s2
+      = Nat.max curr
+          (MachineState.activeWordsAfter (MachineState.activeWordsAfter 0 o1 s1) o2 s2) := by
+  rw [activeWordsAfter_split (MachineState.activeWordsAfter curr o1 s1) o2 s2,
+      activeWordsAfter_split curr o1 s1,
+      activeWordsAfter_split (MachineState.activeWordsAfter 0 o1 s1) o2 s2]
+  exact Nat.max_assoc _ _ _
+
+/-- Memory-expansion gas for a fixed range is bounded independently of the
+current high-water mark: expanding *from* `curr` never costs more than
+building the range *from* `0`. -/
+private theorem memExpansionDelta2_le (curr o1 s1 o2 s2 : Nat) :
+    MachineState.memExpansionDelta2 curr o1 s1 o2 s2
+      ≤ MachineState.memCost
+          (MachineState.activeWordsAfter (MachineState.activeWordsAfter 0 o1 s1) o2 s2) := by
+  unfold MachineState.memExpansionDelta2
+  rw [activeWordsAfter2_split]
+  set M := MachineState.activeWordsAfter (MachineState.activeWordsAfter 0 o1 s1) o2 s2 with hM
+  rcases Nat.le_total curr M with h | h
+  · simp only [Nat.max_eq_right h]; exact Nat.sub_le _ _
+  · simp only [Nat.max_eq_left h, Nat.sub_self]; exact Nat.zero_le _
+
+/-- Every additive component of `Gas.callCommitted` is bounded by a fixed
+constant plus the (state-independent) memory-expansion ceiling. On the pinned
+Osaka fork the base fee is `100`; the value/new-account surcharge is at most
+`9000 + 25000`, the cold-account surcharge at most `2500`, and the EIP-7702
+delegate-access cost at most `2600`. -/
+private theorem callCommitted_le (s : State) (hfork : s.executionEnv.fork = .Osaka)
+    (value argsOff argsLen retOff retLen toArg : EvmSemantics.UInt256) :
+    Gas.callCommitted s value argsOff argsLen retOff retLen toArg
+      ≤ 39200 + MachineState.memCost
+          (MachineState.activeWordsAfter
+            (MachineState.activeWordsAfter 0 argsOff.toNat argsLen.toNat)
+            retOff.toNat retLen.toNat) := by
+  have hbase : Gas.baseCost s.executionEnv.fork .CALL ≤ 100 := by rw [hfork]; decide
+  have hmem := memExpansionDelta2_le s.activeWords.toNat argsOff.toNat argsLen.toNat
+    retOff.toNat retLen.toNat
+  have hsur : Gas.callSurcharge s.executionEnv.fork (value.toNat != 0)
+      (Gas.callTargetIsNew s.executionEnv.fork s.accountMap
+        (AccountAddress.ofUInt256 toArg)) ≤ 34000 := by
+    simp only [Gas.callSurcharge]; split_ifs <;> omega
+  have hcold : Gas.accountColdSurcharge s (AccountAddress.ofUInt256 toArg) ≤ 2500 := by
+    unfold Gas.accountColdSurcharge; split_ifs <;> omega
+  have hdel : Gas.delegationAccessCost s (AccountAddress.ofUInt256 toArg) ≤ 2600 := by
+    unfold Gas.delegationAccessCost
+    split <;> first | (split_ifs <;> omega) | omega
+  rw [show Gas.callCommitted s value argsOff argsLen retOff retLen toArg
+      = Gas.baseCost s.executionEnv.fork .CALL
+        + MachineState.memExpansionDelta2 s.activeWords.toNat
+            argsOff.toNat argsLen.toNat retOff.toNat retLen.toNat
+        + (Gas.callSurcharge s.executionEnv.fork (value.toNat != 0)
+              (Gas.callTargetIsNew s.executionEnv.fork s.accountMap
+                (AccountAddress.ofUInt256 toArg))
+            + Gas.accountColdSurcharge s (AccountAddress.ofUInt256 toArg)
+            + Gas.delegationAccessCost s (AccountAddress.ofUInt256 toArg)) from rfl]
+  omega
+
+/-- The non-empty call relation: a value-bearing `call` that the caller cannot
+afford fails immediately (`success = false`, empty return data, world equal to
+the pre-call world projection). Restricting to the insufficient-balance case is
+what lets the failure be observed from the *source* state (the EVM's other
+silent-fail trigger, the 1024-frame depth limit, is invisible to this
+relation). -/
+def insufficientBalanceCalls : YulSemantics.EVM.ExternalCalls where
+  Call := fun req st resp =>
+    req.kind = YulSemantics.EVM.CallKind.call ∧
+    st.env.selfBalance.toNat < req.value.toNat ∧
+    resp.success = false ∧
+    resp.returndata = [] ∧
+    resp.world = YulSemantics.EVM.CallWorld.ofState st
+
+/-- The non-trivial model: the insufficient-balance CALL failure relation for
+calls, and no creations. -/
+@[reducible] def insufficientBalanceModel : ExternalModel where
+  calls := insufficientBalanceCalls
+  creates := YulSemantics.EVM.ExternalCreates.none
+
+/-- `conv` is strictly monotone (it preserves `toNat`). -/
+private theorem conv_lt_of_toNat {a b : U256} (h : a.toNat < b.toNat) :
+    conv a < conv b := h
+
+/-- The insufficient-balance CALL relation is realized by a single real
+evm-semantics `StepRunning.callFail` step. This is the first genuinely
+non-vacuous instance of `CallsRealized` proved in-repo. -/
+theorem CallsRealized.insufficientBalance :
+    CallsRealized insufficientBalanceCalls := by
+  constructor
+  intro yop hcall o hop args rets yst yst' hsource
+  -- The relation only fires on `.call`; narrow `yop` to the four call ops.
+  have hkinds : yop = .call ∨ yop = .callcode ∨ yop = .delegatecall ∨ yop = .staticcall := by
+    cases yop <;> simp_all [IsCallOp]
+  rcases hkinds with rfl | rfl | rfl | rfl
+  · -- `.call`: the genuine witness.
+    have hoCALL : o = .CALL := by
+      have h : opTable Op.call = some Operation.CALL := rfl
+      rw [h] at hop; exact (Option.some.inj hop).symm
+    subst hoCALL
+    -- Reduce to the exactly-seven-argument shape; every other shape is `False`.
+    rcases args with _ | ⟨gas, _ | ⟨target, _ | ⟨value, _ | ⟨inOff, _ | ⟨inSize,
+      _ | ⟨outOff, _ | ⟨outSize, _ | ⟨x, xs⟩⟩⟩⟩⟩⟩⟩⟩ <;>
+      simp only [YulSemantics.EVM.builtin, YulSemantics.EVM.builtinWithExternal] at hsource
+    -- One goal remains: `if static ∧ value ≠ 0 then _ = .halt else externalCall …`.
+    split at hsource
+    · exact absurd hsource (by simp)
+    · unfold YulSemantics.EVM.externalCall at hsource
+      obtain ⟨response, hCall, heq⟩ := hsource
+      injection heq with hrets hyst'
+      obtain ⟨-, hbal, hsucc, hrdata, -⟩ := hCall
+      subst hyst'
+      subst hrets
+      refine ⟨39200 + MachineState.memCost
+        (MachineState.activeWordsAfter
+          (MachineState.activeWordsAfter 0 inOff.toNat inSize.toNat)
+          outOff.toNat outSize.toNat), ?_⟩
+      intro code s σ hf hm hdec hstk hbnd
+      simp only [List.map_cons, List.map_nil, List.cons_append,
+        List.nil_append] at hstk
+      have hccbound : Gas.callCommitted s (conv value) (conv inOff) (conv inSize)
+          (conv outOff) (conv outSize) (conv target)
+          ≤ 39200 + MachineState.memCost
+              (MachineState.activeWordsAfter
+                (MachineState.activeWordsAfter 0 inOff.toNat inSize.toNat)
+                outOff.toNat outSize.toNat) := by
+        have := callCommitted_le s hf.fork (conv value) (conv inOff) (conv inSize)
+          (conv outOff) (conv outSize) (conv target)
+        simpa only [conv_toNat] using this
+      have hgas : Gas.callCommitted s (conv value) (conv inOff) (conv inSize)
+          (conv outOff) (conv outSize) (conv target) ≤ s.gasAvailable :=
+        le_trans hccbound hbnd
+      have h_afford : Gas.forwardGas s.executionEnv.fork
+          (s.gasAvailable - Gas.callCommitted s (conv value) (conv inOff) (conv inSize)
+            (conv outOff) (conv outSize) (conv target)) (conv gas).toNat
+          ≤ s.gasAvailable - Gas.callCommitted s (conv value) (conv inOff) (conv inSize)
+            (conv outOff) (conv outSize) (conv target) := by
+        rw [hf.fork]
+        unfold Gas.forwardGas
+        rw [if_pos (by decide)]
+        exact le_trans (Nat.min_le_right _ _) (Nat.sub_le _ _)
+      have h_fail : s.executionEnv.depth ≥ 1024 ∨
+          (s.accountMap s.executionEnv.address).balance < conv value :=
+        Or.inr (by rw [← hm.selfBalance]; exact conv_lt_of_toNat hbal)
+      have hstep := StepRunning.callFail s (conv gas) (conv target) (conv value)
+        (conv inOff) (conv inSize) (conv outOff) (conv outSize) σ hdec hstk hgas
+        h_afford h_fail
+      refine ⟨_, Steps.trans (Step.running hf.running hf.noPrecompile hstep)
+        (Steps.refl _), ?_, ?_, ?_, ?_, ?_⟩
+      · -- FrameOK
+        exact ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack, hf.running⟩
+      · -- StateMatch
+        have hcopy : YulSemantics.EVM.copyReturn yst.memory outOff.toNat outSize.toNat []
+            = yst.memory := by
+          funext a
+          show (if outOff.toNat ≤ a ∧ a < outOff.toNat + min outSize.toNat [].length
+            then _ else yst.memory a) = yst.memory a
+          rw [if_neg (by rintro ⟨h1, h2⟩; simp only [List.length_nil, Nat.min_zero,
+            Nat.add_zero] at h2; omega)]
+        have hwarm : ∀ {α : Type} (f : Substate → α),
+            (∀ A a, f (Substate.addAccessedAccount A a) = f A) →
+            f (State.warmCallTarget s s.substate (AccountAddress.ofUInt256 (conv target)))
+              = f s.substate := by
+          intro α f hf'
+          unfold State.warmCallTarget Substate.addAccessedAccountOpt
+          cases s.delegateOf (AccountAddress.ofUInt256 (conv target)) <;>
+            simp only [hf']
+        refine {
+          mem := ?_, stor := ?_, tstor := ?_, cd := ?_, env := ?_, codeBytes := ?_,
+          codeLen := ?_, selfBalance := ?_, balanceOf := ?_, activeWords := ?_,
+          retData := ?_, retDataLen := ?_, externalCode := ?_, logs := ?_,
+          selfdestructs := ?_, createdThisTx := ?_ }
+        · simp only [YulSemantics.EVM.finishCall, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          rw [hcopy]; exact hm.mem
+        · simp only [YulSemantics.EVM.finishCall, YulSemantics.EVM.touchMemory2,
+            YulSemantics.EVM.touchMemory, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          exact hm.stor
+        · simp only [YulSemantics.EVM.finishCall, YulSemantics.EVM.touchMemory2,
+            YulSemantics.EVM.touchMemory, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          exact hm.tstor
+        · simp only [YulSemantics.EVM.finishCall, YulSemantics.EVM.touchMemory2,
+            YulSemantics.EVM.touchMemory, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          exact hm.cd
+        · simp only [YulSemantics.EVM.finishCall, YulSemantics.EVM.touchMemory2,
+            YulSemantics.EVM.touchMemory, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          exact hm.env
+        · simp only [YulSemantics.EVM.finishCall, YulSemantics.EVM.touchMemory2,
+            YulSemantics.EVM.touchMemory, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          exact hm.codeBytes
+        · simp only [YulSemantics.EVM.finishCall, YulSemantics.EVM.touchMemory2,
+            YulSemantics.EVM.touchMemory, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          exact hm.codeLen
+        · simp only [YulSemantics.EVM.finishCall, YulSemantics.EVM.touchMemory2,
+            YulSemantics.EVM.touchMemory, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          exact hm.selfBalance
+        · simp only [YulSemantics.EVM.finishCall, YulSemantics.EVM.touchMemory2,
+            YulSemantics.EVM.touchMemory, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          exact hm.balanceOf
+        · simp only [YulSemantics.EVM.finishCall, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          show conv (YulSemantics.EVM.touchMemory2 yst inOff.toNat inSize.toNat
+            outOff.toNat outSize.toNat).activeWords = _
+          simp only [conv_toNat]
+          exact activeWordsAfter2_eq hm.activeWords inOff.toNat inSize.toNat
+            outOff.toNat outSize.toNat inOff.isLt inSize.isLt
+        · simp only [YulSemantics.EVM.finishCall, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          have hbf : YulSemantics.EVM.byteFrom ([] : List UInt8) = fun _ => (0 : UInt8) := by
+            funext a; simp [YulSemantics.EVM.byteFrom]
+          rw [hbf]; exact MemMatch.init
+        · simp only [YulSemantics.EVM.finishCall, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false, List.length_nil, ByteArray.size_empty]
+        · simp only [YulSemantics.EVM.finishCall, YulSemantics.EVM.touchMemory2,
+            YulSemantics.EVM.touchMemory, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          exact hm.externalCode
+        · simp only [YulSemantics.EVM.finishCall, YulSemantics.EVM.touchMemory2,
+            YulSemantics.EVM.touchMemory, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          rw [hwarm (fun A => A.logSeries) (fun _ _ => rfl)]
+          exact hm.logs
+        · simp only [YulSemantics.EVM.finishCall, YulSemantics.EVM.touchMemory2,
+            YulSemantics.EVM.touchMemory, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          rw [hwarm (fun A => A.selfDestructList) (fun _ _ => rfl),
+            hwarm (fun A => A.originalAccountMap) (fun _ _ => rfl)]
+          exact hm.selfdestructs
+        · simp only [YulSemantics.EVM.finishCall, YulSemantics.EVM.touchMemory2,
+            YulSemantics.EVM.touchMemory, hsucc, hrdata, Bool.false_eq_true,
+            false_and, if_false]
+          rw [hwarm (fun A => A.originalAccountMap) (fun _ _ => rfl)]
+          exact hm.createdThisTx
+      · rfl
+      · -- stack
+        show UInt256.ofNat 0 :: σ = List.map conv [response.flag] ++ σ
+        have hf0 : response.flag = (0 : U256) := by
+          simp [YulSemantics.EVM.CallResponse.flag, hsucc]
+        rw [hf0]; rfl
+      · -- gas bound
+        show s.gasAvailable - (39200 + MachineState.memCost
+            (MachineState.activeWordsAfter
+              (MachineState.activeWordsAfter 0 inOff.toNat inSize.toNat)
+              outOff.toNat outSize.toNat))
+          ≤ s.gasAvailable - Gas.callCommitted s (conv value) (conv inOff) (conv inSize)
+              (conv outOff) (conv outSize) (conv target)
+            + (bif (conv value).toNat != 0 then Gas.callStipend else 0)
+        have hb0 : 0 ≤ (bif (conv value).toNat != 0 then Gas.callStipend else 0) :=
+          Nat.zero_le _
+        omega
+  · -- `.callcode`: `req.kind = .callcode ≠ .call`, contradiction.
+    exfalso
+    rcases args with _ | ⟨gas, _ | ⟨target, _ | ⟨value, _ | ⟨inOff, _ | ⟨inSize,
+      _ | ⟨outOff, _ | ⟨outSize, _ | ⟨x, xs⟩⟩⟩⟩⟩⟩⟩⟩ <;>
+      simp only [YulSemantics.EVM.builtin, YulSemantics.EVM.builtinWithExternal,
+        YulSemantics.EVM.externalCall, insufficientBalanceCalls] at hsource
+    obtain ⟨response, hCall, -⟩ := hsource
+    exact absurd hCall.1 (by decide)
+  · -- `.delegatecall`
+    exfalso
+    rcases args with _ | ⟨gas, _ | ⟨target, _ | ⟨inOff, _ | ⟨inSize,
+      _ | ⟨outOff, _ | ⟨outSize, _ | ⟨x, xs⟩⟩⟩⟩⟩⟩⟩ <;>
+      simp only [YulSemantics.EVM.builtin, YulSemantics.EVM.builtinWithExternal,
+        YulSemantics.EVM.externalCall, insufficientBalanceCalls] at hsource
+    obtain ⟨response, hCall, -⟩ := hsource
+    exact absurd hCall.1 (by decide)
+  · -- `.staticcall`
+    exfalso
+    rcases args with _ | ⟨gas, _ | ⟨target, _ | ⟨inOff, _ | ⟨inSize,
+      _ | ⟨outOff, _ | ⟨outSize, _ | ⟨x, xs⟩⟩⟩⟩⟩⟩⟩ <;>
+      simp only [YulSemantics.EVM.builtin, YulSemantics.EVM.builtinWithExternal,
+        YulSemantics.EVM.externalCall, insufficientBalanceCalls] at hsource
+    obtain ⟨response, hCall, -⟩ := hsource
+    exact absurd hCall.1 (by decide)
+
+/-- The non-trivial model satisfies the full open-world obligations: its call
+relation is realized by a real EVM `callFail` trace, and it has no creations.
+This exhibits a demonstrably inhabited (non-vacuous) `ExternalsRealized`. -/
+theorem ExternalsRealized.insufficientBalanceCall :
+    ExternalsRealized insufficientBalanceModel :=
+  ⟨CallsRealized.insufficientBalance, CreatesRealized.none⟩
+
 /-- The lowered program's byte size is `codeSize prog` (bounded by the
 frame invariant). -/
 theorem codeSize_lt {prog : List Asm} {is : List Instr} {payload : List UInt8}

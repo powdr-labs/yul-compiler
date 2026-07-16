@@ -170,6 +170,24 @@ and the restored caller/creator afterward, but do not constrain intermediate
 call stacks. Consequently the theorem covers arbitrary callee and init code,
 nested calls and creations, and reentrant executions of the creator.
 
+Instantiating this interface for a fully general callee is a client
+responsibility, but the interface is not merely satisfiable in principle: it is
+demonstrably inhabited by a real EVM behavior. Besides the vacuous closed-world
+`ExternalsRealized.none`, the library proves
+`ExternalsRealized.insufficientBalanceCall` (in `LowerDefs.lean`), a *genuinely
+non-empty* witness. Its `insufficientBalanceCalls` relation admits, for a
+value-bearing `call` whose caller balance is below the transferred value,
+exactly the EVM's immediate-fail response — success flag `0`, empty return data,
+world unchanged — and the proof realizes it with a single concrete
+`StepRunning.callFail` step (no callee frame, no `StepReturn` resume), matching
+`StateMatch`/`FrameOK` at both endpoints, `pc + 1`, the `0` result word, and the
+existential gas bound. This covers the insufficient-balance `.call` silent-fail
+class only (the depth-limit trigger is invisible to a source-state relation, and
+success-with-callee-execution realization remains the larger, still-open effort);
+it nonetheless closes the audit gap that only the vacuous `.none` was exhibited.
+`#print axioms` confirms it rests on the standard `[propext, Classical.choice,
+Quot.sound]` (see `Checks.lean`).
+
 The correspondence `StateMatch` relates memory pointwise (total function vs.
 zero-padded `ByteArray`) and its active-word high-water mark, Yul's flat
 storage/transient storage to the executing account's storage, calldata and

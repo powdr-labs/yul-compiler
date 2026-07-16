@@ -278,7 +278,14 @@ inputs cannot vary between matching worlds. Log correspondence also retains
 each emitting frame's address, including callee and init-code logs.
 `compile_correct` quantifies over
 both external relations and assumes realization for every response they admit.
-`ExternalsRealized.none` provides the vacuous closed-world realization.
+`ExternalsRealized.none` provides the vacuous closed-world realization, and
+`ExternalsRealized.insufficientBalanceCall` provides a genuinely non-empty one:
+its relation admits the EVM's immediate-fail response for a value-bearing `call`
+the caller cannot afford (success flag `0`, empty return data, world unchanged),
+realized by a single concrete `StepRunning.callFail` step. This witness proves
+the interface is inhabited by a real EVM behavior — not just satisfiable
+vacuously — for the insufficient-balance `.call` failure class; general
+success-with-callee realization remains the client's responsibility.
 
 ### Remaining extension path
 
