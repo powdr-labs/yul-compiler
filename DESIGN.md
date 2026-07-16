@@ -449,6 +449,14 @@ the compiler algorithm or any proof changes. That is the intended contract for
 automated refactoring: code and proofs may change freely; the audited spec is
 the fixed point that must be re-approved by a human when it moves.
 
+When a change to the specification is intended, a maintainer runs
+[`scripts/update-spec.sh`](./scripts/update-spec.sh), which regenerates `SPEC.md`
+and re-pins `SpecClosure.lean` in one step; the resulting diff is the audit
+artifact to review. The trust-boundary files (`SpecClosure.lean`, `SPEC.md`,
+`Checks.lean`, the updater, the workflow, and the semantics pins) are guarded by
+[`.github/CODEOWNERS`](./.github/CODEOWNERS) and flagged human-approval-only in
+`AGENTS.md`, so an automated agent cannot re-pin a spec change to approve it.
+
 This is a "does nothing it shouldn't" guarantee. The complementary "does
 everything it should" side — that compilation is not vacuously rejecting
 programs — is not part of the spec closure; it is enforced separately by the

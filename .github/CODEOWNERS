@@ -1,0 +1,21 @@
+# Trust boundary — changes here require human code-owner approval and MUST NOT be
+# made by automated agents. These files define WHAT is trusted (the axiom base
+# and the audited specification surface) and the machinery that enforces it. See
+# DESIGN.md ("The audited specification boundary") and AGENTS.md.
+#
+# NOTE: verify these handles/teams match the repository's actual maintainers and
+# enable "Require review from Code Owners" in branch protection — CODEOWNERS is
+# advisory until that setting is on.
+
+/Checks.lean               @leonardoalt @chriseth
+/SpecClosure.lean          @leonardoalt @chriseth
+/SPEC.md                   @leonardoalt @chriseth
+/scripts/update-spec.sh    @leonardoalt @chriseth
+/.github/CODEOWNERS        @leonardoalt @chriseth
+/.github/workflows/        @leonardoalt @chriseth
+
+# The pinned semantics revisions are part of the trusted ground truth: bumping
+# them can silently move the specification (the external boundary the theorems
+# quantify over).
+/lakefile.toml             @leonardoalt @chriseth
+/lake-manifest.json        @leonardoalt @chriseth

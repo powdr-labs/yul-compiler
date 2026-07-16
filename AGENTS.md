@@ -286,6 +286,34 @@ git -C /tmp/solidity sparse-checkout set \
   test/libyul/evmCodeTransform
 ```
 
+## Trust boundary — human-approval-only files (do NOT edit as an agent)
+
+These files define *what is trusted* — the axiom base and the audited
+specification surface — and the machinery that pins them. They are the fixed
+point of the autoresearch contract: you may freely change the compiler
+algorithm and its proofs, but the guarantees are only meaningful if this
+boundary moves *only* under human review. **An automated agent must not modify,
+re-pin, or regenerate any of these**, because doing so would let a change to the
+specification approve itself:
+
+- `Checks.lean` — pins the axiom footprint of the headline theorems.
+- `SpecClosure.lean` — computes and pins the audited specification closure.
+- `SPEC.md` — the generated manifest of that closure.
+- `scripts/update-spec.sh` — the re-pinning tool.
+- `.github/CODEOWNERS`, `.github/workflows/` — the enforcement.
+- `lakefile.toml`, `lake-manifest.json` — the pinned semantics revisions
+  (bumping them can silently move the external boundary the theorems are stated
+  against).
+
+If your change legitimately alters the specification (e.g. a new match-relation
+field, a widened theorem statement, a new supported opcode), **stop and surface
+it for a human**: describe what moved and why. A maintainer runs
+`scripts/update-spec.sh`, reviews the resulting diff (the audit artifact),
+confirms it is a strengthening/fix rather than a weakening, and re-pins. The
+CI gate (`lake env lean SpecClosure.lean` + `git diff SPEC.md`) exists precisely
+to force that step; treat a failure there as "a human must look", never as
+"regenerate and move on".
+
 ## Change discipline
 
 - Keep imports layered; avoid making Phase A depend on EVM byte/gas modules.
