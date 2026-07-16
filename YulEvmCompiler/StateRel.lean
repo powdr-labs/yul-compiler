@@ -1240,6 +1240,7 @@ def HaltMatch (hk : YulSemantics.EVM.HaltKind × List UInt8) (s : EVM.State) : P
   | .revert  => s.halt = .Reverted ∧ s.hReturn.toList = hk.2
   | .invalid => s.halt = .Exception .InvalidInstruction
   | .invalidMemoryAccess => s.halt = .Exception .InvalidMemoryAccess
+  | .staticViolation => s.halt = .Exception .StaticModeViolation
   | .selfdestruct => s.halt = .Success ∧ s.hReturn = .empty
 
 /-- The `ExecutionResult` a yul-semantics halt corresponds to. -/
@@ -1250,6 +1251,7 @@ def resultOf (hk : YulSemantics.EVM.HaltKind × List UInt8) : ExecutionResult :=
   | .revert  => .reverted (mkCode hk.2)
   | .invalid => .exception .InvalidInstruction
   | .invalidMemoryAccess => .exception .InvalidMemoryAccess
+  | .staticViolation => .exception .StaticModeViolation
   | .selfdestruct => .success
 
 end YulEvmCompiler
