@@ -52,6 +52,25 @@ compare their expected optimized Yul. CI partitions the expensive optimizer
 run by a stable fixture-name hash; the same hash filters each shard's exact
 baseline entries, so stale and unexpected failures remain enforced per shard.
 
+## Gas comparison
+
+Two runners compare the *execution gas* of this compiler's bytecode against
+solc's. Both reuse the differential's deterministic scenarios and its exact
+behavior gate: gas is only measured where both compilers reach identical
+observable behavior, and a non-optimizing compiler is expected to spend more
+gas, so gas is a measurement rather than an equality target.
+
+`gas-benchmarks.txt` pins the exact per-scenario gas of the small, in-repo
+benchmark suite in `test/gas/` (Tier A). `scripts/CheckGasBenchmarks.lean`
+recompiles each benchmark with both toolchains, re-measures, and fails if the
+result differs from the committed baseline; `scripts/update-gas.sh` re-pins it
+after an intended codegen or solc change. See `test/gas/README.md`.
+
+`scripts/ReportSolcGas.lean` is the non-gating Tier B report: it measures gas
+overhead across a whole upstream corpus (skipping the differential's
+known-failure entries) and prints the aggregate and worst-case ratios. It has
+no baseline because the upstream corpora and solc numbers churn.
+
 Remove a relative fixture path from any baseline as soon as it passes. A
 local checkout can be checked with:
 
@@ -92,3 +111,19 @@ lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
 
 Omit the final shard index/count pair to run the complete suite locally; use
 indices `0` through `3` with count `4` to reproduce the four CI shards.
+
+The Tier A gas baseline can be checked (and the Tier B report produced) with:
+
+```sh
+lake env lean --run scripts/CheckGasBenchmarks.lean \
+  test/gas test/gas-benchmarks.txt "$(svm which 0.8.35)" 0.8.35
+
+lake env lean --run scripts/ReportSolcGas.lean \
+  object-compiler \
+  /path/to/solidity/test/libyul/objectCompiler \
+  test/solidity-yul-object-compiler-known-solc-differential-failures.txt \
+  "$(svm which 0.8.35)" 0.8.35
+```
+
+Pass `--update` to `CheckGasBenchmarks.lean` (or run `scripts/update-gas.sh`)
+to re-pin the baseline after an intended change.

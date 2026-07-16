@@ -247,6 +247,38 @@ def compareBytecode
           throw (s!"{name} observable-state mismatch: " ++
             mismatchSection oursObservation solcObservation)
 
+/-- Gas charged for a run: the drop in the top-level `gasAvailable` between the
+scenario's start state and its halted state. Only meaningful once the run has
+halted, so callers gate on `isDone`. -/
+def gasUsed (start final : EVM.State) : Nat :=
+  start.gasAvailable - final.gasAvailable
+
+/-- Per-scenario execution gas for two bytecode sequences compiled from the
+same Yul source — conventionally this compiler's output first and solc's
+second. Each entry carries the gas both programs spend under one scenario, or
+`none` when that scenario is not gas-comparable: a comparison is only made
+where both halt within `fuel` and reach identical observable behavior (the same
+predicate `compareBytecode` enforces). Divergent or non-halting runs would
+otherwise contribute meaningless gas.
+
+A non-optimizing compiler is expected to spend strictly more gas than solc, so
+this is a measurement, never an equality check. -/
+def measureGas
+    (ours solc : ByteArray) (fuel : Nat := 100000)
+    (scenarioSeed : Nat := 0) : Array (String × Option (Nat × Nat)) := Id.run do
+  let mut results := #[]
+  for (name, scenario) in scenarios scenarioSeed do
+    let oursStart := scenario ours
+    let solcStart := scenario solc
+    let oursFinal := runEvm fuel oursStart
+    let solcFinal := runEvm fuel solcStart
+    if oursFinal.isDone && solcFinal.isDone && observe oursFinal == observe solcFinal then
+      results := results.push
+        (name, some (gasUsed oursStart oursFinal, gasUsed solcStart solcFinal))
+    else
+      results := results.push (name, none)
+  return results
+
 /-- Empty bytecode and an explicit STOP are behaviorally equivalent even
 though the executing account's code representation differs. -/
 example : compareBytecode .empty (Hex.hexToBytes "00") 10 = .ok () := by

@@ -1,4 +1,5 @@
 import YulParser.Compile
+import YulEvmCompilerTests.Solc
 import YulEvmCompilerTests.SolcDifferential
 import YulEvmCompilerTests.SolidityCorpus
 
@@ -19,46 +20,9 @@ too, so every shard independently rejects new and stale baseline entries.
 
 open System YulParser
 open EvmSemantics
+open YulEvmCompilerTests.Solc
 open YulEvmCompilerTests.SolcDifferential
 open YulEvmCompilerTests.SolidityCorpus
-
-private def isHexDigit (char : Char) : Bool :=
-  ('0' <= char && char <= '9') ||
-    ('a' <= char && char <= 'f') ||
-    ('A' <= char && char <= 'F')
-
-private def findBinary (afterMarker : Bool) : List String → Option String
-  | [] => none
-  | rawLine :: lines =>
-      let line := rawLine.trimAscii.copy
-      if afterMarker && !line.isEmpty then some line
-      else findBinary (afterMarker || line == "Binary representation:") lines
-
-private def parseSolcBinary (stdout : String) : Except String ByteArray := do
-  let encoded ← match findBinary false (stdout.splitOn "\n") with
-    | some encoded => pure encoded
-    | none => throw "solc output did not contain Binary representation"
-  if encoded.isEmpty || !encoded.all isHexDigit || encoded.length % 2 != 0 then
-    throw s!"solc returned malformed bytecode: {encoded}"
-  return Hex.hexToBytes encoded
-
-private def compileWithSolc (solcPath source : String) : IO (Except String ByteArray) := do
-  let output ← IO.Process.output {
-    cmd := solcPath
-    args := #["--strict-assembly", "--bin", "--evm-version", "osaka", "-"]
-  } (some source)
-  if output.exitCode != 0 then
-    return .error s!"solc compilation failed: {output.stderr.trimAscii.copy}"
-  return parseSolcBinary output.stdout
-
-private def checkSolcVersion (solcPath expectedVersion : String) : IO (Except String Unit) := do
-  let output ← IO.Process.output { cmd := solcPath, args := #["--version"] }
-  if output.exitCode != 0 then
-    return .error s!"solc --version failed: {output.stderr.trimAscii.copy}"
-  let marker := s!"Version: {expectedVersion}+"
-  if !output.stdout.contains marker then
-    return .error (s!"expected solc {expectedVersion}, got:\n" ++ output.stdout.trimAscii.copy)
-  return .ok ()
 
 private structure Shard where
   index : Nat

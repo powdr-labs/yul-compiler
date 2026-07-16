@@ -1,3 +1,4 @@
 import YulEvmCompilerTests.InterpreterFixture
+import YulEvmCompilerTests.Solc
 import YulEvmCompilerTests.SolidityCorpus
 import YulEvmCompilerTests.SolcDifferential

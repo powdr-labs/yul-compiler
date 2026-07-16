@@ -263,3 +263,33 @@ jobs:
               "$SOLC_PATH" "$SOLC_VERSION" 0 1 || status=1
             exit "$status"
           fi
+
+      # Tier A: exact, pinned gas figures for the in-repo benchmark suite. A
+      # codegen change or solc bump moves the numbers and fails here until the
+      # baseline is re-pinned with scripts/update-gas.sh. Runs once (the direct
+      # leg has the build and pinned solc).
+      - name: Check gas benchmarks against pinned baseline
+        if: matrix.kind == 'direct'
+        run: |
+          lake env lean --run scripts/CheckGasBenchmarks.lean \
+            test/gas \
+            test/gas-benchmarks.txt \
+            "$SOLC_PATH" "$SOLC_VERSION"
+
+      # Tier B: non-gating overhead report over the two smaller differential
+      # corpora. Informational only — upstream fixtures and solc numbers churn,
+      # so there is no baseline. The large optimizer corpus is excluded here to
+      # bound runtime; add it (sharded) if a fuller picture is ever needed.
+      - name: Report solc gas overhead (informational)
+        if: matrix.kind == 'direct'
+        run: |
+          lake env lean --run scripts/ReportSolcGas.lean \
+            object-compiler \
+            /tmp/solidity/test/libyul/objectCompiler \
+            test/solidity-yul-object-compiler-known-solc-differential-failures.txt \
+            "$SOLC_PATH" "$SOLC_VERSION"
+          lake env lean --run scripts/ReportSolcGas.lean \
+            EVM-code-transform \
+            /tmp/solidity/test/libyul/evmCodeTransform \
+            test/solidity-yul-evm-code-transform-known-solc-differential-failures.txt \
+            "$SOLC_PATH" "$SOLC_VERSION"
