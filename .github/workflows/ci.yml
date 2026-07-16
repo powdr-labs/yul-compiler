@@ -240,6 +240,10 @@ jobs:
             test/libyul/objectCompiler \
             test/libyul/evmCodeTransform
 
+      # The same run checks behavior AND gas: each differential invocation also
+      # takes a per-suite gas baseline and fails if this compiler's total gas
+      # for a fixture rises above its pinned figure while solc's is unchanged.
+      # Re-pin with scripts/update-gas.sh after an intended codegen or solc change.
       - name: Differentially execute against solc
         run: |
           if [[ "${{ matrix.kind }}" == "optimizer" ]]; then
@@ -247,6 +251,7 @@ jobs:
               optimizer \
               /tmp/solidity/test/libyul/yulOptimizerTests \
               test/solidity-yul-optimizer-known-solc-differential-failures.txt \
+              test/solidity-yul-optimizer-gas-baseline.txt \
               "$SOLC_PATH" "$SOLC_VERSION" \
               "${{ matrix.shard_index }}" "${{ matrix.shard_count }}"
           else
@@ -255,11 +260,13 @@ jobs:
               object-compiler \
               /tmp/solidity/test/libyul/objectCompiler \
               test/solidity-yul-object-compiler-known-solc-differential-failures.txt \
+              test/solidity-yul-object-compiler-gas-baseline.txt \
               "$SOLC_PATH" "$SOLC_VERSION" 0 1 || status=1
             lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
               EVM-code-transform \
               /tmp/solidity/test/libyul/evmCodeTransform \
               test/solidity-yul-evm-code-transform-known-solc-differential-failures.txt \
+              test/solidity-yul-evm-code-transform-gas-baseline.txt \
               "$SOLC_PATH" "$SOLC_VERSION" 0 1 || status=1
             exit "$status"
           fi

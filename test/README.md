@@ -52,6 +52,23 @@ compare their expected optimized Yul. CI partitions the expensive optimizer
 run by a stable fixture-name hash; the same hash filters each shard's exact
 baseline entries, so stale and unexpected failures remain enforced per shard.
 
+The same differential run also compares *gas*. For every fixture whose two
+bytecode sequences are behaviorally comparable, it sums the execution gas this
+compiler and solc spend across the comparable scenarios and checks this
+compiler's total against a per-suite baseline
+(`solidity-yul-*-gas-baseline.txt`). CI **fails if this compiler's total rises
+above the pinned figure**. Because the corpora track upstream `develop`, a
+fixture's source can change and move our gas for reasons unrelated to codegen;
+solc's pinned total is used as a content fingerprint, so a rise only counts as a
+regression when solc's total is unchanged. A changed solc total, a new fixture,
+or a removed one is a re-pin notice rather than a failure, and only genuine
+regressions fail. The baselines are sharded by the same fixture-name hash as the
+known-failure lists. Re-pin after an intended codegen or solc change with:
+
+```sh
+scripts/update-gas.sh          # regenerates test/solidity-yul-*-gas-baseline.txt
+```
+
 Remove a relative fixture path from any baseline as soon as it passes. A
 local checkout can be checked with:
 
@@ -78,17 +95,20 @@ lake env lean --run scripts/CheckSolidityCompileTests.lean \
   test/solidity-yul-object-compiler-known-compile-failures.txt
 ```
 
-After installing solc 0.8.35 with `svm-rs`, its behavioral differential can be
-run with:
+After installing solc 0.8.35 with `svm-rs`, its behavioral-plus-gas differential
+can be run with:
 
 ```sh
 lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
   optimizer \
   /path/to/solidity/test/libyul/yulOptimizerTests \
   test/solidity-yul-optimizer-known-solc-differential-failures.txt \
+  test/solidity-yul-optimizer-gas-baseline.txt \
   "$(svm which 0.8.35)" 0.8.35 \
   0 4
 ```
 
 Omit the final shard index/count pair to run the complete suite locally; use
-indices `0` through `3` with count `4` to reproduce the four CI shards.
+indices `0` through `3` with count `4` to reproduce the four CI shards. Re-pin
+the gas baselines after an intended change with `scripts/update-gas.sh` (it
+regenerates all three suites from `SOLIDITY_DIR`, default `/tmp/solidity`).
