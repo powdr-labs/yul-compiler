@@ -3,14 +3,16 @@ import YulEvmCompiler.Asm
 /-!
 # YulEvmCompiler.Compile
 
-The compiler from Yul to the labeled assembly layer, now covering
-**`for` loops (with `break`/`continue`) and user-defined functions (with
-`leave`)** on top of the milestone-2 fragment.
+The compiler from Yul to the labeled assembly layer. It covers literals,
+variables, built-ins, calls, nested blocks, `let`, assignments, `if`,
+`switch`, `for` loops (with `break`/`continue`), and user-defined functions
+(with `leave`, recursion, and up to 16 return values). See `DESIGN.md` for
+the compilation scheme.
 
 ## What is threaded through compilation
 
 * the stack layout `Γ : List Ident` (mirror of the runtime variable
-  region, innermost first) — exactly as in milestone 2;
+  region, innermost first);
 * a **fresh-label counter** `n : Nat`. No freshness invariant is proved
   about it: the final program is *checked* for label well-formedness
   (`wfCheck`) and rejected on failure, so proofs read uniqueness off the

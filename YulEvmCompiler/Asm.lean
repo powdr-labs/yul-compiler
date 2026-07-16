@@ -14,7 +14,7 @@ positions and produces `Instr`s; its correctness proof
 (`YulEvmCompiler.LowerCorrect`) is the only place byte positions, decode
 lemmas, and gas appear.
 
-Design points (see `PLAN.md`, "Milestones 3–4"):
+Design points (see `DESIGN.md`):
 
 * Every constructor lowers to a **fixed byte width** (`Asm.size`), so the
   byte position of a suffix `c` of the program is
