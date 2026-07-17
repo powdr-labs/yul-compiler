@@ -9,13 +9,14 @@ import YulEvmCompilerTests.InterpreterFixture
 Compile and gas-check Solidity's `libsolidity/gasTests` fixtures.
 
 Each fixture is a full Solidity contract. This compiler only accepts Yul, so we
-route through solc's `--via-ir` pipeline with the Yul optimizer on: solc lowers
-the contract to optimized Yul (`--ir-optimized --optimize`), and this compiler
-compiles that same Yul. Compiling it is the *correctness* check.
+route through solc's `--via-ir` lowering — but with the Yul optimizer OFF: solc
+lowers the contract to *fully unoptimized* Yul (`--ir`), and this compiler
+compiles that. So the pipeline uses only solc's Solidity→Yul front-end and none
+of solc's Yul optimizer. Compiling it is the *correctness* check.
 
-For *gas*, we compare runtime bytecode against solc's own optimized runtime
-(`--bin-runtime --optimize --via-ir`) — a fair comparison, since both sides
-start from the same optimized Yul. Our runtime is obtained by deploying our
+For *gas*, our runtime bytecode is compared against solc's own *fully optimized*
+runtime (`--bin-runtime --optimize --via-ir`): our non-optimizing compiler on
+unoptimized IR versus solc's best. Our runtime is obtained by deploying our
 creation bytecode in the executable EVM and taking the code it returns. Both
 runtimes then run under the shared deterministic scenarios; where they reach
 identical observable behavior, the total gas each spends is summed and this
@@ -65,7 +66,7 @@ private def run (dir baselineFile : FilePath)
     | .ok false => skipped := skipped + 1
     | .ok true =>
         let source := fixtureSource contents
-        match ← solcOptimizedIR solcPath source with
+        match ← solcUnoptimizedIR solcPath source with
         | .error message => compileFailures := compileFailures.push (name, message)
         | .ok ir =>
             match compileSource ir with

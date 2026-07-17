@@ -47,21 +47,23 @@ def compileWithSolc (solcPath source : String) : IO (Except String ByteArray) :=
     return .error s!"solc compilation failed: {output.stderr.trimAscii.copy}"
   return parseSolcBinary output.stdout
 
-/-- Optimized Yul IR for a Solidity source, via solc's `--via-ir` pipeline with
-the Yul optimizer enabled (`--ir-optimized --optimize`). Returned from the first
-`object` line so it can be fed straight to this compiler; this is the same Yul
-solc lowers to bytecode, so compiling it here is a fair basis for comparison. -/
-def solcOptimizedIR (solcPath source : String) : IO (Except String String) := do
+/-- Fully *unoptimized* Yul IR for a Solidity source (`--ir`, solc's `--via-ir`
+lowering with the Yul optimizer OFF). Returned from the first `object` line so
+it can be fed straight to this compiler. Using the unoptimized IR means the
+comparison exercises only solc's Solidity→Yul front-end and none of solc's Yul
+optimizer: our (non-optimizing) compiler is measured against solc's fully
+optimized bytecode. -/
+def solcUnoptimizedIR (solcPath source : String) : IO (Except String String) := do
   let output ← IO.Process.output {
     cmd := solcPath
-    args := #["--ir-optimized", "--optimize", "--evm-version", "osaka", "-"]
+    args := #["--ir", "--evm-version", "osaka", "-"]
   } (some source)
   if output.exitCode != 0 then
-    return .error s!"solc --ir-optimized failed: {output.stderr.trimAscii.copy}"
+    return .error s!"solc --ir failed: {output.stderr.trimAscii.copy}"
   let lines := output.stdout.splitOn "\n"
   let ir := lines.dropWhile (fun line => !line.startsWith "object ")
   if ir.isEmpty then
-    return .error "solc --ir-optimized produced no object"
+    return .error "solc --ir produced no object"
   return .ok (String.intercalate "\n" ir)
 
 /-- solc's own optimized runtime bytecode for a Solidity source
