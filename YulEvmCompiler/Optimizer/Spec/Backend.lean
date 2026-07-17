@@ -1,5 +1,5 @@
 import YulEvmCompiler.Correctness
-import YulEvmCompiler.Optimizer.Pass
+import YulEvmCompiler.Optimizer.Spec.Pass
 
 /-!
 # YulEvmCompiler.Optimizer.Backend

@@ -431,26 +431,35 @@ genuine theorems. `Checks.lean` pins that exact set for each theorem in CI:
 ## The optimizer specification
 
 The compiler is non-optimizing, but the repository fixes, once and formally, what
-any future Yul→Yul optimization pass must prove. This is the layer future
-optimization research plugs into — `YulEvmCompiler/Optimizer/`:
+any future Yul→Yul optimization pass must prove. `YulEvmCompiler/Optimizer/` is
+split so the contract and its implementations stay separate — the same
+audited-surface-vs-artifact distinction the spec closure already makes:
 
-* **`Pass.lean`** — the spec. A pass is a total transform
-  `run : Block D.Op → Block D.Op`; it is **sound** when
-  `Sound D run := ∀ b, EquivBlock D b (run b)`, and the `Pass` structure bundles a
-  transform with that proof, so a value of `Pass` *is* a verified optimizer.
-  `EquivBlock` (from the pinned `YulSemantics.Equiv`) is *pointwise* big-step
-  equivalence: identical final environment, final state (hence halt payloads), and
-  outcome from every configuration — strictly stronger than observational
-  equivalence, and therefore stable under any context. Passes compose
-  (`Pass.comp`) by transitivity of `EquivBlock`, and `Pass.preservesRun` extracts
-  the whole-program `YulSemantics.Run` guarantee.
-* **`Identity.lean`** — the first inhabitant: the identity pass, returning its
-  input unchanged and sound by `EquivBlock.refl`. It is the unit of composition,
-  so `ofList` folds a list of proved passes into one proved pass.
-* **`Backend.lean`** — the payoff. `Pass.optimize_then_compile_correct` composes
-  any sound pass with `compile_correct`: the bytecode compiled from the *optimized*
-  program correctly simulates the *original* program's Yul semantics. This is the
-  `Run`-interface composition `AGENTS.md` prescribes; no backend proof is reopened.
+* **`Optimizer/Spec/`** — the *stable contract*; an auditor reads this and nothing
+  under `Implementation/`.
+  * **`Spec/Pass.lean`** — a pass is a total transform
+    `run : Block D.Op → Block D.Op`; it is **sound** when
+    `Sound D run := ∀ b, EquivBlock D b (run b)`, and the `Pass` structure bundles a
+    transform with that proof, so a value of `Pass` *is* a verified optimizer — there
+    is no way to build one without discharging `Sound`. `EquivBlock` (from the pinned
+    `YulSemantics.Equiv`) is *pointwise* big-step equivalence: identical final
+    environment, final state (hence halt payloads), and outcome from every
+    configuration — strictly stronger than observational equivalence, hence stable
+    under any context. Passes compose (`Pass.comp`, unit `Pass.id`) by transitivity,
+    a pipeline is one pass (`Pass.ofList`), and `Pass.preservesRun` extracts the
+    whole-program `YulSemantics.Run` guarantee.
+  * **`Spec/Backend.lean`** — the payoff. `Pass.optimize_then_compile_correct`
+    composes any sound pass with `compile_correct`: the bytecode compiled from the
+    *optimized* program correctly simulates the *original* program's Yul semantics.
+    This is the `Run`-interface composition `AGENTS.md` prescribes; no backend proof
+    is reopened.
+* **`Optimizer/Implementation/`** — concrete passes, *not* part of what an auditor
+  must read: because every `Pass` is sound by construction, a pass is trusted the
+  moment it type-checks against the spec.
+  * **`Implementation/Identity.lean`** — the identity pass, the first inhabitant:
+    returns its input unchanged, sound by reflexivity (definitionally `Pass.id`). A
+    real pass replaces `run` with a transformation and `sound` with an equivalence
+    proof of the same shape.
 
 The soundness obligation and its congruence machinery live upstream in
 `YulSemantics.Equiv`/`YulSemantics.Rewrites`; this repo supplies the pass

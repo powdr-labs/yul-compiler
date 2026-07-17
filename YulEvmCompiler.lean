@@ -14,6 +14,6 @@ import YulEvmCompiler.LowerCorrect
 import YulEvmCompiler.SimAsm
 import YulEvmCompiler.Correctness
 import YulEvmCompiler.ObjectCompile
-import YulEvmCompiler.Optimizer.Pass
-import YulEvmCompiler.Optimizer.Identity
-import YulEvmCompiler.Optimizer.Backend
+import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Spec.Backend
+import YulEvmCompiler.Optimizer.Implementation.Identity
