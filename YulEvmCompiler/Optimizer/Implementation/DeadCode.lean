@@ -411,4 +411,34 @@ theorem dceDflt_scoped {Γ} : ∀ {dflt : Option (List (Stmt Op))}, ScopedOptBlo
   | some _, h => dceStmts_scoped h
 end
 
+/-! ### `restore` arithmetic for the simulation -/
+
+theorem drop_append_len {α} : ∀ (l₁ l₂ : List α), (l₁ ++ l₂).drop l₁.length = l₂
+  | [], l₂ => rfl
+  | _ :: t, l₂ => by simpa using drop_append_len t l₂
+
+/-- Restoring to `V` after restoring to a larger `V1` is just restoring to `V`. -/
+theorem restore_restore {V V1 W : VEnv D} (h1 : V.length ≤ V1.length) (h2 : V1.length ≤ W.length) :
+    restore V (restore V1 W) = restore V W := by
+  simp only [restore, List.length_drop, List.drop_drop]
+  congr 1
+  omega
+
+/-- Restoring past an inserted binding (at depth = base length) drops it: the two
+sides of a dead-`let` removal restore equally. -/
+theorem restore_insAt_eq {d x w} {V1 V2 : VEnv D} (h : InsAt d x w V1 V2) {base : VEnv D}
+    (hb : base.length = d) : restore base V1 = restore base V2 := by
+  obtain ⟨A, B, rfl, rfl, hBd⟩ := h
+  have g1 : restore base (A ++ B) = B := by
+    simp only [restore, List.length_append]
+    rw [show A.length + B.length - base.length = A.length by omega, drop_append_len]
+  have g2 : restore base (A ++ (x, w) :: B) = B := by
+    have heq : A ++ (x, w) :: B = (A ++ [(x, w)]) ++ B := by simp
+    rw [heq]
+    simp only [restore]
+    rw [show ((A ++ [(x, w)]) ++ B).length - base.length = (A ++ [(x, w)]).length by
+      simp only [List.length_append, List.length_cons, List.length_nil]; omega]
+    exact drop_append_len (A ++ [(x, w)]) B
+  rw [g1, g2]
+
 end YulEvmCompiler.Optimizer
