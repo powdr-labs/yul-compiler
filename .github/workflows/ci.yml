@@ -35,7 +35,7 @@ env:
 jobs:
   build:
     name: Build & verify
-    runs-on: warp-ubuntu-2404-x64-16x
+    runs-on: warp-ubuntu-2404-x64-32x
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -222,18 +222,26 @@ jobs:
           # The optimizer corpus is split across machines AND each leg runs its
           # fixtures across all the runner's cores (TEST_JOBS), so a few shards
           # on 32-core runners cover it quickly.
-          - name: optimizer 1/3
+          - name: optimizer 1/5
             kind: optimizer
             shard_index: 0
-            shard_count: 3
-          - name: optimizer 2/3
+            shard_count: 5
+          - name: optimizer 2/5
             kind: optimizer
             shard_index: 1
-            shard_count: 3
-          - name: optimizer 3/3
+            shard_count: 5
+          - name: optimizer 3/5
             kind: optimizer
             shard_index: 2
-            shard_count: 3
+            shard_count: 5
+          - name: optimizer 4/5
+            kind: optimizer
+            shard_index: 3
+            shard_count: 5
+          - name: optimizer 5/5
+            kind: optimizer
+            shard_index: 4
+            shard_count: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
