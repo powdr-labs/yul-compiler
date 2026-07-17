@@ -47,16 +47,20 @@ partial def desugarObject {Op : Type} : Object Op → Object Op
 using the documented compatibility parser when the verified parser does not
 apply. Hint builtins (`memoryguard`) are desugared before compilation.
 
-Block-rooted programs are run through the verified `Optimizer.simplify` pass
-(constant folding + neutral-element identities) before the backend; soundness of
-this composition is `Optimizer.Pass.optimize_then_compile_correct`. -/
+Both block- and object-rooted programs are run through the verified
+`Optimizer.simplify` pass (constant folding + neutral-element identities) before
+the backend. For blocks this is `Optimizer.Pass.optimize_then_compile_correct`;
+for objects, `Optimizer.simplifyObject` runs the pass on every code block of the
+tree (deploy and runtime), and correctness is
+`Optimizer.Pass.optimizeObject_compileObject_correct`. -/
 def compileSource (source : String) : Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
       return YulEvmCompiler.assemble
         (← YulEvmCompiler.compile (YulEvmCompiler.Optimizer.simplifyStmts (block.map desugarStmt)))
   | some (.object o) =>
-      let layout ← YulEvmCompiler.compileObject (desugarObject o)
+      let layout ← YulEvmCompiler.compileObject
+        (YulEvmCompiler.Optimizer.simplifyObject (desugarObject o))
       return ByteArray.mk layout.code.toArray
   | none => none
 

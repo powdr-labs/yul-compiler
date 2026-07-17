@@ -157,12 +157,14 @@ operations are different**: their correctness is *conditional on* the
   programs (`compileSource`); it is a total source-to-source transformation proved
   semantics-preserving (`EquivBlock`) and composed with the backend via
   `Pass.optimize_then_compile_correct`. Reaching into function bodies rests on a
-  locally-proved function-environment congruence (`Optimizer.FunCongr`). The object
-  path has a proved foundation (`Pass.optimizeTop_compileObject_correct`, sound for
-  offset-free/leaf objects) but is not yet wired: the object compiler couples code
-  length to sub-object/data offsets, so optimizing real constructor→runtime nesting
-  needs a cross-layout equivalence (see `Optimizer/IDEAS.md`). `compile`/
-  `compileObject` never silently call an unproved transformation.
+  locally-proved function-environment congruence (`Optimizer.FunCongr`). For
+  **object-rooted** programs (Solidity's `--via-ir` artifacts), `compileSource`
+  runs the pass on *every* code block of the tree — deploy and runtime — via
+  `Optimizer.simplifyObject`. `simplifyObject_correct` proves the emitted bytecode
+  correctly simulates the **original** object's resolved execution under the
+  compiler's layout (the object analogue of `optimize_then_compile_correct`),
+  bridged by a resolution congruence (`Optimizer.resolveSimplifyBlock_equiv`).
+  `compile`/`compileObject` never silently call an unproved transformation.
 - **Fork range.** The theorem fixes `fork = .Osaka`. Function/param/return names
   must be `Nodup`.
 - **Gas is existentially bounded, not closed-form.** By design (yul-semantics is
