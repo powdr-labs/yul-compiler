@@ -75,37 +75,41 @@ end
 /-! ### The insertion relation
 
 `InsAt d x v V1 V2` holds when `V2` is `V1` with one extra binding `(x,v)` spliced
-in at a fixed depth (`below.length = d`), with `x` fresh everywhere in `V1`.
-Execution only pushes above the splice and updates entries in place, so the
-relation is preserved throughout — and crucially, tracking the depth `d` lets
-scope restoration drop the same prefix on both sides (see `InsAt.restore`). -/
+in at a fixed depth (`below.length = d`). Execution only pushes above the splice
+and updates entries in place, so the relation is preserved throughout — and
+crucially, tracking the depth `d` lets scope restoration drop the same prefix on
+both sides (see `InsAt.restore`).
+
+No freshness of `x` in `V1` is required: code that never *mentions* `x` neither
+reads, writes, nor declares it, so an inserted `(x,v)` binding is invisible even
+when it shadows an existing one. Dropping freshness keeps the tooling usable
+without a no-shadowing side condition on the program. -/
 
 /-- `V2` is `V1` with `(x,v)` inserted at depth `d` (i.e. with `d` bindings below
-the splice), and `x` fresh in `V1`. -/
+the splice). -/
 def InsAt (d : Nat) (x : Ident) (v : D.Value) (V1 V2 : VEnv D) : Prop :=
   ∃ above below : VEnv D,
-    V1 = above ++ below ∧ V2 = above ++ (x, v) :: below ∧
-    below.length = d ∧ x ∉ above.map Prod.fst ∧ x ∉ below.map Prod.fst
+    V1 = above ++ below ∧ V2 = above ++ (x, v) :: below ∧ below.length = d
 
 theorem InsAt.length {d x v} {V1 V2 : VEnv D} (h : InsAt d x v V1 V2) :
     V2.length = V1.length + 1 := by
-  obtain ⟨a, b, rfl, rfl, _, _, _⟩ := h; simp only [List.length_append, List.length_cons]; omega
+  obtain ⟨a, b, rfl, rfl, _⟩ := h; simp only [List.length_append, List.length_cons]; omega
 
-/-- Reading any variable but `x` is unaffected. -/
+/-- Reading any variable but `x` is unaffected (the inserted `(x,v)` is skipped, and
+any pre-existing entry for `z ≠ x` is found at the same position on both sides). -/
 theorem InsAt.get_ne {d x v} {V1 V2 : VEnv D} (h : InsAt d x v V1 V2) {z : Ident} (hz : z ≠ x) :
     V2.get z = V1.get z := by
-  obtain ⟨a, b, rfl, rfl, _, ha, _⟩ := h
+  obtain ⟨a, b, rfl, rfl, _⟩ := h
   induction a with
   | nil =>
       simp only [List.nil_append, VEnv.get]
       rw [List.find?_cons_of_neg (by simp [Ne.symm hz])]
   | cons p rest ih =>
-      simp only [List.map_cons, List.mem_cons, not_or] at ha
       simp only [List.cons_append, VEnv.get]
       by_cases hp : p.1 = z
       · rw [List.find?_cons_of_pos (by simp [hp]), List.find?_cons_of_pos (by simp [hp])]
       · rw [List.find?_cons_of_neg (by simp [hp]), List.find?_cons_of_neg (by simp [hp])]
-        exact ih ha.2
+        exact ih
 
 /-- `set` updates a value, never a key, so it preserves the length. -/
 theorem VEnv.set_length (V : VEnv D) (z : Ident) (w : D.Value) :
@@ -117,46 +121,27 @@ theorem VEnv.set_length (V : VEnv D) (z : Ident) (w : D.Value) :
       · simp [hp]
       · simp only [hp, if_false, List.length_cons, ih]
 
-/-- `set` updates a value, never a key, so it preserves the key list. -/
-theorem VEnv.set_keys (V : VEnv D) (z : Ident) (w : D.Value) :
-    (V.set z w).map Prod.fst = V.map Prod.fst := by
-  induction V with
-  | nil => rfl
-  | cons p rest ih =>
-      simp only [VEnv.set]
-      by_cases hp : p.1 = z
-      · simp [hp]
-      · simp only [hp, if_false, List.map_cons, ih]
-
 /-- Writing any variable but `x` preserves the relation (and its depth). -/
 theorem InsAt.set {d x v} {V1 V2 : VEnv D} (h : InsAt d x v V1 V2) {z : Ident} (hz : z ≠ x)
     (w : D.Value) : InsAt d x v (V1.set z w) (V2.set z w) := by
-  obtain ⟨a, b, rfl, rfl, hd, ha, hb⟩ := h
+  obtain ⟨a, b, rfl, rfl, hd⟩ := h
   induction a with
   | nil =>
-      refine ⟨[], b.set z w, by simp [VEnv.set], ?_, by rw [VEnv.set_length]; exact hd,
-        by simp, by rw [VEnv.set_keys]; exact hb⟩
+      refine ⟨[], b.set z w, by simp [VEnv.set], ?_, by rw [VEnv.set_length]; exact hd⟩
       simp only [List.nil_append, VEnv.set, if_neg (Ne.symm hz)]
   | cons p rest ih =>
-      simp only [List.map_cons, List.mem_cons, not_or] at ha
       by_cases hp : p.1 = z
-      · refine ⟨(z, w) :: rest, b, ?_, ?_, hd, ?_, hb⟩
-        · simp only [List.cons_append, VEnv.set, if_pos hp]
-        · simp only [List.cons_append, VEnv.set, if_pos hp]
-        · simp only [List.map_cons, List.mem_cons, not_or]
-          exact ⟨hp ▸ ha.1, ha.2⟩
-      · obtain ⟨a', b', h1, h2, hd', ha', hb'⟩ := ih ha.2
-        refine ⟨p :: a', b', ?_, ?_, hd', ?_, hb'⟩
-        · simp only [List.cons_append, VEnv.set, if_neg hp]; rw [h1]
-        · simp only [List.cons_append, VEnv.set, if_neg hp]; rw [h2]
-        · simp only [List.map_cons, List.mem_cons, not_or]; exact ⟨ha.1, ha'⟩
+      · exact ⟨(z, w) :: rest, b, by simp only [List.cons_append, VEnv.set, if_pos hp],
+          by simp only [List.cons_append, VEnv.set, if_pos hp], hd⟩
+      · obtain ⟨a', b', h1, h2, hd'⟩ := ih
+        exact ⟨p :: a', b', by simp only [List.cons_append, VEnv.set, if_neg hp]; rw [h1],
+          by simp only [List.cons_append, VEnv.set, if_neg hp]; rw [h2], hd'⟩
 
-/-- Prepending the same bindings (with `x` fresh) preserves the relation and depth. -/
-theorem InsAt.prepend {d x v} {V1 V2 : VEnv D} (h : InsAt d x v V1 V2) (pre : VEnv D)
-    (hpre : x ∉ pre.map Prod.fst) : InsAt d x v (pre ++ V1) (pre ++ V2) := by
-  obtain ⟨a, b, rfl, rfl, hd, ha, hb⟩ := h
-  refine ⟨pre ++ a, b, by simp, by simp, hd, ?_, hb⟩
-  simp only [List.map_append, List.mem_append, not_or]; exact ⟨hpre, ha⟩
+/-- Prepending the same bindings preserves the relation and depth. -/
+theorem InsAt.prepend {d x v} {V1 V2 : VEnv D} (h : InsAt d x v V1 V2) (pre : VEnv D) :
+    InsAt d x v (pre ++ V1) (pre ++ V2) := by
+  obtain ⟨a, b, rfl, rfl, hd⟩ := h
+  exact ⟨pre ++ a, b, by simp, by simp, hd⟩
 
 /-! ### VEnv length lemmas and monotonicity
 
@@ -231,33 +216,6 @@ def codeMentions (x : Ident) : Code D.Op → Bool
   | .stmts ss => stmtsMentions x ss
   | .loop c post body => exprMentions x c || stmtsMentions x post || stmtsMentions x body
 
-/-! ### Small list helpers (self-contained to avoid library-name churn) -/
-
-theorem mem_drop_imp_mem {α} : ∀ {n : Nat} {l : List α} {a : α}, a ∈ l.drop n → a ∈ l := by
-  intro n
-  induction n with
-  | zero => intro l a h; simpa using h
-  | succ k ih =>
-      intro l a h
-      cases l with
-      | nil => simp at h
-      | cons b t => exact List.mem_cons_of_mem b (ih (by simpa using h))
-
-theorem fst_mem_of_mem_zip {α β} :
-    ∀ {l : List α} {m : List β} {p : α × β}, p ∈ l.zip m → p.1 ∈ l := by
-  intro l
-  induction l with
-  | nil => intro m p h; simp at h
-  | cons a t ih =>
-      intro m p h
-      cases m with
-      | nil => simp at h
-      | cons b s =>
-          simp only [List.zip_cons_cons, List.mem_cons] at h
-          rcases h with rfl | h
-          · simp
-          · exact List.mem_cons_of_mem a (ih h)
-
 /-! ### More `InsAt` preservation lemmas -/
 
 /-- `setMany` over keys all `≠ x` preserves the relation and its depth. -/
@@ -281,8 +239,8 @@ depth index guarantees `restore` drops the same prefix on both sides. -/
 theorem InsAt.restore {d x v} {Ve1 Ve2 Vb1 Vb2 : VEnv D}
     (hentry : InsAt d x v Ve1 Ve2) (hbody : InsAt d x v Vb1 Vb2) :
     InsAt d x v (restore Ve1 Vb1) (restore Ve2 Vb2) := by
-  obtain ⟨A, B, hb1, hb2, hBd, hAk, hBk⟩ := hbody
-  obtain ⟨Ae, Be, he1, he2, hBed, _, _⟩ := hentry
+  obtain ⟨A, B, hb1, hb2, hBd⟩ := hbody
+  obtain ⟨Ae, Be, he1, he2, hBed⟩ := hentry
   have hk1 : Vb1.length - Ve1.length = A.length - Ae.length := by
     rw [hb1, he1]; simp only [List.length_append]; omega
   have hk2 : Vb2.length - Ve2.length = A.length - Ae.length := by
@@ -291,25 +249,9 @@ theorem InsAt.restore {d x v} {Ve1 Ve2 Vb1 Vb2 : VEnv D}
   change InsAt d x v (Vb1.drop (Vb1.length - Ve1.length)) (Vb2.drop (Vb2.length - Ve2.length))
   rw [hk1, hk2, hb1, hb2, List.drop_append_of_le_length hle,
     List.drop_append_of_le_length hle]
-  refine ⟨A.drop (A.length - Ae.length), B, rfl, rfl, hBd, ?_, hBk⟩
-  intro hc
-  obtain ⟨p, hp, hpx⟩ := List.mem_map.1 hc
-  exact hAk (List.mem_map.2 ⟨p, mem_drop_imp_mem hp, hpx⟩)
+  exact ⟨A.drop (A.length - Ae.length), B, rfl, rfl, hBd⟩
 
 /-! ### Mentions helpers -/
-
-theorem bindZeros_keys (vars : List Ident) : (bindZeros D vars).map Prod.fst = vars := by
-  induction vars with
-  | nil => rfl
-  | cons a t ih =>
-      have h1 : bindZeros D (a :: t) = (a, D.zero) :: bindZeros D t := rfl
-      rw [h1, List.map_cons, ih]
-
-theorem not_mem_map_fst_zip {x : Ident} {vars : List Ident} {vals : List D.Value}
-    (h : x ∉ vars) : x ∉ (vars.zip vals).map Prod.fst := by
-  intro hc
-  obtain ⟨p, hp, hpx⟩ := List.mem_map.1 hc
-  exact h (hpx ▸ fst_mem_of_mem_zip hp)
 
 theorem casesMentions_of_mem {x : Ident} :
     ∀ {cases : List (Literal × Block D.Op)}, casesMentions x cases = false →
@@ -460,14 +402,14 @@ theorem frameAdd {funs : FunEnv D} {V1 st code res1} (h : Step D funs V1 st code
       intro d x v Vt hins hm
       simp only [codeMentions, stmtMentions, optExprMentions, Bool.or_false,
         decide_eq_false_iff_not] at hm
-      exact ⟨_, Step.letZero, ⟨hins.prepend _ (by rw [bindZeros_keys]; exact hm), rfl, rfl⟩⟩
+      exact ⟨_, Step.letZero, ⟨hins.prepend _, rfl, rfl⟩⟩
   | letVal he hlen ihe =>
       intro d x v Vt hins hm
       simp only [codeMentions, stmtMentions, optExprMentions, Bool.or_eq_false_iff,
         decide_eq_false_iff_not] at hm
       obtain ⟨r, hs, hr⟩ := ihe hins (by simp only [codeMentions]; exact hm.2)
       obtain rfl := hr.eres
-      exact ⟨_, Step.letVal hs hlen, ⟨hins.prepend _ (not_mem_map_fst_zip hm.1), rfl, rfl⟩⟩
+      exact ⟨_, Step.letVal hs hlen, ⟨hins.prepend _, rfl, rfl⟩⟩
   | letHalt he ihe =>
       intro d x v Vt hins hm
       simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
@@ -714,14 +656,14 @@ theorem frameRemove {funs : FunEnv D} {V2 st code res2} (h : Step D funs V2 st c
       intro d x v Vs hins hm
       simp only [codeMentions, stmtMentions, optExprMentions, Bool.or_false,
         decide_eq_false_iff_not] at hm
-      exact ⟨_, Step.letZero, ⟨hins.prepend _ (by rw [bindZeros_keys]; exact hm), rfl, rfl⟩⟩
+      exact ⟨_, Step.letZero, ⟨hins.prepend _, rfl, rfl⟩⟩
   | letVal he hlen ihe =>
       intro d x v Vs hins hm
       simp only [codeMentions, stmtMentions, optExprMentions, Bool.or_eq_false_iff,
         decide_eq_false_iff_not] at hm
       obtain ⟨r, hs, hr⟩ := ihe hins (by simp only [codeMentions]; exact hm.2)
       obtain rfl := hr.eres_right
-      exact ⟨_, Step.letVal hs hlen, ⟨hins.prepend _ (not_mem_map_fst_zip hm.1), rfl, rfl⟩⟩
+      exact ⟨_, Step.letVal hs hlen, ⟨hins.prepend _, rfl, rfl⟩⟩
   | letHalt he ihe =>
       intro d x v Vs hins hm
       simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
