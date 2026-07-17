@@ -551,4 +551,97 @@ theorem dceStmts_fwd (ss : List (Stmt Op)) {funs : FunEnv D} {Γ V st Vb st' o}
             exact ⟨_, Step.seqStop (dceStmt_fwd s hsc.1 hdom hs) hne, rfl⟩
 end
 
+/-! ### The soundness simulation (backward)
+
+The mirror of the forward direction: a run of the dce'd program is realised by the
+original, reconstructing each removed `let` (its side-effect-free initialiser still
+evaluates, by `sef_eval`) via `frameAdd`. -/
+
+mutual
+theorem dceStmt_bwd (s : Stmt Op) {funs : FunEnv D} {Γ V st V1 st1 o}
+    (hsc : ScopedStmt Γ s) (hdom : ∀ y ∈ Γ, y ∈ V.map Prod.fst)
+    (h : Step D funs V st (.stmt (dceStmt s)) (.sres V1 st1 o)) :
+    Step D funs V st (.stmt s) (.sres V1 st1 o) := by
+  cases s with
+  | block body =>
+      simp only [dceStmt] at h
+      cases h with
+      | block hbody =>
+          obtain ⟨Vborig, horig, hres⟩ := dceStmts_bwd body hsc hdom hbody
+          rw [hoist_dceStmts body] at horig
+          rw [← hres]; exact Step.block horig
+  | cond c body =>
+      simp only [dceStmt] at h
+      cases h with
+      | ifTrue hc hcv hbody =>
+          cases hbody with
+          | block hb =>
+              obtain ⟨Vborig, horig, hres⟩ := dceStmts_bwd body hsc.2 hdom hb
+              rw [hoist_dceStmts body] at horig
+              rw [← hres]; exact Step.ifTrue hc hcv (Step.block horig)
+      | ifFalse hc hcv => exact Step.ifFalse hc hcv
+      | ifHalt hc => exact Step.ifHalt hc
+  | forLoop init c post body => simpa only [dceStmt] using h
+  | funDef n ps rs body => simpa only [dceStmt] using h
+  | switch c cs df => simpa only [dceStmt] using h
+  | letDecl vars val => simpa only [dceStmt] using h
+  | assign vars val => simpa only [dceStmt] using h
+  | exprStmt e => simpa only [dceStmt] using h
+  | «break» => simpa only [dceStmt] using h
+  | «continue» => simpa only [dceStmt] using h
+  | leave => simpa only [dceStmt] using h
+theorem dceStmts_bwd (ss : List (Stmt Op)) {funs : FunEnv D} {Γ V st Vb' st' o}
+    (hsc : ScopedStmts Γ ss) (hdom : ∀ y ∈ Γ, y ∈ V.map Prod.fst)
+    (h : Step D funs V st (.stmts (dceStmts ss)) (.sres Vb' st' o)) :
+    ∃ Vb, Step D funs V st (.stmts ss) (.sres Vb st' o) ∧ restore V Vb = restore V Vb' := by
+  cases ss with
+  | nil => cases h with | seqNil => exact ⟨V, Step.seqNil, rfl⟩
+  | cons s rest =>
+      by_cases hr : removable s rest
+      · obtain ⟨x, e, rfl, hxr⟩ : ∃ x e, s = .letDecl [x] (some e) ∧
+            (SideEffectFree e && !stmtsMentions x rest) = true := by
+          cases s with
+          | letDecl vars val =>
+              cases vars with
+              | nil => simp [removable] at hr
+              | cons a as => cases as with
+                | cons _ _ => simp [removable] at hr
+                | nil => cases val with
+                  | none => simp [removable] at hr
+                  | some e => exact ⟨a, e, rfl, hr⟩
+          | _ => simp [removable] at hr
+        have hsef : SideEffectFree e = true := by
+          simp only [Bool.and_eq_true, Bool.not_eq_true'] at hxr; exact hxr.1
+        have hxrest : stmtsMentions x rest = false := by
+          simp only [Bool.and_eq_true, Bool.not_eq_true'] at hxr; exact hxr.2
+        simp only [dceStmts, hr, if_true] at h
+        have hscr : ScopedStmts Γ rest := ScopedStmts_erase (Γ₁ := []) hxrest hsc.2
+        obtain ⟨Vr, horig, hres⟩ := dceStmts_bwd rest hscr hdom h
+        obtain ⟨w, he⟩ := sef_eval (Γ := Γ) hsef hsc.1 hdom (st := st)
+        have hins : InsAt V.length x w V ((x, w) :: V) := ⟨[], V, rfl, rfl, rfl⟩
+        obtain ⟨res2, hstep2, hrel⟩ := frameAdd horig hins (by simpa only [codeMentions] using hxrest)
+        obtain ⟨Vb2, rfl, hins2⟩ := hrel.sres
+        have hletstep : Step D funs V st (.stmt (.letDecl [x] (some e))) (.sres ((x, w) :: V) st .normal) := by
+          have hlv := Step.letVal he (vars := [x]) (by simp)
+          rwa [show [x].zip [w] ++ V = (x, w) :: V from by simp] at hlv
+        exact ⟨Vb2, Step.seqCons hletstep hstep2, (restore_insAt_eq hins2 (base := V) rfl).symm.trans hres⟩
+      · simp only [dceStmts, hr, if_false] at h
+        cases h with
+        | @seqCons _ _ _ _ _ V1 st1 _ _ _ hs htail =>
+            have hsorig := dceStmt_bwd s hsc.1 hdom hs
+            have hdom1 : ∀ y ∈ declVars s ++ Γ, y ∈ V1.map Prod.fst := by
+              intro y hy
+              rcases List.mem_append.1 hy with h' | h'
+              · exact stmt_declVars_dom hsorig h'
+              · exact dom_mono hsorig (hdom y h')
+            obtain ⟨Vr, hrest, hres⟩ := dceStmts_bwd rest hsc.2 hdom1 htail
+            refine ⟨Vr, Step.seqCons hsorig hrest, ?_⟩
+            have hV1 : V.length ≤ V1.length := venvLen_mono hsorig rfl
+            have hVr : V1.length ≤ Vr.length := venvLen_mono hrest rfl
+            have hVb' : V1.length ≤ Vb'.length := venvLen_mono htail rfl
+            rw [← restore_restore hV1 hVr, ← restore_restore hV1 hVb', hres]
+        | seqStop hs hne =>
+            exact ⟨_, Step.seqStop (dceStmt_bwd s hsc.1 hdom hs) hne, rfl⟩
+end
+
 end YulEvmCompiler.Optimizer
