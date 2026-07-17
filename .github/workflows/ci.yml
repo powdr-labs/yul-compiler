@@ -52,6 +52,20 @@ jobs:
           test: "false"
           lint: "false"
 
+      # Share the freshly compiled root-package oleans with the solc-differential
+      # matrix so those jobs restore this build instead of recompiling the whole
+      # library ~5 more times. Scoped to this run, so it is always the exact
+      # commit; hidden files (lake's trace metadata) must be included or lake
+      # would consider the restored build stale and rebuild anyway. A restore
+      # miss just falls back to a normal `lake build`, so this is safe.
+      - name: Upload compiled library build
+        uses: actions/upload-artifact@v4
+        with:
+          name: lake-build
+          path: .lake/build
+          include-hidden-files: true
+          retention-days: 1
+
       # `lake build` treats `sorry` as a warning, not an error, so guard against
       # an incomplete proof slipping in with a plain textual scan of the library
       # sources. (Checks.lean is excluded: it legitimately names `sorry` in its
@@ -170,22 +184,35 @@ jobs:
             kind: direct
             shard_index: 0
             shard_count: 1
-          - name: optimizer 1/4
+          # The optimizer corpus dominates the pipeline's tail. It is split
+          # across shards (across machines) AND each shard processes its
+          # fixtures with in-shard parallelism (DIFF_JOBS workers, one per
+          # runner core), so both dimensions of parallelism apply. Six shards
+          # keeps the per-machine cost low without over-provisioning jobs.
+          - name: optimizer 1/6
             kind: optimizer
             shard_index: 0
-            shard_count: 4
-          - name: optimizer 2/4
+            shard_count: 6
+          - name: optimizer 2/6
             kind: optimizer
             shard_index: 1
-            shard_count: 4
-          - name: optimizer 3/4
+            shard_count: 6
+          - name: optimizer 3/6
             kind: optimizer
             shard_index: 2
-            shard_count: 4
-          - name: optimizer 4/4
+            shard_count: 6
+          - name: optimizer 4/6
             kind: optimizer
             shard_index: 3
-            shard_count: 4
+            shard_count: 6
+          - name: optimizer 5/6
+            kind: optimizer
+            shard_index: 4
+            shard_count: 6
+          - name: optimizer 6/6
+            kind: optimizer
+            shard_index: 5
+            shard_count: 6
     env:
       SVM_VERSION: "0.5.26"
       SOLC_VERSION: "0.8.35"
@@ -200,6 +227,14 @@ jobs:
             .lake/packages/yul-semantics/.lake/build
             .lake/packages/evm_semantics/.lake/build
           key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+
+      # Restore the root-package build produced once by the `build` job so the
+      # `lake build` below is a trace-check no-op instead of a full recompile.
+      - name: Restore compiled library build
+        uses: actions/download-artifact@v4
+        with:
+          name: lake-build
+          path: .lake/build
 
       - name: Build differential runner
         uses: leanprover/lean-action@v1
