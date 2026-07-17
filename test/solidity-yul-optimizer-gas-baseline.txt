@@ -4,7 +4,7 @@
 # CI fails if this compiler's total rises above it while solc's is unchanged.
 # columns: fixture<TAB>ours<TAB>solc
 blockFlattener/basic.yul	354	90
-blockFlattener/if_stmt.yul	13034	12960
+blockFlattener/if_stmt.yul	12998	12960
 blockFlattener/many_nested_blocks.yul	510	0
 blockFlattener/switch_stmt.yul	398	167
 circularReferencesPruner/nested_different_names.yul	288	0
@@ -139,7 +139,7 @@ expressionSimplifier/combine_shift_and_and.yul	76060	76036
 expressionSimplifier/combine_shift_and_and_2.yul	312542	312482
 expressionSimplifier/combine_shift_and_and_3.yul	537638	537578
 expressionSimplifier/constant_propagation.yul	198	174
-expressionSimplifier/constants.yul	132738	132720
+expressionSimplifier/constants.yul	132654	132720
 expressionSimplifier/create2_and_mask.yul	590644278	590644332
 expressionSimplifier/create_and_mask.yul	516876	516972
 expressionSimplifier/exp_simplifications.yul	401756	401732
@@ -149,7 +149,7 @@ expressionSimplifier/identity_rules_negative.yul	27326	27296
 expressionSimplifier/identity_rules_simple.yul	27344	27296
 expressionSimplifier/including_function_calls.yul	27566	27458
 expressionSimplifier/invalid_match.yul	1200	666
-expressionSimplifier/invariant.yul	27380	27332
+expressionSimplifier/invariant.yul	27308	27332
 expressionSimplifier/iszero_sub_to_eq.yul	22370	22321
 expressionSimplifier/large_byte_access.yul	424308	424260
 expressionSimplifier/mcopy_non_zero_size.yul	306	294
@@ -176,7 +176,7 @@ expressionSimplifier/unassigend_vars_multi.yul	44462	44414
 expressionSimplifier/unassigned_vars.yul	132762	132714
 expressionSimplifier/zero_length_read.yul	54	48
 expressionSimplifier/zero_length_read_call.yul	15744	15738
-expressionSimplifier/zero_length_read_codecopy.yul	144	144
+expressionSimplifier/zero_length_read_codecopy.yul	108	144
 expressionSplitter/control_flow.yul	486	492
 expressionSplitter/inside_function.yul	28220	27938
 expressionSplitter/object_access.yul	198	156
@@ -215,12 +215,12 @@ fullInlinerWithoutSplitter/call_arguments_with_side_effects.yul	378	30
 fullInlinerWithoutSplitter/call_arguments_without_side_effects.yul	13974	0
 fullInlinerWithoutSplitter/simple.yul	372	0
 fullSimplify/constant_propagation.yul	180	156
-fullSimplify/constants.yul	174	150
+fullSimplify/constants.yul	90	150
 fullSimplify/identity_rules_complex.yul	162	138
 fullSimplify/identity_rules_negative.yul	162	132
 fullSimplify/identity_rules_simple.yul	144	114
 fullSimplify/including_function_calls.yul	402	294
-fullSimplify/invariant.yul	222	210
+fullSimplify/invariant.yul	150	210
 fullSimplify/mod_and_1.yul	516	504
 fullSimplify/mod_and_2.yul	516	504
 fullSimplify/not_applied_function_call_different_arguments.yul	576	468
@@ -234,7 +234,7 @@ fullSimplify/signextend.yul	276	228
 fullSimplify/smoke.yul	0	0
 fullSuite/abi2.yul	456	432
 fullSuite/abi_example1.yul	1758	1410
-fullSuite/and_or_combination.yul	144166	144022
+fullSuite/and_or_combination.yul	144094	144022
 fullSuite/call_arguments_with_side_effects.yul	378	30
 fullSuite/call_arguments_without_side_effects.yul	14162	13956
 fullSuite/clear_after_if_continue.yul	354	306
@@ -245,7 +245,7 @@ fullSuite/combine_shift_and_and_unsplit.yul	76060	76036
 fullSuite/create2_and_mask.yul	590644278	590644332
 fullSuite/create_and_mask.yul	516858	516972
 fullSuite/devcon_example.yul	27836	27674
-fullSuite/extcodelength.yul	13294	13258
+fullSuite/extcodelength.yul	13216	13258
 fullSuite/fibonacci.yul	1352732	1356098
 fullSuite/loopInvariantCodeMotion.yul	27836	27674
 fullSuite/mcopy.yul	468	450
@@ -260,14 +260,14 @@ fullSuite/no_move_loop_orig.yul	120	120
 fullSuite/remove_redundant_assignments_in_switch.yul	426	402
 fullSuite/reserved_identifiers.yul	75942	257690
 fullSuite/reuse_vars_bug_in_simplifier.yul	116118	115974
-fullSuite/shift_signextend.yul	27410	27356
+fullSuite/shift_signextend.yul	27374	27356
 fullSuite/ssaReverse.yul	546	558
 fullSuite/ssaReverseComplex.yul	27482	27440
 fullSuite/stack_compressor_msize.yul	446114	446156
 fullSuite/stack_shuffler_bring_up_target_slot_bfs_dedup.yul	457835	458013
 fullSuite/static_array_slot_computation.yul	228	204
 fullSuite/storage.yul	266508	266508
-fullSuite/structural_simplification.yul	115980	115962
+fullSuite/structural_simplification.yul	115908	115962
 fullSuite/sub_objects.yul	108	108
 fullSuite/switch_inline.yul	13962	13806
 fullSuite/switch_inline_match_default.yul	13902	13656
@@ -515,7 +515,7 @@ unusedStoreEliminator/mstore_overwriting_mcopy.yul	378	342
 unusedStoreEliminator/mstore_overwriting_mstore.yul	306	270
 unusedStoreEliminator/no_storage_inside_function.yul	133716	133338
 unusedStoreEliminator/overflow.yul	72	90
-unusedStoreEliminator/overlapping.yul	193	158
+unusedStoreEliminator/overlapping.yul	187	158
 unusedStoreEliminator/overlapping_small.yul	318	192
 unusedStoreEliminator/remove_before_revert.yul	107	109
 unusedStoreEliminator/returndatacopy_fixed_size.yul	54	48
