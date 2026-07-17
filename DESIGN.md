@@ -478,14 +478,14 @@ audited-surface-vs-artifact distinction the spec closure already makes:
   * **`Implementation/ObjectPass.lean`** — the object path. `simplifyObject` (in
     `Simplify`) runs the pass on *every* code block of an object tree (deploy and
     runtime); `compileSource` uses it for object-rooted programs.
-    `simplifyObject_compileObject_correct` (= `compileObject_correct` on the
-    optimized tree) certifies the artifact, and `simplifyObject_topEquiv` certifies
-    every code block is `EquivBlock`-equivalent to the original. `Pass.optimizeTopCode`
-    + `Pass.optimizeTop_compileObject_correct` additionally give the stricter
-    single-object end-to-end theorem for the offset-free/leaf fragment. The object
-    compiler couples code length to sub-object/data offsets, so the *single* "artifact
-    simulates the original object" theorem needs a resolution congruence — the
-    frontier documented in `IDEAS.md`.
+    `simplifyObject_correct` proves the emitted bytecode correctly simulates the
+    **original** object's resolved execution under the compiler's layout — the object
+    analogue of `optimize_then_compile_correct`. The bridge over the object
+    compiler's layout-coupling (code length ↔ baked-in offsets) is the **resolution
+    congruence** `ResolveCongr.resolveSimplifyBlock_equiv`
+    (`EquivBlock (resolve L b) (resolve L (simplify b))`), proved because the pass
+    touches only pure ops and `var`/`lit` operands — disjoint from the
+    `dataoffset`/`datasize` nodes resolution rewrites.
 
 The soundness obligation and its congruence machinery live upstream in
 `YulSemantics.Equiv`/`YulSemantics.Rewrites`; this repo supplies the pass

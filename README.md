@@ -160,10 +160,11 @@ operations are different**: their correctness is *conditional on* the
   locally-proved function-environment congruence (`Optimizer.FunCongr`). For
   **object-rooted** programs (Solidity's `--via-ir` artifacts), `compileSource`
   runs the pass on *every* code block of the tree — deploy and runtime — via
-  `Optimizer.simplifyObject`; the artifact is the verified compilation of that
-  tree (`compileObject_correct`), and every code block is `EquivBlock`-equivalent
-  to the original (`simplifyObject_topEquiv`). `compile`/`compileObject` never
-  silently call an unproved transformation.
+  `Optimizer.simplifyObject`. `simplifyObject_correct` proves the emitted bytecode
+  correctly simulates the **original** object's resolved execution under the
+  compiler's layout (the object analogue of `optimize_then_compile_correct`),
+  bridged by a resolution congruence (`Optimizer.resolveSimplifyBlock_equiv`).
+  `compile`/`compileObject` never silently call an unproved transformation.
 - **Fork range.** The theorem fixes `fork = .Osaka`. Function/param/return names
   must be `Nodup`.
 - **Gas is existentially bounded, not closed-form.** By design (yul-semantics is

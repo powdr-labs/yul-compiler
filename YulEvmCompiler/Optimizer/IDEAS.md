@@ -101,16 +101,23 @@ of the optimized tree, via `compileObject_correct`) + `simplifyObject_topEquiv`
 `blockEquiv`). So the bytecode faithfully runs a program each of whose code blocks
 is provably equivalent to the source.
 
-Gas (real Solidity contracts, `checkSolidityGas`): `libsolidity/gasTests` — 12/12
-fixtures down, 0 regressions (`dispatch_large` 97748→97586, `abiv2` 9377→9341, …).
-`objectCompiler` yul corpus — 3 down. The single end-to-end "bytecode simulates
-the *original object*" theorem would additionally want a resolution congruence
-`EquivBlock (resolve L b) (resolve L (P.run b))`; the layout-coupling below blocks
-that as a general lemma, but it does not weaken the shipped guarantee (correct
-compilation of a per-block-equivalent tree).
+**Full end-to-end soundness** (`simplifyObject_correct`): compiling
+`simplifyObject o` yields bytecode that correctly simulates the **original**
+object `o`'s resolved run under the compiler's layout — the object analogue of
+`Pass.optimize_then_compile_correct`, with **no caveat**. The bridge is the
+**resolution congruence** `ResolveCongr.resolveSimplifyBlock_equiv`:
+`EquivBlock (resolveForLayoutStmts L b) (resolveForLayoutStmts L (simplifyStmts b))`
+— proved by a structural induction using that the pass touches only pure ops and
+`var`/`lit` neutral operands (disjoint from the `dataoffset`/`datasize` nodes
+resolution rewrites, and the pass never manufactures a string literal so the
+layout-keyed shape is preserved).
 
-`Pass.optimizeTopCode` + `Pass.optimizeTop_compileObject_correct` remain as the
-stricter single-object theorem for the offset-free/leaf fragment.
+Gas (real Solidity contracts, `checkSolidityGas`): `libsolidity/semanticTests`
+619/648 down (−185,438 gas); `libsolidity/gasTests` 12/12 down; `objectCompiler`
+3 down. All zero-regression.
+
+`Pass.optimizeTopCode` + `Pass.optimizeTop_compileObject_correct` remain as an
+alternative single-object theorem for the offset-free/leaf fragment.
 
 ## The layout-coupling (why the end-to-end object theorem is subtle)
 
@@ -141,13 +148,9 @@ the real object-path frontier.
 
 ## Candidate next ideas (not started)
 
-- **Resolution congruence** `EquivBlock (resolve L b) (resolve L (P.run b))` (a
-  structural induction mirroring the pass, using that resolution touches only
-  `dataoffset`/`datasize`/`datacopy` — disjoint from the pure ops the pass folds).
-  Gives the single end-to-end "artifact simulates the *original* object" theorem.
 - **`for`-loop `init`**: a `for`-specific congruence to simplify `init` too.
-- **Higher-impact passes** (the real gas lever): dead/unused-`let` elimination,
-  redundant `pop`/store elimination, branch/switch folding.
+- **Higher-impact passes**: dead/unused-`let` elimination, redundant `pop`/store
+  elimination, branch/switch folding, common-subexpression elimination.
 - **Dead `pop`/unused `let` elimination**: remove `let x := <pure e>` when `x`
   is never used and `e` is side-effect-free; drop `pop(<pure e>)`.
 - **`iszero(iszero(x))` in boolean position** → `x` when the value is only used

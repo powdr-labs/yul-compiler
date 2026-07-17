@@ -1,5 +1,6 @@
 import YulEvmCompiler.Optimizer.Spec.Pass
 import YulEvmCompiler.Optimizer.Implementation.Simplify
+import YulEvmCompiler.Optimizer.Implementation.ResolveCongr
 import YulEvmCompiler.ObjectCompile
 
 /-!
@@ -125,5 +126,30 @@ every level of the tree.) -/
 theorem simplifyObject_topEquiv (o : Object Op) :
     YulSemantics.EquivBlock yulD o.codeBlock (simplifyObject o).codeBlock := by
   rw [simplifyObject_codeBlock]; exact blockEquiv o.codeBlock
+
+/-- **End-to-end object optimization is correct.** Compiling `simplifyObject o`
+(the whole tree optimized — deploy and runtime) yields bytecode that correctly
+simulates the **original** object `o`'s resolved execution under the compiler's
+layout. This is the object analogue of `Pass.optimize_then_compile_correct`, now
+with no caveat: the resolution congruence (`resolveSimplifyBlock_equiv`) bridges
+the optimized artifact's resolved run back to the original's. -/
+theorem simplifyObject_correct (hexternal : ExternalsRealized model)
+    {o : Object Op} {L : Layout}
+    (hcomp : compileObject (simplifyObject o) = some L)
+    {V : VEnv yulD} {yst : EvmState} {out : Outcome}
+    (hrun : RunResolvedObject o L V yst out) :
+    ∃ b : Nat, ∀ s0 : State,
+      FrameOK (mkCode L.code) s0 → StateMatch L.initState s0 →
+      s0.pc = UInt256.ofNat 0 → s0.stack = [] → b ≤ s0.gasAvailable →
+      ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst s' ∧
+        ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
+         (out = .halt ∧ HaltedMatch yst s')) := by
+  have hb := resolveSimplifyBlock_equiv (calls := model.calls) (creates := model.creates)
+    L o.codeBlock
+  have hrun' : RunResolvedObject (simplifyObject o) L V yst out := by
+    show Run yulD (resolveForLayoutStmts L (simplifyObject o).codeBlock) L.initState V yst out
+    rw [simplifyObject_codeBlock]
+    exact hb.run_iff.mp hrun
+  exact compileObject_correct hexternal hcomp hrun'
 
 end YulEvmCompiler.Optimizer
