@@ -1,5 +1,6 @@
 import YulEvmCompiler.Compile
 import YulEvmCompiler.StateRel
+import YulEvmCompiler.Optimizer.Implementation.IdentityPipeline
 import YulSemantics.Syntax
 import YulSemantics.Interp
 import YulSemantics.FibExample
@@ -114,6 +115,23 @@ def funCall : Block Op := yul% {
   }
   sstore(0, double(21))
 }
+
+/-- Identity helpers at top-level and inside a sibling function, plus a nested
+non-identity shadow with the same name. -/
+def identityHelpers : Block Op := yul% {
+  function identity(x) -> y { y := x }
+  function throughSibling(x) -> y { y := identity(x) }
+  sstore(0, throughSibling(41))
+  {
+    function identity(x) -> y { y := add(x, 1) }
+    sstore(1, identity(41))
+  }
+}
+
+def optimizedIdentityHelpers : Block Op :=
+  (Optimizer.identityPipeline
+    (calls := YulSemantics.EVM.ExternalCalls.none)
+    (creates := YulSemantics.EVM.ExternalCreates.none)).run identityHelpers
 
 /-- A *recursive* function: `fact(5) = 120` in slot 0. -/
 def factorial : Block Op := yul% {
@@ -440,6 +458,8 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn switchDefault [0]
 #guard agreeOn multiRet [0, 1]
 #guard agreeOn multiAssign [0, 1]
+#guard compile optimizedIdentityHelpers |>.isSome
+#guard agreeOn optimizedIdentityHelpers [0, 1]
 #guard agreeOn multiRet3 [0, 1, 2]
 #guard agreeOn funCall [0]
 #guard agreeOn factorial [0]

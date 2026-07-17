@@ -1,6 +1,6 @@
 import YulParser.Source
 import YulEvmCompiler.ObjectCompile
-import YulEvmCompiler.Optimizer.Implementation.Simplify
+import YulEvmCompiler.Optimizer.Implementation.IdentityPipeline
 
 /-!
 # YulParser.Compile
@@ -47,20 +47,23 @@ partial def desugarObject {Op : Type} : Object Op → Object Op
 using the documented compatibility parser when the verified parser does not
 apply. Hint builtins (`memoryguard`) are desugared before compilation.
 
-Both block- and object-rooted programs are run through the verified
-`Optimizer.simplify` pass (constant folding, neutral-element identities, and
-literal control-flow selection) before the backend. For blocks this is
-`Optimizer.Pass.optimize_then_compile_correct`; for objects,
-`Optimizer.simplifyObject` runs the pass on every code block of the tree (deploy
-and runtime), with correctness provided by `Optimizer.simplifyObject_correct`. -/
+Both block- and object-rooted programs run the verified production pipeline:
+Simplify, exact-identity call inlining, then Simplify again.  The object path
+applies the same pipeline to every code block in the tree. -/
 def compileSource (source : String) : Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
       return YulEvmCompiler.assemble
-        (← YulEvmCompiler.compile (YulEvmCompiler.Optimizer.simplifyStmts (block.map desugarStmt)))
+        (← YulEvmCompiler.compile
+          ((YulEvmCompiler.Optimizer.identityPipeline
+            (calls := YulSemantics.EVM.ExternalCalls.none)
+            (creates := YulSemantics.EVM.ExternalCreates.none)).run
+              (block.map desugarStmt)))
   | some (.object o) =>
       let layout ← YulEvmCompiler.compileObject
-        (YulEvmCompiler.Optimizer.simplifyObject (desugarObject o))
+        (YulEvmCompiler.Optimizer.identityPipelineObject
+          (calls := YulSemantics.EVM.ExternalCalls.none)
+          (creates := YulSemantics.EVM.ExternalCreates.none) (desugarObject o))
       return ByteArray.mk layout.code.toArray
   | none => none
 
