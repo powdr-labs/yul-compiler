@@ -5,6 +5,7 @@ import YulEvmCompilerTests.CorpusGas
 import YulEvmCompilerTests.SolidityCorpus
 import YulEvmCompilerTests.InterpreterFixture
 import YulEvmCompilerTests.SolTest
+import YulEvmCompilerTests.Parallel
 
 /-!
 Compile and gas-check Solidity's `libsolidity/gasTests` fixtures.
@@ -36,6 +37,7 @@ open YulEvmCompilerTests.SolidityCorpus
 open YulEvmCompilerTests.InterpreterFixture
 open YulEvmCompilerTests.SolcDifferential (observe gasUsed fixtureSeed)
 open YulEvmCompilerTests.SolTest (Call parseSpec)
+open YulEvmCompilerTests.Parallel (detectJobs parMap)
 
 /-- Optional sharding by the same stable fixture-name hash the differential uses,
 so the large semanticTests corpus can be split across CI jobs and its baseline
@@ -117,6 +119,56 @@ private def replayCalls (ourBase solcBase : EVM.State) (calls : Array Call) : Op
     solcState := { solcState with accountMap := solcFinal.accountMap }
   return total
 
+/-- The per-contract verdict, accumulated exactly as the old sequential loop did
+but computed independently so contracts can be gas-checked concurrently. -/
+private structure GasOutcome where
+  compileFailure : Option (String × String) := none
+  skipped : Bool := false
+  measured : Option GasRow := none
+
+/-- Compile one contract through solc's unoptimized `--via-ir` Yul, deploy both
+this compiler's and solc's optimized bytecode, replay the fixture's calls, and
+measure gas — the body of the old loop, extracted as an independent unit of
+work with no shared mutable state. -/
+private def processContract (dir : FilePath) (solcPath : String)
+    (path : FilePath) : IO GasOutcome := do
+  let name := relativeName dir path
+  let contents ← IO.FS.readFile path
+  match runsOnLatestFork contents with
+  | .error message => return { compileFailure := some (name, s!"metadata: {message}") }
+  | .ok false => return { skipped := true }
+  | .ok true =>
+      let source := fixtureSource contents
+      match ← solcUnoptimizedIR solcPath source with
+      | .error message => return { compileFailure := some (name, message) }
+      | .ok ir =>
+          match compileSource ir with
+          | none =>
+              return { compileFailure := some (name, "this compiler rejected solc's optimized IR") }
+          | some creation =>
+              match ← solcCreationBytecode solcPath source with
+              | .error message => return { compileFailure := some (name, message) }
+              | .ok solcCreation =>
+                  -- Replay the fixture's own specified calls (semanticTests).
+                  -- With no call spec (gasTests) fall back to one synthetic
+                  -- call per external function selector.
+                  let spec := parseSpec contents
+                  let calls ← do
+                    if spec.calls.isEmpty then
+                      match ← solcFunctionSelectors solcPath source with
+                      | .error _ => pure #[]
+                      | .ok sels => pure (sels.toArray.map fun s =>
+                          ({ sig := s, value := 0,
+                             calldata := Hex.hexToBytes (s ++ argWords) } : Call))
+                    else pure spec.calls
+                  match deployForCalls creation spec.ctorArgs spec.ctorValue,
+                        deployForCalls solcCreation spec.ctorArgs spec.ctorValue with
+                  | some ourBase, some solcBase =>
+                      match replayCalls ourBase solcBase calls with
+                      | some (ours, solc) => return { measured := some { fixture := name, ours, solc } }
+                      | none => return {}   -- compiled, but no comparable call
+                  | _, _ => return {}       -- deployment did not produce runtime
+
 private def usage : String :=
   "usage: CheckSolidityGas <contracts-dir> <gas-baseline.txt> " ++
     "<solc-path> <expected-solc-version> [--lenient] [--update]"
@@ -141,43 +193,12 @@ private def run (dir baselineFile : FilePath)
   let mut measured : Array GasRow := #[]
   let mut compileFailures : Array (String × String) := #[]
   let mut skipped := 0
-  for path in files do
-    let name := relativeName dir path
-    let contents ← IO.FS.readFile path
-    match runsOnLatestFork contents with
-    | .error message => compileFailures := compileFailures.push (name, s!"metadata: {message}")
-    | .ok false => skipped := skipped + 1
-    | .ok true =>
-        let source := fixtureSource contents
-        match ← solcUnoptimizedIR solcPath source with
-        | .error message => compileFailures := compileFailures.push (name, message)
-        | .ok ir =>
-            match compileSource ir with
-            | none =>
-                compileFailures := compileFailures.push (name, "this compiler rejected solc's optimized IR")
-            | some creation =>
-                match ← solcCreationBytecode solcPath source with
-                | .error message => compileFailures := compileFailures.push (name, message)
-                | .ok solcCreation =>
-                    -- Replay the fixture's own specified calls (semanticTests).
-                    -- With no call spec (gasTests) fall back to one synthetic
-                    -- call per external function selector.
-                    let spec := parseSpec contents
-                    let calls ← do
-                      if spec.calls.isEmpty then
-                        match ← solcFunctionSelectors solcPath source with
-                        | .error _ => pure #[]
-                        | .ok sels => pure (sels.toArray.map fun s =>
-                            ({ sig := s, value := 0,
-                               calldata := Hex.hexToBytes (s ++ argWords) } : Call))
-                      else pure spec.calls
-                    match deployForCalls creation spec.ctorArgs spec.ctorValue,
-                          deployForCalls solcCreation spec.ctorArgs spec.ctorValue with
-                    | some ourBase, some solcBase =>
-                        match replayCalls ourBase solcBase calls with
-                        | some (ours, solc) => measured := measured.push { fixture := name, ours, solc }
-                        | none => pure ()   -- compiled, but no comparable call
-                    | _, _ => pure ()       -- deployment did not produce runtime
+  let jobs ← detectJobs
+  let outcomes : Array GasOutcome ← parMap jobs files (processContract dir solcPath)
+  for outcome in outcomes do
+    if let some entry := outcome.compileFailure then compileFailures := compileFailures.push entry
+    if outcome.skipped then skipped := skipped + 1
+    if let some row := outcome.measured then measured := measured.push row
   let compiled := files.size - skipped - compileFailures.size
 
   if update then

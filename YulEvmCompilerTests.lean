@@ -4,3 +4,4 @@ import YulEvmCompilerTests.SolidityCorpus
 import YulEvmCompilerTests.SolcDifferential
 import YulEvmCompilerTests.CorpusGas
 import YulEvmCompilerTests.SolTest
+import YulEvmCompilerTests.Parallel

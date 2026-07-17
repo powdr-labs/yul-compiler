@@ -14,13 +14,28 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  SVM_VERSION: "0.5.26"
+  SOLC_VERSION: "0.8.35"
+
+# The pipeline is split so no expensive build is ever done twice on the critical
+# path, and so the two independent build products fan out in parallel:
+#
+#   build ───────────────▶ solc-differential (yul corpora, `lean --run`)
+#   gas-runner ──────────▶ solidity-gas       (gasTests + semanticTests, native)
+#
+# `build` compiles the library once and shares its oleans; `gas-runner` compiles
+# the native `checkSolidityGas` executable once (a ~13-minute C compile of the
+# whole dependency closure that previously ran in every matrix leg) and shares
+# the binary. Both fan-outs then only *run* tests, each leg parallelised across
+# the runner's cores by the runners themselves (see TEST_JOBS in the Lean
+# scripts). WarpBuild 32-core runners make the one-time C compile and the
+# per-leg execution both scale with cores. Which tests run is unchanged — only
+# where they run and how the work is distributed.
 jobs:
   build:
     name: Build & verify
-    runs-on: ubuntu-latest
-    env:
-      SVM_VERSION: "0.5.26"
-      SOLC_VERSION: "0.8.35"
+    runs-on: warp-ubuntu-2404-x64-32x
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,9 +67,9 @@ jobs:
           test: "false"
           lint: "false"
 
-      # Share the freshly compiled root-package oleans with the solc-differential
+      # Share the freshly compiled library oleans with the solc-differential
       # matrix so those jobs restore this build instead of recompiling the whole
-      # library ~5 more times. Scoped to this run, so it is always the exact
+      # library once per leg. Scoped to this run, so it is always the exact
       # commit; hidden files (lake's trace metadata) must be included or lake
       # would consider the restored build stale and rebuild anyway. A restore
       # miss just falls back to a normal `lake build`, so this is safe.
@@ -149,73 +164,15 @@ jobs:
             test/solidity-yul-evm-code-transform-known-compile-failures.txt || status=1
           exit "$status"
 
-      - name: Cache pinned svm and solc
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/svm
-            ~/.cargo/bin/solc
-            ~/.local/share/svm/${{ env.SOLC_VERSION }}
-          key: svm-${{ runner.os }}-${{ runner.arch }}-${{ env.SVM_VERSION }}-solc-${{ env.SOLC_VERSION }}
-
-      - name: Install pinned solc with svm
-        run: |
-          if ! command -v svm >/dev/null 2>&1 || \
-              ! svm --version | grep -q "^svm $SVM_VERSION "; then
-            cargo install svm-rs --locked --version "$SVM_VERSION" --force
-          fi
-          if ! svm which "$SOLC_VERSION" >/dev/null 2>&1; then
-            svm install "$SOLC_VERSION"
-          fi
-          solc_path="$(svm which "$SOLC_VERSION")"
-          test -x "$solc_path"
-          echo "SOLC_PATH=$solc_path" >> "$GITHUB_ENV"
-
-  solc-differential:
-    name: solc differential (${{ matrix.name }})
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: direct corpora
-            kind: direct
-            shard_index: 0
-            shard_count: 1
-          # The optimizer corpus dominates the pipeline's tail. It is split
-          # across shards (across machines) AND each shard processes its
-          # fixtures with in-shard parallelism (DIFF_JOBS workers, one per
-          # runner core), so both dimensions of parallelism apply. Six shards
-          # keeps the per-machine cost low without over-provisioning jobs.
-          - name: optimizer 1/6
-            kind: optimizer
-            shard_index: 0
-            shard_count: 6
-          - name: optimizer 2/6
-            kind: optimizer
-            shard_index: 1
-            shard_count: 6
-          - name: optimizer 3/6
-            kind: optimizer
-            shard_index: 2
-            shard_count: 6
-          - name: optimizer 4/6
-            kind: optimizer
-            shard_index: 3
-            shard_count: 6
-          - name: optimizer 5/6
-            kind: optimizer
-            shard_index: 4
-            shard_count: 6
-          - name: optimizer 6/6
-            kind: optimizer
-            shard_index: 5
-            shard_count: 6
-    env:
-      SVM_VERSION: "0.5.26"
-      SOLC_VERSION: "0.8.35"
+  # Compile the native `checkSolidityGas` executable exactly once, in parallel
+  # with `build`. This is the ~13-minute step (it compiles the whole dependency
+  # closure — Mathlib included — to native code) that used to run in every
+  # differential leg; a 32-core runner makes the C compile itself much faster,
+  # and the binary is statically linked, so the downstream gas jobs need only the
+  # artifact plus solc — no Lean toolchain at all.
+  gas-runner:
+    name: Build gas runner
+    runs-on: warp-ubuntu-2404-x64-32x
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -228,7 +185,76 @@ jobs:
             .lake/packages/evm_semantics/.lake/build
           key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
 
-      # Restore the root-package build produced once by the `build` job so the
+      - name: Build (fetch Mathlib cache + lake build)
+        uses: leanprover/lean-action@v1
+        with:
+          use-mathlib-cache: "true"
+          build: "true"
+          test: "false"
+          lint: "false"
+
+      # Compiling large real-world contracts recurses deeper than the Lean
+      # interpreter's stack allows, so the gas runner is a native executable
+      # rather than `lean --run`.
+      - name: Build Solidity gas runner (native)
+        run: lake build checkSolidityGas
+
+      - name: Upload gas runner binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: gas-runner-bin
+          path: .lake/build/bin/checkSolidityGas
+          retention-days: 1
+
+  solc-differential:
+    name: solc differential (${{ matrix.name }})
+    needs: build
+    runs-on: warp-ubuntu-2404-x64-32x
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: direct corpora
+            kind: direct
+            shard_index: 0
+            shard_count: 1
+          # The optimizer corpus is split across machines AND each leg runs its
+          # fixtures across all the runner's cores (TEST_JOBS), so a few shards
+          # on 32-core runners cover it quickly.
+          - name: optimizer 1/5
+            kind: optimizer
+            shard_index: 0
+            shard_count: 5
+          - name: optimizer 2/5
+            kind: optimizer
+            shard_index: 1
+            shard_count: 5
+          - name: optimizer 3/5
+            kind: optimizer
+            shard_index: 2
+            shard_count: 5
+          - name: optimizer 4/5
+            kind: optimizer
+            shard_index: 3
+            shard_count: 5
+          - name: optimizer 5/5
+            kind: optimizer
+            shard_index: 4
+            shard_count: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache dependency builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake/packages/yul-semantics/.lake/build
+            .lake/packages/evm_semantics/.lake/build
+          key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+
+      # Restore the library build produced once by the `build` job so the
       # `lake build` below is a trace-check no-op instead of a full recompile.
       - name: Restore compiled library build
         uses: actions/download-artifact@v4
@@ -244,11 +270,6 @@ jobs:
           test: "false"
           lint: "false"
 
-      # The Solidity gas runner is a native executable (not `lean --run`):
-      # compiling large real-world contracts recurses past the interpreter stack.
-      - name: Build Solidity gas runner
-        run: lake build checkSolidityGas
-
       - name: Cache pinned svm and solc
         uses: actions/cache@v4
         with:
@@ -271,41 +292,29 @@ jobs:
           test -x "$solc_path"
           echo "SOLC_PATH=$solc_path" >> "$GITHUB_ENV"
 
-      - name: Fetch Solidity compiler corpora
+      - name: Fetch Solidity Yul corpora
         run: |
           git clone --depth 1 --filter=blob:none --sparse --branch develop \
             https://github.com/argotorg/solidity.git /tmp/solidity
           git -C /tmp/solidity sparse-checkout set \
             test/libyul/yulOptimizerTests \
             test/libyul/objectCompiler \
-            test/libyul/evmCodeTransform \
-            test/libsolidity/gasTests \
-            test/libsolidity/semanticTests
+            test/libyul/evmCodeTransform
 
-      # The same run checks behavior AND gas: each differential invocation also
-      # takes a per-suite gas baseline and fails if this compiler's total gas
-      # for a fixture rises above its pinned figure while solc's is unchanged.
-      # Re-pin with scripts/update-gas.sh after an intended codegen or solc change.
+      # Behavior AND gas for the Yul corpora: each differential invocation also
+      # takes a per-suite gas baseline and fails if this compiler's total gas for
+      # a fixture rises above its pinned figure while solc's is unchanged. Re-pin
+      # with scripts/update-gas.sh after an intended codegen or solc change.
       - name: Differentially execute against solc
         run: |
           if [[ "${{ matrix.kind }}" == "optimizer" ]]; then
-            status=0
             lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
               optimizer \
               /tmp/solidity/test/libyul/yulOptimizerTests \
               test/solidity-yul-optimizer-known-solc-differential-failures.txt \
               test/solidity-yul-optimizer-gas-baseline.txt \
               "$SOLC_PATH" "$SOLC_VERSION" \
-              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}" || status=1
-            # Real-world contracts: gas-compare the compilable subset of
-            # semanticTests (lenient), sharded across the optimizer legs.
-            ulimit -s unlimited || true
-            .lake/build/bin/checkSolidityGas \
-              /tmp/solidity/test/libsolidity/semanticTests \
-              test/solidity-semantic-gas-baseline.txt \
-              "$SOLC_PATH" "$SOLC_VERSION" \
-              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}" --lenient || status=1
-            exit "$status"
+              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}"
           else
             status=0
             lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
@@ -323,14 +332,97 @@ jobs:
             exit "$status"
           fi
 
-      # Solidity gasTests: compile each contract through solc's --via-ir pipeline
-      # with the Yul optimizer on, then gas-compare the optimized runtime against
-      # solc's. Fails if a contract stops compiling or its gas rises above the pin.
-      - name: Compile and gas-check Solidity gasTests
-        if: matrix.kind == 'direct'
+  solidity-gas:
+    name: Solidity gas (${{ matrix.name }})
+    needs: gas-runner
+    runs-on: warp-ubuntu-2404-x64-32x
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Curated gasTests: strict (every contract must compile). Small corpus,
+          # one leg.
+          - name: gasTests
+            kind: gasTests
+            shard_index: 0
+            shard_count: 1
+          # semanticTests: the large real-world corpus, lenient, sharded across
+          # legs; each leg runs its shard across all cores (TEST_JOBS).
+          - name: semanticTests 1/3
+            kind: semantic
+            shard_index: 0
+            shard_count: 3
+          - name: semanticTests 2/3
+            kind: semantic
+            shard_index: 1
+            shard_count: 3
+          - name: semanticTests 3/3
+            kind: semantic
+            shard_index: 2
+            shard_count: 3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The gas runner is a statically linked native binary, so no Lean toolchain
+      # is needed here — just the binary and solc.
+      - name: Restore gas runner binary
+        uses: actions/download-artifact@v4
+        with:
+          name: gas-runner-bin
+          path: .lake/build/bin
+      - name: Make gas runner executable
+        run: chmod +x .lake/build/bin/checkSolidityGas
+
+      - name: Cache pinned svm and solc
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/svm
+            ~/.cargo/bin/solc
+            ~/.local/share/svm/${{ env.SOLC_VERSION }}
+          key: svm-${{ runner.os }}-${{ runner.arch }}-${{ env.SVM_VERSION }}-solc-${{ env.SOLC_VERSION }}
+
+      - name: Install pinned solc with svm
+        run: |
+          if ! command -v svm >/dev/null 2>&1 || \
+              ! svm --version | grep -q "^svm $SVM_VERSION "; then
+            cargo install svm-rs --locked --version "$SVM_VERSION" --force
+          fi
+          if ! svm which "$SOLC_VERSION" >/dev/null 2>&1; then
+            svm install "$SOLC_VERSION"
+          fi
+          solc_path="$(svm which "$SOLC_VERSION")"
+          test -x "$solc_path"
+          echo "SOLC_PATH=$solc_path" >> "$GITHUB_ENV"
+
+      - name: Fetch Solidity gas corpora
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse --branch develop \
+            https://github.com/argotorg/solidity.git /tmp/solidity
+          if [[ "${{ matrix.kind }}" == "gasTests" ]]; then
+            git -C /tmp/solidity sparse-checkout set test/libsolidity/gasTests
+          else
+            git -C /tmp/solidity sparse-checkout set test/libsolidity/semanticTests
+          fi
+
+      # Compile each contract through solc's --via-ir pipeline and gas-compare the
+      # optimized runtime against solc's; fails if a contract stops compiling or
+      # its gas rises above the pin. gasTests is strict; semanticTests is lenient
+      # (real-world corpus with many unsupported features) and sharded.
+      - name: Compile and gas-check Solidity contracts
         run: |
           ulimit -s unlimited || true
-          .lake/build/bin/checkSolidityGas \
-            /tmp/solidity/test/libsolidity/gasTests \
-            test/solidity-gas-baseline.txt \
-            "$SOLC_PATH" "$SOLC_VERSION"
+          if [[ "${{ matrix.kind }}" == "gasTests" ]]; then
+            .lake/build/bin/checkSolidityGas \
+              /tmp/solidity/test/libsolidity/gasTests \
+              test/solidity-gas-baseline.txt \
+              "$SOLC_PATH" "$SOLC_VERSION"
+          else
+            .lake/build/bin/checkSolidityGas \
+              /tmp/solidity/test/libsolidity/semanticTests \
+              test/solidity-semantic-gas-baseline.txt \
+              "$SOLC_PATH" "$SOLC_VERSION" \
+              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}" --lenient
+          fi
