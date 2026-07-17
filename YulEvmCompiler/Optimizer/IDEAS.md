@@ -119,6 +119,30 @@ Gas (real Solidity contracts, `checkSolidityGas`): `libsolidity/semanticTests`
 `Pass.optimizeTopCode` + `Pass.optimizeTop_compileObject_correct` remain as an
 alternative single-object theorem for the offset-free/leaf fragment.
 
+### 🚧 Constant control-flow folding — IN PROGRESS (`agent/optimizer-control-flow`)
+
+Extend `Simplify` with bottom-up folding of control flow whose condition becomes
+literal after expression simplification:
+
+- `if 0 { body }` → an empty block;
+- `if <nonzero literal> { body }` → `body` as a block; and
+- `switch <literal> ...` → the selected case/default as a block.
+
+This removes the condition dispatch and, more importantly, all unreachable
+branch bytecode.  It is distinct from the copy-propagation/dead-`let` work in
+PR #52 and directly targets existing constant-control-flow fixtures in the Yul
+optimizer and EVM code-transform gas suites.
+
+Soundness is local and exact: invert the source `if`/`switch` big-step rule,
+use literal evaluation to rule out the untaken `if` arm or fix the switch value,
+and reconstruct the chosen block execution in both directions.  These local
+equivalences compose after the existing expression/body congruences, including
+the function-environment relation for rewritten function bodies.  The object
+path additionally uses the structural fact that resolving a selected switch
+block equals selecting from the resolved cases; this preserves
+`resolveSimplifyBlock_equiv`, so the existing whole-tree object correctness
+theorem continues to cover both deploy and runtime code.
+
 ## The layout-coupling (why the end-to-end object theorem is subtle)
 
 `planObject` derives every sub-object/data **offset** from the top code block's
