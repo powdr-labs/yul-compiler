@@ -174,7 +174,7 @@ be handled by well-founded recursion, `funDef` needs a function-env relation). -
 def dceStmt : Stmt Op → Stmt Op
   | .block body => .block (dceStmts body)
   | .cond c body => .cond c (dceStmts body)
-  | .forLoop init c post body => .forLoop init c (dceStmts post) (dceStmts body)
+  | .forLoop init c post body => .forLoop init c post body
   | .funDef n ps rs body => .funDef n ps rs body
   | .switch c cases dflt => .switch c cases dflt
   | .letDecl xs val => .letDecl xs val
@@ -204,9 +204,7 @@ theorem dceStmt_mentions {x : Ident} : ∀ {s : Stmt Op}, stmtMentions x s = fal
       simp only [dceStmt, stmtMentions, Bool.or_eq_false_iff] at h ⊢
       exact ⟨h.1, dceStmts_mentions h.2⟩
   | .switch _ _ _, h => h
-  | .forLoop _ _ _ _, h => by
-      simp only [dceStmt, stmtMentions, Bool.or_eq_false_iff] at h ⊢
-      exact ⟨⟨⟨h.1.1.1, h.1.1.2⟩, dceStmts_mentions h.1.2⟩, dceStmts_mentions h.2⟩
+  | .forLoop _ _ _ _, h => h
   | .letDecl _ _, h => h
   | .assign _ _, h => h
   | .exprStmt _, h => h
@@ -345,7 +343,7 @@ theorem dceStmt_scoped {Γ} : ∀ {s : Stmt Op}, ScopedStmt Γ s → ScopedStmt 
   | .funDef _ _ _ _, h => h
   | .cond _ _, h => ⟨h.1, dceStmts_scoped h.2⟩
   | .switch _ _ _, h => h
-  | .forLoop _ _ _ _, h => ⟨h.1, h.2.1, dceStmts_scoped h.2.2.1, dceStmts_scoped h.2.2.2⟩
+  | .forLoop _ _ _ _, h => h
   | .letDecl _ _, h => h
   | .assign _ _, h => h
   | .exprStmt _, h => h
@@ -414,5 +412,143 @@ theorem restore_insAt_eq {d x w} {V1 V2 : VEnv D} (h : InsAt d x w V1 V2) {base 
       simp only [List.length_append, List.length_cons, List.length_nil]; omega]
     exact drop_append_len (A ++ [(x, w)]) B
   rw [g1, g2]
+
+/-! ### Simulation helpers -/
+
+/-- A side-effect-free expression leaves the state unchanged. -/
+theorem sef_eval_inv {e : Expr Op} {funs : FunEnv D} {V st vals st1}
+    (hsef : SideEffectFree e = true)
+    (h : Step D funs V st (.expr e) (.eres (.vals vals st1))) : st1 = st := by
+  cases e with
+  | lit l => cases h; rfl
+  | var y => cases h; rfl
+  | builtin op args => simp [SideEffectFree] at hsef
+  | call f args => simp [SideEffectFree] at hsef
+
+/-- `dce` leaves function definitions (hence the hoisted function scope) unchanged. -/
+theorem hoist_dceStmts : ∀ (ss : List (Stmt Op)), hoist D (dceStmts ss) = hoist D ss
+  | [] => rfl
+  | s :: rest => by
+      have ih := hoist_dceStmts rest
+      simp only [hoist] at ih ⊢
+      simp only [dceStmts]
+      by_cases hr : removable s rest <;> simp only [hr, if_true, if_false]
+      · cases s with
+        | letDecl vars val => simp only [List.filterMap_cons, ih]
+        | _ => simp [removable] at hr
+      · cases s <;> simp [dceStmt, List.filterMap_cons, ih]
+
+/-! ### The soundness simulation (forward)
+
+Running the dce'd program mirrors the original, up to the dead bindings the block
+`restore` drops. Threaded with the scope→domain invariant so a removed
+initialiser still evaluates. `dceStmt_fwd` gives the *identical* result for a
+single statement (its sub-blocks restore to the same env); `dceStmts_fwd` gives a
+`restore`-equal result for a sequence. -/
+
+mutual
+theorem dceStmt_fwd (s : Stmt Op) {funs : FunEnv D} {Γ V st V1 st1 o}
+    (hsc : ScopedStmt Γ s) (hdom : ∀ y ∈ Γ, y ∈ V.map Prod.fst)
+    (h : Step D funs V st (.stmt s) (.sres V1 st1 o)) :
+    Step D funs V st (.stmt (dceStmt s)) (.sres V1 st1 o) := by
+  cases s with
+  | block body =>
+      cases h with
+      | block hbody =>
+          obtain ⟨Vb', hstep', hres⟩ := dceStmts_fwd body hsc hdom hbody
+          rw [← hoist_dceStmts body] at hstep'
+          simp only [dceStmt]; rw [hres]; exact Step.block hstep'
+  | cond c body =>
+      simp only [dceStmt]
+      cases h with
+      | ifTrue hc hcv hbody =>
+          cases hbody with
+          | block hb =>
+              obtain ⟨Vb', hstep', hres⟩ := dceStmts_fwd body hsc.2 hdom hb
+              rw [← hoist_dceStmts body] at hstep'
+              rw [hres]; exact Step.ifTrue hc hcv (Step.block hstep')
+      | ifFalse hc hcv => exact Step.ifFalse hc hcv
+      | ifHalt hc => exact Step.ifHalt hc
+  | forLoop init c post body => simpa only [dceStmt] using h
+  | funDef n ps rs body => simpa only [dceStmt] using h
+  | switch c cs df => simpa only [dceStmt] using h
+  | letDecl vars val => simpa only [dceStmt] using h
+  | assign vars val => simpa only [dceStmt] using h
+  | exprStmt e => simpa only [dceStmt] using h
+  | «break» => simpa only [dceStmt] using h
+  | «continue» => simpa only [dceStmt] using h
+  | leave => simpa only [dceStmt] using h
+theorem dceStmts_fwd (ss : List (Stmt Op)) {funs : FunEnv D} {Γ V st Vb st' o}
+    (hsc : ScopedStmts Γ ss) (hdom : ∀ y ∈ Γ, y ∈ V.map Prod.fst)
+    (h : Step D funs V st (.stmts ss) (.sres Vb st' o)) :
+    ∃ Vb', Step D funs V st (.stmts (dceStmts ss)) (.sres Vb' st' o) ∧
+      restore V Vb = restore V Vb' := by
+  cases ss with
+  | nil => cases h with | seqNil => exact ⟨V, Step.seqNil, rfl⟩
+  | cons s rest =>
+      by_cases hr : removable s rest
+      · obtain ⟨x, e, rfl, hxr⟩ : ∃ x e, s = .letDecl [x] (some e) ∧
+            (SideEffectFree e && !stmtsMentions x rest) = true := by
+          cases s with
+          | letDecl vars val =>
+              cases vars with
+              | nil => simp [removable] at hr
+              | cons a as => cases as with
+                | cons _ _ => simp [removable] at hr
+                | nil => cases val with
+                  | none => simp [removable] at hr
+                  | some e => exact ⟨a, e, rfl, hr⟩
+          | _ => simp [removable] at hr
+        have hsef : SideEffectFree e = true := by
+          simp only [Bool.and_eq_true, Bool.not_eq_true'] at hxr; exact hxr.1
+        have hxrest : stmtsMentions x rest = false := by
+          simp only [Bool.and_eq_true, Bool.not_eq_true'] at hxr; exact hxr.2
+        simp only [dceStmts, hr, if_true]
+        cases h with
+        | seqCons hlet htail =>
+            cases hlet with
+            | @letVal _ _ _ _ _ vals st1 hexpr hlen =>
+                obtain ⟨w, rfl⟩ : ∃ w, vals = [w] := by
+                  cases vals with
+                  | nil => simp at hlen
+                  | cons w t => cases t with
+                    | nil => exact ⟨w, rfl⟩
+                    | cons _ _ => simp at hlen
+                obtain rfl := sef_eval_inv hsef hexpr
+                have hins : InsAt V.length x w V ((x, w) :: V) := ⟨[], V, rfl, rfl, rfl⟩
+                rw [show ([x].zip [w] ++ V) = (x, w) :: V from by simp] at htail
+                obtain ⟨r1, hstepV, hrel⟩ :=
+                  frameRemove htail hins (by simpa only [codeMentions] using hxrest)
+                obtain ⟨Vr, rfl, hinsr⟩ := hrel.sres_right
+                have hscr : ScopedStmts Γ rest := ScopedStmts_erase (Γ₁ := []) hxrest hsc.2
+                obtain ⟨Vb', htail', hres'⟩ := dceStmts_fwd rest hscr hdom hstepV
+                exact ⟨Vb', htail', (restore_insAt_eq hinsr (base := V) rfl).symm.trans hres'⟩
+        | seqStop hlet hne =>
+            cases hlet with
+            | letVal _ _ => exact absurd rfl hne
+            | letHalt hexpr =>
+                cases e with
+                | lit _ => cases hexpr
+                | var _ => cases hexpr
+                | builtin _ _ => simp [SideEffectFree] at hsef
+                | call _ _ => simp [SideEffectFree] at hsef
+      · simp only [dceStmts, hr, if_false]
+        cases h with
+        | @seqCons _ _ _ _ _ V1 st1 _ _ _ hs htail =>
+            have hs' := dceStmt_fwd s hsc.1 hdom hs
+            have hdom1 : ∀ y ∈ declVars s ++ Γ, y ∈ V1.map Prod.fst := by
+              intro y hy
+              rcases List.mem_append.1 hy with h' | h'
+              · exact stmt_declVars_dom hs h'
+              · exact dom_mono hs (hdom y h')
+            obtain ⟨Vb', htail', hres⟩ := dceStmts_fwd rest hsc.2 hdom1 htail
+            refine ⟨Vb', Step.seqCons hs' htail', ?_⟩
+            have hV1 : V.length ≤ V1.length := venvLen_mono hs rfl
+            have hVb : V1.length ≤ Vb.length := venvLen_mono htail rfl
+            have hVb' : V1.length ≤ Vb'.length := venvLen_mono htail' rfl
+            rw [← restore_restore hV1 hVb, ← restore_restore hV1 hVb', hres]
+        | seqStop hs hne =>
+            exact ⟨_, Step.seqStop (dceStmt_fwd s hsc.1 hdom hs) hne, rfl⟩
+end
 
 end YulEvmCompiler.Optimizer
