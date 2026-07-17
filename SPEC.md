@@ -9,8 +9,8 @@ computed by walking each headline theorem's **statement** (never its proof),
 so the hundreds of preservation lemmas are excluded automatically — what
 remains is exactly the specification vocabulary.
 
-**Audited surface: 89 declarations** \
-relations: 12 · structures: 12 · data defs: 51 · statements: 9 · artifact signatures: 4 \
+**Audited surface: 99 declarations** \
+relations: 20 · structures: 12 · data defs: 53 · statements: 9 · artifact signatures: 4 \
 **External boundary: 153 declarations** across the two pinned semantics.
 
 Axioms are pinned separately in `Checks.lean` (only `propext`,
@@ -24,9 +24,9 @@ coverage never shrinks) is enforced by the differential corpora in CI; see
 flowchart TD
   subgraph audited ["audited this-repo surface — a human signs off on these"]
     S["Headline theorem statements (9)"]
-    R["Match relations & predicates (12)"]
+    R["Match relations & predicates (20)"]
     T["Structures & data types (12)"]
-    D["Data definitions (51)"]
+    D["Data definitions (53)"]
     A["Artifact signatures (4) — type only, bodies free"]
   end
   subgraph external ["trusted ground truth — pinned dependency semantics"]
@@ -49,7 +49,7 @@ The shape of each guarantee. Read these first: the honest scoping lives here.
 
 | declaration | source | hash |
 |---|---|---|
-| `YulEvmCompiler.Optimizer.Pass.optimize_then_compile_correct` | [YulEvmCompiler/Optimizer/Spec/Backend.lean#L30](YulEvmCompiler/Optimizer/Spec/Backend.lean#L30) | `6bb685c2df35a2b3` |
+| `YulEvmCompiler.Optimizer.Pass.optimize_then_compile_correct` | [YulEvmCompiler/Optimizer/Spec/Backend.lean#L30](YulEvmCompiler/Optimizer/Spec/Backend.lean#L30) | `9308d529c11eeb2b` |
 | `YulEvmCompiler.compileObject_consistent` | [YulEvmCompiler/ObjectCompile.lean#L740](YulEvmCompiler/ObjectCompile.lean#L740) | `6772c506631c72d` |
 | `YulEvmCompiler.compileObject_correct` | [YulEvmCompiler/ObjectCompile.lean#L763](YulEvmCompiler/ObjectCompile.lean#L763) | `6c28d636cabfed71` |
 | `YulEvmCompiler.compile_correct` | [YulEvmCompiler/Correctness.lean#L70](YulEvmCompiler/Correctness.lean#L70) | `ec51f1c553a52f8a` |
@@ -72,7 +72,15 @@ How a source state/outcome corresponds to a target state/outcome. The heart of t
 | `YulEvmCompiler.LogEntryMatch` | [YulEvmCompiler/StateRel.lean#L934](YulEvmCompiler/StateRel.lean#L934) | `44220474a51dc6b6` |
 | `YulEvmCompiler.LogsMatch` | [YulEvmCompiler/StateRel.lean#L942](YulEvmCompiler/StateRel.lean#L942) | `6d1d2dd35bc25e39` |
 | `YulEvmCompiler.MemMatch` | [YulEvmCompiler/StateRel.lean#L32](YulEvmCompiler/StateRel.lean#L32) | `e48211ef54b0d862` |
-| `YulEvmCompiler.Optimizer.Sound` | [YulEvmCompiler/Optimizer/Spec/Pass.lean#L64](YulEvmCompiler/Optimizer/Spec/Pass.lean#L64) | `d9d7947b1bb2287` |
+| `YulEvmCompiler.Optimizer.ScopedArgs` | [YulEvmCompiler/Optimizer/Spec/Scoped.lean#L57](YulEvmCompiler/Optimizer/Spec/Scoped.lean#L57) | `cca42bbbb74d8753` |
+| `YulEvmCompiler.Optimizer.ScopedCases` | [YulEvmCompiler/Optimizer/Spec/Scoped.lean#L84](YulEvmCompiler/Optimizer/Spec/Scoped.lean#L84) | `1c8b5a7afb2519e7` |
+| `YulEvmCompiler.Optimizer.ScopedExpr` | [YulEvmCompiler/Optimizer/Spec/Scoped.lean#L51](YulEvmCompiler/Optimizer/Spec/Scoped.lean#L51) | `3195f0a8bbf7c0fc` |
+| `YulEvmCompiler.Optimizer.ScopedOptBlock` | [YulEvmCompiler/Optimizer/Spec/Scoped.lean#L92](YulEvmCompiler/Optimizer/Spec/Scoped.lean#L92) | `211d23fed52ef94c` |
+| `YulEvmCompiler.Optimizer.ScopedOptExpr` | [YulEvmCompiler/Optimizer/Spec/Scoped.lean#L88](YulEvmCompiler/Optimizer/Spec/Scoped.lean#L88) | `4a01a17eca926401` |
+| `YulEvmCompiler.Optimizer.ScopedStmt` | [YulEvmCompiler/Optimizer/Spec/Scoped.lean#L64](YulEvmCompiler/Optimizer/Spec/Scoped.lean#L64) | `4276675c2733cb41` |
+| `YulEvmCompiler.Optimizer.ScopedStmts` | [YulEvmCompiler/Optimizer/Spec/Scoped.lean#L79](YulEvmCompiler/Optimizer/Spec/Scoped.lean#L79) | `3e6662f7eca887f8` |
+| `YulEvmCompiler.Optimizer.Sound` | [YulEvmCompiler/Optimizer/Spec/Pass.lean#L65](YulEvmCompiler/Optimizer/Spec/Pass.lean#L65) | `967f616639434ee` |
+| `YulEvmCompiler.Optimizer.WellScoped` | [YulEvmCompiler/Optimizer/Spec/Scoped.lean#L98](YulEvmCompiler/Optimizer/Spec/Scoped.lean#L98) | `546d947c7f457409` |
 | `YulEvmCompiler.RunResolvedObject` | [YulEvmCompiler/ObjectCompile.lean#L757](YulEvmCompiler/ObjectCompile.lean#L757) | `22471129a83f65e3` |
 | `YulEvmCompiler.SelfdestructEntryMatch` | [YulEvmCompiler/StateRel.lean#L956](YulEvmCompiler/StateRel.lean#L956) | `3b1f6c17c9cc3b3f` |
 | `YulEvmCompiler.SelfdestructsMatch` | [YulEvmCompiler/StateRel.lean#L963](YulEvmCompiler/StateRel.lean#L963) | `8fb6a9b19498848` |
@@ -92,7 +100,7 @@ The vocabulary the guarantee is phrased in.
 | `YulEvmCompiler.ExternalsRealized` | [YulEvmCompiler/LowerDefs.lean#L398](YulEvmCompiler/LowerDefs.lean#L398) | `7fd85ee803561fa8` |
 | `YulEvmCompiler.FrameOK` | [YulEvmCompiler/StateRel.lean#L1240](YulEvmCompiler/StateRel.lean#L1240) | `97dc148ae9bebed5` |
 | `YulEvmCompiler.Instr` | [YulEvmCompiler/Instr.lean#L34](YulEvmCompiler/Instr.lean#L34) | `b8989862a6923efc` |
-| `YulEvmCompiler.Optimizer.Pass` | [YulEvmCompiler/Optimizer/Spec/Pass.lean#L72](YulEvmCompiler/Optimizer/Spec/Pass.lean#L72) | `d101e83e0c45f945` |
+| `YulEvmCompiler.Optimizer.Pass` | [YulEvmCompiler/Optimizer/Spec/Pass.lean#L73](YulEvmCompiler/Optimizer/Spec/Pass.lean#L73) | `c7f69430334b5767` |
 | `YulEvmCompiler.StateMatch` | [YulEvmCompiler/StateRel.lean#L982](YulEvmCompiler/StateRel.lean#L982) | `79c6c401a5fb18ee` |
 | `YulParser.CTok` | [YulParser/Canon.lean#L27](YulParser/Canon.lean#L27) | `f0018424d20ab2ce` |
 | `YulParser.QuotedScan` | [YulParser/Lexer.lean#L63](YulParser/Lexer.lean#L63) | `fda150592f3cfc21` |
@@ -105,6 +113,8 @@ Concrete spec-level functions (outcome maps, canonicalisation, byte assembly).
 |---|---|---|
 | `YulEvmCompiler.Instr.bytes` | [YulEvmCompiler/Instr.lean#L80](YulEvmCompiler/Instr.lean#L80) | `cb67215ba3c17cde` |
 | `YulEvmCompiler.Instr.opByte` | [YulEvmCompiler/Instr.lean#L46](YulEvmCompiler/Instr.lean#L46) | `1063189e226fb3ef` |
+| `YulEvmCompiler.Optimizer.declVars` | [YulEvmCompiler/Optimizer/Spec/Scoped.lean#L38](YulEvmCompiler/Optimizer/Spec/Scoped.lean#L38) | `2d487d30a9e72858` |
+| `YulEvmCompiler.Optimizer.declVarsList` | [YulEvmCompiler/Optimizer/Spec/Scoped.lean#L45](YulEvmCompiler/Optimizer/Spec/Scoped.lean#L45) | `a0e799ae40f0bd07` |
 | `YulEvmCompiler.assemble` | [YulEvmCompiler/Instr.lean#L111](YulEvmCompiler/Instr.lean#L111) | `c1c9c0c9a1ad80c8` |
 | `YulEvmCompiler.assembleBytes` | [YulEvmCompiler/Instr.lean#L99](YulEvmCompiler/Instr.lean#L99) | `29d8e692638cce98` |
 | `YulEvmCompiler.assembleWithPayload` | [YulEvmCompiler/LowerDefs.lean#L142](YulEvmCompiler/LowerDefs.lean#L142) | `55ba5256c2c91c08` |
