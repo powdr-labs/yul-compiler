@@ -237,14 +237,29 @@ the point is a toolkit, not one-off code). All in `Implementation/Frame.lean`,
 → `rest[y↦x]`, block-level soundness via substitution + `frameRemove`/`frameAdd`
 for the dropped binding), wired into the pipeline, gas re-measured.
 
-### ✅ Spec change + dead-`let` DCE (branch `optimizer-dce`, PR #52) — DONE
+### ✅ Dead-`let` DCE (branch `optimizer-dce`, PR #52) — DONE
 
-**The verified `deadCode : Pass` is landed, `sorry`-free, wired into
-`compileSource`.** A well-scoped `let x := e` with `x` unused in the rest of its
-block and `e` side-effect-free (var/lit) is dropped; sound via the whole-program
-simulation (both directions) + the block `restore` erasing the removed binding,
-and scope-preserving. Functional check: `{ let y:=7 let x:=y let z:=5 sstore(0,z) }`
-→ dce drops `let x:=y` (4→3 statements).
+**Verified dead-`let` elimination is landed, `sorry`-free, wired into
+`compileSource`** (after the identity pipeline, both block & object paths). A
+well-scoped `let x := e` with `x` unused in the rest of its block and `e`
+side-effect-free (var/lit) is dropped; sound via the whole-program simulation
+(both directions, `dceStmts_fwd`/`dceStmts_bwd`) + the block `restore` erasing the
+removed binding, and scope-preserving. The soundness is
+`dceStmts_equivBlock : WellScoped b → EquivBlock b (dceStmts b)`, with
+`dceStmts_preservesRun` its whole-program corollary. Functional check:
+`{ let y:=7 let x:=y let z:=5 sstore(0,z) }` → dce drops `let x:=y` (4→3 stmts).
+
+**Merge note (with PR #54).** DCE needs the `WellScoped` precondition, so it is
+*not* a plain `Pass` (whose `Sound` is unconditional). After #54 merged a large
+inline-identity pipeline on the strong `Pass`, unifying everything under a
+`WellScoped`-conditioned `Pass` (adding `preservesScoped` to every pass) proved a
+large yak-shave — #54's passes are well-founded recursions, so their scope- and
+`WellScoped`-preservation cascades through the whole object/resolve theorem stack.
+So DCE ships as a **standalone-proven transform** (`dceStmts_equivBlock` +
+`dceStmts_preservesRun`), with the shared `Pass` kept strong. **Follow-up:**
+weaken `Sound` to `WellScoped` and give `simplify`/`inlineIdentityPass` a
+`preservesScoped` proof (both only shrink read-sets — the shape is `simplify`'s),
+making `deadCode` a first-class composable `Pass`.
 
 Follow-ups (each a bounded extension of the same machinery): recurse into
 `switch` (needs `selectSwitch` via well-founded recursion), `forLoop` bodies
