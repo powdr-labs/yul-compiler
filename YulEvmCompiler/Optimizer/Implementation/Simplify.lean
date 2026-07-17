@@ -523,12 +523,123 @@ theorem blockEquiv (b : List (Stmt Op)) : EquivBlock D b (simplifyStmts b) :=
   EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 b))
     (scopeRel_hoistSimplify b)
 
+/-! ### The pass preserves well-scopedness
+
+`simplify` never introduces a variable read (folding/neutralizing only shrink the
+read-set) and preserves the declaration structure exactly (it leaves `let`/assign
+variable lists and a `for`'s `init` untouched), so it maps well-scoped programs to
+well-scoped programs — the `Pass.scoped` obligation. -/
+
+/-- A scoped argument list scopes each of its members. -/
+theorem ScopedArgs_of_mem {Γ : List Ident} : ∀ {es : List (Expr Op)} {e : Expr Op},
+    ScopedArgs Γ es → e ∈ es → ScopedExpr Γ e := by
+  intro es
+  induction es with
+  | nil => intro e h hmem; simp at hmem
+  | cons a rest ih =>
+      intro e h hmem
+      simp only [List.mem_cons] at hmem
+      rcases hmem with rfl | hmem
+      · exact h.1
+      · exact ih h.2 hmem
+
+/-- A neutral rewrite returns one of its (variable) arguments. -/
+theorem neutral_mem {op : Op} {args : List (Expr Op)} {e : Expr Op}
+    (hn : neutral op args = some e) : e ∈ args := by
+  unfold neutral at hn
+  split at hn <;>
+    first
+      | contradiction
+      | (split_ifs at hn <;>
+          first | contradiction | (obtain rfl := Option.some.inj hn; simp))
+
+/-- The local built-in rewrite preserves scoping (its output reads only what its
+already-scoped arguments read). -/
+theorem simplifyBuiltin_scoped {Γ : List Ident} (op : Op) (args : List (Expr Op))
+    (h : ScopedArgs Γ args) : ScopedExpr Γ (simplifyBuiltin op args) := by
+  unfold simplifyBuiltin
+  split
+  · exact True.intro
+  · cases hn : neutral op args with
+    | none => exact h
+    | some e => exact ScopedArgs_of_mem h (neutral_mem hn)
+
+mutual
+/-- Simplifying an expression preserves scoping. -/
+theorem simplifyExpr_scoped {Γ : List Ident} : ∀ (e : Expr Op),
+    ScopedExpr Γ e → ScopedExpr Γ (simplifyExpr e)
+  | .lit _, h => h
+  | .var _, h => h
+  | .builtin op args, h => simplifyBuiltin_scoped op _ (simplifyArgs_scoped args h)
+  | .call _ args, h => simplifyArgs_scoped args h
+/-- Simplifying an argument list preserves scoping. -/
+theorem simplifyArgs_scoped {Γ : List Ident} : ∀ (es : List (Expr Op)),
+    ScopedArgs Γ es → ScopedArgs Γ (simplifyArgs es)
+  | [], h => h
+  | e :: rest, h => ⟨simplifyExpr_scoped e h.1, simplifyArgs_scoped rest h.2⟩
+end
+
+/-- `simplify` leaves the declared-variable list of every statement unchanged, so
+scope-threading through a sequence is preserved. -/
+theorem simplifyStmt_declVars : ∀ (s : Stmt Op), declVars (simplifyStmt s) = declVars s
+  | .letDecl _ (some _) => rfl
+  | .letDecl _ none => rfl
+  | .block _ => rfl
+  | .funDef _ _ _ _ => rfl
+  | .assign _ _ => rfl
+  | .cond _ _ => rfl
+  | .switch _ _ _ => rfl
+  | .forLoop _ _ _ _ => rfl
+  | .exprStmt _ => rfl
+  | .break => rfl
+  | .continue => rfl
+  | .leave => rfl
+
+mutual
+/-- Simplifying a statement preserves scoping. -/
+theorem simplifyStmt_scoped {Γ : List Ident} : ∀ (s : Stmt Op),
+    ScopedStmt Γ s → ScopedStmt Γ (simplifyStmt s)
+  | .block body, h => simplifyStmts_scoped body h
+  | .funDef _ _ _ body, h => simplifyStmts_scoped body h
+  | .letDecl _ (some e), h => simplifyExpr_scoped e h
+  | .letDecl _ none, h => h
+  | .assign _ e, h => ⟨h.1, simplifyExpr_scoped e h.2⟩
+  | .cond c body, h => ⟨simplifyExpr_scoped c h.1, simplifyStmts_scoped body h.2⟩
+  | .switch c cases dflt, h =>
+      ⟨simplifyExpr_scoped c h.1, simplifyCases_scoped cases h.2.1, simplifyDflt_scoped dflt h.2.2⟩
+  | .forLoop init c post body, h =>
+      ⟨h.1, simplifyExpr_scoped c h.2.1, simplifyStmts_scoped post h.2.2.1,
+        simplifyStmts_scoped body h.2.2.2⟩
+  | .exprStmt e, h => simplifyExpr_scoped e h
+  | .break, h => h
+  | .continue, h => h
+  | .leave, h => h
+/-- Simplifying a statement sequence preserves scoping. -/
+theorem simplifyStmts_scoped {Γ : List Ident} : ∀ (ss : List (Stmt Op)),
+    ScopedStmts Γ ss → ScopedStmts Γ (simplifyStmts ss)
+  | [], h => h
+  | s :: rest, h =>
+      ⟨simplifyStmt_scoped s h.1, by
+        rw [simplifyStmt_declVars]; exact simplifyStmts_scoped rest h.2⟩
+/-- Simplifying `switch` cases preserves scoping. -/
+theorem simplifyCases_scoped {Γ : List Ident} : ∀ (cs : List (Literal × Block Op)),
+    ScopedCases Γ cs → ScopedCases Γ (simplifyCases cs)
+  | [], h => h
+  | (_, b) :: rest, h => ⟨simplifyStmts_scoped b h.1, simplifyCases_scoped rest h.2⟩
+/-- Simplifying a `switch` default preserves scoping. -/
+theorem simplifyDflt_scoped {Γ : List Ident} : ∀ (dflt : Option (Block Op)),
+    ScopedOptBlock Γ dflt → ScopedOptBlock Γ (simplifyDflt dflt)
+  | none, h => h
+  | some b, h => simplifyStmts_scoped b h
+end
+
 /-- The **Simplify pass**: constant folding + neutral-element identities over the
 whole program (including function bodies; only a `for`-loop's `init` is left
-untouched), bundled with its soundness proof. -/
+untouched), bundled with its soundness and scope-preservation proofs. -/
 def simplify : Pass D where
   run := simplifyStmts
-  sound := blockEquiv
+  sound := fun b _ => blockEquiv b
+  preservesScoped := fun b hb => simplifyStmts_scoped b hb
 
 /-! ### Optimizing a whole object tree
 

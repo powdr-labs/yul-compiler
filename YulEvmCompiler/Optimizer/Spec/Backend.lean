@@ -40,6 +40,7 @@ the end-to-end statement that optimizing before compiling is correct. -/
 theorem Pass.optimize_then_compile_correct
     (P : Pass yulD) (hexternal : ExternalsRealized model)
     {prog : Block Op} {is : List Instr}
+    (hscoped : WellScoped prog)
     (hcomp : compile (P.run prog) = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
     (hrun : Run yulD prog yst0 V' yst' o) :
@@ -49,6 +50,6 @@ theorem Pass.optimize_then_compile_correct
       ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst' s' ∧
         ((o = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
          (o = .halt ∧ HaltedMatch yst' s')) :=
-  compile_correct hexternal hcomp (P.run_optimized hrun)
+  compile_correct hexternal hcomp (P.run_optimized hscoped hrun)
 
 end YulEvmCompiler.Optimizer
