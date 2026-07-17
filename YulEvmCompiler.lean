@@ -23,3 +23,4 @@ import YulEvmCompiler.Optimizer.Implementation.Simplify
 import YulEvmCompiler.Optimizer.Implementation.ResolveCongr
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
 import YulEvmCompiler.Optimizer.Implementation.Frame
+import YulEvmCompiler.Optimizer.Implementation.DeadCode
