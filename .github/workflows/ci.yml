@@ -244,6 +244,11 @@ jobs:
           test: "false"
           lint: "false"
 
+      # The Solidity gas runner is a native executable (not `lean --run`):
+      # compiling large real-world contracts recurses past the interpreter stack.
+      - name: Build Solidity gas runner
+        run: lake build checkSolidityGas
+
       - name: Cache pinned svm and solc
         uses: actions/cache@v4
         with:
@@ -274,7 +279,8 @@ jobs:
             test/libyul/yulOptimizerTests \
             test/libyul/objectCompiler \
             test/libyul/evmCodeTransform \
-            test/libsolidity/gasTests
+            test/libsolidity/gasTests \
+            test/libsolidity/semanticTests
 
       # The same run checks behavior AND gas: each differential invocation also
       # takes a per-suite gas baseline and fails if this compiler's total gas
@@ -283,13 +289,23 @@ jobs:
       - name: Differentially execute against solc
         run: |
           if [[ "${{ matrix.kind }}" == "optimizer" ]]; then
+            status=0
             lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
               optimizer \
               /tmp/solidity/test/libyul/yulOptimizerTests \
               test/solidity-yul-optimizer-known-solc-differential-failures.txt \
               test/solidity-yul-optimizer-gas-baseline.txt \
               "$SOLC_PATH" "$SOLC_VERSION" \
-              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}"
+              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}" || status=1
+            # Real-world contracts: gas-compare the compilable subset of
+            # semanticTests (lenient), sharded across the optimizer legs.
+            ulimit -s unlimited || true
+            .lake/build/bin/checkSolidityGas \
+              /tmp/solidity/test/libsolidity/semanticTests \
+              test/solidity-semantic-gas-baseline.txt \
+              "$SOLC_PATH" "$SOLC_VERSION" \
+              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}" --lenient || status=1
+            exit "$status"
           else
             status=0
             lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
@@ -313,7 +329,8 @@ jobs:
       - name: Compile and gas-check Solidity gasTests
         if: matrix.kind == 'direct'
         run: |
-          lake env lean --run scripts/CheckSolidityGas.lean \
+          ulimit -s unlimited || true
+          .lake/build/bin/checkSolidityGas \
             /tmp/solidity/test/libsolidity/gasTests \
             test/solidity-gas-baseline.txt \
             "$SOLC_PATH" "$SOLC_VERSION"

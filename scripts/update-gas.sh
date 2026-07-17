@@ -51,12 +51,24 @@ for entry in "${suites[@]}"; do
     "$solc_path" "$SOLC_VERSION"
 done
 
+# The Solidity gas runner is a native executable (large contracts recurse past
+# the interpreter stack); raise the OS stack for the deepest ones.
+lake build checkSolidityGas
+ulimit -s unlimited || true
+
 echo "==> Re-measuring Solidity gasTests (compile via --via-ir, optimized runtime)"
-lake env lean --run scripts/CheckSolidityGas.lean \
+.lake/build/bin/checkSolidityGas \
   "$SOLIDITY_DIR/test/libsolidity/gasTests" \
   test/solidity-gas-baseline.txt \
   "$solc_path" "$SOLC_VERSION" --update
 
+echo "==> Re-measuring Solidity semanticTests (compilable subset, lenient)"
+.lake/build/bin/checkSolidityGas \
+  "$SOLIDITY_DIR/test/libsolidity/semanticTests" \
+  test/solidity-semantic-gas-baseline.txt \
+  "$solc_path" "$SOLC_VERSION" --lenient --update
+
 echo
 echo "==> Done. Review the diff — this is the review artifact:"
-git --no-pager diff --stat -- 'test/solidity-yul-*-gas-baseline.txt' test/solidity-gas-baseline.txt
+git --no-pager diff --stat -- 'test/solidity-yul-*-gas-baseline.txt' \
+  test/solidity-gas-baseline.txt test/solidity-semantic-gas-baseline.txt
