@@ -146,11 +146,41 @@ the pass *after* resolution and recompute `codeSize` from its output (breaks the
 current fixed-width-`PUSH32` layout fixpoint for offset-sensitive passes). This is
 the real object-path frontier.
 
+### 🚧 `CopyProp` + `DeadCode` (`Implementation/Frame.lean`, +Subst) — IN PROGRESS (branch `optimizer-dce`)
+**Copy propagation of single-use `let` temporaries + dead-`let`/dead-code
+elimination.** Data-driven target: solc's unoptimized `--via-ir` runtime IR is
+dominated by single-assignment `let` temporaries — e.g. dispatch_large's runtime
+has 315 `let`s of which **82 are var→var copies** (`let x := y`) and 62 are
+const-lets; abiv2 has 25 copies. These are the bulk of the redundancy.
+
+Honest gas ceiling: each eliminated copy saves ~one `DUP`+`POP` (~5 gas) in our
+codegen, so ≈0.2–0.5% on dispatch-heavy contracts (more inside hot loops). The
+big gaps vs solc are codegen/algorithmic, not local rewrites — this is the best
+*provable-local* lever, labeled honestly.
+
+**Reusable rewrite-proof tooling being built** (usable by any future
+env-dependent pass — the point is a toolkit, not one-off code):
+- `Implementation/Frame.lean`: `mentions`/`stmtMentions` free-variable analysis;
+  the VEnv **insertion relation** `Ins x v V1 V2` (`V2` is `V1` with one fresh
+  binding spliced in) with preservation lemmas `Ins.get_ne`/`Ins.set`/
+  `Ins.prepend`/`Ins.length` and `VEnv.set_keys`. **Done.**
+- *Next*: a VEnv **length-monotonicity** lemma (the invariant the semantics leaves
+  implicit — `restore`'s docstring notes it but proves nothing), then the **frame
+  lemma** (an unmentioned binding survives `restore`), then a **substitution**
+  lemma (`var y ↦ var x` preserves semantics under `V.get y = V.get x`).
+- These join `FunCongr` (function-env congruence) and `ResolveCongr` (resolution
+  congruence) as the reusable meta-theory layer for optimizer soundness.
+
+Then: `deadLet` (drop `let x := <pure e>` with `x` unmentioned; via frame lemma)
+and `copyProp` (`let y := x; rest` → `subst y x rest`; via substitution + frame),
+wired into the pipeline, gas re-measured.
+
 ## Candidate next ideas (not started)
 
 - **`for`-loop `init`**: a `for`-specific congruence to simplify `init` too.
-- **Higher-impact passes**: dead/unused-`let` elimination, redundant `pop`/store
-  elimination, branch/switch folding, common-subexpression elimination.
+- **Higher-impact passes**: redundant `pop`/store elimination, branch/switch
+  folding, common-subexpression elimination, trivial-function inlining
+  (`cleanup_*` identity helpers, via `FunCongr`).
 - **Dead `pop`/unused `let` elimination**: remove `let x := <pure e>` when `x`
   is never used and `e` is side-effect-free; drop `pop(<pure e>)`.
 - **`iszero(iszero(x))` in boolean position** → `x` when the value is only used
