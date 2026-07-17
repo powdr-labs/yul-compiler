@@ -644,4 +644,33 @@ theorem dceStmts_bwd (ss : List (Stmt Op)) {funs : FunEnv D} {Γ V st Vb' st' o}
             exact ⟨_, Step.seqStop (dceStmt_bwd s hsc.1 hdom hs) hne, rfl⟩
 end
 
+/-! ### The pass -/
+
+/-- A well-scoped block is `EquivBlock`-equivalent to its dead-`let`-eliminated
+form: the block `restore` erases the removed bindings, and the two simulations
+give both implications. -/
+theorem dceStmts_equivBlock (b : Block Op) (hb : WellScoped b) :
+    EquivBlock D b (dceStmts b) := by
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    cases h with
+    | block hbody =>
+        obtain ⟨Vb', hstep', hres⟩ := dceStmts_fwd b hb (by simp) hbody
+        rw [← hoist_dceStmts b] at hstep'
+        rw [hres]; exact Step.block hstep'
+  · intro h
+    cases h with
+    | block hbody =>
+        obtain ⟨Vb, horig, hres⟩ := dceStmts_bwd b hb (by simp) hbody
+        rw [hoist_dceStmts b] at horig
+        rw [← hres]; exact Step.block horig
+
+/-- **The dead-code-elimination pass**: drops side-effect-free dead `let`s, sound
+on well-scoped programs and scope-preserving. -/
+def deadCode : Pass D where
+  run := dceStmts
+  sound := fun b hb => dceStmts_equivBlock b hb
+  preservesScoped := fun _ hb => dceStmts_scoped hb
+
 end YulEvmCompiler.Optimizer
