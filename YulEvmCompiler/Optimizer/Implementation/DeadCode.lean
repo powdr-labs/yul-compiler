@@ -159,6 +159,12 @@ whose `e` is side-effect-free, recursing into every nested block / function body
 loop so dead temporaries inside functions are removed too. It leaves all other
 structure — including declared-variable lists and `for`-loop `init` — intact. -/
 
+/-- Is `s` a removable dead `let` at the head of `rest`: a single-variable,
+side-effect-free initialiser whose variable is unused in `rest`? -/
+def removable : Stmt Op → List (Stmt Op) → Bool
+  | .letDecl [x] (some e), rest => SideEffectFree e && !stmtsMentions x rest
+  | _, _ => false
+
 mutual
 /-- Remove dead `let`s inside a single statement's sub-blocks. -/
 def dceStmt : Stmt Op → Stmt Op
@@ -173,14 +179,11 @@ def dceStmt : Stmt Op → Stmt Op
   | .«break» => .«break»
   | .«continue» => .«continue»
   | .leave => .leave
-/-- Remove dead `let`s from a statement sequence (dropping a dead one at the head,
+/-- Remove dead `let`s from a statement sequence (dropping a removable head,
 otherwise recursing into the statement and the tail). -/
 def dceStmts : List (Stmt Op) → List (Stmt Op)
   | [] => []
-  | .letDecl [x] (some e) :: rest =>
-      if SideEffectFree e && !stmtsMentions x rest then dceStmts rest
-      else .letDecl [x] (some e) :: dceStmts rest
-  | s :: rest => dceStmt s :: dceStmts rest
+  | s :: rest => if removable s rest then dceStmts rest else dceStmt s :: dceStmts rest
 /-- Remove dead `let`s from each `switch` case body. -/
 def dceCases : List (Literal × List (Stmt Op)) → List (Literal × List (Stmt Op))
   | [] => []
@@ -189,6 +192,58 @@ def dceCases : List (Literal × List (Stmt Op)) → List (Literal × List (Stmt 
 def dceDflt : Option (List (Stmt Op)) → Option (List (Stmt Op))
   | none => none
   | some b => some (dceStmts b)
+end
+
+/-! ### `dce` never introduces a mention
+
+The transformation only deletes statements and recurses, so a variable unmentioned
+by `ss` stays unmentioned by `dceStmts ss`. -/
+
+mutual
+theorem dceStmt_mentions {x : Ident} : ∀ {s : Stmt Op}, stmtMentions x s = false →
+    stmtMentions x (dceStmt s) = false
+  | .block _, h => by simpa only [dceStmt, stmtMentions] using dceStmts_mentions (by simpa only [stmtMentions] using h)
+  | .funDef _ ps rs _, h => by
+      simp only [dceStmt, stmtMentions, Bool.or_eq_false_iff] at h ⊢
+      exact ⟨h.1, dceStmts_mentions h.2⟩
+  | .cond _ _, h => by
+      simp only [dceStmt, stmtMentions, Bool.or_eq_false_iff] at h ⊢
+      exact ⟨h.1, dceStmts_mentions h.2⟩
+  | .switch _ _ _, h => by
+      simp only [dceStmt, stmtMentions, Bool.or_eq_false_iff] at h ⊢
+      exact ⟨⟨h.1.1, dceCases_mentions h.1.2⟩, dceDflt_mentions h.2⟩
+  | .forLoop _ _ _ _, h => by
+      simp only [dceStmt, stmtMentions, Bool.or_eq_false_iff] at h ⊢
+      exact ⟨⟨⟨dceStmts_mentions h.1.1.1, h.1.1.2⟩, dceStmts_mentions h.1.2⟩,
+        dceStmts_mentions h.2⟩
+  | .letDecl _ _, h => h
+  | .assign _ _, h => h
+  | .exprStmt _, h => h
+  | .«break», h => h
+  | .«continue», h => h
+  | .leave, h => h
+theorem dceStmts_mentions {x : Ident} : ∀ {ss : List (Stmt Op)}, stmtsMentions x ss = false →
+    stmtsMentions x (dceStmts ss) = false
+  | [], h => h
+  | s :: rest, h => by
+      have hs : stmtMentions x s = false ∧ stmtsMentions x rest = false := by
+        simpa only [stmtsMentions, Bool.or_eq_false_iff] using h
+      simp only [dceStmts]
+      split
+      · exact dceStmts_mentions hs.2
+      · simp only [stmtsMentions, Bool.or_eq_false_iff]
+        exact ⟨dceStmt_mentions hs.1, dceStmts_mentions hs.2⟩
+theorem dceCases_mentions {x : Ident} : ∀ {cs : List (Literal × List (Stmt Op))},
+    casesMentions x cs = false → casesMentions x (dceCases cs) = false
+  | [], h => h
+  | (_, _) :: rest, h => by
+      simp only [casesMentions, Bool.or_eq_false_iff] at h
+      simp only [dceCases, casesMentions, Bool.or_eq_false_iff]
+      exact ⟨dceStmts_mentions h.1, dceCases_mentions h.2⟩
+theorem dceDflt_mentions {x : Ident} : ∀ {dflt : Option (List (Stmt Op))},
+    optBlockMentions x dflt = false → optBlockMentions x (dceDflt dflt) = false
+  | none, h => h
+  | some _, h => by simpa only [dceDflt, optBlockMentions] using dceStmts_mentions (by simpa only [optBlockMentions] using h)
 end
 
 end YulEvmCompiler.Optimizer
