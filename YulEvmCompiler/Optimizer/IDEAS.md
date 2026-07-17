@@ -158,22 +158,51 @@ codegen, so ≈0.2–0.5% on dispatch-heavy contracts (more inside hot loops). T
 big gaps vs solc are codegen/algorithmic, not local rewrites — this is the best
 *provable-local* lever, labeled honestly.
 
-**Reusable rewrite-proof tooling being built** (usable by any future
-env-dependent pass — the point is a toolkit, not one-off code):
-- `Implementation/Frame.lean`: `mentions`/`stmtMentions` free-variable analysis;
-  the VEnv **insertion relation** `Ins x v V1 V2` (`V2` is `V1` with one fresh
-  binding spliced in) with preservation lemmas `Ins.get_ne`/`Ins.set`/
-  `Ins.prepend`/`Ins.length` and `VEnv.set_keys`. **Done.**
-- *Next*: a VEnv **length-monotonicity** lemma (the invariant the semantics leaves
-  implicit — `restore`'s docstring notes it but proves nothing), then the **frame
-  lemma** (an unmentioned binding survives `restore`), then a **substitution**
-  lemma (`var y ↦ var x` preserves semantics under `V.get y = V.get x`).
-- These join `FunCongr` (function-env congruence) and `ResolveCongr` (resolution
-  congruence) as the reusable meta-theory layer for optimizer soundness.
+**Reusable rewrite-proof tooling** (usable by any future env-dependent pass —
+the point is a toolkit, not one-off code). All in `Implementation/Frame.lean`,
+`sorry`-free:
+- `mentions`/`stmtMentions`/`codeMentions` free-variable analysis (with the
+  `optExprMentions`/`optBlockMentions` helpers — inline `match`es in a def break
+  kernel-checking of `simp`-rewritten hypotheses inside big inductions).
+- The VEnv **insertion relation** `InsAt d x v V1 V2` (`V2` is `V1` with `(x,v)`
+  spliced in at depth `d = |below|`), with `get_ne`/`set`/`setMany`/`prepend`/
+  `length`/`restore` preservation lemmas. **Depth-indexing is essential**: the
+  general existential splice loses the depth needed for the `restore` case;
+  fixing `d` makes `restore` drop the same prefix on both sides. **No freshness
+  of `x` in `V1`** is required (unmentioned code never touches `x`, so the insert
+  is invisible even when shadowing) — which is what lets a rewrite stay sound
+  with no no-shadowing precondition. **Done.**
+- `venvLen_mono` (env never shrinks — the invariant the semantics leaves implicit
+  in `restore`'s docstring) and `restore_length`. **Done.**
+- The **frame lemma, both directions**: `frameAdd`/`frameRemove` — running
+  `x`-unmentioned `code` from `V1` vs from `V2` (`= V1 + (x,v)`) stays in
+  lock-step (`eres` equal, `sres` `InsAt d`-related, `restore` aligned). Full
+  35-case inductions over `Step`. **Done.**
+- These join `FunCongr` and `ResolveCongr` as the reusable meta-theory layer.
 
-Then: `deadLet` (drop `let x := <pure e>` with `x` unmentioned; via frame lemma)
-and `copyProp` (`let y := x; rest` → `subst y x rest`; via substitution + frame),
-wired into the pipeline, gas re-measured.
+**Soundness constraint discovered (shapes the pass design).** `EquivBlock` is
+*pointwise on the raw `VEnv`*, so:
+1. Any binding-*removing* transform (dead-`let`, copy-prop-then-drop) is
+   **block-level only** — it changes the statement-sequence's output env, so it is
+   *not* an `EquivStmts` congruence; it only becomes an equivalence after the
+   block's `restore` drops the extra binding. Proofs go through `EquivBlock`
+   (= `EquivStmt (.block ·)`), not `EquivStmts.cons_congr`.
+2. Removing `let x := e` is **unsound when `e` can get stuck** (e.g. `e = var y`
+   with `y ∉ V`): the equivalence quantifies over *all* `V`, including ill-scoped
+   ones, where the original is stuck but the reduced program runs — breaking the
+   `↔`. Only *always-evaluable* `e` (literals, closed total builtins) is
+   unconditionally droppable — which is rare in solc output, so low gas.
+3. The **gas-relevant** transform is therefore **copy-propagation with
+   substitution**: `let y := x; rest` → `rest[y↦x]`. This is sound because the
+   substituted `rest` *reads `x` exactly where the `let` did*, so stuck-ness is
+   preserved. It needs a **variable-substitution lemma** (`rest[y↦x]` preserves
+   semantics while the aliasing invariant `V.get y = V.get x` holds and neither
+   `y` nor `x` is reassigned/reshadowed), on top of the frame lemma for the
+   block-level `restore`.
+
+**Next**: the substitution lemma, then the `copyProp` pass (`let y := x; rest`
+→ `rest[y↦x]`, block-level soundness via substitution + `frameRemove`/`frameAdd`
+for the dropped binding), wired into the pipeline, gas re-measured.
 
 ## Candidate next ideas (not started)
 
