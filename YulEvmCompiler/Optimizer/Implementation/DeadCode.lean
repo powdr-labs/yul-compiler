@@ -172,7 +172,7 @@ def dceStmt : Stmt Op → Stmt Op
   | .funDef n ps rs body => .funDef n ps rs (dceStmts body)
   | .cond c body => .cond c (dceStmts body)
   | .switch c cases dflt => .switch c (dceCases cases) (dceDflt dflt)
-  | .forLoop init c post body => .forLoop (dceStmts init) c (dceStmts post) (dceStmts body)
+  | .forLoop init c post body => .forLoop init c (dceStmts post) (dceStmts body)
   | .letDecl xs val => .letDecl xs val
   | .assign xs val => .assign xs val
   | .exprStmt e => .exprStmt e
@@ -214,8 +214,7 @@ theorem dceStmt_mentions {x : Ident} : ∀ {s : Stmt Op}, stmtMentions x s = fal
       exact ⟨⟨h.1.1, dceCases_mentions h.1.2⟩, dceDflt_mentions h.2⟩
   | .forLoop _ _ _ _, h => by
       simp only [dceStmt, stmtMentions, Bool.or_eq_false_iff] at h ⊢
-      exact ⟨⟨⟨dceStmts_mentions h.1.1.1, h.1.1.2⟩, dceStmts_mentions h.1.2⟩,
-        dceStmts_mentions h.2⟩
+      exact ⟨⟨⟨h.1.1.1, h.1.1.2⟩, dceStmts_mentions h.1.2⟩, dceStmts_mentions h.2⟩
   | .letDecl _ _, h => h
   | .assign _ _, h => h
   | .exprStmt _, h => h
@@ -244,6 +243,173 @@ theorem dceDflt_mentions {x : Ident} : ∀ {dflt : Option (List (Stmt Op))},
     optBlockMentions x dflt = false → optBlockMentions x (dceDflt dflt) = false
   | none, h => h
   | some _, h => by simpa only [dceDflt, optBlockMentions] using dceStmts_mentions (by simpa only [optBlockMentions] using h)
+end
+
+/-! ### The pass preserves well-scopedness
+
+Removing a dead `let x := e` drops `x` from the scope of the rest of its block —
+but the rest never reads `x` (it is dead), so scoping is preserved. The engine is
+a "drop an unmentioned variable from the middle of the context" lemma. -/
+
+theorem mem_of_ne_mid {α} {y x : α} {Γ₁ Γ₂ : List α} (h : y ∈ Γ₁ ++ x :: Γ₂) (hne : y ≠ x) :
+    y ∈ Γ₁ ++ Γ₂ := by
+  rw [List.mem_append] at h ⊢
+  rcases h with h | h
+  · exact Or.inl h
+  · rw [List.mem_cons] at h
+    rcases h with h | h
+    · exact absurd h hne
+    · exact Or.inr h
+
+theorem not_mem_declVars {x : Ident} {s : Stmt Op} (h : stmtMentions x s = false) :
+    x ∉ declVars s := by
+  cases s with
+  | letDecl vars val =>
+      simp only [stmtMentions, Bool.or_eq_false_iff, decide_eq_false_iff_not] at h
+      simpa only [declVars] using h.1
+  | _ => simp [declVars]
+
+theorem not_mem_declVarsList {x : Ident} {ss : List (Stmt Op)} (h : stmtsMentions x ss = false) :
+    x ∉ declVarsList ss := by
+  induction ss with
+  | nil => simp [declVarsList]
+  | cons s rest ih =>
+      simp only [stmtsMentions, Bool.or_eq_false_iff] at h
+      simp only [declVarsList, List.flatMap_cons, List.mem_append, not_or]
+      exact ⟨not_mem_declVars h.1, by simpa only [declVarsList] using ih h.2⟩
+
+mutual
+theorem ScopedExpr_erase {x Γ₁ Γ₂} : ∀ {e : Expr Op}, exprMentions x e = false →
+    ScopedExpr (Γ₁ ++ x :: Γ₂) e → ScopedExpr (Γ₁ ++ Γ₂) e
+  | .lit _, _, h => h
+  | .var y, hm, h => by
+      simp only [exprMentions, decide_eq_false_iff_not] at hm
+      exact mem_of_ne_mid h (fun hy => hm hy.symm)
+  | .builtin _ _, hm, h => ScopedArgs_erase (by simpa only [exprMentions] using hm) h
+  | .call _ _, hm, h => ScopedArgs_erase (by simpa only [exprMentions] using hm) h
+theorem ScopedArgs_erase {x Γ₁ Γ₂} : ∀ {es : List (Expr Op)}, argsMentions x es = false →
+    ScopedArgs (Γ₁ ++ x :: Γ₂) es → ScopedArgs (Γ₁ ++ Γ₂) es
+  | [], _, h => h
+  | _ :: _, hm, h => by
+      simp only [argsMentions, Bool.or_eq_false_iff] at hm
+      exact ⟨ScopedExpr_erase hm.1 h.1, ScopedArgs_erase hm.2 h.2⟩
+end
+
+mutual
+theorem ScopedStmt_erase {x Γ₁ Γ₂} : ∀ {s : Stmt Op}, stmtMentions x s = false →
+    ScopedStmt (Γ₁ ++ x :: Γ₂) s → ScopedStmt (Γ₁ ++ Γ₂) s
+  | .block _, hm, h => ScopedStmts_erase (by simpa only [stmtMentions] using hm) h
+  | .funDef _ _ _ _, _, h => h
+  | .letDecl _ _, hm, h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff] at hm
+      exact ScopedOptExpr_erase hm.2 h
+  | .assign vars _, hm, h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff, decide_eq_false_iff_not] at hm
+      refine ⟨fun z hz => mem_of_ne_mid (h.1 z hz) (fun hzx => hm.1 (hzx ▸ hz)), ?_⟩
+      exact ScopedExpr_erase hm.2 h.2
+  | .cond _ _, hm, h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff] at hm
+      exact ⟨ScopedExpr_erase hm.1 h.1, ScopedStmts_erase hm.2 h.2⟩
+  | .switch _ _ _, hm, h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff] at hm
+      exact ⟨ScopedExpr_erase hm.1.1 h.1, ScopedCases_erase hm.1.2 h.2.1,
+        ScopedOptBlock_erase hm.2 h.2.2⟩
+  | .forLoop init _ _ _, hm, h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff] at hm
+      have hxi : x ∉ declVarsList init := not_mem_declVarsList hm.1.1.1
+      refine ⟨ScopedStmts_erase hm.1.1.1 h.1, ?_, ?_, ?_⟩
+      · rw [← List.append_assoc]
+        exact ScopedExpr_erase hm.1.1.2 (by rw [List.append_assoc]; exact h.2.1)
+      · rw [← List.append_assoc]
+        exact ScopedStmts_erase hm.1.2 (by rw [List.append_assoc]; exact h.2.2.1)
+      · rw [← List.append_assoc]
+        exact ScopedStmts_erase hm.2 (by rw [List.append_assoc]; exact h.2.2.2)
+  | .exprStmt _, hm, h => ScopedExpr_erase (by simpa only [stmtMentions] using hm) h
+  | .«break», _, h => h
+  | .«continue», _, h => h
+  | .leave, _, h => h
+theorem ScopedStmts_erase {x Γ₁ Γ₂} : ∀ {ss : List (Stmt Op)}, stmtsMentions x ss = false →
+    ScopedStmts (Γ₁ ++ x :: Γ₂) ss → ScopedStmts (Γ₁ ++ Γ₂) ss
+  | [], _, h => h
+  | s :: rest, hm, h => by
+      simp only [stmtsMentions, Bool.or_eq_false_iff] at hm
+      refine ⟨ScopedStmt_erase hm.1 h.1, ?_⟩
+      have hxs : x ∉ declVars s := not_mem_declVars hm.1
+      rw [← List.append_assoc]
+      exact ScopedStmts_erase hm.2 (by rw [List.append_assoc]; exact h.2)
+theorem ScopedCases_erase {x Γ₁ Γ₂} : ∀ {cs : List (Literal × List (Stmt Op))},
+    casesMentions x cs = false → ScopedCases (Γ₁ ++ x :: Γ₂) cs → ScopedCases (Γ₁ ++ Γ₂) cs
+  | [], _, h => h
+  | (_, _) :: _, hm, h => by
+      simp only [casesMentions, Bool.or_eq_false_iff] at hm
+      exact ⟨ScopedStmts_erase hm.1 h.1, ScopedCases_erase hm.2 h.2⟩
+theorem ScopedOptExpr_erase {x Γ₁ Γ₂} : ∀ {val : Option (Expr Op)}, optExprMentions x val = false →
+    ScopedOptExpr (Γ₁ ++ x :: Γ₂) val → ScopedOptExpr (Γ₁ ++ Γ₂) val
+  | none, _, h => h
+  | some _, hm, h => ScopedExpr_erase (by simpa only [optExprMentions] using hm) h
+theorem ScopedOptBlock_erase {x Γ₁ Γ₂} : ∀ {dflt : Option (List (Stmt Op))},
+    optBlockMentions x dflt = false → ScopedOptBlock (Γ₁ ++ x :: Γ₂) dflt →
+      ScopedOptBlock (Γ₁ ++ Γ₂) dflt
+  | none, _, h => h
+  | some _, hm, h => ScopedStmts_erase (by simpa only [optBlockMentions] using hm) h
+end
+
+theorem dceStmt_declVars : ∀ (s : Stmt Op), declVars (dceStmt s) = declVars s := by
+  intro s; cases s <;> rfl
+
+mutual
+/-- `dceStmt` preserves scoping. -/
+theorem dceStmt_scoped {Γ} : ∀ {s : Stmt Op}, ScopedStmt Γ s → ScopedStmt Γ (dceStmt s)
+  | .block _, h => dceStmts_scoped h
+  | .funDef _ _ _ _, h => dceStmts_scoped h
+  | .cond _ _, h => ⟨h.1, dceStmts_scoped h.2⟩
+  | .switch _ _ _, h => ⟨h.1, dceCases_scoped h.2.1, dceDflt_scoped h.2.2⟩
+  | .forLoop _ _ _ _, h => ⟨h.1, h.2.1, dceStmts_scoped h.2.2.1, dceStmts_scoped h.2.2.2⟩
+  | .letDecl _ _, h => h
+  | .assign _ _, h => h
+  | .exprStmt _, h => h
+  | .«break», h => h
+  | .«continue», h => h
+  | .leave, h => h
+/-- `dceStmts` preserves scoping: removing a dead `let` drops its (unmentioned)
+variable from the scope of the rest, which the rest never needed. -/
+theorem dceStmts_scoped {Γ} : ∀ {ss : List (Stmt Op)}, ScopedStmts Γ ss →
+    ScopedStmts Γ (dceStmts ss)
+  | [], h => h
+  | s :: rest, h => by
+      simp only [dceStmts]
+      by_cases hr : removable s rest
+      · -- s is a removable dead `let [x] (some e)`; drop it
+        simp only [hr, if_true]
+        obtain ⟨x, e, rfl, hx⟩ : ∃ x e, s = .letDecl [x] (some e) ∧
+            (SideEffectFree e && !stmtsMentions x rest) = true := by
+          cases s with
+          | letDecl vars val =>
+              cases vars with
+              | nil => simp [removable] at hr
+              | cons a as =>
+                  cases as with
+                  | cons _ _ => simp [removable] at hr
+                  | nil => cases val with
+                    | none => simp [removable] at hr
+                    | some e => exact ⟨a, e, rfl, hr⟩
+          | _ => simp [removable] at hr
+        -- rest is scoped in [x] ++ Γ; x unmentioned in rest ⇒ scoped in Γ
+        have hxrest : stmtsMentions x rest = false := by
+          simp only [Bool.and_eq_true, Bool.not_eq_true'] at hx; exact hx.2
+        have hrest : ScopedStmts ([x] ++ Γ) rest := h.2
+        exact dceStmts_scoped (ScopedStmts_erase (Γ₁ := []) hxrest hrest)
+      · simp only [hr, if_false]
+        refine ⟨dceStmt_scoped h.1, ?_⟩
+        rw [dceStmt_declVars]; exact dceStmts_scoped h.2
+theorem dceCases_scoped {Γ} : ∀ {cs : List (Literal × List (Stmt Op))}, ScopedCases Γ cs →
+    ScopedCases Γ (dceCases cs)
+  | [], h => h
+  | (_, _) :: _, h => ⟨dceStmts_scoped h.1, dceCases_scoped h.2⟩
+theorem dceDflt_scoped {Γ} : ∀ {dflt : Option (List (Stmt Op))}, ScopedOptBlock Γ dflt →
+    ScopedOptBlock Γ (dceDflt dflt)
+  | none, h => h
+  | some _, h => dceStmts_scoped h
 end
 
 end YulEvmCompiler.Optimizer
