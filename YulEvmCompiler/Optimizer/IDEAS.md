@@ -204,6 +204,39 @@ the point is a toolkit, not one-off code). All in `Implementation/Frame.lean`,
 → `rest[y↦x]`, block-level soundness via substitution + `frameRemove`/`frameAdd`
 for the dropped binding), wired into the pipeline, gas re-measured.
 
+### 🚧 Spec change + dead-`let` (branch `optimizer-dce`, PR #52) — owner-approved
+
+The owner authorized **weakening the spec** so binding-removal is sound (the
+pointwise `EquivBlock` iff is unsound for binding-removal on ill-scoped envs;
+restricting to well-scoped programs fixes it — all `solc` output is well-scoped).
+
+**Done, `sorry`-free, `lake build` green:**
+- `Spec/Scoped.lean`: the `WellScoped` judgment (`ScopedExpr/Stmt/Stmts/Cases/…`,
+  over `Op`), Yul scoping rules exact (let leaks to block rest; block/if/for/
+  switch bodies inner; for-init visible in cond/post/body; funDef body =
+  params+rets only).
+- `Spec/Pass.lean`: `Sound run := ∀ b, WellScoped b → EquivBlock b (run b)`;
+  `Pass` gains `preservesScoped` (closed under `comp`/`ofList`).
+- `Spec/Backend.lean` + `ObjectPass`: headline theorems gain a `WellScoped`
+  precondition. **`SpecClosure.lean`/`SPEC.md` are stale — a code-owner must run
+  `scripts/update-spec.sh` and approve; an agent must not self-approve.**
+- `Simplify`: proven to preserve `WellScoped` (never introduces a read; keeps
+  decl structure).
+- `DeadCode.lean`: `SideEffectFree` fragment (var/lit) + `sef_eval` **evaluation
+  adequacy** (a scoped side-effect-free expr always evaluates) — the ingredient
+  the *backward* direction of dead-let removal needs.
+
+**Remaining (the last big proof):** the block-level DCE **simulation**
+`EquivBlock body (dceStmts body)`. Binding-removal is *not* an `EquivStmts`
+congruence (it changes the sequence's output env), so it can't reuse
+`cons_congr`; it needs a bespoke `Step`-induction that (a) threads the
+static-scope ↔ runtime-env-domain invariant `Γ ⊆ dom V` (so `sef_eval` applies at
+each reachable env), (b) uses `frameRemove`/`frameAdd` for each removed binding,
+and (c) shows the block `restore` erases the removed bindings (a `drop`
+computation: dropping the `let`'s frame on the long side equals not adding it).
+Then `dceStmts` (+ `hoist` `ScopeRel` for funDef bodies, as in `Simplify`),
+`preservesScoped`, wire into the pipeline, re-measure gas.
+
 ## Candidate next ideas (not started)
 
 - **`for`-loop `init`**: a `for`-specific congruence to simplify `init` too.
