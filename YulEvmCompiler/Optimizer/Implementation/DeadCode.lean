@@ -106,4 +106,50 @@ theorem stmts_append_normal {funs : FunEnv D} {pre suf : List (Stmt Op)} {V st V
       | seqCons hs hpre' => exact Step.seqCons hs (ih hpre')
       | seqStop _ hne => exact absurd rfl hne
 
+/-! ### Declared variables end up in the domain -/
+
+theorem map_fst_zip_eq {α β} {vars : List α} {vals : List β} (h : vars.length = vals.length) :
+    (vars.zip vals).map Prod.fst = vars := by
+  induction vars generalizing vals with
+  | nil => rfl
+  | cons a t ih =>
+      cases vals with
+      | nil => simp at h
+      | cons b s => simp only [List.zip_cons_cons, List.map_cons, ih (by simpa using h)]
+
+/-- A single statement adds every variable it declares to the environment domain. -/
+theorem stmt_declVars_dom {funs : FunEnv D} {V st s V1 st1}
+    (h : Step D funs V st (.stmt s) (.sres V1 st1 .normal)) {y : Ident}
+    (hy : y ∈ declVars s) : y ∈ V1.map Prod.fst := by
+  cases h with
+  | letZero =>
+      simp only [declVars] at hy
+      rw [List.map_append]
+      refine List.mem_append_left _ ?_
+      simp only [bindZeros, List.map_map, List.mem_map, Function.comp]
+      exact ⟨y, hy, rfl⟩
+  | letVal hv hlen =>
+      simp only [declVars] at hy
+      rw [List.map_append]
+      exact List.mem_append_left _ (by rw [map_fst_zip_eq hlen.symm]; exact hy)
+  | _ => simp [declVars] at hy
+
+/-- After a normally-completing sequence, every top-level declared variable is in
+the domain. -/
+theorem stmts_declVars_dom {funs : FunEnv D} : ∀ {ss : List (Stmt Op)} {V st Vb st1},
+    Step D funs V st (.stmts ss) (.sres Vb st1 .normal) → ∀ {y}, y ∈ declVarsList ss →
+      y ∈ Vb.map Prod.fst := by
+  intro ss
+  induction ss with
+  | nil => intro V st Vb st1 _ y hy; simp [declVarsList] at hy
+  | cons s rest ih =>
+      intro V st Vb st1 h y hy
+      cases h with
+      | seqCons hs htail =>
+          simp only [declVarsList, List.flatMap_cons, List.mem_append] at hy
+          rcases hy with hy | hy
+          · exact dom_mono htail (stmt_declVars_dom hs hy)
+          · exact ih htail hy
+      | seqStop _ hne => exact absurd rfl hne
+
 end YulEvmCompiler.Optimizer
