@@ -202,6 +202,107 @@ theorem venvLen_mono {funs : FunEnv D} {V st code res} (h : Step D funs V st cod
   | loopLeave _ _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
   | loopBodyHalt _ _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
 
+/-! ### VEnv domain (key) monotonicity
+
+For the backward direction of dead-code elimination we need that execution never
+*drops* a variable from scope: a variable in the environment's domain stays in the
+domain. This is the key half of the "execution only prepends and updates in place"
+invariant (`restore`'s docstring) — the base frame keeps its keys. -/
+
+/-- `set` updates a value, never a key. -/
+theorem VEnv.set_keys (V : VEnv D) (z : Ident) (w : D.Value) :
+    (V.set z w).map Prod.fst = V.map Prod.fst := by
+  induction V with
+  | nil => rfl
+  | cons p rest ih =>
+      simp only [VEnv.set]; by_cases hp : p.1 = z
+      · simp [hp]
+      · simp only [hp, if_false, List.map_cons, ih]
+
+/-- `setMany` updates values, never keys. -/
+theorem VEnv.setMany_keys (V : VEnv D) (xs : List Ident) (vs : List D.Value) :
+    (V.setMany xs vs).map Prod.fst = V.map Prod.fst := by
+  unfold VEnv.setMany
+  induction xs.zip vs generalizing V with
+  | nil => rfl
+  | cons p rest ih => simp only [List.foldl_cons]; rw [ih]; exact VEnv.set_keys _ _ _
+
+/-- `restore` keeps exactly the outer frame's keys, when the outer keys are a
+suffix of the inner keys (which execution maintains). -/
+theorem restore_keys {V Vb : VEnv D} (hs : V.map Prod.fst <:+ Vb.map Prod.fst)
+    (hlen : V.length ≤ Vb.length) : (restore V Vb).map Prod.fst = V.map Prod.fst := by
+  obtain ⟨t, ht⟩ := hs
+  have hlm : t.length = Vb.length - V.length := by
+    have := congrArg List.length ht
+    simp only [List.length_append, List.length_map] at this; omega
+  simp only [restore, List.map_drop, ← ht, ← hlm, List.drop_append_of_le_length (Nat.le_refl _)]
+  simp
+
+/-- **VEnv key monotonicity**: `V`'s keys remain a suffix of the resulting env's
+keys — execution prepends and updates in place, never drops the base frame. -/
+theorem venvKeys_suffix {funs : FunEnv D} {V st code res} (h : Step D funs V st code res) :
+    ∀ {V' st' o}, res = .sres V' st' o → V.map Prod.fst <:+ V'.map Prod.fst := by
+  induction h with
+  | lit | var | builtinOk | builtinHalt | builtinArgsHalt | callOk | callHalt | callArgsHalt
+  | argsNil | argsCons | argsRestHalt | argsHeadHalt =>
+      intro V' st' o heq; nomatch heq
+  | funDef => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | block hb ihb =>
+      intro V' st' o heq; injection heq with h1 _ _; subst h1
+      rw [restore_keys (ihb rfl) (venvLen_mono hb rfl)]
+      exact List.suffix_refl _
+  | letZero =>
+      intro V' st' o heq; injection heq with h1 _ _; subst h1
+      simp only [bindZeros, List.map_append]; exact List.suffix_append _ _
+  | letVal _ _ _ =>
+      intro V' st' o heq; injection heq with h1 _ _; subst h1
+      simp only [List.map_append]; exact List.suffix_append _ _
+  | letHalt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | assignVal _ _ _ =>
+      intro V' st' o heq; injection heq with h1 _ _; subst h1
+      rw [VEnv.setMany_keys]
+      exact List.suffix_refl _
+  | assignHalt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | exprStmt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | exprStmtHalt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | ifTrue _ _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
+  | ifFalse => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | ifHalt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | switchExec _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
+  | switchHalt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | forLoop hi hl ihinit ihloop =>
+      intro V' st' o heq; injection heq with h1 _ _; subst h1
+      rw [restore_keys ((ihinit rfl).trans (ihloop rfl))
+        (Nat.le_trans (venvLen_mono hi rfl) (venvLen_mono hl rfl))]
+      exact List.suffix_refl _
+  | forInitHalt hi ihinit =>
+      intro V' st' o heq; injection heq with h1 _ _; subst h1
+      rw [restore_keys (ihinit rfl) (venvLen_mono hi rfl)]
+      exact List.suffix_refl _
+  | «break» => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | «continue» => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | leave => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | seqNil => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | seqCons _ _ ihs ihrest =>
+      intro V' st' o heq; injection heq with h1 _ _; subst h1; exact (ihs rfl).trans (ihrest rfl)
+  | seqStop _ _ ihs => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihs rfl
+  | loopDone => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | loopCondHalt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact List.suffix_refl _
+  | loopStep _ _ _ _ _ _ _ ihb ihp ihr =>
+      intro V' st' o heq; injection heq with h1 _ _; subst h1
+      exact ((ihb rfl).trans (ihp rfl)).trans (ihr rfl)
+  | loopPostHalt _ _ _ _ _ _ ihb ihp =>
+      intro V' st' o heq; injection heq with h1 _ _; subst h1; exact (ihb rfl).trans (ihp rfl)
+  | loopBreak _ _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
+  | loopLeave _ _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
+  | loopBodyHalt _ _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
+
+/-- **VEnv domain monotonicity**: a variable in scope stays in scope. -/
+theorem dom_mono {funs : FunEnv D} {V st code V' st' o}
+    (h : Step D funs V st code (.sres V' st' o)) {y : Ident}
+    (hy : y ∈ V.map Prod.fst) : y ∈ V'.map Prod.fst :=
+  (venvKeys_suffix h rfl).subset hy
+
 /-! ### The frame lemma
 
 `x` unmentioned by `code` ⇒ executing `code` from `V1` and from `V2` (= `V1` with
