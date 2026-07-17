@@ -155,8 +155,9 @@ theorem stmts_declVars_dom {funs : FunEnv D} : ∀ {ss : List (Stmt Op)} {V st V
 /-! ### The dead-`let` transformation
 
 `dceStmts` drops a `let x := e` whose `x` is unused in the rest of its block and
-whose `e` is side-effect-free, recursing into every nested block / function body /
-loop so dead temporaries inside functions are removed too. It leaves all other
+whose `e` is side-effect-free, recursing into every nested block /
+loop (function bodies are left for a follow-up: they need a function-environment
+relation) so dead temporaries inside functions are removed too. It leaves all other
 structure — including declared-variable lists and `for`-loop `init` — intact. -/
 
 /-- Is `s` a removable dead `let` at the head of `rest`: a single-variable,
@@ -169,7 +170,7 @@ mutual
 /-- Remove dead `let`s inside a single statement's sub-blocks. -/
 def dceStmt : Stmt Op → Stmt Op
   | .block body => .block (dceStmts body)
-  | .funDef n ps rs body => .funDef n ps rs (dceStmts body)
+  | .funDef n ps rs body => .funDef n ps rs body
   | .cond c body => .cond c (dceStmts body)
   | .switch c cases dflt => .switch c (dceCases cases) (dceDflt dflt)
   | .forLoop init c post body => .forLoop init c (dceStmts post) (dceStmts body)
@@ -203,9 +204,7 @@ mutual
 theorem dceStmt_mentions {x : Ident} : ∀ {s : Stmt Op}, stmtMentions x s = false →
     stmtMentions x (dceStmt s) = false
   | .block _, h => by simpa only [dceStmt, stmtMentions] using dceStmts_mentions (by simpa only [stmtMentions] using h)
-  | .funDef _ ps rs _, h => by
-      simp only [dceStmt, stmtMentions, Bool.or_eq_false_iff] at h ⊢
-      exact ⟨h.1, dceStmts_mentions h.2⟩
+  | .funDef _ _ _ _, h => h
   | .cond _ _, h => by
       simp only [dceStmt, stmtMentions, Bool.or_eq_false_iff] at h ⊢
       exact ⟨h.1, dceStmts_mentions h.2⟩
@@ -361,7 +360,7 @@ mutual
 /-- `dceStmt` preserves scoping. -/
 theorem dceStmt_scoped {Γ} : ∀ {s : Stmt Op}, ScopedStmt Γ s → ScopedStmt Γ (dceStmt s)
   | .block _, h => dceStmts_scoped h
-  | .funDef _ _ _ _, h => dceStmts_scoped h
+  | .funDef _ _ _ _, h => h
   | .cond _ _, h => ⟨h.1, dceStmts_scoped h.2⟩
   | .switch _ _ _, h => ⟨h.1, dceCases_scoped h.2.1, dceDflt_scoped h.2.2⟩
   | .forLoop _ _ _ _, h => ⟨h.1, h.2.1, dceStmts_scoped h.2.2.1, dceStmts_scoped h.2.2.2⟩
