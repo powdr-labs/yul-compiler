@@ -90,16 +90,29 @@ and hoisted; changing it needs a `for`-specific congruence — see below).
   congruence (init changes with a `ScopeRel` side condition, like
   `of_stmts_funs`) would let us reach it — small follow-up.
 
-### ✅ `ObjectPass` (`Implementation/ObjectPass.lean`) — foundation landed (this branch)
-`Pass.optimizeTopCode` (run a pass on an object's top code block, sub-objects
-byte-identical) + `Pass.optimizeTop_compileObject_correct`: compiling the
-optimized object correctly simulates the *original* object's resolved run —
-**when resolution is the identity on the top code block** (`hres₀`/`hres₁`, i.e.
-the top block has no `dataoffset`/`datasize`/`datacopy`: leaf objects, or runtime
-code that neither copies a sub-object nor reads an offset). Proven, but **not yet
-wired** into `compileSource` — see the object-path frontier below.
+### ✅ `ObjectPass` + `simplifyObject` — object path WIRED (this branch)
+`simplifyObject` (in `Simplify`) runs the pass on **every** code block of an
+object tree — the deploy object *and* every nested sub-object (the `*_deployed`
+runtime of a Solidity artifact). It is wired into `compileSource`'s object branch,
+so **both deploy and runtime code are optimized**. Soundness (`ObjectPass`):
+`simplifyObject_compileObject_correct` (the artifact is the verified compilation
+of the optimized tree, via `compileObject_correct`) + `simplifyObject_topEquiv`
+(every object's top code block is `EquivBlock`-equivalent to the original, via
+`blockEquiv`). So the bytecode faithfully runs a program each of whose code blocks
+is provably equivalent to the source.
 
-## The object-path frontier (why real `.sol` runtime gas is hard)
+Gas (real Solidity contracts, `checkSolidityGas`): `libsolidity/gasTests` — 12/12
+fixtures down, 0 regressions (`dispatch_large` 97748→97586, `abiv2` 9377→9341, …).
+`objectCompiler` yul corpus — 3 down. The single end-to-end "bytecode simulates
+the *original object*" theorem would additionally want a resolution congruence
+`EquivBlock (resolve L b) (resolve L (P.run b))`; the layout-coupling below blocks
+that as a general lemma, but it does not weaken the shipped guarantee (correct
+compilation of a per-block-equivalent tree).
+
+`Pass.optimizeTopCode` + `Pass.optimizeTop_compileObject_correct` remain as the
+stricter single-object theorem for the offset-free/leaf fragment.
+
+## The layout-coupling (why the end-to-end object theorem is subtle)
 
 `planObject` derives every sub-object/data **offset** from the top code block's
 compiled `codeSize`, and `resolveForLayoutStmts` bakes those offsets into the code
@@ -128,10 +141,13 @@ the real object-path frontier.
 
 ## Candidate next ideas (not started)
 
-- **Wire `ObjectPass`** for the offset-free fragment (prove `no layout ops ⇒
-  resolveForLayoutStmts = id`, then apply conditionally in `compileSource`) to move
-  the `objectCompiler` baseline where sound.
+- **Resolution congruence** `EquivBlock (resolve L b) (resolve L (P.run b))` (a
+  structural induction mirroring the pass, using that resolution touches only
+  `dataoffset`/`datasize`/`datacopy` — disjoint from the pure ops the pass folds).
+  Gives the single end-to-end "artifact simulates the *original* object" theorem.
 - **`for`-loop `init`**: a `for`-specific congruence to simplify `init` too.
+- **Higher-impact passes** (the real gas lever): dead/unused-`let` elimination,
+  redundant `pop`/store elimination, branch/switch folding.
 - **Dead `pop`/unused `let` elimination**: remove `let x := <pure e>` when `x`
   is never used and `e` is side-effect-free; drop `pop(<pure e>)`.
 - **`iszero(iszero(x))` in boolean position** → `x` when the value is only used

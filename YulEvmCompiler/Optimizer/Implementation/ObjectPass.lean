@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Implementation.Simplify
 import YulEvmCompiler.ObjectCompile
 
 /-!
@@ -79,5 +80,50 @@ theorem Pass.optimizeTop_compileObject_correct
     change Run yulD (resolveForLayoutStmts L (P.optimizeTopCode o).codeBlock) L.initState V yst out
     rw [P.optimizeTopCode_codeBlock, hres₁]; exact h1
   exact compileObject_correct hexternal hcomp hrr
+
+/-! ### Whole-tree optimization (`simplifyObject`), wired into `compileSource`
+
+`simplifyObject` (in `Simplify`) runs the pass on **every** code block of an
+object tree — the deploy object *and* every nested sub-object (the `*_deployed`
+runtime of a Solidity artifact). The soundness this delivers is exactly the
+object analogue of the block path:
+
+* **the artifact is a verified compilation** of the optimized tree
+  (`simplifyObject_compileObject_correct`, below — `compileObject_correct` on
+  `simplifyObject o`); and
+* **every code block is semantics-preserved** — each object's top code block is
+  `EquivBlock`-equivalent to the original (`simplifyObject_topEquiv`, from
+  `blockEquiv`), and this holds at every level of the tree because
+  `compileObject` compiles sub-objects with the same pass applied.
+
+So the emitted bytecode faithfully runs a program each of whose code blocks is
+provably equivalent to the source. (A single end-to-end "bytecode simulates the
+*original* object" theorem would additionally need a resolution congruence
+`EquivBlock (resolveForLayoutStmts L b) (resolveForLayoutStmts L (P.run b))`,
+which the layout-coupling above blocks in general — see `IDEAS.md`.) -/
+
+/-- **The artifact from `simplifyObject` is verified.** Compiling the whole-tree
+optimized object correctly simulates its resolved execution — `compileObject_correct`
+applied to `simplifyObject o`. -/
+theorem simplifyObject_compileObject_correct (hexternal : ExternalsRealized model)
+    {o : Object Op} {L : Layout}
+    (hcomp : compileObject (simplifyObject o) = some L)
+    {V : VEnv yulD} {yst : EvmState} {out : Outcome}
+    (hrun : RunResolvedObject (simplifyObject o) L V yst out) :
+    ∃ b : Nat, ∀ s0 : State,
+      FrameOK (mkCode L.code) s0 → StateMatch L.initState s0 →
+      s0.pc = UInt256.ofNat 0 → s0.stack = [] → b ≤ s0.gasAvailable →
+      ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst s' ∧
+        ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
+         (out = .halt ∧ HaltedMatch yst s')) :=
+  compileObject_correct hexternal hcomp hrun
+
+/-- **Each object's top code block is semantics-preserved** by `simplifyObject`:
+it is `EquivBlock`-equivalent to the original. (`RunObject`/`RunResolvedObject`
+depend only on an object's top code block, so this is the operative guarantee at
+every level of the tree.) -/
+theorem simplifyObject_topEquiv (o : Object Op) :
+    YulSemantics.EquivBlock yulD o.codeBlock (simplifyObject o).codeBlock := by
+  rw [simplifyObject_codeBlock]; exact blockEquiv o.codeBlock
 
 end YulEvmCompiler.Optimizer

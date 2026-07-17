@@ -475,14 +475,17 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     *and* hoisted, so it needs a `for`-specific congruence — a small follow-up).
     `compileSource` runs it on block-rooted programs; `IDEAS.md` logs the running
     list of passes tried and to try.
-  * **`Implementation/ObjectPass.lean`** — `Pass.optimizeTopCode` (run a pass on an
-    object's top code block) and `Pass.optimizeTop_compileObject_correct`: the
-    object analogue of `optimize_then_compile_correct`, sound whenever resolution is
-    the identity on the top block (offset-free / leaf objects). The object compiler
-    couples code length to sub-object/data offsets, so optimizing offset-bearing
-    code (e.g. a constructor that `datacopy`s its runtime) needs a cross-layout
-    equivalence — the object-path frontier documented in `IDEAS.md`. Not yet wired
-    into `compileSource`.
+  * **`Implementation/ObjectPass.lean`** — the object path. `simplifyObject` (in
+    `Simplify`) runs the pass on *every* code block of an object tree (deploy and
+    runtime); `compileSource` uses it for object-rooted programs.
+    `simplifyObject_compileObject_correct` (= `compileObject_correct` on the
+    optimized tree) certifies the artifact, and `simplifyObject_topEquiv` certifies
+    every code block is `EquivBlock`-equivalent to the original. `Pass.optimizeTopCode`
+    + `Pass.optimizeTop_compileObject_correct` additionally give the stricter
+    single-object end-to-end theorem for the offset-free/leaf fragment. The object
+    compiler couples code length to sub-object/data offsets, so the *single* "artifact
+    simulates the original object" theorem needs a resolution congruence — the
+    frontier documented in `IDEAS.md`.
 
 The soundness obligation and its congruence machinery live upstream in
 `YulSemantics.Equiv`/`YulSemantics.Rewrites`; this repo supplies the pass

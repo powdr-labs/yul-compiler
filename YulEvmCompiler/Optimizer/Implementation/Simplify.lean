@@ -524,11 +524,38 @@ theorem blockEquiv (b : List (Stmt Op)) : EquivBlock D b (simplifyStmts b) :=
     (scopeRel_hoistSimplify b)
 
 /-- The **Simplify pass**: constant folding + neutral-element identities over the
-whole program (outside function bodies and `for`-loop `init`s), bundled with its
-soundness proof. -/
+whole program (including function bodies; only a `for`-loop's `init` is left
+untouched), bundled with its soundness proof. -/
 def simplify : Pass D where
   run := simplifyStmts
   sound := blockEquiv
+
+/-! ### Optimizing a whole object tree
+
+`simplifyObject` runs the pass on **every** code block of an object tree — the
+top (deploy) object and every nested sub-object (e.g. the `*_deployed` runtime of
+a Solidity artifact) — leaving names and data segments intact. Each code block is
+`EquivBlock`-equivalent to the original (`simplifyObject_codeBlock` +
+`blockEquiv`), and the emitted bytecode is the verified compilation of the
+result (`compileObject_correct`); the object-tree correctness statement is
+`Pass.optimizeObject_compileObject_correct` in `ObjectPass`. -/
+
+mutual
+
+/-- Run the pass on every code block of an object and its sub-objects. -/
+def simplifyObject : Object Op → Object Op
+  | .mk n code subs segs => .mk n (simplifyStmts code) (simplifyObjects subs) segs
+
+/-- Run `simplifyObject` on each object of a list. -/
+def simplifyObjects : List (Object Op) → List (Object Op)
+  | [] => []
+  | o :: rest => simplifyObject o :: simplifyObjects rest
+
+end
+
+@[simp] theorem simplifyObject_codeBlock (o : Object Op) :
+    (simplifyObject o).codeBlock = simplifyStmts o.codeBlock := by
+  cases o; rw [simplifyObject]; rfl
 
 /-! ### Regression examples (checked at build time) -/
 
