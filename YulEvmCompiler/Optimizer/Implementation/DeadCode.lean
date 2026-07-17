@@ -167,13 +167,16 @@ def removable : Stmt Op → List (Stmt Op) → Bool
   | _, _ => false
 
 mutual
-/-- Remove dead `let`s inside a single statement's sub-blocks. -/
+/-- Remove dead `let`s inside a single statement's sub-blocks. Recurses into
+`block`/`cond`/`for` bodies (whose bodies run as their own scopes); `switch` and
+`funDef` bodies are left unchanged (follow-ups: `switch` needs `selectSwitch` to
+be handled by well-founded recursion, `funDef` needs a function-env relation). -/
 def dceStmt : Stmt Op → Stmt Op
   | .block body => .block (dceStmts body)
-  | .funDef n ps rs body => .funDef n ps rs body
   | .cond c body => .cond c (dceStmts body)
-  | .switch c cases dflt => .switch c (dceCases cases) (dceDflt dflt)
   | .forLoop init c post body => .forLoop init c (dceStmts post) (dceStmts body)
+  | .funDef n ps rs body => .funDef n ps rs body
+  | .switch c cases dflt => .switch c cases dflt
   | .letDecl xs val => .letDecl xs val
   | .assign xs val => .assign xs val
   | .exprStmt e => .exprStmt e
@@ -185,14 +188,6 @@ otherwise recursing into the statement and the tail). -/
 def dceStmts : List (Stmt Op) → List (Stmt Op)
   | [] => []
   | s :: rest => if removable s rest then dceStmts rest else dceStmt s :: dceStmts rest
-/-- Remove dead `let`s from each `switch` case body. -/
-def dceCases : List (Literal × List (Stmt Op)) → List (Literal × List (Stmt Op))
-  | [] => []
-  | (l, b) :: rest => (l, dceStmts b) :: dceCases rest
-/-- Remove dead `let`s from a `switch` default block. -/
-def dceDflt : Option (List (Stmt Op)) → Option (List (Stmt Op))
-  | none => none
-  | some b => some (dceStmts b)
 end
 
 /-! ### `dce` never introduces a mention
@@ -208,9 +203,7 @@ theorem dceStmt_mentions {x : Ident} : ∀ {s : Stmt Op}, stmtMentions x s = fal
   | .cond _ _, h => by
       simp only [dceStmt, stmtMentions, Bool.or_eq_false_iff] at h ⊢
       exact ⟨h.1, dceStmts_mentions h.2⟩
-  | .switch _ _ _, h => by
-      simp only [dceStmt, stmtMentions, Bool.or_eq_false_iff] at h ⊢
-      exact ⟨⟨h.1.1, dceCases_mentions h.1.2⟩, dceDflt_mentions h.2⟩
+  | .switch _ _ _, h => h
   | .forLoop _ _ _ _, h => by
       simp only [dceStmt, stmtMentions, Bool.or_eq_false_iff] at h ⊢
       exact ⟨⟨⟨h.1.1.1, h.1.1.2⟩, dceStmts_mentions h.1.2⟩, dceStmts_mentions h.2⟩
@@ -231,17 +224,6 @@ theorem dceStmts_mentions {x : Ident} : ∀ {ss : List (Stmt Op)}, stmtsMentions
       · exact dceStmts_mentions hs.2
       · simp only [stmtsMentions, Bool.or_eq_false_iff]
         exact ⟨dceStmt_mentions hs.1, dceStmts_mentions hs.2⟩
-theorem dceCases_mentions {x : Ident} : ∀ {cs : List (Literal × List (Stmt Op))},
-    casesMentions x cs = false → casesMentions x (dceCases cs) = false
-  | [], h => h
-  | (_, _) :: rest, h => by
-      simp only [casesMentions, Bool.or_eq_false_iff] at h
-      simp only [dceCases, casesMentions, Bool.or_eq_false_iff]
-      exact ⟨dceStmts_mentions h.1, dceCases_mentions h.2⟩
-theorem dceDflt_mentions {x : Ident} : ∀ {dflt : Option (List (Stmt Op))},
-    optBlockMentions x dflt = false → optBlockMentions x (dceDflt dflt) = false
-  | none, h => h
-  | some _, h => by simpa only [dceDflt, optBlockMentions] using dceStmts_mentions (by simpa only [optBlockMentions] using h)
 end
 
 /-! ### The pass preserves well-scopedness
@@ -362,7 +344,7 @@ theorem dceStmt_scoped {Γ} : ∀ {s : Stmt Op}, ScopedStmt Γ s → ScopedStmt 
   | .block _, h => dceStmts_scoped h
   | .funDef _ _ _ _, h => h
   | .cond _ _, h => ⟨h.1, dceStmts_scoped h.2⟩
-  | .switch _ _ _, h => ⟨h.1, dceCases_scoped h.2.1, dceDflt_scoped h.2.2⟩
+  | .switch _ _ _, h => h
   | .forLoop _ _ _ _, h => ⟨h.1, h.2.1, dceStmts_scoped h.2.2.1, dceStmts_scoped h.2.2.2⟩
   | .letDecl _ _, h => h
   | .assign _ _, h => h
@@ -401,14 +383,6 @@ theorem dceStmts_scoped {Γ} : ∀ {ss : List (Stmt Op)}, ScopedStmts Γ ss →
       · simp only [hr, if_false]
         refine ⟨dceStmt_scoped h.1, ?_⟩
         rw [dceStmt_declVars]; exact dceStmts_scoped h.2
-theorem dceCases_scoped {Γ} : ∀ {cs : List (Literal × List (Stmt Op))}, ScopedCases Γ cs →
-    ScopedCases Γ (dceCases cs)
-  | [], h => h
-  | (_, _) :: _, h => ⟨dceStmts_scoped h.1, dceCases_scoped h.2⟩
-theorem dceDflt_scoped {Γ} : ∀ {dflt : Option (List (Stmt Op))}, ScopedOptBlock Γ dflt →
-    ScopedOptBlock Γ (dceDflt dflt)
-  | none, h => h
-  | some _, h => dceStmts_scoped h
 end
 
 /-! ### `restore` arithmetic for the simulation -/
