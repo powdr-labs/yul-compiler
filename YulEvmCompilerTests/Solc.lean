@@ -96,6 +96,18 @@ def solcRuntimeBytecode (solcPath source : String) : IO (Except String ByteArray
     return .error s!"solc --bin-runtime failed: {output.stderr.trimAscii.copy}"
   return parseBinaryAfter "Binary of the runtime part:" output.stdout
 
+/-- solc's own optimized creation bytecode (`--bin --optimize --via-ir`). Used
+when a comparison must run the constructor (so constructor-initialized storage is
+in place) before replaying calls. -/
+def solcCreationBytecode (solcPath source : String) : IO (Except String ByteArray) := do
+  let output ← IO.Process.output {
+    cmd := solcPath
+    args := #["--bin", "--optimize", "--via-ir", "--evm-version", "osaka", "-"]
+  } (some source)
+  if output.exitCode != 0 then
+    return .error s!"solc --bin failed: {output.stderr.trimAscii.copy}"
+  return parseBinaryAfter "Binary:" output.stdout
+
 /-- Reject any `solc` other than the pinned version, so every checked-in gas
 figure and every differential result reproduces from a single toolchain. -/
 def checkSolcVersion (solcPath expectedVersion : String) : IO (Except String Unit) := do

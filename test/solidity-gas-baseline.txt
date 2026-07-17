@@ -6,8 +6,8 @@
 abiv2.sol	9377	6886
 abiv2_optimised.sol	9377	6886
 data_storage.sol	610	202
-dispatch_large.sol	117648	96547
-dispatch_large_optimised.sol	117648	96547
+dispatch_large.sol	97748	76647
+dispatch_large_optimised.sol	97748	76647
 dispatch_medium.sol	49548	41541
 dispatch_medium_optimised.sol	49548	41541
 dispatch_small.sol	31259	29028
