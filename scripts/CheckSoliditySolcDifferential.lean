@@ -3,6 +3,7 @@ import YulEvmCompilerTests.Solc
 import YulEvmCompilerTests.SolcDifferential
 import YulEvmCompilerTests.CorpusGas
 import YulEvmCompilerTests.SolidityCorpus
+import YulEvmCompilerTests.Parallel
 
 /-!
 Compile each applicable fixture with both this compiler and a pinned solc,
@@ -25,6 +26,7 @@ open YulEvmCompilerTests.Solc
 open YulEvmCompilerTests.SolcDifferential
 open YulEvmCompilerTests.CorpusGas
 open YulEvmCompilerTests.SolidityCorpus
+open YulEvmCompilerTests.Parallel (detectJobs parMap)
 
 private structure Shard where
   index : Nat
@@ -76,43 +78,6 @@ private def processFile (corpusDir : FilePath) (solcPath : String)
                       return { checked := true, gas := some { fixture := name, ours, solc } }
                   | none => return { checked := true }
 
-/-- Degree of in-shard parallelism: `DIFF_JOBS` if set, else `nproc`, else 4.
-Each worker runs solc plus this compiler's execution scenarios on its own
-fixtures, so the ceiling is the runner's core count. -/
-private def detectJobs : IO Nat := do
-  match ← IO.getEnv "DIFF_JOBS" with
-  | some raw => return max 1 (raw.trimAscii.toString.toNat?.getD 4)
-  | none =>
-      try
-        let out ← IO.Process.output { cmd := "nproc" }
-        return max 1 (out.stdout.trimAscii.toString.toNat?.getD 4)
-      catch _ => return 4
-
-/-- Process every fixture, up to `jobs` at a time, and return the outcomes in the
-original file order. Fixtures are dealt round-robin across `jobs` worker tasks so
-cost spreads regardless of where the expensive fixtures sit; results carry their
-original index and are re-sorted, so the run is deterministic and independent of
-the number of workers. -/
-private def processFiles (jobs : Nat) (corpusDir : FilePath) (solcPath : String)
-    (files : Array FilePath) : IO (Array FileOutcome) := do
-  if jobs ≤ 1 || files.size ≤ 1 then
-    return ← files.mapM (processFile corpusDir solcPath)
-  let mut chunks : Array (Array (Nat × FilePath)) := Array.replicate jobs #[]
-  for i in [0:files.size] do
-    let worker := i % jobs
-    chunks := chunks.set! worker (chunks[worker]!.push (i, files[i]!))
-  -- Dedicated threads: each worker blocks on its solc subprocess, so keep those
-  -- waits off Lean's shared task-pool threads. `jobs` is bounded by core count.
-  let tasks ← chunks.mapM fun chunk =>
-    IO.asTask (prio := Task.Priority.dedicated) <| chunk.mapM fun (idx, path) => do
-      return (idx, ← processFile corpusDir solcPath path)
-  let mut indexed : Array (Nat × FileOutcome) := #[]
-  for task in tasks do
-    match ← IO.wait task with
-    | .ok rows => indexed := indexed ++ rows
-    | .error err => throw err
-  return (indexed.qsort (fun a b => a.1 < b.1)).map (·.2)
-
 private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFile : FilePath)
     (solcPath expectedSolcVersion : String) (shard : Option Shard) : IO UInt32 := do
   match ← checkSolcVersion solcPath expectedSolcVersion with
@@ -137,7 +102,7 @@ private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFil
   let mut checked := 0
   let mut skipped := 0
   let jobs ← detectJobs
-  let outcomes ← processFiles jobs corpusDir solcPath files
+  let outcomes : Array FileOutcome ← parMap jobs files (processFile corpusDir solcPath)
   for outcome in outcomes do
     if let some entry := outcome.metadataError then metadataErrors := metadataErrors.push entry
     if outcome.skipped then skipped := skipped + 1
