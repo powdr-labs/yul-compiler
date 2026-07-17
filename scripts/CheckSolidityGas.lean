@@ -233,6 +233,12 @@ private def run (dir baselineFile : FilePath)
   let unsupported := if lenient then compileFailures.size else 0
   IO.println s!"Compiled {compiled}/{files.size - skipped} latest-fork contracts via solc {expectedSolcVersion} --via-ir (skipped {skipped}, unsupported {unsupported})."
   IO.println s!"Gas: {measured.size} comparable, {gasRegressions.size} regressions, {gasImproved.size} improved, {gasChanged.size} changed, {gasUnpinned.size} unpinned, {gasStale.size} stale."
+  -- Machine-readable aggregate for the PR summary comment. `mode=vs_solc_optimized`:
+  -- this compiler compiles solc's *unoptimized* IR while solc is fully optimized
+  -- (`--optimize --via-ir`), so `ours/solc > 1` is expected until this compiler
+  -- gains its own optimizer.
+  let suite := dir.fileName.getD "gas"
+  IO.println s!"Gas totals: suite={suite} mode=vs_solc_optimized ours={measured.foldl (fun a r => a + r.ours) 0} solc={measured.foldl (fun a r => a + r.solc) 0} comparable={measured.size}"
   unless lenient || compileFailures.isEmpty do
     IO.eprintln "Contracts this compiler failed to compile:"
     for (name, message) in compileFailures do IO.eprintln s!"  {name}: {message}"
