@@ -673,4 +673,19 @@ def deadCode : Pass D where
   sound := fun b hb => dceStmts_equivBlock b hb
   preservesScoped := fun _ hb => dceStmts_scoped hb
 
+mutual
+/-- Run dead-code elimination on every code block of an object tree (top object
+and every nested sub-object), leaving names and data segments intact. -/
+def dceObject : Object Op → Object Op
+  | .mk n code subs segs => .mk n (dceStmts code) (dceObjects subs) segs
+/-- Run `dceObject` on each object of a list. -/
+def dceObjects : List (Object Op) → List (Object Op)
+  | [] => []
+  | o :: rest => dceObject o :: dceObjects rest
+end
+
+@[simp] theorem dceObject_codeBlock (o : Object Op) :
+    (dceObject o).codeBlock = dceStmts o.codeBlock := by
+  cases o; rw [dceObject]; rfl
+
 end YulEvmCompiler.Optimizer

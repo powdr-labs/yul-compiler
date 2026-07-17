@@ -1,6 +1,7 @@
 import YulParser.Source
 import YulEvmCompiler.ObjectCompile
 import YulEvmCompiler.Optimizer.Implementation.Simplify
+import YulEvmCompiler.Optimizer.Implementation.DeadCode
 
 /-!
 # YulParser.Compile
@@ -57,10 +58,12 @@ def compileSource (source : String) : Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
       return YulEvmCompiler.assemble
-        (← YulEvmCompiler.compile (YulEvmCompiler.Optimizer.simplifyStmts (block.map desugarStmt)))
+        (← YulEvmCompiler.compile (YulEvmCompiler.Optimizer.dceStmts
+          (YulEvmCompiler.Optimizer.simplifyStmts (block.map desugarStmt))))
   | some (.object o) =>
       let layout ← YulEvmCompiler.compileObject
-        (YulEvmCompiler.Optimizer.simplifyObject (desugarObject o))
+        (YulEvmCompiler.Optimizer.dceObject
+          (YulEvmCompiler.Optimizer.simplifyObject (desugarObject o)))
       return ByteArray.mk layout.code.toArray
   | none => none
 
