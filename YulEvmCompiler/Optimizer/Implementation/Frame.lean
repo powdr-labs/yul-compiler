@@ -363,6 +363,22 @@ theorem ResRelAt.sres {d x v} {V1 : VEnv D} {st o} {res2 : Res D}
       obtain ⟨hins, rfl, rfl⟩ := h
       exact ⟨V2, rfl, hins⟩
 
+theorem ResRelAt.eres_right {d x v} {res1 : Res D} {r : EResult D}
+    (h : ResRelAt d x v res1 (.eres r)) : res1 = .eres r := by
+  cases res1 with
+  | eres r1 => simp only [ResRelAt] at h; rw [h]
+  | sres => simp only [ResRelAt] at h
+
+theorem ResRelAt.sres_right {d x v} {res1 : Res D} {V2 : VEnv D} {st o}
+    (h : ResRelAt d x v res1 (.sres V2 st o)) :
+    ∃ V1, res1 = .sres V1 st o ∧ InsAt d x v V1 V2 := by
+  cases res1 with
+  | eres => simp only [ResRelAt] at h
+  | sres V1 st1 o1 =>
+      simp only [ResRelAt] at h
+      obtain ⟨hins, rfl, rfl⟩ := h
+      exact ⟨V1, rfl, hins⟩
+
 /-! ### The frame lemma (add direction)
 
 Running `code` (which does not mention `x`) from `V2` — an environment carrying an
@@ -614,6 +630,260 @@ theorem frameAdd {funs : FunEnv D} {V1 st code res1} (h : Step D funs V1 st code
       obtain rfl := hrc.eres
       obtain ⟨rb, hsb, hrb⟩ := ihbody hins (by simp only [codeMentions, stmtMentions]; exact h_sb)
       obtain ⟨Vb2, rfl, hinsb⟩ := hrb.sres
+      exact ⟨_, Step.loopBodyHalt hsc hcv hsb, ⟨hinsb, rfl, rfl⟩⟩
+
+/-! ### The frame lemma (remove direction)
+
+The mirror of `frameAdd`: running `code` (which does not mention `x`) from `V2` — an
+environment carrying an extra `(x,v)` binding — can equally be run from `V1` (the
+same environment without that binding), with `InsAt d`-related results. Together
+`frameAdd`/`frameRemove` give the two implications behind `EquivStmts`. -/
+
+theorem frameRemove {funs : FunEnv D} {V2 st code res2} (h : Step D funs V2 st code res2) :
+    ∀ {d x v V1}, InsAt d x v V1 V2 → codeMentions x code = false →
+      ∃ res1, Step D funs V1 st code res1 ∧ ResRelAt d x v res1 res2 := by
+  induction h with
+  | lit => intro d x v Vs hins hm; exact ⟨_, Step.lit, rfl⟩
+  | @var _ _ _ y vv hv =>
+      intro d x v Vs hins hm
+      have hy : y ≠ x := by
+        simp only [codeMentions, exprMentions, decide_eq_false_iff_not] at hm
+        exact fun hc => hm hc.symm
+      exact ⟨_, Step.var (hins.get_ne hy ▸ hv), rfl⟩
+  | builtinOk hargs hb iha =>
+      intro d x v Vs hins hm
+      obtain ⟨r, hs, hr⟩ := iha hins (by simpa only [codeMentions, exprMentions] using hm)
+      obtain rfl := hr.eres_right
+      exact ⟨_, Step.builtinOk hs hb, rfl⟩
+  | builtinHalt hargs hb iha =>
+      intro d x v Vs hins hm
+      obtain ⟨r, hs, hr⟩ := iha hins (by simpa only [codeMentions, exprMentions] using hm)
+      obtain rfl := hr.eres_right
+      exact ⟨_, Step.builtinHalt hs hb, rfl⟩
+  | builtinArgsHalt hargs iha =>
+      intro d x v Vs hins hm
+      obtain ⟨r, hs, hr⟩ := iha hins (by simpa only [codeMentions, exprMentions] using hm)
+      obtain rfl := hr.eres_right
+      exact ⟨_, Step.builtinArgsHalt hs, rfl⟩
+  | callOk hargs hl hlen hbody ho iha ihbody =>
+      intro d x v Vs hins hm
+      obtain ⟨r, hs, hr⟩ := iha hins (by simpa only [codeMentions, exprMentions] using hm)
+      obtain rfl := hr.eres_right
+      exact ⟨_, Step.callOk hs hl hlen hbody ho, rfl⟩
+  | callHalt hargs hl hlen hbody iha ihbody =>
+      intro d x v Vs hins hm
+      obtain ⟨r, hs, hr⟩ := iha hins (by simpa only [codeMentions, exprMentions] using hm)
+      obtain rfl := hr.eres_right
+      exact ⟨_, Step.callHalt hs hl hlen hbody, rfl⟩
+  | callArgsHalt hargs iha =>
+      intro d x v Vs hins hm
+      obtain ⟨r, hs, hr⟩ := iha hins (by simpa only [codeMentions, exprMentions] using hm)
+      obtain rfl := hr.eres_right
+      exact ⟨_, Step.callArgsHalt hs, rfl⟩
+  | argsNil => intro d x v Vs hins hm; exact ⟨_, Step.argsNil, rfl⟩
+  | argsCons hrest he ihrest ihe =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, argsMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨rr, hsr, hrr⟩ := ihrest hins (by simp only [codeMentions]; exact hm.2)
+      obtain rfl := hrr.eres_right
+      obtain ⟨re, hse, hre⟩ := ihe hins (by simp only [codeMentions]; exact hm.1)
+      obtain rfl := hre.eres_right
+      exact ⟨_, Step.argsCons hsr hse, rfl⟩
+  | argsRestHalt hrest ihrest =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, argsMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨rr, hsr, hrr⟩ := ihrest hins (by simp only [codeMentions]; exact hm.2)
+      obtain rfl := hrr.eres_right
+      exact ⟨_, Step.argsRestHalt hsr, rfl⟩
+  | argsHeadHalt hrest he ihrest ihe =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, argsMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨rr, hsr, hrr⟩ := ihrest hins (by simp only [codeMentions]; exact hm.2)
+      obtain rfl := hrr.eres_right
+      obtain ⟨re, hse, hre⟩ := ihe hins (by simp only [codeMentions]; exact hm.1)
+      obtain rfl := hre.eres_right
+      exact ⟨_, Step.argsHeadHalt hsr hse, rfl⟩
+  | funDef => intro d x v Vs hins hm; exact ⟨_, Step.funDef, ⟨hins, rfl, rfl⟩⟩
+  | block hbody ihbody =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions] at hm
+      obtain ⟨r, hs, hr⟩ := ihbody hins (by simp only [codeMentions]; exact hm)
+      obtain ⟨Vb1, rfl, hins1⟩ := hr.sres_right
+      exact ⟨_, Step.block hs, ⟨InsAt.restore hins hins1, rfl, rfl⟩⟩
+  | letZero =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions, optExprMentions, Bool.or_false,
+        decide_eq_false_iff_not] at hm
+      exact ⟨_, Step.letZero, ⟨hins.prepend _ (by rw [bindZeros_keys]; exact hm), rfl, rfl⟩⟩
+  | letVal he hlen ihe =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions, optExprMentions, Bool.or_eq_false_iff,
+        decide_eq_false_iff_not] at hm
+      obtain ⟨r, hs, hr⟩ := ihe hins (by simp only [codeMentions]; exact hm.2)
+      obtain rfl := hr.eres_right
+      exact ⟨_, Step.letVal hs hlen, ⟨hins.prepend _ (not_mem_map_fst_zip hm.1), rfl, rfl⟩⟩
+  | letHalt he ihe =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨r, hs, hr⟩ := ihe hins (by simp only [codeMentions]; exact hm.2)
+      obtain rfl := hr.eres_right
+      exact ⟨_, Step.letHalt hs, ⟨hins, rfl, rfl⟩⟩
+  | assignVal he hlen ihe =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff, decide_eq_false_iff_not] at hm
+      obtain ⟨r, hs, hr⟩ := ihe hins (by simp only [codeMentions]; exact hm.2)
+      obtain rfl := hr.eres_right
+      exact ⟨_, Step.assignVal hs hlen, ⟨InsAt.setMany hm.1 _ hins, rfl, rfl⟩⟩
+  | assignHalt he ihe =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨r, hs, hr⟩ := ihe hins (by simp only [codeMentions]; exact hm.2)
+      obtain rfl := hr.eres_right
+      exact ⟨_, Step.assignHalt hs, ⟨hins, rfl, rfl⟩⟩
+  | exprStmt he ihe =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions] at hm
+      obtain ⟨r, hs, hr⟩ := ihe hins (by simp only [codeMentions]; exact hm)
+      obtain rfl := hr.eres_right
+      exact ⟨_, Step.exprStmt hs, ⟨hins, rfl, rfl⟩⟩
+  | exprStmtHalt he ihe =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions] at hm
+      obtain ⟨r, hs, hr⟩ := ihe hins (by simp only [codeMentions]; exact hm)
+      obtain rfl := hr.eres_right
+      exact ⟨_, Step.exprStmtHalt hs, ⟨hins, rfl, rfl⟩⟩
+  | ifTrue hc hcv hbody ihc ihbody =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨rc, hsc, hrc⟩ := ihc hins (by simp only [codeMentions]; exact hm.1)
+      obtain rfl := hrc.eres_right
+      obtain ⟨rb, hsb, hrb⟩ := ihbody hins (by simp only [codeMentions, stmtMentions]; exact hm.2)
+      obtain ⟨V'1, rfl, hins1⟩ := hrb.sres_right
+      exact ⟨_, Step.ifTrue hsc hcv hsb, ⟨hins1, rfl, rfl⟩⟩
+  | ifFalse hc hcv ihc =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨rc, hsc, hrc⟩ := ihc hins (by simp only [codeMentions]; exact hm.1)
+      obtain rfl := hrc.eres_right
+      exact ⟨_, Step.ifFalse hsc hcv, ⟨hins, rfl, rfl⟩⟩
+  | ifHalt hc ihc =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨rc, hsc, hrc⟩ := ihc hins (by simp only [codeMentions]; exact hm.1)
+      obtain rfl := hrc.eres_right
+      exact ⟨_, Step.ifHalt hsc, ⟨hins, rfl, rfl⟩⟩
+  | switchExec hc hbody ihc ihbody =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨rc, hsc, hrc⟩ := ihc hins (by simp only [codeMentions]; exact hm.1.1)
+      obtain rfl := hrc.eres_right
+      obtain ⟨rb, hsb, hrb⟩ := ihbody hins (by
+        simp only [codeMentions, stmtMentions]
+        exact selectSwitch_not_mentions hm.1.2 hm.2)
+      obtain ⟨V'1, rfl, hins1⟩ := hrb.sres_right
+      exact ⟨_, Step.switchExec hsc hsb, ⟨hins1, rfl, rfl⟩⟩
+  | switchHalt hc ihc =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨rc, hsc, hrc⟩ := ihc hins (by simp only [codeMentions]; exact hm.1.1)
+      obtain rfl := hrc.eres_right
+      exact ⟨_, Step.switchHalt hsc, ⟨hins, rfl, rfl⟩⟩
+  | forLoop hinit hloop ihinit ihloop =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨⟨⟨h_si, h_ec⟩, h_sp⟩, h_sb⟩ := hm
+      obtain ⟨ri, hsi, hri⟩ := ihinit hins (by simp only [codeMentions]; exact h_si)
+      obtain ⟨Vi1, rfl, hinsi⟩ := hri.sres_right
+      obtain ⟨rl, hsl, hrl⟩ := ihloop hinsi (by simp only [codeMentions, h_ec, h_sp, h_sb, Bool.or_false])
+      obtain ⟨Ve1, rfl, hinsl⟩ := hrl.sres_right
+      exact ⟨_, Step.forLoop hsi hsl, ⟨InsAt.restore hins hinsl, rfl, rfl⟩⟩
+  | forInitHalt hinit ihinit =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨⟨⟨h_si, h_ec⟩, h_sp⟩, h_sb⟩ := hm
+      obtain ⟨ri, hsi, hri⟩ := ihinit hins (by simp only [codeMentions]; exact h_si)
+      obtain ⟨Vi1, rfl, hinsi⟩ := hri.sres_right
+      exact ⟨_, Step.forInitHalt hsi, ⟨InsAt.restore hins hinsi, rfl, rfl⟩⟩
+  | «break» => intro d x v Vs hins hm; exact ⟨_, Step.break, ⟨hins, rfl, rfl⟩⟩
+  | «continue» => intro d x v Vs hins hm; exact ⟨_, Step.continue, ⟨hins, rfl, rfl⟩⟩
+  | leave => intro d x v Vs hins hm; exact ⟨_, Step.leave, ⟨hins, rfl, rfl⟩⟩
+  | seqNil => intro d x v Vs hins hm; exact ⟨_, Step.seqNil, ⟨hins, rfl, rfl⟩⟩
+  | seqCons hs hrest ihs ihrest =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtsMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨rs, hss, hrs⟩ := ihs hins (by simp only [codeMentions]; exact hm.1)
+      obtain ⟨V1', rfl, hins1⟩ := hrs.sres_right
+      obtain ⟨rr, hsr, hrr⟩ := ihrest hins1 (by simp only [codeMentions]; exact hm.2)
+      obtain ⟨V2', rfl, hins2⟩ := hrr.sres_right
+      exact ⟨_, Step.seqCons hss hsr, ⟨hins2, rfl, rfl⟩⟩
+  | seqStop hs hne ihs =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, stmtsMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨rs, hss, hrs⟩ := ihs hins (by simp only [codeMentions]; exact hm.1)
+      obtain ⟨V1', rfl, hins1⟩ := hrs.sres_right
+      exact ⟨_, Step.seqStop hss hne, ⟨hins1, rfl, rfl⟩⟩
+  | loopDone hc hcv ihc =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨rc, hsc, hrc⟩ := ihc hins (by simp only [codeMentions]; exact hm.1.1)
+      obtain rfl := hrc.eres_right
+      exact ⟨_, Step.loopDone hsc hcv, ⟨hins, rfl, rfl⟩⟩
+  | loopCondHalt hc ihc =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨rc, hsc, hrc⟩ := ihc hins (by simp only [codeMentions]; exact hm.1.1)
+      obtain rfl := hrc.eres_right
+      exact ⟨_, Step.loopCondHalt hsc, ⟨hins, rfl, rfl⟩⟩
+  | loopStep hc hcv hbody hob hpost hrec ihc ihbody ihpost ihrec =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨⟨h_ec, h_sp⟩, h_sb⟩ := hm
+      obtain ⟨rc, hsc, hrc⟩ := ihc hins (by simp only [codeMentions]; exact h_ec)
+      obtain rfl := hrc.eres_right
+      obtain ⟨rb, hsb, hrb⟩ := ihbody hins (by simp only [codeMentions, stmtMentions]; exact h_sb)
+      obtain ⟨Vb1, rfl, hinsb⟩ := hrb.sres_right
+      obtain ⟨rp, hsp, hrp⟩ := ihpost hinsb (by simp only [codeMentions, stmtMentions]; exact h_sp)
+      obtain ⟨Vp1, rfl, hinsp⟩ := hrp.sres_right
+      obtain ⟨rr, hsr, hrr⟩ := ihrec hinsp (by simp only [codeMentions, h_ec, h_sp, h_sb, Bool.or_false])
+      obtain ⟨Ve1, rfl, hinsr⟩ := hrr.sres_right
+      exact ⟨_, Step.loopStep hsc hcv hsb hob hsp hsr, ⟨hinsr, rfl, rfl⟩⟩
+  | loopPostHalt hc hcv hbody hob hpost ihc ihbody ihpost =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨⟨h_ec, h_sp⟩, h_sb⟩ := hm
+      obtain ⟨rc, hsc, hrc⟩ := ihc hins (by simp only [codeMentions]; exact h_ec)
+      obtain rfl := hrc.eres_right
+      obtain ⟨rb, hsb, hrb⟩ := ihbody hins (by simp only [codeMentions, stmtMentions]; exact h_sb)
+      obtain ⟨Vb1, rfl, hinsb⟩ := hrb.sres_right
+      obtain ⟨rp, hsp, hrp⟩ := ihpost hinsb (by simp only [codeMentions, stmtMentions]; exact h_sp)
+      obtain ⟨Vp1, rfl, hinsp⟩ := hrp.sres_right
+      exact ⟨_, Step.loopPostHalt hsc hcv hsb hob hsp, ⟨hinsp, rfl, rfl⟩⟩
+  | loopBreak hc hcv hbody ihc ihbody =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨⟨h_ec, h_sp⟩, h_sb⟩ := hm
+      obtain ⟨rc, hsc, hrc⟩ := ihc hins (by simp only [codeMentions]; exact h_ec)
+      obtain rfl := hrc.eres_right
+      obtain ⟨rb, hsb, hrb⟩ := ihbody hins (by simp only [codeMentions, stmtMentions]; exact h_sb)
+      obtain ⟨Vb1, rfl, hinsb⟩ := hrb.sres_right
+      exact ⟨_, Step.loopBreak hsc hcv hsb, ⟨hinsb, rfl, rfl⟩⟩
+  | loopLeave hc hcv hbody ihc ihbody =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨⟨h_ec, h_sp⟩, h_sb⟩ := hm
+      obtain ⟨rc, hsc, hrc⟩ := ihc hins (by simp only [codeMentions]; exact h_ec)
+      obtain rfl := hrc.eres_right
+      obtain ⟨rb, hsb, hrb⟩ := ihbody hins (by simp only [codeMentions, stmtMentions]; exact h_sb)
+      obtain ⟨Vb1, rfl, hinsb⟩ := hrb.sres_right
+      exact ⟨_, Step.loopLeave hsc hcv hsb, ⟨hinsb, rfl, rfl⟩⟩
+  | loopBodyHalt hc hcv hbody ihc ihbody =>
+      intro d x v Vs hins hm
+      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨⟨h_ec, h_sp⟩, h_sb⟩ := hm
+      obtain ⟨rc, hsc, hrc⟩ := ihc hins (by simp only [codeMentions]; exact h_ec)
+      obtain rfl := hrc.eres_right
+      obtain ⟨rb, hsb, hrb⟩ := ihbody hins (by simp only [codeMentions, stmtMentions]; exact h_sb)
+      obtain ⟨Vb1, rfl, hinsb⟩ := hrb.sres_right
       exact ⟨_, Step.loopBodyHalt hsc hcv hsb, ⟨hinsb, rfl, rfl⟩⟩
 
 end YulEvmCompiler.Optimizer
