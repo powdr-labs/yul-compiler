@@ -428,6 +428,35 @@ genuine theorems. `Checks.lean` pins that exact set for each theorem in CI:
   `CreatesRealized.complete_allows_initcode_reentrancy` — that the open-world
   realization interface admits reentrant traces.
 
+## The optimizer specification
+
+The compiler is non-optimizing, but the repository fixes, once and formally, what
+any future Yul→Yul optimization pass must prove. This is the layer future
+optimization research plugs into — `YulEvmCompiler/Optimizer/`:
+
+* **`Pass.lean`** — the spec. A pass is a total transform
+  `run : Block D.Op → Block D.Op`; it is **sound** when
+  `Sound D run := ∀ b, EquivBlock D b (run b)`, and the `Pass` structure bundles a
+  transform with that proof, so a value of `Pass` *is* a verified optimizer.
+  `EquivBlock` (from the pinned `YulSemantics.Equiv`) is *pointwise* big-step
+  equivalence: identical final environment, final state (hence halt payloads), and
+  outcome from every configuration — strictly stronger than observational
+  equivalence, and therefore stable under any context. Passes compose
+  (`Pass.comp`) by transitivity of `EquivBlock`, and `Pass.preservesRun` extracts
+  the whole-program `YulSemantics.Run` guarantee.
+* **`Identity.lean`** — the first inhabitant: the identity pass, returning its
+  input unchanged and sound by `EquivBlock.refl`. It is the unit of composition,
+  so `ofList` folds a list of proved passes into one proved pass.
+* **`Backend.lean`** — the payoff. `Pass.optimize_then_compile_correct` composes
+  any sound pass with `compile_correct`: the bytecode compiled from the *optimized*
+  program correctly simulates the *original* program's Yul semantics. This is the
+  `Run`-interface composition `AGENTS.md` prescribes; no backend proof is reopened.
+
+The soundness obligation and its congruence machinery live upstream in
+`YulSemantics.Equiv`/`YulSemantics.Rewrites`; this repo supplies the pass
+abstraction, the identity instance, and the backend composition. All of it checks
+with the same `[propext, Classical.choice, Quot.sound]` footprint and no `sorry`.
+
 ## The audited specification boundary
 
 `Checks.lean` pins what the proofs are trusted *modulo* (the axiom base).
@@ -483,10 +512,12 @@ CI), which must stay in sync as coverage grows.
   (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
   activated on any modeled fork. Lifting this needs either EIP-8024 activation
   upstream or a spilling pass.
-* **Non-optimizing.** There is no verified optimizer in front of the backend.
-  A source-to-source pass would be a separate total transformation proved
-  against `YulSemantics.Run` and composed with `compile_correct`; the compiler
-  never silently calls an unproved transformation.
+* **Non-optimizing.** No optimization pass runs in front of the backend yet. The
+  spec every pass must meet is fixed and inhabited (see *The optimizer
+  specification* above): a sound `Optimizer.Pass` is a total source-to-source
+  transform proved semantics-preserving (`EquivBlock`) and composed with
+  `compile_correct`. Only the identity pass exists so far; the compiler never
+  silently calls an unproved transformation.
 * **Fork range.** The theorem fixes `fork = .Osaka`; parameterizing over a range
   of compatible forks is a later generalization.
 * **Gas is existential, not closed-form.** By design (yul-semantics is gas-free,
