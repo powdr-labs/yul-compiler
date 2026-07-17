@@ -51,6 +51,12 @@ for entry in "${suites[@]}"; do
     "$solc_path" "$SOLC_VERSION"
 done
 
+echo "==> Re-measuring Solidity gasTests (compile via --via-ir, optimized runtime)"
+lake env lean --run scripts/CheckSolidityGas.lean \
+  "$SOLIDITY_DIR/test/libsolidity/gasTests" \
+  test/solidity-gas-baseline.txt \
+  "$solc_path" "$SOLC_VERSION" --update
+
 echo
 echo "==> Done. Review the diff — this is the review artifact:"
-git --no-pager diff --stat -- 'test/solidity-yul-*-gas-baseline.txt'
+git --no-pager diff --stat -- 'test/solidity-yul-*-gas-baseline.txt' test/solidity-gas-baseline.txt

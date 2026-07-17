@@ -69,6 +69,24 @@ known-failure lists. Re-pin after an intended codegen or solc change with:
 scripts/update-gas.sh          # regenerates test/solidity-yul-*-gas-baseline.txt
 ```
 
+## Solidity gasTests
+
+`scripts/CheckSolidityGas.lean` extends the comparison to Solidity's
+`test/libsolidity/gasTests` — full contracts, not Yul. Since this compiler only
+accepts Yul, each contract is lowered by solc through its `--via-ir` pipeline
+**with the Yul optimizer off** (`--ir`), and this compiler compiles that fully
+unoptimized Yul; compiling it is the correctness check. This deliberately uses
+only solc's Solidity→Yul front-end and none of solc's Yul optimizer. For gas,
+our runtime bytecode (obtained by deploying our creation bytecode in the
+executable EVM and taking the returned code) is compared against solc's own
+**fully optimized** runtime (`--bin-runtime --optimize --via-ir`) under the same
+scenarios — our non-optimizing compiler versus solc's best. This compiler's
+total is pinned in `solidity-gas-baseline.txt` with the same fail-if-worse rule.
+It relies on two small additions that let this compiler accept solc's generated
+Yul: the validator no longer mis-lexes digits inside identifiers (solc's hashed
+helper names), and `memoryguard` is desugared to its argument before
+compilation. Re-pin with `scripts/update-gas.sh`.
+
 Remove a relative fixture path from any baseline as soon as it passes. A
 local checkout can be checked with:
 

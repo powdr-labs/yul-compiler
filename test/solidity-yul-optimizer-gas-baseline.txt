@@ -183,6 +183,15 @@ expressionSplitter/object_access.yul	198	156
 expressionSplitter/smoke.yul	0	0
 expressionSplitter/switch.yul	474	336
 expressionSplitter/trivial.yul	150	150
+fakeStackLimitEvader/connected.yul	30926	29252
+fakeStackLimitEvader/function_arg.yul	143216	143024
+fakeStackLimitEvader/multi_variable_declaration_without_value.yul	228	108
+fakeStackLimitEvader/outer_block.yul	132762	132744
+fakeStackLimitEvader/return_leave.yul	116630	116135
+fakeStackLimitEvader/return_one.yul	47720	47508
+fakeStackLimitEvader/return_one_with_args.yul	47872	47586
+fakeStackLimitEvader/same_variable_in_lhs_and_rhs.yul	492	282
+fakeStackLimitEvader/stub.yul	50574	47394
 forLoopConditionIntoBody/empty_body.yul	3180	2370
 forLoopConditionIntoBody/nested.yul	11760	9474
 forLoopInitRewriter/nested.yul	11760	9474
@@ -223,6 +232,7 @@ fullSimplify/reversed.yul	144	108
 fullSimplify/scoped_var_ref_in_function_call.yul	206346	206190
 fullSimplify/signextend.yul	276	228
 fullSimplify/smoke.yul	0	0
+fullSuite/abi2.yul	456	432
 fullSuite/abi_example1.yul	1758	1410
 fullSuite/and_or_combination.yul	144166	144022
 fullSuite/call_arguments_with_side_effects.yul	378	30
@@ -254,6 +264,7 @@ fullSuite/shift_signextend.yul	27410	27356
 fullSuite/ssaReverse.yul	546	558
 fullSuite/ssaReverseComplex.yul	27482	27440
 fullSuite/stack_compressor_msize.yul	446114	446156
+fullSuite/stack_shuffler_bring_up_target_slot_bfs_dedup.yul	457835	458013
 fullSuite/static_array_slot_computation.yul	228	204
 fullSuite/storage.yul	266508	266508
 fullSuite/structural_simplification.yul	115980	115962
@@ -497,6 +508,7 @@ unusedStoreEliminator/mcopy_reading_writing_same_area_mstore_overlap.yul	468	414
 unusedStoreEliminator/mcopy_same_area.yul	270	234
 unusedStoreEliminator/mcopy_same_write_area_overwriting_mcopy.yul	450	414
 unusedStoreEliminator/mcopy_sstore.yul	48114	48078
+unusedStoreEliminator/memoryguard.yul	540	540
 unusedStoreEliminator/mload.yul	47352	47292
 unusedStoreEliminator/mload_reading_mcopy.yul	27650	27614
 unusedStoreEliminator/mstore_overwriting_mcopy.yul	378	342
