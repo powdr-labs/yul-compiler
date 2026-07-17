@@ -48,11 +48,11 @@ using the documented compatibility parser when the verified parser does not
 apply. Hint builtins (`memoryguard`) are desugared before compilation.
 
 Both block- and object-rooted programs are run through the verified
-`Optimizer.simplify` pass (constant folding + neutral-element identities) before
-the backend. For blocks this is `Optimizer.Pass.optimize_then_compile_correct`;
-for objects, `Optimizer.simplifyObject` runs the pass on every code block of the
-tree (deploy and runtime), and correctness is
-`Optimizer.Pass.optimizeObject_compileObject_correct`. -/
+`Optimizer.simplify` pass (constant folding, neutral-element identities, and
+literal control-flow selection) before the backend. For blocks this is
+`Optimizer.Pass.optimize_then_compile_correct`; for objects,
+`Optimizer.simplifyObject` runs the pass on every code block of the tree (deploy
+and runtime), with correctness provided by `Optimizer.simplifyObject_correct`. -/
 def compileSource (source : String) : Option ByteArray := do
   match parseSource source with
   | some (.block block) =>

@@ -151,9 +151,10 @@ operations are different**: their correctness is *conditional on* the
   (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
   activated on any fork modeled by evm-semantics. Lifting the restriction is a
   codegen-only change once the fork table activates EIP-8024, or a spilling pass.
-- **Optimizer.** A verified `Optimizer.simplify` pass (constant folding +
-  neutral-element identities, recursing through the whole program including
-  function bodies) runs in front of the backend for **block-rooted** source
+- **Optimizer.** A verified `Optimizer.simplify` pass (constant folding,
+  neutral-element identities, and literal `if`/`switch` selection, recursing
+  through the whole program including function bodies) runs in front of the
+  backend for **block-rooted** source
   programs (`compileSource`); it is a total source-to-source transformation proved
   semantics-preserving (`EquivBlock`) and composed with the backend via
   `Pass.optimize_then_compile_correct`. Reaching into function bodies rests on a
