@@ -20,25 +20,26 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 
 variable {D : Dialect} [DecidableEq D.Value]
+variable {Op : Type}
 
 /-! ### Syntactic "mentions" -/
 
 mutual
 /-- Does `x` occur (read) in an expression? -/
-def exprMentions (x : Ident) : Expr D.Op → Bool
+def exprMentions (x : Ident) : Expr Op → Bool
   | .lit _ => false
   | .var y => x = y
   | .builtin _ args => argsMentions x args
   | .call _ args => argsMentions x args
 /-- Does `x` occur in any of an argument list? -/
-def argsMentions (x : Ident) : List (Expr D.Op) → Bool
+def argsMentions (x : Ident) : List (Expr Op) → Bool
   | [] => false
   | e :: rest => exprMentions x e || argsMentions x rest
 end
 
 mutual
 /-- Does `x` occur (read, written, or declared) in a statement? -/
-def stmtMentions (x : Ident) : Stmt D.Op → Bool
+def stmtMentions (x : Ident) : Stmt Op → Bool
   | .block body => stmtsMentions x body
   | .funDef _ ps rs body => (x ∈ ps) || (x ∈ rs) || stmtsMentions x body
   | .letDecl vars val => (x ∈ vars) || optExprMentions x val
@@ -53,21 +54,21 @@ def stmtMentions (x : Ident) : Stmt D.Op → Bool
   | .«continue» => false
   | .leave => false
 /-- Does `x` occur in a statement sequence? -/
-def stmtsMentions (x : Ident) : List (Stmt D.Op) → Bool
+def stmtsMentions (x : Ident) : List (Stmt Op) → Bool
   | [] => false
   | s :: rest => stmtMentions x s || stmtsMentions x rest
 /-- Does `x` occur in any `switch` case body? -/
-def casesMentions (x : Ident) : List (Literal × List (Stmt D.Op)) → Bool
+def casesMentions (x : Ident) : List (Literal × List (Stmt Op)) → Bool
   | [] => false
   | (_, b) :: rest => stmtsMentions x b || casesMentions x rest
 /-- Does `x` occur in an optional initialiser expression? (Named helper so that
 `stmtMentions` contains no inline `match` — inline matches generate auxiliaries
 that break kernel-checking of `simp`-rewritten hypotheses.) -/
-def optExprMentions (x : Ident) : Option (Expr D.Op) → Bool
+def optExprMentions (x : Ident) : Option (Expr Op) → Bool
   | some e => exprMentions x e
   | none => false
 /-- Does `x` occur in an optional block (a `switch` default)? -/
-def optBlockMentions (x : Ident) : Option (List (Stmt D.Op)) → Bool
+def optBlockMentions (x : Ident) : Option (List (Stmt Op)) → Bool
   | some b => stmtsMentions x b
   | none => false
 end
@@ -310,7 +311,7 @@ theorem dom_mono {funs : FunEnv D} {V st code V' st' o}
 results stay `Ins`-related, and `restore` drops the same frame on both sides. -/
 
 /-- `x` does not occur in a `Code`. -/
-def codeMentions (x : Ident) : Code D.Op → Bool
+def codeMentions (x : Ident) : Code Op → Bool
   | .expr e => exprMentions x e
   | .args es => argsMentions x es
   | .stmt s => stmtMentions x s

@@ -152,4 +152,43 @@ theorem stmts_declVars_dom {funs : FunEnv D} : ∀ {ss : List (Stmt Op)} {V st V
           · exact ih htail hy
       | seqStop _ hne => exact absurd rfl hne
 
+/-! ### The dead-`let` transformation
+
+`dceStmts` drops a `let x := e` whose `x` is unused in the rest of its block and
+whose `e` is side-effect-free, recursing into every nested block / function body /
+loop so dead temporaries inside functions are removed too. It leaves all other
+structure — including declared-variable lists and `for`-loop `init` — intact. -/
+
+mutual
+/-- Remove dead `let`s inside a single statement's sub-blocks. -/
+def dceStmt : Stmt Op → Stmt Op
+  | .block body => .block (dceStmts body)
+  | .funDef n ps rs body => .funDef n ps rs (dceStmts body)
+  | .cond c body => .cond c (dceStmts body)
+  | .switch c cases dflt => .switch c (dceCases cases) (dceDflt dflt)
+  | .forLoop init c post body => .forLoop (dceStmts init) c (dceStmts post) (dceStmts body)
+  | .letDecl xs val => .letDecl xs val
+  | .assign xs val => .assign xs val
+  | .exprStmt e => .exprStmt e
+  | .«break» => .«break»
+  | .«continue» => .«continue»
+  | .leave => .leave
+/-- Remove dead `let`s from a statement sequence (dropping a dead one at the head,
+otherwise recursing into the statement and the tail). -/
+def dceStmts : List (Stmt Op) → List (Stmt Op)
+  | [] => []
+  | .letDecl [x] (some e) :: rest =>
+      if SideEffectFree e && !stmtsMentions x rest then dceStmts rest
+      else .letDecl [x] (some e) :: dceStmts rest
+  | s :: rest => dceStmt s :: dceStmts rest
+/-- Remove dead `let`s from each `switch` case body. -/
+def dceCases : List (Literal × List (Stmt Op)) → List (Literal × List (Stmt Op))
+  | [] => []
+  | (l, b) :: rest => (l, dceStmts b) :: dceCases rest
+/-- Remove dead `let`s from a `switch` default block. -/
+def dceDflt : Option (List (Stmt Op)) → Option (List (Stmt Op))
+  | none => none
+  | some b => some (dceStmts b)
+end
+
 end YulEvmCompiler.Optimizer
