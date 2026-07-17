@@ -135,4 +135,72 @@ theorem Ins.prepend {x v} {V1 V2 : VEnv D} (h : Ins x v V1 V2) (pre : VEnv D)
   refine ⟨pre ++ a, b, by simp, by simp, ?_, hb⟩
   simp only [List.map_append, List.mem_append, not_or]; exact ⟨hpre, ha⟩
 
+/-! ### VEnv length lemmas and monotonicity
+
+The semantics leaves "execution only prepends and updates in place" implicit
+(see `restore`'s docstring). We make the length half of it explicit: a statement
+never shrinks the environment, so `restore` keeps exactly the outer frame. -/
+
+theorem VEnv.set_length (V : VEnv D) (z : Ident) (w : D.Value) :
+    (V.set z w).length = V.length := by
+  induction V with
+  | nil => rfl
+  | cons p rest ih =>
+      simp only [VEnv.set]; by_cases hp : p.1 = z
+      · simp [hp]
+      · simp only [hp, if_false, List.length_cons, ih]
+
+theorem VEnv.setMany_length (V : VEnv D) (xs : List Ident) (vs : List D.Value) :
+    (V.setMany xs vs).length = V.length := by
+  unfold VEnv.setMany
+  induction xs.zip vs generalizing V with
+  | nil => rfl
+  | cons p rest ih => simp only [List.foldl_cons]; rw [ih]; exact VEnv.set_length _ _ _
+
+theorem restore_length {outer inner : VEnv D} (h : outer.length ≤ inner.length) :
+    (restore outer inner).length = outer.length := by
+  simp only [restore, List.length_drop]; omega
+
+/-- **VEnv length monotonicity**: executing a statement (sequence, loop) never
+shrinks the environment. -/
+theorem venvLen_mono {funs : FunEnv D} {V st code res} (h : Step D funs V st code res) :
+    ∀ {V' st' o}, res = .sres V' st' o → V.length ≤ V'.length := by
+  induction h with
+  | lit | var | builtinOk | builtinHalt | builtinArgsHalt | callOk | callHalt | callArgsHalt
+  | argsNil | argsCons | argsRestHalt | argsHeadHalt =>
+      intro V' st' o heq; nomatch heq
+  | funDef => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | block _ ihb =>
+      intro V' st' o heq; injection heq with h1 _ _; subst h1
+      have he := restore_length (ihb rfl); omega
+  | letZero => intro V' st' o heq; injection heq with h1 _ _; subst h1; simp only [bindZeros, List.length_append, List.length_map]; omega
+  | letVal _ _ _ => intro V' st' o heq; injection heq with h1 _ _; subst h1; simp only [List.length_append]; omega
+  | letHalt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | assignVal _ _ _ => intro V' st' o heq; injection heq with h1 _ _; subst h1; simp only [VEnv.setMany_length]; omega
+  | assignHalt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | exprStmt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | exprStmtHalt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | ifTrue _ _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
+  | ifFalse => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | ifHalt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | switchExec _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
+  | switchHalt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | forLoop _ _ ihinit ihloop =>
+      intro V' st' o heq; injection heq with h1 _ _; subst h1
+      have he := restore_length (Nat.le_trans (ihinit rfl) (ihloop rfl)); omega
+  | forInitHalt _ ihinit => intro V' st' o heq; injection heq with h1 _ _; subst h1; have he := restore_length (ihinit rfl); omega
+  | «break» => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | «continue» => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | leave => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | seqNil => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | seqCons _ _ ihs ihrest => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_trans (ihs rfl) (ihrest rfl)
+  | seqStop _ _ ihs => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihs rfl
+  | loopDone => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | loopCondHalt => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_refl _
+  | loopStep _ _ _ _ _ _ _ ihb ihp ihr => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_trans (ihb rfl) (Nat.le_trans (ihp rfl) (ihr rfl))
+  | loopPostHalt _ _ _ _ _ _ ihb ihp => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact Nat.le_trans (ihb rfl) (ihp rfl)
+  | loopBreak _ _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
+  | loopLeave _ _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
+  | loopBodyHalt _ _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
+
 end YulEvmCompiler.Optimizer
