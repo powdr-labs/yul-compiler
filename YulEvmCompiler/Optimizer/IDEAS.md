@@ -226,16 +226,29 @@ restricting to well-scoped programs fixes it — all `solc` output is well-scope
   adequacy** (a scoped side-effect-free expr always evaluates) — the ingredient
   the *backward* direction of dead-let removal needs.
 
-**Remaining (the last big proof):** the block-level DCE **simulation**
-`EquivBlock body (dceStmts body)`. Binding-removal is *not* an `EquivStmts`
-congruence (it changes the sequence's output env), so it can't reuse
-`cons_congr`; it needs a bespoke `Step`-induction that (a) threads the
-static-scope ↔ runtime-env-domain invariant `Γ ⊆ dom V` (so `sef_eval` applies at
-each reachable env), (b) uses `frameRemove`/`frameAdd` for each removed binding,
-and (c) shows the block `restore` erases the removed bindings (a `drop`
-computation: dropping the `let`'s frame on the long side equals not adding it).
-Then `dceStmts` (+ `hoist` `ScopeRel` for funDef bodies, as in `Simplify`),
-`preservesScoped`, wire into the pipeline, re-measure gas.
+**Ingredients — all done, `sorry`-free, committed:**
+- `sef_eval` (adequacy), `stmts_append_fwd`/`_normal` (sequence split/join),
+  `dom_mono`/`venvKeys_suffix` (a scoped read stays evaluable), `stmt_declVars_dom`
+  /`stmts_declVars_dom` (declared vars land in the domain), `map_fst_zip_eq`.
+- Plus the frame lemma (`frameAdd`/`frameRemove`) and the `restore`/`drop`
+  arithmetic (worked out: `restore V VbWith = restore V VbWithout` when the
+  removed binding sits at depth `|Vp|`).
+
+**Remaining (the last big proof) — must be a *whole-program* simulation, not a
+per-block congruence.** Key finding: `EquivBlock` (the `Pass.Sound` obligation
+*and* what the `EquivStmt` congruences require) quantifies over **all** `V`.
+Removing `let x := var y` from a block scoped in a *non-empty* `Γ` is UNSOUND
+∀`V`: for `V` missing `y`, the original is stuck on `y` but the reduced program
+(which no longer reads `y`) runs — breaking the iff. This is only sound because
+the *top-level* block is scoped in `[]`, so during its execution every nested
+block runs from an environment that already contains its scope `Γ` (`Γ ⊆ dom V`
+holds by construction). Therefore DCE soundness cannot be decomposed through the
+existing per-block congruences (`cond_congr`, `of_stmts`, …); it must be one
+`Step`-induction over the whole top-level execution, threading `Γ ⊆ dom V` from
+`Γ = []`, using `frameRemove`/`frameAdd` per removed binding and the `restore`
+computation, and recursing into nested blocks/functions inline (with a `hoist`
+`ScopeRel` for funDef bodies, as `Simplify` does). Then `preservesScoped`, wire
+into the pipeline, re-measure gas.
 
 ## Candidate next ideas (not started)
 
