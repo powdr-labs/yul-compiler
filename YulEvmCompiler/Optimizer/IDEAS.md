@@ -204,7 +204,26 @@ the point is a toolkit, not one-off code). All in `Implementation/Frame.lean`,
 → `rest[y↦x]`, block-level soundness via substitution + `frameRemove`/`frameAdd`
 for the dropped binding), wired into the pipeline, gas re-measured.
 
-### 🚧 Spec change + dead-`let` (branch `optimizer-dce`, PR #52) — owner-approved
+### ✅ Spec change + dead-`let` DCE (branch `optimizer-dce`, PR #52) — DONE
+
+**The verified `deadCode : Pass` is landed, `sorry`-free, wired into
+`compileSource`.** A well-scoped `let x := e` with `x` unused in the rest of its
+block and `e` side-effect-free (var/lit) is dropped; sound via the whole-program
+simulation (both directions) + the block `restore` erasing the removed binding,
+and scope-preserving. Functional check: `{ let y:=7 let x:=y let z:=5 sstore(0,z) }`
+→ dce drops `let x:=y` (4→3 statements).
+
+Follow-ups (each a bounded extension of the same machinery): recurse into
+`switch` (needs `selectSwitch` via well-founded recursion), `forLoop` bodies
+(loop-iteration sim), and `funDef` bodies (a `FunsRel`/`ScopeRel` thread);
+widen `SideEffectFree` to total pure builtins; the object-level soundness theorem
+for `dceObject` (mirrors `simplifyObject_compileObject_correct`); gas re-pin via
+the CI gas job (needs solc + corpus). Also the natural next pass, **copy
+propagation** (`let y := x; rest` → `rest[y↦x]`), via the substitution lemma +
+this dead-let removal.
+
+---
+### (historical) Spec change + dead-`let` (branch `optimizer-dce`, PR #52) — owner-approved
 
 The owner authorized **weakening the spec** so binding-removal is sound (the
 pointwise `EquivBlock` iff is unsound for binding-removal on ill-scoped envs;
