@@ -74,4 +74,36 @@ theorem sef_eval {Γ : List Ident} {e : Expr Op} {funs : FunEnv D} {V : VEnv D} 
   | builtin op args => simp [SideEffectFree] at hsef
   | call f args => simp [SideEffectFree] at hsef
 
+/-! ### Statement-sequence append decomposition -/
+
+/-- Executing `pre ++ suf` either runs `pre` to a `normal` outcome and then `suf`,
+or `pre` short-circuits (a non-`normal` outcome) and `suf` never runs. -/
+theorem stmts_append_fwd {funs : FunEnv D} {pre suf : List (Stmt Op)} {V st Vb st' o}
+    (h : Step D funs V st (.stmts (pre ++ suf)) (.sres Vb st' o)) :
+    (∃ V1 st1, Step D funs V st (.stmts pre) (.sres V1 st1 .normal) ∧
+       Step D funs V1 st1 (.stmts suf) (.sres Vb st' o)) ∨
+    (o ≠ .normal ∧ Step D funs V st (.stmts pre) (.sres Vb st' o)) := by
+  induction pre generalizing V st with
+  | nil => exact Or.inl ⟨V, st, Step.seqNil, h⟩
+  | cons s pre' ih =>
+      rw [List.cons_append] at h
+      cases h with
+      | seqCons hs htail =>
+          rcases ih htail with ⟨V1, st1, hpre', hsuf⟩ | ⟨hne, hpre'⟩
+          · exact Or.inl ⟨V1, st1, Step.seqCons hs hpre', hsuf⟩
+          · exact Or.inr ⟨hne, Step.seqCons hs hpre'⟩
+      | seqStop hs hne => exact Or.inr ⟨hne, Step.seqStop hs hne⟩
+
+/-- Reassembling: `pre` to `normal` then `suf` runs `pre ++ suf`. -/
+theorem stmts_append_normal {funs : FunEnv D} {pre suf : List (Stmt Op)} {V st V1 st1 Vb st' o}
+    (hpre : Step D funs V st (.stmts pre) (.sres V1 st1 .normal))
+    (hsuf : Step D funs V1 st1 (.stmts suf) (.sres Vb st' o)) :
+    Step D funs V st (.stmts (pre ++ suf)) (.sres Vb st' o) := by
+  induction pre generalizing V st with
+  | nil => cases hpre with | seqNil => exact hsuf
+  | cons s pre' ih =>
+      cases hpre with
+      | seqCons hs hpre' => exact Step.seqCons hs (ih hpre')
+      | seqStop _ hne => exact absurd rfl hne
+
 end YulEvmCompiler.Optimizer
