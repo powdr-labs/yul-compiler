@@ -14,6 +14,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   SVM_VERSION: "0.5.26"
   SOLC_VERSION: "0.8.35"
@@ -81,46 +84,36 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
-      # `lake build` treats `sorry` as a warning, not an error, so guard against
-      # an incomplete proof slipping in with a plain textual scan of the library
-      # sources. (Checks.lean is excluded: it legitimately names `sorry` in its
-      # docstrings, and any `sorry` reachable from the theorems would anyway be
-      # caught by the axiom check below via `sorryAx`.)
-      - name: Reject sorry in library sources
+      # The project's soundness gate, recorded to a summary file for the PR
+      # comment and failing the job if any part regresses. Four checks:
+      #  - No `sorry` in sources: `lake build` treats `sorry` as a warning, so a
+      #    textual scan guards against an incomplete proof slipping in.
+      #  - Axiom footprint: the correctness theorems are proved with no `sorry`
+      #    and only the three standard classical axioms; `Checks.lean` pins that
+      #    set with `#guard_msgs`, so it fails if a `sorryAx` or new axiom appears.
+      #  - Spec closure: `SpecClosure.lean` pins the exact audited specification
+      #    surface each headline theorem is phrased in terms of; it fails if a
+      #    declaration enters/leaves that surface or its meaning changes. It also
+      #    regenerates SPEC.md.
+      #  - SPEC.md up to date: the regenerated manifest must match what's checked in.
+      - name: Verify soundness (sorry-free, axioms, spec surface)
         run: |
+          mkdir -p ci-summary; f=ci-summary/soundness.txt; : > "$f"; ok=1
           if grep -rn --include='*.lean' -w 'sorry' \
               YulEvmCompiler YulParser YulEvmCompilerTests; then
             echo "::error::found a sorry in compiler, parser, or test-framework sources"
-            exit 1
+            echo "sorry_scan=fail" >> "$f"; ok=0
+          else echo "sorry_scan=pass" >> "$f"; fi
+          if lake env lean Checks.lean; then echo "axioms=pass" >> "$f"
+          else echo "::error::axiom footprint changed"; echo "axioms=fail" >> "$f"; ok=0; fi
+          if lake env lean SpecClosure.lean; then echo "spec_closure=pass" >> "$f"
+          else echo "::error::audited spec surface changed"; echo "spec_closure=fail" >> "$f"; ok=0; fi
+          if git diff --exit-code -- SPEC.md; then echo "spec_md=uptodate" >> "$f"
+          else
+            echo "::error::SPEC.md is stale — run 'lake env lean SpecClosure.lean' and commit"
+            echo "spec_md=stale" >> "$f"; ok=0
           fi
-
-      # The project's headline guarantee: the correctness theorems are proved
-      # with no `sorry` and only the three standard classical axioms. `Checks.lean`
-      # pins that axiom set with `#guard_msgs`, so this step fails if it ever
-      # changes (e.g. a `sorryAx` or a new axiom appears).
-      - name: Verify axiom footprint (sorry-free, standard axioms only)
-        run: lake env lean Checks.lean
-
-      # The audited *specification* boundary — the dual of the axiom check.
-      # `SpecClosure.lean` walks each headline theorem's statement (never its
-      # proof) to pin the exact set of match relations, frame conditions,
-      # outcome maps, data types, and external-semantics entry points the
-      # guarantee is phrased in terms of. Its `#guard_msgs` block fails if a
-      # declaration enters or leaves the audited surface, or an audited
-      # declaration's meaning changes — the signal that a human must re-audit
-      # the spec. Elaborating it also regenerates SPEC.md (checked next). This
-      # does NOT fire when the compiler algorithm or any proof changes: under
-      # autoresearch, code and proofs may change freely as long as the pinned
-      # spec surface does not.
-      - name: Verify specification closure (audited spec surface pinned)
-        run: lake env lean SpecClosure.lean
-
-      - name: Specification manifest (SPEC.md) is up to date
-        run: |
-          if ! git diff --exit-code -- SPEC.md; then
-            echo "::error::SPEC.md is stale — run 'lake env lean SpecClosure.lean' and commit the result"
-            exit 1
-          fi
+          [ "$ok" = 1 ]
 
       # Fetch only the Yul test directories used below. Checked-in baselines
       # make current parser/compiler gaps explicit and detect stale entries.
@@ -135,34 +128,51 @@ jobs:
             test/libyul/objectCompiler \
             test/libyul/evmCodeTransform
 
+      # These steps tee their runner output into ci-summary/ so the pr-summary
+      # job can turn it into a PR comment; `set -o pipefail` keeps the runner's
+      # exit code (not tee's) as the step result.
       - name: Check parser against Solidity syntax corpus
         run: |
+          set -o pipefail; mkdir -p ci-summary
           lake env lean --run scripts/CheckSoliditySyntaxTests.lean \
             /tmp/solidity/test/libyul/yulSyntaxTests \
-            test/solidity-yul-syntax-known-mismatches.txt
+            test/solidity-yul-syntax-known-mismatches.txt \
+            2>&1 | tee ci-summary/parsing-syntax.txt
 
       - name: Compile and execute latest-fork Solidity Yul interpreter tests
         run: |
+          set -o pipefail; mkdir -p ci-summary
           lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
             /tmp/solidity/test/libyul/yulInterpreterTests \
-            test/solidity-yul-interpreter-known-failures.txt
+            test/solidity-yul-interpreter-known-failures.txt \
+            2>&1 | tee ci-summary/parsing-interpreter.txt
 
       - name: Compile latest-fork Solidity positive compiler corpora
         run: |
+          set -o pipefail; mkdir -p ci-summary; f=ci-summary/correctness-compile.txt; : > "$f"
           status=0
           lake env lean --run scripts/CheckSolidityCompileTests.lean \
             optimizer \
             /tmp/solidity/test/libyul/yulOptimizerTests \
-            test/solidity-yul-optimizer-known-compile-failures.txt || status=1
+            test/solidity-yul-optimizer-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
           lake env lean --run scripts/CheckSolidityCompileTests.lean \
             object-compiler \
             /tmp/solidity/test/libyul/objectCompiler \
-            test/solidity-yul-object-compiler-known-compile-failures.txt || status=1
+            test/solidity-yul-object-compiler-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
           lake env lean --run scripts/CheckSolidityCompileTests.lean \
             EVM-code-transform \
             /tmp/solidity/test/libyul/evmCodeTransform \
-            test/solidity-yul-evm-code-transform-known-compile-failures.txt || status=1
+            test/solidity-yul-evm-code-transform-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
           exit "$status"
+
+      - name: Upload CI summary (build)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-build
+          path: ci-summary
+          retention-days: 1
+          if-no-files-found: ignore
 
   # Compile the native `checkSolidityGas` executable exactly once, in parallel
   # with `build`. This is the ~13-minute step (it compiles the whole dependency
@@ -307,6 +317,9 @@ jobs:
       # with scripts/update-gas.sh after an intended codegen or solc change.
       - name: Differentially execute against solc
         run: |
+          set -o pipefail
+          mkdir -p ci-summary
+          f="ci-summary/diff-${{ matrix.kind }}-${{ matrix.shard_index }}.txt"; : > "$f"
           if [[ "${{ matrix.kind }}" == "optimizer" ]]; then
             lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
               optimizer \
@@ -314,7 +327,7 @@ jobs:
               test/solidity-yul-optimizer-known-solc-differential-failures.txt \
               test/solidity-yul-optimizer-gas-baseline.txt \
               "$SOLC_PATH" "$SOLC_VERSION" \
-              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}"
+              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}" 2>&1 | tee -a "$f"
           else
             status=0
             lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
@@ -322,15 +335,24 @@ jobs:
               /tmp/solidity/test/libyul/objectCompiler \
               test/solidity-yul-object-compiler-known-solc-differential-failures.txt \
               test/solidity-yul-object-compiler-gas-baseline.txt \
-              "$SOLC_PATH" "$SOLC_VERSION" 0 1 || status=1
+              "$SOLC_PATH" "$SOLC_VERSION" 0 1 2>&1 | tee -a "$f" || status=1
             lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
               EVM-code-transform \
               /tmp/solidity/test/libyul/evmCodeTransform \
               test/solidity-yul-evm-code-transform-known-solc-differential-failures.txt \
               test/solidity-yul-evm-code-transform-gas-baseline.txt \
-              "$SOLC_PATH" "$SOLC_VERSION" 0 1 || status=1
+              "$SOLC_PATH" "$SOLC_VERSION" 0 1 2>&1 | tee -a "$f" || status=1
             exit "$status"
           fi
+
+      - name: Upload CI summary (differential)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-diff-${{ matrix.kind }}-${{ matrix.shard_index }}
+          path: ci-summary
+          retention-days: 1
+          if-no-files-found: ignore
 
   solidity-gas:
     name: Solidity gas (${{ matrix.name }})
@@ -413,16 +435,81 @@ jobs:
       # (real-world corpus with many unsupported features) and sharded.
       - name: Compile and gas-check Solidity contracts
         run: |
+          set -o pipefail
           ulimit -s unlimited || true
+          mkdir -p ci-summary
+          f="ci-summary/gas-${{ matrix.kind }}-${{ matrix.shard_index }}.txt"; : > "$f"
           if [[ "${{ matrix.kind }}" == "gasTests" ]]; then
             .lake/build/bin/checkSolidityGas \
               /tmp/solidity/test/libsolidity/gasTests \
               test/solidity-gas-baseline.txt \
-              "$SOLC_PATH" "$SOLC_VERSION"
+              "$SOLC_PATH" "$SOLC_VERSION" 2>&1 | tee -a "$f"
           else
             .lake/build/bin/checkSolidityGas \
               /tmp/solidity/test/libsolidity/semanticTests \
               test/solidity-semantic-gas-baseline.txt \
               "$SOLC_PATH" "$SOLC_VERSION" \
-              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}" --lenient
+              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}" --lenient 2>&1 | tee -a "$f"
+          fi
+
+      - name: Upload CI summary (gas)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-gas-${{ matrix.kind }}-${{ matrix.shard_index }}
+          path: ci-summary
+          retention-days: 1
+          if-no-files-found: ignore
+
+  # Aggregate every leg's captured summary into one sticky PR comment: parsing,
+  # correctness, gas (vs solc-optimized AND codegen parity), soundness, verdict.
+  # Runs on pull requests only; `always()` so it also reports failing runs (that
+  # is when the summary is most useful). Needs no Lean toolchain.
+  pr-summary:
+    name: PR summary comment
+    needs: [build, gas-runner, solc-differential, solidity-gas]
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all leg summaries
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: summary-*
+          path: summaries
+          merge-multiple: true
+
+      - name: Render summary comment
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          GAS_RUNNER_RESULT: ${{ needs.gas-runner.result }}
+          SOLC_DIFFERENTIAL_RESULT: ${{ needs.solc-differential.result }}
+          SOLIDITY_GAS_RESULT: ${{ needs.solidity-gas.result }}
+        run: |
+          python3 scripts/ci_pr_summary.py summaries --sha "${{ github.event.pull_request.head.sha }}" \
+            > comment.md
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post or update sticky PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          marker='<!-- ci-summary -->'
+          { echo "$marker"; cat comment.md; } > body.md
+          cid=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n1)
+          if [ -n "$cid" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$cid" -F body=@body.md >/dev/null
+            echo "Updated comment $cid"
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@body.md >/dev/null
+            echo "Created new comment"
           fi

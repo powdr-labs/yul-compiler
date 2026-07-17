@@ -144,6 +144,13 @@ private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFil
   IO.println (s!"Gas: {measuredGas.size} comparable, {gasRegressions.size} regressions, " ++
     s!"{gasImproved.size} improved, {gasChanged.size} changed upstream, " ++
     s!"{gasUnpinned.size} unpinned, {gasStale.size} stale.")
+  -- Machine-readable aggregate for the PR summary comment. `mode=codegen`: both
+  -- sides assemble the *same* Yul with no optimizer (solc here is
+  -- `--strict-assembly` without `--optimize`), so this measures backend codegen
+  -- parity, NOT this compiler against solc's Yul optimizer.
+  IO.println (s!"Gas totals: suite={suiteName} mode=codegen " ++
+    s!"ours={measuredGas.foldl (fun a r => a + r.ours) 0} " ++
+    s!"solc={measuredGas.foldl (fun a r => a + r.solc) 0} comparable={measuredGas.size}")
   unless metadataErrors.isEmpty do
     IO.eprintln s!"Invalid {suiteName} EVMVersion metadata:"
     for (name, message) in metadataErrors do
