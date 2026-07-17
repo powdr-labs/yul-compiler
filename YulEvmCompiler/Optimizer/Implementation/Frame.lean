@@ -203,4 +203,25 @@ theorem venvLen_mono {funs : FunEnv D} {V st code res} (h : Step D funs V st cod
   | loopLeave _ _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
   | loopBodyHalt _ _ _ _ ihb => intro V' st' o heq; injection heq with h1 _ _; subst h1; exact ihb rfl
 
+/-! ### The frame lemma
+
+`x` unmentioned by `code` ⇒ executing `code` from `V1` and from `V2` (= `V1` with
+`(x,v)` spliced in) stay in lock-step: expression results are identical, statement
+results stay `Ins`-related, and `restore` drops the same frame on both sides. -/
+
+/-- `x` does not occur in a `Code`. -/
+def codeMentions (x : Ident) : Code D.Op → Bool
+  | .expr e => exprMentions x e
+  | .args es => argsMentions x es
+  | .stmt s => stmtMentions x s
+  | .stmts ss => stmtsMentions x ss
+  | .loop c post body => exprMentions x c || stmtsMentions x post || stmtsMentions x body
+
+/-- Relation on results: expression results equal; statement results `Ins`-related
+with equal state and outcome. -/
+def ResRel (x : Ident) (v : D.Value) : Res D → Res D → Prop
+  | .eres r1, .eres r2 => r1 = r2
+  | .sres V1 st1 o1, .sres V2 st2 o2 => Ins x v V1 V2 ∧ st1 = st2 ∧ o1 = o2
+  | _, _ => False
+
 end YulEvmCompiler.Optimizer
