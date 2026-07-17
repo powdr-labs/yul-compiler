@@ -1,5 +1,6 @@
 import YulParser.Source
 import YulEvmCompiler.ObjectCompile
+import YulEvmCompiler.Optimizer.Implementation.Simplify
 
 /-!
 # YulParser.Compile
@@ -44,11 +45,16 @@ partial def desugarObject {Op : Type} : Object Op → Object Op
 
 /-- Parse and compile a complete Yul source program to executable EVM bytecode,
 using the documented compatibility parser when the verified parser does not
-apply. Hint builtins (`memoryguard`) are desugared before compilation. -/
+apply. Hint builtins (`memoryguard`) are desugared before compilation.
+
+Block-rooted programs are run through the verified `Optimizer.simplify` pass
+(constant folding + neutral-element identities) before the backend; soundness of
+this composition is `Optimizer.Pass.optimize_then_compile_correct`. -/
 def compileSource (source : String) : Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
-      return YulEvmCompiler.assemble (← YulEvmCompiler.compile (block.map desugarStmt))
+      return YulEvmCompiler.assemble
+        (← YulEvmCompiler.compile (YulEvmCompiler.Optimizer.simplifyStmts (block.map desugarStmt)))
   | some (.object o) =>
       let layout ← YulEvmCompiler.compileObject (desugarObject o)
       return ByteArray.mk layout.code.toArray

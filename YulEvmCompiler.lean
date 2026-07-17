@@ -17,3 +17,6 @@ import YulEvmCompiler.ObjectCompile
 import YulEvmCompiler.Optimizer.Spec.Pass
 import YulEvmCompiler.Optimizer.Spec.Backend
 import YulEvmCompiler.Optimizer.Implementation.Identity
+import YulEvmCompiler.Optimizer.Implementation.FunCongr
+import YulEvmCompiler.Optimizer.Implementation.Simplify
+import YulEvmCompiler.Optimizer.Implementation.ObjectPass

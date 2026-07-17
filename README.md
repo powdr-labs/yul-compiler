@@ -151,10 +151,18 @@ operations are different**: their correctness is *conditional on* the
   (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
   activated on any fork modeled by evm-semantics. Lifting the restriction is a
   codegen-only change once the fork table activates EIP-8024, or a spilling pass.
-- **Non-optimizing.** There is no verified optimizer in front of the backend. A
-  source-to-source pass would be a separate total transformation proved against
-  `YulSemantics.Run` and composed with `compile_correct`; `compile` never
-  silently calls an unproved transformation.
+- **Optimizer.** A verified `Optimizer.simplify` pass (constant folding +
+  neutral-element identities, recursing through the whole program including
+  function bodies) runs in front of the backend for **block-rooted** source
+  programs (`compileSource`); it is a total source-to-source transformation proved
+  semantics-preserving (`EquivBlock`) and composed with the backend via
+  `Pass.optimize_then_compile_correct`. Reaching into function bodies rests on a
+  locally-proved function-environment congruence (`Optimizer.FunCongr`). The object
+  path has a proved foundation (`Pass.optimizeTop_compileObject_correct`, sound for
+  offset-free/leaf objects) but is not yet wired: the object compiler couples code
+  length to sub-object/data offsets, so optimizing real constructor→runtime nesting
+  needs a cross-layout equivalence (see `Optimizer/IDEAS.md`). `compile`/
+  `compileObject` never silently call an unproved transformation.
 - **Fork range.** The theorem fixes `fork = .Osaka`. Function/param/return names
   must be `Nodup`.
 - **Gas is existentially bounded, not closed-form.** By design (yul-semantics is
