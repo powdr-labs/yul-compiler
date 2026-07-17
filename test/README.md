@@ -87,6 +87,20 @@ Yul: the validator no longer mis-lexes digits inside identifiers (solc's hashed
 helper names), and `memoryguard` is desugared to its argument before
 compilation. Re-pin with `scripts/update-gas.sh`.
 
+Gas is summed over each contract's external functions, invoked with a selector
+plus nonzero argument words so real work (storage writes, arithmetic) is charged
+rather than dispatch-and-revert. A successful empty `RETURN` and a `STOP` are
+treated as the same outcome (our compiler emits the former where solc's
+optimizer emits the latter).
+
+The same runner also covers Solidity's much larger
+`test/libsolidity/semanticTests` corpus — real contracts, not microbenchmarks —
+in `--lenient` mode: contracts using features this compiler cannot yet handle
+are skipped rather than failing, and only the compilable subset's gas is pinned
+(`solidity-semantic-gas-baseline.txt`). CI runs it sharded across the optimizer
+legs. This is where the largest overheads surface — e.g. contracts solc
+constant-folds to almost nothing that this non-optimizing compiler runs in full.
+
 Remove a relative fixture path from any baseline as soon as it passes. A
 local checkout can be checked with:
 

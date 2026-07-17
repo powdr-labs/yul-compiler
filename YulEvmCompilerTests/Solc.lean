@@ -66,6 +66,25 @@ def solcUnoptimizedIR (solcPath source : String) : IO (Except String String) := 
     return .error "solc --ir produced no object"
   return .ok (String.intercalate "\n" ir)
 
+/-- External function selectors of a Solidity source (`solc --hashes`), each the
+8-hex-digit selector. Used to build valid function-call calldata so the gas
+comparison exercises the contract's real work instead of dispatch-and-revert. -/
+def solcFunctionSelectors (solcPath source : String) : IO (Except String (List String)) := do
+  let output ← IO.Process.output {
+    cmd := solcPath
+    args := #["--hashes", "--evm-version", "osaka", "-"]
+  } (some source)
+  if output.exitCode != 0 then
+    return .error s!"solc --hashes failed: {output.stderr.trimAscii.copy}"
+  -- Lines look like "4018d9aa: setX(uint256)"; keep the 8-hex-digit prefix.
+  let selectors := (output.stdout.splitOn "\n").filterMap fun rawLine =>
+    let line := rawLine.trimAscii.copy
+    match line.splitOn ": " with
+    | sel :: _ :: _ =>
+        if sel.length == 8 && sel.all isHexDigit then some sel else none
+    | _ => none
+  return .ok selectors
+
 /-- solc's own optimized runtime bytecode for a Solidity source
 (`--bin-runtime --optimize --via-ir`) — the reference for gas comparison. -/
 def solcRuntimeBytecode (solcPath source : String) : IO (Except String ByteArray) := do

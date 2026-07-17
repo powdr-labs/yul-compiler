@@ -26,3 +26,9 @@ name = "YulEvmCompilerTests"
 [[lean_exe]]
 name = "yulc"
 root = "YulParserMain"
+
+# Built natively (not `lean --run`) because compiling large real-world Solidity
+# contracts recurses deeper than the interpreter's stack allows.
+[[lean_exe]]
+name = "checkSolidityGas"
+root = "scripts.CheckSolidityGas"
