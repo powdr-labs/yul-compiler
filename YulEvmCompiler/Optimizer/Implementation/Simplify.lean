@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Implementation.FunCongr
 import YulSemantics.Dialect.EVM
 
 /-!
@@ -355,12 +356,12 @@ theorem simplifyBuiltin_equiv (op : Op) (args : List (Expr Op)) :
 
 /-! ### The recursive pass
 
-`simplifyExpr`/`simplifyStmt` rewrite bottom-up.  For soundness within the
-upstream congruences (which have no `funDef`-body rule and fix a `for`-loop's
-`init`), this pass leaves **function-definition bodies** and a **`for`-loop's
-`init`** block untouched; every other position is simplified.  (Reaching into
-function bodies is a logged follow-up needing a function-environment
-congruence.) -/
+`simplifyExpr`/`simplifyStmt` rewrite bottom-up through the whole program,
+**including `funDef` bodies** (soundness there uses the function-environment
+congruence `EquivBlock.of_stmts_funs` from `FunCongr`).  The only position left
+untouched is a `for`-loop's `init` block, which is both executed *and* hoisted
+into the loop's scope — changing it needs a `for`-specific congruence beyond the
+upstream `forLoop_congr` (which fixes `init`); that is a logged follow-up. -/
 
 mutual
 
@@ -380,11 +381,11 @@ end
 
 mutual
 
-/-- Simplify a statement, recursing into every sub-block except `funDef` bodies
-and a `for`-loop's `init`. -/
+/-- Simplify a statement, recursing into every sub-block (including `funDef`
+bodies) except a `for`-loop's `init`. -/
 def simplifyStmt : Stmt Op → Stmt Op
   | .block body => .block (simplifyStmts body)
-  | .funDef n ps rs body => .funDef n ps rs body
+  | .funDef n ps rs body => .funDef n ps rs (simplifyStmts body)
   | .letDecl xs (some e) => .letDecl xs (some (simplifyExpr e))
   | .letDecl xs none => .letDecl xs none
   | .assign xs e => .assign xs (simplifyExpr e)
@@ -416,24 +417,14 @@ end
 
 /-! ### Soundness of the pass -/
 
-/-- The pass never touches `funDef` statements, so the hoisted function scope of a
-block is unchanged — the side condition of the block congruence. -/
-theorem simplifyStmts_eq_map (ss : List (Stmt Op)) :
-    simplifyStmts ss = ss.map simplifyStmt := by
-  induction ss with
-  | nil => simp [simplifyStmts]
-  | cons s rest ih => rw [simplifyStmts, ih, List.map_cons]
-
-theorem hoist_simplifyStmts (ss : List (Stmt Op)) :
-    hoist D (simplifyStmts ss) = hoist D ss := by
-  rw [simplifyStmts_eq_map]
-  simp only [hoist, List.filterMap_map]
-  congr 1
-  funext s
-  simp only [Function.comp]
-  cases s with
-  | letDecl vars val => cases val <;> rfl
-  | _ => rfl
+/-- A `funDef` statement is a no-op — its body runs only when the function is
+*called* — so changing the body leaves the statement's own behavior unchanged.
+The body's equivalence matters at the block level, through the hoisted scope
+(`scopeRel_hoistSimplify` + `EquivBlock.of_stmts_funs`). -/
+theorem funDef_equiv (n : Ident) (ps rs : List Ident) (b₁ b₂ : Block Op) :
+    EquivStmt D (.funDef n ps rs b₁) (.funDef n ps rs b₂) := by
+  intro funs V st V' st' o
+  constructor <;> (intro h; cases h; exact Step.funDef)
 
 mutual
 
@@ -460,29 +451,29 @@ mutual
 /-- Every statement is equivalent to its simplification. -/
 theorem simplifyStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (simplifyStmt s)
   | .block body =>
-      EquivBlock.of_stmts (EquivStmts.of_forall₂ (simplifyStmts_forall2 body))
-        (hoist_simplifyStmts body).symm
-  | .funDef .. => EquivStmt.refl _
+      EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 body))
+        (scopeRel_hoistSimplify body)
+  | .funDef n ps rs body => funDef_equiv n ps rs body (simplifyStmts body)
   | .letDecl _ (some e) => EquivStmt.letDecl_congr _ (simplifyExpr_equiv e)
   | .letDecl _ none => EquivStmt.refl _
   | .assign _ e => EquivStmt.assign_congr _ (simplifyExpr_equiv e)
   | .cond c body =>
       EquivStmt.cond_congr (simplifyExpr_equiv c)
-        (EquivBlock.of_stmts (EquivStmts.of_forall₂ (simplifyStmts_forall2 body))
-          (hoist_simplifyStmts body).symm)
+        (EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 body))
+          (scopeRel_hoistSimplify body))
   | .switch c cases dflt => by
       refine EquivStmt.switch_congr (simplifyExpr_equiv c) (simplifyCases_forall2 cases) ?_
       cases dflt with
       | none => exact EquivBlock.refl _
       | some b =>
-          exact EquivBlock.of_stmts (EquivStmts.of_forall₂ (simplifyStmts_forall2 b))
-            (hoist_simplifyStmts b).symm
+          exact EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 b))
+            (scopeRel_hoistSimplify b)
   | .forLoop init c post body =>
       EquivStmt.forLoop_congr init (simplifyExpr_equiv c)
-        (EquivBlock.of_stmts (EquivStmts.of_forall₂ (simplifyStmts_forall2 post))
-          (hoist_simplifyStmts post).symm)
-        (EquivBlock.of_stmts (EquivStmts.of_forall₂ (simplifyStmts_forall2 body))
-          (hoist_simplifyStmts body).symm)
+        (EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 post))
+          (scopeRel_hoistSimplify post))
+        (EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 body))
+          (scopeRel_hoistSimplify body))
   | .exprStmt e => EquivStmt.exprStmt_congr (simplifyExpr_equiv e)
   | .break => EquivStmt.refl _
   | .continue => EquivStmt.refl _
@@ -499,16 +490,38 @@ theorem simplifyCases_forall2 : ∀ cs : List (Literal × Block Op),
     List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs (simplifyCases cs)
   | [] => .nil
   | (_, b) :: rest =>
-      .cons ⟨rfl, EquivBlock.of_stmts (EquivStmts.of_forall₂ (simplifyStmts_forall2 b))
-        (hoist_simplifyStmts b).symm⟩ (simplifyCases_forall2 rest)
+      .cons ⟨rfl, EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 b))
+        (scopeRel_hoistSimplify b)⟩ (simplifyCases_forall2 rest)
+
+/-- The pass changes only `funDef` *bodies* (to `EquivBlock`-equivalent ones with
+identical signatures), so a block's hoisted scope maps to a `ScopeRel`-related
+one — the side condition of `EquivBlock.of_stmts_funs`. -/
+theorem scopeRel_hoistSimplify : ∀ ss : List (Stmt Op),
+    ScopeRel D (hoist D ss) (hoist D (simplifyStmts ss))
+  | [] => .nil
+  | .funDef _ _ _ body :: rest =>
+      .cons ⟨rfl, rfl, rfl,
+        EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 body))
+          (scopeRel_hoistSimplify body)⟩ (scopeRel_hoistSimplify rest)
+  | .block _ :: rest => scopeRel_hoistSimplify rest
+  | .letDecl _ (some _) :: rest => scopeRel_hoistSimplify rest
+  | .letDecl _ none :: rest => scopeRel_hoistSimplify rest
+  | .assign _ _ :: rest => scopeRel_hoistSimplify rest
+  | .cond _ _ :: rest => scopeRel_hoistSimplify rest
+  | .switch _ _ _ :: rest => scopeRel_hoistSimplify rest
+  | .forLoop _ _ _ _ :: rest => scopeRel_hoistSimplify rest
+  | .exprStmt _ :: rest => scopeRel_hoistSimplify rest
+  | .break :: rest => scopeRel_hoistSimplify rest
+  | .continue :: rest => scopeRel_hoistSimplify rest
+  | .leave :: rest => scopeRel_hoistSimplify rest
 
 end
 
-/-- A block is equivalent to its simplification (statement congruence plus the
-unchanged hoisted scope). -/
+/-- A block is equivalent to its simplification (statement congruence lifted
+through the function-environment congruence). -/
 theorem blockEquiv (b : List (Stmt Op)) : EquivBlock D b (simplifyStmts b) :=
-  EquivBlock.of_stmts (EquivStmts.of_forall₂ (simplifyStmts_forall2 b))
-    (hoist_simplifyStmts b).symm
+  EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 b))
+    (scopeRel_hoistSimplify b)
 
 /-- The **Simplify pass**: constant folding + neutral-element identities over the
 whole program (outside function bodies and `for`-loop `init`s), bundled with its

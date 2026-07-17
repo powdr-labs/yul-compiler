@@ -460,14 +460,29 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     returns its input unchanged, sound by reflexivity (definitionally `Pass.id`). A
     real pass replaces `run` with a transformation and `sound` with an equivalence
     proof of the same shape.
+  * **`Implementation/FunCongr.lean`** — the **function-environment congruence**
+    upstream defers: `FunsRel` (function environments related scope-by-scope, with
+    equal signatures and `EquivBlock` bodies), `Step.funs_congr` (a `Step`
+    derivation transports across `FunsRel`), and `EquivBlock.of_stmts_funs` (a block
+    congruence that lets the hoisted scope change). This is what lets a pass rewrite
+    *inside* `funDef` bodies; it is reusable by any future pass.
   * **`Implementation/Simplify.lean`** — the first *real* pass: local **constant
     folding** (a pure built-in on all-literal arguments → the folded literal) and
     **neutral-element identities** (`add(x,0)`, `mul(x,1)`, `and(x,2²⁵⁶−1)`, … → `x`,
     with the variable kept on the right-hand side so the rewrite is sound on every
-    environment). It recurses through the whole program except `funDef` bodies and a
-    `for`-loop's `init` (reaching those needs a function-environment congruence,
-    deferred). `compileSource` runs it on block-rooted programs; `IDEAS.md` logs the
-    running list of passes tried and to try.
+    environment). It recurses through the whole program **including `funDef` bodies**
+    (via `FunCongr`); only a `for`-loop's `init` is left untouched (it is executed
+    *and* hoisted, so it needs a `for`-specific congruence — a small follow-up).
+    `compileSource` runs it on block-rooted programs; `IDEAS.md` logs the running
+    list of passes tried and to try.
+  * **`Implementation/ObjectPass.lean`** — `Pass.optimizeTopCode` (run a pass on an
+    object's top code block) and `Pass.optimizeTop_compileObject_correct`: the
+    object analogue of `optimize_then_compile_correct`, sound whenever resolution is
+    the identity on the top block (offset-free / leaf objects). The object compiler
+    couples code length to sub-object/data offsets, so optimizing offset-bearing
+    code (e.g. a constructor that `datacopy`s its runtime) needs a cross-layout
+    equivalence — the object-path frontier documented in `IDEAS.md`. Not yet wired
+    into `compileSource`.
 
 The soundness obligation and its congruence machinery live upstream in
 `YulSemantics.Equiv`/`YulSemantics.Rewrites`; this repo supplies the pass

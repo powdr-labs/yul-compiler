@@ -29,9 +29,11 @@ a lot of structural slack to remove.
   See the note in upstream `YulSemantics.Rewrites`.
 - `EquivBlock.of_stmts` needs `hoist b₁ = hoist b₂`. Rewriting *inside a `funDef`
   body* changes `hoist`, so it is **not** liftable by the upstream congruences —
-  there is no `funDef`-body congruence upstream (explicitly deferred). To recurse
-  into function bodies soundly we prove a **function-environment congruence**
-  locally (see `Simplify`, below).
+  there is no `funDef`-body congruence upstream (explicitly deferred). We prove
+  that missing **function-environment congruence** locally in
+  `Implementation/FunCongr.lean` (`FunsRel` + `Step.funs_congr` +
+  `EquivBlock.of_stmts_funs`); it lets a pass rewrite inside `funDef` bodies and
+  is the reusable foundation for every future pass that does so.
 - Object path: `RunObject o L = Run evm o.codeBlock L.initState`, so an
   `EquivBlock` on a code block lifts to object behavior *under a fixed layout*.
   But optimizing a **sub-object** whose compiled byte length changes shifts
@@ -58,9 +60,18 @@ a lot of structural slack to remove.
 ### ✅ `identity` (`Implementation/Identity.lean`) — landed
 The do-nothing pass; validates the spec is inhabited. Sound by reflexivity.
 
+### ✅ `FunCongr` (`Implementation/FunCongr.lean`) — landed (this branch)
+The **function-environment congruence** upstream defers: `FunsRel` (related
+function environments — equal signatures, `EquivBlock` bodies), `Step.funs_congr`
+(a `Step` transports across `FunsRel`), and `EquivBlock.of_stmts_funs` (block
+congruence that lets the hoisted scope change). Enables optimizing inside `funDef`
+bodies. Reusable by any future pass.
+
 ### 🚧 `Simplify` (`Implementation/Simplify.lean`) — IN PROGRESS (this branch)
 A local **constant-folding + neutral-element** expression simplifier that
-recurses through the whole program, *including function bodies*.
+recurses through the whole program, **including function bodies** (via
+`FunCongr`). Only a `for`-loop's `init` is left untouched (it is both executed
+and hoisted; changing it needs a `for`-specific congruence — see below).
 
 - **Constant folding**: `builtin op args` with every arg a literal and `op` pure
   → replace with the literal `number (v.toNat)` where `v = f (args.map litValue)`.
@@ -71,21 +82,56 @@ recurses through the whole program, *including function bodies*.
   `or(x,0)`, `or(0,x)`, `xor(x,0)`, `xor(0,x)`, `and(x,MAX)`, `and(MAX,x)`,
   `shl(0,x)`, `shr(0,x)` → `x`. Collapsed to two parameterized lemmas
   (`[var,lit]` and `[lit,var]`) discharged by a per-identity `stepOp` reduction.
-- **Foundation contributed**: a **function-environment congruence**
-  (`FunsRel` + `Step.funs_congr` + `EquivBlock.of_stmts_funs`) proving that
-  replacing function bodies by `EquivBlock`-equivalent bodies (same signatures)
-  preserves whole-block semantics. This is the machinery `YulSemantics.Equiv`
-  explicitly defers, and it unlocks *any* pass that rewrites inside functions.
 - **Wiring**: inserted into `compileSource`'s block branch (`compile (P.run …)`);
-  soundness is `Pass.optimize_then_compile_correct`. Object path left unchanged.
+  soundness is `Pass.optimize_then_compile_correct`.
 - **Target**: `solidity-yul-optimizer-gas-baseline.txt` (+ evmCodeTransform).
+- **`for`-loop `init`**: left untouched. `init` is executed *and* hoisted into the
+  loop's scope, and upstream `EquivStmt.forLoop_congr` fixes it. A `for`-specific
+  congruence (init changes with a `ScopeRel` side condition, like
+  `of_stmts_funs`) would let us reach it — small follow-up.
+
+### ✅ `ObjectPass` (`Implementation/ObjectPass.lean`) — foundation landed (this branch)
+`Pass.optimizeTopCode` (run a pass on an object's top code block, sub-objects
+byte-identical) + `Pass.optimizeTop_compileObject_correct`: compiling the
+optimized object correctly simulates the *original* object's resolved run —
+**when resolution is the identity on the top code block** (`hres₀`/`hres₁`, i.e.
+the top block has no `dataoffset`/`datasize`/`datacopy`: leaf objects, or runtime
+code that neither copies a sub-object nor reads an offset). Proven, but **not yet
+wired** into `compileSource` — see the object-path frontier below.
+
+## The object-path frontier (why real `.sol` runtime gas is hard)
+
+`planObject` derives every sub-object/data **offset** from the top code block's
+compiled `codeSize`, and `resolveForLayoutStmts` bakes those offsets into the code
+as `PUSH32` literals. Consequences (verified against the code, see the analysis
+that produced `ObjectPass`):
+
+- Optimizing code that any `dataoffset`/`datasize`/`datacopy` observes **shifts
+  the layout** (`L → L'`). There is **no `EquivBlock`-congruence for resolution**,
+  and none is generally provable (folding reads the offset immediates), so a raw
+  `EquivBlock` on the code block does **not** lift across resolution to two
+  different layouts.
+- Sound optimization is clean **only** when the top block makes no layout
+  references (`ObjectPass`'s `hres₀`/`hres₁`).
+- Real solc output nests a **constructor** object (whose top code `datacopy`s the
+  runtime — not offset-free) around the **runtime** sub-object (where execution
+  gas is spent). Optimizing the runtime shifts the constructor's baked offsets;
+  optimizing the constructor is offset-*ful* at the top. So neither the "top code
+  only" nor the "leaf" fragment reaches real-contract runtime gas.
+
+To move `solidity-gas`/`solidity-semantic` (object-rooted, the real solc
+comparison) we need one of: (a) a **cross-layout object equivalence** relating the
+offsets an optimization shifts (major); or (b) restructuring `planObject` to apply
+the pass *after* resolution and recompute `codeSize` from its output (breaks the
+current fixed-width-`PUSH32` layout fixpoint for offset-sensitive passes). This is
+the real object-path frontier.
 
 ## Candidate next ideas (not started)
 
-- **Object-path wiring**: apply `Simplify` to object code blocks. Needs the
-  layout-stability argument above (fold before/independent of resolution, or a
-  cross-layout relation) to keep `compileObject_correct`. Unlocks the real `.sol`
-  gas baselines.
+- **Wire `ObjectPass`** for the offset-free fragment (prove `no layout ops ⇒
+  resolveForLayoutStmts = id`, then apply conditionally in `compileSource`) to move
+  the `objectCompiler` baseline where sound.
+- **`for`-loop `init`**: a `for`-specific congruence to simplify `init` too.
 - **Dead `pop`/unused `let` elimination**: remove `let x := <pure e>` when `x`
   is never used and `e` is side-effect-free; drop `pop(<pure e>)`.
 - **`iszero(iszero(x))` in boolean position** → `x` when the value is only used

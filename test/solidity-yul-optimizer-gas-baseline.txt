@@ -263,8 +263,8 @@ fullSuite/reuse_vars_bug_in_simplifier.yul	116118	115974
 fullSuite/shift_signextend.yul	27374	27356
 fullSuite/ssaReverse.yul	546	558
 fullSuite/ssaReverseComplex.yul	27482	27440
-fullSuite/stack_compressor_msize.yul	446114	446156
-fullSuite/stack_shuffler_bring_up_target_slot_bfs_dedup.yul	457835	458013
+fullSuite/stack_compressor_msize.yul	446096	446156
+fullSuite/stack_shuffler_bring_up_target_slot_bfs_dedup.yul	457355	458013
 fullSuite/static_array_slot_computation.yul	228	204
 fullSuite/storage.yul	266508	266508
 fullSuite/structural_simplification.yul	115908	115962
