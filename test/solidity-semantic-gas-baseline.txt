@@ -65,7 +65,7 @@ array/array_storage_index_boundary_test.sol	992922	212135
 array/array_storage_length_access.sol	13817540	1306640
 array/array_storage_push_empty_length_address.sol	14012176	2139347
 array/array_storage_push_pop.sol	23156434	14028568
-array/arrays_complex_from_and_to_storage.sol	224280	191924
+array/arrays_complex_from_and_to_storage.sol	222840	191924
 array/byte_array_storage_layout.sol	197482	131729
 array/bytes_length_member.sol	95572	93785
 array/bytes_to_fixed_bytes_cleanup.sol	7634	4069
@@ -77,7 +77,7 @@ array/concat/bytes_concat_3_args.sol	7911	3217
 array/concat/bytes_concat_as_argument.sol	5840	2407
 array/concat/bytes_concat_empty_argument_list.sol	1074	309
 array/concat/bytes_concat_nested.sol	4510	1883
-array/copying/arrays_from_and_to_storage.sol	111737	92553
+array/copying/arrays_from_and_to_storage.sol	111697	92553
 array/copying/bytes_calldata_to_string_calldata.sol	1089	375
 array/copying/bytes_memory_to_storage.sol	24624	22800
 array/copying/bytes_storage_to_memory.sol	3744	2567
@@ -92,10 +92,10 @@ array/copying/nested_array_dynamic_static_calldata_to_storage.sol	6154	4618
 array/copying/nested_array_element_calldata_to_storage.sol	3215	591
 array/copying/nested_array_element_memory_to_storage.sol	3126	1354
 array/copying/nested_array_of_structs_calldata_to_memory.sol	24622	10046
-array/copying/nested_array_of_structs_calldata_to_storage.sol	585295	538435
+array/copying/nested_array_of_structs_calldata_to_storage.sol	580975	538435
 array/copying/nested_array_of_structs_memory_to_memory.sol	24409	10079
-array/copying/nested_array_of_structs_memory_to_storage.sol	602188	547431
-array/copying/nested_array_of_structs_with_nested_array_from_storage_to_memory.sol	44607	30281
+array/copying/nested_array_of_structs_memory_to_storage.sol	597868	547431
+array/copying/nested_array_of_structs_with_nested_array_from_storage_to_memory.sol	42447	30281
 array/copying/nested_array_storage_to_memory.sol	83629	62288
 array/copying/nested_dynamic_array_element_calldata_to_storage.sol	706	457
 array/copying/storage_memory_nested_bytes.sol	184034	181019
@@ -465,12 +465,12 @@ statements/do_while_loop_continue.sol	1426	273
 statements/empty_for_loop.sol	6580	634
 storage/accessors_mapping_for_array.sol	13690	9615
 storage/complex_accessors.sol	13601	9498
-storage/delete_overlapping_transient_after_storage_array_delete_different_base_type.sol	12176	5734
+storage/delete_overlapping_transient_after_storage_array_delete_different_base_type.sol	10816	5734
 storage/delete_overlapping_transient_after_storage_array_pop_same_base_type.sol	5432	4618
 storage/delete_overlapping_transient_after_storage_delete_same_value_type.sol	5592	4532
 storage/delete_overlapping_transient_after_storage_mapping_delete_same_value_type.sol	3100	2268
 storage/delete_overlapping_transient_after_storage_struct_delete_same_value_type.sol	10696	8772
-storage/delete_overlapping_transient_before_storage_array_delete_different_base_type.sol	12176	5734
+storage/delete_overlapping_transient_before_storage_array_delete_different_base_type.sol	10816	5734
 storage/delete_overlapping_transient_before_storage_array_partial_assignment_same_base_type.sol	12930	9500
 storage/delete_overlapping_transient_before_storage_delete_same_value_type.sol	5592	4532
 storage/delete_overlapping_transient_before_storage_mapping_delete_same_value_type.sol	3100	2268
@@ -481,7 +481,7 @@ storage/state_smoke_test.sol	16458	11859
 storage/storage_boundary_array_assignment.sol	89922	69357
 storage/storage_boundary_array_delete.sol	89922	69357
 storage/storage_boundary_array_delete_overlapping_variable.sol	98310	76164
-storage/storage_boundary_packed_array.sol	133644	81069
+storage/storage_boundary_packed_array.sol	133524	81069
 storage/struct_accessor.sol	8009	6581
 storageLayoutSpecifier/base_slot_max_value.sol	1134	203
 storageLayoutSpecifier/delete_transient_storage.sol	6974	1624
@@ -507,7 +507,7 @@ strings/string_escapes.sol	578	148
 strings/unicode_escapes.sol	5400	1682
 strings/unicode_string.sol	2648	717
 structs/array_of_recursive_struct.sol	22330	7141
-structs/copy_from_mapping.sol	135440	121253
+structs/copy_from_mapping.sol	135320	121253
 structs/copy_from_storage.sol	5705	2912
 structs/copy_struct_with_nested_array_from_calldata_to_memory.sol	10903	4151
 structs/copy_struct_with_nested_array_from_calldata_to_storage.sol	331	195
@@ -547,7 +547,7 @@ uninitializedFunctionPointer/uninitialized_internal_storage_function_legacy.sol	
 uninitializedFunctionPointer/uninitialized_internal_storage_function_via_yul.sol	3175	2263
 userDefinedValueType/assembly_access_bytes2_abicoder_v1.sol	3940	1416
 userDefinedValueType/assembly_access_bytes2_abicoder_v2.sol	3940	1416
-userDefinedValueType/calldata_to_storage.sol	132882	116983
+userDefinedValueType/calldata_to_storage.sol	132802	116983
 userDefinedValueType/constant.sol	3312	510
 userDefinedValueType/conversion.sol	30302	6061
 userDefinedValueType/conversion_abicoderv1.sol	30302	6061
@@ -555,7 +555,7 @@ userDefinedValueType/dirty_slot.sol	30926	23552
 userDefinedValueType/dirty_uint8_read.sol	5778	4557
 userDefinedValueType/in_parenthesis.sol	1328	160
 userDefinedValueType/mapping_key.sol	9846	7059
-userDefinedValueType/memory_to_storage.sol	134706	117605
+userDefinedValueType/memory_to_storage.sol	134626	117605
 userDefinedValueType/ownable.sol	15423	11382
 userDefinedValueType/parameter.sol	12837	4149
 userDefinedValueType/simple.sol	2108	337

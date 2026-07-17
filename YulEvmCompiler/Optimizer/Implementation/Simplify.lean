@@ -5,13 +5,17 @@ import YulSemantics.Dialect.EVM
 /-!
 # YulEvmCompiler.Optimizer.Implementation.Simplify
 
-A local **constant-folding + neutral-element** simplifier for the EVM dialect,
-the first real `Optimizer.Pass`.  It rewrites, bottom-up:
+A local **expression + constant-control-flow** simplifier for the EVM dialect,
+the first real `Optimizer.Pass`. It rewrites, bottom-up:
 
 * a pure built-in applied to all-literal arguments → the folded literal
-  (`add(2,3) → 5`), and
+  (`add(2,3) → 5`);
 * a pure built-in with a neutral literal operand kept alongside a *variable*
-  (`add(x,0) → x`, `mul(x,1) → x`, `and(x, 2²⁵⁶−1) → x`, `shl(0,x) → x`, …).
+  (`add(x,0) → x`, `mul(x,1) → x`, `and(x, 2²⁵⁶−1) → x`, `shl(0,x) → x`, …);
+* an `if` whose simplified condition is literal → its body or an empty block;
+  and
+* a `switch` whose simplified condition is literal → its selected case/default
+  block.
 
 Everything here is dialect-EVM specific (it computes with `stepOp`/`litValue`),
 so it lives under `Optimizer/Implementation/`.  Only its type — a `Pass` — is
@@ -379,6 +383,28 @@ def simplifyArgs : List (Expr Op) → List (Expr Op)
 
 end
 
+/-! ### Constant control-flow selection
+
+Keep the selected body wrapped in `.block`: this preserves the source branch's
+variable restoration and function scope, as well as every non-local outcome.
+The smart constructors use the closed EVM dialect because they are syntax
+transformations independent of the open-world call/create relations. -/
+
+/-- Fold an `if` with a literal condition to the block it deterministically
+executes.  A non-literal condition is rebuilt unchanged. -/
+def simplifyCond (c : Expr Op) (body : Block Op) : Stmt Op :=
+  match c with
+  | .lit l => if litValue l = 0 then .block [] else .block body
+  | _ => .cond c body
+
+/-- Fold a `switch` with a literal condition to the case/default block selected
+by the source semantics.  A non-literal condition is rebuilt unchanged. -/
+def simplifySwitch (c : Expr Op) (cases : List (Literal × Block Op))
+    (dflt : Option (Block Op)) : Stmt Op :=
+  match c with
+  | .lit l => .block (selectSwitch evm (litValue l) cases dflt)
+  | _ => .switch c cases dflt
+
 mutual
 
 /-- Simplify a statement, recursing into every sub-block (including `funDef`
@@ -389,8 +415,9 @@ def simplifyStmt : Stmt Op → Stmt Op
   | .letDecl xs (some e) => .letDecl xs (some (simplifyExpr e))
   | .letDecl xs none => .letDecl xs none
   | .assign xs e => .assign xs (simplifyExpr e)
-  | .cond c body => .cond (simplifyExpr c) (simplifyStmts body)
-  | .switch c cases dflt => .switch (simplifyExpr c) (simplifyCases cases) (simplifyDflt dflt)
+  | .cond c body => simplifyCond (simplifyExpr c) (simplifyStmts body)
+  | .switch c cases dflt =>
+      simplifySwitch (simplifyExpr c) (simplifyCases cases) (simplifyDflt dflt)
   | .forLoop init c post body =>
       .forLoop init (simplifyExpr c) (simplifyStmts post) (simplifyStmts body)
   | .exprStmt e => .exprStmt (simplifyExpr e)
@@ -426,6 +453,113 @@ theorem funDef_equiv (n : Ident) (ps rs : List Ident) (b₁ b₂ : Block Op) :
   intro funs V st V' st' o
   constructor <;> (intro h; cases h; exact Step.funDef)
 
+/-- A false literal `if` is exactly an empty block. -/
+theorem cond_lit_zero_equiv (l : Literal) (body : Block Op)
+    (hz : (evmWithExternal calls creates).litValue l =
+      (evmWithExternal calls creates).zero) :
+    EquivStmt D (.cond (.lit l) body) (.block []) := by
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    cases h with
+    | ifTrue hc hnz _ => cases hc; exact absurd hz hnz
+    | ifFalse hc _ =>
+        cases hc
+        simpa [restore] using
+          (Step.block (funs := funs) (V := V) (st := st) Step.seqNil)
+    | ifHalt hc => cases hc
+  · intro h
+    cases h with
+    | block hb =>
+        cases hb
+        simpa [restore] using (Step.ifFalse (body := body) Step.lit hz)
+
+/-- A true literal `if` is exactly its body block. -/
+theorem cond_lit_nonzero_equiv (l : Literal) (body : Block Op)
+    (hnz : (evmWithExternal calls creates).litValue l ≠
+      (evmWithExternal calls creates).zero) :
+    EquivStmt D (.cond (.lit l) body) (.block body) := by
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    cases h with
+    | ifTrue hc _ hb => cases hc; exact hb
+    | ifFalse hc hz => cases hc; exact absurd hz hnz
+    | ifHalt hc => cases hc
+  · intro h
+    exact Step.ifTrue Step.lit hnz h
+
+/-- A literal `switch` is exactly the case/default block selected by the source
+semantics (including first-match behavior). -/
+theorem selectSwitch_open_eq (value : U256) (cases : List (Literal × Block Op))
+    (dflt : Option (Block Op)) :
+    selectSwitch (evmWithExternal calls creates) value cases dflt =
+      selectSwitch evm value cases dflt := by
+  induction cases with
+  | nil => simp [selectSwitch]
+  | cons head rest ih =>
+      rcases head with ⟨l, body⟩
+      by_cases h : value = litValue l
+      · simp [selectSwitch, h, evmWithExternal, evm]
+      · simpa [selectSwitch, h, evmWithExternal, evm] using ih
+
+theorem switch_lit_equiv (l : Literal) (cases : List (Literal × Block Op))
+    (dflt : Option (Block Op)) :
+    EquivStmt D (.switch (.lit l) cases dflt)
+      (.block (selectSwitch evm (litValue l) cases dflt)) := by
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    cases h with
+    | switchExec hc hb =>
+        cases hc
+        rw [selectSwitch_open_eq] at hb
+        exact hb
+    | switchHalt hc => cases hc
+  · intro h
+    rw [← selectSwitch_open_eq] at h
+    exact Step.switchExec Step.lit h
+
+/-- The `if` smart constructor is semantics-preserving. -/
+theorem simplifyCond_equiv (c : Expr Op) (body : Block Op) :
+    EquivStmt D (.cond c body) (simplifyCond c body) := by
+  cases c with
+  | lit l =>
+      rw [simplifyCond]
+      split
+      · next h => exact cond_lit_zero_equiv l body h
+      · next h => exact cond_lit_nonzero_equiv l body h
+  | var _ => exact EquivStmt.refl _
+  | builtin _ _ => exact EquivStmt.refl _
+  | call _ _ => exact EquivStmt.refl _
+
+/-- The `switch` smart constructor is semantics-preserving. -/
+theorem simplifySwitch_equiv (c : Expr Op) (cases : List (Literal × Block Op))
+    (dflt : Option (Block Op)) :
+    EquivStmt D (.switch c cases dflt) (simplifySwitch c cases dflt) := by
+  cases c with
+  | lit l => exact switch_lit_equiv l cases dflt
+  | var _ => exact EquivStmt.refl _
+  | builtin _ _ => exact EquivStmt.refl _
+  | call _ _ => exact EquivStmt.refl _
+
+/-- A folded `if` never contributes a function declaration to its enclosing
+hoisted scope. -/
+theorem hoist_simplifyCond_cons (c : Expr Op) (body rest : Block Op) :
+    hoist D (simplifyCond c body :: rest) = hoist D rest := by
+  cases c with
+  | lit l => rw [simplifyCond]; split <;> rfl
+  | var _ => rfl
+  | builtin _ _ => rfl
+  | call _ _ => rfl
+
+/-- A folded `switch` never contributes a function declaration to its enclosing
+hoisted scope. -/
+theorem hoist_simplifySwitch_cons (c : Expr Op) (cases : List (Literal × Block Op))
+    (dflt : Option (Block Op)) (rest : Block Op) :
+    hoist D (simplifySwitch c cases dflt :: rest) = hoist D rest := by
+  cases c <;> simp [simplifySwitch, hoist]
+
 mutual
 
 /-- Every expression is equivalent to its simplification. -/
@@ -458,16 +592,22 @@ theorem simplifyStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (simplifyStmt s)
   | .letDecl _ none => EquivStmt.refl _
   | .assign _ e => EquivStmt.assign_congr _ (simplifyExpr_equiv e)
   | .cond c body =>
-      EquivStmt.cond_congr (simplifyExpr_equiv c)
+      (EquivStmt.cond_congr (simplifyExpr_equiv c)
         (EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 body))
-          (scopeRel_hoistSimplify body))
+          (scopeRel_hoistSimplify body))).trans
+        (simplifyCond_equiv (simplifyExpr c) (simplifyStmts body))
   | .switch c cases dflt => by
-      refine EquivStmt.switch_congr (simplifyExpr_equiv c) (simplifyCases_forall2 cases) ?_
-      cases dflt with
-      | none => exact EquivBlock.refl _
-      | some b =>
-          exact EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 b))
-            (scopeRel_hoistSimplify b)
+      have hswitch : EquivStmt D (.switch c cases dflt)
+          (.switch (simplifyExpr c) (simplifyCases cases) (simplifyDflt dflt)) := by
+        apply EquivStmt.switch_congr (simplifyExpr_equiv c) (simplifyCases_forall2 cases)
+        cases dflt with
+        | none => exact EquivBlock.refl _
+        | some b =>
+            exact (EquivBlock.of_stmts_funs
+              (EquivStmts.of_forall₂ (simplifyStmts_forall2 b))
+              (scopeRel_hoistSimplify b))
+      simpa only [simplifyStmt] using hswitch.trans
+        (simplifySwitch_equiv (simplifyExpr c) (simplifyCases cases) (simplifyDflt dflt))
   | .forLoop init c post body =>
       EquivStmt.forLoop_congr init (simplifyExpr_equiv c)
         (EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 post))
@@ -507,8 +647,17 @@ theorem scopeRel_hoistSimplify : ∀ ss : List (Stmt Op),
   | .letDecl _ (some _) :: rest => scopeRel_hoistSimplify rest
   | .letDecl _ none :: rest => scopeRel_hoistSimplify rest
   | .assign _ _ :: rest => scopeRel_hoistSimplify rest
-  | .cond _ _ :: rest => scopeRel_hoistSimplify rest
-  | .switch _ _ _ :: rest => scopeRel_hoistSimplify rest
+  | .cond c body :: rest => by
+      change ScopeRel D (hoist D rest)
+        (hoist D (simplifyCond (simplifyExpr c) (simplifyStmts body) :: simplifyStmts rest))
+      rw [hoist_simplifyCond_cons]
+      exact scopeRel_hoistSimplify rest
+  | .switch c cases dflt :: rest => by
+      change ScopeRel D (hoist D rest)
+        (hoist D (simplifySwitch (simplifyExpr c) (simplifyCases cases) (simplifyDflt dflt) ::
+          simplifyStmts rest))
+      rw [hoist_simplifySwitch_cons]
+      exact scopeRel_hoistSimplify rest
   | .forLoop _ _ _ _ :: rest => scopeRel_hoistSimplify rest
   | .exprStmt _ :: rest => scopeRel_hoistSimplify rest
   | .break :: rest => scopeRel_hoistSimplify rest
@@ -523,9 +672,10 @@ theorem blockEquiv (b : List (Stmt Op)) : EquivBlock D b (simplifyStmts b) :=
   EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 b))
     (scopeRel_hoistSimplify b)
 
-/-- The **Simplify pass**: constant folding + neutral-element identities over the
-whole program (including function bodies; only a `for`-loop's `init` is left
-untouched), bundled with its soundness proof. -/
+/-- The **Simplify pass**: constant folding, neutral-element identities, and
+literal control-flow selection over the whole program (including function
+bodies; only a `for`-loop's `init` is left untouched), bundled with its
+soundness proof. -/
 def simplify : Pass D where
   run := simplifyStmts
   sound := blockEquiv
@@ -580,5 +730,19 @@ example : simplifyExpr (.call "f" [.builtin .add [.lit (.number 2), .lit (.numbe
 example : simplifyStmts [.exprStmt (.builtin .sstore [.lit (.number 0),
     .builtin .add [.lit (.number 2), .lit (.number 3)]])]
   = [.exprStmt (.builtin .sstore [.lit (.number 0), .lit (.number 5)])] := rfl
+/-- A false literal branch is removed. -/
+example : simplifyStmt (.cond (.lit (.number 0)) [.exprStmt (.builtin .stop [])]) =
+    .block [] := rfl
+/-- A condition that folds to true selects its body. -/
+example : simplifyStmt (.cond (.builtin .add [.lit (.number 1), .lit (.number 2)])
+    [.exprStmt (.builtin .stop [])]) = .block [.exprStmt (.builtin .stop [])] := rfl
+/-- A literal switch keeps only its selected case. -/
+example : simplifyStmt (.switch (.lit (.number 2))
+    [(.number 1, [.break]), (.number 2, [.leave])] (some [.continue])) =
+    .block [.leave] := rfl
+/-- A literal switch with no matching case selects its default. -/
+example : simplifyStmt (.switch (.lit (.number 3))
+    [(.number 1, [.break]), (.number 2, [.leave])] (some [.continue])) =
+    .block [.continue] := rfl
 
 end YulEvmCompiler.Optimizer
