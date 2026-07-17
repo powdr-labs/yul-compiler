@@ -470,11 +470,25 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     folding** (a pure built-in on all-literal arguments → the folded literal) and
     **neutral-element identities** (`add(x,0)`, `mul(x,1)`, `and(x,2²⁵⁶−1)`, … → `x`,
     with the variable kept on the right-hand side so the rewrite is sound on every
-    environment). It recurses through the whole program **including `funDef` bodies**
+    environment), plus **literal control-flow selection** (`if` → chosen/empty
+    block and `switch` → selected case/default). It recurses through the whole
+    program **including `funDef` bodies**
     (via `FunCongr`); only a `for`-loop's `init` is left untouched (it is executed
     *and* hoisted, so it needs a `for`-specific congruence — a small follow-up).
     `compileSource` runs it on block-rooted programs; `IDEAS.md` logs the running
     list of passes tried and to try.
+  * **`Implementation/InlineIdentity.lean`** — scope-aware inlining of exact
+    `function f(p) -> r { r := p }` helpers. Calls become `add(e, 0)`, retaining
+    the original call's single-value requirement even for arbitrary AST input.
+    Its bidirectional `Step` simulation follows hoisted ordered scopes, closure
+    environments, shadowing, and `for` initializer scopes. The production
+    pipeline runs Simplify before and after this pass.
+  * **`Implementation/InlineIdentityResolve.lean`** — proves strict commutation
+    between layout resolution and identity inlining, including invariance of
+    exact-identity classification under resolution.
+  * **`Implementation/IdentityPipeline.lean`** — composes the three verified
+    stages and applies them recursively to every object code block, with the
+    full original-object execution theorem.
   * **`Implementation/ObjectPass.lean`** — the object path. `simplifyObject` (in
     `Simplify`) runs the pass on *every* code block of an object tree (deploy and
     runtime); `compileSource` uses it for object-rooted programs.
@@ -483,9 +497,9 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     analogue of `optimize_then_compile_correct`. The bridge over the object
     compiler's layout-coupling (code length ↔ baked-in offsets) is the **resolution
     congruence** `ResolveCongr.resolveSimplifyBlock_equiv`
-    (`EquivBlock (resolve L b) (resolve L (simplify b))`), proved because the pass
-    touches only pure ops and `var`/`lit` operands — disjoint from the
-    `dataoffset`/`datasize` nodes resolution rewrites.
+    (`EquivBlock (resolve L b) (resolve L (simplify b))`), proved because
+    expression rewrites are disjoint from `dataoffset`/`datasize` resolution and
+    resolving switch cases commutes with literal case selection.
 
 The soundness obligation and its congruence machinery live upstream in
 `YulSemantics.Equiv`/`YulSemantics.Rewrites`; this repo supplies the pass
@@ -547,13 +561,15 @@ CI), which must stay in sync as coverage grows.
   (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
   activated on any modeled fork. Lifting this needs either EIP-8024 activation
   upstream or a spilling pass.
-* **Optimizer.** A verified `Optimizer.simplify` pass (constant folding +
-  neutral-element identities) runs in front of the backend for block-rooted
+* **Optimizer.** A verified `Simplify → InlineIdentity → Simplify` pipeline runs
+  in front of the backend for block-rooted
   `compileSource` inputs. The spec every pass must meet is fixed and inhabited
   (see *The optimizer specification* above): a sound `Optimizer.Pass` is a total
   source-to-source transform proved semantics-preserving (`EquivBlock`) and
-  composed with `compile_correct`. Object-rooted programs are not yet optimized;
-  `compile`/`compileObject` never silently call an unproved transformation.
+  composed with `compile_correct`. Object-rooted inputs run the same pipeline on
+  every deploy/runtime code block; resolver congruence connects the optimized
+  artifact to the original resolved object execution. `compile`/`compileObject`
+  never silently call an unproved transformation.
 * **Fork range.** The theorem fixes `fork = .Osaka`; parameterizing over a range
   of compatible forks is a later generalization.
 * **Gas is existential, not closed-form.** By design (yul-semantics is gas-free,

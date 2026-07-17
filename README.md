@@ -151,19 +151,23 @@ operations are different**: their correctness is *conditional on* the
   (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
   activated on any fork modeled by evm-semantics. Lifting the restriction is a
   codegen-only change once the fork table activates EIP-8024, or a spilling pass.
-- **Optimizer.** A verified `Optimizer.simplify` pass (constant folding +
-  neutral-element identities, recursing through the whole program including
-  function bodies) runs in front of the backend for **block-rooted** source
+- **Optimizer.** A verified `Simplify → InlineIdentity → Simplify` pipeline
+  runs in front of the
+  backend for **block-rooted** source
   programs (`compileSource`); it is a total source-to-source transformation proved
   semantics-preserving (`EquivBlock`) and composed with the backend via
-  `Pass.optimize_then_compile_correct`. Reaching into function bodies rests on a
-  locally-proved function-environment congruence (`Optimizer.FunCongr`). For
+  `Pass.optimize_then_compile_correct`. `Simplify` performs constant folding,
+  neutral identities, and literal control-flow selection. `InlineIdentity`
+  replaces an exact lexical identity-helper call `f(e)` by `add(e, 0)`; the
+  `add` preserves the call's one-value arity requirement and the second
+  Simplify removes it in its proved variable/literal cases. For
   **object-rooted** programs (Solidity's `--via-ir` artifacts), `compileSource`
-  runs the pass on *every* code block of the tree — deploy and runtime — via
-  `Optimizer.simplifyObject`. `simplifyObject_correct` proves the emitted bytecode
+  runs the pipeline on *every* code block of the tree — deploy and runtime — via
+  `Optimizer.identityPipelineObject`. `identityPipelineObject_correct` proves the emitted bytecode
   correctly simulates the **original** object's resolved execution under the
   compiler's layout (the object analogue of `optimize_then_compile_correct`),
-  bridged by a resolution congruence (`Optimizer.resolveSimplifyBlock_equiv`).
+  bridged by the Simplify resolution congruence and strict commutation of layout
+  resolution with identity inlining.
   `compile`/`compileObject` never silently call an unproved transformation.
 - **Fork range.** The theorem fixes `fork = .Osaka`. Function/param/return names
   must be `Nodup`.

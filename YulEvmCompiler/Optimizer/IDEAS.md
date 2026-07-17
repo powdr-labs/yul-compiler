@@ -84,6 +84,9 @@ and hoisted; changing it needs a `for`-specific congruence — see below).
   (`[var,lit]` and `[lit,var]`) discharged by a per-identity `stepOp` reduction.
 - **Wiring**: inserted into `compileSource`'s block branch (`compile (P.run …)`);
   soundness is `Pass.optimize_then_compile_correct`.
+- **Constant control flow**: after expression simplification, literal `if`
+  conditions select the body/empty block and literal `switch` conditions select
+  the matching case/default block.
 - **Target**: `solidity-yul-optimizer-gas-baseline.txt` (+ evmCodeTransform).
 - **`for`-loop `init`**: left untouched. `init` is executed *and* hoisted into the
   loop's scope, and upstream `EquivStmt.forLoop_congr` fixes it. A `for`-specific
@@ -107,10 +110,9 @@ object `o`'s resolved run under the compiler's layout — the object analogue of
 `Pass.optimize_then_compile_correct`, with **no caveat**. The bridge is the
 **resolution congruence** `ResolveCongr.resolveSimplifyBlock_equiv`:
 `EquivBlock (resolveForLayoutStmts L b) (resolveForLayoutStmts L (simplifyStmts b))`
-— proved by a structural induction using that the pass touches only pure ops and
-`var`/`lit` neutral operands (disjoint from the `dataoffset`/`datasize` nodes
-resolution rewrites, and the pass never manufactures a string literal so the
-layout-keyed shape is preserved).
+— proved by a structural induction using that expression rewrites are disjoint
+from `dataoffset`/`datasize`, the pass never manufactures a string literal, and
+resolving switch cases commutes with selecting a literal case.
 
 Gas (real Solidity contracts, `checkSolidityGas`): `libsolidity/semanticTests`
 619/648 down (−185,438 gas); `libsolidity/gasTests` 12/12 down; `objectCompiler`
@@ -118,6 +120,37 @@ Gas (real Solidity contracts, `checkSolidityGas`): `libsolidity/semanticTests`
 
 `Pass.optimizeTopCode` + `Pass.optimizeTop_compileObject_correct` remain as an
 alternative single-object theorem for the offset-free/leaf fragment.
+
+### ✅ Constant control-flow folding (`agent/optimizer-control-flow`)
+
+Extend `Simplify` with bottom-up folding of control flow whose condition becomes
+literal after expression simplification:
+
+- `if 0 { body }` → an empty block;
+- `if <nonzero literal> { body }` → `body` as a block; and
+- `switch <literal> ...` → the selected case/default as a block.
+
+This removes the condition dispatch and, more importantly, all unreachable
+branch bytecode.  It is distinct from the copy-propagation/dead-`let` work in
+PR #52 and directly targets existing constant-control-flow fixtures in the Yul
+optimizer and EVM code-transform gas suites.
+
+Soundness is local and exact: invert the source `if`/`switch` big-step rule,
+use literal evaluation to rule out the untaken `if` arm or fix the switch value,
+and reconstruct the chosen block execution in both directions.  These local
+equivalences compose after the existing expression/body congruences, including
+the function-environment relation for rewritten function bodies.  The object
+path additionally uses the structural fact that resolving a selected switch
+block equals selecting from the resolved cases; this preserves
+`resolveSimplifyBlock_equiv`, so the existing whole-tree object correctness
+theorem continues to cover both deploy and runtime code.
+
+Gas results are zero-regression: 9 `yulOptimizerTests` fixtures improve by
+2,292 total gas, 2 `evmCodeTransform` fixtures improve by 240, and 11 real
+Solidity `semanticTests` contracts improve by 15,400.  The largest local wins
+are literal switches (up to 408 gas in the Yul scenarios); all solc fingerprint
+columns are unchanged.  The curated Solidity `gasTests` and `objectCompiler`
+rows are unchanged.
 
 ## The layout-coupling (why the end-to-end object theorem is subtle)
 
@@ -271,6 +304,43 @@ into the pipeline, re-measure gas.
 
 ## Candidate next ideas (not started)
 
+### 🚧 Inline exact identity helpers (`codex/semantic-gas-optimizer`)
+
+Solc's unoptimized IR contains many helpers of the exact form
+`function f(p) -> r { r := p }`.  Each use currently pays the full verified
+Yul function-call protocol even though the body only returns its argument.  The
+semantic gas rows with the largest current `ours / solc` ratios are especially
+dense in these helpers: user-defined operator wrappers, cleanup/conversion
+chains, and loop bookkeeping.
+
+The planned pass preserves every declaration and rewrites a lexically resolved
+identity call `f(e)` to `add(e, 0)`.  The `add` is intentional: unlike the
+generally-unsound raw rewrite `f(e) → e`, it preserves the requirement that `e`
+produce exactly one value, while also preserving stuckness, halts, value, and
+state.  A following `Simplify` run can remove the `add` for the already-proved
+variable/literal cases.  Lookup uses the same ordered stack of ordered hoisted
+scopes as `lookupFun`, including first-definition behavior, shadowing, function
+closures, and the special `for`-initializer scope.
+
+Measurement-only prototype results on 15 of the highest-ratio semantic
+benchmarks were all improvements, including:
+
+- `operators/userDefined/all_possible_operators.sol`: 50,489 → 40,160
+  (−10,329 gas);
+- `statements/empty_for_loop.sol`: 6,580 → 3,095 (−3,485);
+- `viaYul/conditional/conditional_multiple.sol`: 1,709 → 1,188 (−521); and
+- `operators/userDefined/multiple_operator_definitions_different_types_different_functions_separate_directives.sol`:
+  4,205 → 2,319 (−1,886).
+
+The proof will be a bidirectional `Step` simulation indexed by the static scope
+stack, because function bodies that call sibling identities are not pointwise
+equivalent under arbitrary unrelated `FunEnv`s.  A local identity-call lemma
+handles the rewrite; other calls recursively simulate transformed bodies under
+corresponding closure environments.  The object path will prove that identity
+classification and transformation commute with `resolveForLayoutStmts`, then
+compose that result with the existing `Simplify` resolution congruence for the
+`Simplify → InlineIdentity → Simplify` pipeline on every object code block.
+
 - **`for`-loop `init`**: a `for`-specific congruence to simplify `init` too.
 - **Higher-impact passes**: redundant `pop`/store elimination, branch/switch
   folding, common-subexpression elimination, trivial-function inlining
@@ -281,8 +351,5 @@ into the pipeline, re-measure gas.
   for truthiness (condition of `if`/`for`, arg of `iszero`).
 - **Double-negation / `not(not(x))` → x**, `xor(x,x) → 0`, `sub(x,x) → 0`
   (var-only, value-preserving where sound).
-- **Branch folding**: `if 0 {…}` → removed; `if <nonzero-const> {…}` → inline the
-  block; `switch <const>` → selected case. Sound via the `cond`/`switch`
-  congruences plus `selectSwitch` evaluation.
 - **Block flattening** of nested `{ … }` with no `funDef`s and no shadowing.
 - **Asm-level peepholes** (separate, Asm→Asm soundness contract).

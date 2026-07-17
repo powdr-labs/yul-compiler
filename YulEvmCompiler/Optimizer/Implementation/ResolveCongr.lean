@@ -11,12 +11,11 @@ with the pass up to semantic equivalence,
 EquivBlock D (resolveForLayoutStmts L b) (resolveForLayoutStmts L (simplifyStmts b))
 ```
 
-It holds because the pass touches only *pure* ops (folding all-literal
-applications) and *neutral* `var`/`lit` operands — node kinds that resolution
-leaves alone (resolution rewrites only `dataoffset`/`datasize`). This is the
-missing link for the object path: with it, compiling `simplifyObject o` correctly
-simulates the **original** object's resolved run under the compiler's layout
-(`Pass.optimizeObject_correct`, in `ObjectPass`).
+It holds because expression rewrites avoid `dataoffset`/`datasize`, while
+literal control-flow selection commutes with resolving every case/default body.
+This is the missing link for the object path: with it, compiling
+`simplifyObject o` correctly simulates the **original** object's resolved run
+under the compiler's layout (`simplifyObject_correct`, in `ObjectPass`).
 -/
 
 namespace YulEvmCompiler.Optimizer
@@ -211,6 +210,99 @@ theorem resolveSimplifyArgs_forall2 (L : Layout) : ∀ args : List (Expr Op),
 
 end
 
+/-! ### Resolution commutes with constant control-flow selection -/
+
+/-- Resolving a statically selected switch block is the same as selecting from
+the resolved cases/default.  This mirrors the resolver's internal preservation
+lemma, restated here because that theorem is private to `ObjectResolve`. -/
+theorem resolve_selectSwitch (L : Layout) (value : U256)
+    (cases : List (Literal × Block Op)) (dflt : Option (Block Op)) :
+    resolveForLayoutStmts L (selectSwitch evm value cases dflt) =
+      selectSwitch evm value (resolveForLayoutCases L cases)
+        (dflt.map (resolveForLayoutStmts L)) := by
+  induction cases with
+  | nil => cases dflt <;> simp [selectSwitch, resolveForLayoutCases]
+  | cons head rest ih =>
+      rcases head with ⟨l, body⟩
+      by_cases h : decide (value = litValue l) = true
+      · simp [selectSwitch, resolveForLayoutCases, h]
+      · simpa [selectSwitch, resolveForLayoutCases, h] using ih
+
+/-- Resolving a folded `if` agrees with resolving its condition/body first and
+then executing the original `if`. -/
+theorem resolveSimplifyCond_equiv (L : Layout) (c : Expr Op) (body : Block Op) :
+    EquivStmt D
+      (.cond (resolveForLayoutExpr L c) (resolveForLayoutStmts L body))
+      (resolveForLayoutStmt L (simplifyCond c body)) := by
+  cases c with
+  | lit l =>
+      rw [simplifyCond]
+      by_cases hz : litValue l = 0
+      · rw [if_pos hz]
+        simpa only [resolveForLayoutExpr, resolveForLayoutStmt, resolveForLayoutStmts] using
+          (cond_lit_zero_equiv (calls := calls) (creates := creates) l
+            (resolveForLayoutStmts L body) hz)
+      · rw [if_neg hz]
+        simpa only [resolveForLayoutExpr, resolveForLayoutStmt] using
+          (cond_lit_nonzero_equiv (calls := calls) (creates := creates) l
+            (resolveForLayoutStmts L body) hz)
+  | var x =>
+      simp only [simplifyCond, resolveForLayoutStmt_cond]
+      exact EquivStmt.refl _
+  | builtin op args =>
+      simp only [simplifyCond, resolveForLayoutStmt_cond]
+      exact EquivStmt.refl _
+  | call fn args =>
+      simp only [simplifyCond, resolveForLayoutStmt_cond]
+      exact EquivStmt.refl _
+
+/-- Resolving a folded `switch` agrees with resolving its condition/cases first
+and then executing the original `switch`. -/
+theorem resolveSimplifySwitch_equiv (L : Layout) (c : Expr Op)
+    (cases : List (Literal × Block Op)) (dflt : Option (Block Op)) :
+    EquivStmt D
+      (.switch (resolveForLayoutExpr L c) (resolveForLayoutCases L cases)
+        (dflt.map (resolveForLayoutStmts L)))
+      (resolveForLayoutStmt L (simplifySwitch c cases dflt)) := by
+  cases c with
+  | lit l =>
+      rw [simplifySwitch]
+      simp only [resolveForLayoutStmt]
+      rw [resolve_selectSwitch]
+      exact switch_lit_equiv (calls := calls) (creates := creates) l
+        (resolveForLayoutCases L cases)
+        (dflt.map (resolveForLayoutStmts L))
+  | var x =>
+      simp only [simplifySwitch, resolveForLayoutStmt_switch]
+      exact EquivStmt.refl _
+  | builtin op args =>
+      simp only [simplifySwitch, resolveForLayoutStmt_switch]
+      exact EquivStmt.refl _
+  | call fn args =>
+      simp only [simplifySwitch, resolveForLayoutStmt_switch]
+      exact EquivStmt.refl _
+
+/-- A resolved folded `if` still contributes no declaration to its enclosing
+hoisted scope. -/
+theorem hoist_resolve_simplifyCond_cons (L : Layout) (c : Expr Op)
+    (body rest : Block Op) :
+    hoist D (resolveForLayoutStmts L (simplifyCond c body :: rest)) =
+      hoist D (resolveForLayoutStmts L rest) := by
+  cases c with
+  | lit l => rw [simplifyCond]; split <;>
+      simp [hoist]
+  | var _ => simp [simplifyCond, hoist]
+  | builtin _ _ => simp [simplifyCond, hoist]
+  | call _ _ => simp [simplifyCond, hoist]
+
+/-- A resolved folded `switch` still contributes no declaration to its enclosing
+hoisted scope. -/
+theorem hoist_resolve_simplifySwitch_cons (L : Layout) (c : Expr Op)
+    (cases : List (Literal × Block Op)) (dflt : Option (Block Op)) (rest : Block Op) :
+    hoist D (resolveForLayoutStmts L (simplifySwitch c cases dflt :: rest)) =
+      hoist D (resolveForLayoutStmts L rest) := by
+  cases c <;> simp [simplifySwitch, hoist]
+
 /-! ### The resolution congruence — statements and blocks -/
 
 mutual
@@ -235,22 +327,28 @@ theorem resolveSimplifyStmt_equiv (L : Layout) : ∀ s : Stmt Op,
       exact EquivStmt.assign_congr _ (resolveSimplifyExpr_equiv L e)
   | .cond c body => by
       simp only [simplifyStmt, resolveForLayoutStmt]
-      exact EquivStmt.cond_congr (resolveSimplifyExpr_equiv L c)
+      exact (EquivStmt.cond_congr (resolveSimplifyExpr_equiv L c)
         (EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (resolveSimplifyStmts_forall2 L body))
-          (scopeRel_resolveSimplify L body))
+          (scopeRel_resolveSimplify L body))).trans
+        (resolveSimplifyCond_equiv L (simplifyExpr c) (simplifyStmts body))
   | .switch c cases dflt => by
-      simp only [simplifyStmt, resolveForLayoutStmt_switch]
-      cases dflt with
-      | none =>
-          refine EquivStmt.switch_congr (resolveSimplifyExpr_equiv L c)
-            (resolveSimplifyCases_forall2 L cases) ?_
-          exact EquivBlock.refl _
-      | some b =>
-          simp only [simplifyDflt]
-          refine EquivStmt.switch_congr (resolveSimplifyExpr_equiv L c)
-            (resolveSimplifyCases_forall2 L cases) ?_
-          exact EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (resolveSimplifyStmts_forall2 L b))
-            (scopeRel_resolveSimplify L b)
+      have hswitch : EquivStmt D
+          (.switch (resolveForLayoutExpr L c) (resolveForLayoutCases L cases)
+            (dflt.map (resolveForLayoutStmts L)))
+          (.switch (resolveForLayoutExpr L (simplifyExpr c))
+            (resolveForLayoutCases L (simplifyCases cases))
+            ((simplifyDflt dflt).map (resolveForLayoutStmts L))) := by
+        apply EquivStmt.switch_congr (resolveSimplifyExpr_equiv L c)
+          (resolveSimplifyCases_forall2 L cases)
+        cases dflt with
+        | none => exact EquivBlock.refl _
+        | some b =>
+            exact (EquivBlock.of_stmts_funs
+              (EquivStmts.of_forall₂ (resolveSimplifyStmts_forall2 L b))
+              (scopeRel_resolveSimplify L b))
+      simpa only [simplifyStmt, resolveForLayoutStmt_switch] using hswitch.trans
+        (resolveSimplifySwitch_equiv L (simplifyExpr c)
+          (simplifyCases cases) (simplifyDflt dflt))
   | .forLoop init c post body => by
       simp only [simplifyStmt, resolveForLayoutStmt]
       exact EquivStmt.forLoop_congr (resolveForLayoutStmts L init) (resolveSimplifyExpr_equiv L c)
@@ -310,12 +408,20 @@ theorem scopeRel_resolveSimplify (L : Layout) : ∀ ss : List (Stmt Op),
   | .assign _ _ :: rest => by
       simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt,
         hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest
-  | .cond _ _ :: rest => by
-      simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt,
-        hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest
-  | .switch _ _ _ :: rest => by
-      simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt_switch,
-        hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest
+  | .cond c body :: rest => by
+      have hleft : hoist D (resolveForLayoutStmts L (.cond c body :: rest)) =
+          hoist D (resolveForLayoutStmts L rest) := by
+        simp [hoist]
+      rw [hleft, simplifyStmts, simplifyStmt]
+      rw [hoist_resolve_simplifyCond_cons]
+      exact scopeRel_resolveSimplify L rest
+  | .switch c cases dflt :: rest => by
+      have hleft : hoist D (resolveForLayoutStmts L (.switch c cases dflt :: rest)) =
+          hoist D (resolveForLayoutStmts L rest) := by
+        simp [hoist]
+      rw [hleft, simplifyStmts, simplifyStmt]
+      rw [hoist_resolve_simplifySwitch_cons]
+      exact scopeRel_resolveSimplify L rest
   | .forLoop _ _ _ _ :: rest => by
       simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt,
         hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest

@@ -61,7 +61,6 @@ theorem Pass.optimizeTop_compileObject_correct
     (P : Pass yulD) (hexternal : ExternalsRealized model)
     {o : Object Op} {L : Layout}
     (hcomp : compileObject (P.optimizeTopCode o) = some L)
-    (hscoped : WellScoped o.codeBlock)
     (hres₀ : resolveForLayoutStmts L o.codeBlock = o.codeBlock)
     (hres₁ : resolveForLayoutStmts L (P.run o.codeBlock) = P.run o.codeBlock)
     {V : VEnv yulD} {yst : EvmState} {out : Outcome}
@@ -77,7 +76,7 @@ theorem Pass.optimizeTop_compileObject_correct
     have h := hrun
     change Run yulD (resolveForLayoutStmts L o.codeBlock) L.initState V yst out at h
     rw [hres₀] at h; exact h
-  have h1 : Run yulD (P.run o.codeBlock) L.initState V yst out := P.run_optimized hscoped h0
+  have h1 : Run yulD (P.run o.codeBlock) L.initState V yst out := P.run_optimized h0
   have hrr : RunResolvedObject (P.optimizeTopCode o) L V yst out := by
     change Run yulD (resolveForLayoutStmts L (P.optimizeTopCode o).codeBlock) L.initState V yst out
     rw [P.optimizeTopCode_codeBlock, hres₁]; exact h1

@@ -1,5 +1,4 @@
 import YulSemantics.Equiv
-import YulEvmCompiler.Optimizer.Spec.Scoped
 
 /-!
 # YulEvmCompiler.Optimizer.Spec.Pass
@@ -68,26 +67,16 @@ initial state, and for every control-flow outcome and resulting state. This is t
 sole proof obligation for admitting a Yul→Yul pass in front of the verified
 backend. -/
 def Sound (D : Dialect) [DecidableEq D.Value] (run : Block D.Op → Block D.Op) : Prop :=
-  ∀ b, WellScoped b → EquivBlock D b (run b)
+  ∀ b, EquivBlock D b (run b)
 
 /-- A **verified optimizer pass**: a total Yul→Yul transformation bundled with a
-proof that it preserves program semantics on **well-scoped** input, and a proof
-that it preserves well-scopedness (so passes compose). A value of this type *is* a
-sound optimizer; there is no way to construct one without discharging `Sound`.
-
-The well-scopedness precondition is what makes aggressive binding-removal (dead
-`let`, copy-propagation) sound — see `Spec/Scoped.lean`. It costs no real
-coverage: every program the frontend/`solc` emits is well-scoped. The `scoped`
-field keeps the class closed under composition (`comp`/`ofList`). -/
+proof that it preserves program semantics. A value of this type *is* a sound
+optimizer; there is no way to construct one without discharging `Sound`. -/
 structure Pass (D : Dialect) [DecidableEq D.Value] where
   /-- The source-to-source transformation on top-level blocks. -/
   run : Block D.Op → Block D.Op
-  /-- Proof obligation: the transformation is semantics-preserving on well-scoped
-  input (`Sound`). -/
+  /-- Proof obligation: the transformation is semantics-preserving (`Sound`). -/
   sound : Sound D run
-  /-- Proof obligation: the transformation maps well-scoped programs to
-  well-scoped programs, so passes compose. -/
-  preservesScoped : ∀ b, WellScoped b → WellScoped (run b)
 
 namespace Pass
 
@@ -95,19 +84,19 @@ namespace Pass
 unchanged — same final environment, final state, and outcome, from every initial
 state. Combined with determinism (`YulSemantics.Run.det`), this means the optimized
 program has the *same unique* result as the original. -/
-theorem preservesRun (P : Pass D) (b : Block D.Op) (hb : WellScoped b) {st0 V' st' o} :
+theorem preservesRun (P : Pass D) (b : Block D.Op) {st0 V' st' o} :
     Run D b st0 V' st' o ↔ Run D (P.run b) st0 V' st' o :=
-  (P.sound b hb).run_iff
+  (P.sound b).run_iff
 
 /-- Transport a run of the original program to a run of the optimized program. -/
-theorem run_optimized (P : Pass D) {b : Block D.Op} (hb : WellScoped b) {st0 V' st' o}
+theorem run_optimized (P : Pass D) {b : Block D.Op} {st0 V' st' o}
     (h : Run D b st0 V' st' o) : Run D (P.run b) st0 V' st' o :=
-  (P.preservesRun b hb).mp h
+  (P.preservesRun b).mp h
 
 /-- Transport a run of the optimized program back to a run of the original. -/
-theorem run_original (P : Pass D) {b : Block D.Op} (hb : WellScoped b) {st0 V' st' o}
+theorem run_original (P : Pass D) {b : Block D.Op} {st0 V' st' o}
     (h : Run D (P.run b) st0 V' st' o) : Run D b st0 V' st' o :=
-  (P.preservesRun b hb).mpr h
+  (P.preservesRun b).mpr h
 
 /-- The **do-nothing pass**: returns its input unchanged, sound by reflexivity of
 semantic equivalence. It is the neutral element of `comp` and the seed of `ofList`.
@@ -115,8 +104,7 @@ semantic equivalence. It is the neutral element of `comp` and the seed of `ofLis
 implementation in `Optimizer/Implementation/Identity.lean`.) -/
 def id : Pass D where
   run := fun b => b
-  sound := fun b _ => EquivBlock.refl b
-  preservesScoped := fun _ h => h
+  sound := fun b => EquivBlock.refl b
 
 @[simp] theorem id_run (b : Block D.Op) : (id (D := D)).run b = b := rfl
 
@@ -125,8 +113,7 @@ def id : Pass D where
 pipeline is therefore itself a single verified `Pass`. -/
 def comp (P Q : Pass D) : Pass D where
   run := fun b => P.run (Q.run b)
-  sound := fun b hb => (Q.sound b hb).trans (P.sound (Q.run b) (Q.preservesScoped b hb))
-  preservesScoped := fun b hb => P.preservesScoped (Q.run b) (Q.preservesScoped b hb)
+  sound := fun b => (Q.sound b).trans (P.sound (Q.run b))
 
 @[simp] theorem comp_run (P Q : Pass D) (b : Block D.Op) :
     (comp P Q).run b = P.run (Q.run b) := rfl
@@ -150,10 +137,9 @@ def ofList (ps : List (Pass D)) : Pass D :=
 
 /-- The pipeline's whole-program behavior matches the source program's — the
 end-to-end soundness of a composed optimizer, for free. -/
-theorem ofList_preservesRun (ps : List (Pass D)) (b : Block D.Op) (hb : WellScoped b)
-    {st0 V' st' o} :
+theorem ofList_preservesRun (ps : List (Pass D)) (b : Block D.Op) {st0 V' st' o} :
     Run D b st0 V' st' o ↔ Run D ((ofList ps).run b) st0 V' st' o :=
-  (ofList ps).preservesRun b hb
+  (ofList ps).preservesRun b
 
 end Pass
 

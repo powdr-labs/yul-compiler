@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Spec.Scoped
 import YulEvmCompiler.Optimizer.Implementation.Frame
 import YulSemantics.Dialect.EVM
 
@@ -666,12 +667,13 @@ theorem dceStmts_equivBlock (b : Block Op) (hb : WellScoped b) :
         rw [hoist_dceStmts b] at horig
         rw [← hres]; exact Step.block horig
 
-/-- **The dead-code-elimination pass**: drops side-effect-free dead `let`s, sound
-on well-scoped programs and scope-preserving. -/
-def deadCode : Pass D where
-  run := dceStmts
-  sound := fun b hb => dceStmts_equivBlock b hb
-  preservesScoped := fun _ hb => dceStmts_scoped hb
+/-- Dead-code elimination preserves whole-program behaviour on well-scoped input:
+its `Run` results are exactly those of the source program. (Not packaged as a
+`Pass`, whose `Sound` is unconditional; DCE's soundness is `WellScoped`-conditioned
+— see the design note in `Spec/Scoped.lean`.) -/
+theorem dceStmts_preservesRun (b : Block Op) (hb : WellScoped b) {st0 V' st' o} :
+    Run D b st0 V' st' o ↔ Run D (dceStmts b) st0 V' st' o :=
+  (dceStmts_equivBlock b hb).run_iff
 
 mutual
 /-- Run dead-code elimination on every code block of an object tree (top object

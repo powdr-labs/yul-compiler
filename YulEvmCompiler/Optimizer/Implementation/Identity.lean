@@ -35,8 +35,8 @@ theorem identity_eq_id : (identity : Pass D) = Pass.id := rfl
 
 /-- The identity pass changes no whole-program behavior: its `Run` results are
 exactly those of the input program. -/
-theorem identity_preservesRun (b : Block D.Op) (hb : WellScoped b) {st0 V' st' o} :
+theorem identity_preservesRun (b : Block D.Op) {st0 V' st' o} :
     Run D b st0 V' st' o ↔ Run D ((identity (D := D)).run b) st0 V' st' o :=
-  (identity (D := D)).preservesRun b hb
+  (identity (D := D)).preservesRun b
 
 end YulEvmCompiler.Optimizer
