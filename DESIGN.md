@@ -430,8 +430,9 @@ genuine theorems. `Checks.lean` pins that exact set for each theorem in CI:
 
 ## The optimizer specification
 
-The compiler is non-optimizing, but the repository fixes, once and formally, what
-any future Yul→Yul optimization pass must prove. `YulEvmCompiler/Optimizer/` is
+The verified backend is non-optimizing, while the production source entry point
+runs a verified Yul→Yul pipeline in front of it. The repository fixes, once and
+formally, what every such pass must prove. `YulEvmCompiler/Optimizer/` is
 split so the contract and its implementations stay separate — the same
 audited-surface-vs-artifact distinction the spec closure already makes:
 
@@ -453,6 +454,19 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     *optimized* program correctly simulates the *original* program's Yul semantics.
     This is the `Run`-interface composition `AGENTS.md` prescribes; no backend proof
     is reopened.
+* **`Optimizer/Core/`** — the incrementally introduced optimizer IR, behind the
+  unchanged `Pass` boundary.
+  * **`Core/Basic.lean`** — the first intrinsically checked fragment: ANF values
+    are literals or variables carrying membership in an explicit context; pure
+    EVM operations carry their input arity in the type; and their arguments are
+    values, making nested/effectful arguments unrepresentable. `ingest` is
+    deliberately partial, while `ingest_emit` proves that successful ingestion
+    erases to exactly the original Yul expression. The current simplifier leaves
+    unsupported syntax—including calls and recursive calls—unchanged; later
+    passes may use the same partial boundary with their own total fallback policy.
+  * **`Core/Rule.lean`** — a shallow rewrite bundled with its `EquivExpr` proof.
+    The generic first-match engine is proved once for any ordered rule list, so
+    optimizer policy can change without changing the engine proof.
 * **`Optimizer/Implementation/`** — concrete passes, *not* part of what an auditor
   must read: because every `Pass` is sound by construction, a pass is trusted the
   moment it type-checks against the spec.
@@ -471,7 +485,11 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     **neutral-element identities** (`add(x,0)`, `mul(x,1)`, `and(x,2²⁵⁶−1)`, … → `x`,
     with the variable kept on the right-hand side so the rewrite is sound on every
     environment), plus **literal control-flow selection** (`if` → chosen/empty
-    block and `switch` → selected case/default). It recurses through the whole
+    block and `switch` → selected case/default). Flat pure applications are now
+    ingested into Core and run through proof-carrying fold/neutral rules. This
+    replaces the old raw-AST rewrite driver: syntax outside the current Core
+    fragment is simply unchanged.
+    It recurses through the whole
     program **including `funDef` bodies**
     (via `FunCongr`); only a `for`-loop's `init` is left untouched (it is executed
     *and* hoisted, so it needs a `for`-specific congruence — a small follow-up).
@@ -498,7 +516,8 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     compiler's layout-coupling (code length ↔ baked-in offsets) is the **resolution
     congruence** `ResolveCongr.resolveSimplifyBlock_equiv`
     (`EquivBlock (resolve L b) (resolve L (simplify b))`), proved because
-    expression rewrites are disjoint from `dataoffset`/`datasize` resolution and
+    expression rewrites are disjoint from `dataoffset`/`datasize` resolution;
+    resolution is structurally the identity on every Core term; and
     resolving switch cases commutes with literal case selection.
 
 The soundness obligation and its congruence machinery live upstream in

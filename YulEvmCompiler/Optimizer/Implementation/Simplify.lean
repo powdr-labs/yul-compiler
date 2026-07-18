@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Core.Rule
 import YulEvmCompiler.Optimizer.Implementation.FunCongr
 import YulSemantics.Dialect.EVM
 set_option warningAsError true
@@ -143,6 +144,13 @@ theorem args_lits_inv {funs : FunEnv D} {V : VEnv D} {st : EvmState} {lits : Lis
 /-- Fold a pure built-in applied to literals into a single literal. -/
 def pureFold (op : Op) (lits : List Literal) : Option Literal :=
   (pureFn op (lits.map litValue)).map (fun w => .number w.toNat)
+
+/-- Every successful constant fold produces a number literal. -/
+theorem pureFold_isNumber {op : Op} {lits : List Literal} {literal : Literal}
+    (h : pureFold op lits = some literal) : ∃ n, literal = .number n := by
+  rw [pureFold, Option.map_eq_some_iff] at h
+  obtain ⟨word, _, rfl⟩ := h
+  exact ⟨word.toNat, rfl⟩
 
 /-- A number literal denotes exactly the word it was built from. -/
 theorem litValue_number_toNat (w : U256) : litValue (.number w.toNat) = w := by
@@ -337,26 +345,191 @@ theorem neutral_equiv {op : Op} {args : List (Expr Op)} {e : Expr Op}
                      rw [hc]; simp only [pureFn, Option.some.injEq]
                      first | simp | (rw [allOnes]; exact BitVec.allOnes_and))))
 
-/-- The local built-in rewrite: constant-fold, else a neutral rewrite, else
-rebuild unchanged.  Its arguments are assumed already simplified. -/
-def simplifyBuiltin (op : Op) (args : List (Expr Op)) : Expr Op :=
-  match (asLits args).bind (pureFold op) with
-  | some l => .lit l
-  | none => (neutral op args).getD (.builtin op args)
+/-- Every successful neutral rewrite returns a variable. -/
+theorem neutral_result_var {op : Op} {args : List (Expr Op)} {e : Expr Op}
+    (h : neutral op args = some e) : ∃ name, e = .var name := by
+  unfold neutral at h
+  split at h <;>
+    first
+      | contradiction
+      | (split_ifs at h;
+          first
+            | contradiction
+            | (obtain rfl := Option.some.inj h; exact ⟨_, rfl⟩))
 
-/-- The local built-in rewrite is sound. -/
+/-! ### Core-backed, proof-carrying rewrite rules
+
+Flat pure applications now cross the Core boundary.  The Core type certifies
+that every argument is an ANF value, the operation is state-independent, its
+input arity is correct, and every variable belongs to the expression context.
+Each rule below carries its own `EquivExpr` proof; the generic engine in
+`Optimizer/Core/Rule.lean` composes the ordered policy without inspecting the
+rules.  Unsupported syntax is left unchanged by the Core boundary. -/
+
+namespace Core
+
+/-- Constant-fold one typed, all-literal Core application. -/
+def foldRewrite {Γ : Ctx} : Term Γ 1 → Option (Term Γ 1)
+  | .atom _ => none
+  | .builtin op args => do
+      let lits ← asLits args.emit
+      let literal ← pureFold op.toOp lits
+      return .atom (.lit literal)
+
+/-- The Core constant-folding rule is sound. -/
+theorem foldRewrite_sound {Γ : Ctx} {input output : Term Γ 1}
+    (h : foldRewrite input = some output) :
+    EquivExpr D input.emit output.emit := by
+  cases input with
+  | atom value => simp [foldRewrite] at h
+  | builtin op args =>
+      cases hlits : asLits args.emit with
+      | none => simp [foldRewrite, hlits] at h
+      | some lits =>
+          cases hfold : pureFold op.toOp lits with
+          | none => simp [foldRewrite, hlits, hfold] at h
+          | some literal =>
+              simp [foldRewrite, hlits, hfold] at h
+              subst output
+              simp only [Term.emit, Value.emit]
+              rw [asLits_map hlits]
+              exact fold_equiv hfold
+
+/-- Apply a neutral-element rule to a typed Core application.  Re-ingestion of
+the survivor retains its original variable-membership proof. -/
+def neutralRewrite {Γ : Ctx} : Term Γ 1 → Option (Term Γ 1)
+  | .atom _ => none
+  | .builtin op args => do
+      let survivor ← neutral op.toOp args.emit
+      let value ← ingestValue Γ survivor
+      return .atom value
+
+/-- The Core neutral-element rule is sound. -/
+theorem neutralRewrite_sound {Γ : Ctx} {input output : Term Γ 1}
+    (h : neutralRewrite input = some output) :
+    EquivExpr D input.emit output.emit := by
+  cases input with
+  | atom value => simp [neutralRewrite] at h
+  | builtin op args =>
+      cases hneutral : neutral op.toOp args.emit with
+      | none => simp [neutralRewrite, hneutral] at h
+      | some survivor =>
+          cases hvalue : ingestValue Γ survivor with
+          | none => simp [neutralRewrite, hneutral, hvalue] at h
+          | some value =>
+              simp [neutralRewrite, hneutral, hvalue] at h
+              subst output
+              simp only [Term.emit]
+              rw [ingestValue_emit hvalue]
+              exact neutral_equiv hneutral
+
+/-- Constant-folding packaged as a first-class proved rule. -/
+def foldRule : Rule where
+  rewrite := foldRewrite
+  sound := foldRewrite_sound
+
+/-- Neutral identities packaged as a first-class proved rule. -/
+def neutralRule : Rule where
+  rewrite := neutralRewrite
+  sound := neutralRewrite_sound
+
+/-- The current Core simplification policy: constant folding has priority over
+neutral-element rewriting, matching the established pass. -/
+def simplifyRules : List Rule := [foldRule, neutralRule]
+
+/-- Simplify a typed Core term with the generic proof-carrying rule engine. -/
+def simplifyTerm (term : Term Γ 1) : Term Γ 1 := run simplifyRules term
+
+/-- Core simplification preserves the exact upstream expression semantics. -/
+theorem simplifyTerm_sound (term : Term Γ 1) :
+    EquivExpr D term.emit (simplifyTerm term).emit :=
+  run_sound simplifyRules term
+
+/-- A successful fold rule produces a number atom. -/
+theorem foldRewrite_shape {input output : Term Γ 1}
+    (h : foldRewrite input = some output) :
+    ∃ n, output = .atom (.lit (.number n)) := by
+  cases input with
+  | atom value => simp [foldRewrite] at h
+  | builtin op args =>
+      cases hlits : asLits args.emit with
+      | none => simp [foldRewrite, hlits] at h
+      | some lits =>
+          cases hfold : pureFold op.toOp lits with
+          | none => simp [foldRewrite, hlits, hfold] at h
+          | some literal =>
+              simp [foldRewrite, hlits, hfold] at h
+              subst output
+              obtain ⟨n, rfl⟩ := pureFold_isNumber hfold
+              exact ⟨n, rfl⟩
+
+/-- A successful neutral rule produces a variable atom. -/
+theorem neutralRewrite_shape {input output : Term Γ 1}
+    (h : neutralRewrite input = some output) :
+    ∃ ref, output = .atom (.var ref) := by
+  cases input with
+  | atom value => simp [neutralRewrite] at h
+  | builtin op args =>
+      cases hneutral : neutral op.toOp args.emit with
+      | none => simp [neutralRewrite, hneutral] at h
+      | some survivor =>
+          obtain ⟨name, hs⟩ := neutral_result_var hneutral
+          subst survivor
+          cases hvalue : ingestValue Γ (.var name) with
+          | none => simp [neutralRewrite, hneutral, hvalue] at h
+          | some value =>
+              simp [neutralRewrite, hneutral, hvalue] at h
+              subst output
+              cases value with
+              | lit literal =>
+                  have hemit := ingestValue_emit hvalue
+                  simp [Value.emit] at hemit
+              | var ref => exact ⟨ref, rfl⟩
+
+/-- The Core simplifier either leaves its input alone, folds to a number, or
+returns a variable.  In particular, it never manufactures a string literal. -/
+theorem simplifyTerm_shape (input : Term Γ 1) :
+    simplifyTerm input = input ∨
+      (∃ n, simplifyTerm input = .atom (.lit (.number n))) ∨
+      (∃ ref, simplifyTerm input = .atom (.var ref)) := by
+  cases hfold : foldRewrite input with
+  | some folded =>
+      obtain ⟨n, rfl⟩ := foldRewrite_shape hfold
+      exact Or.inr (Or.inl ⟨n, by
+        simp [simplifyTerm, run, first, simplifyRules, foldRule, hfold]⟩)
+  | none =>
+      cases hneutral : neutralRewrite input with
+      | some rewritten =>
+          obtain ⟨ref, rfl⟩ := neutralRewrite_shape hneutral
+          exact Or.inr (Or.inr ⟨ref, by
+            simp [simplifyTerm, run, first, simplifyRules, foldRule, neutralRule,
+              hfold, hneutral]⟩)
+      | none =>
+          exact Or.inl (by
+            simp [simplifyTerm, run, first, simplifyRules, foldRule, neutralRule,
+              hfold, hneutral])
+
+end Core
+
+/-- The local built-in rewrite.  Supported flat pure syntax is ingested into
+Core and simplified by proof-carrying rules; all other syntax is unchanged.
+Arguments are assumed already simplified by the traversal. -/
+def simplifyBuiltin (op : Op) (args : List (Expr Op)) : Expr Op :=
+  let source : Expr Op := .builtin op args
+  match Core.ingestSelf source with
+  | some core => (Core.simplifyTerm core).emit
+  | none => source
+
+/-- The Core-backed local rewrite is sound. -/
 theorem simplifyBuiltin_equiv (op : Op) (args : List (Expr Op)) :
     EquivExpr D (.builtin op args) (simplifyBuiltin op args) := by
-  unfold simplifyBuiltin
-  split
-  · rename_i l hbind
-    rw [Option.bind_eq_some_iff] at hbind
-    obtain ⟨lits, hlits, hfold⟩ := hbind
-    rw [asLits_map hlits]
-    exact fold_equiv hfold
-  · cases hn : neutral op args with
-    | none => exact EquivExpr.refl _
-    | some e => exact neutral_equiv hn
+  simp only [simplifyBuiltin]
+  cases hcore : Core.ingestSelf (Expr.builtin op args) with
+  | some core =>
+    have herase := Core.ingestSelf_emit hcore
+    simpa only [herase] using
+      (Core.simplifyTerm_sound (calls := calls) (creates := creates) core)
+  | none => exact EquivExpr.refl _
 
 /-! ### The recursive pass
 
@@ -714,12 +887,30 @@ example : simplifyExpr (.builtin .add [.lit (.number 2), .lit (.number 3)]) = .l
 /-- Nested folding: `mul(add(1,2), 1) = 3`. -/
 example : simplifyExpr (.builtin .mul [.builtin .add [.lit (.number 1), .lit (.number 2)],
     .lit (.number 1)]) = .lit (.number 3) := rfl
-/-- Right neutral: `add(x, 0) = x`. -/
-example : simplifyExpr (.builtin .add [.var "x", .lit (.number 0)]) = .var "x" := rfl
-/-- Left neutral: `mul(1, x) = x`. -/
-example : simplifyExpr (.builtin .mul [.lit (.number 1), .var "x"]) = .var "x" := rfl
-/-- Mask by all-ones is the identity: `and(x, 2²⁵⁶−1) = x`. -/
-example : simplifyExpr (.builtin .and [.var "x", .lit (.number (2 ^ 256 - 1))]) = .var "x" := rfl
+/-- The Core rule engine rewrites a typed right-neutral application. -/
+example (x : Core.Var ["x"]) :
+    Core.simplifyTerm (.builtin .add
+      (⟨[.var x, .lit (.number 0)], rfl⟩ : Core.Args ["x"] 2)) = .atom (.var x) := by
+  rcases x with ⟨name, hname⟩
+  simp only [List.mem_singleton] at hname
+  subst name
+  simp [Core.simplifyTerm, Core.run, Core.first, Core.simplifyRules, Core.foldRule,
+    Core.foldRewrite, Core.neutralRule, Core.neutralRewrite, Core.PureOp.toOp,
+    Core.Args.emit, Core.Value.emit, Core.Var.emit, Core.ingestValue, asLits, pureFold,
+    pureFn, neutral, litValue]
+-- The production wrapper successfully composes ingestion with the Core rule.
+#guard match simplifyExpr (.builtin .add [.var "x", .lit (.number 0)]) with
+  | .var "x" => true
+  | _ => false
+-- Left neutral: `mul(1, x) = x`.
+#guard match simplifyExpr (.builtin .mul [.lit (.number 1), .var "x"]) with
+  | .var "x" => true
+  | _ => false
+-- Mask by all-ones is the identity: `and(x, 2²⁵⁶−1) = x`.
+#guard match simplifyExpr
+    (.builtin .and [.var "x", .lit (.number (2 ^ 256 - 1))]) with
+  | .var "x" => true
+  | _ => false
 /-- Non-pure built-ins are left untouched. -/
 example : simplifyExpr (.builtin .sload [.lit (.number 0)]) =
     .builtin .sload [.lit (.number 0)] := rfl
