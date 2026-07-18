@@ -1,5 +1,7 @@
 import YulParser.Validate
 
+set_option warningAsError true
+
 /-!
 # YulParser.Source
 

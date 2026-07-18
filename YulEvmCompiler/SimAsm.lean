@@ -2,6 +2,8 @@ import YulEvmCompiler.AsmSem
 import YulEvmCompiler.Compile
 import YulSemantics.BigStep
 
+set_option warningAsError true
+
 /-!
 # YulEvmCompiler.SimAsm
 

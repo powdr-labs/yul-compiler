@@ -2,6 +2,8 @@ import EvmSemantics.Machine.MachineState
 import EvmSemantics.Data.Bytes
 import YulSemantics.Dialect.EVM
 
+set_option warningAsError true
+
 /-!
 # YulEvmCompiler.BytesLemmas
 

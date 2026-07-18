@@ -1,6 +1,8 @@
 import YulParser.Atoms
 import YulSemantics.Dialect.EVM
 
+set_option warningAsError true
+
 /-!
 # YulParser.Expr
 

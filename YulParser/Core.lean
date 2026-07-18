@@ -1,3 +1,5 @@
+set_option warningAsError true
+
 /-!
 # YulParser.Core
 

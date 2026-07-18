@@ -1,5 +1,7 @@
 import YulParser.Combinators
 
+set_option warningAsError true
+
 /-!
 # YulParser.Tokens
 

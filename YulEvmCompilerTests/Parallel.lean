@@ -1,3 +1,5 @@
+set_option warningAsError true
+
 /-!
 Bounded, deterministic parallelism for the corpus test runners.
 

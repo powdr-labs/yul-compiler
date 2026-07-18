@@ -1,5 +1,7 @@
 import YulEvmCompiler.Asm
 
+set_option warningAsError true
+
 /-!
 # YulEvmCompiler.AsmSem
 

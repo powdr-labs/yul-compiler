@@ -1,5 +1,7 @@
 import YulParser.Expr
 
+set_option warningAsError true
+
 /-!
 # YulParser.Stmt
 

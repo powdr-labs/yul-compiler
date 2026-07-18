@@ -1,5 +1,7 @@
 import YulParser.Source
 
+set_option warningAsError true
+
 /-!
 Shared helpers for runners over Solidity's moving Yul test corpora: relative
 fixture names, exact text baselines, source-section extraction, and filtering

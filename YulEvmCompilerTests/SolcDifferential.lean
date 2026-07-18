@@ -1,5 +1,7 @@
 import YulEvmCompilerTests.InterpreterFixture
 
+set_option warningAsError true
+
 /-!
 # Differential execution against solc
 

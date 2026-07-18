@@ -1,6 +1,8 @@
 import YulParser.Stmt
 import YulSemantics.Object
 
+set_option warningAsError true
+
 /-!
 # YulParser.Obj
 

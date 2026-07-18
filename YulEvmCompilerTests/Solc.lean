@@ -1,5 +1,7 @@
 import EvmSemantics.Data.Hex
 
+set_option warningAsError true
+
 /-!
 # Driving a pinned `solc` as an external process
 

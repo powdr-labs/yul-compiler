@@ -1,4 +1,6 @@
 import YulEvmCompiler.LowerDefs
+
+set_option warningAsError true
 /-!
 # YulEvmCompiler.LowerCorrect
 

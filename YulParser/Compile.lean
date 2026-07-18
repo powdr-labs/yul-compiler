@@ -2,6 +2,8 @@ import YulParser.Source
 import YulEvmCompiler.ObjectCompile
 import YulEvmCompiler.Optimizer.Implementation.IdentityPipeline
 
+set_option warningAsError true
+
 /-!
 # YulParser.Compile
 

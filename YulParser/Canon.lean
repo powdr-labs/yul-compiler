@@ -1,6 +1,8 @@
 import Mathlib
 import YulParser.Lexer
 
+set_option warningAsError true
+
 /-!
 # YulParser.Canon
 

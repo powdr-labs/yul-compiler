@@ -1,6 +1,8 @@
 import YulEvmCompiler.Correctness
 import YulEvmCompiler.ObjectResolve
 
+set_option warningAsError true
+
 /-!
 # YulEvmCompiler.ObjectCompile
 

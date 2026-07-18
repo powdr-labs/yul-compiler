@@ -1,6 +1,8 @@
 import YulEvmCompiler.StateRel
 import YulSemantics.BigStep
 
+set_option warningAsError true
+
 /-!
 # YulEvmCompiler.OpStep
 

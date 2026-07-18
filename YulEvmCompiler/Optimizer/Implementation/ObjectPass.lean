@@ -3,6 +3,8 @@ import YulEvmCompiler.Optimizer.Implementation.Simplify
 import YulEvmCompiler.Optimizer.Implementation.ResolveCongr
 import YulEvmCompiler.ObjectCompile
 
+set_option warningAsError true
+
 /-!
 # YulEvmCompiler.Optimizer.Implementation.ObjectPass
 

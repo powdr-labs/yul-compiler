@@ -1,5 +1,7 @@
 import YulSemantics.Equiv
 
+set_option warningAsError true
+
 /-!
 # YulEvmCompiler.Optimizer.Spec.Pass
 

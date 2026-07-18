@@ -1,6 +1,8 @@
 import YulEvmCompiler.Optimizer.Implementation.Simplify
 import YulEvmCompiler.ObjectResolve
 
+set_option warningAsError true
+
 /-!
 # YulEvmCompiler.Optimizer.Implementation.ResolveCongr
 
@@ -75,7 +77,7 @@ theorem neutral_isVar {op : Op} {args : List (Expr Op)} {e : Expr Op}
   split at h <;>
     first
       | contradiction
-      | (split_ifs at h <;>
+      | (split_ifs at h;
           first
             | contradiction
             | (obtain rfl := Option.some.inj h; exact ⟨_, rfl⟩))
@@ -89,7 +91,7 @@ theorem neutral_resolve (L : Layout) {op : Op} {args : List (Expr Op)} {e : Expr
   split at h <;>
     first
       | contradiction
-      | (split_ifs at h <;>
+      | (split_ifs at h;
           first
             | contradiction
             | (obtain rfl := Option.some.inj h; exact ⟨rfl, rfl⟩))
@@ -175,7 +177,7 @@ theorem resolve_builtin_argEquiv (L : Layout) (op : Op) (args : List (Expr Op))
   · obtain ⟨n, rfl⟩ := hstr
     have h : simplifyArgs [Expr.lit (.string n)] = [Expr.lit (.string n)] := rfl
     rw [h]; exact EquivExpr.refl _
-  · push_neg at hstr
+  · push Not at hstr
     have hstr' : ∀ n, simplifyArgs args ≠ [.lit (.string n)] :=
       fun n hc => hstr n (simplifyArgs_stringlit hc)
     rw [resolveForLayoutExpr_builtin_other L op args hstr,

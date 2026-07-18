@@ -1,6 +1,8 @@
 import EvmSemantics.Data.UInt256
 import YulSemantics.Dialect.EVM
 
+set_option warningAsError true
+
 /-!
 # YulEvmCompiler.Value
 
