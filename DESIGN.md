@@ -454,6 +454,20 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     *optimized* program correctly simulates the *original* program's Yul semantics.
     This is the `Run`-interface composition `AGENTS.md` prescribes; no backend proof
     is reopened.
+  * **`Spec/Observe.lean`** — the *observational tier*, additive and (so far)
+    outside the pinned audit roots. `ObsEquivBlock` compares runs only on what a
+    caller or the transaction can see — the committed (`committedState`) storage,
+    transient storage, logs, self-destructs, returndata, halt payload, and world
+    projections — quantifying away raw memory, `msize`, and the final variable
+    environment, under every external oracle. This is the contract for passes
+    `EquivBlock` provably cannot express (dead-binding removal, scratch-memory
+    reuse, dead stores before `revert`). The strong tier embeds
+    (`ObsEquivBlock.ofEquiv`), `ObsPass` composes, and
+    `ObsPass.optimize_then_compile_correct` restates the backend payoff
+    observationally: the compiled optimized program reaches a state matching a
+    Yul state with the *same run observables* as the source's. Admitting an
+    `ObsPass` into the production pipeline is a deliberate, human-reviewed
+    weakening of the headline guarantee; the theorem is ready for that review.
 * **`Optimizer/Core/`** — the incrementally introduced optimizer IR, behind the
   unchanged `Pass` boundary.
   * **`Core/Basic.lean`** — the first intrinsically checked fragment: ANF values
@@ -467,6 +481,14 @@ audited-surface-vs-artifact distinction the spec closure already makes:
   * **`Core/Rule.lean`** — a shallow rewrite bundled with its `EquivExpr` proof.
     The generic first-match engine is proved once for any ordered rule list, so
     optimizer policy can change without changing the engine proof.
+  * **`Core/Subst.lean`** — closed-term instantiation of parameter contexts:
+    substituting caller arguments for a Core term's context is first-occurrence
+    name lookup (deliberately mirroring `VEnv.get`), so no capture, renaming, or
+    freshness discipline exists to prove anything about. `valueEval` reflects the
+    `Step` judgment on value-shaped expressions (variables/non-string literals)
+    into `Option`-equational reasoning; `substEmit_value_correspond` is the heart
+    of the inliner's β argument — a substituted value evaluates in the caller
+    environment exactly as the original evaluates in the callee frame.
 * **`Optimizer/Implementation/`** — concrete passes, *not* part of what an auditor
   must read: because every `Pass` is sound by construction, a pass is trusted the
   moment it type-checks against the spec.
@@ -495,18 +517,34 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     *and* hoisted, so it needs a `for`-specific congruence — a small follow-up).
     `compileSource` runs it on block-rooted programs; `IDEAS.md` logs the running
     list of passes tried and to try.
-  * **`Implementation/InlineIdentity.lean`** — scope-aware inlining of exact
-    `function f(p) -> r { r := p }` helpers. Calls become `add(e, 0)`, retaining
-    the original call's single-value requirement even for arbitrary AST input.
-    Its bidirectional `Step` simulation follows hoisted ordered scopes, closure
-    environments, shadowing, and `for` initializer scopes. The production
-    pipeline runs Simplify before and after this pass.
-  * **`Implementation/InlineIdentityResolve.lean`** — proves strict commutation
-    between layout resolution and identity inlining, including invariance of
-    exact-identity classification under resolution.
-  * **`Implementation/IdentityPipeline.lean`** — composes the three verified
-    stages and applies them recursively to every object code block, with the
-    full original-object execution theorem.
+  * **`Implementation/InlineHelpers.lean`** — scope-aware inlining of pure
+    expression-body helpers, classified through the Core boundary
+    (`helper?` ingests the body into `Term params 1` and certifies distinct,
+    all-read parameters and string-freeness). A bare-parameter body
+    (`r := p`) rewrites `f(e)` to `add(e, 0)` for any single argument — the
+    arity-preserving fence the old identity pass used; a pure built-in body
+    (`r := op(…)`) rewrites a flat call `f(v₁, …, vₙ)` to the body with
+    arguments substituted (`Term.substEmit`) — closed-term instantiation, with
+    a β equivalence (`helper_call_subst_iff`) whose right-hand side consults
+    *no* function environment. Recursive helpers, effectful or multi-statement
+    bodies, and non-flat call sites keep the ordinary verified call. The
+    bidirectional `Step` simulation follows hoisted ordered scopes, closure
+    environments, shadowing, and `for` initializer scopes; classified helpers
+    are fixed points of the transform, so call sites may consult the callee's
+    original body after the whole program has been rewritten. The `litOK` flag
+    selects between full classification (block path) and the
+    resolution-stable, variables-only fragment (object path).
+  * **`Implementation/InlineHelpersResolve.lean`** — proves strict commutation
+    between layout resolution and helper inlining in its resolution-stable
+    mode, including invariance of classification and of the rewrite condition
+    under resolution: resolution can neither create nor destroy the bare-var
+    shapes that mode accepts, whereas it *does* create literals (from
+    `dataoffset`/`datasize`), which is exactly why the object path must not
+    classify literal-carrying bodies or literal call arguments.
+  * **`Implementation/Pipeline.lean`** — composes the three verified stages
+    (`optimizerPipeline` for blocks, `objectPipeline` for object code blocks,
+    applied recursively over the tree), with the full original-object
+    execution theorem `optimizerPipelineObject_correct`.
   * **`Implementation/ObjectPass.lean`** — the object path. `simplifyObject` (in
     `Simplify`) runs the pass on *every* code block of an object tree (deploy and
     runtime); `compileSource` uses it for object-rooted programs.

@@ -16,7 +16,7 @@ commonSubexpressionEliminator/case2.yul	1752	1050
 commonSubexpressionEliminator/clear_not_needed.yul	47370	47130
 commonSubexpressionEliminator/function_scopes.yul	1752	1050
 commonSubexpressionEliminator/loop.yul	27854	27584
-commonSubexpressionEliminator/movable_functions.yul	1542	624
+commonSubexpressionEliminator/movable_functions.yul	1050	624
 commonSubexpressionEliminator/non_movable_instr.yul	108	0
 commonSubexpressionEliminator/object_access.yul	126	108
 commonSubexpressionEliminator/replace_return_nonzero.yul	72	0
@@ -108,9 +108,9 @@ equivalentFunctionCombiner/multiple_complex.yul	1800	0
 equivalentFunctionCombiner/simple.yul	624	456
 equivalentFunctionCombiner/simple_different_vars.yul	750	0
 equivalentFunctionCombiner/switch_case_order.yul	1152	894
-expressionInliner/argument_duplication_heuristic.yul	4722	0
+expressionInliner/argument_duplication_heuristic.yul	3630	0
 expressionInliner/complex_with_evm.yul	366	0
-expressionInliner/double_calls.yul	816	0
+expressionInliner/double_calls.yul	570	0
 expressionInliner/no_inline_mload.yul	180	0
 expressionInliner/no_move_with_sideeffects.yul	1140	678
 expressionInliner/simple.yul	306	0
@@ -200,9 +200,9 @@ fullInliner/call_arguments_without_side_effects.yul	13974	0
 fullInliner/inside_condition.yul	25672	25499
 fullInliner/large_function_multi_use.yul	182922	182454
 fullInliner/large_function_single_use.yul	47790	47562
-fullInliner/long_names.yul	516	336
+fullInliner/long_names.yul	270	336
 fullInliner/move_up_rightwards_argument.yul	726	0
-fullInliner/multi_fun.yul	1104	0
+fullInliner/multi_fun.yul	576	0
 fullInliner/multi_return.yul	594	384
 fullInliner/no_inline_into_big_function.yul	144	0
 fullInliner/no_inline_leave.yul	690	0
@@ -213,7 +213,7 @@ fullInliner/recursion.yul	55332	92052
 fullInliner/simple.yul	13158	0
 fullInlinerWithoutSplitter/call_arguments_with_side_effects.yul	378	30
 fullInlinerWithoutSplitter/call_arguments_without_side_effects.yul	13974	0
-fullInlinerWithoutSplitter/simple.yul	372	0
+fullInlinerWithoutSplitter/simple.yul	90	0
 fullSimplify/constant_propagation.yul	180	156
 fullSimplify/constants.yul	90	150
 fullSimplify/identity_rules_complex.yul	162	138
@@ -233,7 +233,7 @@ fullSimplify/scoped_var_ref_in_function_call.yul	206346	206190
 fullSimplify/signextend.yul	276	228
 fullSimplify/smoke.yul	0	0
 fullSuite/abi2.yul	456	432
-fullSuite/abi_example1.yul	1758	1410
+fullSuite/abi_example1.yul	1512	1410
 fullSuite/and_or_combination.yul	144094	144022
 fullSuite/call_arguments_with_side_effects.yul	378	30
 fullSuite/call_arguments_without_side_effects.yul	14162	13956
@@ -326,8 +326,8 @@ loadResolver/merge_unknown_write.yul	2322	2308
 loadResolver/merge_with_rewrite.yul	47454	47478
 loadResolver/mload_in_function.yul	28328	28022
 loadResolver/mload_self.yul	2277	2241
-loadResolver/mstore_in_function_loop_body.yul	47940	47664
-loadResolver/mstore_in_function_loop_init.yul	28094	27812
+loadResolver/mstore_in_function_loop_body.yul	47694	47664
+loadResolver/mstore_in_function_loop_init.yul	27848	27812
 loadResolver/multi_sload_loop.yul	13572	12924
 loadResolver/re_store_memory.yul	177188	177140
 loadResolver/re_store_storage.yul	49170	49122
@@ -351,7 +351,7 @@ loopInvariantCodeMotion/no_move_state_function.yul	86210	45926
 loopInvariantCodeMotion/no_move_storage_function.yul	55604	36800
 loopInvariantCodeMotion/no_move_transient_storage.yul	1190928	1190172
 loopInvariantCodeMotion/not_first.yul	63136	57502
-nameDisplacer/funtion_call.yul	816	0
+nameDisplacer/funtion_call.yul	192	0
 nameDisplacer/variables.yul	120	0
 nameDisplacer/variables_inside_functions.yul	72	0
 rematerialiser/branches_if.yul	240	180

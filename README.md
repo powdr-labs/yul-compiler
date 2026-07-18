@@ -152,27 +152,35 @@ operations are different**: their correctness is *conditional on* the
   (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
   activated on any fork modeled by evm-semantics. Lifting the restriction is a
   codegen-only change once the fork table activates EIP-8024, or a spilling pass.
-- **Optimizer.** A verified `Simplify → InlineIdentity → Simplify` pipeline
+- **Optimizer.** A verified `Simplify → InlineHelpers → Simplify` pipeline
   runs in front of the
   backend for **block-rooted** source
   programs (`compileSource`); it is a total source-to-source transformation proved
   semantics-preserving (`EquivBlock`) and composed with the backend via
   `Pass.optimize_then_compile_correct`. `Simplify` performs constant folding,
   neutral identities, and literal control-flow selection. Its supported flat
-  pure expressions now pass through an intrinsically scoped, arity-indexed ANF
+  pure expressions pass through an intrinsically scoped, arity-indexed ANF
   Core IR and a generic proof-carrying rule engine; unsupported built-ins and
   non-ANF expression shapes are left unchanged rather than routed through a
-  second raw-AST rewrite implementation. `InlineIdentity`
-  replaces an exact lexical identity-helper call `f(e)` by `add(e, 0)`; the
-  `add` preserves the call's one-value arity requirement and the second
-  Simplify removes it in its proved variable/literal cases. For
+  second raw-AST rewrite implementation. `InlineHelpers` inlines helpers whose
+  body is a single assignment of a pure Core expression over the parameters:
+  an exact identity `f(e)` becomes `add(e, 0)` (the `add` preserves the call's
+  one-value arity requirement; the second Simplify removes it in its proved
+  variable/literal cases), and a pure built-in body is substituted into flat
+  call sites by Core closed-term instantiation — recursion, effectful bodies,
+  and non-flat sites keep the verified call protocol. For
   **object-rooted** programs (Solidity's `--via-ir` artifacts), `compileSource`
   runs the pipeline on *every* code block of the tree — deploy and runtime — via
-  `Optimizer.identityPipelineObject`. `identityPipelineObject_correct` proves the emitted bytecode
+  `Optimizer.optimizerPipelineObject` in the inliner's resolution-stable mode.
+  `optimizerPipelineObject_correct` proves the emitted bytecode
   correctly simulates the **original** object's resolved execution under the
   compiler's layout (the object analogue of `optimize_then_compile_correct`),
   bridged by the Simplify resolution congruence and strict commutation of layout
-  resolution with identity inlining.
+  resolution with helper inlining.
+  A second, weaker pass contract (`Spec/Observe.lean`: `ObsPass`, observational
+  equivalence of committed run observables) is defined and composed with the
+  backend for future passes that legitimately change memory or dead bindings;
+  the production pipeline currently uses only the strong `EquivBlock` tier.
   `compile`/`compileObject` never silently call an unproved transformation.
 - **Fork range.** The theorem fixes `fork = .Osaka`. Function/param/return names
   must be `Nodup`.
