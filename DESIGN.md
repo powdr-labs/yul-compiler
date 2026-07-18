@@ -461,8 +461,9 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     EVM operations carry their input arity in the type; and their arguments are
     values, making nested/effectful arguments unrepresentable. `ingest` is
     deliberately partial, while `ingest_emit` proves that successful ingestion
-    erases to exactly the original Yul expression. Unsupported syntax—including
-    calls and recursive calls—uses the total raw-Yul fallback.
+    erases to exactly the original Yul expression. The current simplifier leaves
+    unsupported syntax—including calls and recursive calls—unchanged; later
+    passes may use the same partial boundary with their own total fallback policy.
   * **`Core/Rule.lean`** — a shallow rewrite bundled with its `EquivExpr` proof.
     The generic first-match engine is proved once for any ordered rule list, so
     optimizer policy can change without changing the engine proof.
@@ -485,8 +486,9 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     with the variable kept on the right-hand side so the rewrite is sound on every
     environment), plus **literal control-flow selection** (`if` → chosen/empty
     block and `switch` → selected case/default). Flat pure applications are now
-    ingested into Core and run through proof-carrying fold/neutral rules; syntax
-    outside the current Core fragment retains the established total fallback.
+    ingested into Core and run through proof-carrying fold/neutral rules. This
+    replaces the old raw-AST rewrite driver: syntax outside the current Core
+    fragment is simply unchanged.
     It recurses through the whole
     program **including `funDef` bodies**
     (via `FunCongr`); only a `for`-loop's `init` is left untouched (it is executed

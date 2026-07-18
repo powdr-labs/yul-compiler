@@ -357,27 +357,6 @@ theorem neutral_result_var {op : Op} {args : List (Expr Op)} {e : Expr Op}
             | contradiction
             | (obtain rfl := Option.some.inj h; exact ⟨_, rfl⟩))
 
-/-- The raw-AST fallback for syntax outside the current Core fragment:
-constant-fold, else apply a neutral rewrite, else rebuild unchanged. -/
-def simplifyBuiltinRaw (op : Op) (args : List (Expr Op)) : Expr Op :=
-  match (asLits args).bind (pureFold op) with
-  | some l => .lit l
-  | none => (neutral op args).getD (.builtin op args)
-
-/-- The raw-AST fallback is sound. -/
-theorem simplifyBuiltinRaw_equiv (op : Op) (args : List (Expr Op)) :
-    EquivExpr D (.builtin op args) (simplifyBuiltinRaw op args) := by
-  unfold simplifyBuiltinRaw
-  split
-  · rename_i l hbind
-    rw [Option.bind_eq_some_iff] at hbind
-    obtain ⟨lits, hlits, hfold⟩ := hbind
-    rw [asLits_map hlits]
-    exact fold_equiv hfold
-  · cases hn : neutral op args with
-    | none => exact EquivExpr.refl _
-    | some e => exact neutral_equiv hn
-
 /-! ### Core-backed, proof-carrying rewrite rules
 
 Flat pure applications now cross the Core boundary.  The Core type certifies
@@ -385,7 +364,7 @@ that every argument is an ANF value, the operation is state-independent, its
 input arity is correct, and every variable belongs to the expression context.
 Each rule below carries its own `EquivExpr` proof; the generic engine in
 `Optimizer/Core/Rule.lean` composes the ordered policy without inspecting the
-rules.  Unsupported syntax takes the total raw-AST fallback above. -/
+rules.  Unsupported syntax is left unchanged by the Core boundary. -/
 
 namespace Core
 
@@ -533,13 +512,13 @@ theorem simplifyTerm_shape (input : Term Γ 1) :
 end Core
 
 /-- The local built-in rewrite.  Supported flat pure syntax is ingested into
-Core and simplified by proof-carrying rules; all other syntax uses the existing
-total fallback.  Arguments are assumed already simplified by the traversal. -/
+Core and simplified by proof-carrying rules; all other syntax is unchanged.
+Arguments are assumed already simplified by the traversal. -/
 def simplifyBuiltin (op : Op) (args : List (Expr Op)) : Expr Op :=
   let source : Expr Op := .builtin op args
   match Core.ingestSelf source with
   | some core => (Core.simplifyTerm core).emit
-  | none => simplifyBuiltinRaw op args
+  | none => source
 
 /-- The Core-backed local rewrite is sound. -/
 theorem simplifyBuiltin_equiv (op : Op) (args : List (Expr Op)) :
@@ -550,8 +529,7 @@ theorem simplifyBuiltin_equiv (op : Op) (args : List (Expr Op)) :
     have herase := Core.ingestSelf_emit hcore
     simpa only [herase] using
       (Core.simplifyTerm_sound (calls := calls) (creates := creates) core)
-  | none =>
-    exact simplifyBuiltinRaw_equiv op args
+  | none => exact EquivExpr.refl _
 
 /-! ### The recursive pass
 
@@ -924,10 +902,15 @@ example (x : Core.Var ["x"]) :
 #guard match simplifyExpr (.builtin .add [.var "x", .lit (.number 0)]) with
   | .var "x" => true
   | _ => false
-/-- Left neutral: `mul(1, x) = x`. -/
-example : neutral .mul [.lit (.number 1), .var "x"] = some (.var "x") := rfl
-/-- Mask by all-ones is the identity: `and(x, 2²⁵⁶−1) = x`. -/
-example : neutral .and [.var "x", .lit (.number (2 ^ 256 - 1))] = some (.var "x") := rfl
+-- Left neutral: `mul(1, x) = x`.
+#guard match simplifyExpr (.builtin .mul [.lit (.number 1), .var "x"]) with
+  | .var "x" => true
+  | _ => false
+-- Mask by all-ones is the identity: `and(x, 2²⁵⁶−1) = x`.
+#guard match simplifyExpr
+    (.builtin .and [.var "x", .lit (.number (2 ^ 256 - 1))]) with
+  | .var "x" => true
+  | _ => false
 /-- Non-pure built-ins are left untouched. -/
 example : simplifyExpr (.builtin .sload [.lit (.number 0)]) =
     .builtin .sload [.lit (.number 0)] := rfl

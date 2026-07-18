@@ -160,8 +160,9 @@ operations are different**: their correctness is *conditional on* the
   `Pass.optimize_then_compile_correct`. `Simplify` performs constant folding,
   neutral identities, and literal control-flow selection. Its supported flat
   pure expressions now pass through an intrinsically scoped, arity-indexed ANF
-  Core IR and a generic proof-carrying rule engine; nested/effectful syntax and
-  user calls retain the total raw-Yul fallback. `InlineIdentity`
+  Core IR and a generic proof-carrying rule engine; unsupported built-ins and
+  non-ANF expression shapes are left unchanged rather than routed through a
+  second raw-AST rewrite implementation. `InlineIdentity`
   replaces an exact lexical identity-helper call `f(e)` by `add(e, 0)`; the
   `add` preserves the call's one-value arity requirement and the second
   Simplify removes it in its proved variable/literal cases. For

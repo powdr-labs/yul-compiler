@@ -13,10 +13,10 @@ starts with the expression fragment used by the local simplifier:
 * built-in arguments are values, so nested/effectful expressions cannot be
   represented accidentally.
 
-`ingest` is partial because the public optimizer pass remains total: syntax not
-yet represented by Core stays on the existing Yul path.  `ingest_emit` is the
-boundary theorem—successful ingestion erases to exactly the original Yul
-expression.  Later Core stages can extend this module without changing the
+`ingest` is partial while the public optimizer pass remains total: the current
+simplifier leaves syntax not represented by Core unchanged. `ingest_emit` is
+the boundary theorem—successful ingestion erases to exactly the original Yul
+expression. Later Core stages can extend this module without changing the
 audited `Optimizer.Pass` contract or the backend proof.
 -/
 
@@ -288,16 +288,15 @@ example : (ingest ["x"] (.builtin .add [.var "x", .lit (.number 0)])).isSome = t
 /-- Wrong arity is rejected at ingestion rather than represented in Core. -/
 example : ingest [] (.builtin .add [.lit (.number 1)]) = none := rfl
 
-/-- Effectful operations remain on the total raw-Yul fallback path. -/
+/-- Effectful operations remain outside Core and are left unchanged. -/
 example : ingest [] (.builtin .sload [.lit (.number 0)]) = none := rfl
 
-/-- Nested expressions are not ANF values and remain on the fallback path until
-the statement-level splitter is introduced. -/
+/-- Nested expressions are not ANF values and remain unchanged at this boundary
+until the statement-level splitter is introduced. -/
 example : ingest [] (.builtin .add
     [.builtin .add [.lit (.number 1), .lit (.number 2)], .lit (.number 3)]) = none := rfl
 
-/-- User calls—including recursive calls—remain on the fallback path in this
-first Core slice. -/
+/-- User calls—including recursive calls—remain outside this first Core slice. -/
 example : ingest [] (.call "f" []) = none := rfl
 
 end YulEvmCompiler.Optimizer.Core
