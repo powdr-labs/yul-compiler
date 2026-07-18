@@ -1,7 +1,5 @@
 import YulEvmCompilerTests.SolcDifferential
-
 set_option warningAsError true
-
 /-!
 # Gas regression baselines over the Solidity Yul corpora
 

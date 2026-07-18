@@ -1,9 +1,7 @@
 import YulEvmCompiler.Optimizer.Spec.Pass
 import YulEvmCompiler.Optimizer.Implementation.FunCongr
 import YulSemantics.Dialect.EVM
-
 set_option warningAsError true
-
 /-!
 # YulEvmCompiler.Optimizer.Implementation.Simplify
 

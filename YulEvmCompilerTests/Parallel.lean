@@ -1,7 +1,5 @@
 set_option warningAsError true
-
-/-!
-Bounded, deterministic parallelism for the corpus test runners.
+/-! Bounded, deterministic parallelism for the corpus test runners.
 
 The Solidity corpus runners spend nearly all their wall-clock in per-fixture
 work that is independent across fixtures — compiling with this compiler, shelling

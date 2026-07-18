@@ -1,7 +1,5 @@
 import YulParser.Obj
-
 set_option warningAsError true
-
 /-!
 # YulParser.Compat
 

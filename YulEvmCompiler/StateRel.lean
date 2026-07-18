@@ -2,9 +2,7 @@ import YulEvmCompiler.Decode
 import YulEvmCompiler.Value
 import YulEvmCompiler.BytesLemmas
 import EvmSemantics.EVM.BigStep
-
 set_option warningAsError true
-
 /-!
 # YulEvmCompiler.StateRel
 

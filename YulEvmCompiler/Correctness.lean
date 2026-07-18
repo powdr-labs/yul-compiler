@@ -1,9 +1,7 @@
 import YulEvmCompiler.SimAsm
 import YulEvmCompiler.LowerCorrect
 import YulEvmCompiler.OpStep
-
 set_option warningAsError true
-
 /-!
 # YulEvmCompiler.Correctness
 

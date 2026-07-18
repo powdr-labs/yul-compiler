@@ -1,7 +1,5 @@
 import YulParser.Tokens
-
 set_option warningAsError true
-
 /-!
 # YulParser.Lexer
 

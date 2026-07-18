@@ -1,9 +1,7 @@
 import YulParser.Compile
 import EvmSemantics.EVM.StepF
 import EvmSemantics.Data.Hex
-
 set_option warningAsError true
-
 /-!
 # Solidity Yul interpreter fixtures
 

@@ -1,8 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.InlineIdentity
 import YulEvmCompiler.ObjectResolve
-
 set_option warningAsError true
-
 namespace YulEvmCompiler.Optimizer
 
 open YulSemantics

@@ -1,8 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.Simplify
 import YulEvmCompiler.ObjectResolve
-
 set_option warningAsError true
-
 /-!
 # YulEvmCompiler.Optimizer.Implementation.ResolveCongr
 

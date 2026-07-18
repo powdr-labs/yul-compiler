@@ -1,9 +1,7 @@
 import YulEvmCompiler.Optimizer.Spec.Pass
 import YulEvmCompiler.Optimizer.Implementation.Simplify
 import YulSemantics.Determinism
-
 set_option warningAsError true
-
 /-!
 # Inline exact identity helpers
 

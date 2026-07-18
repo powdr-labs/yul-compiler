@@ -1,8 +1,6 @@
 import YulSemantics.Determinism
 import YulSemantics.ObjectRun
-
 set_option warningAsError true
-
 /-!
 # YulEvmCompiler.ObjectResolve
 

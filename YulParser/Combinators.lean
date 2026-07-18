@@ -1,7 +1,5 @@
 import YulParser.Core
-
 set_option warningAsError true
-
 /-!
 # YulParser.Combinators
 

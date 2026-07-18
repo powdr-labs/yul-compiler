@@ -1,8 +1,6 @@
 import YulEvmCompiler.AsmSem
 import YulEvmCompiler.OpStep
-
 set_option warningAsError true
-
 /-!
 # YulEvmCompiler.LowerDefs
 

@@ -1,8 +1,6 @@
 import EvmSemantics.Crypto.Keccak256
 import EvmSemantics.Data.Hex
-
 set_option warningAsError true
-
 /-!
 # Parsing Solidity semantic-test call specs
 

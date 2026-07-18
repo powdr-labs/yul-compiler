@@ -1,7 +1,5 @@
 set_option warningAsError true
-
-/-!
-# YulParser.Core
+/-! # YulParser.Core
 
 Primitive parser combinators. A `Parser α` consumes a prefix of the input and returns a value with
 the remaining suffix.

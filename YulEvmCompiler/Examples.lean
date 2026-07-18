@@ -5,9 +5,7 @@ import YulSemantics.Syntax
 import YulSemantics.Interp
 import YulSemantics.FibExample
 import EvmSemantics.EVM.StepF
-
 set_option warningAsError true
-
 /-!
 # YulEvmCompiler.Examples
 

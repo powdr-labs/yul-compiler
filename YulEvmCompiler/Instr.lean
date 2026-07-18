@@ -1,7 +1,5 @@
 import EvmSemantics.EVM.Decode
-
 set_option warningAsError true
-
 /-!
 # YulEvmCompiler.Instr
 

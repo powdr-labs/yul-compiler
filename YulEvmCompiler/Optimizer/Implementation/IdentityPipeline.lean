@@ -1,8 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.InlineIdentityResolve
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
-
 set_option warningAsError true
-
 /-!
 # Production optimizer pipeline
 

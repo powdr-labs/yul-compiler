@@ -1,7 +1,5 @@
 import YulEvmCompiler.OpTable
-
 set_option warningAsError true
-
 /-!
 # YulEvmCompiler.Asm
 

@@ -1,8 +1,6 @@
 import YulParser.Canon
 import YulParser.Tokens
-
 set_option warningAsError true
-
 /-!
 # YulParser.SoundC
 
