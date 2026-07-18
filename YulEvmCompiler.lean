@@ -16,6 +16,8 @@ import YulEvmCompiler.Correctness
 import YulEvmCompiler.ObjectCompile
 import YulEvmCompiler.Optimizer.Spec.Pass
 import YulEvmCompiler.Optimizer.Spec.Backend
+import YulEvmCompiler.Optimizer.Core.Basic
+import YulEvmCompiler.Optimizer.Core.Rule
 import YulEvmCompiler.Optimizer.Implementation.Identity
 import YulEvmCompiler.Optimizer.Implementation.FunCongr
 import YulEvmCompiler.Optimizer.Implementation.Simplify

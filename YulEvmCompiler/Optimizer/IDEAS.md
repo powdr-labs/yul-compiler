@@ -14,6 +14,12 @@ a lot of structural slack to remove.
 
 ## Framework facts worth knowing before adding a pass
 
+- `Optimizer/Core/Basic.lean` provides the first typed optimizer boundary:
+  intrinsically scoped ANF values and arity-indexed pure operations. Successful
+  ingestion erases exactly to its Yul input; unsupported, nested, effectful, and
+  call syntax falls back to raw Yul, keeping the public pass total. `Core/Rule.lean`
+  supplies a generic first-match engine whose rules carry their own `EquivExpr`
+  proofs. `Simplify` is the first pass using this path.
 - `EquivExpr`/`EquivStmt`/`EquivStmts`/`EquivBlock` are pointwise big-step
   equivalences with congruence lemmas in `YulSemantics.Equiv`. Local expression
   rewrites lift through `builtin_congr`/`call_congr` and the statement

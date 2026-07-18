@@ -47,6 +47,39 @@ theorem resolve_builtin_nondata (L : Layout) {op : Op} (args : List (Expr Op))
     | (exact absurd rfl h2)
     | rfl
 
+/-! ### Resolution is the identity on Core terms
+
+The Core type admits only literals, scoped variables, and typed pure operations;
+layout reads are unrepresentable.  Consequently resolution is structurally the
+identity before and after any Core rule. -/
+
+theorem Core.resolveValue (L : Layout) (value : Core.Value Γ) :
+    resolveForLayoutExpr L value.emit = value.emit := by
+  cases value <;> rfl
+
+theorem Core.resolveArgs (L : Layout) (args : Core.Args Γ arity) :
+    resolveForLayoutExprs L args.emit = args.emit := by
+  have helper : ∀ values : List (Core.Value Γ),
+      resolveForLayoutExprs L (values.map Core.Value.emit) =
+        values.map Core.Value.emit := by
+    intro values
+    induction values with
+    | nil => rfl
+    | cons value rest ih =>
+        simp only [List.map_cons, resolveForLayoutExprs]
+        rw [Core.resolveValue L value, ih]
+  exact helper args.values
+
+theorem Core.resolveTerm (L : Layout) (term : Core.Term Γ outputs) :
+    resolveForLayoutExpr L term.emit = term.emit := by
+  cases term with
+  | atom value => exact Core.resolveValue L value
+  | builtin op args =>
+      rw [Core.Term.emit, resolve_builtin_nondata L args.emit]
+      · rw [Core.resolveArgs L args]
+      · cases op <;> simp [Core.PureOp.toOp]
+      · cases op <;> simp [Core.PureOp.toOp]
+
 /-- On any built-in whose args are not a lone string literal, resolution just
 recurses into the args (neither `dataoffset` nor `datasize` special case fires). -/
 theorem resolveForLayoutExpr_builtin_other (L : Layout) (op : Op) (args : List (Expr Op))
@@ -100,11 +133,10 @@ Folding produces number literals; neutral rewrites produce variables. So a strin
 literal in the output was already there — which is what preserves the
 `dataoffset("name")`/`datasize("name")` shape that resolution keys on. -/
 
-/-- `simplifyBuiltin` never returns a string literal (folds give numbers, neutral
-gives variables). -/
-theorem simplifyBuiltin_not_stringlit (op : Op) (args : List (Expr Op)) (n : String) :
-    simplifyBuiltin op args ≠ .lit (.string n) := by
-  unfold simplifyBuiltin
+/-- The raw fallback never returns a string literal. -/
+theorem simplifyBuiltinRaw_not_stringlit (op : Op) (args : List (Expr Op)) (n : String) :
+    simplifyBuiltinRaw op args ≠ .lit (.string n) := by
+  unfold simplifyBuiltinRaw
   split
   · rename_i l hb
     rw [Option.bind_eq_some_iff] at hb
@@ -115,6 +147,29 @@ theorem simplifyBuiltin_not_stringlit (op : Op) (args : List (Expr Op)) (n : Str
   · cases hn : neutral op args with
     | none => simp
     | some e => obtain ⟨x, rfl⟩ := neutral_isVar hn; simp
+
+/-- `simplifyBuiltin` never returns a string literal: Core either retains the
+input built-in, folds to a number, or returns a variable; fallback has the same
+property. -/
+theorem simplifyBuiltin_not_stringlit (op : Op) (args : List (Expr Op)) (n : String) :
+    simplifyBuiltin op args ≠ .lit (.string n) := by
+  simp only [simplifyBuiltin]
+  cases hcore : Core.ingestSelf (Expr.builtin op args) with
+  | none => exact simplifyBuiltinRaw_not_stringlit op args n
+  | some core =>
+      intro hstring
+      change (Core.simplifyTerm core).emit = .lit (.string n) at hstring
+      rcases Core.simplifyTerm_shape core with hsame | hnumber | hvar
+      · rw [hsame] at hstring
+        have herase := Core.ingestSelf_emit hcore
+        rw [herase] at hstring
+        simp at hstring
+      · obtain ⟨value, hvalue⟩ := hnumber
+        rw [hvalue] at hstring
+        simp [Core.Term.emit, Core.Value.emit] at hstring
+      · obtain ⟨ref, href⟩ := hvar
+        rw [href] at hstring
+        simp [Core.Term.emit, Core.Value.emit] at hstring
 
 theorem simplifyExpr_stringlit {e : Expr Op} {n : String}
     (h : simplifyExpr e = .lit (.string n)) : e = .lit (.string n) := by
@@ -143,10 +198,10 @@ theorem simplifyArgs_stringlit {args : List (Expr Op)} {n : String}
 
 /-! ### The local built-in rewrite commutes with resolution -/
 
-theorem resolveSimplifyBuiltin_equiv (L : Layout) (op : Op) (args : List (Expr Op)) :
+theorem resolveSimplifyBuiltinRaw_equiv (L : Layout) (op : Op) (args : List (Expr Op)) :
     EquivExpr D (resolveForLayoutExpr L (.builtin op args))
-      (resolveForLayoutExpr L (simplifyBuiltin op args)) := by
-  unfold simplifyBuiltin
+      (resolveForLayoutExpr L (simplifyBuiltinRaw op args)) := by
+  unfold simplifyBuiltinRaw
   split
   · -- constant folding
     rename_i l hbind
@@ -163,6 +218,23 @@ theorem resolveSimplifyBuiltin_equiv (L : Layout) (op : Op) (args : List (Expr O
         simp only [Option.getD_some]
         rw [resolve_builtin_nondata L _ hd1 hd2, hargs, he]
         exact neutral_equiv hn
+
+/-- Core simplification commutes with resolution because every Core term is
+layout-independent; unsupported syntax uses the established raw proof. -/
+theorem resolveSimplifyBuiltin_equiv (L : Layout) (op : Op) (args : List (Expr Op)) :
+    EquivExpr D (resolveForLayoutExpr L (.builtin op args))
+      (resolveForLayoutExpr L (simplifyBuiltin op args)) := by
+  simp only [simplifyBuiltin]
+  cases hcore : Core.ingestSelf (Expr.builtin op args) with
+  | none => exact resolveSimplifyBuiltinRaw_equiv L op args
+  | some core =>
+      have herase := Core.ingestSelf_emit hcore
+      have hleft : resolveForLayoutExpr L (.builtin op args) = core.emit :=
+        (congrArg (resolveForLayoutExpr L) herase.symm).trans (Core.resolveTerm L core)
+      have hright : resolveForLayoutExpr L (Core.simplifyTerm core).emit =
+          (Core.simplifyTerm core).emit := Core.resolveTerm L (Core.simplifyTerm core)
+      rw [hleft, hright]
+      exact Core.simplifyTerm_sound core
 
 /-- Simplifying a built-in's arguments commutes with resolution up to equivalence
 (the `dataoffset`/`datasize` string-literal shape is preserved by the pass). -/
