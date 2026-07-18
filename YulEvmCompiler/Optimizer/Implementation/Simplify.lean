@@ -1,7 +1,7 @@
 import YulEvmCompiler.Optimizer.Spec.Pass
 import YulEvmCompiler.Optimizer.Implementation.FunCongr
 import YulSemantics.Dialect.EVM
-
+set_option warningAsError true
 /-!
 # YulEvmCompiler.Optimizer.Implementation.Simplify
 
@@ -325,7 +325,7 @@ theorem neutral_equiv {op : Op} {args : List (Expr Op)} {e : Expr Op}
   split at h <;>
     first
       | contradiction
-      | (split_ifs at h with hc <;>
+      | (split_ifs at h with hc;
           first
             | contradiction
             | (obtain rfl := Option.some.inj h;

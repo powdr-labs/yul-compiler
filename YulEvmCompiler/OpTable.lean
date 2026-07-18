@@ -1,6 +1,6 @@
 import YulEvmCompiler.Instr
 import YulEvmCompiler.Value
-
+set_option warningAsError true
 /-!
 # YulEvmCompiler.OpTable
 

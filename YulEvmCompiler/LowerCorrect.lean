@@ -1,6 +1,6 @@
 import YulEvmCompiler.LowerDefs
-/-!
-# YulEvmCompiler.LowerCorrect
+set_option warningAsError true
+/-! # YulEvmCompiler.LowerCorrect
 
 **Phase B**, the simulation theorems: each local Asm step maps to 1–3 EVM
 steps on the lowered bytecode. An external call/create step maps to an

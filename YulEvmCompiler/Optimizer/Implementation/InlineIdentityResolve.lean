@@ -1,6 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.InlineIdentity
 import YulEvmCompiler.ObjectResolve
-
+set_option warningAsError true
 namespace YulEvmCompiler.Optimizer
 
 open YulSemantics
@@ -21,9 +21,8 @@ def resolveIdentityFuns (L : Layout) (funs : FunEnv D) : FunEnv D :=
 
 private theorem resolveForLayoutExpr_eq_var_iff (L : Layout) (e : Expr Op)
     (x : Ident) : resolveForLayoutExpr L e = .var x ↔ e = .var x := by
-  cases e <;> simp only [resolveForLayoutExpr, Expr.lit.injEq,
-    Expr.var.injEq, Expr.builtin.injEq, Expr.call.injEq,
-    reduceCtorEq] <;> split <;> simp_all
+  cases e <;> simp only [resolveForLayoutExpr, Expr.var.injEq, reduceCtorEq];
+    split <;> simp_all
 
 private theorem exactIdentity_iff_shape (decl : FDecl D) :
     ExactIdentity decl ↔ ∃ param ret, decl =
@@ -40,13 +39,12 @@ private theorem resolveForLayoutStmts_eq_identity_iff (L : Layout)
     resolveForLayoutStmts L body = [.assign [ret] (.var param)] ↔
       body = [.assign [ret] (.var param)] := by
   cases body with
-  | nil => simp [resolveForLayoutStmts]
+  | nil => simp
   | cons stmt rest =>
       cases rest with
-      | cons => simp [resolveForLayoutStmts]
+      | cons => simp
       | nil =>
-          cases stmt <;> simp [resolveForLayoutStmts, resolveForLayoutStmt,
-            resolveForLayoutExpr_eq_var_iff]
+          cases stmt <;> simp [resolveForLayoutExpr_eq_var_iff]
 
 private theorem resolveIdentityDecl_eq_identity_iff (L : Layout)
     (decl : FDecl D) (param ret : Ident) :
@@ -92,7 +90,7 @@ theorem lookupFun_resolveIdentityFuns (L : Layout) (static : FunEnv D)
           simpa only [resolveIdentityFuns] using ih
       | some found =>
           rcases found with ⟨name, decl⟩
-          simp [h, resolveIdentityFuns]
+          simp
 
 theorem resolvesIdentity_resolveIdentityFuns (L : Layout) (static : FunEnv D)
     (fn : Ident) :
@@ -110,7 +108,7 @@ theorem hoist_resolveIdentity (L : Layout) (body : Block Op) :
     hoist D (resolveForLayoutStmts L body) =
       resolveIdentityScope L (hoist D body) := by
   induction body with
-  | nil => simp [resolveForLayoutStmts, hoist, resolveIdentityScope]
+  | nil => simp [hoist, resolveIdentityScope]
   | cons stmt rest ih =>
       rw [resolveForLayoutStmts]
       cases stmt <;>
@@ -232,11 +230,9 @@ mutual
         simp only [resolveIdentityFuns, List.map_cons, hoist_resolveIdentity]
     | letDecl vars value =>
         cases value <;>
-          simp [inlineIdentityStmt, resolveForLayoutStmt,
-            resolve_inlineIdentityExpr]
+          simp [inlineIdentityStmt, resolve_inlineIdentityExpr]
     | assign vars value =>
-        simp [inlineIdentityStmt, resolveForLayoutStmt,
-          resolve_inlineIdentityExpr]
+        simp [inlineIdentityStmt, resolve_inlineIdentityExpr]
     | cond c body =>
         rw [inlineIdentityStmt, resolveForLayoutStmt,
           resolveForLayoutStmt, inlineIdentityStmt,
@@ -246,26 +242,24 @@ mutual
         cases dflt with
         | none =>
             simp only [inlineIdentityStmt, resolveForLayoutStmt,
-              Option.map_none, resolve_inlineIdentityExpr,
+              resolve_inlineIdentityExpr,
               resolve_inlineIdentityCases]
         | some body =>
             rw [inlineIdentityStmt, resolveForLayoutStmt,
               resolveForLayoutStmt, inlineIdentityStmt,
               resolve_inlineIdentityExpr, resolve_inlineIdentityCases,
               resolve_inlineIdentityStmts]
-            simp only [Option.map_some, resolveIdentityFuns, List.map_cons,
-              hoist_resolveIdentity]
+            simp only [resolveIdentityFuns, List.map_cons, hoist_resolveIdentity]
     | forLoop init c post body =>
         simp only [inlineIdentityStmt, resolveForLayoutStmt]
         rw [resolve_inlineIdentityStmts, resolve_inlineIdentityExpr,
           resolve_inlineIdentityStmts, resolve_inlineIdentityStmts]
         simp only [resolveIdentityFuns, List.map_cons, hoist_resolveIdentity]
     | exprStmt e =>
-        simp [inlineIdentityStmt, resolveForLayoutStmt,
-          resolve_inlineIdentityExpr]
-    | «break» => simp [inlineIdentityStmt, resolveForLayoutStmt]
-    | «continue» => simp [inlineIdentityStmt, resolveForLayoutStmt]
-    | «leave» => simp [inlineIdentityStmt, resolveForLayoutStmt]
+        simp [inlineIdentityStmt, resolve_inlineIdentityExpr]
+    | «break» => simp [inlineIdentityStmt]
+    | «continue» => simp [inlineIdentityStmt]
+    | «leave» => simp [inlineIdentityStmt]
 
   theorem resolve_inlineIdentityStmts (L : Layout) (static : FunEnv D)
       (stmts : Block Op) :
@@ -273,7 +267,7 @@ mutual
         inlineIdentityStmts (resolveIdentityFuns L static)
           (resolveForLayoutStmts L stmts) := by
     cases stmts with
-    | nil => simp [inlineIdentityStmts, resolveForLayoutStmts]
+    | nil => simp [inlineIdentityStmts]
     | cons stmt rest =>
         rw [inlineIdentityStmts, resolveForLayoutStmts,
           resolve_inlineIdentityStmt, resolve_inlineIdentityStmts,

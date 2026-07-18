@@ -1,5 +1,5 @@
 import YulEvmCompiler.Optimizer.Spec.Pass
-
+set_option warningAsError true
 /-!
 # YulEvmCompiler.Optimizer.Implementation.Identity
 

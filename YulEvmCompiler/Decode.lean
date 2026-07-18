@@ -1,6 +1,6 @@
 import YulEvmCompiler.OpTable
 import Batteries.Data.ByteArray
-
+set_option warningAsError true
 /-!
 # YulEvmCompiler.Decode
 

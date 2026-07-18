@@ -1,6 +1,6 @@
 import YulParser.SoundC
 import YulSemantics.Ast
-
+set_option warningAsError true
 /-!
 # YulParser.Atoms
 

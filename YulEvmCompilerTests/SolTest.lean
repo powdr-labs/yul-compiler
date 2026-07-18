@@ -1,6 +1,6 @@
 import EvmSemantics.Crypto.Keccak256
 import EvmSemantics.Data.Hex
-
+set_option warningAsError true
 /-!
 # Parsing Solidity semantic-test call specs
 
@@ -64,8 +64,8 @@ private def parseHex (s : String) : Option Nat :=
   if cs.isEmpty || !cs.all isHexDigit then none
   else some (cs.foldl (fun n c => n * 16 + hexVal c) 0)
 
-private def dropN (s : String) (n : Nat) : String := String.mk (s.toList.drop n)
-private def takeN (s : String) (n : Nat) : String := String.mk (s.toList.take n)
+private def dropN (s : String) (n : Nat) : String := String.ofList (s.toList.drop n)
+private def takeN (s : String) (n : Nat) : String := String.ofList (s.toList.take n)
 
 private def stripPrefix (s p : String) : Option String :=
   if s.startsWith p then some (dropN s p.length) else none

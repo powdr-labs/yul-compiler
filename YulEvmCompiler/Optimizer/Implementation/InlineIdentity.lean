@@ -1,7 +1,7 @@
 import YulEvmCompiler.Optimizer.Spec.Pass
 import YulEvmCompiler.Optimizer.Implementation.Simplify
 import YulSemantics.Determinism
-
+set_option warningAsError true
 /-!
 # Inline exact identity helpers
 
@@ -193,7 +193,7 @@ theorem hoist_inlineIdentityStmts (static : FunEnv D) : ∀ body : Block Op,
   | .funDef fn params rets body :: rest => by
       rw [inlineIdentityStmts, inlineIdentityStmt]
       simp only [hoist, List.filterMap_cons, inlineIdentityScope, List.map_cons,
-        Prod.fst, Prod.snd, inlineIdentityDecl]
+        inlineIdentityDecl]
       congr 1
       change hoist D (inlineIdentityStmts static rest) =
         inlineIdentityScope static (hoist D rest)
@@ -442,10 +442,9 @@ theorem identity_body_value (cenv : FunEnv D) (param ret : Ident) (v : U256)
   refine ⟨restore V0 V1, ?_, ?_⟩
   · apply Step.block
     exact Step.seqCons
-      (Step.assignVal (Step.var (by simp [V0, VEnv.get])) (by simp)) Step.seqNil
+      (Step.assignVal (Step.var (by simp [VEnv.get])) (by simp)) Step.seqNil
   · by_cases hpr : param = ret <;>
-      simp [V0, V1, bindZeros, VEnv.get, VEnv.setMany, VEnv.set, restore,
-        venv_set_length, hpr]
+      simp [V0, V1, bindZeros, VEnv.get, VEnv.setMany, VEnv.set, restore, hpr]
 
 theorem identity_body_inv {cenv : FunEnv D} {param ret : Ident} {v : U256}
     {st Vend st' o}
@@ -507,7 +506,7 @@ theorem identity_call_add_iff {funs cenv : FunEnv D} {V st fn e}
         injection hlookup with heq
         obtain ⟨rfl, rfl⟩ := Prod.mk.injEq .. ▸ heq
         obtain ⟨rfl, rfl, hret⟩ := identity_body_inv hbody
-        simp only [List.map_cons, List.map_nil, Option.getD_some] at *
+        simp only [List.map_cons, List.map_nil] at *
         rw [hret] at *
         exact Step.builtinOk (args_add_zero_value he)
           (pureFn_builtin (calls := calls) (creates := creates) (by simp [pureFn]) _)
@@ -1302,7 +1301,7 @@ theorem Step.inlineIdentity_reverse {funsT : FunEnv D} {V st codeT result}
         have hfunEq : hoist D bodyT :: funs =
             inlineIdentityFuns (hoist D body :: static) ++ outer := by
           rw [hf, inlineIdentityFuns]
-          simpa [hbodyEq, hoist_inlineIdentityStmts]
+          simp [hbodyEq, hoist_inlineIdentityStmts]
         have hcodeEq : Code.stmts bodyT = inlineIdentityCode
             (hoist D body :: static) (.stmts body) := by
           simpa [inlineIdentityCode, inlineIdentityBlock] using
@@ -1461,10 +1460,10 @@ theorem Step.inlineIdentity_reverse {funsT : FunEnv D} {V st codeT result}
         | leave => simp [inlineIdentityCode, inlineIdentityStmt] at hc
         | switch c0 cases0 dflt0 =>
           rw [inlineIdentityCode, inlineIdentityStmt_switch] at hc
-          simp only [Stmt.switch.injEq] at hc
-          obtain ⟨hceq, rfl, rfl⟩ := hc
+          simp only at hc
+          obtain ⟨_, rfl, rfl⟩ := hc
           have hc0 := ihcond static outer (.expr c0) hf
-            (by simpa [inlineIdentityCode] using congrArg Code.expr hceq)
+            (by simp [inlineIdentityCode])
           have hsel : selectSwitch D cv (inlineIdentityCases static cases0)
               (dflt0.map (inlineIdentityBlock static)) =
               inlineIdentityBlock static (selectSwitch D cv cases0 dflt0) := by
@@ -1495,11 +1494,11 @@ theorem Step.inlineIdentity_reverse {funsT : FunEnv D} {V st codeT result}
         | leave => simp [inlineIdentityCode, inlineIdentityStmt] at hc
         | switch c0 cases0 dflt0 =>
           rw [inlineIdentityCode, inlineIdentityStmt_switch] at hc
-          simp only [Stmt.switch.injEq] at hc
-          obtain ⟨hceq, rfl, rfl⟩ := hc
+          simp only at hc
+          obtain ⟨_, rfl, rfl⟩ := hc
           exact Step.switchHalt (cases := cases0) (dflt := dflt0)
             (ihcond static outer (.expr c0) hf
-              (by simpa [inlineIdentityCode] using congrArg Code.expr hceq))
+              (by simp [inlineIdentityCode]))
     | expr => simp [inlineIdentityCode] at hc
     | args => simp [inlineIdentityCode] at hc
     | stmts => simp [inlineIdentityCode] at hc
@@ -1515,7 +1514,7 @@ theorem Step.inlineIdentity_reverse {funsT : FunEnv D} {V st codeT result}
         have hfunEq : hoist D initT :: funs =
             inlineIdentityFuns loopStatic ++ outer := by
           rw [hf, inlineIdentityFuns]
-          simpa [loopStatic, hiEq, hoist_inlineIdentityStmts]
+          simp [hiEq, hoist_inlineIdentityStmts]
         have hiCode : Code.stmts initT =
             inlineIdentityCode loopStatic (.stmts init0) := by
           simpa [inlineIdentityCode, loopStatic] using congrArg Code.stmts hiEq
@@ -1540,7 +1539,7 @@ theorem Step.inlineIdentity_reverse {funsT : FunEnv D} {V st codeT result}
         have hfunEq : hoist D initT :: funs =
             inlineIdentityFuns loopStatic ++ outer := by
           rw [hf, inlineIdentityFuns]
-          simpa [loopStatic, hiEq, hoist_inlineIdentityStmts]
+          simp [hiEq, hoist_inlineIdentityStmts]
         have hiCode : Code.stmts initT =
             inlineIdentityCode loopStatic (.stmts init0) := by
           simpa [inlineIdentityCode, loopStatic] using congrArg Code.stmts hiEq

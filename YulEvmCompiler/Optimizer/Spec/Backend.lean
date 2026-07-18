@@ -1,6 +1,6 @@
 import YulEvmCompiler.Correctness
 import YulEvmCompiler.Optimizer.Spec.Pass
-
+set_option warningAsError true
 /-!
 # YulEvmCompiler.Optimizer.Backend
 

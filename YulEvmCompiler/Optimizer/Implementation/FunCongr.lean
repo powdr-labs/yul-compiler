@@ -1,5 +1,5 @@
 import YulSemantics.Equiv
-
+set_option warningAsError true
 /-!
 # YulEvmCompiler.Optimizer.Implementation.FunCongr
 

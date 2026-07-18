@@ -1,5 +1,5 @@
 import YulParser.Compile
-
+set_option warningAsError true
 /-!
 # YulParser.Examples
 
