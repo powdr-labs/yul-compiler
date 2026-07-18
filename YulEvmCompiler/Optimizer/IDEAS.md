@@ -21,6 +21,14 @@ a lot of structural slack to remove.
   the public pass total. `Core/Rule.lean` supplies a generic first-match engine
   whose rules carry their own `EquivExpr` proofs. `Simplify` now uses that path
   instead of retaining a second raw-AST rewrite driver.
+- `Core/Subst.lean` provides closed-term instantiation of Core parameter
+  contexts (`Term.substEmit`) plus the functional reflection `valueEval` of
+  `Step` on value-shaped expressions — the β machinery behind the helper
+  inliner. `Spec/Observe.lean` adds the **observational tier** (`ObsPass`,
+  `ObsEquivBlock` over committed run observables, memory/`msize`/final-`VEnv`
+  quantified away) with the strong tier embedded and the backend payoff
+  restated; use it for passes `EquivBlock` cannot express (dead bindings,
+  scratch memory), pending a human decision to admit it into the audited roots.
 - `EquivExpr`/`EquivStmt`/`EquivStmts`/`EquivBlock` are pointwise big-step
   equivalences with congruence lemmas in `YulSemantics.Equiv`. Local expression
   rewrites lift through `builtin_congr`/`call_congr` and the statement
@@ -188,7 +196,25 @@ the real object-path frontier.
 
 ## Candidate next ideas (not started)
 
-### 🚧 Inline exact identity helpers (`codex/semantic-gas-optimizer`)
+### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
+
+Generalizes (and **replaces**) `InlineIdentity` through the Core boundary:
+`helper?` classifies any `function f(ps) -> r { r := e }` whose body ingests
+into `Core.Term ps 1` (nodup, all-read params; string-free). A bare-parameter
+body keeps the old `f(e) → add(e, 0)` fence at any single-argument site; a
+pure built-in body is **substituted** into flat (value-argument) call sites by
+`Term.substEmit` — solc's `wrapping_*`/shift/cleanup wrapper helpers inline
+without paying the call protocol. Recursion, effectful/multi-statement bodies,
+and non-flat sites keep the call (the fragment Core does not yet cover). The
+`litOK` flag separates the block pipeline (literals allowed in bodies and
+arguments) from the object pipeline (variables only), because layout
+resolution *creates* literals from `dataoffset`/`datasize`, and the
+resolution commutation (`InlineHelpersResolve.lean`) needs classification and
+the rewrite condition to be resolution-stable. Pipelines live in
+`Implementation/Pipeline.lean` (`optimizerPipeline`, `objectPipeline`,
+`optimizerPipelineObject_correct`).
+
+### ✅ Inline exact identity helpers (`codex/semantic-gas-optimizer`) — superseded by `InlineHelpers`
 
 Solc's unoptimized IR contains many helpers of the exact form
 `function f(p) -> r { r := p }`.  Each use currently pays the full verified

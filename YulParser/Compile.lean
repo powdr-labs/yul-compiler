@@ -1,6 +1,6 @@
 import YulParser.Source
 import YulEvmCompiler.ObjectCompile
-import YulEvmCompiler.Optimizer.Implementation.IdentityPipeline
+import YulEvmCompiler.Optimizer.Implementation.Pipeline
 set_option warningAsError true
 /-!
 # YulParser.Compile
@@ -48,20 +48,20 @@ using the documented compatibility parser when the verified parser does not
 apply. Hint builtins (`memoryguard`) are desugared before compilation.
 
 Both block- and object-rooted programs run the verified production pipeline:
-Simplify, exact-identity call inlining, then Simplify again.  The object path
-applies the same pipeline to every code block in the tree. -/
+Simplify, Core helper inlining, then Simplify again.  The object path applies
+the pipeline's resolution-stable mode to every code block in the tree. -/
 def compileSource (source : String) : Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
       return YulEvmCompiler.assemble
         (← YulEvmCompiler.compile
-          ((YulEvmCompiler.Optimizer.identityPipeline
+          ((YulEvmCompiler.Optimizer.optimizerPipeline
             (calls := YulSemantics.EVM.ExternalCalls.none)
             (creates := YulSemantics.EVM.ExternalCreates.none)).run
               (block.map desugarStmt)))
   | some (.object o) =>
       let layout ← YulEvmCompiler.compileObject
-        (YulEvmCompiler.Optimizer.identityPipelineObject
+        (YulEvmCompiler.Optimizer.optimizerPipelineObject
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none) (desugarObject o))
       return ByteArray.mk layout.code.toArray

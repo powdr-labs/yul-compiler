@@ -1,6 +1,6 @@
 import YulEvmCompiler.Compile
 import YulEvmCompiler.StateRel
-import YulEvmCompiler.Optimizer.Implementation.IdentityPipeline
+import YulEvmCompiler.Optimizer.Implementation.Pipeline
 import YulSemantics.Syntax
 import YulSemantics.Interp
 import YulSemantics.FibExample
@@ -129,9 +129,26 @@ def identityHelpers : Block Op := yul% {
 }
 
 def optimizedIdentityHelpers : Block Op :=
-  (Optimizer.identityPipeline
+  (Optimizer.optimizerPipeline
     (calls := YulSemantics.EVM.ExternalCalls.none)
     (creates := YulSemantics.EVM.ExternalCreates.none)).run identityHelpers
+
+/-- Pure expression-body wrapper helpers — the shapes solc emits for scaling,
+masking, and unchecked-arithmetic wrappers. The Core inliner substitutes the
+arguments into the body at flat call sites; the trailing Simplify folds what
+the substitution exposes. -/
+def wrapperHelpers : Block Op := yul% {
+  function scale(v) -> r { r := mul(v, 3) }
+  function wadd(a, b) -> r { r := add(a, b) }
+  let x := 14
+  sstore(0, scale(x))
+  sstore(1, wadd(x, scale(1)))
+}
+
+def optimizedWrapperHelpers : Block Op :=
+  (Optimizer.optimizerPipeline
+    (calls := YulSemantics.EVM.ExternalCalls.none)
+    (creates := YulSemantics.EVM.ExternalCreates.none)).run wrapperHelpers
 
 /-- A *recursive* function: `fact(5) = 120` in slot 0. -/
 def factorial : Block Op := yul% {
@@ -460,6 +477,9 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn multiAssign [0, 1]
 #guard compile optimizedIdentityHelpers |>.isSome
 #guard agreeOn optimizedIdentityHelpers [0, 1]
+#guard compile optimizedWrapperHelpers |>.isSome
+#guard agreeOn optimizedWrapperHelpers [0, 1]
+#guard agreeOn wrapperHelpers [0, 1]
 #guard agreeOn multiRet3 [0, 1, 2]
 #guard agreeOn funCall [0]
 #guard agreeOn factorial [0]
