@@ -845,11 +845,11 @@ theorem blockEquiv (b : List (Stmt Op)) : EquivBlock D b (simplifyStmts b) :=
   EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 b))
     (scopeRel_hoistSimplify b)
 
-/-- The **Simplify pass**: constant folding, neutral-element identities, and
+/-- The unconditional local simplifier: constant folding, neutral-element identities, and
 literal control-flow selection over the whole program (including function
 bodies; only a `for`-loop's `init` is left untouched), bundled with its
 soundness proof. -/
-def simplify : Pass D where
+def simplifyLocal : Pass D where
   run := simplifyStmts
   sound := blockEquiv
 

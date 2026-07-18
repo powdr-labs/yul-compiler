@@ -162,7 +162,9 @@ operations are different**: their correctness is *conditional on* the
   pure expressions now pass through an intrinsically scoped, arity-indexed ANF
   Core IR and a generic proof-carrying rule engine; unsupported built-ins and
   non-ANF expression shapes are left unchanged rather than routed through a
-  second raw-AST rewrite implementation. `InlineIdentity`
+  second raw-AST rewrite implementation. A scoped Core rule additionally proves
+  `mul(x,0) → 0` and `mul(0,x) → 0` once a preceding declaration realizes `x`
+  in the runtime variable environment; free variables remain untouched. `InlineIdentity`
   replaces an exact lexical identity-helper call `f(e)` by `add(e, 0)`; the
   `add` preserves the call's one-value arity requirement and the second
   Simplify removes it in its proved variable/literal cases. For

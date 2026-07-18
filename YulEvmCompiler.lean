@@ -21,5 +21,6 @@ import YulEvmCompiler.Optimizer.Core.Rule
 import YulEvmCompiler.Optimizer.Implementation.Identity
 import YulEvmCompiler.Optimizer.Implementation.FunCongr
 import YulEvmCompiler.Optimizer.Implementation.Simplify
+import YulEvmCompiler.Optimizer.Implementation.AbsorbZero
 import YulEvmCompiler.Optimizer.Implementation.ResolveCongr
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass

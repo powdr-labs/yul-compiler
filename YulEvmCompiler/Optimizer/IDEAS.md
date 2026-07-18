@@ -21,6 +21,10 @@ a lot of structural slack to remove.
   the public pass total. `Core/Rule.lean` supplies a generic first-match engine
   whose rules carry their own `EquivExpr` proofs. `Simplify` now uses that path
   instead of retaining a second raw-AST rewrite driver.
+- `Core/Rule.lean` also supports `ScopedRule`s under a `VarsBound Γ V`
+  realization invariant. `Implementation/AbsorbZero.lean` uses it for the
+  otherwise-unsound raw rewrite `mul(x,0) → 0`: consecutive `let` bindings
+  establish the invariant, while free variables are left unchanged.
 - `EquivExpr`/`EquivStmt`/`EquivStmts`/`EquivBlock` are pointwise big-step
   equivalences with congruence lemmas in `YulSemantics.Equiv`. Local expression
   rewrites lift through `builtin_congr`/`call_congr` and the statement

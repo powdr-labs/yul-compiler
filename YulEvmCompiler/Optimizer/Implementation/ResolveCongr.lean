@@ -1,11 +1,11 @@
-import YulEvmCompiler.Optimizer.Implementation.Simplify
+import YulEvmCompiler.Optimizer.Implementation.AbsorbZero
 import YulEvmCompiler.ObjectResolve
 set_option warningAsError true
 /-!
 # YulEvmCompiler.Optimizer.Implementation.ResolveCongr
 
-The **resolution congruence** for the `Simplify` pass: layout resolution commutes
-with the pass up to semantic equivalence,
+The **resolution congruences** for the unconditional `Simplify` pass and scoped
+zero absorption: layout resolution commutes with both up to semantic equivalence,
 
 ```
 EquivBlock D (resolveForLayoutStmts L b) (resolveForLayoutStmts L (simplifyStmts b))
@@ -439,5 +439,216 @@ theorem resolveSimplifyBlock_equiv (L : Layout) (b : List (Stmt Op)) :
     EquivBlock D (resolveForLayoutStmts L b) (resolveForLayoutStmts L (simplifyStmts b)) :=
   EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (resolveSimplifyStmts_forall2 L b))
     (scopeRel_resolveSimplify L b)
+
+/-! ## Resolution congruence for scoped zero absorption -/
+
+/-- Resolution is inert on the Core input and output of scoped rules. -/
+theorem resolveAbsorbZeroExpr_equiv (L : Layout) (Γ : Core.Ctx) (source : Expr Op) :
+    Core.ScopedEquivExpr Γ (resolveForLayoutExpr L source)
+      (resolveForLayoutExpr L (absorbZeroExpr Γ source)) := by
+  intro calls creates funs V st result hbound
+  simp only [absorbZeroExpr]
+  cases hcore : Core.ingest Γ source with
+  | none => simp
+  | some core =>
+      have herase := Core.ingest_emit hcore
+      have hleft : resolveForLayoutExpr L source = core.emit :=
+        (congrArg (resolveForLayoutExpr L) herase.symm).trans (Core.resolveTerm L core)
+      have hright :
+          resolveForLayoutExpr L (Core.scopedRun Core.scopedRules core).emit =
+            (Core.scopedRun Core.scopedRules core).emit :=
+        Core.resolveTerm L (Core.scopedRun Core.scopedRules core)
+      rw [hleft, hright]
+      exact Core.scopedRun_sound Core.scopedRules core
+        (calls := calls) (creates := creates) funs V st result hbound
+
+@[simp] theorem absorbNextCtx_resolve (L : Layout) (Γ : Core.Ctx) (stmt : Stmt Op) :
+    absorbNextCtx Γ (resolveForLayoutStmt L stmt) = absorbNextCtx Γ stmt := by
+  cases stmt <;> rw [resolveForLayoutStmt.eq_def] <;> rfl
+
+/-- Each resolved statement remains equivalent after scoped absorption. -/
+theorem resolveAbsorbZeroStmt_sound (L : Layout) (Γ : Core.Ctx) (stmt : Stmt Op) :
+    ScopedEquivStmt Γ (resolveForLayoutStmt L stmt)
+      (resolveForLayoutStmt L (absorbZeroStmt Γ stmt)) := by
+  intro calls creates funs V st V' st' outcome hbound
+  cases stmt with
+  | funDef name params rets body =>
+      simp only [absorbZeroStmt, resolveForLayoutStmt.eq_def]
+      constructor <;> (intro h; cases h; exact Step.funDef)
+  | letDecl vars init =>
+      cases init with
+      | none => simp [absorbZeroStmt, resolveForLayoutStmt.eq_def]
+      | some value =>
+          simp only [absorbZeroStmt, resolveForLayoutStmt.eq_def, Option.map]
+          constructor
+          · intro h
+            cases h with
+            | letVal hvalue hlen =>
+                exact Step.letVal
+                  ((resolveAbsorbZeroExpr_equiv L Γ value funs V st _ hbound).mp hvalue) hlen
+            | letHalt hvalue =>
+                exact Step.letHalt
+                  ((resolveAbsorbZeroExpr_equiv L Γ value funs V st _ hbound).mp hvalue)
+          · intro h
+            cases h with
+            | letVal hvalue hlen =>
+                exact Step.letVal
+                  ((resolveAbsorbZeroExpr_equiv L Γ value funs V st _ hbound).mpr hvalue) hlen
+            | letHalt hvalue =>
+                exact Step.letHalt
+                  ((resolveAbsorbZeroExpr_equiv L Γ value funs V st _ hbound).mpr hvalue)
+  | assign vars value =>
+      simp only [absorbZeroStmt, resolveForLayoutStmt.eq_def]
+      constructor
+      · intro h
+        cases h with
+        | assignVal hvalue hlen =>
+            exact Step.assignVal
+              ((resolveAbsorbZeroExpr_equiv L Γ value funs V st _ hbound).mp hvalue) hlen
+        | assignHalt hvalue =>
+            exact Step.assignHalt
+              ((resolveAbsorbZeroExpr_equiv L Γ value funs V st _ hbound).mp hvalue)
+      · intro h
+        cases h with
+        | assignVal hvalue hlen =>
+            exact Step.assignVal
+              ((resolveAbsorbZeroExpr_equiv L Γ value funs V st _ hbound).mpr hvalue) hlen
+        | assignHalt hvalue =>
+            exact Step.assignHalt
+              ((resolveAbsorbZeroExpr_equiv L Γ value funs V st _ hbound).mpr hvalue)
+  | exprStmt value =>
+      simp only [absorbZeroStmt, resolveForLayoutStmt.eq_def]
+      constructor
+      · intro h
+        cases h with
+        | exprStmt hvalue =>
+            exact Step.exprStmt
+              ((resolveAbsorbZeroExpr_equiv L Γ value funs V st _ hbound).mp hvalue)
+        | exprStmtHalt hvalue =>
+            exact Step.exprStmtHalt
+              ((resolveAbsorbZeroExpr_equiv L Γ value funs V st _ hbound).mp hvalue)
+      · intro h
+        cases h with
+        | exprStmt hvalue =>
+            exact Step.exprStmt
+              ((resolveAbsorbZeroExpr_equiv L Γ value funs V st _ hbound).mpr hvalue)
+        | exprStmtHalt hvalue =>
+            exact Step.exprStmtHalt
+              ((resolveAbsorbZeroExpr_equiv L Γ value funs V st _ hbound).mpr hvalue)
+  | block body => rfl
+  | cond condition body => rfl
+  | «switch» condition caseBlocks dflt => rfl
+  | forLoop init condition post body => rfl
+  | «break» => rfl
+  | «continue» => rfl
+  | «leave» => rfl
+
+/-- Resolution preserves the contextual sequence proof. -/
+theorem resolveAbsorbZeroStmts_sound (L : Layout) (Γ : Core.Ctx) (stmts : Block Op) :
+    ScopedEquivStmts Γ (resolveForLayoutStmts L stmts)
+      (resolveForLayoutStmts L (absorbZeroStmts Γ stmts)) := by
+  intro calls creates funs V st V' st' outcome hbound
+  induction stmts generalizing V st V' st' outcome Γ with
+  | nil => simp [absorbZeroStmts]
+  | cons stmt rest ih =>
+      simp only [resolveForLayoutStmts, absorbZeroStmts]
+      constructor
+      · intro h
+        cases h with
+        | seqCons hstmt hrest =>
+            have hstmt' :=
+              (resolveAbsorbZeroStmt_sound L Γ stmt funs V st _ _ _ hbound).mp hstmt
+            have hnext := absorbNextCtx_bound hbound hstmt
+            rw [absorbNextCtx_resolve] at hnext
+            exact Step.seqCons hstmt'
+              ((ih (absorbNextCtx Γ stmt) _ _ _ _ _ hnext).mp hrest)
+        | seqStop hstmt hnormal =>
+            exact Step.seqStop
+              ((resolveAbsorbZeroStmt_sound L Γ stmt funs V st _ _ _ hbound).mp hstmt)
+              hnormal
+      · intro h
+        cases h with
+        | seqCons hstmt hrest =>
+            have hstmt' :=
+              (resolveAbsorbZeroStmt_sound L Γ stmt funs V st _ _ _ hbound).mpr hstmt
+            have hnext := absorbNextCtx_bound hbound hstmt'
+            rw [absorbNextCtx_resolve] at hnext
+            exact Step.seqCons hstmt'
+              ((ih (absorbNextCtx Γ stmt) _ _ _ _ _ hnext).mpr hrest)
+        | seqStop hstmt hnormal =>
+            exact Step.seqStop
+              ((resolveAbsorbZeroStmt_sound L Γ stmt funs V st _ _ _ hbound).mpr hstmt)
+              hnormal
+
+theorem resolveAbsorbZeroStmts_equiv (L : Layout) (stmts : Block Op) :
+    EquivStmts D (resolveForLayoutStmts L stmts)
+      (resolveForLayoutStmts L (absorbZeroStmts [] stmts)) := by
+  intro funs V st V' st' outcome
+  exact resolveAbsorbZeroStmts_sound L [] stmts funs V st V' st' outcome (varsBound_nil V)
+
+mutual
+
+/-- Block-level resolution congruence for scoped zero absorption. -/
+theorem resolveAbsorbZeroBlock_equiv (L : Layout) (body : Block Op) :
+    EquivBlock D (resolveForLayoutStmts L body)
+      (resolveForLayoutStmts L (absorbZeroStmts [] body)) :=
+  EquivBlock.of_stmts_funs (resolveAbsorbZeroStmts_equiv L body)
+    (scopeRel_resolveAbsorb L [] body)
+
+theorem scopeRel_resolveAbsorb (L : Layout) (Γ : Core.Ctx) : ∀ body : Block Op,
+    ScopeRel D (hoist D (resolveForLayoutStmts L body))
+      (hoist D (resolveForLayoutStmts L (absorbZeroStmts Γ body)))
+  | [] => by simp [absorbZeroStmts, hoist]; exact .nil
+  | .funDef name params rets fnBody :: rest => by
+      simp only [absorbZeroStmts, absorbZeroStmt, absorbNextCtx, resolveForLayoutStmts,
+        resolveForLayoutStmt.eq_def, hoist, List.filterMap_cons]
+      exact .cons ⟨rfl, rfl, rfl, resolveAbsorbZeroBlock_equiv L fnBody⟩
+        (scopeRel_resolveAbsorb L [] rest)
+  | .block body :: rest => by
+      simp only [absorbZeroStmts, absorbZeroStmt, absorbNextCtx, resolveForLayoutStmts,
+        resolveForLayoutStmt.eq_def, hoist, List.filterMap_cons]
+      exact scopeRel_resolveAbsorb L [] rest
+  | .letDecl vars (some value) :: rest => by
+      simp only [absorbZeroStmts, absorbZeroStmt, absorbNextCtx, resolveForLayoutStmts,
+        resolveForLayoutStmt.eq_def, hoist, List.filterMap_cons]
+      exact scopeRel_resolveAbsorb L (vars ++ Γ) rest
+  | .letDecl vars none :: rest => by
+      simp only [absorbZeroStmts, absorbZeroStmt, absorbNextCtx, resolveForLayoutStmts,
+        resolveForLayoutStmt.eq_def, hoist, List.filterMap_cons]
+      exact scopeRel_resolveAbsorb L (vars ++ Γ) rest
+  | .assign vars value :: rest => by
+      simp only [absorbZeroStmts, absorbZeroStmt, absorbNextCtx, resolveForLayoutStmts,
+        resolveForLayoutStmt.eq_def, hoist, List.filterMap_cons]
+      exact scopeRel_resolveAbsorb L [] rest
+  | .cond condition body :: rest => by
+      simp only [absorbZeroStmts, absorbZeroStmt, absorbNextCtx, resolveForLayoutStmts,
+        resolveForLayoutStmt.eq_def, hoist, List.filterMap_cons]
+      exact scopeRel_resolveAbsorb L [] rest
+  | .switch condition cases dflt :: rest => by
+      simp only [absorbZeroStmts, absorbZeroStmt, absorbNextCtx, resolveForLayoutStmts,
+        resolveForLayoutStmt.eq_def, hoist, List.filterMap_cons]
+      exact scopeRel_resolveAbsorb L [] rest
+  | .forLoop init condition post body :: rest => by
+      simp only [absorbZeroStmts, absorbZeroStmt, absorbNextCtx, resolveForLayoutStmts,
+        resolveForLayoutStmt.eq_def, hoist, List.filterMap_cons]
+      exact scopeRel_resolveAbsorb L [] rest
+  | .exprStmt value :: rest => by
+      simp only [absorbZeroStmts, absorbZeroStmt, absorbNextCtx, resolveForLayoutStmts,
+        resolveForLayoutStmt.eq_def, hoist, List.filterMap_cons]
+      exact scopeRel_resolveAbsorb L [] rest
+  | .break :: rest => by
+      simp only [absorbZeroStmts, absorbZeroStmt, absorbNextCtx, resolveForLayoutStmts,
+        resolveForLayoutStmt.eq_def, hoist, List.filterMap_cons]
+      exact scopeRel_resolveAbsorb L [] rest
+  | .continue :: rest => by
+      simp only [absorbZeroStmts, absorbZeroStmt, absorbNextCtx, resolveForLayoutStmts,
+        resolveForLayoutStmt.eq_def, hoist, List.filterMap_cons]
+      exact scopeRel_resolveAbsorb L [] rest
+  | .leave :: rest => by
+      simp only [absorbZeroStmts, absorbZeroStmt, absorbNextCtx, resolveForLayoutStmts,
+        resolveForLayoutStmt.eq_def, hoist, List.filterMap_cons]
+      exact scopeRel_resolveAbsorb L [] rest
+
+end
 
 end YulEvmCompiler.Optimizer

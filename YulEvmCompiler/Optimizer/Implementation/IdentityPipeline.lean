@@ -4,9 +4,8 @@ set_option warningAsError true
 /-!
 # Production optimizer pipeline
 
-The production pipeline simplifies expressions, inlines exact identity helpers,
-then simplifies again to remove the arity-preserving `add(e, 0)` fence where
-the existing simplifier has proved that removal sound.
+The production pipeline simplifies expressions, applies scoped zero absorption,
+inlines exact identity helpers, then repeats simplification and absorption.
 -/
 
 namespace YulEvmCompiler.Optimizer
@@ -25,26 +24,33 @@ def identityPipeline : Pass D :=
 
 @[simp] theorem identityPipeline_run (b : Block Op) :
     (identityPipeline (calls := calls) (creates := creates)).run b =
-      simplifyStmts
-        (inlineIdentityBlock (calls := calls) (creates := creates)
-          ([] : FunEnv D) (simplifyStmts b)) := rfl
+      absorbZeroStmts []
+        (simplifyStmts
+          (inlineIdentityBlock (calls := calls) (creates := creates)
+            ([] : FunEnv D) (absorbZeroStmts [] (simplifyStmts b)))) := rfl
 
-/-- Resolution congruence for the complete three-stage pipeline. -/
+/-- Resolution congruence for the complete five-stage pipeline. -/
 theorem resolveIdentityPipelineBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L
         ((identityPipeline (calls := calls) (creates := creates)).run b)) := by
   have hs₀ := resolveSimplifyBlock_equiv (calls := calls) (creates := creates) L b
+  have ha₀ := resolveAbsorbZeroBlock_equiv (calls := calls) (creates := creates) L
+    (simplifyStmts b)
   have hi := (inlineIdentityPass (calls := calls) (creates := creates)).sound
-    (resolveForLayoutStmts L (simplifyStmts b))
-  change EquivBlock D (resolveForLayoutStmts L (simplifyStmts b))
+    (resolveForLayoutStmts L (absorbZeroStmts [] (simplifyStmts b)))
+  change EquivBlock D (resolveForLayoutStmts L (absorbZeroStmts [] (simplifyStmts b)))
     (inlineIdentityBlock (calls := calls) (creates := creates) ([] : FunEnv D)
-      (resolveForLayoutStmts L (simplifyStmts b))) at hi
-  rw [← resolve_inlineIdentityBlock_nil L (simplifyStmts b)] at hi
+      (resolveForLayoutStmts L (absorbZeroStmts [] (simplifyStmts b)))) at hi
+  rw [← resolve_inlineIdentityBlock_nil L (absorbZeroStmts [] (simplifyStmts b))] at hi
   have hs₁ := resolveSimplifyBlock_equiv (calls := calls) (creates := creates) L
     (inlineIdentityBlock (calls := calls) (creates := creates)
-      ([] : FunEnv D) (simplifyStmts b))
-  simpa using hs₀.trans (hi.trans hs₁)
+      ([] : FunEnv D) (absorbZeroStmts [] (simplifyStmts b)))
+  have ha₁ := resolveAbsorbZeroBlock_equiv (calls := calls) (creates := creates) L
+    (simplifyStmts
+      (inlineIdentityBlock (calls := calls) (creates := creates)
+        ([] : FunEnv D) (absorbZeroStmts [] (simplifyStmts b))))
+  simpa using hs₀.trans (ha₀.trans (hi.trans (hs₁.trans ha₁)))
 
 mutual
   /-- Run the verified pipeline on every object code block. -/

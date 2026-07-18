@@ -466,7 +466,10 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     passes may use the same partial boundary with their own total fallback policy.
   * **`Core/Rule.lean`** — a shallow rewrite bundled with its `EquivExpr` proof.
     The generic first-match engine is proved once for any ordered rule list, so
-    optimizer policy can change without changing the engine proof.
+    optimizer policy can change without changing the engine proof. It also
+    provides `VarsBound`, `ScopedRule`, and a parallel generic engine for rules
+    that may discard ANF values only when the typed context is realized by the
+    runtime `VEnv`.
 * **`Optimizer/Implementation/`** — concrete passes, *not* part of what an auditor
   must read: because every `Pass` is sound by construction, a pass is trusted the
   moment it type-checks against the spec.
@@ -495,6 +498,13 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     *and* hoisted, so it needs a `for`-specific congruence — a small follow-up).
     `compileSource` runs it on block-rooted programs; `IDEAS.md` logs the running
     list of passes tried and to try.
+  * **`Implementation/AbsorbZero.lean`** — the first context-dependent Core
+    pass. It proves `mul(x,0) → 0` and `mul(0,x) → 0` under `VarsBound`, tracks
+    bindings introduced by consecutive `let` declarations, and conservatively
+    forgets that context after other statements until the general dataflow
+    environment exists. Public blocks and function bodies start from an empty
+    context, so free variables are never silently treated as bound. The same
+    scoped argument is carried through object layout resolution.
   * **`Implementation/InlineIdentity.lean`** — scope-aware inlining of exact
     `function f(p) -> r { r := p }` helpers. Calls become `add(e, 0)`, retaining
     the original call's single-value requirement even for arbitrary AST input.
@@ -504,8 +514,9 @@ audited-surface-vs-artifact distinction the spec closure already makes:
   * **`Implementation/InlineIdentityResolve.lean`** — proves strict commutation
     between layout resolution and identity inlining, including invariance of
     exact-identity classification under resolution.
-  * **`Implementation/IdentityPipeline.lean`** — composes the three verified
-    stages and applies them recursively to every object code block, with the
+  * **`Implementation/IdentityPipeline.lean`** — composes simplification,
+    scoped absorption, identity inlining, simplification, and absorption, then
+    applies them recursively to every object code block, with the
     full original-object execution theorem.
   * **`Implementation/ObjectPass.lean`** — the object path. `simplifyObject` (in
     `Simplify`) runs the pass on *every* code block of an object tree (deploy and
