@@ -1,22 +1,30 @@
 import YulEvmCompiler.Optimizer.Implementation.InlineHelpersResolve
+import YulEvmCompiler.Optimizer.Implementation.PropagateResolve
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
 set_option warningAsError true
 /-!
 # Production optimizer pipeline
 
-The production pipeline simplifies expressions, inlines pure expression-body
-helpers through the Core boundary, then simplifies again — the second round
-folds the substituted bodies against their now-visible literal arguments and
-removes the arity-preserving `add(e, 0)` fence where its removal is proved.
+The production pipeline simplifies expressions, propagates known bindings
+(`Propagate`: constant + copy propagation with binding-preserving
+substitution), inlines pure expression-body helpers through the Core boundary,
+and simplifies again — the trailing round folds what substitution and inlining
+exposed and removes the arity-preserving `add(e, 0)` fence where its removal is
+proved.
 
-Two instantiations of the same verified pass:
+Stage order differs by path, deliberately:
 
-* **block path** (`optimizerPipeline`) — full classification (`litOK := true`):
-  helper bodies and call arguments may carry literals.
-* **object path** (`objectPipeline`) — resolution-stable classification
-  (`litOK := false`): variables only, so the transform commutes with
-  `dataoffset`/`datasize` layout resolution and the whole-tree object
-  correctness theorem goes through with no caveat.
+* **block path** (`optimizerPipeline`): `simplify → propagate → inline(litOK)
+  → simplify`. Propagation runs *before* the inliner because the block-path
+  inliner accepts literal arguments (`litOK := true`) — substituted constants
+  make more call sites flat and inlinable.
+* **object path** (`objectPipeline`): `simplify → inline(var-only) → propagate
+  → simplify`. The object-path inliner is variable-only (`litOK := false`, the
+  resolution-stable mode), so propagation runs *after* it — running first
+  would turn variable arguments into literals and starve it. `Propagate`
+  itself needs no restricted object mode: its soundness is proven for a
+  relation closed under layout resolution (`PropagateResolve`), so the
+  whole-tree object correctness theorem composes with the full pass.
 -/
 
 namespace YulEvmCompiler.Optimizer
@@ -31,26 +39,27 @@ local notation "D" => evmWithExternal calls creates
 
 /-- Verified production pipeline for top-level blocks, applied left-to-right. -/
 def optimizerPipeline : Pass D :=
-  Pass.ofList [simplify, inlineHelpersPass true, simplify]
+  Pass.ofList [simplify, propagate, inlineHelpersPass true, simplify]
 
 @[simp] theorem optimizerPipeline_run (b : Block Op) :
     (optimizerPipeline (calls := calls) (creates := creates)).run b =
       simplifyStmts
         (inlineHelpersBlock (calls := calls) (creates := creates) true
-          ([] : FunEnv D) (simplifyStmts b)) := rfl
+          ([] : FunEnv D) (propStmts [] (simplifyStmts b)).1) := rfl
 
 /-- Verified pipeline for object code blocks: the inliner runs in its
-resolution-stable mode. -/
+resolution-stable mode, before propagation. -/
 def objectPipeline : Pass D :=
-  Pass.ofList [simplify, inlineHelpersPass false, simplify]
+  Pass.ofList [simplify, inlineHelpersPass false, propagate, simplify]
 
 @[simp] theorem objectPipeline_run (b : Block Op) :
     (objectPipeline (calls := calls) (creates := creates)).run b =
       simplifyStmts
-        (inlineHelpersBlock (calls := calls) (creates := creates) false
-          ([] : FunEnv D) (simplifyStmts b)) := rfl
+        (propStmts []
+          (inlineHelpersBlock (calls := calls) (creates := creates) false
+            ([] : FunEnv D) (simplifyStmts b))).1 := rfl
 
-/-- Resolution congruence for the complete three-stage object pipeline. -/
+/-- Resolution congruence for the complete four-stage object pipeline. -/
 theorem resolveObjectPipelineBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L
@@ -62,10 +71,15 @@ theorem resolveObjectPipelineBlock_equiv (L : Layout) (b : Block Op) :
     (inlineHelpersBlock (calls := calls) (creates := creates) false ([] : FunEnv D)
       (resolveForLayoutStmts L (simplifyStmts b))) at hi
   rw [← resolve_inlineHelpersBlock_nil L (simplifyStmts b)] at hi
-  have hs₁ := resolveSimplifyBlock_equiv (calls := calls) (creates := creates) L
+  have hp := resolvePropagateBlock_equiv (calls := calls) (creates := creates) L
     (inlineHelpersBlock (calls := calls) (creates := creates) false
       ([] : FunEnv D) (simplifyStmts b))
-  simpa using hs₀.trans (hi.trans hs₁)
+  have hs₁ := resolveSimplifyBlock_equiv (calls := calls) (creates := creates) L
+    (propStmts []
+      (inlineHelpersBlock (calls := calls) (creates := creates) false
+        ([] : FunEnv D) (simplifyStmts b))).1
+  simp only [propagateBlock] at hp
+  simpa using (hs₀.trans (hi.trans hp)).trans hs₁
 
 mutual
   /-- Run the verified object pipeline on every object code block. -/
