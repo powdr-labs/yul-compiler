@@ -1401,6 +1401,685 @@ theorem PropRel.selectRel {σ τc τd : PEnv} {cases cases' : List (Literal × B
             rw [selectSwitch] at hsel
             exact hsel
 
+/-! ### The master simulation
+
+`prop_fwd`: a derivation of the source transports to a derivation of the
+propagated program with the *same* result, re-establishing `Compat` for the
+threaded environment. `prop_bwd` (below) is the converse. Together they
+discharge `Sound`. -/
+
+/-- Embed `Step`'s code classes into the relation's classes. -/
+def toPCode : Code Op → PCode Op
+  | .expr e => .expr e
+  | .args es => .args es
+  | .stmt s => .stmt s
+  | .stmts ss => .stmts ss
+  | .loop c post body => .loop c post body
+
+/-- Project back (junk on the two extra classes, which never relate to an
+embedded `Code`). -/
+def ofPCode : PCode Op → Code Op
+  | .expr e => .expr e
+  | .args es => .args es
+  | .stmt s => .stmt s
+  | .stmts ss => .stmts ss
+  | .loop c post body => .loop c post body
+  | .cases _ => .stmts []
+  | .odflt _ => .stmts []
+
+/-- **Forward simulation.** A source derivation, a propagation of its code, a
+related function environment, and a compatible tracked environment yield the
+same result for the propagated code — and compatibility of the threaded
+environment out. -/
+theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} {res : Res D} (h : Step D funs₁ V st code res) :
+    ∀ {funs₂ : FunEnv D} {σ σ' : PEnv} {pc' : PCode Op},
+      PFunsRel funs₁ funs₂ → PropRel σ σ' (toPCode code) pc' → Compat V σ →
+      Step D funs₂ V st (ofPCode pc') res ∧
+        (∀ V' st' o, res = .sres V' st' o → compatAfter σ' (toPCode code) V' o) := by
+  induction h with
+  | @lit funs V st l =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          refine ⟨?_, fun _ _ _ h => nomatch h⟩
+          cases hrhs with
+          | subst => exact Step.lit
+          | fold => exact Step.lit
+  | @var funs V st x v hv =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          refine ⟨?_, fun _ _ _ h => nomatch h⟩
+          cases hrhs with
+          | subst => exact substVar_eval_fwd hc hv funs₂ st
+          | fold =>
+              show Step D funs₂ V st (.expr (rhsExpr σ (.var x))) _
+              rw [rhsExpr, foldRhs_substVar]
+              exact substVar_eval_fwd hc hv funs₂ st
+  | @builtinOk funs V st op args argvals st1 rets st2 ha hb iha =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          refine ⟨?_, fun _ _ _ h => nomatch h⟩
+          have hargs := (iha hR (PropRel.args) hc).1
+          have hsub : Step D funs₂ V st (.expr (substExpr σ (.builtin op args)))
+              (.eres (.vals rets st2)) := by
+            rw [substExpr]
+            exact Step.builtinOk hargs hb
+          cases hrhs with
+          | subst => exact hsub
+          | fold =>
+              show Step D funs₂ V st (.expr (rhsExpr σ (.builtin op args))) _
+              rw [rhsExpr]
+              exact ((foldRhs_equiv (substExpr σ (.builtin op args))) funs₂ V st _).mp hsub
+  | @builtinHalt funs V st op args argvals st1 st2 ha hb iha =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          refine ⟨?_, fun _ _ _ h => nomatch h⟩
+          have hargs := (iha hR (PropRel.args) hc).1
+          have hsub : Step D funs₂ V st (.expr (substExpr σ (.builtin op args)))
+              (.eres (.halt st2)) := by
+            rw [substExpr]
+            exact Step.builtinHalt hargs hb
+          cases hrhs with
+          | subst => exact hsub
+          | fold =>
+              show Step D funs₂ V st (.expr (rhsExpr σ (.builtin op args))) _
+              rw [rhsExpr]
+              exact ((foldRhs_equiv (substExpr σ (.builtin op args))) funs₂ V st _).mp hsub
+  | @builtinArgsHalt funs V st op args st1 ha iha =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          refine ⟨?_, fun _ _ _ h => nomatch h⟩
+          have hargs := (iha hR (PropRel.args) hc).1
+          have hsub : Step D funs₂ V st (.expr (substExpr σ (.builtin op args)))
+              (.eres (.halt st1)) := by
+            rw [substExpr]
+            exact Step.builtinArgsHalt hargs
+          cases hrhs with
+          | subst => exact hsub
+          | fold =>
+              show Step D funs₂ V st (.expr (rhsExpr σ (.builtin op args))) _
+              rw [rhsExpr]
+              exact ((foldRhs_equiv (substExpr σ (.builtin op args))) funs₂ V st _).mp hsub
+  | @callOk funs V st fn args argvals st1 decl cenv Vend st2 o ha hl hlen hbody ho iha ihbody =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          refine ⟨?_, fun _ _ _ h => nomatch h⟩
+          have hargs := (iha hR (PropRel.args) hc).1
+          obtain ⟨decl', cenv', hl', hpar, hret, ⟨σb, hbodyRel⟩, hRc⟩ := lookupFun_pFunsRel hR hl
+          have hbody' := (ihbody hRc (PropRel.blockS hbodyRel) (Compat.nil _)).1
+          have hbody'' : Step D cenv' (decl'.params.zip argvals ++ bindZeros D decl'.rets) st1
+              (.stmt (.block decl'.body)) (.sres Vend st2 o) := by
+            rw [hpar, hret]; exact hbody'
+          have hres := Step.callOk (fn := fn) hargs hl' (by rw [hpar]; exact hlen) hbody'' ho
+          rw [hret] at hres
+          have hsub : Step D funs₂ V st (.expr (substExpr σ (.call fn args)))
+              (.eres (.vals (decl.rets.map
+                (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)) st2)) := by
+            rw [substExpr]
+            exact hres
+          cases hrhs with
+          | subst => exact hsub
+          | fold =>
+              show Step D funs₂ V st (.expr (rhsExpr σ (.call fn args))) _
+              rw [rhsExpr, substExpr, foldRhs_call]
+              rw [substExpr] at hsub
+              exact hsub
+  | @callHalt funs V st fn args argvals st1 decl cenv Vend st2 ha hl hlen hbody iha ihbody =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          refine ⟨?_, fun _ _ _ h => nomatch h⟩
+          have hargs := (iha hR (PropRel.args) hc).1
+          obtain ⟨decl', cenv', hl', hpar, hret, ⟨σb, hbodyRel⟩, hRc⟩ := lookupFun_pFunsRel hR hl
+          have hbody' := (ihbody hRc (PropRel.blockS hbodyRel) (Compat.nil _)).1
+          have hbody'' : Step D cenv' (decl'.params.zip argvals ++ bindZeros D decl'.rets) st1
+              (.stmt (.block decl'.body)) (.sres Vend st2 .halt) := by
+            rw [hpar, hret]; exact hbody'
+          have hsub : Step D funs₂ V st (.expr (substExpr σ (.call fn args)))
+              (.eres (.halt st2)) := by
+            rw [substExpr]
+            exact Step.callHalt hargs hl' (by rw [hpar]; exact hlen) hbody''
+          cases hrhs with
+          | subst => exact hsub
+          | fold =>
+              show Step D funs₂ V st (.expr (rhsExpr σ (.call fn args))) _
+              rw [rhsExpr, substExpr, foldRhs_call]
+              rw [substExpr] at hsub
+              exact hsub
+  | @callArgsHalt funs V st fn args st1 ha iha =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          refine ⟨?_, fun _ _ _ h => nomatch h⟩
+          have hargs := (iha hR (PropRel.args) hc).1
+          have hsub : Step D funs₂ V st (.expr (substExpr σ (.call fn args)))
+              (.eres (.halt st1)) := by
+            rw [substExpr]
+            exact Step.callArgsHalt hargs
+          cases hrhs with
+          | subst => exact hsub
+          | fold =>
+              show Step D funs₂ V st (.expr (rhsExpr σ (.call fn args))) _
+              rw [rhsExpr, substExpr, foldRhs_call]
+              rw [substExpr] at hsub
+              exact hsub
+  | argsNil =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | args => exact ⟨Step.argsNil, fun _ _ _ h => nomatch h⟩
+  | @argsCons funs V st e rest restvals st1 v st2 hrest he ihrest ihe =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | args =>
+          refine ⟨?_, fun _ _ _ h => nomatch h⟩
+          show Step D funs₂ V st (.args (substArgs σ (e :: rest))) _
+          rw [substArgs]
+          exact Step.argsCons ((ihrest hR (PropRel.args) hc).1)
+            ((ihe hR (PropRel.expr .subst) hc).1)
+  | @argsRestHalt funs V st e rest st1 hrest ihrest =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | args =>
+          refine ⟨?_, fun _ _ _ h => nomatch h⟩
+          show Step D funs₂ V st (.args (substArgs σ (e :: rest))) _
+          rw [substArgs]
+          exact Step.argsRestHalt ((ihrest hR (PropRel.args) hc).1)
+  | @argsHeadHalt funs V st e rest restvals st1 st2 hrest he ihrest ihe =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | args =>
+          refine ⟨?_, fun _ _ _ h => nomatch h⟩
+          show Step D funs₂ V st (.args (substArgs σ (e :: rest))) _
+          rw [substArgs]
+          exact Step.argsHeadHalt ((ihrest hR (PropRel.args) hc).1)
+            ((ihe hR (PropRel.expr .subst) hc).1)
+  | @funDef funs V st n ps rs b =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | funDefS hbody =>
+          refine ⟨Step.funDef, ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h1; subst h3
+          intro _
+          exact hc
+  | @block funs V st body Vb stb o hb ihb =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | blockS hbodyRel =>
+          have hstep := (ihb (List.Forall₂.cons (hbodyRel.hoist_scopeRel rfl rfl) hR)
+            hbodyRel hc).1
+          refine ⟨Step.block hstep, ?_⟩
+          intro V' st' o' hres
+          injection hres with h1 h2 h3
+          subst h1
+          intro _
+          exact hc.of_frame (Step.env_frame (Step.block hb) rfl)
+  | @letZero funs V st vars =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | letNoneS henv =>
+          refine ⟨Step.letZero, ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h1; subst h3
+          intro _
+          have hframe : EnvFrame vars V (bindZeros D vars ++ V) := by
+            refine ⟨bindZeros D vars, V, rfl, rfl, ?_, fun _ _ => rfl⟩
+            intro p hp
+            obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hp
+            exact hx
+          cases henv with
+          | skip => exact hc.of_frame hframe
+          | zero hx =>
+              subst hx
+              intro p hp
+              rcases List.mem_cons.mp hp with hp | hp
+              · subst hp
+                show VEnv.get (((_ : Ident), (evmWithExternal calls creates).zero) :: V) _
+                  = some (litValue (.number 0))
+                rw [VEnv.get_cons, if_pos rfl]
+                rfl
+              · exact hc.of_frame hframe _ hp
+  | @letVal funs V st vars e vals st1 he hlen ihe =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | letSomeS hrhs henv =>
+          next rhs' =>
+          have heval : Step D funs₂ V st (.expr rhs') (.eres (.vals vals st1)) :=
+            (ihe hR (PropRel.expr hrhs) hc).1
+          refine ⟨Step.letVal heval hlen, ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h1; subst h2; subst h3
+          intro _
+          have hframe : EnvFrame vars V (vars.zip vals ++ V) := by
+            refine ⟨vars.zip vals, V, rfl, rfl, ?_, fun _ _ => rfl⟩
+            intro p hp
+            rcases p with ⟨a, b⟩
+            exact (List.of_mem_zip hp).1
+          cases henv with
+          | skip => exact hc.of_frame hframe
+          | create hx hcl =>
+              subst hx
+              have hv : ∃ v, vals = [v] := by
+                cases vals with
+                | nil => simp at hlen
+                | cons v rest =>
+                    cases rest with
+                    | nil => exact ⟨v, rfl⟩
+                    | cons _ _ => simp at hlen
+              obtain ⟨v, rfl⟩ := hv
+              next x r =>
+              intro p hp
+              rcases List.mem_cons.mp hp with hp | hp
+              · subst hp
+                cases r with
+                | lit n =>
+                    have hshape := classify_lit hcl
+                    subst hshape
+                    cases heval with
+                    | lit =>
+                        show VEnv.get ([x].zip [_] ++ V) x = _
+                        simp only [List.zip_cons_cons, List.zip_nil_right,
+                          List.cons_append, List.nil_append]
+                        rw [VEnv.get_cons]
+                        simp
+                | var y =>
+                    have hshape := classify_var hcl
+                    subst hshape
+                    cases heval with
+                    | var hvy =>
+                        refine ⟨v, ?_, ?_⟩
+                        · show VEnv.get ([x].zip [v] ++ V) x = some v
+                          simp only [List.zip_cons_cons, List.zip_nil_right,
+                            List.cons_append, List.nil_append]
+                          rw [VEnv.get_cons]
+                          simp
+                        · show VEnv.get ([x].zip [v] ++ V) y = some v
+                          simp only [List.zip_cons_cons, List.zip_nil_right,
+                            List.cons_append, List.nil_append]
+                          rw [VEnv.get_cons]
+                          by_cases hxy : x = y
+                          · simp [hxy]
+                          · simp only [hxy, if_false]
+                            exact hvy
+              · exact hc.of_frame hframe _ hp
+  | @letHalt funs V st vars e st1 he ihe =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | letSomeS hrhs henv =>
+          refine ⟨Step.letHalt ((ihe hR (PropRel.expr hrhs) hc).1), ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h3
+          intro hno
+          exact absurd hno (by simp)
+  | @assignVal funs V st vars e vals st1 he hlen ihe =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | assignS hrhs henv =>
+          next rhs' =>
+          have heval : Step D funs₂ V st (.expr rhs') (.eres (.vals vals st1)) :=
+            (ihe hR (PropRel.expr hrhs) hc).1
+          refine ⟨Step.assignVal heval hlen, ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h1; subst h2; subst h3
+          intro _
+          have hframe : EnvFrame vars V (VEnv.setMany V vars vals) :=
+            ⟨[], VEnv.setMany V vars vals, rfl, VEnv.setMany_keys V vars vals,
+              fun p hp => absurd hp (List.not_mem_nil),
+              fun x hx => VEnv.get_setMany_not_mem hx⟩
+          cases henv with
+          | skip => exact hc.of_frame hframe
+          | refresh hx hbound hcl =>
+              subst hx
+              have hv : ∃ v, vals = [v] := by
+                cases vals with
+                | nil => simp at hlen
+                | cons v rest =>
+                    cases rest with
+                    | nil => exact ⟨v, rfl⟩
+                    | cons _ _ => simp at hlen
+              obtain ⟨v, rfl⟩ := hv
+              next x r =>
+              have hxbound : (VEnv.get V x).isSome := by
+                obtain ⟨r0, hr0⟩ := Option.isSome_iff_exists.mp hbound
+                have := hc _ (mem_of_lookupEnv hr0)
+                cases r0 with
+                | lit n => rw [RhsHolds] at this; simp [this]
+                | var y => obtain ⟨w, hw, _⟩ := this; simp [hw]
+              have hset : VEnv.setMany V [x] [v] = VEnv.set V x v :=
+                VEnv.setMany_singleton V x v
+              intro p hp
+              rcases List.mem_cons.mp hp with hp | hp
+              · subst hp
+                cases r with
+                | lit n =>
+                    have hshape := classify_lit hcl
+                    subst hshape
+                    cases heval with
+                    | lit =>
+                        show VEnv.get (VEnv.setMany V [x] [_]) x = _
+                        rw [hset]
+                        exact VEnv.get_set_self hxbound
+                | var y =>
+                    have hshape := classify_var hcl
+                    subst hshape
+                    cases heval with
+                    | var hvy =>
+                        refine ⟨v, ?_, ?_⟩
+                        · show VEnv.get (VEnv.setMany V [x] [v]) x = some v
+                          rw [hset]
+                          exact VEnv.get_set_self hxbound
+                        · show VEnv.get (VEnv.setMany V [x] [v]) y = some v
+                          rw [hset]
+                          by_cases hxy : y = x
+                          · subst hxy
+                            exact VEnv.get_set_self hxbound
+                          · rw [VEnv.get_set_ne hxy]
+                            exact hvy
+              · have hpr := prune_not_hit hp
+                have hbase := hc _ (List.mem_of_mem_filter hp)
+                rcases p with ⟨z, rhs⟩
+                have hzx : z ≠ x := by
+                  intro hzx
+                  subst hzx
+                  cases rhs <;> simp [entryHits] at hpr
+                cases rhs with
+                | lit n =>
+                    rw [RhsHolds] at hbase ⊢
+                    rw [hset, VEnv.get_set_ne hzx]
+                    exact hbase
+                | var y =>
+                    have hyx : y ≠ x := by
+                      intro hyx
+                      subst hyx
+                      simp [entryHits] at hpr
+                    obtain ⟨w, hwz, hwy⟩ := hbase
+                    exact ⟨w, by rw [hset, VEnv.get_set_ne hzx]; exact hwz,
+                      by rw [hset, VEnv.get_set_ne hyx]; exact hwy⟩
+  | @assignHalt funs V st vars e st1 he ihe =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | assignS hrhs henv =>
+          refine ⟨Step.assignHalt ((ihe hR (PropRel.expr hrhs) hc).1), ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h3
+          intro hno
+          exact absurd hno (by simp)
+  | @exprStmt funs V st e st1 he ihe =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | exprStmtS =>
+          refine ⟨Step.exprStmt ((ihe hR (PropRel.expr .subst) hc).1), ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h1; subst h3
+          intro _
+          exact hc
+  | @exprStmtHalt funs V st e st1 he ihe =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | exprStmtS =>
+          refine ⟨Step.exprStmtHalt ((ihe hR (PropRel.expr .subst) hc).1), ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h3
+          intro hno
+          exact absurd hno (by simp)
+  | @ifTrue funs V st c body cv st1 V2 st2 o hcv hnz hb ihc ihb =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | condS hbodyRel =>
+          have hcond := (ihc hR (PropRel.expr .subst) hc).1
+          have hstep := (ihb hR (PropRel.blockS hbodyRel) hc).1
+          refine ⟨Step.ifTrue hcond hnz hstep, ?_⟩
+          intro V' st' o' hres
+          injection hres with h1 h2 h3
+          subst h1
+          intro _
+          exact hc.of_frame (Step.env_frame (Step.ifTrue hcv hnz hb) rfl)
+  | @ifFalse funs V st c body cv st1 hcv hz ihc =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | condS hbodyRel =>
+          refine ⟨Step.ifFalse ((ihc hR (PropRel.expr .subst) hc).1) hz, ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h1; subst h3
+          intro _
+          exact hc.restrict _
+  | @ifHalt funs V st c body st1 hcv ihc =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | condS hbodyRel =>
+          refine ⟨Step.ifHalt ((ihc hR (PropRel.expr .subst) hc).1), ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h3
+          intro hno
+          exact absurd hno (by simp)
+  | @switchExec funs V st c cases dflt cv st1 V2 st2 o hcv hb ihc ihb =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | switchS hcases hdflt =>
+          obtain ⟨σsel, hsel⟩ := hcases.selectRel hdflt cv
+          have hcond := (ihc hR (PropRel.expr .subst) hc).1
+          have hstep := (ihb hR (PropRel.blockS hsel) hc).1
+          refine ⟨Step.switchExec hcond hstep, ?_⟩
+          intro V' st' o' hres
+          injection hres with h1 h2 h3
+          subst h1
+          intro _
+          exact hc.of_frame (Step.env_frame (Step.switchExec hcv hb) rfl)
+  | @switchHalt funs V st c cases dflt st1 hcv ihc =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | switchS hcases hdflt =>
+          refine ⟨Step.switchHalt ((ihc hR (PropRel.expr .subst) hc).1), ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h3
+          intro hno
+          exact absurd hno (by simp)
+  | @forLoop funs V st init c post body Vinit stinit Vend stend o hinit hloop ihinit ihloop =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | forS hinitRel hσL hpostRel hbodyRel =>
+          subst hσL
+          have hRi := List.Forall₂.cons (hinitRel.hoist_scopeRel rfl rfl) hR
+          obtain ⟨hinit', hcompatInit⟩ := ihinit hRi hinitRel hc
+          have hcompVinit := hcompatInit Vinit stinit .normal rfl rfl
+          have hloopRel := PropRel.loopL (c := c)
+            (prune_idem _ (writeSetStmts post ++ writeSetStmts body)) hpostRel hbodyRel
+          have hcompL := hcompVinit.restrict (writeSetStmts post ++ writeSetStmts body)
+          obtain ⟨hloop', _⟩ := ihloop hRi hloopRel hcompL
+          refine ⟨Step.forLoop hinit' hloop', ?_⟩
+          intro V' st' o' hres
+          injection hres with h1 h2 h3
+          subst h1
+          intro _
+          exact hc.of_frame (Step.env_frame (Step.forLoop hinit hloop) rfl)
+  | @forInitHalt funs V st init c post body Vinit stinit hinit ihinit =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | forS hinitRel hσL hpostRel hbodyRel =>
+          have hRi := List.Forall₂.cons (hinitRel.hoist_scopeRel rfl rfl) hR
+          obtain ⟨hinit', _⟩ := ihinit hRi hinitRel hc
+          refine ⟨Step.forInitHalt hinit', ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h3
+          intro hno
+          exact absurd hno (by simp)
+  | «break» =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | breakS =>
+          refine ⟨Step.break, ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h3
+          intro hno
+          exact absurd hno (by simp)
+  | «continue» =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | continueS =>
+          refine ⟨Step.continue, ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h3
+          intro hno
+          exact absurd hno (by simp)
+  | leave =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | leaveS =>
+          refine ⟨Step.leave, ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h3
+          intro hno
+          exact absurd hno (by simp)
+  | seqNil =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | nilSS =>
+          refine ⟨Step.seqNil, ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h1; subst h3
+          intro _
+          exact hc
+  | @seqCons funs V st s rest V1 st1 V2 st2 o hs hrest ihs ihrest =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | consSS hsRel hrestRel =>
+          obtain ⟨hs', hcompatS⟩ := ihs hR hsRel hc
+          have hcompat1 := hcompatS V1 st1 .normal rfl rfl
+          obtain ⟨hrest', hcompatRest⟩ := ihrest hR hrestRel hcompat1
+          refine ⟨Step.seqCons hs' hrest', ?_⟩
+          intro V' st' o' hres
+          exact hcompatRest V' st' o' hres
+  | @seqStop funs V st s rest V1 st1 o hs hne ihs =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | consSS hsRel hrestRel =>
+          obtain ⟨hs', _⟩ := ihs hR hsRel hc
+          refine ⟨Step.seqStop hs' hne, ?_⟩
+          intro V' st' o' hres
+          injection hres with h1 h2 h3
+          subst h3
+          intro hno
+          exact absurd hno hne
+  | @loopDone funs V st c post body cv st1 hcv hz ihc =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          refine ⟨Step.loopDone ((ihc hR (PropRel.expr .subst) hc).1) hz, ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h1
+          exact hc
+  | @loopCondHalt funs V st c post body st1 hcv ihc =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          refine ⟨Step.loopCondHalt ((ihc hR (PropRel.expr .subst) hc).1), ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h1
+          exact hc
+  | @loopStep funs V st c post body cv st1 Vb stb ob Vp stp Vend stend o
+      hcv hnz hb hob hp hloop ihc ihb ihp ihloop =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          have hcond := (ihc hR (PropRel.expr .subst) hc).1
+          have hb' := (ihb hR (PropRel.blockS hbodyRel) hc).1
+          have hcompVb : Compat Vb σ := by
+            refine Compat.of_frame_stable hstable hc ?_
+            exact (Step.env_frame hb rfl).mono
+              (fun x hx => List.mem_append.mpr (Or.inr hx))
+          have hp' := (ihp hR (PropRel.blockS hpostRel) hcompVb).1
+          have hcompVp : Compat Vp σ := by
+            refine Compat.of_frame_stable hstable hcompVb ?_
+            exact (Step.env_frame hp rfl).mono
+              (fun x hx => List.mem_append.mpr (Or.inl hx))
+          obtain ⟨hloop', hcompatLoop⟩ := ihloop hR
+            (PropRel.loopL hstable hpostRel hbodyRel) hcompVp
+          refine ⟨Step.loopStep hcond hnz hb' hob hp' hloop', ?_⟩
+          intro V' st' o' hres
+          exact hcompatLoop V' st' o' hres
+  | @loopPostHalt funs V st c post body cv st1 Vb stb ob Vp stp
+      hcv hnz hb hob hp ihc ihb ihp =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          have hcond := (ihc hR (PropRel.expr .subst) hc).1
+          have hb' := (ihb hR (PropRel.blockS hbodyRel) hc).1
+          have hcompVb : Compat Vb σ := by
+            refine Compat.of_frame_stable hstable hc ?_
+            exact (Step.env_frame hb rfl).mono
+              (fun x hx => List.mem_append.mpr (Or.inr hx))
+          have hp' := (ihp hR (PropRel.blockS hpostRel) hcompVb).1
+          refine ⟨Step.loopPostHalt hcond hnz hb' hob hp', ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h1
+          refine Compat.of_frame_stable hstable hcompVb ?_
+          exact (Step.env_frame hp rfl).mono
+            (fun x hx => List.mem_append.mpr (Or.inl hx))
+  | @loopBreak funs V st c post body cv st1 Vb stb hcv hnz hb ihc ihb =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          have hcond := (ihc hR (PropRel.expr .subst) hc).1
+          have hb' := (ihb hR (PropRel.blockS hbodyRel) hc).1
+          refine ⟨Step.loopBreak hcond hnz hb', ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h1
+          refine Compat.of_frame_stable hstable hc ?_
+          exact (Step.env_frame hb rfl).mono
+            (fun x hx => List.mem_append.mpr (Or.inr hx))
+  | @loopLeave funs V st c post body cv st1 Vb stb hcv hnz hb ihc ihb =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          have hcond := (ihc hR (PropRel.expr .subst) hc).1
+          have hb' := (ihb hR (PropRel.blockS hbodyRel) hc).1
+          refine ⟨Step.loopLeave hcond hnz hb', ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h1
+          refine Compat.of_frame_stable hstable hc ?_
+          exact (Step.env_frame hb rfl).mono
+            (fun x hx => List.mem_append.mpr (Or.inr hx))
+  | @loopBodyHalt funs V st c post body cv st1 Vb stb hcv hnz hb ihc ihb =>
+      intro funs₂ σ σ' pc' hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          have hcond := (ihc hR (PropRel.expr .subst) hc).1
+          have hb' := (ihb hR (PropRel.blockS hbodyRel) hc).1
+          refine ⟨Step.loopBodyHalt hcond hnz hb', ?_⟩
+          intro V' st' o hres
+          injection hres with h1 h2 h3
+          subst h1
+          refine Compat.of_frame_stable hstable hc ?_
+          exact (Step.env_frame hb rfl).mono
+            (fun x hx => List.mem_append.mpr (Or.inr hx))
+
 /-! ### Regression examples (checked at build time) -/
 
 -- Constant propagation feeds folding: `let a := 1  let b := add(a, 1)` chains.
