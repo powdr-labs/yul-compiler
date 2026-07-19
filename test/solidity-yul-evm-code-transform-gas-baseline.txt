@@ -31,7 +31,7 @@ stackReuse/multi_reuse_single_slot.yul	132	0
 stackReuse/multi_reuse_single_slot_nested.yul	144	0
 stackReuse/reuse_on_decl_assign_not_same_scope.yul	132684	132636
 stackReuse/reuse_on_decl_assign_to_last_used.yul	132672	132636
-stackReuse/reuse_on_decl_assign_to_last_used_expr.yul	132708	132672
+stackReuse/reuse_on_decl_assign_to_last_used_expr.yul	132672	132672
 stackReuse/reuse_on_decl_assign_to_not_last_used.yul	132672	132636
 stackReuse/reuse_slots.yul	252	240
 stackReuse/reuse_slots_function.yul	546	414
@@ -41,5 +41,5 @@ stackReuse/single_var_assigned.yul	18	0
 stackReuse/single_var_assigned_plus_code.yul	108	90
 stackReuse/single_var_assigned_plus_code_and_reused.yul	156	90
 stackReuse/smoke.yul	0	0
-stackReuse/switch.yul	348	198
+stackReuse/switch.yul	96	198
 stub.yul	450	392
