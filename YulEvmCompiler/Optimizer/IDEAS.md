@@ -244,10 +244,32 @@ would turn var args into literals and starve the var-only object inliner).
 Known non-targets (left in this list): LICM, full inlining of multi-statement
 helpers, block flattening — these dominate the largest remaining gas-ratio rows.
 
-**Results (re-pinned, zero regressions everywhere):** `yulOptimizerTests`
-24 rows −2,616 gas; `evmCodeTransform` 2 rows −288; Solidity `gasTests` 11
-rows −540; `semanticTests` **297 rows −18,467**; `objectCompiler` unchanged.
-All solc columns unchanged; the axiom gate is clean.
+**Results** (with `DeadLits` below; re-pinned, zero regressions everywhere,
+cumulative): `yulOptimizerTests` 179 rows −10,300 gas; `evmCodeTransform` 16
+rows −840; Solidity `gasTests` 12/12 rows −1,733; `semanticTests` **534 rows
+−616,030** plus **81 contracts that newly compile**; `objectCompiler` 1 row
+−18. All solc columns unchanged; the axiom gate is clean.
+
+### ✅ `DeadLits` — dead literal-binding elimination (this branch)
+
+The removal companion: delete a singleton `let x := <literal>` (or zero-init
+`let x`) whose variable never occurs afterward in its block — exactly the
+leftovers `Propagate` creates, and exactly the removable class that needs **no
+spec change**: a literal binding always evaluates, changes no state, and its
+binding dies at the enclosing block's `restore` anyway, so the pointwise iff
+holds with no `WellScoped` assumption (contrast PR #52, whose *arbitrary*-rhs
+removal genuinely needed the rejected spec weakening — its `Frame.lean`
+toolkit, `InsAt` with depth-from-the-bottom indexing plus
+`frameAdd`/`frameRemove`, is salvaged verbatim as the semantic core here).
+Soundness: the skip-rule relation `DlRel` (same architecture as `PropRel`;
+closed under layout resolution, so the object path gets the full pass), with
+removal steps discharged by `removeLit_equivBlock` — sequence split at the
+binding, frame simulation across the insertion, `restore` alignment
+(`restore_insAt_le`) — chained under an arbitrary common prefix, and kept
+steps by the pointwise congruences. Wired as the final stage of both
+pipelines. Each removed binding saves its PUSH+POP and **frees a stack
+slot** — 81 real `semanticTests` contracts that used to die at the DUP16
+limit now compile.
 
 **The copy-propagation depth lesson** (measured the hard way): *copy* entries
 (`y ↦ x`) are proven sound end-to-end — the relation, both simulations, and
