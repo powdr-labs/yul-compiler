@@ -3,9 +3,9 @@
 # Pinned to solc 0.8.35, EVM version osaka. 'ours' is a ceiling:
 # CI fails if this compiler's total rises above it while solc's is unchanged.
 # columns: fixture<TAB>ours<TAB>solc
-BitMath.sol	6282	1836
-LPFeeLibrary.sol	6515	1294
-LiquidityMath.sol	3213	831
-ProtocolFeeLibrary.sol	4537	1091
-SafeCast.sol	6590	1545
-UnsafeMath.sol	3974	768
+BitMath.sol	6186	1836
+LPFeeLibrary.sol	6420	1294
+LiquidityMath.sol	3165	831
+ProtocolFeeLibrary.sol	4478	1091
+SafeCast.sol	6509	1545
+UnsafeMath.sol	3900	768

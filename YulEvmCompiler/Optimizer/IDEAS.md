@@ -194,6 +194,96 @@ the pass *after* resolution and recompute `codeSize` from its output (breaks the
 current fixed-width-`PUSH32` layout fixpoint for offset-sensitive passes). This is
 the real object-path frontier.
 
+### ✅ `Propagate` — constant propagation, binding-preserving (this branch)
+
+**Forward substitution of known bindings, keeping every binding in place.** After
+`let x := <number literal>`, later reads of `x` (until invalidated) become the
+literal; `let x` (no initializer) yields `x ↦ 0` (Yul zero-initializes); at
+`x := <literal>` with `x` already tracked, the entry is *refreshed*
+(σ-membership proves `x` is bound, so `VEnv.set` really updates) — capturing
+solc's reassignment chains (`ssaPlusCleanup/multi_reassign.yul`). A
+fold-at-let step (reusing `pureFold`) collapses literal chains in one
+traversal, so copy chains rooted at a constant collapse too. (Bare *copy*
+entries `y ↦ x` are proven sound but disabled in production — see the depth
+lesson below.) Invalidation is syntactic and
+conservative: shadowing lets, assignments (key *and* rhs-source of copy entries),
+and, per construct, the assigned/declared sets of nested bodies; loops rewrite
+cond/body/post under a σ pruned by the loop's whole write set (invariant by
+construction); `funDef` bodies restart at σ = ∅ (fresh callee env).
+
+**Why sound in the unchanged pointwise spec** (where binding *removal* died,
+PR #52): the kept `let` guarantees the variable is bound to the known value in
+every execution reaching the use site, on both sides — no stuckness asymmetry,
+no well-scopedness assumption. Invariant: `Compat V σ` (each entry's key is bound
+and agrees with its rhs). One bidirectional `Step` simulation, with `FunsRel`
+(`FunCongr`) for rewritten function bodies.
+
+**Object path without weakening**: soundness is proven for a *relation*
+`PropRel σ ss ss'` (transform rules + skip alternatives; pruning mandatory), with
+`propStmts` inhabiting it. Since resolution maps number literals and vars to
+themselves and only rewrites `dataoffset`/`datasize` string-calls *into* number
+literals, `PropRel` is closed under `resolveForLayoutStmts` by a purely syntactic
+induction — the skip rules absorb resolution-created literals. So the object
+pipeline gets the **full** pass (no `litOK`-style restriction), and the whole-tree
+correctness theorem extends stage-wise as before.
+
+**Why it pays**: vars are stack slots (read = DUP = 3 gas, literal = PUSH = 3 gas),
+so each substitution is gas-neutral until the existing `Simplify` folding /
+constant-control-flow folding / `InlineHelpers` fire — then folded sites save
+~6 gas each, folded branches remove dispatch + dead bytecode, inlined calls save
+~25+ gas. Corpus: 558 literal-lets (347 safe + 78 refresh-recoverable), ≥26
+baseline fixtures with concrete fold unlocks, and the pervasive solc `let _N := 0`
+idiom (also all over real via-IR output → object-rooted baselines). Substitution
+also relieves the DUP16 depth limit (deep var reads currently fail to compile).
+
+**Pipelines**: block `[simplify, propagate, inline(litOK), simplify]` (propagate
+first feeds the literal-friendly inliner); object
+`[simplify, inline(var-only), propagate, simplify]` (inline first — propagation
+would turn var args into literals and starve the var-only object inliner).
+
+Known non-targets (left in this list): LICM, full inlining of multi-statement
+helpers, block flattening — these dominate the largest remaining gas-ratio rows.
+
+**Results** (with `DeadLits` below; re-pinned, zero regressions everywhere,
+cumulative): `yulOptimizerTests` 179 rows −10,300 gas; `evmCodeTransform` 16
+rows −840; Solidity `gasTests` 12/12 rows −1,733; `semanticTests` **534 rows
+−616,030** plus **81 contracts that newly compile**; `objectCompiler` 1 row
+−18. All solc columns unchanged; the axiom gate is clean.
+
+### ✅ `DeadLits` — dead literal-binding elimination (this branch)
+
+The removal companion: delete a singleton `let x := <literal>` (or zero-init
+`let x`) whose variable never occurs afterward in its block — exactly the
+leftovers `Propagate` creates, and exactly the removable class that needs **no
+spec change**: a literal binding always evaluates, changes no state, and its
+binding dies at the enclosing block's `restore` anyway, so the pointwise iff
+holds with no `WellScoped` assumption (contrast PR #52, whose *arbitrary*-rhs
+removal genuinely needed the rejected spec weakening — its `Frame.lean`
+toolkit, `InsAt` with depth-from-the-bottom indexing plus
+`frameAdd`/`frameRemove`, is salvaged verbatim as the semantic core here).
+Soundness: the skip-rule relation `DlRel` (same architecture as `PropRel`;
+closed under layout resolution, so the object path gets the full pass), with
+removal steps discharged by `removeLit_equivBlock` — sequence split at the
+binding, frame simulation across the insertion, `restore` alignment
+(`restore_insAt_le`) — chained under an arbitrary common prefix, and kept
+steps by the pointwise congruences. Wired as the final stage of both
+pipelines. Each removed binding saves its PUSH+POP and **frees a stack
+slot** — 81 real `semanticTests` contracts that used to die at the DUP16
+limit now compile.
+
+**The copy-propagation depth lesson** (measured the hard way): *copy* entries
+(`y ↦ x`) are proven sound end-to-end — the relation, both simulations, and
+the resolution closure all cover them — but the production transform creates
+**literal entries only**. Substituting a copy replaces a read of a recently
+bound (stack-shallow) variable with a read of an older (deeper) one, and this
+backend's variable reads are `DUP`s hard-limited at depth 16: with copies
+enabled, solc's `dispatch_*.sol` gasTests stopped compiling. Literal
+substitution can only relieve depth (a literal is a `PUSH`, and folded sites
+shrink expression stacks). Re-enabling copy entries behind a depth analysis
+(only propagate copies whose source provably stays within `DUP16` at every
+use site) is a logged follow-up; any future substitution-based pass must run
+this same check.
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
