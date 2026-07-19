@@ -1,5 +1,6 @@
 import YulEvmCompiler.Optimizer.Spec.Pass
 import YulEvmCompiler.Optimizer.Implementation.Simplify
+import YulEvmCompiler.Optimizer.Implementation.Frame
 set_option warningAsError true
 /-!
 # YulEvmCompiler.Optimizer.Implementation.Propagate
@@ -474,17 +475,6 @@ theorem VEnv.get_append_not_mem {ext W : VEnv D} {x : Ident}
     exact h (hx ▸ List.mem_map_of_mem hp)
   rw [hnone, Option.none_or]
 
-/-- In-place update preserves the key sequence. -/
-theorem VEnv.set_keys (V : VEnv D) (x : Ident) (v : U256) :
-    (VEnv.set V x v).map Prod.fst = V.map Prod.fst := by
-  induction V with
-  | nil => rfl
-  | cons p rest ih =>
-      rw [VEnv.set]
-      split
-      · next h => simp [← h]
-      · simp [ih]
-
 /-- Lookup on a cons cell. -/
 theorem VEnv.get_cons (p : Ident × U256) (V : VEnv D) (y : Ident) :
     VEnv.get (p :: V) y = if p.1 = y then some p.2 else VEnv.get V y := by
@@ -506,18 +496,6 @@ theorem VEnv.get_set_ne {V : VEnv D} {x y : Ident} {v : U256} (h : y ≠ x) :
           have hp : ¬ (p.1 = y) := heq ▸ hx
           simp [hx, hp]
       · rw [VEnv.get_cons, VEnv.get_cons, ih]
-
-/-- One `foldl` of updates preserves the key sequence. -/
-private theorem foldl_set_keys (l : List (Ident × U256)) (V : VEnv D) :
-    (l.foldl (fun acc p => VEnv.set acc p.1 p.2) V).map Prod.fst = V.map Prod.fst := by
-  induction l generalizing V with
-  | nil => rfl
-  | cons p rest ih => rw [List.foldl_cons, ih, VEnv.set_keys]
-
-/-- Multi-update preserves the key sequence. -/
-theorem VEnv.setMany_keys (V : VEnv D) (xs : List Ident) (vs : List U256) :
-    (VEnv.setMany V xs vs).map Prod.fst = V.map Prod.fst :=
-  foldl_set_keys (xs.zip vs) V
 
 /-- One `foldl` of updates leaves unmentioned keys' lookups unchanged. -/
 private theorem foldl_set_get_not_mem {x : Ident} :

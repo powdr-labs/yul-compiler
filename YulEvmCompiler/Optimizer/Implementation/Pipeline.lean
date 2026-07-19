@@ -1,5 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.InlineHelpersResolve
 import YulEvmCompiler.Optimizer.Implementation.PropagateResolve
+import YulEvmCompiler.Optimizer.Implementation.DeadLitsResolve
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
 set_option warningAsError true
 /-!
@@ -37,29 +38,30 @@ open YulEvmCompiler
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 local notation "D" => evmWithExternal calls creates
 
-/-- Verified production pipeline for top-level blocks, applied left-to-right. -/
+/-- Verified production pipeline for top-level blocks, applied left-to-right.
+The final `deadLits` prunes the literal bindings the earlier stages made dead. -/
 def optimizerPipeline : Pass D :=
-  Pass.ofList [simplify, propagate, inlineHelpersPass true, simplify]
+  Pass.ofList [simplify, propagate, inlineHelpersPass true, simplify, deadLits]
 
 @[simp] theorem optimizerPipeline_run (b : Block Op) :
     (optimizerPipeline (calls := calls) (creates := creates)).run b =
-      simplifyStmts
+      dlStmts (simplifyStmts
         (inlineHelpersBlock (calls := calls) (creates := creates) true
-          ([] : FunEnv D) (propStmts [] (simplifyStmts b)).1) := rfl
+          ([] : FunEnv D) (propStmts [] (simplifyStmts b)).1)) := rfl
 
 /-- Verified pipeline for object code blocks: the inliner runs in its
-resolution-stable mode, before propagation. -/
+resolution-stable mode, before propagation; `deadLits` prunes last. -/
 def objectPipeline : Pass D :=
-  Pass.ofList [simplify, inlineHelpersPass false, propagate, simplify]
+  Pass.ofList [simplify, inlineHelpersPass false, propagate, simplify, deadLits]
 
 @[simp] theorem objectPipeline_run (b : Block Op) :
     (objectPipeline (calls := calls) (creates := creates)).run b =
-      simplifyStmts
+      dlStmts (simplifyStmts
         (propStmts []
           (inlineHelpersBlock (calls := calls) (creates := creates) false
-            ([] : FunEnv D) (simplifyStmts b))).1 := rfl
+            ([] : FunEnv D) (simplifyStmts b))).1) := rfl
 
-/-- Resolution congruence for the complete four-stage object pipeline. -/
+/-- Resolution congruence for the complete five-stage object pipeline. -/
 theorem resolveObjectPipelineBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L
@@ -79,7 +81,12 @@ theorem resolveObjectPipelineBlock_equiv (L : Layout) (b : Block Op) :
       (inlineHelpersBlock (calls := calls) (creates := creates) false
         ([] : FunEnv D) (simplifyStmts b))).1
   simp only [propagateBlock] at hp
-  simpa using (hs₀.trans (hi.trans hp)).trans hs₁
+  have hd := resolveDeadLitsBlock_equiv (calls := calls) (creates := creates) L
+    (simplifyStmts
+      (propStmts []
+        (inlineHelpersBlock (calls := calls) (creates := creates) false
+          ([] : FunEnv D) (simplifyStmts b))).1)
+  simpa using ((hs₀.trans (hi.trans hp)).trans hs₁).trans hd
 
 mutual
   /-- Run the verified object pipeline on every object code block. -/
