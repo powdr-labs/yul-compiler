@@ -194,6 +194,54 @@ the pass *after* resolution and recompute `codeSize` from its output (breaks the
 current fixed-width-`PUSH32` layout fixpoint for offset-sensitive passes). This is
 the real object-path frontier.
 
+### 🚧 `Propagate` — constant + copy propagation, binding-preserving (this branch)
+
+**Forward substitution of known bindings, keeping every binding in place.** After
+`let x := <number literal>`, later reads of `x` (until invalidated) become the
+literal; after `let y := x`, reads of `y` become `x`; `let x` (no initializer)
+yields `x ↦ 0` (Yul zero-initializes); at `x := <literal>` with `x` already
+tracked, the entry is *refreshed* (σ-membership proves `x` is bound, so
+`VEnv.set` really updates) — capturing solc's reassignment chains
+(`ssaPlusCleanup/multi_reassign.yul`). A fold-at-let step (reusing `pureFold`)
+collapses literal chains in one traversal. Invalidation is syntactic and
+conservative: shadowing lets, assignments (key *and* rhs-source of copy entries),
+and, per construct, the assigned/declared sets of nested bodies; loops rewrite
+cond/body/post under a σ pruned by the loop's whole write set (invariant by
+construction); `funDef` bodies restart at σ = ∅ (fresh callee env).
+
+**Why sound in the unchanged pointwise spec** (where binding *removal* died,
+PR #52): the kept `let` guarantees the variable is bound to the known value in
+every execution reaching the use site, on both sides — no stuckness asymmetry,
+no well-scopedness assumption. Invariant: `Compat V σ` (each entry's key is bound
+and agrees with its rhs). One bidirectional `Step` simulation, with `FunsRel`
+(`FunCongr`) for rewritten function bodies.
+
+**Object path without weakening**: soundness is proven for a *relation*
+`PropRel σ ss ss'` (transform rules + skip alternatives; pruning mandatory), with
+`propStmts` inhabiting it. Since resolution maps number literals and vars to
+themselves and only rewrites `dataoffset`/`datasize` string-calls *into* number
+literals, `PropRel` is closed under `resolveForLayoutStmts` by a purely syntactic
+induction — the skip rules absorb resolution-created literals. So the object
+pipeline gets the **full** pass (no `litOK`-style restriction), and the whole-tree
+correctness theorem extends stage-wise as before.
+
+**Why it pays**: vars are stack slots (read = DUP = 3 gas, literal = PUSH = 3 gas),
+so each substitution is gas-neutral until the existing `Simplify` folding /
+constant-control-flow folding / `InlineHelpers` fire — then folded sites save
+~6 gas each, folded branches remove dispatch + dead bytecode, inlined calls save
+~25+ gas. Corpus: 558 literal-lets (347 safe + 78 refresh-recoverable), ≥26
+baseline fixtures with concrete fold unlocks, and the pervasive solc `let _N := 0`
+idiom (also all over real via-IR output → object-rooted baselines). Substitution
+also relieves the DUP16 depth limit (deep var reads currently fail to compile).
+
+**Pipelines**: block `[simplify, propagate, inline(litOK), simplify]` (propagate
+first feeds the literal-friendly inliner); object
+`[simplify, inline(var-only), propagate, simplify]` (inline first — propagation
+would turn var args into literals and starve the var-only object inliner).
+
+Known non-targets (left in this list): LICM, full inlining of multi-statement
+helpers, block flattening — these dominate the largest remaining gas-ratio rows.
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
