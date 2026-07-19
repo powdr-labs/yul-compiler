@@ -194,16 +194,18 @@ the pass *after* resolution and recompute `codeSize` from its output (breaks the
 current fixed-width-`PUSH32` layout fixpoint for offset-sensitive passes). This is
 the real object-path frontier.
 
-### 🚧 `Propagate` — constant + copy propagation, binding-preserving (this branch)
+### ✅ `Propagate` — constant propagation, binding-preserving (this branch)
 
 **Forward substitution of known bindings, keeping every binding in place.** After
 `let x := <number literal>`, later reads of `x` (until invalidated) become the
-literal; after `let y := x`, reads of `y` become `x`; `let x` (no initializer)
-yields `x ↦ 0` (Yul zero-initializes); at `x := <literal>` with `x` already
-tracked, the entry is *refreshed* (σ-membership proves `x` is bound, so
-`VEnv.set` really updates) — capturing solc's reassignment chains
-(`ssaPlusCleanup/multi_reassign.yul`). A fold-at-let step (reusing `pureFold`)
-collapses literal chains in one traversal. Invalidation is syntactic and
+literal; `let x` (no initializer) yields `x ↦ 0` (Yul zero-initializes); at
+`x := <literal>` with `x` already tracked, the entry is *refreshed*
+(σ-membership proves `x` is bound, so `VEnv.set` really updates) — capturing
+solc's reassignment chains (`ssaPlusCleanup/multi_reassign.yul`). A
+fold-at-let step (reusing `pureFold`) collapses literal chains in one
+traversal, so copy chains rooted at a constant collapse too. (Bare *copy*
+entries `y ↦ x` are proven sound but disabled in production — see the depth
+lesson below.) Invalidation is syntactic and
 conservative: shadowing lets, assignments (key *and* rhs-source of copy entries),
 and, per construct, the assigned/declared sets of nested bodies; loops rewrite
 cond/body/post under a σ pruned by the loop's whole write set (invariant by
@@ -241,6 +243,24 @@ would turn var args into literals and starve the var-only object inliner).
 
 Known non-targets (left in this list): LICM, full inlining of multi-statement
 helpers, block flattening — these dominate the largest remaining gas-ratio rows.
+
+**Results (re-pinned, zero regressions everywhere):** `yulOptimizerTests`
+24 rows −2,616 gas; `evmCodeTransform` 2 rows −288; Solidity `gasTests` 11
+rows −540; `semanticTests` **297 rows −18,467**; `objectCompiler` unchanged.
+All solc columns unchanged; the axiom gate is clean.
+
+**The copy-propagation depth lesson** (measured the hard way): *copy* entries
+(`y ↦ x`) are proven sound end-to-end — the relation, both simulations, and
+the resolution closure all cover them — but the production transform creates
+**literal entries only**. Substituting a copy replaces a read of a recently
+bound (stack-shallow) variable with a read of an older (deeper) one, and this
+backend's variable reads are `DUP`s hard-limited at depth 16: with copies
+enabled, solc's `dispatch_*.sol` gasTests stopped compiling. Literal
+substitution can only relieve depth (a literal is a `PUSH`, and folded sites
+shrink expression stacks). Re-enabling copy entries behind a depth analysis
+(only propagate copies whose source provably stays within `DUP16` at every
+use site) is a logged follow-up; any future substitution-based pass must run
+this same check.
 
 ## Candidate next ideas (not started)
 
