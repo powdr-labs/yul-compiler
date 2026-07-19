@@ -61,6 +61,26 @@ def solidityCompatObject : String :=
 #guard (parseSource solidityCompatObject).isSome
 #guard (compileSource solidityCompatObject).isSome
 
+/-- A dead `linkersymbol` binding — solc's unoptimized IR emits one for every
+qualified internal library call — is pruned before compilation, but a program
+that references the value stays outside the supported fragment. -/
+def deadLinkerObject : String :=
+  "object \"A\" { code { let a := linkersymbol(\"file.sol:L\") sstore(0, 1) } }"
+
+def usedLinkerObject : String :=
+  "object \"A\" { code { let a := linkersymbol(\"file.sol:L\") sstore(0, a) } }"
+
+#guard (parseSource deadLinkerObject).isSome
+#guard (compileSource deadLinkerObject).isSome
+#guard (parseSource usedLinkerObject).isSome
+#guard (compileSource usedLinkerObject).isNone
+
+/-! The prune is shadowing-proof by over-approximation: if the bound name is
+referenced anywhere in the program — even a write — the binding is kept and the
+program is rejected rather than miscompiled. -/
+#guard (compileSource
+  "object \"A\" { code { let a := linkersymbol(\"file.sol:L\") a := 1 sstore(0, a) } }").isNone
+
 /-! The source entry point also runs Solidity-compatible validation after the
 grammar has produced an AST.  These checks pin representative scope, arity,
 control-flow, literal, switch, object, and EVM-version rules locally; CI covers

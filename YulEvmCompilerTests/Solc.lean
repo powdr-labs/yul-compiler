@@ -60,8 +60,14 @@ def solcUnoptimizedIR (solcPath source : String) : IO (Except String String) := 
   } (some source)
   if output.exitCode != 0 then
     return .error s!"solc --ir failed: {output.stderr.trimAscii.copy}"
+  -- With several contracts in one source (e.g. a contract plus libraries), solc
+  -- emits one `IR:` block per contract, ordered by contract name. Keep only the
+  -- first block — cut at the next unindented `IR:` header — so the result is a
+  -- single well-formed object; the harness pairs it with the first `Binary:`
+  -- section, which is the same contract.
   let lines := output.stdout.splitOn "\n"
-  let ir := lines.dropWhile (fun line => !line.startsWith "object ")
+  let ir := (lines.dropWhile (fun line => !line.startsWith "object ")).takeWhile
+    (fun line => line != "IR:")
   if ir.isEmpty then
     return .error "solc --ir produced no object"
   return .ok (String.intercalate "\n" ir)

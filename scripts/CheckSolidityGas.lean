@@ -144,7 +144,7 @@ private def processContract (dir : FilePath) (solcPath : String)
       | .ok ir =>
           match compileSource ir with
           | none =>
-              return { compileFailure := some (name, "this compiler rejected solc's optimized IR") }
+              return { compileFailure := some (name, "this compiler rejected solc's unoptimized IR") }
           | some creation =>
               match ← solcCreationBytecode solcPath source with
               | .error message => return { compileFailure := some (name, message) }
@@ -171,15 +171,23 @@ private def processContract (dir : FilePath) (solcPath : String)
 
 private def usage : String :=
   "usage: CheckSolidityGas <contracts-dir> <gas-baseline.txt> " ++
-    "<solc-path> <expected-solc-version> [--lenient] [--update]"
+    "<solc-path> <expected-solc-version> [--lenient] [--update] " ++
+    "[--known=<known-compile-failures.txt>]"
 
 /-- `lenient`: treat contracts this compiler cannot handle as skips rather than
 failures. Off for the curated gasTests (every contract must compile); on for the
 broad semanticTests corpus, where many contracts use unsupported features and
-only the gas of the compilable subset is pinned. -/
+only the gas of the compilable subset is pinned.
+
+`known`: a checked-in list of fixtures this compiler is expected to reject
+(same convention as the compile-corpus known-failure lists). Strict otherwise:
+an unlisted compile failure fails the run, and so does a stale entry that now
+compiles — the list must always match reality. Used for the curated Uniswap
+v4-core suite, whose heaviest fixtures sit beyond the current compiler's
+supported fragment on purpose, to record the frontier. -/
 private def run (dir baselineFile : FilePath)
     (solcPath expectedSolcVersion : String) (lenient update : Bool)
-    (shard : Option Shard) : IO UInt32 := do
+    (known : Option (Array String)) (shard : Option Shard) : IO UInt32 := do
   match ← checkSolcVersion solcPath expectedSolcVersion with
   | .error message => IO.eprintln message; return 1
   | .ok () => pure ()
@@ -200,15 +208,25 @@ private def run (dir baselineFile : FilePath)
     if outcome.skipped then skipped := skipped + 1
     if let some row := outcome.measured then measured := measured.push row
   let compiled := files.size - skipped - compileFailures.size
+  let failureNames := compileFailures.map (·.1)
+  let unexpectedFailures := match known with
+    | some allowed =>
+        compileFailures.filter (fun (f : String × String) => !allowed.contains f.1)
+    | none => compileFailures
+  let staleKnown := match known with
+    | some allowed =>
+        allowed.filter (fun n => selected shard n && !failureNames.contains n)
+    | none => #[]
 
   if update then
     IO.FS.writeFile baselineFile (render "solidity-gas" expectedSolcVersion measured)
     IO.println s!"Compiled {compiled} contracts; re-pinned {measured.size} gas rows in {baselineFile}."
-    unless lenient || compileFailures.isEmpty do
+    unless lenient || unexpectedFailures.isEmpty do
       IO.eprintln "Contracts that failed to compile (fix before pinning):"
-      for (name, message) in compileFailures do IO.eprintln s!"  {name}: {message}"
+      for (name, message) in unexpectedFailures do IO.eprintln s!"  {name}: {message}"
       return 1
-    return 0
+    printNames "Stale known-compile-failure entries (remove after review):" staleKnown
+    return if staleKnown.isEmpty then 0 else 1
 
   let baseline ← match ← readBaseline baselineFile with
     | .ok rows => pure (rows.filter (fun r => selected shard r.fixture))
@@ -230,7 +248,7 @@ private def run (dir baselineFile : FilePath)
   let measuredNames := measured.map (·.fixture)
   let gasStale := (baseline.filter (fun r => !measuredNames.contains r.fixture)).map (·.fixture)
 
-  let unsupported := if lenient then compileFailures.size else 0
+  let unsupported := if lenient || known.isSome then compileFailures.size else 0
   IO.println s!"Compiled {compiled}/{files.size - skipped} latest-fork contracts via solc {expectedSolcVersion} --via-ir (skipped {skipped}, unsupported {unsupported})."
   IO.println s!"Gas: {measured.size} comparable, {gasRegressions.size} regressions, {gasImproved.size} improved, {gasChanged.size} changed, {gasUnpinned.size} unpinned, {gasStale.size} stale."
   -- Machine-readable aggregate for the PR summary comment. `mode=vs_solc_optimized`:
@@ -239,9 +257,10 @@ private def run (dir baselineFile : FilePath)
   -- gains its own optimizer.
   let suite := dir.fileName.getD "gas"
   IO.println s!"Gas totals: suite={suite} mode=vs_solc_optimized ours={measured.foldl (fun a r => a + r.ours) 0} solc={measured.foldl (fun a r => a + r.solc) 0} comparable={measured.size}"
-  unless lenient || compileFailures.isEmpty do
+  unless lenient || unexpectedFailures.isEmpty do
     IO.eprintln "Contracts this compiler failed to compile:"
-    for (name, message) in compileFailures do IO.eprintln s!"  {name}: {message}"
+    for (name, message) in unexpectedFailures do IO.eprintln s!"  {name}: {message}"
+  printNames "Stale known-compile-failure entries (remove after review):" staleKnown
   printNames "Gas improved — re-pin with scripts/update-gas.sh to tighten:" gasImproved
   printNames "Fixtures changed upstream/solc — re-pin with scripts/update-gas.sh:" gasChanged
   printNames "Gas-unpinned fixtures — re-pin with scripts/update-gas.sh:" gasUnpinned
@@ -249,16 +268,24 @@ private def run (dir baselineFile : FilePath)
   unless gasRegressions.isEmpty do
     IO.eprintln "GAS REGRESSIONS (this compiler now spends more gas):"
     for detail in gasRegressions do IO.eprintln s!"  {detail}"
-  return if (lenient || compileFailures.isEmpty) && gasRegressions.isEmpty then 0 else 1
+  return if (lenient || unexpectedFailures.isEmpty) && staleKnown.isEmpty &&
+    gasRegressions.isEmpty then 0 else 1
 
 def main (args : List String) : IO UInt32 := do
   match args with
   | dir :: baselineFile :: solcPath :: expectedSolcVersion :: rest =>
       let flags := rest.filter (·.startsWith "--")
       let nums := rest.filter (fun s => !s.startsWith "--")
-      if !flags.all (fun f => f == "--update" || f == "--lenient") then
+      let knownFiles := flags.filterMap (fun f =>
+        if f.startsWith "--known=" then some ((f.drop "--known=".length).copy) else none)
+      if !flags.all (fun f =>
+          f == "--update" || f == "--lenient" || f.startsWith "--known=") then
         IO.eprintln usage; return 64
       else
+        let known ← match knownFiles with
+          | [] => pure none
+          | [file] => some <$> readKnownFailures (FilePath.mk file)
+          | _ => IO.eprintln usage; return 64
         let shard ← match nums with
           | [] => pure none
           | [rawIndex, rawCount] =>
@@ -270,5 +297,5 @@ def main (args : List String) : IO UInt32 := do
               | _, _ => IO.eprintln usage; return 64
           | _ => IO.eprintln usage; return 64
         run dir baselineFile solcPath expectedSolcVersion
-          (flags.contains "--lenient") (flags.contains "--update") shard
+          (flags.contains "--lenient") (flags.contains "--update") known shard
   | _ => IO.eprintln usage; return 64

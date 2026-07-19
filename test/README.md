@@ -82,10 +82,14 @@ executable EVM and taking the returned code) is compared against solc's own
 **fully optimized** runtime (`--bin-runtime --optimize --via-ir`) under the same
 scenarios — our non-optimizing compiler versus solc's best. This compiler's
 total is pinned in `solidity-gas-baseline.txt` with the same fail-if-worse rule.
-It relies on two small additions that let this compiler accept solc's generated
-Yul: the validator no longer mis-lexes digits inside identifiers (solc's hashed
-helper names), and `memoryguard` is desugared to its argument before
-compilation. Re-pin with `scripts/update-gas.sh`.
+It relies on three small additions that let this compiler accept solc's
+generated Yul: the validator no longer mis-lexes digits inside identifiers
+(solc's hashed helper names), `memoryguard` is desugared to its argument before
+compilation, and `let x := linkersymbol("…")` bindings whose variable is never
+referenced — the dead placeholder solc's unoptimized IR emits for every
+qualified internal library call — are dropped (a program that actually *uses* a
+linker symbol is still rejected: with no linker there is no sound value for
+it). Re-pin with `scripts/update-gas.sh`.
 
 Both compilers' optimized creation bytecode is deployed (running the
 constructor), and the contract's calls are replayed on each, summing the gas
@@ -106,6 +110,40 @@ flattened ABI form, so the runner replays the *real* calls the test intends
 synthetic inputs. CI runs it sharded across the optimizer legs. This is where
 the largest overheads surface — e.g. contracts solc constant-folds to almost
 nothing that this non-optimizing compiler runs in full.
+
+## Uniswap v4-core fixtures (`uniswap-v4/`)
+
+`test/uniswap-v4/` applies the same runner to real production DeFi code:
+Uniswap v4-core's library gas benchmarks, mirroring the upstream
+`test/libraries/*.t.sol` gas-snapshot tests (`snapshots/*.json` in
+[Uniswap/v4-core](https://github.com/Uniswap/v4-core)). Each fixture is a
+single self-contained file: a small `AGasTest` wrapper contract exposing the
+upstream snapshot scenarios as external functions, followed by the **verbatim**
+v4-core library sources (only SPDX/pragma/import lines dropped), and a
+semanticTests-style `// ----` call section replaying the exact upstream inputs
+(the expected values were produced by executing solc's optimized build of each
+fixture). The wrapper is named `AGasTest` so it sorts alphabetically before
+every library: solc emits one output section per contract, ordered by name,
+and the runner reads the first one.
+
+Unlike semanticTests, this curated suite is strict: a fixture that stops
+compiling fails CI unless it is listed in
+`uniswap-v4-known-compile-failures.txt`, and a listed fixture that *starts*
+compiling also fails until the entry is removed and its gas row pinned
+(`uniswap-v4-gas-baseline.txt`). The five heaviest fixtures (FullMath,
+SqrtPriceMath, SwapMath, TickBitmap, TickMath) are in that list today: their
+unoptimized IR keeps more simultaneously-live locals than the backend's fixed
+stack layout can address, so the list doubles as a visible record of the
+optimizer frontier. CI runs the suite as the `Uniswap v4` leg of the
+`solidity-gas` matrix:
+
+```sh
+.lake/build/bin/checkSolidityGas \
+  test/uniswap-v4 \
+  test/uniswap-v4-gas-baseline.txt \
+  "$(svm which 0.8.35)" 0.8.35 \
+  --known=test/uniswap-v4-known-compile-failures.txt
+```
 
 Remove a relative fixture path from any baseline as soon as it passes. A
 local checkout can be checked with:

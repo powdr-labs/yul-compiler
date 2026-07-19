@@ -132,17 +132,22 @@ def ratio_pct(ours, solc):
     return f"{ours / solc * 100:.1f}%"
 
 
-def gas_table(out, suites):
-    out.append("| corpus | comparable | our gas | solc gas | ours/solc | regr | impr |")
-    out.append("|---|--:|--:|--:|--:|--:|--:|")
+def gas_table(out, suites, compile_stats=None):
+    """Render one gas table. `compile_stats` (suite -> compiled/eligible dict)
+    adds a coverage column for pipelines where not every contract compiles."""
+    coverage = compile_stats or {}
+    out.append("| corpus | compiled | comparable | our gas | solc gas | ours/solc | regr | impr |")
+    out.append("|---|--:|--:|--:|--:|--:|--:|--:|")
     tot_ours = tot_solc = tot_regr = tot_impr = 0
     for suite, g in sorted(suites.items()):
         tot_ours += g["ours"]; tot_solc += g["solc"]
         tot_regr += g["regressions"]; tot_impr += g["improved"]
-        out.append(f"| {suite} | {g['comparable']} | {fmt_int(g['ours'])} | "
+        c = coverage.get(suite)
+        compiled = f"{c['compiled']}/{c['eligible']}" if c else "—"
+        out.append(f"| {suite} | {compiled} | {g['comparable']} | {fmt_int(g['ours'])} | "
                    f"{fmt_int(g['solc'])} | {ratio_pct(g['ours'], g['solc'])} | "
                    f"{g['regressions']} | {g['improved']} |")
-    out.append(f"| **total** | | **{fmt_int(tot_ours)}** | **{fmt_int(tot_solc)}** | "
+    out.append(f"| **total** | | | **{fmt_int(tot_ours)}** | **{fmt_int(tot_solc)}** | "
                f"**{ratio_pct(tot_ours, tot_solc)}** | {tot_regr} | {tot_impr} |")
     return tot_regr
 
@@ -241,9 +246,11 @@ def build_comment(data, results, sha):
     if vs_opt:
         out.append("")
         out.append("**a) This compiler vs solc's optimized output** — we compile solc's "
-                   "*unoptimized* `--via-ir` Yul; solc is fully optimized (`--optimize --via-ir`).")
+                   "*unoptimized* `--via-ir` Yul; solc is fully optimized (`--optimize --via-ir`). "
+                   "The `uniswap-v4` corpus is real Uniswap v4-core library code "
+                   "(see test/uniswap-v4).")
         out.append("")
-        gas_table(out, vs_opt)
+        gas_table(out, vs_opt, data["gas_compile"])
         out.append("")
         out.append("<sub>ours/solc **> 100% is expected**: this compiler has no Yul optimizer yet, "
                    "so it spends more gas than solc's optimized output. This number is the size of "
