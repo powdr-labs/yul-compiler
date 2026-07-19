@@ -2080,6 +2080,530 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
           exact (Step.env_frame hb rfl).mono
             (fun x hx => List.mem_append.mpr (Or.inr hx))
 
+/-! ### Shape inversion of related expressions (for the backward direction) -/
+
+/-- A related expression is the substitution or the substitution-then-fold. -/
+theorem RhsRel.eq_or_fold {σ : PEnv} {e t : Expr Op} (h : RhsRel σ e t) :
+    t = substExpr σ e ∨ t = rhsExpr σ e := by
+  cases h with
+  | subst => exact Or.inl rfl
+  | fold => exact Or.inr rfl
+
+theorem foldRhs_builtin_nolits {op : Op} {args : List (Expr Op)}
+    (h : asLits args = none) : foldRhs (.builtin op args) = .builtin op args := by
+  simp only [foldRhs, h]
+
+theorem foldRhs_builtin_nofold {op : Op} {args : List (Expr Op)} {lits : List Literal}
+    (hl : asLits args = some lits) (h : pureFold op lits = none) :
+    foldRhs (.builtin op args) = .builtin op args := by
+  simp only [foldRhs, hl, h]
+
+theorem foldRhs_builtin_fold {op : Op} {args : List (Expr Op)} {lits : List Literal}
+    {l : Literal} (hl : asLits args = some lits) (h : pureFold op lits = some l) :
+    foldRhs (.builtin op args) = .lit l := by
+  simp only [foldRhs, hl, h]
+
+/-- A related expression that is a builtin call comes from the same builtin
+with substituted arguments (folding never *produces* a builtin from another
+shape). -/
+theorem RhsRel.builtin_inv {σ : PEnv} {e : Expr Op} {op : Op} {es' : List (Expr Op)}
+    (h : RhsRel σ e (.builtin op es')) :
+    ∃ args, e = .builtin op args ∧ es' = substArgs σ args := by
+  rcases h.eq_or_fold with ht | ht
+  · cases e with
+    | lit l => rw [substExpr] at ht; cases ht
+    | var x =>
+        rw [substExpr] at ht
+        cases hlook : lookupEnv σ x with
+        | none => rw [hlook] at ht; cases ht
+        | some r => rw [hlook] at ht; cases r <;> simp [PRhs.toExpr] at ht
+    | builtin op0 args =>
+        rw [substExpr] at ht
+        injection ht with h1 h2
+        exact ⟨args, by rw [h1], h2⟩
+    | call f args => rw [substExpr] at ht; cases ht
+  · cases e with
+    | lit l => rw [rhsExpr] at ht; simp only [substExpr, foldRhs_lit] at ht; cases ht
+    | var x =>
+        rw [rhsExpr, foldRhs_substVar] at ht
+        rw [substExpr] at ht
+        cases hlook : lookupEnv σ x with
+        | none => rw [hlook] at ht; cases ht
+        | some r => rw [hlook] at ht; cases r <;> simp [PRhs.toExpr] at ht
+    | builtin op0 args =>
+        rw [rhsExpr, substExpr] at ht
+        cases hlits : asLits (substArgs σ args) with
+        | none =>
+            rw [foldRhs_builtin_nolits hlits] at ht
+            injection ht with h1 h2
+            exact ⟨args, by rw [h1], h2⟩
+        | some lits =>
+            cases hfold : pureFold op0 lits with
+            | none =>
+                rw [foldRhs_builtin_nofold hlits hfold] at ht
+                injection ht with h1 h2
+                exact ⟨args, by rw [h1], h2⟩
+            | some l =>
+                rw [foldRhs_builtin_fold hlits hfold] at ht
+                cases ht
+    | call f args => rw [rhsExpr, substExpr, foldRhs_call] at ht; cases ht
+
+/-- A related expression that is a user call comes from the same call with
+substituted arguments. -/
+theorem RhsRel.call_inv {σ : PEnv} {e : Expr Op} {f : Ident} {es' : List (Expr Op)}
+    (h : RhsRel σ e (.call f es')) :
+    ∃ args, e = .call f args ∧ es' = substArgs σ args := by
+  rcases h.eq_or_fold with ht | ht
+  · cases e with
+    | lit l => rw [substExpr] at ht; cases ht
+    | var x =>
+        rw [substExpr] at ht
+        cases hlook : lookupEnv σ x with
+        | none => rw [hlook] at ht; cases ht
+        | some r => rw [hlook] at ht; cases r <;> simp [PRhs.toExpr] at ht
+    | builtin op0 args => rw [substExpr] at ht; cases ht
+    | call f0 args =>
+        rw [substExpr] at ht
+        injection ht with h1 h2
+        exact ⟨args, by rw [h1], h2⟩
+  · cases e with
+    | lit l => rw [rhsExpr] at ht; simp only [substExpr, foldRhs_lit] at ht; cases ht
+    | var x =>
+        rw [rhsExpr, foldRhs_substVar] at ht
+        rw [substExpr] at ht
+        cases hlook : lookupEnv σ x with
+        | none => rw [hlook] at ht; cases ht
+        | some r => rw [hlook] at ht; cases r <;> simp [PRhs.toExpr] at ht
+    | builtin op0 args =>
+        rw [rhsExpr, substExpr] at ht
+        cases hlits : asLits (substArgs σ args) with
+        | none => rw [foldRhs_builtin_nolits hlits] at ht; cases ht
+        | some lits =>
+            cases hfold : pureFold op0 lits with
+            | none => rw [foldRhs_builtin_nofold hlits hfold] at ht; cases ht
+            | some l => rw [foldRhs_builtin_fold hlits hfold] at ht; cases ht
+    | call f0 args =>
+        rw [rhsExpr, substExpr, foldRhs_call] at ht
+        injection ht with h1 h2
+        exact ⟨args, by rw [h1], h2⟩
+
+/-- A related expression that is a variable read comes from a variable read
+whose substitution it is. -/
+theorem RhsRel.var_inv {σ : PEnv} {e : Expr Op} {y : Ident}
+    (h : RhsRel σ e (.var y)) :
+    ∃ x, e = .var x ∧ substExpr σ (.var x) = .var y := by
+  rcases h.eq_or_fold with ht | ht
+  · cases e with
+    | lit l => rw [substExpr] at ht; cases ht
+    | var x => exact ⟨x, rfl, ht.symm⟩
+    | builtin op0 args => rw [substExpr] at ht; cases ht
+    | call f args => rw [substExpr] at ht; cases ht
+  · cases e with
+    | lit l => rw [rhsExpr] at ht; simp only [substExpr, foldRhs_lit] at ht; cases ht
+    | var x =>
+        rw [rhsExpr, foldRhs_substVar] at ht
+        exact ⟨x, rfl, ht.symm⟩
+    | builtin op0 args =>
+        rw [rhsExpr, substExpr] at ht
+        cases hlits : asLits (substArgs σ args) with
+        | none => rw [foldRhs_builtin_nolits hlits] at ht; cases ht
+        | some lits =>
+            cases hfold : pureFold op0 lits with
+            | none => rw [foldRhs_builtin_nofold hlits hfold] at ht; cases ht
+            | some l => rw [foldRhs_builtin_fold hlits hfold] at ht; cases ht
+    | call f args => rw [rhsExpr, substExpr, foldRhs_call] at ht; cases ht
+
+/-- A related expression that is a literal: the same literal, a substituted
+tracked read, or a folded all-literal builtin. -/
+theorem RhsRel.lit_inv {σ : PEnv} {e : Expr Op} {l : Literal}
+    (h : RhsRel σ e (.lit l)) :
+    e = .lit l ∨
+    (∃ x, e = .var x ∧ substExpr σ (.var x) = .lit l) ∨
+    (∃ op args lits w, e = .builtin op args ∧
+      asLits (substArgs σ args) = some lits ∧
+      pureFn op (lits.map litValue) = some w ∧ l = .number w.toNat) := by
+  rcases h.eq_or_fold with ht | ht
+  · cases e with
+    | lit l0 =>
+        rw [substExpr] at ht
+        injection ht with h1
+        exact Or.inl (by rw [h1])
+    | var x => exact Or.inr (Or.inl ⟨x, rfl, ht.symm⟩)
+    | builtin op0 args => rw [substExpr] at ht; cases ht
+    | call f args => rw [substExpr] at ht; cases ht
+  · cases e with
+    | lit l0 =>
+        rw [rhsExpr] at ht
+        simp only [substExpr, foldRhs_lit] at ht
+        injection ht with h1
+        exact Or.inl (by rw [h1])
+    | var x =>
+        rw [rhsExpr, foldRhs_substVar] at ht
+        exact Or.inr (Or.inl ⟨x, rfl, ht.symm⟩)
+    | builtin op0 args =>
+        rw [rhsExpr, substExpr] at ht
+        cases hlits : asLits (substArgs σ args) with
+        | none => rw [foldRhs_builtin_nolits hlits] at ht; cases ht
+        | some lits =>
+            cases hfold : pureFold op0 lits with
+            | none => rw [foldRhs_builtin_nofold hlits hfold] at ht; cases ht
+            | some l0 =>
+                rw [foldRhs_builtin_fold hlits hfold] at ht
+                injection ht with h1
+                subst h1
+                rw [pureFold, Option.map_eq_some_iff] at hfold
+                obtain ⟨w, hw, rfl⟩ := hfold
+                exact Or.inr (Or.inr ⟨op0, args, lits, w, rfl, hlits, hw, rfl⟩)
+    | call f args => rw [rhsExpr, substExpr, foldRhs_call] at ht; cases ht
+
+/-- Inversion of an argument-list relation target. -/
+theorem PropRel.args_inv {σ σ' : PEnv} {pc : PCode Op} {es' : List (Expr Op)}
+    (h : PropRel σ σ' pc (.args es')) :
+    ∃ es, pc = .args es ∧ σ' = σ ∧ es' = substArgs σ es := by
+  cases h with
+  | args => exact ⟨_, rfl, rfl, rfl⟩
+
+/-- **Backward simulation.** A derivation of the propagated program transports
+back to a derivation of the source with the same result. Together with
+`prop_fwd` this closes the pointwise iff. -/
+theorem prop_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code' : Code Op} {res : Res D} (h : Step D funs₂ V st code' res) :
+    ∀ {funs₁ : FunEnv D} {σ σ' : PEnv} {pc : PCode Op},
+      PFunsRel funs₁ funs₂ → PropRel σ σ' pc (toPCode code') → Compat V σ →
+      Step D funs₁ V st (ofPCode pc) res := by
+  induction h with
+  | @lit funs V st l =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          rcases hrhs.lit_inv with rfl | ⟨x, rfl, hsub⟩ |
+            ⟨op, args, lits, w, rfl, hlits, hw, rfl⟩
+          · exact Step.lit
+          · refine substVar_eval_bwd hc ?_
+            rw [hsub]
+            exact Step.lit
+          · show Step D funs₁ V st (.expr (.builtin op args)) _
+            have hargs : Step D funs₁ V st (.args args)
+                (.eres (.vals (lits.map litValue) st)) :=
+              substArgs_lits_eval hc funs₁ st (asLits_map hlits)
+            have hstep := Step.builtinOk hargs
+              (pureFn_builtin (calls := calls) (creates := creates) hw st)
+            have hlv : litValue (.number w.toNat) = w := litValue_number_toNat w
+            rw [← hlv] at hstep
+            exact hstep
+  | @var funs V st x0 v hv =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          obtain ⟨x, rfl, hsub⟩ := hrhs.var_inv
+          refine substVar_eval_bwd hc ?_
+          rw [hsub]
+          exact Step.var hv
+  | @builtinOk funs V st op args' argvals st1 rets st2 ha hb iha =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          obtain ⟨args, rfl, rfl⟩ := hrhs.builtin_inv
+          exact Step.builtinOk (iha hR (PropRel.args) hc) hb
+  | @builtinHalt funs V st op args' argvals st1 st2 ha hb iha =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          obtain ⟨args, rfl, rfl⟩ := hrhs.builtin_inv
+          exact Step.builtinHalt (iha hR (PropRel.args) hc) hb
+  | @builtinArgsHalt funs V st op args' st1 ha iha =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          obtain ⟨args, rfl, rfl⟩ := hrhs.builtin_inv
+          exact Step.builtinArgsHalt (iha hR (PropRel.args) hc)
+  | @callOk funs V st fn args' argvals st1 decl' cenv' Vend st2 o
+      ha hl hlen hbody ho iha ihbody =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          obtain ⟨args, rfl, rfl⟩ := hrhs.call_inv
+          obtain ⟨decl, cenv, hl0, hpar, hret, ⟨σb, hbodyRel⟩, hRc⟩ :=
+            lookupFun_pFunsRel_bwd hR hl
+          have hargs := iha hR (PropRel.args) hc
+          have hbody0 : Step D cenv (decl.params.zip argvals ++ bindZeros D decl.rets) st1
+              (.stmt (.block decl.body)) (.sres Vend st2 o) := by
+            have hib := ihbody hRc (PropRel.blockS hbodyRel) (Compat.nil _)
+            rw [hpar, hret] at hib
+            exact hib
+          have hlen0 : argvals.length = decl.params.length := by
+            rw [← hpar]; exact hlen
+          have hres := Step.callOk hargs hl0 hlen0 hbody0 ho
+          rw [← hret] at hres
+          exact hres
+  | @callHalt funs V st fn args' argvals st1 decl' cenv' Vend st2
+      ha hl hlen hbody iha ihbody =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          obtain ⟨args, rfl, rfl⟩ := hrhs.call_inv
+          obtain ⟨decl, cenv, hl0, hpar, hret, ⟨σb, hbodyRel⟩, hRc⟩ :=
+            lookupFun_pFunsRel_bwd hR hl
+          have hargs := iha hR (PropRel.args) hc
+          have hbody0 : Step D cenv (decl.params.zip argvals ++ bindZeros D decl.rets) st1
+              (.stmt (.block decl.body)) (.sres Vend st2 .halt) := by
+            have hib := ihbody hRc (PropRel.blockS hbodyRel) (Compat.nil _)
+            rw [hpar, hret] at hib
+            exact hib
+          have hlen0 : argvals.length = decl.params.length := by
+            rw [← hpar]; exact hlen
+          exact Step.callHalt hargs hl0 hlen0 hbody0
+  | @callArgsHalt funs V st fn args' st1 ha iha =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | expr hrhs =>
+          obtain ⟨args, rfl, rfl⟩ := hrhs.call_inv
+          exact Step.callArgsHalt (iha hR (PropRel.args) hc)
+  | @argsNil funs V st =>
+      intro funs₁ σ σ' pc hR hrel hc
+      obtain ⟨es, rfl, rfl, heq⟩ := hrel.args_inv
+      cases es with
+      | nil => exact Step.argsNil
+      | cons e0 rest0 => rw [substArgs] at heq; cases heq
+  | @argsCons funs V st e' rest' restvals st1 v st2 hrest he ihrest ihe =>
+      intro funs₁ σ σ' pc hR hrel hc
+      obtain ⟨es, rfl, rfl, heq⟩ := hrel.args_inv
+      cases es with
+      | nil => rw [substArgs] at heq; cases heq
+      | cons e0 rest0 =>
+          rw [substArgs] at heq
+          injection heq with h1 h2
+          subst h1; subst h2
+          exact Step.argsCons (ihrest hR (PropRel.args) hc)
+            (ihe hR (PropRel.expr .subst) hc)
+  | @argsRestHalt funs V st e' rest' st1 hrest ihrest =>
+      intro funs₁ σ σ' pc hR hrel hc
+      obtain ⟨es, rfl, rfl, heq⟩ := hrel.args_inv
+      cases es with
+      | nil => rw [substArgs] at heq; cases heq
+      | cons e0 rest0 =>
+          rw [substArgs] at heq
+          injection heq with h1 h2
+          subst h1; subst h2
+          exact Step.argsRestHalt (ihrest hR (PropRel.args) hc)
+  | @argsHeadHalt funs V st e' rest' restvals st1 st2 hrest he ihrest ihe =>
+      intro funs₁ σ σ' pc hR hrel hc
+      obtain ⟨es, rfl, rfl, heq⟩ := hrel.args_inv
+      cases es with
+      | nil => rw [substArgs] at heq; cases heq
+      | cons e0 rest0 =>
+          rw [substArgs] at heq
+          injection heq with h1 h2
+          subst h1; subst h2
+          exact Step.argsHeadHalt (ihrest hR (PropRel.args) hc)
+            (ihe hR (PropRel.expr .subst) hc)
+  | @funDef funs V st n ps rs b' =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | funDefS hbody => exact Step.funDef
+  | @block funs V st body' Vb stb o hb ihb =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | blockS hbodyRel =>
+          exact Step.block (ihb
+            (List.Forall₂.cons (hbodyRel.hoist_scopeRel rfl rfl) hR) hbodyRel hc)
+  | @letZero funs V st vars =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | letNoneS henv => exact Step.letZero
+  | @letVal funs V st vars rhs' vals st1 he hlen ihe =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | letSomeS hrhs henv =>
+          exact Step.letVal (ihe hR (PropRel.expr hrhs) hc) hlen
+  | @letHalt funs V st vars rhs' st1 he ihe =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | letSomeS hrhs henv =>
+          exact Step.letHalt (ihe hR (PropRel.expr hrhs) hc)
+  | @assignVal funs V st vars rhs' vals st1 he hlen ihe =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | assignS hrhs henv =>
+          exact Step.assignVal (ihe hR (PropRel.expr hrhs) hc) hlen
+  | @assignHalt funs V st vars rhs' st1 he ihe =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | assignS hrhs henv =>
+          exact Step.assignHalt (ihe hR (PropRel.expr hrhs) hc)
+  | @exprStmt funs V st e' st1 he ihe =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | exprStmtS => exact Step.exprStmt (ihe hR (PropRel.expr .subst) hc)
+  | @exprStmtHalt funs V st e' st1 he ihe =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | exprStmtS => exact Step.exprStmtHalt (ihe hR (PropRel.expr .subst) hc)
+  | @ifTrue funs V st c0 body' cv st1 V2 st2 o hcv hnz hb ihc ihb =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | condS hbodyRel =>
+          exact Step.ifTrue (ihc hR (PropRel.expr .subst) hc) hnz
+            (ihb hR (PropRel.blockS hbodyRel) hc)
+  | @ifFalse funs V st c0 body' cv st1 hcv hz ihc =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | condS hbodyRel =>
+          exact Step.ifFalse (ihc hR (PropRel.expr .subst) hc) hz
+  | @ifHalt funs V st c0 body' st1 hcv ihc =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | condS hbodyRel =>
+          exact Step.ifHalt (ihc hR (PropRel.expr .subst) hc)
+  | @switchExec funs V st c0 cases' dflt' cv st1 V2 st2 o hcv hb ihc ihb =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | switchS hcases hdflt =>
+          obtain ⟨σsel, hsel⟩ := hcases.selectRel hdflt cv
+          exact Step.switchExec (ihc hR (PropRel.expr .subst) hc)
+            (ihb hR (PropRel.blockS hsel) hc)
+  | @switchHalt funs V st c0 cases' dflt' st1 hcv ihc =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | switchS hcases hdflt =>
+          exact Step.switchHalt (ihc hR (PropRel.expr .subst) hc)
+  | @forLoop funs V st init' c0 post' body' Vinit stinit Vend stend o
+      hinit hloop ihinit ihloop =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | forS hinitRel hσL hpostRel hbodyRel =>
+          subst hσL
+          have hRi := List.Forall₂.cons (hinitRel.hoist_scopeRel rfl rfl) hR
+          have hinit0 := ihinit hRi hinitRel hc
+          have hcomp := (prop_fwd hinit0 hRi hinitRel hc).2 Vinit stinit .normal rfl rfl
+          exact Step.forLoop hinit0 (ihloop hRi
+            (PropRel.loopL (prune_idem _ _) hpostRel hbodyRel) (hcomp.restrict _))
+  | @forInitHalt funs V st init' c0 post' body' Vinit stinit hinit ihinit =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | forS hinitRel hσL hpostRel hbodyRel =>
+          have hRi := List.Forall₂.cons (hinitRel.hoist_scopeRel rfl rfl) hR
+          exact Step.forInitHalt (ihinit hRi hinitRel hc)
+  | «break» =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | breakS => exact Step.break
+  | «continue» =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | continueS => exact Step.continue
+  | leave =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | leaveS => exact Step.leave
+  | seqNil =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | nilSS => exact Step.seqNil
+  | @seqCons funs V st s' rest' V1 st1 V2 st2 o hs hrest ihs ihrest =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | consSS hsRel hrestRel =>
+          have hs0 := ihs hR hsRel hc
+          have hcomp1 := (prop_fwd hs0 hR hsRel hc).2 V1 st1 .normal rfl rfl
+          exact Step.seqCons hs0 (ihrest hR hrestRel hcomp1)
+  | @seqStop funs V st s' rest' V1 st1 o hs hne ihs =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | consSS hsRel hrestRel =>
+          exact Step.seqStop (ihs hR hsRel hc) hne
+  | @loopDone funs V st c0 post' body' cv st1 hcv hz ihc =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          exact Step.loopDone (ihc hR (PropRel.expr .subst) hc) hz
+  | @loopCondHalt funs V st c0 post' body' st1 hcv ihc =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          exact Step.loopCondHalt (ihc hR (PropRel.expr .subst) hc)
+  | @loopStep funs V st c0 post' body' cv st1 Vb stb ob Vp stp Vend stend o
+      hcv hnz hb hob hp hloop ihc ihb ihp ihloop =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          have hcond := ihc hR (PropRel.expr .subst) hc
+          have hb0 := ihb hR (PropRel.blockS hbodyRel) hc
+          have hcompVb : Compat Vb σ := by
+            refine Compat.of_frame_stable hstable hc ?_
+            exact (Step.env_frame hb0 rfl).mono
+              (fun x hx => List.mem_append.mpr (Or.inr hx))
+          have hp0 := ihp hR (PropRel.blockS hpostRel) hcompVb
+          have hcompVp : Compat Vp σ := by
+            refine Compat.of_frame_stable hstable hcompVb ?_
+            exact (Step.env_frame hp0 rfl).mono
+              (fun x hx => List.mem_append.mpr (Or.inl hx))
+          exact Step.loopStep hcond hnz hb0 hob hp0
+            (ihloop hR (PropRel.loopL hstable hpostRel hbodyRel) hcompVp)
+  | @loopPostHalt funs V st c0 post' body' cv st1 Vb stb ob Vp stp
+      hcv hnz hb hob hp ihc ihb ihp =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          have hcond := ihc hR (PropRel.expr .subst) hc
+          have hb0 := ihb hR (PropRel.blockS hbodyRel) hc
+          have hcompVb : Compat Vb σ := by
+            refine Compat.of_frame_stable hstable hc ?_
+            exact (Step.env_frame hb0 rfl).mono
+              (fun x hx => List.mem_append.mpr (Or.inr hx))
+          exact Step.loopPostHalt hcond hnz hb0 hob
+            (ihp hR (PropRel.blockS hpostRel) hcompVb)
+  | @loopBreak funs V st c0 post' body' cv st1 Vb stb hcv hnz hb ihc ihb =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          exact Step.loopBreak (ihc hR (PropRel.expr .subst) hc) hnz
+            (ihb hR (PropRel.blockS hbodyRel) hc)
+  | @loopLeave funs V st c0 post' body' cv st1 Vb stb hcv hnz hb ihc ihb =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          exact Step.loopLeave (ihc hR (PropRel.expr .subst) hc) hnz
+            (ihb hR (PropRel.blockS hbodyRel) hc)
+  | @loopBodyHalt funs V st c0 post' body' cv st1 Vb stb hcv hnz hb ihc ihb =>
+      intro funs₁ σ σ' pc hR hrel hc
+      cases hrel with
+      | loopL hstable hpostRel hbodyRel =>
+          exact Step.loopBodyHalt (ihc hR (PropRel.expr .subst) hc) hnz
+            (ihb hR (PropRel.blockS hbodyRel) hc)
+
+/-! ### The pass -/
+
+/-- Related blocks are semantically equivalent: the two simulations, packaged
+through the hoisted-scope extension of `PFunsRel`. -/
+theorem PropRel.equivBlock {σ' : PEnv} {b b' : Block Op}
+    (hrel : PropRel [] σ' (.stmts b) (.stmts b')) :
+    EquivBlock D b b' := by
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    cases h with
+    | block hb =>
+        refine Step.block ?_
+        exact (prop_fwd hb (List.Forall₂.cons (hrel.hoist_scopeRel rfl rfl)
+          (PFunsRel.refl funs)) hrel (Compat.nil V)).1
+  · intro h
+    cases h with
+    | block hb =>
+        refine Step.block ?_
+        exact prop_bwd hb (List.Forall₂.cons (hrel.hoist_scopeRel rfl rfl)
+          (PFunsRel.refl funs)) hrel (Compat.nil V)
+
+/-- The **Propagate pass**: constant + copy propagation with binding-preserving
+substitution, assignment refresh, zero-init tracking, and rhs folding — bundled
+with its soundness proof. -/
+def propagate : Pass D where
+  run := propagateBlock
+  sound := fun b => PropRel.equivBlock (propStmts_rel [] b)
+
+@[simp] theorem propagate_run (b : Block Op) :
+    (propagate (calls := calls) (creates := creates)).run b = (propStmts [] b).1 := rfl
+
 /-! ### Regression examples (checked at build time) -/
 
 -- Constant propagation feeds folding: `let a := 1  let b := add(a, 1)` chains.
