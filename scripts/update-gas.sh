@@ -68,7 +68,15 @@ echo "==> Re-measuring Solidity semanticTests (compilable subset, lenient)"
   test/solidity-semantic-gas-baseline.txt \
   "$solc_path" "$SOLC_VERSION" --lenient --update
 
+echo "==> Re-measuring Uniswap v4-core fixtures (in-repo, strict + known failures)"
+.lake/build/bin/checkSolidityGas \
+  test/uniswap-v4 \
+  test/uniswap-v4-gas-baseline.txt \
+  "$solc_path" "$SOLC_VERSION" \
+  --known=test/uniswap-v4-known-compile-failures.txt --update
+
 echo
 echo "==> Done. Review the diff — this is the review artifact:"
 git --no-pager diff --stat -- 'test/solidity-yul-*-gas-baseline.txt' \
-  test/solidity-gas-baseline.txt test/solidity-semantic-gas-baseline.txt
+  test/solidity-gas-baseline.txt test/solidity-semantic-gas-baseline.txt \
+  test/uniswap-v4-gas-baseline.txt
