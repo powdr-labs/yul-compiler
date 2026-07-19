@@ -7,7 +7,7 @@ data.yul	0	0
 dataoffset_self.yul	27236	27224
 datasize_data.yul	47136	47130
 function_series.yul	44504	44330
-identical_subobjects_creation_deployed.yul	27854	27734
+identical_subobjects_creation_deployed.yul	27836	27734
 identical_subobjects_full_debug_info.yul	93436	93190
 identical_subobjects_no_debug_info.yul	93436	93190
 identical_subobjects_partial_debug_info.yul	93436	93190
