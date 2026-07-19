@@ -177,10 +177,27 @@ def rhsExpr (σ : PEnv) (e : Expr Op) : Expr Op := foldRhs (substExpr σ e)
 
 /-! ### The transform -/
 
+/-- Production classification: number literals only. Copy entries (`y ↦ x`)
+are *proven* sound (the relation and simulations cover them) but deliberately
+not created by the production transform: substituting a copy replaces a read
+of a recently bound (stack-shallow) variable with a read of an older (deeper)
+one, and the backend's variable reads are `DUP`s hard-limited at depth 16 —
+real solc dispatchers stop compiling. Constant entries can only relieve depth
+(a literal is a `PUSH`). -/
+def classifyProd : Expr Op → Option PRhs
+  | .lit (.number n) => some (.lit n)
+  | _ => none
+
+/-- Production classification refines the relation's classification. -/
+theorem classifyProd_sub {e : Expr Op} {r : PRhs} (h : classifyProd e = some r) :
+    classify e = some r := by
+  unfold classifyProd at h
+  split at h <;> simp_all [classify]
+
 /-- The tracked environment after `let xs := rhs'`: prune the shadowed names,
 then track a singleton whose rewritten rhs is classifiable. -/
 def letEnv (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) : PEnv :=
-  match xs, classify rhs' with
+  match xs, classifyProd rhs' with
   | [x], some r => (x, r) :: prune σ [x]
   | _, _ => prune σ xs
 
@@ -195,7 +212,7 @@ def letZeroEnv (σ : PEnv) (xs : List Ident) : PEnv :=
 assignment to an *already-tracked* variable (hence provably bound) with a
 classifiable rhs *refreshes* the entry. -/
 def assignEnv (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) : PEnv :=
-  match xs, classify rhs' with
+  match xs, classifyProd rhs' with
   | [x], some r =>
       if (lookupEnv σ x).isSome then (x, r) :: prune σ [x] else prune σ xs
   | _, _ => prune σ xs
@@ -376,7 +393,7 @@ theorem letEnv_rel (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) :
     LetEnvRel σ xs rhs' (letEnv σ xs rhs') := by
   unfold letEnv
   split
-  · next x r hcl => exact .create rfl hcl
+  · next x r hcl => exact .create rfl (classifyProd_sub hcl)
   · exact .skip
 
 /-- `letZeroEnv` is a valid `LetZeroEnvRel` choice. -/
@@ -394,7 +411,7 @@ theorem assignEnv_rel (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) :
   split
   · next x r hcl =>
       split
-      · next hb => exact .refresh rfl hb hcl
+      · next hb => exact .refresh rfl hb (classifyProd_sub hcl)
       · exact .skip
   · exact .skip
 
@@ -2613,11 +2630,19 @@ example : (propStmts [] [.letDecl ["a"] (some (.lit (.number 1))),
   = [.letDecl ["a"] (some (.lit (.number 1))),
      .letDecl ["b"] (some (.lit (.number 2))),
      .exprStmt (.builtin .sstore [.lit (.number 0), .lit (.number 2)])] := rfl
--- Copy propagation: `let y := x` uses become `x`.
+-- Copy entries are proven sound but not created in production (DUP16 depth):
+-- a bare copy stays untouched...
 example : (propStmts [] [.letDecl ["y"] (some (.var "x")),
     .exprStmt (.builtin .sstore [.lit (.number 0), .var "y"])]).1
   = [.letDecl ["y"] (some (.var "x")),
-     .exprStmt (.builtin .sstore [.lit (.number 0), .var "x"])] := rfl
+     .exprStmt (.builtin .sstore [.lit (.number 0), .var "y"])] := rfl
+-- ...but copy chains still collapse through tracked literals (depth-safe).
+example : (propStmts [] [.letDecl ["x"] (some (.lit (.number 7))),
+    .letDecl ["y"] (some (.var "x")),
+    .exprStmt (.builtin .sstore [.lit (.number 0), .var "y"])]).1
+  = [.letDecl ["x"] (some (.lit (.number 7))),
+     .letDecl ["y"] (some (.lit (.number 7))),
+     .exprStmt (.builtin .sstore [.lit (.number 0), .lit (.number 7)])] := rfl
 -- Assignment refresh: reassigned literals are tracked (`multi_reassign`).
 example : (propStmts [] [.letDecl ["a"] (some (.lit (.number 1))),
     .assign ["a"] (.lit (.number 2)),
