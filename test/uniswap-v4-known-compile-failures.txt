@@ -1,0 +1,12 @@
+# Uniswap v4-core fixtures this compiler currently rejects, all for the same
+# reason: their unoptimized solc IR keeps more simultaneously-live Yul locals
+# than the backend's fixed stack layout can address (dup/swap reach), and the
+# current optimizer pipeline does not yet eliminate enough bindings. They are
+# kept in the suite on purpose: when the optimizer learns to shrink them below
+# the limit they start compiling, this list goes stale, and CI asks for the
+# entry's removal plus a pinned gas row — making optimizer progress visible.
+FullMath.sol
+SqrtPriceMath.sol
+SwapMath.sol
+TickBitmap.sol
+TickMath.sol

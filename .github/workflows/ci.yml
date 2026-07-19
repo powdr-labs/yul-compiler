@@ -369,6 +369,14 @@ jobs:
             kind: gasTests
             shard_index: 0
             shard_count: 1
+          # Curated Uniswap v4-core fixtures checked into this repo
+          # (test/uniswap-v4): real production DeFi code, strict against a
+          # known-compile-failures list that records which fixtures still sit
+          # beyond the compiler's supported fragment.
+          - name: Uniswap v4
+            kind: uniswap
+            shard_index: 0
+            shard_count: 1
           # semanticTests: the large real-world corpus, lenient, sharded across
           # legs; each leg runs its shard across all cores (TEST_JOBS).
           - name: semanticTests 1/3
@@ -420,6 +428,7 @@ jobs:
           echo "SOLC_PATH=$solc_path" >> "$GITHUB_ENV"
 
       - name: Fetch Solidity gas corpora
+        if: ${{ matrix.kind != 'uniswap' }}
         run: |
           git clone --depth 1 --filter=blob:none --sparse --branch develop \
             https://github.com/argotorg/solidity.git /tmp/solidity
@@ -432,7 +441,9 @@ jobs:
       # Compile each contract through solc's --via-ir pipeline and gas-compare the
       # optimized runtime against solc's; fails if a contract stops compiling or
       # its gas rises above the pin. gasTests is strict; semanticTests is lenient
-      # (real-world corpus with many unsupported features) and sharded.
+      # (real-world corpus with many unsupported features) and sharded; the
+      # Uniswap v4-core fixtures live in this repo and are strict against a
+      # known-compile-failures list (see test/README.md).
       - name: Compile and gas-check Solidity contracts
         run: |
           set -o pipefail
@@ -444,6 +455,12 @@ jobs:
               /tmp/solidity/test/libsolidity/gasTests \
               test/solidity-gas-baseline.txt \
               "$SOLC_PATH" "$SOLC_VERSION" 2>&1 | tee -a "$f"
+          elif [[ "${{ matrix.kind }}" == "uniswap" ]]; then
+            .lake/build/bin/checkSolidityGas \
+              test/uniswap-v4 \
+              test/uniswap-v4-gas-baseline.txt \
+              "$SOLC_PATH" "$SOLC_VERSION" \
+              --known=test/uniswap-v4-known-compile-failures.txt 2>&1 | tee -a "$f"
           else
             .lake/build/bin/checkSolidityGas \
               /tmp/solidity/test/libsolidity/semanticTests \
