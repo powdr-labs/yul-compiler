@@ -29,7 +29,6 @@ loopInvariantCodeMotion/move_memory_function.yul
 loopInvariantCodeMotion/move_state_function.yul
 loopInvariantCodeMotion/no_move_gas.yul
 loopInvariantCodeMotion/no_move_recursive_function.yul
-loopInvariantCodeMotion/no_move_state.yul
 loopInvariantCodeMotion/no_move_state_recursive_function.yul
 stackLimitEvader/cycle.yul
 stackLimitEvader/cycle_after.yul

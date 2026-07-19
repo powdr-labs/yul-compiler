@@ -347,6 +347,7 @@ loopInvariantCodeMotion/create_sload.yul	1754034	1732656
 loopInvariantCodeMotion/move_storage_function.yul	27744	2370
 loopInvariantCodeMotion/no_move_immovables.yul	444	138
 loopInvariantCodeMotion/no_move_memory.yul	618	630
+loopInvariantCodeMotion/no_move_state.yul	599841178	599959551
 loopInvariantCodeMotion/no_move_state_function.yul	86192	45926
 loopInvariantCodeMotion/no_move_storage_function.yul	55586	36800
 loopInvariantCodeMotion/no_move_transient_storage.yul	1190928	1190172
