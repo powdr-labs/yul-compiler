@@ -1,11 +1,9 @@
 import YulEvmCompiler.Optimizer.Implementation.InlineHelpersResolve
 import YulEvmCompiler.Optimizer.Implementation.PropagateResolve
 import YulEvmCompiler.Optimizer.Implementation.DeadLitsResolve
-import YulEvmCompiler.Optimizer.Implementation.InlineCallsSound
+import YulEvmCompiler.Optimizer.Implementation.InlineCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
--- TODO(inline-calls): restore `set_option warningAsError true` once the
--- InlineCalls resolution congruence replaces the measurement-phase `sorry`.
-set_option warningAsError false
+set_option warningAsError true
 /-!
 # Production optimizer pipeline
 
@@ -105,7 +103,7 @@ def objectRound : List (RPass calls creates) :=
    ⟨propagate, fun L b => by
       have hp := resolvePropagateBlock_equiv (calls := calls) (creates := creates) L b
       simpa [propagateBlock] using hp⟩,
-   ⟨inlineCalls, fun L b => sorry⟩,
+   ⟨inlineCalls, fun L b => resolveInlineCallsBlock_equiv L b⟩,
    ⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
    ⟨deadLits, fun L b => resolveDeadLitsBlock_equiv L b⟩]
 

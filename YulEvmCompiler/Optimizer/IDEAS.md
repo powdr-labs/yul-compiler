@@ -284,7 +284,7 @@ shrink expression stacks). Re-enabling copy entries behind a depth analysis
 use site) is a logged follow-up; any future substitution-based pass must run
 this same check.
 
-### 🚧 `InlineCalls` — statement-level inlining of call-free helpers (this branch)
+### ✅ `InlineCalls` — statement-level inlining of call-free helpers (this branch)
 
 **The dominant remaining gap is function-call protocol overhead.** The verified
 backend's call protocol costs ≈ `24 + 2·|args| + 6·|rets|` gas per call (PUSH32
@@ -332,12 +332,37 @@ weakening. Transform-only heuristics (skip rules absorb them): a size bound
 and a live-local depth guard so aggressive inlining does not push callers past
 the backend's DUP16/SWAP16 hard limit (see the known-compile-failures lists).
 
+**Results** (fully proven, no sorries, axiom gate clean; pipelines iterated
+6 rounds; transform-only guards `rets ≤ 2` and `liveMax ≤ 10` plus a
+compile-fallback in `compileSource` — optimized program first, unoptimized if
+the backend rejects it — so stack-pressure blowups cannot cost coverage):
+`semanticTests` **842 rows −3,354,775 gas, zero regressions**; `gasTests`
+12/12 rows −15,874 (e.g. `exp.sol` 3,576 → 2,640, `dispatch_large.sol`
+92,572 → 88,362); Uniswap v4 6/6 rows −4,823 (`UnsafeMath.sol` 3,900 → 2,732,
+`BitMath.sol` 6,186 → 4,754, `SafeCast.sol` 6,509 → 5,349);
+`yulOptimizerTests` ~57 rows −16k; `evmCodeTransform` 6 rows −1,668;
+`objectCompiler` 2 rows −240. All solc fingerprint columns unchanged.
+
+Proof lessons for future passes: the **`scoped_transfer` engine** (one
+induction giving funs-irrelevance + scoped weakening over an arbitrary
+appended environment + the normal/halt outcome restriction for the checked
+fragment) is reusable for any pass that relocates code between environments;
+the **backward let-form reduction** (after the zero-init runs, a `let`-site
+is exactly its assign-form site, so the backward simulation reuses the
+`siteAssign` relation one statement in — no two-level induction needed); and
+inlining bodies are inserted *unchanged* (call-free bodies contain no sites),
+so `Δ` entries always match `lookupFun` on the source side syntactically.
+
 Follow-ups logged, not in v1: bodies containing calls (needs Δ-compat across
 closures), arg substitution instead of `let p := a` copies (capture/depth),
 `InlineHelpers` litOK upgrade via a skip-rule relation (would inline
 literal-bodied expression helpers — `shr(224, v)`, address masks — on the
-object path; also unblocks chain collapse for non-uint256 cleanup types),
-`if iszero(eq(x,x)) {halt-body}` → `pop(x)` validator residue.
+object path; also unblocks chain collapse for non-uint256 cleanup types and
+would let more `validator_revert_*` chains collapse), the
+`if iszero(eq(x,x)) {halt-body}` → `pop(x)` validator residue, copy-chain
+cleanup (`let _2 := var_x; let expr := _2` residue is now the dominant
+remaining cost — copy propagation behind a depth analysis), and smarter
+guards (whole-caller live-local analysis instead of the per-callee bound).
 
 ## Candidate next ideas (not started)
 

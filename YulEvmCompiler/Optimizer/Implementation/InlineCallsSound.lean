@@ -1,8 +1,8 @@
 import YulEvmCompiler.Optimizer.Implementation.InlineCalls
 import YulEvmCompiler.Optimizer.Implementation.DeadLits
--- TODO(inline-calls): restore `set_option warningAsError true` once the
--- soundness proof replaces the measurement-phase `sorry`.
-set_option warningAsError false
+set_option warningAsError true
+set_option linter.unusedVariables false
+set_option linter.unusedSimpArgs false
 /-!
 # YulEvmCompiler.Optimizer.Implementation.InlineCallsSound
 

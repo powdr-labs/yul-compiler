@@ -1,9 +1,8 @@
 import YulEvmCompiler.Optimizer.Spec.Pass
 import YulEvmCompiler.Optimizer.Implementation.Frame
 import YulSemantics.Dialect.EVM
--- TODO(inline-calls): restore `set_option warningAsError true` once the
--- soundness proof replaces the measurement-phase `sorry`.
-set_option warningAsError false
+set_option warningAsError true
+set_option linter.unusedVariables false
 /-!
 # YulEvmCompiler.Optimizer.Implementation.InlineCalls
 
