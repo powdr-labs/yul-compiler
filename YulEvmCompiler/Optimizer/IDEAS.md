@@ -284,6 +284,61 @@ shrink expression stacks). Re-enabling copy entries behind a depth analysis
 use site) is a logged follow-up; any future substitution-based pass must run
 this same check.
 
+### 🚧 `InlineCalls` — statement-level inlining of call-free helpers (this branch)
+
+**The dominant remaining gap is function-call protocol overhead.** The verified
+backend's call protocol costs ≈ `24 + 2·|args| + 6·|rets|` gas per call (PUSH32
+ret-addr, zeroed ret slots, jumps, JUMPDEST, param pops, ret rotation, dynJump,
++11 for `leave`), and solc's unoptimized IR routes every external call through
+~15 tiny helpers (`external_fun_*` → `abi_decode_tuple_*` → `abi_decode_t_*` →
+`validator_revert_*` → `cleanup_*`, `fun_X` → `fun_Y` wrappers, `zero_value_*`,
+`revert_error_*`). Measured on the Uniswap v4 suite: `UnsafeMath.sol` ours
+780 gas/tx vs solc 154 — ~75–85 % of the gap is call protocol + copy-`let`s.
+solc's FullInliner collapses all of it; our `InlineHelpers` only inlines
+single-*expression* bodies (var-only on the object path).
+
+The pass inlines *statement-level* calls (`let xs := f(as)` / `xs := f(as)` /
+`f(as)`) to functions whose body is **call-free** (no `.call` anywhere — the
+body's execution is then independent of the function environment, killing all
+closure/scope-resolution obligations), has **no
+loops/funDefs/leave/break/continue** (`if`/`switch`/nested blocks fine; one
+trailing `leave` allowed and dropped), and is **binder-aware well-scoped**
+within `params ∪ rets` (a soundness condition, not hygiene: inlining an
+ill-scoped body converts callee stuckness into caller execution). Replacement
+(let-form): `let xs` then
+`{ let rs (zero-init); let pₙ := aₙ; …; let p₁ := a₁; { ss }; x₁ := r₁; … }` —
+the inner env is exactly `callOk`'s `params.zip argvals ++ bindZeros rets`, the
+`{ ss }` wrap mirrors the call's body-block `restore`, arg evaluation stays
+right-to-left, and per-site conditions (`(vars(as) ∪ xs) ∩ (ps ∪ rs) = ∅`,
+`vars(as) ∩ xs = ∅` for let-form, `xs.Nodup`, exact arities) rule out the
+capture/stuckness asymmetries. `for`-init sites are skipped (as in `DlRel`).
+Helper chains collapse leaf-first by iterating the pipeline (a call-free
+callee inlines this round, making its caller call-free for the next round).
+
+Soundness: PropRel-style skip-rule relation `IcRel Δ` (Δ = syntactic decl map
+from enclosing hoisted scopes; original decls, so `lookupFun funs₁ f` matches
+Δ syntactically), fwd+bwd `Step` simulations with two new semantic tools:
+`Step.funs_irrel` (call/funDef-free code ignores the function env) and
+`Step.append_frame` (scoped weakening: well-scoped code runs identically with
+an arbitrary caller env appended below — `frameAdd`'s mention-freeness cannot
+work here since the caller env is arbitrary; shadowing-aware well-scopedness
+is the right condition). Halt-in-body leaves the site's temporaries on the env
+until the enclosing block's `restore` — a prefix generalization of DeadLits'
+`ResRelAt`, confined to the `.stmts` class. Object path: `IcRel` is closed
+under layout resolution (`dataoffset`/`datasize` are *builtins* in this AST,
+so resolution never changes the call count; all classification conditions are
+resolution-invariant), giving the full pass on object code, no litOK-style
+weakening. Transform-only heuristics (skip rules absorb them): a size bound
+and a live-local depth guard so aggressive inlining does not push callers past
+the backend's DUP16/SWAP16 hard limit (see the known-compile-failures lists).
+
+Follow-ups logged, not in v1: bodies containing calls (needs Δ-compat across
+closures), arg substitution instead of `let p := a` copies (capture/depth),
+`InlineHelpers` litOK upgrade via a skip-rule relation (would inline
+literal-bodied expression helpers — `shr(224, v)`, address masks — on the
+object path; also unblocks chain collapse for non-uint256 cleanup types),
+`if iszero(eq(x,x)) {halt-body}` → `pop(x)` validator residue.
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
