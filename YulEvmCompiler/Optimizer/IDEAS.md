@@ -337,9 +337,9 @@ the backend's DUP16/SWAP16 hard limit (see the known-compile-failures lists).
 compile-fallback in `compileSource` — optimized program first, unoptimized if
 the backend rejects it — so stack-pressure blowups cannot cost coverage):
 `semanticTests` **842 rows −3,354,775 gas, zero regressions**; `gasTests`
-12/12 rows −15,874 (e.g. `exp.sol` 3,576 → 2,640, `dispatch_large.sol`
-92,572 → 88,362); Uniswap v4 6/6 rows −4,823 (`UnsafeMath.sol` 3,900 → 2,732,
-`BitMath.sol` 6,186 → 4,754, `SafeCast.sol` 6,509 → 5,349);
+12/12 rows −15,874 (e.g. `exp.sol` 3,576 → 2,700, `dispatch_large.sol`
+92,572 → 88,362); Uniswap v4 6/6 rows −4,823 (`UnsafeMath.sol` 3,900 → 2,908,
+`BitMath.sol` 6,186 → 4,902, `SafeCast.sol` 6,509 → 5,442);
 `yulOptimizerTests` ~57 rows −16k; `evmCodeTransform` 6 rows −1,668;
 `objectCompiler` 2 rows −240. All solc fingerprint columns unchanged.
 
