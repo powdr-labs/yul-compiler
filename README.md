@@ -158,8 +158,9 @@ operations are different**: their correctness is *conditional on* the
   and three of the five former Uniswap v4 stack failures while leaving bytecode
   for already-compiling programs unchanged. Programs still beyond classic
   reach are rejected; complete coverage needs spilling or active EIP-8024.
-- **Optimizer.** A verified `Simplify → InlineHelpers → Simplify` pipeline
-  runs in front of the
+- **Optimizer.** A verified six-round `Simplify → Propagate →
+  InlineHelpers → HoistCalls → FreshenCalls → InlineCalls → Simplify → DeadPure →
+  DeadResults` pipeline runs in front of the
   backend for **block-rooted** source
   programs (`compileSource`); it is a total source-to-source transformation proved
   semantics-preserving (`EquivBlock`) and composed with the backend via
@@ -168,21 +169,28 @@ operations are different**: their correctness is *conditional on* the
   pure expressions pass through an intrinsically scoped, arity-indexed ANF
   Core IR and a generic proof-carrying rule engine; unsupported built-ins and
   non-ANF expression shapes are left unchanged rather than routed through a
-  second raw-AST rewrite implementation. `InlineHelpers` inlines helpers whose
+  second raw-AST rewrite implementation. `Propagate` tracks literal and
+  depth-gated copy facts. `InlineHelpers` inlines helpers whose
   body is a single assignment of a pure Core expression over the parameters:
   an exact identity `f(e)` becomes `add(e, 0)` (the `add` preserves the call's
   one-value arity requirement; the second Simplify removes it in its proved
   variable/literal cases), and a pure built-in body is substituted into flat
   call sites by Core closed-term instantiation — recursion, effectful bodies,
-  and non-flat sites keep the verified call protocol. For
+  and non-flat sites keep the verified call protocol. `HoistCalls` normalizes
+  the common direct unary nesting `x := f(g(args))` into a fresh temporary;
+  `FreshenCalls` renames
+  result sites that would otherwise capture an inlined helper's locals;
+  `InlineCalls` then handles bounded call-free statement bodies. `DeadPure`
+  removes unused total pure expressions and storage reads, while `DeadResults`
+  removes an unused zero-initialized result together with its adjacent
+  straight-line, state-preserving computation region. For
   **object-rooted** programs (Solidity's `--via-ir` artifacts), `compileSource`
   runs the pipeline on *every* code block of the tree — deploy and runtime — via
   `Optimizer.optimizerPipelineObject` in the inliner's resolution-stable mode.
   `optimizerPipelineObject_correct` proves the emitted bytecode
   correctly simulates the **original** object's resolved execution under the
   compiler's layout (the object analogue of `optimize_then_compile_correct`),
-  bridged by the Simplify resolution congruence and strict commutation of layout
-  resolution with helper inlining.
+  bridged by a resolution congruence for every pipeline stage.
   If that artifact still fails classic stack reach, the source entry point
   retries its code blocks through `Optimizer.stackLayoutBlock`. The transform
   is itself a strong `Pass`: `StackLayoutSound.lean` proves both the

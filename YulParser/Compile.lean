@@ -131,8 +131,10 @@ apply. Hint builtins (`memoryguard`) are desugared and provably dead
 `linkersymbol` bindings are dropped before compilation.
 
 Both block- and object-rooted programs run the verified production pipeline:
-Simplify, Core helper inlining, then Simplify again.  The object path applies
-the pipeline's resolution-stable mode to every code block in the tree. -/
+simplification and propagation, bounded helper/call inlining with the
+normalization needed to expose it, then dead pure/result-region elimination.
+The object path applies the pipeline's resolution-stable mode to every code
+block in the tree. -/
 def compileSource (source : String) : Option ByteArray := do
   match parseSource source with
   | some (.block block) =>

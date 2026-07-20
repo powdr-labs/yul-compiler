@@ -11,8 +11,10 @@ right-hand sides to right-hand sides that *provably evaluate in context*:
 * variables that are **provably bound here** — function parameters/returns
   (the call rule's `callOk` environment binds exactly those) and variables
   let-declared earlier in an enclosing scope of the same frame; and
-* pure-total builtin trees over those (`pureFn`-domain ops at exact arity —
-  total, state-independent, non-halting).
+* total state-preserving builtin trees over those (`pureFn`-domain ops and
+  deterministic storage reads at exact arity).  In particular, `sload`
+  depends on the input state but returns that state unchanged, so an unused
+  read is just as removable as an unused arithmetic result.
 
 Additionally, a **self-assignment** `x := x` with `x` provably bound is
 dropped: `VEnv.set V x v = V` when `VEnv.get V x = some v`, so removal
@@ -80,6 +82,19 @@ theorem pureTotalArity_pureFn {op : Op} {n : Nat}
       | (match vs, hlen with | [a, b], _ => exact ⟨_, rfl⟩)
       | (match vs, hlen with | [a, b, c], _ => exact ⟨_, rfl⟩)
 
+/-- Arity of the total, state-preserving expression fragment.  This extends
+`pureTotalArity` with storage reads: unlike `mload` and `keccak256`, `sload`
+does not expand active memory or otherwise change `EvmState`. -/
+def stableTotalArity : Op → Option Nat
+  | .sload => some 1
+  | op => pureTotalArity op
+
+/-- Every stable-total operation is either a `pureFn` operation or `sload`. -/
+theorem stableTotalArity_cases {op : Op} {n : Nat}
+    (h : stableTotalArity op = some n) :
+    pureTotalArity op = some n ∨ (op = .sload ∧ n = 1) := by
+  cases op <;> simp_all [stableTotalArity, pureTotalArity]
+
 mutual
 
 /-- Does the expression evaluate — to exactly one value, without touching
@@ -88,7 +103,7 @@ def alwaysEval (bound : List Ident) : Expr Op → Bool
   | .lit _ => true
   | .var x => bound.contains x
   | .builtin op args =>
-      (pureTotalArity op == some args.length) && alwaysEvalArgs bound args
+      (stableTotalArity op == some args.length) && alwaysEvalArgs bound args
   | .call _ _ => false
 
 /-- `alwaysEval` for each argument. -/
@@ -97,6 +112,266 @@ def alwaysEvalArgs (bound : List Ident) : List (Expr Op) → Bool
   | e :: rest => alwaysEval bound e && alwaysEvalArgs bound rest
 
 end
+
+/-! ### Dead result-region checker -/
+
+/-- Static context for a discardable result region. `bound` may be read;
+`owned` contains exactly the region-local bindings that may be assigned. -/
+structure DrCtx where
+  bound : List Ident
+  owned : List Ident
+
+mutual
+
+/-- Check one statement in a total, state-preserving straight-line region. -/
+def discardStmt (sink : Ident) (ctx : DrCtx) : Stmt Op → Option DrCtx
+  | .block body => do
+      let _ ← discardStmts sink ctx body
+      pure ctx
+  | .letDecl [x] none =>
+      if x == sink then none else some ⟨x :: ctx.bound, x :: ctx.owned⟩
+  | .letDecl [x] (some rhs) =>
+      if x != sink && alwaysEval ctx.bound rhs then
+        some ⟨x :: ctx.bound, x :: ctx.owned⟩
+      else none
+  | .assign [x] rhs =>
+      if ctx.owned.contains x && alwaysEval ctx.bound rhs then some ctx else none
+  | _ => none
+
+/-- Check a straight-line region, threading declarations through its sequence. -/
+def discardStmts (sink : Ident) : DrCtx → List (Stmt Op) → Option DrCtx
+  | ctx, [] => some ctx
+  | ctx, s :: rest => do
+      let ctx' ← discardStmt sink ctx s
+      discardStmts sink ctx' rest
+
+end
+
+mutual
+
+/-- Whether executing a statement can consult the Yul function environment. -/
+def stmtCallFree : Stmt Op → Bool
+  | .block body => stmtsCallFree body
+  | .funDef _ _ _ _ => true
+  | .letDecl _ none => true
+  | .letDecl _ (some e) => !exprHasCall e
+  | .assign _ e => !exprHasCall e
+  | .cond c body => !exprHasCall c && stmtsCallFree body
+  | .switch c cases dflt =>
+      !exprHasCall c && casesCallFree cases && dfltCallFree dflt
+  | .forLoop init c post body =>
+      stmtsCallFree init && !exprHasCall c && stmtsCallFree post && stmtsCallFree body
+  | .exprStmt e => !exprHasCall e
+  | .break | .continue | .leave => true
+
+def stmtsCallFree : List (Stmt Op) → Bool
+  | [] => true
+  | s :: rest => stmtCallFree s && stmtsCallFree rest
+
+def casesCallFree : List (Literal × Block Op) → Bool
+  | [] => true
+  | (_, body) :: rest => stmtsCallFree body && casesCallFree rest
+
+def dfltCallFree : Option (Block Op) → Bool
+  | none => true
+  | some body => stmtsCallFree body
+
+end
+
+/-- Per-code-class call-freedom predicate. -/
+def codeCallFree : Code Op → Bool
+  | .expr e => !exprHasCall e
+  | .args es => !argsHaveCall es
+  | .stmt s => stmtCallFree s
+  | .stmts ss => stmtsCallFree ss
+  | .loop c post body =>
+      !exprHasCall c && stmtsCallFree post && stmtsCallFree body
+
+theorem blockCodeCallFree {body : Block Op} (h : stmtsCallFree body = true) :
+    codeCallFree (.stmt (.block body)) = true := h
+
+/-- Is `let sink; { body }` a removable dead result at this point? -/
+def removableResult (bound : List Ident) (sink : Ident)
+    (body rest : List (Stmt Op)) : Bool :=
+  (discardStmts sink ⟨sink :: bound, [sink]⟩ body).isSome &&
+    !stmtsMentions sink rest && stmtsCallFree rest
+
+/-- A selected switch arm is call-free when every arm is. -/
+theorem selectSwitch_callFree {cv : U256} {cases : List (Literal × Block Op)}
+    {dflt : Option (Block Op)} (hc : casesCallFree cases = true)
+    (hd : dfltCallFree dflt = true) :
+    stmtsCallFree (selectSwitch D cv cases dflt) = true := by
+  induction cases with
+  | nil =>
+      unfold selectSwitch
+      simp only [List.find?_nil]
+      cases dflt with
+      | none => rfl
+      | some body => exact hd
+  | cons p rest ih =>
+      obtain ⟨l, body⟩ := p
+      simp only [casesCallFree, Bool.and_eq_true] at hc
+      by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+      · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
+        exact hc.1
+      · rw [selectSwitch, List.find?_cons_of_neg (by simp [hcv])]
+        have := ih hc.2
+        rwa [selectSwitch] at this
+
+/-- Call-free code is independent of the Yul function environment. -/
+theorem Step.callFree_funs {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} {res : Res D} (h : Step D funs₁ V st code res) :
+    codeCallFree code = true → ∀ funs₂, Step D funs₂ V st code res := by
+  induction h with
+  | lit => intro _ _; exact Step.lit
+  | var hv => intro _ _; exact Step.var hv
+  | builtinOk _ hbi ih =>
+      intro hcf funs₂
+      exact Step.builtinOk (ih (by simpa [codeCallFree, exprHasCall] using hcf) funs₂) hbi
+  | builtinHalt _ hbi ih =>
+      intro hcf funs₂
+      exact Step.builtinHalt (ih (by simpa [codeCallFree, exprHasCall] using hcf) funs₂) hbi
+  | builtinArgsHalt _ ih =>
+      intro hcf funs₂
+      exact Step.builtinArgsHalt (ih (by simpa [codeCallFree, exprHasCall] using hcf) funs₂)
+  | callOk | callHalt | callArgsHalt =>
+      intro hcf _
+      simp [codeCallFree, exprHasCall] at hcf
+  | argsNil => intro _ _; exact Step.argsNil
+  | argsCons _ _ ihr ihe =>
+      intro hcf funs₂
+      simp only [codeCallFree, Bool.not_eq_true', argsHaveCall,
+        Bool.or_eq_false_iff] at hcf
+      exact Step.argsCons
+        (ihr (by simp [codeCallFree, hcf.2]) funs₂)
+        (ihe (by simp [codeCallFree, hcf.1]) funs₂)
+  | argsRestHalt _ ihr =>
+      intro hcf funs₂
+      simp only [codeCallFree, Bool.not_eq_true', argsHaveCall,
+        Bool.or_eq_false_iff] at hcf
+      exact Step.argsRestHalt (ihr (by simp [codeCallFree, hcf.2]) funs₂)
+  | argsHeadHalt _ _ ihr ihe =>
+      intro hcf funs₂
+      simp only [codeCallFree, Bool.not_eq_true', argsHaveCall,
+        Bool.or_eq_false_iff] at hcf
+      exact Step.argsHeadHalt
+        (ihr (by simp [codeCallFree, hcf.2]) funs₂)
+        (ihe (by simp [codeCallFree, hcf.1]) funs₂)
+  | funDef => intro _ _; exact Step.funDef
+  | block _ ih =>
+      intro hcf funs₂
+      exact Step.block (ih (by simpa [codeCallFree, stmtCallFree] using hcf)
+        (hoist D _ :: funs₂))
+  | letZero => intro _ _; exact Step.letZero
+  | letVal _ hlen ih =>
+      intro hcf funs₂
+      exact Step.letVal (ih (by simpa [codeCallFree, stmtCallFree] using hcf) funs₂) hlen
+  | letHalt _ ih =>
+      intro hcf funs₂
+      exact Step.letHalt (ih (by simpa [codeCallFree, stmtCallFree] using hcf) funs₂)
+  | assignVal _ hlen ih =>
+      intro hcf funs₂
+      exact Step.assignVal (ih (by simpa [codeCallFree, stmtCallFree] using hcf) funs₂) hlen
+  | assignHalt _ ih =>
+      intro hcf funs₂
+      exact Step.assignHalt (ih (by simpa [codeCallFree, stmtCallFree] using hcf) funs₂)
+  | exprStmt _ ih =>
+      intro hcf funs₂
+      exact Step.exprStmt (ih (by simpa [codeCallFree, stmtCallFree] using hcf) funs₂)
+  | exprStmtHalt _ ih =>
+      intro hcf funs₂
+      exact Step.exprStmtHalt (ih (by simpa [codeCallFree, stmtCallFree] using hcf) funs₂)
+  | ifTrue _ hnz _ ihc ihb =>
+      intro hcf funs₂
+      simp only [codeCallFree, stmtCallFree, Bool.and_eq_true] at hcf
+      exact Step.ifTrue
+        (ihc (by simpa [codeCallFree] using hcf.1) funs₂) hnz
+        (ihb (by simpa [codeCallFree, stmtCallFree] using hcf.2) funs₂)
+  | ifFalse _ hz ihc =>
+      intro hcf funs₂
+      simp only [codeCallFree, stmtCallFree, Bool.and_eq_true] at hcf
+      exact Step.ifFalse (ihc (by simpa [codeCallFree] using hcf.1) funs₂) hz
+  | ifHalt _ ihc =>
+      intro hcf funs₂
+      simp only [codeCallFree, stmtCallFree, Bool.and_eq_true] at hcf
+      exact Step.ifHalt (ihc (by simpa [codeCallFree] using hcf.1) funs₂)
+  | switchExec _ _ ihc ihb =>
+      intro hcf funs₂
+      simp only [codeCallFree, stmtCallFree, Bool.and_eq_true] at hcf
+      exact Step.switchExec
+        (ihc (by simpa [codeCallFree] using hcf.1.1) funs₂)
+        (ihb (blockCodeCallFree (selectSwitch_callFree hcf.1.2 hcf.2)) funs₂)
+  | switchHalt _ ihc =>
+      intro hcf funs₂
+      simp only [codeCallFree, stmtCallFree, Bool.and_eq_true] at hcf
+      exact Step.switchHalt (ihc (by simpa [codeCallFree] using hcf.1.1) funs₂)
+  | forLoop _ _ ihinit ihloop =>
+      intro hcf funs₂
+      simp only [codeCallFree, stmtCallFree, Bool.and_eq_true] at hcf
+      exact Step.forLoop
+        (ihinit (by simpa [codeCallFree] using hcf.1.1.1) (hoist D _ :: funs₂))
+        (ihloop (by simp [codeCallFree, hcf.1.1.2, hcf.1.2, hcf.2])
+          (hoist D _ :: funs₂))
+  | forInitHalt _ ihinit =>
+      intro hcf funs₂
+      simp only [codeCallFree, stmtCallFree, Bool.and_eq_true] at hcf
+      exact Step.forInitHalt
+        (ihinit (by simpa [codeCallFree] using hcf.1.1.1) (hoist D _ :: funs₂))
+  | «break» => intro _ _; exact Step.break
+  | «continue» => intro _ _; exact Step.continue
+  | leave => intro _ _; exact Step.leave
+  | seqNil => intro _ _; exact Step.seqNil
+  | seqCons _ _ ihs ihrest =>
+      intro hcf funs₂
+      simp only [codeCallFree, stmtsCallFree, Bool.and_eq_true] at hcf
+      exact Step.seqCons
+        (ihs (by simpa [codeCallFree] using hcf.1) funs₂)
+        (ihrest (by simpa [codeCallFree] using hcf.2) funs₂)
+  | seqStop _ hne ihs =>
+      intro hcf funs₂
+      simp only [codeCallFree, stmtsCallFree, Bool.and_eq_true] at hcf
+      exact Step.seqStop (ihs (by simpa [codeCallFree] using hcf.1) funs₂) hne
+  | loopDone _ hz ihc =>
+      intro hcf funs₂
+      simp only [codeCallFree, Bool.and_eq_true] at hcf
+      exact Step.loopDone (ihc (by simpa [codeCallFree] using hcf.1.1) funs₂) hz
+  | loopCondHalt _ ihc =>
+      intro hcf funs₂
+      simp only [codeCallFree, Bool.and_eq_true] at hcf
+      exact Step.loopCondHalt (ihc (by simpa [codeCallFree] using hcf.1.1) funs₂)
+  | loopStep _ hnz _ hob _ _ ihc ihb ihp ihr =>
+      intro hcf funs₂
+      simp only [codeCallFree, Bool.and_eq_true] at hcf
+      exact Step.loopStep
+        (ihc (by simpa [codeCallFree] using hcf.1.1) funs₂) hnz
+        (ihb (blockCodeCallFree hcf.2) funs₂) hob
+        (ihp (blockCodeCallFree hcf.1.2) funs₂)
+        (ihr (by simp [codeCallFree, hcf.1.1, hcf.1.2, hcf.2]) funs₂)
+  | loopPostHalt _ hnz _ hob _ ihc ihb ihp =>
+      intro hcf funs₂
+      simp only [codeCallFree, Bool.and_eq_true] at hcf
+      exact Step.loopPostHalt
+        (ihc (by simpa [codeCallFree] using hcf.1.1) funs₂) hnz
+        (ihb (blockCodeCallFree hcf.2) funs₂) hob
+        (ihp (blockCodeCallFree hcf.1.2) funs₂)
+  | loopBreak _ hnz _ ihc ihb =>
+      intro hcf funs₂
+      simp only [codeCallFree, Bool.and_eq_true] at hcf
+      exact Step.loopBreak
+        (ihc (by simpa [codeCallFree] using hcf.1.1) funs₂) hnz
+        (ihb (blockCodeCallFree hcf.2) funs₂)
+  | loopLeave _ hnz _ ihc ihb =>
+      intro hcf funs₂
+      simp only [codeCallFree, Bool.and_eq_true] at hcf
+      exact Step.loopLeave
+        (ihc (by simpa [codeCallFree] using hcf.1.1) funs₂) hnz
+        (ihb (blockCodeCallFree hcf.2) funs₂)
+  | loopBodyHalt _ hnz _ ihc ihb =>
+      intro hcf funs₂
+      simp only [codeCallFree, Bool.and_eq_true] at hcf
+      exact Step.loopBodyHalt
+        (ihc (by simpa [codeCallFree] using hcf.1.1) funs₂) hnz
+        (ihb (blockCodeCallFree hcf.2) funs₂)
 
 /-! ### The transform -/
 
@@ -215,9 +490,16 @@ theorem dcEvalRun {bound : List Ident} {V : VEnv D} (hb : BoundOK V bound)
   | .builtin op args, h => by
       rw [alwaysEval, Bool.and_eq_true] at h
       obtain ⟨vs, hvs, hlen⟩ := dcEvalArgsRun hb funs st args h.2
-      have har : pureTotalArity op = some args.length := by simpa using h.1
-      obtain ⟨w, hw⟩ := pureTotalArity_pureFn har vs hlen
-      exact ⟨w, Step.builtinOk hvs (pureFn_builtin hw st)⟩
+      have har : stableTotalArity op = some args.length := by simpa using h.1
+      rcases stableTotalArity_cases har with hpure | ⟨rfl, harity⟩
+      · obtain ⟨w, hw⟩ := pureTotalArity_pureFn hpure vs hlen
+        exact ⟨w, Step.builtinOk hvs (pureFn_builtin hw st)⟩
+      · match vs, hlen, harity with
+        | [k], _, _ =>
+            exact ⟨st.storage k, Step.builtinOk hvs (by
+              simp [builtinWithExternal, stepOp])⟩
+        | [], _, _ => simp_all
+        | _ :: _ :: _, _, _ => simp_all
   | .call _ _, h => by rw [alwaysEval] at h; cases h
 
 /-- Always-evaluating argument lists evaluate to one value each, state
@@ -255,23 +537,36 @@ theorem dcEvalInv {bound : List Ident} :
   | .builtin op args, h => by
       intro hstep
       rw [alwaysEval, Bool.and_eq_true] at h
-      have har : pureTotalArity op = some args.length := by simpa using h.1
+      have har : stableTotalArity op = some args.length := by simpa using h.1
       cases hstep with
       | @builtinOk _ _ _ _ _ argvals st1 rets st2 hargs hbi =>
           obtain ⟨vs, heq, hlen⟩ := dcEvalArgsInv args h.2 hargs
           injection heq with hv hs
           subst hv; subst hs
-          obtain ⟨w, hw⟩ := pureTotalArity_pureFn har argvals hlen
-          have hr := pureFn_builtin_inv hw hbi
-          injection hr with hr1 hr2
-          subst hr1; subst hr2
-          exact ⟨w, rfl⟩
+          rcases stableTotalArity_cases har with hpure | ⟨rfl, harity⟩
+          · obtain ⟨w, hw⟩ := pureTotalArity_pureFn hpure argvals hlen
+            have hr := pureFn_builtin_inv hw hbi
+            injection hr with hr1 hr2
+            subst hr1; subst hr2
+            exact ⟨w, rfl⟩
+          · match argvals, hlen, harity with
+            | [k], _, _ =>
+                simp [builtinWithExternal, stepOp] at hbi
+                obtain ⟨rfl, rfl⟩ := hbi
+                exact ⟨st1.storage k, rfl⟩
+            | [], _, _ => simp_all
+            | _ :: _ :: _, _, _ => simp_all
       | @builtinHalt _ _ _ _ _ argvals st1 st2 hargs hbi =>
           obtain ⟨vs, heq, hlen⟩ := dcEvalArgsInv args h.2 hargs
           injection heq with hv hs
           subst hv; subst hs
-          obtain ⟨w, hw⟩ := pureTotalArity_pureFn har argvals hlen
-          exact absurd (pureFn_builtin_inv hw hbi) (by simp)
+          rcases stableTotalArity_cases har with hpure | ⟨rfl, harity⟩
+          · obtain ⟨w, hw⟩ := pureTotalArity_pureFn hpure argvals hlen
+            exact absurd (pureFn_builtin_inv hw hbi) (by simp)
+          · match argvals, hlen, harity with
+            | [k], _, _ => simp [builtinWithExternal, stepOp] at hbi
+            | [], _, _ => simp_all
+            | _ :: _ :: _, _, _ => simp_all
       | builtinArgsHalt hargs =>
           obtain ⟨vs, heq, -⟩ := dcEvalArgsInv args h.2 hargs
           cases heq
@@ -310,6 +605,445 @@ theorem dcEvalArgsInv {bound : List Ident} :
           cases hv
 
 end
+
+/-! ### Executing accepted dead result regions -/
+
+/-- The local bindings represented by a discard context form a prefix over
+an arbitrary outer environment. Values may change, but the prefix names are
+exactly `owned`. -/
+def DrFrame (base : VEnv D) (owned : List Ident) (V : VEnv D) : Prop :=
+  ∃ A, V = A ++ base ∧ A.map Prod.fst = owned
+
+theorem DrFrame.nil (V : VEnv D) : DrFrame V [] V :=
+  ⟨[], by simp⟩
+
+theorem DrFrame.cons {base V : VEnv D} {owned : List Ident}
+    (h : DrFrame base owned V) (x : Ident) (v : U256) :
+    DrFrame base (x :: owned) ((x, v) :: V) := by
+  obtain ⟨A, rfl, hkeys⟩ := h
+  exact ⟨(x, v) :: A, by simp [hkeys]⟩
+
+theorem DrFrame.set {base V : VEnv D} {owned : List Ident}
+    (h : DrFrame base owned V) {x : Ident} (hx : x ∈ owned) (v : U256) :
+    DrFrame base owned (VEnv.set V x v) := by
+  obtain ⟨A, rfl, hkeys⟩ := h
+  have hxA : x ∈ A.map Prod.fst := by simpa [hkeys] using hx
+  refine ⟨VEnv.set A x v, ?_, ?_⟩
+  · exact VEnv.set_append_mem hxA base v
+  · rw [VEnv.set_keys, hkeys]
+
+mutual
+
+theorem discardStmt_owned_suffix {sink : Ident} {ctx ctx' : DrCtx}
+    {s : Stmt Op} (h : discardStmt sink ctx s = some ctx') :
+    ∃ pre, ctx'.owned = pre ++ ctx.owned := by
+  cases s with
+  | block body =>
+      cases hb : discardStmts sink ctx body with
+      | none => simp [discardStmt, hb] at h
+      | some out =>
+          simp [discardStmt, hb] at h
+          subst ctx'
+          exact ⟨[], rfl⟩
+  | letDecl xs rhs =>
+      cases xs with
+      | nil => simp [discardStmt] at h
+      | cons x xs =>
+          cases xs with
+          | nil =>
+              cases rhs with
+              | none =>
+                  by_cases hx : x = sink
+                  · simp [discardStmt, hx] at h
+                  · simp [discardStmt, hx] at h
+                    subst ctx'
+                    exact ⟨[x], rfl⟩
+              | some rhs =>
+                  by_cases hx : x != sink && alwaysEval ctx.bound rhs
+                  · simp [discardStmt, hx] at h
+                    subst ctx'
+                    exact ⟨[x], rfl⟩
+                  · simp [discardStmt, hx] at h
+          | cons _ _ => simp [discardStmt] at h
+  | assign xs rhs =>
+      cases xs with
+      | nil => simp [discardStmt] at h
+      | cons x xs =>
+          cases xs with
+          | nil =>
+              simp [discardStmt] at h
+              rcases h with ⟨-, -, rfl⟩
+              exact ⟨[], rfl⟩
+          | cons _ _ => simp [discardStmt] at h
+  | cond _ _ => simp [discardStmt] at h
+  | switch _ _ _ => simp [discardStmt] at h
+  | forLoop _ _ _ _ => simp [discardStmt] at h
+  | funDef _ _ _ _ => simp [discardStmt] at h
+  | exprStmt _ => simp [discardStmt] at h
+  | «break» => simp [discardStmt] at h
+  | «continue» => simp [discardStmt] at h
+  | leave => simp [discardStmt] at h
+
+theorem discardStmts_owned_suffix {sink : Ident} {ctx ctx' : DrCtx}
+    {ss : List (Stmt Op)} (h : discardStmts sink ctx ss = some ctx') :
+    ∃ pre, ctx'.owned = pre ++ ctx.owned := by
+  induction ss generalizing ctx with
+  | nil =>
+      simp only [discardStmts, Option.some.injEq] at h
+      subst ctx'
+      exact ⟨[], rfl⟩
+  | cons s rest ih =>
+      cases hs : discardStmt sink ctx s with
+      | none => simp [discardStmts, hs] at h
+      | some ctx₁ =>
+          have htail : discardStmts sink ctx₁ rest = some ctx' := by
+            simpa [discardStmts, hs] using h
+          obtain ⟨pre₁, hpre₁⟩ := discardStmt_owned_suffix hs
+          obtain ⟨pre₂, hpre₂⟩ := ih htail
+          exact ⟨pre₂ ++ pre₁, by simp [hpre₂, hpre₁, List.append_assoc]⟩
+
+end
+
+
+theorem DrFrame.restore {base V V' : VEnv D} {owned owned' : List Ident}
+    (hV : DrFrame base owned V) (hV' : DrFrame base owned' V')
+    (hsuf : ∃ pre, owned' = pre ++ owned) :
+    DrFrame base owned (restore V V') ∧
+      (restore V V').map Prod.fst = V.map Prod.fst := by
+  obtain ⟨A, rfl, hA⟩ := hV
+  obtain ⟨A', rfl, hA'⟩ := hV'
+  obtain ⟨pre, rfl⟩ := hsuf
+  have hlenA : A.length = owned.length := by
+    simpa using congrArg List.length hA
+  have hlenA' : A'.length = pre.length + owned.length := by
+    simpa using congrArg List.length hA'
+  have hdrop : (A' ++ base).drop pre.length = A'.drop pre.length ++ base :=
+    List.drop_append_of_le_length (by omega)
+  have hkeys : (A'.drop pre.length).map Prod.fst = owned := by
+    rw [List.map_drop, hA']
+    simp
+  have hrestore : YulSemantics.restore (A ++ base) (A' ++ base) =
+      A'.drop pre.length ++ base := by
+    unfold YulSemantics.restore
+    simp only [List.length_append]
+    rw [show (A'.length + base.length) - (A.length + base.length) = pre.length by omega]
+    exact hdrop
+  rw [hrestore]
+  constructor
+  · exact ⟨A'.drop pre.length, rfl, hkeys⟩
+  · simp [hkeys, hA]
+
+mutual
+
+theorem discardStmt_run {sink : Ident} {ctx ctx' : DrCtx} {s : Stmt Op}
+    (hcheck : discardStmt sink ctx s = some ctx')
+    {base V : VEnv D} (hframe : DrFrame base ctx.owned V)
+    (hb : BoundOK V ctx.bound) (funs : FunEnv D) (st : EvmState) :
+    ∃ V', Step D funs V st (.stmt s) (.sres V' st .normal) ∧
+      DrFrame base ctx'.owned V' ∧ BoundOK V' ctx'.bound := by
+  cases s with
+  | block body =>
+      cases hbody : discardStmts sink ctx body with
+      | none => simp [discardStmt, hbody] at hcheck
+      | some out =>
+          simp [discardStmt, hbody] at hcheck
+          subst ctx'
+          obtain ⟨Vb, hrun, hframe', -⟩ :=
+            discardStmts_run hbody hframe hb (hoist D body :: funs) st
+          obtain ⟨hrestFrame, hkeys⟩ :=
+            hframe.restore hframe' (discardStmts_owned_suffix hbody)
+          refine ⟨restore V Vb, Step.block hrun, hrestFrame, ?_⟩
+          intro x hx
+          rw [hkeys]
+          exact hb x hx
+  | letDecl xs rhs =>
+      cases xs with
+      | nil => simp [discardStmt] at hcheck
+      | cons x xs =>
+          cases xs with
+          | cons _ _ => simp [discardStmt] at hcheck
+          | nil =>
+              cases rhs with
+              | none =>
+                  by_cases hx : x = sink
+                  · simp [discardStmt, hx] at hcheck
+                  · simp [discardStmt, hx] at hcheck
+                    subst ctx'
+                    refine ⟨(x, 0) :: V, Step.letZero, hframe.cons x 0, ?_⟩
+                    intro z hz
+                    simp only [List.mem_cons] at hz
+                    rcases hz with rfl | hz
+                    · simp
+                    · simp only [List.map_cons, List.mem_cons]
+                      exact Or.inr (hb z hz)
+              | some rhs =>
+                  simp [discardStmt] at hcheck
+                  rcases hcheck with ⟨⟨hx, hae⟩, rfl⟩
+                  obtain ⟨v, he⟩ := dcEvalRun hb funs st rhs hae
+                  refine ⟨(x, v) :: V, Step.letVal he rfl, hframe.cons x v, ?_⟩
+                  intro z hz
+                  simp only [List.mem_cons] at hz
+                  rcases hz with rfl | hz
+                  · simp
+                  · simp only [List.map_cons, List.mem_cons]
+                    exact Or.inr (hb z hz)
+  | assign xs rhs =>
+      cases xs with
+      | nil => simp [discardStmt] at hcheck
+      | cons x xs =>
+          cases xs with
+          | cons _ _ => simp [discardStmt] at hcheck
+          | nil =>
+              simp [discardStmt] at hcheck
+              rcases hcheck with ⟨⟨hx, hae⟩, rfl⟩
+              obtain ⟨v, he⟩ := dcEvalRun hb funs st rhs hae
+              refine ⟨VEnv.set V x v, ?_, hframe.set hx v, ?_⟩
+              · have h := Step.assignVal (vars := [x]) he rfl
+                rwa [VEnv.setMany_singleton] at h
+              · intro z hz
+                rw [VEnv.set_keys]
+                exact hb z hz
+  | cond _ _ => simp [discardStmt] at hcheck
+  | switch _ _ _ => simp [discardStmt] at hcheck
+  | forLoop _ _ _ _ => simp [discardStmt] at hcheck
+  | funDef _ _ _ _ => simp [discardStmt] at hcheck
+  | exprStmt _ => simp [discardStmt] at hcheck
+  | «break» => simp [discardStmt] at hcheck
+  | «continue» => simp [discardStmt] at hcheck
+  | leave => simp [discardStmt] at hcheck
+
+theorem discardStmts_run {sink : Ident} {ctx ctx' : DrCtx}
+    {ss : List (Stmt Op)} (hcheck : discardStmts sink ctx ss = some ctx')
+    {base V : VEnv D} (hframe : DrFrame base ctx.owned V)
+    (hb : BoundOK V ctx.bound) (funs : FunEnv D) (st : EvmState) :
+    ∃ V', Step D funs V st (.stmts ss) (.sres V' st .normal) ∧
+      DrFrame base ctx'.owned V' ∧ BoundOK V' ctx'.bound := by
+  cases ss with
+  | nil =>
+      simp only [discardStmts, Option.some.injEq] at hcheck
+      subst ctx'
+      exact ⟨V, Step.seqNil, hframe, hb⟩
+  | cons s rest =>
+      cases hs : discardStmt sink ctx s with
+      | none => simp [discardStmts, hs] at hcheck
+      | some ctx₁ =>
+          have htail : discardStmts sink ctx₁ rest = some ctx' := by
+            simpa [discardStmts, hs] using hcheck
+          obtain ⟨V₁, hsrun, hframe₁, hb₁⟩ :=
+            discardStmt_run hs hframe hb funs st
+          obtain ⟨V₂, hrest, hframe₂, hb₂⟩ :=
+            discardStmts_run htail hframe₁ hb₁ funs st
+          exact ⟨V₂, Step.seqCons hsrun hrest, hframe₂, hb₂⟩
+
+end
+
+mutual
+
+/-- Every derivation of an accepted statement has the checked normal,
+state-preserving frame shape. -/
+theorem discardStmt_inv {sink : Ident} {ctx ctx' : DrCtx} {s : Stmt Op}
+    (hcheck : discardStmt sink ctx s = some ctx')
+    {base V : VEnv D} (hframe : DrFrame base ctx.owned V)
+    (hb : BoundOK V ctx.bound) {funs : FunEnv D} {st V' st' o}
+    (hstep : Step D funs V st (.stmt s) (.sres V' st' o)) :
+    st' = st ∧ o = .normal ∧ DrFrame base ctx'.owned V' ∧
+      BoundOK V' ctx'.bound := by
+  cases s with
+  | block body =>
+      cases hbody : discardStmts sink ctx body with
+      | none => simp [discardStmt, hbody] at hcheck
+      | some out =>
+          simp [discardStmt, hbody] at hcheck
+          subst ctx'
+          cases hstep with
+          | block hrun =>
+              obtain ⟨rfl, rfl, hframe', -⟩ :=
+                discardStmts_inv hbody hframe hb hrun
+              obtain ⟨hrestFrame, hkeys⟩ :=
+                hframe.restore hframe' (discardStmts_owned_suffix hbody)
+              refine ⟨rfl, rfl, hrestFrame, ?_⟩
+              intro x hx
+              rw [hkeys]
+              exact hb x hx
+  | letDecl xs rhs =>
+      cases xs with
+      | nil => simp [discardStmt] at hcheck
+      | cons x xs =>
+          cases xs with
+          | cons _ _ => simp [discardStmt] at hcheck
+          | nil =>
+              cases rhs with
+              | none =>
+                  by_cases hx : x = sink
+                  · simp [discardStmt, hx] at hcheck
+                  · simp [discardStmt, hx] at hcheck
+                    subst ctx'
+                    cases hstep with
+                    | letZero =>
+                        have hframe' : DrFrame base (x :: ctx.owned)
+                            ((x, (evmWithExternal calls creates).zero) :: V) :=
+                          hframe.cons x (evmWithExternal calls creates).zero
+                        have hb' : BoundOK
+                            ((x, (evmWithExternal calls creates).zero) :: V)
+                            (x :: ctx.bound) := by
+                          intro z hz
+                          simp only [List.mem_cons] at hz
+                          rcases hz with rfl | hz
+                          · simp
+                          · simp only [List.map_cons, List.mem_cons]
+                            exact Or.inr (hb z hz)
+                        exact ⟨rfl, rfl, by simpa [bindZeros] using hframe',
+                          by simpa [bindZeros] using hb'⟩
+              | some rhs =>
+                  simp [discardStmt] at hcheck
+                  rcases hcheck with ⟨⟨-, hae⟩, rfl⟩
+                  cases hstep with
+                  | letVal he hlen =>
+                      obtain ⟨v, hr⟩ := dcEvalInv rhs hae he
+                      injection hr with hvals hst
+                      subst hvals; subst hst
+                      have hb' : BoundOK ((x, v) :: V) (x :: ctx.bound) := by
+                        intro z hz
+                        simp only [List.mem_cons] at hz
+                        rcases hz with rfl | hz
+                        · simp
+                        · simp only [List.map_cons, List.mem_cons]
+                          exact Or.inr (hb z hz)
+                      exact ⟨rfl, rfl, by simpa using hframe.cons x v,
+                        by simpa using hb'⟩
+                  | letHalt he =>
+                      obtain ⟨v, hv⟩ := dcEvalInv rhs hae he
+                      cases hv
+  | assign xs rhs =>
+      cases xs with
+      | nil => simp [discardStmt] at hcheck
+      | cons x xs =>
+          cases xs with
+          | cons _ _ => simp [discardStmt] at hcheck
+          | nil =>
+              simp [discardStmt] at hcheck
+              rcases hcheck with ⟨⟨hx, hae⟩, rfl⟩
+              cases hstep with
+              | assignVal he hlen =>
+                  obtain ⟨v, hr⟩ := dcEvalInv rhs hae he
+                  injection hr with hvals hst
+                  subst hvals; subst hst
+                  rw [VEnv.setMany_singleton]
+                  refine ⟨rfl, rfl, hframe.set hx v, ?_⟩
+                  intro z hz
+                  rw [VEnv.set_keys]
+                  exact hb z hz
+              | assignHalt he =>
+                  obtain ⟨v, hv⟩ := dcEvalInv rhs hae he
+                  cases hv
+  | cond _ _ => simp [discardStmt] at hcheck
+  | switch _ _ _ => simp [discardStmt] at hcheck
+  | forLoop _ _ _ _ => simp [discardStmt] at hcheck
+  | funDef _ _ _ _ => simp [discardStmt] at hcheck
+  | exprStmt _ => simp [discardStmt] at hcheck
+  | «break» => simp [discardStmt] at hcheck
+  | «continue» => simp [discardStmt] at hcheck
+  | leave => simp [discardStmt] at hcheck
+
+/-- Inversion for accepted region sequences. -/
+theorem discardStmts_inv {sink : Ident} {ctx ctx' : DrCtx}
+    {ss : List (Stmt Op)} (hcheck : discardStmts sink ctx ss = some ctx')
+    {base V : VEnv D} (hframe : DrFrame base ctx.owned V)
+    (hb : BoundOK V ctx.bound) {funs : FunEnv D} {st V' st' o}
+    (hstep : Step D funs V st (.stmts ss) (.sres V' st' o)) :
+    st' = st ∧ o = .normal ∧ DrFrame base ctx'.owned V' ∧
+      BoundOK V' ctx'.bound := by
+  cases ss with
+  | nil =>
+      simp only [discardStmts, Option.some.injEq] at hcheck
+      subst ctx'
+      cases hstep with
+      | seqNil => exact ⟨rfl, rfl, hframe, hb⟩
+  | cons s rest =>
+      cases hs : discardStmt sink ctx s with
+      | none => simp [discardStmts, hs] at hcheck
+      | some ctx₁ =>
+          have htail : discardStmts sink ctx₁ rest = some ctx' := by
+            simpa [discardStmts, hs] using hcheck
+          cases hstep with
+          | seqCons hstmt hrest =>
+              obtain ⟨hst, -, hframe₁, hb₁⟩ :=
+                discardStmt_inv hs hframe hb hstmt
+              rw [hst] at hrest
+              exact discardStmts_inv htail hframe₁ hb₁ hrest
+          | seqStop hstmt hne =>
+              obtain ⟨-, ho, -, -⟩ := discardStmt_inv hs hframe hb hstmt
+              exact absurd ho hne
+
+end
+
+/-- An accepted block, entered immediately after the zero-initialized sink,
+has exactly one possible observable shape. -/
+theorem discardBlock_run {bound : List Ident} {sink : Ident} {body : Block Op}
+    (hcheck : (discardStmts sink ⟨sink :: bound, [sink]⟩ body).isSome = true)
+    {V : VEnv D} (hb : BoundOK V bound) (funs : FunEnv D) (st : EvmState) :
+    ∃ v, Step D funs ((sink, (evmWithExternal calls creates).zero) :: V) st
+      (.stmt (.block body))
+      (.sres ((sink, v) :: V) st .normal) := by
+  cases hc : discardStmts sink ⟨sink :: bound, [sink]⟩ body with
+  | none => simp [hc] at hcheck
+  | some out =>
+      have hbound : BoundOK ((sink, 0) :: V) (sink :: bound) := by
+        intro x hx
+        simp only [List.mem_cons] at hx
+        rcases hx with rfl | hx
+        · simp
+        · simp only [List.map_cons, List.mem_cons]
+          exact Or.inr (hb x hx)
+      have hstmt : discardStmt sink ⟨sink :: bound, [sink]⟩ (.block body) =
+          some ⟨sink :: bound, [sink]⟩ := by simp [discardStmt, hc]
+      obtain ⟨V', hrun, hframe, -⟩ :=
+        discardStmt_run hstmt (DrFrame.cons (DrFrame.nil V) sink
+          (evmWithExternal calls creates).zero)
+          hbound funs st
+      obtain ⟨A, hV', hkeys⟩ := hframe
+      cases A with
+      | nil => simp at hkeys
+      | cons p rest =>
+          cases rest with
+          | nil =>
+              obtain ⟨rfl, -⟩ := List.cons.inj hkeys
+              rw [hV'] at hrun
+              exact ⟨p.2, hrun⟩
+          | cons q rest => simp at hkeys
+
+theorem discardBlock_inv {bound : List Ident} {sink : Ident} {body : Block Op}
+    (hcheck : (discardStmts sink ⟨sink :: bound, [sink]⟩ body).isSome = true)
+    {V : VEnv D} (hb : BoundOK V bound) {funs : FunEnv D} {st V' st' o}
+    (hstep : Step D funs ((sink, (evmWithExternal calls creates).zero) :: V) st
+      (.stmt (.block body))
+      (.sres V' st' o)) :
+    ∃ v, V' = (sink, v) :: V ∧ st' = st ∧ o = .normal := by
+  cases hc : discardStmts sink ⟨sink :: bound, [sink]⟩ body with
+  | none => simp [hc] at hcheck
+  | some out =>
+      have hbound : BoundOK ((sink, 0) :: V) (sink :: bound) := by
+        intro x hx
+        simp only [List.mem_cons] at hx
+        rcases hx with rfl | hx
+        · simp
+        · simp only [List.map_cons, List.mem_cons]
+          exact Or.inr (hb x hx)
+      have hstmt : discardStmt sink ⟨sink :: bound, [sink]⟩ (.block body) =
+          some ⟨sink :: bound, [sink]⟩ := by simp [discardStmt, hc]
+      obtain ⟨rfl, rfl, hframe, -⟩ :=
+        discardStmt_inv hstmt (DrFrame.cons (DrFrame.nil V) sink
+          (evmWithExternal calls creates).zero)
+          hbound hstep
+      obtain ⟨A, hV', hkeys⟩ := hframe
+      cases A with
+      | nil => simp at hkeys
+      | cons p rest =>
+          cases rest with
+          | nil =>
+              obtain ⟨rfl, -⟩ := List.cons.inj hkeys
+              exact ⟨p.2, hV', rfl, rfl⟩
+          | cons q rest => simp at hkeys
 
 /-! ### The multi-insertion environment relation
 
@@ -488,12 +1222,64 @@ theorem InsFree.mono {ins : List (Nat × Ident)} {c₁ c₂ : Code Op}
     InsFree ins c₂ :=
   fun p hp => hsub _ (h p hp)
 
+/-- Remove every insertion in an `MIns` chain while executing code that
+mentions none of their names. -/
+theorem MIns.frameRemove {ins : List (Nat × Ident)} {V₁ V₂ : VEnv D}
+    (hins : MIns ins V₁ V₂) {funs : FunEnv D} {st : EvmState}
+    {code : Code Op} {V₁' : VEnv D} {st' : EvmState} {o : Outcome}
+    (hstep : Step D funs V₁ st code (.sres V₁' st' o))
+    (hfree : InsFree ins code) :
+    ∃ V₂', Step D funs V₂ st code (.sres V₂' st' o) ∧
+      MIns ins V₁' V₂' := by
+  induction hins generalizing V₁' st' o with
+  | nil V => exact ⟨V₁', hstep, .nil _⟩
+  | @cons ins d x v V₂ Vm V₁ hm hlink ih =>
+      obtain ⟨resm, hstepm, hrelm⟩ :=
+        YulEvmCompiler.Optimizer.frameRemove hstep hlink
+        (hfree (d, x) (List.mem_cons_self ..))
+      obtain ⟨Vm', rfl, hlink'⟩ := hrelm.sres_right
+      have hfree' : InsFree ins code :=
+        fun p hp => hfree p (List.mem_cons_of_mem _ hp)
+      obtain ⟨V₂', hstep₂, hm'⟩ := ih hstepm hfree'
+      exact ⟨V₂', hstep₂, .cons hm' hlink'⟩
+
+/-- Add every insertion in an `MIns` chain while executing mention-free
+code. -/
+theorem MIns.frameAdd {ins : List (Nat × Ident)} {V₁ V₂ : VEnv D}
+    (hins : MIns ins V₁ V₂) {funs : FunEnv D} {st : EvmState}
+    {code : Code Op} {V₂' : VEnv D} {st' : EvmState} {o : Outcome}
+    (hstep : Step D funs V₂ st code (.sres V₂' st' o))
+    (hfree : InsFree ins code) :
+    ∃ V₁', Step D funs V₁ st code (.sres V₁' st' o) ∧
+      MIns ins V₁' V₂' := by
+  induction hins generalizing V₂' st' o with
+  | nil V => exact ⟨V₂', hstep, .nil _⟩
+  | @cons ins d x v V₂ Vm V₁ hm hlink ih =>
+      have hfree' : InsFree ins code :=
+        fun p hp => hfree p (List.mem_cons_of_mem _ hp)
+      obtain ⟨Vm', hstepm, hm'⟩ := ih hstep hfree'
+      obtain ⟨res₁, hstep₁, hrel₁⟩ :=
+        YulEvmCompiler.Optimizer.frameAdd hstepm hlink
+        (hfree (d, x) (List.mem_cons_self ..))
+      obtain ⟨V₁', rfl, hlink'⟩ := hrel₁.sres
+      exact ⟨V₁', hstep₁, .cons hm' hlink'⟩
+
 /-! ### The removal relation
 
 `DcRel bound bound' pc pc'`: `pc'` is `pc` with a valid subset of dead pure
 bindings and self-assignments removed, under provably-bound set `bound`,
 leaving `bound'` for what follows. Constructor-preserving on statements;
 expressions are never rewritten; the `for` init is fixed. -/
+
+/-- The provably-bound set a kept statement leaves for following statements. -/
+def dpOut (bound : List Ident) : Stmt Op → List Ident
+  | .letDecl xs _ => xs ++ bound
+  | _ => bound
+
+/-- Bound names accumulated by an unchanged statement suffix. -/
+def dpOutStmts : List Ident → List (Stmt Op) → List Ident
+  | bound, [] => bound
+  | bound, s :: rest => dpOutStmts (dpOut bound s) rest
 
 /-- The removal relation (see section header). -/
 inductive DcRel : List Ident → List Ident → PCode Op → PCode Op → Prop
@@ -552,6 +1338,12 @@ inductive DcRel : List Ident → List Ident → PCode Op → PCode Op → Prop
       x ∈ bound →
       DcRel bound b2 (.stmts rest) (.stmts rest') →
       DcRel bound b2 (.stmts (.assign [x] (.var x) :: rest)) (.stmts rest')
+  | dropRegionSS {bound : List Ident} {sink : Ident} {body rest : Block Op} :
+      (discardStmts sink ⟨sink :: bound, [sink]⟩ body).isSome = true →
+      stmtsMentions sink rest = false →
+      stmtsCallFree rest = true →
+      DcRel bound (dpOutStmts bound rest)
+        (.stmts (.letDecl [sink] none :: .block body :: rest)) (.stmts rest)
   | loopL {bound bp bb : List Ident} {c : Expr Op}
       {post post' body body' : Block Op} :
       DcRel bound bp (.stmts post) (.stmts post') →
@@ -594,6 +1386,12 @@ theorem DcRel.stmts_len {bound b2 : List Ident} {pc pc' : PCode Op}
       injection h1 with h1; injection h2 with h2
       subst h1; subst h2
       exact Nat.le_trans (ihrest rfl rfl) (by simp)
+  | dropRegionSS _ _ =>
+      intro ss ss' h1 h2
+      injection h1 with h1; injection h2 with h2
+      subst h1; subst h2
+      simp only [List.length_cons]
+      omega
   | exprE => exact fun h _ => nomatch h
   | argsE => exact fun h _ => nomatch h
   | blockS _ _ => exact fun h _ => nomatch h
@@ -614,12 +1412,6 @@ theorem DcRel.stmts_len {bound b2 : List Ident} {pc pc' : PCode Op}
   | odfltSome _ _ => exact fun h _ => nomatch h
 
 /-! ### The transform inhabits the relation -/
-
-/-- The provably-bound set a kept statement leaves for the statements after
-it (only `letDecl` extends it — matching `dpStmts`). -/
-def dpOut (bound : List Ident) : Stmt Op → List Ident
-  | .letDecl xs _ => xs ++ bound
-  | _ => bound
 
 /-- Unpack a positive removability test. -/
 theorem removablePure_inv {bound : List Ident} {s : Stmt Op}
@@ -813,6 +1605,14 @@ theorem DcRel.reflDflt (bound : List Ident) : ∀ d : Option (Block Op),
 
 end
 
+/-- Deterministic-index form of sequence reflexivity. -/
+theorem DcRel.reflStmtsExact (bound : List Ident) : ∀ ss : List (Stmt Op),
+    DcRel bound (dpOutStmts bound ss) (.stmts ss) (.stmts ss)
+  | [] => .nilSS
+  | s :: rest =>
+      .consSS (DcRel.reflStmt bound s)
+        (DcRel.reflStmtsExact (dpOut bound s) rest)
+
 /-! ### The function-environment relation -/
 
 /-- Declarations with equal signatures and `DcRel (params ++ rets)`-related
@@ -886,6 +1686,11 @@ theorem DcRel.hoist_scopeRel {bound b2 : List Ident} {pc pc' : PCode Op}
       injection hss with h1; injection hss' with h2
       subst h1; subst h2
       simpa [hoist] using ihrest rfl rfl
+  | dropRegionSS _ _ =>
+      intro ss ss' hss hss'
+      injection hss with h1; injection hss' with h2
+      subst h1; subst h2
+      exact DcScopeRel.refl _
   | exprE => exact fun h _ => nomatch h
   | argsE => exact fun h _ => nomatch h
   | blockS _ _ => exact fun h _ => nomatch h
@@ -1091,6 +1896,11 @@ inductive LeadDrops (bound : List Ident) :
       x ∈ bound →
       LeadDrops bound rest mid →
       LeadDrops bound (.assign [x] (.var x) :: rest) mid
+  | dropRegion {sink : Ident} {body rest mid : List (Stmt Op)} :
+      (discardStmts sink ⟨sink :: bound, [sink]⟩ body).isSome = true →
+      stmtsMentions sink rest = false →
+      LeadDrops bound rest mid →
+      LeadDrops bound (.letDecl [sink] none :: .block body :: rest) mid
 
 theorem LeadDrops.length_le {bound : List Ident} {ss mid : List (Stmt Op)}
     (h : LeadDrops bound ss mid) : mid.length ≤ ss.length := by
@@ -1098,6 +1908,9 @@ theorem LeadDrops.length_le {bound : List Ident} {ss mid : List (Stmt Op)}
   | done _ => exact Nat.le_refl _
   | dropLet _ _ _ ih => exact Nat.le_trans ih (by simp)
   | dropSelf _ _ ih => exact Nat.le_trans ih (by simp)
+  | dropRegion _ _ _ ih =>
+      simp only [List.length_cons]
+      omega
 
 theorem LeadDrops.mentions_le {bound : List Ident} {ss mid : List (Stmt Op)}
     (h : LeadDrops bound ss mid) (z : Ident) :
@@ -1112,6 +1925,10 @@ theorem LeadDrops.mentions_le {bound : List Ident} {ss mid : List (Stmt Op)}
       intro hm
       simp only [stmtsMentions, Bool.or_eq_false_iff] at hm
       exact ih hm.2
+  | dropRegion _ _ _ ih =>
+      intro hm
+      simp only [stmtsMentions, Bool.or_eq_false_iff] at hm
+      exact ih hm.2.2
 
 /-- Any sequence relation factors as leading drops followed by a kept head
 (or the empty tail). -/
@@ -1152,6 +1969,16 @@ theorem DcRel.stmts_factor {bound b2 : List Ident} {pc pc' : PCode Op}
       · exact Or.inl ⟨rfl, hb, .dropSelf hx hld⟩
       · exact Or.inr ⟨s, rest2, s', rest2', b1, heq,
           .dropSelf hx hld, hhead, htail⟩
+  | @dropRegionSS bound sink body rest hcheck hm =>
+      intro ss ss' h1 h2
+      injection h1 with h1; injection h2 with h2
+      subst h1; subst h2
+      cases rest with
+      | nil => exact Or.inl ⟨rfl, rfl, .dropRegion hcheck hm (.done [])⟩
+      | cons s tail =>
+          exact Or.inr ⟨s, tail, s, tail, dpOut bound s, rfl,
+            .dropRegion hcheck hm (.done _), DcRel.reflStmt bound s,
+            DcRel.reflStmtsExact (dpOut bound s) tail⟩
   | exprE => exact fun h _ => nomatch h
   | argsE => exact fun h _ => nomatch h
   | blockS _ _ => exact fun h _ => nomatch h
@@ -1233,8 +2060,87 @@ theorem leadDrops_run {bound : List Ident} {ss mid : List (Stmt Op)}
         omega
       · intro V' st' o hrun
         exact Step.seqCons hstep (hchain hrun)
+  | @dropRegion sink body rest mid hcheck hm hld ih =>
+      intro funs V₁ V₂ ins st hins hb
+      obtain ⟨v, hblock⟩ := discardBlock_run hcheck (hb.of_mins hins) funs st
+      obtain ⟨V₁', insN, hins', hd, hmen, hrefl, hchain⟩ :=
+        ih (funs := funs) st (hins.insTop sink v) hb
+      refine ⟨V₁', insN ++ [(V₁.length, sink)], ?_, ?_, ?_, ?_, ?_⟩
+      · rw [List.append_assoc]
+        exact hins'
+      · intro p hp
+        rcases List.mem_append.mp hp with hp | hp
+        · have := hd p hp
+          simp only [List.length_cons] at this
+          omega
+        · rcases List.mem_singleton.mp hp with rfl
+          exact Nat.le_refl _
+      · intro p hp
+        rcases List.mem_append.mp hp with hp | hp
+        · exact hmen p hp
+        · rcases List.mem_singleton.mp hp with rfl
+          exact hld.mentions_le sink hm
+      · intro hmid
+        exfalso
+        have h1 := hld.length_le
+        have h2 : mid.length = rest.length + 2 := by rw [hmid]; simp
+        omega
+      · intro V' st' o hrun
+        have hzero : Step D funs V₁ st (.stmt (.letDecl [sink] none))
+            (.sres (bindZeros D [sink] ++ V₁) st .normal) := Step.letZero
+        exact Step.seqCons hzero (Step.seqCons hblock (hchain hrun))
 
 /-! ### The forward simulation -/
+
+/-- An unchanged statement establishes the declaration names tracked by
+`dpOut` when it finishes normally. -/
+theorem BoundOK.afterStmt {bound : List Ident} {V V' : VEnv D}
+    {funs : FunEnv D} {st st' : EvmState} {s : Stmt Op}
+    (hb : BoundOK V bound)
+    (hstep : Step D funs V st (.stmt s) (.sres V' st' .normal)) :
+    BoundOK V' (dpOut bound s) := by
+  cases s with
+  | letDecl xs val =>
+      cases hstep with
+      | letZero =>
+          intro x hx
+          simp only [dpOut, List.mem_append] at hx
+          rw [List.map_append, bindZeros_keys]
+          exact hx.elim (fun h => List.mem_append_left _ h)
+            (fun h => List.mem_append_right _ (hb x h))
+      | letVal he hlen =>
+          intro x hx
+          simp only [dpOut, List.mem_append] at hx
+          rw [List.map_append, zip_keys (by omega)]
+          exact hx.elim (fun h => List.mem_append_left _ h)
+            (fun h => List.mem_append_right _ (hb x h))
+  | block _ => exact hb.mono hstep
+  | funDef _ _ _ _ => exact hb.mono hstep
+  | assign _ _ => exact hb.mono hstep
+  | cond _ _ => exact hb.mono hstep
+  | switch _ _ _ => exact hb.mono hstep
+  | forLoop _ _ _ _ => exact hb.mono hstep
+  | exprStmt _ => exact hb.mono hstep
+  | «break» => exact hb.mono hstep
+  | «continue» => exact hb.mono hstep
+  | leave => exact hb.mono hstep
+
+/-- Normal execution of an unchanged suffix establishes every declaration
+name accumulated by `dpOutStmts`. -/
+theorem BoundOK.afterStmts {bound : List Ident} {V V' : VEnv D}
+    {funs : FunEnv D} {st st' : EvmState} {ss : List (Stmt Op)}
+    (hb : BoundOK V bound)
+    (hstep : Step D funs V st (.stmts ss) (.sres V' st' .normal)) :
+    BoundOK V' (dpOutStmts bound ss) := by
+  induction ss generalizing bound V st with
+  | nil =>
+      cases hstep with
+      | seqNil => exact hb
+  | cons s rest ih =>
+      cases hstep with
+      | seqCons hs hrest =>
+          exact ih (hb.afterStmt hs) hrest
+      | seqStop _ hne => exact absurd rfl hne
 
 /-- Forward result correspondence, per code class of the source derivation:
 expression classes yield identical results; statement classes yield the
@@ -1787,6 +2693,45 @@ theorem dc_fwd {funs₁ : FunEnv D} {V₁ : VEnv D} {st : EvmState}
           have h2 : rest'.length = rest.length + 1 := by
             rw [← heq]; simp
           omega
+      | @dropRegionSS _ sink body tail hcheck hm hcf =>
+          cases hs with
+          | letZero =>
+              cases hrest with
+              | seqCons hblock htail =>
+                  obtain ⟨v, hV, hst, -⟩ :=
+                    discardBlock_inv hcheck (hb.of_mins hins) hblock
+                  rw [hV, hst] at htail
+                  have hld : LeadDrops bound
+                      (.letDecl [sink] none :: .block body :: tail) tail :=
+                    .dropRegion hcheck hm (.done tail)
+                  have hfreeTail : InsFree ((V.length, sink) :: ins) (.stmts tail) := by
+                    intro p hp
+                    rcases List.mem_cons.mp hp with rfl | hp
+                    · simpa only [codeMentions] using hm
+                    · exact hld.mentions_le p.2
+                        (by simpa only [codeMentions] using hfree p hp)
+                  obtain ⟨V₂', htailSame, hmins'⟩ :=
+                    (hins.insTop sink v).frameRemove htail hfreeTail
+                  have htail₂ := YulEvmCompiler.Optimizer.Step.callFree_funs
+                    htailSame (by simpa [codeCallFree] using hcf) funs₂
+                  refine ⟨_, htail₂, V₂', [(V.length, sink)], rfl, ?_, ?_, ?_, ?_⟩
+                  · simpa using hmins'
+                  · intro p hp
+                    rcases List.mem_singleton.mp hp with rfl
+                    exact Nat.le_refl _
+                  · intro heq
+                    exfalso
+                    injection heq with heq
+                    have := congrArg List.length heq
+                    simp at this
+                    omega
+                  · intro ho
+                    subst ho
+                    exact hb.afterStmts htail₂
+              | seqStop hblock hne =>
+                  obtain ⟨-, -, -, ho⟩ :=
+                    discardBlock_inv hcheck (hb.of_mins hins) hblock
+                  exact absurd ho hne
   | @seqStop funs V st s rest Vm1 stm1 o hs hne ihs =>
       intro funs₂ V₂ ins bound bound' pc' hR hrel hins hfree hb
       cases hrel with
@@ -1806,6 +2751,9 @@ theorem dc_fwd {funs₁ : FunEnv D} {V₁ : VEnv D} {st : EvmState}
       | dropSelfSS hx htailRel =>
           obtain ⟨-, -, ho⟩ := dropSelf_inv hs
           exact absurd ho hne
+      | dropRegionSS hcheck hm hcf =>
+          cases hs with
+          | letZero => exact absurd rfl hne
   | @loopDone funs V st c post body cv st1 hc hz ihc =>
       intro funs₂ V₂ ins bound bound' pc' hR hrel hins hfree hb
       cases hrel with
@@ -1963,6 +2911,10 @@ theorem LeadDrops.eq_of_length {bound : List Ident} {ss mid : List (Stmt Op)}
       simp only [List.length_cons] at hlen
       omega
   | dropSelf _ hld =>
+      have := hld.length_le
+      simp only [List.length_cons] at hlen
+      omega
+  | dropRegion _ _ hld =>
       have := hld.length_le
       simp only [List.length_cons] at hlen
       omega

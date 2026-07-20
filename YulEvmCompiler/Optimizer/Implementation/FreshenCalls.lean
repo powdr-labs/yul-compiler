@@ -170,7 +170,7 @@ private theorem args_emptyScope_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmStat
 
 /-- A call with call-free arguments is unchanged by an empty innermost
 function scope. -/
-private theorem call_emptyScope_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+theorem call_emptyScope_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
     {f : Ident} {as : List (Expr Op)} {r : EResult D}
     (h : Step D funs V st (.expr (.call f as)) (.eres r))
     (hnc : argsHaveCall as = false) :
@@ -184,7 +184,7 @@ private theorem call_emptyScope_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmStat
         (by simpa [lookupFun] using hlookup) hlen hbody
   | callArgsHalt hargs => exact Step.callArgsHalt (args_emptyScope_fwd hargs hnc)
 
-private theorem call_emptyScope_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+theorem call_emptyScope_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
     {f : Ident} {as : List (Expr Op)} {r : EResult D}
     (h : Step D ([] :: funs) V st (.expr (.call f as)) (.eres r))
     (hnc : argsHaveCall as = false) :
