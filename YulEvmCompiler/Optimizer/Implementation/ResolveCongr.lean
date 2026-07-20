@@ -11,8 +11,10 @@ with the pass up to semantic equivalence,
 EquivBlock D (resolveForLayoutStmts L b) (resolveForLayoutStmts L (simplifyStmts b))
 ```
 
-It holds because expression rewrites avoid `dataoffset`/`datasize`, while
-literal control-flow selection commutes with resolving every case/default body.
+It holds because expression rewrites avoid `dataoffset`/`datasize`, literal
+control-flow selection commutes with resolving every case/default body, and the
+`iszero(eq(x,x))` validator pattern contains only resolution-fixed operations
+and variables.
 This is the missing link for the object path: with it, compiling
 `simplifyObject o` correctly simulates the **original** object's resolved run
 under the compiler's layout (`simplifyObject_correct`, in `ObjectPass`).
@@ -319,14 +321,23 @@ theorem resolveSimplifyCond_equiv (L : Layout) (c : Expr Op) (body : Block Op) :
           (cond_lit_nonzero_equiv (calls := calls) (creates := creates) l
             (resolveForLayoutStmts L body) hz)
   | var x =>
-      simp only [simplifyCond, resolveForLayoutStmt_cond]
-      exact EquivStmt.refl _
+      simp only [simplifyCond, selfEqVar?, resolveForLayoutStmt_cond]
+      exact fun _ _ _ _ _ _ => Iff.rfl
   | builtin op args =>
-      simp only [simplifyCond, resolveForLayoutStmt_cond]
-      exact EquivStmt.refl _
+      cases hself : selfEqVar? (.builtin op args) with
+      | none =>
+          simp only [simplifyCond, hself, resolveForLayoutStmt_cond]
+          exact fun _ _ _ _ _ _ => Iff.rfl
+      | some x =>
+          have hshape := selfEqVar?_some hself
+          rw [hshape]
+          simpa [simplifyCond, selfEqVar?, resolveForLayoutExpr,
+            resolveForLayoutExprs, resolveForLayoutStmt] using
+            (cond_selfEq_equiv (calls := calls) (creates := creates) x
+              (resolveForLayoutStmts L body))
   | call fn args =>
-      simp only [simplifyCond, resolveForLayoutStmt_cond]
-      exact EquivStmt.refl _
+      simp only [simplifyCond, selfEqVar?, resolveForLayoutStmt_cond]
+      exact fun _ _ _ _ _ _ => Iff.rfl
 
 /-- Resolving a folded `switch` agrees with resolving its condition/cases first
 and then executing the original `switch`. -/
@@ -363,9 +374,11 @@ theorem hoist_resolve_simplifyCond_cons (L : Layout) (c : Expr Op)
   cases c with
   | lit l => rw [simplifyCond]; split <;>
       simp [hoist]
-  | var _ => simp [simplifyCond, hoist]
-  | builtin _ _ => simp [simplifyCond, hoist]
-  | call _ _ => simp [simplifyCond, hoist]
+  | var _ => simp [simplifyCond, selfEqVar?, hoist]
+  | builtin op args =>
+      cases hself : selfEqVar? (.builtin op args) <;>
+        simp [simplifyCond, hself, hoist]
+  | call _ _ => simp [simplifyCond, selfEqVar?, hoist]
 
 /-- A resolved folded `switch` still contributes no declaration to its enclosing
 hoisted scope. -/
