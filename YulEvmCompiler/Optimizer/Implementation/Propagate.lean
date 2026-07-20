@@ -191,7 +191,11 @@ and are always created. A wrong gate costs optimization (the compile
 fallback), never coverage or soundness. -/
 def copyDepthLimit : Nat := 12
 
-/-- Enable copy facts for a scope entered with `acc` already-live bindings? -/
+/-- Enable copy facts for a scope entered with `acc` already-live bindings?
+Recomputed at **every block entry** (not just per function): the copies worth
+substituting are locally sourced and locally consumed (inlined-site blocks),
+where the small block bounds the depth delta; big frames — dispatcher arms,
+whole dispatcher bodies — recompute big and stay gated off. -/
 def copyGate (acc : Nat) (body : Block Op) : Bool :=
   decide (liveMaxStmts acc body ≤ copyDepthLimit)
 
@@ -241,7 +245,7 @@ mutual
 tracked environment for the statements that follow it. -/
 def propStmt (copyOK : Bool) (σ : PEnv) : Stmt Op → Stmt Op × PEnv
   | .block body =>
-      (.block (propStmts copyOK σ body).1, prune σ (writeSetStmts body))
+      (.block (propStmts (copyGate 0 body) σ body).1, prune σ (writeSetStmts body))
   | .funDef n ps rs body =>
       (.funDef n ps rs
         (propStmts (copyGate (ps.length + rs.length) body) [] body).1, σ)
@@ -254,15 +258,16 @@ def propStmt (copyOK : Bool) (σ : PEnv) : Stmt Op → Stmt Op × PEnv
       let r := rhsExpr σ e
       (.assign xs r, assignEnv copyOK σ xs r)
   | .cond c body =>
-      (.cond (substExpr σ c) (propStmts copyOK σ body).1, prune σ (writeSetStmts body))
+      (.cond (substExpr σ c) (propStmts (copyGate 0 body) σ body).1,
+        prune σ (writeSetStmts body))
   | .switch c cases dflt =>
       (.switch (substExpr σ c) (propCases copyOK σ cases) (propDflt copyOK σ dflt),
         prune σ (writeSetCases cases ++ writeSetDflt dflt))
   | .forLoop init c post body =>
       let pinit := propStmts copyOK σ init
       let σL := prune pinit.2 (writeSetStmts post ++ writeSetStmts body)
-      (.forLoop pinit.1 (substExpr σL c) (propStmts copyOK σL post).1
-        (propStmts copyOK σL body).1,
+      (.forLoop pinit.1 (substExpr σL c) (propStmts (copyGate 0 post) σL post).1
+        (propStmts (copyGate 0 body) σL body).1,
         prune σ (writeSetStmts init ++ writeSetStmts post ++ writeSetStmts body))
   | .exprStmt e => (.exprStmt (substExpr σ e), σ)
   | .break => (.break, σ)
@@ -281,12 +286,13 @@ def propStmts (copyOK : Bool) (σ : PEnv) : List (Stmt Op) → List (Stmt Op) ×
 def propCases (copyOK : Bool) (σ : PEnv) :
     List (Literal × Block Op) → List (Literal × Block Op)
   | [] => []
-  | (l, b) :: rest => (l, (propStmts copyOK σ b).1) :: propCases copyOK σ rest
+  | (l, b) :: rest =>
+      (l, (propStmts (copyGate 0 b) σ b).1) :: propCases copyOK σ rest
 
 /-- Propagate through a `switch`'s optional default. -/
-def propDflt (copyOK : Bool) (σ : PEnv) : Option (Block Op) → Option (Block Op)
+def propDflt (_copyOK : Bool) (σ : PEnv) : Option (Block Op) → Option (Block Op)
   | none => none
-  | some b => some ((propStmts copyOK σ b).1)
+  | some b => some ((propStmts (copyGate 0 b) σ b).1)
 
 end
 
@@ -442,19 +448,20 @@ mutual
 theorem propStmt_rel (copyOK : Bool) (σ : PEnv) : ∀ s : Stmt Op,
     PropRel σ (propStmt copyOK σ s).2
       (.stmt s) (.stmt (propStmt copyOK σ s).1)
-  | .block body => .blockS (propStmts_rel copyOK σ body)
+  | .block body => .blockS (propStmts_rel (copyGate 0 body) σ body)
   | .funDef _ ps rs body =>
       .funDefS (propStmts_rel (copyGate (ps.length + rs.length) body) [] body)
   | .letDecl xs none => .letNoneS (letZeroEnv_rel σ xs)
   | .letDecl xs (some e) =>
       .letSomeS (.fold) (letEnv_rel copyOK σ xs (rhsExpr σ e))
   | .assign xs e => .assignS (.fold) (assignEnv_rel copyOK σ xs (rhsExpr σ e))
-  | .cond _ body => .condS (propStmts_rel copyOK σ body)
+  | .cond _ body => .condS (propStmts_rel (copyGate 0 body) σ body)
   | .switch _ cases dflt =>
       .switchS (propCases_rel copyOK σ cases) (propDflt_rel copyOK σ dflt)
   | .forLoop init _ post body =>
       .forS (propStmts_rel copyOK σ init) rfl
-        (propStmts_rel copyOK _ post) (propStmts_rel copyOK _ body)
+        (propStmts_rel (copyGate 0 post) _ post)
+        (propStmts_rel (copyGate 0 body) _ body)
   | .exprStmt _ => .exprStmtS
   | .break => .breakS
   | .continue => .continueS
@@ -475,14 +482,14 @@ theorem propCases_rel (copyOK : Bool) (σ : PEnv) : ∀ cs : List (Literal × Bl
       (.cases cs) (.cases (propCases copyOK σ cs))
   | [] => .casesNil
   | (_, b) :: rest =>
-      .casesCons (propStmts_rel copyOK σ b) (propCases_rel copyOK σ rest)
+      .casesCons (propStmts_rel (copyGate 0 b) σ b) (propCases_rel copyOK σ rest)
 
 /-- The default transform inhabits the relation. -/
 theorem propDflt_rel (copyOK : Bool) (σ : PEnv) : ∀ d : Option (Block Op),
     PropRel σ σ
       (.odflt d) (.odflt (propDflt copyOK σ d))
   | none => .odfltNone
-  | some b => .odfltSome (propStmts_rel copyOK σ b)
+  | some b => .odfltSome (propStmts_rel (copyGate 0 b) σ b)
 
 end
 

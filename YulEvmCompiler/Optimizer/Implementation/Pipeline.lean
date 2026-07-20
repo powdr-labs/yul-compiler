@@ -3,6 +3,7 @@ import YulEvmCompiler.Optimizer.Implementation.PropagateResolve
 import YulEvmCompiler.Optimizer.Implementation.DeadLitsResolve
 import YulEvmCompiler.Optimizer.Implementation.InlineCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.DeadPureResolve
+import YulEvmCompiler.Optimizer.Implementation.FreshenCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
 set_option warningAsError true
 /-!
@@ -86,7 +87,8 @@ def pipelineRounds : Nat := 6
 
 /-- One block-path round. -/
 def blockRound : List (Pass D) :=
-  [simplify, propagate, inlineHelpersPass true, inlineCalls, simplify, deadPure]
+  [simplify, propagate, inlineHelpersPass true, freshenCalls, inlineCalls,
+   simplify, deadPure]
 
 /-- Verified block pipeline at an explicit round count. Iterated inlining can
 push a caller's live locals past the backend's `DUP16`/`SWAP16` reach; fewer
@@ -118,6 +120,7 @@ def objectRound : List (RPass calls creates) :=
    ⟨propagate, fun L b => by
       have hp := resolvePropagateBlock_equiv (calls := calls) (creates := creates) L b
       simpa [propagateBlock] using hp⟩,
+   ⟨freshenCalls, fun L b => resolveFreshenCallsBlock_equiv L b⟩,
    ⟨inlineCalls, fun L b => resolveInlineCallsBlock_equiv L b⟩,
    ⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
    ⟨deadPure, fun L b => resolveDeadPureBlock_equiv L b⟩]
