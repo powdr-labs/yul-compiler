@@ -411,6 +411,40 @@ FullMath, SqrtPriceMath, TickBitmap, and TickMath are newly accepted; SwapMath
 remains a conservative rejection. Existing successful artifacts are unchanged
 because the pass is fallback-only, yielding zero gas regressions; the four
 newly comparable gas rows are pinned.
+### 🚧 Depth-aware copy propagation + scoped pure DCE + open-operand identities (this branch)
+
+Issue #64, informed by the post-#63 dumps: after `InlineCalls`, the dominant
+remaining cost is copy/rename residue (`let _2 := var_x; let expr := _2`),
+dead parameter/result copy bindings, and one-open-operand identities
+(`or(0, e)`, the `InlineHelpers` fence `add(f(…), 0)`) that gate further
+inlining rounds. Three coordinated changes, one branch:
+
+1. **Copy facts in production `Propagate`** behind a per-scope live-locals
+   depth gate (mirroring `liveMaxStmts`): the relation side (`classify`,
+   `PropRel`, both simulations, resolution closure) already covers `.var`
+   facts; only `classifyProd`/policy threading changes. The resolution
+   congruence transports a frozen relation instance, so the gate heuristic
+   needs no resolution stability. `dispatch_*` (large frames) is the
+   regression target the gate must protect.
+2. **`DeadPure`** — DeadLits generalized to dead singleton `let y := rhs`
+   where `rhs` *always evaluates in context*: literals, `bound`-vars
+   (params/rets via the call rule's `callOk` env, plus earlier binders), and
+   pure-total builtin trees over those. Proof: PropRel-style relation
+   `DcRel bound` + bidirectional Step simulation carrying `BoundOK` and a
+   multi-insertion generalization of `InsAt`; block-exit `restore` erases
+   the extra bindings, keeping the strong `Pass` tier (no ObsPass).
+3. **Open-operand neutral identities in `Simplify`** at the expression layer
+   (outside Core): `add/sub/or/xor(e,0)`, `add/or/xor(0,e)`, `mul/div(e,1)`,
+   `mul(1,e)` for arbitrary `e` including calls — the literal operand is
+   total/stateless, `e` evaluates once on both sides. Rewriting the fence
+   `add(f(…),0) → f(…)` re-exposes statement-level calls to `InlineCalls`,
+   unblocking the `read_from_storage → extract → shift_right` chains in the
+   top loop fixtures.
+
+Dead assignments, multi-binder lets, and dead `funDef` removal are logged
+follow-ups (value-desync needs a different relation).
+
+## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
 
