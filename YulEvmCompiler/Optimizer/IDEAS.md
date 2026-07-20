@@ -650,6 +650,40 @@ loop `sload`. The curated gas suite and current six compilable Uniswap scenarios
 are unchanged with no regression; Uniswap remains orthogonal to PR #68's stack
 work. Layout congruence, adversarial shadowing/unbound/rebinding guards, and the
 bidirectional pass proof all type-check without changing the trust boundary.
+### 🚧 Dead-let lifetime shortening after `InlineCalls` (`dead-let-pop`)
+
+Issue #64 is the right companion to `InlineCalls`, but directly enabling copy
+substitution remains unsafe for this stack backend: replacing a recent copy by
+an older source can turn a compiling `DUP16` into an unreachable `DUP17`.
+The first production slice instead shortens dead binding lifetimes without
+substitution.  A dead singleton initialized binding
+
+```yul
+let x := e
+```
+
+whose `x` is not mentioned by the rest of its block becomes
+
+```yul
+pop(e)
+```
+
+while the existing `DeadLits` cases still delete dead zero/literal bindings
+entirely.  Keeping `e` under `pop` preserves its evaluation, effects, halt,
+arity check, and unbound-variable stuckness under the unchanged pointwise
+`EquivBlock` spec; removing the binding ends its operand-stack lifetime at the
+declaration rather than at block exit.  This targets dead parameter/result and
+copy scaffolding exposed by `InlineCalls`, may bring optimized programs back
+under `DUP16`, and cannot deepen any remaining variable read.
+
+Proof plan: add a bidirectional `let`/`pop` execution lemma, reuse the existing
+`InsAt` frame simulation for the mention-free suffix, extend `DlRel` with a
+guarded replacement rule, and transport it through object layout resolution
+using the existing identifier-occurrence invariance.  The existing iterated
+block/object pipelines then pick up the stronger stage without a spec change.
+Measure all `dispatch_*` gas tests, the six compiling and five rejected Uniswap
+fixtures, and the high-gap semantic cases before deciding whether the next
+slice should be depth-aware copy facts or broader pure-expression deletion.
 
 ## Candidate next ideas (not started)
 
