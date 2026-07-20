@@ -344,11 +344,11 @@ loadResolver/simple_memory.yul	2302	2292
 loadResolver/staticcall.yul	236852	236882
 loadResolver/zero_length_reads.yul	54	48
 loopInvariantCodeMotion/create_sload.yul	1752414	1732656
-loopInvariantCodeMotion/move_storage_function.yul	26610	2370
+loopInvariantCodeMotion/move_storage_function.yul	25746	2370
 loopInvariantCodeMotion/no_move_immovables.yul	354	138
 loopInvariantCodeMotion/no_move_memory.yul	618	630
 loopInvariantCodeMotion/no_move_state.yul	599841178	599959551
-loopInvariantCodeMotion/no_move_state_function.yul	86192	45926
+loopInvariantCodeMotion/no_move_state_function.yul	85328	45926
 loopInvariantCodeMotion/no_move_storage_function.yul	55586	36800
 loopInvariantCodeMotion/no_move_transient_storage.yul	1190928	1190172
 loopInvariantCodeMotion/not_first.yul	63118	57502

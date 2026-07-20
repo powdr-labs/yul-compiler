@@ -442,34 +442,35 @@ inlining rounds. Three coordinated changes, one branch:
    unblocking the `read_from_storage → extract → shift_right` chains in the
    top loop fixtures.
 
-**Results** (fully proven, no sorries, axiom gate clean): `semanticTests`
-846 comparable rows — **769 improve, −1,198,198 gas** (gap 35.09M → 33.89M,
-3.4% closed), **11 fixtures newly produce gas rows** (857 total; the light
-compile fallback below rescues one, cleanup unlocks the rest), one softened
-regression (`calldata_array_bounds_check_nested_bytes.sol` 4,019 → 4,268:
-rounds ≥ 2 now exceed DUP16 there, the one-round fallback compiles);
-`gasTests` 12/12 rows −2,782 (`exp.sol` 2,352, `dispatch_large.sol` 87,843 —
-the depth gate keeps every `dispatch_*` compiling); Uniswap v4 6/6 rows
-−1,875 (`UnsafeMath.sol` 2,908 → 2,464, `SafeCast.sol` 5,442 → 4,919); the
-five DUP16-rejected Uniswap fixtures stay rejected (they fail unoptimized
-too — stack compression is still the needed follow-up).
+**Results** (fully proven, no sorries, axiom gate clean): on the 846
+`semanticTests` rows shared with main, **777 improve, −2,132,944 gas net**
+(−2,137,080 improvements, four small regressions totaling +4,136), and
+**13 fixtures newly produce gas rows** (859 total). `gasTests` improve 12/12,
+−3,855 total (`exp.sol` 2,700 → 2,352, `dispatch_large.sol` 88,362 → 87,677);
+Uniswap v4 improves 6/6, −1,946 total (`UnsafeMath.sol` 2,908 → 2,434,
+`SafeCast.sol` 5,442 → 4,888); the Yul optimizer corpus improves 27 rows,
+−2,941 total. The five DUP16-rejected Uniswap fixtures stay rejected (they
+fail unoptimized too — stack compression is still the needed follow-up).
 
 Also on this branch: `compileSource` now retries a **light one-round
 pipeline** before abandoning optimization (`optimizerPipeline*Rounds`
 generalization) — iterated inlining occasionally pushes a caller past
 DUP16, and the graded fallback converts that cliff into a small gradient.
 
+Also completed on this branch: a proved **call-site result freshening** pass
+(`x := f(a)` → `{ let t := f(a); x := t }`, globally fresh `t`) removes the
+common caller-result/callee-name collision before `InlineCalls`; the copy/DCE
+passes consume its temporary. The gate is recomputed per block, and the
+inlining live-local bound is 12. Argument-side shadowing and call-bearing
+arguments remain deliberately unfreshened until their environment-extension
+proof is available.
+
 Findings for the follow-ups, from the post-branch dumps:
 
-- **Name collisions now block the top loop fixtures** (`array_storage_*`,
-  rows 1–3 of the gap report — still ~27M of the remaining gap). solc's
-  helpers reuse `value`/`slot`/`offset`, so sites like
-  `value := extract_from_storage(…)` or `slot, offset := storage_array_…(…)`
-  hit `InlineCalls`' capture conditions (`xs ∩ (ps ∪ rs) ≠ ∅`) and are
-  rejected rather than renamed. A small **call-site freshening** rewrite
-  (`x := f(a)` → `{ let t := f(a); x := t }`, `t` fresh) would make them
-  eligible, and DeadPure + copy propagation now clean up exactly the copies
-  it introduces. Highest-leverage next step for the loop rows.
+- **Argument-side collisions remain** where an argument reads a callee
+  parameter/return name or itself contains a call. Extending freshening to
+  hoist arguments right-to-left would unlock more of the remaining loop gap,
+  but needs the stronger environment-extension proof for nested calls.
 - **Gate granularity**: the per-function `copyGate` disables copy facts in
   large caller frames — precisely where iterated inlining lands its residue
   (visible in `fun_run` of `calling_other_functions.sol`). Per-enclosing-
