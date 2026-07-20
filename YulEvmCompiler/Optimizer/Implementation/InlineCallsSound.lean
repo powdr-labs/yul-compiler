@@ -1713,6 +1713,319 @@ theorem inlineCore_bwd {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
                     (P ++ bindZeros D d.rs) ++ (Z ++ V) by simp [List.append_assoc]]
                   exact restore_exact rfl
 
+/-! ### The inlining relation
+
+Skip-rule relation over `PCode` (the transform inhabits it; skip alternatives
+make it closed under layout resolution). Expressions are never rewritten —
+the expression/argument classes relate identically — and every statement rule
+is constructor-preserving except the three *site* rules. `Δ` mirrors the
+scope discipline of `hoist`/`lookupFun`: blocks and function bodies extend it
+with their own hoisted declarations (`deltaExtend`), a `for` prunes its
+`init`-defined names. -/
+
+inductive IcRel : DEnv → PCode Op → PCode Op → Prop
+  | expr {Δ : DEnv} {e : Expr Op} : IcRel Δ (.expr e) (.expr e)
+  | args {Δ : DEnv} {es : List (Expr Op)} : IcRel Δ (.args es) (.args es)
+  | blockS {Δ : DEnv} {body body' : Block Op} :
+      IcRel (deltaExtend Δ body) (.stmts body) (.stmts body') →
+      IcRel Δ (.stmt (.block body)) (.stmt (.block body'))
+  | funDefS {Δ : DEnv} {n : Ident} {ps rs : List Ident} {body body' : Block Op} :
+      IcRel (deltaExtend Δ body) (.stmts body) (.stmts body') →
+      IcRel Δ (.stmt (.funDef n ps rs body)) (.stmt (.funDef n ps rs body'))
+  | letS {Δ : DEnv} {xs : List Ident} {v : Option (Expr Op)} :
+      IcRel Δ (.stmt (.letDecl xs v)) (.stmt (.letDecl xs v))
+  | assignS {Δ : DEnv} {xs : List Ident} {e : Expr Op} :
+      IcRel Δ (.stmt (.assign xs e)) (.stmt (.assign xs e))
+  | exprStmtS {Δ : DEnv} {e : Expr Op} :
+      IcRel Δ (.stmt (.exprStmt e)) (.stmt (.exprStmt e))
+  | condS {Δ : DEnv} {c : Expr Op} {body body' : Block Op} :
+      IcRel (deltaExtend Δ body) (.stmts body) (.stmts body') →
+      IcRel Δ (.stmt (.cond c body)) (.stmt (.cond c body'))
+  | switchS {Δ : DEnv} {c : Expr Op} {cases cases' : List (Literal × Block Op)}
+      {dflt dflt' : Option (Block Op)} :
+      IcRel Δ (.cases cases) (.cases cases') →
+      IcRel Δ (.odflt dflt) (.odflt dflt') →
+      IcRel Δ (.stmt (.switch c cases dflt)) (.stmt (.switch c cases' dflt'))
+  | forS {Δ : DEnv} {init : Block Op} {c : Expr Op} {post post' body body' : Block Op} :
+      IcRel (deltaExtend (Δ.filter
+          (fun p => !(definedFuns init).contains p.1)) post)
+        (.stmts post) (.stmts post') →
+      IcRel (deltaExtend (Δ.filter
+          (fun p => !(definedFuns init).contains p.1)) body)
+        (.stmts body) (.stmts body') →
+      IcRel Δ (.stmt (.forLoop init c post body))
+        (.stmt (.forLoop init c post' body'))
+  | breakS {Δ : DEnv} : IcRel Δ (.stmt .break) (.stmt .break)
+  | continueS {Δ : DEnv} : IcRel Δ (.stmt .continue) (.stmt .continue)
+  | leaveS {Δ : DEnv} : IcRel Δ (.stmt .leave) (.stmt .leave)
+  | nilSS {Δ : DEnv} : IcRel Δ (.stmts []) (.stmts [])
+  | consSS {Δ : DEnv} {s s' : Stmt Op} {rest rest' : List (Stmt Op)} :
+      IcRel Δ (.stmt s) (.stmt s') → IcRel Δ (.stmts rest) (.stmts rest') →
+      IcRel Δ (.stmts (s :: rest)) (.stmts (s' :: rest'))
+  | siteLet {Δ : DEnv} {f : Ident} {d : IDecl} {xs : List Ident}
+      {as : List (Expr Op)} {rest rest' : List (Stmt Op)} :
+      lookupDelta Δ f = some d →
+      (d.ps ++ d.rs).Nodup →
+      scopedStmts (d.ps ++ d.rs) d.ss = true →
+      siteOK d xs as true = true →
+      IcRel Δ (.stmts rest) (.stmts rest') →
+      IcRel Δ (.stmts (.letDecl xs (some (.call f as)) :: rest))
+        (.stmts (.letDecl xs none :: inlineCore d xs as :: rest'))
+  | siteAssign {Δ : DEnv} {f : Ident} {d : IDecl} {xs : List Ident}
+      {as : List (Expr Op)} {rest rest' : List (Stmt Op)} :
+      lookupDelta Δ f = some d →
+      (d.ps ++ d.rs).Nodup →
+      scopedStmts (d.ps ++ d.rs) d.ss = true →
+      siteOK d xs as false = true →
+      IcRel Δ (.stmts rest) (.stmts rest') →
+      IcRel Δ (.stmts (.assign xs (.call f as) :: rest))
+        (.stmts (inlineCore d xs as :: rest'))
+  | siteExpr {Δ : DEnv} {f : Ident} {d : IDecl}
+      {as : List (Expr Op)} {rest rest' : List (Stmt Op)} :
+      lookupDelta Δ f = some d →
+      (d.ps ++ d.rs).Nodup →
+      scopedStmts (d.ps ++ d.rs) d.ss = true →
+      siteOK d [] as false = true →
+      IcRel Δ (.stmts rest) (.stmts rest') →
+      IcRel Δ (.stmts (.exprStmt (.call f as) :: rest))
+        (.stmts (inlineCore d [] as :: rest'))
+  | loopL {Δ : DEnv} {c : Expr Op} {post post' body body' : Block Op} :
+      IcRel (deltaExtend Δ post) (.stmts post) (.stmts post') →
+      IcRel (deltaExtend Δ body) (.stmts body) (.stmts body') →
+      IcRel Δ (.loop c post body) (.loop c post' body')
+  | casesNil {Δ : DEnv} : IcRel Δ (.cases []) (.cases [])
+  | casesCons {Δ : DEnv} {l : Literal} {b b' : Block Op}
+      {rest rest' : List (Literal × Block Op)} :
+      IcRel (deltaExtend Δ b) (.stmts b) (.stmts b') →
+      IcRel Δ (.cases rest) (.cases rest') →
+      IcRel Δ (.cases ((l, b) :: rest)) (.cases ((l, b') :: rest'))
+  | odfltNone {Δ : DEnv} : IcRel Δ (.odflt none) (.odflt none)
+  | odfltSome {Δ : DEnv} {b b' : Block Op} :
+      IcRel (deltaExtend Δ b) (.stmts b) (.stmts b') →
+      IcRel Δ (.odflt (some b)) (.odflt (some b'))
+
+/-! ### The transform inhabits the relation -/
+
+/-- Every tracked declaration is classified: distinct parameter/return names
+and a scoped body. Maintained by `deltaExtend` (entries come from
+`classifyDecl`) and trivially by pruning. -/
+def DeltaWF (Δ : DEnv) : Prop :=
+  ∀ p ∈ Δ, (p.2.ps ++ p.2.rs).Nodup ∧
+    scopedStmts (p.2.ps ++ p.2.rs) p.2.ss = true
+
+/-- `hoistDecls` only produces classified declarations. -/
+theorem hoistDecls_wf {seen : List Ident} : ∀ {body : List (Stmt Op)}
+    {p : Ident × IDecl}, p ∈ hoistDecls seen body →
+    (p.2.ps ++ p.2.rs).Nodup ∧ scopedStmts (p.2.ps ++ p.2.rs) p.2.ss = true := by
+  intro body
+  induction body generalizing seen with
+  | nil => intro p hp; cases hp
+  | cons s rest ih =>
+      intro p hp
+      cases s with
+      | funDef f ps rs fbody =>
+          unfold hoistDecls at hp
+          split at hp
+          · exact ih hp
+          · split at hp
+            · next d hcl =>
+                rcases List.mem_cons.mp hp with rfl | hp
+                · obtain ⟨hps, hrs, hnd, hsc, -⟩ := classifyDecl_inv hcl
+                  refine ⟨?_, ?_⟩
+                  · show (d.ps ++ d.rs).Nodup
+                    rw [hps, hrs]; exact hnd
+                  · show scopedStmts (d.ps ++ d.rs) d.ss = true
+                    rw [hps, hrs]
+                    exact hsc
+                · exact ih hp
+            · exact ih hp
+      | block body => exact ih hp
+      | letDecl xs v => exact ih hp
+      | assign xs e => exact ih hp
+      | exprStmt e => exact ih hp
+      | cond c body => exact ih hp
+      | switch c cases dflt => exact ih hp
+      | forLoop init c post body => exact ih hp
+      | «break» => exact ih hp
+      | «continue» => exact ih hp
+      | leave => exact ih hp
+
+/-- `deltaExtend` preserves well-formedness. -/
+theorem DeltaWF.extend {Δ : DEnv} (h : DeltaWF Δ) (body : List (Stmt Op)) :
+    DeltaWF (deltaExtend Δ body) := by
+  intro p hp
+  unfold deltaExtend at hp
+  rcases List.mem_append.mp hp with hp | hp
+  · exact hoistDecls_wf hp
+  · exact h p (List.mem_filter.mp hp).1
+
+/-- Pruning preserves well-formedness. -/
+theorem DeltaWF.filter {Δ : DEnv} (h : DeltaWF Δ) (q : Ident × IDecl → Bool) :
+    DeltaWF (Δ.filter q) :=
+  fun p hp => h p (List.mem_filter.mp hp).1
+
+/-- A `lookupDelta` hit is a member. -/
+theorem lookupDelta_mem {Δ : DEnv} {f : Ident} {d : IDecl}
+    (h : lookupDelta Δ f = some d) : (f, d) ∈ Δ := by
+  unfold lookupDelta at h
+  cases hf : Δ.find? (fun p => p.1 = f) with
+  | none => rw [hf] at h; cases h
+  | some p =>
+      rw [hf] at h
+      injection h with h
+      have hmem := List.mem_of_find?_eq_some hf
+      have hkey : p.1 = f := by
+        have := List.find?_some hf
+        simpa using this
+      have : p = (f, d) := by
+        cases p
+        simp only at hkey h
+        rw [hkey, h]
+      rw [← this]
+      exact hmem
+
+mutual
+
+/-- The statement-list transform inhabits the relation. -/
+theorem icStmts_rel (Δ : DEnv) (hwf : DeltaWF Δ) :
+    ∀ ss : List (Stmt Op), IcRel Δ (.stmts ss) (.stmts (icStmts Δ ss))
+  | [] => by
+      rw [icStmts]
+      exact .nilSS
+  | .letDecl xs (some (.call f as)) :: rest => by
+      rw [icStmts, icStmt]
+      split
+      · next d hld =>
+          obtain ⟨hnd, hsc⟩ := hwf (f, d) (lookupDelta_mem hld)
+          by_cases hok : (inlineOK d && siteOK d xs as true) = true
+          · rw [if_pos hok]
+            rw [Bool.and_eq_true] at hok
+            exact .siteLet hld hnd hsc hok.2 (icStmts_rel Δ hwf rest)
+          · rw [if_neg hok]
+            exact .consSS .letS (icStmts_rel Δ hwf rest)
+      · exact .consSS .letS (icStmts_rel Δ hwf rest)
+  | .assign xs (.call f as) :: rest => by
+      rw [icStmts, icStmt]
+      split
+      · next d hld =>
+          obtain ⟨hnd, hsc⟩ := hwf (f, d) (lookupDelta_mem hld)
+          by_cases hok : (inlineOK d && siteOK d xs as false) = true
+          · rw [if_pos hok]
+            rw [Bool.and_eq_true] at hok
+            exact .siteAssign hld hnd hsc hok.2 (icStmts_rel Δ hwf rest)
+          · rw [if_neg hok]
+            exact .consSS .assignS (icStmts_rel Δ hwf rest)
+      · exact .consSS .assignS (icStmts_rel Δ hwf rest)
+  | .exprStmt (.call f as) :: rest => by
+      rw [icStmts, icStmt]
+      split
+      · next d hld =>
+          obtain ⟨hnd, hsc⟩ := hwf (f, d) (lookupDelta_mem hld)
+          by_cases hok : (inlineOK d && siteOK d [] as false) = true
+          · rw [if_pos hok]
+            rw [Bool.and_eq_true] at hok
+            exact .siteExpr hld hnd hsc hok.2 (icStmts_rel Δ hwf rest)
+          · rw [if_neg hok]
+            exact .consSS .exprStmtS (icStmts_rel Δ hwf rest)
+      · exact .consSS .exprStmtS (icStmts_rel Δ hwf rest)
+  | .block body :: rest => by
+      rw [icStmts, icStmt, icBlock]
+      exact .consSS (.blockS (icStmts_rel _ (hwf.extend body) body))
+        (icStmts_rel Δ hwf rest)
+  | .funDef n ps rs body :: rest => by
+      rw [icStmts, icStmt, icBlock]
+      exact .consSS (.funDefS (icStmts_rel _ (hwf.extend body) body))
+        (icStmts_rel Δ hwf rest)
+  | .letDecl xs none :: rest => by
+      rw [icStmts]
+      simp only [icStmt]
+      exact .consSS .letS (icStmts_rel Δ hwf rest)
+  | .letDecl xs (some (.lit l)) :: rest => by
+      rw [icStmts]
+      simp only [icStmt]
+      exact .consSS .letS (icStmts_rel Δ hwf rest)
+  | .letDecl xs (some (.var y)) :: rest => by
+      rw [icStmts]
+      simp only [icStmt]
+      exact .consSS .letS (icStmts_rel Δ hwf rest)
+  | .letDecl xs (some (.builtin op es)) :: rest => by
+      rw [icStmts]
+      simp only [icStmt]
+      exact .consSS .letS (icStmts_rel Δ hwf rest)
+  | .assign xs (.lit l) :: rest => by
+      rw [icStmts]
+      simp only [icStmt]
+      exact .consSS .assignS (icStmts_rel Δ hwf rest)
+  | .assign xs (.var y) :: rest => by
+      rw [icStmts]
+      simp only [icStmt]
+      exact .consSS .assignS (icStmts_rel Δ hwf rest)
+  | .assign xs (.builtin op es) :: rest => by
+      rw [icStmts]
+      simp only [icStmt]
+      exact .consSS .assignS (icStmts_rel Δ hwf rest)
+  | .exprStmt (.lit l) :: rest => by
+      rw [icStmts]
+      simp only [icStmt]
+      exact .consSS .exprStmtS (icStmts_rel Δ hwf rest)
+  | .exprStmt (.var y) :: rest => by
+      rw [icStmts]
+      simp only [icStmt]
+      exact .consSS .exprStmtS (icStmts_rel Δ hwf rest)
+  | .exprStmt (.builtin op es) :: rest => by
+      rw [icStmts]
+      simp only [icStmt]
+      exact .consSS .exprStmtS (icStmts_rel Δ hwf rest)
+  | .cond c body :: rest => by
+      rw [icStmts, icStmt, icBlock]
+      exact .consSS (.condS (icStmts_rel _ (hwf.extend body) body))
+        (icStmts_rel Δ hwf rest)
+  | .switch c cases dflt :: rest => by
+      rw [icStmts, icStmt]
+      exact .consSS (.switchS (icCases_rel Δ hwf cases) (icDflt_rel Δ hwf dflt))
+        (icStmts_rel Δ hwf rest)
+  | .forLoop init c post body :: rest => by
+      rw [icStmts, icStmt]
+      simp only [icBlock]
+      exact .consSS (.forS
+          (icStmts_rel _ ((hwf.filter _).extend post) post)
+          (icStmts_rel _ ((hwf.filter _).extend body) body))
+        (icStmts_rel Δ hwf rest)
+  | .break :: rest => by
+      rw [icStmts]
+      simp only [icStmt]
+      exact .consSS .breakS (icStmts_rel Δ hwf rest)
+  | .continue :: rest => by
+      rw [icStmts]
+      simp only [icStmt]
+      exact .consSS .continueS (icStmts_rel Δ hwf rest)
+  | .leave :: rest => by
+      rw [icStmts]
+      simp only [icStmt]
+      exact .consSS .leaveS (icStmts_rel Δ hwf rest)
+
+/-- The case-list transform inhabits the relation. -/
+theorem icCases_rel (Δ : DEnv) (hwf : DeltaWF Δ) :
+    ∀ cs : List (Literal × Block Op), IcRel Δ (.cases cs) (.cases (icCases Δ cs))
+  | [] => by
+      rw [icCases]
+      exact .casesNil
+  | (l, b) :: rest => by
+      rw [icCases, icBlock]
+      exact .casesCons (icStmts_rel _ (hwf.extend b) b) (icCases_rel Δ hwf rest)
+
+/-- The default transform inhabits the relation. -/
+theorem icDflt_rel (Δ : DEnv) (hwf : DeltaWF Δ) :
+    ∀ dflt : Option (Block Op), IcRel Δ (.odflt dflt) (.odflt (icDflt Δ dflt))
+  | none => by
+      rw [icDflt]
+      exact .odfltNone
+  | some b => by
+      rw [icDflt, icBlock]
+      exact .odfltSome (icStmts_rel _ (hwf.extend b) b)
+
+end
+
 /-- The verified pass (soundness in progress). -/
 def inlineCalls : Pass D where
   run := inlineCallsBlock

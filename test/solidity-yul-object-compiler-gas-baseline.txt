@@ -19,8 +19,8 @@ metadata.yul	162708	162684
 namedObject.yul	0	0
 namedObjectCode.yul	44336	44330
 nested_optimizer.yul	13362	13350
-prune_unreachable_function_non_returning.yul	126	30
-prune_unreferenced_function.yul	366	210
+prune_unreachable_function_non_returning.yul	36	30
+prune_unreferenced_function.yul	216	210
 simple.yul	44336	44330
 simple_optimizer.yul	13362	13350
 smoke.yul	0	0

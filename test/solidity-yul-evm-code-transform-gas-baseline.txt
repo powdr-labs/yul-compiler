@@ -3,13 +3,13 @@
 # Pinned to solc 0.8.35, EVM version osaka. 'ours' is a ceiling:
 # CI fails if this compiler's total rises above it while solc's is unchanged.
 # columns: fixture<TAB>ours<TAB>solc
-after_terminating_function.yul	180	30
+after_terminating_function.yul	54	30
 nonempty_initial_layout.yul	0	210
 pops_in_reverting_branch.yul	61646	61580
 stackReuse/function_argument_reuse.yul	27692	27464
-stackReuse/function_argument_reuse_without_retparams.yul	25594	25511
-stackReuse/function_call.yul	594	480
-stackReuse/function_params.yul	282	0
+stackReuse/function_argument_reuse_without_retparams.yul	25384	25511
+stackReuse/function_call.yul	186	480
+stackReuse/function_params.yul	72	0
 stackReuse/function_params_and_retparams.yul	414	0
 stackReuse/function_params_and_retparams_partly_used.yul	600	432
 stackReuse/function_retparam.yul	294	0
@@ -21,9 +21,9 @@ stackReuse/function_retparam_leave.yul	360	0
 stackReuse/function_retparam_read.yul	27554	27404
 stackReuse/function_retparam_unassigned.yul	294	0
 stackReuse/function_retparam_unassigned_multiple.yul	354	0
-stackReuse/function_trivial.yul	222	0
+stackReuse/function_trivial.yul	72	0
 stackReuse/function_with_body_embedded.yul	522	0
-stackReuse/functions_multi_return.yul	1170	888
+stackReuse/functions_multi_return.yul	606	888
 stackReuse/if.yul	174	132
 stackReuse/last_use_in_nested_block.yul	30	0
 stackReuse/multi_reuse_same_variable_name.yul	306	48
