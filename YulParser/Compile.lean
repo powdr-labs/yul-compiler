@@ -135,18 +135,24 @@ the pipeline's resolution-stable mode to every code block in the tree. -/
 def compileSource (source : String) : Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
-      return YulEvmCompiler.assemble
-        (← YulEvmCompiler.compile
+      let b := pruneLinkerBlock (block.map desugarStmt)
+      -- Optimization can raise a caller's live-local count past the backend's
+      -- DUP16/SWAP16 reach; when the optimized program does not compile, fall
+      -- back to the unoptimized one (each choice is covered by its own
+      -- correctness theorem).
+      let asm := YulEvmCompiler.compile
           ((YulEvmCompiler.Optimizer.optimizerPipeline
             (calls := YulSemantics.EVM.ExternalCalls.none)
-            (creates := YulSemantics.EVM.ExternalCreates.none)).run
-              (pruneLinkerBlock (block.map desugarStmt))))
+            (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
+        <|> YulEvmCompiler.compile b
+      return YulEvmCompiler.assemble (← asm)
   | some (.object o) =>
+      let o := pruneLinkerObjectTree (desugarObject o)
       let layout ← YulEvmCompiler.compileObject
-        (YulEvmCompiler.Optimizer.optimizerPipelineObject
-          (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none)
-          (pruneLinkerObjectTree (desugarObject o)))
+          (YulEvmCompiler.Optimizer.optimizerPipelineObject
+            (calls := YulSemantics.EVM.ExternalCalls.none)
+            (creates := YulSemantics.EVM.ExternalCreates.none) o)
+        <|> YulEvmCompiler.compileObject o
       return ByteArray.mk layout.code.toArray
   | none => none
 
