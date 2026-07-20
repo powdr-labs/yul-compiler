@@ -1,6 +1,7 @@
 import YulParser.Source
 import YulEvmCompiler.ObjectCompile
 import YulEvmCompiler.Optimizer.Implementation.Pipeline
+import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
 set_option warningAsError true
 /-!
 # YulParser.Compile
@@ -136,22 +137,26 @@ def compileSource (source : String) : Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
       let b := pruneLinkerBlock (block.map desugarStmt)
-      -- Optimization can raise a caller's live-local count past the backend's
-      -- DUP16/SWAP16 reach; when the optimized program does not compile, fall
-      -- back to the unoptimized one (each choice is covered by its own
-      -- correctness theorem).
-      let asm := YulEvmCompiler.compile
-          ((YulEvmCompiler.Optimizer.optimizerPipeline
-            (calls := YulSemantics.EVM.ExternalCalls.none)
-            (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
+      -- Preserve bytecode stability for programs the ordinary pipeline can
+      -- already compile.  On stack pressure, retry its verified smart layout
+      -- (expression scheduling plus dead-slot coalescing), then retain the
+      -- historical unoptimized fallback.
+      let optimized := (YulEvmCompiler.Optimizer.optimizerPipeline
+        (calls := YulSemantics.EVM.ExternalCalls.none)
+        (creates := YulSemantics.EVM.ExternalCreates.none)).run b
+      let asm := YulEvmCompiler.compile optimized
+        <|> YulEvmCompiler.compile
+          (YulEvmCompiler.Optimizer.stackLayoutBlock optimized)
         <|> YulEvmCompiler.compile b
       return YulEvmCompiler.assemble (← asm)
   | some (.object o) =>
       let o := pruneLinkerObjectTree (desugarObject o)
-      let layout ← YulEvmCompiler.compileObject
-          (YulEvmCompiler.Optimizer.optimizerPipelineObject
-            (calls := YulSemantics.EVM.ExternalCalls.none)
-            (creates := YulSemantics.EVM.ExternalCreates.none) o)
+      let optimized := YulEvmCompiler.Optimizer.optimizerPipelineObject
+        (calls := YulSemantics.EVM.ExternalCalls.none)
+        (creates := YulSemantics.EVM.ExternalCreates.none) o
+      let layout ← YulEvmCompiler.compileObject optimized
+        <|> YulEvmCompiler.compileObject
+          (YulEvmCompiler.Optimizer.stackLayoutObject optimized)
         <|> YulEvmCompiler.compileObject o
       return ByteArray.mk layout.code.toArray
   | none => none

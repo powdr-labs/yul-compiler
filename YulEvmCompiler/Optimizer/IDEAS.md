@@ -364,19 +364,26 @@ cleanup (`let _2 := var_x; let expr := _2` residue is now the dominant
 remaining cost — copy propagation behind a depth analysis), and smarter
 guards (whole-caller live-local analysis instead of the per-callee bound).
 
-## Candidate next ideas (not started)
+## Candidate next ideas
 
-### 🚧 `StackLayout` — liveness-guided stack-slot reuse ([#61](https://github.com/powdr-labs/yul-compiler/issues/61))
+### ✅ `StackLayout` — expression scheduling and liveness-guided slot reuse ([#61](https://github.com/powdr-labs/yul-compiler/issues/61))
 
 Treat block-local Yul bindings as virtual stack registers and color their
 live ranges onto the existing local slots.  At a singleton `let y := e`, a
 dead, reachable local `x` may be reused by emitting the source-level equivalent
 `x := e` and consistently renaming the remainder of `y`'s live range to `x`.
-The allocation policy is separate from the semantic mechanism: a backwards
-liveness analysis scores legal slots by resulting `DUP`/`SWAP` reach and
-prefers no rewrite unless reuse lowers peak stack pressure.  This keeps the
-common shallow case byte-for-byte stable while compressing the large solc IR
-frames that currently fail at `DUP16`/`SWAP16`.
+The allocation policy is separate from the semantic mechanism. It searches
+earlier block-owned slots that remain within `DUP16`, rejects any whose value
+is live in the suffix, and runs only as a compilation fallback. This keeps the
+common successful case byte-for-byte stable while compressing large solc IR
+frames that otherwise fail at `DUP16`/`SWAP16`.
+
+The all-live case needs scheduling rather than coalescing. Yul evaluates call
+arguments right-to-left, so a left-associated `add` fold accumulates pending
+right operands before reaching its oldest variable. The pass right-associates
+addition spines: the leaf order is still exactly right-to-left, including for
+state-changing and halting expressions, but pending-operand pressure becomes
+constant. This is proved directly against `EvalExpr`, not assumed from purity.
 
 The proof is a bidirectional `Step` simulation over a slot-renaming relation on
 variable environments.  The overwritten value is unobservable because the
@@ -385,13 +392,16 @@ environment agree on every renamed live variable; declarations and assignments
 preserve that relation; and the enclosing block's `restore` erases the local
 layout difference.  The transform is conservative around shadowing,
 multi-value declarations, function boundaries, loop-carried values, and
-non-local control until their side conditions are proved.  It will be an
-ordinary strong `Pass`, plus resolution closure for the production object path.
+  non-local control until their side conditions are proved. The implementation
+  is an ordinary strong `Pass`; unsupported multi-value coalescing remains a
+  later extension rather than an unproved acceptance path.
 
-Acceptance target: issue #61's nine-local reproducer and the five Uniswap v4
-known stack-too-deep fixtures.  Performance gates: no lost compilation, no gas
-baseline increases, and reuse enabled only where the compiler's exact classic
-stack-depth model predicts a lower peak or turns rejection into acceptance.
+**Result:** issue #61's exact nine-local reproducer compiles and executes
+differentially. The strict Uniswap v4 suite improves from 6/11 to 9/11:
+FullMath, TickBitmap, and TickMath are newly accepted; SqrtPriceMath and
+SwapMath remain conservative rejections. Existing successful artifacts are
+unchanged because the pass is fallback-only, yielding zero gas regressions;
+the three newly comparable gas rows are pinned.
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
 

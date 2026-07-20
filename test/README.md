@@ -130,11 +130,11 @@ Unlike semanticTests, this curated suite is strict: a fixture that stops
 compiling fails CI unless it is listed in
 `uniswap-v4-known-compile-failures.txt`, and a listed fixture that *starts*
 compiling also fails until the entry is removed and its gas row pinned
-(`uniswap-v4-gas-baseline.txt`). The five heaviest fixtures (FullMath,
-SqrtPriceMath, SwapMath, TickBitmap, TickMath) are in that list today: their
-unoptimized IR keeps more simultaneously-live locals than the backend's fixed
-stack layout can address, so the list doubles as a visible record of the
-optimizer frontier. CI runs the suite as the `Uniswap v4` leg of the
+(`uniswap-v4-gas-baseline.txt`). The smart stack-layout fallback now compiles
+FullMath, TickBitmap, and TickMath; only SqrtPriceMath and SwapMath remain in
+the known-failure list because their unoptimized IR still exceeds classic
+stack reach. The list therefore remains a visible record of the optimizer
+frontier. CI runs the suite as the `Uniswap v4` leg of the
 `solidity-gas` matrix:
 
 ```sh

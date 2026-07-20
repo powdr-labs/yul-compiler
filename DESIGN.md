@@ -541,6 +541,16 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     shapes that mode accepts, whereas it *does* create literals (from
     `dataoffset`/`datasize`), which is exactly why the object path must not
     classify literal-carrying bodies or literal call arguments.
+  * **`Implementation/StackLayout.lean` / `StackLayoutSound.lean`** — the smart
+    fallback for classic-stack pressure. A Sethi--Ullman-style scheduler
+    right-associates `add` spines, preserving the exact right-to-left leaf
+    order even for state-changing or halting subexpressions. A structured
+    liveness scan then colors a singleton local onto an earlier reachable
+    block-local slot when the old value is dead, replacing `let y := e` by
+    `x := e` and consistently renaming `y`'s remaining live range. The proof is
+    a bidirectional big-step simulation over source/target variable
+    environments, including nested scopes, functions, loops, every outcome,
+    and exact block restoration.
   * **`Implementation/Pipeline.lean`** — composes the three verified stages
     (`optimizerPipeline` for blocks, `objectPipeline` for object code blocks,
     applied recursively over the tree), with the full original-object
@@ -616,8 +626,9 @@ CI), which must stay in sync as coverage grows.
 * **Deep stack access.** Variable reads use up to `DUP16` and stores up to
   `SWAP16`; functions return up to 16 values. Deeper accesses are *rejected*
   (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
-  activated on any modeled fork. Lifting this needs either EIP-8024 activation
-  upstream or a spilling pass.
+  activated on any modeled fork. The production source entry point first uses
+  the verified smart layout fallback described above; irreducible frames still
+  need EIP-8024 activation upstream or a verified spilling pass.
 * **Optimizer.** A verified `Simplify → InlineIdentity → Simplify` pipeline runs
   in front of the backend for block-rooted
   `compileSource` inputs. The spec every pass must meet is fixed and inhabited

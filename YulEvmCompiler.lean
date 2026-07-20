@@ -28,3 +28,5 @@ import YulEvmCompiler.Optimizer.Implementation.ObjectPass
 import YulEvmCompiler.Optimizer.Implementation.InlineHelpers
 import YulEvmCompiler.Optimizer.Implementation.InlineHelpersResolve
 import YulEvmCompiler.Optimizer.Implementation.Pipeline
+import YulEvmCompiler.Optimizer.Implementation.StackLayoutSound
+import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject

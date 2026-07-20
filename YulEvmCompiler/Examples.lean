@@ -1,6 +1,7 @@
 import YulEvmCompiler.Compile
 import YulEvmCompiler.StateRel
 import YulEvmCompiler.Optimizer.Implementation.Pipeline
+import YulEvmCompiler.Optimizer.Implementation.StackLayoutSound
 import YulSemantics.Syntax
 import YulSemantics.Interp
 import YulSemantics.FibExample
@@ -340,6 +341,33 @@ def externalCreates : Block Op := yul% {
   sstore(0, add(a, b))
 }
 
+/-- Issue #61's all-live pressure case.  The left-associated sum makes `v0`
+fall beyond `DUP16`; the smart layout preserves the right-to-left leaf order
+while reassociating the tree, so all nine locals remain reachable. -/
+def stackPressure : Block Op := yul% {
+  function f(x) -> r {
+    let v0 := add(x, 0)
+    let v1 := add(x, 1)
+    let v2 := add(x, 2)
+    let v3 := add(x, 3)
+    let v4 := add(x, 4)
+    let v5 := add(x, 5)
+    let v6 := add(x, 6)
+    let v7 := add(x, 7)
+    let v8 := add(x, 8)
+    r := add(add(add(add(add(add(add(add(v0, v1), v2), v3), v4), v5), v6), v7), v8)
+  }
+  sstore(0, f(7))
+}
+
+def optimizedStackPressure : Block Op :=
+  (Optimizer.optimizerPipeline
+    (calls := YulSemantics.EVM.ExternalCalls.none)
+    (creates := YulSemantics.EVM.ExternalCreates.none)).run stackPressure
+
+def laidOutStackPressure : Block Op :=
+  Optimizer.stackLayoutBlock optimizedStackPressure
+
 /-- A terminal world-state update. The unreachable store makes the halting behavior observable
 in addition to the balance transfer and scheduled-destruction record checked below. -/
 def selfdestructOps : Block Op := yul% {
@@ -381,6 +409,8 @@ def selfdestructOps : Block Op := yul% {
 #guard (compile externalCreates).isSome
 #guard (compileProgram selfdestructOps).isSome
 #guard (compile selfdestructOps).isSome
+#guard !(compile optimizedStackPressure).isSome
+#guard (compile laidOutStackPressure).isSome
 
 /-! ### The upstream Fibonacci contract
 
@@ -494,6 +524,7 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn memorySizeOps [0, 1, 2, 3, 4]
 #guard agreeOn keccakOps [0, 1]
 #guard agreeOn logOps []
+#guard agreeOn laidOutStackPressure [0]
 
 /-- Differential check with the source's abstract balance/blob oracles and the
 target's concrete account map/blob list initialized to matching values. -/
