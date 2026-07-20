@@ -366,6 +366,33 @@ guards (whole-caller live-local analysis instead of the per-callee bound).
 
 ## Candidate next ideas (not started)
 
+### 🚧 `StackLayout` — liveness-guided stack-slot reuse ([#61](https://github.com/powdr-labs/yul-compiler/issues/61))
+
+Treat block-local Yul bindings as virtual stack registers and color their
+live ranges onto the existing local slots.  At a singleton `let y := e`, a
+dead, reachable local `x` may be reused by emitting the source-level equivalent
+`x := e` and consistently renaming the remainder of `y`'s live range to `x`.
+The allocation policy is separate from the semantic mechanism: a backwards
+liveness analysis scores legal slots by resulting `DUP`/`SWAP` reach and
+prefers no rewrite unless reuse lowers peak stack pressure.  This keeps the
+common shallow case byte-for-byte stable while compressing the large solc IR
+frames that currently fail at `DUP16`/`SWAP16`.
+
+The proof is a bidirectional `Step` simulation over a slot-renaming relation on
+variable environments.  The overwritten value is unobservable because the
+chosen slot is dead; the original environment's extra binding and the reused
+environment agree on every renamed live variable; declarations and assignments
+preserve that relation; and the enclosing block's `restore` erases the local
+layout difference.  The transform is conservative around shadowing,
+multi-value declarations, function boundaries, loop-carried values, and
+non-local control until their side conditions are proved.  It will be an
+ordinary strong `Pass`, plus resolution closure for the production object path.
+
+Acceptance target: issue #61's nine-local reproducer and the five Uniswap v4
+known stack-too-deep fixtures.  Performance gates: no lost compilation, no gas
+baseline increases, and reuse enabled only where the compiler's exact classic
+stack-depth model predicts a lower peak or turns rejection into acceptance.
+
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
 
 Generalizes (and **replaces**) `InlineIdentity` through the Core boundary:
