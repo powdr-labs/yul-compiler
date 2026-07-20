@@ -2026,6 +2026,1095 @@ theorem icDflt_rel (Δ : DEnv) (hwf : DeltaWF Δ) :
 
 end
 
+/-! ### Reflexivity (the all-skip derivation) -/
+
+mutual
+
+/-- Every statement is `IcRel`-related to itself at any `Δ`. -/
+theorem IcRel.reflStmt (Δ : DEnv) : ∀ s : Stmt Op, IcRel Δ (.stmt s) (.stmt s)
+  | .block body => .blockS (IcRel.reflStmts _ body)
+  | .funDef n ps rs body => .funDefS (IcRel.reflStmts _ body)
+  | .letDecl xs v => .letS
+  | .assign xs e => .assignS
+  | .exprStmt e => .exprStmtS
+  | .cond c body => .condS (IcRel.reflStmts _ body)
+  | .switch c cases dflt =>
+      .switchS (IcRel.reflCases Δ cases) (IcRel.reflDflt Δ dflt)
+  | .forLoop init c post body =>
+      .forS (IcRel.reflStmts _ post) (IcRel.reflStmts _ body)
+  | .break => .breakS
+  | .continue => .continueS
+  | .leave => .leaveS
+
+/-- Every statement sequence is `IcRel`-related to itself at any `Δ`. -/
+theorem IcRel.reflStmts (Δ : DEnv) : ∀ ss : List (Stmt Op),
+    IcRel Δ (.stmts ss) (.stmts ss)
+  | [] => .nilSS
+  | s :: rest => .consSS (IcRel.reflStmt Δ s) (IcRel.reflStmts Δ rest)
+
+/-- Every case list is `IcRel`-related to itself at any `Δ`. -/
+theorem IcRel.reflCases (Δ : DEnv) : ∀ cs : List (Literal × Block Op),
+    IcRel Δ (.cases cs) (.cases cs)
+  | [] => .casesNil
+  | (l, b) :: rest => .casesCons (IcRel.reflStmts _ b) (IcRel.reflCases Δ rest)
+
+/-- Every default is `IcRel`-related to itself at any `Δ`. -/
+theorem IcRel.reflDflt (Δ : DEnv) : ∀ dflt : Option (Block Op),
+    IcRel Δ (.odflt dflt) (.odflt dflt)
+  | none => .odfltNone
+  | some b => .odfltSome (IcRel.reflStmts _ b)
+
+end
+
+/-! ### Declaration-context compatibility -/
+
+/-- Every tracked declaration resolves, via `lookupFun`, to a declaration
+whose signature matches and whose body is the tracked one up to a trailing
+`leave`. -/
+def DeltaCompat (Δ : DEnv) (funs : FunEnv D) : Prop :=
+  ∀ p ∈ Δ, ∃ body₀ cenv,
+    lookupFun funs p.1 = some (⟨p.2.ps, p.2.rs, body₀⟩, cenv) ∧
+    (body₀ = p.2.ss ∨ body₀ = p.2.ss ++ [.leave])
+
+theorem DeltaCompat.nil (funs : FunEnv D) :
+    DeltaCompat (calls := calls) (creates := creates) [] funs :=
+  fun p hp => absurd hp (List.not_mem_nil)
+
+/-- Entries produced by `hoistDecls` carry names outside `seen`. -/
+theorem hoistDecls_not_seen {seen : List Ident} : ∀ {body : List (Stmt Op)}
+    {p : Ident × IDecl}, p ∈ hoistDecls seen body → p.1 ∉ seen := by
+  intro body
+  induction body generalizing seen with
+  | nil => intro p hp; cases hp
+  | cons s rest ih =>
+      intro p hp
+      cases s with
+      | funDef f ps rs fbody =>
+          unfold hoistDecls at hp
+          split at hp
+          · exact ih hp
+          · next hseen =>
+              split at hp
+              · rcases List.mem_cons.mp hp with rfl | hp
+                · simpa using hseen
+                · have := ih hp
+                  intro hmem
+                  exact this (List.mem_cons_of_mem _ hmem)
+              · have := ih hp
+                intro hmem
+                exact this (List.mem_cons_of_mem _ hmem)
+      | block body => exact ih hp
+      | letDecl xs v => exact ih hp
+      | assign xs e => exact ih hp
+      | exprStmt e => exact ih hp
+      | cond c body => exact ih hp
+      | switch c cases dflt => exact ih hp
+      | forLoop init c post body => exact ih hp
+      | «break» => exact ih hp
+      | «continue» => exact ih hp
+      | leave => exact ih hp
+
+/-- A `hoistDecls` entry is found by `find?` on the hoisted scope, at a
+declaration it classified. -/
+theorem hoistDecls_find {seen : List Ident} : ∀ {body : List (Stmt Op)}
+    {f : Ident} {d : IDecl}, (f, d) ∈ hoistDecls seen body →
+    ∃ ps rs fbody, (hoist D body).find? (fun p => p.1 = f) =
+        some (f, ⟨ps, rs, fbody⟩) ∧ classifyDecl ps rs fbody = some d := by
+  intro body
+  induction body generalizing seen with
+  | nil => intro f d hp; cases hp
+  | cons s rest ih =>
+      intro f d hp
+      cases s with
+      | funDef g ps rs fbody =>
+          rw [show hoist D (.funDef g ps rs fbody :: rest) =
+            (g, ⟨ps, rs, fbody⟩) :: hoist D rest from rfl]
+          unfold hoistDecls at hp
+          split at hp
+          · next hseen =>
+              have hne : f ≠ g := by
+                intro he
+                have := hoistDecls_not_seen hp
+                rw [he] at this
+                exact this (by simpa using hseen)
+              rw [List.find?_cons_of_neg (by simpa using Ne.symm hne)]
+              exact ih hp
+          · next hseen =>
+              split at hp
+              · next d' hcl =>
+                  rcases List.mem_cons.mp hp with heq | hp
+                  · injection heq with h1 h2
+                    subst h1
+                    rw [List.find?_cons_of_pos (by simp)]
+                    exact ⟨ps, rs, fbody, rfl, h2 ▸ hcl⟩
+                  · have hne : f ≠ g := by
+                      intro he
+                      have := hoistDecls_not_seen hp
+                      rw [he] at this
+                      exact this (List.mem_cons_self ..)
+                    rw [List.find?_cons_of_neg (by simpa using Ne.symm hne)]
+                    exact ih hp
+              · rcases hp' : hp with _
+                have hne : f ≠ g := by
+                  intro he
+                  have := hoistDecls_not_seen hp
+                  rw [he] at this
+                  exact this (List.mem_cons_self ..)
+                rw [List.find?_cons_of_neg (by simpa using Ne.symm hne)]
+                exact ih hp
+      | block body =>
+          rw [show hoist D (.block body :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | letDecl xs v =>
+          rw [show hoist D (.letDecl xs v :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | assign xs e =>
+          rw [show hoist D (.assign xs e :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | exprStmt e =>
+          rw [show hoist D (.exprStmt e :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | cond c body =>
+          rw [show hoist D (.cond c body :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | switch c cases dflt =>
+          rw [show hoist D (.switch c cases dflt :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | forLoop init c post body =>
+          rw [show hoist D (.forLoop init c post body :: rest) =
+            hoist D rest from rfl]
+          exact ih hp
+      | «break» =>
+          rw [show hoist D (.break :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | «continue» =>
+          rw [show hoist D (.continue :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | leave =>
+          rw [show hoist D (.leave :: rest) = hoist D rest from rfl]
+          exact ih hp
+
+/-- Names not defined by a block are absent from its hoisted scope. -/
+theorem hoist_find_none {f : Ident} : ∀ {body : List (Stmt Op)},
+    f ∉ definedFuns body →
+    (hoist D body).find? (fun p => p.1 = f) = none := by
+  intro body
+  induction body with
+  | nil => intro _; rfl
+  | cons s rest ih =>
+      intro hnf
+      cases s with
+      | funDef g ps rs fbody =>
+          rw [show hoist D (.funDef g ps rs fbody :: rest) =
+            (g, ⟨ps, rs, fbody⟩) :: hoist D rest from rfl]
+          unfold definedFuns at hnf
+          rw [List.mem_cons, not_or] at hnf
+          rw [List.find?_cons_of_neg (by simp; exact fun h => hnf.1 h.symm)]
+          exact ih hnf.2
+      | block body => exact ih (by simpa [definedFuns] using hnf)
+      | letDecl xs v => exact ih (by simpa [definedFuns] using hnf)
+      | assign xs e => exact ih (by simpa [definedFuns] using hnf)
+      | exprStmt e => exact ih (by simpa [definedFuns] using hnf)
+      | cond c body => exact ih (by simpa [definedFuns] using hnf)
+      | switch c cases dflt => exact ih (by simpa [definedFuns] using hnf)
+      | forLoop init c post body => exact ih (by simpa [definedFuns] using hnf)
+      | «break» => exact ih (by simpa [definedFuns] using hnf)
+      | «continue» => exact ih (by simpa [definedFuns] using hnf)
+      | leave => exact ih (by simpa [definedFuns] using hnf)
+
+/-- Entering a block preserves compatibility: its own classified declarations
+resolve in its hoisted scope, surviving outer entries resolve below it. -/
+theorem DeltaCompat.extend {Δ : DEnv} {funs : FunEnv D}
+    (h : DeltaCompat (calls := calls) (creates := creates) Δ funs)
+    (body : List (Stmt Op)) :
+    DeltaCompat (calls := calls) (creates := creates)
+      (deltaExtend Δ body) (hoist D body :: funs) := by
+  intro p hp
+  unfold deltaExtend at hp
+  rcases List.mem_append.mp hp with hp | hp
+  · obtain ⟨py, pd⟩ := p
+    obtain ⟨ps, rs, fbody, hfind, hcl⟩ := hoistDecls_find hp
+    obtain ⟨hps, hrs, -, -, hbody⟩ := classifyDecl_inv hcl
+    refine ⟨fbody, hoist D body :: funs, ?_, hbody⟩
+    show lookupFun (hoist D body :: funs) py = _
+    unfold lookupFun
+    rw [hfind]
+    simp only [hps, hrs]
+  · rw [List.mem_filter] at hp
+    obtain ⟨body₀, cenv, hlk, hb⟩ := h p hp.1
+    refine ⟨body₀, cenv, ?_, hb⟩
+    show lookupFun (hoist D body :: funs) p.1 = _
+    unfold lookupFun
+    rw [hoist_find_none (by simpa using hp.2)]
+    exact hlk
+
+/-- Pruning names defined by a `for` init keeps compatibility under its
+pushed scope. -/
+theorem DeltaCompat.pruneInit {Δ : DEnv} {funs : FunEnv D}
+    (h : DeltaCompat (calls := calls) (creates := creates) Δ funs)
+    (init : List (Stmt Op)) :
+    DeltaCompat (calls := calls) (creates := creates)
+      (Δ.filter (fun p => !(definedFuns init).contains p.1))
+      (hoist D init :: funs) := by
+  intro p hp
+  rw [List.mem_filter] at hp
+  obtain ⟨body₀, cenv, hlk, hb⟩ := h p hp.1
+  refine ⟨body₀, cenv, ?_, hb⟩
+  show lookupFun (hoist D init :: funs) p.1 = _
+  unfold lookupFun
+  rw [hoist_find_none (by simpa using hp.2)]
+  exact hlk
+
+/-! ### Function-environment relation -/
+
+/-- Declarations related by the inline transform, relative to the defining
+environment. -/
+def IcFDeclRel (cenv : FunEnv D) (d₁ d₂ : FDecl D) : Prop :=
+  d₁.params = d₂.params ∧ d₁.rets = d₂.rets ∧
+    ∃ Δ, DeltaCompat (calls := calls) (creates := creates) Δ cenv ∧
+      IcRel (deltaExtend Δ d₁.body) (.stmts d₁.body) (.stmts d₂.body)
+
+/-- Scopes related pairwise, relative to the defining environment. -/
+def IcScopeRel (cenv : FunEnv D) (s₁ s₂ : FScope D) : Prop :=
+  List.Forall₂ (fun p q => p.1 = q.1 ∧
+    IcFDeclRel (calls := calls) (creates := creates) cenv p.2 q.2) s₁ s₂
+
+/-- Function environments related scope-by-scope, each scope relative to its
+own defining suffix. -/
+inductive IcFunsRel : FunEnv D → FunEnv D → Prop
+  | nil : IcFunsRel [] []
+  | cons {s₁ s₂ : FScope D} {r₁ r₂ : FunEnv D} :
+      IcScopeRel (calls := calls) (creates := creates) (s₁ :: r₁) s₁ s₂ →
+      IcFunsRel r₁ r₂ →
+      IcFunsRel (s₁ :: r₁) (s₂ :: r₂)
+
+/-- A scope lookup transports across `IcScopeRel`. -/
+theorem icScopeRel_find {cenv : FunEnv D} {s₁ s₂ : FScope D}
+    (h : IcScopeRel (calls := calls) (creates := creates) cenv s₁ s₂)
+    (fn : Ident) :
+    (s₁.find? (fun p => p.1 = fn) = none ∧ s₂.find? (fun p => p.1 = fn) = none) ∨
+    (∃ p q, s₁.find? (fun p => p.1 = fn) = some p ∧
+      s₂.find? (fun p => p.1 = fn) = some q ∧ p.1 = q.1 ∧
+      IcFDeclRel (calls := calls) (creates := creates) cenv p.2 q.2) := by
+  induction h with
+  | nil => left; simp
+  | @cons p q u₁ u₂ hpq _ ih =>
+      by_cases hp : p.1 = fn
+      · right
+        refine ⟨p, q, ?_, ?_, hpq.1, hpq.2⟩
+        · exact List.find?_cons_of_pos (by simp [hp])
+        · exact List.find?_cons_of_pos (by simp [← hpq.1, hp])
+      · rw [List.find?_cons_of_neg (by simp [hp]),
+            List.find?_cons_of_neg (by simp [← hpq.1, hp])]
+        exact ih
+
+/-- `lookupFun` transports forward across `IcFunsRel`, returning the
+defining-suffix relation. -/
+theorem lookupFun_icFunsRel {f₁ f₂ : FunEnv D}
+    (hR : IcFunsRel (calls := calls) (creates := creates) f₁ f₂)
+    {fn : Ident} {decl₁ : FDecl D} {cenv₁ : FunEnv D}
+    (h : lookupFun f₁ fn = some (decl₁, cenv₁)) :
+    ∃ decl₂ cenv₂, lookupFun f₂ fn = some (decl₂, cenv₂) ∧
+      IcFDeclRel (calls := calls) (creates := creates) cenv₁ decl₁ decl₂ ∧
+      IcFunsRel (calls := calls) (creates := creates) cenv₁ cenv₂ := by
+  induction hR with
+  | nil => cases h
+  | @cons s₁ s₂ r₁ r₂ hscope hrest ih =>
+      unfold lookupFun at h ⊢
+      rcases icScopeRel_find hscope fn with ⟨h1, h2⟩ | ⟨p, q, h1, h2, hname, hdecl⟩
+      · rw [h1] at h
+        rw [h2]
+        exact ih h
+      · rw [h1] at h
+        rw [h2]
+        injection h with h
+        injection h with hd hc
+        subst hd hc
+        exact ⟨q.2, s₂ :: r₂, rfl, hdecl, .cons hscope hrest⟩
+
+/-- `lookupFun` transports backward across `IcFunsRel`. -/
+theorem lookupFun_icFunsRel_bwd {f₁ f₂ : FunEnv D}
+    (hR : IcFunsRel (calls := calls) (creates := creates) f₁ f₂)
+    {fn : Ident} {decl₂ : FDecl D} {cenv₂ : FunEnv D}
+    (h : lookupFun f₂ fn = some (decl₂, cenv₂)) :
+    ∃ decl₁ cenv₁, lookupFun f₁ fn = some (decl₁, cenv₁) ∧
+      IcFDeclRel (calls := calls) (creates := creates) cenv₁ decl₁ decl₂ ∧
+      IcFunsRel (calls := calls) (creates := creates) cenv₁ cenv₂ := by
+  induction hR with
+  | nil => cases h
+  | @cons s₁ s₂ r₁ r₂ hscope hrest ih =>
+      unfold lookupFun at h ⊢
+      rcases icScopeRel_find hscope fn with ⟨h1, h2⟩ | ⟨p, q, h1, h2, hname, hdecl⟩
+      · rw [h2] at h
+        rw [h1]
+        exact ih h
+      · rw [h2] at h
+        rw [h1]
+        injection h with h
+        injection h with hd hc
+        subst hd hc
+        exact ⟨p.2, s₁ :: r₁, rfl, hdecl, .cons hscope hrest⟩
+
+/-- Extract the hoisted-scope alignment from a related statement sequence:
+the declarations pair off with bodies related at the sequence's `Δ`
+(extended by their own hoists). -/
+theorem IcRel.hoist_scopeRel {Δ : DEnv} {pc pc' : PCode Op}
+    (h : IcRel Δ pc pc') :
+    ∀ {ss ss' : List (Stmt Op)}, pc = .stmts ss → pc' = .stmts ss' →
+      List.Forall₂ (fun (p q : Ident × FDecl D) => p.1 = q.1 ∧
+        p.2.params = q.2.params ∧ p.2.rets = q.2.rets ∧
+        IcRel (deltaExtend Δ p.2.body) (.stmts p.2.body) (.stmts q.2.body))
+        (hoist D ss) (hoist D ss') := by
+  induction h with
+  | nilSS =>
+      intro ss ss' hss hss'
+      injection hss with h1; injection hss' with h2
+      subst h1; subst h2
+      exact .nil
+  | consSS hs _ _ ihrest =>
+      intro ss ss' hss hss'
+      injection hss with h1; injection hss' with h2
+      subst h1; subst h2
+      have htail := ihrest rfl rfl
+      cases hs with
+      | funDefS hbody => exact .cons ⟨rfl, rfl, rfl, hbody⟩ htail
+      | blockS _ => simpa [hoist] using htail
+      | letS => simpa [hoist] using htail
+      | assignS => simpa [hoist] using htail
+      | condS _ => simpa [hoist] using htail
+      | switchS _ _ => simpa [hoist] using htail
+      | forS _ _ => simpa [hoist] using htail
+      | exprStmtS => simpa [hoist] using htail
+      | breakS => simpa [hoist] using htail
+      | continueS => simpa [hoist] using htail
+      | leaveS => simpa [hoist] using htail
+  | siteLet hld hnd hsc hok _ ihrest =>
+      intro ss ss' hss hss'
+      injection hss with h1; injection hss' with h2
+      subst h1; subst h2
+      have htail := ihrest rfl rfl
+      show List.Forall₂ _ (hoist D (_ :: _)) (hoist D (_ :: _ :: _))
+      simpa [hoist, inlineCore] using htail
+  | siteAssign hld hnd hsc hok _ ihrest =>
+      intro ss ss' hss hss'
+      injection hss with h1; injection hss' with h2
+      subst h1; subst h2
+      have htail := ihrest rfl rfl
+      simpa [hoist, inlineCore] using htail
+  | siteExpr hld hnd hsc hok _ ihrest =>
+      intro ss ss' hss hss'
+      injection hss with h1; injection hss' with h2
+      subst h1; subst h2
+      have htail := ihrest rfl rfl
+      simpa [hoist, inlineCore] using htail
+  | expr => exact fun h _ => nomatch h
+  | args => exact fun h _ => nomatch h
+  | blockS _ _ => exact fun h _ => nomatch h
+  | funDefS _ _ => exact fun h _ => nomatch h
+  | letS => exact fun h _ => nomatch h
+  | assignS => exact fun h _ => nomatch h
+  | exprStmtS => exact fun h _ => nomatch h
+  | condS _ _ => exact fun h _ => nomatch h
+  | switchS _ _ _ _ => exact fun h _ => nomatch h
+  | forS _ _ _ _ => exact fun h _ => nomatch h
+  | breakS => exact fun h _ => nomatch h
+  | continueS => exact fun h _ => nomatch h
+  | leaveS => exact fun h _ => nomatch h
+  | loopL _ _ _ _ => exact fun h _ => nomatch h
+  | casesNil => exact fun h _ => nomatch h
+  | casesCons _ _ _ _ => exact fun h _ => nomatch h
+  | odfltNone => exact fun h _ => nomatch h
+  | odfltSome _ _ => exact fun h _ => nomatch h
+
+/-- The scope-alignment of a related block yields `IcScopeRel` under the
+extended compatibility. -/
+theorem icScopeRel_of_block {Δ : DEnv} {funs : FunEnv D}
+    {body body' : List (Stmt Op)}
+    (hrel : IcRel (deltaExtend Δ body) (.stmts body) (.stmts body'))
+    (hcompat : DeltaCompat (calls := calls) (creates := creates)
+      (deltaExtend Δ body) (hoist D body :: funs)) :
+    IcScopeRel (calls := calls) (creates := creates)
+      (hoist D body :: funs) (hoist D body) (hoist D body') := by
+  have hpairs := IcRel.hoist_scopeRel (calls := calls) (creates := creates)
+    hrel rfl rfl
+  refine List.Forall₂.imp ?_ hpairs
+  intro p q hpq
+  exact ⟨hpq.1, hpq.2.1, hpq.2.2.1, deltaExtend Δ body, hcompat, hpq.2.2.2⟩
+
+/-- Reflexive scope relation (for untouched `for`-loop inits). -/
+theorem icScopeRel_refl (cenv : FunEnv D) (s : FScope D) :
+    IcScopeRel (calls := calls) (creates := creates) cenv s s := by
+  induction s with
+  | nil => exact .nil
+  | cons p rest ih =>
+      refine .cons ⟨rfl, rfl, rfl, [], DeltaCompat.nil _, ?_⟩ ih
+      exact IcRel.reflStmts _ _
+
+/-! ### The simulations -/
+
+/-- Result correspondence: identical, except a `halt` reached inside an
+inlined `let`-form site carries the site's zero-bound targets as an
+environment prefix (erased at the nearest enclosing block's `restore`). -/
+inductive IcRes : Res D → Res D → Prop
+  | refl (r : Res D) : IcRes r r
+  | haltIns (Zp V₁ : VEnv D) (st : EvmState) :
+      IcRes (.sres V₁ st .halt) (.sres (Zp ++ V₁) st .halt)
+
+/-- The per-class result claim: residue only on the statement-sequence class. -/
+def icResOK : Code Op → Res D → Res D → Prop
+  | .stmts _, r₁, r₂ => IcRes (calls := calls) (creates := creates) r₁ r₂
+  | _, r₁, r₂ => r₂ = r₁
+
+/-- `restore` past an inserted prefix above the preserved base. -/
+theorem restore_prefix_le {base Zp Vb : VEnv D} (h : base.length ≤ Vb.length) :
+    restore base (Zp ++ Vb) = restore base Vb := by
+  simp only [restore, List.length_append]
+  rw [show Zp.length + Vb.length - base.length =
+    Zp.length + (Vb.length - base.length) by omega]
+  rw [List.drop_append, List.drop_eq_nil_of_le (by omega), List.nil_append]
+  congr 1
+  omega
+
+/-- The switch selection of related case lists/defaults is a related block
+statement. -/
+theorem IcRel.selectRel {Δ : DEnv} {cases cases' : List (Literal × Block Op)}
+    {dflt dflt' : Option (Block Op)}
+    (hcs : IcRel Δ (.cases cases) (.cases cases'))
+    (hd : IcRel Δ (.odflt dflt) (.odflt dflt')) (cv : U256) :
+    IcRel Δ (.stmt (.block (selectSwitch D cv cases dflt)))
+      (.stmt (.block (selectSwitch D cv cases' dflt'))) := by
+  induction cases generalizing cases' with
+  | nil =>
+      cases hcs
+      cases hd with
+      | odfltNone =>
+          show IcRel Δ (.stmt (.block (Option.getD none [])))
+            (.stmt (.block (Option.getD none [])))
+          exact .blockS (IcRel.reflStmts _ _)
+      | odfltSome hb =>
+          simpa [selectSwitch] using IcRel.blockS hb
+  | cons head rest ih =>
+      rcases head with ⟨l, b⟩
+      cases hcs with
+      | casesCons hb hrest =>
+          by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+          · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv]),
+                selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
+            exact .blockS hb
+          · rw [selectSwitch, List.find?_cons_of_neg (by simp [hcv]),
+                selectSwitch, List.find?_cons_of_neg (by simp [hcv])]
+            have := ih hrest
+            rw [selectSwitch, selectSwitch] at this
+            exact this
+
+/-- Normalize a callee body to its trailing-`leave`-free form, at a
+`normal`/`leave` call outcome; scoped bodies only ever produce `normal`. -/
+theorem body_normalize_ok {d : IDecl} {body₀ : List (Stmt Op)}
+    (hb : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave])
+    (hsc : scopedStmts (d.ps ++ d.rs) d.ss = true)
+    {cenv : FunEnv D} {E : VEnv D} {st1 st2 : EvmState} {Vend : VEnv D}
+    {o : Outcome}
+    (hkeys : ∀ x ∈ d.ps ++ d.rs, x ∈ E.map Prod.fst)
+    (hbody : Step D cenv E st1 (.stmt (.block body₀)) (.sres Vend st2 o))
+    (ho : o = .normal ∨ o = .leave) :
+    Step D cenv E st1 (.stmt (.block d.ss)) (.sres Vend st2 .normal) := by
+  have hscode : scopedCode (d.ps ++ d.rs) (Code.stmt (.block d.ss)) = true := by
+    simp [scopedCode, scopedStmt, hsc]
+  rcases hb with rfl | rfl
+  · -- no trailing leave: a scoped body cannot yield `leave`
+    rcases ho with rfl | rfl
+    · exact hbody
+    · obtain ⟨res₂, -, htr⟩ := scoped_transfer hbody
+        (A := E) (W := ([] : VEnv D)) (bound := d.ps ++ d.rs) cenv []
+        (by simp) hscode hkeys
+      cases htr
+  · -- trailing leave: `leave` renormalizes, `normal` is impossible
+    obtain ⟨o', hbody', hcase⟩ := block_trailing_leave_fwd hbody
+    rcases hcase with ⟨-, rfl⟩ | ⟨rfl, hne⟩
+    · exact hbody'
+    · rcases ho with rfl | rfl
+      · exact absurd rfl hne
+      · obtain ⟨res₂, -, htr⟩ := scoped_transfer hbody'
+          (A := E) (W := ([] : VEnv D)) (bound := d.ps ++ d.rs) cenv []
+          (by simp) hscode hkeys
+        cases htr
+
+/-- ... and to its halting form. -/
+theorem body_normalize_halt {d : IDecl} {body₀ : List (Stmt Op)}
+    (hb : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave])
+    {cenv : FunEnv D} {E : VEnv D} {st1 st2 : EvmState} {Vend : VEnv D}
+    (hbody : Step D cenv E st1 (.stmt (.block body₀)) (.sres Vend st2 .halt)) :
+    Step D cenv E st1 (.stmt (.block d.ss)) (.sres Vend st2 .halt) := by
+  rcases hb with rfl | rfl
+  · exact hbody
+  · obtain ⟨o', hbody', hcase⟩ := block_trailing_leave_fwd hbody
+    rcases hcase with ⟨h1, -⟩ | ⟨h1, -⟩
+    · cases h1
+    · rw [← h1] at hbody'
+      exact hbody'
+
+/-- **Forward simulation**: a source derivation transports across `IcRel` to
+the inlined program, with equal results everywhere except the statement-list
+class, where a `let`-form site's halt may carry an inserted prefix. -/
+theorem ic_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} {res : Res D} (h : Step D funs₁ V st code res) :
+    ∀ {funs₂ : FunEnv D} {Δ : DEnv} {pc' : PCode Op},
+      IcFunsRel (calls := calls) (creates := creates) funs₁ funs₂ →
+      DeltaCompat (calls := calls) (creates := creates) Δ funs₁ →
+      IcRel Δ (toPCode code) pc' →
+      ∃ res₂, Step D funs₂ V st (ofPCode pc') res₂ ∧
+        icResOK (calls := calls) (creates := creates) code res res₂ := by
+  induction h with
+  | @lit funs V st l =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | expr => exact ⟨_, Step.lit, rfl⟩
+  | @var funs V st x v hv =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | expr => exact ⟨_, Step.var hv, rfl⟩
+  | @builtinOk funs V st op args argvals st1 rets st2 ha hbi iha =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | expr =>
+          obtain ⟨res₂, hs, heq⟩ := iha hR hΔ IcRel.args
+          rw [show res₂ = _ from heq] at hs
+          exact ⟨_, Step.builtinOk hs hbi, rfl⟩
+  | @builtinHalt funs V st op args argvals st1 st2 ha hbi iha =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | expr =>
+          obtain ⟨res₂, hs, heq⟩ := iha hR hΔ IcRel.args
+          rw [show res₂ = _ from heq] at hs
+          exact ⟨_, Step.builtinHalt hs hbi, rfl⟩
+  | @builtinArgsHalt funs V st op args st1 ha iha =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | expr =>
+          obtain ⟨res₂, hs, heq⟩ := iha hR hΔ IcRel.args
+          rw [show res₂ = _ from heq] at hs
+          exact ⟨_, Step.builtinArgsHalt hs, rfl⟩
+  | @callOk funs V st fn args argvals st1 decl cenv Vend st2 o ha hlk harity hbody ho iha ihbody =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | expr =>
+          obtain ⟨resa, hs, heqa⟩ := iha hR hΔ IcRel.args
+          rw [show resa = _ from heqa] at hs
+          obtain ⟨decl₂, cenv₂, hlk₂, hdecl, hcenvR⟩ := lookupFun_icFunsRel hR hlk
+          obtain ⟨hps, hrs, Δf, hΔf, hbrel⟩ := hdecl
+          obtain ⟨resb, hsb, heqb⟩ := ihbody hcenvR hΔf (IcRel.blockS hbrel)
+          rw [show resb = _ from heqb] at hsb
+          have hsb' : Step D cenv₂ (decl₂.params.zip argvals ++ bindZeros D decl₂.rets)
+              st1 (.stmt (.block decl₂.body)) (.sres Vend st2 o) := by
+            rw [← hps, ← hrs]
+            exact hsb
+          have harity' : argvals.length = decl₂.params.length := by
+            rw [← hps]; exact harity
+          refine ⟨_, Step.callOk hs hlk₂ harity' hsb' ho, ?_⟩
+          show Res.eres (.vals (decl₂.rets.map _) st2) =
+            Res.eres (.vals (decl.rets.map _) st2)
+          rw [← hrs]
+  | @callHalt funs V st fn args argvals st1 decl cenv Vend st2 ha hlk harity hbody iha ihbody =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | expr =>
+          obtain ⟨resa, hs, heqa⟩ := iha hR hΔ IcRel.args
+          rw [show resa = _ from heqa] at hs
+          obtain ⟨decl₂, cenv₂, hlk₂, hdecl, hcenvR⟩ := lookupFun_icFunsRel hR hlk
+          obtain ⟨hps, hrs, Δf, hΔf, hbrel⟩ := hdecl
+          obtain ⟨resb, hsb, heqb⟩ := ihbody hcenvR hΔf (IcRel.blockS hbrel)
+          rw [show resb = _ from heqb] at hsb
+          have hsb' : Step D cenv₂ (decl₂.params.zip argvals ++ bindZeros D decl₂.rets)
+              st1 (.stmt (.block decl₂.body)) (.sres Vend st2 .halt) := by
+            rw [← hps, ← hrs]
+            exact hsb
+          have harity' : argvals.length = decl₂.params.length := by
+            rw [← hps]; exact harity
+          exact ⟨_, Step.callHalt hs hlk₂ harity' hsb', rfl⟩
+  | @callArgsHalt funs V st fn args st1 ha iha =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | expr =>
+          obtain ⟨resa, hs, heqa⟩ := iha hR hΔ IcRel.args
+          rw [show resa = _ from heqa] at hs
+          exact ⟨_, Step.callArgsHalt hs, rfl⟩
+  | @argsNil funs V st =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | args => exact ⟨_, Step.argsNil, rfl⟩
+  | @argsCons funs V st e rest restvals st1 v st2 hrest he ihrest ihe =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | args =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihrest hR hΔ IcRel.args
+          rw [show res₁ = _ from heq₁] at hs₁
+          obtain ⟨res₂, hs₂, heq₂⟩ := ihe hR hΔ IcRel.expr
+          rw [show res₂ = _ from heq₂] at hs₂
+          exact ⟨_, Step.argsCons hs₁ hs₂, rfl⟩
+  | @argsRestHalt funs V st e rest st1 hrest ihrest =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | args =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihrest hR hΔ IcRel.args
+          rw [show res₁ = _ from heq₁] at hs₁
+          exact ⟨_, Step.argsRestHalt hs₁, rfl⟩
+  | @argsHeadHalt funs V st e rest restvals st1 st2 hrest he ihrest ihe =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | args =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihrest hR hΔ IcRel.args
+          rw [show res₁ = _ from heq₁] at hs₁
+          obtain ⟨res₂, hs₂, heq₂⟩ := ihe hR hΔ IcRel.expr
+          rw [show res₂ = _ from heq₂] at hs₂
+          exact ⟨_, Step.argsHeadHalt hs₁ hs₂, rfl⟩
+  | @funDef funs V st n ps rs b =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | funDefS hbrel => exact ⟨_, Step.funDef, rfl⟩
+  | @block funs V st body Vb stb o hb ihb =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | @blockS _ _ body' hbrel =>
+          have hcompat := DeltaCompat.extend (calls := calls) (creates := creates)
+            hΔ body
+          have hfr : IcFunsRel (calls := calls) (creates := creates)
+              (hoist D body :: funs) (hoist D body' :: funs₂) :=
+            .cons (icScopeRel_of_block hbrel hcompat) hR
+          obtain ⟨res₂, hs, hres⟩ := ihb hfr hcompat hbrel
+          cases hres with
+          | refl => exact ⟨_, Step.block hs, rfl⟩
+          | haltIns Zp =>
+              have hb2 := Step.block (funs := funs₂) hs
+              rw [restore_prefix_le (venvLen_mono hb rfl)] at hb2
+              exact ⟨_, hb2, rfl⟩
+  | @letZero funs V st vars =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | letS => exact ⟨_, Step.letZero, rfl⟩
+  | @letVal funs V st vars e vals st1 he hlen ihe =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | letS =>
+          obtain ⟨res₂, hs, heq⟩ := ihe hR hΔ IcRel.expr
+          rw [show res₂ = _ from heq] at hs
+          exact ⟨_, Step.letVal hs hlen, rfl⟩
+  | @letHalt funs V st vars e st1 he ihe =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | letS =>
+          obtain ⟨res₂, hs, heq⟩ := ihe hR hΔ IcRel.expr
+          rw [show res₂ = _ from heq] at hs
+          exact ⟨_, Step.letHalt hs, rfl⟩
+  | @assignVal funs V st vars e vals st1 he hlen ihe =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | assignS =>
+          obtain ⟨res₂, hs, heq⟩ := ihe hR hΔ IcRel.expr
+          rw [show res₂ = _ from heq] at hs
+          exact ⟨_, Step.assignVal hs hlen, rfl⟩
+  | @assignHalt funs V st vars e st1 he ihe =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | assignS =>
+          obtain ⟨res₂, hs, heq⟩ := ihe hR hΔ IcRel.expr
+          rw [show res₂ = _ from heq] at hs
+          exact ⟨_, Step.assignHalt hs, rfl⟩
+  | @exprStmt funs V st e st1 he ihe =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | exprStmtS =>
+          obtain ⟨res₂, hs, heq⟩ := ihe hR hΔ IcRel.expr
+          rw [show res₂ = _ from heq] at hs
+          exact ⟨_, Step.exprStmt hs, rfl⟩
+  | @exprStmtHalt funs V st e st1 he ihe =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | exprStmtS =>
+          obtain ⟨res₂, hs, heq⟩ := ihe hR hΔ IcRel.expr
+          rw [show res₂ = _ from heq] at hs
+          exact ⟨_, Step.exprStmtHalt hs, rfl⟩
+  | @ifTrue funs V st c body cv st1 V' st2 o hc hcv hbody ihc ihbody =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | @condS _ _ _ body' hbrel =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihc hR hΔ IcRel.expr
+          rw [show res₁ = _ from heq₁] at hs₁
+          obtain ⟨res₂, hs₂, heq₂⟩ := ihbody hR hΔ (IcRel.blockS hbrel)
+          rw [show res₂ = _ from heq₂] at hs₂
+          exact ⟨_, Step.ifTrue hs₁ hcv hs₂, rfl⟩
+  | @ifFalse funs V st c body cv st1 hc hcv ihc =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | condS hbrel =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihc hR hΔ IcRel.expr
+          rw [show res₁ = _ from heq₁] at hs₁
+          exact ⟨_, Step.ifFalse hs₁ hcv, rfl⟩
+  | @ifHalt funs V st c body st1 hc ihc =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | condS hbrel =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihc hR hΔ IcRel.expr
+          rw [show res₁ = _ from heq₁] at hs₁
+          exact ⟨_, Step.ifHalt hs₁, rfl⟩
+  | @switchExec funs V st c cases' dflt cv st1 V' st2 o hc hsel ihc ihsel =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | switchS hcs hd =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihc hR hΔ IcRel.expr
+          rw [show res₁ = _ from heq₁] at hs₁
+          obtain ⟨res₂, hs₂, heq₂⟩ := ihsel hR hΔ (IcRel.selectRel hcs hd cv)
+          rw [show res₂ = _ from heq₂] at hs₂
+          exact ⟨_, Step.switchExec hs₁ hs₂, rfl⟩
+  | @switchHalt funs V st c cases' dflt st1 hc ihc =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | switchS hcs hd =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihc hR hΔ IcRel.expr
+          rw [show res₁ = _ from heq₁] at hs₁
+          exact ⟨_, Step.switchHalt hs₁, rfl⟩
+  | @forLoop funs V st init c post body Vinit stinit Vend stend o hinit hloop ihinit ihloop =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | @forS _ _ _ _ post' _ body' hpost hbody =>
+          have hfr : IcFunsRel (calls := calls) (creates := creates)
+              (hoist D init :: funs) (hoist D init :: funs₂) :=
+            .cons (icScopeRel_refl _ _) hR
+          obtain ⟨res₁, hs₁, hres₁⟩ := ihinit hfr (DeltaCompat.nil _)
+            (IcRel.reflStmts [] init)
+          cases hres₁ with
+          | refl =>
+              obtain ⟨res₂, hs₂, heq₂⟩ := ihloop hfr
+                (DeltaCompat.pruneInit hΔ init)
+                (IcRel.loopL hpost hbody)
+              rw [show res₂ = _ from heq₂] at hs₂
+              exact ⟨_, Step.forLoop hs₁ hs₂, rfl⟩
+  | @forInitHalt funs V st init c post body Vinit stinit hinit ihinit =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | @forS _ _ _ _ post' _ body' hpost hbody =>
+          have hfr : IcFunsRel (calls := calls) (creates := creates)
+              (hoist D init :: funs) (hoist D init :: funs₂) :=
+            .cons (icScopeRel_refl _ _) hR
+          obtain ⟨res₁, hs₁, hres₁⟩ := ihinit hfr (DeltaCompat.nil _)
+            (IcRel.reflStmts [] init)
+          cases hres₁ with
+          | refl => exact ⟨_, Step.forInitHalt hs₁, rfl⟩
+          | haltIns Zp =>
+              have hb2 := Step.forInitHalt (c := c) (post := post') (body := body')
+                (funs := funs₂) hs₁
+              rw [restore_prefix_le (venvLen_mono hinit rfl)] at hb2
+              exact ⟨_, hb2, rfl⟩
+  | @«break» funs V st =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | breakS => exact ⟨_, Step.break, rfl⟩
+  | @«continue» funs V st =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | continueS => exact ⟨_, Step.continue, rfl⟩
+  | @leave funs V st =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | leaveS => exact ⟨_, Step.leave, rfl⟩
+  | @seqNil funs V st =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | nilSS => exact ⟨_, Step.seqNil, .refl _⟩
+  | @seqCons funs V st s rest V1 st1 V2 st2 o hs hrest ihs ihrest =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | consSS hsrel hrestrel =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihs hR hΔ hsrel
+          rw [show res₁ = _ from heq₁] at hs₁
+          obtain ⟨res₂, hs₂, hres₂⟩ := ihrest hR hΔ hrestrel
+          cases hres₂ with
+          | refl => exact ⟨_, Step.seqCons hs₁ hs₂, .refl _⟩
+          | haltIns Zp => exact ⟨_, Step.seqCons hs₁ hs₂, .haltIns _ _ _⟩
+      | @siteLet _ f d xs as _ rest' hld hnd hsc hok hrestrel =>
+          obtain ⟨hlen_as, hlen_xs, hxnd, hnc, hsh, hxout, hxlet⟩ := siteOK_inv hok
+          obtain ⟨body₀, cenv₀, hlk₀X, hb₀X⟩ := hΔ (f, d) (lookupDelta_mem hld)
+          have hlk₀ : lookupFun funs f =
+              some (⟨d.ps, d.rs, body₀⟩, cenv₀) := hlk₀X
+          have hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave] := hb₀X
+          cases hs with
+          | @letVal _ _ _ _ _ vals stv he hlenv =>
+              cases he with
+              | @callOk _ _ _ _ _ argvals st1' decl cenv Vend st2' o' ha hlk harity hbody ho =>
+                  rw [hlk₀] at hlk
+                  injection hlk with hlk
+                  injection hlk with hdecl hcenv
+                  subst hdecl hcenv
+                  have harity' : argvals.length = d.ps.length := harity
+                  have hbody' := body_normalize_ok hb₀ hsc
+                    (by
+                      intro x hx
+                      rw [calleeFrame_keys (by omega)]
+                      exact hx) hbody ho
+                  have hZvars : ∀ y ∈ varsList as,
+                      y ∉ (bindZeros D xs).map Prod.fst := by
+                    intro y hy
+                    rw [bindZeros_keys]
+                    exact hxlet rfl y hy
+                  have hcore := inlineCore_fwd_normal hnd hsc hlen_as hnc hsh
+                    hxout hlen_xs ha hbody' hZvars funs₂
+                  have hsm : VEnv.setMany (bindZeros D xs ++ V) xs
+                      (d.rs.map (fun r => (VEnv.get Vend r).getD
+                        (evmWithExternal calls creates).zero)) =
+                      xs.zip (d.rs.map (fun r => (VEnv.get Vend r).getD
+                        (evmWithExternal calls creates).zero)) ++ V :=
+                    VEnv.setMany_bindZeros hxnd
+                      (by simp only [List.length_map]; omega) V
+                  rw [hsm] at hcore
+                  obtain ⟨res₂, hs₂, hres₂⟩ := ihrest hR hΔ hrestrel
+                  cases hres₂ with
+                  | refl =>
+                      exact ⟨_, Step.seqCons Step.letZero
+                        (Step.seqCons hcore hs₂), .refl _⟩
+                  | haltIns Zp =>
+                      exact ⟨_, Step.seqCons Step.letZero
+                        (Step.seqCons hcore hs₂), .haltIns _ _ _⟩
+      | @siteAssign _ f d xs as _ rest' hld hnd hsc hok hrestrel =>
+          obtain ⟨hlen_as, hlen_xs, hxnd, hnc, hsh, hxout, -⟩ := siteOK_inv hok
+          obtain ⟨body₀, cenv₀, hlk₀X, hb₀X⟩ := hΔ (f, d) (lookupDelta_mem hld)
+          have hlk₀ : lookupFun funs f =
+              some (⟨d.ps, d.rs, body₀⟩, cenv₀) := hlk₀X
+          have hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave] := hb₀X
+          have hZvars : ∀ y ∈ varsList as,
+              y ∉ (([] : VEnv D)).map Prod.fst := by
+            intro y hy
+            simp
+          cases hs with
+          | @assignVal _ _ _ _ _ vals stv he hlenv =>
+              cases he with
+              | @callOk _ _ _ _ _ argvals st1' decl cenv Vend st2' o' ha hlk harity hbody ho =>
+                  rw [hlk₀] at hlk
+                  injection hlk with hlk
+                  injection hlk with hdecl hcenv
+                  subst hdecl hcenv
+                  have harity' : argvals.length = d.ps.length := harity
+                  have hbody' := body_normalize_ok hb₀ hsc
+                    (by
+                      intro x hx
+                      rw [calleeFrame_keys (by omega)]
+                      exact hx) hbody ho
+                  have hcore := inlineCore_fwd_normal hnd hsc hlen_as hnc hsh
+                    hxout hlen_xs (Z := []) ha hbody' hZvars funs₂
+                  obtain ⟨res₂, hs₂, hres₂⟩ := ihrest hR hΔ hrestrel
+                  cases hres₂ with
+                  | refl => exact ⟨_, Step.seqCons hcore hs₂, .refl _⟩
+                  | haltIns Zp => exact ⟨_, Step.seqCons hcore hs₂, .haltIns _ _ _⟩
+      | @siteExpr _ f d as _ rest' hld hnd hsc hok hrestrel =>
+          obtain ⟨hlen_as, hlen_xs, -, hnc, hsh, -, -⟩ := siteOK_inv hok
+          obtain ⟨body₀, cenv₀, hlk₀X, hb₀X⟩ := hΔ (f, d) (lookupDelta_mem hld)
+          have hlk₀ : lookupFun funs f =
+              some (⟨d.ps, d.rs, body₀⟩, cenv₀) := hlk₀X
+          have hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave] := hb₀X
+          have hrs0 : d.rs = [] := by
+            cases hrs : d.rs with
+            | nil => rfl
+            | cons r rs' => rw [hrs] at hlen_xs; simp at hlen_xs
+          have hZvars : ∀ y ∈ varsList as,
+              y ∉ (([] : VEnv D)).map Prod.fst := by
+            intro y hy
+            simp
+          cases hs with
+          | @exprStmt _ _ _ _ stv he =>
+              obtain ⟨vs, he', hvs⟩ :
+                  ∃ vs, Step D funs V st (.expr (.call f as))
+                    (.eres (.vals vs st1)) ∧ vs = [] := ⟨[], he, rfl⟩
+              cases he' with
+              | @callOk _ _ _ _ _ argvals st1' decl cenv Vend st2' o' ha hlk harity hbody ho =>
+                  rw [hlk₀] at hlk
+                  injection hlk with hlk
+                  injection hlk with hdecl hcenv
+                  subst hdecl hcenv
+                  have harity' : argvals.length = d.ps.length := harity
+                  have hargsl := args_length ha
+                  have hbody' := body_normalize_ok hb₀ hsc
+                    (by
+                      intro x hx
+                      rw [calleeFrame_keys (by omega)]
+                      exact hx) hbody ho
+                  have hcore := inlineCore_fwd_normal hnd hsc hlen_as hnc hsh
+                    (fun x hx => by cases hx) hlen_xs (Z := []) ha hbody'
+                    hZvars funs₂
+                  obtain ⟨res₂, hs₂, hres₂⟩ := ihrest hR hΔ hrestrel
+                  have hcore' : Step D funs₂ V st
+                      (.stmt (inlineCore d [] as)) (.sres V st1 .normal) := by
+                    have hsm : VEnv.setMany (([] : VEnv D) ++ V) []
+                        (d.rs.map (fun r => (VEnv.get Vend r).getD
+                          (evmWithExternal calls creates).zero)) = V := rfl
+                    rw [hsm] at hcore
+                    exact hcore
+                  cases hres₂ with
+                  | refl => exact ⟨_, Step.seqCons hcore' hs₂, .refl _⟩
+                  | haltIns Zp => exact ⟨_, Step.seqCons hcore' hs₂, .haltIns _ _ _⟩
+  | @seqStop funs V st s rest V1 st1 o hs hne ihs =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | consSS hsrel hrestrel =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihs hR hΔ hsrel
+          rw [show res₁ = _ from heq₁] at hs₁
+          exact ⟨_, Step.seqStop hs₁ hne, .refl _⟩
+      | @siteLet _ f d xs as _ rest' hld hnd hsc hok hrestrel =>
+          obtain ⟨hlen_as, hlen_xs, hxnd, hnc, hsh, hxout, hxlet⟩ := siteOK_inv hok
+          obtain ⟨body₀, cenv₀, hlk₀X, hb₀X⟩ := hΔ (f, d) (lookupDelta_mem hld)
+          have hlk₀ : lookupFun funs f =
+              some (⟨d.ps, d.rs, body₀⟩, cenv₀) := hlk₀X
+          have hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave] := hb₀X
+          cases hs with
+          | @letVal _ _ _ _ _ vals stv he hlenv => exact absurd rfl hne
+          | @letHalt _ _ _ _ _ sth he =>
+              cases he with
+              | @callHalt _ _ _ _ _ argvals st1' decl cenv Vend st2' ha hlk harity hbody =>
+                  rw [hlk₀] at hlk
+                  injection hlk with hlk
+                  injection hlk with hdecl hcenv
+                  subst hdecl hcenv
+                  have hbody' := body_normalize_halt hb₀ hbody
+                  have hZvars : ∀ y ∈ varsList as,
+                      y ∉ (bindZeros D xs).map Prod.fst := by
+                    intro y hy
+                    rw [bindZeros_keys]
+                    exact hxlet rfl y hy
+                  have hcore := inlineCore_fwd_bodyhalt (xs := xs)
+                    (Z := bindZeros D xs) hsc hlen_as hnc hsh
+                    ha hbody' hZvars funs₂
+                  refine ⟨_, Step.seqCons Step.letZero
+                    (Step.seqStop hcore (by simp)), ?_⟩
+                  exact .haltIns _ _ _
+              | @callArgsHalt _ _ _ _ _ _ ha =>
+                  have hZvars : ∀ y ∈ varsList as,
+                      y ∉ (bindZeros D xs).map Prod.fst := by
+                    intro y hy
+                    rw [bindZeros_keys]
+                    exact hxlet rfl y hy
+                  have hcore := inlineCore_fwd_argshalt (d := d) (xs := xs)
+                    (Z := bindZeros D xs) hlen_as hnc hsh
+                    ha hZvars funs₂
+                  refine ⟨_, Step.seqCons Step.letZero
+                    (Step.seqStop hcore (by simp)), ?_⟩
+                  exact .haltIns _ _ _
+      | @siteAssign _ f d xs as _ rest' hld hnd hsc hok hrestrel =>
+          obtain ⟨hlen_as, hlen_xs, hxnd, hnc, hsh, hxout, -⟩ := siteOK_inv hok
+          obtain ⟨body₀, cenv₀, hlk₀X, hb₀X⟩ := hΔ (f, d) (lookupDelta_mem hld)
+          have hlk₀ : lookupFun funs f =
+              some (⟨d.ps, d.rs, body₀⟩, cenv₀) := hlk₀X
+          have hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave] := hb₀X
+          have hZvars : ∀ y ∈ varsList as,
+              y ∉ (([] : VEnv D)).map Prod.fst := by
+            intro y hy
+            simp
+          cases hs with
+          | @assignVal _ _ _ _ _ vals stv he hlenv => exact absurd rfl hne
+          | @assignHalt _ _ _ _ _ sth he =>
+              cases he with
+              | @callHalt _ _ _ _ _ argvals st1' decl cenv Vend st2' ha hlk harity hbody =>
+                  rw [hlk₀] at hlk
+                  injection hlk with hlk
+                  injection hlk with hdecl hcenv
+                  subst hdecl hcenv
+                  have hbody' := body_normalize_halt hb₀ hbody
+                  have hcore := inlineCore_fwd_bodyhalt (xs := xs)
+                    (Z := []) hsc hlen_as hnc hsh ha hbody' hZvars funs₂
+                  exact ⟨_, Step.seqStop hcore (by simp), .refl _⟩
+              | @callArgsHalt _ _ _ _ _ _ ha =>
+                  have hcore := inlineCore_fwd_argshalt (d := d) (xs := xs)
+                    (Z := []) hlen_as hnc hsh ha hZvars funs₂
+                  exact ⟨_, Step.seqStop hcore (by simp), .refl _⟩
+      | @siteExpr _ f d as _ rest' hld hnd hsc hok hrestrel =>
+          obtain ⟨hlen_as, hlen_xs, -, hnc, hsh, -, -⟩ := siteOK_inv hok
+          obtain ⟨body₀, cenv₀, hlk₀X, hb₀X⟩ := hΔ (f, d) (lookupDelta_mem hld)
+          have hlk₀ : lookupFun funs f =
+              some (⟨d.ps, d.rs, body₀⟩, cenv₀) := hlk₀X
+          have hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave] := hb₀X
+          have hZvars : ∀ y ∈ varsList as,
+              y ∉ (([] : VEnv D)).map Prod.fst := by
+            intro y hy
+            simp
+          cases hs with
+          | @exprStmt _ _ _ _ stv he => exact absurd rfl hne
+          | @exprStmtHalt _ _ _ _ sth he =>
+              cases he with
+              | @callHalt _ _ _ _ _ argvals st1' decl cenv Vend st2' ha hlk harity hbody =>
+                  rw [hlk₀] at hlk
+                  injection hlk with hlk
+                  injection hlk with hdecl hcenv
+                  subst hdecl hcenv
+                  have hbody' := body_normalize_halt hb₀ hbody
+                  have hcore := inlineCore_fwd_bodyhalt (xs := ([] : List Ident))
+                    (Z := []) hsc hlen_as hnc hsh ha hbody' hZvars funs₂
+                  exact ⟨_, Step.seqStop hcore (by simp), .refl _⟩
+              | @callArgsHalt _ _ _ _ _ _ ha =>
+                  have hcore := inlineCore_fwd_argshalt (d := d) (xs := ([] : List Ident))
+                    (Z := []) hlen_as hnc hsh ha hZvars funs₂
+                  exact ⟨_, Step.seqStop hcore (by simp), .refl _⟩
+  | @loopDone funs V st c post body cv st1 hc hcz ihc =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | loopL hpost hbody =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihc hR hΔ IcRel.expr
+          rw [show res₁ = _ from heq₁] at hs₁
+          exact ⟨_, Step.loopDone hs₁ hcz, rfl⟩
+  | @loopCondHalt funs V st c post body st1 hc ihc =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | loopL hpost hbody =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihc hR hΔ IcRel.expr
+          rw [show res₁ = _ from heq₁] at hs₁
+          exact ⟨_, Step.loopCondHalt hs₁, rfl⟩
+  | @loopStep funs V st c post body cv st1 Vb stb ob Vp stp Vend stend o hc hcv hbody hob hpost hnext ihc ihbody ihpost ihnext =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | @loopL _ _ _ post' _ body' hpostrel hbodyrel =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihc hR hΔ IcRel.expr
+          rw [show res₁ = _ from heq₁] at hs₁
+          obtain ⟨res₂, hs₂, heq₂⟩ := ihbody hR hΔ (IcRel.blockS hbodyrel)
+          rw [show res₂ = _ from heq₂] at hs₂
+          obtain ⟨res₃, hs₃, heq₃⟩ := ihpost hR hΔ (IcRel.blockS hpostrel)
+          rw [show res₃ = _ from heq₃] at hs₃
+          obtain ⟨res₄, hs₄, heq₄⟩ := ihnext hR hΔ (IcRel.loopL hpostrel hbodyrel)
+          rw [show res₄ = _ from heq₄] at hs₄
+          exact ⟨_, Step.loopStep hs₁ hcv hs₂ hob hs₃ hs₄, rfl⟩
+  | @loopPostHalt funs V st c post body cv st1 Vb stb ob Vp stp hc hcv hbody hob hpost ihc ihbody ihpost =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | loopL hpostrel hbodyrel =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihc hR hΔ IcRel.expr
+          rw [show res₁ = _ from heq₁] at hs₁
+          obtain ⟨res₂, hs₂, heq₂⟩ := ihbody hR hΔ (IcRel.blockS hbodyrel)
+          rw [show res₂ = _ from heq₂] at hs₂
+          obtain ⟨res₃, hs₃, heq₃⟩ := ihpost hR hΔ (IcRel.blockS hpostrel)
+          rw [show res₃ = _ from heq₃] at hs₃
+          exact ⟨_, Step.loopPostHalt hs₁ hcv hs₂ hob hs₃, rfl⟩
+  | @loopBreak funs V st c post body cv st1 Vb stb hc hcv hbody ihc ihbody =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | loopL hpostrel hbodyrel =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihc hR hΔ IcRel.expr
+          rw [show res₁ = _ from heq₁] at hs₁
+          obtain ⟨res₂, hs₂, heq₂⟩ := ihbody hR hΔ (IcRel.blockS hbodyrel)
+          rw [show res₂ = _ from heq₂] at hs₂
+          exact ⟨_, Step.loopBreak hs₁ hcv hs₂, rfl⟩
+  | @loopLeave funs V st c post body cv st1 Vb stb hc hcv hbody ihc ihbody =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | loopL hpostrel hbodyrel =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihc hR hΔ IcRel.expr
+          rw [show res₁ = _ from heq₁] at hs₁
+          obtain ⟨res₂, hs₂, heq₂⟩ := ihbody hR hΔ (IcRel.blockS hbodyrel)
+          rw [show res₂ = _ from heq₂] at hs₂
+          exact ⟨_, Step.loopLeave hs₁ hcv hs₂, rfl⟩
+  | @loopBodyHalt funs V st c post body cv st1 Vb stb hc hcv hbody ihc ihbody =>
+      intro funs₂ Δ pc' hR hΔ hrel
+      cases hrel with
+      | loopL hpostrel hbodyrel =>
+          obtain ⟨res₁, hs₁, heq₁⟩ := ihc hR hΔ IcRel.expr
+          rw [show res₁ = _ from heq₁] at hs₁
+          obtain ⟨res₂, hs₂, heq₂⟩ := ihbody hR hΔ (IcRel.blockS hbodyrel)
+          rw [show res₂ = _ from heq₂] at hs₂
+          exact ⟨_, Step.loopBodyHalt hs₁ hcv hs₂, rfl⟩
+
 /-- The verified pass (soundness in progress). -/
 def inlineCalls : Pass D where
   run := inlineCallsBlock
