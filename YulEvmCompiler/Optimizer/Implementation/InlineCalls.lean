@@ -240,36 +240,8 @@ transform declines); they gate *when* inlining pays.
   live locals, and iterated rounds compound nested frames (measured:
   `fullSuite/abi2.yul` stopped compiling without the bound). -/
 
-mutual
-
-/-- Maximum simultaneously-live local count of a statement, starting from
-`acc` live bindings. -/
-def liveMaxStmt (acc : Nat) : Stmt Op → Nat
-  | .block body => liveMaxStmts acc body
-  | .cond _ body => liveMaxStmts acc body
-  | .switch _ cases dflt => max (liveMaxCases acc cases) (liveMaxDflt acc dflt)
-  | .forLoop init _ post body =>
-      max (liveMaxStmts acc init)
-        (max (liveMaxStmts acc post) (liveMaxStmts acc body))
-  | _ => acc
-
-/-- Maximum simultaneously-live local count along a statement sequence. -/
-def liveMaxStmts (acc : Nat) : List (Stmt Op) → Nat
-  | [] => acc
-  | .letDecl xs _ :: rest => max acc (liveMaxStmts (acc + xs.length) rest)
-  | s :: rest => max (liveMaxStmt acc s) (liveMaxStmts acc rest)
-
-/-- Maximum over `switch` case bodies. -/
-def liveMaxCases (acc : Nat) : List (Literal × Block Op) → Nat
-  | [] => acc
-  | (_, b) :: rest => max (liveMaxStmts acc b) (liveMaxCases acc rest)
-
-/-- Maximum over a `switch` default. -/
-def liveMaxDflt (acc : Nat) : Option (Block Op) → Nat
-  | none => acc
-  | some b => liveMaxStmts acc b
-
-end
+-- `liveMax*` (the live-local analysis) lives in `Frame.lean`, shared with
+-- the propagation depth gate.
 
 /-- Profitability + stack-pressure gate (see the section notes). -/
 def inlineOK (d : IDecl) : Bool :=
