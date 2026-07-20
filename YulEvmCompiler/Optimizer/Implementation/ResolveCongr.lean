@@ -123,6 +123,35 @@ theorem simplifyExpr_stringlit {e : Expr Op} {n : String}
       rw [simplifyExpr] at h
       exact absurd h (simplifyBuiltin_not_stringlit op (simplifyArgs args) n)
 
+/-- A successful open-operand rewrite returns an allowed survivor. -/
+theorem openNeutral_survivorOK {op : Op} {args : List (Expr Op)} {e : Expr Op}
+    (h : openNeutral op args = some e) : survivorOK e = true := by
+  unfold openNeutral at h
+  split at h <;>
+    first
+      | contradiction
+      | (split_ifs at h with hc
+         · obtain rfl := Option.some.inj h; exact hc.2)
+
+/-- The top-level open-operand rewrite never manufactures a string literal
+(the survivor fence `survivorOK`). -/
+theorem openTop_stringlit {e : Expr Op} {n : String}
+    (h : openTop e = .lit (.string n)) : e = .lit (.string n) := by
+  cases e with
+  | lit l => simpa [openTop] using h
+  | var x => simp [openTop] at h
+  | call f args => simp [openTop] at h
+  | builtin op args =>
+      rw [openTop] at h
+      cases hn : openNeutral op args with
+      | none => rw [hn] at h; simp at h
+      | some e' =>
+          rw [hn] at h
+          simp only [Option.getD_some] at h
+          subst h
+          have := openNeutral_survivorOK hn
+          simp [survivorOK] at this
+
 theorem simplifyArgs_stringlit {args : List (Expr Op)} {n : String}
     (h : simplifyArgs args = [.lit (.string n)]) : args = [.lit (.string n)] := by
   cases args with
@@ -136,7 +165,7 @@ theorem simplifyArgs_stringlit {args : List (Expr Op)} {n : String}
         | nil => rfl
         | cons _ _ => rw [simplifyArgs] at hrest; exact absurd hrest (by simp)
       subst hnil
-      rw [simplifyExpr_stringlit ha]
+      rw [simplifyExpr_stringlit (openTop_stringlit ha)]
 
 /-! ### The local built-in rewrite commutes with resolution -/
 
@@ -157,10 +186,55 @@ theorem resolveSimplifyBuiltin_equiv (L : Layout) (op : Op) (args : List (Expr O
       rw [hleft, hright]
       exact Core.simplifyTerm_sound core
 
+/-- Resolution pushes into a two-argument built-in pointwise (the
+`dataoffset`/`datasize` special shape is single-argument). -/
+theorem resolve_two_args (L : Layout) (op : Op) (a b : Expr Op) :
+    resolveForLayoutExpr L (.builtin op [a, b]) =
+      .builtin op [resolveForLayoutExpr L a, resolveForLayoutExpr L b] := by
+  rw [resolveForLayoutExpr_builtin_other L op [a, b] (by intro n; simp)]
+  rfl
+
+@[simp] theorem resolve_lit (L : Layout) (c : Literal) :
+    resolveForLayoutExpr L (.lit c) = .lit c := rfl
+
+/-- **Resolution respects the open-operand rewrite, value-restrictedly.** The
+proof re-runs the per-pattern neutral-element soundness at the *resolved*
+operands. It deliberately does not re-match `openNeutral` on the resolved
+arguments: resolution can turn the surviving operand into a literal, changing
+which pattern (if any) would fire — but the fired rule's algebraic fact holds
+at resolved operands regardless. -/
+theorem resolve_openTop_equiv1 (L : Layout) (e : Expr Op) :
+    EquivExpr1 (calls := calls) (creates := creates)
+      (resolveForLayoutExpr L e) (resolveForLayoutExpr L (openTop e)) := by
+  cases e with
+  | lit _ => exact EquivExpr1.refl _
+  | var _ => exact EquivExpr1.refl _
+  | call _ _ => exact EquivExpr1.refl _
+  | builtin op args =>
+      rw [openTop]
+      cases hn : openNeutral op args with
+      | none => exact EquivExpr1.refl _
+      | some e' =>
+          simp only [Option.getD_some]
+          unfold openNeutral at hn
+          split at hn <;>
+            first
+              | contradiction
+              | (split_ifs at hn with hc
+                 · obtain rfl := Option.some.inj hn
+                   simp only [resolve_two_args, resolve_lit]
+                   first
+                     | exact open_right_equiv1 (fun v => by
+                         rw [hc.1]; simp only [pureFn, Option.some.injEq]
+                         first | simp | (rw [allOnes]; exact BitVec.and_allOnes))
+                     | exact open_left_equiv1 (fun v => by
+                         rw [hc.1]; simp only [pureFn, Option.some.injEq]
+                         first | simp | (rw [allOnes]; exact BitVec.allOnes_and)))
+
 /-- Simplifying a built-in's arguments commutes with resolution up to equivalence
 (the `dataoffset`/`datasize` string-literal shape is preserved by the pass). -/
 theorem resolve_builtin_argEquiv (L : Layout) (op : Op) (args : List (Expr Op))
-    (hargs : List.Forall₂ (EquivExpr D) (resolveForLayoutExprs L args)
+    (hargs : EquivArgs D (resolveForLayoutExprs L args)
       (resolveForLayoutExprs L (simplifyArgs args))) :
     EquivExpr D (resolveForLayoutExpr L (.builtin op args))
       (resolveForLayoutExpr L (.builtin op (simplifyArgs args))) := by
@@ -173,7 +247,7 @@ theorem resolve_builtin_argEquiv (L : Layout) (op : Op) (args : List (Expr Op))
       fun n hc => hstr n (simplifyArgs_stringlit hc)
     rw [resolveForLayoutExpr_builtin_other L op args hstr,
         resolveForLayoutExpr_builtin_other L op (simplifyArgs args) hstr']
-    exact EquivExpr.builtin_congr op (EquivArgs.of_forall₂ hargs)
+    exact EquivExpr.builtin_congr op hargs
 
 /-! ### The resolution congruence — expressions and arguments -/
 
@@ -186,20 +260,25 @@ theorem resolveSimplifyExpr_equiv (L : Layout) : ∀ e : Expr Op,
   | .var _ => EquivExpr.refl _
   | .builtin op args => by
       rw [simplifyExpr]
-      exact (resolve_builtin_argEquiv L op args (resolveSimplifyArgs_forall2 L args)).trans
+      exact (resolve_builtin_argEquiv L op args (resolveSimplifyArgs_equivArgs L args)).trans
         (resolveSimplifyBuiltin_equiv L op (simplifyArgs args))
   | .call f args => by
       rw [simplifyExpr, resolveForLayoutExpr, resolveForLayoutExpr]
-      exact EquivExpr.call_congr f (EquivArgs.of_forall₂ (resolveSimplifyArgs_forall2 L args))
+      exact EquivExpr.call_congr f (resolveSimplifyArgs_equivArgs L args)
 
-/-- Resolution commutes with `simplifyArgs` up to pairwise equivalence. -/
-theorem resolveSimplifyArgs_forall2 (L : Layout) : ∀ args : List (Expr Op),
-    List.Forall₂ (EquivExpr D) (resolveForLayoutExprs L args)
+/-- Resolution commutes with `simplifyArgs` up to argument-list equivalence.
+Elements carry the open-operand rewrite, related only value-restrictedly; the
+argument context lifts that to full list equivalence (`EquivArgs.cons1`). -/
+theorem resolveSimplifyArgs_equivArgs (L : Layout) : ∀ args : List (Expr Op),
+    EquivArgs D (resolveForLayoutExprs L args)
       (resolveForLayoutExprs L (simplifyArgs args))
-  | [] => .nil
+  | [] => EquivArgs.refl _
   | e :: rest => by
       rw [simplifyArgs, resolveForLayoutExprs, resolveForLayoutExprs]
-      exact .cons (resolveSimplifyExpr_equiv L e) (resolveSimplifyArgs_forall2 L rest)
+      exact EquivArgs.cons1
+        (EquivExpr1.trans (EquivExpr.toEquivExpr1 (resolveSimplifyExpr_equiv L e))
+          (resolve_openTop_equiv1 L (simplifyExpr e)))
+        (resolveSimplifyArgs_equivArgs L rest)
 
 end
 
@@ -311,11 +390,27 @@ theorem resolveSimplifyStmt_equiv (L : Layout) : ∀ s : Stmt Op,
       simp only [simplifyStmt, resolveForLayoutStmt]
       exact funDef_equiv n ps rs (resolveForLayoutStmts L body)
         (resolveForLayoutStmts L (simplifyStmts body))
-  | .letDecl names (some e) => by
+  | .letDecl [x] (some e) => by
+      simp only [simplifyStmt, resolveForLayoutStmt, Option.map_some]
+      exact (EquivStmt.letDecl_congr _ (resolveSimplifyExpr_equiv L e)).trans
+        (EquivStmt.letDecl1_congr (resolve_openTop_equiv1 L (simplifyExpr e)))
+  | .letDecl [] (some e) => by
       simp only [simplifyStmt, resolveForLayoutStmt, Option.map_some]
       exact EquivStmt.letDecl_congr _ (resolveSimplifyExpr_equiv L e)
-  | .letDecl names none => EquivStmt.refl _
-  | .assign names e => by
+  | .letDecl (_ :: _ :: _) (some e) => by
+      simp only [simplifyStmt, resolveForLayoutStmt, Option.map_some]
+      exact EquivStmt.letDecl_congr _ (resolveSimplifyExpr_equiv L e)
+  | .letDecl [_] none => EquivStmt.refl _
+  | .letDecl [] none => EquivStmt.refl _
+  | .letDecl (_ :: _ :: _) none => EquivStmt.refl _
+  | .assign [x] e => by
+      simp only [simplifyStmt, resolveForLayoutStmt]
+      exact (EquivStmt.assign_congr _ (resolveSimplifyExpr_equiv L e)).trans
+        (EquivStmt.assign1_congr (resolve_openTop_equiv1 L (simplifyExpr e)))
+  | .assign [] e => by
+      simp only [simplifyStmt, resolveForLayoutStmt]
+      exact EquivStmt.assign_congr _ (resolveSimplifyExpr_equiv L e)
+  | .assign (_ :: _ :: _) e => by
       simp only [simplifyStmt, resolveForLayoutStmt]
       exact EquivStmt.assign_congr _ (resolveSimplifyExpr_equiv L e)
   | .cond c body => by
@@ -392,13 +487,31 @@ theorem scopeRel_resolveSimplify (L : Layout) : ∀ ss : List (Stmt Op),
   | .block _ :: rest => by
       simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt,
         hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest
-  | .letDecl _ (some _) :: rest => by
+  | .letDecl [_] (some _) :: rest => by
       simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt,
         hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest
-  | .letDecl _ none :: rest => by
+  | .letDecl [] (some _) :: rest => by
       simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt,
         hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest
-  | .assign _ _ :: rest => by
+  | .letDecl (_ :: _ :: _) (some _) :: rest => by
+      simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt,
+        hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest
+  | .letDecl [_] none :: rest => by
+      simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt,
+        hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest
+  | .letDecl [] none :: rest => by
+      simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt,
+        hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest
+  | .letDecl (_ :: _ :: _) none :: rest => by
+      simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt,
+        hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest
+  | .assign [_] _ :: rest => by
+      simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt,
+        hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest
+  | .assign [] _ :: rest => by
+      simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt,
+        hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest
+  | .assign (_ :: _ :: _) _ :: rest => by
       simp only [simplifyStmts, simplifyStmt, resolveForLayoutStmts, resolveForLayoutStmt,
         hoist, List.filterMap_cons]; exact scopeRel_resolveSimplify L rest
   | .cond c body :: rest => by
