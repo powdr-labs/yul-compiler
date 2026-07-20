@@ -551,6 +551,47 @@ The three dominant dynamic-array rows fall by 9,017,190, 9,482,520, and
 23,889 → 23,700 (−189); its five stack-depth failures remain a separate
 stack-compression target.
 
+### 🚧 Right-to-left call-argument splitting (`codex/expression-splitter`)
+
+Post-`DeadResults` dumps show that the remaining helper graph is often blocked
+by a named call nested as an argument of another expression.  The hottest pop
+chain contains, for example:
+
+```yul
+sstore(slot, update_byte_slice_dynamic32(sload(slot), offset, converted))
+```
+
+`InlineCalls` can consume the `update_byte_slice_dynamic32` helper once it is a
+direct singleton call site, but cannot classify its caller as call-free while
+the call remains under `sstore`.  That in turn keeps `storage_set_to_zero` and
+`array_pop` out of line on every loop iteration.
+
+The proposed generalization of `HoistCalls` splits an assignment or expression
+statement's minimal call-bearing argument suffix.  It evaluates the complete
+suffix into globally fresh singleton locals in reverse source order, then
+rebuilds the parent expression from those locals inside a restoring block.
+The prefix is call-free by construction; every call-bearing suffix member must
+be a direct named call accepted by the existing `lookupDelta`, `inlineOK`, and
+`siteOK` gates.  Thus evaluation order, state changes, stuckness, and halts are
+preserved exactly, while every newly exposed call is consumed by the following
+`FreshenCalls → InlineCalls` stages.  `let` initializers and control-flow
+conditions remain unchanged because their binding/halt shapes require a
+different contextual theorem.
+
+Soundness will use a bidirectional suffix-evaluation simulation indexed by the
+fresh environment insertions, covering normal evaluation and both argument
+halt forms.  The assignment case additionally proves that block restoration
+drops every temporary while preserving exact multi-target updates; the
+expression-statement case restores the original environment on normal and halt
+outcomes.  The recursive traversal retains the existing hoisted-scope model and
+gets a corresponding layout-resolution proof for the object path.
+
+Acceptance requires the six-round pipeline to collapse the observed
+`array_pop` chain, material aggregate/top-30 gains, no gas regressions or lost
+compilation, full solc differential agreement, and an unchanged trust boundary.
+Storage-load forwarding remains a separate measured follow-up: it requires a
+concrete alias/invalidation rule and an independent proof-design review.
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
