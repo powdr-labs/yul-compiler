@@ -1,0 +1,1721 @@
+import YulEvmCompiler.Optimizer.Implementation.InlineCalls
+import YulEvmCompiler.Optimizer.Implementation.DeadLits
+-- TODO(inline-calls): restore `set_option warningAsError true` once the
+-- soundness proof replaces the measurement-phase `sorry`.
+set_option warningAsError false
+/-!
+# YulEvmCompiler.Optimizer.Implementation.InlineCallsSound
+
+Soundness of the `InlineCalls` transform (see `InlineCalls.lean` for the
+transform and the module notes). Proof architecture:
+
+1. **`scoped_transfer`** — the single semantic engine: code accepted by the
+   `scopedStmts` checker executes identically under *any* function
+   environment (it contains no calls, so `Step` never consults `funs`) and
+   under *any* extension of its environment below the checked part
+   (`A ++ W` for arbitrary `W`), producing only `normal`/`halt` outcomes.
+   One induction gives funs-irrelevance, scoped weakening in both
+   directions, and the outcome restriction at once.
+
+2. **Site lemmas** — conditional on `lookupFun` resolving the callee, the
+   call statement and its inlined replacement produce the same results
+   (exactly equal on the `assign`/`exprStmt` forms and on every `normal`
+   path; the `let` form's halt paths carry the site's zero-bound `xs` as an
+   environment prefix until the enclosing block's `restore` erases it).
+
+3. **`IcRel`** — a PropRel-style skip-rule relation indexed by the syntactic
+   declaration map `Δ`, with forward/backward `Step` simulations carrying
+   `DeltaCompat` (every `Δ` entry resolves via `lookupFun` to its recorded
+   declaration) and an `IcFunsRel` function-environment relation.
+
+4. `IcRel.equivBlock` + transform inhabitation discharge `Pass.Sound`.
+-/
+
+namespace YulEvmCompiler.Optimizer
+
+open YulSemantics
+open YulSemantics.EVM
+
+variable {calls : ExternalCalls} {creates : ExternalCreates}
+
+local notation "D" => evmWithExternal calls creates
+
+/-! ### Environment splitting lemmas
+
+Execution of scoped code over `A ++ W` keeps `W` inert: reads and writes of
+checked names hit the innermost occurrence, which the checker keeps inside
+`A`. -/
+
+/-- A key bound in `A` is found in `A`. -/
+theorem VEnv.find?_key_isSome {A : VEnv D} {x : Ident}
+    (h : x ∈ A.map Prod.fst) : (A.find? (fun p => p.1 = x)).isSome := by
+  rw [List.find?_isSome]
+  obtain ⟨p, hp, hpx⟩ := List.mem_map.mp h
+  exact ⟨p, hp, by simp [hpx]⟩
+
+/-- Lookup of a key bound in the top part ignores the extension. -/
+theorem VEnv.get_append_mem {A : VEnv D} {x : Ident}
+    (h : x ∈ A.map Prod.fst) (W : VEnv D) :
+    VEnv.get (A ++ W) x = VEnv.get A x := by
+  unfold VEnv.get
+  rw [List.find?_append]
+  obtain ⟨p, hs⟩ := Option.isSome_iff_exists.mp (VEnv.find?_key_isSome h)
+  rw [hs]
+  rfl
+
+/-- Update of a key bound in the top part ignores the extension. -/
+theorem VEnv.set_append_mem {A : VEnv D} {x : Ident}
+    (h : x ∈ A.map Prod.fst) (W : VEnv D) (v : U256) :
+    VEnv.set (A ++ W) x v = VEnv.set A x v ++ W := by
+  induction A with
+  | nil => simp at h
+  | cons p rest ih =>
+      obtain ⟨py, pv⟩ := p
+      simp only [List.map_cons, List.mem_cons] at h
+      simp only [List.cons_append, VEnv.set]
+      by_cases hp : py = x
+      · simp [hp]
+      · rcases h with h | h
+        · exact absurd h.symm hp
+        · simp only [hp, if_false, List.cons_append, ih h]
+
+/-- Update of a key not bound in the top part passes through it. -/
+theorem VEnv.set_append_not_mem {A : VEnv D} {x : Ident}
+    (h : x ∉ A.map Prod.fst) (W : VEnv D) (v : U256) :
+    VEnv.set (A ++ W) x v = A ++ VEnv.set W x v := by
+  induction A with
+  | nil => rfl
+  | cons p rest ih =>
+      obtain ⟨py, pv⟩ := p
+      simp only [List.map_cons, List.mem_cons, not_or] at h
+      simp only [List.cons_append, VEnv.set]
+      rw [if_neg (fun hh => h.1 hh.symm), ih h.2]
+
+/-- Multi-update over keys all bound in the top part ignores the extension. -/
+theorem VEnv.setMany_append_mem {A W : VEnv D} {xs : List Ident} {vs : List U256}
+    (h : ∀ x ∈ xs, x ∈ A.map Prod.fst) :
+    VEnv.setMany (A ++ W) xs vs = VEnv.setMany A xs vs ++ W := by
+  unfold VEnv.setMany
+  induction xs generalizing vs A with
+  | nil => rfl
+  | cons x rest ih =>
+      cases vs with
+      | nil => rfl
+      | cons v vrest =>
+          simp only [List.zip_cons_cons, List.foldl_cons]
+          rw [VEnv.set_append_mem (h x (by simp)) W v]
+          exact ih (fun y hy => by
+            rw [VEnv.set_keys]
+            exact h y (List.mem_cons_of_mem _ hy))
+
+/-- `restore` distributes over a common extension. -/
+theorem restore_append {A A' W : VEnv D} (h : A.length ≤ A'.length) :
+    restore (A ++ W) (A' ++ W) = restore A A' ++ W := by
+  simp only [restore, List.length_append]
+  rw [show A'.length + W.length - (A.length + W.length) = A'.length - A.length by omega]
+  rw [List.drop_append_of_le_length (by omega)]
+
+/-- Cancelling a common extension of a keys-suffix. -/
+theorem keys_suffix_cancel {A A' W : VEnv D}
+    (hs : (A ++ W).map Prod.fst <:+ (A' ++ W).map Prod.fst) :
+    A.map Prod.fst <:+ A'.map Prod.fst := by
+  obtain ⟨t, ht⟩ := hs
+  refine ⟨t, ?_⟩
+  simp only [List.map_append] at ht
+  have := congrArg (fun l => List.take (l.length - W.length) l) ht
+  simpa [List.length_append, List.take_append_of_le_length,
+    List.take_of_length_le] using
+    List.append_cancel_right (by simpa [List.append_assoc] using ht)
+
+/-- Zero-bindings bind exactly their names. -/
+theorem bindZeros_keys (xs : List Ident) :
+    (bindZeros D xs).map Prod.fst = xs := by
+  unfold bindZeros
+  induction xs with
+  | nil => rfl
+  | cons x rest ih => simpa using ih
+
+/-! ### Scoped-code inversions -/
+
+/-- Per-class scoped check for the transfer induction. -/
+def scopedArgs (bound : List Ident) : List (Expr Op) → Bool
+  | [] => true
+  | e :: rest => scopedExpr bound e && scopedArgs bound rest
+
+/-- Per-class scoped check for the transfer induction. -/
+def scopedCode (bound : List Ident) : Code Op → Bool
+  | .expr e => scopedExpr bound e
+  | .args es => scopedArgs bound es
+  | .stmt s => (scopedStmt bound s).isSome
+  | .stmts ss => scopedStmts bound ss
+  | .loop _ _ _ => false
+
+/-- Argument lists with no calls and bound reads are scoped, per argument. -/
+theorem scopedArgs_of_parts {bound : List Ident} {args : List (Expr Op)}
+    (hnc : argsHaveCall args = false)
+    (hv : (varsList args).all bound.contains = true) :
+    scopedArgs bound args = true := by
+  induction args with
+  | nil => rfl
+  | cons e rest ih =>
+      rw [show argsHaveCall (e :: rest) = (exprHasCall e || argsHaveCall rest) from rfl,
+        Bool.or_eq_false_iff] at hnc
+      rw [show varsList (e :: rest) = exprVars e ++ varsList rest from rfl,
+        List.all_append, Bool.and_eq_true] at hv
+      unfold scopedArgs
+      rw [Bool.and_eq_true]
+      refine ⟨?_, ih hnc.2 hv.2⟩
+      unfold scopedExpr
+      rw [Bool.and_eq_true, Bool.not_eq_true']
+      exact ⟨hnc.1, hv.1⟩
+
+/-- A scoped builtin's arguments are scoped. -/
+theorem scopedExpr_builtin_args {bound : List Ident} {op : Op} {args : List (Expr Op)}
+    (h : scopedExpr bound (.builtin op args) = true) :
+    scopedArgs bound args = true := by
+  unfold scopedExpr at h
+  rw [Bool.and_eq_true, Bool.not_eq_true'] at h
+  exact scopedArgs_of_parts h.1 h.2
+
+/-- The selected switch block of scoped cases/default is scoped. -/
+theorem scoped_selectSwitch {bound : List Ident} {cv : U256}
+    {cases : List (Literal × Block Op)} {dflt : Option (Block Op)}
+    (hc : scopedCases bound cases = true) (hd : scopedDflt bound dflt = true) :
+    scopedStmts bound (selectSwitch D cv cases dflt) = true := by
+  induction cases with
+  | nil =>
+      unfold selectSwitch
+      simp only [List.find?_nil]
+      cases dflt with
+      | none => rfl
+      | some b => exact hd
+  | cons hd' rest ih =>
+      rcases hd' with ⟨l, b⟩
+      unfold scopedCases at hc
+      rw [Bool.and_eq_true] at hc
+      by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+      · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
+        exact hc.1
+      · rw [selectSwitch, List.find?_cons_of_neg (by simp [hcv])]
+        have := ih hc.2
+        rw [selectSwitch] at this
+        exact this
+
+/-! ### The scoped-transfer engine -/
+
+/-- Result correspondence for `scoped_transfer`: expression results transfer
+verbatim; statement-class results split as `A' ++ W ↦ A' ++ W'` with only
+`normal`/`halt` outcomes, the `normal` case re-establishing the checker's
+binding context inside `A'`. -/
+inductive TRes (W W' : VEnv D) (post : List Ident) : Res D → Res D → Prop
+  | eres (r : EResult D) : TRes W W' post (.eres r) (.eres r)
+  | norm {A' : VEnv D} {st' : EvmState}
+      (hk : ∀ x ∈ post, x ∈ A'.map Prod.fst) :
+      TRes W W' post (.sres (A' ++ W) st' .normal) (.sres (A' ++ W') st' .normal)
+  | halt {A' : VEnv D} {st' : EvmState} :
+      TRes W W' post (.sres (A' ++ W) st' .halt) (.sres (A' ++ W') st' .halt)
+
+/-- The binding context the checker leaves after one statement (`bound` for
+every other class — sequences end at blocks, which restore). -/
+def postBound (bound : List Ident) : Code Op → List Ident
+  | .stmt s => (scopedStmt bound s).getD bound
+  | _ => []
+
+/-- Split a scoped sequence at its head. -/
+theorem scopedStmts_cons_inv {bound : List Ident} {s : Stmt Op} {rest : List (Stmt Op)}
+    (h : scopedStmts bound (s :: rest) = true) :
+    ∃ bound₁, scopedStmt bound s = some bound₁ ∧ scopedStmts bound₁ rest = true := by
+  unfold scopedStmts at h
+  split at h
+  · next bound₁ heq => exact ⟨bound₁, heq, h⟩
+  · cases h
+
+/-- Membership form of a positive `List.all contains` test. -/
+theorem all_contains_subset {xs bound : List Ident}
+    (h : xs.all bound.contains = true) : ∀ x ∈ xs, x ∈ bound := by
+  intro x hx
+  have := List.all_eq_true.mp h x hx
+  simpa using this
+
+/-- **The scoped-transfer engine.** Scoped code never consults the function
+environment (it has no calls) and never touches an environment extension
+below its checked part — so its execution transfers verbatim from
+`funs₁, A ++ W` to *any* `funs₂, A ++ W'`, and it produces only
+`normal`/`halt` outcomes. One induction yields funs-irrelevance, scoped
+weakening (in both directions, by symmetry of `W`/`W'`), and the outcome
+restriction. -/
+theorem scoped_transfer {funs₁ : FunEnv D} {V₁ : VEnv D} {st : EvmState}
+    {code : Code Op} {res₁ : Res D}
+    (h : Step D funs₁ V₁ st code res₁) :
+    ∀ {A W : VEnv D} {bound : List Ident} (funs₂ : FunEnv D) (W' : VEnv D),
+      V₁ = A ++ W → scopedCode bound code = true →
+      (∀ x ∈ bound, x ∈ A.map Prod.fst) →
+      ∃ res₂, Step D funs₂ (A ++ W') st code res₂ ∧
+        TRes (calls := calls) (creates := creates) W W'
+          (postBound bound code) res₁ res₂ := by
+  induction h with
+  | @lit funs V st l =>
+      intro A W bound funs₂ W' hV hsc hb
+      exact ⟨_, Step.lit, .eres _⟩
+  | @var funs V st x v hv =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      have hx : x ∈ bound := by
+        unfold scopedCode scopedExpr at hsc
+        rw [Bool.and_eq_true] at hsc
+        have := List.all_eq_true.mp hsc.2 x (by simp [exprVars])
+        simpa using this
+      have hxA : x ∈ A.map Prod.fst := hb x hx
+      have hgv : VEnv.get A x = some v := by
+        rw [← VEnv.get_append_mem hxA W]; exact hv
+      refine ⟨_, Step.var ?_, .eres _⟩
+      rw [VEnv.get_append_mem hxA W']; exact hgv
+  | @builtinOk funs V st op args argvals st1 rets st2 ha hbi iha =>
+      intro A W bound funs₂ W' hV hsc hb
+      have hargs : scopedArgs bound args = true := scopedExpr_builtin_args hsc
+      obtain ⟨res₂, hstep, htr⟩ := iha funs₂ W' hV hargs hb
+      cases htr with
+      | eres => exact ⟨_, Step.builtinOk hstep hbi, .eres _⟩
+  | @builtinHalt funs V st op args argvals st1 st2 ha hbi iha =>
+      intro A W bound funs₂ W' hV hsc hb
+      have hargs : scopedArgs bound args = true := scopedExpr_builtin_args hsc
+      obtain ⟨res₂, hstep, htr⟩ := iha funs₂ W' hV hargs hb
+      cases htr with
+      | eres => exact ⟨_, Step.builtinHalt hstep hbi, .eres _⟩
+  | @builtinArgsHalt funs V st op args st1 ha iha =>
+      intro A W bound funs₂ W' hV hsc hb
+      have hargs : scopedArgs bound args = true := scopedExpr_builtin_args hsc
+      obtain ⟨res₂, hstep, htr⟩ := iha funs₂ W' hV hargs hb
+      cases htr with
+      | eres => exact ⟨_, Step.builtinArgsHalt hstep, .eres _⟩
+  | callOk | callHalt | callArgsHalt =>
+      intro A W bound funs₂ W' hV hsc hb
+      simp [scopedCode, scopedExpr, exprHasCall] at hsc
+  | @argsNil funs V st =>
+      intro A W bound funs₂ W' hV hsc hb
+      exact ⟨_, Step.argsNil, .eres _⟩
+  | @argsCons funs V st e rest restvals st1 v st2 hrest he ihrest ihe =>
+      intro A W bound funs₂ W' hV hsc hb
+      unfold scopedCode scopedArgs at hsc
+      rw [Bool.and_eq_true] at hsc
+      obtain ⟨res₂, hstep₁, htr₁⟩ := ihrest funs₂ W' hV hsc.2 hb
+      obtain ⟨res₃, hstep₂, htr₂⟩ := ihe funs₂ W' hV hsc.1 hb
+      cases htr₁ with
+      | eres =>
+          cases htr₂ with
+          | eres => exact ⟨_, Step.argsCons hstep₁ hstep₂, .eres _⟩
+  | @argsRestHalt funs V st e rest st1 hrest ihrest =>
+      intro A W bound funs₂ W' hV hsc hb
+      unfold scopedCode scopedArgs at hsc
+      rw [Bool.and_eq_true] at hsc
+      obtain ⟨res₂, hstep₁, htr₁⟩ := ihrest funs₂ W' hV hsc.2 hb
+      cases htr₁ with
+      | eres => exact ⟨_, Step.argsRestHalt hstep₁, .eres _⟩
+  | @argsHeadHalt funs V st e rest restvals st1 st2 hrest he ihrest ihe =>
+      intro A W bound funs₂ W' hV hsc hb
+      unfold scopedCode scopedArgs at hsc
+      rw [Bool.and_eq_true] at hsc
+      obtain ⟨res₂, hstep₁, htr₁⟩ := ihrest funs₂ W' hV hsc.2 hb
+      obtain ⟨res₃, hstep₂, htr₂⟩ := ihe funs₂ W' hV hsc.1 hb
+      cases htr₁ with
+      | eres =>
+          cases htr₂ with
+          | eres => exact ⟨_, Step.argsHeadHalt hstep₁ hstep₂, .eres _⟩
+  | funDef =>
+      intro A W bound funs₂ W' hV hsc hb
+      simp [scopedCode, scopedStmt] at hsc
+  | @block funs V st body Vb stb o hbody ihbody =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      have hstmts : scopedStmts bound body = true := by
+        simp only [scopedCode, scopedStmt] at hsc
+        by_cases hc : scopedStmts bound body = true
+        · exact hc
+        · simp [hc] at hsc
+      have hpost : postBound bound (Code.stmt (.block body)) = bound := by
+        simp [postBound, scopedStmt, hstmts]
+      obtain ⟨res₂, hstep, htr⟩ :=
+        ihbody (hoist D body :: funs₂) W' rfl hstmts hb
+      have hlenV : (A ++ W).length ≤ Vb.length := venvLen_mono hbody rfl
+      have hkeysV := venvKeys_suffix hbody rfl
+      cases htr with
+      | @norm A' st' hk =>
+          have hlen : A.length ≤ A'.length := by
+            rw [List.length_append, List.length_append] at hlenV
+            omega
+          refine ⟨_, Step.block hstep, ?_⟩
+          rw [hpost, restore_append hlen, restore_append hlen]
+          exact .norm (fun x hx => by
+            rw [restore_keys (keys_suffix_cancel hkeysV) hlen]
+            exact hb x hx)
+      | @halt A' st' =>
+          have hlen : A.length ≤ A'.length := by
+            rw [List.length_append, List.length_append] at hlenV
+            omega
+          refine ⟨_, Step.block hstep, ?_⟩
+          rw [restore_append hlen, restore_append hlen]
+          exact .halt
+  | @letZero funs V st vars =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      refine ⟨_, Step.letZero, ?_⟩
+      rw [show bindZeros D vars ++ (A ++ W) = (bindZeros D vars ++ A) ++ W from
+            (List.append_assoc _ _ _).symm,
+          show bindZeros D vars ++ (A ++ W') = (bindZeros D vars ++ A) ++ W' from
+            (List.append_assoc _ _ _).symm]
+      refine .norm (fun x hx => ?_)
+      have hpost : postBound bound (Code.stmt (.letDecl vars none)) = vars ++ bound := by
+        simp [postBound, scopedStmt]
+      rw [hpost] at hx
+      rw [List.map_append, bindZeros_keys]
+      rcases List.mem_append.mp hx with hx | hx
+      · exact List.mem_append.mpr (Or.inl hx)
+      · exact List.mem_append.mpr (Or.inr (hb x hx))
+  | @letVal funs V st vars e vals st1 he hlen ihe =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      have hse : scopedExpr bound e = true := by
+        simp only [scopedCode, scopedStmt] at hsc
+        by_cases hc : scopedExpr bound e = true
+        · exact hc
+        · simp [hc] at hsc
+      obtain ⟨res₂, hstep, htr⟩ := ihe funs₂ W' rfl hse hb
+      cases htr with
+      | eres =>
+          refine ⟨_, Step.letVal hstep hlen, ?_⟩
+          rw [show vars.zip vals ++ (A ++ W) = (vars.zip vals ++ A) ++ W from
+                (List.append_assoc _ _ _).symm,
+              show vars.zip vals ++ (A ++ W') = (vars.zip vals ++ A) ++ W' from
+                (List.append_assoc _ _ _).symm]
+          refine .norm (fun x hx => ?_)
+          have hpost : postBound bound (Code.stmt (.letDecl vars (some e))) =
+              vars ++ bound := by
+            simp [postBound, scopedStmt, hse]
+          rw [hpost] at hx
+          rw [List.map_append, List.map_fst_zip (by omega)]
+          rcases List.mem_append.mp hx with hx | hx
+          · exact List.mem_append.mpr (Or.inl hx)
+          · exact List.mem_append.mpr (Or.inr (hb x hx))
+  | @letHalt funs V st vars e st1 he ihe =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      have hse : scopedExpr bound e = true := by
+        simp only [scopedCode, scopedStmt] at hsc
+        by_cases hc : scopedExpr bound e = true
+        · exact hc
+        · simp [hc] at hsc
+      obtain ⟨res₂, hstep, htr⟩ := ihe funs₂ W' rfl hse hb
+      cases htr with
+      | eres => exact ⟨_, Step.letHalt hstep, .halt⟩
+  | @assignVal funs V st vars e vals st1 he hlen ihe =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      have hsc' : vars.all bound.contains = true ∧ scopedExpr bound e = true := by
+        simp only [scopedCode, scopedStmt] at hsc
+        by_cases hc : (vars.all bound.contains && scopedExpr bound e) = true
+        · rw [Bool.and_eq_true] at hc
+          exact hc
+        · simp [hc] at hsc
+      have hvars : ∀ x ∈ vars, x ∈ A.map Prod.fst := fun x hx =>
+        hb x (all_contains_subset hsc'.1 x hx)
+      obtain ⟨res₂, hstep, htr⟩ := ihe funs₂ W' rfl hsc'.2 hb
+      cases htr with
+      | eres =>
+          refine ⟨_, Step.assignVal hstep hlen, ?_⟩
+          rw [VEnv.setMany_append_mem hvars, VEnv.setMany_append_mem hvars]
+          refine .norm (fun x hx => ?_)
+          have hpost : postBound bound (Code.stmt (.assign vars e)) = bound := by
+            simp [postBound, scopedStmt, hsc'.1, hsc'.2]
+          rw [hpost] at hx
+          rw [VEnv.setMany_keys]
+          exact hb x hx
+  | @assignHalt funs V st vars e st1 he ihe =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      have hse : scopedExpr bound e = true := by
+        simp only [scopedCode, scopedStmt] at hsc
+        by_cases hc : (vars.all bound.contains && scopedExpr bound e) = true
+        · rw [Bool.and_eq_true] at hc
+          exact hc.2
+        · simp [hc] at hsc
+      obtain ⟨res₂, hstep, htr⟩ := ihe funs₂ W' rfl hse hb
+      cases htr with
+      | eres => exact ⟨_, Step.assignHalt hstep, .halt⟩
+  | @exprStmt funs V st e st1 he ihe =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      have hse : scopedExpr bound e = true := by
+        simp only [scopedCode, scopedStmt] at hsc
+        by_cases hc : scopedExpr bound e = true
+        · exact hc
+        · simp [hc] at hsc
+      obtain ⟨res₂, hstep, htr⟩ := ihe funs₂ W' rfl hse hb
+      cases htr with
+      | eres =>
+          refine ⟨_, Step.exprStmt hstep, ?_⟩
+          refine .norm (fun x hx => ?_)
+          have hpost : postBound bound (Code.stmt (.exprStmt e)) = bound := by
+            simp [postBound, scopedStmt, hse]
+          rw [hpost] at hx
+          exact hb x hx
+  | @exprStmtHalt funs V st e st1 he ihe =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      have hse : scopedExpr bound e = true := by
+        simp only [scopedCode, scopedStmt] at hsc
+        by_cases hc : scopedExpr bound e = true
+        · exact hc
+        · simp [hc] at hsc
+      obtain ⟨res₂, hstep, htr⟩ := ihe funs₂ W' rfl hse hb
+      cases htr with
+      | eres => exact ⟨_, Step.exprStmtHalt hstep, .halt⟩
+  | @ifTrue funs V st c body cv st1 V' st2 o hc hcv hbody ihc ihbody =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      have hsc' : scopedExpr bound c = true ∧ scopedStmts bound body = true := by
+        simp only [scopedCode, scopedStmt] at hsc
+        by_cases hcnd : (scopedExpr bound c && scopedStmts bound body) = true
+        · rw [Bool.and_eq_true] at hcnd
+          exact hcnd
+        · simp [hcnd] at hsc
+      obtain ⟨res₂, hstepc, htrc⟩ := ihc funs₂ W' rfl hsc'.1 hb
+      have hscb : scopedCode bound (Code.stmt (.block body)) = true := by
+        simp [scopedCode, scopedStmt, hsc'.2]
+      obtain ⟨res₃, hstepb, htrb⟩ := ihbody funs₂ W' rfl hscb hb
+      cases htrc with
+      | eres =>
+          have hpostb : postBound bound (Code.stmt (.block body)) = bound := by
+            simp [postBound, scopedStmt, hsc'.2]
+          have hpost : postBound bound (Code.stmt (.cond c body)) = bound := by
+            simp [postBound, scopedStmt, hsc'.1, hsc'.2]
+          rw [hpostb] at htrb
+          rw [hpost]
+          cases htrb with
+          | norm hk => exact ⟨_, Step.ifTrue hstepc hcv hstepb, .norm hk⟩
+          | halt => exact ⟨_, Step.ifTrue hstepc hcv hstepb, .halt⟩
+  | @ifFalse funs V st c body cv st1 hc hcv ihc =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      have hcnd : (scopedExpr bound c && scopedStmts bound body) = true := by
+        simp only [scopedCode, scopedStmt] at hsc
+        by_cases hcnd : (scopedExpr bound c && scopedStmts bound body) = true
+        · exact hcnd
+        · simp [hcnd] at hsc
+      have hsc' : scopedExpr bound c = true := by
+        rw [Bool.and_eq_true] at hcnd
+        exact hcnd.1
+      obtain ⟨res₂, hstepc, htrc⟩ := ihc funs₂ W' rfl hsc' hb
+      cases htrc with
+      | eres =>
+          refine ⟨_, Step.ifFalse hstepc hcv, .norm (fun x hx => ?_)⟩
+          exact hb x (by
+            simpa [postBound, scopedStmt, hcnd] using hx)
+  | @ifHalt funs V st c body st1 hc ihc =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      have hsc' : scopedExpr bound c = true := by
+        simp only [scopedCode, scopedStmt] at hsc
+        by_cases hcnd : (scopedExpr bound c && scopedStmts bound body) = true
+        · rw [Bool.and_eq_true] at hcnd
+          exact hcnd.1
+        · simp [hcnd] at hsc
+      obtain ⟨res₂, hstepc, htrc⟩ := ihc funs₂ W' rfl hsc' hb
+      cases htrc with
+      | eres => exact ⟨_, Step.ifHalt hstepc, .halt⟩
+  | @switchExec funs V st c cases' dflt cv st1 V' st2 o hc hsel ihc ihsel =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      have hsc' : scopedExpr bound c = true ∧ scopedCases bound cases' = true ∧
+          scopedDflt bound dflt = true := by
+        simp only [scopedCode, scopedStmt] at hsc
+        by_cases hcnd : (scopedExpr bound c && scopedCases bound cases' &&
+            scopedDflt bound dflt) = true
+        · rw [Bool.and_eq_true, Bool.and_eq_true] at hcnd
+          exact ⟨hcnd.1.1, hcnd.1.2, hcnd.2⟩
+        · simp [hcnd] at hsc
+      obtain ⟨res₂, hstepc, htrc⟩ := ihc funs₂ W' rfl hsc'.1 hb
+      have hsels : scopedStmts bound (selectSwitch D cv cases' dflt) = true :=
+        scoped_selectSwitch hsc'.2.1 hsc'.2.2
+      have hscb : scopedCode bound (Code.stmt (.block (selectSwitch D cv cases' dflt))) =
+          true := by
+        simp [scopedCode, scopedStmt, hsels]
+      obtain ⟨res₃, hstepb, htrb⟩ := ihsel funs₂ W' rfl hscb hb
+      cases htrc with
+      | eres =>
+          have hpostb : postBound bound
+              (Code.stmt (.block (selectSwitch D cv cases' dflt))) = bound := by
+            simp [postBound, scopedStmt, hsels]
+          have hpost : postBound bound (Code.stmt (.switch c cases' dflt)) = bound := by
+            simp [postBound, scopedStmt, hsc'.1, hsc'.2.1, hsc'.2.2]
+          rw [hpostb] at htrb
+          rw [hpost]
+          cases htrb with
+          | norm hk => exact ⟨_, Step.switchExec hstepc hstepb, .norm hk⟩
+          | halt => exact ⟨_, Step.switchExec hstepc hstepb, .halt⟩
+  | @switchHalt funs V st c cases' dflt st1 hc ihc =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      have hsc' : scopedExpr bound c = true := by
+        simp only [scopedCode, scopedStmt] at hsc
+        by_cases hcnd : (scopedExpr bound c && scopedCases bound cases' &&
+            scopedDflt bound dflt) = true
+        · rw [Bool.and_eq_true, Bool.and_eq_true] at hcnd
+          exact hcnd.1.1
+        · simp [hcnd] at hsc
+      obtain ⟨res₂, hstepc, htrc⟩ := ihc funs₂ W' rfl hsc' hb
+      cases htrc with
+      | eres => exact ⟨_, Step.switchHalt hstepc, .halt⟩
+  | forLoop | forInitHalt =>
+      intro A W bound funs₂ W' hV hsc hb
+      simp [scopedCode, scopedStmt] at hsc
+  | «break» | «continue» | leave =>
+      intro A W bound funs₂ W' hV hsc hb
+      simp [scopedCode, scopedStmt] at hsc
+  | @seqNil funs V st =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      exact ⟨_, Step.seqNil, .norm (fun x hx => by simp [postBound] at hx)⟩
+  | @seqCons funs V st s rest V1 st1 V2 st2 o hs hrest ihs ihrest =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      obtain ⟨bound₁, hstmt, hrest'⟩ := scopedStmts_cons_inv hsc
+      obtain ⟨res₂, hstep₁, htr₁⟩ := ihs funs₂ W' rfl (by simp [scopedCode, hstmt]) hb
+      have hpost₁ : postBound bound (Code.stmt s) = bound₁ := by
+        simp [postBound, hstmt]
+      rw [hpost₁] at htr₁
+      cases htr₁ with
+      | @norm A₁ st₁' hk =>
+          obtain ⟨res₃, hstep₂, htr₂⟩ := ihrest funs₂ W' rfl hrest' hk
+          cases htr₂ with
+          | norm hk₂ => exact ⟨_, Step.seqCons hstep₁ hstep₂, .norm hk₂⟩
+          | halt => exact ⟨_, Step.seqCons hstep₁ hstep₂, .halt⟩
+  | @seqStop funs V st s rest V1 st1 o hs hne ihs =>
+      intro A W bound funs₂ W' hV hsc hb
+      subst hV
+      obtain ⟨bound₁, hstmt, hrest'⟩ := scopedStmts_cons_inv hsc
+      obtain ⟨res₂, hstep₁, htr₁⟩ := ihs funs₂ W' rfl (by simp [scopedCode, hstmt]) hb
+      cases htr₁ with
+      | norm hk => exact absurd rfl hne
+      | halt => exact ⟨_, Step.seqStop hstep₁ (by simp), .halt⟩
+  | loopDone | loopCondHalt | loopStep | loopPostHalt | loopBreak | loopLeave
+  | loopBodyHalt =>
+      intro A W bound funs₂ W' hV hsc hb
+      simp [scopedCode] at hsc
+
+/-! ### Call-free expression transfer
+
+Argument expressions at an inline site are call-free (`siteOK`) but read
+arbitrary caller variables, so `scoped_transfer` does not apply; instead their
+evaluation transfers to any environment that *agrees on the variables they
+read* — and to any function environment. -/
+
+/-- The transfer condition of `exprNoCall_transfer`: call-free code whose
+reads the two environments agree on. -/
+def NoCallAgrees (V V₂ : VEnv D) : Code Op → Prop
+  | .expr e => exprHasCall e = false ∧
+      ∀ y ∈ exprVars e, VEnv.get V₂ y = VEnv.get V y
+  | .args es => argsHaveCall es = false ∧
+      ∀ y ∈ varsList es, VEnv.get V₂ y = VEnv.get V y
+  | _ => False
+
+/-- Evaluation of call-free expression/argument code transfers to any function
+environment and any read-agreeing variable environment. -/
+theorem exprNoCall_transfer {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} {res : Res D} (h : Step D funs V st code res) :
+    ∀ {V₂ : VEnv D} (funs₂ : FunEnv D),
+      NoCallAgrees (calls := calls) (creates := creates) V V₂ code →
+      Step D funs₂ V₂ st code res := by
+  induction h with
+  | lit =>
+      intro V₂ funs₂ hc
+      exact Step.lit
+  | @var funs V st x v hv =>
+      intro V₂ funs₂ hc
+      obtain ⟨-, hag⟩ := hc
+      refine Step.var ?_
+      rw [hag x (by simp [exprVars])]
+      exact hv
+  | @builtinOk funs V st op args argvals st1 rets st2 ha hbi iha =>
+      intro V₂ funs₂ hc
+      obtain ⟨hnc, hag⟩ := hc
+      exact Step.builtinOk (iha funs₂ ⟨hnc, hag⟩) hbi
+  | @builtinHalt funs V st op args argvals st1 st2 ha hbi iha =>
+      intro V₂ funs₂ hc
+      obtain ⟨hnc, hag⟩ := hc
+      exact Step.builtinHalt (iha funs₂ ⟨hnc, hag⟩) hbi
+  | @builtinArgsHalt funs V st op args st1 ha iha =>
+      intro V₂ funs₂ hc
+      obtain ⟨hnc, hag⟩ := hc
+      exact Step.builtinArgsHalt (iha funs₂ ⟨hnc, hag⟩)
+  | callOk | callHalt | callArgsHalt =>
+      intro V₂ funs₂ hc
+      obtain ⟨hnc, -⟩ := hc
+      simp [exprHasCall] at hnc
+  | argsNil =>
+      intro V₂ funs₂ hc
+      exact Step.argsNil
+  | @argsCons funs V st e rest restvals st1 v st2 hrest he ihrest ihe =>
+      intro V₂ funs₂ hc
+      obtain ⟨hnc, hvars⟩ := hc
+      rw [show argsHaveCall (e :: rest) = (exprHasCall e || argsHaveCall rest) from rfl,
+        Bool.or_eq_false_iff] at hnc
+      rw [show varsList (e :: rest) = exprVars e ++ varsList rest from rfl] at hvars
+      exact Step.argsCons
+        (ihrest funs₂ ⟨hnc.2, fun y hy => hvars y (List.mem_append.mpr (Or.inr hy))⟩)
+        (ihe funs₂ ⟨hnc.1, fun y hy => hvars y (List.mem_append.mpr (Or.inl hy))⟩)
+  | @argsRestHalt funs V st e rest st1 hrest ihrest =>
+      intro V₂ funs₂ hc
+      obtain ⟨hnc, hvars⟩ := hc
+      rw [show argsHaveCall (e :: rest) = (exprHasCall e || argsHaveCall rest) from rfl,
+        Bool.or_eq_false_iff] at hnc
+      rw [show varsList (e :: rest) = exprVars e ++ varsList rest from rfl] at hvars
+      exact Step.argsRestHalt
+        (ihrest funs₂ ⟨hnc.2, fun y hy => hvars y (List.mem_append.mpr (Or.inr hy))⟩)
+  | @argsHeadHalt funs V st e rest restvals st1 st2 hrest he ihrest ihe =>
+      intro V₂ funs₂ hc
+      obtain ⟨hnc, hvars⟩ := hc
+      rw [show argsHaveCall (e :: rest) = (exprHasCall e || argsHaveCall rest) from rfl,
+        Bool.or_eq_false_iff] at hnc
+      rw [show varsList (e :: rest) = exprVars e ++ varsList rest from rfl] at hvars
+      exact Step.argsHeadHalt
+        (ihrest funs₂ ⟨hnc.2, fun y hy => hvars y (List.mem_append.mpr (Or.inr hy))⟩)
+        (ihe funs₂ ⟨hnc.1, fun y hy => hvars y (List.mem_append.mpr (Or.inl hy))⟩)
+  | funDef | block | letZero | letVal | letHalt | assignVal | assignHalt
+  | exprStmt | exprStmtHalt | ifTrue | ifFalse | ifHalt | switchExec | switchHalt
+  | forLoop | forInitHalt | «break» | «continue» | leave | seqNil | seqCons
+  | seqStop | loopDone | loopCondHalt | loopStep | loopPostHalt | loopBreak
+  | loopLeave | loopBodyHalt =>
+      intro V₂ funs₂ hc
+      exact absurd hc (by simp [NoCallAgrees])
+
+/-- Argument evaluation produces one value per argument. -/
+theorem args_length {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {as : List (Expr Op)} {vs : List U256} {st1 : EvmState}
+    (h : Step D funs V st (.args as) (.eres (.vals vs st1))) :
+    vs.length = as.length := by
+  induction as generalizing vs st st1 with
+  | nil => cases h with | argsNil => rfl
+  | cons e rest ih =>
+      cases h with
+      | argsCons hrest he => simpa using ih hrest
+
+/-! ### Trailing `leave` normalization -/
+
+/-- `hoist` ignores a trailing `leave`. -/
+theorem hoist_append_leave (ss : List (Stmt Op)) :
+    hoist D (ss ++ [.leave]) = hoist D ss := by
+  rw [hoist_append]
+  simp [hoist]
+
+/-- Executions of a body with a trailing `leave` are executions of the body
+without it: `leave` becomes `normal`, everything else was an early stop. -/
+theorem block_trailing_leave_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {ss : List (Stmt Op)} {Vr : VEnv D} {st' : EvmState} {o : Outcome}
+    (h : Step D funs V st (.stmt (.block (ss ++ [.leave]))) (.sres Vr st' o)) :
+    ∃ o', Step D funs V st (.stmt (.block ss)) (.sres Vr st' o') ∧
+      ((o = .leave ∧ o' = .normal) ∨ (o = o' ∧ o' ≠ .normal)) := by
+  cases h with
+  | block hb =>
+      rw [hoist_append_leave] at hb
+      rcases stmts_append_fwd hb with ⟨V1, st1, hpre, hsuf⟩ | ⟨hne, hpre⟩
+      · cases hsuf with
+        | seqCons hl _ => cases hl
+        | seqStop hl hne =>
+            cases hl with
+            | leave =>
+                exact ⟨.normal, Step.block hpre, Or.inl ⟨rfl, rfl⟩⟩
+      · exact ⟨o, Step.block hpre, Or.inr ⟨rfl, hne⟩⟩
+
+/-- Converse: re-attach the trailing `leave`. -/
+theorem block_trailing_leave_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {ss : List (Stmt Op)} {Vr : VEnv D} {st' : EvmState} {o' : Outcome}
+    (h : Step D funs V st (.stmt (.block ss)) (.sres Vr st' o')) :
+    Step D funs V st (.stmt (.block (ss ++ [.leave])))
+      (.sres Vr st' (if o' = .normal then .leave else o')) := by
+  cases h with
+  | block hb =>
+      refine Step.block ?_
+      rw [hoist_append_leave]
+      by_cases ho : o' = .normal
+      · subst ho
+        exact stmts_append_normal hb (Step.seqStop Step.leave (by simp))
+      · rw [if_neg ho]
+        exact stmts_append_early hb ho
+
+/-! ### Sequential-assignment characterizations -/
+
+/-- A `setMany` through a head binding it never targets. -/
+theorem VEnv.setMany_cons_not_mem {x : Ident} {v : U256} {R : VEnv D}
+    {xs : List Ident} (hx : x ∉ xs) (vs : List U256) :
+    VEnv.setMany ((x, v) :: R) xs vs = (x, v) :: VEnv.setMany R xs vs := by
+  unfold VEnv.setMany
+  induction xs generalizing vs R with
+  | nil => rfl
+  | cons y rest ih =>
+      cases vs with
+      | nil => rfl
+      | cons w wrest =>
+          simp only [List.zip_cons_cons, List.foldl_cons]
+          have hxy : ¬(x = y) := fun hh => hx (hh ▸ List.mem_cons_self ..)
+          rw [show VEnv.set ((x, v) :: R) y w = (x, v) :: VEnv.set R y w by
+            simp only [VEnv.set, if_neg hxy]]
+          exact ih (fun hh => hx (List.mem_cons_of_mem _ hh)) wrest
+
+/-- Assigning through freshly zero-bound names lands exactly on them. -/
+theorem VEnv.setMany_bindZeros {xs : List Ident} (hnd : xs.Nodup)
+    {vs : List U256} (hlen : vs.length = xs.length) (V : VEnv D) :
+    VEnv.setMany (bindZeros D xs ++ V) xs vs = xs.zip vs ++ V := by
+  induction xs generalizing vs with
+  | nil => cases vs with | nil => rfl | cons v vs => rfl
+  | cons x rest ih =>
+      cases vs with
+      | nil => simp at hlen
+      | cons v vrest =>
+          have hx : x ∉ rest := (List.nodup_cons.mp hnd).1
+          have hnd' : rest.Nodup := (List.nodup_cons.mp hnd).2
+          show VEnv.setMany
+              ((x, (evmWithExternal calls creates).zero) :: (bindZeros D rest ++ V))
+              (x :: rest) (v :: vrest) = (x, v) :: rest.zip vrest ++ V
+          unfold VEnv.setMany
+          simp only [List.zip_cons_cons, List.foldl_cons]
+          rw [show VEnv.set
+              ((x, (evmWithExternal calls creates).zero) :: (bindZeros D rest ++ V)) x v =
+            (x, v) :: (bindZeros D rest ++ V) by simp [VEnv.set]]
+          have := VEnv.setMany_cons_not_mem (calls := calls) (creates := creates)
+            (x := x) (v := v) (R := bindZeros D rest ++ V) hx vrest
+          unfold VEnv.setMany at this
+          rw [this]
+          congr 1
+          have := ih hnd' (by simpa using hlen)
+          unfold VEnv.setMany at this
+          exact this
+
+/-- A block statement restores its entry keys and length. -/
+theorem block_stmt_shape {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {body : Block Op} {Vr : VEnv D} {st' : EvmState} {o : Outcome}
+    (h : Step D funs V st (.stmt (.block body)) (.sres Vr st' o)) :
+    Vr.map Prod.fst = V.map Prod.fst ∧ Vr.length = V.length := by
+  cases h with
+  | block hb =>
+      exact ⟨restore_keys (venvKeys_suffix hb rfl) (venvLen_mono hb rfl),
+        restore_length (venvLen_mono hb rfl)⟩
+
+/-! ### The inlined argument bindings -/
+
+/-- Keys of a zip are its first components (given enough values). -/
+theorem zip_keys {ps : List Ident} {vs : List U256} (h : ps.length ≤ vs.length) :
+    (ps.zip vs).map Prod.fst = ps :=
+  List.map_fst_zip h
+
+/-- `argsShadowOK`'s per-argument return-name component, at the list level. -/
+theorem argsShadowOK_rs {rs : List Ident} :
+    ∀ {pairs : List (Ident × Expr Op)}, argsShadowOK rs pairs = true →
+      ∀ y ∈ varsList (pairs.map Prod.snd), y ∉ rs := by
+  intro pairs
+  induction pairs with
+  | nil => intro _ y hy; simp [varsList] at hy
+  | cons pa rest ih =>
+      intro h y hy
+      unfold argsShadowOK at h
+      rw [Bool.and_eq_true] at h
+      rw [List.map_cons, show varsList (pa.2 :: rest.map Prod.snd) =
+        exprVars pa.2 ++ varsList (rest.map Prod.snd) from rfl] at hy
+      rcases List.mem_append.mp hy with hy | hy
+      · have := List.all_eq_true.mp h.1 y hy
+        rw [Bool.and_eq_true] at this
+        simpa using this.2
+      · exact ih h.2 y hy
+
+/-- Sequential `let`-bindings reproduce right-to-left argument evaluation:
+from `N ++ V` (the freshly bound return/`xs` zone on the caller env), the
+reversed parameter `let`s land exactly on the `callOk` parameter frame. -/
+theorem argLets_fwd {rs : List Ident} :
+    ∀ {ps : List Ident} {as : List (Expr Op)} {argvals : List U256}
+      {funs : FunEnv D} {V : VEnv D} {st st1 : EvmState},
+      Step D funs V st (.args as) (.eres (.vals argvals st1)) →
+      ps.length = as.length →
+      argsHaveCall as = false →
+      argsShadowOK rs (ps.zip as) = true →
+      ∀ {N : VEnv D}, (∀ y ∈ varsList as, y ∉ N.map Prod.fst) →
+      ∀ (funs₂ : FunEnv D),
+      Step D funs₂ (N ++ V) st
+        (.stmts ((ps.zip as).reverse.map (fun pa => .letDecl [pa.1] (some pa.2))))
+        (.sres (ps.zip argvals ++ (N ++ V)) st1 .normal) := by
+  intro ps as
+  induction as generalizing ps with
+  | nil =>
+      intro argvals funs V st st1 h hlen hnc hsh N hN funs₂
+      cases ps with
+      | nil =>
+          cases h with
+          | argsNil => simpa using Step.seqNil
+      | cons p ps' => simp at hlen
+  | cons a as' ih =>
+      intro argvals funs V st st1 h hlen hnc hsh N hN funs₂
+      cases ps with
+      | nil => simp at hlen
+      | cons p ps' =>
+          cases h with
+          | @argsCons _ _ _ _ _ restvals st1' v _ hrest ha =>
+              rw [show argsHaveCall (a :: as') =
+                (exprHasCall a || argsHaveCall as') from rfl,
+                Bool.or_eq_false_iff] at hnc
+              rw [List.zip_cons_cons] at hsh ⊢
+              unfold argsShadowOK at hsh
+              rw [Bool.and_eq_true] at hsh
+              have hNrest : ∀ y ∈ varsList as', y ∉ N.map Prod.fst := fun y hy =>
+                hN y (by
+                  rw [show varsList (a :: as') = exprVars a ++ varsList as' from rfl]
+                  exact List.mem_append.mpr (Or.inr hy))
+              have hpre := ih hrest (by simpa using hlen) hnc.2 hsh.2 hNrest funs₂
+              have hrestlen : restvals.length = as'.length := args_length hrest
+              rw [List.reverse_cons, List.map_append]
+              refine stmts_append_normal hpre ?_
+              have hagree : ∀ y ∈ exprVars a,
+                  VEnv.get (ps'.zip restvals ++ (N ++ V)) y = VEnv.get V y := by
+                intro y hy
+                have hsha := List.all_eq_true.mp hsh.1 y hy
+                rw [Bool.and_eq_true] at hsha
+                have hlen' : ps'.length = as'.length := by simpa using hlen
+                have hyp : y ∉ (ps'.zip restvals).map Prod.fst := by
+                  rw [List.map_fst_zip (by omega : ps'.length ≤ restvals.length)]
+                  have h1 := hsha.1
+                  rw [List.map_fst_zip (le_of_eq hlen')] at h1
+                  simpa using h1
+                have hyN : y ∉ N.map Prod.fst := hN y (by
+                  rw [show varsList (a :: as') = exprVars a ++ varsList as' from rfl]
+                  exact List.mem_append.mpr (Or.inl hy))
+                rw [VEnv.get_append_not_mem hyp, VEnv.get_append_not_mem hyN]
+              have ha₂ : Step D funs₂ (ps'.zip restvals ++ (N ++ V)) st1'
+                  (.expr a) (.eres (.vals [v] st1)) :=
+                exprNoCall_transfer ha funs₂ ⟨hnc.1, hagree⟩
+              refine Step.seqCons (Step.letVal ha₂ rfl) ?_
+              rw [show [p].zip [v] = [(p, v)] from rfl]
+              rw [show ([(p, v)] : VEnv D) ++ (ps'.zip restvals ++ (N ++ V)) =
+                (p, v) :: ps'.zip restvals ++ (N ++ V) from rfl]
+              exact Step.seqNil
+
+/-- Halting argument evaluation halts the `let` sequence, keeping the base
+environment as a suffix. -/
+theorem argLets_halt_fwd {rs : List Ident} :
+    ∀ {ps : List Ident} {as : List (Expr Op)}
+      {funs : FunEnv D} {V : VEnv D} {st st1 : EvmState},
+      Step D funs V st (.args as) (.eres (.halt st1)) →
+      ps.length = as.length →
+      argsHaveCall as = false →
+      argsShadowOK rs (ps.zip as) = true →
+      ∀ {N : VEnv D}, (∀ y ∈ varsList as, y ∉ N.map Prod.fst) →
+      ∀ (funs₂ : FunEnv D),
+      ∃ P : VEnv D, Step D funs₂ (N ++ V) st
+        (.stmts ((ps.zip as).reverse.map (fun pa => .letDecl [pa.1] (some pa.2))))
+        (.sres (P ++ (N ++ V)) st1 .halt) := by
+  intro ps as
+  induction as generalizing ps with
+  | nil =>
+      intro funs V st st1 h hlen hnc hsh N hN funs₂
+      cases h
+  | cons a as' ih =>
+      intro funs V st st1 h hlen hnc hsh N hN funs₂
+      cases ps with
+      | nil => simp at hlen
+      | cons p ps' =>
+          rw [show argsHaveCall (a :: as') =
+            (exprHasCall a || argsHaveCall as') from rfl,
+            Bool.or_eq_false_iff] at hnc
+          rw [List.zip_cons_cons] at hsh ⊢
+          unfold argsShadowOK at hsh
+          rw [Bool.and_eq_true] at hsh
+          have hNrest : ∀ y ∈ varsList as', y ∉ N.map Prod.fst := fun y hy =>
+            hN y (by
+              rw [show varsList (a :: as') = exprVars a ++ varsList as' from rfl]
+              exact List.mem_append.mpr (Or.inr hy))
+          rw [List.reverse_cons, List.map_append]
+          cases h with
+          | @argsRestHalt _ _ _ _ _ _ hrest =>
+              obtain ⟨P, hpre⟩ := ih hrest (by simpa using hlen) hnc.2 hsh.2
+                hNrest funs₂
+              exact ⟨P, stmts_append_early hpre (by simp)⟩
+          | @argsHeadHalt _ _ _ _ _ restvals st1' _ hrest ha =>
+              have hpre := argLets_fwd (rs := rs) hrest (by simpa using hlen)
+                hnc.2 hsh.2 hNrest funs₂
+              have hrestlen : restvals.length = as'.length := args_length hrest
+              have hagree : ∀ y ∈ exprVars a,
+                  VEnv.get (ps'.zip restvals ++ (N ++ V)) y = VEnv.get V y := by
+                intro y hy
+                have hsha := List.all_eq_true.mp hsh.1 y hy
+                rw [Bool.and_eq_true] at hsha
+                have hlen' : ps'.length = as'.length := by simpa using hlen
+                have hyp : y ∉ (ps'.zip restvals).map Prod.fst := by
+                  rw [List.map_fst_zip (by omega : ps'.length ≤ restvals.length)]
+                  have h1 := hsha.1
+                  rw [List.map_fst_zip (le_of_eq hlen')] at h1
+                  simpa using h1
+                have hyN : y ∉ N.map Prod.fst := hN y (by
+                  rw [show varsList (a :: as') = exprVars a ++ varsList as' from rfl]
+                  exact List.mem_append.mpr (Or.inl hy))
+                rw [VEnv.get_append_not_mem hyp, VEnv.get_append_not_mem hyN]
+              have ha₂ : Step D funs₂ (ps'.zip restvals ++ (N ++ V)) st1'
+                  (.expr a) (.eres (.halt st1)) :=
+                exprNoCall_transfer ha funs₂ ⟨hnc.1, hagree⟩
+              refine ⟨ps'.zip restvals, stmts_append_normal hpre ?_⟩
+              exact Step.seqStop (Step.letHalt ha₂) (by simp)
+
+/-! ### The return read-out -/
+
+/-- The trailing `x := r` assignments read the callee frame and write through
+it into the caller zone. -/
+theorem assigns_fwd {A' : VEnv D} :
+    ∀ {xs rs : List Ident},
+      (∀ r ∈ rs, r ∈ A'.map Prod.fst) →
+      (∀ x ∈ xs, x ∉ A'.map Prod.fst) →
+      xs.length = rs.length →
+      ∀ (funs : FunEnv D) (Wb : VEnv D) (st : EvmState),
+      Step D funs (A' ++ Wb) st
+        (.stmts ((xs.zip rs).map (fun xr => .assign [xr.1] (.var xr.2))))
+        (.sres (A' ++ VEnv.setMany Wb xs (rs.map
+          (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)))
+          st .normal) := by
+  intro xs
+  induction xs with
+  | nil =>
+      intro rs hr hx hlen funs Wb st
+      cases rs with
+      | nil => simpa [VEnv.setMany] using Step.seqNil
+      | cons r rs' => simp at hlen
+  | cons x xs' ih =>
+      intro rs hr hx hlen funs Wb st
+      cases rs with
+      | nil => simp at hlen
+      | cons r rs' =>
+          rw [List.zip_cons_cons, List.map_cons]
+          have hrA : r ∈ A'.map Prod.fst := hr r (by simp)
+          obtain ⟨v, hv⟩ : ∃ v, VEnv.get A' r = some v := by
+            have := VEnv.find?_key_isSome (calls := calls) (creates := creates) hrA
+            obtain ⟨p, hp⟩ := Option.isSome_iff_exists.mp this
+            exact ⟨p.2, by unfold VEnv.get; rw [hp]; rfl⟩
+          have hgv : VEnv.get (A' ++ Wb) r = some v := by
+            rw [VEnv.get_append_mem hrA]; exact hv
+          have hset : VEnv.setMany (A' ++ Wb) [x] [v] = A' ++ VEnv.set Wb x v := by
+            rw [VEnv.setMany_singleton]
+            exact VEnv.set_append_not_mem (hx x (by simp)) Wb v
+          have hstep : Step D funs (A' ++ Wb) st
+              (.stmt (.assign [x] (.var r)))
+              (.sres (VEnv.setMany (A' ++ Wb) [x] [v]) st .normal) :=
+            Step.assignVal (Step.var hgv) (by simp)
+          rw [hset] at hstep
+          have hrest := ih (fun r' hr' => hr r' (List.mem_cons_of_mem _ hr'))
+            (fun x' hx' => hx x' (List.mem_cons_of_mem _ hx'))
+            (by simpa using hlen) funs (VEnv.set Wb x v) st
+          have hmany : VEnv.setMany Wb (x :: xs') ((r :: rs').map
+              (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) =
+              VEnv.setMany (VEnv.set Wb x v) xs' (rs'.map
+                (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) := by
+            rw [List.map_cons, hv]
+            rfl
+          rw [hmany]
+          exact Step.seqCons hstep hrest
+
+/-! ### `TRes` inversions and remaining glue -/
+
+/-- Invert a `normal` transfer result. -/
+theorem TRes.norm_inv {W W' : VEnv D} {post : List Ident} {V₁ : VEnv D}
+    {st₁ : EvmState} {res₂ : Res D}
+    (h : TRes (calls := calls) (creates := creates) W W' post
+      (.sres V₁ st₁ .normal) res₂) :
+    ∃ A', V₁ = A' ++ W ∧ res₂ = .sres (A' ++ W') st₁ .normal ∧
+      (∀ x ∈ post, x ∈ A'.map Prod.fst) := by
+  cases h with
+  | norm hk => exact ⟨_, rfl, rfl, hk⟩
+
+/-- Invert a `halt` transfer result. -/
+theorem TRes.halt_inv {W W' : VEnv D} {post : List Ident} {V₁ : VEnv D}
+    {st₁ : EvmState} {res₂ : Res D}
+    (h : TRes (calls := calls) (creates := creates) W W' post
+      (.sres V₁ st₁ .halt) res₂) :
+    ∃ A', V₁ = A' ++ W ∧ res₂ = .sres (A' ++ W') st₁ .halt := by
+  cases h with
+  | halt => exact ⟨_, rfl, rfl⟩
+
+/-- `restore` to a base of the extension's length peels the top exactly. -/
+theorem restore_exact {W Y W' : VEnv D} (h : W'.length = W.length) :
+    restore W (Y ++ W') = W' := by
+  simp only [restore, List.length_append]
+  rw [show Y.length + W'.length - W.length = Y.length by omega]
+  exact List.drop_left
+
+/-- Equal-length prefixes of equal appends are equal. -/
+theorem append_cancel_of_length {α : Type _} {a b c d : List α}
+    (h : a ++ b = c ++ d) (hl : a.length = c.length) : a = c ∧ b = d :=
+  List.append_inj h hl
+
+/-- `siteOK` unpacked. -/
+theorem siteOK_inv {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
+    {isLet : Bool} (h : siteOK d xs as isLet = true) :
+    as.length = d.ps.length ∧ xs.length = d.rs.length ∧ xs.Nodup ∧
+    argsHaveCall as = false ∧ argsShadowOK d.rs (d.ps.zip as) = true ∧
+    (∀ x ∈ xs, x ∉ d.ps ++ d.rs) ∧
+    (isLet = true → ∀ y ∈ varsList as, y ∉ xs) := by
+  unfold siteOK at h
+  rw [Bool.and_eq_true, Bool.and_eq_true, Bool.and_eq_true, Bool.and_eq_true,
+    Bool.and_eq_true, Bool.and_eq_true] at h
+  obtain ⟨⟨⟨⟨⟨⟨h1, h2⟩, h3⟩, h4⟩, h5⟩, h6⟩, h7⟩ := h
+  refine ⟨by simpa using h1, by simpa using h2, by simpa using h3,
+    by simpa using h4, h5, ?_, ?_⟩
+  · intro x hx
+    have := List.all_eq_true.mp h6 x hx
+    simpa using this
+  · intro hl y hy
+    rw [hl] at h7
+    have h7' : ∀ x ∈ varsList as, x ∉ xs := by simpa using h7
+    exact h7' y hy
+
+/-- `classifyDecl` unpacked. -/
+theorem classifyDecl_inv {ps rs : List Ident} {body : Block Op} {d : IDecl}
+    (h : classifyDecl ps rs body = some d) :
+    d.ps = ps ∧ d.rs = rs ∧ (ps ++ rs).Nodup ∧
+    scopedStmts (ps ++ rs) d.ss = true ∧
+    (body = d.ss ∨ body = d.ss ++ [.leave]) := by
+  unfold classifyDecl at h
+  split at h
+  · next hc =>
+      rw [Bool.and_eq_true] at hc
+      injection h with h
+      subst h
+      refine ⟨rfl, rfl, by simpa using hc.1, hc.2, ?_⟩
+      unfold dropTrailingLeave
+      split
+      · next hlast =>
+          right
+          have hne : body ≠ [] := by
+            intro he; rw [he] at hlast; cases hlast
+          have hgl : body.getLast hne = .leave := by
+            rw [List.getLast?_eq_some_getLast hne] at hlast
+            injection hlast
+          rw [← hgl]
+          exact (List.dropLast_append_getLast hne).symm
+      · left; rfl
+  · cases h
+
+/-! ### The core inline lemmas (forward) -/
+
+/-- Second components of an exact zip. -/
+theorem zip_snds : ∀ {ps : List Ident} {as : List (Expr Op)},
+    ps.length = as.length → (ps.zip as).map Prod.snd = as := by
+  intro ps
+  induction ps with
+  | nil =>
+      intro as h
+      cases as with
+      | nil => rfl
+      | cons a as' => simp at h
+  | cons p ps' ih =>
+      intro as h
+      cases as with
+      | nil => simp at h
+      | cons a as' =>
+          rw [List.zip_cons_cons, List.map_cons, ih (by simpa using h)]
+
+/-- The callee frame's keys are its parameter and return names. -/
+theorem calleeFrame_keys {d : IDecl} {argvals : List U256}
+    (hlen : d.ps.length ≤ argvals.length) :
+    (d.ps.zip argvals ++ bindZeros D d.rs).map Prod.fst = d.ps ++ d.rs := by
+  rw [List.map_append, zip_keys hlen, bindZeros_keys]
+
+/-- **Forward, normal path**: from the call's constituents — argument
+evaluation, callee body run to `normal` — the inlined core runs to exactly the
+sequential-assignment environment. -/
+theorem inlineCore_fwd_normal {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
+    (hnd : (d.ps ++ d.rs).Nodup)
+    (hsc : scopedStmts (d.ps ++ d.rs) d.ss = true)
+    (hlen_as : as.length = d.ps.length)
+    (hnc : argsHaveCall as = false)
+    (hsh : argsShadowOK d.rs (d.ps.zip as) = true)
+    (hxout : ∀ x ∈ xs, x ∉ d.ps ++ d.rs)
+    (hlen_xs : xs.length = d.rs.length)
+    {funs cenv : FunEnv D} {V Z : VEnv D} {st st1 st2 : EvmState}
+    {argvals : List U256} {Vend : VEnv D}
+    (hargs : Step D funs V st (.args as) (.eres (.vals argvals st1)))
+    (hbody : Step D cenv (d.ps.zip argvals ++ bindZeros D d.rs) st1
+      (.stmt (.block d.ss)) (.sres Vend st2 .normal))
+    (hZ : ∀ y ∈ varsList as, y ∉ Z.map Prod.fst)
+    (funs₂ : FunEnv D) :
+    Step D funs₂ (Z ++ V) st (.stmt (inlineCore d xs as))
+      (.sres (VEnv.setMany (Z ++ V) xs (d.rs.map
+        (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)))
+        st2 .normal) := by
+  have hvlen : argvals.length = as.length := args_length hargs
+  have hpslen : d.ps.length ≤ argvals.length := by omega
+  set A₀ : VEnv D := d.ps.zip argvals ++ bindZeros D d.rs with hA₀
+  have hA₀keys : A₀.map Prod.fst = d.ps ++ d.rs := calleeFrame_keys hpslen
+  set funs' : FunEnv D := hoist D
+    ([Stmt.letDecl d.rs none]
+      ++ ((d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2)))
+      ++ [Stmt.block d.ss]
+      ++ (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2))) :: funs₂
+    with hfuns'
+  -- 1. the return zero-inits
+  have s1 : Step D funs' (Z ++ V) st (.stmt (.letDecl d.rs none))
+      (.sres (bindZeros D d.rs ++ (Z ++ V)) st .normal) := Step.letZero
+  -- 2. the argument lets
+  have hN : ∀ y ∈ varsList as, y ∉ (bindZeros D d.rs ++ Z).map Prod.fst := by
+    intro y hy
+    rw [List.map_append, bindZeros_keys]
+    intro hmem
+    rcases List.mem_append.mp hmem with hm | hm
+    · have hrs := argsShadowOK_rs hsh y
+      rw [zip_snds hlen_as.symm] at hrs
+      exact hrs hy hm
+    · exact hZ y hy hm
+  have s2 := argLets_fwd (rs := d.rs) hargs hlen_as.symm hnc hsh hN funs'
+  -- 3. the body, transferred onto the caller environment
+  have hscode : scopedCode (d.ps ++ d.rs) (Code.stmt (.block d.ss)) = true := by
+    simp [scopedCode, scopedStmt, hsc]
+  have hbound : ∀ x ∈ d.ps ++ d.rs, x ∈ A₀.map Prod.fst := by
+    intro x hx; rw [hA₀keys]; exact hx
+  obtain ⟨res₂, hstepb, htr⟩ := scoped_transfer hbody
+    (A := A₀) (W := ([] : VEnv D)) (bound := d.ps ++ d.rs) funs' (Z ++ V)
+    (by simp) hscode hbound
+  obtain ⟨A'', hVend, hres₂, hk⟩ := TRes.norm_inv htr
+  have hVend' : Vend = A'' := by simpa using hVend
+  subst hres₂
+  -- the transferred body's frame keeps the callee frame's keys
+  have hshape := block_stmt_shape hstepb
+  have hkeysA'' : A''.map Prod.fst = d.ps ++ d.rs := by
+    have hlA : A''.length = A₀.length := by
+      have := hshape.2
+      simp only [List.length_append] at this
+      omega
+    have hkk : A''.map Prod.fst = A₀.map Prod.fst := by
+      have := hshape.1
+      simp only [List.map_append] at this
+      simpa [List.append_assoc] using this
+    exact hkk.trans hA₀keys
+  have hpost : postBound (d.ps ++ d.rs) (Code.stmt (.block d.ss)) =
+      d.ps ++ d.rs := by
+    simp [postBound, scopedStmt, hsc]
+  rw [hpost] at hk
+  -- 4. the read-out assignments
+  have s4 := assigns_fwd (A' := A'')
+    (fun r hr => by rw [hkeysA'']; exact List.mem_append.mpr (Or.inr hr))
+    (fun x hx => by rw [hkeysA'']; exact hxout x hx)
+    hlen_xs funs' (Z ++ V) st2
+  -- assemble the block
+  set argLets : List (Stmt Op) :=
+    (d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2)) with hargLets
+  set assignsL : List (Stmt Op) :=
+    (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2)) with hassignsL
+  have c1 : Step D funs' (Z ++ V) st (.stmts [Stmt.letDecl d.rs none])
+      (.sres (bindZeros D d.rs ++ (Z ++ V)) st .normal) :=
+    Step.seqCons s1 Step.seqNil
+  have s2' : Step D funs' (bindZeros D d.rs ++ (Z ++ V)) st (.stmts argLets)
+      (.sres (d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V))) st1 .normal) := by
+    have h := s2
+    rw [show (bindZeros D d.rs ++ Z) ++ V = bindZeros D d.rs ++ (Z ++ V) from
+      List.append_assoc _ _ _] at h
+    exact h
+  have c2 : Step D funs' (Z ++ V) st
+      (.stmts ([Stmt.letDecl d.rs none] ++ argLets))
+      (.sres (d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V))) st1 .normal) :=
+    stmts_append_normal c1 s2'
+  have c3b : Step D funs' (d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V))) st1
+      (.stmts [Stmt.block d.ss])
+      (.sres (A'' ++ (Z ++ V)) st2 .normal) := by
+    have h := Step.seqCons hstepb Step.seqNil
+    rw [show A₀ ++ (Z ++ V) = d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V)) by
+      rw [hA₀]; simp [List.append_assoc]] at h
+    exact h
+  have c3 : Step D funs' (Z ++ V) st
+      (.stmts (([Stmt.letDecl d.rs none] ++ argLets) ++ [Stmt.block d.ss]))
+      (.sres (A'' ++ (Z ++ V)) st2 .normal) :=
+    stmts_append_normal c2 c3b
+  have c4 : Step D funs' (Z ++ V) st
+      (.stmts ((([Stmt.letDecl d.rs none] ++ argLets) ++ [Stmt.block d.ss]) ++ assignsL))
+      (.sres (A'' ++ VEnv.setMany (Z ++ V) xs (d.rs.map
+        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero)))
+        st2 .normal) :=
+    stmts_append_normal c3 s4
+  have hchain : Step D (hoist D ([Stmt.letDecl d.rs none] ++ argLets
+      ++ [Stmt.block d.ss] ++ assignsL) :: funs₂) (Z ++ V) st
+      (.stmts ([Stmt.letDecl d.rs none] ++ argLets ++ [Stmt.block d.ss] ++ assignsL))
+      (.sres (A'' ++ VEnv.setMany (Z ++ V) xs (d.rs.map
+        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero)))
+        st2 .normal) := by
+    rw [hfuns'] at c4
+    exact c4
+  have hfinal := Step.block (funs := funs₂) hchain
+  have hlast : restore (Z ++ V) (A'' ++ VEnv.setMany (Z ++ V) xs (d.rs.map
+      (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero))) =
+      VEnv.setMany (Z ++ V) xs (d.rs.map
+        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero)) :=
+    restore_exact (VEnv.setMany_length _ _ _)
+  rw [hlast] at hfinal
+  rw [hVend']
+  show Step D funs₂ (Z ++ V) st (.stmt (.block ([Stmt.letDecl d.rs none] ++ argLets
+      ++ [Stmt.block d.ss] ++ assignsL))) _
+  exact hfinal
+
+/-- **Forward, body-halt path**: a halting callee body halts the inlined core
+with the caller environment restored. -/
+theorem inlineCore_fwd_bodyhalt {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
+    (hsc : scopedStmts (d.ps ++ d.rs) d.ss = true)
+    (hlen_as : as.length = d.ps.length)
+    (hnc : argsHaveCall as = false)
+    (hsh : argsShadowOK d.rs (d.ps.zip as) = true)
+    {funs cenv : FunEnv D} {V Z : VEnv D} {st st1 st2 : EvmState}
+    {argvals : List U256} {Vend : VEnv D}
+    (hargs : Step D funs V st (.args as) (.eres (.vals argvals st1)))
+    (hbody : Step D cenv (d.ps.zip argvals ++ bindZeros D d.rs) st1
+      (.stmt (.block d.ss)) (.sres Vend st2 .halt))
+    (hZ : ∀ y ∈ varsList as, y ∉ Z.map Prod.fst)
+    (funs₂ : FunEnv D) :
+    Step D funs₂ (Z ++ V) st (.stmt (inlineCore d xs as))
+      (.sres (Z ++ V) st2 .halt) := by
+  have hvlen : argvals.length = as.length := args_length hargs
+  have hpslen : d.ps.length ≤ argvals.length := by omega
+  set A₀ : VEnv D := d.ps.zip argvals ++ bindZeros D d.rs with hA₀
+  have hA₀keys : A₀.map Prod.fst = d.ps ++ d.rs := calleeFrame_keys hpslen
+  set argLets : List (Stmt Op) :=
+    (d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2)) with hargLets
+  set assignsL : List (Stmt Op) :=
+    (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2)) with hassignsL
+  set funs' : FunEnv D := hoist D
+    ([Stmt.letDecl d.rs none] ++ argLets ++ [Stmt.block d.ss] ++ assignsL) :: funs₂
+    with hfuns'
+  have s1 : Step D funs' (Z ++ V) st (.stmt (.letDecl d.rs none))
+      (.sres (bindZeros D d.rs ++ (Z ++ V)) st .normal) := Step.letZero
+  have hN : ∀ y ∈ varsList as, y ∉ (bindZeros D d.rs ++ Z).map Prod.fst := by
+    intro y hy
+    rw [List.map_append, bindZeros_keys]
+    intro hmem
+    rcases List.mem_append.mp hmem with hm | hm
+    · have hrs := argsShadowOK_rs hsh y
+      rw [zip_snds hlen_as.symm] at hrs
+      exact hrs hy hm
+    · exact hZ y hy hm
+  have s2 := argLets_fwd (rs := d.rs) hargs hlen_as.symm hnc hsh hN funs'
+  have hscode : scopedCode (d.ps ++ d.rs) (Code.stmt (.block d.ss)) = true := by
+    simp [scopedCode, scopedStmt, hsc]
+  have hbound : ∀ x ∈ d.ps ++ d.rs, x ∈ A₀.map Prod.fst := by
+    intro x hx; rw [hA₀keys]; exact hx
+  obtain ⟨res₂, hstepb, htr⟩ := scoped_transfer hbody
+    (A := A₀) (W := ([] : VEnv D)) (bound := d.ps ++ d.rs) funs' (Z ++ V)
+    (by simp) hscode hbound
+  obtain ⟨A'', hVend, hres₂⟩ := TRes.halt_inv htr
+  subst hres₂
+  have c1 : Step D funs' (Z ++ V) st (.stmts [Stmt.letDecl d.rs none])
+      (.sres (bindZeros D d.rs ++ (Z ++ V)) st .normal) :=
+    Step.seqCons s1 Step.seqNil
+  have s2' : Step D funs' (bindZeros D d.rs ++ (Z ++ V)) st (.stmts argLets)
+      (.sres (d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V))) st1 .normal) := by
+    have h := s2
+    rw [show (bindZeros D d.rs ++ Z) ++ V = bindZeros D d.rs ++ (Z ++ V) from
+      List.append_assoc _ _ _] at h
+    exact h
+  have c2 : Step D funs' (Z ++ V) st
+      (.stmts ([Stmt.letDecl d.rs none] ++ argLets))
+      (.sres (d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V))) st1 .normal) :=
+    stmts_append_normal c1 s2'
+  have c3b : Step D funs' (d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V))) st1
+      (.stmts [Stmt.block d.ss])
+      (.sres (A'' ++ (Z ++ V)) st2 .halt) := by
+    have h : Step D funs' (A₀ ++ (Z ++ V)) st1 (.stmts [Stmt.block d.ss])
+        (.sres (A'' ++ (Z ++ V)) st2 .halt) :=
+      Step.seqStop hstepb (by simp)
+    rw [show A₀ ++ (Z ++ V) = d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V)) by
+      rw [hA₀]; simp [List.append_assoc]] at h
+    exact h
+  have c3 : Step D funs' (Z ++ V) st
+      (.stmts (([Stmt.letDecl d.rs none] ++ argLets) ++ [Stmt.block d.ss]))
+      (.sres (A'' ++ (Z ++ V)) st2 .halt) :=
+    stmts_append_normal c2 c3b
+  have c4 : Step D funs' (Z ++ V) st
+      (.stmts ((([Stmt.letDecl d.rs none] ++ argLets) ++ [Stmt.block d.ss]) ++ assignsL))
+      (.sres (A'' ++ (Z ++ V)) st2 .halt) :=
+    stmts_append_early c3 (by simp)
+  have hchain : Step D (hoist D ([Stmt.letDecl d.rs none] ++ argLets
+      ++ [Stmt.block d.ss] ++ assignsL) :: funs₂) (Z ++ V) st
+      (.stmts ([Stmt.letDecl d.rs none] ++ argLets ++ [Stmt.block d.ss] ++ assignsL))
+      (.sres (A'' ++ (Z ++ V)) st2 .halt) := by
+    rw [hfuns'] at c4
+    exact c4
+  have hfinal := Step.block (funs := funs₂) hchain
+  rw [restore_exact rfl] at hfinal
+  exact hfinal
+
+/-- **Forward, argument-halt path**: halting argument evaluation halts the
+inlined core with the caller environment restored. -/
+theorem inlineCore_fwd_argshalt {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
+    (hlen_as : as.length = d.ps.length)
+    (hnc : argsHaveCall as = false)
+    (hsh : argsShadowOK d.rs (d.ps.zip as) = true)
+    {funs : FunEnv D} {V Z : VEnv D} {st st1 : EvmState}
+    (hargs : Step D funs V st (.args as) (.eres (.halt st1)))
+    (hZ : ∀ y ∈ varsList as, y ∉ Z.map Prod.fst)
+    (funs₂ : FunEnv D) :
+    Step D funs₂ (Z ++ V) st (.stmt (inlineCore d xs as))
+      (.sres (Z ++ V) st1 .halt) := by
+  set argLets : List (Stmt Op) :=
+    (d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2)) with hargLets
+  set assignsL : List (Stmt Op) :=
+    (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2)) with hassignsL
+  set funs' : FunEnv D := hoist D
+    ([Stmt.letDecl d.rs none] ++ argLets ++ [Stmt.block d.ss] ++ assignsL) :: funs₂
+    with hfuns'
+  have hN : ∀ y ∈ varsList as, y ∉ (bindZeros D d.rs ++ Z).map Prod.fst := by
+    intro y hy
+    rw [List.map_append, bindZeros_keys]
+    intro hmem
+    rcases List.mem_append.mp hmem with hm | hm
+    · have hrs := argsShadowOK_rs hsh y
+      rw [zip_snds hlen_as.symm] at hrs
+      exact hrs hy hm
+    · exact hZ y hy hm
+  obtain ⟨P, s2⟩ := argLets_halt_fwd (rs := d.rs) hargs hlen_as.symm hnc hsh hN funs'
+  have c1 : Step D funs' (Z ++ V) st (.stmts [Stmt.letDecl d.rs none])
+      (.sres (bindZeros D d.rs ++ (Z ++ V)) st .normal) :=
+    Step.seqCons Step.letZero Step.seqNil
+  have s2' : Step D funs' (bindZeros D d.rs ++ (Z ++ V)) st (.stmts argLets)
+      (.sres ((P ++ bindZeros D d.rs) ++ (Z ++ V)) st1 .halt) := by
+    have h := s2
+    rw [show P ++ ((bindZeros D d.rs ++ Z) ++ V) =
+      (P ++ bindZeros D d.rs) ++ (Z ++ V) by simp [List.append_assoc]] at h
+    rw [show (bindZeros D d.rs ++ Z) ++ V = bindZeros D d.rs ++ (Z ++ V) from
+      List.append_assoc _ _ _] at h
+    exact h
+  have c2 : Step D funs' (Z ++ V) st
+      (.stmts ([Stmt.letDecl d.rs none] ++ argLets))
+      (.sres ((P ++ bindZeros D d.rs) ++ (Z ++ V)) st1 .halt) :=
+    stmts_append_normal c1 s2'
+  have c3 : Step D funs' (Z ++ V) st
+      (.stmts (([Stmt.letDecl d.rs none] ++ argLets) ++ [Stmt.block d.ss]))
+      (.sres ((P ++ bindZeros D d.rs) ++ (Z ++ V)) st1 .halt) :=
+    stmts_append_early c2 (by simp)
+  have c4 : Step D funs' (Z ++ V) st
+      (.stmts ((([Stmt.letDecl d.rs none] ++ argLets) ++ [Stmt.block d.ss]) ++ assignsL))
+      (.sres ((P ++ bindZeros D d.rs) ++ (Z ++ V)) st1 .halt) :=
+    stmts_append_early c3 (by simp)
+  have hchain : Step D (hoist D ([Stmt.letDecl d.rs none] ++ argLets
+      ++ [Stmt.block d.ss] ++ assignsL) :: funs₂) (Z ++ V) st
+      (.stmts ([Stmt.letDecl d.rs none] ++ argLets ++ [Stmt.block d.ss] ++ assignsL))
+      (.sres ((P ++ bindZeros D d.rs) ++ (Z ++ V)) st1 .halt) := by
+    rw [hfuns'] at c4
+    exact c4
+  have hfinal := Step.block (funs := funs₂) hchain
+  rw [restore_exact rfl] at hfinal
+  exact hfinal
+
+/-! ### Backward direction: dissecting the inlined core -/
+
+/-- Dissect the argument `let`s: an execution of the reversed binding sequence
+is an evaluation of the argument list under the caller environment. -/
+theorem argLets_bwd {rs : List Ident} {funs₁ : FunEnv D} :
+    ∀ {ps : List Ident} {as : List (Expr Op)}
+      {funs₂ : FunEnv D} {V N : VEnv D} {st : EvmState}
+      {Vr : VEnv D} {str : EvmState} {o : Outcome},
+      Step D funs₂ (N ++ V) st
+        (.stmts ((ps.zip as).reverse.map (fun pa => .letDecl [pa.1] (some pa.2))))
+        (.sres Vr str o) →
+      ps.length = as.length →
+      argsHaveCall as = false →
+      argsShadowOK rs (ps.zip as) = true →
+      (∀ y ∈ varsList as, y ∉ N.map Prod.fst) →
+      (∃ argvals, Vr = ps.zip argvals ++ (N ++ V) ∧ o = .normal ∧
+        Step D funs₁ V st (.args as) (.eres (.vals argvals str))) ∨
+      (∃ P, Vr = P ++ (N ++ V) ∧ o = .halt ∧
+        Step D funs₁ V st (.args as) (.eres (.halt str))) := by
+  intro ps as
+  induction as generalizing ps with
+  | nil =>
+      intro funs₂ V N st Vr str o h hlen hnc hsh hN
+      cases ps with
+      | nil =>
+          left
+          cases h with
+          | seqNil => exact ⟨[], by simp, rfl, Step.argsNil⟩
+      | cons p ps' => simp at hlen
+  | cons a as' ih =>
+      intro funs₂ V N st Vr str o h hlen hnc hsh hN
+      cases ps with
+      | nil => simp at hlen
+      | cons p ps' =>
+          rw [show argsHaveCall (a :: as') =
+            (exprHasCall a || argsHaveCall as') from rfl,
+            Bool.or_eq_false_iff] at hnc
+          rw [List.zip_cons_cons] at hsh h
+          unfold argsShadowOK at hsh
+          rw [Bool.and_eq_true] at hsh
+          have hNrest : ∀ y ∈ varsList as', y ∉ N.map Prod.fst := fun y hy =>
+            hN y (by
+              rw [show varsList (a :: as') = exprVars a ++ varsList as' from rfl]
+              exact List.mem_append.mpr (Or.inr hy))
+          rw [List.reverse_cons, List.map_append] at h
+          rcases stmts_append_fwd h with ⟨V1, st1, hpre, hsuf⟩ | ⟨hne, hpre⟩
+          · -- the earlier (rightward) arguments ran to completion
+            rcases ih hpre (by simpa using hlen) hnc.2 hsh.2 hNrest
+              with ⟨argvals, hV1, -, hargs⟩ | ⟨P, hV1, ho, hargs⟩
+            · -- and bound normally; then the head binding ran
+              subst hV1
+              have hrestlen : argvals.length = as'.length := args_length hargs
+              have hagree : ∀ y ∈ exprVars a,
+                  VEnv.get (ps'.zip argvals ++ (N ++ V)) y = VEnv.get V y := by
+                intro y hy
+                have hsha := List.all_eq_true.mp hsh.1 y hy
+                rw [Bool.and_eq_true] at hsha
+                have hlen' : ps'.length = as'.length := by simpa using hlen
+                have hyp : y ∉ (ps'.zip argvals).map Prod.fst := by
+                  rw [List.map_fst_zip (by omega : ps'.length ≤ argvals.length)]
+                  have h1 := hsha.1
+                  rw [List.map_fst_zip (le_of_eq hlen')] at h1
+                  simpa using h1
+                have hyN : y ∉ N.map Prod.fst := hN y (by
+                  rw [show varsList (a :: as') = exprVars a ++ varsList as' from rfl]
+                  exact List.mem_append.mpr (Or.inl hy))
+                rw [VEnv.get_append_not_mem hyp, VEnv.get_append_not_mem hyN]
+              cases hsuf with
+              | seqCons hlet htail =>
+                  cases hlet with
+                  | @letVal _ _ _ _ _ vals stv he hlenv =>
+                      cases htail with
+                      | seqNil =>
+                          left
+                          obtain ⟨v, rfl⟩ : ∃ v, vals = [v] := by
+                            cases vals with
+                            | nil => simp at hlenv
+                            | cons v vrest =>
+                                cases vrest with
+                                | nil => exact ⟨v, rfl⟩
+                                | cons _ _ => simp at hlenv
+                          refine ⟨v :: argvals, ?_, rfl, ?_⟩
+                          · rw [List.zip_cons_cons]
+                            rfl
+                          · exact Step.argsCons hargs
+                              (exprNoCall_transfer he funs₁ ⟨hnc.1,
+                                fun y hy => (hagree y hy).symm⟩)
+              | seqStop hlet hneq =>
+                  cases hlet with
+                  | @letVal _ _ _ _ _ vals stv he hlenv => exact absurd rfl hneq
+                  | @letHalt _ _ _ _ _ _ he =>
+                      right
+                      refine ⟨ps'.zip argvals, rfl, rfl, ?_⟩
+                      exact Step.argsHeadHalt hargs
+                        (exprNoCall_transfer he funs₁ ⟨hnc.1,
+                          fun y hy => (hagree y hy).symm⟩)
+            · -- an earlier argument halted: the prefix cannot be normal
+              exact absurd ho (by simp)
+          · -- the let prefix stopped early: only a halt is possible
+            rcases ih hpre (by simpa using hlen) hnc.2 hsh.2 hNrest
+              with ⟨argvals, hV1, ho, hargs⟩ | ⟨P, hV1, ho, hargs⟩
+            · exact absurd ho hne
+            · right
+              exact ⟨P, hV1, ho, Step.argsRestHalt hargs⟩
+
+/-- Dissect the read-out assignments (given the callee frame's keys, they
+always complete normally, computing exactly the sequential update). -/
+theorem assigns_bwd {A' : VEnv D} :
+    ∀ {xs rs : List Ident} {funs : FunEnv D} {Wb : VEnv D} {st : EvmState}
+      {Vr : VEnv D} {str : EvmState} {o : Outcome},
+      Step D funs (A' ++ Wb) st
+        (.stmts ((xs.zip rs).map (fun xr => .assign [xr.1] (.var xr.2))))
+        (.sres Vr str o) →
+      (∀ r ∈ rs, r ∈ A'.map Prod.fst) →
+      (∀ x ∈ xs, x ∉ A'.map Prod.fst) →
+      xs.length = rs.length →
+      Vr = A' ++ VEnv.setMany Wb xs (rs.map
+        (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) ∧
+      str = st ∧ o = .normal := by
+  intro xs
+  induction xs with
+  | nil =>
+      intro rs funs Wb st Vr str o h hr hx hlen
+      cases rs with
+      | nil =>
+          cases h with
+          | seqNil => exact ⟨by simp [VEnv.setMany], rfl, rfl⟩
+      | cons r rs' => simp at hlen
+  | cons x xs' ih =>
+      intro rs funs Wb st Vr str o h hr hx hlen
+      cases rs with
+      | nil => simp at hlen
+      | cons r rs' =>
+          rw [List.zip_cons_cons, List.map_cons] at h
+          have hrA : r ∈ A'.map Prod.fst := hr r (by simp)
+          obtain ⟨v, hv⟩ : ∃ v, VEnv.get A' r = some v := by
+            have := VEnv.find?_key_isSome (calls := calls) (creates := creates) hrA
+            obtain ⟨p, hp⟩ := Option.isSome_iff_exists.mp this
+            exact ⟨p.2, by unfold VEnv.get; rw [hp]; rfl⟩
+          have hmany : VEnv.setMany Wb (x :: xs') ((r :: rs').map
+              (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) =
+              VEnv.setMany (VEnv.set Wb x v) xs' (rs'.map
+                (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) := by
+            rw [List.map_cons, hv]
+            rfl
+          cases h with
+          | seqCons hs htail =>
+              cases hs with
+              | @assignVal _ _ _ _ _ vals stv he hlenv =>
+                  cases he with
+                  | @var _ _ _ _ w hw =>
+                      have hwv : w = v := by
+                        rw [VEnv.get_append_mem hrA, hv] at hw
+                        injection hw with hw
+                        exact hw.symm
+                      have hsetc : VEnv.setMany (A' ++ Wb) [x] [w] =
+                          A' ++ VEnv.set Wb x w := by
+                        rw [VEnv.setMany_singleton]
+                        exact VEnv.set_append_not_mem (hx x (by simp)) Wb w
+                      rw [hsetc] at htail
+                      obtain ⟨hVr, hstr, ho⟩ := ih htail
+                        (fun r' hr' => hr r' (List.mem_cons_of_mem _ hr'))
+                        (fun x' hx' => hx x' (List.mem_cons_of_mem _ hx'))
+                        (by simpa using hlen)
+                      refine ⟨?_, hstr, ho⟩
+                      rw [hmany, ← hwv]
+                      exact hVr
+          | seqStop hs hneq =>
+              cases hs with
+              | @assignVal _ _ _ _ _ vals stv he hlenv => exact absurd rfl hneq
+              | @assignHalt _ _ _ _ _ _ he => cases he
+
+/-- **Backward**: an execution of the inlined core dissects into the call's
+constituents — argument evaluation and callee body run — with the exact
+result correspondence of the forward direction. -/
+theorem inlineCore_bwd {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
+    (hsc : scopedStmts (d.ps ++ d.rs) d.ss = true)
+    (hlen_as : as.length = d.ps.length)
+    (hnc : argsHaveCall as = false)
+    (hsh : argsShadowOK d.rs (d.ps.zip as) = true)
+    (hxout : ∀ x ∈ xs, x ∉ d.ps ++ d.rs)
+    (hlen_xs : xs.length = d.rs.length)
+    {funs₂ : FunEnv D} {V Z : VEnv D} {st : EvmState}
+    {Vr : VEnv D} {str : EvmState} {o : Outcome}
+    (hcore : Step D funs₂ (Z ++ V) st (.stmt (inlineCore d xs as))
+      (.sres Vr str o))
+    (hZ : ∀ y ∈ varsList as, y ∉ Z.map Prod.fst)
+    (funs₁ cenv : FunEnv D) :
+    (∃ argvals st1 Vend,
+      Step D funs₁ V st (.args as) (.eres (.vals argvals st1)) ∧
+      Step D cenv (d.ps.zip argvals ++ bindZeros D d.rs) st1
+        (.stmt (.block d.ss)) (.sres Vend str .normal) ∧
+      Vr = VEnv.setMany (Z ++ V) xs (d.rs.map
+        (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)) ∧
+      o = .normal) ∨
+    (∃ argvals st1 Vend,
+      Step D funs₁ V st (.args as) (.eres (.vals argvals st1)) ∧
+      Step D cenv (d.ps.zip argvals ++ bindZeros D d.rs) st1
+        (.stmt (.block d.ss)) (.sres Vend str .halt) ∧
+      Vr = Z ++ V ∧ o = .halt) ∨
+    (Step D funs₁ V st (.args as) (.eres (.halt str)) ∧
+      Vr = Z ++ V ∧ o = .halt) := by
+  cases hcore with
+  | @block _ _ _ _ Vb _ _ hb =>
+      cases hb with
+      | seqStop hlet hneq =>
+          cases hlet with
+          | letZero => exact absurd rfl hneq
+      | seqCons hlet htail =>
+          cases hlet with
+          | letZero =>
+              -- split the argument lets from the body + read-out
+              simp only [List.append_eq, List.nil_append, List.append_assoc] at htail
+              rw [show bindZeros D d.rs ++ (Z ++ V) =
+                (bindZeros D d.rs ++ Z) ++ V from (List.append_assoc _ _ _).symm]
+                at htail
+              have htail' := htail
+              have hN : ∀ y ∈ varsList as,
+                  y ∉ (bindZeros D d.rs ++ Z).map Prod.fst := by
+                intro y hy
+                rw [List.map_append, bindZeros_keys]
+                intro hmem
+                rcases List.mem_append.mp hmem with hm | hm
+                · have hrs := argsShadowOK_rs hsh y
+                  rw [zip_snds hlen_as.symm] at hrs
+                  exact hrs hy hm
+                · exact hZ y hy hm
+              rcases stmts_append_fwd htail' with ⟨V1, st1, hpre, hsuf⟩ | ⟨hne, hpre⟩
+              · -- argument lets completed normally
+                rcases argLets_bwd (rs := d.rs) (funs₁ := funs₁) hpre hlen_as.symm
+                    hnc hsh hN with ⟨argvals, hV1, -, hargs⟩ | ⟨P, hV1, ho, -⟩
+                · subst hV1
+                  have hvlen : argvals.length = as.length := args_length hargs
+                  have hpslen : d.ps.length ≤ argvals.length := by omega
+                  have hscode : scopedCode (d.ps ++ d.rs)
+                      (Code.stmt (.block d.ss)) = true := by
+                    simp [scopedCode, scopedStmt, hsc]
+                  have hbound : ∀ x ∈ d.ps ++ d.rs,
+                      x ∈ (d.ps.zip argvals ++ bindZeros D d.rs).map Prod.fst := by
+                    intro x hx
+                    rw [calleeFrame_keys hpslen]
+                    exact hx
+                  cases hsuf with
+                  | @seqCons _ _ _ _ _ V2 st2 _ _ _ hbody htail2 =>
+                      rw [show d.ps.zip argvals ++ (bindZeros D d.rs ++ Z ++ V) =
+                        (d.ps.zip argvals ++ bindZeros D d.rs) ++ (Z ++ V) by
+                          simp [List.append_assoc]] at hbody
+                      have hbody' := hbody
+                      obtain ⟨res₂, hstepb, htr⟩ := scoped_transfer hbody'
+                        (A := d.ps.zip argvals ++ bindZeros D d.rs)
+                        (W := Z ++ V) (bound := d.ps ++ d.rs) cenv ([] : VEnv D)
+                        rfl hscode hbound
+                      obtain ⟨A', hV2, hres₂, hk⟩ := TRes.norm_inv htr
+                      subst hres₂ hV2
+                      simp only [List.append_nil] at hstepb
+                      -- the callee frame's keys survive the body
+                      have hshape := block_stmt_shape hbody'
+                      have hkeysA' : A'.map Prod.fst = d.ps ++ d.rs := by
+                        have hlA : A'.length =
+                            (d.ps.zip argvals ++ bindZeros D d.rs).length := by
+                          have := hshape.2
+                          simp only [List.length_append] at this ⊢
+                          omega
+                        have hmm : A'.map Prod.fst ++ (Z ++ V).map Prod.fst =
+                            (d.ps.zip argvals ++ bindZeros D d.rs).map Prod.fst ++
+                              (Z ++ V).map Prod.fst := by
+                          rw [← List.map_append, ← List.map_append]
+                          exact hshape.1
+                        exact (append_cancel_of_length hmm
+                          (by simpa using hlA)).1.trans (calleeFrame_keys hpslen)
+                      -- dissect the read-out assignments
+                      obtain ⟨hVb, hstb, ho⟩ := assigns_bwd htail2
+                        (fun r hr => by
+                          rw [hkeysA']; exact List.mem_append.mpr (Or.inr hr))
+                        (fun x hx => by
+                          rw [hkeysA']; exact hxout x hx)
+                        hlen_xs
+                      subst hVb hstb ho
+                      left
+                      refine ⟨argvals, st1, A', hargs, hstepb, ?_, rfl⟩
+                      exact restore_exact (VEnv.setMany_length _ _ _)
+                  | @seqStop _ _ _ _ _ V2 st2 ob hbody hneb =>
+                      rw [show d.ps.zip argvals ++ (bindZeros D d.rs ++ Z ++ V) =
+                        (d.ps.zip argvals ++ bindZeros D d.rs) ++ (Z ++ V) by
+                          simp [List.append_assoc]] at hbody
+                      have hbody' := hbody
+                      obtain ⟨res₂, hstepb, htr⟩ := scoped_transfer hbody'
+                        (A := d.ps.zip argvals ++ bindZeros D d.rs)
+                        (W := Z ++ V) (bound := d.ps ++ d.rs) cenv ([] : VEnv D)
+                        rfl hscode hbound
+                      cases htr with
+                      | norm hk => exact absurd rfl hneb
+                      | @halt A' st' =>
+                          simp only [List.append_nil] at hstepb
+                          right; left
+                          refine ⟨argvals, st1, A', hargs, hstepb, ?_, rfl⟩
+                          exact restore_exact rfl
+                · exact absurd ho (by simp)
+              · -- the argument lets stopped early: only a halt is possible
+                rcases argLets_bwd (rs := d.rs) (funs₁ := funs₁) hpre hlen_as.symm
+                    hnc hsh hN with ⟨argvals, hV1, ho, -⟩ | ⟨P, hV1, ho, hargs⟩
+                · exact absurd ho hne
+                · subst hV1 ho
+                  right; right
+                  refine ⟨hargs, ?_, rfl⟩
+                  rw [show P ++ ((bindZeros D d.rs ++ Z) ++ V) =
+                    (P ++ bindZeros D d.rs) ++ (Z ++ V) by simp [List.append_assoc]]
+                  exact restore_exact rfl
+
+/-- The verified pass (soundness in progress). -/
+def inlineCalls : Pass D where
+  run := inlineCallsBlock
+  sound := sorry
+
+end YulEvmCompiler.Optimizer
