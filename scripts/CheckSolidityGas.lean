@@ -71,10 +71,12 @@ private def sameOutcome (a b : EVM.State) : Bool :=
   normHalt a.halt == normHalt b.halt &&
     { observe a with halt := .Returned } == { observe b with halt := .Returned }
 
-/-- Deploy creation bytecode (with constructor arguments appended) and return a
-state ready for calls: the returned runtime installed as the account's code, and
-the storage the constructor wrote kept in place. `none` if the constructor does
-not cleanly return runtime code. -/
+/-- Execute creation bytecode (with constructor arguments appended) and return
+a state ready for calls: the returned top-level runtime is installed directly,
+and the constructor's complete final account world is retained. The direct
+installation deliberately omits a transaction-level EIP-170 check; CREATEs
+executed by the constructor still enforce the normal target semantics. `none`
+if the constructor does not cleanly return runtime code. -/
 private def deployForCalls (creation ctorArgs : ByteArray) (ctorValue : Nat) : Option EVM.State :=
   let base := initialState (creation ++ ctorArgs)
   let start := { base with
@@ -84,10 +86,13 @@ private def deployForCalls (creation ctorArgs : ByteArray) (ctorValue : Nat) : O
   else
     let rtBase := initialState fin.hReturn
     let addr := rtBase.executionEnv.address
-    let deployed := { (rtBase.accountMap addr) with
-      storage := (fin.accountMap addr).storage
-      tstorage := (fin.accountMap addr).tstorage }
-    let accounts := rtBase.accountMap.set addr deployed
+    -- Top-level creation is executed directly, outside a transaction deploy
+    -- step, so install its returned runtime explicitly. Keep the rest of the
+    -- constructor's final world: integration fixtures create managers,
+    -- routers, and tokens whose code and state must survive into the calls.
+    let deployed := { (fin.accountMap addr) with
+      code := (rtBase.accountMap addr).code }
+    let accounts := fin.accountMap.set addr deployed
     some { rtBase with
       accountMap := accounts
       substate := { rtBase.substate with originalAccountMap := accounts } }
@@ -101,36 +106,57 @@ private def withCall (state : EVM.State) (call : Call) : EVM.State :=
 /-- Replay a call sequence on both deployments, summing per-call gas over the
 leading run of behaviorally-identical calls. State persists across calls (as in
 a real test), so a divergence or non-halt ends the sequence — the two worlds
-would part after it. `none` if no call was comparable. -/
-private def replayCalls (ourBase solcBase : EVM.State) (calls : Array Call) : Option (Nat × Nat) := Id.run do
+would part after it. The result is empty if no call was comparable. -/
+private structure CallGas where
+  sig : String
+  ours : Nat
+  solc : Nat
+
+private def replayCalls (ourBase solcBase : EVM.State) (calls : Array Call) : Array CallGas := Id.run do
   let mut ourState := ourBase
   let mut solcState := solcBase
-  let mut total : Option (Nat × Nat) := none
+  let mut measured : Array CallGas := #[]
   for call in calls do
     let os := withCall ourState call
     let ss := withCall solcState call
     let ourFinal := runEvm 3000000 os
     let solcFinal := runEvm 3000000 ss
     if !(ourFinal.isDone && solcFinal.isDone && sameOutcome ourFinal solcFinal) then break
-    total := match total with
-      | none => some (gasUsed os ourFinal, gasUsed ss solcFinal)
-      | some (ao, as) => some (ao + gasUsed os ourFinal, as + gasUsed ss solcFinal)
+    measured := measured.push {
+      sig := call.sig
+      ours := gasUsed os ourFinal
+      solc := gasUsed ss solcFinal
+    }
     ourState := { ourState with accountMap := ourFinal.accountMap }
     solcState := { solcState with accountMap := solcFinal.accountMap }
-  return total
+  return measured
+
+/-- Pin one row per external function. Repeated calls to the same signature
+are summed so existing multi-vector library fixtures still have stable keys. -/
+private def perScenarioRows (name : String) (calls : Array CallGas) : Array GasRow :=
+  calls.foldl (init := #[]) fun rows call =>
+    let key := s!"{name}:{call.sig}"
+    match rows.findIdx? (fun row => row.fixture == key) with
+    | none => rows.push { fixture := key, ours := call.ours, solc := call.solc }
+    | some index => rows.modify index fun row =>
+        { row with ours := row.ours + call.ours, solc := row.solc + call.solc }
+
+private def totalRow (name : String) (calls : Array CallGas) : GasRow :=
+  calls.foldl (init := { fixture := name, ours := 0, solc := 0 }) fun row call =>
+    { row with ours := row.ours + call.ours, solc := row.solc + call.solc }
 
 /-- The per-contract verdict, accumulated exactly as the old sequential loop did
 but computed independently so contracts can be gas-checked concurrently. -/
 private structure GasOutcome where
   compileFailure : Option (String × String) := none
   skipped : Bool := false
-  measured : Option GasRow := none
+  measured : Array GasRow := #[]
 
 /-- Compile one contract through solc's unoptimized `--via-ir` Yul, deploy both
 this compiler's and solc's optimized bytecode, replay the fixture's calls, and
 measure gas — the body of the old loop, extracted as an independent unit of
 work with no shared mutable state. -/
-private def processContract (dir : FilePath) (solcPath : String)
+private def processContract (dir : FilePath) (solcPath : String) (perScenario : Bool)
     (path : FilePath) : IO GasOutcome := do
   let name := relativeName dir path
   let contents ← IO.FS.readFile path
@@ -164,15 +190,18 @@ private def processContract (dir : FilePath) (solcPath : String)
                   match deployForCalls creation spec.ctorArgs spec.ctorValue,
                         deployForCalls solcCreation spec.ctorArgs spec.ctorValue with
                   | some ourBase, some solcBase =>
-                      match replayCalls ourBase solcBase calls with
-                      | some (ours, solc) => return { measured := some { fixture := name, ours, solc } }
-                      | none => return {}   -- compiled, but no comparable call
+                      let callGas := replayCalls ourBase solcBase calls
+                      if callGas.isEmpty then return {}
+                      else if perScenario then
+                        return { measured := perScenarioRows name callGas }
+                      else
+                        return { measured := #[totalRow name callGas] }
                   | _, _ => return {}       -- deployment did not produce runtime
 
 private def usage : String :=
   "usage: CheckSolidityGas <contracts-dir> <gas-baseline.txt> " ++
     "<solc-path> <expected-solc-version> [--lenient] [--update] " ++
-    "[--known=<known-compile-failures.txt>]"
+    "[--per-scenario] [--known=<known-compile-failures.txt>]"
 
 /-- `lenient`: treat contracts this compiler cannot handle as skips rather than
 failures. Off for the curated gasTests (every contract must compile); on for the
@@ -184,10 +213,14 @@ only the gas of the compilable subset is pinned.
 an unlisted compile failure fails the run, and so does a stale entry that now
 compiles — the list must always match reality. Used for the curated Uniswap
 v4-core suite, whose heaviest fixtures sit beyond the current compiler's
-supported fragment on purpose, to record the frontier. -/
+supported fragment on purpose, to record the frontier.
+
+`perScenario`: pin one row per external function signature instead of one total
+per fixture. Repeated calls to the same signature are summed. The in-repo
+`uniswap-v4` directory always enables this mode. -/
 private def run (dir baselineFile : FilePath)
     (solcPath expectedSolcVersion : String) (lenient update : Bool)
-    (known : Option (Array String)) (shard : Option Shard) : IO UInt32 := do
+    (perScenario : Bool) (known : Option (Array String)) (shard : Option Shard) : IO UInt32 := do
   match ← checkSolcVersion solcPath expectedSolcVersion with
   | .error message => IO.eprintln message; return 1
   | .ok () => pure ()
@@ -202,11 +235,15 @@ private def run (dir baselineFile : FilePath)
   let mut compileFailures : Array (String × String) := #[]
   let mut skipped := 0
   let jobs ← detectJobs
-  let outcomes : Array GasOutcome ← parMap jobs files (processContract dir solcPath)
+  -- The checked-in Uniswap suite always uses scenario rows; keeping this
+  -- directory convention automatic avoids duplicating policy in both the PR
+  -- and baseline CI jobs. The flag remains available for other local suites.
+  let perScenario := perScenario || dir.fileName == some "uniswap-v4"
+  let outcomes : Array GasOutcome ← parMap jobs files (processContract dir solcPath perScenario)
   for outcome in outcomes do
     if let some entry := outcome.compileFailure then compileFailures := compileFailures.push entry
     if outcome.skipped then skipped := skipped + 1
-    if let some row := outcome.measured then measured := measured.push row
+    measured := measured ++ outcome.measured
   let compiled := files.size - skipped - compileFailures.size
   let failureNames := compileFailures.map (·.1)
   let unexpectedFailures := match known with
@@ -219,7 +256,10 @@ private def run (dir baselineFile : FilePath)
     | none => #[]
 
   if update then
-    IO.FS.writeFile baselineFile (render "solidity-gas" expectedSolcVersion measured)
+    let baselineKind :=
+      if perScenario then "solidity-gas per external function"
+      else "solidity-gas"
+    IO.FS.writeFile baselineFile (render baselineKind expectedSolcVersion measured)
     IO.println s!"Compiled {compiled} contracts; re-pinned {measured.size} gas rows in {baselineFile}."
     unless lenient || unexpectedFailures.isEmpty do
       IO.eprintln "Contracts that failed to compile (fix before pinning):"
@@ -284,7 +324,8 @@ def main (args : List String) : IO UInt32 := do
       let knownFiles := flags.filterMap (fun f =>
         if f.startsWith "--known=" then some ((f.drop "--known=".length).copy) else none)
       if !flags.all (fun f =>
-          f == "--update" || f == "--lenient" || f.startsWith "--known=") then
+          f == "--update" || f == "--lenient" || f == "--per-scenario" ||
+            f.startsWith "--known=") then
         IO.eprintln usage; return 64
       else
         let known ← match knownFiles with
@@ -302,5 +343,6 @@ def main (args : List String) : IO UInt32 := do
               | _, _ => IO.eprintln usage; return 64
           | _ => IO.eprintln usage; return 64
         run dir baselineFile solcPath expectedSolcVersion
-          (flags.contains "--lenient") (flags.contains "--update") known shard
+          (flags.contains "--lenient") (flags.contains "--update")
+          (flags.contains "--per-scenario") known shard
   | _ => IO.eprintln usage; return 64

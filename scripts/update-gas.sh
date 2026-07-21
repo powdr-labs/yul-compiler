@@ -73,7 +73,7 @@ echo "==> Re-measuring Uniswap v4-core fixtures (in-repo, strict + known failure
   test/uniswap-v4 \
   test/uniswap-v4-gas-baseline.txt \
   "$solc_path" "$SOLC_VERSION" \
-  --known=test/uniswap-v4-known-compile-failures.txt --update
+  --known=test/uniswap-v4-known-compile-failures.txt --per-scenario --update
 
 echo
 echo "==> Done. Review the diff — this is the review artifact:"
