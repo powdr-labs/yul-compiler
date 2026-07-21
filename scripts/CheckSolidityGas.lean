@@ -246,6 +246,12 @@ private def run (dir baselineFile : FilePath)
     if let some entry := outcome.compileFailure then compileFailures := compileFailures.push entry
     if outcome.skipped then skipped := skipped + 1
     measured := measured ++ outcome.measured
+  -- The Aave suite is intentionally reserved for complex paths. Keep its
+  -- executable rows above the agreed 100k-gas floor instead of allowing small
+  -- library calls or artificial repetition to dilute the benchmark.
+  let lowAaveRows := if dir.fileName == some "aave-v4" then
+      measured.filter (fun row => row.ours < 100000)
+    else #[]
   let compiled := files.size - skipped - compileFailures.size
   let failureNames := compileFailures.map (·.1)
   let unexpectedFailures := match known with
@@ -258,6 +264,10 @@ private def run (dir baselineFile : FilePath)
     | none => #[]
 
   if update then
+    unless lowAaveRows.isEmpty do
+      IO.eprintln "Aave scenarios below the 100000-gas minimum:"
+      for row in lowAaveRows do IO.eprintln s!"  {row.fixture}: {row.ours}"
+      return 1
     let baselineKind :=
       if perScenario then "solidity-gas per external function"
       else "solidity-gas"
@@ -312,11 +322,14 @@ private def run (dir baselineFile : FilePath)
   printNames "Fixtures changed upstream/solc — re-pin with scripts/update-gas.sh:" gasChanged
   printNames "Gas-unpinned fixtures — re-pin with scripts/update-gas.sh:" gasUnpinned
   printNames "Stale gas entries — re-pin with scripts/update-gas.sh:" gasStale
+  unless lowAaveRows.isEmpty do
+    IO.eprintln "Aave scenarios below the 100000-gas minimum:"
+    for row in lowAaveRows do IO.eprintln s!"  {row.fixture}: {row.ours}"
   unless gasRegressions.isEmpty do
     IO.eprintln "GAS REGRESSIONS (this compiler now spends more gas):"
     for detail in gasRegressions do IO.eprintln s!"  {detail}"
   return if (lenient || unexpectedFailures.isEmpty) && staleKnown.isEmpty &&
-    gasRegressions.isEmpty then 0 else 1
+    gasRegressions.isEmpty && lowAaveRows.isEmpty then 0 else 1
 
 def main (args : List String) : IO UInt32 := do
   match args with

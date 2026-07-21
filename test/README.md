@@ -173,16 +173,16 @@ CI runs the suite as the `Uniswap v4` leg of the `solidity-gas` matrix:
 ## Aave v4 fixtures (`aave-v4/`)
 
 `test/aave-v4/` applies the same strict, per-scenario runner to Aave v4's
-largest stateful paths and to two production data structures used inside the
+largest stateful paths and to the production position bitmap used inside the
 Spoke. The fixture wrappers reproduce upstream test sequences and values; they
 do not invent new boundary vectors:
 
-- `KeyValueList.sol` sorts the 11-cell vector from
-  `tests/contracts/spoke/libraries/KeyValueList.t.sol::test_add_unique`,
-  including duplicate keys, uninitialized cells, and near-maximum values;
 - `PositionStatusMap.sol` reproduces the collateral/borrow bitmap transitions
-  and reserve IDs from `test_collateralCount` and `test_borrowCount`, then scans
-  the resulting multiword maps;
+  and reserve IDs from `test_collateralCount`, `test_borrowCount`,
+  `test_collateralCount_ignoresInvalidBits`, and
+  `test_borrowCount_ignoresInvalidBits`. Its mixed-position scenario applies
+  the two upstream set/clear vectors to one realistic position rather than
+  repeating a cheap operation to inflate gas;
 - `HubOperations.sol` reproduces the high-gas add/remove, draw/restore, and
   deficit accounting flows from `tests/gas/Hub.Operations.gas.t.sol`, using the
   upstream 1000e6/500e6 and 1000e18/500e18/250e18/100e18 amounts;
@@ -206,9 +206,10 @@ benchmarks for test environments, not deployable Aave distributions.
 The suite is strict. `aave-v4-known-compile-failures.txt` exactly records the
 three full integration fixtures whose unoptimized IR still exceeds this
 compiler's classic stack reach. A newly rejected fixture or a stale failure
-entry fails the run. The two currently compilable fixtures pin seven call rows
-in `aave-v4-gas-baseline.txt`, including roughly 76k-gas bitmap configuration
-calls and the 55.6k-gas sort path.
+entry fails the run. The currently compilable fixture pins three call rows in
+`aave-v4-gas-baseline.txt`: 111,633, 115,092, and 115,324 gas. The runner
+enforces a 100,000-gas minimum for every executable Aave scenario, so a future
+sub-threshold row fails instead of diluting this suite with microbenchmarks.
 
 Run the suite with:
 

@@ -3,10 +3,6 @@
 # Pinned to solc 0.8.35, EVM version osaka. 'ours' is a ceiling:
 # CI fails if this compiler's total rises above it while solc's is unchanged.
 # columns: fixture<TAB>ours<TAB>solc
-KeyValueList.sol:sortUpstreamVector()	55644	9557
-PositionStatusMap.sol:borrowCount343()	8941	7387
-PositionStatusMap.sol:collateralCount343()	8967	7345
-PositionStatusMap.sol:configureBorrowCountVector()	75992	66581
-PositionStatusMap.sol:configureCollateralCountVector()	76069	66552
-PositionStatusMap.sol:scanBorrowVector()	14509	10190
-PositionStatusMap.sol:scanCollateralVector()	22403	12291
+PositionStatusMap.sol:borrowCountIgnoresInvalidBits()	115092	99216
+PositionStatusMap.sol:collateralCountIgnoresInvalidBits()	115324	99553
+PositionStatusMap.sol:mixedPositionCountVector()	111633	82332

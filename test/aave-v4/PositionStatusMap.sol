@@ -1513,65 +1513,83 @@ contract AGasTest {
   using PositionStatusMap for ISpoke.PositionStatus;
 
   ISpoke.PositionStatus private collateralStatus;
-  ISpoke.PositionStatus private borrowStatus;
+  ISpoke.PositionStatus private collateralInvalidStatus;
+  ISpoke.PositionStatus private borrowInvalidStatus;
 
-  function configureCollateralCountVector() external {
-    // Exact reserve ids and state transitions from test_collateralCount.
+  function mixedPositionCountVector() external {
+    // One real mixed position using the exact reserve ids and set/clear
+    // transitions from test_collateralCount and test_borrowCount.
     collateralStatus.setUsingAsCollateral(127, true);
+    require(collateralStatus.collateralCount(128) == 1);
     collateralStatus.setUsingAsCollateral(128, true);
+    require(collateralStatus.collateralCount(128) == 1);
+    require(collateralStatus.collateralCount(129) == 2);
+    require(collateralStatus.collateralCount(100) == 0);
     collateralStatus.setUsingAsCollateral(2, true);
+    require(collateralStatus.collateralCount(128) == 2);
     collateralStatus.setUsingAsCollateral(32, true);
+    require(collateralStatus.collateralCount(128) == 3);
     collateralStatus.setUsingAsCollateral(342, true);
+    require(collateralStatus.collateralCount(343) == 5);
     collateralStatus.setUsingAsCollateral(32, false);
+    require(collateralStatus.collateralCount(343) == 4);
+
+    collateralStatus.setBorrowing(127, true);
+    require(collateralStatus.borrowCount(128) == 1);
+    collateralStatus.setBorrowing(128, true);
+    require(collateralStatus.borrowCount(128) == 1);
+    require(collateralStatus.borrowCount(129) == 2);
+    require(collateralStatus.borrowCount(100) == 0);
+    collateralStatus.setBorrowing(2, true);
+    require(collateralStatus.borrowCount(128) == 2);
     collateralStatus.setBorrowing(32, true);
-    collateralStatus.setBorrowing(79, true);
-    collateralStatus.setBorrowing(255, true);
+    require(collateralStatus.borrowCount(128) == 3);
+    collateralStatus.setBorrowing(342, true);
+    require(collateralStatus.borrowCount(343) == 5);
+    collateralStatus.setBorrowing(32, false);
+    require(collateralStatus.borrowCount(343) == 4);
+    require(collateralStatus.collateralCount(343) == 4);
   }
 
-  function collateralCount343() external view returns (uint256) {
-    return collateralStatus.collateralCount(343);
+  function collateralCountIgnoresInvalidBits() external {
+    // Exact test_collateralCount_ignoresInvalidBits sequence.
+    collateralInvalidStatus.setUsingAsCollateral(127, true);
+    require(collateralInvalidStatus.collateralCount(100) == 0);
+    require(collateralInvalidStatus.collateralCount(200) == 1);
+    collateralInvalidStatus.setUsingAsCollateral(255, true);
+    require(collateralInvalidStatus.collateralCount(200) == 1);
+    collateralInvalidStatus.setUsingAsCollateral(133, true);
+    require(collateralInvalidStatus.collateralCount(200) == 2);
+    collateralInvalidStatus.setUsingAsCollateral(383, true);
+    require(collateralInvalidStatus.collateralCount(300) == 3);
+    collateralInvalidStatus.setUsingAsCollateral(283, true);
+    require(collateralInvalidStatus.collateralCount(300) == 4);
+    collateralInvalidStatus.setUsingAsCollateral(511, true);
+    require(collateralInvalidStatus.collateralCount(500) == 5);
+    require(collateralInvalidStatus.collateralCount(600) == 6);
   }
 
-  function scanCollateralVector() external view returns (uint256 count) {
-    uint256 reserveId = 343;
-    while (true) {
-      (reserveId, , ) = collateralStatus.next(reserveId);
-      if (reserveId == type(uint256).max) return count;
-      ++count;
-    }
+  function borrowCountIgnoresInvalidBits() external {
+    // Exact test_borrowCount_ignoresInvalidBits sequence.
+    borrowInvalidStatus.setBorrowing(127, true);
+    require(borrowInvalidStatus.borrowCount(100) == 0);
+    require(borrowInvalidStatus.borrowCount(200) == 1);
+    borrowInvalidStatus.setBorrowing(255, true);
+    require(borrowInvalidStatus.borrowCount(200) == 1);
+    borrowInvalidStatus.setBorrowing(133, true);
+    require(borrowInvalidStatus.borrowCount(200) == 2);
+    borrowInvalidStatus.setBorrowing(383, true);
+    require(borrowInvalidStatus.borrowCount(300) == 3);
+    borrowInvalidStatus.setBorrowing(283, true);
+    require(borrowInvalidStatus.borrowCount(300) == 4);
+    borrowInvalidStatus.setBorrowing(511, true);
+    require(borrowInvalidStatus.borrowCount(500) == 5);
+    require(borrowInvalidStatus.borrowCount(600) == 6);
   }
 
-  function configureBorrowCountVector() external {
-    // Exact reserve ids and state transitions from test_borrowCount.
-    borrowStatus.setBorrowing(127, true);
-    borrowStatus.setBorrowing(128, true);
-    borrowStatus.setBorrowing(2, true);
-    borrowStatus.setBorrowing(32, true);
-    borrowStatus.setBorrowing(342, true);
-    borrowStatus.setBorrowing(32, false);
-    borrowStatus.setUsingAsCollateral(32, true);
-    borrowStatus.setUsingAsCollateral(79, true);
-    borrowStatus.setUsingAsCollateral(255, true);
-  }
-
-  function borrowCount343() external view returns (uint256) {
-    return borrowStatus.borrowCount(343);
-  }
-
-  function scanBorrowVector() external view returns (uint256 count) {
-    uint256 reserveId = 343;
-    while (true) {
-      reserveId = borrowStatus.nextBorrowing(reserveId);
-      if (reserveId == type(uint256).max) return count;
-      ++count;
-    }
-  }
 }
 
 // ----
-// configureCollateralCountVector() -> 0
-// collateralCount343() -> 4
-// scanCollateralVector() -> 7
-// configureBorrowCountVector() -> 0
-// borrowCount343() -> 4
-// scanBorrowVector() -> 4
+// mixedPositionCountVector() -> 0
+// collateralCountIgnoresInvalidBits() -> 0
+// borrowCountIgnoresInvalidBits() -> 0
