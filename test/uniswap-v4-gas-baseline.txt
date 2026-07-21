@@ -4,12 +4,12 @@
 # CI fails if this compiler's total rises above it while solc's is unchanged.
 # columns: fixture<TAB>ours<TAB>solc
 BitMath.sol	4521	1836
-FullMath.sol	5304	1635
+FullMath.sol	4727	1635
 LPFeeLibrary.sol	5355	1294
 LiquidityMath.sol	2742	831
 ProtocolFeeLibrary.sol	3949	1091
 SafeCast.sol	4888	1545
-SqrtPriceMath.sol	23123	6525
-TickBitmap.sol	67507	49965
-TickMath.sol	1008056	283870
+SqrtPriceMath.sol	20341	6525
+TickBitmap.sol	65808	49965
+TickMath.sol	884353	283870
 UnsafeMath.sol	2434	768
