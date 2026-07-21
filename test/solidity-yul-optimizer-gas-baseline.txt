@@ -232,6 +232,7 @@ fullSimplify/reversed.yul	144	108
 fullSimplify/scoped_var_ref_in_function_call.yul	206196	206190
 fullSimplify/signextend.yul	144	228
 fullSimplify/smoke.yul	0	0
+fullSuite/abi2.yul	456	432
 fullSuite/abi_example1.yul	1512	1410
 fullSuite/and_or_combination.yul	143914	144022
 fullSuite/call_arguments_with_side_effects.yul	378	30

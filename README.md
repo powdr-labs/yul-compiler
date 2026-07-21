@@ -150,8 +150,14 @@ operations are different**: their correctness is *conditional on* the
 - **Deep stack access.** Variable reads use up to `DUP16`, stores up to
   `SWAP16`, and functions return up to 16 values. Deeper accesses are *rejected*
   (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
-  activated on any fork modeled by evm-semantics. Lifting the restriction is a
-  codegen-only change once the fork table activates EIP-8024, or a spilling pass.
+  activated on any fork modeled by evm-semantics. `compileSource` retries a
+  failed optimized compile with the verified smart stack-layout pass: it
+  right-associates addition spines without changing Yul's right-to-left leaf
+  evaluation order, then coalesces non-overlapping singleton-local live ranges
+  onto reachable dead slots. This fixes issue #61's nine-live-local reproducer
+  and three of the five former Uniswap v4 stack failures while leaving bytecode
+  for already-compiling programs unchanged. Programs still beyond classic
+  reach are rejected; complete coverage needs spilling or active EIP-8024.
 - **Optimizer.** A verified `Simplify → InlineHelpers → Simplify` pipeline
   runs in front of the
   backend for **block-rooted** source
@@ -177,6 +183,15 @@ operations are different**: their correctness is *conditional on* the
   compiler's layout (the object analogue of `optimize_then_compile_correct`),
   bridged by the Simplify resolution congruence and strict commutation of layout
   resolution with helper inlining.
+  If that artifact still fails classic stack reach, the source entry point
+  retries its code blocks through `Optimizer.stackLayoutBlock`. The transform
+  is itself a strong `Pass`: `StackLayoutSound.lean` proves both the
+  state/halting-preserving addition scheduler and a bidirectional variable-
+  environment simulation for liveness-guided slot reuse. A dominance- and
+  liveness-guided tail rule also sinks a computation into a nested scope when
+  dead locals hide the caller's result slot: a dominating carrier preserves
+  the live-out value while block restoration removes the deep local frame
+  before the final result copy.
   A second, weaker pass contract (`Spec/Observe.lean`: `ObsPass`, observational
   equivalence of committed run observables) is defined and composed with the
   backend for future passes that legitimately change memory or dead bindings;
