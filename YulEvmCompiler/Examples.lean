@@ -151,6 +151,43 @@ def optimizedWrapperHelpers : Block Op :=
     (calls := YulSemantics.EVM.ExternalCalls.none)
     (creates := YulSemantics.EVM.ExternalCreates.none)).run wrapperHelpers
 
+/-- A store followed by repeated literal-slot loads. `StorageForward` reuses
+the stored cheap value instead of emitting warm `SLOAD`s. -/
+def storageForwarding : Block Op := yul% {
+  let base := 40
+  sstore(0, add(base, 2))
+  let first := sload(0)
+  sstore(1, first)
+  let second := sload(1)
+  sstore(2, second)
+}
+
+def hasForwardedStorageLoads : Block Op → Bool
+  | [.letDecl ["base"] (some (.lit (.number 40))),
+      .exprStmt (.builtin .sstore _),
+      .letDecl ["first"] (some (.builtin .add [.var "base", .lit (.number 2)])),
+      .exprStmt (.builtin .sstore _),
+      .letDecl ["second"] (some (.var "first")),
+      .exprStmt (.builtin .sstore _)] => true
+  | _ => false
+
+/-- Loop bodies are separate forwarding regions; facts never cross iterations. -/
+def storageForwardingLoop : Block Op := yul% {
+  for {} 1 {} {
+    sstore(0, 7)
+    let loaded := sload(0)
+    sstore(1, loaded)
+    break
+  }
+}
+
+def hasForwardedLoopLoad : Block Op → Bool
+  | [.forLoop _ _ _
+      [.exprStmt (.builtin .sstore _),
+       .letDecl ["loaded"] (some (.lit (.number 7))),
+       .exprStmt (.builtin .sstore _), .break]] => true
+  | _ => false
+
 /-- A *recursive* function: `fact(5) = 120` in slot 0. -/
 def factorial : Block Op := yul% {
   function fact(n) -> f {
@@ -534,6 +571,13 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard compile optimizedWrapperHelpers |>.isSome
 #guard agreeOn optimizedWrapperHelpers [0, 1]
 #guard agreeOn wrapperHelpers [0, 1]
+#guard hasForwardedStorageLoads (Optimizer.storageForwardBlock storageForwarding)
+#guard hasForwardedLoopLoad (Optimizer.storageForwardBlock storageForwardingLoop)
+#guard compile ((Optimizer.storageForward
+  (calls := YulSemantics.EVM.ExternalCalls.none)
+  (creates := YulSemantics.EVM.ExternalCreates.none)).run storageForwarding) |>.isSome
+#guard agreeOn storageForwarding [0, 1, 2]
+#guard agreeOn storageForwardingLoop [0, 1]
 #guard agreeOn multiRet3 [0, 1, 2]
 #guard agreeOn funCall [0]
 #guard agreeOn factorial [0]

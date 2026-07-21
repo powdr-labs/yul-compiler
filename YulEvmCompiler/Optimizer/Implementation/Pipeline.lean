@@ -6,6 +6,7 @@ import YulEvmCompiler.Optimizer.Implementation.DeadPureResolve
 import YulEvmCompiler.Optimizer.Implementation.DeadResultsResolve
 import YulEvmCompiler.Optimizer.Implementation.FreshenCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.HoistCallsResolve
+import YulEvmCompiler.Optimizer.Implementation.StorageForwardResolve
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
 set_option warningAsError true
 /-!
@@ -17,8 +18,10 @@ identities including the open-operand forms), propagates known bindings
 binding-preserving), inlines pure expression-body helpers through the Core
 boundary (`InlineHelpers`), hoists direct unary nested calls and freshens
 result sites before inlining call-free statement-body helpers (`HoistCalls`,
-`FreshenCalls`, `InlineCalls`), simplifies again, prunes dead pure bindings and
-self-assignments (`DeadPure`, subsuming the earlier `DeadLits`), and removes
+`FreshenCalls`, `InlineCalls`), forwards cheap values written to literal storage
+slots through later loads (`StorageForward`), simplifies again, prunes dead pure
+bindings and self-assignments (`DeadPure`, subsuming the earlier `DeadLits`),
+and removes
 unused result slots together with adjacent total, state-preserving readback
 regions (`DeadResults`). The whole round is **iterated** (`pipelineRounds`): statement-level inlining collapses
 helper chains leaf-first — a call-free callee inlines this round, which makes
@@ -30,14 +33,14 @@ under the inlining guards.
 Stage order differs by path, deliberately:
 
 * **block path** (`optimizerPipeline`): `simplify → propagate → inline(litOK)
-  → hoistCalls → freshenCalls → inlineCalls → simplify → deadPure →
-  deadResults`.
+  → hoistCalls → freshenCalls → inlineCalls → storageForward → simplify
+  → deadPure → deadResults`.
   Propagation runs *before* the inliner
   because the block-path inliner accepts literal arguments (`litOK := true`) —
   substituted constants make more call sites flat and inlinable.
 * **object path** (`objectPipeline`): `simplify → inline(var-only) →
-  propagate → hoistCalls → freshenCalls → inlineCalls → simplify → deadPure →
-  deadResults`. The object-path inliner is
+  propagate → hoistCalls → freshenCalls → inlineCalls → storageForward →
+  simplify → deadPure → deadResults`. The object-path inliner is
   variable-only (`litOK := false`, the resolution-stable mode), so propagation
   runs *after* it — running first would turn variable arguments into literals
   and starve it. `Propagate`, `DeadPure`, and `InlineCalls` need no restricted
@@ -95,7 +98,7 @@ def pipelineRounds : Nat := 6
 /-- One block-path round. -/
 def blockRound : List (Pass D) :=
   [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
-   simplify, deadPure, deadResults]
+   storageForward, simplify, deadPure, deadResults]
 
 /-- Verified block pipeline at an explicit round count. Iterated inlining can
 push a caller's live locals past the backend's `DUP16`/`SWAP16` reach; fewer
@@ -130,6 +133,7 @@ def objectRound : List (RPass calls creates) :=
    ⟨hoistCalls, fun L b => resolveHoistCallsBlock_equiv L b⟩,
    ⟨freshenCalls, fun L b => resolveFreshenCallsBlock_equiv L b⟩,
    ⟨inlineCalls, fun L b => resolveInlineCallsBlock_equiv L b⟩,
+   ⟨storageForward, fun L b => resolveStorageForwardBlock_equiv L b⟩,
    ⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
    ⟨deadPure, fun L b => resolveDeadPureBlock_equiv L b⟩,
    ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩]

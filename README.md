@@ -159,8 +159,8 @@ operations are different**: their correctness is *conditional on* the
   for already-compiling programs unchanged. Programs still beyond classic
   reach are rejected; complete coverage needs spilling or active EIP-8024.
 - **Optimizer.** A verified six-round `Simplify → Propagate →
-  InlineHelpers → HoistCalls → FreshenCalls → InlineCalls → Simplify → DeadPure →
-  DeadResults` pipeline runs in front of the
+  InlineHelpers → HoistCalls → FreshenCalls → InlineCalls → StorageForward →
+  Simplify → DeadPure → DeadResults` pipeline runs in front of the
   backend for **block-rooted** source
   programs (`compileSource`); it is a total source-to-source transformation proved
   semantics-preserving (`EquivBlock`) and composed with the backend via
@@ -180,7 +180,13 @@ operations are different**: their correctness is *conditional on* the
   the common direct unary nesting `x := f(g(args))` into a fresh temporary;
   `FreshenCalls` renames
   result sites that would otherwise capture an inlined helper's locals;
-  `InlineCalls` then handles bounded call-free statement bodies. `DeadPure`
+  `InlineCalls` then handles bounded call-free statement bodies.
+  `StorageForward` remembers cheap literal, variable, and `add(variable,
+  literal)` values written to literal storage slots and substitutes them for
+  later loads. Any possibly aliasing store, stateful expression, control-flow
+  join, or reassignment of a depended-on variable invalidates the relevant
+  facts; loop post/body blocks are optimized independently, never across an
+  iteration boundary. `DeadPure`
   removes unused total pure expressions and storage reads, while `DeadResults`
   removes an unused zero-initialized result together with its adjacent
   straight-line, state-preserving computation region. For
