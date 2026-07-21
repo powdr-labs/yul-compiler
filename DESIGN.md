@@ -507,7 +507,10 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     **neutral-element identities** (`add(x,0)`, `mul(x,1)`, `and(x,2²⁵⁶−1)`, … → `x`,
     with the variable kept on the right-hand side so the rewrite is sound on every
     environment), plus **literal control-flow selection** (`if` → chosen/empty
-    block and `switch` → selected case/default). Flat pure applications are now
+    block and `switch` → selected case/default). It also removes the
+    always-false `if iszero(eq(x,x))` validator residue while evaluating and
+    discarding the original condition, preserving its unbound-variable
+    stuckness. Flat pure applications are now
     ingested into Core and run through proof-carrying fold/neutral rules. This
     replaces the old raw-AST rewrite driver: syntax outside the current Core
     fragment is simply unchanged.

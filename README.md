@@ -165,7 +165,9 @@ operations are different**: their correctness is *conditional on* the
   programs (`compileSource`); it is a total source-to-source transformation proved
   semantics-preserving (`EquivBlock`) and composed with the backend via
   `Pass.optimize_then_compile_correct`. `Simplify` performs constant folding,
-  neutral identities, and literal control-flow selection. Its supported flat
+  neutral identities, literal control-flow selection, and removal of
+  `if iszero(eq(x,x))` validator residue while retaining evaluation under
+  `pop` so unbound-variable stuckness is unchanged. Its supported flat
   pure expressions pass through an intrinsically scoped, arity-indexed ANF
   Core IR and a generic proof-carrying rule engine; unsupported built-ins and
   non-ANF expression shapes are left unchanged rather than routed through a

@@ -651,6 +651,81 @@ are unchanged with no regression; Uniswap remains orthogonal to PR #68's stack
 work. Layout congruence, adversarial shadowing/unbound/rebinding guards, and the
 bidirectional pass proof all type-check without changing the trust boundary.
 
+### ❌ Dead-let lifetime shortening after `InlineCalls` (`dead-let-pop`)
+
+Issue #64 is the right companion to `InlineCalls`, but directly enabling copy
+substitution remains unsafe for this stack backend: replacing a recent copy by
+an older source can turn a compiling `DUP16` into an unreachable `DUP17`.
+The first production slice instead shortens dead binding lifetimes without
+substitution.  A dead singleton initialized binding
+
+```yul
+let x := e
+```
+
+whose `x` is not mentioned by the rest of its block becomes
+
+```yul
+pop(e)
+```
+
+while the existing `DeadLits` cases still delete dead zero/literal bindings
+entirely.  Keeping `e` under `pop` preserves its evaluation, effects, halt,
+arity check, and unbound-variable stuckness under the unchanged pointwise
+`EquivBlock` spec; removing the binding ends its operand-stack lifetime at the
+declaration rather than at block exit.  This targets dead parameter/result and
+copy scaffolding exposed by `InlineCalls`, may bring optimized programs back
+under `DUP16`, and cannot deepen any remaining variable read.
+
+Proof plan: add a bidirectional `let`/`pop` execution lemma, reuse the existing
+`InsAt` frame simulation for the mention-free suffix, extend `DlRel` with a
+guarded replacement rule, and transport it through object layout resolution
+using the existing identifier-occurrence invariance.  The existing iterated
+block/object pipelines then pick up the stronger stage without a spec change.
+Measure all `dispatch_*` gas tests, the six compiling and five rejected Uniswap
+fixtures, and the high-gap semantic cases before deciding whether the next
+slice should be depth-aware copy facts or broader pure-expression deletion.
+
+**Result:** fully implemented and proved experimentally, then rejected. The
+curated `gasTests` had six regressions and no improvements: each
+`dispatch_small*`/`medium*` row rose by 2 gas and each `dispatch_large*` row by
+4. Moving the eventual block-exit `POP` to the declaration executes it on halt
+paths where the old cleanup was unreachable. The proof/code was removed; the
+measurement confirms lifetime shortening needs a profitability analysis, not
+an unconditional rewrite.
+
+### ✅ Self-equality validator residue (`if-self-eq`)
+
+`InlineCalls` exposes Solidity validator guards of the form
+
+```yul
+if iszero(eq(x, x)) { <halt body> }
+```
+
+The condition is false whenever `x` is bound, but replacing the whole statement
+by an empty block is unsound under pointwise `EquivStmt`: it would also run when
+`x` is unbound. Replace it with a value discard that retains evaluation of the
+original condition (and therefore the same stuckness) while removing the dead
+branch dispatch and unreachable body. A later strengthening may reduce the
+discard to `pop(x)` once that expression equivalence is packaged cleanly.
+
+Proof plan: invert successful evaluation of `iszero(eq(x,x))` to show its sole
+value is zero, then prove the conditional equivalent to discarding that exact
+condition in both normal and halt cases. Extend `simplifyCond`, show the pattern
+is stable under object layout resolution, and keep only zero-regression gas
+improvements.
+
+**Results** (fully proved in the unchanged strong `Pass` spec, object-resolution
+congruence included): `semanticTests` 199/846 rows improve by **19,230 gas**
+with zero regressions (`calling_other_functions.sol` −75; the top three
+dynamic-array loops −90/−105/−90); curated `gasTests` 11/12 improve by
+**1,125** with every `dispatch_*` row down; Uniswap v4 improves BitMath,
+SafeCast, and UnsafeMath by **315** total. The Yul optimizer corpus newly emits
+`fullSuite/abi2.yul` (456 gas), previously beyond the optimized backend's stack
+frontier; its other 552 rows, all 23 object-compiler rows, and all 40
+EVM-code-transform rows are unchanged. No solc fingerprint moved and no known
+failure baseline changed.
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)

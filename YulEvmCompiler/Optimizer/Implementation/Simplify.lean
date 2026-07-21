@@ -14,7 +14,8 @@ the first real `Optimizer.Pass`. It rewrites, bottom-up:
 * a pure built-in with a neutral literal operand kept alongside a *variable*
   (`add(x,0) → x`, `mul(x,1) → x`, `and(x, 2²⁵⁶−1) → x`, `shl(0,x) → x`, …);
 * an `if` whose simplified condition is literal → its body or an empty block;
-  and
+* an `if iszero(eq(x,x)) { body }` validator residue → evaluation and discard
+  of the condition (preserving unbound-variable stuckness); and
 * a `switch` whose simplified condition is literal → its selected case/default
   block.
 
@@ -619,12 +620,23 @@ variable restoration and function scope, as well as every non-local outcome.
 The smart constructors use the closed EVM dialect because they are syntax
 transformations independent of the open-world call/create relations. -/
 
+/-- Recognize `iszero(eq(x,x))`, which is false whenever `x` evaluates. -/
+def selfEqVar? : Expr Op → Option Ident
+  | .builtin .iszero [.builtin .eq [.var x, .var y]] =>
+      if x = y then some x else none
+  | _ => none
+
 /-- Fold an `if` with a literal condition to the block it deterministically
-executes.  A non-literal condition is rebuilt unchanged. -/
+executes. A self-equality validator residue retains evaluation of its false
+condition under `pop`, preserving stuckness while deleting branch dispatch.
+Other conditions are rebuilt unchanged. -/
 def simplifyCond (c : Expr Op) (body : Block Op) : Stmt Op :=
   match c with
   | .lit l => if litValue l = 0 then .block [] else .block body
-  | _ => .cond c body
+  | _ =>
+      match selfEqVar? c with
+      | some _ => .exprStmt (.builtin .pop [c])
+      | none => .cond c body
 
 /-- Fold a `switch` with a literal condition to the case/default block selected
 by the source semantics.  A non-literal condition is rebuilt unchanged. -/
@@ -683,6 +695,111 @@ theorem funDef_equiv (n : Ident) (ps rs : List Ident) (b₁ b₂ : Block Op) :
     EquivStmt D (.funDef n ps rs b₁) (.funDef n ps rs b₂) := by
   intro funs V st V' st' o
   constructor <;> (intro h; cases h; exact Step.funDef)
+
+/-- Successful recognition exposes the exact self-equality condition. -/
+theorem selfEqVar?_some {c : Expr Op} {x : Ident} (h : selfEqVar? c = some x) :
+    c = .builtin .iszero [.builtin .eq [.var x, .var x]] := by
+  unfold selfEqVar? at h
+  split at h
+  · next a b =>
+      split at h
+      · next hab =>
+          cases h
+          subst b
+          rfl
+      · contradiction
+  · contradiction
+
+/-- A normally evaluated `iszero(eq(x,x))` produces exactly zero and leaves
+state unchanged. Repeated evaluation of `x` is retained, so the statement is
+still stuck when `x` is unbound. -/
+theorem selfEq_zero_inv {funs : FunEnv D} {V : VEnv D} {st st' : EvmState}
+    {x : Ident} {cv : U256}
+    (h : Step D funs V st
+      (.expr (.builtin .iszero [.builtin .eq [.var x, .var x]]))
+      (.eres (.vals [cv] st'))) : cv = 0 ∧ st' = st := by
+  cases h with
+  | builtinOk houter hbzero =>
+      cases houter with
+      | argsCons hnil heq =>
+          cases hnil
+          cases heq with
+          | builtinOk heqargs hbeq =>
+              cases heqargs with
+              | argsCons hrest hx1 =>
+                  cases hx1 with
+                  | var hv1 =>
+                      cases hrest with
+                      | argsCons hnil hx2 =>
+                          cases hx2 with
+                          | var hv2 =>
+                              cases hnil
+                              rw [hv1] at hv2
+                              injection hv2 with hv
+                              subst hv
+                              have heqv := pureFn_builtin_inv
+                                (calls := calls) (creates := creates)
+                                (w := 1) (by simp [pureFn, b2w]) hbeq
+                              injection heqv with hvals hst
+                              injection hvals with hv
+                              subst hv
+                              subst hst
+                              have hzero := pureFn_builtin_inv
+                                (calls := calls) (creates := creates)
+                                (w := 0) (by simp [pureFn, b2w]) hbzero
+                              injection hzero with hvals hst
+                              exact ⟨by simpa using hvals, hst⟩
+
+/-- A self-equality validator branch is unreachable, but its condition must
+still be evaluated to preserve unbound-variable stuckness. `pop(condition)`
+does exactly that while deleting the branch and body. -/
+theorem cond_selfEq_equiv (x : Ident) (body : Block Op) :
+    EquivStmt D
+      (.cond (.builtin .iszero [.builtin .eq [.var x, .var x]]) body)
+      (.exprStmt (.builtin .pop
+        [.builtin .iszero [.builtin .eq [.var x, .var x]]])) := by
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    cases h with
+    | ifTrue hc hnz _ =>
+        obtain ⟨rfl, -⟩ := selfEq_zero_inv hc
+        exact absurd rfl hnz
+    | ifFalse hc _ =>
+        obtain ⟨rfl, rfl⟩ := selfEq_zero_inv hc
+        exact Step.exprStmt (Step.builtinOk
+          (Step.argsCons Step.argsNil hc) (by rfl))
+    | ifHalt hc =>
+        exact Step.exprStmtHalt
+          (Step.builtinArgsHalt (Step.argsHeadHalt Step.argsNil hc))
+  · intro h
+    cases h with
+    | exprStmt hpop =>
+        cases hpop with
+        | builtinOk hargs hb =>
+            cases hargs with
+            | argsCons hnil hc =>
+                cases hnil
+                simp [evmWithExternal, builtinWithExternal, stepOp] at hb
+                subst_vars
+                obtain ⟨rfl, rfl⟩ := selfEq_zero_inv hc
+                exact Step.ifFalse hc rfl
+    | exprStmtHalt hpop =>
+        cases hpop with
+        | @builtinHalt _ _ _ _ _ argvals _ _ _ hb =>
+            simp [evmWithExternal, builtinWithExternal] at hb
+            cases argvals with
+            | nil => simp [stepOp] at hb
+            | cons _ rest =>
+                cases rest with
+                | nil => simp [stepOp] at hb
+                | cons _ _ => simp [stepOp] at hb
+        | builtinArgsHalt hargs =>
+            cases hargs with
+            | argsRestHalt hnil => cases hnil
+            | argsHeadHalt hnil hc =>
+                cases hnil
+                exact Step.ifHalt hc
 
 /-- A false literal `if` is exactly an empty block. -/
 theorem cond_lit_zero_equiv (l : Literal) (body : Block Op)
@@ -761,7 +878,17 @@ theorem simplifyCond_equiv (c : Expr Op) (body : Block Op) :
       · next h => exact cond_lit_zero_equiv l body h
       · next h => exact cond_lit_nonzero_equiv l body h
   | var _ => exact EquivStmt.refl _
-  | builtin _ _ => exact EquivStmt.refl _
+  | builtin op args =>
+      cases hself : selfEqVar? (.builtin op args) with
+      | none =>
+          have hrefl : EquivStmt D (.cond (.builtin op args) body)
+              (.cond (.builtin op args) body) := fun _ _ _ _ _ _ => Iff.rfl
+          simpa [simplifyCond, hself] using hrefl
+      | some x =>
+          have hshape := selfEqVar?_some hself
+          rw [hshape]
+          simpa [simplifyCond, selfEqVar?] using
+            (cond_selfEq_equiv (calls := calls) (creates := creates) x body)
   | call _ _ => exact EquivStmt.refl _
 
 /-- The `switch` smart constructor is semantics-preserving. -/
@@ -781,7 +908,9 @@ theorem hoist_simplifyCond_cons (c : Expr Op) (body rest : Block Op) :
   cases c with
   | lit l => rw [simplifyCond]; split <;> rfl
   | var _ => rfl
-  | builtin _ _ => rfl
+  | builtin op args =>
+      cases hself : selfEqVar? (.builtin op args) <;>
+        simp [simplifyCond, hself, hoist]
   | call _ _ => rfl
 
 /-- A folded `switch` never contributes a function declaration to its enclosing
@@ -1201,10 +1330,10 @@ theorem blockEquiv (b : List (Stmt Op)) : EquivBlock D b (simplifyStmts b) :=
   EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 b))
     (scopeRel_hoistSimplify b)
 
-/-- The **Simplify pass**: constant folding, neutral-element identities, and
-literal control-flow selection over the whole program (including function
-bodies; only a `for`-loop's `init` is left untouched), bundled with its
-soundness proof. -/
+/-- The **Simplify pass**: constant folding, neutral-element identities,
+literal control-flow selection, and self-equality validator pruning over the
+whole program (including function bodies; only a `for`-loop's `init` is left
+untouched), bundled with its soundness proof. -/
 def simplify : Pass D where
   run := simplifyStmts
   sound := blockEquiv
@@ -1283,6 +1412,18 @@ example : simplifyStmt (.cond (.lit (.number 0)) [.exprStmt (.builtin .stop [])]
 /-- A condition that folds to true selects its body. -/
 example : simplifyStmt (.cond (.builtin .add [.lit (.number 1), .lit (.number 2)])
     [.exprStmt (.builtin .stop [])]) = .block [.exprStmt (.builtin .stop [])] := rfl
+-- A self-equality validator keeps condition evaluation but drops its branch.
+#guard match simplifyStmt (.cond
+    (.builtin .iszero [.builtin .eq [.var "x", .var "x"]])
+    [.exprStmt (.builtin .revert [.lit (.number 0), .lit (.number 0)])]) with
+  | .exprStmt (.builtin .pop
+      [.builtin .iszero [.builtin .eq [.var "x", .var "x"]]]) => true
+  | _ => false
+-- Equality of different variables is not assumed.
+#guard match simplifyStmt (.cond
+    (.builtin .iszero [.builtin .eq [.var "x", .var "y"]]) [.break]) with
+  | .cond (.builtin .iszero [.builtin .eq [.var "x", .var "y"]]) [.break] => true
+  | _ => false
 /-- A literal switch keeps only its selected case. -/
 example : simplifyStmt (.switch (.lit (.number 2))
     [(.number 1, [.break]), (.number 2, [.leave])] (some [.continue])) =
