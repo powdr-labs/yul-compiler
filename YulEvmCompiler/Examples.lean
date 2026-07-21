@@ -368,6 +368,29 @@ def optimizedStackPressure : Block Op :=
 def laidOutStackPressure : Block Op :=
   Optimizer.stackLayoutBlock optimizedStackPressure
 
+/-- A result slot that is shallow on block entry but hidden below fourteen
+locals at the terminal write. The tail-carrier policy recognizes that the
+first local dominates the region and is the only value needed after it. -/
+def tailCarrierCandidate : Block Op := yul% {
+  let carrier := 1
+  let a0 := 0
+  let a1 := 1
+  let a2 := 2
+  let a3 := 3
+  let a4 := 4
+  let a5 := 5
+  let a6 := 6
+  let a7 := 7
+  let a8 := 8
+  let a9 := 9
+  let a10 := 10
+  let a11 := 11
+  let a12 := 12
+  let a13 := 13
+  r := carrier
+  leave
+}
+
 /-- A terminal world-state update. The unreachable store makes the halting behavior observable
 in addition to the balance transfer and scheduled-destruction record checked below. -/
 def selfdestructOps : Block Op := yul% {
@@ -411,6 +434,7 @@ def selfdestructOps : Block Op := yul% {
 #guard (compile selfdestructOps).isSome
 #guard !(compile optimizedStackPressure).isSome
 #guard (compile laidOutStackPressure).isSome
+#guard (Optimizer.scopeTailHere ["x", "r"] tailCarrierCandidate).isSome
 
 /-! ### The upstream Fibonacci contract
 

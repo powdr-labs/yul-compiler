@@ -14,7 +14,9 @@ right-to-left evaluation order, including state changes and halts.  The slot
 reuse simulation is indexed by the depths of the removed binding and the
 reused slot.  Both depths are measured from the bottom of the variable
 environment, so declarations prepend above them and nested-block `restore`
-preserves them.
+preserves them. The tail-carrier proof uses the same restoration invariant to
+show that sinking a dominated region removes only dead locals before copying
+its one live-out value to a result slot.
 -/
 
 namespace YulEvmCompiler.Optimizer
@@ -2463,11 +2465,1094 @@ theorem iterateStackLayout_equiv (n : Nat) (b : Block Op) :
       | none => exact EquivBlock.refl _
       | some b' => exact (reuseOneStmts_equiv h).trans (ih b')
 
+/-! ## Tail-carrier scope sinking -/
+
+theorem restore_set_commute {base inner : VEnv D} {keys : List Ident}
+    {x : Ident} (v : U256)
+    (hkeys : inner.map Prod.fst = keys ++ base.map Prod.fst)
+    (hx : x ∉ keys) :
+    restore base (VEnv.set inner x v) =
+      VEnv.set (restore base inner) x v := by
+  have hlen : inner.length = keys.length + base.length := by
+    have h := congrArg List.length hkeys
+    simpa using h
+  have hdrop : inner.length - base.length = keys.length := by omega
+  let A := inner.take keys.length
+  let B := inner.drop keys.length
+  have hab : inner = A ++ B := by
+    exact (List.take_append_drop keys.length inner).symm
+  have hAkeys : A.map Prod.fst = keys := by
+    dsimp [A]
+    rw [List.map_take, hkeys, List.take_append_of_le_length (Nat.le_refl _)]
+    simp
+  have hxA : x ∉ A.map Prod.fst := hAkeys ▸ hx
+  have hAle : keys.length ≤ inner.length := by omega
+  have hAlen : A.length = keys.length := by simp [A, List.length_take, hAle]
+  have hBlen : B.length = base.length := by
+    simp [B, List.length_drop, hlen]
+  rw [hab, VEnv.set_append_not_mem hxA]
+  simp only [restore]
+  have hsetB : (VEnv.set B x v).length = B.length := VEnv.set_length _ _ _
+  rw [show (A ++ B).length - base.length = A.length by simp [hBlen]]
+  rw [show (A ++ VEnv.set B x v).length - base.length = A.length by
+    simp [hsetB, hBlen]]
+  rw [List.drop_left, List.drop_left]
+
+theorem restore_restore {outer base inner : VEnv D}
+    (hob : outer.length ≤ base.length) (hbi : base.length ≤ inner.length) :
+    restore outer (restore base inner) = restore outer inner := by
+  simp only [restore, List.length_drop]
+  rw [List.drop_drop]
+  have h₁ : inner.length - base.length ≤ inner.length := Nat.sub_le _ _
+  have h₂ : inner.length - (inner.length - base.length) = base.length := by omega
+  rw [show inner.length - (inner.length - base.length) - outer.length =
+      base.length - outer.length by omega]
+  congr 1
+  omega
+
+theorem restore_erase_head_set {outer tail : VEnv D} {c r : Ident}
+    (old value result : U256) (houter : outer.length ≤ tail.length)
+    (hcr : c ≠ r) :
+    restore outer
+        (VEnv.set (VEnv.set ((c, old) :: tail) c value) r result) =
+      restore outer (VEnv.set ((c, old) :: tail) r result) := by
+  have hc : VEnv.set ((c, old) :: tail) c value = (c, value) :: tail := by
+    simp [VEnv.set]
+  have hr₁ : VEnv.set ((c, value) :: tail) r result =
+      (c, value) :: VEnv.set tail r result := by simp [VEnv.set, hcr]
+  have hr₂ : VEnv.set ((c, old) :: tail) r result =
+      (c, old) :: VEnv.set tail r result := by simp [VEnv.set, hcr]
+  rw [hc, hr₁, hr₂]
+  simp only [restore, List.length_cons]
+  rw [VEnv.set_length]
+  rw [show tail.length + 1 - outer.length =
+      (tail.length - outer.length) + 1 by omega]
+  rfl
+
+theorem get_set_of_mem {V : VEnv D} {x : Ident} (v : U256)
+    (hx : x ∈ V.map Prod.fst) : VEnv.get (VEnv.set V x v) x = some v := by
+  induction V with
+  | nil => simp at hx
+  | cons entry rest ih =>
+      obtain ⟨y, old⟩ := entry
+      by_cases hy : y = x
+      · subst y; simp [VEnv.set, VEnv.get]
+      · simp only [List.map_cons, List.mem_cons] at hx
+        rcases hx with rfl | hx
+        · exact absurd rfl hy
+        · rw [VEnv.set, if_neg hy]
+          unfold VEnv.get at ih ⊢
+          rw [List.find?_cons_of_neg (by simpa using hy)]
+          exact ih hx
+
+theorem binds_not_mem_of_declare_false (x : Ident) : ∀ mid : Block Op,
+    stmtsDeclare x mid = false → x ∉ stmtsBinds mid
+  | [], _ => by simp [stmtsBinds]
+  | s :: rest, h => by
+      simp only [stmtsDeclare, Bool.or_eq_false_iff] at h
+      rw [stmtsBinds]
+      simp only [List.mem_append, not_or]
+      refine ⟨binds_not_mem_of_declare_false x rest h.2, ?_⟩
+      cases s <;> simp_all [stmtDeclares, stmtBinds]
+
+inductive EmptyScopeRel : FunEnv D → FunEnv D → Prop
+  | refl (funs) : EmptyScopeRel funs funs
+  | add (funs) : EmptyScopeRel funs ([] :: funs)
+  | drop (funs) : EmptyScopeRel ([] :: funs) funs
+  | cons (scope) {funs₁ funs₂} : EmptyScopeRel funs₁ funs₂ →
+      EmptyScopeRel (scope :: funs₁) (scope :: funs₂)
+
+theorem EmptyScopeRel.lookup {funs₁ funs₂ : FunEnv D}
+    (hrel : EmptyScopeRel funs₁ funs₂) :
+    ∀ {fn decl cenv₁}, lookupFun funs₁ fn = some (decl, cenv₁) →
+      ∃ cenv₂, lookupFun funs₂ fn = some (decl, cenv₂) ∧
+        EmptyScopeRel cenv₁ cenv₂ := by
+  induction hrel with
+  | refl funs =>
+      intro fn decl cenv h
+      exact ⟨cenv, h, .refl _⟩
+  | add funs =>
+      intro fn decl cenv h
+      exact ⟨cenv, by simpa [lookupFun] using h, .refl _⟩
+  | drop funs =>
+      intro fn decl cenv h
+      exact ⟨cenv, by simpa [lookupFun] using h, .refl _⟩
+  | @cons scope funs₁ funs₂ hrel ih =>
+      intro fn decl cenv₁ h
+      cases hs : scope.find? (fun p => p.1 = fn) with
+      | some p =>
+          rw [lookupFun, hs] at h
+          simp only [Option.some.injEq, Prod.mk.injEq] at h
+          obtain ⟨rfl, rfl⟩ := h
+          exact ⟨scope :: funs₂, by rw [lookupFun, hs], .cons _ hrel⟩
+      | none =>
+          rw [lookupFun, hs] at h
+          obtain ⟨cenv₂, hout, hc⟩ := ih h
+          exact ⟨cenv₂, by rw [lookupFun, hs]; exact hout, hc⟩
+
+theorem Step.emptyScope_congr {funs₁ : FunEnv D} {V st code res}
+    (h : Step D funs₁ V st code res) :
+    ∀ {funs₂}, EmptyScopeRel funs₁ funs₂ → Step D funs₂ V st code res := by
+  induction h with
+  | lit => intro _ _; exact Step.lit
+  | var hv => intro _ _; exact Step.var hv
+  | builtinOk _ hb iha => intro _ hr; exact Step.builtinOk (iha hr) hb
+  | builtinHalt _ hb iha => intro _ hr; exact Step.builtinHalt (iha hr) hb
+  | builtinArgsHalt _ iha => intro _ hr; exact Step.builtinArgsHalt (iha hr)
+  | @callOk funs V st fn args argvals st1 decl cenv Vend st2 o ha hl hlen hbody ho iha ihbody =>
+      intro funs₂ hr
+      obtain ⟨cenv₂, hl₂, hc⟩ := hr.lookup hl
+      exact Step.callOk (iha hr) hl₂ hlen (ihbody hc) ho
+  | @callHalt funs V st fn args argvals st1 decl cenv Vend st2 ha hl hlen hbody iha ihbody =>
+      intro funs₂ hr
+      obtain ⟨cenv₂, hl₂, hc⟩ := hr.lookup hl
+      exact Step.callHalt (iha hr) hl₂ hlen (ihbody hc)
+  | callArgsHalt _ iha => intro _ hr; exact Step.callArgsHalt (iha hr)
+  | argsNil => intro _ _; exact Step.argsNil
+  | argsCons _ _ iha ihe => intro _ hr; exact Step.argsCons (iha hr) (ihe hr)
+  | argsRestHalt _ iha => intro _ hr; exact Step.argsRestHalt (iha hr)
+  | argsHeadHalt _ _ iha ihe => intro _ hr; exact Step.argsHeadHalt (iha hr) (ihe hr)
+  | funDef => intro _ _; exact Step.funDef
+  | @block funs V st body Vb stb o hbody ihbody =>
+      intro funs₂ hr; exact Step.block (ihbody (.cons _ hr))
+  | letZero => intro _ _; exact Step.letZero
+  | letVal _ hlen ihe => intro _ hr; exact Step.letVal (ihe hr) hlen
+  | letHalt _ ihe => intro _ hr; exact Step.letHalt (ihe hr)
+  | assignVal _ hlen ihe => intro _ hr; exact Step.assignVal (ihe hr) hlen
+  | assignHalt _ ihe => intro _ hr; exact Step.assignHalt (ihe hr)
+  | exprStmt _ ihe => intro _ hr; exact Step.exprStmt (ihe hr)
+  | exprStmtHalt _ ihe => intro _ hr; exact Step.exprStmtHalt (ihe hr)
+  | ifTrue _ hnz _ ihc ihb => intro _ hr; exact Step.ifTrue (ihc hr) hnz (ihb hr)
+  | ifFalse _ hz ihc => intro _ hr; exact Step.ifFalse (ihc hr) hz
+  | ifHalt _ ihc => intro _ hr; exact Step.ifHalt (ihc hr)
+  | switchExec _ _ ihc ihb => intro _ hr; exact Step.switchExec (ihc hr) (ihb hr)
+  | switchHalt _ ihc => intro _ hr; exact Step.switchHalt (ihc hr)
+  | @forLoop funs V st init c post body Vinit stinit Vend stend o hinit hloop ihinit ihloop =>
+      intro funs₂ hr
+      exact Step.forLoop (ihinit (.cons _ hr)) (ihloop (.cons _ hr))
+  | @forInitHalt funs V st init c post body Vinit stinit hinit ihinit =>
+      intro funs₂ hr; exact Step.forInitHalt (ihinit (.cons _ hr))
+  | «break» => intro _ _; exact Step.break
+  | «continue» => intro _ _; exact Step.continue
+  | «leave» => intro _ _; exact Step.leave
+  | seqNil => intro _ _; exact Step.seqNil
+  | seqCons _ _ ihs ihrest => intro _ hr; exact Step.seqCons (ihs hr) (ihrest hr)
+  | seqStop _ hne ihs => intro _ hr; exact Step.seqStop (ihs hr) hne
+  | loopDone _ hz ihc => intro _ hr; exact Step.loopDone (ihc hr) hz
+  | loopCondHalt _ ihc => intro _ hr; exact Step.loopCondHalt (ihc hr)
+  | loopStep _ hnz _ hob _ _ ihc ihb ihp ihr =>
+      intro _ hr; exact Step.loopStep (ihc hr) hnz (ihb hr) hob (ihp hr) (ihr hr)
+  | loopPostHalt _ hnz _ hob _ ihc ihb ihp =>
+      intro _ hr; exact Step.loopPostHalt (ihc hr) hnz (ihb hr) hob (ihp hr)
+  | loopBreak _ hnz _ ihc ihb => intro _ hr; exact Step.loopBreak (ihc hr) hnz (ihb hr)
+  | loopLeave _ hnz _ ihc ihb => intro _ hr; exact Step.loopLeave (ihc hr) hnz (ihb hr)
+  | loopBodyHalt _ hnz _ ihc ihb => intro _ hr; exact Step.loopBodyHalt (ihc hr) hnz (ihb hr)
+
+theorem restored_head {base inner : VEnv D} {c : Ident} {old : U256}
+    (hsuffix : ((c, old) :: base).map Prod.fst <:+ inner.map Prod.fst)
+    (hlen : ((c, old) :: base).length ≤ inner.length) :
+    ∃ value tail, restore ((c, old) :: base) inner = (c, value) :: tail ∧
+      tail.length = base.length := by
+  have hk : (restore ((c, old) :: base) inner).map Prod.fst =
+      ((c, old) :: base).map Prod.fst := restore_keys hsuffix hlen
+  have hl : (restore ((c, old) :: base) inner).length =
+      ((c, old) :: base).length := restore_length hlen
+  generalize hb : restore ((c, old) :: base) inner = B at hk hl ⊢
+  cases B with
+  | nil => simp at hk
+  | cons p tail =>
+      obtain ⟨z, value⟩ := p
+      simp only [List.map_cons] at hk
+      have hzc : z = c := by simpa using congrArg List.head? hk
+      subst z
+      refine ⟨value, tail, rfl, ?_⟩
+      simp only [List.length_cons] at hl
+      omega
+
+theorem hoist_nil_of_no_direct_fun : ∀ middle : Block Op,
+    hasDirectFun middle = false → hoist D middle = []
+  | [], _ => rfl
+  | .funDef _ _ _ _ :: _, h => by simp [hasDirectFun] at h
+  | .block _ :: rest, h
+  | .letDecl _ _ :: rest, h
+  | .assign _ _ :: rest, h
+  | .cond _ _ :: rest, h
+  | .switch _ _ _ :: rest, h
+  | .forLoop _ _ _ _ :: rest, h
+  | .exprStmt _ :: rest, h
+  | .break :: rest, h
+  | .continue :: rest, h
+  | .leave :: rest, h => by
+      simpa [hasDirectFun, hoist] using hoist_nil_of_no_direct_fun rest h
+
+theorem scopeTail_equivBlock {pre middle : Block Op} {carrier result : Ident}
+    {e : Expr Op}
+    (hcr : carrier ≠ result)
+    (hcarrier : stmtsDeclare carrier middle = false)
+    (hresult : stmtsDeclare result middle = false)
+    (hfun : hasDirectFun middle = false) :
+    EquivBlock D
+      (pre ++ ([.letDecl [carrier] none] ++
+        middle ++ [.assign [result] e, .leave]))
+      (pre ++ [.letDecl [carrier] none,
+        .block (middle ++ [.assign [carrier] e]),
+        .assign [result] (.var carrier), .leave]) := by
+  have hmhoist : hoist D middle = [] := hoist_nil_of_no_direct_fun middle hfun
+  have hh : hoist D (pre ++ ([.letDecl [carrier] none] ++
+        middle ++ [.assign [result] e, .leave])) =
+      hoist D (pre ++ [.letDecl [carrier] none,
+        .block (middle ++ [.assign [carrier] e]),
+        .assign [result] (.var carrier), .leave]) := by
+    simp only [hoist_append]
+    rw [hmhoist]
+    rfl
+  have hnc : carrier ∉ stmtsBinds middle :=
+    binds_not_mem_of_declare_false carrier middle hcarrier
+  have hnr : result ∉ stmtsBinds middle :=
+    binds_not_mem_of_declare_false result middle hresult
+  intro funs V st V' st' o
+  constructor
+  · intro hrun
+    cases hrun with
+    | block hb =>
+      rw [hh] at hb
+      let F : FunEnv D := hoist D
+        (pre ++ [.letDecl [carrier] none,
+          .block (middle ++ [.assign [carrier] e]),
+          .assign [result] (.var carrier), .leave]) :: funs
+      rcases stmts_append_fwd hb with ⟨Vp, stp, hpre, hsuf⟩ | ⟨hne, hpre⟩
+      · cases hsuf with
+        | seqCons hlet htail =>
+          cases hlet with
+          | letZero =>
+            let Vc : VEnv D :=
+              (carrier, (evmWithExternal calls creates).zero) :: Vp
+            have htail' := htail
+            simp only [bindZeros, List.map_cons, List.map_nil,
+              List.cons_append, List.nil_append] at htail'
+            rcases stmts_append_fwd htail' with
+              ⟨Vm, stm, hmid, hlast⟩ | ⟨hneMid, hmid⟩
+            · cases hlast with
+              | seqCons hass hleave =>
+                cases hass with
+                | assignVal hexpr hlen =>
+                  rename_i values
+                  cases values with
+                  | nil => simp at hlen
+                  | cons value values =>
+                    cases values with
+                    | cons value' values => simp at hlen
+                    | nil =>
+                      cases hleave with
+                      | seqCons hleave hnil => cases hleave
+                      | seqStop hleave hneLeave =>
+                        cases hleave
+                        have hmid' :=
+                          YulEvmCompiler.Optimizer.Step.emptyScope_congr hmid (.add _)
+                        have hexpr' :=
+                          YulEvmCompiler.Optimizer.Step.emptyScope_congr hexpr (.add _)
+                        have hinner : Step D ([] :: F)
+                            Vc stp (.stmts (middle ++ [.assign [carrier] e]))
+                            (.sres (VEnv.set Vm carrier value) st' .normal) := by
+                          apply stmts_append_normal hmid'
+                          exact Step.seqCons (Step.assignVal hexpr' (by simp)) Step.seqNil
+                        have hblock : Step D F Vc stp
+                            (.stmt (.block (middle ++ [.assign [carrier] e])))
+                            (.sres (restore Vc (VEnv.set Vm carrier value)) st' .normal) := by
+                          apply Step.block
+                          have hi : hoist D (middle ++ [.assign [carrier] e]) = [] := by
+                            rw [hoist_append, hmhoist]
+                            rfl
+                          rw [hi]
+                          exact hinner
+                        have hkeys := stmts_normal_keys hmid
+                        have hccomm := restore_set_commute value hkeys hnc
+                        have hbaseKeys := venvKeys_suffix hmid rfl
+                        have hbaseLen := venvLen_mono hmid rfl
+                        obtain ⟨old, tail, hshape, htailLen⟩ :=
+                          restored_head hbaseKeys hbaseLen
+                        have hcmem : carrier ∈
+                            (restore Vc Vm).map Prod.fst := by
+                          rw [hshape]
+                          simp
+                        have hget0 := get_set_of_mem value hcmem
+                        have hget : VEnv.get
+                            (restore Vc (VEnv.set Vm carrier value)) carrier =
+                            some value := by
+                          rw [hccomm]
+                          exact hget0
+                        have hcopy : Step D F
+                            (restore Vc (VEnv.set Vm carrier value)) st'
+                            (.stmt (.assign [result] (.var carrier)))
+                            (.sres (VEnv.set
+                              (restore Vc (VEnv.set Vm carrier value)) result value)
+                              st' .normal) :=
+                          Step.assignVal (Step.var hget) (by simp)
+                        have hleaveTarget : Step D F
+                            (VEnv.set
+                              (restore Vc (VEnv.set Vm carrier value)) result value)
+                            st' (.stmts [.leave])
+                            (.sres (VEnv.set
+                              (restore Vc (VEnv.set Vm carrier value)) result value)
+                              st' .leave) :=
+                          Step.seqStop Step.leave (by decide)
+                        have hcopyTarget : Step D F
+                            (restore Vc (VEnv.set Vm carrier value)) st'
+                            (.stmts [.assign [result] (.var carrier), .leave])
+                            (.sres (VEnv.set
+                              (restore Vc (VEnv.set Vm carrier value)) result value)
+                              st' .leave) :=
+                          Step.seqCons hcopy hleaveTarget
+                        have htargetTail : Step D F Vc stp
+                            (.stmts [.block (middle ++ [.assign [carrier] e]),
+                              .assign [result] (.var carrier), .leave])
+                            (.sres (VEnv.set
+                              (restore Vc (VEnv.set Vm carrier value)) result value)
+                              st' .leave) :=
+                          Step.seqCons hblock hcopyTarget
+                        have hVpLen : V.length ≤ Vp.length := venvLen_mono hpre rfl
+                        have hOuterVc : V.length ≤ Vc.length := by
+                          simp [Vc]
+                          omega
+                        have hVcLen : Vc.length ≤ Vm.length := hbaseLen
+                        have hrcomm := restore_set_commute value hkeys hnr
+                        have herase : restore V
+                            (VEnv.set (VEnv.set (restore Vc Vm) carrier value)
+                              result value) =
+                            restore V (VEnv.set (restore Vc Vm) result value) := by
+                          rw [hshape]
+                          apply restore_erase_head_set old value value
+                          · rw [htailLen]
+                            exact hVpLen
+                          · exact hcr
+                        have hsourceEq : restore V
+                            (VEnv.set (restore Vc Vm) result value) =
+                            restore V (VEnv.set Vm result value) := by
+                          rw [← hrcomm]
+                          apply restore_restore hOuterVc
+                          rw [VEnv.set_length]
+                          exact hVcLen
+                        have henv : restore V
+                            (VEnv.set (restore Vc (VEnv.set Vm carrier value))
+                              result value) =
+                            restore V (VEnv.set Vm result value) := by
+                          rw [hccomm, herase, hsourceEq]
+                        have hletTarget : Step D F Vp stp
+                            (.stmt (.letDecl [carrier] none))
+                            (.sres Vc stp .normal) := by
+                          have hz : Step D F Vp stp
+                              (.stmt (.letDecl [carrier] none))
+                              (.sres (bindZeros D [carrier] ++ Vp) stp .normal) :=
+                            Step.letZero
+                          simpa [Vc, bindZeros] using hz
+                        have htargetSuffix : Step D F Vp stp
+                            (.stmts [.letDecl [carrier] none,
+                              .block (middle ++ [.assign [carrier] e]),
+                              .assign [result] (.var carrier), .leave])
+                            (.sres (VEnv.set
+                              (restore Vc (VEnv.set Vm carrier value)) result value)
+                              st' .leave) :=
+                          Step.seqCons hletTarget htargetTail
+                        have hfinal := Step.block
+                          (stmts_append_normal hpre htargetSuffix)
+                        rw [henv] at hfinal
+                        simpa [VEnv.setMany] using hfinal
+              | seqStop hass hne =>
+                cases hass with
+                | assignVal _ _ => exact absurd rfl hne
+                | assignHalt hexpr =>
+                  rename_i Vm
+                  have hmid' :=
+                    YulEvmCompiler.Optimizer.Step.emptyScope_congr hmid (.add _)
+                  have hexpr' :=
+                    YulEvmCompiler.Optimizer.Step.emptyScope_congr hexpr (.add _)
+                  have hassignTail : Step D ([] :: F) Vm stm
+                      (.stmts [.assign [carrier] e]) (.sres Vm st' .halt) :=
+                    Step.seqStop (Step.assignHalt (vars := [carrier]) hexpr') (by decide)
+                  have hinner : Step D ([] :: F) Vc stp
+                      (.stmts (middle ++ [.assign [carrier] e]))
+                      (.sres Vm st' .halt) :=
+                    stmts_append_normal hmid' hassignTail
+                  have hblock : Step D F Vc stp
+                      (.stmt (.block (middle ++ [.assign [carrier] e])))
+                      (.sres (restore Vc Vm) st' .halt) := by
+                    apply Step.block
+                    have hi : hoist D (middle ++ [.assign [carrier] e]) = [] := by
+                      rw [hoist_append, hmhoist]
+                      rfl
+                    rw [hi]
+                    exact hinner
+                  have hVpLen : V.length ≤ Vp.length := venvLen_mono hpre rfl
+                  have hVcLen : Vc.length ≤ Vm.length := venvLen_mono hmid rfl
+                  have hOuterVc : V.length ≤ Vc.length := by simp [Vc]; omega
+                  have henv := restore_restore hOuterVc hVcLen
+                  have hblockTail : Step D F Vc stp
+                      (.stmts [.block (middle ++ [.assign [carrier] e]),
+                        .assign [result] (.var carrier), .leave])
+                      (.sres (restore Vc Vm) st' .halt) :=
+                    Step.seqStop hblock (by decide)
+                  have hletTarget : Step D F Vp stp
+                      (.stmt (.letDecl [carrier] none)) (.sres Vc stp .normal) := by
+                    have hz : Step D F Vp stp (.stmt (.letDecl [carrier] none))
+                        (.sres (bindZeros D [carrier] ++ Vp) stp .normal) := Step.letZero
+                    simpa [Vc, bindZeros] using hz
+                  have htargetSuffix := Step.seqCons hletTarget hblockTail
+                  have hfinal := Step.block (stmts_append_normal hpre htargetSuffix)
+                  rw [henv] at hfinal
+                  exact hfinal
+            · rename_i Vmid
+              have hmid' :=
+                YulEvmCompiler.Optimizer.Step.emptyScope_congr hmid (.add _)
+              have hinner : Step D ([] :: F) Vc stp
+                  (.stmts (middle ++ [.assign [carrier] e]))
+                  (.sres Vmid st' o) :=
+                stmts_append_early (suf := [.assign [carrier] e]) hmid' hneMid
+              have hblock : Step D F Vc stp
+                  (.stmt (.block (middle ++ [.assign [carrier] e])))
+                  (.sres (restore Vc Vmid) st' o) := by
+                apply Step.block
+                have hi : hoist D (middle ++ [.assign [carrier] e]) = [] := by
+                  rw [hoist_append, hmhoist]
+                  rfl
+                rw [hi]
+                exact hinner
+              have hVpLen : V.length ≤ Vp.length := venvLen_mono hpre rfl
+              have hOuterVc : V.length ≤ Vc.length := by simp [Vc]; omega
+              have hVcLen : Vc.length ≤ Vmid.length := venvLen_mono hmid rfl
+              have henv := restore_restore hOuterVc hVcLen
+              have hblockTail : Step D F Vc stp
+                  (.stmts [.block (middle ++ [.assign [carrier] e]),
+                    .assign [result] (.var carrier), .leave])
+                  (.sres (restore Vc Vmid) st' o) :=
+                Step.seqStop hblock hneMid
+              have hletTarget : Step D F Vp stp
+                  (.stmt (.letDecl [carrier] none)) (.sres Vc stp .normal) := by
+                have hz : Step D F Vp stp (.stmt (.letDecl [carrier] none))
+                    (.sres (bindZeros D [carrier] ++ Vp) stp .normal) := Step.letZero
+                simpa [Vc, bindZeros] using hz
+              have htargetSuffix := Step.seqCons hletTarget hblockTail
+              have hfinal := Step.block (stmts_append_normal hpre htargetSuffix)
+              rw [henv] at hfinal
+              exact hfinal
+        | seqStop hlet hne =>
+          cases hlet
+          exact absurd rfl hne
+      · exact Step.block (stmts_append_early hpre hne)
+  · intro hrun
+    cases hrun with
+    | block hb =>
+      rw [← hh] at hb
+      let F : FunEnv D := hoist D
+        (pre ++ ([.letDecl [carrier] none] ++
+          middle ++ [.assign [result] e, .leave])) :: funs
+      rcases stmts_append_fwd hb with ⟨Vp, stp, hpre, hsuf⟩ | ⟨hne, hpre⟩
+      · cases hsuf with
+        | seqCons hlet hrest =>
+          cases hlet
+          let Vc : VEnv D :=
+            (carrier, (evmWithExternal calls creates).zero) :: Vp
+          have hrest' := hrest
+          simp only [bindZeros, List.map_cons, List.map_nil,
+            List.cons_append, List.nil_append] at hrest'
+          cases hrest' with
+          | seqCons hblock hafter =>
+            cases hblock with
+            | block hinner =>
+              have hi : hoist D (middle ++ [.assign [carrier] e]) = [] := by
+                rw [hoist_append, hmhoist]
+                rfl
+              rw [hi] at hinner
+              have hinner' :=
+                YulEvmCompiler.Optimizer.Step.emptyScope_congr hinner (.drop F)
+              rcases stmts_append_fwd hinner' with
+                ⟨Vm, stm, hmid, hassignCarrier⟩ | ⟨hneMid, hmid⟩
+              · cases hassignCarrier with
+                | seqCons hassign hnil =>
+                  cases hnil
+                  cases hassign with
+                  | assignVal hexpr hlen =>
+                    rename_i values
+                    cases values with
+                    | nil => simp at hlen
+                    | cons value values =>
+                      cases values with
+                      | cons value' values => simp at hlen
+                      | nil =>
+                        cases hafter with
+                        | seqCons hcopy hleave =>
+                          cases hcopy with
+                          | assignVal hvar hcopyLen =>
+                            rename_i copied
+                            cases copied with
+                            | nil => simp at hcopyLen
+                            | cons copied copiedRest =>
+                              cases copiedRest with
+                              | cons copied' copiedRest => simp at hcopyLen
+                              | nil =>
+                                cases hvar
+                                rename_i hreadRaw
+                                cases hleave with
+                                | seqCons hleave hnil => cases hleave
+                                | seqStop hleave hneLeave =>
+                                  cases hleave
+                                  have hkeys := stmts_normal_keys hmid
+                                  have hccomm := restore_set_commute value hkeys hnc
+                                  have hbaseKeys := venvKeys_suffix hmid rfl
+                                  have hbaseLen := venvLen_mono hmid rfl
+                                  obtain ⟨old, tail, hshape, htailLen⟩ :=
+                                    restored_head hbaseKeys hbaseLen
+                                  have hcmem : carrier ∈
+                                      (restore Vc Vm).map Prod.fst := by
+                                    rw [hshape]
+                                    simp
+                                  have hget0 := get_set_of_mem value hcmem
+                                  have hactual : VEnv.get
+                                      (restore Vc (VEnv.set Vm carrier value)) carrier =
+                                      some value := by
+                                    rw [hccomm]
+                                    exact hget0
+                                  have hread : VEnv.get
+                                      (restore Vc (VEnv.set Vm carrier value)) carrier =
+                                      some copied := by
+                                    simpa [VEnv.setMany] using hreadRaw
+                                  have hcv : copied = value := by
+                                    exact Option.some.inj (hread.symm.trans hactual)
+                                  subst copied
+                                  have hassignResult : Step D F Vm stm
+                                      (.stmt (.assign [result] e))
+                                      (.sres (VEnv.set Vm result value) st' .normal) :=
+                                    Step.assignVal hexpr (by simp)
+                                  have hleaveSource : Step D F
+                                      (VEnv.set Vm result value) st'
+                                      (.stmts [.leave])
+                                      (.sres (VEnv.set Vm result value) st' .leave) :=
+                                    Step.seqStop Step.leave (by decide)
+                                  have hlastSource : Step D F Vm stm
+                                      (.stmts [.assign [result] e, .leave])
+                                      (.sres (VEnv.set Vm result value) st' .leave) :=
+                                    Step.seqCons hassignResult hleaveSource
+                                  have hafterLet : Step D F Vc stp
+                                      (.stmts (middle ++ [.assign [result] e, .leave]))
+                                      (.sres (VEnv.set Vm result value) st' .leave) :=
+                                    stmts_append_normal hmid hlastSource
+                                  have hletSource : Step D F Vp stp
+                                      (.stmt (.letDecl [carrier] none))
+                                      (.sres Vc stp .normal) := by
+                                    have hz : Step D F Vp stp
+                                        (.stmt (.letDecl [carrier] none))
+                                        (.sres (bindZeros D [carrier] ++ Vp)
+                                          stp .normal) := Step.letZero
+                                    simpa [Vc, bindZeros] using hz
+                                  have hsourceSuffix := Step.seqCons hletSource hafterLet
+                                  have hsourceFinal := Step.block
+                                    (stmts_append_normal hpre hsourceSuffix)
+                                  have hVpLen : V.length ≤ Vp.length :=
+                                    venvLen_mono hpre rfl
+                                  have hOuterVc : V.length ≤ Vc.length := by
+                                    simp [Vc]
+                                    omega
+                                  have hVcLen : Vc.length ≤ Vm.length := hbaseLen
+                                  have hrcomm := restore_set_commute value hkeys hnr
+                                  have herase : restore V
+                                      (VEnv.set (VEnv.set (restore Vc Vm)
+                                        carrier value) result value) =
+                                      restore V (VEnv.set (restore Vc Vm)
+                                        result value) := by
+                                    rw [hshape]
+                                    apply restore_erase_head_set old value value
+                                    · rw [htailLen]
+                                      exact hVpLen
+                                    · exact hcr
+                                  have hsourceEq : restore V
+                                      (VEnv.set (restore Vc Vm) result value) =
+                                      restore V (VEnv.set Vm result value) := by
+                                    rw [← hrcomm]
+                                    apply restore_restore hOuterVc
+                                    rw [VEnv.set_length]
+                                    exact hVcLen
+                                  have henv : restore V
+                                      (VEnv.set
+                                        (restore Vc (VEnv.set Vm carrier value))
+                                        result value) =
+                                      restore V (VEnv.set Vm result value) := by
+                                    rw [hccomm, herase, hsourceEq]
+                                  rw [← henv] at hsourceFinal
+                                  simpa [VEnv.setMany] using hsourceFinal
+                        | seqStop hcopy hneCopy =>
+                          cases hcopy with
+                          | assignVal _ _ => exact absurd rfl hneCopy
+                          | assignHalt hvar => cases hvar
+                | seqStop hassign hneAssign =>
+                  cases hassign with
+                  | assignVal _ _ => exact absurd rfl hneAssign
+              · exact absurd rfl hneMid
+          | seqStop hblock hneBlock =>
+            cases hblock with
+            | block hinner =>
+              have hi : hoist D (middle ++ [.assign [carrier] e]) = [] := by
+                rw [hoist_append, hmhoist]
+                rfl
+              rw [hi] at hinner
+              have hinner' :=
+                YulEvmCompiler.Optimizer.Step.emptyScope_congr hinner (.drop F)
+              rcases stmts_append_fwd hinner' with
+                ⟨Vm, stm, hmid, hassignCarrier⟩ | ⟨hneMid, hmid⟩
+              · cases hassignCarrier with
+                | seqCons hassign hnil =>
+                  cases hnil
+                  cases hassign
+                  exact absurd rfl hneBlock
+                | seqStop hassign hneAssign =>
+                  cases hassign with
+                  | assignVal _ _ => exact absurd rfl hneAssign
+                  | assignHalt hexpr =>
+                    rename_i Vmid
+                    have hlastSource : Step D F Vmid stm
+                        (.stmts [.assign [result] e, .leave])
+                        (.sres Vmid st' .halt) :=
+                      Step.seqStop (Step.assignHalt (vars := [result]) hexpr)
+                        (by decide)
+                    have hafterLet : Step D F Vc stp
+                        (.stmts (middle ++ [.assign [result] e, .leave]))
+                        (.sres Vmid st' .halt) :=
+                      stmts_append_normal hmid hlastSource
+                    have hletSource : Step D F Vp stp
+                        (.stmt (.letDecl [carrier] none))
+                        (.sres Vc stp .normal) := by
+                      have hz : Step D F Vp stp
+                          (.stmt (.letDecl [carrier] none))
+                          (.sres (bindZeros D [carrier] ++ Vp) stp .normal) :=
+                        Step.letZero
+                      simpa [Vc, bindZeros] using hz
+                    have hsourceSuffix := Step.seqCons hletSource hafterLet
+                    have hsourceFinal := Step.block
+                      (stmts_append_normal hpre hsourceSuffix)
+                    have hOuterVc : V.length ≤ Vc.length := by
+                      have hp : V.length ≤ Vp.length := venvLen_mono hpre rfl
+                      simp [Vc]
+                      omega
+                    have hVcLen : Vc.length ≤ Vmid.length :=
+                      venvLen_mono hmid rfl
+                    have henv := restore_restore hOuterVc hVcLen
+                    rw [← henv] at hsourceFinal
+                    exact hsourceFinal
+              · rename_i Vmid
+                have hafterLet : Step D F Vc stp
+                    (.stmts (middle ++ [.assign [result] e, .leave]))
+                    (.sres Vmid st' o) :=
+                  stmts_append_early
+                    (suf := [.assign [result] e, .leave]) hmid hneMid
+                have hletSource : Step D F Vp stp
+                    (.stmt (.letDecl [carrier] none))
+                    (.sres Vc stp .normal) := by
+                  have hz : Step D F Vp stp
+                      (.stmt (.letDecl [carrier] none))
+                      (.sres (bindZeros D [carrier] ++ Vp) stp .normal) :=
+                    Step.letZero
+                  simpa [Vc, bindZeros] using hz
+                have hsourceSuffix := Step.seqCons hletSource hafterLet
+                have hsourceFinal := Step.block
+                  (stmts_append_normal hpre hsourceSuffix)
+                have hOuterVc : V.length ≤ Vc.length := by
+                  have hp : V.length ≤ Vp.length := venvLen_mono hpre rfl
+                  simp [Vc]
+                  omega
+                have hVcLen : Vc.length ≤ Vmid.length := venvLen_mono hmid rfl
+                have henv := restore_restore hOuterVc hVcLen
+                rw [← henv] at hsourceFinal
+                exact hsourceFinal
+        | seqStop hlet hne =>
+          cases hlet
+          exact absurd rfl hne
+      · exact Step.block (stmts_append_early hpre hne)
+
+theorem restore_cons_of_le {outer base : VEnv D} {x : Ident} (v : U256)
+    (h : outer.length ≤ base.length) :
+    restore outer ((x, v) :: base) = restore outer base := by
+  simp only [restore, List.length_cons]
+  rw [show base.length + 1 - outer.length =
+      (base.length - outer.length) + 1 by omega]
+  rfl
+
+theorem splitLet_equivBlock {pre rest : Block Op} {x : Ident} {e : Expr Op} :
+    exprMentions x e = false →
+    EquivBlock D (pre ++ .letDecl [x] (some e) :: rest)
+      (pre ++ .letDecl [x] none :: .assign [x] e :: rest) := by
+  intro hx
+  have hh : hoist D (pre ++ .letDecl [x] (some e) :: rest) =
+      hoist D (pre ++ .letDecl [x] none :: .assign [x] e :: rest) := by
+    simp [hoist]
+  intro funs V st V' st' o
+  constructor
+  · intro hrun
+    cases hrun with
+    | block hb =>
+      rw [hh] at hb
+      rcases stmts_append_fwd hb with ⟨Vp, stp, hpre, hsuf⟩ | ⟨hne, hpre⟩
+      · cases hsuf with
+        | seqCons hlet hrest =>
+          let F : FunEnv D := hoist D
+            (pre ++ .letDecl [x] none :: .assign [x] e :: rest) :: funs
+          cases hlet with
+          | @letVal _ _ _ _ _ values _ hexpr hlen =>
+            cases values with
+            | nil => simp at hlen
+            | cons value values =>
+              cases values with
+              | cons value' values => simp at hlen
+              | nil =>
+                have hzero : Step D F Vp stp (.stmt (.letDecl [x] none))
+                    (.sres ((x, (evmWithExternal calls creates).zero) :: Vp)
+                      stp .normal) := Step.letZero (funs := F)
+                have hins : InsAt Vp.length x
+                    (evmWithExternal calls creates).zero Vp
+                    ((x, (evmWithExternal calls creates).zero) :: Vp) :=
+                  ⟨[], Vp, by simp, by simp, rfl⟩
+                obtain ⟨_, hexpr', hrel⟩ := frameAdd hexpr hins
+                  (by simpa [codeMentions] using hx)
+                obtain rfl := hrel.eres
+                have hassign := Step.assignVal (vars := [x]) (vals := [value])
+                  hexpr' rfl
+                simp [VEnv.setMany, VEnv.set] at hassign
+                exact Step.block (stmts_append_normal hpre
+                  (Step.seqCons hzero (Step.seqCons hassign hrest)))
+        | seqStop hlet hne =>
+          let Vp0 := Vp
+          let stp0 := stp
+          let F : FunEnv D := hoist D
+            (pre ++ .letDecl [x] none :: .assign [x] e :: rest) :: funs
+          cases hlet with
+          | letVal _ _ => exact absurd rfl hne
+          | letHalt hexpr =>
+            let Vx : VEnv D :=
+              (x, (evmWithExternal calls creates).zero) :: Vp0
+            have hzero : Step D F Vp0 stp0 (.stmt (.letDecl [x] none))
+                (.sres Vx stp0 .normal) := by simpa [Vx, Vp0, bindZeros] using
+                  (Step.letZero (funs := F) (V := Vp0) (st := stp0)
+                    (vars := [x]))
+            have hins : InsAt Vp0.length x
+                (evmWithExternal calls creates).zero Vp0 Vx := by
+              exact ⟨[], Vp0, by simp, by simp [Vx], rfl⟩
+            obtain ⟨_, hexpr', hrel⟩ := frameAdd hexpr hins
+              (by simpa [codeMentions] using hx)
+            obtain rfl := hrel.eres
+            have htarget := Step.seqCons hzero
+              (Step.seqStop (rest := rest)
+                (Step.assignHalt (vars := [x]) hexpr') hne)
+            have hfinal := Step.block (stmts_append_normal hpre htarget)
+            have hlenVp : V.length ≤ Vp0.length := by
+              simpa [Vp0] using venvLen_mono hpre rfl
+            rw [restore_cons_of_le (evmWithExternal calls creates).zero hlenVp]
+              at hfinal
+            exact hfinal
+      · exact Step.block (stmts_append_early hpre hne)
+  · intro hrun
+    cases hrun with
+    | block hb =>
+      rw [← hh] at hb
+      rcases stmts_append_fwd hb with ⟨Vp, stp, hpre, hsuf⟩ | ⟨hne, hpre⟩
+      · cases hsuf with
+        | seqCons hzero hrest =>
+          cases hzero
+          have hrest' := hrest
+          simp only [bindZeros, List.map_cons, List.map_nil, List.cons_append,
+            List.nil_append] at hrest'
+          cases hrest' with
+          | seqCons hassign htail =>
+            cases hassign with
+            | @assignVal _ _ _ _ _ values _ hexpr hlen =>
+              cases values with
+              | nil => simp at hlen
+              | cons value values =>
+                cases values with
+                | cons value' values => simp at hlen
+                | nil =>
+                  have hins : InsAt Vp.length x
+                      (evmWithExternal calls creates).zero Vp
+                      ((x, (evmWithExternal calls creates).zero) :: Vp) :=
+                    ⟨[], Vp, by simp, by simp, rfl⟩
+                  obtain ⟨_, hexpr', hrel⟩ := frameRemove hexpr hins
+                    (by simpa [codeMentions] using hx)
+                  obtain rfl := hrel.eres_right
+                  have hlet := Step.letVal (vars := [x]) (vals := [value])
+                    hexpr' rfl
+                  have htail' := htail
+                  simp [VEnv.setMany, VEnv.set] at htail'
+                  have hs := Step.seqCons hlet htail'
+                  exact Step.block (stmts_append_normal hpre hs)
+          | seqStop hassign hneAssign =>
+            cases hassign with
+            | assignVal _ _ => exact absurd rfl hneAssign
+            | assignHalt hexpr =>
+              have hins : InsAt Vp.length x
+                  (evmWithExternal calls creates).zero Vp
+                  ((x, (evmWithExternal calls creates).zero) :: Vp) :=
+                ⟨[], Vp, by simp, by simp, rfl⟩
+              obtain ⟨_, hexpr', hrel⟩ := frameRemove hexpr hins
+                (by simpa [codeMentions] using hx)
+              obtain rfl := hrel.eres_right
+              have hsource := Step.seqStop (rest := rest)
+                (Step.letHalt (vars := [x]) hexpr') hneAssign
+              have hfinal := Step.block (stmts_append_normal hpre hsource)
+              have hlenVp : V.length ≤ Vp.length := venvLen_mono hpre rfl
+              rw [← restore_cons_of_le
+                (evmWithExternal calls creates).zero hlenVp] at hfinal
+              exact hfinal
+        | seqStop hzero hne =>
+          cases hzero
+          exact absurd rfl hne
+      · exact Step.block (stmts_append_early hpre hne)
+
+theorem scopeTailVal_equivBlock {pre middle : Block Op}
+    {carrier result : Ident} {val : Option (Expr Op)} {e : Expr Op}
+    (hcr : carrier ≠ result)
+    (hinit : carrierInitSafe carrier val = true)
+    (hcarrier : stmtsDeclare carrier middle = false)
+    (hresult : stmtsDeclare result middle = false)
+    (hfun : hasDirectFun middle = false) :
+    EquivBlock D
+      (pre ++ ([.letDecl [carrier] val] ++ middle ++
+        [.assign [result] e, .leave]))
+      (pre ++ [.letDecl [carrier] none,
+        .block (carrierInit carrier val ++ middle ++ [.assign [carrier] e]),
+        .assign [result] (.var carrier), .leave]) := by
+  cases val with
+  | none =>
+      simpa [carrierInit] using scopeTail_equivBlock
+        (pre := pre) hcr hcarrier hresult hfun
+  | some init =>
+      simp only [carrierInitSafe] at hinit
+      have hinit' : exprMentions carrier init = false := by simpa using hinit
+      have hsplit := splitLet_equivBlock (calls := calls) (creates := creates)
+        (pre := pre)
+        (rest := middle ++ [.assign [result] e, .leave]) hinit'
+      have hscope := scopeTail_equivBlock (calls := calls) (creates := creates)
+        (pre := pre) (carrier := carrier) (result := result) (e := e)
+        (middle := .assign [carrier] init :: middle) hcr
+        (by simpa [stmtsDeclare, stmtDeclares] using hcarrier)
+        (by simpa [stmtsDeclare, stmtDeclares, hcr] using hresult)
+        (by simpa [hasDirectFun] using hfun)
+      simpa [carrierInit, List.append_assoc] using hsplit.trans hscope
+
+theorem splitAssignLeave_inv : ∀ {ss middle : Block Op} {result : Ident}
+    {e : Expr Op}, splitAssignLeave ss = some (middle, result, e) →
+      ss = middle ++ [.assign [result] e, .leave] := by
+  intro ss
+  fun_induction splitAssignLeave ss
+  · simp_all
+  · rename_i s rest hspecial ih
+    intro middle result e h
+    cases hs : splitAssignLeave rest with
+    | none => simp [hs] at h
+    | some p =>
+      obtain ⟨m, r, ex⟩ := p
+      simp only [hs] at h
+      cases h
+      rw [ih hs]
+      simp
+  · simp_all
+
+theorem scopeTailHere_sound {layout : List Ident} {ss ss' : Block Op}
+    (h : scopeTailHere layout ss = some ss') :
+    ∀ pre : Block Op, EquivBlock D (pre ++ ss) (pre ++ ss') := by
+  intro pre
+  cases ss with
+  | nil => simp [scopeTailHere] at h
+  | cons s rest =>
+    cases s with
+    | letDecl vars val =>
+      cases vars with
+      | nil => simp [scopeTailHere] at h
+      | cons carrier varsTail =>
+        cases varsTail with
+        | cons y ys => simp [scopeTailHere] at h
+        | nil =>
+          simp only [scopeTailHere] at h
+          cases hs : splitAssignLeave rest with
+          | none => simp [hs] at h
+          | some p =>
+            obtain ⟨middle, result, e⟩ := p
+            simp only [hs] at h
+            cases hd : layout.findIdx? (fun x => x = result) with
+            | none => simp [hd] at h
+            | some resultDepth =>
+              simp [hd] at h
+              rcases h with
+                ⟨⟨⟨⟨⟨⟨⟨⟨⟨_, _⟩, hcr⟩, _⟩, hinit⟩, hc⟩, hr⟩, hf⟩, _⟩, rfl⟩
+              have hshape := splitAssignLeave_inv hs
+              subst rest
+              simpa [List.append_assoc] using
+                scopeTailVal_equivBlock (calls := calls) (creates := creates)
+                  (pre := pre) (middle := middle) (carrier := carrier)
+                  (result := result) (val := val) (e := e)
+                  hcr hinit hc hr hf
+    | block _ => simp [scopeTailHere] at h
+    | funDef _ _ _ _ => simp [scopeTailHere] at h
+    | assign _ _ => simp [scopeTailHere] at h
+    | cond _ _ => simp [scopeTailHere] at h
+    | «switch» _ _ _ => simp [scopeTailHere] at h
+    | forLoop _ _ _ _ => simp [scopeTailHere] at h
+    | exprStmt _ => simp [scopeTailHere] at h
+    | «break» => simp [scopeTailHere] at h
+    | «continue» => simp [scopeTailHere] at h
+    | «leave» => simp [scopeTailHere] at h
+
+private theorem tail_forall₂_refl_cases
+    (cases : List (Literal × Block Op)) :
+    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+      cases cases := by
+  induction cases with
+  | nil => exact .nil
+  | cons p rest ih => exact .cons ⟨rfl, EquivBlock.refl _⟩ ih
+
+mutual
+  theorem scopeOneStmt_sound : ∀ (layout : List Ident) (s s' : Stmt Op),
+      scopeOneStmt layout s = some s' →
+      EquivStmt D s s' ∧ ScopeRel D (hoist D [s]) (hoist D [s'])
+    | layout, .block body, s', h => by
+        simp only [scopeOneStmt] at h
+        obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+        subst s'
+        have heq := scopeOneStmts_sound layout body _ hb []
+        exact ⟨heq, ScopeRel.refl _⟩
+    | layout, .funDef f ps rs body, s', h => by
+        simp only [scopeOneStmt] at h
+        obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+        subst s'
+        have heq := scopeOneStmts_sound (ps ++ rs) body _ hb []
+        refine ⟨funDef_equiv f ps rs body body', ?_⟩
+        exact .cons ⟨rfl, rfl, rfl, heq⟩ .nil
+    | layout, .cond c body, s', h => by
+        simp only [scopeOneStmt] at h
+        obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+        subst s'
+        have heq := scopeOneStmts_sound layout body _ hb []
+        exact ⟨EquivStmt.cond_congr (fun _ _ _ _ => Iff.rfl) heq,
+          ScopeRel.refl _⟩
+    | layout, .switch c cases dflt, s', h => by
+        unfold scopeOneStmt at h
+        cases hcases : scopeOneCases layout cases with
+        | some cases' =>
+          simp only [hcases] at h
+          cases h
+          have hc := scopeOneCases_sound layout cases _ hcases
+          exact ⟨EquivStmt.switch_congr (fun _ _ _ _ => Iff.rfl) hc
+            (EquivBlock.refl _), ScopeRel.refl _⟩
+        | none =>
+          simp only [hcases] at h
+          cases dflt with
+          | some body =>
+            cases hb : scopeOneStmts layout body with
+            | some body' =>
+              simp only [hb] at h
+              cases h
+              have heq := scopeOneStmts_sound layout body _ hb []
+              exact ⟨EquivStmt.switch_congr (fun _ _ _ _ => Iff.rfl)
+                (tail_forall₂_refl_cases cases) heq, ScopeRel.refl _⟩
+            | none => simp [hb] at h
+          | none => simp at h
+    | layout, .forLoop init c post body, s', h => by
+        unfold scopeOneStmt at h
+        cases hp : scopeOneStmts layout post with
+        | some post' =>
+          simp only [hp] at h
+          cases h
+          have heq := scopeOneStmts_sound layout post _ hp []
+          exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl) heq
+            (EquivBlock.refl _), ScopeRel.refl _⟩
+        | none =>
+          simp only [hp] at h
+          obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+          subst s'
+          have heq := scopeOneStmts_sound layout body _ hb []
+          exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
+            (EquivBlock.refl _) heq, ScopeRel.refl _⟩
+    | _, .letDecl _ _, _, h => by simp [scopeOneStmt] at h
+    | _, .assign _ _, _, h => by simp [scopeOneStmt] at h
+    | _, .exprStmt _, _, h => by simp [scopeOneStmt] at h
+    | _, .break, _, h => by simp [scopeOneStmt] at h
+    | _, .continue, _, h => by simp [scopeOneStmt] at h
+    | _, .leave, _, h => by simp [scopeOneStmt] at h
+    termination_by layout s s' _h => 2 * sizeOf s
+
+  theorem scopeOneStmts_sound : ∀ (layout : List Ident) (ss ss' : Block Op),
+      scopeOneStmts layout ss = some ss' →
+      ∀ pre : Block Op, EquivBlock D (pre ++ ss) (pre ++ ss')
+    | layout, ss, ss', h => by
+        unfold scopeOneStmts at h
+        cases ht : scopeTailHere layout ss with
+        | some target =>
+          simp only [ht] at h
+          cases h
+          exact scopeTailHere_sound (calls := calls) (creates := creates) ht
+        | none =>
+          simp only [ht] at h
+          cases ss with
+          | nil => simp at h
+          | cons s rest =>
+            cases hs : scopeOneStmt layout s with
+            | some s' =>
+              simp only [hs] at h
+              cases h
+              intro pre
+              obtain ⟨heq, hscope⟩ := scopeOneStmt_sound layout s s' hs
+              exact replaceStmt_equivBlock heq hscope pre
+            | none =>
+              simp only [hs] at h
+              let layout' := match s with
+                | .letDecl xs _ => xs ++ layout
+                | _ => layout
+              obtain ⟨rest', hr, htarget⟩ := Option.map_eq_some_iff.mp h
+              subst ss'
+              intro pre
+              have heq := scopeOneStmts_sound layout' rest rest' hr (pre ++ [s])
+              simpa only [List.append_assoc, List.cons_append, List.nil_append]
+                using heq
+    termination_by layout ss ss' _h => 2 * sizeOf ss + 1
+
+  theorem scopeOneCases_sound : ∀ (layout : List Ident)
+      (cases cases' : List (Literal × Block Op)),
+      scopeOneCases layout cases = some cases' →
+      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cases cases'
+    | _, [], _, h => by simp [scopeOneCases] at h
+    | layout, (l, body) :: rest, cases', h => by
+        unfold scopeOneCases at h
+        split at h
+        · next body' hb =>
+          cases h
+          exact .cons ⟨rfl, scopeOneStmts_sound layout body _ hb []⟩
+            (tail_forall₂_refl_cases rest)
+        · obtain ⟨rest', hr, hs'⟩ := Option.map_eq_some_iff.mp h
+          subst cases'
+          exact .cons ⟨rfl, EquivBlock.refl _⟩
+            (scopeOneCases_sound layout rest _ hr)
+    termination_by layout cases cases' _h => 2 * sizeOf cases + 1
+  decreasing_by
+    all_goals simp_wf
+    all_goals omega
+end
+
+theorem scopeOneStmts_equiv {b b' : Block Op}
+    (h : scopeOneStmts [] b = some b') : EquivBlock D b b' := by
+  simpa using scopeOneStmts_sound [] b b' h []
+
+theorem iterateTailScope_equiv (n : Nat) (b : Block Op) :
+    EquivBlock D b (iterateTailScope n b) := by
+  induction n generalizing b with
+  | zero => exact EquivBlock.refl _
+  | succ n ih =>
+      rw [iterateTailScope]
+      cases h : scopeOneStmts [] b with
+      | none => exact EquivBlock.refl _
+      | some b' => exact (scopeOneStmts_equiv h).trans (ih b')
+
 /-- The verified expression-scheduling and liveness-guided stack-layout pass. -/
 def stackLayout : Pass D where
   run := stackLayoutBlock
   sound := fun b => (scheduleBlock_equiv b).trans
-    (iterateStackLayout_equiv 1024 (scheduleStmts b))
+    ((iterateStackLayout_equiv 1024 (scheduleStmts b)).trans
+      (iterateTailScope_equiv 1024
+        (iterateStackLayout 1024 (scheduleStmts b))))
 
 @[simp] theorem stackLayout_run (b : Block Op) :
     (stackLayout (calls := calls) (creates := creates)).run b = stackLayoutBlock b := rfl

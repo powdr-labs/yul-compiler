@@ -385,6 +385,15 @@ addition spines: the leaf order is still exactly right-to-left, including for
 state-changing and halting expressions, but pending-operand pressure becomes
 constant. This is proved directly against `EvalExpr`, not assumed from purity.
 
+A third rule handles a control-flow lifetime cliff at function tails. If a
+singleton carrier declaration dominates a region ending in `result := e;
+leave`, and the intervening locals are dead after that write, the region moves
+into a nested block and writes `e` to the carrier. Block restoration then pops
+the dead frame before a shallow `result := carrier` copy. The policy checks the
+entry/result depths, declaration liveness, initializer freshness, and absence
+of directly hoisted functions; the proof covers normal, early-control, and
+halting executions in both directions.
+
 The proof is a bidirectional `Step` simulation over a slot-renaming relation on
 variable environments.  The overwritten value is unobservable because the
 chosen slot is dead; the original environment's extra binding and the reused
@@ -397,11 +406,11 @@ multi-value declarations, function boundaries, loop-carried values, and
   later extension rather than an unproved acceptance path.
 
 **Result:** issue #61's exact nine-local reproducer compiles and executes
-differentially. The strict Uniswap v4 suite improves from 6/11 to 9/11:
-FullMath, TickBitmap, and TickMath are newly accepted; SqrtPriceMath and
-SwapMath remain conservative rejections. Existing successful artifacts are
-unchanged because the pass is fallback-only, yielding zero gas regressions;
-the three newly comparable gas rows are pinned.
+differentially. The strict Uniswap v4 suite improves from 6/11 to 10/11:
+FullMath, SqrtPriceMath, TickBitmap, and TickMath are newly accepted; SwapMath
+remains a conservative rejection. Existing successful artifacts are unchanged
+because the pass is fallback-only, yielding zero gas regressions; the four
+newly comparable gas rows are pinned.
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
 

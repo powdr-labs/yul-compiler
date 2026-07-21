@@ -187,7 +187,11 @@ operations are different**: their correctness is *conditional on* the
   retries its code blocks through `Optimizer.stackLayoutBlock`. The transform
   is itself a strong `Pass`: `StackLayoutSound.lean` proves both the
   state/halting-preserving addition scheduler and a bidirectional variable-
-  environment simulation for liveness-guided slot reuse.
+  environment simulation for liveness-guided slot reuse. A dominance- and
+  liveness-guided tail rule also sinks a computation into a nested scope when
+  dead locals hide the caller's result slot: a dominating carrier preserves
+  the live-out value while block restoration removes the deep local frame
+  before the final result copy.
   A second, weaker pass contract (`Spec/Observe.lean`: `ObsPass`, observational
   equivalence of committed run observables) is defined and composed with the
   backend for future passes that legitimately change memory or dead bindings;

@@ -2,11 +2,12 @@ import YulEvmCompiler.Optimizer.Implementation.Frame
 import YulSemantics.Dialect.EVM
 set_option warningAsError true
 /-!
-# Liveness-guided stack-slot reuse
+# Smart stack layout
 
-The executable half of the smart stack-layout pass.  Soundness lives in
-`StackLayoutSound.lean`; keeping policy and renaming separate makes the slot
-choice independently testable.
+The executable half of the expression scheduler, liveness-guided slot reuse,
+and dominance-guided tail-scope pass. Soundness lives in
+`StackLayoutSound.lean`; keeping policy separate makes each layout choice
+independently testable.
 -/
 
 namespace YulEvmCompiler.Optimizer
@@ -204,6 +205,123 @@ def reusableSlot (layout owned : List Ident) (_y : Ident) (_e : Expr Op)
           !stmtsFunMention _y rest
       | none => false
 
+/-! ### Tail-carrier scope sinking
+
+At a block tail, an outer result write can become unreachable solely because
+the block's locals are still live on the operand stack.  When the block starts
+with a singleton local `carrier` and ends in `result := e; leave`, keep the
+carrier in the outer block, move the intervening computation into a nested
+block, write `e` to the carrier there, and copy it to `result` after the nested
+scope has popped its locals.  The carrier declaration dominates the whole
+region; the final copy is its only live-out use.
+
+The policy fires only when the original result slot is at depth 16 or greater
+and the scoped form makes it reachable.  Direct function definitions are
+excluded because moving them would change the block's hoisted scope. -/
+
+def splitAssignLeave : Block Op → Option (Block Op × Ident × Expr Op)
+  | [.assign [r] e, .leave] => some ([], r, e)
+  | s :: rest => do
+      let (middle, r, e) ← splitAssignLeave rest
+      pure (s :: middle, r, e)
+  | _ => none
+
+def directSlots : Block Op → Nat
+  | [] => 0
+  | .letDecl xs _ :: rest => xs.length + directSlots rest
+  | _ :: rest => directSlots rest
+
+def hasDirectFun : Block Op → Bool
+  | [] => false
+  | .funDef _ _ _ _ :: _ => true
+  | _ :: rest => hasDirectFun rest
+
+def carrierInit (carrier : Ident) : Option (Expr Op) → Block Op
+  | none => []
+  | some e => [.assign [carrier] e]
+
+def carrierInitSafe (carrier : Ident) : Option (Expr Op) → Bool
+  | none => true
+  | some e => !exprMentions carrier e
+
+def scopeTailHere (layout : List Ident) : Block Op → Option (Block Op)
+  | .letDecl [carrier] val :: rest => do
+      let (middle, result, e) ← splitAssignLeave rest
+      let resultDepth ← layout.findIdx? (fun x => x = result)
+      if resultDepth + 1 < 16 &&
+          16 ≤ resultDepth + 1 + directSlots middle &&
+          carrier != result && !layout.contains carrier &&
+          carrierInitSafe carrier val &&
+          !stmtsDeclare carrier middle && !stmtsDeclare result middle &&
+          !hasDirectFun middle && !middle.isEmpty then
+        some [.letDecl [carrier] none,
+          .block (carrierInit carrier val ++ middle ++ [.assign [carrier] e]),
+          .assign [result] (.var carrier), .leave]
+      else none
+  | _ => none
+
+/-! Like slot coalescing, scope sinking exposes one proof-sized rewrite per
+iteration.  Layout changes only at direct declarations; all structured
+statements restore their entry layout. -/
+
+mutual
+  def scopeOneStmt (layout : List Ident) : Stmt Op → Option (Stmt Op)
+    | .block body => (.block ·) <$> scopeOneStmts layout body
+    | .funDef f ps rs body =>
+        (.funDef f ps rs ·) <$> scopeOneStmts (ps ++ rs) body
+    | .cond c body => (.cond c ·) <$> scopeOneStmts layout body
+    | .switch c cases dflt =>
+        match scopeOneCases layout cases with
+        | some cases' => some (.switch c cases' dflt)
+        | none =>
+            match dflt with
+            | some body =>
+                (fun body' => .switch c cases (some body')) <$>
+                  scopeOneStmts layout body
+            | none => none
+    | .forLoop init c post body =>
+        match scopeOneStmts layout post with
+        | some post' => some (.forLoop init c post' body)
+        | none => (.forLoop init c post ·) <$> scopeOneStmts layout body
+    | _ => none
+    termination_by s => 2 * sizeOf s
+
+  def scopeOneStmts (layout : List Ident) (ss : Block Op) : Option (Block Op) :=
+    match scopeTailHere layout ss with
+    | some ss' => some ss'
+    | none =>
+        match ss with
+        | [] => none
+        | s :: rest =>
+            match scopeOneStmt layout s with
+            | some s' => some (s' :: rest)
+            | none =>
+                let layout' := match s with
+                  | .letDecl xs _ => xs ++ layout
+                  | _ => layout
+                (s :: ·) <$> scopeOneStmts layout' rest
+    termination_by 2 * sizeOf ss + 1
+
+  def scopeOneCases (layout : List Ident) :
+      List (Literal × Block Op) → Option (List (Literal × Block Op))
+    | [] => none
+    | (l, body) :: rest =>
+        match scopeOneStmts layout body with
+        | some body' => some ((l, body') :: rest)
+        | none => ((l, body) :: ·) <$> scopeOneCases layout rest
+    termination_by cases => 2 * sizeOf cases + 1
+  decreasing_by
+    all_goals simp_wf
+    all_goals omega
+end
+
+def iterateTailScope : Nat → Block Op → Block Op
+  | 0, b => b
+  | n + 1, b =>
+      match scopeOneStmts [] b with
+      | some b' => iterateTailScope n b'
+      | none => b
+
 /-! ### One-rewrite allocator
 
 The proof-facing driver performs one coalescing rewrite at a time.  Iterating
@@ -276,7 +394,7 @@ def iterateStackLayout : Nat → Block Op → Block Op
       | none => b
 
 def stackLayoutBlock (b : Block Op) : Block Op :=
-  iterateStackLayout 1024 (scheduleStmts b)
+  iterateTailScope 1024 (iterateStackLayout 1024 (scheduleStmts b))
 
 mutual
   /-- Apply stack layout independently to every code block in an object tree. -/
