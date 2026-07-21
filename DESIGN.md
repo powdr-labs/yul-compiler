@@ -541,6 +541,24 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     shapes that mode accepts, whereas it *does* create literals (from
     `dataoffset`/`datasize`), which is exactly why the object path must not
     classify literal-carrying bodies or literal call arguments.
+  * **`Implementation/HoistCalls.lean`** — normalizes the direct unary nested
+    call shape `x := f(g(args))` when both helpers pass the existing
+    stack-pressure gate. The inner call is evaluated into a globally fresh
+    block-local temporary, preserving Yul's right-to-left evaluation order;
+    the following `FreshenCalls → InlineCalls` stages can then inline both
+    sites. Its pointwise statement proof covers normal results and halts, and
+    its object-path proof transports the normalization through layout
+    resolution.
+  * **`Implementation/DeadPure.lean` / `DeadResults.lean`** — perform scoped
+    dead-code elimination while retaining the strong `EquivBlock` contract.
+    `DeadPure` removes unused singleton bindings whose right-hand sides are
+    provably total and state-preserving (including `sload`). `DeadResults`
+    recognizes the `let result; { ... result := value }` residue produced by
+    statement-level inlining and removes the whole adjacent region when its
+    result is unused, its locals and assignments are confined to the region,
+    and its suffix cannot observe a changed function environment. Both passes
+    have bidirectional source-semantics simulations and layout-resolution
+    closure for object compilation.
   * **`Implementation/StackLayout.lean` / `StackLayoutSound.lean`** — the smart
     fallback for classic-stack pressure. A Sethi--Ullman-style scheduler
     right-associates `add` spines, preserving the exact right-to-left leaf
@@ -551,7 +569,7 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     a bidirectional big-step simulation over source/target variable
     environments, including nested scopes, functions, loops, every outcome,
     and exact block restoration.
-  * **`Implementation/Pipeline.lean`** — composes the three verified stages
+  * **`Implementation/Pipeline.lean`** — composes the verified stages
     (`optimizerPipeline` for blocks, `objectPipeline` for object code blocks,
     applied recursively over the tree), with the full original-object
     execution theorem `optimizerPipelineObject_correct`.

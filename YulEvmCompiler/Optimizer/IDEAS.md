@@ -482,6 +482,75 @@ Findings for the follow-ups, from the post-branch dumps:
   remain logged follow-ups (value-desync needs a different relation);
   whole-caller-aware `inlineOK` would recover the one softened regression.
 
+### ✅ Dead read-only result regions (`codex/dead-region-dce`)
+
+Post-#67 dumps of the three dominant dynamic-array fixtures show that call-site
+freshening succeeds: their hot push loops are call-free.  The newly exposed
+residue contains an adjacent zero-initialized result and nested computation
+block whose result is never read:
+
+```yul
+let ignored
+{
+  // Inlined read_from_storage / extract / cleanup chain.
+  let word := sload(slot)
+  ...
+  ignored := value
+}
+```
+
+solc removes the entire readback.  Ours still executes a warm `sload` plus
+shift/mask and stack scaffolding on every push iteration.  This is present in
+all of `array_storage_length_access`, `array_storage_push_empty_length_address`,
+and `array_storage_push_pop`, which together retain roughly 27.9M of the
+post-#63 semantic gap and remain the highest-leverage measured target after
+#67.
+
+The `DeadResults` pass removes exactly an adjacent `let x` + block
+when `x` is unmentioned in the remaining sequence and a scope-aware checker
+proves that the block:
+
+- always terminates normally and preserves the exact `EvmState`;
+- reads only variables known bound at that point;
+- writes only `x` or non-shadowing locals declared earlier in the region; and
+- uses only singleton lets/assignments, nested blocks, exact-arity pure
+  builtins, and deterministic state-preserving reads (`sload`, initially).
+
+Calls, control flow, stores, memory-touching reads, Keccak, copies, layout
+operations, `gas`, and every open-world operation are rejected.  The explicit
+total-operation whitelist is intentional: the dialect effect flags alone do
+not prove arity/totality, and `mload`/Keccak can change active memory.
+
+Soundness stays in the strong `Pass` tier.  It is a contextual block theorem,
+not a false standalone statement equivalence: the source executes the harmless
+region and carries one inserted, possibly updated dead binding through the
+`x`-free suffix; the enclosing block's `restore` erases that binding and
+recovers exact `VEnv` equality.  The proof extends the `Frame`/`DeadPure`
+simulation in both directions, recurses conservatively through all sub-blocks,
+and proves structural layout-resolution closure for the object path.
+
+State-read CSE and store-to-load forwarding are deliberately separate follow-
+ups: they require alias/effect invalidation across stores, calls, control-flow
+joins, and static-context halts.  Measure this directly evidenced rule first;
+only add small cleanup needed to expose or consume more instances of the same
+dead-result shape.
+
+The final change also adds `HoistCalls`, the smallest argument-normalization
+needed by the observed storage-cleanup chain: an assignment shaped
+`x := f(g(args))` becomes a block-local fresh binding for `g(args)` followed by
+`x := f(fresh)`. It fires only when both helpers pass `InlineCalls`' existing
+stack-pressure gate and the inner arguments are call-free. This preserves the
+exact evaluation order and lets the following freshen/inline stages consume
+both sites; broader argument splitting remains a separate follow-up.
+
+Measured on top of PR #67, the two passes improve 152/859 comparable semantic
+fixtures with no regressions: **130,608,997 → 110,331,250** total gas
+(−20,277,747), moving the aggregate ratio from **1.3390× to 1.1311×**.
+The three dominant dynamic-array rows fall by 9,017,190, 9,482,520, and
+884,962 gas respectively. The compiling Uniswap subset improves
+23,889 → 23,700 (−189); its five stack-depth failures remain a separate
+stack-compression target.
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)

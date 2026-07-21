@@ -1,5 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.DeadPure
 import YulEvmCompiler.Optimizer.Implementation.DeadLitsResolve
+import YulEvmCompiler.Optimizer.Implementation.InlineCallsResolve
 set_option warningAsError true
 /-!
 # YulEvmCompiler.Optimizer.Implementation.DeadPureResolve
@@ -7,9 +8,9 @@ set_option warningAsError true
 Resolution congruence for the `DeadPure` pass (object path): mirrors
 `DeadLitsResolve` — the removal relation is closed under layout resolution
 (`mentions_resolve*` invariance; `alwaysEval` is resolution-stable in the
-transported direction since `dataoffset`/`datasize` are outside the pure
-fragment and resolution preserves literals, variables, and statement
-structure).
+transported direction since `dataoffset`/`datasize` are outside the total
+state-preserving fragment and resolution preserves literals, variables, and
+statement structure).
 -/
 
 namespace YulEvmCompiler.Optimizer
@@ -29,6 +30,12 @@ theorem pureTotalArity_not_data {op : Op} {n : Nat}
     (h : pureTotalArity op = some n) :
     op ≠ .dataoffset ∧ op ≠ .datasize := by
   constructor <;> (rintro rfl; simp [pureTotalArity] at h)
+
+/-- Stable-total operations, including `sload`, are not layout reads. -/
+theorem stableTotalArity_not_data {op : Op} {n : Nat}
+    (h : stableTotalArity op = some n) :
+    op ≠ .dataoffset ∧ op ≠ .datasize := by
+  constructor <;> (rintro rfl; simp [stableTotalArity, pureTotalArity] at h)
 
 /-- Resolution preserves argument-list lengths. -/
 theorem resolveForLayoutExprs_length (L : Layout) :
@@ -51,8 +58,8 @@ theorem alwaysEval_resolve (L : Layout) (bound : List Ident) :
   | .var _, h => h
   | .builtin op args, h => by
       rw [alwaysEval, Bool.and_eq_true] at h
-      have har : pureTotalArity op = some args.length := by simpa using h.1
-      obtain ⟨h1, h2⟩ := pureTotalArity_not_data har
+      have har : stableTotalArity op = some args.length := by simpa using h.1
+      obtain ⟨h1, h2⟩ := stableTotalArity_not_data har
       rw [resolve_builtin_nondata L args h1 h2, alwaysEval, Bool.and_eq_true]
       refine ⟨?_, alwaysEvalArgs_resolve L bound args h.2⟩
       simp [resolveForLayoutExprs_length, har]
@@ -72,6 +79,124 @@ theorem alwaysEvalArgs_resolve (L : Layout) (bound : List Ident) :
         alwaysEvalArgs_resolve L bound rest h.2⟩
 
 end
+
+/-! ### Region-checker stability -/
+
+mutual
+
+theorem discardStmt_resolve (L : Layout) {sink : Ident} : ∀
+    (ctx : DrCtx) (s : Stmt Op) (ctx' : DrCtx),
+    discardStmt sink ctx s = some ctx' →
+    discardStmt sink ctx (resolveForLayoutStmt L s) = some ctx'
+  | ctx, .block body, ctx', h => by
+      cases hb : discardStmts sink ctx body with
+      | none => simp [discardStmt, hb] at h
+      | some out =>
+          simp [discardStmt, hb] at h
+          subst ctx'
+          simp [resolveForLayoutStmt_block, discardStmt,
+            discardStmts_resolve L ctx body out hb]
+  | _, .letDecl [] _, _, h => by simp [discardStmt] at h
+  | ctx, .letDecl [x] none, ctx', h => by
+      simpa [discardStmt, resolveForLayoutStmt_letDecl] using h
+  | ctx, .letDecl [x] (some rhs), ctx', h => by
+      simp [discardStmt] at h
+      rcases h with ⟨⟨hx, hae⟩, rfl⟩
+      simp [resolveForLayoutStmt_letDecl, discardStmt, hx,
+        alwaysEval_resolve L ctx.bound rhs hae]
+  | _, .letDecl (_ :: _ :: _) _, _, h => by simp [discardStmt] at h
+  | _, .assign [] _, _, h => by simp [discardStmt] at h
+  | ctx, .assign [x] rhs, ctx', h => by
+      simp [discardStmt] at h
+      rcases h with ⟨⟨hx, hae⟩, rfl⟩
+      simp [resolveForLayoutStmt_assign, discardStmt, hx,
+        alwaysEval_resolve L ctx.bound rhs hae]
+  | _, .assign (_ :: _ :: _) _, _, h => by simp [discardStmt] at h
+  | _, .cond _ _, _, h => by simp [discardStmt] at h
+  | _, .switch _ _ _, _, h => by simp [discardStmt] at h
+  | _, .forLoop _ _ _ _, _, h => by simp [discardStmt] at h
+  | _, .funDef _ _ _ _, _, h => by simp [discardStmt] at h
+  | _, .exprStmt _, _, h => by simp [discardStmt] at h
+  | _, .break, _, h => by simp [discardStmt] at h
+  | _, .continue, _, h => by simp [discardStmt] at h
+  | _, .leave, _, h => by simp [discardStmt] at h
+  termination_by _ s _ _ => 2 * sizeOf s + 1
+  decreasing_by all_goals simp_wf
+
+theorem discardStmts_resolve (L : Layout) {sink : Ident} : ∀
+    (ctx : DrCtx) (ss : Block Op) (ctx' : DrCtx),
+    discardStmts sink ctx ss = some ctx' →
+    discardStmts sink ctx (resolveForLayoutStmts L ss) = some ctx'
+  | ctx, [], ctx', h => by simpa [discardStmts] using h
+  | ctx, s :: rest, ctx', h => by
+      cases hs : discardStmt sink ctx s with
+      | none => simp [discardStmts, hs] at h
+      | some ctx₁ =>
+          have htail : discardStmts sink ctx₁ rest = some ctx' := by
+            simpa [discardStmts, hs] using h
+          simp [discardStmts,
+            discardStmt_resolve L ctx s ctx₁ hs,
+            discardStmts_resolve L ctx₁ rest ctx' htail]
+  termination_by _ ss _ _ => 2 * sizeOf ss
+  decreasing_by all_goals simp_wf <;> omega
+
+end
+
+mutual
+
+theorem stmtCallFree_resolve (L : Layout) : ∀ s : Stmt Op,
+    stmtCallFree (resolveForLayoutStmt L s) = stmtCallFree s
+  | .block body => by simp [resolveForLayoutStmt_block, stmtCallFree,
+      stmtsCallFree_resolve L body]
+  | .funDef n ps rs body => by simp [resolveForLayoutStmt_funDef, stmtCallFree]
+  | .letDecl xs none => by simp [resolveForLayoutStmt_letDecl, stmtCallFree]
+  | .letDecl xs (some e) => by simp [resolveForLayoutStmt_letDecl, stmtCallFree,
+      exprHasCall_resolve]
+  | .assign xs e => by simp [resolveForLayoutStmt_assign, stmtCallFree,
+      exprHasCall_resolve]
+  | .cond c body => by simp [resolveForLayoutStmt_cond, stmtCallFree,
+      exprHasCall_resolve, stmtsCallFree_resolve L body]
+  | .switch c cases dflt => by simp [resolveForLayoutStmt_switch, stmtCallFree,
+      exprHasCall_resolve, casesCallFree_resolve L cases, dfltCallFree_resolve L dflt]
+  | .forLoop init c post body => by simp [resolveForLayoutStmt_forLoop, stmtCallFree,
+      exprHasCall_resolve, stmtsCallFree_resolve L init,
+      stmtsCallFree_resolve L post, stmtsCallFree_resolve L body]
+  | .exprStmt e => by simp [resolveForLayoutStmt_exprStmt, stmtCallFree,
+      exprHasCall_resolve]
+  | .break => by simp [resolveForLayoutStmt_break, stmtCallFree]
+  | .continue => by simp [resolveForLayoutStmt_continue, stmtCallFree]
+  | .leave => by simp [resolveForLayoutStmt_leave, stmtCallFree]
+
+theorem stmtsCallFree_resolve (L : Layout) : ∀ ss : Block Op,
+    stmtsCallFree (resolveForLayoutStmts L ss) = stmtsCallFree ss
+  | [] => by simp [resolveForLayoutStmts_nil, stmtsCallFree]
+  | s :: rest => by simp [stmtsCallFree,
+      stmtCallFree_resolve L s, stmtsCallFree_resolve L rest]
+
+theorem casesCallFree_resolve (L : Layout) : ∀ cs : List (Literal × Block Op),
+    casesCallFree (resolveForLayoutCases L cs) = casesCallFree cs
+  | [] => by simp [resolveForLayoutCases, casesCallFree]
+  | (lit, body) :: rest => by simp [resolveForLayoutCases, casesCallFree,
+      stmtsCallFree_resolve L body, casesCallFree_resolve L rest]
+
+theorem dfltCallFree_resolve (L : Layout) : ∀ d : Option (Block Op),
+    dfltCallFree (d.map (resolveForLayoutStmts L)) = dfltCallFree d
+  | none => rfl
+  | some body => by simp [dfltCallFree,
+      stmtsCallFree_resolve L body]
+
+end
+
+
+theorem dpOut_resolve (L : Layout) (bound : List Ident) (s : Stmt Op) :
+    dpOut bound (resolveForLayoutStmt L s) = dpOut bound s := by
+  cases s <;> simp [dpOut, resolveForLayoutStmt.eq_def]
+
+theorem dpOutStmts_resolve (L : Layout) (bound : List Ident) : ∀ ss : Block Op,
+    dpOutStmts bound (resolveForLayoutStmts L ss) = dpOutStmts bound ss
+  | [] => by simp [resolveForLayoutStmts_nil, dpOutStmts]
+  | s :: rest => by simp [dpOutStmts,
+      dpOut_resolve L bound s, dpOutStmts_resolve L (dpOut bound s) rest]
 
 /-! ### The relation is closed under resolution -/
 
@@ -170,6 +295,25 @@ theorem DcRel.resolve {bound bound' : List Ident} {pc pc' : PCode Op}
         (.stmts (resolveForLayoutStmts L rest'))
       rw [resolveForLayoutStmts_cons, resolveForLayoutStmt_assign]
       exact .dropSelfSS hx ihrest
+  | @dropRegionSS bound sink body rest hcheck hm hcf =>
+      rw [← dpOutStmts_resolve L bound rest]
+      show DcRel bound (dpOutStmts bound (resolveForLayoutStmts L rest))
+        (.stmts (resolveForLayoutStmts L
+          (.letDecl [sink] none :: .block body :: rest)))
+        (.stmts (resolveForLayoutStmts L rest))
+      rw [resolveForLayoutStmts_cons, resolveForLayoutStmt_letDecl,
+        resolveForLayoutStmts_cons, resolveForLayoutStmt_block]
+      refine .dropRegionSS ?_ ?_ ?_
+      · cases hc : discardStmts sink
+          { bound := sink :: bound, owned := [sink] } body with
+        | none => simp [hc] at hcheck
+        | some out =>
+            simp [discardStmts_resolve L
+              { bound := sink :: bound, owned := [sink] } body out hc] at hcheck ⊢
+      · rw [mentions_resolveStmts L sink rest]
+        exact hm
+      · rw [stmtsCallFree_resolve L rest]
+        exact hcf
   | @loopL bound bp bb c post post' body body' _ _ ihp ihb =>
       exact .loopL ihp ihb
   | casesNil =>
