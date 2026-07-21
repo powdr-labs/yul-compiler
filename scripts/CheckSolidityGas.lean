@@ -257,6 +257,11 @@ private def run (dir baselineFile : FilePath)
   -- gains its own optimizer.
   let suite := dir.fileName.getD "gas"
   IO.println s!"Gas totals: suite={suite} mode=vs_solc_optimized ours={measured.foldl (fun a r => a + r.ours) 0} solc={measured.foldl (fun a r => a + r.solc) 0} comparable={measured.size}"
+  -- Per-fixture rows let the PR summary compare a head run with a main run on
+  -- their exact shared fixture set. Tabs are intentional: fixture paths may
+  -- contain spaces, but Solidity corpus paths cannot contain tabs.
+  for row in measured do
+    IO.println s!"Gas row:\t{suite}\tvs_solc_optimized\t{row.fixture}\t{row.ours}\t{row.solc}"
   unless lenient || unexpectedFailures.isEmpty do
     IO.eprintln "Contracts this compiler failed to compile:"
     for (name, message) in unexpectedFailures do IO.eprintln s!"  {name}: {message}"
