@@ -152,22 +152,54 @@ def ratio_pct(ours, solc):
     return f"{ours / solc * 100:.1f}%"
 
 
-def gas_row_delta(suite, current, base, current_rows, base_rows):
-    """Return (gas delta, added fixtures, dropped fixtures, exact comparison).
+def fmt_ratio_delta(delta):
+    if delta is None:
+        return "—"
+    if abs(delta) < 0.05:
+        return "0.0 pp"
+    sign = "+" if delta > 0 else "−"
+    return f"{sign}{abs(delta):.1f} pp"
+
+
+def gas_comparison(suite, current, base, current_rows, base_rows):
+    """Return paired gas totals, coverage changes, and comparison precision.
 
     New runner output supplies per-fixture rows, so totals are compared only on
     the intersection. The aggregate fallback keeps the first rollout useful
     while main still predates the row output.
     """
     if base is None:
-        return None, 0, 0, False
+        return None
     ours = current_rows.get(suite, {})
     theirs = base_rows.get(suite, {})
     if ours and theirs:
         shared = ours.keys() & theirs.keys()
-        delta = sum(ours[name]["ours"] - theirs[name]["ours"] for name in shared)
-        return delta, len(ours.keys() - theirs.keys()), len(theirs.keys() - ours.keys()), True
-    return current["ours"] - base["ours"], 0, 0, False
+        return {
+            "current_ours": sum(ours[name]["ours"] for name in shared),
+            "current_solc": sum(ours[name]["solc"] for name in shared),
+            "base_ours": sum(theirs[name]["ours"] for name in shared),
+            "base_solc": sum(theirs[name]["solc"] for name in shared),
+            "added": len(ours.keys() - theirs.keys()),
+            "dropped": len(theirs.keys() - ours.keys()),
+            "exact": True,
+        }
+    return {
+        "current_ours": current["ours"],
+        "current_solc": current["solc"],
+        "base_ours": base["ours"],
+        "base_solc": base["solc"],
+        "added": 0,
+        "dropped": 0,
+        "exact": False,
+    }
+
+
+def comparison_ratio_delta(comparison):
+    if comparison is None or comparison["current_solc"] == 0 or comparison["base_solc"] == 0:
+        return None
+    current = comparison["current_ours"] / comparison["current_solc"] * 100
+    base = comparison["base_ours"] / comparison["base_solc"] * 100
+    return current - base
 
 
 def gas_table(out, suites, compile_stats=None, base_suites=None,
@@ -178,11 +210,12 @@ def gas_table(out, suites, compile_stats=None, base_suites=None,
     base_suites = base_suites or {}
     current_rows = current_rows or {}
     base_rows = base_rows or {}
-    out.append("| corpus | compiled | comparable | our gas | Δ vs main | solc gas | ours/solc | regr | impr |")
-    out.append("|---|--:|--:|--:|--:|--:|--:|--:|--:|")
+    out.append("| corpus | compiled | comparable | our gas | Δ vs main | solc gas | ours/solc | Δ ratio vs main | regr | impr |")
+    out.append("|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|")
     tot_ours = tot_solc = tot_regr = tot_impr = 0
     tot_delta = 0
     have_delta = False
+    comparison_totals = dict(current_ours=0, current_solc=0, base_ours=0, base_solc=0)
     coverage_changes = []
     used_fallback = False
     for suite, g in sorted(suites.items()):
@@ -190,26 +223,35 @@ def gas_table(out, suites, compile_stats=None, base_suites=None,
         tot_regr += g["regressions"]; tot_impr += g["improved"]
         c = coverage.get(suite)
         compiled = f"{c['compiled']}/{c['eligible']}" if c else "—"
-        delta, added, dropped, exact = gas_row_delta(
+        comparison = gas_comparison(
             suite, g, base_suites.get(suite), current_rows, base_rows)
-        if delta is not None:
+        delta = None if comparison is None else comparison["current_ours"] - comparison["base_ours"]
+        ratio_delta = comparison_ratio_delta(comparison)
+        if comparison is not None:
             tot_delta += delta
             have_delta = True
-            used_fallback = used_fallback or not exact
+            for key in comparison_totals:
+                comparison_totals[key] += comparison[key]
+            used_fallback = used_fallback or not comparison["exact"]
+            added, dropped = comparison["added"], comparison["dropped"]
+        else:
+            added = dropped = 0
         if added or dropped:
             coverage_changes.append(f"`{suite}`: +{added}/−{dropped} comparable fixtures")
         out.append(f"| {suite} | {compiled} | {g['comparable']} | {fmt_int(g['ours'])} | "
                    f"{fmt_delta(delta)} | {fmt_int(g['solc'])} | {ratio_pct(g['ours'], g['solc'])} | "
-                   f"{g['regressions']} | {g['improved']} |")
+                   f"{fmt_ratio_delta(ratio_delta)} | {g['regressions']} | {g['improved']} |")
+    total_ratio_delta = comparison_ratio_delta(comparison_totals) if have_delta else None
     out.append(f"| **total** | | | **{fmt_int(tot_ours)}** | **{fmt_delta(tot_delta) if have_delta else '—'}** | **{fmt_int(tot_solc)}** | "
-               f"**{ratio_pct(tot_ours, tot_solc)}** | {tot_regr} | {tot_impr} |")
+               f"**{ratio_pct(tot_ours, tot_solc)}** | **{fmt_ratio_delta(total_ratio_delta)}** | {tot_regr} | {tot_impr} |")
     if coverage_changes:
         out.append("")
         out.append("<sub>Coverage change vs main — " + "; ".join(coverage_changes) +
-                   ". Gas deltas use only fixtures present in both runs.</sub>")
+                   ". Gas and ratio deltas use only fixtures present in both runs.</sub>")
     elif used_fallback:
         out.append("")
-        out.append("<sub>Gas delta uses aggregate totals because main predates per-fixture CI rows.</sub>")
+        out.append("<sub>Gas and ratio deltas use aggregate totals because main predates "
+                   "per-fixture CI rows.</sub>")
     return tot_regr
 
 

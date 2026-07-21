@@ -53,18 +53,33 @@ class SummaryTest(unittest.TestCase):
 
         self.assertIn("head `abcdef123` · main `012345678`", rendered)
         self.assertIn("Δ vs main: successes +1, expected failures −1, mismatches 0", rendered)
+        self.assertIn("| ours/solc | Δ ratio vs main |", rendered)
         self.assertIn("| optimizer | 5/6 | +1 | 1 | −1 | 1 |", rendered)
-        self.assertIn("| optimizer | — | 2 | 260 | −50 | 250 | 104.0% | 0 | 1 |", rendered)
+        self.assertIn(
+            "| optimizer | — | 2 | 260 | −50 | 250 | 104.0% | −50.0 pp | 0 | 1 |",
+            rendered)
+        self.assertIn(
+            "| **total** | | | **260** | **−50** | **250** | **104.0%** | "
+            "**−50.0 pp** | 0 | 1 |",
+            rendered)
         self.assertIn("`optimizer`: +1/−1 comparable fixtures", rendered)
-        self.assertIn("Gas deltas use only fixtures present in both runs", rendered)
+        self.assertIn("Gas and ratio deltas use only fixtures present in both runs", rendered)
 
     def test_aggregate_fallback_supports_old_main_output(self):
         head = summary.parse(HEAD_LINES)
         old_main = summary.parse([line for line in MAIN_LINES if not line.startswith("Gas row:")])
         rendered = summary.build_comment(head, {}, base=old_main, sha="")
 
-        self.assertIn("| optimizer | — | 2 | 260 | −60 | 250 | 104.0% | 0 | 1 |", rendered)
+        self.assertIn(
+            "| optimizer | — | 2 | 260 | −60 | 250 | 104.0% | −2.7 pp | 0 | 1 |",
+            rendered)
         self.assertIn("main predates per-fixture CI rows", rendered)
+
+    def test_formats_ratio_delta_in_percentage_points(self):
+        self.assertEqual(summary.fmt_ratio_delta(1.24), "+1.2 pp")
+        self.assertEqual(summary.fmt_ratio_delta(-0.26), "−0.3 pp")
+        self.assertEqual(summary.fmt_ratio_delta(0.01), "0.0 pp")
+        self.assertEqual(summary.fmt_ratio_delta(None), "—")
 
 
 if __name__ == "__main__":
