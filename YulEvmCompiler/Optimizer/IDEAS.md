@@ -82,41 +82,51 @@ cliff, the exact-output branch evaluates
 return address, return slot, and one pending argument above `amountOut`,
 requiring `DUP17`.
 
-The planned fix treats structured Yul regions as the compiler's dominance
-tree.  A statement's immediately enclosing block is the lowest common
-dominator of that statement's operand evaluations and result write-back, so
-new carrier live ranges stay in that smallest region instead of leaking into
-the function frame.  This is the structured-AST specialization of the classic
-dominator/SSA placement approach of Lengauer--Tarjan and Cytron et al.; a
-backward live-after analysis supplies the interference test.
+The planned fix uses the same placement principle as dominator-tree/SSA work:
+place a carrier at the lowest program point that dominates all of its uses.
+For this local rewrite that point is the call statement itself, represented by
+a fresh nested block, so the carrier live ranges cannot leak into the function
+frame.  This is a structured-region specialization, not a claim that the pass
+constructs a general CFG dominator tree: loops, early outcomes, and hoisted
+functions still follow Yul's explicit syntax.  A backward syntactic
+mention analysis supplies the local interference test.
 
 Two coordinated, verified rewrites form one stack-layout pass:
 
-1. **Multi-result copy-back coalescing.** Recognize a call result declaration
-   followed by component copies whose temporary names are dead afterward, and
-   retarget the call directly to the destination vector.  The rewrite handles
-   singleton and multi-binder results, requires distinct temporaries and
-   destinations, and uses the live-after set rather than adjacency as the
-   semantic criterion.  This removes the wrapper's four temporary slots.
+1. **Multi-result copy-back coalescing.** Recognize the exact adjacent vector
+   `let t₁…tₙ := f(as); d₁ := t₁; …; dₙ := tₙ` and retarget the call directly
+   to `d₁…dₙ := f(as)`.  The rewrite handles singleton and multi-binder
+   results; requires distinct, disjoint temporaries and destinations already
+   bound at the site; and requires full read/write/declaration mention-freedom
+   of every temporary in the suffix.  Adjacency is deliberate: textbook
+   live-after alone cannot justify moving destination writes across arbitrary
+   effects.  This removes the wrapper's four temporary slots.
 2. **Right-to-left call-argument staging.** When the backend pressure model
-   predicts a `DUP17+` while evaluating a direct assignment-form call, evaluate
-   arguments once, right-to-left, into globally fresh carriers in a nested
-   block, then call using the shallow carriers.  The nesting point is the
-   lowest common dominator of all uses (the call site); block restoration kills
-   every carrier on normal, control, and halt outcomes.  The policy fires only
-   when every staged evaluation and the final multi-assignment fit classic
-   `DUP16`/`SWAP16`, and it may stage call-bearing arguments because their
-   order is preserved exactly.
+   predicts a `DUP17+` while evaluating a direct **assignment-form** call,
+   evaluate arguments once, right-to-left, into globally fresh carriers in a
+   nested block, then call using the shallow carriers.  The call site is the
+   lowest common dominator of those carrier uses; block restoration kills every
+   carrier on normal and halt outcomes.  Let-form calls are not staged because
+   predeclaring their results would change the environment on argument halts.
+   The policy fires only when every staged evaluation and the final
+   multi-assignment fit classic `DUP16`/`SWAP16`.  Call-bearing arguments are
+   admitted only with a general proof that prepending the generated block's
+   empty function scope preserves lookup and execution.
 
-Soundness stays in the existing strong `Pass` tier.  Copy-back uses a
-multi-insertion generalization of the stack-layout environment relation: the
-source carries dead temporary bindings through the suffix while the target
-does not, and enclosing `restore` erases the difference.  Argument staging
-proves an `EvalArgs` decomposition/recomposition lemma, preserving Yul's
-right-to-left order, exact arity, state changes, and halts; globally fresh names
-make environment extension observationally inert.  Function-body congruence is
-handled by `FunCongr`, and a structural resolution theorem lifts the pass over
-every object code block without changing the audited specification.
+Soundness stays in the existing strong `Pass` tier.  Copy-back uses `MIns` and
+`InsFree`: the source carries dead temporary bindings through the suffix while
+the target does not, and enclosing `restore` erases the difference in both
+directions, including halts.  Argument staging proves an `EvalArgs`
+decomposition/recomposition lemma, preserving Yul's right-to-left order,
+exact arity, state changes, and halts; globally fresh names make environment
+extension observationally inert.  One-rewrite drivers keep both proofs local.
+The executable order is scheduling, adjacent copy-back to a fixed point,
+existing slot reuse, tail scoping, then pressure-triggered staging to a fixed
+point.  Its pressure traversal threads loop-init declarations and the init's
+hoisted function-signature scope into the condition, post, and body.
+Function-body congruence is handled by `FunCongr`; a structural resolution
+congruence lifts the pass over every object code block without changing object
+names, data, or the audited specification.
 
 Primary references: T. Lengauer and R. E. Tarjan, “A Fast Algorithm for
 Finding Dominators in a Flowgraph,” TOPLAS 1(1), 1979,
