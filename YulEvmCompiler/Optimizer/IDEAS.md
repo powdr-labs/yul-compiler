@@ -72,6 +72,65 @@ a lot of structural slack to remove.
 
 ## Passes
 
+### 🚧 Dominance-local call-frame compression (`codex/swapmath-stack-layout`)
+
+`SwapMath.sol` exposes two related failures after the existing smart layout:
+the ABI wrapper materializes four call results in a multi-binder and then
+copies them to four return slots, requiring `SWAP17`; after removing that
+cliff, the exact-output branch evaluates
+`getNextSqrtPriceFromOutput(current, liquidity, amountOut, zeroForOne)` with a
+return address, return slot, and one pending argument above `amountOut`,
+requiring `DUP17`.
+
+The planned fix treats structured Yul regions as the compiler's dominance
+tree.  A statement's immediately enclosing block is the lowest common
+dominator of that statement's operand evaluations and result write-back, so
+new carrier live ranges stay in that smallest region instead of leaking into
+the function frame.  This is the structured-AST specialization of the classic
+dominator/SSA placement approach of Lengauer--Tarjan and Cytron et al.; a
+backward live-after analysis supplies the interference test.
+
+Two coordinated, verified rewrites form one stack-layout pass:
+
+1. **Multi-result copy-back coalescing.** Recognize a call result declaration
+   followed by component copies whose temporary names are dead afterward, and
+   retarget the call directly to the destination vector.  The rewrite handles
+   singleton and multi-binder results, requires distinct temporaries and
+   destinations, and uses the live-after set rather than adjacency as the
+   semantic criterion.  This removes the wrapper's four temporary slots.
+2. **Right-to-left call-argument staging.** When the backend pressure model
+   predicts a `DUP17+` while evaluating a direct assignment-form call, evaluate
+   arguments once, right-to-left, into globally fresh carriers in a nested
+   block, then call using the shallow carriers.  The nesting point is the
+   lowest common dominator of all uses (the call site); block restoration kills
+   every carrier on normal, control, and halt outcomes.  The policy fires only
+   when every staged evaluation and the final multi-assignment fit classic
+   `DUP16`/`SWAP16`, and it may stage call-bearing arguments because their
+   order is preserved exactly.
+
+Soundness stays in the existing strong `Pass` tier.  Copy-back uses a
+multi-insertion generalization of the stack-layout environment relation: the
+source carries dead temporary bindings through the suffix while the target
+does not, and enclosing `restore` erases the difference.  Argument staging
+proves an `EvalArgs` decomposition/recomposition lemma, preserving Yul's
+right-to-left order, exact arity, state changes, and halts; globally fresh names
+make environment extension observationally inert.  Function-body congruence is
+handled by `FunCongr`, and a structural resolution theorem lifts the pass over
+every object code block without changing the audited specification.
+
+Primary references: T. Lengauer and R. E. Tarjan, “A Fast Algorithm for
+Finding Dominators in a Flowgraph,” TOPLAS 1(1), 1979,
+<https://doi.org/10.1145/357062.357071>; R. Cytron et al., “Efficiently
+Computing Static Single Assignment Form and the Control Dependence Graph,”
+TOPLAS 13(4), 1991, <https://doi.org/10.1145/192030.192041>.
+
+Acceptance criteria: both block and object compilation paths use the pass;
+focused guards cover multi-result copy-back, state-changing/call-bearing
+arguments, halts, nested switches, and shadowing; `SwapMath.sol` leaves the
+known-failure baseline and the strict 11/11 Uniswap suite compiles and remains
+behaviorally comparable; all gas changes are non-regressions; and the full
+build, exact axiom guard, and unchanged audited specification closure pass.
+
 ### ✅ `identity` (`Implementation/Identity.lean`) — landed
 The do-nothing pass; validates the spec is inhabited. Sound by reflexivity.
 
