@@ -151,6 +151,11 @@ private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFil
   IO.println (s!"Gas totals: suite={suiteName} mode=codegen " ++
     s!"ours={measuredGas.foldl (fun a r => a + r.ours) 0} " ++
     s!"solc={measuredGas.foldl (fun a r => a + r.solc) 0} comparable={measuredGas.size}")
+  -- Per-fixture rows let the PR summary compare a head run with a main run on
+  -- their exact shared fixture set. Tabs are intentional: fixture paths may
+  -- contain spaces, but Solidity corpus paths cannot contain tabs.
+  for row in measuredGas do
+    IO.println s!"Gas row:\t{suiteName}\tcodegen\t{row.fixture}\t{row.ours}\t{row.solc}"
   unless metadataErrors.isEmpty do
     IO.eprintln s!"Invalid {suiteName} EVMVersion metadata:"
     for (name, message) in metadataErrors do
