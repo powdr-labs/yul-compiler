@@ -562,11 +562,15 @@ audited-surface-vs-artifact distinction the spec closure already makes:
   * **`Implementation/StorageForward.lean`** — forwards cheap values from
     literal-key `sstore` operations to later `sload`s. The cache stores only
     literals, variables, and `add(variable, literal)`; aliasing stores and
-    stateful or joining control flow clear it, while reassignment kills facts
-    that depend on the assigned variable. Loop post/body blocks are separate
-    optimization regions. `StorageForwardSound.lean` proves the bidirectional
-    state-and-environment simulation, and `StorageForwardResolve.lean` supplies
-    the object-layout congruence by leaving layout-sensitive regions unchanged.
+    stateful or joining control flow clear it. Assignments to known-bound
+    variables establish and rebind matching facts using the pre-assignment
+    value; nested blocks export facts after filtering dependencies on their
+    direct declarations, matching the variables removed by `restore`. Loop
+    post/body blocks remain separate optimization regions.
+    `StorageForwardSound.lean` proves the bidirectional state-and-environment
+    simulation, including the block declaration-frame invariant, and
+    `StorageForwardResolve.lean` supplies the object-layout congruence by
+    leaving layout-sensitive regions unchanged.
   * **`Implementation/StackLayout.lean` / `StackLayoutSound.lean`** — the smart
     fallback for classic-stack pressure. A Sethi--Ullman-style scheduler
     right-associates `add` spines, preserving the exact right-to-left leaf

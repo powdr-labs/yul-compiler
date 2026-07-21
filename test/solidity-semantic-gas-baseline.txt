@@ -114,12 +114,12 @@ array/array_memory_create.sol	3045	1284
 array/array_memory_index_access.sol	298484	109723
 array/array_push_return_reference.sol	20084	18469
 array/array_push_with_arg.sol	20084	18469
-array/array_storage_index_access.sol	7088850	6816025
-array/array_storage_index_boundary_test.sol	280316	212135
-array/array_storage_index_zeroed_test.sol	7960693	7424367
-array/array_storage_length_access.sol	2963222	1306640
-array/array_storage_push_empty_length_address.sol	3069206	2139347
-array/array_storage_push_pop.sol	17562270	14028568
+array/array_storage_index_access.sol	7059750	6816025
+array/array_storage_index_boundary_test.sol	253816	212135
+array/array_storage_index_zeroed_test.sol	7902193	7424367
+array/array_storage_length_access.sol	2553722	1306640
+array/array_storage_push_empty_length_address.sol	2657706	2139347
+array/array_storage_push_pop.sol	17124170	14028568
 array/arrays_complex_from_and_to_storage.sol	215667	191924
 array/byte_array_storage_layout.sol	174565	131729
 array/byte_array_transitional_2.sol	218156	132332
@@ -144,7 +144,7 @@ array/copying/array_copy_storage_abi_signed.sol	58354	50794
 array/copying/array_copy_storage_storage_different_base.sol	210030	204503
 array/copying/array_copy_storage_storage_dyn_dyn.sol	5422	4688
 array/copying/array_copy_storage_storage_dynamic_dynamic.sol	256028	252427
-array/copying/array_copy_storage_storage_static_dynamic.sol	103620	102116
+array/copying/array_copy_storage_storage_static_dynamic.sol	103520	102116
 array/copying/array_copy_storage_storage_static_simple.sol	49167	45431
 array/copying/array_copy_storage_storage_static_static.sol	223837	215106
 array/copying/array_copy_storage_storage_struct.sol	245357	217281
@@ -198,13 +198,13 @@ array/copying/nested_array_element_calldata_to_storage.sol	2286	591
 array/copying/nested_array_element_memory_to_memory.sol	40635	20533
 array/copying/nested_array_element_memory_to_storage.sol	3013	1354
 array/copying/nested_array_element_storage_to_memory.sol	120324	94161
-array/copying/nested_array_element_storage_to_storage.sol	444362	411659
+array/copying/nested_array_element_storage_to_storage.sol	444062	411659
 array/copying/nested_array_memory_to_storage.sol	510834	487583
 array/copying/nested_array_of_structs_calldata_to_memory.sol	22765	10046
 array/copying/nested_array_of_structs_calldata_to_storage.sol	570748	538435
 array/copying/nested_array_of_structs_memory_to_memory.sol	22645	10079
 array/copying/nested_array_of_structs_memory_to_storage.sol	587702	547431
-array/copying/nested_array_of_structs_storage_to_storage.sol	299899	280371
+array/copying/nested_array_of_structs_storage_to_storage.sol	299699	280371
 array/copying/nested_array_of_structs_with_nested_array_from_storage_to_memory.sol	40319	30281
 array/copying/nested_array_storage_to_memory.sol	74899	62288
 array/copying/nested_dynamic_array_element_calldata_to_storage.sol	586	457
@@ -228,7 +228,7 @@ array/delete/memory_arrays_delete.sol	32623	9114
 array/dynamic_array_cleanup.sol	507405	498430
 array/dynamic_arrays_in_storage.sol	19668	18166
 array/dynamic_multi_array_cleanup.sol	120200	101921
-array/dynamic_out_of_bounds_array_access.sol	70877	67160
+array/dynamic_out_of_bounds_array_access.sol	70477	67160
 array/external_array_args.sol	1783	493
 array/fixed_array_cleanup.sol	505210	489135
 array/fixed_arrays_as_return_type.sol	124	78
@@ -260,7 +260,7 @@ array/pop/array_pop_empty_exception.sol	2421	2274
 array/pop/array_pop_isolated.sol	370	142
 array/pop/array_pop_storage_empty.sol	46153	45296
 array/pop/array_pop_uint16_transition.sol	224128	164411
-array/pop/array_pop_uint24_transition.sol	168186	136297
+array/pop/array_pop_uint24_transition.sol	167986	136297
 array/pop/byte_array_pop.sol	46516	44871
 array/pop/byte_array_pop_copy_long.sol	99129	86158
 array/pop/byte_array_pop_empty_exception.sol	2517	2359
@@ -271,7 +271,7 @@ array/pop/byte_array_pop_masking_long.sol	98458	85698
 array/pop/byte_array_pop_storage_empty.sol	26194	24826
 array/pop/parenthesized.sol	46383	45321
 array/push/array_push.sol	92920	90770
-array/push/array_push_nested.sol	49794	47901
+array/push/array_push_nested.sol	49694	47901
 array/push/array_push_nested_from_calldata.sol	93359	91088
 array/push/array_push_nested_from_memory.sol	74377	71296
 array/push/array_push_packed_array.sol	76244	71481
@@ -407,8 +407,8 @@ events/event_anonymous_with_signature_collision2.sol	1793	1517
 events/event_anonymous_with_topics.sol	2768	2287
 events/event_dynamic_array_memory.sol	4592	2794
 events/event_dynamic_array_memory_v2.sol	4592	2794
-events/event_dynamic_array_storage.sol	95938	93027
-events/event_dynamic_array_storage_v2.sol	95938	93027
+events/event_dynamic_array_storage.sol	95638	93027
+events/event_dynamic_array_storage_v2.sol	95638	93027
 events/event_dynamic_nested_array_memory_v2.sol	9912	5749
 events/event_dynamic_nested_array_storage_v2.sol	169051	163944
 events/event_emit.sol	2338	1897
@@ -588,7 +588,7 @@ inlineAssembly/inline_assembly_read_and_write_stack.sol	1817	672
 inlineAssembly/inline_assembly_recursion.sol	3352	1587
 inlineAssembly/inline_assembly_storage_access.sol	25198	24540
 inlineAssembly/inline_assembly_storage_access_inside_function.sol	25207	24551
-inlineAssembly/inline_assembly_storage_access_local_var.sol	22623	22253
+inlineAssembly/inline_assembly_storage_access_local_var.sol	22523	22253
 inlineAssembly/inline_assembly_storage_access_via_pointer.sol	30117	29147
 inlineAssembly/inline_assembly_switch.sol	1762	745
 inlineAssembly/inline_assembly_transient_storage_access_inside_function.sol	720	354
@@ -648,7 +648,7 @@ libraries/internal_library_function_calling_private.sol	1696	493
 libraries/internal_library_function_pointer.sol	443	142
 libraries/internal_library_function_return_var_size.sol	2327	578
 libraries/stub_internal.sol	1587	615
-libraries/using_for_storage_structs.sol	23175	22265
+libraries/using_for_storage_structs.sol	23070	22265
 literals/denominations.sol	362	142
 literals/denominations_in_array_sizes.sol	1144	268
 literals/ether.sol	362	142
@@ -824,7 +824,7 @@ storage/delete_overlapping_transient_before_storage_struct_delete_same_value_typ
 storage/mapping_state.sol	74207	56627
 storage/mapping_string_key.sol	12120	9862
 storage/mappings_array2d_pop_delete.sol	10821	9628
-storage/mappings_array_pop_delete.sol	10515	9506
+storage/mappings_array_pop_delete.sol	10415	9506
 storage/packed_storage_overflow.sol	8911	5349
 storage/packed_storage_signed.sol	26320	22431
 storage/packed_storage_structs_bytes.sol	119971	111569
@@ -861,7 +861,7 @@ storageLayoutSpecifier/inheritance_from_same_base_state_var_slots.sol	450	324
 storageLayoutSpecifier/inheritance_simple.sol	2694	2403
 storageLayoutSpecifier/inheritance_storage_vars_initialization.sol	248	162
 storageLayoutSpecifier/inline_assembly_direct_load.sol	25171	24526
-storageLayoutSpecifier/inline_assembly_direct_store.sol	25045	24526
+storageLayoutSpecifier/inline_assembly_direct_store.sol	24940	24526
 storageLayoutSpecifier/last_allowed_storage_slot.sol	25377	24596
 storageLayoutSpecifier/mapping_storage_end.sol	25020690	24503311
 storageLayoutSpecifier/multiple_inheritance.sol	3046	2679
@@ -899,7 +899,7 @@ structs/copy_from_storage.sol	4710	2912
 structs/copy_struct_with_nested_array_from_calldata_to_memory.sol	10077	4151
 structs/copy_struct_with_nested_array_from_calldata_to_storage.sol	268	195
 structs/copy_struct_with_nested_array_from_memory_to_memory.sol	8716	3601
-structs/copy_struct_with_nested_array_from_storage_to_storage.sol	78509	73841
+structs/copy_struct_with_nested_array_from_storage_to_storage.sol	78409	73841
 structs/copy_struct_with_nested_struct_from_calldata_to_memory.sol	2367	499
 structs/copy_substructures_from_mapping.sol	147315	131879
 structs/copy_substructures_to_mapping.sol	310968	294520
@@ -931,7 +931,7 @@ structs/struct_copy_calldata_to_storage_v2.sol	47376	44664
 structs/struct_copy_via_local.sol	91074	88857
 structs/struct_delete_member.sol	6128	5146
 structs/struct_delete_storage_nested_small.sol	99988	96229
-structs/struct_delete_storage_with_array.sol	258560	248066
+structs/struct_delete_storage_with_array.sol	258360	248066
 structs/struct_delete_storage_with_arrays_small.sol	96377	90770
 structs/struct_delete_struct_in_mapping.sol	6052	5171
 structs/struct_memory_to_storage.sol	70110	66971

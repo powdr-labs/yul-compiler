@@ -35,6 +35,15 @@ theorem StorageCache.OK.nil (V : VEnv D) (st : EvmState) : StorageCache.OK V st 
   intro p hp
   simp at hp
 
+theorem StorageCache.OK.cons {V : VEnv D} {st : EvmState}
+    {p : Nat × StorageVal} {C : StorageCache}
+    (hp : StorageFact.Holds V st p) (hc : StorageCache.OK V st C) :
+    StorageCache.OK V st (p :: C) := by
+  intro q hq
+  cases hq with
+  | head => exact hp
+  | tail _ hq => exact hc _ hq
+
 theorem StorageCache.OK.lookup {V : VEnv D} {st : EvmState} {C : StorageCache}
     (hc : StorageCache.OK V st C) {k : Nat} {v : StorageVal}
     (h : cacheLookup k C = some v) :
@@ -95,6 +104,230 @@ theorem StorageCache.OK.kill_setMany {V : VEnv D} {st : EvmState}
     have hk := hp.2
     rw [hx] at hk
     simp [List.contains_eq_mem, hmem] at hk
+
+theorem StorageFact.Holds.set_not_dep {V : VEnv D} {st : EvmState}
+    {p : Nat × StorageVal} {x : Ident} {w : U256}
+    (hp : StorageFact.Holds V st p) (hdep : p.2.dep ≠ some x) :
+    StorageFact.Holds (VEnv.set V x w) st p := by
+  rw [StorageFact.Holds, ← VEnv.setMany_singleton,
+    StorageVal.denote_setMany_not_dep]
+  · exact hp
+  · intro y hy hmem
+    simp only [List.mem_singleton] at hmem
+    exact hdep (hmem ▸ hy)
+
+theorem StorageCache.OK.assign {V : VEnv D} {st : EvmState}
+    {C : StorageCache} {x : Ident} {rhs : StorageVal} {w : U256}
+    (hc : StorageCache.OK V st C) (hrhs : rhs.denote V = some w)
+    (hx : (VEnv.get V x).isSome) :
+    StorageCache.OK (VEnv.set V x w) st (cacheAssign x rhs C) := by
+  induction C with
+  | nil => exact StorageCache.OK.nil _ _
+  | cons p rest ih =>
+      rcases p with ⟨k, v⟩
+      have hhead := hc (k, v) (List.mem_cons_self ..)
+      have hrest : StorageCache.OK V st rest :=
+        fun q hq => hc q (List.mem_cons_of_mem _ hq)
+      have hi := ih hrest
+      cases rhs with
+      | lit n =>
+          simp only [cacheAssign]
+          split
+          · exact hi
+          · next hne =>
+              exact StorageCache.OK.cons (hhead.set_not_dep hne) hi
+      | var y =>
+          simp only [cacheAssign]
+          split
+          · next heq =>
+              subst v
+              refine StorageCache.OK.cons ?_ hi
+              simp only [StorageFact.Holds, StorageVal.denote]
+              rw [VEnv.get_set_self hx]
+              rw [StorageFact.Holds] at hhead
+              rw [hrhs] at hhead
+              exact hhead
+          · next hne =>
+              split
+              · exact hi
+              · next hdep =>
+                  exact StorageCache.OK.cons (hhead.set_not_dep hdep) hi
+      | add y n =>
+          simp only [cacheAssign]
+          split
+          · next heq =>
+              subst v
+              refine StorageCache.OK.cons ?_ hi
+              simp only [StorageFact.Holds, StorageVal.denote]
+              rw [VEnv.get_set_self hx]
+              rw [StorageFact.Holds] at hhead
+              rw [hrhs] at hhead
+              exact hhead
+          · next hne =>
+              split
+              · exact hi
+              · next hdep =>
+                  exact StorageCache.OK.cons (hhead.set_not_dep hdep) hi
+
+/-! ### Block-scope framing
+
+`sfStmt` now exports cache facts from a nested block.  The value environment
+inside that block consists of direct declarations over a key-preserving update
+of the entry environment.  `restore` removes exactly that declaration prefix;
+filtering facts which depend on those names therefore preserves every exported
+fact. -/
+
+def ScopeFrame (decls : List Ident) (V V' : VEnv D) : Prop :=
+  ∃ ext W, V' = ext ++ W ∧ W.map Prod.fst = V.map Prod.fst ∧
+    ∀ p ∈ ext, p.1 ∈ decls
+
+namespace ScopeFrame
+
+theorem refl (V : VEnv D) : ScopeFrame [] V V :=
+  ⟨[], V, rfl, rfl, by simp⟩
+
+theorem of_keys {V V' : VEnv D}
+    (hkeys : V'.map Prod.fst = V.map Prod.fst) : ScopeFrame [] V V' :=
+  ⟨[], V', by simp, hkeys, by simp⟩
+
+theorem comp {ds₁ ds₂ : List Ident} {V V₁ V₂ : VEnv D}
+    (h₁ : ScopeFrame ds₁ V V₁) (h₂ : ScopeFrame ds₂ V₁ V₂) :
+    ScopeFrame (ds₁ ++ ds₂) V V₂ := by
+  obtain ⟨e₁, W₁, rfl, hk₁, he₁⟩ := h₁
+  obtain ⟨e₂, W₂, rfl, hk₂, he₂⟩ := h₂
+  have hlen : e₁.length ≤ W₂.length := by
+    have h := congrArg List.length hk₂
+    simp only [List.map_append, List.length_map, List.length_append] at h
+    omega
+  have hsplit : W₂ = W₂.take e₁.length ++ W₂.drop e₁.length :=
+    (List.take_append_drop _ _).symm
+  have htake : (W₂.take e₁.length).map Prod.fst = e₁.map Prod.fst := by
+    rw [List.map_take, hk₂, List.map_append,
+      List.take_append_of_le_length (by simp)]
+    simp
+  have hdrop : (W₂.drop e₁.length).map Prod.fst = W₁.map Prod.fst := by
+    rw [List.map_drop, hk₂, List.map_append,
+      List.drop_append_of_le_length (by simp)]
+    simp
+  refine ⟨e₂ ++ W₂.take e₁.length, W₂.drop e₁.length,
+    by rw [List.append_assoc, ← hsplit], by rw [hdrop, hk₁], ?_⟩
+  intro p hp
+  rcases List.mem_append.mp hp with hp | hp
+  · exact List.mem_append_right _ (he₂ p hp)
+  · have hkey : p.1 ∈ (W₂.take e₁.length).map Prod.fst :=
+      List.mem_map_of_mem hp
+    rw [htake] at hkey
+    obtain ⟨q, hq, hqp⟩ := List.mem_map.mp hkey
+    exact List.mem_append_left _ (hqp ▸ he₁ q hq)
+
+theorem restore_get_eq {ds : List Ident} {V V' : VEnv D}
+    (h : ScopeFrame ds V V') {x : Ident} (hx : x ∉ ds) :
+    VEnv.get (restore V V') x = VEnv.get V' x := by
+  obtain ⟨ext, W, hV', hkeys, hext⟩ := h
+  have hlen : W.length = V.length := by
+    simpa using congrArg List.length hkeys
+  have hrestore : restore V V' = W := by
+    rw [hV']
+    unfold restore
+    have : (ext ++ W).length - V.length = ext.length := by simp [hlen]
+    rw [this, List.drop_left]
+  have hnot : x ∉ ext.map Prod.fst := by
+    intro hmem
+    obtain ⟨p, hp, hpx⟩ := List.mem_map.mp hmem
+    exact hx (hpx ▸ hext p hp)
+  rw [hrestore, hV', VEnv.get_append_not_mem hnot]
+
+end ScopeFrame
+
+theorem StorageVal.denote_restore {ds : List Ident} {V V' : VEnv D}
+    {v : StorageVal} (hf : ScopeFrame ds V V')
+    (hdep : ∀ x, v.dep = some x → x ∉ ds) :
+    v.denote (restore V V') = v.denote V' := by
+  cases v with
+  | lit n => rfl
+  | var x =>
+      simp only [StorageVal.dep, Option.some.injEq] at hdep
+      simp only [StorageVal.denote]
+      rw [hf.restore_get_eq (hdep x rfl)]
+  | add x n =>
+      simp only [StorageVal.dep, Option.some.injEq] at hdep
+      simp only [StorageVal.denote]
+      rw [hf.restore_get_eq (hdep x rfl)]
+
+theorem StorageCache.OK.kill_restore {ds : List Ident} {V V' : VEnv D}
+    {st : EvmState} {C : StorageCache} (hc : StorageCache.OK V' st C)
+    (hf : ScopeFrame ds V V') :
+    StorageCache.OK (restore V V') st (cacheKill ds C) := by
+  intro p hp
+  simp only [cacheKill, List.mem_filter] at hp
+  rw [StorageFact.Holds, StorageVal.denote_restore hf]
+  · exact hc p hp.1
+  · intro x hx hmem
+    have hk := hp.2
+    rw [hx] at hk
+    simp [List.contains_eq_mem, hmem] at hk
+
+theorem block_keys {funs : FunEnv D} {V V' : VEnv D} {st st' : EvmState}
+    {body : Block Op} {o : Outcome}
+    (h : Step D funs V st (.stmt (.block body)) (.sres V' st' o)) :
+    V'.map Prod.fst = V.map Prod.fst := by
+  cases h with
+  | block hbody =>
+      exact restore_keys (venvKeys_suffix hbody rfl) (venvLen_mono hbody rfl)
+
+theorem scopeFrame_stmt_normal {funs : FunEnv D} {V V' : VEnv D}
+    {st st' : EvmState} {s : Stmt Op}
+    (h : Step D funs V st (.stmt s) (.sres V' st' .normal)) :
+    ScopeFrame (declaredStmts [s]) V V' := by
+  cases h with
+  | funDef => exact ScopeFrame.refl _
+  | block hbody =>
+      exact ScopeFrame.of_keys
+        (restore_keys (venvKeys_suffix hbody rfl) (venvLen_mono hbody rfl))
+  | letZero =>
+      refine ⟨bindZeros D _ , V, rfl, rfl, ?_⟩
+      intro p hp
+      have hk : p.1 ∈ (bindZeros D _).map Prod.fst := List.mem_map_of_mem hp
+      rw [bindZeros_keys] at hk
+      simpa [declaredStmts] using hk
+  | letVal he hlen =>
+      refine ⟨_ , V, rfl, rfl, ?_⟩
+      intro p hp
+      simpa [declaredStmts] using (List.of_mem_zip hp).1
+  | assignVal he hlen =>
+      exact ScopeFrame.of_keys (VEnv.setMany_keys _ _ _)
+  | exprStmt he => exact ScopeFrame.refl _
+  | ifTrue hcond hnz hbody => exact ScopeFrame.of_keys (block_keys hbody)
+  | ifFalse hcond hz => exact ScopeFrame.refl _
+  | switchExec hcond hbody => exact ScopeFrame.of_keys (block_keys hbody)
+  | forLoop hinit hloop =>
+      exact ScopeFrame.of_keys <|
+        restore_keys
+          ((venvKeys_suffix hinit rfl).trans (venvKeys_suffix hloop rfl))
+          (Nat.le_trans (venvLen_mono hinit rfl) (venvLen_mono hloop rfl))
+
+theorem scopeFrame_stmts_normal {funs : FunEnv D} {V V' : VEnv D}
+    {st st' : EvmState} {ss : List (Stmt Op)}
+    (h : Step D funs V st (.stmts ss) (.sres V' st' .normal)) :
+    ScopeFrame (declaredStmts ss) V V' := by
+  induction ss generalizing V st with
+  | nil =>
+      cases h
+      exact ScopeFrame.refl _
+  | cons s rest ih =>
+      cases h with
+      | seqCons hs hrest =>
+          have h₁ := scopeFrame_stmt_normal hs
+          have h₂ := ih hrest
+          cases s <;> simpa [declaredStmts] using h₁.comp h₂
+      | seqStop hs hne => exact absurd rfl hne
+
+theorem BoundOK.get_isSome {V : VEnv D} {bound : List Ident} {x : Ident}
+    (hb : BoundOK V bound) (hx : bound.contains x = true) :
+    (VEnv.get V x).isSome := by
+  have hxmem : x ∈ bound := by simpa [List.contains_eq_mem] using hx
+  obtain ⟨w, hw⟩ := VEnv.get_isSome_of_key (hb x hxmem)
+  simp [hw]
 
 theorem StorageCache.OK.kill_prepend {V : VEnv D} {st : EvmState}
     {C : StorageCache} (hc : StorageCache.OK V st C) (xs : List Ident) (vs : List U256) :
@@ -484,7 +717,7 @@ theorem sfAssign_expr_fwd {bound xs : List Ident} {e e' : Expr Op}
     {C C' : StorageCache} {r : EResult D}
     (h : Step D funs V st (.expr e) (.eres r))
     (heq : sfAssign bound C xs e = (e', C'))
-    (hc : StorageCache.OK V st C) :
+    (hb : BoundOK V bound) (hc : StorageCache.OK V st C) :
     Step D funs V st (.expr e') (.eres r) ∧
       (∀ vals st', r = .vals vals st' →
         StorageCache.OK (VEnv.setMany V xs vals) st' C') := by
@@ -512,14 +745,42 @@ theorem sfAssign_expr_fwd {bound xs : List Ident} {e e' : Expr Op}
               simp only [sfAssign, hk] at heq
               split at heq
               · next hs =>
-                  obtain ⟨rfl, rfl⟩ := heq
-                  refine ⟨h, ?_⟩
-                  intro vals st' hr
-                  obtain ⟨w, hw⟩ := storageStableExpr_inv hs h
-                  rw [hr] at hw
-                  injection hw with hvals hst
-                  cases hvals; cases hst
-                  exact hc.kill_setMany [x] [w]
+                  generalize hv : classifyStorageVal e = qv at heq
+                  cases qv with
+                  | none =>
+                      simp only [hv] at heq
+                      obtain ⟨rfl, rfl⟩ := heq
+                      refine ⟨h, ?_⟩
+                      intro vals st' hr
+                      obtain ⟨w, hw⟩ := storageStableExpr_inv hs h
+                      rw [hr] at hw
+                      injection hw with hvals hst
+                      cases hvals; cases hst
+                      exact hc.kill_setMany [x] [w]
+                  | some v =>
+                      simp only [hv] at heq
+                      split at heq
+                      · next hx =>
+                          obtain ⟨rfl, rfl⟩ := heq
+                          refine ⟨h, ?_⟩
+                          intro vals st' hr
+                          have he : e = v.toExpr := classifyStorageVal_eq_some hv
+                          obtain ⟨w, hvdenote, hresult⟩ :=
+                            StorageVal.eval_inv (he ▸ h)
+                          rw [hr] at hresult
+                          injection hresult with hvals hst
+                          cases hvals; cases hst
+                          rw [VEnv.setMany_singleton]
+                          exact hc.assign hvdenote (hb.get_isSome hx)
+                      · next hx =>
+                          obtain ⟨rfl, rfl⟩ := heq
+                          refine ⟨h, ?_⟩
+                          intro vals st' hr
+                          obtain ⟨w, hw⟩ := storageStableExpr_inv hs h
+                          rw [hr] at hw
+                          injection hw with hvals hst
+                          cases hvals; cases hst
+                          exact hc.kill_setMany [x] [w]
               · obtain ⟨rfl, rfl⟩ := heq
                 exact ⟨h, by intros; exact StorageCache.OK.nil _ _⟩
           | some k =>
@@ -530,25 +791,54 @@ theorem sfAssign_expr_fwd {bound xs : List Ident} {e e' : Expr Op}
               cases q with
               | none =>
                   simp only [hl, Option.map_none, Option.getD_none] at heq
-                  obtain ⟨rfl, rfl⟩ := heq
-                  refine ⟨h, ?_⟩
-                  intro vals st' hr
-                  rw [he] at h
-                  have hsload := sload_lit_inv h
-                  rw [hr] at hsload
-                  injection hsload with hvals hst
-                  cases hvals; cases hst
-                  exact hc.kill_setMany [x] [_]
+                  split at heq
+                  · next hx =>
+                      obtain ⟨rfl, rfl⟩ := heq
+                      refine ⟨h, ?_⟩
+                      intro vals st' hr
+                      rw [he] at h
+                      have hsload := sload_lit_inv h
+                      rw [hr] at hsload
+                      injection hsload with hvals hst
+                      cases hvals; cases hst
+                      refine (hc.kill_setMany [x] [_]).put ?_
+                      rw [StorageFact.Holds, VEnv.setMany_singleton]
+                      simp only [StorageVal.denote]
+                      rw [VEnv.get_set_self (hb.get_isSome hx)]
+                  · next hx =>
+                      obtain ⟨rfl, rfl⟩ := heq
+                      refine ⟨h, ?_⟩
+                      intro vals st' hr
+                      rw [he] at h
+                      have hsload := sload_lit_inv h
+                      rw [hr] at hsload
+                      injection hsload with hvals hst
+                      cases hvals; cases hst
+                      exact hc.kill_setMany [x] [_]
               | some v =>
                   simp only [hl, Option.map_some, Option.getD_some] at heq
-                  obtain ⟨rfl, rfl⟩ := heq
-                  refine ⟨(cached_sload_iff hc hl funs r).mp (he ▸ h), ?_⟩
-                  intro vals st' hr
-                  have hsload := sload_lit_inv (he ▸ h)
-                  rw [hr] at hsload
-                  injection hsload with hvals hst
-                  cases hvals; cases hst
-                  exact hc.kill_setMany [x] [_]
+                  split at heq
+                  · next hx =>
+                      obtain ⟨rfl, rfl⟩ := heq
+                      refine ⟨(cached_sload_iff hc hl funs r).mp (he ▸ h), ?_⟩
+                      intro vals st' hr
+                      have hsload := sload_lit_inv (he ▸ h)
+                      rw [hr] at hsload
+                      injection hsload with hvals hst
+                      cases hvals; cases hst
+                      refine (hc.kill_setMany [x] [_]).put ?_
+                      rw [StorageFact.Holds, VEnv.setMany_singleton]
+                      simp only [StorageVal.denote]
+                      rw [VEnv.get_set_self (hb.get_isSome hx)]
+                  · next hx =>
+                      obtain ⟨rfl, rfl⟩ := heq
+                      refine ⟨(cached_sload_iff hc hl funs r).mp (he ▸ h), ?_⟩
+                      intro vals st' hr
+                      have hsload := sload_lit_inv (he ▸ h)
+                      rw [hr] at hsload
+                      injection hsload with hvals hst
+                      cases hvals; cases hst
+                      exact hc.kill_setMany [x] [_]
       | cons y tail =>
           simp only [sfAssign] at heq
           split at heq
@@ -643,7 +933,18 @@ theorem sfAssign_expr_bwd {bound xs : List Ident} {e e' : Expr Op}
           cases q with
           | none =>
               simp only [sfAssign, hk] at heq
-              split at heq <;> obtain ⟨rfl, rfl⟩ := heq <;> exact h
+              split at heq
+              · generalize hv : classifyStorageVal e = qv at heq
+                cases qv with
+                | none =>
+                    simp only [hv] at heq
+                    obtain ⟨rfl, rfl⟩ := heq
+                    exact h
+                | some v =>
+                    simp only [hv] at heq
+                    split at heq <;> obtain ⟨rfl, rfl⟩ := heq <;> exact h
+              · obtain ⟨rfl, rfl⟩ := heq
+                exact h
           | some k =>
               simp only [sfAssign, hk] at heq
               have he := literalSloadKey_eq_some hk
@@ -651,13 +952,11 @@ theorem sfAssign_expr_bwd {bound xs : List Ident} {e e' : Expr Op}
               cases q with
               | none =>
                   simp only [hl, Option.map_none, Option.getD_none] at heq
-                  obtain ⟨rfl, rfl⟩ := heq
-                  exact h
+                  split at heq <;> obtain ⟨rfl, rfl⟩ := heq <;> exact h
               | some v =>
                   simp only [hl, Option.map_some, Option.getD_some] at heq
-                  obtain ⟨rfl, rfl⟩ := heq
-                  rw [he]
-                  exact (cached_sload_iff hc hl funs r).mpr h
+                  split at heq <;> obtain ⟨rfl, rfl⟩ := heq <;>
+                    rw [he] <;> exact (cached_sload_iff hc hl funs r).mpr h
       | cons y tail =>
           simp only [sfAssign] at heq
           split at heq <;> obtain ⟨rfl, rfl⟩ := heq <;> exact h
@@ -852,7 +1151,9 @@ theorem hoist_sfStmts (bound : List Ident) (C : StorageCache) :
   | nil => rfl
   | cons s rest ih =>
       cases s with
-      | block body => simpa [sfStmts, sfStmt, sfNextBound, hoist] using ih bound ([] : StorageCache)
+      | block body =>
+          simpa [sfStmts, sfStmt, sfNextBound, hoist] using
+            ih bound (cacheKill (declaredStmts body) (sfStmts bound C body).2)
       | funDef n ps rs body =>
           simpa [sfStmts, sfStmt, sfNextBound, hoist] using ih bound C
       | letDecl xs rhs =>
@@ -991,15 +1292,18 @@ theorem sf_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
   | @block funs V st body Vb stb o hbody ihbody =>
       simp only [SFRel, sfCode, sfStmt, Prod.mk.injEq] at hr
       obtain ⟨rfl, rfl⟩ := hr
-      obtain ⟨hbody', -⟩ := ihbody (bound := bound) (C := C)
+      obtain ⟨hbody', hcbody⟩ := ihbody (bound := bound) (C := C)
         (C' := (sfStmts bound C body).2)
         (code' := .stmts (sfStmts bound C body).1) rfl hb hc
       rw [← hoist_sfStmts bound C body] at hbody'
       refine ⟨Step.block hbody', ?_⟩
       intro V' st' o' hres ho
+      subst o'
       injection hres with hV hs hout
       subst hV; subst hs; subst hout
-      exact ⟨hb.mono (Step.block hbody), StorageCache.OK.nil _ _⟩
+      have hcbody' := hcbody Vb stb .normal rfl rfl
+      exact ⟨hb.mono (Step.block hbody),
+        hcbody'.2.kill_restore (scopeFrame_stmts_normal hbody)⟩
   | letZero =>
       simp only [SFRel, sfCode, sfStmt, sfLet, Prod.mk.injEq] at hr
       obtain ⟨rfl, rfl⟩ := hr
@@ -1041,7 +1345,7 @@ theorem sf_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       rcases p with ⟨e', C''⟩
       simp only [SFRel, sfCode, sfStmt, hp, Prod.mk.injEq] at hr
       obtain ⟨rfl, rfl⟩ := hr
-      obtain ⟨he', hc'⟩ := sfAssign_expr_fwd he hp hc
+      obtain ⟨he', hc'⟩ := sfAssign_expr_fwd he hp hb hc
       refine ⟨Step.assignVal he' hlen, ?_⟩
       intro V' st' o hres ho
       injection hres with hV hs hout
@@ -1052,7 +1356,7 @@ theorem sf_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       rcases p with ⟨e', C''⟩
       simp only [SFRel, sfCode, sfStmt, hp, Prod.mk.injEq] at hr
       obtain ⟨rfl, rfl⟩ := hr
-      obtain ⟨he', -⟩ := sfAssign_expr_fwd he hp hc
+      obtain ⟨he', -⟩ := sfAssign_expr_fwd he hp hb hc
       exact ⟨Step.assignHalt he', by intros; simp_all⟩
   | @exprStmt funs V st e st1 he ihe =>
       generalize hp : sfExprStmt C e = p
@@ -1082,7 +1386,8 @@ theorem sf_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
           simp only [SFRel, sfCode, sfStmt, hkeep, Bool.false_eq_true, if_false,
             Prod.mk.injEq] at hr
           obtain ⟨rfl, rfl⟩ := hr
-          obtain ⟨hbody', -⟩ := ihbody (bound := bound) (C := []) (C' := [])
+          obtain ⟨hbody', -⟩ := ihbody (bound := bound) (C := [])
+            (C' := cacheKill (declaredStmts body) (sfStmts bound [] body).2)
             (code' := .stmt (.block (sfStmts bound [] body).1)) rfl hb
             (StorageCache.OK.nil _ _)
           exact ⟨Step.ifTrue hcond hnz hbody', by
@@ -1093,7 +1398,8 @@ theorem sf_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       | true =>
           simp only [SFRel, sfCode, sfStmt, hkeep, if_true, Prod.mk.injEq] at hr
           obtain ⟨rfl, rfl⟩ := hr
-          obtain ⟨hbody', -⟩ := ihbody (bound := bound) (C := []) (C' := [])
+          obtain ⟨hbody', -⟩ := ihbody (bound := bound) (C := [])
+            (C' := cacheKill (declaredStmts body) (sfStmts bound [] body).2)
             (code' := .stmt (.block (sfStmts bound [] body).1)) rfl hb
             (StorageCache.OK.nil _ _)
           refine ⟨Step.ifTrue hcond hnz hbody', ?_⟩
@@ -1382,7 +1688,9 @@ theorem sf_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       obtain ⟨body, rfl, hbodyeq, hcache⟩ := hr.cond_inv
       cases hbodyeq
       have hbody' := ihbody (code := .stmt (.block body)) (bound := bound)
-        (C := []) (C' := []) rfl hb (StorageCache.OK.nil _ _)
+        (C := [])
+        (C' := cacheKill (declaredStmts body) (sfStmts bound [] body).2)
+        rfl hb (StorageCache.OK.nil _ _)
       exact Step.ifTrue hcond hnz hbody'
   | ifFalse hcond hz ihc =>
       obtain ⟨body, rfl, hbodyeq, hcache⟩ := hr.cond_inv
