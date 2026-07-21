@@ -188,8 +188,8 @@ do not invent new boundary vectors:
   upstream 1000e6/500e6 and 1000e18/500e18/250e18/100e18 amounts;
 - `SpokeOperations.sol` builds a real Hub, Spoke, oracle, two reserves, and
   actors, then replays the supply, collateral, borrow, risk-premium, dynamic
-  configuration, repay, and withdrawal sequence exercised by the Spoke gas
-  tests; and
+  configuration, repay, withdrawal, and all five partial/full/receive-shares/
+  deficit liquidation sequences exercised by the Spoke gas tests; and
 - `LiquidationLogic.sol` uses the exact deterministic vectors from Aave's
   `LiquidationLogic.LiquidationAmounts.t.sol` and related liquidation-library
   tests for full liquidation amount, target-health-factor, collateral, and

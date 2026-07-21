@@ -14277,14 +14277,50 @@ contract TestSpoke is Spoke {
   function initialize(address) external pure override {}
 }
 
+contract SpokeActor {
+  TestSpoke private immutable spoke;
+  TestnetERC20 private immutable collateral;
+  uint256 private immutable collateralReserveId;
+  uint256 private immutable debtReserveId;
+
+  constructor(
+    TestSpoke spoke_,
+    TestnetERC20 collateral_,
+    uint256 collateralReserveId_,
+    uint256 debtReserveId_
+  ) {
+    spoke = spoke_;
+    collateral = collateral_;
+    collateralReserveId = collateralReserveId_;
+    debtReserveId = debtReserveId_;
+    collateral_.approve(address(spoke_), type(uint256).max);
+  }
+
+  function supplyCollateral(uint256 amount) external {
+    spoke.supply(collateralReserveId, amount, address(this));
+    spoke.setUsingAsCollateral(collateralReserveId, true, address(this));
+  }
+
+  function borrow(uint256 amount) external {
+    spoke.borrow(debtReserveId, amount, address(this));
+  }
+}
+
 contract AGasTest {
   TestHub public immutable hub;
   TestSpoke public immutable spoke;
   TestnetERC20 public immutable usdx;
   TestnetERC20 public immutable dai;
+  MockPriceFeed public immutable usdxPriceFeed;
 
   uint256 public immutable usdxReserveId;
   uint256 public immutable daiReserveId;
+
+  SpokeActor private immutable liquidationPartialActor;
+  SpokeActor private immutable liquidationFullActor;
+  SpokeActor private immutable liquidationSharesPartialActor;
+  SpokeActor private immutable liquidationSharesFullActor;
+  SpokeActor private immutable liquidationDeficitActor;
 
   constructor() {
     AlwaysAllowAuthority authority = new AlwaysAllowAuthority();
@@ -14333,15 +14369,16 @@ contract AGasTest {
       borrowable: true,
       receiveSharesEnabled: true
     });
+    usdxPriceFeed = new MockPriceFeed(8, 'USDX / USD', 1e8);
     usdxReserveId = spoke.addReserve(
       address(hub),
       usdxAssetId,
-      address(new MockPriceFeed(8, 'USDX / USD', 1e8)),
+      address(usdxPriceFeed),
       reserveConfig,
       ISpoke.DynamicReserveConfig({
         collateralFactor: 78_00,
-        maxLiquidationBonus: 101_00,
-        liquidationFee: 12_00
+        maxLiquidationBonus: 105_00,
+        liquidationFee: 10_00
       })
     );
     daiReserveId = spoke.addReserve(
@@ -14357,13 +14394,35 @@ contract AGasTest {
     );
 
     usdx.mint(address(this), 2_000_000e6);
-    dai.mint(address(this), 2_000_000e18);
+    dai.mint(address(this), 10_000_000e18);
     usdx.approve(address(spoke), type(uint256).max);
     dai.approve(address(spoke), type(uint256).max);
 
     // Matches Spoke.Operations' seeded DAI liquidity. The public scenario
     // sequence below performs the user's setup and actions in upstream order.
-    spoke.supply(daiReserveId, 1_000_000e18, address(this));
+    spoke.supply(daiReserveId, 5_000_000e18, address(this));
+
+    // Five isolated users reproduce the upstream liquidation gas scenarios.
+    // Each borrows to HF 1.05 before the shared collateral price falls to 85%.
+    liquidationPartialActor = _newLiquidationActor();
+    liquidationFullActor = _newLiquidationActor();
+    liquidationSharesPartialActor = _newLiquidationActor();
+    liquidationSharesFullActor = _newLiquidationActor();
+    liquidationDeficitActor = _newLiquidationActor();
+    usdxPriceFeed.setPrice(85e6);
+  }
+
+  function _newLiquidationActor() internal returns (SpokeActor actor) {
+    actor = new SpokeActor(spoke, usdx, usdxReserveId, daiReserveId);
+    usdx.mint(address(actor), 1_000_000e6);
+    actor.supplyCollateral(1_000_000e6);
+
+    // This is the calculation used by Aave's
+    // _borrowToBeLiquidatableWithPriceChange helper for desired HF 1.05.
+    ISpoke.UserAccountData memory data = spoke.getUserAccountData(address(actor));
+    uint256 adjustedCollateral = data.totalCollateralValue * data.avgCollateralFactor / 1e18;
+    uint256 targetDebtValue = (adjustedCollateral * 1e18 + 1.05e18 - 1) / 1.05e18;
+    actor.borrow(targetDebtValue / 1e8);
   }
 
   function supplyFirst() external {
@@ -14417,6 +14476,57 @@ contract AGasTest {
   function withdrawFull() external {
     spoke.withdraw(usdxReserveId, type(uint256).max, address(this));
   }
+
+  function liquidationPartial() external {
+    spoke.liquidationCall(
+      usdxReserveId,
+      daiReserveId,
+      address(liquidationPartialActor),
+      100_000e18,
+      false
+    );
+  }
+
+  function liquidationFull() external {
+    spoke.liquidationCall(
+      usdxReserveId,
+      daiReserveId,
+      address(liquidationFullActor),
+      type(uint256).max,
+      false
+    );
+  }
+
+  function liquidationReceiveSharesPartial() external {
+    spoke.liquidationCall(
+      usdxReserveId,
+      daiReserveId,
+      address(liquidationSharesPartialActor),
+      100_000e18,
+      true
+    );
+  }
+
+  function liquidationReceiveSharesFull() external {
+    spoke.liquidationCall(
+      usdxReserveId,
+      daiReserveId,
+      address(liquidationSharesFullActor),
+      type(uint256).max,
+      true
+    );
+  }
+
+  function liquidationReportDeficitFull() external {
+    usdxPriceFeed.setPrice(45e6);
+    spoke.liquidationCall(
+      usdxReserveId,
+      daiReserveId,
+      address(liquidationDeficitActor),
+      type(uint256).max,
+      false
+    );
+  }
 }
 
 // ----
@@ -14432,3 +14542,8 @@ contract AGasTest {
 // repayFull() -> 0
 // withdrawPartial() -> 0
 // withdrawFull() -> 0
+// liquidationPartial() -> 0
+// liquidationFull() -> 0
+// liquidationReceiveSharesPartial() -> 0
+// liquidationReceiveSharesFull() -> 0
+// liquidationReportDeficitFull() -> 0
