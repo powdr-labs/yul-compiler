@@ -551,7 +551,7 @@ The three dominant dynamic-array rows fall by 9,017,190, 9,482,520, and
 23,889 → 23,700 (−189); its five stack-depth failures remain a separate
 stack-compression target.
 
-### 🚧 Right-to-left call-argument splitting (`codex/expression-splitter`)
+### ❌ Right-to-left call-argument splitting (measured, rejected)
 
 Post-`DeadResults` dumps show that the remaining helper graph is often blocked
 by a named call nested as an argument of another expression.  The hottest pop
@@ -566,31 +566,44 @@ direct singleton call site, but cannot classify its caller as call-free while
 the call remains under `sstore`.  That in turn keeps `storage_set_to_zero` and
 `array_pop` out of line on every loop iteration.
 
-The proposed generalization of `HoistCalls` splits an assignment or expression
-statement's minimal call-bearing argument suffix.  It evaluates the complete
-suffix into globally fresh singleton locals in reverse source order, then
-rebuilds the parent expression from those locals inside a restoring block.
-The prefix is call-free by construction; every call-bearing suffix member must
-be a direct named call accepted by the existing `lookupDelta`, `inlineOK`, and
-`siteOK` gates.  Thus evaluation order, state changes, stuckness, and halts are
-preserved exactly, while every newly exposed call is consumed by the following
-`FreshenCalls → InlineCalls` stages.  `let` initializers and control-flow
-conditions remain unchanged because their binding/halt shapes require a
-different contextual theorem.
+A prototype generalized `HoistCalls` to split a minimal call-bearing argument
+suffix into fresh singleton locals in Yul's right-to-left evaluation order.
+Combined with the existing inliners it improved many fixtures, but also caused
+36 small gas regressions from extra temporary stack traffic. Its aggregate gain
+was modest compared with the storage-specific opportunity below, so the pass
+was dropped rather than adding a broad normalization with a mixed gas result.
 
-Soundness will use a bidirectional suffix-evaluation simulation indexed by the
-fresh environment insertions, covering normal evaluation and both argument
-halt forms.  The assignment case additionally proves that block restoration
-drops every temporary while preserving exact multi-target updates; the
-expression-statement case restores the original environment on normal and halt
-outcomes.  The recursive traversal retains the existing hoisted-scope model and
-gets a corresponding layout-resolution proof for the object path.
+### ✅ Literal-slot storage value forwarding (`codex/expression-splitter`)
 
-Acceptance requires the six-round pipeline to collapse the observed
-`array_pop` chain, material aggregate/top-30 gains, no gas regressions or lost
-compilation, full solc differential agreement, and an unchanged trust boundary.
-Storage-load forwarding remains a separate measured follow-up: it requires a
-concrete alias/invalidation rule and an independent proof-design review.
+Post-`DeadResults` output made the remaining dominant array cost more precise.
+After a dynamic-array length update, the inlined bounds-check path reloads the
+same literal storage slot even though the just-written value is a cheap
+literal, variable, or `add(variable, literal)` expression. This occurs inside
+the hot loops of issue #65's three largest array fixtures.
+
+`StorageForward` keeps a small cache from literal slot keys to those replayable
+value shapes. A potentially aliasing store clears all old facts before adding
+one exact fact; stateful expressions, calls, switches, and loops are barriers;
+assignment kills values that depend on the assigned variable. A conditional
+may preserve its incoming facts only when its condition is total and storage
+neutral and its body is syntactically unable to complete normally. Loop post
+and body blocks are optimized independently, so no fact crosses an iteration.
+Regions containing unresolved `dataoffset` or `datasize` are unchanged; this
+makes the pass resolution-congruent on the object compilation path.
+
+The proof is a bidirectional big-step simulation carrying explicit variable-
+binding and cache-validity invariants. It covers normal execution and every
+halt/control outcome, lifts through nested function bodies and loop regions,
+and has a separate layout-resolution congruence for object compilation.
+
+Measured on top of the `DeadResults` branch, the semantic Solidity suite
+improves 15/859 comparable fixtures with no regression: **110,331,250 →
+109,038,844** total gas (−1,292,406), moving ours/solc from **1.13114× to
+1.11789×** and removing 10.1% of the remaining aggregate gap. The three
+dominant array rows improve by 384,930, 386,810, and 411,814 gas respectively
+(−1,183,554 combined). The current Uniswap library scenarios are unchanged;
+their remaining gap is dominated by arithmetic/stack layout rather than
+persistent-storage reloads.
 
 ## Candidate next ideas (not started)
 
