@@ -21,8 +21,8 @@ env:
   SVM_VERSION: "0.5.26"
   SOLC_VERSION: "0.8.35"
 
-# The pipeline is split so no expensive build is ever done twice on the critical
-# path, and so the two independent build products fan out in parallel:
+# The head pipeline is split so no expensive build is ever done twice on its
+# critical path, and so the two independent build products fan out in parallel:
 #
 #   build ───────────────▶ solc-differential (yul corpora, `lean --run`)
 #   gas-runner ──────────▶ solidity-gas       (gasTests + semanticTests, native)
@@ -34,14 +34,49 @@ env:
 # the runner's cores by the runners themselves (see TEST_JOBS in the Lean
 # scripts). WarpBuild 32-core runners make the one-time C compile and the
 # per-leg execution both scale with cores. Which tests run is unchanged — only
-# where they run and how the work is distributed.
+# where they run and how the work is distributed. Pull requests also run the
+# same fan-outs from a resolved main SHA against the exact same resolved
+# Solidity corpus SHA. Main's library build and native gas runner are cached by
+# commit across PRs; test execution itself is never cached, so the reported
+# delta always comes from the current paired run.
 jobs:
+  # Resolve moving branch inputs once so every head/main leg sees the same
+  # revisions. In particular, Solidity's develop branch must not advance
+  # between the two runs or an upstream corpus change would look like a compiler
+  # delta in the PR sticker.
+  comparison-inputs:
+    name: Resolve comparison inputs
+    runs-on: ubuntu-latest
+    outputs:
+      main_sha: ${{ steps.revisions.outputs.main_sha }}
+      solidity_sha: ${{ steps.revisions.outputs.solidity_sha }}
+    steps:
+      - name: Resolve main and Solidity develop
+        id: revisions
+        run: |
+          main_sha=$(git ls-remote https://github.com/${{ github.repository }}.git refs/heads/main | cut -f1)
+          solidity_sha=$(git ls-remote https://github.com/argotorg/solidity.git refs/heads/develop | cut -f1)
+          [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$solidity_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
+          echo "solidity_sha=$solidity_sha" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build & verify
+    needs: comparison-inputs
     runs-on: warp-ubuntu-2404-x64-32x
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Populate a reusable main build cache on pushes. PR baseline builds use
+      # the same key below, avoiding a second proof compilation for every PR.
+      - name: Cache main compiled library build
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/cache@v4
+        with:
+          path: .lake/build
+          key: main-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ github.sha }}
 
       # Cache the compiled oleans of the two (large) semantics dependencies so
       # they are not recompiled from source every run — lean-action only caches
@@ -118,15 +153,19 @@ jobs:
       # Fetch only the Yul test directories used below. Checked-in baselines
       # make current parser/compiler gaps explicit and detect stale entries.
       - name: Fetch Solidity Yul tests
+        env:
+          SOLIDITY_SHA: ${{ needs.comparison-inputs.outputs.solidity_sha }}
         run: |
-          git clone --depth 1 --filter=blob:none --sparse --branch develop \
-            https://github.com/argotorg/solidity.git /tmp/solidity
+          git init /tmp/solidity
+          git -C /tmp/solidity remote add origin https://github.com/argotorg/solidity.git
           git -C /tmp/solidity sparse-checkout set \
             test/libyul/yulSyntaxTests \
             test/libyul/yulInterpreterTests \
             test/libyul/yulOptimizerTests \
             test/libyul/objectCompiler \
             test/libyul/evmCodeTransform
+          git -C /tmp/solidity fetch --depth 1 --filter=blob:none origin "$SOLIDITY_SHA"
+          git -C /tmp/solidity checkout --detach FETCH_HEAD
 
       # These steps tee their runner output into ci-summary/ so the pr-summary
       # job can turn it into a PR comment; `set -o pipefail` keeps the runner's
@@ -187,7 +226,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Cache gas runner binary
+        id: gas-runner-cache
+        uses: actions/cache@v4
+        with:
+          path: .lake/build/bin/checkSolidityGas
+          key: gas-runner-bin-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ github.sha }}
+
       - name: Cache dependency builds
+        if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache@v4
         with:
           path: |
@@ -196,6 +243,7 @@ jobs:
           key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
 
       - name: Build (fetch Mathlib cache + lake build)
+        if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
         uses: leanprover/lean-action@v1
         with:
           use-mathlib-cache: "true"
@@ -207,6 +255,7 @@ jobs:
       # interpreter's stack allows, so the gas runner is a native executable
       # rather than `lean --run`.
       - name: Build Solidity gas runner (native)
+        if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
         run: lake build checkSolidityGas
 
       - name: Upload gas runner binary
@@ -218,7 +267,7 @@ jobs:
 
   solc-differential:
     name: solc differential (${{ matrix.name }})
-    needs: build
+    needs: [comparison-inputs, build]
     runs-on: warp-ubuntu-2404-x64-32x
     timeout-minutes: 30
     strategy:
@@ -303,13 +352,17 @@ jobs:
           echo "SOLC_PATH=$solc_path" >> "$GITHUB_ENV"
 
       - name: Fetch Solidity Yul corpora
+        env:
+          SOLIDITY_SHA: ${{ needs.comparison-inputs.outputs.solidity_sha }}
         run: |
-          git clone --depth 1 --filter=blob:none --sparse --branch develop \
-            https://github.com/argotorg/solidity.git /tmp/solidity
+          git init /tmp/solidity
+          git -C /tmp/solidity remote add origin https://github.com/argotorg/solidity.git
           git -C /tmp/solidity sparse-checkout set \
             test/libyul/yulOptimizerTests \
             test/libyul/objectCompiler \
             test/libyul/evmCodeTransform
+          git -C /tmp/solidity fetch --depth 1 --filter=blob:none origin "$SOLIDITY_SHA"
+          git -C /tmp/solidity checkout --detach FETCH_HEAD
 
       # Behavior AND gas for the Yul corpora: each differential invocation also
       # takes a per-suite gas baseline and fails if this compiler's total gas for
@@ -356,7 +409,7 @@ jobs:
 
   solidity-gas:
     name: Solidity gas (${{ matrix.name }})
-    needs: gas-runner
+    needs: [comparison-inputs, gas-runner]
     runs-on: warp-ubuntu-2404-x64-32x
     timeout-minutes: 30
     strategy:
@@ -429,14 +482,18 @@ jobs:
 
       - name: Fetch Solidity gas corpora
         if: ${{ matrix.kind != 'uniswap' }}
+        env:
+          SOLIDITY_SHA: ${{ needs.comparison-inputs.outputs.solidity_sha }}
         run: |
-          git clone --depth 1 --filter=blob:none --sparse --branch develop \
-            https://github.com/argotorg/solidity.git /tmp/solidity
+          git init /tmp/solidity
+          git -C /tmp/solidity remote add origin https://github.com/argotorg/solidity.git
           if [[ "${{ matrix.kind }}" == "gasTests" ]]; then
             git -C /tmp/solidity sparse-checkout set test/libsolidity/gasTests
           else
             git -C /tmp/solidity sparse-checkout set test/libsolidity/semanticTests
           fi
+          git -C /tmp/solidity fetch --depth 1 --filter=blob:none origin "$SOLIDITY_SHA"
+          git -C /tmp/solidity checkout --detach FETCH_HEAD
 
       # Compile each contract through solc's --via-ir pipeline and gas-compare the
       # optimized runtime against solc's; fails if a contract stops compiling or
@@ -478,13 +535,424 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
+  # PR-only baseline: compile and test the resolved main commit against the
+  # exact same Solidity revision as the head jobs. Build products are cached by
+  # main SHA, but tests are deliberately rerun so their data cannot go stale.
+  baseline-build:
+    name: Main baseline build & verify
+    if: ${{ github.event_name == 'pull_request' }}
+    needs: comparison-inputs
+    runs-on: warp-ubuntu-2404-x64-32x
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.comparison-inputs.outputs.main_sha }}
+
+      - name: Cache compiled main library build
+        uses: actions/cache@v4
+        with:
+          path: .lake/build
+          key: main-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ needs.comparison-inputs.outputs.main_sha }}
+
+      - name: Cache dependency builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake/packages/yul-semantics/.lake/build
+            .lake/packages/evm_semantics/.lake/build
+          key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+
+      - name: Build main (fetch Mathlib cache + lake build)
+        uses: leanprover/lean-action@v1
+        with:
+          use-mathlib-cache: "true"
+          build: "true"
+          test: "false"
+          lint: "false"
+
+      - name: Upload compiled main library build
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-lake-build
+          path: .lake/build
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Verify main soundness
+        run: |
+          mkdir -p ci-summary; f=ci-summary/soundness.txt; : > "$f"; ok=1
+          if grep -rn --include='*.lean' -w 'sorry' \
+              YulEvmCompiler YulParser YulEvmCompilerTests; then
+            echo "::error::found a sorry in main compiler, parser, or test-framework sources"
+            echo "sorry_scan=fail" >> "$f"; ok=0
+          else echo "sorry_scan=pass" >> "$f"; fi
+          if lake env lean Checks.lean; then echo "axioms=pass" >> "$f"
+          else echo "::error::main axiom footprint changed"; echo "axioms=fail" >> "$f"; ok=0; fi
+          if lake env lean SpecClosure.lean; then echo "spec_closure=pass" >> "$f"
+          else echo "::error::main audited spec surface changed"; echo "spec_closure=fail" >> "$f"; ok=0; fi
+          if git diff --exit-code -- SPEC.md; then echo "spec_md=uptodate" >> "$f"
+          else echo "::error::main SPEC.md is stale"; echo "spec_md=stale" >> "$f"; ok=0; fi
+          [ "$ok" = 1 ]
+
+      - name: Fetch pinned Solidity Yul tests
+        env:
+          SOLIDITY_SHA: ${{ needs.comparison-inputs.outputs.solidity_sha }}
+        run: |
+          git init /tmp/solidity
+          git -C /tmp/solidity remote add origin https://github.com/argotorg/solidity.git
+          git -C /tmp/solidity sparse-checkout set \
+            test/libyul/yulSyntaxTests \
+            test/libyul/yulInterpreterTests \
+            test/libyul/yulOptimizerTests \
+            test/libyul/objectCompiler \
+            test/libyul/evmCodeTransform
+          git -C /tmp/solidity fetch --depth 1 --filter=blob:none origin "$SOLIDITY_SHA"
+          git -C /tmp/solidity checkout --detach FETCH_HEAD
+
+      - name: Check main parser against Solidity syntax corpus
+        run: |
+          set -o pipefail; mkdir -p ci-summary
+          lake env lean --run scripts/CheckSoliditySyntaxTests.lean \
+            /tmp/solidity/test/libyul/yulSyntaxTests \
+            test/solidity-yul-syntax-known-mismatches.txt \
+            2>&1 | tee ci-summary/parsing-syntax.txt
+
+      - name: Execute main on Solidity Yul interpreter tests
+        run: |
+          set -o pipefail; mkdir -p ci-summary
+          lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
+            /tmp/solidity/test/libyul/yulInterpreterTests \
+            test/solidity-yul-interpreter-known-failures.txt \
+            2>&1 | tee ci-summary/parsing-interpreter.txt
+
+      - name: Compile positive Solidity corpora with main
+        run: |
+          set -o pipefail; mkdir -p ci-summary; f=ci-summary/correctness-compile.txt; : > "$f"
+          status=0
+          lake env lean --run scripts/CheckSolidityCompileTests.lean \
+            optimizer /tmp/solidity/test/libyul/yulOptimizerTests \
+            test/solidity-yul-optimizer-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
+          lake env lean --run scripts/CheckSolidityCompileTests.lean \
+            object-compiler /tmp/solidity/test/libyul/objectCompiler \
+            test/solidity-yul-object-compiler-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
+          lake env lean --run scripts/CheckSolidityCompileTests.lean \
+            EVM-code-transform /tmp/solidity/test/libyul/evmCodeTransform \
+            test/solidity-yul-evm-code-transform-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
+          exit "$status"
+
+      - name: Upload main CI summary (build)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-summary-build
+          path: ci-summary
+          retention-days: 1
+          if-no-files-found: ignore
+
+  baseline-gas-runner:
+    name: Main baseline gas runner
+    if: ${{ github.event_name == 'pull_request' }}
+    needs: comparison-inputs
+    runs-on: warp-ubuntu-2404-x64-32x
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.comparison-inputs.outputs.main_sha }}
+
+      - name: Cache main gas runner binary
+        id: gas-runner-cache
+        uses: actions/cache@v4
+        with:
+          path: .lake/build/bin/checkSolidityGas
+          key: gas-runner-bin-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ needs.comparison-inputs.outputs.main_sha }}
+
+      - name: Cache dependency builds
+        if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake/packages/yul-semantics/.lake/build
+            .lake/packages/evm_semantics/.lake/build
+          key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+
+      - name: Build main (fetch Mathlib cache + lake build)
+        if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
+        uses: leanprover/lean-action@v1
+        with:
+          use-mathlib-cache: "true"
+          build: "true"
+          test: "false"
+          lint: "false"
+
+      - name: Build main Solidity gas runner (native)
+        if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
+        run: lake build checkSolidityGas
+
+      - name: Upload main gas runner binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-gas-runner-bin
+          path: .lake/build/bin/checkSolidityGas
+          retention-days: 1
+
+  baseline-solc-differential:
+    name: Main solc differential (${{ matrix.name }})
+    if: ${{ github.event_name == 'pull_request' }}
+    needs: [comparison-inputs, baseline-build]
+    runs-on: warp-ubuntu-2404-x64-32x
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: direct corpora
+            kind: direct
+            shard_index: 0
+            shard_count: 1
+          - name: optimizer 1/5
+            kind: optimizer
+            shard_index: 0
+            shard_count: 5
+          - name: optimizer 2/5
+            kind: optimizer
+            shard_index: 1
+            shard_count: 5
+          - name: optimizer 3/5
+            kind: optimizer
+            shard_index: 2
+            shard_count: 5
+          - name: optimizer 4/5
+            kind: optimizer
+            shard_index: 3
+            shard_count: 5
+          - name: optimizer 5/5
+            kind: optimizer
+            shard_index: 4
+            shard_count: 5
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.comparison-inputs.outputs.main_sha }}
+
+      - name: Cache dependency builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake/packages/yul-semantics/.lake/build
+            .lake/packages/evm_semantics/.lake/build
+          key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+
+      - name: Restore compiled main library build
+        uses: actions/download-artifact@v4
+        with:
+          name: baseline-lake-build
+          path: .lake/build
+
+      - name: Build main differential runner
+        uses: leanprover/lean-action@v1
+        with:
+          use-mathlib-cache: "true"
+          build: "true"
+          test: "false"
+          lint: "false"
+
+      - name: Cache pinned svm and solc
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/svm
+            ~/.cargo/bin/solc
+            ~/.local/share/svm/${{ env.SOLC_VERSION }}
+          key: svm-${{ runner.os }}-${{ runner.arch }}-${{ env.SVM_VERSION }}-solc-${{ env.SOLC_VERSION }}
+
+      - name: Install pinned solc with svm
+        run: |
+          if ! command -v svm >/dev/null 2>&1 || \
+              ! svm --version | grep -q "^svm $SVM_VERSION "; then
+            cargo install svm-rs --locked --version "$SVM_VERSION" --force
+          fi
+          if ! svm which "$SOLC_VERSION" >/dev/null 2>&1; then svm install "$SOLC_VERSION"; fi
+          solc_path="$(svm which "$SOLC_VERSION")"
+          test -x "$solc_path"
+          echo "SOLC_PATH=$solc_path" >> "$GITHUB_ENV"
+
+      - name: Fetch pinned Solidity Yul corpora
+        env:
+          SOLIDITY_SHA: ${{ needs.comparison-inputs.outputs.solidity_sha }}
+        run: |
+          git init /tmp/solidity
+          git -C /tmp/solidity remote add origin https://github.com/argotorg/solidity.git
+          git -C /tmp/solidity sparse-checkout set \
+            test/libyul/yulOptimizerTests test/libyul/objectCompiler test/libyul/evmCodeTransform
+          git -C /tmp/solidity fetch --depth 1 --filter=blob:none origin "$SOLIDITY_SHA"
+          git -C /tmp/solidity checkout --detach FETCH_HEAD
+
+      - name: Differentially execute main against solc
+        run: |
+          set -o pipefail
+          mkdir -p ci-summary
+          f="ci-summary/diff-${{ matrix.kind }}-${{ matrix.shard_index }}.txt"; : > "$f"
+          if [[ "${{ matrix.kind }}" == "optimizer" ]]; then
+            lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+              optimizer /tmp/solidity/test/libyul/yulOptimizerTests \
+              test/solidity-yul-optimizer-known-solc-differential-failures.txt \
+              test/solidity-yul-optimizer-gas-baseline.txt \
+              "$SOLC_PATH" "$SOLC_VERSION" \
+              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}" 2>&1 | tee -a "$f"
+          else
+            status=0
+            lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+              object-compiler /tmp/solidity/test/libyul/objectCompiler \
+              test/solidity-yul-object-compiler-known-solc-differential-failures.txt \
+              test/solidity-yul-object-compiler-gas-baseline.txt \
+              "$SOLC_PATH" "$SOLC_VERSION" 0 1 2>&1 | tee -a "$f" || status=1
+            lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+              EVM-code-transform /tmp/solidity/test/libyul/evmCodeTransform \
+              test/solidity-yul-evm-code-transform-known-solc-differential-failures.txt \
+              test/solidity-yul-evm-code-transform-gas-baseline.txt \
+              "$SOLC_PATH" "$SOLC_VERSION" 0 1 2>&1 | tee -a "$f" || status=1
+            exit "$status"
+          fi
+
+      - name: Upload main CI summary (differential)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-summary-diff-${{ matrix.kind }}-${{ matrix.shard_index }}
+          path: ci-summary
+          retention-days: 1
+          if-no-files-found: ignore
+
+  baseline-solidity-gas:
+    name: Main Solidity gas (${{ matrix.name }})
+    if: ${{ github.event_name == 'pull_request' }}
+    needs: [comparison-inputs, baseline-gas-runner]
+    runs-on: warp-ubuntu-2404-x64-32x
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gasTests
+            kind: gasTests
+            shard_index: 0
+            shard_count: 1
+          - name: Uniswap v4
+            kind: uniswap
+            shard_index: 0
+            shard_count: 1
+          - name: semanticTests 1/3
+            kind: semantic
+            shard_index: 0
+            shard_count: 3
+          - name: semanticTests 2/3
+            kind: semantic
+            shard_index: 1
+            shard_count: 3
+          - name: semanticTests 3/3
+            kind: semantic
+            shard_index: 2
+            shard_count: 3
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.comparison-inputs.outputs.main_sha }}
+
+      - name: Restore main gas runner binary
+        uses: actions/download-artifact@v4
+        with:
+          name: baseline-gas-runner-bin
+          path: .lake/build/bin
+
+      - name: Make main gas runner executable
+        run: chmod +x .lake/build/bin/checkSolidityGas
+
+      - name: Cache pinned svm and solc
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/svm
+            ~/.cargo/bin/solc
+            ~/.local/share/svm/${{ env.SOLC_VERSION }}
+          key: svm-${{ runner.os }}-${{ runner.arch }}-${{ env.SVM_VERSION }}-solc-${{ env.SOLC_VERSION }}
+
+      - name: Install pinned solc with svm
+        run: |
+          if ! command -v svm >/dev/null 2>&1 || \
+              ! svm --version | grep -q "^svm $SVM_VERSION "; then
+            cargo install svm-rs --locked --version "$SVM_VERSION" --force
+          fi
+          if ! svm which "$SOLC_VERSION" >/dev/null 2>&1; then svm install "$SOLC_VERSION"; fi
+          solc_path="$(svm which "$SOLC_VERSION")"
+          test -x "$solc_path"
+          echo "SOLC_PATH=$solc_path" >> "$GITHUB_ENV"
+
+      - name: Fetch pinned Solidity gas corpus
+        if: ${{ matrix.kind != 'uniswap' }}
+        env:
+          SOLIDITY_SHA: ${{ needs.comparison-inputs.outputs.solidity_sha }}
+        run: |
+          git init /tmp/solidity
+          git -C /tmp/solidity remote add origin https://github.com/argotorg/solidity.git
+          if [[ "${{ matrix.kind }}" == "gasTests" ]]; then
+            git -C /tmp/solidity sparse-checkout set test/libsolidity/gasTests
+          else
+            git -C /tmp/solidity sparse-checkout set test/libsolidity/semanticTests
+          fi
+          git -C /tmp/solidity fetch --depth 1 --filter=blob:none origin "$SOLIDITY_SHA"
+          git -C /tmp/solidity checkout --detach FETCH_HEAD
+
+      - name: Compile and gas-check Solidity contracts with main
+        run: |
+          set -o pipefail
+          ulimit -s unlimited || true
+          mkdir -p ci-summary
+          f="ci-summary/gas-${{ matrix.kind }}-${{ matrix.shard_index }}.txt"; : > "$f"
+          if [[ "${{ matrix.kind }}" == "gasTests" ]]; then
+            .lake/build/bin/checkSolidityGas \
+              /tmp/solidity/test/libsolidity/gasTests test/solidity-gas-baseline.txt \
+              "$SOLC_PATH" "$SOLC_VERSION" 2>&1 | tee -a "$f"
+          elif [[ "${{ matrix.kind }}" == "uniswap" ]]; then
+            .lake/build/bin/checkSolidityGas \
+              test/uniswap-v4 test/uniswap-v4-gas-baseline.txt \
+              "$SOLC_PATH" "$SOLC_VERSION" \
+              --known=test/uniswap-v4-known-compile-failures.txt 2>&1 | tee -a "$f"
+          else
+            .lake/build/bin/checkSolidityGas \
+              /tmp/solidity/test/libsolidity/semanticTests \
+              test/solidity-semantic-gas-baseline.txt "$SOLC_PATH" "$SOLC_VERSION" \
+              "${{ matrix.shard_index }}" "${{ matrix.shard_count }}" --lenient 2>&1 | tee -a "$f"
+          fi
+
+      - name: Upload main CI summary (gas)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-summary-gas-${{ matrix.kind }}-${{ matrix.shard_index }}
+          path: ci-summary
+          retention-days: 1
+          if-no-files-found: ignore
+
   # Aggregate every leg's captured summary into one sticky PR comment: parsing,
   # correctness, gas (vs solc-optimized AND codegen parity), soundness, verdict.
   # Runs on pull requests only; `always()` so it also reports failing runs (that
   # is when the summary is most useful). Needs no Lean toolchain.
   pr-summary:
     name: PR summary comment
-    needs: [build, gas-runner, solc-differential, solidity-gas]
+    needs:
+      - comparison-inputs
+      - build
+      - gas-runner
+      - solc-differential
+      - solidity-gas
+      - baseline-build
+      - baseline-gas-runner
+      - baseline-solc-differential
+      - baseline-solidity-gas
     if: ${{ always() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     permissions:
@@ -494,12 +962,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download all leg summaries
+      - name: Download head summaries
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           pattern: summary-*
-          path: summaries
+          path: summaries/head
+          merge-multiple: true
+
+      - name: Download main summaries
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: baseline-summary-*
+          path: summaries/main
           merge-multiple: true
 
       - name: Render summary comment
@@ -508,8 +984,15 @@ jobs:
           GAS_RUNNER_RESULT: ${{ needs.gas-runner.result }}
           SOLC_DIFFERENTIAL_RESULT: ${{ needs.solc-differential.result }}
           SOLIDITY_GAS_RESULT: ${{ needs.solidity-gas.result }}
+          MAIN_BUILD_RESULT: ${{ needs.baseline-build.result }}
+          MAIN_GAS_RUNNER_RESULT: ${{ needs.baseline-gas-runner.result }}
+          MAIN_SOLC_DIFFERENTIAL_RESULT: ${{ needs.baseline-solc-differential.result }}
+          MAIN_SOLIDITY_GAS_RESULT: ${{ needs.baseline-solidity-gas.result }}
         run: |
-          python3 scripts/ci_pr_summary.py summaries --sha "${{ github.event.pull_request.head.sha }}" \
+          python3 scripts/ci_pr_summary.py summaries/head \
+            --base-summary-dir summaries/main \
+            --sha "${{ github.event.pull_request.head.sha }}" \
+            --base-sha "${{ needs.comparison-inputs.outputs.main_sha }}" \
             > comment.md
           cat comment.md >> "$GITHUB_STEP_SUMMARY"
 
