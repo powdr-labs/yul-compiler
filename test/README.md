@@ -113,36 +113,59 @@ nothing that this non-optimizing compiler runs in full.
 
 ## Uniswap v4-core fixtures (`uniswap-v4/`)
 
-`test/uniswap-v4/` applies the same runner to real production DeFi code:
-Uniswap v4-core's library gas benchmarks, mirroring the upstream
-`test/libraries/*.t.sol` gas-snapshot tests (`snapshots/*.json` in
-[Uniswap/v4-core](https://github.com/Uniswap/v4-core)). Each fixture is a
-single self-contained file: a small `AGasTest` wrapper contract exposing the
-upstream snapshot scenarios as external functions, followed by the **verbatim**
-v4-core library sources (only SPDX/pragma/import lines dropped), and a
-semanticTests-style `// ----` call section replaying the exact upstream inputs
-(the expected values were produced by executing solc's optimized build of each
-fixture). The wrapper is named `AGasTest` so it sorts alphabetically before
-every library: solc emits one output section per contract, ordered by name,
-and the runner reads the first one.
+`test/uniswap-v4/` applies the same runner to real production DeFi code. The
+first tier mirrors Uniswap v4-core's `test/libraries/*.t.sol` gas snapshots.
+Above it, four fixtures form an explicit integration ladder:
+
+- `PoolInitialize.sol` initializes and reads a real `Pool.State` and compiles
+  today;
+- `PoolLiquidity.sol` adds/removes liquidity and donates over persistent pool
+  storage;
+- `PoolSwap.sol` adds the full swap hot path; and
+- `PoolManager.sol` wraps the production PoolManager with a minimal router and
+  two ERC20s, covering constructor CREATEs, callback CALLs, settlement, and
+  transient-storage unlock accounting.
+
+Each fixture is one self-contained file: an authored `AGasTest` wrapper
+followed by the **verbatim** flattened v4-core sources from commit
+`46c6834698c48bc4a463a86d8420f4eb1d7f3b75` (only SPDX/pragma/import lines
+dropped), plus a semanticTests-style `// ----` sequence. Calls replay in order
+with persistent state. The wrapper is named `AGasTest` so it sorts
+alphabetically before every library: solc emits one output section per
+contract, ordered by name, and the runner reads the first one.
 
 Unlike semanticTests, this curated suite is strict: a fixture that stops
 compiling fails CI unless it is listed in
 `uniswap-v4-known-compile-failures.txt`, and a listed fixture that *starts*
-compiling also fails until the entry is removed and its gas row pinned
-(`uniswap-v4-gas-baseline.txt`). The smart stack-layout fallback now compiles
-FullMath, SqrtPriceMath, TickBitmap, and TickMath; only SwapMath remains in the
-known-failure list because its unoptimized IR still exceeds classic stack
-reach. The list therefore remains a visible record of the optimizer
-frontier. CI runs the suite as the `Uniswap v4` leg of the
-`solidity-gas` matrix:
+compiling also fails until the entry is removed and its gas rows are pinned
+(`uniswap-v4-gas-baseline.txt`). Uniswap rows use `fixture:function`
+granularity; repeated vectors for one signature are summed into that function's
+row. The smart stack layout currently compiles ten library fixtures plus
+`PoolInitialize.sol`. `SwapMath.sol`, `PoolLiquidity.sol`, `PoolSwap.sol`, and
+`PoolManager.sol` remain strict frontier fixtures because their unoptimized IR
+still exceeds classic stack reach.
+
+Deployment here is deliberately local-EVM-only. `deployForCalls` directly
+executes top-level creation code and installs its returned runtime without a
+transaction-level EIP-170 size check; this permits wrappers larger than 24,576
+bytes (the pinned solc-optimized `AGasTest` is currently 18,307 bytes; this
+compiler consumes much larger unoptimized IR). CREATE opcodes *inside*
+constructors still use the executable semantics' normal EIP-170/EIP-3860
+checks. The PoolManager fixture therefore inherits the manager as its top-level
+runtime and creates only the small router and token contracts. The runner
+preserves the complete constructor world when installing that top-level
+runtime, so created accounts remain available to the replayed calls. This is a
+compiler benchmark, not a claim that an oversized emitted wrapper is
+mainnet-deployable.
+
+CI runs the suite as the `Uniswap v4` leg of the `solidity-gas` matrix:
 
 ```sh
 .lake/build/bin/checkSolidityGas \
   test/uniswap-v4 \
   test/uniswap-v4-gas-baseline.txt \
   "$(svm which 0.8.35)" 0.8.35 \
-  --known=test/uniswap-v4-known-compile-failures.txt
+  --known=test/uniswap-v4-known-compile-failures.txt --per-scenario
 ```
 
 Remove a relative fixture path from any baseline as soon as it passes. A
