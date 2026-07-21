@@ -50,9 +50,9 @@ structure Observation where
 
 private def word (n : Nat) : UInt256 := UInt256.ofNat n
 
-/-- Stable fixture-name hash used for both generated states and CI sharding.
-This deliberately avoids the runtime's implementation-dependent hash table
-hash, so a failure always reproduces from its checked-in relative path. -/
+/-- Stable fixture-name hash used for generated states. This deliberately
+avoids the runtime's implementation-dependent hash table hash, so a failure
+always reproduces from its checked-in relative path. -/
 def fixtureSeed (name : String) : Nat :=
   name.toList.foldl
     (fun hash char => (hash * 16777619 + char.toNat) % (2 ^ 64))

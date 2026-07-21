@@ -49,8 +49,10 @@ and zero-only memory allocation are intentionally ignored because correct
 compilers may differ there. Optimizer fixtures supply additional source
 programs only: this check does not apply their configured optimization step or
 compare their expected optimized Yul. CI partitions the expensive optimizer
-run by a stable fixture-name hash; the same hash filters each shard's exact
-baseline entries, so stale and unexpected failures remain enforced per shard.
+run with a deterministic source-size-weighted assignment and filters each
+shard's exact baseline entries by the resulting fixture set, so stale and
+unexpected failures remain enforced per shard without creating large
+hash-bucket stragglers.
 
 The same differential run also compares *gas*. For every fixture whose two
 bytecode sequences are behaviorally comparable, it sums the execution gas this
