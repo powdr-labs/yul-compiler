@@ -1,0 +1,7 @@
+# Full Aave v4 integration fixtures whose unoptimized solc IR still exceeds
+# the smart layout pass's current DUP16/SWAP16 reach. They remain active
+# acceptance tests: remove an entry as soon as it compiles and pin its
+# per-scenario gas rows.
+HubOperations.sol
+LiquidationLogic.sol
+SpokeOperations.sol

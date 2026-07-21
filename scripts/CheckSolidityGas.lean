@@ -208,12 +208,12 @@ only the gas of the compilable subset is pinned.
 (same convention as the compile-corpus known-failure lists). Strict otherwise:
 an unlisted compile failure fails the run, and so does a stale entry that now
 compiles — the list must always match reality. Used for the curated Uniswap
-v4-core suite, whose heaviest fixtures sit beyond the current compiler's
-supported fragment on purpose, to record the frontier.
+v4-core and Aave v4 suites, whose heaviest fixtures sit beyond the current
+compiler's supported fragment on purpose, to record the frontier.
 
 `perScenario`: pin one row per external function signature instead of one total
 per fixture. Repeated calls to the same signature are summed. The in-repo
-`uniswap-v4` directory always enables this mode. -/
+`uniswap-v4` and `aave-v4` directories always enable this mode. -/
 private def run (dir baselineFile : FilePath)
     (solcPath expectedSolcVersion : String) (lenient update : Bool)
     (perScenario : Bool) (known : Option (Array String)) (shard : Option Shard) : IO UInt32 := do
@@ -236,10 +236,11 @@ private def run (dir baselineFile : FilePath)
   let mut compileFailures : Array (String × String) := #[]
   let mut skipped := 0
   let jobs ← detectJobs
-  -- The checked-in Uniswap suite always uses scenario rows; keeping this
-  -- directory convention automatic avoids duplicating policy in both the PR
-  -- and baseline CI jobs. The flag remains available for other local suites.
-  let perScenario := perScenario || dir.fileName == some "uniswap-v4"
+  -- The checked-in protocol suites always use scenario rows; keeping this
+  -- directory convention automatic avoids duplicating policy in their runner
+  -- invocations. The flag remains available for other local suites.
+  let perScenario := perScenario ||
+    dir.fileName == some "uniswap-v4" || dir.fileName == some "aave-v4"
   let outcomes : Array GasOutcome ← parMap jobs files (processContract dir solcPath perScenario)
   for outcome in outcomes do
     if let some entry := outcome.compileFailure then compileFailures := compileFailures.push entry

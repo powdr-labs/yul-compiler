@@ -75,8 +75,15 @@ echo "==> Re-measuring Uniswap v4-core fixtures (in-repo, strict + known failure
   "$solc_path" "$SOLC_VERSION" \
   --known=test/uniswap-v4-known-compile-failures.txt --per-scenario --update
 
+echo "==> Re-measuring Aave v4 fixtures (in-repo, strict + known failures)"
+.lake/build/bin/checkSolidityGas \
+  test/aave-v4 \
+  test/aave-v4-gas-baseline.txt \
+  "$solc_path" "$SOLC_VERSION" \
+  --known=test/aave-v4-known-compile-failures.txt --per-scenario --update
+
 echo
 echo "==> Done. Review the diff — this is the review artifact:"
 git --no-pager diff --stat -- 'test/solidity-yul-*-gas-baseline.txt' \
   test/solidity-gas-baseline.txt test/solidity-semantic-gas-baseline.txt \
-  test/uniswap-v4-gas-baseline.txt
+  test/uniswap-v4-gas-baseline.txt test/aave-v4-gas-baseline.txt
