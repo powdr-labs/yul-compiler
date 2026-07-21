@@ -233,12 +233,12 @@ jobs:
           path: .lake/packages/*/.lake/build
           key: lake-package-builds-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
 
-      - name: Build (fetch Mathlib cache + lake build)
+      - name: Set up Lean and fetch Mathlib cache
         if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
         uses: leanprover/lean-action@v1
         with:
           use-mathlib-cache: "true"
-          build: "true"
+          build: "false"
           test: "false"
           lint: "false"
           use-github-cache: "false"
@@ -766,12 +766,12 @@ jobs:
           path: .lake/packages/*/.lake/build
           key: lake-package-builds-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
 
-      - name: Build main (fetch Mathlib cache + lake build)
+      - name: Set up Lean and fetch main Mathlib cache
         if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
         uses: leanprover/lean-action@v1
         with:
           use-mathlib-cache: "true"
-          build: "true"
+          build: "false"
           test: "false"
           lint: "false"
           use-github-cache: "false"
