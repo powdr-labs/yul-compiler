@@ -8,6 +8,10 @@ on:
   # not wait forever for a check that never runs.
   merge_group:
   workflow_dispatch:
+  # Refresh the reusable main result bundle when Solidity's moving develop
+  # corpus changes even if this repository has no main push that day.
+  schedule:
+    - cron: "17 3 * * *"
 
 # Keep only the latest run per branch/PR; cancel superseded ones.
 concurrency:
@@ -24,21 +28,24 @@ env:
 # The head pipeline is split so no expensive build is ever done twice on its
 # critical path, and so the two independent build products fan out in parallel:
 #
-#   build ───────────────▶ solc-differential (yul corpora, `lean --run`)
-#   gas-runner ──────────▶ solidity-gas       (gasTests + semanticTests, native)
+#   build ───────────────▶ proof/parser/correctness verification
+#   gas-runner ─────┬────▶ solc-differential (Yul corpora, native)
+#                   └────▶ solidity-gas       (Solidity corpora, native)
 #
-# `build` compiles the library once and shares its oleans; `gas-runner` compiles
-# the native `checkSolidityGas` executable once (a ~13-minute C compile of the
+# `build` verifies the library once; `gas-runner` compiles the native
+# `checkSolidityGas` executable once (a ~13-minute C compile of the
 # whole dependency closure that previously ran in every matrix leg) and shares
-# the binary. Both fan-outs then only *run* tests, each leg parallelised across
+# the binary. The native binary also dispatches the Yul/solc differential, so
+# every fan-out leg only *runs* tests and never restores a full Lean workspace.
+# Each leg is parallelised across
 # the runner's cores by the runners themselves (see TEST_JOBS in the Lean
 # scripts). WarpBuild 32-core runners make the one-time C compile and the
 # per-leg execution both scale with cores. Which tests run is unchanged — only
 # where they run and how the work is distributed. Pull requests also run the
-# same fan-outs from a resolved main SHA against the exact same resolved
-# Solidity corpus SHA. Main's library build and native gas runner are cached by
-# commit across PRs; test execution itself is never cached, so the reported
-# delta always comes from the current paired run.
+# a resolved main SHA against the exact same resolved Solidity corpus SHA.
+# Successful main and scheduled runs publish their summaries as an immutable
+# bundle keyed by main SHA + corpus SHA. PRs reuse that bundle; only the first
+# run for a genuinely new input pair falls back to executing main again.
 jobs:
   # Resolve moving branch inputs once so every head/main leg sees the same
   # revisions. In particular, Solidity's develop branch must not advance
@@ -69,27 +76,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Populate a reusable main build cache on pushes. PR baseline builds use
-      # the same key below, avoiding a second proof compilation for every PR.
-      - name: Cache main compiled library build
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      # Cache only this repository's comparatively small build output. A
+      # content key lets documentation-only commits reuse it, while the restore
+      # prefix gives Lake a safe incremental starting point for source changes.
+      - name: Cache compiled library build
         uses: actions/cache@v4
         with:
           path: .lake/build
-          key: main-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ github.sha }}
+          key: project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'scripts/*.lean') }}
+          restore-keys: |
+            project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
 
-      # Cache the compiled oleans of the two (large) semantics dependencies so
-      # they are not recompiled from source every run — lean-action only caches
-      # Mathlib. Keyed on the toolchain + pinned dependency revisions
-      # (lake-manifest.json); on a miss, or if `lake`'s own trace hashing finds
-      # the restored build stale, it simply rebuilds — so this is safe.
-      - name: Cache dependency builds
+      # Keep one manifest-keyed dependency cache instead of lean-action's
+      # ~2.6GB full `.lake` cache for every commit. This includes Mathlib and
+      # all transitive packages but excludes this repository's changing build.
+      - name: Cache package builds
         uses: actions/cache@v4
         with:
-          path: |
-            .lake/packages/yul-semantics/.lake/build
-            .lake/packages/evm_semantics/.lake/build
-          key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+          path: .lake/packages/*/.lake/build
+          key: lake-package-builds-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
 
       # lean-action installs the toolchain pinned in `lean-toolchain`, fetches
       # the prebuilt Mathlib olean cache (so Mathlib is not recompiled from
@@ -104,20 +109,7 @@ jobs:
           build: "true"
           test: "false"
           lint: "false"
-
-      # Share the freshly compiled library oleans with the solc-differential
-      # matrix so those jobs restore this build instead of recompiling the whole
-      # library once per leg. Scoped to this run, so it is always the exact
-      # commit; hidden files (lake's trace metadata) must be included or lake
-      # would consider the restored build stale and rebuild anyway. A restore
-      # miss just falls back to a normal `lake build`, so this is safe.
-      - name: Upload compiled library build
-        uses: actions/upload-artifact@v4
-        with:
-          name: lake-build
-          path: .lake/build
-          include-hidden-files: true
-          retention-days: 1
+          use-github-cache: "false"
 
       # The project's soundness gate, recorded to a summary file for the PR
       # comment and failing the job if any part regresses. Four checks:
@@ -170,39 +162,40 @@ jobs:
       # These steps tee their runner output into ci-summary/ so the pr-summary
       # job can turn it into a PR comment; `set -o pipefail` keeps the runner's
       # exit code (not tee's) as the step result.
-      - name: Check parser against Solidity syntax corpus
-        run: |
-          set -o pipefail; mkdir -p ci-summary
-          lake env lean --run scripts/CheckSoliditySyntaxTests.lean \
-            /tmp/solidity/test/libyul/yulSyntaxTests \
-            test/solidity-yul-syntax-known-mismatches.txt \
-            2>&1 | tee ci-summary/parsing-syntax.txt
+      - parallel:
+          - name: Check parser against Solidity syntax corpus
+            run: |
+              set -o pipefail; mkdir -p ci-summary
+              lake env lean --run scripts/CheckSoliditySyntaxTests.lean \
+                /tmp/solidity/test/libyul/yulSyntaxTests \
+                test/solidity-yul-syntax-known-mismatches.txt \
+                2>&1 | tee ci-summary/parsing-syntax.txt
 
-      - name: Compile and execute latest-fork Solidity Yul interpreter tests
-        run: |
-          set -o pipefail; mkdir -p ci-summary
-          lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
-            /tmp/solidity/test/libyul/yulInterpreterTests \
-            test/solidity-yul-interpreter-known-failures.txt \
-            2>&1 | tee ci-summary/parsing-interpreter.txt
+          - name: Compile and execute latest-fork Solidity Yul interpreter tests
+            run: |
+              set -o pipefail; mkdir -p ci-summary
+              lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
+                /tmp/solidity/test/libyul/yulInterpreterTests \
+                test/solidity-yul-interpreter-known-failures.txt \
+                2>&1 | tee ci-summary/parsing-interpreter.txt
 
-      - name: Compile latest-fork Solidity positive compiler corpora
-        run: |
-          set -o pipefail; mkdir -p ci-summary; f=ci-summary/correctness-compile.txt; : > "$f"
-          status=0
-          lake env lean --run scripts/CheckSolidityCompileTests.lean \
-            optimizer \
-            /tmp/solidity/test/libyul/yulOptimizerTests \
-            test/solidity-yul-optimizer-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
-          lake env lean --run scripts/CheckSolidityCompileTests.lean \
-            object-compiler \
-            /tmp/solidity/test/libyul/objectCompiler \
-            test/solidity-yul-object-compiler-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
-          lake env lean --run scripts/CheckSolidityCompileTests.lean \
-            EVM-code-transform \
-            /tmp/solidity/test/libyul/evmCodeTransform \
-            test/solidity-yul-evm-code-transform-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
-          exit "$status"
+          - name: Compile latest-fork Solidity positive compiler corpora
+            run: |
+              set -o pipefail; mkdir -p ci-summary; f=ci-summary/correctness-compile.txt; : > "$f"
+              status=0
+              lake env lean --run scripts/CheckSolidityCompileTests.lean \
+                optimizer \
+                /tmp/solidity/test/libyul/yulOptimizerTests \
+                test/solidity-yul-optimizer-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
+              lake env lean --run scripts/CheckSolidityCompileTests.lean \
+                object-compiler \
+                /tmp/solidity/test/libyul/objectCompiler \
+                test/solidity-yul-object-compiler-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
+              lake env lean --run scripts/CheckSolidityCompileTests.lean \
+                EVM-code-transform \
+                /tmp/solidity/test/libyul/evmCodeTransform \
+                test/solidity-yul-evm-code-transform-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
+              exit "$status"
 
       - name: Upload CI summary (build)
         if: always()
@@ -213,14 +206,14 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
-  # Compile the native `checkSolidityGas` executable exactly once, in parallel
+  # Compile the native corpus executable exactly once, in parallel
   # with `build`. This is the ~13-minute step (it compiles the whole dependency
   # closure — Mathlib included — to native code) that used to run in every
   # differential leg; a 32-core runner makes the C compile itself much faster,
   # and the binary is statically linked, so the downstream gas jobs need only the
   # artifact plus solc — no Lean toolchain at all.
   gas-runner:
-    name: Build gas runner
+    name: Build native corpus runner
     runs-on: warp-ubuntu-2404-x64-32x
     steps:
       - name: Checkout
@@ -231,16 +224,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .lake/build/bin/checkSolidityGas
-          key: gas-runner-bin-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ github.sha }}
+          key: gas-runner-bin-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'scripts/CheckSolidityGas.lean') }}
 
-      - name: Cache dependency builds
+      - name: Cache package builds
         if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache@v4
         with:
-          path: |
-            .lake/packages/yul-semantics/.lake/build
-            .lake/packages/evm_semantics/.lake/build
-          key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+          path: .lake/packages/*/.lake/build
+          key: lake-package-builds-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
 
       - name: Build (fetch Mathlib cache + lake build)
         if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
@@ -250,6 +241,7 @@ jobs:
           build: "true"
           test: "false"
           lint: "false"
+          use-github-cache: "false"
 
       # Compiling large real-world contracts recurses deeper than the Lean
       # interpreter's stack allows, so the gas runner is a native executable
@@ -267,8 +259,8 @@ jobs:
 
   solc-differential:
     name: solc differential (${{ matrix.name }})
-    needs: [comparison-inputs, build]
-    runs-on: warp-ubuntu-2404-x64-32x
+    needs: [comparison-inputs, gas-runner]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -278,6 +270,7 @@ jobs:
             kind: direct
             shard_index: 0
             shard_count: 1
+            runner: warp-ubuntu-2404-x64-16x
           # The optimizer corpus is split across machines AND each leg runs its
           # fixtures across all the runner's cores (TEST_JOBS), so a few shards
           # on 32-core runners cover it quickly.
@@ -285,49 +278,38 @@ jobs:
             kind: optimizer
             shard_index: 0
             shard_count: 5
+            runner: warp-ubuntu-2404-x64-32x
           - name: optimizer 2/5
             kind: optimizer
             shard_index: 1
             shard_count: 5
+            runner: warp-ubuntu-2404-x64-32x
           - name: optimizer 3/5
             kind: optimizer
             shard_index: 2
             shard_count: 5
+            runner: warp-ubuntu-2404-x64-32x
           - name: optimizer 4/5
             kind: optimizer
             shard_index: 3
             shard_count: 5
+            runner: warp-ubuntu-2404-x64-32x
           - name: optimizer 5/5
             kind: optimizer
             shard_index: 4
             shard_count: 5
+            runner: warp-ubuntu-2404-x64-32x
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cache dependency builds
-        uses: actions/cache@v4
-        with:
-          path: |
-            .lake/packages/yul-semantics/.lake/build
-            .lake/packages/evm_semantics/.lake/build
-          key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
-
-      # Restore the library build produced once by the `build` job so the
-      # `lake build` below is a trace-check no-op instead of a full recompile.
-      - name: Restore compiled library build
+      - name: Restore native corpus runner
         uses: actions/download-artifact@v4
         with:
-          name: lake-build
-          path: .lake/build
-
-      - name: Build differential runner
-        uses: leanprover/lean-action@v1
-        with:
-          use-mathlib-cache: "true"
-          build: "true"
-          test: "false"
-          lint: "false"
+          name: gas-runner-bin
+          path: .lake/build/bin
+      - name: Make corpus runner executable
+        run: chmod +x .lake/build/bin/checkSolidityGas
 
       - name: Cache pinned svm and solc
         uses: actions/cache@v4
@@ -374,7 +356,7 @@ jobs:
           mkdir -p ci-summary
           f="ci-summary/diff-${{ matrix.kind }}-${{ matrix.shard_index }}.txt"; : > "$f"
           if [[ "${{ matrix.kind }}" == "optimizer" ]]; then
-            lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+            .lake/build/bin/checkSolidityGas --yul-differential \
               optimizer \
               /tmp/solidity/test/libyul/yulOptimizerTests \
               test/solidity-yul-optimizer-known-solc-differential-failures.txt \
@@ -383,13 +365,13 @@ jobs:
               "${{ matrix.shard_index }}" "${{ matrix.shard_count }}" 2>&1 | tee -a "$f"
           else
             status=0
-            lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+            .lake/build/bin/checkSolidityGas --yul-differential \
               object-compiler \
               /tmp/solidity/test/libyul/objectCompiler \
               test/solidity-yul-object-compiler-known-solc-differential-failures.txt \
               test/solidity-yul-object-compiler-gas-baseline.txt \
               "$SOLC_PATH" "$SOLC_VERSION" 0 1 2>&1 | tee -a "$f" || status=1
-            lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+            .lake/build/bin/checkSolidityGas --yul-differential \
               EVM-code-transform \
               /tmp/solidity/test/libyul/evmCodeTransform \
               test/solidity-yul-evm-code-transform-known-solc-differential-failures.txt \
@@ -410,7 +392,7 @@ jobs:
   solidity-gas:
     name: Solidity gas (${{ matrix.name }})
     needs: [comparison-inputs, gas-runner]
-    runs-on: warp-ubuntu-2404-x64-32x
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -422,6 +404,7 @@ jobs:
             kind: gasTests
             shard_index: 0
             shard_count: 1
+            runner: warp-ubuntu-2404-x64-8x
           # Curated Uniswap v4-core fixtures checked into this repo
           # (test/uniswap-v4): real production DeFi code, strict against a
           # known-compile-failures list that records which fixtures still sit
@@ -430,20 +413,24 @@ jobs:
             kind: uniswap
             shard_index: 0
             shard_count: 1
+            runner: warp-ubuntu-2404-x64-16x
           # semanticTests: the large real-world corpus, lenient, sharded across
           # legs; each leg runs its shard across all cores (TEST_JOBS).
           - name: semanticTests 1/3
             kind: semantic
             shard_index: 0
             shard_count: 3
+            runner: warp-ubuntu-2404-x64-32x
           - name: semanticTests 2/3
             kind: semantic
             shard_index: 1
             shard_count: 3
+            runner: warp-ubuntu-2404-x64-32x
           - name: semanticTests 3/3
             kind: semantic
             shard_index: 2
             shard_count: 3
+            runner: warp-ubuntu-2404-x64-32x
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -535,13 +522,115 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
-  # PR-only baseline: compile and test the resolved main commit against the
-  # exact same Solidity revision as the head jobs. Build products are cached by
-  # main SHA, but tests are deliberately rerun so their data cannot go stale.
-  baseline-build:
-    name: Main baseline build & verify
+  # A main commit is immutable, as are the pinned solc binary and resolved
+  # Solidity corpus SHA. Persist its small result files once so every PR does
+  # not spend another full set of 32-core runners recomputing the same rows.
+  publish-main-baseline:
+    name: Publish reusable main baseline
+    needs: [comparison-inputs, build, gas-runner, solc-differential, solidity-gas]
+    if: >-
+      ${{ always() && github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' || github.event_name == 'schedule' ||
+           github.event_name == 'workflow_dispatch') &&
+          needs.build.result == 'success' && needs.gas-runner.result == 'success' &&
+          needs.solc-differential.result == 'success' && needs.solidity-gas.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download main summaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: summary-*
+          path: main-baseline/summaries
+          merge-multiple: true
+
+      - name: Record exact baseline inputs
+        env:
+          MAIN_SHA: ${{ github.sha }}
+          SOLIDITY_SHA: ${{ needs.comparison-inputs.outputs.solidity_sha }}
+        run: |
+          printf 'main_sha=%s\nsolidity_sha=%s\nsolc_version=%s\nschema=2\n' \
+            "$MAIN_SHA" "$SOLIDITY_SHA" "$SOLC_VERSION" > main-baseline/metadata.env
+
+      - name: Upload reusable main baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-baseline-${{ github.sha }}-${{ needs.comparison-inputs.outputs.solidity_sha }}
+          path: main-baseline
+          retention-days: 30
+
+  # Look for the exact main-SHA + Solidity-SHA bundle. The fallback baseline
+  # jobs below run only when a bundle is absent, such as the first PR after an
+  # upstream corpus update. Downloaded results are re-uploaded under the normal
+  # current-run prefix so the summary job has one simple input path.
+  baseline-lookup:
+    name: Restore reusable main baseline
     if: ${{ github.event_name == 'pull_request' }}
     needs: comparison-inputs
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      hit: ${{ steps.verify.outputs.hit }}
+    steps:
+      - name: Find exact main baseline artifact
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MAIN_SHA: ${{ needs.comparison-inputs.outputs.main_sha }}
+          SOLIDITY_SHA: ${{ needs.comparison-inputs.outputs.solidity_sha }}
+        run: |
+          name="main-baseline-$MAIN_SHA-$SOLIDITY_SHA"
+          run_id=$(gh api "repos/$REPO/actions/artifacts?name=$name&per_page=10" \
+            --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .workflow_run.id // empty')
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download exact main baseline
+        id: download
+        if: ${{ steps.find.outputs.run_id != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.find.outputs.name }}
+          path: cached-main
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.find.outputs.run_id }}
+
+      - name: Verify restored metadata
+        id: verify
+        if: always()
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+          MAIN_SHA: ${{ needs.comparison-inputs.outputs.main_sha }}
+          SOLIDITY_SHA: ${{ needs.comparison-inputs.outputs.solidity_sha }}
+        run: |
+          hit=false
+          if [ "$DOWNLOAD_OUTCOME" = success ] && [ -f cached-main/metadata.env ]; then
+            set -a; . cached-main/metadata.env; set +a
+            if [ "$main_sha" = "$MAIN_SHA" ] && [ "$solidity_sha" = "$SOLIDITY_SHA" ] && \
+                [ "$solc_version" = "$SOLC_VERSION" ] && [ "$schema" = 2 ]; then
+              hit=true
+            fi
+          fi
+          echo "hit=$hit" >> "$GITHUB_OUTPUT"
+
+      - name: Upload restored summaries for this run
+        if: ${{ steps.verify.outputs.hit == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-summary-cached
+          path: cached-main/summaries
+          retention-days: 1
+
+  # Cache-miss-only fallback: compile and test the resolved main commit against
+  # the exact same Solidity revision as the head jobs. The common path restores
+  # the immutable result bundle above instead.
+  baseline-build:
+    name: Main baseline build & verify
+    if: ${{ github.event_name == 'pull_request' && needs.baseline-lookup.outputs.hit != 'true' }}
+    needs: [comparison-inputs, baseline-lookup]
     runs-on: warp-ubuntu-2404-x64-32x
     steps:
       - name: Checkout main
@@ -553,15 +642,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .lake/build
-          key: main-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ needs.comparison-inputs.outputs.main_sha }}
+          key: project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'scripts/*.lean') }}
+          restore-keys: |
+            project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
 
-      - name: Cache dependency builds
+      - name: Cache package builds
         uses: actions/cache@v4
         with:
-          path: |
-            .lake/packages/yul-semantics/.lake/build
-            .lake/packages/evm_semantics/.lake/build
-          key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+          path: .lake/packages/*/.lake/build
+          key: lake-package-builds-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
 
       - name: Build main (fetch Mathlib cache + lake build)
         uses: leanprover/lean-action@v1
@@ -570,6 +659,7 @@ jobs:
           build: "true"
           test: "false"
           lint: "false"
+          use-github-cache: "false"
 
       - name: Upload compiled main library build
         uses: actions/upload-artifact@v4
@@ -610,36 +700,37 @@ jobs:
           git -C /tmp/solidity fetch --depth 1 --filter=blob:none origin "$SOLIDITY_SHA"
           git -C /tmp/solidity checkout --detach FETCH_HEAD
 
-      - name: Check main parser against Solidity syntax corpus
-        run: |
-          set -o pipefail; mkdir -p ci-summary
-          lake env lean --run scripts/CheckSoliditySyntaxTests.lean \
-            /tmp/solidity/test/libyul/yulSyntaxTests \
-            test/solidity-yul-syntax-known-mismatches.txt \
-            2>&1 | tee ci-summary/parsing-syntax.txt
+      - parallel:
+          - name: Check main parser against Solidity syntax corpus
+            run: |
+              set -o pipefail; mkdir -p ci-summary
+              lake env lean --run scripts/CheckSoliditySyntaxTests.lean \
+                /tmp/solidity/test/libyul/yulSyntaxTests \
+                test/solidity-yul-syntax-known-mismatches.txt \
+                2>&1 | tee ci-summary/parsing-syntax.txt
 
-      - name: Execute main on Solidity Yul interpreter tests
-        run: |
-          set -o pipefail; mkdir -p ci-summary
-          lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
-            /tmp/solidity/test/libyul/yulInterpreterTests \
-            test/solidity-yul-interpreter-known-failures.txt \
-            2>&1 | tee ci-summary/parsing-interpreter.txt
+          - name: Execute main on Solidity Yul interpreter tests
+            run: |
+              set -o pipefail; mkdir -p ci-summary
+              lake env lean --run scripts/CheckSolidityInterpreterTests.lean \
+                /tmp/solidity/test/libyul/yulInterpreterTests \
+                test/solidity-yul-interpreter-known-failures.txt \
+                2>&1 | tee ci-summary/parsing-interpreter.txt
 
-      - name: Compile positive Solidity corpora with main
-        run: |
-          set -o pipefail; mkdir -p ci-summary; f=ci-summary/correctness-compile.txt; : > "$f"
-          status=0
-          lake env lean --run scripts/CheckSolidityCompileTests.lean \
-            optimizer /tmp/solidity/test/libyul/yulOptimizerTests \
-            test/solidity-yul-optimizer-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
-          lake env lean --run scripts/CheckSolidityCompileTests.lean \
-            object-compiler /tmp/solidity/test/libyul/objectCompiler \
-            test/solidity-yul-object-compiler-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
-          lake env lean --run scripts/CheckSolidityCompileTests.lean \
-            EVM-code-transform /tmp/solidity/test/libyul/evmCodeTransform \
-            test/solidity-yul-evm-code-transform-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
-          exit "$status"
+          - name: Compile positive Solidity corpora with main
+            run: |
+              set -o pipefail; mkdir -p ci-summary; f=ci-summary/correctness-compile.txt; : > "$f"
+              status=0
+              lake env lean --run scripts/CheckSolidityCompileTests.lean \
+                optimizer /tmp/solidity/test/libyul/yulOptimizerTests \
+                test/solidity-yul-optimizer-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
+              lake env lean --run scripts/CheckSolidityCompileTests.lean \
+                object-compiler /tmp/solidity/test/libyul/objectCompiler \
+                test/solidity-yul-object-compiler-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
+              lake env lean --run scripts/CheckSolidityCompileTests.lean \
+                EVM-code-transform /tmp/solidity/test/libyul/evmCodeTransform \
+                test/solidity-yul-evm-code-transform-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
+              exit "$status"
 
       - name: Upload main CI summary (build)
         if: always()
@@ -651,9 +742,9 @@ jobs:
           if-no-files-found: ignore
 
   baseline-gas-runner:
-    name: Main baseline gas runner
-    if: ${{ github.event_name == 'pull_request' }}
-    needs: comparison-inputs
+    name: Main baseline native corpus runner
+    if: ${{ github.event_name == 'pull_request' && needs.baseline-lookup.outputs.hit != 'true' }}
+    needs: [comparison-inputs, baseline-lookup]
     runs-on: warp-ubuntu-2404-x64-32x
     steps:
       - name: Checkout main
@@ -666,16 +757,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .lake/build/bin/checkSolidityGas
-          key: gas-runner-bin-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ needs.comparison-inputs.outputs.main_sha }}
+          key: gas-runner-bin-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'scripts/CheckSolidityGas.lean') }}
 
-      - name: Cache dependency builds
+      - name: Cache package builds
         if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache@v4
         with:
-          path: |
-            .lake/packages/yul-semantics/.lake/build
-            .lake/packages/evm_semantics/.lake/build
-          key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+          path: .lake/packages/*/.lake/build
+          key: lake-package-builds-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
 
       - name: Build main (fetch Mathlib cache + lake build)
         if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
@@ -685,6 +774,7 @@ jobs:
           build: "true"
           test: "false"
           lint: "false"
+          use-github-cache: "false"
 
       - name: Build main Solidity gas runner (native)
         if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
@@ -699,9 +789,9 @@ jobs:
 
   baseline-solc-differential:
     name: Main solc differential (${{ matrix.name }})
-    if: ${{ github.event_name == 'pull_request' }}
-    needs: [comparison-inputs, baseline-build]
-    runs-on: warp-ubuntu-2404-x64-32x
+    if: ${{ github.event_name == 'pull_request' && needs.baseline-lookup.outputs.hit != 'true' }}
+    needs: [comparison-inputs, baseline-lookup, baseline-build]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -711,39 +801,43 @@ jobs:
             kind: direct
             shard_index: 0
             shard_count: 1
+            runner: warp-ubuntu-2404-x64-16x
           - name: optimizer 1/5
             kind: optimizer
             shard_index: 0
             shard_count: 5
+            runner: warp-ubuntu-2404-x64-32x
           - name: optimizer 2/5
             kind: optimizer
             shard_index: 1
             shard_count: 5
+            runner: warp-ubuntu-2404-x64-32x
           - name: optimizer 3/5
             kind: optimizer
             shard_index: 2
             shard_count: 5
+            runner: warp-ubuntu-2404-x64-32x
           - name: optimizer 4/5
             kind: optimizer
             shard_index: 3
             shard_count: 5
+            runner: warp-ubuntu-2404-x64-32x
           - name: optimizer 5/5
             kind: optimizer
             shard_index: 4
             shard_count: 5
+            runner: warp-ubuntu-2404-x64-32x
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.comparison-inputs.outputs.main_sha }}
 
-      - name: Cache dependency builds
+      - name: Cache package builds
         uses: actions/cache@v4
         with:
-          path: |
-            .lake/packages/yul-semantics/.lake/build
-            .lake/packages/evm_semantics/.lake/build
-          key: lake-deps-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+          path: .lake/packages/*/.lake/build
+          key: lake-package-builds-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
 
       - name: Restore compiled main library build
         uses: actions/download-artifact@v4
@@ -751,13 +845,14 @@ jobs:
           name: baseline-lake-build
           path: .lake/build
 
-      - name: Build main differential runner
+      - name: Set up main differential runner
         uses: leanprover/lean-action@v1
         with:
           use-mathlib-cache: "true"
           build: "true"
           test: "false"
           lint: "false"
+          use-github-cache: "false"
 
       - name: Cache pinned svm and solc
         uses: actions/cache@v4
@@ -828,9 +923,9 @@ jobs:
 
   baseline-solidity-gas:
     name: Main Solidity gas (${{ matrix.name }})
-    if: ${{ github.event_name == 'pull_request' }}
-    needs: [comparison-inputs, baseline-gas-runner]
-    runs-on: warp-ubuntu-2404-x64-32x
+    if: ${{ github.event_name == 'pull_request' && needs.baseline-lookup.outputs.hit != 'true' }}
+    needs: [comparison-inputs, baseline-lookup, baseline-gas-runner]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -840,22 +935,27 @@ jobs:
             kind: gasTests
             shard_index: 0
             shard_count: 1
+            runner: warp-ubuntu-2404-x64-8x
           - name: Uniswap v4
             kind: uniswap
             shard_index: 0
             shard_count: 1
+            runner: warp-ubuntu-2404-x64-16x
           - name: semanticTests 1/3
             kind: semantic
             shard_index: 0
             shard_count: 3
+            runner: warp-ubuntu-2404-x64-32x
           - name: semanticTests 2/3
             kind: semantic
             shard_index: 1
             shard_count: 3
+            runner: warp-ubuntu-2404-x64-32x
           - name: semanticTests 3/3
             kind: semantic
             shard_index: 2
             shard_count: 3
+            runner: warp-ubuntu-2404-x64-32x
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -949,6 +1049,7 @@ jobs:
       - gas-runner
       - solc-differential
       - solidity-gas
+      - baseline-lookup
       - baseline-build
       - baseline-gas-runner
       - baseline-solc-differential
@@ -984,10 +1085,10 @@ jobs:
           GAS_RUNNER_RESULT: ${{ needs.gas-runner.result }}
           SOLC_DIFFERENTIAL_RESULT: ${{ needs.solc-differential.result }}
           SOLIDITY_GAS_RESULT: ${{ needs.solidity-gas.result }}
-          MAIN_BUILD_RESULT: ${{ needs.baseline-build.result }}
-          MAIN_GAS_RUNNER_RESULT: ${{ needs.baseline-gas-runner.result }}
-          MAIN_SOLC_DIFFERENTIAL_RESULT: ${{ needs.baseline-solc-differential.result }}
-          MAIN_SOLIDITY_GAS_RESULT: ${{ needs.baseline-solidity-gas.result }}
+          MAIN_BUILD_RESULT: ${{ needs.baseline-lookup.outputs.hit == 'true' && 'success' || needs.baseline-build.result }}
+          MAIN_GAS_RUNNER_RESULT: ${{ needs.baseline-lookup.outputs.hit == 'true' && 'success' || needs.baseline-gas-runner.result }}
+          MAIN_SOLC_DIFFERENTIAL_RESULT: ${{ needs.baseline-lookup.outputs.hit == 'true' && 'success' || needs.baseline-solc-differential.result }}
+          MAIN_SOLIDITY_GAS_RESULT: ${{ needs.baseline-lookup.outputs.hit == 'true' && 'success' || needs.baseline-solidity-gas.result }}
         run: |
           python3 scripts/ci_pr_summary.py summaries/head \
             --base-summary-dir summaries/main \

@@ -27,29 +27,66 @@ def detectJobs : IO Nat := do
 /-- Map `f` over `items` with up to `jobs` concurrent dedicated-thread workers,
 returning the results in the original input order.
 
-Items are dealt round-robin across `jobs` workers so cost spreads regardless of
-where the expensive items sit. Each result carries its original index and the
-whole thing is re-sorted at the end, so the output is deterministic and identical
-to `items.mapM f` no matter how many workers run. Workers get dedicated threads
-because each one blocks on a `solc` subprocess and must not tie up Lean's shared
-task-pool threads. A worker error is re-raised on the caller. -/
+Workers take the next unclaimed item from an atomic counter. This dynamic queue
+keeps short workers busy when another worker receives an unusually expensive
+fixture. Each result carries its original index and the whole thing is re-sorted
+at the end, so the output is deterministic and identical to `items.mapM f` no
+matter how many workers run. Workers get dedicated threads because each one
+blocks on a `solc` subprocess and must not tie up Lean's shared task-pool
+threads. A worker error is re-raised on the caller. -/
 def parMap {α β : Type} (jobs : Nat) (items : Array α) (f : α → IO β) : IO (Array β) := do
   if jobs ≤ 1 || items.size ≤ 1 then
     return ← items.mapM f
-  let mut chunks : Array (Array (Nat × α)) := Array.replicate jobs #[]
-  let mut i := 0
-  for item in items do
-    let worker := i % jobs
-    chunks := chunks.set! worker (chunks[worker]!.push (i, item))
-    i := i + 1
-  let tasks ← chunks.mapM fun chunk =>
-    IO.asTask (prio := Task.Priority.dedicated) <| chunk.mapM fun (idx, item) => do
-      return (idx, ← f item)
+  let next ← IO.mkRef 0
+  let workerCount := min jobs items.size
+  let tasks ← (Array.range workerCount).mapM fun _ =>
+    IO.asTask (prio := Task.Priority.dedicated) <| do
+      let mut rows : Array (Nat × β) := #[]
+      let mut done := false
+      while !done do
+        let idx ← next.modifyGet fun idx => (idx, idx + 1)
+        if h : idx < items.size then
+          rows := rows.push (idx, ← f items[idx])
+        else
+          done := true
+      return rows
   let mut indexed : Array (Nat × β) := #[]
   for task in tasks do
     match ← IO.wait task with
     | .ok rows => indexed := indexed ++ rows
     | .error err => throw err
   return (indexed.qsort (fun a b => a.1 < b.1)).map (·.2)
+
+private structure WeightedItem (α : Type) where
+  index : Nat
+  weight : Nat
+
+/-- Deterministically divide `items` into `shardCount` shards by greedily
+assigning the heaviest remaining item to the currently lightest shard.
+
+The returned shard retains the input order. CI uses source byte size as a cheap,
+stable approximation of fixture cost; this avoids the severe stragglers caused
+by hashing a few very large fixtures into the same shard. -/
+def weightedShard {α : Type} (shardIndex shardCount : Nat) (items : Array α)
+    (weight : α → IO Nat) : IO (Array α) := do
+  if shardCount == 0 || shardIndex >= shardCount then
+    throw <| IO.userError "invalid weighted shard"
+  let mut weighted : Array (WeightedItem α) := #[]
+  for h : i in [:items.size] do
+    weighted := weighted.push { index := i, weight := max 1 (← weight items[i]) }
+  weighted := weighted.qsort fun a b =>
+    a.weight > b.weight || (a.weight == b.weight && a.index < b.index)
+  let mut loads := Array.replicate shardCount 0
+  let mut owners := Array.replicate items.size 0
+  for entry in weighted do
+    let mut owner := 0
+    for h : i in [1:shardCount] do
+      if loads[i]! < loads[owner]! then owner := i
+    loads := loads.modify owner (· + entry.weight)
+    owners := owners.set! entry.index owner
+  let mut selected : Array α := #[]
+  for h : i in [:items.size] do
+    if owners[i]! == shardIndex then selected := selected.push items[i]
+  return selected
 
 end YulEvmCompilerTests.Parallel

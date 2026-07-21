@@ -6,6 +6,7 @@ import YulEvmCompilerTests.SolidityCorpus
 import YulEvmCompilerTests.InterpreterFixture
 import YulEvmCompilerTests.SolTest
 import YulEvmCompilerTests.Parallel
+import YulEvmCompilerTests.SolcDifferentialRunner
 
 /-!
 Compile and gas-check Solidity's `libsolidity/gasTests` fixtures.
@@ -35,21 +36,16 @@ open YulEvmCompilerTests.Solc
 open YulEvmCompilerTests.CorpusGas
 open YulEvmCompilerTests.SolidityCorpus
 open YulEvmCompilerTests.InterpreterFixture
-open YulEvmCompilerTests.SolcDifferential (observe gasUsed fixtureSeed)
+open YulEvmCompilerTests.SolcDifferential (observe gasUsed)
 open YulEvmCompilerTests.SolTest (Call parseSpec)
-open YulEvmCompilerTests.Parallel (detectJobs parMap)
+open YulEvmCompilerTests.Parallel (detectJobs parMap weightedShard)
 
-/-- Optional sharding by the same stable fixture-name hash the differential uses,
-so the large semanticTests corpus can be split across CI jobs and its baseline
-filtered per shard. -/
+/-- Optional deterministic source-size-weighted sharding, so the large
+semanticTests corpus can be split across CI jobs without concentrating its
+largest contracts in one hash bucket. -/
 private structure Shard where
   index : Nat
   count : Nat
-
-private def selected (shard : Option Shard) (name : String) : Bool :=
-  match shard with
-  | none => true
-  | some s => fixtureSeed name % s.count == s.index
 
 /-- Eight nonzero argument words appended after a selector, used only for the
 gasTests corpus (which specifies gas per function but no call arguments). It
@@ -225,9 +221,14 @@ private def run (dir baselineFile : FilePath)
   | .error message => IO.eprintln message; return 1
   | .ok () => pure ()
   let paths ← dir.walkDir
-  let files := paths.filter (fun p => p.extension == some "sol")
+  let allFiles := paths.filter (fun p => p.extension == some "sol")
     |>.qsort (fun a b => relativeName dir a < relativeName dir b)
-    |>.filter (fun p => selected shard (relativeName dir p))
+  let files ← match shard with
+    | none => pure allFiles
+    | some shard => weightedShard shard.index shard.count allFiles fun path => do
+        return (← path.metadata).byteSize.toNat
+  let selectedNames := files.map (relativeName dir)
+  let selected := selectedNames.contains
   if files.isEmpty then
     IO.eprintln s!"{dir}: found no .sol fixtures"
     return 1
@@ -252,7 +253,7 @@ private def run (dir baselineFile : FilePath)
     | none => compileFailures
   let staleKnown := match known with
     | some allowed =>
-        allowed.filter (fun n => selected shard n && !failureNames.contains n)
+        allowed.filter (fun n => selected n && !failureNames.contains n)
     | none => #[]
 
   if update then
@@ -269,7 +270,7 @@ private def run (dir baselineFile : FilePath)
     return if staleKnown.isEmpty then 0 else 1
 
   let baseline ← match ← readBaseline baselineFile with
-    | .ok rows => pure (rows.filter (fun r => selected shard r.fixture))
+    | .ok rows => pure (rows.filter (fun r => selected r.fixture))
     | .error message => IO.eprintln s!"{baselineFile}: {message}"; return 1
   let mut gasRegressions : Array String := #[]
   let mut gasImproved : Array String := #[]
@@ -318,6 +319,7 @@ private def run (dir baselineFile : FilePath)
 
 def main (args : List String) : IO UInt32 := do
   match args with
+  | "--yul-differential" :: rest => solcDifferentialMain rest
   | dir :: baselineFile :: solcPath :: expectedSolcVersion :: rest =>
       let flags := rest.filter (·.startsWith "--")
       let nums := rest.filter (fun s => !s.startsWith "--")
