@@ -208,8 +208,8 @@ three full integration fixtures whose unoptimized IR still exceeds this
 compiler's classic stack reach. A newly rejected fixture or a stale failure
 entry fails the run. The currently compilable fixture pins three call rows in
 `aave-v4-gas-baseline.txt`: 111,633, 115,092, and 115,324 gas. The runner
-enforces a 100,000-gas minimum for every executable Aave scenario, so a future
-sub-threshold row fails instead of diluting this suite with microbenchmarks.
+continues to allow smaller coverage rows when they are useful; these three
+scenarios are the suite's deliberately expensive paths.
 
 Run the suite with:
 
