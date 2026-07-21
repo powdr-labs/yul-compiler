@@ -531,6 +531,61 @@ theorem simplifyBuiltin_equiv (op : Op) (args : List (Expr Op)) :
       (Core.simplifyTerm_sound (calls := calls) (creates := creates) core)
   | none => exact EquivExpr.refl _
 
+/-! ### Open-operand neutral identities
+
+`neutral` fires only on one-variable-one-literal operand pairs, because it runs
+through the Core boundary whose arguments are atoms. The dumps after
+`InlineCalls` are dominated by redexes with one *arbitrary* operand — the
+`InlineHelpers` identity fence `add(f(…), 0)`, and residue like
+`or(0, eq(…))` — which never ingest.
+
+`openNeutral` recognizes those: one operand is the op's neutral literal, the
+other survives **unchanged, whatever it is** (calls included). The rewrite is
+*not* a pointwise `EquivExpr` for arbitrary survivors — `add(e, 0)` is stuck
+when `e` yields zero or several values, while bare `e` is not (that asymmetry
+is exactly why the inliner's fence exists). It agrees with the redex on
+single-value results and halts (`EquivExpr1` below), so it is applied only at
+positions whose semantics already demand exactly one value: argument elements
+(`argsCons` binds a single head value) and singleton `let`/`assign`
+right-hand sides (`letVal`/`assignVal` check `vals.length = vars.length`).
+Multi-binder right-hand sides, `exprStmt` (demands zero values), and
+condition positions are left alone. -/
+
+/-- A survivor a rewrite may return: anything but a bare string literal.
+Returning a string literal could put one in `dataoffset`/`datasize` argument
+position, where layout resolution treats it specially — the resolution
+congruence needs rewrites to never manufacture that shape (the same fence as
+`simplifyBuiltin_not_stringlit`). -/
+def survivorOK : Expr Op → Bool
+  | .lit (.string _) => false
+  | _ => true
+
+/-- Recognize a neutral-element binary op with one arbitrary surviving
+operand. The surviving operand is returned as-is. -/
+def openNeutral : Op → List (Expr Op) → Option (Expr Op)
+  | .add, [e, .lit c] => if litValue c = 0 ∧ survivorOK e then some e else none
+  | .sub, [e, .lit c] => if litValue c = 0 ∧ survivorOK e then some e else none
+  | .or,  [e, .lit c] => if litValue c = 0 ∧ survivorOK e then some e else none
+  | .xor, [e, .lit c] => if litValue c = 0 ∧ survivorOK e then some e else none
+  | .mul, [e, .lit c] => if litValue c = 1 ∧ survivorOK e then some e else none
+  | .div, [e, .lit c] => if litValue c = 1 ∧ survivorOK e then some e else none
+  | .and, [e, .lit c] => if litValue c = allOnes ∧ survivorOK e then some e else none
+  | .add, [.lit c, e] => if litValue c = 0 ∧ survivorOK e then some e else none
+  | .or,  [.lit c, e] => if litValue c = 0 ∧ survivorOK e then some e else none
+  | .xor, [.lit c, e] => if litValue c = 0 ∧ survivorOK e then some e else none
+  | .mul, [.lit c, e] => if litValue c = 1 ∧ survivorOK e then some e else none
+  | .and, [.lit c, e] => if litValue c = allOnes ∧ survivorOK e then some e else none
+  | .shl, [.lit c, e] => if litValue c = 0 ∧ survivorOK e then some e else none
+  | .shr, [.lit c, e] => if litValue c = 0 ∧ survivorOK e then some e else none
+  | .sar, [.lit c, e] => if litValue c = 0 ∧ survivorOK e then some e else none
+  | _, _ => none
+
+/-- Rewrite a top-level open-operand redex; leave everything else unchanged.
+Applied only at single-value positions (see the section notes). -/
+def openTop : Expr Op → Expr Op
+  | .builtin op args => (openNeutral op args).getD (.builtin op args)
+  | e => e
+
 /-! ### The recursive pass
 
 `simplifyExpr`/`simplifyStmt` rewrite bottom-up through the whole program,
@@ -549,10 +604,11 @@ def simplifyExpr : Expr Op → Expr Op
   | .builtin op args => simplifyBuiltin op (simplifyArgs args)
   | .call f args => .call f (simplifyArgs args)
 
-/-- Simplify each expression of an argument list. -/
+/-- Simplify each expression of an argument list. Argument positions demand a
+single value per element, so open-operand redexes are rewritten here. -/
 def simplifyArgs : List (Expr Op) → List (Expr Op)
   | [] => []
-  | e :: rest => simplifyExpr e :: simplifyArgs rest
+  | e :: rest => openTop (simplifyExpr e) :: simplifyArgs rest
 
 end
 
@@ -585,8 +641,10 @@ bodies) except a `for`-loop's `init`. -/
 def simplifyStmt : Stmt Op → Stmt Op
   | .block body => .block (simplifyStmts body)
   | .funDef n ps rs body => .funDef n ps rs (simplifyStmts body)
+  | .letDecl [x] (some e) => .letDecl [x] (some (openTop (simplifyExpr e)))
   | .letDecl xs (some e) => .letDecl xs (some (simplifyExpr e))
   | .letDecl xs none => .letDecl xs none
+  | .assign [x] e => .assign [x] (openTop (simplifyExpr e))
   | .assign xs e => .assign xs (simplifyExpr e)
   | .cond c body => simplifyCond (simplifyExpr c) (simplifyStmts body)
   | .switch c cases dflt =>
@@ -733,6 +791,283 @@ theorem hoist_simplifySwitch_cons (c : Expr Op) (cases : List (Literal × Block 
     hoist D (simplifySwitch c cases dflt :: rest) = hoist D rest := by
   cases c <;> simp [simplifySwitch, hoist]
 
+/-! ### Value-restricted equivalence, and soundness of the open-operand rewrites
+
+`EquivExpr1` is agreement on *single-value results and halts* — everything a
+single-value position can observe. It is strictly weaker than `EquivExpr`
+(no agreement on zero/multi-value results), and it is exactly the contract
+the `openNeutral` rewrites satisfy for arbitrary survivors: `add(e, 0)`
+and `e` diverge only on results the consuming positions rule out anyway
+(`argsCons` pins argument heads to singletons; `letVal`/`assignVal` pin
+right-hand sides to the binder arity). -/
+
+/-- Agreement on single-value results and halts. -/
+def EquivExpr1 (e₁ e₂ : Expr Op) : Prop :=
+  ∀ funs (V : VEnv D) (st : EvmState),
+    (∀ v st', Step D funs V st (.expr e₁) (.eres (.vals [v] st')) ↔
+        Step D funs V st (.expr e₂) (.eres (.vals [v] st'))) ∧
+    (∀ st', Step D funs V st (.expr e₁) (.eres (.halt st')) ↔
+        Step D funs V st (.expr e₂) (.eres (.halt st')))
+
+theorem EquivExpr1.refl (e : Expr Op) :
+    EquivExpr1 (calls := calls) (creates := creates) e e :=
+  fun _ _ _ => ⟨fun _ _ => Iff.rfl, fun _ => Iff.rfl⟩
+
+theorem EquivExpr1.trans {e₁ e₂ e₃ : Expr Op}
+    (h₁ : EquivExpr1 (calls := calls) (creates := creates) e₁ e₂)
+    (h₂ : EquivExpr1 (calls := calls) (creates := creates) e₂ e₃) :
+    EquivExpr1 (calls := calls) (creates := creates) e₁ e₃ :=
+  fun funs V st =>
+    ⟨fun v st' => ((h₁ funs V st).1 v st').trans ((h₂ funs V st).1 v st'),
+     fun st' => ((h₁ funs V st).2 st').trans ((h₂ funs V st).2 st')⟩
+
+/-- Full pointwise equivalence restricts to the value-restricted one. -/
+theorem EquivExpr.toEquivExpr1 {e₁ e₂ : Expr Op}
+    (h : EquivExpr D e₁ e₂) :
+    EquivExpr1 (calls := calls) (creates := creates) e₁ e₂ :=
+  fun funs V st => ⟨fun _ _ => h funs V st _, fun _ => h funs V st _⟩
+
+/-- Inversion of `[e, lit]` argument evaluation to a value list. -/
+theorem args_expr_lit_value_inv {funs : FunEnv D} {V st e c vals st'}
+    (h : Step D funs V st (.args [e, .lit c]) (.eres (.vals vals st'))) :
+    ∃ v, vals = [v, litValue c] ∧
+      Step D funs V st (.expr e) (.eres (.vals [v] st')) := by
+  cases h with
+  | argsCons hrest he =>
+      cases hrest with
+      | argsCons hnil hc => cases hnil; cases hc; exact ⟨_, rfl, he⟩
+
+/-- Inversion of `[e, lit]` argument evaluation to a halt. -/
+theorem args_expr_lit_halt_inv {funs : FunEnv D} {V st e c st'}
+    (h : Step D funs V st (.args [e, .lit c]) (.eres (.halt st'))) :
+    Step D funs V st (.expr e) (.eres (.halt st')) := by
+  cases h with
+  | argsRestHalt hrest =>
+      cases hrest with
+      | argsRestHalt hnil => cases hnil
+      | argsHeadHalt hnil hc => cases hnil; cases hc
+  | argsHeadHalt hrest he =>
+      cases hrest with
+      | argsCons hnil hc => cases hnil; cases hc; exact he
+
+/-- Inversion of `[lit, e]` argument evaluation to a value list. -/
+theorem args_lit_expr_value_inv {funs : FunEnv D} {V st e c vals st'}
+    (h : Step D funs V st (.args [.lit c, e]) (.eres (.vals vals st'))) :
+    ∃ v, vals = [litValue c, v] ∧
+      Step D funs V st (.expr e) (.eres (.vals [v] st')) := by
+  cases h with
+  | argsCons hrest he =>
+      cases he with
+      | lit =>
+          cases hrest with
+          | argsCons hnil hv => cases hnil; exact ⟨_, rfl, hv⟩
+
+/-- Inversion of `[lit, e]` argument evaluation to a halt. -/
+theorem args_lit_expr_halt_inv {funs : FunEnv D} {V st e c st'}
+    (h : Step D funs V st (.args [.lit c, e]) (.eres (.halt st'))) :
+    Step D funs V st (.expr e) (.eres (.halt st')) := by
+  cases h with
+  | argsRestHalt hrest =>
+      cases hrest with
+      | argsRestHalt hnil => cases hnil
+      | argsHeadHalt hnil he => cases hnil; exact he
+  | argsHeadHalt hrest he => cases he
+
+/-- **Right-operand open neutral**: `op(e, c) ≈₁ e` when `op` maps `(v, c)`
+to `v` — for an arbitrary surviving operand. -/
+theorem open_right_equiv1 {op : Op} {e : Expr Op} {c : Literal}
+    (h : ∀ v : U256, pureFn op [v, litValue c] = some v) :
+    EquivExpr1 (calls := calls) (creates := creates) (.builtin op [e, .lit c]) e := by
+  intro funs V st
+  constructor
+  · intro v st'
+    constructor
+    · intro hb
+      cases hb with
+      | builtinOk ha hop =>
+          obtain ⟨w, rfl, he⟩ := args_expr_lit_value_inv ha
+          have := pureFn_builtin_inv (h w) hop
+          injection this with hrets hst
+          injection hrets with hv _
+          subst hv; subst hst
+          exact he
+    · intro he
+      exact Step.builtinOk
+        (Step.argsCons (Step.argsCons Step.argsNil Step.lit) he)
+        (pureFn_builtin (h v) st')
+  · intro st'
+    constructor
+    · intro hb
+      cases hb with
+      | builtinHalt ha hop =>
+          obtain ⟨w, rfl, he⟩ := args_expr_lit_value_inv ha
+          have := pureFn_builtin_inv (h w) hop
+          simp at this
+      | builtinArgsHalt ha => exact args_expr_lit_halt_inv ha
+    · intro he
+      exact Step.builtinArgsHalt
+        (Step.argsHeadHalt (Step.argsCons Step.argsNil Step.lit) he)
+
+/-- **Left-operand open neutral**: `op(c, e) ≈₁ e` when `op` maps `(c, v)`
+to `v` — for an arbitrary surviving operand. -/
+theorem open_left_equiv1 {op : Op} {e : Expr Op} {c : Literal}
+    (h : ∀ v : U256, pureFn op [litValue c, v] = some v) :
+    EquivExpr1 (calls := calls) (creates := creates) (.builtin op [.lit c, e]) e := by
+  intro funs V st
+  constructor
+  · intro v st'
+    constructor
+    · intro hb
+      cases hb with
+      | builtinOk ha hop =>
+          obtain ⟨w, rfl, he⟩ := args_lit_expr_value_inv ha
+          have := pureFn_builtin_inv (h w) hop
+          injection this with hrets hst
+          injection hrets with hv _
+          subst hv; subst hst
+          exact he
+    · intro he
+      exact Step.builtinOk
+        (Step.argsCons (Step.argsCons Step.argsNil he) Step.lit)
+        (pureFn_builtin (h v) st')
+  · intro st'
+    constructor
+    · intro hb
+      cases hb with
+      | builtinHalt ha hop =>
+          obtain ⟨w, rfl, he⟩ := args_lit_expr_value_inv ha
+          have := pureFn_builtin_inv (h w) hop
+          simp at this
+      | builtinArgsHalt ha => exact args_lit_expr_halt_inv ha
+    · intro he
+      exact Step.builtinArgsHalt (Step.argsRestHalt
+        (Step.argsHeadHalt Step.argsNil he))
+
+/-- Every open-operand rewrite is value-restricted-sound. -/
+theorem openNeutral_equiv1 {op : Op} {args : List (Expr Op)} {e : Expr Op}
+    (h : openNeutral op args = some e) :
+    EquivExpr1 (calls := calls) (creates := creates) (.builtin op args) e := by
+  unfold openNeutral at h
+  split at h <;>
+    first
+      | contradiction
+      | (split_ifs at h with hc
+         · obtain rfl := Option.some.inj h
+           first
+             | exact open_right_equiv1 (fun v => by
+                 rw [hc.1]; simp only [pureFn, Option.some.injEq]
+                 first | simp | (rw [allOnes]; exact BitVec.and_allOnes))
+             | exact open_left_equiv1 (fun v => by
+                 rw [hc.1]; simp only [pureFn, Option.some.injEq]
+                 first | simp | (rw [allOnes]; exact BitVec.allOnes_and)))
+
+/-- The top-level open-operand rewrite is value-restricted-sound. -/
+theorem openTop_equiv1 : ∀ e : Expr Op,
+    EquivExpr1 (calls := calls) (creates := creates) e (openTop e)
+  | .lit _ => EquivExpr1.refl _
+  | .var _ => EquivExpr1.refl _
+  | .call _ _ => EquivExpr1.refl _
+  | .builtin op args => by
+      rw [openTop]
+      cases hn : openNeutral op args with
+      | none => exact EquivExpr1.refl _
+      | some e => simpa using openNeutral_equiv1 hn
+
+/-! #### Lifting the value-restricted equivalence at single-value positions -/
+
+/-- Argument-element lift: the `.args` context itself pins each head to a
+singleton value or a halt, so a value-restricted head rewrite yields **full**
+argument-list equivalence. -/
+theorem EquivArgs.cons1 {e e' : Expr Op} {rest rest' : List (Expr Op)}
+    (hh : EquivExpr1 (calls := calls) (creates := creates) e e')
+    (ht : EquivArgs D rest rest') :
+    EquivArgs D (e :: rest) (e' :: rest') := by
+  intro funs V st r
+  constructor
+  · intro h
+    cases h with
+    | argsCons hrest he =>
+        exact Step.argsCons ((ht funs V st _).mp hrest) (((hh funs _ _).1 _ _).mp he)
+    | argsRestHalt hrest =>
+        exact Step.argsRestHalt ((ht funs V st _).mp hrest)
+    | argsHeadHalt hrest he =>
+        exact Step.argsHeadHalt ((ht funs V st _).mp hrest) (((hh funs _ _).2 _).mp he)
+  · intro h
+    cases h with
+    | argsCons hrest he =>
+        exact Step.argsCons ((ht funs V st _).mpr hrest) (((hh funs _ _).1 _ _).mpr he)
+    | argsRestHalt hrest =>
+        exact Step.argsRestHalt ((ht funs V st _).mpr hrest)
+    | argsHeadHalt hrest he =>
+        exact Step.argsHeadHalt ((ht funs V st _).mpr hrest) (((hh funs _ _).2 _).mpr he)
+
+/-- Singleton-`let` lift: `letVal` pins the right-hand side to exactly one
+value, `letHalt` to a halt. -/
+theorem EquivStmt.letDecl1_congr {x : Ident} {e e' : Expr Op}
+    (h : EquivExpr1 (calls := calls) (creates := creates) e e') :
+    EquivStmt D (.letDecl [x] (some e)) (.letDecl [x] (some e')) := by
+  intro funs V st V' st' o
+  constructor
+  · intro hs
+    cases hs with
+    | letVal he hlen =>
+        rename_i vals
+        obtain ⟨v, rfl⟩ : ∃ v, vals = [v] := by
+          cases vals with
+          | nil => simp at hlen
+          | cons a rest =>
+              cases rest with
+              | nil => exact ⟨a, rfl⟩
+              | cons b r => simp at hlen
+        exact Step.letVal (((h funs _ _).1 _ _).mp he) hlen
+    | letHalt he => exact Step.letHalt (((h funs _ _).2 _).mp he)
+  · intro hs
+    cases hs with
+    | letVal he hlen =>
+        rename_i vals
+        obtain ⟨v, rfl⟩ : ∃ v, vals = [v] := by
+          cases vals with
+          | nil => simp at hlen
+          | cons a rest =>
+              cases rest with
+              | nil => exact ⟨a, rfl⟩
+              | cons b r => simp at hlen
+        exact Step.letVal (((h funs _ _).1 _ _).mpr he) hlen
+    | letHalt he => exact Step.letHalt (((h funs _ _).2 _).mpr he)
+
+/-- Singleton-`assign` lift. -/
+theorem EquivStmt.assign1_congr {x : Ident} {e e' : Expr Op}
+    (h : EquivExpr1 (calls := calls) (creates := creates) e e') :
+    EquivStmt D (.assign [x] e) (.assign [x] e') := by
+  intro funs V st V' st' o
+  constructor
+  · intro hs
+    cases hs with
+    | assignVal he hlen =>
+        rename_i vals
+        obtain ⟨v, rfl⟩ : ∃ v, vals = [v] := by
+          cases vals with
+          | nil => simp at hlen
+          | cons a rest =>
+              cases rest with
+              | nil => exact ⟨a, rfl⟩
+              | cons b r => simp at hlen
+        exact Step.assignVal (((h funs _ _).1 _ _).mp he) hlen
+    | assignHalt he => exact Step.assignHalt (((h funs _ _).2 _).mp he)
+  · intro hs
+    cases hs with
+    | assignVal he hlen =>
+        rename_i vals
+        obtain ⟨v, rfl⟩ : ∃ v, vals = [v] := by
+          cases vals with
+          | nil => simp at hlen
+          | cons a rest =>
+              cases rest with
+              | nil => exact ⟨a, rfl⟩
+              | cons b r => simp at hlen
+        exact Step.assignVal (((h funs _ _).1 _ _).mpr he) hlen
+    | assignHalt he => exact Step.assignHalt (((h funs _ _).2 _).mpr he)
+
 mutual
 
 /-- Every expression is equivalent to its simplification. -/
@@ -740,16 +1075,21 @@ theorem simplifyExpr_equiv : ∀ e : Expr Op, EquivExpr D e (simplifyExpr e)
   | .lit _ => EquivExpr.refl _
   | .var _ => EquivExpr.refl _
   | .builtin op args =>
-      (EquivExpr.builtin_congr op (EquivArgs.of_forall₂ (simplifyArgs_forall2 args))).trans
+      (EquivExpr.builtin_congr op (simplifyArgs_equivArgs args)).trans
         (simplifyBuiltin_equiv op (simplifyArgs args))
   | .call f args =>
-      EquivExpr.call_congr f (EquivArgs.of_forall₂ (simplifyArgs_forall2 args))
+      EquivExpr.call_congr f (simplifyArgs_equivArgs args)
 
-/-- Each argument is equivalent to its simplification, pairwise. -/
-theorem simplifyArgs_forall2 : ∀ args : List (Expr Op),
-    List.Forall₂ (EquivExpr D) args (simplifyArgs args)
-  | [] => .nil
-  | e :: rest => .cons (simplifyExpr_equiv e) (simplifyArgs_forall2 rest)
+/-- The argument list is equivalent to its simplification. Elements are
+related only up to `EquivExpr1` (the open-operand rewrite), which the
+argument context lifts to full list equivalence (`EquivArgs.cons1`). -/
+theorem simplifyArgs_equivArgs : ∀ args : List (Expr Op),
+    EquivArgs D args (simplifyArgs args)
+  | [] => EquivArgs.refl _
+  | e :: rest =>
+      EquivArgs.cons1
+        (EquivExpr1.trans (EquivExpr.toEquivExpr1 (simplifyExpr_equiv e)) (openTop_equiv1 _))
+        (simplifyArgs_equivArgs rest)
 
 end
 
@@ -761,9 +1101,19 @@ theorem simplifyStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (simplifyStmt s)
       EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 body))
         (scopeRel_hoistSimplify body)
   | .funDef n ps rs body => funDef_equiv n ps rs body (simplifyStmts body)
-  | .letDecl _ (some e) => EquivStmt.letDecl_congr _ (simplifyExpr_equiv e)
-  | .letDecl _ none => EquivStmt.refl _
-  | .assign _ e => EquivStmt.assign_congr _ (simplifyExpr_equiv e)
+  | .letDecl [x] (some e) =>
+      (EquivStmt.letDecl_congr _ (simplifyExpr_equiv e)).trans
+        (EquivStmt.letDecl1_congr (openTop_equiv1 _))
+  | .letDecl [] (some e) => EquivStmt.letDecl_congr _ (simplifyExpr_equiv e)
+  | .letDecl (_ :: _ :: _) (some e) => EquivStmt.letDecl_congr _ (simplifyExpr_equiv e)
+  | .letDecl [_] none => EquivStmt.refl _
+  | .letDecl [] none => EquivStmt.refl _
+  | .letDecl (_ :: _ :: _) none => EquivStmt.refl _
+  | .assign [x] e =>
+      (EquivStmt.assign_congr _ (simplifyExpr_equiv e)).trans
+        (EquivStmt.assign1_congr (openTop_equiv1 _))
+  | .assign [] e => EquivStmt.assign_congr _ (simplifyExpr_equiv e)
+  | .assign (_ :: _ :: _) e => EquivStmt.assign_congr _ (simplifyExpr_equiv e)
   | .cond c body =>
       (EquivStmt.cond_congr (simplifyExpr_equiv c)
         (EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 body))
@@ -817,9 +1167,15 @@ theorem scopeRel_hoistSimplify : ∀ ss : List (Stmt Op),
         EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 body))
           (scopeRel_hoistSimplify body)⟩ (scopeRel_hoistSimplify rest)
   | .block _ :: rest => scopeRel_hoistSimplify rest
-  | .letDecl _ (some _) :: rest => scopeRel_hoistSimplify rest
-  | .letDecl _ none :: rest => scopeRel_hoistSimplify rest
-  | .assign _ _ :: rest => scopeRel_hoistSimplify rest
+  | .letDecl [_] (some _) :: rest => scopeRel_hoistSimplify rest
+  | .letDecl [] (some _) :: rest => scopeRel_hoistSimplify rest
+  | .letDecl (_ :: _ :: _) (some _) :: rest => scopeRel_hoistSimplify rest
+  | .letDecl [_] none :: rest => scopeRel_hoistSimplify rest
+  | .letDecl [] none :: rest => scopeRel_hoistSimplify rest
+  | .letDecl (_ :: _ :: _) none :: rest => scopeRel_hoistSimplify rest
+  | .assign [_] _ :: rest => scopeRel_hoistSimplify rest
+  | .assign [] _ :: rest => scopeRel_hoistSimplify rest
+  | .assign (_ :: _ :: _) _ :: rest => scopeRel_hoistSimplify rest
   | .cond c body :: rest => by
       change ScopeRel D (hoist D rest)
         (hoist D (simplifyCond (simplifyExpr c) (simplifyStmts body) :: simplifyStmts rest))

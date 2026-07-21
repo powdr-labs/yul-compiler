@@ -22,7 +22,7 @@ stackReuse/function_retparam_read.yul	27554	27404
 stackReuse/function_retparam_unassigned.yul	294	0
 stackReuse/function_retparam_unassigned_multiple.yul	354	0
 stackReuse/function_trivial.yul	72	0
-stackReuse/function_with_body_embedded.yul	522	0
+stackReuse/function_with_body_embedded.yul	492	0
 stackReuse/functions_multi_return.yul	606	888
 stackReuse/if.yul	174	132
 stackReuse/last_use_in_nested_block.yul	30	0

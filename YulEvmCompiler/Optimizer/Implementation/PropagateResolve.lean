@@ -427,6 +427,6 @@ restriction). -/
 theorem resolvePropagateBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L (propagateBlock b)) :=
-  PropRel.equivBlock ((propStmts_rel [] b).resolve L)
+  PropRel.equivBlock ((propStmts_rel (copyGate 0 b) [] b).resolve L)
 
 end YulEvmCompiler.Optimizer

@@ -178,27 +178,48 @@ def rhsExpr (σ : PEnv) (e : Expr Op) : Expr Op := foldRhs (substExpr σ e)
 
 /-! ### The transform -/
 
-/-- Production classification: number literals only. Copy entries (`y ↦ x`)
-are *proven* sound (the relation and simulations cover them) but deliberately
-not created by the production transform: substituting a copy replaces a read
-of a recently bound (stack-shallow) variable with a read of an older (deeper)
-one, and the backend's variable reads are `DUP`s hard-limited at depth 16 —
-real solc dispatchers stop compiling. Constant entries can only relieve depth
-(a literal is a `PUSH`). -/
-def classifyProd : Expr Op → Option PRhs
-  | .lit (.number n) => some (.lit n)
-  | _ => none
+/-- The copy-fact depth gate's live-local budget. Substituting a copy
+(`y ↦ x`) replaces a read of a recently bound (stack-shallow) variable with a
+read of an older (deeper) one, and the backend's variable reads are `DUP`s
+hard-limited at depth 16 (`compileExpr`: `off + idx < 16`). Copy facts are
+therefore created only inside scopes whose maximum simultaneously-live local
+count (`liveMaxStmts`, shared with the `InlineCalls` guard) stays within this
+budget — small inlined-helper frames qualify; solc's big `dispatch_*`
+dispatcher frames do not (they stopped compiling when copies were substituted
+ungated). Constant entries can only relieve depth (a literal is a `PUSH`)
+and are always created. A wrong gate costs optimization (the compile
+fallback), never coverage or soundness. -/
+def copyDepthLimit : Nat := 12
+
+/-- Enable copy facts for a scope entered with `acc` already-live bindings?
+Recomputed at **every block entry** (not just per function): the copies worth
+substituting are locally sourced and locally consumed (inlined-site blocks),
+where the small block bounds the depth delta; big frames — dispatcher arms,
+whole dispatcher bodies — recompute big and stay gated off. -/
+def copyGate (acc : Nat) (body : Block Op) : Bool :=
+  decide (liveMaxStmts acc body ≤ copyDepthLimit)
+
+/-- Production classification: number literals always; copy entries (`y ↦ x`)
+only when the enclosing scope passed the depth gate (see `copyGate`). Both
+are refinements of the relation's `classify`, so any gate policy is sound —
+and because the resolution congruence transports the frozen relation
+instance, the policy needs no resolution stability. -/
+def classifyProd : Bool → Expr Op → Option PRhs
+  | _, .lit (.number n) => some (.lit n)
+  | true, .var x => some (.var x)
+  | _, _ => none
 
 /-- Production classification refines the relation's classification. -/
-theorem classifyProd_sub {e : Expr Op} {r : PRhs} (h : classifyProd e = some r) :
+theorem classifyProd_sub {copyOK : Bool} {e : Expr Op} {r : PRhs}
+    (h : classifyProd copyOK e = some r) :
     classify e = some r := by
   unfold classifyProd at h
   split at h <;> simp_all [classify]
 
 /-- The tracked environment after `let xs := rhs'`: prune the shadowed names,
 then track a singleton whose rewritten rhs is classifiable. -/
-def letEnv (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) : PEnv :=
-  match xs, classifyProd rhs' with
+def letEnv (copyOK : Bool) (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) : PEnv :=
+  match xs, classifyProd copyOK rhs' with
   | [x], some r => (x, r) :: prune σ [x]
   | _, _ => prune σ xs
 
@@ -212,8 +233,8 @@ def letZeroEnv (σ : PEnv) (xs : List Ident) : PEnv :=
 /-- The tracked environment after `xs := rhs'`: prune, except a singleton
 assignment to an *already-tracked* variable (hence provably bound) with a
 classifiable rhs *refreshes* the entry. -/
-def assignEnv (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) : PEnv :=
-  match xs, classifyProd rhs' with
+def assignEnv (copyOK : Bool) (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) : PEnv :=
+  match xs, classifyProd copyOK rhs' with
   | [x], some r =>
       if (lookupEnv σ x).isSome then (x, r) :: prune σ [x] else prune σ xs
   | _, _ => prune σ xs
@@ -222,28 +243,31 @@ mutual
 
 /-- Propagate through one statement, returning the rewritten statement and the
 tracked environment for the statements that follow it. -/
-def propStmt (σ : PEnv) : Stmt Op → Stmt Op × PEnv
+def propStmt (copyOK : Bool) (σ : PEnv) : Stmt Op → Stmt Op × PEnv
   | .block body =>
-      (.block (propStmts σ body).1, prune σ (writeSetStmts body))
+      (.block (propStmts (copyGate 0 body) σ body).1, prune σ (writeSetStmts body))
   | .funDef n ps rs body =>
-      (.funDef n ps rs (propStmts [] body).1, σ)
+      (.funDef n ps rs
+        (propStmts (copyGate (ps.length + rs.length) body) [] body).1, σ)
   | .letDecl xs none =>
       (.letDecl xs none, letZeroEnv σ xs)
   | .letDecl xs (some e) =>
       let r := rhsExpr σ e
-      (.letDecl xs (some r), letEnv σ xs r)
+      (.letDecl xs (some r), letEnv copyOK σ xs r)
   | .assign xs e =>
       let r := rhsExpr σ e
-      (.assign xs r, assignEnv σ xs r)
+      (.assign xs r, assignEnv copyOK σ xs r)
   | .cond c body =>
-      (.cond (substExpr σ c) (propStmts σ body).1, prune σ (writeSetStmts body))
+      (.cond (substExpr σ c) (propStmts (copyGate 0 body) σ body).1,
+        prune σ (writeSetStmts body))
   | .switch c cases dflt =>
-      (.switch (substExpr σ c) (propCases σ cases) (propDflt σ dflt),
+      (.switch (substExpr σ c) (propCases copyOK σ cases) (propDflt copyOK σ dflt),
         prune σ (writeSetCases cases ++ writeSetDflt dflt))
   | .forLoop init c post body =>
-      let pinit := propStmts σ init
+      let pinit := propStmts copyOK σ init
       let σL := prune pinit.2 (writeSetStmts post ++ writeSetStmts body)
-      (.forLoop pinit.1 (substExpr σL c) (propStmts σL post).1 (propStmts σL body).1,
+      (.forLoop pinit.1 (substExpr σL c) (propStmts (copyGate 0 post) σL post).1
+        (propStmts (copyGate 0 body) σL body).1,
         prune σ (writeSetStmts init ++ writeSetStmts post ++ writeSetStmts body))
   | .exprStmt e => (.exprStmt (substExpr σ e), σ)
   | .break => (.break, σ)
@@ -251,27 +275,29 @@ def propStmt (σ : PEnv) : Stmt Op → Stmt Op × PEnv
   | .leave => (.leave, σ)
 
 /-- Propagate through a statement sequence, threading the environment. -/
-def propStmts (σ : PEnv) : List (Stmt Op) → List (Stmt Op) × PEnv
+def propStmts (copyOK : Bool) (σ : PEnv) : List (Stmt Op) → List (Stmt Op) × PEnv
   | [] => ([], σ)
   | s :: rest =>
-      let ps := propStmt σ s
-      let prest := propStmts ps.2 rest
+      let ps := propStmt copyOK σ s
+      let prest := propStmts copyOK ps.2 rest
       (ps.1 :: prest.1, prest.2)
 
 /-- Propagate through each `switch` case body (labels preserved). -/
-def propCases (σ : PEnv) : List (Literal × Block Op) → List (Literal × Block Op)
+def propCases (copyOK : Bool) (σ : PEnv) :
+    List (Literal × Block Op) → List (Literal × Block Op)
   | [] => []
-  | (l, b) :: rest => (l, (propStmts σ b).1) :: propCases σ rest
+  | (l, b) :: rest =>
+      (l, (propStmts (copyGate 0 b) σ b).1) :: propCases copyOK σ rest
 
 /-- Propagate through a `switch`'s optional default. -/
-def propDflt (σ : PEnv) : Option (Block Op) → Option (Block Op)
+def propDflt (_copyOK : Bool) (σ : PEnv) : Option (Block Op) → Option (Block Op)
   | none => none
-  | some b => some ((propStmts σ b).1)
+  | some b => some ((propStmts (copyGate 0 b) σ b).1)
 
 end
 
 /-- The pass entry point: propagate through a top-level block. -/
-def propagateBlock (b : Block Op) : Block Op := (propStmts [] b).1
+def propagateBlock (b : Block Op) : Block Op := (propStmts (copyGate 0 b) [] b).1
 
 /-! ### The propagation relation
 
@@ -389,9 +415,9 @@ inductive PropRel : PEnv → PEnv → PCode Op → PCode Op → Prop
 
 /-! ### The transform inhabits the relation -/
 
-/-- `letEnv` is a valid `LetEnvRel` choice. -/
-theorem letEnv_rel (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) :
-    LetEnvRel σ xs rhs' (letEnv σ xs rhs') := by
+/-- `letEnv` is a valid `LetEnvRel` choice — for any gate policy. -/
+theorem letEnv_rel (copyOK : Bool) (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) :
+    LetEnvRel σ xs rhs' (letEnv copyOK σ xs rhs') := by
   unfold letEnv
   split
   · next x r hcl => exact .create rfl (classifyProd_sub hcl)
@@ -405,9 +431,9 @@ theorem letZeroEnv_rel (σ : PEnv) (xs : List Ident) :
   · exact .zero rfl
   · exact .skip
 
-/-- `assignEnv` is a valid `AssignEnvRel` choice. -/
-theorem assignEnv_rel (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) :
-    AssignEnvRel σ xs rhs' (assignEnv σ xs rhs') := by
+/-- `assignEnv` is a valid `AssignEnvRel` choice — for any gate policy. -/
+theorem assignEnv_rel (copyOK : Bool) (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) :
+    AssignEnvRel σ xs rhs' (assignEnv copyOK σ xs rhs') := by
   unfold assignEnv
   split
   · next x r hcl =>
@@ -418,45 +444,52 @@ theorem assignEnv_rel (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) :
 
 mutual
 
-/-- The statement transform inhabits the relation. -/
-theorem propStmt_rel (σ : PEnv) : ∀ s : Stmt Op,
-    PropRel σ (propStmt σ s).2
-      (.stmt s) (.stmt (propStmt σ s).1)
-  | .block body => .blockS (propStmts_rel σ body)
-  | .funDef _ _ _ body => .funDefS (propStmts_rel [] body)
+/-- The statement transform inhabits the relation — for any gate policy. -/
+theorem propStmt_rel (copyOK : Bool) (σ : PEnv) : ∀ s : Stmt Op,
+    PropRel σ (propStmt copyOK σ s).2
+      (.stmt s) (.stmt (propStmt copyOK σ s).1)
+  | .block body => .blockS (propStmts_rel (copyGate 0 body) σ body)
+  | .funDef _ ps rs body =>
+      .funDefS (propStmts_rel (copyGate (ps.length + rs.length) body) [] body)
   | .letDecl xs none => .letNoneS (letZeroEnv_rel σ xs)
-  | .letDecl xs (some e) => .letSomeS (.fold) (letEnv_rel σ xs (rhsExpr σ e))
-  | .assign xs e => .assignS (.fold) (assignEnv_rel σ xs (rhsExpr σ e))
-  | .cond _ body => .condS (propStmts_rel σ body)
-  | .switch _ cases dflt => .switchS (propCases_rel σ cases) (propDflt_rel σ dflt)
+  | .letDecl xs (some e) =>
+      .letSomeS (.fold) (letEnv_rel copyOK σ xs (rhsExpr σ e))
+  | .assign xs e => .assignS (.fold) (assignEnv_rel copyOK σ xs (rhsExpr σ e))
+  | .cond _ body => .condS (propStmts_rel (copyGate 0 body) σ body)
+  | .switch _ cases dflt =>
+      .switchS (propCases_rel copyOK σ cases) (propDflt_rel copyOK σ dflt)
   | .forLoop init _ post body =>
-      .forS (propStmts_rel σ init) rfl
-        (propStmts_rel _ post) (propStmts_rel _ body)
+      .forS (propStmts_rel copyOK σ init) rfl
+        (propStmts_rel (copyGate 0 post) _ post)
+        (propStmts_rel (copyGate 0 body) _ body)
   | .exprStmt _ => .exprStmtS
   | .break => .breakS
   | .continue => .continueS
   | .leave => .leaveS
 
 /-- The sequence transform inhabits the relation. -/
-theorem propStmts_rel (σ : PEnv) : ∀ ss : List (Stmt Op),
-    PropRel σ (propStmts σ ss).2
-      (.stmts ss) (.stmts (propStmts σ ss).1)
+theorem propStmts_rel (copyOK : Bool) (σ : PEnv) : ∀ ss : List (Stmt Op),
+    PropRel σ (propStmts copyOK σ ss).2
+      (.stmts ss) (.stmts (propStmts copyOK σ ss).1)
   | [] => .nilSS
-  | s :: rest => .consSS (propStmt_rel σ s) (propStmts_rel (propStmt σ s).2 rest)
+  | s :: rest =>
+      .consSS (propStmt_rel copyOK σ s)
+        (propStmts_rel copyOK (propStmt copyOK σ s).2 rest)
 
 /-- The case-list transform inhabits the relation. -/
-theorem propCases_rel (σ : PEnv) : ∀ cs : List (Literal × Block Op),
+theorem propCases_rel (copyOK : Bool) (σ : PEnv) : ∀ cs : List (Literal × Block Op),
     PropRel σ σ
-      (.cases cs) (.cases (propCases σ cs))
+      (.cases cs) (.cases (propCases copyOK σ cs))
   | [] => .casesNil
-  | (_, b) :: rest => .casesCons (propStmts_rel σ b) (propCases_rel σ rest)
+  | (_, b) :: rest =>
+      .casesCons (propStmts_rel (copyGate 0 b) σ b) (propCases_rel copyOK σ rest)
 
 /-- The default transform inhabits the relation. -/
-theorem propDflt_rel (σ : PEnv) : ∀ d : Option (Block Op),
+theorem propDflt_rel (copyOK : Bool) (σ : PEnv) : ∀ d : Option (Block Op),
     PropRel σ σ
-      (.odflt d) (.odflt (propDflt σ d))
+      (.odflt d) (.odflt (propDflt copyOK σ d))
   | none => .odfltNone
-  | some b => .odfltSome (propStmts_rel σ b)
+  | some b => .odfltSome (propStmts_rel (copyGate 0 b) σ b)
 
 end
 
@@ -2594,42 +2627,48 @@ substitution, assignment refresh, zero-init tracking, and rhs folding — bundle
 with its soundness proof. -/
 def propagate : Pass D where
   run := propagateBlock
-  sound := fun b => PropRel.equivBlock (propStmts_rel [] b)
+  sound := fun b => PropRel.equivBlock (propStmts_rel (copyGate 0 b) [] b)
 
 @[simp] theorem propagate_run (b : Block Op) :
-    (propagate (calls := calls) (creates := creates)).run b = (propStmts [] b).1 := rfl
+    (propagate (calls := calls) (creates := creates)).run b =
+      (propStmts (copyGate 0 b) [] b).1 := rfl
 
 /-! ### Regression examples (checked at build time) -/
 
 -- Constant propagation feeds folding: `let a := 1  let b := add(a, 1)` chains.
-example : (propStmts [] [.letDecl ["a"] (some (.lit (.number 1))),
+example : (propStmts false [] [.letDecl ["a"] (some (.lit (.number 1))),
     .letDecl ["b"] (some (.builtin .add [.var "a", .lit (.number 1)])),
     .exprStmt (.builtin .sstore [.lit (.number 0), .var "b"])]).1
   = [.letDecl ["a"] (some (.lit (.number 1))),
      .letDecl ["b"] (some (.lit (.number 2))),
      .exprStmt (.builtin .sstore [.lit (.number 0), .lit (.number 2)])] := rfl
--- Copy entries are proven sound but not created in production (DUP16 depth):
--- a bare copy stays untouched...
-example : (propStmts [] [.letDecl ["y"] (some (.var "x")),
+-- Copy entries are gate-controlled (DUP16 depth): a bare copy stays
+-- untouched when the gate is off...
+example : (propStmts false [] [.letDecl ["y"] (some (.var "x")),
     .exprStmt (.builtin .sstore [.lit (.number 0), .var "y"])]).1
   = [.letDecl ["y"] (some (.var "x")),
      .exprStmt (.builtin .sstore [.lit (.number 0), .var "y"])] := rfl
+-- ...and is substituted (binding preserved) when it is on.
+example : (propStmts true [] [.letDecl ["y"] (some (.var "x")),
+    .exprStmt (.builtin .sstore [.lit (.number 0), .var "y"])]).1
+  = [.letDecl ["y"] (some (.var "x")),
+     .exprStmt (.builtin .sstore [.lit (.number 0), .var "x"])] := rfl
 -- ...but copy chains still collapse through tracked literals (depth-safe).
-example : (propStmts [] [.letDecl ["x"] (some (.lit (.number 7))),
+example : (propStmts false [] [.letDecl ["x"] (some (.lit (.number 7))),
     .letDecl ["y"] (some (.var "x")),
     .exprStmt (.builtin .sstore [.lit (.number 0), .var "y"])]).1
   = [.letDecl ["x"] (some (.lit (.number 7))),
      .letDecl ["y"] (some (.lit (.number 7))),
      .exprStmt (.builtin .sstore [.lit (.number 0), .lit (.number 7)])] := rfl
 -- Assignment refresh: reassigned literals are tracked (`multi_reassign`).
-example : (propStmts [] [.letDecl ["a"] (some (.lit (.number 1))),
+example : (propStmts false [] [.letDecl ["a"] (some (.lit (.number 1))),
     .assign ["a"] (.lit (.number 2)),
     .exprStmt (.builtin .sstore [.lit (.number 0), .var "a"])]).1
   = [.letDecl ["a"] (some (.lit (.number 1))),
      .assign ["a"] (.lit (.number 2)),
      .exprStmt (.builtin .sstore [.lit (.number 0), .lit (.number 2)])] := rfl
 -- Refresh kills stale copies: `y ↦ x` must die when `x` is refreshed.
-example : (propStmts [] [.letDecl ["x"] (some (.lit (.number 1))),
+example : (propStmts false [] [.letDecl ["x"] (some (.lit (.number 1))),
     .letDecl ["y"] (some (.var "x")),
     .assign ["x"] (.lit (.number 2)),
     .exprStmt (.builtin .sstore [.lit (.number 0), .var "y"])]).1
@@ -2638,14 +2677,14 @@ example : (propStmts [] [.letDecl ["x"] (some (.lit (.number 1))),
      .assign ["x"] (.lit (.number 2)),
      .exprStmt (.builtin .sstore [.lit (.number 0), .lit (.number 1)])] := rfl
 -- Uninitialized `let` shadows: `let x := 1  let x  use x` must read 0.
-example : (propStmts [] [.letDecl ["x"] (some (.lit (.number 1))),
+example : (propStmts false [] [.letDecl ["x"] (some (.lit (.number 1))),
     .letDecl ["x"] none,
     .exprStmt (.builtin .sstore [.lit (.number 0), .var "x"])]).1
   = [.letDecl ["x"] (some (.lit (.number 1))),
      .letDecl ["x"] none,
      .exprStmt (.builtin .sstore [.lit (.number 0), .lit (.number 0)])] := rfl
 -- A variable assigned inside a loop body is NOT propagated into the loop.
-example : (propStmts [] [.letDecl ["i"] (some (.lit (.number 0))),
+example : (propStmts false [] [.letDecl ["i"] (some (.lit (.number 0))),
     .forLoop [] (.builtin .lt [.var "i", .lit (.number 10)])
       [.assign ["i"] (.builtin .add [.var "i", .lit (.number 1)])]
       [.exprStmt (.builtin .sstore [.var "i", .var "i"])]]).1
@@ -2654,7 +2693,7 @@ example : (propStmts [] [.letDecl ["i"] (some (.lit (.number 0))),
        [.assign ["i"] (.builtin .add [.var "i", .lit (.number 1)])]
        [.exprStmt (.builtin .sstore [.var "i", .var "i"])]] := rfl
 -- funDef bodies restart at σ = [] (no caller-variable capture).
-example : (propStmts [] [.letDecl ["x"] (some (.lit (.number 5))),
+example : (propStmts false [] [.letDecl ["x"] (some (.lit (.number 5))),
     .funDef "f" [] ["r"] [.assign ["r"] (.var "x")]]).1
   = [.letDecl ["x"] (some (.lit (.number 5))),
      .funDef "f" [] ["r"] [.assign ["r"] (.var "x")]] := rfl

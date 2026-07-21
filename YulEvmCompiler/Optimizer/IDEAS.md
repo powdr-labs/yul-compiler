@@ -412,6 +412,78 @@ remains a conservative rejection. Existing successful artifacts are unchanged
 because the pass is fallback-only, yielding zero gas regressions; the four
 newly comparable gas rows are pinned.
 
+### ✅ Depth-aware copy propagation + scoped pure DCE + open-operand identities (this branch)
+
+Issue #64, informed by the post-#63 dumps: after `InlineCalls`, the dominant
+remaining cost is copy/rename residue (`let _2 := var_x; let expr := _2`),
+dead parameter/result copy bindings, and one-open-operand identities
+(`or(0, e)`, the `InlineHelpers` fence `add(f(…), 0)`) that gate further
+inlining rounds. Three coordinated changes, one branch:
+
+1. **Copy facts in production `Propagate`** behind a per-scope live-locals
+   depth gate (mirroring `liveMaxStmts`): the relation side (`classify`,
+   `PropRel`, both simulations, resolution closure) already covers `.var`
+   facts; only `classifyProd`/policy threading changes. The resolution
+   congruence transports a frozen relation instance, so the gate heuristic
+   needs no resolution stability. `dispatch_*` (large frames) is the
+   regression target the gate must protect.
+2. **`DeadPure`** — DeadLits generalized to dead singleton `let y := rhs`
+   where `rhs` *always evaluates in context*: literals, `bound`-vars
+   (params/rets via the call rule's `callOk` env, plus earlier binders), and
+   pure-total builtin trees over those. Proof: PropRel-style relation
+   `DcRel bound` + bidirectional Step simulation carrying `BoundOK` and a
+   multi-insertion generalization of `InsAt`; block-exit `restore` erases
+   the extra bindings, keeping the strong `Pass` tier (no ObsPass).
+3. **Open-operand neutral identities in `Simplify`** at the expression layer
+   (outside Core): `add/sub/or/xor(e,0)`, `add/or/xor(0,e)`, `mul/div(e,1)`,
+   `mul(1,e)` for arbitrary `e` including calls — the literal operand is
+   total/stateless, `e` evaluates once on both sides. Rewriting the fence
+   `add(f(…),0) → f(…)` re-exposes statement-level calls to `InlineCalls`,
+   unblocking the `read_from_storage → extract → shift_right` chains in the
+   top loop fixtures.
+
+**Results after rebasing onto the smart-stack-layout main** (fully proven, no
+sorries, axiom gate clean): on the 846 `semanticTests` rows shared with main,
+**781 improve, none regress, −2,138,102 gas net**, and the regenerated combined
+baseline contains **288 additional rows** (1,134 total). `gasTests` improve 12/12,
+−3,855 total (`exp.sol` 2,700 → 2,352, `dispatch_large.sol` 88,362 → 87,677);
+Uniswap v4 improves 10/10, −130,707 total (`TickMath.sol` 1,008,056 →
+884,353, `UnsafeMath.sol` 2,908 → 2,434); the Yul optimizer corpus improves 27
+rows, −2,941 total. `SwapMath` remains the sole strict Uniswap rejection.
+
+Also on this branch: `compileSource` now combines its **light one-round
+pipeline** (`optimizerPipeline*Rounds` generalization) with main's verified
+smart stack layout. It tries the full pipeline, smart layout of that result,
+the light pipeline, smart layout of the light result, and only then the
+unoptimized source. Iterated inlining can push a caller past DUP16; this graded
+ladder converts that cliff into a small gradient without losing the layout
+fallback added by PR #68.
+
+Also completed on this branch: a proved **call-site result freshening** pass
+(`x := f(a)` → `{ let t := f(a); x := t }`, globally fresh `t`) removes the
+common caller-result/callee-name collision before `InlineCalls`; the copy/DCE
+passes consume its temporary. The gate is recomputed per block, and the
+inlining live-local bound is 12. Argument-side shadowing and call-bearing
+arguments remain deliberately unfreshened until their environment-extension
+proof is available.
+
+Findings for the follow-ups, from the post-branch dumps:
+
+- **Argument-side collisions remain** where an argument reads a callee
+  parameter/return name or itself contains a call. Extending freshening to
+  hoist arguments right-to-left would unlock more of the remaining loop gap,
+  but needs the stronger environment-extension proof for nested calls.
+- **Gate granularity**: the per-function `copyGate` disables copy facts in
+  large caller frames — precisely where iterated inlining lands its residue
+  (visible in `fun_run` of `calling_other_functions.sol`). Per-enclosing-
+  block gating or a per-fact lexical-window analysis is the second
+  iteration; the gate is a parameter, so the relation is untouched.
+- Dead non-self assignments, multi-binder lets, and dead `funDef` removal
+  remain logged follow-ups (value-desync needs a different relation);
+  whole-caller-aware `inlineOK` would recover the one softened regression.
+
+## Candidate next ideas (not started)
+
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
 
 Generalizes (and **replaces**) `InlineIdentity` through the Core boundary:

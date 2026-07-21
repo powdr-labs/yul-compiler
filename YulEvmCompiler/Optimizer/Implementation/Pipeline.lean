@@ -2,33 +2,38 @@ import YulEvmCompiler.Optimizer.Implementation.InlineHelpersResolve
 import YulEvmCompiler.Optimizer.Implementation.PropagateResolve
 import YulEvmCompiler.Optimizer.Implementation.DeadLitsResolve
 import YulEvmCompiler.Optimizer.Implementation.InlineCallsResolve
+import YulEvmCompiler.Optimizer.Implementation.DeadPureResolve
+import YulEvmCompiler.Optimizer.Implementation.FreshenCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
 set_option warningAsError true
 /-!
 # Production optimizer pipeline
 
-The production pipeline simplifies expressions, propagates known bindings
-(`Propagate`: constant propagation with binding-preserving substitution),
-inlines pure expression-body helpers through the Core boundary
-(`InlineHelpers`), inlines call-free statement-body helpers (`InlineCalls`),
-simplifies again, and prunes dead literal bindings (`DeadLits`). The whole
+The production pipeline simplifies expressions (constant folding, neutral
+identities including the open-operand forms), propagates known bindings
+(`Propagate`: constant propagation plus depth-gated copy propagation, both
+binding-preserving), inlines pure expression-body helpers through the Core
+boundary (`InlineHelpers`), inlines call-free statement-body helpers
+(`InlineCalls`), simplifies again, and prunes dead pure bindings and
+self-assignments (`DeadPure`, subsuming the earlier `DeadLits`). The whole
 round is **iterated** (`pipelineRounds`): statement-level inlining collapses
 helper chains leaf-first — a call-free callee inlines this round, which makes
-its caller call-free for the next round — and each round's leftovers (literal
-parameter bindings, zero-initialized returns) feed the next round's
-propagation and pruning.
+its caller call-free for the next round — and each round's leftovers
+(parameter/result copy bindings, zero-initialized returns) feed the next
+round's propagation and pruning, which in turn shrink helper bodies back
+under the inlining guards.
 
 Stage order differs by path, deliberately:
 
 * **block path** (`optimizerPipeline`): `simplify → propagate → inline(litOK)
-  → inlineCalls → simplify → deadLits`. Propagation runs *before* the inliner
+  → inlineCalls → simplify → deadPure`. Propagation runs *before* the inliner
   because the block-path inliner accepts literal arguments (`litOK := true`) —
   substituted constants make more call sites flat and inlinable.
 * **object path** (`objectPipeline`): `simplify → inline(var-only) →
-  propagate → inlineCalls → simplify → deadLits`. The object-path inliner is
+  propagate → inlineCalls → simplify → deadPure`. The object-path inliner is
   variable-only (`litOK := false`, the resolution-stable mode), so propagation
   runs *after* it — running first would turn variable arguments into literals
-  and starve it. `Propagate`, `DeadLits`, and `InlineCalls` need no restricted
+  and starve it. `Propagate`, `DeadPure`, and `InlineCalls` need no restricted
   object mode: their soundness is proven for relations closed under layout
   resolution, so the whole-tree object correctness theorem composes with the
   full passes.
@@ -82,12 +87,24 @@ def pipelineRounds : Nat := 6
 
 /-- One block-path round. -/
 def blockRound : List (Pass D) :=
-  [simplify, propagate, inlineHelpersPass true, inlineCalls, simplify, deadLits]
+  [simplify, propagate, inlineHelpersPass true, freshenCalls, inlineCalls,
+   simplify, deadPure]
+
+/-- Verified block pipeline at an explicit round count. Iterated inlining can
+push a caller's live locals past the backend's `DUP16`/`SWAP16` reach; fewer
+rounds keep frames shallower, so `compileSource` retries a **light**
+(one-round) pipeline before giving up on optimization entirely. -/
+def optimizerPipelineRounds (n : Nat) : Pass D :=
+  Pass.ofList ((List.replicate n (blockRound (calls := calls)
+    (creates := creates))).flatten)
 
 /-- Verified production pipeline for top-level blocks: the round, iterated. -/
 def optimizerPipeline : Pass D :=
-  Pass.ofList ((List.replicate pipelineRounds (blockRound (calls := calls)
-    (creates := creates))).flatten)
+  optimizerPipelineRounds pipelineRounds
+
+/-- The light (one-round) block pipeline, the middle compile fallback. -/
+def optimizerPipelineLight : Pass D :=
+  optimizerPipelineRounds 1
 
 /-- One object-path round, with each stage's resolution congruence. -/
 def objectRound : List (RPass calls creates) :=
@@ -103,14 +120,27 @@ def objectRound : List (RPass calls creates) :=
    ⟨propagate, fun L b => by
       have hp := resolvePropagateBlock_equiv (calls := calls) (creates := creates) L b
       simpa [propagateBlock] using hp⟩,
+   ⟨freshenCalls, fun L b => resolveFreshenCallsBlock_equiv L b⟩,
    ⟨inlineCalls, fun L b => resolveInlineCallsBlock_equiv L b⟩,
    ⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
-   ⟨deadLits, fun L b => resolveDeadLitsBlock_equiv L b⟩]
+   ⟨deadPure, fun L b => resolveDeadPureBlock_equiv L b⟩]
+
+/-- Verified object pipeline at an explicit round count (see
+`optimizerPipelineRounds` for why the count varies). -/
+def objectPipelineRounds (n : Nat) : Pass D :=
+  Pass.ofList (((List.replicate n (objectRound (calls := calls)
+    (creates := creates))).flatten).map (·.pass))
 
 /-- Verified pipeline for object code blocks: the round, iterated. -/
 def objectPipeline : Pass D :=
-  Pass.ofList (((List.replicate pipelineRounds (objectRound (calls := calls)
-    (creates := creates))).flatten).map (·.pass))
+  objectPipelineRounds pipelineRounds
+
+/-- Resolution congruence for the iterated object pipeline, any round count. -/
+theorem resolveObjectPipelineRoundsBlock_equiv (n : Nat) (L : Layout) (b : Block Op) :
+    EquivBlock D (resolveForLayoutStmts L b)
+      (resolveForLayoutStmts L
+        ((objectPipelineRounds (calls := calls) (creates := creates) n).run b)) :=
+  RPass.resolve_equiv_ofList _ L b
 
 /-- Resolution congruence for the complete iterated object pipeline. -/
 theorem resolveObjectPipelineBlock_equiv (L : Layout) (b : Block Op) :
@@ -120,24 +150,62 @@ theorem resolveObjectPipelineBlock_equiv (L : Layout) (b : Block Op) :
   RPass.resolve_equiv_ofList _ L b
 
 mutual
-  /-- Run the verified object pipeline on every object code block. -/
-  def optimizerPipelineObject : Object Op → Object Op
+  /-- Run the verified object pipeline (at a round count) on every object
+  code block. -/
+  def optimizerPipelineObjectRounds (n : Nat) : Object Op → Object Op
     | .mk name code subs segs =>
         .mk name
-          ((objectPipeline (calls := calls) (creates := creates)).run code)
-          (optimizerPipelineObjects subs) segs
+          ((objectPipelineRounds (calls := calls) (creates := creates) n).run code)
+          (optimizerPipelineObjectsRounds n subs) segs
 
   /-- Run the verified object pipeline on every object in a list. -/
-  def optimizerPipelineObjects : List (Object Op) → List (Object Op)
+  def optimizerPipelineObjectsRounds (n : Nat) : List (Object Op) → List (Object Op)
     | [] => []
-    | o :: rest => optimizerPipelineObject o :: optimizerPipelineObjects rest
+    | o :: rest =>
+        optimizerPipelineObjectRounds n o :: optimizerPipelineObjectsRounds n rest
 end
+
+/-- Run the verified object pipeline on every object code block. -/
+def optimizerPipelineObject : Object Op → Object Op :=
+  optimizerPipelineObjectRounds (calls := calls) (creates := creates)
+    pipelineRounds
+
+/-- The light (one-round) whole-tree optimizer, the middle compile fallback. -/
+def optimizerPipelineObjectLight : Object Op → Object Op :=
+  optimizerPipelineObjectRounds (calls := calls) (creates := creates) 1
+
+@[simp] theorem optimizerPipelineObjectRounds_codeBlock (n : Nat) (o : Object Op) :
+    (optimizerPipelineObjectRounds (calls := calls) (creates := creates) n o).codeBlock =
+      (objectPipelineRounds (calls := calls) (creates := creates) n).run o.codeBlock := by
+  cases o
+  rfl
 
 @[simp] theorem optimizerPipelineObject_codeBlock (o : Object Op) :
     (optimizerPipelineObject (calls := calls) (creates := creates) o).codeBlock =
       (objectPipeline (calls := calls) (creates := creates)).run o.codeBlock := by
   cases o
   rfl
+
+/-- The recursively optimized artifact (any round count) is covered directly
+by the verified object compiler theorem. -/
+theorem optimizerPipelineObjectRounds_compileObject_correct
+    [model : ExternalModel] (hexternal : ExternalsRealized model) (n : Nat)
+    {o : Object Op} {L : Layout}
+    (hcomp : compileObject
+      (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) n o)
+        = some L)
+    {V : VEnv (evmWithExternal model.calls model.creates)}
+    {yst : EvmState} {out : Outcome}
+    (hrun : RunResolvedObject
+      (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) n o)
+      L V yst out) :
+    ∃ b : Nat, ∀ s0 : State,
+      FrameOK (mkCode L.code) s0 → StateMatch L.initState s0 →
+      s0.pc = UInt256.ofNat 0 → s0.stack = [] → b ≤ s0.gasAvailable →
+      ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst s' ∧
+        ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
+         (out = .halt ∧ HaltedMatch yst s')) :=
+  compileObject_correct hexternal hcomp hrun
 
 /-- The recursively optimized artifact is covered directly by the verified
 object compiler theorem. -/
@@ -160,12 +228,51 @@ theorem optimizerPipelineObject_compileObject_correct
          (out = .halt ∧ HaltedMatch yst s')) :=
   compileObject_correct hexternal hcomp hrun
 
+/-- Every object's own code block is pointwise equivalent to its source block
+(any round count). -/
+theorem optimizerPipelineObjectRounds_topEquiv (n : Nat) (o : Object Op) :
+    EquivBlock D o.codeBlock
+      (optimizerPipelineObjectRounds (calls := calls) (creates := creates) n o).codeBlock := by
+  rw [optimizerPipelineObjectRounds_codeBlock]
+  exact (objectPipelineRounds (calls := calls) (creates := creates) n).sound o.codeBlock
+
 /-- Every object's own code block is pointwise equivalent to its source block. -/
 theorem optimizerPipelineObject_topEquiv (o : Object Op) :
     EquivBlock D o.codeBlock
-      (optimizerPipelineObject (calls := calls) (creates := creates) o).codeBlock := by
-  rw [optimizerPipelineObject_codeBlock]
-  exact (objectPipeline (calls := calls) (creates := creates)).sound o.codeBlock
+      (optimizerPipelineObject (calls := calls) (creates := creates) o).codeBlock :=
+  optimizerPipelineObjectRounds_topEquiv pipelineRounds o
+
+/-- End-to-end correctness for the recursively optimized object tree (any
+round count), relative to the original object's resolved execution under the
+optimized layout. -/
+theorem optimizerPipelineObjectRounds_correct
+    [model : ExternalModel] (hexternal : ExternalsRealized model) (n : Nat)
+    {o : Object Op} {L : Layout}
+    (hcomp : compileObject
+      (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) n o)
+        = some L)
+    {V : VEnv (evmWithExternal model.calls model.creates)}
+    {yst : EvmState} {out : Outcome}
+    (hrun : RunResolvedObject o L V yst out) :
+    ∃ b : Nat, ∀ s0 : State,
+      FrameOK (mkCode L.code) s0 → StateMatch L.initState s0 →
+      s0.pc = UInt256.ofNat 0 → s0.stack = [] → b ≤ s0.gasAvailable →
+      ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst s' ∧
+        ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
+         (out = .halt ∧ HaltedMatch yst s')) := by
+  have hb := resolveObjectPipelineRoundsBlock_equiv
+    (calls := model.calls) (creates := model.creates) n L o.codeBlock
+  have hrun' : RunResolvedObject
+      (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) n o)
+      L V yst out := by
+    show Run (evmWithExternal model.calls model.creates)
+      (resolveForLayoutStmts L
+        (optimizerPipelineObjectRounds (calls := model.calls)
+          (creates := model.creates) n o).codeBlock)
+      L.initState V yst out
+    rw [optimizerPipelineObjectRounds_codeBlock]
+    exact hb.run_iff.mp hrun
+  exact compileObject_correct hexternal hcomp hrun'
 
 /-- End-to-end correctness for the recursively optimized object tree, relative
 to the original object's resolved execution under the optimized layout. -/
@@ -183,19 +290,7 @@ theorem optimizerPipelineObject_correct
       s0.pc = UInt256.ofNat 0 → s0.stack = [] → b ≤ s0.gasAvailable →
       ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst s' ∧
         ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
-         (out = .halt ∧ HaltedMatch yst s')) := by
-  have hb := resolveObjectPipelineBlock_equiv
-    (calls := model.calls) (creates := model.creates) L o.codeBlock
-  have hrun' : RunResolvedObject
-      (optimizerPipelineObject (calls := model.calls) (creates := model.creates) o)
-      L V yst out := by
-    show Run (evmWithExternal model.calls model.creates)
-      (resolveForLayoutStmts L
-        (optimizerPipelineObject (calls := model.calls)
-          (creates := model.creates) o).codeBlock)
-      L.initState V yst out
-    rw [optimizerPipelineObject_codeBlock]
-    exact hb.run_iff.mp hrun
-  exact compileObject_correct hexternal hcomp hrun'
+         (out = .halt ∧ HaltedMatch yst s')) :=
+  optimizerPipelineObjectRounds_correct hexternal pipelineRounds hcomp hrun
 
 end YulEvmCompiler.Optimizer

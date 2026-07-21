@@ -3,15 +3,15 @@
 # Pinned to solc 0.8.35, EVM version osaka. 'ours' is a ceiling:
 # CI fails if this compiler's total rises above it while solc's is unchanged.
 # columns: fixture<TAB>ours<TAB>solc
-abiv2.sol	8524	6886
-abiv2_optimised.sol	8524	6886
-data_storage.sol	525	202
-dispatch_large.sol	88362	76647
-dispatch_large_optimised.sol	88362	76647
-dispatch_medium.sol	45952	41541
-dispatch_medium_optimised.sol	45952	41541
-dispatch_small.sol	30290	29028
-dispatch_small_optimised.sol	30290	29028
-exp.sol	2700	776
-exp_optimized.sol	2700	776
-storage_costs.sol	27964	26869
+abiv2.sol	8351	6886
+abiv2_optimised.sol	8351	6886
+data_storage.sol	462	202
+dispatch_large.sol	87677	76647
+dispatch_large_optimised.sol	87677	76647
+dispatch_medium.sol	45598	41541
+dispatch_medium_optimised.sol	45598	41541
+dispatch_small.sol	30081	29028
+dispatch_small_optimised.sol	30081	29028
+exp.sol	2352	776
+exp_optimized.sol	2352	776
+storage_costs.sol	27710	26869
