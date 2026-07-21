@@ -605,6 +605,52 @@ dominant array rows improve by 384,930, 386,810, and 411,814 gas respectively
 their remaining gap is dominated by arithmetic/stack layout rather than
 persistent-storage reloads.
 
+### ✅ Scoped storage-fact propagation (`codex/storage-scope-forward`)
+
+Post-`StorageForward` output removes the reload immediately following a
+literal-slot store, but the three dominant array loops still contain one warm
+reload of the same slot through nested inliner scaffolding. The value travels
+through a return slot and block-local copy before becoming an outer variable:
+
+```yul
+let expr {
+  let length
+  { length := sload(0) }
+  expr := length
+}
+// Later nested push logic reloads slot 0 instead of reusing expr.
+```
+
+The previous pass intentionally dropped every cache fact at block exit and did
+not establish facts from assignments. The extension treats these as one scoped
+dataflow feature:
+
+- `x := sload(literalKey)` establishes `literalKey ↦ x`;
+- `x := cheapValue` rebinds structurally equal cached values to `x`, allowing
+  facts to follow inlined return-slot copies; and
+- block exit filters facts depending on direct block-local declarations, then
+  exports the remainder across Yul's `restore`.
+
+All existing aliasing, stateful-expression, control-flow, loop-iteration, and
+layout-resolution barriers remain. Assignment facts are gated by `BoundOK`, so
+an ill-scoped assignment whose `VEnv.set` would be a no-op cannot create a
+fact. Rebinding compares the pre-assignment value before invalidating old
+dependencies (covering `x := add(x, 1)`) and keeps literal facts as literals.
+The block proof carries a declaration frame: the body environment is direct
+locals over a key-preserving update of its entry environment, so filtering
+dependencies on exactly those locals makes cache validity survive `restore`.
+
+Measured on top of the first `StorageForward` change, the semantic Solidity
+suite improves **20/859** comparable fixtures with no regression:
+**109,038,844 → 107,663,034** total gas (−1,375,810), moving ours/solc from
+**1.11789× to 1.10378×** and removing another **12.0%** of the remaining
+aggregate gap. The three dominant array rows improve by 409,500, 411,500, and
+438,100 gas respectively (−1,259,100 combined), each losing the targeted hot-
+loop `sload`. The curated gas suite and current six compilable Uniswap scenarios
+are unchanged with no regression; Uniswap remains orthogonal to PR #68's stack
+work. Layout congruence, adversarial shadowing/unbound/rebinding guards, and the
+bidirectional pass proof all type-check without changing the trust boundary.
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)

@@ -10,6 +10,8 @@ the cache before establishing one new fact, so syntactically different keys
 can alias without jeopardizing soundness. Unknown/stateful expressions and
 control-flow joins clear the cache; a conditional whose body cannot complete
 normally may retain it, because only the unselected branch reaches the tail.
+Assignments to known-bound variables establish or rebind facts, and nested
+blocks export facts whose representatives survive removal of direct locals.
 Function bodies and loop post/body blocks are optimized as independent
 regions, so facts never cross a call or loop-iteration boundary.
 -/
@@ -113,6 +115,23 @@ def cacheKill (xs : List Ident) (C : StorageCache) : StorageCache :=
 def cachePut (k : Nat) (v : StorageVal) (C : StorageCache) : StorageCache :=
   (k, v) :: C.filter (fun p => p.1 != k)
 
+/-- After assigning the value denoted by `rhs` to `x`, prefer `x` as the
+replayable representative of every matching non-literal storage fact. Matching
+is checked before invalidating facts that depended on the old value of `x`, so
+`x := add(x, 1)` may safely retain a matching pre-assignment fact. Literal
+facts remain literals because they are cheaper and do not depend on a binding. -/
+def cacheAssign (x : Ident) (rhs : StorageVal) : StorageCache → StorageCache
+  | [] => []
+  | (k, v) :: rest =>
+      let rest' := cacheAssign x rhs rest
+      match rhs with
+      | .lit _ =>
+          if v.dep = some x then rest' else (k, v) :: rest'
+      | _ =>
+          if v = rhs then (k, .var x) :: rest'
+          else if v.dep = some x then rest'
+          else (k, v) :: rest'
+
 mutual
 /-- Syntactic proof search that a statement cannot yield `.normal`. -/
 def stmtNoNormal : Stmt Op → Bool
@@ -150,16 +169,23 @@ def sfLet (C : StorageCache) : List Ident → Option (Expr Op) → Option (Expr 
       | some e =>
           if storageStableExpr e then (some e, C') else (some e, [])
 
-def sfAssign (_bound : List Ident) (C : StorageCache) :
+def sfAssign (bound : List Ident) (C : StorageCache) :
     List Ident → Expr Op → Expr Op × StorageCache
   | [x], e =>
       match literalSloadKey e with
       | some k =>
           let rhs := (cacheLookup k C).map StorageVal.toExpr |>.getD e
-          (rhs, cacheKill [x] C)
-      | none =>
           let C' := cacheKill [x] C
-          if storageStableExpr e then (e, C') else (e, [])
+          let C' := if bound.contains x then cachePut k (.var x) C' else C'
+          (rhs, C')
+      | none =>
+          if storageStableExpr e then
+            match classifyStorageVal e with
+            | some v =>
+                let C' := if bound.contains x then cacheAssign x v C else cacheKill [x] C
+                (e, C')
+            | none => (e, cacheKill [x] C)
+          else (e, [])
   | xs, e =>
       let C' := cacheKill xs C
       if storageStableExpr e then (e, C') else (e, [])
@@ -175,8 +201,8 @@ def sfStmt (bound : List Ident) (C : StorageCache) : Stmt Op → Stmt Op × Stor
   | .assign xs e => let p := sfAssign bound C xs e; (.assign xs p.1, p.2)
   | .exprStmt e => let p := sfExprStmt C e; (.exprStmt p.1, p.2)
   | .block body =>
-      let (body', _) := sfStmts bound C body
-      (.block body', [])
+      let (body', C') := sfStmts bound C body
+      (.block body', cacheKill (declaredStmts body) C')
   | s@(.funDef _ _ _ _) => (s, C)
   | .cond c body =>
       let (body', _) := sfStmts bound [] body

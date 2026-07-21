@@ -183,10 +183,12 @@ operations are different**: their correctness is *conditional on* the
   `InlineCalls` then handles bounded call-free statement bodies.
   `StorageForward` remembers cheap literal, variable, and `add(variable,
   literal)` values written to literal storage slots and substitutes them for
-  later loads. Any possibly aliasing store, stateful expression, control-flow
-  join, or reassignment of a depended-on variable invalidates the relevant
-  facts; loop post/body blocks are optimized independently, never across an
-  iteration boundary. `DeadPure`
+  later loads. Assignment to a bound outer variable can establish or rebind a
+  fact, and nested blocks export facts that do not depend on their direct local
+  declarations. Any possibly aliasing store, stateful expression, control-flow
+  join, or incompatible reassignment invalidates the relevant facts; loop
+  post/body blocks are optimized independently, never across an iteration
+  boundary. `DeadPure`
   removes unused total pure expressions and storage reads, while `DeadResults`
   removes an unused zero-initialized result together with its adjacent
   straight-line, state-preserving computation region. For

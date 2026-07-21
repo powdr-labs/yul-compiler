@@ -188,6 +188,52 @@ def hasForwardedLoopLoad : Block Op → Bool
        .exprStmt (.builtin .sstore _), .break]] => true
   | _ => false
 
+/-- An outer return slot assigned inside an inliner-style nested block carries
+the loaded storage fact back across block restoration. -/
+def storageForwardingScope : Block Op := yul% {
+  let outer
+  { outer := sload(0) }
+  let copied := sload(0)
+  sstore(1, copied)
+}
+
+def hasForwardedScopedLoad : Block Op → Bool
+  | [.letDecl ["outer"] none,
+      .block [.assign ["outer"] (.builtin .sload [.lit (.number 0)])],
+      .letDecl ["copied"] (some (.var "outer")),
+      .exprStmt (.builtin .sstore _)] => true
+  | _ => false
+
+/-- Rebinding checks the pre-assignment value before invalidating dependencies:
+the cached `add(x, 1)` becomes the new value of `x` itself. -/
+def storageForwardingRebind : Block Op := yul% {
+  let x := 40
+  sstore(0, add(x, 1))
+  x := add(x, 1)
+  let copied := sload(0)
+  sstore(1, copied)
+}
+
+def hasForwardedReboundLoad : Block Op → Bool
+  | [.letDecl ["x"] _, .exprStmt (.builtin .sstore _),
+      .assign ["x"] _, .letDecl ["copied"] (some (.var "x")),
+      .exprStmt (.builtin .sstore _)] => true
+  | _ => false
+
+/-- A fact represented by a direct block-local binding must not escape that
+binding's `restore`. -/
+def storageForwardingShadow : Block Op := yul% {
+  { let inner := sload(0) }
+  let copied := sload(0)
+  sstore(1, copied)
+}
+
+def keepsLoadAfterLocalRestore : Block Op → Bool
+  | [.block [.letDecl ["inner"] (some (.builtin .sload _))],
+      .letDecl ["copied"] (some (.builtin .sload _)),
+      .exprStmt (.builtin .sstore _)] => true
+  | _ => false
+
 /-- A *recursive* function: `fact(5) = 120` in slot 0. -/
 def factorial : Block Op := yul% {
   function fact(n) -> f {
@@ -573,11 +619,19 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn wrapperHelpers [0, 1]
 #guard hasForwardedStorageLoads (Optimizer.storageForwardBlock storageForwarding)
 #guard hasForwardedLoopLoad (Optimizer.storageForwardBlock storageForwardingLoop)
+#guard hasForwardedScopedLoad (Optimizer.storageForwardBlock storageForwardingScope)
+#guard hasForwardedReboundLoad (Optimizer.storageForwardBlock storageForwardingRebind)
+#guard keepsLoadAfterLocalRestore (Optimizer.storageForwardBlock storageForwardingShadow)
+#guard (Optimizer.sfAssign [] [] ["missing"]
+  (.builtin .sload [.lit (.number 0)])).2 == []
 #guard compile ((Optimizer.storageForward
   (calls := YulSemantics.EVM.ExternalCalls.none)
   (creates := YulSemantics.EVM.ExternalCreates.none)).run storageForwarding) |>.isSome
 #guard agreeOn storageForwarding [0, 1, 2]
 #guard agreeOn storageForwardingLoop [0, 1]
+#guard agreeOn storageForwardingScope [0, 1]
+#guard agreeOn storageForwardingRebind [0, 1]
+#guard agreeOn storageForwardingShadow [0, 1]
 #guard agreeOn multiRet3 [0, 1, 2]
 #guard agreeOn funCall [0]
 #guard agreeOn factorial [0]

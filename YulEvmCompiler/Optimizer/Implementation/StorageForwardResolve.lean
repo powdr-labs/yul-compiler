@@ -160,7 +160,9 @@ theorem sfStmt_storageLayoutFree {bound : List Ident} {C : StorageCache} :
                 | some v =>
                     cases v <;> simp_all [storageLayoutFreeStmt, StorageVal.toExpr,
                       storageLayoutFreeExpr, storageLayoutFreeArgs]
-              · split <;> simp_all [storageLayoutFreeStmt]
+              · split
+                · split <;> simp_all [storageLayoutFreeStmt]
+                · simp_all [storageLayoutFreeStmt]
           | cons y tail =>
               simp_all [sfStmt, sfAssign, storageLayoutFreeStmt]
               split <;> simp_all
