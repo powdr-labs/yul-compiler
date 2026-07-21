@@ -661,14 +661,6 @@ jobs:
           lint: "false"
           use-github-cache: "false"
 
-      - name: Upload compiled main library build
-        uses: actions/upload-artifact@v4
-        with:
-          name: baseline-lake-build
-          path: .lake/build
-          include-hidden-files: true
-          retention-days: 1
-
       - name: Verify main soundness
         run: |
           mkdir -p ci-summary; f=ci-summary/soundness.txt; : > "$f"; ok=1
@@ -790,7 +782,7 @@ jobs:
   baseline-solc-differential:
     name: Main solc differential (${{ matrix.name }})
     if: ${{ github.event_name == 'pull_request' && needs.baseline-lookup.outputs.hit != 'true' }}
-    needs: [comparison-inputs, baseline-lookup, baseline-build]
+    needs: [comparison-inputs, baseline-lookup, baseline-gas-runner]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -833,26 +825,14 @@ jobs:
         with:
           ref: ${{ needs.comparison-inputs.outputs.main_sha }}
 
-      - name: Cache package builds
-        uses: actions/cache@v4
-        with:
-          path: .lake/packages/*/.lake/build
-          key: lake-package-builds-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
-
-      - name: Restore compiled main library build
+      - name: Restore main native corpus runner
         uses: actions/download-artifact@v4
         with:
-          name: baseline-lake-build
-          path: .lake/build
+          name: baseline-gas-runner-bin
+          path: .lake/build/bin
 
-      - name: Set up main differential runner
-        uses: leanprover/lean-action@v1
-        with:
-          use-mathlib-cache: "true"
-          build: "true"
-          test: "false"
-          lint: "false"
-          use-github-cache: "false"
+      - name: Make main corpus runner executable
+        run: chmod +x .lake/build/bin/checkSolidityGas
 
       - name: Cache pinned svm and solc
         uses: actions/cache@v4
@@ -891,7 +871,7 @@ jobs:
           mkdir -p ci-summary
           f="ci-summary/diff-${{ matrix.kind }}-${{ matrix.shard_index }}.txt"; : > "$f"
           if [[ "${{ matrix.kind }}" == "optimizer" ]]; then
-            lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+            .lake/build/bin/checkSolidityGas --yul-differential \
               optimizer /tmp/solidity/test/libyul/yulOptimizerTests \
               test/solidity-yul-optimizer-known-solc-differential-failures.txt \
               test/solidity-yul-optimizer-gas-baseline.txt \
@@ -899,12 +879,12 @@ jobs:
               "${{ matrix.shard_index }}" "${{ matrix.shard_count }}" 2>&1 | tee -a "$f"
           else
             status=0
-            lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+            .lake/build/bin/checkSolidityGas --yul-differential \
               object-compiler /tmp/solidity/test/libyul/objectCompiler \
               test/solidity-yul-object-compiler-known-solc-differential-failures.txt \
               test/solidity-yul-object-compiler-gas-baseline.txt \
               "$SOLC_PATH" "$SOLC_VERSION" 0 1 2>&1 | tee -a "$f" || status=1
-            lake env lean --run scripts/CheckSoliditySolcDifferential.lean \
+            .lake/build/bin/checkSolidityGas --yul-differential \
               EVM-code-transform /tmp/solidity/test/libyul/evmCodeTransform \
               test/solidity-yul-evm-code-transform-known-solc-differential-failures.txt \
               test/solidity-yul-evm-code-transform-gas-baseline.txt \
