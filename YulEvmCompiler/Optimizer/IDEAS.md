@@ -605,6 +605,43 @@ dominant array rows improve by 384,930, 386,810, and 411,814 gas respectively
 their remaining gap is dominated by arithmetic/stack layout rather than
 persistent-storage reloads.
 
+### 🚧 Scoped storage-fact propagation (`codex/storage-scope-forward`)
+
+Post-`StorageForward` output removes the reload immediately following a
+literal-slot store, but the three dominant array loops still contain one warm
+reload of the same slot through nested inliner scaffolding. The value travels
+through a return slot and block-local copy before becoming an outer variable:
+
+```yul
+let expr {
+  let length
+  { length := sload(0) }
+  expr := length
+}
+// Later nested push logic reloads slot 0 instead of reusing expr.
+```
+
+The current pass intentionally drops every cache fact at block exit and does
+not establish facts from assignments. The proposed extension treats these as
+one scoped dataflow feature:
+
+- `x := sload(literalKey)` establishes `literalKey ↦ x`;
+- `x := cheapValue` rebinds structurally equal cached values to `x`, allowing
+  facts to follow inlined return-slot copies; and
+- block exit filters facts depending on direct block-local declarations, then
+  exports the remainder across Yul's `restore`.
+
+All existing aliasing, stateful-expression, control-flow, loop-iteration, and
+layout-resolution barriers remain. The proof must establish that filtered
+value expressions denote the same word before and after `restore`, including
+shadowing and outer-variable assignments, and must extend the assignment cache
+invariant in both simulation directions.
+
+Acceptance requires removal of the second hot-loop `sload`, a material
+aggregate reduction with no gas regressions or lost compilation, unchanged
+Uniswap behavior (this is intentionally orthogonal to PR #68's stack work),
+full object-path layout congruence, and an unchanged trust boundary.
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
