@@ -108,15 +108,16 @@ private structure CallGas where
   ours : Nat
   solc : Nat
 
-private def replayCalls (ourBase solcBase : EVM.State) (calls : Array Call) : Array CallGas := Id.run do
+private def replayCalls (ourBase solcBase : EVM.State) (calls : Array Call)
+    (fuel : Nat := 3000000) : Array CallGas := Id.run do
   let mut ourState := ourBase
   let mut solcState := solcBase
   let mut measured : Array CallGas := #[]
   for call in calls do
     let os := withCall ourState call
     let ss := withCall solcState call
-    let ourFinal := runEvm 3000000 os
-    let solcFinal := runEvm 3000000 ss
+    let ourFinal := runEvm fuel os
+    let solcFinal := runEvm fuel ss
     if !(ourFinal.isDone && solcFinal.isDone && sameOutcome ourFinal solcFinal) then break
     measured := measured.push {
       sig := call.sig
@@ -186,7 +187,13 @@ private def processContract (dir : FilePath) (solcPath : String) (perScenario : 
                   match deployForCalls creation spec.ctorArgs spec.ctorValue,
                         deployForCalls solcCreation spec.ctorArgs spec.ctorValue with
                   | some ourBase, some solcBase =>
-                      let callGas := replayCalls ourBase solcBase calls
+                      -- Aave's upstream PositionStatusMap stress tests traverse
+                      -- up to 10,000 reserve IDs. They stay below the EVM gas
+                      -- limit but require more small-step fuel than ordinary
+                      -- corpus calls under this compiler's unoptimized output.
+                      let replayFuel :=
+                        if dir.fileName == some "aave-v4" then 30000000 else 3000000
+                      let callGas := replayCalls ourBase solcBase calls replayFuel
                       if callGas.isEmpty then return {}
                       else if perScenario then
                         return { measured := perScenarioRows name callGas }
@@ -228,7 +235,13 @@ private def run (dir baselineFile : FilePath)
     | some shard => weightedShard shard.index shard.count allFiles fun path => do
         return (← path.metadata).byteSize.toNat
   let selectedNames := files.map (relativeName dir)
-  let selected := selectedNames.contains
+  -- Scenario baselines append `:<signature>` to the Solidity fixture path.
+  -- Retain those rows when selecting a whole fixture (including shard runs),
+  -- while preserving exact path matching for contract-total baselines.
+  let perScenario := perScenario ||
+    dir.fileName == some "uniswap-v4" || dir.fileName == some "aave-v4"
+  let selected (fixture : String) : Bool := selectedNames.any fun name =>
+    fixture == name || (perScenario && fixture.startsWith (name ++ ":"))
   if files.isEmpty then
     IO.eprintln s!"{dir}: found no .sol fixtures"
     return 1
@@ -239,8 +252,6 @@ private def run (dir baselineFile : FilePath)
   -- The checked-in protocol suites always use scenario rows; keeping this
   -- directory convention automatic avoids duplicating policy in their runner
   -- invocations. The flag remains available for other local suites.
-  let perScenario := perScenario ||
-    dir.fileName == some "uniswap-v4" || dir.fileName == some "aave-v4"
   let outcomes : Array GasOutcome ← parMap jobs files (processContract dir solcPath perScenario)
   for outcome in outcomes do
     if let some entry := outcome.compileFailure then compileFailures := compileFailures.push entry

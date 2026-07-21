@@ -1515,6 +1515,24 @@ contract AGasTest {
   ISpoke.PositionStatus private collateralStatus;
   ISpoke.PositionStatus private collateralInvalidStatus;
   ISpoke.PositionStatus private borrowInvalidStatus;
+  ISpoke.PositionStatus private scanStatus;
+  ISpoke.PositionStatus private nextStatus;
+  ISpoke.PositionStatus private nextBorrowStatus;
+  ISpoke.PositionStatus private nextCollateralStatus;
+
+  function constants() external pure {
+    // Exact test_constants loop and expectations.
+    uint256 collateralMask;
+    uint256 borrowingMask;
+    for (uint256 i; i < 256; i += 2) {
+      borrowingMask |= 1 << i;
+      collateralMask |= 1 << (i + 1);
+    }
+    require(collateralMask == PositionStatusMap.COLLATERAL_MASK);
+    require(borrowingMask == PositionStatusMap.BORROWING_MASK);
+    require((collateralMask | borrowingMask) == type(uint256).max);
+    require((collateralMask & borrowingMask) == 0);
+  }
 
   function mixedPositionCountVector() external {
     // One real mixed position using the exact reserve ids and set/clear
@@ -1587,9 +1605,153 @@ contract AGasTest {
     require(borrowInvalidStatus.borrowCount(600) == 6);
   }
 
+  function collateralCountMaxReserveScan() external {
+    // Deterministic form of upstream test_collateralCount(uint256) at its
+    // explicit maximum reserveCount bound (1 << 10). The populated reserve IDs
+    // are the exact deterministic vector from test_collateralCount.
+    _seedCollateral(scanStatus);
+
+    uint256 collateralCount;
+    for (uint256 reserveId; reserveId < 1 << 10; ++reserveId) {
+      if (scanStatus.isUsingAsCollateral(reserveId)) ++collateralCount;
+      require(scanStatus.collateralCount(reserveId + 1) == collateralCount);
+    }
+    require(scanStatus.collateralCount(1 << 10) == collateralCount);
+  }
+
+  function borrowCountMaxReserveScan() external {
+    // Deterministic form of upstream test_borrowCount(uint256) at its explicit
+    // maximum reserveCount bound. Uses test_borrowCount's exact reserve IDs.
+    _seedBorrowing(scanStatus);
+
+    uint256 borrowCount;
+    for (uint256 reserveId; reserveId < 1 << 10; ++reserveId) {
+      if (scanStatus.isBorrowing(reserveId)) ++borrowCount;
+      require(scanStatus.borrowCount(reserveId + 1) == borrowCount);
+    }
+    require(scanStatus.borrowCount(1 << 10) == borrowCount);
+  }
+
+  function nextContinuousTenThousand() external {
+    // Exact control-flow and 10,000-reserve bound from test_next_continuous.
+    // The random upstream storage is replaced with its deterministic count-test
+    // reserve IDs so both result flags and long empty-bucket traversal execute.
+    _seedMixed(nextStatus);
+    uint256 lastSeenReserveId = 10_000;
+    uint256 nextReserveId = 10_000;
+    bool borrowing;
+    bool collateral;
+    while (true) {
+      (nextReserveId, borrowing, collateral) = nextStatus.next(lastSeenReserveId);
+      if (nextReserveId == PositionStatusMap.NOT_FOUND) break;
+
+      require(nextStatus.isBorrowing(nextReserveId) == borrowing);
+      require(nextStatus.isUsingAsCollateral(nextReserveId) == collateral);
+      if (lastSeenReserveId > 0) lastSeenReserveId--;
+      while (lastSeenReserveId > nextReserveId) {
+        require(!nextStatus.isBorrowing(lastSeenReserveId));
+        require(!nextStatus.isUsingAsCollateral(lastSeenReserveId));
+        lastSeenReserveId--;
+      }
+    }
+    if (lastSeenReserveId > 0) lastSeenReserveId--;
+    while (lastSeenReserveId > 0) {
+      require(!nextStatus.isBorrowing(lastSeenReserveId));
+      require(!nextStatus.isUsingAsCollateral(lastSeenReserveId));
+      lastSeenReserveId--;
+    }
+  }
+
+  function nextBorrowingContinuousTenThousand() external {
+    // Exact control-flow and bound from test_nextBorrowing_continuous.
+    _seedMixed(nextBorrowStatus);
+    uint256 lastSeenReserveId = 10_000;
+    uint256 nextReserveId = 10_000;
+    while (
+      (nextReserveId = nextBorrowStatus.nextBorrowing(lastSeenReserveId)) !=
+      PositionStatusMap.NOT_FOUND
+    ) {
+      require(nextBorrowStatus.isBorrowing(nextReserveId));
+      if (lastSeenReserveId > 0) lastSeenReserveId--;
+      while (lastSeenReserveId > nextReserveId) {
+        require(!nextBorrowStatus.isBorrowing(lastSeenReserveId));
+        lastSeenReserveId--;
+      }
+    }
+    if (lastSeenReserveId > 0) lastSeenReserveId--;
+    while (lastSeenReserveId > 0) {
+      require(!nextBorrowStatus.isBorrowing(lastSeenReserveId));
+      lastSeenReserveId--;
+    }
+  }
+
+  function nextCollateralContinuousTenThousand() external {
+    // Exact control-flow and bound from test_nextCollateral_continuous.
+    _seedMixed(nextCollateralStatus);
+    uint256 lastSeenReserveId = 10_000;
+    uint256 nextReserveId = 10_000;
+    while (
+      (nextReserveId = nextCollateralStatus.nextCollateral(lastSeenReserveId)) !=
+      PositionStatusMap.NOT_FOUND
+    ) {
+      require(nextCollateralStatus.isUsingAsCollateral(nextReserveId));
+      if (lastSeenReserveId > 0) lastSeenReserveId--;
+      while (lastSeenReserveId > nextReserveId) {
+        require(!nextCollateralStatus.isUsingAsCollateral(lastSeenReserveId));
+        lastSeenReserveId--;
+      }
+    }
+    if (lastSeenReserveId > 0) lastSeenReserveId--;
+    while (lastSeenReserveId > 0) {
+      require(!nextCollateralStatus.isUsingAsCollateral(lastSeenReserveId));
+      lastSeenReserveId--;
+    }
+  }
+
+  function flsFullRange() external pure {
+    // Exact test_fls vectors and loop bounds.
+    require(LibBit.fls(0xff << 3) == 10);
+    for (uint256 i = 1; i < 255; i++) {
+      require(LibBit.fls((1 << i) - 1) == i - 1);
+      require(LibBit.fls(1 << i) == i);
+      require(LibBit.fls((1 << i) + 1) == i);
+    }
+    require(LibBit.fls(0) == 256);
+  }
+
+  function _seedCollateral(ISpoke.PositionStatus storage self) internal {
+    self.setUsingAsCollateral(127, true);
+    self.setUsingAsCollateral(128, true);
+    self.setUsingAsCollateral(2, true);
+    self.setUsingAsCollateral(32, true);
+    self.setUsingAsCollateral(342, true);
+    self.setUsingAsCollateral(32, false);
+  }
+
+  function _seedBorrowing(ISpoke.PositionStatus storage self) internal {
+    self.setBorrowing(127, true);
+    self.setBorrowing(128, true);
+    self.setBorrowing(2, true);
+    self.setBorrowing(32, true);
+    self.setBorrowing(342, true);
+    self.setBorrowing(32, false);
+  }
+
+  function _seedMixed(ISpoke.PositionStatus storage self) internal {
+    _seedCollateral(self);
+    _seedBorrowing(self);
+  }
+
 }
 
 // ----
 // mixedPositionCountVector() -> 0
 // collateralCountIgnoresInvalidBits() -> 0
 // borrowCountIgnoresInvalidBits() -> 0
+// constants() -> 0
+// collateralCountMaxReserveScan() -> 0
+// borrowCountMaxReserveScan() -> 0
+// nextContinuousTenThousand() -> 0
+// nextBorrowingContinuousTenThousand() -> 0
+// nextCollateralContinuousTenThousand() -> 0
+// flsFullRange() -> 0

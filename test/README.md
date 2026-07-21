@@ -180,9 +180,12 @@ do not invent new boundary vectors:
 - `PositionStatusMap.sol` reproduces the collateral/borrow bitmap transitions
   and reserve IDs from `test_collateralCount`, `test_borrowCount`,
   `test_collateralCount_ignoresInvalidBits`, and
-  `test_borrowCount_ignoresInvalidBits`. Its mixed-position scenario applies
-  the two upstream set/clear vectors to one realistic position rather than
-  repeating a cheap operation to inflate gas;
+  `test_borrowCount_ignoresInvalidBits`. It also executes the upstream
+  maximum-bound (1,024-reserve) running count checks, all three upstream
+  10,000-reserve continuous traversal algorithms, and `test_fls`'s complete
+  1..254 bit range. The traversal fixtures use independent positions and the
+  published deterministic reserve-ID vectors, rather than repeating one cheap
+  call to inflate gas;
 - `HubOperations.sol` reproduces the high-gas add/remove, draw/restore, and
   deficit accounting flows from `tests/gas/Hub.Operations.gas.t.sol`, using the
   upstream 1000e6/500e6 and 1000e18/500e18/250e18/100e18 amounts;
@@ -206,10 +209,12 @@ benchmarks for test environments, not deployable Aave distributions.
 The suite is strict. `aave-v4-known-compile-failures.txt` exactly records the
 three full integration fixtures whose unoptimized IR still exceeds this
 compiler's classic stack reach. A newly rejected fixture or a stale failure
-entry fails the run. The currently compilable fixture pins three call rows in
-`aave-v4-gas-baseline.txt`: 111,633, 115,092, and 115,324 gas. The runner
-continues to allow smaller coverage rows when they are useful; these three
-scenarios are the suite's deliberately expensive paths.
+entry fails the run. The currently compilable fixture pins ten distinct call
+rows in `aave-v4-gas-baseline.txt`, totaling about 54.5 million gas for this
+compiler and 18.2 million for solc. The runner continues to allow smaller
+coverage rows when useful; the two maximum-count scans consume about 5 million
+gas each, and the three continuous traversals consume roughly 11 million,
+11 million, and 21 million gas.
 
 Run the suite with:
 
