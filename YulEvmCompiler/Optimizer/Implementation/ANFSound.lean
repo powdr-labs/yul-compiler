@@ -18,6 +18,7 @@ temp-tracking simulation build on top; this file is their base.
 namespace YulEvmCompiler.Optimizer.ANF
 
 open YulSemantics
+open YulSemantics.EVM (Op)
 
 variable {D : Dialect}
 
@@ -128,6 +129,52 @@ theorem eraseTemps_set {V : VEnv D} {x : Ident} {v : D.Value} (h : isTemp P x = 
         · rw [eraseTemps_cons_temp ht, eraseTemps_cons_temp ht, ih]
         · simp only [Bool.not_eq_true] at ht
           rw [eraseTemps_cons_nonTemp ht, eraseTemps_cons_nonTemp ht, set_cons_ne hyx, ih]
+
+/-! ### "No temporary appears here"
+
+The weakening lemma applies to *original* (pre-ANF) code, which mentions no
+temporary. `noTemp*` is that predicate over the syntax — a mutual `Bool`
+recursion checking that no variable read, no declared/assigned variable, and no
+function parameter/return uses a temporary name. (Function *names* live in a
+separate namespace and are not temporaries.) -/
+
+mutual
+def noTempExpr (P : String) : Expr Op → Bool
+  | .lit _ => true
+  | .var x => ! isTemp P x
+  | .builtin _ args => noTempArgs P args
+  | .call _ args => noTempArgs P args
+def noTempArgs (P : String) : List (Expr Op) → Bool
+  | [] => true
+  | e :: rest => noTempExpr P e && noTempArgs P rest
+end
+
+/-- No name in a list is a temporary. -/
+def noTempIdents (P : String) : List Ident → Bool
+  | [] => true
+  | x :: rest => (! isTemp P x) && noTempIdents P rest
+
+mutual
+def noTempStmt (P : String) : Stmt Op → Bool
+  | .block body | .funDef _ _ _ body => noTempStmts P body
+  | .letDecl vars val => noTempIdents P vars && val.all (noTempExpr P)
+  | .assign vars val => noTempIdents P vars && noTempExpr P val
+  | .cond c body => noTempExpr P c && noTempStmts P body
+  | .switch c cases dflt => noTempExpr P c && noTempCases P cases && noTempDflt P dflt
+  | .forLoop init c post body =>
+      noTempStmts P init && noTempExpr P c && noTempStmts P post && noTempStmts P body
+  | .exprStmt e => noTempExpr P e
+  | .break | .continue | .leave => true
+def noTempStmts (P : String) : List (Stmt Op) → Bool
+  | [] => true
+  | s :: rest => noTempStmt P s && noTempStmts P rest
+def noTempCases (P : String) : List (Literal × List (Stmt Op)) → Bool
+  | [] => true
+  | (_, b) :: rest => noTempStmts P b && noTempCases P rest
+def noTempDflt (P : String) : Option (List (Stmt Op)) → Bool
+  | none => true
+  | some b => noTempStmts P b
+end
 
 /-! ### Statement-sequence composition
 
