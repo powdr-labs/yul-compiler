@@ -1,7 +1,32 @@
 # Verified Redundant-Store Elimination — design & plan
 
-Status: **M0 + M1 complete** (semantics pinned; abstract domain + `Valid`
-relation landed in `Implementation/RedundantStore/Domain.lean`). M2+ not started.
+Status: **M0 + M1 done; M2 forwarding-soundness core landed** (semantics pinned;
+abstract domain + `Valid` in `Domain.lean`; load→value-forwarding equivalence in
+`Forward.lean`). **IR decision revised — see §"IR form" below.**
+
+## IR form (revised)
+
+An earlier draft argued against a statement-level Core IR for a single pass. For
+redundant-store elimination that call is **reversed**, on optimization-quality
+grounds, not proof convenience:
+
+* **Run the pass on ANF-normalized Yul** — every operand a variable or literal.
+  Then the abstract store is `keyVar → valueVar`, and forwarding `sload(k)` is a
+  *variable reference* (`let y := x`).
+* **Soundness collapses**: a variable operand is trivially pure — nothing to
+  re-evaluate, halt, or read — so forwarding needs no purity side-proof (the
+  general `cleanEval` purity machinery is off the critical path).
+* **Unconditional profit**: `SLOAD` (100–2100 gas) → `DUP` (~3). Forwarding a
+  re-*computable* value expression can be *worse* than the load (re-emitting a
+  `keccak`/`mulmod`), so values must be **variables**, not arbitrary pure terms.
+  Handling "any argument" is the ANF normalizer's job (bind every non-trivial
+  subexpression to a fresh variable), not the forwarder's.
+* Keys reduce to **value-numbering on key variables** instead of `splitKey`
+  arithmetic — where the aliasing intelligence now lives.
+
+Prerequisite this moves upfront: a verified **ANF / expression-splitting**
+normalization (cf. solc `ExpressionSplitter`), shared infrastructure many passes
+want. That is the next build after the M2 forwarding core.
 
 This document plans a single verified dataflow pass that subsumes today's
 `StorageForward` (read forwarding) and `DeadStore` (write removal) passes with a
@@ -145,7 +170,7 @@ Forward simulation with an invariant, at the statement-list level (generalizing
 |---|------|-------------|
 | **M0** | 0 | **Semantics memo (this doc §M0) + machine-checked probes** (`Implementation/RedundantStore/M0Semantics.lean`). **DONE.** |
 | **M1** | 1 | Abstract domain + key-classes via `KeyDiff` + `Valid` relation, in `Implementation/RedundantStore/Domain.lean`. **DONE.** `Avail`/`Fact` (known-only word-region store; `⊤` = absence), `find?`/`kill`/`store` via `mustAliasWord`/`mustNotAliasWord`, and `Valid` anchored on `EvalExpr`. Structural lemmas `Valid_nil`/`Valid_cons`/`Valid.filter`/`Valid.kill`/`Valid.store`/`Valid.find?` — axiom-clean (`propext`, `Quot.sound`; no `sorryAx`). |
-| **M2** | 1 | **Forwarding + value resolution**, straight-line only (no deletion; calls/CF as barriers). Statement-list simulation proof. Superset of `StorageForward`, now non-literal. |
+| **M2** | 1 | **Forwarding + value resolution**, straight-line only. Core landed in `Forward.lean`: `sload_lit_eval` (exact `sload` evaluation on a literal slot) and `forward_atom_sound` (under `Valid`, reading a slot and evaluating the stored variable/literal are interchangeable — both directions, axiom-clean). **Remaining**: variable-slot keys via value-numbering, and the straight-line statement-list simulation threading `Valid`. Depends on the ANF normalizer (see §"IR form"). |
 | **M3** | 2 | Add `pending` + `nonStatic`. **Redundant-store** (`upd_absorb`) and **dead-store** deletion crossing benign statements. Fixes the motivating example. |
 | **M4** | 2 | Enable **transient** region (same word machinery + `nonStatic`); retires today's staged-transient no-op. |
 | **M5** | 3 | Control-flow **merge/meet** at `if`/`switch`, conservative loop kill. Join simulation proof. |
