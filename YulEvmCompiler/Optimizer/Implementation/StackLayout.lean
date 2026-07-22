@@ -2515,7 +2515,10 @@ def propagateFunctionStmts (body : Block Op) : Block Op :=
 
 end StackV2
 
-def stackLayoutBlock (b : Block Op) : Block Op :=
+def legacyStackLayoutBlock (b : Block Op) : Block Op :=
+  iterateTailScope 1024 (iterateStackLayout 1024 (scheduleStmts b))
+
+def aggressiveStackLayoutBlock (b : Block Op) : Block Op :=
   let copied := iterateCopyBack 1024 (scheduleStmts b)
   let prefixed := copied
   let scopedEarly := StackV2.scopeDeadFunctionStmts prefixed
@@ -2531,6 +2534,14 @@ def stackLayoutBlock (b : Block Op) : Block Op :=
   let nestedReused := iterateStackLayout 4096 nested
   let nestedAliased := StackV2.aliasFunctionStmts nestedReused
   stageCallsBlock (StackV2.scopeDeadFunctionStmts nestedAliased)
+
+/-- Preserve the established layout and bytecode whenever it already compiles;
+use the more aggressive dominance-local pipeline only as a stack-pressure
+fallback. This keeps the new acceptance frontier from perturbing gas for the
+previously supported fragment. -/
+def stackLayoutBlock (b : Block Op) : Block Op :=
+  let legacy := legacyStackLayoutBlock b
+  if (compile legacy).isSome then legacy else aggressiveStackLayoutBlock b
 
 mutual
   /-- Apply stack layout independently to every code block in an object tree. -/

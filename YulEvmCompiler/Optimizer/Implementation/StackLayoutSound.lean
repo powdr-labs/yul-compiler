@@ -7216,11 +7216,17 @@ theorem aliasFunctionStmts_equiv (b : Block Op) :
 
 end StackV2Sound
 
-/-- The verified expression-scheduling and liveness-guided stack-layout pass. -/
-def stackLayout : Pass D where
-  run := stackLayoutBlock
-  sound := fun b => by
-    simp only [stackLayoutBlock]
+theorem legacyStackLayoutBlock_equiv (b : Block Op) :
+    EquivBlock D b (legacyStackLayoutBlock b) := by
+  simp only [legacyStackLayoutBlock]
+  exact (scheduleBlock_equiv b).trans
+    ((iterateStackLayout_equiv 1024 (scheduleStmts b)).trans
+      (iterateTailScope_equiv 1024
+        (iterateStackLayout 1024 (scheduleStmts b))))
+
+theorem aggressiveStackLayoutBlock_equiv (b : Block Op) :
+    EquivBlock D b (aggressiveStackLayoutBlock b) := by
+    simp only [aggressiveStackLayoutBlock]
     apply (scheduleBlock_equiv b).trans
     apply (iterateCopyBack_equiv 1024 (scheduleStmts b)).trans
     apply (StackV2Sound.scopeDeadFunctionStmts_equiv _).trans
@@ -7238,6 +7244,15 @@ def stackLayout : Pass D where
     apply (StackV2Sound.aliasFunctionStmts_equiv _).trans
     apply (StackV2Sound.scopeDeadFunctionStmts_equiv _).trans
     exact stageCallsBlock_equiv _
+
+/-- The verified expression-scheduling and liveness-guided stack-layout pass. -/
+def stackLayout : Pass D where
+  run := stackLayoutBlock
+  sound := fun b => by
+    simp only [stackLayoutBlock]
+    split
+    · exact legacyStackLayoutBlock_equiv b
+    · exact aggressiveStackLayoutBlock_equiv b
 
 @[simp] theorem stackLayout_run (b : Block Op) :
     (stackLayout (calls := calls) (creates := creates)).run b = stackLayoutBlock b := rfl

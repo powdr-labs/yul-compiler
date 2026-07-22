@@ -134,6 +134,10 @@ early dead scoping, tail scoping, slot reuse, dominance-local splitting and
 available-copy forwarding, then pressure-triggered staging against the final
 layout. Its pressure traversal threads loop-init declarations and the init's
 hoisted function-signature scope into the condition, post, and body.
+The public pass first runs the established layout and retains it whenever that
+program already compiles; the aggressive pipeline is selected only when the
+legacy layout still hits a stack cliff. This preserves bytecode and gas for the
+previously supported fragment while extending acceptance.
 Function-body congruence is handled by `FunCongr`; a structural resolution
 congruence lifts the pass over every object code block without changing object
 names, data, or the audited specification.
