@@ -816,6 +816,57 @@ frontier; its other 552 rows, all 23 object-compiler rows, and all 40
 EVM-code-transform rows are unchanged. No solc fingerprint moved and no known
 failure baseline changed.
 
+### 🚧 Function-scoped stack layout and loop-carried read-only ranges
+
+Follow-up to the bounded dominance-local fallback merged in PR #75.  The
+remaining Uniswap failures expose two related gaps:
+
+- aggressive fixed points are still orchestrated from the whole object block,
+  so a large sibling function affects the cost and eligibility of an otherwise
+  moderate function; and
+- `PoolSwap.fun_swap_3942` keeps the stable result pointer
+  `var_result_3345_mpos` below `DUP16` across a loop body containing a `break`.
+  The existing acyclic range splitter rejects that body solely because of the
+  non-local edge, even though the pointer binding itself is never assigned.
+
+The implementation will run scheduling, copy-back coalescing, dead scoping,
+slot reuse, dominance-local range splitting, alias propagation, and call
+staging as a bounded fixed point per direct function.  Each function starts
+from its `parameters ++ returns` layout and shares only the enclosing hoisted
+signature map needed to price calls.  Top-level executable statements remain a
+separate region.  This removes object/file size from the stack-layout decision
+and makes the complexity bound match the scope in which locals actually live.
+
+For loop bodies, add a read-only range rule:
+
+```yul
+<body using stable x, possibly break/continue/leave>
+
+⇒
+
+{
+  let shadow := x
+  { <body with x renamed to shadow> }
+}
+```
+
+No copy-back is emitted because the source binding is provably not assigned.
+Consequently every control outcome may cross the region boundary unchanged;
+the existing slot-renaming bisimulation already covers loops, `break`,
+`continue`, `leave`, and halt.  Writable loop-carried ranges remain behind the
+stricter edge-copy/SSA-destruction proof obligation.
+
+Proof plan: generalize the existing fixed-point equivalence lemmas to an
+explicit entry layout, compose them into a `BoundEquivBlock` for one function,
+use the existing `mapFunBodies_equiv`/function-environment congruence for
+selective mapping, and prove the read-only shadow block directly from
+`SlotRel.initial`, `slot_fwd`, `slot_rev_fwd`, and block restoration.  Acceptance
+is still gated by ordinary `compile`; there is no deep-stack escape hatch.
+
+Validation target: remove `PoolSwap.sol` first, then diagnose the now-isolated
+`PoolManager.sol` functions; retain the strict Uniswap gas/differential suite,
+Aave rejection-time checks, full build, axiom checks, and spec-closure guard.
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
