@@ -256,6 +256,16 @@ theorem TempExt.temp_left {P : String} {Vo Va : VEnv D} {t : Ident} {w : D.Value
     (ht : isTemp P t = true) (h : TempExt P Vo Va) : TempExt P Vo ((t, w) :: Va) :=
   .temp ht h
 
+/-- Prepending the same block of non-temp declarations to both sides preserves
+the extension (used for `let`/`for`-`init` declarations and block entry). -/
+theorem TempExt.prepend_nonTemp {P : String} :
+    ∀ {new : VEnv D} {Vo Va : VEnv D}, (∀ p ∈ new, isTemp P p.1 = false) →
+      TempExt P Vo Va → TempExt P (new ++ Vo) (new ++ Va)
+  | [], _, _, _, h => h
+  | (y, v) :: rest, _, _, hnew, h => by
+      refine .keep (hnew (y, v) (List.mem_cons_self ..)) ?_
+      exact TempExt.prepend_nonTemp (fun p hp => hnew p (List.mem_cons_of_mem _ hp)) h
+
 /-- A temp-free environment temp-extends itself (the base case at a program's
 outermost scope, where no ANF temporary exists yet). -/
 theorem TempExt.of_tempFree {P : String} :
