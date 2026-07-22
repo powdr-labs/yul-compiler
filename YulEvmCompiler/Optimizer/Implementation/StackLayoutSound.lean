@@ -7252,7 +7252,9 @@ def stackLayout : Pass D where
     simp only [stackLayoutBlock]
     split
     · exact legacyStackLayoutBlock_equiv b
-    · exact aggressiveStackLayoutBlock_equiv b
+    · split
+      · exact aggressiveStackLayoutBlock_equiv b
+      · exact legacyStackLayoutBlock_equiv b
 
 @[simp] theorem stackLayout_run (b : Block Op) :
     (stackLayout (calls := calls) (creates := creates)).run b = stackLayoutBlock b := rfl

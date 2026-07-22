@@ -2535,13 +2535,40 @@ def aggressiveStackLayoutBlock (b : Block Op) : Block Op :=
   let nestedAliased := StackV2.aliasFunctionStmts nestedReused
   stageCallsBlock (StackV2.scopeDeadFunctionStmts nestedAliased)
 
+/-- The aggressive fallback deliberately performs repeated whole-function
+data-flow scans.  Keep that search bounded on generated integration IR using
+both an object-wide identifier-occurrence budget and a tighter per-function
+budget.  Above either bound the legacy pass still gives the established fast
+rejection, while moderate functions (including PoolLiquidity and SwapMath) get
+the full dominance/liveness refinement.  This is a compile-time resource bound,
+not a semantic restriction: both alternatives are independently proved
+equivalent. -/
+def aggressiveStackLayoutBudget : Nat := 8192
+
+def aggressiveFunctionLayoutBudget : Nat := 1024
+
+def directFunctionsWithinAggressiveBudget : Block Op → Bool
+  | [] => true
+  | .funDef _ _ _ body :: rest =>
+      (stmtsIdents body).length ≤ aggressiveFunctionLayoutBudget &&
+        directFunctionsWithinAggressiveBudget rest
+  | _ :: rest => directFunctionsWithinAggressiveBudget rest
+
+def withinAggressiveStackLayoutBudget (b : Block Op) : Bool :=
+  (stmtsIdents b).length ≤ aggressiveStackLayoutBudget &&
+    directFunctionsWithinAggressiveBudget b
+
 /-- Preserve the established layout and bytecode whenever it already compiles;
 use the more aggressive dominance-local pipeline only as a stack-pressure
-fallback. This keeps the new acceptance frontier from perturbing gas for the
-previously supported fragment. -/
+fallback on bounded functions. This keeps the new acceptance frontier from
+perturbing gas for the previously supported fragment and prevents generated
+multi-megabyte functions from turning a known rejection into an unbounded
+compile-time search. -/
 def stackLayoutBlock (b : Block Op) : Block Op :=
   let legacy := legacyStackLayoutBlock b
-  if (compile legacy).isSome then legacy else aggressiveStackLayoutBlock b
+  if (compile legacy).isSome then legacy
+  else if withinAggressiveStackLayoutBudget b then aggressiveStackLayoutBlock b
+  else legacy
 
 mutual
   /-- Apply stack layout independently to every code block in an object tree. -/
