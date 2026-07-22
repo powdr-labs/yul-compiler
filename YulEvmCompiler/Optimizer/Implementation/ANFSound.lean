@@ -68,6 +68,67 @@ theorem set_length (V : VEnv D) (x : Ident) (v : D.Value) :
       · subst h; simp [VEnv.set]
       · simp [VEnv.set, h, ih]
 
+/-! ### Erasing temporaries: the environment "modulo fresh temps"
+
+The simulation invariant relating the original and ANF'd executions is
+`eraseTemps P Va = Vo`: the ANF environment with all temporary (prefix-`P`)
+bindings removed equals the original environment. These lemmas show that
+invariant is preserved by the environment operations — reads/writes of a
+non-temp variable ignore the temps, declaring a temp is invisible to the
+erasure, and declaring a non-temp commutes with it. -/
+
+/-- `x` is a temporary of the ANF pass: its name starts with the fresh prefix. -/
+def isTemp (P : String) (x : Ident) : Bool := P.isPrefixOf x
+
+/-- The environment with all temporary bindings removed. -/
+def eraseTemps (P : String) (V : VEnv D) : VEnv D :=
+  V.filter (fun p => ! isTemp P p.1)
+
+@[simp] theorem eraseTemps_nil : eraseTemps P ([] : VEnv D) = [] := rfl
+
+@[simp] theorem eraseTemps_cons_temp {V : VEnv D} {y : Ident} {w : D.Value}
+    (h : isTemp P y = true) : eraseTemps P ((y, w) :: V) = eraseTemps P V := by
+  simp [eraseTemps, h]
+
+@[simp] theorem eraseTemps_cons_nonTemp {V : VEnv D} {y : Ident} {w : D.Value}
+    (h : isTemp P y = false) :
+    eraseTemps P ((y, w) :: V) = (y, w) :: eraseTemps P V := by
+  simp [eraseTemps, h]
+
+/-- Reading a non-temporary variable is unaffected by erasing temporaries. -/
+theorem get_eraseTemps {V : VEnv D} {x : Ident} (h : isTemp P x = false) :
+    VEnv.get (eraseTemps P V) x = VEnv.get V x := by
+  induction V with
+  | nil => rfl
+  | cons p rest ih =>
+      obtain ⟨y, w⟩ := p
+      by_cases ht : isTemp P y = true
+      · rw [eraseTemps_cons_temp ht, ih]
+        have hyx : y ≠ x := by intro he; rw [he, h] at ht; exact absurd ht (by simp)
+        rw [get_cons_ne hyx]
+      · simp only [Bool.not_eq_true] at ht
+        rw [eraseTemps_cons_nonTemp ht]
+        by_cases hyx : y = x
+        · subst hyx; simp
+        · rw [get_cons_ne hyx, get_cons_ne hyx, ih]
+
+/-- Assigning a non-temporary variable commutes with erasing temporaries. -/
+theorem eraseTemps_set {V : VEnv D} {x : Ident} {v : D.Value} (h : isTemp P x = false) :
+    eraseTemps P (VEnv.set V x v) = VEnv.set (eraseTemps P V) x v := by
+  induction V with
+  | nil => rfl
+  | cons p rest ih =>
+      obtain ⟨y, w⟩ := p
+      by_cases hyx : y = x
+      · subst hyx
+        have hy : isTemp P y = false := h
+        rw [set_cons_self, eraseTemps_cons_nonTemp hy, eraseTemps_cons_nonTemp hy, set_cons_self]
+      · rw [set_cons_ne hyx]
+        by_cases ht : isTemp P y = true
+        · rw [eraseTemps_cons_temp ht, eraseTemps_cons_temp ht, ih]
+        · simp only [Bool.not_eq_true] at ht
+          rw [eraseTemps_cons_nonTemp ht, eraseTemps_cons_nonTemp ht, set_cons_ne hyx, ih]
+
 /-! ### `restore` under a block-local prefix
 
 `restore outer inner = inner.drop (inner.length - outer.length)`. The block-scoped
