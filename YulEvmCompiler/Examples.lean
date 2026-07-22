@@ -451,6 +451,39 @@ def optimizedStackPressure : Block Op :=
 def laidOutStackPressure : Block Op :=
   Optimizer.stackLayoutBlock optimizedStackPressure
 
+/-- A read-only result slot becomes `DUP17`-deep inside a loop whose `break`
+edge is consumed by that loop.  The loop-range layout introduces one shallow
+shadow at the loop dominator and keeps the copy-back outside the loop. -/
+def loopBreakStackPressure : Block Op := yul% {
+  function f(x) -> r {
+    r := x
+    for { } 1 { } {
+      let a0 := 0
+      let a1 := 1
+      let a2 := 2
+      let a3 := 3
+      let a4 := 4
+      let a5 := 5
+      let a6 := 6
+      let a7 := 7
+      let a8 := 8
+      let a9 := 9
+      let a10 := 10
+      let a11 := 11
+      let a12 := 12
+      let a13 := 13
+      let a14 := 14
+      sstore(0, r)
+      break
+    }
+  }
+  let result := f(7)
+  sstore(1, result)
+}
+
+def laidOutLoopBreakStackPressure : Block Op :=
+  Optimizer.stackLayoutBlock loopBreakStackPressure
+
 /-- A result slot that is shallow on block entry but hidden below fourteen
 locals at the terminal write. The tail-carrier policy recognizes that the
 first local dominates the region and is the only value needed after it. -/
@@ -517,6 +550,8 @@ def selfdestructOps : Block Op := yul% {
 #guard (compile selfdestructOps).isSome
 #guard !(compile optimizedStackPressure).isSome
 #guard (compile laidOutStackPressure).isSome
+#guard !(compile loopBreakStackPressure).isSome
+#guard (compile laidOutLoopBreakStackPressure).isSome
 #guard (Optimizer.scopeTailHere ["x", "r"] tailCarrierCandidate).isSome
 
 /-! ### The upstream Fibonacci contract
@@ -647,6 +682,7 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn keccakOps [0, 1]
 #guard agreeOn logOps []
 #guard agreeOn laidOutStackPressure [0]
+#guard agreeOn laidOutLoopBreakStackPressure [0, 1]
 
 /-- Differential check with the source's abstract balance/blob oracles and the
 target's concrete account map/blob list initialized to matching values. -/

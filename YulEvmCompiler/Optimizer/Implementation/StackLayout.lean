@@ -318,12 +318,15 @@ mutual
     all_goals omega
 end
 
-def iterateTailScope : Nat → Block Op → Block Op
-  | 0, b => b
-  | n + 1, b =>
-      match scopeOneStmts [] b with
-      | some b' => iterateTailScope n b'
+def iterateTailScopeFrom : Nat → List Ident → Block Op → Block Op
+  | 0, _, b => b
+  | n + 1, layout, b =>
+      match scopeOneStmts layout b with
+      | some b' => iterateTailScopeFrom n layout b'
       | none => b
+
+def iterateTailScope (n : Nat) (b : Block Op) : Block Op :=
+  iterateTailScopeFrom n [] b
 
 /-! ### Adjacent call-result copy-back
 
@@ -416,12 +419,15 @@ mutual
     all_goals omega
 end
 
-def iterateCopyBack : Nat → Block Op → Block Op
-  | 0, b => b
-  | n + 1, b =>
-      match copyOneStmts [] b with
-      | some b' => iterateCopyBack n b'
+def iterateCopyBackFrom : Nat → List Ident → Block Op → Block Op
+  | 0, _, b => b
+  | n + 1, layout, b =>
+      match copyOneStmts layout b with
+      | some b' => iterateCopyBackFrom n layout b'
       | none => b
+
+def iterateCopyBack (n : Nat) (b : Block Op) : Block Op :=
+  iterateCopyBackFrom n [] b
 
 /-! ### Pressure-triggered right-to-left call-argument staging
 
@@ -546,12 +552,17 @@ mutual
     all_goals omega
 end
 
-def iterateStageWith : Nat → String → FMap → Block Op → Block Op
-  | 0, _, _, b => b
-  | n + 1, P, Phi, b =>
-      match stageOneStmts P Phi [] b with
-      | some b' => iterateStageWith n P Phi b'
+def iterateStageWithLayout : Nat → String → FMap → List Ident →
+    Block Op → Block Op
+  | 0, _, _, _, b => b
+  | n + 1, P, Phi, layout, b =>
+      match stageOneStmts P Phi layout b with
+      | some b' => iterateStageWithLayout n P Phi layout b'
       | none => b
+
+def iterateStageWith (n : Nat) (P : String) (Phi : FMap)
+    (b : Block Op) : Block Op :=
+  iterateStageWithLayout n P Phi [] b
 
 def iterateStageCalls (fuel : Nat) (P : String) (b : Block Op) : Block Op :=
   let (scope, _) := hoistInfos 0 b
@@ -1208,12 +1219,15 @@ mutual
     all_goals omega
 end
 
-def iterateStackLayout : Nat → Block Op → Block Op
-  | 0, b => b
-  | n + 1, b =>
-      match reuseOneStmts [] [] b with
-      | some b' => iterateStackLayout n b'
+def iterateStackLayoutFrom : Nat → List Ident → Block Op → Block Op
+  | 0, _, b => b
+  | n + 1, layout, b =>
+      match reuseOneStmts layout [] b with
+      | some b' => iterateStackLayoutFrom n layout b'
       | none => b
+
+def iterateStackLayout (n : Nat) (b : Block Op) : Block Op :=
+  iterateStackLayoutFrom n [] b
 
 namespace StackV2
 
@@ -2214,6 +2228,108 @@ mutual
     all_goals simp_wf
 end
 
+/-! ### Read-only ranges across one structured loop
+
+`break` and `continue` are consumed by their owning loop.  A loop whose
+initializer/post are straight-line regions and whose body is acyclic apart
+from those two edges therefore returns only normally or by halting (provided
+there is no `leave`).  A stable entry value can be shadowed around that whole
+loop and copied back on normal exit; no edge-specific SSA copy is needed. -/
+
+mutual
+  def loopBodySafeStmt : Stmt Op → Bool
+    | .block body | .cond _ body => loopBodySafeStmts body
+    | .switch _ cases dflt => loopBodySafeCases cases && loopBodySafeDflt dflt
+    | .letDecl _ _ | .assign _ _ | .exprStmt _ | .break | .continue => true
+    | .funDef _ _ _ _ | .forLoop _ _ _ _ | .leave => false
+    termination_by s => 2 * sizeOf s
+
+  def loopBodySafeStmts : Block Op → Bool
+    | [] => true
+    | s :: rest => loopBodySafeStmt s && loopBodySafeStmts rest
+    termination_by ss => 2 * sizeOf ss + 1
+
+  def loopBodySafeCases : List (Literal × Block Op) → Bool
+    | [] => true
+    | (_, body) :: rest => loopBodySafeStmts body && loopBodySafeCases rest
+    termination_by cases => 2 * sizeOf cases + 1
+
+  def loopBodySafeDflt : Option (Block Op) → Bool
+    | none => true
+    | some body => loopBodySafeStmts body
+    termination_by dflt => 2 * sizeOf dflt + 1
+  decreasing_by
+    all_goals simp_wf
+end
+
+def readOnlyLoopSafe : Stmt Op → Bool
+  | .forLoop init _ post body =>
+      shadowStraightStmts init && shadowStraightStmts post &&
+        loopBodySafeStmts body
+  | _ => false
+
+def shadowReadOnlyLoopCandidate (P : String) (Phi : FMap)
+    (layout : List Ident) (loop : Stmt Op) : List Ident → Option (Stmt Op)
+  | [] => none
+  | x :: xs =>
+      match layout.findIdx? (fun y => y = x) with
+      | none => shadowReadOnlyLoopCandidate P Phi layout loop xs
+      | some idx =>
+          let shadow := s!"{P}loop"
+          if idx < 16 && x != shadow && !layout.contains shadow &&
+              !stmtMentions shadow loop && !stmtDeclares x loop &&
+              !stmtFunMentions x loop && !writesStmt x loop &&
+              readOnlyLoopSafe loop then
+            let renamed := renameStmt [(x, shadow)] loop
+            if !(deepVarsStmt Phi [shadow] (shadow :: layout) renamed).contains shadow then
+              some (.block [.letDecl [shadow] (some (.var x)),
+                .block [renamed], .assign [x] (.var shadow)])
+            else shadowReadOnlyLoopCandidate P Phi layout loop xs
+          else shadowReadOnlyLoopCandidate P Phi layout loop xs
+
+def shadowReadOnlyLoopHere (P : String) (Phi : FMap)
+    (layout : List Ident) (loop : Stmt Op) : Option (Stmt Op) :=
+  shadowReadOnlyLoopCandidate P Phi layout loop
+    (deepVarsStmt Phi layout layout loop |>.filter fun x => !writesStmt x loop)
+
+def readOnlyLoopLayoutAfter (layout : List Ident) : Stmt Op → List Ident
+  | .letDecl xs _ => xs ++ layout
+  | _ => layout
+
+mutual
+  def shadowOneReadOnlyLoopStmt (P : String) (Phi : FMap)
+      (layout : List Ident) : Stmt Op → Option (Stmt Op)
+    | loop@(.forLoop _ _ _ _) => shadowReadOnlyLoopHere P Phi layout loop
+    | .block body => (.block ·) <$> shadowOneReadOnlyLoopStmts P Phi layout body
+    | _ => none
+    termination_by s => 2 * sizeOf s
+
+  def shadowOneReadOnlyLoopStmts (P : String) (Phi : FMap)
+      (layout : List Ident) : Block Op → Option (Block Op)
+    | [] => none
+    | s :: rest =>
+        match shadowOneReadOnlyLoopStmt P Phi layout s with
+        | some s' => some (s' :: rest)
+        | none =>
+            (s :: ·) <$> shadowOneReadOnlyLoopStmts P Phi
+              (readOnlyLoopLayoutAfter layout s) rest
+    termination_by ss => 2 * sizeOf ss + 1
+  decreasing_by
+    all_goals simp_wf
+    all_goals omega
+end
+
+def iterateReadOnlyLoopRangesFrom : Nat → FMap → List Ident →
+    Block Op → Block Op
+  | 0, _, _, body => body
+  | n + 1, Phi, layout, body =>
+      match freshPrefix (stmtsIdents body) with
+      | none => body
+      | some P =>
+          match shadowOneReadOnlyLoopStmts P Phi layout body with
+          | none => body
+          | some body' => iterateReadOnlyLoopRangesFrom n Phi layout body'
+
 def shadowStableCandidate (P : String) (Phi : FMap) (layout : List Ident)
     (body : Block Op) : List Ident → Option (Block Op)
   | [] => none
@@ -2535,6 +2651,35 @@ def aggressiveStackLayoutBlock (b : Block Op) : Block Op :=
   let nestedAliased := StackV2.aliasFunctionStmts nestedReused
   stageCallsBlock (StackV2.scopeDeadFunctionStmts nestedAliased)
 
+/-- Run the aggressive fixed point inside one function frame.  Unlike the
+whole-block driver, every search starts at the function's parameter/result
+layout and receives the already-hoisted enclosing signature scope. -/
+def aggressiveStackLayoutFunction (Phi : FMap) (layout : List Ident)
+    (body : Block Op) : Block Op :=
+  let copied := iterateCopyBackFrom 1024 layout (scheduleStmts body)
+  let scopedEarly := StackV2.scopeDeadPrefixesStmts 64 copied
+  let tailed := iterateTailScopeFrom 4096 layout scopedEarly
+  let reused := iterateStackLayoutFrom 4096 layout tailed
+  let loopRanged := StackV2.iterateReadOnlyLoopRangesFrom 16 Phi layout reused
+  let ranged := StackV2.iterateRegionRangesFrom 64 Phi layout loopRanged
+  let rangedReused := StackV2.iterateRegionRangesFrom 64 Phi layout
+    (iterateStackLayoutFrom 4096 layout ranged)
+  let aliased := StackV2.iterateAliasesFrom 4096 layout rangedReused
+  let rangedFinal := StackV2.iterateRegionRangesFrom 64 Phi layout aliased
+  let nestedStable := match freshPrefix (stmtsIdents rangedFinal) with
+    | some P => (StackV2.shadowInsideExisting P Phi layout rangedFinal).getD rangedFinal
+    | none => rangedFinal
+  let nested := match freshPrefix (stmtsIdents nestedStable) with
+    | some P =>
+        (StackV2.shadowInsideExistingWritten P Phi layout nestedStable).getD nestedStable
+    | none => nestedStable
+  let nestedReused := iterateStackLayoutFrom 4096 layout nested
+  let nestedAliased := StackV2.iterateAliasesFrom 4096 layout nestedReused
+  let scopedFinal := StackV2.scopeDeadPrefixesStmts 64 nestedAliased
+  match freshPrefix (stmtsIdents scopedFinal) with
+  | some P => iterateStageWithLayout 16384 P Phi layout scopedFinal
+  | none => scopedFinal
+
 /-- The aggressive fallback deliberately performs repeated whole-function
 data-flow scans.  Keep that search bounded on generated integration IR using
 both an object-wide identifier-occurrence budget and a tighter per-function
@@ -2545,7 +2690,7 @@ not a semantic restriction: both alternatives are independently proved
 equivalent. -/
 def aggressiveStackLayoutBudget : Nat := 8192
 
-def aggressiveFunctionLayoutBudget : Nat := 1024
+def aggressiveFunctionLayoutBudget : Nat := 8192
 
 def directFunctionsWithinAggressiveBudget : Block Op → Bool
   | [] => true
@@ -2558,6 +2703,23 @@ def withinAggressiveStackLayoutBudget (b : Block Op) : Bool :=
   (stmtsIdents b).length ≤ aggressiveStackLayoutBudget &&
     directFunctionsWithinAggressiveBudget b
 
+/-- Transform each function independently so an oversized sibling neither
+suppresses nor slows layout of a moderate function.  The shared scope is used
+only for call signatures; function bodies remain separate fixed points. -/
+def scopedAggressiveFunctions (scope : FScopeInfo) : Block Op → Block Op
+  | [] => []
+  | .funDef f ps rs body :: rest =>
+      let body' :=
+        if (stmtsIdents body).length ≤ aggressiveFunctionLayoutBudget then
+          aggressiveStackLayoutFunction [scope] (ps ++ rs) body
+        else body
+      .funDef f ps rs body' :: scopedAggressiveFunctions scope rest
+  | s :: rest => s :: scopedAggressiveFunctions scope rest
+
+def scopedAggressiveStackLayoutBlock (b : Block Op) : Block Op :=
+  let (scope, _) := hoistInfos 0 b
+  scopedAggressiveFunctions scope b
+
 /-- Preserve the established layout and bytecode whenever it already compiles;
 use the more aggressive dominance-local pipeline only as a stack-pressure
 fallback on bounded functions. This keeps the new acceptance frontier from
@@ -2567,8 +2729,11 @@ compile-time search. -/
 def stackLayoutBlock (b : Block Op) : Block Op :=
   let legacy := legacyStackLayoutBlock b
   if (compile legacy).isSome then legacy
-  else if withinAggressiveStackLayoutBudget b then aggressiveStackLayoutBlock b
-  else legacy
+  else
+    let localized := scopedAggressiveStackLayoutBlock b
+    if (compile localized).isSome then localized
+    else if withinAggressiveStackLayoutBudget b then aggressiveStackLayoutBlock b
+    else localized
 
 mutual
   /-- Apply stack layout independently to every code block in an object tree. -/

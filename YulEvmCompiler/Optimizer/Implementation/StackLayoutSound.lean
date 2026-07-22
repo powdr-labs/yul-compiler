@@ -3030,19 +3030,25 @@ mutual
     all_goals omega
 end
 
-theorem stageOneStmts_equiv {P : String} {Phi : FMap} {b b' : Block Op}
-    (h : stageOneStmts P Phi [] b = some b') : EquivBlock D b b' := by
-  simpa using stageOneStmts_sound P Phi [] b b' h []
+theorem stageOneStmts_equiv {P : String} {Phi : FMap} {layout : List Ident}
+    {b b' : Block Op} (h : stageOneStmts P Phi layout b = some b') :
+    EquivBlock D b b' := by
+  simpa using stageOneStmts_sound P Phi layout b b' h []
 
-theorem iterateStageWith_equiv (n : Nat) (P : String) (Phi : FMap)
-    (b : Block Op) : EquivBlock D b (iterateStageWith n P Phi b) := by
+theorem iterateStageWithLayout_equiv (n : Nat) (P : String) (Phi : FMap)
+    (layout : List Ident) (b : Block Op) :
+    EquivBlock D b (iterateStageWithLayout n P Phi layout b) := by
   induction n generalizing b with
   | zero => exact EquivBlock.refl _
   | succ n ih =>
-      rw [iterateStageWith]
-      cases h : stageOneStmts P Phi [] b with
+      rw [iterateStageWithLayout]
+      cases h : stageOneStmts P Phi layout b with
       | none => exact EquivBlock.refl _
       | some b' => exact (stageOneStmts_equiv h).trans (ih b')
+
+theorem iterateStageWith_equiv (n : Nat) (P : String) (Phi : FMap)
+    (b : Block Op) : EquivBlock D b (iterateStageWith n P Phi b) := by
+  exact iterateStageWithLayout_equiv n P Phi [] b
 
 theorem iterateStageCalls_equiv (n : Nat) (P : String) (b : Block Op) :
     EquivBlock D b (iterateStageCalls n P b) := by
@@ -3184,19 +3190,23 @@ mutual
     all_goals omega
 end
 
-theorem copyOneStmts_equiv {b b' : Block Op}
-    (h : copyOneStmts [] b = some b') : EquivBlock D b b' := by
-  simpa using copyOneStmts_sound [] b b' h []
+theorem copyOneStmts_equiv {layout : List Ident} {b b' : Block Op}
+    (h : copyOneStmts layout b = some b') : EquivBlock D b b' := by
+  simpa using copyOneStmts_sound layout b b' h []
 
-theorem iterateCopyBack_equiv (n : Nat) (b : Block Op) :
-    EquivBlock D b (iterateCopyBack n b) := by
+theorem iterateCopyBackFrom_equiv (n : Nat) (layout : List Ident)
+    (b : Block Op) : EquivBlock D b (iterateCopyBackFrom n layout b) := by
   induction n generalizing b with
   | zero => exact EquivBlock.refl _
   | succ n ih =>
-      rw [iterateCopyBack]
-      cases h : copyOneStmts [] b with
+      rw [iterateCopyBackFrom]
+      cases h : copyOneStmts layout b with
       | none => exact EquivBlock.refl _
       | some b' => exact (copyOneStmts_equiv h).trans (ih b')
+
+theorem iterateCopyBack_equiv (n : Nat) (b : Block Op) :
+    EquivBlock D b (iterateCopyBack n b) := by
+  exact iterateCopyBackFrom_equiv n [] b
 
 mutual
   theorem reuseOneStmt_sound : ∀ (layout : List Ident) (s s' : Stmt Op),
@@ -3418,19 +3428,23 @@ mutual
     all_goals omega
 end
 
-theorem reuseOneStmts_equiv {b b' : Block Op}
-    (h : reuseOneStmts [] [] b = some b') : EquivBlock D b b' := by
-  simpa using reuseOneStmts_sound [] [] b b' h [] (by simp)
+theorem reuseOneStmts_equiv {layout : List Ident} {b b' : Block Op}
+    (h : reuseOneStmts layout [] b = some b') : EquivBlock D b b' := by
+  simpa using reuseOneStmts_sound layout [] b b' h [] (by simp)
 
-theorem iterateStackLayout_equiv (n : Nat) (b : Block Op) :
-    EquivBlock D b (iterateStackLayout n b) := by
+theorem iterateStackLayoutFrom_equiv (n : Nat) (layout : List Ident)
+    (b : Block Op) : EquivBlock D b (iterateStackLayoutFrom n layout b) := by
   induction n generalizing b with
   | zero => exact EquivBlock.refl _
   | succ n ih =>
-      rw [iterateStackLayout]
-      cases h : reuseOneStmts [] [] b with
+      rw [iterateStackLayoutFrom]
+      cases h : reuseOneStmts layout [] b with
       | none => exact EquivBlock.refl _
       | some b' => exact (reuseOneStmts_equiv h).trans (ih b')
+
+theorem iterateStackLayout_equiv (n : Nat) (b : Block Op) :
+    EquivBlock D b (iterateStackLayout n b) := by
+  exact iterateStackLayoutFrom_equiv n [] b
 
 /-! ## Tail-carrier scope sinking -/
 
@@ -4499,19 +4513,23 @@ mutual
     all_goals omega
 end
 
-theorem scopeOneStmts_equiv {b b' : Block Op}
-    (h : scopeOneStmts [] b = some b') : EquivBlock D b b' := by
-  simpa using scopeOneStmts_sound [] b b' h []
+theorem scopeOneStmts_equiv {layout : List Ident} {b b' : Block Op}
+    (h : scopeOneStmts layout b = some b') : EquivBlock D b b' := by
+  simpa using scopeOneStmts_sound layout b b' h []
 
-theorem iterateTailScope_equiv (n : Nat) (b : Block Op) :
-    EquivBlock D b (iterateTailScope n b) := by
+theorem iterateTailScopeFrom_equiv (n : Nat) (layout : List Ident)
+    (b : Block Op) : EquivBlock D b (iterateTailScopeFrom n layout b) := by
   induction n generalizing b with
   | zero => exact EquivBlock.refl _
   | succ n ih =>
-      rw [iterateTailScope]
-      cases h : scopeOneStmts [] b with
+      rw [iterateTailScopeFrom]
+      cases h : scopeOneStmts layout b with
       | none => exact EquivBlock.refl _
       | some b' => exact (scopeOneStmts_equiv h).trans (ih b')
+
+theorem iterateTailScope_equiv (n : Nat) (b : Block Op) :
+    EquivBlock D b (iterateTailScope n b) := by
+  exact iterateTailScopeFrom_equiv n [] b
 
 namespace StackV2Sound
 
@@ -6482,6 +6500,71 @@ mutual
           rename_straight r body hb
 end
 
+mutual
+  private theorem rename_loopSafe_stmt (r : Rename) : ∀ s : Stmt Op,
+      StackV2.loopBodySafeStmt s = true →
+        StackV2.loopBodySafeStmt (renameStmt r s) = true
+    | .block body, h | .cond _ body, h => by
+        simpa only [renameStmt, StackV2.loopBodySafeStmt] using
+          rename_loopSafe r body (by
+            simpa only [StackV2.loopBodySafeStmt] using h)
+    | .switch _ cases dflt, h => by
+        simp only [StackV2.loopBodySafeStmt, Bool.and_eq_true] at h ⊢
+        simp only [renameStmt.eq_def, StackV2.loopBodySafeStmt,
+          Bool.and_eq_true]
+        exact ⟨rename_loopSafe_cases r cases h.1,
+          rename_loopSafe_dflt r dflt h.2⟩
+    | .letDecl _ _, _ | .assign _ _, _ | .exprStmt _, _ |
+      .break, _ | .continue, _ => by
+        simp [renameStmt, StackV2.loopBodySafeStmt]
+    | .funDef _ _ _ _, h | .forLoop _ _ _ _, h | .leave, h => by
+        simp [StackV2.loopBodySafeStmt] at h
+
+  private theorem rename_loopSafe (r : Rename) : ∀ body : Block Op,
+      StackV2.loopBodySafeStmts body = true →
+        StackV2.loopBodySafeStmts (renameStmts r body) = true
+    | [], _ => by simp [renameStmts, StackV2.loopBodySafeStmts]
+    | s :: rest, h => by
+        simp only [StackV2.loopBodySafeStmts, Bool.and_eq_true] at h ⊢
+        simp only [renameStmts, StackV2.loopBodySafeStmts, Bool.and_eq_true]
+        exact ⟨rename_loopSafe_stmt r s h.1, rename_loopSafe r rest h.2⟩
+
+  private theorem rename_loopSafe_cases (r : Rename) :
+      ∀ cases : List (Literal × Block Op),
+      StackV2.loopBodySafeCases cases = true →
+        StackV2.loopBodySafeCases (renameCases r cases) = true
+    | [], _ => by simp [renameCases, StackV2.loopBodySafeCases]
+    | (_, body) :: rest, h => by
+        simp only [StackV2.loopBodySafeCases, Bool.and_eq_true] at h ⊢
+        simp only [renameCases, StackV2.loopBodySafeCases, Bool.and_eq_true]
+        exact ⟨rename_loopSafe r body h.1,
+          rename_loopSafe_cases r rest h.2⟩
+
+  private theorem rename_loopSafe_dflt (r : Rename) :
+      ∀ dflt : Option (Block Op),
+      StackV2.loopBodySafeDflt dflt = true →
+        StackV2.loopBodySafeDflt
+          (match dflt with
+          | none => none
+          | some body => some (renameStmts r body)) = true
+    | none, _ => by simp [StackV2.loopBodySafeDflt]
+    | some body, h => by
+        simpa only [StackV2.loopBodySafeDflt] using
+          rename_loopSafe r body (by
+            simpa only [StackV2.loopBodySafeDflt] using h)
+end
+
+private theorem rename_readOnlyLoopSafe (r : Rename) {loop : Stmt Op}
+    (h : StackV2.readOnlyLoopSafe loop = true) :
+    StackV2.readOnlyLoopSafe (renameStmt r loop) = true := by
+  cases loop with
+  | forLoop init c post body =>
+      simp only [renameStmt, StackV2.readOnlyLoopSafe,
+        Bool.and_eq_true] at h ⊢
+      exact ⟨⟨rename_straight r init h.1.1,
+        rename_straight r post h.1.2⟩, rename_loopSafe r body h.2⟩
+  | _ => simp [StackV2.readOnlyLoopSafe] at h
+
 private theorem straight_cases_mem {cases : List (Literal × Block Op)}
     (h : StackV2.shadowStraightCases cases = true) {p} (hp : p ∈ cases) :
     StackV2.shadowStraightStmts p.2 = true := by
@@ -6591,14 +6674,171 @@ mutual
     all_goals omega
 end
 
-private theorem shadowStraightCore_bound {layout : List Ident}
+private theorem loopSafe_cases_mem {cases : List (Literal × Block Op)}
+    (h : StackV2.loopBodySafeCases cases = true) {p} (hp : p ∈ cases) :
+    StackV2.loopBodySafeStmts p.2 = true := by
+  induction cases with
+  | nil => simp at hp
+  | cons q rest ih =>
+      rcases q with ⟨lit, body⟩
+      simp only [StackV2.loopBodySafeCases, Bool.and_eq_true] at h
+      rcases List.mem_cons.mp hp with rfl | hp
+      · exact h.1
+      · exact ih h.2 hp
+
+private theorem loopSafe_selectSwitch (cv : U256)
+    (cases : List (Literal × Block Op)) (dflt : Option (Block Op))
+    (hc : StackV2.loopBodySafeCases cases = true)
+    (hd : StackV2.loopBodySafeDflt dflt = true) :
+    StackV2.loopBodySafeStmts (selectSwitch D cv cases dflt) = true := by
+  unfold selectSwitch
+  cases hfind : cases.find? (fun p => decide (cv = litValue p.1)) with
+  | some p =>
+      simp only [hfind]
+      exact loopSafe_cases_mem hc (List.mem_of_find?_eq_some hfind)
+  | none =>
+      simp only [hfind]
+      cases dflt <;> simp_all [StackV2.loopBodySafeDflt,
+        StackV2.loopBodySafeStmts]
+
+set_option maxHeartbeats 800000 in
+mutual
+  private theorem loopSafe_stmt_outcome {s : Stmt Op} {funs : FunEnv D}
+      {V V' : VEnv D} {st st' : EvmState} {o : Outcome}
+      (hs : StackV2.loopBodySafeStmt s = true)
+      (h : ExecStmt D funs V st s V' st' o) :
+      o = .normal ∨ o = .break ∨ o = .continue ∨ o = .halt := by
+    cases h with
+    | block hbody =>
+        exact loopSafe_outcome _ _ _ _ _ _ _ (by
+          simpa only [StackV2.loopBodySafeStmt] using hs) hbody
+    | funDef => simp [StackV2.loopBodySafeStmt] at hs
+    | letZero | ifFalse => exact .inl rfl
+    | letVal | assignVal | exprStmt => exact .inl rfl
+    | letHalt | assignHalt | exprStmtHalt | ifHalt | switchHalt |
+      forInitHalt => exact .inr (.inr (.inr rfl))
+    | «break» => exact .inr (.inl rfl)
+    | «continue» => exact .inr (.inr (.inl rfl))
+    | «leave» => simp [StackV2.loopBodySafeStmt] at hs
+    | ifTrue _ _ hbody =>
+        cases hbody with
+        | block hbody =>
+          exact loopSafe_outcome _ _ _ _ _ _ _ (by
+            simpa only [StackV2.loopBodySafeStmt] using hs) hbody
+    | @switchExec funs0 V0 st0 c cases dflt cv st1 Vout st2 o0
+        hcond hbody =>
+        cases hbody with
+        | block hbody =>
+          simp only [StackV2.loopBodySafeStmt, Bool.and_eq_true] at hs
+          have hsize := selectSwitch_size_lt_stmt (calls := calls)
+            (creates := creates) c cv cases dflt
+          exact loopSafe_outcome (selectSwitch D cv cases dflt) _ _ _ _ _ _
+            (loopSafe_selectSwitch _ _ _ hs.1 hs.2) hbody
+    | forLoop => simp [StackV2.loopBodySafeStmt] at hs
+  termination_by 2 * sizeOf s
+
+  private theorem loopSafe_outcome : ∀ (body : Block Op) (funs : FunEnv D)
+      (V V' : VEnv D) (st st' : EvmState) (o : Outcome),
+      StackV2.loopBodySafeStmts body = true →
+      ExecStmts D funs V st body V' st' o →
+      o = .normal ∨ o = .break ∨ o = .continue ∨ o = .halt
+    | [], _, _, _, _, _, _, _, h => by
+        cases h
+        exact .inl rfl
+    | s :: rest, _, _, _, _, _, _, hs, h => by
+        simp only [StackV2.loopBodySafeStmts, Bool.and_eq_true] at hs
+        cases h with
+        | seqCons _ hrest =>
+            exact loopSafe_outcome rest _ _ _ _ _ _ hs.2 hrest
+        | seqStop hhead hn =>
+            have hout := loopSafe_stmt_outcome hs.1 hhead
+            rcases hout with rfl | rfl | rfl | rfl
+            · exact False.elim (hn rfl)
+            · exact .inr (.inl rfl)
+            · exact .inr (.inr (.inl rfl))
+            · exact .inr (.inr (.inr rfl))
+  termination_by body _ _ _ _ _ _ _ _ => 2 * sizeOf body + 1
+  decreasing_by
+    all_goals simp_wf
+    all_goals omega
+end
+
+private theorem safe_step_loop_outcome : ∀ {funs : FunEnv D} {V : VEnv D}
+    {st : EvmState} {code : Code Op} {res : Res D},
+    Step D funs V st code res → ∀ (c : Expr Op) (post body : Block Op)
+      (V' : VEnv D) (st' : EvmState) (o : Outcome),
+      code = .loop c post body → res = .sres V' st' o →
+      StackV2.loopBodySafeStmts body = true → o = .normal ∨ o = .halt := by
+  intro funs V st code res h
+  induction h <;> intro c post body V' st' o hcode hres hs <;>
+    try cases hcode
+  case loopDone =>
+      cases hres
+      exact .inl rfl
+  case loopCondHalt =>
+      cases hres
+      exact .inr rfl
+  case loopStep ihc ihbody ihpost ihrest =>
+      exact ihrest _ _ _ _ _ _ rfl hres hs
+  case loopPostHalt =>
+      cases hres
+      exact .inr rfl
+  case loopBreak =>
+      cases hres
+      exact .inl rfl
+  case loopLeave =>
+      cases hres
+      rename_i funs0 V0 st0 c0 post0 body0 cv0 st10 Vb0 stb0
+        hcond hn hbody ihcond ihbody
+      have hsafe : StackV2.loopBodySafeStmt (.block body0) = true := by
+        simpa only [StackV2.loopBodySafeStmt] using hs
+      have hout := loopSafe_stmt_outcome hsafe hbody
+      rcases hout with h | h | h | h <;> contradiction
+  case loopBodyHalt =>
+      cases hres
+      exact .inr rfl
+
+private theorem safe_execLoop_outcome {c : Expr Op} {post body : Block Op}
+    {funs : FunEnv D} {V V' : VEnv D} {st st' : EvmState} {o : Outcome}
+    (hs : StackV2.loopBodySafeStmts body = true)
+    (h : ExecLoop D funs V st c post body V' st' o) :
+    o = .normal ∨ o = .halt :=
+  safe_step_loop_outcome h c post body V' st' o rfl rfl hs
+
+private theorem readOnlyLoop_outcome {loop : Stmt Op} {funs : FunEnv D}
+    {V V' : VEnv D} {st st' : EvmState} {o : Outcome}
+    (hs : StackV2.readOnlyLoopSafe loop = true)
+    (h : ExecStmt D funs V st loop V' st' o) :
+    o = .normal ∨ o = .halt := by
+  cases loop with
+  | forLoop init c post body =>
+      simp only [StackV2.readOnlyLoopSafe, Bool.and_eq_true] at hs
+      cases h with
+      | forLoop _ hloop => exact safe_execLoop_outcome hs.2 hloop
+      | forInitHalt => exact .inr rfl
+  | _ => simp [StackV2.readOnlyLoopSafe] at hs
+
+private theorem readOnlyLoop_stmts_outcome {loop : Stmt Op}
+    {funs : FunEnv D} {V V' : VEnv D} {st st' : EvmState} {o : Outcome}
+    (hs : StackV2.readOnlyLoopSafe loop = true)
+    (h : ExecStmts D funs V st [loop] V' st' o) :
+    o = .normal ∨ o = .halt := by
+  cases h with
+  | seqCons hloop hnil => cases hnil; exact .inl rfl
+  | seqStop hloop hn => exact readOnlyLoop_outcome hs hloop
+
+private theorem shadowCore_bound {layout : List Ident}
     {x shadow : Ident} {body : Block Op}
     (hx : x ∈ layout) (hxy : x ≠ shadow)
     (hshadow : stmtsMentions shadow body = false)
     (hdecl : stmtsDeclare x body = false)
     (hfunX : stmtsFunMention x body = false)
     (hsourceHoist : hoist D body = [])
-    (hstraight : StackV2.shadowStraightStmts body = true) :
+    (hsourceOutcome : ∀ funs V V' st st' o,
+      ExecStmts D funs V st body V' st' o → o = .normal ∨ o = .halt)
+    (htargetOutcome : ∀ funs V V' st st' o,
+      ExecStmts D funs V st (renameStmts [(x, shadow)] body) V' st' o →
+        o = .normal ∨ o = .halt) :
     BoundEquivBlock D layout body
       [.letDecl [shadow] (some (.var x)),
         .block (renameStmts [(x, shadow)] body),
@@ -6632,7 +6872,7 @@ private theorem shadowStraightCore_bound {layout : List Ident}
     · intro hrun
       cases hrun with
       | @block _ _ _ _ Vbody _ _ hbody =>
-        have hout := straight_outcome _ _ _ _ _ _ _ hstraight hbody
+        have hout := hsourceOutcome _ _ _ _ _ _ hbody
         rcases hout with rfl | rfl
         · obtain ⟨r, hrenamed, hr⟩ := slot_rev_fwd hbody hslot₀ hxy
             (by simpa [codeMentions] using hshadow)
@@ -6741,9 +6981,7 @@ private theorem shadowStraightCore_bound {layout : List Ident}
               | seqStop hinner hn =>
                 cases hinner with
                 | block hrenamedBody =>
-                  have hout := straight_outcome _ _ _ _ _ _ _
-                    (rename_straight [(x, shadow)] body hstraight)
-                    hrenamedBody
+                  have hout := htargetOutcome _ _ _ _ _ _ hrenamedBody
                   rcases hout with rfl | rfl <;> simp_all
         | seqStop hlet hn =>
           cases hlet with
@@ -6812,6 +7050,600 @@ private theorem shadowStraightCore_bound {layout : List Ident}
         | seqStop hlet hn =>
           cases hlet with
           | letHalt hexpr => cases hexpr
+
+private theorem shadowStraightCore_bound {layout : List Ident}
+    {x shadow : Ident} {body : Block Op}
+    (hx : x ∈ layout) (hxy : x ≠ shadow)
+    (hshadow : stmtsMentions shadow body = false)
+    (hdecl : stmtsDeclare x body = false)
+    (hfunX : stmtsFunMention x body = false)
+    (hsourceHoist : hoist D body = [])
+    (hstraight : StackV2.shadowStraightStmts body = true) :
+    BoundEquivBlock D layout body
+      [.letDecl [shadow] (some (.var x)),
+        .block (renameStmts [(x, shadow)] body),
+        .assign [x] (.var shadow)] := by
+  apply shadowCore_bound hx hxy hshadow hdecl hfunX hsourceHoist
+  · intro funs V V' st st' o h
+    exact straight_outcome body funs V V' st st' o hstraight h
+  · intro funs V V' st st' o h
+    exact straight_outcome (renameStmts [(x, shadow)] body) funs V V' st st' o
+      (rename_straight [(x, shadow)] body hstraight) h
+
+private theorem shadowReadOnlyLoopCandidate_bound (P : String) (Phi : FMap)
+    (layout : List Ident) (loop : Stmt Op) : ∀ (xs : List Ident)
+    {out : Stmt Op},
+    StackV2.shadowReadOnlyLoopCandidate P Phi layout loop xs = some out →
+      BoundEquivBlock D layout [loop] [out]
+  | [], _, h => by simp [StackV2.shadowReadOnlyLoopCandidate] at h
+  | x :: xs, out, h => by
+      rw [StackV2.shadowReadOnlyLoopCandidate] at h
+      cases hidx : layout.findIdx? (fun y => y = x) with
+      | none =>
+          simp only [hidx] at h
+          exact shadowReadOnlyLoopCandidate_bound P Phi layout loop xs h
+      | some idx =>
+          simp only [hidx] at h
+          split at h
+          · next hguard =>
+            split at h
+            · cases h
+              simp only [Bool.and_eq_true, Bool.not_eq_true] at hguard
+              rcases hguard with ⟨hguard, hsafe⟩
+              rcases hguard with ⟨hguard, hwrite⟩
+              rcases hguard with ⟨hguard, hfun⟩
+              rcases hguard with ⟨hguard, hdecl⟩
+              rcases hguard with ⟨hguard, hmention⟩
+              rcases hguard with ⟨hguard, hfresh⟩
+              rcases hguard with ⟨hdepth, hbne⟩
+              let shadow := s!"{P}loop"
+              have hxy : x ≠ shadow := bne_iff_ne.mp hbne
+              have hshadow : stmtsMentions shadow [loop] = false := by
+                simpa [shadow, stmtsMentions] using hmention
+              have hdecl' : stmtsDeclare x [loop] = false := by
+                simpa [stmtsDeclare] using hdecl
+              have hfun' : stmtsFunMention x [loop] = false := by
+                simpa [stmtsFunMention] using hfun
+              have hhoist : hoist D [loop] = [] := by
+                cases loop <;> simp_all [StackV2.readOnlyLoopSafe, hoist]
+              let inner : Block Op :=
+                [.letDecl [shadow] (some (.var x)),
+                  .block [renameStmt [(x, shadow)] loop],
+                  .assign [x] (.var shadow)]
+              have hcore : BoundEquivBlock D layout [loop] inner := by
+                simpa [inner, renameStmts] using
+                  shadowCore_bound (mem_of_findIdx?_eq_some hidx) hxy
+                    hshadow hdecl' hfun' hhoist
+                    (fun funs V V' st st' o hrun =>
+                      readOnlyLoop_stmts_outcome hsafe hrun)
+                    (fun funs V V' st st' o hrun =>
+                      readOnlyLoop_stmts_outcome
+                        (rename_readOnlyLoopSafe [(x, shadow)] hsafe) (by
+                          simpa [renameStmts] using hrun))
+              have hwrap : EquivBlock D inner [.block inner] := by
+                simpa [inner] using scopePrefix_equivBlock
+                  (pre := inner) (rest := [])
+                  (by simp [inner, hasDirectFun])
+                  (by intro y hy; rfl)
+              exact hcore.trans (BoundEquivBlock.of_equiv hwrap)
+            · exact shadowReadOnlyLoopCandidate_bound P Phi layout loop xs h
+          · exact shadowReadOnlyLoopCandidate_bound P Phi layout loop xs h
+  termination_by xs out _h => xs.length
+
+private theorem shadowReadOnlyLoopHere_bound {P : String} {Phi : FMap}
+    {layout : List Ident} {loop out : Stmt Op}
+    (h : StackV2.shadowReadOnlyLoopHere P Phi layout loop = some out) :
+    BoundEquivBlock D layout [loop] [out] := by
+  exact shadowReadOnlyLoopCandidate_bound P Phi layout loop _
+    (by simpa [StackV2.shadowReadOnlyLoopHere] using h)
+
+private theorem shadowReadOnlyLoopCandidate_isBlock (P : String) (Phi : FMap)
+    (layout : List Ident) (loop : Stmt Op) : ∀ (xs : List Ident)
+    {out : Stmt Op},
+    StackV2.shadowReadOnlyLoopCandidate P Phi layout loop xs = some out →
+      ∃ inner, out = .block inner
+  | [], _, h => by simp [StackV2.shadowReadOnlyLoopCandidate] at h
+  | x :: xs, out, h => by
+      rw [StackV2.shadowReadOnlyLoopCandidate] at h
+      cases hidx : layout.findIdx? (fun y => y = x) with
+      | none =>
+          simp only [hidx] at h
+          exact shadowReadOnlyLoopCandidate_isBlock P Phi layout loop xs h
+      | some idx =>
+          simp only [hidx] at h
+          split at h
+          · split at h
+            · cases h
+              exact ⟨_, rfl⟩
+            · exact shadowReadOnlyLoopCandidate_isBlock P Phi layout loop xs h
+          · exact shadowReadOnlyLoopCandidate_isBlock P Phi layout loop xs h
+  termination_by xs out _h => xs.length
+
+private theorem shadowReadOnlyLoopHere_isBlock {P : String} {Phi : FMap}
+    {layout : List Ident} {loop out : Stmt Op}
+    (h : StackV2.shadowReadOnlyLoopHere P Phi layout loop = some out) :
+    ∃ inner, out = .block inner := by
+  exact shadowReadOnlyLoopCandidate_isBlock P Phi layout loop _
+    (by simpa [StackV2.shadowReadOnlyLoopHere] using h)
+
+private theorem shadowReadOnlyLoopCandidate_safe (P : String) (Phi : FMap)
+    (layout : List Ident) (loop : Stmt Op) : ∀ (xs : List Ident)
+    {out : Stmt Op},
+    StackV2.shadowReadOnlyLoopCandidate P Phi layout loop xs = some out →
+      StackV2.readOnlyLoopSafe loop = true
+  | [], _, h => by simp [StackV2.shadowReadOnlyLoopCandidate] at h
+  | x :: xs, out, h => by
+      rw [StackV2.shadowReadOnlyLoopCandidate] at h
+      cases hidx : layout.findIdx? (fun y => y = x) with
+      | none =>
+          simp only [hidx] at h
+          exact shadowReadOnlyLoopCandidate_safe P Phi layout loop xs h
+      | some idx =>
+          simp only [hidx] at h
+          split at h
+          · next hguard =>
+            split at h
+            · simp only [Bool.and_eq_true] at hguard
+              exact hguard.2
+            · exact shadowReadOnlyLoopCandidate_safe P Phi layout loop xs h
+          · exact shadowReadOnlyLoopCandidate_safe P Phi layout loop xs h
+  termination_by xs out _h => xs.length
+
+private theorem shadowReadOnlyLoopHere_safe {P : String} {Phi : FMap}
+    {layout : List Ident} {loop out : Stmt Op}
+    (h : StackV2.shadowReadOnlyLoopHere P Phi layout loop = some out) :
+    StackV2.readOnlyLoopSafe loop = true := by
+  exact shadowReadOnlyLoopCandidate_safe P Phi layout loop _
+    (by simpa [StackV2.shadowReadOnlyLoopHere] using h)
+
+/-! A raw statement-sequence relation is used while the search walks through a
+function body.  It has the same relaxed treatment of halting environments as
+`BoundEquivBlock`, but does not insert another Yul scope around each suffix. -/
+private def BoundEquivStmts (layout : List Ident) (b₁ b₂ : Block Op) : Prop :=
+  ∀ funs V st, BoundFun.BoundOK V layout →
+    (∀ V' st' o, o ≠ .halt →
+      (ExecStmts D funs V st b₁ V' st' o ↔
+        ExecStmts D funs V st b₂ V' st' o)) ∧
+    (∀ st', ((∃ V', ExecStmts D funs V st b₁ V' st' .halt) ↔
+      ∃ V', ExecStmts D funs V st b₂ V' st' .halt))
+
+private theorem BoundEquivStmts.refl (layout : List Ident) (body : Block Op) :
+    BoundEquivStmts (calls := calls) (creates := creates) layout body body :=
+  fun _ _ _ _ => ⟨fun _ _ _ _ => Iff.rfl, fun _ => Iff.rfl⟩
+
+private theorem BoundEquivStmts.trans {layout : List Ident} {b₁ b₂ b₃ : Block Op}
+    (h₁₂ : BoundEquivStmts (calls := calls) (creates := creates) layout b₁ b₂)
+    (h₂₃ : BoundEquivStmts (calls := calls) (creates := creates) layout b₂ b₃) :
+    BoundEquivStmts (calls := calls) (creates := creates) layout b₁ b₃ := by
+  intro funs V st hb
+  exact ⟨fun V' st' o ho => ((h₁₂ funs V st hb).1 V' st' o ho).trans
+      ((h₂₃ funs V st hb).1 V' st' o ho),
+    fun st' => ((h₁₂ funs V st hb).2 st').trans
+      ((h₂₃ funs V st hb).2 st')⟩
+
+private theorem BoundEquivStmts.cons {layout layout' : List Ident}
+    {s : Stmt Op} {rest rest' : Block Op}
+    (hafter : ∀ {funs V st V' st'}, BoundFun.BoundOK V layout →
+      ExecStmt D funs V st s V' st' .normal → BoundFun.BoundOK V' layout')
+    (hrest : BoundEquivStmts (calls := calls) (creates := creates)
+      layout' rest rest') :
+    BoundEquivStmts (calls := calls) (creates := creates)
+      layout (s :: rest) (s :: rest') := by
+  intro funs V st hb
+  constructor
+  · intro V' st' o ho
+    constructor <;> intro h
+    · cases h with
+      | seqCons hs hr =>
+          exact Step.seqCons hs
+            (((hrest funs _ _ (hafter hb hs)).1 _ _ _ ho).mp hr)
+      | seqStop hs hn => exact Step.seqStop hs hn
+    · cases h with
+      | seqCons hs hr =>
+          exact Step.seqCons hs
+            (((hrest funs _ _ (hafter hb hs)).1 _ _ _ ho).mpr hr)
+      | seqStop hs hn => exact Step.seqStop hs hn
+  · intro st'
+    constructor
+    · rintro ⟨V', h⟩
+      cases h with
+      | seqCons hs hr =>
+          obtain ⟨V'', hr'⟩ := ((hrest funs _ _ (hafter hb hs)).2 st').mp
+            ⟨_, hr⟩
+          exact ⟨_, Step.seqCons hs hr'⟩
+      | seqStop hs hn => exact ⟨_, Step.seqStop hs hn⟩
+    · rintro ⟨V', h⟩
+      cases h with
+      | seqCons hs hr =>
+          obtain ⟨V'', hr'⟩ := ((hrest funs _ _ (hafter hb hs)).2 st').mpr
+            ⟨_, hr⟩
+          exact ⟨_, Step.seqCons hs hr'⟩
+      | seqStop hs hn => exact ⟨_, Step.seqStop hs hn⟩
+
+private theorem BoundEquivStmts.head {layout : List Ident}
+    {s s' : Stmt Op} {rest : Block Op}
+    (hsingle : BoundEquivStmts (calls := calls) (creates := creates)
+      layout [s] [s']) :
+    BoundEquivStmts (calls := calls) (creates := creates)
+      layout (s :: rest) (s' :: rest) := by
+  intro funs V st hb
+  have hs := hsingle funs V st hb
+  have hnormal : ∀ {V' st'}, ExecStmt D funs V st s V' st' .normal ↔
+      ExecStmt D funs V st s' V' st' .normal := by
+    intro V' st'
+    constructor <;> intro hhead
+    · have hone : ExecStmts D funs V st [s] V' st' .normal :=
+        Step.seqCons hhead Step.seqNil
+      have hone' := (hs.1 V' st' .normal (by simp)).mp hone
+      cases hone' with
+      | seqCons hhead' hnil => cases hnil; exact hhead'
+      | seqStop hhead' hn => exact False.elim (hn rfl)
+    · have hone : ExecStmts D funs V st [s'] V' st' .normal :=
+        Step.seqCons hhead Step.seqNil
+      have hone' := (hs.1 V' st' .normal (by simp)).mpr hone
+      cases hone' with
+      | seqCons hhead' hnil => cases hnil; exact hhead'
+      | seqStop hhead' hn => exact False.elim (hn rfl)
+  have hstop : ∀ {V' st' o}, o ≠ .normal → o ≠ .halt →
+      (ExecStmt D funs V st s V' st' o ↔ ExecStmt D funs V st s' V' st' o) := by
+    intro V' st' o hn ho
+    constructor <;> intro hhead
+    · have hone : ExecStmts D funs V st [s] V' st' o := Step.seqStop hhead hn
+      have hone' := (hs.1 V' st' o ho).mp hone
+      cases hone' with
+      | seqCons hhead' hnil => cases hnil; exact False.elim (hn rfl)
+      | seqStop hhead' hn' => exact hhead'
+    · have hone : ExecStmts D funs V st [s'] V' st' o := Step.seqStop hhead hn
+      have hone' := (hs.1 V' st' o ho).mpr hone
+      cases hone' with
+      | seqCons hhead' hnil => cases hnil; exact False.elim (hn rfl)
+      | seqStop hhead' hn' => exact hhead'
+  constructor
+  · intro V' st' o ho
+    constructor
+    · intro h
+      cases h with
+      | seqCons hhead hrest => exact Step.seqCons (hnormal.mp hhead) hrest
+      | seqStop hhead hn =>
+          exact Step.seqStop ((hstop hn ho).mp hhead) hn
+    · intro h
+      cases h with
+      | seqCons hhead hrest => exact Step.seqCons (hnormal.mpr hhead) hrest
+      | seqStop hhead hn =>
+          exact Step.seqStop ((hstop hn ho).mpr hhead) hn
+  · intro st'
+    constructor
+    · rintro ⟨V', h⟩
+      cases h with
+      | seqCons hhead hrest => exact ⟨_, Step.seqCons (hnormal.mp hhead) hrest⟩
+      | seqStop hhead hn =>
+          obtain ⟨Vt, hone'⟩ := (hs.2 st').mp
+            ⟨_, Step.seqStop hhead hn⟩
+          cases hone' with
+          | seqCons hhead' hnil => cases hnil
+          | seqStop hhead' hn' => exact ⟨_, Step.seqStop hhead' hn'⟩
+    · rintro ⟨V', h⟩
+      cases h with
+      | seqCons hhead hrest => exact ⟨_, Step.seqCons (hnormal.mpr hhead) hrest⟩
+      | seqStop hhead hn =>
+          obtain ⟨Vs, hone'⟩ := (hs.2 st').mpr
+            ⟨_, Step.seqStop hhead hn⟩
+          cases hone' with
+          | seqCons hhead' hnil => cases hnil
+          | seqStop hhead' hn' => exact ⟨_, Step.seqStop hhead' hn'⟩
+
+private theorem BoundEquivStmts.singletonBlock {layout : List Ident}
+    {body body' : Block Op}
+    (hh : hoist D body = hoist D body')
+    (hbody : BoundEquivStmts (calls := calls) (creates := creates)
+      layout body body') :
+    BoundEquivStmts (calls := calls) (creates := creates)
+      layout [.block body] [.block body'] := by
+  intro funs V st hb
+  have hrel := hbody (hoist D body :: funs) V st hb
+  constructor
+  · intro V' st' o ho
+    constructor <;> intro h
+    · cases h with
+      | seqCons hblock hnil =>
+          cases hblock with
+          | block hbdy =>
+            exact Step.seqCons (Step.block (by
+              rw [← hh]
+              exact (hrel.1 _ _ _ (by simp)).mp hbdy)) hnil
+      | seqStop hblock hn =>
+          cases hblock with
+          | block hbdy =>
+            exact Step.seqStop (Step.block (by
+              rw [← hh]
+              exact (hrel.1 _ _ _ ho).mp hbdy)) hn
+    · cases h with
+      | seqCons hblock hnil =>
+          cases hblock with
+          | block hbdy =>
+            exact Step.seqCons (Step.block (by
+              rw [← hh] at hbdy
+              exact (hrel.1 _ _ _ (by simp)).mpr hbdy)) hnil
+      | seqStop hblock hn =>
+          cases hblock with
+          | block hbdy =>
+            exact Step.seqStop (Step.block (by
+              rw [← hh] at hbdy
+              exact (hrel.1 _ _ _ ho).mpr hbdy)) hn
+  · intro st'
+    constructor
+    · rintro ⟨V', h⟩
+      cases h with
+      | seqCons hblock hnil => cases hnil
+      | seqStop hblock hn =>
+          cases hblock with
+          | block hbdy =>
+            obtain ⟨Vt, hbdy'⟩ := (hrel.2 st').mp ⟨_, hbdy⟩
+            exact ⟨_, Step.seqStop (Step.block (by rw [← hh]; exact hbdy'))
+              (by simp)⟩
+    · rintro ⟨V', h⟩
+      cases h with
+      | seqCons hblock hnil => cases hnil
+      | seqStop hblock hn =>
+          cases hblock with
+          | block hbdy =>
+            rw [← hh] at hbdy
+            obtain ⟨Vs, hbdy'⟩ := (hrel.2 st').mpr ⟨_, hbdy⟩
+            exact ⟨_, Step.seqStop (Step.block hbdy') (by simp)⟩
+
+private theorem BoundEquivStmts.to_block {layout : List Ident}
+    {b₁ b₂ : Block Op}
+    (hh : hoist D b₁ = hoist D b₂)
+    (h : BoundEquivStmts (calls := calls) (creates := creates) layout b₁ b₂) :
+    BoundEquivBlock D layout b₁ b₂ := by
+  intro funs V st hb
+  constructor
+  · intro V' st' o ho
+    constructor <;> intro hrun
+    · cases hrun with
+      | block hbody =>
+          apply Step.block
+          rw [← hh]
+          exact ((h _ _ _ hb).1 _ _ _ ho).mp hbody
+    · cases hrun with
+      | block hbody =>
+          apply Step.block
+          rw [hh]
+          exact ((h _ _ _ hb).1 _ _ _ ho).mpr hbody
+  · intro st'
+    constructor
+    · rintro ⟨V', hrun⟩
+      cases hrun with
+      | block hbody =>
+          obtain ⟨V'', hbody'⟩ := ((h _ _ _ hb).2 st').mp ⟨_, hbody⟩
+          exact ⟨_, Step.block (by rw [← hh]; exact hbody')⟩
+    · rintro ⟨V', hrun⟩
+      cases hrun with
+      | block hbody =>
+          obtain ⟨V'', hbody'⟩ := ((h _ _ _ hb).2 st').mpr ⟨_, hbody⟩
+          exact ⟨_, Step.block (by rw [hh]; exact hbody')⟩
+
+private theorem singletonBlockStmts_len {inner : Block Op} {funs : FunEnv D}
+    {V V' : VEnv D} {st st' : EvmState} {o : Outcome}
+    (h : ExecStmts D funs V st [.block inner] V' st' o) :
+    V'.length = V.length := by
+  cases h with
+  | seqCons hblock hnil =>
+      cases hnil
+      have hk := (block_stmt_shape hblock).1
+      simpa using congrArg List.length hk
+  | seqStop hblock hn =>
+      have hk := (block_stmt_shape hblock).1
+      simpa using congrArg List.length hk
+
+private theorem boundEmptyHoist_to_stmts {layout : List Ident}
+    {b₁ b₂ : Block Op}
+    (hh₁ : hoist D b₁ = []) (hh₂ : hoist D b₂ = [])
+    (hbind₁ : stmtsBinds b₁ = [])
+    (hout₁ : ∀ funs V V' st st' o,
+      ExecStmts D funs V st b₁ V' st' o → o = .normal ∨ o = .halt)
+    (hlen₂ : ∀ funs V V' st st' o,
+      ExecStmts D funs V st b₂ V' st' o → V'.length = V.length)
+    (h : BoundEquivBlock D layout b₁ b₂) :
+    BoundEquivStmts (calls := calls) (creates := creates) layout b₁ b₂ := by
+  intro funs V st hb
+  have hbound := h funs V st hb
+  constructor
+  · intro V' st' o ho
+    constructor
+    · intro hrun
+      rcases hout₁ funs V V' st st' o hrun with rfl | rfl
+      · have hk := stmts_normal_keys hrun
+        have hlen : V'.length = V.length := by
+          have := congrArg List.length hk
+          simp [hbind₁] at this
+          exact this
+        have hadd := Step.emptyScope_congr hrun (.add _)
+        have hblock : ExecStmt D funs V st (.block b₁) V' st' .normal := by
+          have hb : ExecStmt D funs V st (.block b₁)
+              (restore V V') st' .normal :=
+            Step.block (by simpa [hh₁] using hadd)
+          simpa [restore, hlen] using hb
+        have htarget := (hbound.1 V' st' .normal (by simp)).mp hblock
+        cases htarget with
+        | block hbody =>
+          have hdrop := Step.emptyScope_congr (by simpa [hh₂] using hbody) (.drop _)
+          have hlen' := hlen₂ _ _ _ _ _ _ hdrop
+          simpa [restore, hlen'] using hdrop
+      · exact False.elim (ho rfl)
+    · intro hrun
+      have hlen := hlen₂ funs V V' st st' o hrun
+      have hadd := Step.emptyScope_congr hrun (.add _)
+      have hblock : ExecStmt D funs V st (.block b₂) V' st' o := by
+        have hb : ExecStmt D funs V st (.block b₂)
+            (restore V V') st' o :=
+          Step.block (by simpa [hh₂] using hadd)
+        simpa [restore, hlen] using hb
+      have hsource := (hbound.1 V' st' o ho).mpr hblock
+      cases hsource with
+      | block hbody =>
+        have hdrop := Step.emptyScope_congr (by simpa [hh₁] using hbody) (.drop _)
+        rcases hout₁ funs V _ st st' o hdrop with rfl | rfl
+        · have hk := stmts_normal_keys hdrop
+          have hlen' := congrArg List.length hk
+          simp [hbind₁] at hlen'
+          simpa [restore, hlen'] using hdrop
+        · exact False.elim (ho rfl)
+  · intro st'
+    constructor
+    · rintro ⟨V', hrun⟩
+      have hadd := Step.emptyScope_congr hrun (.add _)
+      have hblock : ExecStmt D funs V st (.block b₁)
+          (restore V V') st' .halt := by
+        exact Step.block (by simpa [hh₁] using hadd)
+      obtain ⟨Vt, htarget⟩ := (hbound.2 st').mp ⟨_, hblock⟩
+      cases htarget with
+      | block hbody =>
+          exact ⟨_, Step.emptyScope_congr
+            (by simpa [hh₂] using hbody) (.drop _)⟩
+    · rintro ⟨V', hrun⟩
+      have hadd := Step.emptyScope_congr hrun (.add _)
+      have hblock : ExecStmt D funs V st (.block b₂)
+          (restore V V') st' .halt := by
+        exact Step.block (by simpa [hh₂] using hadd)
+      obtain ⟨Vs, hsource⟩ := (hbound.2 st').mpr ⟨_, hblock⟩
+      cases hsource with
+      | block hbody =>
+          exact ⟨_, Step.emptyScope_congr
+            (by simpa [hh₁] using hbody) (.drop _)⟩
+
+private theorem shadowReadOnlyLoopHere_stmts {P : String} {Phi : FMap}
+    {layout : List Ident} {loop out : Stmt Op}
+    (h : StackV2.shadowReadOnlyLoopHere P Phi layout loop = some out) :
+    BoundEquivStmts (calls := calls) (creates := creates)
+      layout [loop] [out] := by
+  have hsafe := shadowReadOnlyLoopHere_safe h
+  obtain ⟨inner, rfl⟩ := shadowReadOnlyLoopHere_isBlock h
+  apply boundEmptyHoist_to_stmts
+    (b₁ := [loop]) (b₂ := [.block inner])
+  · cases loop <;> simp_all [StackV2.readOnlyLoopSafe, hoist]
+  · simp [hoist]
+  · cases loop <;> simp_all [StackV2.readOnlyLoopSafe, stmtsBinds, stmtBinds]
+  · intro funs V V' st st' o hrun
+    exact readOnlyLoop_stmts_outcome hsafe hrun
+  · intro funs V V' st st' o hrun
+    exact singletonBlockStmts_len hrun
+  · exact shadowReadOnlyLoopHere_bound h
+
+private theorem shadowOneReadOnlyLoopStmt_hoist (P : String) (Phi : FMap)
+      (layout : List Ident) : ∀ {s out : Stmt Op},
+      StackV2.shadowOneReadOnlyLoopStmt P Phi layout s = some out →
+        hoist D [s] = hoist D [out]
+    | .forLoop init c post body, out, h => by
+        simp only [StackV2.shadowOneReadOnlyLoopStmt] at h
+        obtain ⟨inner, rfl⟩ := shadowReadOnlyLoopHere_isBlock h
+        simp [hoist]
+    | .block body, out, h => by
+        simp only [StackV2.shadowOneReadOnlyLoopStmt] at h
+        obtain ⟨body', hb, rfl⟩ := Option.map_eq_some_iff.mp h
+        simp [hoist]
+    | .funDef _ _ _ _, _, h | .letDecl _ _, _, h | .assign _ _, _, h |
+      .cond _ _, _, h | .switch _ _ _, _, h | .exprStmt _, _, h |
+      .break, _, h | .continue, _, h | .leave, _, h => by
+        simp [StackV2.shadowOneReadOnlyLoopStmt] at h
+
+private theorem shadowOneReadOnlyLoopStmts_hoist (P : String) (Phi : FMap) :
+      ∀ (layout : List Ident) {body out : Block Op},
+      StackV2.shadowOneReadOnlyLoopStmts P Phi layout body = some out →
+        hoist D body = hoist D out
+    | _, [], _, h => by simp [StackV2.shadowOneReadOnlyLoopStmts] at h
+    | layout, s :: rest, out, h => by
+        rw [StackV2.shadowOneReadOnlyLoopStmts] at h
+        cases hs : StackV2.shadowOneReadOnlyLoopStmt P Phi layout s with
+        | some s' =>
+            simp only [hs] at h
+            cases h
+            have hh := shadowOneReadOnlyLoopStmt_hoist
+              (calls := calls) (creates := creates) P Phi layout hs
+            change hoist D ([s] ++ rest) = hoist D ([s'] ++ rest)
+            rw [hoist_append, hoist_append, hh]
+        | none =>
+            simp only [hs] at h
+            obtain ⟨rest', hr, rfl⟩ := Option.map_eq_some_iff.mp h
+            have ih := shadowOneReadOnlyLoopStmts_hoist P Phi
+              (StackV2.readOnlyLoopLayoutAfter layout s) hr
+            cases s <;> simp_all [hoist]
+    termination_by layout body out _h => 2 * sizeOf body + 1
+    decreasing_by
+      all_goals simp_wf
+
+mutual
+  private theorem shadowOneReadOnlyLoopStmt_stmts (P : String) (Phi : FMap)
+      (layout : List Ident) : ∀ {s out : Stmt Op},
+      StackV2.shadowOneReadOnlyLoopStmt P Phi layout s = some out →
+        BoundEquivStmts (calls := calls) (creates := creates)
+          layout [s] [out]
+    | .forLoop init c post body, out, h => by
+        simp only [StackV2.shadowOneReadOnlyLoopStmt] at h
+        exact shadowReadOnlyLoopHere_stmts h
+    | .block body, out, h => by
+        simp only [StackV2.shadowOneReadOnlyLoopStmt] at h
+        obtain ⟨body', hb, rfl⟩ := Option.map_eq_some_iff.mp h
+        exact BoundEquivStmts.singletonBlock
+          (shadowOneReadOnlyLoopStmts_hoist P Phi layout hb)
+          (shadowOneReadOnlyLoopStmts_stmts P Phi layout hb)
+    | .funDef _ _ _ _, _, h | .letDecl _ _, _, h | .assign _ _, _, h |
+      .cond _ _, _, h | .switch _ _ _, _, h | .exprStmt _, _, h |
+      .break, _, h | .continue, _, h | .leave, _, h => by
+        simp [StackV2.shadowOneReadOnlyLoopStmt] at h
+    termination_by s out _h => 2 * sizeOf s
+
+  private theorem shadowOneReadOnlyLoopStmts_stmts (P : String) (Phi : FMap) :
+      ∀ (layout : List Ident) {body out : Block Op},
+      StackV2.shadowOneReadOnlyLoopStmts P Phi layout body = some out →
+        BoundEquivStmts (calls := calls) (creates := creates) layout body out
+    | _, [], _, h => by simp [StackV2.shadowOneReadOnlyLoopStmts] at h
+    | layout, s :: rest, out, h => by
+        rw [StackV2.shadowOneReadOnlyLoopStmts] at h
+        cases hs : StackV2.shadowOneReadOnlyLoopStmt P Phi layout s with
+        | some s' =>
+            simp only [hs] at h
+            cases h
+            exact BoundEquivStmts.head
+              (shadowOneReadOnlyLoopStmt_stmts P Phi layout hs)
+        | none =>
+            simp only [hs] at h
+            obtain ⟨rest', hr, rfl⟩ := Option.map_eq_some_iff.mp h
+            apply BoundEquivStmts.cons (s := s)
+              (hrest := shadowOneReadOnlyLoopStmts_stmts P Phi
+                (StackV2.readOnlyLoopLayoutAfter layout s) hr)
+            intro funs V st V' st' hb hstmt
+            unfold BoundFun.BoundOK at hb ⊢
+            rw [stmt_normal_keys hstmt, hb]
+            cases s <;> rfl
+    termination_by layout body out _h => 2 * sizeOf body + 1
+  decreasing_by
+    all_goals simp_wf
+    all_goals omega
+end
+
+private theorem shadowOneReadOnlyLoopStmts_bound {P : String} {Phi : FMap}
+    {layout : List Ident} {body out : Block Op}
+    (h : StackV2.shadowOneReadOnlyLoopStmts P Phi layout body = some out) :
+    BoundEquivBlock D layout body out :=
+  BoundEquivStmts.to_block (shadowOneReadOnlyLoopStmts_hoist P Phi layout h)
+    (shadowOneReadOnlyLoopStmts_stmts P Phi layout h)
+
+theorem iterateReadOnlyLoopRangesFrom_bound (n : Nat) (Phi : FMap)
+    (layout : List Ident) (body : Block Op) :
+    BoundEquivBlock D layout body
+      (StackV2.iterateReadOnlyLoopRangesFrom n Phi layout body) := by
+  induction n generalizing body with
+  | zero => exact BoundEquivBlock.refl _ _
+  | succ n ih =>
+      rw [StackV2.iterateReadOnlyLoopRangesFrom]
+      cases hp : freshPrefix (stmtsIdents body) with
+      | none => exact BoundEquivBlock.refl _ _
+      | some P =>
+          simp only [hp]
+          cases h : StackV2.shadowOneReadOnlyLoopStmts P Phi layout body with
+          | none => exact BoundEquivBlock.refl _ _
+          | some out => exact (shadowOneReadOnlyLoopStmts_bound h).trans (ih out)
 
 private theorem shadowStableCandidate_bound (P : String) (Phi : FMap)
     (layout : List Ident) (body : Block Op) : ∀ (xs : List Ident)
@@ -7216,6 +8048,106 @@ theorem aliasFunctionStmts_equiv (b : Block Op) :
 
 end StackV2Sound
 
+namespace StackV2Sound
+
+open BoundFun
+
+private theorem shadowInsideExisting_fresh_bound (PΦ : FMap)
+    (layout : List Ident) (body : Block Op) :
+    BoundEquivBlock D layout body
+      (match freshPrefix (stmtsIdents body) with
+      | some P => (StackV2.shadowInsideExisting P PΦ layout body).getD body
+      | none => body) := by
+  cases hp : freshPrefix (stmtsIdents body) with
+  | none => exact BoundEquivBlock.refl _ _
+  | some P =>
+      simp only
+      cases hs : StackV2.shadowInsideExisting P PΦ layout body with
+      | none => exact BoundEquivBlock.refl _ _
+      | some out => exact shadowInsideExisting_bound P PΦ layout hs
+
+private theorem shadowInsideExistingWritten_fresh_bound (PΦ : FMap)
+    (layout : List Ident) (body : Block Op) :
+    BoundEquivBlock D layout body
+      (match freshPrefix (stmtsIdents body) with
+      | some P =>
+          (StackV2.shadowInsideExistingWritten P PΦ layout body).getD body
+      | none => body) := by
+  cases hp : freshPrefix (stmtsIdents body) with
+  | none => exact BoundEquivBlock.refl _ _
+  | some P =>
+      simp only
+      cases hs : StackV2.shadowInsideExistingWritten P PΦ layout body with
+      | none => exact BoundEquivBlock.refl _ _
+      | some out => exact shadowInsideExistingWritten_bound P PΦ layout hs
+
+private theorem stageFresh_bound (PΦ : FMap) (layout : List Ident)
+    (body : Block Op) :
+    BoundEquivBlock D layout body
+      (match freshPrefix (stmtsIdents body) with
+      | some P => iterateStageWithLayout 16384 P PΦ layout body
+      | none => body) := by
+  cases hp : freshPrefix (stmtsIdents body) with
+  | none => exact BoundEquivBlock.refl _ _
+  | some P =>
+      exact BoundEquivBlock.of_equiv
+        (iterateStageWithLayout_equiv 16384 P PΦ layout body)
+
+theorem aggressiveStackLayoutFunction_bound (PΦ : FMap)
+    (layout : List Ident) (body : Block Op) :
+    BoundEquivBlock D layout body
+      (aggressiveStackLayoutFunction PΦ layout body) := by
+  simp only [aggressiveStackLayoutFunction]
+  apply (BoundEquivBlock.of_equiv (scheduleBlock_equiv body)).trans
+  apply (BoundEquivBlock.of_equiv
+    (iterateCopyBackFrom_equiv 1024 layout (scheduleStmts body))).trans
+  apply (BoundEquivBlock.of_equiv
+    (StackV2Sound.scopeDeadPrefixesStmts_equiv 64 _)).trans
+  apply (BoundEquivBlock.of_equiv
+    (iterateTailScopeFrom_equiv 4096 layout _)).trans
+  apply (BoundEquivBlock.of_equiv
+    (iterateStackLayoutFrom_equiv 4096 layout _)).trans
+  apply (StackV2Sound.iterateReadOnlyLoopRangesFrom_bound
+    16 PΦ layout _).trans
+  apply (StackV2Sound.iterateRegionRangesFrom_bound 64 PΦ layout _).trans
+  apply (BoundEquivBlock.of_equiv
+    (iterateStackLayoutFrom_equiv 4096 layout _)).trans
+  apply (StackV2Sound.iterateRegionRangesFrom_bound 64 PΦ layout _).trans
+  apply (StackV2Sound.iterateAliasesFrom_bound 4096 layout _).trans
+  apply (StackV2Sound.iterateRegionRangesFrom_bound 64 PΦ layout _).trans
+  apply (shadowInsideExisting_fresh_bound PΦ layout _).trans
+  apply (shadowInsideExistingWritten_fresh_bound PΦ layout _).trans
+  apply (BoundEquivBlock.of_equiv
+    (iterateStackLayoutFrom_equiv 4096 layout _)).trans
+  apply (StackV2Sound.iterateAliasesFrom_bound 4096 layout _).trans
+  apply (BoundEquivBlock.of_equiv
+    (StackV2Sound.scopeDeadPrefixesStmts_equiv 64 _)).trans
+  exact stageFresh_bound PΦ layout _
+
+private theorem scopedAggressiveFunctions_eq_mapFunBodies
+    (scope : FScopeInfo) : ∀ b : Block Op,
+    scopedAggressiveFunctions scope b = mapFunBodies (fun ps rs body =>
+      if (stmtsIdents body).length ≤ aggressiveFunctionLayoutBudget then
+        aggressiveStackLayoutFunction [scope] (ps ++ rs) body
+      else body) b
+  | [] => rfl
+  | s :: rest => by
+      cases s <;> simp [scopedAggressiveFunctions, mapFunBodies,
+        scopedAggressiveFunctions_eq_mapFunBodies scope rest]
+
+theorem scopedAggressiveStackLayoutBlock_equiv (b : Block Op) :
+    EquivBlock D b (scopedAggressiveStackLayoutBlock b) := by
+  simp only [scopedAggressiveStackLayoutBlock]
+  let scope := (hoistInfos 0 b).1
+  rw [scopedAggressiveFunctions_eq_mapFunBodies]
+  apply mapFunBodies_equiv
+  intro ps rs body
+  split
+  · exact aggressiveStackLayoutFunction_bound [scope] (ps ++ rs) body
+  · exact BoundEquivBlock.refl _ _
+
+end StackV2Sound
+
 theorem legacyStackLayoutBlock_equiv (b : Block Op) :
     EquivBlock D b (legacyStackLayoutBlock b) := by
   simp only [legacyStackLayoutBlock]
@@ -7253,8 +8185,10 @@ def stackLayout : Pass D where
     split
     · exact legacyStackLayoutBlock_equiv b
     · split
-      · exact aggressiveStackLayoutBlock_equiv b
-      · exact legacyStackLayoutBlock_equiv b
+      · exact StackV2Sound.scopedAggressiveStackLayoutBlock_equiv b
+      · split
+        · exact aggressiveStackLayoutBlock_equiv b
+        · exact StackV2Sound.scopedAggressiveStackLayoutBlock_equiv b
 
 @[simp] theorem stackLayout_run (b : Block Op) :
     (stackLayout (calls := calls) (creates := creates)).run b = stackLayoutBlock b := rfl
