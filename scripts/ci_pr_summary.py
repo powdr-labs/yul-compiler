@@ -378,8 +378,8 @@ def build_comment(data, results, sha, base=None, base_sha="", base_results=None)
         out.append("")
         out.append("**a) This compiler vs solc's optimized output** — we compile solc's "
                    "*unoptimized* `--via-ir` Yul; solc is fully optimized (`--optimize --via-ir`). "
-                   "The `uniswap-v4` corpus is real Uniswap v4-core library code "
-                   "(see test/uniswap-v4).")
+                   "The `uniswap-v4` and `aave-v4` corpora are real protocol code and "
+                   "upstream-derived scenarios (see test/uniswap-v4 and test/aave-v4).")
         out.append("")
         base_vs_opt = ({s: g for s, g in base["gas"].items()
                         if g.get("mode") == "vs_solc_optimized"} if base else {})
