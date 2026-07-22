@@ -78,8 +78,21 @@ invariant is preserved by the environment operations — reads/writes of a
 non-temp variable ignore the temps, declaring a temp is invisible to the
 erasure, and declaring a non-temp commutes with it. -/
 
-/-- `x` is a temporary of the ANF pass: its name starts with the fresh prefix. -/
-def isTemp (P : String) (x : Ident) : Bool := P.isPrefixOf x
+/-- `x` is a temporary of the ANF pass: its name starts with the fresh prefix.
+Phrased on `toList` so prefix facts reduce to `List` reasoning. -/
+def isTemp (P : String) (x : Ident) : Bool := (P.toList).isPrefixOf x.toList
+
+/-- A list is a prefix of itself extended. -/
+theorem List.isPrefixOf_append_self {α} [BEq α] [LawfulBEq α] (a b : List α) :
+    a.isPrefixOf (a ++ b) = true := by
+  induction a with
+  | nil => rfl
+  | cons x xs ih => simp only [List.cons_append, List.isPrefixOf, ih, beq_self_eq_true, Bool.and_true]
+
+/-- Every temporary is `isTemp` (it starts with the prefix). -/
+theorem isTemp_tempName (P : String) (k : Nat) : isTemp P (tempName P k) = true := by
+  simp only [isTemp, tempName, String.toList_append]
+  exact List.isPrefixOf_append_self _ _
 
 /-- The environment with all temporary bindings removed. -/
 def eraseTemps (P : String) (V : VEnv D) : VEnv D :=
