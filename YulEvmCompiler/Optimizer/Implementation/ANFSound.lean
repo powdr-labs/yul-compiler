@@ -96,11 +96,23 @@ end YulEvmCompiler.Optimizer.ANF
 /-! ## Soundness scaffold
 
 The end-to-end soundness statement and the wired `Pass`, scaffolded with a single
-`sorry` at the semantic core so the architecture is verified to compose. The
-`sorry` (`anfNormalize_sound`) is discharged incrementally: block-scoped
-temporaries are popped by the enclosing `restore` (the lemmas above), so the
-proof reduces to per-statement local block-equivalences plus the flatten
-evaluation-correctness — no general `Step` weakening lemma required. -/
+`sorry` at the semantic core so the architecture is verified to compose.
+
+Discharging `anfNormalize_sound` for the *current* (persistent-temporary)
+`anfBlock` requires, in order of difficulty:
+
+1. a **fresh-binding weakening lemma for `Step`** — temporaries persist across
+   statements within the block (so forwarding can reuse them), so the simulation
+   threads them through execution; the `VEnv`/`restore` lemmas above are its base;
+2. a **block congruence with *equivalent* (not identical) hoisted functions** —
+   ANF rewrites `funDef` bodies, so `hoist b ≠ hoist (anfBlock b)`; `EquivBlock.of_stmts`
+   (which needs `hoist` equal) does not apply directly;
+3. the **flatten evaluation-correctness** simulation on top.
+
+An alternative design (wrap each statement's flattening in its own sub-block)
+makes temporaries block-local per statement, removing (1) entirely — but then
+temporaries do not persist, defeating store-to-load forwarding. The persistent
+design here is the one the redundant-store pass wants. -/
 
 namespace YulEvmCompiler.Optimizer.ANF
 
