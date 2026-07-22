@@ -692,8 +692,46 @@ theorem flattenArgs_correct {funs : FunEnv D} {P : String} {es : List (Expr Op)}
             exact flattenArgs_atom_fresh hnt.2 m hm1
 end
 
-/-- **ANF preserves behavior.** (Scaffolded; discharged via the flatten
-correctness + statement simulation + `restore` lemmas above.) -/
+/-- Head-expression flattening correctness: run the prelude (to some
+intermediate state), then the flat right-hand side evaluates to the same values.
+Unlike `flatten_correct`, the top operator is kept (no final temp), so the
+result may be multi-valued and the prelude ends at the arguments' state. -/
+theorem flattenTop_correct {funs : FunEnv D} {P : String} {e : Expr Op}
+    {Vo Va : VEnv D} {st : EvmState} {vs st1} (k : Nat)
+    (hstep : Step D funs Vo st (.expr e) (.eres (.vals vs st1)))
+    (hnt : noTempExpr P e = true) (hext : TempExt P Vo Va) :
+    ∃ Va' stMid, Step D funs Va st (.stmts (flattenTop P k e).2.1) (.sres Va' stMid .normal)
+      ∧ TempExt P Vo Va'
+      ∧ Step D funs Va' stMid (.expr (flattenTop P k e).2.2) (.eres (.vals vs st1)) := by
+  cases e with
+  | var x =>
+      refine ⟨Va, st, ?_, hext, ?_⟩
+      · simp only [flattenTop]; exact Step.seqNil
+      · simpa only [flattenTop] using weakenExpr hext hnt hstep
+  | lit l =>
+      refine ⟨Va, st, ?_, hext, ?_⟩
+      · simp only [flattenTop]; exact Step.seqNil
+      · simpa only [flattenTop] using weakenExpr hext hnt hstep
+  | builtin op args =>
+      cases hstep with
+      | builtinOk hargs hb =>
+          obtain ⟨Va_a, hpre, hext_a, hatoms⟩ :=
+            flattenArgs_correct k hargs (by simpa [noTempExpr] using hnt) hext
+          simp only [flattenTop]
+          exact ⟨Va_a, _, hpre, hext_a, Step.builtinOk hatoms hb⟩
+  | call fn args =>
+      obtain ⟨argvals, sta, decl, cenv, Vend, o, hargs, hlk, hlen, hbody, ho, hmap⟩ :=
+        expr_call_inv hstep
+      obtain ⟨Va_a, hpre, hext_a, hatoms⟩ :=
+        flattenArgs_correct k hargs (by simpa [noTempExpr] using hnt) hext
+      have hcall : Step D funs Va_a sta
+          (.expr (.call fn (flattenArgs P k args).2.2)) (.eres (.vals vs st1)) := by
+        rw [hmap]; exact Step.callOk hatoms hlk hlen hbody ho
+      simp only [flattenTop]
+      exact ⟨Va_a, _, hpre, hext_a, hcall⟩
+
+/-- **ANF preserves behavior.** (Scaffolded; discharged via the statement
+simulation + `restore` lemmas.) -/
 theorem anfNormalize_sound (b : Block Op) :
     EquivBlock D b (anfNormalize b) := by
   sorry
