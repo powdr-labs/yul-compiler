@@ -591,6 +591,22 @@ theorem flattenArgs_prelude_decl {P : String} {k : Nat} {es : List (Expr Op)} :
         exact ⟨m, le_trans (flattenArgs_k_mono P k rest) hm1, hm2⟩
 end
 
+/-- Inversion for a call expression that yields values (stated with a *variable*
+result list so `cases` can unify — `callOk`'s result `decl.rets.map …` is not a
+variable). -/
+theorem expr_call_inv {funs : FunEnv D} {V : VEnv D} {st fn args rr st1}
+    (h : Step D funs V st (.expr (.call fn args)) (.eres (.vals rr st1))) :
+    ∃ argvals sta decl cenv Vend o,
+      Step D funs V st (.args args) (.eres (.vals argvals sta)) ∧
+      lookupFun funs fn = some (decl, cenv) ∧
+      argvals.length = decl.params.length ∧
+      Step D cenv ((decl.params.zip argvals) ++ bindZeros D decl.rets) sta
+        (.stmt (.block decl.body)) (.sres Vend st1 o) ∧
+      (o = .normal ∨ o = .leave) ∧
+      rr = decl.rets.map (fun r => (VEnv.get Vend r).getD (Dialect.zero D)) := by
+  cases h with
+  | callOk h1 h2 h3 h4 h5 => exact ⟨_, _, _, _, _, _, h1, h2, h3, h4, h5, rfl⟩
+
 /-! ### Flatten-correctness
 
 Running a `flatten`/`flattenArgs` prelude from a temp-extended environment binds
@@ -618,8 +634,31 @@ theorem flatten_correct {funs : FunEnv D} {P : String} {e : Expr Op}
           refine ⟨Va, ?_, hext, ?_⟩
           · simp only [flatten]; exact Step.seqNil
           · simp only [flatten]; exact Step.lit
-  | builtin op args => sorry
-  | call fn args => sorry
+  | builtin op args =>
+      cases hstep with
+      | builtinOk hargs hb =>
+          obtain ⟨Va_a, hpre, hext_a, hatoms⟩ :=
+            flattenArgs_correct k hargs (by simpa [noTempExpr] using hnt) hext
+          simp only [flatten]
+          refine ⟨(tempName P (flattenArgs P k args).1, v) :: Va_a, ?_, ?_, ?_⟩
+          · exact stmts_append_normal hpre
+              (Step.seqCons (Step.letVal (Step.builtinOk hatoms hb) rfl) Step.seqNil)
+          · exact TempExt.temp (isTemp_tempName P _) hext_a
+          · exact Step.var get_cons_self
+  | call fn args =>
+      obtain ⟨argvals, sta, decl, cenv, Vend, o, hargs, hlk, hlen, hbody, ho, hmap⟩ :=
+        expr_call_inv hstep
+      obtain ⟨Va_a, hpre, hext_a, hatoms⟩ :=
+        flattenArgs_correct k hargs (by simpa [noTempExpr] using hnt) hext
+      have hcall : Step D funs Va_a sta
+          (.expr (.call fn (flattenArgs P k args).2.2)) (.eres (.vals [v] st1)) := by
+        rw [hmap]; exact Step.callOk hatoms hlk hlen hbody ho
+      simp only [flatten]
+      refine ⟨(tempName P (flattenArgs P k args).1, v) :: Va_a, ?_, ?_, ?_⟩
+      · exact stmts_append_normal hpre
+          (Step.seqCons (Step.letVal hcall rfl) Step.seqNil)
+      · exact TempExt.temp (isTemp_tempName P _) hext_a
+      · exact Step.var get_cons_self
 
 theorem flattenArgs_correct {funs : FunEnv D} {P : String} {es : List (Expr Op)}
     {Vo Va : VEnv D} {st : EvmState} {argvals st1} (k : Nat)
@@ -635,7 +674,22 @@ theorem flattenArgs_correct {funs : FunEnv D} {P : String} {es : List (Expr Op)}
           refine ⟨Va, ?_, hext, ?_⟩
           · simp only [flattenArgs]; exact Step.seqNil
           · simp only [flattenArgs]; exact Step.argsNil
-  | cons e rest => sorry
+  | cons e rest =>
+      cases hstep with
+      | argsCons hrest hhead =>
+          simp only [noTempArgs, Bool.and_eq_true] at hnt
+          obtain ⟨Va_r, hpreR, hextR, hatomsR⟩ := flattenArgs_correct k hrest hnt.2 hext
+          obtain ⟨Va_h, hpreH, hextH, hatomH⟩ :=
+            flatten_correct (flattenArgs P k rest).1 hhead hnt.1 hextR
+          simp only [flattenArgs]
+          refine ⟨Va_h, stmts_append_normal hpreR hpreH, hextH, Step.argsCons ?_ hatomH⟩
+          refine prelude_preserves_atoms (flattenArgs_ok P k rest).1
+            (flatten P (flattenArgs P k rest).1 e).2.1 ?_ ?_ hpreH hatomsR
+          · exact fun s hs => preludeOK_shape ((flatten_ok P (flattenArgs P k rest).1 e).2 s hs)
+          · intro t ht
+            obtain ⟨rhs, hmem⟩ := ht
+            obtain ⟨m, hm1, rfl⟩ := flatten_prelude_decl t ⟨rhs, hmem⟩
+            exact flattenArgs_atom_fresh hnt.2 m hm1
 end
 
 /-- **ANF preserves behavior.** (Scaffolded; discharged via the flatten

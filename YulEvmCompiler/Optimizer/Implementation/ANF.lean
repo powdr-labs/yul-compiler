@@ -188,6 +188,24 @@ theorem flattenArgs_ok (P : String) (k : Nat) (args : List (Expr Op)) :
         · exact hhead.2 st hpre
 end
 
+/-- A well-formed prelude statement is a single-variable `let` with an rhs. -/
+theorem preludeOK_shape : ∀ {s : Stmt Op}, preludeOK s = true →
+    ∃ t rhs, s = .letDecl [t] (some rhs)
+  | .letDecl [t] (some rhs), _ => ⟨t, rhs, rfl⟩
+  | .letDecl [] _, h => by simp [preludeOK] at h
+  | .letDecl (_ :: _ :: _) _, h => by simp [preludeOK] at h
+  | .letDecl [_] none, h => by simp [preludeOK] at h
+  | .block _, h => by simp [preludeOK] at h
+  | .funDef _ _ _ _, h => by simp [preludeOK] at h
+  | .assign _ _, h => by simp [preludeOK] at h
+  | .cond _ _, h => by simp [preludeOK] at h
+  | .switch _ _ _, h => by simp [preludeOK] at h
+  | .forLoop _ _ _ _, h => by simp [preludeOK] at h
+  | .exprStmt _, h => by simp [preludeOK] at h
+  | .break, h => by simp [preludeOK] at h
+  | .continue, h => by simp [preludeOK] at h
+  | .leave, h => by simp [preludeOK] at h
+
 /-! ### Head-expression flattening
 
 For a statement position that already allows one operator level (`let`/`assign`
