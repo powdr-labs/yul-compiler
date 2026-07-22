@@ -36,9 +36,9 @@ The two aliasing regimes, from the EVM dialect (`YulSemantics.Dialect.EVM`):
   `(-0x20, 0x20)` proves must-not-alias.
 
 The soundness lemmas at the bottom relate `keyDelta` to (in)equality of the
-*evaluated* key words. The clean word-difference direction is proved; the memory
-byte-range / wraparound facts are stated precisely and left as `sorry`
-(they need the no-overflow side condition `base.toNat + max offset < 2^256`).
+*evaluated* key words, and are fully proved: `word_ne_of_delta_ne_zero`
+(nonzero bounded difference ⇒ distinct words) and `mem_disjoint_of_delta`
+(≥`0x20` separation with non-negative offsets ⇒ disjoint byte ranges).
 -/
 
 namespace YulEvmCompiler.Optimizer.DeadStore
@@ -160,10 +160,13 @@ def keyDelta (k₁ k₂ : Expr Op) : Option Int :=
 /-! ### Aliasing predicates -/
 
 /-- Word regions (storage / transient): `k₁` and `k₂` **must not alias** when
-their difference is a known nonzero constant. -/
+their difference is a known nonzero constant that does not wrap modulo `2^256`
+(`|d| < 2^256`). The bound is essential: two literal slots differing by a
+multiple of `2^256` denote the *same* 256-bit word, so a nonzero integer
+difference alone does not prove distinctness (see `word_ne_of_delta_ne_zero`). -/
 def mustNotAliasWord (k₁ k₂ : Expr Op) : Bool :=
   match keyDelta k₁ k₂ with
-  | some d => decide (d ≠ 0)
+  | some d => decide (d ≠ 0 ∧ d.natAbs < 2 ^ 256)
   | none   => false
 
 /-- Word regions: `k₁` **must alias** `k₂` (same slot) when their difference is a

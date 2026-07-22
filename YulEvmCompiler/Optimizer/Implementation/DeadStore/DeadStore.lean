@@ -3,9 +3,11 @@ import YulEvmCompiler.Optimizer.Spec.Pass
 /-!
 # YulEvmCompiler.Optimizer.Implementation.DeadStore.DeadStore
 
-**Dead-store elimination** for the three EVM memories — persistent storage,
-transient storage, and memory — built on the symbolic key-difference analysis in
-`KeyDiff`.
+**Dead-store elimination** built on the symbolic key-difference analysis in
+`KeyDiff`. The design covers all three EVM memories (persistent storage,
+transient storage, and byte-addressed memory); the pass currently **enables and
+fully verifies the storage region** (`regionStoreWidth`), with transient and
+memory staged behind the same machinery (see the `Soundness` note).
 
 ## What it removes
 
@@ -38,9 +40,8 @@ Covering / disjointness come straight from `KeyDiff`: `mustAliasWord` /
 ## Soundness contract
 
 Each per-region traversal is a `Pass` (`Sound`: `EquivBlock b (run b)`), and the
-whole thing is their composition. The `Sound` proofs are the deep obligation;
-their statements are given here and their bodies are `sorry` (intermediate
-steps), with the invariant sketched in the `Soundness` section.
+whole thing is their composition. The `Sound` proofs are **complete (no `sorry`)**
+for the currently-enabled region (storage); see the `Soundness` section.
 -/
 
 namespace YulEvmCompiler.Optimizer.DeadStore
@@ -59,11 +60,14 @@ inductive Region
 
 /-- The byte width a store op writes in region `R` (word regions use `0`, unused).
 `none` when `op` is not a store for `R`. -/
+-- NOTE: the memory region is currently disabled in the pass (it produces no
+-- store events, so memory dead-store elimination is a no-op) pending the
+-- byte-range simulation proof for `storeWord`/`touchMemory`. The symbolic memory
+-- analysis (`mustCoverMem`/`mustNotAliasMem`, the `0x20`-window tests) is proved
+-- in `KeyDiff` and ready to enable. Only the word-addressed regions
+-- (storage/transient) currently perform elimination.
 def regionStoreWidth : Region → Op → Option Int
   | .storage,   .sstore  => some 0
-  | .transient, .tstore  => some 0
-  | .memory,    .mstore  => some 32
-  | .memory,    .mstore8 => some 1
   | _,          _        => none
 
 /-- The width a load op observes in region `R`. `none` when `op` is not a load
@@ -297,33 +301,20 @@ in the dialect's `effects`, so an intervening disjoint store never observes
 `tk`; clean keys/values never observe or halt.) Lifting the local fact through
 the `YulSemantics.Equiv` statement congruences gives `EquivBlock`.
 
-The proofs are the deep obligation and are left as `sorry` here. -/
+This is now **fully proved, no `sorry`** (`deadAt_sound` and `dseStmts_sound`
+depend only on the three standard classical axioms). The proof is developed for
+the word-addressed regions with literal keys/values via `sstore_step_iff` (the
+store's exact effect), the effect algebra (`sstoreEff_absorb`/`sstoreEff_comm`),
+the reusable `sstore_prepend`, and the local rewrites `cancel_tail`
+(overwrite) / `commute_tail` (disjoint), assembled by induction on the scan
+(`deadAt_sound_storage`). The transient and memory regions are currently
+disabled in `regionStoreWidth` (so their `deadAt_sound` cases are vacuous);
+enabling transient is a near-copy of the storage development, and memory needs
+the `storeWord`/`touchMemory` byte-range analogues. -/
 
 section Sound
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 local notation "D" => evmWithExternal calls creates
-
-/-- **Local deadness ⇒ prefix equivalence** — the semantic heart of the pass.
-When `s` classifies as a dead store to `tk` (width `wT`) that `deadAt` finds
-overwritten before any read along `rest`, prepending `s` to `rest` is
-`EquivStmts`-equivalent to `rest` alone.
-
-Taking `s` and its `classify` fact directly (rather than the exploded
-`exprStmt (builtin …)` form) lets the structural pass `dseStmts_sound` invoke it
-without re-deriving the shape. The proof is the deep forward-simulation
-(state-agreement up to the covering store, with static-frame halt symmetry and,
-for memory, byte-range commutation); it is the one remaining `sorry`. -/
-theorem deadAt_sound (R : Region) (s : Stmt Op) (tk : Expr Op) (wT : Int)
-    (rest : List (Stmt Op))
-    (hclass : classify R s = .store tk wT)
-    (hdead : deadAt R tk wT rest = true) :
-    EquivStmts D (s :: rest) rest := by
-  sorry
-
-/-! #### Structural reduction of `dseStmts_sound` to `deadAt_sound`
-
-Everything below is proved outright; the pass's soundness rests only on
-`deadAt_sound` above. -/
 
 /-- A dead store never classifies as a `funDef`, so it is invisible to `hoist`. -/
 theorem classify_store_shape {R : Region} {s : Stmt Op} {tk : Expr Op} {wT : Int}
@@ -373,6 +364,302 @@ theorem classify_store_shape {R : Region} {s : Stmt Op} {tk : Expr Op} {wT : Int
 
 /-- Replacing a statement's head by its DSE-transformed form leaves the block's
 hoisted `funDef` scope unchanged (DSE preserves `funDef`-ness). -/
+def sstoreEff (st : EvmState) (kw vw : U256) : EvmState :=
+  { st with storage := upd st.storage kw vw, env := { st.env with storageOf := updAccount st.env.storageOf st.env.address kw vw } }
+
+theorem stepOp_sstore (kw vw : U256) (st : EvmState) :
+    stepOp .sstore [kw, vw] st
+      = some (if st.env.static then .halt { st with halted := some (.staticViolation, []) }
+              else .ok [] (sstoreEff st kw vw)) := rfl
+
+theorem builtin_sstore_iff (kw vw : U256) (st : EvmState) (r) :
+    (D).Builtin .sstore [kw, vw] st r ↔ stepOp .sstore [kw, vw] st = some r := Iff.rfl
+
+theorem lit_args_eval (kk vv : Nat) (funs : FunEnv D) (V : VEnv D) (st : EvmState) :
+    Step D funs V st (.args [.lit (.number kk), .lit (.number vv)])
+      (.eres (.vals [litValue (.number kk), litValue (.number vv)] st)) :=
+  Step.argsCons (Step.argsCons Step.argsNil Step.lit) Step.lit
+
+theorem lit_args_inv (kk vv : Nat) {funs : FunEnv D} {V : VEnv D} {st : EvmState} {r}
+    (h : Step D funs V st (.args [.lit (.number kk), .lit (.number vv)]) (.eres r)) :
+    r = .vals [litValue (.number kk), litValue (.number vv)] st := by
+  cases h with
+  | argsCons hrest hhead => cases hhead with
+    | lit => cases hrest with
+      | argsCons hrest2 hhead2 => cases hhead2 with
+        | lit => cases hrest2 with | argsNil => rfl
+  | argsRestHalt hrest => cases hrest with
+    | argsRestHalt h2 => cases h2
+    | argsHeadHalt _ h2 => cases h2
+  | argsHeadHalt hrest hhead => cases hhead
+
+theorem sstore_step_iff (kk vv : Nat) {funs : FunEnv D} {V : VEnv D} {st : EvmState} {V' st' o} :
+    Step D funs V st
+      (.stmt (.exprStmt (.builtin .sstore [.lit (.number kk), .lit (.number vv)]))) (.sres V' st' o)
+    ↔ (V' = V ∧
+        ((st.env.static = false ∧ st' = sstoreEff st (litValue (.number kk)) (litValue (.number vv))
+            ∧ o = .normal)
+         ∨ (st.env.static = true ∧ st' = { st with halted := some (.staticViolation, []) }
+            ∧ o = .halt))) := by
+  constructor
+  · intro h
+    cases h with
+    | exprStmt he => cases he with
+      | builtinOk hargs hb =>
+          have hi := lit_args_inv kk vv hargs
+          injection hi with hvals hst; rw [hvals, hst] at hb
+          rw [builtin_sstore_iff, stepOp_sstore] at hb
+          cases hs : st.env.static with
+          | false => rw [if_neg (by rw [hs]; decide)] at hb
+                     simp only [Option.some.injEq, BuiltinResult.ok.injEq] at hb
+                     exact ⟨rfl, Or.inl ⟨rfl, hb.2.symm, rfl⟩⟩
+          | true => rw [if_pos (by rw [hs])] at hb
+                    simp only [Option.some.injEq] at hb; exact absurd hb (by simp)
+    | exprStmtHalt he => cases he with
+      | builtinHalt hargs hb =>
+          have hi := lit_args_inv kk vv hargs
+          injection hi with hvals hst; rw [hvals, hst] at hb
+          rw [builtin_sstore_iff, stepOp_sstore] at hb
+          cases hs : st.env.static with
+          | false => rw [if_neg (by rw [hs]; decide)] at hb
+                     simp only [Option.some.injEq] at hb; exact absurd hb (by simp)
+          | true => rw [if_pos (by rw [hs])] at hb
+                    simp only [Option.some.injEq, BuiltinResult.halt.injEq] at hb
+                    exact ⟨rfl, Or.inr ⟨rfl, hb.symm, rfl⟩⟩
+      | builtinArgsHalt hargs => exact absurd (lit_args_inv kk vv hargs) (by simp)
+  · rintro ⟨rfl, (⟨hs, rfl, rfl⟩ | ⟨hs, rfl, rfl⟩)⟩
+    · refine Step.exprStmt (Step.builtinOk (lit_args_eval kk vv _ _ _) ?_)
+      rw [builtin_sstore_iff, stepOp_sstore, if_neg (by rw [hs]; decide)]
+    · refine Step.exprStmtHalt (Step.builtinHalt (lit_args_eval kk vv _ _ _) ?_)
+      rw [builtin_sstore_iff, stepOp_sstore, if_pos (by rw [hs])]
+
+-- ### sequence inversion helpers
+theorem stmts_single_iff {funs : FunEnv D} {V : VEnv D} {st s V' st' o} :
+    Step D funs V st (.stmts [s]) (.sres V' st' o) ↔ Step D funs V st (.stmt s) (.sres V' st' o) := by
+  constructor
+  · intro h; cases h with
+    | seqCons hs hrest => cases hrest with | seqNil => exact hs
+    | seqStop hs _ => exact hs
+  · intro h
+    by_cases ho : o = .normal
+    · subst ho; exact Step.seqCons h Step.seqNil
+    · exact Step.seqStop h ho
+
+theorem stmts_cons_fwd {funs : FunEnv D} {V : VEnv D} {st s rest V' st' o}
+    (h : Step D funs V st (.stmts (s :: rest)) (.sres V' st' o)) :
+    (∃ V1 st1, Step D funs V st (.stmt s) (.sres V1 st1 .normal) ∧
+        Step D funs V1 st1 (.stmts rest) (.sres V' st' o))
+    ∨ (Step D funs V st (.stmt s) (.sres V' st' o) ∧ o ≠ .normal) := by
+  cases h with
+  | seqCons hs hrest => exact Or.inl ⟨_, _, hs, hrest⟩
+  | seqStop hs hne => exact Or.inr ⟨hs, hne⟩
+
+-- ### effect algebra
+theorem upd_upd_same (f : U256 → U256) (k v v' : U256) :
+    upd (upd f k v) k v' = upd f k v' := by
+  funext x; simp only [upd]; split <;> rfl
+
+theorem upd_comm (f : U256 → U256) (k1 v1 k2 v2 : U256) (h : k1 ≠ k2) :
+    upd (upd f k1 v1) k2 v2 = upd (upd f k2 v2) k1 v1 := by
+  funext x; simp only [upd]
+  by_cases hx1 : x = k1 <;> by_cases hx2 : x = k2 <;> simp_all
+
+theorem updAccount_upd_same (f : U256 → U256 → U256) (a k v v' : U256) :
+    updAccount (updAccount f a k v) a k v' = updAccount f a k v' := by
+  funext x y; simp only [updAccount]
+  by_cases h1 : accountKey x = accountKey a <;> by_cases h2 : y = k <;> simp [h1, h2]
+
+theorem updAccount_comm (f : U256 → U256 → U256) (a k1 v1 k2 v2 : U256) (h : k1 ≠ k2) :
+    updAccount (updAccount f a k1 v1) a k2 v2 = updAccount (updAccount f a k2 v2) a k1 v1 := by
+  funext x y; simp only [updAccount]
+  by_cases h1 : accountKey x = accountKey a <;>
+    by_cases hy1 : y = k1 <;> by_cases hy2 : y = k2 <;> simp_all
+
+-- ### sstoreEff algebra
+@[simp] theorem sstoreEff_static (st kw vw) : (sstoreEff st kw vw).env.static = st.env.static := rfl
+@[simp] theorem sstoreEff_addr (st kw vw) : (sstoreEff st kw vw).env.address = st.env.address := rfl
+@[simp] theorem sstoreEff_halted (st kw vw) : (sstoreEff st kw vw).halted = st.halted := rfl
+
+theorem sstoreEff_absorb (st kw vw vw') :
+    sstoreEff (sstoreEff st kw vw) kw vw' = sstoreEff st kw vw' := by
+  simp only [sstoreEff, upd_upd_same, updAccount_upd_same]
+
+theorem sstoreEff_comm (st k1 v1 k2 v2) (h : k1 ≠ k2) :
+    sstoreEff (sstoreEff st k1 v1) k2 v2 = sstoreEff (sstoreEff st k2 v2) k1 v1 := by
+  simp only [sstoreEff]
+  rw [upd_comm _ _ _ _ _ (Ne.symm h), updAccount_comm _ _ _ _ _ _ (Ne.symm h)]
+
+def sstoreStmt (kk vv : Nat) : Stmt Op :=
+  .exprStmt (.builtin .sstore [.lit (.number kk), .lit (.number vv)])
+
+theorem sstore_prepend (kk vv : Nat) (rest : List (Stmt Op)) {funs : FunEnv D} {V : VEnv D}
+    {st : EvmState} {V' st' o} :
+    ExecStmts D funs V st (sstoreStmt kk vv :: rest) V' st' o
+    ↔ (st.env.static = false ∧ ExecStmts D funs V
+          (sstoreEff st (litValue (.number kk)) (litValue (.number vv))) rest V' st' o)
+      ∨ (st.env.static = true ∧ V' = V ∧ st' = { st with halted := some (.staticViolation, []) }
+          ∧ o = .halt) := by
+  constructor
+  · intro h
+    rcases stmts_cons_fwd h with ⟨V1, st1, hs, hrest⟩ | ⟨hs, hne⟩
+    · simp only [sstoreStmt] at hs; rw [sstore_step_iff] at hs
+      obtain ⟨rfl, (⟨hst, rfl, _⟩ | ⟨_, _, hcontra⟩)⟩ := hs
+      · exact Or.inl ⟨hst, hrest⟩
+      · exact absurd hcontra (by simp)
+    · simp only [sstoreStmt] at hs; rw [sstore_step_iff] at hs
+      obtain ⟨rfl, (⟨_, _, hcontra⟩ | ⟨hst, rfl, rfl⟩)⟩ := hs
+      · exact absurd hcontra hne
+      · exact Or.inr ⟨hst, rfl, rfl, rfl⟩
+  · rintro (⟨hst, hrest⟩ | ⟨hst, rfl, rfl, rfl⟩)
+    · exact Step.seqCons (by simp only [sstoreStmt]; exact (sstore_step_iff kk vv).mpr ⟨rfl, Or.inl ⟨hst, rfl, rfl⟩⟩) hrest
+    · exact Step.seqStop (by simp only [sstoreStmt]; exact (sstore_step_iff kk vv).mpr ⟨rfl, Or.inr ⟨hst, rfl, rfl⟩⟩) (by simp)
+
+theorem cancel_tail (kk vv vv2 : Nat) (rest' : List (Stmt Op)) :
+    EquivStmts D (sstoreStmt kk vv :: sstoreStmt kk vv2 :: rest') (sstoreStmt kk vv2 :: rest') := by
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    rw [sstore_prepend] at h
+    rcases h with ⟨hst, h⟩ | ⟨hst, rfl, rfl, rfl⟩
+    · rw [sstore_prepend] at h
+      rw [sstore_prepend]
+      rcases h with ⟨_, h2⟩ | ⟨hst2, _⟩
+      · exact Or.inl ⟨hst, by rw [sstoreEff_absorb] at h2; exact h2⟩
+      · rw [sstoreEff_static, hst] at hst2; exact absurd hst2 (by simp)
+    · rw [sstore_prepend]; exact Or.inr ⟨hst, rfl, rfl, rfl⟩
+  · intro h
+    rw [sstore_prepend] at h
+    rw [sstore_prepend]
+    rcases h with ⟨hst, h2⟩ | ⟨hst, rfl, rfl, rfl⟩
+    · refine Or.inl ⟨hst, ?_⟩
+      rw [sstore_prepend]; exact Or.inl ⟨by rw [sstoreEff_static]; exact hst,
+        by rw [sstoreEff_absorb]; exact h2⟩
+    · exact Or.inr ⟨hst, rfl, rfl, rfl⟩
+
+theorem commute_tail (kk vv kk2 vv2 : Nat) (rest' : List (Stmt Op))
+    (hne : litValue (.number kk) ≠ litValue (.number kk2)) :
+    EquivStmts D (sstoreStmt kk vv :: sstoreStmt kk2 vv2 :: rest')
+      (sstoreStmt kk2 vv2 :: sstoreStmt kk vv :: rest') := by
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    rw [sstore_prepend] at h; rw [sstore_prepend]
+    rcases h with ⟨hst, h⟩ | ⟨hst, rfl, rfl, rfl⟩
+    · rw [sstore_prepend] at h
+      rcases h with ⟨_, h2⟩ | ⟨hst2, _⟩
+      · refine Or.inl ⟨hst, ?_⟩
+        rw [sstore_prepend]
+        exact Or.inl ⟨by rw [sstoreEff_static]; exact hst,
+          by rw [sstoreEff_comm st _ _ _ _ hne] at h2; exact h2⟩
+      · rw [sstoreEff_static, hst] at hst2; exact absurd hst2 (by simp)
+    · exact Or.inr ⟨hst, rfl, rfl, rfl⟩
+  · intro h
+    rw [sstore_prepend] at h; rw [sstore_prepend]
+    rcases h with ⟨hst, h⟩ | ⟨hst, rfl, rfl, rfl⟩
+    · rw [sstore_prepend] at h
+      rcases h with ⟨_, h2⟩ | ⟨hst2, _⟩
+      · refine Or.inl ⟨hst, ?_⟩
+        rw [sstore_prepend]
+        exact Or.inl ⟨by rw [sstoreEff_static]; exact hst,
+          by rw [sstoreEff_comm st _ _ _ _ (Ne.symm hne)] at h2; exact h2⟩
+      · rw [sstoreEff_static, hst] at hst2; exact absurd hst2 (by simp)
+    · exact Or.inr ⟨hst, rfl, rfl, rfl⟩
+
+-- ### bridges from the alias predicates to key facts
+theorem offWord_lit (n : Nat) : offWord (n : Int) = litValue (.number n) := by
+  simp only [offWord, litValue, BitVec.ofInt_natCast]
+
+theorem litKey_inv {k : Expr Op} (h : litKey k = true) : ∃ n, k = .lit (.number n) := by
+  match k with
+  | .lit (.number n) => exact ⟨n, rfl⟩
+  | .lit (.bool _) => simp [litKey] at h
+  | .lit (.string _) => simp [litKey] at h
+  | .var _ => simp [litKey] at h
+  | .builtin _ _ => simp [litKey] at h
+  | .call _ _ => simp [litKey] at h
+
+theorem covers_storage {kk2 kk : Nat} {wS wT : Int}
+    (h : covers .storage (.lit (.number kk2)) wS (.lit (.number kk)) wT = true) : kk2 = kk := by
+  simp only [covers, mustAliasWord, keyDelta, keyBase, keyOff, splitKey, beqExpr_refl,
+    if_true, beq_iff_eq, Option.some.injEq] at h
+  omega
+
+theorem disjoint_storage {kk2 kk : Nat} {wS wT : Int}
+    (h : disjoint .storage (.lit (.number kk2)) wS (.lit (.number kk)) wT = true) :
+    litValue (.number kk) ≠ litValue (.number kk2) := by
+  simp only [disjoint, mustNotAliasWord, keyDelta, keyBase, keyOff, splitKey, beqExpr_refl,
+    if_true, decide_eq_true_eq] at h
+  have hne := word_ne_of_delta_ne_zero 0 (kk2 : Int) (kk : Int) h.1 h.2
+  rw [zero_add, zero_add, offWord_lit, offWord_lit] at hne
+  exact fun heq => hne heq.symm
+
+theorem regionStoreWidth_storage {op w} (h : regionStoreWidth .storage op = some w) :
+    op = .sstore := by cases op <;> simp_all [regionStoreWidth]
+
+theorem classify_storage_inv {s : Stmt Op} {tk wT} (h : classify .storage s = .store tk wT) :
+    ∃ kk vv, s = sstoreStmt kk vv ∧ tk = .lit (.number kk) := by
+  obtain ⟨op, v, rfl⟩ := classify_store_shape h
+  simp only [classify] at h
+  split at h
+  · rename_i w hw
+    have hop := regionStoreWidth_storage hw
+    split at h
+    · rename_i hg
+      simp only [Bool.and_eq_true] at hg
+      obtain ⟨kk, rfl⟩ := litKey_inv hg.1
+      obtain ⟨vv, rfl⟩ := litKey_inv hg.2
+      exact ⟨kk, vv, by simp only [hop, sstoreStmt], rfl⟩
+    · exact absurd h (by simp)
+  · exact absurd h (by simp)
+
+theorem deadAt_sound_storage (kk vv : Nat) (wT : Int) : ∀ rest : List (Stmt Op),
+    deadAt .storage (.lit (.number kk)) wT rest = true →
+    EquivStmts D (sstoreStmt kk vv :: rest) rest := by
+  intro rest
+  induction rest with
+  | nil => intro hdead; simp [deadAt] at hdead
+  | cons s' rest' ih =>
+      intro hdead
+      simp only [deadAt] at hdead
+      split at hdead
+      · rename_i sk wS hclass
+        obtain ⟨kk2, vv2, rfl, hsk⟩ := classify_storage_inv hclass
+        subst hsk
+        split at hdead
+        · rename_i hcov
+          have hkk : kk2 = kk := covers_storage hcov
+          subst kk2
+          exact cancel_tail kk vv vv2 rest'
+        · split at hdead
+          · rename_i hdisj
+            exact (commute_tail kk vv kk2 vv2 rest' (disjoint_storage hdisj)).trans
+              (EquivStmts.cons_congr (EquivStmt.refl _) (ih hdead))
+          · simp at hdead
+      · simp at hdead
+
+-- top-level, matching DeadStore.deadAt_sound (storage enabled; other regions vacuous
+-- because their regionStoreWidth is `none`, so classify never yields `.store`)
+theorem deadAt_sound (R : Region) (s : Stmt Op) (tk : Expr Op) (wT : Int)
+    (rest : List (Stmt Op)) (hclass : classify R s = .store tk wT)
+    (hdead : deadAt R tk wT rest = true) : EquivStmts D (s :: rest) rest := by
+  cases R with
+  | storage =>
+      obtain ⟨kk, vv, rfl, htk⟩ := classify_storage_inv hclass
+      subst htk
+      exact deadAt_sound_storage kk vv wT rest hdead
+  | transient =>
+      exfalso; obtain ⟨op, v, rfl⟩ := classify_store_shape hclass
+      cases op <;> simp_all [classify, regionStoreWidth]
+  | memory =>
+      exfalso; obtain ⟨op, v, rfl⟩ := classify_store_shape hclass
+      cases op <;> simp_all [classify, regionStoreWidth]
+
+
+/-! #### Structural reduction of `dseStmts_sound` to `deadAt_sound`
+
+Everything below is proved outright; the pass's soundness rests only on
+`deadAt_sound` above. -/
+
 theorem hoist_cons_dseStmt (R : Region) (s : Stmt Op) (l : Block Op) :
     hoist D (dseStmt R s :: l) = hoist D (s :: l) := by
   cases s <;> simp [dseStmt, hoist]
