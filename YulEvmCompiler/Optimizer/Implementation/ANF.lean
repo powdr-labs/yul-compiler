@@ -102,6 +102,33 @@ def flattenArgs (P : String) (k : Nat) : List (Expr Op) → Nat × List (Stmt Op
       (k2, preRest ++ preHead, atomHead :: atomsRest)
 end
 
+/-! ### Temp-index monotonicity
+
+`flatten`/`flattenArgs` only advance the fresh-temp counter, and each temporary
+they emit uses an index in the half-open range `[k, result-counter)`. Disjoint
+counter ranges therefore give distinct temporary names — the freshness fact the
+soundness proof's flatten-correctness needs. -/
+mutual
+theorem flatten_k_mono (P : String) (k : Nat) (e : Expr Op) : k ≤ (flatten P k e).1 := by
+  match e with
+  | .var _ => exact Nat.le_refl _
+  | .lit _ => exact Nat.le_refl _
+  | .builtin _ args =>
+      simp only [flatten]
+      exact Nat.le_trans (flattenArgs_k_mono P k args) (Nat.le_succ _)
+  | .call _ args =>
+      simp only [flatten]
+      exact Nat.le_trans (flattenArgs_k_mono P k args) (Nat.le_succ _)
+
+theorem flattenArgs_k_mono (P : String) (k : Nat) (args : List (Expr Op)) :
+    k ≤ (flattenArgs P k args).1 := by
+  match args with
+  | [] => exact Nat.le_refl _
+  | e :: rest =>
+      simp only [flattenArgs]
+      exact Nat.le_trans (flattenArgs_k_mono P k rest) (flatten_k_mono P _ e)
+end
+
 /-! ### Structural correctness: the output is in ANF -/
 
 mutual
