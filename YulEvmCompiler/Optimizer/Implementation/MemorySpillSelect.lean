@@ -654,6 +654,76 @@ mutual
     all_goals omega
 end
 
+/-! ## Selected-binding validity
+
+Only bindings removed from the operand stack need an additional validity
+gate.  Ordinary invalid assignments/declarations remain for the backend to
+reject.  A selected declaration must be new in its frame, and a selected
+assignment must target a selected binding already live at that program point.
+This prevents spilling from accidentally making an otherwise-invalid program
+compile, and supplies the exact static facts used by the simulation. -/
+
+mutual
+  def selectedBindingsStmtOK (selected : SpillSet) (frame : Frame)
+      (live : SpillSet) : Stmt Op → Bool
+    | .letDecl names _ => names.all fun name =>
+        let key : SpillKey := { owner := frame.owner, name }
+        !selected.contains key ||
+          (!live.contains key && !(frame.params ++ frame.returns).contains name)
+    | .assign names _ => names.all fun name =>
+        let key : SpillKey := { owner := frame.owner, name }
+        !selected.contains key || live.contains key
+    | .block body | .cond _ body =>
+        selectedBindingsStmtsOK selected frame live body
+    | .switch _ cases dflt =>
+        selectedBindingsCasesOK selected frame live cases &&
+          match dflt with
+          | some body => selectedBindingsStmtsOK selected frame live body
+          | none => true
+    | .forLoop init _ post body =>
+        let loopLive := (liveStmts selected frame.owner live init).2
+        selectedBindingsStmtsOK selected frame live init &&
+          selectedBindingsStmtsOK selected frame loopLive post &&
+          selectedBindingsStmtsOK selected frame loopLive body
+    | .funDef _ _ _ _ | .exprStmt _ | .break | .continue | .leave => true
+    termination_by statement => 2 * sizeOf statement
+
+  def selectedBindingsStmtsOK (selected : SpillSet) (frame : Frame)
+      (live : SpillSet) : Block Op → Bool
+    | [] => true
+    | statement :: rest =>
+        selectedBindingsStmtOK selected frame live statement &&
+          selectedBindingsStmtsOK selected frame
+            (liveStmt selected frame.owner live statement).2 rest
+    termination_by statements => 2 * sizeOf statements + 1
+
+  def selectedBindingsCasesOK (selected : SpillSet) (frame : Frame)
+      (live : SpillSet) : List (Literal × Block Op) → Bool
+    | [] => true
+    | (_, body) :: rest =>
+        selectedBindingsStmtsOK selected frame live body &&
+          selectedBindingsCasesOK selected frame live rest
+    termination_by cases => 2 * sizeOf cases + 1
+  decreasing_by
+    all_goals simp_wf
+    all_goals omega
+end
+
+def selectedBindingsCodeOK (selected : SpillSet) (frame : Frame)
+    (live : SpillSet) : Code Op → Bool
+  | .expr _ | .args _ => true
+  | .stmt statement => selectedBindingsStmtOK selected frame live statement
+  | .stmts statements => selectedBindingsStmtsOK selected frame live statements
+  | .loop _ post body =>
+      selectedBindingsStmtsOK selected frame live post &&
+        selectedBindingsStmtsOK selected frame live body
+
+def selectedBindingsWF (selected : SpillSet) (allFrames : List Frame) : Bool :=
+  allFrames.all fun frame =>
+    selectedBindingsStmtsOK selected frame
+      (selectedKeys selected frame.owner (frame.params ++ frame.returns))
+      frame.body
+
 structure FrameLives where
   owner : Owner
   sets : List SpillSet
@@ -1085,6 +1155,7 @@ def spillBlock? (body : Block Op) : Option Result := do
   if !framesWF guardedFrames then none else
   if !frameSignaturesWF guardedFrames then none else
   if !selectedWF guardedFrames selected then none else
+  if !selectedBindingsWF selected guardedFrames then none else
   if !groupsClosedCheck (coupledStmts none guarded) selected then none else
   let layout ← buildLayout base selected guarded
   if layout.words != provisional.words then none else

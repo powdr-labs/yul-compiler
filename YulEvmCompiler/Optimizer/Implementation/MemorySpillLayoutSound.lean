@@ -1089,7 +1089,7 @@ theorem spillBlock_layoutCheck {body : Block Op} {result : Result}
   obtain ⟨selected, _, hselected⟩ := Option.bind_eq_some_iff.mp hbase.2
   obtain ⟨provisional, _, hprovisional⟩ := Option.bind_eq_some_iff.mp hselected
   simp at hprovisional
-  obtain ⟨_, _, _, _, _, _, hlayoutBind⟩ := hprovisional
+  obtain ⟨_, _, _, _, _, _, _, hlayoutBind⟩ := hprovisional
   obtain ⟨layout, _, hlayout⟩ := Option.bind_eq_some_iff.mp hlayoutBind
   simp at hlayout
   rcases hlayout with ⟨_, hcheck, _, _, rfl⟩
@@ -1112,6 +1112,8 @@ structure SpillFacts (body : Block Op) (result : Result) (guards : List Nat) : P
   selected : selectSpills body = some result.selection
   selected_wf : selectedWF (frames
     (resolveMemoryGuardStmts result.base result.reserved body)) result.selection = true
+  selected_bindings_wf : selectedBindingsWF result.selection (frames
+    (resolveMemoryGuardStmts result.base result.reserved body)) = true
   groups_closed :
     groupsClosedCheck (coupledStmts none
       (resolveMemoryGuardStmts result.base result.reserved body))
@@ -1168,7 +1170,8 @@ theorem spillBlock_facts {body : Block Op} {result : Result}
     Option.bind_eq_some_iff.mp hselected
   simp at hprovisional
   rcases hprovisional with
-    ⟨hwords, hreserved, hframes, hsignatures, hselectedWF, hgroups, hlayoutBind⟩
+    ⟨hwords, hreserved, hframes, hsignatures, hselectedWF, hbindings,
+      hgroups, hlayoutBind⟩
   obtain ⟨layout, hbuild, hlayout⟩ := Option.bind_eq_some_iff.mp hlayoutBind
   simp at hlayout
   rcases hlayout with
@@ -1185,6 +1188,7 @@ theorem spillBlock_facts {body : Block Op} {result : Result}
     signatures_wf := hsignatures
     selected := hselection
     selected_wf := hselectedWF
+    selected_bindings_wf := hbindings
     groups_closed := hgroups
     layout_built := hbuild
     words_nonzero := by rw [hwordEq]; exact hwords

@@ -3,6 +3,7 @@ import YulEvmCompiler.ObjectCompile
 import YulEvmCompiler.Optimizer.Implementation.Pipeline
 import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
 import YulEvmCompiler.Optimizer.Implementation.MemorySpillSelect
+import YulEvmCompiler.Optimizer.Implementation.MemorySpillSound
 set_option warningAsError true
 /-!
 # YulParser.Compile

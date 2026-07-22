@@ -243,6 +243,22 @@ def msizeConditionUnderPressure : Block Op :=
 
 #guard (spillBlock? msizeConditionUnderPressure).isNone
 
+/-! The fallback independently checks selected binding scope instead of
+relying on the parser validator.  This keeps direct AST callers sound too. -/
+def bindingGateFrame : Frame :=
+  { owner := none, params := [], returns := [], body := [] }
+
+def selectedX : SpillSet := [{ owner := none, name := "x" }]
+
+#guard !(selectedBindingsStmtOK selectedX bindingGateFrame []
+  (.assign ["x"] (lit 1)))
+#guard selectedBindingsStmtOK selectedX bindingGateFrame selectedX
+  (.assign ["x"] (lit 1))
+#guard selectedBindingsStmtOK selectedX bindingGateFrame []
+  (.letDecl ["x"] (some (lit 1)))
+#guard !(selectedBindingsStmtOK selectedX bindingGateFrame selectedX
+  (.letDecl ["x"] (some (lit 1))))
+
 /-! User memory beginning at the guard result moves above the spill interval.
 The identity source writes/returns from `base`; the chosen source and spilled
 program write/return the same payload from `reserved`. -/
