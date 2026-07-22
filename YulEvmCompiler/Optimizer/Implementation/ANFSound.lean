@@ -341,6 +341,54 @@ def anfNormalize (b : Block Op) : Block Op := anfBlock (anfPrefix b) b
 theorem anfNormalize_isANF (b : Block Op) : isANFStmts (anfNormalize b) = true :=
   anfBlock_isANF _ b
 
+/-! ### Expression weakening
+
+A temp-free expression evaluates to exactly the same result under a
+temp-extended environment: it reads only non-temp variables (`TempExt.get`), and
+a `call` runs its callee in a fresh frame independent of the caller's
+temporaries, so the callee derivation is reused verbatim (the function
+environment `funs` is identical because ANF is the identity on `funDef`). -/
+mutual
+theorem weakenExpr {funs : FunEnv D} {P : String} {e : Expr Op}
+    {Vo Va : VEnv D} {st : EvmState} {r} (hext : TempExt P Vo Va)
+    (hnt : noTempExpr P e = true) (h : Step D funs Vo st (.expr e) (.eres r)) :
+    Step D funs Va st (.expr e) (.eres r) := by
+  cases e with
+  | lit l => cases h with | lit => exact Step.lit
+  | var x =>
+      cases h with
+      | var hv =>
+          have hx : isTemp P x = false := by simpa [noTempExpr] using hnt
+          exact Step.var (by rw [TempExt.get hx hext]; exact hv)
+  | builtin op args =>
+      have hna : noTempArgs P args = true := by simpa [noTempExpr] using hnt
+      cases h with
+      | builtinOk ha hb => exact Step.builtinOk (weakenArgs hext hna ha) hb
+      | builtinHalt ha hb => exact Step.builtinHalt (weakenArgs hext hna ha) hb
+      | builtinArgsHalt ha => exact Step.builtinArgsHalt (weakenArgs hext hna ha)
+  | call fn args =>
+      have hna : noTempArgs P args = true := by simpa [noTempExpr] using hnt
+      cases h with
+      | callOk ha hlk hlen hbody ho => exact Step.callOk (weakenArgs hext hna ha) hlk hlen hbody ho
+      | callHalt ha hlk hlen hbody => exact Step.callHalt (weakenArgs hext hna ha) hlk hlen hbody
+      | callArgsHalt ha => exact Step.callArgsHalt (weakenArgs hext hna ha)
+
+theorem weakenArgs {funs : FunEnv D} {P : String} {es : List (Expr Op)}
+    {Vo Va : VEnv D} {st : EvmState} {r} (hext : TempExt P Vo Va)
+    (hnt : noTempArgs P es = true) (h : Step D funs Vo st (.args es) (.eres r)) :
+    Step D funs Va st (.args es) (.eres r) := by
+  cases es with
+  | nil => cases h with | argsNil => exact Step.argsNil
+  | cons e rest =>
+      simp only [noTempArgs, Bool.and_eq_true] at hnt
+      cases h with
+      | argsCons hrest hhead =>
+          exact Step.argsCons (weakenArgs hext hnt.2 hrest) (weakenExpr hext hnt.1 hhead)
+      | argsRestHalt hrest => exact Step.argsRestHalt (weakenArgs hext hnt.2 hrest)
+      | argsHeadHalt hrest hhead =>
+          exact Step.argsHeadHalt (weakenArgs hext hnt.2 hrest) (weakenExpr hext hnt.1 hhead)
+end
+
 /-- **ANF preserves behavior.** (Scaffolded; the `sorry` is the remaining work,
 discharged via the block-scoped temp / `restore` lemmas above.) -/
 theorem anfNormalize_sound (b : Block Op) :
