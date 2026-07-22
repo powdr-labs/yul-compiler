@@ -518,18 +518,38 @@ theorem atomArgs_state_indep {funs : FunEnv D} {es : List (Expr Op)} {V : VEnv D
 /-- Running a prelude of single-variable `let`s whose bound variables are not
 atoms preserves the atoms' evaluation across the resulting environment/state
 change. -/
-theorem prelude_preserves_atoms {funs : FunEnv D} {pre : List (Stmt Op)}
-    {atoms : List (Expr Op)} {V V' : VEnv D} {st st' vs}
-    (hOK : ∀ s ∈ pre, ∃ t rhs, s = .letDecl [t] (some rhs))
-    (hfresh : ∀ t, (∃ rhs, Stmt.letDecl [t] (some rhs) ∈ pre) → Expr.var t ∉ atoms)
-    (hatom : atomicArgs atoms = true)
-    (hpre : Step D funs V st (.stmts pre) (.sres V' st' .normal))
-    (hae : Step D funs V st (.args atoms) (.eres (.vals vs st))) :
-    Step D funs V' st' (.args atoms) (.eres (.vals vs st')) := by
-  -- Proof: induction on `pre`; each `let t := rhs` prepends `(t, v)` (t ∉ atoms,
-  -- so `atomArgs_prepend_cons`) and advances the state (`atomArgs_state_indep`).
-  -- Stubbed pending the dependent-hypothesis induction bookkeeping.
-  sorry
+theorem prelude_preserves_atoms {funs : FunEnv D} {atoms : List (Expr Op)}
+    (hatom : atomicArgs atoms = true) :
+    ∀ (pre : List (Stmt Op)) {V V' : VEnv D} {st st' vs},
+      (∀ s ∈ pre, ∃ t rhs, s = .letDecl [t] (some rhs)) →
+      (∀ t, (∃ rhs, Stmt.letDecl [t] (some rhs) ∈ pre) → Expr.var t ∉ atoms) →
+      Step D funs V st (.stmts pre) (.sres V' st' .normal) →
+      Step D funs V st (.args atoms) (.eres (.vals vs st)) →
+      Step D funs V' st' (.args atoms) (.eres (.vals vs st'))
+  | [] => by intro _ _ hpre hae; cases hpre with | seqNil => exact hae
+  | s :: rest => by
+      intro hOK hfresh hpre hae
+      obtain ⟨t, rhs, rfl⟩ := hOK s (List.mem_cons_self ..)
+      have htne : ∀ x, Expr.var x ∈ atoms → t ≠ x :=
+        fun x hx he => hfresh t ⟨rhs, List.mem_cons_self ..⟩ (he ▸ hx)
+      cases hpre with
+      | seqCons hs hrest =>
+          cases hs with
+          | letVal hval hlen =>
+              rename_i stMid vals
+              cases vals with
+              | nil => simp at hlen
+              | cons v tl =>
+                  cases tl with
+                  | cons _ _ => simp at hlen
+                  | nil =>
+                      have h1 := atomArgs_prepend_cons (w := v) hatom htne hae
+                      have h2 := atomArgs_state_indep hatom h1 stMid
+                      exact prelude_preserves_atoms hatom rest
+                        (fun s' hs' => hOK s' (List.mem_cons_of_mem _ hs'))
+                        (fun t' ht' => hfresh t' (ht'.imp fun r hr => List.mem_cons_of_mem _ hr))
+                        hrest h2
+      | seqStop hs hne => exact absurd rfl hne
 
 /-! ### Flatten-correctness
 
