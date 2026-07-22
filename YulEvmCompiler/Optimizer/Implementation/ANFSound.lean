@@ -249,6 +249,8 @@ inductive TempExt (P : String) : VEnv D → VEnv D → Prop
   | temp {Vo Va t w} : isTemp P t = true → TempExt P Vo Va → TempExt P Vo ((t, w) :: Va)
   | keep {Vo Va y v} : isTemp P y = false → TempExt P Vo Va →
       TempExt P ((y, v) :: Vo) ((y, v) :: Va)
+  | keepTemp {Vo Va y v} : isTemp P y = true → TempExt P Vo Va →
+      TempExt P ((y, v) :: Vo) ((y, v) :: Va)
 
 /-- A temporary name and a non-temporary name are distinct. -/
 theorem name_ne_of_isTemp {P : String} {t x : Ident}
@@ -267,6 +269,11 @@ theorem TempExt.get {P : String} {Vo Va : VEnv D} {x : Ident}
       by_cases hyx : y = x
       · subst hyx; simp
       · rw [get_cons_ne hyx, get_cons_ne hyx]; exact ih
+  | keepTemp hy hte ih =>
+      rename_i _ _ y v
+      by_cases hyx : y = x
+      · subst hyx; simp
+      · rw [get_cons_ne hyx, get_cons_ne hyx]; exact ih
 
 /-- Assigning a non-temp variable preserves the temp-extension. -/
 theorem TempExt.set {P : String} {Vo Va : VEnv D} {x : Ident} {v : D.Value}
@@ -280,6 +287,22 @@ theorem TempExt.set {P : String} {Vo Va : VEnv D} {x : Ident} {v : D.Value}
       by_cases hyx : y = x
       · subst hyx; rw [set_cons_self, set_cons_self]; exact .keep hy hte
       · rw [set_cons_ne hyx, set_cons_ne hyx]; exact .keep hy ih
+  | keepTemp hy hte ih =>
+      rename_i _ _ y w
+      by_cases hyx : y = x
+      · subst hyx; rw [set_cons_self, set_cons_self]; exact .keepTemp hy hte
+      · rw [set_cons_ne hyx, set_cons_ne hyx]; exact .keepTemp hy ih
+
+/-- Any environment temp-extends itself (no temporaries inserted). Unlike
+`of_tempFree`, this holds for an *arbitrary* environment — even one that happens
+to contain temp-named bindings — which is what the pass-level `EquivStmt` (with
+its universally-quantified outer environment) needs. -/
+theorem TempExt.refl {P : String} : ∀ (V : VEnv D), TempExt P V V
+  | [] => .nil
+  | (y, v) :: rest => by
+      by_cases hy : isTemp P y = true
+      · exact .keepTemp hy (TempExt.refl rest)
+      · exact .keep (by simpa using hy) (TempExt.refl rest)
 
 /-- Declaring a fresh temporary in the ANF environment only (invisible to the
 original) preserves the extension. -/
