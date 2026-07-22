@@ -66,9 +66,18 @@ def preludeOK : Stmt Op → Bool
 
 /-! ### Fresh temporaries -/
 
-/-- The `k`-th temporary under prefix `P`. Distinct `k` give distinct names, and
-none is a program identifier when `P` is prefix-fresh. -/
-def tempName (P : String) (k : Nat) : Ident := P ++ "t" ++ toString k
+/-- The `k`-th temporary under prefix `P`. A unary suffix is used so that
+distinctness of indices is a trivial `List.length` fact (rather than depending on
+`Nat.repr` injectivity); every name starts with `P`. (A compact decimal suffix
+can be substituted once `Nat`-`toString` injectivity is available.) -/
+def tempName (P : String) (k : Nat) : Ident := P ++ String.ofList (List.replicate (k + 1) 't')
+
+/-- Distinct temporary indices give distinct names. -/
+theorem tempName_inj {P : String} {i j : Nat} (h : tempName P i = tempName P j) : i = j := by
+  simp only [tempName, String.append_right_inj, String.ofList_inj] at h
+  have := congrArg List.length h
+  simp only [List.length_replicate] at this
+  omega
 
 /-! ### The flattener
 
