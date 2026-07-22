@@ -72,6 +72,96 @@ a lot of structural slack to remove.
 
 ## Passes
 
+### ✅ Dominance-local stack layout (`codex/swapmath-stack-layout`)
+
+`SwapMath.sol` exposes two related failures after the existing smart layout:
+the ABI wrapper materializes four call results in a multi-binder and then
+copies them to four return slots, requiring `SWAP17`; after removing that
+cliff, the exact-output branch evaluates
+`getNextSqrtPriceFromOutput(current, liquidity, amountOut, zeroForOne)` with a
+return address, return slot, and one pending argument above `amountOut`,
+requiring `DUP17`.
+
+The planned fix uses the same placement principle as dominator-tree/SSA work:
+place a carrier at the lowest program point that dominates all of its uses.
+For this local rewrite that point is the call statement itself, represented by
+a fresh nested block, so the carrier live ranges cannot leak into the function
+frame.  This is a structured-region specialization, not a claim that the pass
+constructs a general CFG dominator tree: loops, early outcomes, and hoisted
+functions still follow Yul's explicit syntax.  A backward syntactic
+mention analysis supplies the local interference test.
+
+The implementation grew into coordinated, verified rewrites in one
+stack-layout pass:
+
+1. **Multi-result copy-back coalescing.** Recognize the exact adjacent vector
+   `let t₁…tₙ := f(as); d₁ := t₁; …; dₙ := tₙ` and retarget the call directly
+   to `d₁…dₙ := f(as)`.  The rewrite handles singleton and multi-binder
+   results; requires distinct, disjoint temporaries and destinations already
+   bound at the site; and requires full read/write/declaration mention-freedom
+   of every temporary in the suffix.  Adjacency is deliberate: textbook
+   live-after alone cannot justify moving destination writes across arbitrary
+   effects.  This removes the wrapper's four temporary slots.
+2. **Right-to-left call-argument staging.** When the backend pressure model
+   predicts a `DUP17+` while evaluating a direct **assignment-form** call,
+   evaluate arguments once, right-to-left, into globally fresh carriers in a
+   nested block, then call using the shallow carriers.  The call site is the
+   lowest common dominator of those carrier uses; block restoration kills every
+   carrier on normal and halt outcomes.  Let-form calls are not staged because
+   predeclaring their results would change the environment on argument halts.
+   The policy fires only when every staged evaluation and the final
+   multi-assignment fit classic `DUP16`/`SWAP16`.  Call-bearing arguments are
+   admitted only with a general proof that prepending the generated block's
+   empty function scope preserves lookup and execution.
+
+Soundness stays in the existing strong `Pass` tier.  Copy-back uses `MIns` and
+`InsFree`: the source carries dead temporary bindings through the suffix while
+the target does not, and enclosing `restore` erases the difference in both
+directions, including halts.  Argument staging proves an `EvalArgs`
+decomposition/recomposition lemma, preserving Yul's right-to-left order,
+exact arity, state changes, and halts; globally fresh names make environment
+   extension observationally inert.  One-rewrite drivers keep both proofs local.
+3. **Dominance-local live-range splitting and slot reuse.** Backward liveness
+   and syntactic declaration dominance identify acyclic block/conditional/
+   switch regions where dead locals can be scoped away or a deep live value can
+   be carried in a fresh shallow slot. Nested refinements descend through the
+   already-generated dominator chain. Stable reads are split first; a second
+   reverse-postorder pass prefers a writable deep value, keeping both the call
+   input and result destination within `DUP16`/`SWAP16` in SwapMath.
+
+The executable order is scheduling, adjacent copy-back to a fixed point,
+early dead scoping, tail scoping, slot reuse, dominance-local splitting and
+available-copy forwarding, then pressure-triggered staging against the final
+layout. Its pressure traversal threads loop-init declarations and the init's
+hoisted function-signature scope into the condition, post, and body.
+The public pass first runs the established layout and retains it whenever that
+program already compiles; the aggressive pipeline is selected only when the
+legacy layout still hits a stack cliff. This preserves bytecode and gas for the
+previously supported fragment while extending acceptance.
+Function-body congruence is handled by `FunCongr`; a structural resolution
+congruence lifts the pass over every object code block without changing object
+names, data, or the audited specification.
+
+Primary references: T. Lengauer and R. E. Tarjan, “A Fast Algorithm for
+Finding Dominators in a Flowgraph,” TOPLAS 1(1), 1979,
+<https://doi.org/10.1145/357062.357071>; R. Cytron et al., “Efficiently
+Computing Static Single Assignment Form and the Control Dependence Graph,”
+TOPLAS 13(4), 1991, <https://doi.org/10.1145/192030.192041>.
+
+Current review state: both block and object compilation paths use the pass;
+the proof covers copy-back, argument evaluation and halts, nested acyclic
+regions, function environments, and generated nested shadow scopes. The strict
+Uniswap suite compiles 13/15 contracts and runs 39 comparable external-call
+scenarios with no behavioral or gas regressions. `PoolLiquidity.sol` and
+`SwapMath.sol` leave the exact known-failure set; SwapMath's
+`computeSwapStep(uint160,uint160,uint128,int256,uint24)` is now exercised.
+`PoolSwap.sol` remains blocked by five reads of the same result-memory pointer
+across loop branches (the first needs `DUP21`); `PoolManager.sol` remains the
+larger integrated frontier. Supporting those loop-carried regions needs a
+separate control-flow proof rather than weakening this acyclic-region pass.
+The full build, exact axiom guard, and unchanged audited specification closure
+pass.
+
 ### ✅ `identity` (`Implementation/Identity.lean`) — landed
 The do-nothing pass; validates the spec is inhabited. Sound by reflexivity.
 

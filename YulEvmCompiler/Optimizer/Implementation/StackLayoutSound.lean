@@ -1,5 +1,7 @@
 import YulEvmCompiler.Optimizer.Implementation.StackLayout
 import YulEvmCompiler.Optimizer.Implementation.InlineCallsSound
+import YulEvmCompiler.Optimizer.Implementation.DeadPure
+import YulEvmCompiler.Optimizer.Implementation.BoundFunCongr
 import YulEvmCompiler.Optimizer.Spec.Pass
 import YulEvmCompiler.ObjectResolve
 set_option warningAsError true
@@ -291,6 +293,670 @@ theorem scheduleBlock_equiv (b : Block Op) : EquivBlock D b (scheduleStmts b) :=
   EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (scheduleStmts_forall2 b))
     (scopeRel_hoistSchedule b)
 
+/-! ### Adjacent call-result copy-back -/
+
+private def tempIns (base : Nat) : List Ident → List (Nat × Ident)
+  | [] => []
+  | t :: ts => (base + ts.length, t) :: tempIns base ts
+
+private theorem tempIns_names {base : Nat} : ∀ {ts : List Ident} {p},
+    p ∈ tempIns base ts → p.2 ∈ ts := by
+  intro ts
+  induction ts with
+  | nil => simp [tempIns]
+  | cons t ts ih =>
+      intro p hp
+      simp only [tempIns, List.mem_cons] at hp
+      rcases hp with rfl | hp
+      · simp
+      · exact List.mem_cons_of_mem _ (ih hp)
+
+private theorem tempIns_depth {base : Nat} : ∀ {ts : List Ident} {p},
+    p ∈ tempIns base ts → base ≤ p.1 := by
+  intro ts
+  induction ts with
+  | nil => simp [tempIns]
+  | cons t ts ih =>
+      intro p hp
+      simp only [tempIns, List.mem_cons] at hp
+      rcases hp with rfl | hp
+      · omega
+      · exact ih hp
+
+private theorem zip_mins (V : VEnv D) : ∀ {ts : List Ident} {vals : List U256},
+    vals.length = ts.length →
+    MIns (tempIns V.length ts) (ts.zip vals ++ V) V := by
+  intro ts
+  induction ts with
+  | nil =>
+      intro vals hlen
+      cases vals with
+      | nil => exact .nil V
+      | cons _ _ => simp at hlen
+  | cons t ts ih =>
+      intro vals hlen
+      cases vals with
+      | nil => simp at hlen
+      | cons v vals =>
+          have hlen' : vals.length = ts.length := by simpa using hlen
+          have hm := ih hlen'
+          have ht := hm.insTop t v
+          simpa [tempIns, List.length_append, hlen', Nat.add_comm] using ht
+
+private theorem takeCopyBack_spec : ∀ {ts : List Ident} {rest ds suffix},
+    takeCopyBack ts rest = some (ds, suffix) →
+    rest = copyBackStmts ts ds ++ suffix ∧ ds.length = ts.length := by
+  intro ts
+  induction ts with
+  | nil =>
+      intro rest ds suffix h
+      simp [takeCopyBack] at h
+      obtain ⟨rfl, rfl⟩ := h
+      simp [copyBackStmts]
+  | cons t ts ih =>
+      intro rest ds suffix h
+      cases rest with
+      | nil => simp [takeCopyBack] at h
+      | cons s rest =>
+          cases s with
+          | assign xs e =>
+              cases xs with
+              | nil => simp [takeCopyBack] at h
+              | cons d xs =>
+                cases xs with
+                | cons _ _ => simp [takeCopyBack] at h
+                | nil =>
+                  cases e with
+                  | var u =>
+                    simp only [takeCopyBack] at h
+                    split at h
+                    · next hne => simp at h
+                    · next heq =>
+                      have hut : u = t := by simpa using heq
+                      subst u
+                      obtain ⟨tailDs, htail, hpair⟩ :=
+                        Option.bind_eq_some_iff.mp h
+                      cases hpair
+                      obtain ⟨hrest, hlen⟩ := ih htail
+                      subst rest
+                      simp [copyBackStmts, hlen]
+                  | lit _ | builtin _ _ | call _ _ => simp [takeCopyBack] at h
+          | block _ => simp [takeCopyBack] at h
+          | funDef _ _ _ _ => simp [takeCopyBack] at h
+          | letDecl _ _ => simp [takeCopyBack] at h
+          | cond _ _ => simp [takeCopyBack] at h
+          | «switch» _ _ _ => simp [takeCopyBack] at h
+          | forLoop _ _ _ _ => simp [takeCopyBack] at h
+          | exprStmt _ => simp [takeCopyBack] at h
+          | «break» => simp [takeCopyBack] at h
+          | «continue» => simp [takeCopyBack] at h
+          | «leave» => simp [takeCopyBack] at h
+
+private theorem copy_zip_gets {ts : List Ident} (hnd : ts.Nodup) :
+    ∀ {vals : List U256}, vals.length = ts.length →
+      ts.map (fun t => (VEnv.get (ts.zip vals : VEnv D) t).getD
+        (evmWithExternal calls creates).zero) = vals := by
+  induction ts with
+  | nil =>
+      intro vals hlen
+      cases vals with
+      | nil => rfl
+      | cons _ _ => simp at hlen
+  | cons t ts ih =>
+      intro vals hlen
+      cases vals with
+      | nil => simp at hlen
+      | cons v vals =>
+          have ht : t ∉ ts := (List.nodup_cons.mp hnd).1
+          have hnd' : ts.Nodup := (List.nodup_cons.mp hnd).2
+          have hlen' : vals.length = ts.length := by simpa using hlen
+          simp only [List.zip_cons_cons, List.map_cons]
+          rw [show VEnv.get (((t, v) :: ts.zip vals) : VEnv D) t = some v by
+            simp [VEnv.get]]
+          congr 1
+          calc
+            ts.map (fun u => (VEnv.get ((t, v) :: ts.zip vals) u).getD
+                (evmWithExternal calls creates).zero) =
+                ts.map (fun u => (VEnv.get (ts.zip vals) u).getD
+                  (evmWithExternal calls creates).zero) := by
+              apply List.map_congr_left
+              intro u hu
+              have htu : t ≠ u := fun h => ht (h ▸ hu)
+              simp [VEnv.get, htu]
+            _ = vals := ih hnd' hlen'
+
+private theorem hoist_copyBackStmts (ts ds : List Ident) :
+    hoist D (copyBackStmts ts ds) = [] := by
+  unfold copyBackStmts
+  induction ds generalizing ts with
+  | nil => simp [hoist]
+  | cons d ds ih =>
+      cases ts with
+      | nil => simp [hoist]
+      | cons t ts => simp [hoist, ih]
+
+/-- The semantic core of copy-back coalescing.  The temporary result frame is
+an `MIns` extension of the direct-assignment frame; mention-freedom lets the
+unchanged suffix run with that frame removed, and block restoration erases it
+on every outcome. -/
+theorem copyBackSite_equivBlock {pre suffix : Block Op} {ts ds : List Ident}
+    {call : Expr Op}
+    (hlen : ds.length = ts.length) (hnd : ts.Nodup)
+    (hdisj : ∀ d ∈ ds, d ∉ ts)
+    (hfree : ∀ t ∈ ts, stmtsMentions t suffix = false) :
+    EquivBlock D
+      (pre ++ ([.letDecl ts (some call)] ++ copyBackStmts ts ds ++ suffix))
+      (pre ++ ([.assign ds call] ++ suffix)) := by
+  intro funs V st V' st' o
+  have hhoist : hoist D
+      (pre ++ ([.letDecl ts (some call)] ++ copyBackStmts ts ds ++ suffix)) =
+      hoist D (pre ++ ([.assign ds call] ++ suffix)) := by
+    simp only [hoist_append]
+    rw [hoist_copyBackStmts]
+    simp [hoist]
+  let F := hoist D (pre ++ ([.assign ds call] ++ suffix)) :: funs
+  constructor
+  · intro hrun
+    cases hrun with
+    | block hb =>
+      rw [hhoist] at hb
+      rcases stmts_append_fwd hb with ⟨Vp, stp, hpre, hsite⟩ | ⟨hne, hpre⟩
+      · cases hsite with
+        | seqStop hlet hne =>
+          cases hlet with
+          | letVal _ _ => exact absurd rfl hne
+          | letHalt hcall =>
+            exact Step.block (stmts_append_normal hpre
+              (Step.seqStop (Step.assignHalt hcall) (by simp)))
+        | seqCons hlet hrest =>
+          cases hlet with
+          | @letVal _ _ _ _ _ vals stv hcall hvals =>
+            have hvals' : vals.length = ts.length := hvals
+            have hkeys : (ts.zip vals).map Prod.fst = ts :=
+              List.map_fst_zip (le_of_eq hvals.symm)
+            rcases stmts_append_fwd hrest with
+              ⟨Vm, stm, hcopies, hsuffix⟩ | ⟨hneCopies, hcopies⟩
+            · obtain ⟨hVm, hstm, hoCopies⟩ := assigns_bwd hcopies
+                (fun t ht => by rw [hkeys]; exact ht)
+                (fun d hd => by rw [hkeys]; exact hdisj d hd) hlen
+              subst stm
+              rw [copy_zip_gets hnd hvals'] at hVm
+              subst Vm
+              have hm : MIns (tempIns Vp.length ts)
+                  (ts.zip vals ++ VEnv.setMany Vp ds vals)
+                  (VEnv.setMany Vp ds vals) := by
+                have hm0 := zip_mins (calls := calls) (creates := creates)
+                  (VEnv.setMany Vp ds vals) hvals'
+                rw [VEnv.setMany_length] at hm0
+                exact hm0
+              have hifree : InsFree (tempIns Vp.length ts) (.stmts suffix) := by
+                intro p hp
+                exact hfree p.2 (tempIns_names hp)
+              obtain ⟨Vt, htargetSuffix, hm'⟩ := hm.frameRemove hsuffix hifree
+              have htargetSite := Step.seqCons
+                (Step.assignVal hcall (hvals.trans hlen.symm))
+                htargetSuffix
+              have htarget := Step.block (stmts_append_normal hpre htargetSite)
+              have hbase : V.length ≤ Vp.length := venvLen_mono hpre rfl
+              have herase := restore_mins_le (base := V) hm' (fun p hp =>
+                hbase.trans (tempIns_depth hp))
+              rw [← herase] at htarget
+              exact htarget
+            · obtain ⟨_, _, hoCopies⟩ := assigns_bwd hcopies
+                (fun t ht => by rw [hkeys]; exact ht)
+                (fun d hd => by rw [hkeys]; exact hdisj d hd) hlen
+              exact absurd hoCopies hneCopies
+      · exact Step.block (stmts_append_early hpre hne)
+
+  · intro hrun
+    cases hrun with
+    | block hb =>
+      rw [← hhoist] at hb
+      rcases stmts_append_fwd hb with ⟨Vp, stp, hpre, hsite⟩ | ⟨hne, hpre⟩
+      · cases hsite with
+        | seqStop hassign hne =>
+          cases hassign with
+          | assignVal _ _ => exact absurd rfl hne
+          | assignHalt hcall =>
+            exact Step.block (stmts_append_normal hpre
+              (Step.seqStop (Step.letHalt hcall) (by simp)))
+        | seqCons hassign hsuffix =>
+          cases hassign with
+          | assignVal hcall hvals =>
+            rename_i stv vals
+            have hvals' : vals.length = ts.length := hvals.trans hlen
+            have hkeys : (ts.zip vals).map Prod.fst = ts :=
+              List.map_fst_zip (le_of_eq hvals'.symm)
+            have hm : MIns (tempIns Vp.length ts)
+                (ts.zip vals ++ VEnv.setMany Vp ds vals)
+                (VEnv.setMany Vp ds vals) := by
+              have hm0 := zip_mins (calls := calls) (creates := creates)
+                (VEnv.setMany Vp ds vals) hvals'
+              rw [VEnv.setMany_length] at hm0
+              exact hm0
+            have hifree : InsFree (tempIns Vp.length ts) (.stmts suffix) := by
+              intro p hp
+              exact hfree p.2 (tempIns_names hp)
+            obtain ⟨Vs, hsourceSuffix, hm'⟩ := hm.frameAdd hsuffix hifree
+            have hcopies := assigns_fwd (A' := (ts.zip vals : VEnv D))
+              (fun t ht => by rw [hkeys]; exact ht)
+              (fun d hd => by rw [hkeys]; exact hdisj d hd)
+              hlen (hoist D
+                (pre ++ ([.letDecl ts (some call)] ++
+                  copyBackStmts ts ds ++ suffix)) :: funs) Vp stv
+            rw [copy_zip_gets hnd hvals'] at hcopies
+            have hafterLet := stmts_append_normal hcopies hsourceSuffix
+            have hsourceSite := Step.seqCons (Step.letVal hcall hvals') hafterLet
+            have hsource := Step.block (stmts_append_normal hpre hsourceSite)
+            have hbase : V.length ≤ Vp.length := venvLen_mono hpre rfl
+            have herase := restore_mins_le (base := V) hm' (fun p hp =>
+              hbase.trans (tempIns_depth hp))
+            rw [herase] at hsource
+            exact hsource
+      · exact Step.block (stmts_append_early hpre hne)
+
+
+theorem copyBackHere_sound {layout : List Ident} {ss ss' : Block Op}
+    (h : copyBackHere layout ss = some ss') (pre : Block Op) :
+    EquivBlock D (pre ++ ss) (pre ++ ss') := by
+  cases ss with
+  | nil => simp [copyBackHere] at h
+  | cons s rest =>
+    cases s with
+    | letDecl ts val =>
+      cases val with
+      | none => simp [copyBackHere] at h
+      | some e =>
+        cases e with
+        | call f args =>
+          simp only [copyBackHere] at h
+          split at h
+          · simp at h
+          · next htemps =>
+            obtain ⟨pair, htake, hafter⟩ := Option.bind_eq_some_iff.mp h
+            obtain ⟨ds, suffix⟩ := pair
+            dsimp only at hafter
+            split at hafter
+            · next hok =>
+              cases hafter
+              obtain ⟨hrest, hlen⟩ := takeCopyBack_spec htake
+              subst rest
+              have hnotempty : ts ≠ [] := by
+                intro heq
+                subst ts
+                exact htemps (by simp)
+              have hnodup : ts.Nodup := by
+                by_contra hn
+                exact htemps (by simp [hn])
+              simp only [Bool.and_eq_true] at hok
+              have hdisjAll := List.all_eq_true.mp hok.2
+              have hdisj : ∀ d ∈ ds, d ∉ ts := by
+                intro d hd hdt
+                have := hdisjAll d hdt
+                simp only [Bool.and_eq_true, Bool.not_eq_true] at this
+                have hnot : d ∉ ds := by simpa using this.1
+                exact hnot hd
+              have hfree : ∀ t ∈ ts, stmtsMentions t suffix = false := by
+                intro t ht
+                have := hdisjAll t ht
+                simp only [Bool.and_eq_true, Bool.not_eq_true] at this
+                simpa using this.2
+              simpa [List.append_assoc] using copyBackSite_equivBlock
+                (calls := calls) (creates := creates) (pre := pre)
+                (call := .call f args) hlen hnodup hdisj hfree
+            · simp at hafter
+        | lit _ => simp [copyBackHere] at h
+        | var _ => simp [copyBackHere] at h
+        | builtin _ _ => simp [copyBackHere] at h
+    | block _ => simp [copyBackHere] at h
+    | funDef _ _ _ _ => simp [copyBackHere] at h
+    | assign _ _ => simp [copyBackHere] at h
+    | cond _ _ => simp [copyBackHere] at h
+    | «switch» _ _ _ => simp [copyBackHere] at h
+    | forLoop _ _ _ _ => simp [copyBackHere] at h
+    | exprStmt _ => simp [copyBackHere] at h
+    | «break» => simp [copyBackHere] at h
+    | «continue» => simp [copyBackHere] at h
+    | «leave» => simp [copyBackHere] at h
+
+/-! ### Right-to-left call-argument staging -/
+
+private theorem zip_get_of_mem {names : List Ident} (hnd : names.Nodup) :
+    ∀ {vals : List U256}, vals.length = names.length →
+      ∀ {x v}, (x, v) ∈ names.zip vals →
+        VEnv.get (names.zip vals : VEnv D) x = some v := by
+  induction names with
+  | nil => simp
+  | cons n names ih =>
+      intro vals hlen x v hm
+      cases vals with
+      | nil => simp at hlen
+      | cons w vals =>
+        simp only [List.zip_cons_cons, List.mem_cons] at hm
+        rcases hm with h | hm
+        · injection h with hx hv
+          subst x
+          subst v
+          simp [VEnv.get]
+        · have hn : n ∉ names := (List.nodup_cons.mp hnd).1
+          have hnd' := (List.nodup_cons.mp hnd).2
+          have hlen' : vals.length = names.length := by simpa using hlen
+          have hxmem : x ∈ names := (List.of_mem_zip hm).1
+          have hnx : n ≠ x := fun heq => hn (heq ▸ hxmem)
+          change VEnv.get ((n, w) :: names.zip vals : VEnv D) x = some v
+          rw [VEnv.get_cons]
+          simp only [hnx, if_false]
+          exact ih hnd' hlen' hm
+
+private theorem varArgs_eval {names : List Ident} (hnd : names.Nodup) :
+    ∀ {vals : List U256}, vals.length = names.length →
+      ∀ (funs : FunEnv D) (V : VEnv D) (st : EvmState),
+      Step D funs (names.zip vals ++ V) st (.args (names.map Expr.var))
+        (.eres (.vals vals st)) := by
+  intro vals hlen funs V st
+  let W : VEnv D := names.zip vals ++ V
+  have hlookup : ∀ {x v}, (x, v) ∈ names.zip vals →
+      @VEnv.get D W x = some v := by
+    intro x v hm
+    have hx : x ∈ (names.zip vals).map Prod.fst :=
+      List.mem_map_of_mem hm
+    change @VEnv.get D (names.zip vals ++ V) x = some v
+    rw [VEnv.get_append_mem hx]
+    exact zip_get_of_mem hnd hlen hm
+  let rec go : ∀ (ns : List Ident) (vs : List U256),
+      ns.length = vs.length →
+      (∀ {x v}, (x, v) ∈ ns.zip vs →
+        @VEnv.get D W x = some v) →
+      Step D funs (names.zip vals ++ V) st (.args (ns.map Expr.var))
+        (.eres (.vals vs st))
+    | [], [], _, _ => Step.argsNil
+    | [], _ :: _, h, _ => by simp at h
+    | _ :: _, [], h, _ => by simp at h
+    | n :: ns, v :: vs, h, hl => by
+        rw [List.map_cons]
+        exact Step.argsCons
+          (go ns vs (by simpa using h)
+            (fun hm => hl (List.mem_cons_of_mem _ hm)))
+          (Step.var (hl (List.mem_cons_self ..)))
+  exact go names vals hlen.symm hlookup
+
+private theorem varArgs_inv {names : List Ident} (hnd : names.Nodup)
+    {vals : List U256} (hlen : vals.length = names.length)
+    {funs : FunEnv D} {V : VEnv D} {st : EvmState} {r : EResult D}
+    (h : Step D funs (names.zip vals ++ V) st (.args (names.map Expr.var))
+      (.eres r)) : r = .vals vals st := by
+  let W : VEnv D := names.zip vals ++ V
+  have hlookup : ∀ {x v}, (x, v) ∈ names.zip vals →
+      @VEnv.get D W x = some v := by
+    intro x v hm
+    have hx : x ∈ (names.zip vals).map Prod.fst := List.mem_map_of_mem hm
+    change @VEnv.get D (names.zip vals ++ V) x = some v
+    rw [VEnv.get_append_mem hx]
+    exact zip_get_of_mem hnd hlen hm
+  let rec go : ∀ (ns : List Ident) (vs : List U256),
+      ns.length = vs.length →
+      (∀ {x v}, (x, v) ∈ ns.zip vs →
+        @VEnv.get D W x = some v) →
+      ∀ {r : EResult D},
+      Step D funs (names.zip vals ++ V) st (.args (ns.map Expr.var)) (.eres r) →
+        r = .vals vs st
+    | [], [], _, _, _, h => by cases h; rfl
+    | [], _ :: _, hlen, _, _, _ => by simp at hlen
+    | _ :: _, [], hlen, _, _, _ => by simp at hlen
+    | n :: ns, v :: vs, hlen, hl, r, hstep => by
+        rw [List.map_cons] at hstep
+        cases hstep with
+        | argsCons htail hvar =>
+          have htailEq := go ns vs (by simpa using hlen)
+            (fun hm => hl (List.mem_cons_of_mem _ hm)) htail
+          injection htailEq with hout hstate
+          subst hout
+          subst hstate
+          cases hvar with
+          | var hv =>
+            have hv' : @VEnv.get D W n = some v :=
+              hl (x := n) (v := v) (by simp)
+            rw [hv'] at hv
+            injection hv with heq
+            subst heq
+            rfl
+        | argsRestHalt htail =>
+          have := go ns vs (by simpa using hlen)
+            (fun hm => hl (List.mem_cons_of_mem _ hm)) htail
+          contradiction
+        | argsHeadHalt htail hvar => cases hvar
+  exact go names vals hlen.symm hlookup h
+
+private theorem hoist_stageDecls (names : List Ident) (args : List (Expr Op)) :
+    hoist D (stageDecls names args) = [] := by
+  unfold stageDecls
+  induction names generalizing args with
+  | nil => simp [hoist]
+  | cons n names ih =>
+      cases args with
+      | nil => simp [hoist]
+      | cons a args =>
+        rw [List.zip_cons_cons, List.reverse_cons, List.map_append, hoist_append]
+        simp [hoist, ih]
+
+theorem stageCore_equiv_of (P : String) (xs : List Ident) (f : Ident)
+    (args : List (Expr Op))
+    (hnc : argsHaveCall args = false)
+    (hshadow : argsShadowOK [] ((callCarriers P args.length).zip args) = true)
+    (hnd : (callCarriers P args.length).Nodup)
+    (hdisj : ∀ x ∈ xs, x ∉ callCarriers P args.length) :
+    EquivStmt D (.assign xs (.call f args)) (stageCore P xs f args) := by
+  let names := callCarriers P args.length
+  have hnames : names.length = args.length := by
+    simp [names, callCarriers]
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    cases h with
+    | assignVal hcall hxs =>
+      cases hcall with
+      | callOk hargs hlookup harglen hbody hout =>
+        rename_i argvals stArgs decl cenv Vend stBody
+        have hvals : argvals.length = names.length :=
+          (args_length hargs).trans hnames.symm
+        have hlets := argLets_fwd (rs := []) hargs hnames hnc hshadow
+          (N := []) (by simp) ([] :: funs)
+        have hvargs := varArgs_eval (calls := calls) (creates := creates)
+          hnd hvals ([] :: funs) V stArgs
+        have hcall' := Step.callOk hvargs
+          (by simpa [lookupFun] using hlookup) harglen hbody hout
+        have hassign := Step.assignVal hcall' hxs
+        have hseq := stmts_append_normal hlets
+          (Step.seqCons hassign Step.seqNil)
+        have hb : Step D funs V st (.stmt (.block
+            (stageDecls names args ++
+              [.assign xs (.call f (names.map Expr.var))])))
+            (.sres (restore V (VEnv.setMany (names.zip argvals ++ V) xs
+              (decl.rets.map fun r => (VEnv.get Vend r).getD
+                (evmWithExternal calls creates).zero))) st' .normal) := by
+          apply Step.block
+          simpa [stageDecls, hoist] using hseq
+        have hm0 := zip_mins (calls := calls) (creates := creates) V hvals
+        have hmins := MIns.setMany
+          (decl.rets.map fun r => (VEnv.get Vend r).getD
+            (evmWithExternal calls creates).zero) hm0
+          (fun p hp => by
+            have hpname := tempIns_names hp
+            intro hx
+            exact hdisj p.2 hx hpname)
+        have herase := restore_mins_le (base := V) hmins
+          (fun p hp => tempIns_depth hp)
+        have hsmall : restore V (VEnv.setMany V xs
+            (decl.rets.map fun r => (VEnv.get Vend r).getD
+              (evmWithExternal calls creates).zero)) =
+            VEnv.setMany V xs (decl.rets.map fun r => (VEnv.get Vend r).getD
+              (evmWithExternal calls creates).zero) :=
+          restore_exact (W := V) (Y := [])
+            (W' := VEnv.setMany V xs
+              (decl.rets.map fun r => (VEnv.get Vend r).getD
+                (evmWithExternal calls creates).zero))
+            (VEnv.setMany_length _ _ _)
+        rw [herase, hsmall] at hb
+        simpa [stageCore, names] using hb
+    | assignHalt hcall =>
+      cases hcall with
+      | callHalt hargs hlookup harglen hbody =>
+        rename_i argvals stArgs decl cenv Vend
+        have hvals : argvals.length = names.length :=
+          (args_length hargs).trans hnames.symm
+        have hlets := argLets_fwd (rs := []) hargs hnames hnc hshadow
+          (N := []) (by simp) ([] :: funs)
+        have hvargs := varArgs_eval (calls := calls) (creates := creates)
+          hnd hvals ([] :: funs) V stArgs
+        have hcall' := Step.callHalt hvargs
+          (by simpa [lookupFun] using hlookup) harglen hbody
+        have hseq := stmts_append_normal hlets
+          (Step.seqStop (rest := [])
+            (Step.assignHalt (vars := xs) hcall') (by simp))
+        have hb : Step D funs V st (.stmt (.block
+            (stageDecls names args ++
+              [.assign xs (.call f (names.map Expr.var))])))
+            (.sres (restore V (names.zip argvals ++ V)) st' .halt) := by
+          apply Step.block
+          have hhoist : hoist D (stageDecls names args ++
+              [.assign xs (.call f (names.map Expr.var))]) = [] := by
+            rw [hoist_append, hoist_stageDecls]
+            simp [hoist]
+          rw [hhoist]
+          simpa [stageDecls] using hseq
+        have hm0 := zip_mins (calls := calls) (creates := creates) V hvals
+        have herase := restore_mins_le (base := V) hm0
+          (fun p hp => tempIns_depth hp)
+        have hself : restore V V = V := restore_exact (Y := []) rfl
+        rw [herase, hself] at hb
+        simpa [stageCore, names] using hb
+      | callArgsHalt hargs =>
+        obtain ⟨Pfx, hlets⟩ := argLets_halt_fwd (rs := []) hargs
+          hnames hnc hshadow (N := []) (by simp) ([] :: funs)
+        have hseq := stmts_append_early
+          (suf := [.assign xs (.call f (names.map Expr.var))]) hlets (by simp)
+        have hb : Step D funs V st (.stmt (.block
+            (stageDecls names args ++
+              [.assign xs (.call f (names.map Expr.var))])))
+            (.sres (restore V (Pfx ++ V)) st' .halt) := by
+          apply Step.block
+          have hhoist : hoist D (stageDecls names args ++
+              [.assign xs (.call f (names.map Expr.var))]) = [] := by
+            rw [hoist_append, hoist_stageDecls]
+            simp [hoist]
+          rw [hhoist]
+          simpa [stageDecls] using hseq
+        have herase : restore V (Pfx ++ V) = V := restore_exact rfl
+        rw [herase] at hb
+        simpa [stageCore, names] using hb
+  · intro h
+    change Step D funs V st (.stmt (.block
+      (stageDecls names args ++
+        [.assign xs (.call f (names.map Expr.var))]))) _ at h
+    cases h with
+    | block hb =>
+      have hhoist : hoist D (stageDecls names args ++
+          [.assign xs (.call f (names.map Expr.var))]) = [] := by
+        rw [hoist_append, hoist_stageDecls]
+        simp [hoist]
+      rw [hhoist] at hb
+      rcases stmts_append_fwd hb with
+        ⟨Vm, stm, hlets, hlast⟩ | ⟨hne, hlets⟩
+      · rcases argLets_bwd (rs := []) (funs₁ := funs) (N := []) hlets
+          hnames hnc hshadow (by simp) with
+          ⟨argvals, hVm, ho, hargs⟩ | ⟨Pfx, hVm, ho, hargs⟩
+        · subst Vm
+          cases hlast with
+          | seqCons hassign hnil =>
+            cases hnil
+            cases hassign with
+            | assignVal hcall hxs =>
+              cases hcall with
+              | callOk hvargs hlookup harglen hbody hout =>
+                rename_i callVals callSt decl cenv Vend bodyOut
+                have hinv := varArgs_inv (calls := calls) (creates := creates)
+                  hnd (args_length hargs |>.trans hnames.symm) hvargs
+                injection hinv with hvals hstate
+                subst hvals
+                subst hstate
+                have hcall0 := Step.callOk hargs
+                  (by simpa [lookupFun] using hlookup) harglen hbody hout
+                have hout0 := Step.assignVal hcall0 hxs
+                let retvals := decl.rets.map fun r =>
+                  (VEnv.get Vend r).getD (evmWithExternal calls creates).zero
+                have hm0 := zip_mins (calls := calls) (creates := creates) V
+                  (args_length hargs |>.trans hnames.symm)
+                have hmins := MIns.setMany retvals hm0 (fun p hp => by
+                  intro hx
+                  exact hdisj p.2 hx (tempIns_names hp))
+                have herase := restore_mins_le (base := V) hmins
+                  (fun p hp => tempIns_depth hp)
+                have hsmall : restore V (VEnv.setMany V xs retvals) =
+                    VEnv.setMany V xs retvals :=
+                  restore_exact (W := V) (Y := [])
+                    (VEnv.setMany_length _ _ _)
+                simp only [List.nil_append]
+                rw [herase, hsmall]
+                exact hout0
+          | seqStop hassign hne =>
+            cases hassign with
+            | assignVal _ _ => exact absurd rfl hne
+            | assignHalt hcall =>
+              cases hcall with
+              | callHalt hvargs hlookup harglen hbody =>
+                have hinv := varArgs_inv (calls := calls) (creates := creates)
+                  hnd (args_length hargs |>.trans hnames.symm) hvargs
+                injection hinv with hvals hstate
+                subst hvals
+                subst hstate
+                have hcall0 := Step.callHalt hargs
+                  (by simpa [lookupFun] using hlookup) harglen hbody
+                have hm0 := zip_mins (calls := calls) (creates := creates) V
+                  (args_length hargs |>.trans hnames.symm)
+                have herase := restore_mins_le (base := V) hm0
+                  (fun p hp => tempIns_depth hp)
+                have hself : restore V V = V := restore_exact (Y := []) rfl
+                simp only [List.nil_append]
+                rw [herase, hself]
+                exact Step.assignHalt hcall0
+              | callArgsHalt hvargs =>
+                have hinv := varArgs_inv (calls := calls) (creates := creates)
+                  hnd (args_length hargs |>.trans hnames.symm) hvargs
+                contradiction
+        · exact absurd ho (by simp)
+      · rcases argLets_bwd (rs := []) (funs₁ := funs) (N := []) hlets
+          hnames hnc hshadow (by simp) with
+          ⟨argvals, hVm, ho, hargs⟩ | ⟨Pfx, hVm, ho, hargs⟩
+        · exact absurd ho hne
+        · rw [hVm]
+          rw [ho]
+          have herase : restore V (Pfx ++ V) = V := restore_exact rfl
+          rw [show Pfx ++ ([] ++ V) = Pfx ++ V by simp, herase]
+          exact Step.assignHalt (vars := xs)
+            (Step.callArgsHalt (fn := f) hargs)
+
+theorem stageWanted_equiv {P : String} {Phi : FMap} {layout xs : List Ident}
+    {f : Ident} {args : List (Expr Op)}
+    (h : stageWanted Phi layout xs f args (callCarriers P args.length) = true) :
+    EquivStmt D (.assign xs (.call f args)) (stageCore P xs f args) := by
+  unfold stageWanted at h
+  rw [Bool.and_eq_true] at h
+  obtain ⟨hprev, hxs⟩ := h
+  rw [Bool.and_eq_true] at hprev
+  obtain ⟨hprev, hnd⟩ := hprev
+  rw [Bool.and_eq_true] at hprev
+  obtain ⟨hprev, hshadow⟩ := hprev
+  rw [Bool.and_eq_true] at hprev
+  obtain ⟨_, hnc⟩ := hprev
+  have hnc' : argsHaveCall args = false := by simpa using hnc
+  have hshadow' : argsShadowOK []
+      ((callCarriers P args.length).zip args) = true := hshadow
+  have hnd' : (callCarriers P args.length).Nodup := by simpa using hnd
+  have hdisj : ∀ x ∈ xs, x ∉ callCarriers P args.length := by
+    intro x hx
+    have hx' := List.all_eq_true.mp hxs x hx
+    simpa using hx'
+  exact stageCore_equiv_of P xs f args hnc' hshadow' hnd' hdisj
 /-- `x` is the first `x` binding in `V`, at depth `d` from the bottom. -/
 def LocalAt (d : Nat) (x : Ident) (V : VEnv D) : Prop :=
   ∃ above below value,
@@ -2232,6 +2898,307 @@ theorem replaceStmt_equivBlock {s s' : Stmt Op} {rest : Block Op}
     (scopeRel_append' hscope (ScopeRel.refl _))
 
 mutual
+  theorem stageOneStmt_sound : ∀ (P : String) (Phi : FMap)
+      (layout : List Ident) (s s' : Stmt Op),
+      stageOneStmt P Phi layout s = some s' →
+      EquivStmt D s s' ∧ ScopeRel D (hoist D [s]) (hoist D [s'])
+    | P, Phi, layout, .assign xs (.call f args), s', h => by
+        unfold stageOneStmt at h
+        dsimp only at h
+        split at h
+        · next hw =>
+          cases h
+          exact ⟨stageWanted_equiv (calls := calls) (creates := creates) hw,
+            ScopeRel.refl _⟩
+        · simp at h
+    | _, _, _, .assign _ (.lit _), _, h => by simp [stageOneStmt] at h
+    | _, _, _, .assign _ (.var _), _, h => by simp [stageOneStmt] at h
+    | _, _, _, .assign _ (.builtin _ _), _, h => by simp [stageOneStmt] at h
+    | P, Phi, layout, .block body, s', h => by
+        simp only [stageOneStmt] at h
+        obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+        subst s'
+        exact ⟨stageOneStmts_sound P Phi layout body _ hb [], ScopeRel.refl _⟩
+    | P, Phi, layout, .funDef f ps rs body, s', h => by
+        simp only [stageOneStmt] at h
+        obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+        subst s'
+        have heq := stageOneStmts_sound P Phi (ps ++ rs) body _ hb []
+        refine ⟨funDef_equiv f ps rs body body', ?_⟩
+        exact .cons ⟨rfl, rfl, rfl, heq⟩ .nil
+    | P, Phi, layout, .cond c body, s', h => by
+        simp only [stageOneStmt] at h
+        obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+        subst s'
+        exact ⟨EquivStmt.cond_congr (fun _ _ _ _ => Iff.rfl)
+          (stageOneStmts_sound P Phi layout body _ hb []), ScopeRel.refl _⟩
+    | P, Phi, layout, .switch c cases dflt, s', h => by
+        unfold stageOneStmt at h
+        cases hc : stageOneCases P Phi layout cases with
+        | some cases' =>
+          simp only [hc] at h
+          cases h
+          exact ⟨EquivStmt.switch_congr (fun _ _ _ _ => Iff.rfl)
+            (stageOneCases_sound P Phi layout cases _ hc) (EquivBlock.refl _),
+            ScopeRel.refl _⟩
+        | none =>
+          simp only [hc] at h
+          cases dflt with
+          | none => simp at h
+          | some body =>
+            obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+            subst s'
+            exact ⟨EquivStmt.switch_congr (fun _ _ _ _ => Iff.rfl)
+              (forall₂_refl_cases cases)
+              (stageOneStmts_sound P Phi layout body _ hb []), ScopeRel.refl _⟩
+    | P, Phi, layout, .forLoop init c post body, s', h => by
+        unfold stageOneStmt at h
+        let Phi' : FMap := (hoistInfos 0 init).1 :: Phi
+        let loopLayout := layoutAfter layout init
+        change (match stageOneStmts P Phi' loopLayout post with
+          | some post' => some (.forLoop init c post' body)
+          | none => (.forLoop init c post ·) <$>
+              stageOneStmts P Phi' loopLayout body) = some s' at h
+        cases hp : stageOneStmts P Phi' loopLayout post with
+        | some post' =>
+          simp only [hp] at h
+          cases h
+          exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
+            (stageOneStmts_sound P Phi' loopLayout post _ hp [])
+            (EquivBlock.refl _), ScopeRel.refl _⟩
+        | none =>
+          simp only [hp] at h
+          obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+          subst s'
+          exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
+            (EquivBlock.refl _)
+            (stageOneStmts_sound P Phi' loopLayout body _ hb []),
+            ScopeRel.refl _⟩
+    | _, _, _, .letDecl _ _, _, h => by simp [stageOneStmt] at h
+    | _, _, _, .exprStmt _, _, h => by simp [stageOneStmt] at h
+    | _, _, _, .break, _, h => by simp [stageOneStmt] at h
+    | _, _, _, .continue, _, h => by simp [stageOneStmt] at h
+    | _, _, _, .leave, _, h => by simp [stageOneStmt] at h
+    termination_by P Phi layout s s' _h => 2 * sizeOf s
+
+  theorem stageOneStmts_sound : ∀ (P : String) (Phi : FMap)
+      (layout : List Ident) (ss ss' : Block Op),
+      stageOneStmts P Phi layout ss = some ss' →
+      ∀ pre : Block Op, EquivBlock D (pre ++ ss) (pre ++ ss')
+    | _, _, _, [], _, h => by simp [stageOneStmts] at h
+    | P, Phi, layout, s :: rest, ss', h => by
+        unfold stageOneStmts at h
+        cases hs : stageOneStmt P Phi layout s with
+        | some s' =>
+          simp only [hs] at h
+          cases h
+          intro pre
+          obtain ⟨heq, hscope⟩ := stageOneStmt_sound P Phi layout s s' hs
+          exact replaceStmt_equivBlock heq hscope pre
+        | none =>
+          simp only [hs] at h
+          let layout' := match s with
+            | .letDecl xs _ => xs ++ layout
+            | _ => layout
+          obtain ⟨rest', hr, htarget⟩ := Option.map_eq_some_iff.mp h
+          subst ss'
+          intro pre
+          have heq := stageOneStmts_sound P Phi layout' rest rest' hr (pre ++ [s])
+          simpa only [List.append_assoc, List.cons_append, List.nil_append]
+            using heq
+    termination_by P Phi layout ss ss' _h => 2 * sizeOf ss + 1
+
+  theorem stageOneCases_sound : ∀ (P : String) (Phi : FMap)
+      (layout : List Ident) (cases cases' : List (Literal × Block Op)),
+      stageOneCases P Phi layout cases = some cases' →
+      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cases cases'
+    | _, _, _, [], _, h => by simp [stageOneCases] at h
+    | P, Phi, layout, (l, body) :: rest, cases', h => by
+        unfold stageOneCases at h
+        split at h
+        · next body' hb =>
+          cases h
+          exact .cons ⟨rfl, stageOneStmts_sound P Phi layout body _ hb []⟩
+            (forall₂_refl_cases rest)
+        · obtain ⟨rest', hr, hs'⟩ := Option.map_eq_some_iff.mp h
+          subst cases'
+          exact .cons ⟨rfl, EquivBlock.refl _⟩
+            (stageOneCases_sound P Phi layout rest _ hr)
+    termination_by P Phi layout cases cases' _h => 2 * sizeOf cases + 1
+  decreasing_by
+    all_goals simp_wf
+    all_goals omega
+end
+
+theorem stageOneStmts_equiv {P : String} {Phi : FMap} {b b' : Block Op}
+    (h : stageOneStmts P Phi [] b = some b') : EquivBlock D b b' := by
+  simpa using stageOneStmts_sound P Phi [] b b' h []
+
+theorem iterateStageWith_equiv (n : Nat) (P : String) (Phi : FMap)
+    (b : Block Op) : EquivBlock D b (iterateStageWith n P Phi b) := by
+  induction n generalizing b with
+  | zero => exact EquivBlock.refl _
+  | succ n ih =>
+      rw [iterateStageWith]
+      cases h : stageOneStmts P Phi [] b with
+      | none => exact EquivBlock.refl _
+      | some b' => exact (stageOneStmts_equiv h).trans (ih b')
+
+theorem iterateStageCalls_equiv (n : Nat) (P : String) (b : Block Op) :
+    EquivBlock D b (iterateStageCalls n P b) := by
+  unfold iterateStageCalls
+  exact iterateStageWith_equiv n P [(hoistInfos 0 b).1] b
+
+theorem stageCallsBlock_equiv (b : Block Op) :
+    EquivBlock D b (stageCallsBlock b) := by
+  unfold stageCallsBlock
+  split
+  · exact iterateStageCalls_equiv 16384 _ b
+  · exact EquivBlock.refl _
+
+mutual
+  theorem copyOneStmt_sound : ∀ (layout : List Ident) (s s' : Stmt Op),
+      copyOneStmt layout s = some s' →
+      EquivStmt D s s' ∧ ScopeRel D (hoist D [s]) (hoist D [s'])
+    | layout, .block body, s', h => by
+        simp only [copyOneStmt] at h
+        obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+        subst s'
+        exact ⟨copyOneStmts_sound layout body _ hb [], ScopeRel.refl _⟩
+    | layout, .funDef f ps rs body, s', h => by
+        simp only [copyOneStmt] at h
+        obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+        subst s'
+        have heq := copyOneStmts_sound (ps ++ rs) body _ hb []
+        refine ⟨funDef_equiv f ps rs body body', ?_⟩
+        exact .cons ⟨rfl, rfl, rfl, heq⟩ .nil
+    | layout, .cond c body, s', h => by
+        simp only [copyOneStmt] at h
+        obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+        subst s'
+        exact ⟨EquivStmt.cond_congr (fun _ _ _ _ => Iff.rfl)
+          (copyOneStmts_sound layout body _ hb []), ScopeRel.refl _⟩
+    | layout, .switch c cases dflt, s', h => by
+        unfold copyOneStmt at h
+        cases hc : copyOneCases layout cases with
+        | some cases' =>
+          simp only [hc] at h
+          cases h
+          exact ⟨EquivStmt.switch_congr (fun _ _ _ _ => Iff.rfl)
+            (copyOneCases_sound layout cases _ hc) (EquivBlock.refl _),
+            ScopeRel.refl _⟩
+        | none =>
+          simp only [hc] at h
+          cases dflt with
+          | none => simp at h
+          | some body =>
+            obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+            subst s'
+            exact ⟨EquivStmt.switch_congr (fun _ _ _ _ => Iff.rfl)
+              (forall₂_refl_cases cases)
+              (copyOneStmts_sound layout body _ hb []), ScopeRel.refl _⟩
+    | layout, .forLoop init c post body, s', h => by
+        unfold copyOneStmt at h
+        change (match copyOneStmts (layoutAfter layout init) post with
+          | some post' => some (.forLoop init c post' body)
+          | none => (.forLoop init c post ·) <$>
+              copyOneStmts (layoutAfter layout init) body) = some s' at h
+        cases hp : copyOneStmts (layoutAfter layout init) post with
+        | some post' =>
+          simp only [hp] at h
+          cases h
+          exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
+            (copyOneStmts_sound (layoutAfter layout init) post _ hp [])
+            (EquivBlock.refl _),
+            ScopeRel.refl _⟩
+        | none =>
+          simp only [hp] at h
+          obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+          subst s'
+          exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
+            (EquivBlock.refl _)
+            (copyOneStmts_sound (layoutAfter layout init) body _ hb []),
+            ScopeRel.refl _⟩
+    | _, .letDecl _ _, _, h => by simp [copyOneStmt] at h
+    | _, .assign _ _, _, h => by simp [copyOneStmt] at h
+    | _, .exprStmt _, _, h => by simp [copyOneStmt] at h
+    | _, .break, _, h => by simp [copyOneStmt] at h
+    | _, .continue, _, h => by simp [copyOneStmt] at h
+    | _, .leave, _, h => by simp [copyOneStmt] at h
+    termination_by layout s s' _h => 2 * sizeOf s
+
+  theorem copyOneStmts_sound : ∀ (layout : List Ident) (ss ss' : Block Op),
+      copyOneStmts layout ss = some ss' →
+      ∀ pre : Block Op, EquivBlock D (pre ++ ss) (pre ++ ss')
+    | layout, ss, ss', h => by
+        unfold copyOneStmts at h
+        cases ht : copyBackHere layout ss with
+        | some target =>
+          simp only [ht] at h
+          cases h
+          exact copyBackHere_sound (calls := calls) (creates := creates) ht
+        | none =>
+          simp only [ht] at h
+          cases ss with
+          | nil => simp at h
+          | cons s rest =>
+            cases hs : copyOneStmt layout s with
+            | some s' =>
+              simp only [hs] at h
+              cases h
+              intro pre
+              obtain ⟨heq, hscope⟩ := copyOneStmt_sound layout s s' hs
+              exact replaceStmt_equivBlock heq hscope pre
+            | none =>
+              simp only [hs] at h
+              let layout' := match s with
+                | .letDecl xs _ => xs ++ layout
+                | _ => layout
+              obtain ⟨rest', hr, htarget⟩ := Option.map_eq_some_iff.mp h
+              subst ss'
+              intro pre
+              have heq := copyOneStmts_sound layout' rest rest' hr (pre ++ [s])
+              simpa only [List.append_assoc, List.cons_append, List.nil_append]
+                using heq
+    termination_by layout ss ss' _h => 2 * sizeOf ss + 1
+
+  theorem copyOneCases_sound : ∀ (layout : List Ident)
+      (cases cases' : List (Literal × Block Op)),
+      copyOneCases layout cases = some cases' →
+      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cases cases'
+    | _, [], _, h => by simp [copyOneCases] at h
+    | layout, (l, body) :: rest, cases', h => by
+        unfold copyOneCases at h
+        split at h
+        · next body' hb =>
+          cases h
+          exact .cons ⟨rfl, copyOneStmts_sound layout body _ hb []⟩
+            (forall₂_refl_cases rest)
+        · obtain ⟨rest', hr, hs'⟩ := Option.map_eq_some_iff.mp h
+          subst cases'
+          exact .cons ⟨rfl, EquivBlock.refl _⟩
+            (copyOneCases_sound layout rest _ hr)
+    termination_by layout cases cases' _h => 2 * sizeOf cases + 1
+  decreasing_by
+    all_goals simp_wf
+    all_goals omega
+end
+
+theorem copyOneStmts_equiv {b b' : Block Op}
+    (h : copyOneStmts [] b = some b') : EquivBlock D b b' := by
+  simpa using copyOneStmts_sound [] b b' h []
+
+theorem iterateCopyBack_equiv (n : Nat) (b : Block Op) :
+    EquivBlock D b (iterateCopyBack n b) := by
+  induction n generalizing b with
+  | zero => exact EquivBlock.refl _
+  | succ n ih =>
+      rw [iterateCopyBack]
+      cases h : copyOneStmts [] b with
+      | none => exact EquivBlock.refl _
+      | some b' => exact (copyOneStmts_equiv h).trans (ih b')
+
+mutual
   theorem reuseOneStmt_sound : ∀ (layout : List Ident) (s s' : Stmt Op),
       reuseOneStmt layout s = some s' →
       EquivStmt D s s' ∧ ScopeRel D (hoist D [s]) (hoist D [s'])
@@ -3546,13 +4513,2748 @@ theorem iterateTailScope_equiv (n : Nat) (b : Block Op) :
       | none => exact EquivBlock.refl _
       | some b' => exact (scopeOneStmts_equiv h).trans (ih b')
 
-/-- The verified expression-scheduling and liveness-guided stack-layout pass. -/
-def stackLayout : Pass D where
-  run := stackLayoutBlock
-  sound := fun b => (scheduleBlock_equiv b).trans
+namespace StackV2Sound
+
+open BoundFun
+
+private theorem forwardAliasStmt_hoist (source copy : Ident) (s : Stmt Op) :
+    hoist D [(StackV2.forwardAliasStmt source copy s).1] = hoist D [s] := by
+  cases s <;> simp [StackV2.forwardAliasStmt, hoist]
+
+private theorem forwardAliasStmts_hoist (source copy : Ident) :
+    ∀ body : Block Op,
+      hoist D (StackV2.forwardAliasStmts source copy body).1 = hoist D body
+  | [] => by simp [StackV2.forwardAliasStmts, hoist]
+  | s :: rest => by
+      rw [StackV2.forwardAliasStmts]
+      generalize hr : StackV2.forwardAliasStmt source copy s = r
+      obtain ⟨s', keep, changed⟩ := r
+      dsimp only
+      have hh := forwardAliasStmt_hoist
+        (calls := calls) (creates := creates) source copy s
+      rw [hr] at hh
+      change hoist D [s'] = hoist D [s] at hh
+      cases keep with
+      | false =>
+          simp only [Bool.false_eq_true, if_false]
+          rw [show s' :: rest = [s'] ++ rest by rfl,
+            show s :: rest = [s] ++ rest by rfl,
+            hoist_append, hoist_append, hh]
+      | true =>
+          simp only [if_true]
+          rw [show s' :: (StackV2.forwardAliasStmts source copy rest).1 =
+                [s'] ++ (StackV2.forwardAliasStmts source copy rest).1 by rfl,
+            show s :: rest = [s] ++ rest by rfl,
+            hoist_append, hoist_append, hh, forwardAliasStmts_hoist]
+
+private theorem selectSwitch_size_lt (c : Expr Op)
+    (cases : List (Literal × Block Op)) (dflt : Option (Block Op)) (cv : U256) :
+    sizeOf (selectSwitch D cv cases dflt) <
+      sizeOf c + sizeOf cases + sizeOf dflt := by
+  unfold selectSwitch
+  cases hfind : cases.find? (fun p =>
+      decide (cv = (evmWithExternal calls creates).litValue p.1)) with
+  | some p =>
+      simp only
+      have hm : p ∈ cases := List.mem_of_find?_eq_some hfind
+      have hp := List.sizeOf_lt_of_mem hm
+      rcases p with ⟨l, body⟩
+      change sizeOf body < sizeOf c + sizeOf cases + sizeOf dflt
+      have hb : sizeOf body < sizeOf (l, body) := by simp_wf
+      have hc : 0 < sizeOf c := by cases c <;> simp
+      have hbc := Nat.lt_trans hb hp
+      omega
+  | none =>
+      simp only
+      have hc : 0 < sizeOf c := by cases c <;> simp
+      cases dflt with
+      | none =>
+          change 1 < sizeOf c + sizeOf cases + 1
+          omega
+      | some body =>
+          change sizeOf body < sizeOf c + sizeOf cases + (1 + sizeOf body)
+          omega
+
+private theorem forwardAliasStmt_keep_inv (source copy : Ident) :
+    ∀ s : Stmt Op, (StackV2.forwardAliasStmt source copy s).2.1 = true →
+      StackV2.aliasSelfAssign copy s = true ∨
+        (source ∉ writeSetStmt s ∧ copy ∉ writeSetStmt s)
+  | .block body, h => by
+      simp only [StackV2.forwardAliasStmt, Bool.and_eq_true,
+        Bool.not_eq_true, decide_eq_false_iff_not, List.contains_eq_mem,
+        writeSetStmt] at h
+      right
+      change source ∉ writeSetStmts body ∧ copy ∉ writeSetStmts body
+      exact ⟨by simpa using h.1, by simpa using h.2⟩
+  | .funDef _ _ _ _, _ => by simp [StackV2.aliasSelfAssign, writeSetStmt]
+  | .letDecl xs val, h => by
+      simp only [StackV2.forwardAliasStmt, Bool.and_eq_true,
+        Bool.not_eq_true, decide_eq_false_iff_not, List.contains_eq_mem,
+        writeSetStmt] at h
+      right
+      change source ∉ xs ∧ copy ∉ xs
+      exact ⟨by simpa using h.1, by simpa using h.2⟩
+  | .assign xs e, h => by
+      simp only [StackV2.forwardAliasStmt, Bool.or_eq_true,
+        Bool.and_eq_true, Bool.not_eq_true, decide_eq_false_iff_not,
+        List.contains_eq_mem, writeSetStmt] at h
+      rcases h with hself | hfree
+      · exact .inl hself
+      · right
+        change source ∉ xs ∧ copy ∉ xs
+        exact ⟨by simpa using hfree.1, by simpa using hfree.2⟩
+  | .cond c body, h => by
+      simp only [StackV2.forwardAliasStmt, Bool.and_eq_true,
+        Bool.not_eq_true, decide_eq_false_iff_not, List.contains_eq_mem,
+        writeSetStmt] at h
+      right
+      change source ∉ writeSetStmts body ∧ copy ∉ writeSetStmts body
+      exact ⟨by simpa using h.1, by simpa using h.2⟩
+  | .switch _ _ _, h => by simp [StackV2.forwardAliasStmt] at h
+  | .forLoop _ _ _ _, h => by simp [StackV2.forwardAliasStmt] at h
+  | .exprStmt _, _ => by simp [StackV2.aliasSelfAssign, writeSetStmt]
+  | .break, _ => by simp [StackV2.aliasSelfAssign, writeSetStmt]
+  | .continue, _ => by simp [StackV2.aliasSelfAssign, writeSetStmt]
+  | .leave, _ => by simp [StackV2.aliasSelfAssign, writeSetStmt]
+
+private theorem aliasSelfAssign_inv {copy : Ident} {s : Stmt Op}
+    (h : StackV2.aliasSelfAssign copy s = true) :
+    s = .assign [copy] (.var copy) := by
+  cases s with
+  | assign xs e =>
+      cases xs with
+      | nil => simp [StackV2.aliasSelfAssign] at h
+      | cons x xs =>
+          cases xs with
+          | nil =>
+              cases e <;> simp [StackV2.aliasSelfAssign] at h
+              case var => rcases h with ⟨rfl, rfl⟩; rfl
+          | cons y ys => simp [StackV2.aliasSelfAssign] at h
+  | _ => simp [StackV2.aliasSelfAssign] at h
+
+private theorem aliasSelfAssign_preserves {source copy : Ident}
+    {funs : FunEnv D} {V V' : VEnv D} {st st' : EvmState}
+    (hne : source ≠ copy)
+    (heq : VEnv.get V source = VEnv.get V copy)
+    (h : ExecStmt D funs V st (.assign [copy] (.var copy)) V' st' .normal) :
+    VEnv.get V' source = VEnv.get V' copy := by
+  cases h with
+  | assignVal he hlen =>
+      cases he with
+      | var hget =>
+          simp only at hlen
+          rw [VEnv.setMany_singleton, VEnv.set_self hget]
+          exact heq
+
+private theorem forwardAliasStmt_preserves {source copy : Ident}
+    {s : Stmt Op} {funs : FunEnv D} {V V' : VEnv D} {st st' : EvmState}
+    (hne : source ≠ copy)
+    (heq : VEnv.get V source = VEnv.get V copy)
+    (hkeep : (StackV2.forwardAliasStmt source copy s).2.1 = true)
+    (h : ExecStmt D funs V st s V' st' .normal) :
+    VEnv.get V' source = VEnv.get V' copy := by
+  rcases forwardAliasStmt_keep_inv source copy s hkeep with hself | hfree
+  · have hs := aliasSelfAssign_inv hself
+    subst s
+    exact aliasSelfAssign_preserves hne heq h
+  · have hf := YulEvmCompiler.Optimizer.Step.env_frame h rfl
+    have hs := hf.get_eq hfree.1
+    have hc := hf.get_eq hfree.2
+    simp only [codeWriteSet] at hs hc
+    rw [hs, hc]
+    exact heq
+
+mutual
+  theorem useAliasExpr_equivAt {source copy : Ident} {V : VEnv D}
+      (heq : VEnv.get V source = VEnv.get V copy) :
+      ∀ e funs st r,
+        EvalExpr D funs V st e r ↔
+          EvalExpr D funs V st (StackV2.useAliasExpr source copy e) r
+    | .lit l, funs, st, r => by
+        constructor <;> intro h <;> cases h <;> exact Step.lit
+    | .var x, funs, st, r => by
+        by_cases hx : x = source
+        · subst x
+          simp only [StackV2.useAliasExpr, if_pos]
+          constructor <;> intro h <;> cases h with
+          | var hget => exact Step.var (by simpa [heq] using hget)
+        · simp only [StackV2.useAliasExpr, if_neg hx]
+    | .builtin op args, funs, st, r => by
+        simp only [StackV2.useAliasExpr]
+        constructor
+        · intro h
+          cases h with
+          | builtinOk hargs hop =>
+              exact Step.builtinOk
+                ((useAliasArgs_equivAt heq args funs st _).mp hargs) hop
+          | builtinHalt hargs hop =>
+              exact Step.builtinHalt
+                ((useAliasArgs_equivAt heq args funs st _).mp hargs) hop
+          | builtinArgsHalt hargs =>
+              exact Step.builtinArgsHalt
+                ((useAliasArgs_equivAt heq args funs st _).mp hargs)
+        · intro h
+          cases h with
+          | builtinOk hargs hop =>
+              exact Step.builtinOk
+                ((useAliasArgs_equivAt heq args funs st _).mpr hargs) hop
+          | builtinHalt hargs hop =>
+              exact Step.builtinHalt
+                ((useAliasArgs_equivAt heq args funs st _).mpr hargs) hop
+          | builtinArgsHalt hargs =>
+              exact Step.builtinArgsHalt
+                ((useAliasArgs_equivAt heq args funs st _).mpr hargs)
+    | .call fn args, funs, st, r => by
+        simp only [StackV2.useAliasExpr]
+        constructor
+        · intro h
+          cases h with
+          | callOk hargs hl hlen hbody ho =>
+              exact Step.callOk
+                ((useAliasArgs_equivAt heq args funs st _).mp hargs)
+                hl hlen hbody ho
+          | callHalt hargs hl hlen hbody =>
+              exact Step.callHalt
+                ((useAliasArgs_equivAt heq args funs st _).mp hargs)
+                hl hlen hbody
+          | callArgsHalt hargs =>
+              exact Step.callArgsHalt
+                ((useAliasArgs_equivAt heq args funs st _).mp hargs)
+        · intro h
+          cases h with
+          | callOk hargs hl hlen hbody ho =>
+              exact Step.callOk
+                ((useAliasArgs_equivAt heq args funs st _).mpr hargs)
+                hl hlen hbody ho
+          | callHalt hargs hl hlen hbody =>
+              exact Step.callHalt
+                ((useAliasArgs_equivAt heq args funs st _).mpr hargs)
+                hl hlen hbody
+          | callArgsHalt hargs =>
+              exact Step.callArgsHalt
+                ((useAliasArgs_equivAt heq args funs st _).mpr hargs)
+
+  theorem useAliasArgs_equivAt {source copy : Ident} {V : VEnv D}
+      (heq : VEnv.get V source = VEnv.get V copy) :
+      ∀ args funs st r,
+        EvalArgs D funs V st args r ↔
+          EvalArgs D funs V st (StackV2.useAliasArgs source copy args) r
+    | [], funs, st, r => by
+        constructor <;> intro h <;> cases h <;> exact Step.argsNil
+    | e :: rest, funs, st, r => by
+        simp only [StackV2.useAliasArgs]
+        constructor
+        · intro h
+          cases h with
+          | argsCons hrest he =>
+              exact Step.argsCons
+                ((useAliasArgs_equivAt heq rest funs st _).mp hrest)
+                ((useAliasExpr_equivAt heq e funs _ _).mp he)
+          | argsRestHalt hrest =>
+              exact Step.argsRestHalt
+                ((useAliasArgs_equivAt heq rest funs st _).mp hrest)
+          | argsHeadHalt hrest he =>
+              exact Step.argsHeadHalt
+                ((useAliasArgs_equivAt heq rest funs st _).mp hrest)
+                ((useAliasExpr_equivAt heq e funs _ _).mp he)
+        · intro h
+          cases h with
+          | argsCons hrest he =>
+              exact Step.argsCons
+                ((useAliasArgs_equivAt heq rest funs st _).mpr hrest)
+                ((useAliasExpr_equivAt heq e funs _ _).mpr he)
+          | argsRestHalt hrest =>
+              exact Step.argsRestHalt
+                ((useAliasArgs_equivAt heq rest funs st _).mpr hrest)
+          | argsHeadHalt hrest he =>
+              exact Step.argsHeadHalt
+                ((useAliasArgs_equivAt heq rest funs st _).mpr hrest)
+                ((useAliasExpr_equivAt heq e funs _ _).mpr he)
+end
+
+mutual
+  private theorem forwardAliasStmt_equivAt {source copy : Ident} {V : VEnv D}
+      (hne : source ≠ copy) (heq : VEnv.get V source = VEnv.get V copy) :
+      ∀ (s : Stmt Op) funs st V' st' o,
+        ExecStmt D funs V st s V' st' o ↔
+          ExecStmt D funs V st (StackV2.forwardAliasStmt source copy s).1
+            V' st' o
+    | .block body, funs, st, V', st', o => by
+        simp only [StackV2.forwardAliasStmt]
+        have hh := forwardAliasStmts_hoist
+          (calls := calls) (creates := creates) source copy body
+        constructor
+        · intro h
+          cases h with
+          | block hb =>
+              apply Step.block
+              rw [hh]
+              exact (forwardAliasStmts_equivAt hne heq body _ _ _ _ _).mp hb
+        · intro h
+          cases h with
+          | block hb =>
+              apply Step.block
+              rw [hh] at hb
+              exact (forwardAliasStmts_equivAt hne heq body _ _ _ _ _).mpr hb
+    | .funDef f ps rs body, funs, st, V', st', o => by
+        simp only [StackV2.forwardAliasStmt]
+    | .letDecl xs none, funs, st, V', st', o => by
+        simp only [StackV2.forwardAliasStmt, Option.map]
+    | .letDecl xs (some e), funs, st, V', st', o => by
+        simp only [StackV2.forwardAliasStmt, Option.map]
+        constructor
+        · intro h
+          cases h with
+          | letVal he hlen =>
+              exact Step.letVal
+                ((useAliasExpr_equivAt heq e funs st _).mp he) hlen
+          | letHalt he =>
+              exact Step.letHalt
+                ((useAliasExpr_equivAt heq e funs st _).mp he)
+        · intro h
+          cases h with
+          | letVal he hlen =>
+              exact Step.letVal
+                ((useAliasExpr_equivAt heq e funs st _).mpr he) hlen
+          | letHalt he =>
+              exact Step.letHalt
+                ((useAliasExpr_equivAt heq e funs st _).mpr he)
+    | .assign xs e, funs, st, V', st', o => by
+        simp only [StackV2.forwardAliasStmt]
+        constructor
+        · intro h
+          cases h with
+          | assignVal he hlen =>
+              exact Step.assignVal
+                ((useAliasExpr_equivAt heq e funs st _).mp he) hlen
+          | assignHalt he =>
+              exact Step.assignHalt
+                ((useAliasExpr_equivAt heq e funs st _).mp he)
+        · intro h
+          cases h with
+          | assignVal he hlen =>
+              exact Step.assignVal
+                ((useAliasExpr_equivAt heq e funs st _).mpr he) hlen
+          | assignHalt he =>
+              exact Step.assignHalt
+                ((useAliasExpr_equivAt heq e funs st _).mpr he)
+    | .cond c body, funs, st, V', st', o => by
+        simp only [StackV2.forwardAliasStmt]
+        have hh := forwardAliasStmts_hoist
+          (calls := calls) (creates := creates) source copy body
+        constructor
+        · intro h
+          cases h with
+          | @ifTrue _ _ _ _ _ _ st1 _ _ _ hc hn hbody =>
+              have hbody' : ExecStmt D funs V st1
+                  (.block (StackV2.forwardAliasStmts source copy body).1)
+                  V' st' o := by
+                cases hbody with
+                | block hb =>
+                    apply Step.block
+                    rw [hh]
+                    exact (forwardAliasStmts_equivAt hne heq body _ _ _ _ _).mp hb
+              exact Step.ifTrue
+                ((useAliasExpr_equivAt heq c funs st _).mp hc) hn
+                hbody'
+          | ifFalse hc hz =>
+              exact Step.ifFalse
+                ((useAliasExpr_equivAt heq c funs st _).mp hc) hz
+          | ifHalt hc =>
+              exact Step.ifHalt
+                ((useAliasExpr_equivAt heq c funs st _).mp hc)
+        · intro h
+          cases h with
+          | @ifTrue _ _ _ _ _ _ st1 _ _ _ hc hn hbody =>
+              have hbody' : ExecStmt D funs V st1 (.block body) V' st' o := by
+                cases hbody with
+                | block hb =>
+                    apply Step.block
+                    rw [hh] at hb
+                    exact (forwardAliasStmts_equivAt hne heq body _ _ _ _ _).mpr hb
+              exact Step.ifTrue
+                ((useAliasExpr_equivAt heq c funs st _).mpr hc) hn
+                hbody'
+          | ifFalse hc hz =>
+              exact Step.ifFalse
+                ((useAliasExpr_equivAt heq c funs st _).mpr hc) hz
+          | ifHalt hc =>
+              exact Step.ifHalt
+                ((useAliasExpr_equivAt heq c funs st _).mpr hc)
+    | .switch c cases dflt, funs, st, V', st', o => by
+        simp only [StackV2.forwardAliasStmt]
+    | .forLoop init c post body, funs, st, V', st', o => by
+        simp only [StackV2.forwardAliasStmt]
+    | .exprStmt e, funs, st, V', st', o => by
+        simp only [StackV2.forwardAliasStmt]
+        constructor
+        · intro h
+          cases h with
+          | exprStmt he =>
+              exact Step.exprStmt
+                ((useAliasExpr_equivAt heq e funs st _).mp he)
+          | exprStmtHalt he =>
+              exact Step.exprStmtHalt
+                ((useAliasExpr_equivAt heq e funs st _).mp he)
+        · intro h
+          cases h with
+          | exprStmt he =>
+              exact Step.exprStmt
+                ((useAliasExpr_equivAt heq e funs st _).mpr he)
+          | exprStmtHalt he =>
+              exact Step.exprStmtHalt
+                ((useAliasExpr_equivAt heq e funs st _).mpr he)
+    | .break, funs, st, V', st', o => by
+        simp only [StackV2.forwardAliasStmt]
+    | .continue, funs, st, V', st', o => by
+        simp only [StackV2.forwardAliasStmt]
+    | .leave, funs, st, V', st', o => by
+        simp only [StackV2.forwardAliasStmt]
+    termination_by s funs st V' st' o => 2 * sizeOf s
+
+  private theorem forwardAliasStmts_equivAt {source copy : Ident} {V : VEnv D}
+      (hne : source ≠ copy) (heq : VEnv.get V source = VEnv.get V copy) :
+      ∀ (body : Block Op) funs st V' st' o,
+        ExecStmts D funs V st body V' st' o ↔
+          ExecStmts D funs V st (StackV2.forwardAliasStmts source copy body).1
+            V' st' o
+    | [], funs, st, V', st', o => by
+        simp only [StackV2.forwardAliasStmts]
+    | s :: rest, funs, st, V', st', o => by
+        rw [StackV2.forwardAliasStmts]
+        generalize hr : StackV2.forwardAliasStmt source copy s = r
+        obtain ⟨s', keep, changed⟩ := r
+        dsimp only
+        have hhead : ∀ V1 st1 o1,
+            ExecStmt D funs V st s V1 st1 o1 ↔
+              ExecStmt D funs V st s' V1 st1 o1 := by
+          intro V1 st1 o1
+          have h := forwardAliasStmt_equivAt hne heq s funs st V1 st1 o1
+          simpa [hr] using h
+        cases keep with
+        | false =>
+            simp only [Bool.false_eq_true, if_false]
+            constructor
+            · intro h
+              cases h with
+              | seqCons hs hrest => exact Step.seqCons ((hhead _ _ _).mp hs) hrest
+              | seqStop hs hn => exact Step.seqStop ((hhead _ _ _).mp hs) hn
+            · intro h
+              cases h with
+              | seqCons hs hrest => exact Step.seqCons ((hhead _ _ _).mpr hs) hrest
+              | seqStop hs hn => exact Step.seqStop ((hhead _ _ _).mpr hs) hn
+        | true =>
+            simp only [if_true]
+            constructor
+            · intro h
+              cases h with
+              | seqCons hs hrest =>
+                  have heq1 := forwardAliasStmt_preserves hne heq
+                    (s := s) (by simpa [hr]) hs
+                  exact Step.seqCons ((hhead _ _ _).mp hs)
+                    ((forwardAliasStmts_equivAt hne heq1 rest _ _ _ _ _).mp hrest)
+              | seqStop hs hn => exact Step.seqStop ((hhead _ _ _).mp hs) hn
+            · intro h
+              cases h with
+              | seqCons hs hrest =>
+                  have hs' := (hhead _ _ _).mpr hs
+                  have heq1 := forwardAliasStmt_preserves hne heq
+                    (s := s) (by simpa [hr]) hs'
+                  exact Step.seqCons hs'
+                    ((forwardAliasStmts_equivAt hne heq1 rest _ _ _ _ _).mpr hrest)
+              | seqStop hs hn => exact Step.seqStop ((hhead _ _ _).mpr hs) hn
+    termination_by body funs st V' st' o => 2 * sizeOf body + 1
+  decreasing_by
+    all_goals simp_wf
+    all_goals omega
+end
+
+def mapFunBodies (f : List Ident → List Ident → Block Op → Block Op) :
+    Block Op → Block Op
+  | [] => []
+  | .funDef n ps rs body :: rest =>
+      .funDef n ps rs (f ps rs body) :: mapFunBodies f rest
+  | s :: rest => s :: mapFunBodies f rest
+
+private theorem mapFunBodies_stmts
+    (f : List Ident → List Ident → Block Op → Block Op) :
+    ∀ b, EquivStmts D b (mapFunBodies f b) := by
+  intro b
+  apply EquivStmts.of_forall₂
+  induction b with
+  | nil => exact .nil
+  | cons s rest ih =>
+      cases s with
+      | funDef n ps rs body =>
+          apply List.Forall₂.cons
+          · intro funs V st V' st' o
+            constructor <;> intro h <;> cases h <;> exact Step.funDef
+          · exact ih
+      | _ =>
+          exact .cons (fun _ _ _ _ _ _ => Iff.rfl) ih
+
+private theorem mapFunBodies_scope
+    (f : List Ident → List Ident → Block Op → Block Op)
+    (hf : ∀ ps rs body,
+      BoundEquivBlock D (ps ++ rs) body (f ps rs body)) :
+    ∀ b, BoundScopeRel D (hoist D b) (hoist D (mapFunBodies f b)) := by
+  intro b
+  induction b with
+  | nil => exact .nil
+  | cons s rest ih =>
+      cases s with
+      | funDef n ps rs body =>
+          exact .cons ⟨rfl, rfl, rfl, hf ps rs body⟩ ih
+      | _ =>
+          simpa [mapFunBodies, hoist] using ih
+
+theorem mapFunBodies_equiv
+    (f : List Ident → List Ident → Block Op → Block Op)
+    (hf : ∀ ps rs body,
+      BoundEquivBlock D (ps ++ rs) body (f ps rs body)) (b : Block Op) :
+    EquivBlock D b (mapFunBodies f b) :=
+  EquivBlock.of_stmts_bound_funs (mapFunBodies_stmts f b)
+    (mapFunBodies_scope f hf b)
+
+theorem identityPEnv_compat {bound : List Ident} {V : VEnv D}
+    (hb : BoundOK V bound) : Compat V (StackV2.identityPEnv bound) := by
+  intro p hp
+  obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hp
+  obtain ⟨v, hv⟩ := VEnv.get_isSome_of_key (hb x hx)
+  exact ⟨v, hv, hv⟩
+
+theorem seededProp_bound (bound : List Ident) (body : Block Op) :
+    BoundEquivBlock D bound body
+      (propStmts true (StackV2.identityPEnv bound) body).1 := by
+  intro funs V st hb
+  let σ := StackV2.identityPEnv bound
+  let body' := (propStmts true σ body).1
+  have hrel : PropRel σ (propStmts true σ body).2
+      (.stmts body) (.stmts body') := propStmts_rel true σ body
+  have hscope : PScopeRel (calls := calls) (creates := creates)
+      (hoist D body) (hoist D body') :=
+    PropRel.hoist_scopeRel (calls := calls) (creates := creates) hrel rfl rfl
+  have hbmem : YulEvmCompiler.Optimizer.BoundOK V bound := by
+    intro x hx
+    change V.map Prod.fst = bound at hb
+    rw [hb]
+    exact hx
+  have hc : Compat V σ := identityPEnv_compat hbmem
+  have hF : PFunsRel (hoist D body :: funs) (hoist D body' :: funs) :=
+    .cons hscope (PFunsRel.refl funs)
+  constructor
+  · intro V' st' o _
+    constructor
+    · intro h
+      cases h with
+      | block hs => exact Step.block (prop_fwd hs hF hrel hc).1
+    · intro h
+      cases h with
+      | block hs => exact Step.block (prop_bwd hs hF hrel hc)
+  · intro st'
+    constructor
+    · rintro ⟨Vh, h⟩
+      refine ⟨Vh, ?_⟩
+      cases h with
+      | block hs => exact Step.block (prop_fwd hs hF hrel hc).1
+    · rintro ⟨Vh, h⟩
+      refine ⟨Vh, ?_⟩
+      cases h with
+      | block hs => exact Step.block (prop_bwd hs hF hrel hc)
+
+theorem iterateSeededProp_bound (n : Nat) (bound : List Ident) (body : Block Op) :
+    BoundEquivBlock D bound body (StackV2.iterateSeededProp n bound body) := by
+  induction n generalizing body with
+  | zero => exact BoundEquivBlock.refl _ _
+  | succ n ih =>
+      rw [StackV2.iterateSeededProp]
+      exact (seededProp_bound bound body).trans
+        (ih (propStmts true (StackV2.identityPEnv bound) body).1)
+
+theorem exists_mins_append (pre base : VEnv D) :
+    ∃ ins, MIns ins (pre ++ base) base ∧
+      (∀ p ∈ ins, p.2 ∈ pre.map Prod.fst) ∧
+      (∀ p ∈ ins, base.length ≤ p.1) := by
+  induction pre with
+  | nil => exact ⟨[], .nil _, by simp, by simp⟩
+  | cons q rest ih =>
+      obtain ⟨x, v⟩ := q
+      obtain ⟨ins, hm, hnames, hdepth⟩ := ih
+      refine ⟨((rest ++ base).length, x) :: ins, hm.insTop x v, ?_, ?_⟩
+      · intro p hp
+        rcases List.mem_cons.mp hp with rfl | hp
+        · simp
+        · exact List.mem_cons_of_mem _ (hnames p hp)
+      · intro p hp
+        rcases List.mem_cons.mp hp with rfl | hp
+        · simp
+        · exact hdepth p hp
+
+theorem normal_prefix_mins {pre : Block Op} {funs : FunEnv D}
+    {V Vp : VEnv D} {st stp : EvmState}
+    (hp : Step D funs V st (.stmts pre) (.sres Vp stp .normal)) :
+    ∃ ins, MIns ins Vp (restore V Vp) ∧
+      (∀ p ∈ ins, p.2 ∈ stmtsBinds pre) ∧
+      (∀ p ∈ ins, V.length ≤ p.1) := by
+  have hkeys := stmts_normal_keys hp
+  let n := (stmtsBinds pre).length
+  have hlen : Vp.length - V.length = n := by
+    have hklen := congrArg List.length hkeys
+    simp only [List.length_map, List.length_append] at hklen
+    simp [n]
+    omega
+  have hsplit : Vp = Vp.take n ++ Vp.drop n :=
+    (List.take_append_drop n Vp).symm
+  obtain ⟨ins, hm0, hnames0, hdepth0⟩ :=
+    exists_mins_append (Vp.take n) (Vp.drop n)
+  have htake : (Vp.take n).map Prod.fst = stmtsBinds pre := by
+    rw [List.map_take, hkeys]
+    simp [n]
+  have hm : MIns ins Vp (restore V Vp) := by
+    rw [restore, hlen, hsplit]
+    simpa using hm0
+  refine ⟨ins, hm, ?_, ?_⟩
+  · intro p hpins
+    rw [← htake]
+    exact hnames0 p hpins
+  · intro p hpins
+    have hd := hdepth0 p hpins
+    have hdrop : (Vp.drop n).length = V.length := by
+      rw [List.length_drop]
+      have hklen := congrArg List.length hkeys
+      simp only [List.length_map, List.length_append] at hklen
+      simp [n]
+      omega
+    rwa [hdrop] at hd
+
+theorem scopePrefix_equivBlock {pre rest : Block Op}
+    (hfun : hasDirectFun pre = false)
+    (hfree : ∀ x ∈ stmtsBinds pre, stmtsMentions x rest = false) :
+    EquivBlock D (pre ++ rest) (.block pre :: rest) := by
+  have hhoist : hoist D pre = [] := hoist_nil_of_no_direct_fun pre hfun
+  have hh : hoist D (pre ++ rest) = hoist D (.block pre :: rest) := by
+    rw [hoist_append, hhoist]
+    rfl
+  intro funs V st V' st' o
+  constructor
+  · intro hrun
+    cases hrun with
+    | block hb =>
+      rw [hh] at hb
+      rcases stmts_append_fwd hb with ⟨Vp, stp, hp, hr⟩ | ⟨hne, hp⟩
+      · have hkeys := stmts_normal_keys hp
+        let n := (stmtsBinds pre).length
+        have hlen : Vp.length - V.length = n := by
+          have hklen := congrArg List.length hkeys
+          simp only [List.length_map, List.length_append] at hklen
+          simp [n]
+          omega
+        have hsplit : Vp = Vp.take n ++ Vp.drop n :=
+          (List.take_append_drop n Vp).symm
+        obtain ⟨ins, hm0, hnames0, hdepth0⟩ :=
+          exists_mins_append (Vp.take n) (Vp.drop n)
+        have htake : (Vp.take n).map Prod.fst = stmtsBinds pre := by
+          rw [List.map_take, hkeys]
+          simp [n]
+        have hm : MIns ins Vp (restore V Vp) := by
+          rw [restore, hlen, hsplit]
+          simpa using hm0
+        have hnames : ∀ p ∈ ins, p.2 ∈ stmtsBinds pre := by
+          intro p hpins
+          rw [← htake]
+          exact hnames0 p hpins
+        have hdepth : ∀ p ∈ ins, V.length ≤ p.1 := by
+          intro p hpins
+          have hd := hdepth0 p hpins
+          have hdrop : (Vp.drop n).length = V.length := by
+            rw [List.length_drop]
+            have hklen := congrArg List.length hkeys
+            simp only [List.length_map, List.length_append] at hklen
+            simp [n]
+            omega
+          rwa [hdrop] at hd
+        have hifree : InsFree ins (.stmts rest) := by
+          intro p hpins
+          simpa [codeMentions] using hfree p.2 (hnames p hpins)
+        obtain ⟨Vr, hr', hm'⟩ := hm.frameRemove hr hifree
+        have hp' := Step.emptyScope_congr hp (.add _)
+        have hp'' : Step D (hoist D pre :: hoist D (.block pre :: rest) :: funs)
+            V st (.stmts pre) (.sres Vp stp .normal) := by
+          simpa [hhoist] using hp'
+        have hblock : Step D (hoist D (.block pre :: rest) :: funs) V st
+            (.stmt (.block pre)) (.sres (restore V Vp) stp .normal) := by
+          exact Step.block hp''
+        have htarget := Step.seqCons hblock hr'
+        have herase := MIns.restore (MIns.nil V) (by simpa using hm') hdepth
+        rw [herase.nil_eq]
+        exact Step.block htarget
+      · have hp' := Step.emptyScope_congr hp (.add _)
+        rw [← hhoist] at hp'
+        have hblock := Step.block hp'
+        have hseq := @Step.seqStop D inferInstance
+          (hoist D (.block pre :: rest) :: funs) V st (.block pre) rest
+          _ st' o hblock hne
+        have htarget := Step.block hseq
+        have hlen := venvLen_mono hp rfl
+        rw [restore_restore (Nat.le_refl _) hlen] at htarget
+        exact htarget
+  · intro hrun
+    cases hrun with
+    | block hb =>
+      rw [← hh] at hb
+      cases hb with
+      | seqCons hblock hr =>
+        cases hblock with
+        | block hp =>
+          rw [hhoist] at hp
+          have hp' := Step.emptyScope_congr hp (.drop _)
+          obtain ⟨ins, hm, hnames, hdepth⟩ := normal_prefix_mins hp'
+          have hifree : InsFree ins (.stmts rest) := by
+            intro p hpins
+            simpa [codeMentions] using hfree p.2 (hnames p hpins)
+          obtain ⟨Vr, hr', hm'⟩ := hm.frameAdd hr hifree
+          have hsource := stmts_append_normal hp' hr'
+          have herase := MIns.restore (MIns.nil V) (by simpa using hm') hdepth
+          rw [← herase.nil_eq]
+          exact Step.block hsource
+      | seqStop hblock hne =>
+        cases hblock with
+        | block hp =>
+          rw [hhoist] at hp
+          have hp' := Step.emptyScope_congr hp (.drop _)
+          have hsource := Step.block (stmts_append_early (suf := rest) hp' hne)
+          have hlen := venvLen_mono hp' rfl
+          rw [restore_restore (Nat.le_refl _) hlen]
+          exact hsource
+
+theorem scopePrefix_after_equivBlock {outer pre rest : Block Op}
+    (hfun : hasDirectFun pre = false)
+    (hfree : ∀ x ∈ stmtsBinds pre, stmtsMentions x rest = false) :
+    EquivBlock D (outer ++ (pre ++ rest))
+      (outer ++ (.block pre :: rest)) := by
+  have hhoist : hoist D pre = [] := hoist_nil_of_no_direct_fun pre hfun
+  have hh : hoist D (outer ++ (pre ++ rest)) =
+      hoist D (outer ++ (.block pre :: rest)) := by
+    simp only [hoist_append]
+    rw [hhoist]
+    simp [hoist]
+  intro funs V st V' st' o
+  constructor
+  · intro hrun
+    cases hrun with
+    | block hb =>
+      rw [hh] at hb
+      rcases stmts_append_fwd hb with
+        ⟨Vo, sto, ho, hsuf⟩ | ⟨hneOuter, ho⟩
+      · rcases stmts_append_fwd hsuf with
+          ⟨Vp, stp, hp, hr⟩ | ⟨hne, hp⟩
+        · obtain ⟨ins, hm, hnames, hdepthVo⟩ := normal_prefix_mins hp
+          have hifree : InsFree ins (.stmts rest) := by
+            intro p hpins
+            simpa [codeMentions] using hfree p.2 (hnames p hpins)
+          obtain ⟨Vr, hr', hm'⟩ := hm.frameRemove hr hifree
+          have hp' := Step.emptyScope_congr hp (.add _)
+          have hp'' : Step D
+              (hoist D pre :: hoist D (outer ++ .block pre :: rest) :: funs)
+              Vo sto (.stmts pre) (.sres Vp stp .normal) := by
+            simpa [hhoist] using hp'
+          have hblock : Step D (hoist D (outer ++ .block pre :: rest) :: funs)
+              Vo sto (.stmt (.block pre))
+              (.sres (restore Vo Vp) stp .normal) := Step.block hp''
+          have htarget := Step.block
+            (stmts_append_normal ho (Step.seqCons hblock hr'))
+          have hVo : V.length ≤ Vo.length := venvLen_mono ho rfl
+          have hdepth : ∀ p ∈ ins, V.length ≤ p.1 :=
+            fun p hpins => hVo.trans (hdepthVo p hpins)
+          have herase := MIns.restore (MIns.nil V) (by simpa using hm') hdepth
+          rw [herase.nil_eq]
+          exact htarget
+        · have hp' := Step.emptyScope_congr hp (.add _)
+          rw [← hhoist] at hp'
+          have hblock := Step.block hp'
+          have hseq := @Step.seqStop D inferInstance
+            (hoist D (outer ++ .block pre :: rest) :: funs) Vo sto
+            (.block pre) rest _ st' o hblock hne
+          have htarget := Step.block (stmts_append_normal ho hseq)
+          have hVo : V.length ≤ Vo.length := venvLen_mono ho rfl
+          have hVp := venvLen_mono hp rfl
+          rw [restore_restore hVo hVp] at htarget
+          exact htarget
+      · exact Step.block (stmts_append_early (suf := .block pre :: rest) ho hneOuter)
+  · intro hrun
+    cases hrun with
+    | block hb =>
+      rw [← hh] at hb
+      rcases stmts_append_fwd hb with
+        ⟨Vo, sto, ho, hsuf⟩ | ⟨hneOuter, ho⟩
+      · cases hsuf with
+        | seqCons hblock hr =>
+          cases hblock with
+          | block hp =>
+            rw [hhoist] at hp
+            have hp' := Step.emptyScope_congr hp (.drop _)
+            obtain ⟨ins, hm, hnames, hdepthVo⟩ := normal_prefix_mins hp'
+            have hifree : InsFree ins (.stmts rest) := by
+              intro p hpins
+              simpa [codeMentions] using hfree p.2 (hnames p hpins)
+            obtain ⟨Vr, hr', hm'⟩ := hm.frameAdd hr hifree
+            have hsource := Step.block
+              (stmts_append_normal ho (stmts_append_normal hp' hr'))
+            have hVo : V.length ≤ Vo.length := venvLen_mono ho rfl
+            have hdepth : ∀ p ∈ ins, V.length ≤ p.1 :=
+              fun p hpins => hVo.trans (hdepthVo p hpins)
+            have herase := MIns.restore (MIns.nil V) (by simpa using hm') hdepth
+            rw [← herase.nil_eq]
+            exact hsource
+        | seqStop hblock hne =>
+          cases hblock with
+          | block hp =>
+            rw [hhoist] at hp
+            have hp' := Step.emptyScope_congr hp (.drop _)
+            have hsource := Step.block
+              (stmts_append_normal ho
+                (stmts_append_early (suf := rest) hp' hne))
+            have hVo : V.length ≤ Vo.length := venvLen_mono ho rfl
+            have hVp := venvLen_mono hp' rfl
+            rw [restore_restore hVo hVp]
+            exact hsource
+      · exact Step.block
+          (stmts_append_early (suf := pre ++ rest) ho hneOuter)
+
+theorem directDecls_mem_iff (x : Ident) : ∀ body : Block Op,
+    x ∈ StackV2.directDecls body ↔ x ∈ stmtsBinds body
+  | [] => by simp [StackV2.directDecls, stmtsBinds]
+  | s :: rest => by
+      cases s with
+      | letDecl vars val =>
+          simp [StackV2.directDecls, stmtsBinds, stmtBinds,
+            directDecls_mem_iff x rest, or_comm]
+      | _ =>
+          simp [StackV2.directDecls, stmtsBinds, stmtBinds,
+            directDecls_mem_iff x rest]
+
+theorem deadPrefixSearch_sound : ∀ outer pre rest out,
+    StackV2.deadPrefixSearch pre rest = some out →
+      EquivBlock D (outer ++ (pre ++ rest)) (outer ++ out)
+  | _, _, [], _, h => by simp [StackV2.deadPrefixSearch] at h
+  | outer, pre, s :: rest, out, h => by
+      rw [StackV2.deadPrefixSearch] at h
+      let pre' := pre ++ [s]
+      let names := StackV2.directDecls pre'
+      split at h
+      · next hcond =>
+        cases h
+        change ((((!rest.isEmpty && !names.isEmpty) && decide names.Nodup) &&
+          names.all (fun x => !stmtsMentions x rest)) &&
+          !hasDirectFun pre') = true at hcond
+        simp only [Bool.and_eq_true] at hcond
+        rcases hcond with ⟨⟨⟨⟨_, _⟩, _⟩, hall⟩, hfun0⟩
+        have hfun : hasDirectFun pre' = false := by
+          simpa using hfun0
+        have hfree : ∀ x ∈ stmtsBinds pre', stmtsMentions x rest = false := by
+          intro x hx
+          have hx' : x ∈ names := by
+            rw [directDecls_mem_iff]
+            exact hx
+          have hxall := List.all_eq_true.mp hall x hx'
+          simpa using hxall
+        simpa [pre', List.append_assoc] using
+          scopePrefix_after_equivBlock (calls := calls) (creates := creates)
+            (outer := outer) hfun hfree
+      · next hcond =>
+        have ih := deadPrefixSearch_sound outer pre' rest out h
+        simpa [pre', List.append_assoc] using ih
+
+theorem scopeDeadPrefixHere_sound {body out : Block Op}
+    (h : StackV2.scopeDeadPrefixHere body = some out) :
+    EquivBlock D body out := by
+  simpa using deadPrefixSearch_sound [] [] body out h
+
+theorem scopeDeadPrefixHere_after_sound {body out : Block Op}
+    (h : StackV2.scopeDeadPrefixHere body = some out) (pre : Block Op) :
+    EquivBlock D (pre ++ body) (pre ++ out) := by
+  simpa using deadPrefixSearch_sound pre [] body out h
+
+theorem iterateDeadPrefixesHere_equiv (n : Nat) (body : Block Op) :
+    EquivBlock D body (StackV2.iterateDeadPrefixesHere n body) := by
+  induction n generalizing body with
+  | zero => exact EquivBlock.refl _
+  | succ n ih =>
+      rw [StackV2.iterateDeadPrefixesHere]
+      cases h : StackV2.scopeDeadPrefixHere body with
+      | none => exact EquivBlock.refl _
+      | some out => exact (scopeDeadPrefixHere_sound h).trans (ih out)
+
+mutual
+  theorem scopeOneDeadPrefixStmt_sound : ∀ (s s' : Stmt Op),
+      StackV2.scopeOneDeadPrefixStmt s = some s' →
+      EquivStmt D s s' ∧ ScopeRel D (hoist D [s]) (hoist D [s'])
+    | .block body, s', h => by
+        simp only [StackV2.scopeOneDeadPrefixStmt] at h
+        obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+        subst s'
+        exact ⟨scopeOneDeadPrefixStmts_sound body _ hb [], ScopeRel.refl _⟩
+    | .funDef f ps rs body, s', h => by
+        simp only [StackV2.scopeOneDeadPrefixStmt] at h
+        obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+        subst s'
+        have heq := scopeOneDeadPrefixStmts_sound body _ hb []
+        refine ⟨funDef_equiv f ps rs body body', ?_⟩
+        exact .cons ⟨rfl, rfl, rfl, heq⟩ .nil
+    | .cond c body, s', h => by
+        simp only [StackV2.scopeOneDeadPrefixStmt] at h
+        obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+        subst s'
+        exact ⟨EquivStmt.cond_congr (fun _ _ _ _ => Iff.rfl)
+          (scopeOneDeadPrefixStmts_sound body _ hb []), ScopeRel.refl _⟩
+    | .switch c cases dflt, s', h => by
+        unfold StackV2.scopeOneDeadPrefixStmt at h
+        cases hc : StackV2.scopeOneDeadPrefixCases cases with
+        | some cases' =>
+            simp only [hc] at h
+            cases h
+            exact ⟨EquivStmt.switch_congr (fun _ _ _ _ => Iff.rfl)
+              (scopeOneDeadPrefixCases_sound cases _ hc)
+              (EquivBlock.refl _), ScopeRel.refl _⟩
+        | none =>
+            simp only [hc] at h
+            cases dflt with
+            | some body =>
+                obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+                subst s'
+                exact ⟨EquivStmt.switch_congr (fun _ _ _ _ => Iff.rfl)
+                  (tail_forall₂_refl_cases cases)
+                  (scopeOneDeadPrefixStmts_sound body _ hb []), ScopeRel.refl _⟩
+            | none => simp at h
+    | .forLoop init c post body, s', h => by
+        unfold StackV2.scopeOneDeadPrefixStmt at h
+        cases hp : StackV2.scopeOneDeadPrefixStmts post with
+        | some post' =>
+            simp only [hp] at h
+            cases h
+            exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
+              (scopeOneDeadPrefixStmts_sound post _ hp [])
+              (EquivBlock.refl _), ScopeRel.refl _⟩
+        | none =>
+            simp only [hp] at h
+            obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
+            subst s'
+            exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
+              (EquivBlock.refl _)
+              (scopeOneDeadPrefixStmts_sound body _ hb []), ScopeRel.refl _⟩
+    | .letDecl _ _, _, h => by simp [StackV2.scopeOneDeadPrefixStmt] at h
+    | .assign _ _, _, h => by simp [StackV2.scopeOneDeadPrefixStmt] at h
+    | .exprStmt _, _, h => by simp [StackV2.scopeOneDeadPrefixStmt] at h
+    | .break, _, h => by simp [StackV2.scopeOneDeadPrefixStmt] at h
+    | .continue, _, h => by simp [StackV2.scopeOneDeadPrefixStmt] at h
+    | .leave, _, h => by simp [StackV2.scopeOneDeadPrefixStmt] at h
+    termination_by s s' _h => 2 * sizeOf s
+
+  theorem scopeOneDeadPrefixStmts_sound : ∀ (ss ss' : Block Op),
+      StackV2.scopeOneDeadPrefixStmts ss = some ss' →
+      ∀ pre : Block Op, EquivBlock D (pre ++ ss) (pre ++ ss')
+    | [], _, h => by simp [StackV2.scopeOneDeadPrefixStmts] at h
+    | s :: rest, ss', h => by
+        unfold StackV2.scopeOneDeadPrefixStmts at h
+        cases hh : StackV2.scopeDeadPrefixHere (s :: rest) with
+        | some target =>
+            rw [hh] at h
+            cases h
+            exact scopeDeadPrefixHere_after_sound hh
+        | none =>
+            rw [hh] at h
+            cases hs : StackV2.scopeOneDeadPrefixStmt s with
+            | some s' =>
+                simp only [hs] at h
+                cases h
+                intro pre
+                obtain ⟨heq, hscope⟩ := scopeOneDeadPrefixStmt_sound s s' hs
+                exact replaceStmt_equivBlock heq hscope pre
+            | none =>
+                simp only [hs] at h
+                obtain ⟨rest', hr, htarget⟩ := Option.map_eq_some_iff.mp h
+                subst ss'
+                intro pre
+                have heq := scopeOneDeadPrefixStmts_sound rest rest' hr (pre ++ [s])
+                simpa only [List.append_assoc, List.cons_append, List.nil_append]
+                  using heq
+    termination_by ss ss' _h => 2 * sizeOf ss + 1
+
+  theorem scopeOneDeadPrefixCases_sound : ∀
+      (cases cases' : List (Literal × Block Op)),
+      StackV2.scopeOneDeadPrefixCases cases = some cases' →
+      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+        cases cases'
+    | [], _, h => by simp [StackV2.scopeOneDeadPrefixCases] at h
+    | (l, body) :: rest, cases', h => by
+        unfold StackV2.scopeOneDeadPrefixCases at h
+        cases hb : StackV2.scopeOneDeadPrefixStmts body with
+        | some body' =>
+            simp only [hb] at h
+            cases h
+            exact .cons ⟨rfl, scopeOneDeadPrefixStmts_sound body _ hb []⟩
+              (tail_forall₂_refl_cases rest)
+        | none =>
+            simp only [hb] at h
+            obtain ⟨rest', hr, htarget⟩ := Option.map_eq_some_iff.mp h
+            subst cases'
+            exact .cons ⟨rfl, EquivBlock.refl _⟩
+              (scopeOneDeadPrefixCases_sound rest _ hr)
+    termination_by cases cases' _h => 2 * sizeOf cases + 1
+  decreasing_by
+    all_goals simp_wf
+    all_goals omega
+end
+
+theorem iterateDeadPrefixes_equiv (n : Nat) (body : Block Op) :
+    EquivBlock D body (StackV2.iterateDeadPrefixes n body) := by
+  induction n generalizing body with
+  | zero => exact EquivBlock.refl _
+  | succ n ih =>
+      rw [StackV2.iterateDeadPrefixes]
+      cases h : StackV2.scopeOneDeadPrefixStmts body with
+      | none => exact EquivBlock.refl _
+      | some out =>
+          exact (scopeOneDeadPrefixStmts_sound body out h []).trans (ih out)
+
+/- The following first-order helpers record the same fuel structure explicitly;
+the mutually recursive proof below is the maintained formulation. -/
+/-
+private theorem scopeDeadCases_of
+    (n : Nat)
+    (H : ∀ body : Block Op,
+      EquivBlock D body (StackV2.scopeDeadPrefixesStmts n body)) :
+    ∀ cases : List (Literal × Block Op),
+      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+        cases (StackV2.scopeDeadPrefixesCases n cases) := by
+  intro cases
+  cases n with
+  | zero => exact tail_forall₂_refl_cases cases
+  | succ n =>
+      induction cases with
+      | nil => exact .nil
+      | cons p rest ih =>
+          obtain ⟨l, body⟩ := p
+          exact .cons ⟨rfl, H body⟩ ih
+
+private theorem scopeDeadDflt_of
+    (n : Nat)
+    (H : ∀ body : Block Op,
+      EquivBlock D body (StackV2.scopeDeadPrefixesStmts n body)) :
+    ∀ dflt : Option (Block Op),
+      EquivBlock D (dflt.getD [])
+        ((StackV2.scopeDeadPrefixesDflt n dflt).getD []) := by
+  intro dflt
+  cases n <;> cases dflt <;> simp [StackV2.scopeDeadPrefixesDflt]
+  exact H _
+
+private theorem scopeDeadStmt_of
+    (n : Nat)
+    (H : ∀ body : Block Op,
+      EquivBlock D body (StackV2.scopeDeadPrefixesStmts n body)) :
+    ∀ s : Stmt Op,
+      EquivStmt D s (StackV2.scopeDeadPrefixesStmt (n + 1) s) ∧
+      ScopeRel D (hoist D [s])
+        (hoist D [StackV2.scopeDeadPrefixesStmt (n + 1) s]) := by
+  intro s
+  cases s with
+  | block body => exact ⟨H body, ScopeRel.refl _⟩
+  | funDef f ps rs body =>
+      exact ⟨funDef_equiv f ps rs body _ (H body),
+        .cons ⟨rfl, rfl, rfl, H body⟩ .nil⟩
+  | cond c body =>
+      exact ⟨EquivStmt.cond_congr (fun _ _ _ _ => Iff.rfl) (H body),
+        ScopeRel.refl _⟩
+  | switch c cases dflt =>
+      exact ⟨EquivStmt.switch_congr (fun _ _ _ _ => Iff.rfl)
+        (scopeDeadCases_of n H cases) (scopeDeadDflt_of n H dflt),
+        ScopeRel.refl _⟩
+  | forLoop init c post body =>
+      exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
+        (H post) (H body), ScopeRel.refl _⟩
+  | letDecl _ _ | assign _ _ | exprStmt _ | «break» | «continue» | «leave» =>
+      exact ⟨fun _ _ _ _ _ _ => Iff.rfl, ScopeRel.refl _⟩
+
+private theorem scopeDeadMapStmts_of
+    (n : Nat)
+    (H : ∀ body : Block Op,
+      EquivBlock D body (StackV2.scopeDeadPrefixesStmts n body)) :
+    ∀ body : Block Op,
+      EquivStmts D body (body.map (StackV2.scopeDeadPrefixesStmt (n + 1))) := by
+  intro body
+  apply EquivStmts.of_forall₂
+  induction body with
+  | nil => exact .nil
+  | cons s rest ih => exact .cons (scopeDeadStmt_of n H s).1 ih
+
+private theorem scopeDeadMapScope_of
+    (n : Nat)
+    (H : ∀ body : Block Op,
+      EquivBlock D body (StackV2.scopeDeadPrefixesStmts n body)) :
+    ∀ body : Block Op,
+      ScopeRel D (hoist D body)
+        (hoist D (body.map (StackV2.scopeDeadPrefixesStmt (n + 1)))) := by
+  intro body
+  induction body with
+  | nil => exact .nil
+  | cons s rest ih =>
+      cases s with
+      | funDef f ps rs fnBody =>
+          exact .cons ⟨rfl, rfl, rfl, H fnBody⟩ ih
+      | _ => simpa [hoist, StackV2.scopeDeadPrefixesStmt] using ih
+
+theorem scopeDeadPrefixesStmts_equiv_old (n : Nat) (body : Block Op) :
+    EquivBlock D body (StackV2.scopeDeadPrefixesStmts n body) := by
+  induction n generalizing body with
+  | zero => exact EquivBlock.refl _
+  | succ n ih =>
+      rw [StackV2.scopeDeadPrefixesStmts]
+      let split := StackV2.iterateDeadPrefixesHere 64 body
+      have hs := iterateDeadPrefixesHere_equiv (calls := calls) (creates := creates) 64 body
+      apply hs.trans
+      exact EquivBlock.of_stmts_funs
+        (scopeDeadMapStmts_of n ih split)
+        (scopeDeadMapScope_of n ih split)
+-/
+
+private theorem forall₂_append {α β : Type} {R : α → β → Prop}
+    {a b : List α} {c d : List β}
+    (h₁ : List.Forall₂ R a c) (h₂ : List.Forall₂ R b d) :
+    List.Forall₂ R (a ++ b) (c ++ d) := by
+  induction h₁ with
+  | nil => exact h₂
+  | cons hp _ ih => exact .cons hp ih
+
+mutual
+  theorem scopeDeadPrefixesStmt_equiv : ∀ (n : Nat) (s : Stmt Op),
+      EquivStmt D s (StackV2.scopeDeadPrefixesStmt n s) ∧
+      ScopeRel D (hoist D [s])
+        (hoist D [StackV2.scopeDeadPrefixesStmt n s])
+    | 0, s => ⟨fun _ _ _ _ _ _ => Iff.rfl, ScopeRel.refl _⟩
+    | n + 1, .block body =>
+        ⟨scopeDeadPrefixesStmts_equiv n body, ScopeRel.refl _⟩
+    | n + 1, .funDef f ps rs body =>
+        ⟨funDef_equiv f ps rs body _,
+          .cons ⟨rfl, rfl, rfl, scopeDeadPrefixesStmts_equiv n body⟩ .nil⟩
+    | n + 1, .cond c body =>
+        ⟨EquivStmt.cond_congr (fun _ _ _ _ => Iff.rfl)
+          (scopeDeadPrefixesStmts_equiv n body), ScopeRel.refl _⟩
+    | n + 1, .switch c cases dflt =>
+        ⟨EquivStmt.switch_congr (fun _ _ _ _ => Iff.rfl)
+          (scopeDeadPrefixesCases_equiv n cases)
+          (scopeDeadPrefixesDflt_equiv n dflt), ScopeRel.refl _⟩
+    | n + 1, .forLoop init c post body =>
+        ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
+          (scopeDeadPrefixesStmts_equiv n post)
+          (scopeDeadPrefixesStmts_equiv n body), ScopeRel.refl _⟩
+    | _n + 1, s@(.letDecl _ _) =>
+        ⟨fun _ _ _ _ _ _ => Iff.rfl, ScopeRel.refl _⟩
+    | _n + 1, s@(.assign _ _) =>
+        ⟨fun _ _ _ _ _ _ => Iff.rfl, ScopeRel.refl _⟩
+    | _n + 1, s@(.exprStmt _) =>
+        ⟨fun _ _ _ _ _ _ => Iff.rfl, ScopeRel.refl _⟩
+    | _n + 1, .break =>
+        ⟨fun _ _ _ _ _ _ => Iff.rfl, ScopeRel.refl _⟩
+    | _n + 1, .continue =>
+        ⟨fun _ _ _ _ _ _ => Iff.rfl, ScopeRel.refl _⟩
+    | _n + 1, .leave =>
+        ⟨fun _ _ _ _ _ _ => Iff.rfl, ScopeRel.refl _⟩
+
+  theorem scopeDeadPrefixesStmts_equiv : ∀ (n : Nat) (body : Block Op),
+      EquivBlock D body (StackV2.scopeDeadPrefixesStmts n body)
+    | 0, body => EquivBlock.refl _
+    | n + 1, body => by
+        rw [StackV2.scopeDeadPrefixesStmts]
+        let split := StackV2.iterateDeadPrefixes 64 body
+        have hs := iterateDeadPrefixes_equiv
+          (calls := calls) (creates := creates) 64 body
+        apply hs.trans
+        change EquivBlock D split
+          (split.map (StackV2.scopeDeadPrefixesStmt n))
+        have hstmts : EquivStmts D split
+            (split.map (StackV2.scopeDeadPrefixesStmt n)) := by
+          apply EquivStmts.of_forall₂
+          induction split with
+          | nil => exact .nil
+          | cons s rest ih =>
+              exact .cons (scopeDeadPrefixesStmt_equiv n s).1 ih
+        have hscope : ScopeRel D (hoist D split)
+            (hoist D (split.map (StackV2.scopeDeadPrefixesStmt n))) := by
+          induction split with
+          | nil => exact .nil
+          | cons s rest ih =>
+              have hhead := (scopeDeadPrefixesStmt_equiv n s).2
+              rw [show s :: rest = [s] ++ rest by rfl, hoist_append]
+              change ScopeRel D (hoist D [s] ++ hoist D rest)
+                (hoist D ([StackV2.scopeDeadPrefixesStmt n s] ++
+                  rest.map (StackV2.scopeDeadPrefixesStmt n)))
+              rw [hoist_append]
+              exact forall₂_append hhead ih
+        exact EquivBlock.of_stmts_funs hstmts hscope
+
+  theorem scopeDeadPrefixesCases_equiv : ∀ (n : Nat)
+      (cases : List (Literal × Block Op)),
+      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+        cases (StackV2.scopeDeadPrefixesCases n cases)
+    | 0, cases => tail_forall₂_refl_cases cases
+    | _n + 1, [] => .nil
+    | n + 1, (l, body) :: rest =>
+        .cons ⟨rfl, scopeDeadPrefixesStmts_equiv n body⟩
+          (scopeDeadPrefixesCases_equiv n rest)
+
+  theorem scopeDeadPrefixesDflt_equiv : ∀ (n : Nat)
+      (dflt : Option (Block Op)),
+      EquivBlock D (dflt.getD [])
+        ((StackV2.scopeDeadPrefixesDflt n dflt).getD [])
+    | 0, none => EquivBlock.refl _
+    | 0, some body => EquivBlock.refl _
+    | _n + 1, none => EquivBlock.refl _
+    | n + 1, some body => scopeDeadPrefixesStmts_equiv n body
+end
+
+private theorem propagateFunctionStmts_eq_mapFunBodies : ∀ b : Block Op,
+    StackV2.propagateFunctionStmts b = mapFunBodies
+      (fun ps rs body => StackV2.iterateSeededProp 64 (ps ++ rs) body) b := by
+  intro b
+  induction b with
+  | nil => rfl
+  | cons s rest ih =>
+      change List.map StackV2.propagateFunctionStmt rest =
+        mapFunBodies (fun ps rs body =>
+          StackV2.iterateSeededProp 64 (ps ++ rs) body) rest at ih
+      cases s <;> simp [StackV2.propagateFunctionStmts,
+        StackV2.propagateFunctionStmt, mapFunBodies, ih]
+
+private theorem scopeDeadFunctionStmts_eq_mapFunBodies : ∀ b : Block Op,
+    StackV2.scopeDeadFunctionStmts b =
+      mapFunBodies (fun _ _ body => StackV2.scopeDeadPrefixesStmts 64 body) b := by
+  intro b
+  induction b with
+  | nil => rfl
+  | cons s rest ih =>
+      change List.map StackV2.scopeDeadFunctionStmt rest =
+        mapFunBodies (fun _ _ body => StackV2.scopeDeadPrefixesStmts 64 body) rest at ih
+      cases s <;> simp [StackV2.scopeDeadFunctionStmts,
+        StackV2.scopeDeadFunctionStmt, mapFunBodies, ih]
+
+/- Duplicated earlier so the alias simulation can use it. -/
+/-
+mutual
+  theorem useAliasExpr_equivAt {source copy : Ident} {V : VEnv D}
+      (heq : VEnv.get V source = VEnv.get V copy) :
+      ∀ e funs st r,
+        EvalExpr D funs V st e r ↔
+          EvalExpr D funs V st (StackV2.useAliasExpr source copy e) r
+    | .lit l, funs, st, r => by
+        constructor <;> intro h <;> cases h <;> exact Step.lit
+    | .var x, funs, st, r => by
+        by_cases hx : x = source
+        · subst x
+          simp only [StackV2.useAliasExpr, if_pos]
+          constructor <;> intro h <;> cases h with
+          | var hget => exact Step.var (by simpa [heq] using hget)
+        · simp only [StackV2.useAliasExpr, if_neg hx]
+    | .builtin op args, funs, st, r => by
+        simp only [StackV2.useAliasExpr]
+        constructor
+        · intro h
+          cases h with
+          | builtinOk hargs hop =>
+              exact Step.builtinOk
+                ((useAliasArgs_equivAt heq args funs st _).mp hargs) hop
+          | builtinHalt hargs hop =>
+              exact Step.builtinHalt
+                ((useAliasArgs_equivAt heq args funs st _).mp hargs) hop
+          | builtinArgsHalt hargs =>
+              exact Step.builtinArgsHalt
+                ((useAliasArgs_equivAt heq args funs st _).mp hargs)
+        · intro h
+          cases h with
+          | builtinOk hargs hop =>
+              exact Step.builtinOk
+                ((useAliasArgs_equivAt heq args funs st _).mpr hargs) hop
+          | builtinHalt hargs hop =>
+              exact Step.builtinHalt
+                ((useAliasArgs_equivAt heq args funs st _).mpr hargs) hop
+          | builtinArgsHalt hargs =>
+              exact Step.builtinArgsHalt
+                ((useAliasArgs_equivAt heq args funs st _).mpr hargs)
+    | .call fn args, funs, st, r => by
+        simp only [StackV2.useAliasExpr]
+        constructor
+        · intro h
+          cases h with
+          | callOk hargs hl hlen hbody ho =>
+              exact Step.callOk
+                ((useAliasArgs_equivAt heq args funs st _).mp hargs)
+                hl hlen hbody ho
+          | callHalt hargs hl hlen hbody =>
+              exact Step.callHalt
+                ((useAliasArgs_equivAt heq args funs st _).mp hargs)
+                hl hlen hbody
+          | callArgsHalt hargs =>
+              exact Step.callArgsHalt
+                ((useAliasArgs_equivAt heq args funs st _).mp hargs)
+        · intro h
+          cases h with
+          | callOk hargs hl hlen hbody ho =>
+              exact Step.callOk
+                ((useAliasArgs_equivAt heq args funs st _).mpr hargs)
+                hl hlen hbody ho
+          | callHalt hargs hl hlen hbody =>
+              exact Step.callHalt
+                ((useAliasArgs_equivAt heq args funs st _).mpr hargs)
+                hl hlen hbody
+          | callArgsHalt hargs =>
+              exact Step.callArgsHalt
+                ((useAliasArgs_equivAt heq args funs st _).mpr hargs)
+
+  theorem useAliasArgs_equivAt {source copy : Ident} {V : VEnv D}
+      (heq : VEnv.get V source = VEnv.get V copy) :
+      ∀ args funs st r,
+        EvalArgs D funs V st args r ↔
+          EvalArgs D funs V st (StackV2.useAliasArgs source copy args) r
+    | [], funs, st, r => by
+        constructor <;> intro h <;> cases h <;> exact Step.argsNil
+    | e :: rest, funs, st, r => by
+        simp only [StackV2.useAliasArgs]
+        constructor
+        · intro h
+          cases h with
+          | argsCons hrest he =>
+              exact Step.argsCons
+                ((useAliasArgs_equivAt heq rest funs st _).mp hrest)
+                ((useAliasExpr_equivAt heq e funs _ _).mp he)
+          | argsRestHalt hrest =>
+              exact Step.argsRestHalt
+                ((useAliasArgs_equivAt heq rest funs st _).mp hrest)
+          | argsHeadHalt hrest he =>
+              exact Step.argsHeadHalt
+                ((useAliasArgs_equivAt heq rest funs st _).mp hrest)
+                ((useAliasExpr_equivAt heq e funs _ _).mp he)
+        · intro h
+          cases h with
+          | argsCons hrest he =>
+              exact Step.argsCons
+                ((useAliasArgs_equivAt heq rest funs st _).mpr hrest)
+                ((useAliasExpr_equivAt heq e funs _ _).mpr he)
+          | argsRestHalt hrest =>
+              exact Step.argsRestHalt
+                ((useAliasArgs_equivAt heq rest funs st _).mpr hrest)
+          | argsHeadHalt hrest he =>
+              exact Step.argsHeadHalt
+                ((useAliasArgs_equivAt heq rest funs st _).mpr hrest)
+                ((useAliasExpr_equivAt heq e funs _ _).mpr he)
+end
+-/
+
+theorem scopeDeadFunctionStmts_equiv (b : Block Op) :
+    EquivBlock D b (StackV2.scopeDeadFunctionStmts b) := by
+  rw [scopeDeadFunctionStmts_eq_mapFunBodies]
+  exact mapFunBodies_equiv _ (fun ps rs body =>
+    BoundEquivBlock.of_equiv (scopeDeadPrefixesStmts_equiv 64 body)) b
+
+private def LayoutEquivStmts (calls' : ExternalCalls) (creates' : ExternalCreates)
+    (bound : List Ident) (b₁ b₂ : Block Op) : Prop :=
+  let D' := evmWithExternal calls' creates'
+  ∀ (funs : FunEnv D') (V : VEnv D') (st : EvmState),
+    YulEvmCompiler.Optimizer.BoundOK (calls := calls') (creates := creates')
+      V bound → ∀ V' st' o,
+    ExecStmts D' funs V st b₁ V' st' o ↔
+      ExecStmts D' funs V st b₂ V' st' o
+
+private theorem LayoutEquivStmts.refl (bound : List Ident) (b : Block Op) :
+    LayoutEquivStmts calls creates bound b b :=
+  fun _ _ _ _ _ _ _ => Iff.rfl
+
+private theorem LayoutEquivStmts.cons {bound bound' : List Ident}
+    {s : Stmt Op} {rest rest' : Block Op}
+    (hbound : ∀ {funs V st V' st'}, YulEvmCompiler.Optimizer.BoundOK V bound →
+      ExecStmt D funs V st s V' st' .normal →
+        YulEvmCompiler.Optimizer.BoundOK V' bound')
+    (hrest : LayoutEquivStmts calls creates bound' rest rest') :
+    LayoutEquivStmts calls creates bound (s :: rest) (s :: rest') := by
+  intro funs V st hb V' st' o
+  constructor
+  · intro h
+    cases h with
+    | seqCons hs hr =>
+        exact Step.seqCons hs
+          ((hrest funs _ _ (hbound hb hs) _ _ _).mp hr)
+    | seqStop hs hn => exact Step.seqStop hs hn
+  · intro h
+    cases h with
+    | seqCons hs hr =>
+        exact Step.seqCons hs
+          ((hrest funs _ _ (hbound hb hs) _ _ _).mpr hr)
+    | seqStop hs hn => exact Step.seqStop hs hn
+
+private theorem letAlias_establishes {source copy : Ident}
+    {funs : FunEnv D} {V V' : VEnv D} {st st' : EvmState}
+    (hne : copy ≠ source)
+    (h : ExecStmt D funs V st (.letDecl [copy] (some (.var source)))
+      V' st' .normal) :
+    VEnv.get V' source = VEnv.get V' copy := by
+  cases h with
+  | letVal he hlen =>
+      cases he with
+      | var hget =>
+          rename_i v
+          simp only at hlen
+          change VEnv.get ((copy, v) :: V) source =
+            VEnv.get ((copy, v) :: V) copy
+          rw [VEnv.get_cons, if_neg hne, VEnv.get_cons, if_pos rfl, hget]
+
+private theorem assignAlias_establishes {source copy : Ident}
+    {layout : List Ident} {funs : FunEnv D}
+    {V V' : VEnv D} {st st' : EvmState}
+    (hne : copy ≠ source) (hcopy : copy ∈ layout)
+    (hb : YulEvmCompiler.Optimizer.BoundOK V layout)
+    (h : ExecStmt D funs V st (.assign [copy] (.var source))
+      V' st' .normal) :
+    VEnv.get V' source = VEnv.get V' copy := by
+  cases h with
+  | assignVal he hlen =>
+      cases he with
+      | var hget =>
+          simp only at hlen
+          obtain ⟨old, hold⟩ := VEnv.get_isSome_of_key (hb copy hcopy)
+          have his : (VEnv.get V copy).isSome = true := by simp [hold]
+          rw [VEnv.setMany_singleton, VEnv.get_set_ne hne.symm,
+            VEnv.get_set_self his]
+          exact hget
+
+private theorem aliasLetStmts_equiv {layout : List Ident}
+    {source copy : Ident} {rest : Block Op}
+    (hne : copy ≠ source) :
+    LayoutEquivStmts calls creates layout
+      (.letDecl [copy] (some (.var source)) :: rest)
+      (.letDecl [copy] (some (.var source)) ::
+        (StackV2.forwardAliasStmts source copy rest).1) := by
+  intro funs V st hb V' st' o
+  constructor
+  · intro h
+    cases h with
+    | seqCons hs hr =>
+        have heq := letAlias_establishes hne hs
+        exact Step.seqCons hs
+          ((forwardAliasStmts_equivAt hne.symm heq rest _ _ _ _ _).mp hr)
+    | seqStop hs hn => exact Step.seqStop hs hn
+  · intro h
+    cases h with
+    | seqCons hs hr =>
+        have heq := letAlias_establishes hne hs
+        exact Step.seqCons hs
+          ((forwardAliasStmts_equivAt hne.symm heq rest _ _ _ _ _).mpr hr)
+    | seqStop hs hn => exact Step.seqStop hs hn
+
+private theorem aliasAssignStmts_equiv {layout : List Ident}
+    {source copy : Ident} {rest : Block Op}
+    (hne : copy ≠ source) (hcopy : copy ∈ layout) :
+    LayoutEquivStmts calls creates layout
+      (.assign [copy] (.var source) :: rest)
+      (.assign [copy] (.var source) ::
+        (StackV2.forwardAliasStmts source copy rest).1) := by
+  intro funs V st hb V' st' o
+  constructor
+  · intro h
+    cases h with
+    | seqCons hs hr =>
+        have heq := assignAlias_establishes hne hcopy hb hs
+        exact Step.seqCons hs
+          ((forwardAliasStmts_equivAt hne.symm heq rest _ _ _ _ _).mp hr)
+    | seqStop hs hn => exact Step.seqStop hs hn
+  · intro h
+    cases h with
+    | seqCons hs hr =>
+        have heq := assignAlias_establishes hne hcopy hb hs
+        exact Step.seqCons hs
+          ((forwardAliasStmts_equivAt hne.symm heq rest _ _ _ _ _).mpr hr)
+    | seqStop hs hn => exact Step.seqStop hs hn
+
+private theorem aliasAssignStmts_equiv_rev {layout : List Ident}
+    {source copy : Ident} {rest : Block Op}
+    (hne : copy ≠ source) (hcopy : copy ∈ layout) :
+    LayoutEquivStmts calls creates layout
+      (.assign [copy] (.var source) :: rest)
+      (.assign [copy] (.var source) ::
+        (StackV2.forwardAliasStmts copy source rest).1) := by
+  intro funs V st hb V' st' o
+  constructor
+  · intro h
+    cases h with
+    | seqCons hs hr =>
+        have heq := assignAlias_establishes hne hcopy hb hs
+        exact Step.seqCons hs
+          ((forwardAliasStmts_equivAt hne heq.symm rest _ _ _ _ _).mp hr)
+    | seqStop hs hn => exact Step.seqStop hs hn
+  · intro h
+    cases h with
+    | seqCons hs hr =>
+        have heq := assignAlias_establishes hne hcopy hb hs
+        exact Step.seqCons hs
+          ((forwardAliasStmts_equivAt hne heq.symm rest _ _ _ _ _).mpr hr)
+    | seqStop hs hn => exact Step.seqStop hs hn
+
+private theorem mem_of_findIdx?_eq_some {layout : List Ident} {x : Ident}
+    {i : Nat} (h : layout.findIdx? (fun y => y = x) = some i) :
+    x ∈ layout := by
+  rw [List.findIdx?_eq_some_iff_getElem] at h
+  obtain ⟨hi, heq, _⟩ := h
+  have hval : layout[i] = x := by simpa using heq
+  rw [← hval]
+  exact List.getElem_mem hi
+
+private def aliasLayoutAfter (layout : List Ident) : Stmt Op → List Ident
+  | .letDecl xs _ => xs ++ layout
+  | _ => layout
+
+private theorem aliasBound_after {layout : List Ident} {s : Stmt Op}
+    {funs : FunEnv D} {V V' : VEnv D} {st st' : EvmState}
+    (hb : YulEvmCompiler.Optimizer.BoundOK V layout)
+    (h : ExecStmt D funs V st s V' st' .normal) :
+    YulEvmCompiler.Optimizer.BoundOK V' (aliasLayoutAfter layout s) := by
+  cases s with
+  | letDecl xs val =>
+      simpa [aliasLayoutAfter, dpOut] using
+        YulEvmCompiler.Optimizer.BoundOK.afterStmt hb h
+  | _ => exact YulEvmCompiler.Optimizer.BoundOK.mono hb h
+
+private theorem aliasFallback {layout layout' : List Ident}
+    {s : Stmt Op} {rest rest' : Block Op}
+    (hrest : LayoutEquivStmts calls creates layout' rest rest')
+    (hlayout : layout' = aliasLayoutAfter layout s) :
+    LayoutEquivStmts calls creates layout (s :: rest) (s :: rest') := by
+  subst layout'
+  exact LayoutEquivStmts.cons (fun hb hs => aliasBound_after hb hs) hrest
+
+private theorem aliasOneStmts_sound : ∀ (layout : List Ident)
+    (body out : Block Op), StackV2.aliasOneStmts layout body = some out →
+    LayoutEquivStmts calls creates layout body out
+  | _, [], _, h => by simp [StackV2.aliasOneStmts] at h
+  | layout, s :: rest, out, h => by
+      cases s with
+      | letDecl xs val =>
+          cases xs with
+          | nil =>
+              replace h := Option.map_eq_some_iff.mp (by
+                simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+              obtain ⟨rest', hr, hout⟩ := h
+              subst out
+              exact aliasFallback (aliasOneStmts_sound layout rest rest' hr) rfl
+          | cons copy tail =>
+              cases tail with
+              | cons y ys =>
+                  replace h := Option.map_eq_some_iff.mp (by
+                    simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+                  obtain ⟨rest', hr, hout⟩ := h
+                  subst out
+                  exact aliasFallback
+                    (aliasOneStmts_sound (copy :: y :: ys ++ layout)
+                      rest rest' hr) rfl
+              | nil =>
+                  cases val with
+                  | none =>
+                      replace h := Option.map_eq_some_iff.mp (by
+                        simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+                      obtain ⟨rest', hr, hout⟩ := h
+                      subst out
+                      exact aliasFallback
+                        (aliasOneStmts_sound (copy :: layout) rest rest' hr) rfl
+                  | some e =>
+                      cases e with
+                      | var source =>
+                          simp only [StackV2.aliasOneStmts] at h
+                          split at h
+                          · next hg =>
+                            generalize hf :
+                              StackV2.forwardAliasStmts source copy rest = q at h
+                            obtain ⟨restF, keep, changed⟩ := q
+                            dsimp only at h
+                            split at h
+                            · cases h
+                              have hne : copy ≠ source := by
+                                have hg' := hg
+                                simp only [Bool.and_eq_true, bne_iff_ne] at hg'
+                                exact hg'.1
+                              simpa [hf] using
+                                (aliasLetStmts_equiv (layout := layout)
+                                  (rest := rest) hne)
+                            · obtain ⟨rest', hr, hout⟩ :=
+                                Option.map_eq_some_iff.mp h
+                              subst out
+                              exact aliasFallback
+                                (aliasOneStmts_sound (copy :: layout)
+                                  rest rest' hr) rfl
+                          · obtain ⟨rest', hr, hout⟩ :=
+                              Option.map_eq_some_iff.mp h
+                            subst out
+                            exact aliasFallback
+                              (aliasOneStmts_sound (copy :: layout)
+                                rest rest' hr) rfl
+                      | lit l | builtin op args | call f args =>
+                          replace h := Option.map_eq_some_iff.mp (by
+                            simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+                          obtain ⟨rest', hr, hout⟩ := h
+                          subst out
+                          exact aliasFallback
+                            (aliasOneStmts_sound (copy :: layout)
+                              rest rest' hr) rfl
+      | assign xs e =>
+          cases xs with
+          | nil =>
+              replace h := Option.map_eq_some_iff.mp (by
+                simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+              obtain ⟨rest', hr, hout⟩ := h
+              subst out
+              exact aliasFallback (aliasOneStmts_sound layout rest rest' hr) rfl
+          | cons copy tail =>
+              cases tail with
+              | cons y ys =>
+                  replace h := Option.map_eq_some_iff.mp (by
+                    simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+                  obtain ⟨rest', hr, hout⟩ := h
+                  subst out
+                  exact aliasFallback
+                    (aliasOneStmts_sound layout rest rest' hr) rfl
+              | nil =>
+                  cases e with
+                  | var source =>
+                      simp only [StackV2.aliasOneStmts] at h
+                      cases hc : layout.findIdx? (fun x => x = copy) with
+                      | none =>
+                          simp only [hc] at h
+                          cases hr : StackV2.aliasOneStmts layout rest with
+                          | none => simp [hr] at h
+                          | some rest' =>
+                              simp [hr] at h
+                              subst out
+                              exact aliasFallback
+                                (aliasOneStmts_sound layout rest rest' hr) rfl
+                      | some copyDepth =>
+                          cases hs : layout.findIdx? (fun x => x = source) with
+                          | none =>
+                              simp only [hc, hs] at h
+                              cases hr : StackV2.aliasOneStmts layout rest with
+                              | none => simp [hr] at h
+                              | some rest' =>
+                                  simp [hr] at h
+                                  subst out
+                                  exact aliasFallback
+                                    (aliasOneStmts_sound layout rest rest' hr) rfl
+                          | some sourceDepth =>
+                              simp only [hc, hs] at h
+                              split at h
+                              · next hg =>
+                                generalize hf : StackV2.forwardAliasStmts
+                                  source copy rest = q at h
+                                obtain ⟨restF, keep, changed⟩ := q
+                                dsimp only at h
+                                split at h
+                                · cases h
+                                  have hne : copy ≠ source := by
+                                    have hg' := hg
+                                    simp only [Bool.and_eq_true, bne_iff_ne] at hg'
+                                    exact hg'.1
+                                  simpa [hf] using
+                                    (aliasAssignStmts_equiv (layout := layout)
+                                      (rest := rest) hne
+                                      (mem_of_findIdx?_eq_some hc))
+                                · obtain ⟨rest', hr, hout⟩ :=
+                                    Option.map_eq_some_iff.mp h
+                                  subst out
+                                  exact aliasFallback
+                                    (aliasOneStmts_sound layout rest rest' hr) rfl
+                              · split at h
+                                · next hg =>
+                                  generalize hf : StackV2.forwardAliasStmts
+                                    copy source rest = q at h
+                                  obtain ⟨restF, keep, changed⟩ := q
+                                  dsimp only at h
+                                  split at h
+                                  · cases h
+                                    have hne : copy ≠ source := by
+                                      have hg' := hg
+                                      simp only [Bool.and_eq_true, bne_iff_ne] at hg'
+                                      exact hg'.1
+                                    simpa [hf] using
+                                      (aliasAssignStmts_equiv_rev
+                                        (layout := layout) (rest := rest) hne
+                                        (mem_of_findIdx?_eq_some hc))
+                                  · obtain ⟨rest', hr, hout⟩ :=
+                                      Option.map_eq_some_iff.mp h
+                                    subst out
+                                    exact aliasFallback
+                                      (aliasOneStmts_sound layout rest rest' hr) rfl
+                                · obtain ⟨rest', hr, hout⟩ :=
+                                    Option.map_eq_some_iff.mp h
+                                  subst out
+                                  exact aliasFallback
+                                    (aliasOneStmts_sound layout rest rest' hr) rfl
+                  | lit l | builtin op args | call f args =>
+                      replace h := Option.map_eq_some_iff.mp (by
+                        simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+                      obtain ⟨rest', hr, hout⟩ := h
+                      subst out
+                      exact aliasFallback
+                        (aliasOneStmts_sound layout rest rest' hr) rfl
+      | block body =>
+          replace h := Option.map_eq_some_iff.mp (by
+            simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+          obtain ⟨rest', hr, hout⟩ := h
+          subst out
+          exact aliasFallback (aliasOneStmts_sound layout rest rest' hr) rfl
+      | funDef f ps rs body =>
+          replace h := Option.map_eq_some_iff.mp (by
+            simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+          obtain ⟨rest', hr, hout⟩ := h
+          subst out
+          exact aliasFallback (aliasOneStmts_sound layout rest rest' hr) rfl
+      | cond c body =>
+          replace h := Option.map_eq_some_iff.mp (by
+            simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+          obtain ⟨rest', hr, hout⟩ := h
+          subst out
+          exact aliasFallback (aliasOneStmts_sound layout rest rest' hr) rfl
+      | «switch» c cases dflt =>
+          replace h := Option.map_eq_some_iff.mp (by
+            simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+          obtain ⟨rest', hr, hout⟩ := h
+          subst out
+          exact aliasFallback (aliasOneStmts_sound layout rest rest' hr) rfl
+      | forLoop init c post body =>
+          replace h := Option.map_eq_some_iff.mp (by
+            simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+          obtain ⟨rest', hr, hout⟩ := h
+          subst out
+          exact aliasFallback (aliasOneStmts_sound layout rest rest' hr) rfl
+      | exprStmt e =>
+          replace h := Option.map_eq_some_iff.mp (by
+            simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+          obtain ⟨rest', hr, hout⟩ := h
+          subst out
+          exact aliasFallback (aliasOneStmts_sound layout rest rest' hr) rfl
+      | «break» =>
+          replace h := Option.map_eq_some_iff.mp (by
+            simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+          obtain ⟨rest', hr, hout⟩ := h
+          subst out
+          exact aliasFallback (aliasOneStmts_sound layout rest rest' hr) rfl
+      | «continue» =>
+          replace h := Option.map_eq_some_iff.mp (by
+            simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+          obtain ⟨rest', hr, hout⟩ := h
+          subst out
+          exact aliasFallback (aliasOneStmts_sound layout rest rest' hr) rfl
+      | «leave» =>
+          replace h := Option.map_eq_some_iff.mp (by
+            simpa only [StackV2.aliasOneStmts, Option.map_eq_map, Option.map] using h)
+          obtain ⟨rest', hr, hout⟩ := h
+          subst out
+          exact aliasFallback (aliasOneStmts_sound layout rest rest' hr) rfl
+  termination_by layout body out _h => 2 * sizeOf body + 1
+
+private theorem hoist_cons_congr (s : Stmt Op) {a b : Block Op}
+    (h : hoist D a = hoist D b) :
+    hoist D (s :: a) = hoist D (s :: b) := by
+  cases s <;> simp_all [hoist]
+
+private theorem hoist_map_cons {s : Stmt Op} {rest out : Block Op}
+    {next : Option (Block Op)}
+    (ih : ∀ {a}, next = some a → hoist D a = hoist D rest)
+    (h : (s :: ·) <$> next = some out) :
+    hoist D out = hoist D (s :: rest) := by
+  change Option.map _ next = some out at h
+  obtain ⟨a, ha, hout⟩ := Option.map_eq_some_iff.mp h
+  subst out
+  exact hoist_cons_congr _ (ih ha)
+
+private theorem hoist_forward_result {source copy : Ident}
+    {body body' : Block Op} {keep changed : Bool}
+    (h : StackV2.forwardAliasStmts source copy body =
+      (body', keep, changed)) :
+    hoist D body' = hoist D body := by
+  have hf := forwardAliasStmts_hoist
+    (calls := calls) (creates := creates) source copy body
+  rw [h] at hf
+  exact hf
+
+private theorem hoist_some_forward {s : Stmt Op} {source copy : Ident}
+    {body body' out : Block Op} {keep changed : Bool}
+    (hout : some (s :: body') = some out)
+    (hforward : StackV2.forwardAliasStmts source copy body =
+      (body', keep, changed)) :
+    hoist D out = hoist D (s :: body) := by
+  injection hout with hout'
+  subst out
+  exact hoist_cons_congr _ (hoist_forward_result hforward)
+
+private theorem aliasOneStmts_hoist {layout : List Ident}
+    {body out : Block Op} (h : StackV2.aliasOneStmts layout body = some out) :
+    hoist D out = hoist D body := by
+  revert out
+  fun_induction StackV2.aliasOneStmts layout body
+  all_goals intro out h
+  all_goals
+    first
+    | (apply hoist_map_cons (calls := calls) (creates := creates) <;> assumption)
+    | (apply hoist_some_forward (calls := calls) (creates := creates) <;>
+        assumption)
+    | contradiction
+
+private theorem aliasOneStmts_bound {layout : List Ident}
+    {body out : Block Op} (h : StackV2.aliasOneStmts layout body = some out) :
+    BoundEquivBlock D layout body out := by
+  have hs := aliasOneStmts_sound (calls := calls) (creates := creates)
+    layout body out h
+  have hh := aliasOneStmts_hoist (calls := calls) (creates := creates) h
+  intro funs V st hb
+  have hbmem : YulEvmCompiler.Optimizer.BoundOK V layout := by
+    intro x hx
+    change V.map Prod.fst = layout at hb
+    rw [hb]
+    exact hx
+  constructor
+  · intro V' st' o _
+    constructor
+    · intro hrun
+      cases hrun with
+      | block hbody =>
+          exact Step.block (by
+            rw [hh]
+            exact (hs (hoist D body :: funs) V st hbmem _ _ _).mp hbody)
+    · intro hrun
+      cases hrun with
+      | block hbody =>
+          rw [hh] at hbody
+          exact Step.block ((hs (hoist D body :: funs) V st hbmem _ _ _).mpr hbody)
+  · intro st'
+    constructor
+    · rintro ⟨_, hrun⟩
+      cases hrun with
+      | block hbody =>
+          have hrunOut := Step.block (by
+            rw [hh]
+            exact (hs (hoist D body :: funs) V st hbmem _ _ _).mp hbody)
+          exact ⟨_, hrunOut⟩
+    · rintro ⟨V', hrun⟩
+      cases hrun with
+      | block hbody =>
+          rw [hh] at hbody
+          exact ⟨_, Step.block
+            ((hs (hoist D body :: funs) V st hbmem _ _ _).mpr hbody)⟩
+
+theorem iterateAliasesFrom_bound (n : Nat) (layout : List Ident)
+    (body : Block Op) :
+    BoundEquivBlock D layout body
+      (StackV2.iterateAliasesFrom n layout body) := by
+  induction n generalizing body with
+  | zero => exact BoundEquivBlock.refl _ _
+  | succ n ih =>
+      rw [StackV2.iterateAliasesFrom]
+      cases h : StackV2.aliasOneStmts layout body with
+      | none => exact BoundEquivBlock.refl _ _
+      | some out => exact (aliasOneStmts_bound h).trans (ih out)
+
+private theorem aliasFunctionStmts_eq_mapFunBodies : ∀ b : Block Op,
+    StackV2.aliasFunctionStmts b = mapFunBodies
+      (fun ps rs body =>
+        StackV2.iterateAliasesFrom 4096 (ps ++ rs) body) b := by
+  intro b
+  induction b with
+  | nil => rfl
+  | cons s rest ih =>
+      change List.map StackV2.aliasFunctionStmt rest =
+        mapFunBodies (fun ps rs body =>
+          StackV2.iterateAliasesFrom 4096 (ps ++ rs) body) rest at ih
+      cases s <;> simp [StackV2.aliasFunctionStmts,
+        StackV2.aliasFunctionStmt, mapFunBodies, ih]
+
+private theorem localAt_of_layout {V : VEnv D} {layout : List Ident}
+    {x : Ident} (hkeys : V.map Prod.fst = layout) (hx : x ∈ layout) :
+    ∃ d, LocalAt d x V := by
+  have hm : x ∈ (V.take V.length).map Prod.fst := by
+    simpa [hkeys] using hx
+  obtain ⟨d, hd, _⟩ := localAt_of_mem_take hm
+  exact ⟨d, hd⟩
+
+private theorem SlotRel.copyBack_restore {d dx : Nat} {x y : Ident}
+    {V₁ V₂ base : VEnv D} {value : U256}
+    (h : SlotRel d dx x y V₁ V₂) (hxy : x ≠ y)
+    (hkeys : V₁.map Prod.fst = y :: base.map Prod.fst)
+    (hget : VEnv.get V₁ y = some value) :
+    restore base (VEnv.set V₁ x value) = V₂ := by
+  obtain ⟨above, tail, old, hV₁, hV₂, hxa, hya, hd, hlocal⟩ := h
+  subst V₁
+  have habove : above = [] := by
+    cases above with
+    | nil => rfl
+    | cons p rest =>
+        have hhead := congrArg List.head? hkeys
+        simp only [List.map_append, List.map_cons, List.head?_cons] at hhead
+        have hp : p.1 = y := by simpa using hhead
+        exact False.elim (hya (by simp [hp]))
+  rw [habove] at hkeys hget hV₂ hxa hya ⊢
+  simp only [List.nil_append] at hkeys hget hV₂ hxa hya ⊢
+  have hvalue : old = value := by
+    simpa [VEnv.get] using hget
+  subst old
+  rw [VEnv.set]
+  simp only [if_neg hxy.symm]
+  rw [restore]
+  have hlen : ((y, value) :: VEnv.set tail x value).length - base.length = 1 := by
+    have htail := congrArg List.length hkeys
+    simp only [List.length_map, List.length_cons] at htail
+    have htailBase : tail.length = base.length := by omega
+    rw [List.length_cons, VEnv.set_length, htailBase]
+    simp
+  rw [hlen]
+  simp [hV₂]
+
+mutual
+  private theorem rename_straight_stmt (r : Rename) : ∀ s : Stmt Op,
+      StackV2.shadowStraightStmt s = true →
+        StackV2.shadowStraightStmt (renameStmt r s) = true
+    | .block body, h | .cond _ body, h => by
+        have hb : StackV2.shadowStraightStmts body = true := by
+          simpa only [StackV2.shadowStraightStmt] using h
+        simpa only [renameStmt, StackV2.shadowStraightStmt] using
+          rename_straight r body hb
+    | .switch _ cases dflt, h => by
+        have hs : StackV2.shadowStraightCases cases = true ∧
+            StackV2.shadowStraightDflt dflt = true := by
+          simpa only [StackV2.shadowStraightStmt, Bool.and_eq_true] using h
+        simp only [renameStmt.eq_def, StackV2.shadowStraightStmt,
+          Bool.and_eq_true]
+        constructor
+        · exact rename_straight_cases r cases hs.1
+        · cases dflt with
+          | none => simp [StackV2.shadowStraightDflt]
+          | some body =>
+              simpa only [StackV2.shadowStraightDflt] using
+                rename_straight r body (by
+                  simpa only [StackV2.shadowStraightDflt] using hs.2)
+    | .letDecl _ _, _ | .assign _ _, _ | .exprStmt _, _ => by
+        simp [renameStmt, StackV2.shadowStraightStmt]
+    | .funDef _ _ _ _, h | .forLoop _ _ _ _, h |
+      .break, h | .continue, h | .leave, h => by
+        simp [StackV2.shadowStraightStmt] at h
+
+  private theorem rename_straight (r : Rename) : ∀ body : Block Op,
+      StackV2.shadowStraightStmts body = true →
+        StackV2.shadowStraightStmts (renameStmts r body) = true
+    | [], _ => by simp [renameStmts, StackV2.shadowStraightStmts]
+    | s :: rest, h => by
+        have hs : StackV2.shadowStraightStmt s = true ∧
+            StackV2.shadowStraightStmts rest = true := by
+          simpa only [StackV2.shadowStraightStmts, Bool.and_eq_true] using h
+        simpa only [renameStmts, StackV2.shadowStraightStmts,
+          Bool.and_eq_true] using
+          And.intro (rename_straight_stmt r s hs.1)
+            (rename_straight r rest hs.2)
+
+  private theorem rename_straight_cases (r : Rename) :
+      ∀ cases : List (Literal × Block Op),
+      StackV2.shadowStraightCases cases = true →
+        StackV2.shadowStraightCases (renameCases r cases) = true
+    | [], _ => by simp [renameCases, StackV2.shadowStraightCases]
+    | (_, body) :: rest, h => by
+        have hs : StackV2.shadowStraightStmts body = true ∧
+            StackV2.shadowStraightCases rest = true := by
+          simpa only [StackV2.shadowStraightCases, Bool.and_eq_true] using h
+        simpa only [renameCases, StackV2.shadowStraightCases,
+          Bool.and_eq_true] using
+          And.intro (rename_straight r body hs.1)
+            (rename_straight_cases r rest hs.2)
+
+  private theorem rename_straight_dflt (r : Rename) :
+      ∀ dflt : Option (Block Op),
+      StackV2.shadowStraightDflt dflt = true →
+        StackV2.shadowStraightDflt
+          (match dflt with
+          | none => none
+          | some body => some (renameStmts r body)) = true
+    | none, _ => by simp [StackV2.shadowStraightDflt]
+    | some body, h => by
+        have hb : StackV2.shadowStraightStmts body = true := by
+          simpa only [StackV2.shadowStraightDflt] using h
+        simpa only [StackV2.shadowStraightDflt] using
+          rename_straight r body hb
+end
+
+private theorem straight_cases_mem {cases : List (Literal × Block Op)}
+    (h : StackV2.shadowStraightCases cases = true) {p} (hp : p ∈ cases) :
+    StackV2.shadowStraightStmts p.2 = true := by
+  induction cases with
+  | nil => simp at hp
+  | cons q rest ih =>
+      have hs : StackV2.shadowStraightStmts q.2 = true ∧
+          StackV2.shadowStraightCases rest = true := by
+        rw [StackV2.shadowStraightCases] at h
+        simpa only [Bool.and_eq_true] using h
+      rcases List.mem_cons.mp hp with rfl | hp
+      · exact hs.1
+      · exact ih hs.2 hp
+
+private theorem straight_selectSwitch (cv : U256)
+    (cases : List (Literal × Block Op)) (dflt : Option (Block Op))
+    (hc : StackV2.shadowStraightCases cases = true)
+    (hd : StackV2.shadowStraightDflt dflt = true) :
+    StackV2.shadowStraightStmts (selectSwitch D cv cases dflt) = true := by
+  unfold selectSwitch
+  cases hfind : cases.find? (fun p => decide (cv = litValue p.1)) with
+  | some p =>
+      simp only [hfind]
+      exact straight_cases_mem hc (List.mem_of_find?_eq_some hfind)
+  | none =>
+      simp only [hfind]
+      cases dflt <;> simp_all [StackV2.shadowStraightDflt,
+        StackV2.shadowStraightStmts]
+
+private theorem selectSwitch_size_lt_stmt (c : Expr Op) (cv : U256)
+    (cases : List (Literal × Block Op)) (dflt : Option (Block Op)) :
+    2 * sizeOf (selectSwitch D cv cases dflt) + 1 <
+      2 * sizeOf (Stmt.switch c cases dflt) := by
+  unfold selectSwitch
+  cases hfind : cases.find? (fun p => decide (cv = litValue p.1)) with
+  | some p =>
+      simp only [hfind]
+      have hp := List.mem_of_find?_eq_some hfind
+      have hsize := List.sizeOf_lt_of_mem hp
+      have hpair : sizeOf p.2 < sizeOf p := by
+        rcases p with ⟨lit, body⟩
+        simp_wf
+      have hstmt : sizeOf cases < sizeOf (Stmt.switch c cases dflt) := by
+        simp_wf
+        omega
+      omega
+  | none =>
+      simp only [hfind]
+      cases dflt <;> simp_all <;> omega
+
+set_option maxHeartbeats 800000 in
+mutual
+  private theorem straight_stmt_outcome {s : Stmt Op} {funs : FunEnv D}
+      {V V' : VEnv D} {st st' : EvmState} {o : Outcome}
+      (hs : StackV2.shadowStraightStmt s = true)
+      (h : ExecStmt D funs V st s V' st' o) :
+      o = .normal ∨ o = .halt := by
+    cases h with
+    | block hbody =>
+        exact straight_outcome _ _ _ _ _ _ _ (by
+          simpa only [StackV2.shadowStraightStmt] using hs) hbody
+    | funDef => simp [StackV2.shadowStraightStmt] at hs
+    | letZero | ifFalse => exact .inl rfl
+    | «break» | «continue» | «leave» =>
+        simp [StackV2.shadowStraightStmt] at hs
+    | letVal | assignVal | exprStmt => exact .inl rfl
+    | letHalt | assignHalt | exprStmtHalt | ifHalt | switchHalt |
+      forInitHalt => exact .inr rfl
+    | ifTrue _ _ hbody =>
+        cases hbody with
+        | block hbody =>
+          exact straight_outcome _ _ _ _ _ _ _ (by
+            simpa only [StackV2.shadowStraightStmt] using hs) hbody
+    | @switchExec funs0 V0 st0 c cases dflt cv st1 Vout st2 o0
+        hcond hbody =>
+        cases hbody with
+        | block hbody =>
+          simp only [StackV2.shadowStraightStmt, Bool.and_eq_true] at hs
+          have hsize := selectSwitch_size_lt_stmt (calls := calls)
+            (creates := creates) c cv cases dflt
+          exact straight_outcome (selectSwitch D cv cases dflt) _ _ _ _ _ _
+            (straight_selectSwitch _ _ _ hs.1 hs.2) hbody
+    | forLoop => simp [StackV2.shadowStraightStmt] at hs
+  termination_by 2 * sizeOf s
+
+  private theorem straight_outcome : ∀ (body : Block Op) (funs : FunEnv D)
+      (V V' : VEnv D) (st st' : EvmState) (o : Outcome),
+      StackV2.shadowStraightStmts body = true →
+      ExecStmts D funs V st body V' st' o →
+      o = .normal ∨ o = .halt
+    | [], _, _, _, _, _, _, _, h => by
+        cases h
+        exact .inl rfl
+    | s :: rest, _, _, _, _, _, _, hs, h => by
+        simp only [StackV2.shadowStraightStmts, Bool.and_eq_true] at hs
+        cases h with
+        | seqCons _ hrest =>
+            exact straight_outcome rest _ _ _ _ _ _ hs.2 hrest
+        | seqStop hhead hn =>
+            have hout := straight_stmt_outcome (s := s) hs.1 hhead
+            rcases hout with rfl | rfl
+            · exact False.elim (hn rfl)
+            · exact .inr rfl
+  termination_by body _ _ _ _ _ _ _ _ => 2 * sizeOf body + 1
+  decreasing_by
+    all_goals simp_wf
+    all_goals omega
+end
+
+private theorem shadowStraightCore_bound {layout : List Ident}
+    {x shadow : Ident} {body : Block Op}
+    (hx : x ∈ layout) (hxy : x ≠ shadow)
+    (hshadow : stmtsMentions shadow body = false)
+    (hdecl : stmtsDeclare x body = false)
+    (hfunX : stmtsFunMention x body = false)
+    (hsourceHoist : hoist D body = [])
+    (hstraight : StackV2.shadowStraightStmts body = true) :
+    BoundEquivBlock D layout body
+      [.letDecl [shadow] (some (.var x)),
+        .block (renameStmts [(x, shadow)] body),
+        .assign [x] (.var shadow)] := by
+  intro funs V st hkeys
+  change V.map Prod.fst = layout at hkeys
+  have hxV : x ∈ V.map Prod.fst := by simpa [hkeys] using hx
+  obtain ⟨value, hxget⟩ := VEnv.get_isSome_of_key hxV
+  obtain ⟨dx, hxlocal⟩ := localAt_of_layout hkeys hx
+  have hslot₀ : SlotRel V.length dx x shadow
+      ((shadow, value) :: V) V := by
+    have h := SlotRel.initial (y := shadow) (value := value) hxlocal
+    rwa [VEnv.set_self hxget] at h
+  have htargetMentions :
+      stmtsMentions x (renameStmts [(x, shadow)] body) = false :=
+    renameStmts_no_target hxy.symm hshadow hdecl hfunX
+  have htargetDeclares :
+      stmtsDeclare shadow (renameStmts [(x, shadow)] body) = false := by
+    rw [stmtsDeclare_rename]
+    exact stmtsDeclare_false_of_mentions shadow body hshadow
+  have htargetHoist : hoist D (renameStmts [(x, shadow)] body) = [] := by
+    rw [hoist_renameStmts, hsourceHoist]
+  have htargetOuterHoist : hoist D
+      [.letDecl [shadow] (some (.var x)),
+        .block (renameStmts [(x, shadow)] body),
+        .assign [x] (.var shadow)] = [] := by
+    simp [hoist, htargetHoist]
+  constructor
+  · intro V' st' o ho
+    constructor
+    · intro hrun
+      cases hrun with
+      | @block _ _ _ _ Vbody _ _ hbody =>
+        have hout := straight_outcome _ _ _ _ _ _ _ hstraight hbody
+        rcases hout with rfl | rfl
+        · obtain ⟨r, hrenamed, hr⟩ := slot_rev_fwd hbody hslot₀ hxy
+            (by simpa [codeMentions] using hshadow)
+            (by simpa [codeDeclares] using hdecl)
+          obtain ⟨Vb, rfl, hslotB⟩ := hr.sres_right
+          have hrenamed' : ExecStmts D ([] :: funs) ((shadow, value) :: V) st
+              (renameStmts [(x, shadow)] body) Vb st' .normal := by
+            simpa [renameCode, hsourceHoist] using hrenamed
+          have hrenamed'' := Step.emptyScope_congr hrenamed' (.add _)
+          have hinner : ExecStmt D ([] :: funs) ((shadow, value) :: V) st
+              (.block (renameStmts [(x, shadow)] body))
+              (restore ((shadow, value) :: V) Vb) st' .normal := by
+            exact Step.block (by simpa [htargetHoist] using hrenamed'')
+          have hslotR := hslot₀.restore_nested hslotB
+            (venvLen_mono hrenamed' rfl)
+          have hkeysInner := (block_stmt_shape hinner).1
+          have hxFinal : x ∈ (restore V Vbody).map Prod.fst := by
+            have hshape := (block_stmt_shape (Step.block hbody)).1
+            rw [hshape]
+            exact hxV
+          obtain ⟨newValue, hxFinalGet⟩ := VEnv.get_isSome_of_key hxFinal
+          have hshadowGet : VEnv.get (restore ((shadow, value) :: V) Vb)
+              shadow = some newValue := by
+            rw [hslotR.get_y]
+            exact hxFinalGet
+          have hcopy : ExecStmt D ([] :: funs)
+              (restore ((shadow, value) :: V) Vb) st'
+              (.assign [x] (.var shadow))
+              (VEnv.set (restore ((shadow, value) :: V) Vb) x newValue)
+              st' .normal := by
+            exact Step.assignVal (Step.var hshadowGet) rfl
+          have hrestore := SlotRel.copyBack_restore hslotR hxy
+            hkeysInner hshadowGet
+          have hlet : ExecStmt D ([] :: funs) V st
+              (.letDecl [shadow] (some (.var x)))
+              ((shadow, value) :: V) st .normal :=
+            Step.letVal (Step.var hxget) rfl
+          have hseq := Step.seqCons hlet
+            (Step.seqCons hinner (Step.seqCons hcopy Step.seqNil))
+          have htarget : ExecStmt D funs V st
+              (.block [.letDecl [shadow] (some (.var x)),
+                .block (renameStmts [(x, shadow)] body),
+                .assign [x] (.var shadow)])
+              (restore V (VEnv.set (restore ((shadow, value) :: V) Vb)
+                x newValue)) st' .normal := by
+            exact Step.block (by simpa [htargetOuterHoist] using hseq)
+          rw [hrestore] at htarget
+          exact htarget
+        · exact absurd rfl ho
+    · intro hrun
+      cases hrun with
+      | block hseq =>
+        cases hseq with
+        | seqCons hlet hrest =>
+          cases hlet with
+          | letVal hread hlen =>
+            cases hread with
+            | var hread =>
+              simp only at hlen
+              rw [hxget] at hread
+              cases hread
+              cases hrest with
+              | seqCons hinner htail =>
+                cases htail with
+                | seqCons hcopy hnil =>
+                  cases hcopy with
+                  | assignVal hreadCopy hlenCopy =>
+                    cases hreadCopy with
+                    | var hshadowGet =>
+                      cases hnil
+                      cases hinner with
+                      | @block _ _ _ _ Vrenamed _ _ hrenamedBody =>
+                        have hrenamedBody' : ExecStmts D ([] :: [] :: funs)
+                            ((shadow, value) :: V) st
+                            (renameStmts [(x, shadow)] body) Vrenamed st' .normal := by
+                          simpa [htargetOuterHoist, htargetHoist] using hrenamedBody
+                        have hrenamed' := Step.emptyScope_congr
+                          hrenamedBody' (.drop _)
+                        obtain ⟨r, hsource, hr⟩ := slot_fwd hrenamed' hslot₀
+                          (by simpa [codeMentions] using htargetMentions)
+                          (by simpa [codeDeclares] using htargetDeclares)
+                        obtain ⟨Vb, rfl, hslotB⟩ := hr.sres
+                        simp only [renameCode] at hsource
+                        rw [renameStmts_inverse hxy.symm hshadow] at hsource
+                        have hslotR := hslot₀.restore_nested hslotB
+                          (venvLen_mono hrenamed' rfl)
+                        simp only at hlenCopy
+                        have hinner : ExecStmt D ([] :: funs)
+                            ((shadow, value) :: V) st
+                            (.block (renameStmts [(x, shadow)] body))
+                            (restore ((shadow, value) :: V) Vrenamed)
+                            st' .normal := by
+                          exact Step.block (by simpa [htargetOuterHoist,
+                            htargetHoist] using hrenamedBody)
+                        have hkeysInner := (block_stmt_shape hinner).1
+                        have hrestore := SlotRel.copyBack_restore hslotR hxy
+                          hkeysInner hshadowGet
+                        have hsourceBlock : ExecStmt D funs V st (.block body)
+                            (restore V Vb) st' .normal := by
+                          exact Step.block (by simpa [hsourceHoist] using hsource)
+                        simp only [List.zip_cons_cons, List.zip_nil_left,
+                          List.nil_append, List.singleton_append]
+                        rw [VEnv.setMany_singleton, hrestore]
+                        exact hsourceBlock
+                | seqStop hcopy hn => cases hcopy <;> simp_all
+              | seqStop hinner hn =>
+                cases hinner with
+                | block hrenamedBody =>
+                  have hout := straight_outcome _ _ _ _ _ _ _
+                    (rename_straight [(x, shadow)] body hstraight)
+                    hrenamedBody
+                  rcases hout with rfl | rfl <;> simp_all
+        | seqStop hlet hn =>
+          cases hlet with
+          | letVal _ _ => exact False.elim (hn rfl)
+          | letHalt hexpr => cases hexpr
+  · intro st'
+    constructor
+    · rintro ⟨V', hrun⟩
+      cases hrun with
+      | block hbody =>
+        obtain ⟨r, hrenamed, hr⟩ := slot_rev_fwd hbody hslot₀ hxy
+          (by simpa [codeMentions] using hshadow)
+          (by simpa [codeDeclares] using hdecl)
+        obtain ⟨Vb, rfl, hslotB⟩ := hr.sres_right
+        have hrenamed' : ExecStmts D ([] :: funs) ((shadow, value) :: V) st
+            (renameStmts [(x, shadow)] body) Vb st' .halt := by
+          simpa [renameCode, hsourceHoist] using hrenamed
+        have hrenamed'' := Step.emptyScope_congr hrenamed' (.add _)
+        have hinner : ExecStmt D ([] :: funs) ((shadow, value) :: V) st
+            (.block (renameStmts [(x, shadow)] body))
+            (restore ((shadow, value) :: V) Vb) st' .halt :=
+          Step.block (by simpa [htargetHoist] using hrenamed'')
+        have hlet : ExecStmt D ([] :: funs) V st
+            (.letDecl [shadow] (some (.var x)))
+            ((shadow, value) :: V) st .normal :=
+          Step.letVal (Step.var hxget) rfl
+        refine ⟨_, Step.block (Step.seqCons hlet
+          (Step.seqStop hinner (by simp)))⟩
+    · rintro ⟨V', hrun⟩
+      cases hrun with
+      | block hseq =>
+        cases hseq with
+        | seqCons hlet hrest =>
+          cases hlet with
+          | letVal hread hlen =>
+            cases hread with
+            | var hread =>
+              simp only at hlen
+              rw [hxget] at hread
+              cases hread
+              cases hrest with
+              | seqStop hinner hn =>
+                cases hinner with
+                | @block _ _ _ _ Vrenamed _ _ hrenamedBody =>
+                  have hrenamedBody' : ExecStmts D ([] :: [] :: funs)
+                      ((shadow, value) :: V) st
+                      (renameStmts [(x, shadow)] body) Vrenamed st' .halt := by
+                    simpa [htargetOuterHoist, htargetHoist] using hrenamedBody
+                  have hrenamed' := Step.emptyScope_congr
+                    hrenamedBody' (.drop _)
+                  obtain ⟨r, hsource, hr⟩ := slot_fwd hrenamed' hslot₀
+                    (by simpa [codeMentions] using htargetMentions)
+                    (by simpa [codeDeclares] using htargetDeclares)
+                  obtain ⟨Vb, rfl, hslotB⟩ := hr.sres
+                  simp only [renameCode] at hsource
+                  rw [renameStmts_inverse hxy.symm hshadow] at hsource
+                  exact ⟨_, Step.block (by simpa [hsourceHoist] using hsource)⟩
+              | seqCons hinner htail =>
+                cases hinner with
+                | block hrenamedBody =>
+                  cases htail with
+                  | seqStop hcopy hn =>
+                      cases hcopy with
+                      | assignHalt hv => cases hv
+                  | seqCons hcopy hnil => cases hnil
+        | seqStop hlet hn =>
+          cases hlet with
+          | letHalt hexpr => cases hexpr
+
+private theorem shadowStableCandidate_bound (P : String) (Phi : FMap)
+    (layout : List Ident) (body : Block Op) : ∀ (xs : List Ident)
+    {out : Block Op},
+    StackV2.shadowStableCandidate P Phi layout body xs = some out →
+      BoundEquivBlock D layout body out
+  | [], _, h => by simp [StackV2.shadowStableCandidate] at h
+  | x :: xs, out, h => by
+      rw [StackV2.shadowStableCandidate] at h
+      cases hidx : layout.findIdx? (fun y => y = x) with
+      | none =>
+          simp only [hidx] at h
+          exact shadowStableCandidate_bound P Phi layout body xs h
+      | some idx =>
+          simp only [hidx] at h
+          split at h
+          · next hguard =>
+            split at h
+            · cases h
+              simp only [Bool.and_eq_true, Bool.not_eq_true] at hguard
+              rcases hguard with ⟨hguard, hcontrols⟩
+              rcases hguard with ⟨hguard, hstraight⟩
+              rcases hguard with ⟨hguard, hfunMentionNeg⟩
+              rcases hguard with ⟨hguard, hescape⟩
+              rcases hguard with ⟨hguard, hleave⟩
+              rcases hguard with ⟨hguard, hfun⟩
+              rcases hguard with ⟨hguard, hdeclNeg⟩
+              rcases hguard with ⟨hguard, hshadow⟩
+              rcases hguard with ⟨hguard, hfresh⟩
+              rcases hguard with ⟨hdepth, hbne⟩
+              have hxy : x ≠ s!"{P}r" := bne_iff_ne.mp hbne
+              have hshadowFalse : stmtsMentions s!"{P}r" body = false := by
+                cases hm : stmtsMentions s!"{P}r" body <;> simp_all
+              have hdecl : stmtsDeclare x body = false := by
+                cases hd : stmtsDeclare x body <;> simp_all
+              have hfunMention : stmtsFunMention x body = false := by
+                cases hm : stmtsFunMention x body <;> simp_all
+              have hsourceHoist : hoist D body = [] :=
+                hoist_nil_of_no_direct_fun body (by
+                  cases hf : hasDirectFun body <;> simp_all)
+              let inner : Block Op :=
+                [.letDecl [s!"{P}r"] (some (.var x)),
+                  .block (renameStmts [(x, s!"{P}r")] body),
+                  .assign [x] (.var s!"{P}r")]
+              have hcore : BoundEquivBlock D layout body inner := by
+                simpa [inner] using shadowStraightCore_bound
+                  (mem_of_findIdx?_eq_some hidx) hxy
+                  hshadowFalse hdecl hfunMention hsourceHoist hstraight
+              have hwrap : EquivBlock D inner [.block inner] := by
+                simpa [inner] using scopePrefix_equivBlock
+                  (pre := inner) (rest := [])
+                  (by simp [inner, hasDirectFun])
+                  (by intro x hx; rfl)
+              exact hcore.trans (BoundEquivBlock.of_equiv hwrap)
+            · exact shadowStableCandidate_bound P Phi layout body xs h
+          · exact shadowStableCandidate_bound P Phi layout body xs h
+  termination_by xs out _h => xs.length
+
+private theorem shadowStableHere_bound {P : String} {Phi : FMap}
+    {layout : List Ident} {body out : Block Op}
+    (h : StackV2.shadowStableHere P Phi layout body = some out) :
+    BoundEquivBlock D layout body out := by
+  unfold StackV2.shadowStableHere at h
+  cases hfirst : StackV2.shadowStableCandidate P Phi layout body
+      ((StackV2.deepVarsStmts Phi layout layout body).filter fun x =>
+        !StackV2.writesStmts x body) with
+  | some first =>
+      simp only [hfirst] at h
+      cases h
+      exact shadowStableCandidate_bound P Phi layout body _ hfirst
+  | none =>
+      simp only [hfirst] at h
+      exact shadowStableCandidate_bound P Phi layout body _ h
+
+private theorem shadowWrittenHere_bound {P : String} {Phi : FMap}
+    {layout : List Ident} {body out : Block Op}
+    (h : StackV2.shadowWrittenHere P Phi layout body = some out) :
+    BoundEquivBlock D layout body out := by
+  exact shadowStableCandidate_bound P Phi layout body _
+    (by simpa [StackV2.shadowWrittenHere] using h)
+
+private theorem let_single_bound {funs : FunEnv D} {V V' : VEnv D}
+    {st st'} {g : Ident} {init : Option (Expr Op)}
+    {layout : List Ident} (hb : BoundFun.BoundOK V layout)
+    (hlet : ExecStmt D funs V st (.letDecl [g] init) V' st' .normal) :
+    BoundFun.BoundOK V' (g :: layout) := by
+  cases init with
+  | none =>
+      cases hlet
+      unfold BoundFun.BoundOK
+      change [g] ++ V.map Prod.fst = g :: layout
+      rw [hb]
+      rfl
+  | some e =>
+      cases hlet with
+      | letVal _ hlen =>
+          unfold BoundFun.BoundOK
+          rw [List.map_append, List.map_fst_zip (by omega), hb]
+          simp
+
+private theorem boundBlockTail_nonhalt {bound : List Ident}
+    {inner inner' rest : Block Op}
+    (hinner : BoundEquivBlock D bound inner inner')
+    {funs : FunEnv D} {V : VEnv D} {st}
+    (hb : BoundFun.BoundOK V bound) {V' : VEnv D} {st'}
+    {o : Outcome} (ho : o ≠ .halt) :
+    ExecStmts D funs V st (.block inner :: rest) V' st' o ↔
+      ExecStmts D funs V st (.block inner' :: rest) V' st' o := by
+  constructor <;> intro h
+  · cases h with
+    | seqCons hblock hrest =>
+        exact Step.seqCons (((hinner funs V st hb).1 _ _ .normal (by simp)).mp hblock)
+          hrest
+    | seqStop hblock hn =>
+        exact Step.seqStop (((hinner funs V st hb).1 _ _ _ ho).mp hblock) hn
+  · cases h with
+    | seqCons hblock hrest =>
+        exact Step.seqCons (((hinner funs V st hb).1 _ _ .normal (by simp)).mpr hblock)
+          hrest
+    | seqStop hblock hn =>
+        exact Step.seqStop (((hinner funs V st hb).1 _ _ _ ho).mpr hblock) hn
+
+private theorem boundBlockTail_halt {bound : List Ident}
+    {inner inner' rest : Block Op}
+    (hinner : BoundEquivBlock D bound inner inner')
+    {funs : FunEnv D} {V : VEnv D} {st}
+    (hb : BoundFun.BoundOK V bound) {st'} :
+    (∃ V', ExecStmts D funs V st (.block inner :: rest) V' st' .halt) ↔
+      ∃ V', ExecStmts D funs V st (.block inner' :: rest) V' st' .halt := by
+  constructor
+  · rintro ⟨V', h⟩
+    cases h with
+    | seqCons hblock hrest =>
+        refine ⟨V', Step.seqCons ?_ hrest⟩
+        exact ((hinner funs V st hb).1 _ _ .normal (by simp)).mp hblock
+    | seqStop hblock _ =>
+        obtain ⟨V'', hblock'⟩ := ((hinner funs V st hb).2 st').mp ⟨_, hblock⟩
+        exact ⟨V'', Step.seqStop hblock' (by simp)⟩
+  · rintro ⟨V', h⟩
+    cases h with
+    | seqCons hblock hrest =>
+        refine ⟨V', Step.seqCons ?_ hrest⟩
+        exact ((hinner funs V st hb).1 _ _ .normal (by simp)).mpr hblock
+    | seqStop hblock _ =>
+        obtain ⟨V'', hblock'⟩ := ((hinner funs V st hb).2 st').mpr ⟨_, hblock⟩
+        exact ⟨V'', Step.seqStop hblock' (by simp)⟩
+
+private theorem underLetBlockTail_bound {g : Ident} {init : Option (Expr Op)}
+    {layout : List Ident} {inner inner' rest : Block Op}
+    (hinner : BoundEquivBlock D (g :: layout) inner inner') :
+    BoundEquivBlock D layout
+      (.letDecl [g] init :: .block inner :: rest)
+      (.letDecl [g] init :: .block inner' :: rest) := by
+  intro funs V st hb
+  have hhoist : hoist D (.letDecl [g] init :: .block inner :: rest) =
+      hoist D (.letDecl [g] init :: .block inner' :: rest) := by
+    simp [hoist]
+  constructor
+  · intro V' st' o ho
+    constructor
+    · intro h
+      cases h with
+      | block hbody =>
+        apply Step.block
+        rw [← hhoist]
+        cases hbody with
+        | seqCons hlet htail =>
+            exact Step.seqCons hlet ((boundBlockTail_nonhalt hinner
+              (let_single_bound hb hlet) ho).mp htail)
+        | seqStop hlet hn => exact Step.seqStop hlet hn
+    · intro h
+      cases h with
+      | block hbody =>
+        apply Step.block
+        rw [hhoist]
+        cases hbody with
+        | seqCons hlet htail =>
+            exact Step.seqCons hlet ((boundBlockTail_nonhalt hinner
+              (let_single_bound hb hlet) ho).mpr htail)
+        | seqStop hlet hn => exact Step.seqStop hlet hn
+  · intro st'
+    constructor
+    · rintro ⟨V', h⟩
+      cases h with
+      | block hbody =>
+        rw [hhoist] at hbody
+        cases hbody with
+        | seqCons hlet htail =>
+            obtain ⟨V'', htail'⟩ := (boundBlockTail_halt hinner
+              (let_single_bound hb hlet)).mp ⟨_, htail⟩
+            exact ⟨_, Step.block (Step.seqCons hlet htail')⟩
+        | seqStop hlet hn => exact ⟨_, Step.block (Step.seqStop hlet hn)⟩
+    · rintro ⟨V', h⟩
+      cases h with
+      | block hbody =>
+        rw [← hhoist] at hbody
+        cases hbody with
+        | seqCons hlet htail =>
+            obtain ⟨V'', htail'⟩ := (boundBlockTail_halt hinner
+              (let_single_bound hb hlet)).mpr ⟨_, htail⟩
+            exact ⟨_, Step.block (Step.seqCons hlet htail')⟩
+        | seqStop hlet hn => exact ⟨_, Step.block (Step.seqStop hlet hn)⟩
+
+private theorem singletonBlock_bound {layout : List Ident}
+    {inner inner' : Block Op}
+    (hinner : BoundEquivBlock D layout inner inner') :
+    BoundEquivBlock D layout [.block inner] [.block inner'] := by
+  intro funs V st hb
+  constructor
+  · intro V' st' o ho
+    constructor
+    · intro h
+      cases h with
+      | block hbody =>
+          exact Step.block ((boundBlockTail_nonhalt (rest := []) hinner hb ho).mp hbody)
+    · intro h
+      cases h with
+      | block hbody =>
+          exact Step.block ((boundBlockTail_nonhalt (rest := []) hinner hb ho).mpr hbody)
+  · intro st'
+    constructor
+    · rintro ⟨V', h⟩
+      cases h with
+      | block hbody =>
+          obtain ⟨V'', hbody'⟩ := (boundBlockTail_halt (rest := []) hinner hb).mp
+            ⟨_, hbody⟩
+          exact ⟨_, Step.block hbody'⟩
+    · rintro ⟨V', h⟩
+      cases h with
+      | block hbody =>
+          obtain ⟨V'', hbody'⟩ := (boundBlockTail_halt (rest := []) hinner hb).mpr
+            ⟨_, hbody⟩
+          exact ⟨_, Step.block hbody'⟩
+
+private theorem shadowInsideExisting_bound (P : String) (Phi : FMap)
+    (layout : List Ident) {body out : Block Op}
+    (h : StackV2.shadowInsideExisting P Phi layout body = some out) :
+    BoundEquivBlock D layout body out := by
+  revert out
+  fun_induction StackV2.shadowInsideExisting P Phi layout body
+  case case1 inner ih =>
+    intro out h
+    obtain ⟨inner', hinner, rfl⟩ := Option.map_eq_some_iff.mp h
+    exact singletonBlock_bound (ih hinner)
+  case case2 g init inner rest hgen inner' hinner ih =>
+    intro out h
+    cases h
+    exact underLetBlockTail_bound (ih hinner)
+  case case3 g init inner rest hgen hnone ih =>
+    intro out h
+    contradiction
+  case case4 g init inner rest hgen =>
+    intro out h
+    exact shadowStableHere_bound h
+  case case5 body hsingle hchain =>
+    intro out h
+    exact shadowStableHere_bound h
+
+private theorem shadowInsideExistingWritten_bound (P : String) (Phi : FMap)
+    (layout : List Ident) {body out : Block Op}
+    (h : StackV2.shadowInsideExistingWritten P Phi layout body = some out) :
+    BoundEquivBlock D layout body out := by
+  revert out
+  fun_induction StackV2.shadowInsideExistingWritten P Phi layout body
+  case case1 inner ih =>
+    intro out h
+    obtain ⟨inner', hinner, rfl⟩ := Option.map_eq_some_iff.mp h
+    exact singletonBlock_bound (ih hinner)
+  case case2 g init inner rest hgen inner' hinner ih =>
+    intro out h
+    cases h
+    exact underLetBlockTail_bound (ih hinner)
+  case case3 g init inner rest hgen hnone ih =>
+    intro out h
+    contradiction
+  case case4 g init inner rest hgen =>
+    intro out h
+    exact shadowWrittenHere_bound h
+  case case5 body hsingle hchain =>
+    intro out h
+    exact shadowWrittenHere_bound h
+
+private theorem shadowOneRegionStmts_bound {P : String} {Phi : FMap}
+    {layout : List Ident} {body out : Block Op}
+    (h : StackV2.shadowOneRegionStmts P Phi layout body = some out) :
+    BoundEquivBlock D layout body out := by
+  exact shadowStableHere_bound (by simpa [StackV2.shadowOneRegionStmts] using h)
+
+theorem iterateRegionRangesFrom_bound (n : Nat) (Phi : FMap)
+    (layout : List Ident) (body : Block Op) :
+    BoundEquivBlock D layout body
+      (StackV2.iterateRegionRangesFrom n Phi layout body) := by
+  induction n generalizing body with
+  | zero => exact BoundEquivBlock.refl _ _
+  | succ n ih =>
+      rw [StackV2.iterateRegionRangesFrom]
+      cases hp : freshPrefix (stmtsIdents body) with
+      | none => exact BoundEquivBlock.refl _ _
+      | some P =>
+          simp only [hp]
+          cases h : StackV2.shadowOneRegionStmts P Phi layout body with
+          | none => exact BoundEquivBlock.refl _ _
+          | some out => exact (shadowOneRegionStmts_bound h).trans (ih out)
+
+private theorem rangeFunctionStmts_eq_mapFunBodies (n : Nat) : ∀ b : Block Op,
+    StackV2.rangeFunctionStmts n b = mapFunBodies
+      (fun ps rs body =>
+        let (scope, _) := hoistInfos 0 b
+        StackV2.iterateRegionRangesFrom n [scope] (ps ++ rs) body) b := by
+  intro b
+  simp only [StackV2.rangeFunctionStmts]
+  generalize hs : (hoistInfos 0 b).1 = scope
+  clear hs
+  induction b with
+  | nil => rfl
+  | cons s rest ih =>
+      cases s <;> simp [mapFunBodies, ih]
+theorem rangeFunctionStmts_equiv (n : Nat) (b : Block Op) :
+    EquivBlock D b (StackV2.rangeFunctionStmts n b) := by
+  rw [rangeFunctionStmts_eq_mapFunBodies]
+  exact mapFunBodies_equiv _ (fun ps rs body => by
+    dsimp only
+    exact iterateRegionRangesFrom_bound n _ (ps ++ rs) body) b
+
+private theorem nestedRangeFunctionStmts_eq_mapFunBodies : ∀ b : Block Op,
+    StackV2.nestedRangeFunctionStmts b = mapFunBodies
+      (fun ps rs body =>
+        let (scope, _) := hoistInfos 0 b
+        match freshPrefix (stmtsIdents body) with
+        | some P => (StackV2.shadowInsideExisting P [scope] (ps ++ rs) body).getD body
+        | none => body) b := by
+  intro b
+  simp only [StackV2.nestedRangeFunctionStmts]
+  generalize hs : (hoistInfos 0 b).1 = scope
+  clear hs
+  induction b with
+  | nil => rfl
+  | cons s rest ih =>
+      cases s <;> simp [mapFunBodies, ih]
+      all_goals split <;> simp_all
+
+theorem nestedRangeFunctionStmts_equiv (b : Block Op) :
+    EquivBlock D b (StackV2.nestedRangeFunctionStmts b) := by
+  rw [nestedRangeFunctionStmts_eq_mapFunBodies]
+  exact mapFunBodies_equiv _ (fun ps rs body => by
+    dsimp only
+    cases hp : freshPrefix (stmtsIdents body) with
+    | none => exact BoundEquivBlock.refl _ _
+    | some P =>
+        simp only [hp]
+        cases h : StackV2.shadowInsideExisting P _ (ps ++ rs) body with
+        | none => exact BoundEquivBlock.refl _ _
+        | some out =>
+            simpa using shadowInsideExisting_bound P _ (ps ++ rs) h) b
+
+private theorem nestedWrittenRangeFunctionStmts_eq_mapFunBodies : ∀ b : Block Op,
+    StackV2.nestedWrittenRangeFunctionStmts b = mapFunBodies
+      (fun ps rs body =>
+        let (scope, _) := hoistInfos 0 b
+        match freshPrefix (stmtsIdents body) with
+        | some P =>
+            (StackV2.shadowInsideExistingWritten P [scope] (ps ++ rs) body).getD body
+        | none => body) b := by
+  intro b
+  simp only [StackV2.nestedWrittenRangeFunctionStmts]
+  generalize hs : (hoistInfos 0 b).1 = scope
+  clear hs
+  induction b with
+  | nil => rfl
+  | cons s rest ih =>
+      cases s <;> simp [mapFunBodies, ih]
+      all_goals split <;> simp_all
+
+theorem nestedWrittenRangeFunctionStmts_equiv (b : Block Op) :
+    EquivBlock D b (StackV2.nestedWrittenRangeFunctionStmts b) := by
+  rw [nestedWrittenRangeFunctionStmts_eq_mapFunBodies]
+  exact mapFunBodies_equiv _ (fun ps rs body => by
+    dsimp only
+    cases hp : freshPrefix (stmtsIdents body) with
+    | none => exact BoundEquivBlock.refl _ _
+    | some P =>
+        simp only [hp]
+        cases h : StackV2.shadowInsideExistingWritten P _ (ps ++ rs) body with
+        | none => exact BoundEquivBlock.refl _ _
+        | some out =>
+            simpa using shadowInsideExistingWritten_bound P _ (ps ++ rs) h) b
+
+theorem iterateNestedRangeFunctionStmts_equiv (n : Nat) (b : Block Op) :
+    EquivBlock D b (StackV2.iterateNestedRangeFunctionStmts n b) := by
+  induction n generalizing b with
+  | zero => exact EquivBlock.refl _
+  | succ n ih =>
+      rw [StackV2.iterateNestedRangeFunctionStmts]
+      exact (nestedRangeFunctionStmts_equiv b).trans
+        (ih (StackV2.nestedRangeFunctionStmts b))
+
+theorem aliasFunctionStmts_equiv (b : Block Op) :
+    EquivBlock D b (StackV2.aliasFunctionStmts b) := by
+  rw [aliasFunctionStmts_eq_mapFunBodies]
+  exact mapFunBodies_equiv _ (fun ps rs body =>
+    iterateAliasesFrom_bound 4096 (ps ++ rs) body) b
+
+end StackV2Sound
+
+theorem legacyStackLayoutBlock_equiv (b : Block Op) :
+    EquivBlock D b (legacyStackLayoutBlock b) := by
+  simp only [legacyStackLayoutBlock]
+  exact (scheduleBlock_equiv b).trans
     ((iterateStackLayout_equiv 1024 (scheduleStmts b)).trans
       (iterateTailScope_equiv 1024
         (iterateStackLayout 1024 (scheduleStmts b))))
+
+theorem aggressiveStackLayoutBlock_equiv (b : Block Op) :
+    EquivBlock D b (aggressiveStackLayoutBlock b) := by
+    simp only [aggressiveStackLayoutBlock]
+    apply (scheduleBlock_equiv b).trans
+    apply (iterateCopyBack_equiv 1024 (scheduleStmts b)).trans
+    apply (StackV2Sound.scopeDeadFunctionStmts_equiv _).trans
+    apply (iterateTailScope_equiv 4096 _).trans
+    apply (iterateStackLayout_equiv 4096 _).trans
+    apply (StackV2Sound.rangeFunctionStmts_equiv 64 _).trans
+    apply (iterateStackLayout_equiv 4096 _).trans
+    apply (iterateStackLayout_equiv 4096 _).trans
+    apply (StackV2Sound.rangeFunctionStmts_equiv 64 _).trans
+    apply (StackV2Sound.aliasFunctionStmts_equiv _).trans
+    apply (StackV2Sound.rangeFunctionStmts_equiv 64 _).trans
+    apply (StackV2Sound.iterateNestedRangeFunctionStmts_equiv 1 _).trans
+    apply (StackV2Sound.nestedWrittenRangeFunctionStmts_equiv _).trans
+    apply (iterateStackLayout_equiv 4096 _).trans
+    apply (StackV2Sound.aliasFunctionStmts_equiv _).trans
+    apply (StackV2Sound.scopeDeadFunctionStmts_equiv _).trans
+    exact stageCallsBlock_equiv _
+
+/-- The verified expression-scheduling and liveness-guided stack-layout pass. -/
+def stackLayout : Pass D where
+  run := stackLayoutBlock
+  sound := fun b => by
+    simp only [stackLayoutBlock]
+    split
+    · exact legacyStackLayoutBlock_equiv b
+    · split
+      · exact aggressiveStackLayoutBlock_equiv b
+      · exact legacyStackLayoutBlock_equiv b
 
 @[simp] theorem stackLayout_run (b : Block Op) :
     (stackLayout (calls := calls) (creates := creates)).run b = stackLayoutBlock b := rfl
