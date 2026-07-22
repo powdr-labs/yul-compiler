@@ -40,7 +40,7 @@ Covering / disjointness come straight from `KeyDiff`: `mustAliasWord` /
 ## Soundness contract
 
 Each per-region traversal is a `Pass` (`Sound`: `EquivBlock b (run b)`), and the
-whole thing is their composition. The `Sound` proofs are **complete (no `sorry`)**
+whole thing is their composition. The `Sound` proofs are **complete** (no proof holes)
 for the currently-enabled region (storage); see the `Soundness` section.
 -/
 
@@ -301,7 +301,7 @@ in the dialect's `effects`, so an intervening disjoint store never observes
 `tk`; clean keys/values never observe or halt.) Lifting the local fact through
 the `YulSemantics.Equiv` statement congruences gives `EquivBlock`.
 
-This is now **fully proved, no `sorry`** (`deadAt_sound` and `dseStmts_sound`
+This is now **fully proved** (`deadAt_sound` and `dseStmts_sound`
 depend only on the three standard classical axioms). The proof is developed for
 the word-addressed regions with literal keys/values via `sstore_step_iff` (the
 store's exact effect), the effect algebra (`sstoreEff_absorb`/`sstoreEff_comm`),
