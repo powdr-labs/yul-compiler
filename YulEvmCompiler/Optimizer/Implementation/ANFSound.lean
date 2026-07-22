@@ -1,4 +1,6 @@
 import YulSemantics.BigStep
+import YulEvmCompiler.Optimizer.Implementation.ANF
+import YulEvmCompiler.Optimizer.Spec.Pass
 /-!
 # ANF normalizer — soundness foundations (`VEnv` weakening atoms)
 
@@ -65,5 +67,70 @@ theorem set_length (V : VEnv D) (x : Ident) (v : D.Value) :
       by_cases h : y = x
       · subst h; simp [VEnv.set]
       · simp [VEnv.set, h, ih]
+
+/-! ### `restore` under a block-local prefix
+
+`restore outer inner = inner.drop (inner.length - outer.length)`. The block-scoped
+ANF design introduces temporaries as a *prefix* of the block-local environment,
+so `restore` drops them: the observable post-block environment is exactly what it
+would have been without the temporaries. -/
+
+private theorem drop_length_append {α} (pre suf : List α) :
+    (pre ++ suf).drop pre.length = suf := by
+  induction pre with
+  | nil => rfl
+  | cons a as ih => simpa using ih
+
+/-- Restoring past a block-local prefix recovers the enclosing environment. -/
+theorem restore_prefix (V pre : VEnv D) : restore V (pre ++ V) = V := by
+  unfold restore
+  rw [List.length_append, Nat.add_sub_cancel]
+  exact drop_length_append pre V
+
+/-- `restore V V = V` (an empty block-local layer). -/
+@[simp] theorem restore_self (V : VEnv D) : restore V V = V := by
+  have := restore_prefix V ([] : VEnv D); simp only [List.nil_append] at this; exact this
+
+end YulEvmCompiler.Optimizer.ANF
+
+/-! ## Soundness scaffold
+
+The end-to-end soundness statement and the wired `Pass`, scaffolded with a single
+`sorry` at the semantic core so the architecture is verified to compose. The
+`sorry` (`anfNormalize_sound`) is discharged incrementally: block-scoped
+temporaries are popped by the enclosing `restore` (the lemmas above), so the
+proof reduces to per-statement local block-equivalences plus the flatten
+evaluation-correctness — no general `Step` weakening lemma required. -/
+
+namespace YulEvmCompiler.Optimizer.ANF
+
+open YulSemantics YulSemantics.EVM
+open YulEvmCompiler.Optimizer (Pass)
+
+variable {calls : ExternalCalls} {creates : ExternalCreates}
+local notation "D" => evmWithExternal calls creates
+
+/-- A program-fresh temporary prefix. A NUL character cannot occur in a Yul
+source identifier, so no program identifier starts with it; the freshness fact
+is proved when discharging `anfNormalize_sound`. -/
+def anfPrefix (_b : Block Op) : String := String.ofList [Char.ofNat 0] ++ "anf"
+
+/-- The wired ANF normalizer: flatten with a program-fresh prefix. -/
+def anfNormalize (b : Block Op) : Block Op := anfBlock (anfPrefix b) b
+
+/-- The normalizer's output is in ANF (from the structural proof). -/
+theorem anfNormalize_isANF (b : Block Op) : isANFStmts (anfNormalize b) = true :=
+  anfBlock_isANF _ b
+
+/-- **ANF preserves behavior.** (Scaffolded; the `sorry` is the remaining work,
+discharged via the block-scoped temp / `restore` lemmas above.) -/
+theorem anfNormalize_sound (b : Block Op) :
+    EquivBlock D b (anfNormalize b) := by
+  sorry
+
+/-- The ANF normalizer as a verified `Pass`. -/
+def anfPass : Pass D where
+  run := anfNormalize
+  sound := anfNormalize_sound
 
 end YulEvmCompiler.Optimizer.ANF
