@@ -207,6 +207,24 @@ theorem stmts_append_normal [DecidableEq D.Value] :
       | seqCons hs hrest => exact Step.seqCons hs (stmts_append_normal hrest h2)
       | seqStop _ hne => exact absurd rfl hne
 
+/-- Decompose a concatenated `.stmts` execution: either `l₁` stops (non-normal)
+and reaches the final result, or `l₁` finishes normally to a midpoint and `l₂`
+runs from there. The inverse of `stmts_append_normal`/`stmts_append_stop`. -/
+theorem stmts_append_inv [DecidableEq D.Value] {l₂ : List (Stmt D.Op)} :
+    ∀ {l₁ : List (Stmt D.Op)} {funs V st V' st' o},
+      Step D funs V st (.stmts (l₁ ++ l₂)) (.sres V' st' o) →
+      (o ≠ .normal ∧ Step D funs V st (.stmts l₁) (.sres V' st' o)) ∨
+      (∃ Vm stm, Step D funs V st (.stmts l₁) (.sres Vm stm .normal) ∧
+        Step D funs Vm stm (.stmts l₂) (.sres V' st' o))
+  | [], _, _, _, _, _, _, h => Or.inr ⟨_, _, Step.seqNil, h⟩
+  | _ :: _, _, _, _, _, _, _, h => by
+      cases h with
+      | seqCons hs hrest =>
+          rcases stmts_append_inv hrest with ⟨hne, hr⟩ | ⟨Vm, stm, h1, h2⟩
+          · exact Or.inl ⟨hne, Step.seqCons hs hr⟩
+          · exact Or.inr ⟨Vm, stm, Step.seqCons hs h1, h2⟩
+      | seqStop hs hne => exact Or.inl ⟨hne, Step.seqStop hs hne⟩
+
 /-- If `l₁` halts / breaks / continues / leaves, `l₁ ++ l₂` stops there (`l₂` is
 never reached). -/
 theorem stmts_append_stop [DecidableEq D.Value] :
