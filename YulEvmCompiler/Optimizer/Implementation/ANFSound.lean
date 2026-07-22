@@ -490,6 +490,31 @@ theorem atomArgs_prepend_cons {funs : FunEnv D} {es : List (Expr Op)}
           | builtin _ _ => simp [isAtom] at hatom
           | call _ _ => simp [isAtom] at hatom
 
+/-- Evaluating a list of atoms is state-independent: the same values are produced
+at any state (atoms read no state and cause no effects). -/
+theorem atomArgs_state_indep {funs : FunEnv D} {es : List (Expr Op)} {V : VEnv D}
+    {st : EvmState} {vs} (hatom : atomicArgs es = true)
+    (h : Step D funs V st (.args es) (.eres (.vals vs st))) :
+    ∀ st2, Step D funs V st2 (.args es) (.eres (.vals vs st2)) := by
+  induction es generalizing vs st with
+  | nil => intro st2; cases h with | argsNil => exact Step.argsNil
+  | cons e rest ih =>
+      simp only [atomicArgs, Bool.and_eq_true] at hatom
+      intro st2
+      cases e with
+      | var y =>
+          cases h with
+          | argsCons hrest hhead =>
+              cases hhead with
+              | var hv => exact Step.argsCons (ih hatom.2 hrest st2) (Step.var hv)
+      | lit l =>
+          cases h with
+          | argsCons hrest hhead =>
+              cases hhead with
+              | lit => exact Step.argsCons (ih hatom.2 hrest st2) Step.lit
+      | builtin _ _ => simp [isAtom] at hatom
+      | call _ _ => simp [isAtom] at hatom
+
 /-! ### Flatten-correctness
 
 Running a `flatten`/`flattenArgs` prelude from a temp-extended environment binds
