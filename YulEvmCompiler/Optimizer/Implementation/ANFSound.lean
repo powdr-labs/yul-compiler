@@ -129,6 +129,65 @@ theorem eraseTemps_set {V : VEnv D} {x : Ident} {v : D.Value} (h : isTemp P x = 
         · simp only [Bool.not_eq_true] at ht
           rw [eraseTemps_cons_nonTemp ht, eraseTemps_cons_nonTemp ht, set_cons_ne hyx, ih]
 
+/-! ### The temp-extension relation — the simulation invariant
+
+`TempExt P Vo Va` means the ANF environment `Va` is the original `Vo` with
+temporary bindings *inserted*, the non-temp entries matching pairwise in name and
+value and order. This is the structural invariant the `Step` simulation maintains
+(stronger than value-agreement, which `restore`'s length-based truncation needs).
+-/
+inductive TempExt (P : String) : VEnv D → VEnv D → Prop
+  | nil : TempExt P [] []
+  | temp {Vo Va t w} : isTemp P t = true → TempExt P Vo Va → TempExt P Vo ((t, w) :: Va)
+  | keep {Vo Va y v} : isTemp P y = false → TempExt P Vo Va →
+      TempExt P ((y, v) :: Vo) ((y, v) :: Va)
+
+/-- A temporary name and a non-temporary name are distinct. -/
+theorem name_ne_of_isTemp {P : String} {t x : Ident}
+    (ht : isTemp P t = true) (hx : isTemp P x = false) : t ≠ x := by
+  intro he; subst he; rw [ht] at hx; simp at hx
+
+/-- Reads of a non-temp variable agree across a temp-extension. -/
+theorem TempExt.get {P : String} {Vo Va : VEnv D} {x : Ident}
+    (hx : isTemp P x = false) (h : TempExt P Vo Va) :
+    VEnv.get Va x = VEnv.get Vo x := by
+  induction h with
+  | nil => rfl
+  | temp ht _ ih => rw [get_cons_ne (name_ne_of_isTemp ht hx)]; exact ih
+  | keep hy hte ih =>
+      rename_i _ _ y v
+      by_cases hyx : y = x
+      · subst hyx; simp
+      · rw [get_cons_ne hyx, get_cons_ne hyx]; exact ih
+
+/-- Assigning a non-temp variable preserves the temp-extension. -/
+theorem TempExt.set {P : String} {Vo Va : VEnv D} {x : Ident} {v : D.Value}
+    (hx : isTemp P x = false) (h : TempExt P Vo Va) :
+    TempExt P (VEnv.set Vo x v) (VEnv.set Va x v) := by
+  induction h with
+  | nil => exact .nil
+  | temp ht _ ih => rw [set_cons_ne (name_ne_of_isTemp ht hx)]; exact .temp ht ih
+  | keep hy hte ih =>
+      rename_i _ _ y w
+      by_cases hyx : y = x
+      · subst hyx; rw [set_cons_self, set_cons_self]; exact .keep hy hte
+      · rw [set_cons_ne hyx, set_cons_ne hyx]; exact .keep hy ih
+
+/-- Declaring a fresh temporary in the ANF environment only (invisible to the
+original) preserves the extension. -/
+theorem TempExt.temp_left {P : String} {Vo Va : VEnv D} {t : Ident} {w : D.Value}
+    (ht : isTemp P t = true) (h : TempExt P Vo Va) : TempExt P Vo ((t, w) :: Va) :=
+  .temp ht h
+
+/-- A temp-free environment temp-extends itself (the base case at a program's
+outermost scope, where no ANF temporary exists yet). -/
+theorem TempExt.of_tempFree {P : String} :
+    ∀ {V : VEnv D}, (∀ p ∈ V, isTemp P p.1 = false) → TempExt P V V
+  | [], _ => .nil
+  | (y, v) :: rest, h => by
+      refine .keep (h (y, v) (List.mem_cons_self ..)) ?_
+      exact TempExt.of_tempFree (fun p hp => h p (List.mem_cons_of_mem _ hp))
+
 /-! ### `restore` under a block-local prefix
 
 `restore outer inner = inner.drop (inner.length - outer.length)`. The block-scoped
