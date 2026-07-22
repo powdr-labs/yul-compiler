@@ -20,6 +20,9 @@ on:
 
 permissions:
   contents: read
+  # Needed to download the rendered-comment artifact from the triggering CI run
+  # (cross-run `actions/download-artifact` calls the Actions API).
+  actions: read
   pull-requests: write
 
 jobs:
