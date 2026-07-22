@@ -389,8 +389,55 @@ theorem weakenArgs {funs : FunEnv D} {P : String} {es : List (Expr Op)}
           exact Step.argsHeadHalt (weakenArgs hext hnt.2 hrest) (weakenExpr hext hnt.1 hhead)
 end
 
-/-- **ANF preserves behavior.** (Scaffolded; the `sorry` is the remaining work,
-discharged via the block-scoped temp / `restore` lemmas above.) -/
+/-! ### Flatten-correctness
+
+Running a `flatten`/`flattenArgs` prelude from a temp-extended environment binds
+the temporaries so that the resulting atom(s) evaluate to the same value(s) as
+the original expression, leaving `TempExt` intact and ending at the same state. -/
+mutual
+theorem flatten_correct {funs : FunEnv D} {P : String} {e : Expr Op}
+    {Vo Va : VEnv D} {st : EvmState} {v st1} (k : Nat)
+    (hstep : Step D funs Vo st (.expr e) (.eres (.vals [v] st1)))
+    (hnt : noTempExpr P e = true) (hext : TempExt P Vo Va) :
+    ∃ Va', Step D funs Va st (.stmts (flatten P k e).2.1) (.sres Va' st1 .normal)
+      ∧ TempExt P Vo Va'
+      ∧ Step D funs Va' st1 (.expr (flatten P k e).2.2) (.eres (.vals [v] st1)) := by
+  cases e with
+  | var x =>
+      cases hstep with
+      | var hv =>
+          refine ⟨Va, ?_, hext, ?_⟩
+          · simp only [flatten]; exact Step.seqNil
+          · simp only [flatten]
+            exact weakenExpr hext hnt (Step.var hv)
+  | lit l =>
+      cases hstep with
+      | lit =>
+          refine ⟨Va, ?_, hext, ?_⟩
+          · simp only [flatten]; exact Step.seqNil
+          · simp only [flatten]; exact Step.lit
+  | builtin op args => sorry
+  | call fn args => sorry
+
+theorem flattenArgs_correct {funs : FunEnv D} {P : String} {es : List (Expr Op)}
+    {Vo Va : VEnv D} {st : EvmState} {argvals st1} (k : Nat)
+    (hstep : Step D funs Vo st (.args es) (.eres (.vals argvals st1)))
+    (hnt : noTempArgs P es = true) (hext : TempExt P Vo Va) :
+    ∃ Va', Step D funs Va st (.stmts (flattenArgs P k es).2.1) (.sres Va' st1 .normal)
+      ∧ TempExt P Vo Va'
+      ∧ Step D funs Va' st1 (.args (flattenArgs P k es).2.2) (.eres (.vals argvals st1)) := by
+  cases es with
+  | nil =>
+      cases hstep with
+      | argsNil =>
+          refine ⟨Va, ?_, hext, ?_⟩
+          · simp only [flattenArgs]; exact Step.seqNil
+          · simp only [flattenArgs]; exact Step.argsNil
+  | cons e rest => sorry
+end
+
+/-- **ANF preserves behavior.** (Scaffolded; discharged via the flatten
+correctness + statement simulation + `restore` lemmas above.) -/
 theorem anfNormalize_sound (b : Block Op) :
     EquivBlock D b (anfNormalize b) := by
   sorry
