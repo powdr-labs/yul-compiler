@@ -402,6 +402,54 @@ theorem weakenArgs {funs : FunEnv D} {P : String} {es : List (Expr Op)}
           exact Step.argsHeadHalt (weakenArgs hext hnt.2 hrest) (weakenExpr hext hnt.1 hhead)
 end
 
+/-! ### Fresh-temp / atom range characterization
+
+A source variable (temp-free) is never a temporary, and a temporary with index
+`≥ result` is never one of the flattener's output atoms (its atoms use temp
+indices `< result`). Together these give the non-shadowing the `cons` case needs. -/
+
+theorem noTemp_ne_tempName {P : String} {x : Ident} {k : Nat}
+    (h : isTemp P x = false) : x ≠ tempName P k := by
+  intro he; rw [he, isTemp_tempName] at h; exact absurd h (by simp)
+
+mutual
+theorem flatten_atom_fresh {P : String} {k : Nat} {e : Expr Op} (hnt : noTempExpr P e = true) :
+    ∀ j, (flatten P k e).1 ≤ j → (flatten P k e).2.2 ≠ Expr.var (tempName P j) := by
+  intro j hj
+  cases e with
+  | var x =>
+      simp only [flatten]
+      have hx : isTemp P x = false := by simpa [noTempExpr] using hnt
+      intro he; injection he with he'; exact noTemp_ne_tempName hx he'
+  | lit l => simp [flatten]
+  | builtin op args =>
+      simp only [flatten] at hj ⊢
+      intro he; injection he with he'
+      have : (flattenArgs P k args).1 = j := tempName_inj he'
+      omega
+  | call fn args =>
+      simp only [flatten] at hj ⊢
+      intro he; injection he with he'
+      have : (flattenArgs P k args).1 = j := tempName_inj he'
+      omega
+
+theorem flattenArgs_atom_fresh {P : String} {k : Nat} {es : List (Expr Op)}
+    (hnt : noTempArgs P es = true) :
+    ∀ j, (flattenArgs P k es).1 ≤ j → Expr.var (tempName P j) ∉ (flattenArgs P k es).2.2 := by
+  intro j hj
+  cases es with
+  | nil => simp [flattenArgs]
+  | cons e rest =>
+      simp only [noTempArgs, Bool.and_eq_true] at hnt
+      simp only [flattenArgs] at hj ⊢
+      have hk1 : (flattenArgs P k rest).1 ≤ (flatten P (flattenArgs P k rest).1 e).1 :=
+        flatten_k_mono P _ e
+      intro hmem
+      rcases List.mem_cons.mp hmem with heq | htail
+      · exact flatten_atom_fresh hnt.1 j hj heq.symm
+      · exact flattenArgs_atom_fresh hnt.2 j (by omega) htail
+end
+
 /-! ### Atom-list weakening
 
 The flattener's atoms are variables/literals, so a binding whose name is not one
