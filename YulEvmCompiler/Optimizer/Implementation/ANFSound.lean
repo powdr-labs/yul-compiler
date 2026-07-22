@@ -129,6 +129,36 @@ theorem eraseTemps_set {V : VEnv D} {x : Ident} {v : D.Value} (h : isTemp P x = 
         · simp only [Bool.not_eq_true] at ht
           rw [eraseTemps_cons_nonTemp ht, eraseTemps_cons_nonTemp ht, set_cons_ne hyx, ih]
 
+/-! ### Statement-sequence composition
+
+`anfStmts (s :: rest) = anfStmt s ++ anfStmts rest`, so the list-level simulation
+composes the executions of consecutive ANF'd statement-lists. These are the
+generic `Step` composition bricks for `.stmts` over `++`. -/
+
+/-- Running `l₁` to a *normal* completion then `l₂` equals running `l₁ ++ l₂`. -/
+theorem stmts_append_normal [DecidableEq D.Value] :
+    ∀ {l₁ : List (Stmt D.Op)} {funs V st Vm stm l₂ V' st' o},
+      Step D funs V st (.stmts l₁) (.sres Vm stm .normal) →
+      Step D funs Vm stm (.stmts l₂) (.sres V' st' o) →
+      Step D funs V st (.stmts (l₁ ++ l₂)) (.sres V' st' o)
+  | [], _, _, _, _, _, _, _, _, _, h1, h2 => by cases h1; exact h2
+  | _ :: _, _, _, _, _, _, _, _, _, _, h1, h2 => by
+      cases h1 with
+      | seqCons hs hrest => exact Step.seqCons hs (stmts_append_normal hrest h2)
+      | seqStop _ hne => exact absurd rfl hne
+
+/-- If `l₁` halts / breaks / continues / leaves, `l₁ ++ l₂` stops there (`l₂` is
+never reached). -/
+theorem stmts_append_stop [DecidableEq D.Value] :
+    ∀ {l₁ : List (Stmt D.Op)} {funs V st V' st' o l₂},
+      Step D funs V st (.stmts l₁) (.sres V' st' o) → o ≠ .normal →
+      Step D funs V st (.stmts (l₁ ++ l₂)) (.sres V' st' o)
+  | [], _, _, _, _, _, _, _, h1, ho => by cases h1; exact absurd rfl ho
+  | _ :: _, _, _, _, _, _, _, _, h1, ho => by
+      cases h1 with
+      | seqCons hs hrest => exact Step.seqCons hs (stmts_append_stop hrest ho)
+      | seqStop hs hne => exact Step.seqStop hs hne
+
 /-! ### The temp-extension relation — the simulation invariant
 
 `TempExt P Vo Va` means the ANF environment `Va` is the original `Vo` with
