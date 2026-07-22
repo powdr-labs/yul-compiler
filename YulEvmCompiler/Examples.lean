@@ -234,6 +234,37 @@ def keepsLoadAfterLocalRestore : Block Op → Bool
       .exprStmt (.builtin .sstore _)] => true
   | _ => false
 
+/-- The dual of `StorageForward`: a store to slot 0 that is overwritten before
+any read is dead. `DeadStore` drops the first `sstore(0, _)` — the disjoint
+`sstore(1, _)` in between is skipped and the covering `sstore(0, _)` cancels it.
+Observable storage is unchanged (slot 0 = 2, slot 1 = 9). -/
+def deadStoreElim : Block Op := yul% {
+  sstore(0, 1)
+  sstore(1, 9)
+  sstore(0, 2)
+}
+
+def dropsDeadStore : Block Op → Bool
+  | [.exprStmt (.builtin .sstore [.lit (.number 1), .lit (.number 9)]),
+      .exprStmt (.builtin .sstore [.lit (.number 0), .lit (.number 2)])] => true
+  | _ => false
+
+/-- A store read by an intervening `sload` of the same slot is live and kept:
+the load is a barrier that stops the deadness scan. -/
+def deadStoreKept : Block Op := yul% {
+  sstore(0, 1)
+  let seen := sload(0)
+  sstore(0, 2)
+  sstore(1, seen)
+}
+
+def keepsReadStore : Block Op → Bool
+  | [.exprStmt (.builtin .sstore [.lit (.number 0), .lit (.number 1)]),
+      .letDecl ["seen"] (some (.builtin .sload [.lit (.number 0)])),
+      .exprStmt (.builtin .sstore [.lit (.number 0), .lit (.number 2)]),
+      .exprStmt (.builtin .sstore [.lit (.number 1), .var "seen"])] => true
+  | _ => false
+
 /-- A *recursive* function: `fact(5) = 120` in slot 0. -/
 def factorial : Block Op := yul% {
   function fact(n) -> f {
@@ -632,6 +663,13 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn storageForwardingScope [0, 1]
 #guard agreeOn storageForwardingRebind [0, 1]
 #guard agreeOn storageForwardingShadow [0, 1]
+#guard dropsDeadStore (Optimizer.DeadStore.deadStoreBlock deadStoreElim)
+#guard keepsReadStore (Optimizer.DeadStore.deadStoreBlock deadStoreKept)
+#guard compile (Optimizer.DeadStore.deadStoreBlock deadStoreElim) |>.isSome
+#guard agreeOn deadStoreElim [0, 1]
+#guard agreeOn (Optimizer.DeadStore.deadStoreBlock deadStoreElim) [0, 1]
+#guard agreeOn deadStoreKept [0, 1]
+#guard agreeOn (Optimizer.DeadStore.deadStoreBlock deadStoreKept) [0, 1]
 #guard agreeOn multiRet3 [0, 1, 2]
 #guard agreeOn funCall [0]
 #guard agreeOn factorial [0]
