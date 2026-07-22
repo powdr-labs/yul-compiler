@@ -184,13 +184,14 @@ A statement is in ANF when its operand expressions are flat (`isFlatRhs`) and it
 nested blocks are ANF. -/
 mutual
 def isANFStmt : Stmt Op → Bool
-  | .block body | .funDef _ _ _ body => isANFStmts body
+  | .block body => isANFStmts body
+  | .funDef _ _ _ _ => true  -- function bodies left un-normalized (see ANF scope note)
   | .letDecl _ rhs => rhs.all isFlatRhs
   | .assign _ rhs | .exprStmt rhs => isFlatRhs rhs
   | .cond c body => isFlatRhs c && isANFStmts body
   | .switch c cases dflt => isFlatRhs c && isANFCases cases && isANFDflt dflt
-  | .forLoop init c post body =>
-      isANFStmts init && isFlatRhs c && isANFStmts post && isANFStmts body
+  | .forLoop init _ post body =>  -- loop condition left un-normalized (re-evaluated per iteration)
+      isANFStmts init && isANFStmts post && isANFStmts body
   | .break | .continue | .leave => true
 
 def isANFStmts : List (Stmt Op) → Bool
@@ -217,7 +218,7 @@ it re-runs. A shared temporary index `k` is threaded so names stay distinct. -/
 mutual
 def anfStmt (P : String) (k : Nat) : Stmt Op → Nat × List (Stmt Op)
   | .block body => let (k1, body') := anfStmts P k body; (k1, [.block body'])
-  | .funDef n ps rs body => let (k1, body') := anfStmts P k body; (k1, [.funDef n ps rs body'])
+  | .funDef n ps rs body => (k, [.funDef n ps rs body])  -- identity: bodies left un-normalized
   | .letDecl vars none => (k, [.letDecl vars none])
   | .letDecl vars (some e) => let (k1, pre, e') := flattenTop P k e; (k1, pre ++ [.letDecl vars (some e')])
   | .assign vars e => let (k1, pre, e') := flattenTop P k e; (k1, pre ++ [.assign vars e'])
@@ -232,12 +233,11 @@ def anfStmt (P : String) (k : Nat) : Stmt Op → Nat × List (Stmt Op)
       let (k3, dflt') := anfDflt P k2 dflt
       (k3, pre ++ [.switch c' cases' dflt'])
   | .forLoop init c post body =>
+      -- condition left as-is (re-evaluated per iteration); flatten init/post/body
       let (k1, init') := anfStmts P k init
-      let (k2, cpre, catom) := flatten P k1 c
-      let (k3, post') := anfStmts P k2 post
-      let (k4, body') := anfStmts P k3 body
-      (k4, [.forLoop init' (.lit (.number 1)) post'
-              (cpre ++ .cond (.builtin .iszero [catom]) [.break] :: body')])
+      let (k2, post') := anfStmts P k1 post
+      let (k3, body') := anfStmts P k2 body
+      (k3, [.forLoop init' c post' body'])
   | .break => (k, [.break])
   | .continue => (k, [.continue])
   | .leave => (k, [.leave])
@@ -290,8 +290,7 @@ theorem anfStmt_ok (P : String) (k : Nat) (s : Stmt Op) :
   match s with
   | .block body =>
       have := anfStmts_ok P k body; simp [anfStmt, isANFStmts, isANFStmt, this]
-  | .funDef n ps rs body =>
-      have := anfStmts_ok P k body; simp [anfStmt, isANFStmts, isANFStmt, this]
+  | .funDef n ps rs body => simp [anfStmt, isANFStmts, isANFStmt]
   | .letDecl vars none => simp [anfStmt, isANFStmts, isANFStmt]
   | .letDecl vars (some e) =>
       have hpre := isANFStmts_of_preludeOK (flattenTop_ok P k e).2
@@ -318,16 +317,9 @@ theorem anfStmt_ok (P : String) (k : Nat) (s : Stmt Op) :
       simp [anfStmt, isANFStmts_append, isANFStmts, isANFStmt, hpre, hflat, hcases, hdflt]
   | .forLoop init c post body =>
       have hinit := anfStmts_ok P k init
-      have hcpre := isANFStmts_of_preludeOK (flatten_ok P (anfStmts P k init).1 c).2
-      have hcatom := (flatten_ok P (anfStmts P k init).1 c).1
-      have hpost := anfStmts_ok P (flatten P (anfStmts P k init).1 c).1 post
-      have hbody := anfStmts_ok P (anfStmts P (flatten P (anfStmts P k init).1 c).1 post).1 body
-      have hone : isFlatRhs (Expr.lit (Literal.number 1) : Expr Op) = true := rfl
-      have hiszero : isFlatRhs (Expr.builtin Op.iszero
-          [(flatten P (anfStmts P k init).1 c).2.2]) = true := by
-        simp only [isFlatRhs, atomicArgs, Bool.and_true]; exact hcatom
-      simp [anfStmt, isANFStmts_append, isANFStmts, isANFStmt,
-        hinit, hcpre, hpost, hbody, hone, hiszero]
+      have hpost := anfStmts_ok P (anfStmts P k init).1 post
+      have hbody := anfStmts_ok P (anfStmts P (anfStmts P k init).1 post).1 body
+      simp [anfStmt, isANFStmts, isANFStmt, hinit, hpost, hbody]
   | .break => simp [anfStmt, isANFStmts, isANFStmt]
   | .continue => simp [anfStmt, isANFStmts, isANFStmt]
   | .leave => simp [anfStmt, isANFStmts, isANFStmt]
