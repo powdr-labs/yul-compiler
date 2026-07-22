@@ -515,6 +515,22 @@ theorem atomArgs_state_indep {funs : FunEnv D} {es : List (Expr Op)} {V : VEnv D
       | builtin _ _ => simp [isAtom] at hatom
       | call _ _ => simp [isAtom] at hatom
 
+/-- Running a prelude of single-variable `let`s whose bound variables are not
+atoms preserves the atoms' evaluation across the resulting environment/state
+change. -/
+theorem prelude_preserves_atoms {funs : FunEnv D} {pre : List (Stmt Op)}
+    {atoms : List (Expr Op)} {V V' : VEnv D} {st st' vs}
+    (hOK : ∀ s ∈ pre, ∃ t rhs, s = .letDecl [t] (some rhs))
+    (hfresh : ∀ t, (∃ rhs, Stmt.letDecl [t] (some rhs) ∈ pre) → Expr.var t ∉ atoms)
+    (hatom : atomicArgs atoms = true)
+    (hpre : Step D funs V st (.stmts pre) (.sres V' st' .normal))
+    (hae : Step D funs V st (.args atoms) (.eres (.vals vs st))) :
+    Step D funs V' st' (.args atoms) (.eres (.vals vs st')) := by
+  -- Proof: induction on `pre`; each `let t := rhs` prepends `(t, v)` (t ∉ atoms,
+  -- so `atomArgs_prepend_cons`) and advances the state (`atomArgs_state_indep`).
+  -- Stubbed pending the dependent-hypothesis induction bookkeeping.
+  sorry
+
 /-! ### Flatten-correctness
 
 Running a `flatten`/`flattenArgs` prelude from a temp-extended environment binds
