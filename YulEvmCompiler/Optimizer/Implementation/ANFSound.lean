@@ -279,6 +279,28 @@ theorem TempExt.prepend_nonTemp {P : String} :
       refine .keep (hnew (y, v) (List.mem_cons_self ..)) ?_
       exact TempExt.prepend_nonTemp (fun p hp => hnew p (List.mem_cons_of_mem _ hp)) h
 
+/-- `TempExt` is preserved by folding non-temp assignments. -/
+theorem TempExt.foldl_set {P : String} :
+    ∀ (l : List (Ident × D.Value)) {Vo Va : VEnv D}, TempExt P Vo Va →
+      (∀ p ∈ l, isTemp P p.1 = false) →
+      TempExt P (l.foldl (fun acc p => VEnv.set acc p.1 p.2) Vo)
+        (l.foldl (fun acc p => VEnv.set acc p.1 p.2) Va)
+  | [], _, _, h, _ => h
+  | p :: rest, _, _, h, hnt => by
+      simp only [List.foldl_cons]
+      exact TempExt.foldl_set rest (TempExt.set (hnt p (List.mem_cons_self ..)) h)
+        (fun q hq => hnt q (List.mem_cons_of_mem _ hq))
+
+/-- `TempExt` is preserved by a multi-variable assignment to non-temp variables. -/
+theorem TempExt.setMany {P : String} {xs : List Ident} {vs : List D.Value}
+    {Vo Va : VEnv D} (hnt : ∀ x ∈ xs, isTemp P x = false) (h : TempExt P Vo Va) :
+    TempExt P (VEnv.setMany Vo xs vs) (VEnv.setMany Va xs vs) := by
+  unfold VEnv.setMany
+  refine TempExt.foldl_set _ h ?_
+  intro p hp
+  obtain ⟨x, v⟩ := p
+  exact hnt x (List.of_mem_zip hp).1
+
 /-- A temp-free environment temp-extends itself (the base case at a program's
 outermost scope, where no ANF temporary exists yet). -/
 theorem TempExt.of_tempFree {P : String} :
