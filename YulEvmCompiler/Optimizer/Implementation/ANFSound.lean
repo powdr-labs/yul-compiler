@@ -551,6 +551,46 @@ theorem prelude_preserves_atoms {funs : FunEnv D} {atoms : List (Expr Op)}
                         hrest h2
       | seqStop hs hne => exact absurd rfl hne
 
+/-! Every variable declared by a flatten prelude is a temporary with index ≥ the
+input counter. -/
+mutual
+theorem flatten_prelude_decl {P : String} {k : Nat} {e : Expr Op} :
+    ∀ t, (∃ rhs, Stmt.letDecl [t] (some rhs) ∈ (flatten P k e).2.1) →
+      ∃ m, k ≤ m ∧ t = tempName P m := by
+  intro t ht
+  cases e with
+  | var _ => obtain ⟨rhs, hm⟩ := ht; simp [flatten] at hm
+  | lit _ => obtain ⟨rhs, hm⟩ := ht; simp [flatten] at hm
+  | builtin op args =>
+      obtain ⟨rhs, hm⟩ := ht
+      simp only [flatten, List.mem_append, List.mem_singleton] at hm
+      rcases hm with hpre | hlast
+      · exact flattenArgs_prelude_decl t ⟨rhs, hpre⟩
+      · injection hlast with h1 h2; injection h1 with h3
+        exact ⟨(flattenArgs P k args).1, flattenArgs_k_mono P k args, h3⟩
+  | call fn args =>
+      obtain ⟨rhs, hm⟩ := ht
+      simp only [flatten, List.mem_append, List.mem_singleton] at hm
+      rcases hm with hpre | hlast
+      · exact flattenArgs_prelude_decl t ⟨rhs, hpre⟩
+      · injection hlast with h1 h2; injection h1 with h3
+        exact ⟨(flattenArgs P k args).1, flattenArgs_k_mono P k args, h3⟩
+
+theorem flattenArgs_prelude_decl {P : String} {k : Nat} {es : List (Expr Op)} :
+    ∀ t, (∃ rhs, Stmt.letDecl [t] (some rhs) ∈ (flattenArgs P k es).2.1) →
+      ∃ m, k ≤ m ∧ t = tempName P m := by
+  intro t ht
+  cases es with
+  | nil => obtain ⟨rhs, hm⟩ := ht; simp [flattenArgs] at hm
+  | cons e rest =>
+      obtain ⟨rhs, hm⟩ := ht
+      simp only [flattenArgs, List.mem_append] at hm
+      rcases hm with hpre | hhead
+      · exact flattenArgs_prelude_decl t ⟨rhs, hpre⟩
+      · obtain ⟨m, hm1, hm2⟩ := flatten_prelude_decl t ⟨rhs, hhead⟩
+        exact ⟨m, le_trans (flattenArgs_k_mono P k rest) hm1, hm2⟩
+end
+
 /-! ### Flatten-correctness
 
 Running a `flatten`/`flattenArgs` prelude from a temp-extended environment binds
