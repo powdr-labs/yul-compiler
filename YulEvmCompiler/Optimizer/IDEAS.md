@@ -72,7 +72,7 @@ a lot of structural slack to remove.
 
 ## Passes
 
-### 🚧 Dominance-local call-frame compression (`codex/swapmath-stack-layout`)
+### ✅ Dominance-local stack layout (`codex/swapmath-stack-layout`)
 
 `SwapMath.sol` exposes two related failures after the existing smart layout:
 the ABI wrapper materializes four call results in a multi-binder and then
@@ -91,7 +91,8 @@ constructs a general CFG dominator tree: loops, early outcomes, and hoisted
 functions still follow Yul's explicit syntax.  A backward syntactic
 mention analysis supplies the local interference test.
 
-Two coordinated, verified rewrites form one stack-layout pass:
+The implementation grew into coordinated, verified rewrites in one
+stack-layout pass:
 
 1. **Multi-result copy-back coalescing.** Recognize the exact adjacent vector
    `let t₁…tₙ := f(as); d₁ := t₁; …; dₙ := tₙ` and retarget the call directly
@@ -119,10 +120,19 @@ the target does not, and enclosing `restore` erases the difference in both
 directions, including halts.  Argument staging proves an `EvalArgs`
 decomposition/recomposition lemma, preserving Yul's right-to-left order,
 exact arity, state changes, and halts; globally fresh names make environment
-extension observationally inert.  One-rewrite drivers keep both proofs local.
+   extension observationally inert.  One-rewrite drivers keep both proofs local.
+3. **Dominance-local live-range splitting and slot reuse.** Backward liveness
+   and syntactic declaration dominance identify acyclic block/conditional/
+   switch regions where dead locals can be scoped away or a deep live value can
+   be carried in a fresh shallow slot. Nested refinements descend through the
+   already-generated dominator chain. Stable reads are split first; a second
+   reverse-postorder pass prefers a writable deep value, keeping both the call
+   input and result destination within `DUP16`/`SWAP16` in SwapMath.
+
 The executable order is scheduling, adjacent copy-back to a fixed point,
-existing slot reuse, tail scoping, then pressure-triggered staging to a fixed
-point.  Its pressure traversal threads loop-init declarations and the init's
+early dead scoping, tail scoping, slot reuse, dominance-local splitting and
+available-copy forwarding, then pressure-triggered staging against the final
+layout. Its pressure traversal threads loop-init declarations and the init's
 hoisted function-signature scope into the condition, post, and body.
 Function-body congruence is handled by `FunCongr`; a structural resolution
 congruence lifts the pass over every object code block without changing object
@@ -134,12 +144,19 @@ Finding Dominators in a Flowgraph,” TOPLAS 1(1), 1979,
 Computing Static Single Assignment Form and the Control Dependence Graph,”
 TOPLAS 13(4), 1991, <https://doi.org/10.1145/192030.192041>.
 
-Acceptance criteria: both block and object compilation paths use the pass;
-focused guards cover multi-result copy-back, state-changing/call-bearing
-arguments, halts, nested switches, and shadowing; `SwapMath.sol` leaves the
-known-failure baseline and the strict 11/11 Uniswap suite compiles and remains
-behaviorally comparable; all gas changes are non-regressions; and the full
-build, exact axiom guard, and unchanged audited specification closure pass.
+Current review state: both block and object compilation paths use the pass;
+the proof covers copy-back, argument evaluation and halts, nested acyclic
+regions, function environments, and generated nested shadow scopes. The strict
+Uniswap suite compiles 13/15 contracts and runs 39 comparable external-call
+scenarios with no behavioral or gas regressions. `PoolLiquidity.sol` and
+`SwapMath.sol` leave the exact known-failure set; SwapMath's
+`computeSwapStep(uint160,uint160,uint128,int256,uint24)` is now exercised.
+`PoolSwap.sol` remains blocked by five reads of the same result-memory pointer
+across loop branches (the first needs `DUP21`); `PoolManager.sol` remains the
+larger integrated frontier. Supporting those loop-carried regions needs a
+separate control-flow proof rather than weakening this acyclic-region pass.
+The full build, exact axiom guard, and unchanged audited specification closure
+pass.
 
 ### ✅ `identity` (`Implementation/Identity.lean`) — landed
 The do-nothing pass; validates the spec is inhabited. Sound by reflexivity.

@@ -1,8 +1,6 @@
-# Increasingly integrated Uniswap v4-core fixtures whose unoptimized solc IR
-# still exceeds the smart layout pass's current DUP16/SWAP16 reach. They remain
-# active acceptance tests: when a later layout improvement compiles one, CI
-# requires its removal and pinned per-scenario gas rows.
-PoolLiquidity.sol
+# Remaining integrated Uniswap v4-core fixtures whose unoptimized solc IR
+# needs loop-carried/control-flow stack splitting beyond the current acyclic
+# dominator-region pass. They remain active acceptance tests: when a later
+# layout improvement compiles one, CI requires its removal and pinned gas rows.
 PoolManager.sol
 PoolSwap.sol
-SwapMath.sol
