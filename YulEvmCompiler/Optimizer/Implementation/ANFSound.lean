@@ -682,6 +682,39 @@ theorem expr_call_inv {funs : FunEnv D} {V : VEnv D} {st fn args rr st1}
   cases h with
   | callOk h1 h2 h3 h4 h5 => exact ⟨_, _, _, _, _, _, h1, h2, h3, h4, h5, rfl⟩
 
+/-- Reverse of `prelude_preserves_atoms`: atoms evaluating after the prelude
+implies they evaluate (to the same values) before it. -/
+theorem prelude_preserves_atoms_bwd {funs : FunEnv D} {atoms : List (Expr Op)}
+    (hatom : atomicArgs atoms = true) :
+    ∀ (pre : List (Stmt Op)) {V V' : VEnv D} {st st' vs},
+      (∀ s ∈ pre, ∃ t rhs, s = .letDecl [t] (some rhs)) →
+      (∀ t, (∃ rhs, Stmt.letDecl [t] (some rhs) ∈ pre) → Expr.var t ∉ atoms) →
+      Step D funs V st (.stmts pre) (.sres V' st' .normal) →
+      Step D funs V' st' (.args atoms) (.eres (.vals vs st')) →
+      Step D funs V st (.args atoms) (.eres (.vals vs st))
+  | [], _, _, _, _, _, _, _, hpre, hae => by cases hpre with | seqNil => exact hae
+  | s :: rest, _, _, st, _, _, hOK, hfresh, hpre, hae => by
+      obtain ⟨t, rhs, rfl⟩ := hOK s (List.mem_cons_self ..)
+      have htne : ∀ x, Expr.var x ∈ atoms → t ≠ x :=
+        fun x hx he => hfresh t ⟨rhs, List.mem_cons_self ..⟩ (he ▸ hx)
+      cases hpre with
+      | seqCons hs hrest =>
+          cases hs with
+          | letVal hval hlen =>
+              rename_i stMid vals
+              cases vals with
+              | nil => simp at hlen
+              | cons v tl =>
+                  cases tl with
+                  | cons _ _ => simp at hlen
+                  | nil =>
+                      have h1 := prelude_preserves_atoms_bwd hatom rest
+                        (fun s' hs' => hOK s' (List.mem_cons_of_mem _ hs'))
+                        (fun t' ht' => hfresh t' (ht'.imp fun r hr => List.mem_cons_of_mem _ hr))
+                        hrest hae
+                      exact atomArgs_state_indep hatom (atomArgs_remove_cons hatom htne h1) st
+      | seqStop hs hne => exact absurd rfl hne
+
 /-! ### Flatten-correctness
 
 Running a `flatten`/`flattenArgs` prelude from a temp-extended environment binds
