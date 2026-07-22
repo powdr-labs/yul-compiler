@@ -255,6 +255,12 @@ Correctness is carried by the theorems below. In addition:
   compares termination, return/revert bytes, returndata, nonzero memory, account
   state, logs, self-destructs, and storage refunds, and deliberately ignores
   exact bytecode, PCs, operand stacks, and remaining gas.
+- Curated Uniswap v4-core and Aave v4 fixtures feed flattened production
+  contracts through the same Solidity-to-unoptimized-Yul path. Their strict
+  compile-frontier lists and per-call gas baselines exercise protocol storage,
+  multi-bucket bitmap accounting, Hub accounting, Spoke borrow/repay, and
+  liquidation paths; see [`test/README.md`](./test/README.md) for reproduction
+  details.
 
 The differential baselines track **genuine behavioral mismatches vs solc** —
 halt/memory/storage differences under the seeded states and a

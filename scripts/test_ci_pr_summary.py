@@ -38,8 +38,26 @@ MAIN_LINES = [
     "Gas row:\toptimizer\tcodegen\tdropped.yul\t170\t200",
 ]
 
+AAVE_LINES = [
+    "Compiled 1/4 latest-fork contracts via solc 0.8.35 --via-ir "
+    "(skipped 0, unsupported 3).",
+    "Gas: 10 comparable, 0 regressions, 0 improved, 0 changed, 0 unpinned, 0 stale.",
+    "Gas totals: suite=aave-v4 mode=vs_solc_optimized ours=54544009 "
+    "solc=18236226 comparable=10",
+    "Gas row:\taave-v4\tvs_solc_optimized\tPositionStatusMap.sol:nextContinuousTenThousand()\t"
+    "21450571\t5975804",
+]
+
 
 class SummaryTest(unittest.TestCase):
+    def test_renders_aave_gas_corpus_row(self):
+        rendered = summary.build_comment(summary.parse(AAVE_LINES), {}, sha="")
+
+        self.assertIn(
+            "| aave-v4 | 1/4 | 10 | 54,544,009 | — | 18,236,226 | 299.1% | — | 0 | 0 |",
+            rendered)
+        self.assertIn("`uniswap-v4` and `aave-v4` corpora", rendered)
+
     def test_parses_machine_readable_gas_rows(self):
         data = summary.parse(HEAD_LINES)
         self.assertEqual(data["gas_rows"]["optimizer"]["shared.yul"]["ours"], 100)

@@ -170,6 +170,64 @@ CI runs the suite as the `Uniswap v4` leg of the `solidity-gas` matrix:
   --known=test/uniswap-v4-known-compile-failures.txt --per-scenario
 ```
 
+## Aave v4 fixtures (`aave-v4/`)
+
+`test/aave-v4/` applies the same strict, per-scenario runner to Aave v4's
+largest stateful paths and to the production position bitmap used inside the
+Spoke. The fixture wrappers reproduce upstream test sequences and values; they
+do not invent new boundary vectors:
+
+- `PositionStatusMap.sol` reproduces the collateral/borrow bitmap transitions
+  and reserve IDs from `test_collateralCount`, `test_borrowCount`,
+  `test_collateralCount_ignoresInvalidBits`, and
+  `test_borrowCount_ignoresInvalidBits`. It also executes the upstream
+  maximum-bound (1,024-reserve) running count checks, all three upstream
+  10,000-reserve continuous traversal algorithms, and `test_fls`'s complete
+  1..254 bit range. The traversal fixtures use independent positions and the
+  published deterministic reserve-ID vectors, rather than repeating one cheap
+  call to inflate gas;
+- `HubOperations.sol` reproduces the high-gas add/remove, draw/restore, and
+  deficit accounting flows from `tests/gas/Hub.Operations.gas.t.sol`, using the
+  upstream 1000e6/500e6 and 1000e18/500e18/250e18/100e18 amounts;
+- `SpokeOperations.sol` builds a real Hub, Spoke, oracle, two reserves, and
+  actors, then replays the supply, collateral, borrow, risk-premium, dynamic
+  configuration, repay, withdrawal, and all five partial/full/receive-shares/
+  deficit liquidation sequences exercised by the Spoke gas tests; and
+- `LiquidationLogic.sol` uses the exact deterministic vectors from Aave's
+  `LiquidationLogic.LiquidationAmounts.t.sol` and related liquidation-library
+  tests for full liquidation amount, target-health-factor, collateral, and
+  bonus calculations.
+
+Each fixture is a self-contained flattened Solidity file from Aave v4 commit
+`cfdf931c8c61715bef590c087c1fabe64c92ac92`. Production sources are unchanged
+apart from flattening; the combined pragma is `^0.8.28` so the repository's
+pinned solc 0.8.35 can lower them to unoptimized Yul. The authored `AGasTest`
+wrappers use the same test-only Business Source License grant. The upstream
+license is reproduced in `test/aave-v4/LICENSE`; these fixtures are compiler
+benchmarks for test environments, not deployable Aave distributions.
+
+The suite is strict. `aave-v4-known-compile-failures.txt` exactly records the
+three full integration fixtures whose unoptimized IR still exceeds this
+compiler's classic stack reach. A newly rejected fixture or a stale failure
+entry fails the run. The currently compilable fixture pins ten distinct call
+rows in `aave-v4-gas-baseline.txt`, totaling about 54.5 million gas for this
+compiler and 18.2 million for solc. The runner continues to allow smaller
+coverage rows when useful; the two maximum-count scans consume about 5 million
+gas each, and the three continuous traversals consume roughly 11 million,
+11 million, and 21 million gas.
+
+Run the suite with:
+
+```sh
+lake build checkSolidityGas
+ulimit -s unlimited
+.lake/build/bin/checkSolidityGas \
+  test/aave-v4 \
+  test/aave-v4-gas-baseline.txt \
+  "$(svm which 0.8.35)" 0.8.35 \
+  --known=test/aave-v4-known-compile-failures.txt --per-scenario
+```
+
 Remove a relative fixture path from any baseline as soon as it passes. A
 local checkout can be checked with:
 
