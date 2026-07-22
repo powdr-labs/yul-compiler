@@ -152,4 +152,220 @@ theorem flattenArgs_ok (P : String) (k : Nat) (args : List (Expr Op)) :
         · exact hhead.2 st hpre
 end
 
+/-! ### Head-expression flattening
+
+For a statement position that already allows one operator level (`let`/`assign`
+right-hand sides, `exprStmt`, and `if`/`switch` conditions), we flatten only the
+*arguments* — keeping a single flat `op(atoms)`/`call(atoms)` — and prepend the
+prelude. -/
+def flattenTop (P : String) (k : Nat) : Expr Op → Nat × List (Stmt Op) × Expr Op
+  | .builtin op args =>
+      let (k1, pre, atoms) := flattenArgs P k args
+      (k1, pre, .builtin op atoms)
+  | .call f args =>
+      let (k1, pre, atoms) := flattenArgs P k args
+      (k1, pre, .call f atoms)
+  | e => (k, [], e)
+
+theorem flattenTop_ok (P : String) (k : Nat) (e : Expr Op) :
+    isFlatRhs (flattenTop P k e).2.2 = true ∧
+      ∀ s ∈ (flattenTop P k e).2.1, preludeOK s = true := by
+  match e with
+  | .var x => exact ⟨rfl, by intro s hs; simp [flattenTop] at hs⟩
+  | .lit l => exact ⟨rfl, by intro s hs; simp [flattenTop] at hs⟩
+  | .builtin op args =>
+      exact ⟨(flattenArgs_ok P k args).1, fun s hs => (flattenArgs_ok P k args).2 s hs⟩
+  | .call f args =>
+      exact ⟨(flattenArgs_ok P k args).1, fun s hs => (flattenArgs_ok P k args).2 s hs⟩
+
+/-! ### The ANF form of statements and blocks
+
+A statement is in ANF when its operand expressions are flat (`isFlatRhs`) and its
+nested blocks are ANF. -/
+mutual
+def isANFStmt : Stmt Op → Bool
+  | .block body | .funDef _ _ _ body => isANFStmts body
+  | .letDecl _ rhs => rhs.all isFlatRhs
+  | .assign _ rhs | .exprStmt rhs => isFlatRhs rhs
+  | .cond c body => isFlatRhs c && isANFStmts body
+  | .switch c cases dflt => isFlatRhs c && isANFCases cases && isANFDflt dflt
+  | .forLoop init c post body =>
+      isANFStmts init && isFlatRhs c && isANFStmts post && isANFStmts body
+  | .break | .continue | .leave => true
+
+def isANFStmts : List (Stmt Op) → Bool
+  | [] => true
+  | s :: rest => isANFStmt s && isANFStmts rest
+
+def isANFCases : List (Literal × List (Stmt Op)) → Bool
+  | [] => true
+  | (_, b) :: rest => isANFStmts b && isANFCases rest
+
+def isANFDflt : Option (List (Stmt Op)) → Bool
+  | none => true
+  | some b => isANFStmts b
+end
+
+/-! ### The statement/block transform
+
+Each statement's operand expressions are flattened (prelude prepended); nested
+blocks recurse. The `for` **condition** is re-evaluated every iteration, so it
+cannot simply be hoisted before the loop: instead the loop condition becomes the
+literal `1` and the real test moves to the top of the body as
+`if iszero(cAtom) { break }`, with the condition's prelude inside the body where
+it re-runs. A shared temporary index `k` is threaded so names stay distinct. -/
+mutual
+def anfStmt (P : String) (k : Nat) : Stmt Op → Nat × List (Stmt Op)
+  | .block body => let (k1, body') := anfStmts P k body; (k1, [.block body'])
+  | .funDef n ps rs body => let (k1, body') := anfStmts P k body; (k1, [.funDef n ps rs body'])
+  | .letDecl vars none => (k, [.letDecl vars none])
+  | .letDecl vars (some e) => let (k1, pre, e') := flattenTop P k e; (k1, pre ++ [.letDecl vars (some e')])
+  | .assign vars e => let (k1, pre, e') := flattenTop P k e; (k1, pre ++ [.assign vars e'])
+  | .exprStmt e => let (k1, pre, e') := flattenTop P k e; (k1, pre ++ [.exprStmt e'])
+  | .cond c body =>
+      let (k1, pre, c') := flattenTop P k c
+      let (k2, body') := anfStmts P k1 body
+      (k2, pre ++ [.cond c' body'])
+  | .switch c cases dflt =>
+      let (k1, pre, c') := flattenTop P k c
+      let (k2, cases') := anfCases P k1 cases
+      let (k3, dflt') := anfDflt P k2 dflt
+      (k3, pre ++ [.switch c' cases' dflt'])
+  | .forLoop init c post body =>
+      let (k1, init') := anfStmts P k init
+      let (k2, cpre, catom) := flatten P k1 c
+      let (k3, post') := anfStmts P k2 post
+      let (k4, body') := anfStmts P k3 body
+      (k4, [.forLoop init' (.lit (.number 1)) post'
+              (cpre ++ .cond (.builtin .iszero [catom]) [.break] :: body')])
+  | .break => (k, [.break])
+  | .continue => (k, [.continue])
+  | .leave => (k, [.leave])
+
+def anfStmts (P : String) (k : Nat) : List (Stmt Op) → Nat × List (Stmt Op)
+  | [] => (k, [])
+  | s :: rest =>
+      let (k1, s') := anfStmt P k s
+      let (k2, rest') := anfStmts P k1 rest
+      (k2, s' ++ rest')
+
+def anfCases (P : String) (k : Nat) :
+    List (Literal × List (Stmt Op)) → Nat × List (Literal × List (Stmt Op))
+  | [] => (k, [])
+  | (l, b) :: rest =>
+      let (k1, b') := anfStmts P k b
+      let (k2, rest') := anfCases P k1 rest
+      (k2, (l, b') :: rest')
+
+def anfDflt (P : String) (k : Nat) :
+    Option (List (Stmt Op)) → Nat × Option (List (Stmt Op))
+  | none => (k, none)
+  | some b => let (k1, b') := anfStmts P k b; (k1, some b')
+end
+
+/-! ### Structural correctness: the transform produces ANF -/
+
+theorem isANFStmts_append (a b : List (Stmt Op)) :
+    isANFStmts (a ++ b) = (isANFStmts a && isANFStmts b) := by
+  induction a with
+  | nil => simp [isANFStmts]
+  | cons s rest ih => simp only [List.cons_append, isANFStmts, ih, Bool.and_assoc]
+
+theorem preludeOK_isANFStmt {s : Stmt Op} (h : preludeOK s = true) : isANFStmt s = true := by
+  match s, h with
+  | .letDecl [_] (some rhs), h => simpa [isANFStmt, preludeOK] using h
+
+theorem isANFStmts_of_preludeOK {pre : List (Stmt Op)}
+    (h : ∀ s ∈ pre, preludeOK s = true) : isANFStmts pre = true := by
+  induction pre with
+  | nil => rfl
+  | cons s rest ih =>
+      simp only [isANFStmts, Bool.and_eq_true]
+      exact ⟨preludeOK_isANFStmt (h s (List.mem_cons_self ..)),
+        ih (fun t ht => h t (List.mem_cons_of_mem _ ht))⟩
+
+mutual
+theorem anfStmt_ok (P : String) (k : Nat) (s : Stmt Op) :
+    isANFStmts (anfStmt P k s).2 = true := by
+  match s with
+  | .block body =>
+      have := anfStmts_ok P k body; simp [anfStmt, isANFStmts, isANFStmt, this]
+  | .funDef n ps rs body =>
+      have := anfStmts_ok P k body; simp [anfStmt, isANFStmts, isANFStmt, this]
+  | .letDecl vars none => simp [anfStmt, isANFStmts, isANFStmt]
+  | .letDecl vars (some e) =>
+      have hpre := isANFStmts_of_preludeOK (flattenTop_ok P k e).2
+      have hflat := (flattenTop_ok P k e).1
+      simp [anfStmt, isANFStmts_append, isANFStmts, isANFStmt, hpre, hflat]
+  | .assign vars e =>
+      have hpre := isANFStmts_of_preludeOK (flattenTop_ok P k e).2
+      have hflat := (flattenTop_ok P k e).1
+      simp [anfStmt, isANFStmts_append, isANFStmts, isANFStmt, hpre, hflat]
+  | .exprStmt e =>
+      have hpre := isANFStmts_of_preludeOK (flattenTop_ok P k e).2
+      have hflat := (flattenTop_ok P k e).1
+      simp [anfStmt, isANFStmts_append, isANFStmts, isANFStmt, hpre, hflat]
+  | .cond c body =>
+      have hpre := isANFStmts_of_preludeOK (flattenTop_ok P k c).2
+      have hflat := (flattenTop_ok P k c).1
+      have hbody := anfStmts_ok P (flattenTop P k c).1 body
+      simp [anfStmt, isANFStmts_append, isANFStmts, isANFStmt, hpre, hflat, hbody]
+  | .switch c cases dflt =>
+      have hpre := isANFStmts_of_preludeOK (flattenTop_ok P k c).2
+      have hflat := (flattenTop_ok P k c).1
+      have hcases := anfCases_ok P (flattenTop P k c).1 cases
+      have hdflt := anfDflt_ok P (anfCases P (flattenTop P k c).1 cases).1 dflt
+      simp [anfStmt, isANFStmts_append, isANFStmts, isANFStmt, hpre, hflat, hcases, hdflt]
+  | .forLoop init c post body =>
+      have hinit := anfStmts_ok P k init
+      have hcpre := isANFStmts_of_preludeOK (flatten_ok P (anfStmts P k init).1 c).2
+      have hcatom := (flatten_ok P (anfStmts P k init).1 c).1
+      have hpost := anfStmts_ok P (flatten P (anfStmts P k init).1 c).1 post
+      have hbody := anfStmts_ok P (anfStmts P (flatten P (anfStmts P k init).1 c).1 post).1 body
+      have hone : isFlatRhs (Expr.lit (Literal.number 1) : Expr Op) = true := rfl
+      have hiszero : isFlatRhs (Expr.builtin Op.iszero
+          [(flatten P (anfStmts P k init).1 c).2.2]) = true := by
+        simp only [isFlatRhs, atomicArgs, Bool.and_true]; exact hcatom
+      simp [anfStmt, isANFStmts_append, isANFStmts, isANFStmt,
+        hinit, hcpre, hpost, hbody, hone, hiszero]
+  | .break => simp [anfStmt, isANFStmts, isANFStmt]
+  | .continue => simp [anfStmt, isANFStmts, isANFStmt]
+  | .leave => simp [anfStmt, isANFStmts, isANFStmt]
+
+theorem anfStmts_ok (P : String) (k : Nat) (ss : List (Stmt Op)) :
+    isANFStmts (anfStmts P k ss).2 = true := by
+  match ss with
+  | [] => rfl
+  | s :: rest =>
+      have h1 := anfStmt_ok P k s
+      have h2 := anfStmts_ok P (anfStmt P k s).1 rest
+      simp [anfStmts, isANFStmts_append, h1, h2]
+
+theorem anfCases_ok (P : String) (k : Nat) (cs : List (Literal × List (Stmt Op))) :
+    isANFCases (anfCases P k cs).2 = true := by
+  match cs with
+  | [] => rfl
+  | (l, b) :: rest =>
+      have h1 := anfStmts_ok P k b
+      have h2 := anfCases_ok P (anfStmts P k b).1 rest
+      simp [anfCases, isANFCases, h1, h2]
+
+theorem anfDflt_ok (P : String) (k : Nat) (d : Option (List (Stmt Op))) :
+    isANFDflt (anfDflt P k d).2 = true := by
+  match d with
+  | none => rfl
+  | some b => have := anfStmts_ok P k b; simp [anfDflt, isANFDflt, this]
+end
+
+/-- **The ANF normalizer** (structural form): flatten a block so every operand is
+an atom. The prefix is a parameter here; the semantic-preservation step will
+instantiate it with a program-fresh prefix (the `FreshenCalls` idiom) so the
+introduced temporaries cannot capture or collide. -/
+def anfBlock (P : String) (b : Block Op) : Block Op :=
+  (anfStmts P 0 b).2
+
+/-- **Form correctness**: the normalizer's output is in ANF, for any prefix. -/
+theorem anfBlock_isANF (P : String) (b : Block Op) : isANFStmts (anfBlock P b) = true :=
+  anfStmts_ok P 0 b
+
 end YulEvmCompiler.Optimizer.ANF
