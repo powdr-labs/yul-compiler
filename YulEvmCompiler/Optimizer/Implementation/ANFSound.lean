@@ -389,6 +389,46 @@ theorem weakenArgs {funs : FunEnv D} {P : String} {es : List (Expr Op)}
           exact Step.argsHeadHalt (weakenArgs hext hnt.2 hrest) (weakenExpr hext hnt.1 hhead)
 end
 
+/-! ### Atom-list weakening
+
+The flattener's atoms are variables/literals, so a binding whose name is not one
+of the atoms' variables can be prepended without changing their evaluation — the
+non-shadowing fact the flatten-correctness `cons` case needs (a later flatten's
+fresh temporaries don't disturb the already-computed earlier atoms). -/
+theorem atomArgs_prepend_cons {funs : FunEnv D} {es : List (Expr Op)}
+    {V : VEnv D} {t : Ident} {w : U256} {st r}
+    (hatom : atomicArgs es = true) (hne : ∀ x, Expr.var x ∈ es → t ≠ x)
+    (h : Step D funs V st (.args es) (.eres r)) :
+    Step D funs ((t, w) :: V) st (.args es) (.eres r) := by
+  induction es generalizing r with
+  | nil => cases h with | argsNil => exact Step.argsNil
+  | cons e rest ih =>
+      simp only [atomicArgs, Bool.and_eq_true] at hatom
+      cases h with
+      | argsCons hrest hhead =>
+          refine Step.argsCons (ih hatom.2 (fun x hx => hne x (List.mem_cons_of_mem _ hx)) hrest) ?_
+          -- head atom e evaluates unchanged under the prepended binding
+          cases e with
+          | var y =>
+              cases hhead with
+              | var hv =>
+                  have : t ≠ y := hne y (List.mem_cons_self ..)
+                  exact Step.var (by rw [get_cons_ne this]; exact hv)
+          | lit l => cases hhead with | lit => exact Step.lit
+          | builtin _ _ => simp [isAtom] at hatom
+          | call _ _ => simp [isAtom] at hatom
+      | argsRestHalt hrest =>
+          exact Step.argsRestHalt (ih hatom.2 (fun x hx => hne x (List.mem_cons_of_mem _ hx)) hrest)
+      | argsHeadHalt hrest hhead =>
+          refine Step.argsHeadHalt
+            (ih hatom.2 (fun x hx => hne x (List.mem_cons_of_mem _ hx)) hrest) ?_
+          cases e with
+          | var y =>
+              cases hhead
+          | lit l => cases hhead
+          | builtin _ _ => simp [isAtom] at hatom
+          | call _ _ => simp [isAtom] at hatom
+
 /-! ### Flatten-correctness
 
 Running a `flatten`/`flattenArgs` prelude from a temp-extended environment binds
