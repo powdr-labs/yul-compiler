@@ -1,6 +1,7 @@
 # Verified Redundant-Store Elimination — design & plan
 
-Status: **M0 complete** (semantics pinned). M1+ not started.
+Status: **M0 + M1 complete** (semantics pinned; abstract domain + `Valid`
+relation landed in `Implementation/RedundantStore/Domain.lean`). M2+ not started.
 
 This document plans a single verified dataflow pass that subsumes today's
 `StorageForward` (read forwarding) and `DeadStore` (write removal) passes with a
@@ -143,7 +144,7 @@ Forward simulation with an invariant, at the statement-list level (generalizing
 | # | Week | Deliverable |
 |---|------|-------------|
 | **M0** | 0 | **Semantics memo (this doc §M0) + machine-checked probes** (`Implementation/RedundantStore/M0Semantics.lean`). **DONE.** |
-| **M1** | 1 | Abstract domain (`AbsVal`, word-region `σ`), key-classes via `KeyDiff`, the `Valid` relation on Core `valueEval`. |
+| **M1** | 1 | Abstract domain + key-classes via `KeyDiff` + `Valid` relation, in `Implementation/RedundantStore/Domain.lean`. **DONE.** `Avail`/`Fact` (known-only word-region store; `⊤` = absence), `find?`/`kill`/`store` via `mustAliasWord`/`mustNotAliasWord`, and `Valid` anchored on `EvalExpr`. Structural lemmas `Valid_nil`/`Valid_cons`/`Valid.filter`/`Valid.kill`/`Valid.store`/`Valid.find?` — axiom-clean (`propext`, `Quot.sound`; no `sorryAx`). |
 | **M2** | 1 | **Forwarding + value resolution**, straight-line only (no deletion; calls/CF as barriers). Statement-list simulation proof. Superset of `StorageForward`, now non-literal. |
 | **M3** | 2 | Add `pending` + `nonStatic`. **Redundant-store** (`upd_absorb`) and **dead-store** deletion crossing benign statements. Fixes the motivating example. |
 | **M4** | 2 | Enable **transient** region (same word machinery + `nonStatic`); retires today's staged-transient no-op. |
