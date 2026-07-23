@@ -603,7 +603,7 @@ Whole-environment form (`outer = []`), the shape needed for whole-program
 `Run`-equivalence: every in-scope variable is a program variable, renamed by `σ`.
 `ResOK σ'` carries `RenCfg σ'` on a statement result so it threads to the
 continuation. Expression / argument / simple-statement cases are proven; the
-scope-heavy cases are isolated in the final `sorry`. -/
+scope-heavy cases are isolated in the final catch-all branch. -/
 
 def ResOK (σ' : Ident → Ident) : Res D → Prop
   | .eres _ => True
