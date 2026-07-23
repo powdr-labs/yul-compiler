@@ -351,8 +351,93 @@ theorem goodO_lookup : ∀ {funs : FunEnv D} {flatSc : FScope D},
       | none => rw [hfind] at hlk; exact goodO_lookup hg.2 hlk
 
 omit [DecidableEq D.Value] in
+theorem collectStmt_subset_collectStmts : ∀ {ss : List (Stmt D.Op)} {s},
+    s ∈ ss → ∀ x ∈ collectStmt s, x ∈ collectStmts ss
+  | [], _, h, _, _ => by simp at h
+  | s' :: rest, s, h, x, hx => by
+      rw [collectStmts, List.mem_append]
+      rcases List.mem_cons.mp h with rfl | h
+      · exact Or.inl hx
+      · exact Or.inr (collectStmt_subset_collectStmts h x hx)
+
+omit [DecidableEq D.Value] in
+theorem mem_collectStmts_of_top {b : List (Stmt D.Op)} {f ps rs body}
+    (h : (Stmt.funDef f ps rs body) ∈ b) :
+    (Stmt.funDef f ps rs (stripStmts body)) ∈ collectStmts b := by
+  refine collectStmt_subset_collectStmts h _ ?_
+  rw [collectStmt]; exact List.mem_cons_self
+
+omit [DecidableEq D.Value] in
+theorem collectStmts_body_subset {b : List (Stmt D.Op)} {f ps rs body}
+    (h : (Stmt.funDef f ps rs body) ∈ b) {x} (hx : x ∈ collectStmts body) :
+    x ∈ collectStmts b := by
+  refine collectStmt_subset_collectStmts h x ?_
+  rw [collectStmt]; exact List.mem_cons_of_mem _ hx
+
+omit [DecidableEq D.Value] in
+theorem scopedStmts_funDef_body : ∀ {ss : List (Stmt D.Op)} {Γ},
+    ScopedStmts Γ ss → ∀ {f ps rs body}, (Stmt.funDef f ps rs body) ∈ ss →
+      ScopedStmts (funNamesTop body ++ Γ) body
+  | [], _, _, _, _, _, _, h => by simp at h
+  | s' :: rest, Γ, hsc, f, ps, rs, body, h => by
+      obtain ⟨h1, h2⟩ := hsc
+      rcases List.mem_cons.mp h with rfl | h
+      · exact h1
+      · exact scopedStmts_funDef_body h2 h
+
+omit [DecidableEq D.Value] in
+theorem mem_hoist_inv {b : List (Stmt D.Op)} {f} {d : FDecl D} (h : (f, d) ∈ hoist D b) :
+    ∃ ps rs body, d = { params := ps, rets := rs, body := body } ∧
+      (Stmt.funDef f ps rs body) ∈ b := by
+  simp only [hoist, List.mem_filterMap] at h
+  obtain ⟨s, hs, hg⟩ := h
+  cases s with
+  | funDef n ps rs body =>
+      simp only [Option.some.injEq, Prod.mk.injEq] at hg
+      obtain ⟨hn, hd⟩ := hg; subst hn; subst hd
+      exact ⟨ps, rs, body, rfl, hs⟩
+  | _ => simp at hg
+
+omit [DecidableEq D.Value] in
 /-- `ResEq flatSc [flatSc]` — the flat scope resolves like itself. -/
 theorem resEq_flat (flatSc : FScope D) : ResEq flatSc [flatSc] := fun _ => rfl
+
+omit [DecidableEq D.Value] in
+theorem funNamesEnv_hoist_cons (body : List (Stmt D.Op)) (funs : FunEnv D) :
+    funNamesEnv (hoist D body :: funs) = funNamesTop body ++ funNamesEnv funs := by
+  rw [funNamesEnv_cons, hoist_map_fst]
+
+omit [DecidableEq D.Value] in
+/-- Prepending an empty scope to the lifted env is transparent to resolution. -/
+theorem resEq_cons_nil {flatSc : FScope D} {funs_h : FunEnv D} (h : ResEq flatSc funs_h) :
+    ResEq flatSc ([] :: funs_h) := by
+  intro f
+  show lookupFun ([] :: funs_h) f = lookupFun [flatSc] f
+  unfold lookupFun
+  simp only [List.find?_nil]
+  exact h f
+
+omit [DecidableEq D.Value] in
+/-- Establishing `GoodO` for a pushed block scope, from the block's functions
+being in the flat scope and its body well scoped (used for `block`/`forLoop`). -/
+theorem goodO_push {flatSc : FScope D} {funs_o : FunEnv D} {body : List (Stmt D.Op)}
+    (hO : GoodO flatSc funs_o) (hcfb : CodeInFlat flatSc body)
+    (hwsb : ScopedStmts (funNamesTop body ++ funNamesEnv funs_o) body) :
+    GoodO flatSc (hoist D body :: funs_o) := by
+  refine ⟨?_, hO⟩
+  intro n d hmem
+  obtain ⟨ps, rs, bdy, hdeq, hfd⟩ := mem_hoist_inv hmem
+  refine ⟨?_, ?_, ?_⟩
+  · rw [hdeq]
+    have hst : stripDecl (D := D) { params := ps, rets := rs, body := bdy }
+        = { params := ps, rets := rs, body := stripStmts bdy } := rfl
+    rw [hst]
+    exact hcfb n ps rs (stripStmts bdy) (mem_collectStmts_of_top hfd)
+  · rw [hdeq, funNamesEnv_hoist_cons]
+    exact scopedStmts_funDef_body hwsb hfd
+  · rw [hdeq]
+    intro n' ps' rs' bd' hmem'
+    exact hcfb n' ps' rs' bd' (collectStmts_body_subset hfd hmem')
 
 /-- **Forward simulation.** (Under construction — skeleton to validate the
 induction motive; cases filled incrementally.) -/
@@ -512,54 +597,6 @@ theorem funNamesEnv_singleton (b : Block D.Op) :
     funNamesEnv (D := D) (hoist D b :: []) = funNamesTop b := by
   simp only [funNamesEnv, List.map_cons, List.map_nil, List.flatten_cons, List.flatten_nil,
     List.append_nil, hoist_map_fst]
-
-omit [DecidableEq D.Value] in
-theorem collectStmt_subset_collectStmts : ∀ {ss : List (Stmt D.Op)} {s},
-    s ∈ ss → ∀ x ∈ collectStmt s, x ∈ collectStmts ss
-  | [], _, h, _, _ => by simp at h
-  | s' :: rest, s, h, x, hx => by
-      rw [collectStmts, List.mem_append]
-      rcases List.mem_cons.mp h with rfl | h
-      · exact Or.inl hx
-      · exact Or.inr (collectStmt_subset_collectStmts h x hx)
-
-omit [DecidableEq D.Value] in
-theorem mem_collectStmts_of_top {b : List (Stmt D.Op)} {f ps rs body}
-    (h : (Stmt.funDef f ps rs body) ∈ b) :
-    (Stmt.funDef f ps rs (stripStmts body)) ∈ collectStmts b := by
-  refine collectStmt_subset_collectStmts h _ ?_
-  rw [collectStmt]; exact List.mem_cons_self
-
-omit [DecidableEq D.Value] in
-theorem collectStmts_body_subset {b : List (Stmt D.Op)} {f ps rs body}
-    (h : (Stmt.funDef f ps rs body) ∈ b) {x} (hx : x ∈ collectStmts body) :
-    x ∈ collectStmts b := by
-  refine collectStmt_subset_collectStmts h x ?_
-  rw [collectStmt]; exact List.mem_cons_of_mem _ hx
-
-omit [DecidableEq D.Value] in
-theorem scopedStmts_funDef_body : ∀ {ss : List (Stmt D.Op)} {Γ},
-    ScopedStmts Γ ss → ∀ {f ps rs body}, (Stmt.funDef f ps rs body) ∈ ss →
-      ScopedStmts (funNamesTop body ++ Γ) body
-  | [], _, _, _, _, _, _, h => by simp at h
-  | s' :: rest, Γ, hsc, f, ps, rs, body, h => by
-      obtain ⟨h1, h2⟩ := hsc
-      rcases List.mem_cons.mp h with rfl | h
-      · exact h1
-      · exact scopedStmts_funDef_body h2 h
-
-omit [DecidableEq D.Value] in
-theorem mem_hoist_inv {b : List (Stmt D.Op)} {f} {d : FDecl D} (h : (f, d) ∈ hoist D b) :
-    ∃ ps rs body, d = { params := ps, rets := rs, body := body } ∧
-      (Stmt.funDef f ps rs body) ∈ b := by
-  simp only [hoist, List.mem_filterMap] at h
-  obtain ⟨s, hs, hg⟩ := h
-  cases s with
-  | funDef n ps rs body =>
-      simp only [Option.some.injEq, Prod.mk.injEq] at hg
-      obtain ⟨hn, hd⟩ := hg; subst hn; subst hd
-      exact ⟨ps, rs, body, rfl, hs⟩
-  | _ => simp at hg
 
 /-- At the top block, the original scope stack is `GoodO` for the flat scope. -/
 theorem goodO_top {b : Block D.Op} (huniq : UniqueFunNames b) (hws : WellScoped b) :
