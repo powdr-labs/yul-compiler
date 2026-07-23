@@ -286,6 +286,64 @@ def CodeInFlatCode (flatSc : FScope D) : Code D.Op → Prop
   | .stmts ss => CodeInFlat flatSc ss
   | .loop _ post body => CodeInFlat flatSc post ∧ CodeInFlat flatSc body
 
+omit [DecidableEq D.Value] in
+theorem funNamesEnv_cons (s : FScope D) (rest : FunEnv D) :
+    funNamesEnv (s :: rest) = s.map (·.1) ++ funNamesEnv rest := by
+  simp only [funNamesEnv, List.map_cons, List.flatten_cons]
+
+omit [DecidableEq D.Value] in
+theorem mem_funNamesEnv_of_lookup {funs : FunEnv D} {f d c}
+    (h : lookupFun funs f = some (d, c)) : f ∈ funNamesEnv funs := by
+  induction funs with
+  | nil => simp [lookupFun] at h
+  | cons s rest ih =>
+      rw [funNamesEnv_cons, List.mem_append]
+      unfold lookupFun at h
+      cases hfind : s.find? (fun p => p.1 = f) with
+      | some p =>
+          left
+          have := List.find?_some (by rw [hfind])
+          have hp := List.mem_of_find?_eq_some hfind
+          exact (List.mem_map).mpr ⟨p, hp, by simpa using this⟩
+      | none => rw [hfind] at h; exact Or.inr (ih h)
+
+omit [DecidableEq D.Value] in
+/-- Under unique names, resolving in the closure environment returned by a lookup
+agrees with resolving in the whole environment. -/
+theorem lookupFun_cenv_resolve : ∀ (funs : FunEnv D) {f d cenv f' d' cenv'},
+    (funNamesEnv funs).Nodup → lookupFun funs f = some (d, cenv) →
+    lookupFun cenv f' = some (d', cenv') → lookupFun funs f' = some (d', cenv')
+  | [], _, _, _, _, _, _, _, h, _ => by simp [lookupFun] at h
+  | s :: rest, f, d, cenv, f', d', cenv', hnd, hlk, hlk' => by
+      rw [funNamesEnv_cons] at hnd
+      have hnd_rest : (funNamesEnv rest).Nodup := (List.nodup_append.mp hnd).2.1
+      have hdisj := (List.nodup_append.mp hnd).2.2
+      unfold lookupFun at hlk ⊢
+      cases hfind : s.find? (fun p => p.1 = f) with
+      | some p =>
+          rw [hfind] at hlk; simp only [Option.some.injEq, Prod.mk.injEq] at hlk
+          obtain ⟨_, rfl⟩ := hlk
+          unfold lookupFun at hlk'
+          exact hlk'
+      | none =>
+          rw [hfind] at hlk
+          have ihres := lookupFun_cenv_resolve rest hnd_rest hlk hlk'
+          have hmem' : f' ∈ funNamesEnv rest := mem_funNamesEnv_of_lookup ihres
+          cases hfind' : s.find? (fun p => p.1 = f') with
+          | some p' =>
+              exfalso
+              have hp' := List.mem_of_find?_eq_some hfind'
+              have hkey : p'.1 = f' := by simpa using List.find?_some hfind'
+              exact hdisj f' (List.mem_map.mpr ⟨p', hp', hkey⟩) f' hmem' rfl
+          | none => exact ihres
+
+omit [DecidableEq D.Value] in
+/-- `GoodO` is inherited by any closure environment a lookup returns. -/
+theorem goodO_cenv {flatSc : FScope D} {funs : FunEnv D}
+    (hnd : (funNamesEnv funs).Nodup) (hg : GoodO flatSc funs)
+    {f d cenv} (hlk : lookupFun funs f = some (d, cenv)) : GoodO flatSc cenv :=
+  fun f' d' cenv' hlk' => hg f' d' cenv' (lookupFun_cenv_resolve funs hnd hlk hlk')
+
 /-- **Core bidirectional simulation.** Running the original code under its
 lexical scope stack equals running the stripped code under the flat scope. The
 invariants (unique names in the env, `GoodO`, `ResEq`, well-scopedness,
