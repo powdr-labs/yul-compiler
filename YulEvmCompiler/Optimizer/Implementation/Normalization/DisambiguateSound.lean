@@ -596,3 +596,117 @@ theorem RenCfg.of_keys {σ : Ident → Ident} {V V' : VEnv D}
 theorem RenCfg.setMany {σ : Ident → Ident} {V : VEnv D} (h : RenCfg σ V)
     (xs : List Ident) (vs : List D.Value) : RenCfg σ (VEnv.setMany V xs vs) :=
   RenCfg.of_keys (VEnv.setMany_keys V xs vs) h
+
+/-! ### Forward simulation (on the `RenCfg` foundation)
+
+Whole-environment form (`outer = []`), the shape needed for whole-program
+`Run`-equivalence: every in-scope variable is a program variable, renamed by `σ`.
+`ResOK σ'` carries `RenCfg σ'` on a statement result so it threads to the
+continuation. Expression / argument / simple-statement cases are proven; the
+scope-heavy cases are isolated in the final `sorry`. -/
+
+def ResOK (σ' : Ident → Ident) : Res D → Prop
+  | .eres _ => True
+  | .sres V _ _ => RenCfg σ' V
+
+theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs₁ V₁ mst code₁ res₁) :
+    ∀ {σ φ σ' φ' funs₂ code₂}, RenCfg σ V₁ → Function.Injective φ →
+      RenFunsRel φ (FDeclRen φ) funs₁ funs₂ → AlphaCode σ φ σ' φ' code₁ code₂ →
+      Step D funs₂ (renVEnv σ V₁) mst code₂ (renRes σ' res₁) ∧ ResOK σ' res₁ := by
+  induction h with
+  | @lit funs V st l =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | expr hae => cases hae; exact ⟨Step.lit, trivial⟩
+  | @var funs V st x v hv =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | expr hae => cases hae with | var hx =>
+          exact ⟨Step.var (by rw [renVEnv_get σ V x (hcfg.no_merge hx)]; exact hv), trivial⟩
+  | @builtinOk funs V st op args argvals st1 rets st2 ha hb iha =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | expr hae => cases hae with | builtin ha2 =>
+          exact ⟨Step.builtinOk (iha hcfg hφ hfuns (.args ha2)).1 hb, trivial⟩
+  | @builtinHalt funs V st op args argvals st1 st2 ha hb iha =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | expr hae => cases hae with | builtin ha2 =>
+          exact ⟨Step.builtinHalt (iha hcfg hφ hfuns (.args ha2)).1 hb, trivial⟩
+  | @builtinArgsHalt funs V st op args st1 ha iha =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | expr hae => cases hae with | builtin ha2 =>
+          exact ⟨Step.builtinArgsHalt (iha hcfg hφ hfuns (.args ha2)).1, trivial⟩
+  | @callArgsHalt funs V st fn args st1 ha iha =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | expr hae => cases hae with | call hfn ha2 =>
+          exact ⟨Step.callArgsHalt (iha hcfg hφ hfuns (.args ha2)).1, trivial⟩
+  | @argsNil funs V st =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | args hae => cases hae; exact ⟨Step.argsNil, trivial⟩
+  | @argsCons funs V st e rest restvals st1 v st2 hrest he ihrest ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | args hae => cases hae with | cons he2 hr2 =>
+          exact ⟨Step.argsCons (ihrest hcfg hφ hfuns (.args hr2)).1
+            (ihe hcfg hφ hfuns (.expr he2)).1, trivial⟩
+  | @argsRestHalt funs V st e rest st1 hrest ihrest =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | args hae => cases hae with | cons he2 hr2 =>
+          exact ⟨Step.argsRestHalt (ihrest hcfg hφ hfuns (.args hr2)).1, trivial⟩
+  | @argsHeadHalt funs V st e rest restvals st1 st2 hrest he ihrest ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | args hae => cases hae with | cons he2 hr2 =>
+          exact ⟨Step.argsHeadHalt (ihrest hcfg hφ hfuns (.args hr2)).1
+            (ihe hcfg hφ hfuns (.expr he2)).1, trivial⟩
+  | @funDef funs V st n ps rs b =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | funD _ => exact ⟨Step.funDef, hcfg⟩
+  | @«break» funs V st =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | breakD => exact ⟨Step.break, hcfg⟩
+  | @«continue» funs V st =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | contD => exact ⟨Step.continue, hcfg⟩
+  | @leave funs V st =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | leaveD => exact ⟨Step.leave, hcfg⟩
+  | @seqNil funs V st =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | stmts hs => cases hs with | nil => exact ⟨Step.seqNil, hcfg⟩
+  | @exprStmt funs V st e st1 he ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | exprD he2 =>
+          exact ⟨Step.exprStmt (ihe hcfg hφ hfuns (.expr he2)).1, hcfg⟩
+  | @exprStmtHalt funs V st e st1 he ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | exprD he2 =>
+          exact ⟨Step.exprStmtHalt (ihe hcfg hφ hfuns (.expr he2)).1, hcfg⟩
+  | @assignVal funs V st vars e vals st1 he hlen ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | assignD hvars he2 =>
+          have hnm : ∀ x ∈ vars, ∀ k ∈ V.map Prod.fst, σ k = σ x → k = x := by
+            intro x hx k hk hkeq
+            obtain ⟨p, hp, hpk⟩ := List.mem_map.mp hk
+            subst hpk
+            exact hcfg.no_merge (hvars x hx) p hp hkeq
+          refine ⟨?_, RenCfg.setMany hcfg vars vals⟩
+          simp only [renRes]
+          rw [← renVEnv_setMany_dom σ vars vals V hnm]
+          exact Step.assignVal (ihe hcfg hφ hfuns (.expr he2)).1 (by rw [List.length_map]; exact hlen)
+  | @assignHalt funs V st vars e st1 he ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | assignD hvars he2 =>
+          exact ⟨Step.assignHalt (ihe hcfg hφ hfuns (.expr he2)).1, hcfg⟩
+  | @ifHalt funs V st c body st1 hc ihc =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | condD hc2 hb2 =>
+          exact ⟨Step.ifHalt (ihc hcfg hφ hfuns (.expr hc2)).1, hcfg⟩
+  | @switchHalt funs V st c cs dflt st1 hc ihc =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | switchD hc2 hcs2 hd2 =>
+          exact ⟨Step.switchHalt (ihc hcfg hφ hfuns (.expr hc2)).1, hcfg⟩
+  | @loopCondHalt funs V st c post body st1 hc ihc =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | loop hc2 hb2 hp2 =>
+          exact ⟨Step.loopCondHalt (ihc hcfg hφ hfuns (.expr hc2)).1, hcfg⟩
+  | @loopDone funs V st c post body cv st1 hc hz ihc =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | loop hc2 hb2 hp2 =>
+          exact ⟨Step.loopDone (ihc hcfg hφ hfuns (.expr hc2)).1 hz, hcfg⟩
+  | _ => intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode; sorry
