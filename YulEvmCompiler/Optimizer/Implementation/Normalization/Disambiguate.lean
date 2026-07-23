@@ -37,12 +37,14 @@ variable {Op : Type}
 
 /-! ### Fresh names -/
 
-/-- The `k`-th fresh name. A unary suffix makes distinctness a `List.length`
-fact (avoiding `Nat`-to-`String` injectivity lemmas). -/
-def dsName (k : Nat) : Ident := String.ofList (List.replicate (k + 1) 'v')
+/-- The `k`-th fresh name: a leading `NUL` (`Char.ofNat 0`), which cannot occur
+in a valid Yul identifier, followed by a unary suffix. The `NUL` makes the name
+disjoint from every source identifier (capture-avoidance, used by soundness);
+the unary suffix makes distinctness a `List.length` fact. -/
+def dsName (k : Nat) : Ident := String.ofList (Char.ofNat 0 :: List.replicate (k + 1) 'v')
 
 theorem dsName_inj {i j : Nat} (h : dsName i = dsName j) : i = j := by
-  simp only [dsName, String.ofList_inj] at h
+  simp only [dsName, String.ofList_inj, List.cons.injEq, true_and] at h
   have := congrArg List.length h
   simpa using this
 
