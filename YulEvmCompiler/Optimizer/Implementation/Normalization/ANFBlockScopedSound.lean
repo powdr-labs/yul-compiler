@@ -1,5 +1,5 @@
-import YulEvmCompiler.Optimizer.Implementation.ANFSound
-import YulEvmCompiler.Optimizer.Implementation.ANFBlockScoped
+import YulEvmCompiler.Optimizer.Implementation.Normalization.ANFSound
+import YulEvmCompiler.Optimizer.Implementation.Normalization.ANFBlockScoped
 import YulEvmCompiler.Optimizer.Implementation.EmptyScope
 import YulEvmCompiler.Optimizer.Implementation.StorageForwardSound
 /-!

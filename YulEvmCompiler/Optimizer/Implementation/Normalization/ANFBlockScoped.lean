@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Implementation.ANF
+import YulEvmCompiler.Optimizer.Implementation.Normalization.ANF
 /-!
 # ANF pass 1 — block-scoped operand flattening
 

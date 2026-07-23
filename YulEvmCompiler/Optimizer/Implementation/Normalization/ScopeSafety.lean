@@ -1,7 +1,7 @@
 import YulSemantics.BigStep
-import YulEvmCompiler.Optimizer.Implementation.ANF
+import YulEvmCompiler.Optimizer.Implementation.Normalization.ANF
 /-!
-# YulEvmCompiler.Optimizer.Implementation.ScopeSafety
+# YulEvmCompiler.Optimizer.Implementation.Normalization.ScopeSafety
 
 Reusable scope-safety meta-theory for the big-step semantics: **free variables**
 of expressions, the fact that an **atom list never gets stuck** when its

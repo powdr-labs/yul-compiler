@@ -1,6 +1,6 @@
 import YulSemantics.BigStep
-import YulEvmCompiler.Optimizer.Implementation.ANF
-import YulEvmCompiler.Optimizer.Implementation.ScopeSafety
+import YulEvmCompiler.Optimizer.Implementation.Normalization.ANF
+import YulEvmCompiler.Optimizer.Implementation.Normalization.ScopeSafety
 import YulEvmCompiler.Optimizer.Spec.Pass
 /-!
 # ANF normalizer — soundness foundations (`VEnv` weakening atoms)
