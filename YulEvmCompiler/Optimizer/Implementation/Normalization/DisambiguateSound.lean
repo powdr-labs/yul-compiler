@@ -714,6 +714,10 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
       cases hcode with | loop hc2 hb2 hp2 =>
           exact ⟨Step.loopDone (ihc hcfg hφ hfuns (.expr hc2)).1 hz, hcfg⟩
+  | @ifFalse funs V st c body cv st1 hc hz ihc =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | condD hc2 hb2 =>
+          exact ⟨Step.ifFalse (ihc hcfg hφ hfuns (.expr hc2)).1 hz, hcfg⟩
   | @seqCons funs V st s rest V1 st1 V2 st2 o hs hrest ihs ihrest =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
       cases hcode with | stmts hss => cases hss with | cons hs1 hrest1 =>
