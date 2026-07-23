@@ -377,41 +377,32 @@ theorem restore_prefix (V pre : VEnv D) : restore V (pre ++ V) = V := by
 
 end YulEvmCompiler.Optimizer.ANF
 
-/-! ## Soundness scaffold
+/-! ## The persistent-temporary normalizer (transform + form)
 
-The end-to-end soundness statement and the wired `Pass`, scaffolded with a single
-`sorry` at the semantic core so the architecture is verified to compose.
+`anfNormalize`/`anfBlock` is the persistent-temporary ANF form together with its
+structural (form) correctness `anfNormalize_isANF`. Its *semantic* soundness is
+not stated here: with atoms kept, the unconditional `∀ b, EquivBlock b (anfBlock b)`
+is false (reordering a pure but unbound operand past a halting one turns a stuck
+program into a halting one), so no such theorem can hold.
 
-Discharging `anfNormalize_sound` for the *current* (persistent-temporary)
-`anfBlock` requires, in order of difficulty:
-
-1. a **fresh-binding weakening lemma for `Step`** — temporaries persist across
-   statements within the block (so forwarding can reuse them), so the simulation
-   threads them through execution; the `VEnv`/`restore` lemmas above are its base;
-2. a **block congruence with *equivalent* (not identical) hoisted functions** —
-   ANF rewrites `funDef` bodies, so `hoist b ≠ hoist (anfBlock b)`; `EquivBlock.of_stmts`
-   (which needs `hoist` equal) does not apply directly;
-3. the **flatten evaluation-correctness** simulation on top.
-
-An alternative design (wrap each statement's flattening in its own sub-block)
-makes temporaries block-local per statement, removing (1) entirely — but then
-temporaries do not persist, defeating store-to-load forwarding. The persistent
-design here is the one the redundant-store pass wants. -/
+The verified soundness instead lives in `ANFBlockScopedSound`, for the
+*block-scoped* normalizer `bsStmts` (`bsStmts_sound_block : EquivBlock b (bsStmts P b)`
+for a closed block under a fresh prefix), built on the flatten-correctness lemmas
+below (forward/backward, normal/halt). Composing the block-scoped form with a
+block-flattening pass recovers this persistent form. -/
 
 namespace YulEvmCompiler.Optimizer.ANF
 
 open YulSemantics YulSemantics.EVM
-open YulEvmCompiler.Optimizer (Pass)
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 local notation "D" => evmWithExternal calls creates
 
 /-- A program-fresh temporary prefix. A NUL character cannot occur in a Yul
-source identifier, so no program identifier starts with it; the freshness fact
-is proved when discharging `anfNormalize_sound`. -/
+source identifier, so no program identifier starts with it. -/
 def anfPrefix (_b : Block Op) : String := String.ofList [Char.ofNat 0] ++ "anf"
 
-/-- The wired ANF normalizer: flatten with a program-fresh prefix. -/
+/-- The persistent-temporary ANF normalizer: flatten with a program-fresh prefix. -/
 def anfNormalize (b : Block Op) : Block Op := anfBlock (anfPrefix b) b
 
 /-- The normalizer's output is in ANF (from the structural proof). -/
