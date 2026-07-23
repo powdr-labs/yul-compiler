@@ -774,7 +774,8 @@ scope-heavy cases are isolated in the final catch-all branch. -/
 
 def ResOK (σ' : Ident → Ident) : Res D → Prop
   | .eres _ => True
-  | .sres V _ _ => RenCfg σ' V
+  | .sres V _ .normal => RenCfg σ' V
+  | .sres _ _ _ => True
 
 /-- A single statement never changes the function renaming (function names are
 prescanned at the block level). -/
@@ -832,13 +833,13 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
       cases hcode with | stmt hs => cases hs with | funD _ => exact ⟨Step.funDef, hcfg⟩
   | @«break» funs V st =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
-      cases hcode with | stmt hs => cases hs with | breakD => exact ⟨Step.break, hcfg⟩
+      cases hcode with | stmt hs => cases hs with | breakD => exact ⟨Step.break, trivial⟩
   | @«continue» funs V st =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
-      cases hcode with | stmt hs => cases hs with | contD => exact ⟨Step.continue, hcfg⟩
+      cases hcode with | stmt hs => cases hs with | contD => exact ⟨Step.continue, trivial⟩
   | @leave funs V st =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
-      cases hcode with | stmt hs => cases hs with | leaveD => exact ⟨Step.leave, hcfg⟩
+      cases hcode with | stmt hs => cases hs with | leaveD => exact ⟨Step.leave, trivial⟩
   | @seqNil funs V st =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmts hs => cases hs with | nil => exact ⟨Step.seqNil, hcfg⟩
@@ -849,7 +850,7 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
   | @exprStmtHalt funs V st e st1 he ihe =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | exprD he2 =>
-          exact ⟨Step.exprStmtHalt (ihe hcfg hφ hfuns trivial (.expr he2)).1, hcfg⟩
+          exact ⟨Step.exprStmtHalt (ihe hcfg hφ hfuns trivial (.expr he2)).1, trivial⟩
   | @assignVal funs V st vars e vals st1 he hlen ihe =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | assignD hvars he2 =>
@@ -865,19 +866,19 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
   | @assignHalt funs V st vars e st1 he ihe =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | assignD hvars he2 =>
-          exact ⟨Step.assignHalt (ihe hcfg hφ hfuns trivial (.expr he2)).1, hcfg⟩
+          exact ⟨Step.assignHalt (ihe hcfg hφ hfuns trivial (.expr he2)).1, trivial⟩
   | @ifHalt funs V st c body st1 hc ihc =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | condD hc2 hb2 =>
-          exact ⟨Step.ifHalt (ihc hcfg hφ hfuns trivial (.expr hc2)).1, hcfg⟩
+          exact ⟨Step.ifHalt (ihc hcfg hφ hfuns trivial (.expr hc2)).1, trivial⟩
   | @switchHalt funs V st c cs dflt st1 hc ihc =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | switchD hc2 hcs2 hd2 =>
-          exact ⟨Step.switchHalt (ihc hcfg hφ hfuns trivial (.expr hc2)).1, hcfg⟩
+          exact ⟨Step.switchHalt (ihc hcfg hφ hfuns trivial (.expr hc2)).1, trivial⟩
   | @loopCondHalt funs V st c post body st1 hc ihc =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | loop hc2 hb2 hp2 =>
-          exact ⟨Step.loopCondHalt (ihc hcfg hφ hfuns trivial (.expr hc2)).1, hcfg⟩
+          exact ⟨Step.loopCondHalt (ihc hcfg hφ hfuns trivial (.expr hc2)).1, trivial⟩
   | @loopDone funs V st c post body cv st1 hc hz ihc =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | loop hc2 hb2 hp2 =>
@@ -912,6 +913,17 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
             refine ⟨?_, RenCfg.extend hcfg hvnd hnd hlen hds hfr hsc' hW⟩
             simp only [renRes, renVEnv_append, hagree, renVEnv_zip, map_updRen_zip hvnd hlen]
             exact Step.letVal (ihe hcfg hφ hfuns trivial (.expr he')).1 (hlen0.trans hlen)
+  | @letHalt funs V st vars e st1 hval ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
+      cases hcode with | stmt hs => cases hs with
+        | @letD _ _ _ vars' _ _ hvnd hnd hlen hds hfr ho => cases ho with | some he' =>
+            have hsc' : ∀ x ∈ vars, x ∉ V.map Prod.fst := hsc
+            have hagree : renVEnv (updRen σ (vars.zip vars')) V = renVEnv σ V :=
+              renVEnv_congr (fun p hp => updRen_of_not_mem
+                (fun q hq hqp => hsc' p.1 (hqp ▸ (List.of_mem_zip hq).1) (List.mem_map_of_mem hp)))
+            refine ⟨?_, trivial⟩
+            simp only [renRes, hagree]
+            exact Step.letHalt (ihe hcfg hφ hfuns trivial (.expr he')).1
   | @seqCons funs V st s rest V1 st1 V2 st2 o hs hrest ihs ihrest =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmts hss => cases hss with | cons hs1 hrest1 =>
