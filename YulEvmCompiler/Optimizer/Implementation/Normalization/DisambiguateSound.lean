@@ -245,6 +245,117 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
       | «continue» => trivial
       | leave => trivial
       | halt => trivial
+  | @loopStep funs V st c post body cv st1 Vb stb ob Vp stp Vend stend o hc hnz hbody hob hpost hloop ihc ihbody ihpost ihloop =>
+      intro lo hi σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hfsc hns hcode
+      cases hcode with | loop hc2 hb2 hp2 =>
+      obtain ⟨hnsc, hnsp, hnsb⟩ := (hns : NormalForm.ScopedExpr _ _ c ∧
+        NormalForm.ScopedStmts _ (_ ++ NormalForm.funDefNames post) post ∧
+        NormalForm.ScopedStmts _ (_ ++ NormalForm.funDefNames body) body)
+      obtain ⟨hscb, hscp⟩ := (hsc : WScopedStmts (V.map Prod.fst) body ∧
+        WScopedStmts (V.map Prod.fst) post)
+      obtain ⟨hfscb, hfscp⟩ := (hfsc :
+        ((∀ fn ∈ funNames body, fn ∉ funNamesOf funs) ∧
+          FScopedStmts (funNames body ++ funNamesOf funs) body) ∧
+        ((∀ fn ∈ funNames post, fn ∉ funNamesOf funs) ∧
+          FScopedStmts (funNames post ++ funNamesOf funs) post))
+      have hkb : Vb.map Prod.fst = V.map Prod.fst := block_keys hbody
+      have hkp : Vp.map Prod.fst = V.map Prod.fst := (block_keys hpost).trans hkb
+      have hleb := alphaBlockExt_le hb2
+      obtain ⟨hstep_body, _⟩ := ihbody hcfg hφ hfuns hscb hfscb hnsb (.stmt (.blockD hb2))
+      obtain ⟨hstep_post, _⟩ := ihpost ((RenCfg.of_keys hkb hcfg).mono hleb) (hφ.mono hleb)
+        hfuns (by rw [hkb]; exact hscp) hfscp (by rw [hkb]; exact hnsp)
+        (.stmt (.blockD hp2))
+      obtain ⟨hstep_loop, hres⟩ := ihloop (RenCfg.of_keys hkp hcfg) hφ hfuns
+        (by rw [hkp]; exact ⟨hscb, hscp⟩) ⟨hfscb, hfscp⟩
+        (by rw [hkp]; exact ⟨hnsc, hnsp, hnsb⟩)
+        (.loop hc2 hb2 hp2)
+      exact ⟨Step.loopStep (ihc hcfg hφ hfuns trivial trivial hnsc
+        (.expr (lo := lo) (hi := hi) hc2)).1 hnz hstep_body hob hstep_post hstep_loop, hres⟩
+  | @loopPostHalt funs V st c post body cv st1 Vb stb ob Vp stp hc hnz hbody hob hpost ihc ihbody ihpost =>
+      intro lo hi σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hfsc hns hcode
+      cases hcode with | loop hc2 hb2 hp2 =>
+      obtain ⟨hnsc, hnsp, hnsb⟩ := (hns : NormalForm.ScopedExpr _ _ c ∧
+        NormalForm.ScopedStmts _ (_ ++ NormalForm.funDefNames post) post ∧
+        NormalForm.ScopedStmts _ (_ ++ NormalForm.funDefNames body) body)
+      obtain ⟨hscb, hscp⟩ := (hsc : WScopedStmts (V.map Prod.fst) body ∧
+        WScopedStmts (V.map Prod.fst) post)
+      obtain ⟨hfscb, hfscp⟩ := (hfsc : _ ∧ _)
+      have hkb : Vb.map Prod.fst = V.map Prod.fst := block_keys hbody
+      have hleb : lo ≤ _ := alphaBlockExt_le hb2
+      obtain ⟨hstep_body, _⟩ := ihbody hcfg hφ hfuns hscb hfscb hnsb (.stmt (.blockD hb2))
+      obtain ⟨hstep_post, _⟩ := ihpost ((RenCfg.of_keys hkb hcfg).mono hleb) (hφ.mono hleb)
+        hfuns (by rw [hkb]; exact hscp) hfscp (by rw [hkb]; exact hnsp)
+        (.stmt (.blockD hp2))
+      exact ⟨Step.loopPostHalt (ihc hcfg hφ hfuns trivial trivial hnsc
+        (.expr (lo := lo) (hi := hi) hc2)).1 hnz hstep_body hob hstep_post, trivial⟩
+  | @loopBreak funs V st c post body cv st1 Vb stb hc hnz hbody ihc ihbody =>
+      intro lo hi σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hfsc hns hcode
+      cases hcode with | loop hc2 hb2 hp2 =>
+      obtain ⟨hnsc, hnsp, hnsb⟩ := (hns : NormalForm.ScopedExpr _ _ c ∧
+        NormalForm.ScopedStmts _ (_ ++ NormalForm.funDefNames post) post ∧
+        NormalForm.ScopedStmts _ (_ ++ NormalForm.funDefNames body) body)
+      obtain ⟨hscb, hscp⟩ := (hsc : WScopedStmts (V.map Prod.fst) body ∧
+        WScopedStmts (V.map Prod.fst) post)
+      obtain ⟨hfscb, hfscp⟩ := (hfsc : _ ∧ _)
+      obtain ⟨hstep_body, _⟩ := ihbody hcfg hφ hfuns hscb hfscb hnsb (.stmt (.blockD hb2))
+      refine ⟨Step.loopBreak (ihc hcfg hφ hfuns trivial trivial hnsc
+        (.expr (lo := lo) (hi := hi) hc2)).1 hnz hstep_body, ?_⟩
+      exact (RenCfg.of_keys (block_keys hbody) hcfg).mono
+        (Nat.le_trans (alphaBlockExt_le hb2) (alphaBlockExt_le hp2))
+  | @loopLeave funs V st c post body cv st1 Vb stb hc hnz hbody ihc ihbody =>
+      intro lo hi σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hfsc hns hcode
+      cases hcode with | loop hc2 hb2 hp2 =>
+      obtain ⟨hnsc, hnsp, hnsb⟩ := (hns : NormalForm.ScopedExpr _ _ c ∧
+        NormalForm.ScopedStmts _ (_ ++ NormalForm.funDefNames post) post ∧
+        NormalForm.ScopedStmts _ (_ ++ NormalForm.funDefNames body) body)
+      obtain ⟨hscb, hscp⟩ := (hsc : WScopedStmts (V.map Prod.fst) body ∧
+        WScopedStmts (V.map Prod.fst) post)
+      obtain ⟨hfscb, hfscp⟩ := (hfsc : _ ∧ _)
+      obtain ⟨hstep_body, _⟩ := ihbody hcfg hφ hfuns hscb hfscb hnsb (.stmt (.blockD hb2))
+      exact ⟨Step.loopLeave (ihc hcfg hφ hfuns trivial trivial hnsc
+        (.expr (lo := lo) (hi := hi) hc2)).1 hnz hstep_body, trivial⟩
+  | @loopBodyHalt funs V st c post body cv st1 Vb stb hc hnz hbody ihc ihbody =>
+      intro lo hi σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hfsc hns hcode
+      cases hcode with | loop hc2 hb2 hp2 =>
+      obtain ⟨hnsc, hnsp, hnsb⟩ := (hns : NormalForm.ScopedExpr _ _ c ∧
+        NormalForm.ScopedStmts _ (_ ++ NormalForm.funDefNames post) post ∧
+        NormalForm.ScopedStmts _ (_ ++ NormalForm.funDefNames body) body)
+      obtain ⟨hscb, hscp⟩ := (hsc : WScopedStmts (V.map Prod.fst) body ∧
+        WScopedStmts (V.map Prod.fst) post)
+      obtain ⟨hfscb, hfscp⟩ := (hfsc : _ ∧ _)
+      obtain ⟨hstep_body, _⟩ := ihbody hcfg hφ hfuns hscb hfscb hnsb (.stmt (.blockD hb2))
+      exact ⟨Step.loopBodyHalt (ihc hcfg hφ hfuns trivial trivial hnsc
+        (.expr (lo := lo) (hi := hi) hc2)).1 hnz hstep_body, trivial⟩
+  | @seqStop funs V st s rest V1 st1 o hs hne ihs =>
+      intro lo hi σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hfsc hns hcode
+      cases hcode with | stmts hss =>
+      cases hss with | @cons _ m _ _ _ _ s₂ _ rest₂ σmid _ _ _ hs1 hrest1 =>
+      obtain ⟨hsc_s, hsc_r⟩ := (hsc : WScopedStmt (V.map Prod.fst) s ∧
+        WScopedStmts (declVars s ++ V.map Prod.fst) rest)
+      obtain ⟨hfsc_s, hfsc_r⟩ := (hfsc : FScopedStmt _ s ∧ FScopedStmts _ rest)
+      obtain ⟨hns_s, hns_r⟩ := (hns : NormalForm.ScopedStmt _ _ s ∧
+        NormalForm.ScopedStmts (V.map Prod.fst ++ NormalForm.declTopVars s) _ rest)
+      obtain ⟨hstep_s, _⟩ := ihs hcfg hφ hfuns hsc_s hfsc_s hns_s (.stmt hs1)
+      have hpe := hs1.phi_eq; subst hpe
+      have hk1 : V1.map Prod.fst = V.map Prod.fst := venvKeys_stmt_abnormal hs hne
+      have hagree : renVEnv σ' V1 = renVEnv σmid V1 := by
+        refine renVEnv_congr (fun p hp => ?_)
+        have hpk : p.1 ∈ V.map Prod.fst := by
+          rw [← hk1]; exact List.mem_map_of_mem hp
+        exact alphaSeq_agrees hrest1 p.1
+          (wscoped_declVars_disjoint hsc_r p.1
+            (List.mem_append.mpr (Or.inr hpk)))
+      refine ⟨?_, ?_⟩
+      · show Step D funs₂ (renVEnv σ V) st (.stmts (s₂ :: rest₂))
+          (.sres (renVEnv σ' V1) st1 o)
+        rw [hagree]
+        exact Step.seqStop hstep_s hne
+      · cases o with
+        | normal => exact absurd rfl hne
+        | «break» => trivial
+        | «continue» => trivial
+        | leave => trivial
+        | halt => trivial
   | _ => intro lo hi σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hfsc hns hcode; sorry
 
 end YulEvmCompiler.Optimizer.Normalize

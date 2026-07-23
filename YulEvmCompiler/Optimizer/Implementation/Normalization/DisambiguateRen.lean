@@ -1006,4 +1006,34 @@ theorem selectSwitch_nscoped {vs fs : List Ident} {cv : D.Value} :
         simp only [selectSwitch, List.find?_cons, hcv, decide_false] at this ⊢
         exact this
 
+/-- For an abnormal outcome, a statement leaves the environment's key-set
+unchanged (halts return the current environment; `break`/`continue`/`leave`
+escape from inside restoring scopes). -/
+theorem venvKeys_stmt_abnormal {funs : FunEnv D} {V st s V1 st1 o}
+    (h : Step D funs V st (.stmt s) (.sres V1 st1 o)) (hne : o ≠ .normal) :
+    V1.map Prod.fst = V.map Prod.fst := by
+  cases h with
+  | funDef => exact absurd rfl hne
+  | letZero => exact absurd rfl hne
+  | letVal _ _ => exact absurd rfl hne
+  | assignVal _ _ => exact absurd rfl hne
+  | exprStmt _ => exact absurd rfl hne
+  | ifFalse _ _ => exact absurd rfl hne
+  | letHalt _ => rfl
+  | assignHalt _ => rfl
+  | exprStmtHalt _ => rfl
+  | ifHalt _ => rfl
+  | switchHalt _ => rfl
+  | «break» => rfl
+  | «continue» => rfl
+  | leave => rfl
+  | ifTrue _ _ hb => exact block_keys hb
+  | switchExec _ hb => exact block_keys hb
+  | block hb => exact restore_keys (venvKeys_suffix hb rfl) (venvLen_mono hb rfl)
+  | forLoop hinit hloop =>
+      exact restore_keys ((venvKeys_suffix hinit rfl).trans (venvKeys_suffix hloop rfl))
+        (Nat.le_trans (venvLen_mono hinit rfl) (venvLen_mono hloop rfl))
+  | forInitHalt hinit =>
+      exact restore_keys (venvKeys_suffix hinit rfl) (venvLen_mono hinit rfl)
+
 end YulEvmCompiler.Optimizer.Normalize
