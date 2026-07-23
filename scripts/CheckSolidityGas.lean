@@ -23,7 +23,10 @@ constructor), and the contract's calls are replayed on each. semanticTests
 fixtures specify their own calls in the `// ----` section (`f(uint256): 42 ->
 42`); those exact calls — arguments already in flattened ABI form — are used, so
 real work is exercised, state persists across the sequence, and outputs are
-cross-checked. gasTests have no call spec, so each external function is called
+cross-checked. Final frame memory is intentionally excluded because it is not
+observable after a contract call returns; returned data and every committed
+world effect remain compared. A strict fixture with declared calls must measure
+all of them. gasTests have no call spec, so each external function is called
 once with synthetic argument words. Over the calls that reach identical
 observable behavior, the gas each spends is summed and this compiler's total is
 checked against a pinned baseline (fail if it rises while solc's is unchanged —
@@ -62,10 +65,31 @@ private def normHalt : HaltKind → HaltKind
   | .Success => .Returned
   | h => h
 
-/-- Behavioral equality for a call, tolerant of the STOP/RETURN distinction. -/
+/-- Behavioral equality for a completed contract call. The caller can observe
+the halt/output, returndata, persistent world, logs, self-destructs, and refund,
+but the callee frame's final memory disappears when the call returns. Excluding
+that transient memory is also essential for guarded memory spilling: scratch
+writes may remain in the halted frame without changing any committed effect. -/
 private def sameOutcome (a b : EVM.State) : Bool :=
   normHalt a.halt == normHalt b.halt &&
-    { observe a with halt := .Returned } == { observe b with halt := .Returned }
+    { observe a with halt := .Returned, memory := #[] } ==
+      { observe b with halt := .Returned, memory := #[] }
+
+private def sameOutcomeIgnoresTransientMemory : Bool :=
+  let state := initialState (ByteArray.mk #[])
+  sameOutcome state { state with memory := ByteArray.mk #[1] }
+
+private def sameOutcomeStillChecksOutput : Bool :=
+  let state := initialState (ByteArray.mk #[])
+  !sameOutcome state { state with hReturn := ByteArray.mk #[1] }
+
+private def parseSpecCountsUnsupportedDeclaredCalls : Bool :=
+  let spec := parseSpec "// ----\n// f() -> 1\n// g(uint256): unsupported -> 0"
+  spec.declaredCalls == 2 && spec.calls.size == 1
+
+#guard sameOutcomeIgnoresTransientMemory
+#guard sameOutcomeStillChecksOutput
+#guard parseSpecCountsUnsupportedDeclaredCalls
 
 /-- Execute creation bytecode (with constructor arguments appended) and return
 a state ready for calls: the returned top-level runtime is installed directly,
@@ -146,6 +170,7 @@ private def totalRow (name : String) (calls : Array CallGas) : GasRow :=
 but computed independently so contracts can be gas-checked concurrently. -/
 private structure GasOutcome where
   compileFailure : Option (String × String) := none
+  measurementFailure : Option (String × String) := none
   skipped : Bool := false
   measured : Array GasRow := #[]
 
@@ -176,8 +201,11 @@ private def processContract (dir : FilePath) (solcPath : String) (perScenario : 
                   -- With no call spec (gasTests) fall back to one synthetic
                   -- call per external function selector.
                   let spec := parseSpec contents
+                  if spec.calls.size != spec.declaredCalls then
+                    return { measurementFailure := some (name,
+                      s!"only {spec.calls.size}/{spec.declaredCalls} declared calls could be parsed") }
                   let calls ← do
-                    if spec.calls.isEmpty then
+                    if spec.declaredCalls == 0 then
                       match ← solcFunctionSelectors solcPath source with
                       | .error _ => pure #[]
                       | .ok sels => pure (sels.toArray.map fun s =>
@@ -194,12 +222,20 @@ private def processContract (dir : FilePath) (solcPath : String) (perScenario : 
                       let replayFuel :=
                         if dir.fileName == some "aave-v4" then 30000000 else 3000000
                       let callGas := replayCalls ourBase solcBase calls replayFuel
-                      if callGas.isEmpty then return {}
+                      if spec.declaredCalls != 0 && callGas.size != calls.size then
+                        return { measurementFailure := some (name,
+                          s!"only {callGas.size}/{calls.size} declared calls reached matching observable behavior") }
+                      else if callGas.isEmpty then return {}
                       else if perScenario then
                         return { measured := perScenarioRows name callGas }
                       else
                         return { measured := #[totalRow name callGas] }
-                  | _, _ => return {}       -- deployment did not produce runtime
+                  | _, _ =>
+                      if spec.declaredCalls == 0 then return {}
+                      else
+                        let failure :=
+                          (name, "deployment did not produce runtime for declared calls")
+                        return { measurementFailure := some failure }
 
 private def usage : String :=
   "usage: CheckSolidityGas <contracts-dir> <gas-baseline.txt> " ++
@@ -247,6 +283,7 @@ private def run (dir baselineFile : FilePath)
     return 1
   let mut measured : Array GasRow := #[]
   let mut compileFailures : Array (String × String) := #[]
+  let mut measurementFailures : Array (String × String) := #[]
   let mut skipped := 0
   let jobs ← detectJobs
   -- The checked-in protocol suites always use scenario rows; keeping this
@@ -255,6 +292,8 @@ private def run (dir baselineFile : FilePath)
   let outcomes : Array GasOutcome ← parMap jobs files (processContract dir solcPath perScenario)
   for outcome in outcomes do
     if let some entry := outcome.compileFailure then compileFailures := compileFailures.push entry
+    if let some entry := outcome.measurementFailure then
+      measurementFailures := measurementFailures.push entry
     if outcome.skipped then skipped := skipped + 1
     measured := measured ++ outcome.measured
   let compiled := files.size - skipped - compileFailures.size
@@ -269,17 +308,23 @@ private def run (dir baselineFile : FilePath)
     | none => #[]
 
   if update then
+    unless lenient || unexpectedFailures.isEmpty do
+      IO.eprintln "Contracts that failed to compile (fix before pinning):"
+      for (name, message) in unexpectedFailures do IO.eprintln s!"  {name}: {message}"
+      return 1
+    unless lenient || measurementFailures.isEmpty do
+      IO.eprintln "Contracts with declared calls that could not be measured:"
+      for (name, message) in measurementFailures do IO.eprintln s!"  {name}: {message}"
+      return 1
+    if !staleKnown.isEmpty then
+      printNames "Stale known-compile-failure entries (remove after review):" staleKnown
+      return 1
     let baselineKind :=
       if perScenario then "solidity-gas per external function"
       else "solidity-gas"
     IO.FS.writeFile baselineFile (render baselineKind expectedSolcVersion measured)
     IO.println s!"Compiled {compiled} contracts; re-pinned {measured.size} gas rows in {baselineFile}."
-    unless lenient || unexpectedFailures.isEmpty do
-      IO.eprintln "Contracts that failed to compile (fix before pinning):"
-      for (name, message) in unexpectedFailures do IO.eprintln s!"  {name}: {message}"
-      return 1
-    printNames "Stale known-compile-failure entries (remove after review):" staleKnown
-    return if staleKnown.isEmpty then 0 else 1
+    return 0
 
   let baseline ← match ← readBaseline baselineFile with
     | .ok rows => pure (rows.filter (fun r => selected r.fixture))
@@ -318,6 +363,9 @@ private def run (dir baselineFile : FilePath)
   unless lenient || unexpectedFailures.isEmpty do
     IO.eprintln "Contracts this compiler failed to compile:"
     for (name, message) in unexpectedFailures do IO.eprintln s!"  {name}: {message}"
+  unless lenient || measurementFailures.isEmpty do
+    IO.eprintln "Contracts with declared calls that could not be measured:"
+    for (name, message) in measurementFailures do IO.eprintln s!"  {name}: {message}"
   printNames "Stale known-compile-failure entries (remove after review):" staleKnown
   printNames "Gas improved — re-pin with scripts/update-gas.sh to tighten:" gasImproved
   printNames "Fixtures changed upstream/solc — re-pin with scripts/update-gas.sh:" gasChanged
@@ -326,8 +374,8 @@ private def run (dir baselineFile : FilePath)
   unless gasRegressions.isEmpty do
     IO.eprintln "GAS REGRESSIONS (this compiler now spends more gas):"
     for detail in gasRegressions do IO.eprintln s!"  {detail}"
-  return if (lenient || unexpectedFailures.isEmpty) && staleKnown.isEmpty &&
-    gasRegressions.isEmpty then 0 else 1
+  return if (lenient || (unexpectedFailures.isEmpty && measurementFailures.isEmpty)) &&
+    staleKnown.isEmpty && gasRegressions.isEmpty then 0 else 1
 
 def main (args : List String) : IO UInt32 := do
   match args with

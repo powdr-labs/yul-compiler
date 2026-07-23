@@ -21,7 +21,8 @@ call value, so the gas comparison replays the *real* calls the test intends
 rather than synthetic inputs. Constructor args and value are captured too.
 
 Unsupported argument spellings (rare builtins) make the value — and hence the
-call — unparseable; the caller simply skips those.
+call — unparseable. `Spec.declaredCalls` retains the source count so callers
+that require complete replay can distinguish that from a fixture with no calls.
 -/
 
 namespace YulEvmCompilerTests.SolTest
@@ -146,6 +147,7 @@ structure Call where
 structure Spec where
   ctorArgs : ByteArray := ByteArray.empty
   ctorValue : Nat := 0
+  declaredCalls : Nat := 0
   calls : Array Call := #[]
 
 /-- Parse one call/constructor line (already stripped of its `// ` prefix and
@@ -167,7 +169,8 @@ private def parseHeaderArgs (line : String) : Option (String × Nat × String) :
   | _ => none
 
 /-- Parse the `// ----` expectation section into a replayable spec. Lines that
-are not calls (gas/storage/comments) or whose args are unsupported are skipped. -/
+are not calls (gas/storage/comments) are skipped. Unsupported calls are absent
+from `calls` but remain included in `declaredCalls`. -/
 def parseSpec (source : String) : Spec := Id.run do
   let lines := source.splitOn "\n"
   let body := lines.dropWhile (fun l => l.trimAscii.copy != "// ----")
@@ -181,15 +184,19 @@ def parseSpec (source : String) : Spec := Id.run do
     if content.isEmpty || content == "----" then continue
     if content.startsWith "gas " || content.startsWith "storage" ||
         content.startsWith "~ " || content.startsWith "left(" then continue
+    let hasResult := (content.splitOn " -> ").length >= 2
+    let isConstructor := content.startsWith "constructor("
+    if hasResult && !isConstructor then
+      spec := { spec with declaredCalls := spec.declaredCalls + 1 }
     let some (sig, value, args) := parseHeaderArgs content | continue
     if !sig.contains '(' then continue
-    if sig.startsWith "constructor(" then
+    if isConstructor then
       match encodeArgs args with
       | some encoded => spec := { spec with ctorArgs := encoded, ctorValue := value }
       | none => pure ()
     -- A real call line always has a `->` result; without one this is a gas or
     -- storage annotation (e.g. gasTests' `a(): 2425`), not a call.
-    else if (content.splitOn " -> ").length < 2 then continue
+    else if !hasResult then continue
     else
       match encodeArgs args with
       | some encoded =>
