@@ -1799,7 +1799,7 @@ theorem storageForwardShallow_sound : Sound D storageForwardShallowBlock := by
   · have hfalse : storageLayoutFreeStmts b = false := Bool.eq_false_of_not_eq_true hfree
     simpa [storageForwardShallowBlock, hfalse] using (EquivBlock.refl b : EquivBlock D b b)
 
-def storageForwardShallow : Pass D where
+def storageForwardShallow : LocalPass D where
   run := storageForwardShallowBlock
   sound := storageForwardShallow_sound
 
@@ -1883,7 +1883,7 @@ theorem storageForward_sound : Sound D storageForwardBlock := by
   exact (EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (sfFunStmts_forall2 b))
     (sfFunScopeRel b)).trans (storageForwardShallow.sound (sfFunStmts b))
 
-def storageForward : Pass D where
+def storageForward : LocalPass D where
   run := storageForwardBlock
   sound := storageForward_sound
 
