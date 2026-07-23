@@ -258,51 +258,46 @@ def updRen (σ : Ident → Ident) (l : List (Ident × Ident)) : Ident → Ident 
     | none => σ z
 
 mutual
-inductive AlphaSeqExt :
-    (Ident → Ident) → (Ident → Ident) → List (Stmt Op) → List (Stmt Op) →
+/-- Single-statement α-equivalence, reporting the renamings after the statement's
+declarations (only `let` extends `σ`; `funDef` names are prescanned into `φ`). -/
+inductive AlphaStmt1 :
+    (Ident → Ident) → (Ident → Ident) → Stmt Op → Stmt Op →
     (Ident → Ident) → (Ident → Ident) → Prop
-  | nil {σ φ} : AlphaSeqExt σ φ [] [] σ φ
-  | letD {σ φ vars vars' eo eo' rest rest' σ'' φ''} :
+  | letD {σ φ vars vars' eo eo'} :
       AlphaOExpr σ φ eo eo' →
-      AlphaSeqExt (updRen σ (vars.zip vars')) φ rest rest' σ'' φ'' →
-      AlphaSeqExt σ φ (.letDecl vars eo :: rest) (.letDecl vars' eo' :: rest') σ'' φ''
-  | assignD {σ φ vars e e' rest rest' σ'' φ''} :
-      AlphaExpr σ φ e e' → AlphaSeqExt σ φ rest rest' σ'' φ'' →
-      AlphaSeqExt σ φ (.assign vars e :: rest) (.assign (vars.map σ) e' :: rest') σ'' φ''
-  | exprD {σ φ e e' rest rest' σ'' φ''} :
-      AlphaExpr σ φ e e' → AlphaSeqExt σ φ rest rest' σ'' φ'' →
-      AlphaSeqExt σ φ (.exprStmt e :: rest) (.exprStmt e' :: rest') σ'' φ''
-  | funD {σ φ fn ps ps' rs rs' body body' rest rest' σb φb σ'' φ''} :
+      AlphaStmt1 σ φ (.letDecl vars eo) (.letDecl vars' eo') (updRen σ (vars.zip vars')) φ
+  | assignD {σ φ vars e e'} :
+      AlphaExpr σ φ e e' →
+      AlphaStmt1 σ φ (.assign vars e) (.assign (vars.map σ) e') σ φ
+  | exprD {σ φ e e'} :
+      AlphaExpr σ φ e e' → AlphaStmt1 σ φ (.exprStmt e) (.exprStmt e') σ φ
+  | funD {σ φ fn ps ps' rs rs' body body' σb φb} :
       AlphaBlockExt (updRen σ (ps.zip ps' ++ rs.zip rs')) φ body body' σb φb →
-      AlphaSeqExt σ φ rest rest' σ'' φ'' →
-      AlphaSeqExt σ φ (.funDef fn ps rs body :: rest) (.funDef (φ fn) ps' rs' body' :: rest') σ'' φ''
-  | blockD {σ φ body body' rest rest' σb φb σ'' φ''} :
-      AlphaBlockExt σ φ body body' σb φb → AlphaSeqExt σ φ rest rest' σ'' φ'' →
-      AlphaSeqExt σ φ (.block body :: rest) (.block body' :: rest') σ'' φ''
-  | condD {σ φ c c' body body' rest rest' σb φb σ'' φ''} :
-      AlphaExpr σ φ c c' → AlphaBlockExt σ φ body body' σb φb → AlphaSeqExt σ φ rest rest' σ'' φ'' →
-      AlphaSeqExt σ φ (.cond c body :: rest) (.cond c' body' :: rest') σ'' φ''
-  | switchD {σ φ c c' cases cases' dflt dflt' rest rest' σ'' φ''} :
+      AlphaStmt1 σ φ (.funDef fn ps rs body) (.funDef (φ fn) ps' rs' body') σ φ
+  | blockD {σ φ body body' σb φb} :
+      AlphaBlockExt σ φ body body' σb φb → AlphaStmt1 σ φ (.block body) (.block body') σ φ
+  | condD {σ φ c c' body body' σb φb} :
+      AlphaExpr σ φ c c' → AlphaBlockExt σ φ body body' σb φb →
+      AlphaStmt1 σ φ (.cond c body) (.cond c' body') σ φ
+  | switchD {σ φ c c' cases cases' dflt dflt'} :
       AlphaExpr σ φ c c' → AlphaCases σ φ cases cases' → AlphaDflt σ φ dflt dflt' →
-      AlphaSeqExt σ φ rest rest' σ'' φ'' →
-      AlphaSeqExt σ φ (.switch c cases dflt :: rest) (.switch c' cases' dflt' :: rest') σ'' φ''
-  | forD {σ φ init init' c c' post post' body body' rest rest' σi φi σb φb σp φp σ'' φ''} :
+      AlphaStmt1 σ φ (.switch c cases dflt) (.switch c' cases' dflt') σ φ
+  | forD {σ φ init init' c c' post post' body body' σi φi σb φb σp φp} :
       AlphaBlockExt σ φ init init' σi φi →
       AlphaExpr σi φi c c' →
       AlphaBlockExt σi φi body body' σb φb →
       AlphaBlockExt σi φi post post' σp φp →
-      AlphaSeqExt σ φ rest rest' σ'' φ'' →
-      AlphaSeqExt σ φ (.forLoop init c post body :: rest)
-        (.forLoop init' c' post' body' :: rest') σ'' φ''
-  | breakD {σ φ rest rest' σ'' φ''} :
-      AlphaSeqExt σ φ rest rest' σ'' φ'' →
-      AlphaSeqExt σ φ (.break :: rest) (.break :: rest') σ'' φ''
-  | contD {σ φ rest rest' σ'' φ''} :
-      AlphaSeqExt σ φ rest rest' σ'' φ'' →
-      AlphaSeqExt σ φ (.continue :: rest) (.continue :: rest') σ'' φ''
-  | leaveD {σ φ rest rest' σ'' φ''} :
-      AlphaSeqExt σ φ rest rest' σ'' φ'' →
-      AlphaSeqExt σ φ (.leave :: rest) (.leave :: rest') σ'' φ''
+      AlphaStmt1 σ φ (.forLoop init c post body) (.forLoop init' c' post' body') σ φ
+  | breakD {σ φ} : AlphaStmt1 σ φ .break .break σ φ
+  | contD {σ φ} : AlphaStmt1 σ φ .continue .continue σ φ
+  | leaveD {σ φ} : AlphaStmt1 σ φ .leave .leave σ φ
+inductive AlphaSeqExt :
+    (Ident → Ident) → (Ident → Ident) → List (Stmt Op) → List (Stmt Op) →
+    (Ident → Ident) → (Ident → Ident) → Prop
+  | nil {σ φ} : AlphaSeqExt σ φ [] [] σ φ
+  | cons {σ φ s s' rest rest' σ' φ' σ'' φ''} :
+      AlphaStmt1 σ φ s s' σ' φ' → AlphaSeqExt σ' φ' rest rest' σ'' φ'' →
+      AlphaSeqExt σ φ (s :: rest) (s' :: rest') σ'' φ''
 inductive AlphaBlockExt :
     (Ident → Ident) → (Ident → Ident) → List (Stmt Op) → List (Stmt Op) →
     (Ident → Ident) → (Ident → Ident) → Prop
