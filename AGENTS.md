@@ -44,6 +44,7 @@ Important files:
 - `YulEvmCompiler/Correctness.lean`: composition into the public correctness theorems.
 - `YulEvmCompiler/ObjectCompile.lean`: object/data layout, its data-segment consistency theorem (`compileObject_consistent`), and the full object-execution theorem (`compileObject_correct`), which simulates every `RunObject` derivation under the generated layout with the emitted EVM bytecode. Both are axiom-pinned in `Checks.lean`.
 - `YulEvmCompiler/Examples.lean`: build-time compilation guards and executable differential tests between both semantics.
+- `YulEvmCompiler/Optimizer/`: verified Yul→Yul optimizer (the largest subtree). Layered as `Spec/` (the stable `Optimizer.Pass` contract and its `Pass.optimize_then_compile_correct` backend composition), `Core/` (intrinsically-scoped ANF IR plus proof-carrying rewrite rules), and `Implementation/` (the concrete passes and the production `Pipeline.lean`). See `YulEvmCompiler/Optimizer/AGENTS.md` for the local map and `YulEvmCompiler/Optimizer/IDEAS.md` for the pass log.
 - `YulParser/`: parser library. `Canon.lean` supports verified canonical round trips; `Compat.lean` is an intentionally lossy Solidity-compatibility fallback.
 - `YulEvmCompilerTests/InterpreterFixture.lean`: runner for Solidity's Yul interpreter fixtures.
 - `YulEvmCompilerTests/SolcDifferential.lean`: common-state behavioral comparison of this compiler's and solc's bytecode, plus `measureGas` (per-scenario execution gas for behaviorally comparable runs).
@@ -129,7 +130,7 @@ Keep the lowered width fixed for each constructor. If that is impossible, redesi
 
 ### Adding a real optimization or normalization pass
 
-There is currently no verified optimizer in front of the backend. A new source-to-source pass should be a separate total transformation with a theorem relating its input and output under `YulSemantics.Run` (including halt payloads, environments, and all outcomes it can encounter). Compose that theorem with `compile_correct`; do not silently call an unproved transformation from `compile`.
+The repository has a verified Yul→Yul optimizer under `YulEvmCompiler/Optimizer/` (see `YulEvmCompiler/Optimizer/AGENTS.md`). Its stable contract is `Optimizer.Pass` in `Optimizer/Spec/Pass.lean`, and `Pass.optimize_then_compile_correct` in `Optimizer/Spec/Backend.lean` proves that a sound pass composes with the verified backend. A new source-to-source pass should be a separate total transformation with a theorem relating its input and output under `YulSemantics.Run` (including halt payloads, environments, and all outcomes it can encounter) — i.e. a value of `Optimizer.Pass`, whose obligation is `Sound D run := ∀ b, EquivBlock D b (run b)`. Compose it with `compile_correct` through the backend lemma; do not silently call an unproved transformation from `compile`.
 
 For an Asm-to-Asm optimization, preserve `AStep` behavior, symbolic control flow, stack shape, label well-formedness, and fixed-width location assumptions, or state and prove the replacement invariants. Bytecode peepholes are especially sensitive to jump addresses and valid `JUMPDEST` analysis.
 
