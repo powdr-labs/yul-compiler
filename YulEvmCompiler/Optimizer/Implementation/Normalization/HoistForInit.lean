@@ -1,5 +1,5 @@
 import YulSemantics.Equiv
-import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Spec.LocalPass
 import YulEvmCompiler.Optimizer.Implementation.EmptyScope
 import YulEvmCompiler.Optimizer.Implementation.Frame
 import YulEvmCompiler.Optimizer.Implementation.FunCongr
@@ -8,7 +8,7 @@ set_option warningAsError true
 set_option linter.unusedSectionVars false
 
 /-!
-# YulEvmCompiler.Optimizer.Implementation.HoistForInit
+# YulEvmCompiler.Optimizer.Implementation.Normalization.HoistForInit
 
 A single verified pass: **pull the `init` block out of a `for` loop**.
 
@@ -26,7 +26,7 @@ lifting `init` into the enclosing block would otherwise change behaviour on a
 left unchanged, so the enclosing block's hoisted function scope is preserved and
 plain `EquivBlock.of_stmts` suffices (no `FunCongr`).
 
-Soundness is the strong `EquivBlock` `Pass` tier. The one subtlety is that the
+Soundness is the strong `EquivBlock` `LocalPass` tier. The one subtlety is that the
 residual `for {}` still hoists an (empty) function scope, so the loop runs under
 one extra `[]` scope; `EmptyScope.Step.emptyExt_congr(')` bridges it.
 -/
@@ -378,7 +378,7 @@ theorem hoistForInit_blockEquiv (b : List (Stmt D.Op)) : EquivBlock D b (hoistIn
 /-- The **hoist-for-init pass**: pull a non-empty `SimpleInit` initializer out of
 every `for` loop (throughout, including function bodies), bundled with its
 soundness proof. -/
-def hoistForInit : Pass D where
+def hoistForInit : LocalPass D where
   run := hoistInitStmts
   sound := hoistForInit_blockEquiv
 

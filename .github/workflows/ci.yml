@@ -1065,9 +1065,14 @@ jobs:
       - baseline-solidity-gas
     if: ${{ always() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    # Read-only: this job runs in the PR's context, so for fork-originated pull
+    # requests GitHub caps GITHUB_TOKEN at read-only regardless of any elevation
+    # requested here. Rendering the comment needs no write access; the actual
+    # posting happens in the separate `pr-summary-comment` workflow, which is
+    # triggered by `workflow_run` and therefore runs in the base-repo context
+    # where `pull-requests: write` is honoured even for fork PRs.
     permissions:
       contents: read
-      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1099,27 +1104,22 @@ jobs:
           MAIN_SOLC_DIFFERENTIAL_RESULT: ${{ needs.baseline-lookup.outputs.hit == 'true' && 'success' || needs.baseline-solc-differential.result }}
           MAIN_SOLIDITY_GAS_RESULT: ${{ needs.baseline-lookup.outputs.hit == 'true' && 'success' || needs.baseline-solidity-gas.result }}
         run: |
+          mkdir -p pr-comment
           python3 scripts/ci_pr_summary.py summaries/head \
             --base-summary-dir summaries/main \
             --sha "${{ github.event.pull_request.head.sha }}" \
             --base-sha "${{ needs.comparison-inputs.outputs.main_sha }}" \
-            > comment.md
-          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+            > pr-comment/comment.md
+          cat pr-comment/comment.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Post or update sticky PR comment
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          marker='<!-- ci-summary -->'
-          { echo "$marker"; cat comment.md; } > body.md
-          cid=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n1)
-          if [ -n "$cid" ]; then
-            gh api -X PATCH "repos/$REPO/issues/comments/$cid" -F body=@body.md >/dev/null
-            echo "Updated comment $cid"
-          else
-            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@body.md >/dev/null
-            echo "Created new comment"
-          fi
+      # Hand the rendered comment (plus the PR number, which the workflow_run
+      # event does not reliably carry for fork PRs) to the posting workflow.
+      - name: Record PR number
+        run: echo "${{ github.event.pull_request.number }}" > pr-comment/pr-number.txt
+
+      - name: Upload rendered PR comment
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment
+          path: pr-comment
+          retention-days: 1

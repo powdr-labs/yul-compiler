@@ -17,7 +17,7 @@ starts with the expression fragment used by the local simplifier:
 simplifier leaves syntax not represented by Core unchanged. `ingest_emit` is
 the boundary theorem—successful ingestion erases to exactly the original Yul
 expression. Later Core stages can extend this module without changing the
-audited `Optimizer.Pass` contract or the backend proof.
+audited `Optimizer.LocalPass` contract or the backend proof.
 -/
 
 namespace YulEvmCompiler.Optimizer.Core

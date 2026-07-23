@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Spec.LocalPass
 import YulEvmCompiler.Optimizer.Core.Rule
 import YulEvmCompiler.Optimizer.Implementation.FunCongr
 import YulSemantics.Dialect.EVM
@@ -7,7 +7,7 @@ set_option warningAsError true
 # YulEvmCompiler.Optimizer.Implementation.Simplify
 
 A local **expression + constant-control-flow** simplifier for the EVM dialect,
-the first real `Optimizer.Pass`. It rewrites, bottom-up:
+the first real `Optimizer.LocalPass`. It rewrites, bottom-up:
 
 * a pure built-in applied to all-literal arguments → the folded literal
   (`add(2,3) → 5`);
@@ -20,7 +20,7 @@ the first real `Optimizer.Pass`. It rewrites, bottom-up:
   block.
 
 Everything here is dialect-EVM specific (it computes with `stepOp`/`litValue`),
-so it lives under `Optimizer/Implementation/`.  Only its type — a `Pass` — is
+so it lives under `Optimizer/Implementation/`.  Only its type — a `LocalPass` — is
 trusted by the audited surface; the internal proofs below need no separate audit.
 
 ## Why these rewrites are sound
@@ -29,7 +29,7 @@ The pure EVM ops (`add … sar`) reduce via `stepOp op vs st = some (.ok [f vs] 
 the result value is a total function of the argument *values* and the state is
 unchanged.  So folding all-literal applications and neutral-operand rewrites are
 pointwise `EquivExpr`s (`YulSemantics.Equiv`), lifted through the built-in and
-statement congruences to `EquivBlock`, discharging the `Pass` obligation `Sound`.
+statement congruences to `EquivBlock`, discharging the `LocalPass` obligation `Sound`.
 
 Two soundness fences (see `IDEAS.md`):
 
@@ -48,8 +48,8 @@ open YulSemantics.EVM
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
-/-- The open-world EVM dialect this pass is a `Pass` over — the dialect the
-verified backend theorem (`Pass.optimize_then_compile_correct`) is stated
+/-- The open-world EVM dialect this pass is a `LocalPass` over — the dialect the
+verified backend theorem (`LocalPass.optimize_then_compile_correct`) is stated
 against. Its `Builtin` reduces to `stepOp` on every non-external op. -/
 local notation "D" => evmWithExternal calls creates
 
@@ -1334,7 +1334,7 @@ theorem blockEquiv (b : List (Stmt Op)) : EquivBlock D b (simplifyStmts b) :=
 literal control-flow selection, and self-equality validator pruning over the
 whole program (including function bodies; only a `for`-loop's `init` is left
 untouched), bundled with its soundness proof. -/
-def simplify : Pass D where
+def simplify : LocalPass D where
   run := simplifyStmts
   sound := blockEquiv
 
@@ -1346,7 +1346,7 @@ a Solidity artifact) — leaving names and data segments intact. Each code block
 `EquivBlock`-equivalent to the original (`simplifyObject_codeBlock` +
 `blockEquiv`), and the emitted bytecode is the verified compilation of the
 result (`compileObject_correct`); the object-tree correctness statement is
-`Pass.optimizeObject_compileObject_correct` in `ObjectPass`. -/
+`LocalPass.optimizeObject_compileObject_correct` in `ObjectPass`. -/
 
 mutual
 

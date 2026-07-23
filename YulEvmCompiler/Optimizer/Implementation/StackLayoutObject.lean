@@ -27,7 +27,7 @@ local notation "D" => evmWithExternal calls creates
   rfl
 
 /-- Every code block rewritten by `stackLayoutObject` is covered by the strong
-pointwise `Pass` equivalence. -/
+pointwise `LocalPass` equivalence. -/
 theorem stackLayoutObject_topEquiv (o : Object Op) :
     EquivBlock D o.codeBlock (stackLayoutObject o).codeBlock := by
   rw [stackLayoutObject_codeBlock]

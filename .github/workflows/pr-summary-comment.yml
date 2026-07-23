@@ -1,0 +1,67 @@
+name: PR summary comment
+
+# Post (or update) the sticky CI-summary comment on a pull request.
+#
+# Why this is a separate workflow: the main `CI` workflow runs in the *pull
+# request's* context, so for fork-originated PRs GitHub hard-caps GITHUB_TOKEN
+# to read-only and any `pull-requests: write` request is ignored — the comment
+# POST/PATCH then fails with "Resource not accessible by integration (HTTP 403)".
+#
+# `workflow_run` workflows instead run in the *base repository's* context off the
+# default branch, where `pull-requests: write` is honoured even when the run they
+# follow was for a fork PR. This workflow only consumes the already-rendered
+# Markdown artifact produced by CI (treated as data — no PR head code runs here),
+# which is the GitHub-recommended pattern for commenting on untrusted PRs.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+  # Needed to download the rendered-comment artifact from the triggering CI run
+  # (cross-run `actions/download-artifact` calls the Actions API).
+  actions: read
+  pull-requests: write
+
+jobs:
+  comment:
+    name: Post or update sticky PR comment
+    runs-on: ubuntu-latest
+    # Only for CI runs that were triggered by a pull request and that actually
+    # produced a rendered comment artifact.
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
+    steps:
+      - name: Download rendered PR comment
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-comment
+          path: pr-comment
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Post or update sticky PR comment
+        # Skip silently when the CI run uploaded no comment (e.g. it failed
+        # before the pr-summary job ran).
+        if: ${{ steps.download.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pr="$(cat pr-comment/pr-number.txt)"
+          [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::missing/invalid PR number"; exit 1; }
+          marker='<!-- ci-summary -->'
+          { echo "$marker"; cat pr-comment/comment.md; } > body.md
+          cid=$(gh api "repos/$REPO/issues/$pr/comments" --paginate \
+            --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n1)
+          if [ -n "$cid" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$cid" -F body=@body.md >/dev/null
+            echo "Updated comment $cid on PR #$pr"
+          else
+            gh api -X POST "repos/$REPO/issues/$pr/comments" -F body=@body.md >/dev/null
+            echo "Created new comment on PR #$pr"
+          fi

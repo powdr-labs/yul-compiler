@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Implementation.HoistForInit
+import YulEvmCompiler.Optimizer.Implementation.Normalization.HoistForInit
 import YulEvmCompiler.Optimizer.Implementation.InlineCallsResolve
 
 set_option warningAsError true

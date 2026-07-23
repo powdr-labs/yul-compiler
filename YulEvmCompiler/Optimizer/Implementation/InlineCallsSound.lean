@@ -28,7 +28,7 @@ transform and the module notes). Proof architecture:
    `DeltaCompat` (every `Δ` entry resolves via `lookupFun` to its recorded
    declaration) and an `IcFunsRel` function-environment relation.
 
-4. `IcRel.equivBlock` + transform inhabitation discharge `Pass.Sound`.
+4. `IcRel.equivBlock` + transform inhabitation discharge `LocalPass.Sound`.
 -/
 
 namespace YulEvmCompiler.Optimizer
@@ -3791,7 +3791,7 @@ theorem IcRel.equivBlock {b b' : Block Op}
 
 /-- The **InlineCalls pass**: statement-level inlining of call-free helpers,
 bundled with its soundness proof — in the unchanged pointwise spec. -/
-def inlineCalls : Pass D where
+def inlineCalls : LocalPass D where
   run := inlineCallsBlock
   sound := fun b => IcRel.equivBlock
     (by
