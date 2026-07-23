@@ -76,6 +76,18 @@ theorem atomArgs_eval_of_bound {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       | builtin _ _ => simp [isAtom] at hatom
       | call _ _ => simp [isAtom] at hatom
 
+/-- Prepending bindings never unbinds a variable: boundedness is preserved. -/
+theorem get_append_isSome {V : VEnv D} {x : Ident} (ext : VEnv D)
+    (h : (VEnv.get V x).isSome = true) : (VEnv.get (ext ++ V) x).isSome = true := by
+  induction ext with
+  | nil => simpa using h
+  | cons p rest ih =>
+      obtain ⟨y, w⟩ := p
+      by_cases hyx : y = x
+      · subst hyx; simp [VEnv.get]
+      · rw [List.cons_append]
+        simpa [VEnv.get, List.find?, hyx] using ih
+
 /-! ### The shape of a `let`-prelude's environment
 
 Executing a list of single-variable `let`s only ever prepends bindings, so the
