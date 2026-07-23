@@ -904,4 +904,106 @@ def ResOK (σ' : Ident → Ident) (N : Nat) : Res D → Prop
   | .sres V _ .normal => RenCfg σ' V N
   | .sres _ _ _ => True
 
+/-! ### `selectSwitch` transport
+
+A `switch` executes the first case whose label matches, else the default, else
+the empty block. Labels are preserved verbatim by the α-relation, so source and
+target select *corresponding* blocks; the scope-safety and reference-scoping
+predicates select through as well. -/
+
+theorem selectSwitch_alpha {σ φ : Ident → Ident} {cv : D.Value} :
+    ∀ {cs cs' : List (Literal × Block D.Op)} {lo m : Nat},
+      AlphaCases lo m σ φ cs cs' →
+      ∀ {dflt dflt' : Option (Block D.Op)} {hi : Nat}, AlphaDflt m hi σ φ dflt dflt' →
+      ∃ lo' hi' σb φb, lo ≤ lo' ∧ hi' ≤ hi ∧
+        AlphaBlockExt lo' hi' σ φ (selectSwitch D cv cs dflt)
+          (selectSwitch D cv cs' dflt') σb φb
+  | [], _, lo, m, hcs, dflt, dflt', hi, hd => by
+      cases hcs with | nil hle =>
+      cases hd with
+      | none hled =>
+          refine ⟨m, m, σ,
+            updRen φ ((funNames ([] : Block D.Op)).zip (funNames ([] : Block D.Op))),
+            hle, hled, ?_⟩
+          show AlphaBlockExt m m σ φ (selectSwitch D cv [] none) (selectSwitch D cv [] none) _ _
+          simp only [selectSwitch, List.find?_nil, Option.getD_none]
+          exact AlphaBlockExt.mk List.nodup_nil rfl (fun x hx => absurd hx (by simp [funNames]))
+            (RangeNodup.nil m) (AlphaSeqExt.nil (Nat.le_refl m))
+      | some hb =>
+          exact ⟨m, hi, _, _, hle, Nat.le_refl hi, hb⟩
+  | (l, body) :: rest, _, lo, m, hcs, dflt, dflt', hi, hd => by
+      cases hcs with | @cons _ m₀ _ _ _ _ _ body' _ rest' σb0 φb0 hb hrest =>
+      by_cases hcv : cv = D.litValue l
+      · refine ⟨lo, m₀, σb0, φb0, Nat.le_refl lo,
+          Nat.le_trans (alphaCases_le hrest) (alphaDflt_le hd), ?_⟩
+        show AlphaBlockExt lo m₀ σ φ (selectSwitch D cv ((l, body) :: rest) dflt)
+          (selectSwitch D cv ((l, body') :: rest') dflt') _ _
+        simp only [selectSwitch, List.find?_cons, hcv, decide_true]
+        exact hb
+      · obtain ⟨lo', hi', σb, φb, hlo, hhi, hsel⟩ := selectSwitch_alpha hrest hd
+        refine ⟨lo', hi', σb, φb, Nat.le_trans (alphaBlockExt_le hb) hlo, hhi, ?_⟩
+        show AlphaBlockExt lo' hi' σ φ (selectSwitch D cv ((l, body) :: rest) dflt)
+          (selectSwitch D cv ((l, body') :: rest') dflt') σb φb
+        simp only [selectSwitch, List.find?_cons, hcv, decide_false] at hsel ⊢
+        exact hsel
+
+theorem selectSwitch_wscoped {dom : List Ident} {cv : D.Value} :
+    ∀ {cs : List (Literal × Block D.Op)}, WScopedCases dom cs →
+      ∀ {dflt : Option (Block D.Op)}, WScopedDflt dom dflt →
+      WScopedStmts dom (selectSwitch D cv cs dflt)
+  | [], _, none, _ => by simp only [selectSwitch, List.find?_nil, Option.getD_none]; trivial
+  | [], _, some body, hd => by
+      simp only [selectSwitch, List.find?_nil, Option.getD_some]
+      exact hd
+  | (l, body) :: rest, hcs, dflt, hd => by
+      obtain ⟨hb, hrest⟩ := (hcs : WScopedStmts dom body ∧ WScopedCases dom rest)
+      by_cases hcv : cv = D.litValue l
+      · simp only [selectSwitch, List.find?_cons, hcv, decide_true]
+        exact hb
+      · have := selectSwitch_wscoped hrest (dflt := dflt) hd (cv := cv)
+        simp only [selectSwitch, List.find?_cons, hcv, decide_false] at this ⊢
+        exact this
+
+theorem selectSwitch_fscoped {F : List Ident} {cv : D.Value} :
+    ∀ {cs : List (Literal × Block D.Op)}, FScopedCases F cs →
+      ∀ {dflt : Option (Block D.Op)}, FScopedDflt F dflt →
+      (∀ fn ∈ funNames (selectSwitch D cv cs dflt), fn ∉ F) ∧
+        FScopedStmts (funNames (selectSwitch D cv cs dflt) ++ F) (selectSwitch D cv cs dflt)
+  | [], _, none, _ => by
+      simp only [selectSwitch, List.find?_nil, Option.getD_none]
+      exact ⟨fun fn hfn => absurd hfn (by simp [funNames]), trivial⟩
+  | [], _, some body, hd => by
+      simp only [selectSwitch, List.find?_nil, Option.getD_some]
+      exact hd
+  | (l, body) :: rest, hcs, dflt, hd => by
+      obtain ⟨hb, hrest⟩ := (hcs :
+        ((∀ fn ∈ funNames body, fn ∉ F) ∧ FScopedStmts (funNames body ++ F) body) ∧
+          FScopedCases F rest)
+      by_cases hcv : cv = D.litValue l
+      · simp only [selectSwitch, List.find?_cons, hcv, decide_true]
+        exact hb
+      · have := selectSwitch_fscoped hrest (dflt := dflt) hd (cv := cv)
+        simp only [selectSwitch, List.find?_cons, hcv, decide_false] at this ⊢
+        exact this
+
+theorem selectSwitch_nscoped {vs fs : List Ident} {cv : D.Value} :
+    ∀ {cs : List (Literal × Block D.Op)}, NormalForm.ScopedCases vs fs cs →
+      ∀ {dflt : Option (Block D.Op)}, NormalForm.ScopedDflt vs fs dflt →
+      NormalForm.ScopedStmts vs (fs ++ NormalForm.funDefNames (selectSwitch D cv cs dflt))
+        (selectSwitch D cv cs dflt)
+  | [], _, none, _ => by simp only [selectSwitch, List.find?_nil, Option.getD_none]; trivial
+  | [], _, some body, hd => by
+      simp only [selectSwitch, List.find?_nil, Option.getD_some]
+      exact hd
+  | (l, body) :: rest, hcs, dflt, hd => by
+      obtain ⟨hb, hrest⟩ := (hcs :
+        NormalForm.ScopedStmts vs (fs ++ NormalForm.funDefNames body) body ∧
+          NormalForm.ScopedCases vs fs rest)
+      by_cases hcv : cv = D.litValue l
+      · simp only [selectSwitch, List.find?_cons, hcv, decide_true]
+        exact hb
+      · have := selectSwitch_nscoped hrest (dflt := dflt) hd (cv := cv)
+        simp only [selectSwitch, List.find?_cons, hcv, decide_false] at this ⊢
+        exact this
+
 end YulEvmCompiler.Optimizer.Normalize

@@ -207,6 +207,44 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
               · exact List.mem_append.mpr (Or.inl h))
             (.stmts hrest1)
           exact ⟨Step.seqCons hstep_s hstep_r, hcfgr⟩
+  | @ifTrue funs V st c body cv st1 V' st2 o hc hnz hbody ihc ihbody =>
+      intro lo hi σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hfsc hns hcode
+      cases hcode with | stmt hs =>
+      cases hs with | condD hc2 hb2 =>
+      obtain ⟨hnsc, hnsb⟩ := (hns : NormalForm.ScopedExpr _ _ c ∧
+        NormalForm.ScopedStmts _ (_ ++ NormalForm.funDefNames body) body)
+      obtain ⟨hstep_b, hresb⟩ := ihbody hcfg hφ hfuns
+        (hsc : WScopedStmts (V.map Prod.fst) body)
+        (hfsc : (∀ fn ∈ funNames body, fn ∉ funNamesOf funs) ∧
+          FScopedStmts (funNames body ++ funNamesOf funs) body)
+        (hnsb : NormalForm.ScopedStmt _ _ (.block body))
+        (.stmt (.blockD hb2))
+      exact ⟨Step.ifTrue (ihc hcfg hφ hfuns trivial trivial hnsc
+        (.expr (lo := lo) (hi := hi) hc2)).1 hnz hstep_b, hresb⟩
+  | @switchExec funs V st c cases dflt cv st1 V' st2 o hc hbody ihc ihbody =>
+      intro lo hi σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hfsc hns hcode
+      cases hcode with | stmt hs =>
+      cases hs with | @switchD _ m _ _ _ _ c₂ _ cases₂ _ dflt₂ hc2 hcs2 hd2 =>
+      obtain ⟨hnsc, hnscs, hnsd⟩ := (hns : NormalForm.ScopedExpr _ _ c ∧
+        NormalForm.ScopedCases _ _ cases ∧ NormalForm.ScopedDflt _ _ dflt)
+      obtain ⟨hwscs, hwsd⟩ := (hsc : WScopedCases (V.map Prod.fst) cases ∧
+        WScopedDflt (V.map Prod.fst) dflt)
+      obtain ⟨hfscs, hfsd⟩ := (hfsc : FScopedCases (funNamesOf funs) cases ∧
+        FScopedDflt (funNamesOf funs) dflt)
+      obtain ⟨lo', hi', σb, φb, hlo', hhi', hsel⟩ := selectSwitch_alpha (cv := cv) hcs2 hd2
+      obtain ⟨hstep_b, hresb⟩ := ihbody (hcfg.mono hlo') (hφ.mono hlo') hfuns
+        (selectSwitch_wscoped hwscs hwsd)
+        (selectSwitch_fscoped hfscs hfsd)
+        (selectSwitch_nscoped hnscs hnsd)
+        (.stmt (.blockD hsel))
+      refine ⟨Step.switchExec (ihc hcfg hφ hfuns trivial trivial hnsc
+        (.expr (lo := lo) (hi := hi) hc2)).1 hstep_b, ?_⟩
+      cases o with
+      | normal => exact (hresb : RenCfg σ V' hi').mono hhi'
+      | «break» => trivial
+      | «continue» => trivial
+      | leave => trivial
+      | halt => trivial
   | _ => intro lo hi σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hfsc hns hcode; sorry
 
 end YulEvmCompiler.Optimizer.Normalize
