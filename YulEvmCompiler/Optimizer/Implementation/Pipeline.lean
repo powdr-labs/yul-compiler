@@ -7,6 +7,7 @@ import YulEvmCompiler.Optimizer.Implementation.DeadResultsResolve
 import YulEvmCompiler.Optimizer.Implementation.FreshenCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.HoistCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.StorageForwardResolve
+import YulEvmCompiler.Optimizer.Implementation.DeadStore.Resolve
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
 set_option warningAsError true
 /-!
@@ -95,10 +96,12 @@ are ~5 calls deep (`external_fun_*` → `abi_decode_tuple_*` → `abi_decode_t_*
 call-free leaves. -/
 def pipelineRounds : Nat := 6
 
-/-- One block-path round. -/
+/-- One block-path round. `DeadStore.deadStore` runs after `storageForward`
+(which collapses redundant *reads*) so it can drop the now-redundant *writes*,
+and before the second `simplify`. -/
 def blockRound : List (Pass D) :=
   [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
-   storageForward, simplify, deadPure, deadResults]
+   storageForward, DeadStore.deadStoreObj, simplify, deadPure, deadResults]
 
 /-- Verified block pipeline at an explicit round count. Iterated inlining can
 push a caller's live locals past the backend's `DUP16`/`SWAP16` reach; fewer
@@ -134,6 +137,7 @@ def objectRound : List (RPass calls creates) :=
    ⟨freshenCalls, fun L b => resolveFreshenCallsBlock_equiv L b⟩,
    ⟨inlineCalls, fun L b => resolveInlineCallsBlock_equiv L b⟩,
    ⟨storageForward, fun L b => resolveStorageForwardBlock_equiv L b⟩,
+   ⟨DeadStore.deadStoreObj, fun L b => DeadStore.resolveDeadStoreObj_equiv L b⟩,
    ⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
    ⟨deadPure, fun L b => resolveDeadPureBlock_equiv L b⟩,
    ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩]
