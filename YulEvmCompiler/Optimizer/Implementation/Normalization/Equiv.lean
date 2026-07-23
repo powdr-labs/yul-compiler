@@ -573,15 +573,166 @@ theorem scopedStmts_selectSwitch {Γ} {cv} :
       · rw [List.find?_cons_of_pos (by simp [hcv])]; exact hc.1
       · rw [List.find?_cons_of_neg (by simp [hcv])]; exact scopedStmts_selectSwitch hc.2 hd
 
+omit [DecidableEq D.Value] in
+theorem lookupFun_singleton (scope : FScope D) (n : Ident) :
+    lookupFun [scope] n = (scope.find? (fun p => p.1 = n)).map (fun p => (p.2, [scope])) := by
+  simp only [lookupFun]
+  cases scope.find? (fun p => p.1 = n) <;> rfl
+
+omit [DecidableEq D.Value] in
+/-- The lifted environment resolves a name to the flat (stripped) declaration,
+with the flat scope as its closure environment. -/
+theorem flatLookup_lifted {flatSc : FScope D} {funs_h : FunEnv D} {fn} {d : FDecl D}
+    (hf : flatLookup flatSc fn = some d) (hH : ResEq flatSc funs_h) :
+    lookupFun funs_h fn = some (d, [flatSc]) := by
+  rw [hH fn, lookupFun_singleton]
+  rw [flatLookup, lookupFun_singleton] at hf
+  cases hfd : flatSc.find? (fun p => p.1 = fn) with
+  | none => rw [hfd] at hf; simp at hf
+  | some p =>
+      rw [hfd] at hf
+      obtain ⟨pn, pd⟩ := p
+      have hpd : pd = d := by change some pd = some d at hf; injection hf
+      subst hpd
+      rfl
+
 /-- **Forward simulation.** Under `GoodO`/`ResEq`/well-scopedness/`CodeInFlat`,
 an original derivation transports to one over the flat (lifted) environment on
 the `stripCode`-ped code. -/
 theorem step_lift_fwd {flatSc : FScope D} :
     ∀ {funs_o V st code res}, Step D funs_o V st code res →
-    ∀ {funs_h}, (funNamesEnv funs_o).Nodup → GoodO flatSc funs_o → ResEq flatSc funs_h →
+    ∀ {funs_h}, GoodO flatSc funs_o → ResEq flatSc funs_h →
       ScopedCode (funNamesEnv funs_o) code → CodeInFlatCode flatSc code →
       Step D funs_h V st (stripCode code) res := by
-  sorry
+  intro funs_o V st code res h
+  induction h with
+  | lit => intro funs_h hO hH hws hcf; exact Step.lit
+  | var hv => intro funs_h hO hH hws hcf; exact Step.var hv
+  | builtinOk ha hb iha =>
+      intro funs_h hO hH hws hcf; exact Step.builtinOk (iha hO hH hws trivial) hb
+  | builtinHalt ha hb iha =>
+      intro funs_h hO hH hws hcf; exact Step.builtinHalt (iha hO hH hws trivial) hb
+  | builtinArgsHalt ha iha =>
+      intro funs_h hO hH hws hcf; exact Step.builtinArgsHalt (iha hO hH hws trivial)
+  | @callOk funs V st fn args argvals st1 decl cenv Vend st2 o ha hlk hlen hbody ho iha ihbody =>
+      intro funs_h hO hH hws hcf
+      obtain ⟨hflat, hsc, hcfb⟩ := goodO_lookup hO hlk
+      refine Step.callOk (decl := stripDecl decl) (iha hO hH hws.2 trivial)
+        (flatLookup_lifted hflat hH) hlen ?_ ho
+      exact ihbody (goodO_cenv hO hlk) (resEq_flat flatSc) hsc (cif_block_wrap hcfb)
+  | @callHalt funs V st fn args argvals st1 decl cenv Vend st2 ha hlk hlen hbody iha ihbody =>
+      intro funs_h hO hH hws hcf
+      obtain ⟨hflat, hsc, hcfb⟩ := goodO_lookup hO hlk
+      exact Step.callHalt (decl := stripDecl decl) (iha hO hH hws.2 trivial)
+        (flatLookup_lifted hflat hH) hlen
+        (ihbody (goodO_cenv hO hlk) (resEq_flat flatSc) hsc (cif_block_wrap hcfb))
+  | callArgsHalt ha iha =>
+      intro funs_h hO hH hws hcf; exact Step.callArgsHalt (iha hO hH hws.2 trivial)
+  | argsNil => intro funs_h hO hH hws hcf; exact Step.argsNil
+  | argsCons hrest he ihrest ihe =>
+      intro funs_h hO hH hws hcf
+      exact Step.argsCons (ihrest hO hH hws.2 trivial) (ihe hO hH hws.1 trivial)
+  | argsRestHalt hrest ihrest =>
+      intro funs_h hO hH hws hcf; exact Step.argsRestHalt (ihrest hO hH hws.2 trivial)
+  | argsHeadHalt hrest he ihrest ihe =>
+      intro funs_h hO hH hws hcf
+      exact Step.argsHeadHalt (ihrest hO hH hws.2 trivial) (ihe hO hH hws.1 trivial)
+  | funDef => intro funs_h hO hH hws hcf; exact Step.funDef
+  | block hb ihb =>
+      intro funs_h hO hH hws hcf
+      refine Step.block ?_
+      rw [hoist_stripStmts]
+      exact ihb (goodO_push hO (cif_block_inv hcf) hws) (resEq_cons_nil hH)
+        (by rw [funNamesEnv_hoist_cons]; exact hws) (cif_block_inv hcf)
+  | letZero => intro funs_h hO hH hws hcf; exact Step.letZero
+  | letVal hv hlen ihv =>
+      intro funs_h hO hH hws hcf; exact Step.letVal (ihv hO hH hws trivial) hlen
+  | letHalt hv ihv =>
+      intro funs_h hO hH hws hcf; exact Step.letHalt (ihv hO hH hws trivial)
+  | assignVal hv hlen ihv =>
+      intro funs_h hO hH hws hcf; exact Step.assignVal (ihv hO hH hws trivial) hlen
+  | assignHalt hv ihv =>
+      intro funs_h hO hH hws hcf; exact Step.assignHalt (ihv hO hH hws trivial)
+  | exprStmt he ihe =>
+      intro funs_h hO hH hws hcf; exact Step.exprStmt (ihe hO hH hws trivial)
+  | exprStmtHalt he ihe =>
+      intro funs_h hO hH hws hcf; exact Step.exprStmtHalt (ihe hO hH hws trivial)
+  | ifTrue hc hne hbody ihc ihbody =>
+      intro funs_h hO hH hws hcf
+      exact Step.ifTrue (ihc hO hH hws.1 trivial) hne
+        (ihbody hO hH hws.2 (cif_block_wrap (cif_cond_inv hcf)))
+  | ifFalse hc heq ihc =>
+      intro funs_h hO hH hws hcf; exact Step.ifFalse (ihc hO hH hws.1 trivial) heq
+  | ifHalt hc ihc =>
+      intro funs_h hO hH hws hcf; exact Step.ifHalt (ihc hO hH hws.1 trivial)
+  | switchExec hc hbody ihc ihbody =>
+      intro funs_h hO hH hws hcf
+      refine Step.switchExec (ihc hO hH hws.1 trivial) ?_
+      rw [selectSwitch_strip]
+      exact ihbody hO hH (scopedStmts_selectSwitch hws.2.1 hws.2.2)
+        (cif_block_wrap (cif_switch_sel hcf))
+  | switchHalt hc ihc =>
+      intro funs_h hO hH hws hcf; exact Step.switchHalt (ihc hO hH hws.1 trivial)
+  | @forLoop funs V st init c post body Vinit stinit Vend stend o hinit hloop ihinit ihloop =>
+      intro funs_h hO hH hws hcf
+      refine Step.forLoop (Vinit := Vinit) (stinit := stinit) ?_ ?_
+      · rw [hoist_stripStmts]
+        exact ihinit (goodO_push hO (cif_for_init hcf) hws.1) (resEq_cons_nil hH)
+          (by rw [funNamesEnv_hoist_cons]; exact hws.1) (cif_for_init hcf)
+      · rw [hoist_stripStmts]
+        exact ihloop (goodO_push hO (cif_for_init hcf) hws.1) (resEq_cons_nil hH)
+          (by rw [funNamesEnv_hoist_cons]; exact ⟨hws.2.1, hws.2.2.1, hws.2.2.2⟩)
+          ⟨cif_for_post hcf, cif_for_body hcf⟩
+  | forInitHalt hinit ihinit =>
+      intro funs_h hO hH hws hcf
+      refine Step.forInitHalt ?_
+      rw [hoist_stripStmts]
+      exact ihinit (goodO_push hO (cif_for_init hcf) hws.1) (resEq_cons_nil hH)
+        (by rw [funNamesEnv_hoist_cons]; exact hws.1) (cif_for_init hcf)
+  | «break» => intro funs_h hO hH hws hcf; exact Step.break
+  | «continue» => intro funs_h hO hH hws hcf; exact Step.continue
+  | leave => intro funs_h hO hH hws hcf; exact Step.leave
+  | seqNil => intro funs_h hO hH hws hcf; exact Step.seqNil
+  | @seqCons funs V st s rest V1 st1 V2 st2 o hs hrest ihs ihrest =>
+      intro funs_h hO hH hws hcf
+      cases s with
+      | funDef n ps rs bd =>
+          cases hs
+          exact ihrest hO hH hws.2 (cif_tail hcf)
+      | _ =>
+          exact Step.seqCons (ihs hO hH hws.1 (cif_head hcf)) (ihrest hO hH hws.2 (cif_tail hcf))
+  | @seqStop funs V st s rest V1 st1 o hs hne ihs =>
+      intro funs_h hO hH hws hcf
+      cases s with
+      | funDef n ps rs bd => cases hs; exact absurd rfl hne
+      | _ => exact Step.seqStop (ihs hO hH hws.1 (cif_head hcf)) hne
+  | loopDone hc heq ihc =>
+      intro funs_h hO hH hws hcf; exact Step.loopDone (ihc hO hH hws.1 trivial) heq
+  | loopCondHalt hc ihc =>
+      intro funs_h hO hH hws hcf; exact Step.loopCondHalt (ihc hO hH hws.1 trivial)
+  | loopStep hc hne hbody hob hpost hrec ihc ihbody ihpost ihrec =>
+      intro funs_h hO hH hws hcf
+      exact Step.loopStep (ihc hO hH hws.1 trivial) hne
+        (ihbody hO hH hws.2.2 (cif_block_wrap hcf.2)) hob
+        (ihpost hO hH hws.2.1 (cif_block_wrap hcf.1))
+        (ihrec hO hH hws hcf)
+  | loopPostHalt hc hne hbody hob hpost ihc ihbody ihpost =>
+      intro funs_h hO hH hws hcf
+      exact Step.loopPostHalt (ihc hO hH hws.1 trivial) hne
+        (ihbody hO hH hws.2.2 (cif_block_wrap hcf.2)) hob
+        (ihpost hO hH hws.2.1 (cif_block_wrap hcf.1))
+  | loopBreak hc hne hbody ihc ihbody =>
+      intro funs_h hO hH hws hcf
+      exact Step.loopBreak (ihc hO hH hws.1 trivial) hne
+        (ihbody hO hH hws.2.2 (cif_block_wrap hcf.2))
+  | loopLeave hc hne hbody ihc ihbody =>
+      intro funs_h hO hH hws hcf
+      exact Step.loopLeave (ihc hO hH hws.1 trivial) hne
+        (ihbody hO hH hws.2.2 (cif_block_wrap hcf.2))
+  | loopBodyHalt hc hne hbody ihc ihbody =>
+      intro funs_h hO hH hws hcf
+      exact Step.loopBodyHalt (ihc hO hH hws.1 trivial) hne
+        (ihbody hO hH hws.2.2 (cif_block_wrap hcf.2))
 
 theorem step_lift_sim {flatSc : FScope D} {funs_o funs_h : FunEnv D} {code V st res}
     (huniq : (funNamesEnv funs_o).Nodup)
@@ -700,12 +851,6 @@ theorem funNamesTop_collectDflt (d : Option (Block D.Op)) :
   | none => rfl
   | some b => rw [collectDflt]; simp only [funNamesDflt]; exact funNamesTop_collectStmts b
 end
-
-omit [DecidableEq D.Value] in
-theorem lookupFun_singleton (scope : FScope D) (n : Ident) :
-    lookupFun [scope] n = (scope.find? (fun p => p.1 = n)).map (fun p => (p.2, [scope])) := by
-  simp only [lookupFun]
-  cases scope.find? (fun p => p.1 = n) <;> rfl
 
 omit [DecidableEq D.Value] in
 theorem mem_hoist_of_mem {L : List (Stmt D.Op)} {n ps rs bd}
