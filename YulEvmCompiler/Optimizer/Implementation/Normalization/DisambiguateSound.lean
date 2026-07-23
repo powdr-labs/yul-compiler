@@ -841,6 +841,42 @@ def FDeclRen (φ : Ident → Ident) (d₁ d₂ : FDecl D) : Prop :=
     RenCfg σc (bindZeros D (d₁.params ++ d₁.rets)) ∧
     AlphaBlockExt σc φ d₁.body d₂.body σc' φc'
 
+/-- A single statement never changes the function renaming (function names are
+prescanned at the block level). -/
+theorem AlphaStmt1.phi_eq {σ φ : Ident → Ident} {s s' : Stmt D.Op} {σ' φ' : Ident → Ident}
+    (h : AlphaStmt1 σ φ s s' σ' φ') : φ' = φ := by cases h <;> rfl
+
+/-- **Hoist transport.** α-equivalent statement sequences have `RenScopeRel`-related
+hoisted function scopes: each source `funDef` is matched by a target `funDef` with
+`φ`-renamed name and an `FDeclRen`-related declaration. -/
+theorem hoist_renScopeRel : ∀ {ss ss' : List (Stmt D.Op)} {σ φ σ' φ' : Ident → Ident},
+    AlphaSeqExt σ φ ss ss' σ' φ' → RenScopeRel φ (FDeclRen φ) (hoist D ss) (hoist D ss')
+  | [], _, _, _, _, _, h => by cases h; exact List.Forall₂.nil
+  | s :: rest, _, σ0, φ0, _, _, h => by
+      cases h with
+      | @cons _ _ _ s' _ rest' σm φm σ'' φ'' hs1 hrest =>
+      have ih := hoist_renScopeRel hrest
+      have hpe := hs1.phi_eq; subst hpe
+      cases hs1 with
+      | @funD _ _ fn ps ps' rs rs' body body' σb φb hnd hnd' hlp hlr hds hbe =>
+          simp only [hoist, List.filterMap_cons]
+          refine List.Forall₂.cons ⟨rfl, ?_⟩ ih
+          have hpsnd : ps.Nodup := (List.nodup_append.mp hnd).1
+          have hrsnd : rs.Nodup := (List.nodup_append.mp hnd).2.1
+          have hdisj : ∀ x ∈ ps, x ∉ rs :=
+            fun x hx hxr => (List.nodup_append.mp hnd).2.2 x hx x hxr rfl
+          refine ⟨updRen id (ps.zip ps' ++ rs.zip rs'), σb, φb, ?_, ?_, ?_, hbe⟩
+          · exact (map_updRen_zip_pre (rs.zip rs') hpsnd hlp).symm
+          · have hc : rs.map (updRen id (ps.zip ps' ++ rs.zip rs'))
+                = rs.map (updRen id (rs.zip rs')) :=
+              List.map_congr_left (fun y hy => updRen_append_skip
+                (fun p hp hpy => hdisj y (hpy ▸ (List.of_mem_zip hp).1) hy))
+            exact (hc.trans (map_updRen_zip hrsnd hlr)).symm
+          · rw [show ps.zip ps' ++ rs.zip rs' = (ps ++ rs).zip (ps' ++ rs') from
+              (List.zip_append hlp).symm]
+            exact RenCfg.ofFreshScope hnd hnd' (by simp only [List.length_append, hlp, hlr]) hds
+      | _ => simp only [hoist, List.filterMap_cons]; exact ih
+
 /-! ### Forward simulation (on the `RenCfg` foundation)
 
 Whole-environment form (`outer = []`), the shape needed for whole-program
@@ -854,10 +890,6 @@ def ResOK (σ' : Ident → Ident) : Res D → Prop
   | .sres V _ .normal => RenCfg σ' V
   | .sres _ _ _ => True
 
-/-- A single statement never changes the function renaming (function names are
-prescanned at the block level). -/
-theorem AlphaStmt1.phi_eq {σ φ : Ident → Ident} {s s' : Stmt D.Op} {σ' φ' : Ident → Ident}
-    (h : AlphaStmt1 σ φ s s' σ' φ') : φ' = φ := by cases h <;> rfl
 
 theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs₁ V₁ mst code₁ res₁) :
     ∀ {σ φ σ' φ' funs₂ code₂}, RenCfg σ V₁ → RenFCfg φ funs₁ →
