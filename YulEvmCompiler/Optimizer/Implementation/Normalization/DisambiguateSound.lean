@@ -597,6 +597,48 @@ theorem RenCfg.setMany {σ : Ident → Ident} {V : VEnv D} (h : RenCfg σ V)
     (xs : List Ident) (vs : List D.Value) : RenCfg σ (VEnv.setMany V xs vs) :=
   RenCfg.of_keys (VEnv.setMany_keys V xs vs) h
 
+/-! ### Scope-safety (no-shadowing) for the source program
+
+Valid Yul forbids declaring a variable already in scope. `WScoped dom code` says
+so: each `let`'s variables are disjoint from the in-scope domain `dom`, and nested
+scopes are checked against the appropriately-extended domain (a function body
+against a *fresh* domain of its own params/rets, since functions cannot see outer
+variables). This is what makes the extended renaming `σ'` agree with `σ` on the
+already-bound variables, so the whole-environment renaming survives a `let`. -/
+
+/-- Variables a statement adds to the current scope (only `let`). -/
+def declVars : Stmt Op → List Ident
+  | .letDecl vars _ => vars
+  | _ => []
+
+/-- Variables a statement *sequence* adds to the current scope. -/
+def declVarsSeq : List (Stmt Op) → List Ident
+  | [] => []
+  | s :: rest => declVars s ++ declVarsSeq rest
+
+mutual
+def WScopedStmts (dom : List Ident) : List (Stmt Op) → Prop
+  | [] => True
+  | s :: rest => WScopedStmt dom s ∧ WScopedStmts (declVars s ++ dom) rest
+def WScopedStmt (dom : List Ident) : Stmt Op → Prop
+  | .letDecl vars _ => ∀ x ∈ vars, x ∉ dom
+  | .block body => WScopedStmts dom body
+  | .cond _ body => WScopedStmts dom body
+  | .switch _ cases dflt => WScopedCases dom cases ∧ WScopedDflt dom dflt
+  | .funDef _ ps rs body => (ps ++ rs).Nodup ∧ WScopedStmts (ps ++ rs) body
+  | .forLoop init _ post body =>
+      WScopedStmts dom init ∧ WScopedStmts (declVarsSeq init ++ dom) body ∧
+        WScopedStmts (declVarsSeq init ++ dom) post
+  | _ => True
+def WScopedCases (dom : List Ident) : List (Literal × List (Stmt Op)) → Prop
+  | [] => True
+  | (_, body) :: rest => WScopedStmts dom body ∧ WScopedCases dom rest
+def WScopedDflt (dom : List Ident) : Option (List (Stmt Op)) → Prop
+  | none => True
+  | some body => WScopedStmts dom body
+end
+
+
 /-! ### Forward simulation (on the `RenCfg` foundation)
 
 Whole-environment form (`outer = []`), the shape needed for whole-program
@@ -726,44 +768,3 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
           obtain ⟨hstep_r, hcfgr⟩ := ihrest hcfg1 hφ hfuns (.stmts hrest1)
           exact ⟨Step.seqCons hstep_s hstep_r, hcfgr⟩
   | _ => intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode; sorry
-
-/-! ### Scope-safety (no-shadowing) for the source program
-
-Valid Yul forbids declaring a variable already in scope. `WScoped dom code` says
-so: each `let`'s variables are disjoint from the in-scope domain `dom`, and nested
-scopes are checked against the appropriately-extended domain (a function body
-against a *fresh* domain of its own params/rets, since functions cannot see outer
-variables). This is what makes the extended renaming `σ'` agree with `σ` on the
-already-bound variables, so the whole-environment renaming survives a `let`. -/
-
-/-- Variables a statement adds to the current scope (only `let`). -/
-def declVars : Stmt Op → List Ident
-  | .letDecl vars _ => vars
-  | _ => []
-
-/-- Variables a statement *sequence* adds to the current scope. -/
-def declVarsSeq : List (Stmt Op) → List Ident
-  | [] => []
-  | s :: rest => declVars s ++ declVarsSeq rest
-
-mutual
-def WScopedStmts (dom : List Ident) : List (Stmt Op) → Prop
-  | [] => True
-  | s :: rest => WScopedStmt dom s ∧ WScopedStmts (declVars s ++ dom) rest
-def WScopedStmt (dom : List Ident) : Stmt Op → Prop
-  | .letDecl vars _ => ∀ x ∈ vars, x ∉ dom
-  | .block body => WScopedStmts dom body
-  | .cond _ body => WScopedStmts dom body
-  | .switch _ cases dflt => WScopedCases dom cases ∧ WScopedDflt dom dflt
-  | .funDef _ ps rs body => (ps ++ rs).Nodup ∧ WScopedStmts (ps ++ rs) body
-  | .forLoop init _ post body =>
-      WScopedStmts dom init ∧ WScopedStmts (declVarsSeq init ++ dom) body ∧
-        WScopedStmts (declVarsSeq init ++ dom) post
-  | _ => True
-def WScopedCases (dom : List Ident) : List (Literal × List (Stmt Op)) → Prop
-  | [] => True
-  | (_, body) :: rest => WScopedStmts dom body ∧ WScopedCases dom rest
-def WScopedDflt (dom : List Ident) : Option (List (Stmt Op)) → Prop
-  | none => True
-  | some body => WScopedStmts dom body
-end
