@@ -147,6 +147,9 @@ including `PoolInitialize.sol`, `SwapMath.sol`, `PoolLiquidity.sol`, and
 `PoolSwap.sol`. `PoolManager.sol` is the sole exact known failure: guarded
 spilling removes its selected stack-pressure sites, after which compilation
 reaches separately unsupported `gas`, immutable, and live-linker behavior.
+The 14 compiling fixtures pin 44 per-function gas rows. PoolSwap contributes
+five of them; the call comparator checks returned data and committed world
+effects but correctly excludes the callee frame's ephemeral final memory.
 
 Deployment here is deliberately local-EVM-only. `deployForCalls` directly
 executes top-level creation code and installs its returned runtime without a
