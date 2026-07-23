@@ -379,4 +379,38 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
   | @seqNil funs V st =>
       intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
       cases hcode with | stmts hs => cases hs with | nil => exact Step.seqNil
+  | @exprStmt funs V st e st1 he ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | exprD he2 =>
+          exact Step.exprStmt (ihe hσ hφ hfuns (.expr he2))
+  | @exprStmtHalt funs V st e st1 he ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | exprD he2 =>
+          exact Step.exprStmtHalt (ihe hσ hφ hfuns (.expr he2))
+  | @assignVal funs V st vars e vals st1 he hlen ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | assignD he2 =>
+          simp only [renRes]
+          rw [← renVEnv_setMany σ hσ vars vals V]
+          exact Step.assignVal (ihe hσ hφ hfuns (.expr he2)) (by rw [List.length_map]; exact hlen)
+  | @assignHalt funs V st vars e st1 he ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | assignD he2 =>
+          exact Step.assignHalt (ihe hσ hφ hfuns (.expr he2))
+  | @ifHalt funs V st c body st1 hc ihc =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | condD hc2 hb2 =>
+          exact Step.ifHalt (ihc hσ hφ hfuns (.expr hc2))
+  | @switchHalt funs V st c cs dflt st1 hc ihc =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | switchD hc2 hcs2 hd2 =>
+          exact Step.switchHalt (ihc hσ hφ hfuns (.expr hc2))
+  | @loopCondHalt funs V st c post body st1 hc ihc =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | loop hc2 hb2 hp2 =>
+          exact Step.loopCondHalt (ihc hσ hφ hfuns (.expr hc2))
+  | @loopDone funs V st c post body cv st1 hc hz ihc =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | loop hc2 hb2 hp2 =>
+          exact Step.loopDone (ihc hσ hφ hfuns (.expr hc2)) hz
   | _ => intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode; sorry
