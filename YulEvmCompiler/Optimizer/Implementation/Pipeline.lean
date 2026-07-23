@@ -8,6 +8,7 @@ import YulEvmCompiler.Optimizer.Implementation.FreshenCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.HoistCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.StorageForwardResolve
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
+import YulEvmCompiler.Optimizer.Implementation.HoistForInit
 set_option warningAsError true
 /-!
 # Production optimizer pipeline
@@ -95,9 +96,10 @@ are ~5 calls deep (`external_fun_*` → `abi_decode_tuple_*` → `abi_decode_t_*
 call-free leaves. -/
 def pipelineRounds : Nat := 6
 
-/-- One block-path round. -/
+/-- One block-path round. `hoistForInit` runs first so the pulled-out
+initializers become ordinary block statements the later stages optimize. -/
 def blockRound : List (Pass D) :=
-  [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
+  [hoistForInit, simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
    storageForward, simplify, deadPure, deadResults]
 
 /-- Verified block pipeline at an explicit round count. Iterated inlining can

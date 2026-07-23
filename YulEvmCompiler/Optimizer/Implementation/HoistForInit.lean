@@ -2,8 +2,10 @@ import YulSemantics.Equiv
 import YulEvmCompiler.Optimizer.Spec.Pass
 import YulEvmCompiler.Optimizer.Implementation.EmptyScope
 import YulEvmCompiler.Optimizer.Implementation.Frame
+import YulEvmCompiler.Optimizer.Implementation.FunCongr
 
 set_option warningAsError true
+set_option linter.unusedSectionVars false
 
 /-!
 # YulEvmCompiler.Optimizer.Implementation.HoistForInit
@@ -217,18 +219,18 @@ theorem hoistForInit_core {init : List (Stmt D.Op)} (c : Expr D.Op) (post body :
 
 mutual
 
-/-- Pull the `init` out of every `SimpleInit` `for` loop, recursing into
-`post`/`body`, `block`/`cond`/`switch`. `funDef` bodies and `init` are left
-unchanged. -/
+/-- Pull the `init` out of every non-empty `SimpleInit` `for` loop, recursing
+into `post`/`body`, nested `block`/`cond`/`switch`, and **`funDef` bodies**.
+Only a `for`-loop's own `init` is left untouched. -/
 def hoistInitStmt : Stmt D.Op → Stmt D.Op
   | .forLoop init c post body =>
-      if SimpleInit init
+      if SimpleInit init && !init.isEmpty
       then .block (init ++ [.forLoop [] c (hoistInitStmts post) (hoistInitStmts body)])
       else .forLoop init c (hoistInitStmts post) (hoistInitStmts body)
   | .block b => .block (hoistInitStmts b)
   | .cond c b => .cond c (hoistInitStmts b)
   | .switch c cases dflt => .switch c (hoistInitCases cases) (hoistInitDflt dflt)
-  | .funDef n ps rs b => .funDef n ps rs b
+  | .funDef n ps rs b => .funDef n ps rs (hoistInitStmts b)
   | .letDecl vars val => .letDecl vars val
   | .assign vars e => .assign vars e
   | .exprStmt e => .exprStmt e
@@ -250,7 +252,7 @@ def hoistInitDflt : Option (Block D.Op) → Option (Block D.Op)
 
 end
 
-/-! ### The transform preserves the hoisted function scope -/
+/-! ### Generic helpers -/
 
 omit [DecidableEq D.Value] in
 theorem hoist_cons (x : Stmt D.Op) (l : List (Stmt D.Op)) :
@@ -258,29 +260,29 @@ theorem hoist_cons (x : Stmt D.Op) (l : List (Stmt D.Op)) :
   cases x <;> rfl
 
 omit [DecidableEq D.Value] in
-theorem hoistInitStmt_hoistEq (s : Stmt D.Op) :
-    hoist D [hoistInitStmt s] = hoist D [s] := by
-  cases s with
-  | forLoop i cc p bd => simp only [hoistInitStmt]; split <;> rfl
-  | funDef n ps rs bd => simp only [hoistInitStmt]
-  | block bd => simp only [hoistInitStmt]; rfl
-  | cond cc bd => simp only [hoistInitStmt]; rfl
-  | switch cc cs d => simp only [hoistInitStmt]; rfl
-  | letDecl vars val => simp only [hoistInitStmt]
-  | assign vars e => simp only [hoistInitStmt]
-  | exprStmt e => simp only [hoistInitStmt]
-  | «break» => simp only [hoistInitStmt]
-  | «continue» => simp only [hoistInitStmt]
-  | leave => simp only [hoistInitStmt]
+theorem forall2_append {α β} {R : α → β → Prop} {a a' b b' : List _}
+    (h1 : List.Forall₂ R a a') (h2 : List.Forall₂ R b b') :
+    List.Forall₂ R (a ++ b) (a' ++ b') := by
+  induction h1 with
+  | nil => exact h2
+  | cons hx _ ih => exact .cons hx ih
+
+/-- A `funDef` executes as a no-op regardless of its body, so two `funDef`s with
+the same signature are equivalent *as statements* whatever their bodies (body
+differences matter only through the enclosing block's `hoist`, handled by
+`scopeRel_hoistForInit`). -/
+theorem hfi_funDef_equiv (n : Ident) (ps rs : List Ident) (b₁ b₂ : Block D.Op) :
+    EquivStmt D (.funDef n ps rs b₁) (.funDef n ps rs b₂) := by
+  intro funs V st V' st' o
+  constructor <;> (intro h; cases h; exact Step.funDef)
 
 omit [DecidableEq D.Value] in
-theorem hoist_hoistInitStmts (b : List (Stmt D.Op)) :
-    hoist D (hoistInitStmts b) = hoist D b := by
-  induction b with
-  | nil => rfl
-  | cons s rest ih =>
-      show hoist D (hoistInitStmt s :: hoistInitStmts rest) = hoist D (s :: rest)
-      rw [hoist_cons, hoist_cons (D := D) s rest, hoistInitStmt_hoistEq, ih]
+/-- Recover `SimpleInit init` from the transform's firing condition. -/
+theorem simpleInit_of_cond {init : List (Stmt D.Op)}
+    (hcond : (SimpleInit (D := D) init && !init.isEmpty) = true) : SimpleInit (D := D) init = true := by
+  cases hh : SimpleInit (D := D) init with
+  | true => rfl
+  | false => rw [hh, Bool.false_and] at hcond; exact absurd hcond (by decide)
 
 /-! ### Soundness -/
 
@@ -289,24 +291,25 @@ mutual
 theorem hoistInitStmt_equiv : ∀ s : Stmt D.Op, EquivStmt D s (hoistInitStmt s)
   | .forLoop init c post body => by
       have hpost : EquivBlock D post (hoistInitStmts post) :=
-        EquivBlock.of_stmts (EquivStmts.of_forall₂ (hoistInitStmts_forall2 post))
-          (hoist_hoistInitStmts post).symm
+        EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (hoistInitStmts_forall2 post))
+          (scopeRel_hoistForInit post)
       have hbody : EquivBlock D body (hoistInitStmts body) :=
-        EquivBlock.of_stmts (EquivStmts.of_forall₂ (hoistInitStmts_forall2 body))
-          (hoist_hoistInitStmts body).symm
+        EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (hoistInitStmts_forall2 body))
+          (scopeRel_hoistForInit body)
       simp only [hoistInitStmt]
       split
-      · rename_i hsimple
+      · rename_i hcond
+        have hsimple : SimpleInit init = true := simpleInit_of_cond hcond
         exact (EquivStmt.forLoop_congr init (EquivExpr.refl c) hpost hbody).trans
           (hoistForInit_core c (hoistInitStmts post) (hoistInitStmts body) hsimple)
       · exact EquivStmt.forLoop_congr init (EquivExpr.refl c) hpost hbody
   | .block b =>
-      EquivBlock.of_stmts (EquivStmts.of_forall₂ (hoistInitStmts_forall2 b))
-        (hoist_hoistInitStmts b).symm
+      EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (hoistInitStmts_forall2 b))
+        (scopeRel_hoistForInit b)
   | .cond c b =>
       EquivStmt.cond_congr (EquivExpr.refl c)
-        (EquivBlock.of_stmts (EquivStmts.of_forall₂ (hoistInitStmts_forall2 b))
-          (hoist_hoistInitStmts b).symm)
+        (EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (hoistInitStmts_forall2 b))
+          (scopeRel_hoistForInit b))
   | .switch c cases dflt => by
       have hsw : EquivStmt D (.switch c cases dflt)
           (.switch c (hoistInitCases cases) (hoistInitDflt dflt)) := by
@@ -314,10 +317,11 @@ theorem hoistInitStmt_equiv : ∀ s : Stmt D.Op, EquivStmt D s (hoistInitStmt s)
         cases dflt with
         | none => exact EquivBlock.refl _
         | some b =>
-            exact EquivBlock.of_stmts (EquivStmts.of_forall₂ (hoistInitStmts_forall2 b))
-              (hoist_hoistInitStmts b).symm
+            exact EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (hoistInitStmts_forall2 b))
+              (scopeRel_hoistForInit b)
       simpa only [hoistInitStmt] using hsw
-  | .funDef n ps rs b => by simp only [hoistInitStmt]; exact EquivStmt.refl _
+  | .funDef n ps rs b => by
+      simp only [hoistInitStmt]; exact hfi_funDef_equiv n ps rs b (hoistInitStmts b)
   | .letDecl vars val => by simp only [hoistInitStmt]; exact EquivStmt.refl _
   | .assign vars e => by simp only [hoistInitStmt]; exact EquivStmt.refl _
   | .exprStmt e => by simp only [hoistInitStmt]; exact EquivStmt.refl _
@@ -334,21 +338,155 @@ theorem hoistInitCases_forall2 : ∀ cs : List (Literal × Block D.Op),
     List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs (hoistInitCases cs)
   | [] => .nil
   | (_, b) :: rest =>
-      .cons ⟨rfl, EquivBlock.of_stmts (EquivStmts.of_forall₂ (hoistInitStmts_forall2 b))
-        (hoist_hoistInitStmts b).symm⟩ (hoistInitCases_forall2 rest)
+      .cons ⟨rfl, EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (hoistInitStmts_forall2 b))
+        (scopeRel_hoistForInit b)⟩ (hoistInitCases_forall2 rest)
+
+theorem hfi_scopeRel_single : ∀ s : Stmt D.Op,
+    ScopeRel D (hoist D [s]) (hoist D [hoistInitStmt s])
+  | .funDef n ps rs b => by
+      simp only [hoistInitStmt]
+      exact List.Forall₂.cons
+        ⟨rfl, rfl, rfl,
+          EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (hoistInitStmts_forall2 b))
+            (scopeRel_hoistForInit b)⟩ .nil
+  | .forLoop i cc p bd => by simp only [hoistInitStmt]; split <;> exact .nil
+  | .block bd => by simp only [hoistInitStmt]; exact .nil
+  | .cond cc bd => by simp only [hoistInitStmt]; exact .nil
+  | .switch cc cs d => by simp only [hoistInitStmt]; exact .nil
+  | .letDecl vars val => by simp only [hoistInitStmt]; exact .nil
+  | .assign vars e => by simp only [hoistInitStmt]; exact .nil
+  | .exprStmt e => by simp only [hoistInitStmt]; exact .nil
+  | .break => by simp only [hoistInitStmt]; exact .nil
+  | .continue => by simp only [hoistInitStmt]; exact .nil
+  | .leave => by simp only [hoistInitStmt]; exact .nil
+
+theorem scopeRel_hoistForInit : ∀ ss : List (Stmt D.Op),
+    ScopeRel D (hoist D ss) (hoist D (hoistInitStmts ss))
+  | [] => .nil
+  | s :: rest => by
+      simp only [hoistInitStmts]
+      rw [hoist_cons s rest, hoist_cons (hoistInitStmt s) (hoistInitStmts rest)]
+      exact forall2_append (hfi_scopeRel_single s) (scopeRel_hoistForInit rest)
 
 end
 
 /-- A block is equivalent to its transform. -/
 theorem hoistForInit_blockEquiv (b : List (Stmt D.Op)) : EquivBlock D b (hoistInitStmts b) :=
-  EquivBlock.of_stmts (EquivStmts.of_forall₂ (hoistInitStmts_forall2 b))
-    (hoist_hoistInitStmts b).symm
+  EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (hoistInitStmts_forall2 b))
+    (scopeRel_hoistForInit b)
 
-/-- The **hoist-for-init pass**: pull a `SimpleInit` initializer out of every
-`for` loop, bundled with its soundness proof. -/
+/-- The **hoist-for-init pass**: pull a non-empty `SimpleInit` initializer out of
+every `for` loop (throughout, including function bodies), bundled with its
+soundness proof. -/
 def hoistForInit : Pass D where
   run := hoistInitStmts
   sound := hoistForInit_blockEquiv
+
+/-! ### Normal form: every reachable `for` loop has its `init` hoisted
+
+`ForInitOK` says every `for` loop reached without descending into another loop's
+`init` has an already-hoisted initializer — `SimpleInit init → init = []`, i.e.
+no non-empty simple init survives (that is exactly what the pass removes). It
+recurses into `post`/`body`, nested `block`/`cond`/`switch`, and `funDef`
+bodies — the same positions the transform rewrites. -/
+
+mutual
+def ForInitOK : Stmt D.Op → Prop
+  | .forLoop init _ post body =>
+      (SimpleInit init = true → init = []) ∧ ForInitOKs post ∧ ForInitOKs body
+  | .block b => ForInitOKs b
+  | .cond _ b => ForInitOKs b
+  | .switch _ cases dflt => ForInitOKsCases cases ∧ ForInitOKsDflt dflt
+  | .funDef _ _ _ b => ForInitOKs b
+  | _ => True
+def ForInitOKs : List (Stmt D.Op) → Prop
+  | [] => True
+  | s :: rest => ForInitOK s ∧ ForInitOKs rest
+def ForInitOKsCases : List (Literal × Block D.Op) → Prop
+  | [] => True
+  | (_, b) :: rest => ForInitOKs b ∧ ForInitOKsCases rest
+def ForInitOKsDflt : Option (Block D.Op) → Prop
+  | none => True
+  | some b => ForInitOKs b
+end
+
+omit [DecidableEq D.Value] in
+theorem forInitOKs_append : ∀ {a b : List (Stmt D.Op)},
+    ForInitOKs a → ForInitOKs b → ForInitOKs (a ++ b)
+  | [], _, _, hb => hb
+  | _ :: _, _, ha, hb => by
+      simp only [List.cons_append, ForInitOKs] at ha ⊢
+      exact ⟨ha.1, forInitOKs_append ha.2 hb⟩
+
+/-- A `SimpleInit` list is all leaves, so it trivially satisfies the normal form. -/
+theorem simpleInit_forInitOKs {init : List (Stmt D.Op)}
+    (h : SimpleInit (D := D) init = true) : ForInitOKs (D := D) init := by
+  induction init with
+  | nil => exact True.intro
+  | cons s rest ih =>
+      simp only [SimpleInit, List.all_cons, Bool.and_eq_true] at h
+      refine ⟨?_, ih (by simp [SimpleInit, h.2])⟩
+      obtain ⟨hhead, _⟩ := h
+      cases s with
+      | letDecl _ _ => exact True.intro
+      | assign _ _ => exact True.intro
+      | exprStmt _ => exact True.intro
+      | block _ => simp [simpleInitStmt] at hhead
+      | funDef _ _ _ _ => simp [simpleInitStmt] at hhead
+      | cond _ _ => simp [simpleInitStmt] at hhead
+      | switch _ _ _ => simp [simpleInitStmt] at hhead
+      | forLoop _ _ _ _ => simp [simpleInitStmt] at hhead
+      | «break» => simp [simpleInitStmt] at hhead
+      | «continue» => simp [simpleInitStmt] at hhead
+      | leave => simp [simpleInitStmt] at hhead
+
+mutual
+theorem forInitOK_hoistInitStmt : ∀ s : Stmt D.Op, ForInitOK (hoistInitStmt s)
+  | .forLoop init c post body => by
+      simp only [hoistInitStmt]
+      split
+      · rename_i hcond
+        have hsimple : SimpleInit init = true := simpleInit_of_cond hcond
+        exact forInitOKs_append (simpleInit_forInitOKs hsimple)
+          ⟨⟨fun _ => rfl, forInitOK_hoistInitStmts post, forInitOK_hoistInitStmts body⟩, True.intro⟩
+      · rename_i hcond
+        refine ⟨?_, forInitOK_hoistInitStmts post, forInitOK_hoistInitStmts body⟩
+        intro hs
+        by_contra hne
+        apply hcond
+        have hie : init.isEmpty = false := by
+          cases init with
+          | nil => exact absurd rfl hne
+          | cons => rfl
+        simp [hs, hie]
+  | .block b => forInitOK_hoistInitStmts b
+  | .cond c b => forInitOK_hoistInitStmts b
+  | .switch c cases dflt => ⟨forInitOK_hoistInitCases cases, forInitOK_hoistInitDflt dflt⟩
+  | .funDef n ps rs b => forInitOK_hoistInitStmts b
+  | .letDecl _ _ => True.intro
+  | .assign _ _ => True.intro
+  | .exprStmt _ => True.intro
+  | .break => True.intro
+  | .continue => True.intro
+  | .leave => True.intro
+theorem forInitOK_hoistInitStmts : ∀ ss : List (Stmt D.Op), ForInitOKs (hoistInitStmts ss)
+  | [] => True.intro
+  | s :: rest => ⟨forInitOK_hoistInitStmt s, forInitOK_hoistInitStmts rest⟩
+theorem forInitOK_hoistInitCases : ∀ cs : List (Literal × Block D.Op),
+    ForInitOKsCases (hoistInitCases cs)
+  | [] => True.intro
+  | (_, b) :: rest => ⟨forInitOK_hoistInitStmts b, forInitOK_hoistInitCases rest⟩
+theorem forInitOK_hoistInitDflt : ∀ d : Option (Block D.Op), ForInitOKsDflt (hoistInitDflt d)
+  | none => True.intro
+  | some b => forInitOK_hoistInitStmts b
+end
+
+/-- **The transform normalizes every reachable `for` loop**: after
+`hoistForInit`, no `for` loop (outside another loop's initializer) has a
+non-empty `SimpleInit` init. -/
+theorem hoistForInit_forInitOK (b : List (Stmt D.Op)) :
+    ForInitOKs (D := D) (hoistForInit.run b) :=
+  forInitOK_hoistInitStmts b
 
 
 
