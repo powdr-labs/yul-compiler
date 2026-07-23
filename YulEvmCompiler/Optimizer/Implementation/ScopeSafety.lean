@@ -48,6 +48,82 @@ theorem mem_freeVars_of_mem_var {es : List (Expr Op)} {x : Ident}
       · simp [freeVarsExpr]
       · exact List.mem_append.mpr (Or.inr (ih hrest))
 
+/-! ### `restore`/`setMany` past a temporary prefix (dialect-generic)
+
+An assignment to source variables commutes with a prepended block of
+temporaries (disjoint names), and `restore` then discharges the temporaries —
+so a block-scoped rewrite's assignment lands on the enclosing variables exactly
+as the un-rewritten assignment would. -/
+
+section Generic
+variable {D : Dialect}
+
+/-- `VEnv.set` preserves length. -/
+theorem set_length' (V : VEnv D) (x : Ident) (v : D.Value) :
+    (VEnv.set V x v).length = V.length := by
+  induction V with
+  | nil => rfl
+  | cons p rest ih =>
+      obtain ⟨y, w⟩ := p
+      by_cases h : y = x
+      · subst h; simp [VEnv.set]
+      · simp [VEnv.set, h, ih]
+
+/-- `VEnv.setMany` preserves length. -/
+theorem setMany_length (V : VEnv D) (xs : List Ident) (vs : List D.Value) :
+    (VEnv.setMany V xs vs).length = V.length := by
+  unfold VEnv.setMany
+  induction (xs.zip vs) generalizing V with
+  | nil => rfl
+  | cons p rest ih => simp only [List.foldl_cons]; rw [ih]; exact set_length' V p.1 p.2
+
+/-- Setting a variable disjoint from a prepended block lands past the block. -/
+theorem set_append_disjoint {V : VEnv D} {x : Ident} {v : D.Value} (ext : VEnv D)
+    (hd : ∀ p ∈ ext, p.1 ≠ x) : VEnv.set (ext ++ V) x v = ext ++ VEnv.set V x v := by
+  induction ext with
+  | nil => rfl
+  | cons p rest ih =>
+      obtain ⟨y, w⟩ := p
+      have hyx : ¬ (y = x) := hd (y, w) (List.mem_cons_self ..)
+      rw [List.cons_append]
+      show VEnv.set ((y, w) :: (rest ++ V)) x v = (y, w) :: (rest ++ VEnv.set V x v)
+      rw [VEnv.set, if_neg hyx, ih (fun q hq => hd q (List.mem_cons_of_mem _ hq))]
+
+private theorem foldl_set_append_disjoint (ext : VEnv D) :
+    ∀ (l : List (Ident × D.Value)),
+      (∀ p ∈ ext, ∀ q ∈ l, p.1 ≠ q.1) → ∀ (V : VEnv D),
+      l.foldl (fun acc p => VEnv.set acc p.1 p.2) (ext ++ V)
+        = ext ++ l.foldl (fun acc p => VEnv.set acc p.1 p.2) V
+  | [], _, _ => rfl
+  | q :: rest, hd, V => by
+      simp only [List.foldl_cons]
+      rw [set_append_disjoint ext (fun p hp => hd p hp q (List.mem_cons_self ..))]
+      exact foldl_set_append_disjoint ext rest
+        (fun p hp r hr => hd p hp r (List.mem_cons_of_mem _ hr)) _
+
+/-- `setMany` to variables disjoint from a prepended block lands past the block. -/
+theorem setMany_append_disjoint {V : VEnv D} (ext : VEnv D) {xs : List Ident} {vs : List D.Value}
+    (hd : ∀ p ∈ ext, p.1 ∉ xs) :
+    VEnv.setMany (ext ++ V) xs vs = ext ++ VEnv.setMany V xs vs := by
+  unfold VEnv.setMany
+  refine foldl_set_append_disjoint ext _ (fun p hp q hq => ?_) V
+  intro heq
+  apply hd p hp
+  rw [heq]
+  exact (List.of_mem_zip hq).1
+
+/-- `restore` past a prefix of a same-length replacement recovers the replacement
+(generalizes `restore_prefix` to allow in-place updates in the suffix). -/
+theorem restore_prefix_len {V W : VEnv D} (ext : VEnv D) (hlen : W.length = V.length) :
+    restore V (ext ++ W) = W := by
+  unfold restore
+  rw [List.length_append, hlen, Nat.add_sub_cancel]
+  induction ext with
+  | nil => simp
+  | cons a as ih => simpa using ih
+
+end Generic
+
 open YulSemantics.EVM
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
