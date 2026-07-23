@@ -283,9 +283,19 @@ theorem step_lift_sim {flatSc : FScope D} {funs_o funs_h : FunEnv D} {code V st 
 
 /-! ### Top-level bridges (base = []) -/
 
+omit [DecidableEq D.Value] in
+theorem hoist_map_fst (b : List (Stmt D.Op)) :
+    (hoist D b).map (·.1) = funNamesTop b := by
+  simp only [hoist, funNamesTop, List.map_filterMap]
+  congr 1
+  funext s
+  cases s <;> rfl
+
+omit [DecidableEq D.Value] in
 theorem funNamesEnv_singleton (b : Block D.Op) :
     funNamesEnv (D := D) (hoist D b :: []) = funNamesTop b := by
-  sorry
+  simp only [funNamesEnv, List.map_cons, List.map_nil, List.flatten_cons, List.flatten_nil,
+    List.append_nil, hoist_map_fst]
 
 /-- At the top block, the original scope stack is `GoodO` for the flat scope. -/
 theorem goodO_top {b : Block D.Op} (huniq : UniqueFunNames b) (hws : WellScoped b) :
