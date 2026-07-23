@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.HoistFunDefsEquiv
+import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalForm
 import YulEvmCompiler.Optimizer.Spec.GlobalPass
 
 /-!
@@ -154,30 +155,161 @@ theorem hoistGuard_sound {b : Block D.Op} (h : hoistGuard b = true) :
   rw [hoistGuard, Bool.and_eq_true, decide_eq_true_eq] at h
   exact ⟨h.1, wellScopedB_sound h.2⟩
 
-/-- Hoist all function definitions to the top **when** the block is unique and
-well scoped; otherwise leave it unchanged. -/
-def hoistBlock (b : Block D.Op) : Block D.Op :=
-  if hoistGuard b = true then liftFunDefs b else b
-
-/-- Hoisting a code block preserves its whole-program behaviour, unconditionally
-(the guard makes the transform behavioural-identity where it cannot prove the
-hoist sound). -/
-theorem hoistBlock_runEquiv (b : Block D.Op) : RunEquivBlock D b (hoistBlock b) := by
-  unfold hoistBlock
-  by_cases hg : hoistGuard b = true
-  · rw [if_pos hg]
-    obtain ⟨hu, hs⟩ := hoistGuard_sound hg
-    exact fun _ _ _ _ => liftFunDefs_run_equiv hu hs
-  · rw [if_neg hg]; exact RunEquivBlock.refl b
+/-- The per-block transform: hoist all function definitions to the top **when**
+the block is unique and well scoped, otherwise leave it unchanged. -/
+def hoistBlock : Block D.Op → Block D.Op := guardedBlock hoistGuard liftFunDefs
 
 /-- **Function hoisting as a verified global pass.** Applies `liftFunDefs` to
 every code block of an object tree wherever the block is disambiguated and well
-scoped; sound unconditionally. -/
-def hoistFunDefsPass : GlobalPass D where
-  run := mapObjCode hoistBlock
-  sound := objEquiv_mapObjCode hoistBlock_runEquiv
+scoped; sound unconditionally (via the `ofGuardedBlock` combinator). -/
+def hoistFunDefsPass : GlobalPass D :=
+  GlobalPass.ofGuardedBlock hoistGuard liftFunDefs
+    (fun _ hg _ _ _ _ => liftFunDefs_run_equiv (hoistGuard_sound hg).1 (hoistGuard_sound hg).2)
 
 @[simp] theorem hoistFunDefsPass_run (o : Object D.Op) :
     (hoistFunDefsPass (D := D)).run o = mapObjCode hoistBlock o := rfl
+
+/-! ### Postcondition: the output is function-hoisted (a `NormalForm` property)
+
+`liftFunDefs` unconditionally produces a block in which every function definition
+sits at the top level with a definition-free body — `NormalForm.FunctionsHoisted`.
+(Unlike *soundness*, this syntactic property needs no disambiguation.) -/
+
+/- The stripped block contains no function definition anywhere. -/
+mutual
+theorem noFunDef_stripStmts : ∀ (b : List (Stmt D.Op)), NormalForm.NoFunDefStmts (stripStmts b)
+  | [] => trivial
+  | s :: rest => by
+      cases s with
+      | funDef n ps rs body =>
+          simp only [stripStmts]; exact noFunDef_stripStmts rest
+      | block bb =>
+          simp only [stripStmts, stripStmt, NormalForm.NoFunDefStmts, NormalForm.NoFunDefStmt]
+          exact ⟨noFunDef_stripStmts bb, noFunDef_stripStmts rest⟩
+      | cond c bb =>
+          simp only [stripStmts, stripStmt, NormalForm.NoFunDefStmts, NormalForm.NoFunDefStmt]
+          exact ⟨noFunDef_stripStmts bb, noFunDef_stripStmts rest⟩
+      | switch c cases dflt =>
+          simp only [stripStmts, stripStmt, NormalForm.NoFunDefStmts, NormalForm.NoFunDefStmt]
+          exact ⟨⟨noFunDef_stripCases cases, noFunDef_stripDflt dflt⟩, noFunDef_stripStmts rest⟩
+      | forLoop init c post body =>
+          simp only [stripStmts, stripStmt, NormalForm.NoFunDefStmts, NormalForm.NoFunDefStmt]
+          exact ⟨⟨noFunDef_stripStmts init, noFunDef_stripStmts post, noFunDef_stripStmts body⟩,
+            noFunDef_stripStmts rest⟩
+      | letDecl vs v =>
+          simp only [stripStmts, stripStmt, NormalForm.NoFunDefStmts, NormalForm.NoFunDefStmt,
+            true_and]
+          exact noFunDef_stripStmts rest
+      | assign vs e =>
+          simp only [stripStmts, stripStmt, NormalForm.NoFunDefStmts, NormalForm.NoFunDefStmt,
+            true_and]
+          exact noFunDef_stripStmts rest
+      | exprStmt e =>
+          simp only [stripStmts, stripStmt, NormalForm.NoFunDefStmts, NormalForm.NoFunDefStmt,
+            true_and]
+          exact noFunDef_stripStmts rest
+      | «break» =>
+          simp only [stripStmts, stripStmt, NormalForm.NoFunDefStmts, NormalForm.NoFunDefStmt,
+            true_and]
+          exact noFunDef_stripStmts rest
+      | «continue» =>
+          simp only [stripStmts, stripStmt, NormalForm.NoFunDefStmts, NormalForm.NoFunDefStmt,
+            true_and]
+          exact noFunDef_stripStmts rest
+      | leave =>
+          simp only [stripStmts, stripStmt, NormalForm.NoFunDefStmts, NormalForm.NoFunDefStmt,
+            true_and]
+          exact noFunDef_stripStmts rest
+theorem noFunDef_stripCases : ∀ (cs : List (Literal × Block D.Op)),
+    NormalForm.NoFunDefCases (stripCases cs)
+  | [] => trivial
+  | (_, b) :: rest => by
+      simp only [stripCases, NormalForm.NoFunDefCases]
+      exact ⟨noFunDef_stripStmts b, noFunDef_stripCases rest⟩
+theorem noFunDef_stripDflt : ∀ (d : Option (Block D.Op)), NormalForm.NoFunDefDflt (stripDflt d)
+  | none => trivial
+  | some b => by simp only [stripDflt, NormalForm.NoFunDefDflt]; exact noFunDef_stripStmts b
+end
+
+/-- Membership extraction from `NoFunDefStmts`. -/
+theorem noFunDefStmt_of_mem : ∀ {ss : List (Stmt D.Op)}, NormalForm.NoFunDefStmts ss →
+    ∀ {s}, s ∈ ss → NormalForm.NoFunDefStmt s
+  | [], _, _, hs => by simp at hs
+  | _ :: rest, h, s, hs => by
+      simp only [NormalForm.NoFunDefStmts] at h
+      rcases List.mem_cons.mp hs with rfl | hs
+      · exact h.1
+      · exact noFunDefStmt_of_mem h.2 hs
+
+/- Every statement `collectStmt` emits is function-hoisted (a top funDef whose
+body — a `stripStmts` — is definition-free). -/
+mutual
+theorem hoistedTop_collectStmt : ∀ (s : Stmt D.Op), ∀ x ∈ collectStmt s, NormalForm.HoistedTop x
+  | .funDef n ps rs body, x, hx => by
+      rw [collectStmt] at hx
+      rcases List.mem_cons.mp hx with rfl | hx
+      · rw [NormalForm.HoistedTop]; exact noFunDef_stripStmts body
+      · exact hoistedTop_collectStmts body x hx
+  | .block b, x, hx => by rw [collectStmt] at hx; exact hoistedTop_collectStmts b x hx
+  | .cond c b, x, hx => by rw [collectStmt] at hx; exact hoistedTop_collectStmts b x hx
+  | .switch c cases dflt, x, hx => by
+      rw [collectStmt, List.mem_append] at hx
+      rcases hx with hx | hx
+      · exact hoistedTop_collectCases cases x hx
+      · exact hoistedTop_collectDflt dflt x hx
+  | .forLoop init c post body, x, hx => by
+      rw [collectStmt, List.mem_append, List.mem_append] at hx
+      rcases hx with (hx | hx) | hx
+      · exact hoistedTop_collectStmts init x hx
+      · exact hoistedTop_collectStmts post x hx
+      · exact hoistedTop_collectStmts body x hx
+  | .letDecl _ _, x, hx => by rw [collectStmt] at hx; simp at hx
+  | .assign _ _, x, hx => by rw [collectStmt] at hx; simp at hx
+  | .exprStmt _, x, hx => by rw [collectStmt] at hx; simp at hx
+  | .«break», x, hx => by rw [collectStmt] at hx; simp at hx
+  | .«continue», x, hx => by rw [collectStmt] at hx; simp at hx
+  | .leave, x, hx => by rw [collectStmt] at hx; simp at hx
+theorem hoistedTop_collectStmts : ∀ (b : List (Stmt D.Op)), ∀ x ∈ collectStmts b,
+    NormalForm.HoistedTop x
+  | [], x, hx => by simp [collectStmts] at hx
+  | s :: rest, x, hx => by
+      rw [collectStmts, List.mem_append] at hx
+      rcases hx with hx | hx
+      · exact hoistedTop_collectStmt s x hx
+      · exact hoistedTop_collectStmts rest x hx
+theorem hoistedTop_collectCases : ∀ (cs : List (Literal × Block D.Op)),
+    ∀ x ∈ collectCases cs, NormalForm.HoistedTop x
+  | [], x, hx => by simp [collectCases] at hx
+  | (_, b) :: rest, x, hx => by
+      rw [collectCases, List.mem_append] at hx
+      rcases hx with hx | hx
+      · exact hoistedTop_collectStmts b x hx
+      · exact hoistedTop_collectCases rest x hx
+theorem hoistedTop_collectDflt : ∀ (d : Option (Block D.Op)),
+    ∀ x ∈ collectDflt d, NormalForm.HoistedTop x
+  | none, x, hx => by simp [collectDflt] at hx
+  | some b, x, hx => by rw [collectDflt] at hx; exact hoistedTop_collectStmts b x hx
+end
+
+/-- **`liftFunDefs` produces a function-hoisted block, unconditionally.** After
+the hoister runs, every function definition is at the top level of the block with
+a definition-free body — the `FunctionsHoisted` component of the normal form. -/
+theorem functionsHoisted_liftFunDefs (b : Block D.Op) :
+    NormalForm.FunctionsHoisted (liftFunDefs b) := by
+  intro s hs
+  rw [liftFunDefs, List.mem_append] at hs
+  rcases hs with hc | hst
+  · exact hoistedTop_collectStmts b s hc
+  · have hnf : NormalForm.NoFunDefStmt s := noFunDefStmt_of_mem (noFunDef_stripStmts b) hst
+    cases s with
+    | funDef n ps rs body => rw [NormalForm.NoFunDefStmt] at hnf; exact hnf.elim
+    | _ => exact hnf
+
+/-- On a disambiguated, well-scoped block the pass really hoists, so its output
+is `FunctionsHoisted`. -/
+theorem hoistBlock_functionsHoisted {b : Block D.Op} (hg : hoistGuard b = true) :
+    NormalForm.FunctionsHoisted (hoistBlock b) := by
+  simp only [hoistBlock, guardedBlock, if_pos hg]
+  exact functionsHoisted_liftFunDefs b
 
 end YulEvmCompiler.Optimizer.Normalization
