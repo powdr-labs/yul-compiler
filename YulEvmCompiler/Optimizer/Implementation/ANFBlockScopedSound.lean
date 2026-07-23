@@ -1,6 +1,7 @@
 import YulEvmCompiler.Optimizer.Implementation.ANFSound
 import YulEvmCompiler.Optimizer.Implementation.ANFBlockScoped
 import YulEvmCompiler.Optimizer.Implementation.EmptyScope
+import YulEvmCompiler.Optimizer.Implementation.StorageForwardSound
 /-!
 # ANF pass 1 — block-scoped flattening, soundness
 
@@ -268,5 +269,127 @@ theorem bsStmt1_sound {funs : FunEnv D} {P : String} {s : Stmt Op}
   | «break» => exact stmt_as_stmts
   | «continue» => exact stmt_as_stmts
   | leave => exact stmt_as_stmts
+
+/-! ### Statement-sequence soundness -/
+
+/-- Executing a statement (to `normal`) only grows the variable domain, by at
+most its declared variables — and a `let`'s declared variables *are* added. -/
+theorem stmt_keys_grow {funs : FunEnv D} {s : Stmt Op} {V st V1 st1}
+    (h : Step D funs V st (.stmt s) (.sres V1 st1 .normal)) :
+    ∀ x, (x ∈ declaredStmts [s] ∨ x ∈ V.map Prod.fst) → x ∈ V1.map Prod.fst := by
+  intro x hx
+  rcases hx with hdec | hold
+  · cases s with
+    | letDecl xs val =>
+        cases h with
+        | letVal hval hlen =>
+            simp only [declaredStmts, List.append_nil] at hdec
+            simp only [List.map_append, List.mem_append]
+            exact Or.inl (by rw [List.map_fst_zip (by omega)]; exact hdec)
+        | letZero =>
+            simp only [declaredStmts, List.append_nil] at hdec
+            simp only [bindZeros, List.map_append, List.map_map, List.mem_append]
+            exact Or.inl (by simpa using hdec)
+    | assign _ _ => simp [declaredStmts] at hdec
+    | exprStmt _ => simp [declaredStmts] at hdec
+    | block _ => simp [declaredStmts] at hdec
+    | funDef _ _ _ _ => simp [declaredStmts] at hdec
+    | cond _ _ => simp [declaredStmts] at hdec
+    | switch _ _ _ => simp [declaredStmts] at hdec
+    | forLoop _ _ _ _ => simp [declaredStmts] at hdec
+    | «break» => simp [declaredStmts] at hdec
+    | «continue» => simp [declaredStmts] at hdec
+    | leave => simp [declaredStmts] at hdec
+  · obtain ⟨ext, W, hV1, hWk, _⟩ := scopeFrame_stmt_normal h
+    subst hV1
+    simp only [List.map_append, List.mem_append]
+    exact Or.inr (hWk ▸ hold)
+
+/-- Well-scopedness of a statement list in scope `Γ`: each statement's flattened
+operands read only in-scope variables; declarations extend the scope. -/
+def WScoped : List Ident → List (Stmt Op) → Prop
+  | _, [] => True
+  | Γ, s :: rest => (∀ x ∈ stmtFreeVars s, x ∈ Γ) ∧ WScoped (declaredStmts [s] ++ Γ) rest
+
+/-- No temporaries in a statement list. -/
+def noTempStmtsL (P : String) : List (Stmt Op) → Bool
+  | [] => true
+  | s :: rest => noTempStmt P s && noTempStmtsL P rest
+
+theorem bsStmts_sound {funs : FunEnv D} {P : String} :
+    ∀ (ss : List (Stmt Op)) {V : VEnv D} {st V' st' o} (Γ : List Ident),
+      noTempStmtsL P ss = true → WScoped Γ ss → (∀ x ∈ Γ, (VEnv.get V x).isSome = true) →
+      (Step D funs V st (.stmts ss) (.sres V' st' o) ↔
+        Step D funs V st (.stmts (bsStmts P ss)) (.sres V' st' o))
+  | [], _, _, _, _, _, _, _, _, _ => by simp only [bsStmts_nil]
+  | s :: rest, V, st, V', st', o, Γ, hnt, hws, hΓ => by
+      simp only [noTempStmtsL, Bool.and_eq_true] at hnt
+      simp only [bsStmts_cons]
+      have hscS : ∀ x, x ∈ stmtFreeVars s → (VEnv.get V x).isSome = true :=
+        fun x hx => hΓ x (hws.1 x hx)
+      constructor
+      · intro h
+        cases h with
+        | seqCons hs hrest =>
+            rename_i V1 st1
+            have hhead := (bsStmt1_sound hnt.1 hscS).mp hs
+            have hΓ' : ∀ x ∈ declaredStmts [s] ++ Γ, (VEnv.get V1 x).isSome = true := by
+              intro x hx
+              rcases List.mem_append.mp hx with hd | hg
+              · exact venvGet_isSome_of_mem_keys (stmt_keys_grow hs x (Or.inl hd))
+              · exact venvGet_isSome_of_mem_keys (stmt_keys_grow hs x (Or.inr (mem_keys_of_isSome (hΓ x hg))))
+            have htail := (bsStmts_sound rest (declaredStmts [s] ++ Γ) hnt.2 hws.2 hΓ').mp hrest
+            exact stmts_append_normal hhead htail
+        | seqStop hs hne =>
+            have hhead := (bsStmt1_sound hnt.1 hscS).mp hs
+            exact stmts_append_stop hhead hne
+      · intro h
+        rcases stmts_append_inv h with ⟨hne, hh⟩ | ⟨Vm, stm, hhead, htail⟩
+        · exact Step.seqStop ((bsStmt1_sound hnt.1 hscS).mpr hh) hne
+        · have hs := (bsStmt1_sound hnt.1 hscS).mpr hhead
+          have hΓ' : ∀ x ∈ declaredStmts [s] ++ Γ, (VEnv.get Vm x).isSome = true := by
+            intro x hx
+            rcases List.mem_append.mp hx with hd | hg
+            · exact venvGet_isSome_of_mem_keys (stmt_keys_grow hs x (Or.inl hd))
+            · exact venvGet_isSome_of_mem_keys (stmt_keys_grow hs x (Or.inr (mem_keys_of_isSome (hΓ x hg))))
+          exact Step.seqCons hs ((bsStmts_sound rest (declaredStmts [s] ++ Γ) hnt.2 hws.2 hΓ').mpr htail)
+
+/-! ### Whole-block soundness (under freshness + closedness) -/
+
+theorem hoist_bsStmt1 (P : String) (s : Stmt Op) : hoist D (bsStmt1 P s) = hoist D [s] := by
+  cases s with
+  | assign vars e => simp only [bsStmt1]; split
+                     · rfl
+                     · simp [hoist]
+  | exprStmt e => simp only [bsStmt1]; split
+                  · rfl
+                  · simp [hoist]
+  | _ => rfl
+
+theorem hoist_bsStmts (P : String) : ∀ (ss : List (Stmt Op)),
+    hoist D (bsStmts P ss) = hoist D ss
+  | [] => rfl
+  | s :: rest => by
+      rw [bsStmts_cons, hoist_append, hoist_bsStmt1 P s, hoist_bsStmts P rest,
+        show (s :: rest) = [s] ++ rest from rfl, hoist_append]
+
+/-- **Block-scoped ANF preserves behavior**, for a well-scoped (closed) block
+under a fresh temporary prefix. -/
+theorem bsStmts_sound_block {P : String} {b : Block Op}
+    (hnt : noTempStmtsL P b = true) (hcl : WScoped [] b) :
+    EquivBlock D b (bsStmts P b) := by
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    cases h with
+    | block hb =>
+        refine Step.block ?_
+        rw [hoist_bsStmts]
+        exact (bsStmts_sound b [] hnt hcl (by simp)).mp hb
+  · intro h
+    cases h with
+    | block hb =>
+        rw [hoist_bsStmts] at hb
+        exact Step.block ((bsStmts_sound b [] hnt hcl (by simp)).mpr hb)
 
 end YulEvmCompiler.Optimizer.ANF

@@ -58,6 +58,31 @@ as the un-rewritten assignment would. -/
 section Generic
 variable {D : Dialect}
 
+/-- Membership in the key list is equivalent to being bound. -/
+theorem venvGet_isSome_of_mem_keys {V : VEnv D} {x : Ident}
+    (h : x ∈ V.map Prod.fst) : (VEnv.get V x).isSome = true := by
+  induction V with
+  | nil => simp at h
+  | cons p rest ih =>
+      obtain ⟨y, w⟩ := p
+      by_cases hyx : y = x
+      · subst hyx; simp [VEnv.get]
+      · simp only [List.map_cons, List.mem_cons] at h
+        rcases h with h | h
+        · exact absurd h.symm hyx
+        · simpa [VEnv.get, List.find?, hyx] using ih h
+
+theorem mem_keys_of_isSome {V : VEnv D} {x : Ident}
+    (h : (VEnv.get V x).isSome = true) : x ∈ V.map Prod.fst := by
+  induction V with
+  | nil => simp [VEnv.get] at h
+  | cons p rest ih =>
+      obtain ⟨y, w⟩ := p
+      by_cases hyx : y = x
+      · subst hyx; simp
+      · simp only [List.map_cons, List.mem_cons]
+        exact Or.inr (ih (by simpa [VEnv.get, List.find?, hyx] using h))
+
 /-- `VEnv.set` preserves length. -/
 theorem set_length' (V : VEnv D) (x : Ident) (v : D.Value) :
     (VEnv.set V x v).length = V.length := by
