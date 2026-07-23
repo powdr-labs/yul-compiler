@@ -142,10 +142,14 @@ compiling fails CI unless it is listed in
 compiling also fails until the entry is removed and its gas rows are pinned
 (`uniswap-v4-gas-baseline.txt`). Uniswap rows use `fixture:function`
 granularity; repeated vectors for one signature are summed into that function's
-row. The smart stack layout currently compiles ten library fixtures plus
-`PoolInitialize.sol`. `SwapMath.sol`, `PoolLiquidity.sol`, `PoolSwap.sol`, and
-`PoolManager.sol` remain strict frontier fixtures because their unoptimized IR
-still exceeds classic stack reach.
+row. The production candidate ladder now compiles 14 of the 15 fixtures,
+including `PoolInitialize.sol`, `SwapMath.sol`, `PoolLiquidity.sol`, and
+`PoolSwap.sol`. `PoolManager.sol` is the sole exact known failure: guarded
+spilling removes its selected stack-pressure sites, after which compilation
+reaches separately unsupported `gas`, immutable, and live-linker behavior.
+The 14 compiling fixtures pin 44 per-function gas rows. PoolSwap contributes
+five of them; the call comparator checks returned data and committed world
+effects but correctly excludes the callee frame's ephemeral final memory.
 
 Deployment here is deliberately local-EVM-only. `deployForCalls` directly
 executes top-level creation code and installs its returned runtime without a
@@ -207,9 +211,11 @@ license is reproduced in `test/aave-v4/LICENSE`; these fixtures are compiler
 benchmarks for test environments, not deployable Aave distributions.
 
 The suite is strict. `aave-v4-known-compile-failures.txt` exactly records the
-three full integration fixtures whose unoptimized IR still exceeds this
-compiler's classic stack reach. A newly rejected fixture or a stale failure
-entry fails the run. The currently compilable fixture pins ten distinct call
+three full integration fixtures that still reach separately unsupported
+`gas`, immutable, or live-linker behavior after guarded spilling removes their
+selected pressure sites; `SpokeOperations.sol` also contains an independent
+unguarded pressure site. A newly rejected fixture or a stale failure entry
+fails the run. The currently compilable fixture pins ten distinct call
 rows in `aave-v4-gas-baseline.txt`, totaling about 54.5 million gas for this
 compiler and 18.2 million for solc. The runner continues to allow smaller
 coverage rows when useful; the two maximum-count scans consume about 5 million

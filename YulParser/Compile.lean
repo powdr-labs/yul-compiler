@@ -2,6 +2,8 @@ import YulParser.Source
 import YulEvmCompiler.ObjectCompile
 import YulEvmCompiler.Optimizer.Implementation.Pipeline
 import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
+import YulEvmCompiler.Optimizer.Implementation.MemorySpillSelect
+import YulEvmCompiler.Optimizer.Implementation.MemorySpillSound
 set_option warningAsError true
 /-!
 # YulParser.Compile
@@ -16,33 +18,20 @@ namespace YulParser
 
 open YulSemantics (Expr Stmt Object)
 
-/-- Desugar solc-IR hint builtins that have no EVM value effect into core Yul,
-before compilation. `memoryguard(e)` is a Yul optimizer hint whose value is
-just its argument, so it lowers to `e`; the verified compiler then handles the
-result unchanged. Every other node is rebuilt structurally, so programs that do
-not use such hints are unaffected. -/
-partial def desugarExpr {Op : Type} : Expr Op → Expr Op
-  | .call "memoryguard" [arg] => desugarExpr arg
-  | .call fn args => .call fn (args.map desugarExpr)
-  | .builtin op args => .builtin op (args.map desugarExpr)
-  | e => e
+/-- Desugar solc-IR hint builtins that have no EVM value effect into core Yul
+for the ordinary compilation candidates. `memoryguard(e)` returns `e` when no
+optimizer scratch is reserved. The final spilling fallback instead retains the
+raw marker, raises its result by the reserved call-path bound, and only then
+hands the resulting core Yul to the compiler. Every other node is rebuilt
+structurally, so programs that do not use such hints are unaffected. -/
+def desugarExpr {Op : Type} : Expr Op → Expr Op :=
+  YulEvmCompiler.Optimizer.MemorySpill.eraseMemoryGuardExpr
 
-partial def desugarStmt {Op : Type} : Stmt Op → Stmt Op
-  | .block body => .block (body.map desugarStmt)
-  | .funDef name params rets body => .funDef name params rets (body.map desugarStmt)
-  | .letDecl vars val => .letDecl vars (val.map desugarExpr)
-  | .assign vars val => .assign vars (desugarExpr val)
-  | .cond c body => .cond (desugarExpr c) (body.map desugarStmt)
-  | .switch c cases dflt =>
-      .switch (desugarExpr c) (cases.map (fun cb => (cb.1, cb.2.map desugarStmt)))
-        (dflt.map (fun b => b.map desugarStmt))
-  | .forLoop init c post body =>
-      .forLoop (init.map desugarStmt) (desugarExpr c) (post.map desugarStmt) (body.map desugarStmt)
-  | .exprStmt e => .exprStmt (desugarExpr e)
-  | s => s
+def desugarStmt {Op : Type} : Stmt Op → Stmt Op :=
+  YulEvmCompiler.Optimizer.MemorySpill.eraseMemoryGuardStmt
 
-partial def desugarObject {Op : Type} : Object Op → Object Op
-  | .mk name code subs segs => .mk name (code.map desugarStmt) (subs.map desugarObject) segs
+def desugarObject {Op : Type} : Object Op → Object Op :=
+  YulEvmCompiler.Optimizer.MemorySpill.eraseMemoryGuardObject
 
 /-! ### Dead `linkersymbol` bindings
 
@@ -127,8 +116,9 @@ def pruneLinkerObjectTree {Op : Type} (o : Object Op) : Object Op :=
 
 /-- Parse and compile a complete Yul source program to executable EVM bytecode,
 using the documented compatibility parser when the verified parser does not
-apply. Hint builtins (`memoryguard`) are desugared and provably dead
-`linkersymbol` bindings are dropped before compilation.
+apply. Hint builtins (`memoryguard`) are desugared for ordinary candidates and
+retained as reservation authority for the final spilling fallback. Provably
+dead `linkersymbol` bindings are dropped before either path.
 
 Both block- and object-rooted programs run the verified production pipeline:
 simplification and propagation, bounded helper/call inlining with the
@@ -138,7 +128,8 @@ block in the tree. -/
 def compileSource (source : String) : Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
-      let b := pruneLinkerBlock (block.map desugarStmt)
+      let raw := pruneLinkerBlock block
+      let b := raw.map desugarStmt
       -- Preserve bytecode stability for programs the full pipeline can already
       -- compile. On stack pressure, first retry its verified smart layout;
       -- then retry the shallower one-round pipeline, with and without smart
@@ -157,22 +148,33 @@ def compileSource (source : String) : Option ByteArray := do
         <|> YulEvmCompiler.compile
           (YulEvmCompiler.Optimizer.stackLayoutBlock light)
         <|> YulEvmCompiler.compile b
+        <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillBlock? raw with
+          | some spilled => YulEvmCompiler.compile spilled.block
+          | none => none)
       return YulEvmCompiler.assemble (← asm)
   | some (.object o) =>
-      let o := pruneLinkerObjectTree (desugarObject o)
+      let raw := pruneLinkerObjectTree o
+      let o := desugarObject raw
       let optimized := YulEvmCompiler.Optimizer.optimizerPipelineObject
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none) o
+      let optimizedLayout :=
+        YulEvmCompiler.Optimizer.stackLayoutObject optimized
       let light := YulEvmCompiler.Optimizer.optimizerPipelineObjectLight
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none) o
       let layout ← YulEvmCompiler.compileObject optimized
-        <|> YulEvmCompiler.compileObject
-          (YulEvmCompiler.Optimizer.stackLayoutObject optimized)
+        <|> YulEvmCompiler.compileObject optimizedLayout
         <|> YulEvmCompiler.compileObject light
         <|> YulEvmCompiler.compileObject
           (YulEvmCompiler.Optimizer.stackLayoutObject light)
         <|> YulEvmCompiler.compileObject o
+        <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback
+              raw optimized with
+          | some spilled =>
+              if spilled.selected = 0 then none
+              else YulEvmCompiler.compileObject spilled.object
+          | none => none)
       return ByteArray.mk layout.code.toArray
   | none => none
 

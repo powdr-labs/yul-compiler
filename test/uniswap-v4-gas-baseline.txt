@@ -19,6 +19,11 @@ PoolLiquidity.sol:addLiquidityWide()	129044	107996
 PoolLiquidity.sol:donate()	49372	46659
 PoolLiquidity.sol:removeLiquidity()	103843	84879
 PoolLiquidity.sol:slot0()	5382	4455
+PoolSwap.sol:addLiquidityWide()	166938	108108
+PoolSwap.sol:donate()	37342	29581
+PoolSwap.sol:removeLiquidity()	139744	85048
+PoolSwap.sol:slot0()	6901	4455
+PoolSwap.sol:swapExactInputNoTick()	138059	44284
 ProtocolFeeLibrary.sol:calculateSwapFee(uint16,uint24)	989	312
 ProtocolFeeLibrary.sol:getOneForZeroFee(uint24)	1119	249
 ProtocolFeeLibrary.sol:getZeroForOneFee(uint24)	984	284

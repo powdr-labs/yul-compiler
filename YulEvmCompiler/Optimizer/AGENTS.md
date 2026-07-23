@@ -34,9 +34,12 @@ trusts `Spec/Pass.lean` need not read any individual pass proof.
   `Backend.lean` (`Pass.optimize_then_compile_correct`: a sound pass composes with
   the backend), `Observe.lean` (the weaker **observational tier** `ObsPass` /
   `ObsEquivBlock` for passes `EquivBlock` cannot express — dead bindings, scratch
-  memory, dead stores before `revert` — pending human admission into the audited
-  roots). Treat `Spec/` as near-frozen: changing the contract is a design decision,
-  not a pass addition.
+  memory, dead stores before `revert`), and `MemoryGuard.lean` /
+  `MemoryGuardSound.lean` (the `memoryguard`-based scratch-reservation contract
+  built on `ObsPass`, with the `OpMemorySafe` / reserved-interval premises that
+  make raising the guard pointer honest rather than an unconditional weakening).
+  Treat `Spec/` as near-frozen: changing a contract is a design decision, not a
+  pass addition.
 - `Core/` — the typed optimizer IR. `Basic.lean` is intrinsically-scoped ANF
   (arity-indexed pure ops; `ingest` is partial, `ingest_emit` erases back to the
   exact Yul input). `Rule.lean` is a generic first-match rewrite engine whose
@@ -62,6 +65,14 @@ Shared foundations: `Frame.lean` (VEnv frame lemma — the basis for dropping
 unused/effect-free bindings), `ResolveCongr.lean`, `FunCongr.lean`,
 `BoundFunCongr.lean`, `InlineHelpers.lean`. Object-path variants: `ObjectPass.lean`,
 `StackLayoutObject.lean`.
+
+The `MemorySpill*` family is the guarded **memory-spilling** fallback (an
+`ObsPass`/`MemoryGuard` optimization, *not* part of `pipelineRounds`): when stack
+pressure would force an unsupported `DUP17+`/`SWAP17+`, `MemorySpill.lean` (the
+mechanism) plus `MemorySpillSelect.lean` (pressure-based, lexically-scoped,
+call-path slot allocation) move selected bindings into `memoryguard`-reserved
+scratch memory. Its many `MemorySpill*Sound.lean` files prove the composed
+direct-block and object theorems.
 
 The production pipeline (`Pipeline.lean`) currently runs: `Simplify` → `Propagate`
 → `InlineHelpers` → `HoistCalls`/`FreshenCalls`/`InlineCalls` → `StorageForward` →
