@@ -316,12 +316,6 @@ def renRes (σ' : Ident → Ident) : Res D → Res D
   | .eres r => .eres r
   | .sres V st o => .sres (renVEnv σ' V) st o
 
-/-- Function-declaration renaming: params/rets renamed by an injective `σc`,
-body α-equivalent under `σc` (variables) and `φ` (functions). -/
-def FDeclRen (φ : Ident → Ident) (d₁ d₂ : FDecl D) : Prop :=
-  ∃ σc σc' φc', Function.Injective σc ∧
-    d₂.params = d₁.params.map σc ∧ d₂.rets = d₁.rets.map σc ∧
-    AlphaBlockExt σc φ d₁.body d₂.body σc' φc'
 
 /-- α-relation on `Code`, carrying input and post renamings. -/
 inductive AlphaCode :
@@ -765,6 +759,16 @@ theorem venvKeys_stmt {funs : FunEnv D} {V st s V1 st1}
       simp only [declVars, List.nil_append]
       exact restore_keys ((venvKeys_suffix hinit rfl).trans (venvKeys_suffix hloop rfl))
         (Nat.le_trans (venvLen_mono hinit rfl) (venvLen_mono hloop rfl))
+
+/-- Function-declaration renaming: params/rets renamed by `σc`, which is a valid
+renaming (`RenCfg`) on the function's fresh parameter/return scope, and the body
+is α-equivalent under `σc` (variables) and `φ` (functions). `RenCfg` on the
+param/ret key-set (not global injectivity) is the satisfiable condition. -/
+def FDeclRen (φ : Ident → Ident) (d₁ d₂ : FDecl D) : Prop :=
+  ∃ σc σc' φc',
+    d₂.params = d₁.params.map σc ∧ d₂.rets = d₁.rets.map σc ∧
+    RenCfg σc (bindZeros D (d₁.params ++ d₁.rets)) ∧
+    AlphaBlockExt σc φ d₁.body d₂.body σc' φc'
 
 /-! ### Forward simulation (on the `RenCfg` foundation)
 
