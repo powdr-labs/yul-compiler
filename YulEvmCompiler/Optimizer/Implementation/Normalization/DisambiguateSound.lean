@@ -604,3 +604,38 @@ theorem RenCfg.get {σ : Ident → Ident} {inner : VEnv D} (h : RenCfg σ inner)
     (outer : VEnv D) {x : Ident} (hx : NotFresh x) :
     VEnv.get (renVEnv σ inner ++ outer) (σ x) = VEnv.get (inner ++ outer) x :=
   get_boundary σ inner outer x (h.no_merge hx) (fun hn => h.id_at hn)
+
+/-! ### `setMany` transport under injectivity-on-keys (not global)
+
+The disambiguation renaming is injective only on the in-scope keys, not globally,
+so the multi-assignment transport is re-based onto a per-key no-merge condition
+(`VEnv.set` preserves keys, so the condition threads through the fold). -/
+
+theorem VEnv.set_keys (V : VEnv D) (x : Ident) (v : D.Value) :
+    (VEnv.set V x v).map Prod.fst = V.map Prod.fst := by
+  induction V with
+  | nil => rfl
+  | cons p rest ih =>
+      obtain ⟨y, w⟩ := p
+      by_cases hyx : y = x
+      · simp [VEnv.set, hyx]
+      · simp only [VEnv.set, if_neg hyx, List.map_cons, ih]
+
+theorem renVEnv_setMany_dom (σ : Ident → Ident) :
+    ∀ (vars : List Ident) (vals : List D.Value) (V : VEnv D),
+      (∀ x ∈ vars, ∀ k ∈ V.map Prod.fst, σ k = σ x → k = x) →
+      VEnv.setMany (renVEnv σ V) (vars.map σ) vals = renVEnv σ (VEnv.setMany V vars vals) := by
+  intro vars
+  induction vars with
+  | nil => intro vals V _; simp [VEnv.setMany]
+  | cons x xs ih =>
+      intro vals V hnm
+      cases vals with
+      | nil => simp [VEnv.setMany]
+      | cons v vs =>
+          have hx : ∀ p ∈ V, σ p.1 = σ x → p.1 = x := fun p hp =>
+            hnm x (List.mem_cons_self ..) p.1 (List.mem_map_of_mem hp)
+          rw [List.map_cons, VEnv.setMany_cons, VEnv.setMany_cons, renVEnv_set σ V x v hx]
+          refine ih vs (VEnv.set V x v) (fun y hy k hk => ?_)
+          rw [VEnv.set_keys] at hk
+          exact hnm y (List.mem_cons_of_mem _ hy) k hk
