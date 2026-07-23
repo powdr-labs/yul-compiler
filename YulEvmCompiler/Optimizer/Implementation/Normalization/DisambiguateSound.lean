@@ -177,3 +177,68 @@ theorem lookupFun_renFunsRel {φ : Ident → Ident} {BR : FDecl D → FDecl D �
         obtain ⟨hd_eq, hcenv_eq⟩ := h
         subst hd_eq; subst hcenv_eq
         exact ⟨q.2, s₂ :: t₂, by rw [lookupFun, hp₂], hd, List.Forall₂.cons hs hR'⟩
+
+/-! ### α-equivalence: the renaming relation the bisimulation ranges over
+
+`AlphaExpr σ φ e₁ e₂` says `e₂` is `e₁` with free variable names renamed by `σ`
+and free function names by `φ`. Expressions have no binders, so `σ`/`φ` are fixed
+here; statement-level binders extend them (built on top). Expression *results*
+(`EResult`: values + state) contain no environment keys, so a renaming leaves
+them unchanged — the bisimulation target produces the identical `EResult`. -/
+
+variable {Op : Type}
+
+mutual
+inductive AlphaExpr (σ φ : Ident → Ident) : Expr Op → Expr Op → Prop
+  | lit {l} : AlphaExpr σ φ (.lit l) (.lit l)
+  | var {x} : AlphaExpr σ φ (.var x) (.var (σ x))
+  | builtin {op as₁ as₂} : AlphaArgs σ φ as₁ as₂ → AlphaExpr σ φ (.builtin op as₁) (.builtin op as₂)
+  | call {fn as₁ as₂} : AlphaArgs σ φ as₁ as₂ → AlphaExpr σ φ (.call fn as₁) (.call (φ fn) as₂)
+inductive AlphaArgs (σ φ : Ident → Ident) : List (Expr Op) → List (Expr Op) → Prop
+  | nil : AlphaArgs σ φ [] []
+  | cons {e₁ e₂ r₁ r₂} :
+      AlphaExpr σ φ e₁ e₂ → AlphaArgs σ φ r₁ r₂ → AlphaArgs σ φ (e₁ :: r₁) (e₂ :: r₂)
+end
+
+/-- α-equivalence of optional initializers (`let` with/without a value). -/
+inductive AlphaOExpr (σ φ : Ident → Ident) : Option (Expr Op) → Option (Expr Op) → Prop
+  | none : AlphaOExpr σ φ none none
+  | some {e₁ e₂} : AlphaExpr σ φ e₁ e₂ → AlphaOExpr σ φ (some e₁) (some e₂)
+
+/-! ### Expression-level forward simulation
+
+Renaming an expression (and its environment) preserves evaluation: the result is
+identical. `call` is deferred to the statement-level mutual bisimulation (a call
+runs a function body, which is a block). -/
+
+mutual
+theorem alphaExpr_fwd {σ φ : Ident → Ident} (hσ : Function.Injective σ)
+    {BR : FDecl D → FDecl D → Prop} {funs₁ funs₂ : FunEnv D} (hfuns : RenFunsRel φ BR funs₁ funs₂)
+    {e₁ e₂ : Expr D.Op} (hα : AlphaExpr σ φ e₁ e₂)
+    {V₁ : VEnv D} {mst : D.State} {r : EResult D} (h : EvalExpr D funs₁ V₁ mst e₁ r) :
+    EvalExpr D funs₂ (renVEnv σ V₁) mst e₂ r := by
+  cases hα with
+  | lit => cases h with | lit => exact Step.lit
+  | @var x =>
+      cases h with
+      | var hv => exact Step.var (by rw [renVEnv_get σ V₁ x (fun p _ hh => hσ hh)]; exact hv)
+  | builtin ha =>
+      cases h with
+      | builtinOk hargs hb => exact Step.builtinOk (alphaArgs_fwd hσ hfuns ha hargs) hb
+      | builtinHalt hargs hb => exact Step.builtinHalt (alphaArgs_fwd hσ hfuns ha hargs) hb
+      | builtinArgsHalt hargs => exact Step.builtinArgsHalt (alphaArgs_fwd hσ hfuns ha hargs)
+  | call ha => sorry
+theorem alphaArgs_fwd {σ φ : Ident → Ident} (hσ : Function.Injective σ)
+    {BR : FDecl D → FDecl D → Prop} {funs₁ funs₂ : FunEnv D} (hfuns : RenFunsRel φ BR funs₁ funs₂)
+    {as₁ as₂ : List (Expr D.Op)} (hα : AlphaArgs σ φ as₁ as₂)
+    {V₁ : VEnv D} {mst : D.State} {r : EResult D} (h : EvalArgs D funs₁ V₁ mst as₁ r) :
+    EvalArgs D funs₂ (renVEnv σ V₁) mst as₂ r := by
+  cases hα with
+  | nil => cases h with | argsNil => exact Step.argsNil
+  | cons he hr =>
+      cases h with
+      | argsCons ha hh => exact Step.argsCons (alphaArgs_fwd hσ hfuns hr ha) (alphaExpr_fwd hσ hfuns he hh)
+      | argsRestHalt ha => exact Step.argsRestHalt (alphaArgs_fwd hσ hfuns hr ha)
+      | argsHeadHalt ha hh =>
+          exact Step.argsHeadHalt (alphaArgs_fwd hσ hfuns hr ha) (alphaExpr_fwd hσ hfuns he hh)
+end
