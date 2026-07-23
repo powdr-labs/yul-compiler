@@ -1,11 +1,11 @@
-import YulEvmCompiler.Optimizer.Implementation.Normalization.Equiv
+import YulEvmCompiler.Optimizer.Implementation.Normalization.HoistFunDefsEquiv
 import YulEvmCompiler.Optimizer.Spec.GlobalPass
 
 /-!
 # Function hoisting as a verified `GlobalPass`
 
 Wraps the proven whole-program hoisting transform `liftFunDefs` (see
-`Normalization/Equiv.lean`, theorem `liftFunDefs_run_equiv`) as a sound
+`Normalization/HoistFunDefsEquiv.lean`, theorem `liftFunDefs_run_equiv`) as a sound
 `Optimizer.GlobalPass`.
 
 `liftFunDefs` is semantics-preserving only when the program's function names are
