@@ -177,6 +177,11 @@ theorem RenFCfg.no_merge_scope {φ : Ident → Ident} {funs : FunEnv D} (h : Ren
     rw [h.2.1 fn hfmem, hk] at hpq
     exact absurd hpq.symm (hfn k)
 
+theorem funNamesOf_cons (s : FScope D) (funs : FunEnv D) :
+    funNamesOf (s :: funs) = s.map Prod.fst ++ funNamesOf funs := by
+  simp [funNamesOf, List.flatMap_cons]
+
+
 /-- A scope lookup transports across `RenScopeRel`: if `φ` merges no other key of
 `s₁` onto `φ fn`, then `fn` resolves in `s₁` exactly when `φ fn` resolves in `s₂`,
 to `BR`-related declarations. -/
@@ -723,6 +728,45 @@ theorem RenCfg.extend {σ : Ident → Ident} {V : VEnv D} (h : RenCfg σ V)
     · rw [hid_off p.1 (fun hc => hsh p.1 hc hpV)]
       obtain ⟨p₀, hp₀, hp₀e⟩ := List.mem_map.mp hpV
       rw [← hp₀e]; exact h.2.2 p₀ hp₀
+
+/-- **Extending `RenFCfg` for a block's function scope.** Prepending a scope `s`
+of fresh function names (`new'`) for the block's source function names (`new`),
+disjoint from the visible functions, preserves `RenFCfg`. The φ-analog of
+`RenCfg.extend`. -/
+theorem RenFCfg.extend {φ : Ident → Ident} {funs : FunEnv D} (h : RenFCfg φ funs)
+    {new new' : List Ident} (hvnd : new.Nodup) (hnd : new'.Nodup)
+    (hlen : new.length = new'.length) (hds : ∀ v' ∈ new', ∃ k, v' = dsName k)
+    (hfresh : ∀ v' ∈ new', ∀ z, φ z ≠ v') (hsh : ∀ x ∈ new, x ∉ funNamesOf funs)
+    {s : FScope D} (hs : s.map Prod.fst = new) :
+    RenFCfg (updRen φ (new.zip new')) (s :: funs) := by
+  have hkeys : funNamesOf (s :: funs) = new ++ funNamesOf funs := by rw [funNamesOf_cons, hs]
+  have hmap : new.map (updRen φ (new.zip new')) = new' := map_updRen_zip hvnd hlen
+  have hinj_new : ∀ a ∈ new, ∀ b ∈ new,
+      updRen φ (new.zip new') a = updRen φ (new.zip new') b → a = b :=
+    fun a ha b hb => List.inj_on_of_nodup_map (by rw [hmap]; exact hnd) ha hb
+  have hnew_img : ∀ a ∈ new, updRen φ (new.zip new') a ∈ new' :=
+    fun a ha => by have := List.mem_map_of_mem (f := updRen φ (new.zip new')) ha; rwa [hmap] at this
+  have hid_off : ∀ z, z ∉ new → updRen φ (new.zip new') z = φ z := fun z hz =>
+    updRen_of_not_mem (fun p hp hpz => hz (hpz ▸ (List.of_mem_zip hp).1))
+  refine ⟨?_, ?_, ?_⟩
+  · intro a ha b hb hab
+    rw [hkeys, List.mem_append] at ha hb
+    rcases ha with hav | haf <;> rcases hb with hbv | hbf
+    · exact hinj_new a hav b hbv hab
+    · exact absurd (by rw [hid_off b (fun hc => hsh b hc hbf)] at hab; exact hab.symm)
+        (hfresh _ (hnew_img a hav) b)
+    · exact absurd (by rw [hid_off a (fun hc => hsh a hc haf)] at hab; exact hab)
+        (hfresh _ (hnew_img b hbv) a)
+    · rw [hid_off a (fun hc => hsh a hc haf), hid_off b (fun hc => hsh b hc hbf)] at hab
+      exact h.1 a haf b hbf hab
+  · intro z hz
+    simp only [hkeys, List.mem_append, not_or] at hz
+    rw [hid_off z hz.1]; exact h.2.1 z hz.2
+  · intro a ha
+    rw [hkeys, List.mem_append] at ha
+    rcases ha with hav | haf
+    · exact hds _ (hnew_img a hav)
+    · rw [hid_off a (fun hc => hsh a hc haf)]; exact h.2.2 a haf
 
 /-- **`RenCfg` for a fresh scope.** The identity-based renaming that sends distinct
 names `xs` to distinct fresh names `ys` is a valid `RenCfg` on the scope `xs` — used
