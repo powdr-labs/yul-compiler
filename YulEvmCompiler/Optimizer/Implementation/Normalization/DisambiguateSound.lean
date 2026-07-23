@@ -414,3 +414,32 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
       cases hcode with | loop hc2 hb2 hp2 =>
           exact Step.loopDone (ihc hσ hφ hfuns (.expr hc2)) hz
   | _ => intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode; sorry
+
+/-! ### Renaming-agreement lemmas
+
+The scope-heavy `Step` cases extend the renaming when a binder is entered. On the
+already-bound variables (disjoint from the fresh binder names — Yul's no-shadowing
+rule) the extended renaming agrees with the old one, so the environment relation
+is preserved. -/
+
+/-- `renVEnv` depends only on the renaming's values at the present keys. -/
+theorem renVEnv_congr {σ τ : Ident → Ident} {V : VEnv D} (h : ∀ p ∈ V, σ p.1 = τ p.1) :
+    renVEnv σ V = renVEnv τ V :=
+  List.map_congr_left (fun p hp => by simp only [h p hp])
+
+/-- Outside the association list's keys, `updRen σ l` agrees with `σ`. -/
+theorem updRen_of_not_mem {σ : Ident → Ident} {l : List (Ident × Ident)} {z : Ident}
+    (h : ∀ p ∈ l, p.1 ≠ z) : updRen σ l z = σ z := by
+  simp only [updRen]
+  induction l with
+  | nil => rfl
+  | cons p rest ih =>
+      have hp : ¬ (p.1 = z) := h p (List.mem_cons_self ..)
+      simp only [List.find?_cons, hp, decide_false, cond_false]
+      exact ih (fun q hq => h q (List.mem_cons_of_mem _ hq))
+
+/-- On a key `z` present in the association list, `updRen σ l z` is the paired value
+of the first occurrence. -/
+theorem updRen_of_find {σ : Ident → Ident} {l : List (Ident × Ident)} {z : Ident}
+    {p : Ident × Ident} (h : l.find? (fun q => q.1 = z) = some p) : updRen σ l z = p.2 := by
+  simp only [updRen, h]
