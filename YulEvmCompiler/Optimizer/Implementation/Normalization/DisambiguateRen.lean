@@ -1036,4 +1036,25 @@ theorem venvKeys_stmt_abnormal {funs : FunEnv D} {V st s V1 st1 o}
   | forInitHalt hinit =>
       exact restore_keys (venvKeys_suffix hinit rfl) (venvLen_mono hinit rfl)
 
+/-- Key-set membership after a normally-completed statement sequence: the
+sequence's declared variables plus the initial keys (as a set — sequences
+prepend each `let`'s bindings, so the list order differs from `declVarsSeq`). -/
+theorem venvKeys_stmts {funs : FunEnv D} :
+    ∀ {ss : List (Stmt D.Op)} {V st V1 st1},
+      Step D funs V st (.stmts ss) (.sres V1 st1 .normal) →
+      ∀ x, x ∈ V1.map Prod.fst ↔ (x ∈ declVarsSeq ss ∨ x ∈ V.map Prod.fst)
+  | [], V, st, V1, st1, h => by
+      cases h with
+      | seqNil => intro x; simp [declVarsSeq]
+  | s :: rest, V, st, V1, st1, h => by
+      cases h with
+      | @seqCons _ _ _ _ _ Vm stm _ _ _ hs hrest =>
+          intro x
+          have h1 : Vm.map Prod.fst = declVars s ++ V.map Prod.fst := venvKeys_stmt hs
+          have h2 := venvKeys_stmts hrest x
+          rw [h2, h1]
+          simp only [declVarsSeq, List.mem_append]
+          tauto
+      | seqStop hs hne => exact absurd rfl hne
+
 end YulEvmCompiler.Optimizer.Normalize

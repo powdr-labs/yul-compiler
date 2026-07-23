@@ -356,6 +356,198 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
         | «continue» => trivial
         | leave => trivial
         | halt => trivial
+  | @forLoop funs V st init c post body Vinit stinit Vend stend o hinit hloop ihinit ihloop =>
+      intro lo hi σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hfsc hns hcode
+      cases hcode with | stmt hs =>
+      have hle : lo ≤ hi := alphaStmt1_le hs
+      cases hs with
+      | @forD _ m₁ m₂ _ _ _ _ init₂ _ c₂ _ post₂ _ body₂ σi φi _ _ _ _ hInit hc2 hb2 hp2 =>
+      have hphiI := hInit.phi_out
+      cases hInit with | @mk _ mI _ _ _ _ _ _ _ hndI hlenI hNFI hrnI hseqI =>
+      obtain ⟨hscI, hscB, hscP⟩ := (hsc : WScopedStmts (V.map Prod.fst) init ∧
+        WScopedStmts (declVarsSeq init ++ V.map Prod.fst) body ∧
+        WScopedStmts (declVarsSeq init ++ V.map Prod.fst) post)
+      obtain ⟨hdisjI, hfsI, hfsB, hfsP⟩ := (hfsc :
+        (∀ fn ∈ funNames init, fn ∉ funNamesOf funs) ∧
+        FScopedStmts (funNames init ++ funNamesOf funs) init ∧
+        ((∀ fn ∈ funNames body, fn ∉ funNames init ++ funNamesOf funs) ∧
+          FScopedStmts (funNames body ++ funNames init ++ funNamesOf funs) body) ∧
+        ((∀ fn ∈ funNames post, fn ∉ funNames init ++ funNamesOf funs) ∧
+          FScopedStmts (funNames post ++ funNames init ++ funNamesOf funs) post))
+      obtain ⟨hnsI, hnsC, hnsP, hnsB⟩ := (hns :
+        NormalForm.ScopedStmts (V.map Prod.fst)
+          (funNamesOf funs ++ NormalForm.funDefNames init) init ∧
+        NormalForm.ScopedExpr (V.map Prod.fst ++ NormalForm.declTopVarsL init)
+          (funNamesOf funs ++ NormalForm.funDefNames init) c ∧
+        NormalForm.ScopedStmts (V.map Prod.fst ++ NormalForm.declTopVarsL init)
+          ((funNamesOf funs ++ NormalForm.funDefNames init) ++
+            NormalForm.funDefNames post) post ∧
+        NormalForm.ScopedStmts (V.map Prod.fst ++ NormalForm.declTopVarsL init)
+          ((funNamesOf funs ++ NormalForm.funDefNames init) ++
+            NormalForm.funDefNames body) body)
+      have hkeys' : funNamesOf (hoist D init :: funs)
+          = funNames init ++ funNamesOf funs := by
+        rw [funNamesOf_cons, hoist_keys]
+      have hagOld : ∀ fn ∈ funNamesOf funs,
+          updRen φ ((funNames init).zip (funNames init₂)) fn = φ fn :=
+        fun fn hfn => updRen_of_not_mem
+          (fun p hp hpfn => hdisjI p.1 (List.of_mem_zip hp).1 (hpfn ▸ hfn))
+      have hnsI' : NormalForm.ScopedStmts (V.map Prod.fst)
+          (funNames init ++ funNamesOf funs) init := by
+        refine scopedStmts_mono (fun x hx => hx) (fun x hx => ?_) hnsI
+        rw [funNames_eq_funDefNames]
+        rcases List.mem_append.mp hx with h | h
+        · exact List.mem_append.mpr (Or.inr h)
+        · exact List.mem_append.mpr (Or.inl h)
+      have hφI : RenFCfg (updRen φ ((funNames init).zip (funNames init₂)))
+          (hoist D init :: funs) mI :=
+        RenFCfg.extend hφ hndI hlenI hNFI hrnI hdisjI (hoist_keys init)
+      have hfunsI : RenFunsRelF (updRen φ ((funNames init).zip (funNames init₂)))
+          (hoist D init :: funs) (hoist D init₂ :: funs₂) := by
+        refine RenFunsRelF.cons ?_ (hfuns.congr_phi hagOld)
+        rw [hkeys']
+        exact hoist_renScopeRel hseqI hscI hfsI hnsI'
+      obtain ⟨hstep_init, hcfgInit⟩ := ihinit (hcfg.mono hrnI.2.2) hφI hfunsI hscI
+        (by
+          show FScopedStmts (funNamesOf (hoist D init :: funs)) init
+          rw [hkeys']
+          exact hfsI)
+        (by
+          show NormalForm.ScopedStmts (V.map Prod.fst)
+            (funNamesOf (hoist D init :: funs)) init
+          rw [hkeys']
+          exact hnsI')
+        (.stmts hseqI)
+      -- the loop configuration, at φi = the prescan-extended φ
+      have hVinitKeys := venvKeys_stmts hinit
+      have hdomI : ∀ x ∈ Vinit.map Prod.fst, x ∈ declVarsSeq init ++ V.map Prod.fst := by
+        intro x hx
+        rcases (hVinitKeys x).mp hx with h | h
+        · exact List.mem_append.mpr (Or.inl h)
+        · exact List.mem_append.mpr (Or.inr h)
+      have hdomI' : ∀ x ∈ V.map Prod.fst ++ NormalForm.declTopVarsL init,
+          x ∈ Vinit.map Prod.fst := by
+        intro x hx
+        refine (hVinitKeys x).mpr ?_
+        rw [(declVarsSeq_eq_declTopVarsL init).symm] at hx
+        rcases List.mem_append.mp hx with h | h
+        · exact Or.inr h
+        · exact Or.inl h
+      have hfnI' : ∀ x ∈ funNamesOf funs ++ NormalForm.funDefNames init,
+          x ∈ funNamesOf (hoist D init :: funs) := by
+        intro x hx
+        rw [hkeys', ← funNames_eq_funDefNames] at *
+        rcases List.mem_append.mp hx with h | h
+        · exact List.mem_append.mpr (Or.inr h)
+        · exact List.mem_append.mpr (Or.inl h)
+      have hmIle : mI ≤ m₁ := alphaSeqExt_le hseqI
+      have hphiEq : φi = updRen φ ((funNames init).zip (funNames init₂)) := hphiI
+      obtain ⟨hstep_loop, hres⟩ := ihloop hcfgInit
+        (by rw [hphiEq]; exact hφI.mono hmIle)
+        (by rw [hphiEq]; exact hfunsI)
+        (⟨wscopedStmts_anti hdomI hscB, wscopedStmts_anti hdomI hscP⟩)
+        (by
+          show ((∀ fn ∈ funNames body, fn ∉ funNamesOf (hoist D init :: funs)) ∧
+              FScopedStmts (funNames body ++ funNamesOf (hoist D init :: funs)) body) ∧
+            ((∀ fn ∈ funNames post, fn ∉ funNamesOf (hoist D init :: funs)) ∧
+              FScopedStmts (funNames post ++ funNamesOf (hoist D init :: funs)) post)
+          rw [hkeys']
+          exact ⟨⟨hfsB.1, by rw [← List.append_assoc]; exact hfsB.2⟩,
+            ⟨hfsP.1, by rw [← List.append_assoc]; exact hfsP.2⟩⟩)
+        (⟨scopedExpr_mono hdomI' hfnI' hnsC,
+          scopedStmts_mono hdomI' (mem_append_mono hfnI' (fun x hx => hx)) hnsP,
+          scopedStmts_mono hdomI' (mem_append_mono hfnI' (fun x hx => hx)) hnsB⟩)
+        (.loop hc2 hb2 hp2)
+      have hrk : (restore V Vend).map Prod.fst = V.map Prod.fst :=
+        restore_keys ((venvKeys_suffix hinit rfl).trans (venvKeys_suffix hloop rfl))
+          (Nat.le_trans (venvLen_mono hinit rfl) (venvLen_mono hloop rfl))
+      have hres_env : restore (renVEnv σ V) (renVEnv σi Vend) = renVEnv σ (restore V Vend) := by
+        have h1 : restore (renVEnv σ V) (renVEnv σi Vend)
+            = renVEnv σi (restore V Vend) := by
+          rw [renVEnv_restore]
+          simp only [restore, renVEnv_length]
+        rw [h1]
+        refine renVEnv_congr (fun p hp => ?_)
+        have hpk : p.1 ∈ V.map Prod.fst := by
+          rw [← hrk]; exact List.mem_map_of_mem hp
+        exact alphaSeq_agrees hseqI p.1 (wscoped_declVars_disjoint hscI p.1 hpk)
+      refine ⟨?_, ?_⟩
+      · show Step D funs₂ (renVEnv σ V) st (.stmt (.forLoop init₂ c₂ post₂ body₂))
+          (.sres (renVEnv σ (restore V Vend)) stend o)
+        rw [← hres_env]
+        exact Step.forLoop hstep_init hstep_loop
+      · cases o with
+        | normal => exact (RenCfg.of_keys hrk hcfg).mono hle
+        | «break» => trivial
+        | «continue» => trivial
+        | leave => trivial
+        | halt => trivial
+  | @forInitHalt funs V st init c post body Vinit stinit hinit ihinit =>
+      intro lo hi σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hfsc hns hcode
+      cases hcode with | stmt hs =>
+      cases hs with
+      | @forD _ m₁ m₂ _ _ _ _ init₂ _ c₂ _ post₂ _ body₂ σi φi _ _ _ _ hInit hc2 hb2 hp2 =>
+      cases hInit with | @mk _ mI _ _ _ _ _ _ _ hndI hlenI hNFI hrnI hseqI =>
+      obtain ⟨hscI, hscB, hscP⟩ := (hsc : WScopedStmts (V.map Prod.fst) init ∧
+        WScopedStmts (declVarsSeq init ++ V.map Prod.fst) body ∧
+        WScopedStmts (declVarsSeq init ++ V.map Prod.fst) post)
+      obtain ⟨hdisjI, hfsI, hfsB, hfsP⟩ := (hfsc :
+        (∀ fn ∈ funNames init, fn ∉ funNamesOf funs) ∧
+        FScopedStmts (funNames init ++ funNamesOf funs) init ∧ (_ ∧ _) ∧ (_ ∧ _))
+      obtain ⟨hnsI, hnsC, hnsP, hnsB⟩ := (hns :
+        NormalForm.ScopedStmts (V.map Prod.fst)
+          (funNamesOf funs ++ NormalForm.funDefNames init) init ∧ _ ∧ _ ∧ _)
+      have hkeys' : funNamesOf (hoist D init :: funs)
+          = funNames init ++ funNamesOf funs := by
+        rw [funNamesOf_cons, hoist_keys]
+      have hagOld : ∀ fn ∈ funNamesOf funs,
+          updRen φ ((funNames init).zip (funNames init₂)) fn = φ fn :=
+        fun fn hfn => updRen_of_not_mem
+          (fun p hp hpfn => hdisjI p.1 (List.of_mem_zip hp).1 (hpfn ▸ hfn))
+      have hnsI' : NormalForm.ScopedStmts (V.map Prod.fst)
+          (funNames init ++ funNamesOf funs) init := by
+        refine scopedStmts_mono (fun x hx => hx) (fun x hx => ?_) hnsI
+        rw [funNames_eq_funDefNames]
+        rcases List.mem_append.mp hx with h | h
+        · exact List.mem_append.mpr (Or.inr h)
+        · exact List.mem_append.mpr (Or.inl h)
+      have hφI : RenFCfg (updRen φ ((funNames init).zip (funNames init₂)))
+          (hoist D init :: funs) mI :=
+        RenFCfg.extend hφ hndI hlenI hNFI hrnI hdisjI (hoist_keys init)
+      have hfunsI : RenFunsRelF (updRen φ ((funNames init).zip (funNames init₂)))
+          (hoist D init :: funs) (hoist D init₂ :: funs₂) := by
+        refine RenFunsRelF.cons ?_ (hfuns.congr_phi hagOld)
+        rw [hkeys']
+        exact hoist_renScopeRel hseqI hscI hfsI hnsI'
+      obtain ⟨hstep_init, _⟩ := ihinit (hcfg.mono hrnI.2.2) hφI hfunsI hscI
+        (by
+          show FScopedStmts (funNamesOf (hoist D init :: funs)) init
+          rw [hkeys']
+          exact hfsI)
+        (by
+          show NormalForm.ScopedStmts (V.map Prod.fst)
+            (funNamesOf (hoist D init :: funs)) init
+          rw [hkeys']
+          exact hnsI')
+        (.stmts hseqI)
+      have hrk : (restore V Vinit).map Prod.fst = V.map Prod.fst :=
+        restore_keys (venvKeys_suffix hinit rfl) (venvLen_mono hinit rfl)
+      have hres_env : restore (renVEnv σ V) (renVEnv σi Vinit)
+          = renVEnv σ (restore V Vinit) := by
+        have h1 : restore (renVEnv σ V) (renVEnv σi Vinit)
+            = renVEnv σi (restore V Vinit) := by
+          rw [renVEnv_restore]
+          simp only [restore, renVEnv_length]
+        rw [h1]
+        refine renVEnv_congr (fun p hp => ?_)
+        have hpk : p.1 ∈ V.map Prod.fst := by
+          rw [← hrk]; exact List.mem_map_of_mem hp
+        exact alphaSeq_agrees hseqI p.1 (wscoped_declVars_disjoint hscI p.1 hpk)
+      refine ⟨?_, trivial⟩
+      show Step D funs₂ (renVEnv σ V) st (.stmt (.forLoop init₂ c₂ post₂ body₂))
+        (.sres (renVEnv σ (restore V Vinit)) stinit .halt)
+      rw [← hres_env]
+      exact Step.forInitHalt hstep_init
   | _ => intro lo hi σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hfsc hns hcode; sorry
 
 end YulEvmCompiler.Optimizer.Normalize

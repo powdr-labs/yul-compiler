@@ -781,4 +781,55 @@ theorem declVars_eq_declTopVars : ∀ s : Stmt Op, declVars s = NormalForm.declT
   | .«continue» => rfl
   | .leave => rfl
 
+/-- The pass-side and shared-spec sequence variable collectors agree. -/
+theorem declVarsSeq_eq_declTopVarsL : ∀ ss : List (Stmt Op),
+    declVarsSeq ss = NormalForm.declTopVarsL ss
+  | [] => rfl
+  | s :: rest => by
+      rw [declVarsSeq, declVars_eq_declTopVars, declVarsSeq_eq_declTopVarsL rest]
+      simp [NormalForm.declTopVarsL]
+
+
+/-! ### No-shadowing anti-monotonicity
+
+`WScoped*` constrains binders to avoid the domain (`∉ dom`), so it transports
+along `⊇`-shrinkage of the domain. Needed because environment key-sets list a
+sequence's additions in reverse segment order versus `declVarsSeq`. -/
+
+mutual
+theorem wscopedStmt_anti {dom dom' : List Ident} (hd : ∀ x ∈ dom', x ∈ dom) :
+    ∀ {s : Stmt Op}, WScopedStmt dom s → WScopedStmt dom' s
+  | .letDecl vars eo, h => fun x hx hxd =>
+      (h : ∀ x ∈ vars, x ∉ dom) x hx (hd x hxd)
+  | .assign _ _, _ => trivial
+  | .exprStmt _, _ => trivial
+  | .block body, h => wscopedStmts_anti hd h
+  | .cond _ body, h => wscopedStmts_anti hd h
+  | .switch _ cs dflt, h =>
+      ⟨wscopedCases_anti hd (h : _ ∧ _).1, wscopedDflt_anti hd (h : _ ∧ _).2⟩
+  | .funDef _ ps rs body, h => h
+  | .forLoop init _ post body, h =>
+      ⟨wscopedStmts_anti hd (h : _ ∧ _ ∧ _).1,
+        wscopedStmts_anti (mem_append_mono (fun x hx => hx) hd) (h : _ ∧ _ ∧ _).2.1,
+        wscopedStmts_anti (mem_append_mono (fun x hx => hx) hd) (h : _ ∧ _ ∧ _).2.2⟩
+  | .«break», _ => trivial
+  | .«continue», _ => trivial
+  | .leave, _ => trivial
+theorem wscopedStmts_anti {dom dom' : List Ident} (hd : ∀ x ∈ dom', x ∈ dom) :
+    ∀ {ss : List (Stmt Op)}, WScopedStmts dom ss → WScopedStmts dom' ss
+  | [], _ => trivial
+  | s :: rest, h =>
+      ⟨wscopedStmt_anti hd (h : _ ∧ _).1,
+        wscopedStmts_anti (mem_append_mono (fun x hx => hx) hd) (h : _ ∧ _).2⟩
+theorem wscopedCases_anti {dom dom' : List Ident} (hd : ∀ x ∈ dom', x ∈ dom) :
+    ∀ {cs : List (Literal × List (Stmt Op))}, WScopedCases dom cs → WScopedCases dom' cs
+  | [], _ => trivial
+  | (l, body) :: rest, h =>
+      ⟨wscopedStmts_anti hd (h : _ ∧ _).1, wscopedCases_anti hd (h : _ ∧ _).2⟩
+theorem wscopedDflt_anti {dom dom' : List Ident} (hd : ∀ x ∈ dom', x ∈ dom) :
+    ∀ {dflt : Option (List (Stmt Op))}, WScopedDflt dom dflt → WScopedDflt dom' dflt
+  | none, _ => trivial
+  | some body, h => wscopedStmts_anti hd h
+end
+
 end YulEvmCompiler.Optimizer.Normalize
