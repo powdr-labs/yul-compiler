@@ -344,6 +344,8 @@ inductive AlphaBlockExt :
     (Ident → Ident) → (Ident → Ident) → List (Stmt Op) → List (Stmt Op) →
     (Ident → Ident) → (Ident → Ident) → Prop
   | mk {σ φ : Ident → Ident} {b₁ b₂ : List (Stmt Op)} {σ' φ' : Ident → Ident} :
+      (funNames b₁).Nodup → (funNames b₁).length = (funNames b₂).length → (funNames b₂).Nodup →
+      (∀ v' ∈ funNames b₂, ∃ k, v' = dsName k) → (∀ v' ∈ funNames b₂, ∀ z, φ z ≠ v') →
       AlphaSeqExt σ (updRen φ ((funNames b₁).zip (funNames b₂))) b₁ b₂ σ' φ' →
       AlphaBlockExt σ φ b₁ b₂ σ' φ'
 inductive AlphaCases :
