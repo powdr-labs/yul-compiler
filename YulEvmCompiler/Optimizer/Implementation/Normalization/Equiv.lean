@@ -2,9 +2,11 @@ import YulEvmCompiler.Optimizer.Implementation.Normalization.HoistFunDefs
 import YulEvmCompiler.Optimizer.Spec.Pass
 
 /-!
-# Semantic equivalence of function hoisting  (WORK IN PROGRESS — contains `sorry`)
+# Semantic equivalence of function hoisting
 
-Goal: `UniqueFunNames b → WellScoped b → EquivBlock D b (liftFunDefs b)`.
+Main result: `liftFunDefs_run_equiv` — for a program with globally unique
+function names that is well scoped, hoisting all function definitions to the top
+block preserves whole-program semantics (`Run`-equivalence, in both directions).
 
 Yul functions capture no variables (a callee runs with a fresh `VEnv`), only the
 *function environment* (`cenv`, the scopes visible at the definition site). So
@@ -904,12 +906,279 @@ theorem stripStmts_cons_inv : ∀ {ss : List (Stmt D.Op)} {s' rest'}, stripStmts
       | leave =>
           injection h with h1 h2; exact ⟨[], .leave, rest, rfl, by simp, h1, h2⟩
 
+/-! ### Extra structural helpers for the backward direction -/
+
+omit [DecidableEq D.Value] in
+theorem collectStmts_append : ∀ (a b : List (Stmt D.Op)),
+    collectStmts (a ++ b) = collectStmts a ++ collectStmts b
+  | [], b => by simp [collectStmts]
+  | s :: a', b => by
+      rw [List.cons_append, collectStmts, collectStmts, collectStmts_append a' b,
+        List.append_assoc]
+
+omit [DecidableEq D.Value] in
+theorem scopedStmts_append_right : ∀ (a : List (Stmt D.Op)) {b Γ},
+    ScopedStmts Γ (a ++ b) → ScopedStmts Γ b
+  | [], _, _, h => h
+  | _ :: a', _, _, h => scopedStmts_append_right a' h.2
+
+omit [DecidableEq D.Value] in
+/-- A name occurring in the function environment resolves to some declaration. -/
+theorem lookupFun_of_mem_funNamesEnv : ∀ {funs : FunEnv D} {fn}, fn ∈ funNamesEnv funs →
+    ∃ d cenv, lookupFun funs fn = some (d, cenv)
+  | [], fn, h => by simp [funNamesEnv] at h
+  | s :: rest, fn, h => by
+      unfold lookupFun
+      cases hfind : s.find? (fun p => p.1 = fn) with
+      | some p => exact ⟨p.2, s :: rest, rfl⟩
+      | none =>
+          rw [funNamesEnv_cons, List.mem_append] at h
+          rcases h with hs | hrest
+          · obtain ⟨x, hx, hxeq⟩ := List.mem_map.mp hs
+            have hcontra := List.find?_eq_none.mp hfind x hx
+            simp only [hxeq, decide_true] at hcontra
+            exact absurd trivial hcontra
+          · exact lookupFun_of_mem_funNamesEnv hrest
+
+/-- **Backward simulation.** A derivation over the flat (lifted) environment on
+`stripCode code` transports back to one over the original environment on `code`. -/
+theorem step_lift_bwd {flatSc : FScope D} :
+    ∀ {funs_h V st code' res}, Step D funs_h V st code' res →
+    ∀ {funs_o code}, stripCode code = code' → GoodO flatSc funs_o → ResEq flatSc funs_h →
+      ScopedCode (funNamesEnv funs_o) code → CodeInFlatCode flatSc code →
+      Step D funs_o V st code res := by
+  intro funs_h V st code' res h
+  induction h with
+  | lit => intro funs_o code hstrip hO hH hws hcf; obtain rfl := stripCode_expr_inv hstrip; exact Step.lit
+  | var hv => intro funs_o code hstrip hO hH hws hcf; obtain rfl := stripCode_expr_inv hstrip; exact Step.var hv
+  | builtinOk ha hb iha =>
+      intro funs_o code hstrip hO hH hws hcf; obtain rfl := stripCode_expr_inv hstrip
+      exact Step.builtinOk (iha rfl hO hH hws trivial) hb
+  | builtinHalt ha hb iha =>
+      intro funs_o code hstrip hO hH hws hcf; obtain rfl := stripCode_expr_inv hstrip
+      exact Step.builtinHalt (iha rfl hO hH hws trivial) hb
+  | builtinArgsHalt ha iha =>
+      intro funs_o code hstrip hO hH hws hcf; obtain rfl := stripCode_expr_inv hstrip
+      exact Step.builtinArgsHalt (iha rfl hO hH hws trivial)
+  | @callOk funs_h V st fn args argvals st1 decl_h cenv_h Vend st2 o ha hlk hlen hbody ho iha ihbody =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain rfl := stripCode_expr_inv hstrip
+      obtain ⟨decl, cenv, hlk_o⟩ := lookupFun_of_mem_funNamesEnv hws.1
+      obtain ⟨hflat, hsc, hcfb⟩ := goodO_lookup hO hlk_o
+      have heq := flatLookup_lifted hflat hH
+      rw [hlk] at heq
+      simp only [Option.some.injEq, Prod.mk.injEq] at heq
+      obtain ⟨hdecl, hcenv⟩ := heq; subst hdecl; subst hcenv
+      refine Step.callOk (decl := decl) (iha rfl hO hH hws.2 trivial) hlk_o hlen ?_ ho
+      exact ihbody rfl (goodO_cenv hO hlk_o) (resEq_flat flatSc) hsc (cif_block_wrap hcfb)
+  | @callHalt funs_h V st fn args argvals st1 decl_h cenv_h Vend st2 ha hlk hlen hbody iha ihbody =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain rfl := stripCode_expr_inv hstrip
+      obtain ⟨decl, cenv, hlk_o⟩ := lookupFun_of_mem_funNamesEnv hws.1
+      obtain ⟨hflat, hsc, hcfb⟩ := goodO_lookup hO hlk_o
+      have heq := flatLookup_lifted hflat hH
+      rw [hlk] at heq
+      simp only [Option.some.injEq, Prod.mk.injEq] at heq
+      obtain ⟨hdecl, hcenv⟩ := heq; subst hdecl; subst hcenv
+      exact Step.callHalt (decl := decl) (iha rfl hO hH hws.2 trivial) hlk_o hlen
+        (ihbody rfl (goodO_cenv hO hlk_o) (resEq_flat flatSc) hsc (cif_block_wrap hcfb))
+  | callArgsHalt ha iha =>
+      intro funs_o code hstrip hO hH hws hcf; obtain rfl := stripCode_expr_inv hstrip
+      exact Step.callArgsHalt (iha rfl hO hH hws.2 trivial)
+  | argsNil => intro funs_o code hstrip hO hH hws hcf; obtain rfl := stripCode_args_inv hstrip; exact Step.argsNil
+  | argsCons hrest he ihrest ihe =>
+      intro funs_o code hstrip hO hH hws hcf; obtain rfl := stripCode_args_inv hstrip
+      exact Step.argsCons (ihrest rfl hO hH hws.2 trivial) (ihe rfl hO hH hws.1 trivial)
+  | argsRestHalt hrest ihrest =>
+      intro funs_o code hstrip hO hH hws hcf; obtain rfl := stripCode_args_inv hstrip
+      exact Step.argsRestHalt (ihrest rfl hO hH hws.2 trivial)
+  | argsHeadHalt hrest he ihrest ihe =>
+      intro funs_o code hstrip hO hH hws hcf; obtain rfl := stripCode_args_inv hstrip
+      exact Step.argsHeadHalt (ihrest rfl hO hH hws.2 trivial) (ihe rfl hO hH hws.1 trivial)
+  | funDef =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain ⟨b₀, rfl, _⟩ := stripStmt_funDef_inv hss
+      exact Step.funDef
+  | block hb ihb =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain ⟨body, rfl, hbody⟩ := stripStmt_block_inv hss
+      subst hbody
+      refine Step.block ?_
+      exact ihb rfl (goodO_push hO (cif_block_inv hcf) hws) (by rw [hoist_stripStmts]; exact resEq_cons_nil hH)
+        (by rw [funNamesEnv_hoist_cons]; exact hws) (cif_block_inv hcf)
+  | letZero =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain rfl := stripStmt_letDecl_inv hss; exact Step.letZero
+  | letVal hv hlen ihv =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain rfl := stripStmt_letDecl_inv hss
+      exact Step.letVal (ihv rfl hO hH hws trivial) hlen
+  | letHalt hv ihv =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain rfl := stripStmt_letDecl_inv hss
+      exact Step.letHalt (ihv rfl hO hH hws trivial)
+  | assignVal hv hlen ihv =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain rfl := stripStmt_assign_inv hss
+      exact Step.assignVal (ihv rfl hO hH hws trivial) hlen
+  | assignHalt hv ihv =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain rfl := stripStmt_assign_inv hss
+      exact Step.assignHalt (ihv rfl hO hH hws trivial)
+  | exprStmt he ihe =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain rfl := stripStmt_exprStmt_inv hss
+      exact Step.exprStmt (ihe rfl hO hH hws trivial)
+  | exprStmtHalt he ihe =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain rfl := stripStmt_exprStmt_inv hss
+      exact Step.exprStmtHalt (ihe rfl hO hH hws trivial)
+  | ifTrue hc hne hbody ihc ihbody =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain ⟨body, rfl, hb⟩ := stripStmt_cond_inv hss; subst hb
+      exact Step.ifTrue (ihc rfl hO hH hws.1 trivial) hne
+        (ihbody rfl hO hH hws.2 (cif_block_wrap (cif_cond_inv hcf)))
+  | ifFalse hc heq ihc =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain ⟨body, rfl, hb⟩ := stripStmt_cond_inv hss; subst hb
+      exact Step.ifFalse (ihc rfl hO hH hws.1 trivial) heq
+  | ifHalt hc ihc =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain ⟨body, rfl, hb⟩ := stripStmt_cond_inv hss; subst hb
+      exact Step.ifHalt (ihc rfl hO hH hws.1 trivial)
+  | switchExec hc hbody ihc ihbody =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain ⟨cases, dflt, rfl, hcs, hd⟩ := stripStmt_switch_inv hss; subst hcs; subst hd
+      refine Step.switchExec (ihc rfl hO hH hws.1 trivial) ?_
+      refine ihbody ?_ hO hH (scopedStmts_selectSwitch hws.2.1 hws.2.2)
+        (cif_block_wrap (cif_switch_sel hcf))
+      show Code.stmt (Stmt.block (stripStmts (selectSwitch D _ cases dflt))) = _
+      rw [← selectSwitch_strip]
+  | switchHalt hc ihc =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain ⟨cases, dflt, rfl, hcs, hd⟩ := stripStmt_switch_inv hss; subst hcs; subst hd
+      exact Step.switchHalt (ihc rfl hO hH hws.1 trivial)
+  | @forLoop funs_h V st init' c post' body' Vinit stinit Vend stend o hinit hloop ihinit ihloop =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain ⟨init, post, body, rfl, hi, hp, hb⟩ := stripStmt_forLoop_inv hss
+      subst hi; subst hp; subst hb
+      refine Step.forLoop (Vinit := Vinit) (stinit := stinit) ?_ ?_
+      · exact ihinit rfl (goodO_push hO (cif_for_init hcf) hws.1)
+          (by rw [hoist_stripStmts]; exact resEq_cons_nil hH)
+          (by rw [funNamesEnv_hoist_cons]; exact hws.1) (cif_for_init hcf)
+      · exact ihloop rfl (goodO_push hO (cif_for_init hcf) hws.1)
+          (by rw [hoist_stripStmts]; exact resEq_cons_nil hH)
+          (by rw [funNamesEnv_hoist_cons]; exact ⟨hws.2.1, hws.2.2.1, hws.2.2.2⟩)
+          ⟨cif_for_post hcf, cif_for_body hcf⟩
+  | @forInitHalt funs_h V st init' c post' body' Vinit stinit hinit ihinit =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain ⟨init, post, body, rfl, hi, hp, hb⟩ := stripStmt_forLoop_inv hss
+      subst hi; subst hp; subst hb
+      refine Step.forInitHalt (Vinit := Vinit) (stinit := stinit) ?_
+      exact ihinit rfl (goodO_push hO (cif_for_init hcf) hws.1)
+        (by rw [hoist_stripStmts]; exact resEq_cons_nil hH)
+        (by rw [funNamesEnv_hoist_cons]; exact hws.1) (cif_for_init hcf)
+  | «break» =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain rfl := stripStmt_break_inv hss; exact Step.break
+  | «continue» =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain rfl := stripStmt_continue_inv hss; exact Step.continue
+  | leave =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨s, rfl, hss⟩ := stripCode_stmt_inv hstrip
+      obtain rfl := stripStmt_leave_inv hss; exact Step.leave
+  | @seqNil funs_h V st =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨ss, rfl, hss⟩ := stripCode_stmts_inv hstrip
+      have hnoop : Step D funs_o V st (.stmts (ss ++ [])) (.sres V st .normal) :=
+        (funDefs_noop (stripStmts_nil_inv hss)).mpr Step.seqNil
+      rw [List.append_nil] at hnoop; exact hnoop
+  | @seqCons funs_h V st s' rest' V1 st1 V2 st2 o hs hrest ihs ihrest =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨ss, rfl, hss⟩ := stripCode_stmts_inv hstrip
+      obtain ⟨fds, s, rest, rfl, hfds, hs_eq, hr_eq⟩ := stripStmts_cons_inv hss
+      have hwsr := scopedStmts_append_right fds hws
+      have hcfr : CodeInFlat flatSc (s :: rest) :=
+        codeInFlat_mono (fun x hx => by
+          rw [collectStmts_append]; exact List.mem_append.mpr (Or.inr hx)) hcf
+      rw [funDefs_noop hfds]
+      refine Step.seqCons (V1 := V1) (st1 := st1) ?_ ?_
+      · exact ihs (by show Code.stmt (stripStmt s) = _; rw [hs_eq]) hO hH hwsr.1 (cif_head hcfr)
+      · exact ihrest (by show Code.stmts (stripStmts rest) = _; rw [hr_eq]) hO hH hwsr.2 (cif_tail hcfr)
+  | @seqStop funs_h V st s' rest' V1 st1 o hs hne ihs =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨ss, rfl, hss⟩ := stripCode_stmts_inv hstrip
+      obtain ⟨fds, s, rest, rfl, hfds, hs_eq, hr_eq⟩ := stripStmts_cons_inv hss
+      have hwsr := scopedStmts_append_right fds hws
+      have hcfr : CodeInFlat flatSc (s :: rest) :=
+        codeInFlat_mono (fun x hx => by
+          rw [collectStmts_append]; exact List.mem_append.mpr (Or.inr hx)) hcf
+      rw [funDefs_noop hfds]
+      exact Step.seqStop (ihs (by show Code.stmt (stripStmt s) = _; rw [hs_eq]) hO hH hwsr.1 (cif_head hcfr)) hne
+  | loopDone hc heq ihc =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨post, body, rfl, hp, hb⟩ := stripCode_loop_inv hstrip; subst hp; subst hb
+      exact Step.loopDone (ihc rfl hO hH hws.1 trivial) heq
+  | loopCondHalt hc ihc =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨post, body, rfl, hp, hb⟩ := stripCode_loop_inv hstrip; subst hp; subst hb
+      exact Step.loopCondHalt (ihc rfl hO hH hws.1 trivial)
+  | @loopStep funs_h V st c post' body' cv st1 Vb stb ob Vp stp Vend stend o
+      hc hne hbody hob hpost hrec ihc ihbody ihpost ihrec =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨post, body, rfl, hp, hb⟩ := stripCode_loop_inv hstrip; subst hp; subst hb
+      refine Step.loopStep (Vb := Vb) (stb := stb) (ob := ob) (Vp := Vp) (stp := stp)
+        (ihc rfl hO hH hws.1 trivial) hne ?_ hob ?_ ?_
+      · exact ihbody rfl hO hH hws.2.2 (cif_block_wrap hcf.2)
+      · exact ihpost rfl hO hH hws.2.1 (cif_block_wrap hcf.1)
+      · exact ihrec rfl hO hH hws hcf
+  | @loopPostHalt funs_h V st c post' body' cv st1 Vb stb ob Vp stp hc hne hbody hob hpost
+      ihc ihbody ihpost =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨post, body, rfl, hp, hb⟩ := stripCode_loop_inv hstrip; subst hp; subst hb
+      refine Step.loopPostHalt (Vb := Vb) (stb := stb) (ob := ob)
+        (ihc rfl hO hH hws.1 trivial) hne ?_ hob ?_
+      · exact ihbody rfl hO hH hws.2.2 (cif_block_wrap hcf.2)
+      · exact ihpost rfl hO hH hws.2.1 (cif_block_wrap hcf.1)
+  | loopBreak hc hne hbody ihc ihbody =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨post, body, rfl, hp, hb⟩ := stripCode_loop_inv hstrip; subst hp; subst hb
+      exact Step.loopBreak (ihc rfl hO hH hws.1 trivial) hne (ihbody rfl hO hH hws.2.2 (cif_block_wrap hcf.2))
+  | loopLeave hc hne hbody ihc ihbody =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨post, body, rfl, hp, hb⟩ := stripCode_loop_inv hstrip; subst hp; subst hb
+      exact Step.loopLeave (ihc rfl hO hH hws.1 trivial) hne (ihbody rfl hO hH hws.2.2 (cif_block_wrap hcf.2))
+  | loopBodyHalt hc hne hbody ihc ihbody =>
+      intro funs_o code hstrip hO hH hws hcf
+      obtain ⟨post, body, rfl, hp, hb⟩ := stripCode_loop_inv hstrip; subst hp; subst hb
+      exact Step.loopBodyHalt (ihc rfl hO hH hws.1 trivial) hne (ihbody rfl hO hH hws.2.2 (cif_block_wrap hcf.2))
+
 theorem step_lift_sim {flatSc : FScope D} {funs_o funs_h : FunEnv D} {code V st res}
     (hO : GoodO flatSc funs_o) (hH : ResEq flatSc funs_h)
     (hws : ScopedCode (funNamesEnv funs_o) code)
     (hcf : CodeInFlatCode flatSc code) :
-    Step D funs_o V st code res ↔ Step D funs_h V st (stripCode code) res := by
-  sorry
+    Step D funs_o V st code res ↔ Step D funs_h V st (stripCode code) res :=
+  ⟨fun h => step_lift_fwd h hO hH hws hcf,
+   fun h => step_lift_bwd h rfl hO hH hws hcf⟩
 
 omit [DecidableEq D.Value] in
 theorem funNamesTop_cons_other {s : Stmt D.Op} (h : ∀ n ps rs bd, s ≠ .funDef n ps rs bd)
