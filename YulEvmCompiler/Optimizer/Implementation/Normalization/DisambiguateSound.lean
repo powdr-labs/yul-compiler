@@ -615,18 +615,27 @@ theorem updRen_cons_ne {σ : Ident → Ident} {a b z : Ident} {l : List (Ident �
     (h : a ≠ z) : updRen σ ((a, b) :: l) z = updRen σ l z := by
   simp [updRen, List.find?_cons, h]
 
-/-- The `let`-extended renaming sends the declared variables to their fresh names. -/
-theorem map_updRen_zip {σ : Ident → Ident} : ∀ {xs ys : List Ident}, xs.Nodup →
-    xs.length = ys.length → xs.map (updRen σ (xs.zip ys)) = ys
+/-- The renaming sends `xs` to `ys`, even with a trailing binding list `tl` (the
+lookup of an `xs`-key hits the `xs.zip ys` prefix first). -/
+theorem map_updRen_zip_pre {σ : Ident → Ident} (tl : List (Ident × Ident)) :
+    ∀ {xs ys : List Ident}, xs.Nodup → xs.length = ys.length →
+      xs.map (updRen σ (xs.zip ys ++ tl)) = ys
   | [], [], _, _ => rfl
   | [], _ :: _, _, hlen => by simp at hlen
   | _ :: _, [], _, hlen => by simp at hlen
   | x :: xs, y :: ys, hnd, hlen => by
       have hx : x ∉ xs := (List.nodup_cons.mp hnd).1
-      simp only [List.zip_cons_cons, List.map_cons, updRen_cons_eq]
-      have htail : xs.map (updRen σ ((x, y) :: xs.zip ys)) = xs.map (updRen σ (xs.zip ys)) :=
+      simp only [List.zip_cons_cons, List.cons_append, List.map_cons, updRen_cons_eq]
+      have htail : xs.map (updRen σ ((x, y) :: (xs.zip ys ++ tl))) =
+          xs.map (updRen σ (xs.zip ys ++ tl)) :=
         List.map_congr_left (fun z hz => updRen_cons_ne (fun heq => hx (heq ▸ hz)))
-      rw [htail, map_updRen_zip (List.nodup_cons.mp hnd).2 (by simpa using hlen)]
+      rw [htail, map_updRen_zip_pre tl (List.nodup_cons.mp hnd).2 (by simpa using hlen)]
+
+/-- The `let`-extended renaming sends the declared variables to their fresh names. -/
+theorem map_updRen_zip {σ : Ident → Ident} {xs ys : List Ident} (hnd : xs.Nodup)
+    (hlen : xs.length = ys.length) : xs.map (updRen σ (xs.zip ys)) = ys := by
+  have := map_updRen_zip_pre (σ := σ) [] hnd hlen
+  simpa using this
 
 /-- **Extending `RenCfg` for a `let`.** Extending the renaming with fresh names
 `vars'` for a `let`'s distinct variables `vars` (disjoint from the current scope)
