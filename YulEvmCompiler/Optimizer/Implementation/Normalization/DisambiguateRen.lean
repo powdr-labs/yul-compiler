@@ -1098,4 +1098,48 @@ theorem venvKeys_stmts {funs : FunEnv D} :
           tauto
       | seqStop hs hne => exact absurd rfl hne
 
+/-! ### Backward-direction helpers -/
+
+/-- Inverting a renamed result that is an expression result. -/
+theorem renRes_eres_inv {σ' : Ident → Ident} {r : EResult D} {res₁ : Res D}
+    (h : Res.eres r = renRes σ' res₁) : res₁ = .eres r := by
+  cases res₁ with
+  | eres r' => cases h; rfl
+  | sres V st o => simp [renRes] at h
+
+/-- Inverting a renamed result that is a statement result. -/
+theorem renRes_sres_inv {σ' : Ident → Ident} {W : VEnv D} {st : D.State} {o : Outcome}
+    {res₁ : Res D} (h : Res.sres W st o = renRes σ' res₁) :
+    ∃ W₁, res₁ = .sres W₁ st o ∧ W = renVEnv σ' W₁ := by
+  cases res₁ with
+  | eres r' => simp [renRes] at h
+  | sres V1 st1 o1 =>
+      simp only [renRes, Res.sres.injEq] at h
+      exact ⟨V1, by rw [h.2.1, h.2.2], h.1⟩
+
+/-- Reverse `lookupFun` transport across `RenFunsRelF`: a successful *target*
+lookup of a renamed name pulls back to a successful source lookup. -/
+theorem lookupFun_renFunsRelF_rev {φ : Ident → Ident} :
+    ∀ {f₁ f₂ : FunEnv D}, RenFunsRelF φ f₁ f₂ →
+      ∀ {fn : Ident}, (∀ s ∈ f₁, ∀ p ∈ s, φ p.1 = φ fn → p.1 = fn) →
+      ∀ {decl₂ : FDecl D} {cenv₂ : FunEnv D}, lookupFun f₂ (φ fn) = some (decl₂, cenv₂) →
+      ∃ decl cenv, lookupFun f₁ fn = some (decl, cenv) ∧
+        FDeclRen (funNamesOf cenv) φ decl decl₂ ∧ RenFunsRelF φ cenv cenv₂
+  | [], [], _, fn, _, decl₂, cenv₂, h => by simp [lookupFun] at h
+  | [], _ :: _, hR, fn, _, decl₂, cenv₂, h => hR.elim
+  | _ :: _, [], hR, fn, _, decl₂, cenv₂, h => hR.elim
+  | s₁ :: r₁, s₂ :: r₂, hR, fn, hnm, decl₂, cenv₂, h => by
+      obtain ⟨hs, hr⟩ := hR
+      rcases renScopeRel_find hs fn (hnm s₁ (List.mem_cons_self ..)) with
+        ⟨hn₁, hn₂⟩ | ⟨p, q, hp₁, hp₂, hkey, hd⟩
+      · rw [lookupFun, hn₂] at h
+        obtain ⟨decl, cenv, hl, hbody, hRc⟩ :=
+          lookupFun_renFunsRelF_rev hr (fun s hs' => hnm s (List.mem_cons_of_mem _ hs')) h
+        exact ⟨decl, cenv, by rw [lookupFun, hn₁]; exact hl, hbody, hRc⟩
+      · rw [lookupFun, hp₂] at h
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨hd_eq, hcenv_eq⟩ := h
+        subst hd_eq; subst hcenv_eq
+        exact ⟨p.2, s₁ :: r₁, by rw [lookupFun, hp₁], hd, hs, hr⟩
+
 end YulEvmCompiler.Optimizer.Normalize

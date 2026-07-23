@@ -37,4 +37,6 @@ import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateAlpha
 import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateInstance
 import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateRen
 import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateSound
+import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateSoundBwd
+import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateRun
 import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateNormalForm
