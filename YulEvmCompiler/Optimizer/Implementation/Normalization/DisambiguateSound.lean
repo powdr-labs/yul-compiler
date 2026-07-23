@@ -504,38 +504,29 @@ theorem VEnv.get_eq_none_iff_find (V : VEnv D) (k : Ident) :
     VEnv.get V k = none ↔ V.find? (fun p => p.1 = k) = none := by
   simp only [VEnv.get, Option.map_eq_none_iff]
 
-/-- `set` transport across a boundary renaming (the `set` analog of `get_boundary`):
-an in-place update of `σ x` hits the renamed inner prefix when `x` is inner, and
-otherwise (`σ x = x`) the shared outer suffix; the fresh inner keys are disjoint
-from the outer keys so neither update touches the wrong side. -/
-theorem set_boundary (σ : Ident → Ident) (inner outer : VEnv D) (x : Ident) (v : D.Value)
-    (hinj : ∀ p ∈ inner, σ p.1 = σ x → p.1 = x)
-    (hid : VEnv.get inner x = none → σ x = x)
-    (hfresh : ∀ p ∈ inner, ∀ q ∈ outer, σ p.1 ≠ q.1) :
-    VEnv.set (renVEnv σ inner ++ outer) (σ x) v
-      = renVEnv σ (VEnv.set inner x v) ++ VEnv.set outer (σ x) v := by
+/-- `set` transport across a boundary renaming when `x` is an **inner** key: the
+update hits the renamed prefix (searched first), leaving the shared outer suffix
+untouched — no freshness-vs-outer condition needed, since the prefix wins even if
+the fresh key coincides with an outer key. This is exactly what preserves the
+boundary form for an `assign`/`set` to a block-local variable. -/
+theorem set_boundary_hit (σ : Ident → Ident) (inner outer : VEnv D) (x : Ident) (v : D.Value)
+    (hinj : ∀ p ∈ inner, σ p.1 = σ x → p.1 = x) (hx : VEnv.get inner x ≠ none) :
+    VEnv.set (renVEnv σ inner ++ outer) (σ x) v = renVEnv σ (VEnv.set inner x v) ++ outer := by
   have hget : VEnv.get (renVEnv σ inner) (σ x) = VEnv.get inner x := renVEnv_get σ inner x hinj
-  rw [VEnv.set_append]
-  by_cases hx : VEnv.get inner x = none
-  · have hrn : (renVEnv σ inner).find? (fun p => p.1 = σ x) = none :=
-      (VEnv.get_eq_none_iff_find _ _).mp (hget.trans hx)
-    rw [if_neg (by rw [hrn]; simp),
-      VEnv.set_of_find_none inner x v ((VEnv.get_eq_none_iff_find _ _).mp hx)]
-  · have hsome : ((renVEnv σ inner).find? (fun p => p.1 = σ x)).isSome :=
-      Option.isSome_iff_ne_none.mpr
-        (fun hc => hx (hget ▸ (VEnv.get_eq_none_iff_find _ _).mpr hc))
-    have hne : inner.find? (fun p => p.1 = x) ≠ none :=
-      fun hc => hx ((VEnv.get_eq_none_iff_find _ _).mpr hc)
-    obtain ⟨p, hp⟩ := Option.ne_none_iff_exists'.mp hne
-    have hpmem : p ∈ inner := List.mem_of_find?_eq_some hp
-    have hpx : p.1 = x := by simpa using List.find?_some hp
-    have houter : outer.find? (fun q => q.1 = σ x) = none := by
-      rw [List.find?_eq_none]
-      intro q hq
-      simp only [decide_eq_true_eq]
-      intro hqeq
-      exact hfresh p hpmem q hq (by rw [hpx]; exact hqeq.symm)
-    rw [if_pos hsome, renVEnv_set σ inner x v hinj, VEnv.set_of_find_none outer (σ x) v houter]
+  rw [VEnv.set_append, if_pos, renVEnv_set σ inner x v hinj]
+  exact Option.isSome_iff_ne_none.mpr
+    (fun hc => hx (hget ▸ (VEnv.get_eq_none_iff_find _ _).mpr hc))
+
+/-- `set` transport when `x` is **not** an inner key: `σ x = x` and the update
+falls through the fresh prefix (which lacks `x`) to the shared outer suffix. -/
+theorem set_boundary_miss (σ : Ident → Ident) (inner outer : VEnv D) (x : Ident) (v : D.Value)
+    (hinj : ∀ p ∈ inner, σ p.1 = σ x → p.1 = x)
+    (hx : VEnv.get inner x = none) (hid : σ x = x) :
+    VEnv.set (renVEnv σ inner ++ outer) (σ x) v = renVEnv σ inner ++ VEnv.set outer x v := by
+  have hget : VEnv.get (renVEnv σ inner) (σ x) = VEnv.get inner x := renVEnv_get σ inner x hinj
+  have hrn : (renVEnv σ inner).find? (fun p => p.1 = σ x) = none :=
+    (VEnv.get_eq_none_iff_find _ _).mp (hget.trans hx)
+  rw [VEnv.set_append, if_neg (by rw [hrn]; simp), hid]
 
 /-- A block/scope exit (`restore`) drops exactly the bindings it introduced,
 returning to the entry environment. Both source and target satisfy this at their
