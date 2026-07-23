@@ -194,16 +194,6 @@ sequence. Everything is stated at whole-state level because the transform's
 mutual functions are compiled by well-founded recursion and do not reduce
 definitionally. -/
 
-/-- A full zip's `find?`-miss means the key is absent. -/
-theorem find?_zip_none_not_mem {xs ys : List Ident} {x : Ident} (hlen : xs.length ≤ ys.length)
-    (h : (xs.zip ys).find? (fun p => p.1 = x) = none) : x ∉ xs := by
-  intro hx
-  have hkeys : (xs.zip ys).map Prod.fst = xs := List.map_fst_zip hlen
-  have hx' : x ∈ (xs.zip ys).map Prod.fst := by rw [hkeys]; exact hx
-  obtain ⟨p, hp, hpx⟩ := List.mem_map.mp hx'
-  have := List.find?_eq_none.mp h p hp
-  simp [hpx] at this
-
 /-- The function substitution passes through a statement list unchanged. -/
 theorem dsStmts_st2 (st : St) (n : Nat) (ss : List (Stmt Op)) :
     (dsStmts st n ss).1.2 = st.2 := by
@@ -554,7 +544,7 @@ mutual
 theorem alpha_dsStmt {vs fs : List Ident} :
     ∀ (st : St) (n : Nat) (s : Stmt Op), StOK st n → SVStmt s → WFInnerS s →
       NormalForm.ScopedStmt vs fs s →
-      AlphaStmt1 (substOf st.1) (substOf st.2) s (dsStmt st n s).2.2
+      AlphaStmt1 n (dsStmt st n s).2.1 (substOf st.1) (substOf st.2) s (dsStmt st n s).2.2
         (substOf (dsStmt st n s).1.1) (substOf (dsStmt st n s).1.2) ∧
       StOK (dsStmt st n s).1 (dsStmt st n s).2.1
   | st, n, .letDecl vars eo, hst, hsv, hwf, hns => by
@@ -570,27 +560,21 @@ theorem alpha_dsStmt {vs fs : List Ident} :
       constructor
       · simp only [dsStmt]
         rw [substOf_append]
-        exact AlphaStmt1.letD hvnd (freshVars_nodup n vars)
-          (freshVars_length n vars).symm hvNF
-          (fun v' hv' => (freshVars_mem hv').imp (fun k hk => hk.2.2))
-          (fun v' hv' z hz => by
-            obtain ⟨k, hk1, _, hk3⟩ := freshVars_mem hv'
-            rw [hk3]
-            exact hst.1.fresh_ne hz hk1)
-          hoe
+        exact AlphaStmt1.letD hvnd (freshVars_length n vars).symm hvNF
+          (freshVars_rangeNodup n vars) hoe
       · simp only [dsStmt]
         exact hStOK
   | st, n, .assign vars e, hst, hsv, hwf, hns => by
       obtain ⟨hvNF, hsve⟩ := (hsv : (∀ x ∈ vars, NotFresh x) ∧ SVExpr e)
       constructor
       · simp only [dsStmt]
-        exact AlphaStmt1.assignD hvNF (alpha_dsExpr st e hsve)
+        exact AlphaStmt1.assignD (Nat.le_refl n) hvNF (alpha_dsExpr st e hsve)
       · simp only [dsStmt]
         exact hst
   | st, n, .exprStmt e, hst, hsv, hwf, hns => by
       constructor
       · simp only [dsStmt]
-        exact AlphaStmt1.exprD (alpha_dsExpr st e (hsv : SVExpr e))
+        exact AlphaStmt1.exprD (Nat.le_refl n) (alpha_dsExpr st e (hsv : SVExpr e))
       · simp only [dsStmt]
         exact hst
   | st, n, .block body, hst, hsv, hwf, hns => by
@@ -688,24 +672,11 @@ theorem alpha_dsStmt {vs fs : List Ident} :
         (n + params.length + rets.length) body hStT hsvb hnd hwfI hnsb
       constructor
       · simp only [dsStmt]
-        rw [show (dsScope (params.zip (freshVars n params) ++
-              rets.zip (freshVars (n + params.length) rets) ++ st.1, st.2)
-              (n + params.length + rets.length) body).2.2
-            = (dsScope (params.zip (freshVars n params) ++
-              rets.zip (freshVars (n + params.length) rets), st.2)
-              (n + params.length + rets.length) body).2.2 from
-          congrArg Prod.snd hcongr.1]
-        have hnd' : (freshVars n params ++ freshVars (n + params.length) rets).Nodup :=
+        rw [hcongr.1]
+        exact AlphaStmt1.funD hprnd (freshVars_length n params).symm
+          (freshVars_length (n + params.length) rets).symm hprNF
           (RangeNodup.append (freshVars_rangeNodup n params)
-            (freshVars_rangeNodup (n + params.length) rets)).2.1
-        have hds' : ∀ v' ∈ freshVars n params ++ freshVars (n + params.length) rets,
-            ∃ k, v' = dsName k := by
-          intro v' hv'
-          rcases List.mem_append.mp hv' with h | h
-          · exact (freshVars_mem h).imp (fun k hk => hk.2.2)
-          · exact (freshVars_mem h).imp (fun k hk => hk.2.2)
-        exact AlphaStmt1.funD hprnd hnd' (freshVars_length n params).symm
-          (freshVars_length (n + params.length) rets).symm hprNF hds'
+            (freshVars_rangeNodup (n + params.length) rets))
           (by rw [← substOf_eq_updRen_id]; exact hS.1)
       · simp only [dsStmt]
         refine hst.mono ?_
@@ -746,25 +717,25 @@ theorem alpha_dsStmt {vs fs : List Ident} :
   | st, n, .«break», hst, _, _, _ => by
       refine ⟨?_, by simp only [dsStmt]; exact hst⟩
       simp only [dsStmt]
-      exact AlphaStmt1.breakD
+      exact AlphaStmt1.breakD (Nat.le_refl n)
   | st, n, .«continue», hst, _, _, _ => by
       refine ⟨?_, by simp only [dsStmt]; exact hst⟩
       simp only [dsStmt]
-      exact AlphaStmt1.contD
+      exact AlphaStmt1.contD (Nat.le_refl n)
   | st, n, .leave, hst, _, _, _ => by
       refine ⟨?_, by simp only [dsStmt]; exact hst⟩
       simp only [dsStmt]
-      exact AlphaStmt1.leaveD
+      exact AlphaStmt1.leaveD (Nat.le_refl n)
 theorem alpha_dsStmts {vs fs : List Ident} :
     ∀ (st : St) (n : Nat) (ss : List (Stmt Op)), StOK st n → SVStmts ss → WFInner ss →
       NormalForm.ScopedStmts vs fs ss →
-      AlphaSeqExt (substOf st.1) (substOf st.2) ss (dsStmts st n ss).2.2
+      AlphaSeqExt n (dsStmts st n ss).2.1 (substOf st.1) (substOf st.2) ss (dsStmts st n ss).2.2
         (substOf (dsStmts st n ss).1.1) (substOf (dsStmts st n ss).1.2) ∧
       StOK (dsStmts st n ss).1 (dsStmts st n ss).2.1
   | st, n, [], hst, _, _, _ => by
       refine ⟨?_, by simp only [dsStmts]; exact hst⟩
       simp only [dsStmts]
-      exact AlphaSeqExt.nil
+      exact AlphaSeqExt.nil (Nat.le_refl n)
   | st, n, s :: rest, hst, hsv, hwf, hns => by
       obtain ⟨hsvs, hsvr⟩ := (hsv : SVStmt s ∧ SVStmts rest)
       obtain ⟨hwfs, hwfr⟩ := (hwf : WFInnerS s ∧ WFInner rest)
@@ -779,7 +750,8 @@ theorem alpha_dsScope {vs fs : List Ident} :
     ∀ (st : St) (n : Nat) (body : List (Stmt Op)), StOK st n → SVStmts body →
       (funNames body).Nodup → WFInner body →
       NormalForm.ScopedStmts vs fs body →
-      AlphaBlockExt (substOf st.1) (substOf st.2) body (dsScope st n body).2.2
+      AlphaBlockExt n (dsScope st n body).2.1 (substOf st.1) (substOf st.2) body
+        (dsScope st n body).2.2
         (substOf (dsScope st n body).1.1) (substOf (dsScope st n body).1.2) ∧
       StOK (dsScope st n body).1 (dsScope st n body).2.1
   | st, n, body, hst, hsv, hnd, hwf, hns => by
@@ -797,29 +769,21 @@ theorem alpha_dsScope {vs fs : List Ident} :
         exact map_substOf_zip hnd (by rw [freshVars_length])
       refine ⟨?_, by simp only [dsScope]; exact hSeq.2⟩
       simp only [dsScope]
-      refine AlphaBlockExt.mk hnd ?_ ?_ (funNames_notFresh hsv) ?_ ?_ ?_
+      refine AlphaBlockExt.mk (m := n + (funNames body).length) hnd ?_ (funNames_notFresh hsv) ?_ ?_
       · rw [hfn2, freshVars_length]
       · rw [hfn2]
-        exact freshVars_nodup _ _
-      · rw [hfn2]
-        intro v' hv'
-        exact (freshVars_mem hv').imp (fun k hk => hk.2.2)
-      · rw [hfn2]
-        intro v' hv' z hz
-        obtain ⟨k, hk1, _, hk3⟩ := freshVars_mem hv'
-        rw [hk3]
-        exact hst.2.fresh_ne hz hk1
+        exact freshVars_rangeNodup n (funNames body)
       · rw [hfn2, ← substOf_append]
         exact hSeq.1
 theorem alpha_dsCases {vs fs : List Ident} :
     ∀ (st : St) (n : Nat) (cs : List (Literal × List (Stmt Op))), StOK st n → SVCases cs →
       WFCases cs → NormalForm.ScopedCases vs fs cs →
-      AlphaCases (substOf st.1) (substOf st.2) cs (dsCases st n cs).2 ∧
+      AlphaCases n (dsCases st n cs).1 (substOf st.1) (substOf st.2) cs (dsCases st n cs).2 ∧
       StOK st (dsCases st n cs).1
   | st, n, [], hst, _, _, _ => by
       refine ⟨?_, by simp only [dsCases]; exact hst⟩
       simp only [dsCases]
-      exact AlphaCases.nil
+      exact AlphaCases.nil (Nat.le_refl n)
   | st, n, (l, body) :: rest, hst, hsv, hwf, hns => by
       obtain ⟨hsvb, hsvr⟩ := (hsv : SVStmts body ∧ SVCases rest)
       obtain ⟨⟨hndb, hwfb⟩, hwfr⟩ :=
@@ -836,12 +800,12 @@ theorem alpha_dsCases {vs fs : List Ident} :
 theorem alpha_dsDflt {vs fs : List Ident} :
     ∀ (st : St) (n : Nat) (dflt : Option (List (Stmt Op))), StOK st n → SVDflt dflt →
       WFDflt dflt → NormalForm.ScopedDflt vs fs dflt →
-      AlphaDflt (substOf st.1) (substOf st.2) dflt (dsDflt st n dflt).2 ∧
+      AlphaDflt n (dsDflt st n dflt).1 (substOf st.1) (substOf st.2) dflt (dsDflt st n dflt).2 ∧
       StOK st (dsDflt st n dflt).1
   | st, n, none, hst, _, _, _ => by
       refine ⟨?_, by simp only [dsDflt]; exact hst⟩
       simp only [dsDflt]
-      exact AlphaDflt.none
+      exact AlphaDflt.none (Nat.le_refl n)
   | st, n, some body, hst, hsv, hwf, hns => by
       obtain ⟨hndb, hwfb⟩ := (hwf : (funNames body).Nodup ∧ WFInner body)
       have hnsb : NormalForm.ScopedStmts vs (fs ++ NormalForm.funDefNames body) body := hns
@@ -857,7 +821,8 @@ end
 disambiguated program is α-related to the source from the empty renaming state. -/
 theorem alpha_disambiguate (b : Block Op) (hsv : SVStmts b) (hwf : WellFormed b)
     (hns : NormalForm.WellScoped b) :
-    AlphaBlockExt (substOf ([] : Subst)) (substOf ([] : Subst)) b (disambiguate b)
+    AlphaBlockExt 0 (dsScope (([], []) : St) 0 b).2.1
+      (substOf ([] : Subst)) (substOf ([] : Subst)) b (disambiguate b)
       (substOf (dsScope (([], []) : St) 0 b).1.1)
       (substOf (dsScope (([], []) : St) 0 b).1.2) :=
   (alpha_dsScope (([], []) : St) 0 b

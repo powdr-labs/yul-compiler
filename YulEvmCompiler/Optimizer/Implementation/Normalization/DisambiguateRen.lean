@@ -158,15 +158,23 @@ identity off them, maps them to fresh names, and all in-scope names are source
 /-- All function names in scope across a function environment. -/
 def funNamesOf (funs : FunEnv D) : List Ident := funs.flatMap (fun s => s.map Prod.fst)
 
-def RenFCfg (φ : Ident → Ident) (funs : FunEnv D) : Prop :=
+def RenFCfg (φ : Ident → Ident) (funs : FunEnv D) (N : Nat) : Prop :=
   (∀ a ∈ funNamesOf funs, ∀ b ∈ funNamesOf funs, φ a = φ b → a = b) ∧
   (∀ z, z ∉ funNamesOf funs → φ z = z) ∧
-  (∀ a ∈ funNamesOf funs, ∃ k, φ a = dsName k) ∧
+  (∀ a ∈ funNamesOf funs, ∃ k, k < N ∧ φ a = dsName k) ∧
   (∀ a ∈ funNamesOf funs, NotFresh a)
+
+/-- The bound only grows. -/
+theorem RenFCfg.mono {φ : Ident → Ident} {funs : FunEnv D} {N M : Nat}
+    (h : RenFCfg φ funs N) (hNM : N ≤ M) : RenFCfg φ funs M :=
+  ⟨h.1, h.2.1,
+    fun a ha => (h.2.2.1 a ha).imp (fun k hk => ⟨Nat.lt_of_lt_of_le hk.1 hNM, hk.2⟩),
+    h.2.2.2⟩
 
 /-- The `renScopeRel_find`/`lookupFun` no-merge condition for a not-fresh name `fn`:
 no in-scope function name renames onto `φ fn` (within any single scope of `funs`). -/
-theorem RenFCfg.no_merge_scope {φ : Ident → Ident} {funs : FunEnv D} (h : RenFCfg φ funs)
+theorem RenFCfg.no_merge_scope {φ : Ident → Ident} {funs : FunEnv D} {N : Nat}
+    (h : RenFCfg φ funs N)
     {fn : Ident} (hfn : NotFresh fn) {s : FScope D} (hs : s ∈ funs) :
     ∀ p ∈ s, φ p.1 = φ fn → p.1 = fn := by
   intro p hp hpq
@@ -174,7 +182,7 @@ theorem RenFCfg.no_merge_scope {φ : Ident → Ident} {funs : FunEnv D} (h : Ren
     List.mem_flatMap.mpr ⟨s, hs, List.mem_map_of_mem hp⟩
   by_cases hfmem : fn ∈ funNamesOf funs
   · exact h.1 p.1 hpmem fn hfmem hpq
-  · obtain ⟨k, hk⟩ := h.2.2.1 p.1 hpmem
+  · obtain ⟨k, _, hk⟩ := h.2.2.1 p.1 hpmem
     rw [h.2.1 fn hfmem, hk] at hpq
     exact absurd hpq.symm (hfn k)
 
@@ -354,14 +362,22 @@ is a source (`NotFresh`) name. From it we derive the per-lookup no-merge
 hypotheses that the `get`/`set` transports require, for any not-fresh (source)
 reference. -/
 
-def RenCfg (σ : Ident → Ident) (inner : VEnv D) : Prop :=
+def RenCfg (σ : Ident → Ident) (inner : VEnv D) (N : Nat) : Prop :=
   (∀ p ∈ inner, ∀ q ∈ inner, σ p.1 = σ q.1 → p.1 = q.1) ∧
   (∀ z, VEnv.get inner z = none → σ z = z) ∧
-  (∀ p ∈ inner, ∃ k, σ p.1 = dsName k) ∧
+  (∀ p ∈ inner, ∃ k, k < N ∧ σ p.1 = dsName k) ∧
   (∀ p ∈ inner, NotFresh p.1)
 
+/-- The bound only grows. -/
+theorem RenCfg.mono {σ : Ident → Ident} {inner : VEnv D} {N M : Nat}
+    (h : RenCfg σ inner N) (hNM : N ≤ M) : RenCfg σ inner M :=
+  ⟨h.1, h.2.1,
+    fun p hp => (h.2.2.1 p hp).imp (fun k hk => ⟨Nat.lt_of_lt_of_le hk.1 hNM, hk.2⟩),
+    h.2.2.2⟩
+
 /-- All keys of a `RenCfg` environment are source names. -/
-theorem RenCfg.keys_notFresh {σ : Ident → Ident} {inner : VEnv D} (h : RenCfg σ inner) :
+theorem RenCfg.keys_notFresh {σ : Ident → Ident} {inner : VEnv D} {N : Nat}
+    (h : RenCfg σ inner N) :
     ∀ z ∈ inner.map Prod.fst, NotFresh z := by
   intro z hz
   obtain ⟨q, hq, hqe⟩ := List.mem_map.mp hz
@@ -369,11 +385,12 @@ theorem RenCfg.keys_notFresh {σ : Ident → Ident} {inner : VEnv D} (h : RenCfg
 
 /-- The `get`/`set` no-merge condition for a not-fresh name `x`: no in-scope key
 renames onto `σ x`. -/
-theorem RenCfg.no_merge {σ : Ident → Ident} {inner : VEnv D} (h : RenCfg σ inner)
+theorem RenCfg.no_merge {σ : Ident → Ident} {inner : VEnv D} {N : Nat}
+    (h : RenCfg σ inner N)
     {x : Ident} (hx : NotFresh x) : ∀ p ∈ inner, σ p.1 = σ x → p.1 = x := by
   intro p hp hpq
   by_cases hxi : VEnv.get inner x = none
-  · obtain ⟨k, hk⟩ := h.2.2.1 p hp
+  · obtain ⟨k, _, hk⟩ := h.2.2.1 p hp
     rw [h.2.1 x hxi, hk] at hpq
     exact absurd hpq.symm (hx k)
   · have hne : inner.find? (fun q => q.1 = x) ≠ none :=
@@ -385,11 +402,11 @@ theorem RenCfg.no_merge {σ : Ident → Ident} {inner : VEnv D} (h : RenCfg σ i
     exact h.1 p hp q hqmem hpq
 
 /-- `σ x = x` for a not-fresh name absent from the inner prefix. -/
-theorem RenCfg.id_at {σ : Ident → Ident} {inner : VEnv D} (h : RenCfg σ inner)
+theorem RenCfg.id_at {σ : Ident → Ident} {inner : VEnv D} {N : Nat} (h : RenCfg σ inner N)
     {x : Ident} (hxi : VEnv.get inner x = none) : σ x = x := h.2.1 x hxi
 
 /-- `get` transport at the boundary for a not-fresh name. -/
-theorem RenCfg.get {σ : Ident → Ident} {inner : VEnv D} (h : RenCfg σ inner)
+theorem RenCfg.get {σ : Ident → Ident} {inner : VEnv D} {N : Nat} (h : RenCfg σ inner N)
     (outer : VEnv D) {x : Ident} (hx : NotFresh x) :
     VEnv.get (renVEnv σ inner ++ outer) (σ x) = VEnv.get (inner ++ outer) x :=
   get_boundary σ inner outer x (h.no_merge hx) (fun hn => h.id_at hn)
@@ -449,8 +466,8 @@ theorem VEnv.setMany_keys (V : VEnv D) (xs : List Ident) (vs : List D.Value) :
       | nil => simp [VEnv.setMany]
       | cons v vs => rw [VEnv.setMany_cons, ih, VEnv.set_keys]
 
-theorem RenCfg.of_keys {σ : Ident → Ident} {V V' : VEnv D}
-    (hk : V'.map Prod.fst = V.map Prod.fst) (h : RenCfg σ V) : RenCfg σ V' := by
+theorem RenCfg.of_keys {σ : Ident → Ident} {V V' : VEnv D} {N : Nat}
+    (hk : V'.map Prod.fst = V.map Prod.fst) (h : RenCfg σ V N) : RenCfg σ V' N := by
   obtain ⟨h1, h2, h3, h4⟩ := h
   refine ⟨?_, ?_, ?_, ?_⟩
   · intro p hp q hq hpq
@@ -470,26 +487,25 @@ theorem RenCfg.of_keys {σ : Ident → Ident} {V V' : VEnv D}
     obtain ⟨p₀, hp₀, hp₀e⟩ := List.mem_map.mp (hk ▸ List.mem_map_of_mem hp : p.1 ∈ V.map Prod.fst)
     rw [← hp₀e]; exact h4 p₀ hp₀
 
-theorem RenCfg.setMany {σ : Ident → Ident} {V : VEnv D} (h : RenCfg σ V)
-    (xs : List Ident) (vs : List D.Value) : RenCfg σ (VEnv.setMany V xs vs) :=
+theorem RenCfg.setMany {σ : Ident → Ident} {V : VEnv D} {N : Nat} (h : RenCfg σ V N)
+    (xs : List Ident) (vs : List D.Value) : RenCfg σ (VEnv.setMany V xs vs) N :=
   RenCfg.of_keys (VEnv.setMany_keys V xs vs) h
 
 /-- **Extending `RenCfg` for a `let`.** Extending the renaming with fresh names
-`vars'` for a `let`'s distinct variables `vars` (disjoint from the current scope)
-preserves `RenCfg` on the extended environment. The new fresh names are distinct
-(`vars'.Nodup`), are `dsName`s, and differ from the image of any source name
-under the incoming renaming (`hfresh`, `NotFresh`-restricted — the satisfiable
-form) — so injectivity, identity-off, freshness, and key-sourceness all survive. -/
-theorem RenCfg.extend {σ : Ident → Ident} {V : VEnv D} (h : RenCfg σ V)
-    {vars vars' : List Ident} (hvnd : vars.Nodup) (hnd : vars'.Nodup)
+`vars'` (drawn from the counter range `[lo, hi)` — `RangeNodup`) for a `let`'s
+distinct source variables `vars` (disjoint from the current scope) preserves
+`RenCfg`, at the advanced bound `hi`. Collision-freedom is arithmetic: images of
+old keys lie below `lo`, the new names at or above it. -/
+theorem RenCfg.extend {σ : Ident → Ident} {V : VEnv D} {lo : Nat} (h : RenCfg σ V lo)
+    {vars vars' : List Ident} {hi : Nat} (hvnd : vars.Nodup)
     (hlen : vars.length = vars'.length)
     (hvNF : ∀ x ∈ vars, NotFresh x)
-    (hds : ∀ v' ∈ vars', ∃ k, v' = dsName k)
-    (hfresh : ∀ v' ∈ vars', ∀ z, NotFresh z → σ z ≠ v')
+    (hrn : RangeNodup vars' lo hi)
     (hsh : ∀ x ∈ vars, x ∉ V.map Prod.fst)
     {W : VEnv D} (hW : W.map Prod.fst = vars ++ V.map Prod.fst) :
-    RenCfg (updRen σ (vars.zip vars')) W := by
+    RenCfg (updRen σ (vars.zip vars')) W hi := by
   have hNFkey : ∀ z ∈ V.map Prod.fst, NotFresh z := h.keys_notFresh
+  have hnd : vars'.Nodup := hrn.2.1
   have hmap : vars.map (updRen σ (vars.zip vars')) = vars' := map_updRen_zip hvnd hlen
   have hmapnd : (vars.map (updRen σ (vars.zip vars'))).Nodup := by rw [hmap]; exact hnd
   have hinj_vars : ∀ a ∈ vars, ∀ b ∈ vars,
@@ -500,16 +516,26 @@ theorem RenCfg.extend {σ : Ident → Ident} {V : VEnv D} (h : RenCfg σ V)
                    rwa [hmap] at this
   have hid_off : ∀ z, z ∉ vars → updRen σ (vars.zip vars') z = σ z := fun z hz =>
     updRen_of_not_mem (fun p hp hpz => hz (hpz ▸ (List.of_mem_zip hp).1))
+  -- images of old keys (below lo) never hit new names (at or above lo)
+  have hsep : ∀ a ∈ vars, ∀ z ∈ V.map Prod.fst,
+      updRen σ (vars.zip vars') a ≠ σ z := by
+    intro a ha z hz hc
+    obtain ⟨i, hi1, _, hi3⟩ := hrn.1 _ (hvars_img a ha)
+    obtain ⟨z₀, hz₀, hz₀e⟩ := List.mem_map.mp hz
+    obtain ⟨j, hj, hje⟩ := h.2.2.1 z₀ hz₀
+    rw [hi3, ← hz₀e, hje] at hc
+    have := dsName_inj hc
+    omega
   refine ⟨?_, ?_, ?_, ?_⟩
   · intro p hp q hq hpq
     have hp1 : p.1 ∈ vars ++ V.map Prod.fst := hW ▸ List.mem_map_of_mem hp
     have hq1 : q.1 ∈ vars ++ V.map Prod.fst := hW ▸ List.mem_map_of_mem hq
     rcases List.mem_append.mp hp1 with hpv | hpV <;> rcases List.mem_append.mp hq1 with hqv | hqV
     · exact hinj_vars p.1 hpv q.1 hqv hpq
-    · exact absurd (by rw [hid_off q.1 (fun hc => hsh q.1 hc hqV)] at hpq; exact hpq.symm)
-        (hfresh _ (hvars_img p.1 hpv) q.1 (hNFkey q.1 hqV))
-    · exact absurd (by rw [hid_off p.1 (fun hc => hsh p.1 hc hpV)] at hpq; exact hpq)
-        (hfresh _ (hvars_img q.1 hqv) p.1 (hNFkey p.1 hpV))
+    · exact absurd (by rw [hid_off q.1 (fun hc => hsh q.1 hc hqV)] at hpq; exact hpq)
+        (hsep p.1 hpv q.1 hqV)
+    · exact absurd (by rw [hid_off p.1 (fun hc => hsh p.1 hc hpV)] at hpq; exact hpq.symm)
+        (hsep q.1 hqv p.1 hpV)
     · rw [hid_off p.1 (fun hc => hsh p.1 hc hpV), hid_off q.1 (fun hc => hsh q.1 hc hqV)] at hpq
       obtain ⟨p₀, hp₀, hp₀e⟩ := List.mem_map.mp hpV
       obtain ⟨q₀, hq₀, hq₀e⟩ := List.mem_map.mp hqV
@@ -523,10 +549,13 @@ theorem RenCfg.extend {σ : Ident → Ident} {V : VEnv D} (h : RenCfg σ V)
   · intro p hp
     have hp1 : p.1 ∈ vars ++ V.map Prod.fst := hW ▸ List.mem_map_of_mem hp
     rcases List.mem_append.mp hp1 with hpv | hpV
-    · exact hds _ (hvars_img p.1 hpv)
+    · obtain ⟨i, _, hi2, hi3⟩ := hrn.1 _ (hvars_img p.1 hpv)
+      exact ⟨i, hi2, hi3⟩
     · rw [hid_off p.1 (fun hc => hsh p.1 hc hpV)]
       obtain ⟨p₀, hp₀, hp₀e⟩ := List.mem_map.mp hpV
-      rw [← hp₀e]; exact h.2.2.1 p₀ hp₀
+      rw [← hp₀e]
+      obtain ⟨j, hj, hje⟩ := h.2.2.1 p₀ hp₀
+      exact ⟨j, Nat.lt_of_lt_of_le hj hrn.2.2, hje⟩
   · intro p hp
     have hp1 : p.1 ∈ vars ++ V.map Prod.fst := hW ▸ List.mem_map_of_mem hp
     rcases List.mem_append.mp hp1 with hpv | hpV
@@ -534,36 +563,43 @@ theorem RenCfg.extend {σ : Ident → Ident} {V : VEnv D} (h : RenCfg σ V)
     · exact hNFkey p.1 hpV
 
 /-- **Extending `RenFCfg` for a block's function scope.** Prepending a scope `s`
-of fresh function names (`new'`) for the block's source function names (`new`),
-disjoint from the visible functions, preserves `RenFCfg`. The φ-analog of
-`RenCfg.extend`. -/
-theorem RenFCfg.extend {φ : Ident → Ident} {funs : FunEnv D} (h : RenFCfg φ funs)
-    {new new' : List Ident} (hvnd : new.Nodup) (hnd : new'.Nodup)
+of fresh function names (`new'`, from `[lo, hi)`) for the block's source function
+names (`new`), disjoint from the visible functions, preserves `RenFCfg` at the
+advanced bound. The φ-analog of `RenCfg.extend`. -/
+theorem RenFCfg.extend {φ : Ident → Ident} {funs : FunEnv D} {lo : Nat}
+    (h : RenFCfg φ funs lo)
+    {new new' : List Ident} {hi : Nat} (hvnd : new.Nodup)
     (hlen : new.length = new'.length)
     (hnewNF : ∀ x ∈ new, NotFresh x)
-    (hds : ∀ v' ∈ new', ∃ k, v' = dsName k)
-    (hfresh : ∀ v' ∈ new', ∀ z, NotFresh z → φ z ≠ v')
+    (hrn : RangeNodup new' lo hi)
     (hsh : ∀ x ∈ new, x ∉ funNamesOf funs)
     {s : FScope D} (hs : s.map Prod.fst = new) :
-    RenFCfg (updRen φ (new.zip new')) (s :: funs) := by
+    RenFCfg (updRen φ (new.zip new')) (s :: funs) hi := by
   have hkeys : funNamesOf (s :: funs) = new ++ funNamesOf funs := by rw [funNamesOf_cons, hs]
   have hmap : new.map (updRen φ (new.zip new')) = new' := map_updRen_zip hvnd hlen
   have hinj_new : ∀ a ∈ new, ∀ b ∈ new,
       updRen φ (new.zip new') a = updRen φ (new.zip new') b → a = b :=
-    fun a ha b hb => List.inj_on_of_nodup_map (by rw [hmap]; exact hnd) ha hb
+    fun a ha b hb => List.inj_on_of_nodup_map (by rw [hmap]; exact hrn.2.1) ha hb
   have hnew_img : ∀ a ∈ new, updRen φ (new.zip new') a ∈ new' :=
     fun a ha => by have := List.mem_map_of_mem (f := updRen φ (new.zip new')) ha; rwa [hmap] at this
   have hid_off : ∀ z, z ∉ new → updRen φ (new.zip new') z = φ z := fun z hz =>
     updRen_of_not_mem (fun p hp hpz => hz (hpz ▸ (List.of_mem_zip hp).1))
+  have hsep : ∀ a ∈ new, ∀ z ∈ funNamesOf funs, updRen φ (new.zip new') a ≠ φ z := by
+    intro a ha z hz hc
+    obtain ⟨i, hi1, _, hi3⟩ := hrn.1 _ (hnew_img a ha)
+    obtain ⟨j, hj, hje⟩ := h.2.2.1 z hz
+    rw [hi3, hje] at hc
+    have := dsName_inj hc
+    omega
   refine ⟨?_, ?_, ?_, ?_⟩
   · intro a ha b hb hab
     rw [hkeys, List.mem_append] at ha hb
     rcases ha with hav | haf <;> rcases hb with hbv | hbf
     · exact hinj_new a hav b hbv hab
-    · exact absurd (by rw [hid_off b (fun hc => hsh b hc hbf)] at hab; exact hab.symm)
-        (hfresh _ (hnew_img a hav) b (h.2.2.2 b hbf))
-    · exact absurd (by rw [hid_off a (fun hc => hsh a hc haf)] at hab; exact hab)
-        (hfresh _ (hnew_img b hbv) a (h.2.2.2 a haf))
+    · exact absurd (by rw [hid_off b (fun hc => hsh b hc hbf)] at hab; exact hab)
+        (hsep a hav b hbf)
+    · exact absurd (by rw [hid_off a (fun hc => hsh a hc haf)] at hab; exact hab.symm)
+        (hsep b hbv a haf)
     · rw [hid_off a (fun hc => hsh a hc haf), hid_off b (fun hc => hsh b hc hbf)] at hab
       exact h.1 a haf b hbf hab
   · intro z hz
@@ -572,8 +608,11 @@ theorem RenFCfg.extend {φ : Ident → Ident} {funs : FunEnv D} (h : RenFCfg φ 
   · intro a ha
     rw [hkeys, List.mem_append] at ha
     rcases ha with hav | haf
-    · exact hds _ (hnew_img a hav)
-    · rw [hid_off a (fun hc => hsh a hc haf)]; exact h.2.2.1 a haf
+    · obtain ⟨i, _, hi2, hi3⟩ := hrn.1 _ (hnew_img a hav)
+      exact ⟨i, hi2, hi3⟩
+    · rw [hid_off a (fun hc => hsh a hc haf)]
+      obtain ⟨j, hj, hje⟩ := h.2.2.1 a haf
+      exact ⟨j, Nat.lt_of_lt_of_le hj hrn.2.2, hje⟩
   · intro a ha
     rw [hkeys, List.mem_append] at ha
     rcases ha with hav | haf
@@ -581,19 +620,19 @@ theorem RenFCfg.extend {φ : Ident → Ident} {funs : FunEnv D} (h : RenFCfg φ 
     · exact h.2.2.2 a haf
 
 /-- **`RenCfg` for a fresh scope.** The identity-based renaming that sends distinct
-source names `xs` to distinct fresh names `ys` is a valid `RenCfg` on the scope
-`xs` — used for a function's parameter/return scope (`FDeclRen`). -/
-theorem RenCfg.ofFreshScope {xs ys : List Ident} (hxnd : xs.Nodup) (hynd : ys.Nodup)
+source names `xs` to fresh names from `[lo, hi)` is a valid `RenCfg` on the scope
+`xs`, at bound `hi` — used for a function's parameter/return scope (`FDeclRen`). -/
+theorem RenCfg.ofFreshScope {xs ys : List Ident} {lo hi : Nat} (hxnd : xs.Nodup)
     (hlen : xs.length = ys.length)
     (hxNF : ∀ x ∈ xs, NotFresh x)
-    (hds : ∀ v ∈ ys, ∃ k, v = dsName k) :
-    RenCfg (updRen id (xs.zip ys)) (bindZeros D xs) := by
+    (hrn : RangeNodup ys lo hi) :
+    RenCfg (updRen id (xs.zip ys)) (bindZeros D xs) hi := by
   have hkeys : (bindZeros D xs).map Prod.fst = xs := by
     simp [bindZeros, List.map_map, Function.comp_def]
   have hmap : xs.map (updRen id (xs.zip ys)) = ys := map_updRen_zip hxnd hlen
   refine ⟨?_, ?_, ?_, ?_⟩
   · intro p hp q hq hpq
-    exact List.inj_on_of_nodup_map (by rw [hmap]; exact hynd)
+    exact List.inj_on_of_nodup_map (by rw [hmap]; exact hrn.2.1)
       (hkeys ▸ List.mem_map_of_mem hp) (hkeys ▸ List.mem_map_of_mem hq) hpq
   · intro z hz
     have hzx : z ∉ xs := by
@@ -601,10 +640,11 @@ theorem RenCfg.ofFreshScope {xs ys : List Ident} (hxnd : xs.Nodup) (hynd : ys.No
       rwa [hkeys] at hh
     exact updRen_of_not_mem (fun p hp hpz => hzx (hpz ▸ (List.of_mem_zip hp).1))
   · intro p hp
-    have : updRen id (xs.zip ys) p.1 ∈ ys := by
+    have himg : updRen id (xs.zip ys) p.1 ∈ ys := by
       have := List.mem_map_of_mem (f := updRen id (xs.zip ys)) (hkeys ▸ List.mem_map_of_mem hp)
       rwa [hmap] at this
-    exact hds _ this
+    obtain ⟨i, _, hi2, hi3⟩ := hrn.1 _ himg
+    exact ⟨i, hi2, hi3⟩
   · intro p hp
     exact hxNF p.1 (hkeys ▸ List.mem_map_of_mem hp)
 
@@ -669,10 +709,10 @@ theorem venvKeys_stmt {funs : FunEnv D} {V st s V1 st1}
 renaming (`RenCfg`) on the function's fresh parameter/return scope, and the body
 is α-equivalent under `σc` (variables) and `φ` (functions). -/
 def FDeclRen (φ : Ident → Ident) (d₁ d₂ : FDecl D) : Prop :=
-  ∃ σc σc' φc',
+  ∃ lo hi σc σc' φc',
     d₂.params = d₁.params.map σc ∧ d₂.rets = d₁.rets.map σc ∧
-    RenCfg σc (bindZeros D (d₁.params ++ d₁.rets)) ∧
-    AlphaBlockExt σc φ d₁.body d₂.body σc' φc'
+    RenCfg σc (bindZeros D (d₁.params ++ d₁.rets)) lo ∧
+    AlphaBlockExt lo hi σc φ d₁.body d₂.body σc' φc'
 
 /-- The hoisted scope's keys are the block's top-level function names. -/
 theorem hoist_keys (body : List (Stmt D.Op)) : (hoist D body).map Prod.fst = funNames body := by
@@ -685,23 +725,23 @@ theorem hoist_keys (body : List (Stmt D.Op)) : (hoist D body).map Prod.fst = fun
 /-- **Hoist transport.** α-equivalent statement sequences have `RenScopeRel`-related
 hoisted function scopes: each source `funDef` is matched by a target `funDef` with
 `φ`-renamed name and an `FDeclRen`-related declaration. -/
-theorem hoist_renScopeRel : ∀ {ss ss' : List (Stmt D.Op)} {σ φ σ' φ' : Ident → Ident},
-    AlphaSeqExt σ φ ss ss' σ' φ' → RenScopeRel φ (FDeclRen φ) (hoist D ss) (hoist D ss')
-  | [], _, _, _, _, _, h => by cases h; exact List.Forall₂.nil
-  | s :: rest, _, σ0, φ0, _, _, h => by
+theorem hoist_renScopeRel : ∀ {ss ss' : List (Stmt D.Op)} {lo hi} {σ φ σ' φ' : Ident → Ident},
+    AlphaSeqExt lo hi σ φ ss ss' σ' φ' → RenScopeRel φ (FDeclRen φ) (hoist D ss) (hoist D ss')
+  | [], _, _, _, _, _, _, _, h => by cases h; exact List.Forall₂.nil
+  | s :: rest, _, _, _, σ0, φ0, _, _, h => by
       cases h with
-      | @cons _ _ _ s' _ rest' σm φm σ'' φ'' hs1 hrest =>
+      | @cons _ _ _ _ _ _ s' _ rest' σm φm _ _ hs1 hrest =>
       have ih := hoist_renScopeRel hrest
       have hpe := hs1.phi_eq; subst hpe
       cases hs1 with
-      | @funD _ _ fn ps ps' rs rs' body body' σb φb hnd hnd' hlp hlr hNF hds hbe =>
+      | @funD _ m _ _ _ fn ps ps' rs rs' body body' σb φb hnd hlp hlr hNF hrn hbe =>
           simp only [hoist, List.filterMap_cons]
           refine List.Forall₂.cons ⟨rfl, ?_⟩ ih
           have hpsnd : ps.Nodup := (List.nodup_append.mp hnd).1
           have hrsnd : rs.Nodup := (List.nodup_append.mp hnd).2.1
           have hdisj : ∀ x ∈ ps, x ∉ rs :=
             fun x hx hxr => (List.nodup_append.mp hnd).2.2 x hx x hxr rfl
-          refine ⟨updRen id (ps.zip ps' ++ rs.zip rs'), σb, φb, ?_, ?_, ?_, hbe⟩
+          refine ⟨m, _, updRen id (ps.zip ps' ++ rs.zip rs'), σb, φb, ?_, ?_, ?_, hbe⟩
           · exact (map_updRen_zip_pre (rs.zip rs') hpsnd hlp).symm
           · have hc : rs.map (updRen id (ps.zip ps' ++ rs.zip rs'))
                 = rs.map (updRen id (rs.zip rs')) :=
@@ -710,7 +750,7 @@ theorem hoist_renScopeRel : ∀ {ss ss' : List (Stmt D.Op)} {σ φ σ' φ' : Ide
             exact (hc.trans (map_updRen_zip hrsnd hlr)).symm
           · rw [show ps.zip ps' ++ rs.zip rs' = (ps ++ rs).zip (ps' ++ rs') from
               (List.zip_append hlp).symm]
-            exact RenCfg.ofFreshScope hnd hnd' (by simp only [List.length_append, hlp, hlr]) hNF hds
+            exact RenCfg.ofFreshScope hnd (by simp only [List.length_append, hlp, hlr]) hNF hrn
       | _ => simp only [hoist, List.filterMap_cons]; exact ih
 
 /-! ### Result renaming and the code-level α-relation -/
@@ -720,25 +760,27 @@ def renRes (σ' : Ident → Ident) : Res D → Res D
   | .eres r => .eres r
   | .sres V st o => .sres (renVEnv σ' V) st o
 
-/-- α-relation on `Code`, carrying input and post renamings. -/
+/-- α-relation on `Code`, carrying counter range, input and post renamings. -/
 inductive AlphaCode :
-    (Ident → Ident) → (Ident → Ident) → (Ident → Ident) → (Ident → Ident) →
+    Nat → Nat → (Ident → Ident) → (Ident → Ident) → (Ident → Ident) → (Ident → Ident) →
     Code D.Op → Code D.Op → Prop
-  | expr {σ φ e₁ e₂} : AlphaExpr σ φ e₁ e₂ → AlphaCode σ φ σ φ (.expr e₁) (.expr e₂)
-  | args {σ φ a₁ a₂} : AlphaArgs σ φ a₁ a₂ → AlphaCode σ φ σ φ (.args a₁) (.args a₂)
-  | stmt {σ φ s₁ s₂ σ' φ'} : AlphaStmt1 σ φ s₁ s₂ σ' φ' → AlphaCode σ φ σ' φ' (.stmt s₁) (.stmt s₂)
-  | stmts {σ φ ss₁ ss₂ σ' φ'} :
-      AlphaSeqExt σ φ ss₁ ss₂ σ' φ' → AlphaCode σ φ σ' φ' (.stmts ss₁) (.stmts ss₂)
-  | loop {σ φ c₁ c₂ p₁ p₂ b₁ b₂ σb φb σp φp} :
-      AlphaExpr σ φ c₁ c₂ → AlphaBlockExt σ φ b₁ b₂ σb φb → AlphaBlockExt σ φ p₁ p₂ σp φp →
-      AlphaCode σ φ σ φ (.loop c₁ p₁ b₁) (.loop c₂ p₂ b₂)
+  | expr {lo hi σ φ e₁ e₂} : AlphaExpr σ φ e₁ e₂ → AlphaCode lo hi σ φ σ φ (.expr e₁) (.expr e₂)
+  | args {lo hi σ φ a₁ a₂} : AlphaArgs σ φ a₁ a₂ → AlphaCode lo hi σ φ σ φ (.args a₁) (.args a₂)
+  | stmt {lo hi σ φ s₁ s₂ σ' φ'} :
+      AlphaStmt1 lo hi σ φ s₁ s₂ σ' φ' → AlphaCode lo hi σ φ σ' φ' (.stmt s₁) (.stmt s₂)
+  | stmts {lo hi σ φ ss₁ ss₂ σ' φ'} :
+      AlphaSeqExt lo hi σ φ ss₁ ss₂ σ' φ' → AlphaCode lo hi σ φ σ' φ' (.stmts ss₁) (.stmts ss₂)
+  | loop {lo m hi σ φ c₁ c₂ p₁ p₂ b₁ b₂ σb φb σp φp} :
+      AlphaExpr σ φ c₁ c₂ → AlphaBlockExt lo m σ φ b₁ b₂ σb φb →
+      AlphaBlockExt m hi σ φ p₁ p₂ σp φp →
+      AlphaCode lo hi σ φ σ φ (.loop c₁ p₁ b₁) (.loop c₂ p₂ b₂)
 
 /-- Post-condition carried on a statement result so it threads to the
 continuation: for a `normal` outcome, the reported post-renaming is a valid
-`RenCfg` on the result environment. -/
-def ResOK (σ' : Ident → Ident) : Res D → Prop
+`RenCfg` on the result environment, at the post-range bound. -/
+def ResOK (σ' : Ident → Ident) (N : Nat) : Res D → Prop
   | .eres _ => True
-  | .sres V _ .normal => RenCfg σ' V
+  | .sres V _ .normal => RenCfg σ' V N
   | .sres _ _ _ => True
 
 end YulEvmCompiler.Optimizer.Normalize
