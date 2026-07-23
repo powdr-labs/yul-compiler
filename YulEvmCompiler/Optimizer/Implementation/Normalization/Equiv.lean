@@ -209,24 +209,42 @@ theorem collectDflt_allFunDef :
   | some b => by intro x hx; simp only [collectDflt] at hx; exact collectStmts_allFunDef b x hx
 end
 
-/-! ### The core simulation (under construction) -/
+
+/-! ### The core simulation (Run-equivalence; base = []) -/
 
 /-- A function declaration with its body stripped of nested definitions. -/
 def stripDecl (d : FDecl D) : FDecl D := { d with body := stripStmts d.body }
 
-/-- The original environment resolves every *program* function name to a
-declaration whose strip is the flat scope's entry. (Names outside `flatSc` — e.g.
-ambient functions the well-scoped program never calls — are unconstrained.) -/
-def ResOK (flatSc : FScope D) (funs_o : FunEnv D) : Prop :=
-  ∀ f d c d' c', lookupFun funs_o f = some (d, c) → lookupFun [flatSc] f = some (d', c') →
-    d' = stripDecl d
+/-- All function names bound anywhere in an environment (scope stack). -/
+def funNamesEnv (funs : FunEnv D) : List Ident :=
+  (funs.map (fun s => s.map (·.1))).flatten
 
-/-- The lifted environment resolves every name exactly as the flat scope over the
-ambient base does (nested stripped blocks only add empty scopes on top). -/
-def ResEq (ref funs_h : FunEnv D) : Prop := ∀ f, lookupFun funs_h f = lookupFun ref f
+/-- Resolve a name in the single flat scope. -/
+def flatLookup (flatSc : FScope D) (f : Ident) : Option (FDecl D) :=
+  (lookupFun [flatSc] f).map (·.1)
 
-/-- `stripStmt` on the `Code` wrapper (expressions/arg-lists are unchanged; only
-statement bodies are stripped). -/
+/-- Every function collected out of `code` is registered in the flat scope with
+its (already-stripped) body. -/
+def CodeInFlat (flatSc : FScope D) (code : List (Stmt D.Op)) : Prop :=
+  ∀ n ps rs bd, (Stmt.funDef n ps rs bd) ∈ collectStmts code →
+    flatLookup flatSc n = some { params := ps, rets := rs, body := bd }
+
+/-- The original environment is a valid program scope stack for `flatSc`: every
+function it resolves matches the flat scope (stripped), has a well-scoped body,
+and a body whose own functions are registered in the flat scope. No ambient base
+(this is the whole-program `Run` setting). -/
+def GoodO (flatSc : FScope D) (funs : FunEnv D) : Prop :=
+  ∀ f d cenv, lookupFun funs f = some (d, cenv) →
+    flatLookup flatSc f = some (stripDecl d) ∧
+    ScopedStmts (funNamesTop d.body ++ funNamesEnv cenv) d.body ∧
+    CodeInFlat flatSc d.body
+
+/-- The lifted environment resolves every name exactly as the single flat scope
+does (nested stripped blocks only add empty scopes, transparent to lookup). -/
+def ResEq (flatSc : FScope D) (funs_h : FunEnv D) : Prop :=
+  ∀ f, lookupFun funs_h f = lookupFun [flatSc] f
+
+/-- `stripStmt` on the `Code` wrapper. -/
 def stripCode : Code D.Op → Code D.Op
   | .expr e => .expr e
   | .args es => .args es
@@ -234,39 +252,69 @@ def stripCode : Code D.Op → Code D.Op
   | .stmts ss => .stmts (stripStmts ss)
   | .loop c post body => .loop c (stripStmts post) (stripStmts body)
 
-/-- **Core bidirectional simulation.** Running the original code under its lexical
-scope stack equals running the stripped code under the flat scope, when the
-environments are resolution-related (`ResOK`/`ResEq`, driven by unique names) and
-the code is well scoped (so every call resolves within the flat scope, not the
-ambient base — the direction uniqueness alone cannot save). Proved by induction
-on the `Step` derivation; the `callOk`/`block` cases re-establish the relation.
-Under construction. -/
-theorem step_lift_sim {flatSc : FScope D} {base : FunEnv D}
-    {funs_o funs_h : FunEnv D} {V st code res}
-    (hres : ResOK flatSc funs_o) (heq : ResEq (flatSc :: base) funs_h) :
+/-- Well-scopedness lifted to the `Code` wrapper. -/
+def ScopedCode (Γ : List Ident) : Code D.Op → Prop
+  | .expr e => ScopedExpr Γ e
+  | .args es => ScopedArgs Γ es
+  | .stmt s => ScopedStmt Γ s
+  | .stmts ss => ScopedStmts Γ ss
+  | .loop c post body => ScopedExpr Γ c ∧ ScopedStmts Γ post ∧ ScopedStmts Γ body
+
+/-- `CodeInFlat` lifted to the `Code` wrapper. -/
+def CodeInFlatCode (flatSc : FScope D) : Code D.Op → Prop
+  | .expr _ => True
+  | .args _ => True
+  | .stmt s => CodeInFlat flatSc [s]
+  | .stmts ss => CodeInFlat flatSc ss
+  | .loop _ post body => CodeInFlat flatSc post ∧ CodeInFlat flatSc body
+
+/-- **Core bidirectional simulation.** Running the original code under its
+lexical scope stack equals running the stripped code under the flat scope. The
+invariants (unique names in the env, `GoodO`, `ResEq`, well-scopedness,
+functions-in-flat) are preserved and re-established by the `block`/`callOk`
+cases. Proof under construction. -/
+theorem step_lift_sim {flatSc : FScope D} {funs_o funs_h : FunEnv D} {code V st res}
+    (huniq : (funNamesEnv funs_o).Nodup)
+    (hO : GoodO flatSc funs_o) (hH : ResEq flatSc funs_h)
+    (hws : ScopedCode (funNamesEnv funs_o) code)
+    (hcf : CodeInFlatCode flatSc code) :
     Step D funs_o V st code res ↔ Step D funs_h V st (stripCode code) res := by
   sorry
 
-/-- The `.stmts` specialization used by the block rule. -/
-theorem inner_sim {flatSc : FScope D} {base funs_o funs_h : FunEnv D}
-    {b : List (Stmt D.Op)} {V st res}
-    (hres : ResOK flatSc funs_o) (heq : ResEq (flatSc :: base) funs_h) :
-    Step D funs_o V st (.stmts b) res ↔
-      Step D funs_h V st (.stmts (stripStmts b)) res :=
-  step_lift_sim (code := .stmts b) hres heq
+/-! ### Top-level bridges (base = []) -/
+
+theorem funNamesEnv_singleton (b : Block D.Op) :
+    funNamesEnv (D := D) (hoist D b :: []) = funNamesTop b := by
+  sorry
+
+/-- At the top block, the original scope stack is `GoodO` for the flat scope. -/
+theorem goodO_top {b : Block D.Op} (huniq : UniqueFunNames b) (hws : WellScoped b) :
+    GoodO (D := D) (flat b) (hoist D b :: []) := by
+  sorry
+
+/-- At the top block, `b`'s functions are all registered in the flat scope. -/
+theorem codeInFlat_top (b : Block D.Op) : CodeInFlat (D := D) (flat b) b := by
+  sorry
 
 /-! ### The equivalence -/
 
-/-- **Hoisting all function definitions to the top preserves semantics**, for
-programs with globally unique function names that are well scoped. -/
-theorem liftFunDefs_equiv {b : Block D.Op}
-    (huniq : UniqueFunNames b) (hscoped : WellScoped b) :
-    EquivBlock D b (liftFunDefs b) := by
-  intro funs V st V' st' o
-  have heq : ResEq (D := D) (flat b :: funs) (flat b :: funs) := fun _ => rfl
-  -- structural bridge: the top block's own functions match the flat scope
-  -- (stripped). To be refined to the `program-scopes ++ base` relation.
-  have hres : ResOK (D := D) (flat b) (hoist D b :: funs) := by sorry
+/-- **Hoisting all function definitions to the top preserves whole-program
+semantics**, for programs with globally unique function names that are well
+scoped. -/
+theorem liftFunDefs_run_equiv {b : Block D.Op}
+    (huniq : UniqueFunNames b) (hscoped : WellScoped b)
+    {st0 : D.State} {V' st' o} :
+    Run D b st0 V' st' o ↔ Run D (liftFunDefs b) st0 V' st' o := by
+  have simIff : ∀ {r}, Step D (hoist D b :: []) [] st0 (.stmts b) r ↔
+      Step D (flat b :: []) [] st0 (.stmts (stripStmts b)) r := by
+    intro r
+    have huniqEnv : (funNamesEnv (D := D) (hoist D b :: [])).Nodup := by
+      rw [funNamesEnv_singleton]
+      sorry
+    have hwsEnv : ScopedCode (funNamesEnv (D := D) (hoist D b :: [])) (.stmts b) := by
+      rw [funNamesEnv_singleton]; exact hscoped
+    exact step_lift_sim (code := .stmts b) (res := r) huniqEnv (goodO_top huniq hscoped)
+      (fun _ => rfl) hwsEnv (codeInFlat_top b)
   constructor
   · intro h
     cases h with
@@ -275,7 +323,7 @@ theorem liftFunDefs_equiv {b : Block D.Op}
         rw [hoist_liftFunDefs]
         simp only [liftFunDefs]
         rw [funDefs_noop (collectStmts_allFunDef b)]
-        exact (inner_sim (flatSc := flat b) (base := funs) hres heq).mp hb
+        exact simIff.mp hb
   · intro h
     cases h with
     | @block _ _ _ _ Vb stb _ hb =>
@@ -283,6 +331,6 @@ theorem liftFunDefs_equiv {b : Block D.Op}
         rw [hoist_liftFunDefs] at hb
         simp only [liftFunDefs] at hb
         rw [funDefs_noop (collectStmts_allFunDef b)] at hb
-        exact (inner_sim (flatSc := flat b) (base := funs) hres heq).mpr hb
+        exact simIff.mpr hb
 
 end YulEvmCompiler.Optimizer.Normalization
