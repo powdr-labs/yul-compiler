@@ -1339,15 +1339,50 @@ theorem flattenArgs_halt_bwd {funs : FunEnv D} {P : String} {es : List (Expr Op)
         exact Step.argsHeadHalt hargsRest hheadHalt
 end
 
-/-- **ANF preserves behavior.** (Scaffolded; discharged via the statement
-simulation + `restore` lemmas.) -/
-theorem anfNormalize_sound (b : Block Op) :
-    EquivBlock D b (anfNormalize b) := by
-  sorry
-
-/-- The ANF normalizer as a verified `Pass`. -/
-def anfPass : Pass D where
-  run := anfNormalize
-  sound := anfNormalize_sound
+/-- Head-flattening, halt (backward). Two forms: if the prelude halts, or if it
+completes and the flat expression halts, the original expression halts. (The
+prelude-halt half uses well-scopedness via `flattenArgs_halt_bwd`.) -/
+theorem flattenTop_halt_bwd {funs : FunEnv D} {P : String} {e : Expr Op}
+    {Vo Va : VEnv D} {st : EvmState} (k : Nat)
+    (hnt : noTempExpr P e = true) (hext : TempExt P Vo Va)
+    (hsc : ∀ x, x ∈ freeVarsExpr e → (VEnv.get Vo x).isSome = true) :
+    (∀ {Va' sth}, Step D funs Va st (.stmts (flattenTop P k e).2.1) (.sres Va' sth .halt) →
+        Step D funs Vo st (.expr e) (.eres (.halt sth))) ∧
+    (∀ {Va' stM sth}, Step D funs Va st (.stmts (flattenTop P k e).2.1) (.sres Va' stM .normal) →
+        Step D funs Va' stM (.expr (flattenTop P k e).2.2) (.eres (.halt sth)) →
+        Step D funs Vo st (.expr e) (.eres (.halt sth))) := by
+  cases e with
+  | var x =>
+      refine ⟨fun hph => ?_, fun _ hh => ?_⟩
+      · simp only [flattenTop] at hph; cases hph
+      · simp only [flattenTop] at hh; cases hh
+  | lit l =>
+      refine ⟨fun hph => ?_, fun _ hh => ?_⟩
+      · simp only [flattenTop] at hph; cases hph
+      · simp only [flattenTop] at hh; cases hh
+  | builtin op args =>
+      have hna : noTempArgs P args = true := by simpa [noTempExpr] using hnt
+      refine ⟨fun hph => ?_, fun hpre hh => ?_⟩
+      · simp only [flattenTop] at hph
+        exact Step.builtinArgsHalt (flattenArgs_halt_bwd k hna hext hsc hph)
+      · simp only [flattenTop] at hpre hh
+        cases hh with
+        | builtinHalt hatoms hb =>
+            obtain ⟨hargs, _⟩ := flattenArgs_correct_bwd k hna hext hpre hatoms
+            exact Step.builtinHalt hargs hb
+        | builtinArgsHalt hah =>
+            exact absurd hah (fun h => (atomArgs_no_halt (flattenArgs_ok P k args).1 h).elim)
+  | call fn args =>
+      have hna : noTempArgs P args = true := by simpa [noTempExpr] using hnt
+      refine ⟨fun hph => ?_, fun hpre hh => ?_⟩
+      · simp only [flattenTop] at hph
+        exact Step.callArgsHalt (flattenArgs_halt_bwd k hna hext hsc hph)
+      · simp only [flattenTop] at hpre hh
+        cases hh with
+        | callHalt hatoms hlk hlen hbody =>
+            obtain ⟨hargs, _⟩ := flattenArgs_correct_bwd k hna hext hpre hatoms
+            exact Step.callHalt hargs hlk hlen hbody
+        | callArgsHalt hah =>
+            exact absurd hah (fun h => (atomArgs_no_halt (flattenArgs_ok P k args).1 h).elim)
 
 end YulEvmCompiler.Optimizer.ANF
