@@ -730,6 +730,7 @@ def FDeclRen (F : List Ident) (φ : Ident → Ident) (d₁ d₂ : FDecl D) : Pro
   ∃ lo hi σc σc' φc',
     d₂.params = d₁.params.map σc ∧ d₂.rets = d₁.rets.map σc ∧
     RenCfg σc (bindZeros D (d₁.params ++ d₁.rets)) lo ∧
+    (∀ a ∈ F, (∃ k, k < lo ∧ φ a = dsName k) ∧ NotFresh a) ∧
     NormalForm.ScopedStmts (d₁.params ++ d₁.rets)
       (F ++ NormalForm.funDefNames d₁.body) d₁.body ∧
     WScopedStmts (d₁.params ++ d₁.rets) d₁.body ∧
@@ -750,6 +751,33 @@ theorem RenFunsRelF.cons {φ : Ident → Ident} {s₁ s₂ : FScope D} {r₁ r�
     (hs : RenScopeRel φ (FDeclRen (funNamesOf (s₁ :: r₁)) φ) s₁ s₂)
     (hr : RenFunsRelF φ r₁ r₂) : RenFunsRelF φ (s₁ :: r₁) (s₂ :: r₂) :=
   ⟨hs, hr⟩
+
+/-- A successful lookup's closure environment consists of scopes of the original
+environment, and the resolved name is among its visible names. -/
+theorem lookupFun_scopes_sub {funs : FunEnv D} :
+    ∀ {fn : Ident} {decl : FDecl D} {cenv : FunEnv D},
+      lookupFun funs fn = some (decl, cenv) →
+      (∀ s ∈ cenv, s ∈ funs) ∧ fn ∈ funNamesOf cenv := by
+  induction funs with
+  | nil => intro fn decl cenv h; simp [lookupFun] at h
+  | cons s rest ih =>
+      intro fn decl cenv h
+      rw [lookupFun] at h
+      cases hf : s.find? (fun p => p.1 = fn) with
+      | some p =>
+          rw [hf] at h
+          simp only [Option.some.injEq, Prod.mk.injEq] at h
+          obtain ⟨_, hc⟩ := h
+          subst hc
+          refine ⟨fun t ht => ht, ?_⟩
+          have hp : p ∈ s := List.mem_of_find?_eq_some hf
+          have hpfn : p.1 = fn := by simpa using List.find?_some hf
+          rw [funNamesOf_cons]
+          exact List.mem_append.mpr (Or.inl (hpfn ▸ List.mem_map_of_mem hp))
+      | none =>
+          rw [hf] at h
+          obtain ⟨hsub, hmem⟩ := ih h
+          exact ⟨fun t ht => List.mem_cons_of_mem _ (hsub t ht), hmem⟩
 
 /-- `lookupFun` transports across `RenFunsRelF`: the resolved declaration is
 related at exactly the visible set of the returned closure environment. -/
@@ -782,9 +810,13 @@ stored body references only visible names (its `Scoped` field), so its
 theorem FDeclRen.congr_phi {F : List Ident} {φ φ' : Ident → Ident} {d₁ d₂ : FDecl D}
     (h : FDeclRen F φ d₁ d₂) (hag : ∀ fn ∈ F, φ' fn = φ fn) :
     FDeclRen F φ' d₁ d₂ := by
-  obtain ⟨lo, hi, σc, σc', φc', hps, hrs, hcfg, hns, hws, hfs, hbe⟩ := h
-  exact ⟨lo, hi, σc, _, _, hps, hrs, hcfg, hns, hws, hfs,
+  obtain ⟨lo, hi, σc, σc', φc', hps, hrs, hcfg, hφd, hns, hws, hfs, hbe⟩ := h
+  refine ⟨lo, hi, σc, _, _, hps, hrs, hcfg, ?_, hns, hws, hfs,
     alphaBlockExt_congr_phi hbe hns hag⟩
+  intro a ha
+  refine ⟨(hφd a ha).1.imp (fun k hk => ⟨hk.1, ?_⟩), (hφd a ha).2⟩
+  rw [hag a ha]
+  exact hk.2
 
 /-- Scope-level transport at a fixed visible set: keys by agreement on the
 scope's names, declarations by `FDeclRen.congr_phi`. -/
@@ -831,26 +863,31 @@ theorem hoist_keys (body : List (Stmt D.Op)) : (hoist D body).map Prod.fst = fun
 /-- **Hoist transport.** α-equivalent statement sequences with scope-safe,
 reference-scoped source have `RenScopeRel`-related hoisted function scopes at
 the block's visible set `F`: each source `funDef` is matched by a target
-`funDef` with `φ`-renamed name and an `FDeclRen F φ`-related declaration. -/
-theorem hoist_renScopeRel {F : List Ident} :
+`funDef` with `φ`-renamed name and an `FDeclRen F φ`-related declaration. The
+ambient `φ`'s images on `F` must lie below the sequence's counter range (`N`),
+so each declaration's stored image-bound holds at its body's range start. -/
+theorem hoist_renScopeRel {F : List Ident} {N : Nat} :
     ∀ {ss ss' : List (Stmt D.Op)} {lo hi} {σ φ σ' φ' : Ident → Ident}
       {dom vs : List Ident},
     AlphaSeqExt lo hi σ φ ss ss' σ' φ' →
+    N ≤ lo →
+    (∀ a ∈ F, (∃ k, k < N ∧ φ a = dsName k) ∧ NotFresh a) →
     WScopedStmts dom ss →
     FScopedStmts F ss →
     NormalForm.ScopedStmts vs F ss →
     RenScopeRel φ (FDeclRen F φ) (hoist D ss) (hoist D ss')
-  | [], _, _, _, _, _, _, _, _, _, h, _, _, _ => by cases h; exact List.Forall₂.nil
-  | s :: rest, _, _, _, σ0, φ0, _, _, dom, vs, h, hws, hfs, hns => by
+  | [], _, _, _, _, _, _, _, _, _, h, _, _, _, _, _ => by cases h; exact List.Forall₂.nil
+  | s :: rest, _, _, _, σ0, φ0, _, _, dom, vs, h, hNlo, hφd, hws, hfs, hns => by
       obtain ⟨hws_s, hws_r⟩ := (hws : WScopedStmt dom s ∧
         WScopedStmts (declVars s ++ dom) rest)
       obtain ⟨hfs_s, hfs_r⟩ := (hfs : FScopedStmt F s ∧ FScopedStmts F rest)
       obtain ⟨hns_s, hns_r⟩ := (hns : NormalForm.ScopedStmt vs F s ∧
         NormalForm.ScopedStmts (vs ++ NormalForm.declTopVars s) F rest)
       cases h with
-      | @cons _ _ _ _ _ _ s' _ rest' σm φm _ _ hs1 hrest =>
-      have ih := hoist_renScopeRel hrest hws_r hfs_r hns_r
+      | @cons _ mid _ _ _ _ s' _ rest' σm φm _ _ hs1 hrest =>
       have hpe := hs1.phi_eq; subst hpe
+      have ih := hoist_renScopeRel hrest
+        (Nat.le_trans hNlo (alphaStmt1_le hs1)) hφd hws_r hfs_r hns_r
       cases hs1 with
       | @funD _ m _ _ _ fn ps ps' rs rs' body body' σb φb hnd hlp hlr hNF hrn hbe =>
           simp only [hoist, List.filterMap_cons]
@@ -859,7 +896,8 @@ theorem hoist_renScopeRel {F : List Ident} :
           have hrsnd : rs.Nodup := (List.nodup_append.mp hnd).2.1
           have hdisj : ∀ x ∈ ps, x ∉ rs :=
             fun x hx hxr => (List.nodup_append.mp hnd).2.2 x hx x hxr rfl
-          refine ⟨m, _, updRen id (ps.zip ps' ++ rs.zip rs'), σb, φb, ?_, ?_, ?_, ?_, ?_, ?_, hbe⟩
+          refine ⟨m, _, updRen id (ps.zip ps' ++ rs.zip rs'), σb, φb,
+            ?_, ?_, ?_, ?_, ?_, ?_, ?_, hbe⟩
           · exact (map_updRen_zip_pre (rs.zip rs') hpsnd hlp).symm
           · have hc : rs.map (updRen id (ps.zip ps' ++ rs.zip rs'))
                 = rs.map (updRen id (rs.zip rs')) :=
@@ -869,6 +907,9 @@ theorem hoist_renScopeRel {F : List Ident} :
           · rw [show ps.zip ps' ++ rs.zip rs' = (ps ++ rs).zip (ps' ++ rs') from
               (List.zip_append hlp).symm]
             exact RenCfg.ofFreshScope hnd (by simp only [List.length_append, hlp, hlr]) hNF hrn
+          · intro a ha
+            refine ⟨(hφd a ha).1.imp (fun k hk =>
+              ⟨Nat.lt_of_lt_of_le hk.1 (Nat.le_trans hNlo hrn.2.2), hk.2⟩), (hφd a ha).2⟩
           · exact hns_s
           · exact (hws_s : (ps ++ rs).Nodup ∧ WScopedStmts (ps ++ rs) body).2
           · exact hfs_s
