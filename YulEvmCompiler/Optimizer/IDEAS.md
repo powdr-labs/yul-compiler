@@ -456,36 +456,36 @@ guards (whole-caller live-local analysis instead of the per-callee bound).
 
 ## Candidate next ideas
 
-### 🚧 Memory spilling for residual stack pressure (in progress)
+### ✅ Memory spilling for residual stack pressure ([#81](https://github.com/powdr-labs/yul-compiler/pull/81))
 
-The remaining strict integration failures (`PoolManager.sol`, `PoolSwap.sol`,
-`HubOperations.sol`, `LiquidationLogic.sol`, and `SpokeOperations.sol`) still
-exceed classic `DUP16`/`SWAP16` reach after the verified layout passes.  The
-proposed fallback follows Solidity's stack-limit evader: choose stack bindings
-to spill, color fixed 32-byte memory slots across the non-recursive call graph,
-rewrite their definitions/reads/writes to `mstore`/`mload`, and increase the
-program's `memoryguard` reservation so ordinary allocations cannot overlap the
-spill area.  It will run only after every existing compilation candidate has
-failed, preserving the bytecode and gas of all programs that already compile.
+The production compiler now uses guarded memory spilling as its final fallback
+after every existing compilation candidate fails.  It chooses bindings from
+actual backend stack-pressure failures, keeps tuple bindings all-or-none,
+colors fixed 32-byte cells across lexical lifetimes and the non-recursive call
+graph, and rewrites selected definitions, reads, assignments, parameters,
+returns, calls, loops, and control exits to `mstore`/`mload`.  A consistent
+literal `memoryguard(n)` reserves the spill interval; `msize`, recursion,
+malformed signatures, invalid selected-binding scopes, partial tuple groups,
+and missing or inconsistent guards reject safely.  Existing successful
+candidates still run first, so their bytecode and gas are unchanged.
 
-There is a specification gate before implementation can enter production.
-This repository currently desugars `memoryguard(e)` to `e` and its strong
-optimizer contract requires identical final memory, active-memory size, and
-variable environment for arbitrary Yul states.  Memory spilling cannot satisfy
-that contract: changing the guard value is observable in unrestricted Yul, and
-unguarded scratch writes can be observed by memory operations, hashes, logs,
-returns, or external calls.  Backend memory virtualization instead changes the
-`MemMatch`/`StateMatch` representation invariant.  Either route moves the
-audited specification boundary and therefore requires explicit maintainer
-approval and a human-reviewed spec re-pin; an unproved `compileSource`
-accommodation is not an acceptable fallback.
+The approved specification is deliberately guarded rather than an
+unconditional strong optimizer pass.  `GuardedRun` and plan-indexed
+`PlannedTopRun`, together with `GuardedExternals`, state the memoryguard scratch
+contract.  The simulation relates source and rewritten states outside the
+reserved interval and covers every source `Step` constructor, block scope
+restoration, function calls and return copy-back, and recursively planned
+object compilation.  The composed block and object backend theorems check with
+no `sorry`, new axioms, `unsafe`, trust-boundary edits, or spec re-pinning.
 
-Subject to that approval, acceptance requires all five strict fixtures to
-compile and execute differentially, no changed gas rows or bytecode for any
-previously compiling fallback candidate, block and recursive-object coverage,
-no spills through recursive call cycles, memoryguard-reservation and slot
-noninterference proofs, a proved observational/object execution theorem, no
-`sorry`/new axioms, and the full build and axiom checks.
+`PoolSwap.sol`, `stackLimitEvader/function_arg.yul`, and
+`stackLimitEvader/tree.yul` now compile.  The strict Uniswap and Aave gas suites
+and all CI differential/gas shards pass without changed existing gas rows.
+`PoolManager.sol`, `HubOperations.sol`, `LiquidationLogic.sol`, and
+`SpokeOperations.sol` remain exact known failures because they reach separate
+unsupported `gas`, immutable, or live-linker behavior after guarded pressure is
+removed; `SpokeOperations.sol` also has an independent unguarded pressure site.
+Those are follow-up features rather than unfinished memory spilling.
 
 ### ✅ `StackLayout` — expression scheduling and liveness-guided slot reuse ([#61](https://github.com/powdr-labs/yul-compiler/issues/61))
 
