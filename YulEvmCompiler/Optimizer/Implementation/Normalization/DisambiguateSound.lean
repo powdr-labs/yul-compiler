@@ -443,3 +443,30 @@ of the first occurrence. -/
 theorem updRen_of_find {σ : Ident → Ident} {l : List (Ident × Ident)} {z : Ident}
     {p : Ident × Ident} (h : l.find? (fun q => q.1 = z) = some p) : updRen σ l z = p.2 := by
   simp only [updRen, h]
+
+/-! ### Boundary renaming: renamed inner prefix over a shared outer suffix
+
+For the *arbitrary-context* `EquivBlock`, the target environment is the source
+with only the block's own (freshly-renamed) declarations changed, over an
+identical outer suffix. A reference to an outer name is left unchanged by the
+renaming and falls through the fresh inner keys to the shared suffix; a reference
+to an inner name is renamed and resolves in the inner prefix. -/
+
+/-- `get` distributes over `++`: the first list wins, else the second. -/
+theorem VEnv.get_append (A B : VEnv D) (k : Ident) :
+    VEnv.get (A ++ B) k = (VEnv.get A k).orElse (fun _ => VEnv.get B k) := by
+  simp only [VEnv.get, List.find?_append]
+  cases A.find? (fun p => p.1 = k) <;> simp
+
+/-- `get` transport across a boundary renaming. A lookup of `σ x`:
+* if `x` is an inner (renamed) key, resolves in the renamed prefix to `x`'s value;
+* otherwise `σ x = x` (outer names unrenamed) and, the fresh inner keys being
+  disjoint from `x`, falls through to the shared suffix. -/
+theorem get_boundary (σ : Ident → Ident) (inner outer : VEnv D) (x : Ident)
+    (hinj : ∀ p ∈ inner, σ p.1 = σ x → p.1 = x)
+    (hid : VEnv.get inner x = none → σ x = x) :
+    VEnv.get (renVEnv σ inner ++ outer) (σ x) = VEnv.get (inner ++ outer) x := by
+  rw [VEnv.get_append, VEnv.get_append, renVEnv_get σ inner x hinj]
+  cases hgi : VEnv.get inner x with
+  | some v => simp
+  | none => simp [hid hgi]
