@@ -609,6 +609,11 @@ def ResOK (σ' : Ident → Ident) : Res D → Prop
   | .eres _ => True
   | .sres V _ _ => RenCfg σ' V
 
+/-- A single statement never changes the function renaming (function names are
+prescanned at the block level). -/
+theorem AlphaStmt1.phi_eq {σ φ : Ident → Ident} {s s' : Stmt D.Op} {σ' φ' : Ident → Ident}
+    (h : AlphaStmt1 σ φ s s' σ' φ') : φ' = φ := by cases h <;> rfl
+
 theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs₁ V₁ mst code₁ res₁) :
     ∀ {σ φ σ' φ' funs₂ code₂}, RenCfg σ V₁ → Function.Injective φ →
       RenFunsRel φ (FDeclRen φ) funs₁ funs₂ → AlphaCode σ φ σ' φ' code₁ code₂ →
@@ -709,4 +714,11 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
       cases hcode with | loop hc2 hb2 hp2 =>
           exact ⟨Step.loopDone (ihc hcfg hφ hfuns (.expr hc2)).1 hz, hcfg⟩
+  | @seqCons funs V st s rest V1 st1 V2 st2 o hs hrest ihs ihrest =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      cases hcode with | stmts hss => cases hss with | cons hs1 hrest1 =>
+          obtain ⟨hstep_s, hcfg1⟩ := ihs hcfg hφ hfuns (.stmt hs1)
+          have hpe := hs1.phi_eq; subst hpe
+          obtain ⟨hstep_r, hcfgr⟩ := ihrest hcfg1 hφ hfuns (.stmts hrest1)
+          exact ⟨Step.seqCons hstep_s hstep_r, hcfgr⟩
   | _ => intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode; sorry
