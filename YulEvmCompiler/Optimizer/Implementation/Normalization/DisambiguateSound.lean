@@ -316,104 +316,10 @@ inductive AlphaCode :
       AlphaExpr σ φ c₁ c₂ → AlphaBlockExt σ φ b₁ b₂ σb φb → AlphaBlockExt σ φ p₁ p₂ σp φp →
       AlphaCode σ φ σ φ (.loop c₁ p₁ b₁) (.loop c₂ p₂ b₂)
 
-/-- **Forward simulation.** A source `Step` transports to the renamed program,
-with the result renamed by the post-renaming. Expression, argument, and simple
-statement cases are proven; the scope-heavy cases (block/call/for/if/switch/seq)
-are being filled in, isolated in the final catch-all branch. -/
-theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs₁ V₁ mst code₁ res₁) :
-    ∀ {σ φ σ' φ' funs₂ code₂}, Function.Injective σ → Function.Injective φ →
-      RenFunsRel φ (FDeclRen φ) funs₁ funs₂ → AlphaCode σ φ σ' φ' code₁ code₂ →
-      Step D funs₂ (renVEnv σ V₁) mst code₂ (renRes σ' res₁) := by
-  induction h with
-  | @lit funs V st l =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | expr hae => cases hae; exact Step.lit
-  | @var funs V st x v hv =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with
-      | expr hae => cases hae with | var =>
-          exact Step.var (by rw [renVEnv_get σ V x (fun p _ hh => hσ hh)]; exact hv)
-  | @builtinOk funs V st op args argvals st1 rets st2 ha hb iha =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | expr hae => cases hae with | builtin ha2 =>
-          exact Step.builtinOk (iha hσ hφ hfuns (.args ha2)) hb
-  | @builtinHalt funs V st op args argvals st1 st2 ha hb iha =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | expr hae => cases hae with | builtin ha2 =>
-          exact Step.builtinHalt (iha hσ hφ hfuns (.args ha2)) hb
-  | @builtinArgsHalt funs V st op args st1 ha iha =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | expr hae => cases hae with | builtin ha2 =>
-          exact Step.builtinArgsHalt (iha hσ hφ hfuns (.args ha2))
-  | @callArgsHalt funs V st fn args st1 ha iha =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | expr hae => cases hae with | call ha2 =>
-          exact Step.callArgsHalt (iha hσ hφ hfuns (.args ha2))
-  | @argsNil funs V st =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | args hae => cases hae; exact Step.argsNil
-  | @argsCons funs V st e rest restvals st1 v st2 hrest he ihrest ihe =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | args hae => cases hae with | cons he2 hr2 =>
-          exact Step.argsCons (ihrest hσ hφ hfuns (.args hr2)) (ihe hσ hφ hfuns (.expr he2))
-  | @argsRestHalt funs V st e rest st1 hrest ihrest =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | args hae => cases hae with | cons he2 hr2 =>
-          exact Step.argsRestHalt (ihrest hσ hφ hfuns (.args hr2))
-  | @argsHeadHalt funs V st e rest restvals st1 st2 hrest he ihrest ihe =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | args hae => cases hae with | cons he2 hr2 =>
-          exact Step.argsHeadHalt (ihrest hσ hφ hfuns (.args hr2)) (ihe hσ hφ hfuns (.expr he2))
-  | @funDef funs V st n ps rs b =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | stmt hs => cases hs with | funD _ => exact Step.funDef
-  | @«break» funs V st =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | stmt hs => cases hs with | breakD => exact Step.break
-  | @«continue» funs V st =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | stmt hs => cases hs with | contD => exact Step.continue
-  | @leave funs V st =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | stmt hs => cases hs with | leaveD => exact Step.leave
-  | @seqNil funs V st =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | stmts hs => cases hs with | nil => exact Step.seqNil
-  | @exprStmt funs V st e st1 he ihe =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | stmt hs => cases hs with | exprD he2 =>
-          exact Step.exprStmt (ihe hσ hφ hfuns (.expr he2))
-  | @exprStmtHalt funs V st e st1 he ihe =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | stmt hs => cases hs with | exprD he2 =>
-          exact Step.exprStmtHalt (ihe hσ hφ hfuns (.expr he2))
-  | @assignVal funs V st vars e vals st1 he hlen ihe =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | stmt hs => cases hs with | assignD he2 =>
-          simp only [renRes]
-          rw [← renVEnv_setMany σ hσ vars vals V]
-          exact Step.assignVal (ihe hσ hφ hfuns (.expr he2)) (by rw [List.length_map]; exact hlen)
-  | @assignHalt funs V st vars e st1 he ihe =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | stmt hs => cases hs with | assignD he2 =>
-          exact Step.assignHalt (ihe hσ hφ hfuns (.expr he2))
-  | @ifHalt funs V st c body st1 hc ihc =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | stmt hs => cases hs with | condD hc2 hb2 =>
-          exact Step.ifHalt (ihc hσ hφ hfuns (.expr hc2))
-  | @switchHalt funs V st c cs dflt st1 hc ihc =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | stmt hs => cases hs with | switchD hc2 hcs2 hd2 =>
-          exact Step.switchHalt (ihc hσ hφ hfuns (.expr hc2))
-  | @loopCondHalt funs V st c post body st1 hc ihc =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | loop hc2 hb2 hp2 =>
-          exact Step.loopCondHalt (ihc hσ hφ hfuns (.expr hc2))
-  | @loopDone funs V st c post body cv st1 hc hz ihc =>
-      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
-      cases hcode with | loop hc2 hb2 hp2 =>
-          exact Step.loopDone (ihc hσ hφ hfuns (.expr hc2)) hz
-  | _ => intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode; sorry
+-- The forward simulation `sim_fwd` is defined at the end of the file, once the
+-- `RenCfg` config (injective-on-keys, the satisfiable condition) is in scope.
+-- (An earlier version here assumed a globally injective `σ`, which the
+-- disambiguation renaming does not satisfy — see `RenCfg`.)
 
 /-! ### Renaming-agreement lemmas
 
