@@ -486,3 +486,53 @@ theorem VEnv.set_append (A B : VEnv D) (k : Ident) (v : D.Value) :
       · simp only [List.cons_append, VEnv.set, if_neg hyk, List.find?_cons, hyk,
           decide_false, cond_false, ih]
         cases (rest.find? (fun p => p.1 = k)).isSome <;> simp
+
+/-- `set` is a no-op when the key is absent. -/
+theorem VEnv.set_of_find_none (V : VEnv D) (k : Ident) (v : D.Value)
+    (h : V.find? (fun p => p.1 = k) = none) : VEnv.set V k v = V := by
+  induction V with
+  | nil => rfl
+  | cons p rest ih =>
+      obtain ⟨y, w⟩ := p
+      rw [List.find?_cons] at h
+      by_cases hyk : y = k
+      · simp [hyk] at h
+      · simp only [VEnv.set, if_neg hyk]
+        rw [ih (by simpa only [hyk, decide_false, cond_false] using h)]
+
+theorem VEnv.get_eq_none_iff_find (V : VEnv D) (k : Ident) :
+    VEnv.get V k = none ↔ V.find? (fun p => p.1 = k) = none := by
+  simp only [VEnv.get, Option.map_eq_none_iff]
+
+/-- `set` transport across a boundary renaming (the `set` analog of `get_boundary`):
+an in-place update of `σ x` hits the renamed inner prefix when `x` is inner, and
+otherwise (`σ x = x`) the shared outer suffix; the fresh inner keys are disjoint
+from the outer keys so neither update touches the wrong side. -/
+theorem set_boundary (σ : Ident → Ident) (inner outer : VEnv D) (x : Ident) (v : D.Value)
+    (hinj : ∀ p ∈ inner, σ p.1 = σ x → p.1 = x)
+    (hid : VEnv.get inner x = none → σ x = x)
+    (hfresh : ∀ p ∈ inner, ∀ q ∈ outer, σ p.1 ≠ q.1) :
+    VEnv.set (renVEnv σ inner ++ outer) (σ x) v
+      = renVEnv σ (VEnv.set inner x v) ++ VEnv.set outer (σ x) v := by
+  have hget : VEnv.get (renVEnv σ inner) (σ x) = VEnv.get inner x := renVEnv_get σ inner x hinj
+  rw [VEnv.set_append]
+  by_cases hx : VEnv.get inner x = none
+  · have hrn : (renVEnv σ inner).find? (fun p => p.1 = σ x) = none :=
+      (VEnv.get_eq_none_iff_find _ _).mp (hget.trans hx)
+    rw [if_neg (by rw [hrn]; simp),
+      VEnv.set_of_find_none inner x v ((VEnv.get_eq_none_iff_find _ _).mp hx)]
+  · have hsome : ((renVEnv σ inner).find? (fun p => p.1 = σ x)).isSome :=
+      Option.isSome_iff_ne_none.mpr
+        (fun hc => hx (hget ▸ (VEnv.get_eq_none_iff_find _ _).mpr hc))
+    have hne : inner.find? (fun p => p.1 = x) ≠ none :=
+      fun hc => hx ((VEnv.get_eq_none_iff_find _ _).mpr hc)
+    obtain ⟨p, hp⟩ := Option.ne_none_iff_exists'.mp hne
+    have hpmem : p ∈ inner := List.mem_of_find?_eq_some hp
+    have hpx : p.1 = x := by simpa using List.find?_some hp
+    have houter : outer.find? (fun q => q.1 = σ x) = none := by
+      rw [List.find?_eq_none]
+      intro q hq
+      simp only [decide_eq_true_eq]
+      intro hqeq
+      exact hfresh p hpmem q hq (by rw [hpx]; exact hqeq.symm)
+    rw [if_pos hsome, renVEnv_set σ inner x v hinj, VEnv.set_of_find_none outer (σ x) v houter]
