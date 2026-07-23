@@ -38,10 +38,6 @@ Straight-line statements have their operands flattened inside a fresh sub-block;
 `let` additionally declares its binding outside the block. Everything else is
 returned unchanged (control-flow recursion is added in a later refinement). -/
 def bsStmt1 (P : String) : Stmt Op → List (Stmt Op)
-  | .letDecl vars (some e) =>
-      let (_, pre, e') := flattenTop P 0 e
-      if pre.isEmpty then [.letDecl vars (some e)]
-      else [.letDecl vars none, .block (pre ++ [.assign vars e'])]
   | .assign vars e =>
       let (_, pre, e') := flattenTop P 0 e
       if pre.isEmpty then [.assign vars e]

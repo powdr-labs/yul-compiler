@@ -239,4 +239,34 @@ theorem bsAssign_sound {funs : FunEnv D} {P : String} {vars : List Ident} {e : E
   · exact stmt_as_stmts
   · exact hblock.trans stmt_as_stmts
 
+/-! ### Per-statement soundness (all statement forms) -/
+
+/-- The source variables a statement's flattened operands read (only the
+straight-line forms that `bsStmt1` rewrites; identity forms need no scope). -/
+def stmtFreeVars : Stmt Op → List Ident
+  | .assign _ e => freeVarsExpr e
+  | .exprStmt e => freeVarsExpr e
+  | _ => []
+
+theorem bsStmt1_sound {funs : FunEnv D} {P : String} {s : Stmt Op}
+    (hnt : noTempStmt P s = true) {V : VEnv D} {st V' st' o}
+    (hsc : ∀ x, x ∈ stmtFreeVars s → (VEnv.get V x).isSome = true) :
+    Step D funs V st (.stmt s) (.sres V' st' o) ↔
+    Step D funs V st (.stmts (bsStmt1 P s)) (.sres V' st' o) := by
+  cases s with
+  | assign vars e =>
+      simp only [noTempStmt, Bool.and_eq_true] at hnt
+      exact bsAssign_sound hnt.1 hnt.2 (by simpa [stmtFreeVars] using hsc)
+  | exprStmt e =>
+      exact bsExprStmt_sound (by simpa [noTempStmt] using hnt) (by simpa [stmtFreeVars] using hsc)
+  | letDecl vars val => exact stmt_as_stmts
+  | block body => exact stmt_as_stmts
+  | funDef n ps rs b => exact stmt_as_stmts
+  | cond c body => exact stmt_as_stmts
+  | switch c cs dflt => exact stmt_as_stmts
+  | forLoop init c post body => exact stmt_as_stmts
+  | «break» => exact stmt_as_stmts
+  | «continue» => exact stmt_as_stmts
+  | leave => exact stmt_as_stmts
+
 end YulEvmCompiler.Optimizer.ANF

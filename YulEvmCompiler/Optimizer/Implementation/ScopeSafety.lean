@@ -112,6 +112,34 @@ theorem setMany_append_disjoint {V : VEnv D} (ext : VEnv D) {xs : List Ident} {v
   rw [heq]
   exact (List.of_mem_zip hq).1
 
+/-- One step of `setMany`. -/
+theorem setMany_cons (W : VEnv D) (x : Ident) (xs : List Ident) (v : D.Value) (vs : List D.Value) :
+    VEnv.setMany W (x :: xs) (v :: vs) = VEnv.setMany (VEnv.set W x v) xs vs := by
+  simp only [VEnv.setMany, List.zip_cons_cons, List.foldl_cons]
+
+/-- Declaring variables to zero and then assigning them (block-scoped) reproduces
+the direct `let`-binding, for distinct variables. -/
+theorem setMany_bindZeros : ∀ {vars : List Ident} {vals : List D.Value} {V : VEnv D},
+    vals.length = vars.length → vars.Nodup →
+    VEnv.setMany (bindZeros D vars ++ V) vars vals = vars.zip vals ++ V
+  | [], [], V, _, _ => rfl
+  | [], _ :: _, _, hlen, _ => by simp at hlen
+  | x :: xs, [], _, hlen, _ => by simp at hlen
+  | x :: xs, v :: vs, V, hlen, hnd => by
+      have hx : x ∉ xs := (List.nodup_cons.mp hnd).1
+      have hnd' : xs.Nodup := (List.nodup_cons.mp hnd).2
+      have hlen' : vs.length = xs.length := by simpa using hlen
+      have hbz : bindZeros D (x :: xs) = (x, D.zero) :: bindZeros D xs := rfl
+      rw [hbz, List.cons_append, setMany_cons]
+      have hset : VEnv.set ((x, D.zero) :: (bindZeros D xs ++ V)) x v
+          = (x, v) :: (bindZeros D xs ++ V) := by simp [VEnv.set]
+      have hdisj : ∀ p ∈ ([(x, v)] : VEnv D), p.1 ∉ xs := by
+        intro p hp; simp only [List.mem_singleton] at hp; subst hp; exact hx
+      rw [hset,
+        show (x, v) :: (bindZeros D xs ++ V) = [(x, v)] ++ (bindZeros D xs ++ V) from rfl,
+        setMany_append_disjoint [(x, v)] hdisj, setMany_bindZeros hlen' hnd']
+      simp [List.zip_cons_cons]
+
 /-- `restore` past a prefix of a same-length replacement recovers the replacement
 (generalizes `restore_prefix` to allow in-place updates in the suffix). -/
 theorem restore_prefix_len {V W : VEnv D} (ext : VEnv D) (hlen : W.length = V.length) :
