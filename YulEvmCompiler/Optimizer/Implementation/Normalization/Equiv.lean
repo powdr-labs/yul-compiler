@@ -127,6 +127,24 @@ omit [DecidableEq D.Value] in
 theorem hoist_liftFunDefs (b : Block D.Op) : hoist D (liftFunDefs b) = flat b := by
   rw [liftFunDefs, hoist_append, hoist_stripStmts, List.append_nil, flat]
 
+omit [DecidableEq D.Value] in
+theorem hoist_map_fst (b : List (Stmt D.Op)) :
+    (hoist D b).map (·.1) = funNamesTop b := by
+  simp only [hoist, funNamesTop, List.map_filterMap]
+  congr 1
+  funext s
+  cases s <;> rfl
+
+omit [DecidableEq D.Value] in
+theorem funNamesTop_append (a c : List (Stmt D.Op)) :
+    funNamesTop (a ++ c) = funNamesTop a ++ funNamesTop c := by
+  simp only [funNamesTop, List.filterMap_append]
+
+omit [DecidableEq D.Value] in
+theorem funNamesTop_cons_funDef (n ps rs bd) (rest : List (Stmt D.Op)) :
+    funNamesTop (D := D) (.funDef n ps rs bd :: rest) = n :: funNamesTop rest := by
+  simp only [funNamesTop, List.filterMap_cons]
+
 /-- Every statement `collectStmts` emits is a function definition. -/
 def IsFunDef : Stmt D.Op → Prop
   | .funDef _ _ _ _ => True
@@ -281,15 +299,141 @@ theorem step_lift_sim {flatSc : FScope D} {funs_o funs_h : FunEnv D} {code V st 
     Step D funs_o V st code res ↔ Step D funs_h V st (stripCode code) res := by
   sorry
 
-/-! ### Top-level bridges (base = []) -/
+omit [DecidableEq D.Value] in
+theorem funNamesTop_cons_other {s : Stmt D.Op} (h : ∀ n ps rs bd, s ≠ .funDef n ps rs bd)
+    (rest : List (Stmt D.Op)) : funNamesTop (s :: rest) = funNamesTop rest := by
+  cases s with
+  | funDef n ps rs bd => exact absurd rfl (h n ps rs bd)
+  | _ => simp only [funNamesTop, List.filterMap_cons]
 
 omit [DecidableEq D.Value] in
-theorem hoist_map_fst (b : List (Stmt D.Op)) :
-    (hoist D b).map (·.1) = funNamesTop b := by
-  simp only [hoist, funNamesTop, List.map_filterMap]
-  congr 1
-  funext s
-  cases s <;> rfl
+/-- The top-level function names are a sublist of all function names, so global
+uniqueness gives top-level uniqueness. -/
+theorem funNamesTop_sublist (b : List (Stmt D.Op)) :
+    List.Sublist (funNamesTop b) (funNamesStmts b) := by
+  induction b with
+  | nil => exact List.nil_sublist _
+  | cons s rest ih =>
+      have hs : funNamesStmts (s :: rest) = funNamesStmt s ++ funNamesStmts rest := rfl
+      rw [hs]
+      cases s with
+      | funDef n ps rs body =>
+          rw [funNamesTop_cons_funDef]
+          have hfs : funNamesStmt (.funDef n ps rs body) = n :: funNamesStmts body := rfl
+          rw [hfs, List.cons_append]
+          exact (ih.trans (List.sublist_append_right _ _)).cons₂ n
+      | block _ => rw [funNamesTop_cons_other (by simp)]
+                   exact ih.trans (List.sublist_append_right _ _)
+      | cond _ _ => rw [funNamesTop_cons_other (by simp)]
+                    exact ih.trans (List.sublist_append_right _ _)
+      | switch _ _ _ => rw [funNamesTop_cons_other (by simp)]
+                        exact ih.trans (List.sublist_append_right _ _)
+      | forLoop _ _ _ _ => rw [funNamesTop_cons_other (by simp)]
+                           exact ih.trans (List.sublist_append_right _ _)
+      | letDecl _ _ => rw [funNamesTop_cons_other (by simp)]
+                       exact ih.trans (List.sublist_append_right _ _)
+      | assign _ _ => rw [funNamesTop_cons_other (by simp)]
+                      exact ih.trans (List.sublist_append_right _ _)
+      | exprStmt _ => rw [funNamesTop_cons_other (by simp)]
+                      exact ih.trans (List.sublist_append_right _ _)
+      | «break» => rw [funNamesTop_cons_other (by simp)]
+                   exact ih.trans (List.sublist_append_right _ _)
+      | «continue» => rw [funNamesTop_cons_other (by simp)]
+                      exact ih.trans (List.sublist_append_right _ _)
+      | leave => rw [funNamesTop_cons_other (by simp)]
+                 exact ih.trans (List.sublist_append_right _ _)
+
+/-! ### Lookup infrastructure -/
+
+omit [DecidableEq D.Value] in
+/-- In a key-`Nodup` association list, a member is exactly what `find?` returns. -/
+theorem find?_nodup_mem {β : Type _} {l : List (Ident × β)}
+    (hnd : (l.map (·.1)).Nodup) {a : Ident} {v : β} (hmem : (a, v) ∈ l) :
+    l.find? (fun p => p.1 = a) = some (a, v) := by
+  induction l with
+  | nil => simp at hmem
+  | cons p rest ih =>
+      simp only [List.map_cons, List.nodup_cons] at hnd
+      rcases List.mem_cons.mp hmem with h | h
+      · subst h; simp [List.find?_cons_of_pos]
+      · have hne : p.1 ≠ a := by
+          intro heq; exact hnd.1 (heq ▸ (List.mem_map.mpr ⟨(a, v), h, rfl⟩))
+        rw [List.find?_cons_of_neg (by simp [hne])]
+        exact ih hnd.2 h
+
+/- Names collected by `collectStmts` are exactly the program's function names. -/
+mutual
+theorem funNamesTop_collectStmt (s : Stmt D.Op) :
+    funNamesTop (collectStmt s) = funNamesStmt s := by
+  cases s with
+  | funDef n ps rs body =>
+      rw [collectStmt, funNamesTop_cons_funDef, funNamesTop_collectStmts body]
+      simp only [funNamesStmt]
+  | block b => rw [collectStmt]; simp only [funNamesStmt]; exact funNamesTop_collectStmts b
+  | cond c b => rw [collectStmt]; simp only [funNamesStmt]; exact funNamesTop_collectStmts b
+  | switch c cs d =>
+      rw [collectStmt, funNamesTop_append, funNamesTop_collectCases cs,
+        funNamesTop_collectDflt d]
+      simp only [funNamesStmt]
+  | forLoop i c p bd =>
+      rw [collectStmt, funNamesTop_append, funNamesTop_append,
+        funNamesTop_collectStmts i, funNamesTop_collectStmts p, funNamesTop_collectStmts bd]
+      simp only [funNamesStmt]
+  | letDecl _ _ => rfl
+  | assign _ _ => rfl
+  | exprStmt _ => rfl
+  | «break» => rfl
+  | «continue» => rfl
+  | leave => rfl
+theorem funNamesTop_collectStmts (b : List (Stmt D.Op)) :
+    funNamesTop (collectStmts b) = funNamesStmts b := by
+  cases b with
+  | nil => rfl
+  | cons s rest =>
+      rw [collectStmts, funNamesTop_append, funNamesTop_collectStmt s,
+        funNamesTop_collectStmts rest]
+      simp only [funNamesStmts]
+theorem funNamesTop_collectCases (cs : List (Literal × Block D.Op)) :
+    funNamesTop (collectCases cs) = funNamesCases cs := by
+  cases cs with
+  | nil => rfl
+  | cons p rest =>
+      obtain ⟨l, b⟩ := p
+      rw [collectCases, funNamesTop_append, funNamesTop_collectStmts b,
+        funNamesTop_collectCases rest]
+      simp only [funNamesCases]
+theorem funNamesTop_collectDflt (d : Option (Block D.Op)) :
+    funNamesTop (collectDflt d) = funNamesDflt d := by
+  cases d with
+  | none => rfl
+  | some b => rw [collectDflt]; simp only [funNamesDflt]; exact funNamesTop_collectStmts b
+end
+
+omit [DecidableEq D.Value] in
+theorem lookupFun_singleton (scope : FScope D) (n : Ident) :
+    lookupFun [scope] n = (scope.find? (fun p => p.1 = n)).map (fun p => (p.2, [scope])) := by
+  simp only [lookupFun]
+  cases scope.find? (fun p => p.1 = n) <;> rfl
+
+omit [DecidableEq D.Value] in
+theorem mem_hoist_of_mem {L : List (Stmt D.Op)} {n ps rs bd}
+    (h : (Stmt.funDef n ps rs bd) ∈ L) :
+    (n, ({ params := ps, rets := rs, body := bd } : FDecl D)) ∈ hoist D L := by
+  simp only [hoist, List.mem_filterMap]
+  exact ⟨.funDef n ps rs bd, h, rfl⟩
+
+/-- The key fact: under unique names, the flat scope resolves a collected
+function's name to exactly its (stripped-body) declaration. -/
+theorem flatLookup_of_mem {b : Block D.Op} (huniq : UniqueFunNames b)
+    {n ps rs bd} (hmem : (Stmt.funDef n ps rs bd) ∈ collectStmts b) :
+    flatLookup (flat b) n = some { params := ps, rets := rs, body := bd } := by
+  have hkeys : ((flat b).map (·.1)) = funNamesStmts b := by
+    rw [flat, hoist_map_fst, funNamesTop_collectStmts]
+  have hnd : ((flat b).map (·.1)).Nodup := by rw [hkeys]; exact huniq
+  have hfind := find?_nodup_mem hnd (mem_hoist_of_mem (D := D) hmem)
+  simp only [flatLookup, lookupFun_singleton, hfind, Option.map_some]
+
+/-! ### Top-level bridges (base = []) -/
 
 omit [DecidableEq D.Value] in
 theorem funNamesEnv_singleton (b : Block D.Op) :
@@ -303,8 +447,9 @@ theorem goodO_top {b : Block D.Op} (huniq : UniqueFunNames b) (hws : WellScoped 
   sorry
 
 /-- At the top block, `b`'s functions are all registered in the flat scope. -/
-theorem codeInFlat_top (b : Block D.Op) : CodeInFlat (D := D) (flat b) b := by
-  sorry
+theorem codeInFlat_top {b : Block D.Op} (huniq : UniqueFunNames b) :
+    CodeInFlat (D := D) (flat b) b :=
+  fun _ _ _ _ hmem => flatLookup_of_mem huniq hmem
 
 /-! ### The equivalence -/
 
@@ -320,11 +465,11 @@ theorem liftFunDefs_run_equiv {b : Block D.Op}
     intro r
     have huniqEnv : (funNamesEnv (D := D) (hoist D b :: [])).Nodup := by
       rw [funNamesEnv_singleton]
-      sorry
+      exact huniq.sublist (funNamesTop_sublist b)
     have hwsEnv : ScopedCode (funNamesEnv (D := D) (hoist D b :: [])) (.stmts b) := by
       rw [funNamesEnv_singleton]; exact hscoped
     exact step_lift_sim (code := .stmts b) (res := r) huniqEnv (goodO_top huniq hscoped)
-      (fun _ => rfl) hwsEnv (codeInFlat_top b)
+      (fun _ => rfl) hwsEnv (codeInFlat_top huniq)
   constructor
   · intro h
     cases h with
