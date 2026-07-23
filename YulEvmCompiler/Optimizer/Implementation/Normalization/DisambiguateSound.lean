@@ -181,6 +181,29 @@ theorem funNamesOf_cons (s : FScope D) (funs : FunEnv D) :
     funNamesOf (s :: funs) = s.map Prod.fst ++ funNamesOf funs := by
   simp [funNamesOf, List.flatMap_cons]
 
+/-- `RenScopeRel` depends only on the renaming's values at the scope's keys. -/
+theorem RenScopeRel.congr_phi {φ φ' : Ident → Ident} {BR : FDecl D → FDecl D → Prop}
+    {s₁ s₂ : FScope D} (h : RenScopeRel φ BR s₁ s₂) (hag : ∀ p ∈ s₁, φ' p.1 = φ p.1) :
+    RenScopeRel φ' BR s₁ s₂ := by
+  induction h with
+  | nil => exact List.Forall₂.nil
+  | @cons p q u₁ u₂ hpq _ ih =>
+      exact List.Forall₂.cons ⟨hpq.1.trans (hag p (List.mem_cons_self ..)).symm, hpq.2⟩
+        (ih (fun p hp => hag p (List.mem_cons_of_mem _ hp)))
+
+/-- `RenFunsRel` transports to a renaming that agrees on the in-scope function
+names (used when a block extends `φ` by its own function names). -/
+theorem RenFunsRel.congr_phi {φ φ' : Ident → Ident} {BR : FDecl D → FDecl D → Prop}
+    {f₁ f₂ : FunEnv D} (h : RenFunsRel φ BR f₁ f₂)
+    (hag : ∀ fn ∈ funNamesOf f₁, φ' fn = φ fn) : RenFunsRel φ' BR f₁ f₂ := by
+  induction h with
+  | nil => exact List.Forall₂.nil
+  | @cons s₁ s₂ t₁ t₂ hs hR ih =>
+      refine List.Forall₂.cons (hs.congr_phi (fun p hp => hag p.1 ?_))
+        (ih (fun fn hfn => hag fn ?_))
+      · rw [funNamesOf_cons]; exact List.mem_append.mpr (Or.inl (List.mem_map_of_mem hp))
+      · rw [funNamesOf_cons]; exact List.mem_append.mpr (Or.inr hfn)
+
 
 /-- A scope lookup transports across `RenScopeRel`: if `φ` merges no other key of
 `s₁` onto `φ fn`, then `fn` resolves in `s₁` exactly when `φ fn` resolves in `s₂`,
