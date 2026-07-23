@@ -91,13 +91,116 @@ end
 with the top block's own functions. -/
 def WellScoped (b : Block D.Op) : Prop := ScopedStmts (funNamesTop b) b
 
-/-! ### The equivalence (statement pinned; proof under construction) -/
+/-! ### Structural facts about `strip`/`collect`/`hoist` -/
+
+/-- The flat top scope the lifted program hoists: every function of `b`, each
+with a `stripStmts`-ed body. -/
+def flat (b : Block D.Op) : FScope D := hoist D (collectStmts b)
+
+omit [DecidableEq D.Value] in
+theorem hoist_append (a c : List (Stmt D.Op)) :
+    hoist D (a ++ c) = hoist D a ++ hoist D c := by
+  simp only [hoist, List.filterMap_append]
+
+omit [DecidableEq D.Value] in
+/-- Stripping removes every top-level `funDef`, so the stripped block hoists
+nothing. -/
+theorem hoist_stripStmts (b : List (Stmt D.Op)) : hoist D (stripStmts b) = [] := by
+  induction b with
+  | nil => rfl
+  | cons s rest ih =>
+      cases s with
+      | funDef n ps rs body => rw [stripStmts]; exact ih
+      | block bb => simp only [stripStmts, stripStmt, hoist, List.filterMap_cons]; exact ih
+      | cond c bb => simp only [stripStmts, stripStmt, hoist, List.filterMap_cons]; exact ih
+      | switch c cs d => simp only [stripStmts, stripStmt, hoist, List.filterMap_cons]; exact ih
+      | forLoop i c p bb => simp only [stripStmts, stripStmt, hoist, List.filterMap_cons]; exact ih
+      | letDecl vs v => simp only [stripStmts, stripStmt, hoist, List.filterMap_cons]; exact ih
+      | assign vs e => simp only [stripStmts, stripStmt, hoist, List.filterMap_cons]; exact ih
+      | exprStmt e => simp only [stripStmts, stripStmt, hoist, List.filterMap_cons]; exact ih
+      | «break» => simp only [stripStmts, stripStmt, hoist, List.filterMap_cons]; exact ih
+      | «continue» => simp only [stripStmts, stripStmt, hoist, List.filterMap_cons]; exact ih
+      | leave => simp only [stripStmts, stripStmt, hoist, List.filterMap_cons]; exact ih
+
+omit [DecidableEq D.Value] in
+/-- The lifted top block hoists exactly the flat scope. -/
+theorem hoist_liftFunDefs (b : Block D.Op) : hoist D (liftFunDefs b) = flat b := by
+  rw [liftFunDefs, hoist_append, hoist_stripStmts, List.append_nil, flat]
+
+/-- Every statement `collectStmts` emits is a function definition. -/
+def IsFunDef : Stmt D.Op → Prop
+  | .funDef _ _ _ _ => True
+  | _ => False
+
+/-- Running a prefix of function definitions is a no-op (each `funDef`
+statement steps to `.normal` with the environment and state unchanged). -/
+theorem funDefs_noop {funs : FunEnv D} {fds rest : List (Stmt D.Op)}
+    (hall : ∀ s ∈ fds, IsFunDef (D := D) s) {V st V2 st2 o} :
+    Step D funs V st (.stmts (fds ++ rest)) (.sres V2 st2 o) ↔
+      Step D funs V st (.stmts rest) (.sres V2 st2 o) := by
+  induction fds with
+  | nil => simp
+  | cons s fds' ih =>
+      obtain ⟨n, ps, rs, body, rfl⟩ : ∃ n ps rs body, s = .funDef n ps rs body := by
+        have hmem := hall s (by simp)
+        cases s with
+        | funDef n ps rs body => exact ⟨n, ps, rs, body, rfl⟩
+        | _ => exact absurd hmem (by simp [IsFunDef])
+      have hall' : ∀ s ∈ fds', IsFunDef (D := D) s :=
+        fun s hs => hall s (List.mem_cons_of_mem _ hs)
+      constructor
+      · intro h
+        rw [List.cons_append] at h
+        cases h with
+        | seqCons hs htail => cases hs; exact (ih hall').mp htail
+        | seqStop hs hne => cases hs; exact absurd rfl hne
+      · intro h
+        rw [List.cons_append]
+        exact Step.seqCons Step.funDef ((ih hall').mpr h)
+
+/-- `collectStmts` yields only function definitions. -/
+theorem collectStmts_allFunDef (b : List (Stmt D.Op)) :
+    ∀ s ∈ collectStmts b, IsFunDef (D := D) s := by
+  sorry
+
+/-! ### The core simulation (under construction) -/
+
+/-- **Core bidirectional simulation.** Running the original statements under the
+lexical scope stack is equivalent to running the stripped statements under the
+flat scope, provided the environments are `FEnvLift`-related and the code is well
+scoped. This is the heart of the proof; `FEnvLift` and this lemma are being
+built. -/
+theorem inner_sim {flatSc : FScope D} {funs_o funs_h : FunEnv D}
+    {b : List (Stmt D.Op)} {V st res}
+    (hsim : True) :  -- placeholder for FEnvLift flatSc funs_o funs_h ∧ scoping
+    Step D funs_o V st (.stmts b) res ↔
+      Step D funs_h V st (.stmts (stripStmts b)) res := by
+  sorry
+
+/-! ### The equivalence -/
 
 /-- **Hoisting all function definitions to the top preserves semantics**, for
 programs with globally unique function names that are well scoped. -/
 theorem liftFunDefs_equiv {b : Block D.Op}
     (huniq : UniqueFunNames b) (hscoped : WellScoped b) :
     EquivBlock D b (liftFunDefs b) := by
-  sorry
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    cases h with
+    | @block _ _ _ _ Vb stb _ hb =>
+        refine Step.block ?_
+        rw [hoist_liftFunDefs]
+        simp only [liftFunDefs]
+        rw [funDefs_noop (collectStmts_allFunDef b)]
+        exact (inner_sim (flatSc := flat b) (b := b) trivial).mp hb
+  · intro h
+    cases h with
+    | @block _ _ _ _ Vb stb _ hb =>
+        refine Step.block ?_
+        rw [hoist_liftFunDefs] at hb
+        simp only [liftFunDefs] at hb
+        rw [funDefs_noop (collectStmts_allFunDef b)] at hb
+        exact (inner_sim (flatSc := flat b) (b := b) trivial).mpr hb
 
 end YulEvmCompiler.Optimizer.Normalization
