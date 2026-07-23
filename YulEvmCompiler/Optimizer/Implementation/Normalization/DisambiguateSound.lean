@@ -254,8 +254,8 @@ inductive AlphaStmt1 :
       AlphaExpr σ φ e e' → AlphaStmt1 σ φ (.exprStmt e) (.exprStmt e') σ φ
   | funD {σ φ fn ps ps' rs rs' body body' σb φb} :
       (ps ++ rs).Nodup → (ps' ++ rs').Nodup → ps.length = ps'.length → rs.length = rs'.length →
-      (∀ v' ∈ ps' ++ rs', ∃ k, v' = dsName k) → (∀ v' ∈ ps' ++ rs', ∀ z, σ z ≠ v') →
-      AlphaBlockExt (updRen σ (ps.zip ps' ++ rs.zip rs')) φ body body' σb φb →
+      (∀ v' ∈ ps' ++ rs', ∃ k, v' = dsName k) →
+      AlphaBlockExt (updRen id (ps.zip ps' ++ rs.zip rs')) φ body body' σb φb →
       AlphaStmt1 σ φ (.funDef fn ps rs body) (.funDef (φ fn) ps' rs' body') σ φ
   | blockD {σ φ body body' σb φb} :
       AlphaBlockExt σ φ body body' σb φb → AlphaStmt1 σ φ (.block body) (.block body') σ φ
