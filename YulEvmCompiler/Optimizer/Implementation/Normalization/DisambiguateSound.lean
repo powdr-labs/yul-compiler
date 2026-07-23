@@ -958,6 +958,33 @@ prescanned at the block level). -/
 theorem AlphaStmt1.phi_eq {σ φ : Ident → Ident} {s s' : Stmt D.Op} {σ' φ' : Ident → Ident}
     (h : AlphaStmt1 σ φ s s' σ' φ') : φ' = φ := by cases h <;> rfl
 
+/-- The hoisted scope's keys are the block's top-level function names. -/
+theorem hoist_keys (body : List (Stmt D.Op)) : (hoist D body).map Prod.fst = funNames body := by
+  induction body with
+  | nil => rfl
+  | cons s rest ih =>
+      simp only [hoist] at ih ⊢
+      cases s <;> simp only [List.filterMap_cons, List.map_cons, funNames, ih]
+
+/-- The output variable-renaming of a sequence agrees with the input off the
+sequence's declared variables (used for the block/for `restore` step). -/
+theorem alphaSeq_agrees : ∀ {ss ss' : List (Stmt D.Op)} {σ φ σ' φ' : Ident → Ident},
+    AlphaSeqExt σ φ ss ss' σ' φ' → ∀ z, z ∉ declVarsSeq ss → σ' z = σ z
+  | [], _, _, _, _, _, h, z, _ => by cases h; rfl
+  | s :: rest, _, σ0, φ0, _, _, h, z, hz => by
+      cases h with
+      | @cons _ _ _ s' _ rest' σmid φmid _ _ hs1 hrest =>
+      have htail : _ = σmid z :=
+        alphaSeq_agrees hrest z (fun hc => hz (by
+          rw [declVarsSeq]; exact List.mem_append.mpr (Or.inr hc)))
+      rw [htail]
+      cases hs1 with
+      | letD _ _ _ _ _ _ =>
+          exact updRen_of_not_mem (fun p hp hpz => hz (by
+            rw [declVarsSeq, declVars]
+            exact List.mem_append.mpr (Or.inl (hpz ▸ (List.of_mem_zip hp).1))))
+      | _ => rfl
+
 /-- **Hoist transport.** α-equivalent statement sequences have `RenScopeRel`-related
 hoisted function scopes: each source `funDef` is matched by a target `funDef` with
 `φ`-renamed name and an `FDeclRen`-related declaration. -/
