@@ -536,3 +536,13 @@ theorem set_boundary (σ : Ident → Ident) (inner outer : VEnv D) (x : Ident) (
       intro hqeq
       exact hfresh p hpmem q hq (by rw [hpx]; exact hqeq.symm)
     rw [if_pos hsome, renVEnv_set σ inner x v hinj, VEnv.set_of_find_none outer (σ x) v houter]
+
+/-- A block/scope exit (`restore`) drops exactly the bindings it introduced,
+returning to the entry environment. Both source and target satisfy this at their
+respective (equal-length) boundaries, so the boundary relation is preserved. -/
+theorem restore_prefix (A E : VEnv D) : restore A (E ++ A) = A := by
+  have hd : (E ++ A).drop E.length = A := by
+    induction E with
+    | nil => simp
+    | cons e rest ih => simpa using ih
+  simp only [restore, List.length_append, Nat.add_sub_cancel, hd]
