@@ -65,11 +65,12 @@ def ScopedStmt (scope : List Ident) : Stmt D.Op → Prop
   | .switch c cases dflt =>
       ScopedExpr scope c ∧ ScopedCases scope cases ∧ ScopedDflt scope dflt
   | .forLoop init c post body =>
-      -- init's functions are visible in cond/post/body (they share the loop scope)
+      -- init's functions are visible in cond/post/body (they share the loop scope);
+      -- post and body are each executed as a block, so hoist their own functions too.
       ScopedStmts (funNamesTop init ++ scope) init ∧
       ScopedExpr (funNamesTop init ++ scope) c ∧
-      ScopedStmts (funNamesTop init ++ scope) post ∧
-      ScopedStmts (funNamesTop init ++ scope) body
+      ScopedStmts (funNamesTop post ++ (funNamesTop init ++ scope)) post ∧
+      ScopedStmts (funNamesTop body ++ (funNamesTop init ++ scope)) body
   | .letDecl _ val => match val with | none => True | some e => ScopedExpr scope e
   | .assign _ e => ScopedExpr scope e
   | .exprStmt e => ScopedExpr scope e
@@ -278,7 +279,9 @@ def ScopedCode (Γ : List Ident) : Code D.Op → Prop
   | .args es => ScopedArgs Γ es
   | .stmt s => ScopedStmt Γ s
   | .stmts ss => ScopedStmts Γ ss
-  | .loop c post body => ScopedExpr Γ c ∧ ScopedStmts Γ post ∧ ScopedStmts Γ body
+  | .loop c post body =>
+      ScopedExpr Γ c ∧ ScopedStmts (funNamesTop post ++ Γ) post ∧
+        ScopedStmts (funNamesTop body ++ Γ) body
 
 /-- `CodeInFlat` lifted to the `Code` wrapper. -/
 def CodeInFlatCode (flatSc : FScope D) : Code D.Op → Prop
@@ -439,8 +442,140 @@ theorem goodO_push {flatSc : FScope D} {funs_o : FunEnv D} {body : List (Stmt D.
     intro n' ps' rs' bd' hmem'
     exact hcfb n' ps' rs' bd' (collectStmts_body_subset hfd hmem')
 
-/-- **Forward simulation.** (Under construction — skeleton to validate the
-induction motive; cases filled incrementally.) -/
+/-! ### `CodeInFlat` / `ScopedStmts` extraction helpers for the simulation cases -/
+
+omit [DecidableEq D.Value] in
+/-- `CodeInFlat` transports along a `collectStmts` inclusion. -/
+theorem codeInFlat_mono {flatSc : FScope D} {sub code : List (Stmt D.Op)}
+    (hsub : ∀ x ∈ collectStmts sub, x ∈ collectStmts code)
+    (h : CodeInFlat flatSc code) : CodeInFlat flatSc sub :=
+  fun n ps rs bd hm => h n ps rs bd (hsub _ hm)
+
+omit [DecidableEq D.Value] in
+theorem collectStmts_singleton (s : Stmt D.Op) : collectStmts [s] = collectStmt s := by
+  simp only [collectStmts, List.append_nil]
+
+omit [DecidableEq D.Value] in
+theorem cif_block_inv {flatSc : FScope D} {body : List (Stmt D.Op)}
+    (h : CodeInFlat flatSc [Stmt.block body]) : CodeInFlat flatSc body :=
+  codeInFlat_mono (fun _ hx => by rw [collectStmts_singleton]; exact hx) h
+
+omit [DecidableEq D.Value] in
+theorem cif_block_wrap {flatSc : FScope D} {body : List (Stmt D.Op)}
+    (h : CodeInFlat flatSc body) : CodeInFlat flatSc [Stmt.block body] :=
+  codeInFlat_mono (fun _ hx => by rw [collectStmts_singleton] at hx; exact hx) h
+
+omit [DecidableEq D.Value] in
+theorem cif_cond_inv {flatSc : FScope D} {c} {body : List (Stmt D.Op)}
+    (h : CodeInFlat flatSc [Stmt.cond c body]) : CodeInFlat flatSc body :=
+  codeInFlat_mono (fun _ hx => by rw [collectStmts_singleton]; exact hx) h
+
+omit [DecidableEq D.Value] in
+theorem cif_head {flatSc : FScope D} {s} {rest : List (Stmt D.Op)}
+    (h : CodeInFlat flatSc (s :: rest)) : CodeInFlat flatSc [s] :=
+  codeInFlat_mono (fun x hx => by
+    rw [collectStmts_singleton] at hx
+    rw [collectStmts, List.mem_append]; exact Or.inl hx) h
+
+omit [DecidableEq D.Value] in
+theorem cif_tail {flatSc : FScope D} {s} {rest : List (Stmt D.Op)}
+    (h : CodeInFlat flatSc (s :: rest)) : CodeInFlat flatSc rest :=
+  codeInFlat_mono (fun x hx => by rw [collectStmts, List.mem_append]; exact Or.inr hx) h
+
+omit [DecidableEq D.Value] in
+theorem cif_for_init {flatSc : FScope D} {init c post body}
+    (h : CodeInFlat flatSc [Stmt.forLoop init c post body]) : CodeInFlat flatSc init :=
+  codeInFlat_mono (fun x hx => by
+    rw [collectStmts_singleton, collectStmt, List.mem_append, List.mem_append]
+    exact Or.inl (Or.inl hx)) h
+
+omit [DecidableEq D.Value] in
+theorem cif_for_post {flatSc : FScope D} {init c post body}
+    (h : CodeInFlat flatSc [Stmt.forLoop init c post body]) : CodeInFlat flatSc post :=
+  codeInFlat_mono (fun x hx => by
+    rw [collectStmts_singleton, collectStmt, List.mem_append, List.mem_append]
+    exact Or.inl (Or.inr hx)) h
+
+omit [DecidableEq D.Value] in
+theorem cif_for_body {flatSc : FScope D} {init c post body}
+    (h : CodeInFlat flatSc [Stmt.forLoop init c post body]) : CodeInFlat flatSc body :=
+  codeInFlat_mono (fun x hx => by
+    rw [collectStmts_singleton, collectStmt, List.mem_append]
+    exact Or.inr hx) h
+
+/-- The block a `switch` selects has its collected functions among the cases'
+and default's collected functions. -/
+theorem collectStmts_selectSwitch_subset (cv) :
+    ∀ {cases : List (Literal × Block D.Op)} {dflt : Option (Block D.Op)} {x},
+      x ∈ collectStmts (selectSwitch D cv cases dflt) → x ∈ collectCases cases ++ collectDflt dflt
+  | [], dflt, x, hx => by
+      unfold selectSwitch at hx
+      simp only [List.find?_nil] at hx
+      cases dflt with
+      | none => simp only [Option.getD_none, collectStmts, List.not_mem_nil] at hx
+      | some b => simpa only [Option.getD_some, collectCases, collectDflt, List.nil_append] using hx
+  | (l, b) :: rest, dflt, x, hx => by
+      unfold selectSwitch at hx
+      by_cases hcv : cv = D.litValue l
+      · rw [List.find?_cons_of_pos (by simp [hcv])] at hx
+        rw [collectCases]
+        exact List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inl hx)))
+      · rw [List.find?_cons_of_neg (by simp [hcv])] at hx
+        have h2 := collectStmts_selectSwitch_subset cv (cases := rest) (dflt := dflt) hx
+        rw [collectCases]
+        rcases List.mem_append.mp h2 with h | h
+        · exact List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inr h)))
+        · exact List.mem_append.mpr (Or.inr h)
+
+theorem cif_switch_sel {flatSc : FScope D} {c cv cases dflt}
+    (h : CodeInFlat flatSc [Stmt.switch c cases dflt]) :
+    CodeInFlat flatSc (selectSwitch D cv cases dflt) :=
+  codeInFlat_mono (fun x hx => by
+    rw [collectStmts_singleton, collectStmt]
+    exact collectStmts_selectSwitch_subset cv hx) h
+
+/-- `stripStmts` commutes with `selectSwitch`: stripping then selecting equals
+selecting from the stripped cases/default. -/
+theorem selectSwitch_strip (cv) :
+    ∀ (cases : List (Literal × Block D.Op)) (dflt : Option (Block D.Op)),
+      selectSwitch D cv (stripCases cases) (stripDflt dflt)
+        = stripStmts (selectSwitch D cv cases dflt)
+  | [], dflt => by
+      simp only [stripCases]
+      unfold selectSwitch
+      simp only [List.find?_nil]
+      cases dflt with
+      | none => rfl
+      | some b => rfl
+  | (l, b) :: rest, dflt => by
+      rw [stripCases]
+      unfold selectSwitch
+      by_cases hcv : cv = D.litValue l
+      · rw [List.find?_cons_of_pos (by simp [hcv]), List.find?_cons_of_pos (by simp [hcv])]
+      · rw [List.find?_cons_of_neg (by simp [hcv]), List.find?_cons_of_neg (by simp [hcv])]
+        exact selectSwitch_strip cv rest dflt
+
+/-- The selected `switch` block is well scoped (in the block-hoisted scope) when
+the cases and default are. -/
+theorem scopedStmts_selectSwitch {Γ} {cv} :
+    ∀ {cases : List (Literal × Block D.Op)} {dflt : Option (Block D.Op)},
+      ScopedCases Γ cases → ScopedDflt Γ dflt →
+      ScopedStmts (funNamesTop (selectSwitch D cv cases dflt) ++ Γ) (selectSwitch D cv cases dflt)
+  | [], dflt, _, hd => by
+      unfold selectSwitch
+      simp only [List.find?_nil]
+      cases dflt with
+      | none => exact trivial
+      | some b => exact hd
+  | (l, b) :: rest, dflt, hc, hd => by
+      unfold selectSwitch
+      by_cases hcv : cv = D.litValue l
+      · rw [List.find?_cons_of_pos (by simp [hcv])]; exact hc.1
+      · rw [List.find?_cons_of_neg (by simp [hcv])]; exact scopedStmts_selectSwitch hc.2 hd
+
+/-- **Forward simulation.** Under `GoodO`/`ResEq`/well-scopedness/`CodeInFlat`,
+an original derivation transports to one over the flat (lifted) environment on
+the `stripCode`-ped code. -/
 theorem step_lift_fwd {flatSc : FScope D} :
     ∀ {funs_o V st code res}, Step D funs_o V st code res →
     ∀ {funs_h}, (funNamesEnv funs_o).Nodup → GoodO flatSc funs_o → ResEq flatSc funs_h →
