@@ -470,3 +470,19 @@ theorem get_boundary (σ : Ident → Ident) (inner outer : VEnv D) (x : Ident)
   cases hgi : VEnv.get inner x with
   | some v => simp
   | none => simp [hid hgi]
+
+/-- `set` over `++`: an in-place update hits the first list if the key occurs
+there, otherwise the second (mirrors `VEnv.set`'s first-match, no-op-if-absent
+behavior). The building block for boundary `set` transport. -/
+theorem VEnv.set_append (A B : VEnv D) (k : Ident) (v : D.Value) :
+    VEnv.set (A ++ B) k v =
+      if (A.find? (fun p => p.1 = k)).isSome then VEnv.set A k v ++ B else A ++ VEnv.set B k v := by
+  induction A with
+  | nil => simp [VEnv.set]
+  | cons p rest ih =>
+      obtain ⟨y, w⟩ := p
+      by_cases hyk : y = k
+      · simp [VEnv.set, List.find?_cons, hyk]
+      · simp only [List.cons_append, VEnv.set, if_neg hyk, List.find?_cons, hyk,
+          decide_false, cond_false, ih]
+        cases (rest.find? (fun p => p.1 = k)).isSome <;> simp
