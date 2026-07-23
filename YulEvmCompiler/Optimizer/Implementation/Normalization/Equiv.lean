@@ -344,11 +344,15 @@ theorem goodO_cenv {flatSc : FScope D} {funs : FunEnv D}
     {f d cenv} (hlk : lookupFun funs f = some (d, cenv)) : GoodO flatSc cenv :=
   fun f' d' cenv' hlk' => hg f' d' cenv' (lookupFun_cenv_resolve funs hnd hlk hlk')
 
-/-- **Core bidirectional simulation.** Running the original code under its
-lexical scope stack equals running the stripped code under the flat scope. The
-invariants (unique names in the env, `GoodO`, `ResEq`, well-scopedness,
-functions-in-flat) are preserved and re-established by the `block`/`callOk`
-cases. Proof under construction. -/
+/-- **Forward simulation.** (Under construction — skeleton to validate the
+induction motive; cases filled incrementally.) -/
+theorem step_lift_fwd {flatSc : FScope D} :
+    ∀ {funs_o V st code res}, Step D funs_o V st code res →
+    ∀ {funs_h}, (funNamesEnv funs_o).Nodup → GoodO flatSc funs_o → ResEq flatSc funs_h →
+      ScopedCode (funNamesEnv funs_o) code → CodeInFlatCode flatSc code →
+      Step D funs_h V st (stripCode code) res := by
+  sorry
+
 theorem step_lift_sim {flatSc : FScope D} {funs_o funs_h : FunEnv D} {code V st res}
     (huniq : (funNamesEnv funs_o).Nodup)
     (hO : GoodO flatSc funs_o) (hH : ResEq flatSc funs_h)
