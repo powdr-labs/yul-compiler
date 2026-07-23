@@ -30,3 +30,4 @@ import YulEvmCompiler.Optimizer.Implementation.InlineHelpersResolve
 import YulEvmCompiler.Optimizer.Implementation.Pipeline
 import YulEvmCompiler.Optimizer.Implementation.StackLayoutSound
 import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
+import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalForm
