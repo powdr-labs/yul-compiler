@@ -27,6 +27,10 @@ open YulSemantics
 
 variable {D : Dialect} [DecidableEq D.Value]
 
+/-- `x` is not a disambiguation-fresh name (holds for every source identifier in a
+well-formed program; the α-relation only relates such source references). -/
+def NotFresh (x : Ident) : Prop := ∀ k, x ≠ dsName k
+
 /-! ### Renaming a variable environment -/
 
 /-- `renVEnv σ V` is `V` with every key renamed by `σ` (values untouched). -/
@@ -144,6 +148,35 @@ theorem RenFunsRel.cons {φ : Ident → Ident} {BR : FDecl D → FDecl D → Pro
     (hf : RenFunsRel φ BR f₁ f₂) : RenFunsRel φ BR (s₁ :: f₁) (s₂ :: f₂) :=
   List.Forall₂.cons hs hf
 
+/-! ### The function-name config `RenFCfg`
+
+The `φ`-side analog of `RenCfg`: `φ` is injective on the function names in scope
+across the whole `funs` stack (Yul forbids shadowing a visible function), is the
+identity off them, and maps them to fresh names. The satisfiable replacement for
+the (unsatisfiable) global `Function.Injective φ`. -/
+
+/-- All function names in scope across a function environment. -/
+def funNamesOf (funs : FunEnv D) : List Ident := funs.flatMap (fun s => s.map Prod.fst)
+
+def RenFCfg (φ : Ident → Ident) (funs : FunEnv D) : Prop :=
+  (∀ a ∈ funNamesOf funs, ∀ b ∈ funNamesOf funs, φ a = φ b → a = b) ∧
+  (∀ z, z ∉ funNamesOf funs → φ z = z) ∧
+  (∀ a ∈ funNamesOf funs, ∃ k, φ a = dsName k)
+
+/-- The `renScopeRel_find`/`lookupFun` no-merge condition for a not-fresh name `fn`:
+no in-scope function name renames onto `φ fn` (within any single scope of `funs`). -/
+theorem RenFCfg.no_merge_scope {φ : Ident → Ident} {funs : FunEnv D} (h : RenFCfg φ funs)
+    {fn : Ident} (hfn : NotFresh fn) {s : FScope D} (hs : s ∈ funs) :
+    ∀ p ∈ s, φ p.1 = φ fn → p.1 = fn := by
+  intro p hp hpq
+  have hpmem : p.1 ∈ funNamesOf funs :=
+    List.mem_flatMap.mpr ⟨s, hs, List.mem_map_of_mem hp⟩
+  by_cases hfmem : fn ∈ funNamesOf funs
+  · exact h.1 p.1 hpmem fn hfmem hpq
+  · obtain ⟨k, hk⟩ := h.2.2 p.1 hpmem
+    rw [h.2.1 fn hfmem, hk] at hpq
+    exact absurd hpq.symm (hfn k)
+
 /-- A scope lookup transports across `RenScopeRel`: if `φ` merges no other key of
 `s₁` onto `φ fn`, then `fn` resolves in `s₁` exactly when `φ fn` resolves in `s₂`,
 to `BR`-related declarations. -/
@@ -188,10 +221,6 @@ theorem lookupFun_renFunsRel {φ : Ident → Ident} {BR : FDecl D → FDecl D �
         obtain ⟨hd_eq, hcenv_eq⟩ := h
         subst hd_eq; subst hcenv_eq
         exact ⟨q.2, s₂ :: t₂, by rw [lookupFun, hp₂], hd, List.Forall₂.cons hs hR'⟩
-
-/-- `x` is not a disambiguation-fresh name (holds for every source identifier in a
-well-formed program; the α-relation only relates such source references). -/
-def NotFresh (x : Ident) : Prop := ∀ k, x ≠ dsName k
 
 /-! ### α-equivalence: the renaming relation the bisimulation ranges over
 
