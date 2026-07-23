@@ -34,6 +34,7 @@ import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
 import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalForm
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate
 import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateAlpha
+import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateInstance
 import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateRen
 import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateSound
 import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateNormalForm
