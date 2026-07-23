@@ -734,8 +734,177 @@ theorem step_lift_fwd {flatSc : FScope D} :
       exact Step.loopBodyHalt (ihc hO hH hws.1 trivial) hne
         (ihbody hO hH hws.2.2 (cif_block_wrap hcf.2))
 
+/-! ### `strip` inversion (for the backward simulation)
+
+`stripCode`/`stripStmt` preserve the outer constructor (expressions are left
+untouched), so a stripped shape determines the original's shape up to the
+recursive sub-parts. -/
+
+omit [DecidableEq D.Value] in
+theorem stripCode_expr_inv {code : Code D.Op} {e} (h : stripCode code = .expr e) :
+    code = .expr e := by
+  cases code with
+  | expr e' => injection h with h; rw [h]
+  | _ => simp [stripCode] at h
+
+omit [DecidableEq D.Value] in
+theorem stripCode_args_inv {code : Code D.Op} {es} (h : stripCode code = .args es) :
+    code = .args es := by
+  cases code with
+  | args es' => injection h with h; rw [h]
+  | _ => simp [stripCode] at h
+
+omit [DecidableEq D.Value] in
+theorem stripCode_stmt_inv {code : Code D.Op} {s'} (h : stripCode code = .stmt s') :
+    ∃ s, code = .stmt s ∧ stripStmt s = s' := by
+  cases code with
+  | stmt s => exact ⟨s, rfl, Code.stmt.inj h⟩
+  | _ => simp [stripCode] at h
+
+omit [DecidableEq D.Value] in
+theorem stripCode_stmts_inv {code : Code D.Op} {ss'} (h : stripCode code = .stmts ss') :
+    ∃ ss, code = .stmts ss ∧ stripStmts ss = ss' := by
+  cases code with
+  | stmts ss => exact ⟨ss, rfl, Code.stmts.inj h⟩
+  | _ => simp [stripCode] at h
+
+omit [DecidableEq D.Value] in
+theorem stripCode_loop_inv {code : Code D.Op} {c pp' bb'} (h : stripCode code = .loop c pp' bb') :
+    ∃ pp bb, code = .loop c pp bb ∧ stripStmts pp = pp' ∧ stripStmts bb = bb' := by
+  cases code with
+  | loop c' pp bb =>
+      injection h with hc hpp hbb; subst hc; exact ⟨pp, bb, rfl, hpp, hbb⟩
+  | _ => simp [stripCode] at h
+
+/- `stripStmt` inversions per outer statement constructor. -/
+omit [DecidableEq D.Value] in
+theorem stripStmt_block_inv {s : Stmt D.Op} {b'} (h : stripStmt s = .block b') :
+    ∃ b, s = .block b ∧ stripStmts b = b' := by
+  cases s with
+  | block b => exact ⟨b, rfl, Stmt.block.inj h⟩
+  | _ => simp [stripStmt] at h
+
+omit [DecidableEq D.Value] in
+theorem stripStmt_cond_inv {s : Stmt D.Op} {c b'} (h : stripStmt s = .cond c b') :
+    ∃ b, s = .cond c b ∧ stripStmts b = b' := by
+  cases s with
+  | cond c₀ b => injection h with hc hb; subst hc; exact ⟨b, rfl, hb⟩
+  | _ => simp [stripStmt] at h
+
+omit [DecidableEq D.Value] in
+theorem stripStmt_switch_inv {s : Stmt D.Op} {c cs' d'} (h : stripStmt s = .switch c cs' d') :
+    ∃ cs d, s = .switch c cs d ∧ stripCases cs = cs' ∧ stripDflt d = d' := by
+  cases s with
+  | switch c₀ cs d => injection h with hc hcs hd; subst hc; exact ⟨cs, d, rfl, hcs, hd⟩
+  | _ => simp [stripStmt] at h
+
+omit [DecidableEq D.Value] in
+theorem stripStmt_forLoop_inv {s : Stmt D.Op} {i' c p' b'} (h : stripStmt s = .forLoop i' c p' b') :
+    ∃ i p b, s = .forLoop i c p b ∧ stripStmts i = i' ∧ stripStmts p = p' ∧ stripStmts b = b' := by
+  cases s with
+  | forLoop i c₀ p b =>
+      injection h with hi hc hp hb; subst hc; exact ⟨i, p, b, rfl, hi, hp, hb⟩
+  | _ => simp [stripStmt] at h
+
+omit [DecidableEq D.Value] in
+theorem stripStmt_funDef_inv {s : Stmt D.Op} {n ps rs b'} (h : stripStmt s = .funDef n ps rs b') :
+    ∃ b, s = .funDef n ps rs b ∧ stripStmts b = b' := by
+  cases s with
+  | funDef n₀ ps₀ rs₀ b =>
+      injection h with hn hps hrs hb; subst hn; subst hps; subst hrs; exact ⟨b, rfl, hb⟩
+  | _ => simp [stripStmt] at h
+
+omit [DecidableEq D.Value] in
+theorem stripStmt_letDecl_inv {s : Stmt D.Op} {vars val} (h : stripStmt s = .letDecl vars val) :
+    s = .letDecl vars val := by
+  cases s with
+  | letDecl v₀ vl₀ => injection h with hv hvl; rw [hv, hvl]
+  | _ => simp [stripStmt] at h
+
+omit [DecidableEq D.Value] in
+theorem stripStmt_assign_inv {s : Stmt D.Op} {vars e} (h : stripStmt s = .assign vars e) :
+    s = .assign vars e := by
+  cases s with
+  | assign v₀ e₀ => injection h with hv he; rw [hv, he]
+  | _ => simp [stripStmt] at h
+
+omit [DecidableEq D.Value] in
+theorem stripStmt_exprStmt_inv {s : Stmt D.Op} {e} (h : stripStmt s = .exprStmt e) :
+    s = .exprStmt e := by
+  cases s with
+  | exprStmt e₀ => injection h with he; rw [he]
+  | _ => simp [stripStmt] at h
+
+omit [DecidableEq D.Value] in
+theorem stripStmt_break_inv {s : Stmt D.Op} (h : stripStmt s = .break) : s = .break := by
+  cases s with
+  | «break» => rfl
+  | _ => simp [stripStmt] at h
+
+omit [DecidableEq D.Value] in
+theorem stripStmt_continue_inv {s : Stmt D.Op} (h : stripStmt s = .continue) : s = .continue := by
+  cases s with
+  | «continue» => rfl
+  | _ => simp [stripStmt] at h
+
+omit [DecidableEq D.Value] in
+theorem stripStmt_leave_inv {s : Stmt D.Op} (h : stripStmt s = .leave) : s = .leave := by
+  cases s with
+  | leave => rfl
+  | _ => simp [stripStmt] at h
+
+/- If a statement list strips to empty, every statement in it is a `funDef`. -/
+omit [DecidableEq D.Value] in
+theorem stripStmts_nil_inv : ∀ {ss : List (Stmt D.Op)}, stripStmts ss = [] → ∀ x ∈ ss, IsFunDef x
+  | [], _, _, hx => by simp at hx
+  | s :: rest, h, x, hx => by
+      cases s with
+      | funDef n ps rs b =>
+          have h' : stripStmts rest = [] := h
+          rcases List.mem_cons.mp hx with rfl | hx
+          · exact trivial
+          · exact stripStmts_nil_inv h' x hx
+      | _ => simp [stripStmts] at h
+
+/- If a statement list strips to a cons, it is a run of `funDef`s followed by a
+non-`funDef` head (which strips to the cons head) and a tail. -/
+omit [DecidableEq D.Value] in
+theorem stripStmts_cons_inv : ∀ {ss : List (Stmt D.Op)} {s' rest'}, stripStmts ss = s' :: rest' →
+    ∃ fds s rest, ss = fds ++ s :: rest ∧ (∀ x ∈ fds, IsFunDef x) ∧
+      stripStmt s = s' ∧ stripStmts rest = rest'
+  | [], _, _, h => by simp [stripStmts] at h
+  | s :: rest, s', rest', h => by
+      cases s with
+      | funDef n ps rs b =>
+          have h' : stripStmts rest = s' :: rest' := h
+          obtain ⟨fds, s₀, rest₀, hss, hfd, hs, hr⟩ := stripStmts_cons_inv h'
+          exact ⟨.funDef n ps rs b :: fds, s₀, rest₀, by rw [hss, List.cons_append],
+            fun x hx => by
+              rcases List.mem_cons.mp hx with rfl | hx
+              · exact trivial
+              · exact hfd x hx, hs, hr⟩
+      | block bb =>
+          injection h with h1 h2; exact ⟨[], .block bb, rest, rfl, by simp, h1, h2⟩
+      | cond c bb =>
+          injection h with h1 h2; exact ⟨[], .cond c bb, rest, rfl, by simp, h1, h2⟩
+      | switch c cs d =>
+          injection h with h1 h2; exact ⟨[], .switch c cs d, rest, rfl, by simp, h1, h2⟩
+      | forLoop i c p bb =>
+          injection h with h1 h2; exact ⟨[], .forLoop i c p bb, rest, rfl, by simp, h1, h2⟩
+      | letDecl vs vl =>
+          injection h with h1 h2; exact ⟨[], .letDecl vs vl, rest, rfl, by simp, h1, h2⟩
+      | assign vs e =>
+          injection h with h1 h2; exact ⟨[], .assign vs e, rest, rfl, by simp, h1, h2⟩
+      | exprStmt e =>
+          injection h with h1 h2; exact ⟨[], .exprStmt e, rest, rfl, by simp, h1, h2⟩
+      | «break» =>
+          injection h with h1 h2; exact ⟨[], .break, rest, rfl, by simp, h1, h2⟩
+      | «continue» =>
+          injection h with h1 h2; exact ⟨[], .continue, rest, rfl, by simp, h1, h2⟩
+      | leave =>
+          injection h with h1 h2; exact ⟨[], .leave, rest, rfl, by simp, h1, h2⟩
+
 theorem step_lift_sim {flatSc : FScope D} {funs_o funs_h : FunEnv D} {code V st res}
-    (huniq : (funNamesEnv funs_o).Nodup)
     (hO : GoodO flatSc funs_o) (hH : ResEq flatSc funs_h)
     (hws : ScopedCode (funNamesEnv funs_o) code)
     (hcf : CodeInFlatCode flatSc code) :
@@ -913,12 +1082,9 @@ theorem liftFunDefs_run_equiv {b : Block D.Op}
   have simIff : ∀ {r}, Step D (hoist D b :: []) [] st0 (.stmts b) r ↔
       Step D (flat b :: []) [] st0 (.stmts (stripStmts b)) r := by
     intro r
-    have huniqEnv : (funNamesEnv (D := D) (hoist D b :: [])).Nodup := by
-      rw [funNamesEnv_singleton]
-      exact huniq.sublist (funNamesTop_sublist b)
     have hwsEnv : ScopedCode (funNamesEnv (D := D) (hoist D b :: [])) (.stmts b) := by
       rw [funNamesEnv_singleton]; exact hscoped
-    exact step_lift_sim (code := .stmts b) (res := r) huniqEnv (goodO_top huniq hscoped)
+    exact step_lift_sim (code := .stmts b) (res := r) (goodO_top huniq hscoped)
       (fun _ => rfl) hwsEnv (codeInFlat_top huniq)
   constructor
   · intro h
