@@ -1,5 +1,6 @@
 import YulSemantics.BigStep
 import YulEvmCompiler.Optimizer.Implementation.ANF
+import YulEvmCompiler.Optimizer.Implementation.ScopeSafety
 import YulEvmCompiler.Optimizer.Spec.Pass
 /-!
 # ANF normalizer — soundness foundations (`VEnv` weakening atoms)
@@ -1138,6 +1139,103 @@ theorem flattenTop_halt {funs : FunEnv D} {P : String} {e : Expr Op}
       | callHalt hargs hlk hlen hbody =>
           obtain ⟨Va_a, hpre, hext_a, hatoms⟩ := flattenArgs_correct k hargs hna hext
           exact Or.inr ⟨Va_a, _, hpre, Step.callHalt hatoms hlk hlen hbody, hext_a⟩
+
+/-! ### Atoms are evaluable after a normal prelude (progress under scoping)
+
+After the flatten prelude runs normally, the resulting atoms all evaluate: each
+is either a source variable (bound by well-scopedness, carried across the
+prelude which only prepends) or a fresh temporary (bound by the very `let` that
+introduced it). This is the progress fact the reordering-halt backward direction
+needs, and it is the *only* place scoping enters. -/
+theorem flatten_atom_eval {funs : FunEnv D} {P : String} {e : Expr Op}
+    {Va : VEnv D} {st : EvmState} (k : Nat)
+    (hsc : ∀ x, x ∈ freeVarsExpr e → (VEnv.get Va x).isSome = true)
+    {Va' stM} (hpre : Step D funs Va st (.stmts (flatten P k e).2.1) (.sres Va' stM .normal)) :
+    ∃ v, Step D funs Va' stM (.expr (flatten P k e).2.2) (.eres (.vals [v] stM)) := by
+  cases e with
+  | var x =>
+      simp only [flatten] at hpre ⊢
+      cases hpre with
+      | seqNil =>
+          obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp (hsc x (by simp [freeVarsExpr]))
+          exact ⟨v, Step.var hv⟩
+  | lit l =>
+      simp only [flatten] at hpre ⊢
+      cases hpre with | seqNil => exact ⟨_, Step.lit⟩
+  | builtin op args =>
+      simp only [flatten] at hpre ⊢
+      rcases stmts_append_inv hpre with ⟨hne, _⟩ | ⟨Vm, stm, hpreA, htail⟩
+      · exact absurd rfl hne
+      · cases htail with
+        | seqStop _ hne => exact absurd rfl hne
+        | seqCons hlet hnil =>
+            cases hnil with
+            | seqNil =>
+                cases hlet with
+                | letVal hbe hlen =>
+                    rename_i vals
+                    obtain ⟨bv, rfl⟩ : ∃ bv, vals = [bv] := by
+                      cases vals with
+                      | nil => simp at hlen
+                      | cons b tl => cases tl with
+                        | nil => exact ⟨b, rfl⟩
+                        | cons _ _ => simp at hlen
+                    exact ⟨bv, Step.var get_cons_self⟩
+  | call fn args =>
+      simp only [flatten] at hpre ⊢
+      rcases stmts_append_inv hpre with ⟨hne, _⟩ | ⟨Vm, stm, hpreA, htail⟩
+      · exact absurd rfl hne
+      · cases htail with
+        | seqStop _ hne => exact absurd rfl hne
+        | seqCons hlet hnil =>
+            cases hnil with
+            | seqNil =>
+                cases hlet with
+                | letVal hbe hlen =>
+                    rename_i vals
+                    obtain ⟨bv, rfl⟩ : ∃ bv, vals = [bv] := by
+                      cases vals with
+                      | nil => simp at hlen
+                      | cons b tl => cases tl with
+                        | nil => exact ⟨b, rfl⟩
+                        | cons _ _ => simp at hlen
+                    exact ⟨bv, Step.var get_cons_self⟩
+
+theorem flattenArgs_atoms_eval {funs : FunEnv D} {P : String} {es : List (Expr Op)}
+    {Va : VEnv D} {st : EvmState} (k : Nat) (hnt : noTempArgs P es = true)
+    (hsc : ∀ x, x ∈ freeVarsArgs es → (VEnv.get Va x).isSome = true)
+    {Va' stM} (hpre : Step D funs Va st (.stmts (flattenArgs P k es).2.1) (.sres Va' stM .normal)) :
+    ∃ vs, Step D funs Va' stM (.args (flattenArgs P k es).2.2) (.eres (.vals vs stM)) := by
+  cases es with
+  | nil =>
+      simp only [flattenArgs] at hpre ⊢
+      cases hpre with | seqNil => exact ⟨[], Step.argsNil⟩
+  | cons e rest =>
+      simp only [noTempArgs, Bool.and_eq_true] at hnt
+      simp only [flattenArgs] at hpre ⊢
+      rcases stmts_append_inv hpre with ⟨hne, _⟩ | ⟨Vr, str, hpreR, hpreH⟩
+      · exact absurd rfl hne
+      · obtain ⟨rvs, hrestAt⟩ := flattenArgs_atoms_eval k hnt.2
+          (fun x hx => hsc x (by simp only [freeVarsArgs_cons, List.mem_append]; exact Or.inr hx))
+          hpreR
+        have hatomsR_ok : atomicArgs (flattenArgs P k rest).2.2 = true := (flattenArgs_ok P k rest).1
+        have hmove : Step D funs Va' stM (.args (flattenArgs P k rest).2.2)
+            (.eres (.vals rvs stM)) := by
+          refine prelude_preserves_atoms hatomsR_ok
+            (flatten P (flattenArgs P k rest).1 e).2.1 ?_ ?_ hpreH hrestAt
+          · exact fun s hs => preludeOK_shape ((flatten_ok P (flattenArgs P k rest).1 e).2 s hs)
+          · intro t ht
+            obtain ⟨rhs, hmem⟩ := ht
+            obtain ⟨m, hm1, rfl⟩ := flatten_prelude_decl t ⟨rhs, hmem⟩
+            exact flattenArgs_atom_fresh hnt.2 m hm1
+        have hscHead : ∀ x, x ∈ freeVarsExpr e → (VEnv.get Vr x).isSome = true := by
+          obtain ⟨ext, rfl⟩ := letPrelude_prefix (flattenArgs P k rest).2.1
+            (fun s hs => preludeOK_shape ((flattenArgs_ok P k rest).2 s hs)) hpreR
+          intro x hx
+          exact get_append_isSome ext
+            (hsc x (by simp only [freeVarsArgs_cons, List.mem_append]; exact Or.inl hx))
+        obtain ⟨hv, hheadAt⟩ := flatten_atom_eval (flattenArgs P k rest).1 hscHead hpreH
+        exact ⟨hv :: rvs, Step.argsCons hmove hheadAt⟩
 
 /-- **ANF preserves behavior.** (Scaffolded; discharged via the statement
 simulation + `restore` lemmas.) -/
