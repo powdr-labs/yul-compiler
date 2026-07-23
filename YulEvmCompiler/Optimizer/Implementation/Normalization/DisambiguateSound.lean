@@ -242,3 +242,84 @@ theorem alphaArgs_fwd {σ φ : Ident → Ident} (hσ : Function.Injective σ)
       | argsHeadHalt ha hh =>
           exact Step.argsHeadHalt (alphaArgs_fwd hσ hfuns hr ha) (alphaExpr_fwd hσ hfuns he hh)
 end
+
+/-! ### α-equivalence: statements
+
+Statement-level α-equivalence threads the renamings through binders. `AlphaSeqExt
+σ φ ss₁ ss₂ σ' φ'` relates a source sequence to its renaming and reports the
+renamings `σ'`/`φ'` in force after the sequence's declarations (a `for`-loop's
+`init` needs them for its condition/body/post). A block/`init` first prescans its
+top-level function names into `φ` (Yul's forward visibility), via `AlphaBlockExt`. -/
+
+/-- Extend a renaming with an association list (later lookups shadow `σ`). -/
+def updRen (σ : Ident → Ident) (l : List (Ident × Ident)) : Ident → Ident :=
+  fun z => match l.find? (fun p => p.1 = z) with
+    | some p => p.2
+    | none => σ z
+
+mutual
+inductive AlphaSeqExt :
+    (Ident → Ident) → (Ident → Ident) → List (Stmt Op) → List (Stmt Op) →
+    (Ident → Ident) → (Ident → Ident) → Prop
+  | nil {σ φ} : AlphaSeqExt σ φ [] [] σ φ
+  | letD {σ φ vars vars' eo eo' rest rest' σ'' φ''} :
+      AlphaOExpr σ φ eo eo' →
+      AlphaSeqExt (updRen σ (vars.zip vars')) φ rest rest' σ'' φ'' →
+      AlphaSeqExt σ φ (.letDecl vars eo :: rest) (.letDecl vars' eo' :: rest') σ'' φ''
+  | assignD {σ φ vars e e' rest rest' σ'' φ''} :
+      AlphaExpr σ φ e e' → AlphaSeqExt σ φ rest rest' σ'' φ'' →
+      AlphaSeqExt σ φ (.assign vars e :: rest) (.assign (vars.map σ) e' :: rest') σ'' φ''
+  | exprD {σ φ e e' rest rest' σ'' φ''} :
+      AlphaExpr σ φ e e' → AlphaSeqExt σ φ rest rest' σ'' φ'' →
+      AlphaSeqExt σ φ (.exprStmt e :: rest) (.exprStmt e' :: rest') σ'' φ''
+  | funD {σ φ fn ps ps' rs rs' body body' rest rest' σb φb σ'' φ''} :
+      AlphaBlockExt (updRen σ (ps.zip ps' ++ rs.zip rs')) φ body body' σb φb →
+      AlphaSeqExt σ φ rest rest' σ'' φ'' →
+      AlphaSeqExt σ φ (.funDef fn ps rs body :: rest) (.funDef (φ fn) ps' rs' body' :: rest') σ'' φ''
+  | blockD {σ φ body body' rest rest' σb φb σ'' φ''} :
+      AlphaBlockExt σ φ body body' σb φb → AlphaSeqExt σ φ rest rest' σ'' φ'' →
+      AlphaSeqExt σ φ (.block body :: rest) (.block body' :: rest') σ'' φ''
+  | condD {σ φ c c' body body' rest rest' σb φb σ'' φ''} :
+      AlphaExpr σ φ c c' → AlphaBlockExt σ φ body body' σb φb → AlphaSeqExt σ φ rest rest' σ'' φ'' →
+      AlphaSeqExt σ φ (.cond c body :: rest) (.cond c' body' :: rest') σ'' φ''
+  | switchD {σ φ c c' cases cases' dflt dflt' rest rest' σ'' φ''} :
+      AlphaExpr σ φ c c' → AlphaCases σ φ cases cases' → AlphaDflt σ φ dflt dflt' →
+      AlphaSeqExt σ φ rest rest' σ'' φ'' →
+      AlphaSeqExt σ φ (.switch c cases dflt :: rest) (.switch c' cases' dflt' :: rest') σ'' φ''
+  | forD {σ φ init init' c c' post post' body body' rest rest' σi φi σb φb σp φp σ'' φ''} :
+      AlphaBlockExt σ φ init init' σi φi →
+      AlphaExpr σi φi c c' →
+      AlphaBlockExt σi φi body body' σb φb →
+      AlphaBlockExt σi φi post post' σp φp →
+      AlphaSeqExt σ φ rest rest' σ'' φ'' →
+      AlphaSeqExt σ φ (.forLoop init c post body :: rest)
+        (.forLoop init' c' post' body' :: rest') σ'' φ''
+  | breakD {σ φ rest rest' σ'' φ''} :
+      AlphaSeqExt σ φ rest rest' σ'' φ'' →
+      AlphaSeqExt σ φ (.break :: rest) (.break :: rest') σ'' φ''
+  | contD {σ φ rest rest' σ'' φ''} :
+      AlphaSeqExt σ φ rest rest' σ'' φ'' →
+      AlphaSeqExt σ φ (.continue :: rest) (.continue :: rest') σ'' φ''
+  | leaveD {σ φ rest rest' σ'' φ''} :
+      AlphaSeqExt σ φ rest rest' σ'' φ'' →
+      AlphaSeqExt σ φ (.leave :: rest) (.leave :: rest') σ'' φ''
+inductive AlphaBlockExt :
+    (Ident → Ident) → (Ident → Ident) → List (Stmt Op) → List (Stmt Op) →
+    (Ident → Ident) → (Ident → Ident) → Prop
+  | mk {σ φ : Ident → Ident} {b₁ b₂ : List (Stmt Op)} {σ' φ' : Ident → Ident} :
+      AlphaSeqExt σ (updRen φ ((funNames b₁).zip (funNames b₂))) b₁ b₂ σ' φ' →
+      AlphaBlockExt σ φ b₁ b₂ σ' φ'
+inductive AlphaCases :
+    (Ident → Ident) → (Ident → Ident) →
+    List (Literal × List (Stmt Op)) → List (Literal × List (Stmt Op)) → Prop
+  | nil {σ φ} : AlphaCases σ φ [] []
+  | cons {σ φ l body body' rest rest' σb φb} :
+      AlphaBlockExt σ φ body body' σb φb → AlphaCases σ φ rest rest' →
+      AlphaCases σ φ ((l, body) :: rest) ((l, body') :: rest')
+inductive AlphaDflt :
+    (Ident → Ident) → (Ident → Ident) →
+    Option (List (Stmt Op)) → Option (List (Stmt Op)) → Prop
+  | none {σ φ} : AlphaDflt σ φ none none
+  | some {σ φ body body' σb φb} :
+      AlphaBlockExt σ φ body body' σb φb → AlphaDflt σ φ (some body) (some body')
+end
