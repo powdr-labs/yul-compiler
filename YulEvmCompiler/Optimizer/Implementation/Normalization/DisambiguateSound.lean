@@ -198,23 +198,25 @@ theorem renScopeRel_find {φ : Ident → Ident} {BR : FDecl D → FDecl D → Pr
         rw [List.find?_cons_of_neg (by simp [hp]), List.find?_cons_of_neg (by simp [hφ])]
         exact ih (fun p hp => hinj p (List.mem_cons_of_mem _ hp))
 
-/-- `lookupFun` transports across `RenFunsRel` under an injective `φ`: a resolved
+/-- `lookupFun` transports across `RenFunsRel`, under a per-scope no-merge
+condition on the queried name (provided by `RenFCfg.no_merge_scope`): a resolved
 function has a `φ`-renamed counterpart with a `BR`-related declaration and a
 related closure environment. -/
 theorem lookupFun_renFunsRel {φ : Ident → Ident} {BR : FDecl D → FDecl D → Prop}
-    (hinj : Function.Injective φ) {f₁ f₂ : FunEnv D} (hR : RenFunsRel φ BR f₁ f₂) :
-    ∀ {fn : Ident} {decl : FDecl D} {cenv : FunEnv D},
-      lookupFun f₁ fn = some (decl, cenv) →
+    {f₁ f₂ : FunEnv D} (hR : RenFunsRel φ BR f₁ f₂) :
+    ∀ {fn : Ident}, (∀ s ∈ f₁, ∀ p ∈ s, φ p.1 = φ fn → p.1 = fn) →
+      ∀ {decl : FDecl D} {cenv : FunEnv D}, lookupFun f₁ fn = some (decl, cenv) →
       ∃ decl' cenv', lookupFun f₂ (φ fn) = some (decl', cenv') ∧
         BR decl decl' ∧ RenFunsRel φ BR cenv cenv' := by
   induction hR with
-  | nil => intro fn decl cenv h; simp [lookupFun] at h
+  | nil => intro fn _ decl cenv h; simp [lookupFun] at h
   | @cons s₁ s₂ t₁ t₂ hs hR' ih =>
-      intro fn decl cenv h
-      rcases renScopeRel_find hs fn (fun _ _ hc => hinj hc) with
+      intro fn hnm decl cenv h
+      rcases renScopeRel_find hs fn (hnm s₁ (List.mem_cons_self ..)) with
         ⟨hn₁, hn₂⟩ | ⟨p, q, hp₁, hp₂, hkey, hd⟩
       · rw [lookupFun, hn₁] at h
-        obtain ⟨decl', cenv', hl', hbody, hRc⟩ := ih h
+        obtain ⟨decl', cenv', hl', hbody, hRc⟩ :=
+          ih (fun s hs' => hnm s (List.mem_cons_of_mem _ hs')) h
         exact ⟨decl', cenv', by rw [lookupFun, hn₂]; exact hl', hbody, hRc⟩
       · rw [lookupFun, hp₁] at h
         simp only [Option.some.injEq, Prod.mk.injEq] at h
