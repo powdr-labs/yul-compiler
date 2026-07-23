@@ -686,6 +686,30 @@ theorem RenCfg.extend {σ : Ident → Ident} {V : VEnv D} (h : RenCfg σ V)
       obtain ⟨p₀, hp₀, hp₀e⟩ := List.mem_map.mp hpV
       rw [← hp₀e]; exact h.2.2 p₀ hp₀
 
+/-- **`RenCfg` for a fresh scope.** The identity-based renaming that sends distinct
+names `xs` to distinct fresh names `ys` is a valid `RenCfg` on the scope `xs` — used
+for a function's parameter/return scope (`FDeclRen`). -/
+theorem RenCfg.ofFreshScope {xs ys : List Ident} (hxnd : xs.Nodup) (hynd : ys.Nodup)
+    (hlen : xs.length = ys.length) (hds : ∀ v ∈ ys, ∃ k, v = dsName k) :
+    RenCfg (updRen id (xs.zip ys)) (bindZeros D xs) := by
+  have hkeys : (bindZeros D xs).map Prod.fst = xs := by
+    simp [bindZeros, List.map_map, Function.comp_def]
+  have hmap : xs.map (updRen id (xs.zip ys)) = ys := map_updRen_zip hxnd hlen
+  refine ⟨?_, ?_, ?_⟩
+  · intro p hp q hq hpq
+    exact List.inj_on_of_nodup_map (by rw [hmap]; exact hynd)
+      (hkeys ▸ List.mem_map_of_mem hp) (hkeys ▸ List.mem_map_of_mem hq) hpq
+  · intro z hz
+    have hzx : z ∉ xs := by
+      have hh := (VEnv.get_eq_none_iff_not_mem _ z).mp hz
+      rwa [hkeys] at hh
+    exact updRen_of_not_mem (fun p hp hpz => hzx (hpz ▸ (List.of_mem_zip hp).1))
+  · intro p hp
+    have : updRen id (xs.zip ys) p.1 ∈ ys := by
+      have := List.mem_map_of_mem (f := updRen id (xs.zip ys)) (hkeys ▸ List.mem_map_of_mem hp)
+      rwa [hmap] at this
+    exact hds _ this
+
 /-! ### Scope-safety (no-shadowing) for the source program
 
 Valid Yul forbids declaring a variable already in scope. `WScoped dom code` says
