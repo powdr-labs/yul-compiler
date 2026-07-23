@@ -88,6 +88,15 @@ theorem renVEnv_set (σ : Ident → Ident) (V : VEnv D) (x : Ident) (v : D.Value
     renVEnv σ (bindZeros D xs) = bindZeros D (xs.map σ) := by
   simp [renVEnv, bindZeros, List.map_map, Function.comp]
 
+theorem renVEnv_zip (σ : Ident → Ident) (xs : List Ident) (vals : List D.Value) :
+    renVEnv σ (xs.zip vals) = (xs.map σ).zip vals := by
+  induction xs generalizing vals with
+  | nil => rfl
+  | cons x xs ih =>
+      cases vals with
+      | nil => rfl
+      | cons v vals => simp only [List.zip_cons_cons, renVEnv_cons, List.map_cons, ih]
+
 theorem renVEnv_restore (σ : Ident → Ident) (V W : VEnv D) :
     renVEnv σ (restore V W) = restore (renVEnv σ V) (renVEnv σ W) := by
   simp only [restore, renVEnv, List.map_drop, List.length_map]
@@ -234,6 +243,8 @@ inductive AlphaStmt1 :
     (Ident → Ident) → (Ident → Ident) → Stmt Op → Stmt Op →
     (Ident → Ident) → (Ident → Ident) → Prop
   | letD {σ φ vars vars' eo eo'} :
+      vars.Nodup → vars'.Nodup → vars.length = vars'.length →
+      (∀ v' ∈ vars', ∃ k, v' = dsName k) → (∀ v' ∈ vars', ∀ z, σ z ≠ v') →
       AlphaOExpr σ φ eo eo' →
       AlphaStmt1 σ φ (.letDecl vars eo) (.letDecl vars' eo') (updRen σ (vars.zip vars')) φ
   | assignD {σ φ vars e e'} :
@@ -875,6 +886,32 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | condD hc2 hb2 =>
           exact ⟨Step.ifFalse (ihc hcfg hφ hfuns trivial (.expr hc2)).1 hz, hcfg⟩
+  | @letZero funs V st vars =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
+      cases hcode with | stmt hs => cases hs with
+        | @letD _ _ _ vars' _ _ hvnd hnd hlen hds hfr ho => cases ho with | none =>
+            have hsc' : ∀ x ∈ vars, x ∉ V.map Prod.fst := hsc
+            have hW : (bindZeros D vars ++ V).map Prod.fst = vars ++ V.map Prod.fst := by
+              simp [bindZeros, List.map_append, List.map_map, Function.comp_def]
+            have hagree : renVEnv (updRen σ (vars.zip vars')) V = renVEnv σ V :=
+              renVEnv_congr (fun p hp => updRen_of_not_mem
+                (fun q hq hqp => hsc' p.1 (hqp ▸ (List.of_mem_zip hq).1) (List.mem_map_of_mem hp)))
+            refine ⟨?_, RenCfg.extend hcfg hvnd hnd hlen hds hfr hsc' hW⟩
+            simp only [renRes, renVEnv_append, renVEnv_bindZeros, map_updRen_zip hvnd hlen, hagree]
+            exact Step.letZero
+  | @letVal funs V st vars e vals st1 hval hlen0 ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
+      cases hcode with | stmt hs => cases hs with
+        | @letD _ _ _ vars' _ _ hvnd hnd hlen hds hfr ho => cases ho with | some he' =>
+            have hsc' : ∀ x ∈ vars, x ∉ V.map Prod.fst := hsc
+            have hW : (vars.zip vals ++ V).map Prod.fst = vars ++ V.map Prod.fst := by
+              rw [List.map_append, List.map_fst_zip (Nat.le_of_eq hlen0.symm)]
+            have hagree : renVEnv (updRen σ (vars.zip vars')) V = renVEnv σ V :=
+              renVEnv_congr (fun p hp => updRen_of_not_mem
+                (fun q hq hqp => hsc' p.1 (hqp ▸ (List.of_mem_zip hq).1) (List.mem_map_of_mem hp)))
+            refine ⟨?_, RenCfg.extend hcfg hvnd hnd hlen hds hfr hsc' hW⟩
+            simp only [renRes, renVEnv_append, hagree, renVEnv_zip, map_updRen_zip hvnd hlen]
+            exact Step.letVal (ihe hcfg hφ hfuns trivial (.expr he')).1 (hlen0.trans hlen)
   | @seqCons funs V st s rest V1 st1 V2 st2 o hs hrest ihs ihrest =>
       intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmts hss => cases hss with | cons hs1 hrest1 =>
