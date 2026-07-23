@@ -565,3 +565,42 @@ theorem freshVars_isFresh {n : Nat} {vars : List Ident} {v : Ident}
 
 /-- A not-fresh name differs from any fresh name. -/
 theorem notFresh_ne_dsName {x : Ident} (hx : NotFresh x) (k : Nat) : x ≠ dsName k := hx k
+
+/-! ### The boundary config and its lookup interface
+
+`RenCfg σ inner`: the renaming `σ` is injective on the inner (program-declared)
+keys, is the identity below the boundary, and maps every inner key to a fresh
+`dsName`. From it we derive the per-lookup no-merge hypotheses that `get_boundary`
+/`set_boundary_*` require, for any not-fresh (source) name. -/
+
+def RenCfg (σ : Ident → Ident) (inner : VEnv D) : Prop :=
+  (∀ p ∈ inner, ∀ q ∈ inner, σ p.1 = σ q.1 → p.1 = q.1) ∧
+  (∀ z, VEnv.get inner z = none → σ z = z) ∧
+  (∀ p ∈ inner, ∃ k, σ p.1 = dsName k)
+
+/-- The `get_boundary`/`renVEnv_get` no-merge condition for a not-fresh name `x`:
+no inner key renames onto `σ x`. -/
+theorem RenCfg.no_merge {σ : Ident → Ident} {inner : VEnv D} (h : RenCfg σ inner)
+    {x : Ident} (hx : NotFresh x) : ∀ p ∈ inner, σ p.1 = σ x → p.1 = x := by
+  intro p hp hpq
+  by_cases hxi : VEnv.get inner x = none
+  · obtain ⟨k, hk⟩ := h.2.2 p hp
+    rw [h.2.1 x hxi, hk] at hpq
+    exact absurd hpq.symm (hx k)
+  · have hne : inner.find? (fun q => q.1 = x) ≠ none :=
+      fun hc => hxi ((VEnv.get_eq_none_iff_find _ _).mpr hc)
+    obtain ⟨q, hq⟩ := Option.ne_none_iff_exists'.mp hne
+    have hqmem : q ∈ inner := List.mem_of_find?_eq_some hq
+    have hqx : q.1 = x := by simpa using List.find?_some hq
+    rw [← hqx] at hpq ⊢
+    exact h.1 p hp q hqmem hpq
+
+/-- `σ x = x` for a not-fresh name absent from the inner prefix. -/
+theorem RenCfg.id_at {σ : Ident → Ident} {inner : VEnv D} (h : RenCfg σ inner)
+    {x : Ident} (hxi : VEnv.get inner x = none) : σ x = x := h.2.1 x hxi
+
+/-- `get` transport at the boundary for a not-fresh name. -/
+theorem RenCfg.get {σ : Ident → Ident} {inner : VEnv D} (h : RenCfg σ inner)
+    (outer : VEnv D) {x : Ident} (hx : NotFresh x) :
+    VEnv.get (renVEnv σ inner ++ outer) (σ x) = VEnv.get (inner ++ outer) x :=
+  get_boundary σ inner outer x (h.no_merge hx) (fun hn => h.id_at hn)
