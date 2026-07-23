@@ -211,17 +211,49 @@ end
 
 /-! ### The core simulation (under construction) -/
 
-/-- **Core bidirectional simulation.** Running the original statements under the
-lexical scope stack is equivalent to running the stripped statements under the
-flat scope, provided the environments are `FEnvLift`-related and the code is well
-scoped. This is the heart of the proof; `FEnvLift` and this lemma are being
-built. -/
-theorem inner_sim {flatSc : FScope D} {funs_o funs_h : FunEnv D}
-    {b : List (Stmt D.Op)} {V st res}
-    (hsim : True) :  -- placeholder for FEnvLift flatSc funs_o funs_h ∧ scoping
-    Step D funs_o V st (.stmts b) res ↔
-      Step D funs_h V st (.stmts (stripStmts b)) res := by
+/-- A function declaration with its body stripped of nested definitions. -/
+def stripDecl (d : FDecl D) : FDecl D := { d with body := stripStmts d.body }
+
+/-- The original environment resolves every *program* function name to a
+declaration whose strip is the flat scope's entry. (Names outside `flatSc` — e.g.
+ambient functions the well-scoped program never calls — are unconstrained.) -/
+def ResOK (flatSc : FScope D) (funs_o : FunEnv D) : Prop :=
+  ∀ f d c d' c', lookupFun funs_o f = some (d, c) → lookupFun [flatSc] f = some (d', c') →
+    d' = stripDecl d
+
+/-- The lifted environment resolves every name exactly as the flat scope over the
+ambient base does (nested stripped blocks only add empty scopes on top). -/
+def ResEq (ref funs_h : FunEnv D) : Prop := ∀ f, lookupFun funs_h f = lookupFun ref f
+
+/-- `stripStmt` on the `Code` wrapper (expressions/arg-lists are unchanged; only
+statement bodies are stripped). -/
+def stripCode : Code D.Op → Code D.Op
+  | .expr e => .expr e
+  | .args es => .args es
+  | .stmt s => .stmt (stripStmt s)
+  | .stmts ss => .stmts (stripStmts ss)
+  | .loop c post body => .loop c (stripStmts post) (stripStmts body)
+
+/-- **Core bidirectional simulation.** Running the original code under its lexical
+scope stack equals running the stripped code under the flat scope, when the
+environments are resolution-related (`ResOK`/`ResEq`, driven by unique names) and
+the code is well scoped (so every call resolves within the flat scope, not the
+ambient base — the direction uniqueness alone cannot save). Proved by induction
+on the `Step` derivation; the `callOk`/`block` cases re-establish the relation.
+Under construction. -/
+theorem step_lift_sim {flatSc : FScope D} {base : FunEnv D}
+    {funs_o funs_h : FunEnv D} {V st code res}
+    (hres : ResOK flatSc funs_o) (heq : ResEq (flatSc :: base) funs_h) :
+    Step D funs_o V st code res ↔ Step D funs_h V st (stripCode code) res := by
   sorry
+
+/-- The `.stmts` specialization used by the block rule. -/
+theorem inner_sim {flatSc : FScope D} {base funs_o funs_h : FunEnv D}
+    {b : List (Stmt D.Op)} {V st res}
+    (hres : ResOK flatSc funs_o) (heq : ResEq (flatSc :: base) funs_h) :
+    Step D funs_o V st (.stmts b) res ↔
+      Step D funs_h V st (.stmts (stripStmts b)) res :=
+  step_lift_sim (code := .stmts b) hres heq
 
 /-! ### The equivalence -/
 
@@ -231,6 +263,10 @@ theorem liftFunDefs_equiv {b : Block D.Op}
     (huniq : UniqueFunNames b) (hscoped : WellScoped b) :
     EquivBlock D b (liftFunDefs b) := by
   intro funs V st V' st' o
+  have heq : ResEq (D := D) (flat b :: funs) (flat b :: funs) := fun _ => rfl
+  -- structural bridge: the top block's own functions match the flat scope
+  -- (stripped). To be refined to the `program-scopes ++ base` relation.
+  have hres : ResOK (D := D) (flat b) (hoist D b :: funs) := by sorry
   constructor
   · intro h
     cases h with
@@ -239,7 +275,7 @@ theorem liftFunDefs_equiv {b : Block D.Op}
         rw [hoist_liftFunDefs]
         simp only [liftFunDefs]
         rw [funDefs_noop (collectStmts_allFunDef b)]
-        exact (inner_sim (flatSc := flat b) (b := b) trivial).mp hb
+        exact (inner_sim (flatSc := flat b) (base := funs) hres heq).mp hb
   · intro h
     cases h with
     | @block _ _ _ _ Vb stb _ hb =>
@@ -247,6 +283,6 @@ theorem liftFunDefs_equiv {b : Block D.Op}
         rw [hoist_liftFunDefs] at hb
         simp only [liftFunDefs] at hb
         rw [funDefs_noop (collectStmts_allFunDef b)] at hb
-        exact (inner_sim (flatSc := flat b) (b := b) trivial).mpr hb
+        exact (inner_sim (flatSc := flat b) (base := funs) hres heq).mpr hb
 
 end YulEvmCompiler.Optimizer.Normalization
