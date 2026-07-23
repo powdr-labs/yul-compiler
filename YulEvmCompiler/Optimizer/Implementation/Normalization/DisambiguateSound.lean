@@ -700,74 +700,75 @@ theorem AlphaStmt1.phi_eq {σ φ : Ident → Ident} {s s' : Stmt D.Op} {σ' φ' 
 
 theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs₁ V₁ mst code₁ res₁) :
     ∀ {σ φ σ' φ' funs₂ code₂}, RenCfg σ V₁ → Function.Injective φ →
-      RenFunsRel φ (FDeclRen φ) funs₁ funs₂ → AlphaCode σ φ σ' φ' code₁ code₂ →
+      RenFunsRel φ (FDeclRen φ) funs₁ funs₂ → WScopedCode (V₁.map Prod.fst) code₁ →
+      AlphaCode σ φ σ' φ' code₁ code₂ →
       Step D funs₂ (renVEnv σ V₁) mst code₂ (renRes σ' res₁) ∧ ResOK σ' res₁ := by
   induction h with
   | @lit funs V st l =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | expr hae => cases hae; exact ⟨Step.lit, trivial⟩
   | @var funs V st x v hv =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | expr hae => cases hae with | var hx =>
           exact ⟨Step.var (by rw [renVEnv_get σ V x (hcfg.no_merge hx)]; exact hv), trivial⟩
   | @builtinOk funs V st op args argvals st1 rets st2 ha hb iha =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | expr hae => cases hae with | builtin ha2 =>
-          exact ⟨Step.builtinOk (iha hcfg hφ hfuns (.args ha2)).1 hb, trivial⟩
+          exact ⟨Step.builtinOk (iha hcfg hφ hfuns trivial (.args ha2)).1 hb, trivial⟩
   | @builtinHalt funs V st op args argvals st1 st2 ha hb iha =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | expr hae => cases hae with | builtin ha2 =>
-          exact ⟨Step.builtinHalt (iha hcfg hφ hfuns (.args ha2)).1 hb, trivial⟩
+          exact ⟨Step.builtinHalt (iha hcfg hφ hfuns trivial (.args ha2)).1 hb, trivial⟩
   | @builtinArgsHalt funs V st op args st1 ha iha =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | expr hae => cases hae with | builtin ha2 =>
-          exact ⟨Step.builtinArgsHalt (iha hcfg hφ hfuns (.args ha2)).1, trivial⟩
+          exact ⟨Step.builtinArgsHalt (iha hcfg hφ hfuns trivial (.args ha2)).1, trivial⟩
   | @callArgsHalt funs V st fn args st1 ha iha =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | expr hae => cases hae with | call hfn ha2 =>
-          exact ⟨Step.callArgsHalt (iha hcfg hφ hfuns (.args ha2)).1, trivial⟩
+          exact ⟨Step.callArgsHalt (iha hcfg hφ hfuns trivial (.args ha2)).1, trivial⟩
   | @argsNil funs V st =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | args hae => cases hae; exact ⟨Step.argsNil, trivial⟩
   | @argsCons funs V st e rest restvals st1 v st2 hrest he ihrest ihe =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | args hae => cases hae with | cons he2 hr2 =>
-          exact ⟨Step.argsCons (ihrest hcfg hφ hfuns (.args hr2)).1
-            (ihe hcfg hφ hfuns (.expr he2)).1, trivial⟩
+          exact ⟨Step.argsCons (ihrest hcfg hφ hfuns trivial (.args hr2)).1
+            (ihe hcfg hφ hfuns trivial (.expr he2)).1, trivial⟩
   | @argsRestHalt funs V st e rest st1 hrest ihrest =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | args hae => cases hae with | cons he2 hr2 =>
-          exact ⟨Step.argsRestHalt (ihrest hcfg hφ hfuns (.args hr2)).1, trivial⟩
+          exact ⟨Step.argsRestHalt (ihrest hcfg hφ hfuns trivial (.args hr2)).1, trivial⟩
   | @argsHeadHalt funs V st e rest restvals st1 st2 hrest he ihrest ihe =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | args hae => cases hae with | cons he2 hr2 =>
-          exact ⟨Step.argsHeadHalt (ihrest hcfg hφ hfuns (.args hr2)).1
-            (ihe hcfg hφ hfuns (.expr he2)).1, trivial⟩
+          exact ⟨Step.argsHeadHalt (ihrest hcfg hφ hfuns trivial (.args hr2)).1
+            (ihe hcfg hφ hfuns trivial (.expr he2)).1, trivial⟩
   | @funDef funs V st n ps rs b =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | funD _ => exact ⟨Step.funDef, hcfg⟩
   | @«break» funs V st =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | breakD => exact ⟨Step.break, hcfg⟩
   | @«continue» funs V st =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | contD => exact ⟨Step.continue, hcfg⟩
   | @leave funs V st =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | leaveD => exact ⟨Step.leave, hcfg⟩
   | @seqNil funs V st =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmts hs => cases hs with | nil => exact ⟨Step.seqNil, hcfg⟩
   | @exprStmt funs V st e st1 he ihe =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | exprD he2 =>
-          exact ⟨Step.exprStmt (ihe hcfg hφ hfuns (.expr he2)).1, hcfg⟩
+          exact ⟨Step.exprStmt (ihe hcfg hφ hfuns trivial (.expr he2)).1, hcfg⟩
   | @exprStmtHalt funs V st e st1 he ihe =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | exprD he2 =>
-          exact ⟨Step.exprStmtHalt (ihe hcfg hφ hfuns (.expr he2)).1, hcfg⟩
+          exact ⟨Step.exprStmtHalt (ihe hcfg hφ hfuns trivial (.expr he2)).1, hcfg⟩
   | @assignVal funs V st vars e vals st1 he hlen ihe =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | assignD hvars he2 =>
           have hnm : ∀ x ∈ vars, ∀ k ∈ V.map Prod.fst, σ k = σ x → k = x := by
             intro x hx k hk hkeq
@@ -777,36 +778,40 @@ theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs�
           refine ⟨?_, RenCfg.setMany hcfg vars vals⟩
           simp only [renRes]
           rw [← renVEnv_setMany_dom σ vars vals V hnm]
-          exact Step.assignVal (ihe hcfg hφ hfuns (.expr he2)).1 (by rw [List.length_map]; exact hlen)
+          exact Step.assignVal (ihe hcfg hφ hfuns trivial (.expr he2)).1 (by rw [List.length_map]; exact hlen)
   | @assignHalt funs V st vars e st1 he ihe =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | assignD hvars he2 =>
-          exact ⟨Step.assignHalt (ihe hcfg hφ hfuns (.expr he2)).1, hcfg⟩
+          exact ⟨Step.assignHalt (ihe hcfg hφ hfuns trivial (.expr he2)).1, hcfg⟩
   | @ifHalt funs V st c body st1 hc ihc =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | condD hc2 hb2 =>
-          exact ⟨Step.ifHalt (ihc hcfg hφ hfuns (.expr hc2)).1, hcfg⟩
+          exact ⟨Step.ifHalt (ihc hcfg hφ hfuns trivial (.expr hc2)).1, hcfg⟩
   | @switchHalt funs V st c cs dflt st1 hc ihc =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | switchD hc2 hcs2 hd2 =>
-          exact ⟨Step.switchHalt (ihc hcfg hφ hfuns (.expr hc2)).1, hcfg⟩
+          exact ⟨Step.switchHalt (ihc hcfg hφ hfuns trivial (.expr hc2)).1, hcfg⟩
   | @loopCondHalt funs V st c post body st1 hc ihc =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | loop hc2 hb2 hp2 =>
-          exact ⟨Step.loopCondHalt (ihc hcfg hφ hfuns (.expr hc2)).1, hcfg⟩
+          exact ⟨Step.loopCondHalt (ihc hcfg hφ hfuns trivial (.expr hc2)).1, hcfg⟩
   | @loopDone funs V st c post body cv st1 hc hz ihc =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | loop hc2 hb2 hp2 =>
-          exact ⟨Step.loopDone (ihc hcfg hφ hfuns (.expr hc2)).1 hz, hcfg⟩
+          exact ⟨Step.loopDone (ihc hcfg hφ hfuns trivial (.expr hc2)).1 hz, hcfg⟩
   | @ifFalse funs V st c body cv st1 hc hz ihc =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmt hs => cases hs with | condD hc2 hb2 =>
-          exact ⟨Step.ifFalse (ihc hcfg hφ hfuns (.expr hc2)).1 hz, hcfg⟩
+          exact ⟨Step.ifFalse (ihc hcfg hφ hfuns trivial (.expr hc2)).1 hz, hcfg⟩
   | @seqCons funs V st s rest V1 st1 V2 st2 o hs hrest ihs ihrest =>
-      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode
+      intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode
       cases hcode with | stmts hss => cases hss with | cons hs1 hrest1 =>
-          obtain ⟨hstep_s, hcfg1⟩ := ihs hcfg hφ hfuns (.stmt hs1)
+          simp only [WScopedCode, WScopedStmts] at hsc
+          obtain ⟨hsc_s, hsc_r⟩ := hsc
+          obtain ⟨hstep_s, hcfg1⟩ := ihs hcfg hφ hfuns hsc_s (.stmt hs1)
           have hpe := hs1.phi_eq; subst hpe
-          obtain ⟨hstep_r, hcfgr⟩ := ihrest hcfg1 hφ hfuns (.stmts hrest1)
+          have hk : V1.map Prod.fst = declVars s ++ V.map Prod.fst := venvKeys_stmt hs
+          obtain ⟨hstep_r, hcfgr⟩ := ihrest hcfg1 hφ hfuns
+            (by show WScopedStmts (V1.map Prod.fst) rest; rw [hk]; exact hsc_r) (.stmts hrest1)
           exact ⟨Step.seqCons hstep_s hstep_r, hcfgr⟩
-  | _ => intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hcode; sorry
+  | _ => intro σ φ σ' φ' funs₂ code₂ hcfg hφ hfuns hsc hcode; sorry
