@@ -537,3 +537,31 @@ theorem restore_prefix (A E : VEnv D) : restore A (E ++ A) = A := by
     | nil => simp
     | cons e rest ih => simpa using ih
   simp only [restore, List.length_append, Nat.add_sub_cancel, hd]
+
+/-! ### Fresh-name disjointness (no `String` internals)
+
+A source identifier is "not fresh" iff it is not any `dsName`. Under
+well-formedness every identifier in the source program is not fresh, while every
+renamed (inner) key is a `dsName` — so a lookup of an outer source name never
+collides with a renamed inner key, discharging the boundary `get`/`set` no-merge
+obligation for outer references. -/
+
+/-- `x` is not a disambiguation-fresh name. -/
+def NotFresh (x : Ident) : Prop := ∀ k, x ≠ dsName k
+
+/-- Fresh names really are fresh. -/
+theorem not_notFresh_dsName (k : Nat) : ¬ NotFresh (dsName k) := fun h => h k rfl
+
+/-- Every `freshVars` entry is some `dsName`. -/
+theorem freshVars_isFresh {n : Nat} {vars : List Ident} {v : Ident}
+    (h : v ∈ freshVars n vars) : ∃ k, v = dsName k := by
+  induction vars generalizing n with
+  | nil => simp [freshVars] at h
+  | cons a rest ih =>
+      rw [freshVars] at h
+      rcases List.mem_cons.mp h with h1 | h2
+      · exact ⟨n, h1⟩
+      · exact ih h2
+
+/-- A not-fresh name differs from any fresh name. -/
+theorem notFresh_ne_dsName {x : Ident} (hx : NotFresh x) (k : Nat) : x ≠ dsName k := hx k
