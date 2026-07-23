@@ -153,10 +153,12 @@ Two facts about the pinned target semantics shape the compiler:
 1. **EIP-8024 (`DUPN`/`SWAPN`/`EXCHANGE`) is not activated on any modeled fork.**
    `Operation.availableInFork` returns `false` for all three on every fork
    (Frontier … Osaka), so bytes `0xe6..0xe8` always halt with
-   `InvalidInstruction`. The compiler therefore uses classic `DUP1`–`DUP16` and
-   `SWAP1`–`SWAP16`, and rejects accesses beyond that range. Activating
-   EIP-8024 upstream would let a later code-generation extension remove this
-   depth restriction.
+   `InvalidInstruction`. The raw backend therefore uses classic
+   `DUP1`–`DUP16` and `SWAP1`–`SWAP16`, and rejects accesses beyond that range.
+   The production source entry point can instead invoke the proved guarded
+   spilling fallback described below. Activating EIP-8024 upstream would let a
+   later code-generation extension remove this depth restriction without that
+   source rewrite and scratch contract.
 2. **`MachineState.writeBytes` is a total, kernel-transparent `def`**, so
    memory-write proofs are possible. `mstore`'s `MemMatch` preservation rests on
    the upstream read-after-write lemma
@@ -671,10 +673,11 @@ CI), which must stay in sync as coverage grows.
   `.call` fail class, realized by a real `StepRunning.callFail` trace — see the
   open-world section above). A fully general model is still the client's job, so
   end-to-end open-world coverage remains conditional on supplying one.
-* **Deep stack access.** Variable reads use up to `DUP16` and stores up to
-  `SWAP16`; functions return up to 16 values. Deeper accesses are *rejected*
-  (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
-  activated on any modeled fork. The production source entry point first uses
+* **Deep stack access.** The raw backend uses up to `DUP16` for variable reads
+  and `SWAP16` for stores; functions return up to 16 values. A raw deeper
+  access is *rejected* (`compile = none`), not miscompiled, because EIP-8024
+  (`DUPN`/`SWAPN`) is not activated on any modeled fork. The production source
+  entry point first uses
   the verified smart layout fallback described above, then the guarded memory
   spilling fallback when a safe scratch reservation is available. Irreducible
   frames without that contract still need EIP-8024 activation upstream.

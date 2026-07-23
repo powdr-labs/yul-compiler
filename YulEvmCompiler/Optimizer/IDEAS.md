@@ -148,16 +148,17 @@ Finding Dominators in a Flowgraph,” TOPLAS 1(1), 1979,
 Computing Static Single Assignment Form and the Control Dependence Graph,”
 TOPLAS 13(4), 1991, <https://doi.org/10.1145/192030.192041>.
 
-Current review state: both block and object compilation paths use the pass;
-the proof covers copy-back, argument evaluation and halts, nested acyclic
+Result at this pass's landing: both block and object compilation paths used the
+pass; the proof covers copy-back, argument evaluation and halts, nested acyclic
 regions, function environments, and generated nested shadow scopes. The strict
 Uniswap suite compiles 13/15 contracts and runs 39 comparable external-call
 scenarios with no behavioral or gas regressions. `PoolLiquidity.sol` and
 `SwapMath.sol` leave the exact known-failure set; SwapMath's
 `computeSwapStep(uint160,uint160,uint128,int256,uint24)` is now exercised.
-`PoolSwap.sol` remains blocked by five reads of the same result-memory pointer
-across loop branches (the first needs `DUP21`); `PoolManager.sol` remains the
-larger integrated frontier. Supporting those loop-carried regions needs a
+At that point, `PoolSwap.sol` remained blocked by five reads of the same
+result-memory pointer across loop branches (the first needed `DUP21`), while
+`PoolManager.sol` remained the larger integrated frontier. Supporting those
+loop-carried regions needs a
 separate control-flow proof rather than weakening this acyclic-region pass.
 The full build, exact axiom guard, and unchanged audited specification closure
 pass.
@@ -324,7 +325,8 @@ constant-control-flow folding / `InlineHelpers` fire — then folded sites save
 ~25+ gas. Corpus: 558 literal-lets (347 safe + 78 refresh-recoverable), ≥26
 baseline fixtures with concrete fold unlocks, and the pervasive solc `let _N := 0`
 idiom (also all over real via-IR output → object-rooted baselines). Substitution
-also relieves the DUP16 depth limit (deep var reads currently fail to compile).
+also relieved the DUP16 depth limit (deep var reads failed to compile at that
+stage).
 
 **Pipelines**: block `[simplify, propagate, inline(litOK), simplify]` (propagate
 first feeds the literal-friendly inliner); object
@@ -570,7 +572,8 @@ baseline contains **288 additional rows** (1,134 total). `gasTests` improve 12/1
 −3,855 total (`exp.sol` 2,700 → 2,352, `dispatch_large.sol` 88,362 → 87,677);
 Uniswap v4 improves 10/10, −130,707 total (`TickMath.sol` 1,008,056 →
 884,353, `UnsafeMath.sol` 2,908 → 2,434); the Yul optimizer corpus improves 27
-rows, −2,941 total. `SwapMath` remains the sole strict Uniswap rejection.
+rows, −2,941 total. At that stage, `SwapMath` remained the sole strict
+Uniswap rejection.
 
 Also on this branch: `compileSource` now combines its **light one-round
 pipeline** (`optimizerPipeline*Rounds` generalization) with main's verified

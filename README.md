@@ -147,10 +147,11 @@ operations are different**: their correctness is *conditional on* the
   callee/init code with success-and-return) is still the client's responsibility,
   so end-to-end open-world call/create coverage remains conditional on supplying
   such a realization. This is a genuine distinction from the flat built-ins above.
-- **Deep stack access.** Variable reads use up to `DUP16`, stores up to
-  `SWAP16`, and functions return up to 16 values. Deeper accesses are *rejected*
-  (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
-  activated on any fork modeled by evm-semantics. `compileSource` retries a
+- **Deep stack access.** The raw backend uses up to `DUP16` for variable reads
+  and `SWAP16` for stores, and functions return up to 16 values. A raw deeper
+  access is *rejected* (`compile = none`), not miscompiled, because EIP-8024
+  (`DUPN`/`SWAPN`) is not activated on any fork modeled by evm-semantics.
+  `compileSource` retries a
   failed optimized compile with the verified smart stack-layout pass: it
   right-associates addition spines without changing Yul's right-to-left leaf
   evaluation order, then coalesces non-overlapping singleton-local live ranges
@@ -161,8 +162,8 @@ operations are different**: their correctness is *conditional on* the
   by a consistent literal `memoryguard(n)`. It rejects spilling when `msize`
   could observe the reservation, when recursion makes the active call path
   unbounded, when a selected binding violates lexical scope, or when a tuple
-  binding cannot be spilled as one group. Lexical
-  siblings reuse colors, and caller/callee regions overlap only when their
+  binding cannot be spilled as one group. Lexical siblings reuse colors, and
+  caller/callee regions overlap only when their
   lifetimes cannot: the reserved word count is the peak simultaneous lexical
   and call-path footprint, not the total number of selected bindings. Existing
   successful candidates still win before this fallback, so their bytecode and
