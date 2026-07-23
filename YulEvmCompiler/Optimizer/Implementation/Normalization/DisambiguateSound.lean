@@ -615,6 +615,13 @@ theorem updRen_cons_ne {σ : Ident → Ident} {a b z : Ident} {l : List (Ident �
     (h : a ≠ z) : updRen σ ((a, b) :: l) z = updRen σ l z := by
   simp [updRen, List.find?_cons, h]
 
+/-- A lookup past a prefix that doesn't contain the key skips to the suffix. -/
+theorem updRen_append_skip {σ : Ident → Ident} {l₁ l₂ : List (Ident × Ident)} {z : Ident}
+    (h : ∀ p ∈ l₁, p.1 ≠ z) : updRen σ (l₁ ++ l₂) z = updRen σ l₂ z := by
+  have h1 : l₁.find? (fun p => p.1 = z) = none :=
+    List.find?_eq_none.mpr (fun p hp => by simpa using h p hp)
+  simp [updRen, List.find?_append, h1]
+
 /-- The renaming sends `xs` to `ys`, even with a trailing binding list `tl` (the
 lookup of an `xs`-key hits the `xs.zip ys` prefix first). -/
 theorem map_updRen_zip_pre {σ : Ident → Ident} (tl : List (Ident × Ident)) :
