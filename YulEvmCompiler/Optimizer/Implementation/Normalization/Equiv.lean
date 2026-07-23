@@ -251,11 +251,13 @@ def CodeInFlat (flatSc : FScope D) (code : List (Stmt D.Op)) : Prop :=
 function it resolves matches the flat scope (stripped), has a well-scoped body,
 and a body whose own functions are registered in the flat scope. No ambient base
 (this is the whole-program `Run` setting). -/
-def GoodO (flatSc : FScope D) (funs : FunEnv D) : Prop :=
-  ∀ f d cenv, lookupFun funs f = some (d, cenv) →
-    flatLookup flatSc f = some (stripDecl d) ∧
-    ScopedStmts (funNamesTop d.body ++ funNamesEnv cenv) d.body ∧
-    CodeInFlat flatSc d.body
+def GoodO (flatSc : FScope D) : FunEnv D → Prop
+  | [] => True
+  | s :: rest =>
+      (∀ n d, (n, d) ∈ s →
+        flatLookup flatSc n = some (stripDecl d) ∧
+        ScopedStmts (funNamesTop d.body ++ funNamesEnv (s :: rest)) d.body ∧
+        CodeInFlat flatSc d.body) ∧ GoodO flatSc rest
 
 /-- The lifted environment resolves every name exactly as the single flat scope
 does (nested stripped blocks only add empty scopes, transparent to lookup). -/
@@ -292,57 +294,65 @@ theorem funNamesEnv_cons (s : FScope D) (rest : FunEnv D) :
   simp only [funNamesEnv, List.map_cons, List.flatten_cons]
 
 omit [DecidableEq D.Value] in
-theorem mem_funNamesEnv_of_lookup {funs : FunEnv D} {f d c}
-    (h : lookupFun funs f = some (d, c)) : f ∈ funNamesEnv funs := by
-  induction funs with
-  | nil => simp [lookupFun] at h
-  | cons s rest ih =>
-      rw [funNamesEnv_cons, List.mem_append]
+theorem funNamesEnv_append (a c : FunEnv D) :
+    funNamesEnv (a ++ c) = funNamesEnv a ++ funNamesEnv c := by
+  simp only [funNamesEnv, List.map_append, List.flatten_append]
+
+omit [DecidableEq D.Value] in
+theorem lookupFun_cenv_suffix : ∀ (funs : FunEnv D) {f d cenv},
+    lookupFun funs f = some (d, cenv) → List.IsSuffix cenv funs
+  | [], _, _, _, h => by simp [lookupFun] at h
+  | s :: rest, f, d, cenv, h => by
       unfold lookupFun at h
       cases hfind : s.find? (fun p => p.1 = f) with
       | some p =>
-          left
-          have := List.find?_some (by rw [hfind])
-          have hp := List.mem_of_find?_eq_some hfind
-          exact (List.mem_map).mpr ⟨p, hp, by simpa using this⟩
-      | none => rw [hfind] at h; exact Or.inr (ih h)
+          rw [hfind] at h; simp only [Option.some.injEq, Prod.mk.injEq] at h
+          obtain ⟨_, rfl⟩ := h; exact List.suffix_refl _
+      | none =>
+          rw [hfind] at h
+          exact (lookupFun_cenv_suffix rest h).trans (List.suffix_cons _ _)
 
 omit [DecidableEq D.Value] in
-/-- Under unique names, resolving in the closure environment returned by a lookup
-agrees with resolving in the whole environment. -/
-theorem lookupFun_cenv_resolve : ∀ (funs : FunEnv D) {f d cenv f' d' cenv'},
-    (funNamesEnv funs).Nodup → lookupFun funs f = some (d, cenv) →
-    lookupFun cenv f' = some (d', cenv') → lookupFun funs f' = some (d', cenv')
-  | [], _, _, _, _, _, _, _, h, _ => by simp [lookupFun] at h
-  | s :: rest, f, d, cenv, f', d', cenv', hnd, hlk, hlk' => by
-      rw [funNamesEnv_cons] at hnd
-      have hnd_rest : (funNamesEnv rest).Nodup := (List.nodup_append.mp hnd).2.1
-      have hdisj := (List.nodup_append.mp hnd).2.2
-      unfold lookupFun at hlk ⊢
-      cases hfind : s.find? (fun p => p.1 = f) with
+theorem goodO_append_right : ∀ (a : FunEnv D) {c : FunEnv D} {flatSc},
+    GoodO flatSc (a ++ c) → GoodO flatSc c
+  | [], _, _, h => h
+  | _ :: a', _, _, h => goodO_append_right a' h.2
+
+omit [DecidableEq D.Value] in
+/-- `GoodO` is inherited by any closure environment a lookup returns (a suffix). -/
+theorem goodO_cenv {flatSc : FScope D} {funs : FunEnv D} (hg : GoodO flatSc funs)
+    {f d cenv} (hlk : lookupFun funs f = some (d, cenv)) : GoodO flatSc cenv := by
+  obtain ⟨pre, hpre⟩ := lookupFun_cenv_suffix funs hlk
+  rw [← hpre] at hg
+  exact goodO_append_right pre hg
+
+omit [DecidableEq D.Value] in
+/-- Facts about the function a lookup resolves, with the correct (positional)
+body scope, read off structural `GoodO`. -/
+theorem goodO_lookup : ∀ {funs : FunEnv D} {flatSc : FScope D},
+    GoodO flatSc funs → ∀ {fn d cenv}, lookupFun funs fn = some (d, cenv) →
+      flatLookup flatSc fn = some (stripDecl d) ∧
+      ScopedStmts (funNamesTop d.body ++ funNamesEnv cenv) d.body ∧
+      CodeInFlat flatSc d.body
+  | [], _, _, _, _, _, h => by simp [lookupFun] at h
+  | s :: rest, flatSc, hg, fn, d, cenv, hlk => by
+      unfold lookupFun at hlk
+      cases hfind : s.find? (fun p => p.1 = fn) with
       | some p =>
           rw [hfind] at hlk; simp only [Option.some.injEq, Prod.mk.injEq] at hlk
-          obtain ⟨_, rfl⟩ := hlk
-          unfold lookupFun at hlk'
-          exact hlk'
-      | none =>
-          rw [hfind] at hlk
-          have ihres := lookupFun_cenv_resolve rest hnd_rest hlk hlk'
-          have hmem' : f' ∈ funNamesEnv rest := mem_funNamesEnv_of_lookup ihres
-          cases hfind' : s.find? (fun p => p.1 = f') with
-          | some p' =>
-              exfalso
-              have hp' := List.mem_of_find?_eq_some hfind'
-              have hkey : p'.1 = f' := by simpa using List.find?_some hfind'
-              exact hdisj f' (List.mem_map.mpr ⟨p', hp', hkey⟩) f' hmem' rfl
-          | none => exact ihres
+          obtain ⟨hd, hc⟩ := hlk
+          have hpmem := List.mem_of_find?_eq_some hfind
+          have hpkey : p.1 = fn := by simpa using List.find?_some hfind
+          have hmem : (fn, d) ∈ s := by
+            have hp : p = (fn, d) := Prod.ext hpkey hd
+            rw [← hp]; exact hpmem
+          rw [← hc]
+          exact hg.1 fn d hmem
+      | none => rw [hfind] at hlk; exact goodO_lookup hg.2 hlk
 
 omit [DecidableEq D.Value] in
-/-- `GoodO` is inherited by any closure environment a lookup returns. -/
-theorem goodO_cenv {flatSc : FScope D} {funs : FunEnv D}
-    (hnd : (funNamesEnv funs).Nodup) (hg : GoodO flatSc funs)
-    {f d cenv} (hlk : lookupFun funs f = some (d, cenv)) : GoodO flatSc cenv :=
-  fun f' d' cenv' hlk' => hg f' d' cenv' (lookupFun_cenv_resolve funs hnd hlk hlk')
+/-- `ResEq flatSc [flatSc]` — the flat scope resolves like itself. -/
+theorem resEq_flat (flatSc : FScope D) : ResEq flatSc [flatSc] := fun _ => rfl
 
 /-- **Forward simulation.** (Under construction — skeleton to validate the
 induction motive; cases filled incrementally.) -/
@@ -554,32 +564,20 @@ theorem mem_hoist_inv {b : List (Stmt D.Op)} {f} {d : FDecl D} (h : (f, d) ∈ h
 /-- At the top block, the original scope stack is `GoodO` for the flat scope. -/
 theorem goodO_top {b : Block D.Op} (huniq : UniqueFunNames b) (hws : WellScoped b) :
     GoodO (D := D) (flat b) (hoist D b :: []) := by
-  intro f d cenv hlk
-  rw [lookupFun_singleton] at hlk
-  cases hfind : (hoist D b).find? (fun p => p.1 = f) with
-  | none => rw [hfind] at hlk; simp at hlk
-  | some p =>
-      rw [hfind] at hlk
-      simp only [Option.map_some, Option.some.injEq, Prod.mk.injEq] at hlk
-      obtain ⟨hd, hc⟩ := hlk
-      have hpmem := List.mem_of_find?_eq_some hfind
-      have hpkey : p.1 = f := by simpa using List.find?_some hfind
-      have hmem : (f, d) ∈ hoist D b := by
-        have : p = (f, d) := by
-          rw [← hd, ← hpkey]
-        rw [← this]; exact hpmem
-      obtain ⟨ps, rs, body, hdeq, hfd⟩ := mem_hoist_inv hmem
-      refine ⟨?_, ?_, ?_⟩
-      · rw [hdeq]
-        have : stripDecl (D := D) { params := ps, rets := rs, body := body }
-            = { params := ps, rets := rs, body := stripStmts body } := rfl
-        rw [this]
-        exact flatLookup_of_mem huniq (mem_collectStmts_of_top hfd)
-      · rw [← hc, hdeq, funNamesEnv_singleton]
-        exact scopedStmts_funDef_body hws hfd
-      · rw [hdeq]
-        intro n' ps' rs' bd' hmem'
-        exact flatLookup_of_mem huniq (collectStmts_body_subset hfd hmem')
+  refine ⟨?_, trivial⟩
+  intro n d hmem
+  obtain ⟨ps, rs, body, hdeq, hfd⟩ := mem_hoist_inv hmem
+  refine ⟨?_, ?_, ?_⟩
+  · rw [hdeq]
+    have : stripDecl (D := D) { params := ps, rets := rs, body := body }
+        = { params := ps, rets := rs, body := stripStmts body } := rfl
+    rw [this]
+    exact flatLookup_of_mem huniq (mem_collectStmts_of_top hfd)
+  · rw [hdeq, funNamesEnv_singleton]
+    exact scopedStmts_funDef_body hws hfd
+  · rw [hdeq]
+    intro n' ps' rs' bd' hmem'
+    exact flatLookup_of_mem huniq (collectStmts_body_subset hfd hmem')
 
 /-- At the top block, `b`'s functions are all registered in the flat scope. -/
 theorem codeInFlat_top {b : Block D.Op} (huniq : UniqueFunNames b) :
