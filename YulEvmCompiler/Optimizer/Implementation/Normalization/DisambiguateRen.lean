@@ -660,6 +660,19 @@ def FScopedCode (fdom : List Ident) : Code D.Op → Prop
       ((∀ fn ∈ funNames body, fn ∉ fdom) ∧ FScopedStmts (funNames body ++ fdom) body) ∧
         ((∀ fn ∈ funNames post, fn ∉ fdom) ∧ FScopedStmts (funNames post ++ fdom) post)
 
+/-- `NormalForm` reference-scoping lifted to the `Code` classes. For the `loop`
+class the condition/post/body are each checked at the current sets (post/body
+extend the function set by their own hoisted names, as `ScopedStmt` does). -/
+def NScopedCode (vs fs : List Ident) : Code D.Op → Prop
+  | .expr e => NormalForm.ScopedExpr vs fs e
+  | .args es => NormalForm.ScopedArgs vs fs es
+  | .stmt s => NormalForm.ScopedStmt vs fs s
+  | .stmts ss => NormalForm.ScopedStmts vs fs ss
+  | .loop c post body =>
+      NormalForm.ScopedExpr vs fs c ∧
+      NormalForm.ScopedStmts vs (fs ++ NormalForm.funDefNames post) post ∧
+      NormalForm.ScopedStmts vs (fs ++ NormalForm.funDefNames body) body
+
 /-- `WScoped` lifted to the `Code` classes (expressions/arguments declare nothing). -/
 def WScopedCode (dom : List Ident) : Code D.Op → Prop
   | .expr _ => True
@@ -705,14 +718,107 @@ theorem venvKeys_stmt {funs : FunEnv D} {V st s V1 st1}
 
 /-! ### The function-declaration body relation -/
 
-/-- Function-declaration renaming: params/rets renamed by `σc`, which is a valid
-renaming (`RenCfg`) on the function's fresh parameter/return scope, and the body
-is α-equivalent under `σc` (variables) and `φ` (functions). -/
-def FDeclRen (φ : Ident → Ident) (d₁ d₂ : FDecl D) : Prop :=
+/-- Function-declaration renaming, at visible function set `F` (the names in
+scope at the declaration's position — for a stored declaration, exactly
+`funNamesOf` of the closure environment `lookupFun` returns). Params/rets are
+renamed by `σc`, a valid renaming (`RenCfg`) on the fresh parameter/return
+scope, bounded by the body's range start; the body is α-equivalent under `σc`
+(variables) and the ambient `φ` (functions); and the source body is
+reference-scoped (for the `φ`-congruence transport), variable-scope-safe and
+function-scope-safe (for re-entering the simulation at a call). -/
+def FDeclRen (F : List Ident) (φ : Ident → Ident) (d₁ d₂ : FDecl D) : Prop :=
   ∃ lo hi σc σc' φc',
     d₂.params = d₁.params.map σc ∧ d₂.rets = d₁.rets.map σc ∧
     RenCfg σc (bindZeros D (d₁.params ++ d₁.rets)) lo ∧
+    NormalForm.ScopedStmts (d₁.params ++ d₁.rets)
+      (F ++ NormalForm.funDefNames d₁.body) d₁.body ∧
+    WScopedStmts (d₁.params ++ d₁.rets) d₁.body ∧
+    ((∀ fn ∈ funNames d₁.body, fn ∉ F) ∧
+      FScopedStmts (funNames d₁.body ++ F) d₁.body) ∧
     AlphaBlockExt lo hi σc φ d₁.body d₂.body σc' φc'
+
+/-- Function environments related scope-by-scope, each scope's declarations at
+its own visible set (its scope and everything below — exactly what `lookupFun`
+returns as the closure environment). -/
+def RenFunsRelF (φ : Ident → Ident) : FunEnv D → FunEnv D → Prop
+  | s₁ :: r₁, s₂ :: r₂ =>
+      RenScopeRel φ (FDeclRen (funNamesOf (s₁ :: r₁)) φ) s₁ s₂ ∧ RenFunsRelF φ r₁ r₂
+  | [], [] => True
+  | _, _ => False
+
+theorem RenFunsRelF.cons {φ : Ident → Ident} {s₁ s₂ : FScope D} {r₁ r₂ : FunEnv D}
+    (hs : RenScopeRel φ (FDeclRen (funNamesOf (s₁ :: r₁)) φ) s₁ s₂)
+    (hr : RenFunsRelF φ r₁ r₂) : RenFunsRelF φ (s₁ :: r₁) (s₂ :: r₂) :=
+  ⟨hs, hr⟩
+
+/-- `lookupFun` transports across `RenFunsRelF`: the resolved declaration is
+related at exactly the visible set of the returned closure environment. -/
+theorem lookupFun_renFunsRelF {φ : Ident → Ident} :
+    ∀ {f₁ f₂ : FunEnv D}, RenFunsRelF φ f₁ f₂ →
+      ∀ {fn : Ident}, (∀ s ∈ f₁, ∀ p ∈ s, φ p.1 = φ fn → p.1 = fn) →
+      ∀ {decl : FDecl D} {cenv : FunEnv D}, lookupFun f₁ fn = some (decl, cenv) →
+      ∃ decl' cenv', lookupFun f₂ (φ fn) = some (decl', cenv') ∧
+        FDeclRen (funNamesOf cenv) φ decl decl' ∧ RenFunsRelF φ cenv cenv'
+  | [], [], _, fn, _, decl, cenv, h => by simp [lookupFun] at h
+  | [], _ :: _, hR, fn, _, decl, cenv, h => hR.elim
+  | _ :: _, [], hR, fn, _, decl, cenv, h => hR.elim
+  | s₁ :: r₁, s₂ :: r₂, hR, fn, hnm, decl, cenv, h => by
+      obtain ⟨hs, hr⟩ := hR
+      rcases renScopeRel_find hs fn (hnm s₁ (List.mem_cons_self ..)) with
+        ⟨hn₁, hn₂⟩ | ⟨p, q, hp₁, hp₂, hkey, hd⟩
+      · rw [lookupFun, hn₁] at h
+        obtain ⟨decl', cenv', hl', hbody, hRc⟩ :=
+          lookupFun_renFunsRelF hr (fun s hs' => hnm s (List.mem_cons_of_mem _ hs')) h
+        exact ⟨decl', cenv', by rw [lookupFun, hn₂]; exact hl', hbody, hRc⟩
+      · rw [lookupFun, hp₁] at h
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨hd_eq, hcenv_eq⟩ := h
+        subst hd_eq; subst hcenv_eq
+        exact ⟨q.2, s₂ :: r₂, by rw [lookupFun, hp₂], hd, hs, hr⟩
+
+/-- `FDeclRen` transports along a `φ` agreeing on the visible functions: the
+stored body references only visible names (its `Scoped` field), so its
+α-relation transports by congruence; nothing else mentions `φ`. -/
+theorem FDeclRen.congr_phi {F : List Ident} {φ φ' : Ident → Ident} {d₁ d₂ : FDecl D}
+    (h : FDeclRen F φ d₁ d₂) (hag : ∀ fn ∈ F, φ' fn = φ fn) :
+    FDeclRen F φ' d₁ d₂ := by
+  obtain ⟨lo, hi, σc, σc', φc', hps, hrs, hcfg, hns, hws, hfs, hbe⟩ := h
+  exact ⟨lo, hi, σc, _, _, hps, hrs, hcfg, hns, hws, hfs,
+    alphaBlockExt_congr_phi hbe hns hag⟩
+
+/-- Scope-level transport at a fixed visible set: keys by agreement on the
+scope's names, declarations by `FDeclRen.congr_phi`. -/
+theorem RenScopeRel.congr_phi_fdecl {F : List Ident} {φ φ' : Ident → Ident}
+    {s₁ s₂ : FScope D}
+    (h : RenScopeRel φ (FDeclRen F φ) s₁ s₂)
+    (hag : ∀ fn ∈ F, φ' fn = φ fn)
+    (hkeys : ∀ p ∈ s₁, φ' p.1 = φ p.1) :
+    RenScopeRel φ' (FDeclRen F φ') s₁ s₂ := by
+  induction h with
+  | nil => exact List.Forall₂.nil
+  | @cons p q u₁ u₂ hpq hrest ih =>
+      exact List.Forall₂.cons
+        ⟨hpq.1.trans (hkeys p (List.mem_cons_self ..)).symm, hpq.2.congr_phi hag⟩
+        (ih (fun p hp => hkeys p (List.mem_cons_of_mem _ hp)))
+
+/-- `RenFunsRelF` transports along a `φ` agreeing on all in-scope names. -/
+theorem RenFunsRelF.congr_phi {φ φ' : Ident → Ident} :
+    ∀ {f₁ f₂ : FunEnv D}, RenFunsRelF φ f₁ f₂ →
+      (∀ fn ∈ funNamesOf f₁, φ' fn = φ fn) → RenFunsRelF φ' f₁ f₂
+  | [], [], _, _ => trivial
+  | [], _ :: _, hR, _ => hR.elim
+  | _ :: _, [], hR, _ => hR.elim
+  | s₁ :: r₁, s₂ :: r₂, hR, hag => by
+      obtain ⟨hs, hr⟩ := hR
+      have hsub : ∀ fn ∈ funNamesOf r₁, fn ∈ funNamesOf (s₁ :: r₁) := by
+        intro fn hfn
+        rw [funNamesOf_cons]
+        exact List.mem_append.mpr (Or.inr hfn)
+      have hkeys : ∀ p ∈ s₁, φ' p.1 = φ p.1 := fun p hp => hag p.1 (by
+        rw [funNamesOf_cons]
+        exact List.mem_append.mpr (Or.inl (List.mem_map_of_mem hp)))
+      exact ⟨hs.congr_phi_fdecl hag hkeys,
+        RenFunsRelF.congr_phi hr (fun fn hfn => hag fn (hsub fn hfn))⟩
 
 /-- The hoisted scope's keys are the block's top-level function names. -/
 theorem hoist_keys (body : List (Stmt D.Op)) : (hoist D body).map Prod.fst = funNames body := by
@@ -722,16 +828,28 @@ theorem hoist_keys (body : List (Stmt D.Op)) : (hoist D body).map Prod.fst = fun
       simp only [hoist] at ih ⊢
       cases s <;> simp only [List.filterMap_cons, List.map_cons, funNames, ih]
 
-/-- **Hoist transport.** α-equivalent statement sequences have `RenScopeRel`-related
-hoisted function scopes: each source `funDef` is matched by a target `funDef` with
-`φ`-renamed name and an `FDeclRen`-related declaration. -/
-theorem hoist_renScopeRel : ∀ {ss ss' : List (Stmt D.Op)} {lo hi} {σ φ σ' φ' : Ident → Ident},
-    AlphaSeqExt lo hi σ φ ss ss' σ' φ' → RenScopeRel φ (FDeclRen φ) (hoist D ss) (hoist D ss')
-  | [], _, _, _, _, _, _, _, h => by cases h; exact List.Forall₂.nil
-  | s :: rest, _, _, _, σ0, φ0, _, _, h => by
+/-- **Hoist transport.** α-equivalent statement sequences with scope-safe,
+reference-scoped source have `RenScopeRel`-related hoisted function scopes at
+the block's visible set `F`: each source `funDef` is matched by a target
+`funDef` with `φ`-renamed name and an `FDeclRen F φ`-related declaration. -/
+theorem hoist_renScopeRel {F : List Ident} :
+    ∀ {ss ss' : List (Stmt D.Op)} {lo hi} {σ φ σ' φ' : Ident → Ident}
+      {dom vs : List Ident},
+    AlphaSeqExt lo hi σ φ ss ss' σ' φ' →
+    WScopedStmts dom ss →
+    FScopedStmts F ss →
+    NormalForm.ScopedStmts vs F ss →
+    RenScopeRel φ (FDeclRen F φ) (hoist D ss) (hoist D ss')
+  | [], _, _, _, _, _, _, _, _, _, h, _, _, _ => by cases h; exact List.Forall₂.nil
+  | s :: rest, _, _, _, σ0, φ0, _, _, dom, vs, h, hws, hfs, hns => by
+      obtain ⟨hws_s, hws_r⟩ := (hws : WScopedStmt dom s ∧
+        WScopedStmts (declVars s ++ dom) rest)
+      obtain ⟨hfs_s, hfs_r⟩ := (hfs : FScopedStmt F s ∧ FScopedStmts F rest)
+      obtain ⟨hns_s, hns_r⟩ := (hns : NormalForm.ScopedStmt vs F s ∧
+        NormalForm.ScopedStmts (vs ++ NormalForm.declTopVars s) F rest)
       cases h with
       | @cons _ _ _ _ _ _ s' _ rest' σm φm _ _ hs1 hrest =>
-      have ih := hoist_renScopeRel hrest
+      have ih := hoist_renScopeRel hrest hws_r hfs_r hns_r
       have hpe := hs1.phi_eq; subst hpe
       cases hs1 with
       | @funD _ m _ _ _ fn ps ps' rs rs' body body' σb φb hnd hlp hlr hNF hrn hbe =>
@@ -741,7 +859,7 @@ theorem hoist_renScopeRel : ∀ {ss ss' : List (Stmt D.Op)} {lo hi} {σ φ σ' �
           have hrsnd : rs.Nodup := (List.nodup_append.mp hnd).2.1
           have hdisj : ∀ x ∈ ps, x ∉ rs :=
             fun x hx hxr => (List.nodup_append.mp hnd).2.2 x hx x hxr rfl
-          refine ⟨m, _, updRen id (ps.zip ps' ++ rs.zip rs'), σb, φb, ?_, ?_, ?_, hbe⟩
+          refine ⟨m, _, updRen id (ps.zip ps' ++ rs.zip rs'), σb, φb, ?_, ?_, ?_, ?_, ?_, ?_, hbe⟩
           · exact (map_updRen_zip_pre (rs.zip rs') hpsnd hlp).symm
           · have hc : rs.map (updRen id (ps.zip ps' ++ rs.zip rs'))
                 = rs.map (updRen id (rs.zip rs')) :=
@@ -751,6 +869,9 @@ theorem hoist_renScopeRel : ∀ {ss ss' : List (Stmt D.Op)} {lo hi} {σ φ σ' �
           · rw [show ps.zip ps' ++ rs.zip rs' = (ps ++ rs).zip (ps' ++ rs') from
               (List.zip_append hlp).symm]
             exact RenCfg.ofFreshScope hnd (by simp only [List.length_append, hlp, hlr]) hNF hrn
+          · exact hns_s
+          · exact (hws_s : (ps ++ rs).Nodup ∧ WScopedStmts (ps ++ rs) body).2
+          · exact hfs_s
       | _ => simp only [hoist, List.filterMap_cons]; exact ih
 
 /-! ### Result renaming and the code-level α-relation -/

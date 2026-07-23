@@ -677,4 +677,108 @@ theorem alphaDflt_congr_phi {vs fs : List Ident} {φ2 : Ident → Ident} :
 end
 
 
+/-! ### Reference-scoping monotonicity
+
+`NormalForm.Scoped*` only tests membership of referenced names, so it transports
+along `⊆` on both the visible variables and the visible functions. Needed
+because the bisimulation states visible sets in environment order
+(`funNames body ++ outer`) while `ScopedStmt` extends on the right
+(`outer ++ funDefNames body`). -/
+
+mutual
+theorem scopedExpr_mono {vs vs' fs fs' : List Ident}
+    (hv : ∀ x ∈ vs, x ∈ vs') (hf : ∀ x ∈ fs, x ∈ fs') :
+    ∀ {e : Expr Op}, NormalForm.ScopedExpr vs fs e → NormalForm.ScopedExpr vs' fs' e
+  | .lit _, _ => trivial
+  | .var x, h => hv x h
+  | .builtin _ args, h => scopedArgs_mono hv hf (h : NormalForm.ScopedArgs vs fs args)
+  | .call fn args, h =>
+      ⟨hf fn (h : fn ∈ fs ∧ NormalForm.ScopedArgs vs fs args).1,
+        scopedArgs_mono hv hf (h : fn ∈ fs ∧ NormalForm.ScopedArgs vs fs args).2⟩
+theorem scopedArgs_mono {vs vs' fs fs' : List Ident}
+    (hv : ∀ x ∈ vs, x ∈ vs') (hf : ∀ x ∈ fs, x ∈ fs') :
+    ∀ {es : List (Expr Op)}, NormalForm.ScopedArgs vs fs es → NormalForm.ScopedArgs vs' fs' es
+  | [], _ => trivial
+  | e :: rest, h =>
+      ⟨scopedExpr_mono hv hf (h : _ ∧ _).1, scopedArgs_mono hv hf (h : _ ∧ _).2⟩
+end
+
+/-- Extend a `⊆` fact pointwise across an `++` on both sides. -/
+theorem mem_append_mono {α} {a b a' b' : List α}
+    (ha : ∀ x ∈ a, x ∈ a') (hb : ∀ x ∈ b, x ∈ b') :
+    ∀ x ∈ a ++ b, x ∈ a' ++ b' := by
+  intro x hx
+  rcases List.mem_append.mp hx with h | h
+  · exact List.mem_append.mpr (Or.inl (ha x h))
+  · exact List.mem_append.mpr (Or.inr (hb x h))
+
+mutual
+theorem scopedStmt_mono {vs vs' fs fs' : List Ident}
+    (hv : ∀ x ∈ vs, x ∈ vs') (hf : ∀ x ∈ fs, x ∈ fs') :
+    ∀ {s : Stmt Op}, NormalForm.ScopedStmt vs fs s → NormalForm.ScopedStmt vs' fs' s
+  | .letDecl vars (some e), h => scopedExpr_mono hv hf (h : NormalForm.ScopedExpr vs fs e)
+  | .letDecl vars none, _ => trivial
+  | .assign vars e, h =>
+      ⟨fun x hx => hv x ((h : _ ∧ _).1 x hx), scopedExpr_mono hv hf (h : _ ∧ _).2⟩
+  | .exprStmt e, h => scopedExpr_mono hv hf (h : NormalForm.ScopedExpr vs fs e)
+  | .block body, h =>
+      scopedStmts_mono hv (mem_append_mono hf (fun x hx => hx)) h
+  | .cond c body, h =>
+      ⟨scopedExpr_mono hv hf (h : _ ∧ _).1,
+        scopedStmts_mono hv (mem_append_mono hf (fun x hx => hx)) (h : _ ∧ _).2⟩
+  | .switch c cases dflt, h =>
+      ⟨scopedExpr_mono hv hf (h : _ ∧ _ ∧ _).1,
+        scopedCases_mono hv hf (h : _ ∧ _ ∧ _).2.1,
+        scopedDflt_mono hv hf (h : _ ∧ _ ∧ _).2.2⟩
+  | .funDef fn ps rs body, h =>
+      scopedStmts_mono (fun x hx => hx) (mem_append_mono hf (fun x hx => hx)) h
+  | .forLoop init c post body, h => by
+      obtain ⟨hi, hc, hp, hb⟩ := (h : _ ∧ _ ∧ _ ∧ _)
+      refine ⟨scopedStmts_mono hv (mem_append_mono hf (fun x hx => hx)) hi,
+        scopedExpr_mono (mem_append_mono hv (fun x hx => hx))
+          (mem_append_mono hf (fun x hx => hx)) hc,
+        scopedStmts_mono (mem_append_mono hv (fun x hx => hx))
+          (mem_append_mono (mem_append_mono hf (fun x hx => hx)) (fun x hx => hx)) hp,
+        scopedStmts_mono (mem_append_mono hv (fun x hx => hx))
+          (mem_append_mono (mem_append_mono hf (fun x hx => hx)) (fun x hx => hx)) hb⟩
+  | .«break», _ => trivial
+  | .«continue», _ => trivial
+  | .leave, _ => trivial
+theorem scopedStmts_mono {vs vs' fs fs' : List Ident}
+    (hv : ∀ x ∈ vs, x ∈ vs') (hf : ∀ x ∈ fs, x ∈ fs') :
+    ∀ {ss : List (Stmt Op)}, NormalForm.ScopedStmts vs fs ss → NormalForm.ScopedStmts vs' fs' ss
+  | [], _ => trivial
+  | s :: rest, h =>
+      ⟨scopedStmt_mono hv hf (h : _ ∧ _).1,
+        scopedStmts_mono (mem_append_mono hv (fun x hx => hx)) hf (h : _ ∧ _).2⟩
+theorem scopedCases_mono {vs vs' fs fs' : List Ident}
+    (hv : ∀ x ∈ vs, x ∈ vs') (hf : ∀ x ∈ fs, x ∈ fs') :
+    ∀ {cs : List (Literal × List (Stmt Op))},
+      NormalForm.ScopedCases vs fs cs → NormalForm.ScopedCases vs' fs' cs
+  | [], _ => trivial
+  | (l, body) :: rest, h =>
+      ⟨scopedStmts_mono hv (mem_append_mono hf (fun x hx => hx)) (h : _ ∧ _).1,
+        scopedCases_mono hv hf (h : _ ∧ _).2⟩
+theorem scopedDflt_mono {vs vs' fs fs' : List Ident}
+    (hv : ∀ x ∈ vs, x ∈ vs') (hf : ∀ x ∈ fs, x ∈ fs') :
+    ∀ {dflt : Option (List (Stmt Op))},
+      NormalForm.ScopedDflt vs fs dflt → NormalForm.ScopedDflt vs' fs' dflt
+  | none, _ => trivial
+  | some body, h => scopedStmts_mono hv (mem_append_mono hf (fun x hx => hx)) h
+end
+
+/-- The pass-side and shared-spec statement variable collectors agree. -/
+theorem declVars_eq_declTopVars : ∀ s : Stmt Op, declVars s = NormalForm.declTopVars s
+  | .letDecl _ _ => rfl
+  | .assign _ _ => rfl
+  | .exprStmt _ => rfl
+  | .block _ => rfl
+  | .cond _ _ => rfl
+  | .switch _ _ _ => rfl
+  | .funDef _ _ _ _ => rfl
+  | .forLoop _ _ _ _ => rfl
+  | .«break» => rfl
+  | .«continue» => rfl
+  | .leave => rfl
+
 end YulEvmCompiler.Optimizer.Normalize
