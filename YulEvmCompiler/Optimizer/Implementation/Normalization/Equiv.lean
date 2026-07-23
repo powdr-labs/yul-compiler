@@ -158,10 +158,56 @@ theorem funDefs_noop {funs : FunEnv D} {fds rest : List (Stmt D.Op)}
         rw [List.cons_append]
         exact Step.seqCons Step.funDef ((ih hall').mpr h)
 
-/-- `collectStmts` yields only function definitions. -/
-theorem collectStmts_allFunDef (b : List (Stmt D.Op)) :
-    ∀ s ∈ collectStmts b, IsFunDef (D := D) s := by
-  sorry
+/- `collectStmts` (and friends) yield only function definitions. -/
+mutual
+theorem collectStmt_allFunDef : ∀ (s : Stmt D.Op), ∀ x ∈ collectStmt s, IsFunDef (D := D) x
+  | .funDef n ps rs body => by
+      intro x hx; simp only [collectStmt, List.mem_cons] at hx
+      rcases hx with rfl | hx
+      · simp [IsFunDef]
+      · exact collectStmts_allFunDef body x hx
+  | .block b => by
+      intro x hx; simp only [collectStmt] at hx; exact collectStmts_allFunDef b x hx
+  | .cond c b => by
+      intro x hx; simp only [collectStmt] at hx; exact collectStmts_allFunDef b x hx
+  | .switch c cs d => by
+      intro x hx; simp only [collectStmt, List.mem_append] at hx
+      rcases hx with hx | hx
+      · exact collectCases_allFunDef cs x hx
+      · exact collectDflt_allFunDef d x hx
+  | .forLoop i c p bd => by
+      intro x hx; simp only [collectStmt, List.mem_append] at hx
+      rcases hx with (hx | hx) | hx
+      · exact collectStmts_allFunDef i x hx
+      · exact collectStmts_allFunDef p x hx
+      · exact collectStmts_allFunDef bd x hx
+  | .letDecl _ _ => by intro x hx; simp [collectStmt] at hx
+  | .assign _ _ => by intro x hx; simp [collectStmt] at hx
+  | .exprStmt _ => by intro x hx; simp [collectStmt] at hx
+  | .break => by intro x hx; simp [collectStmt] at hx
+  | .continue => by intro x hx; simp [collectStmt] at hx
+  | .leave => by intro x hx; simp [collectStmt] at hx
+theorem collectStmts_allFunDef :
+    ∀ (b : List (Stmt D.Op)), ∀ x ∈ collectStmts b, IsFunDef (D := D) x
+  | [] => by intro x hx; simp [collectStmts] at hx
+  | s :: rest => by
+      intro x hx; simp only [collectStmts, List.mem_append] at hx
+      rcases hx with hx | hx
+      · exact collectStmt_allFunDef s x hx
+      · exact collectStmts_allFunDef rest x hx
+theorem collectCases_allFunDef :
+    ∀ (cs : List (Literal × Block D.Op)), ∀ x ∈ collectCases cs, IsFunDef (D := D) x
+  | [] => by intro x hx; simp [collectCases] at hx
+  | (_, b) :: rest => by
+      intro x hx; simp only [collectCases, List.mem_append] at hx
+      rcases hx with hx | hx
+      · exact collectStmts_allFunDef b x hx
+      · exact collectCases_allFunDef rest x hx
+theorem collectDflt_allFunDef :
+    ∀ (d : Option (Block D.Op)), ∀ x ∈ collectDflt d, IsFunDef (D := D) x
+  | none => by intro x hx; simp [collectDflt] at hx
+  | some b => by intro x hx; simp only [collectDflt] at hx; exact collectStmts_allFunDef b x hx
+end
 
 /-! ### The core simulation (under construction) -/
 
