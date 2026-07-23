@@ -205,43 +205,6 @@ inductive AlphaOExpr (σ φ : Ident → Ident) : Option (Expr Op) → Option (Ex
   | none : AlphaOExpr σ φ none none
   | some {e₁ e₂} : AlphaExpr σ φ e₁ e₂ → AlphaOExpr σ φ (some e₁) (some e₂)
 
-/-! ### Expression-level forward simulation
-
-Renaming an expression (and its environment) preserves evaluation: the result is
-identical. `call` is deferred to the statement-level mutual bisimulation (a call
-runs a function body, which is a block). -/
-
-mutual
-theorem alphaExpr_fwd {σ φ : Ident → Ident} (hσ : Function.Injective σ)
-    {BR : FDecl D → FDecl D → Prop} {funs₁ funs₂ : FunEnv D} (hfuns : RenFunsRel φ BR funs₁ funs₂)
-    {e₁ e₂ : Expr D.Op} (hα : AlphaExpr σ φ e₁ e₂)
-    {V₁ : VEnv D} {mst : D.State} {r : EResult D} (h : EvalExpr D funs₁ V₁ mst e₁ r) :
-    EvalExpr D funs₂ (renVEnv σ V₁) mst e₂ r := by
-  cases hα with
-  | lit => cases h with | lit => exact Step.lit
-  | @var x =>
-      cases h with
-      | var hv => exact Step.var (by rw [renVEnv_get σ V₁ x (fun p _ hh => hσ hh)]; exact hv)
-  | builtin ha =>
-      cases h with
-      | builtinOk hargs hb => exact Step.builtinOk (alphaArgs_fwd hσ hfuns ha hargs) hb
-      | builtinHalt hargs hb => exact Step.builtinHalt (alphaArgs_fwd hσ hfuns ha hargs) hb
-      | builtinArgsHalt hargs => exact Step.builtinArgsHalt (alphaArgs_fwd hσ hfuns ha hargs)
-  | call ha => sorry
-theorem alphaArgs_fwd {σ φ : Ident → Ident} (hσ : Function.Injective σ)
-    {BR : FDecl D → FDecl D → Prop} {funs₁ funs₂ : FunEnv D} (hfuns : RenFunsRel φ BR funs₁ funs₂)
-    {as₁ as₂ : List (Expr D.Op)} (hα : AlphaArgs σ φ as₁ as₂)
-    {V₁ : VEnv D} {mst : D.State} {r : EResult D} (h : EvalArgs D funs₁ V₁ mst as₁ r) :
-    EvalArgs D funs₂ (renVEnv σ V₁) mst as₂ r := by
-  cases hα with
-  | nil => cases h with | argsNil => exact Step.argsNil
-  | cons he hr =>
-      cases h with
-      | argsCons ha hh => exact Step.argsCons (alphaArgs_fwd hσ hfuns hr ha) (alphaExpr_fwd hσ hfuns he hh)
-      | argsRestHalt ha => exact Step.argsRestHalt (alphaArgs_fwd hσ hfuns hr ha)
-      | argsHeadHalt ha hh =>
-          exact Step.argsHeadHalt (alphaArgs_fwd hσ hfuns hr ha) (alphaExpr_fwd hσ hfuns he hh)
-end
 
 /-! ### α-equivalence: statements
 
@@ -318,3 +281,102 @@ inductive AlphaDflt :
   | some {σ φ body body' σb φb} :
       AlphaBlockExt σ φ body body' σb φb → AlphaDflt σ φ (some body) (some body')
 end
+
+/-! ### The forward bisimulation
+
+`renRes σ'` renames a statement result's environment by the post-renaming `σ'`
+(expression results carry no keys, so are untouched). `AlphaCode` bundles the
+per-class α-relation with the reported post-renamings, so a single `Step`
+induction can range over every code class. `FDeclRen φ` is the body relation
+carried in the function environment: a callee's params/rets are renamed by an
+injective `σc` and its body is α-equivalent under `σc`/`φ`. -/
+
+/-- Rename a result's environment by `σ'` (expression results are unchanged). -/
+def renRes (σ' : Ident → Ident) : Res D → Res D
+  | .eres r => .eres r
+  | .sres V st o => .sres (renVEnv σ' V) st o
+
+/-- Function-declaration renaming: params/rets renamed by an injective `σc`,
+body α-equivalent under `σc` (variables) and `φ` (functions). -/
+def FDeclRen (φ : Ident → Ident) (d₁ d₂ : FDecl D) : Prop :=
+  ∃ σc σc' φc', Function.Injective σc ∧
+    d₂.params = d₁.params.map σc ∧ d₂.rets = d₁.rets.map σc ∧
+    AlphaBlockExt σc φ d₁.body d₂.body σc' φc'
+
+/-- α-relation on `Code`, carrying input and post renamings. -/
+inductive AlphaCode :
+    (Ident → Ident) → (Ident → Ident) → (Ident → Ident) → (Ident → Ident) →
+    Code D.Op → Code D.Op → Prop
+  | expr {σ φ e₁ e₂} : AlphaExpr σ φ e₁ e₂ → AlphaCode σ φ σ φ (.expr e₁) (.expr e₂)
+  | args {σ φ a₁ a₂} : AlphaArgs σ φ a₁ a₂ → AlphaCode σ φ σ φ (.args a₁) (.args a₂)
+  | stmt {σ φ s₁ s₂ σ' φ'} : AlphaStmt1 σ φ s₁ s₂ σ' φ' → AlphaCode σ φ σ' φ' (.stmt s₁) (.stmt s₂)
+  | stmts {σ φ ss₁ ss₂ σ' φ'} :
+      AlphaSeqExt σ φ ss₁ ss₂ σ' φ' → AlphaCode σ φ σ' φ' (.stmts ss₁) (.stmts ss₂)
+  | loop {σ φ c₁ c₂ p₁ p₂ b₁ b₂ σb φb σp φp} :
+      AlphaExpr σ φ c₁ c₂ → AlphaBlockExt σ φ b₁ b₂ σb φb → AlphaBlockExt σ φ p₁ p₂ σp φp →
+      AlphaCode σ φ σ φ (.loop c₁ p₁ b₁) (.loop c₂ p₂ b₂)
+
+/-- **Forward simulation.** A source `Step` transports to the renamed program,
+with the result renamed by the post-renaming. Expression, argument, and simple
+statement cases are proven; the scope-heavy cases (block/call/for/if/switch/seq)
+are being filled in, isolated in the final catch-all branch. -/
+theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs₁ V₁ mst code₁ res₁) :
+    ∀ {σ φ σ' φ' funs₂ code₂}, Function.Injective σ → Function.Injective φ →
+      RenFunsRel φ (FDeclRen φ) funs₁ funs₂ → AlphaCode σ φ σ' φ' code₁ code₂ →
+      Step D funs₂ (renVEnv σ V₁) mst code₂ (renRes σ' res₁) := by
+  induction h with
+  | @lit funs V st l =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | expr hae => cases hae; exact Step.lit
+  | @var funs V st x v hv =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with
+      | expr hae => cases hae with | var =>
+          exact Step.var (by rw [renVEnv_get σ V x (fun p _ hh => hσ hh)]; exact hv)
+  | @builtinOk funs V st op args argvals st1 rets st2 ha hb iha =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | expr hae => cases hae with | builtin ha2 =>
+          exact Step.builtinOk (iha hσ hφ hfuns (.args ha2)) hb
+  | @builtinHalt funs V st op args argvals st1 st2 ha hb iha =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | expr hae => cases hae with | builtin ha2 =>
+          exact Step.builtinHalt (iha hσ hφ hfuns (.args ha2)) hb
+  | @builtinArgsHalt funs V st op args st1 ha iha =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | expr hae => cases hae with | builtin ha2 =>
+          exact Step.builtinArgsHalt (iha hσ hφ hfuns (.args ha2))
+  | @callArgsHalt funs V st fn args st1 ha iha =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | expr hae => cases hae with | call ha2 =>
+          exact Step.callArgsHalt (iha hσ hφ hfuns (.args ha2))
+  | @argsNil funs V st =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | args hae => cases hae; exact Step.argsNil
+  | @argsCons funs V st e rest restvals st1 v st2 hrest he ihrest ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | args hae => cases hae with | cons he2 hr2 =>
+          exact Step.argsCons (ihrest hσ hφ hfuns (.args hr2)) (ihe hσ hφ hfuns (.expr he2))
+  | @argsRestHalt funs V st e rest st1 hrest ihrest =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | args hae => cases hae with | cons he2 hr2 =>
+          exact Step.argsRestHalt (ihrest hσ hφ hfuns (.args hr2))
+  | @argsHeadHalt funs V st e rest restvals st1 st2 hrest he ihrest ihe =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | args hae => cases hae with | cons he2 hr2 =>
+          exact Step.argsHeadHalt (ihrest hσ hφ hfuns (.args hr2)) (ihe hσ hφ hfuns (.expr he2))
+  | @funDef funs V st n ps rs b =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | funD _ => exact Step.funDef
+  | @«break» funs V st =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | breakD => exact Step.break
+  | @«continue» funs V st =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | contD => exact Step.continue
+  | @leave funs V st =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | stmt hs => cases hs with | leaveD => exact Step.leave
+  | @seqNil funs V st =>
+      intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode
+      cases hcode with | stmts hs => cases hs with | nil => exact Step.seqNil
+  | _ => intro σ φ σ' φ' funs₂ code₂ hσ hφ hfuns hcode; sorry
