@@ -503,10 +503,83 @@ theorem funNamesEnv_singleton (b : Block D.Op) :
   simp only [funNamesEnv, List.map_cons, List.map_nil, List.flatten_cons, List.flatten_nil,
     List.append_nil, hoist_map_fst]
 
+omit [DecidableEq D.Value] in
+theorem collectStmt_subset_collectStmts : ∀ {ss : List (Stmt D.Op)} {s},
+    s ∈ ss → ∀ x ∈ collectStmt s, x ∈ collectStmts ss
+  | [], _, h, _, _ => by simp at h
+  | s' :: rest, s, h, x, hx => by
+      rw [collectStmts, List.mem_append]
+      rcases List.mem_cons.mp h with rfl | h
+      · exact Or.inl hx
+      · exact Or.inr (collectStmt_subset_collectStmts h x hx)
+
+omit [DecidableEq D.Value] in
+theorem mem_collectStmts_of_top {b : List (Stmt D.Op)} {f ps rs body}
+    (h : (Stmt.funDef f ps rs body) ∈ b) :
+    (Stmt.funDef f ps rs (stripStmts body)) ∈ collectStmts b := by
+  refine collectStmt_subset_collectStmts h _ ?_
+  rw [collectStmt]; exact List.mem_cons_self
+
+omit [DecidableEq D.Value] in
+theorem collectStmts_body_subset {b : List (Stmt D.Op)} {f ps rs body}
+    (h : (Stmt.funDef f ps rs body) ∈ b) {x} (hx : x ∈ collectStmts body) :
+    x ∈ collectStmts b := by
+  refine collectStmt_subset_collectStmts h x ?_
+  rw [collectStmt]; exact List.mem_cons_of_mem _ hx
+
+omit [DecidableEq D.Value] in
+theorem scopedStmts_funDef_body : ∀ {ss : List (Stmt D.Op)} {Γ},
+    ScopedStmts Γ ss → ∀ {f ps rs body}, (Stmt.funDef f ps rs body) ∈ ss →
+      ScopedStmts (funNamesTop body ++ Γ) body
+  | [], _, _, _, _, _, _, h => by simp at h
+  | s' :: rest, Γ, hsc, f, ps, rs, body, h => by
+      obtain ⟨h1, h2⟩ := hsc
+      rcases List.mem_cons.mp h with rfl | h
+      · exact h1
+      · exact scopedStmts_funDef_body h2 h
+
+omit [DecidableEq D.Value] in
+theorem mem_hoist_inv {b : List (Stmt D.Op)} {f} {d : FDecl D} (h : (f, d) ∈ hoist D b) :
+    ∃ ps rs body, d = { params := ps, rets := rs, body := body } ∧
+      (Stmt.funDef f ps rs body) ∈ b := by
+  simp only [hoist, List.mem_filterMap] at h
+  obtain ⟨s, hs, hg⟩ := h
+  cases s with
+  | funDef n ps rs body =>
+      simp only [Option.some.injEq, Prod.mk.injEq] at hg
+      obtain ⟨hn, hd⟩ := hg; subst hn; subst hd
+      exact ⟨ps, rs, body, rfl, hs⟩
+  | _ => simp at hg
+
 /-- At the top block, the original scope stack is `GoodO` for the flat scope. -/
 theorem goodO_top {b : Block D.Op} (huniq : UniqueFunNames b) (hws : WellScoped b) :
     GoodO (D := D) (flat b) (hoist D b :: []) := by
-  sorry
+  intro f d cenv hlk
+  rw [lookupFun_singleton] at hlk
+  cases hfind : (hoist D b).find? (fun p => p.1 = f) with
+  | none => rw [hfind] at hlk; simp at hlk
+  | some p =>
+      rw [hfind] at hlk
+      simp only [Option.map_some, Option.some.injEq, Prod.mk.injEq] at hlk
+      obtain ⟨hd, hc⟩ := hlk
+      have hpmem := List.mem_of_find?_eq_some hfind
+      have hpkey : p.1 = f := by simpa using List.find?_some hfind
+      have hmem : (f, d) ∈ hoist D b := by
+        have : p = (f, d) := by
+          rw [← hd, ← hpkey]
+        rw [← this]; exact hpmem
+      obtain ⟨ps, rs, body, hdeq, hfd⟩ := mem_hoist_inv hmem
+      refine ⟨?_, ?_, ?_⟩
+      · rw [hdeq]
+        have : stripDecl (D := D) { params := ps, rets := rs, body := body }
+            = { params := ps, rets := rs, body := stripStmts body } := rfl
+        rw [this]
+        exact flatLookup_of_mem huniq (mem_collectStmts_of_top hfd)
+      · rw [← hc, hdeq, funNamesEnv_singleton]
+        exact scopedStmts_funDef_body hws hfd
+      · rw [hdeq]
+        intro n' ps' rs' bd' hmem'
+        exact flatLookup_of_mem huniq (collectStmts_body_subset hfd hmem')
 
 /-- At the top block, `b`'s functions are all registered in the flat scope. -/
 theorem codeInFlat_top {b : Block D.Op} (huniq : UniqueFunNames b) :
