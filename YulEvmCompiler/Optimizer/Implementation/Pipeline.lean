@@ -8,7 +8,7 @@ import YulEvmCompiler.Optimizer.Implementation.FreshenCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.HoistCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.StorageForwardResolve
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
-import YulEvmCompiler.Optimizer.Implementation.HoistForInit
+import YulEvmCompiler.Optimizer.Implementation.HoistForInitResolve
 set_option warningAsError true
 /-!
 # Production optimizer pipeline
@@ -120,7 +120,8 @@ def optimizerPipelineLight : Pass D :=
 
 /-- One object-path round, with each stage's resolution congruence. -/
 def objectRound : List (RPass calls creates) :=
-  [⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
+  [⟨hoistForInit, fun L b => resolveHoistForInitBlock_equiv L b⟩,
+   ⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
    ⟨inlineHelpersPass false, fun L b => by
       have hi := (inlineHelpersPass (calls := calls) (creates := creates) false).sound
         (resolveForLayoutStmts L b)
