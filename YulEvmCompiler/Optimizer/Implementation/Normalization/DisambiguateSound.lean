@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate
+import YulEvmCompiler.Optimizer.Implementation.Frame
 import YulSemantics.Equiv
 /-!
 # Semantic soundness of name disambiguation — foundations
@@ -638,6 +639,47 @@ def WScopedDflt (dom : List Ident) : Option (List (Stmt Op)) → Prop
   | some body => WScopedStmts dom body
 end
 
+
+/-- `WScoped` lifted to the `Code` classes (expressions/arguments declare nothing). -/
+def WScopedCode (dom : List Ident) : Code D.Op → Prop
+  | .expr _ => True
+  | .args _ => True
+  | .stmt s => WScopedStmt dom s
+  | .stmts ss => WScopedStmts dom ss
+  | .loop _ post body => WScopedStmts dom body ∧ WScopedStmts dom post
+
+/-- A block/scope statement leaves the current scope's keys unchanged (it restores
+its own additions). -/
+theorem block_keys {funs : FunEnv D} {V st body V1 st1 o}
+    (h : Step D funs V st (.stmt (.block body)) (.sres V1 st1 o)) :
+    V1.map Prod.fst = V.map Prod.fst := by
+  cases h with
+  | block hb => exact restore_keys (venvKeys_suffix hb rfl) (venvLen_mono hb rfl)
+
+/-- Keys grow by exactly the statement's top-level `let`-declared variables (for a
+normal outcome). This ties `WScoped`'s domain to the environment's key-set through
+the `seqCons` step. -/
+theorem venvKeys_stmt {funs : FunEnv D} {V st s V1 st1}
+    (h : Step D funs V st (.stmt s) (.sres V1 st1 .normal)) :
+    V1.map Prod.fst = declVars s ++ V.map Prod.fst := by
+  cases h with
+  | funDef => simp [declVars]
+  | letZero => simp [declVars, bindZeros, List.map_append, List.map_map, Function.comp_def]
+  | letVal hval hlen =>
+      simp only [declVars, List.map_append]
+      rw [List.map_fst_zip (Nat.le_of_eq hlen.symm)]
+  | assignVal hval hlen => simp only [declVars, List.nil_append, VEnv.setMany_keys]
+  | exprStmt => simp [declVars]
+  | block hb =>
+      simp only [declVars, List.nil_append]
+      exact restore_keys (venvKeys_suffix hb rfl) (venvLen_mono hb rfl)
+  | ifTrue hc hnz hb => simp only [declVars, List.nil_append]; exact block_keys hb
+  | ifFalse hc hz => simp [declVars]
+  | switchExec hc hb => simp only [declVars, List.nil_append]; exact block_keys hb
+  | @forLoop funs V st init c post body Vinit stinit Vend stend o hinit hloop =>
+      simp only [declVars, List.nil_append]
+      exact restore_keys ((venvKeys_suffix hinit rfl).trans (venvKeys_suffix hloop rfl))
+        (Nat.le_trans (venvLen_mono hinit rfl) (venvLen_mono hloop rfl))
 
 /-! ### Forward simulation (on the `RenCfg` foundation)
 
