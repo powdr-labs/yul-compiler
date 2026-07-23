@@ -88,6 +88,24 @@ theorem get_append_isSome {V : VEnv D} {x : Ident} (ext : VEnv D)
       · rw [List.cons_append]
         simpa [VEnv.get, List.find?, hyx] using ih
 
+/-- An atom list never halts: atoms are variable reads / literals, which produce
+values, so no `halt` result is derivable. -/
+theorem atomArgs_no_halt {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {es : List (Expr Op)} {sth} (hatom : atomicArgs es = true)
+    (h : Step D funs V st (.args es) (.eres (.halt sth))) : False := by
+  induction es with
+  | nil => cases h
+  | cons e rest ih =>
+      simp only [atomicArgs, Bool.and_eq_true] at hatom
+      cases h with
+      | argsRestHalt hrh => exact ih hatom.2 hrh
+      | argsHeadHalt hrest hhead =>
+          cases e with
+          | var y => cases hhead
+          | lit l => cases hhead
+          | builtin _ _ => simp [isAtom] at hatom
+          | call _ _ => simp [isAtom] at hatom
+
 /-! ### The shape of a `let`-prelude's environment
 
 Executing a list of single-variable `let`s only ever prepends bindings, so the

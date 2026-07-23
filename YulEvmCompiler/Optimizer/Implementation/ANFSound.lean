@@ -1237,6 +1237,108 @@ theorem flattenArgs_atoms_eval {funs : FunEnv D} {P : String} {es : List (Expr O
         obtain ⟨hv, hheadAt⟩ := flatten_atom_eval (flattenArgs P k rest).1 hscHead hpreH
         exact ⟨hv :: rvs, Step.argsCons hmove hheadAt⟩
 
+/-! Free variables of a temp-free expression are non-temporary. -/
+mutual
+theorem freeVarsExpr_noTemp {P : String} {e : Expr Op} (h : noTempExpr P e = true) :
+    ∀ x, x ∈ freeVarsExpr e → isTemp P x = false := by
+  intro x hx
+  cases e with
+  | var y => simp only [freeVarsExpr, List.mem_singleton] at hx; subst hx; simpa [noTempExpr] using h
+  | lit l => simp [freeVarsExpr] at hx
+  | builtin op args =>
+      exact freeVarsArgs_noTemp (by simpa [noTempExpr] using h) x (by simpa [freeVarsExpr] using hx)
+  | call fn args =>
+      exact freeVarsArgs_noTemp (by simpa [noTempExpr] using h) x (by simpa [freeVarsExpr] using hx)
+theorem freeVarsArgs_noTemp {P : String} {es : List (Expr Op)} (h : noTempArgs P es = true) :
+    ∀ x, x ∈ freeVarsArgs es → isTemp P x = false := by
+  intro x hx
+  cases es with
+  | nil => simp [freeVarsArgs] at hx
+  | cons e rest =>
+      simp only [noTempArgs, Bool.and_eq_true] at h
+      simp only [freeVarsArgs_cons, List.mem_append] at hx
+      rcases hx with h1 | h2
+      · exact freeVarsExpr_noTemp h.1 x h1
+      · exact freeVarsArgs_noTemp h.2 x h2
+end
+
+/-! ### Flatten-correctness, halt (backward, under scoping)
+
+If the flatten prelude halts, the original halts. The only subtle case is
+`argsHeadHalt` (a later operand halts after earlier ones succeeded): recovering
+the earlier operands' values needs them evaluable, which is where well-scopedness
+(`hsc`) — via `flattenArgs_atoms_eval` — is used. -/
+mutual
+theorem flatten_halt_bwd {funs : FunEnv D} {P : String} {e : Expr Op}
+    {Vo Va : VEnv D} {st : EvmState} (k : Nat)
+    (hnt : noTempExpr P e = true) (hext : TempExt P Vo Va)
+    (hsc : ∀ x, x ∈ freeVarsExpr e → (VEnv.get Vo x).isSome = true)
+    {Va' sth} (hpre : Step D funs Va st (.stmts (flatten P k e).2.1) (.sres Va' sth .halt)) :
+    Step D funs Vo st (.expr e) (.eres (.halt sth)) := by
+  cases e with
+  | var x => simp only [flatten] at hpre; cases hpre
+  | lit l => simp only [flatten] at hpre; cases hpre
+  | builtin op args =>
+      have hna : noTempArgs P args = true := by simpa [noTempExpr] using hnt
+      simp only [flatten] at hpre
+      rcases stmts_append_inv hpre with ⟨_, hph⟩ | ⟨Vm, stm, hpreA, htail⟩
+      · exact Step.builtinArgsHalt (flattenArgs_halt_bwd k hna hext hsc hph)
+      · cases htail with
+        | seqCons _ hnil => cases hnil
+        | seqStop hlet _ =>
+            cases hlet with
+            | letHalt hbe =>
+                cases hbe with
+                | builtinHalt hatoms hb =>
+                    obtain ⟨hargs, _⟩ := flattenArgs_correct_bwd k hna hext hpreA hatoms
+                    exact Step.builtinHalt hargs hb
+                | builtinArgsHalt hah =>
+                    exact absurd hah (fun h => (atomArgs_no_halt (flattenArgs_ok P k args).1 h).elim)
+  | call fn args =>
+      have hna : noTempArgs P args = true := by simpa [noTempExpr] using hnt
+      simp only [flatten] at hpre
+      rcases stmts_append_inv hpre with ⟨_, hph⟩ | ⟨Vm, stm, hpreA, htail⟩
+      · exact Step.callArgsHalt (flattenArgs_halt_bwd k hna hext hsc hph)
+      · cases htail with
+        | seqCons _ hnil => cases hnil
+        | seqStop hlet _ =>
+            cases hlet with
+            | letHalt hce =>
+                cases hce with
+                | callHalt hatoms hlk hlen hbody =>
+                    obtain ⟨hargs, _⟩ := flattenArgs_correct_bwd k hna hext hpreA hatoms
+                    exact Step.callHalt hargs hlk hlen hbody
+                | callArgsHalt hah =>
+                    exact absurd hah (fun h => (atomArgs_no_halt (flattenArgs_ok P k args).1 h).elim)
+
+theorem flattenArgs_halt_bwd {funs : FunEnv D} {P : String} {es : List (Expr Op)}
+    {Vo Va : VEnv D} {st : EvmState} (k : Nat)
+    (hnt : noTempArgs P es = true) (hext : TempExt P Vo Va)
+    (hsc : ∀ x, x ∈ freeVarsArgs es → (VEnv.get Vo x).isSome = true)
+    {Va' sth} (hpre : Step D funs Va st (.stmts (flattenArgs P k es).2.1) (.sres Va' sth .halt)) :
+    Step D funs Vo st (.args es) (.eres (.halt sth)) := by
+  cases es with
+  | nil => simp only [flattenArgs] at hpre; cases hpre
+  | cons e rest =>
+      simp only [noTempArgs, Bool.and_eq_true] at hnt
+      simp only [flattenArgs] at hpre
+      -- well-scopedness transported to the prelude's starting env
+      have hscVa : ∀ x, x ∈ freeVarsArgs (e :: rest) → (VEnv.get Va x).isSome = true := by
+        intro x hx
+        rw [TempExt.get (freeVarsArgs_noTemp (by simp [noTempArgs, hnt.1, hnt.2]) x hx) hext]
+        exact hsc x hx
+      rcases stmts_append_inv hpre with ⟨_, hph⟩ | ⟨Vr, str, hpreR, hpreH⟩
+      · exact Step.argsRestHalt (flattenArgs_halt_bwd k hnt.2 hext
+          (fun x hx => hsc x (by simp only [freeVarsArgs_cons, List.mem_append]; exact Or.inr hx)) hph)
+      · obtain ⟨rvs, hrestAt⟩ := flattenArgs_atoms_eval k hnt.2
+          (fun x hx => hscVa x (by simp only [freeVarsArgs_cons, List.mem_append]; exact Or.inr hx))
+          hpreR
+        obtain ⟨hargsRest, hextR⟩ := flattenArgs_correct_bwd k hnt.2 hext hpreR hrestAt
+        have hheadHalt := flatten_halt_bwd (flattenArgs P k rest).1 hnt.1 hextR
+          (fun x hx => hsc x (by simp only [freeVarsArgs_cons, List.mem_append]; exact Or.inl hx)) hpreH
+        exact Step.argsHeadHalt hargsRest hheadHalt
+end
+
 /-- **ANF preserves behavior.** (Scaffolded; discharged via the statement
 simulation + `restore` lemmas.) -/
 theorem anfNormalize_sound (b : Block Op) :
