@@ -1,6 +1,5 @@
-# Remaining integrated Uniswap v4-core fixtures whose unoptimized solc IR
-# needs loop-carried/control-flow stack splitting beyond the current acyclic
-# dominator-region pass. They remain active acceptance tests: when a later
-# layout improvement compiles one, CI requires its removal and pinned gas rows.
+# Remaining integrated Uniswap v4-core fixtures. Memory spilling removes the
+# guarded stack-pressure failure, but this source still reaches independently
+# unsupported gas/immutable/live-linker operations. It remains an active
+# acceptance test: remove it as those features are implemented.
 PoolManager.sol
-PoolSwap.sol

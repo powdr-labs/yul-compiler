@@ -456,6 +456,37 @@ guards (whole-caller live-local analysis instead of the per-callee bound).
 
 ## Candidate next ideas
 
+### 🚧 Memory spilling for residual stack pressure (in progress)
+
+The remaining strict integration failures (`PoolManager.sol`, `PoolSwap.sol`,
+`HubOperations.sol`, `LiquidationLogic.sol`, and `SpokeOperations.sol`) still
+exceed classic `DUP16`/`SWAP16` reach after the verified layout passes.  The
+proposed fallback follows Solidity's stack-limit evader: choose stack bindings
+to spill, color fixed 32-byte memory slots across the non-recursive call graph,
+rewrite their definitions/reads/writes to `mstore`/`mload`, and increase the
+program's `memoryguard` reservation so ordinary allocations cannot overlap the
+spill area.  It will run only after every existing compilation candidate has
+failed, preserving the bytecode and gas of all programs that already compile.
+
+There is a specification gate before implementation can enter production.
+This repository currently desugars `memoryguard(e)` to `e` and its strong
+optimizer contract requires identical final memory, active-memory size, and
+variable environment for arbitrary Yul states.  Memory spilling cannot satisfy
+that contract: changing the guard value is observable in unrestricted Yul, and
+unguarded scratch writes can be observed by memory operations, hashes, logs,
+returns, or external calls.  Backend memory virtualization instead changes the
+`MemMatch`/`StateMatch` representation invariant.  Either route moves the
+audited specification boundary and therefore requires explicit maintainer
+approval and a human-reviewed spec re-pin; an unproved `compileSource`
+accommodation is not an acceptable fallback.
+
+Subject to that approval, acceptance requires all five strict fixtures to
+compile and execute differentially, no changed gas rows or bytecode for any
+previously compiling fallback candidate, block and recursive-object coverage,
+no spills through recursive call cycles, memoryguard-reservation and slot
+noninterference proofs, a proved observational/object execution theorem, no
+`sorry`/new axioms, and the full build and axiom checks.
+
 ### ✅ `StackLayout` — expression scheduling and liveness-guided slot reuse ([#61](https://github.com/powdr-labs/yul-compiler/issues/61))
 
 Treat block-local Yul bindings as virtual stack registers and color their
