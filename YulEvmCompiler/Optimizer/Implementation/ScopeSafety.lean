@@ -216,6 +216,42 @@ theorem letPrelude_prefix {funs : FunEnv D} :
           | letVal _ _ => exact absurd rfl hne
           | letHalt _ => exact ⟨[], rfl⟩
 
+/-- Like `letPrelude_prefix`, but also records that each prepended binding's name
+is one of the prelude's declared variables. -/
+theorem letPrelude_prefix_keys {funs : FunEnv D} :
+    ∀ (pre : List (Stmt Op)) {V V' : VEnv D} {st st' o},
+      (∀ s ∈ pre, ∃ t rhs, s = .letDecl [t] (some rhs)) →
+      Step D funs V st (.stmts pre) (.sres V' st' o) →
+      ∃ ext, V' = ext ++ V ∧
+        ∀ p ∈ ext, ∃ t rhs, Stmt.letDecl [t] (some rhs) ∈ pre ∧ p.1 = t
+  | [], _, _, _, _, _, _, h => by cases h with | seqNil => exact ⟨[], rfl, by simp⟩
+  | s :: rest, _, _, _, _, _, hOK, h => by
+      obtain ⟨t, rhs, rfl⟩ := hOK s (List.mem_cons_self ..)
+      cases h with
+      | seqCons hs hrest =>
+          cases hs with
+          | letVal hval hlen =>
+              rename_i vals
+              obtain ⟨v, rfl⟩ : ∃ v, vals = [v] := by
+                cases vals with
+                | nil => simp at hlen
+                | cons b tl => cases tl with
+                  | nil => exact ⟨b, rfl⟩
+                  | cons _ _ => simp at hlen
+              obtain ⟨ext, hrfl, hmem⟩ := letPrelude_prefix_keys rest
+                (fun s' hs' => hOK s' (List.mem_cons_of_mem _ hs')) hrest
+              refine ⟨ext ++ [(t, v)], by rw [hrfl]; simp, ?_⟩
+              intro p hp
+              rcases List.mem_append.mp hp with hpe | hpt
+              · obtain ⟨t', rhs', hmem', hpt'⟩ := hmem p hpe
+                exact ⟨t', rhs', List.mem_cons_of_mem _ hmem', hpt'⟩
+              · rw [List.mem_singleton] at hpt; subst hpt
+                exact ⟨t, rhs, List.mem_cons_self .., rfl⟩
+      | seqStop hs hne =>
+          cases hs with
+          | letVal _ _ => exact absurd rfl hne
+          | letHalt _ => exact ⟨[], rfl, by simp⟩
+
 /-- A prelude of single-variable `let`s produces `normal` or `halt` — never a
 loop control outcome (`break`/`continue`/`leave`). -/
 theorem letPrelude_outcome {funs : FunEnv D} :

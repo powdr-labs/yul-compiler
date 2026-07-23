@@ -152,4 +152,91 @@ theorem bsExprStmt_sound {funs : FunEnv D} {P : String} {e : Expr Op}
   · exact stmt_as_stmts
   · exact hblock.trans stmt_as_stmts
 
+/-- `restore` past the `flattenTop` temp prefix, through an assignment to
+(non-temporary) source variables: the assignment lands on the enclosing
+variables. -/
+theorem flattenTop_restore_setMany {funs : FunEnv D} {P e V st Va' stM o} {vars vals}
+    (hnti : noTempIdents P vars = true)
+    (hpre : Step D funs V st (.stmts (flattenTop P 0 e).2.1) (.sres Va' stM o)) :
+    restore V (VEnv.setMany Va' vars vals) = VEnv.setMany V vars vals := by
+  obtain ⟨ext, rfl, hmem⟩ := letPrelude_prefix_keys _ (flattenTop_prelude_lets P 0 e) hpre
+  have hdisj : ∀ p ∈ ext, p.1 ∉ vars := by
+    intro p hp hpin
+    obtain ⟨t, rhs, hmemPre, hpt⟩ := hmem p hp
+    obtain ⟨m, hm⟩ := flattenTop_prelude_decl t ⟨rhs, hmemPre⟩
+    have h1 : isTemp P p.1 = true := by rw [hpt, hm]; exact isTemp_tempName P m
+    simp [noTempIdents_mem hnti p.1 hpin] at h1
+  rw [setMany_append_disjoint ext hdisj]
+  exact restore_prefix_len ext (setMany_length V vars vals)
+
+/-! ### Per-statement soundness: `assign` -/
+
+theorem bsAssign_sound {funs : FunEnv D} {P : String} {vars : List Ident} {e : Expr Op}
+    (hnti : noTempIdents P vars = true) (hnt : noTempExpr P e = true)
+    {V : VEnv D} {st V' st' o}
+    (hsc : ∀ x, x ∈ freeVarsExpr e → (VEnv.get V x).isSome = true) :
+    Step D funs V st (.stmt (.assign vars e)) (.sres V' st' o) ↔
+    Step D funs V st (.stmts (bsStmt1 P (.assign vars e))) (.sres V' st' o) := by
+  have hhoist : hoist D ((flattenTop P 0 e).2.1 ++ [.assign vars (flattenTop P 0 e).2.2]) = [] :=
+    hoist_flattenTop_body (by simp [hoist])
+  have hblock : Step D funs V st (.stmt (.assign vars e)) (.sres V' st' o) ↔
+      Step D funs V st
+        (.stmt (.block ((flattenTop P 0 e).2.1 ++ [.assign vars (flattenTop P 0 e).2.2])))
+        (.sres V' st' o) := by
+    constructor
+    · intro h
+      cases h with
+      | assignVal he hlen =>
+          have he0 := Step.emptyExt_congr he (EmptyExt.head funs)
+          obtain ⟨Va', stMid, hpre, _, he'⟩ := flattenTop_correct 0 he0 hnt (TempExt.refl V)
+          have hbody := stmts_append_normal hpre (Step.seqCons (Step.assignVal he' hlen) Step.seqNil)
+          have hblk := block_of_body hhoist hbody
+          rwa [flattenTop_restore_setMany hnti hpre] at hblk
+      | assignHalt he =>
+          have he0 := Step.emptyExt_congr he (EmptyExt.head funs)
+          rcases flattenTop_halt 0 he0 hnt (TempExt.refl V) with ⟨Va', hph⟩ | ⟨Va', stMid, hpre, he'h, _⟩
+          · have hbody : Step D ([] :: funs) V st
+                (.stmts ((flattenTop P 0 e).2.1 ++ [.assign vars (flattenTop P 0 e).2.2]))
+                (.sres Va' _ .halt) := stmts_append_stop hph (by simp)
+            have hblk := block_of_body hhoist hbody
+            rwa [flattenTop_restore hph] at hblk
+          · have hbody : Step D ([] :: funs) V st
+                (.stmts ((flattenTop P 0 e).2.1 ++ [.assign vars (flattenTop P 0 e).2.2]))
+                (.sres Va' _ .halt) :=
+              stmts_append_normal hpre (Step.seqStop (Step.assignHalt he'h) (by simp))
+            have hblk := block_of_body hhoist hbody
+            rwa [flattenTop_restore hpre] at hblk
+    · intro h
+      cases h with
+      | block hb =>
+          rw [hhoist] at hb
+          rcases stmts_append_inv hb with ⟨hne, hph⟩ | ⟨Vm, stm, hpre, htail⟩
+          · rcases letPrelude_outcome _ (flattenTop_prelude_lets P 0 e) hph with rfl | rfl
+            · exact absurd rfl hne
+            · rw [flattenTop_restore hph]
+              exact Step.emptyExt_congr'
+                (Step.assignHalt ((flattenTop_halt_bwd 0 hnt (TempExt.refl V) hsc).1 hph))
+                (EmptyExt.head funs)
+          · cases htail with
+            | seqCons htl hnil =>
+                cases hnil with
+                | seqNil =>
+                    cases htl with
+                    | assignVal he' hlen =>
+                        obtain ⟨he, _⟩ := flattenTop_correct_bwd 0 hnt (TempExt.refl V) hpre he'
+                        rw [flattenTop_restore_setMany hnti hpre]
+                        exact Step.emptyExt_congr' (Step.assignVal he hlen) (EmptyExt.head funs)
+            | seqStop htl hne =>
+                cases htl with
+                | assignVal _ _ => exact absurd rfl hne
+                | assignHalt he'h =>
+                    rw [flattenTop_restore hpre]
+                    exact Step.emptyExt_congr'
+                      (Step.assignHalt ((flattenTop_halt_bwd 0 hnt (TempExt.refl V) hsc).2 hpre he'h))
+                      (EmptyExt.head funs)
+  simp only [bsStmt1]
+  split
+  · exact stmt_as_stmts
+  · exact hblock.trans stmt_as_stmts
+
 end YulEvmCompiler.Optimizer.ANF

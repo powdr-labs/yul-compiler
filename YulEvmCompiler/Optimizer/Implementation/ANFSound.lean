@@ -1385,4 +1385,30 @@ theorem flattenTop_halt_bwd {funs : FunEnv D} {P : String} {e : Expr Op}
         | callArgsHalt hah =>
             exact absurd hah (fun h => (atomArgs_no_halt (flattenArgs_ok P k args).1 h).elim)
 
+/-- Every variable bound by a `flattenTop` prelude is a temporary. -/
+theorem flattenTop_prelude_decl {P : String} {k : Nat} {e : Expr Op} :
+    ∀ t, (∃ rhs, Stmt.letDecl [t] (some rhs) ∈ (flattenTop P k e).2.1) → ∃ m, t = tempName P m := by
+  intro t ht
+  cases e with
+  | var x => obtain ⟨rhs, hm⟩ := ht; simp [flattenTop] at hm
+  | lit l => obtain ⟨rhs, hm⟩ := ht; simp [flattenTop] at hm
+  | builtin op args =>
+      obtain ⟨m, _, hm⟩ := flattenArgs_prelude_decl t (by simpa [flattenTop] using ht)
+      exact ⟨m, hm⟩
+  | call fn args =>
+      obtain ⟨m, _, hm⟩ := flattenArgs_prelude_decl t (by simpa [flattenTop] using ht)
+      exact ⟨m, hm⟩
+
+/-- Members of a `noTempIdents` list are non-temporary. -/
+theorem noTempIdents_mem {P : String} {vars : List Ident} (h : noTempIdents P vars = true) :
+    ∀ x ∈ vars, isTemp P x = false := by
+  intro x hx
+  induction vars with
+  | nil => simp at hx
+  | cons y rest ih =>
+      simp only [noTempIdents, Bool.and_eq_true, Bool.not_eq_true'] at h
+      rcases List.mem_cons.mp hx with rfl | hr
+      · exact h.1
+      · exact ih h.2 hr
+
 end YulEvmCompiler.Optimizer.ANF
