@@ -856,6 +856,39 @@ def WScopedDflt (dom : List Ident) : Option (List (Stmt Op)) → Prop
   | some body => WScopedStmts dom body
 end
 
+/-! ### Function-scope-safety (no function shadows a visible one)
+
+The function analog of `WScoped`: each block/`funDef`/`for` scope's top-level
+function names are disjoint from the visible function names `fdom`, and nested
+scopes are checked against `fdom` extended by that scope's own function names
+(functions are visible throughout their block, including their own bodies). -/
+mutual
+def FScopedStmts (fdom : List Ident) : List (Stmt Op) → Prop
+  | [] => True
+  | s :: rest => FScopedStmt fdom s ∧ FScopedStmts fdom rest
+def FScopedStmt (fdom : List Ident) : Stmt Op → Prop
+  | .block body => (∀ fn ∈ funNames body, fn ∉ fdom) ∧ FScopedStmts (funNames body ++ fdom) body
+  | .cond _ body => (∀ fn ∈ funNames body, fn ∉ fdom) ∧ FScopedStmts (funNames body ++ fdom) body
+  | .funDef _ _ _ body =>
+      (∀ fn ∈ funNames body, fn ∉ fdom) ∧ FScopedStmts (funNames body ++ fdom) body
+  | .switch _ cases dflt => FScopedCases fdom cases ∧ FScopedDflt fdom dflt
+  | .forLoop init _ post body =>
+      (∀ fn ∈ funNames init, fn ∉ fdom) ∧ FScopedStmts (funNames init ++ fdom) init ∧
+        ((∀ fn ∈ funNames body, fn ∉ funNames init ++ fdom) ∧
+          FScopedStmts (funNames body ++ funNames init ++ fdom) body) ∧
+        ((∀ fn ∈ funNames post, fn ∉ funNames init ++ fdom) ∧
+          FScopedStmts (funNames post ++ funNames init ++ fdom) post)
+  | _ => True
+def FScopedCases (fdom : List Ident) : List (Literal × List (Stmt Op)) → Prop
+  | [] => True
+  | (_, body) :: rest =>
+      ((∀ fn ∈ funNames body, fn ∉ fdom) ∧ FScopedStmts (funNames body ++ fdom) body) ∧
+        FScopedCases fdom rest
+def FScopedDflt (fdom : List Ident) : Option (List (Stmt Op)) → Prop
+  | none => True
+  | some body => (∀ fn ∈ funNames body, fn ∉ fdom) ∧ FScopedStmts (funNames body ++ fdom) body
+end
+
 
 /-- `WScoped` lifted to the `Code` classes (expressions/arguments declare nothing). -/
 def WScopedCode (dom : List Ident) : Code D.Op → Prop
