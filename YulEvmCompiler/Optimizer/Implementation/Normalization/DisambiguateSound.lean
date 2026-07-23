@@ -178,6 +178,10 @@ theorem lookupFun_renFunsRel {φ : Ident → Ident} {BR : FDecl D → FDecl D �
         subst hd_eq; subst hcenv_eq
         exact ⟨q.2, s₂ :: t₂, by rw [lookupFun, hp₂], hd, List.Forall₂.cons hs hR'⟩
 
+/-- `x` is not a disambiguation-fresh name (holds for every source identifier in a
+well-formed program; the α-relation only relates such source references). -/
+def NotFresh (x : Ident) : Prop := ∀ k, x ≠ dsName k
+
 /-! ### α-equivalence: the renaming relation the bisimulation ranges over
 
 `AlphaExpr σ φ e₁ e₂` says `e₂` is `e₁` with free variable names renamed by `σ`
@@ -191,9 +195,10 @@ variable {Op : Type}
 mutual
 inductive AlphaExpr (σ φ : Ident → Ident) : Expr Op → Expr Op → Prop
   | lit {l} : AlphaExpr σ φ (.lit l) (.lit l)
-  | var {x} : AlphaExpr σ φ (.var x) (.var (σ x))
+  | var {x} : NotFresh x → AlphaExpr σ φ (.var x) (.var (σ x))
   | builtin {op as₁ as₂} : AlphaArgs σ φ as₁ as₂ → AlphaExpr σ φ (.builtin op as₁) (.builtin op as₂)
-  | call {fn as₁ as₂} : AlphaArgs σ φ as₁ as₂ → AlphaExpr σ φ (.call fn as₁) (.call (φ fn) as₂)
+  | call {fn as₁ as₂} :
+      NotFresh fn → AlphaArgs σ φ as₁ as₂ → AlphaExpr σ φ (.call fn as₁) (.call (φ fn) as₂)
 inductive AlphaArgs (σ φ : Ident → Ident) : List (Expr Op) → List (Expr Op) → Prop
   | nil : AlphaArgs σ φ [] []
   | cons {e₁ e₂ r₁ r₂} :
@@ -230,7 +235,7 @@ inductive AlphaStmt1 :
       AlphaOExpr σ φ eo eo' →
       AlphaStmt1 σ φ (.letDecl vars eo) (.letDecl vars' eo') (updRen σ (vars.zip vars')) φ
   | assignD {σ φ vars e e'} :
-      AlphaExpr σ φ e e' →
+      (∀ x ∈ vars, NotFresh x) → AlphaExpr σ φ e e' →
       AlphaStmt1 σ φ (.assign vars e) (.assign (vars.map σ) e') σ φ
   | exprD {σ φ e e'} :
       AlphaExpr σ φ e e' → AlphaStmt1 σ φ (.exprStmt e) (.exprStmt e') σ φ
@@ -452,9 +457,6 @@ renamed (inner) key is a `dsName` — so a lookup of an outer source name never
 collides with a renamed inner key, discharging the boundary `get`/`set` no-merge
 obligation for outer references. -/
 
-/-- `x` is not a disambiguation-fresh name. -/
-def NotFresh (x : Ident) : Prop := ∀ k, x ≠ dsName k
-
 /-- Fresh names really are fresh. -/
 theorem not_notFresh_dsName (k : Nat) : ¬ NotFresh (dsName k) := fun h => h k rfl
 
@@ -545,3 +547,52 @@ theorem renVEnv_setMany_dom (σ : Ident → Ident) :
           refine ih vs (VEnv.set V x v) (fun y hy k hk => ?_)
           rw [VEnv.set_keys] at hk
           exact hnm y (List.mem_cons_of_mem _ hy) k hk
+
+/-! ### RenCfg preservation (keys-only dependence)
+
+`RenCfg` depends only on the environment's key-set, which `set`/`setMany`
+preserve — so it survives an assignment. -/
+
+theorem VEnv.get_eq_none_iff_not_mem (V : VEnv D) (z : Ident) :
+    VEnv.get V z = none ↔ z ∉ V.map Prod.fst := by
+  induction V with
+  | nil => simp [VEnv.get]
+  | cons p rest ih =>
+      obtain ⟨y, w⟩ := p
+      by_cases hyz : y = z
+      · subst hyz; simp [VEnv.get]
+      · have hzy : (z = y) = False := eq_false (fun h => hyz h.symm)
+        simp only [VEnv.get, List.find?_cons, hyz, decide_false, cond_false, List.map_cons,
+          List.mem_cons, hzy, false_or]
+        exact ih
+
+theorem VEnv.setMany_keys (V : VEnv D) (xs : List Ident) (vs : List D.Value) :
+    (VEnv.setMany V xs vs).map Prod.fst = V.map Prod.fst := by
+  induction xs generalizing V vs with
+  | nil => simp [VEnv.setMany]
+  | cons x xs ih =>
+      cases vs with
+      | nil => simp [VEnv.setMany]
+      | cons v vs => rw [VEnv.setMany_cons, ih, VEnv.set_keys]
+
+theorem RenCfg.of_keys {σ : Ident → Ident} {V V' : VEnv D}
+    (hk : V'.map Prod.fst = V.map Prod.fst) (h : RenCfg σ V) : RenCfg σ V' := by
+  obtain ⟨h1, h2, h3⟩ := h
+  refine ⟨?_, ?_, ?_⟩
+  · intro p hp q hq hpq
+    have hp' : p.1 ∈ V.map Prod.fst := hk ▸ List.mem_map_of_mem hp
+    have hq' : q.1 ∈ V.map Prod.fst := hk ▸ List.mem_map_of_mem hq
+    obtain ⟨p₀, hp₀, hp₀e⟩ := List.mem_map.mp hp'
+    obtain ⟨q₀, hq₀, hq₀e⟩ := List.mem_map.mp hq'
+    rw [← hp₀e, ← hq₀e] at hpq ⊢
+    exact h1 p₀ hp₀ q₀ hq₀ hpq
+  · intro z hz
+    exact h2 z ((VEnv.get_eq_none_iff_not_mem V z).mpr
+      (fun hc => (VEnv.get_eq_none_iff_not_mem V' z).mp hz (hk ▸ hc)))
+  · intro p hp
+    obtain ⟨p₀, hp₀, hp₀e⟩ := List.mem_map.mp (hk ▸ List.mem_map_of_mem hp : p.1 ∈ V.map Prod.fst)
+    rw [← hp₀e]; exact h3 p₀ hp₀
+
+theorem RenCfg.setMany {σ : Ident → Ident} {V : VEnv D} (h : RenCfg σ V)
+    (xs : List Ident) (vs : List D.Value) : RenCfg σ (VEnv.setMany V xs vs) :=
+  RenCfg.of_keys (VEnv.setMany_keys V xs vs) h
