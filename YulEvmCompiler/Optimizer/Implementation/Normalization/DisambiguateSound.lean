@@ -110,3 +110,70 @@ theorem renVEnv_setMany (σ : Ident → Ident) (hinj : Function.Injective σ) :
       | cons v vs =>
           rw [List.map_cons, VEnv.setMany_cons, VEnv.setMany_cons,
             renVEnv_set σ V x v (fun _ _ h => hinj h), ih vs (VEnv.set V x v)]
+
+/-! ### Renaming a function environment
+
+The function-environment side of the bisimulation. `RenScopeRel φ BR` relates a
+source scope to a target scope whose keys are `φ`-renamed and whose declarations
+are related by an (abstract) body relation `BR` — instantiated later with the
+syntactic translation. A single `φ` serves the whole stack: Yul forbids shadowing
+a visible function, so function names across the in-scope stack are distinct and
+one injective `φ` renames them all consistently. -/
+
+/-- Source/target function scopes: `φ`-renamed keys, `BR`-related declarations. -/
+def RenScopeRel (φ : Ident → Ident) (BR : FDecl D → FDecl D → Prop) (s₁ s₂ : FScope D) : Prop :=
+  List.Forall₂ (fun p q => q.1 = φ p.1 ∧ BR p.2 q.2) s₁ s₂
+
+/-- Source/target function environments: related scope-by-scope under one `φ`. -/
+def RenFunsRel (φ : Ident → Ident) (BR : FDecl D → FDecl D → Prop) (f₁ f₂ : FunEnv D) : Prop :=
+  List.Forall₂ (RenScopeRel φ BR) f₁ f₂
+
+theorem RenFunsRel.cons {φ : Ident → Ident} {BR : FDecl D → FDecl D → Prop}
+    {s₁ s₂ : FScope D} {f₁ f₂ : FunEnv D} (hs : RenScopeRel φ BR s₁ s₂)
+    (hf : RenFunsRel φ BR f₁ f₂) : RenFunsRel φ BR (s₁ :: f₁) (s₂ :: f₂) :=
+  List.Forall₂.cons hs hf
+
+/-- A scope lookup transports across `RenScopeRel`: if `φ` merges no other key of
+`s₁` onto `φ fn`, then `fn` resolves in `s₁` exactly when `φ fn` resolves in `s₂`,
+to `BR`-related declarations. -/
+theorem renScopeRel_find {φ : Ident → Ident} {BR : FDecl D → FDecl D → Prop}
+    {s₁ s₂ : FScope D} (h : RenScopeRel φ BR s₁ s₂) (fn : Ident)
+    (hinj : ∀ p ∈ s₁, φ p.1 = φ fn → p.1 = fn) :
+    (s₁.find? (fun p => p.1 = fn) = none ∧ s₂.find? (fun p => p.1 = φ fn) = none) ∨
+    (∃ p q, s₁.find? (fun p => p.1 = fn) = some p ∧ s₂.find? (fun p => p.1 = φ fn) = some q ∧
+      q.1 = φ p.1 ∧ BR p.2 q.2) := by
+  induction h with
+  | nil => left; simp
+  | @cons p q u₁ u₂ hpq _ ih =>
+      by_cases hp : p.1 = fn
+      · right
+        refine ⟨p, q, List.find?_cons_of_pos (by simp [hp]),
+          List.find?_cons_of_pos (by simp [hpq.1, hp]), hpq.1, hpq.2⟩
+      · have hφ : ¬ (q.1 = φ fn) := by
+          rw [hpq.1]; exact fun hc => hp (hinj p (List.mem_cons_self ..) hc)
+        rw [List.find?_cons_of_neg (by simp [hp]), List.find?_cons_of_neg (by simp [hφ])]
+        exact ih (fun p hp => hinj p (List.mem_cons_of_mem _ hp))
+
+/-- `lookupFun` transports across `RenFunsRel` under an injective `φ`: a resolved
+function has a `φ`-renamed counterpart with a `BR`-related declaration and a
+related closure environment. -/
+theorem lookupFun_renFunsRel {φ : Ident → Ident} {BR : FDecl D → FDecl D → Prop}
+    (hinj : Function.Injective φ) {f₁ f₂ : FunEnv D} (hR : RenFunsRel φ BR f₁ f₂) :
+    ∀ {fn : Ident} {decl : FDecl D} {cenv : FunEnv D},
+      lookupFun f₁ fn = some (decl, cenv) →
+      ∃ decl' cenv', lookupFun f₂ (φ fn) = some (decl', cenv') ∧
+        BR decl decl' ∧ RenFunsRel φ BR cenv cenv' := by
+  induction hR with
+  | nil => intro fn decl cenv h; simp [lookupFun] at h
+  | @cons s₁ s₂ t₁ t₂ hs hR' ih =>
+      intro fn decl cenv h
+      rcases renScopeRel_find hs fn (fun _ _ hc => hinj hc) with
+        ⟨hn₁, hn₂⟩ | ⟨p, q, hp₁, hp₂, hkey, hd⟩
+      · rw [lookupFun, hn₁] at h
+        obtain ⟨decl', cenv', hl', hbody, hRc⟩ := ih h
+        exact ⟨decl', cenv', by rw [lookupFun, hn₂]; exact hl', hbody, hRc⟩
+      · rw [lookupFun, hp₁] at h
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨hd_eq, hcenv_eq⟩ := h
+        subst hd_eq; subst hcenv_eq
+        exact ⟨q.2, s₂ :: t₂, by rw [lookupFun, hp₂], hd, List.Forall₂.cons hs hR'⟩
