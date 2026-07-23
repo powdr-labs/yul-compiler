@@ -598,6 +598,28 @@ theorem RenCfg.setMany {σ : Ident → Ident} {V : VEnv D} (h : RenCfg σ V)
     (xs : List Ident) (vs : List D.Value) : RenCfg σ (VEnv.setMany V xs vs) :=
   RenCfg.of_keys (VEnv.setMany_keys V xs vs) h
 
+/-! ### `updRen` extension lemmas (for the `let` case) -/
+
+theorem updRen_cons_eq (σ : Ident → Ident) (a b : Ident) (l : List (Ident × Ident)) :
+    updRen σ ((a, b) :: l) a = b := by simp [updRen, List.find?_cons]
+
+theorem updRen_cons_ne {σ : Ident → Ident} {a b z : Ident} {l : List (Ident × Ident)}
+    (h : a ≠ z) : updRen σ ((a, b) :: l) z = updRen σ l z := by
+  simp [updRen, List.find?_cons, h]
+
+/-- The `let`-extended renaming sends the declared variables to their fresh names. -/
+theorem map_updRen_zip {σ : Ident → Ident} : ∀ {xs ys : List Ident}, xs.Nodup →
+    xs.length = ys.length → xs.map (updRen σ (xs.zip ys)) = ys
+  | [], [], _, _ => rfl
+  | [], _ :: _, _, hlen => by simp at hlen
+  | _ :: _, [], _, hlen => by simp at hlen
+  | x :: xs, y :: ys, hnd, hlen => by
+      have hx : x ∉ xs := (List.nodup_cons.mp hnd).1
+      simp only [List.zip_cons_cons, List.map_cons, updRen_cons_eq]
+      have htail : xs.map (updRen σ ((x, y) :: xs.zip ys)) = xs.map (updRen σ (xs.zip ys)) :=
+        List.map_congr_left (fun z hz => updRen_cons_ne (fun heq => hx (heq ▸ hz)))
+      rw [htail, map_updRen_zip (List.nodup_cons.mp hnd).2 (by simpa using hlen)]
+
 /-! ### Scope-safety (no-shadowing) for the source program
 
 Valid Yul forbids declaring a variable already in scope. `WScoped dom code` says
