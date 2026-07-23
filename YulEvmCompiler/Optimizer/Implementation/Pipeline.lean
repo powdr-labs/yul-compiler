@@ -70,7 +70,7 @@ pass before resolution is equivalent (pointwise) to not running it, *on the
 resolved code*. This is the per-stage fact `optimizerPipelineObject_correct`
 composes over the whole pipeline. -/
 structure RPass (calls : ExternalCalls) (creates : ExternalCreates) where
-  pass : Pass (evmWithExternal calls creates)
+  pass : LocalPass (evmWithExternal calls creates)
   resolve_equiv : ∀ (L : Layout) (b : Block Op),
     EquivBlock (evmWithExternal calls creates)
       (resolveForLayoutStmts L b)
@@ -81,7 +81,7 @@ theorem RPass.resolve_equiv_ofList (ps : List (RPass calls creates))
     (L : Layout) (b : Block Op) :
     EquivBlock D
       (resolveForLayoutStmts L b)
-      (resolveForLayoutStmts L ((Pass.ofList (ps.map (·.pass))).run b)) := by
+      (resolveForLayoutStmts L ((LocalPass.ofList (ps.map (·.pass))).run b)) := by
   induction ps generalizing b with
   | nil => exact EquivBlock.refl _
   | cons p rest ih =>
@@ -96,7 +96,7 @@ call-free leaves. -/
 def pipelineRounds : Nat := 6
 
 /-- One block-path round. -/
-def blockRound : List (Pass D) :=
+def blockRound : List (LocalPass D) :=
   [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
    storageForward, simplify, deadPure, deadResults]
 
@@ -104,16 +104,16 @@ def blockRound : List (Pass D) :=
 push a caller's live locals past the backend's `DUP16`/`SWAP16` reach; fewer
 rounds keep frames shallower, so `compileSource` retries a **light**
 (one-round) pipeline before giving up on optimization entirely. -/
-def optimizerPipelineRounds (n : Nat) : Pass D :=
-  Pass.ofList ((List.replicate n (blockRound (calls := calls)
+def optimizerPipelineRounds (n : Nat) : LocalPass D :=
+  LocalPass.ofList ((List.replicate n (blockRound (calls := calls)
     (creates := creates))).flatten)
 
 /-- Verified production pipeline for top-level blocks: the round, iterated. -/
-def optimizerPipeline : Pass D :=
+def optimizerPipeline : LocalPass D :=
   optimizerPipelineRounds pipelineRounds
 
 /-- The light (one-round) block pipeline, the middle compile fallback. -/
-def optimizerPipelineLight : Pass D :=
+def optimizerPipelineLight : LocalPass D :=
   optimizerPipelineRounds 1
 
 /-- One object-path round, with each stage's resolution congruence. -/
@@ -140,12 +140,12 @@ def objectRound : List (RPass calls creates) :=
 
 /-- Verified object pipeline at an explicit round count (see
 `optimizerPipelineRounds` for why the count varies). -/
-def objectPipelineRounds (n : Nat) : Pass D :=
-  Pass.ofList (((List.replicate n (objectRound (calls := calls)
+def objectPipelineRounds (n : Nat) : LocalPass D :=
+  LocalPass.ofList (((List.replicate n (objectRound (calls := calls)
     (creates := creates))).flatten).map (·.pass))
 
 /-- Verified pipeline for object code blocks: the round, iterated. -/
-def objectPipeline : Pass D :=
+def objectPipeline : LocalPass D :=
   objectPipelineRounds pipelineRounds
 
 /-- Resolution congruence for the iterated object pipeline, any round count. -/

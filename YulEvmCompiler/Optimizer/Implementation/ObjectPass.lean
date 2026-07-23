@@ -1,4 +1,5 @@
-import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Spec.LocalPass
+import YulEvmCompiler.Optimizer.Spec.GlobalPass
 import YulEvmCompiler.Optimizer.Implementation.Simplify
 import YulEvmCompiler.Optimizer.Implementation.ResolveCongr
 import YulEvmCompiler.ObjectCompile
@@ -6,9 +7,9 @@ set_option warningAsError true
 /-!
 # YulEvmCompiler.Optimizer.Implementation.ObjectPass
 
-Running a verified `Optimizer.Pass` on an **object's** top code block, and the
+Running a verified `Optimizer.LocalPass` on an **object's** top code block, and the
 correctness theorem for doing so — the object analogue of
-`Pass.optimize_then_compile_correct`.
+`LocalPass.optimize_then_compile_correct`.
 
 ## The layout-coupling caveat
 
@@ -42,10 +43,10 @@ local notation "yulD" => evmWithExternal model.calls model.creates
 /-- Apply a pass to an object's **top** code block, leaving sub-objects and data
 segments byte-identical (so their compiled lengths — and hence every layout
 offset derived from them — are unchanged). -/
-def Pass.optimizeTopCode (P : Pass yulD) : Object Op → Object Op
+def LocalPass.optimizeTopCode (P : LocalPass yulD) : Object Op → Object Op
   | .mk n code subs segs => .mk n (P.run code) subs segs
 
-@[simp] theorem Pass.optimizeTopCode_codeBlock (P : Pass yulD) (o : Object Op) :
+@[simp] theorem LocalPass.optimizeTopCode_codeBlock (P : LocalPass yulD) (o : Object Op) :
     (P.optimizeTopCode o).codeBlock = P.run o.codeBlock := by
   cases o; rfl
 
@@ -55,10 +56,10 @@ does not perturb any baked-in offset. Then compiling the optimized object
 correctly simulates the *original* object's resolved execution.
 
 This is `compileObject_correct` precomposed with the pass's semantics
-preservation (`Pass.run_optimized`), exactly as
-`Pass.optimize_then_compile_correct` does for the block path. -/
-theorem Pass.optimizeTop_compileObject_correct
-    (P : Pass yulD) (hexternal : ExternalsRealized model)
+preservation (`LocalPass.run_optimized`), exactly as
+`LocalPass.optimize_then_compile_correct` does for the block path. -/
+theorem LocalPass.optimizeTop_compileObject_correct
+    (P : LocalPass yulD) (hexternal : ExternalsRealized model)
     {o : Object Op} {L : Layout}
     (hcomp : compileObject (P.optimizeTopCode o) = some L)
     (hres₀ : resolveForLayoutStmts L o.codeBlock = o.codeBlock)
@@ -80,6 +81,37 @@ theorem Pass.optimizeTop_compileObject_correct
   have hrr : RunResolvedObject (P.optimizeTopCode o) L V yst out := by
     change Run yulD (resolveForLayoutStmts L (P.optimizeTopCode o).codeBlock) L.initState V yst out
     rw [P.optimizeTopCode_codeBlock, hres₁]; exact h1
+  exact compileObject_correct hexternal hcomp hrr
+
+/-- **A verified global pass is safe on an object** — the whole-tree analogue of
+`LocalPass.optimizeTop_compileObject_correct`. A `GlobalPass` rewrites the whole
+object; its `Run`-level soundness at the top code block (`GlobalPass.soundTop`)
+transports the original object's resolved run onto the optimized object, which
+`compileObject_correct` then simulates. Same layout-coupling caveat: resolution
+must be the identity on both top blocks (`hres₀`/`hres₁`). -/
+theorem GlobalPass.optimize_then_compileObject_correct
+    (P : GlobalPass yulD) (hexternal : ExternalsRealized model)
+    {o : Object Op} {L : Layout}
+    (hcomp : compileObject (P.run o) = some L)
+    (hres₀ : resolveForLayoutStmts L o.codeBlock = o.codeBlock)
+    (hres₁ : resolveForLayoutStmts L (P.run o).codeBlock = (P.run o).codeBlock)
+    {V : VEnv yulD} {yst : EvmState} {out : Outcome}
+    (hrun : RunResolvedObject o L V yst out) :
+    ∃ b : Nat, ∀ s0 : State,
+      FrameOK (mkCode L.code) s0 → StateMatch L.initState s0 →
+      s0.pc = UInt256.ofNat 0 → s0.stack = [] → b ≤ s0.gasAvailable →
+      ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst s' ∧
+        ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
+         (out = .halt ∧ HaltedMatch yst s')) := by
+  have h0 : Run yulD o.codeBlock L.initState V yst out := by
+    have h := hrun
+    change Run yulD (resolveForLayoutStmts L o.codeBlock) L.initState V yst out at h
+    rw [hres₀] at h; exact h
+  have h1 : Run yulD (P.run o).codeBlock L.initState V yst out :=
+    (P.soundTop o L.initState V yst out).mp h0
+  have hrr : RunResolvedObject (P.run o) L V yst out := by
+    change Run yulD (resolveForLayoutStmts L (P.run o).codeBlock) L.initState V yst out
+    rw [hres₁]; exact h1
   exact compileObject_correct hexternal hcomp hrr
 
 /-! ### Whole-tree optimization (`simplifyObject`), wired into `compileSource`
@@ -130,7 +162,7 @@ theorem simplifyObject_topEquiv (o : Object Op) :
 /-- **End-to-end object optimization is correct.** Compiling `simplifyObject o`
 (the whole tree optimized — deploy and runtime) yields bytecode that correctly
 simulates the **original** object `o`'s resolved execution under the compiler's
-layout. This is the object analogue of `Pass.optimize_then_compile_correct`, now
+layout. This is the object analogue of `LocalPass.optimize_then_compile_correct`, now
 with no caveat: the resolution congruence (`resolveSimplifyBlock_equiv`) bridges
 the optimized artifact's resolved run back to the original's. -/
 theorem simplifyObject_correct (hexternal : ExternalsRealized model)

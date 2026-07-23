@@ -14,7 +14,8 @@ import YulEvmCompiler.LowerCorrect
 import YulEvmCompiler.SimAsm
 import YulEvmCompiler.Correctness
 import YulEvmCompiler.ObjectCompile
-import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Spec.LocalPass
+import YulEvmCompiler.Optimizer.Spec.GlobalPass
 import YulEvmCompiler.Optimizer.Spec.Backend
 import YulEvmCompiler.Optimizer.Core.Basic
 import YulEvmCompiler.Optimizer.Core.Rule
@@ -30,5 +31,6 @@ import YulEvmCompiler.Optimizer.Implementation.InlineHelpersResolve
 import YulEvmCompiler.Optimizer.Implementation.Pipeline
 import YulEvmCompiler.Optimizer.Implementation.StackLayoutSound
 import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
+import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalForm
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate
 import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateSound
