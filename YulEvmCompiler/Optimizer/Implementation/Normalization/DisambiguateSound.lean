@@ -89,3 +89,24 @@ theorem renVEnv_set (σ : Ident → Ident) (V : VEnv D) (x : Ident) (v : D.Value
 theorem renVEnv_restore (σ : Ident → Ident) (V W : VEnv D) :
     renVEnv σ (restore V W) = restore (renVEnv σ V) (renVEnv σ W) := by
   simp only [restore, renVEnv, List.map_drop, List.length_map]
+
+/-! ### `setMany` transport (under a genuinely injective renaming) -/
+
+theorem VEnv.setMany_cons (V : VEnv D) (x : Ident) (v : D.Value)
+    (xs : List Ident) (vs : List D.Value) :
+    VEnv.setMany V (x :: xs) (v :: vs) = VEnv.setMany (VEnv.set V x v) xs vs := by
+  simp [VEnv.setMany, List.zip_cons_cons, List.foldl_cons]
+
+theorem renVEnv_setMany (σ : Ident → Ident) (hinj : Function.Injective σ) :
+    ∀ (vars : List Ident) (vals : List D.Value) (V : VEnv D),
+      VEnv.setMany (renVEnv σ V) (vars.map σ) vals = renVEnv σ (VEnv.setMany V vars vals) := by
+  intro vars
+  induction vars with
+  | nil => intro vals V; simp [VEnv.setMany]
+  | cons x xs ih =>
+      intro vals V
+      cases vals with
+      | nil => simp [VEnv.setMany]
+      | cons v vs =>
+          rw [List.map_cons, VEnv.setMany_cons, VEnv.setMany_cons,
+            renVEnv_set σ V x v (fun _ _ h => hinj h), ih vs (VEnv.set V x v)]

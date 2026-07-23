@@ -31,3 +31,4 @@ import YulEvmCompiler.Optimizer.Implementation.Pipeline
 import YulEvmCompiler.Optimizer.Implementation.StackLayoutSound
 import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate
+import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateSound
