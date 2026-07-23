@@ -1,6 +1,7 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate
 import YulEvmCompiler.Optimizer.Implementation.Frame
 import YulSemantics.Equiv
+import Mathlib.Data.List.Nodup
 /-!
 # Semantic soundness of name disambiguation — foundations
 
@@ -619,6 +620,55 @@ theorem map_updRen_zip {σ : Ident → Ident} : ∀ {xs ys : List Ident}, xs.Nod
       have htail : xs.map (updRen σ ((x, y) :: xs.zip ys)) = xs.map (updRen σ (xs.zip ys)) :=
         List.map_congr_left (fun z hz => updRen_cons_ne (fun heq => hx (heq ▸ hz)))
       rw [htail, map_updRen_zip (List.nodup_cons.mp hnd).2 (by simpa using hlen)]
+
+/-- **Extending `RenCfg` for a `let`.** Extending the renaming with fresh names
+`vars'` for a `let`'s distinct variables `vars` (disjoint from the current scope)
+preserves `RenCfg` on the extended environment. The new fresh names are distinct
+(`vars'.Nodup`), are `dsName`s, and are disjoint from the renaming's existing
+range (`hfresh`) — so injectivity, identity-below, and freshness all survive. -/
+theorem RenCfg.extend {σ : Ident → Ident} {V : VEnv D} (h : RenCfg σ V)
+    {vars vars' : List Ident} (hvnd : vars.Nodup) (hnd : vars'.Nodup)
+    (hlen : vars.length = vars'.length) (hds : ∀ v' ∈ vars', ∃ k, v' = dsName k)
+    (hfresh : ∀ v' ∈ vars', ∀ z, σ z ≠ v') (hsh : ∀ x ∈ vars, x ∉ V.map Prod.fst)
+    {W : VEnv D} (hW : W.map Prod.fst = vars ++ V.map Prod.fst) :
+    RenCfg (updRen σ (vars.zip vars')) W := by
+  have hmap : vars.map (updRen σ (vars.zip vars')) = vars' := map_updRen_zip hvnd hlen
+  have hmapnd : (vars.map (updRen σ (vars.zip vars'))).Nodup := by rw [hmap]; exact hnd
+  have hinj_vars : ∀ a ∈ vars, ∀ b ∈ vars,
+      updRen σ (vars.zip vars') a = updRen σ (vars.zip vars') b → a = b :=
+    fun a ha b hb => List.inj_on_of_nodup_map hmapnd ha hb
+  have hvars_img : ∀ a ∈ vars, updRen σ (vars.zip vars') a ∈ vars' :=
+    fun a ha => by have := List.mem_map_of_mem (f := updRen σ (vars.zip vars')) ha
+                   rwa [hmap] at this
+  have hid_off : ∀ z, z ∉ vars → updRen σ (vars.zip vars') z = σ z := fun z hz =>
+    updRen_of_not_mem (fun p hp hpz => hz (hpz ▸ (List.of_mem_zip hp).1))
+  refine ⟨?_, ?_, ?_⟩
+  · intro p hp q hq hpq
+    have hp1 : p.1 ∈ vars ++ V.map Prod.fst := hW ▸ List.mem_map_of_mem hp
+    have hq1 : q.1 ∈ vars ++ V.map Prod.fst := hW ▸ List.mem_map_of_mem hq
+    rcases List.mem_append.mp hp1 with hpv | hpV <;> rcases List.mem_append.mp hq1 with hqv | hqV
+    · exact hinj_vars p.1 hpv q.1 hqv hpq
+    · exact absurd (by rw [hid_off q.1 (fun hc => hsh q.1 hc hqV)] at hpq; exact hpq.symm)
+        (hfresh _ (hvars_img p.1 hpv) q.1)
+    · exact absurd (by rw [hid_off p.1 (fun hc => hsh p.1 hc hpV)] at hpq; exact hpq)
+        (hfresh _ (hvars_img q.1 hqv) p.1)
+    · rw [hid_off p.1 (fun hc => hsh p.1 hc hpV), hid_off q.1 (fun hc => hsh q.1 hc hqV)] at hpq
+      obtain ⟨p₀, hp₀, hp₀e⟩ := List.mem_map.mp hpV
+      obtain ⟨q₀, hq₀, hq₀e⟩ := List.mem_map.mp hqV
+      rw [← hp₀e, ← hq₀e] at hpq ⊢
+      exact h.1 p₀ hp₀ q₀ hq₀ hpq
+  · intro z hz
+    have hznk : z ∉ W.map Prod.fst := (VEnv.get_eq_none_iff_not_mem W z).mp hz
+    rw [hW, List.mem_append] at hznk
+    rw [hid_off z (fun hc => hznk (Or.inl hc))]
+    exact h.2.1 z ((VEnv.get_eq_none_iff_not_mem V z).mpr (fun hc => hznk (Or.inr hc)))
+  · intro p hp
+    have hp1 : p.1 ∈ vars ++ V.map Prod.fst := hW ▸ List.mem_map_of_mem hp
+    rcases List.mem_append.mp hp1 with hpv | hpV
+    · exact hds _ (hvars_img p.1 hpv)
+    · rw [hid_off p.1 (fun hc => hsh p.1 hc hpV)]
+      obtain ⟨p₀, hp₀, hp₀e⟩ := List.mem_map.mp hpV
+      rw [← hp₀e]; exact h.2.2 p₀ hp₀
 
 /-! ### Scope-safety (no-shadowing) for the source program
 
