@@ -1007,6 +1007,46 @@ theorem flattenArgs_correct_bwd {funs : FunEnv D} {P : String} {es : List (Expr 
             exact ⟨Step.argsCons hargsR hheadE, hextH⟩
 end
 
+/-- Reverse of `flattenTop_correct` (normal case): from the head-flattening
+prelude (normal) plus the resulting flat expression, recover the original
+expression's evaluation. The top operator is kept, so the flat expression may be
+multi-valued. Unconditional (boundedness is witnessed by the flat expr's
+evaluation of its atoms). -/
+theorem flattenTop_correct_bwd {funs : FunEnv D} {P : String} {e : Expr Op}
+    {Vo Va : VEnv D} {st : EvmState} (k : Nat)
+    (hnt : noTempExpr P e = true) (hext : TempExt P Vo Va)
+    {Va' stM stA vs}
+    (hpre : Step D funs Va st (.stmts (flattenTop P k e).2.1) (.sres Va' stM .normal))
+    (hat : Step D funs Va' stM (.expr (flattenTop P k e).2.2) (.eres (.vals vs stA))) :
+    Step D funs Vo st (.expr e) (.eres (.vals vs stA)) ∧ TempExt P Vo Va' := by
+  cases e with
+  | var x =>
+      simp only [flattenTop] at hpre hat
+      cases hpre with
+      | seqNil =>
+          cases hat with
+          | var hv =>
+              have hx : isTemp P x = false := by simpa [noTempExpr] using hnt
+              exact ⟨Step.var (by rw [TempExt.get hx hext] at hv; exact hv), hext⟩
+  | lit l =>
+      simp only [flattenTop] at hpre hat
+      cases hpre with
+      | seqNil => cases hat with | lit => exact ⟨Step.lit, hext⟩
+  | builtin op args =>
+      have hna : noTempArgs P args = true := by simpa [noTempExpr] using hnt
+      simp only [flattenTop] at hpre hat
+      cases hat with
+      | builtinOk hatoms hb =>
+          obtain ⟨hargs, hextm⟩ := flattenArgs_correct_bwd k hna hext hpre hatoms
+          exact ⟨Step.builtinOk hargs hb, hextm⟩
+  | call fn args =>
+      have hna : noTempArgs P args = true := by simpa [noTempExpr] using hnt
+      simp only [flattenTop] at hpre hat
+      obtain ⟨argvals, sta, decl, cenv, Vend, o, hatoms, hlk, hlen, hbody, ho, hmap⟩ :=
+        expr_call_inv hat
+      obtain ⟨hargs, hextm⟩ := flattenArgs_correct_bwd k hna hext hpre hatoms
+      exact ⟨by rw [hmap]; exact Step.callOk hargs hlk hlen hbody ho, hextm⟩
+
 /-- **ANF preserves behavior.** (Scaffolded; discharged via the statement
 simulation + `restore` lemmas.) -/
 theorem anfNormalize_sound (b : Block Op) :
