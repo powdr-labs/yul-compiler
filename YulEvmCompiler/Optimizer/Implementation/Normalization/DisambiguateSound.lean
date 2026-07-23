@@ -860,7 +860,7 @@ theorem AlphaStmt1.phi_eq {σ φ : Ident → Ident} {s s' : Stmt D.Op} {σ' φ' 
     (h : AlphaStmt1 σ φ s s' σ' φ') : φ' = φ := by cases h <;> rfl
 
 theorem sim_fwd {funs₁ : FunEnv D} {V₁ mst code₁ res₁} (h : Step D funs₁ V₁ mst code₁ res₁) :
-    ∀ {σ φ σ' φ' funs₂ code₂}, RenCfg σ V₁ → Function.Injective φ →
+    ∀ {σ φ σ' φ' funs₂ code₂}, RenCfg σ V₁ → RenFCfg φ funs₁ →
       RenFunsRel φ (FDeclRen φ) funs₁ funs₂ → WScopedCode (V₁.map Prod.fst) code₁ →
       AlphaCode σ φ σ' φ' code₁ code₂ →
       Step D funs₂ (renVEnv σ V₁) mst code₂ (renRes σ' res₁) ∧ ResOK σ' res₁ := by
