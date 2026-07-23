@@ -985,6 +985,20 @@ theorem alphaSeq_agrees : ∀ {ss ss' : List (Stmt D.Op)} {σ φ σ' φ' : Ident
             exact List.mem_append.mpr (Or.inl (hpz ▸ (List.of_mem_zip hp).1))))
       | _ => rfl
 
+/-- A well-scoped sequence's declared variables are disjoint from the domain. -/
+theorem wscoped_declVars_disjoint : ∀ {ss : List (Stmt D.Op)} {dom : List Ident},
+    WScopedStmts dom ss → ∀ z ∈ dom, z ∉ declVarsSeq ss
+  | [], _, _, z, _ => by simp [declVarsSeq]
+  | s :: rest, dom, hws, z, hz => by
+      simp only [WScopedStmts] at hws
+      obtain ⟨hs, hrest⟩ := hws
+      rw [declVarsSeq, List.mem_append, not_or]
+      refine ⟨?_, wscoped_declVars_disjoint hrest z (List.mem_append.mpr (Or.inr hz))⟩
+      intro hc
+      cases s with
+      | letDecl vars val => exact hs z hc hz
+      | _ => simp [declVars] at hc
+
 /-- **Hoist transport.** α-equivalent statement sequences have `RenScopeRel`-related
 hoisted function scopes: each source `funDef` is matched by a target `funDef` with
 `φ`-renamed name and an `FDeclRen`-related declaration. -/
