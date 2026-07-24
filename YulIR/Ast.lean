@@ -49,7 +49,7 @@ inductive Rhs
   | atom    (a : Atom)
   | builtin (op : Op) (args : List Atom)
   | call    (fn : Ident) (args : List Atom)
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, DecidableEq, BEq
 
 /-- An IR statement. Blocks are `List Stmt`. -/
 inductive Stmt

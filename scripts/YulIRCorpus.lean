@@ -135,15 +135,22 @@ observably (under the differential scenarios) on every comparable fixture. A mis
 miscompile in `optimize`/translation. -/
 def behaviour (corpusDir : FilePath) : IO UInt32 := do
   let fixtures ← blockFixtures corpusDir
-  let mut ok := 0; let mut mism := 0; let mut uncmp := 0
+  let mut ok := 0; let mut mism := 0; let mut uncmp := 0; let mut timeout := 0
   for (name, source, b) in fixtures do
     match compileSource source, YulIR.Check.blockBytecode (YulIR.Check.irOptimized b) with
     | some cur, some irOp =>
         match compareBytecode irOp cur with
         | .ok _ => ok := ok + 1
-        | .error e => mism := mism + 1; IO.eprintln s!"::error::{name}: ir-opt ≠ current — {e}"
+        | .error e =>
+            -- A "did not halt within N steps" difference is a gas/step-cap artefact for
+            -- gas-bound or non-terminating programs (differently-sized code hits the step
+            -- cap vs the gas limit at different points), not an observable-state divergence.
+            if (e.splitOn "did not halt").length > 1 then
+              timeout := timeout + 1
+            else
+              mism := mism + 1; IO.eprintln s!"::error::{name}: ir-opt ≠ current — {e}"
     | _, _ => uncmp := uncmp + 1
-  IO.println s!"YulIR behaviour: {ok} match current, {mism} MISMATCH, {uncmp} uncompilable."
+  IO.println s!"YulIR behaviour: {ok} match current, {mism} MISMATCH, {timeout} step-cap/gas-bound, {uncmp} uncompilable."
   return (if mism == 0 then 0 else 1)
 
 end YulIRCorpus

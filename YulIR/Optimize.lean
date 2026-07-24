@@ -1,24 +1,30 @@
 import YulIR.Object
 import YulIR.Simplify
+import YulIR.Uniquify
+import YulIR.ValueNumber
+import YulIR.DeadCode
 
 /-!
-# YulIR.Optimize — the IR optimization pipeline (hook)
+# YulIR.Optimize — the IR optimization pipeline
 
-The single place IR→IR optimization passes are composed. It is currently the **identity**;
-as passes land (CSE, inlining, redundant-store elimination, …) they are added here, and the
-benchmark's `irOpt` column (`toYul ∘ optimize ∘ ofYul`) starts to diverge from `irNoOpt`
-(`toYul ∘ ofYul`).
+Composes the IR→IR passes. Order:
 
-Keeping this hook here — rather than inlining `id` at call sites — is what lets the corpus
-benchmark measure *optimization* effect (`irOpt` vs `irNoOpt`, which cancels IR→Yul
-translation quality) separately from translation overhead (`irNoOpt` vs `current`).
+1. `uniquify`      — make variable declarations globally unique (enables sound value tracking);
+2. `valueNumber`   — constant/copy propagation + folding/identities + CSE;
+3. `deadCode`      — remove the now-unused pure bindings;
+
+steps 2–3 iterated once more, since DCE can expose further propagation/CSE. Every step is a
+behaviour-preserving IR→IR transformation (validated by the interpreter check in
+`YulIR.CheckBaseline`); the benchmark's `irOpt` column measures their effect.
 -/
 
 namespace YulIR
 
-/-- The IR optimization pipeline on a top-level block. Currently: local expression
-simplification (constant folding + algebraic identities). -/
-def optimize (b : Block) : Block := simplifyBlock b
+/-- One value-numbering + dead-code round. -/
+def optRound (b : Block) : Block := deadCode (valueNumber b)
+
+/-- The IR optimization pipeline on a top-level block. -/
+def optimize (b : Block) : Block := optRound (optRound (uniquify b))
 
 /-- The IR optimization pipeline on an object (optimizes every code block). -/
 partial def optimizeObject : Object → Object
