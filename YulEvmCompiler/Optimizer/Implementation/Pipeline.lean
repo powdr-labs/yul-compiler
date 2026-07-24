@@ -312,33 +312,34 @@ theorem optimizerPipelineObject_correct
 `compileSource` runs the full normalization front-end (`Normalize.normalize` /
 `Normalize.normalizeObject`, see `Normalization/Normalize.lean`) — disambiguate
 every declared name, then hoist every function definition to the root —
-**before** the optimizer pipeline. Its soundness is *conditional* on the
-source-validity facts `Normalize.SourceValid` (assumed, not decided, and owed by
-the disambiguation step alone — hoisting is unconditional; see the module
-docstrings), so the composed guarantee here carries the same hypothesis; the
-pipeline stages after it stay unconditional. -/
+**before** the optimizer pipeline. Both steps guard on a decidable check
+(`Disambiguate/Decide.lean`'s `sourceValidB` for disambiguation, `hoistGuard` for
+hoisting) and are the identity off their domains, so normalization is now an
+**unconditionally**-sound `GlobalPass`: the composed guarantees below carry no
+`SourceValid` hypothesis. On any valid source program (which the parser's
+validator guarantees) both guards fire, so normalization is active, not a
+no-op. -/
 
 /-- **Normalize-then-optimize preserves whole-program behaviour** (block path),
-for a valid source block. -/
-theorem normalize_optimizerPipelineRounds_runEquiv (n : Nat) (b : Block Op)
-    (h : Normalize.SourceValid b) :
+for **every** block: normalization is now an unconditionally-sound guarded pass
+(`Normalize.normalize_runEquivBlock`), so no `SourceValid` hypothesis survives. -/
+theorem normalize_optimizerPipelineRounds_runEquiv (n : Nat) (b : Block Op) :
     RunEquivBlock D b
       ((optimizerPipelineRounds (calls := calls) (creates := creates) n).run
         (@Normalize.normalize (evmWithExternal calls creates) b)) :=
-  (Normalize.sourceValid_normalize_runEquivBlock h).trans
+  (@Normalize.normalize_runEquivBlock (evmWithExternal calls creates) _ b).trans
     (RunEquivBlock.of_equivBlock
       ((optimizerPipelineRounds (calls := calls) (creates := creates) n).sound
         (@Normalize.normalize (evmWithExternal calls creates) b)))
 
 /-- **Normalize-then-optimize preserves whole-program behaviour** (object path,
-at the top code block — the `RunObject`/`RunResolvedObject` interface), for an
-object whose top block is a valid source block. -/
-theorem normalize_optimizerPipelineObjectRounds_topRunEquiv (n : Nat) (o : Object Op)
-    (h : Normalize.SourceValid o.codeBlock) :
+at the top code block — the `RunObject`/`RunResolvedObject` interface), for
+**every** object tree. -/
+theorem normalize_optimizerPipelineObjectRounds_topRunEquiv (n : Nat) (o : Object Op) :
     RunEquivBlock D o.codeBlock
       (optimizerPipelineObjectRounds (calls := calls) (creates := creates) n
         (@Normalize.normalizeObject (evmWithExternal calls creates) _ o)).codeBlock :=
-  (Normalize.normalizeObject_topRunEquiv h).trans
+  (@Normalize.normalizeObject_topRunEquiv (evmWithExternal calls creates) _ o).trans
     (RunEquivBlock.of_equivBlock
       (optimizerPipelineObjectRounds_topEquiv n (@Normalize.normalizeObject (evmWithExternal calls creates) _ o)))
 
