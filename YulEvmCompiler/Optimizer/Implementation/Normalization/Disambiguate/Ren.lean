@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateAlpha
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Alpha
 import YulEvmCompiler.Optimizer.Implementation.Frame
 import YulSemantics.Equiv
 import Mathlib.Data.List.Nodup
@@ -14,8 +14,8 @@ renaming under the *satisfiable* injectivity configs `RenCfg`/`RenFCfg`
 `NotFresh` keys) — not global injectivity, which the pass's renaming does not
 have.
 
-Built on the purely syntactic `DisambiguateAlpha`; the `Step` simulation proper
-(`DisambiguateSound`) builds on this file's olean.
+Built on the purely syntactic `Alpha`; the `Step` simulation proper
+(`Sound`) builds on this file's olean.
 -/
 
 namespace YulEvmCompiler.Optimizer.Normalize

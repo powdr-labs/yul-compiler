@@ -1,6 +1,6 @@
-import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateSound
-import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateSoundBwd
-import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateInstance
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Sound
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.SoundBwd
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Instance
 import YulEvmCompiler.Optimizer.Spec.GlobalPass
 /-!
 # Semantic soundness of name disambiguation
@@ -12,11 +12,11 @@ source and disambiguated program produce exactly the same final environment,
 state, and outcome, in both directions.
 
 Assembled from:
-* `alpha_disambiguate` (`DisambiguateInstance`) — the pass's output is
+* `alpha_disambiguate` (`Instance`) — the pass's output is
   α-related to its input at the pass's own renamings;
-* `sim_fwd` (`DisambiguateSound`) — a source step transports to a target step
+* `sim_fwd` (`Sound`) — a source step transports to a target step
   with renamed result;
-* `sim_bwd` (`DisambiguateSoundBwd`) — a target step pulls back to a source
+* `sim_bwd` (`SoundBwd`) — a target step pulls back to a source
   step whose renamed result it is.
 
 At the top level every configuration is trivial (empty environments, identity

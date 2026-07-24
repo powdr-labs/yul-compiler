@@ -72,6 +72,48 @@ a lot of structural slack to remove.
 
 ## Passes
 
+### ✅ Name disambiguation (`disambiguate`) — conditional soundness, deciders deferred
+
+`Normalize.disambiguate` renames every declared name (let-bounds, params,
+returns, function names) to a globally fresh `NUL`-prefixed counter name, so no
+two declarations in a root block share a name (`Disambiguated` /
+`NormalForm.UniqueNames`). Wired as the **first** optimizer step in
+`compileSource` (block path: `disambiguate`; object path:
+`disambiguateObject`, every code block of the tree), composed with the pipeline
+by `disambiguate_optimizerPipelineRounds_runEquiv` /
+`disambiguate_optimizerPipelineObjectRounds_topRunEquiv`.
+
+**Known limitation — soundness is conditional and the preconditions are
+assumed, not checked.** `disambiguate_runEquivBlock` needs the source-validity
+facts bundled as `Normalize.SourceValid` (see
+`Normalization/Disambiguate/Pass.lean`): `NUL`-free identifiers with
+duplicate-free binder lists (`SVStmts`), per-block distinct function names
+(`WellFormed`), resolvable references (`NormalForm.WellScoped`), and no
+variable/function shadowing (`WScopedStmts []` / `FScopedStmts`). All hold for
+spec-valid (in particular solc-generated) Yul, but only `WellScoped` is forced
+by execution itself. Consequently the pass is **not** a `GlobalPass` (whose
+`sound` field is unconditional) and there is no end-to-end unconditional
+theorem covering it. Two upgrade paths:
+
+1. **Guard (mechanical).** Write `Bool` deciders for the five predicates
+   (mirror `scopedStmtsB`/`wellScopedB` in `HoistFunDefsPass.lean`) and wrap
+   with `GlobalPass.ofGuardedBlock`, making the pass unconditionally sound
+   (identity off-domain) — the `hoistFunDefsPass` pattern. ~500 lines,
+   no new ideas.
+2. **Generalize (a redesign).** Prove soundness for every well-scoped program,
+   dropping the other four hypotheses. Two genuine obstacles: (a) the
+   simulation relates environments through renaming *functions*
+   `σ, φ : Ident → Ident` (`RenCfg`, `renVEnv`), which cannot express a
+   *shadowed* environment — two entries keyed `x` must map to two different
+   fresh names — so the relation must become positional (entry-by-entry over
+   `VEnv`/`FunEnv`), redoing the 41-case `sim_fwd`/`sim_bwd`; (b) fresh names
+   must be fresh w.r.t. the *program's* identifiers (a non-stuck program may
+   legally use `NUL` names), replacing the global `dsName`/`RangeNodup`
+   scheme by a scanned-prefix one. Estimated at roughly the size of the
+   original soundness effort (weeks); the `WellScoped` hypothesis (the only
+   one execution itself forces, via unbound references — and even that only on
+   executed paths) would remain and would then need the one cheap decider.
+
 ### ✅ Dominance-local stack layout (`codex/swapmath-stack-layout`)
 
 `SwapMath.sol` exposes two related failures after the existing smart layout:

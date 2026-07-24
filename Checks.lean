@@ -71,3 +71,27 @@ modulo only the standard classical axioms. -/
 /-- info: 'YulParser.parse_canon_obj' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms YulParser.parse_canon_obj
+
+/-- info: 'YulEvmCompiler.Optimizer.Normalize.disambiguate_runEquivBlock' depends on axioms: [propext,
+ Classical.choice,
+ Quot.sound] -/
+#guard_msgs in
+#print axioms YulEvmCompiler.Optimizer.Normalize.disambiguate_runEquivBlock
+
+/-- info: 'YulEvmCompiler.Optimizer.Normalize.disambiguateObject_objEquiv' depends on axioms: [propext,
+ Classical.choice,
+ Quot.sound] -/
+#guard_msgs in
+#print axioms YulEvmCompiler.Optimizer.Normalize.disambiguateObject_objEquiv
+
+/-- info: 'YulEvmCompiler.Optimizer.disambiguate_optimizerPipelineRounds_runEquiv' depends on axioms: [propext,
+ Classical.choice,
+ Quot.sound] -/
+#guard_msgs in
+#print axioms YulEvmCompiler.Optimizer.disambiguate_optimizerPipelineRounds_runEquiv
+
+/-- info: 'YulEvmCompiler.Optimizer.disambiguate_optimizerPipelineObjectRounds_topRunEquiv' depends on axioms: [propext,
+ Classical.choice,
+ Quot.sound] -/
+#guard_msgs in
+#print axioms YulEvmCompiler.Optimizer.disambiguate_optimizerPipelineObjectRounds_topRunEquiv

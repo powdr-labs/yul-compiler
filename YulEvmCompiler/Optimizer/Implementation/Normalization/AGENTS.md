@@ -48,8 +48,13 @@ are currently on unmerged branches (targeting `powdr-labs`) in *different*
 namespaces, which `NormalForm` deliberately does not import:
 
 - `IsANF` → `anf-normalizer` (`Normalization/ANF.lean`, `isANFStmts` Bool decider)
-- `UniqueNames` → `disambiguate` (`Disambiguated` via `.Nodup`)
-- `FunctionsHoisted` → `normalization-hoist-funcs` (`liftFunDefs`; had no positive predicate)
+- `UniqueNames` → **landed**: `Disambiguate/` (`Disambiguated` via `.Nodup`,
+  bridged by `disambiguate_uniqueNames`; whole-program soundness
+  `disambiguate_runEquivBlock` is *conditional* on assumed `SourceValid`
+  facts — no Bool deciders yet, so not a `GlobalPass`; see
+  `Disambiguate/Pass.lean` and the IDEAS.md entry for the upgrade paths)
+- `FunctionsHoisted` → **landed**: `HoistFunDefsPass.lean` (`liftFunDefs` as the
+  guarded `hoistFunDefsPass : GlobalPass`)
 - `ForInitEmpty` → `hoist-for-init` (`ForInitOKs`, a *conditional* variant)
 - `WellScoped` → `normalization-hoist-funcs` (`Equiv.lean`, functions only)
 

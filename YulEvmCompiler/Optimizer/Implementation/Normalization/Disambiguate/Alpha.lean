@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Basic
 import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalForm
 /-!
 # Disambiguation α-equivalence (syntax only)
@@ -7,7 +7,7 @@ The renaming relation the disambiguation bisimulation ranges over, together with
 its purely syntactic lemmas. Nothing semantic lives here — this file depends only
 on the AST, the pass (`dsName`/`freshVars`/`funNames`), and the shared
 `NormalForm` scoping predicates — so it compiles fast and the semantic layers
-(`DisambiguateRen`, `DisambiguateSound`) build on top of its olean.
+(`Ren`, `Sound`) build on top of its olean.
 
 Contents:
 * `NotFresh` and fresh-name disjointness lemmas;

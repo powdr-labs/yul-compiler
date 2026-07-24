@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateRen
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Ren
 /-!
 # Semantic soundness of name disambiguation — the backward simulation
 

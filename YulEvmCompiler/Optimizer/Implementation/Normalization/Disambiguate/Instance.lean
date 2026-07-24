@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateAlpha
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Alpha
 /-!
 # The disambiguation pass is an instance of the α-relation
 

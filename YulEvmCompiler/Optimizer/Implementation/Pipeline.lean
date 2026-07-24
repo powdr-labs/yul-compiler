@@ -8,6 +8,7 @@ import YulEvmCompiler.Optimizer.Implementation.FreshenCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.HoistCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.StorageForwardResolve
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Pass
 set_option warningAsError true
 /-!
 # Production optimizer pipeline
@@ -305,5 +306,38 @@ theorem optimizerPipelineObject_correct
         ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
          (out = .halt ∧ HaltedMatch yst s')) :=
   optimizerPipelineObjectRounds_correct hexternal pipelineRounds hcomp hrun
+
+/-! ### Disambiguation as the first pipeline step
+
+`compileSource` runs the name disambiguator (`Normalize.disambiguate` /
+`Normalize.disambiguateObject`, see `Normalization/Disambiguate/Pass.lean`)
+**before** the pipeline. Its soundness is *conditional* on the source-validity
+facts `Normalize.SourceValid` (assumed, not decided — see that module's
+docstring), so the composed guarantee here carries the same hypothesis; the
+pipeline stages after it stay unconditional. -/
+
+/-- **Disambiguate-then-optimize preserves whole-program behaviour** (block
+path), for a valid source block. -/
+theorem disambiguate_optimizerPipelineRounds_runEquiv (n : Nat) (b : Block Op)
+    (h : Normalize.SourceValid b) :
+    RunEquivBlock D b
+      ((optimizerPipelineRounds (calls := calls) (creates := creates) n).run
+        (Normalize.disambiguate b)) :=
+  (Normalize.sourceValid_runEquivBlock h).trans
+    (RunEquivBlock.of_equivBlock
+      ((optimizerPipelineRounds (calls := calls) (creates := creates) n).sound
+        (Normalize.disambiguate b)))
+
+/-- **Disambiguate-then-optimize preserves whole-program behaviour** (object
+path, at the top code block — the `RunObject`/`RunResolvedObject` interface),
+for an object whose top block is a valid source block. -/
+theorem disambiguate_optimizerPipelineObjectRounds_topRunEquiv (n : Nat) (o : Object Op)
+    (h : Normalize.SourceValid o.codeBlock) :
+    RunEquivBlock D o.codeBlock
+      (optimizerPipelineObjectRounds (calls := calls) (creates := creates) n
+        (Normalize.disambiguateObject o)).codeBlock :=
+  (Normalize.disambiguateObject_topRunEquiv h).trans
+    (RunEquivBlock.of_equivBlock
+      (optimizerPipelineObjectRounds_topEquiv n (Normalize.disambiguateObject o)))
 
 end YulEvmCompiler.Optimizer
