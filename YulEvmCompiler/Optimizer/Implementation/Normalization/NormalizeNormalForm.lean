@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Normalize
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.DecideComplete
 import Mathlib.Data.Multiset.Basic
 import Mathlib.Data.Multiset.AddSub
 import Mathlib.Data.Multiset.OrderedMonoid
@@ -264,6 +265,16 @@ theorem normalize_uniqueNames {b : Block D.Op} (h : sourceValidB b = true) :
   unfold normalize disambiguateGuarded guardedBlock
   rw [if_pos h]
   exact uniqueNames_hoistBlock (disambiguate_uniqueNames b hsv.2.1)
+
+/-- **`normalize` as a clean precondition→postcondition pass.** A valid source
+block — `SourceValid`, the disambiguator's few requirements — is normalized to the
+canonical `UniqueNames` normal form. Decider completeness (`sourceValidB_complete`)
+discharges the runtime guard, so the precondition is the semantic `SourceValid`,
+not the `Bool`. This is the pre/postcondition shape the pipeline threads:
+`SourceValid` in, normal form out. -/
+theorem normalize_uniqueNames_of_sourceValid {b : Block D.Op} (h : SourceValid b) :
+    NormalForm.UniqueNames (normalize b) :=
+  normalize_uniqueNames (sourceValidB_complete h)
 
 /-! ### Well-scopedness: the canonical predicate implies the hoist pass's
 
