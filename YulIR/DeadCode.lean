@@ -18,9 +18,11 @@ namespace YulIR
 
 open YulSemantics (Ident Literal)
 
-/-- Is this statement a dead pure binding, given the set of used identifiers? -/
+/-- Is this statement dead — a pure binding whose result is unused, or a pure statement
+(e.g. `pop(x)`) that has no observable effect at all? -/
 def isDeadLet (used : List Ident) : Stmt → Bool
   | .letD [v] rhs => Rhs.isPure rhs && ! used.contains v
+  | .effect rhs   => Rhs.isPure rhs          -- a pure op evaluated for effect does nothing
   | _             => false
 
 mutual
