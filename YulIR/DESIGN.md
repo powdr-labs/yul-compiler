@@ -35,15 +35,16 @@ backend. Semantic soundness of `ofYul∘toYul` and of `optimize` is checked with
 
 ## Passes (`YulIR/Optimize.lean` = `optimize`)
 
-Order: `uniquify` → (`valueNumber` → `structural` → `deadCode`) ×2.
+Order: `uniquify` → (`valueNumber` → `structural` → `deadStore` → `deadCode`) ×2.
 
 | Pass | File | What | Provability notes |
 |---|---|---|---|
 | Uniquify | `Uniquify.lean` | α-rename every declaration to a globally fresh name; removes shadowing | α-renaming; behaviour-preserving |
 | Simplify | `Simplify.lean` | local constant folding (via dialect `stepOp`) + algebraic identities | per-`Rhs`, local; folding delegates to the semantics |
 | ValueNumber | `ValueNumber.lean` | const/copy propagation, folding across `let`s, CSE — tracks only *immutable* values so no invalidation is ever needed | forward, monotone; immutability = never an `assign` target |
-| Structural | `Structural.lean` | dead-branch removal (`if 0`), constant `switch` selection, `if 1`→block, empty-block/if removal | local, per-statement rewrites |
-| DeadCode | `DeadCode.lean` | remove unused pure bindings (global check under unique names), to a fixpoint | pure ⇒ no observable effect |
+| Structural | `Structural.lean` | dead-branch (`if 0`), constant `switch` selection, `if 1`→block, empty removal, and unreachable-code elimination (drop stmts after a terminator) | local, per-statement rewrites |
+| DeadStore | `DeadStore.lean` | remove `x := <pure rhs>` whose value is never observed (backward liveness; conservative for loops/`break`/`continue`; return vars protected) | only removes a provably-dead pure store |
+| DeadCode | `DeadCode.lean` | remove unused pure bindings, and pure statements like `pop(x)`; fixpoint | pure ⇒ no observable effect |
 
 ### Design decisions of note
 
@@ -73,22 +74,35 @@ Run in the interpreter (`lake env lean --run …`); a native `lean_exe` would be
 runtime but requires compiling the whole mathlib closure with the C backend (~13 min), so it
 is reserved for CI-cached heavy runs, not local iteration.
 
-## Roadmap toward parity
+## Status & roadmap toward parity
 
-Biggest remaining `ir-opt` vs `current` gaps and the passes that close them:
+Current: corpus total `ir-opt` **−9%** vs `ir-noopt`, **~1.3% above `current`** (was ~8%);
+several categories now *beat* `current` (`structuralSimplifier`, `deadCodeEliminator`,
+`unusedAssignEliminator`, `unusedPruner`, `fullSuite`). Behaviour sweep: 0 miscompiles.
 
-- [ ] **Unused-assignment / dead-store elimination** (`unusedAssignEliminator`,
-      `unusedStoreEliminator`): backward liveness on locals; remove dead `assign`s.
+Done: uniquify · simplify · value-numbering (const/copy-prop, fold, CSE) · structural +
+unreachable-code · dead-store (unused-assignment) · dead pure bindings/statements.
+
+Remaining to reach/exceed parity:
+
 - [ ] **Function inlining** (`fullInliner`, `expressionInliner`, `functionSpecializer`):
-      capture-avoiding (unique names make this clean); also unlocks cross-call propagation.
-- [ ] **Load resolver** (`loadResolver`): memory/storage store→load forwarding + redundant
-      store elimination (needs an effect/aliasing model; the pure/effect split helps).
-- [ ] **Loop-invariant code motion** (`loopInvariantCodeMotion`): hoist invariant pure
-      computations; must weigh stack-pressure like CSE.
-- [ ] **Rematerialization + a stack-aware cost model**: undo CSE/LICM where they cost more
-      than they save on the EVM stack.
-- [ ] If the backend's **stack allocation** is the bottleneck, improve it (the point where
-      IR values are laid onto the EVM stack — DUP/SWAP/POP scheduling).
+      capture-avoiding (unique names make this clean); mainly valuable for *unlocking*
+      cross-call propagation. `leave` handling is the crux (restrict to leave-free,
+      non-recursive, small bodies first).
+- [ ] **Load resolver** (`loadResolver`, `equalStoreEliminator`, `unusedStoreEliminator`):
+      memory/storage store→load forwarding + redundant/overwritten-store elimination
+      (needs an effect/aliasing model; the pure/effect split helps). Also recovers the
+      CSE-inflated storage-store categories.
+- [ ] **Rematerialization + a stack-aware cost model**: undo CSE (and later LICM) where the
+      live-range extension costs more DUP/SWAP than recomputation saves. (CSE is kept on
+      deliberately; this is its counterpart.)
+- [ ] **Gas measurement** alongside code size: LICM and CSE trade size for gas, so the size
+      metric under-credits them. Add a gas column (execution over the corpus; likely a native
+      `lean_exe` since interpreter execution is minutes).
+- [ ] **Loop-invariant code motion** (`loopInvariantCodeMotion`): gas-oriented; gate on the
+      gas metric + cost model.
+- [ ] If the backend's **stack allocation** is the bottleneck, improve the Yul→EVM
+      DUP/SWAP/POP scheduling.
 
-Each pass: implement → interpreter-validate → measure on the corpus → re-pin baseline →
-commit & push → update this file.
+Each pass: implement → interpreter-validate → measure on the corpus → behaviour-sweep →
+re-pin baseline → commit & push → update this file.
