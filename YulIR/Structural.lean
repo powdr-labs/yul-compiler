@@ -65,7 +65,34 @@ partial def structuralBlock : Block → Block
   | s :: ss => structuralStmt s ++ structuralBlock ss
 end
 
-/-- Structural simplification over a whole program. -/
-def structural (b : Block) : Block := structuralBlock b
+/-- Halting built-ins: a statement `op(args)` after which control never continues. -/
+def Op.isHalting : Op → Bool
+  | .stop | .ret | .revert | .invalid | .selfdestruct => true
+  | _ => false
+
+/-- Does this statement unconditionally end the current straight-line block? -/
+def isTerminator : Stmt → Bool
+  | .«break» | .«continue» | .leave => true
+  | .effect (.builtin op _)         => Op.isHalting op
+  | _                               => false
+
+mutual
+/-- Drop statements after the first terminator in every block (recursively). -/
+partial def dropUnreachableStmt : Stmt → Stmt
+  | .block b           => .block (dropUnreachableBlock b)
+  | .funDef n ps rs b  => .funDef n ps rs (dropUnreachableBlock b)
+  | .cond c b          => .cond c (dropUnreachableBlock b)
+  | .switch c cs d     => .switch c (cs.map (fun p => (p.1, dropUnreachableBlock p.2))) (d.map dropUnreachableBlock)
+  | .loop post body    => .loop (dropUnreachableBlock post) (dropUnreachableBlock body)
+  | s                  => s
+partial def dropUnreachableBlock : Block → Block
+  | []      => []
+  | s :: ss =>
+      let s' := dropUnreachableStmt s
+      if isTerminator s' then [s'] else s' :: dropUnreachableBlock ss
+end
+
+/-- Structural simplification + unreachable-code elimination over a whole program. -/
+def structural (b : Block) : Block := dropUnreachableBlock (structuralBlock b)
 
 end YulIR
