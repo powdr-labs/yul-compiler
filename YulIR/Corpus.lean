@@ -221,6 +221,21 @@ def corpus : List (String × YulSemantics.Block EVM.Op) :=
         let t := mul(i, 2)
         s := add(s, t)
       }
-      sstore(0, s) }) ]
+      sstore(0, s) })
+  -- regression: a store before `break`/`continue` is live via the loop's exit/back edge
+  , ("deadstore/break-live", yul% {
+      let x := 1
+      for { } calldataload(0) { } {
+        if callvalue() { x := 2 break }
+        x := 3
+      }
+      mstore(x, 66) })
+  , ("deadstore/continue-live", yul% {
+      let x := 1
+      for { let i := 0 } lt(i, 4) { i := add(i, 1) } {
+        if eq(i, 2) { x := add(x, 10) continue }
+        x := add(x, 1)
+      }
+      sstore(0, x) }) ]
 
 end YulIR.Corpus
