@@ -83,7 +83,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .lake/build
-          key: project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'scripts/*.lean') }}
+          key: project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'YulIR/**/*.lean', 'scripts/*.lean') }}
           restore-keys: |
             project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
 
@@ -141,6 +141,20 @@ jobs:
             echo "spec_md=stale" >> "$f"; ok=0
           fi
           [ "$ok" = 1 ]
+
+      # Experimental YulIR: (1) every corpus program must agree with its
+      # `toYul ∘ ofYul` round-trip under the interpreter, and (2) the recomputed
+      # code-size / gas report must match the committed YulIR/baseline.txt. The
+      # library (incl. YulIRBench = corpus + checks) is already built by the
+      # `lake build` step via defaultTargets, so this only runs the check.
+      - name: YulIR baseline (round-trip + gas snapshot)
+        run: |
+          f=ci-summary/yulir.txt; : > "$f"
+          if lake env lean YulIR/CheckBaseline.lean; then echo "yulir_baseline=pass" >> "$f"
+          else
+            echo "::error::YulIR baseline drifted or a round-trip broke — run 'lake env lean YulIR/UpdateBaseline.lean' and commit if intended"
+            echo "yulir_baseline=fail" >> "$f"; exit 1
+          fi
 
       # Fetch only the Yul test directories used below. Checked-in baselines
       # make current parser/compiler gaps explicit and detect stale entries.
@@ -656,7 +670,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .lake/build
-          key: project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'scripts/*.lean') }}
+          key: project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'YulIR/**/*.lean', 'scripts/*.lean') }}
           restore-keys: |
             project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
 

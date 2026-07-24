@@ -1,6 +1,6 @@
 name = "yul-evm-compiler"
 version = "0.1.0"
-defaultTargets = ["YulEvmCompiler", "YulParser", "YulEvmCompilerTests"]
+defaultTargets = ["YulEvmCompiler", "YulParser", "YulEvmCompilerTests", "YulIR", "YulIRBench"]
 
 # Source-language semantics: the Yul big-step judgment this compiler is proved against.
 [[require]]
@@ -26,6 +26,14 @@ name = "YulEvmCompilerTests"
 # Experimental optimizer IR (ANF, structured, named): Yul <-> IR translation and passes.
 [[lean_lib]]
 name = "YulIR"
+
+# IR benchmark/baseline tooling (corpus + gas/round-trip checks). Depends on the
+# compiler backend and the differential test harness, so it is kept out of the core
+# `YulIR` library. The side-effecting runners (Update/CheckBaseline) are standalone
+# scripts run with `lake env lean`, not part of this library.
+[[lean_lib]]
+name = "YulIRBench"
+roots = ["YulIR.Check", "YulIR.Corpus"]
 
 [[lean_exe]]
 name = "yulc"
