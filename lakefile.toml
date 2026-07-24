@@ -23,6 +23,10 @@ name = "YulParser"
 [[lean_lib]]
 name = "YulEvmCompilerTests"
 
+# Experimental optimizer IR (ANF, structured, named): Yul <-> IR translation and passes.
+[[lean_lib]]
+name = "YulIR"
+
 [[lean_exe]]
 name = "yulc"
 root = "YulParserMain"
