@@ -83,7 +83,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .lake/build
-          key: project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'scripts/*.lean') }}
+          key: project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'YulIR/**/*.lean', 'scripts/*.lean') }}
           restore-keys: |
             project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
 
@@ -142,6 +142,20 @@ jobs:
           fi
           [ "$ok" = 1 ]
 
+      # Experimental YulIR — translation correctness: every YulIR.Corpus program
+      # must agree with its `toYul ∘ ofYul` round-trip under the interpreter. The
+      # library (incl. YulIRBench = corpus + checks) is already built by `lake build`
+      # via defaultTargets, so this only runs the check. (IR optimization size is
+      # tracked separately below, over Solidity's real yulOptimizerTests corpus.)
+      - name: YulIR round-trip (translation correctness)
+        run: |
+          f=ci-summary/yulir.txt; : > "$f"
+          if lake env lean YulIR/CheckBaseline.lean; then echo "yulir_roundtrip=pass" >> "$f"
+          else
+            echo "::error::a YulIR Yul→IR→Yul round-trip changed observable behaviour"
+            echo "yulir_roundtrip=fail" >> "$f"; exit 1
+          fi
+
       # Fetch only the Yul test directories used below. Checked-in baselines
       # make current parser/compiler gaps explicit and detect stale entries.
       - name: Fetch Solidity Yul tests
@@ -196,6 +210,20 @@ jobs:
                 /tmp/solidity/test/libyul/evmCodeTransform \
                 test/solidity-yul-evm-code-transform-known-compile-failures.txt 2>&1 | tee -a "$f" || status=1
               exit "$status"
+
+          # Experimental YulIR — optimization tracking: compile every yulOptimizerTests
+          # fixture via the current pipeline, the IR round-trip, and the IR optimization
+          # pipeline, and compare code size per optimizer-step category. Each category is
+          # gated only when its source fingerprint matches the committed baseline, so the
+          # daily-moving upstream corpus never false-fails; it fails only on an IR size
+          # regression. Re-pin with `... update ... test/yulir-corpus-size-baseline.txt`.
+          - name: YulIR optimization size (yulOptimizerTests)
+            run: |
+              set -o pipefail; mkdir -p ci-summary
+              lake env lean --run scripts/YulIRCorpus.lean check \
+                /tmp/solidity/test/libyul/yulOptimizerTests \
+                test/yulir-corpus-size-baseline.txt \
+                2>&1 | tee ci-summary/yulir-corpus.txt
 
       - name: Upload CI summary (build)
         if: always()
@@ -656,7 +684,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .lake/build
-          key: project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'scripts/*.lean') }}
+          key: project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'YulIR/**/*.lean', 'scripts/*.lean') }}
           restore-keys: |
             project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
 
