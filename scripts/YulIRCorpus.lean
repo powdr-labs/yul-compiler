@@ -30,7 +30,7 @@ reported.
 
 open System YulParser
 open YulEvmCompilerTests.SolidityCorpus
-open YulEvmCompilerTests.SolcDifferential (compareBytecode)
+open YulEvmCompilerTests.SolcDifferential (compareBytecode measureGas fixtureSeed)
 
 namespace YulIRCorpus
 
@@ -153,6 +153,27 @@ def behaviour (corpusDir : FilePath) : IO UInt32 := do
   IO.println s!"YulIR behaviour: {ok} match current, {mism} MISMATCH, {timeout} step-cap/gas-bound, {uncmp} uncompilable."
   return (if mism == 0 then 0 else 1)
 
+/-- Gas comparison: total EVM execution gas of the IR-optimized code vs the current pipeline,
+summed over every gas-comparable (both halt identically) scenario across the corpus. This is the
+metric solc's optimizer actually targets, and where CSE/inlining pay off even when they cost code
+size. Measurement only — cannot affect correctness. -/
+def gasReport (corpusDir : FilePath) : IO UInt32 := do
+  let fixtures ← blockFixtures corpusDir
+  let mut irTot := 0; let mut curTot := 0; let mut n := 0; let mut wins := 0; let mut losses := 0
+  for (name, source, b) in fixtures do
+    match compileSource source, YulIR.Check.blockBytecode (YulIR.Check.irOptimized b) with
+    | some cur, some irOp =>
+        for (_, res) in measureGas irOp cur (scenarioSeed := fixtureSeed name) do
+          match res with
+          | some (gi, gc) =>
+              irTot := irTot + gi; curTot := curTot + gc; n := n + 1
+              if gi < gc then wins := wins + 1 else if gi > gc then losses := losses + 1
+          | none => pure ()
+    | _, _ => pure ()
+  IO.println s!"YulIR gas over {n} comparable scenarios: ir-opt={irTot}  current={curTot}  Δ={Int.ofNat irTot - Int.ofNat curTot}"
+  IO.println s!"  per-scenario: ir-opt cheaper in {wins}, costlier in {losses}, equal in {n - wins - losses}"
+  return 0
+
 end YulIRCorpus
 
 open YulIRCorpus
@@ -165,6 +186,7 @@ def main (args : List String) : IO UInt32 := do
       return 0
   | ["behaviour", dir] => behaviour dir
   | ["behavior", dir] => behaviour dir
+  | ["gas", dir] => gasReport dir
   | ["update", dir, baseline] => do
       let (m, skipped) ← scan dir
       IO.FS.writeFile baseline (render m)
