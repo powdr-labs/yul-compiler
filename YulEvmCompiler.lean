@@ -37,5 +37,9 @@ import YulEvmCompiler.Optimizer.Implementation.Normalization.HoistFunDefsEquiv
 import YulEvmCompiler.Optimizer.Implementation.Normalization.HoistFunDefsPass
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Normalize
 import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalizeNormalForm
+import YulEvmCompiler.Optimizer.Implementation.Normalization.RenameNumeric
+import YulEvmCompiler.Optimizer.Implementation.Normalization.RenameNumericFresh
+import YulEvmCompiler.Optimizer.Implementation.Normalization.RenameNumericDis
+import YulEvmCompiler.Optimizer.Implementation.Normalization.RenameNumericUnique
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.DecideComplete
 import YulEvmCompiler.Optimizer.Spec.PrePostPass
