@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateRen
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Ren
 /-!
 # Semantic soundness of name disambiguation — the forward simulation
 
@@ -11,7 +11,7 @@ function environment is `RenFunsRel`-related.
 
 This file holds the forward direction: a source `Step` yields a target `Step`
 with `renRes`-renamed result. The relation and environment-transport foundations
-live in `DisambiguateAlpha` (syntax) and `DisambiguateRen` (environments); the
+live in `Alpha` (syntax) and `Ren` (environments); the
 backward direction and the `Run`-level assembly build on top.
 -/
 

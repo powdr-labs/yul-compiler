@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Basic
 import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalForm
 /-!
 # Disambiguation establishes `NormalForm.UniqueNames`
@@ -6,7 +6,7 @@ import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalForm
 The `disambiguate` pass's *syntactic* normal-form obligation: after it, no name
 is declared twice anywhere — `NormalForm.UniqueNames (disambiguate b)`.
 
-Bridges the pass's own `Disambiguated` (proved in `Disambiguate.lean` with the
+Bridges the pass's own `Disambiguated` (proved in `Basic.lean` with the
 collector `declaredBlock`, which lists a block's top-level function names first)
 to the shared spec's `NormalForm.UniqueNames` (collector `declaredNamesStmts`,
 function names inline). The two enumerate the same declared names in a different

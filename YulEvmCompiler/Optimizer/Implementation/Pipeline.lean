@@ -8,6 +8,7 @@ import YulEvmCompiler.Optimizer.Implementation.FreshenCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.HoistCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.StorageForwardResolve
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Normalize
 set_option warningAsError true
 /-!
 # Production optimizer pipeline
@@ -305,5 +306,40 @@ theorem optimizerPipelineObject_correct
         ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
          (out = .halt ∧ HaltedMatch yst s')) :=
   optimizerPipelineObjectRounds_correct hexternal pipelineRounds hcomp hrun
+
+/-! ### Normalization as the first pipeline step
+
+`compileSource` runs the full normalization front-end (`Normalize.normalize` /
+`Normalize.normalizeObject`, see `Normalization/Normalize.lean`) — disambiguate
+every declared name, then hoist every function definition to the root —
+**before** the optimizer pipeline. Its soundness is *conditional* on the
+source-validity facts `Normalize.SourceValid` (assumed, not decided, and owed by
+the disambiguation step alone — hoisting is unconditional; see the module
+docstrings), so the composed guarantee here carries the same hypothesis; the
+pipeline stages after it stay unconditional. -/
+
+/-- **Normalize-then-optimize preserves whole-program behaviour** (block path),
+for a valid source block. -/
+theorem normalize_optimizerPipelineRounds_runEquiv (n : Nat) (b : Block Op)
+    (h : Normalize.SourceValid b) :
+    RunEquivBlock D b
+      ((optimizerPipelineRounds (calls := calls) (creates := creates) n).run
+        (@Normalize.normalize (evmWithExternal calls creates) b)) :=
+  (Normalize.sourceValid_normalize_runEquivBlock h).trans
+    (RunEquivBlock.of_equivBlock
+      ((optimizerPipelineRounds (calls := calls) (creates := creates) n).sound
+        (@Normalize.normalize (evmWithExternal calls creates) b)))
+
+/-- **Normalize-then-optimize preserves whole-program behaviour** (object path,
+at the top code block — the `RunObject`/`RunResolvedObject` interface), for an
+object whose top block is a valid source block. -/
+theorem normalize_optimizerPipelineObjectRounds_topRunEquiv (n : Nat) (o : Object Op)
+    (h : Normalize.SourceValid o.codeBlock) :
+    RunEquivBlock D o.codeBlock
+      (optimizerPipelineObjectRounds (calls := calls) (creates := creates) n
+        (@Normalize.normalizeObject (evmWithExternal calls creates) _ o)).codeBlock :=
+  (Normalize.normalizeObject_topRunEquiv h).trans
+    (RunEquivBlock.of_equivBlock
+      (optimizerPipelineObjectRounds_topEquiv n (@Normalize.normalizeObject (evmWithExternal calls creates) _ o)))
 
 end YulEvmCompiler.Optimizer
