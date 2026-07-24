@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.RenameNumeric
+import YulEvmCompiler.Optimizer.Implementation.Normalization.RenameNumericFresh
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Pass
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Decide
 import YulEvmCompiler.Optimizer.Spec.GlobalPass
@@ -78,26 +79,10 @@ open YulEvmCompiler.Optimizer.Normalize
 variable {Op : Type}
 variable {D : Dialect} [DecidableEq D.Value]
 
-/-! ## Milestone 1 — fresh-name foundation -/
+/-! ## Milestone 1 — fresh-name foundation
 
-/-- The numeric-suffix candidates are injective in the index (so `≥ length+1`
-of them are distinct, which drives the pigeonhole for `freshName`). Reduces to
-injectivity of decimal `toString` on `Nat` by cancelling the common prefix. -/
-theorem freshCand_inj {base : Ident} {i j : Nat}
-    (h : base ++ "_" ++ toString i = base ++ "_" ++ toString j) : i = j := by
-  -- `base ++ "_" ++ toString i` parses as `(base ++ "_") ++ toString i`.
-  have h2 := (String.append_right_inj (base ++ "_")).mp h
-  -- `toString` is injective on `Nat`; decimal-representation leaf.
-  sorry
-
-/-- **A generated fresh name is not in the avoidance set.** With
-`fuel = avoid.length + 1` the bounded search always finds a free candidate,
-because the `avoid.length + 1` distinct candidates cannot all lie in `avoid`. -/
-theorem freshName_not_mem (avoid : List Ident) (base : Ident) :
-    freshName avoid base ∉ avoid := by
-  -- freshName = freshAux base avoid (avoid.length+1) 1; induction on fuel with the
-  -- pigeonhole "some candidate in [1, avoid.length+2) is fresh" (uses freshCand_inj).
-  sorry
+`natToString_inj`, `freshCand_inj`, and `freshName_not_mem` are proved
+sorry-free in `RenameNumericFresh.lean` (imported above). -/
 
 /-- Each `assignName` commits an output name that is new to `taken`. -/
 theorem assignName_fresh (orig taken : List Ident) (x : Ident) :
