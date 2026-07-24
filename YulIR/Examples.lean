@@ -56,4 +56,33 @@ def demo (name : String) (p : YulSemantics.Block YulSemantics.EVM.Op) : IO Unit 
 #eval demo "nested / ANF" nestedProg
 #eval demo "function + switch + if" mixedProg
 
+/-- A full object: a constructor `code` block, a nested `C_deployed` runtime sub-object,
+and a data segment — the standard Yul deployment layout. -/
+def objProg := yulObject% object "C" {
+  code {
+    let sz := datasize("C_deployed")
+    datacopy(0, dataoffset("C_deployed"), sz)
+    return(0, sz)
+  }
+  object "C_deployed" {
+    code {
+      let x := calldataload(0)
+      sstore(0, add(x, 1))
+      stop()
+    }
+    data "note" "hello"
+  }
+}
+
+/-- Show a Yul object and its IR-object round-trip. -/
+def demoObj (name : String) (o : YulSemantics.Object YulSemantics.EVM.Op) : IO Unit := do
+  IO.println s!"══════════ {name} ══════════"
+  IO.println "── source Yul object ──"
+  IO.println (EVM.printObject o)
+  IO.println "── IR object re-emitted (ofYulObject ▸ toYulObject) ──"
+  IO.println (EVM.printObject (YulIR.toYulObject (YulIR.ofYulObject o)))
+  IO.println ""
+
+#eval demoObj "object C (constructor + runtime + data)" objProg
+
 end YulIR.Examples
