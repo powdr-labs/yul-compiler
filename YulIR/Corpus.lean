@@ -203,6 +203,24 @@ def corpus : List (String × YulSemantics.Block EVM.Op) :=
       sstore(4, or(x, 0))
       sstore(5, xor(x, x))
       sstore(6, div(x, 1))
-      sstore(7, shl(0, x)) }) ]
+      sstore(7, shl(0, x)) })
+  -- dead-store (unused-assignment) targets
+  , ("deadstore/reassign", yul% {
+      let x := calldataload(0)
+      x := add(x, 1)
+      x := calldataload(32)
+      sstore(0, x) })
+  , ("deadstore/branch", yul% {
+      let x := calldataload(0)
+      if calldataload(32) { x := 5 }
+      x := 9
+      sstore(0, x) })
+  , ("deadstore/loop", yul% {
+      let s := 0
+      for { let i := 0 } lt(i, 3) { i := add(i, 1) } {
+        let t := mul(i, 2)
+        s := add(s, t)
+      }
+      sstore(0, s) }) ]
 
 end YulIR.Corpus

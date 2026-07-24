@@ -88,4 +88,25 @@ end
 /-- Every identifier in the program (used to choose fresh, collision-free names). -/
 def allIdents (b : Block) : List Ident := blockIdents b
 
+mutual
+/-- Variables *read* by a statement (its rhs/condition operands only — not assign targets or
+binders). This is the liveness "gen" set. -/
+partial def stmtReads : Stmt → List Ident
+  | .letD _ rhs         => rhs.vars
+  | .assign _ rhs       => rhs.vars
+  | .effect rhs         => rhs.vars
+  | .cond c b           => c.var?.toList ++ blockReads b
+  | .switch c cs d      => c.var?.toList ++ cs.flatMap (fun p => blockReads p.2) ++ (d.map blockReads).getD []
+  | .loop post body     => blockReads post ++ blockReads body
+  | .block b            => blockReads b
+  | .funDef _ _ _ b     => blockReads b
+  | _                   => []
+partial def blockReads : Block → List Ident
+  | []      => []
+  | s :: r  => stmtReads s ++ blockReads r
+end
+
+/-- Variables read anywhere in a block (liveness gen set). -/
+def readVars (b : Block) : List Ident := blockReads b
+
 end YulIR
