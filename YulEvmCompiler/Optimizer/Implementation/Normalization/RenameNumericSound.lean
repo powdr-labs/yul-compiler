@@ -93,18 +93,12 @@ theorem assignName_fresh (orig taken : List Ident) (x : Ident) :
     exact fun hmem => freshName_not_mem (taken ++ orig) x (List.mem_append_left orig hmem)
   · rw [if_neg hx]; exact hx
 
-/-! ## `UniqueNames` postcondition -/
+/-! ## `UniqueNames` postcondition
 
-/-- **`rename` produces globally-unique declared names** on valid source input.
-Each declaration commits a name new to the monotone `taken` set; `SourceValid`'s
-`WellFormed` half rules out the duplicate-`funDef` inputs on which the
-name-keyed function substitution would merge two definitions. -/
-theorem rename_uniqueNames {b : Block Op} (h : SourceValid b) :
-    NormalForm.UniqueNames (rename b) := by
-  -- Invariant: `declaredNames (output) = taken_after \ taken_before`, output names
-  -- pairwise-distinct and disjoint from `taken_before`, threaded through the
-  -- mutual traversal (renStmt/renStmts/renScope/renCases/renDflt).
-  sorry
+Proved sorry-free as `rename_uniqueNames'` in `RenameNumericUnique.lean` (under
+the `WellFormed` half of `SourceValid`, which is exactly what it needs — see the
+precondition note above). Not imported here to keep this module's import graph
+acyclic; the final assembly composes it alongside the theorems below. -/
 
 /-! ## Milestone 2 — (A) `SourceValid` preservation -/
 

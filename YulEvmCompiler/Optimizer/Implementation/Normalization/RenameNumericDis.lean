@@ -154,7 +154,7 @@ theorem not_mem_keys_of_spec {l : List (Ident × Ident)} {P : Ident → Prop}
   exact hx (hpk ▸ spec p hp)
 
 /-- `assignNames` unfolded one step (head assignment, then the tail batch). -/
-theorem assignNames_cons (orig taken : List Ident) (x : Ident) (xs : List Ident)
+theorem assignNames_cons_eq (orig taken : List Ident) (x : Ident) (xs : List Ident)
     {x' : Ident} {sub : List (Ident × Ident)} {t1 : List Ident}
     (h : assignName orig taken x = (x', sub, t1)) :
     assignNames orig (x :: xs) taken =
@@ -169,7 +169,7 @@ theorem assignNames_length (orig : List Ident) :
   | [], _ => rfl
   | x :: xs, taken => by
       rcases h : assignName orig taken x with ⟨x', sub, t1⟩
-      rw [assignNames_cons orig taken x xs h]
+      rw [assignNames_cons_eq orig taken x xs h]
       simp [assignNames_length orig xs t1]
 
 /-- `taken` only grows across a batch. -/
@@ -179,7 +179,7 @@ theorem assignNames_taken_mono (orig : List Ident) :
   | [], _, _, hy => hy
   | x :: xs, taken, y, hy => by
       rcases h : assignName orig taken x with ⟨x', sub, t1⟩
-      rw [assignNames_cons orig taken x xs h]
+      rw [assignNames_cons_eq orig taken x xs h]
       refine assignNames_taken_mono orig xs t1 y ?_
       have ht1 : t1 = x' :: taken := by
         rcases assignName_cases orig taken x with ⟨_, he⟩ | ⟨_, he⟩ <;>
@@ -196,7 +196,7 @@ theorem assignNames_sub_spec (orig : List Ident) :
   | [], _, p, hp => by simp [assignNames] at hp
   | x :: xs, taken, p, hp => by
       rcases h : assignName orig taken x with ⟨x', sub, t1⟩
-      rw [assignNames_cons orig taken x xs h] at hp
+      rw [assignNames_cons_eq orig taken x xs h] at hp
       simp only [List.mem_append] at hp
       rcases hp with hp | hp
       · rcases assignName_cases orig taken x with ⟨_, he⟩ | ⟨hx, he⟩ <;>
@@ -249,7 +249,7 @@ theorem lookupAligned_batch {orig : List Ident} :
         have := assignName_not_taken orig taken x
         rw [h] at this
         exact this
-      rw [assignNames_cons orig taken x xs h]
+      rw [assignNames_cons_eq orig taken x xs h]
       simp only [List.zip_cons_cons, List.cons_append, List.append_assoc]
       -- tail IH at the extended committed set
       have hSB1 : SubstBelow t1 sv :=
