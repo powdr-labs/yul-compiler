@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Normalize
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.DecideComplete
 import Mathlib.Data.Multiset.Basic
 import Mathlib.Data.Multiset.AddSub
 import Mathlib.Data.Multiset.OrderedMonoid
@@ -252,12 +253,28 @@ theorem uniqueNames_hoistBlock {b : Block D.Op} (h : NormalForm.UniqueNames b) :
   · rw [if_pos hb]; exact uniqueNames_liftFunDefs h
   · rw [if_neg hb]; exact h
 
-/-- **`normalize` establishes the canonical `UniqueNames` normal form.** For a
-valid source block, no name is declared twice after normalization: disambiguation
-makes names distinct and hoisting preserves that. -/
-theorem normalize_uniqueNames {b : Block D.Op} (h : SourceValid b) :
+/-- **`normalize` establishes the canonical `UniqueNames` normal form.** When the
+decidable guard fires (`sourceValidB b = true`, which holds for every valid source
+block — see `Disambiguate/Decide.lean`), no name is declared twice after
+normalization: disambiguation makes names distinct and hoisting preserves that.
+Keyed on the decidable guard rather than `SourceValid` so a downstream consumer
+discharges it from the same `Bool` the pass itself guards on. -/
+theorem normalize_uniqueNames {b : Block D.Op} (h : sourceValidB b = true) :
+    NormalForm.UniqueNames (normalize b) := by
+  have hsv := sourceValidB_sound h
+  unfold normalize disambiguateGuarded guardedBlock
+  rw [if_pos h]
+  exact uniqueNames_hoistBlock (disambiguate_uniqueNames b hsv.2.1)
+
+/-- **`normalize` as a clean precondition→postcondition pass.** A valid source
+block — `SourceValid`, the disambiguator's few requirements — is normalized to the
+canonical `UniqueNames` normal form. Decider completeness (`sourceValidB_complete`)
+discharges the runtime guard, so the precondition is the semantic `SourceValid`,
+not the `Bool`. This is the pre/postcondition shape the pipeline threads:
+`SourceValid` in, normal form out. -/
+theorem normalize_uniqueNames_of_sourceValid {b : Block D.Op} (h : SourceValid b) :
     NormalForm.UniqueNames (normalize b) :=
-  uniqueNames_hoistBlock (disambiguate_uniqueNames b h.2.1)
+  normalize_uniqueNames (sourceValidB_complete h)
 
 /-! ### Well-scopedness: the canonical predicate implies the hoist pass's
 
