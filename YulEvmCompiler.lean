@@ -40,3 +40,5 @@ import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateSound
 import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateSoundBwd
 import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateRun
 import YulEvmCompiler.Optimizer.Implementation.Normalization.DisambiguateNormalForm
+import YulEvmCompiler.Optimizer.Implementation.Normalization.HoistFunDefsEquiv
+import YulEvmCompiler.Optimizer.Implementation.Normalization.HoistFunDefsPass
