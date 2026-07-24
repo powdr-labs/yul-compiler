@@ -74,9 +74,14 @@ def scenarios : List (String × EvmState) :=
   , ("cd=42*", withCalldata (List.replicate 64 (UInt8.ofNat 42)))
   , ("cd=one", withCalldata (List.replicate 31 0 ++ [1])) ]
 
-/-- The IR round-trip of a program. -/
+/-- The IR round-trip of a program, **without** IR optimizations. -/
 def irRoundTrip (b : YulSemantics.Block EVM.Op) : YulSemantics.Block EVM.Op :=
   YulIR.toYul (YulIR.ofYul b)
+
+/-- The IR round-trip **with** the IR optimization pipeline applied. As passes land in
+`YulIR.optimize`, this diverges from `irRoundTrip`. -/
+def irOptimized (b : YulSemantics.Block EVM.Op) : YulSemantics.Block EVM.Op :=
+  YulIR.toYul (YulIR.optimize (YulIR.ofYul b))
 
 /-- Does the program agree with its IR round-trip under the interpreter, on every
 scenario (same status and, when `ok`, identical fingerprint)? -/
@@ -101,6 +106,9 @@ def blockBytecode (b : YulSemantics.Block EVM.Op) : Option ByteArray :=
   (YulEvmCompiler.compile b
     <|> YulEvmCompiler.compile (YulEvmCompiler.Optimizer.stackLayoutBlock b)).map
       YulEvmCompiler.assemble
+
+/-- Compiled code size in bytes, or `none` if the backend failed. -/
+def codeSizeOf (b : YulSemantics.Block EVM.Op) : Option Nat := (blockBytecode b).map (·.size)
 
 /-- Sum IR and current execution gas over gas-comparable scenarios; returns the
 comparable-scenario count and the two totals. -/
