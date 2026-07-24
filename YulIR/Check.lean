@@ -88,6 +88,11 @@ scenario (same status and, when `ok`, identical fingerprint)? -/
 def roundTripPasses (prog : YulSemantics.Block EVM.Op) : Bool :=
   scenarios.all (fun (_, st0) => runFP prog st0 == runFP (irRoundTrip prog) st0)
 
+/-- Does the program agree with its **optimized** IR round-trip under the interpreter, on
+every scenario? This validates `YulIR.optimize` (not just the translation). -/
+def optimizePasses (prog : YulSemantics.Block EVM.Op) : Bool :=
+  scenarios.all (fun (_, st0) => runFP prog st0 == runFP (irOptimized prog) st0)
+
 /-- Interpreter status of the source program on the `init` scenario. -/
 def sourceStatus (prog : YulSemantics.Block EVM.Op) : String :=
   match Interp.run EVM.exec interpFuel prog EvmState.init with
@@ -150,5 +155,9 @@ def fullReport (corpus : List (String × YulSemantics.Block EVM.Op)) : String :=
 /-- The names of programs whose interpreter round-trip fails (a hard error). -/
 def roundTripFailures (corpus : List (String × YulSemantics.Block EVM.Op)) : List String :=
   (corpus.filter (fun np => !roundTripPasses np.2)).map (·.1)
+
+/-- The names of programs whose optimized IR round-trip changes behavior (a hard error). -/
+def optimizeFailures (corpus : List (String × YulSemantics.Block EVM.Op)) : List String :=
+  (corpus.filter (fun np => !optimizePasses np.2)).map (·.1)
 
 end YulIR.Check

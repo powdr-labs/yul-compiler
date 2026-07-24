@@ -1,4 +1,5 @@
 import YulIR.Object
+import YulIR.Simplify
 
 /-!
 # YulIR.Optimize — the IR optimization pipeline (hook)
@@ -15,8 +16,9 @@ translation quality) separately from translation overhead (`irNoOpt` vs `current
 
 namespace YulIR
 
-/-- The IR optimization pipeline on a top-level block. Identity until passes land. -/
-def optimize (b : Block) : Block := b
+/-- The IR optimization pipeline on a top-level block. Currently: local expression
+simplification (constant folding + algebraic identities). -/
+def optimize (b : Block) : Block := simplifyBlock b
 
 /-- The IR optimization pipeline on an object (optimizes every code block). -/
 partial def optimizeObject : Object → Object

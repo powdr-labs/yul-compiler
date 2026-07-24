@@ -188,6 +188,21 @@ def corpus : List (String × YulSemantics.Block EVM.Op) :=
       sstore(0, 1) })
   , ("halt/stop", yul% {
       sstore(0, 1)
-      stop() }) ]
+      stop() })
+  -- simplification targets: constant folding + algebraic identities
+  , ("simplify/const-fold", yul% {
+      sstore(0, add(mul(3, 4), 5))
+      sstore(1, shl(2, 1))
+      sstore(2, and(255, 4096)) })
+  , ("simplify/identities", yul% {
+      let x := calldataload(0)
+      sstore(0, add(x, 0))
+      sstore(1, mul(x, 1))
+      sstore(2, mul(x, 0))
+      sstore(3, sub(x, x))
+      sstore(4, or(x, 0))
+      sstore(5, xor(x, x))
+      sstore(6, div(x, 1))
+      sstore(7, shl(0, x)) }) ]
 
 end YulIR.Corpus

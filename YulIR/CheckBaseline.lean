@@ -19,8 +19,10 @@ Optimization effectiveness is tracked over Solidity's real `yulOptimizerTests` c
 open YulIR
 
 #eval do
-  let failures := Check.roundTripFailures Corpus.corpus
-  if failures.isEmpty then
-    IO.println s!"YulIR round-trip OK: {Corpus.corpus.length} programs agree with their IR round-trip."
-  else
-    throw (IO.userError s!"semantic round-trip FAILED for: {failures}")
+  let rtFail := Check.roundTripFailures Corpus.corpus
+  unless rtFail.isEmpty do
+    throw (IO.userError s!"Yul→IR→Yul round-trip changed behaviour for: {rtFail}")
+  let optFail := Check.optimizeFailures Corpus.corpus
+  unless optFail.isEmpty do
+    throw (IO.userError s!"YulIR.optimize changed behaviour for: {optFail}")
+  IO.println s!"YulIR OK: {Corpus.corpus.length} programs — round-trip and optimize both behaviour-preserving."
