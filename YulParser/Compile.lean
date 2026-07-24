@@ -120,11 +120,13 @@ apply. Hint builtins (`memoryguard`) are desugared for ordinary candidates and
 retained as reservation authority for the final spilling fallback. Provably
 dead `linkersymbol` bindings are dropped before either path.
 
-Both block- and object-rooted programs first **disambiguate** every declared
-name (`Normalize.disambiguate`, semantics-preserving for valid source programs
-— `disambiguate_optimizerPipelineRounds_runEquiv`; its `SourceValid`
-hypotheses are assumed of the input, see `Normalization/Disambiguate/Pass.lean`
-for the limitation), then run the verified production pipeline:
+Both block- and object-rooted programs first run the full **normalization**
+front-end (`Normalize.normalize`: disambiguate every declared name, then hoist
+every function definition to the root — semantics-preserving for valid source
+programs, `normalize_optimizerPipelineRounds_runEquiv`; its `SourceValid`
+hypotheses are assumed of the input, see `Normalization/Normalize.lean` and
+`Normalization/Disambiguate/Pass.lean` for the limitation), then run the
+verified production pipeline:
 simplification and propagation, bounded helper/call inlining with the
 normalization needed to expose it, then dead pure/result-region elimination.
 The object path applies the pipeline's resolution-stable mode to every code
@@ -133,7 +135,10 @@ def compileSource (source : String) : Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
       let raw := pruneLinkerBlock block
-      let b := YulEvmCompiler.Optimizer.Normalize.disambiguate (raw.map desugarStmt)
+      let b := YulEvmCompiler.Optimizer.Normalize.normalize
+        (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
+          YulSemantics.EVM.ExternalCreates.none)
+        (raw.map desugarStmt)
       -- Preserve bytecode stability for programs the full pipeline can already
       -- compile. On stack pressure, first retry its verified smart layout;
       -- then retry the shallower one-round pipeline, with and without smart
@@ -158,7 +163,10 @@ def compileSource (source : String) : Option ByteArray := do
       return YulEvmCompiler.assemble (← asm)
   | some (.object o) =>
       let raw := pruneLinkerObjectTree o
-      let o := YulEvmCompiler.Optimizer.Normalize.disambiguateObject (desugarObject raw)
+      let o := YulEvmCompiler.Optimizer.Normalize.normalizeObject
+        (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
+          YulSemantics.EVM.ExternalCreates.none)
+        (desugarObject raw)
       let optimized := YulEvmCompiler.Optimizer.optimizerPipelineObject
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none) o

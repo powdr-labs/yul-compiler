@@ -35,3 +35,5 @@ import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalForm
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate
 import YulEvmCompiler.Optimizer.Implementation.Normalization.HoistFunDefsEquiv
 import YulEvmCompiler.Optimizer.Implementation.Normalization.HoistFunDefsPass
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Normalize
+import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalizeNormalForm

@@ -56,15 +56,37 @@ namespaces, which `NormalForm` deliberately does not import:
 - `FunctionsHoisted` → **landed**: `HoistFunDefsPass.lean` (`liftFunDefs` as the
   guarded `hoistFunDefsPass : GlobalPass`)
 - `ForInitEmpty` → `hoist-for-init` (`ForInitOKs`, a *conditional* variant)
-- `WellScoped` → `normalization-hoist-funcs` (`Equiv.lean`, functions only)
+- `WellScoped` → `normalization-hoist-funcs` (`HoistFunDefsEquiv.lean`, functions
+  only — the *function-call-scoping fragment* of `NormalForm.WellScoped`)
 
-When those land, the follow-up is: (a) prove each pass establishes its
-`NormalForm` field, adding a `↔ isANFStmts = true`-style bridge to the Bool
-deciders; (b) unify the duplicated name/scope collectors. Two `NormalForm`
-choices are **stronger** than today's passes on purpose — `ForInitEmpty` demands
-a literally empty init (not "empty when simple"), and `IsANF` recurses into
-function bodies (the ANF pass leaves them un-normalized). They are the target to
-raise the passes to, not a description of current behavior.
+## `Normalize.lean` — the combined front-end (what the pipeline runs first)
+
+`Normalize.normalize` / `normalizeObject` chain the landed steps in
+precondition order — **disambiguate, then hoist functions** — and are what
+`compileSource`/`Pipeline.lean` run *before* the optimizer. Soundness is
+conditional on the disambiguator's assumed `SourceValid` (hoisting adds nothing):
+`sourceValid_normalize_runEquivBlock` / `normalizeObject_objEquiv`. Running
+disambiguation first is what makes the guarded hoister actually fire (unique,
+well-scoped input).
+
+`NormalizeNormalForm.lean` reconciles the duplicated notions against the
+canonical spec and states the front-end's postcondition:
+`uniqueNames_uniqueFunNames` (canonical `UniqueNames` ⇒ hoist's `UniqueFunNames`),
+`wellScoped_callsScoped` (canonical `WellScoped` ⇒ hoist's call-scoping
+`WellScoped`, with `funNamesTop_eq_funDefNames`), and `normalize_uniqueNames`
+(the front-end establishes `NormalForm.UniqueNames`).
+
+When the remaining passes land, the follow-up is: (a) prove each pass establishes
+its `NormalForm` field, adding a `↔ isANFStmts = true`-style bridge to the Bool
+deciders, and prove `normalize` establishes `FunctionsHoisted` (needs
+`Bool`-completeness of `wellScopedB` plus disambiguation preserving
+`NormalForm.WellScoped`); (b) finish unifying the duplicated name/scope
+collectors (the uniqueness and well-scopedness bridges above are the first
+installments). Two `NormalForm` choices are **stronger** than today's passes on
+purpose — `ForInitEmpty` demands a literally empty init (not "empty when
+simple"), and `IsANF` recurses into function bodies (the ANF pass leaves them
+un-normalized). They are the target to raise the passes to, not a description of
+current behavior.
 
 ## Style notes
 

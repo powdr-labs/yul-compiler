@@ -1,5 +1,6 @@
 import YulEvmCompiler.Correctness
 import YulEvmCompiler.ObjectCompile
+import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalizeNormalForm
 import YulParser
 
 /-!
@@ -84,14 +85,22 @@ modulo only the standard classical axioms. -/
 #guard_msgs in
 #print axioms YulEvmCompiler.Optimizer.Normalize.disambiguateObject_objEquiv
 
-/-- info: 'YulEvmCompiler.Optimizer.disambiguate_optimizerPipelineRounds_runEquiv' depends on axioms: [propext,
- Classical.choice,
- Quot.sound] -/
+/-- info: 'YulEvmCompiler.Optimizer.Normalize.normalizeObject_objEquiv' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
-#print axioms YulEvmCompiler.Optimizer.disambiguate_optimizerPipelineRounds_runEquiv
+#print axioms YulEvmCompiler.Optimizer.Normalize.normalizeObject_objEquiv
 
-/-- info: 'YulEvmCompiler.Optimizer.disambiguate_optimizerPipelineObjectRounds_topRunEquiv' depends on axioms: [propext,
+/-- info: 'YulEvmCompiler.Optimizer.Normalize.normalize_uniqueNames' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms YulEvmCompiler.Optimizer.Normalize.normalize_uniqueNames
+
+/-- info: 'YulEvmCompiler.Optimizer.normalize_optimizerPipelineRounds_runEquiv' depends on axioms: [propext,
  Classical.choice,
  Quot.sound] -/
 #guard_msgs in
-#print axioms YulEvmCompiler.Optimizer.disambiguate_optimizerPipelineObjectRounds_topRunEquiv
+#print axioms YulEvmCompiler.Optimizer.normalize_optimizerPipelineRounds_runEquiv
+
+/-- info: 'YulEvmCompiler.Optimizer.normalize_optimizerPipelineObjectRounds_topRunEquiv' depends on axioms: [propext,
+ Classical.choice,
+ Quot.sound] -/
+#guard_msgs in
+#print axioms YulEvmCompiler.Optimizer.normalize_optimizerPipelineObjectRounds_topRunEquiv
