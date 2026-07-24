@@ -252,12 +252,18 @@ theorem uniqueNames_hoistBlock {b : Block D.Op} (h : NormalForm.UniqueNames b) :
   · rw [if_pos hb]; exact uniqueNames_liftFunDefs h
   · rw [if_neg hb]; exact h
 
-/-- **`normalize` establishes the canonical `UniqueNames` normal form.** For a
-valid source block, no name is declared twice after normalization: disambiguation
-makes names distinct and hoisting preserves that. -/
-theorem normalize_uniqueNames {b : Block D.Op} (h : SourceValid b) :
-    NormalForm.UniqueNames (normalize b) :=
-  uniqueNames_hoistBlock (disambiguate_uniqueNames b h.2.1)
+/-- **`normalize` establishes the canonical `UniqueNames` normal form.** When the
+decidable guard fires (`sourceValidB b = true`, which holds for every valid source
+block — see `Disambiguate/Decide.lean`), no name is declared twice after
+normalization: disambiguation makes names distinct and hoisting preserves that.
+Keyed on the decidable guard rather than `SourceValid` so a downstream consumer
+discharges it from the same `Bool` the pass itself guards on. -/
+theorem normalize_uniqueNames {b : Block D.Op} (h : sourceValidB b = true) :
+    NormalForm.UniqueNames (normalize b) := by
+  have hsv := sourceValidB_sound h
+  unfold normalize disambiguateGuarded guardedBlock
+  rw [if_pos h]
+  exact uniqueNames_hoistBlock (disambiguate_uniqueNames b hsv.2.1)
 
 /-! ### Well-scopedness: the canonical predicate implies the hoist pass's
 
