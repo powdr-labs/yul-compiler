@@ -147,8 +147,7 @@ theorem structural_equiv (funs : Funs) (b : Block n) :
 /-- **Whole-program soundness of `structural`**: applying `structural` to `main` and every function
 body yields a program with identical runs. -/
 theorem structural_program_run' (p : Program) {st st' o} :
-    Run p st st' o ↔
-      Run ⟨mapBodiesFuns structural p.functions, p.mainSlots, structural p.main⟩ st st' o :=
+    Run p st st' o ↔ Run ⟨mapBodiesFuns structural p.functions⟩ st st' o :=
   run_mapBodies structural (fun F _ b => structural_equiv F b)
 
 end YulIR.FinFrame.Sem

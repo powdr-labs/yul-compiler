@@ -172,18 +172,11 @@ theorem structuralBlock_equiv (funs : Funs) (b : Block n) :
 
 /-! ### Whole-program lifting -/
 
-/-- Structural simplification of `main` alone preserves the whole-program run. -/
-theorem structuralBlock_run (funs : Funs) (main : Block m) {st st' o} :
-    Run ⟨funs, m, structuralBlock main⟩ st st' o ↔ Run ⟨funs, m, main⟩ st st' o :=
-  Run.of_equivMain (structuralBlock_equiv funs main)
-
-/-- **Whole-program soundness of structural simplification**: applying `structuralBlock` to `main`
-*and every function body* yields a program with identical runs. This composes the whole-pass block
-result with the function-table congruence (`run_mapBodies`) — the frame analogue of lifting a
-body-local Yul rewrite through the `funDef` congruence. -/
+/-- **Whole-program soundness of structural simplification**: applying `structuralBlock` to every
+function body in the table (the entry point `none` included) yields a program with identical runs —
+one `run_mapBodies` over the unified function table. -/
 theorem structural_program_run (p : Program) {st st' o} :
-    Run p st st' o ↔
-      Run ⟨mapBodiesFuns structuralBlock p.functions, p.mainSlots, structuralBlock p.main⟩ st st' o :=
+    Run p st st' o ↔ Run ⟨mapBodiesFuns structuralBlock p.functions⟩ st st' o :=
   run_mapBodies structuralBlock (fun F _ b => structuralBlock_equiv F b)
 
 end YulIR.FinFrame.Sem

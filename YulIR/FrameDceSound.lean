@@ -330,35 +330,34 @@ theorem dce_fwd {funs : Funs} {n} {σ : Store n} {st} {code : Code n} {res}
         (fun i hi => hin i (List.mem_append_left _ hi))
       exact ⟨σ₂p, Step.loopPostStop hb2 hob hp2 hne, hagp⟩
 
-/-! ### Whole-program lifting (main block) -/
+/-! ### Forward soundness of a `main`-style entry body -/
 
-/-- One dead-code pass over the `main` block preserves the program run (forward). The local store
-`σ'` is discarded by `Run`, and the initial store `fun _ => 0` agrees with itself everywhere, so the
-simulation applies with the trivial agreement. -/
-theorem dceBlock_run_fwd {funs : Funs} {m} {b : Block m} {st st' o}
-    (h : Run ⟨funs, m, b⟩ st st' o) :
-    Run ⟨funs, m, dceBlock (blockReads b) [] b⟩ st st' o := by
-  obtain ⟨σ', hexec⟩ := h
+/-- One dead-code pass over an entry body (run from a zero-initialised frame, `prot = []`) is
+forward-simulated: the local store `fun _ => 0` agrees with itself everywhere, so `dce_fwd` applies
+with the trivial agreement. Stated at the `ExecBlock` level (the store `σ''` is discarded, exactly
+the observation `Run` keeps). -/
+theorem dceBlock_exec_fwd {funs : Funs} {m} {b : Block m} {σ' st st' o}
+    (hexec : ExecBlock funs (fun _ => 0) st b σ' st' o) :
+    ∃ σ'', ExecBlock funs (fun _ => 0) st (dceBlock (blockReads b) [] b) σ'' st' o := by
   obtain ⟨σ₂', hstep, _⟩ := dce_fwd hexec (blockReads b) [] (fun _ => 0) (fun _ _ => rfl)
     (by intro i hi; rw [List.append_nil]; exact hi)
   exact ⟨σ₂', hstep⟩
 
-/-- The bounded fixpoint `deadCode [] fuel` over `main` preserves the program run (forward). -/
-theorem deadCode_run_fwd {funs : Funs} {m} (fuel : Nat) : ∀ {b : Block m} {st st' o},
-    Run ⟨funs, m, b⟩ st st' o → Run ⟨funs, m, deadCode [] fuel b⟩ st st' o := by
+/-- The bounded fixpoint `deadCode [] fuel` over an entry body is forward-simulated. This is the
+`deadCode` soundness content for a `main`-style body; lifting it to a whole-program `Run ↔` over the
+unified function table additionally needs the call-graph store-agreement coupling (future work). -/
+theorem deadCode_exec_fwd {funs : Funs} {m} (fuel : Nat) : ∀ {b : Block m} {σ' st st' o},
+    ExecBlock funs (fun _ => 0) st b σ' st' o →
+      ∃ σ'', ExecBlock funs (fun _ => 0) st (deadCode [] fuel b) σ'' st' o := by
   induction fuel with
-  | zero => intro b st st' o h; simpa [deadCode] using h
+  | zero => intro b σ' st st' o h; exact ⟨σ', by simpa [deadCode] using h⟩
   | succ fuel ih =>
-      intro b st st' o h
+      intro b σ' st st' o h
       rw [deadCode]
       by_cases hfix : (blockCount (dceBlock (blockReads b) [] b) == blockCount b) = true
-      · rw [if_pos hfix]; exact dceBlock_run_fwd h
-      · rw [if_neg hfix]; exact ih (dceBlock_run_fwd h)
-
-/-- **Forward soundness of `deadCode` on `main`**: every behaviour of the source program is a
-behaviour of the program with dead code eliminated from `main` (function bodies unchanged). -/
-theorem deadCode_main_run_fwd (p : Program) (fuel : Nat) {st st' o} (h : Run p st st' o) :
-    Run ⟨p.functions, p.mainSlots, deadCode [] fuel p.main⟩ st st' o :=
-  deadCode_run_fwd fuel h
+      · rw [if_pos hfix]; exact dceBlock_exec_fwd h
+      · rw [if_neg hfix]
+        obtain ⟨σ'', h''⟩ := dceBlock_exec_fwd h
+        exact ih h''
 
 end YulIR.FinFrame.Sem

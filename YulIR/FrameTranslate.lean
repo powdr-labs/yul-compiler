@@ -73,9 +73,9 @@ def ofNamedFunction (fn : YulIR.Function) : Function :=
 /-- A named program → a frame `Program`. -/
 def frameOfNamed (p : YulIR.Program) : Program :=
   let ⟨k, _, _, mainB⟩ := frameBody [] [] p.main
-  { functions := Std.HashMap.ofList (p.funList.map (fun q => (q.1, ofNamedFunction q.2)))
-    mainSlots := k
-    main      := mainB }
+  let mainFn : Function := { nslots := k, params := [], rets := [], body := mainB }
+  { functions := Std.HashMap.ofList
+      ((none, mainFn) :: p.funList.map (fun q => (some q.1, ofNamedFunction q.2))) }
 
 /-- Translate a Yul block into the frame IR. -/
 def ofYul (b : YulSemantics.Block Op) : Program := frameOfNamed (YulIR.ofYul b)
@@ -125,8 +125,10 @@ def toNamedFunction (fn : Function) : YulIR.Function :=
 
 /-- Erase a frame program to a named program (all `main` slots declared by a preamble). -/
 def namedOfFrame (p : Program) : YulIR.Program :=
-  { functions := Std.HashMap.ofList (p.functions.toList.map (fun q => (q.1, toNamedFunction q.2)))
-    main      := slotPreamble (List.finRange p.mainSlots) ++ toNamedBlock p.main }
+  let mainFn : Function := (p.main?).getD ⟨0, [], [], []⟩
+  { functions := Std.HashMap.ofList
+      (p.functions.toList.filterMap (fun q => q.1.map (fun name => (name, toNamedFunction q.2))))
+    main      := slotPreamble (List.finRange mainFn.nslots) ++ toNamedBlock mainFn.body }
 
 /-- Translate the frame IR back to Yul. -/
 def toYul (p : Program) : YulSemantics.Block Op := YulIR.toYul (namedOfFrame p)

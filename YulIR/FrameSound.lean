@@ -89,13 +89,4 @@ theorem structural_switch (funs : Funs) (L : Literal) (cases : List (Literal × 
   · intro h
     exact block_singleton (.switch h)
 
-/-! ### Lifting a `main`-block rewrite to a whole-program run -/
-
-/-- The payoff at whole-program level: an `if 1 { body }` program and its collapsed `body` program
-(same function table) have identical runs. -/
-theorem structural_if_true_run (funs : Funs) (body : Block m) {st st' o} :
-    Run ⟨funs, m, [Stmt.cond (.lit (.number 1)) body]⟩ st st' o ↔
-    Run ⟨funs, m, body⟩ st st' o :=
-  Run.of_equivMain (structural_if_true funs body)
-
 end YulIR.FinFrame.Sem

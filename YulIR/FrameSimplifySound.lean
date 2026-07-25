@@ -245,8 +245,7 @@ theorem simplify_equiv (funs : Funs) (b : Block n) : EquivBlock funs (simplify b
 /-- **Whole-program soundness of `simplify`**: applying it to `main` and every function body yields a
 program with identical runs. -/
 theorem simplify_program_run (p : Program) {st st' o} :
-    Run p st st' o ↔
-      Run ⟨mapBodiesFuns simplify p.functions, p.mainSlots, simplify p.main⟩ st st' o :=
+    Run p st st' o ↔ Run ⟨mapBodiesFuns simplify p.functions⟩ st st' o :=
   run_mapBodies simplify (fun F _ b => simplify_equiv F b)
 
 end YulIR.FinFrame.Sem

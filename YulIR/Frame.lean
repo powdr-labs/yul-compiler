@@ -77,11 +77,15 @@ structure Function where
   rets   : List (Fin nslots)
   body   : Block nslots
 
-/-- A program: a table of functions and a `main` frame. -/
+/-- A program is just a function table keyed by `Option Ident`: named functions under `some name`,
+and the entry point ("main", a zero-argument/zero-return function whose body is the object's
+top-level code) under `none`. Unifying `main` into the table means `optimize` and every
+whole-program statement range over one map. -/
 structure Program where
-  functions : Std.HashMap Ident Function
-  mainSlots : Nat
-  main      : Block mainSlots
+  functions : Std.HashMap (Option Ident) Function
+
+/-- The entry-point ("main") function — the `none`-keyed table entry, if present. -/
+def Program.main? (p : Program) : Option Function := p.functions[(none : Option Ident)]?
 
 /-! ### General slot remap (subsumes weakening) -/
 

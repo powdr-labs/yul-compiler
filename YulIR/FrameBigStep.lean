@@ -52,14 +52,14 @@ inductive Step (funs : Funs) : {n : Nat} → Store n → State → Code n → Re
       Step funs σ st (.rhs (.builtin op args)) (.eres r)
   | callNorm {n} {σ : Store n} {st fn args} {fdecl : Function}
       {σ' : Store fdecl.nslots} {st' o} :
-      funs[fn]? = some fdecl →
+      funs[some fn]? = some fdecl →
       Step funs (seed fdecl.nslots fdecl.params (args.map (evalAtom σ))) st (.stmts fdecl.body)
         (.sres σ' st' o) →
       (o = .normal ∨ o = .leave) →
       Step funs σ st (.rhs (.call fn args)) (.eres (.ok (fdecl.rets.map σ') st'))
   | callHalt {n} {σ : Store n} {st fn args} {fdecl : Function}
       {σ' : Store fdecl.nslots} {st'} :
-      funs[fn]? = some fdecl →
+      funs[some fn]? = some fdecl →
       Step funs (seed fdecl.nslots fdecl.params (args.map (evalAtom σ))) st (.stmts fdecl.body)
         (.sres σ' st' .halt) →
       Step funs σ st (.rhs (.call fn args)) (.eres (.halt st'))
@@ -167,18 +167,10 @@ theorem EquivBlock.consStmt {funs : Funs} {s₁ s₂ : Stmt n} {r₁ r₂ : Bloc
 
 /-! ### Whole-program runs -/
 
-/-- Run a program: execute `main` from a zero-initialised frame; observe the final state and
-outcome (the local store is discarded). -/
+/-- Run a program: execute the entry point (`functions[none]`) from a zero-initialised frame;
+observe the final state and outcome (the local store is discarded). -/
 def Run (p : Program) (st : State) (st' : State) (o : Outcome) : Prop :=
-  ∃ σ', ExecBlock p.functions (fun _ => 0) st p.main σ' st' o
-
-/-- Equivalent `main` blocks (same function table) give identical runs. -/
-theorem Run.of_equivMain {funs : Funs} {main₁ main₂ : Block m}
-    (h : EquivBlock funs main₁ main₂) {st st' o} :
-    Run ⟨funs, m, main₁⟩ st st' o ↔ Run ⟨funs, m, main₂⟩ st st' o := by
-  simp only [Run]
-  constructor
-  · rintro ⟨σ', hexec⟩; exact ⟨σ', (h _ _ _ _ _).mp hexec⟩
-  · rintro ⟨σ', hexec⟩; exact ⟨σ', (h _ _ _ _ _).mpr hexec⟩
+  ∃ (fd : Function) (σ' : Store fd.nslots),
+    p.main? = some fd ∧ ExecBlock p.functions (fun _ => 0) st fd.body σ' st' o
 
 end YulIR.FinFrame.Sem
