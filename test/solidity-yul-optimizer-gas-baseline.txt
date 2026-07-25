@@ -5,7 +5,7 @@
 # columns: fixture<TAB>ours<TAB>solc
 blockFlattener/basic.yul	354	90
 blockFlattener/if_stmt.yul	12968	12960
-blockFlattener/many_nested_blocks.yul	366	0
+blockFlattener/many_nested_blocks.yul	330	0
 blockFlattener/switch_stmt.yul	398	167
 circularReferencesPruner/nested_different_names.yul	288	0
 circularReferencesPruner/nested_same_name.yul	288	0
@@ -108,7 +108,7 @@ equivalentFunctionCombiner/multiple_complex.yul	1800	0
 equivalentFunctionCombiner/simple.yul	324	456
 equivalentFunctionCombiner/simple_different_vars.yul	750	0
 equivalentFunctionCombiner/switch_case_order.yul	288	894
-expressionInliner/argument_duplication_heuristic.yul	2076	0
+expressionInliner/argument_duplication_heuristic.yul	1920	0
 expressionInliner/complex_with_evm.yul	276	0
 expressionInliner/double_calls.yul	450	0
 expressionInliner/no_inline_mload.yul	144	0
@@ -148,7 +148,7 @@ expressionSimplifier/identity_rules_complex.yul	27326	27290
 expressionSimplifier/identity_rules_negative.yul	27326	27296
 expressionSimplifier/identity_rules_simple.yul	27344	27296
 expressionSimplifier/including_function_calls.yul	27566	27458
-expressionSimplifier/invalid_match.yul	582	666
+expressionSimplifier/invalid_match.yul	546	666
 expressionSimplifier/invariant.yul	27290	27332
 expressionSimplifier/iszero_sub_to_eq.yul	22370	22321
 expressionSimplifier/large_byte_access.yul	424308	424260
@@ -205,7 +205,7 @@ fullInliner/move_up_rightwards_argument.yul	726	0
 fullInliner/multi_fun.yul	390	0
 fullInliner/multi_return.yul	564	384
 fullInliner/no_inline_into_big_function.yul	144	0
-fullInliner/no_inline_leave.yul	336	0
+fullInliner/no_inline_leave.yul	258	0
 fullInliner/no_return.yul	27374	27410
 fullInliner/not_inside_for.yul	28460	28298
 fullInliner/pop_result.yul	498	0
@@ -344,7 +344,7 @@ loadResolver/simple_memory.yul	2302	2292
 loadResolver/staticcall.yul	236852	236882
 loadResolver/zero_length_reads.yul	54	48
 loopInvariantCodeMotion/create_sload.yul	1734744	1732656
-loopInvariantCodeMotion/move_storage_function.yul	23640	2370
+loopInvariantCodeMotion/move_storage_function.yul	22938	2370
 loopInvariantCodeMotion/no_move_immovables.yul	354	138
 loopInvariantCodeMotion/no_move_memory.yul	618	630
 loopInvariantCodeMotion/no_move_state.yul	599841178	599959551
@@ -368,7 +368,7 @@ rematerialiser/large_constant.yul	36	108
 rematerialiser/large_constant_used_once.yul	72	138
 rematerialiser/medium_sized_constant.yul	324	414
 rematerialiser/no_remat_in_loop.yul	296	250
-rematerialiser/non_movable_function.yul	264	312
+rematerialiser/non_movable_function.yul	162	312
 rematerialiser/non_movable_instruction.yul	162	144
 rematerialiser/reassign.yul	15876	0
 rematerialiser/reassignment.yul	198	174
@@ -395,13 +395,13 @@ ssaPlusCleanup/multi_reassign_with_use.yul	270	210
 ssaReverser/abi_example.yul	72	0
 ssaReverser/self_assign.yul	36	0
 ssaReverser/simple.yul	210	150
-ssaTransform/branches.yul	288	372
+ssaTransform/branches.yul	252	372
 ssaTransform/for_reassign_body.yul	288	228
 ssaTransform/for_reassign_post.yul	288	228
 ssaTransform/function.yul	72	0
 ssaTransform/multi_assign.yul	27704	27584
 ssaTransform/multi_decl.yul	27842	27794
-ssaTransform/nested.yul	312	0
+ssaTransform/nested.yul	276	0
 ssaTransform/nested_reassign.yul	72	198
 ssaTransform/notransform.yul	138	156
 ssaTransform/simple.yul	162	0
@@ -456,7 +456,7 @@ unusedAssignEliminator/switch_unused.yul	298	167
 unusedFunctionParameterPruner/LiteralRematerialiser.yul	330	366
 unusedFunctionParameterPruner/multiple_param.yul	27824	27602
 unusedFunctionParameterPruner/multiple_return.yul	27764	27584
-unusedFunctionParameterPruner/nested_function.yul	30472	30148
+unusedFunctionParameterPruner/nested_function.yul	30346	30148
 unusedFunctionParameterPruner/nested_function_name_collision.yul	62580	62364
 unusedFunctionParameterPruner/no_return.yul	16186	16282
 unusedFunctionParameterPruner/no_unused.yul	16180	16192

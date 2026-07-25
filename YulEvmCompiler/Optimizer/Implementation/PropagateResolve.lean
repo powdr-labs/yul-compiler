@@ -200,6 +200,37 @@ theorem writeSet_resolveCases (L : Layout) :
 
 end
 
+/-- Resolution also preserves direct block-local declarations (it rewrites
+expressions only, never binder lists). -/
+theorem blockDecls_resolveStmts (L : Layout) :
+    ∀ ss : List (Stmt Op), blockDecls (resolveForLayoutStmts L ss) = blockDecls ss
+  | [] => by rw [resolveForLayoutStmts_nil]
+  | s :: rest => by
+      rw [resolveForLayoutStmts_cons]
+      show blockDecls (resolveForLayoutStmt L s :: resolveForLayoutStmts L rest) = _
+      have hrest := blockDecls_resolveStmts L rest
+      cases s with
+      | letDecl xs v =>
+          rw [resolveForLayoutStmt_letDecl]
+          simp [blockDecls, hrest]
+      | block body =>
+          rw [resolveForLayoutStmt_block]; simpa [blockDecls] using hrest
+      | funDef n ps rs body =>
+          rw [resolveForLayoutStmt_funDef]; simpa [blockDecls] using hrest
+      | assign xs e =>
+          rw [resolveForLayoutStmt_assign]; simpa [blockDecls] using hrest
+      | cond c body =>
+          rw [resolveForLayoutStmt_cond]; simpa [blockDecls] using hrest
+      | «switch» c cs dflt =>
+          rw [resolveForLayoutStmt_switch]; simpa [blockDecls] using hrest
+      | forLoop finit c post body =>
+          rw [resolveForLayoutStmt_forLoop]; simpa [blockDecls] using hrest
+      | exprStmt e =>
+          rw [resolveForLayoutStmt_exprStmt]; simpa [blockDecls] using hrest
+      | «break» => rw [resolveForLayoutStmt_break]; simpa [blockDecls] using hrest
+      | «continue» => rw [resolveForLayoutStmt_continue]; simpa [blockDecls] using hrest
+      | «leave» => rw [resolveForLayoutStmt_leave]; simpa [blockDecls] using hrest
+
 /-! ### The rhs choice is closed under resolution -/
 
 /-- A pure op is never an object-data op. -/
@@ -290,13 +321,20 @@ theorem PropRel.resolve {σ σ' : PEnv} {pc pc' : PCode Op}
         (.args (resolveForLayoutExprs L (substArgs σ es)))
       rw [resolve_substArgs L σ es]
       exact .args
-  | @blockS σ σb body body' _ ih =>
-      show PropRel σ (prune σ (writeSetStmts body))
+  | @blockS σ σb σ2 body body' _ hexit ih =>
+      show PropRel σ σ2
         (.stmt (resolveForLayoutStmt L (.block body)))
         (.stmt (resolveForLayoutStmt L (.block body')))
-      rw [resolveForLayoutStmt_block, resolveForLayoutStmt_block,
-          ← writeSet_resolveStmts L body]
-      exact .blockS ih
+      rw [resolveForLayoutStmt_block, resolveForLayoutStmt_block]
+      cases hexit with
+      | skip =>
+          refine .blockS ih ?_
+          rw [← writeSet_resolveStmts L body]
+          exact .skip
+      | exportFacts =>
+          refine .blockS ih ?_
+          rw [← blockDecls_resolveStmts L body]
+          exact .exportFacts
   | @funDefS σ σb n ps rs body body' _ ih =>
       show PropRel σ σ (.stmt (resolveForLayoutStmt L (.funDef n ps rs body)))
         (.stmt (resolveForLayoutStmt L (.funDef n ps rs body')))

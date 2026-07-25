@@ -145,11 +145,8 @@ def stmtsNoNormal : List (Stmt Op) → Bool
   | s :: rest => stmtNoNormal s || stmtsNoNormal rest
 end
 
-/-- Bindings introduced at this block level and removed by `restore`. -/
-def declaredStmts : List (Stmt Op) → List Ident
-  | [] => []
-  | .letDecl xs _ :: rest => xs ++ declaredStmts rest
-  | _ :: rest => declaredStmts rest
+-- The direct block-local declarations (`blockDecls`) live in `Propagate.lean`,
+-- shared with its scoped fact export across the same `restore` boundary.
 
 mutual
 
@@ -202,7 +199,7 @@ def sfStmt (bound : List Ident) (C : StorageCache) : Stmt Op → Stmt Op × Stor
   | .exprStmt e => let p := sfExprStmt C e; (.exprStmt p.1, p.2)
   | .block body =>
       let (body', C') := sfStmts bound C body
-      (.block body', cacheKill (declaredStmts body) C')
+      (.block body', cacheKill (blockDecls body) C')
   | s@(.funDef _ _ _ _) => (s, C)
   | .cond c body =>
       let (body', _) := sfStmts bound [] body

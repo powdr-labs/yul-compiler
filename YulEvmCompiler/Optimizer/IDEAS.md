@@ -892,6 +892,83 @@ frontier; its other 552 rows, all 23 object-compiler rows, and all 40
 EVM-code-transform rows are unchanged. No solc fingerprint moved and no known
 failure baseline changed.
 
+### ✅ Scoped fact export across block exits (`optimizer/propagate-scoped-export`)
+
+Issue #65's 2026-07-25 refresh showed the Aave `PositionStatusMap` hot loops
+dominated by inliner readback scaffolding: shapes like
+
+```yul
+let x
+{
+    let z
+    {
+        z := 0
+    }
+    x := z
+}
+y := x
+```
+
+never folded because `Propagate` discarded **every** tracked fact at nested
+block exit (`prune σ (writeSetStmts body)` from the *entry* environment).
+Constants established inside a readback block died immediately, so
+`DeadPure`/`DeadResults` had nothing to consume, helper bodies stayed above
+the shared `liveMax ≤ 12` gates, and the hot helpers
+(`getBucketWord`/`isBorrowing`/`isUsingAsCollateral`) never shrank or inlined.
+
+The `.block` case of `propStmt` now threads the body's own **final**
+environment out of the block, pruned of the block's direct locals
+(`blockDecls`, the shared shallow scan formerly `StorageForward.declaredStmts`;
+`MemorySpill.declaredStmts` is an unrelated deep scan, and its two
+`MemorySpillSelect` uses are now explicitly qualified after a near-miss silent
+re-resolution). This is the value-fact analog of the already-landed
+"scoped storage-fact propagation": facts about outer variables — including
+ones established or refreshed *inside* the block — survive exactly the
+bindings `restore` removes. `PropRel.blockS` gains a `BlockExitRel` choice
+(`skip` = the old conservative exit, `exportFacts` = the scoped export), the
+simulation is proved with the same `ScopeFrame` block-framing argument
+`StorageForward` uses (that machinery now lives in `Propagate.lean` and is
+shared), and the resolution closure extends with `blockDecls_resolveStmts`
+because resolution rewrites expressions, never binder lists. No spec change,
+no new axioms.
+
+A second, deliberately proof-free change follows from measurement: the export
+turns whole *groups* of adjacent readback regions dead within one round, but
+`deadResults` removes at most one region per statement sequence per
+invocation. In `various/code_length_contract_member.sol` that pacing race
+left two dead **cold `sload` regions** alive after six rounds (+4,171 gas,
+the only regression in the first measurement; rounds 7–9 drained them one
+per round). The round stage lists now run the verified `deadResults` stage
+three times back-to-back, draining up to three regions per sequence per
+round. `LocalPass` composition makes this free of new proof obligations.
+
+**Results** (all four real-Solidity suites, solc 0.8.35, corpus `902f848`,
+vs the issue-refresh totals; zero regressions anywhere):
+
+- **Aave v4: 53,889,601 → 47,918,164 (−5,971,437; all 10 rows improve).**
+  `nextContinuousTenThousand` −2,524,464, `nextBorrowing…` −1,265,970,
+  `nextCollateral…` −1,265,970, the two count scans −426,567/−426,567,
+  `constants()` −10,504, `flsFullRange` −42,215. The Aave excess over solc
+  falls 16.7%.
+- semanticTests: 134,881,267 → 134,383,334 (−497,933; 1,005/1,237 rows
+  improve, 0 regress — the pacing fix flipped the one interim regression).
+- Uniswap v4: 1,950,079 → 1,778,850 (−171,229; 38/44 rows improve — the
+  triple `deadResults` alone contributed −64,286).
+- Curated gasTests: 485,175 → 483,580 (−1,595; 11/12 improve).
+- `PositionStatusMap` runtime bytecode: 93,144 → 86,508 bytes (−7.1%);
+  whole-object statement count −19%.
+- Soundness gates: sorry scan, `Checks.lean` axiom footprint, `SpecClosure`,
+  SPEC.md, YulIR round-trip, all three compile corpora (no new or stale
+  failures), and the Yul interpreter suite all pass.
+
+Remaining hot-loop cost (visible in fresh dumps): plain copy chains
+(`let a := b` at the same level) are still gated off by `copyGate` in fat
+bodies, the retained helpers still pay the call protocol in the inner loops,
+and `let x { x := e }` declare-then-assign pairs whose value *is* read remain.
+The natural follow-ups from the issue-refresh list are unchanged: generalized
+stack-aware inlining (rec 4) and loop/state-aware dataflow (rec 5), both of
+which now start from much smaller bodies.
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
