@@ -969,6 +969,66 @@ The natural follow-ups from the issue-refresh list are unchanged: generalized
 stack-aware inlining (rec 4) and loop/state-aware dataflow (rec 5), both of
 which now start from much smaller bodies.
 
+### ✅ Adjacent copy-chain coalescing (`optimizer/aave-gas-next`, PR #111)
+
+Post-#107 dumps of Aave `PositionStatusMap` show the next bottleneck plainly:
+427 of the 1,033 optimized bindings are pure variable copies
+(`let a := p  let b := a  let c := b`), 75% with a source that dies at the
+copy — the statement inliner's parameter/readback scaffolding. Each copy
+costs a `DUP` plus a live operand-stack slot inside 10,000-iteration loops,
+and the extra live locals hold `isBorrowing`/`isUsingAsCollateral`/
+`getBucketWord` above the shared `liveMax ≤ 12` gates, which keeps both
+gated copy propagation and `InlineCalls` shut — the residual deadlock from
+the issue #65 refresh.
+
+`CoalesceCopies` merges the adjacent pair `let x := rhs; let y := x` to
+`let y := rhs` when `x` is not mentioned afterwards (plus the zero-init
+variant `let x; let y := x` → `let y`), sweeping left-to-right so whole
+chains collapse in one invocation. Unlike copy *substitution* — the known
+`DUP16` hazard that motivated the depth gates — binder forwarding removes a
+live slot and never deepens any read, so it needs **no profitability gate**.
+The stage runs between `simplify` and `deadPure` in both round lists.
+
+Soundness is deliberately cheap: `rhs` evaluates identically on both sides,
+and afterwards the source carries exactly one extra dead `(x, v)` binding
+per merged pair — a single `InsAt` insertion, transported through the
+mention-free suffix by the existing `frameAdd`/`frameRemove` frame lemmas
+and erased by the enclosing block's `restore` (`InsChain.restore_eq`; every
+statement sequence in the semantics runs under a block, including `callOk`
+bodies, so the insertion never outlives its sequence and never reaches a
+return readout). Scope changes lift with `FunCongr`'s
+`EquivBlock.of_stmts_funs`; the object path is a *syntactic commutation*
+with layout resolution (resolution creates literals, never bare variables,
+so the pass fires at identical sites — `resolve_coalesceCopiesBlock`).
+No spec change, no new axioms.
+
+**Results** (vs the PR #107 baselines, solc 0.8.35, corpus `902f848`; zero
+regressions on all 1,303 comparable rows):
+
+- **Aave v4: 47,918,164 → 38,749,156 (−9,169,008, −19.1%; ratio 2.628x →
+  2.125x; all 10 rows improve).** `nextContinuousTenThousand`
+  18,666,506 → 14,315,572 (−4,350,934), `nextBorrowing…` −1,780,147,
+  `nextCollateral…` −1,860,139, the count scans −576,463/−568,223,
+  `constants()` −4,936, `flsFullRange` −18,296.
+- semanticTests: 134,383,334 → 134,078,455 (−304,879; 348 rows improve).
+- Uniswap v4: 1,778,850 → 1,703,107 (−75,743; 18/44 rows improve).
+- Curated gasTests: unchanged (dispatch fixtures have no such chains).
+- `PositionStatusMap` copies 427 → 120; bytecode 86,508 → 86,192 bytes;
+  TickMath bytecode 34,459 → 34,336. PoolSwap's object is byte-identical:
+  it still compiles through a fallback path, untouched by the pipeline.
+- Gates: sorry scan, axiom footprint, `SpecClosure`, SPEC.md, interpreter
+  suite, all three compile corpora, and the YulIR round-trip all pass.
+
+Remaining hot-loop cost after coalescing: the loops still *call* the (now
+much slimmer) helpers each iteration, keep the `iszero`-normalization
+readbacks and checked-decrement panic blocks, and the helpers still redo the
+scratch `mstore`/Keccak/`sload` address setup per call. The chain heads
+(`let a := param`) also remain, one per collapsed chain. Next levers, in
+issue #65's terms: recommendation 4 (the hot helper bodies should now fit
+under `inlineOK` after another look at the gate arithmetic — check
+`liveMaxStmts` on the post-coalesce bodies), then recommendation 5
+(keccak/sload CSE and loop-invariant scratch setup).
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
