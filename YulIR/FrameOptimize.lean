@@ -1,4 +1,5 @@
 import YulIR.FramePasses
+import YulIR.FrameStoreElim
 import YulIR.Effects
 import YulSemantics.Dialect.EVM
 
@@ -243,7 +244,7 @@ def deadCode (prot : List (Fin n)) : Nat → Block n → Block n
 /-- One optimization round over a block. `frozen` = the params+returns whose writes are
 reassignments of an initial value: excluded from value-tracking and protected from dead-code. -/
 def optRoundBody (frozen : List (Fin n)) (b : Block n) : Block n :=
-  deadCode frozen 8 (structural (simplify (valueNumberChecked frozen b)))
+  deadCode frozen 8 (storeElim (structural (simplify (valueNumberChecked frozen b))))
 
 /-- Optimize a program: two rounds over every function body in the table (the entry point `none`
 included — its params/returns are empty, so its `frozen` set is `[]`). A function's params+returns
