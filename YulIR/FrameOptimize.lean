@@ -181,17 +181,23 @@ def rhsReads : Rhs n → List (Fin n)
   | .call _ as    => as.filterMap atomSlot?
 
 mutual
-partial def stmtReads : Stmt n → List (Fin n)
+def stmtReads : Stmt n → List (Fin n)
   | .write _ rhs      => rhsReads rhs
   | .writeMany _ rhs  => rhsReads rhs
   | .effect rhs       => rhsReads rhs
   | .cond c body      => (atomSlot? c).toList ++ blockReads body
-  | .switch c cs df   => (atomSlot? c).toList ++ cs.flatMap (fun p => blockReads p.2) ++ (df.map blockReads).getD []
+  | .switch c cs df   => (atomSlot? c).toList ++ readsCases cs ++ readsDflt df
   | .loop post body   => blockReads post ++ blockReads body
   | _                 => []
-partial def blockReads : Block n → List (Fin n)
+def blockReads : Block n → List (Fin n)
   | []      => []
   | s :: ss => stmtReads s ++ blockReads ss
+def readsCases : List (Literal × Block n) → List (Fin n)
+  | []             => []
+  | (_, b) :: rest => blockReads b ++ readsCases rest
+def readsDflt : Option (Block n) → List (Fin n)
+  | none   => []
+  | some b => blockReads b
 end
 
 /-- A statement that produces no observable effect and whose result is unused. -/
@@ -201,15 +207,21 @@ def isDead (reads prot : List (Fin n)) : Stmt n → Bool
   | _            => false
 
 mutual
-partial def dceBlock (reads prot : List (Fin n)) : Block n → Block n
+def dceBlock (reads prot : List (Fin n)) : Block n → Block n
   | []      => []
   | s :: ss => if isDead reads prot s then dceBlock reads prot ss
                else dceStmt reads prot s :: dceBlock reads prot ss
-partial def dceStmt (reads prot : List (Fin n)) : Stmt n → Stmt n
+def dceStmt (reads prot : List (Fin n)) : Stmt n → Stmt n
   | .cond c b       => .cond c (dceBlock reads prot b)
-  | .switch c cs df => .switch c (cs.map (fun p => (p.1, dceBlock reads prot p.2))) (df.map (dceBlock reads prot))
+  | .switch c cs df => .switch c (dceCases reads prot cs) (dceDflt reads prot df)
   | .loop post body => .loop (dceBlock reads prot post) (dceBlock reads prot body)
   | s               => s
+def dceCases (reads prot : List (Fin n)) : List (Literal × Block n) → List (Literal × Block n)
+  | []             => []
+  | (l, b) :: rest => (l, dceBlock reads prot b) :: dceCases reads prot rest
+def dceDflt (reads prot : List (Fin n)) : Option (Block n) → Option (Block n)
+  | none   => none
+  | some b => some (dceBlock reads prot b)
 end
 
 -- Total statement count, for fixpoint detection.
@@ -225,7 +237,7 @@ partial def blockCount : Block n → Nat
 end
 
 /-- Dead-code elimination to a fixpoint (bounded), protecting `prot` (a function's return slots). -/
-partial def deadCode (prot : List (Fin n)) : Nat → Block n → Block n
+def deadCode (prot : List (Fin n)) : Nat → Block n → Block n
   | 0,     b => b
   | fuel+1, b =>
     let b' := dceBlock (blockReads b) prot b
