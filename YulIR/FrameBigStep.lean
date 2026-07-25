@@ -154,6 +154,14 @@ def EquivBlock (funs : Funs) {n} (b₁ b₂ : Block n) : Prop :=
 theorem EquivStmt.refl (funs : Funs) (s : Stmt n) : EquivStmt funs s s := fun _ _ _ _ _ => Iff.rfl
 theorem EquivBlock.refl (funs : Funs) (b : Block n) : EquivBlock funs b b := fun _ _ _ _ _ => Iff.rfl
 
+theorem EquivStmt.symm {funs : Funs} {s₁ s₂ : Stmt n} (h : EquivStmt funs s₁ s₂) :
+    EquivStmt funs s₂ s₁ := fun σ st σ' st' o => (h σ st σ' st' o).symm
+theorem EquivBlock.symm {funs : Funs} {b₁ b₂ : Block n} (h : EquivBlock funs b₁ b₂) :
+    EquivBlock funs b₂ b₁ := fun σ st σ' st' o => (h σ st σ' st' o).symm
+theorem EquivBlock.trans {funs : Funs} {b₁ b₂ b₃ : Block n}
+    (h₁ : EquivBlock funs b₁ b₂) (h₂ : EquivBlock funs b₂ b₃) : EquivBlock funs b₁ b₃ :=
+  fun σ st σ' st' o => (h₁ σ st σ' st' o).trans (h₂ σ st σ' st' o)
+
 /-- Cons-congruence. -/
 theorem EquivBlock.consStmt {funs : Funs} {s₁ s₂ : Stmt n} {r₁ r₂ : Block n}
     (hs : EquivStmt funs s₁ s₂) (hr : EquivBlock funs r₁ r₂) :
