@@ -9,10 +9,23 @@ set_option warningAsError true
 passes it carries an *environment* (`env : slot ↦ atom`, `avail : expr ↦ slot`), so its correctness
 is a **store-relative** invariant threaded through the block simulation: the maps are only valid
 against a particular store, and stay valid because the pass only ever records *immutable*
-(written-at-most-once) slots whose defining write has already happened (read-after-write).
+(written-at-most-once) slots whose defining write has already happened (read-after-write) — the
+discipline the decidable checker `vnSafe` (`YulIR.FramePasses`) enforces.
 
-This file builds the groundwork — the environment-validity invariant and the fact that resolving
-an rhs through a valid environment preserves its evaluation.
+The structure:
+
+* **Invariant** (`VNInv`): `EnvValid`/`AvailValid` (the maps are true of the current store) plus
+  `RefsOK` (every referenced slot is immutable and in the checker's written-set `W`) plus `W ⊆ imm`.
+  The checker guarantees no remaining statement writes a `W`-slot, so the invariant transports
+  along execution (`VNInv.transport` over `AgreeOn W`).
+* **Record step** (`recordWrite_sim`): a recording assign's emitted rhs executes exactly like the
+  original — the CSE hit needs no well-formedness hypothesis because the avail entry itself
+  witnesses evaluability — and the extended maps re-establish the invariant.
+* **Simulation** (`vn_sim`): by functional induction on the pass; loops via `loop_imp_sim` (a
+  conditional loop simulation re-establishing the invariant each iteration).
+* **Capstones**: `valueNumber_equiv` (checker-accepted body ⟹ `EquivBlock`),
+  `valueNumberChecked_equiv` (the guarded pass, *unconditionally* sound), and
+  `valueNumber_program_run` (whole-program, via the per-function `run_mapBodies`).
 -/
 
 namespace YulIR.FinFrame.Sem
@@ -655,3 +668,461 @@ theorem recordWrite_sim {funs : Funs} {imm : Fin n → Bool} {W : List (Fin n)}
       cases hrec
       exact ⟨fun st r => resolveRhs_exec (rhs := .call fn args₀) hinv.env_valid,
         fun st vs st₁ _ => htrans vs⟩
+
+/-! ### The main simulation -/
+
+/-- Conditional block simulation at a written-set: from any invariant store the transformed and
+original blocks execute identically (same store, state, outcome), and execution of the original
+establishes agreement on `W`. -/
+def SimAt (funs : Funs) (imm : Fin n → Bool) (env : List (Fin n × Atom n))
+    (avail : List (Rhs n × Fin n)) (W : List (Fin n)) (b' b : Block n) : Prop :=
+  ∀ σ : Store n, VNInv funs imm W env avail σ →
+    ∀ st σ' st' o,
+      (ExecBlock funs σ st b' σ' st' o ↔ ExecBlock funs σ st b σ' st' o) ∧
+      (ExecBlock funs σ st b σ' st' o → AgreeOn W σ σ')
+
+/-- A simulation at a larger written-set restricts to a smaller one. -/
+theorem SimAt.anti {funs : Funs} {imm : Fin n → Bool} {env avail} {W W₂ : List (Fin n)}
+    {b' b : Block n} (hg : WGrows imm W W₂)
+    (h : SimAt funs imm env avail W₂ b' b) : SimAt funs imm env avail W b' b := by
+  intro σ hinv st σ' st' o
+  have hinv₂ : VNInv funs imm W₂ env avail σ :=
+    hinv.transport (fun i _ => rfl) hg.1 (hg.2 hinv.wImm)
+  obtain ⟨hiff, hag⟩ := h σ hinv₂ st σ' st' o
+  exact ⟨hiff, fun hex i hi => hag hex i (hg.1 i hi)⟩
+
+/-- Checker growth for a single statement (wrapper around the block form). -/
+theorem vnSafe_grows_stmt {imm : Fin n → Bool} {W W' : List (Fin n)} {s : Stmt n}
+    (h : vnSafeStmt imm W s = some W') : WGrows imm W W' :=
+  vnSafe_grows W [s] W' (by simp [vnSafeBlock, h])
+
+theorem vnSafe_grows_cases {imm : Fin n → Bool} {W W' : List (Fin n)}
+    {cs : List (Literal × Block n)} (h : vnSafeCases imm W cs = some W') : WGrows imm W W' :=
+  vnSafe_grows_stmt (s := .switch (.lit (.number 0)) cs none)
+    (by simp [vnSafeStmt, h, vnSafeDflt])
+
+theorem vnSafe_grows_dflt {imm : Fin n → Bool} {W W' : List (Fin n)}
+    {df : Option (Block n)} (h : vnSafeDflt imm W df = some W') : WGrows imm W W' := by
+  cases df with
+  | none =>
+      obtain rfl : W = W' := by simpa [vnSafeDflt] using h
+      exact WGrows.rfl
+  | some b => exact vnSafe_grows W b W' h
+
+/-- `selectCase` respects any pointwise relation on the case blocks and default. -/
+theorem selectCase_rel {R : Block n → Block n → Prop} {cv : U256}
+    {cs₁ cs₂ : List (Literal × Block n)} {df₁ df₂ : Option (Block n)}
+    (hcs : List.Forall₂ (fun p q => p.1 = q.1 ∧ R p.2 q.2) cs₁ cs₂)
+    (hdf : R (df₁.getD []) (df₂.getD [])) :
+    R (selectCase cv cs₁ df₁) (selectCase cv cs₂ df₂) := by
+  induction hcs with
+  | nil => simpa only [selectCase, List.find?_nil] using hdf
+  | @cons p q cs₁' cs₂' hpq _ ih =>
+      obtain ⟨hlabel, hblk⟩ := hpq
+      unfold selectCase
+      by_cases hm : (litValue p.1 == cv) = true
+      · have hmq : (litValue q.1 == cv) = true := by rw [← hlabel]; exact hm
+        rw [List.find?_cons_of_pos (by simpa using hm), List.find?_cons_of_pos (by simpa using hmq)]
+        exact hblk
+      · have hmq : ¬ (litValue q.1 == cv) = true := by rw [← hlabel]; exact hm
+        rw [List.find?_cons_of_neg (by simpa using hm), List.find?_cons_of_neg (by simpa using hmq)]
+        exact ih
+
+/-- **The value-numbering simulation.** On a checker-accepted block, from any invariant store the
+transformed block executes exactly like the original — same final store, machine state and outcome —
+and execution establishes agreement on the written-set. Proved by functional induction on the pass,
+with the statement motive additionally re-establishing the invariant (at the extended maps and
+written-set) after every normal step. -/
+theorem vn_sim {funs : Funs} {imm : Fin n → Bool} (env : List (Fin n × Atom n))
+    (avail : List (Rhs n × Fin n)) (b : Block n) :
+    ∀ W W', vnSafeBlock imm W b = some W' →
+      SimAt funs imm env avail W (vnBlock imm env avail b) b := by
+  refine vnBlock.induct imm
+    (motive_1 := fun env avail s => ∀ W W', vnSafeStmt imm W s = some W' →
+      ∀ σ : Store n, VNInv funs imm W env avail σ →
+        ∀ s' env' avail', vnStmt imm env avail s = (s', env', avail') →
+          ∀ st σ' st' o,
+            (ExecStmt funs σ st s' σ' st' o ↔ ExecStmt funs σ st s σ' st' o) ∧
+            (ExecStmt funs σ st s σ' st' o → AgreeOn W σ σ' ∧
+              (o = .normal → VNInv funs imm W' env' avail' σ')))
+    (motive_2 := fun env avail df => ∀ W W', vnSafeDflt imm W df = some W' →
+      SimAt funs imm env avail W ((vnDflt imm env avail df).getD []) (df.getD []))
+    (motive_3 := fun env avail b => ∀ W W', vnSafeBlock imm W b = some W' →
+      SimAt funs imm env avail W (vnBlock imm env avail b) b)
+    (motive_4 := fun env avail cs => ∀ W W₁, vnSafeCases imm W cs = some W₁ →
+      List.Forall₂ (fun p q => p.1 = q.1 ∧ SimAt funs imm env avail W p.2 q.2)
+        (vnCases imm env avail cs) cs)
+    ?assign1 ?assignN ?cond ?switch ?loop ?stmt ?bnil ?bcons ?cnil ?ccons ?dnone ?dsome env avail b
+  case assign1 =>
+    intro env avail d rhs env' avail' out hrec W W' hchk σ hinv s'' env'' avail'' hvn
+    rw [vnStmt] at hvn
+    rw [hrec] at hvn
+    cases hvn
+    rw [vnSafeStmt] at hchk
+    split at hchk
+    case isFalse => simp at hchk
+    case isTrue hcond =>
+    obtain rfl := Option.some.inj hchk
+    obtain ⟨hdst, hdsts⟩ := Bool.and_eq_true_iff.mp hcond
+    intro st σ' st' o
+    by_cases himm : imm d = true
+    · -- recording destination
+      have hdW : d ∉ W := by
+        have hall := List.all_eq_true.mp hdst d (List.mem_singleton_self d)
+        simp only [himm, Bool.not_true, Bool.false_or, Bool.not_eq_true'] at hall
+        intro hmem
+        rw [List.contains_eq_mem, decide_eq_false_iff_not] at hall
+        exact hall hmem
+      have hsafe : vnSafeRhs imm W rhs = true := by
+        simpa only [vnSafeDsts, himm, Bool.not_true, Bool.false_or] using hdsts
+      obtain ⟨hexec, hpost⟩ := recordWrite_sim hinv himm hdW hsafe hrec
+      refine ⟨?_, ?_⟩
+      · constructor
+        · intro h
+          cases h with
+          | assignOk hr => exact .assignOk ((hexec _ _).mp hr)
+          | assignHalt hr => exact .assignHalt ((hexec _ _).mp hr)
+        · intro h
+          cases h with
+          | assignOk hr => exact .assignOk ((hexec _ _).mpr hr)
+          | assignHalt hr => exact .assignHalt ((hexec _ _).mpr hr)
+      · intro h
+        cases h with
+        | assignOk hr =>
+            refine ⟨?_, fun _ => ?_⟩
+            · refine AgreeOn.updMany_out ?_ _
+              intro x hx
+              rw [List.mem_singleton] at hx
+              exact hx ▸ hdW
+            · simpa [List.filter, himm] using hpost _ _ _ hr
+        | assignHalt hr => exact ⟨fun i _ => rfl, fun hno => nomatch hno⟩
+    · -- non-recording destination: maps unchanged
+      have himmF : imm d = false := Bool.not_eq_true _ ▸ (by simpa using himm)
+      have hrec' : env' = env ∧ avail' = avail ∧ out = resolveRhs env rhs := by
+        unfold recordWrite at hrec
+        rw [himmF] at hrec
+        simp only [Bool.not_false, if_true] at hrec
+        exact ⟨(Prod.mk.injEq ..).mp hrec |>.1.symm,
+          ((Prod.mk.injEq ..).mp ((Prod.mk.injEq ..).mp hrec).2).1.symm,
+          ((Prod.mk.injEq ..).mp ((Prod.mk.injEq ..).mp hrec).2).2.symm⟩
+      obtain ⟨rfl, rfl, rfl⟩ := hrec'
+      have hdW : d ∉ W := fun hmem => himm (hinv.wImm d hmem)
+      refine ⟨?_, ?_⟩
+      · constructor
+        · intro h
+          cases h with
+          | assignOk hr => exact .assignOk ((resolveRhs_exec (rhs := rhs) hinv.env_valid).mp hr)
+          | assignHalt hr =>
+              exact .assignHalt ((resolveRhs_exec (rhs := rhs) hinv.env_valid).mp hr)
+        · intro h
+          cases h with
+          | assignOk hr => exact .assignOk ((resolveRhs_exec (rhs := rhs) hinv.env_valid).mpr hr)
+          | assignHalt hr =>
+              exact .assignHalt ((resolveRhs_exec (rhs := rhs) hinv.env_valid).mpr hr)
+      · intro h
+        cases h with
+        | @assignOk _ _ _ _ _ vs st₁ hr =>
+            have hag : AgreeOn W σ (updMany σ [d] vs) := by
+              refine AgreeOn.updMany_out ?_ _
+              intro x hx
+              rw [List.mem_singleton] at hx
+              exact hx ▸ hdW
+            refine ⟨hag, fun _ => ?_⟩
+            have : List.filter imm [d] ++ W = W := by simp [List.filter, himmF]
+            rw [this]
+            exact hinv.transport hag (fun _ h => h) hinv.wImm
+        | assignHalt hr => exact ⟨fun i _ => rfl, fun hno => nomatch hno⟩
+  case assignN =>
+    intro env avail ds rhs hne W W' hchk σ hinv s'' env'' avail'' hvn
+    rw [vnStmt.eq_2 imm env avail ds rhs hne] at hvn
+    cases hvn
+    rw [vnSafeStmt] at hchk
+    split at hchk
+    case isFalse => simp at hchk
+    case isTrue hcond =>
+    obtain rfl := Option.some.inj hchk
+    obtain ⟨hdst, -⟩ := Bool.and_eq_true_iff.mp hcond
+    intro st σ' st' o
+    have hds : ∀ d₀ ∈ ds, d₀ ∉ W := by
+      intro d₀ hd₀ hmem
+      have hall := List.all_eq_true.mp hdst d₀ hd₀
+      have himmw := hinv.wImm d₀ hmem
+      simp only [himmw, Bool.not_true, Bool.false_or, Bool.not_eq_true'] at hall
+      rw [List.contains_eq_mem, decide_eq_false_iff_not] at hall
+      exact hall hmem
+    refine ⟨?_, ?_⟩
+    · constructor
+      · intro h
+        cases h with
+        | assignOk hr => exact .assignOk ((resolveRhs_exec (rhs := rhs) hinv.env_valid).mp hr)
+        | assignHalt hr =>
+            exact .assignHalt ((resolveRhs_exec (rhs := rhs) hinv.env_valid).mp hr)
+      · intro h
+        cases h with
+        | assignOk hr => exact .assignOk ((resolveRhs_exec (rhs := rhs) hinv.env_valid).mpr hr)
+        | assignHalt hr =>
+            exact .assignHalt ((resolveRhs_exec (rhs := rhs) hinv.env_valid).mpr hr)
+    · intro h
+      cases h with
+      | @assignOk _ _ _ _ _ vs st₁ hr =>
+          have hag : AgreeOn W σ (updMany σ ds vs) := AgreeOn.updMany_out hds _
+          exact ⟨hag, fun _ => hinv.transport hag (WGrows.append_filter ds).1
+            ((WGrows.append_filter ds).2 hinv.wImm)⟩
+      | assignHalt hr => exact ⟨fun i _ => rfl, fun hno => nomatch hno⟩
+  case cond =>
+    intro env avail c b ihb W W' hchk σ hinv s'' env'' avail'' hvn
+    rw [vnStmt] at hvn
+    cases hvn
+    rw [vnSafeStmt] at hchk
+    have hg := vnSafe_grows W b W' hchk
+    have hsim := ihb W W' hchk σ hinv
+    intro st σ' st' o
+    refine ⟨?_, ?_⟩
+    · constructor
+      · intro h
+        cases h with
+        | condFalse hc =>
+            refine .condFalse ?_
+            rwa [resolveAtom_sound hinv.env_valid] at hc
+        | condTrue hc hb =>
+            refine .condTrue ?_ ((hsim st σ' st' o).1.mp hb)
+            rwa [resolveAtom_sound hinv.env_valid] at hc
+      · intro h
+        cases h with
+        | condFalse hc =>
+            refine .condFalse ?_
+            rwa [resolveAtom_sound hinv.env_valid]
+        | condTrue hc hb =>
+            refine .condTrue ?_ ((hsim st σ' st' o).1.mpr hb)
+            rwa [resolveAtom_sound hinv.env_valid]
+    · intro h
+      cases h with
+      | condFalse hc =>
+          exact ⟨fun i _ => rfl, fun _ =>
+            hinv.transport (fun i _ => rfl) hg.1 (hg.2 hinv.wImm)⟩
+      | condTrue hc hb =>
+          have hag := (hsim st σ' st' o).2 hb
+          exact ⟨hag, fun _ => hinv.transport hag hg.1 (hg.2 hinv.wImm)⟩
+  case switch =>
+    intro env avail c cs df ihcs ihdf W W' hchk σ hinv s'' env'' avail'' hvn
+    rw [vnStmt] at hvn
+    cases hvn
+    rw [vnSafeStmt] at hchk
+    split at hchk
+    case h_2 => simp at hchk
+    case h_1 W₁ hcs =>
+    have hg₁ := vnSafe_grows_cases hcs
+    have hg₂ := vnSafe_grows_dflt hchk
+    have hsel : SimAt funs imm env avail W
+        (selectCase (evalAtom σ c) (vnCases imm env avail cs) (vnDflt imm env avail df))
+        (selectCase (evalAtom σ c) cs df) :=
+      selectCase_rel (ihcs W W₁ hcs) ((ihdf W₁ W' hchk).anti hg₁)
+    intro st σ' st' o
+    refine ⟨?_, ?_⟩
+    · constructor
+      · intro h
+        cases h with
+        | switch hs =>
+            refine .switch ?_
+            rw [resolveAtom_sound hinv.env_valid] at hs
+            exact (hsel σ hinv st σ' st' o).1.mp hs
+      · intro h
+        cases h with
+        | switch hs =>
+            refine .switch ?_
+            rw [resolveAtom_sound hinv.env_valid]
+            exact (hsel σ hinv st σ' st' o).1.mpr hs
+    · intro h
+      cases h with
+      | switch hs =>
+          have hag := (hsel σ hinv st σ' st' o).2 hs
+          exact ⟨hag, fun _ => hinv.transport hag (hg₁.trans hg₂).1
+            ((hg₁.trans hg₂).2 hinv.wImm)⟩
+  case loop =>
+    intro env avail post body ihp ihb W W' hchk σ hinv s'' env'' avail'' hvn
+    rw [vnStmt] at hvn
+    cases hvn
+    rw [vnSafeStmt] at hchk
+    split at hchk
+    case h_2 => simp at hchk
+    case h_1 W₁ hbody =>
+    have hgb := vnSafe_grows W body W₁ hbody
+    have hgp := vnSafe_grows W₁ post W' hchk
+    have hbodySim := ihb W W₁ hbody
+    have hpostSim := (ihp W₁ W' hchk).anti hgb
+    have hP : ∀ {σ₁ σ₂ : Store n}, AgreeOn W σ₁ σ₂ →
+        VNInv funs imm W env avail σ₁ → VNInv funs imm W env avail σ₂ :=
+      fun hag hi => hi.transport hag (fun _ h => h) hi.wImm
+    have hbodyF : ∀ σ₁ st₁ σ₂ st₂ o₁, VNInv funs imm W env avail σ₁ →
+        ExecBlock funs σ₁ st₁ body σ₂ st₂ o₁ →
+        ExecBlock funs σ₁ st₁ (vnBlock imm env avail body) σ₂ st₂ o₁ ∧ AgreeOn W σ₁ σ₂ :=
+      fun σ₁ st₁ σ₂ st₂ o₁ hi hex =>
+        ⟨(hbodySim σ₁ hi st₁ σ₂ st₂ o₁).1.mpr hex, (hbodySim σ₁ hi st₁ σ₂ st₂ o₁).2 hex⟩
+    have hpostF : ∀ σ₁ st₁ σ₂ st₂ o₁, VNInv funs imm W env avail σ₁ →
+        ExecBlock funs σ₁ st₁ post σ₂ st₂ o₁ →
+        ExecBlock funs σ₁ st₁ (vnBlock imm env avail post) σ₂ st₂ o₁ ∧ AgreeOn W σ₁ σ₂ :=
+      fun σ₁ st₁ σ₂ st₂ o₁ hi hex =>
+        ⟨(hpostSim σ₁ hi st₁ σ₂ st₂ o₁).1.mpr hex, (hpostSim σ₁ hi st₁ σ₂ st₂ o₁).2 hex⟩
+    have hbodyR : ∀ σ₁ st₁ σ₂ st₂ o₁, VNInv funs imm W env avail σ₁ →
+        ExecBlock funs σ₁ st₁ (vnBlock imm env avail body) σ₂ st₂ o₁ →
+        ExecBlock funs σ₁ st₁ body σ₂ st₂ o₁ ∧ AgreeOn W σ₁ σ₂ :=
+      fun σ₁ st₁ σ₂ st₂ o₁ hi hex =>
+        have horig := (hbodySim σ₁ hi st₁ σ₂ st₂ o₁).1.mp hex
+        ⟨horig, (hbodySim σ₁ hi st₁ σ₂ st₂ o₁).2 horig⟩
+    have hpostR : ∀ σ₁ st₁ σ₂ st₂ o₁, VNInv funs imm W env avail σ₁ →
+        ExecBlock funs σ₁ st₁ (vnBlock imm env avail post) σ₂ st₂ o₁ →
+        ExecBlock funs σ₁ st₁ post σ₂ st₂ o₁ ∧ AgreeOn W σ₁ σ₂ :=
+      fun σ₁ st₁ σ₂ st₂ o₁ hi hex =>
+        have horig := (hpostSim σ₁ hi st₁ σ₂ st₂ o₁).1.mp hex
+        ⟨horig, (hpostSim σ₁ hi st₁ σ₂ st₂ o₁).2 horig⟩
+    intro st σ' st' o
+    refine ⟨?_, ?_⟩
+    · constructor
+      · intro h
+        cases h with
+        | loopS hl => exact .loopS (loop_imp_sim @hP hbodyR hpostR hl rfl hinv rfl).1
+      · intro h
+        cases h with
+        | loopS hl => exact .loopS (loop_imp_sim @hP hbodyF hpostF hl rfl hinv rfl).1
+    · intro h
+      cases h with
+      | loopS hl =>
+          have hag := (loop_imp_sim @hP hbodyF hpostF hl rfl hinv rfl).2
+          exact ⟨hag, fun _ => hinv.transport hag (hgb.trans hgp).1
+            ((hgb.trans hgp).2 hinv.wImm)⟩
+  case stmt =>
+    intro env avail s hna1 hna2 hnc hns hnl W W' hchk σ hinv s'' env'' avail'' hvn
+    cases s with
+    | assign ds rhs => exact absurd rfl (hna2 ds rhs)
+    | cond c b => exact absurd rfl (hnc c b)
+    | switch c cs df => exact absurd rfl (hns c cs df)
+    | loop post body => exact absurd rfl (hnl post body)
+    | «break» =>
+        rw [show vnStmt imm env avail .«break» = (.«break», env, avail) from rfl] at hvn
+        cases hvn
+        obtain rfl := Option.some.inj
+          (show some W = some W' from by rw [← hchk]; rfl)
+        intro st σ' st' o
+        refine ⟨Iff.rfl, ?_⟩
+        intro h
+        cases h
+        exact ⟨fun i _ => rfl, fun hno => nomatch hno⟩
+    | «continue» =>
+        rw [show vnStmt imm env avail .«continue» = (.«continue», env, avail) from rfl] at hvn
+        cases hvn
+        obtain rfl := Option.some.inj
+          (show some W = some W' from by rw [← hchk]; rfl)
+        intro st σ' st' o
+        refine ⟨Iff.rfl, ?_⟩
+        intro h
+        cases h
+        exact ⟨fun i _ => rfl, fun hno => nomatch hno⟩
+    | leave =>
+        rw [show vnStmt imm env avail .leave = (.leave, env, avail) from rfl] at hvn
+        cases hvn
+        obtain rfl := Option.some.inj
+          (show some W = some W' from by rw [← hchk]; rfl)
+        intro st σ' st' o
+        refine ⟨Iff.rfl, ?_⟩
+        intro h
+        cases h
+        exact ⟨fun i _ => rfl, fun hno => nomatch hno⟩
+  case bnil =>
+    intro env avail W W' hchk σ hinv st σ' st' o
+    refine ⟨Iff.rfl, ?_⟩
+    intro h
+    cases h
+    exact fun i _ => rfl
+  case bcons =>
+    intro env avail s rest s' env' avail' hvnstmt ih1 ih3 W W' hchk σ hinv st σ' st' o
+    rw [vnSafeBlock] at hchk
+    split at hchk
+    case h_2 => simp at hchk
+    case h_1 W₂ hs =>
+    have hstmt := ih1 W W₂ hs σ hinv s' env' avail' hvnstmt
+    have hgs := vnSafe_grows_stmt hs
+    have hblock : vnBlock imm env avail (s :: rest) = s' :: vnBlock imm env' avail' rest := by
+      rw [vnBlock, hvnstmt]
+    rw [hblock]
+    refine ⟨?_, ?_⟩
+    · constructor
+      · intro h
+        cases h with
+        | consNormal h1 h2 =>
+            have ho := (hstmt _ _ _ _).1.mp h1
+            have hinv₂ := ((hstmt _ _ _ _).2 ho).2 rfl
+            exact .consNormal ho ((ih3 W₂ W' hchk _ hinv₂ _ _ _ _).1.mp h2)
+        | consStop h1 hne => exact .consStop ((hstmt _ _ _ _).1.mp h1) hne
+      · intro h
+        cases h with
+        | consNormal h1 h2 =>
+            have hinv₂ := ((hstmt _ _ _ _).2 h1).2 rfl
+            exact .consNormal ((hstmt _ _ _ _).1.mpr h1)
+              ((ih3 W₂ W' hchk _ hinv₂ _ _ _ _).1.mpr h2)
+        | consStop h1 hne => exact .consStop ((hstmt _ _ _ _).1.mpr h1) hne
+    · intro h
+      cases h with
+      | consNormal h1 h2 =>
+          obtain ⟨hag₁, hpi⟩ := (hstmt _ _ _ _).2 h1
+          have hinv₂ := hpi rfl
+          have hag₂ := (ih3 W₂ W' hchk _ hinv₂ _ _ _ _).2 h2
+          exact hag₁.trans (fun i hi => hag₂ i (hgs.1 i hi))
+      | consStop h1 hne => exact ((hstmt _ _ _ _).2 h1).1
+  case cnil =>
+    intro env avail W W₁ hchk
+    exact List.Forall₂.nil
+  case ccons =>
+    intro env avail l b rest ihb ihrest W W₁ hchk
+    rw [vnSafeCases] at hchk
+    split at hchk
+    case h_2 => simp at hchk
+    case h_1 W₂ hb =>
+    have hg := vnSafe_grows W b W₂ hb
+    refine List.Forall₂.cons ⟨rfl, ihb W W₂ hb⟩ ?_
+    exact (ihrest W₂ W₁ hchk).imp (fun {p q} hpq => ⟨hpq.1, hpq.2.anti hg⟩)
+  case dnone =>
+    intro env avail W W' hchk σ hinv st σ' st' o
+    refine ⟨Iff.rfl, ?_⟩
+    intro h
+    cases h
+    exact fun i _ => rfl
+  case dsome =>
+    intro env avail b ih W W' hchk σ hinv st σ' st' o
+    exact ih W W' hchk σ hinv st σ' st' o
+
+/-! ### Capstones -/
+
+/-- The initial invariant: empty maps are valid at every store, under any immutable seed set. -/
+theorem VNInv.init (funs : Funs) (imm : Fin n → Bool) (W₀ : List (Fin n))
+    (hW : ∀ w ∈ W₀, imm w = true) (σ : Store n) : VNInv funs imm W₀ [] [] σ where
+  wImm := hW
+  refs := ⟨List.forall_mem_nil _, List.forall_mem_nil _⟩
+  env_valid := List.forall_mem_nil _
+  avail_valid := List.forall_mem_nil _
+
+/-- **Checked value numbering is sound**: on a checker-accepted body, `valueNumber` (constant/copy
+propagation + CSE) preserves the big-step semantics exactly. -/
+theorem valueNumber_equiv {funs : Funs} {frozen : List (Fin n)} {b : Block n}
+    (h : vnSafe frozen b = true) : EquivBlock funs (valueNumber frozen b) b := by
+  unfold vnSafe at h
+  obtain ⟨W', hW'⟩ := Option.isSome_iff_exists.mp h
+  intro σ st σ' st' o
+  exact (vn_sim [] [] b _ W' hW'
+    σ (VNInv.init funs _ _ (fun w hw => List.of_mem_filter hw) σ) st σ' st' o).1
+
+/-- **The guarded pass is unconditionally sound**: `valueNumberChecked` runs the pass only when the
+checker accepts, so it preserves semantics on every block. -/
+theorem valueNumberChecked_equiv (funs : Funs) (frozen : List (Fin n)) (b : Block n) :
+    EquivBlock funs (valueNumberChecked frozen b) b := by
+  unfold valueNumberChecked
+  split
+  · exact valueNumber_equiv (by assumption)
+  · exact EquivBlock.refl funs b
+
+/-- **Whole-program soundness of checked value numbering**: applying it (with each function's
+params+returns frozen) to every body of the table yields a program with identical runs. -/
+theorem valueNumber_program_run (p : Program) {st st' o} :
+    Run p st st' o ↔
+      Run ⟨mapBodiesFuns (fun fd b => valueNumberChecked (fd.params ++ fd.rets) b) p.functions⟩
+        st st' o :=
+  run_mapBodies _ (fun F fd => valueNumberChecked_equiv F (fd.params ++ fd.rets) fd.body)

@@ -176,7 +176,7 @@ theorem structuralBlock_equiv (funs : Funs) (b : Block n) :
 function body in the table (the entry point `none` included) yields a program with identical runs —
 one `run_mapBodies` over the unified function table. -/
 theorem structural_program_run (p : Program) {st st' o} :
-    Run p st st' o ↔ Run ⟨mapBodiesFuns structuralBlock p.functions⟩ st st' o :=
-  run_mapBodies structuralBlock (fun F _ b => structuralBlock_equiv F b)
+    Run p st st' o ↔ Run ⟨mapBodiesFuns (fun _ b => structuralBlock b) p.functions⟩ st st' o :=
+  run_mapBodies _ (fun F fd => structuralBlock_equiv F fd.body)
 
 end YulIR.FinFrame.Sem
