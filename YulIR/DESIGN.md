@@ -30,6 +30,18 @@ backend. Semantic soundness of `ofYul∘toYul` and of `optimize` is checked with
 - **Right-to-left** argument flattening in `ofYul` preserves Yul's observable arg order.
 - **Structured control, no `for`-init**: `loop post body` ≙ `for {} 1 { post } { body }`,
   the condition folded into `body` as `if iszero(c) { break }`.
+- **Functions are not statements.** `Stmt` has no `funDef`. A `Program` is a table of
+  `functions : Std.HashMap Ident Function` (keyed by name) plus a `main` block; an `Object`
+  holds a `Program` (+ sub-objects/data). `ofYul` lifts every `funDef`, at any nesting depth,
+  into this flat table — sound because Yul functions capture no enclosing *variables*, only
+  their params/rets/locals and the functions in scope. This makes function-name uniqueness
+  **structural** (a `HashMap` key), gives O(1) call-target lookup, and removes `funDef`
+  hoisting/scoping from every pass (each pass now runs over `main` and each function body). To
+  keep output deterministic despite `HashMap`'s unordered iteration, `toYul` **sorts functions
+  by name** before emitting them at the top of the code block (Yul hoisting then makes them
+  mutually visible). *Assumption:* distinct source function names (solc `--via-ir` guarantees
+  this; `uniquify` maintains it). A colliding name would overwrite in the table — handled by a
+  future rename-on-flatten if the corpus needs it.
 - **Named** variables (erasure to Yul is trivial). The intrinsically-scoped `Var Γ`
   refinement (à la `Optimizer.Core.Term`) is deferred to proof time.
 

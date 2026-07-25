@@ -56,7 +56,6 @@ partial def structuralStmt : Stmt → List Stmt
       let body' := structuralBlock body
       if body'.isEmpty then [] else [.block body']
   | .loop post body => [.loop (structuralBlock post) (structuralBlock body)]
-  | .funDef n ps rs body => [.funDef n ps rs (structuralBlock body)]
   | s => [s]
 
 /-- Structurally simplify a block. -/
@@ -80,7 +79,6 @@ mutual
 /-- Drop statements after the first terminator in every block (recursively). -/
 partial def dropUnreachableStmt : Stmt → Stmt
   | .block b           => .block (dropUnreachableBlock b)
-  | .funDef n ps rs b  => .funDef n ps rs (dropUnreachableBlock b)
   | .cond c b          => .cond c (dropUnreachableBlock b)
   | .switch c cs d     => .switch c (cs.map (fun p => (p.1, dropUnreachableBlock p.2))) (d.map dropUnreachableBlock)
   | .loop post body    => .loop (dropUnreachableBlock post) (dropUnreachableBlock body)
@@ -92,7 +90,10 @@ partial def dropUnreachableBlock : Block → Block
       if isTerminator s' then [s'] else s' :: dropUnreachableBlock ss
 end
 
-/-- Structural simplification + unreachable-code elimination over a whole program. -/
+/-- Structural simplification + unreachable-code elimination over a block. -/
 def structural (b : Block) : Block := dropUnreachableBlock (structuralBlock b)
+
+/-- Structural simplification over a whole program: every function body and `main`. -/
+def structuralProgram (p : Program) : Program := p.mapBodies structural
 
 end YulIR

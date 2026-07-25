@@ -78,12 +78,6 @@ partial def uniqStmt (ids : List Ident) (σ : Ren) : Stmt → StateM Nat (Stmt �
   | .block body => do
       let body' ← uniqBlock ids σ body
       pure (.block body', σ)
-  | .funDef name ps rs body => do
-      let ps' ← freshNames ids ps
-      let rs' ← freshNames ids rs
-      let σbody := (ps.zip ps') ++ (rs.zip rs')   -- callee sees only its params/rets
-      let body' ← uniqBlock ids σbody body
-      pure (.funDef name ps' rs' body', σ)
   | s => pure (s, σ)
 
 /-- Uniquify a block, threading the renaming across its statements. -/
@@ -111,5 +105,22 @@ end
 
 /-- Rename every variable in a block to a globally unique name. -/
 def uniquify (b : Block) : Block := (uniqBlock (allIdents b) [] b).run' 0
+
+/-- Rename every variable in a whole `Program` to a program-wide unique name. Each function's
+params, returns, and body locals are freshened (a callee sees only its own params/rets); `main` is
+freshened too. Function *names* are left unchanged (calls resolve by name; assumed unique). A single
+shared counter over all functions and `main` keeps every fresh name distinct. -/
+def uniquifyProgram (p : Program) : Program :=
+  let ids := allIdentsProgram p
+  (do
+    let funcs' ← p.funList.mapM (fun (nf : Ident × Function) => do
+      let fn := nf.2
+      let ps' ← freshNames ids fn.params
+      let rs' ← freshNames ids fn.rets
+      let body' ← uniqBlock ids ((fn.params.zip ps') ++ (fn.rets.zip rs')) fn.body
+      pure ((nf.1, { fn with params := ps', rets := rs', body := body' }) : Ident × Function))
+    let main' ← uniqBlock ids [] p.main
+    pure ({ functions := Std.HashMap.ofList funcs', main := main' } : Program)
+  ).run' 0
 
 end YulIR

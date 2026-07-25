@@ -83,7 +83,6 @@ mutual
 /-- Apply `simplifyRhs` to every right-hand side in a statement, recursively. -/
 partial def simplifyStmt : Stmt → Stmt
   | .block body        => .block (simplifyBlock body)
-  | .funDef n ps rs b  => .funDef n ps rs (simplifyBlock b)
   | .letD vars rhs     => .letD vars (simplifyRhs rhs)
   | .assign vars rhs   => .assign vars (simplifyRhs rhs)
   | .effect rhs        => .effect (simplifyRhs rhs)
@@ -97,5 +96,8 @@ partial def simplifyBlock : Block → Block
   | []      => []
   | s :: ss => simplifyStmt s :: simplifyBlock ss
 end
+
+/-- Simplify a whole program: every function body and `main`. -/
+def simplify (p : Program) : Program := p.mapBodies simplifyBlock
 
 end YulIR

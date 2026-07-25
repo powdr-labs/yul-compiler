@@ -38,7 +38,6 @@ mutual
 /-- Erase an IR statement to a Yul statement. -/
 partial def Stmt.toYul : Stmt → YulSemantics.Stmt Op
   | .block body        => .block (Stmt.toYulBlock body)
-  | .funDef n ps rs b  => .funDef n ps rs (Stmt.toYulBlock b)
   | .letD vars rhs     => .letDecl vars (some rhs.toYul)
   | .assign vars rhs   => .assign vars rhs.toYul
   | .effect rhs        => .exprStmt rhs.toYul
@@ -57,7 +56,15 @@ partial def Stmt.toYulBlock : Block → YulSemantics.Block Op
   | s :: ss => s.toYul :: Stmt.toYulBlock ss
 end
 
-/-- Erase a whole IR program (top-level block) to a Yul block. -/
-def toYul (b : Block) : YulSemantics.Block Op := Stmt.toYulBlock b
+/-- Erase a named function to a Yul `funDef` statement. -/
+def Function.toYul (name : Ident) (f : Function) : YulSemantics.Stmt Op :=
+  .funDef name f.params f.rets (Stmt.toYulBlock f.body)
+
+/-- Erase a whole IR `Program` to a Yul block: emit the functions — **sorted by name**, so the
+`HashMap`'s nondeterministic iteration order cannot affect output — at the top of the block, where
+Yul's hoisting makes them mutually visible throughout, then the `main` statements. -/
+def toYul (p : Program) : YulSemantics.Block Op :=
+  let sorted := p.funList.mergeSort (fun a b => a.1 ≤ b.1)
+  sorted.map (fun (n, f) => Function.toYul n f) ++ Stmt.toYulBlock p.main
 
 end YulIR

@@ -35,7 +35,6 @@ mutual
 partial def stmtMutated : Stmt → List Ident
   | .assign vars _      => vars
   | .block b            => blockMutated b
-  | .funDef _ _ _ b     => blockMutated b
   | .cond _ b           => blockMutated b
   | .switch _ cs d      => cs.flatMap (fun p => blockMutated p.2) ++ (d.map blockMutated).getD []
   | .loop post body     => blockMutated post ++ blockMutated body
@@ -58,7 +57,6 @@ partial def stmtUsed : Stmt → List Ident
   | .switch c cs d      => c.var?.toList ++ cs.flatMap (fun p => blockUsed p.2) ++ (d.map blockUsed).getD []
   | .loop post body     => blockUsed post ++ blockUsed body
   | .block b            => blockUsed b
-  | .funDef _ _ _ b     => blockUsed b
   | _                   => []
 partial def blockUsed : Block → List Ident
   | []      => []
@@ -78,7 +76,6 @@ partial def stmtIdents : Stmt → List Ident
   | .switch c cs d      => c.var?.toList ++ cs.flatMap (fun p => blockIdents p.2) ++ (d.map blockIdents).getD []
   | .loop post body     => blockIdents post ++ blockIdents body
   | .block b            => blockIdents b
-  | .funDef n ps rs b   => n :: (ps ++ rs ++ blockIdents b)
   | _                   => []
 partial def blockIdents : Block → List Ident
   | []      => []
@@ -87,6 +84,16 @@ end
 
 /-- Every identifier in the program (used to choose fresh, collision-free names). -/
 def allIdents (b : Block) : List Ident := blockIdents b
+
+/-- Variables ever reassigned anywhere in a whole `Program` (all function bodies + `main`). -/
+def mutatedVarsProgram (p : Program) : List Ident :=
+  (p.funList.flatMap (fun (_, fn) => blockMutated fn.body)) ++ blockMutated p.main
+
+/-- Every identifier occurring anywhere in a whole `Program` — function names, params, rets, and
+all body/main identifiers (used to pick program-wide collision-free fresh names). -/
+def allIdentsProgram (p : Program) : List Ident :=
+  (p.funList.flatMap (fun (n, fn) => n :: (fn.params ++ fn.rets ++ blockIdents fn.body)))
+    ++ blockIdents p.main
 
 mutual
 /-- Variables *read* by a statement (its rhs/condition operands only — not assign targets or
@@ -99,7 +106,6 @@ partial def stmtReads : Stmt → List Ident
   | .switch c cs d      => c.var?.toList ++ cs.flatMap (fun p => blockReads p.2) ++ (d.map blockReads).getD []
   | .loop post body     => blockReads post ++ blockReads body
   | .block b            => blockReads b
-  | .funDef _ _ _ b     => blockReads b
   | _                   => []
 partial def blockReads : Block → List Ident
   | []      => []

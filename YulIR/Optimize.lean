@@ -22,15 +22,16 @@ behaviour-preserving IR→IR transformation (validated by the interpreter check 
 
 namespace YulIR
 
-/-- One optimization round: value numbering, structural simplification, dead-store and
-dead-code elimination. -/
-def optRound (b : Block) : Block := deadCode (deadStore (structural (valueNumber b)))
+/-- One optimization round over a whole program: value numbering, structural simplification,
+dead-store and dead-code elimination (each applied to every function body and `main`). -/
+def optRound (p : Program) : Program :=
+  deadCodeProgram (deadStoreProgram (structuralProgram (valueNumberProgram p)))
 
-/-- The IR optimization pipeline on a top-level block. -/
-def optimize (b : Block) : Block := optRound (optRound (uniquify b))
+/-- The IR optimization pipeline on a `Program`. -/
+def optimize (p : Program) : Program := optRound (optRound (uniquifyProgram p))
 
-/-- The IR optimization pipeline on an object (optimizes every code block). -/
+/-- The IR optimization pipeline on an object (optimizes its program and every sub-object). -/
 partial def optimizeObject : Object → Object
-  | .mk name code subs data => .mk name (optimize code) (subs.map optimizeObject) data
+  | .mk name program subs data => .mk name (optimize program) (subs.map optimizeObject) data
 
 end YulIR

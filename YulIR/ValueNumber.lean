@@ -101,12 +101,18 @@ partial def vnBlock (mutated : List Ident) (env : VEnv) (avail : Avail) : Block 
           :: vnBlock mutated env avail rest
     | .block body =>
         .block (vnBlock mutated env avail body) :: vnBlock mutated env avail rest
-    | .funDef n ps rs body =>
-        .funDef n ps rs (vnBlock mutated [] [] body) :: vnBlock mutated env avail rest
     | s => s :: vnBlock mutated env avail rest
 end
 
-/-- Value numbering over a whole program (assumes unique names — run `uniquify` first). -/
+/-- Value numbering over a block, given the program-wide mutated-variable set. -/
+def valueNumberWith (mutated : List Ident) (b : Block) : Block := vnBlock mutated [] [] b
+
+/-- Value numbering over a block (self-contained; assumes unique names). -/
 def valueNumber (b : Block) : Block := vnBlock (mutatedVars b) [] [] b
+
+/-- Value numbering over a whole program (assumes unique names — run `uniquify` first). Each
+function body and `main` is a fresh scope; immutability is judged program-wide. -/
+def valueNumberProgram (p : Program) : Program :=
+  p.mapBodies (valueNumberWith (mutatedVarsProgram p))
 
 end YulIR

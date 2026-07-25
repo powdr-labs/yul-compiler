@@ -27,14 +27,22 @@ open YulSemantics (Ident Literal)
 abbrev YExpr := YulSemantics.Expr Op
 abbrev YStmt := YulSemantics.Stmt Op
 
+/-- Translation state: a fresh-name counter plus the accumulating function table (keyed by name)
+of functions lifted out of the statement stream. -/
+abbrev OfM := StateM (Nat × Std.HashMap Ident Function)
+
 /-- Allocate a fresh temporary name. -/
-def fresh : StateM Nat Ident := fun n => (s!"_ir_{n}", n + 1)
+def fresh : OfM Ident := fun (n, fs) => (s!"_ir_{n}", (n + 1, fs))
+
+/-- Record a function (keyed by name) lifted to the top level. Assumes distinct source names; a
+collision would overwrite (see `YulIR.OfYul` module note / `uniquify`). -/
+def emitFn (name : Ident) (f : Function) : OfM Unit := fun (n, fs) => ((), (n, fs.insert name f))
 
 mutual
 
 /-- Flatten a Yul expression used in **argument position** (must be single-valued):
 returns the `let`-temporaries to emit (in evaluation order) and the resulting atom. -/
-partial def flattenExpr : YExpr → StateM Nat (Block × Atom)
+partial def flattenExpr : YExpr → OfM (Block × Atom)
   | .lit l => pure ([], .lit l)
   | .var x => pure ([], .var x)
   | .builtin op args => do
@@ -48,7 +56,7 @@ partial def flattenExpr : YExpr → StateM Nat (Block × Atom)
 
 /-- Flatten an argument list right-to-left. The emitted bindings are in evaluation
 order (rightmost argument first); the returned atoms are in source (left-to-right) order. -/
-partial def flattenArgs : List YExpr → StateM Nat (Block × List Atom)
+partial def flattenArgs : List YExpr → OfM (Block × List Atom)
   | [] => pure ([], [])
   | e :: rest => do
       let (restBinds, restAtoms) ← flattenArgs rest
@@ -57,7 +65,7 @@ partial def flattenArgs : List YExpr → StateM Nat (Block × List Atom)
 
 /-- Flatten an expression in **rhs position** (`let`/`assign`/`exprStmt`), where a
 multi-result user call is allowed and must *not* be lifted into a temporary. -/
-partial def rhsOfExpr : YExpr → StateM Nat (Block × Rhs)
+partial def rhsOfExpr : YExpr → OfM (Block × Rhs)
   | .lit l => pure ([], .atom (.lit l))
   | .var x => pure ([], .atom (.var x))
   | .builtin op args => do
@@ -68,13 +76,17 @@ partial def rhsOfExpr : YExpr → StateM Nat (Block × Rhs)
       pure (binds, .call fn atoms)
 
 /-- Translate one Yul statement into a sequence of IR statements. -/
-partial def stmtOfYul : YStmt → StateM Nat Block
+partial def stmtOfYul : YStmt → OfM Block
   | .block body => do
       let b ← blockOfYul body
       pure [Stmt.block b]
   | .funDef n ps rs body => do
+      -- lift the function to the top level; it leaves no statement behind. Nested `funDef`s in
+      -- `body` are lifted too (recursively, by `blockOfYul`). Sound because Yul functions capture
+      -- no enclosing variables, so flattening to one scope changes no call resolution.
       let b ← blockOfYul body
-      pure [Stmt.funDef n ps rs b]
+      emitFn n { params := ps, rets := rs, body := b }
+      pure []
   | .letDecl vars none =>
       -- zero-initialise each declared variable
       pure (vars.map (fun v => Stmt.letD [v] (.atom (.lit (.number 0)))))
@@ -116,7 +128,7 @@ partial def stmtOfYul : YStmt → StateM Nat Block
   | .leave => pure [Stmt.leave]
 
 /-- Translate a Yul block. -/
-partial def blockOfYul : List YStmt → StateM Nat Block
+partial def blockOfYul : List YStmt → OfM Block
   | [] => pure []
   | s :: ss => do
       let a ← stmtOfYul s
@@ -124,7 +136,7 @@ partial def blockOfYul : List YStmt → StateM Nat Block
       pure (a ++ b)
 
 /-- Translate `switch` cases. -/
-partial def casesOfYul : List (Literal × List YStmt) → StateM Nat (List (Literal × Block))
+partial def casesOfYul : List (Literal × List YStmt) → OfM (List (Literal × Block))
   | [] => pure []
   | (l, b) :: rest => do
       let b' ← blockOfYul b
@@ -132,7 +144,7 @@ partial def casesOfYul : List (Literal × List YStmt) → StateM Nat (List (Lite
       pure ((l, b') :: rest')
 
 /-- Translate an optional `default` block. -/
-partial def dfltOfYul : Option (List YStmt) → StateM Nat (Option Block)
+partial def dfltOfYul : Option (List YStmt) → OfM (Option Block)
   | none => pure none
   | some b => do
       let b' ← blockOfYul b
@@ -140,7 +152,10 @@ partial def dfltOfYul : Option (List YStmt) → StateM Nat (Option Block)
 
 end
 
-/-- Translate a whole Yul program (top-level block) into the IR. -/
-def ofYul (b : YulSemantics.Block Op) : Block := (blockOfYul b).run' 0
+/-- Translate a whole Yul program (top-level block) into the IR `Program`: functions are lifted
+into a flat top-level list; the remaining statements form `main`. -/
+def ofYul (b : YulSemantics.Block Op) : Program :=
+  let (main, (_, fs)) := (blockOfYul b).run (0, ∅)
+  { functions := fs, main := main }
 
 end YulIR

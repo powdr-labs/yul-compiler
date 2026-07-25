@@ -19,19 +19,20 @@ namespace YulIR
 
 open YulSemantics (Data)
 
-/-- An IR object: a named code block, nested sub-objects, and named data segments.
-Mirrors `YulSemantics.Object` with the code block in IR form. -/
+/-- An IR object: a named `Program` (its lifted functions + `main` code), nested sub-objects, and
+named data segments. Mirrors `YulSemantics.Object`, but the object's code is an IR `Program` — its
+functions have been lifted out of the code block into `Program.functions`. -/
 inductive Object
-  | mk (name : String) (code : Block) (subObjects : List Object)
+  | mk (name : String) (program : Program) (subObjects : List Object)
        (data : List (String × Data))
-  deriving Repr, Inhabited
+  deriving Inhabited
 
 namespace Object
 
 /-- The object's name. -/
 def name : Object → String                 | .mk n _ _ _ => n
-/-- The object's IR code block. -/
-def codeBlock : Object → Block             | .mk _ c _ _ => c
+/-- The object's IR program (functions + main). -/
+def program : Object → Program             | .mk _ p _ _ => p
 /-- The object's nested sub-objects. -/
 def subObjects : Object → List Object      | .mk _ _ s _ => s
 /-- The object's named data segments. -/
@@ -45,6 +46,6 @@ partial def ofYulObject : YulSemantics.Object Op → Object
 
 /-- Erase an IR object back to Yul (recursively through sub-objects). -/
 partial def toYulObject : Object → YulSemantics.Object Op
-  | .mk name code subs data => .mk name (toYul code) (subs.map toYulObject) data
+  | .mk name program subs data => .mk name (toYul program) (subs.map toYulObject) data
 
 end YulIR

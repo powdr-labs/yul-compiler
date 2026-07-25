@@ -81,10 +81,6 @@ partial def liveStmt (c : LCtx) (liveOut : List Ident) : Stmt → (Option Stmt �
   | .block body =>
       let (body', liveBody) := liveBlock c liveOut body
       (some (.block body'), liveBody)
-  | .funDef n ps rs body =>
-      -- a fresh scope: rets live at the end and protected; can't break/continue across it
-      let (body', _) := liveBlock { prot := rs, brk := [], cont := [] } rs body
-      (some (.funDef n ps rs body'), liveOut)         -- defining a function changes no caller var
   | .«break»    => (some .«break», c.brk)              -- successor is after the loop
   | .«continue» => (some .«continue», c.cont)          -- successor is the loop head
   | .leave      => (some .leave, c.prot)               -- successor is function end (rets observed)
@@ -100,7 +96,14 @@ partial def liveBlock (c : LCtx) (liveOut : List Ident) : Block → (Block × Li
       | none    => (rest', liveIn)
 end
 
-/-- Dead-store elimination over a whole program (top level observes no variables). -/
+/-- Dead-store elimination over a block (top level observes no variables). -/
 def deadStore (b : Block) : Block := (liveBlock { prot := [], brk := [], cont := [] } [] b).1
+
+/-- Dead-store elimination over a whole program. `main` observes no variables at the end; each
+function body is analysed with its return variables live (and protected). -/
+def deadStoreProgram (p : Program) : Program :=
+  { (p.mapFunctions (fun _ fn =>
+      { fn with body := (liveBlock { prot := fn.rets, brk := [], cont := [] } fn.rets fn.body).1 }))
+    with main := deadStore p.main }
 
 end YulIR
