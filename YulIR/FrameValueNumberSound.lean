@@ -385,3 +385,273 @@ theorem resolveAtom_refs {imm : Fin n → Bool} {W} {env : List (Fin n × Atom n
           obtain ⟨-, -, h3, h4⟩ := href.1 p (List.mem_of_find?_eq_some hf)
           exact ⟨h3, h4⟩
 
+/-- A resolved atom that `recordWrite` accepts (`isImmAtom` on the *resolved* form) has anchored
+references, given the original passed the checker's rhs condition. -/
+theorem resolveAtom_refs' {imm : Fin n → Bool} {W} {env : List (Fin n × Atom n)} {avail}
+    (href : RefsOK imm W env avail) {a : Atom n}
+    (himm : isImmAtom imm (resolveAtom env a) = true)
+    (ha : ∀ s, a = .slot s → imm s = true → s ∈ W) : AtomRefs imm W (resolveAtom env a) := by
+  cases a with
+  | lit l => exact ⟨rfl, fun s hs => by simp [resolveAtom, atomSlot?] at hs⟩
+  | slot s =>
+      simp only [resolveAtom] at himm ⊢
+      cases hf : env.find? (fun p => p.1 == s) with
+      | none =>
+          rw [hf] at himm
+          exact ⟨himm, fun i hi => by
+            simp only [atomSlot?, Option.some.injEq] at hi
+            exact hi ▸ ha s rfl (by simpa [isImmAtom] using himm)⟩
+      | some p =>
+          obtain ⟨-, -, h3, h4⟩ := href.1 p (List.mem_of_find?_eq_some hf)
+          exact ⟨h3, h4⟩
+
+/-! ### Extending the invariant with a fresh entry -/
+
+/-- Prepend a valid, anchored copy/constant entry. -/
+theorem VNInv.consEnv {funs : Funs} {imm : Fin n → Bool} {W : List (Fin n)} {env avail}
+    {σ : Store n} (h : VNInv funs imm W env avail σ) {d : Fin n} {a : Atom n}
+    (himm : imm d = true) (hdW : d ∈ W) (har : AtomRefs imm W a)
+    (hval : σ d = evalAtom σ a) : VNInv funs imm W ((d, a) :: env) avail σ := by
+  refine ⟨h.wImm, ⟨fun p hp => ?_, h.refs.2⟩, fun p hp => ?_, h.avail_valid⟩
+  · rcases List.mem_cons.mp hp with rfl | hmem
+    · exact ⟨himm, hdW, har⟩
+    · exact h.refs.1 p hmem
+  · rcases List.mem_cons.mp hp with rfl | hmem
+    · exact hval
+    · exact h.env_valid p hmem
+
+/-- Prepend a valid, anchored available-expression entry. -/
+theorem VNInv.consAvail {funs : Funs} {imm : Fin n → Bool} {W : List (Fin n)} {env avail}
+    {σ : Store n} (h : VNInv funs imm W env avail σ) {op} {args : List (Atom n)} {w : Fin n}
+    (himm : imm w = true) (hwW : w ∈ W) (hpure : Op.isPure op = true)
+    (hargs : ∀ a ∈ args, AtomRefs imm W a)
+    (hval : ∀ st, ExecRhs funs σ st (.builtin op args) (.ok [σ w] st)) :
+    VNInv funs imm W env ((Rhs.builtin op args, w) :: avail) σ := by
+  refine ⟨h.wImm, ⟨h.refs.1, fun q hq => ?_⟩, h.env_valid, fun q hq st => ?_⟩
+  · rcases List.mem_cons.mp hq with rfl | hmem
+    · exact ⟨himm, hwW, op, args, rfl, hpure, hargs⟩
+    · exact h.refs.2 q hmem
+  · rcases List.mem_cons.mp hq with rfl | hmem
+    · exact hval st
+    · exact h.avail_valid q hmem st
+
+/-! ### Conditional loop simulation -/
+
+/-- One-directional conditional loop simulation: if body and post forward-simulate under the
+invariant `P` (with `AgreeOn W` re-establishing it via `hP`), so does the whole loop. -/
+theorem loop_imp_sim {funs : Funs} {P : Store n → Prop} {W : List (Fin n)}
+    {postA postB bodyA bodyB : Block n}
+    (hP : ∀ {σ σ' : Store n}, AgreeOn W σ σ' → P σ → P σ')
+    (hbody : ∀ σ st σ' st' o, P σ → ExecBlock funs σ st bodyA σ' st' o →
+        ExecBlock funs σ st bodyB σ' st' o ∧ AgreeOn W σ σ')
+    (hpost : ∀ σ st σ' st' o, P σ → ExecBlock funs σ st postA σ' st' o →
+        ExecBlock funs σ st postB σ' st' o ∧ AgreeOn W σ σ') :
+    ∀ {σ : Store n} {st code res}, Step funs σ st code res → code = .loop postA bodyA → P σ →
+      ∀ {σ' st' o}, res = .sres σ' st' o →
+        Step funs σ st (.loop postB bodyB) (.sres σ' st' o) ∧ AgreeOn W σ σ' := by
+  intro σ st code res h
+  induction h with
+  | loopBrk hb =>
+      rintro hcode hp σ' st' o hres
+      injection hcode with h1 h2; subst h1; subst h2
+      injection hres with h3 h4 h5; subst h3; subst h4; subst h5
+      obtain ⟨hb', hag⟩ := hbody _ _ _ _ _ hp hb
+      exact ⟨.loopBrk hb', hag⟩
+  | loopLeave hb =>
+      rintro hcode hp σ' st' o hres
+      injection hcode with h1 h2; subst h1; subst h2
+      injection hres with h3 h4 h5; subst h3; subst h4; subst h5
+      obtain ⟨hb', hag⟩ := hbody _ _ _ _ _ hp hb
+      exact ⟨.loopLeave hb', hag⟩
+  | loopHalt hb =>
+      rintro hcode hp σ' st' o hres
+      injection hcode with h1 h2; subst h1; subst h2
+      injection hres with h3 h4 h5; subst h3; subst h4; subst h5
+      obtain ⟨hb', hag⟩ := hbody _ _ _ _ _ hp hb
+      exact ⟨.loopHalt hb', hag⟩
+  | loopStep hb hob hp hl ihb ihp ihl =>
+      rintro hcode hpσ σ' st' o hres
+      injection hcode with h1 h2; subst h1; subst h2
+      injection hres with h3 h4 h5; subst h3; subst h4; subst h5
+      obtain ⟨hb', hag₁⟩ := hbody _ _ _ _ _ hpσ hb
+      have hp₁ := hP hag₁ hpσ
+      obtain ⟨hp', hag₂⟩ := hpost _ _ _ _ _ hp₁ hp
+      have hp₂ := hP hag₂ hp₁
+      obtain ⟨hl', hag₃⟩ := ihl @hP hbody hpost rfl hp₂ rfl
+      exact ⟨.loopStep hb' hob hp' hl', (hag₁.trans hag₂).trans hag₃⟩
+  | loopPostStop hb hob hp hne ihb ihp =>
+      rintro hcode hpσ σ' st' o hres
+      injection hcode with h1 h2; subst h1; subst h2
+      injection hres with h3 h4 h5; subst h3; subst h4; subst h5
+      obtain ⟨hb', hag₁⟩ := hbody _ _ _ _ _ hpσ hb
+      have hp₁ := hP hag₁ hpσ
+      obtain ⟨hp', hag₂⟩ := hpost _ _ _ _ _ hp₁ hp
+      exact ⟨.loopPostStop hb' hob hp' hne, hag₁.trans hag₂⟩
+  | _ => exact fun hcode => nomatch hcode
+
+
+/-! ### The record step -/
+
+/-- Extension of an atom's anchoring to a larger written-set. -/
+theorem AtomRefs.mono {imm : Fin n → Bool} {W W' : List (Fin n)} (hsub : ∀ w ∈ W, w ∈ W')
+    {a : Atom n} (h : AtomRefs imm W a) : AtomRefs imm W' a :=
+  ⟨h.1, fun s hs => hsub s (h.2 s hs)⟩
+
+/-- Reading the just-written slot. -/
+theorem updMany_single_self (σ : Store n) (d : Fin n) (v : U256) :
+    updMany σ [d] [v] d = v := by
+  show upd σ d v d = v
+  simp [upd]
+
+/-- **What a single `recordWrite` does, semantically**: the emitted rhs executes exactly like the
+original statement's rhs, and on normal completion the extended maps satisfy the invariant at the
+updated store, with `d` joined into the written-set. -/
+theorem recordWrite_sim {funs : Funs} {imm : Fin n → Bool} {W : List (Fin n)}
+    {env avail} {σ : Store n} (hinv : VNInv funs imm W env avail σ)
+    {d : Fin n} (himm : imm d = true) (hdW : d ∉ W)
+    {rhs : Rhs n} (hsafe : vnSafeRhs imm W rhs = true)
+    {env' avail' out}
+    (hrec : recordWrite imm env avail d (resolveRhs env rhs) = (env', avail', out)) :
+    (∀ st r, ExecRhs funs σ st out r ↔ ExecRhs funs σ st rhs r) ∧
+    (∀ st vs st₁, ExecRhs funs σ st rhs (.ok vs st₁) →
+      VNInv funs imm (d :: W) env' avail' (updMany σ [d] vs)) := by
+  have hsub : ∀ w ∈ W, w ∈ (d :: W) := fun w hw => List.mem_cons_of_mem d hw
+  have hwImm' : ∀ w ∈ (d :: W), imm w = true := by
+    intro w hw
+    rcases List.mem_cons.mp hw with rfl | hmem
+    · exact himm
+    · exact hinv.wImm w hmem
+  have hagAny : ∀ vs, AgreeOn W σ (updMany σ [d] vs) := by
+    intro vs
+    refine AgreeOn.updMany_out ?_ vs
+    intro x hx
+    rw [List.mem_singleton] at hx
+    exact hx ▸ hdW
+  have htrans : ∀ vs, VNInv funs imm (d :: W) env avail (updMany σ [d] vs) :=
+    fun vs => hinv.transport (hagAny vs) hsub hwImm'
+  unfold recordWrite at hrec
+  rw [himm] at hrec
+  simp only [Bool.not_true, Bool.false_eq_true, if_false] at hrec
+  cases rhs with
+  | atom a₀ =>
+      simp only [resolveRhs] at hrec
+      split at hrec
+      · -- recorded copy/constant: env grows by (d, resolveAtom env a₀)
+        next himm_a =>
+        cases hrec
+        constructor
+        · intro st r; exact resolveRhs_exec (rhs := .atom a₀) hinv.env_valid
+        · intro st vs st₁ hex
+          have hex' : ExecRhs funs σ st (.atom (resolveAtom env a₀)) (.ok vs st₁) :=
+            (resolveRhs_exec (rhs := .atom a₀) hinv.env_valid).mpr hex
+          cases hex'
+          have hsl : ∀ s, a₀ = .slot s → imm s = true → s ∈ W := by
+            intro s hs himms
+            subst hs
+            simp only [vnSafeRhs, himms, Bool.not_true, Bool.false_or] at hsafe
+            rwa [List.contains_eq_mem, decide_eq_true_eq] at hsafe
+          have harW := resolveAtom_refs' hinv.refs himm_a hsl
+          refine (htrans _).consEnv himm (List.mem_cons_self ..) (harW.mono hsub) ?_
+          rw [updMany_single_self]
+          exact evalAtom_agree (hagAny _) (fun i hi => harW.2 i hi)
+      · -- unrecorded atom: maps unchanged
+        cases hrec
+        exact ⟨fun st r => resolveRhs_exec (rhs := .atom a₀) hinv.env_valid,
+          fun st vs st₁ _ => htrans vs⟩
+  | builtin op args₀ =>
+      simp only [resolveRhs] at hrec
+      split at hrec
+      · next hcond =>
+        obtain ⟨hpure, hallres⟩ := Bool.and_eq_true_iff.mp hcond
+        have hallorig : ∀ a ∈ args₀, isImmAtom imm a = true := by
+          intro a ha
+          have := List.all_eq_true.mp (by simpa only [List.all_map] using hallres) a ha
+          rwa [Function.comp, resolve_imm_eq hinv.refs] at this
+        have hcondorig : (Op.isPure op && args₀.all (isImmAtom imm)) = true :=
+          Bool.and_eq_true_iff.mpr ⟨hpure, List.all_eq_true.mpr hallorig⟩
+        rw [vnSafeRhs, hcondorig, Bool.not_true, Bool.false_or] at hsafe
+        obtain ⟨hsafeW, hprobe⟩ := Bool.and_eq_true_iff.mp hsafe
+        have hargrefs : ∀ a ∈ args₀.map (resolveAtom env), AtomRefs imm W a := by
+          intro a ha
+          obtain ⟨a₀', ha₀, rfl⟩ := List.mem_map.mp ha
+          refine resolveAtom_refs hinv.refs ?_
+          intro s hs
+          subst hs
+          refine ⟨by simpa [isImmAtom] using hallorig _ ha₀, ?_⟩
+          have hc := List.all_eq_true.mp hsafeW _ ha₀
+          simp only at hc
+          rwa [List.contains_eq_mem, decide_eq_true_eq] at hc
+        split at hrec
+        · -- CSE hit: copy the earlier result
+          next e w hfind =>
+          cases hrec
+          have hmem := List.mem_of_find?_eq_some hfind
+          have hkey : e = Rhs.builtin op (args₀.map (resolveAtom env)) :=
+            rhs_eq_of_beq (by simpa using List.find?_some hfind)
+          obtain ⟨himmw, hwW, -⟩ := hinv.refs.2 (e, w) hmem
+          have hav : ∀ st, ExecRhs funs σ st
+              (.builtin op (args₀.map (resolveAtom env))) (.ok [σ w] st) :=
+            fun st => hkey ▸ hinv.avail_valid (e, w) hmem st
+          constructor
+          · intro st r
+            constructor
+            · intro hout
+              cases hout
+              exact (resolveRhs_exec (rhs := .builtin op args₀) hinv.env_valid).mp (hav st)
+            · intro horig
+              have h' := (resolveRhs_exec (rhs := .builtin op args₀) hinv.env_valid).mpr horig
+              cases h' with
+              | builtin hb =>
+                  cases hav st with
+                  | builtin hb₀ =>
+                      rw [builtin_det hb hb₀]
+                      exact Step.atom
+          · intro st vs st₁ hex
+            have h' := (resolveRhs_exec (rhs := .builtin op args₀) hinv.env_valid).mpr hex
+            cases h' with
+            | builtin hb =>
+                cases hav st with
+                | builtin hb₀ =>
+                    have heq := builtin_det hb hb₀
+                    injection heq with h1 h2
+                    subst h1
+                    subst h2
+                    refine (htrans _).consEnv himm (List.mem_cons_self ..) ⟨?_, ?_⟩ ?_
+                    · simpa [isImmAtom] using himmw
+                    · intro s hs
+                      simp only [atomSlot?, Option.some.injEq] at hs
+                      exact hs ▸ hsub w hwW
+                    · rw [updMany_single_self]
+                      exact hagAny _ w hwW
+        · -- CSE miss: memoise into avail
+          next hfind =>
+          cases hrec
+          constructor
+          · intro st r; exact resolveRhs_exec (rhs := .builtin op args₀) hinv.env_valid
+          · intro st vs st₁ hex
+            have h' := (resolveRhs_exec (rhs := .builtin op args₀) hinv.env_valid).mpr hex
+            cases h' with
+            | builtin hb =>
+                obtain ⟨outs, houts⟩ := pure_builtin_ok hpure hb
+                injection houts with h1 h2
+                subst h2
+                obtain ⟨v, rfl⟩ := pure_ok_single (st := st₁) hpure
+                  (by simpa only [List.length_map] using hprobe) hb
+                refine (htrans _).consAvail himm (List.mem_cons_self ..) hpure
+                  (fun a ha => (hargrefs a ha).mono hsub) ?_
+                intro st''
+                have hmapeq : (args₀.map (resolveAtom env)).map (evalAtom (updMany σ [d] [v]))
+                    = (args₀.map (resolveAtom env)).map (evalAtom σ) :=
+                  (map_evalAtom_agree (hagAny _) (atomRefs_slots hargrefs)).symm
+                refine Step.builtin ?_
+                rw [hmapeq, updMany_single_self]
+                exact pure_st_indep hpure hb st''
+      · -- unrecorded builtin
+        cases hrec
+        exact ⟨fun st r => resolveRhs_exec (rhs := .builtin op args₀) hinv.env_valid,
+          fun st vs st₁ _ => htrans vs⟩
+  | call fn args₀ =>
+      simp only [resolveRhs] at hrec
+      cases hrec
+      exact ⟨fun st r => resolveRhs_exec (rhs := .call fn args₀) hinv.env_valid,
+        fun st vs st₁ _ => htrans vs⟩
