@@ -3,11 +3,13 @@ import YulIR.Effects
 
 set_option warningAsError true
 /-!
-# YulIR.FinFrameSketch — a design sketch of the `Fin n`-frame IR
+# YulIR.Frame — the `Fin n`-frame IR (proof-oriented)
 
-**Not wired into the pipeline.** A self-contained sketch to make the ergonomics of the "numbered
-local frame" representation concrete (see `DESIGN.md`). Companion `YulIR.FinFrameSketchPasses`
-implements two real passes on it — value numbering and an inliner — to measure the friction.
+The intrinsically-scoped IR: variables are slot indices `Fin n` into a per-function *frame* of `n`
+slots, so well-scopedness and uniqueness are **type guarantees** and the value environment is total.
+`YulIR.FrameTranslate` gives `ofYul`/`toYul` (Yul ↔ frame, via the named IR), `YulIR.FrameSem` a
+native executable semantics, and `YulIR.FramePasses` sample passes. Adequacy of `ofYul`/`toYul`
+against the Yul semantics is deferred.
 
 ## The idea
 
@@ -165,38 +167,6 @@ end
 the named IR's "never reassigned": a once-written slot inside a loop is only *tracked* by value
 numbering when its operands are themselves immutable, hence loop-invariant. -/
 def isConstant (b : Block n) (i : Fin n) : Bool := (blockWrites b |>.count i) ≤ 1
-
-/-! ### Bridge to the named IR -/
-
-/-- The named-IR name for slot `i`. -/
-def slotName (i : Fin n) : Ident := s!"_s{i.val}"
-
-def eraseAtom : Atom n → YulIR.Atom
-  | .lit l  => .lit l
-  | .slot i => .var (slotName i)
-
-def eraseRhs : Rhs n → YulIR.Rhs
-  | .atom a       => .atom (eraseAtom a)
-  | .builtin op a => .builtin op (a.map eraseAtom)
-  | .call fn a    => .call fn (a.map eraseAtom)
-
-mutual
-/-- Erase a statement: `write` becomes `assign` (slots are pre-declared by the frame preamble —
-`eraseFunction` prepends zero-init `let`s for the non-param/ret slots). -/
-partial def eraseStmt : Stmt n → YulIR.Stmt
-  | .write d rhs      => .assign [slotName d] (eraseRhs rhs)
-  | .writeMany ds rhs => .assign (ds.map slotName) (eraseRhs rhs)
-  | .effect rhs       => .effect (eraseRhs rhs)
-  | .cond c b         => .cond (eraseAtom c) (eraseBlock b)
-  | .switch c cs df   => .switch (eraseAtom c) (cs.map (fun p => (p.1, eraseBlock p.2))) (df.map eraseBlock)
-  | .loop post body   => .loop (eraseBlock post) (eraseBlock body)
-  | .«break»          => .«break»
-  | .«continue»       => .«continue»
-  | .leave            => .leave
-partial def eraseBlock : Block n → YulIR.Block
-  | []      => []
-  | s :: ss => eraseStmt s :: eraseBlock ss
-end
 
 /-! ### Type-guarantee demonstration -/
 

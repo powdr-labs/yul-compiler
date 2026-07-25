@@ -1,4 +1,4 @@
-import YulIR.FinFrameSketch
+import YulIR.Frame
 
 set_option warningAsError true
 /-!

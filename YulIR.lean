@@ -4,4 +4,7 @@ import YulIR.OfYul
 import YulIR.ToYul
 import YulIR.Object
 import YulIR.Optimize
+import YulIR.Frame
+import YulIR.FrameTranslate
+import YulIR.FramePasses
 set_option warningAsError true
