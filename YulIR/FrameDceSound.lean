@@ -766,6 +766,103 @@ theorem deadCode_program_run_fwd (fuel : Nat) (funs : Funs) {st st' o}
   obtain ⟨σ'', hexec'', _⟩ := deadCode_fwd (dceFuns fuel funs) fd.rets fuel (T_congr_mp fuel funs hexec)
   exact ⟨{ fd with body := deadCode fd.rets fuel fd.body }, σ'', dceFuns_get hmain, hexec''⟩
 
+/-! ### Whole-program reverse (bidirectional) -/
+
+theorem dceFuns_get_inv {fuel : Nat} {funs : Funs} {k : Option Ident} {fd' : Function}
+    (h : (dceFuns fuel funs)[k]? = some fd') :
+    ∃ fd, funs[k]? = some fd ∧ fd' = { fd with body := deadCode fd.rets fuel fd.body } := by
+  simp only [dceFuns, Std.HashMap.getElem?_map] at h
+  obtain ⟨fd, hfd, heq⟩ := Option.map_eq_some_iff.mp h
+  exact ⟨fd, hfd, heq.symm⟩
+
+/-- Every function body is well-formed (against the table). -/
+abbrev WFFuns (funs : Funs) : Prop :=
+  ∀ (k : Option Ident) (fd : Function), funs[k]? = some fd → WFBlock funs fd.body
+
+/-- Well-formedness is table-independent — pure rhs evaluate without consulting the table. -/
+theorem wf_irrel {funs funs' : Funs} (b : Block n) (h : WFBlock funs b) : WFBlock funs' b := by
+  have key : ∀ {r : Rhs n}, rhsPure r = true → (∀ σ st, ∃ vs, ExecRhs funs σ st r (.ok vs st)) →
+      ∀ σ st, ∃ vs, ExecRhs funs' σ st r (.ok vs st) := by
+    intro r hp hh σ st
+    cases r with
+    | atom a => exact ⟨_, Step.atom⟩
+    | builtin op args =>
+        obtain ⟨vs, hv⟩ := hh σ st; cases hv with | builtin hb => exact ⟨vs, Step.builtin hb⟩
+    | call fn args => simp [rhsPure] at hp
+  refine WFBlock.induct
+    (motive_1 := fun s => WFStmt funs s → WFStmt funs' s)
+    (motive_2 := fun df => WFDflt funs df → WFDflt funs' df)
+    (motive_3 := fun b => WFBlock funs b → WFBlock funs' b)
+    (motive_4 := fun cs => WFCases funs cs → WFCases funs' cs)
+    ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ b h
+  · intro dsts rhs hw; simp only [WFStmt] at hw ⊢; exact fun hp => key hp (hw hp)
+  · intro c b ih hw; exact ih hw
+  · intro c cs df ihcs ihdf hw; exact ⟨ihcs hw.1, ihdf hw.2⟩
+  · intro p b ihp ihb hw; exact ⟨ihp hw.1, ihb hw.2⟩
+  · intro t hna hnc hns hnl hw
+    cases t with
+    | assign ds rhs => exact absurd rfl (hna ds rhs)
+    | cond c b => exact absurd rfl (hnc c b)
+    | switch c cs df => exact absurd rfl (hns c cs df)
+    | loop p b => exact absurd rfl (hnl p b)
+    | _ => exact hw
+  · intro hw; exact hw
+  · intro s ss ihs ihss hw; exact ⟨ihs hw.1, ihss hw.2⟩
+  · intro hw; exact hw
+  · intro fst b rest ihb ihrest hw; exact ⟨ihb hw.1, ihrest hw.2⟩
+  · intro hw; exact hw
+  · intro b ih hw; exact ih hw
+
+/-- **Table congruence, reverse** (needs `WFFuns`): running against the original table from a run
+against the dce'd table. Call case reverses the callee's body dce via `deadCode_bwd`. -/
+theorem T_congr_mpr (fuel : Nat) (funs : Funs) (hwf : WFFuns funs)
+    {n} {σ : Store n} {st code res} (h : Step (dceFuns fuel funs) σ st code res) :
+    Step funs σ st code res := by
+  induction h with
+  | atom => exact .atom
+  | builtin hb => exact .builtin hb
+  | @callNorm _ _ _ fn args fdecl' σ'' st' o hl' _ ho ihbody =>
+      obtain ⟨fd, hfd, heq⟩ := dceFuns_get_inv hl'
+      subst heq
+      obtain ⟨σ', hbodyorig, hag⟩ := deadCode_bwd funs fd.rets fuel (hwf _ fd hfd) ihbody
+      rw [show fd.rets.map σ'' = fd.rets.map σ' from (map_agree hag (fun _ h => h)).symm]
+      exact Step.callNorm (fdecl := fd) hfd hbodyorig ho
+  | @callHalt _ _ _ fn args fdecl' σ'' st' hl' _ ihbody =>
+      obtain ⟨fd, hfd, heq⟩ := dceFuns_get_inv hl'
+      subst heq
+      obtain ⟨σ', hbodyorig, _⟩ := deadCode_bwd funs fd.rets fuel (hwf _ fd hfd) ihbody
+      exact Step.callHalt (fdecl := fd) hfd hbodyorig
+  | assignOk _ ihr => exact .assignOk ihr
+  | assignHalt _ ihr => exact .assignHalt ihr
+  | condFalse hc => exact .condFalse hc
+  | condTrue hc _ ihb => exact .condTrue hc ihb
+  | switch _ ihb => exact .switch ihb
+  | loopS _ ihl => exact .loopS ihl
+  | brk => exact .brk
+  | cont => exact .cont
+  | lv => exact .lv
+  | nil => exact .nil
+  | consNormal _ _ ih1 ih2 => exact .consNormal ih1 ih2
+  | consStop _ hne ih1 => exact .consStop ih1 hne
+  | loopBrk _ ihb => exact .loopBrk ihb
+  | loopLeave _ ihb => exact .loopLeave ihb
+  | loopHalt _ ihb => exact .loopHalt ihb
+  | loopStep _ hob _ _ ihb ihp ihl => exact .loopStep ihb hob ihp ihl
+  | loopPostStop _ hob _ hne ihb ihp => exact .loopPostStop ihb hob ihp hne
+
+/-- **Whole-program bidirectional soundness of `deadCode`** under `WFFuns`: the source program and
+the program with dead code eliminated from every function body have exactly the same runs. -/
+theorem deadCode_program_run (fuel : Nat) (funs : Funs) (hwf : WFFuns funs) {st st' o} :
+    Run ⟨funs⟩ st st' o ↔ Run ⟨dceFuns fuel funs⟩ st st' o := by
+  constructor
+  · exact deadCode_program_run_fwd fuel funs
+  · rintro ⟨fd', σ'', hmain', hexec''⟩
+    obtain ⟨fd, hfd, heq⟩ := dceFuns_get_inv hmain'
+    subst heq
+    obtain ⟨σ', hbody, _⟩ :=
+      deadCode_bwd (dceFuns fuel funs) fd.rets fuel (wf_irrel fd.body (hwf _ fd hfd)) hexec''
+    exact ⟨fd, σ', hfd, T_congr_mpr fuel funs hwf hbody⟩
+
 /-! ### Bidirectional soundness (a `main`-style entry body) -/
 
 /-- **Bidirectional soundness of one dead-code pass** over a well-formed entry body: the original and
