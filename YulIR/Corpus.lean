@@ -121,6 +121,14 @@ def corpus : List (String × YulSemantics.Block EVM.Op) :=
   , ("nested-if", yul% {
       let x := calldataload(0)
       if x { if lt(x, 100) { sstore(0, x) } } })
+  , ("blocks/nested", yul% {
+      let x := calldataload(0)
+      { let y := add(x, 1) sstore(0, y) }
+      { let z := add(x, 2) sstore(1, z) } })
+  , ("blocks/shadow", yul% {
+      let x := calldataload(0)
+      sstore(0, x)
+      { let x := calldataload(32) sstore(1, x) } })
   , ("loop/count", yul% {
       let s := 0
       for { let i := 0 } lt(i, 10) { i := add(i, 1) } { s := add(s, i) }

@@ -3,6 +3,7 @@ import YulIR.Simplify
 import YulIR.Uniquify
 import YulIR.ValueNumber
 import YulIR.Structural
+import YulIR.Flatten
 import YulIR.DeadStore
 import YulIR.DeadCode
 
@@ -24,9 +25,10 @@ behaviour-preserving IR→IR transformation (validated by the interpreter check 
 namespace YulIR
 
 /-- One optimization round over a whole program: value numbering, structural simplification,
-dead-store and dead-code elimination (each applied to every function body and `main`). -/
+block flattening (dissolve now-redundant nested blocks), dead-store and dead-code elimination
+(each applied to every function body and `main`). -/
 def optRound (p : Program) : Program :=
-  deadCodeProgram (deadStoreProgram (structuralProgram (valueNumberProgram p)))
+  deadCodeProgram (deadStoreProgram (flatten (structuralProgram (valueNumberProgram p))))
 
 /-- The IR optimization pipeline on a `Program`. -/
 def optimize (p : Program) : Program := optRound (optRound (uniquifyProgram p))

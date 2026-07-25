@@ -47,7 +47,7 @@ backend. Semantic soundness of `ofYul∘toYul` and of `optimize` is checked with
 
 ## Passes (`YulIR/Optimize.lean` = `optimize`)
 
-Order: `uniquify` → (`valueNumber` → `structural` → `deadStore` → `deadCode`) ×2.
+Order: `uniquify` → (`valueNumber` → `structural` → `flatten` → `deadStore` → `deadCode`) ×2.
 
 | Pass | File | What | Provability notes |
 |---|---|---|---|
@@ -55,6 +55,7 @@ Order: `uniquify` → (`valueNumber` → `structural` → `deadStore` → `deadC
 | Simplify | `Simplify.lean` | local constant folding (via dialect `stepOp`) + algebraic identities | per-`Rhs`, local; folding delegates to the semantics |
 | ValueNumber | `ValueNumber.lean` | const/copy propagation, folding across `let`s, CSE — tracks only *immutable* values so no invalidation is ever needed | forward, monotone; immutability = never an `assign` target |
 | Structural | `Structural.lean` | dead-branch (`if 0`), constant `switch` selection, `if 1`→block, empty removal, and unreachable-code elimination (drop stmts after a terminator) | local, per-statement rewrites |
+| Flatten | `Flatten.lean` | dissolve standalone `.block`s (splice into parent) — redundant once names are unique; keeps if/switch/loop/function bodies | sound under unique names; extended binder lifetime is unobservable |
 | DeadStore | `DeadStore.lean` | remove `x := <pure rhs>` whose value is never observed (backward liveness; conservative for loops/`break`/`continue`; return vars protected) | only removes a provably-dead pure store |
 | DeadCode | `DeadCode.lean` | remove unused pure bindings, and pure statements like `pop(x)`; fixpoint | pure ⇒ no observable effect |
 
