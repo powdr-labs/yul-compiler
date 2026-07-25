@@ -112,6 +112,87 @@ reassignments of an initial value. -/
 def valueNumber (frozen : List (Fin n)) (b : Block n) : Block n :=
   vnBlock (immSlot frozen b) [] [] b
 
+/-! ### The value-numbering safety checker
+
+`vnBlock` is sound only under a *read-after-write* discipline: an entry it records references
+"immutable" slots, and stays valid only if those slots are never written afterwards. `immSlot`
+guarantees at most one write, but not that the write *precedes* the reads — `d := j; j := 5; use d`
+would record `d ≡ j` and then rewrite `use d` into `use j`, wrongly. The checker below walks the
+block exactly like `vnBlock`, threading the set `W` of already-written immutable slots, and demands:
+
+* every write to an immutable slot targets a slot not yet in `W` (single write, now used up);
+* whenever a statement would *record* (an immutable single destination with a recordable rhs),
+  every slot operand is already in `W`;
+* a recorded builtin returns exactly one value (probed at the call's arity — excludes zero-output
+  pure ops like `pop`, whose CSE would fabricate a write).
+
+The soundness proof takes `imm` as a black box: any `imm` passing the checker is safe, `immSlot` is
+just the heuristic that makes real code pass. -/
+
+/-- `op` applied at arity `k` returns exactly one value. For a pure op the output arity depends only
+on the input arity, so probing with dummy operands decides it. -/
+def probe1 (op : Op) (k : Nat) : Bool :=
+  match YulSemantics.EVM.stepOp op (List.replicate k 0) YulSemantics.EVM.EvmState.init with
+  | some (.ok [_] _) => true
+  | _ => false
+
+/-- An rhs is safe to sit in a *recording* position (an `imm` single destination): if `recordWrite`
+would track it, every slot operand must already be written. -/
+def vnSafeRhs (imm : Fin n → Bool) (W : List (Fin n)) : Rhs n → Bool
+  | .atom (.lit _) => true
+  | .atom (.slot s) => !imm s || W.contains s
+  | .builtin op args =>
+      !(Op.isPure op && args.all (isImmAtom imm)) ||
+        (args.all (fun a => match a with | .slot s => W.contains s | .lit _ => true) &&
+         probe1 op args.length)
+  | .call _ _ => true
+
+mutual
+def vnSafeStmt (imm : Fin n → Bool) (W : List (Fin n)) : Stmt n → Option (List (Fin n))
+  | .assign ds rhs =>
+      if ds.all (fun d => !imm d || !W.contains d)
+          && (match ds with | [d] => !imm d || vnSafeRhs imm W rhs | _ => true) then
+        some (ds.filter imm ++ W)
+      else none
+  | .cond _ b => vnSafeBlock imm W b
+  | .switch _ cs df =>
+      match vnSafeCases imm W cs with
+      | some W' => vnSafeDflt imm W' df
+      | none    => none
+  | .loop post body =>
+      match vnSafeBlock imm W body with
+      | some W' => vnSafeBlock imm W' post
+      | none    => none
+  | _ => some W
+def vnSafeBlock (imm : Fin n → Bool) (W : List (Fin n)) : Block n → Option (List (Fin n))
+  | []        => some W
+  | s :: rest =>
+      match vnSafeStmt imm W s with
+      | some W' => vnSafeBlock imm W' rest
+      | none    => none
+def vnSafeCases (imm : Fin n → Bool) (W : List (Fin n)) :
+    List (Literal × Block n) → Option (List (Fin n))
+  | []             => some W
+  | (_, b) :: rest =>
+      match vnSafeBlock imm W b with
+      | some W' => vnSafeCases imm W' rest
+      | none    => none
+def vnSafeDflt (imm : Fin n → Bool) (W : List (Fin n)) :
+    Option (Block n) → Option (List (Fin n))
+  | none   => some W
+  | some b => vnSafeBlock imm W b
+end
+
+/-- The whole-body safety check for `valueNumber`: run the checker under `immSlot`, seeding `W` with
+the immutable frozen slots (params/returns carry an initial value, so they count as written). -/
+def vnSafe (frozen : List (Fin n)) (b : Block n) : Bool :=
+  (vnSafeBlock (immSlot frozen b) (frozen.filter (immSlot frozen b)) b).isSome
+
+/-- `valueNumber` guarded by the safety checker: the pass runs only on blocks the checker accepts
+(the soundness proof covers exactly the checked case, making this variant unconditionally sound). -/
+def valueNumberChecked (frozen : List (Fin n)) (b : Block n) : Block n :=
+  if vnSafe frozen b then valueNumber frozen b else b
+
 /-! ### Inlining — the pass that pays the frame-growth tax -/
 
 /-- Inline a call `dsts := callee(args)` that sits at the *tail* of a caller whose earlier
