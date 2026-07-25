@@ -211,14 +211,17 @@ partial def deadCode (prot : List (Fin n)) : Nat → Block n → Block n
 
 /-! ### The pipeline -/
 
-/-- One optimization round over a block, protecting `prot`. -/
-def optRoundBody (prot : List (Fin n)) (b : Block n) : Block n :=
-  deadCode prot 8 (structural (simplify (valueNumber b)))
+/-- One optimization round over a block. `frozen` = the params+returns whose writes are
+reassignments of an initial value: excluded from value-tracking and protected from dead-code. -/
+def optRoundBody (frozen : List (Fin n)) (b : Block n) : Block n :=
+  deadCode frozen 8 (structural (simplify (valueNumber frozen b)))
 
-/-- Optimize a program: two rounds over `main` and every function body (return slots protected). -/
+/-- Optimize a program: two rounds over `main` and every function body. A function's params+returns
+are its `frozen` set; `main` has none. -/
 def optimize (p : Program) : Program :=
   { functions := Std.HashMap.ofList (p.functions.toList.map (fun q =>
-      (q.1, { q.2 with body := optRoundBody q.2.rets (optRoundBody q.2.rets q.2.body) })))
+      let frozen := q.2.params ++ q.2.rets
+      (q.1, { q.2 with body := optRoundBody frozen (optRoundBody frozen q.2.body) })))
     mainSlots := p.mainSlots
     main      := optRoundBody [] (optRoundBody [] p.main) }
 

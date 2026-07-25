@@ -90,9 +90,19 @@ partial def vnBlock (imm : Fin n → Bool) (env : List (Fin n × Atom n))
         .loop (vnBlock imm env avail post) (vnBlock imm env avail body) :: vnBlock imm env avail rest
     | other => other :: vnBlock imm env avail rest
 
-/-- Value numbering over a whole frame (assumes the frame is single-write for its constants —
-`isConstant`). Note the type: **no frame growth**. -/
-def valueNumber (b : Block n) : Block n := vnBlock (isConstant b) [] [] b
+/-- Immutability for value tracking. A local slot is immutable iff written at most once (its single
+write is its declaration, dominating all reads). Parameters and returns carry an implicit initial
+value (arg / zero) with **no** declaration-write, so a *written* param/ret is a reassignment of that
+initial value — mutable — and must be excluded (a read before its write, e.g. `x := f(x)` on a
+return var, sees the old value). Read-only params/rets (never written) stay immutable. -/
+def immSlot (frozen : List (Fin n)) (b : Block n) (d : Fin n) : Bool :=
+  let c := (blockWrites b).count d
+  if frozen.contains d then c == 0 else c ≤ 1
+
+/-- Value numbering over a frame body, given the params+returns (`frozen`) whose writes are
+reassignments of an initial value. -/
+def valueNumber (frozen : List (Fin n)) (b : Block n) : Block n :=
+  vnBlock (immSlot frozen b) [] [] b
 
 /-! ### Inlining — the pass that pays the frame-growth tax -/
 
@@ -125,7 +135,7 @@ def inlineTail (pre : Block n) (callee : Function)
 /-- Value numbering keeps the frame: `slot0 := add(1,2); slot1 := add(1,2)` (a CSE opportunity) is
 optimised within `Block 2`. -/
 example : Block 2 :=
-  valueNumber [ .write 0 (.builtin .add [.lit (.number 1), .lit (.number 2)])
+  valueNumber [] [ .write 0 (.builtin .add [.lit (.number 1), .lit (.number 2)])
               , .write 1 (.builtin .add [.lit (.number 1), .lit (.number 2)]) ]
 
 /-- Inlining a 1-slot identity-ish callee into a 1-slot caller yields a `Block (1 + 1)` — the frame
