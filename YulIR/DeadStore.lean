@@ -79,9 +79,6 @@ partial def liveStmt (c : LCtx) (liveOut : List Ident) : Stmt → (Option Stmt �
       let (post', _) := liveBlock cInner headLive post
       let (body', _) := liveBlock cInner headLive body
       (some (.loop post' body'), headLive)
-  | .block body =>
-      let (body', liveBody) := liveBlock c liveOut body
-      (some (.block body'), liveBody)
   | .«break»    => (some .«break», c.brk)              -- successor is after the loop
   | .«continue» => (some .«continue», c.cont)          -- successor is the loop head
   | .leave      => (some .leave, c.prot)               -- successor is function end (rets observed)

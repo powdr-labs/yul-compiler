@@ -3,6 +3,5 @@ import YulIR.Effects
 import YulIR.OfYul
 import YulIR.ToYul
 import YulIR.Object
-import YulIR.Flatten
 import YulIR.Optimize
 set_option warningAsError true

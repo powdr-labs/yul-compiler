@@ -83,7 +83,6 @@ def simplifyRhs : Rhs → Rhs
 mutual
 /-- Apply `simplifyRhs` to every right-hand side in a statement, recursively. -/
 partial def simplifyStmt : Stmt → Stmt
-  | .block body        => .block (simplifyBlock body)
   | .letD vars rhs     => .letD vars (simplifyRhs rhs)
   | .assign vars rhs   => .assign vars (simplifyRhs rhs)
   | .effect rhs        => .effect (simplifyRhs rhs)

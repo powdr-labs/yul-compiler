@@ -35,7 +35,6 @@ mutual
 /-- Variables that appear as an `assign` target anywhere in a statement. -/
 partial def stmtMutated : Stmt → List Ident
   | .assign vars _      => vars
-  | .block b            => blockMutated b
   | .cond _ b           => blockMutated b
   | .switch _ cs d      => cs.flatMap (fun p => blockMutated p.2) ++ (d.map blockMutated).getD []
   | .loop post body     => blockMutated post ++ blockMutated body
@@ -57,7 +56,6 @@ partial def stmtUsed : Stmt → List Ident
   | .cond c b           => c.var?.toList ++ blockUsed b
   | .switch c cs d      => c.var?.toList ++ cs.flatMap (fun p => blockUsed p.2) ++ (d.map blockUsed).getD []
   | .loop post body     => blockUsed post ++ blockUsed body
-  | .block b            => blockUsed b
   | _                   => []
 partial def blockUsed : Block → List Ident
   | []      => []
@@ -76,7 +74,6 @@ partial def stmtIdents : Stmt → List Ident
   | .cond c b           => c.var?.toList ++ blockIdents b
   | .switch c cs d      => c.var?.toList ++ cs.flatMap (fun p => blockIdents p.2) ++ (d.map blockIdents).getD []
   | .loop post body     => blockIdents post ++ blockIdents body
-  | .block b            => blockIdents b
   | _                   => []
 partial def blockIdents : Block → List Ident
   | []      => []
@@ -106,7 +103,6 @@ partial def stmtReads : Stmt → List Ident
   | .cond c b           => c.var?.toList ++ blockReads b
   | .switch c cs d      => c.var?.toList ++ cs.flatMap (fun p => blockReads p.2) ++ (d.map blockReads).getD []
   | .loop post body     => blockReads post ++ blockReads body
-  | .block b            => blockReads b
   | _                   => []
 partial def blockReads : Block → List Ident
   | []      => []

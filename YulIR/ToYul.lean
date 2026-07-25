@@ -38,7 +38,6 @@ private def trueLit : Expr Op := .lit (.number 1)
 mutual
 /-- Erase an IR statement to a Yul statement. -/
 partial def Stmt.toYul : Stmt → YulSemantics.Stmt Op
-  | .block body        => .block (Stmt.toYulBlock body)
   | .letD vars rhs     => .letDecl vars (some rhs.toYul)
   | .assign vars rhs   => .assign vars rhs.toYul
   | .effect rhs        => .exprStmt rhs.toYul

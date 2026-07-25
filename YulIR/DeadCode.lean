@@ -36,7 +36,6 @@ partial def dceBlock (used : List Ident) : Block → Block
 
 /-- Recurse into a statement's sub-blocks. -/
 partial def dceStmt (used : List Ident) : Stmt → Stmt
-  | .block b           => .block (dceBlock used b)
   | .cond c b          => .cond c (dceBlock used b)
   | .switch c cs d     => .switch c (cs.map (fun p => (p.1, dceBlock used p.2))) (d.map (dceBlock used))
   | .loop post body    => .loop (dceBlock used post) (dceBlock used body)
@@ -49,7 +48,6 @@ def dcePass (b : Block) : Block := dceBlock (usedIdents b) b
 mutual
 /-- Total (recursive) statement count, for fixpoint detection. -/
 partial def stmtCount : Stmt → Nat
-  | .block b          => 1 + blockCount b
   | .cond _ b         => 1 + blockCount b
   | .switch _ cs d    => 1 + cs.foldl (fun a p => a + blockCount p.2) 0 + (d.map blockCount).getD 0
   | .loop post body   => 1 + blockCount post + blockCount body

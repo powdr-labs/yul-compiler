@@ -45,17 +45,14 @@ partial def structuralStmt : Stmt → List Stmt
   | .cond c body =>
       let body' := structuralBlock body
       if c.isZeroLit || body'.isEmpty then []          -- never taken, or empty ⇒ drop
-      else if c.isNonzeroLit then [.block body']         -- always taken ⇒ unconditional block
+      else if c.isNonzeroLit then body'                  -- always taken ⇒ splice the body inline
       else [.cond c body']
   | .switch c cases dflt =>
       let cases' := cases.map (fun p => (p.1, structuralBlock p.2))
       let dflt' := dflt.map structuralBlock
       match c with
-      | .lit k => [.block (selectCase k cases' dflt')]    -- constant scrutinee ⇒ take one branch
+      | .lit k => selectCase k cases' dflt'               -- constant scrutinee ⇒ splice one branch
       | _      => [.switch c cases' dflt']
-  | .block body =>
-      let body' := structuralBlock body
-      if body'.isEmpty then [] else [.block body']
   | .loop post body => [.loop (structuralBlock post) (structuralBlock body)]
   | s => [s]
 
@@ -79,7 +76,6 @@ def isTerminator : Stmt → Bool
 mutual
 /-- Drop statements after the first terminator in every block (recursively). -/
 partial def dropUnreachableStmt : Stmt → Stmt
-  | .block b           => .block (dropUnreachableBlock b)
   | .cond c b          => .cond c (dropUnreachableBlock b)
   | .switch c cs d     => .switch c (cs.map (fun p => (p.1, dropUnreachableBlock p.2))) (d.map dropUnreachableBlock)
   | .loop post body    => .loop (dropUnreachableBlock post) (dropUnreachableBlock body)

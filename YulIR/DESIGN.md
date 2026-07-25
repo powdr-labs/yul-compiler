@@ -47,17 +47,24 @@ backend. Semantic soundness of `ofYul∘toYul` and of `optimize` is checked with
 
 ## Passes (`YulIR/Optimize.lean` = `optimize`)
 
-Order: `uniquify` → (`valueNumber` → `structural` → `flatten` → `deadStore` → `deadCode`) ×2.
+`ofYul` already delivers **uniquely-named, block-free** IR (variable disambiguation and block
+flattening happen during translation — see below), so the pipeline is just:
+
+Order: (`valueNumber` → `structural` → `deadStore` → `deadCode`) ×2.
 
 | Pass | File | What | Provability notes |
 |---|---|---|---|
-| Uniquify | `Uniquify.lean` | α-rename every declaration to a globally fresh name; removes shadowing | α-renaming; behaviour-preserving |
 | Simplify | `Simplify.lean` | local constant folding (via dialect `stepOp`) + algebraic identities | per-`Rhs`, local; folding delegates to the semantics |
 | ValueNumber | `ValueNumber.lean` | const/copy propagation, folding across `let`s, CSE — tracks only *immutable* values so no invalidation is ever needed | forward, monotone; immutability = never an `assign` target |
-| Structural | `Structural.lean` | dead-branch (`if 0`), constant `switch` selection, `if 1`→block, empty removal, and unreachable-code elimination (drop stmts after a terminator) | local, per-statement rewrites |
-| Flatten | `Flatten.lean` | dissolve standalone `.block`s (splice into parent) — redundant once names are unique; keeps if/switch/loop/function bodies | sound under unique names; extended binder lifetime is unobservable |
+| Structural | `Structural.lean` | dead-branch (`if 0`), constant `switch` selection, `if 1`→splice, empty removal, and unreachable-code elimination (drop stmts after a terminator) | local, per-statement rewrites |
 | DeadStore | `DeadStore.lean` | remove `x := <pure rhs>` whose value is never observed (backward liveness; conservative for loops/`break`/`continue`; return vars protected) | only removes a provably-dead pure store |
 | DeadCode | `DeadCode.lean` | remove unused pure bindings, and pure statements like `pop(x)`; fixpoint | pure ⇒ no observable effect |
+
+Variable **disambiguation** (α-rename every binder to a fresh `_ir_<n>`, resolve refs through a
+scoped map) and **block flattening** (splice every Yul `{ … }` inline — sound once names are unique)
+are done *in `ofYul`*, not as separate passes, which is what lets the IR have **no `block`
+constructor** at all (a type-level invariant). No pipeline pass introduces a duplicate name, so no
+re-`uniquify` is ever needed.
 
 ### Design decisions of note
 

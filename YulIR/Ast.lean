@@ -55,15 +55,17 @@ inductive Rhs
 
 /-- An IR statement. Blocks are `List Stmt`.
 
-Note there is **no `funDef` constructor**: unlike Yul (and unlike this IR's earlier form),
-functions are not statements. They are collected into a flat, top-level `List Function` on the
-enclosing `Program`/`Object` (see `YulIR.OfYul`, which lifts every `funDef` out during
-translation). Yul functions capture no enclosing *variables* — only their parameters, returns,
-locals, and the functions in scope — so hoisting them all to one flat scope with unique names is
-behaviour-preserving, and it takes the whole `funDef`-hoisting/scoping tangle out of every pass. -/
+Two Yul statement forms are deliberately **absent as constructors**, both eliminated by `ofYul`:
+
+* **no `funDef`** — functions are lifted into `Program.functions` (a flat, name-keyed table), sound
+  because Yul functions capture no enclosing variables;
+* **no `block`** — a standalone `{ … }` block exists only to scope its declarations; since `ofYul`
+  α-renames every variable to a globally fresh name, blocks carry no meaning and are spliced into
+  their parent. Block-freeness is thus a **type-level invariant** (only the grammatically-required
+  `List Stmt` bodies of `if`/`switch`/`loop`/functions remain).
+
+Both removals take the whole hoisting/scoping tangle out of every optimization pass. -/
 inductive Stmt
-  /-- `{ body }` — a nested block (a new variable scope). -/
-  | block   (body : List Stmt)
   /-- `let vars := rhs`. `vars.length` matches the number of values `rhs` produces. -/
   | letD    (vars : List Ident) (rhs : Rhs)
   /-- `vars := rhs`. -/
