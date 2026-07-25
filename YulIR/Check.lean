@@ -75,14 +75,15 @@ def scenarios : List (String × EvmState) :=
   , ("cd=42*", withCalldata (List.replicate 64 (UInt8.ofNat 42)))
   , ("cd=one", withCalldata (List.replicate 31 0 ++ [1])) ]
 
-/-- The IR round-trip of a program, **without** IR optimizations. -/
+/-- The IR round-trip of a program, **without** IR optimizations. Runs through the **frame IR**
+(`Fin n`-frame), which is now the optimizer's representation. -/
 def irRoundTrip (b : YulSemantics.Block EVM.Op) : YulSemantics.Block EVM.Op :=
-  YulIR.toYul (YulIR.ofYul b)
+  FinFrame.toYul (FinFrame.ofYul b)
 
-/-- The IR round-trip **with** the IR optimization pipeline applied. As passes land in
-`YulIR.optimize`, this diverges from `irRoundTrip`. -/
+/-- The IR round-trip **with** the IR optimization pipeline applied — now the **frame** pipeline
+(`YulIR.FinFrame.optimize`). -/
 def irOptimized (b : YulSemantics.Block EVM.Op) : YulSemantics.Block EVM.Op :=
-  YulIR.toYul (YulIR.optimize (YulIR.ofYul b))
+  FinFrame.toYul (FinFrame.optimize (FinFrame.ofYul b))
 
 /-- Does the program agree with its IR round-trip under the interpreter, on every
 scenario (same status and, when `ok`, identical fingerprint)? -/
