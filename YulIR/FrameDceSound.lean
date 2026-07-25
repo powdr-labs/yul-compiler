@@ -205,6 +205,62 @@ theorem dead_step {reads prot : List (Fin n)} {s : Stmt n} (hd : isDead reads pr
   | «continue»       => simp [isDead] at hd
   | leave            => simp [isDead] at hd
 
+/-- A dead `assign`'s rhs is pure and all its destinations are outside `reads ++ prot`. -/
+theorem dead_dsts_notin {reads prot : List (Fin n)} {ds : List (Fin n)} {rhs : Rhs n}
+    (hd : isDead reads prot (.assign ds rhs) = true) :
+    rhsPure rhs = true ∧ ∀ d ∈ ds, d ∉ reads ++ prot := by
+  simp only [isDead, Bool.and_eq_true] at hd
+  obtain ⟨hp, hdall⟩ := hd
+  refine ⟨hp, fun d hdmem => ?_⟩
+  have hdd := (List.all_eq_true.mp hdall) d hdmem
+  simp only [Bool.and_eq_true, Bool.not_eq_true'] at hdd
+  simp only [List.mem_append, not_or]
+  exact ⟨fun hc => by simp [List.contains_eq_mem, hc] at hdd,
+         fun hc => by simp [List.contains_eq_mem, hc] at hdd⟩
+
+/-! ### Well-formedness (for the reverse direction) -/
+
+/-! Well-formedness: every pure `assign` rhs evaluates to an `.ok` result from any store. This rules
+out exactly the stuck ill-typed terms (arity mismatch, assign-from-void) that would otherwise let
+`deadCode` delete a *stuck* statement and thereby invent behaviour. `ofYul` on type-checked Yul
+establishes it; here it is an explicit hypothesis. -/
+mutual
+def WFStmt (funs : Funs) : Stmt n → Prop
+  | .assign _ rhs   => rhsPure rhs = true → ∀ (σ : Store n) st, ∃ vs, ExecRhs funs σ st rhs (.ok vs st)
+  | .cond _ b       => WFBlock funs b
+  | .switch _ cs df => WFCases funs cs ∧ WFDflt funs df
+  | .loop p b       => WFBlock funs p ∧ WFBlock funs b
+  | _               => True
+def WFBlock (funs : Funs) : Block n → Prop
+  | []      => True
+  | s :: ss => WFStmt funs s ∧ WFBlock funs ss
+def WFCases (funs : Funs) : List (Literal × Block n) → Prop
+  | []             => True
+  | (_, b) :: rest => WFBlock funs b ∧ WFCases funs rest
+def WFDflt (funs : Funs) : Option (Block n) → Prop
+  | none   => True
+  | some b => WFBlock funs b
+end
+
+/-- **The `WellFormed` payoff**: a dead statement can be *reinserted* — it has an inert execution
+(normal outcome, `EvmState` unchanged, store perturbed only outside `reads ++ prot`). This is what
+the reverse simulation uses to reconstruct the statements `deadCode` deleted. -/
+theorem dead_inert {reads prot : List (Fin n)} {s : Stmt n} {funs} (hd : isDead reads prot s = true)
+    (hwf : WFStmt funs s) (σ : Store n) (st : State) :
+    ∃ σ', Step funs σ st (.stmt s) (.sres σ' st .normal) ∧ AgreeOn (reads ++ prot) σ σ' := by
+  cases s with
+  | assign ds rhs =>
+      obtain ⟨hp, hdnotin⟩ := dead_dsts_notin hd
+      simp only [WFStmt] at hwf
+      obtain ⟨vs, hrhs⟩ := hwf hp σ st
+      exact ⟨updMany σ ds vs, Step.assignOk hrhs, AgreeOn.updMany_out hdnotin _⟩
+  | cond c b         => simp [isDead] at hd
+  | switch c cs df   => simp [isDead] at hd
+  | loop post body   => simp [isDead] at hd
+  | «break»          => simp [isDead] at hd
+  | «continue»       => simp [isDead] at hd
+  | leave            => simp [isDead] at hd
+
 /-! ### Forward simulation -/
 
 /-- **Forward store-agreement simulation.** Any source execution can be replayed by the dead-code-
@@ -359,5 +415,60 @@ theorem deadCode_exec_fwd {funs : Funs} {m} (fuel : Nat) : ∀ {b : Block m} {σ
       · rw [if_neg hfix]
         obtain ⟨σ'', h''⟩ := dceBlock_exec_fwd h
         exact ih h''
+
+/-! ### Reverse simulation -/
+
+/-- Reverse block simulation: a run of the dce'd block lifts back to a run of the original (from any
+agreeing store), with the same `EvmState`/outcome and agreeing final store. -/
+abbrev RevSimB (funs : Funs) (reads prot : List (Fin n)) (b : Block n) : Prop :=
+  ∀ {σ₂ : Store n} {st σ₂' st' o},
+    Step funs σ₂ st (.stmts (dceBlock reads prot b)) (.sres σ₂' st' o) →
+    ∀ σ₁, AgreeOn (reads ++ prot) σ₁ σ₂ →
+      ∃ σ₁', Step funs σ₁ st (.stmts b) (.sres σ₁' st' o) ∧ AgreeOn (reads ++ prot) σ₁' σ₂'
+
+/-- Reverse loop simulation, given reverse sims for `post`/`body`. Induction on the dce'd loop's
+derivation (generalize the code, discharge the non-loop constructors with `nofun`). -/
+theorem dce_bwd_loop {funs : Funs} {reads prot : List (Fin n)} {post body : Block n}
+    (revPost : RevSimB funs reads prot post) (revBody : RevSimB funs reads prot body)
+    {σ₂ : Store n} {st code res} (h : Step funs σ₂ st code res) :
+    ∀ {σ₂' st' o}, code = .loop (dceBlock reads prot post) (dceBlock reads prot body) →
+      res = .sres σ₂' st' o → ∀ σ₁, AgreeOn (reads ++ prot) σ₁ σ₂ →
+        ∃ σ₁', Step funs σ₁ st (.loop post body) (.sres σ₁' st' o)
+          ∧ AgreeOn (reads ++ prot) σ₁' σ₂' := by
+  induction h with
+  | loopBrk hb _ =>
+      intro σ₂' st' o hcode hres σ₁ hag
+      injection hcode with hp hbdy; subst hp; subst hbdy; injection hres with h1 h2 h3
+      subst h1; subst h2; subst h3
+      obtain ⟨σ₁', hb', hag'⟩ := revBody hb σ₁ hag
+      exact ⟨σ₁', Step.loopBrk hb', hag'⟩
+  | loopLeave hb _ =>
+      intro σ₂' st' o hcode hres σ₁ hag
+      injection hcode with hp hbdy; subst hp; subst hbdy; injection hres with h1 h2 h3
+      subst h1; subst h2; subst h3
+      obtain ⟨σ₁', hb', hag'⟩ := revBody hb σ₁ hag
+      exact ⟨σ₁', Step.loopLeave hb', hag'⟩
+  | loopHalt hb _ =>
+      intro σ₂' st' o hcode hres σ₁ hag
+      injection hcode with hp hbdy; subst hp; subst hbdy; injection hres with h1 h2 h3
+      subst h1; subst h2; subst h3
+      obtain ⟨σ₁', hb', hag'⟩ := revBody hb σ₁ hag
+      exact ⟨σ₁', Step.loopHalt hb', hag'⟩
+  | loopStep hb hob hp _ _ _ ihl =>
+      intro σ₂' st' o hcode hres σ₁ hag
+      injection hcode with hpost hbody; subst hpost; subst hbody; injection hres with h1 h2 h3
+      subst h1; subst h2; subst h3
+      obtain ⟨σ₁b, hb', hagb⟩ := revBody hb σ₁ hag
+      obtain ⟨σ₁p, hp', hagp⟩ := revPost hp σ₁b hagb
+      obtain ⟨σ₁', hl', hag'⟩ := ihl revPost revBody rfl rfl σ₁p hagp
+      exact ⟨σ₁', Step.loopStep hb' hob hp' hl', hag'⟩
+  | loopPostStop hb hob hp hne _ _ =>
+      intro σ₂' st' o hcode hres σ₁ hag
+      injection hcode with hpost hbody; subst hpost; subst hbody; injection hres with h1 h2 h3
+      subst h1; subst h2; subst h3
+      obtain ⟨σ₁b, hb', hagb⟩ := revBody hb σ₁ hag
+      obtain ⟨σ₁p, hp', hagp⟩ := revPost hp σ₁b hagb
+      exact ⟨σ₁p, Step.loopPostStop hb' hob hp' hne, hagp⟩
+  | _ => intro _ _ _ hcode; nomatch hcode
 
 end YulIR.FinFrame.Sem
