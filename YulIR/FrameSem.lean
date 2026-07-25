@@ -33,7 +33,7 @@ abbrev State := YulSemantics.EVM.EvmState
 abbrev Store (n : Nat) := Fin n → U256
 
 /-- The function table an execution runs against. -/
-abbrev Funs := Std.HashMap YulSemantics.Ident Function
+abbrev Funs := Std.HashMap (Option YulSemantics.Ident) Function
 
 /-- Evaluate an atom (total — a slot read cannot fail). -/
 def evalAtom (σ : Store n) : Atom n → U256
@@ -64,7 +64,7 @@ partial def evalRhs (funs : Funs) (fuel : Nat) (σ : Store n) (st : State) :
       match fuel with
       | 0        => none
       | fuel + 1 =>
-        match funs[fn]? with
+        match funs[some fn]? with
         | none       => none
         | some fdecl =>
             let argvals := args.map (evalAtom σ)
@@ -76,22 +76,11 @@ partial def evalRhs (funs : Funs) (fuel : Nat) (σ : Store n) (st : State) :
 /-- Execute a statement: returns the updated store, state, and control outcome. -/
 partial def execStmt (funs : Funs) (fuel : Nat) (σ : Store n) (st : State) :
     Stmt n → Option (Store n × State × Outcome)
-  | .write d rhs =>
-      match evalRhs funs fuel σ st rhs with
-      | some (.ok (v :: _) st') => some (upd σ d v, st', .normal)
-      | some (.ok [] st')       => some (σ, st', .normal)
-      | some (.halt st')        => some (σ, st', .halt)
-      | none                    => none
-  | .writeMany ds rhs =>
+  | .assign ds rhs =>
       match evalRhs funs fuel σ st rhs with
       | some (.ok vs st') => some (updMany σ ds vs, st', .normal)
       | some (.halt st')  => some (σ, st', .halt)
       | none              => none
-  | .effect rhs =>
-      match evalRhs funs fuel σ st rhs with
-      | some (.ok _ st') => some (σ, st', .normal)
-      | some (.halt st') => some (σ, st', .halt)
-      | none             => none
   | .cond c body =>
       if evalAtom σ c == 0 then some (σ, st, .normal) else execBlock funs fuel σ st body
   | .switch c cases dflt =>
@@ -135,8 +124,10 @@ partial def execLoop (funs : Funs) (fuel : Nat) (σ : Store n) (st : State) (pos
     | none => none
 end
 
-/-- Run a whole program: execute `main` in a zero-initialised frame against the function table. -/
+/-- Run a whole program: execute the entry point (`functions[none]`) in a zero-initialised frame. -/
 def run (p : Program) (st : State) (fuel : Nat := 100000) : Option (State × Outcome) :=
-  (execBlock p.functions fuel (fun _ => 0) st p.main).map (fun r => (r.2.1, r.2.2))
+  match p.main? with
+  | some fd => (execBlock p.functions fuel (fun _ => 0) st fd.body).map (fun r => (r.2.1, r.2.2))
+  | none    => none
 
 end YulIR.FinFrame.Sem

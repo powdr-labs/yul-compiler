@@ -52,36 +52,24 @@ inductive Step (funs : Funs) : {n : Nat} → Store n → State → Code n → Re
       Step funs σ st (.rhs (.builtin op args)) (.eres r)
   | callNorm {n} {σ : Store n} {st fn args} {fdecl : Function}
       {σ' : Store fdecl.nslots} {st' o} :
-      funs[fn]? = some fdecl →
+      funs[some fn]? = some fdecl →
       Step funs (seed fdecl.nslots fdecl.params (args.map (evalAtom σ))) st (.stmts fdecl.body)
         (.sres σ' st' o) →
       (o = .normal ∨ o = .leave) →
       Step funs σ st (.rhs (.call fn args)) (.eres (.ok (fdecl.rets.map σ') st'))
   | callHalt {n} {σ : Store n} {st fn args} {fdecl : Function}
       {σ' : Store fdecl.nslots} {st'} :
-      funs[fn]? = some fdecl →
+      funs[some fn]? = some fdecl →
       Step funs (seed fdecl.nslots fdecl.params (args.map (evalAtom σ))) st (.stmts fdecl.body)
         (.sres σ' st' .halt) →
       Step funs σ st (.rhs (.call fn args)) (.eres (.halt st'))
   /- statements -/
-  | writeOk {n} {σ : Store n} {st d rhs v vs st'} :
-      Step funs σ st (.rhs rhs) (.eres (.ok (v :: vs) st')) →
-      Step funs σ st (.stmt (.write d rhs)) (.sres (upd σ d v) st' .normal)
-  | writeHalt {n} {σ : Store n} {st d rhs st'} :
-      Step funs σ st (.rhs rhs) (.eres (.halt st')) →
-      Step funs σ st (.stmt (.write d rhs)) (.sres σ st' .halt)
-  | writeMany {n} {σ : Store n} {st ds rhs vs st'} :
+  | assignOk {n} {σ : Store n} {st ds rhs vs st'} :
       Step funs σ st (.rhs rhs) (.eres (.ok vs st')) →
-      Step funs σ st (.stmt (.writeMany ds rhs)) (.sres (updMany σ ds vs) st' .normal)
-  | writeManyHalt {n} {σ : Store n} {st ds rhs st'} :
+      Step funs σ st (.stmt (.assign ds rhs)) (.sres (updMany σ ds vs) st' .normal)
+  | assignHalt {n} {σ : Store n} {st ds rhs st'} :
       Step funs σ st (.rhs rhs) (.eres (.halt st')) →
-      Step funs σ st (.stmt (.writeMany ds rhs)) (.sres σ st' .halt)
-  | effectOk {n} {σ : Store n} {st rhs vs st'} :
-      Step funs σ st (.rhs rhs) (.eres (.ok vs st')) →
-      Step funs σ st (.stmt (.effect rhs)) (.sres σ st' .normal)
-  | effectHalt {n} {σ : Store n} {st rhs st'} :
-      Step funs σ st (.rhs rhs) (.eres (.halt st')) →
-      Step funs σ st (.stmt (.effect rhs)) (.sres σ st' .halt)
+      Step funs σ st (.stmt (.assign ds rhs)) (.sres σ st' .halt)
   | condFalse {n} {σ : Store n} {st c body} :
       evalAtom σ c = 0 → Step funs σ st (.stmt (.cond c body)) (.sres σ st .normal)
   | condTrue {n} {σ : Store n} {st c body σ' st' o} :
@@ -179,18 +167,10 @@ theorem EquivBlock.consStmt {funs : Funs} {s₁ s₂ : Stmt n} {r₁ r₂ : Bloc
 
 /-! ### Whole-program runs -/
 
-/-- Run a program: execute `main` from a zero-initialised frame; observe the final state and
-outcome (the local store is discarded). -/
+/-- Run a program: execute the entry point (`functions[none]`) from a zero-initialised frame;
+observe the final state and outcome (the local store is discarded). -/
 def Run (p : Program) (st : State) (st' : State) (o : Outcome) : Prop :=
-  ∃ σ', ExecBlock p.functions (fun _ => 0) st p.main σ' st' o
-
-/-- Equivalent `main` blocks (same function table) give identical runs. -/
-theorem Run.of_equivMain {funs : Funs} {main₁ main₂ : Block m}
-    (h : EquivBlock funs main₁ main₂) {st st' o} :
-    Run ⟨funs, m, main₁⟩ st st' o ↔ Run ⟨funs, m, main₂⟩ st st' o := by
-  simp only [Run]
-  constructor
-  · rintro ⟨σ', hexec⟩; exact ⟨σ', (h _ _ _ _ _).mp hexec⟩
-  · rintro ⟨σ', hexec⟩; exact ⟨σ', (h _ _ _ _ _).mpr hexec⟩
+  ∃ (fd : Function) (σ' : Store fd.nslots),
+    p.main? = some fd ∧ ExecBlock p.functions (fun _ => 0) st fd.body σ' st' o
 
 end YulIR.FinFrame.Sem

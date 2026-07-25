@@ -44,21 +44,19 @@ theorem isTerminator_nonnormal {funs : Funs} {s : Stmt n} {σ st σ' st' o}
   | «break»    => cases h; exact fun hc => by cases hc
   | «continue» => cases h; exact fun hc => by cases hc
   | leave      => cases h; exact fun hc => by cases hc
-  | effect rhs =>
+  | assign ds rhs =>
       cases rhs with
       | atom a       => simp [isTerminator] at hterm
       | call fn as   => simp [isTerminator] at hterm
       | builtin op as =>
           simp only [isTerminator] at hterm
           cases h with
-          | effectHalt _ => exact fun hc => by cases hc
-          | effectOk hrhs =>
+          | assignHalt _ => exact fun hc => by cases hc
+          | assignOk hrhs =>
               cases hrhs with
               | builtin hbltin =>
                   have hh := haltingBuiltin_isHalt hterm hbltin
                   simp [BuiltinResult.isHalt] at hh
-  | write d rhs      => simp [isTerminator] at hterm
-  | writeMany ds rhs => simp [isTerminator] at hterm
   | cond c b         => simp [isTerminator] at hterm
   | switch c cs df   => simp [isTerminator] at hterm
   | loop post body   => simp [isTerminator] at hterm
@@ -149,8 +147,7 @@ theorem structural_equiv (funs : Funs) (b : Block n) :
 /-- **Whole-program soundness of `structural`**: applying `structural` to `main` and every function
 body yields a program with identical runs. -/
 theorem structural_program_run' (p : Program) {st st' o} :
-    Run p st st' o ↔
-      Run ⟨mapBodiesFuns structural p.functions, p.mainSlots, structural p.main⟩ st st' o :=
+    Run p st st' o ↔ Run ⟨mapBodiesFuns structural p.functions⟩ st st' o :=
   run_mapBodies structural (fun F _ b => structural_equiv F b)
 
 end YulIR.FinFrame.Sem

@@ -53,11 +53,11 @@ inductive Rhs (n : Nat)
   deriving DecidableEq, BEq
 
 /-- A statement over an `n`-slot frame. No `block` (flat), no `funDef` (lifted), and **no separate
-`let`** — `write` covers declaration and assignment alike. -/
+`let`** — `assign` covers declaration and assignment alike. A single `assign (dsts) (rhs)` unifies
+the three shapes of "evaluate `rhs`, bind its results to slots": `dsts = []` is an expression
+statement (results discarded), `[d]` a single assignment, `[d,e,…]` a multi-assignment. -/
 inductive Stmt (n : Nat)
-  | write     (dst : Fin n) (rhs : Rhs n)
-  | writeMany (dsts : List (Fin n)) (rhs : Rhs n)
-  | effect    (rhs : Rhs n)
+  | assign    (dsts : List (Fin n)) (rhs : Rhs n)
   | cond      (c : Atom n) (body : List (Stmt n))
   | switch    (c : Atom n) (cases : List (Literal × List (Stmt n))) (dflt : Option (List (Stmt n)))
   | loop      (post body : List (Stmt n))
@@ -77,11 +77,15 @@ structure Function where
   rets   : List (Fin nslots)
   body   : Block nslots
 
-/-- A program: a table of functions and a `main` frame. -/
+/-- A program is just a function table keyed by `Option Ident`: named functions under `some name`,
+and the entry point ("main", a zero-argument/zero-return function whose body is the object's
+top-level code) under `none`. Unifying `main` into the table means `optimize` and every
+whole-program statement range over one map. -/
 structure Program where
-  functions : Std.HashMap Ident Function
-  mainSlots : Nat
-  main      : Block mainSlots
+  functions : Std.HashMap (Option Ident) Function
+
+/-- The entry-point ("main") function — the `none`-keyed table entry, if present. -/
+def Program.main? (p : Program) : Option Function := p.functions[(none : Option Ident)]?
 
 /-! ### General slot remap (subsumes weakening) -/
 
@@ -100,9 +104,7 @@ mutual
 /-- Remap every slot of a statement through `f : Fin n → Fin m`. This is the one primitive behind
 weakening (`f = Fin.castSucc`) and the inliner's frame merge (`f = Fin.natAdd`/`Fin.castAdd`). -/
 partial def mapStmt (f : Fin n → Fin m) : Stmt n → Stmt m
-  | .write d rhs      => .write (f d) (mapRhs f rhs)
-  | .writeMany ds rhs => .writeMany (ds.map f) (mapRhs f rhs)
-  | .effect rhs       => .effect (mapRhs f rhs)
+  | .assign ds rhs    => .assign (ds.map f) (mapRhs f rhs)
   | .cond c b         => .cond (mapAtom f c) (mapBlock f b)
   | .switch c cs df   => .switch (mapAtom f c) (cs.map (fun p => (p.1, mapBlock f p.2))) (df.map (mapBlock f))
   | .loop post body   => .loop (mapBlock f post) (mapBlock f body)
@@ -135,9 +137,9 @@ partial def deadWriteElim (used : List (Fin n)) : Block n → Block n
   | []      => []
   | s :: ss =>
     match s with
-    | .write d rhs =>
-        if rhsPure rhs && ! used.contains d then deadWriteElim used ss
-        else .write d rhs :: deadWriteElim used ss
+    | .assign ds rhs =>
+        if rhsPure rhs && ds.all (fun d => ! used.contains d) then deadWriteElim used ss
+        else .assign ds rhs :: deadWriteElim used ss
     | .cond c b       => .cond c (deadWriteElim used b) :: deadWriteElim used ss
     | .switch c cs df =>
         .switch c (cs.map (fun p => (p.1, deadWriteElim used p.2))) (df.map (deadWriteElim used))
@@ -155,8 +157,7 @@ partial def blockWrites : Block n → List (Fin n)
   | s :: ss => stmtWrites s ++ blockWrites ss
 /-- Slots written by a statement. -/
 partial def stmtWrites : Stmt n → List (Fin n)
-  | .write d _      => [d]
-  | .writeMany ds _ => ds
+  | .assign ds _    => ds
   | .cond _ b       => blockWrites b
   | .switch _ cs df => cs.flatMap (fun p => blockWrites p.2) ++ (df.map blockWrites).getD []
   | .loop post body => blockWrites post ++ blockWrites body
@@ -171,9 +172,9 @@ def isConstant (b : Block n) (i : Fin n) : Bool := (blockWrites b |>.count i) �
 /-! ### Type-guarantee demonstration -/
 
 /-- Well-scoped by construction: `slot0 := add(slot1, 3)` over a 2-slot frame. -/
-example : Stmt 2 := .write 0 (.builtin .add [.slot 1, .lit (.number 3)])
+example : Stmt 2 := .assign [0] (.builtin .add [.slot 1, .lit (.number 3)])
 
 -- A type error (uncomment to see): `2` is not a `Fin 2`, so an out-of-frame slot is unrepresentable.
---   example : Stmt 2 := .write 0 (.atom (.slot 2))
+--   example : Stmt 2 := .assign [0] (.atom (.slot 2))
 
 end YulIR.FinFrame

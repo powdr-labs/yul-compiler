@@ -81,9 +81,7 @@ def simplifyRhs : Rhs n → Rhs n
 
 mutual
 def simplifyStmt : Stmt n → Stmt n
-  | .write d rhs      => .write d (simplifyRhs rhs)
-  | .writeMany ds rhs => .writeMany ds (simplifyRhs rhs)
-  | .effect rhs       => .effect (simplifyRhs rhs)
+  | .assign ds rhs    => .assign ds (simplifyRhs rhs)
   | .cond c body      => .cond c (simplifyBlock body)
   | .switch c cs df   => .switch c (simplifyCases cs) (simplifyDflt df)
   | .loop post body   => .loop (simplifyBlock post) (simplifyBlock body)
@@ -149,7 +147,7 @@ def haltingOp : Op → Bool
 
 def isTerminator : Stmt n → Bool
   | .«break» | .«continue» | .leave => true
-  | .effect (.builtin op _)         => haltingOp op
+  | .assign _ (.builtin op _)       => haltingOp op
   | _                               => false
 
 mutual
@@ -182,9 +180,7 @@ def rhsReads : Rhs n → List (Fin n)
 
 mutual
 def stmtReads : Stmt n → List (Fin n)
-  | .write _ rhs      => rhsReads rhs
-  | .writeMany _ rhs  => rhsReads rhs
-  | .effect rhs       => rhsReads rhs
+  | .assign _ rhs     => rhsReads rhs
   | .cond c body      => (atomSlot? c).toList ++ blockReads body
   | .switch c cs df   => (atomSlot? c).toList ++ readsCases cs ++ readsDflt df
   | .loop post body   => blockReads post ++ blockReads body
@@ -202,9 +198,8 @@ end
 
 /-- A statement that produces no observable effect and whose result is unused. -/
 def isDead (reads prot : List (Fin n)) : Stmt n → Bool
-  | .write d rhs => rhsPure rhs && ! reads.contains d && ! prot.contains d
-  | .effect rhs  => rhsPure rhs
-  | _            => false
+  | .assign ds rhs => rhsPure rhs && ds.all (fun d => ! reads.contains d && ! prot.contains d)
+  | _              => false
 
 mutual
 def dceBlock (reads prot : List (Fin n)) : Block n → Block n
@@ -250,13 +245,12 @@ reassignments of an initial value: excluded from value-tracking and protected fr
 def optRoundBody (frozen : List (Fin n)) (b : Block n) : Block n :=
   deadCode frozen 8 (structural (simplify (valueNumber frozen b)))
 
-/-- Optimize a program: two rounds over `main` and every function body. A function's params+returns
-are its `frozen` set; `main` has none. -/
+/-- Optimize a program: two rounds over every function body in the table (the entry point `none`
+included — its params/returns are empty, so its `frozen` set is `[]`). A function's params+returns
+are its `frozen` set. -/
 def optimize (p : Program) : Program :=
-  { functions := Std.HashMap.ofList (p.functions.toList.map (fun q =>
-      let frozen := q.2.params ++ q.2.rets
-      (q.1, { q.2 with body := optRoundBody frozen (optRoundBody frozen q.2.body) })))
-    mainSlots := p.mainSlots
-    main      := optRoundBody [] (optRoundBody [] p.main) }
+  { functions := p.functions.map (fun _ fd =>
+      let frozen := fd.params ++ fd.rets
+      { fd with body := optRoundBody frozen (optRoundBody frozen fd.body) }) }
 
 end YulIR.FinFrame
