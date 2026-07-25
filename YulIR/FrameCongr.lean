@@ -6,9 +6,11 @@ set_option warningAsError true
 
 The reusable infrastructure for lifting a local rewrite to a whole pass: equivalence is a congruence
 for each block-forming operation. `EquivBlock.consStmt` (in `FrameBigStep`) already handles `::`;
-here are the `if`-body congruence and block **append** congruence (via an execution-decomposition
-lemma for `++`), which is what `structural`'s statement-splicing needs. `switch`/`loop` body
-congruences are future work (the loop one needs induction over iterations).
+here are the `if`-body congruence, block **append** congruence (via an execution-decomposition lemma
+for `++`, what `structural`'s statement-splicing needs), and the `loop`/`switch` body congruences.
+The loop one goes through `loopImp`, an induction over the loop-unrolling derivation (the standard
+"generalize the code, induct, discharge the non-loop constructors with `nofun`" pattern); the switch
+one factors through `selectCase_congr`, congruence of the branch a constant scrutinee selects.
 -/
 
 namespace YulIR.FinFrame.Sem
@@ -71,5 +73,80 @@ theorem EquivBlock.append_congr {funs : Funs} {a₁ a₂ b₁ b₂ : Block n}
   · rintro (⟨σm, stm, haa, hbb⟩ | ⟨haa, hne⟩)
     · exact Or.inl ⟨σm, stm, (ha _ _ _ _ _).mpr haa, (hb _ _ _ _ _).mpr hbb⟩
     · exact Or.inr ⟨(ha _ _ _ _ _).mpr haa, hne⟩
+
+/-! ### Loop congruence -/
+
+private theorem loopImp {funs : Funs} {post₁ post₂ body₁ body₂ : Block n}
+    (hpost : EquivBlock funs post₁ post₂) (hbody : EquivBlock funs body₁ body₂) :
+    ∀ {σ : Store n} {st code res}, Step funs σ st code res → code = .loop post₁ body₁ →
+      Step funs σ st (.loop post₂ body₂) res := by
+  intro σ st code res h
+  induction h with
+  | loopBrk hb ihb =>
+      intro hcode; injection hcode with h1 h2; subst h1; subst h2
+      exact Step.loopBrk ((hbody _ _ _ _ _).mp hb)
+  | loopLeave hb ihb =>
+      intro hcode; injection hcode with h1 h2; subst h1; subst h2
+      exact Step.loopLeave ((hbody _ _ _ _ _).mp hb)
+  | loopHalt hb ihb =>
+      intro hcode; injection hcode with h1 h2; subst h1; subst h2
+      exact Step.loopHalt ((hbody _ _ _ _ _).mp hb)
+  | loopStep hb hob hp hl ihb ihp ihl =>
+      intro hcode; injection hcode with h1 h2; subst h1; subst h2
+      exact Step.loopStep ((hbody _ _ _ _ _).mp hb) hob ((hpost _ _ _ _ _).mp hp)
+        (ihl hpost hbody rfl)
+  | loopPostStop hb hob hp hne ihb ihp =>
+      intro hcode; injection hcode with h1 h2; subst h1; subst h2
+      exact Step.loopPostStop ((hbody _ _ _ _ _).mp hb) hob ((hpost _ _ _ _ _).mp hp) hne
+  | _ => exact nofun
+
+/-- **Loop congruence**: equivalent post/body blocks give equivalent loops. -/
+theorem EquivStmt.loop_congr {funs : Funs} {post₁ post₂ body₁ body₂ : Block n}
+    (hpost : EquivBlock funs post₁ post₂) (hbody : EquivBlock funs body₁ body₂) :
+    EquivStmt funs (.loop post₁ body₁) (.loop post₂ body₂) := by
+  intro σ st σ' st' o
+  constructor
+  · intro h; cases h with
+    | loopS h' => exact .loopS (loopImp hpost hbody h' rfl)
+  · intro h; cases h with
+    | loopS h' => exact .loopS (loopImp hpost.symm hbody.symm h' rfl)
+
+/-! ### Switch congruence -/
+
+open YulSemantics (Literal)
+open YulSemantics.EVM (litValue)
+
+/-- Congruence of the block a constant `switch` selects, under case-wise equivalence. -/
+theorem selectCase_congr {funs : Funs} {cv : U256} {cs₁ cs₂ : List (Literal × Block n)}
+    {df₁ df₂ : Option (Block n)}
+    (hcs : List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock funs p.2 q.2) cs₁ cs₂)
+    (hdf : EquivBlock funs (df₁.getD []) (df₂.getD [])) :
+    EquivBlock funs (selectCase cv cs₁ df₁) (selectCase cv cs₂ df₂) := by
+  induction hcs with
+  | nil => simpa only [selectCase, List.find?_nil] using hdf
+  | @cons p q cs₁' cs₂' hpq _ ih =>
+      obtain ⟨hlabel, hblk⟩ := hpq
+      unfold selectCase
+      by_cases hm : (litValue p.1 == cv) = true
+      · have hmq : (litValue q.1 == cv) = true := by rw [← hlabel]; exact hm
+        rw [List.find?_cons_of_pos (by simpa using hm), List.find?_cons_of_pos (by simpa using hmq)]
+        exact hblk
+      · have hmq : ¬ (litValue q.1 == cv) = true := by rw [← hlabel]; exact hm
+        rw [List.find?_cons_of_neg (by simpa using hm), List.find?_cons_of_neg (by simpa using hmq)]
+        exact ih
+
+/-- **Switch congruence**: a common scrutinee with case-wise / default equivalent bodies gives
+equivalent `switch`es. -/
+theorem EquivStmt.switch_congr {funs : Funs} {c : Atom n} {cs₁ cs₂ : List (Literal × Block n)}
+    {df₁ df₂ : Option (Block n)}
+    (hcs : List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock funs p.2 q.2) cs₁ cs₂)
+    (hdf : EquivBlock funs (df₁.getD []) (df₂.getD [])) :
+    EquivStmt funs (.switch c cs₁ df₁) (.switch c cs₂ df₂) := by
+  intro σ st σ' st' o
+  constructor
+  · intro h; cases h with
+    | switch h' => exact .switch ((selectCase_congr hcs hdf _ _ _ _ _).mp h')
+  · intro h; cases h with
+    | switch h' => exact .switch ((selectCase_congr hcs hdf _ _ _ _ _).mpr h')
 
 end YulIR.FinFrame.Sem
