@@ -50,20 +50,21 @@ def evalConst (op : Op) (lits : List Literal) : Option Literal :=
 
 /-- Algebraic identities on a pure built-in with atom operands. -/
 def simplifyIdentity (op : Op) (args : List (Atom n)) (orig : Rhs n) : Rhs n :=
-  let z (a : Atom n) : Bool := a.isVal 0
-  let o (a : Atom n) : Bool := a.isVal 1
-  let zero : Atom n := .lit (.number 0)
   match op, args with
-  | .add, [a, b] => if z a then .atom b else if z b then .atom a else orig
-  | .sub, [a, b] => if z b then .atom a else if a == b then .atom zero else orig
-  | .mul, [a, b] => if z a || z b then .atom zero else if o a then .atom b else if o b then .atom a else orig
-  | .div, [a, b] => if z b then .atom zero else if o b then .atom a else orig
-  | .or,  [a, b] => if z a then .atom b else if z b then .atom a else if a == b then .atom a else orig
-  | .and, [a, b] => if z a || z b then .atom zero else if a == b then .atom a else orig
-  | .xor, [a, b] => if z a then .atom b else if z b then .atom a else if a == b then .atom zero else orig
-  | .shl, [a, b] => if z a then .atom b else if z b then .atom zero else orig
-  | .shr, [a, b] => if z a then .atom b else if z b then .atom zero else orig
-  | .sar, [a, b] => if z a then .atom b else if z b then .atom zero else orig
+  | .add, [a, b] => if a.isVal 0 then .atom b else if b.isVal 0 then .atom a else orig
+  | .sub, [a, b] => if b.isVal 0 then .atom a else if a == b then .atom (.lit (.number 0)) else orig
+  | .mul, [a, b] => if a.isVal 0 || b.isVal 0 then .atom (.lit (.number 0))
+                    else if a.isVal 1 then .atom b else if b.isVal 1 then .atom a else orig
+  | .div, [a, b] => if b.isVal 0 then .atom (.lit (.number 0)) else if b.isVal 1 then .atom a else orig
+  | .or,  [a, b] => if a.isVal 0 then .atom b else if b.isVal 0 then .atom a
+                    else if a == b then .atom a else orig
+  | .and, [a, b] => if a.isVal 0 || b.isVal 0 then .atom (.lit (.number 0))
+                    else if a == b then .atom a else orig
+  | .xor, [a, b] => if a.isVal 0 then .atom b else if b.isVal 0 then .atom a
+                    else if a == b then .atom (.lit (.number 0)) else orig
+  | .shl, [a, b] => if a.isVal 0 then .atom b else if b.isVal 0 then .atom (.lit (.number 0)) else orig
+  | .shr, [a, b] => if a.isVal 0 then .atom b else if b.isVal 0 then .atom (.lit (.number 0)) else orig
+  | .sar, [a, b] => if a.isVal 0 then .atom b else if b.isVal 0 then .atom (.lit (.number 0)) else orig
   | _, _ => orig
 
 /-- Simplify one rhs: fold pure literal ops, else apply identities. -/
@@ -71,26 +72,31 @@ def simplifyRhs : Rhs n → Rhs n
   | .atom a       => .atom a
   | .call fn args => .call fn args
   | .builtin op args =>
-      let orig : Rhs n := .builtin op args
-      if ! Op.isPure op then orig
+      if ! Op.isPure op then .builtin op args
       else match allLits args with
         | some lits => match evalConst op lits with
             | some l => .atom (.lit l)
-            | none   => simplifyIdentity op args orig
-        | none => simplifyIdentity op args orig
+            | none   => simplifyIdentity op args (.builtin op args)
+        | none => simplifyIdentity op args (.builtin op args)
 
 mutual
-partial def simplifyStmt : Stmt n → Stmt n
+def simplifyStmt : Stmt n → Stmt n
   | .write d rhs      => .write d (simplifyRhs rhs)
   | .writeMany ds rhs => .writeMany ds (simplifyRhs rhs)
   | .effect rhs       => .effect (simplifyRhs rhs)
   | .cond c body      => .cond c (simplifyBlock body)
-  | .switch c cs df   => .switch c (cs.map (fun p => (p.1, simplifyBlock p.2))) (df.map simplifyBlock)
+  | .switch c cs df   => .switch c (simplifyCases cs) (simplifyDflt df)
   | .loop post body   => .loop (simplifyBlock post) (simplifyBlock body)
   | s                 => s
-partial def simplifyBlock : Block n → Block n
+def simplifyBlock : Block n → Block n
   | []      => []
   | s :: ss => simplifyStmt s :: simplifyBlock ss
+def simplifyCases : List (Literal × Block n) → List (Literal × Block n)
+  | []             => []
+  | (l, b) :: rest => (l, simplifyBlock b) :: simplifyCases rest
+def simplifyDflt : Option (Block n) → Option (Block n)
+  | none   => none
+  | some b => some (simplifyBlock b)
 end
 
 def simplify (b : Block n) : Block n := simplifyBlock b
