@@ -1,26 +1,40 @@
 import YulIR.Object
+import YulIR.Simplify
+import YulIR.ValueNumber
+import YulIR.Structural
+import YulIR.DeadStore
+import YulIR.DeadCode
 
 set_option warningAsError true
 /-!
-# YulIR.Optimize — the IR optimization pipeline (hook)
+# YulIR.Optimize — the IR optimization pipeline
 
-The single place IR→IR optimization passes are composed. It is currently the **identity**;
-as passes land (CSE, inlining, redundant-store elimination, …) they are added here, and the
-benchmark's `irOpt` column (`toYul ∘ optimize ∘ ofYul`) starts to diverge from `irNoOpt`
-(`toYul ∘ ofYul`).
+Composes the IR→IR passes. `ofYul` already delivers **uniquely-named, block-free** IR (it absorbs
+variable disambiguation and block flattening), so the pipeline is just:
 
-Keeping this hook here — rather than inlining `id` at call sites — is what lets the corpus
-benchmark measure *optimization* effect (`irOpt` vs `irNoOpt`, which cancels IR→Yul
-translation quality) separately from translation overhead (`irNoOpt` vs `current`).
+1. `valueNumber`   — constant/copy propagation + folding/identities + CSE;
+2. `structural`    — dead-branch / constant-switch / unreachable-code simplification;
+3. `deadStore`     — remove dead variable assignments;
+4. `deadCode`      — remove the now-unused pure bindings;
+
+iterated twice, since DCE can expose further propagation/CSE. Every step is a behaviour-preserving
+IR→IR transformation (validated by the interpreter check in `YulIR.CheckBaseline`); the benchmark's
+`irOpt` column measures their effect. All names stay unique throughout (no pass introduces a
+duplicate), so no re-`uniquify` is needed.
 -/
 
 namespace YulIR
 
-/-- The IR optimization pipeline on a top-level block. Identity until passes land. -/
-def optimize (b : Block) : Block := b
+/-- One optimization round over a whole program: value numbering, structural simplification,
+dead-store and dead-code elimination (each applied to every function body and `main`). -/
+def optRound (p : Program) : Program :=
+  deadCodeProgram (deadStoreProgram (structuralProgram (valueNumberProgram p)))
 
-/-- The IR optimization pipeline on an object (optimizes every code block). -/
+/-- The IR optimization pipeline on a `Program`. -/
+def optimize (p : Program) : Program := optRound (optRound p)
+
+/-- The IR optimization pipeline on an object (optimizes its program and every sub-object). -/
 partial def optimizeObject : Object → Object
-  | .mk name code subs data => .mk name (optimize code) (subs.map optimizeObject) data
+  | .mk name program subs data => .mk name (optimize program) (subs.map optimizeObject) data
 
 end YulIR

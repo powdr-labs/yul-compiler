@@ -1,4 +1,5 @@
 import YulSemantics.Dialect.EVM
+import Std.Data.HashMap
 
 set_option warningAsError true
 /-!
@@ -50,14 +51,21 @@ inductive Rhs
   | atom    (a : Atom)
   | builtin (op : Op) (args : List Atom)
   | call    (fn : Ident) (args : List Atom)
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, DecidableEq, BEq
 
-/-- An IR statement. Blocks are `List Stmt`. -/
+/-- An IR statement. Blocks are `List Stmt`.
+
+Two Yul statement forms are deliberately **absent as constructors**, both eliminated by `ofYul`:
+
+* **no `funDef`** — functions are lifted into `Program.functions` (a flat, name-keyed table), sound
+  because Yul functions capture no enclosing variables;
+* **no `block`** — a standalone `{ … }` block exists only to scope its declarations; since `ofYul`
+  α-renames every variable to a globally fresh name, blocks carry no meaning and are spliced into
+  their parent. Block-freeness is thus a **type-level invariant** (only the grammatically-required
+  `List Stmt` bodies of `if`/`switch`/`loop`/functions remain).
+
+Both removals take the whole hoisting/scoping tangle out of every optimization pass. -/
 inductive Stmt
-  /-- `{ body }` — a nested block (a new scope; its `funDef`s hoist within it). -/
-  | block   (body : List Stmt)
-  /-- `function name(params) -> rets { body }`. -/
-  | funDef  (name : Ident) (params rets : List Ident) (body : List Stmt)
   /-- `let vars := rhs`. `vars.length` matches the number of values `rhs` produces. -/
   | letD    (vars : List Ident) (rhs : Rhs)
   /-- `vars := rhs`. -/
@@ -80,5 +88,41 @@ inductive Stmt
 
 /-- A block of IR statements. -/
 abbrev Block := List Stmt
+
+/-- A user-defined function's signature and body, lifted out of the statement stream to the top
+level. The function's **name is the key** in `Program.functions`, so it is not stored here. -/
+structure Function where
+  params : List Ident
+  rets   : List Ident
+  body   : Block
+  deriving Repr, Inhabited
+
+/-- A translation/optimization unit: a table of functions keyed by name, plus a `main` block.
+
+Keying by name in a `HashMap` makes function-name **uniqueness structural** (no duplicate keys) and
+gives O(1) call-target lookup. Iteration order of a `HashMap` is not deterministic, so `YulIR.toYul`
+**sorts by name** when erasing, keeping compiled output stable. Erasing emits the functions at the
+top of the `main` block, where Yul's hoisting makes them mutually visible throughout it. -/
+structure Program where
+  functions : Std.HashMap Ident Function
+  main      : Block
+  deriving Inhabited
+
+namespace Program
+
+/-- The functions as a name→function list (unspecified order; sort by key when order matters). -/
+def funList (p : Program) : List (Ident × Function) := p.functions.toList
+
+/-- Rebuild the function table by transforming each function (its name is available). Keys are
+preserved, so uniqueness is maintained. -/
+def mapFunctions (f : Ident → Function → Function) (p : Program) : Program :=
+  { p with functions := Std.HashMap.ofList (p.funList.map (fun (n, fn) => (n, f n fn))) }
+
+/-- Transform every function body and `main` by the same block transformation. -/
+def mapBodies (g : Block → Block) (p : Program) : Program :=
+  { functions := Std.HashMap.ofList (p.funList.map (fun (n, fn) => (n, { fn with body := g fn.body })))
+    main := g p.main }
+
+end Program
 
 end YulIR

@@ -121,6 +121,14 @@ def corpus : List (String × YulSemantics.Block EVM.Op) :=
   , ("nested-if", yul% {
       let x := calldataload(0)
       if x { if lt(x, 100) { sstore(0, x) } } })
+  , ("blocks/nested", yul% {
+      let x := calldataload(0)
+      { let y := add(x, 1) sstore(0, y) }
+      { let z := add(x, 2) sstore(1, z) } })
+  , ("blocks/shadow", yul% {
+      let x := calldataload(0)
+      sstore(0, x)
+      { let x := calldataload(32) sstore(1, x) } })
   , ("loop/count", yul% {
       let s := 0
       for { let i := 0 } lt(i, 10) { i := add(i, 1) } { s := add(s, i) }
@@ -189,6 +197,54 @@ def corpus : List (String × YulSemantics.Block EVM.Op) :=
       sstore(0, 1) })
   , ("halt/stop", yul% {
       sstore(0, 1)
-      stop() }) ]
+      stop() })
+  -- simplification targets: constant folding + algebraic identities
+  , ("simplify/const-fold", yul% {
+      sstore(0, add(mul(3, 4), 5))
+      sstore(1, shl(2, 1))
+      sstore(2, and(255, 4096)) })
+  , ("simplify/identities", yul% {
+      let x := calldataload(0)
+      sstore(0, add(x, 0))
+      sstore(1, mul(x, 1))
+      sstore(2, mul(x, 0))
+      sstore(3, sub(x, x))
+      sstore(4, or(x, 0))
+      sstore(5, xor(x, x))
+      sstore(6, div(x, 1))
+      sstore(7, shl(0, x)) })
+  -- dead-store (unused-assignment) targets
+  , ("deadstore/reassign", yul% {
+      let x := calldataload(0)
+      x := add(x, 1)
+      x := calldataload(32)
+      sstore(0, x) })
+  , ("deadstore/branch", yul% {
+      let x := calldataload(0)
+      if calldataload(32) { x := 5 }
+      x := 9
+      sstore(0, x) })
+  , ("deadstore/loop", yul% {
+      let s := 0
+      for { let i := 0 } lt(i, 3) { i := add(i, 1) } {
+        let t := mul(i, 2)
+        s := add(s, t)
+      }
+      sstore(0, s) })
+  -- regression: a store before `break`/`continue` is live via the loop's exit/back edge
+  , ("deadstore/break-live", yul% {
+      let x := 1
+      for { } calldataload(0) { } {
+        if callvalue() { x := 2 break }
+        x := 3
+      }
+      mstore(x, 66) })
+  , ("deadstore/continue-live", yul% {
+      let x := 1
+      for { let i := 0 } lt(i, 4) { i := add(i, 1) } {
+        if eq(i, 2) { x := add(x, 10) continue }
+        x := add(x, 1)
+      }
+      sstore(0, x) }) ]
 
 end YulIR.Corpus

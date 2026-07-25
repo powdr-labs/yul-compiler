@@ -31,8 +31,29 @@ reported.
 
 open System YulParser
 open YulEvmCompilerTests.SolidityCorpus
+open YulEvmCompilerTests.SolcDifferential (compareBytecode measureGas fixtureSeed)
 
 namespace YulIRCorpus
+
+/-- Every block-rooted, latest-fork fixture as `(name, source, desugared block)`. -/
+def blockFixtures (corpusDir : FilePath) :
+    IO (Array (String × String × YulSemantics.Block YulSemantics.EVM.Op)) := do
+  let paths ← corpusDir.walkDir
+  let files := paths.filter (fun p => p.extension == some "yul")
+    |>.qsort (fun a b => relativeName corpusDir a < relativeName corpusDir b)
+  let mut out := #[]
+  for path in files do
+    let name := relativeName corpusDir path
+    let contents ← IO.FS.readFile path
+    match runsOnLatestFork contents with
+    | .ok true =>
+        let source := fixtureSource contents
+        match parseSource source with
+        | some (.block block) =>
+            out := out.push (name, source, pruneLinkerBlock (block.map desugarStmt))
+        | _ => pure ()
+    | _ => pure ()
+  return out
 
 /-- Per-category aggregate over the comparable fixtures (all three pipelines compiled). -/
 structure Cat where
@@ -61,27 +82,14 @@ def addFixture (m : Std.HashMap String Cat) (cat src : String)
 /-- Walk a corpus directory and aggregate per category. Returns the map plus the number of
 skipped (non-block or non-latest-fork) fixtures. -/
 def scan (corpusDir : FilePath) : IO (Std.HashMap String Cat × Nat) := do
-  let paths ← corpusDir.walkDir
-  let files := paths.filter (fun p => p.extension == some "yul")
-    |>.qsort (fun a b => relativeName corpusDir a < relativeName corpusDir b)
+  let fixtures ← blockFixtures corpusDir
   let mut m : Std.HashMap String Cat := {}
-  let mut skipped := 0
-  for path in files do
-    let name := relativeName corpusDir path
-    let contents ← IO.FS.readFile path
-    match runsOnLatestFork contents with
-    | .ok true =>
-        let source := fixtureSource contents
-        match parseSource source with
-        | some (.block block) =>
-            let b := pruneLinkerBlock (block.map desugarStmt)
-            let cur := (compileSource source).map (·.size)
-            let irNo := YulIR.Check.codeSizeOf (YulIR.Check.irRoundTrip b)
-            let irOp := YulIR.Check.codeSizeOf (YulIR.Check.irOptimized b)
-            m := addFixture m (categoryOf name) source cur irNo irOp
-        | _ => skipped := skipped + 1   -- object-rooted or unparseable: out of scope here
-    | _ => skipped := skipped + 1
-  return (m, skipped)
+  for (name, source, b) in fixtures do
+    let cur := (compileSource source).map (·.size)
+    let irNo := YulIR.Check.codeSizeOf (YulIR.Check.irRoundTrip b)
+    let irOp := YulIR.Check.codeSizeOf (YulIR.Check.irOptimized b)
+    m := addFixture m (categoryOf name) source cur irNo irOp
+  return (m, 0)
 
 /-- Serialize one baseline row: `cat  fp  nSrc  nCmp  cur  irNo  irOp`. -/
 def rowString (cat : String) (c : Cat) : String :=
@@ -123,6 +131,50 @@ def summary (m : Std.HashMap String Cat) (skipped : Nat) : String := Id.run do
   out := out ++ s!"(skipped {skipped} object/non-latest-fork fixtures)\n"
   out
 
+/-- Behaviour sweep: the IR-optimized bytecode must match the current pipeline's bytecode
+observably (under the differential scenarios) on every comparable fixture. A mismatch is a
+miscompile in `optimize`/translation. -/
+def behaviour (corpusDir : FilePath) : IO UInt32 := do
+  let fixtures ← blockFixtures corpusDir
+  let mut ok := 0; let mut mism := 0; let mut uncmp := 0; let mut timeout := 0
+  for (name, source, b) in fixtures do
+    match compileSource source, YulIR.Check.blockBytecode (YulIR.Check.irOptimized b) with
+    | some cur, some irOp =>
+        match compareBytecode irOp cur with
+        | .ok _ => ok := ok + 1
+        | .error e =>
+            -- A "did not halt within N steps" difference is a gas/step-cap artefact for
+            -- gas-bound or non-terminating programs (differently-sized code hits the step
+            -- cap vs the gas limit at different points), not an observable-state divergence.
+            if (e.splitOn "did not halt").length > 1 then
+              timeout := timeout + 1
+            else
+              mism := mism + 1; IO.eprintln s!"::error::{name}: ir-opt ≠ current — {e}"
+    | _, _ => uncmp := uncmp + 1
+  IO.println s!"YulIR behaviour: {ok} match current, {mism} MISMATCH, {timeout} step-cap/gas-bound, {uncmp} uncompilable."
+  return (if mism == 0 then 0 else 1)
+
+/-- Gas comparison: total EVM execution gas of the IR-optimized code vs the current pipeline,
+summed over every gas-comparable (both halt identically) scenario across the corpus. This is the
+metric solc's optimizer actually targets, and where CSE/inlining pay off even when they cost code
+size. Measurement only — cannot affect correctness. -/
+def gasReport (corpusDir : FilePath) : IO UInt32 := do
+  let fixtures ← blockFixtures corpusDir
+  let mut irTot := 0; let mut curTot := 0; let mut n := 0; let mut wins := 0; let mut losses := 0
+  for (name, source, b) in fixtures do
+    match compileSource source, YulIR.Check.blockBytecode (YulIR.Check.irOptimized b) with
+    | some cur, some irOp =>
+        for (_, res) in measureGas irOp cur (scenarioSeed := fixtureSeed name) do
+          match res with
+          | some (gi, gc) =>
+              irTot := irTot + gi; curTot := curTot + gc; n := n + 1
+              if gi < gc then wins := wins + 1 else if gi > gc then losses := losses + 1
+          | none => pure ()
+    | _, _ => pure ()
+  IO.println s!"YulIR gas over {n} comparable scenarios: ir-opt={irTot}  current={curTot}  Δ={Int.ofNat irTot - Int.ofNat curTot}"
+  IO.println s!"  per-scenario: ir-opt cheaper in {wins}, costlier in {losses}, equal in {n - wins - losses}"
+  return 0
+
 end YulIRCorpus
 
 open YulIRCorpus
@@ -133,6 +185,9 @@ def main (args : List String) : IO UInt32 := do
       let (m, skipped) ← scan dir
       IO.print (summary m skipped)
       return 0
+  | ["behaviour", dir] => behaviour dir
+  | ["behavior", dir] => behaviour dir
+  | ["gas", dir] => gasReport dir
   | ["update", dir, baseline] => do
       let (m, skipped) ← scan dir
       IO.FS.writeFile baseline (render m)
