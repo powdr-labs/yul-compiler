@@ -68,12 +68,8 @@ theorem step_mapBodies_mp (g : {n : Nat} → Block n → Block n)
   | builtin hb => exact .builtin hb
   | callNorm hl _ ho ihbody => exact callNorm_map hg hl ihbody ho
   | callHalt hl _ ihbody => exact callHalt_map hg hl ihbody
-  | writeOk _ ihr => exact .writeOk ihr
-  | writeHalt _ ihr => exact .writeHalt ihr
-  | writeMany _ ihr => exact .writeMany ihr
-  | writeManyHalt _ ihr => exact .writeManyHalt ihr
-  | effectOk _ ihr => exact .effectOk ihr
-  | effectHalt _ ihr => exact .effectHalt ihr
+  | assignOk _ ihr => exact .assignOk ihr
+  | assignHalt _ ihr => exact .assignHalt ihr
   | condFalse hc => exact .condFalse hc
   | condTrue hc _ ihb => exact .condTrue hc ihb
   | switch _ ihb => exact .switch ihb
@@ -115,12 +111,8 @@ theorem step_mapBodies_mpr (g : {n : Nat} → Block n → Block n)
       obtain ⟨fd, hfd, heq⟩ := mapBodiesFuns_get_inv hl'
       subst heq
       exact Step.callHalt (fdecl := fd) hfd ((hg funs fd.body _ _ _ _ _).mp ihbody)
-  | writeOk _ ihr => exact .writeOk ihr
-  | writeHalt _ ihr => exact .writeHalt ihr
-  | writeMany _ ihr => exact .writeMany ihr
-  | writeManyHalt _ ihr => exact .writeManyHalt ihr
-  | effectOk _ ihr => exact .effectOk ihr
-  | effectHalt _ ihr => exact .effectHalt ihr
+  | assignOk _ ihr => exact .assignOk ihr
+  | assignHalt _ ihr => exact .assignHalt ihr
   | condFalse hc => exact .condFalse hc
   | condTrue hc _ ihb => exact .condTrue hc ihb
   | switch _ ihb => exact .switch ihb

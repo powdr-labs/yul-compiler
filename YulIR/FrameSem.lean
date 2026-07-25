@@ -76,22 +76,11 @@ partial def evalRhs (funs : Funs) (fuel : Nat) (σ : Store n) (st : State) :
 /-- Execute a statement: returns the updated store, state, and control outcome. -/
 partial def execStmt (funs : Funs) (fuel : Nat) (σ : Store n) (st : State) :
     Stmt n → Option (Store n × State × Outcome)
-  | .write d rhs =>
-      match evalRhs funs fuel σ st rhs with
-      | some (.ok (v :: _) st') => some (upd σ d v, st', .normal)
-      | some (.ok [] st')       => some (σ, st', .normal)
-      | some (.halt st')        => some (σ, st', .halt)
-      | none                    => none
-  | .writeMany ds rhs =>
+  | .assign ds rhs =>
       match evalRhs funs fuel σ st rhs with
       | some (.ok vs st') => some (updMany σ ds vs, st', .normal)
       | some (.halt st')  => some (σ, st', .halt)
       | none              => none
-  | .effect rhs =>
-      match evalRhs funs fuel σ st rhs with
-      | some (.ok _ st') => some (σ, st', .normal)
-      | some (.halt st') => some (σ, st', .halt)
-      | none             => none
   | .cond c body =>
       if evalAtom σ c == 0 then some (σ, st, .normal) else execBlock funs fuel σ st body
   | .switch c cases dflt =>

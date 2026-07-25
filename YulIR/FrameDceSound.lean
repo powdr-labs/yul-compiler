@@ -93,6 +93,23 @@ theorem AgreeOn.updMany_both {S : List (Fin n)} {σ₁ σ₂} (h : AgreeOn S σ�
   | nil => exact h
   | cons p rest ih => exact ih (h.upd_both p.1 p.2)
 
+/-- Folding `upd` over pairs whose keys are all outside `S` preserves agreement with the start. -/
+theorem agree_foldl_upd {S : List (Fin n)} (ps : List (Fin n × U256))
+    (hp : ∀ p ∈ ps, p.1 ∉ S) : ∀ σ : Store n, AgreeOn S σ (ps.foldl (fun s p => upd s p.1 p.2) σ) := by
+  induction ps with
+  | nil => intro σ; exact fun i _ => rfl
+  | cons p ps ih =>
+      intro σ
+      simp only [List.foldl_cons]
+      exact AgreeOn.trans (AgreeOn.upd_out (fun _ _ => rfl) (hp p (List.mem_cons_self ..)) p.2).symm
+        (ih (fun q hq => hp q (List.mem_cons_of_mem p hq)) (upd σ p.1 p.2))
+
+/-- Multi-updating slots all outside `S` preserves agreement with the original store. -/
+theorem AgreeOn.updMany_out {S : List (Fin n)} {σ : Store n} {ds : List (Fin n)}
+    (hd : ∀ d ∈ ds, d ∉ S) (vs : List U256) : AgreeOn S σ (updMany σ ds vs) := by
+  simp only [updMany]
+  exact agree_foldl_upd _ (fun p hp => hd p.1 (List.of_mem_zip hp).1) σ
+
 /-! ### Reads determine evaluation -/
 
 /-- An atom whose slot (if any) is live evaluates identically under agreeing stores. -/
@@ -164,29 +181,23 @@ theorem dead_step {reads prot : List (Fin n)} {s : Stmt n} (hd : isDead reads pr
     {funs σ st σ' st' o} (hstep : Step funs σ st (.stmt s) (.sres σ' st' o)) :
     st' = st ∧ o = .normal ∧ AgreeOn (reads ++ prot) σ σ' := by
   cases s with
-  | write d rhs =>
-      simp only [isDead, Bool.and_eq_true, Bool.not_eq_true'] at hd
-      obtain ⟨⟨hp, hdr⟩, hdp⟩ := hd
-      have hdnotin : d ∉ reads ++ prot := by
+  | assign ds rhs =>
+      simp only [isDead, Bool.and_eq_true] at hd
+      obtain ⟨hp, hdall⟩ := hd
+      have hdnotin : ∀ d ∈ ds, d ∉ reads ++ prot := by
+        intro d hdmem
+        have hdd := (List.all_eq_true.mp hdall) d hdmem
+        simp only [Bool.and_eq_true, Bool.not_eq_true'] at hdd
         simp only [List.mem_append, not_or]
-        constructor
-        · intro hc; simp [List.contains_eq_mem, hc] at hdr
-        · intro hc; simp [List.contains_eq_mem, hc] at hdp
+        refine ⟨fun hc => ?_, fun hc => ?_⟩
+        · simp [List.contains_eq_mem, hc] at hdd
+        · simp [List.contains_eq_mem, hc] at hdd
       cases hstep with
-      | writeOk hr =>
+      | assignOk hr =>
           obtain ⟨vs, hres⟩ := pure_rhs_ok hp hr
           simp only [BuiltinResult.ok.injEq] at hres
-          exact ⟨hres.2, rfl, (AgreeOn.upd_out (fun i _ => rfl) hdnotin _).symm⟩
-      | writeHalt hr => obtain ⟨vs, hc⟩ := pure_rhs_ok hp hr; simp at hc
-  | effect rhs =>
-      simp only [isDead] at hd
-      cases hstep with
-      | effectOk hr =>
-          obtain ⟨vs, hres⟩ := pure_rhs_ok hd hr
-          simp only [BuiltinResult.ok.injEq] at hres
-          exact ⟨hres.2, rfl, fun i _ => rfl⟩
-      | effectHalt hr => obtain ⟨vs, hc⟩ := pure_rhs_ok hd hr; simp at hc
-  | writeMany ds rhs => simp [isDead] at hd
+          exact ⟨hres.2, rfl, AgreeOn.updMany_out hdnotin _⟩
+      | assignHalt hr => obtain ⟨vs, hc⟩ := pure_rhs_ok hp hr; simp at hc
   | cond c b         => simp [isDead] at hd
   | switch c cs df   => simp [isDead] at hd
   | loop post body   => simp [isDead] at hd
@@ -224,26 +235,13 @@ theorem dce_fwd {funs : Funs} {n} {σ : Store n} {st} {code : Code n} {res}
   | builtin hb => intro S σ₂ hag hin; exact (execRhs_agree hag hin).mp (Step.builtin hb)
   | callNorm hfn hbody ho => intro S σ₂ hag hin; exact (execRhs_agree hag hin).mp (Step.callNorm hfn hbody ho)
   | callHalt hfn hbody => intro S σ₂ hag hin; exact (execRhs_agree hag hin).mp (Step.callHalt hfn hbody)
-  | @writeOk _ _ _ d rhs v vs _ _ ihr =>
+  | @assignOk _ _ _ ds rhs vs _ _ ihr =>
       intro reads prot σ₂ hag hin
-      exact ⟨upd σ₂ d v, Step.writeOk (ihr _ σ₂ hag (by simpa [stmtReads] using hin)),
-        AgreeOn.upd_both hag d v⟩
-  | writeHalt hr ihr =>
-      intro reads prot σ₂ hag hin
-      exact ⟨σ₂, Step.writeHalt (ihr _ σ₂ hag (by simpa [stmtReads] using hin)), hag⟩
-  | @writeMany _ _ _ ds rhs vs _ _ ihr =>
-      intro reads prot σ₂ hag hin
-      exact ⟨updMany σ₂ ds vs, Step.writeMany (ihr _ σ₂ hag (by simpa [stmtReads] using hin)),
+      exact ⟨updMany σ₂ ds vs, Step.assignOk (ihr _ σ₂ hag (by simpa [stmtReads] using hin)),
         AgreeOn.updMany_both hag ds vs⟩
-  | writeManyHalt hr ihr =>
+  | assignHalt hr ihr =>
       intro reads prot σ₂ hag hin
-      exact ⟨σ₂, Step.writeManyHalt (ihr _ σ₂ hag (by simpa [stmtReads] using hin)), hag⟩
-  | effectOk hr ihr =>
-      intro reads prot σ₂ hag hin
-      exact ⟨σ₂, Step.effectOk (ihr _ σ₂ hag (by simpa [stmtReads] using hin)), hag⟩
-  | effectHalt hr ihr =>
-      intro reads prot σ₂ hag hin
-      exact ⟨σ₂, Step.effectHalt (ihr _ σ₂ hag (by simpa [stmtReads] using hin)), hag⟩
+      exact ⟨σ₂, Step.assignHalt (ihr _ σ₂ hag (by simpa [stmtReads] using hin)), hag⟩
   | @condFalse _ _ _ c body hc =>
       intro reads prot σ₂ hag hin
       have hcin : ∀ i, atomSlot? c = some i → i ∈ reads ++ prot := fun i hi => hin i

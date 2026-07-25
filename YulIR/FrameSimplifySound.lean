@@ -31,38 +31,16 @@ def EquivRhs (funs : Funs) {n} (r₁ r₂ : Rhs n) : Prop :=
 
 theorem EquivRhs.refl (funs : Funs) (r : Rhs n) : EquivRhs funs r r := fun _ _ _ => Iff.rfl
 
-theorem EquivRhs.write_congr {funs : Funs} {r₁ r₂ : Rhs n} (h : EquivRhs funs r₁ r₂) (d : Fin n) :
-    EquivStmt funs (.write d r₁) (.write d r₂) := by
+theorem EquivRhs.assign_congr {funs : Funs} {r₁ r₂ : Rhs n} (h : EquivRhs funs r₁ r₂)
+    (ds : List (Fin n)) : EquivStmt funs (.assign ds r₁) (.assign ds r₂) := by
   intro σ st σ' st' o
   constructor
   · intro hs; cases hs with
-    | writeOk hr   => exact .writeOk ((h _ _ _).mp hr)
-    | writeHalt hr => exact .writeHalt ((h _ _ _).mp hr)
+    | assignOk hr   => exact .assignOk ((h _ _ _).mp hr)
+    | assignHalt hr => exact .assignHalt ((h _ _ _).mp hr)
   · intro hs; cases hs with
-    | writeOk hr   => exact .writeOk ((h _ _ _).mpr hr)
-    | writeHalt hr => exact .writeHalt ((h _ _ _).mpr hr)
-
-theorem EquivRhs.writeMany_congr {funs : Funs} {r₁ r₂ : Rhs n} (h : EquivRhs funs r₁ r₂)
-    (ds : List (Fin n)) : EquivStmt funs (.writeMany ds r₁) (.writeMany ds r₂) := by
-  intro σ st σ' st' o
-  constructor
-  · intro hs; cases hs with
-    | writeMany hr     => exact .writeMany ((h _ _ _).mp hr)
-    | writeManyHalt hr => exact .writeManyHalt ((h _ _ _).mp hr)
-  · intro hs; cases hs with
-    | writeMany hr     => exact .writeMany ((h _ _ _).mpr hr)
-    | writeManyHalt hr => exact .writeManyHalt ((h _ _ _).mpr hr)
-
-theorem EquivRhs.effect_congr {funs : Funs} {r₁ r₂ : Rhs n} (h : EquivRhs funs r₁ r₂) :
-    EquivStmt funs (.effect r₁) (.effect r₂) := by
-  intro σ st σ' st' o
-  constructor
-  · intro hs; cases hs with
-    | effectOk hr   => exact .effectOk ((h _ _ _).mp hr)
-    | effectHalt hr => exact .effectHalt ((h _ _ _).mp hr)
-  · intro hs; cases hs with
-    | effectOk hr   => exact .effectOk ((h _ _ _).mpr hr)
-    | effectHalt hr => exact .effectHalt ((h _ _ _).mpr hr)
+    | assignOk hr   => exact .assignOk ((h _ _ _).mpr hr)
+    | assignHalt hr => exact .assignHalt ((h _ _ _).mpr hr)
 
 /-! ### Small helpers -/
 
@@ -239,22 +217,17 @@ theorem simplifyBlock_equiv (funs : Funs) (b : Block n) :
     (motive_3 := fun b => EquivBlock funs (simplifyBlock b) b)
     (motive_4 := fun cs =>
       List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock funs p.2 q.2) (simplifyCases cs) cs)
-    ?write ?writeMany ?effect ?cond ?switch ?loop ?stmt ?bnil ?bcons ?cnil ?ccons ?dnone ?dsome b
-  case write =>
-    intro d rhs; rw [simplifyStmt.eq_1]; exact EquivRhs.write_congr (simplifyRhs_equiv funs rhs) d
-  case writeMany =>
-    intro ds rhs; rw [simplifyStmt.eq_2]
-    exact EquivRhs.writeMany_congr (simplifyRhs_equiv funs rhs) ds
-  case effect =>
-    intro rhs; rw [simplifyStmt.eq_3]; exact EquivRhs.effect_congr (simplifyRhs_equiv funs rhs)
+    ?assign ?cond ?switch ?loop ?stmt ?bnil ?bcons ?cnil ?ccons ?dnone ?dsome b
+  case assign =>
+    intro ds rhs; rw [simplifyStmt.eq_1]; exact EquivRhs.assign_congr (simplifyRhs_equiv funs rhs) ds
   case cond =>
-    intro c body ih; rw [simplifyStmt.eq_4]; exact EquivStmt.cond_congr ih
+    intro c body ih; rw [simplifyStmt.eq_2]; exact EquivStmt.cond_congr ih
   case switch =>
-    intro c cs df ihcs ihdf; rw [simplifyStmt.eq_5]; exact EquivStmt.switch_congr ihcs ihdf
+    intro c cs df ihcs ihdf; rw [simplifyStmt.eq_3]; exact EquivStmt.switch_congr ihcs ihdf
   case loop =>
-    intro post body ihp ihb; rw [simplifyStmt.eq_6]; exact EquivStmt.loop_congr ihp ihb
+    intro post body ihp ihb; rw [simplifyStmt.eq_4]; exact EquivStmt.loop_congr ihp ihb
   case stmt =>
-    intro s hnw hnwm hne hnc hns hnl; rw [simplifyStmt.eq_7 s hnw hnwm hne hnc hns hnl]
+    intro s hna hnc hns hnl; rw [simplifyStmt.eq_5 s hna hnc hns hnl]
     exact EquivStmt.refl funs s
   case bnil => exact EquivBlock.refl funs []
   case bcons =>

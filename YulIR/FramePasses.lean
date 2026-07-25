@@ -72,14 +72,12 @@ partial def vnBlock (imm : Fin n → Bool) (env : List (Fin n × Atom n))
   | []      => []
   | s :: rest =>
     match s with
-    | .write d rhs =>
+    | .assign [d] rhs =>
         let rhs' := resolveRhs env rhs
         let (env', avail', out) := recordWrite imm env avail d rhs'
-        .write d out :: vnBlock imm env' avail' rest
-    | .writeMany ds rhs =>
-        .writeMany ds (resolveRhs env rhs) :: vnBlock imm env avail rest
-    | .effect rhs =>
-        .effect (resolveRhs env rhs) :: vnBlock imm env avail rest
+        .assign [d] out :: vnBlock imm env' avail' rest
+    | .assign ds rhs =>
+        .assign ds (resolveRhs env rhs) :: vnBlock imm env avail rest
     | .cond c b =>
         .cond (resolveAtom env c) (vnBlock imm env avail b) :: vnBlock imm env avail rest
     | .switch c cs df =>
@@ -125,9 +123,9 @@ def inlineTail (pre : Block n) (callee : Function)
   let preW    := mapBlock cast pre
   let argsW   := args.map (mapAtom cast)
   let dstsW   := dsts.map cast
-  let binds   := (callee.params.zip argsW).map (fun p => Stmt.write (off p.1) (.atom p.2))
+  let binds   := (callee.params.zip argsW).map (fun p => Stmt.assign [off p.1] (.atom p.2))
   let bodyOff := mapBlock off callee.body
-  let extract := (dstsW.zip callee.rets).map (fun p => Stmt.write p.1 (.atom (.slot (off p.2))))
+  let extract := (dstsW.zip callee.rets).map (fun p => Stmt.assign [p.1] (.atom (.slot (off p.2))))
   preW ++ binds ++ bodyOff ++ extract
 
 /-! ### Demonstrations -/
@@ -135,8 +133,8 @@ def inlineTail (pre : Block n) (callee : Function)
 /-- Value numbering keeps the frame: `slot0 := add(1,2); slot1 := add(1,2)` (a CSE opportunity) is
 optimised within `Block 2`. -/
 example : Block 2 :=
-  valueNumber [] [ .write 0 (.builtin .add [.lit (.number 1), .lit (.number 2)])
-              , .write 1 (.builtin .add [.lit (.number 1), .lit (.number 2)]) ]
+  valueNumber [] [ .assign [0] (.builtin .add [.lit (.number 1), .lit (.number 2)])
+              , .assign [1] (.builtin .add [.lit (.number 1), .lit (.number 2)]) ]
 
 /-- Inlining a 1-slot identity-ish callee into a 1-slot caller yields a `Block (1 + 1)` — the frame
 grew, and both sides were reindexed. -/

@@ -64,24 +64,12 @@ inductive Step (funs : Funs) : {n : Nat} → Store n → State → Code n → Re
         (.sres σ' st' .halt) →
       Step funs σ st (.rhs (.call fn args)) (.eres (.halt st'))
   /- statements -/
-  | writeOk {n} {σ : Store n} {st d rhs v vs st'} :
-      Step funs σ st (.rhs rhs) (.eres (.ok (v :: vs) st')) →
-      Step funs σ st (.stmt (.write d rhs)) (.sres (upd σ d v) st' .normal)
-  | writeHalt {n} {σ : Store n} {st d rhs st'} :
-      Step funs σ st (.rhs rhs) (.eres (.halt st')) →
-      Step funs σ st (.stmt (.write d rhs)) (.sres σ st' .halt)
-  | writeMany {n} {σ : Store n} {st ds rhs vs st'} :
+  | assignOk {n} {σ : Store n} {st ds rhs vs st'} :
       Step funs σ st (.rhs rhs) (.eres (.ok vs st')) →
-      Step funs σ st (.stmt (.writeMany ds rhs)) (.sres (updMany σ ds vs) st' .normal)
-  | writeManyHalt {n} {σ : Store n} {st ds rhs st'} :
+      Step funs σ st (.stmt (.assign ds rhs)) (.sres (updMany σ ds vs) st' .normal)
+  | assignHalt {n} {σ : Store n} {st ds rhs st'} :
       Step funs σ st (.rhs rhs) (.eres (.halt st')) →
-      Step funs σ st (.stmt (.writeMany ds rhs)) (.sres σ st' .halt)
-  | effectOk {n} {σ : Store n} {st rhs vs st'} :
-      Step funs σ st (.rhs rhs) (.eres (.ok vs st')) →
-      Step funs σ st (.stmt (.effect rhs)) (.sres σ st' .normal)
-  | effectHalt {n} {σ : Store n} {st rhs st'} :
-      Step funs σ st (.rhs rhs) (.eres (.halt st')) →
-      Step funs σ st (.stmt (.effect rhs)) (.sres σ st' .halt)
+      Step funs σ st (.stmt (.assign ds rhs)) (.sres σ st' .halt)
   | condFalse {n} {σ : Store n} {st c body} :
       evalAtom σ c = 0 → Step funs σ st (.stmt (.cond c body)) (.sres σ st .normal)
   | condTrue {n} {σ : Store n} {st c body σ' st' o} :
