@@ -154,8 +154,8 @@ def dropUnreachableStmt : Stmt n → Stmt n
   | s               => s
 def dropUnreachableBlock : Block n → Block n
   | []      => []
-  | s :: ss => let s' := dropUnreachableStmt s
-               if isTerminator s' then [s'] else s' :: dropUnreachableBlock ss
+  | s :: ss => if isTerminator (dropUnreachableStmt s) then [dropUnreachableStmt s]
+               else dropUnreachableStmt s :: dropUnreachableBlock ss
 def dropUnreachableCases : List (Literal × Block n) → List (Literal × Block n)
   | []             => []
   | (l, b) :: rest => (l, dropUnreachableBlock b) :: dropUnreachableCases rest

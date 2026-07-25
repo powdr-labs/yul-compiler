@@ -14,4 +14,5 @@ import YulIR.FrameCongr
 import YulIR.FramePasses
 import YulIR.FrameOptimize
 import YulIR.FrameStructuralSound
+import YulIR.FrameDropSound
 set_option warningAsError true
