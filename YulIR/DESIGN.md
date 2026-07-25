@@ -18,10 +18,25 @@ Yul  ──ofYul──▶  YulIR  ──optimize──▶  YulIR  ──toYul─
      (trusted)          (this work)          (erasure)         (YulEvmCompiler.compile)
 ```
 
-`ofYul`/`toYul` are trusted (unproven) today; `toYul` is a structural **erasure**, so IR
+`ofYul` is trusted (unproven) today. `toYul` is a structural **erasure** (a non-`partial`,
+structurally-recursive definition, so it carries equation lemmas usable in proofs), so IR
 optimizations are measured as real EVM code-size/gas changes through the existing verified
 backend. Semantic soundness of `ofYul∘toYul` and of `optimize` is checked with the
-`yul-semantics` interpreter (`YulIR/CheckBaseline.lean`), not yet proven.
+`yul-semantics` interpreter (`YulIR/CheckBaseline.lean`).
+
+**Soundness proofs have started** (`YulIR/Soundness.lean`). An IR transformation `f` is sound when
+`EquivBlock evm (toYul (f b)) (toYul b)` — pointwise big-step equivalence of the erased programs,
+which `EquivBlock.run_iff` turns into identical whole-program `Run` results. Grounded in the
+upstream `YulSemantics.Equiv` meta-theory (pointwise equivalences + congruence lemmas), the file
+proves, `sorry`-free (axioms: only `propext`, `Quot.sound`), the semantic rewrites the passes
+perform: `structural`'s dead `if 0` removal, `if 1 { b }` ⇝ `{ b }`, and constant-`switch`
+selection; and `valueNumber`/`simplify`'s constant folding in a `let`. A worked
+`structural_if_true_run` lifts one rewrite through congruence to a whole-program `Run` equality.
+
+**Blocker for whole-pass composition:** the upstream meta-theory has no `funDef`-body congruence
+yet, and every pass recurses into function bodies, so `∀ b, EquivBlock (toYul (pass b)) (toYul b)`
+is not yet provable in general (only for the `funDef`-free fragment). That congruence — a relation
+on function environments threaded through the big-step judgment — is the next keystone.
 
 ## IR (`YulIR/Ast.lean`)
 

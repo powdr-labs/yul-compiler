@@ -35,8 +35,13 @@ def Rhs.toYul : Rhs → Expr Op
 private def trueLit : Expr Op := .lit (.number 1)
 
 mutual
-/-- Erase an IR statement to a Yul statement. -/
-partial def Stmt.toYul : Stmt → YulSemantics.Stmt Op
+/-- Erase an IR statement to a Yul statement.
+
+Defined by structural recursion (not `partial`) so it carries definitional equations —
+soundness proofs (`YulIR.Soundness`) reason by unfolding `toYul`. The `switch` case uses the
+explicit `toYulCases`/`toYulDflt` helpers instead of `List.map`/`Option.map` so the termination
+checker sees the structural decrease. -/
+def Stmt.toYul : Stmt → YulSemantics.Stmt Op
   | .block body        => .block (Stmt.toYulBlock body)
   | .funDef n ps rs b  => .funDef n ps rs (Stmt.toYulBlock b)
   | .letD vars rhs     => .letDecl vars (some rhs.toYul)
@@ -44,17 +49,26 @@ partial def Stmt.toYul : Stmt → YulSemantics.Stmt Op
   | .effect rhs        => .exprStmt rhs.toYul
   | .cond c body       => .cond c.toYul (Stmt.toYulBlock body)
   | .switch c cs dflt  =>
-      .switch c.toYul (cs.map (fun p => (p.1, Stmt.toYulBlock p.2)))
-        (dflt.map Stmt.toYulBlock)
+      .switch c.toYul (Stmt.toYulCases cs) (Stmt.toYulDflt dflt)
   | .loop post body    => .forLoop [] trueLit (Stmt.toYulBlock post) (Stmt.toYulBlock body)
   | .«break»           => .«break»
   | .«continue»        => .«continue»
   | .leave             => .leave
 
 /-- Erase a block. -/
-partial def Stmt.toYulBlock : Block → YulSemantics.Block Op
+def Stmt.toYulBlock : Block → YulSemantics.Block Op
   | []      => []
   | s :: ss => s.toYul :: Stmt.toYulBlock ss
+
+/-- Erase a `switch`'s case list. -/
+def Stmt.toYulCases : List (Literal × Block) → List (Literal × YulSemantics.Block Op)
+  | []            => []
+  | (l, b) :: rest => (l, Stmt.toYulBlock b) :: Stmt.toYulCases rest
+
+/-- Erase a `switch`'s optional default block. -/
+def Stmt.toYulDflt : Option Block → Option (YulSemantics.Block Op)
+  | none   => none
+  | some b => some (Stmt.toYulBlock b)
 end
 
 /-- Erase a whole IR program (top-level block) to a Yul block. -/
