@@ -3,13 +3,13 @@
 # Pinned to solc 0.8.35, EVM version osaka. 'ours' is a ceiling:
 # CI fails if this compiler's total rises above it while solc's is unchanged.
 # columns: fixture<TAB>ours<TAB>solc
-PositionStatusMap.sol:borrowCountIgnoresInvalidBits()	114266	99659
-PositionStatusMap.sol:borrowCountMaxReserveScan()	4430895	2252886
-PositionStatusMap.sol:collateralCountIgnoresInvalidBits()	114498	99643
-PositionStatusMap.sol:collateralCountMaxReserveScan()	4526251	2297830
-PositionStatusMap.sol:constants()	52434	16434
-PositionStatusMap.sol:flsFullRange()	340463	193873
-PositionStatusMap.sol:mixedPositionCountVector()	108526	82465
-PositionStatusMap.sol:nextBorrowingContinuousTenThousand()	9567171	3578808
-PositionStatusMap.sol:nextCollateralContinuousTenThousand()	9997154	3638824
-PositionStatusMap.sol:nextContinuousTenThousand()	18666506	5975804
+PositionStatusMap.sol:borrowCountIgnoresInvalidBits()	111726	99659
+PositionStatusMap.sol:borrowCountMaxReserveScan()	3862672	2252886
+PositionStatusMap.sol:collateralCountIgnoresInvalidBits()	111910	99643
+PositionStatusMap.sol:collateralCountMaxReserveScan()	3949788	2297830
+PositionStatusMap.sol:constants()	47498	16434
+PositionStatusMap.sol:flsFullRange()	322167	193873
+PositionStatusMap.sol:mixedPositionCountVector()	103784	82465
+PositionStatusMap.sol:nextBorrowingContinuousTenThousand()	7787024	3578808
+PositionStatusMap.sol:nextCollateralContinuousTenThousand()	8137015	3638824
+PositionStatusMap.sol:nextContinuousTenThousand()	14315572	5975804
