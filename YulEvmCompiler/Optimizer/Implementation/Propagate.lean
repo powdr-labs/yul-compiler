@@ -100,12 +100,12 @@ def prune (σ : PEnv) (ws : List Ident) : PEnv :=
   σ.filter (fun p => !entryHits ws p)
 
 /-- Bindings introduced at this block level and removed by `restore` at block
-exit. (Shared with `StorageForward`, which exports its cache facts across the
-same scope boundary.) -/
-def declaredStmts : List (Stmt Op) → List Ident
+exit (the same notion as `StorageForward`'s `declaredStmts`; named apart
+because `MemorySpill` has an unrelated deep `declaredStmts`). -/
+def blockDecls : List (Stmt Op) → List Ident
   | [] => []
-  | .letDecl xs _ :: rest => xs ++ declaredStmts rest
-  | _ :: rest => declaredStmts rest
+  | .letDecl xs _ :: rest => xs ++ blockDecls rest
+  | _ :: rest => blockDecls rest
 
 /-! ### Write sets
 
@@ -254,7 +254,7 @@ tracked environment for the statements that follow it. -/
 def propStmt (copyOK : Bool) (σ : PEnv) : Stmt Op → Stmt Op × PEnv
   | .block body =>
       let pb := propStmts (copyGate 0 body) σ body
-      (.block pb.1, prune pb.2 (declaredStmts body))
+      (.block pb.1, prune pb.2 (blockDecls body))
   | .funDef n ps rs body =>
       (.funDef n ps rs
         (propStmts (copyGate (ps.length + rs.length) body) [] body).1, σ)
@@ -364,7 +364,7 @@ block) survive, which is what lets constants travel out of inliner readback
 blocks (`let x  { … x := 0 }  y := x`). -/
 inductive BlockExitRel (σ σb : PEnv) (body : Block Op) : PEnv → Prop
   | skip : BlockExitRel σ σb body (prune σ (writeSetStmts body))
-  | exportFacts : BlockExitRel σ σb body (prune σb (declaredStmts body))
+  | exportFacts : BlockExitRel σ σb body (prune σb (blockDecls body))
 
 /-- `PropRel σ σ' pc pc'`: `pc'` is a valid `σ`-propagation of `pc`, leaving
 `σ'` for what follows. Constructor-preserving on statements; every action has a
@@ -1020,7 +1020,7 @@ theorem block_keys {funs : FunEnv D} {V V' : VEnv D} {st st' : EvmState}
 theorem scopeFrame_stmt_normal {funs : FunEnv D} {V V' : VEnv D}
     {st st' : EvmState} {s : Stmt Op}
     (h : Step D funs V st (.stmt s) (.sres V' st' .normal)) :
-    ScopeFrame (declaredStmts [s]) V V' := by
+    ScopeFrame (blockDecls [s]) V V' := by
   cases h with
   | funDef => exact ScopeFrame.refl _
   | block hbody =>
@@ -1031,11 +1031,11 @@ theorem scopeFrame_stmt_normal {funs : FunEnv D} {V V' : VEnv D}
       intro p hp
       have hk : p.1 ∈ (bindZeros D _).map Prod.fst := List.mem_map_of_mem hp
       rw [bindZeros_keys] at hk
-      simpa [declaredStmts] using hk
+      simpa [blockDecls] using hk
   | letVal he hlen =>
       refine ⟨_ , V, rfl, rfl, ?_⟩
       intro p hp
-      simpa [declaredStmts] using (List.of_mem_zip hp).1
+      simpa [blockDecls] using (List.of_mem_zip hp).1
   | assignVal he hlen =>
       exact ScopeFrame.of_keys (VEnv.setMany_keys _ _ _)
   | exprStmt he => exact ScopeFrame.refl _
@@ -1051,7 +1051,7 @@ theorem scopeFrame_stmt_normal {funs : FunEnv D} {V V' : VEnv D}
 theorem scopeFrame_stmts_normal {funs : FunEnv D} {V V' : VEnv D}
     {st st' : EvmState} {ss : List (Stmt Op)}
     (h : Step D funs V st (.stmts ss) (.sres V' st' .normal)) :
-    ScopeFrame (declaredStmts ss) V V' := by
+    ScopeFrame (blockDecls ss) V V' := by
   induction ss generalizing V st with
   | nil =>
       cases h
@@ -1061,7 +1061,7 @@ theorem scopeFrame_stmts_normal {funs : FunEnv D} {V V' : VEnv D}
       | seqCons hs hrest =>
           have h₁ := scopeFrame_stmt_normal hs
           have h₂ := ih hrest
-          cases s <;> simpa [declaredStmts] using h₁.comp h₂
+          cases s <;> simpa [blockDecls] using h₁.comp h₂
       | seqStop hs hne => exact absurd rfl hne
 
 /-! ### The compatibility invariant -/

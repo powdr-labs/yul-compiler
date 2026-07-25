@@ -509,7 +509,7 @@ def selectLoop (body : Block Op) (groups : List SpillSet) :
           else selectLoop body groups fuel selected'
 
 def selectSpills (body : Block Op) : Option SpillSet :=
-  let names := declaredStmts body
+  let names := MemorySpill.declaredStmts body
   selectLoop body (coupledStmts none body) (names.length + 1) []
 
 /-! ## Lexical slot coloring inside one frame -/
@@ -1160,7 +1160,7 @@ def spillBlock? (body : Block Op) : Option Result := do
   let layout ← buildLayout base selected guarded
   if layout.words != provisional.words then none else
   if !layoutCheck base reserved selected layout then none else
-  if (declaredStmts guarded).any (·.startsWith tempPrefix) then none else
+  if (MemorySpill.declaredStmts guarded).any (·.startsWith tempPrefix) then none else
   let rewritten := rewriteStmts layout.slots none [] guarded
   if (firstPressure [] rewritten).isSome then none else
   some {

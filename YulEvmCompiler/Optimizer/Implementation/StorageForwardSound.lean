@@ -1039,7 +1039,7 @@ theorem hoist_sfStmts (bound : List Ident) (C : StorageCache) :
       cases s with
       | block body =>
           simpa [sfStmts, sfStmt, sfNextBound, hoist] using
-            ih bound (cacheKill (declaredStmts body) (sfStmts bound C body).2)
+            ih bound (cacheKill (blockDecls body) (sfStmts bound C body).2)
       | funDef n ps rs body =>
           simpa [sfStmts, sfStmt, sfNextBound, hoist] using ih bound C
       | letDecl xs rhs =>
@@ -1273,7 +1273,7 @@ theorem sf_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
             Prod.mk.injEq] at hr
           obtain ⟨rfl, rfl⟩ := hr
           obtain ⟨hbody', -⟩ := ihbody (bound := bound) (C := [])
-            (C' := cacheKill (declaredStmts body) (sfStmts bound [] body).2)
+            (C' := cacheKill (blockDecls body) (sfStmts bound [] body).2)
             (code' := .stmt (.block (sfStmts bound [] body).1)) rfl hb
             (StorageCache.OK.nil _ _)
           exact ⟨Step.ifTrue hcond hnz hbody', by
@@ -1285,7 +1285,7 @@ theorem sf_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
           simp only [SFRel, sfCode, sfStmt, hkeep, if_true, Prod.mk.injEq] at hr
           obtain ⟨rfl, rfl⟩ := hr
           obtain ⟨hbody', -⟩ := ihbody (bound := bound) (C := [])
-            (C' := cacheKill (declaredStmts body) (sfStmts bound [] body).2)
+            (C' := cacheKill (blockDecls body) (sfStmts bound [] body).2)
             (code' := .stmt (.block (sfStmts bound [] body).1)) rfl hb
             (StorageCache.OK.nil _ _)
           refine ⟨Step.ifTrue hcond hnz hbody', ?_⟩
@@ -1575,7 +1575,7 @@ theorem sf_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       cases hbodyeq
       have hbody' := ihbody (code := .stmt (.block body)) (bound := bound)
         (C := [])
-        (C' := cacheKill (declaredStmts body) (sfStmts bound [] body).2)
+        (C' := cacheKill (blockDecls body) (sfStmts bound [] body).2)
         rfl hb (StorageCache.OK.nil _ _)
       exact Step.ifTrue hcond hnz hbody'
   | ifFalse hcond hz ihc =>

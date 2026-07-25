@@ -202,35 +202,34 @@ end
 
 /-- Resolution also preserves direct block-local declarations (it rewrites
 expressions only, never binder lists). -/
-theorem declared_resolveStmts (L : Layout) :
-    ∀ ss : List (Stmt Op), declaredStmts (resolveForLayoutStmts L ss) = declaredStmts ss
+theorem blockDecls_resolveStmts (L : Layout) :
+    ∀ ss : List (Stmt Op), blockDecls (resolveForLayoutStmts L ss) = blockDecls ss
   | [] => by rw [resolveForLayoutStmts_nil]
   | s :: rest => by
       rw [resolveForLayoutStmts_cons]
-      show declaredStmts (resolveForLayoutStmt L s :: resolveForLayoutStmts L rest) = _
-      have hrest := declared_resolveStmts L rest
+      show blockDecls (resolveForLayoutStmt L s :: resolveForLayoutStmts L rest) = _
+      have hrest := blockDecls_resolveStmts L rest
       cases s with
       | letDecl xs v =>
           rw [resolveForLayoutStmt_letDecl]
-          show xs ++ declaredStmts (resolveForLayoutStmts L rest) = _
-          rw [hrest]
+          simp [blockDecls, hrest]
       | block body =>
-          rw [resolveForLayoutStmt_block]; exact hrest
+          rw [resolveForLayoutStmt_block]; simpa [blockDecls] using hrest
       | funDef n ps rs body =>
-          rw [resolveForLayoutStmt_funDef]; exact hrest
+          rw [resolveForLayoutStmt_funDef]; simpa [blockDecls] using hrest
       | assign xs e =>
-          rw [resolveForLayoutStmt_assign]; exact hrest
+          rw [resolveForLayoutStmt_assign]; simpa [blockDecls] using hrest
       | cond c body =>
-          rw [resolveForLayoutStmt_cond]; exact hrest
-      | switch c cases dflt =>
-          rw [resolveForLayoutStmt_switch]; exact hrest
-      | forLoop init c post body =>
-          rw [resolveForLayoutStmt_forLoop]; exact hrest
+          rw [resolveForLayoutStmt_cond]; simpa [blockDecls] using hrest
+      | «switch» c cs dflt =>
+          rw [resolveForLayoutStmt_switch]; simpa [blockDecls] using hrest
+      | forLoop finit c post body =>
+          rw [resolveForLayoutStmt_forLoop]; simpa [blockDecls] using hrest
       | exprStmt e =>
-          rw [resolveForLayoutStmt_exprStmt]; exact hrest
-      | «break» => rw [resolveForLayoutStmt_break]; exact hrest
-      | «continue» => rw [resolveForLayoutStmt_continue]; exact hrest
-      | leave => rw [resolveForLayoutStmt_leave]; exact hrest
+          rw [resolveForLayoutStmt_exprStmt]; simpa [blockDecls] using hrest
+      | «break» => rw [resolveForLayoutStmt_break]; simpa [blockDecls] using hrest
+      | «continue» => rw [resolveForLayoutStmt_continue]; simpa [blockDecls] using hrest
+      | «leave» => rw [resolveForLayoutStmt_leave]; simpa [blockDecls] using hrest
 
 /-! ### The rhs choice is closed under resolution -/
 
@@ -334,7 +333,7 @@ theorem PropRel.resolve {σ σ' : PEnv} {pc pc' : PCode Op}
           exact .skip
       | exportFacts =>
           refine .blockS ih ?_
-          rw [← declared_resolveStmts L body]
+          rw [← blockDecls_resolveStmts L body]
           exact .exportFacts
   | @funDefS σ σb n ps rs body body' _ ih =>
       show PropRel σ σ (.stmt (resolveForLayoutStmt L (.funDef n ps rs body)))
