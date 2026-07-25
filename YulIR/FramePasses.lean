@@ -147,11 +147,15 @@ def vnSafeRhs (imm : Fin n → Bool) (W : List (Fin n)) : Rhs n → Bool
          probe1 op args.length)
   | .call _ _ => true
 
+/-- The recording condition applies only to single-destination assigns. -/
+def vnSafeDsts (imm : Fin n → Bool) (W : List (Fin n)) : List (Fin n) → Rhs n → Bool
+  | [d], rhs => !imm d || vnSafeRhs imm W rhs
+  | _, _ => true
+
 mutual
 def vnSafeStmt (imm : Fin n → Bool) (W : List (Fin n)) : Stmt n → Option (List (Fin n))
   | .assign ds rhs =>
-      if ds.all (fun d => !imm d || !W.contains d)
-          && (match ds with | [d] => !imm d || vnSafeRhs imm W rhs | _ => true) then
+      if ds.all (fun d => !imm d || !W.contains d) && vnSafeDsts imm W ds rhs then
         some (ds.filter imm ++ W)
       else none
   | .cond _ b => vnSafeBlock imm W b
