@@ -99,6 +99,14 @@ def entryHits (ws : List Ident) : Ident × PRhs → Bool
 def prune (σ : PEnv) (ws : List Ident) : PEnv :=
   σ.filter (fun p => !entryHits ws p)
 
+/-- Bindings introduced at this block level and removed by `restore` at block
+exit. (Shared with `StorageForward`, which exports its cache facts across the
+same scope boundary.) -/
+def declaredStmts : List (Stmt Op) → List Ident
+  | [] => []
+  | .letDecl xs _ :: rest => xs ++ declaredStmts rest
+  | _ :: rest => declaredStmts rest
+
 /-! ### Write sets
 
 Every ident let-declared or assigned at any depth — `funDef` bodies excluded
@@ -245,7 +253,8 @@ mutual
 tracked environment for the statements that follow it. -/
 def propStmt (copyOK : Bool) (σ : PEnv) : Stmt Op → Stmt Op × PEnv
   | .block body =>
-      (.block (propStmts (copyGate 0 body) σ body).1, prune σ (writeSetStmts body))
+      let pb := propStmts (copyGate 0 body) σ body
+      (.block pb.1, prune pb.2 (declaredStmts body))
   | .funDef n ps rs body =>
       (.funDef n ps rs
         (propStmts (copyGate (ps.length + rs.length) body) [] body).1, σ)
@@ -345,6 +354,18 @@ inductive AssignEnvRel (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) : PEnv →
   | refresh {x r} : xs = [x] → (lookupEnv σ x).isSome → classify rhs' = some r →
       AssignEnvRel σ xs rhs' ((x, r) :: prune σ [x])
 
+/-- Valid tracked environments after a nested block. `skip` is the classic
+conservative exit: prune the *entry* environment by the block's whole write
+set. `exportFacts` instead threads the body's own *final* environment across
+the block's `restore`, dropping every fact whose key or copy-source is one of
+the block's direct locals — exactly the bindings `restore` removes. Facts
+about outer variables (including ones established or refreshed *inside* the
+block) survive, which is what lets constants travel out of inliner readback
+blocks (`let x  { … x := 0 }  y := x`). -/
+inductive BlockExitRel (σ σb : PEnv) (body : Block Op) : PEnv → Prop
+  | skip : BlockExitRel σ σb body (prune σ (writeSetStmts body))
+  | exportFacts : BlockExitRel σ σb body (prune σb (declaredStmts body))
+
 /-- `PropRel σ σ' pc pc'`: `pc'` is a valid `σ`-propagation of `pc`, leaving
 `σ'` for what follows. Constructor-preserving on statements; every action has a
 skip alternative (via the `RhsRel`/`*EnvRel` premises); pruning is mandatory. -/
@@ -354,9 +375,10 @@ inductive PropRel : PEnv → PEnv → PCode Op → PCode Op → Prop
       PropRel σ σ (.expr e) (.expr e')
   | args {σ : PEnv} {es : List (Expr Op)} :
       PropRel σ σ (.args es) (.args (substArgs σ es))
-  | blockS {σ σb : PEnv} {body body' : Block Op} :
+  | blockS {σ σb σ2 : PEnv} {body body' : Block Op} :
       PropRel σ σb (.stmts body) (.stmts body') →
-      PropRel σ (prune σ (writeSetStmts body)) (.stmt (.block body)) (.stmt (.block body'))
+      BlockExitRel σ σb body σ2 →
+      PropRel σ σ2 (.stmt (.block body)) (.stmt (.block body'))
   | funDefS {σ σb : PEnv} {n : Ident} {ps rs : List Ident} {body body' : Block Op} :
       PropRel [] σb (.stmts body) (.stmts body') →
       PropRel σ σ (.stmt (.funDef n ps rs body)) (.stmt (.funDef n ps rs body'))
@@ -448,7 +470,7 @@ mutual
 theorem propStmt_rel (copyOK : Bool) (σ : PEnv) : ∀ s : Stmt Op,
     PropRel σ (propStmt copyOK σ s).2
       (.stmt s) (.stmt (propStmt copyOK σ s).1)
-  | .block body => .blockS (propStmts_rel (copyGate 0 body) σ body)
+  | .block body => .blockS (propStmts_rel (copyGate 0 body) σ body) .exportFacts
   | .funDef _ ps rs body =>
       .funDefS (propStmts_rel (copyGate (ps.length + rs.length) body) [] body)
   | .letDecl xs none => .letNoneS (letZeroEnv_rel σ xs)
@@ -908,6 +930,140 @@ theorem Step.env_frame {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       subst h1
       exact (ihb rfl).mono (fun x hx => List.mem_append.mpr (Or.inr hx))
 
+/-! ### Block-scope framing
+
+The value environment at the end of a block's body consists of the block's
+direct declarations over a key-preserving update of the entry environment.
+`restore` removes exactly that declaration prefix; filtering facts which
+depend on those names therefore preserves every exported fact.  (This
+machinery is shared with `StorageForward`, which exports its cache facts
+across the same scope boundary.) -/
+
+/-- Zero-bindings bind exactly their names. -/
+theorem bindZeros_keys (xs : List Ident) :
+    (bindZeros D xs).map Prod.fst = xs := by
+  unfold bindZeros
+  induction xs with
+  | nil => rfl
+  | cons x rest ih => simpa using ih
+
+def ScopeFrame (decls : List Ident) (V V' : VEnv D) : Prop :=
+  ∃ ext W, V' = ext ++ W ∧ W.map Prod.fst = V.map Prod.fst ∧
+    ∀ p ∈ ext, p.1 ∈ decls
+
+namespace ScopeFrame
+
+theorem refl (V : VEnv D) : ScopeFrame [] V V :=
+  ⟨[], V, rfl, rfl, by simp⟩
+
+theorem of_keys {V V' : VEnv D}
+    (hkeys : V'.map Prod.fst = V.map Prod.fst) : ScopeFrame [] V V' :=
+  ⟨[], V', by simp, hkeys, by simp⟩
+
+theorem comp {ds₁ ds₂ : List Ident} {V V₁ V₂ : VEnv D}
+    (h₁ : ScopeFrame ds₁ V V₁) (h₂ : ScopeFrame ds₂ V₁ V₂) :
+    ScopeFrame (ds₁ ++ ds₂) V V₂ := by
+  obtain ⟨e₁, W₁, rfl, hk₁, he₁⟩ := h₁
+  obtain ⟨e₂, W₂, rfl, hk₂, he₂⟩ := h₂
+  have hlen : e₁.length ≤ W₂.length := by
+    have h := congrArg List.length hk₂
+    simp only [List.map_append, List.length_map, List.length_append] at h
+    omega
+  have hsplit : W₂ = W₂.take e₁.length ++ W₂.drop e₁.length :=
+    (List.take_append_drop _ _).symm
+  have htake : (W₂.take e₁.length).map Prod.fst = e₁.map Prod.fst := by
+    rw [List.map_take, hk₂, List.map_append,
+      List.take_append_of_le_length (by simp)]
+    simp
+  have hdrop : (W₂.drop e₁.length).map Prod.fst = W₁.map Prod.fst := by
+    rw [List.map_drop, hk₂, List.map_append,
+      List.drop_append_of_le_length (by simp)]
+    simp
+  refine ⟨e₂ ++ W₂.take e₁.length, W₂.drop e₁.length,
+    by rw [List.append_assoc, ← hsplit], by rw [hdrop, hk₁], ?_⟩
+  intro p hp
+  rcases List.mem_append.mp hp with hp | hp
+  · exact List.mem_append_right _ (he₂ p hp)
+  · have hkey : p.1 ∈ (W₂.take e₁.length).map Prod.fst :=
+      List.mem_map_of_mem hp
+    rw [htake] at hkey
+    obtain ⟨q, hq, hqp⟩ := List.mem_map.mp hkey
+    exact List.mem_append_left _ (hqp ▸ he₁ q hq)
+
+theorem restore_get_eq {ds : List Ident} {V V' : VEnv D}
+    (h : ScopeFrame ds V V') {x : Ident} (hx : x ∉ ds) :
+    VEnv.get (restore V V') x = VEnv.get V' x := by
+  obtain ⟨ext, W, hV', hkeys, hext⟩ := h
+  have hlen : W.length = V.length := by
+    simpa using congrArg List.length hkeys
+  have hrestore : restore V V' = W := by
+    rw [hV']
+    unfold restore
+    have : (ext ++ W).length - V.length = ext.length := by simp [hlen]
+    rw [this, List.drop_left]
+  have hnot : x ∉ ext.map Prod.fst := by
+    intro hmem
+    obtain ⟨p, hp, hpx⟩ := List.mem_map.mp hmem
+    exact hx (hpx ▸ hext p hp)
+  rw [hrestore, hV', VEnv.get_append_not_mem hnot]
+
+end ScopeFrame
+
+theorem block_keys {funs : FunEnv D} {V V' : VEnv D} {st st' : EvmState}
+    {body : Block Op} {o : Outcome}
+    (h : Step D funs V st (.stmt (.block body)) (.sres V' st' o)) :
+    V'.map Prod.fst = V.map Prod.fst := by
+  cases h with
+  | block hbody =>
+      exact restore_keys (venvKeys_suffix hbody rfl) (venvLen_mono hbody rfl)
+
+theorem scopeFrame_stmt_normal {funs : FunEnv D} {V V' : VEnv D}
+    {st st' : EvmState} {s : Stmt Op}
+    (h : Step D funs V st (.stmt s) (.sres V' st' .normal)) :
+    ScopeFrame (declaredStmts [s]) V V' := by
+  cases h with
+  | funDef => exact ScopeFrame.refl _
+  | block hbody =>
+      exact ScopeFrame.of_keys
+        (restore_keys (venvKeys_suffix hbody rfl) (venvLen_mono hbody rfl))
+  | letZero =>
+      refine ⟨bindZeros D _ , V, rfl, rfl, ?_⟩
+      intro p hp
+      have hk : p.1 ∈ (bindZeros D _).map Prod.fst := List.mem_map_of_mem hp
+      rw [bindZeros_keys] at hk
+      simpa [declaredStmts] using hk
+  | letVal he hlen =>
+      refine ⟨_ , V, rfl, rfl, ?_⟩
+      intro p hp
+      simpa [declaredStmts] using (List.of_mem_zip hp).1
+  | assignVal he hlen =>
+      exact ScopeFrame.of_keys (VEnv.setMany_keys _ _ _)
+  | exprStmt he => exact ScopeFrame.refl _
+  | ifTrue hcond hnz hbody => exact ScopeFrame.of_keys (block_keys hbody)
+  | ifFalse hcond hz => exact ScopeFrame.refl _
+  | switchExec hcond hbody => exact ScopeFrame.of_keys (block_keys hbody)
+  | forLoop hinit hloop =>
+      exact ScopeFrame.of_keys <|
+        restore_keys
+          ((venvKeys_suffix hinit rfl).trans (venvKeys_suffix hloop rfl))
+          (Nat.le_trans (venvLen_mono hinit rfl) (venvLen_mono hloop rfl))
+
+theorem scopeFrame_stmts_normal {funs : FunEnv D} {V V' : VEnv D}
+    {st st' : EvmState} {ss : List (Stmt Op)}
+    (h : Step D funs V st (.stmts ss) (.sres V' st' .normal)) :
+    ScopeFrame (declaredStmts ss) V V' := by
+  induction ss generalizing V st with
+  | nil =>
+      cases h
+      exact ScopeFrame.refl _
+  | cons s rest ih =>
+      cases h with
+      | seqCons hs hrest =>
+          have h₁ := scopeFrame_stmt_normal hs
+          have h₂ := ih hrest
+          cases s <;> simpa [declaredStmts] using h₁.comp h₂
+      | seqStop hs hne => exact absurd rfl hne
+
 /-! ### The compatibility invariant -/
 
 /-- A tracked entry agrees with the runtime environment: the key is bound and
@@ -963,6 +1119,29 @@ theorem Compat.of_frame_stable {V V' : VEnv D} {σ : PEnv} {ws : List Ident}
     Compat V' σ := by
   have := h.of_frame hf
   rwa [hstable] at this
+
+/-- Compatibility at the end of a block's body survives the block's `restore`,
+for the entries that mention none of the block's direct locals — exactly the
+`BlockExitRel.exportFacts` environment. -/
+theorem Compat.export_restore {V Vb : VEnv D} {σb : PEnv} {ds : List Ident}
+    (h : Compat Vb σb) (hsf : ScopeFrame ds V Vb) :
+    Compat (restore V Vb) (prune σb ds) := by
+  intro p hp
+  have hhit := prune_not_hit hp
+  have hbase := h p (List.mem_of_mem_filter hp)
+  rcases p with ⟨x, rhs⟩
+  cases rhs with
+  | lit n =>
+      have hx : x ∉ ds := by
+        intro hmem
+        simp [entryHits, hmem] at hhit
+      simpa [RhsHolds, hsf.restore_get_eq hx] using hbase
+  | var y =>
+      have hx : x ∉ ds ∧ y ∉ ds := by
+        constructor <;> (intro hmem; simp [entryHits, hmem] at hhit)
+      obtain ⟨v, hvx, hvy⟩ := hbase
+      exact ⟨v, by rw [hsf.restore_get_eq hx.1]; exact hvx,
+        by rw [hsf.restore_get_eq hx.2]; exact hvy⟩
 
 /-! ### Small facts about the transform's ingredients -/
 
@@ -1122,7 +1301,7 @@ mutual
 theorem PropRel.reflStmt : ∀ s : Stmt Op,
     PropRel [] [] (.stmt s) (.stmt s)
   | .block body => by
-      have := PropRel.blockS (reflStmts body)
+      have := PropRel.blockS (reflStmts body) .skip
       simpa [prune] using this
   | .funDef n ps rs body => .funDefS (reflStmts body)
   | .letDecl xs none => by
@@ -1217,7 +1396,7 @@ theorem PropRel.hoist_scopeRel {σ σ' : PEnv} {pc pc' : PCode Op}
       cases hs with
       | funDefS hbody =>
           exact .cons ⟨rfl, rfl, rfl, _, hbody⟩ htail
-      | blockS _ => simpa [hoist] using htail
+      | blockS _ _ => simpa [hoist] using htail
       | letSomeS _ _ => simpa [hoist] using htail
       | letNoneS _ => simpa [hoist] using htail
       | assignS _ _ => simpa [hoist] using htail
@@ -1230,7 +1409,7 @@ theorem PropRel.hoist_scopeRel {σ σ' : PEnv} {pc pc' : PCode Op}
       | leaveS => simpa [hoist] using htail
   | expr _ => exact fun h _ => nomatch h
   | args => exact fun h _ => nomatch h
-  | blockS _ _ => exact fun h _ => nomatch h
+  | blockS _ _ _ => exact fun h _ => nomatch h
   | funDefS _ _ => exact fun h _ => nomatch h
   | letSomeS _ _ => exact fun h _ => nomatch h
   | letNoneS _ => exact fun h _ => nomatch h
@@ -1540,7 +1719,7 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
           refine ⟨?_, fun _ _ _ h => nomatch h⟩
           have hargs := (iha hR (PropRel.args) hc).1
           obtain ⟨decl', cenv', hl', hpar, hret, ⟨σb, hbodyRel⟩, hRc⟩ := lookupFun_pFunsRel hR hl
-          have hbody' := (ihbody hRc (PropRel.blockS hbodyRel) (Compat.nil _)).1
+          have hbody' := (ihbody hRc (PropRel.blockS hbodyRel .skip) (Compat.nil _)).1
           have hbody'' : Step D cenv' (decl'.params.zip argvals ++ bindZeros D decl'.rets) st1
               (.stmt (.block decl'.body)) (.sres Vend st2 o) := by
             rw [hpar, hret]; exact hbody'
@@ -1565,7 +1744,7 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
           refine ⟨?_, fun _ _ _ h => nomatch h⟩
           have hargs := (iha hR (PropRel.args) hc).1
           obtain ⟨decl', cenv', hl', hpar, hret, ⟨σb, hbodyRel⟩, hRc⟩ := lookupFun_pFunsRel hR hl
-          have hbody' := (ihbody hRc (PropRel.blockS hbodyRel) (Compat.nil _)).1
+          have hbody' := (ihbody hRc (PropRel.blockS hbodyRel .skip) (Compat.nil _)).1
           have hbody'' : Step D cenv' (decl'.params.zip argvals ++ bindZeros D decl'.rets) st1
               (.stmt (.block decl'.body)) (.sres Vend st2 .halt) := by
             rw [hpar, hret]; exact hbody'
@@ -1640,15 +1819,21 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
   | @block funs V st body Vb stb o hb ihb =>
       intro funs₂ σ σ' pc' hR hrel hc
       cases hrel with
-      | blockS hbodyRel =>
-          have hstep := (ihb (List.Forall₂.cons (hbodyRel.hoist_scopeRel rfl rfl) hR)
-            hbodyRel hc).1
-          refine ⟨Step.block hstep, ?_⟩
+      | blockS hbodyRel hexit =>
+          have hihb := ihb (List.Forall₂.cons (hbodyRel.hoist_scopeRel rfl rfl) hR)
+            hbodyRel hc
+          refine ⟨Step.block hihb.1, ?_⟩
           intro V' st' o' hres
           injection hres with h1 h2 h3
           subst h1
-          intro _
-          exact hc.of_frame (Step.env_frame (Step.block hb) rfl)
+          subst h3
+          intro ho
+          cases hexit with
+          | skip => exact hc.of_frame (Step.env_frame (Step.block hb) rfl)
+          | exportFacts =>
+              subst ho
+              exact (hihb.2 Vb stb .normal rfl rfl).export_restore
+                (scopeFrame_stmts_normal hb)
   | @letZero funs V st vars =>
       intro funs₂ σ σ' pc' hR hrel hc
       cases hrel with
@@ -1869,7 +2054,7 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
       cases hrel with
       | condS hbodyRel =>
           have hcond := (ihc hR (PropRel.expr .subst) hc).1
-          have hstep := (ihb hR (PropRel.blockS hbodyRel) hc).1
+          have hstep := (ihb hR (PropRel.blockS hbodyRel .skip) hc).1
           refine ⟨Step.ifTrue hcond hnz hstep, ?_⟩
           intro V' st' o' hres
           injection hres with h1 h2 h3
@@ -1902,7 +2087,7 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
       | switchS hcases hdflt =>
           obtain ⟨σsel, hsel⟩ := hcases.selectRel hdflt cv
           have hcond := (ihc hR (PropRel.expr .subst) hc).1
-          have hstep := (ihb hR (PropRel.blockS hsel) hc).1
+          have hstep := (ihb hR (PropRel.blockS hsel .skip) hc).1
           refine ⟨Step.switchExec hcond hstep, ?_⟩
           intro V' st' o' hres
           injection hres with h1 h2 h3
@@ -2034,12 +2219,12 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
       cases hrel with
       | loopL hstable hpostRel hbodyRel =>
           have hcond := (ihc hR (PropRel.expr .subst) hc).1
-          have hb' := (ihb hR (PropRel.blockS hbodyRel) hc).1
+          have hb' := (ihb hR (PropRel.blockS hbodyRel .skip) hc).1
           have hcompVb : Compat Vb σ := by
             refine Compat.of_frame_stable hstable hc ?_
             exact (Step.env_frame hb rfl).mono
               (fun x hx => List.mem_append.mpr (Or.inr hx))
-          have hp' := (ihp hR (PropRel.blockS hpostRel) hcompVb).1
+          have hp' := (ihp hR (PropRel.blockS hpostRel .skip) hcompVb).1
           have hcompVp : Compat Vp σ := by
             refine Compat.of_frame_stable hstable hcompVb ?_
             exact (Step.env_frame hp rfl).mono
@@ -2055,12 +2240,12 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
       cases hrel with
       | loopL hstable hpostRel hbodyRel =>
           have hcond := (ihc hR (PropRel.expr .subst) hc).1
-          have hb' := (ihb hR (PropRel.blockS hbodyRel) hc).1
+          have hb' := (ihb hR (PropRel.blockS hbodyRel .skip) hc).1
           have hcompVb : Compat Vb σ := by
             refine Compat.of_frame_stable hstable hc ?_
             exact (Step.env_frame hb rfl).mono
               (fun x hx => List.mem_append.mpr (Or.inr hx))
-          have hp' := (ihp hR (PropRel.blockS hpostRel) hcompVb).1
+          have hp' := (ihp hR (PropRel.blockS hpostRel .skip) hcompVb).1
           refine ⟨Step.loopPostHalt hcond hnz hb' hob hp', ?_⟩
           intro V' st' o hres
           injection hres with h1 h2 h3
@@ -2073,7 +2258,7 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
       cases hrel with
       | loopL hstable hpostRel hbodyRel =>
           have hcond := (ihc hR (PropRel.expr .subst) hc).1
-          have hb' := (ihb hR (PropRel.blockS hbodyRel) hc).1
+          have hb' := (ihb hR (PropRel.blockS hbodyRel .skip) hc).1
           refine ⟨Step.loopBreak hcond hnz hb', ?_⟩
           intro V' st' o hres
           injection hres with h1 h2 h3
@@ -2086,7 +2271,7 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
       cases hrel with
       | loopL hstable hpostRel hbodyRel =>
           have hcond := (ihc hR (PropRel.expr .subst) hc).1
-          have hb' := (ihb hR (PropRel.blockS hbodyRel) hc).1
+          have hb' := (ihb hR (PropRel.blockS hbodyRel .skip) hc).1
           refine ⟨Step.loopLeave hcond hnz hb', ?_⟩
           intro V' st' o hres
           injection hres with h1 h2 h3
@@ -2099,7 +2284,7 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
       cases hrel with
       | loopL hstable hpostRel hbodyRel =>
           have hcond := (ihc hR (PropRel.expr .subst) hc).1
-          have hb' := (ihb hR (PropRel.blockS hbodyRel) hc).1
+          have hb' := (ihb hR (PropRel.blockS hbodyRel .skip) hc).1
           refine ⟨Step.loopBodyHalt hcond hnz hb', ?_⟩
           intro V' st' o hres
           injection hres with h1 h2 h3
@@ -2356,7 +2541,7 @@ theorem prop_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
           have hargs := iha hR (PropRel.args) hc
           have hbody0 : Step D cenv (decl.params.zip argvals ++ bindZeros D decl.rets) st1
               (.stmt (.block decl.body)) (.sres Vend st2 o) := by
-            have hib := ihbody hRc (PropRel.blockS hbodyRel) (Compat.nil _)
+            have hib := ihbody hRc (PropRel.blockS hbodyRel .skip) (Compat.nil _)
             rw [hpar, hret] at hib
             exact hib
           have hlen0 : argvals.length = decl.params.length := by
@@ -2375,7 +2560,7 @@ theorem prop_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
           have hargs := iha hR (PropRel.args) hc
           have hbody0 : Step D cenv (decl.params.zip argvals ++ bindZeros D decl.rets) st1
               (.stmt (.block decl.body)) (.sres Vend st2 .halt) := by
-            have hib := ihbody hRc (PropRel.blockS hbodyRel) (Compat.nil _)
+            have hib := ihbody hRc (PropRel.blockS hbodyRel .skip) (Compat.nil _)
             rw [hpar, hret] at hib
             exact hib
           have hlen0 : argvals.length = decl.params.length := by
@@ -2432,7 +2617,7 @@ theorem prop_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
   | @block funs V st body' Vb stb o hb ihb =>
       intro funs₁ σ σ' pc hR hrel hc
       cases hrel with
-      | blockS hbodyRel =>
+      | blockS hbodyRel hexit =>
           exact Step.block (ihb
             (List.Forall₂.cons (hbodyRel.hoist_scopeRel rfl rfl) hR) hbodyRel hc)
   | @letZero funs V st vars =>
@@ -2472,7 +2657,7 @@ theorem prop_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
       cases hrel with
       | condS hbodyRel =>
           exact Step.ifTrue (ihc hR (PropRel.expr .subst) hc) hnz
-            (ihb hR (PropRel.blockS hbodyRel) hc)
+            (ihb hR (PropRel.blockS hbodyRel .skip) hc)
   | @ifFalse funs V st c0 body' cv st1 hcv hz ihc =>
       intro funs₁ σ σ' pc hR hrel hc
       cases hrel with
@@ -2489,7 +2674,7 @@ theorem prop_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
       | switchS hcases hdflt =>
           obtain ⟨σsel, hsel⟩ := hcases.selectRel hdflt cv
           exact Step.switchExec (ihc hR (PropRel.expr .subst) hc)
-            (ihb hR (PropRel.blockS hsel) hc)
+            (ihb hR (PropRel.blockS hsel .skip) hc)
   | @switchHalt funs V st c0 cases' dflt' st1 hcv ihc =>
       intro funs₁ σ σ' pc hR hrel hc
       cases hrel with
@@ -2556,12 +2741,12 @@ theorem prop_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
       cases hrel with
       | loopL hstable hpostRel hbodyRel =>
           have hcond := ihc hR (PropRel.expr .subst) hc
-          have hb0 := ihb hR (PropRel.blockS hbodyRel) hc
+          have hb0 := ihb hR (PropRel.blockS hbodyRel .skip) hc
           have hcompVb : Compat Vb σ := by
             refine Compat.of_frame_stable hstable hc ?_
             exact (Step.env_frame hb0 rfl).mono
               (fun x hx => List.mem_append.mpr (Or.inr hx))
-          have hp0 := ihp hR (PropRel.blockS hpostRel) hcompVb
+          have hp0 := ihp hR (PropRel.blockS hpostRel .skip) hcompVb
           have hcompVp : Compat Vp σ := by
             refine Compat.of_frame_stable hstable hcompVb ?_
             exact (Step.env_frame hp0 rfl).mono
@@ -2574,31 +2759,31 @@ theorem prop_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
       cases hrel with
       | loopL hstable hpostRel hbodyRel =>
           have hcond := ihc hR (PropRel.expr .subst) hc
-          have hb0 := ihb hR (PropRel.blockS hbodyRel) hc
+          have hb0 := ihb hR (PropRel.blockS hbodyRel .skip) hc
           have hcompVb : Compat Vb σ := by
             refine Compat.of_frame_stable hstable hc ?_
             exact (Step.env_frame hb0 rfl).mono
               (fun x hx => List.mem_append.mpr (Or.inr hx))
           exact Step.loopPostHalt hcond hnz hb0 hob
-            (ihp hR (PropRel.blockS hpostRel) hcompVb)
+            (ihp hR (PropRel.blockS hpostRel .skip) hcompVb)
   | @loopBreak funs V st c0 post' body' cv st1 Vb stb hcv hnz hb ihc ihb =>
       intro funs₁ σ σ' pc hR hrel hc
       cases hrel with
       | loopL hstable hpostRel hbodyRel =>
           exact Step.loopBreak (ihc hR (PropRel.expr .subst) hc) hnz
-            (ihb hR (PropRel.blockS hbodyRel) hc)
+            (ihb hR (PropRel.blockS hbodyRel .skip) hc)
   | @loopLeave funs V st c0 post' body' cv st1 Vb stb hcv hnz hb ihc ihb =>
       intro funs₁ σ σ' pc hR hrel hc
       cases hrel with
       | loopL hstable hpostRel hbodyRel =>
           exact Step.loopLeave (ihc hR (PropRel.expr .subst) hc) hnz
-            (ihb hR (PropRel.blockS hbodyRel) hc)
+            (ihb hR (PropRel.blockS hbodyRel .skip) hc)
   | @loopBodyHalt funs V st c0 post' body' cv st1 Vb stb hcv hnz hb ihc ihb =>
       intro funs₁ σ σ' pc hR hrel hc
       cases hrel with
       | loopL hstable hpostRel hbodyRel =>
           exact Step.loopBodyHalt (ihc hR (PropRel.expr .subst) hc) hnz
-            (ihb hR (PropRel.blockS hbodyRel) hc)
+            (ihb hR (PropRel.blockS hbodyRel .skip) hc)
 
 /-! ### The pass -/
 

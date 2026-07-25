@@ -145,11 +145,8 @@ def stmtsNoNormal : List (Stmt Op) → Bool
   | s :: rest => stmtNoNormal s || stmtsNoNormal rest
 end
 
-/-- Bindings introduced at this block level and removed by `restore`. -/
-def declaredStmts : List (Stmt Op) → List Ident
-  | [] => []
-  | .letDecl xs _ :: rest => xs ++ declaredStmts rest
-  | _ :: rest => declaredStmts rest
+-- `declaredStmts` (the bindings introduced at this block level and removed by
+-- `restore`) now lives in `Propagate.lean`, shared with its scoped fact export.
 
 mutual
 

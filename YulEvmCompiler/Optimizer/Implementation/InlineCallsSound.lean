@@ -127,13 +127,8 @@ theorem keys_suffix_cancel {A A' W : VEnv D}
     List.take_of_length_le] using
     List.append_cancel_right (by simpa [List.append_assoc] using ht)
 
-/-- Zero-bindings bind exactly their names. -/
-theorem bindZeros_keys (xs : List Ident) :
-    (bindZeros D xs).map Prod.fst = xs := by
-  unfold bindZeros
-  induction xs with
-  | nil => rfl
-  | cons x rest ih => simpa using ih
+-- `bindZeros_keys` now lives in `Propagate.lean` (shared with the scoped
+-- fact export's block-scope framing).
 
 /-! ### Scoped-code inversions -/
 
