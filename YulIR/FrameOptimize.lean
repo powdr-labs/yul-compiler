@@ -106,24 +106,35 @@ def selectLit (k : Literal) (cases : List (Literal × Block n)) (dflt : Option (
   | some p => p.2
   | none   => dflt.getD []
 
+/-! Structural simplification. Non-`partial` (structurally recursive on the nested `Stmt`/`Block`),
+so it has equation lemmas and a functional-induction principle — the soundness proof in
+`YulIR.FrameStructuralSound` inducts on it. The `switch`-case and default recursion is factored
+through the explicit list helpers `structuralCases`/`structuralDflt` rather than `List.map`, so the
+recursion stays structural. -/
 mutual
-partial def structuralStmt : Stmt n → List (Stmt n)
+def structuralStmt : Stmt n → List (Stmt n)
   | .cond c body =>
       let b' := structuralBlock body
       if c.isZeroLit || b'.isEmpty then []
       else if c.isNonzeroLit then b'                     -- always taken ⇒ splice
       else [.cond c b']
   | .switch c cs df =>
-      let cs' := cs.map (fun p => (p.1, structuralBlock p.2))
-      let df' := df.map structuralBlock
+      let cs' := structuralCases cs
+      let df' := structuralDflt df
       match c with
       | .lit k => selectLit k cs' df'                    -- constant scrutinee ⇒ splice one branch
       | _      => [.switch c cs' df']
   | .loop post body => [.loop (structuralBlock post) (structuralBlock body)]
   | s => [s]
-partial def structuralBlock : Block n → Block n
+def structuralBlock : Block n → Block n
   | []      => []
   | s :: ss => structuralStmt s ++ structuralBlock ss
+def structuralCases : List (Literal × Block n) → List (Literal × Block n)
+  | []             => []
+  | (l, b) :: rest => (l, structuralBlock b) :: structuralCases rest
+def structuralDflt : Option (Block n) → Option (Block n)
+  | none   => none
+  | some b => some (structuralBlock b)
 end
 
 /-- Halting built-ins (control never continues after them). -/
@@ -137,15 +148,21 @@ def isTerminator : Stmt n → Bool
   | _                               => false
 
 mutual
-partial def dropUnreachableStmt : Stmt n → Stmt n
+def dropUnreachableStmt : Stmt n → Stmt n
   | .cond c b       => .cond c (dropUnreachableBlock b)
-  | .switch c cs df => .switch c (cs.map (fun p => (p.1, dropUnreachableBlock p.2))) (df.map dropUnreachableBlock)
+  | .switch c cs df => .switch c (dropUnreachableCases cs) (dropUnreachableDflt df)
   | .loop post body => .loop (dropUnreachableBlock post) (dropUnreachableBlock body)
   | s               => s
-partial def dropUnreachableBlock : Block n → Block n
+def dropUnreachableBlock : Block n → Block n
   | []      => []
   | s :: ss => let s' := dropUnreachableStmt s
                if isTerminator s' then [s'] else s' :: dropUnreachableBlock ss
+def dropUnreachableCases : List (Literal × Block n) → List (Literal × Block n)
+  | []             => []
+  | (l, b) :: rest => (l, dropUnreachableBlock b) :: dropUnreachableCases rest
+def dropUnreachableDflt : Option (Block n) → Option (Block n)
+  | none   => none
+  | some b => some (dropUnreachableBlock b)
 end
 
 def structural (b : Block n) : Block n := dropUnreachableBlock (structuralBlock b)
