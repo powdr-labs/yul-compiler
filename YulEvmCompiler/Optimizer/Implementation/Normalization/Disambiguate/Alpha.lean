@@ -1,5 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Basic
 import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalForm
+set_option warningAsError true
 /-!
 # Disambiguation α-equivalence (syntax only)
 
@@ -69,7 +70,7 @@ theorem updRen_of_not_mem {σ : Ident → Ident} {l : List (Ident × Ident)} {z 
   | nil => rfl
   | cons p rest ih =>
       have hp : ¬ (p.1 = z) := h p (List.mem_cons_self ..)
-      simp only [List.find?_cons, hp, decide_false, cond_false]
+      simp only [List.find?_cons, hp, decide_false]
       exact ih (fun q hq => h q (List.mem_cons_of_mem _ hq))
 
 /-- On a key `z` present in the association list, `updRen σ l z` is the paired value
@@ -79,11 +80,11 @@ theorem updRen_of_find {σ : Ident → Ident} {l : List (Ident × Ident)} {z : I
   simp only [updRen, h]
 
 theorem updRen_cons_eq (σ : Ident → Ident) (a b : Ident) (l : List (Ident × Ident)) :
-    updRen σ ((a, b) :: l) a = b := by simp [updRen, List.find?_cons]
+    updRen σ ((a, b) :: l) a = b := by simp [updRen]
 
 theorem updRen_cons_ne {σ : Ident → Ident} {a b z : Ident} {l : List (Ident × Ident)}
     (h : a ≠ z) : updRen σ ((a, b) :: l) z = updRen σ l z := by
-  simp [updRen, List.find?_cons, h]
+  simp [updRen, h]
 
 /-- A lookup past a prefix that doesn't contain the key skips to the suffix. -/
 theorem updRen_append_skip {σ : Ident → Ident} {l₁ l₂ : List (Ident × Ident)} {z : Ident}
@@ -511,7 +512,6 @@ theorem funNames_eq_funDefNames : ∀ ss : List (Stmt Op),
   | s :: rest => by
       cases s <;>
         simp [funNames, NormalForm.funDefNames, NormalForm.funDefName?,
-          List.filterMap_cons, ← funNames_eq_funDefNames rest,
           funNames_eq_funDefNames rest]
 
 set_option maxHeartbeats 1600000 in
@@ -699,7 +699,7 @@ theorem scopedArgs_mono {vs vs' fs fs' : List Ident}
     (hv : ∀ x ∈ vs, x ∈ vs') (hf : ∀ x ∈ fs, x ∈ fs') :
     ∀ {es : List (Expr Op)}, NormalForm.ScopedArgs vs fs es → NormalForm.ScopedArgs vs' fs' es
   | [], _ => trivial
-  | e :: rest, h =>
+  | _ :: _, h =>
       ⟨scopedExpr_mono hv hf (h : _ ∧ _).1, scopedArgs_mono hv hf (h : _ ∧ _).2⟩
 end
 
@@ -748,23 +748,23 @@ theorem scopedStmts_mono {vs vs' fs fs' : List Ident}
     (hv : ∀ x ∈ vs, x ∈ vs') (hf : ∀ x ∈ fs, x ∈ fs') :
     ∀ {ss : List (Stmt Op)}, NormalForm.ScopedStmts vs fs ss → NormalForm.ScopedStmts vs' fs' ss
   | [], _ => trivial
-  | s :: rest, h =>
+  | _ :: _, h =>
       ⟨scopedStmt_mono hv hf (h : _ ∧ _).1,
-        scopedStmts_mono (mem_append_mono hv (fun x hx => hx)) hf (h : _ ∧ _).2⟩
+        scopedStmts_mono (mem_append_mono hv (fun _ hx => hx)) hf (h : _ ∧ _).2⟩
 theorem scopedCases_mono {vs vs' fs fs' : List Ident}
     (hv : ∀ x ∈ vs, x ∈ vs') (hf : ∀ x ∈ fs, x ∈ fs') :
     ∀ {cs : List (Literal × List (Stmt Op))},
       NormalForm.ScopedCases vs fs cs → NormalForm.ScopedCases vs' fs' cs
   | [], _ => trivial
-  | (l, body) :: rest, h =>
-      ⟨scopedStmts_mono hv (mem_append_mono hf (fun x hx => hx)) (h : _ ∧ _).1,
+  | (_, _) :: _, h =>
+      ⟨scopedStmts_mono hv (mem_append_mono hf (fun _ hx => hx)) (h : _ ∧ _).1,
         scopedCases_mono hv hf (h : _ ∧ _).2⟩
 theorem scopedDflt_mono {vs vs' fs fs' : List Ident}
     (hv : ∀ x ∈ vs, x ∈ vs') (hf : ∀ x ∈ fs, x ∈ fs') :
     ∀ {dflt : Option (List (Stmt Op))},
       NormalForm.ScopedDflt vs fs dflt → NormalForm.ScopedDflt vs' fs' dflt
   | none, _ => trivial
-  | some body, h => scopedStmts_mono hv (mem_append_mono hf (fun x hx => hx)) h
+  | some _, h => scopedStmts_mono hv (mem_append_mono hf (fun _ hx => hx)) h
 end
 
 /-- The pass-side and shared-spec statement variable collectors agree. -/
@@ -799,37 +799,37 @@ sequence's additions in reverse segment order versus `declVarsSeq`. -/
 mutual
 theorem wscopedStmt_anti {dom dom' : List Ident} (hd : ∀ x ∈ dom', x ∈ dom) :
     ∀ {s : Stmt Op}, WScopedStmt dom s → WScopedStmt dom' s
-  | .letDecl vars eo, h => fun x hx hxd =>
+  | .letDecl vars _, h => fun x hx hxd =>
       (h : ∀ x ∈ vars, x ∉ dom) x hx (hd x hxd)
   | .assign _ _, _ => trivial
   | .exprStmt _, _ => trivial
-  | .block body, h => wscopedStmts_anti hd h
-  | .cond _ body, h => wscopedStmts_anti hd h
-  | .switch _ cs dflt, h =>
+  | .block _, h => wscopedStmts_anti hd h
+  | .cond _ _, h => wscopedStmts_anti hd h
+  | .switch _ _ _, h =>
       ⟨wscopedCases_anti hd (h : _ ∧ _).1, wscopedDflt_anti hd (h : _ ∧ _).2⟩
-  | .funDef _ ps rs body, h => h
-  | .forLoop init _ post body, h =>
+  | .funDef _ _ _ _, h => h
+  | .forLoop _ _ _ _, h =>
       ⟨wscopedStmts_anti hd (h : _ ∧ _ ∧ _).1,
-        wscopedStmts_anti (mem_append_mono (fun x hx => hx) hd) (h : _ ∧ _ ∧ _).2.1,
-        wscopedStmts_anti (mem_append_mono (fun x hx => hx) hd) (h : _ ∧ _ ∧ _).2.2⟩
+        wscopedStmts_anti (mem_append_mono (fun _ hx => hx) hd) (h : _ ∧ _ ∧ _).2.1,
+        wscopedStmts_anti (mem_append_mono (fun _ hx => hx) hd) (h : _ ∧ _ ∧ _).2.2⟩
   | .«break», _ => trivial
   | .«continue», _ => trivial
   | .leave, _ => trivial
 theorem wscopedStmts_anti {dom dom' : List Ident} (hd : ∀ x ∈ dom', x ∈ dom) :
     ∀ {ss : List (Stmt Op)}, WScopedStmts dom ss → WScopedStmts dom' ss
   | [], _ => trivial
-  | s :: rest, h =>
+  | _ :: _, h =>
       ⟨wscopedStmt_anti hd (h : _ ∧ _).1,
-        wscopedStmts_anti (mem_append_mono (fun x hx => hx) hd) (h : _ ∧ _).2⟩
+        wscopedStmts_anti (mem_append_mono (fun _ hx => hx) hd) (h : _ ∧ _).2⟩
 theorem wscopedCases_anti {dom dom' : List Ident} (hd : ∀ x ∈ dom', x ∈ dom) :
     ∀ {cs : List (Literal × List (Stmt Op))}, WScopedCases dom cs → WScopedCases dom' cs
   | [], _ => trivial
-  | (l, body) :: rest, h =>
+  | (_, _) :: _, h =>
       ⟨wscopedStmts_anti hd (h : _ ∧ _).1, wscopedCases_anti hd (h : _ ∧ _).2⟩
 theorem wscopedDflt_anti {dom dom' : List Ident} (hd : ∀ x ∈ dom', x ∈ dom) :
     ∀ {dflt : Option (List (Stmt Op))}, WScopedDflt dom dflt → WScopedDflt dom' dflt
   | none, _ => trivial
-  | some body, h => wscopedStmts_anti hd h
+  | some _, h => wscopedStmts_anti hd h
 end
 
 end YulEvmCompiler.Optimizer.Normalize

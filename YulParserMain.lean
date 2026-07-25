@@ -1,5 +1,6 @@
 import YulParser.Compile
 
+set_option warningAsError true
 /-!
 # yulc
 

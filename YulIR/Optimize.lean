@@ -1,5 +1,6 @@
 import YulIR.Object
 
+set_option warningAsError true
 /-!
 # YulIR.Optimize — the IR optimization pipeline (hook)
 

@@ -5,6 +5,7 @@ import YulEvmCompiler.Optimizer.Implementation.StackLayout
 import YulEvmCompilerTests.SolcDifferential
 import YulSemantics.Syntax
 
+set_option warningAsError true
 /-!
 # YulIR.Bench — gas / code-size comparison: IR pipeline vs. current pipeline
 

@@ -1,5 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Basic
 import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalForm
+set_option warningAsError true
 /-!
 # Disambiguation establishes `NormalForm.UniqueNames`
 

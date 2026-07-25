@@ -2,6 +2,7 @@ import YulIR
 import YulSemantics.Syntax
 import YulSemantics.PrettyPrint
 
+set_option warningAsError true
 /-!
 # YulIR.Examples — round-trip smoke tests
 

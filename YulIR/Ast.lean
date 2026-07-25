@@ -1,5 +1,6 @@
 import YulSemantics.Dialect.EVM
 
+set_option warningAsError true
 /-!
 # YulIR.Ast — the experimental optimizer IR
 

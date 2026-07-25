@@ -2,6 +2,7 @@ import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Sound
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.SoundBwd
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Instance
 import YulEvmCompiler.Optimizer.Spec.GlobalPass
+set_option warningAsError true
 /-!
 # Semantic soundness of name disambiguation
 
@@ -48,12 +49,14 @@ theorem run_block_env_nil {funs : FunEnv D} {st0 : D.State} {prog : Block D.Op}
   cases h with
   | block hb => simp [restore]
 
+omit [DecidableEq D.Value] in
 /-- A renamed environment is empty iff the original is. -/
 theorem renVEnv_eq_nil {σ : Ident → Ident} {V : VEnv D} (h : renVEnv σ V = []) : V = [] := by
   cases V with
   | nil => rfl
   | cons p rest => simp [renVEnv] at h
 
+omit [DecidableEq D.Value] in
 /-- The trivial variable-renaming configuration at the empty environment. -/
 theorem renCfg_empty : RenCfg (substOf ([] : Subst)) ([] : VEnv D) 0 :=
   ⟨fun p hp => (List.not_mem_nil hp).elim,
@@ -61,6 +64,7 @@ theorem renCfg_empty : RenCfg (substOf ([] : Subst)) ([] : VEnv D) 0 :=
     fun p hp => (List.not_mem_nil hp).elim,
     fun p hp => (List.not_mem_nil hp).elim⟩
 
+omit [DecidableEq D.Value] in
 /-- The trivial function-renaming configuration at the empty environment. -/
 theorem renFCfg_empty : RenFCfg (substOf ([] : Subst)) ([] : FunEnv D) 0 := by
   refine ⟨?_, ?_, ?_, ?_⟩

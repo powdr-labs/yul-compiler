@@ -1,6 +1,7 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.HoistFunDefsEquiv
 import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalForm
 import YulEvmCompiler.Optimizer.Spec.GlobalPass
+set_option warningAsError true
 
 /-!
 # Function hoisting as a verified `GlobalPass`
@@ -24,7 +25,7 @@ namespace YulEvmCompiler.Optimizer.Normalization
 
 open YulSemantics
 
-variable {D : Dialect} [DecidableEq D.Value]
+variable {D : Dialect}
 
 /-! ### A decidable mirror of well-scopedness -/
 
@@ -159,6 +160,9 @@ theorem hoistGuard_sound {b : Block D.Op} (h : hoistGuard b = true) :
 the block is unique and well scoped, otherwise leave it unchanged. -/
 def hoistBlock : Block D.Op → Block D.Op := guardedBlock hoistGuard liftFunDefs
 
+section
+variable [DecidableEq D.Value]
+
 /-- **Function hoisting as a verified global pass.** Applies `liftFunDefs` to
 every code block of an object tree wherever the block is disambiguated and well
 scoped; sound unconditionally (via the `ofGuardedBlock` combinator). -/
@@ -168,6 +172,8 @@ def hoistFunDefsPass : GlobalPass D :=
 
 @[simp] theorem hoistFunDefsPass_run (o : Object D.Op) :
     (hoistFunDefsPass (D := D)).run o = mapObjCode hoistBlock o := rfl
+
+end
 
 /-! ### Postcondition: the output is function-hoisted (a `NormalForm` property)
 

@@ -1,5 +1,6 @@
 import YulParser.Source
 
+set_option warningAsError true
 /-!
 Run the parser over Solidity's `test/libyul/yulSyntaxTests` corpus and compare
 its disagreements with Solidity's expected result against a checked-in list.
