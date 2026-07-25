@@ -2,6 +2,7 @@ import YulIR.OfYul
 import YulIR.ToYul
 import YulSemantics.Ast
 
+set_option warningAsError true
 /-!
 # YulIR.Object — object-level translation
 

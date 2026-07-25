@@ -233,7 +233,7 @@ theorem drDflt_rel (bound : List Ident) : ∀ d : Option (Block Op),
 end
 
 /-- Dead read-only result-region elimination. -/
-def deadResults : Pass D where
+def deadResults : LocalPass D where
   run := drStmts []
   sound := fun b => by
     obtain ⟨b2, hrel⟩ := drStmts_rel [] b

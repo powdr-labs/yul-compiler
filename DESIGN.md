@@ -153,10 +153,12 @@ Two facts about the pinned target semantics shape the compiler:
 1. **EIP-8024 (`DUPN`/`SWAPN`/`EXCHANGE`) is not activated on any modeled fork.**
    `Operation.availableInFork` returns `false` for all three on every fork
    (Frontier … Osaka), so bytes `0xe6..0xe8` always halt with
-   `InvalidInstruction`. The compiler therefore uses classic `DUP1`–`DUP16` and
-   `SWAP1`–`SWAP16`, and rejects accesses beyond that range. Activating
-   EIP-8024 upstream would let a later code-generation extension remove this
-   depth restriction.
+   `InvalidInstruction`. The raw backend therefore uses classic
+   `DUP1`–`DUP16` and `SWAP1`–`SWAP16`, and rejects accesses beyond that range.
+   The production source entry point can instead invoke the proved guarded
+   spilling fallback described below. Activating EIP-8024 upstream would let a
+   later code-generation extension remove this depth restriction without that
+   source rewrite and scratch contract.
 2. **`MachineState.writeBytes` is a total, kernel-transparent `def`**, so
    memory-write proofs are possible. `mstore`'s `MemMatch` preservation rests on
    the upstream read-after-write lemma
@@ -584,6 +586,21 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     a bidirectional big-step simulation over source/target variable
     environments, including nested scopes, functions, loops, every outcome,
     and exact block restoration.
+  * **`Implementation/MemorySpill*.lean`** — the last-resort classic-stack
+    fallback. `MemorySpillSelect` accepts only a consistent literal
+    `memoryguard(n)`, rejects `msize`, recursive call graphs, malformed
+    signatures, invalid selected-binding scopes, and partial tuple groups,
+    then allocates word-aligned cells by
+    lexical interference and active call-path need. Sibling scopes and sibling
+    callees reuse addresses; a caller's live cells sit above the largest direct
+    callee requirement. The rewrite covers locals, parameters, returns,
+    assignments, `leave`, loops, and calls. Its simulation uses a guarded Yul
+    dialect in which the marker raises the free-memory boundary, relates source
+    and target states by equality outside the reserved interval, and proves the
+    same committed run observables. Resolution lemmas and a plan-indexed object
+    theorem allow spilled and ordinary optimized nodes to share one recursive
+    object layout. Because the spilling candidate is tried only after every
+    existing candidate fails, previously emitted bytecode is unchanged.
   * **`Implementation/Pipeline.lean`** — composes the verified stages
     (`optimizerPipeline` for blocks, `objectPipeline` for object code blocks,
     applied recursively over the tree), with the full original-object
@@ -656,12 +673,16 @@ CI), which must stay in sync as coverage grows.
   `.call` fail class, realized by a real `StepRunning.callFail` trace — see the
   open-world section above). A fully general model is still the client's job, so
   end-to-end open-world coverage remains conditional on supplying one.
-* **Deep stack access.** Variable reads use up to `DUP16` and stores up to
-  `SWAP16`; functions return up to 16 values. Deeper accesses are *rejected*
-  (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
-  activated on any modeled fork. The production source entry point first uses
-  the verified smart layout fallback described above; irreducible frames still
-  need EIP-8024 activation upstream or a verified spilling pass.
+* **Deep stack access.** The raw backend uses up to `DUP16` for variable reads
+  and `SWAP16` for stores; functions return up to 16 values. A raw deeper
+  access is *rejected* (`compile = none`), not miscompiled, because EIP-8024
+  (`DUPN`/`SWAPN`) is not activated on any modeled fork. The production source
+  entry point first uses
+  the verified smart layout fallback described above, then the guarded memory
+  spilling fallback when a safe scratch reservation is available. Irreducible
+  frames without that contract still need EIP-8024 activation upstream.
+  Independent unsupported operations such as `gas`, immutables, and live
+  linker-symbol values are not accepted merely because spilling succeeds.
 * **Optimizer.** A verified `Simplify → InlineIdentity → Simplify` pipeline runs
   in front of the backend for block-rooted
   `compileSource` inputs. The spec every pass must meet is fixed and inhabited

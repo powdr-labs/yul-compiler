@@ -1,6 +1,7 @@
 import YulSemantics.Dialect.EVM
 import Std.Data.HashMap
 
+set_option warningAsError true
 /-!
 # YulIR.Ast — the experimental optimizer IR
 

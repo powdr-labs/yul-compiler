@@ -1,6 +1,7 @@
 import YulIR.Ast
 import YulSemantics.Ast
 
+set_option warningAsError true
 /-!
 # YulIR.ToYul — erase the IR back to Yul
 

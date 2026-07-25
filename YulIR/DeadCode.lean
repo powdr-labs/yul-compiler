@@ -1,6 +1,7 @@
 import YulIR.Analysis
 import YulIR.Effects
 
+set_option warningAsError true
 /-!
 # YulIR.DeadCode — dead pure-binding elimination
 

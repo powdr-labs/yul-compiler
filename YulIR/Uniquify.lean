@@ -1,5 +1,6 @@
 import YulIR.Analysis
 
+set_option warningAsError true
 /-!
 # YulIR.Uniquify — make every variable declaration unique
 

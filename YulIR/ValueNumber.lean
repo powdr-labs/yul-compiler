@@ -2,6 +2,7 @@ import YulIR.Analysis
 import YulIR.Effects
 import YulIR.Simplify
 
+set_option warningAsError true
 /-!
 # YulIR.ValueNumber — constant/copy propagation, folding, and CSE
 

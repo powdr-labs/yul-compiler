@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Spec.LocalPass
 import YulEvmCompiler.Optimizer.Implementation.Frame
 import YulSemantics.Dialect.EVM
 set_option warningAsError true

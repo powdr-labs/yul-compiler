@@ -459,7 +459,7 @@ theorem DlRel.equivBlock {b b' : Block Op}
 
 /-- The **DeadLits pass**: dead literal-binding elimination, bundled with its
 soundness proof — in the unchanged pointwise spec. -/
-def deadLits : Pass D where
+def deadLits : LocalPass D where
   run := dlStmts
   sound := fun b => DlRel.equivBlock (dlStmts_rel b)
 

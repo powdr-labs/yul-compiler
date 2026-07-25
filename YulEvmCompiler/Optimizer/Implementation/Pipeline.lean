@@ -8,6 +8,7 @@ import YulEvmCompiler.Optimizer.Implementation.FreshenCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.HoistCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.StorageForwardResolve
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
+import YulEvmCompiler.Optimizer.Implementation.Normalization.Normalize
 set_option warningAsError true
 /-!
 # Production optimizer pipeline
@@ -70,7 +71,7 @@ pass before resolution is equivalent (pointwise) to not running it, *on the
 resolved code*. This is the per-stage fact `optimizerPipelineObject_correct`
 composes over the whole pipeline. -/
 structure RPass (calls : ExternalCalls) (creates : ExternalCreates) where
-  pass : Pass (evmWithExternal calls creates)
+  pass : LocalPass (evmWithExternal calls creates)
   resolve_equiv : ∀ (L : Layout) (b : Block Op),
     EquivBlock (evmWithExternal calls creates)
       (resolveForLayoutStmts L b)
@@ -81,7 +82,7 @@ theorem RPass.resolve_equiv_ofList (ps : List (RPass calls creates))
     (L : Layout) (b : Block Op) :
     EquivBlock D
       (resolveForLayoutStmts L b)
-      (resolveForLayoutStmts L ((Pass.ofList (ps.map (·.pass))).run b)) := by
+      (resolveForLayoutStmts L ((LocalPass.ofList (ps.map (·.pass))).run b)) := by
   induction ps generalizing b with
   | nil => exact EquivBlock.refl _
   | cons p rest ih =>
@@ -96,7 +97,7 @@ call-free leaves. -/
 def pipelineRounds : Nat := 6
 
 /-- One block-path round. -/
-def blockRound : List (Pass D) :=
+def blockRound : List (LocalPass D) :=
   [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
    storageForward, simplify, deadPure, deadResults]
 
@@ -104,16 +105,16 @@ def blockRound : List (Pass D) :=
 push a caller's live locals past the backend's `DUP16`/`SWAP16` reach; fewer
 rounds keep frames shallower, so `compileSource` retries a **light**
 (one-round) pipeline before giving up on optimization entirely. -/
-def optimizerPipelineRounds (n : Nat) : Pass D :=
-  Pass.ofList ((List.replicate n (blockRound (calls := calls)
+def optimizerPipelineRounds (n : Nat) : LocalPass D :=
+  LocalPass.ofList ((List.replicate n (blockRound (calls := calls)
     (creates := creates))).flatten)
 
 /-- Verified production pipeline for top-level blocks: the round, iterated. -/
-def optimizerPipeline : Pass D :=
+def optimizerPipeline : LocalPass D :=
   optimizerPipelineRounds pipelineRounds
 
 /-- The light (one-round) block pipeline, the middle compile fallback. -/
-def optimizerPipelineLight : Pass D :=
+def optimizerPipelineLight : LocalPass D :=
   optimizerPipelineRounds 1
 
 /-- One object-path round, with each stage's resolution congruence. -/
@@ -140,12 +141,12 @@ def objectRound : List (RPass calls creates) :=
 
 /-- Verified object pipeline at an explicit round count (see
 `optimizerPipelineRounds` for why the count varies). -/
-def objectPipelineRounds (n : Nat) : Pass D :=
-  Pass.ofList (((List.replicate n (objectRound (calls := calls)
+def objectPipelineRounds (n : Nat) : LocalPass D :=
+  LocalPass.ofList (((List.replicate n (objectRound (calls := calls)
     (creates := creates))).flatten).map (·.pass))
 
 /-- Verified pipeline for object code blocks: the round, iterated. -/
-def objectPipeline : Pass D :=
+def objectPipeline : LocalPass D :=
   objectPipelineRounds pipelineRounds
 
 /-- Resolution congruence for the iterated object pipeline, any round count. -/
@@ -305,5 +306,41 @@ theorem optimizerPipelineObject_correct
         ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
          (out = .halt ∧ HaltedMatch yst s')) :=
   optimizerPipelineObjectRounds_correct hexternal pipelineRounds hcomp hrun
+
+/-! ### Normalization as the first pipeline step
+
+`compileSource` runs the full normalization front-end (`Normalize.normalize` /
+`Normalize.normalizeObject`, see `Normalization/Normalize.lean`) — disambiguate
+every declared name, then hoist every function definition to the root —
+**before** the optimizer pipeline. Both steps guard on a decidable check
+(`Disambiguate/Decide.lean`'s `sourceValidB` for disambiguation, `hoistGuard` for
+hoisting) and are the identity off their domains, so normalization is now an
+**unconditionally**-sound `GlobalPass`: the composed guarantees below carry no
+`SourceValid` hypothesis. On any valid source program (which the parser's
+validator guarantees) both guards fire, so normalization is active, not a
+no-op. -/
+
+/-- **Normalize-then-optimize preserves whole-program behaviour** (block path),
+for **every** block: normalization is now an unconditionally-sound guarded pass
+(`Normalize.normalize_runEquivBlock`), so no `SourceValid` hypothesis survives. -/
+theorem normalize_optimizerPipelineRounds_runEquiv (n : Nat) (b : Block Op) :
+    RunEquivBlock D b
+      ((optimizerPipelineRounds (calls := calls) (creates := creates) n).run
+        (@Normalize.normalize (evmWithExternal calls creates) b)) :=
+  (@Normalize.normalize_runEquivBlock (evmWithExternal calls creates) _ b).trans
+    (RunEquivBlock.of_equivBlock
+      ((optimizerPipelineRounds (calls := calls) (creates := creates) n).sound
+        (@Normalize.normalize (evmWithExternal calls creates) b)))
+
+/-- **Normalize-then-optimize preserves whole-program behaviour** (object path,
+at the top code block — the `RunObject`/`RunResolvedObject` interface), for
+**every** object tree. -/
+theorem normalize_optimizerPipelineObjectRounds_topRunEquiv (n : Nat) (o : Object Op) :
+    RunEquivBlock D o.codeBlock
+      (optimizerPipelineObjectRounds (calls := calls) (creates := creates) n
+        (@Normalize.normalizeObject (evmWithExternal calls creates) _ o)).codeBlock :=
+  (@Normalize.normalizeObject_topRunEquiv (evmWithExternal calls creates) _ o).trans
+    (RunEquivBlock.of_equivBlock
+      (optimizerPipelineObjectRounds_topEquiv n (@Normalize.normalizeObject (evmWithExternal calls creates) _ o)))
 
 end YulEvmCompiler.Optimizer

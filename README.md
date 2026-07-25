@@ -37,9 +37,11 @@ lake env lean --run YulParserMain.lean --parse-only program.yul
 lake build yulc                   # CLI that emits compiled bytecode
 ```
 
-`lake build` treats warnings in the compiler, parser, and test libraries as
-errors, and also executes the `#guard`/`#eval` differential checks in
-`Examples.lean`. Requires the Lean toolchain pinned in
+`lake build` treats warnings in every project Lean module as errors, and also
+executes the `#guard`/`#eval` differential checks in `Examples.lean`. CI rejects
+any tracked Lean source (apart from its two human-approval-only trust-boundary
+checks) that omits this warning policy, so new libraries and runners cannot
+silently bypass it. Requires the Lean toolchain pinned in
 [`lean-toolchain`](./lean-toolchain) (managed by
 [`elan`](https://github.com/leanprover/elan)).
 
@@ -147,17 +149,29 @@ operations are different**: their correctness is *conditional on* the
   callee/init code with success-and-return) is still the client's responsibility,
   so end-to-end open-world call/create coverage remains conditional on supplying
   such a realization. This is a genuine distinction from the flat built-ins above.
-- **Deep stack access.** Variable reads use up to `DUP16`, stores up to
-  `SWAP16`, and functions return up to 16 values. Deeper accesses are *rejected*
-  (`compile = none`), not miscompiled, because EIP-8024 (`DUPN`/`SWAPN`) is not
-  activated on any fork modeled by evm-semantics. `compileSource` retries a
+- **Deep stack access.** The raw backend uses up to `DUP16` for variable reads
+  and `SWAP16` for stores, and functions return up to 16 values. A raw deeper
+  access is *rejected* (`compile = none`), not miscompiled, because EIP-8024
+  (`DUPN`/`SWAPN`) is not activated on any fork modeled by evm-semantics.
+  `compileSource` retries a
   failed optimized compile with the verified smart stack-layout pass: it
   right-associates addition spines without changing Yul's right-to-left leaf
   evaluation order, then coalesces non-overlapping singleton-local live ranges
   onto reachable dead slots. This fixes issue #61's nine-live-local reproducer
   and three of the five former Uniswap v4 stack failures while leaving bytecode
-  for already-compiling programs unchanged. Programs still beyond classic
-  reach are rejected; complete coverage needs spilling or active EIP-8024.
+  for already-compiling programs unchanged. As its final fallback,
+  `compileSource` can spill selected locals to the scratch interval authorized
+  by a consistent literal `memoryguard(n)`. It rejects spilling when `msize`
+  could observe the reservation, when recursion makes the active call path
+  unbounded, when a selected binding violates lexical scope, or when a tuple
+  binding cannot be spilled as one group. Lexical siblings reuse colors, and
+  caller/callee regions overlap only when their
+  lifetimes cannot: the reserved word count is the peak simultaneous lexical
+  and call-path footprint, not the total number of selected bindings. Existing
+  successful candidates still win before this fallback, so their bytecode and
+  gas are unchanged. Programs without a safe guard contract remain rejected.
+  This fallback addresses stack reach only; `gas`, immutables, and a live
+  `linkersymbol` value remain separate unsupported features.
 - **Optimizer.** A verified six-round `Simplify → Propagate →
   InlineHelpers → HoistCalls → FreshenCalls → InlineCalls → StorageForward →
   Simplify → DeadPure → DeadResults` pipeline runs in front of the
@@ -210,6 +224,16 @@ operations are different**: their correctness is *conditional on* the
   dead locals hide the caller's result slot: a dominating carrier preserves
   the live-out value while block restoration removes the deep local frame
   before the final result copy.
+  If every ordinary and smart-layout candidate still fails, a final guarded
+  spilling fallback may rewrite selected bindings to `mload`/`mstore` cells.
+  The selector batches stack-pressure failures, colors non-overlapping lexical
+  lifetimes, separates live caller cells from callee scratch, and rewrites
+  parameters, return values, tuple bindings, assignments, `leave`, loops, and
+  nested calls. Object compilation pairs each successfully spilled code block
+  with the unchanged optimized fallback for its siblings, then resolves both
+  through the same object layout. The proof relates guarded-source and emitted
+  runs by equality outside the reserved scratch interval and by equality of
+  committed observables.
   A second, weaker pass contract (`Spec/Observe.lean`: `ObsPass`, observational
   equivalence of committed run observables) is defined and composed with the
   backend for future passes that legitimately change memory or dead bindings;

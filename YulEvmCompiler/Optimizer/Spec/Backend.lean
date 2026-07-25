@@ -1,18 +1,18 @@
 import YulEvmCompiler.Correctness
-import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Spec.LocalPass
 set_option warningAsError true
 /-!
 # YulEvmCompiler.Optimizer.Backend
 
 The payoff of the optimizer specification: a **sound pass composes with the
-verified backend**. `Pass.optimize_then_compile_correct` shows that compiling the
+verified backend**. `LocalPass.optimize_then_compile_correct` shows that compiling the
 *optimized* program with the (proved) Yul→EVM compiler correctly simulates the
-*original* program's Yul semantics — so running any `Optimizer.Pass` in front of
+*original* program's Yul semantics — so running any `Optimizer.LocalPass` in front of
 `compile` never invalidates `compile_correct`.
 
 The proof is exactly the composition `AGENTS.md` prescribes for a source-to-source
 pass: transport the source run across the pass's soundness
-(`Pass.run_optimized`), then feed it to `compile_correct`. No backend proof is
+(`LocalPass.run_optimized`), then feed it to `compile_correct`. No backend proof is
 re-opened; the optimizer's obligation and the compiler's theorem meet at the
 `YulSemantics.Run` interface.
 -/
@@ -28,7 +28,7 @@ variable [model : ExternalModel]
 local notation "yulD" => evmWithExternal model.calls model.creates
 
 /-- **A sound optimizer pass is safe in front of the verified backend.** If `P`
-is any verified `Pass`, the compiler accepts the optimized program
+is any verified `LocalPass`, the compiler accepts the optimized program
 `P.run prog`, and the Yul semantics runs the *original* `prog` from `yst0` to
 `yst'` with outcome `o`, then the bytecode compiled from `P.run prog` reproduces
 that behavior on the EVM: from every matching initial state with enough gas it
@@ -37,8 +37,8 @@ reaches a final state matching `yst'`, with the same halt/return discipline as
 
 This is `compile_correct` precomposed with the pass's semantics preservation —
 the end-to-end statement that optimizing before compiling is correct. -/
-theorem Pass.optimize_then_compile_correct
-    (P : Pass yulD) (hexternal : ExternalsRealized model)
+theorem LocalPass.optimize_then_compile_correct
+    (P : LocalPass yulD) (hexternal : ExternalsRealized model)
     {prog : Block Op} {is : List Instr}
     (hcomp : compile (P.run prog) = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}

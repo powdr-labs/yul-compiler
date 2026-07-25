@@ -1,6 +1,7 @@
 import YulIR.Effects
 import YulSemantics.Dialect.EVM
 
+set_option warningAsError true
 /-!
 # YulIR.Simplify — local expression simplification (constant folding + identities)
 

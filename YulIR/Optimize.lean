@@ -6,6 +6,7 @@ import YulIR.Structural
 import YulIR.DeadStore
 import YulIR.DeadCode
 
+set_option warningAsError true
 /-!
 # YulIR.Optimize — the IR optimization pipeline
 

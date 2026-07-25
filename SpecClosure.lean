@@ -90,10 +90,10 @@ def roots : List Name :=
   , ``YulParser.parse_canon_block
   , ``YulParser.parse_canon_obj
   -- Optimizer spec: the guarantee that any sound Yul→Yul pass composes with the
-  -- verified backend. Its statement pulls the pass contract (`Optimizer.Pass`,
+  -- verified backend. Its statement pulls the pass contract (`Optimizer.LocalPass`,
   -- `Optimizer.Sound`) into the audited surface; concrete passes stay out (every
   -- `Pass` is sound by construction).
-  , ``YulEvmCompiler.Optimizer.Pass.optimize_then_compile_correct ]
+  , ``YulEvmCompiler.Optimizer.LocalPass.optimize_then_compile_correct ]
 
 /-- Repo-local, data-valued definitions that are the **artifact** (the code
 being verified), not the specification. Only their type signatures are pinned;
@@ -529,8 +529,8 @@ SPEC CLOSURE — audited this-repo surface (89 decls)
   relation YulEvmCompiler.LogEntryMatch 44220474a51dc6b6
   relation YulEvmCompiler.LogsMatch 6d1d2dd35bc25e39
   relation YulEvmCompiler.MemMatch e48211ef54b0d862
-  struct YulEvmCompiler.Optimizer.Pass d101e83e0c45f945
-  statement YulEvmCompiler.Optimizer.Pass.optimize_then_compile_correct 6bb685c2df35a2b3
+  struct YulEvmCompiler.Optimizer.LocalPass 6b8887154f59257c
+  statement YulEvmCompiler.Optimizer.LocalPass.optimize_then_compile_correct b97af54bdbe04c9f
   relation YulEvmCompiler.Optimizer.Sound d9d7947b1bb2287
   relation YulEvmCompiler.RunResolvedObject 22471129a83f65e3
   relation YulEvmCompiler.SelfdestructEntryMatch 3b1f6c17c9cc3b3f

@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Spec.LocalPass
 import YulEvmCompiler.Optimizer.Implementation.Simplify
 import YulEvmCompiler.Optimizer.Implementation.Frame
 set_option warningAsError true
@@ -2625,7 +2625,7 @@ theorem PropRel.equivBlock {σ' : PEnv} {b b' : Block Op}
 /-- The **Propagate pass**: constant + copy propagation with binding-preserving
 substitution, assignment refresh, zero-init tracking, and rhs folding — bundled
 with its soundness proof. -/
-def propagate : Pass D where
+def propagate : LocalPass D where
   run := propagateBlock
   sound := fun b => PropRel.equivBlock (propStmts_rel (copyGate 0 b) [] b)
 

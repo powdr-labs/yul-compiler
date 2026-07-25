@@ -529,7 +529,7 @@ def freshenCallsBlock (b : Block Op) : Block Op :=
 
 /-- The **FreshenCalls pass**: collision unblocking for `InlineCalls`
 (for assign-form result-name collisions). -/
-def freshenCalls : Pass D where
+def freshenCalls : LocalPass D where
   run := freshenCallsBlock
   sound := fun b => by
     unfold freshenCallsBlock

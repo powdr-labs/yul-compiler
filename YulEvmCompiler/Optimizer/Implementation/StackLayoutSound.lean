@@ -2,7 +2,7 @@ import YulEvmCompiler.Optimizer.Implementation.StackLayout
 import YulEvmCompiler.Optimizer.Implementation.InlineCallsSound
 import YulEvmCompiler.Optimizer.Implementation.DeadPure
 import YulEvmCompiler.Optimizer.Implementation.BoundFunCongr
-import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Spec.LocalPass
 import YulEvmCompiler.ObjectResolve
 set_option warningAsError true
 set_option linter.unusedVariables false
@@ -7246,7 +7246,7 @@ theorem aggressiveStackLayoutBlock_equiv (b : Block Op) :
     exact stageCallsBlock_equiv _
 
 /-- The verified expression-scheduling and liveness-guided stack-layout pass. -/
-def stackLayout : Pass D where
+def stackLayout : LocalPass D where
   run := stackLayoutBlock
   sound := fun b => by
     simp only [stackLayoutBlock]

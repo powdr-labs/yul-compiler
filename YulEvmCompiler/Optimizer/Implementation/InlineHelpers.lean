@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Spec.Pass
+import YulEvmCompiler.Optimizer.Spec.LocalPass
 import YulEvmCompiler.Optimizer.Implementation.Simplify
 import YulEvmCompiler.Optimizer.Core.Subst
 import YulSemantics.Determinism
@@ -2545,7 +2545,7 @@ theorem inlineHelpersBlock_equiv {litOK : Bool} (b : Block Op) :
 /-- **The Core-backed helper inliner is a verified pass.** `litOK := true` is
 the block-pipeline classification; `litOK := false` restricts to the
 resolution-stable fragment used by the object pipeline. -/
-def inlineHelpersPass (litOK : Bool) : Pass D where
+def inlineHelpersPass (litOK : Bool) : LocalPass D where
   run := inlineHelpersBlock (calls := calls) (creates := creates) litOK []
   sound := inlineHelpersBlock_equiv
 

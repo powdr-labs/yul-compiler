@@ -1,7 +1,7 @@
-# Full Aave v4 integration fixtures whose unoptimized solc IR still exceeds
-# the smart layout pass's current DUP16/SWAP16 reach. They remain active
-# acceptance tests: remove an entry as soon as it compiles and pin its
-# per-scenario gas rows.
+# Full Aave v4 integration fixtures. Guarded stack-pressure sites are handled
+# by memory spilling, but these sources still reach independently unsupported
+# gas/immutable/live-linker operations; SpokeOperations also contains a
+# separate unguarded pressure site. Keep them active until those follow-ups.
 HubOperations.sol
 LiquidationLogic.sol
 SpokeOperations.sol

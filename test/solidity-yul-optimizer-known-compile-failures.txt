@@ -17,7 +17,6 @@ stackLimitEvader/cycle_after_2.yul
 stackLimitEvader/cycle_before.yul
 stackLimitEvader/cycle_before_2.yul
 stackLimitEvader/cycle_before_after.yul
-stackLimitEvader/function_arg.yul
 stackLimitEvader/intersecting_cycles.yul
 stackLimitEvader/stub.yul
 stackLimitEvader/too_many_args_14.yul
@@ -25,7 +24,6 @@ stackLimitEvader/too_many_args_15.yul
 stackLimitEvader/too_many_args_16.yul
 stackLimitEvader/too_many_returns_15.yul
 stackLimitEvader/too_many_returns_16.yul
-stackLimitEvader/tree.yul
 stackLimitEvader/verbatim_many_arguments.yul
 stackLimitEvader/verbatim_many_arguments_and_returns.yul
 stackLimitEvader/verbatim_many_returns.yul

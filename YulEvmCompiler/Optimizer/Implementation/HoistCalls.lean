@@ -409,7 +409,7 @@ def hoistCallsBlock (b : Block Op) : Block Op :=
   | some P => hcBlock P [] b
   | none => b
 
-def hoistCalls : Pass D where
+def hoistCalls : LocalPass D where
   run := hoistCallsBlock
   sound := fun b => by
     unfold hoistCallsBlock

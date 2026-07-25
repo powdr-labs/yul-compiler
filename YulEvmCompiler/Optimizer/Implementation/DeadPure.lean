@@ -41,7 +41,7 @@ simulation — with the env desync ("the unremoved side carries extra dead
 bindings until its enclosing block's `restore`") tracked by an insertion
 relation generalizing `Frame.InsAt` to interleaved multiple insertions.
 
-The strong `Pass`/`EquivBlock` tier remains reachable because every removed
+The strong `LocalPass`/`EquivBlock` tier remains reachable because every removed
 binding is local to the (implicitly wrapped) top-level block: `restore`
 erases the difference at every block exit, exactly as in `DeadLits`.
 
@@ -3695,7 +3695,7 @@ theorem DcRel.equivBlock {b2 : List Ident} {b b' : Block Op}
 elimination, bundled with its soundness proof — in the unchanged pointwise
 spec (bidirectional `Step` simulation with the `BoundOK` invariant and the
 `MIns` multi-insertion frame). -/
-def deadPure : Pass D where
+def deadPure : LocalPass D where
   run := dpStmts []
   sound := fun b => by
     obtain ⟨b2, hrel⟩ := dpStmts_rel [] b

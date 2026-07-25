@@ -5,6 +5,7 @@ import YulEvmCompiler.Optimizer.Implementation.StackLayout
 import YulEvmCompilerTests.SolcDifferential
 import YulSemantics.Interp
 
+set_option warningAsError true
 /-!
 # YulIR.Check — reusable baseline computation
 

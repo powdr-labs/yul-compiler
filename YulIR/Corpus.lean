@@ -1,6 +1,7 @@
 import YulIR
 import YulSemantics.Syntax
 
+set_option warningAsError true
 /-!
 # YulIR.Corpus — hand-picked test programs for the IR baseline
 

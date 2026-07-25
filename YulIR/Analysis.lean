@@ -1,5 +1,6 @@
 import YulIR.Ast
 
+set_option warningAsError true
 /-!
 # YulIR.Analysis — small syntactic analyses over the IR
 

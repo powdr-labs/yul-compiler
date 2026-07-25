@@ -1,6 +1,7 @@
 import YulIR.Ast
 import YulSemantics.Ast
 
+set_option warningAsError true
 /-!
 # YulIR.OfYul — translate Yul into the IR
 

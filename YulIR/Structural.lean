@@ -1,6 +1,7 @@
 import YulIR.Ast
 import YulSemantics.Dialect.EVM
 
+set_option warningAsError true
 /-!
 # YulIR.Structural — structural / control-flow simplification
 

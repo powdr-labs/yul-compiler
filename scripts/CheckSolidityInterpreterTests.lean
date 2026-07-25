@@ -1,6 +1,7 @@
 import YulEvmCompilerTests.InterpreterFixture
 import YulEvmCompilerTests.SolidityCorpus
 
+set_option warningAsError true
 /-!
 Run every Solidity `yulInterpreterTests` fixture and compare the failures with
 a checked-in baseline. Each baseline entry is a path relative to the upstream

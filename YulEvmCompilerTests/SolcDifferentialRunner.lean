@@ -4,6 +4,7 @@ import YulEvmCompilerTests.SolcDifferential
 import YulEvmCompilerTests.CorpusGas
 import YulEvmCompilerTests.SolidityCorpus
 import YulEvmCompilerTests.Parallel
+set_option warningAsError true
 
 /-!
 Compile each applicable fixture with both this compiler and a pinned solc,
