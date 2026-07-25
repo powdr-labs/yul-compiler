@@ -15,9 +15,12 @@ optimizer runs *on the frame IR* (the representation pass-soundness is proved ag
 * `structural` — dead `if 0`, `if 1`→splice, constant-`switch` selection, empty removal, and
   unreachable-code elimination (the rewrites proved sound in `YulIR.FrameSound`);
 * `deadCode`   — remove pure writes to slots never read (protecting a function's return slots),
-  to a fixpoint.
+  to a fixpoint;
+* `loadElim`/`storeElim` — redundant load and store elimination over storage/transient/memory with
+  symbolic affine address reasoning (`YulIR.FrameStoreElim`).
 
-`optimize : Program → Program` runs `valueNumber → simplify → structural → deadCode` twice over
+`optimize : Program → Program` runs `loadElim → valueNumber → simplify → structural → storeElim →
+deadCode` twice over
 `main` and every function body. Every pass is `Block n → Block n` (frame-preserving), so no
 weakening is needed. Correctness is validated by the interpreter/behaviour checks; soundness proofs
 land incrementally in `YulIR.FrameSound`.
