@@ -5,43 +5,30 @@ set_option warningAsError true
 /-!
 # YulIR.FinFrameSketch — a design sketch of the `Fin n`-frame IR
 
-**Not wired into the pipeline.** This is a self-contained sketch to make the ergonomics of the
-"numbered local frame" representation concrete (see the discussion in `DESIGN.md`), so we can weigh
-it before committing.
+**Not wired into the pipeline.** A self-contained sketch to make the ergonomics of the "numbered
+local frame" representation concrete (see `DESIGN.md`). Companion `YulIR.FinFrameSketchPasses`
+implements two real passes on it — value numbering and an inliner — to measure the friction.
 
 ## The idea
 
-Because the IR is now **block-free** (one flat statement sequence per function / `main`), a scope is
-just a *frame* of `n` local slots. So represent a variable as a slot index `Fin n`, declare the
-count `n` in the function/program header, and **unify declaration and assignment** into a single
-`write` (all slots are pre-declared by the header, zero-initialised as in Yul).
+Since the IR is now **block-free**, a scope is a *frame* of `n` local slots. So a variable is a slot
+index `Fin n`, the count `n` is declared in the function/program header, and declaration and
+assignment unify into a single `write` (all slots pre-declared, zero-initialised, as in Yul).
 
-## What the types buy (the win)
+## The win
 
-* **Well-scopedness + uniqueness are a type guarantee.** A `Stmt n` can only mention `Fin n`
-  slots, so a reference can neither dangle nor collide — the invariant we currently *maintain* in
-  `ofYul` becomes *unrepresentable to violate*. Flatness is what makes this cheap: the nested
-  `Var Γ` context collapses to a single `n`. (See the `example`s at the end — `.slot 2` in a
-  `Stmt 2` is a type error.)
-* **Removal is free.** Dead-code elimination drops writes and *leaves a gap*; `n` is unchanged, so
-  every remaining `Fin n` reference stays valid with **no renumbering** — `deadWriteElim : Block n →
-  Block n`. This is the property de Bruijn indices/levels lack.
-* **Constant analysis is a write-count.** With `let`/`assign` unified, "slot `i` is constant" is
-  just "written ≤ once" (`isConstant`) — one scan, no `let`-vs-`assign` bookkeeping.
+* **Well-scopedness + uniqueness are a type guarantee** — a `Stmt n` can only mention `Fin n` slots
+  (an out-of-frame `.slot` is untypeable). Flatness collapses the nested `Var Γ` context to one `n`.
+* **Removal is free** — DCE drops writes and leaves gaps; `n` is unchanged, no `Fin n` reference is
+  renumbered (`deadWriteElim : Block n → Block n`).
+* **Constant = written-once** (`isConstant`), enabled by unified writes.
 
-## What it costs (the honest downside)
+## The cost
 
-* **Adding a slot re-types the body.** Introducing a temporary (CSE) goes `Block n → Block (n+1)`,
-  which requires weakening every `Fin n` to `Fin (n+1)` — `weakenBlock` below. That's the
-  intrinsic-typing tax; it is exactly the plumbing an extrinsic `Nat`-slot (≈ integer unique names)
-  would avoid, at the price of losing the type guarantee.
-* **Inlining renumbers** the callee's slots into the caller's frame (same cost as fresh-naming).
-
-## Bridge
-
-Erasure to the existing named IR maps slot `i` to the name `_s<i>`, `write` to `assign`, with a
-preamble of zero-init `let`s for the local slots (params/rets come from the signature). Shown by
-`eraseBlock` below; a full `eraseFunction` prepends the preamble.
+* **Growing the frame re-types the body** — `mapBlock (f : Fin n → Fin m)` reindexes every slot;
+  `weakenBlock` (`+1`) and the inliner's frame merge (`+k`) pay this. Passes that only rewrite/remove
+  (value numbering, structural, DCE) stay `Block n → Block n` and pay *nothing*; only frame-growing
+  passes (inlining, LICM, rematerialisation) pay. That is the honest boundary of the friction.
 -/
 
 namespace YulIR.FinFrame
@@ -50,53 +37,88 @@ open YulSemantics (Ident Literal)
 
 /-! ### Syntax over a frame of `n` slots -/
 
-/-- An operand: a literal or a slot reference (`Fin n` ⇒ always in range). -/
+/-- An operand: a literal or an always-in-range slot reference. -/
 inductive Atom (n : Nat)
   | lit  (l : Literal)
   | slot (i : Fin n)
+  deriving DecidableEq, BEq
 
 /-- A right-hand side. -/
 inductive Rhs (n : Nat)
   | atom    (a : Atom n)
   | builtin (op : Op) (args : List (Atom n))
   | call    (fn : Ident) (args : List (Atom n))
+  deriving DecidableEq, BEq
 
 /-- A statement over an `n`-slot frame. No `block` (flat), no `funDef` (lifted), and **no separate
-`let`** — a `write` covers both declaration and assignment. -/
+`let`** — `write` covers declaration and assignment alike. -/
 inductive Stmt (n : Nat)
-  /-- `slot dst := rhs` (single result; declaration *and* reassignment). -/
   | write     (dst : Fin n) (rhs : Rhs n)
-  /-- `slot d₀, d₁, … := call(…)` (multi-result). -/
   | writeMany (dsts : List (Fin n)) (rhs : Rhs n)
-  /-- an effectful rhs evaluated for its effect. -/
   | effect    (rhs : Rhs n)
   | cond      (c : Atom n) (body : List (Stmt n))
   | switch    (c : Atom n) (cases : List (Literal × List (Stmt n))) (dflt : Option (List (Stmt n)))
   | loop      (post body : List (Stmt n))
   | «break» | «continue» | leave
 
-/-- A block is a flat statement sequence over the frame. -/
 abbrev Block (n : Nat) := List (Stmt n)
 
 instance : Inhabited (Atom n) := ⟨.lit (.number 0)⟩
 instance : Inhabited (Rhs n)  := ⟨.atom default⟩
 instance : Inhabited (Stmt n) := ⟨.«break»⟩
 
-/-- A function: a frame of `nslots` slots, of which the first `nparams` are parameters and the next
-`nrets` are returns (the rest are locals). -/
+/-- A function over a frame of `nslots` slots; `params`/`rets` are the slots holding its parameters
+and returns (kept as explicit slot lists so callers/inliners need no `Fin` arithmetic). -/
 structure Function where
-  nslots  : Nat
-  nparams : Nat
-  nrets   : Nat
-  body    : Block nslots
+  nslots : Nat
+  params : List (Fin nslots)
+  rets   : List (Fin nslots)
+  body   : Block nslots
 
-/-- A program: a table of functions (keyed by name) and a `main` frame. -/
+/-- A program: a table of functions and a `main` frame. -/
 structure Program where
   functions : Std.HashMap Ident Function
   mainSlots : Nat
   main      : Block mainSlots
 
-/-! ### The win #1 — removal keeps `n` (free DCE, no renumbering) -/
+/-! ### General slot remap (subsumes weakening) -/
+
+/-- Remap an atom's slots through `f`. -/
+def mapAtom (f : Fin n → Fin m) : Atom n → Atom m
+  | .lit l  => .lit l
+  | .slot i => .slot (f i)
+
+/-- Remap an rhs's slots. -/
+def mapRhs (f : Fin n → Fin m) : Rhs n → Rhs m
+  | .atom a       => .atom (mapAtom f a)
+  | .builtin op a => .builtin op (a.map (mapAtom f))
+  | .call fn a    => .call fn (a.map (mapAtom f))
+
+mutual
+/-- Remap every slot of a statement through `f : Fin n → Fin m`. This is the one primitive behind
+weakening (`f = Fin.castSucc`) and the inliner's frame merge (`f = Fin.natAdd`/`Fin.castAdd`). -/
+partial def mapStmt (f : Fin n → Fin m) : Stmt n → Stmt m
+  | .write d rhs      => .write (f d) (mapRhs f rhs)
+  | .writeMany ds rhs => .writeMany (ds.map f) (mapRhs f rhs)
+  | .effect rhs       => .effect (mapRhs f rhs)
+  | .cond c b         => .cond (mapAtom f c) (mapBlock f b)
+  | .switch c cs df   => .switch (mapAtom f c) (cs.map (fun p => (p.1, mapBlock f p.2))) (df.map (mapBlock f))
+  | .loop post body   => .loop (mapBlock f post) (mapBlock f body)
+  | .«break»          => .«break»
+  | .«continue»       => .«continue»
+  | .leave            => .leave
+partial def mapBlock (f : Fin n → Fin m) : Block n → Block m
+  | []      => []
+  | s :: ss => mapStmt f s :: mapBlock f ss
+end
+
+/-- Weaken a block into a one-larger frame (the CSE/temp-introduction cost). -/
+def weakenBlock : Block n → Block (n + 1) := mapBlock Fin.castSucc
+
+/-- Allocate a fresh slot: enlarge the frame by one and return the new (last) slot. -/
+def allocSlot (b : Block n) : Block (n + 1) × Fin (n + 1) := (weakenBlock b, Fin.last n)
+
+/-! ### Removal keeps `n` — free DCE -/
 
 /-- Purity of an rhs (reuses the dialect's `Op.isPure`). -/
 def rhsPure : Rhs n → Bool
@@ -105,8 +127,8 @@ def rhsPure : Rhs n → Bool
   | .call _ _     => false
 
 mutual
-/-- Drop pure writes to slots that are never read (`used`). Note the type: `Block n → Block n` —
-the frame size is untouched, so *no* `Fin n` reference is renumbered. -/
+/-- Drop pure writes to slots never read (`used`). The type `Block n → Block n` says it all: the
+frame is untouched, so no slot is renumbered. -/
 partial def deadWriteElim (used : List (Fin n)) : Block n → Block n
   | []      => []
   | s :: ss =>
@@ -122,10 +144,10 @@ partial def deadWriteElim (used : List (Fin n)) : Block n → Block n
     | other           => other :: deadWriteElim used ss
 end
 
-/-! ### The win #2 — unified writes ⇒ constant = written-once -/
+/-! ### Unified writes ⇒ constant = written-once -/
 
 mutual
-/-- All slots written anywhere in a block. -/
+/-- Slots written anywhere in a block. -/
 partial def blockWrites : Block n → List (Fin n)
   | []      => []
   | s :: ss => stmtWrites s ++ blockWrites ss
@@ -139,64 +161,28 @@ partial def stmtWrites : Stmt n → List (Fin n)
   | _               => []
 end
 
-/-- A slot is constant iff it is written at most once. -/
+/-- A slot is constant (safe for value tracking) iff written at most once. Same soundness basis as
+the named IR's "never reassigned": a once-written slot inside a loop is only *tracked* by value
+numbering when its operands are themselves immutable, hence loop-invariant. -/
 def isConstant (b : Block n) (i : Fin n) : Bool := (blockWrites b |>.count i) ≤ 1
 
-/-! ### The cost — adding a slot re-types the body (weakening) -/
+/-! ### Bridge to the named IR -/
 
-/-- Weaken an atom into a one-larger frame. -/
-def weakenAtom : Atom n → Atom (n + 1)
-  | .lit l  => .lit l
-  | .slot i => .slot i.castSucc
-
-/-- Weaken an rhs. -/
-def weakenRhs : Rhs n → Rhs (n + 1)
-  | .atom a       => .atom (weakenAtom a)
-  | .builtin op a => .builtin op (a.map weakenAtom)
-  | .call fn a    => .call fn (a.map weakenAtom)
-
-mutual
-/-- Weaken a statement into a one-larger frame — every `Fin n` slot becomes `Fin (n+1)`. This is
-the plumbing an extrinsic integer-slot representation would not need (it is the price of the type
-guarantee). -/
-partial def weakenStmt : Stmt n → Stmt (n + 1)
-  | .write d rhs     => .write d.castSucc (weakenRhs rhs)
-  | .writeMany ds rhs => .writeMany (ds.map Fin.castSucc) (weakenRhs rhs)
-  | .effect rhs      => .effect (weakenRhs rhs)
-  | .cond c b        => .cond (weakenAtom c) (weakenBlock b)
-  | .switch c cs df  => .switch (weakenAtom c) (cs.map (fun p => (p.1, weakenBlock p.2))) (df.map weakenBlock)
-  | .loop post body  => .loop (weakenBlock post) (weakenBlock body)
-  | .«break»         => .«break»
-  | .«continue»      => .«continue»
-  | .leave           => .leave
-partial def weakenBlock : Block n → Block (n + 1)
-  | []      => []
-  | s :: ss => weakenStmt s :: weakenBlock ss
-end
-
-/-- Allocate a fresh slot in a block, returning the enlarged block and the new slot index. This is
-what CSE/temp-introduction costs: a `weakenBlock` plus `Fin.last`. -/
-def allocSlot (b : Block n) : Block (n + 1) × Fin (n + 1) := (weakenBlock b, Fin.last n)
-
-/-! ### Bridge — erase to the existing named IR -/
-
-/-- The Yul/named-IR name for slot `i`. -/
+/-- The named-IR name for slot `i`. -/
 def slotName (i : Fin n) : Ident := s!"_s{i.val}"
 
-/-- Erase an atom to the named IR. -/
 def eraseAtom : Atom n → YulIR.Atom
   | .lit l  => .lit l
   | .slot i => .var (slotName i)
 
-/-- Erase an rhs. -/
 def eraseRhs : Rhs n → YulIR.Rhs
   | .atom a       => .atom (eraseAtom a)
   | .builtin op a => .builtin op (a.map eraseAtom)
   | .call fn a    => .call fn (a.map eraseAtom)
 
 mutual
-/-- Erase a statement: a `write` becomes an `assign` (slots are pre-declared by the frame preamble;
-see `eraseFunction`'s note in the module doc). -/
+/-- Erase a statement: `write` becomes `assign` (slots are pre-declared by the frame preamble —
+`eraseFunction` prepends zero-init `let`s for the non-param/ret slots). -/
 partial def eraseStmt : Stmt n → YulIR.Stmt
   | .write d rhs      => .assign [slotName d] (eraseRhs rhs)
   | .writeMany ds rhs => .assign (ds.map slotName) (eraseRhs rhs)
@@ -214,11 +200,10 @@ end
 
 /-! ### Type-guarantee demonstration -/
 
-/-- A well-scoped statement over a 2-slot frame: `slot0 := add(slot1, 3)`. -/
+/-- Well-scoped by construction: `slot0 := add(slot1, 3)` over a 2-slot frame. -/
 example : Stmt 2 := .write 0 (.builtin .add [.slot 1, .lit (.number 3)])
 
--- The scoping/uniqueness guarantee at work: the following is a *type error*, because `2` is not a
--- `Fin 2` — an out-of-frame slot reference is unrepresentable.
+-- A type error (uncomment to see): `2` is not a `Fin 2`, so an out-of-frame slot is unrepresentable.
 --   example : Stmt 2 := .write 0 (.atom (.slot 2))
 
 end YulIR.FinFrame
