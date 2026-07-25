@@ -114,10 +114,9 @@ recursion stays structural. -/
 mutual
 def structuralStmt : Stmt n → List (Stmt n)
   | .cond c body =>
-      let b' := structuralBlock body
-      if c.isZeroLit || b'.isEmpty then []
-      else if c.isNonzeroLit then b'                     -- always taken ⇒ splice
-      else [.cond c b']
+      if c.isZeroLit || (structuralBlock body).isEmpty then []
+      else if c.isNonzeroLit then structuralBlock body   -- always taken ⇒ splice
+      else [.cond c (structuralBlock body)]
   | .switch c cs df =>
       let cs' := structuralCases cs
       let df' := structuralDflt df
