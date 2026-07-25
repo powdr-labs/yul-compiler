@@ -76,12 +76,23 @@ is reserved for CI-cached heavy runs, not local iteration.
 
 ## Status & roadmap toward parity
 
-Current: corpus total `ir-opt` **−9%** vs `ir-noopt`, **~1.3% above `current`** (was ~8%);
-several categories now *beat* `current` (`structuralSimplifier`, `deadCodeEliminator`,
-`unusedAssignEliminator`, `unusedPruner`, `fullSuite`). Behaviour sweep: 0 miscompiles.
+Current, on Solidity's `yulOptimizerTests`:
+
+* **Gas ≈ parity**: total EVM execution gas `ir-opt` 1,203,801,947 vs `current` 1,203,697,922
+  (**+0.009%**) — the metric solc's optimizer actually targets (`scripts/YulIRCorpus.lean gas`).
+* **Code size within ~1.2%**: `ir-opt` 221,001 vs `current` 218,372 (**−9%** vs `ir-noopt` 240,892);
+  several categories *beat* `current` (`structuralSimplifier`, `deadCodeEliminator`,
+  `unusedAssignEliminator`, `unusedPruner`, `fullSuite`).
+* **Correctness**: full-corpus behaviour sweep = **0 miscompiles**; interp gate green on 57 progs.
 
 Done: uniquify · simplify · value-numbering (const/copy-prop, fold, CSE) · structural +
 unreachable-code · dead-store (unused-assignment) · dead pure bindings/statements.
+
+**Where the residual size gap is** (measured): dominated by `loopInvariantCodeMotion` (+4170) and
+`equalStore`/`unusedStore`. It is *not* CSE alone — gating CSE to expensive ops did not remove it,
+and it persists from copy-propagation/uniquify changing variable liveness/naming in ways the
+**backend stack allocator** lowers less well. I.e. the remaining gap is now as much a *backend
+stack-scheduling* problem as a missing IR pass.
 
 Remaining to reach/exceed parity:
 
