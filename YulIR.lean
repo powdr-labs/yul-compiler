@@ -9,6 +9,7 @@ import YulIR.FrameTranslate
 import YulIR.FrameSem
 import YulIR.FrameBigStep
 import YulIR.FrameSound
+import YulIR.FrameFunCongr
 import YulIR.FramePasses
 import YulIR.FrameOptimize
 set_option warningAsError true
