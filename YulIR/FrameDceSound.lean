@@ -22,7 +22,7 @@ hypothesis ruling out stuck ill-typed terms) is layered on top.
 
 namespace YulIR.FinFrame.Sem
 
-open YulSemantics (Outcome BuiltinResult Literal)
+open YulSemantics (Outcome BuiltinResult Literal Ident)
 open YulSemantics.EVM (evm litValue)
 
 /-! ### Store agreement on a set of slots -/
@@ -659,6 +659,112 @@ theorem wf_dceBlock (funs : Funs) (reads prot : List (Fin n)) (b : Block n) (hwf
   case ccons => intro l b rest ihb ihrest hwfcs; rw [dceCases]; exact ⟨ihb hwfcs.1, ihrest hwfcs.2⟩
   case dnone => intro _; exact trivial
   case dsome => intro b ih hwfdf; rw [dceDflt]; exact ih hwfdf
+
+/-! ### General-store fuel simulations (for the call-graph coupling) -/
+
+/-- Agreement on a superset of a slot list makes reading that list identical (used for return
+values: `rets.map σ` is preserved because `rets ⊆ prot`). -/
+theorem map_agree {S : List (Fin n)} {σ₁ σ₂} (h : AgreeOn S σ₁ σ₂) {l : List (Fin n)}
+    (hl : ∀ i ∈ l, i ∈ S) : l.map σ₁ = l.map σ₂ := by
+  induction l with
+  | nil => rfl
+  | cons a as ih =>
+      simp only [List.map_cons, h a (hl a (List.mem_cons_self ..)),
+        ih (fun i hi => hl i (List.mem_cons_of_mem a hi))]
+
+/-- Forward simulation of the `deadCode` fuel fixpoint from *any* store, tracking agreement on the
+protected slots `prot` (enough to preserve a function's return values). -/
+theorem deadCode_fwd (funs' : Funs) (prot : List (Fin n)) (fuel : Nat) :
+    ∀ {b : Block n} {σ st σ' st' o}, Step funs' σ st (.stmts b) (.sres σ' st' o) →
+      ∃ σ'', Step funs' σ st (.stmts (deadCode prot fuel b)) (.sres σ'' st' o) ∧ AgreeOn prot σ' σ'' := by
+  induction fuel with
+  | zero => intro b σ st σ' st' o h; exact ⟨σ', by rw [deadCode]; exact h, fun _ _ => rfl⟩
+  | succ fuel ih =>
+      intro b σ st σ' st' o h
+      obtain ⟨σ'₂, hstep2, hag2⟩ := dce_fwd h (blockReads b) prot σ (fun _ _ => rfl)
+        (fun i hi => List.mem_append.mpr (Or.inl hi))
+      have hag2' : AgreeOn prot σ' σ'₂ := fun i hi => hag2 i (List.mem_append.mpr (Or.inr hi))
+      rw [deadCode]
+      by_cases hfix : (blockCount (dceBlock (blockReads b) prot b) == blockCount b) = true
+      · rw [if_pos hfix]; exact ⟨σ'₂, hstep2, hag2'⟩
+      · rw [if_neg hfix]
+        obtain ⟨σ''', hstep3, hag3⟩ := ih hstep2
+        exact ⟨σ''', hstep3, hag2'.trans hag3⟩
+
+/-- Reverse simulation of the `deadCode` fuel fixpoint from any store, under well-formedness. -/
+theorem deadCode_bwd (funs' : Funs) (prot : List (Fin n)) (fuel : Nat) :
+    ∀ {b : Block n}, WFBlock funs' b → ∀ {σ st σ'' st' o},
+      Step funs' σ st (.stmts (deadCode prot fuel b)) (.sres σ'' st' o) →
+      ∃ σ', Step funs' σ st (.stmts b) (.sres σ' st' o) ∧ AgreeOn prot σ' σ'' := by
+  induction fuel with
+  | zero => intro b _ σ st σ'' st' o h; rw [deadCode] at h; exact ⟨σ'', h, fun _ _ => rfl⟩
+  | succ fuel ih =>
+      intro b hwf σ st σ'' st' o h
+      rw [deadCode] at h
+      by_cases hfix : (blockCount (dceBlock (blockReads b) prot b) == blockCount b) = true
+      · rw [if_pos hfix] at h
+        obtain ⟨σ', h1, hag1⟩ := dce_bwd funs' (blockReads b) prot b hwf
+          (fun i hi => List.mem_append.mpr (Or.inl hi)) h σ (fun _ _ => rfl)
+        exact ⟨σ', h1, fun i hi => hag1 i (List.mem_append.mpr (Or.inr hi))⟩
+      · rw [if_neg hfix] at h
+        obtain ⟨σ'm, h2, hag2⟩ := ih (wf_dceBlock funs' _ _ b hwf) h
+        obtain ⟨σ', h1, hag1⟩ := dce_bwd funs' (blockReads b) prot b hwf
+          (fun i hi => List.mem_append.mpr (Or.inl hi)) h2 σ (fun _ _ => rfl)
+        exact ⟨σ', h1, AgreeOn.trans (fun i hi => hag1 i (List.mem_append.mpr (Or.inr hi))) hag2⟩
+
+/-! ### Whole-program: dead-code-eliminating every function body -/
+
+/-- Dead-code-eliminate every function body, protecting each function's own return slots. -/
+def dceFuns (fuel : Nat) (funs : Funs) : Funs :=
+  funs.map (fun _ fd => { fd with body := deadCode fd.rets fuel fd.body })
+
+theorem dceFuns_get {fuel : Nat} {funs : Funs} {k : Option Ident} {fd : Function}
+    (h : funs[k]? = some fd) :
+    (dceFuns fuel funs)[k]? = some ({ fd with body := deadCode fd.rets fuel fd.body } : Function) := by
+  simp [dceFuns, Std.HashMap.getElem?_map, h]
+
+/-- **Table congruence, forward.** Running any code against the dce'd table gives the *same* result:
+a call only observes its callee's return values and `EvmState`, both preserved by dead-code
+elimination. Modelled on `step_mapBodies_mp`, with the call case using `deadCode_fwd`. -/
+theorem T_congr_mp (fuel : Nat) (funs : Funs) {n} {σ : Store n} {st code res}
+    (h : Step funs σ st code res) : Step (dceFuns fuel funs) σ st code res := by
+  induction h with
+  | atom => exact .atom
+  | builtin hb => exact .builtin hb
+  | @callNorm _ _ _ fn args fdecl σ' st' o hl _ ho ihbody =>
+      obtain ⟨σ'', hbody'', hag⟩ := deadCode_fwd (dceFuns fuel funs) fdecl.rets fuel ihbody
+      rw [show fdecl.rets.map σ' = fdecl.rets.map σ'' from map_agree hag (fun _ h => h)]
+      exact Step.callNorm (fdecl := { fdecl with body := deadCode fdecl.rets fuel fdecl.body })
+        (dceFuns_get hl) hbody'' ho
+  | @callHalt _ _ _ fn args fdecl σ' st' hl _ ihbody =>
+      obtain ⟨σ'', hbody'', _⟩ := deadCode_fwd (dceFuns fuel funs) fdecl.rets fuel ihbody
+      exact Step.callHalt (fdecl := { fdecl with body := deadCode fdecl.rets fuel fdecl.body })
+        (dceFuns_get hl) hbody''
+  | assignOk _ ihr => exact .assignOk ihr
+  | assignHalt _ ihr => exact .assignHalt ihr
+  | condFalse hc => exact .condFalse hc
+  | condTrue hc _ ihb => exact .condTrue hc ihb
+  | switch _ ihb => exact .switch ihb
+  | loopS _ ihl => exact .loopS ihl
+  | brk => exact .brk
+  | cont => exact .cont
+  | lv => exact .lv
+  | nil => exact .nil
+  | consNormal _ _ ih1 ih2 => exact .consNormal ih1 ih2
+  | consStop _ hne ih1 => exact .consStop ih1 hne
+  | loopBrk _ ihb => exact .loopBrk ihb
+  | loopLeave _ ihb => exact .loopLeave ihb
+  | loopHalt _ ihb => exact .loopHalt ihb
+  | loopStep _ hob _ _ ihb ihp ihl => exact .loopStep ihb hob ihp ihl
+  | loopPostStop _ hob _ hne ihb ihp => exact .loopPostStop ihb hob ihp hne
+
+/-- **Whole-program forward soundness of `deadCode`**: every behaviour of the source program is a
+behaviour of the program with dead code eliminated from *every* function body. -/
+theorem deadCode_program_run_fwd (fuel : Nat) (funs : Funs) {st st' o}
+    (h : Run ⟨funs⟩ st st' o) : Run ⟨dceFuns fuel funs⟩ st st' o := by
+  obtain ⟨fd, σ', hmain, hexec⟩ := h
+  obtain ⟨σ'', hexec'', _⟩ := deadCode_fwd (dceFuns fuel funs) fd.rets fuel (T_congr_mp fuel funs hexec)
+  exact ⟨{ fd with body := deadCode fd.rets fuel fd.body }, σ'', dceFuns_get hmain, hexec''⟩
 
 /-! ### Bidirectional soundness (a `main`-style entry body) -/
 
