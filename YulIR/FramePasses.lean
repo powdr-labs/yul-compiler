@@ -25,7 +25,7 @@ value-numbering/structural/DCE do not.
 
 namespace YulIR.FinFrame
 
-open YulSemantics (Ident)
+open YulSemantics (Ident Literal)
 
 /-! ### Value numbering — `Block n → Block n`, no frame growth -/
 
@@ -65,28 +65,38 @@ def recordWrite (imm : Fin n → Bool) (env : List (Fin n × Atom n)) (avail : L
         else (env, avail, rhs')
     | .call _ _ => (env, avail, rhs')
 
-/-- Value numbering over a block, given the immutability predicate and current maps. The result is
+/-! Value numbering over a block, given the immutability predicate and current maps. The result is
 `Block n` — the frame is never touched. -/
-partial def vnBlock (imm : Fin n → Bool) (env : List (Fin n × Atom n))
+mutual
+/-- Value-number a single statement: emit the rewritten statement and the updated maps (only an
+`assign` to a single slot grows the maps; control-flow statements recurse into their sub-blocks but
+do not thread map updates back out). -/
+def vnStmt (imm : Fin n → Bool) (env : List (Fin n × Atom n)) (avail : List (Rhs n × Fin n)) :
+    Stmt n → Stmt n × List (Fin n × Atom n) × List (Rhs n × Fin n)
+  | .assign [d] rhs =>
+      let (env', avail', out) := recordWrite imm env avail d (resolveRhs env rhs)
+      (.assign [d] out, env', avail')
+  | .assign ds rhs => (.assign ds (resolveRhs env rhs), env, avail)
+  | .cond c b => (.cond (resolveAtom env c) (vnBlock imm env avail b), env, avail)
+  | .switch c cs df =>
+      (.switch (resolveAtom env c) (vnCases imm env avail cs) (vnDflt imm env avail df), env, avail)
+  | .loop post body => (.loop (vnBlock imm env avail post) (vnBlock imm env avail body), env, avail)
+  | s => (s, env, avail)
+def vnBlock (imm : Fin n → Bool) (env : List (Fin n × Atom n))
     (avail : List (Rhs n × Fin n)) : Block n → Block n
   | []      => []
   | s :: rest =>
-    match s with
-    | .assign [d] rhs =>
-        let rhs' := resolveRhs env rhs
-        let (env', avail', out) := recordWrite imm env avail d rhs'
-        .assign [d] out :: vnBlock imm env' avail' rest
-    | .assign ds rhs =>
-        .assign ds (resolveRhs env rhs) :: vnBlock imm env avail rest
-    | .cond c b =>
-        .cond (resolveAtom env c) (vnBlock imm env avail b) :: vnBlock imm env avail rest
-    | .switch c cs df =>
-        .switch (resolveAtom env c)
-          (cs.map (fun p => (p.1, vnBlock imm env avail p.2))) (df.map (vnBlock imm env avail))
-          :: vnBlock imm env avail rest
-    | .loop post body =>
-        .loop (vnBlock imm env avail post) (vnBlock imm env avail body) :: vnBlock imm env avail rest
-    | other => other :: vnBlock imm env avail rest
+      let (s', env', avail') := vnStmt imm env avail s
+      s' :: vnBlock imm env' avail' rest
+def vnCases (imm : Fin n → Bool) (env : List (Fin n × Atom n)) (avail : List (Rhs n × Fin n)) :
+    List (Literal × Block n) → List (Literal × Block n)
+  | []             => []
+  | (l, b) :: rest => (l, vnBlock imm env avail b) :: vnCases imm env avail rest
+def vnDflt (imm : Fin n → Bool) (env : List (Fin n × Atom n)) (avail : List (Rhs n × Fin n)) :
+    Option (Block n) → Option (Block n)
+  | none   => none
+  | some b => some (vnBlock imm env avail b)
+end
 
 /-- Immutability for value tracking. A local slot is immutable iff written at most once (its single
 write is its declaration, dominating all reads). Parameters and returns carry an implicit initial
