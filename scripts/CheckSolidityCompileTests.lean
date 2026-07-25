@@ -1,6 +1,7 @@
 import YulParser.Compile
 import YulEvmCompilerTests.SolidityCorpus
 
+set_option warningAsError true
 /-!
 Compile every accepted Yul fixture in one of Solidity's positive compiler
 corpora and compare the failures with a checked-in baseline. Each baseline

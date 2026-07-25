@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Ren
+set_option warningAsError true
 /-!
 # Semantic soundness of name disambiguation — the backward simulation
 

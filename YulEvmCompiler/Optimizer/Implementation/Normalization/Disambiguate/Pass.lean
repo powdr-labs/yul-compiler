@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Run
+set_option warningAsError true
 /-!
 # Disambiguation as a whole-tree normalization step
 

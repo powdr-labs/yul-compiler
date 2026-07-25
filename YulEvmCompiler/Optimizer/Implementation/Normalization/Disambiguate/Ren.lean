@@ -2,6 +2,7 @@ import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Alpha
 import YulEvmCompiler.Optimizer.Implementation.Frame
 import YulSemantics.Equiv
 import Mathlib.Data.List.Nodup
+set_option warningAsError true
 /-!
 # Disambiguation renaming — environment transport layer
 
@@ -22,7 +23,7 @@ namespace YulEvmCompiler.Optimizer.Normalize
 
 open YulSemantics
 
-variable {D : Dialect} [DecidableEq D.Value]
+variable {D : Dialect}
 
 /-! ### Renaming a variable environment -/
 
@@ -61,7 +62,7 @@ theorem renVEnv_get (σ : Ident → Ident) (V : VEnv D) (x : Ident)
       by_cases hyx : y = x
       · subst hyx; simp
       · have hσ : ¬ (σ y = σ x) := fun h => hyx (hne (y, w) (List.mem_cons_self ..) h)
-        simp only [hyx, hσ, decide_false, cond_false]
+        simp only [hyx, hσ, decide_false]
         exact ih (fun p hp => hne p (List.mem_cons_of_mem _ hp))
 
 /-! ### `set` transport (same per-name no-merge condition as `get`) -/
@@ -168,7 +169,7 @@ def RenFCfg (φ : Ident → Ident) (funs : FunEnv D) (N : Nat) : Prop :=
 theorem RenFCfg.mono {φ : Ident → Ident} {funs : FunEnv D} {N M : Nat}
     (h : RenFCfg φ funs N) (hNM : N ≤ M) : RenFCfg φ funs M :=
   ⟨h.1, h.2.1,
-    fun a ha => (h.2.2.1 a ha).imp (fun k hk => ⟨Nat.lt_of_lt_of_le hk.1 hNM, hk.2⟩),
+    fun a ha => (h.2.2.1 a ha).imp (fun _ hk => ⟨Nat.lt_of_lt_of_le hk.1 hNM, hk.2⟩),
     h.2.2.2⟩
 
 /-- The `renScopeRel_find`/`lookupFun` no-merge condition for a not-fresh name `fn`:
@@ -296,13 +297,13 @@ theorem VEnv.set_append (A B : VEnv D) (k : Ident) (v : D.Value) :
     VEnv.set (A ++ B) k v =
       if (A.find? (fun p => p.1 = k)).isSome then VEnv.set A k v ++ B else A ++ VEnv.set B k v := by
   induction A with
-  | nil => simp [VEnv.set]
+  | nil => simp
   | cons p rest ih =>
       obtain ⟨y, w⟩ := p
       by_cases hyk : y = k
-      · simp [VEnv.set, List.find?_cons, hyk]
-      · simp only [List.cons_append, VEnv.set, if_neg hyk, List.find?_cons, hyk,
-          decide_false, cond_false, ih]
+      · simp [VEnv.set, hyk]
+      · simp only [List.cons_append, VEnv.set, List.find?_cons, hyk,
+          decide_false, ih]
         cases (rest.find? (fun p => p.1 = k)).isSome <;> simp
 
 /-- `set` is a no-op when the key is absent. -/
@@ -351,7 +352,7 @@ theorem restore_prefix (A E : VEnv D) : restore A (E ++ A) = A := by
   have hd : (E ++ A).drop E.length = A := by
     induction E with
     | nil => simp
-    | cons e rest ih => simpa using ih
+    | cons e rest ih => simp at ih ⊢
   simp only [restore, List.length_append, Nat.add_sub_cancel, hd]
 
 /-! ### The renaming config `RenCfg`
@@ -372,7 +373,7 @@ def RenCfg (σ : Ident → Ident) (inner : VEnv D) (N : Nat) : Prop :=
 theorem RenCfg.mono {σ : Ident → Ident} {inner : VEnv D} {N M : Nat}
     (h : RenCfg σ inner N) (hNM : N ≤ M) : RenCfg σ inner M :=
   ⟨h.1, h.2.1,
-    fun p hp => (h.2.2.1 p hp).imp (fun k hk => ⟨Nat.lt_of_lt_of_le hk.1 hNM, hk.2⟩),
+    fun p hp => (h.2.2.1 p hp).imp (fun _ hk => ⟨Nat.lt_of_lt_of_le hk.1 hNM, hk.2⟩),
     h.2.2.2⟩
 
 /-- All keys of a `RenCfg` environment are source names. -/
@@ -453,7 +454,7 @@ theorem VEnv.get_eq_none_iff_not_mem (V : VEnv D) (z : Ident) :
       by_cases hyz : y = z
       · subst hyz; simp [VEnv.get]
       · have hzy : (z = y) = False := eq_false (fun h => hyz h.symm)
-        simp only [VEnv.get, List.find?_cons, hyz, decide_false, cond_false, List.map_cons,
+        simp only [VEnv.get, List.find?_cons, hyz, decide_false, List.map_cons,
           List.mem_cons, hzy, false_or]
         exact ih
 
@@ -683,6 +684,9 @@ def WScopedCode (dom : List Ident) : Code D.Op → Prop
 
 /-! ### Environment-key bookkeeping across `Step` -/
 
+section
+variable [DecidableEq D.Value]
+
 /-- A block/scope statement leaves the current scope's keys unchanged (it restores
 its own additions). -/
 theorem block_keys {funs : FunEnv D} {V st body V1 st1 o}
@@ -715,6 +719,8 @@ theorem venvKeys_stmt {funs : FunEnv D} {V st s V1 st1}
       simp only [declVars, List.nil_append]
       exact restore_keys ((venvKeys_suffix hinit rfl).trans (venvKeys_suffix hloop rfl))
         (Nat.le_trans (venvLen_mono hinit rfl) (venvLen_mono hloop rfl))
+
+end
 
 /-! ### The function-declaration body relation -/
 
@@ -952,6 +958,9 @@ the empty block. Labels are preserved verbatim by the α-relation, so source and
 target select *corresponding* blocks; the scope-safety and reference-scoping
 predicates select through as well. -/
 
+section
+variable [DecidableEq D.Value]
+
 theorem selectSwitch_alpha {σ φ : Ident → Ident} {cv : D.Value} :
     ∀ {cs cs' : List (Literal × Block D.Op)} {lo m : Nat},
       AlphaCases lo m σ φ cs cs' →
@@ -1097,6 +1106,8 @@ theorem venvKeys_stmts {funs : FunEnv D} :
           simp only [declVarsSeq, List.mem_append]
           tauto
       | seqStop hs hne => exact absurd rfl hne
+
+end
 
 /-! ### Backward-direction helpers -/
 

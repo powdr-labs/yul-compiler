@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.HoistFunDefs
+set_option warningAsError true
 
 /-!
 # Semantic equivalence of function hoisting
@@ -179,6 +180,7 @@ theorem funDefs_noop {funs : FunEnv D} {fds rest : List (Stmt D.Op)}
         exact Step.seqCons Step.funDef ((ih hall').mpr h)
 
 /- `collectStmts` (and friends) yield only function definitions. -/
+omit [DecidableEq D.Value] in
 mutual
 theorem collectStmt_allFunDef : ∀ (s : Stmt D.Op), ∀ x ∈ collectStmt s, IsFunDef (D := D) x
   | .funDef n ps rs body => by
@@ -1201,7 +1203,7 @@ theorem funNamesTop_sublist (b : List (Stmt D.Op)) :
           rw [funNamesTop_cons_funDef]
           have hfs : funNamesStmt (.funDef n ps rs body) = n :: funNamesStmts body := rfl
           rw [hfs, List.cons_append]
-          exact (ih.trans (List.sublist_append_right _ _)).cons₂ n
+          exact (ih.trans (List.sublist_append_right _ _)).cons_cons n
       | block _ => rw [funNamesTop_cons_other (by simp)]
                    exact ih.trans (List.sublist_append_right _ _)
       | cond _ _ => rw [funNamesTop_cons_other (by simp)]
@@ -1242,6 +1244,7 @@ theorem find?_nodup_mem {β : Type _} {l : List (Ident × β)}
         exact ih hnd.2 h
 
 /- Names collected by `collectStmts` are exactly the program's function names. -/
+omit [DecidableEq D.Value] in
 mutual
 theorem funNamesTop_collectStmt (s : Stmt D.Op) :
     funNamesTop (collectStmt s) = funNamesStmt s := by
@@ -1296,6 +1299,7 @@ theorem mem_hoist_of_mem {L : List (Stmt D.Op)} {n ps rs bd}
   simp only [hoist, List.mem_filterMap]
   exact ⟨.funDef n ps rs bd, h, rfl⟩
 
+omit [DecidableEq D.Value] in
 /-- The key fact: under unique names, the flat scope resolves a collected
 function's name to exactly its (stripped-body) declaration. -/
 theorem flatLookup_of_mem {b : Block D.Op} (huniq : UniqueFunNames b)
@@ -1315,6 +1319,7 @@ theorem funNamesEnv_singleton (b : Block D.Op) :
   simp only [funNamesEnv, List.map_cons, List.map_nil, List.flatten_cons, List.flatten_nil,
     List.append_nil, hoist_map_fst]
 
+omit [DecidableEq D.Value] in
 /-- At the top block, the original scope stack is `GoodO` for the flat scope. -/
 theorem goodO_top {b : Block D.Op} (huniq : UniqueFunNames b) (hws : WellScoped b) :
     GoodO (D := D) (flat b) (hoist D b :: []) := by
@@ -1333,6 +1338,7 @@ theorem goodO_top {b : Block D.Op} (huniq : UniqueFunNames b) (hws : WellScoped 
     intro n' ps' rs' bd' hmem'
     exact flatLookup_of_mem huniq (collectStmts_body_subset hfd hmem')
 
+omit [DecidableEq D.Value] in
 /-- At the top block, `b`'s functions are all registered in the flat scope. -/
 theorem codeInFlat_top {b : Block D.Op} (huniq : UniqueFunNames b) :
     CodeInFlat (D := D) (flat b) b :=

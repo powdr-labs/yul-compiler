@@ -7,6 +7,7 @@ import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.SoundB
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Run
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.NormalForm
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Pass
+set_option warningAsError true
 /-!
 # Name disambiguation (umbrella)
 

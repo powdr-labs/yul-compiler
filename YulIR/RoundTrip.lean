@@ -2,6 +2,7 @@ import YulIR
 import YulSemantics.Interp
 import YulSemantics.PrettyPrint
 
+set_option warningAsError true
 /-!
 # YulIR.RoundTrip — semantic round-trip check
 

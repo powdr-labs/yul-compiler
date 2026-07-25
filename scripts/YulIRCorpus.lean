@@ -2,6 +2,7 @@ import YulIR.Check
 import YulParser.Compile
 import YulEvmCompilerTests.SolidityCorpus
 
+set_option warningAsError true
 /-!
 # scripts/YulIRCorpus — IR benchmark over Solidity's `yulOptimizerTests`
 

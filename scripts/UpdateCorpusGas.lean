@@ -3,6 +3,7 @@ import YulEvmCompilerTests.Solc
 import YulEvmCompilerTests.CorpusGas
 import YulEvmCompilerTests.SolidityCorpus
 
+set_option warningAsError true
 /-!
 Regenerate a per-suite gas baseline for the solc differential.
 

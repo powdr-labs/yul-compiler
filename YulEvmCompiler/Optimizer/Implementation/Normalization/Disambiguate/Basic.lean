@@ -1,5 +1,6 @@
 import YulSemantics.Ast
 import Mathlib.Data.List.Basic
+set_option warningAsError true
 /-!
 # Normalization pass: name disambiguation
 

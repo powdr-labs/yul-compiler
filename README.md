@@ -37,9 +37,11 @@ lake env lean --run YulParserMain.lean --parse-only program.yul
 lake build yulc                   # CLI that emits compiled bytecode
 ```
 
-`lake build` treats warnings in the compiler, parser, and test libraries as
-errors, and also executes the `#guard`/`#eval` differential checks in
-`Examples.lean`. Requires the Lean toolchain pinned in
+`lake build` treats warnings in every project Lean module as errors, and also
+executes the `#guard`/`#eval` differential checks in `Examples.lean`. CI rejects
+any tracked Lean source (apart from its two human-approval-only trust-boundary
+checks) that omits this warning policy, so new libraries and runners cannot
+silently bypass it. Requires the Lean toolchain pinned in
 [`lean-toolchain`](./lean-toolchain) (managed by
 [`elan`](https://github.com/leanprover/elan)).
 

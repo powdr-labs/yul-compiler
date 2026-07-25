@@ -7,6 +7,7 @@ import YulEvmCompilerTests.InterpreterFixture
 import YulEvmCompilerTests.SolTest
 import YulEvmCompilerTests.Parallel
 import YulEvmCompilerTests.SolcDifferentialRunner
+set_option warningAsError true
 
 /-!
 Compile and gas-check Solidity's `libsolidity/gasTests` fixtures.

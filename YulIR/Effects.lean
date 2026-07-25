@@ -1,5 +1,6 @@
 import YulIR.Ast
 
+set_option warningAsError true
 /-!
 # YulIR.Effects — purity classification for IR right-hand sides
 

@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Alpha
+set_option warningAsError true
 /-!
 # The disambiguation pass is an instance of the α-relation
 
@@ -40,7 +41,7 @@ theorem substOf_append (l m : Subst) : substOf (l ++ m) = updRen (substOf m) l :
   simp only [substOf, updRen, List.find?_append]
   cases h : l.find? (fun p => p.1 = z) with
   | some p => simp
-  | none => simp [substOf]
+  | none => simp
 
 @[simp] theorem substOf_nil : substOf ([] : Subst) = fun z => z := by
   funext z; simp [substOf]
@@ -63,7 +64,7 @@ def SubOK (σ : Subst) (n : Nat) : Prop :=
 def StOK (st : St) (n : Nat) : Prop := SubOK st.1 n ∧ SubOK st.2 n
 
 theorem SubOK.mono {σ : Subst} {n m : Nat} (h : SubOK σ n) (hnm : n ≤ m) : SubOK σ m :=
-  fun p hp => ⟨(h p hp).1, (h p hp).2.imp (fun k hk => ⟨Nat.lt_of_lt_of_le hk.1 hnm, hk.2⟩)⟩
+  fun p hp => ⟨(h p hp).1, (h p hp).2.imp (fun _ hk => ⟨Nat.lt_of_lt_of_le hk.1 hnm, hk.2⟩)⟩
 
 theorem StOK.mono {st : St} {n m : Nat} (h : StOK st n) (hnm : n ≤ m) : StOK st m :=
   ⟨h.1.mono hnm, h.2.mono hnm⟩
