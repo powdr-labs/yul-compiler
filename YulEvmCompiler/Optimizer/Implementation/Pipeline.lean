@@ -96,10 +96,14 @@ are ~5 calls deep (`external_fun_*` → `abi_decode_tuple_*` → `abi_decode_t_*
 call-free leaves. -/
 def pipelineRounds : Nat := 6
 
-/-- One block-path round. -/
+/-- One block-path round. `deadResults` removes at most one dead result
+region per statement sequence per invocation, and the scoped fact export
+turns whole groups of adjacent readback regions dead within a single round —
+so the stage runs three times, draining up to three regions per sequence
+per round instead of spending a full round on each. -/
 def blockRound : List (LocalPass D) :=
   [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
-   storageForward, simplify, deadPure, deadResults]
+   storageForward, simplify, deadPure, deadResults, deadResults, deadResults]
 
 /-- Verified block pipeline at an explicit round count. Iterated inlining can
 push a caller's live locals past the backend's `DUP16`/`SWAP16` reach; fewer
@@ -137,6 +141,8 @@ def objectRound : List (RPass calls creates) :=
    ⟨storageForward, fun L b => resolveStorageForwardBlock_equiv L b⟩,
    ⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
    ⟨deadPure, fun L b => resolveDeadPureBlock_equiv L b⟩,
+   ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
+   ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
    ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩]
 
 /-- Verified object pipeline at an explicit round count (see

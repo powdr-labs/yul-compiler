@@ -177,67 +177,8 @@ of the entry environment.  `restore` removes exactly that declaration prefix;
 filtering facts which depend on those names therefore preserves every exported
 fact. -/
 
-def ScopeFrame (decls : List Ident) (V V' : VEnv D) : Prop :=
-  ∃ ext W, V' = ext ++ W ∧ W.map Prod.fst = V.map Prod.fst ∧
-    ∀ p ∈ ext, p.1 ∈ decls
-
-namespace ScopeFrame
-
-theorem refl (V : VEnv D) : ScopeFrame [] V V :=
-  ⟨[], V, rfl, rfl, by simp⟩
-
-theorem of_keys {V V' : VEnv D}
-    (hkeys : V'.map Prod.fst = V.map Prod.fst) : ScopeFrame [] V V' :=
-  ⟨[], V', by simp, hkeys, by simp⟩
-
-theorem comp {ds₁ ds₂ : List Ident} {V V₁ V₂ : VEnv D}
-    (h₁ : ScopeFrame ds₁ V V₁) (h₂ : ScopeFrame ds₂ V₁ V₂) :
-    ScopeFrame (ds₁ ++ ds₂) V V₂ := by
-  obtain ⟨e₁, W₁, rfl, hk₁, he₁⟩ := h₁
-  obtain ⟨e₂, W₂, rfl, hk₂, he₂⟩ := h₂
-  have hlen : e₁.length ≤ W₂.length := by
-    have h := congrArg List.length hk₂
-    simp only [List.map_append, List.length_map, List.length_append] at h
-    omega
-  have hsplit : W₂ = W₂.take e₁.length ++ W₂.drop e₁.length :=
-    (List.take_append_drop _ _).symm
-  have htake : (W₂.take e₁.length).map Prod.fst = e₁.map Prod.fst := by
-    rw [List.map_take, hk₂, List.map_append,
-      List.take_append_of_le_length (by simp)]
-    simp
-  have hdrop : (W₂.drop e₁.length).map Prod.fst = W₁.map Prod.fst := by
-    rw [List.map_drop, hk₂, List.map_append,
-      List.drop_append_of_le_length (by simp)]
-    simp
-  refine ⟨e₂ ++ W₂.take e₁.length, W₂.drop e₁.length,
-    by rw [List.append_assoc, ← hsplit], by rw [hdrop, hk₁], ?_⟩
-  intro p hp
-  rcases List.mem_append.mp hp with hp | hp
-  · exact List.mem_append_right _ (he₂ p hp)
-  · have hkey : p.1 ∈ (W₂.take e₁.length).map Prod.fst :=
-      List.mem_map_of_mem hp
-    rw [htake] at hkey
-    obtain ⟨q, hq, hqp⟩ := List.mem_map.mp hkey
-    exact List.mem_append_left _ (hqp ▸ he₁ q hq)
-
-theorem restore_get_eq {ds : List Ident} {V V' : VEnv D}
-    (h : ScopeFrame ds V V') {x : Ident} (hx : x ∉ ds) :
-    VEnv.get (restore V V') x = VEnv.get V' x := by
-  obtain ⟨ext, W, hV', hkeys, hext⟩ := h
-  have hlen : W.length = V.length := by
-    simpa using congrArg List.length hkeys
-  have hrestore : restore V V' = W := by
-    rw [hV']
-    unfold restore
-    have : (ext ++ W).length - V.length = ext.length := by simp [hlen]
-    rw [this, List.drop_left]
-  have hnot : x ∉ ext.map Prod.fst := by
-    intro hmem
-    obtain ⟨p, hp, hpx⟩ := List.mem_map.mp hmem
-    exact hx (hpx ▸ hext p hp)
-  rw [hrestore, hV', VEnv.get_append_not_mem hnot]
-
-end ScopeFrame
+-- `ScopeFrame` and its lemmas now live in `Propagate.lean`, shared with the
+-- propagation pass's scoped fact export across block exits.
 
 theorem StorageVal.denote_restore {ds : List Ident} {V V' : VEnv D}
     {v : StorageVal} (hf : ScopeFrame ds V V')
@@ -266,61 +207,6 @@ theorem StorageCache.OK.kill_restore {ds : List Ident} {V V' : VEnv D}
     have hk := hp.2
     rw [hx] at hk
     simp [List.contains_eq_mem, hmem] at hk
-
-theorem block_keys {funs : FunEnv D} {V V' : VEnv D} {st st' : EvmState}
-    {body : Block Op} {o : Outcome}
-    (h : Step D funs V st (.stmt (.block body)) (.sres V' st' o)) :
-    V'.map Prod.fst = V.map Prod.fst := by
-  cases h with
-  | block hbody =>
-      exact restore_keys (venvKeys_suffix hbody rfl) (venvLen_mono hbody rfl)
-
-theorem scopeFrame_stmt_normal {funs : FunEnv D} {V V' : VEnv D}
-    {st st' : EvmState} {s : Stmt Op}
-    (h : Step D funs V st (.stmt s) (.sres V' st' .normal)) :
-    ScopeFrame (declaredStmts [s]) V V' := by
-  cases h with
-  | funDef => exact ScopeFrame.refl _
-  | block hbody =>
-      exact ScopeFrame.of_keys
-        (restore_keys (venvKeys_suffix hbody rfl) (venvLen_mono hbody rfl))
-  | letZero =>
-      refine ⟨bindZeros D _ , V, rfl, rfl, ?_⟩
-      intro p hp
-      have hk : p.1 ∈ (bindZeros D _).map Prod.fst := List.mem_map_of_mem hp
-      rw [bindZeros_keys] at hk
-      simpa [declaredStmts] using hk
-  | letVal he hlen =>
-      refine ⟨_ , V, rfl, rfl, ?_⟩
-      intro p hp
-      simpa [declaredStmts] using (List.of_mem_zip hp).1
-  | assignVal he hlen =>
-      exact ScopeFrame.of_keys (VEnv.setMany_keys _ _ _)
-  | exprStmt he => exact ScopeFrame.refl _
-  | ifTrue hcond hnz hbody => exact ScopeFrame.of_keys (block_keys hbody)
-  | ifFalse hcond hz => exact ScopeFrame.refl _
-  | switchExec hcond hbody => exact ScopeFrame.of_keys (block_keys hbody)
-  | forLoop hinit hloop =>
-      exact ScopeFrame.of_keys <|
-        restore_keys
-          ((venvKeys_suffix hinit rfl).trans (venvKeys_suffix hloop rfl))
-          (Nat.le_trans (venvLen_mono hinit rfl) (venvLen_mono hloop rfl))
-
-theorem scopeFrame_stmts_normal {funs : FunEnv D} {V V' : VEnv D}
-    {st st' : EvmState} {ss : List (Stmt Op)}
-    (h : Step D funs V st (.stmts ss) (.sres V' st' .normal)) :
-    ScopeFrame (declaredStmts ss) V V' := by
-  induction ss generalizing V st with
-  | nil =>
-      cases h
-      exact ScopeFrame.refl _
-  | cons s rest ih =>
-      cases h with
-      | seqCons hs hrest =>
-          have h₁ := scopeFrame_stmt_normal hs
-          have h₂ := ih hrest
-          cases s <;> simpa [declaredStmts] using h₁.comp h₂
-      | seqStop hs hne => exact absurd rfl hne
 
 theorem BoundOK.get_isSome {V : VEnv D} {bound : List Ident} {x : Ident}
     (hb : BoundOK V bound) (hx : bound.contains x = true) :
@@ -1153,7 +1039,7 @@ theorem hoist_sfStmts (bound : List Ident) (C : StorageCache) :
       cases s with
       | block body =>
           simpa [sfStmts, sfStmt, sfNextBound, hoist] using
-            ih bound (cacheKill (declaredStmts body) (sfStmts bound C body).2)
+            ih bound (cacheKill (blockDecls body) (sfStmts bound C body).2)
       | funDef n ps rs body =>
           simpa [sfStmts, sfStmt, sfNextBound, hoist] using ih bound C
       | letDecl xs rhs =>
@@ -1387,7 +1273,7 @@ theorem sf_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
             Prod.mk.injEq] at hr
           obtain ⟨rfl, rfl⟩ := hr
           obtain ⟨hbody', -⟩ := ihbody (bound := bound) (C := [])
-            (C' := cacheKill (declaredStmts body) (sfStmts bound [] body).2)
+            (C' := cacheKill (blockDecls body) (sfStmts bound [] body).2)
             (code' := .stmt (.block (sfStmts bound [] body).1)) rfl hb
             (StorageCache.OK.nil _ _)
           exact ⟨Step.ifTrue hcond hnz hbody', by
@@ -1399,7 +1285,7 @@ theorem sf_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
           simp only [SFRel, sfCode, sfStmt, hkeep, if_true, Prod.mk.injEq] at hr
           obtain ⟨rfl, rfl⟩ := hr
           obtain ⟨hbody', -⟩ := ihbody (bound := bound) (C := [])
-            (C' := cacheKill (declaredStmts body) (sfStmts bound [] body).2)
+            (C' := cacheKill (blockDecls body) (sfStmts bound [] body).2)
             (code' := .stmt (.block (sfStmts bound [] body).1)) rfl hb
             (StorageCache.OK.nil _ _)
           refine ⟨Step.ifTrue hcond hnz hbody', ?_⟩
@@ -1689,7 +1575,7 @@ theorem sf_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       cases hbodyeq
       have hbody' := ihbody (code := .stmt (.block body)) (bound := bound)
         (C := [])
-        (C' := cacheKill (declaredStmts body) (sfStmts bound [] body).2)
+        (C' := cacheKill (blockDecls body) (sfStmts bound [] body).2)
         rfl hb (StorageCache.OK.nil _ _)
       exact Step.ifTrue hcond hnz hbody'
   | ifFalse hcond hz ihc =>
