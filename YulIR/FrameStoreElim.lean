@@ -295,4 +295,160 @@ private def t : Atom 2 := .slot 1
 
 end Checks
 
+/-! ## Redundant load elimination (load CSE + store-to-load forwarding)
+
+The forward twin of the elimination above, on the same descriptor machinery: track *known
+location values* — `space[addr] = ⟦atom⟧` — established by a load (`x := sload(k)` gives
+`storage[k] = x`) or by a store of an atom (`sstore(k, v)` gives `storage[k] = v`). A later load
+from a provably-equal address is replaced by a copy of the atom, which `valueNumber`/`deadCode`
+then propagate and clean up. Entries are invalidated by
+
+* a same-space store to a possibly-aliasing address (provably-different survives: nonzero offset
+  difference for `sstore`/`tstore`, `[32, 2^256-32]` for `mstore`);
+* any op that may write the space (calls clobber everything; `calldatacopy`&co, `mstore8`, `mcopy`
+  clobber memory conservatively);
+* a write to the frame slot holding the address base or the known value.
+-/
+
+/-- A known location value: `space[addr] = ⟦value⟧`. -/
+structure KnownLoad (n : Nat) where
+  space : Space
+  addr  : AddrDesc n
+  value : Atom n
+  deriving DecidableEq
+
+/-- Drop entries whose address base or value mention one of the written slots. -/
+def knownDropSlots (kn : List (KnownLoad n)) (ds : List (Fin n)) : List (KnownLoad n) :=
+  kn.filter (fun e =>
+    (match e.addr.base with | some b => !ds.contains b | none => true) &&
+    (match e.value with | .slot v => !ds.contains v | .lit _ => true))
+
+/-- Invalidate at a store: same-space entries survive only when provably not aliased. -/
+def knownStore (kn : List (KnownLoad n)) (sp : Space) (a : AddrDesc n) : List (KnownLoad n) :=
+  kn.filter (fun e =>
+    e.space != sp ||
+      (match sp with
+       | .memory => provablyDisjoint32 e.addr a
+       | _ => provablyNE e.addr a))
+
+open YulSemantics.EVM (Op) in
+/-- Which spaces an op may *write* (for invalidating known values). Conservative: anything
+unclassified clobbers everything. -/
+def opClobbers (op : Op) : List Space :=
+  match op with
+  | .sload | .tload | .mload | .keccak256 | .msize
+  | .log0 | .log1 | .log2 | .log3 | .log4
+  | .address | .origin | .caller | .callvalue | .gasprice | .selfbalance
+  | .coinbase | .timestamp | .number | .prevrandao | .gaslimit | .chainid | .basefee
+  | .blobbasefee | .balance | .extcodesize | .extcodehash | .blockhash | .blobhash
+  | .calldataload | .calldatasize | .codesize | .returndatasize | .datasize
+  | .dataoffset | .gas => []
+  | .calldatacopy | .codecopy | .returndatacopy | .extcodecopy | .datacopy
+  | .mstore8 | .mcopy => [.memory]
+  | _ => if Op.isPure op then [] else [.storage, .transient, .memory]
+
+open YulSemantics.EVM (Op) in
+/-- The load shape: `[x] := sload/tload/mload [k]`. -/
+def loadShape? : Stmt n → Option (Space × Atom n × Fin n)
+  | .assign [x] (.builtin .sload [k]) => some (.storage, k, x)
+  | .assign [x] (.builtin .tload [k]) => some (.transient, k, x)
+  | .assign [x] (.builtin .mload [k]) => some (.memory, k, x)
+  | _ => none
+
+mutual
+
+/-- One statement forward: rewrite a load whose location is known, and step the fact base. -/
+def rleStmt (env : DescEnv n) (kn : List (KnownLoad n)) :
+    Stmt n → Stmt n × List (KnownLoad n)
+  | .assign ds rhs =>
+      match storeShape? env (.assign ds rhs) with
+      | some (sp, a) =>
+          -- a store: invalidate may-aliases, then learn the stored atom (second operand)
+          let kn₁ := knownStore kn sp a
+          match rhs with
+          | .builtin _ [_, v] =>
+              -- avoid a fact whose value slot is also the address base being self-invalidated later
+              (.assign ds rhs, ⟨sp, a, v⟩ :: kn₁)
+          | _ => (.assign ds rhs, kn₁)
+      | none =>
+          match loadShape? (.assign ds rhs) with
+          | some (sp, k, x) =>
+              let a := descOf env k
+              match kn.find? (fun e => e.space == sp && e.addr == a) with
+              | some e => (.assign ds (.atom e.value), knownDropSlots kn ds)
+              | none =>
+                  let kn₁ := knownDropSlots kn ds
+                  -- learn the loaded value unless the write just clobbered its own address base
+                  if (descOf env k).base == some x then (.assign ds rhs, kn₁)
+                  else (.assign ds rhs, ⟨sp, a, .slot x⟩ :: kn₁)
+          | none =>
+              let kn₁ := knownDropSlots kn ds
+              let kn₂ := match rhs with
+                | .call _ _ => []
+                | .builtin op _ => (opClobbers op).foldl
+                    (fun acc sp => acc.filter (fun e => e.space != sp)) kn₁
+                | .atom _ => kn₁
+              (.assign ds rhs, kn₂)
+  | .cond c b => (.cond c (rleBlock env kn b), kn)
+  | .switch c cs df => (.switch c (rleCases env kn cs) (rleDflt env kn df), kn)
+  | .loop post body => (.loop (rleBlock [] [] post) (rleBlock [] [] body), [])
+  | s => (s, kn)
+
+def rleBlock (env : DescEnv n) (kn : List (KnownLoad n)) : Block n → Block n
+  | [] => []
+  | s :: rest =>
+      let env' := match s with
+        | .assign ds rhs => stepEnvAssign env ds rhs
+        | _ => []
+      let (s', kn') := rleStmt env kn s
+      let kn'' := match s with
+        | .assign _ _ => kn'
+        | .cond _ b => knownAfterSub kn' b     -- branch may or may not run: drop what it clobbers
+        | _ => []                              -- switch/loop/exits: conservative
+      s' :: rleBlock env' kn'' rest
+
+def rleCases (env : DescEnv n) (kn : List (KnownLoad n)) :
+    List (Literal × Block n) → List (Literal × Block n)
+  | [] => []
+  | (l, b) :: rest => (l, rleBlock env kn b) :: rleCases env kn rest
+
+def rleDflt (env : DescEnv n) (kn : List (KnownLoad n)) :
+    Option (Block n) → Option (Block n)
+  | none => none
+  | some b => some (rleBlock env kn b)
+
+/-- After a conditional sub-block, keep only facts it cannot have clobbered. Conservative v1:
+keep nothing (a cond body may store anywhere). -/
+def knownAfterSub (_kn : List (KnownLoad n)) : Block n → List (KnownLoad n)
+  | _ => []
+
+end
+
+/-- **Redundant load elimination** over a frame body. -/
+def loadElim (b : Block n) : Block n := rleBlock [] [] b
+
+section ChecksLoad
+open YulSemantics.EVM (Op)
+
+private def sld (x : Fin 2) (k : Atom 2) : Stmt 2 := .assign [x] (.builtin .sload [k])
+private def mld (x : Fin 2) (k : Atom 2) : Stmt 2 := .assign [x] (.builtin .mload [k])
+
+-- repeated sload becomes a copy
+#guard beqBlock (loadElim [sld 0 (lit 5), sld 1 (lit 5)])
+  [sld 0 (lit 5), .assign [1] (.atom (.slot 0))]
+-- store-to-load forwarding
+#guard beqBlock (loadElim [sst (lit 5) (lit 7), sld 1 (lit 5)])
+  [sst (lit 5) (lit 7), .assign [1] (.atom (.lit (.number 7)))]
+-- an intervening may-alias store blocks it
+#guard beqBlock (loadElim [sld 0 (lit 5), sst t (lit 1), sld 1 (lit 5)])
+  [sld 0 (lit 5), sst t (lit 1), sld 1 (lit 5)]
+-- an intervening provably-different store does not
+#guard beqBlock (loadElim [sld 0 (lit 5), sst (lit 6) (lit 1), sld 1 (lit 5)])
+  [sld 0 (lit 5), sst (lit 6) (lit 1), .assign [1] (.atom (.slot 0))]
+-- memory: an mstore ≥32 away does not clobber a known mload
+#guard beqBlock (loadElim [mld 1 p, mst (lit 100000) (lit 1), mld 1 p])
+  [mld 1 p, mst (lit 100000) (lit 1), mld 1 p]  -- p symbolic vs literal: bases differ, conservative
+
+end ChecksLoad
+
 end YulIR.FinFrame
