@@ -94,7 +94,10 @@ canonical round-trip theorems (`parse_canon_block`, `parse_canon_obj`): accepted
 input is preserved up to whitespace, comments, and number base, including string
 escape spelling. A lossy compatibility fallback handles `hex"..."` literals and
 interleaved sub-objects/data (intentionally outside the round-trip theorem).
-`YulParser.compileSource` compiles either form to executable bytecode.
+`YulParser.compileSource` compiles either form to executable bytecode. At this
+execution boundary it decodes escape-preserving expression string literals to
+their Yul byte values; object/data names and layout/linker/immutable name
+literals retain their spelling.
 
 The **verified built-in set** is the domain of `opTable`
 (`YulEvmCompiler/OpTable.lean`):

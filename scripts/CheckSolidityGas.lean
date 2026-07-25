@@ -41,7 +41,7 @@ open YulEvmCompilerTests.CorpusGas
 open YulEvmCompilerTests.SolidityCorpus
 open YulEvmCompilerTests.InterpreterFixture
 open YulEvmCompilerTests.SolcDifferential (observe gasUsed)
-open YulEvmCompilerTests.SolTest (Call parseSpec)
+open YulEvmCompilerTests.SolTest (Call natToWord parseSpec)
 open YulEvmCompilerTests.Parallel (detectJobs parMap weightedShard)
 
 /-- Optional deterministic source-size-weighted sharding, so the large
@@ -88,22 +88,63 @@ private def parseSpecCountsUnsupportedDeclaredCalls : Bool :=
   let spec := parseSpec "// ----\n// f() -> 1\n// g(uint256): unsupported -> 0"
   spec.declaredCalls == 2 && spec.calls.size == 1
 
+private def parseSpecDoesNotCountEnvironmentDirectives : Bool :=
+  let spec := parseSpec
+    "// ----\n// account: 1 -> 0x12\n// balance: 0x12 -> 10\n// f() -> 1"
+  spec.declaredCalls == 1 && spec.calls.size == 1
+
+private def parseSpecEncodesAlignedValues : Bool :=
+  let spec := parseSpec
+    "// ----\n// f(bytes2,bool): left(0x0022), right(true) ->"
+  match spec.calls.toList with
+  | [call] =>
+      spec.declaredCalls == 1 &&
+        call.calldata.extract 4 36 == natToWord (0x22 <<< (8 * 30)) &&
+        call.calldata.extract 36 68 == natToWord 1
+  | _ => false
+
+private def parseSpecAcceptsOddNibbleHex : Bool :=
+  let spec := parseSpec "// ----\n// f(bytes): hex\"123\" ->"
+  match spec.calls.toList with
+  | [call] =>
+      spec.declaredCalls == 1 &&
+        call.calldata.extract 4 36 ==
+          ByteArray.mk (#[0x01, 0x23] ++ Array.replicate 30 0)
+  | _ => false
+
+private def parseSpecSkipsExplicitOutOfGasCalls : Bool :=
+  let spec := parseSpec
+    "// ----\n// f(uint256): 1 -> 1\n// f(uint256): 0xffff -> FAILURE # Out-of-gas #"
+  spec.declaredCalls == 1 && spec.calls.size == 1
+
 #guard sameOutcomeIgnoresTransientMemory
 #guard sameOutcomeStillChecksOutput
 #guard parseSpecCountsUnsupportedDeclaredCalls
+#guard parseSpecDoesNotCountEnvironmentDirectives
+#guard parseSpecEncodesAlignedValues
+#guard parseSpecAcceptsOddNibbleHex
+#guard parseSpecSkipsExplicitOutOfGasCalls
+
+private structure Deployment where
+  state : Option EVM.State
+  halt : String
+  returnSize : Nat
 
 /-- Execute creation bytecode (with constructor arguments appended) and return
 a state ready for calls: the returned top-level runtime is installed directly,
 and the constructor's complete final account world is retained. The direct
 installation deliberately omits a transaction-level EIP-170 check; CREATEs
-executed by the constructor still enforce the normal target semantics. `none`
-if the constructor does not cleanly return runtime code. -/
-private def deployForCalls (creation ctorArgs : ByteArray) (ctorValue : Nat) : Option EVM.State :=
+executed by the constructor still enforce the normal target semantics. -/
+private def deployForCalls (creation ctorArgs : ByteArray) (ctorValue : Nat) : Deployment :=
   let base := initialState (creation ++ ctorArgs)
   let start := { base with
     executionEnv := { base.executionEnv with weiValue := UInt256.ofNat ctorValue } }
   let fin := runEvm 3000000 start
-  if !fin.isDone || fin.hReturn.size == 0 then none
+  if !fin.isDone || fin.hReturn.size == 0 then {
+    state := none
+    halt := reprStr fin.halt
+    returnSize := fin.hReturn.size
+  }
   else
     let rtBase := initialState fin.hReturn
     let addr := rtBase.executionEnv.address
@@ -114,9 +155,13 @@ private def deployForCalls (creation ctorArgs : ByteArray) (ctorValue : Nat) : O
     let deployed := { (fin.accountMap addr) with
       code := (rtBase.accountMap addr).code }
     let accounts := fin.accountMap.set addr deployed
-    some { rtBase with
-      accountMap := accounts
-      substate := { rtBase.substate with originalAccountMap := accounts } }
+    {
+      state := some { rtBase with
+        accountMap := accounts
+        substate := { rtBase.substate with originalAccountMap := accounts } }
+      halt := reprStr fin.halt
+      returnSize := fin.hReturn.size
+    }
 
 private def withCall (state : EVM.State) (call : Call) : EVM.State :=
   { state with
@@ -134,16 +179,28 @@ private structure CallGas where
   solc : Nat
 
 private def replayCalls (ourBase solcBase : EVM.State) (calls : Array Call)
-    (fuel : Nat := 3000000) : Array CallGas := Id.run do
+    (fuel : Nat := 3000000) : Array CallGas × Option String := Id.run do
   let mut ourState := ourBase
   let mut solcState := solcBase
   let mut measured : Array CallGas := #[]
+  let mut failure : Option String := none
   for call in calls do
     let os := withCall ourState call
     let ss := withCall solcState call
     let ourFinal := runEvm fuel os
     let solcFinal := runEvm fuel ss
-    if !(ourFinal.isDone && solcFinal.isDone && sameOutcome ourFinal solcFinal) then break
+    if !(ourFinal.isDone && solcFinal.isDone && sameOutcome ourFinal solcFinal) then
+      let ours := { observe ourFinal with halt := .Returned, memory := #[] }
+      let solc := { observe solcFinal with halt := .Returned, memory := #[] }
+      failure := some (s!"at {call.sig}: " ++
+        s!"done={ourFinal.isDone}/{solcFinal.isDone}, " ++
+        s!"halt={normHalt ourFinal.halt == normHalt solcFinal.halt}, " ++
+        s!"output={ours.output == solc.output}" ++
+          s!"(size {ours.output.size}/{solc.output.size}), " ++
+        s!"returndata={ours.returnData == solc.returnData}, " ++
+        s!"accounts={ours.accounts == solc.accounts}, logs={ours.logs == solc.logs}, " ++
+        s!"selfdestructs={ours.selfDestructs == solc.selfDestructs}, refund={ours.refund == solc.refund}")
+      break
     measured := measured.push {
       sig := call.sig
       ours := gasUsed os ourFinal
@@ -151,7 +208,7 @@ private def replayCalls (ourBase solcBase : EVM.State) (calls : Array Call)
     }
     ourState := { ourState with accountMap := ourFinal.accountMap }
     solcState := { solcState with accountMap := solcFinal.accountMap }
-  return measured
+  return (measured, failure)
 
 /-- Pin one row per external function. Repeated calls to the same signature
 are summed so existing multi-vector library fixtures still have stable keys. -/
@@ -213,8 +270,11 @@ private def processContract (dir : FilePath) (solcPath : String) (perScenario : 
                           ({ sig := s, value := 0,
                              calldata := Hex.hexToBytes (s ++ argWords) } : Call))
                     else pure spec.calls
-                  match deployForCalls creation spec.ctorArgs spec.ctorValue,
-                        deployForCalls solcCreation spec.ctorArgs spec.ctorValue with
+                  let ourDeployment :=
+                    deployForCalls creation spec.ctorArgs spec.ctorValue
+                  let solcDeployment :=
+                    deployForCalls solcCreation spec.ctorArgs spec.ctorValue
+                  match ourDeployment.state, solcDeployment.state with
                   | some ourBase, some solcBase =>
                       -- Aave's upstream PositionStatusMap stress tests traverse
                       -- up to 10,000 reserve IDs. They stay below the EVM gas
@@ -222,10 +282,12 @@ private def processContract (dir : FilePath) (solcPath : String) (perScenario : 
                       -- corpus calls under this compiler's unoptimized output.
                       let replayFuel :=
                         if dir.fileName == some "aave-v4" then 30000000 else 3000000
-                      let callGas := replayCalls ourBase solcBase calls replayFuel
+                      let (callGas, replayFailure) :=
+                        replayCalls ourBase solcBase calls replayFuel
                       if spec.declaredCalls != 0 && callGas.size != calls.size then
                         return { measurementFailure := some (name,
-                          s!"only {callGas.size}/{calls.size} declared calls reached matching observable behavior") }
+                          s!"only {callGas.size}/{calls.size} declared calls reached matching observable behavior" ++
+                            (replayFailure.map fun detail => s!"; {detail}").getD "") }
                       else if callGas.isEmpty then return {}
                       else if perScenario then
                         return { measured := perScenarioRows name callGas }
@@ -235,7 +297,9 @@ private def processContract (dir : FilePath) (solcPath : String) (perScenario : 
                       if spec.declaredCalls == 0 then return {}
                       else
                         let failure :=
-                          (name, "deployment did not produce runtime for declared calls")
+                          (name, s!"deployment did not produce runtime for declared calls " ++
+                            s!"(ours={ourDeployment.halt}/{ourDeployment.returnSize}, " ++
+                            s!"solc={solcDeployment.halt}/{solcDeployment.returnSize})")
                         return { measurementFailure := some failure }
 
 private def usage : String :=
@@ -246,7 +310,7 @@ private def usage : String :=
 /-- `lenient`: treat contracts this compiler cannot handle as skips rather than
 failures. Off for the curated gasTests (every contract must compile); on for the
 broad semanticTests corpus, where many contracts use unsupported features and
-only the gas of the compilable subset is pinned.
+only the gas of the compilable, behaviorally comparable subset is pinned.
 
 `known`: a checked-in list of fixtures this compiler is expected to reject
 (same convention as the compile-corpus known-failure lists). Strict otherwise:
@@ -376,7 +440,8 @@ private def run (dir baselineFile : FilePath)
     IO.eprintln "GAS REGRESSIONS (this compiler now spends more gas):"
     for detail in gasRegressions do IO.eprintln s!"  {detail}"
   return if (lenient || (unexpectedFailures.isEmpty && measurementFailures.isEmpty)) &&
-    staleKnown.isEmpty && gasRegressions.isEmpty then 0 else 1
+    staleKnown.isEmpty && gasRegressions.isEmpty && gasChanged.isEmpty &&
+    gasUnpinned.isEmpty && gasStale.isEmpty then 0 else 1
 
 def main (args : List String) : IO UInt32 := do
   match args with
