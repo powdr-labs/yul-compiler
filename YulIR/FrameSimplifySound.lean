@@ -94,6 +94,14 @@ theorem pure_defined {op} (hp : Op.isPure op = true) {vals : List U256} {st st' 
   cases op <;> simp_all [Op.isPure, effects, stepOp, bin, YulSemantics.EVM.un, YulSemantics.EVM.ter] <;>
     (revert h; split <;> simp_all)
 
+/-- For a pure op, definedness depends only on the *arity* (argument-list length): a pure built-in
+that evaluates on one list evaluates on any equal-length list from any state. -/
+theorem pure_defined_len {op} (hp : Op.isPure op = true) {v₁ v₂ : List U256} {s₁ s₂ : State}
+    (hlen : v₁.length = v₂.length) (h : (stepOp op v₁ s₁).isSome = true) :
+    (stepOp op v₂ s₂).isSome = true := by
+  cases op <;> simp_all [Op.isPure, effects, stepOp, bin, YulSemantics.EVM.un, YulSemantics.EVM.ter] <;>
+    (rcases v₁ with _|⟨a,_|⟨b,_|⟨c,_|_⟩⟩⟩ <;> rcases v₂ with _|⟨a',_|⟨b',_|⟨c',_|_⟩⟩⟩ <;> simp_all)
+
 /-- A pure built-in returns normally (`.ok`) without changing the state. -/
 theorem pure_builtin_ok {op} (hp : Op.isPure op = true) {vals st r} (h : evm.Builtin op vals st r) :
     ∃ outs, r = .ok outs st := by

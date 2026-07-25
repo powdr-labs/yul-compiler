@@ -23,7 +23,7 @@ hypothesis ruling out stuck ill-typed terms) is layered on top.
 namespace YulIR.FinFrame.Sem
 
 open YulSemantics (Outcome BuiltinResult Literal Ident)
-open YulSemantics.EVM (evm litValue)
+open YulSemantics.EVM (evm litValue stepOp EvmState)
 
 /-! ### Store agreement on a set of slots -/
 
@@ -862,6 +862,95 @@ theorem deadCode_program_run (fuel : Nat) (funs : Funs) (hwf : WFFuns funs) {st 
     obtain ⟨σ', hbody, _⟩ :=
       deadCode_bwd (dceFuns fuel funs) fd.rets fuel (wf_irrel fd.body (hwf _ fd hfd)) hexec''
     exact ⟨fd, σ', hfd, T_congr_mpr fuel funs hwf hbody⟩
+
+/-! ### Discharging `WFFuns` by a decidable arity check -/
+
+/-- A decidable arity check: a *pure* built-in must be applied at an arity `stepOp` accepts (probed
+at dummy zero operands — definedness is arity-only for pure ops, `pure_defined_len`). -/
+def wfRhs : Rhs n → Bool
+  | .builtin op args =>
+      !Op.isPure op || (stepOp op (args.map (fun _ => (0 : U256))) EvmState.init).isSome
+  | _ => true
+
+theorem wfRhs_sound {funs : Funs} {rhs : Rhs n} (h : wfRhs rhs = true) (hp : rhsPure rhs = true)
+    (σ : Store n) (st : State) : ∃ vs, ExecRhs funs σ st rhs (.ok vs st) := by
+  cases rhs with
+  | atom a => exact ⟨_, Step.atom⟩
+  | builtin op args =>
+      have hpo : Op.isPure op = true := by simpa [rhsPure] using hp
+      simp only [wfRhs, Bool.or_eq_true, Bool.not_eq_true'] at h
+      have hdummy : (stepOp op (args.map (fun _ => (0 : U256))) EvmState.init).isSome = true := by
+        rcases h with h | h
+        · simp [hpo] at h
+        · exact h
+      have hdef : (stepOp op (args.map (evalAtom σ)) st).isSome = true :=
+        pure_defined_len hpo (by simp) hdummy
+      obtain ⟨r, hr⟩ := Option.isSome_iff_exists.mp hdef
+      obtain ⟨outs, rfl⟩ := pure_builtin_ok hpo (show evm.Builtin op _ st _ from hr)
+      exact ⟨outs, Step.builtin hr⟩
+  | call fn args => simp [rhsPure] at hp
+
+mutual
+def wfArityStmt : Stmt n → Bool
+  | .assign _ rhs   => wfRhs rhs
+  | .cond _ b       => wfArityBlock b
+  | .switch _ cs df => wfArityCases cs && wfArityDflt df
+  | .loop p b       => wfArityBlock p && wfArityBlock b
+  | _               => true
+def wfArityBlock : Block n → Bool
+  | []      => true
+  | s :: ss => wfArityStmt s && wfArityBlock ss
+def wfArityCases : List (Literal × Block n) → Bool
+  | []             => true
+  | (_, b) :: rest => wfArityBlock b && wfArityCases rest
+def wfArityDflt : Option (Block n) → Bool
+  | none   => true
+  | some b => wfArityBlock b
+end
+
+/-- The decidable arity check implies `WFBlock` (against any table). -/
+theorem WFBlock_of_wfArity {funs : Funs} (b : Block n) (h : wfArityBlock b = true) :
+    WFBlock funs b := by
+  refine WFBlock.induct
+    (motive_1 := fun s => wfArityStmt s = true → WFStmt funs s)
+    (motive_2 := fun df => wfArityDflt df = true → WFDflt funs df)
+    (motive_3 := fun b => wfArityBlock b = true → WFBlock funs b)
+    (motive_4 := fun cs => wfArityCases cs = true → WFCases funs cs)
+    ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ b h
+  · intro dsts rhs hwa; simp only [WFStmt]
+    exact fun hp σ st => wfRhs_sound (by simpa [wfArityStmt] using hwa) hp σ st
+  · intro c b ih hwa; exact ih (by simpa [wfArityStmt] using hwa)
+  · intro c cs df ihcs ihdf hwa
+    obtain ⟨h1, h2⟩ := (by simpa only [wfArityStmt, Bool.and_eq_true] using hwa)
+    exact ⟨ihcs h1, ihdf h2⟩
+  · intro p b ihp ihb hwa
+    obtain ⟨h1, h2⟩ := (by simpa only [wfArityStmt, Bool.and_eq_true] using hwa)
+    exact ⟨ihp h1, ihb h2⟩
+  · intro t hna hnc hns hnl _
+    cases t with
+    | assign ds rhs => exact absurd rfl (hna ds rhs)
+    | cond c b => exact absurd rfl (hnc c b)
+    | switch c cs df => exact absurd rfl (hns c cs df)
+    | loop p b => exact absurd rfl (hnl p b)
+    | _ => trivial
+  · intro _; trivial
+  · intro s ss ihs ihss hwa
+    obtain ⟨h1, h2⟩ := (by simpa only [wfArityBlock, Bool.and_eq_true] using hwa)
+    exact ⟨ihs h1, ihss h2⟩
+  · intro _; trivial
+  · intro fst b rest ihb ihrest hwa
+    obtain ⟨h1, h2⟩ := (by simpa only [wfArityCases, Bool.and_eq_true] using hwa)
+    exact ⟨ihb h1, ihrest h2⟩
+  · intro _; trivial
+  · intro b ih hwa; exact ih (by simpa [wfArityDflt] using hwa)
+
+/-- **Discharging `WFFuns`**: a program all of whose function bodies pass the decidable arity check
+is well-formed. For a concrete program this is closed by `decide`, so `deadCode_program_run` applies
+with no assumed hypothesis. (`ofYul` output passes the check iff the source Yul is arity-correct — a
+per-program, computable fact — which is the honest content of "ofYul ⟹ WellFormed".) -/
+theorem WFFuns_of_wfArity {funs : Funs}
+    (h : ∀ (k : Option Ident) (fd : Function), funs[k]? = some fd → wfArityBlock fd.body = true) :
+    WFFuns funs := fun k fd hfd => WFBlock_of_wfArity fd.body (h k fd hfd)
 
 /-! ### Bidirectional soundness (a `main`-style entry body) -/
 
