@@ -72,47 +72,25 @@ a lot of structural slack to remove.
 
 ## Passes
 
-### ✅ Name disambiguation (`disambiguate`) — conditional soundness, deciders deferred
+### ✅ Full normalization front end (`Normalize.normalize`) — landed
 
 `Normalize.disambiguate` renames every declared name (let-bounds, params,
 returns, function names) to a globally fresh `NUL`-prefixed counter name, so no
 two declarations in a root block share a name (`Disambiguated` /
-`NormalForm.UniqueNames`). Wired as the **first** optimizer step in
-`compileSource` (block path: `disambiguate`; object path:
-`disambiguateObject`, every code block of the tree), composed with the pipeline
-by `disambiguate_optimizerPipelineRounds_runEquiv` /
-`disambiguate_optimizerPipelineObjectRounds_topRunEquiv`.
+`NormalForm.UniqueNames`). `sourceValidB` now decides all source-validity
+preconditions; `disambiguateGuarded` is the identity when the guard fails, so
+`disambiguatePass` is an unconditionally sound `GlobalPass`.
 
-**Known limitation — soundness is conditional and the preconditions are
-assumed, not checked.** `disambiguate_runEquivBlock` needs the source-validity
-facts bundled as `Normalize.SourceValid` (see
-`Normalization/Disambiguate/Pass.lean`): `NUL`-free identifiers with
-duplicate-free binder lists (`SVStmts`), per-block distinct function names
-(`WellFormed`), resolvable references (`NormalForm.WellScoped`), and no
-variable/function shadowing (`WScopedStmts []` / `FScopedStmts`). All hold for
-spec-valid (in particular solc-generated) Yul, but only `WellScoped` is forced
-by execution itself. Consequently the pass is **not** a `GlobalPass` (whose
-`sound` field is unconditional) and there is no end-to-end unconditional
-theorem covering it. Two upgrade paths:
+`Normalize.normalize` then runs the verified guarded function hoister, producing
+`NormalForm.FunctionsHoisted`. Both steps are applied to every code block in an
+object tree. `normalize_runEquivBlock`, `normalizeObject_objEquiv`, and the
+composed `normalize_optimizerPipeline*` theorems are unconditional: no
+`SourceValid` assumption survives at the public boundary. The remaining work is
+performance/preservation of the full seven-field `NormalForm.Normalized`
+bundle, not soundness of this landed front end. The main performance follow-ups
+are pruning unreachable definitions and grouping the hoisted function section
+to avoid a separate backend skip island for every retained definition.
 
-1. **Guard (mechanical).** Write `Bool` deciders for the five predicates
-   (mirror `scopedStmtsB`/`wellScopedB` in `HoistFunDefsPass.lean`) and wrap
-   with `GlobalPass.ofGuardedBlock`, making the pass unconditionally sound
-   (identity off-domain) — the `hoistFunDefsPass` pattern. ~500 lines,
-   no new ideas.
-2. **Generalize (a redesign).** Prove soundness for every well-scoped program,
-   dropping the other four hypotheses. Two genuine obstacles: (a) the
-   simulation relates environments through renaming *functions*
-   `σ, φ : Ident → Ident` (`RenCfg`, `renVEnv`), which cannot express a
-   *shadowed* environment — two entries keyed `x` must map to two different
-   fresh names — so the relation must become positional (entry-by-entry over
-   `VEnv`/`FunEnv`), redoing the 41-case `sim_fwd`/`sim_bwd`; (b) fresh names
-   must be fresh w.r.t. the *program's* identifiers (a non-stuck program may
-   legally use `NUL` names), replacing the global `dsName`/`RangeNodup`
-   scheme by a scanned-prefix one. Estimated at roughly the size of the
-   original soundness effort (weeks); the `WellScoped` hypothesis (the only
-   one execution itself forces, via unbound references — and even that only on
-   executed paths) would remain and would then need the one cheap decider.
 
 ### ✅ Dominance-local stack layout (`codex/swapmath-stack-layout`)
 
@@ -943,7 +921,7 @@ three times back-to-back, draining up to three regions per sequence per
 round. `LocalPass` composition makes this free of new proof obligations.
 
 **Results** (all four real-Solidity suites, solc 0.8.35, corpus `902f848`,
-vs the issue-refresh totals; zero regressions anywhere):
+against the pre-pass baselines; zero regressions anywhere):
 
 - **Aave v4: 53,889,601 → 47,918,164 (−5,971,437; all 10 rows improve).**
   `nextContinuousTenThousand` −2,524,464, `nextBorrowing…` −1,265,970,
@@ -965,9 +943,8 @@ Remaining hot-loop cost (visible in fresh dumps): plain copy chains
 (`let a := b` at the same level) are still gated off by `copyGate` in fat
 bodies, the retained helpers still pay the call protocol in the inner loops,
 and `let x { x := e }` declare-then-assign pairs whose value *is* read remain.
-The natural follow-ups from the issue-refresh list are unchanged: generalized
-stack-aware inlining (rec 4) and loop/state-aware dataflow (rec 5), both of
-which now start from much smaller bodies.
+The natural follow-ups are generalized stack-aware inlining and
+loop/state-aware dataflow, both of which now start from much smaller bodies.
 
 ## Candidate next ideas (not started)
 

@@ -23,6 +23,10 @@ rather than synthetic inputs. Constructor args and value are captured too.
 Unsupported argument spellings (rare builtins) make the value — and hence the
 call — unparseable. `Spec.declaredCalls` retains the source count so callers
 that require complete replay can distinguish that from a fixture with no calls.
+Environment directives (`account:`, `balance:`, etc.) are not calls. Explicit
+`# Out-of-gas #` vectors are execution-limit tests and are deliberately omitted
+from gas replay rather than spending the full test budget as an optimizer
+measurement.
 -/
 
 namespace YulEvmCompilerTests.SolTest
@@ -65,6 +69,13 @@ private def parseHex (s : String) : Option Nat :=
   if cs.isEmpty || !cs.all isHexDigit then none
   else some (cs.foldl (fun n c => n * 16 + hexVal c) 0)
 
+private def parseScalar (s : String) : Option Nat :=
+  if s == "true" then some 1
+  else if s == "false" then some 0
+  else if s.startsWith "0x" || s.startsWith "0X" then
+    parseHex (String.ofList (s.toList.drop 2))
+  else parseDec s
+
 private def dropN (s : String) (n : Nat) : String := String.ofList (s.toList.drop n)
 private def takeN (s : String) (n : Nat) : String := String.ofList (s.toList.take n)
 
@@ -74,6 +85,17 @@ private def stripPrefix (s p : String) : Option String :=
 private def dropSuffix (s p : String) : Option String :=
   if s.endsWith p then some (takeN s (s.length - p.length)) else none
 
+/-- Number of bytes used by the spelling inside `left(…)`. Hex spellings
+preserve leading zero bytes; decimal and boolean spellings use the shortest
+nonempty representation. -/
+private def leftWidth (s : String) (n : Nat) : Nat :=
+  let hexDigits :=
+    if s.startsWith "0x" || s.startsWith "0X" then s.length - 2 else 0
+  if hexDigits != 0 then (hexDigits + 1) / 2
+  else
+    (List.range 32).find? (fun i => n < 2 ^ (8 * (i + 1)))
+      |>.map (· + 1) |>.getD 32
+
 /-- Encode one soltest value token into its ABI word(s), or `none` if the
 spelling is one we do not handle. -/
 def encodeValue (raw : String) : Option ByteArray := do
@@ -82,7 +104,8 @@ def encodeValue (raw : String) : Option ByteArray := do
   if t == "false" then return natToWord 0
   if let some inner := stripPrefix t "hex\"" then
     let inner ← dropSuffix inner "\""
-    if !inner.all isHexDigit || inner.length % 2 != 0 then failure
+    if !inner.all isHexDigit then failure
+    let inner := if inner.length % 2 == 0 then inner else "0" ++ inner
     return padRight32 (Hex.hexToBytes inner)
   if t.startsWith "\"" then
     let inner ← dropSuffix (dropN t 1) "\""
@@ -91,8 +114,15 @@ def encodeValue (raw : String) : Option ByteArray := do
     return natToWord (← parseHex hex)
   if let some hex := stripPrefix t "0X" then
     return natToWord (← parseHex hex)
+  if let some inner := stripPrefix t "left(" then
+    let inner := (← dropSuffix inner ")").trimAscii.copy
+    let n ← parseScalar inner
+    let width := leftWidth inner n
+    if width > 32 then failure
+    return natToWord (n <<< (8 * (32 - width)))
   if let some inner := stripPrefix t "right(" then
-    return natToWord (← parseDec (← dropSuffix inner ")"))
+    let inner := (← dropSuffix inner ")").trimAscii.copy
+    return natToWord (← parseScalar inner)
   if let some neg := stripPrefix t "-" then
     return natToWord (2 ^ 256 - (← parseDec neg))
   return natToWord (← parseDec t)
@@ -155,7 +185,7 @@ trailing `# … #` comment). `header` is everything before `:` (a signature and 
 optional `, <value> <unit>`); `args` is the argument list (empty if none). -/
 private def parseHeaderArgs (line : String) : Option (String × Nat × String) :=
   let (headerArgs, _rest) :=
-    match (line.splitOn " -> ") with
+    match (line.splitOn " ->") with
     | h :: t => (h, t)
     | [] => (line, [])
   let (header, args) :=
@@ -179,17 +209,21 @@ def parseSpec (source : String) : Spec := Id.run do
     let line := raw.trimAscii.copy
     let some content := stripPrefix line "//" | continue
     let content := content.trimAscii.copy
+    -- Explicit out-of-gas expectations intentionally consume the entire test
+    -- gas budget and add no useful optimizer signal. They are execution-limit
+    -- tests, not replayable gas scenarios.
+    if content.contains "# Out-of-gas #" then continue
     -- Drop trailing `# … #` inline comments.
     let content := (content.splitOn "#")[0]!.trimAscii.copy
     if content.isEmpty || content == "----" then continue
     if content.startsWith "gas " || content.startsWith "storage" ||
         content.startsWith "~ " || content.startsWith "left(" then continue
-    let hasResult := (content.splitOn " -> ").length >= 2
+    let hasResult := content.contains " ->"
     let isConstructor := content.startsWith "constructor("
-    if hasResult && !isConstructor then
-      spec := { spec with declaredCalls := spec.declaredCalls + 1 }
     let some (sig, value, args) := parseHeaderArgs content | continue
     if !sig.contains '(' then continue
+    if hasResult && !isConstructor then
+      spec := { spec with declaredCalls := spec.declaredCalls + 1 }
     if isConstructor then
       match encodeArgs args with
       | some encoded => spec := { spec with ctorArgs := encoded, ctorValue := value }
