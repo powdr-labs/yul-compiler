@@ -22,8 +22,8 @@ hypothesis ruling out stuck ill-typed terms) is layered on top.
 
 namespace YulIR.FinFrame.Sem
 
-open YulSemantics (Outcome BuiltinResult Literal)
-open YulSemantics.EVM (evm litValue)
+open YulSemantics (Outcome BuiltinResult Literal Ident)
+open YulSemantics.EVM (evm litValue stepOp EvmState)
 
 /-! ### Store agreement on a set of slots -/
 
@@ -205,6 +205,62 @@ theorem dead_step {reads prot : List (Fin n)} {s : Stmt n} (hd : isDead reads pr
   | «continue»       => simp [isDead] at hd
   | leave            => simp [isDead] at hd
 
+/-- A dead `assign`'s rhs is pure and all its destinations are outside `reads ++ prot`. -/
+theorem dead_dsts_notin {reads prot : List (Fin n)} {ds : List (Fin n)} {rhs : Rhs n}
+    (hd : isDead reads prot (.assign ds rhs) = true) :
+    rhsPure rhs = true ∧ ∀ d ∈ ds, d ∉ reads ++ prot := by
+  simp only [isDead, Bool.and_eq_true] at hd
+  obtain ⟨hp, hdall⟩ := hd
+  refine ⟨hp, fun d hdmem => ?_⟩
+  have hdd := (List.all_eq_true.mp hdall) d hdmem
+  simp only [Bool.and_eq_true, Bool.not_eq_true'] at hdd
+  simp only [List.mem_append, not_or]
+  exact ⟨fun hc => by simp [List.contains_eq_mem, hc] at hdd,
+         fun hc => by simp [List.contains_eq_mem, hc] at hdd⟩
+
+/-! ### Well-formedness (for the reverse direction) -/
+
+/-! Well-formedness: every pure `assign` rhs evaluates to an `.ok` result from any store. This rules
+out exactly the stuck ill-typed terms (arity mismatch, assign-from-void) that would otherwise let
+`deadCode` delete a *stuck* statement and thereby invent behaviour. `ofYul` on type-checked Yul
+establishes it; here it is an explicit hypothesis. -/
+mutual
+def WFStmt (funs : Funs) : Stmt n → Prop
+  | .assign _ rhs   => rhsPure rhs = true → ∀ (σ : Store n) st, ∃ vs, ExecRhs funs σ st rhs (.ok vs st)
+  | .cond _ b       => WFBlock funs b
+  | .switch _ cs df => WFCases funs cs ∧ WFDflt funs df
+  | .loop p b       => WFBlock funs p ∧ WFBlock funs b
+  | _               => True
+def WFBlock (funs : Funs) : Block n → Prop
+  | []      => True
+  | s :: ss => WFStmt funs s ∧ WFBlock funs ss
+def WFCases (funs : Funs) : List (Literal × Block n) → Prop
+  | []             => True
+  | (_, b) :: rest => WFBlock funs b ∧ WFCases funs rest
+def WFDflt (funs : Funs) : Option (Block n) → Prop
+  | none   => True
+  | some b => WFBlock funs b
+end
+
+/-- **The `WellFormed` payoff**: a dead statement can be *reinserted* — it has an inert execution
+(normal outcome, `EvmState` unchanged, store perturbed only outside `reads ++ prot`). This is what
+the reverse simulation uses to reconstruct the statements `deadCode` deleted. -/
+theorem dead_inert {reads prot : List (Fin n)} {s : Stmt n} {funs} (hd : isDead reads prot s = true)
+    (hwf : WFStmt funs s) (σ : Store n) (st : State) :
+    ∃ σ', Step funs σ st (.stmt s) (.sres σ' st .normal) ∧ AgreeOn (reads ++ prot) σ σ' := by
+  cases s with
+  | assign ds rhs =>
+      obtain ⟨hp, hdnotin⟩ := dead_dsts_notin hd
+      simp only [WFStmt] at hwf
+      obtain ⟨vs, hrhs⟩ := hwf hp σ st
+      exact ⟨updMany σ ds vs, Step.assignOk hrhs, AgreeOn.updMany_out hdnotin _⟩
+  | cond c b         => simp [isDead] at hd
+  | switch c cs df   => simp [isDead] at hd
+  | loop post body   => simp [isDead] at hd
+  | «break»          => simp [isDead] at hd
+  | «continue»       => simp [isDead] at hd
+  | leave            => simp [isDead] at hd
+
 /-! ### Forward simulation -/
 
 /-- **Forward store-agreement simulation.** Any source execution can be replayed by the dead-code-
@@ -359,5 +415,577 @@ theorem deadCode_exec_fwd {funs : Funs} {m} (fuel : Nat) : ∀ {b : Block m} {σ
       · rw [if_neg hfix]
         obtain ⟨σ'', h''⟩ := dceBlock_exec_fwd h
         exact ih h''
+
+/-! ### Reverse simulation -/
+
+/-- Reverse block simulation: a run of the dce'd block lifts back to a run of the original (from any
+agreeing store), with the same `EvmState`/outcome and agreeing final store. -/
+abbrev RevSimB (funs : Funs) (reads prot : List (Fin n)) (b : Block n) : Prop :=
+  ∀ {σ₂ : Store n} {st σ₂' st' o},
+    Step funs σ₂ st (.stmts (dceBlock reads prot b)) (.sres σ₂' st' o) →
+    ∀ σ₁, AgreeOn (reads ++ prot) σ₁ σ₂ →
+      ∃ σ₁', Step funs σ₁ st (.stmts b) (.sres σ₁' st' o) ∧ AgreeOn (reads ++ prot) σ₁' σ₂'
+
+/-- Reverse loop simulation, given reverse sims for `post`/`body`. Induction on the dce'd loop's
+derivation (generalize the code, discharge the non-loop constructors with `nofun`). -/
+theorem dce_bwd_loop {funs : Funs} {reads prot : List (Fin n)} {post body : Block n}
+    (revPost : RevSimB funs reads prot post) (revBody : RevSimB funs reads prot body)
+    {σ₂ : Store n} {st code res} (h : Step funs σ₂ st code res) :
+    ∀ {σ₂' st' o}, code = .loop (dceBlock reads prot post) (dceBlock reads prot body) →
+      res = .sres σ₂' st' o → ∀ σ₁, AgreeOn (reads ++ prot) σ₁ σ₂ →
+        ∃ σ₁', Step funs σ₁ st (.loop post body) (.sres σ₁' st' o)
+          ∧ AgreeOn (reads ++ prot) σ₁' σ₂' := by
+  induction h with
+  | loopBrk hb _ =>
+      intro σ₂' st' o hcode hres σ₁ hag
+      injection hcode with hp hbdy; subst hp; subst hbdy; injection hres with h1 h2 h3
+      subst h1; subst h2; subst h3
+      obtain ⟨σ₁', hb', hag'⟩ := revBody hb σ₁ hag
+      exact ⟨σ₁', Step.loopBrk hb', hag'⟩
+  | loopLeave hb _ =>
+      intro σ₂' st' o hcode hres σ₁ hag
+      injection hcode with hp hbdy; subst hp; subst hbdy; injection hres with h1 h2 h3
+      subst h1; subst h2; subst h3
+      obtain ⟨σ₁', hb', hag'⟩ := revBody hb σ₁ hag
+      exact ⟨σ₁', Step.loopLeave hb', hag'⟩
+  | loopHalt hb _ =>
+      intro σ₂' st' o hcode hres σ₁ hag
+      injection hcode with hp hbdy; subst hp; subst hbdy; injection hres with h1 h2 h3
+      subst h1; subst h2; subst h3
+      obtain ⟨σ₁', hb', hag'⟩ := revBody hb σ₁ hag
+      exact ⟨σ₁', Step.loopHalt hb', hag'⟩
+  | loopStep hb hob hp _ _ _ ihl =>
+      intro σ₂' st' o hcode hres σ₁ hag
+      injection hcode with hpost hbody; subst hpost; subst hbody; injection hres with h1 h2 h3
+      subst h1; subst h2; subst h3
+      obtain ⟨σ₁b, hb', hagb⟩ := revBody hb σ₁ hag
+      obtain ⟨σ₁p, hp', hagp⟩ := revPost hp σ₁b hagb
+      obtain ⟨σ₁', hl', hag'⟩ := ihl revPost revBody rfl rfl σ₁p hagp
+      exact ⟨σ₁', Step.loopStep hb' hob hp' hl', hag'⟩
+  | loopPostStop hb hob hp hne _ _ =>
+      intro σ₂' st' o hcode hres σ₁ hag
+      injection hcode with hpost hbody; subst hpost; subst hbody; injection hres with h1 h2 h3
+      subst h1; subst h2; subst h3
+      obtain ⟨σ₁b, hb', hagb⟩ := revBody hb σ₁ hag
+      obtain ⟨σ₁p, hp', hagp⟩ := revPost hp σ₁b hagb
+      exact ⟨σ₁p, Step.loopPostStop hb' hob hp' hne, hagp⟩
+  | _ => intro _ _ _ hcode; nomatch hcode
+
+/-- Reverse simulation for a single statement: the dce'd statement's runs lift back. -/
+abbrev RevSimS (funs : Funs) (reads prot : List (Fin n)) (s : Stmt n) : Prop :=
+  ∀ {σ₂ : Store n} {st σ₂' st' o},
+    Step funs σ₂ st (.stmt (dceStmt reads prot s)) (.sres σ₂' st' o) →
+    ∀ σ₁, AgreeOn (reads ++ prot) σ₁ σ₂ →
+      ∃ σ₁', Step funs σ₁ st (.stmt s) (.sres σ₁' st' o) ∧ AgreeOn (reads ++ prot) σ₁' σ₂'
+
+/-- If every case body and the default reverse-simulate, so does the block a constant switch
+selects. -/
+theorem revSelectCase {funs : Funs} {reads prot : List (Fin n)} (cv : U256) :
+    ∀ (cs : List (Literal × Block n)) (df : Option (Block n)),
+      (∀ p ∈ cs, RevSimB funs reads prot p.2) → RevSimB funs reads prot (df.getD []) →
+      RevSimB funs reads prot (selectCase cv cs df)
+  | [], _df => fun _ hdf => hdf
+  | (l, b) :: rest, df => fun hcs hdf => by
+      unfold selectCase
+      by_cases hlab : (litValue l == cv) = true
+      · rw [List.find?_cons_of_pos (by simpa using hlab)]
+        exact hcs (l, b) (List.mem_cons_self ..)
+      · rw [List.find?_cons_of_neg (by simpa using hlab)]
+        exact revSelectCase cv rest df (fun p hp => hcs p (List.mem_cons_of_mem _ hp)) hdf
+
+/-- **Reverse store-agreement simulation** (needs `WellFormed`): a run of the dead-code-eliminated
+block lifts back to a run of the original, reconstructing the deleted statements via `dead_inert`.
+Functional induction on `dceBlock`; the loop case uses `dce_bwd_loop`, the switch case
+`revSelectCase`. -/
+theorem dce_bwd (funs : Funs) (reads prot : List (Fin n)) (b : Block n)
+    (hwf : WFBlock funs b) (hin : ∀ i ∈ blockReads b, i ∈ reads ++ prot) :
+    RevSimB funs reads prot b := by
+  refine dceBlock.induct (reads := reads) (prot := prot)
+    (motive_1 := fun b => WFBlock funs b → (∀ i ∈ blockReads b, i ∈ reads ++ prot) →
+      RevSimB funs reads prot b)
+    (motive_2 := fun s => WFStmt funs s → (∀ i ∈ stmtReads s, i ∈ reads ++ prot) →
+      RevSimS funs reads prot s)
+    (motive_3 := fun df => WFDflt funs df → (∀ i ∈ readsDflt df, i ∈ reads ++ prot) →
+      RevSimB funs reads prot (df.getD []))
+    (motive_4 := fun cs => WFCases funs cs → (∀ i ∈ readsCases cs, i ∈ reads ++ prot) →
+      ∀ p ∈ cs, RevSimB funs reads prot p.2)
+    ?cond ?switch ?loop ?stmt ?bnil ?bdead ?bcons ?cnil ?ccons ?dnone ?dsome b hwf hin
+  -- dceStmt cond
+  case cond =>
+    intro c body ihbody hwfs hins
+    have hib : RevSimB funs reads prot body :=
+      ihbody hwfs (fun i hi => hins i (by simp only [stmtReads]; exact List.mem_append_right _ hi))
+    intro σ₂ st σ₂' st' o hstep σ₁ hag
+    have hcin : ∀ i, atomSlot? c = some i → i ∈ reads ++ prot := fun i hi => hins i
+      (by simp only [stmtReads]; exact List.mem_append_left _ (by rw [hi]; exact List.mem_cons_self ..))
+    simp only [dceStmt] at hstep
+    cases hstep with
+    | condFalse hc =>
+        exact ⟨σ₁, Step.condFalse ((evalAtom_agree hag hcin).trans hc), hag⟩
+    | condTrue hc hbody =>
+        obtain ⟨σ₁', hb', hag'⟩ := hib hbody σ₁ hag
+        exact ⟨σ₁', Step.condTrue (fun h0 => hc ((evalAtom_agree hag hcin).symm.trans h0)) hb', hag'⟩
+  -- dceStmt switch
+  case switch =>
+    intro c cs df ihcs ihdf hwfs hins
+    obtain ⟨hwfcs, hwfdf⟩ := hwfs
+    have hcs : ∀ p ∈ cs, RevSimB funs reads prot p.2 :=
+      ihcs hwfcs (fun i hi => hins i (by
+        simp only [stmtReads]; exact List.mem_append_left _ (List.mem_append_right _ hi)))
+    have hdf : RevSimB funs reads prot (df.getD []) :=
+      ihdf hwfdf (fun i hi => hins i (by simp only [stmtReads]; exact List.mem_append_right _ hi))
+    intro σ₂ st σ₂' st' o hstep σ₁ hag
+    have hcin : ∀ i, atomSlot? c = some i → i ∈ reads ++ prot := fun i hi => hins i (by
+      simp only [stmtReads]
+      exact List.mem_append_left _ (List.mem_append_left _ (by rw [hi]; exact List.mem_cons_self ..)))
+    simp only [dceStmt] at hstep
+    cases hstep with
+    | switch hsel =>
+        rw [dce_selectCase] at hsel
+        obtain ⟨σ₁', hsel', hag'⟩ := revSelectCase (evalAtom σ₂ c) cs df hcs hdf hsel σ₁ hag
+        refine ⟨σ₁', Step.switch ?_, hag'⟩
+        rw [evalAtom_agree hag hcin]; exact hsel'
+  -- dceStmt loop
+  case loop =>
+    intro post body ihpost ihbody hwfs hins
+    obtain ⟨hwfp, hwfb⟩ := hwfs
+    have hrp : RevSimB funs reads prot post :=
+      ihpost hwfp (fun i hi => hins i (by simp only [stmtReads]; exact List.mem_append_left _ hi))
+    have hrb : RevSimB funs reads prot body :=
+      ihbody hwfb (fun i hi => hins i (by simp only [stmtReads]; exact List.mem_append_right _ hi))
+    intro σ₂ st σ₂' st' o hstep σ₁ hag
+    simp only [dceStmt] at hstep
+    cases hstep with
+    | loopS hl => obtain ⟨σ₁', hl', hag'⟩ := dce_bwd_loop hrp hrb hl rfl rfl σ₁ hag
+                  exact ⟨σ₁', Step.loopS hl', hag'⟩
+  -- dceStmt catch-all (assign / break / continue / leave): dceStmt s = s
+  case stmt =>
+    intro s hnc hns hnl _ hins σ₂ st σ₂' st' o hstep σ₁ hag
+    cases s with
+    | cond c b       => exact absurd rfl (hnc c b)
+    | switch c cs df => exact absurd rfl (hns c cs df)
+    | loop p b       => exact absurd rfl (hnl p b)
+    | «break»        => cases hstep; exact ⟨σ₁, Step.brk, hag⟩
+    | «continue»     => cases hstep; exact ⟨σ₁, Step.cont, hag⟩
+    | leave          => cases hstep; exact ⟨σ₁, Step.lv, hag⟩
+    | assign ds rhs  =>
+        have hrin : ∀ i ∈ rhsReads rhs, i ∈ reads ++ prot :=
+          fun i hi => hins i (by simpa [stmtReads] using hi)
+        cases hstep with
+        | assignOk hr =>
+            exact ⟨updMany σ₁ ds _, Step.assignOk ((execRhs_agree hag hrin).mpr hr),
+              AgreeOn.updMany_both hag ds _⟩
+        | assignHalt hr => exact ⟨σ₁, Step.assignHalt ((execRhs_agree hag hrin).mpr hr), hag⟩
+  case bnil =>
+    intro _ _ σ₂ st σ₂' st' o hstep σ₁ hag; cases hstep; exact ⟨σ₁, Step.nil, hag⟩
+  -- block cons, dead head: dceBlock (s::ss) = dceBlock ss; reinsert s via dead_inert
+  case bdead =>
+    intro s ss hd ihss hwfcons hincons
+    obtain ⟨hwfs, hwfss⟩ := hwfcons
+    have hib : RevSimB funs reads prot ss :=
+      ihss hwfss (fun i hi => hincons i (by simp only [blockReads]; exact List.mem_append_right _ hi))
+    intro σ₂ st σ₂' st' o hstep σ₁ hag
+    rw [dceBlock, if_pos hd] at hstep
+    obtain ⟨σ₁mid, hs_inert, hag_mid⟩ := dead_inert hd hwfs σ₁ st
+    obtain ⟨σ₁', hss', hag'⟩ := hib hstep σ₁mid (hag_mid.symm.trans hag)
+    exact ⟨σ₁', Step.consNormal hs_inert hss', hag'⟩
+  -- block cons, kept head: dceBlock (s::ss) = dceStmt s :: dceBlock ss
+  case bcons =>
+    intro s ss hd ihs ihss hwfcons hincons
+    obtain ⟨hwfs, hwfss⟩ := hwfcons
+    have hrs : RevSimS funs reads prot s :=
+      ihs hwfs (fun i hi => hincons i (by simp only [blockReads]; exact List.mem_append_left _ hi))
+    have hrss : RevSimB funs reads prot ss :=
+      ihss hwfss (fun i hi => hincons i (by simp only [blockReads]; exact List.mem_append_right _ hi))
+    intro σ₂ st σ₂' st' o hstep σ₁ hag
+    rw [dceBlock, if_neg hd] at hstep
+    cases hstep with
+    | consNormal hs2 hss2 =>
+        obtain ⟨σ₁mid, hs', hagmid⟩ := hrs hs2 σ₁ hag
+        obtain ⟨σ₁', hss', hag'⟩ := hrss hss2 σ₁mid hagmid
+        exact ⟨σ₁', Step.consNormal hs' hss', hag'⟩
+    | consStop hs2 hne =>
+        obtain ⟨σ₁', hs', hag'⟩ := hrs hs2 σ₁ hag
+        exact ⟨σ₁', Step.consStop hs' hne, hag'⟩
+  case cnil => intro _ _ p hp; nomatch hp
+  case ccons =>
+    intro l b rest ihb ihrest hwfcs hins
+    obtain ⟨hwfb, hwfrest⟩ := hwfcs
+    intro p hp
+    rcases List.mem_cons.mp hp with rfl | hp'
+    · exact ihb hwfb (fun i hi => hins i (by simp only [readsCases]; exact List.mem_append_left _ hi))
+    · exact ihrest hwfrest
+        (fun i hi => hins i (by simp only [readsCases]; exact List.mem_append_right _ hi)) p hp'
+  case dnone =>
+    intro _ _ σ₂ st σ₂' st' o hstep σ₁ hag; cases hstep; exact ⟨σ₁, Step.nil, hag⟩
+  case dsome =>
+    intro b ihb hwfdf hins
+    exact ihb hwfdf hins
+
+/-! ### `dceBlock` preserves well-formedness -/
+
+/-- `dceBlock` keeps a subset of statements with rhs unchanged (recursing into sub-blocks), so
+well-formedness is preserved — the fixpoint stays reversible. -/
+theorem wf_dceBlock (funs : Funs) (reads prot : List (Fin n)) (b : Block n) (hwf : WFBlock funs b) :
+    WFBlock funs (dceBlock reads prot b) := by
+  refine dceBlock.induct (reads := reads) (prot := prot)
+    (motive_1 := fun b => WFBlock funs b → WFBlock funs (dceBlock reads prot b))
+    (motive_2 := fun s => WFStmt funs s → WFStmt funs (dceStmt reads prot s))
+    (motive_3 := fun df => WFDflt funs df → WFDflt funs (dceDflt reads prot df))
+    (motive_4 := fun cs => WFCases funs cs → WFCases funs (dceCases reads prot cs))
+    ?cond ?switch ?loop ?stmt ?bnil ?bdead ?bcons ?cnil ?ccons ?dnone ?dsome b hwf
+  case cond => intro c body ih hwfs; rw [dceStmt]; exact ih hwfs
+  case switch =>
+    intro c cs df ihcs ihdf hwfs; obtain ⟨hc, hdf⟩ := hwfs
+    rw [dceStmt]; exact ⟨ihcs hc, ihdf hdf⟩
+  case loop =>
+    intro post body ihp ihb hwfs; obtain ⟨hp, hb⟩ := hwfs
+    rw [dceStmt]; exact ⟨ihp hp, ihb hb⟩
+  case stmt =>
+    intro s hnc hns hnl hwfs
+    have : dceStmt reads prot s = s := by
+      cases s with
+      | cond c b => exact absurd rfl (hnc c b)
+      | switch c cs df => exact absurd rfl (hns c cs df)
+      | loop p b => exact absurd rfl (hnl p b)
+      | _ => rfl
+    rw [this]; exact hwfs
+  case bnil => intro _; exact trivial
+  case bdead => intro s ss _ ih hwfcons; rw [dceBlock, if_pos ‹_›]; exact ih hwfcons.2
+  case bcons =>
+    intro s ss hd ihs ihss hwfcons; rw [dceBlock, if_neg hd]
+    exact ⟨ihs hwfcons.1, ihss hwfcons.2⟩
+  case cnil => intro _; exact trivial
+  case ccons => intro l b rest ihb ihrest hwfcs; rw [dceCases]; exact ⟨ihb hwfcs.1, ihrest hwfcs.2⟩
+  case dnone => intro _; exact trivial
+  case dsome => intro b ih hwfdf; rw [dceDflt]; exact ih hwfdf
+
+/-! ### General-store fuel simulations (for the call-graph coupling) -/
+
+/-- Agreement on a superset of a slot list makes reading that list identical (used for return
+values: `rets.map σ` is preserved because `rets ⊆ prot`). -/
+theorem map_agree {S : List (Fin n)} {σ₁ σ₂} (h : AgreeOn S σ₁ σ₂) {l : List (Fin n)}
+    (hl : ∀ i ∈ l, i ∈ S) : l.map σ₁ = l.map σ₂ := by
+  induction l with
+  | nil => rfl
+  | cons a as ih =>
+      simp only [List.map_cons, h a (hl a (List.mem_cons_self ..)),
+        ih (fun i hi => hl i (List.mem_cons_of_mem a hi))]
+
+/-- Forward simulation of the `deadCode` fuel fixpoint from *any* store, tracking agreement on the
+protected slots `prot` (enough to preserve a function's return values). -/
+theorem deadCode_fwd (funs' : Funs) (prot : List (Fin n)) (fuel : Nat) :
+    ∀ {b : Block n} {σ st σ' st' o}, Step funs' σ st (.stmts b) (.sres σ' st' o) →
+      ∃ σ'', Step funs' σ st (.stmts (deadCode prot fuel b)) (.sres σ'' st' o) ∧ AgreeOn prot σ' σ'' := by
+  induction fuel with
+  | zero => intro b σ st σ' st' o h; exact ⟨σ', by rw [deadCode]; exact h, fun _ _ => rfl⟩
+  | succ fuel ih =>
+      intro b σ st σ' st' o h
+      obtain ⟨σ'₂, hstep2, hag2⟩ := dce_fwd h (blockReads b) prot σ (fun _ _ => rfl)
+        (fun i hi => List.mem_append.mpr (Or.inl hi))
+      have hag2' : AgreeOn prot σ' σ'₂ := fun i hi => hag2 i (List.mem_append.mpr (Or.inr hi))
+      rw [deadCode]
+      by_cases hfix : (blockCount (dceBlock (blockReads b) prot b) == blockCount b) = true
+      · rw [if_pos hfix]; exact ⟨σ'₂, hstep2, hag2'⟩
+      · rw [if_neg hfix]
+        obtain ⟨σ''', hstep3, hag3⟩ := ih hstep2
+        exact ⟨σ''', hstep3, hag2'.trans hag3⟩
+
+/-- Reverse simulation of the `deadCode` fuel fixpoint from any store, under well-formedness. -/
+theorem deadCode_bwd (funs' : Funs) (prot : List (Fin n)) (fuel : Nat) :
+    ∀ {b : Block n}, WFBlock funs' b → ∀ {σ st σ'' st' o},
+      Step funs' σ st (.stmts (deadCode prot fuel b)) (.sres σ'' st' o) →
+      ∃ σ', Step funs' σ st (.stmts b) (.sres σ' st' o) ∧ AgreeOn prot σ' σ'' := by
+  induction fuel with
+  | zero => intro b _ σ st σ'' st' o h; rw [deadCode] at h; exact ⟨σ'', h, fun _ _ => rfl⟩
+  | succ fuel ih =>
+      intro b hwf σ st σ'' st' o h
+      rw [deadCode] at h
+      by_cases hfix : (blockCount (dceBlock (blockReads b) prot b) == blockCount b) = true
+      · rw [if_pos hfix] at h
+        obtain ⟨σ', h1, hag1⟩ := dce_bwd funs' (blockReads b) prot b hwf
+          (fun i hi => List.mem_append.mpr (Or.inl hi)) h σ (fun _ _ => rfl)
+        exact ⟨σ', h1, fun i hi => hag1 i (List.mem_append.mpr (Or.inr hi))⟩
+      · rw [if_neg hfix] at h
+        obtain ⟨σ'm, h2, hag2⟩ := ih (wf_dceBlock funs' _ _ b hwf) h
+        obtain ⟨σ', h1, hag1⟩ := dce_bwd funs' (blockReads b) prot b hwf
+          (fun i hi => List.mem_append.mpr (Or.inl hi)) h2 σ (fun _ _ => rfl)
+        exact ⟨σ', h1, AgreeOn.trans (fun i hi => hag1 i (List.mem_append.mpr (Or.inr hi))) hag2⟩
+
+/-! ### Whole-program: dead-code-eliminating every function body -/
+
+/-- Dead-code-eliminate every function body, protecting each function's own return slots. -/
+def dceFuns (fuel : Nat) (funs : Funs) : Funs :=
+  funs.map (fun _ fd => { fd with body := deadCode fd.rets fuel fd.body })
+
+theorem dceFuns_get {fuel : Nat} {funs : Funs} {k : Option Ident} {fd : Function}
+    (h : funs[k]? = some fd) :
+    (dceFuns fuel funs)[k]? = some ({ fd with body := deadCode fd.rets fuel fd.body } : Function) := by
+  simp [dceFuns, Std.HashMap.getElem?_map, h]
+
+/-- **Table congruence, forward.** Running any code against the dce'd table gives the *same* result:
+a call only observes its callee's return values and `EvmState`, both preserved by dead-code
+elimination. Modelled on `step_mapBodies_mp`, with the call case using `deadCode_fwd`. -/
+theorem T_congr_mp (fuel : Nat) (funs : Funs) {n} {σ : Store n} {st code res}
+    (h : Step funs σ st code res) : Step (dceFuns fuel funs) σ st code res := by
+  induction h with
+  | atom => exact .atom
+  | builtin hb => exact .builtin hb
+  | @callNorm _ _ _ fn args fdecl σ' st' o hl _ ho ihbody =>
+      obtain ⟨σ'', hbody'', hag⟩ := deadCode_fwd (dceFuns fuel funs) fdecl.rets fuel ihbody
+      rw [show fdecl.rets.map σ' = fdecl.rets.map σ'' from map_agree hag (fun _ h => h)]
+      exact Step.callNorm (fdecl := { fdecl with body := deadCode fdecl.rets fuel fdecl.body })
+        (dceFuns_get hl) hbody'' ho
+  | @callHalt _ _ _ fn args fdecl σ' st' hl _ ihbody =>
+      obtain ⟨σ'', hbody'', _⟩ := deadCode_fwd (dceFuns fuel funs) fdecl.rets fuel ihbody
+      exact Step.callHalt (fdecl := { fdecl with body := deadCode fdecl.rets fuel fdecl.body })
+        (dceFuns_get hl) hbody''
+  | assignOk _ ihr => exact .assignOk ihr
+  | assignHalt _ ihr => exact .assignHalt ihr
+  | condFalse hc => exact .condFalse hc
+  | condTrue hc _ ihb => exact .condTrue hc ihb
+  | switch _ ihb => exact .switch ihb
+  | loopS _ ihl => exact .loopS ihl
+  | brk => exact .brk
+  | cont => exact .cont
+  | lv => exact .lv
+  | nil => exact .nil
+  | consNormal _ _ ih1 ih2 => exact .consNormal ih1 ih2
+  | consStop _ hne ih1 => exact .consStop ih1 hne
+  | loopBrk _ ihb => exact .loopBrk ihb
+  | loopLeave _ ihb => exact .loopLeave ihb
+  | loopHalt _ ihb => exact .loopHalt ihb
+  | loopStep _ hob _ _ ihb ihp ihl => exact .loopStep ihb hob ihp ihl
+  | loopPostStop _ hob _ hne ihb ihp => exact .loopPostStop ihb hob ihp hne
+
+/-- **Whole-program forward soundness of `deadCode`**: every behaviour of the source program is a
+behaviour of the program with dead code eliminated from *every* function body. -/
+theorem deadCode_program_run_fwd (fuel : Nat) (funs : Funs) {st st' o}
+    (h : Run ⟨funs⟩ st st' o) : Run ⟨dceFuns fuel funs⟩ st st' o := by
+  obtain ⟨fd, σ', hmain, hexec⟩ := h
+  obtain ⟨σ'', hexec'', _⟩ := deadCode_fwd (dceFuns fuel funs) fd.rets fuel (T_congr_mp fuel funs hexec)
+  exact ⟨{ fd with body := deadCode fd.rets fuel fd.body }, σ'', dceFuns_get hmain, hexec''⟩
+
+/-! ### Whole-program reverse (bidirectional) -/
+
+theorem dceFuns_get_inv {fuel : Nat} {funs : Funs} {k : Option Ident} {fd' : Function}
+    (h : (dceFuns fuel funs)[k]? = some fd') :
+    ∃ fd, funs[k]? = some fd ∧ fd' = { fd with body := deadCode fd.rets fuel fd.body } := by
+  simp only [dceFuns, Std.HashMap.getElem?_map] at h
+  obtain ⟨fd, hfd, heq⟩ := Option.map_eq_some_iff.mp h
+  exact ⟨fd, hfd, heq.symm⟩
+
+/-- Every function body is well-formed (against the table). -/
+abbrev WFFuns (funs : Funs) : Prop :=
+  ∀ (k : Option Ident) (fd : Function), funs[k]? = some fd → WFBlock funs fd.body
+
+/-- Well-formedness is table-independent — pure rhs evaluate without consulting the table. -/
+theorem wf_irrel {funs funs' : Funs} (b : Block n) (h : WFBlock funs b) : WFBlock funs' b := by
+  have key : ∀ {r : Rhs n}, rhsPure r = true → (∀ σ st, ∃ vs, ExecRhs funs σ st r (.ok vs st)) →
+      ∀ σ st, ∃ vs, ExecRhs funs' σ st r (.ok vs st) := by
+    intro r hp hh σ st
+    cases r with
+    | atom a => exact ⟨_, Step.atom⟩
+    | builtin op args =>
+        obtain ⟨vs, hv⟩ := hh σ st; cases hv with | builtin hb => exact ⟨vs, Step.builtin hb⟩
+    | call fn args => simp [rhsPure] at hp
+  refine WFBlock.induct
+    (motive_1 := fun s => WFStmt funs s → WFStmt funs' s)
+    (motive_2 := fun df => WFDflt funs df → WFDflt funs' df)
+    (motive_3 := fun b => WFBlock funs b → WFBlock funs' b)
+    (motive_4 := fun cs => WFCases funs cs → WFCases funs' cs)
+    ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ b h
+  · intro dsts rhs hw; simp only [WFStmt] at hw ⊢; exact fun hp => key hp (hw hp)
+  · intro c b ih hw; exact ih hw
+  · intro c cs df ihcs ihdf hw; exact ⟨ihcs hw.1, ihdf hw.2⟩
+  · intro p b ihp ihb hw; exact ⟨ihp hw.1, ihb hw.2⟩
+  · intro t hna hnc hns hnl hw
+    cases t with
+    | assign ds rhs => exact absurd rfl (hna ds rhs)
+    | cond c b => exact absurd rfl (hnc c b)
+    | switch c cs df => exact absurd rfl (hns c cs df)
+    | loop p b => exact absurd rfl (hnl p b)
+    | _ => exact hw
+  · intro hw; exact hw
+  · intro s ss ihs ihss hw; exact ⟨ihs hw.1, ihss hw.2⟩
+  · intro hw; exact hw
+  · intro fst b rest ihb ihrest hw; exact ⟨ihb hw.1, ihrest hw.2⟩
+  · intro hw; exact hw
+  · intro b ih hw; exact ih hw
+
+/-- **Table congruence, reverse** (needs `WFFuns`): running against the original table from a run
+against the dce'd table. Call case reverses the callee's body dce via `deadCode_bwd`. -/
+theorem T_congr_mpr (fuel : Nat) (funs : Funs) (hwf : WFFuns funs)
+    {n} {σ : Store n} {st code res} (h : Step (dceFuns fuel funs) σ st code res) :
+    Step funs σ st code res := by
+  induction h with
+  | atom => exact .atom
+  | builtin hb => exact .builtin hb
+  | @callNorm _ _ _ fn args fdecl' σ'' st' o hl' _ ho ihbody =>
+      obtain ⟨fd, hfd, heq⟩ := dceFuns_get_inv hl'
+      subst heq
+      obtain ⟨σ', hbodyorig, hag⟩ := deadCode_bwd funs fd.rets fuel (hwf _ fd hfd) ihbody
+      rw [show fd.rets.map σ'' = fd.rets.map σ' from (map_agree hag (fun _ h => h)).symm]
+      exact Step.callNorm (fdecl := fd) hfd hbodyorig ho
+  | @callHalt _ _ _ fn args fdecl' σ'' st' hl' _ ihbody =>
+      obtain ⟨fd, hfd, heq⟩ := dceFuns_get_inv hl'
+      subst heq
+      obtain ⟨σ', hbodyorig, _⟩ := deadCode_bwd funs fd.rets fuel (hwf _ fd hfd) ihbody
+      exact Step.callHalt (fdecl := fd) hfd hbodyorig
+  | assignOk _ ihr => exact .assignOk ihr
+  | assignHalt _ ihr => exact .assignHalt ihr
+  | condFalse hc => exact .condFalse hc
+  | condTrue hc _ ihb => exact .condTrue hc ihb
+  | switch _ ihb => exact .switch ihb
+  | loopS _ ihl => exact .loopS ihl
+  | brk => exact .brk
+  | cont => exact .cont
+  | lv => exact .lv
+  | nil => exact .nil
+  | consNormal _ _ ih1 ih2 => exact .consNormal ih1 ih2
+  | consStop _ hne ih1 => exact .consStop ih1 hne
+  | loopBrk _ ihb => exact .loopBrk ihb
+  | loopLeave _ ihb => exact .loopLeave ihb
+  | loopHalt _ ihb => exact .loopHalt ihb
+  | loopStep _ hob _ _ ihb ihp ihl => exact .loopStep ihb hob ihp ihl
+  | loopPostStop _ hob _ hne ihb ihp => exact .loopPostStop ihb hob ihp hne
+
+/-- **Whole-program bidirectional soundness of `deadCode`** under `WFFuns`: the source program and
+the program with dead code eliminated from every function body have exactly the same runs. -/
+theorem deadCode_program_run (fuel : Nat) (funs : Funs) (hwf : WFFuns funs) {st st' o} :
+    Run ⟨funs⟩ st st' o ↔ Run ⟨dceFuns fuel funs⟩ st st' o := by
+  constructor
+  · exact deadCode_program_run_fwd fuel funs
+  · rintro ⟨fd', σ'', hmain', hexec''⟩
+    obtain ⟨fd, hfd, heq⟩ := dceFuns_get_inv hmain'
+    subst heq
+    obtain ⟨σ', hbody, _⟩ :=
+      deadCode_bwd (dceFuns fuel funs) fd.rets fuel (wf_irrel fd.body (hwf _ fd hfd)) hexec''
+    exact ⟨fd, σ', hfd, T_congr_mpr fuel funs hwf hbody⟩
+
+/-! ### Discharging `WFFuns` by a decidable arity check -/
+
+/-- A decidable arity check: a *pure* built-in must be applied at an arity `stepOp` accepts (probed
+at dummy zero operands — definedness is arity-only for pure ops, `pure_defined_len`). -/
+def wfRhs : Rhs n → Bool
+  | .builtin op args =>
+      !Op.isPure op || (stepOp op (args.map (fun _ => (0 : U256))) EvmState.init).isSome
+  | _ => true
+
+theorem wfRhs_sound {funs : Funs} {rhs : Rhs n} (h : wfRhs rhs = true) (hp : rhsPure rhs = true)
+    (σ : Store n) (st : State) : ∃ vs, ExecRhs funs σ st rhs (.ok vs st) := by
+  cases rhs with
+  | atom a => exact ⟨_, Step.atom⟩
+  | builtin op args =>
+      have hpo : Op.isPure op = true := by simpa [rhsPure] using hp
+      simp only [wfRhs, Bool.or_eq_true, Bool.not_eq_true'] at h
+      have hdummy : (stepOp op (args.map (fun _ => (0 : U256))) EvmState.init).isSome = true := by
+        rcases h with h | h
+        · simp [hpo] at h
+        · exact h
+      have hdef : (stepOp op (args.map (evalAtom σ)) st).isSome = true :=
+        pure_defined_len hpo (by simp) hdummy
+      obtain ⟨r, hr⟩ := Option.isSome_iff_exists.mp hdef
+      obtain ⟨outs, rfl⟩ := pure_builtin_ok hpo (show evm.Builtin op _ st _ from hr)
+      exact ⟨outs, Step.builtin hr⟩
+  | call fn args => simp [rhsPure] at hp
+
+mutual
+def wfArityStmt : Stmt n → Bool
+  | .assign _ rhs   => wfRhs rhs
+  | .cond _ b       => wfArityBlock b
+  | .switch _ cs df => wfArityCases cs && wfArityDflt df
+  | .loop p b       => wfArityBlock p && wfArityBlock b
+  | _               => true
+def wfArityBlock : Block n → Bool
+  | []      => true
+  | s :: ss => wfArityStmt s && wfArityBlock ss
+def wfArityCases : List (Literal × Block n) → Bool
+  | []             => true
+  | (_, b) :: rest => wfArityBlock b && wfArityCases rest
+def wfArityDflt : Option (Block n) → Bool
+  | none   => true
+  | some b => wfArityBlock b
+end
+
+/-- The decidable arity check implies `WFBlock` (against any table). -/
+theorem WFBlock_of_wfArity {funs : Funs} (b : Block n) (h : wfArityBlock b = true) :
+    WFBlock funs b := by
+  refine WFBlock.induct
+    (motive_1 := fun s => wfArityStmt s = true → WFStmt funs s)
+    (motive_2 := fun df => wfArityDflt df = true → WFDflt funs df)
+    (motive_3 := fun b => wfArityBlock b = true → WFBlock funs b)
+    (motive_4 := fun cs => wfArityCases cs = true → WFCases funs cs)
+    ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ b h
+  · intro dsts rhs hwa; simp only [WFStmt]
+    exact fun hp σ st => wfRhs_sound (by simpa [wfArityStmt] using hwa) hp σ st
+  · intro c b ih hwa; exact ih (by simpa [wfArityStmt] using hwa)
+  · intro c cs df ihcs ihdf hwa
+    obtain ⟨h1, h2⟩ := (by simpa only [wfArityStmt, Bool.and_eq_true] using hwa)
+    exact ⟨ihcs h1, ihdf h2⟩
+  · intro p b ihp ihb hwa
+    obtain ⟨h1, h2⟩ := (by simpa only [wfArityStmt, Bool.and_eq_true] using hwa)
+    exact ⟨ihp h1, ihb h2⟩
+  · intro t hna hnc hns hnl _
+    cases t with
+    | assign ds rhs => exact absurd rfl (hna ds rhs)
+    | cond c b => exact absurd rfl (hnc c b)
+    | switch c cs df => exact absurd rfl (hns c cs df)
+    | loop p b => exact absurd rfl (hnl p b)
+    | _ => trivial
+  · intro _; trivial
+  · intro s ss ihs ihss hwa
+    obtain ⟨h1, h2⟩ := (by simpa only [wfArityBlock, Bool.and_eq_true] using hwa)
+    exact ⟨ihs h1, ihss h2⟩
+  · intro _; trivial
+  · intro fst b rest ihb ihrest hwa
+    obtain ⟨h1, h2⟩ := (by simpa only [wfArityCases, Bool.and_eq_true] using hwa)
+    exact ⟨ihb h1, ihrest h2⟩
+  · intro _; trivial
+  · intro b ih hwa; exact ih (by simpa [wfArityDflt] using hwa)
+
+/-- **Discharging `WFFuns`**: a program all of whose function bodies pass the decidable arity check
+is well-formed. For a concrete program this is closed by `decide`, so `deadCode_program_run` applies
+with no assumed hypothesis. (`ofYul` output passes the check iff the source Yul is arity-correct — a
+per-program, computable fact — which is the honest content of "ofYul ⟹ WellFormed".) -/
+theorem WFFuns_of_wfArity {funs : Funs}
+    (h : ∀ (k : Option Ident) (fd : Function), funs[k]? = some fd → wfArityBlock fd.body = true) :
+    WFFuns funs := fun k fd hfd => WFBlock_of_wfArity fd.body (h k fd hfd)
+
+/-! ### Bidirectional soundness (a `main`-style entry body) -/
+
+/-- **Bidirectional soundness of one dead-code pass** over a well-formed entry body: the original and
+dce'd blocks reach exactly the same `EvmState`/outcome (from a zero-initialised frame; local store
+discarded). Forward needs nothing; reverse needs `WellFormed` (to rebuild deleted statements). -/
+theorem dceBlock_exec_iff (funs : Funs) {b : Block n} (hwf : WFBlock funs b) {st st' o} :
+    (∃ σ', ExecBlock funs (fun _ => 0) st (dceBlock (blockReads b) [] b) σ' st' o) ↔
+    (∃ σ', ExecBlock funs (fun _ => 0) st b σ' st' o) := by
+  have hcov : ∀ i ∈ blockReads b, i ∈ blockReads b ++ [] := by
+    intro i hi; rw [List.append_nil]; exact hi
+  constructor
+  · rintro ⟨σ', hstep⟩
+    obtain ⟨σ₁', h₁, _⟩ :=
+      dce_bwd funs (blockReads b) [] b hwf hcov hstep (fun _ => 0) (fun _ _ => rfl)
+    exact ⟨σ₁', h₁⟩
+  · rintro ⟨σ', hstep⟩
+    obtain ⟨σ₂', hstep', _⟩ :=
+      dce_fwd hstep (blockReads b) [] (fun _ => 0) (fun _ _ => rfl) hcov
+    exact ⟨σ₂', hstep'⟩
+
+/-- **Bidirectional soundness of `deadCode`** (bounded fixpoint) over a well-formed entry body: the
+optimized and original bodies reach exactly the same `EvmState`/outcome. Lifting to a whole-program
+`Run ↔` over the unified function table further needs the call-graph store-agreement coupling. -/
+theorem deadCode_exec_iff (funs : Funs) (fuel : Nat) : ∀ {b : Block n}, WFBlock funs b →
+    ∀ {st st' o}, (∃ σ', ExecBlock funs (fun _ => 0) st (deadCode [] fuel b) σ' st' o) ↔
+      (∃ σ', ExecBlock funs (fun _ => 0) st b σ' st' o) := by
+  induction fuel with
+  | zero => intro b _ st st' o; rw [deadCode]
+  | succ fuel ih =>
+      intro b hwf st st' o
+      rw [deadCode]
+      by_cases hfix : (blockCount (dceBlock (blockReads b) [] b) == blockCount b) = true
+      · rw [if_pos hfix]; exact dceBlock_exec_iff funs hwf
+      · rw [if_neg hfix]
+        exact (ih (wf_dceBlock funs _ _ b hwf)).trans (dceBlock_exec_iff funs hwf)
 
 end YulIR.FinFrame.Sem
