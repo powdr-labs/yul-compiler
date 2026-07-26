@@ -109,4 +109,99 @@ theorem provablyDisjoint32_sound {σ : Store n} {d₁ d₂ : AddrDesc n}
       omega
     omega
 
+/-! ### The memory-word roundtrip (for store-to-load forwarding) -/
+
+open YulSemantics.EVM (loadWord storeWord byteAt)
+theorem getLsbD_255 (j : Nat) : (255 : BitVec 256).getLsbD j = decide (j < 8) := by
+  rw [show (255 : BitVec 256) = BitVec.ofNat 256 (2 ^ 8 - 1) from rfl]
+  rcases Nat.lt_or_ge j 256 with hj | hj
+  · rw [show (2 ^ 8 - 1 : Nat) = 255 from rfl]
+    simp only [BitVec.getLsbD_ofNat]
+    rw [show (255 : Nat) = 2 ^ 8 - 1 from rfl, Nat.testBit_two_pow_sub_one]
+    simp [hj]
+  · rw [BitVec.getLsbD_of_ge _ _ hj]
+    have : ¬ j < 8 := by omega
+    simp [this]
+
+/-- Rebuilding one byte: `(x >>> (k+8)) <<< 8 ||| (x >>> k &&& 255) = x >>> k`. -/
+theorem shift_byte_step (x : BitVec 256) (k : Nat) :
+    ((x >>> (k + 8)) <<< (8:Nat)) ||| ((x >>> k) &&& 255) = x >>> k := by
+  apply BitVec.eq_of_getLsbD_eq
+  intro j
+  simp only [BitVec.getLsbD_or, BitVec.getLsbD_shiftLeft, BitVec.getLsbD_ushiftRight,
+    BitVec.getLsbD_and, getLsbD_255]
+  rcases Nat.lt_or_ge (j : Nat) 8 with hj | hj
+  · simp [hj]
+  · rcases Nat.lt_or_ge (j : Nat) 256 with hj2 | hj2
+    · have hidx : k + 8 + ((j : Nat) - 8) = k + j := by omega
+      simp [hj2, Nat.not_lt.mpr hj, hidx]
+    · have h1 : ¬ (j : Nat) < 256 := by omega
+      have h2 : ¬ (j : Nat) < 8 := by omega
+      simp [h1, h2, BitVec.getLsbD_of_ge x (k + j) (by omega)]
+
+
+
+
+theorem byte_as_bv (v : U256) (k : Nat) :
+    BitVec.ofNat 256 (byteAt v k).toNat = (v >>> (8 * k)) &&& 255 := by
+  apply BitVec.eq_of_toNat_eq
+  show (BitVec.ofNat 256 (UInt8.toNat (UInt8.ofNat (v >>> (8 * k)).toNat))).toNat
+      = ((v >>> (8 * k)) &&& 255).toNat
+  rw [show ∀ x : Nat, UInt8.toNat (UInt8.ofNat x) = x % 2 ^ 8 from fun x => rfl]
+  simp only [BitVec.toNat_ofNat, BitVec.toNat_and]
+  have h1 : (v >>> (8 * k)).toNat % 2 ^ 8 < 2 ^ 256 := by
+    have := Nat.mod_lt (v >>> (8 * k)).toNat (show 0 < 2 ^ 8 by norm_num)
+    omega
+  rw [Nat.mod_eq_of_lt h1,
+    show ((255 : U256)).toNat = 2 ^ 8 - 1 from rfl,
+    Nat.and_two_pow_sub_one_eq_mod]
+
+theorem recon_aux (v : BitVec 256) : ∀ k, k ≤ 32 →
+    (List.range k).foldl
+      (fun (acc : BitVec 256) (i : Nat) => acc <<< (8:Nat) ||| (v >>> (8 * (31 - i)) &&& 255))
+      (0 : BitVec 256)
+      = v >>> (8 * (32 - k)) := by
+  intro k
+  induction k with
+  | zero =>
+      intro _
+      apply BitVec.eq_of_getLsbD_eq
+      intro j
+      rcases Nat.lt_or_ge (256 + j) 256 with h | h
+      · omega
+      · simp [BitVec.getLsbD_ushiftRight]
+  | succ k ih =>
+      intro hk
+      rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil, ih (by omega)]
+      rw [show 8 * (32 - k) = 8 * (31 - k) + 8 by omega]
+      rw [shift_byte_step v (8 * (31 - k))]
+      congr 1
+      omega
+
+theorem word_reconstruct (v : BitVec 256) :
+    (List.range 32).foldl
+      (fun (acc : BitVec 256) (i : Nat) => acc <<< (8:Nat) ||| (v >>> (8 * (31 - i)) &&& 255))
+      (0 : BitVec 256)
+      = v := by
+  rw [recon_aux v 32 (Nat.le_refl _)]
+  simp
+
+/-- **Store/load roundtrip**: reading back a just-stored word yields the stored value. -/
+theorem loadWord_storeWord (mem : Nat → UInt8) (p : Nat) (v : U256) :
+    loadWord (storeWord mem p v) p = v := by
+  have hread : ∀ acc : BitVec 256, ∀ i ∈ List.range 32,
+      acc <<< (8:Nat) ||| BitVec.ofNat 256 (storeWord mem p v (p + i)).toNat
+        = (acc <<< (8:Nat) ||| ((v >>> (8 * (31 - i)) &&& 255) : BitVec 256)) := by
+    intro acc i hi
+    rw [List.mem_range] at hi
+    congr 1
+    rw [show storeWord mem p v (p + i) = byteAt v (31 - i) by
+      simp only [storeWord]
+      rw [if_pos (by omega)]
+      congr 1
+      omega]
+    exact byte_as_bv v (31 - i)
+  unfold loadWord
+  exact (List.foldl_ext _ _ _ hread).trans (word_reconstruct v)
+
 end YulIR.FinFrame.Sem
