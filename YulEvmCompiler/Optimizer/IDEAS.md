@@ -1006,6 +1006,80 @@ under `inlineOK` after another look at the gate arithmetic — check
 `liveMaxStmts` on the post-coalesce bodies), then recommendation 5
 (keccak/sload CSE and loop-invariant scratch setup).
 
+### ✅ Hot-helper inline unlock + adjacent expression rejoining (`optimizer/aave-gas-3`, PR #117)
+
+Two coupled changes finishing what #107/#111 started on issue #65's Aave rows.
+
+**Gate 13.** Post-coalescing dumps put `isBorrowing`/`isUsingAsCollateral` at
+`liveMax` exactly 13 — one over `InlineCalls`' ≤ 12 gate — stalling the
+cleanup cascade one level from the hot loops. Raising the gate to 13 inlines
+them (transform-only; gates never affect soundness): Aave −2,312,574 with
+zero regressions everywhere including the full semantic suite; 14 adds
+nothing on any suite.
+
+**`RejoinPairs`.** With the helpers inline, the loops are chains of adjacent
+single-use pure pairs (`let x := and(w, 1); let y := iszero(eq(x, 0))`) —
+the "expression rejoining" half of recommendation 3. The pass merges
+`let x := e; let y := f(…x…)` to `let y := f(…e…)` when the consumer is a
+pure-total tree with exactly one `x` whose other leaves are literals or
+**sequence-locally bound** variables, `x` is dead afterwards, `e` is
+call-free, and the merged tree stays under an operand-depth budget
+(`rjDepthLimit = 8`). Swept left-to-right, whole producer chains fold back
+into expression trees, each merge removing a live stack slot and a `DUP`
+from 10,000-iteration loops — and lowering `liveMax` further.
+
+Three measured hazards shaped the guards:
+
+- rejoined **calls** hide from `InlineCalls` (the `fls` fixtures regressed
+  +3k until `e` was restricted call-free);
+- rejoining merges the bindings the smart stack layout re-slots, which
+  pushed `PoolLiquidity` off its `full+layout` rescue onto the light
+  pipeline (+22k over four rows). Depth caps did not help; the fix is a new
+  **full-pipeline-without-rejoin (+ layout)** candidate pair in
+  `compileSource`'s fallback chain, which exactly recovers the old quality
+  on stack-frontier objects;
+- an outer-scope `bound` set is **not pointwise-sound** for the
+  compositional (`EquivStmt` + `of_stmts_funs`) lifting — only variables
+  declared by earlier `let`s of the *same sequence* are bound in every
+  execution reaching the pair, so each sequence starts from an empty bound
+  set. Almost nothing is lost: the consumer trees' sibling leaves are
+  overwhelmingly literals.
+
+Soundness follows `CoalesceCopies`' insertion skeleton: `e` evaluates at
+the identical configuration on both sides (everything evaluated before the
+consumed leaf is stateless and insertion-invariant), and afterwards the
+source carries one dead `(x, v)` binding per merged pair — one `InsAt`
+insertion through the mention-free suffix, erased by the enclosing block's
+`restore`. Producer-halt runs are reconstructed with `dcEvalRun` from the
+sequence-local bound set. The object path uses the `StorageForward` recipe
+taken one step further: the transform is guarded by whole-block
+`storageLayoutFreeStmts` and *preserves* it, so resolution is the identity
+on both input and output and the RPass congruence is the pass's own
+soundness. No spec change, no new axioms, no sorrys.
+
+**Results** (vs post-#111 main, solc 0.8.35, corpus `902f848`; zero
+regressions on every comparable row):
+
+- **Aave v4: 38,749,156 → 35,808,661 (−2,940,495, −7.6%; all 10 rows).**
+  Gate alone −2.31M; rejoining −630k on top.
+- Uniswap v4: 1,703,107 → 1,640,265 (−62,842; 13/44 rows improve).
+- semanticTests: −10,555 net (20 rows improve from the gate, 93 minus
+  overlaps from rejoining), zero regressions on 1,264 rows.
+- Curated gasTests unchanged.
+- Cumulative since the issue refresh: Aave 53.89M → 35.81M (**−33.6%**,
+  ratio 2.955x → 1.964x).
+
+Remaining after this: the loops still pay one call per remaining fat helper
+(`next`'s 3-return shape stays behind the `rets ≤ 2` gate), the duplicated
+scratch `mstore`/keccak/`sload` group per iteration is now fully exposed
+inline (recommendation 5's CSE, which needs value numbering with copy
+tracking — note the DUP16 hazard analysis in the PR: value reuse at
+distance needs backend/stack-layout support, not another rewrite pass),
+and `PoolSwap` still compiles only through the spill fallback (all four
+ordinary candidates fail), keeping its 417 KB bytecode and 706 definitions
+out of the optimizer's reach entirely — likely the single biggest Uniswap
+bytecode lever.
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)

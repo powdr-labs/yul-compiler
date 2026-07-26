@@ -273,12 +273,18 @@ def compileSource (source : String) : Option ByteArray := do
       let optimized := (YulEvmCompiler.Optimizer.optimizerPipeline
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none)).run b
+      let noRejoin := (YulEvmCompiler.Optimizer.optimizerPipelineNoRejoin
+        (calls := YulSemantics.EVM.ExternalCalls.none)
+        (creates := YulSemantics.EVM.ExternalCreates.none)).run b
       let light := (YulEvmCompiler.Optimizer.optimizerPipelineLight
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none)).run b
       let asm := YulEvmCompiler.compile optimized
         <|> YulEvmCompiler.compile
           (YulEvmCompiler.Optimizer.stackLayoutBlock optimized)
+        <|> YulEvmCompiler.compile noRejoin
+        <|> YulEvmCompiler.compile
+          (YulEvmCompiler.Optimizer.stackLayoutBlock noRejoin)
         <|> YulEvmCompiler.compile light
         <|> YulEvmCompiler.compile
           (YulEvmCompiler.Optimizer.stackLayoutBlock light)
@@ -298,11 +304,17 @@ def compileSource (source : String) : Option ByteArray := do
         (creates := YulSemantics.EVM.ExternalCreates.none) o
       let optimizedLayout :=
         YulEvmCompiler.Optimizer.stackLayoutObject optimized
+      let noRejoin := YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
+        (calls := YulSemantics.EVM.ExternalCalls.none)
+        (creates := YulSemantics.EVM.ExternalCreates.none) o
       let light := YulEvmCompiler.Optimizer.optimizerPipelineObjectLight
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none) o
       let layout ← YulEvmCompiler.compileObject optimized
         <|> YulEvmCompiler.compileObject optimizedLayout
+        <|> YulEvmCompiler.compileObject noRejoin
+        <|> YulEvmCompiler.compileObject
+          (YulEvmCompiler.Optimizer.stackLayoutObject noRejoin)
         <|> YulEvmCompiler.compileObject light
         <|> YulEvmCompiler.compileObject
           (YulEvmCompiler.Optimizer.stackLayoutObject light)
