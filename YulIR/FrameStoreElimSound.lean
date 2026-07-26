@@ -204,4 +204,174 @@ theorem loadWord_storeWord (mem : Nat → UInt8) (p : Nat) (v : U256) :
   unfold loadWord
   exact (List.foldl_ext _ _ _ hread).trans (word_reconstruct v)
 
+/-! ### Small-step inversion for the ops the passes reason about -/
+
+open YulSemantics.EVM (touchMemory updAccount guardStatic)
+open YulIR.FinFrame (Space KnownLoad knownDropSlots knownStore opClobbers loadShape? storeShape?)
+
+theorem sload_ok {funs : Funs} {σ : Store n} {st : State} {k : Atom n} {r}
+    (h : ExecRhs funs σ st (.builtin .sload [k]) r) :
+    r = .ok [st.storage (evalAtom σ k)] st := by
+  cases h with
+  | builtin hb => exact Option.some.inj hb |>.symm ▸ rfl
+
+theorem tload_ok {funs : Funs} {σ : Store n} {st : State} {k : Atom n} {r}
+    (h : ExecRhs funs σ st (.builtin .tload [k]) r) :
+    r = .ok [st.transient (evalAtom σ k)] st := by
+  cases h with
+  | builtin hb => exact Option.some.inj hb |>.symm ▸ rfl
+
+theorem mload_ok {funs : Funs} {σ : Store n} {st : State} {p : Atom n} {r}
+    (h : ExecRhs funs σ st (.builtin .mload [p]) r) :
+    r = .ok [YulSemantics.EVM.loadWord st.memory (evalAtom σ p).toNat]
+      (touchMemory st (evalAtom σ p).toNat 32) := by
+  cases h with
+  | builtin hb => exact Option.some.inj hb |>.symm ▸ rfl
+
+theorem sstore_ok {funs : Funs} {σ : Store n} {st : State} (hns : st.env.static = false)
+    {k v : Atom n} {r} (h : ExecRhs funs σ st (.builtin .sstore [k, v]) r) :
+    r = .ok [] { st with
+      storage := YulSemantics.EVM.upd st.storage (evalAtom σ k) (evalAtom σ v)
+      env := { st.env with storageOf := updAccount st.env.storageOf st.env.address (evalAtom σ k) (evalAtom σ v) } } := by
+  cases h with
+  | builtin hb =>
+      simp only [List.map_cons, List.map_nil, stepOp, guardStatic, hns, Bool.false_eq_true,
+        if_false, Option.some.injEq] at hb
+      exact hb.symm
+
+theorem tstore_ok {funs : Funs} {σ : Store n} {st : State} (hns : st.env.static = false)
+    {k v : Atom n} {r} (h : ExecRhs funs σ st (.builtin .tstore [k, v]) r) :
+    r = .ok [] { st with
+      transient := YulSemantics.EVM.upd st.transient (evalAtom σ k) (evalAtom σ v)
+      env := { st.env with transientOf := updAccount st.env.transientOf st.env.address (evalAtom σ k) (evalAtom σ v) } } := by
+  cases h with
+  | builtin hb =>
+      simp only [List.map_cons, List.map_nil, stepOp, guardStatic, hns, Bool.false_eq_true,
+        if_false, Option.some.injEq] at hb
+      exact hb.symm
+
+theorem mstore_ok {funs : Funs} {σ : Store n} {st : State} {p v : Atom n} {r}
+    (h : ExecRhs funs σ st (.builtin .mstore [p, v]) r) :
+    r = .ok [] { touchMemory st (evalAtom σ p).toNat 32 with
+      memory := YulSemantics.EVM.storeWord st.memory (evalAtom σ p).toNat (evalAtom σ v) } := by
+  cases h with
+  | builtin hb => exact Option.some.inj hb |>.symm ▸ rfl
+
+theorem add_lit_ok {funs : Funs} {σ : Store n} {st : State} {x y : Atom n} {r}
+    (h : ExecRhs funs σ st (.builtin .add [x, y]) r) :
+    r = .ok [evalAtom σ x + evalAtom σ y] st := by
+  cases h with
+  | builtin hb => exact Option.some.inj hb |>.symm ▸ rfl
+
+theorem sub_lit_ok {funs : Funs} {σ : Store n} {st : State} {x y : Atom n} {r}
+    (h : ExecRhs funs σ st (.builtin .sub [x, y]) r) :
+    r = .ok [evalAtom σ x - evalAtom σ y] st := by
+  cases h with
+  | builtin hb => exact Option.some.inj hb |>.symm ▸ rfl
+
+/-! ### Pointwise `updMany` non-interference -/
+
+theorem updMany_notin {σ : Store n} {ds : List (Fin n)} {vs : List U256} {i : Fin n}
+    (h : i ∉ ds) : updMany σ ds vs i = σ i :=
+  (AgreeOn.updMany_out (S := [i]) (fun d hd hmem => by
+    rw [List.mem_singleton] at hmem
+    exact h (hmem ▸ hd)) vs i (List.mem_singleton_self i)).symm
+
+/-- `AddrVal` only reads the descriptor's base slot. -/
+theorem AddrVal_updMany_notin {σ : Store n} {ds vs} {d : AddrDesc n}
+    (h : ∀ b, d.base = some b → b ∉ ds) : AddrVal (updMany σ ds vs) d = AddrVal σ d := by
+  cases hb : d.base with
+  | none => simp [AddrVal, hb]
+  | some b => simp [AddrVal, hb, updMany_notin (h b hb)]
+
+/-! ### `stepEnvAssign` preserves environment validity -/
+
+theorem addrval_offset_add {σ : Store n} {env} (h : EnvOK σ env) (x : Atom n) (c : Literal) :
+    AddrVal σ { descOf env x with offset := (descOf env x).offset + litValue c }
+      = evalAtom σ x + litValue c := by
+  rw [← descOf_sound h x]
+  simp only [AddrVal]
+  ring
+
+theorem addrval_offset_sub {σ : Store n} {env} (h : EnvOK σ env) (x : Atom n) (c : Literal) :
+    AddrVal σ { descOf env x with offset := (descOf env x).offset - litValue c }
+      = evalAtom σ x - litValue c := by
+  rw [← descOf_sound h x]
+  simp only [AddrVal]
+  ring
+
+/-- An affine definition's runtime value is exactly its descriptor's denotation. -/
+theorem rhsDesc_value {env : DescEnv n} {rhs : Rhs n} {desc : AddrDesc n}
+    (hd : rhsDesc env rhs = some desc) {funs : Funs} {σ : Store n}
+    (henv : EnvOK σ env) {st st₁ : State} {vs}
+    (hex : ExecRhs funs σ st rhs (.ok vs st₁)) : vs = [AddrVal σ desc] := by
+  unfold rhsDesc at hd
+  split at hd
+  · -- .atom a
+    cases hd
+    cases hex
+    rw [descOf_sound henv]
+  · -- .add [x, .lit c]
+    cases hd
+    have h12 := add_lit_ok hex
+    injection h12 with h1 _
+    subst h1
+    rw [addrval_offset_add henv]
+  · -- .add [.lit c, y]
+    cases hd
+    have h12 := add_lit_ok hex
+    injection h12 with h1 _
+    subst h1
+    rw [addrval_offset_add henv]
+    rw [show ∀ a b : U256, a + b = b + a from fun a b => by ring]
+  · -- .sub [x, .lit c]
+    cases hd
+    have h12 := sub_lit_ok hex
+    injection h12 with h1 _
+    subst h1
+    rw [addrval_offset_sub henv]
+  · exact Option.noConfusion hd
+
+open YulIR.FinFrame (stepEnvAssign) in
+theorem stepEnvAssign_sound {funs : Funs} {σ : Store n} {env} (h : EnvOK σ env)
+    {ds : List (Fin n)} {rhs : Rhs n} {vs : List U256} {st st₁ : State}
+    (hex : ExecRhs funs σ st rhs (.ok vs st₁)) :
+    EnvOK (updMany σ ds vs) (stepEnvAssign env ds rhs) := by
+  have hcleared : EnvOK (updMany σ ds vs) (env.filter (fun p =>
+      !ds.contains p.1 && (match p.2.base with | some b => !ds.contains b | none => true))) := by
+    intro p hp
+    have hmem := List.mem_of_mem_filter hp
+    have hcond := List.of_mem_filter hp
+    obtain ⟨hkey, hbase⟩ := Bool.and_eq_true_iff.mp hcond
+    have hkey' : p.1 ∉ ds := by
+      intro hmem'
+      rw [List.contains_eq_mem, decide_eq_true_eq] at hkey
+      · exact (by simpa using hkey) hmem'
+    rw [updMany_notin hkey', AddrVal_updMany_notin ?_]
+    · exact h p hmem
+    · intro b hb hmem'
+      rw [hb] at hbase
+      simp only [List.contains_eq_mem, Bool.not_eq_true', decide_eq_false_iff_not] at hbase
+      exact hbase hmem'
+  intro p hp
+  unfold stepEnvAssign at hp
+  split at hp
+  · next d desc heq =>
+    split at hp
+    · exact hcleared p hp
+    · next hguard =>
+      rcases List.mem_cons.mp hp with rfl | hmem
+      · -- the new fact (d, desc)
+        show updMany σ [d] vs d = AddrVal (updMany σ [d] vs) desc
+        have hvs := rhsDesc_value heq h hex
+        subst hvs
+        rw [updMany_single_self]
+        rw [AddrVal_updMany_notin ?_]
+        intro b hb hmem'
+        rw [List.mem_singleton] at hmem'
+        subst hmem'
+        exact hguard (by simp [hb])
+      · exact hcleared p hmem
+  · exact hcleared p hp
+
 end YulIR.FinFrame.Sem
