@@ -11,7 +11,7 @@ import YulEvmCompiler.Optimizer.Implementation.CoalesceCopiesResolve
 import YulEvmCompiler.Optimizer.Implementation.RejoinPairs
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Normalize
-set_option warningAsError false -- TEMP: measurement build
+set_option warningAsError true
 /-!
 # Production optimizer pipeline
 
@@ -160,7 +160,7 @@ def objectRound : List (RPass calls creates) :=
    ⟨storageForward, fun L b => resolveStorageForwardBlock_equiv L b⟩,
    ⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
    ⟨coalesceCopies, fun L b => resolveCoalesceCopiesBlock_equiv L b⟩,
-   ⟨rejoinPairs, fun L b => sorry⟩, -- TEMP: measurement build
+   ⟨rejoinPairs, fun L b => resolveRejoinPairsBlock_equiv L b⟩,
    ⟨deadPure, fun L b => resolveDeadPureBlock_equiv L b⟩,
    ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
    ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
