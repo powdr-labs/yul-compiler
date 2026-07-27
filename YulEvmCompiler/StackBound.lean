@@ -112,6 +112,98 @@ step constraint. Decidable-in-spirit: a checker computes `H` and verifies this. 
 def ValidHeights (prog : List Asm) (H : LayoutMap) : Prop :=
   ∀ i c, (i :: c) <:+ prog → ∀ S, H (i :: c) = some S → stepConstraint prog H i c S
 
+/-! ### A decidable verifier for `ValidHeights` (the verified checker)
+
+`stepConstraint` is stated with existentials (over the op-table entry and jump targets); the
+computable `stepOK` mirrors it as a `Bool`, and `checkValid` folds it over every suffix position.
+The layout table `H` itself is proposed by an *untrusted* solver — soundness rests only on the
+verifier below, so a wrong proposal is simply rejected. -/
+
+/-- Decidable mirror of `stepConstraint`. -/
+def stepOK (prog : List Asm) (H : LayoutMap) : Asm → List Asm → Layout → Bool
+  | .push _,      c, S => decide (H c = some (.word :: S)) && decide (S.length + 1 ≤ 1023)
+  | .dup n,       c, S => decide (S[n.val]? = some Slot.word) && decide (H c = some (.word :: S))
+      && decide (S.length + 1 ≤ 1023)
+  | .pushLabel l, c, S => decide (H c = some (.code l :: S)) && decide (S.length + 1 ≤ 1023)
+      && (match findLabel l prog with | some c' => decide (H c' = some S) | none => false)
+  | .pop,         c, S => match S with | _ :: S' => decide (H c = some S') | [] => false
+  | .swap n,      c, S => decide (S[0]? = some Slot.word) && decide (S[n.val + 1]? = some Slot.word)
+      && decide (H c = some S)
+  | .label _,     c, S => decide (H c = some S)
+  | .op yop,      c, S => match opTable yop with
+      | some o => decide (Operation.popArity o ≤ S.length)
+          && decide ((List.replicate (Operation.pushArity o) Slot.word
+              ++ S.drop (Operation.popArity o)).length ≤ 1023)
+          && decide (H c = some (List.replicate (Operation.pushArity o) Slot.word
+              ++ S.drop (Operation.popArity o)))
+      | none => false
+  | .jump l,      _, S => match findLabel l prog with | some c' => decide (H c' = some S) | none => false
+  | .jumpi l,     c, S => match S with
+      | .word :: S' => (match findLabel l prog with | some c' => decide (H c' = some S') | none => false)
+          && decide (H c = some S')
+      | _ => false
+  | .dynJump,     _, _ => true
+
+/-- `stepOK` soundly implies `stepConstraint`. -/
+theorem stepOK_sound {prog : List Asm} {H : LayoutMap} {i : Asm} {c : List Asm} {S : Layout}
+    (h : stepOK prog H i c S = true) : stepConstraint prog H i c S := by
+  cases i with
+  | push v =>
+      simp only [stepOK, Bool.and_eq_true, decide_eq_true_eq] at h; exact h
+  | dup n =>
+      simp only [stepOK, Bool.and_eq_true, decide_eq_true_eq] at h; exact ⟨h.1.1, h.1.2, h.2⟩
+  | pushLabel l =>
+      simp only [stepOK, Bool.and_eq_true, decide_eq_true_eq] at h
+      obtain ⟨⟨hHc, hlen⟩, hf⟩ := h
+      refine ⟨hHc, hlen, ?_⟩
+      revert hf; split
+      · next c' he => intro hf; exact ⟨c', he, by simpa using hf⟩
+      · intro hf; simp at hf
+  | pop =>
+      revert h; simp only [stepOK]; split
+      · next s S' => intro h; exact ⟨s, S', rfl, by simpa using h⟩
+      · intro h; simp at h
+  | swap n =>
+      simp only [stepOK, Bool.and_eq_true, decide_eq_true_eq] at h; exact ⟨h.1.1, h.1.2, h.2⟩
+  | label l =>
+      simp only [stepOK, decide_eq_true_eq] at h; exact h
+  | op yop =>
+      revert h; simp only [stepOK]; split
+      · next o he =>
+          intro h; simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+          exact ⟨o, he, h.1.1, h.1.2, h.2⟩
+      · intro h; simp at h
+  | jump l =>
+      revert h; simp only [stepOK]; split
+      · next c' he => intro h; exact ⟨c', he, by simpa using h⟩
+      · intro h; simp at h
+  | jumpi l =>
+      revert h; simp only [stepOK]; split
+      · next S' =>
+          intro h; simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+          refine ⟨S', rfl, ?_, h.2⟩
+          revert h; split
+          · next c' he => intro h; exact ⟨c', he, by simpa using h.1⟩
+          · intro h; simp at h
+      · intro h; simp at h
+  | dynJump => trivial
+
+/-- The verifier: `H` satisfies every suffix position's step constraint. -/
+def checkValid (prog : List Asm) (H : LayoutMap) : Bool :=
+  prog.tails.all (fun s => match s, H s with
+    | i :: c, some S => stepOK prog H i c S
+    | _, _ => true)
+
+/-- **Verifier soundness**: a passing `checkValid` yields `ValidHeights`. -/
+theorem checkValid_sound {prog : List Asm} {H : LayoutMap} (h : checkValid prog H = true) :
+    ValidHeights prog H := by
+  intro i c hsuf S hHS
+  rw [checkValid, List.all_eq_true] at h
+  have hmem : (i :: c) ∈ prog.tails := (List.mem_tails _ _).mpr hsuf
+  have hs := h (i :: c) hmem
+  rw [hHS] at hs
+  exact stepOK_sound hs
+
 /-- **Well-formed layout**: every `.code l` return-address cell sits at a position whose target
 label `l` expects exactly the layout `below` it. Splitting the layout as `above ++ .code l :: below`,
 `below` is what remains after returning through it (`dynJump`), so its target's layout is `below`. -/
