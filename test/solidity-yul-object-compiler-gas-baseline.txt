@@ -12,8 +12,6 @@ identical_subobjects_full_debug_info.yul	93436	93190
 identical_subobjects_no_debug_info.yul	93436	93190
 identical_subobjects_partial_debug_info.yul	93436	93190
 identical_subobjects_partial_debug_info_no_use_src.yul	93436	93190
-jump_tags.yul	528	432
-leading_and_trailing_dots.yul	55440	85884
 long_object_name.yul	44336	44330
 metadata.yul	162708	162684
 namedObject.yul	0	0
