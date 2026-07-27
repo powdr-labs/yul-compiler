@@ -28,6 +28,19 @@ theorem op_arity_bound (o : Operation) : Operation.pushArity o ≤ Operation.pop
 set_option linter.unusedSimpArgs false in
 set_option linter.unusedTactic false in
 set_option linter.unreachableTactic false in
+theorem baseCost_le_40000 (o : Operation) : Gas.baseCost .Osaka o ≤ 40000 := by
+  cases o <;>
+    simp only [Gas.baseCost] <;>
+    first
+      | decide
+      | (split <;> decide)
+      | (rename_i x; cases x <;> simp only [Gas.baseCost] <;>
+          (first | decide | (split <;> decide) | (rename_i y; have := y.isLt; omega)))
+      | (rename_i x; have := x.isLt; omega)
+
+set_option linter.unusedSimpArgs false in
+set_option linter.unusedTactic false in
+set_option linter.unreachableTactic false in
 theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg prog = some is)
@@ -593,7 +606,7 @@ theorem ahalt_sim [model : ExternalModel]
         (by rw [hm.pc, hpos, hlenPre])
         (by rw [hm.stack, mapStk_words])
         (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega))
-        (by have hfork : s.fork = .Osaka := hm.frame.fork; rw [hfork]; exact le_trans (by cases o <;> decide) hgas)
+        (by have hfork : s.fork = .Osaka := hm.frame.fork; rw [hfork]; exact le_trans (baseCost_le_40000 o) hgas)
       obtain ⟨s', hstep, hsm', hcs', hhm'⟩ := hhalt
       exact ⟨s', .trans hstep (.refl _), hsm', hcs', hhm'⟩
     · have hstepLocal :=
@@ -617,7 +630,8 @@ theorem ahalt_sim [model : ExternalModel]
 theorem asteps_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg prog = some is)
-    {a b : AConf} (hsteps : ASteps prog a b) (hsuf : a.code <:+ prog) :
+    {a b : AConf} (hsteps : ASteps prog a b) (hsuf : a.code <:+ prog)
+    (hbound : ∀ mid, ASteps prog a mid → mid.stk.length ≤ 1023) :
     ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
       bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ ConfMatch (payload := payload) prog is b s'
@@ -626,8 +640,8 @@ theorem asteps_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
   | refl a =>
     exact ⟨0, fun s hm _ => ⟨s, .refl _, hm, by omega⟩⟩
   | @head a₁ a₂ a₃ hstep hrest ih =>
-    obtain ⟨b1, H1⟩ := astep_sim hexternal hlow hstep hsuf
-    obtain ⟨b2, H2⟩ := ih (hstep.suffix hsuf)
+    obtain ⟨b1, H1⟩ := astep_sim hexternal hlow hstep hsuf (hbound a₁ (ASteps.refl a₁))
+    obtain ⟨b2, H2⟩ := ih (hstep.suffix hsuf) (fun mid h => hbound mid (ASteps.head hstep h))
     refine ⟨b1 + b2, ?_⟩
     intro s hm hgas
     obtain ⟨s1, st1, hm1, hg1⟩ := H1 s hm (by omega)
@@ -641,13 +655,14 @@ theorem arun_halt_sim [model : ExternalModel] (hexternal : ExternalsRealized mod
     (hlow : lowerProg prog = some is)
     {a b : AConf} {yst' : EvmState}
     (hsteps : ASteps prog a b) (hhalt : AHalt prog b yst')
-    (hsuf : a.code <:+ prog) :
+    (hsuf : a.code <:+ prog)
+    (hbound : ∀ mid, ASteps prog a mid → mid.stk.length ≤ 1023) :
     ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
       bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ StateMatch yst' s' ∧ s'.callStack = []
         ∧ HaltedMatch yst' s' := by
-  obtain ⟨b1, H1⟩ := asteps_sim hexternal hlow hsteps hsuf
-  obtain ⟨b2, H2⟩ := ahalt_sim hlow hhalt (hsteps.suffix hsuf)
+  obtain ⟨b1, H1⟩ := asteps_sim hexternal hlow hsteps hsuf hbound
+  obtain ⟨b2, H2⟩ := ahalt_sim hlow hhalt (hsteps.suffix hsuf) (hbound b hsteps)
   refine ⟨b1 + b2, ?_⟩
   intro s hm hgas
   obtain ⟨s1, st1, hm1, hg1⟩ := H1 s hm (by omega)
