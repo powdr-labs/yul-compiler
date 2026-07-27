@@ -896,39 +896,48 @@ theorem frameStepB_sound {prog : List Asm} {C : Cert} {i : Asm} {c : List Asm} {
 
 /-! ### The finite certificate and the top-level check -/
 
-/-- The untrusted solver's output: one `(position, layout, frameBase, returnLayout)` per reachable
-position. -/
+/-- The untrusted solver's output: one `(positionLength, position, layout, frameBase, returnLayout)`
+per reachable position. The leading length is a precomputed lookup key: reachable positions are
+suffixes of the program, so equal length ⟹ equal position, and an O(1) `Nat` comparison prunes the
+`find?` scan before the O(length) list comparison — making verification linear rather than O(n²·len). -/
 structure CertData where
-  entries : List (List Asm × FLayout × Nat × FLayout)
+  entries : List (Nat × List Asm × FLayout × Nat × FLayout)
 
-/-- The `Cert` induced by a `CertData`: look the position up in the finite table. -/
+/-- The `Cert` induced by a `CertData`: look the position up in the finite table, keyed by length. -/
 def CertData.toCert (d : CertData) : Cert where
-  fl c := (d.entries.find? (fun e => decide (e.1 = c))).map (·.2.1)
-  fbMax c := (d.entries.find? (fun e => decide (e.1 = c))).map (·.2.2.1)
-  rl c := (d.entries.find? (fun e => decide (e.1 = c))).map (·.2.2.2)
+  fl c := (d.entries.find? (fun e => e.1 == c.length && decide (e.2.1 = c))).map (·.2.2.1)
+  fbMax c := (d.entries.find? (fun e => e.1 == c.length && decide (e.2.1 = c))).map (·.2.2.2.1)
+  rl c := (d.entries.find? (fun e => e.1 == c.length && decide (e.2.1 = c))).map (·.2.2.2.2)
 
 /-- The verifier: bounded at every entry, and `frameStep` at every instruction entry, plus the
-program-entry conditions. One pass over the table ⇒ linear. -/
+program-entry conditions. Each entry carries its own `(fl, fbMax, rl)`, so the current-position
+checks read them directly (no `find?`); `frameStepB` still resolves *successor* positions through
+`C`. One pass over the table ⇒ linear. -/
 def checkCert (prog : List Asm) (d : CertData) : Bool :=
   let C := d.toCert
   (C.fl prog == some []) && (C.fbMax prog == some 0) && (C.rl prog).isSome &&
   d.entries.all (fun e =>
-    (match C.fl e.1, C.fbMax e.1 with
-     | some S, some F => decide (S.length + F ≤ 1023)
-     | _, _ => true)
-    && (match e.1 with
-        | i :: c' => (match C.fl e.1, C.fbMax e.1, C.rl e.1 with
-                      | some S, some F, some R => frameStepB prog C i c' S F R
-                      | _, _, _ => true)
+    decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023)
+    && (match e.2.1 with
+        | i :: c' => frameStepB prog C i c' e.2.2.1 e.2.2.2.1 e.2.2.2.2
         | [] => true))
 
 omit model in
-/-- A defined position comes from a table entry. -/
-theorem CertData.lookup_pos {d : CertData} {c : List Asm} {S : FLayout}
-    (hfl : d.toCert.fl c = some S) : ∃ e ∈ d.entries, e.1 = c := by
-  simp only [CertData.toCert, Option.map_eq_some_iff] at hfl
-  obtain ⟨e, hfound, _⟩ := hfl
-  exact ⟨e, List.mem_of_find?_eq_some hfound, by have := List.find?_some hfound; simpa using this⟩
+/-- A defined position comes from a table entry carrying that exact `(position, fl, fbMax, rl)`. -/
+theorem CertData.lookup_fl {d : CertData} {c : List Asm} {S : FLayout}
+    (hfl : d.toCert.fl c = some S) :
+    ∃ e ∈ d.entries, e.2.1 = c ∧ e.2.2.1 = S ∧
+      d.toCert.fbMax c = some e.2.2.2.1 ∧ d.toCert.rl c = some e.2.2.2.2 := by
+  have hfl' := hfl
+  simp only [CertData.toCert, Option.map_eq_some_iff] at hfl'
+  obtain ⟨e, hfound, hS⟩ := hfl'
+  have hpe : e.2.1 = c := by
+    have := List.find?_some hfound
+    simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at this
+    exact this.2
+  refine ⟨e, List.mem_of_find?_eq_some hfound, hpe, hS, ?_, ?_⟩
+  · simp only [CertData.toCert]; rw [hfound]; rfl
+  · simp only [CertData.toCert]; rw [hfound]; rfl
 
 omit model in
 /-- **Verifier soundness.** -/
@@ -940,18 +949,23 @@ theorem checkCert_sound {prog : List Asm} {d : CertData} (h : checkCert prog d =
   refine ⟨?_, ?_, hentfl, hentfb, ?_⟩
   · -- Valid
     intro i c S F R hfl hfb hrl
-    obtain ⟨e, hmem, hpe⟩ := d.lookup_pos hfl
+    obtain ⟨e, hmem, hpe, hS, hfbe, hrle⟩ := d.lookup_fl hfl
+    have hF : e.2.2.2.1 = F := by rw [hfbe] at hfb; exact Option.some.inj hfb
+    have hR : e.2.2.2.2 = R := by rw [hrle] at hrl; exact Option.some.inj hrl
     have hchk := hall e hmem
-    rw [hpe] at hchk
-    simp only [hfl, hfb, hrl] at hchk
-    exact frameStepB_sound hchk.2
+    have hstep := hchk.2
+    rw [hpe] at hstep
+    have hfs := frameStepB_sound hstep
+    rwa [hS, hF, hR] at hfs
   · -- Bounded
     intro c S F hfl hfb
-    obtain ⟨e, hmem, hpe⟩ := d.lookup_pos hfl
+    obtain ⟨e, hmem, _, hS, hfbe, _⟩ := d.lookup_fl hfl
+    have hF : e.2.2.2.1 = F := by rw [hfbe] at hfb; exact Option.some.inj hfb
     have hchk := hall e hmem
-    rw [hpe] at hchk
-    simp only [hfl, hfb, decide_eq_true_eq] at hchk
-    exact hchk.1
+    have hb := hchk.1
+    rw [decide_eq_true_eq] at hb
+    rw [hS, hF] at hb
+    exact hb
   · exact Option.isSome_iff_exists.mp hentrl
 
 /-- **The scalable overflow gate is sound.** A passing `checkCert` guarantees no reachable
@@ -964,18 +978,20 @@ theorem checkCert_run_bound {prog : List Asm} {d : CertData} (h : checkCert prog
 
 /-! ### The untrusted frame-relative solver
 
-Produces a `CertData` by a single forward layout pass. Being untrusted, its only job is to make
-`checkCert` pass for overflow-free programs; a wrong output is simply rejected by the verifier. It is
-linear: frame layouts (`fl`/`rl`) are context-insensitive, so each position is explored once (a
-call explores the callee body *and* the caller's own continuation directly — no call stack), and
-`fbMax` is raised to the max base over call sites via re-exploration bounded by the 1023 cap. -/
+Produces a `CertData` for `checkCert` to verify. Being untrusted, its only job is to make
+`checkCert` pass for overflow-free programs; a wrong output is simply rejected by the verifier.
+
+It is **linear** in two phases. Frame layouts (`fl`/`rl`) are context-insensitive, so every reachable
+position is explored exactly once — a call explores the callee body *and* the caller's own
+continuation directly (no call stack). Reachable positions are suffixes of `prog`, hence uniquely
+keyed by their length, so a `position.length`-indexed array gives O(1) dedup. Each call records a
+call-graph edge `(caller-frame, callee-frame, |midframe|)`; a second pass (`computeBase`) solves the
+per-function base as the fixpoint `base(callee) = max over calls (base(caller) + |midframe|)`. A base
+that fails to converge (a call-graph cycle = recursion) or exceeds 1023 is rejected. -/
 
 /-- Labels used as `pushLabel` targets — the return addresses. -/
 def pushLabelled (prog : List Asm) : List Label :=
   prog.filterMap (fun x => match x with | .pushLabel l => some l | _ => none)
-
-def isHaltingOp : Op → Bool
-  | .stop | .ret | .revert | .invalid | .selfdestruct => true | _ => false
 
 /-- Count the `retRot` swaps immediately preceding a function's `dynJump` = its return-value count. -/
 def retCount : List Asm → Nat → Nat
@@ -984,32 +1000,37 @@ def retCount : List Asm → Nat → Nat
   | .swap _ :: rest, run => retCount rest (run + 1)
   | _ :: rest, _ => retCount rest 0
 
-abbrev AState := List Asm × FLayout × Nat × FLayout
+/-- Analyzer state: `(position, fl, rl, functionEntryLength)`. The frame base is *not* carried here;
+it is solved per function in `computeBase` and grafted on afterwards. -/
+abbrev AState := List Asm × FLayout × FLayout × Nat
 
-/-- Forward successors of one abstract state (mirrors `frameStep` in the forward direction). -/
-def stepSuccs (prog : List Asm) (pls : List Label) : List Asm → FLayout → Nat → FLayout →
-    Option (List AState)
-  | [], _, _, _ => some []
-  | i :: c, fl, base, rl =>
+/-- A call-graph edge `(callerFrameLen, calleeFrameLen, midframeLen)`, keyed by function-entry length. -/
+abbrev CallEdge := Nat × Nat × Nat
+
+/-- Forward successors of one abstract state (mirrors `frameStep` forward), plus any call edge. -/
+def stepSuccs (prog : List Asm) (pls : List Label) : List Asm → FLayout → FLayout → Nat →
+    Option (List AState × List CallEdge)
+  | [], _, _, _ => some ([], [])
+  | i :: c, fl, rl, fe =>
     match i with
-    | .push _ => some [(c, .word :: fl, base, rl)]
+    | .push _ => some ([(c, .word :: fl, rl, fe)], [])
     | .dup n => match fl[n.val]? with
-        | some FSlot.word => some [(c, .word :: fl, base, rl)] | _ => none
-    | .pop => match fl with | .word :: fl' => some [(c, fl', base, rl)] | _ => none
+        | some FSlot.word => some ([(c, .word :: fl, rl, fe)], []) | _ => none
+    | .pop => match fl with | .word :: fl' => some ([(c, fl', rl, fe)], []) | _ => none
     | .swap n => match fl with
         | sx :: rest => match rest.drop n.val with
-            | sy :: rst => some [(c, sy :: (rest.take n.val ++ sx :: rst), base, rl)]
+            | sy :: rst => some ([(c, sy :: (rest.take n.val ++ sx :: rst), rl, fe)], [])
             | [] => none
         | [] => none
-    | .label _ => some [(c, fl, base, rl)]
-    | .pushLabel l => some [(c, .retTo l :: fl, base, rl)]
+    | .label _ => some ([(c, fl, rl, fe)], [])
+    | .pushLabel l => some ([(c, .retTo l :: fl, rl, fe)], [])
     | .op yop =>
         match opTable yop with
-        | some o => some [(c, List.replicate o.pushArity .word ++ fl.drop o.popArity, base, rl)]
+        | some o => some ([(c, List.replicate o.pushArity .word ++ fl.drop o.popArity, rl, fe)], [])
         | none => none
     | .jumpi l => match findLabel l prog with
         | some t => match fl with
-            | .word :: fl' => some [(t, fl', base, rl), (c, fl', base, rl)]
+            | .word :: fl' => some ([(t, fl', rl, fe), (c, fl', rl, fe)], [])
             | _ => none
         | none => none
     | .jump l => match findLabel l prog with
@@ -1019,39 +1040,60 @@ def stepSuccs (prog : List Asm) (pls : List Label) : List Asm → FLayout → Na
                   match splitSetup Lret fl with
                   | some (Sw, Smid) =>
                       let k := retCount t 0
-                      some [(t, Sw ++ [.ret], base + Smid.length, List.replicate k .word),
-                            (c', List.replicate k .word ++ Smid, base, rl)]
+                      -- callee enters its own frame `t`; the continuation stays in the caller frame.
+                      some ([(t, Sw ++ [.ret], List.replicate k .word, t.length),
+                             (c', List.replicate k .word ++ Smid, rl, fe)],
+                            [(fe, t.length, Smid.length)])
                   | none => none
-                else some [(t, fl, base, rl)]
-            | _ => some [(t, fl, base, rl)]
+                else some ([(t, fl, rl, fe)], [])
+            | _ => some ([(t, fl, rl, fe)], [])
         | none => none
-    | .dynJump => some []
+    | .dynJump => some ([], [])
 
+/-- Phase 1: explore every reachable position once, deduping by `position.length` in `vis`; collect
+call edges. Returns `none` on an unrepresentable instruction (rejected downstream). -/
 partial def analyzeGo (prog : List Asm) (pls : List Label) :
-    Nat → List AState → List AState → Option (List AState)
-  | 0, _, _ => none
-  | _, [], acc => some acc
-  | fuel+1, (pos, fl, base, rl) :: rest, acc =>
-    if 1023 < base then none else
-    match acc.find? (fun e => decide (e.1 = pos)) with
-    | some e =>
-        if fl = e.2.1 then
-          if base ≤ e.2.2.1 then analyzeGo prog pls fuel rest acc
-          else match stepSuccs prog pls pos fl base rl with
-               | some succs =>
-                   analyzeGo prog pls fuel (succs ++ rest)
-                     (acc.map (fun x => if decide (x.1 = pos) then (pos, fl, base, rl) else x))
-               | none => none
-        else none
-    | none => match stepSuccs prog pls pos fl base rl with
-              | some succs => analyzeGo prog pls fuel (succs ++ rest) ((pos, fl, base, rl) :: acc)
-              | none => none
+    List AState → Array (Option AState) → List CallEdge →
+    Option (Array (Option AState) × List CallEdge)
+  | [], vis, edges => some (vis, edges)
+  | (pos, fl, rl, fe) :: wl, vis, edges =>
+    let k := pos.length
+    if k ≥ vis.size then none else
+    match vis[k]! with
+    | some _ => analyzeGo prog pls wl vis edges
+    | none =>
+      match stepSuccs prog pls pos fl rl fe with
+      | some (succs, es) =>
+          analyzeGo prog pls (succs ++ wl) (vis.set! k (some (pos, fl, rl, fe))) (es ++ edges)
+      | none => none
 
-/-- The solver: analyse from the program entry (empty frame, base 0, `main`'s return layout `[]`). -/
+/-- Phase 2: solve the per-function frame base as a fixpoint over the call edges (`size` bounds the
+frame-entry key space). Rejects a non-converging graph (recursion) or a base exceeding 1023. -/
+def computeBase (size : Nat) (edges : List CallEdge) : Option (Array Nat) := Id.run do
+  let mut base : Array Nat := Array.replicate size 0
+  -- A DAG converges within `edges.length` relaxation rounds; one extra round detects a cycle.
+  for _ in [0:edges.length + 1] do
+    for e in edges do
+      let nb := base[e.1]! + e.2.2
+      if base[e.2.1]! < nb then
+        if nb > 1023 then return none
+        base := base.set! e.2.1 nb
+  for e in edges do
+    if base[e.2.1]! < base[e.1]! + e.2.2 then return none  -- did not converge ⇒ recursion
+  return some base
+
+/-- The solver: explore from the entry (empty frame, `main`'s return layout `[]`, frame = whole
+program), solve the bases, then graft `fbMax = base(function)` onto every position. -/
 def analyze (prog : List Asm) : CertData :=
-  match analyzeGo prog (pushLabelled prog) 2000000 [(prog, [], 0, [])] [] with
-  | some acc => ⟨acc⟩
+  let size := prog.length + 1
+  match analyzeGo prog (pushLabelled prog) [(prog, [], [], prog.length)]
+      (Array.replicate size none) [] with
   | none => ⟨[]⟩
+  | some (vis, edges) =>
+    match computeBase size edges with
+    | none => ⟨[]⟩
+    | some base =>
+      ⟨vis.toList.filterMap (fun o => o.map (fun s => (s.1.length, s.1, s.2.1, base[s.2.2.2]!, s.2.2.1)))⟩
 
 /-- The `compile`-facing gate: analyse then verify. -/
 def stackOK2 (prog : List Asm) : Bool := checkCert prog (analyze prog)
