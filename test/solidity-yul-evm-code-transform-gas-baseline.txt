@@ -3,16 +3,16 @@
 # Pinned to solc 0.8.35, EVM version osaka. 'ours' is a ceiling:
 # CI fails if this compiler's total rises above it while solc's is unchanged.
 # columns: fixture<TAB>ours<TAB>solc
-after_terminating_function.yul	126	30
+after_terminating_function.yul	36	30
 nonempty_initial_layout.yul	0	210
 pops_in_reverting_branch.yul	61646	61580
 stackReuse/function_argument_reuse.yul	27692	27464
-stackReuse/function_argument_reuse_without_retparams.yul	25384	25511
-stackReuse/function_call.yul	186	480
-stackReuse/function_params.yul	72	0
-stackReuse/function_params_and_retparams.yul	264	0
-stackReuse/function_params_and_retparams_partly_used.yul	480	432
-stackReuse/function_retparam.yul	264	0
+stackReuse/function_argument_reuse_without_retparams.yul	25312	25511
+stackReuse/function_call.yul	0	480
+stackReuse/function_params.yul	0	0
+stackReuse/function_params_and_retparams.yul	168	0
+stackReuse/function_params_and_retparams_partly_used.yul	306	432
+stackReuse/function_retparam.yul	168	0
 stackReuse/function_retparam_block.yul	318	0
 stackReuse/function_retparam_declaration.yul	318	0
 stackReuse/function_retparam_for.yul	444	174
@@ -21,14 +21,14 @@ stackReuse/function_retparam_leave.yul	360	0
 stackReuse/function_retparam_read.yul	27554	27404
 stackReuse/function_retparam_unassigned.yul	294	0
 stackReuse/function_retparam_unassigned_multiple.yul	354	0
-stackReuse/function_trivial.yul	72	0
-stackReuse/function_with_body_embedded.yul	492	0
-stackReuse/functions_multi_return.yul	606	888
+stackReuse/function_trivial.yul	0	0
+stackReuse/function_with_body_embedded.yul	426	0
+stackReuse/functions_multi_return.yul	300	888
 stackReuse/if.yul	174	132
 stackReuse/last_use_in_nested_block.yul	30	0
-stackReuse/multi_reuse_same_variable_name.yul	306	48
-stackReuse/multi_reuse_single_slot.yul	132	0
-stackReuse/multi_reuse_single_slot_nested.yul	144	0
+stackReuse/multi_reuse_same_variable_name.yul	216	48
+stackReuse/multi_reuse_single_slot.yul	0	0
+stackReuse/multi_reuse_single_slot_nested.yul	0	0
 stackReuse/reuse_on_decl_assign_not_same_scope.yul	132636	132636
 stackReuse/reuse_on_decl_assign_to_last_used.yul	132636	132636
 stackReuse/reuse_on_decl_assign_to_last_used_expr.yul	132636	132672
