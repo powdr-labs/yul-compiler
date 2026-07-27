@@ -470,4 +470,76 @@ theorem checkValid_sound {prog : List Asm} {H : LayoutMap} (h : checkValid prog 
   rw [hHS] at hs
   exact stepOK_sound hs
 
+/-! ### The untrusted layout solver + the `compile`-facing check
+
+`infer` is a forward worklist that *proposes* a layout table (unverified — soundness rests only on
+`checkValid`). At each analysed position it pushes the successors' layouts; a position revisited with
+an inconsistent layout (recursion, stack-growing loop) makes it fail, so those programs are rejected
+— exactly the "no overflow" contract. Positions are keyed by suffix length (unique among suffixes of
+a fixed program). -/
+
+/-- Successor positions and their layouts for one instruction. `none` = malformed / reject. -/
+def succsOf (prog : List Asm) : Asm → List Asm → Layout → Option (List (List Asm × Layout))
+  | .push _,      c, S => some [(c, .word :: S)]
+  | .dup n,       c, S => match S[n.val]? with | some sl => some [(c, sl :: S)] | none => none
+  | .pushLabel l, c, S => match findLabel l prog with
+                          | some tgt => some [(c, .code tgt :: S)] | none => none
+  | .pop,         c, S => match S with | _ :: S' => some [(c, S')] | [] => none
+  | .swap n,      c, S => match S with
+      | a :: t => match t.drop n.val with
+                  | b :: rest => some [(c, b :: (t.take n.val ++ a :: rest))]
+                  | [] => none
+      | [] => none
+  | .label _,     c, S => some [(c, S)]
+  | .op yop,      c, S => match opTable yop with
+      | some o => if Operation.popArity o ≤ S.length then
+            some [(c, List.replicate (Operation.pushArity o) Slot.word ++ S.drop (Operation.popArity o))]
+          else none
+      | none => none
+  | .jump l,      _, S => match findLabel l prog with | some tgt => some [(tgt, S)] | none => none
+  | .jumpi l,     c, S => match S with
+      | .word :: S' => match findLabel l prog with
+                       | some tgt => some [(tgt, S'), (c, S')] | none => none
+      | _ => none
+  | .dynJump,     _, S => match S with | .code tgt :: S' => some [(tgt, S')] | _ => none
+
+/-- Forward worklist accumulating a layout table; fails on inconsistent revisits. -/
+partial def inferGo (prog : List Asm) :
+    List (List Asm × Layout) → List (Nat × Layout) → Option (List (Nat × Layout))
+  | [], acc => some acc
+  | (pos, S) :: wl, acc =>
+    match acc.find? (fun p => p.1 == pos.length) with
+    | some (_, S') => if S' == S then inferGo prog wl acc else none
+    | none =>
+      match pos with
+      | [] => inferGo prog wl ((pos.length, S) :: acc)
+      | i :: c => match succsOf prog i c S with
+                  | some succs => inferGo prog (succs ++ wl) ((pos.length, S) :: acc)
+                  | none => none
+
+/-- Propose a layout table for `prog`, seeded with the empty entry layout. -/
+def infer (prog : List Asm) : Option (List (Nat × Layout)) := inferGo prog [(prog, [])] []
+
+/-- Read a proposed table back as a layout map, keyed by suffix length. -/
+def tableToMap (t : List (Nat × Layout)) : LayoutMap :=
+  fun s => (t.find? (fun p => p.1 == s.length)).map (·.2)
+
+/-- **The compile-facing stack-overflow check.** Propose a layout table and *verify* it. -/
+def stackOK (prog : List Asm) : Bool :=
+  match infer prog with
+  | some t => checkValid prog (tableToMap t) && decide (tableToMap t prog = some [])
+  | none => false
+
+omit model in
+/-- **Soundness of the check**: passing `stackOK` exhibits a valid layout map assigning the whole
+program the empty entry layout — the two facts `run_stack_bound` consumes. -/
+theorem stackOK_sound {prog : List Asm} (h : stackOK prog = true) :
+    ∃ H : LayoutMap, ValidHeights prog H ∧ H prog = some [] := by
+  unfold stackOK at h
+  cases he : infer prog with
+  | none => rw [he] at h; simp at h
+  | some t =>
+      rw [he] at h; simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+      exact ⟨tableToMap t, checkValid_sound h.1, h.2⟩
+
 end YulEvmCompiler
