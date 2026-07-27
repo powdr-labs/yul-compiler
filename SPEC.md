@@ -11,7 +11,7 @@ remains is exactly the specification vocabulary.
 
 **Audited surface: 89 declarations** \
 relations: 12 · structures: 12 · data defs: 51 · statements: 9 · artifact signatures: 4 \
-**External boundary: 153 declarations** across the two pinned semantics.
+**External boundary: 155 declarations** across the two pinned semantics.
 
 Axioms are pinned separately in `Checks.lean` (only `propext`,
 `Classical.choice`, `Quot.sound`). Anti-vacuity (that the accepted-program
@@ -31,7 +31,7 @@ flowchart TD
   end
   subgraph external ["trusted ground truth — pinned dependency semantics"]
     YUL["yul-semantics entry points (37)"]
-    EVM["evm-semantics entry points (116)"]
+    EVM["evm-semantics entry points (118)"]
   end
   AX["Axiom base: propext, Classical.choice, Quot.sound (Checks.lean)"]
   S --> R & T & D & A
@@ -53,8 +53,8 @@ The shape of each guarantee. Read these first: the honest scoping lives here.
 | `YulEvmCompiler.compileObject_consistent` | [YulEvmCompiler/ObjectCompile.lean#L740](YulEvmCompiler/ObjectCompile.lean#L740) | `6772c506631c72d` |
 | `YulEvmCompiler.compileObject_correct` | [YulEvmCompiler/ObjectCompile.lean#L763](YulEvmCompiler/ObjectCompile.lean#L763) | `6c28d636cabfed71` |
 | `YulEvmCompiler.compile_correct` | [YulEvmCompiler/Correctness.lean#L70](YulEvmCompiler/Correctness.lean#L70) | `ec51f1c553a52f8a` |
-| `YulEvmCompiler.compile_correct_eval` | [YulEvmCompiler/Correctness.lean#L217](YulEvmCompiler/Correctness.lean#L217) | `999e96fc09d553b6` |
-| `YulEvmCompiler.compile_correct_withPayload` | [YulEvmCompiler/Correctness.lean#L151](YulEvmCompiler/Correctness.lean#L151) | `50e2c3107c79f9ea` |
+| `YulEvmCompiler.compile_correct_eval` | [YulEvmCompiler/Correctness.lean#L242](YulEvmCompiler/Correctness.lean#L242) | `999e96fc09d553b6` |
+| `YulEvmCompiler.compile_correct_withPayload` | [YulEvmCompiler/Correctness.lean#L164](YulEvmCompiler/Correctness.lean#L164) | `50e2c3107c79f9ea` |
 | `YulEvmCompiler.compiled_constructor_returns` | [YulEvmCompiler/ObjectCompile.lean#L795](YulEvmCompiler/ObjectCompile.lean#L795) | `9a99d76f5d037853` |
 | `YulParser.parse_canon_block` | [YulParser/Stmt.lean#L313](YulParser/Stmt.lean#L313) | `565944a3acfe55d3` |
 | `YulParser.parse_canon_obj` | [YulParser/Obj.lean#L139](YulParser/Obj.lean#L139) | `f40759b3ea852432` |
@@ -84,12 +84,12 @@ The vocabulary the guarantee is phrased in.
 
 | declaration | source | hash |
 |---|---|---|
-| `YulEvmCompiler.CallsRealized` | [YulEvmCompiler/LowerDefs.lean#L307](YulEvmCompiler/LowerDefs.lean#L307) | `64c9e18484d6ee24` |
-| `YulEvmCompiler.CreatesRealized` | [YulEvmCompiler/LowerDefs.lean#L352](YulEvmCompiler/LowerDefs.lean#L352) | `c1cd779310c8070e` |
+| `YulEvmCompiler.CallsRealized` | [YulEvmCompiler/LowerDefs.lean#L307](YulEvmCompiler/LowerDefs.lean#L307) | `60cec34bf4c3cac9` |
+| `YulEvmCompiler.CreatesRealized` | [YulEvmCompiler/LowerDefs.lean#L354](YulEvmCompiler/LowerDefs.lean#L354) | `d608d1effb3509d1` |
 | `YulEvmCompiler.EnvMatch` | [YulEvmCompiler/StateRel.lean#L429](YulEvmCompiler/StateRel.lean#L429) | `9cea97fa8ae94f99` |
 | `YulEvmCompiler.ExternalCodeMatch` | [YulEvmCompiler/StateRel.lean#L494](YulEvmCompiler/StateRel.lean#L494) | `2d46717e52ff1871` |
 | `YulEvmCompiler.ExternalModel` | [YulEvmCompiler/AsmSem.lean#L34](YulEvmCompiler/AsmSem.lean#L34) | `75bd1eadd7f209e2` |
-| `YulEvmCompiler.ExternalsRealized` | [YulEvmCompiler/LowerDefs.lean#L398](YulEvmCompiler/LowerDefs.lean#L398) | `7fd85ee803561fa8` |
+| `YulEvmCompiler.ExternalsRealized` | [YulEvmCompiler/LowerDefs.lean#L402](YulEvmCompiler/LowerDefs.lean#L402) | `7fd85ee803561fa8` |
 | `YulEvmCompiler.FrameOK` | [YulEvmCompiler/StateRel.lean#L1240](YulEvmCompiler/StateRel.lean#L1240) | `97dc148ae9bebed5` |
 | `YulEvmCompiler.Instr` | [YulEvmCompiler/Instr.lean#L34](YulEvmCompiler/Instr.lean#L34) | `b8989862a6923efc` |
 | `YulEvmCompiler.Optimizer.LocalPass` | [YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L72](YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L72) | `6b8887154f59257c` |
@@ -161,7 +161,7 @@ The code being verified. Only the signatures are frozen; implementations are fre
 
 | declaration | source | hash |
 |---|---|---|
-| `YulEvmCompiler.compile` | [YulEvmCompiler/Compile.lean#L332](YulEvmCompiler/Compile.lean#L332) | `49a8d9e93773bc82` |
+| `YulEvmCompiler.compile` | [YulEvmCompiler/Compile.lean#L334](YulEvmCompiler/Compile.lean#L334) | `49a8d9e93773bc82` |
 | `YulEvmCompiler.compileObject` | [YulEvmCompiler/ObjectCompile.lean#L736](YulEvmCompiler/ObjectCompile.lean#L736) | `45cacb379f48e375` |
 | `YulParser.parseBlock` | [YulParser/Stmt.lean#L305](YulParser/Stmt.lean#L305) | `548f44114c0c0376` |
 | `YulParser.parseObject` | [YulParser/Obj.lean#L131](YulParser/Obj.lean#L131) | `7de98252fdadddab` |
@@ -174,7 +174,7 @@ Recursors/auxiliary constants reached through a type.
 |---|---|---|
 | `YulParser.pQuotedChars_rest_lt` | [YulParser/Lexer.lean#L53](YulParser/Lexer.lean#L53) | `bf5ffe92f6739f95` |
 
-## External-semantics boundary (153 decls, combined hash `1b72657fa1e8f869`)
+## External-semantics boundary (155 decls, combined hash `a8298506639ad1db`)
 
 The entry points of the two pinned semantics the guarantee is stated against.
 These are trusted ground truth (auditing them = believing they model real Yul
@@ -184,6 +184,6 @@ and real EVM); they are recorded but not unfolded.
 
 `YulSemantics.Block`, `YulSemantics.Data`, `YulSemantics.Data.bytes`, `YulSemantics.Data.size`, `YulSemantics.Dialect`, `YulSemantics.EVM.EvmState`, `YulSemantics.EVM.ExecEnv`, `YulSemantics.EVM.ExternalCalls`, `YulSemantics.EVM.ExternalCalls.none`, `YulSemantics.EVM.ExternalCreates`, `YulSemantics.EVM.HaltKind`, `YulSemantics.EVM.Layout`, `YulSemantics.EVM.Layout.Consistent`, `YulSemantics.EVM.Layout.initState`, `YulSemantics.EVM.LogEntry`, `YulSemantics.EVM.Op`, `YulSemantics.EVM.U256`, `YulSemantics.EVM.builtin`, `YulSemantics.EVM.builtinWithExternal`, `YulSemantics.EVM.byteFrom`, `YulSemantics.EVM.constructorCode`, `YulSemantics.EVM.evm`, `YulSemantics.EVM.evmWithExternal`, `YulSemantics.EVM.litValue`, `YulSemantics.EVM.opName`, `YulSemantics.EVM.projectedCodeHash`, `YulSemantics.EquivBlock`, `YulSemantics.Expr`, `YulSemantics.Ident`, `YulSemantics.Literal`, `YulSemantics.Object`, `YulSemantics.Object.codeBlock`, `YulSemantics.Object.dataSegs`, `YulSemantics.Outcome`, `YulSemantics.Run`, `YulSemantics.Stmt`, `YulSemantics.VEnv`
 
-### evm-sem (116)
+### evm-sem (118)
 
-`EvmSemantics.Account.codeHash`, `EvmSemantics.Account.isContract`, `EvmSemantics.AccountAddress`, `EvmSemantics.AccountAddress.ofUInt256`, `EvmSemantics.AccountAddress.toUInt256`, `EvmSemantics.AccountMap`, `EvmSemantics.AccountMap.get`, `EvmSemantics.EVM.Eval`, `EvmSemantics.EVM.ExecutionResult`, `EvmSemantics.EVM.Frame`, `EvmSemantics.EVM.Precompile.isPrecompile`, `EvmSemantics.EVM.State`, `EvmSemantics.EVM.State.decodedOp`, `EvmSemantics.EVM.Steps`, `EvmSemantics.ExecutionEnv`, `EvmSemantics.Fork`, `EvmSemantics.HaltKind`, `EvmSemantics.LogEntry`, `EvmSemantics.LogSeries`, `EvmSemantics.Operation`, `EvmSemantics.Operation.ADD`, `EvmSemantics.Operation.ADDMOD`, `EvmSemantics.Operation.ADDRESS`, `EvmSemantics.Operation.AND`, `EvmSemantics.Operation.BALANCE`, `EvmSemantics.Operation.BASEFEE`, `EvmSemantics.Operation.BLOBBASEFEE`, `EvmSemantics.Operation.BLOBHASH`, `EvmSemantics.Operation.BLOCKHASH`, `EvmSemantics.Operation.BYTE`, `EvmSemantics.Operation.BlockOps`, `EvmSemantics.Operation.CALL`, `EvmSemantics.Operation.CALLCODE`, `EvmSemantics.Operation.CALLDATACOPY`, `EvmSemantics.Operation.CALLDATALOAD`, `EvmSemantics.Operation.CALLDATASIZE`, `EvmSemantics.Operation.CALLER`, `EvmSemantics.Operation.CALLVALUE`, `EvmSemantics.Operation.CHAINID`, `EvmSemantics.Operation.CLZ`, `EvmSemantics.Operation.CODECOPY`, `EvmSemantics.Operation.CODESIZE`, `EvmSemantics.Operation.COINBASE`, `EvmSemantics.Operation.CREATE`, `EvmSemantics.Operation.CREATE2`, `EvmSemantics.Operation.CompareBitwiseOps`, `EvmSemantics.Operation.DELEGATECALL`, `EvmSemantics.Operation.DIV`, `EvmSemantics.Operation.DupNOp`, `EvmSemantics.Operation.DupOp`, `EvmSemantics.Operation.EQ`, `EvmSemantics.Operation.EXP`, `EvmSemantics.Operation.EXTCODECOPY`, `EvmSemantics.Operation.EXTCODEHASH`, `EvmSemantics.Operation.EXTCODESIZE`, `EvmSemantics.Operation.EnvOps`, `EvmSemantics.Operation.ExchangeOp`, `EvmSemantics.Operation.GASLIMIT`, `EvmSemantics.Operation.GASPRICE`, `EvmSemantics.Operation.GT`, `EvmSemantics.Operation.INVALID`, `EvmSemantics.Operation.ISZERO`, `EvmSemantics.Operation.KECCAK256`, `EvmSemantics.Operation.KeccakOps`, `EvmSemantics.Operation.LT`, `EvmSemantics.Operation.LogOp`, `EvmSemantics.Operation.MCOPY`, `EvmSemantics.Operation.MLOAD`, `EvmSemantics.Operation.MOD`, `EvmSemantics.Operation.MSIZE`, `EvmSemantics.Operation.MSTORE`, `EvmSemantics.Operation.MSTORE8`, `EvmSemantics.Operation.MUL`, `EvmSemantics.Operation.MULMOD`, `EvmSemantics.Operation.NOT`, `EvmSemantics.Operation.NUMBER`, `EvmSemantics.Operation.OR`, `EvmSemantics.Operation.ORIGIN`, `EvmSemantics.Operation.POP`, `EvmSemantics.Operation.PREVRANDAO`, `EvmSemantics.Operation.PushOp`, `EvmSemantics.Operation.RETURN`, `EvmSemantics.Operation.RETURNDATACOPY`, `EvmSemantics.Operation.RETURNDATASIZE`, `EvmSemantics.Operation.REVERT`, `EvmSemantics.Operation.SAR`, `EvmSemantics.Operation.SDIV`, `EvmSemantics.Operation.SELFBALANCE`, `EvmSemantics.Operation.SELFDESTRUCT`, `EvmSemantics.Operation.SGT`, `EvmSemantics.Operation.SHL`, `EvmSemantics.Operation.SHR`, `EvmSemantics.Operation.SIGNEXTEND`, `EvmSemantics.Operation.SLOAD`, `EvmSemantics.Operation.SLT`, `EvmSemantics.Operation.SMOD`, `EvmSemantics.Operation.SSTORE`, `EvmSemantics.Operation.STATICCALL`, `EvmSemantics.Operation.STOP`, `EvmSemantics.Operation.SUB`, `EvmSemantics.Operation.StackMemFlowOps`, `EvmSemantics.Operation.StopArithOps`, `EvmSemantics.Operation.SwapNOp`, `EvmSemantics.Operation.SwapOp`, `EvmSemantics.Operation.SystemOps`, `EvmSemantics.Operation.TIMESTAMP`, `EvmSemantics.Operation.TLOAD`, `EvmSemantics.Operation.TSTORE`, `EvmSemantics.Operation.XOR`, `EvmSemantics.Storage.get`, `EvmSemantics.UInt256`, `EvmSemantics.UInt256.ofNat`, `EvmSemantics.UInt256.size`, `EvmSemantics.UInt256.succ`, `EvmSemantics.UInt256.toNat`, `EvmSemantics.keccak256`
+`EvmSemantics.Account.codeHash`, `EvmSemantics.Account.isContract`, `EvmSemantics.AccountAddress`, `EvmSemantics.AccountAddress.ofUInt256`, `EvmSemantics.AccountAddress.toUInt256`, `EvmSemantics.AccountMap`, `EvmSemantics.AccountMap.get`, `EvmSemantics.EVM.Eval`, `EvmSemantics.EVM.ExecutionResult`, `EvmSemantics.EVM.Frame`, `EvmSemantics.EVM.Precompile.isPrecompile`, `EvmSemantics.EVM.State`, `EvmSemantics.EVM.State.decodedOp`, `EvmSemantics.EVM.Steps`, `EvmSemantics.ExecutionEnv`, `EvmSemantics.Fork`, `EvmSemantics.HaltKind`, `EvmSemantics.LogEntry`, `EvmSemantics.LogSeries`, `EvmSemantics.Operation`, `EvmSemantics.Operation.ADD`, `EvmSemantics.Operation.ADDMOD`, `EvmSemantics.Operation.ADDRESS`, `EvmSemantics.Operation.AND`, `EvmSemantics.Operation.BALANCE`, `EvmSemantics.Operation.BASEFEE`, `EvmSemantics.Operation.BLOBBASEFEE`, `EvmSemantics.Operation.BLOBHASH`, `EvmSemantics.Operation.BLOCKHASH`, `EvmSemantics.Operation.BYTE`, `EvmSemantics.Operation.BlockOps`, `EvmSemantics.Operation.CALL`, `EvmSemantics.Operation.CALLCODE`, `EvmSemantics.Operation.CALLDATACOPY`, `EvmSemantics.Operation.CALLDATALOAD`, `EvmSemantics.Operation.CALLDATASIZE`, `EvmSemantics.Operation.CALLER`, `EvmSemantics.Operation.CALLVALUE`, `EvmSemantics.Operation.CHAINID`, `EvmSemantics.Operation.CLZ`, `EvmSemantics.Operation.CODECOPY`, `EvmSemantics.Operation.CODESIZE`, `EvmSemantics.Operation.COINBASE`, `EvmSemantics.Operation.CREATE`, `EvmSemantics.Operation.CREATE2`, `EvmSemantics.Operation.CompareBitwiseOps`, `EvmSemantics.Operation.DELEGATECALL`, `EvmSemantics.Operation.DIV`, `EvmSemantics.Operation.DupNOp`, `EvmSemantics.Operation.DupOp`, `EvmSemantics.Operation.EQ`, `EvmSemantics.Operation.EXP`, `EvmSemantics.Operation.EXTCODECOPY`, `EvmSemantics.Operation.EXTCODEHASH`, `EvmSemantics.Operation.EXTCODESIZE`, `EvmSemantics.Operation.EnvOps`, `EvmSemantics.Operation.ExchangeOp`, `EvmSemantics.Operation.GASLIMIT`, `EvmSemantics.Operation.GASPRICE`, `EvmSemantics.Operation.GT`, `EvmSemantics.Operation.INVALID`, `EvmSemantics.Operation.ISZERO`, `EvmSemantics.Operation.KECCAK256`, `EvmSemantics.Operation.KeccakOps`, `EvmSemantics.Operation.LT`, `EvmSemantics.Operation.LogOp`, `EvmSemantics.Operation.MCOPY`, `EvmSemantics.Operation.MLOAD`, `EvmSemantics.Operation.MOD`, `EvmSemantics.Operation.MSIZE`, `EvmSemantics.Operation.MSTORE`, `EvmSemantics.Operation.MSTORE8`, `EvmSemantics.Operation.MUL`, `EvmSemantics.Operation.MULMOD`, `EvmSemantics.Operation.NOT`, `EvmSemantics.Operation.NUMBER`, `EvmSemantics.Operation.OR`, `EvmSemantics.Operation.ORIGIN`, `EvmSemantics.Operation.POP`, `EvmSemantics.Operation.PREVRANDAO`, `EvmSemantics.Operation.PushOp`, `EvmSemantics.Operation.RETURN`, `EvmSemantics.Operation.RETURNDATACOPY`, `EvmSemantics.Operation.RETURNDATASIZE`, `EvmSemantics.Operation.REVERT`, `EvmSemantics.Operation.SAR`, `EvmSemantics.Operation.SDIV`, `EvmSemantics.Operation.SELFBALANCE`, `EvmSemantics.Operation.SELFDESTRUCT`, `EvmSemantics.Operation.SGT`, `EvmSemantics.Operation.SHL`, `EvmSemantics.Operation.SHR`, `EvmSemantics.Operation.SIGNEXTEND`, `EvmSemantics.Operation.SLOAD`, `EvmSemantics.Operation.SLT`, `EvmSemantics.Operation.SMOD`, `EvmSemantics.Operation.SSTORE`, `EvmSemantics.Operation.STATICCALL`, `EvmSemantics.Operation.STOP`, `EvmSemantics.Operation.SUB`, `EvmSemantics.Operation.StackMemFlowOps`, `EvmSemantics.Operation.StopArithOps`, `EvmSemantics.Operation.SwapNOp`, `EvmSemantics.Operation.SwapOp`, `EvmSemantics.Operation.SystemOps`, `EvmSemantics.Operation.TIMESTAMP`, `EvmSemantics.Operation.TLOAD`, `EvmSemantics.Operation.TSTORE`, `EvmSemantics.Operation.XOR`, `EvmSemantics.Operation.popArity`, `EvmSemantics.Operation.pushArity`, `EvmSemantics.Storage.get`, `EvmSemantics.UInt256`, `EvmSemantics.UInt256.ofNat`, `EvmSemantics.UInt256.size`, `EvmSemantics.UInt256.succ`, `EvmSemantics.UInt256.toNat`, `EvmSemantics.keccak256`
