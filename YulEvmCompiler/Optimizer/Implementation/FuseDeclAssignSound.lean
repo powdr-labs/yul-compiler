@@ -700,4 +700,111 @@ theorem step_new_keys_free {x : Ident} {funs : FunEnv D} {V : VEnv D}
       simp only [codeMentions, Bool.or_eq_false_iff] at hm
       exact ihb rfl (by simp [codeMentions, stmtMentions, hm.2])
 
+/-! ### The mentions bridge
+
+The pass's `mentionsStmt` additionally counts `funDef` and call *names*, so it
+is strictly stronger than `Frame`'s `stmtMentions`; a `sink`-checked segment
+therefore satisfies the frame lemmas' mention-freeness. -/
+
+mutual
+theorem mentionsExpr_bridge {x : Ident} : ∀ {e : Expr Op},
+    mentionsExpr x e = false → exprMentions x e = false
+  | .lit _, _ => rfl
+  | .var y, h => by
+      simp only [mentionsExpr, decide_eq_false_iff_not] at h
+      simp only [exprMentions, decide_eq_false_iff_not]
+      exact fun hc => h hc.symm
+  | .builtin op args, h => by
+      simp only [mentionsExpr] at h
+      simp only [exprMentions]
+      exact mentionsArgs_bridge h
+  | .call f args, h => by
+      simp only [mentionsExpr, Bool.or_eq_false_iff] at h
+      simp only [exprMentions]
+      exact mentionsArgs_bridge h.2
+
+theorem mentionsArgs_bridge {x : Ident} : ∀ {args : List (Expr Op)},
+    mentionsArgs x args = false → argsMentions x args = false
+  | [], _ => rfl
+  | e :: rest, h => by
+      simp only [mentionsArgs, Bool.or_eq_false_iff] at h
+      simp only [argsMentions, Bool.or_eq_false_iff]
+      exact ⟨mentionsExpr_bridge h.1, mentionsArgs_bridge h.2⟩
+end
+
+theorem mentionsOptExpr_bridge {x : Ident} : ∀ {rhs : Option (Expr Op)},
+    (rhs.map (mentionsExpr x)).getD false = false →
+      optExprMentions x rhs = false
+  | none, _ => rfl
+  | some e, h => mentionsExpr_bridge (by simpa using h)
+
+mutual
+theorem mentionsStmt_bridge {x : Ident} : ∀ {s : Stmt Op},
+    mentionsStmt x s = false → stmtMentions x s = false
+  | .block body, h => by
+      simp only [mentionsStmt] at h
+      simp only [stmtMentions]
+      exact mentionsStmts_bridge h
+  | .funDef n ps rs body, h => by
+      simp only [mentionsStmt, Bool.or_eq_false_iff] at h
+      simp only [stmtMentions, Bool.or_eq_false_iff]
+      exact ⟨⟨by simpa using h.1.1.2, by simpa using h.1.2⟩,
+        mentionsStmts_bridge h.2⟩
+  | .letDecl xs none, h => by
+      simp only [mentionsStmt] at h
+      simp only [stmtMentions, Bool.or_eq_false_iff]
+      exact ⟨by simpa using h, rfl⟩
+  | .letDecl xs (some e), h => by
+      simp only [mentionsStmt, Bool.or_eq_false_iff] at h
+      simp only [stmtMentions, Bool.or_eq_false_iff]
+      exact ⟨by simpa using h.1,
+        mentionsOptExpr_bridge (by simpa using h.2)⟩
+  | .assign xs e, h => by
+      simp only [mentionsStmt, Bool.or_eq_false_iff] at h
+      simp only [stmtMentions, Bool.or_eq_false_iff]
+      exact ⟨by simpa using h.1, mentionsExpr_bridge h.2⟩
+  | .exprStmt e, h => by
+      simp only [mentionsStmt] at h
+      simp only [stmtMentions]
+      exact mentionsExpr_bridge h
+  | .cond c body, h => by
+      simp only [mentionsStmt, Bool.or_eq_false_iff] at h
+      simp only [stmtMentions, Bool.or_eq_false_iff]
+      exact ⟨mentionsExpr_bridge h.1, mentionsStmts_bridge h.2⟩
+  | .switch c cases dflt, h => by
+      simp only [mentionsStmt, Bool.or_eq_false_iff] at h
+      simp only [stmtMentions, Bool.or_eq_false_iff]
+      exact ⟨⟨mentionsExpr_bridge h.1.1, mentionsCases_bridge h.1.2⟩,
+        mentionsDflt_bridge h.2⟩
+  | .forLoop init c post body, h => by
+      simp only [mentionsStmt, Bool.or_eq_false_iff] at h
+      simp only [stmtMentions, Bool.or_eq_false_iff]
+      exact ⟨⟨⟨mentionsStmts_bridge h.1.1.1, mentionsExpr_bridge h.1.1.2⟩,
+        mentionsStmts_bridge h.1.2⟩, mentionsStmts_bridge h.2⟩
+  | .break, _ => rfl
+  | .continue, _ => rfl
+  | .leave, _ => rfl
+
+theorem mentionsStmts_bridge {x : Ident} : ∀ {ss : List (Stmt Op)},
+    mentionsStmts x ss = false → stmtsMentions x ss = false
+  | [], _ => rfl
+  | s :: rest, h => by
+      simp only [mentionsStmts, Bool.or_eq_false_iff] at h
+      simp only [stmtsMentions, Bool.or_eq_false_iff]
+      exact ⟨mentionsStmt_bridge h.1, mentionsStmts_bridge h.2⟩
+
+theorem mentionsCases_bridge {x : Ident} : ∀ {cs : List (Literal × Block Op)},
+    mentionsCases x cs = false → casesMentions x cs = false
+  | [], _ => rfl
+  | (l, b) :: rest, h => by
+      simp only [mentionsCases, Bool.or_eq_false_iff] at h
+      simp only [casesMentions, Bool.or_eq_false_iff]
+      exact ⟨mentionsStmts_bridge h.1, mentionsCases_bridge h.2⟩
+
+theorem mentionsDflt_bridge {x : Ident} : ∀ {d : Option (Block Op)},
+    mentionsDflt x d = false → optBlockMentions x d = false
+  | none, _ => rfl
+  | some b, h => mentionsStmts_bridge (by simpa [mentionsDflt] using h)
+end
+
 end YulEvmCompiler.Optimizer.FuseDeclAssign
