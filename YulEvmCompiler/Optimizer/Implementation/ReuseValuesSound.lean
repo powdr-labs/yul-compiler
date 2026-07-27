@@ -906,4 +906,202 @@ theorem rvNeutralArgs_step : ∀ {es : List (Expr Op)},
           cases hres'
 end
 
+/-! ### Shape inversions for the forwarded right-hand sides -/
+
+/-- `keccak256(a, b)` with literal, in-range operands: the unique result. -/
+theorem keccak_lit_inv {a b : Nat} (ha : a < 2 ^ 256) (hb : b < 2 ^ 256)
+    {funs : FunEnv D} {V : VEnv D} {st : EvmState} {res : Res D}
+    (h : Step D funs V st
+      (.expr (.builtin .keccak256 [.lit (.number a), .lit (.number b)])) res) :
+    res = .eres (.vals [st.env.keccakOf (readBytes st.memory a b)]
+      (touchMemory st a b)) := by
+  have hta : (Dialect.litValue D (.number a)).toNat = a := by
+    show (BitVec.ofNat 256 a).toNat = a
+    rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt ha]
+  have htb : (Dialect.litValue D (.number b)).toNat = b := by
+    show (BitVec.ofNat 256 b).toNat = b
+    rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt hb]
+  cases h with
+  | builtinOk hargs hop =>
+      cases hargs with
+      | argsCons hrest hlit =>
+          cases hrest with
+          | argsCons hnil hlit2 =>
+              cases hnil
+              cases hlit2
+              cases hlit
+              simp [builtinWithExternal, stepOp] at hop
+              obtain ⟨rfl, rfl⟩ := hop
+              rw [hta, htb]
+  | builtinHalt hargs hop =>
+      cases hargs with
+      | argsCons hrest hlit =>
+          cases hrest with
+          | argsCons hnil hlit2 =>
+              cases hnil
+              cases hlit2
+              cases hlit
+              simp [builtinWithExternal, stepOp] at hop
+  | builtinArgsHalt hargs =>
+      cases hargs with
+      | argsRestHalt hrest =>
+          cases hrest with
+          | argsRestHalt hnil => cases hnil
+          | argsHeadHalt hnil hlit => cases hlit
+      | argsHeadHalt hrest hlit =>
+          cases hlit
+
+/-- `mload(k)` with a literal, in-range operand: the unique result. -/
+theorem mload_lit_inv {k : Nat} (hk : k < 2 ^ 256)
+    {funs : FunEnv D} {V : VEnv D} {st : EvmState} {res : Res D}
+    (h : Step D funs V st
+      (.expr (.builtin .mload [.lit (.number k)])) res) :
+    res = .eres (.vals [loadWord st.memory k] (touchMemory st k 32)) := by
+  have htk : (Dialect.litValue D (.number k)).toNat = k := by
+    show (BitVec.ofNat 256 k).toNat = k
+    rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt hk]
+  cases h with
+  | builtinOk hargs hop =>
+      cases hargs with
+      | argsCons hnil hlit =>
+          cases hnil
+          cases hlit
+          simp [builtinWithExternal, stepOp] at hop
+          obtain ⟨rfl, rfl⟩ := hop
+          rw [htk]
+  | builtinHalt hargs hop =>
+      cases hargs with
+      | argsCons hnil hlit =>
+          cases hnil
+          cases hlit
+          simp [builtinWithExternal, stepOp] at hop
+  | builtinArgsHalt hargs =>
+      cases hargs with
+      | argsRestHalt hnil => cases hnil
+      | argsHeadHalt hnil hlit => cases hlit
+
+/-- `sload(k)` with a canonical-domain key: the unique result. -/
+theorem sload_canon_inv {C : RvCache} {k ck : Expr Op}
+    (hck : canonPureGo C k = some ck)
+    {funs : FunEnv D} {V : VEnv D} {st : EvmState} {res : Res D}
+    (h : Step D funs V st (.expr (.builtin .sload [k])) res) :
+    ∃ kv, evalPure V k = some kv ∧
+      res = .eres (.vals [st.storage kv] st) := by
+  cases h with
+  | builtinOk hargs hop =>
+      cases hargs with
+      | argsCons hnil hke =>
+          cases hnil
+          obtain ⟨kv, hkv, hres⟩ := canonDom_step_inv hck _ _ _ _ hke
+          injection hres with hres
+          injection hres with h1 h2
+          injection h1 with h3 _
+          rw [h3] at hop
+          rw [h2] at hop
+          simp [builtinWithExternal, stepOp] at hop
+          obtain ⟨rfl, rfl⟩ := hop
+          exact ⟨kv, hkv, rfl⟩
+  | builtinHalt hargs hop =>
+      cases hargs with
+      | argsCons hnil hke =>
+          cases hnil
+          obtain ⟨kv, hkv, hres⟩ := canonDom_step_inv hck _ _ _ _ hke
+          injection hres with hres
+          injection hres with h1 h2
+          injection h1 with h3 _
+          rw [h3] at hop
+          rw [h2] at hop
+          simp [builtinWithExternal, stepOp] at hop
+  | builtinArgsHalt hargs =>
+      cases hargs with
+      | argsRestHalt hnil => cases hnil
+      | argsHeadHalt hnil hke =>
+          obtain ⟨kv, hkv, hres⟩ := canonDom_step_inv hck _ _ _ _ hke
+          cases hres
+
+/-- `mstore(k, v)`: either `v` evaluates and the store happens, or `v`
+halts. -/
+theorem mstore_lit_inv {k : Nat} (hk : k < 2 ^ 256) {v : Expr Op}
+    {funs : FunEnv D} {V : VEnv D} {st : EvmState} {res : Res D}
+    (h : Step D funs V st
+      (.expr (.builtin .mstore [.lit (.number k), v])) res) :
+    (∃ vv st₁, Step D funs V st (.expr v) (.eres (.vals [vv] st₁)) ∧
+       res = .eres (.vals [] ({ touchMemory st₁ k 32 with
+         memory := storeWord st₁.memory k vv }))) ∨
+    (∃ st₁, Step D funs V st (.expr v) (.eres (.halt st₁)) ∧
+       res = .eres (.halt st₁)) := by
+  have htk : (Dialect.litValue D (.number k)).toNat = k := by
+    show (BitVec.ofNat 256 k).toNat = k
+    rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt hk]
+  cases h with
+  | builtinOk hargs hop =>
+      cases hargs with
+      | argsCons hrest hlit =>
+          cases hrest with
+          | argsCons hnil hv =>
+              cases hnil
+              cases hlit
+              simp [builtinWithExternal, stepOp] at hop
+              obtain ⟨rfl, rfl⟩ := hop
+              refine Or.inl ⟨_, _, hv, ?_⟩
+              rw [htk]
+  | builtinHalt hargs hop =>
+      cases hargs with
+      | argsCons hrest hlit =>
+          cases hrest with
+          | argsCons hnil hv =>
+              cases hnil
+              cases hlit
+              simp [builtinWithExternal, stepOp] at hop
+  | builtinArgsHalt hargs =>
+      cases hargs with
+      | argsRestHalt hrest =>
+          cases hrest with
+          | argsRestHalt hnil => cases hnil
+          | argsHeadHalt hnil hv =>
+              cases hnil
+              exact Or.inr ⟨_, hv, rfl⟩
+      | argsHeadHalt hrest hlit =>
+          cases hlit
+
+/-- `sstore(k, v)` with neutral operands: only storage (and the storage
+mirror in the environment) changes, after a `MemNeutral` argument
+evaluation — or a halt. -/
+theorem sstore_neutral_inv {args : List (Expr Op)}
+    (hn : rvNeutralArgs args = true)
+    {funs : FunEnv D} {V : VEnv D} {st : EvmState} {res : Res D}
+    (h : Step D funs V st (.expr (.builtin .sstore args)) res) :
+    (∃ st₁ st₂, MemNeutral st st₁ ∧ res = .eres (.vals [] st₂) ∧
+       st₂.memory = st₁.memory ∧ st₂.env.keccakOf = st₁.env.keccakOf ∧
+       st₂.activeWords = st₁.activeWords) ∨
+    (∃ st', res = .eres (.halt st')) := by
+  cases h with
+  | @builtinOk _ _ _ _ _ argvals st1 rets st2 hargs hop =>
+      obtain ⟨vs, st₁, hres, hmn, -⟩ :=
+        rvNeutralArgs_step hn _ _ _ _ hargs
+      injection hres with hres
+      injection hres with h1 h2
+      rw [← h2] at hmn
+      cases argvals with
+      | nil => simp [builtinWithExternal, stepOp] at hop
+      | cons kv rest =>
+        cases rest with
+        | nil => simp [builtinWithExternal, stepOp] at hop
+        | cons vv rest2 =>
+          cases rest2 with
+          | cons a b => simp [builtinWithExternal, stepOp] at hop
+          | nil =>
+              simp only [builtinWithExternal, stepOp, guardStatic,
+                Option.some.injEq] at hop
+              split at hop
+              · cases hop
+              · injection hop with hr hs
+                refine Or.inl ⟨st1, st2, hmn, ?_, ?_, ?_, ?_⟩
+                · rw [← hr]
+                · rw [← hs]
+                · rw [← hs]
+                · rw [← hs]
+  | builtinHalt hargs hop => exact Or.inr ⟨_, rfl⟩
+  | builtinArgsHalt hargs => exact Or.inr ⟨_, rfl⟩
+
 end YulEvmCompiler.Optimizer.ReuseValues
