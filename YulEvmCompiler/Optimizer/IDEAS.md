@@ -1210,7 +1210,17 @@ a combined ~13k (worst `dynamic_multi_array_cleanup` +9k — flatten/reuse live
   move-or-insert chain erased by the enclosing block's `restore`
   (`restore_mv_eq` + `restore_insAt_le`), mirroring `ccPairs_fwd/bwd`;
   (d) structural lifting through `fdStmt` (statement congruences +
-  `FunCongr.of_stmts_funs`) and the guard wrapper.
+  `FunCongr.of_stmts_funs`) and the guard wrapper.  Two auxiliary lemmas
+  surfaced by the detailed walk: a **mentions bridge**
+  (`FuseDeclAssign.mentionsStmt x s = false → Frame.stmtMentions x s = false`
+  — the pass's notion additionally counts `funDef`/call names, so it is
+  strictly stronger), and a **fresh-keys lemma** mirroring
+  `venvKeys_suffix`: executing `x`-mention-free code never *adds* an `x` key
+  above the entry environment (new keys come only from executed `let`s of
+  the code, all `≠ x`; nested blocks restore theirs away; callee
+  environments are discarded).  The fresh-keys lemma licenses crossing the
+  sink's assignment: `VEnv.set (A ++ (x,0) :: B) x val` must hit the
+  inserted binding, i.e. `x ∉ keys A`.
 * `flattenBlock_sound` — splice = the same `InsChain` multi-insertion
   argument (promoted binders carried dead through the mention-free-by-
   construction remainder — fresh names occur nowhere else); rename = a
