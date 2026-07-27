@@ -1969,4 +1969,309 @@ theorem rvRhs_bwd_step {C : RvCache} {x : Ident} {e e' : Expr Op}
                     (injection hp with h1 _; subst h1; exact h)
           · split at hp <;> (injection hp with h1 _; subst h1; exact h)
 
+/-- Alias facts recorded at a binding hold: the canonical representative
+carries the bound value. -/
+private theorem alias_holds_of_var {C : RvCache} {x y : Ident} {v : U256}
+    {V V' : VEnv D} {st : EvmState} (hc : RvOk V st C) (hxf : XFree x C)
+    (hgx : VEnv.get V' x = some v)
+    (hag : ∀ z, z ≠ x → VEnv.get V' z = VEnv.get V z)
+    (hy : VEnv.get V y = some v) :
+    AliasHolds V' (x, canonVar C y) := by
+  by_cases hyx : y = x
+  · subst hyx
+    have : canonVar C y = y := by
+      unfold canonVar
+      cases hf : C.aliases.find? (fun p => p.1 = y) with
+      | none => rfl
+      | some p =>
+          have := (hxf.aliases p (List.mem_of_find?_eq_some hf)).1
+          have hkey : p.1 = y := by simpa using List.find?_some hf
+          exact absurd hkey this
+    rw [this]
+    exact ⟨v, hgx, hgx⟩
+  · refine ⟨v, hgx, ?_⟩
+    rw [hag _ (canonVar_ne hxf hyx), canonVar_get hc]
+    exact hy
+
+set_option maxHeartbeats 3200000 in
+/-- After the binding executes, the extended cache is valid. -/
+theorem rvRhs_ok {C : RvCache} {x : Ident} {e e' : Expr Op}
+    {C' : RvCache} (hp : rvRhs C x e = (e', C'))
+    {V V' : VEnv D} {st st₁ : EvmState} {v : U256}
+    (hc : RvOk V st C) (hxf : XFree x C)
+    (hgx : VEnv.get V' x = some v)
+    (hag : ∀ z, z ≠ x → VEnv.get V' z = VEnv.get V z)
+    {funs : FunEnv D}
+    (hstep : Step D funs V st (.expr e) (.eres (.vals [v] st₁))) :
+    RvOk V' st₁ C' := by
+  unfold rvRhs at hp
+  split at hp
+  · -- alias record
+    next y =>
+      injection hp with h1 h2
+      cases hstep with
+      | var hv =>
+          subst h2
+          refine ⟨?_, ?_, ?_, ?_, ?_⟩
+          · intro p hp'
+            rcases List.mem_cons.mp hp' with rfl | hp'
+            · exact alias_holds_of_var hc hxf hgx hag hv
+            · exact (hc.update_xfree hxf hag).aliases p hp'
+          · exact (hc.update_xfree hxf hag).cells
+          · exact (hc.update_xfree hxf hag).pures
+          · exact (hc.update_xfree hxf hag).kecs
+          · exact (hc.update_xfree hxf hag).slds
+  · split at hp
+    · next a b hke =>
+        obtain ⟨rfl, hab, hblt⟩ := keccakLits_inv hke
+        split at hp
+        · next sig hcov =>
+            obtain ⟨hsz, hnz, ws, hws, hload⟩ := coverageSig_den hc hcov
+            have ha : a < 2 ^ 256 := by omega
+            have hres := keccak_lit_inv ha hblt hstep
+            injection hres with hres
+            injection hres with hv1 hst1
+            injection hv1 with hv1
+            have hmn : MemNeutral st st₁ := by
+              rw [hst1]
+              exact MemNeutral.touch st (by omega) (by omega)
+            have hbase := (hc.update_xfree hxf hag).memNeutral hmn
+            split at hp
+            · -- hit: alias record
+              next key hvar hfind =>
+                injection hp with h1 h2
+                subst h2
+                have hqmem := List.mem_of_find?_eq_some hfind
+                have hqpred := List.find?_some hfind
+                simp only [Bool.and_eq_true, beq_iff_eq] at hqpred
+                obtain ⟨⟨hka, hkb⟩, hksig⟩ := hqpred
+                obtain ⟨ws₀, hws₀, hgh, hact⟩ := hc.kecs _ hqmem
+                rw [sigBeq_eq _ _ hksig] at hws₀
+                rw [SigDen.unique hws₀ hws] at hgh
+                rw [hka, hkb] at hact
+                have hwslen : ws.length = sig.length := SigDen.length hws
+                have hbytes : readBytes st.memory a b = wordsBytes ws := by
+                  rw [hsz, ← hwslen]
+                  exact readBytes_wordsBytes (fun i hi => by
+                    have := hload i (by omega)
+                    simpa using this)
+                refine ⟨?_, hbase.cells, hbase.pures, hbase.kecs, hbase.slds⟩
+                intro p hp'
+                rcases List.mem_cons.mp hp' with rfl | hp'
+                · exact alias_holds_of_var hc hxf hgx hag
+                    (by rw [hgh, ← hbytes, ← hv1])
+                · exact hbase.aliases p hp'
+            · -- record a new keccak fact
+              injection hp with h1 h2
+              subst h2
+              have hsigx : sigMentions x sig = false :=
+                coverageSig_xfree hxf hcov
+              refine ⟨hbase.aliases, hbase.cells, hbase.pures, ?_,
+                hbase.slds⟩
+              intro p hp'
+              rcases List.mem_cons.mp hp' with rfl | hp'
+              · refine ⟨ws, ?_, ?_, ?_⟩
+                · refine SigDen.agree hws (fun q hq z hz => hag z ?_)
+                  intro hzx
+                  subst hzx
+                  simp only [sigMentions, List.any_eq_false] at hsigx
+                  have := hsigx q hq
+                  simp [List.contains_eq_mem, hz] at this
+                · show VEnv.get V' x = _
+                  have hwslen : ws.length = sig.length := SigDen.length hws
+                  have hbytes : readBytes st.memory a b = wordsBytes ws := by
+                    rw [hsz, ← hwslen]
+                    exact readBytes_wordsBytes (fun i hi => by
+                      have := hload i (by omega)
+                      simpa using this)
+                  rw [hgx, hv1, hbytes, hmn.keccak]
+                · show RangeActive st₁ _ _
+                  rw [hst1]
+                  exact touch_covers st hnz (by omega)
+              · exact hbase.kecs p hp'
+        · -- no coverage: cache carried across the touch
+          injection hp with h1 h2
+          subst h2
+          obtain ⟨vs, st', hres, hmn⟩ := rvNeutral_step
+            (show rvNeutralExpr (.builtin .keccak256
+              [.lit (.number a), .lit (.number b)]) = true from rfl)
+            _ _ _ _ hstep
+          injection hres with hres
+          injection hres with hv1 hst1
+          rw [hst1]
+          exact (hc.update_xfree hxf hag).memNeutral hmn
+    · split at hp
+      · next k hsl =>
+          obtain rfl := sloadArg_inv hsl
+          split at hp
+          · next ck hck =>
+              obtain ⟨kv, hkv, hres⟩ :=
+                sload_canon_inv (canonPure_go hck) hstep
+              injection hres with hres
+              injection hres with hv1 hst1
+              injection hv1 with hv1
+              have hbase : RvOk V' st₁ C := by
+                rw [hst1]
+                exact hc.update_xfree hxf hag
+              split at hp
+              · -- hit: alias record
+                next key w hfind =>
+                  injection hp with h1 h2
+                  subst h2
+                  have hqmem := List.mem_of_find?_eq_some hfind
+                  have hqpred := List.find?_some hfind
+                  have hkey : key = ck := exprBeq_eq _ _ hqpred
+                  obtain ⟨kv₀, hkv₀, hgw⟩ := hc.slds _ hqmem
+                  simp only at hkv₀ hgw
+                  rw [hkey, canonPure_eval hc hck, hkv] at hkv₀
+                  injection hkv₀ with hkv₀
+                  refine ⟨?_, hbase.cells, hbase.pures, hbase.kecs,
+                    hbase.slds⟩
+                  intro p hp'
+                  rcases List.mem_cons.mp hp' with rfl | hp'
+                  · exact alias_holds_of_var hc hxf hgx hag
+                      (by rw [hgw, ← hkv₀, ← hv1])
+                  · exact hbase.aliases p hp'
+              · split at hp
+                · -- self-referential: no record
+                  injection hp with h1 h2
+                  subst h2
+                  exact hbase
+                · -- record a new storage-read fact
+                  next hxg =>
+                    injection hp with h1 h2
+                    subst h2
+                    refine ⟨hbase.aliases, hbase.cells, hbase.pures,
+                      hbase.kecs, ?_⟩
+                    intro p hp'
+                    rcases List.mem_cons.mp hp' with rfl | hp'
+                    · refine ⟨kv, ?_, ?_⟩
+                      · show evalPure V' ck = some kv
+                        rw [evalPure_agree (V := V) (fun z hz => hag z ?_),
+                          canonPure_eval hc hck]
+                        · exact hkv
+                        · intro hzx
+                          subst hzx
+                          simp [List.contains_eq_mem, hz] at hxg
+                      · show VEnv.get V' x = some (st₁.storage kv)
+                        rw [hgx, hst1, hv1]
+                    · exact hbase.slds p hp'
+          · -- non-canonical key: neutrality check
+            split at hp
+            · next hne =>
+                injection hp with h1 h2
+                subst h2
+                obtain ⟨vs, st', hres, hmn⟩ :=
+                  rvNeutral_step hne _ _ _ _ hstep
+                injection hres with hres
+                injection hres with hv1 hst1
+                rw [hst1]
+                exact (hc.update_xfree hxf hag).memNeutral hmn
+            · injection hp with h1 h2
+              subst h2
+              exact RvOk.empty _ _
+      · split at hp
+        · next k hml =>
+            obtain ⟨rfl, hkb⟩ := mloadLit_inv hml
+            have hk : k < 2 ^ 256 := by omega
+            have hres := mload_lit_inv hk hstep
+            injection hres with hres
+            injection hres with hv1 hst1
+            injection hv1 with hv1
+            have hmn : MemNeutral st st₁ := by
+              rw [hst1]
+              exact MemNeutral.touch st (by omega) (by omega)
+            have hbase := (hc.update_xfree hxf hag).memNeutral hmn
+            split at hp
+            · next q vv hfind =>
+                injection hp with h1 h2
+                subst h2
+                have hqmem := List.mem_of_find?_eq_some hfind
+                have hkey : q = k := by
+                  have := List.find?_some hfind
+                  simpa using this
+                obtain ⟨hcell, hact, -⟩ := hc.cells _ hqmem
+                rw [hkey] at hcell
+                refine ⟨?_, hbase.cells, hbase.pures, hbase.kecs,
+                  hbase.slds⟩
+                intro p hp'
+                rcases List.mem_cons.mp hp' with rfl | hp'
+                · refine alias_holds_of_var hc hxf hgx hag ?_
+                  have : VEnv.get V vv = some (loadWord st.memory k) := by
+                    simpa [evalPure] using hcell
+                  rw [this, ← hv1]
+                · exact hbase.aliases p hp'
+            · injection hp with h1 h2
+              subst h2
+              exact hbase
+            · injection hp with h1 h2
+              subst h2
+              exact hbase
+        · split at hp
+          · next ce hce =>
+              obtain ⟨wv, hwv, hres⟩ :=
+                canonDom_step_inv (canonPure_go hce) _ _ _ _ hstep
+              injection hres with hres
+              injection hres with hv1 hst1
+              injection hv1 with hv1
+              have hbase : RvOk V' st₁ C := by
+                rw [hst1]
+                exact hc.update_xfree hxf hag
+              split at hp
+              · injection hp with h1 h2
+                subst h2
+                exact hbase
+              · split at hp
+                · -- hit: alias record
+                  next key w hfind =>
+                    injection hp with h1 h2
+                    subst h2
+                    have hqmem := List.mem_of_find?_eq_some hfind
+                    have hqpred := List.find?_some hfind
+                    have hkey : key = ce := exprBeq_eq _ _ hqpred
+                    obtain ⟨w₀, hw₀, hgw⟩ := hc.pures _ hqmem
+                    simp only at hw₀ hgw
+                    rw [hkey, canonPure_eval hc hce, hwv] at hw₀
+                    injection hw₀ with hw₀
+                    refine ⟨?_, hbase.cells, hbase.pures, hbase.kecs,
+                      hbase.slds⟩
+                    intro p hp'
+                    rcases List.mem_cons.mp hp' with rfl | hp'
+                    · exact alias_holds_of_var hc hxf hgx hag
+                        (by rw [hgw, ← hw₀, ← hv1])
+                    · exact hbase.aliases p hp'
+                · split at hp
+                  · injection hp with h1 h2
+                    subst h2
+                    exact hbase
+                  · -- record a new pure fact
+                    next hxg =>
+                      injection hp with h1 h2
+                      subst h2
+                      refine ⟨hbase.aliases, hbase.cells, ?_, hbase.kecs,
+                        hbase.slds⟩
+                      intro p hp'
+                      rcases List.mem_cons.mp hp' with rfl | hp'
+                      · refine ⟨v, ?_, hgx⟩
+                        show evalPure V' ce = some v
+                        rw [evalPure_agree (V := V) (fun z hz => hag z ?_),
+                          canonPure_eval hc hce, hwv, hv1]
+                        intro hzx
+                        subst hzx
+                        simp [List.contains_eq_mem, hz] at hxg
+                      · exact hbase.pures p hp'
+          · split at hp
+            · next hne =>
+                injection hp with h1 h2
+                subst h2
+                obtain ⟨vs, st', hres, hmn⟩ :=
+                  rvNeutral_step hne _ _ _ _ hstep
+                injection hres with hres
+                injection hres with hv1 hst1
+                rw [hst1]
+                exact (hc.update_xfree hxf hag).memNeutral hmn
+            · injection hp with h1 h2
+              subst h2
+              exact RvOk.empty _ _
+
 end YulEvmCompiler.Optimizer.ReuseValues
