@@ -264,7 +264,11 @@ def rvRhs (C : RvCache) (x : Ident) (e : Expr Op) : Expr Op × RvCache :=
                (match C.slds.find? (fun p => exprBeq p.1 ck) with
                 | some (_, w) =>
                     (.var w, { C with aliases := (x, canonVar C w) :: C.aliases })
-                | none => (e, { C with slds := (ck, x) :: C.slds }))
+                | none =>
+                    -- A self-referential binding (`let x := sload(x)`) would
+                    -- record a key whose `x` re-reads the *new* binding.
+                    if (exprVarsRv ck).contains x then (e, C)
+                    else (e, { C with slds := (ck, x) :: C.slds }))
            | none => (e, C))
       | none =>
         match mloadLit e with
@@ -285,7 +289,9 @@ def rvRhs (C : RvCache) (x : Ident) (e : Expr Op) : Expr Op × RvCache :=
                    | some (_, w) =>
                        (.var w,
                         { C with aliases := (x, canonVar C w) :: C.aliases })
-                   | none => (e, { C with pures := (ce, x) :: C.pures }))
+                   | none =>
+                       if (exprVarsRv ce).contains x then (e, C)
+                       else (e, { C with pures := (ce, x) :: C.pures }))
             | none =>
                 if rvNeutralExpr e then (e, C) else (e, RvCache.empty)
 
