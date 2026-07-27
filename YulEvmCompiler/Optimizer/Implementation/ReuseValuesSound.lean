@@ -2415,4 +2415,206 @@ theorem rvLet_expr_bwd {C : RvCache} {xs : List Ident} {e e' : Expr Op}
     exact rvRhs_bwd_step hrv hkill h
   · exact hcatch hp
 
+set_option maxHeartbeats 800000 in
+theorem rvAssign_expr_fwd {bound : List Ident} {C : RvCache}
+    {xs : List Ident} {e e' : Expr Op} {C' : RvCache}
+    (hp : rvAssign bound C xs e = (e', C'))
+    {V : VEnv D} {st : EvmState} (hc : RvOk V st C) (hb : BoundOK V bound)
+    {funs : FunEnv D} {res : Res D}
+    (h : Step D funs V st (.expr e) res) :
+    Step D funs V st (.expr e') res ∧
+      (∀ vals st₁, res = .eres (.vals vals st₁) → vals.length = xs.length →
+        RvOk (VEnv.setMany V xs vals) st₁ C') := by
+  have hcatch : (if rvNeutralExpr e = true then (e, C.kill xs)
+        else (e, RvCache.empty)) = (e', C') →
+      Step D funs V st (.expr e') res ∧
+      (∀ vals st₁, res = .eres (.vals vals st₁) → vals.length = xs.length →
+        RvOk (VEnv.setMany V xs vals) st₁ C') := by
+    intro hp'
+    split at hp'
+    · next hne =>
+        injection hp' with h1 h2
+        subst h1
+        refine ⟨h, ?_⟩
+        intro vals st₁ hres hlen
+        subst hres
+        obtain ⟨vs', st', hres', hmn⟩ := rvNeutral_step hne _ _ _ _ h
+        injection hres' with hres'
+        injection hres' with hv1 hst1
+        rw [← h2, hst1]
+        exact (hc.kill_setMany _ _).memNeutral hmn
+    · injection hp' with h1 h2
+      subst h1
+      refine ⟨h, ?_⟩
+      intro vals st₁ hres hlen
+      rw [← h2]
+      exact RvOk.empty _ _
+  rcases xs with _ | ⟨x, _ | ⟨y, rest⟩⟩
+  · exact hcatch hp
+  · unfold rvAssign at hp
+    dsimp only at hp
+    split at hp
+    · next hbx =>
+        have hkill : RvOk V st (C.kill [x]) := hc.kill [x] (fun _ _ => rfl)
+        have hrv : rvRhs (C.kill [x]) x e = (e', C') := hp
+        constructor
+        · exact rvRhs_fwd_step hrv hkill h
+        · intro vals st₁ hres hlen
+          obtain ⟨v, rfl⟩ := List.length_eq_one_iff.mp hlen
+          subst hres
+          rw [YulEvmCompiler.Optimizer.VEnv.setMany_singleton]
+          have hxsome : (VEnv.get V x).isSome :=
+            YulEvmCompiler.Optimizer.BoundOK.get_isSome hb hbx
+          exact rvRhs_ok hrv hkill (XFree.kill C x)
+            (YulEvmCompiler.Optimizer.VEnv.get_set_self hxsome)
+            (fun z hz => YulEvmCompiler.Optimizer.VEnv.get_set_ne hz) h
+    · exact hcatch hp
+  · exact hcatch hp
+
+theorem rvAssign_expr_bwd {bound : List Ident} {C : RvCache}
+    {xs : List Ident} {e e' : Expr Op} {C' : RvCache}
+    (hp : rvAssign bound C xs e = (e', C'))
+    {V : VEnv D} {st : EvmState} (hc : RvOk V st C)
+    {funs : FunEnv D} {res : Res D}
+    (h : Step D funs V st (.expr e') res) :
+    Step D funs V st (.expr e) res := by
+  have hcatch : (if rvNeutralExpr e = true then (e, C.kill xs)
+        else (e, RvCache.empty)) = (e', C') →
+      Step D funs V st (.expr e) res := by
+    intro hp'
+    split at hp' <;> (injection hp' with h1 h2; subst h1; exact h)
+  rcases xs with _ | ⟨x, _ | ⟨y, rest⟩⟩
+  · exact hcatch hp
+  · unfold rvAssign at hp
+    dsimp only at hp
+    split at hp
+    · next hbx =>
+        have hkill : RvOk V st (C.kill [x]) := hc.kill [x] (fun _ _ => rfl)
+        exact rvRhs_bwd_step hp hkill h
+    · exact hcatch hp
+  · exact hcatch hp
+
+theorem rvExprStmt_fst (C : RvCache) (e : Expr Op) :
+    (rvExprStmt C e).1 = e := by
+  unfold rvExprStmt
+  split
+  · split <;> rfl
+  · split
+    · split <;> rfl
+    · split <;> rfl
+    · split <;> rfl
+
+set_option maxHeartbeats 800000 in
+/-- The expression-statement sweep: the expression is unchanged, and the
+updated cache is valid after a completed evaluation. -/
+theorem rvExprStmt_ok {C : RvCache} {e e' : Expr Op} {C' : RvCache}
+    (hp : rvExprStmt C e = (e', C'))
+    {V : VEnv D} {st : EvmState} (hc : RvOk V st C)
+    {funs : FunEnv D} {res : Res D}
+    (h : Step D funs V st (.expr e) res) :
+    e' = e ∧ (∀ st₁, res = .eres (.vals [] st₁) → RvOk V st₁ C') := by
+  have hfst := rvExprStmt_fst C e
+  rw [hp] at hfst
+  simp only at hfst
+  subst hfst
+  refine ⟨rfl, ?_⟩
+  intro st₁ hres
+  unfold rvExprStmt at hp
+  split at hp
+  · -- mstore at a checked literal
+    next k v hml =>
+      obtain ⟨rfl, hkb⟩ := mstoreLit_inv hml
+      have hk : k < 2 ^ 256 := by omega
+      split at hp
+      · next hnv =>
+          injection hp with h1 h2
+          rcases mstore_lit_inv hk h with
+            ⟨vv, stv, hv, hres'⟩ | ⟨stv, hv, hres'⟩
+          · rw [hres] at hres'
+            injection hres' with hres'
+            injection hres' with hv1 hst1
+            obtain ⟨vs', st', hresn, hmn⟩ := rvNeutral_step hnv _ _ _ _ hv
+            injection hresn with hresn
+            injection hresn with hnv1 hnst1
+            have hcv : RvOk V stv C := by
+              rw [hnst1]
+              exact hc.memNeutral hmn
+            have hbase := hcv.mstore (v := vv) hkb
+            rw [← h2]
+            cases hcp : canonPure C v with
+            | none =>
+                show RvOk V st₁ (C.putCell k none)
+                rw [hst1]
+                exact hbase
+            | some cv =>
+                -- a pure store: the evaluation kept the state, and the
+                -- stored word now denotes the canonical value
+                obtain ⟨wv, hwv, hresp⟩ :=
+                  canonDom_step_inv (canonPure_go hcp) _ _ _ _ hv
+                injection hresp with hresp
+                injection hresp with hpv1 hpst1
+                injection hpv1 with hpv1
+                show RvOk V st₁ (C.putCell k (some cv))
+                rw [hst1]
+                constructor
+                · exact hbase.aliases
+                · intro p hp'
+                  simp only [RvCache.putCell, List.mem_cons] at hp'
+                  rcases hp' with rfl | hp'
+                  · refine ⟨?_, ?_, hkb⟩
+                    · show evalPure V cv = _
+                      rw [canonPure_eval hcv hcp, hwv]
+                      congr 1
+                      rw [hpv1,
+                        YulEvmCompiler.Optimizer.MemorySpillStateSound.loadWord_storeWord]
+                    · exact touch_covers stv (by omega) (by omega)
+                  · exact hbase.cells p (by
+                      simpa [RvCache.putCell] using hp')
+                · exact hbase.pures
+                · exact hbase.kecs
+                · exact hbase.slds
+          · rw [hres] at hres'
+            cases hres'
+      · injection hp with h1 h2
+        rw [← h2]
+        exact RvOk.empty _ _
+  · split at hp
+    · -- sstore with neutral operands
+      next args hlen' =>
+        split at hp
+        · next hn =>
+            simp only [Bool.and_eq_true, beq_iff_eq] at hn
+            injection hp with h1 h2
+            rcases sstore_neutral_inv hn.2 h with
+              ⟨stm, st₂, hmn, hres', hmem, hkec, hact⟩ | ⟨st', hres'⟩
+            · rw [hres] at hres'
+              injection hres' with hres'
+              injection hres' with hv1 hst1
+              rw [← h2, hst1]
+              exact ((hc.memNeutral hmn).sstoreKill hmem hkec hact)
+            · rw [hres] at hres'
+              cases hres'
+        · injection hp with h1 h2
+          rw [← h2]
+          exact RvOk.empty _ _
+    · -- an unchecked mstore is never neutral
+      next args =>
+        split at hp
+        · next hn => exact absurd hn Bool.false_ne_true
+        · injection hp with h1 h2
+          rw [← h2]
+          exact RvOk.empty _ _
+    · split at hp
+      · next hn =>
+          injection hp with h1 h2
+          obtain ⟨vs', st', hres', hmn⟩ := rvNeutral_step hn _ _ _ _ h
+          rw [hres] at hres'
+          injection hres' with hres'
+          injection hres' with hv1 hst1
+          rw [← h2, hst1]
+          exact hc.memNeutral hmn
+      · injection hp with h1 h2
+        rw [← h2]
+        exact RvOk.empty _ _
+
 end YulEvmCompiler.Optimizer.ReuseValues
