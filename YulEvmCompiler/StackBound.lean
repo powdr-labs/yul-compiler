@@ -12,16 +12,24 @@ stays within the 1024-word EVM limit. The abstract Asm machine (`AStep`), by con
 formally, `astep_sim`/`asteps_sim` carry `a.stk.length ≤ 1023` (one slot of slack, because
 `jump`/`jumpi`/`pushLabel` lower to `PUSH <addr>; JUMP`, transiently pushing the label address).
 
-This file discharges that hypothesis by a **static stack-depth analysis**: a height map
-`H : List Asm → Option Nat` assigning each code position (a suffix of the program) the operand-stack
-height reached there, together with a decidable well-formedness check `ValidHeights`. When it holds,
-every configuration reachable from the entry stays within the limit — so the compiler can *reject*
-(return `none`) any program the check fails, exactly the "prove no overflow" contract.
+This file discharges that hypothesis by a **static stack-*layout* analysis**: a layout map
+`H : List Asm → Option Layout` assigning each code position (a suffix of the program) the operand
+stack *layout* reached there — a list of `Slot`s recording, per stack cell, whether it holds a plain
+word or a code (return-address) value and its target label. A decidable well-formedness check
+`ValidHeights` verifies the map. When it holds, every configuration reachable from the entry stays
+within the limit — so the compiler can *reject* (return `none`) any program the check fails, exactly
+the "prove no overflow" contract.
 
-The soundness core is the invariant `Inv` and its preservation. `Inv` tracks three things:
-the stack fits (`≤ 1023`); the height matches the map (`H code = some stk.length`); and — the subtle
-part, needed for `dynJump` (function return) — every `.code l` return-address value on the stack
-sits at exactly the height `H (findLabel l)` its target expects.
+Tracking the full layout (not merely a height `Nat`) is what makes the analysis sound across `DUP`
+and `SWAP`: duplicating or moving a return-address value would land it at a stack height its jump
+target does not expect, breaking return-address consistency. The layout lets `stepConstraint`
+*require* those instructions to touch only `word` slots — rejecting the (compiler-never-emitted)
+programs that would dup/swap a return address.
+
+The soundness core is the invariant `Inv` and its preservation. `Inv` tracks three things: the stack
+fits (`≤ 1023`); the layout matches the map (`H code = some (layoutOf stk)`); and — the subtle part,
+needed for `dynJump` (function return) — every `.code l` return-address value on the stack sits at a
+position whose target label expects exactly the layout below it (`WF`).
 -/
 
 namespace YulEvmCompiler
@@ -29,93 +37,139 @@ namespace YulEvmCompiler
 open EvmSemantics EvmSemantics.EVM
 open YulSemantics.EVM (U256 EvmState Op builtinWithExternal)
 
-/-! ### The height map and its well-formedness -/
+/-! ### Slots and layouts -/
 
-/-- The operand-stack height each code position (suffix of the program) is reached at.
-`none` = the position is not analysed (unreachable / rejected). -/
-abbrev HeightMap := List Asm → Option Nat
+/-- A static abstraction of an operand-stack cell: either a plain word, or a code
+(return-address) value tagged with its target label. -/
+inductive Slot
+  | word
+  | code (l : Label)
+  deriving DecidableEq
 
-/-- The well-formedness constraint one instruction `i` (with continuation `c`) imposes on the height
-map, given its entry height `h`. Mirrors each `AStep` rule's effect on the stack and the EVM 1024
-limit (with 1 slot of slack for the label-address push in the jump/`pushLabel` lowerings). -/
-def stepConstraint (prog : List Asm) (H : HeightMap) : Asm → List Asm → Nat → Prop
-  | .push _,      c, h => h + 1 ≤ 1023 ∧ H c = some (h + 1)
-  | .dup _,       c, h => h + 1 ≤ 1023 ∧ H c = some (h + 1)
-  | .pushLabel l, c, h => h + 1 ≤ 1023 ∧ H c = some (h + 1) ∧
-      ∃ c', findLabel l prog = some c' ∧ H c' = some h
-  | .pop,         c, h => 1 ≤ h ∧ H c = some (h - 1)
-  | .swap _,      c, h => H c = some h
-  | .label _,     c, h => H c = some h
-  | .op yop,      c, h => ∃ o, opTable yop = some o ∧
-      Operation.popArity o ≤ h ∧ h - Operation.popArity o + Operation.pushArity o ≤ 1023 ∧
-      H c = some (h - Operation.popArity o + Operation.pushArity o)
-  | .jump l,      _, h => ∃ c', findLabel l prog = some c' ∧ H c' = some h
-  | .jumpi l,     c, h => 1 ≤ h ∧ (∃ c', findLabel l prog = some c' ∧ H c' = some (h - 1)) ∧
-      H c = some (h - 1)
-  | .dynJump,     _, h => 1 ≤ h
+/-- A static operand-stack layout: top-of-stack first, mirroring `AConf.stk`. -/
+abbrev Layout := List Slot
 
-/-- A height map is **valid** for `prog` when every instruction position it analyses satisfies its
+/-- The layout map assigns each analysed code position (a suffix of the program) the operand-stack
+layout reached there. `none` = not analysed (unreachable / rejected). -/
+abbrev LayoutMap := List Asm → Option Layout
+
+/-- The static abstraction of a runtime stack value. -/
+def slotOf : AVal → Slot
+  | .word _ => .word
+  | .code l => .code l
+
+/-- The layout of a runtime stack. -/
+def layoutOf (σ : List AVal) : Layout := σ.map slotOf
+
+@[simp] theorem layoutOf_nil : layoutOf [] = [] := rfl
+@[simp] theorem layoutOf_cons (v : AVal) (σ : List AVal) :
+    layoutOf (v :: σ) = slotOf v :: layoutOf σ := rfl
+@[simp] theorem layoutOf_length (σ : List AVal) : (layoutOf σ).length = σ.length := by
+  simp [layoutOf]
+theorem layoutOf_append (σ τ : List AVal) : layoutOf (σ ++ τ) = layoutOf σ ++ layoutOf τ := by
+  simp [layoutOf]
+@[simp] theorem slotOf_word (v : U256) : slotOf (.word v) = .word := rfl
+@[simp] theorem slotOf_code (l : Label) : slotOf (.code l) = .code l := rfl
+
+@[simp] theorem layoutOf_words (vs : List U256) :
+    layoutOf (words vs) = List.replicate vs.length Slot.word := by
+  induction vs with
+  | nil => rfl
+  | cons v vs ih => simp [words_cons, layoutOf_cons, slotOf, ih, List.replicate_succ]
+
+/-- `(replicate k x ++ L).drop k = L` — dropping a replicated prefix. -/
+theorem drop_replicate_append {α} (k : Nat) (x : α) (L : List α) :
+    (List.replicate k x ++ L).drop k = L := by
+  induction k with
+  | zero => simp
+  | succ k ih => rw [List.replicate_succ, List.cons_append, List.drop_succ_cons]; exact ih
+
+/-! ### The layout map and its well-formedness -/
+
+/-- The well-formedness constraint one instruction `i` (with continuation `c`) imposes on the layout
+map, given its entry layout `S`. Mirrors each `AStep` rule's effect on the stack and the EVM 1024
+limit (with 1 slot of slack for the label-address push in the jump/`pushLabel` lowerings). `dup`/
+`swap` additionally require the touched cells to be `word`s (rejecting programs that would dup/swap a
+return address). -/
+def stepConstraint (prog : List Asm) (H : LayoutMap) : Asm → List Asm → Layout → Prop
+  | .push _,      c, S => H c = some (.word :: S) ∧ S.length + 1 ≤ 1023
+  | .dup n,       c, S => S[n.val]? = some Slot.word ∧ H c = some (.word :: S) ∧ S.length + 1 ≤ 1023
+  | .pushLabel l, c, S => H c = some (.code l :: S) ∧ S.length + 1 ≤ 1023 ∧
+      ∃ c', findLabel l prog = some c' ∧ H c' = some S
+  | .pop,         c, S => ∃ s S', S = s :: S' ∧ H c = some S'
+  | .swap n,      c, S => S[0]? = some Slot.word ∧ S[n.val + 1]? = some Slot.word ∧ H c = some S
+  | .label _,     c, S => H c = some S
+  | .op yop,      c, S => ∃ o, opTable yop = some o ∧ Operation.popArity o ≤ S.length ∧
+      (List.replicate (Operation.pushArity o) Slot.word ++ S.drop (Operation.popArity o)).length ≤ 1023 ∧
+      H c = some (List.replicate (Operation.pushArity o) Slot.word ++ S.drop (Operation.popArity o))
+  | .jump l,      _, S => ∃ c', findLabel l prog = some c' ∧ H c' = some S
+  | .jumpi l,     c, S => ∃ S', S = .word :: S' ∧
+      (∃ c', findLabel l prog = some c' ∧ H c' = some S') ∧ H c = some S'
+  | .dynJump,     _, _ => True
+
+/-- A layout map is **valid** for `prog` when every instruction position it analyses satisfies its
 step constraint. Decidable-in-spirit: a checker computes `H` and verifies this. -/
-def ValidHeights (prog : List Asm) (H : HeightMap) : Prop :=
-  ∀ i c, (i :: c) <:+ prog → ∀ h, H (i :: c) = some h → stepConstraint prog H i c h
+def ValidHeights (prog : List Asm) (H : LayoutMap) : Prop :=
+  ∀ i c, (i :: c) <:+ prog → ∀ S, H (i :: c) = some S → stepConstraint prog H i c S
 
+/-- **Well-formed layout**: every `.code l` return-address cell sits at a position whose target
+label `l` expects exactly the layout `below` it. Splitting the layout as `above ++ .code l :: below`,
+`below` is what remains after returning through it (`dynJump`), so its target's layout is `below`. -/
+def WF (prog : List Asm) (H : LayoutMap) (S : Layout) : Prop :=
+  ∀ above l below, S = above ++ .code l :: below →
+    ∃ c', findLabel l prog = some c' ∧ H c' = some below
 
-/-- Every `.code l` return-address value on the stack sits at the height `H (findLabel l)` its
-jump target expects: splitting the stack as `above ++ .code l :: below`, the values `below` are
-exactly what remains after returning through it (`dynJump`), so its target's height is `below.length`.
--/
-def ReturnAddrsOK (prog : List Asm) (H : HeightMap) (stk : List AVal) : Prop :=
-  ∀ above l below, stk = above ++ .code l :: below →
-    ∃ c', findLabel l prog = some c' ∧ H c' = some below.length
+/-- Well-formedness is inherited by any suffix (the slots below a return address are unchanged). -/
+theorem WF.of_suffix {prog H} {S S' : Layout} (h : WF prog H S) (hsuf : S' <:+ S) :
+    WF prog H S' := by
+  obtain ⟨t, rfl⟩ := hsuf
+  intro above l below heq
+  exact h (t ++ above) l below (by rw [List.append_assoc, ← heq])
 
-/-- Pushing a plain word preserves return-address consistency. -/
-theorem ReturnAddrsOK.word_cons {prog H} {σ : List AVal} {v : U256}
-    (h : ReturnAddrsOK prog H σ) : ReturnAddrsOK prog H (.word v :: σ) := by
+/-- Popping the top preserves well-formedness for the tail. -/
+theorem WF.tail {prog H} {s : Slot} {S : Layout} (h : WF prog H (s :: S)) : WF prog H S :=
+  h.of_suffix (List.suffix_cons s S)
+
+/-- Dropping any prefix preserves well-formedness. -/
+theorem WF.drop {prog H} {S : Layout} (h : WF prog H S) (k : Nat) : WF prog H (S.drop k) :=
+  h.of_suffix ⟨S.take k, List.take_append_drop k S⟩
+
+/-- Pushing a plain word preserves well-formedness. -/
+theorem WF.word_cons {prog H} {S : Layout} (h : WF prog H S) : WF prog H (.word :: S) := by
   intro above l below heq
   cases above with
   | nil => simp at heq
   | cons x above' =>
       rw [List.cons_append] at heq; injection heq with _ heq2; exact h above' l below heq2
 
-/-- Pushing a code address at the height its target expects preserves consistency. -/
-theorem ReturnAddrsOK.code_cons {prog H} {σ : List AVal} {l0 : Label}
-    (h : ReturnAddrsOK prog H σ)
-    (hc : ∃ c', findLabel l0 prog = some c' ∧ H c' = some σ.length) :
-    ReturnAddrsOK prog H (.code l0 :: σ) := by
+/-- Pushing a code address at the layout its target expects preserves well-formedness. -/
+theorem WF.code_cons {prog H} {S : Layout} {l0 : Label} (h : WF prog H S)
+    (hc : ∃ c', findLabel l0 prog = some c' ∧ H c' = some S) : WF prog H (.code l0 :: S) := by
   intro above l below heq
   cases above with
-  | nil => simp only [List.nil_append, List.cons.injEq] at heq; obtain ⟨hl, hb⟩ := heq
-           cases hl; cases hb; exact hc
+  | nil => simp only [List.nil_append, List.cons.injEq, Slot.code.injEq] at heq
+           obtain ⟨rfl, rfl⟩ := heq; exact hc
   | cons x above' =>
       rw [List.cons_append] at heq; injection heq with _ heq2; exact h above' l below heq2
 
-/-- Popping the top preserves consistency for the tail. -/
-theorem ReturnAddrsOK.tail {prog H} {σ : List AVal} {x : AVal}
-    (h : ReturnAddrsOK prog H (x :: σ)) : ReturnAddrsOK prog H σ :=
-  fun above l below heq => h (x :: above) l below (by rw [heq, List.cons_append])
+/-- Prepending a block of plain words preserves well-formedness. -/
+theorem WF.replicate_word {prog H} {S : Layout} (h : WF prog H S) (k : Nat) :
+    WF prog H (List.replicate k Slot.word ++ S) := by
+  induction k with
+  | zero => simpa using h
+  | succ k ih => rw [List.replicate_succ, List.cons_append]; exact ih.word_cons
 
-/-- Appending a block of plain words on top is transparent to return-address consistency. -/
-theorem ReturnAddrsOK.words_append_iff {prog H} {vs : List U256} {σ : List AVal} :
-    ReturnAddrsOK prog H (words vs ++ σ) ↔ ReturnAddrsOK prog H σ := by
-  induction vs with
-  | nil => simp
-  | cons v vs ih =>
-      rw [words_cons, List.cons_append]
-      constructor
-      · intro h; exact ih.mp h.tail
-      · intro h; exact (ih.mpr h).word_cons
+/-! ### The invariant and its preservation -/
 
 /-- The reachable-configuration invariant. -/
-structure Inv (prog : List Asm) (H : HeightMap) (conf : AConf) : Prop where
-  fits    : conf.stk.length ≤ 1023
-  height  : H conf.code = some conf.stk.length
-  returns : ReturnAddrsOK prog H conf.stk
+structure Inv (prog : List Asm) (H : LayoutMap) (conf : AConf) : Prop where
+  fits   : conf.stk.length ≤ 1023
+  height : H conf.code = some (layoutOf conf.stk)
+  wf     : WF prog H (layoutOf conf.stk)
 
 /-- **The bound falls straight out of the invariant.** -/
 theorem Inv.bound {prog H} {conf : AConf} (h : Inv prog H conf) : conf.stk.length ≤ 1023 :=
   h.fits
-
-/-! ### Preservation along a step, and along a run -/
 
 variable [model : ExternalModel]
 
@@ -124,8 +178,7 @@ set_option linter.unreachableTactic false in
 set_option maxHeartbeats 2000000 in
 /-- **Op-arity coupling**: whenever a builtin (local op or external call/create) executes
 successfully to `.ok rets`, its actual argument and result counts match the `Operation`'s declared
-`popArity`/`pushArity`. This ties the abstract `AStep.op` stack effect (`words args ++ σ ↦
-words rets ++ σ`) to the height-map arithmetic in `stepConstraint`. -/
+`popArity`/`pushArity`. Ties the abstract `AStep.op` stack effect to the layout arithmetic. -/
 theorem builtin_arity {yop : Op} {o : Operation} (hop : opTable yop = some o)
     {args rets : List U256} {yst yst' : EvmState}
     (h : builtinWithExternal model.calls model.creates yop args yst (.ok rets yst')) :
@@ -145,82 +198,138 @@ theorem builtin_arity {yop : Op} {o : Operation} (hop : opTable yop = some o)
         | (obtain ⟨rfl, -⟩ := h; simp [Operation.pushArity])
         | (obtain ⟨_, -, rfl, -⟩ := h; simp [Operation.pushArity])))
 
-set_option warningAsError false in
-/-- **Preservation** (interface; the per-constructor case analysis is the substance of the
-checker's soundness). Given a well-formed height map, `Inv` is preserved by every `AStep`. -/
-theorem Inv.step {prog : List Asm} {H : HeightMap} (hV : ValidHeights prog H)
+set_option linter.unusedVariables false in
+/-- **Preservation.** Given a valid layout map, `Inv` is preserved by every `AStep`. The `dup`/
+`swap` cases are the payoff of tracking layouts: the constraint forces the touched cells to be
+words, so no return address is ever duplicated or moved. -/
+theorem Inv.step {prog : List Asm} {H : LayoutMap} (hV : ValidHeights prog H)
     {a b : AConf} (hstep : AStep (model := model) prog a b) (hsuf : a.code <:+ prog)
     (hinv : Inv prog H a) : Inv prog H b := by
   cases hstep with
   | @push v c σ yst =>
-      obtain ⟨hfit, hHc⟩ := hV (.push v) c hsuf _ hinv.height
-      exact ⟨by simpa using hfit, by simpa using hHc, hinv.returns.word_cons⟩
-  | @pushLabel l c σ yst hdef =>
-      obtain ⟨hfit, hHc, hfind⟩ := hV (.pushLabel l) c hsuf _ hinv.height
-      exact ⟨by simpa using hfit, by simpa using hHc, hinv.returns.code_cons hfind⟩
+      obtain ⟨hHc, hlen⟩ := hV (.push v) c hsuf _ hinv.height
+      refine ⟨?_, ?_, ?_⟩
+      · show (AVal.word v :: σ).length ≤ 1023
+        have h2 : (layoutOf σ).length + 1 ≤ 1023 := hlen
+        simp only [layoutOf_length] at h2; simpa using h2
+      · show H c = some (layoutOf (AVal.word v :: σ))
+        simpa only [layoutOf_cons, slotOf_word] using hHc
+      · show WF prog H (layoutOf (AVal.word v :: σ))
+        simpa only [layoutOf_cons, slotOf_word] using hinv.wf.word_cons
+  | @op yop args rets c σ yst yst' hstepOp =>
+      obtain ⟨o, hop, _, hbnd, hHc⟩ := hV (.op yop) c hsuf _ hinv.height
+      obtain ⟨hargs, hrets⟩ := builtin_arity hop hstepOp
+      have hSdrop : (layoutOf (words args ++ σ)).drop (Operation.popArity o) = layoutOf σ := by
+        rw [layoutOf_append, layoutOf_words, ← hargs]; exact drop_replicate_append _ _ _
+      have hres : layoutOf (words rets ++ σ)
+          = List.replicate (Operation.pushArity o) Slot.word ++
+              (layoutOf (words args ++ σ)).drop (Operation.popArity o) := by
+        rw [hSdrop, layoutOf_append, layoutOf_words, hrets]
+      refine ⟨?_, ?_, ?_⟩
+      · show (words rets ++ σ).length ≤ 1023
+        have h2 := hbnd; rw [← hres, layoutOf_length] at h2; exact h2
+      · show H c = some (layoutOf (words rets ++ σ)); rw [hres]; exact hHc
+      · show WF prog H (layoutOf (words rets ++ σ))
+        rw [hres, hSdrop]
+        have hw := hinv.wf
+        rw [layoutOf_append, layoutOf_words] at hw
+        exact WF.replicate_word (hw.of_suffix ⟨List.replicate args.length Slot.word, rfl⟩) _
+  | @dup n v τ ρ c yst hτ =>
+      obtain ⟨hslot, hHc, hlen⟩ := hV (.dup n) c hsuf _ hinv.height
+      have hv : slotOf v = .word := by
+        have key : (layoutOf (τ ++ v :: ρ))[n.val]? = some (slotOf v) := by
+          rw [layoutOf_append, layoutOf_cons, ← hτ, ← layoutOf_length τ,
+              List.getElem?_append_right (Nat.le_refl _)]
+          simp
+        exact Option.some.inj (key.symm.trans hslot)
+      refine ⟨?_, ?_, ?_⟩
+      · show (v :: (τ ++ v :: ρ)).length ≤ 1023
+        have h2 : (layoutOf (τ ++ v :: ρ)).length + 1 ≤ 1023 := hlen
+        simp only [layoutOf_length] at h2; simpa using h2
+      · show H c = some (layoutOf (v :: (τ ++ v :: ρ)))
+        simpa only [layoutOf_cons, hv] using hHc
+      · show WF prog H (layoutOf (v :: (τ ++ v :: ρ)))
+        simpa only [layoutOf_cons, hv] using hinv.wf.word_cons
+  | @swap n x y τ ρ c yst hτ =>
+      obtain ⟨hx, hy, hHc⟩ := hV (.swap n) c hsuf _ hinv.height
+      have hsx : slotOf x = .word := by
+        have key : (layoutOf (x :: (τ ++ y :: ρ)))[0]? = some (slotOf x) := by simp [layoutOf_cons]
+        exact Option.some.inj (key.symm.trans hx)
+      have hsy : slotOf y = .word := by
+        have key : (layoutOf (x :: (τ ++ y :: ρ)))[n.val + 1]? = some (slotOf y) := by
+          simp only [layoutOf_cons, layoutOf_append, List.getElem?_cons_succ]
+          rw [← hτ, ← layoutOf_length τ, List.getElem?_append_right (Nat.le_refl _)]
+          simp
+        exact Option.some.inj (key.symm.trans hy)
+      have hlayeq : layoutOf (y :: (τ ++ x :: ρ)) = layoutOf (x :: (τ ++ y :: ρ)) := by
+        simp only [layoutOf_cons, layoutOf_append, hsx, hsy]
+      refine ⟨?_, ?_, ?_⟩
+      · show (y :: (τ ++ x :: ρ)).length ≤ 1023
+        have h2 : (x :: (τ ++ y :: ρ)).length ≤ 1023 := hinv.fits
+        simp only [List.length_cons, List.length_append] at h2 ⊢; omega
+      · show H c = some (layoutOf (y :: (τ ++ x :: ρ))); rw [hlayeq]; exact hHc
+      · show WF prog H (layoutOf (y :: (τ ++ x :: ρ))); rw [hlayeq]; exact hinv.wf
   | @pop v σ c yst =>
-      obtain ⟨_, hHc⟩ := hV .pop c hsuf _ hinv.height
-      refine ⟨?_, ?_, hinv.returns.tail⟩
+      obtain ⟨_, S', hSeq, hHc⟩ := hV .pop c hsuf _ hinv.height
+      rw [layoutOf_cons] at hSeq; injection hSeq with _ hS'
+      refine ⟨?_, ?_, ?_⟩
       · show σ.length ≤ 1023
-        have h2 : σ.length + 1 ≤ 1023 := hinv.fits
-        omega
-      · simpa using hHc
+        have h2 : (v :: σ).length ≤ 1023 := hinv.fits
+        simp only [List.length_cons] at h2; omega
+      · show H c = some (layoutOf σ); rw [hS']; exact hHc
+      · show WF prog H (layoutOf σ)
+        have hw := hinv.wf; rw [layoutOf_cons] at hw; exact hw.tail
   | @label l c σ yst =>
       have hHc := hV (.label l) c hsuf _ hinv.height
-      exact ⟨hinv.fits, hHc, hinv.returns⟩
+      exact ⟨hinv.fits, hHc, hinv.wf⟩
   | @jump l c c' σ yst hfind =>
       obtain ⟨c'', hf'', hH''⟩ := hV (.jump l) c hsuf _ hinv.height
       rw [hfind] at hf''; obtain rfl := Option.some.inj hf''
-      exact ⟨hinv.fits, hH'', hinv.returns⟩
+      exact ⟨hinv.fits, hH'', hinv.wf⟩
   | @jumpiTaken l v c c' σ yst hv hfind =>
-      obtain ⟨_, ⟨c'', hf'', hH''⟩, _⟩ := hV (.jumpi l) c hsuf _ hinv.height
+      obtain ⟨S', hSeq, ⟨c'', hf'', hH''⟩, _⟩ := hV (.jumpi l) c hsuf _ hinv.height
+      rw [layoutOf_cons, slotOf_word] at hSeq; injection hSeq with _ hS'
       rw [hfind] at hf''; obtain rfl := Option.some.inj hf''
-      refine ⟨?_, ?_, hinv.returns.tail⟩
-      · show σ.length ≤ 1023
-        have h2 : σ.length + 1 ≤ 1023 := hinv.fits
-        omega
-      · simpa using hH''
-  | @jumpiFall l v c σ yst hv =>
-      obtain ⟨_, _, hHc⟩ := hV (.jumpi l) c hsuf _ hinv.height
-      refine ⟨?_, ?_, hinv.returns.tail⟩
-      · show σ.length ≤ 1023
-        have h2 : σ.length + 1 ≤ 1023 := hinv.fits
-        omega
-      · simpa using hHc
-  | @dynJump l c c' σ yst hfind =>
-      obtain ⟨c'', hf'', hH''⟩ := hinv.returns [] l σ (by simp)
-      rw [hfind] at hf''; obtain rfl := Option.some.inj hf''
-      refine ⟨?_, hH'', hinv.returns.tail⟩
-      · show σ.length ≤ 1023
-        have h2 : σ.length + 1 ≤ 1023 := hinv.fits
-        omega
-  | @dup n v τ ρ c yst hτ =>
-      -- HARD: a dup'd `.code` value would land at the wrong height (needs value-flow).
-      sorry
-  | @swap n x y τ ρ c yst hτ =>
-      -- HARD: a swapped `.code` value would move to the wrong height (needs value-flow).
-      sorry
-  | @op yop args rets c σ yst yst' hstepOp =>
-      obtain ⟨o, hop, hpop, hbnd, hHc⟩ := hV (.op yop) c hsuf _ hinv.height
-      obtain ⟨hargs, hrets⟩ := builtin_arity hop hstepOp
-      have hwa : (words args ++ σ).length = args.length + σ.length := by
-        simp [words, List.length_append, List.length_map]
-      have hwr : (words rets ++ σ).length = rets.length + σ.length := by
-        simp [words, List.length_append, List.length_map]
-      -- height arithmetic: h - popArity + pushArity = rets.length + σ.length
-      have hcalc : (words args ++ σ).length - Operation.popArity o + Operation.pushArity o
-          = (words rets ++ σ).length := by rw [hwa, hwr, hargs, hrets]; omega
       refine ⟨?_, ?_, ?_⟩
-      · show (words rets ++ σ).length ≤ 1023
-        rw [← hcalc]; exact hbnd
-      · show H c = some (words rets ++ σ).length
-        rw [hHc, hcalc]
-      · exact (ReturnAddrsOK.words_append_iff.mpr
-          (ReturnAddrsOK.words_append_iff.mp hinv.returns))
+      · show σ.length ≤ 1023
+        have h2 : (AVal.word v :: σ).length ≤ 1023 := hinv.fits
+        simp only [List.length_cons] at h2; omega
+      · show H c' = some (layoutOf σ); rw [hS']; exact hH''
+      · show WF prog H (layoutOf σ)
+        have hw := hinv.wf; rw [layoutOf_cons, slotOf_word] at hw; exact hw.tail
+  | @jumpiFall l v c σ yst hv =>
+      obtain ⟨S', hSeq, _, hHc⟩ := hV (.jumpi l) c hsuf _ hinv.height
+      rw [layoutOf_cons, slotOf_word] at hSeq; injection hSeq with _ hS'
+      refine ⟨?_, ?_, ?_⟩
+      · show σ.length ≤ 1023
+        have h2 : (AVal.word v :: σ).length ≤ 1023 := hinv.fits
+        simp only [List.length_cons] at h2; omega
+      · show H c = some (layoutOf σ); rw [hS']; exact hHc
+      · show WF prog H (layoutOf σ)
+        have hw := hinv.wf; rw [layoutOf_cons, slotOf_word] at hw; exact hw.tail
+  | @pushLabel l c σ yst hdef =>
+      obtain ⟨hHc, hlen, hfind⟩ := hV (.pushLabel l) c hsuf _ hinv.height
+      refine ⟨?_, ?_, ?_⟩
+      · show (AVal.code l :: σ).length ≤ 1023
+        have h2 : (layoutOf σ).length + 1 ≤ 1023 := hlen
+        simp only [layoutOf_length] at h2; simpa using h2
+      · show H c = some (layoutOf (AVal.code l :: σ))
+        simpa only [layoutOf_cons, slotOf_code] using hHc
+      · show WF prog H (layoutOf (AVal.code l :: σ))
+        simpa only [layoutOf_cons, slotOf_code] using hinv.wf.code_cons hfind
+  | @dynJump l c c' σ yst hfind =>
+      have hw := hinv.wf
+      rw [layoutOf_cons, slotOf_code] at hw
+      obtain ⟨c'', hf'', hH''⟩ := hw [] l (layoutOf σ) (by simp)
+      rw [hfind] at hf''; obtain rfl := Option.some.inj hf''
+      refine ⟨?_, hH'', hw.tail⟩
+      show σ.length ≤ 1023
+      have h2 : (AVal.code l :: σ).length ≤ 1023 := hinv.fits
+      simp only [List.length_cons] at h2; omega
 
 /-- **The invariant holds at every reachable configuration**, hence the stack stays within the
 EVM limit throughout any Asm run — the hypothesis `astep_sim`/`asteps_sim` require. -/
-theorem Inv.reach {prog : List Asm} {H : HeightMap} (hV : ValidHeights prog H)
+theorem Inv.reach {prog : List Asm} {H : LayoutMap} (hV : ValidHeights prog H)
     {a b : AConf} (hsteps : ASteps (model := model) prog a b) (hsuf : a.code <:+ prog)
     (hinv : Inv prog H a) : Inv prog H b := by
   induction hsteps with
@@ -229,17 +338,17 @@ theorem Inv.reach {prog : List Asm} {H : HeightMap} (hV : ValidHeights prog H)
 
 omit model in
 /-- The entry configuration `⟨prog, [], yst⟩` satisfies the invariant, provided the map assigns the
-whole program height `0` and stays within the limit there. -/
-theorem Inv.entry {prog : List Asm} {H : HeightMap} (h0 : H prog = some 0) (yst : EvmState) :
+whole program the empty layout. -/
+theorem Inv.entry {prog : List Asm} {H : LayoutMap} (h0 : H prog = some []) (yst : EvmState) :
     Inv prog H ⟨prog, [], yst⟩ where
   fits := by simp
   height := by simpa using h0
-  returns := by intro above l below hi; simp at hi
+  wf := by intro above l below hi; simp at hi
 
 /-- **The run stack-bound**, in the exact shape the Phase-B lemmas consume: every configuration
 reachable from the entry keeps its stack within the EVM limit. -/
-theorem run_stack_bound {prog : List Asm} {H : HeightMap}
-    (hV : ValidHeights prog H) (h0 : H prog = some 0) (yst : EvmState) :
+theorem run_stack_bound {prog : List Asm} {H : LayoutMap}
+    (hV : ValidHeights prog H) (h0 : H prog = some []) (yst : EvmState) :
     ∀ mid, ASteps (model := model) prog ⟨prog, [], yst⟩ mid → mid.stk.length ≤ 1023 :=
   fun _ hsteps => (Inv.reach hV hsteps (List.suffix_refl _) (Inv.entry h0 yst)).bound
 
