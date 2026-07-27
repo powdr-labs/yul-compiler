@@ -517,4 +517,187 @@ theorem Step.mv_congr {x : Ident} {dA dB : Nat} {funs : FunEnv D}
       obtain ⟨Vb₂, rfl, hrelB⟩ := hrel'.sres_inv
       exact ⟨_, Step.loopBodyHalt h₂ hnz h₃, .sres _ _ hrelB⟩
 
+/-! ### Fresh keys: `x`-mention-free code never adds an `x` key
+
+The lemma that licenses crossing the sink's assignment: after the mention-free
+`mid` runs over the inserted `(x, 0)` binding, the entries `mid` pushed above
+it cannot be keyed `x`, so `VEnv.set … x val` hits the inserted binding. -/
+
+set_option maxHeartbeats 1600000 in
+/-- Executing `x`-mention-free code only adds keys different from `x`. -/
+theorem step_new_keys_free {x : Ident} {funs : FunEnv D} {V : VEnv D}
+    {st : EvmState} {code : Code Op} {res : Res D}
+    (h : Step D funs V st code res) :
+    ∀ {V' st' o}, res = .sres V' st' o → codeMentions x code = false →
+      ∃ NEW, V'.map Prod.fst = NEW ++ V.map Prod.fst ∧ x ∉ NEW := by
+  induction h with
+  | lit | var | builtinOk | builtinHalt | builtinArgsHalt | callOk | callHalt
+  | callArgsHalt | argsNil | argsCons | argsRestHalt | argsHeadHalt =>
+      intro V' st' o heq _; nomatch heq
+  | funDef =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | @block _ V _ body Vb stb o hbody _ =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      refine ⟨[], ?_, by simp⟩
+      rw [restore_keys (venvKeys_suffix hbody rfl) (venvLen_mono hbody rfl)]
+      rfl
+  | @letZero _ V _ vars =>
+      intro V' st' o heq hm
+      injection heq with h1 _ _; subst h1
+      refine ⟨vars, by simp [bindZeros, Function.comp_def], ?_⟩
+      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff,
+        decide_eq_false_iff_not] at hm
+      exact hm.1
+  | @letVal _ V _ vars e vals _ _ hlen =>
+      intro V' st' o heq hm
+      injection heq with h1 _ _; subst h1
+      refine ⟨vars, ?_, ?_⟩
+      · simp only [List.map_append]
+        congr 1
+        exact List.map_fst_zip (l₂ := vals) (by omega)
+      · simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff,
+          decide_eq_false_iff_not] at hm
+        exact hm.1
+  | letHalt =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | assignVal =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], by rw [VEnv.setMany_keys]; rfl, by simp⟩
+  | assignHalt =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | exprStmt =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | exprStmtHalt =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | ifTrue _ _ hb _ ihb =>
+      intro V' st' o heq hm
+      injection heq with h1 _ _; subst h1
+      refine ihb rfl ?_
+      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm ⊢
+      exact hm.2
+  | ifFalse =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | ifHalt =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | @switchExec _ V _ c cases dflt cv _ _ _ o hc hb _ ihb =>
+      intro V' st' o' heq hm
+      injection heq with h1 _ _; subst h1
+      refine ihb rfl ?_
+      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      simp only [codeMentions, stmtMentions]
+      exact selectSwitch_not_mentions hm.1.2 hm.2
+  | switchHalt =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | forLoop hinit hloop _ _ =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      refine ⟨[], ?_, by simp⟩
+      rw [restore_keys ((venvKeys_suffix hinit rfl).trans
+          (venvKeys_suffix hloop rfl))
+        (Nat.le_trans (venvLen_mono hinit rfl) (venvLen_mono hloop rfl))]
+      rfl
+  | forInitHalt hinit _ =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      refine ⟨[], ?_, by simp⟩
+      rw [restore_keys (venvKeys_suffix hinit rfl) (venvLen_mono hinit rfl)]
+      rfl
+  | «break» =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | «continue» =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | leave =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | seqNil =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | seqCons hs hrest ihs ihrest =>
+      intro V' st' o heq hm
+      injection heq with h1 _ _; subst h1
+      simp only [codeMentions, stmtsMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨N1, he1, hx1⟩ := ihs rfl (by simpa [codeMentions] using hm.1)
+      obtain ⟨N2, he2, hx2⟩ := ihrest rfl (by simpa [codeMentions] using hm.2)
+      exact ⟨N2 ++ N1, by rw [he2, he1, List.append_assoc], by
+        simp only [List.mem_append]
+        exact fun hc => hc.elim hx2 hx1⟩
+  | seqStop hs hne ihs =>
+      intro V' st' o heq hm
+      injection heq with h1 _ _; subst h1
+      simp only [codeMentions, stmtsMentions, Bool.or_eq_false_iff] at hm
+      exact ihs rfl (by simpa [codeMentions] using hm.1)
+  | loopDone =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | loopCondHalt =>
+      intro V' st' o heq _
+      injection heq with h1 _ _; subst h1
+      exact ⟨[], rfl, by simp⟩
+  | loopStep _ _ hb _ hp hr _ ihb ihp ihr =>
+      intro V' st' o heq hm
+      injection heq with h1 _ _; subst h1
+      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨N1, he1, hx1⟩ := ihb rfl
+        (by simp [codeMentions, stmtMentions, hm.2])
+      obtain ⟨N2, he2, hx2⟩ := ihp rfl
+        (by simp [codeMentions, stmtMentions, hm.1.2])
+      obtain ⟨N3, he3, hx3⟩ := ihr rfl
+        (by simp [codeMentions, hm.1.1, hm.1.2, hm.2])
+      refine ⟨N3 ++ N2 ++ N1, ?_, ?_⟩
+      · rw [he3, he2, he1]; simp [List.append_assoc]
+      · simp only [List.mem_append]
+        exact fun hc => hc.elim (fun hc' => hc'.elim hx3 hx2) hx1
+  | loopPostHalt _ _ hb _ hp _ ihb ihp =>
+      intro V' st' o heq hm
+      injection heq with h1 _ _; subst h1
+      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨N1, he1, hx1⟩ := ihb rfl
+        (by simp [codeMentions, stmtMentions, hm.2])
+      obtain ⟨N2, he2, hx2⟩ := ihp rfl
+        (by simp [codeMentions, stmtMentions, hm.1.2])
+      refine ⟨N2 ++ N1, ?_, ?_⟩
+      · rw [he2, he1, List.append_assoc]
+      · simp only [List.mem_append]
+        exact fun hc => hc.elim hx2 hx1
+  | loopBreak _ _ hb _ ihb =>
+      intro V' st' o heq hm
+      injection heq with h1 _ _; subst h1
+      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      exact ihb rfl (by simp [codeMentions, stmtMentions, hm.2])
+  | loopLeave _ _ hb _ ihb =>
+      intro V' st' o heq hm
+      injection heq with h1 _ _; subst h1
+      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      exact ihb rfl (by simp [codeMentions, stmtMentions, hm.2])
+  | loopBodyHalt _ _ hb _ ihb =>
+      intro V' st' o heq hm
+      injection heq with h1 _ _; subst h1
+      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      exact ihb rfl (by simp [codeMentions, stmtMentions, hm.2])
+
 end YulEvmCompiler.Optimizer.FuseDeclAssign
