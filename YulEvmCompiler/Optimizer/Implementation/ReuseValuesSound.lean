@@ -3430,4 +3430,133 @@ theorem rv_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       rw [hr.loop_eq]
       exact Step.loopBodyHalt hcond hnz hbody
 
+/-! ### Assembly: the shallow pass, the recursive wrapper, and the guard -/
+
+theorem reuseValuesShallow_sound (b : Block Op) :
+    EquivBlock D b (reuseValuesShallowBlock b) := by
+  by_cases hfree : storageLayoutFreeStmts b = true
+  · simp only [reuseValuesShallowBlock, hfree, if_true]
+    intro funs V st V' st' o
+    constructor
+    · intro h
+      cases h with
+      | block hb =>
+          obtain ⟨hb', -⟩ := rv_fwd hb (bound := []) (C := RvCache.empty)
+            (C' := (rvStmts [] RvCache.empty b).2)
+            (code' := .stmts (rvStmts [] RvCache.empty b).1) rfl
+            (YulEvmCompiler.Optimizer.BoundOK.nil _) (RvOk.empty _ _)
+          rw [← hoist_rvStmts [] RvCache.empty b] at hb'
+          exact Step.block hb'
+    · intro h
+      cases h with
+      | block hb =>
+          rw [hoist_rvStmts [] RvCache.empty b] at hb
+          exact Step.block (rv_bwd hb (bound := []) (C := RvCache.empty)
+            (C' := (rvStmts [] RvCache.empty b).2) (code := .stmts b) rfl
+            (YulEvmCompiler.Optimizer.BoundOK.nil _) (RvOk.empty _ _))
+  · have hfalse : storageLayoutFreeStmts b = false :=
+      Bool.eq_false_of_not_eq_true hfree
+    simpa [reuseValuesShallowBlock, hfalse] using
+      (@EquivBlock.refl (evmWithExternal calls creates) _ b)
+
+set_option linter.unusedVariables false in
+mutual
+
+theorem rvFunStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (rvFunStmt s)
+  | .block body =>
+      EquivBlock.of_stmts_funs
+        (EquivStmts.of_forall₂ (rvFunStmts_forall2 body))
+        (rvFunScopeRel body)
+  | .funDef n ps rs body =>
+      YulEvmCompiler.Optimizer.funDef_equiv n ps rs body _
+  | .cond c body =>
+      EquivStmt.cond_congr (EquivExpr.refl _)
+        (EquivBlock.of_stmts_funs
+          (EquivStmts.of_forall₂ (rvFunStmts_forall2 body))
+          (rvFunScopeRel body))
+  | .switch c cases dflt =>
+      EquivStmt.switch_congr (EquivExpr.refl _) (rvFunCases_forall2 cases)
+        (rvFunDflt_equiv dflt)
+  | .forLoop init c post body => by
+      simpa [rvFunStmt] using
+        (EquivStmt.forLoop_congr init (EquivExpr.refl c)
+        ((EquivBlock.of_stmts_funs
+          (EquivStmts.of_forall₂ (rvFunStmts_forall2 post))
+          (rvFunScopeRel post)).trans
+            (reuseValuesShallow_sound (rvFunStmts post)))
+        ((EquivBlock.of_stmts_funs
+          (EquivStmts.of_forall₂ (rvFunStmts_forall2 body))
+          (rvFunScopeRel body)).trans
+            (reuseValuesShallow_sound (rvFunStmts body))))
+  | .letDecl xs rhs => EquivStmt.refl _
+  | .assign xs rhs => EquivStmt.refl _
+  | .exprStmt e => EquivStmt.refl _
+  | .break => EquivStmt.refl _
+  | .continue => EquivStmt.refl _
+  | .leave => EquivStmt.refl _
+
+theorem rvFunStmts_forall2 : ∀ ss : List (Stmt Op),
+    List.Forall₂ (EquivStmt D) ss (rvFunStmts ss)
+  | [] => .nil
+  | s :: rest => .cons (rvFunStmt_equiv s) (rvFunStmts_forall2 rest)
+
+theorem rvFunCases_forall2 : ∀ cs : List (Literal × Block Op),
+    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs
+      (rvFunCases cs)
+  | [] => .nil
+  | (l, body) :: rest =>
+      .cons ⟨rfl, EquivBlock.of_stmts_funs
+        (EquivStmts.of_forall₂ (rvFunStmts_forall2 body))
+        (rvFunScopeRel body)⟩
+        (rvFunCases_forall2 rest)
+
+theorem rvFunDflt_equiv : ∀ dflt : Option (Block Op),
+    EquivBlock D (dflt.getD []) ((rvFunDflt dflt).getD [])
+  | none => EquivBlock.refl _
+  | some body => by
+      simpa [rvFunDflt] using EquivBlock.of_stmts_funs
+        (EquivStmts.of_forall₂ (rvFunStmts_forall2 body))
+        (rvFunScopeRel body)
+
+theorem rvFunScopeRel : ∀ ss : List (Stmt Op),
+    ScopeRel D (hoist D ss) (hoist D (rvFunStmts ss))
+  | [] => .nil
+  | .funDef n ps rs body :: rest =>
+      .cons ⟨rfl, rfl, rfl,
+        (EquivBlock.of_stmts_funs
+          (EquivStmts.of_forall₂ (rvFunStmts_forall2 body))
+          (rvFunScopeRel body)).trans
+          (reuseValuesShallow_sound (rvFunStmts body))⟩
+        (rvFunScopeRel rest)
+  | .block body :: rest => rvFunScopeRel rest
+  | .letDecl xs rhs :: rest => rvFunScopeRel rest
+  | .assign xs rhs :: rest => rvFunScopeRel rest
+  | .cond c body :: rest => rvFunScopeRel rest
+  | .switch c cases dflt :: rest => rvFunScopeRel rest
+  | .forLoop init c post body :: rest => rvFunScopeRel rest
+  | .exprStmt e :: rest => rvFunScopeRel rest
+  | .break :: rest => rvFunScopeRel rest
+  | .continue :: rest => rvFunScopeRel rest
+  | .leave :: rest => rvFunScopeRel rest
+
+end
+
+/-- **Soundness of scoped available-value reuse.** -/
+theorem reuseValuesBlock_equiv (b : Block Op) :
+    EquivBlock D b (reuseValuesBlock b) := by
+  unfold reuseValuesBlock
+  by_cases h1 : storageLayoutFreeStmts b
+  · rw [if_pos h1]
+    by_cases h2 : storageLayoutFreeStmts
+        (reuseValuesShallowBlock (rvFunStmts b))
+    · simp only [if_pos h2]
+      exact (EquivBlock.of_stmts_funs
+        (EquivStmts.of_forall₂ (rvFunStmts_forall2 b))
+        (rvFunScopeRel b)).trans
+        (reuseValuesShallow_sound (rvFunStmts b))
+    · simp only [if_neg h2]
+      exact EquivBlock.refl _
+  · rw [if_neg h1]
+    exact EquivBlock.refl _
+
 end YulEvmCompiler.Optimizer.ReuseValues

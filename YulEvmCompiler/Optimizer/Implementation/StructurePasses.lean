@@ -2,6 +2,7 @@ import YulEvmCompiler.Optimizer.Implementation.Flatten
 import YulEvmCompiler.Optimizer.Implementation.FlattenSound
 import YulEvmCompiler.Optimizer.Implementation.FuseDeclAssignSound
 import YulEvmCompiler.Optimizer.Implementation.ReuseValues
+import YulEvmCompiler.Optimizer.Implementation.ReuseValuesSound
 import YulEvmCompiler.Optimizer.Implementation.PruneDefsResolve
 import YulEvmCompiler.Optimizer.Implementation.ResolveCongr
 import YulEvmCompiler.Optimizer.Implementation.RejoinPairs
@@ -15,15 +16,16 @@ import YulEvmCompiler.Optimizer.Implementation.RejoinPairs
 three passes are guarded by whole-block layout-freedom on **both input and
 output** (post-checked, falling back to the input), so their object-path
 congruences reduce to their block soundness via `resolve_storageLayoutFreeStmts`
-— resolution is the identity on both sides.  The three block-soundness
-theorems are the remaining stubs (MEASUREMENT STAGE — see the PR):
+— resolution is the identity on both sides.  All four block-soundness
+theorems are fully proved:
 
-* `flattenBlock_sound` — the `InsChain` splice argument plus a block-local
-  fresh-binder alpha conversion;
-* `fuseDeclAssignBlock_sound` — the binding-sink env-reorder transport plus
-  the `CoalesceCopies` insertion skeleton;
+* `flattenBlock_sound` — the splice frame argument (`FlattenSound`) plus a
+  block-local fresh-binder alpha conversion;
+* `fuseDeclAssignBlock_sound` — the binding-sink env-reorder transport
+  (`FuseDeclAssignSound`);
 * `reuseValuesBlock_sound` — the `StorageForward`-style cache-validity
-  simulation extended with content-keyed keccak and memory-cell facts.
+  simulation extended with content-keyed keccak and memory-cell facts
+  (`ReuseValuesSound`).
 -/
 
 namespace YulEvmCompiler.Optimizer
@@ -34,7 +36,7 @@ open YulSemantics.EVM
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 local notation "D" => evmWithExternal calls creates
 
-/-! ### The three remaining soundness obligations -/
+/-! ### The block-soundness theorems -/
 
 /-- Block soundness of flattening (fully proved). -/
 theorem flattenBlock_sound (b : Block Op) :
@@ -46,9 +48,10 @@ theorem fuseDeclAssignBlock_sound (b : Block Op) :
     EquivBlock D b (FuseDeclAssign.fuseDeclAssignBlock b) :=
   FuseDeclAssign.fuseDeclAssignBlock_equiv b
 
-/-- Block soundness of available-value reuse (proof in progress). -/
+/-- Block soundness of available-value reuse (fully proved). -/
 theorem reuseValuesBlock_sound (b : Block Op) :
-    EquivBlock D b (ReuseValues.reuseValuesBlock b) := sorry
+    EquivBlock D b (ReuseValues.reuseValuesBlock b) :=
+  ReuseValues.reuseValuesBlock_equiv b
 
 /-! ### The pass values -/
 
