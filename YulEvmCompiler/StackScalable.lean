@@ -1,6 +1,6 @@
 import YulEvmCompiler.StackBound
 
-set_option warningAsError false  -- WIP
+set_option warningAsError true
 /-!
 # YulEvmCompiler.StackScalable — scalable (frame-relative) stack-overflow analysis  [WIP]
 
@@ -215,7 +215,7 @@ def frameStep (prog : List Asm) (C : Cert) : Asm → List Asm → FLayout → Na
   | .jumpi l,     c, S, F, R => ∃ S', S = .word :: S' ∧
       (∃ t, findLabel l prog = some t ∧ C.fl t = some S' ∧ C.fbMax t = some F ∧ C.rl t = some R) ∧
       C.fl c = some S' ∧ C.fbMax c = some F ∧ C.rl c = some R
-  | .dynJump,     _, S, F, R => ∃ S', S = .ret :: S' ∧ R = S' ∧ (∀ s ∈ S', s = FSlot.word)
+  | .dynJump,     _, S, _F, R => ∃ S', S = .ret :: S' ∧ R = S' ∧ (∀ s ∈ S', s = FSlot.word)
 
 def Cert.Valid (prog : List Asm) (C : Cert) : Prop :=
   ∀ i c S F R, C.fl (i :: c) = some S → C.fbMax (i :: c) = some F → C.rl (i :: c) = some R →
@@ -258,7 +258,7 @@ theorem GoodStack.bound {prog C} (hb : C.Bounded) {σ : List AVal} {c : List Asm
 
 theorem GoodStack.entry {prog C} {R : FLayout} (h0fl : C.fl prog = some []) (h0fb : C.fbMax prog = some 0)
     (h0rl : C.rl prog = some R) : GoodStack prog C [] prog :=
-  .root h0fl h0fb h0rl (by simp [NoRet]) .nil
+  .root h0fl h0fb h0rl (by simp) .nil
 
 /-! ### Frame grow / shrink / same -/
 
@@ -816,7 +816,7 @@ def frameStepB (prog : List Asm) (C : Cert) : Asm → List Asm → FLayout → N
            | none => false)
           && decide (C.fl c = some S' ∧ C.fbMax c = some F ∧ C.rl c = some R)
       | _ => false
-  | .dynJump,     _, S, F, R => match S with
+  | .dynJump,     _, S, _F, R => match S with
       | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
       | _ => false
 
@@ -943,14 +943,14 @@ theorem checkCert_sound {prog : List Asm} {d : CertData} (h : checkCert prog d =
     obtain ⟨e, hmem, hpe⟩ := d.lookup_pos hfl
     have hchk := hall e hmem
     rw [hpe] at hchk
-    simp only [Bool.and_eq_true, hfl, hfb, hrl] at hchk
+    simp only [hfl, hfb, hrl] at hchk
     exact frameStepB_sound hchk.2
   · -- Bounded
     intro c S F hfl hfb
     obtain ⟨e, hmem, hpe⟩ := d.lookup_pos hfl
     have hchk := hall e hmem
     rw [hpe] at hchk
-    simp only [Bool.and_eq_true, hfl, hfb, decide_eq_true_eq] at hchk
+    simp only [hfl, hfb, decide_eq_true_eq] at hchk
     exact hchk.1
   · exact Option.isSome_iff_exists.mp hentrl
 
