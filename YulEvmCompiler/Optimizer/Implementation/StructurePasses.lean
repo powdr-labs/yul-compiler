@@ -1,7 +1,7 @@
 import YulEvmCompiler.Optimizer.Implementation.Flatten
 import YulEvmCompiler.Optimizer.Implementation.FuseDeclAssign
 import YulEvmCompiler.Optimizer.Implementation.ReuseValues
-import YulEvmCompiler.Optimizer.Implementation.PruneDefsSound
+import YulEvmCompiler.Optimizer.Implementation.PruneDefsResolve
 import YulEvmCompiler.Optimizer.Implementation.ResolveCongr
 /-!
 # Pass values for the structural cleanup family
@@ -62,6 +62,8 @@ theorem resolveReuseValuesBlock_equiv (L : Layout) (b : Block Op) :
 /-- Object-path congruence for `pruneDefs`. -/
 theorem resolvePruneDefsBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
-      (resolveForLayoutStmts L (PruneDefs.pruneDefsBlock b)) := sorry
+      (resolveForLayoutStmts L (PruneDefs.pruneDefsBlock b)) := by
+  rw [PruneDefs.resolve_pruneDefsBlock]
+  exact PruneDefs.pruneDefsBlock_sound (resolveForLayoutStmts L b)
 
 end YulEvmCompiler.Optimizer
