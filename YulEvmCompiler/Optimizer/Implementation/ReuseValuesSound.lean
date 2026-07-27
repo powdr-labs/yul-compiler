@@ -517,4 +517,393 @@ theorem RvOk.mstore {V : VEnv D} {st : EvmState} {C : RvCache}
     obtain ⟨kk, h1, h2⟩ := hc.slds p hp
     exact ⟨kk, h1, h2⟩
 
+/-! ### Syntactic equality is equality
+
+`exprBeq` reduces definitionally on constructor pairs (its generated match
+equations are avoided on purpose). -/
+
+mutual
+theorem exprBeq_eq : ∀ (e₁ e₂ : Expr Op), exprBeq e₁ e₂ = true → e₁ = e₂
+  | .lit l₁, e₂, h => by
+      cases e₂
+      case lit l₂ =>
+        cases l₁ <;> cases l₂ <;>
+          first
+          | exact absurd h Bool.false_ne_true
+          | exact congrArg Expr.lit (congrArg Literal.number (eq_of_beq h))
+          | exact congrArg Expr.lit (congrArg Literal.string (eq_of_beq h))
+      all_goals (cases l₁ <;> exact absurd h Bool.false_ne_true)
+  | .var x, e₂, h => by
+      cases e₂
+      case var y => exact congrArg Expr.var (eq_of_beq h)
+      all_goals exact absurd h Bool.false_ne_true
+  | .builtin o1 a1, e₂, h => by
+      cases e₂
+      case builtin o2 a2 =>
+          have h2 : (o1 == o2 && argsBeq a1 a2) = true := h
+          simp only [Bool.and_eq_true, beq_iff_eq] at h2
+          rw [h2.1, argsBeq_eq a1 a2 h2.2]
+      all_goals exact absurd h Bool.false_ne_true
+  | .call f1 a1, e₂, h => by
+      cases e₂
+      case call f2 a2 =>
+          have h2 : (f1 == f2 && argsBeq a1 a2) = true := h
+          simp only [Bool.and_eq_true, beq_iff_eq] at h2
+          rw [h2.1, argsBeq_eq a1 a2 h2.2]
+      all_goals exact absurd h Bool.false_ne_true
+
+theorem argsBeq_eq : ∀ (es₁ es₂ : List (Expr Op)),
+    argsBeq es₁ es₂ = true → es₁ = es₂
+  | [], es₂, h => by
+      cases es₂
+      · rfl
+      · exact absurd h Bool.false_ne_true
+  | e :: rest, es₂, h => by
+      cases es₂ with
+      | nil => exact absurd h Bool.false_ne_true
+      | cons e₂ rest₂ =>
+          have h2 : (exprBeq e e₂ && argsBeq rest rest₂) = true := h
+          simp only [Bool.and_eq_true] at h2
+          rw [exprBeq_eq e e₂ h2.1, argsBeq_eq rest rest₂ h2.2]
+end
+
+theorem sigBeq_eq : ∀ (s₁ s₂ : CellSig), sigBeq s₁ s₂ = true → s₁ = s₂
+  | [], s₂, h => by
+      cases s₂ with
+      | nil => rfl
+      | cons q r => exact absurd h Bool.false_ne_true
+  | (i₁, e₁) :: r₁, s₂, h => by
+      cases s₂ with
+      | nil => exact absurd h Bool.false_ne_true
+      | cons q r₂ =>
+          rcases q with ⟨i₂, e₂⟩
+          have h2 : (i₁ == i₂ && exprBeq e₁ e₂ && sigBeq r₁ r₂) = true := h
+          simp only [Bool.and_eq_true, beq_iff_eq] at h2
+          rw [h2.1.1, exprBeq_eq e₁ e₂ h2.1.2, sigBeq_eq r₁ r₂ h2.2]
+
+/-! ### Canonicalization preserves evaluation -/
+
+theorem canonVar_get {C : RvCache} {V : VEnv D} {st : EvmState}
+    (hc : RvOk V st C) (y : Ident) :
+    VEnv.get V (canonVar C y) = VEnv.get V y := by
+  unfold canonVar
+  cases hf : C.aliases.find? (fun p => p.1 = y) with
+  | none => rfl
+  | some p =>
+      simp only [Option.map_some, Option.getD_some]
+      obtain ⟨v, h1, h2⟩ := hc.aliases p (List.mem_of_find?_eq_some hf)
+      have hkey : p.1 = y := by
+        have := List.find?_some hf
+        simpa using this
+      rw [h2, ← hkey, h1]
+
+theorem canonPureArgs_length {C : RvCache} : ∀ {es ces : List (Expr Op)},
+    canonPureArgs C es = some ces → ces.length = es.length
+  | [], ces, h => by
+      simp only [canonPureArgs, Option.some.injEq] at h
+      subst h
+      rfl
+  | e :: rest, ces, h => by
+      simp only [canonPureArgs, Option.bind_eq_bind,
+        Option.bind_eq_some_iff] at h
+      obtain ⟨ce, hce, h⟩ := h
+      obtain ⟨crest, hcrest, h⟩ := h
+      simp only [Option.pure_def, Option.some.injEq] at h
+      subst h
+      simp [canonPureArgs_length hcrest]
+
+mutual
+theorem canonPureGo_eval {C : RvCache} {V : VEnv D} {st : EvmState}
+    (hc : RvOk V st C) : ∀ {e ce : Expr Op}, canonPureGo C e = some ce →
+    evalPure V ce = evalPure V e
+  | .lit l, ce, h => by
+      cases l with
+      | number n =>
+          simp only [canonPureGo, Option.some.injEq] at h
+          subst h
+          rfl
+      | string s => simp [canonPureGo] at h
+      | bool b => simp [canonPureGo] at h
+  | .var x, ce, h => by
+      simp only [canonPureGo, Option.some.injEq] at h
+      subst h
+      show evalPure V (.var (canonVar C x)) = evalPure V (.var x)
+      simp only [evalPure]
+      exact canonVar_get hc x
+  | .builtin op args, ce, h => by
+      simp only [canonPureGo] at h
+      split at h
+      · next har =>
+          cases hargs : canonPureArgs C args with
+          | none => rw [hargs] at h; cases h
+          | some cargs =>
+              rw [hargs] at h
+              simp only [Option.map_some, Option.some.injEq] at h
+              subst h
+              have hlen : cargs.length = args.length :=
+                canonPureArgs_length hargs
+              simp only [evalPure, hlen]
+              rw [canonPureArgs_eval hc hargs]
+      · cases h
+  | .call _ _, ce, h => by simp [canonPureGo] at h
+
+theorem canonPureArgs_eval {C : RvCache} {V : VEnv D} {st : EvmState}
+    (hc : RvOk V st C) : ∀ {es ces : List (Expr Op)},
+    canonPureArgs C es = some ces →
+    evalPureArgs V ces = evalPureArgs V es
+  | [], ces, h => by
+      simp only [canonPureArgs, Option.some.injEq] at h
+      subst h
+      rfl
+  | e :: rest, ces, h => by
+      simp only [canonPureArgs, Option.bind_eq_bind,
+        Option.bind_eq_some_iff] at h
+      obtain ⟨ce, hce, h⟩ := h
+      obtain ⟨crest, hcrest, h⟩ := h
+      simp only [Option.pure_def, Option.some.injEq] at h
+      subst h
+      simp only [evalPureArgs]
+      rw [canonPureGo_eval hc hce, canonPureArgs_eval hc hcrest]
+end
+
+theorem canonPure_eval {C : RvCache} {V : VEnv D} {st : EvmState}
+    (hc : RvOk V st C) {e ce : Expr Op} (h : canonPure C e = some ce) :
+    evalPure V ce = evalPure V e := by
+  unfold canonPure at h
+  split at h
+  · cases h
+  · exact canonPureGo_eval hc h
+
+/-! ### Determinism over the canonical domain -/
+
+mutual
+/-- Any derivation of an expression in `canonPureGo`'s domain evaluates it
+functionally, with the state unchanged. -/
+theorem canonDom_step_inv {C : RvCache} : ∀ {e ce : Expr Op},
+    canonPureGo C e = some ce →
+    ∀ (funs : FunEnv D) (V : VEnv D) (st : EvmState) (res : Res D),
+      Step D funs V st (.expr e) res →
+      ∃ w, evalPure V e = some w ∧ res = .eres (.vals [w] st)
+  | .lit l, ce, h => by
+      cases l with
+      | number n =>
+          intro funs V st res hstep
+          cases hstep
+          exact ⟨_, rfl, rfl⟩
+      | string s => simp [canonPureGo] at h
+      | bool b => simp [canonPureGo] at h
+  | .var x, ce, h => by
+      intro funs V st res hstep
+      cases hstep with
+      | var hv => exact ⟨_, hv, rfl⟩
+  | .builtin op args, ce, h => by
+      simp only [canonPureGo] at h
+      split at h
+      · next har =>
+          have har' : pureTotalArity op = some args.length := by
+            simpa using har
+          cases hargs : canonPureArgs C args with
+          | none => rw [hargs] at h; cases h
+          | some cargs =>
+              intro funs V st res hstep
+              cases hstep with
+              | builtinOk ha hop =>
+                  obtain ⟨ws, hws, hres⟩ := canonDomArgs_step_inv hargs _ _ _ _ ha
+                  injection hres with hres
+                  injection hres with h1 h2
+                  rw [h1] at hop
+                  have hlen : ws.length = args.length :=
+                    evalPureArgs_length hws
+                  obtain ⟨w, hw⟩ := pureTotalArity_pureFn har' ws (by omega)
+                  have hok := pureFn_builtin_inv hw hop
+                  injection hok with h3 h4
+                  refine ⟨w, ?_, ?_⟩
+                  · simp only [evalPure, if_pos har', hws, Option.bind_some, hw]
+                  · rw [h3, h4, h2]
+              | builtinHalt ha hop =>
+                  obtain ⟨ws, hws, hres⟩ := canonDomArgs_step_inv hargs _ _ _ _ ha
+                  injection hres with hres
+                  injection hres with h1 h2
+                  rw [h1] at hop
+                  have hlen : ws.length = args.length :=
+                    evalPureArgs_length hws
+                  obtain ⟨w, hw⟩ := pureTotalArity_pureFn har' ws (by omega)
+                  have := pureFn_builtin_inv hw hop
+                  cases this
+              | builtinArgsHalt ha =>
+                  obtain ⟨ws, hws, hres⟩ := canonDomArgs_step_inv hargs _ _ _ _ ha
+                  cases hres
+      · cases h
+  | .call _ _, ce, h => by simp [canonPureGo] at h
+
+theorem canonDomArgs_step_inv {C : RvCache} : ∀ {es ces : List (Expr Op)},
+    canonPureArgs C es = some ces →
+    ∀ (funs : FunEnv D) (V : VEnv D) (st : EvmState) (res : Res D),
+      Step D funs V st (.args es) res →
+      ∃ ws, evalPureArgs V es = some ws ∧ res = .eres (.vals ws st)
+  | [], ces, h => by
+      intro funs V st res hstep
+      cases hstep
+      exact ⟨[], rfl, rfl⟩
+  | e :: rest, ces, h => by
+      simp only [canonPureArgs, Option.bind_eq_bind,
+        Option.bind_eq_some_iff] at h
+      obtain ⟨ce, hce, h⟩ := h
+      obtain ⟨crest, hcrest, h⟩ := h
+      intro funs V st res hstep
+      cases hstep with
+      | argsCons hr he =>
+          obtain ⟨ws, hws, hres⟩ := canonDomArgs_step_inv hcrest _ _ _ _ hr
+          injection hres with hres
+          injection hres with h1 h2
+          subst h2
+          obtain ⟨w, hw, hres'⟩ := canonDom_step_inv hce _ _ _ _ he
+          injection hres' with hres'
+          injection hres' with h3 h4
+          injection h3 with h5 _
+          refine ⟨w :: ws, ?_, ?_⟩
+          · simp [evalPureArgs, hw, hws]
+          · rw [h5, h1, h4]
+      | argsRestHalt hr =>
+          obtain ⟨ws, hws, hres⟩ := canonDomArgs_step_inv hcrest _ _ _ _ hr
+          cases hres
+      | argsHeadHalt hr he =>
+          obtain ⟨ws, hws, hres⟩ := canonDomArgs_step_inv hcrest _ _ _ _ hr
+          injection hres with hres
+          injection hres with h1 h2
+          subst h2
+          obtain ⟨w, hw, hres'⟩ := canonDom_step_inv hce _ _ _ _ he
+          cases hres'
+end
+
+/-! ### State-neutral expressions only extend active memory -/
+
+theorem rvNeutralExpr_args {op : Op} {args : List (Expr Op)}
+    (h : rvNeutralExpr (.builtin op args) = true) :
+    rvNeutralArgs args = true := by
+  cases op <;>
+    first
+    | exact absurd h Bool.false_ne_true
+    | (have h' : (_ && rvNeutralArgs args) = true := h
+       simp only [Bool.and_eq_true] at h'
+       exact h'.2)
+
+set_option maxHeartbeats 1600000 in
+/-- A neutral builtin's result: values, and a `MemNeutral` state change. -/
+theorem rvNeutral_builtin_result {op : Op} {args : List (Expr Op)}
+    (hn : rvNeutralExpr (.builtin op args) = true)
+    {argvals : List U256} (hlen : argvals.length = args.length)
+    {st : EvmState} {r : BuiltinResult U256 EvmState}
+    (hop : (evmWithExternal calls creates).Builtin op argvals st r) :
+    ∃ rets st', r = .ok rets st' ∧ MemNeutral st st' := by
+  cases op
+  case sload =>
+      have h' : (args.length == 1 && rvNeutralArgs args) = true := hn
+      simp only [Bool.and_eq_true, beq_iff_eq] at h'
+      obtain ⟨k, rfl⟩ := List.length_eq_one_iff.mp (by omega : argvals.length = 1)
+      simp only [builtinWithExternal, stepOp, Option.some.injEq] at hop
+      exact ⟨_, _, hop.symm, MemNeutral.refl st⟩
+  case mload =>
+      have h' : (args.length == 1 && rvNeutralArgs args) = true := hn
+      simp only [Bool.and_eq_true, beq_iff_eq] at h'
+      obtain ⟨k, rfl⟩ := List.length_eq_one_iff.mp (by omega : argvals.length = 1)
+      simp only [builtinWithExternal, stepOp, Option.some.injEq] at hop
+      exact ⟨_, _, hop.symm,
+        MemNeutral.touch st (Nat.le_of_lt k.isLt) (by omega)⟩
+  case keccak256 =>
+      have h' : (args.length == 2 && rvNeutralArgs args) = true := hn
+      simp only [Bool.and_eq_true, beq_iff_eq] at h'
+      match argvals, (by omega : argvals.length = 2) with
+      | [p, n], _ =>
+          simp only [builtinWithExternal, stepOp, Option.some.injEq] at hop
+          exact ⟨_, _, hop.symm,
+            MemNeutral.touch st (Nat.le_of_lt p.isLt) (Nat.le_of_lt n.isLt)⟩
+  all_goals
+    first
+    | exact absurd hn Bool.false_ne_true
+    | (have h' : ((pureTotalArity _ == some args.length) &&
+          rvNeutralArgs args) = true := hn
+       simp only [Bool.and_eq_true, beq_iff_eq] at h'
+       obtain ⟨w, hw⟩ := pureTotalArity_pureFn h'.1 argvals (by omega)
+       exact ⟨[w], st, pureFn_builtin_inv hw hop, MemNeutral.refl st⟩)
+
+mutual
+theorem rvNeutral_step : ∀ {e : Expr Op}, rvNeutralExpr e = true →
+    ∀ (funs : FunEnv D) (V : VEnv D) (st : EvmState) (res : Res D),
+      Step D funs V st (.expr e) res →
+      ∃ vs st', res = .eres (.vals vs st') ∧ MemNeutral st st'
+  | .lit l, hn => by
+      intro funs V st res hstep
+      cases hstep
+      exact ⟨_, _, rfl, MemNeutral.refl st⟩
+  | .var x, hn => by
+      intro funs V st res hstep
+      cases hstep with
+      | var hv => exact ⟨_, _, rfl, MemNeutral.refl st⟩
+  | .builtin op args, hn => by
+      intro funs V st res hstep
+      have hargs := rvNeutralExpr_args hn
+      cases hstep with
+      | builtinOk ha hop =>
+          obtain ⟨vs, st₁, hres, hmn, hlen⟩ :=
+            rvNeutralArgs_step hargs _ _ _ _ ha
+          injection hres with hres
+          injection hres with h1 h2
+          rw [← h1] at hlen
+          rw [← h2] at hmn
+          obtain ⟨rets, st₂, hr, hmn₂⟩ :=
+            rvNeutral_builtin_result hn hlen hop
+          injection hr with h3 h4
+          exact ⟨rets, st₂, by rw [h3, h4], hmn.trans hmn₂⟩
+      | builtinHalt ha hop =>
+          obtain ⟨vs, st₁, hres, hmn, hlen⟩ :=
+            rvNeutralArgs_step hargs _ _ _ _ ha
+          injection hres with hres
+          injection hres with h1 h2
+          rw [← h1] at hlen
+          obtain ⟨rets, st₂, hr, hmn₂⟩ :=
+            rvNeutral_builtin_result hn hlen hop
+          cases hr
+      | builtinArgsHalt ha =>
+          obtain ⟨vs, st₁, hres, hmn, hlen⟩ :=
+            rvNeutralArgs_step hargs _ _ _ _ ha
+          cases hres
+  | .call f args, hn => absurd hn Bool.false_ne_true
+
+theorem rvNeutralArgs_step : ∀ {es : List (Expr Op)},
+    rvNeutralArgs es = true →
+    ∀ (funs : FunEnv D) (V : VEnv D) (st : EvmState) (res : Res D),
+      Step D funs V st (.args es) res →
+      ∃ vs st', res = .eres (.vals vs st') ∧ MemNeutral st st' ∧
+        vs.length = es.length
+  | [], _ => by
+      intro funs V st res hstep
+      cases hstep
+      exact ⟨[], st, rfl, MemNeutral.refl st, rfl⟩
+  | e :: rest, hn => by
+      have hn' : (rvNeutralExpr e && rvNeutralArgs rest) = true := hn
+      simp only [Bool.and_eq_true] at hn'
+      intro funs V st res hstep
+      cases hstep with
+      | argsCons hr he =>
+          obtain ⟨vs, st₁, hres, hmn, hlen⟩ :=
+            rvNeutralArgs_step hn'.2 _ _ _ _ hr
+          injection hres with hres
+          injection hres with h1 h2
+          obtain ⟨vs', st₂, hres', hmn'⟩ :=
+            rvNeutral_step hn'.1 _ _ _ _ he
+          injection hres' with hres'
+          injection hres' with h3 h4
+          refine ⟨_, _, rfl, ?_, by simp [h1, hlen]⟩
+          rw [h4]
+          exact (h2 ▸ hmn).trans hmn'
+      | argsRestHalt hr =>
+          obtain ⟨vs, st₁, hres, -, -⟩ :=
+            rvNeutralArgs_step hn'.2 _ _ _ _ hr
+          cases hres
+      | argsHeadHalt hr he =>
+          obtain ⟨vs', st₂, hres', -⟩ := rvNeutral_step hn'.1 _ _ _ _ he
+          cases hres'
+end
+
 end YulEvmCompiler.Optimizer.ReuseValues
