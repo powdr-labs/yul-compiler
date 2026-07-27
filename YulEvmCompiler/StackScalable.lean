@@ -28,6 +28,31 @@ open YulSemantics.EVM (U256 EvmState Op)
 /-- Dummy layout map — `StkMatch` ignores its `H` argument, so any value works; we fix one. -/
 def dH : LayoutMap := fun _ => []
 
+/-- A runtime value matches a slot: word↔word, or a return address whose label resolves to the
+slot's tagged target. -/
+def SlotMatchP (prog : List Asm) : AVal → Slot → Prop
+  | .word _, .word => True
+  | .code l, .code t => findLabel l prog = some t
+  | _, _ => False
+
+/-- Matched stacks match cell-by-cell. -/
+theorem StkMatch.slotMatch_at {prog H} {σ : List AVal} {S : StkLayout} (h : StkMatch prog H σ S) :
+    ∀ {i : Nat} {x : AVal} {s : Slot}, σ[i]? = some x → S[i]? = some s → SlotMatchP prog x s := by
+  induction h with
+  | nil => intro i x s hx _; simp at hx
+  | @word w σ' S' _ ih =>
+      intro i x s hx hs
+      cases i with
+      | zero => simp only [List.getElem?_cons_zero, Option.some.injEq] at hx hs
+                subst hx; subst hs; trivial
+      | succ k => simp only [List.getElem?_cons_succ] at hx hs; exact ih hx hs
+  | @code l t σ' S' hf _ ih =>
+      intro i x s hx hs
+      cases i with
+      | zero => simp only [List.getElem?_cons_zero, Option.some.injEq] at hx hs
+                subst hx; subst hs; exact hf
+      | succ k => simp only [List.getElem?_cons_succ] at hx hs; exact ih hx hs
+
 /-! ### The certificate -/
 
 /-- A frame-relative certificate: each code position's **frame layout** `fl` (context-insensitive)
@@ -86,6 +111,25 @@ theorem GoodStack.certAt {prog C} {σ : List AVal} {c : List Asm}
   cases h with
   | root hfl hfb _ => exact ⟨_, _, hfl, hfb⟩
   | call hfl hfb _ _ _ _ _ => exact ⟨_, _, hfl, hfb⟩
+
+/-- The runtime cell at depth `i` matches the frame layout slot at depth `i`. -/
+theorem GoodStack.slotMatchAt {prog C} {σ : List AVal} {c : List Asm} {S : StkLayout}
+    {i : Nat} {x : AVal} {s : Slot}
+    (h : GoodStack prog C σ c) (hfl : C.fl c = some S) (hx : σ[i]? = some x) (hs : S[i]? = some s) :
+    SlotMatchP prog x s := by
+  cases h with
+  | @root σ' c' S' hfl' hfb' hm =>
+      obtain rfl : S = S' := Option.some.inj (hfl.symm.trans hfl')
+      exact hm.slotMatch_at hx hs
+  | @call stk frame rest c' cPre S' F lRet hfl' hfb' hm hmem hle hcaller heq =>
+      obtain rfl : S = S' := Option.some.inj (hfl.symm.trans hfl')
+      have hilt : i < frame.length := by
+        have hiS : i < S.length := by
+          by_contra hc
+          rw [List.getElem?_eq_none (Nat.le_of_not_lt hc)] at hs; exact absurd hs (by simp)
+        rw [hm.length_eq]; exact hiS
+      have hxf : frame[i]? = some x := by rw [heq, List.getElem?_append_left hilt] at hx; exact hx
+      exact hm.slotMatch_at hxf hs
 
 /-- **The bound falls out of the invariant + the certificate.** -/
 theorem GoodStack.bound {prog C} (hb : C.Bounded) {σ : List AVal} {c : List Asm}
@@ -247,7 +291,21 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
           rw [hfind] at hfind'; obtain rfl := Option.some.inj hfind'
           exact hinv.same (by rw [hflc, hfl]) (by rw [hfbc, hfb])
       | inr _ => sorry  -- WIP: the call case
-  | @dup n v τ ρ c yst hτ => sorry
+  | @dup n v τ ρ c yst hτ =>
+      obtain ⟨S, F, hfl, hfb⟩ := hinv.certAt
+      obtain ⟨sl, hidx, hflc, hfbc⟩ := hV _ c S F hfl hfb
+      have hvidx : (τ ++ v :: ρ)[n.val]? = some v := by
+        rw [← hτ, List.getElem?_append_right (Nat.le_refl _)]; simp
+      have hsm : SlotMatchP prog v sl := hinv.slotMatchAt hfl hvidx hidx
+      cases sl with
+      | word =>
+          cases v with
+          | word w => exact hinv.growWord hfl hflc (by rw [hfbc, hfb])
+          | code l => exact absurd hsm (by simp [SlotMatchP])
+      | code t =>
+          cases v with
+          | word w => exact absurd hsm (by simp [SlotMatchP])
+          | code l => exact hinv.growCode hfl hflc hsm (by rw [hfbc, hfb])
   | @swap n x y τ ρ c yst hτ => sorry
   | @jumpiTaken l v c c' σ yst hv hfind =>
       obtain ⟨S, F, hfl, hfb⟩ := hinv.certAt
