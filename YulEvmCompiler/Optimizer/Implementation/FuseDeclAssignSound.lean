@@ -1426,4 +1426,111 @@ theorem sink_site_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       st (.stmts (mid ++ .assign [x] e :: tail)) _
     exact stmts_append_early hmid₁ hno
 
+/-! ### The adjacent literal fuse site -/
+
+/-- Forward: a run of `let x := lit; x := e; rest` yields a run of
+`let x := e; rest` — identical on the normal path (the literal value is
+overwritten before anything reads it), one dead insertion on halt paths. -/
+theorem fuse_site_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {x : Ident} {l : Literal} {e : Expr Op} {rest : List (Stmt Op)}
+    (he : mentionsExpr x e = false)
+    {V₁ : VEnv D} {st₁ : EvmState} {o : Outcome}
+    (h : Step D funs V st
+      (.stmts (.letDecl [x] (some (.lit l)) :: .assign [x] e :: rest))
+      (.sres V₁ st₁ o)) :
+    ∃ V₂, Step D funs V st (.stmts (.letDecl [x] (some e) :: rest))
+      (.sres V₂ st₁ o) ∧ FuseChain V.length V₁ V₂ := by
+  have heM : exprMentions x e = false := mentionsExpr_bridge he
+  have hins : InsAt V.length x ((evmWithExternal calls creates).litValue l)
+      V ((x, (evmWithExternal calls creates).litValue l) :: V) :=
+    ⟨[], V, rfl, rfl, rfl⟩
+  cases h with
+  | seqStop hlet hne =>
+      rcases letSome_inv hlet with ⟨val, hev, rfl, hno⟩ | ⟨hev, rfl, rfl⟩
+      · exact absurd hno hne
+      · nomatch hev
+  | seqCons hlet htail0 =>
+      rcases letSome_inv hlet with ⟨val, hev, rfl, -⟩ | ⟨-, -, hno⟩
+      · -- The literal evaluates to its value without touching state.
+        cases hev with
+        | lit =>
+          -- Invert the assignment over the extended environment.
+          cases htail0 with
+          | seqCons ha htail =>
+              rcases assign_inv ha with ⟨val', hev', hset, -⟩ | ⟨-, -, hno⟩
+              · -- `e` evaluates identically without the binding.
+                obtain ⟨rese, hev₂, hrele⟩ := frameRemove hev' hins
+                  (by simpa [codeMentions] using heM)
+                have hrese := ResRelAt.eres_right hrele
+                subst hrese
+                have hseteq : VEnv.set
+                    ((x, (evmWithExternal calls creates).litValue l) :: V)
+                    x val' = (x, val') :: V := by
+                  simp [VEnv.set]
+                rw [hset, hseteq] at htail
+                exact ⟨V₁, Step.seqCons
+                  (by simpa using Step.letVal (vars := [x]) hev₂ (by simp))
+                  htail, .refl _⟩
+              · nomatch hno
+          | seqStop ha hne =>
+              rcases assign_inv ha with ⟨val', hev', hset, hno⟩ | ⟨hev', rfl, rfl⟩
+              · exact absurd hno hne
+              · obtain ⟨rese, hev₂, hrele⟩ := frameRemove hev' hins
+                  (by simpa [codeMentions] using heM)
+                have hrese := ResRelAt.eres_right hrele
+                subst hrese
+                exact ⟨V, Step.seqStop (Step.letHalt (vars := [x]) hev₂)
+                  (by intro hc; cases hc),
+                  FuseChain.single (.ins hins (Nat.le_refl _))⟩
+      · nomatch hno.symm
+
+/-- Backward: a run of the fused `let x := e; rest` yields a run of the
+original pair. -/
+theorem fuse_site_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {x : Ident} {l : Literal} {e : Expr Op} {rest : List (Stmt Op)}
+    (he : mentionsExpr x e = false)
+    {V₂ : VEnv D} {st₁ : EvmState} {o : Outcome}
+    (h : Step D funs V st (.stmts (.letDecl [x] (some e) :: rest))
+      (.sres V₂ st₁ o)) :
+    ∃ V₁, Step D funs V st
+      (.stmts (.letDecl [x] (some (.lit l)) :: .assign [x] e :: rest))
+      (.sres V₁ st₁ o) ∧ FuseChain V.length V₁ V₂ := by
+  have heM : exprMentions x e = false := mentionsExpr_bridge he
+  have hins : InsAt V.length x ((evmWithExternal calls creates).litValue l)
+      V ((x, (evmWithExternal calls creates).litValue l) :: V) :=
+    ⟨[], V, rfl, rfl, rfl⟩
+  have hlet1 : ∀ st2, Step D funs V st2 (.stmt (.letDecl [x] (some (.lit l))))
+      (.sres ((x, (evmWithExternal calls creates).litValue l) :: V) st2 .normal) :=
+    fun st2 => by simpa using Step.letVal (vars := [x]) Step.lit (by simp)
+  cases h with
+  | seqStop hlet hne =>
+      rcases letSome_inv hlet with ⟨val, hev, rfl, hno⟩ | ⟨hev, rfl, rfl⟩
+      · exact absurd hno hne
+      · -- `e` halts: source runs the literal `let`, then the assignment halts.
+        obtain ⟨rese, hev₁, hrele⟩ := frameAdd hev hins
+          (by simpa [codeMentions] using heM)
+        have hrese := ResRelAt.eres hrele
+        subst hrese
+        refine ⟨_, Step.seqCons (hlet1 st) ?_,
+          FuseChain.single (.ins hins (Nat.le_refl _))⟩
+        exact Step.seqStop (Step.assignHalt (vars := [x]) hev₁)
+          (by intro hc; cases hc)
+  | seqCons hlet htail =>
+      rcases letSome_inv hlet with ⟨val, hev, rfl, -⟩ | ⟨-, -, hno⟩
+      · obtain ⟨rese, hev₁, hrele⟩ := frameAdd hev hins
+          (by simpa [codeMentions] using heM)
+        have hrese := ResRelAt.eres hrele
+        subst hrese
+        refine ⟨V₂, Step.seqCons (hlet1 st) (Step.seqCons ?_ htail), .refl _⟩
+        have hseteq : VEnv.set
+            ((x, (evmWithExternal calls creates).litValue l) :: V)
+            x val = (x, val) :: V := by
+          simp [VEnv.set]
+        have := Step.assignVal (vars := [x]) hev₁ (by simp)
+        rw [show VEnv.setMany
+          ((x, (evmWithExternal calls creates).litValue l) :: V) [x] [val] =
+          (x, val) :: V from hseteq] at this
+        exact this
+      · nomatch hno.symm
+
 end YulEvmCompiler.Optimizer.FuseDeclAssign
