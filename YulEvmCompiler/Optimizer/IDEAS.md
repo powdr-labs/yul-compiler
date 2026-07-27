@@ -1189,6 +1189,50 @@ counter-move; 12/12 gasTests; 1246/1264 semantic rows improve, 12 regress by
 a combined ~13k (worst `dynamic_multi_array_cleanup` +9k — flatten/reuse live
 -range extension in copy-heavy code; accepted pending a gate follow-up).
 
+**Proof state and the worked-out continuation plan:**
+
+* `PruneDefs` — done (`PruneDefsSound.lean`, `PruneDefsResolve.lean`).
+* `fuseDeclAssignBlock_sound` — the hard core is **done**
+  (`FuseDeclAssignSound.lean`): the `MvRel x dA dB` environment-reorder
+  relation (`C ++ A ++ (x,v)::B` vs `C ++ (x,v)::A ++ B`, region lengths
+  indexed), its full get/set/setMany/push/restore algebra
+  (`restore_mvRel`, `restore_mv_eq`, `MvRel.restore_compat`), and the
+  complete 40-constructor `Step.mv_congr` transport (function bodies run in
+  fresh callee envs and are reused unchanged). Remaining assembly: (a) the
+  sink-site lemma — invert `seqCons letZero`, split the tail with
+  `stmts_append_fwd` at the assignment, carry the `(x,0)` insertion through
+  the mention-free `mid` with **one** `frameRemove` application on
+  `.stmts mid`, convert to `MvRel` at the assignment (evaluating `e` via
+  `frameRemove` on `.expr e`), transport the suffix with `mv_congr`; halt
+  paths leave a single insertion (`InsChain`); (b) the lit-fuse case — pure
+  `InsAt` (target env equals source's minus the dead literal binding on halt
+  paths, equal otherwise); (c) the `fuseSeqFuel` induction accumulating a
+  move-or-insert chain erased by the enclosing block's `restore`
+  (`restore_mv_eq` + `restore_insAt_le`), mirroring `ccPairs_fwd/bwd`;
+  (d) structural lifting through `fdStmt` (statement congruences +
+  `FunCongr.of_stmts_funs`) and the guard wrapper.
+* `flattenBlock_sound` — splice = the same `InsChain` multi-insertion
+  argument (promoted binders carried dead through the mention-free-by-
+  construction remainder — fresh names occur nowhere else); rename = a
+  block-local single-binder alpha simulation (occurrences all decl-or-later
+  by `shadowedTop`/`mentionsBeforeDecl`; adapt `Disambiguate`'s
+  `Ren.lean`/`Sound.lean` renaming simulation from its `dsName` freshness to
+  the `freshPrefix` scheme, or restate as a name-swap `Step` transport with
+  the env relation "equal up to keyed rename of `x`↔`x'` where `x'` is
+  program-fresh").
+* `reuseValuesBlock_sound` — the `StorageForward`/scoped-export architecture
+  with five fact families; the new semantic ingredients are (i) `sload` is
+  state-preserving (already in `stableTotalArity`), (ii) `touchMemory`
+  idempotence at already-active ranges plus a global `activeWords`
+  monotonicity lemma over `Step` (mirror `venvLen_mono`), and (iii) the
+  keccak content-signature denotation (`readBytes` decomposition into
+  covered `loadWord`s for 32-multiple ranges).
+* The optimize-after-spill wiring needs the composed theorem: extend
+  `compileObject_memorySpill_correct` with the pipeline hop at the *spilled*
+  object (its `RunResolvedObject output …` conclusion feeds
+  `optimizerPipelineObjectRounds_correct` through
+  `Normalize.normalizeObject_topRunEquiv` at the new layout).
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
