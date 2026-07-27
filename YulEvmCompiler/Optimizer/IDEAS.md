@@ -1080,6 +1080,67 @@ ordinary candidates fail), keeping its 417 KB bytecode and 706 definitions
 out of the optimizer's reach entirely — likely the single biggest Uniswap
 bytecode lever.
 
+### 🚧 Aave/Uniswap gas 4: available-value reuse + dead-definition pruning + optimize-after-spill (`optimizer/aave-uniswap-gas-4`)
+
+Three coordinated changes attacking the largest post-#117 Aave/Uniswap costs
+(issue #65). Fresh ranking: Aave 35.81M vs 18.24M (1.96x) — the three
+`next*TenThousand` rows plus the two count scans hold ~15.9M of the 17.6M
+excess; Uniswap 1.64M vs 0.91M (1.81x) — TickMath sweeps ~343k excess,
+PoolSwap ~218k, the ~25 small library rows ~1.5k each vs solc's ~250.
+
+1. **`ReuseValues` — scoped available-value forwarding (state-read CSE).**
+   Post-#117 dumps of the Aave hot loops show the fully inlined
+   `mapping_index_access` group duplicated per iteration:
+   `mstore(0, key); mstore(0x20, slot); let h := keccak256(0, 0x40);
+   let w := sload(h)` — once for `isBorrowing`, once again (same key/slot)
+   for `isUsingAsCollateral`, ~150 gas of keccak+warm-`sload` per inner
+   iteration that solc CSEs away. A scoped cache tracks (a) **scratch-cell
+   facts** `mstore(lit, shape)` (shape = var/literal), (b) **available
+   state-reads** `keccak256(l₁,l₂) ↦ x`, `sload(k) ↦ x` with *symbolic* keys
+   (extending `StorageForward`'s literal-only keys), and (c) **available pure
+   expressions** over vars/lits (TickMath's repeated mask/shift trees). An
+   `mstore` rewriting a cell with a value the cell-fact already proves equal
+   is *kept* but does not invalidate (no store elimination — that is PR
+   #84/#116 territory); any other memory writer, call, or loop boundary
+   kills memory-dependent facts; `sstore` kills `sload` facts; assignment
+   kills facts mentioning the variable. A second occurrence of an available
+   expression becomes a var read (`let h₂ := h`), which `CoalesceCopies`
+   then merges. Soundness: the `StorageForward`/scoped-export architecture —
+   bidirectional Step simulation carrying cache validity ("evaluating the
+   cached expression now yields the cached variable's value and preserves
+   state" — the first evaluation already extended active memory, so
+   re-evaluation is state-preserving), with the same block-exit export and
+   layout-resolution closure.
+2. **`PruneDefs` — unreachable function-definition removal.** Full
+   normalization hoists every definition to the root and the backend emits a
+   `PUSH32 skip; JUMP; …; JUMPDEST` island per definition (~12 gas per
+   retained definition per call). After six inline rounds the artifacts
+   retain almost all definitions (`PositionStatusMap` 150 vs solc 19,
+   TickMath 177 vs 2, SafeCast ~68 vs 0) — for the small Uniswap library
+   rows the dead-island tax is over half the row. On
+   `UniqueNames + FunctionsHoisted` output, compute transitive
+   call-reachability from the non-`funDef` root statements and drop uncalled
+   root definitions. Soundness: a hoist-shrinking congruence — execution
+   under a function environment with extra entries whose names occur nowhere
+   in call position in the remaining program is pointwise equivalent
+   (`Step.funs_irrel`-style invariant threaded through the run); resolution
+   closure is syntactic (resolution never creates named calls).
+3. **Optimize-after-spill.** `PoolSwap` (and every future spill-only object)
+   compiles through `spillObjectWithFallback raw …`, which uses **raw
+   unoptimized code** at spilled nodes — 706 definitions / 417 KB never see
+   the optimizer. Run the object pipeline on the spilled result (ladder:
+   optimized-spilled first, plain spilled as fallback), composing
+   `compileObject_memorySpill_correct` with the pipeline's fixed-layout
+   resolution congruence — the pipeline preserves the spilled block's exact
+   semantics, so `ScratchRel`/observable equality transport unchanged.
+
+Measured expectations: (1) is the multi-million Aave lever (rows 1–3, 5–6);
+(2) is a broad fixed-cost win (small Uniswap/Aave rows, gasTests' +114k
+normalization regression, bytecode size); (3) opens PoolSwap's 218k excess
+to (1)+(2). The `rets ≤ 2` inline gate is *not* the current `next*` blocker —
+their bodies contain `for` loops, which the statement inliner's classifier
+rejects outright; loop-bearing inlining stays a non-goal here.
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
