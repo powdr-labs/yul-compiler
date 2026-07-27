@@ -1001,4 +1001,468 @@ theorem RnRes.sres_inv_right {x x' : Ident} {n : Nat} {V₂ : VEnv D} {st o}
   cases h with
   | sres _ _ hrel => exact ⟨_, rfl, hrel⟩
 
+/-! ### The rename is an involution under freshness -/
+
+theorem renVar_invol {x x' y : Ident} (hy : y ≠ x') :
+    renVar x' x (renVar x x' y) = y := by
+  by_cases hyx : y = x
+  · subst hyx
+    simp [renVar]
+  · simp [renVar, hyx, hy]
+
+mutual
+theorem renExpr_invol {x x' : Ident} : ∀ {e : Expr Op},
+    exprMentions x' e = false → renExpr x' x (renExpr x x' e) = e
+  | .lit l, _ => rfl
+  | .var y, h => by
+      simp only [exprMentions, decide_eq_false_iff_not] at h
+      simp [renExpr, renVar_invol (fun hc : y = x' => h hc.symm)]
+  | .builtin op args, h => by
+      simp only [exprMentions] at h
+      simp only [renExpr]
+      rw [renArgs_invol h]
+  | .call f args, h => by
+      simp only [exprMentions] at h
+      simp only [renExpr]
+      rw [renArgs_invol h]
+
+theorem renArgs_invol {x x' : Ident} : ∀ {args : List (Expr Op)},
+    argsMentions x' args = false → renArgs x' x (renArgs x x' args) = args
+  | [], _ => rfl
+  | e :: rest, h => by
+      simp only [argsMentions, Bool.or_eq_false_iff] at h
+      simp only [renArgs]
+      rw [renExpr_invol h.1, renArgs_invol h.2]
+end
+
+theorem renVars_invol {x x' : Ident} {ys : List Ident}
+    (h : ∀ y ∈ ys, y ≠ x') :
+    (ys.map (renVar x x')).map (renVar x' x) = ys := by
+  induction ys with
+  | nil => rfl
+  | cons y rest ih =>
+      simp only [List.map_cons,
+        renVar_invol (h y (List.mem_cons_self ..))]
+      rw [ih (fun z hz => h z (List.mem_cons_of_mem _ hz))]
+
+mutual
+theorem renStmt_invol {x x' : Ident} : ∀ {s : Stmt Op},
+    stmtMentions x' s = false → renStmt x' x (renStmt x x' s) = s
+  | .block body, h => by
+      simp only [stmtMentions] at h
+      simp only [renStmt]
+      rw [renStmts_invol h]
+  | .funDef n ps rs body, _ => by simp [renStmt]
+  | .letDecl vars none, h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff,
+        decide_eq_false_iff_not] at h
+      simp only [renStmt, Option.map_none]
+      rw [renVars_invol (fun y hy hc => h.1 (by rw [← hc]; exact hy))]
+  | .letDecl vars (some e), h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff,
+        decide_eq_false_iff_not, optExprMentions] at h
+      simp only [renStmt, Option.map_some]
+      rw [renVars_invol (fun y hy hc => h.1 (by rw [← hc]; exact hy)), renExpr_invol h.2]
+  | .assign vars e, h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff,
+        decide_eq_false_iff_not] at h
+      simp only [renStmt]
+      rw [renVars_invol (fun y hy hc => h.1 (by rw [← hc]; exact hy)), renExpr_invol h.2]
+  | .cond c body, h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff] at h
+      simp only [renStmt]
+      rw [renExpr_invol h.1, renStmts_invol h.2]
+  | .switch c cases dflt, h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff] at h
+      simp only [renStmt]
+      rw [renExpr_invol h.1.1, renCases_invol h.1.2, renDflt_invol h.2]
+  | .forLoop init c post body, h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff] at h
+      simp only [renStmt]
+      rw [renStmts_invol h.1.1.1, renExpr_invol h.1.1.2,
+        renStmts_invol h.1.2, renStmts_invol h.2]
+  | .exprStmt e, h => by
+      simp only [stmtMentions] at h
+      simp only [renStmt]
+      rw [renExpr_invol h]
+  | .break, _ => rfl
+  | .continue, _ => rfl
+  | .leave, _ => rfl
+
+theorem renStmts_invol {x x' : Ident} : ∀ {ss : List (Stmt Op)},
+    stmtsMentions x' ss = false → renStmts x' x (renStmts x x' ss) = ss
+  | [], _ => rfl
+  | s :: rest, h => by
+      simp only [stmtsMentions, Bool.or_eq_false_iff] at h
+      simp only [renStmts]
+      rw [renStmt_invol h.1, renStmts_invol h.2]
+
+theorem renCases_invol {x x' : Ident} : ∀ {cs : List (Literal × Block Op)},
+    casesMentions x' cs = false → renCases x' x (renCases x x' cs) = cs
+  | [], _ => rfl
+  | (l, b) :: rest, h => by
+      simp only [casesMentions, Bool.or_eq_false_iff] at h
+      simp only [renCases]
+      rw [renStmts_invol h.1, renCases_invol h.2]
+
+theorem renDflt_invol {x x' : Ident} : ∀ {d : Option (Block Op)},
+    optBlockMentions x' d = false → renDflt x' x (renDflt x x' d) = d
+  | none, _ => rfl
+  | some b, h => by
+      simp only [optBlockMentions] at h
+      simp only [renDflt]
+      rw [renStmts_invol h]
+end
+
+theorem renCode_invol {x x' : Ident} {code : Code Op}
+    (h : codeMentions x' code = false) :
+    renCode x' x (renCode x x' code) = code := by
+  cases code with
+  | expr e => simp only [renCode]; rw [renExpr_invol (by exact h)]
+  | args es => simp only [renCode]; rw [renArgs_invol (by exact h)]
+  | stmt s => simp only [renCode]; rw [renStmt_invol (by exact h)]
+  | stmts ss => simp only [renCode]; rw [renStmts_invol (by exact h)]
+  | loop c post body =>
+      simp only [codeMentions, Bool.or_eq_false_iff] at h
+      simp only [renCode]
+      rw [renExpr_invol h.1.1, renStmts_invol h.1.2, renStmts_invol h.2]
+
+/-! ### Relation symmetry (rename roles swapped) -/
+
+theorem renKeys_invol {x x' : Ident} {C : VEnv D}
+    (h : ∀ p ∈ C, p.1 ≠ x') :
+    renKeys x' x (renKeys x x' C) = C := by
+  induction C with
+  | nil => rfl
+  | cons p rest ih =>
+      obtain ⟨k, v⟩ := p
+      rw [renKeys_cons, renKeys_cons,
+        renVar_invol (h (k, v) (List.mem_cons_self ..)),
+        ih (fun q hq => h q (List.mem_cons_of_mem _ hq))]
+
+theorem RnRel.symm {x x' : Ident} (hxx' : x ≠ x') {n : Nat}
+    {V₁ V₂ : VEnv D} (h : RnRel x x' n V₁ V₂) :
+    RnRel x' x n V₂ V₁ := by
+  obtain ⟨C, base, hx, hx', hn⟩ := h
+  have hC₁ : renKeys x' x (renKeys x x' C) = C := renKeys_invol hx'
+  have hmk := RnRel.mk (calls := calls) (creates := creates)
+    (x := x') (x' := x) (renKeys x x' C) base ?_ ?_ hn
+  · rwa [hC₁] at hmk
+  · obtain ⟨p, hp⟩ := Option.isSome_iff_exists.mp hx
+    rw [renKeys_find_x' hp hx']
+    simp
+  · intro p hp
+    simp only [renKeys, List.mem_map] at hp
+    obtain ⟨q, hq, rfl⟩ := hp
+    simp only [renVar]
+    split
+    · exact fun hc => hxx' hc.symm
+    · rename_i hqx
+      exact fun hc => hqx (by rw [hc])
+
+theorem RnRes.symm {x x' : Ident} (hxx' : x ≠ x') {n : Nat}
+    {res₁ res₂ : Res D} (h : RnRes x x' n res₁ res₂) :
+    RnRes x' x n res₂ res₁ := by
+  cases h with
+  | eres r => exact .eres r
+  | sres st o hrel => exact .sres st o (hrel.symm hxx')
+
+/-! ### Syntactic facts about the renamed code -/
+
+theorem renVar_ne_x {x x' y : Ident} (hxx' : x ≠ x') :
+    renVar x x' y ≠ x := by
+  simp only [renVar]
+  split
+  · exact fun hc => hxx' hc.symm
+  · rename_i hy
+    exact hy
+
+theorem renVars_not_mem_x {x x' : Ident} (hxx' : x ≠ x')
+    (ys : List Ident) : x ∉ ys.map (renVar x x') := by
+  intro hc
+  obtain ⟨y, _, hy⟩ := List.mem_map.mp hc
+  exact renVar_ne_x hxx' hy
+
+mutual
+theorem exprMentions_ren {x x' : Ident} (hxx' : x ≠ x') : ∀ (e : Expr Op),
+    exprMentions x (renExpr x x' e) = false
+  | .lit _ => rfl
+  | .var y => by
+      simp only [renExpr, exprMentions, decide_eq_false_iff_not]
+      exact fun hc => renVar_ne_x hxx' hc.symm
+  | .builtin op args => by
+      simp only [renExpr, exprMentions]
+      exact argsMentions_ren hxx' args
+  | .call f args => by
+      simp only [renExpr, exprMentions]
+      exact argsMentions_ren hxx' args
+
+theorem argsMentions_ren {x x' : Ident} (hxx' : x ≠ x') :
+    ∀ (args : List (Expr Op)),
+    argsMentions x (renArgs x x' args) = false
+  | [] => rfl
+  | e :: rest => by
+      simp only [renArgs, argsMentions, Bool.or_eq_false_iff]
+      exact ⟨exprMentions_ren hxx' e, argsMentions_ren hxx' rest⟩
+end
+
+theorem optExprMentions_ren {x x' : Ident} (hxx' : x ≠ x') :
+    ∀ (rhs : Option (Expr Op)),
+    optExprMentions x (rhs.map (renExpr x x')) = false
+  | none => rfl
+  | some e => exprMentions_ren hxx' e
+
+mutual
+theorem rnMStmt_ren {x x' : Ident} (hxx' : x ≠ x') : ∀ (s : Stmt Op),
+    rnMStmt x (renStmt x x' s) = false
+  | .block body => by
+      simp only [renStmt, rnMStmt]
+      exact rnMStmts_ren hxx' body
+  | .funDef n ps rs body => by simp [renStmt, rnMStmt]
+  | .letDecl vars rhs => by
+      simp only [renStmt, rnMStmt, Bool.or_eq_false_iff,
+        decide_eq_false_iff_not]
+      exact ⟨renVars_not_mem_x hxx' vars, optExprMentions_ren hxx' rhs⟩
+  | .assign vars e => by
+      simp only [renStmt, rnMStmt, Bool.or_eq_false_iff,
+        decide_eq_false_iff_not]
+      exact ⟨renVars_not_mem_x hxx' vars, exprMentions_ren hxx' e⟩
+  | .cond c body => by
+      simp only [renStmt, rnMStmt, Bool.or_eq_false_iff]
+      exact ⟨exprMentions_ren hxx' c, rnMStmts_ren hxx' body⟩
+  | .switch c cases dflt => by
+      simp only [renStmt, rnMStmt, Bool.or_eq_false_iff]
+      exact ⟨⟨exprMentions_ren hxx' c, rnMCases_ren hxx' cases⟩,
+        rnMDflt_ren hxx' dflt⟩
+  | .forLoop init c post body => by
+      simp only [renStmt, rnMStmt, Bool.or_eq_false_iff]
+      exact ⟨⟨⟨rnMStmts_ren hxx' init, exprMentions_ren hxx' c⟩,
+        rnMStmts_ren hxx' post⟩, rnMStmts_ren hxx' body⟩
+  | .exprStmt e => by
+      simp only [renStmt, rnMStmt]
+      exact exprMentions_ren hxx' e
+  | .break => rfl
+  | .continue => rfl
+  | .leave => rfl
+
+theorem rnMStmts_ren {x x' : Ident} (hxx' : x ≠ x') : ∀ (ss : List (Stmt Op)),
+    rnMStmts x (renStmts x x' ss) = false
+  | [] => rfl
+  | s :: rest => by
+      simp only [renStmts, rnMStmts, Bool.or_eq_false_iff]
+      exact ⟨rnMStmt_ren hxx' s, rnMStmts_ren hxx' rest⟩
+
+theorem rnMCases_ren {x x' : Ident} (hxx' : x ≠ x') :
+    ∀ (cs : List (Literal × Block Op)),
+    rnMCases x (renCases x x' cs) = false
+  | [] => rfl
+  | (l, b) :: rest => by
+      simp only [renCases, rnMCases, Bool.or_eq_false_iff]
+      exact ⟨rnMStmts_ren hxx' b, rnMCases_ren hxx' rest⟩
+
+theorem rnMDflt_ren {x x' : Ident} (hxx' : x ≠ x') :
+    ∀ (d : Option (Block Op)),
+    rnMDflt x (renDflt x x' d) = false
+  | none => rfl
+  | some b => rnMStmts_ren hxx' b
+end
+
+/-- The renamed code never mentions `x` at the executing-frame level. -/
+theorem rnM_renCode {x x' : Ident} (hxx' : x ≠ x') (code : Code Op) :
+    rnMCode x (renCode x x' code) = false := by
+  cases code with
+  | expr e => exact exprMentions_ren hxx' e
+  | args es => exact argsMentions_ren hxx' es
+  | stmt s => exact rnMStmt_ren hxx' s
+  | stmts ss => exact rnMStmts_ren hxx' ss
+  | loop c post body =>
+      simp only [renCode, rnMCode, Bool.or_eq_false_iff]
+      exact ⟨⟨exprMentions_ren hxx' c, rnMStmts_ren hxx' post⟩,
+        rnMStmts_ren hxx' body⟩
+
+/-! Renamed declarations avoid `x'` (original binders avoid it by freshness,
+and the rename only produces `x'` from `x` binders, which redecl-freeness
+excludes — in fact the *rename target itself* would be a legitimate `x'`
+declaration, but sequences the transform renames always declare `x`, and this
+lemma is applied to the *pre-splice code that contains no `x` declarations*
+outside the renamed sequence). -/
+
+mutual
+theorem redeclStmt_ren {x x' : Ident} : ∀ {s : Stmt Op},
+    rnMStmt x' s = false → redeclStmt x s = false →
+    redeclStmt x' (renStmt x x' s) = false
+  | .block body, hm, hd => by
+      simp only [rnMStmt] at hm
+      simp only [redeclStmt] at hd ⊢
+      exact redeclStmts_ren hm hd
+  | .funDef n ps rs body, _, _ => by simp [renStmt, redeclStmt]
+  | .letDecl vars rhs, hm, hd => by
+      simp only [rnMStmt, Bool.or_eq_false_iff,
+        decide_eq_false_iff_not] at hm
+      simp only [redeclStmt] at hd
+      simp only [renStmt, redeclStmt, List.contains_eq_mem,
+        decide_eq_false_iff_not]
+      intro hc
+      obtain ⟨y, hy, hye⟩ := List.mem_map.mp hc
+      by_cases hyx : y = x
+      · subst hyx
+        rw [List.contains_eq_mem] at hd
+        simp [hy] at hd
+      · rw [show renVar x x' y = y from by simp [renVar, hyx]] at hye
+        exact hm.1 (hye ▸ hy)
+  | .assign vars e, _, _ => by simp [renStmt, redeclStmt]
+  | .cond c body, hm, hd => by
+      simp only [rnMStmt, Bool.or_eq_false_iff] at hm
+      simp only [redeclStmt] at hd ⊢
+      exact redeclStmts_ren hm.2 hd
+  | .switch c cases dflt, hm, hd => by
+      simp only [rnMStmt, Bool.or_eq_false_iff] at hm
+      simp only [redeclStmt, Bool.or_eq_false_iff] at hd
+      simp only [renStmt, redeclStmt, Bool.or_eq_false_iff]
+      exact ⟨redeclCases_ren hm.1.2 hd.1, redeclDflt_ren hm.2 hd.2⟩
+  | .forLoop init c post body, hm, hd => by
+      simp only [rnMStmt, Bool.or_eq_false_iff] at hm
+      simp only [redeclStmt, Bool.or_eq_false_iff] at hd
+      simp only [renStmt, redeclStmt, Bool.or_eq_false_iff]
+      exact ⟨⟨redeclStmts_ren hm.1.1.1 hd.1.1,
+        redeclStmts_ren hm.1.2 hd.1.2⟩, redeclStmts_ren hm.2 hd.2⟩
+  | .exprStmt e, _, _ => by simp [renStmt, redeclStmt]
+  | .break, _, _ => rfl
+  | .continue, _, _ => rfl
+  | .leave, _, _ => rfl
+
+theorem redeclStmts_ren {x x' : Ident} : ∀ {ss : List (Stmt Op)},
+    rnMStmts x' ss = false → redeclStmts x ss = false →
+    redeclStmts x' (renStmts x x' ss) = false
+  | [], _, _ => rfl
+  | s :: rest, hm, hd => by
+      simp only [rnMStmts, Bool.or_eq_false_iff] at hm
+      simp only [redeclStmts, Bool.or_eq_false_iff] at hd
+      simp only [renStmts, redeclStmts, Bool.or_eq_false_iff]
+      exact ⟨redeclStmt_ren hm.1 hd.1, redeclStmts_ren hm.2 hd.2⟩
+
+theorem redeclCases_ren {x x' : Ident} : ∀ {cs : List (Literal × Block Op)},
+    rnMCases x' cs = false → redeclCases x cs = false →
+    redeclCases x' (renCases x x' cs) = false
+  | [], _, _ => rfl
+  | (l, b) :: rest, hm, hd => by
+      simp only [rnMCases, Bool.or_eq_false_iff] at hm
+      simp only [redeclCases, Bool.or_eq_false_iff] at hd
+      simp only [renCases, redeclCases, Bool.or_eq_false_iff]
+      exact ⟨redeclStmts_ren hm.1 hd.1, redeclCases_ren hm.2 hd.2⟩
+
+theorem redeclDflt_ren {x x' : Ident} : ∀ {d : Option (Block Op)},
+    rnMDflt x' d = false → redeclDflt x d = false →
+    redeclDflt x' (renDflt x x' d) = false
+  | none, _, _ => rfl
+  | some b, hm, hd => by
+      simp only [rnMDflt] at hm
+      simp only [redeclDflt] at hd
+      simp only [renDflt, redeclDflt]
+      exact redeclStmts_ren hm hd
+end
+
+theorem redecl_renCode {x x' : Ident} {code : Code Op}
+    (hm : rnMCode x' code = false) (hd : codeRedecl x code = false) :
+    codeRedecl x' (renCode x x' code) = false := by
+  cases code with
+  | expr e => rfl
+  | args es => rfl
+  | stmt s => exact redeclStmt_ren hm hd
+  | stmts ss => exact redeclStmts_ren hm hd
+  | loop c post body =>
+      simp only [rnMCode, Bool.or_eq_false_iff] at hm
+      simp only [codeRedecl, Bool.or_eq_false_iff] at hd
+      simp only [renCode, codeRedecl, Bool.or_eq_false_iff]
+      exact ⟨redeclStmts_ren hm.1.2 hd.1, redeclStmts_ren hm.2 hd.2⟩
+
+/-! Frame-level mentions imply the weaker executing-frame notion. -/
+
+mutual
+theorem rnMStmt_of_mentions {z : Ident} : ∀ {s : Stmt Op},
+    stmtMentions z s = false → rnMStmt z s = false
+  | .block body, h => by
+      simp only [stmtMentions] at h
+      simp only [rnMStmt]
+      exact rnMStmts_of_mentions h
+  | .funDef n ps rs body, _ => rfl
+  | .letDecl vars rhs, h => by
+      simp only [stmtMentions] at h
+      simpa only [rnMStmt] using h
+  | .assign vars e, h => by
+      simp only [stmtMentions] at h
+      simpa only [rnMStmt] using h
+  | .cond c body, h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff] at h
+      simp only [rnMStmt, Bool.or_eq_false_iff]
+      exact ⟨h.1, rnMStmts_of_mentions h.2⟩
+  | .switch c cases dflt, h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff] at h
+      simp only [rnMStmt, Bool.or_eq_false_iff]
+      exact ⟨⟨h.1.1, rnMCases_of_mentions h.1.2⟩, rnMDflt_of_mentions h.2⟩
+  | .forLoop init c post body, h => by
+      simp only [stmtMentions, Bool.or_eq_false_iff] at h
+      simp only [rnMStmt, Bool.or_eq_false_iff]
+      exact ⟨⟨⟨rnMStmts_of_mentions h.1.1.1, h.1.1.2⟩,
+        rnMStmts_of_mentions h.1.2⟩, rnMStmts_of_mentions h.2⟩
+  | .exprStmt e, h => by
+      simp only [stmtMentions] at h
+      simpa only [rnMStmt] using h
+  | .break, _ => rfl
+  | .continue, _ => rfl
+  | .leave, _ => rfl
+
+theorem rnMStmts_of_mentions {z : Ident} : ∀ {ss : List (Stmt Op)},
+    stmtsMentions z ss = false → rnMStmts z ss = false
+  | [], _ => rfl
+  | s :: rest, h => by
+      simp only [stmtsMentions, Bool.or_eq_false_iff] at h
+      simp only [rnMStmts, Bool.or_eq_false_iff]
+      exact ⟨rnMStmt_of_mentions h.1, rnMStmts_of_mentions h.2⟩
+
+theorem rnMCases_of_mentions {z : Ident} : ∀ {cs : List (Literal × Block Op)},
+    casesMentions z cs = false → rnMCases z cs = false
+  | [], _ => rfl
+  | (l, b) :: rest, h => by
+      simp only [casesMentions, Bool.or_eq_false_iff] at h
+      simp only [rnMCases, Bool.or_eq_false_iff]
+      exact ⟨rnMStmts_of_mentions h.1, rnMCases_of_mentions h.2⟩
+
+theorem rnMDflt_of_mentions {z : Ident} : ∀ {d : Option (Block Op)},
+    optBlockMentions z d = false → rnMDflt z d = false
+  | none, _ => rfl
+  | some b, h => by
+      simp only [optBlockMentions] at h
+      simp only [rnMDflt]
+      exact rnMStmts_of_mentions h
+end
+
+theorem rnMCode_of_mentions {z : Ident} {code : Code Op}
+    (h : codeMentions z code = false) : rnMCode z code = false := by
+  cases code with
+  | expr e => exact h
+  | args es => exact h
+  | stmt s => exact rnMStmt_of_mentions h
+  | stmts ss => exact rnMStmts_of_mentions h
+  | loop c post body =>
+      simp only [codeMentions, Bool.or_eq_false_iff] at h
+      simp only [rnMCode, Bool.or_eq_false_iff]
+      exact ⟨⟨h.1.1, rnMStmts_of_mentions h.1.2⟩, rnMStmts_of_mentions h.2⟩
+
+/-- **The backward rename transport**, by role-swap through the involution. -/
+theorem Step.rn_congr_bwd {x x' : Ident} (hxx' : x ≠ x') {n : Nat}
+    {funs : FunEnv D} {V₂ : VEnv D} {st : EvmState} {code : Code Op}
+    {res₂ : Res D}
+    (h : Step D funs V₂ st (renCode x x' code) res₂) :
+    ∀ {V₁}, RnRel x x' n V₁ V₂ →
+      codeMentions x' code = false →
+      codeRedecl x code = false →
+      ∃ res₁, Step D funs V₁ st code res₁ ∧ RnRes x x' n res₁ res₂ := by
+  intro V₁ hR hmfull hd
+  have hm : rnMCode x' code = false := rnMCode_of_mentions hmfull
+  obtain ⟨res₁, h₁, hrel⟩ := Step.rn_congr h (hR.symm hxx')
+    (rnM_renCode hxx' code) (redecl_renCode hm hd)
+  rw [renCode_invol hmfull] at h₁
+  exact ⟨res₁, h₁, hrel.symm hxx'.symm⟩
+
 end YulEvmCompiler.Optimizer.Flatten
