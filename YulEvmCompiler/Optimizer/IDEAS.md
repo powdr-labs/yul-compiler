@@ -1080,6 +1080,151 @@ ordinary candidates fail), keeping its 417 KB bytecode and 706 definitions
 out of the optimizer's reach entirely — likely the single biggest Uniswap
 bytecode lever.
 
+### 🚧 Aave/Uniswap gas 4: available-value reuse + dead-definition pruning + optimize-after-spill (`optimizer/aave-uniswap-gas-4`)
+
+Three coordinated changes attacking the largest post-#117 Aave/Uniswap costs
+(issue #65). Fresh ranking: Aave 35.81M vs 18.24M (1.96x) — the three
+`next*TenThousand` rows plus the two count scans hold ~15.9M of the 17.6M
+excess; Uniswap 1.64M vs 0.91M (1.81x) — TickMath sweeps ~343k excess,
+PoolSwap ~218k, the ~25 small library rows ~1.5k each vs solc's ~250.
+
+1. **`ReuseValues` — scoped available-value forwarding (state-read CSE).**
+   Post-#117 dumps of the Aave hot loops show the fully inlined
+   `mapping_index_access` group duplicated per iteration:
+   `mstore(0, key); mstore(0x20, slot); let h := keccak256(0, 0x40);
+   let w := sload(h)` — once for `isBorrowing`, once again (same key/slot)
+   for `isUsingAsCollateral`, ~150 gas of keccak+warm-`sload` per inner
+   iteration that solc CSEs away. A scoped cache tracks (a) **scratch-cell
+   facts** `mstore(lit, shape)` (shape = var/literal), (b) **available
+   state-reads** `keccak256(l₁,l₂) ↦ x`, `sload(k) ↦ x` with *symbolic* keys
+   (extending `StorageForward`'s literal-only keys), and (c) **available pure
+   expressions** over vars/lits (TickMath's repeated mask/shift trees). An
+   `mstore` rewriting a cell with a value the cell-fact already proves equal
+   is *kept* but does not invalidate (no store elimination — that is PR
+   #84/#116 territory); any other memory writer, call, or loop boundary
+   kills memory-dependent facts; `sstore` kills `sload` facts; assignment
+   kills facts mentioning the variable. A second occurrence of an available
+   expression becomes a var read (`let h₂ := h`), which `CoalesceCopies`
+   then merges. Soundness: the `StorageForward`/scoped-export architecture —
+   bidirectional Step simulation carrying cache validity ("evaluating the
+   cached expression now yields the cached variable's value and preserves
+   state" — the first evaluation already extended active memory, so
+   re-evaluation is state-preserving), with the same block-exit export and
+   layout-resolution closure.
+2. **`PruneDefs` — unreachable function-definition removal.** Full
+   normalization hoists every definition to the root and the backend emits a
+   `PUSH32 skip; JUMP; …; JUMPDEST` island per definition (~12 gas per
+   retained definition per call). After six inline rounds the artifacts
+   retain almost all definitions (`PositionStatusMap` 150 vs solc 19,
+   TickMath 177 vs 2, SafeCast ~68 vs 0) — for the small Uniswap library
+   rows the dead-island tax is over half the row. On
+   `UniqueNames + FunctionsHoisted` output, compute transitive
+   call-reachability from the non-`funDef` root statements and drop uncalled
+   root definitions. Soundness: a hoist-shrinking congruence — execution
+   under a function environment with extra entries whose names occur nowhere
+   in call position in the remaining program is pointwise equivalent
+   (`Step.funs_irrel`-style invariant threaded through the run); resolution
+   closure is syntactic (resolution never creates named calls).
+3. **Optimize-after-spill.** `PoolSwap` (and every future spill-only object)
+   compiles through `spillObjectWithFallback raw …`, which uses **raw
+   unoptimized code** at spilled nodes — 706 definitions / 417 KB never see
+   the optimizer. Run the object pipeline on the spilled result (ladder:
+   optimized-spilled first, plain spilled as fallback), composing
+   `compileObject_memorySpill_correct` with the pipeline's fixed-layout
+   resolution congruence — the pipeline preserves the spilled block's exact
+   semantics, so `ScratchRel`/observable equality transport unchanged.
+
+Measured expectations: (1) is the multi-million Aave lever (rows 1–3, 5–6);
+(2) is a broad fixed-cost win (small Uniswap/Aave rows, gasTests' +114k
+normalization regression, bytecode size); (3) opens PoolSwap's 218k excess
+to (1)+(2). The `rets ≤ 2` inline gate is *not* the current `next*` blocker —
+their bodies contain `for` loops, which the statement inliner's classifier
+rejects outright; loop-bearing inlining stays a non-goal here.
+
+**What the dumps forced (mid-implementation redesign):** the duplicated
+keccak/sload groups sit 4–5 inliner-readback blocks deep, and *every* useful
+carrier (the hash, the word, even the `shr(7,·)` key) dies at a nested block
+exit before the second group starts — no fact-forwarding pass can connect
+them at any single level, and the same nesting is what starves
+`CoalesceCopies`/`RejoinPairs` of adjacent pairs. Two structural passes were
+added ahead of `ReuseValues`:
+
+* **`Flatten`** — splices bare inliner blocks into the parent sequence,
+  renaming *all* promoted binders to globally fresh names (`FreshenCalls`
+  prefix scheme). Unconditional renaming makes the splice's mention-freeness
+  hold by construction; the rename declines on shadowed or pre-decl-mentioned
+  binders. Runs right after `InlineCalls`.
+* **`FuseDeclAssign`** — sinks `let x; …(x-free)…; x := e` declarations to
+  their first assignment and fuses `let x := lit; x := e`; converts the
+  flattened assign-chains back into `let`-chains so `CoalesceCopies` and
+  `RejoinPairs` can consume them.
+
+All three (plus `ReuseValues`) are guarded by whole-block
+`storageLayoutFreeStmts` on input **and output** (post-checked, falling back
+to the input), so each object-path congruence reduces to the pass's block
+soundness — no commutation proofs. `PruneDefs` commutes syntactically instead
+(call names are resolution-invariant) and is **fully proved**
+(`PruneDefsSound.lean`: the hoist-shrinking congruence — `PFunsRel` upper
+segment of filtered scopes over a common tail, call-`R`-freeness invariant,
+`reachFuel` closure with an everything-live fuel-exhaustion default;
+`PruneDefsResolve.lean`: the commutation). The optimize-after-spill wiring
+also skips the pipeline when the plain spilled object cannot compile, and
+adds a stack-layout rung for the optimized-spilled candidate (this is what
+admits PoolSwap).
+
+**Measured (transforms complete; three soundness stubs remain —
+`flattenBlock_sound`, `fuseDeclAssignBlock_sound`, `reuseValuesBlock_sound`):**
+
+| Suite | Before | After | Δ | Ratio |
+|---|---:|---:|---:|---:|
+| Aave v4 | 35,808,661 | 27,330,370 | **−8,478,291 (−23.7%)** | 1.964x → 1.499x |
+| Uniswap v4 | 1,640,265 | 1,277,046 | **−363,219 (−22.1%)** | 1.808x → 1.408x |
+| gasTests | 483,580 | 404,348 | −79,232 | 1.436x → 1.200x |
+| semanticTests | 195,793,881 | 186,959,210 | −8,834,671 | 1.146x → 1.094x |
+
+All 10 Aave rows improve (`nextContinuousTenThousand` −3.18M); 43/44 Uniswap
+rows improve — PoolSwap finally compiles through the optimizer
+(`swapExactInputNoTick` 138,059 → 68,021) with one small `slot0` +993
+counter-move; 12/12 gasTests; 1246/1264 semantic rows improve, 12 regress by
+a combined ~13k (worst `dynamic_multi_array_cleanup` +9k — flatten/reuse live
+-range extension in copy-heavy code; accepted pending a gate follow-up).
+
+**Proof state — all four passes fully proved (zero sorries):**
+
+* `PruneDefs` — done (`PruneDefsSound.lean`, `PruneDefsResolve.lean`).
+* `fuseDeclAssignBlock_sound` — done (`FuseDeclAssignSound.lean`): the
+  `MvRel` environment-reorder relation and its algebra, the 40-constructor
+  `Step.mv_congr`/`mv_congr_bwd` transports, `sink`/`fuseSeqFuel`
+  inversions, the `FuseChain` move-or-insert accumulation erased by the
+  enclosing `restore`, and the structural lifting.
+* `flattenBlock_sound` — done (`FlattenSound.lean`): the `RnRel` keyed
+  single-binder rename transport (forward, and backward via the
+  rename-involution role swap), the guard decomposition
+  (`shadowedTop`/`mentionsBeforeDecl` → an unchanged prefix and a
+  redeclaration-free suffix), the splice as a multi-insertion frame chain
+  (`frameAddAll`/`frameRemoveAll` over `InsChain`, new surviving keys ⊆
+  top-level binders, empty-scope transparency from `StackLayoutSound`),
+  and the counter-threaded structural lifting.  Freshness is **checked**
+  by the transform (`stmtsMentions` guards in `renameAll`/`spliceSeq`, the
+  `RejoinPairs` recipe) instead of derived from a prefix-string invariant;
+  the checks never fire in practice and gas is unchanged.
+* `reuseValuesBlock_sound` — done (`ReuseValuesSound.lean`): a functional
+  evaluator for the canonical pure fragment with `Step` totality/
+  determinism bridges, cache validity (`RvOk`) over the five fact
+  families, `MemNeutral` state transitions (`touchMemory` idempotence at
+  active ranges), the word/byte decomposition keystone (equal covering
+  `loadWord`s force equal `readBytes`, via byte-fold injectivity), the
+  per-rhs rewrite transports and post-binding validity, and the
+  `StorageForward`-shaped master inductions.  The proof surfaced and fixed
+  four transform gaps: self-referential recordings (`let x := sload(x)`),
+  assignment facts for unbound names (`bound` threading, `VEnv.set` is a
+  no-op on unbound names), literal-address wrap-around (range guards on
+  `mstoreLit`/`mloadLit`/`keccakLits`), and cache retention across a
+  non-canonicalizable (possibly effectful) `sload` key.
+* The optimize-after-spill wiring is covered by the existing composed
+  correctness chain (`Checks.lean` pins the exact classical axiom set of
+  `compile_correct`; the whole tree is sorry-free).
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
