@@ -174,7 +174,7 @@ def frameStep (prog : List Asm) (C : Cert) : Asm → List Asm → FLayout → Na
           c = .label Lret :: c' ∧
           S = (Sw ++ [FSlot.retTo Lret]) ++ Smid ∧
           (∀ s ∈ Sw, s = FSlot.word) ∧
-          C.fl t = some (Sw ++ [FSlot.ret]) ∧ C.fbMax t = some (F + Smid.length) ∧
+          C.fl t = some (Sw ++ [FSlot.ret]) ∧ (∃ Ft, C.fbMax t = some Ft ∧ F + Smid.length ≤ Ft) ∧
           C.rl t = some Sret ∧ (∀ s ∈ Sret, s = FSlot.word) ∧
           findLabel Lret prog = some c' ∧
           C.fl c' = some (Sret ++ Smid) ∧ C.fbMax c' = some F ∧ C.rl c' = some R)
@@ -534,6 +534,7 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
       | inr hcall =>
           obtain ⟨Sw, Smid, Lret, cc, t, Sret, hfindt, hc, hSeq, hSwords, hflt, hfbt, hrlt,
             hSretw, hfindLret, hflcc, hfbcc, hrlcc⟩ := hcall
+          obtain ⟨Ft, hfbtEq, hFtGe⟩ := hfbt
           obtain rfl : t = c' := Option.some.inj (hfindt.symm.trans hfind)
           cases hinv with
           | @root σr cr Sr Rr hflr hfbr hrlr hmr =>
@@ -547,9 +548,10 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
               cases hMlc with
               | retTo _ =>
                   refine GoodStack.call (above := setupW) (below := []) (lRet := Lret)
-                    (rest := midframe) (cRet := cc) hflt hfbt hrlt (hMsw.append (FMatch.ret FMatch.nil))
+                    (rest := midframe) (cRet := cc) hflt hfbtEq hrlt (hMsw.append (FMatch.ret FMatch.nil))
                     (by rw [hMsw.length_eq, List.getElem?_append_right (le_refl _), Nat.sub_self]; rfl)
-                    (by intro x hx; simp at hx) hfindLret (by rw [hMmid.length_eq]; omega) ?_ ?_
+                    (by intro x hx; simp at hx) hfindLret
+                    (by rw [hMmid.length_eq]; omega) ?_ ?_
                   · intro ws hws
                     exact GoodStack.root hflcc hfbcc hrlcc (hws.append hMmid)
                   · exact hσeq
@@ -602,11 +604,11 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
                     refine (List.append_inj hh ?_).1
                     simp only [List.length_append, List.length_cons, List.length_nil]; omega
                   refine GoodStack.call (above := setupW) (below := []) (lRet := Lret)
-                    (rest := midframe ++ rest0) (cRet := cc) hflt hfbt hrlt
+                    (rest := midframe ++ rest0) (cRet := cc) hflt hfbtEq hrlt
                     (hMsw.append (FMatch.ret FMatch.nil))
                     (by rw [hMsw.length_eq, List.getElem?_append_right (le_refl _), Nat.sub_self]; rfl)
                     (by intro x hx; simp at hx) hfindLret
-                    (by rw [List.length_append, hMmid.length_eq]; omega) ?_ ?_
+                    (by rw [List.length_append, hMmid.length_eq]; omega) ?_ ?_ -- hle: |midframe|+|rest0| ≤ Ft
                   · intro ws hws
                     refine GoodStack.call (above := ws ++ midAbove) (below := below0) (lRet := lRet0)
                       (rest := rest0) (cRet := cRet0) hflcc hfbcc hrlcc ?_ ?_ hbw0 hfind0 hle0 hres0 ?_
@@ -705,5 +707,236 @@ theorem run_stack_bound2 {prog : List Asm} {C : Cert} (hV : C.Valid prog) (hb : 
     ∀ mid, ASteps (model := model) prog ⟨prog, [], yst⟩ mid → mid.stk.length ≤ 1023 :=
   fun _ hsteps =>
     (GoodStack.reach hV hsteps (List.suffix_refl _) (GoodStack.entry h0fl h0fb h0rl)).bound hb
+
+/-! ### A decidable, linear verifier for `Cert.Valid` and `Cert.Bounded`
+
+The certificate (`fl`/`fbMax`/`rl`) is proposed by an *untrusted* solver; soundness rests only on the
+verifier below, so a wrong proposal is simply rejected. Every position carries a **single** layout,
+so the check is one pass over the certificate's finite domain — linear. -/
+
+/-- Split `S` at the first `retTo Lret`, returning the (words) prefix and the suffix. -/
+def splitSetup (Lret : Label) : FLayout → Option (FLayout × FLayout)
+  | [] => none
+  | s :: rest =>
+      if s = FSlot.retTo Lret then some ([], rest)
+      else match splitSetup Lret rest with
+           | some (Sw, Smid) => some (s :: Sw, Smid)
+           | none => none
+
+omit model in
+theorem splitSetup_sound {Lret : Label} : ∀ {S Sw Smid : FLayout},
+    splitSetup Lret S = some (Sw, Smid) → S = Sw ++ FSlot.retTo Lret :: Smid := by
+  intro S
+  induction S with
+  | nil => intro Sw Smid h; simp [splitSetup] at h
+  | cons s rest ih =>
+      intro Sw Smid h
+      simp only [splitSetup] at h
+      split at h
+      · next hs => rw [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, rfl⟩ := h; rw [hs]; rfl
+      · next hs =>
+          revert h; split
+          · next Sw' Smid' hsp =>
+              intro h; rw [Option.some.injEq, Prod.mk.injEq] at h; obtain ⟨rfl, rfl⟩ := h
+              rw [List.cons_append]; congr 1; exact ih hsp
+          · intro h; simp at h
+
+/-- Decidable mirror of `frameStep` (each branch is a single `decide` of the right-nested
+conjunction, so soundness is a projection). -/
+def frameStepB (prog : List Asm) (C : Cert) : Asm → List Asm → FLayout → Nat → FLayout → Bool
+  | .push _,      c, S, F, R =>
+      decide (C.fl c = some (.word :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R)
+  | .dup n,       c, S, F, R => match S[n.val]? with
+      | some sl => decide (C.fl c = some (sl :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R)
+      | none => false
+  | .pushLabel l, c, S, F, R =>
+      decide (C.fl c = some (.retTo l :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R)
+  | .pop,         c, S, F, R => match S with
+      | .word :: S' => decide (C.fl c = some S' ∧ C.fbMax c = some F ∧ C.rl c = some R)
+      | _ => false
+  | .swap n,      c, S, F, R => match S with
+      | sx :: rest => match rest.drop n.val with
+          | sy :: rst => decide (sx = FSlot.word ∧ (∀ s ∈ rest.take n.val, s = FSlot.word) ∧
+              C.fl c = some (sy :: (rest.take n.val ++ sx :: rst)) ∧ C.fbMax c = some F ∧ C.rl c = some R)
+          | [] => false
+      | [] => false
+  | .label _,     c, S, F, R => decide (C.fl c = some S ∧ C.fbMax c = some F ∧ C.rl c = some R)
+  | .op yop,      c, S, F, R => match opTable yop with
+      | some o => decide (Operation.popArity o ≤ S.length ∧
+          C.fl c = some (List.replicate (Operation.pushArity o) FSlot.word ++ S.drop (Operation.popArity o))
+          ∧ C.fbMax c = some F ∧ C.rl c = some R)
+      | none => false
+  | .jump l,      c, S, F, R =>
+      (match findLabel l prog with
+       | some t => decide (C.fl t = some S ∧ C.fbMax t = some F ∧ C.rl t = some R)
+       | none => false)
+      || (match c with
+          | .label Lret :: c' =>
+              (match findLabel l prog with
+               | some t =>
+                   (match splitSetup Lret S with
+                    | some (Sw, Smid) =>
+                        (match C.fbMax t, C.rl t with
+                         | some Ft, some Sret =>
+                             decide (findLabel Lret prog = some c' ∧ (∀ s ∈ Sw, s = FSlot.word) ∧
+                               C.fl t = some (Sw ++ [FSlot.ret]) ∧ F + Smid.length ≤ Ft ∧
+                               (∀ s ∈ Sret, s = FSlot.word) ∧ C.fl c' = some (Sret ++ Smid) ∧
+                               C.fbMax c' = some F ∧ C.rl c' = some R)
+                         | _, _ => false)
+                    | none => false)
+               | none => false)
+          | _ => false)
+  | .jumpi l,     c, S, F, R => match S with
+      | .word :: S' =>
+          (match findLabel l prog with
+           | some t => decide (C.fl t = some S' ∧ C.fbMax t = some F ∧ C.rl t = some R)
+           | none => false)
+          && decide (C.fl c = some S' ∧ C.fbMax c = some F ∧ C.rl c = some R)
+      | _ => false
+  | .dynJump,     _, S, F, R => match S with
+      | .ret :: S' => decide (1 ≤ F ∧ R = S' ∧ (∀ s ∈ S', s = FSlot.word))
+      | _ => false
+
+omit model in
+set_option linter.unusedTactic false in
+/-- `frameStepB` soundly implies `frameStep`. -/
+theorem frameStepB_sound {prog : List Asm} {C : Cert} {i : Asm} {c : List Asm} {S : FLayout}
+    {F : Nat} {R : FLayout} (h : frameStepB prog C i c S F R = true) : frameStep prog C i c S F R := by
+  cases i with
+  | push v => simp only [frameStepB, decide_eq_true_eq] at h; exact h
+  | dup n =>
+      revert h; simp only [frameStepB]; split
+      · next sl he => intro h; simp only [decide_eq_true_eq] at h; exact ⟨sl, he, h⟩
+      · intro h; simp at h
+  | pushLabel l => simp only [frameStepB, decide_eq_true_eq] at h; exact h
+  | pop =>
+      revert h; simp only [frameStepB]; split
+      · next S' => intro h; simp only [decide_eq_true_eq] at h; exact ⟨S', rfl, h⟩
+      · intro h; simp at h
+  | swap n =>
+      revert h; simp only [frameStepB]; split
+      · next sx rest =>
+          split
+          · next sy rst hd =>
+              intro h; simp only [decide_eq_true_eq] at h
+              refine ⟨sx, rest.take n.val, sy, rst, ?_, ?_, h.1, h.2.1, h.2.2.1, h.2.2.2.1, h.2.2.2.2⟩
+              · rw [← hd, List.take_append_drop]
+              · have hh : (rest.drop n.val).length = rest.length - n.val := by simp
+                rw [hd] at hh; simp only [List.length_cons] at hh
+                simp only [List.length_take]; omega
+          · intro h; simp at h
+      · intro h; simp at h
+  | label l => simp only [frameStepB, decide_eq_true_eq] at h; exact h
+  | op yop =>
+      revert h; simp only [frameStepB]; split
+      · next o he => intro h; simp only [decide_eq_true_eq] at h; exact ⟨o, he, h.1, h.2.1, h.2.2.1, h.2.2.2⟩
+      · intro h; simp at h
+  | jump l =>
+      revert h; simp only [frameStepB]; intro h; rw [Bool.or_eq_true] at h
+      cases h with
+      | inl h =>
+          left; revert h; split
+          · next t he => intro h; simp only [decide_eq_true_eq] at h; exact ⟨t, he, h⟩
+          · intro h; simp at h
+      | inr h =>
+          right; revert h; split
+          · next Lret c' =>
+              split
+              · next t he =>
+                  split
+                  · next Sw Smid hsp =>
+                      split
+                      · next Ft Sret hfbtM hrltM =>
+                          intro h; simp only [decide_eq_true_eq] at h
+                          obtain ⟨hFL, hSw, hflt, hle, hSret, hflc, hfbc, hrlc⟩ := h
+                          exact ⟨Sw, Smid, Lret, c', t, Sret, he, rfl,
+                            (by rw [List.append_assoc]; exact splitSetup_sound hsp), hSw,
+                            hflt, ⟨Ft, hfbtM, hle⟩, hrltM, hSret, hFL, hflc, hfbc, hrlc⟩
+                      · intro h; simp at h
+                  · intro h; simp at h
+              · intro h; simp at h
+          · intro h; simp at h
+  | jumpi l =>
+      revert h; simp only [frameStepB]; split
+      · next S' =>
+          intro h; rw [Bool.and_eq_true] at h; obtain ⟨h1, h2⟩ := h
+          simp only [decide_eq_true_eq] at h2
+          refine ⟨S', rfl, ?_, h2.1, h2.2.1, h2.2.2⟩
+          revert h1; split
+          · next t he => intro h1; simp only [decide_eq_true_eq] at h1; exact ⟨t, he, h1⟩
+          · intro h1; simp at h1
+      · intro h; simp at h
+  | dynJump =>
+      revert h; simp only [frameStepB]; split
+      · next S' => intro h; simp only [decide_eq_true_eq] at h; exact ⟨h.1, S', rfl, h.2.1, h.2.2⟩
+      · intro h; simp at h
+
+/-! ### The finite certificate and the top-level check -/
+
+/-- The untrusted solver's output: one `(position, layout, frameBase, returnLayout)` per reachable
+position. -/
+structure CertData where
+  entries : List (List Asm × FLayout × Nat × FLayout)
+
+/-- The `Cert` induced by a `CertData`: look the position up in the finite table. -/
+def CertData.toCert (d : CertData) : Cert where
+  fl c := (d.entries.find? (fun e => decide (e.1 = c))).map (·.2.1)
+  fbMax c := (d.entries.find? (fun e => decide (e.1 = c))).map (·.2.2.1)
+  rl c := (d.entries.find? (fun e => decide (e.1 = c))).map (·.2.2.2)
+
+/-- The verifier: bounded at every entry, and `frameStep` at every instruction entry, plus the
+program-entry conditions. One pass over the table ⇒ linear. -/
+def checkCert (prog : List Asm) (d : CertData) : Bool :=
+  let C := d.toCert
+  (C.fl prog == some []) && (C.fbMax prog == some 0) && (C.rl prog).isSome &&
+  d.entries.all (fun e =>
+    (match C.fl e.1, C.fbMax e.1 with
+     | some S, some F => decide (S.length + F ≤ 1023)
+     | _, _ => true)
+    && (match e.1 with
+        | i :: c' => (match C.fl e.1, C.fbMax e.1, C.rl e.1 with
+                      | some S, some F, some R => frameStepB prog C i c' S F R
+                      | _, _, _ => true)
+        | [] => true))
+
+omit model in
+/-- A defined position comes from a table entry. -/
+theorem CertData.lookup_pos {d : CertData} {c : List Asm} {S : FLayout}
+    (hfl : d.toCert.fl c = some S) : ∃ e ∈ d.entries, e.1 = c := by
+  simp only [CertData.toCert, Option.map_eq_some_iff] at hfl
+  obtain ⟨e, hfound, _⟩ := hfl
+  exact ⟨e, List.mem_of_find?_eq_some hfound, by have := List.find?_some hfound; simpa using this⟩
+
+omit model in
+/-- **Verifier soundness.** -/
+theorem checkCert_sound {prog : List Asm} {d : CertData} (h : checkCert prog d = true) :
+    d.toCert.Valid prog ∧ d.toCert.Bounded ∧ d.toCert.fl prog = some [] ∧
+      d.toCert.fbMax prog = some 0 ∧ ∃ R, d.toCert.rl prog = some R := by
+  simp only [checkCert, Bool.and_eq_true, beq_iff_eq, List.all_eq_true] at h
+  obtain ⟨⟨⟨hentfl, hentfb⟩, hentrl⟩, hall⟩ := h
+  refine ⟨?_, ?_, hentfl, hentfb, ?_⟩
+  · -- Valid
+    intro i c S F R hfl hfb hrl
+    obtain ⟨e, hmem, hpe⟩ := d.lookup_pos hfl
+    have hchk := hall e hmem
+    rw [hpe] at hchk
+    simp only [Bool.and_eq_true, hfl, hfb, hrl] at hchk
+    exact frameStepB_sound hchk.2
+  · -- Bounded
+    intro c S F hfl hfb
+    obtain ⟨e, hmem, hpe⟩ := d.lookup_pos hfl
+    have hchk := hall e hmem
+    rw [hpe] at hchk
+    simp only [Bool.and_eq_true, hfl, hfb, decide_eq_true_eq] at hchk
+    exact hchk.1
+  · exact Option.isSome_iff_exists.mp hentrl
+
+/-- **The scalable overflow gate is sound.** A passing `checkCert` guarantees no reachable
+configuration overflows the 1024-word stack. -/
+theorem checkCert_run_bound {prog : List Asm} {d : CertData} (h : checkCert prog d = true)
+    (yst : EvmState) :
+    ∀ mid, ASteps (model := model) prog ⟨prog, [], yst⟩ mid → mid.stk.length ≤ 1023 := by
+  obtain ⟨hV, hb, h0fl, h0fb, R, h0rl⟩ := checkCert_sound h
+  exact run_stack_bound2 hV hb h0fl h0fb h0rl yst
 
 end YulEvmCompiler
