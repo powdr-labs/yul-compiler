@@ -12,7 +12,7 @@ rev = "81b9e3ecaf4f17e3ade277af20383f87dde70862"
 [[require]]
 name = "evm_semantics"
 git = "https://github.com/powdr-labs/evm-semantics"
-rev = "fcf5c24b3994a61e9f9aa8b1704525e9c7b38cb4"
+rev = "601183cb2d959748243d59093c144652a6f10716"
 
 [[lean_lib]]
 name = "YulEvmCompiler"
