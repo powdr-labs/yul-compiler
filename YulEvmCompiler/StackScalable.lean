@@ -54,7 +54,9 @@ def frameStep (prog : List Asm) (C : Cert) : Asm → List Asm → StkLayout → 
   | .op _,        c, S, F => C.fl c = some S ∧ C.fbMax c = some F  -- WIP
   | .jump l,      _, S, F => (∃ t, findLabel l prog = some t ∧ C.fl t = some S ∧ C.fbMax t = some F)
       ∨ True  -- WIP: the call case
-  | .jumpi _,     c, S, F => C.fl c = some S ∧ C.fbMax c = some F  -- WIP
+  | .jumpi l,     c, S, F => ∃ S', S = .word :: S' ∧
+      (∃ t, findLabel l prog = some t ∧ C.fl t = some S' ∧ C.fbMax t = some F) ∧
+      C.fl c = some S' ∧ C.fbMax c = some F
   | .dynJump,     _, _, _ => True  -- WIP
 
 /-- A certificate is valid when every analysed position satisfies its frame-step constraint. -/
@@ -201,8 +203,17 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
       | inr _ => sorry  -- WIP: the call case
   | @dup n v τ ρ c yst hτ => sorry
   | @swap n x y τ ρ c yst hτ => sorry
-  | @jumpiTaken l v c c' σ yst hv hfind => sorry
-  | @jumpiFall l v c σ yst hv => sorry
+  | @jumpiTaken l v c c' σ yst hv hfind =>
+      obtain ⟨S, F, hfl, hfb⟩ := hinv.certAt
+      obtain ⟨S', hSeq, ⟨t, hfind', hflt, hfbt⟩, _, _⟩ := hV _ c S F hfl hfb
+      subst hSeq
+      rw [hfind] at hfind'; obtain rfl := Option.some.inj hfind'
+      exact hinv.shrinkWord hfl hflt (by rw [hfbt, hfb])
+  | @jumpiFall l v c σ yst hv =>
+      obtain ⟨S, F, hfl, hfb⟩ := hinv.certAt
+      obtain ⟨S', hSeq, _, hflc, hfbc⟩ := hV _ c S F hfl hfb
+      subst hSeq
+      exact hinv.shrinkWord hfl hflc (by rw [hfbc, hfb])
   | @op yop args rets c σ yst yst' hstepOp => sorry
   | @dynJump l c c' σ yst hfind => sorry
 
