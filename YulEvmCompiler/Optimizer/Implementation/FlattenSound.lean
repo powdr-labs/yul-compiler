@@ -1901,4 +1901,185 @@ theorem frameRemoveAll {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       rw [List.length_append]
       exact Nat.le_add_left _ _
 
+/-! ### Guard decomposition
+
+`shadowedTop x ss = false` splits into the three facts the rename walk
+needs: no nested redeclaration, at most one top-level declaration, and no
+mention before it. -/
+
+theorem shadowedTop_false {x : Ident} {ss : List (Stmt Op)}
+    (h : shadowedTop x ss = false) :
+    shadowedTop.nested x ss = false ∧ shadowedTop.topCount x ss ≤ 1 ∧
+      mentionsBeforeDecl x ss = false := by
+  unfold shadowedTop at h
+  simp only [Bool.or_eq_false_iff, decide_eq_false_iff_not, Nat.not_lt] at h
+  exact ⟨h.1.1, h.1.2, h.2⟩
+
+/-- Locate the unique top-level declaration. -/
+theorem topCount_one_split {x : Ident} : ∀ {ss : List (Stmt Op)},
+    shadowedTop.topCount x ss = 1 →
+    ∃ pre xs rhs suf, ss = pre ++ .letDecl xs rhs :: suf ∧
+      xs.contains x = true ∧ shadowedTop.topCount x pre = 0 ∧
+      shadowedTop.topCount x suf = 0
+  | [], h => by simp [shadowedTop.topCount] at h
+  | s :: rest, h => by
+      cases s
+      case letDecl xs rhs =>
+        simp only [shadowedTop.topCount] at h
+        by_cases hxs : xs.contains x = true
+        · rw [if_pos hxs] at h
+          exact ⟨[], xs, rhs, rest, rfl, hxs, rfl, by omega⟩
+        · rw [if_neg hxs] at h
+          obtain ⟨pre, xs', rhs', suf, hss, hc, hp, hsuf⟩ :=
+            topCount_one_split (x := x) (ss := rest) (by omega)
+          subst hss
+          exact ⟨.letDecl xs rhs :: pre, xs', rhs', suf, rfl, hc,
+            by simp only [shadowedTop.topCount, hp]; rw [if_neg hxs], hsuf⟩
+      all_goals (
+        simp only [shadowedTop.topCount] at h;
+        obtain ⟨pre, xs', rhs', suf, hss, hc, hp, hsuf⟩ :=
+          topCount_one_split (x := x) (ss := rest) h;
+        subst hss;
+        exact ⟨_ :: pre, xs', rhs', suf, rfl, hc,
+          by simp [shadowedTop.topCount, hp], hsuf⟩)
+
+/-- Facts about the segment before the declaration: it never touches `x`
+(so the rename leaves it unchanged), and the guards descend to the rest. -/
+theorem pre_facts {x : Ident} : ∀ {pre rest : List (Stmt Op)},
+    shadowedTop.nested x (pre ++ rest) = false →
+    shadowedTop.topCount x pre = 0 →
+    mentionsBeforeDecl x (pre ++ rest) = false →
+    rnMStmts x pre = false ∧ shadowedTop.nested x rest = false ∧
+      mentionsBeforeDecl x rest = false
+  | [], rest, hn, _, hm => ⟨rfl, hn, hm⟩
+  | s :: pre, rest, hn, htc, hm => by
+      cases s
+      case letDecl xs rhs =>
+        simp only [shadowedTop.topCount] at htc
+        have hxs : xs.contains x = false := by
+          by_cases hc : xs.contains x = true
+          · rw [if_pos hc] at htc; omega
+          · simpa using hc
+        rw [if_neg (by simpa using hxs)] at htc
+        simp only [List.cons_append, mentionsBeforeDecl] at hm
+        rw [if_neg (by simpa using hxs)] at hm
+        simp only [Bool.or_eq_false_iff] at hm
+        simp only [List.cons_append, shadowedTop.nested] at hn
+        obtain ⟨i1, i2, i3⟩ :=
+          pre_facts (x := x) (pre := pre) hn (by omega) hm.2
+        refine ⟨?_, i2, i3⟩
+        simp only [rnMStmts, Bool.or_eq_false_iff]
+        refine ⟨?_, i1⟩
+        simp only [rnMStmt, Bool.or_eq_false_iff]
+        refine ⟨by simpa using hxs, ?_⟩
+        cases rhs with
+        | none => rfl
+        | some e =>
+            simp only [Option.map_some, Option.getD_some] at hm
+            cases hexp : exprMentions x e with
+            | false => simpa [optExprMentions] using hexp
+            | true =>
+                exact absurd (exprMentions_mem_idents hexp)
+                  (by simpa using hm.1)
+      case funDef n ps rs b =>
+        simp only [shadowedTop.topCount] at htc
+        simp only [List.cons_append, shadowedTop.nested] at hn
+        simp only [List.cons_append, mentionsBeforeDecl,
+          Bool.or_eq_false_iff] at hm
+        obtain ⟨i1, i2, i3⟩ := pre_facts (x := x) (pre := pre) hn htc hm.2
+        exact ⟨by simp only [rnMStmts, Bool.or_eq_false_iff]
+                  exact ⟨by simp [rnMStmt], i1⟩, i2, i3⟩
+      all_goals (
+        simp only [shadowedTop.topCount] at htc;
+        simp only [List.cons_append, shadowedTop.nested,
+          Bool.or_eq_false_iff] at hn;
+        simp only [List.cons_append, mentionsBeforeDecl,
+          Bool.or_eq_false_iff] at hm;
+        obtain ⟨i1, i2, i3⟩ := pre_facts (x := x) (pre := pre) hn.2 htc hm.2;
+        exact ⟨by simp only [rnMStmts, Bool.or_eq_false_iff]
+                  exact ⟨rnMStmt_of_not_idents (by simpa using hm.1), i1⟩,
+          i2, i3⟩)
+
+/-- The declaring statement's initializer never reads `x` (it still refers
+to the outer binding at that point). -/
+theorem decl_facts {x : Ident} {xs : List Ident} {rhs : Option (Expr Op)}
+    {suf : List (Stmt Op)}
+    (hxs : xs.contains x = true)
+    (hm : mentionsBeforeDecl x (.letDecl xs rhs :: suf) = false) :
+    optExprMentions x rhs = false := by
+  simp only [mentionsBeforeDecl] at hm
+  rw [if_pos hxs] at hm
+  cases rhs with
+  | none => rfl
+  | some e =>
+      simp only [Option.map_some, Option.getD_some] at hm
+      cases hexp : exprMentions x e with
+      | false => simpa [optExprMentions] using hexp
+      | true =>
+          exact absurd (exprMentions_mem_idents hexp) (by simpa using hm)
+
+/-- After the declaration, `x` is never redeclared. -/
+theorem redecl_of_nested_top0 {x : Ident} : ∀ {suf : List (Stmt Op)},
+    shadowedTop.nested x suf = false → shadowedTop.topCount x suf = 0 →
+    redeclStmts x suf = false
+  | [], _, _ => rfl
+  | s :: suf, hn, htc => by
+      cases s
+      case letDecl xs rhs =>
+        simp only [shadowedTop.topCount] at htc
+        have hxs : xs.contains x = false := by
+          by_cases hc : xs.contains x = true
+          · rw [if_pos hc] at htc; omega
+          · simpa using hc
+        rw [if_neg (by simpa using hxs)] at htc
+        simp only [shadowedTop.nested] at hn
+        simp only [redeclStmts, Bool.or_eq_false_iff]
+        refine ⟨?_, redecl_of_nested_top0 (x := x) hn (by omega)⟩
+        simp only [redeclStmt]
+        exact hxs
+      case funDef n ps rs b =>
+        simp only [shadowedTop.topCount] at htc
+        simp only [shadowedTop.nested] at hn
+        simp only [redeclStmts, Bool.or_eq_false_iff]
+        exact ⟨by simp [redeclStmt], redecl_of_nested_top0 (x := x) hn htc⟩
+      all_goals (
+        simp only [shadowedTop.topCount] at htc;
+        simp only [shadowedTop.nested, Bool.or_eq_false_iff] at hn;
+        simp only [redeclStmts, Bool.or_eq_false_iff];
+        exact ⟨hn.1, redecl_of_nested_top0 (x := x) hn.2 htc⟩)
+
+/-- `topCount` distributes over append. -/
+theorem topCount_append (x : Ident) : ∀ (a b : List (Stmt Op)),
+    shadowedTop.topCount x (a ++ b) =
+      shadowedTop.topCount x a + shadowedTop.topCount x b
+  | [], b => by simp [shadowedTop.topCount]
+  | s :: a, b => by
+      cases s <;>
+        simp [shadowedTop.topCount, topCount_append x a b, Nat.add_assoc]
+
+/-- `renStmts` distributes over append. -/
+theorem renStmts_append (x x' : Ident) : ∀ (a b : List (Stmt Op)),
+    renStmts x x' (a ++ b) = renStmts x x' a ++ renStmts x x' b
+  | [], _ => rfl
+  | s :: a, b => by
+      simp only [List.cons_append, renStmts, renStmts_append x x' a b]
+
+/-- Renaming binder lists commutes with `zip`. -/
+theorem renKeys_zip (x x' : Ident) : ∀ (xs : List Ident)
+    (vals : List (evmWithExternal calls creates).Value),
+    renKeys (calls := calls) (creates := creates) x x' (xs.zip vals) =
+      (xs.map (renVar x x')).zip vals
+  | [], _ => rfl
+  | _ :: _, [] => rfl
+  | y :: xs, v :: vals => by
+      show (renVar x x' y, v) :: renKeys x x' (xs.zip vals) = _
+      rw [renKeys_zip x x' xs vals]
+      rfl
+
+/-- Renaming binder lists commutes with zero-binding. -/
+theorem renKeys_bindZeros (x x' : Ident) (xs : List Ident) :
+    renKeys (calls := calls) (creates := creates) x x' (bindZeros D xs) =
+      bindZeros D (xs.map (renVar x x')) := by
+  simp [renKeys, bindZeros, List.map_map, Function.comp_def]
+
 end YulEvmCompiler.Optimizer.Flatten
