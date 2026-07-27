@@ -367,4 +367,176 @@ theorem RnRel.setMany_ren {x x' : Ident} {n : Nat} :
         (fun z hz => hys z (List.mem_cons_of_mem _ hz)) vs
       simpa [VEnv.setMany] using this
 
+/-! ### `restore` compatibility -/
+
+theorem renKeys_drop (x x' : Ident) (k : Nat) (C : VEnv D) :
+    (renKeys x x' C).drop k = renKeys x x' (C.drop k) := by
+  simp [renKeys, List.map_drop]
+
+/-- Related exits restore (to related entries) to related environments; the
+source keys-suffix fact pins the cut to the segment. -/
+theorem RnRel.restore_compat {x x' : Ident} {n : Nat}
+    {Ve₁ Ve₂ Vb₁ Vb₂ : VEnv D}
+    (hentry : RnRel x x' n Ve₁ Ve₂) (hexit : RnRel x x' n Vb₁ Vb₂)
+    (hgrow : Ve₁.length ≤ Vb₁.length)
+    (hkeys : Ve₁.map Prod.fst <:+ Vb₁.map Prod.fst) :
+    RnRel x x' n (restore Ve₁ Vb₁) (restore Ve₂ Vb₂) := by
+  obtain ⟨Ce, base, hxe, hx'e, hne⟩ := hentry
+  obtain ⟨C', base', hx, hx', hn'⟩ := hexit
+  have hCe : Ce.length ≤ C'.length := by
+    simp only [List.length_append] at hgrow
+    omega
+  set k := C'.length - Ce.length with hk
+  have hdrop₁ : restore (Ce ++ base) (C' ++ base') = C'.drop k ++ base' := by
+    unfold restore
+    have : (C' ++ base').length - (Ce ++ base).length = k := by
+      simp [List.length_append]; omega
+    rw [this, List.drop_append_of_le_length (by omega)]
+  have hdrop₂ : restore (renKeys x x' Ce ++ base)
+      (renKeys x x' C' ++ base') = renKeys x x' (C'.drop k) ++ base' := by
+    unfold restore
+    have : (renKeys x x' C' ++ base').length -
+        (renKeys x x' Ce ++ base).length = k := by
+      simp [List.length_append, renKeys]; omega
+    rw [this, List.drop_append_of_le_length (by simp [renKeys]; omega),
+      renKeys_drop]
+  rw [hdrop₁, hdrop₂]
+  -- The kept segment's keys are the entry segment's keys.
+  obtain ⟨pre, hpre⟩ := hkeys
+  have hprelen : pre.length = k := by
+    have := congrArg List.length hpre
+    simp only [List.length_append, List.length_map] at this
+    omega
+  have hsplit : C'.map Prod.fst = pre ++ Ce.map Prod.fst := by
+    have h1 : C'.map Prod.fst ++ base'.map Prod.fst =
+        (pre ++ Ce.map Prod.fst) ++ base.map Prod.fst := by
+      have := hpre
+      simp only [List.map_append] at this
+      rw [← this]
+      simp [List.append_assoc]
+    have hlen : (C'.map Prod.fst).length =
+        (pre ++ Ce.map Prod.fst).length := by
+      simp only [List.length_append, List.length_map]
+      omega
+    exact (List.append_inj h1 hlen).1
+  have hkeep : (C'.drop k).map Prod.fst = Ce.map Prod.fst := by
+    rw [List.map_drop, hsplit,
+      show k = pre.length from hprelen.symm,
+      show pre.length = pre.length + 0 from by omega, List.drop_append]
+    simp
+  refine RnRel.mk (C'.drop k) base' ?_ ?_ hn'
+  · rw [find_key_isSome_iff, hkeep]
+    exact find_key_isSome_iff.mp hxe
+  · intro p hp
+    exact hx' p (List.mem_of_mem_drop hp)
+
+/-! ### The rename on code, and its side conditions -/
+
+/-- The rename lifted to the five code classes. -/
+def renCode (x x' : Ident) : Code Op → Code Op
+  | .expr e => .expr (renExpr x x' e)
+  | .args es => .args (renArgs x x' es)
+  | .stmt s => .stmt (renStmt x x' s)
+  | .stmts ss => .stmts (renStmts x x' ss)
+  | .loop c post body =>
+      .loop (renExpr x x' c) (renStmts x x' post) (renStmts x x' body)
+
+/-- Does the code declare `x` anywhere (excluding `funDef` bodies)? -/
+def codeRedecl (x : Ident) : Code Op → Bool
+  | .expr _ => false
+  | .args _ => false
+  | .stmt s => redeclStmt x s
+  | .stmts ss => redeclStmts x ss
+  | .loop _ post body => redeclStmts x post || redeclStmts x body
+
+/-- Renaming never touches function definitions, so hoisting is stable. -/
+theorem renStmts_hoist (x x' : Ident) : ∀ (ss : List (Stmt Op)),
+    hoist D (renStmts x x' ss) = hoist D ss
+  | [] => rfl
+  | s :: rest => by
+      have ih := renStmts_hoist x x' rest
+      unfold hoist at ih ⊢
+      rw [show renStmts x x' (s :: rest) =
+        renStmt x x' s :: renStmts x x' rest from rfl,
+        List.filterMap_cons, List.filterMap_cons]
+      cases s <;> simp [renStmt, ih]
+
+/-- Renaming commutes with switch-case selection (labels are untouched). -/
+theorem selectSwitch_ren (x x' : Ident) (cv : U256) :
+    ∀ (cases : List (Literal × Block Op)) (dflt : Option (Block Op)),
+    selectSwitch D cv (renCases x x' cases) (renDflt x x' dflt) =
+      renStmts x x' (selectSwitch D cv cases dflt) := by
+  intro cases dflt
+  unfold selectSwitch
+  induction cases with
+  | nil =>
+      simp only [renCases, List.find?_nil]
+      cases dflt with
+      | none => rfl
+      | some b => rfl
+  | cons p rest ih =>
+      obtain ⟨l, b⟩ := p
+      by_cases hl : cv = Dialect.litValue D l
+      · rw [show renCases x x' ((l, b) :: rest) =
+          (l, renStmts x x' b) :: renCases x x' rest from rfl,
+          List.find?_cons_of_pos (by simpa using hl),
+          List.find?_cons_of_pos (by simpa using hl)]
+      · rw [show renCases x x' ((l, b) :: rest) =
+          (l, renStmts x x' b) :: renCases x x' rest from rfl,
+          List.find?_cons_of_neg (by simpa using hl),
+          List.find?_cons_of_neg (by simpa using hl)]
+        exact ih
+
+/-- The selected block of redecl-free cases/default is redecl-free. -/
+theorem selectSwitch_not_redecl {x : Ident} {cv : U256}
+    {cases : List (Literal × Block Op)} {dflt : Option (Block Op)}
+    (hcs : redeclCases x cases = false) (hd : redeclDflt x dflt = false) :
+    redeclStmts x (selectSwitch D cv cases dflt) = false := by
+  unfold selectSwitch
+  cases hfind : cases.find? (fun p => decide (cv = Dialect.litValue D p.1)) with
+  | none =>
+      cases dflt with
+      | none => rfl
+      | some b => exact hd
+  | some p =>
+      have hmem := List.mem_of_find?_eq_some hfind
+      revert hcs
+      clear hfind
+      induction cases with
+      | nil => intro _; cases hmem
+      | cons q rest ih =>
+          intro hcs
+          simp only [redeclCases, Bool.or_eq_false_iff] at hcs
+          rcases List.mem_cons.mp hmem with rfl | hmem'
+          · exact hcs.1
+          · exact ih hmem' hcs.2
+
+/-- Names left fixed by the rename map to themselves, listwise. -/
+theorem map_renVar_id {x x' : Ident} {ys : List Ident}
+    (h : ∀ y ∈ ys, y ≠ x) : ys.map (renVar x x') = ys := by
+  induction ys with
+  | nil => rfl
+  | cons y rest ih =>
+      simp only [List.map_cons, renVar,
+        if_neg (h y (List.mem_cons_self ..))]
+      rw [ih (fun z hz => h z (List.mem_cons_of_mem _ hz))]
+
+/-! ### The result relation and the transport -/
+
+inductive RnRes (x x' : Ident) (n : Nat) : Res D → Res D → Prop
+  | eres (r : EResult D) : RnRes x x' n (.eres r) (.eres r)
+  | sres {V₁ V₂ : VEnv D} (st : EvmState) (o : Outcome)
+      (h : RnRel x x' n V₁ V₂) :
+      RnRes x x' n (.sres V₁ st o) (.sres V₂ st o)
+
+theorem RnRes.eres_inv {x x' : Ident} {n : Nat} {r : EResult D} {res₂ : Res D}
+    (h : RnRes x x' n (.eres r) res₂) : res₂ = .eres r := by
+  cases h; rfl
+
+theorem RnRes.sres_inv {x x' : Ident} {n : Nat} {V₁ : VEnv D} {st o}
+    {res₂ : Res D} (h : RnRes x x' n (.sres V₁ st o) res₂) :
+    ∃ V₂, res₂ = .sres V₂ st o ∧ RnRel x x' n V₁ V₂ := by
+  cases h with
+  | sres _ _ hrel => exact ⟨_, rfl, hrel⟩
+
 end YulEvmCompiler.Optimizer.Flatten
