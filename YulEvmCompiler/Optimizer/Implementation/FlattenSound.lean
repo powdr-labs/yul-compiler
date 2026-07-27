@@ -2082,4 +2082,216 @@ theorem renKeys_bindZeros (x x' : Ident) (xs : List Ident) :
       bindZeros D (xs.map (renVar x x')) := by
   simp [renKeys, bindZeros, List.map_map, Function.comp_def]
 
+/-! ### The single-binder alpha rename, at block level -/
+
+/-- Shape of the renamed sequence across the declaration split: the prefix
+and the initializer are untouched, the binder list and the suffix are
+renamed. -/
+theorem renStmts_split_shape {x x' : Ident} {pre suf : List (Stmt Op)}
+    {xs : List Ident} {rhs : Option (Expr Op)}
+    (hpre : rnMStmts x pre = false) (hrhs : optExprMentions x rhs = false) :
+    renStmts x x' (pre ++ .letDecl xs rhs :: suf) =
+      pre ++ .letDecl (xs.map (renVar x x')) rhs :: renStmts x x' suf := by
+  rw [renStmts_append, renStmts_id hpre]
+  congr 1
+  show renStmt x x' (.letDecl xs rhs) :: renStmts x x' suf = _
+  congr 1
+  show Stmt.letDecl (xs.map (renVar x x')) (rhs.map (renExpr x x')) = _
+  congr 1
+  cases rhs with
+  | none => rfl
+  | some e =>
+      simpa [Option.map_some] using congrArg some
+        (renExpr_id (by simpa [optExprMentions] using hrhs))
+
+/-- Facts delivered by `shadowedTop x ss = false` across the split. -/
+theorem split_guard_facts {x : Ident} {pre suf : List (Stmt Op)}
+    {xs : List Ident} {rhs : Option (Expr Op)}
+    (hsh : shadowedTop x (pre ++ .letDecl xs rhs :: suf) = false)
+    (hxs : xs.contains x = true)
+    (htcp : shadowedTop.topCount x pre = 0)
+    (htcs : shadowedTop.topCount x suf = 0) :
+    rnMStmts x pre = false ∧ optExprMentions x rhs = false ∧
+      redeclStmts x suf = false := by
+  obtain ⟨hn, _, hm⟩ := shadowedTop_false hsh
+  obtain ⟨h1, h2, h3⟩ := pre_facts (x := x) (pre := pre) hn htcp hm
+  refine ⟨h1, decl_facts hxs h3, ?_⟩
+  have hnsuf : shadowedTop.nested x suf = false := by
+    simpa [shadowedTop.nested] using h2
+  exact redecl_of_nested_top0 (x := x) hnsuf htcs
+
+/-- Freshness facts across the split. -/
+theorem fresh_split_facts {x' : Ident} {pre suf : List (Stmt Op)}
+    {xs : List Ident} {rhs : Option (Expr Op)}
+    (hfr : stmtsMentions x' (pre ++ .letDecl xs rhs :: suf) = false) :
+    x' ∉ xs ∧ stmtsMentions x' suf = false := by
+  rw [stmtsMentions_append] at hfr
+  simp only [Bool.or_eq_false_iff] at hfr
+  have hd := hfr.2
+  simp only [stmtsMentions, stmtMentions, Bool.or_eq_false_iff] at hd
+  exact ⟨by simpa using hd.1.1, hd.2⟩
+
+/-- Build the rename relation at a declaration site. -/
+theorem rnRel_decl {x x' : Ident} {xs : List Ident} {C V₁ : VEnv D}
+    (hkeys : C.map Prod.fst = xs) (hxs : xs.contains x = true)
+    (hx' : x' ∉ xs) :
+    RnRel x x' V₁.length (C ++ V₁) (renKeys x x' C ++ V₁) := by
+  refine .mk C V₁ ?_ ?_ rfl
+  · rw [find_key_isSome_iff, hkeys]
+    simpa using hxs
+  · intro p hp hc
+    exact hx' (by
+      rw [← hc, ← hkeys]
+      exact List.mem_map_of_mem hp)
+
+/-- **Forward rename walk**: a source run of the sequence yields a run of
+the renamed sequence with the same state and outcome, and an environment
+that restores identically to any prefix of the entry environment. -/
+theorem renSeq_fwd {x x' : Ident} {ss : List (Stmt Op)}
+    (hsh : shadowedTop x ss = false) (hfr : stmtsMentions x' ss = false)
+    {funs : FunEnv D} {V : VEnv D} {st : EvmState} {Vb : VEnv D}
+    {stb : EvmState} {o : Outcome}
+    (h : Step D funs V st (.stmts ss) (.sres Vb stb o)) :
+    ∃ Vb', Step D funs V st (.stmts (renStmts x x' ss)) (.sres Vb' stb o) ∧
+      restore V Vb = restore V Vb' := by
+  obtain ⟨hn, htc, hm⟩ := shadowedTop_false hsh
+  rcases Nat.lt_or_ge (shadowedTop.topCount x ss) 1 with h0 | h1
+  · -- no top-level declaration of x: x occurs nowhere, rename is identity
+    have htc0 : shadowedTop.topCount x ss = 0 := by omega
+    obtain ⟨hid, -, -⟩ := pre_facts (x := x) (pre := ss) (rest := [])
+      (by simpa using hn) htc0 (by simpa using hm)
+    rw [renStmts_id hid]
+    exact ⟨Vb, h, rfl⟩
+  · have htc1 : shadowedTop.topCount x ss = 1 := by omega
+    obtain ⟨pre, xs, rhs, suf, rfl, hxs, htcp, htcs⟩ := topCount_one_split htc1
+    obtain ⟨hpre, hrhs, hred⟩ := split_guard_facts hsh hxs htcp htcs
+    obtain ⟨hx'xs, hfrsuf⟩ := fresh_split_facts hfr
+    rw [renStmts_split_shape hpre hrhs]
+    rcases stmts_append_fwd h with
+      ⟨V₁, st₁, hpre_step, hrest⟩ | ⟨hne, hpre_step⟩
+    · -- prefix ran to completion; the declaration is next
+      have hVlen : V.length ≤ V₁.length := venvLen_mono hpre_step rfl
+      cases hrest with
+      | seqCons hdecl htail =>
+          cases hdecl with
+          | letZero =>
+              have hR : RnRel x x' V₁.length (bindZeros D xs ++ V₁)
+                  (renKeys x x' (bindZeros D xs) ++ V₁) :=
+                rnRel_decl (by simp [bindZeros, Function.comp_def]) hxs hx'xs
+              obtain ⟨res₂, htail₂, hrel⟩ := Step.rn_congr htail hR
+                (rnMCode_of_mentions (code := .stmts suf) hfrsuf)
+                (show codeRedecl x (.stmts suf) = false from hred)
+              obtain ⟨Vb', rfl, hR'⟩ := hrel.sres_inv
+              refine ⟨Vb', ?_, ?_⟩
+              · refine stmts_append_normal hpre_step (Step.seqCons Step.letZero ?_)
+                rw [renKeys_bindZeros] at htail₂
+                exact htail₂
+              · exact restore_rn_eq hR' hVlen
+          | @letVal _ _ _ _ e vals st₂ hev hlen =>
+              have hR : RnRel x x' V₁.length (xs.zip vals ++ V₁)
+                  (renKeys x x' (xs.zip vals) ++ V₁) :=
+                rnRel_decl (List.map_fst_zip (l₂ := vals) (by omega)) hxs hx'xs
+              obtain ⟨res₂, htail₂, hrel⟩ := Step.rn_congr htail hR
+                (rnMCode_of_mentions (code := .stmts suf) hfrsuf)
+                (show codeRedecl x (.stmts suf) = false from hred)
+              obtain ⟨Vb', rfl, hR'⟩ := hrel.sres_inv
+              refine ⟨Vb', ?_, ?_⟩
+              · refine stmts_append_normal hpre_step (Step.seqCons
+                  (Step.letVal hev (by simpa using hlen)) ?_)
+                rw [renKeys_zip] at htail₂
+                exact htail₂
+              · exact restore_rn_eq hR' hVlen
+      | seqStop hdecl hne =>
+          cases hdecl with
+          | letZero => exact absurd rfl hne
+          | letVal hev hlen => exact absurd rfl hne
+          | letHalt hev =>
+              refine ⟨Vb, ?_, rfl⟩
+              exact stmts_append_normal hpre_step
+                (Step.seqStop (Step.letHalt hev) hne)
+    · -- the prefix stopped early: it is untouched by the rename
+      exact ⟨Vb, stmts_append_early hpre_step hne, rfl⟩
+
+/-- **Backward rename walk**: a run of the renamed sequence yields a source
+run with the same state and outcome, and a restore-equal environment. -/
+theorem renSeq_bwd {x x' : Ident} (hxx' : x ≠ x') {ss : List (Stmt Op)}
+    (hsh : shadowedTop x ss = false) (hfr : stmtsMentions x' ss = false)
+    {funs : FunEnv D} {V : VEnv D} {st : EvmState} {Vb' : VEnv D}
+    {stb : EvmState} {o : Outcome}
+    (h : Step D funs V st (.stmts (renStmts x x' ss)) (.sres Vb' stb o)) :
+    ∃ Vb, Step D funs V st (.stmts ss) (.sres Vb stb o) ∧
+      restore V Vb = restore V Vb' := by
+  obtain ⟨hn, htc, hm⟩ := shadowedTop_false hsh
+  rcases Nat.lt_or_ge (shadowedTop.topCount x ss) 1 with h0 | h1
+  · have htc0 : shadowedTop.topCount x ss = 0 := by omega
+    obtain ⟨hid, -, -⟩ := pre_facts (x := x) (pre := ss) (rest := [])
+      (by simpa using hn) htc0 (by simpa using hm)
+    rw [renStmts_id hid] at h
+    exact ⟨Vb', h, rfl⟩
+  · have htc1 : shadowedTop.topCount x ss = 1 := by omega
+    obtain ⟨pre, xs, rhs, suf, rfl, hxs, htcp, htcs⟩ := topCount_one_split htc1
+    obtain ⟨hpre, hrhs, hred⟩ := split_guard_facts hsh hxs htcp htcs
+    obtain ⟨hx'xs, hfrsuf⟩ := fresh_split_facts hfr
+    rw [renStmts_split_shape hpre hrhs] at h
+    rcases stmts_append_fwd h with
+      ⟨V₁, st₁, hpre_step, hrest⟩ | ⟨hne, hpre_step⟩
+    · have hVlen : V.length ≤ V₁.length := venvLen_mono hpre_step rfl
+      cases hrest with
+      | seqCons hdecl htail =>
+          cases hdecl with
+          | letZero =>
+              rw [← renKeys_bindZeros] at htail
+              have hR : RnRel x x' V₁.length (bindZeros D xs ++ V₁)
+                  (renKeys x x' (bindZeros D xs) ++ V₁) :=
+                rnRel_decl (by simp [bindZeros, Function.comp_def]) hxs hx'xs
+              obtain ⟨res₁, htail₁, hrel⟩ := Step.rn_congr_bwd hxx'
+                (code := .stmts suf) htail hR hfrsuf
+                (show codeRedecl x (.stmts suf) = false from hred)
+              obtain ⟨Vb, rfl, hR'⟩ := hrel.sres_inv_right
+              refine ⟨Vb, ?_, restore_rn_eq hR' hVlen⟩
+              exact stmts_append_normal hpre_step
+                (Step.seqCons Step.letZero htail₁)
+          | @letVal _ _ _ _ e vals st₂ hev hlen =>
+              rw [← renKeys_zip] at htail
+              have hR : RnRel x x' V₁.length (xs.zip vals ++ V₁)
+                  (renKeys x x' (xs.zip vals) ++ V₁) :=
+                rnRel_decl (List.map_fst_zip (l₂ := vals)
+                  (by simpa using hlen.symm.le)) hxs hx'xs
+              obtain ⟨res₁, htail₁, hrel⟩ := Step.rn_congr_bwd hxx'
+                (code := .stmts suf) htail hR hfrsuf
+                (show codeRedecl x (.stmts suf) = false from hred)
+              obtain ⟨Vb, rfl, hR'⟩ := hrel.sres_inv_right
+              refine ⟨Vb, ?_, restore_rn_eq hR' hVlen⟩
+              exact stmts_append_normal hpre_step
+                (Step.seqCons (Step.letVal hev (by simpa using hlen)) htail₁)
+      | seqStop hdecl hne =>
+          cases hdecl with
+          | letZero => exact absurd rfl hne
+          | letVal hev hlen => exact absurd rfl hne
+          | letHalt hev =>
+              refine ⟨Vb', ?_, rfl⟩
+              exact stmts_append_normal hpre_step
+                (Step.seqStop (Step.letHalt hev) hne)
+    · exact ⟨Vb', stmts_append_early hpre_step hne, rfl⟩
+
+/-- **Single-binder alpha conversion at block level.** -/
+theorem renBlock_equiv {x x' : Ident} (hxx' : x ≠ x') {ss : List (Stmt Op)}
+    (hsh : shadowedTop x ss = false) (hfr : stmtsMentions x' ss = false) :
+    EquivStmt D (.block ss) (.block (renStmts x x' ss)) := by
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    cases h with
+    | block hb =>
+        obtain ⟨Vb', hb', heq⟩ := renSeq_fwd hsh hfr hb
+        rw [heq]
+        exact Step.block (by rw [renStmts_hoist]; exact hb')
+  · intro h
+    cases h with
+    | block hb =>
+        rw [renStmts_hoist] at hb
+        obtain ⟨Vb, hb', heq⟩ := renSeq_bwd hxx' hsh hfr hb
+        rw [← heq]
+        exact Step.block hb'
+
 end YulEvmCompiler.Optimizer.Flatten
