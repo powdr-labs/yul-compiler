@@ -1644,15 +1644,13 @@ theorem mload_lit_eval {k : Nat} (hk : k < 2 ^ 256)
   rw [htk]
 
 /-- Construction: `sload` over an evaluating key. -/
-theorem sload_eval {k : Expr Op} {kv : U256}
-    (hk : ∀ (funs : FunEnv D) (st : EvmState) (V : VEnv D),
-      evalPure V k = some kv →
-      Step D funs V st (.expr k) (.eres (.vals [kv] st)))
-    {V : VEnv D} (hkv : evalPure V k = some kv)
+theorem sload_eval {k : Expr Op} {kv : U256} {V : VEnv D}
+    (hkv : evalPure V k = some kv)
     (funs : FunEnv D) (st : EvmState) :
     Step D funs V st (.expr (.builtin .sload [k]))
       (.eres (.vals [st.storage kv] st)) := by
-  refine Step.builtinOk (Step.argsCons Step.argsNil (hk funs st V hkv)) ?_
+  refine Step.builtinOk (Step.argsCons Step.argsNil
+    (evalPure_step hkv funs st)) ?_
   show stepOp _ _ _ = _
   simp only [stepOp]
 
@@ -1810,6 +1808,165 @@ theorem rvRhs_fwd_step {C : RvCache} {x : Ident} {e e' : Expr Op}
                     refine Step.var ?_
                     rw [hgw, hweq]
                 · split at hp <;> (injection hp with h1 _; subst h1; exact h)
+          · split at hp <;> (injection hp with h1 _; subst h1; exact h)
+
+set_option maxHeartbeats 1600000 in
+/-- Backward: an evaluation of the rewritten rhs is an evaluation of the
+original rhs, with the *same* result. -/
+theorem rvRhs_bwd_step {C : RvCache} {x : Ident} {e e' : Expr Op}
+    {C' : RvCache} (hp : rvRhs C x e = (e', C'))
+    {V : VEnv D} {st : EvmState} (hc : RvOk V st C)
+    {funs : FunEnv D} {res : Res D}
+    (h : Step D funs V st (.expr e') res) :
+    Step D funs V st (.expr e) res := by
+  unfold rvRhs at hp
+  split at hp
+  · injection hp with h1 _
+    subst h1
+    exact h
+  · split at hp
+    · next a b hke =>
+        obtain ⟨rfl, hab, hblt⟩ := keccakLits_inv hke
+        split at hp
+        · next sig hcov =>
+            obtain ⟨hsz, hnz, ws, hws, hload⟩ := coverageSig_den hc hcov
+            have ha : a < 2 ^ 256 := by omega
+            split at hp
+            · next key hvar hfind =>
+                injection hp with h1 _
+                subst h1
+                have hqmem := List.mem_of_find?_eq_some hfind
+                have hqpred := List.find?_some hfind
+                simp only [Bool.and_eq_true, beq_iff_eq] at hqpred
+                obtain ⟨⟨hka, hkb⟩, hksig⟩ := hqpred
+                obtain ⟨ws₀, hws₀, hgh, hact⟩ := hc.kecs _ hqmem
+                rw [sigBeq_eq _ _ hksig] at hws₀
+                rw [SigDen.unique hws₀ hws] at hgh
+                rw [hka, hkb] at hact
+                have hwslen : ws.length = sig.length := SigDen.length hws
+                have hbytes : readBytes st.memory a b = wordsBytes ws := by
+                  rw [hsz, ← hwslen]
+                  exact readBytes_wordsBytes (fun i hi => by
+                    have := hload i (by omega)
+                    simpa using this)
+                cases h with
+                | var hv =>
+                    rw [hgh] at hv
+                    injection hv with hv
+                    have hev := keccak_lit_eval (calls := calls)
+                      (creates := creates) ha hblt funs V st
+                    rw [(hact.touch_eq : touchMemory st a b = st),
+                      hbytes, hv] at hev
+                    exact hev
+            · injection hp with h1 _
+              subst h1
+              exact h
+        · injection hp with h1 _
+          subst h1
+          exact h
+    · split at hp
+      · next k hsl =>
+          obtain rfl := sloadArg_inv hsl
+          split at hp
+          · next ck hck =>
+              split at hp
+              · next key w hfind =>
+                  injection hp with h1 _
+                  subst h1
+                  have hqmem := List.mem_of_find?_eq_some hfind
+                  have hqpred := List.find?_some hfind
+                  have hkey : key = ck := exprBeq_eq _ _ hqpred
+                  obtain ⟨kv₀, hkv₀, hgw⟩ := hc.slds _ hqmem
+                  simp only at hkv₀ hgw
+                  rw [hkey, canonPure_eval hc hck] at hkv₀
+                  cases h with
+                  | var hv =>
+                      rw [hgw] at hv
+                      injection hv with hv
+                      have hev := sload_eval (calls := calls)
+                        (creates := creates) hkv₀ funs st
+                      rw [hv] at hev
+                      exact hev
+              · split at hp <;>
+                  (injection hp with h1 _; subst h1; exact h)
+          · split at hp <;> (injection hp with h1 _; subst h1; exact h)
+      · split at hp
+        · next k hml =>
+            obtain ⟨rfl, hkb⟩ := mloadLit_inv hml
+            have hk : k < 2 ^ 256 := by omega
+            split at hp
+            · next q v hfind =>
+                injection hp with h1 _
+                subst h1
+                have hqmem := List.mem_of_find?_eq_some hfind
+                have hkey : q = k := by
+                  have := List.find?_some hfind
+                  simpa using this
+                obtain ⟨hcell, hact, -⟩ := hc.cells _ hqmem
+                rw [hkey] at hcell hact
+                cases h with
+                | var hv =>
+                    have hev := mload_lit_eval (calls := calls)
+                      (creates := creates) hk funs V st
+                    rw [(hact.touch_eq : touchMemory st k 32 = st)] at hev
+                    have hvv : VEnv.get V v =
+                        some (loadWord st.memory k) := by
+                      simpa [evalPure] using hcell
+                    rw [hvv] at hv
+                    injection hv with hv
+                    rw [hv] at hev
+                    exact hev
+            · next q l hfind =>
+                injection hp with h1 _
+                subst h1
+                have hqmem := List.mem_of_find?_eq_some hfind
+                have hkey : q = k := by
+                  have := List.find?_some hfind
+                  simpa using this
+                obtain ⟨hcell, hact, -⟩ := hc.cells _ hqmem
+                rw [hkey] at hcell hact
+                cases l with
+                | number n =>
+                    cases h with
+                    | lit =>
+                        have hev := mload_lit_eval (calls := calls)
+                          (creates := creates) hk funs V st
+                        rw [(hact.touch_eq : touchMemory st k 32 = st)] at hev
+                        have : loadWord st.memory k =
+                            Dialect.litValue D (.number n) := by
+                          simpa [evalPure] using hcell.symm
+                        rw [this] at hev
+                        exact hev
+                | string s => simp [evalPure] at hcell
+                | bool b => simp [evalPure] at hcell
+            · injection hp with h1 _
+              subst h1
+              exact h
+        · split at hp
+          · next ce hce =>
+              split at hp
+              · injection hp with h1 _
+                subst h1
+                exact h
+              · split at hp
+                · next key w hfind =>
+                    injection hp with h1 _
+                    subst h1
+                    have hqmem := List.mem_of_find?_eq_some hfind
+                    have hqpred := List.find?_some hfind
+                    have hkey : key = ce := exprBeq_eq _ _ hqpred
+                    obtain ⟨w₀, hw₀, hgw⟩ := hc.pures _ hqmem
+                    simp only at hw₀ hgw
+                    rw [hkey, canonPure_eval hc hce] at hw₀
+                    cases h with
+                    | var hv =>
+                        rw [hgw] at hv
+                        injection hv with hv
+                        have hev := evalPure_step hw₀ funs st
+                        rw [hv] at hev
+                        exact hev
+                · split at hp <;>
+                    (injection hp with h1 _; subst h1; exact h)
           · split at hp <;> (injection hp with h1 _; subst h1; exact h)
 
 end YulEvmCompiler.Optimizer.ReuseValues
