@@ -1656,4 +1656,160 @@ theorem sload_eval {k : Expr Op} {kv : U256}
   show stepOp _ _ _ = _
   simp only [stepOp]
 
+/-! ### The forwarded right-hand side: rewrite transport -/
+
+set_option maxHeartbeats 1600000 in
+/-- Forward: a source evaluation of the original rhs is an evaluation of
+the rewritten rhs, with the *same* result. -/
+theorem rvRhs_fwd_step {C : RvCache} {x : Ident} {e e' : Expr Op}
+    {C' : RvCache} (hp : rvRhs C x e = (e', C'))
+    {V : VEnv D} {st : EvmState} (hc : RvOk V st C)
+    {funs : FunEnv D} {res : Res D}
+    (h : Step D funs V st (.expr e) res) :
+    Step D funs V st (.expr e') res := by
+  unfold rvRhs at hp
+  split at hp
+  · -- alias: the rhs is untouched
+    injection hp with h1 _
+    subst h1
+    exact h
+  · split at hp
+    · -- keccak256 over literals
+      next a b hke =>
+        obtain ⟨rfl, hab, hblt⟩ := keccakLits_inv hke
+        split at hp
+        · next sig hcov =>
+            obtain ⟨hsz, hnz, ws, hws, hload⟩ := coverageSig_den hc hcov
+            have ha : a < 2 ^ 256 := by omega
+            split at hp
+            · -- hit: rewrite to the cached variable
+              next key hvar hfind =>
+                injection hp with h1 _
+                subst h1
+                have hqmem := List.mem_of_find?_eq_some hfind
+                have hqpred := List.find?_some hfind
+                simp only [Bool.and_eq_true, beq_iff_eq] at hqpred
+                obtain ⟨⟨hka, hkb⟩, hksig⟩ := hqpred
+                obtain ⟨ws₀, hws₀, hgh, hact⟩ := hc.kecs _ hqmem
+                rw [sigBeq_eq _ _ hksig] at hws₀
+                rw [SigDen.unique hws₀ hws] at hgh
+                rw [keccak_lit_inv ha hblt h]
+                rw [hka, hkb] at hact
+                have hwslen : ws.length = sig.length := SigDen.length hws
+                have hbytes : readBytes st.memory a b = wordsBytes ws := by
+                  rw [hsz, ← hwslen]
+                  exact readBytes_wordsBytes (fun i hi => by
+                    have := hload i (by omega)
+                    simpa using this)
+                rw [(hact.touch_eq : touchMemory st a b = st)]
+                refine Step.var ?_
+                rw [hgh, ← hbytes]
+        -- record and no-coverage arms keep the rhs
+            · injection hp with h1 _
+              subst h1
+              exact h
+        · injection hp with h1 _
+          subst h1
+          exact h
+    · split at hp
+      · -- sload
+        next k hsl =>
+          obtain rfl := sloadArg_inv hsl
+          split at hp
+          · next ck hck =>
+              split at hp
+              · -- hit
+                next key w hfind =>
+                  injection hp with h1 _
+                  subst h1
+                  have hqmem := List.mem_of_find?_eq_some hfind
+                  have hqpred := List.find?_some hfind
+                  have hkey : key = ck := exprBeq_eq _ _ hqpred
+                  obtain ⟨kv₀, hkv₀, hgw⟩ := hc.slds _ hqmem
+                  simp only at hkv₀ hgw
+                  rw [hkey] at hkv₀
+                  obtain ⟨kv, hkv, hres⟩ :=
+                    sload_canon_inv (canonPure_go hck) h
+                  rw [hres]
+                  have hkveq : kv₀ = kv := by
+                    rw [canonPure_eval hc hck, hkv] at hkv₀
+                    injection hkv₀ with hv
+                    exact hv.symm
+                  refine Step.var ?_
+                  rw [hgw, hkveq]
+              · split at hp <;>
+                  (injection hp with h1 _; subst h1; exact h)
+          · split at hp <;> (injection hp with h1 _; subst h1; exact h)
+      · split at hp
+        · -- mload
+          next k hml =>
+            obtain ⟨rfl, hkb⟩ := mloadLit_inv hml
+            have hk : k < 2 ^ 256 := by omega
+            split at hp
+            · next q v hfind =>
+                injection hp with h1 _
+                subst h1
+                have hqmem := List.mem_of_find?_eq_some hfind
+                have hkey : q = k := by
+                  have := List.find?_some hfind
+                  simpa using this
+                obtain ⟨hcell, hact, -⟩ := hc.cells _ hqmem
+                rw [mload_lit_inv hk h]
+                rw [hkey] at hcell hact
+                rw [(hact.touch_eq : touchMemory st k 32 = st)]
+                refine Step.var ?_
+                simpa [evalPure] using hcell
+            · next q l hfind =>
+                injection hp with h1 _
+                subst h1
+                have hqmem := List.mem_of_find?_eq_some hfind
+                have hkey : q = k := by
+                  have := List.find?_some hfind
+                  simpa using this
+                obtain ⟨hcell, hact, -⟩ := hc.cells _ hqmem
+                rw [mload_lit_inv hk h]
+                rw [hkey] at hcell hact
+                rw [(hact.touch_eq : touchMemory st k 32 = st)]
+                cases l with
+                | number n =>
+                    have : loadWord st.memory k =
+                        Dialect.litValue D (.number n) := by
+                      simpa [evalPure] using hcell.symm
+                    rw [this]
+                    exact Step.lit
+                | string s => simp [evalPure] at hcell
+                | bool b => simp [evalPure] at hcell
+            · injection hp with h1 _
+              subst h1
+              exact h
+        · split at hp
+          · -- canonical pure
+            next ce hce =>
+              split at hp
+              · injection hp with h1 _
+                subst h1
+                exact h
+              · split at hp
+                · -- hit
+                  next key w hfind =>
+                    injection hp with h1 _
+                    subst h1
+                    have hqmem := List.mem_of_find?_eq_some hfind
+                    have hqpred := List.find?_some hfind
+                    have hkey : key = ce := exprBeq_eq _ _ hqpred
+                    obtain ⟨w₀, hw₀, hgw⟩ := hc.pures _ hqmem
+                    simp only at hw₀ hgw
+                    rw [hkey, canonPure_eval hc hce] at hw₀
+                    obtain ⟨wv, hwv, hres⟩ :=
+                      canonDom_step_inv (canonPure_go hce) _ _ _ _ h
+                    rw [hres]
+                    have hweq : w₀ = wv := by
+                      rw [hwv] at hw₀
+                      injection hw₀ with hv
+                      exact hv.symm
+                    refine Step.var ?_
+                    rw [hgw, hweq]
+                · split at hp <;> (injection hp with h1 _; subst h1; exact h)
+          · split at hp <;> (injection hp with h1 _; subst h1; exact h)
+
 end YulEvmCompiler.Optimizer.ReuseValues
