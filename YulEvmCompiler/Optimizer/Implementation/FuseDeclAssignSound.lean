@@ -1113,4 +1113,202 @@ theorem sink_inv {x : Ident} {ss ss' : List (Stmt Op)}
               · simpa using hm
               · exact hmid s' hs'
 
+/-! ### The accumulated result relation of the fuse sweep -/
+
+/-- One primitive difference the sweep introduces, protecting the bottom `n`
+entries: an extra dead binding on the source side (a halt inside a rewritten
+site), or one moved binding (the normal path through a sink). -/
+inductive FuseStep (n : Nat) : VEnv D → VEnv D → Prop
+  | ins {d : Nat} {x : Ident} {v : (evmWithExternal calls creates).Value}
+      {V₁ V₂ : VEnv D} :
+      InsAt d x v V₂ V₁ → n ≤ d → FuseStep n V₁ V₂
+  | mv {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D} :
+      MvRel x dA dB V₁ V₂ → n ≤ dB → FuseStep n V₁ V₂
+
+/-- Finitely many primitives, composed. -/
+inductive FuseChain (n : Nat) : VEnv D → VEnv D → Prop
+  | refl (V : VEnv D) : FuseChain n V V
+  | head {V₁ V₂ V₃ : VEnv D} :
+      FuseStep n V₁ V₂ → FuseChain n V₂ V₃ → FuseChain n V₁ V₃
+
+theorem FuseStep.mono {m n : Nat} {V₁ V₂ : VEnv D} (hmn : m ≤ n)
+    (h : FuseStep n V₁ V₂) : FuseStep m V₁ V₂ := by
+  cases h with
+  | ins hins hd => exact .ins hins (Nat.le_trans hmn hd)
+  | mv hmv hd => exact .mv hmv (Nat.le_trans hmn hd)
+
+theorem FuseChain.mono {m n : Nat} {V₁ V₂ : VEnv D} (hmn : m ≤ n)
+    (h : FuseChain n V₁ V₂) : FuseChain m V₁ V₂ := by
+  induction h with
+  | refl => exact .refl _
+  | head hs _ ih => exact .head (hs.mono hmn) ih
+
+theorem FuseChain.single {n : Nat} {V₁ V₂ : VEnv D}
+    (h : FuseStep n V₁ V₂) : FuseChain n V₁ V₂ :=
+  .head h (.refl _)
+
+/-- A base at or below the protected suffix restores both sides equally. -/
+theorem FuseStep.restore_eq {n : Nat} {V₀ V₁ V₂ : VEnv D}
+    (h : FuseStep n V₁ V₂) (hb : V₀.length ≤ n) :
+    restore V₀ V₁ = restore V₀ V₂ := by
+  cases h with
+  | ins hins hd => exact (restore_insAt_le hins (Nat.le_trans hb hd)).symm
+  | @mv x dA dB _ _ hmv hd =>
+      cases hmv with
+      | mk C A B v hA hdA hdB =>
+          exact restore_mv_eq (by omega)
+
+theorem FuseChain.restore_eq {n : Nat} {V₀ V₁ V₂ : VEnv D}
+    (h : FuseChain n V₁ V₂) (hb : V₀.length ≤ n) :
+    restore V₀ V₁ = restore V₀ V₂ := by
+  induction h with
+  | refl => rfl
+  | head hs _ ih => rw [hs.restore_eq hb, ih]
+
+/-! ### The sink site, forward -/
+
+/-- Split the `x ∉ keys A` fact out of the target `mid` run. -/
+theorem above_x_free {funs : FunEnv D} {V A B : VEnv D} {st st' : EvmState}
+    {mid : List (Stmt Op)} {x : Ident}
+    (hrun : Step D funs V st (.stmts mid) (.sres (A ++ B) st' .normal))
+    (hm : codeMentions x (.stmts mid) = false)
+    (hB : B.length = V.length) :
+    ∀ p ∈ A, p.1 ≠ x := by
+  obtain ⟨NEW, hkeys, hxNEW⟩ := step_new_keys_free hrun rfl hm
+  have hlenN : NEW.length = A.length := by
+    have := congrArg List.length hkeys
+    simp only [List.length_map, List.length_append] at this
+    omega
+  have hsplit : A.map Prod.fst = NEW := by
+    have : A.map Prod.fst ++ B.map Prod.fst = NEW ++ V.map Prod.fst := by
+      simpa [List.map_append] using hkeys
+    exact (List.append_inj this (by simp [hlenN])).1
+  intro p hp hc
+  exact hxNEW (hsplit ▸ List.mem_map.mpr ⟨p, hp, hc⟩)
+
+theorem mentionsStmts_of_forall {x : Ident} : ∀ {ss : List (Stmt Op)},
+    (∀ s ∈ ss, mentionsStmt x s = false) → mentionsStmts x ss = false
+  | [], _ => rfl
+  | s :: rest, h => by
+      simp only [mentionsStmts, Bool.or_eq_false_iff]
+      exact ⟨h s (List.mem_cons_self ..), mentionsStmts_of_forall
+        (fun s' hs' => h s' (List.mem_cons_of_mem _ hs'))⟩
+
+/-- Inversion for a singleton assignment. -/
+theorem assign_inv {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {x : Ident} {e : Expr Op} {V' : VEnv D} {st' : EvmState} {o : Outcome}
+    (h : Step D funs V st (.stmt (.assign [x] e)) (.sres V' st' o)) :
+    (∃ val, Step D funs V st (.expr e) (.eres (.vals [val] st')) ∧
+      V' = VEnv.set V x val ∧ o = .normal) ∨
+    (Step D funs V st (.expr e) (.eres (.halt st')) ∧ V' = V ∧ o = .halt) := by
+  cases h with
+  | @assignVal _ _ _ _ _ vals _ hev hlen =>
+      obtain ⟨val, rfl⟩ : ∃ v, vals = [v] := by
+        cases vals with
+        | nil => simp at hlen
+        | cons a t =>
+            cases t with
+            | nil => exact ⟨a, rfl⟩
+            | cons b t2 => simp at hlen
+      exact Or.inl ⟨val, hev, rfl, rfl⟩
+  | assignHalt hev => exact Or.inr ⟨hev, rfl, rfl⟩
+
+set_option maxHeartbeats 1600000 in
+/-- **The sink site, forward**: a run of
+`let x; mid; x := e; tail` (with `mid` and `e` `x`-free) yields a run of
+`mid; let x := e; tail` whose result differs by one fuse primitive. -/
+theorem sink_site_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {x : Ident} {mid tail : List (Stmt Op)} {e : Expr Op}
+    (hmid : ∀ s ∈ mid, mentionsStmt x s = false)
+    (he : mentionsExpr x e = false)
+    {V₁ : VEnv D} {st₁ : EvmState} {o : Outcome}
+    (h : Step D funs V st
+      (.stmts (.letDecl [x] none :: (mid ++ .assign [x] e :: tail)))
+      (.sres V₁ st₁ o)) :
+    ∃ V₂, Step D funs V st
+      (.stmts (mid ++ .letDecl [x] (some e) :: tail)) (.sres V₂ st₁ o) ∧
+      FuseChain V.length V₁ V₂ := by
+  -- Bridge the mention hypotheses to the frame lemmas' notion.
+  have hmidM : codeMentions x (.stmts mid) = false := by
+    show stmtsMentions x mid = false
+    exact mentionsStmts_bridge (mentionsStmts_of_forall
+      (fun s hs => hmid s hs))
+  have heM : exprMentions x e = false := mentionsExpr_bridge he
+  -- Invert the head `let x`.
+  cases h with
+  | seqStop hs hne =>
+      cases hs
+      exact absurd rfl hne
+  | seqCons hs htail0 =>
+      cases hs
+      -- `htail0` runs `mid ++ assign :: tail` over `(x, 0) :: V`.
+      have hins0 : InsAt V.length x (evmWithExternal calls creates).zero
+          V ((x, (evmWithExternal calls creates).zero) :: V) :=
+        ⟨[], V, rfl, rfl, rfl⟩
+      rcases stmts_append_fwd (by simpa [bindZeros] using htail0) with
+        ⟨Vm₁, stm, hmidrun, hrest⟩ | ⟨hno, hmidrun⟩
+      · -- `mid` completed normally.
+        obtain ⟨resm, hmid₂, hrelm⟩ := frameRemove hmidrun hins0 hmidM
+        obtain ⟨Vm₂, hresm, hinsm⟩ := ResRelAt.sres_right hrelm
+        subst hresm
+        obtain ⟨A, B, rfl, rfl, hBd⟩ := hinsm
+        have hxA : ∀ p ∈ A, p.1 ≠ x :=
+          above_x_free hmid₂ hmidM hBd
+        have hAfind : A.find? (fun p => p.1 = x) = none := by
+          rw [List.find?_eq_none]
+          intro p hp
+          simp [hxA p hp]
+        -- Invert the assignment.
+        cases hrest with
+        | seqCons ha htail =>
+            rcases assign_inv ha with ⟨val, hev, rfl, -⟩ | ⟨-, -, hno⟩
+            · -- Evaluate `e` on the target side.
+              obtain ⟨rese, hev₂, hrele⟩ := frameRemove hev
+                ⟨A, B, rfl, rfl, hBd⟩ (by simpa [codeMentions] using heM)
+              have hrese := ResRelAt.eres_right hrele
+              subst hrese
+              -- The source assignment hits the inserted binding.
+              have hsrcset : VEnv.set
+                  (A ++ (x, (evmWithExternal calls creates).zero) :: B)
+                  x val = A ++ (x, val) :: B := by
+                rw [set_append_of_none hAfind]
+                congr 1
+                simp [VEnv.set]
+              rw [hsrcset] at htail
+              -- Relate to the target `let x := e` result.
+              have hmv : MvRel x A.length V.length
+                  ([] ++ (A ++ (x, val) :: B))
+                  ([] ++ ((x, val) :: (A ++ B))) :=
+                MvRel.mk [] A B val hxA rfl hBd
+              simp only [List.nil_append] at hmv
+              obtain ⟨rest₂, htail₂, hrelt⟩ := Step.mv_congr htail hmv
+              obtain ⟨V₂, rfl, hrelV⟩ := hrelt.sres_inv
+              refine ⟨V₂, ?_, ?_⟩
+              · refine stmts_append_normal hmid₂ ?_
+                exact Step.seqCons
+                  (Step.letVal (vars := [x]) hev₂ (by simp)) htail₂
+              · exact FuseChain.single (.mv hrelV (by omega))
+            · exact absurd hno.symm (by simp)
+        | seqStop ha hne =>
+            rcases assign_inv ha with ⟨val, hev, rfl, hno⟩ | ⟨hev, rfl, rfl⟩
+            · exact absurd hno hne
+            · obtain ⟨rese, hev₂, hrele⟩ := frameRemove hev
+                ⟨A, B, rfl, rfl, hBd⟩ (by simpa [codeMentions] using heM)
+              have hrese := ResRelAt.eres_right hrele
+              subst hrese
+              refine ⟨A ++ B, ?_, ?_⟩
+              · refine stmts_append_normal hmid₂ ?_
+                exact Step.seqStop (Step.letHalt (vars := [x]) hev₂)
+                  (by intro hc; cases hc)
+              · exact FuseChain.single
+                  (.ins ⟨A, B, rfl, rfl, hBd⟩ (by omega))
+      · -- `mid` stopped early (halt/break/continue/leave).
+        obtain ⟨resm, hmid₂, hrelm⟩ := frameRemove hmidrun hins0 hmidM
+        obtain ⟨V₂, hresm, hinsm⟩ := ResRelAt.sres_right hrelm
+        subst hresm
+        exact ⟨V₂, stmts_append_early hmid₂ hno,
+          FuseChain.single (.ins hinsm (by
+            obtain ⟨A, B, _, _, hBd⟩ := hinsm
+            omega))⟩
+
 end YulEvmCompiler.Optimizer.FuseDeclAssign
