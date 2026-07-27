@@ -1,4 +1,5 @@
 import YulEvmCompiler.Asm
+import YulEvmCompiler.StackBound
 set_option warningAsError true
 /-!
 # YulEvmCompiler.Compile
@@ -329,9 +330,11 @@ def compileProgram (prog : Block Op) : Option (List Asm) := do
   let (asm, _, _) ← compileStmts [scope] [] none none n0 prog
   if wfCheck asm then some asm else none
 
-/-- The full pipeline: Yul → labeled assembly → byte-level IR. -/
+/-- The full pipeline: Yul → labeled assembly → byte-level IR. The `stackOK` gate rejects
+(`none`) any program whose Asm execution could overflow the 1024-word EVM operand stack — recursive
+calls and stack-growing loops — so every accepted program is proven overflow-free (`StackBound`). -/
 def compile (prog : Block Op) : Option (List Instr) := do
   let asm ← compileProgram prog
-  lowerProg asm
+  if stackOK asm then lowerProg asm else none
 
 end YulEvmCompiler
