@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.FreshenCalls
+set_option warningAsError true
 /-!
 # Unreachable function-definition pruning
 

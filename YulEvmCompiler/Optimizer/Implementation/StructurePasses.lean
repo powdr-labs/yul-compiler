@@ -6,6 +6,7 @@ import YulEvmCompiler.Optimizer.Implementation.ReuseValuesSound
 import YulEvmCompiler.Optimizer.Implementation.PruneDefsResolve
 import YulEvmCompiler.Optimizer.Implementation.ResolveCongr
 import YulEvmCompiler.Optimizer.Implementation.RejoinPairs
+set_option warningAsError true
 /-!
 # Pass values for the structural cleanup family
 

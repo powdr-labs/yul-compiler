@@ -1255,10 +1255,10 @@ viaYul/storage/packed_storage.sol	25226	22634
 viaYul/storage/simple_storage.sol	45332	44542
 viaYul/string_format.sol	3363	1232
 viaYul/string_literals.sol	6876	2431
-viaYul/struct_member_access.sol	24906	16515
+viaYul/struct_member_access.sol	24909	16515
 viaYul/tuple_evaluation_order.sol	46690	44382
 viaYul/unary_fixedbytes.sol	13882	4848
-viaYul/unary_operations.sol	56092	21227
+viaYul/unary_operations.sol	56113	21227
 viaYul/various_inline_asm.sol	417	142
 viaYul/virtual_functions.sol	936	765
 virtualFunctions/internal_virtual_function_calls.sol	182	142

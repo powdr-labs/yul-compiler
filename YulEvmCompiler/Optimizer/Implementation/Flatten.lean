@@ -1,6 +1,7 @@
 import YulEvmCompiler.Optimizer.Implementation.FreshenCalls
 import YulEvmCompiler.Optimizer.Implementation.StorageForward
 import YulEvmCompiler.Optimizer.Implementation.Frame
+set_option warningAsError true
 /-!
 # Block flattening (scaffold splicing)
 

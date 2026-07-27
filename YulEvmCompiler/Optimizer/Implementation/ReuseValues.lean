@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.StorageForward
+set_option warningAsError true
 /-!
 # Scoped available-value reuse (state-read and pure CSE)
 

@@ -112,7 +112,7 @@ expressionInliner/argument_duplication_heuristic.yul	996	0
 expressionInliner/complex_with_evm.yul	12	0
 expressionInliner/double_calls.yul	168	0
 expressionInliner/no_inline_mload.yul	72	0
-expressionInliner/no_move_with_sideeffects.yul	1122	678
+expressionInliner/no_move_with_sideeffects.yul	1140	678
 expressionInliner/simple.yul	0	0
 expressionInliner/with_args.yul	0	0
 expressionJoiner/if_condition.yul	12952	12870

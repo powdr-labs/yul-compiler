@@ -1,6 +1,7 @@
 import YulEvmCompiler.Optimizer.Implementation.DeadPure
 import YulEvmCompiler.Optimizer.Implementation.FreshenCalls
 import YulEvmCompiler.Optimizer.Implementation.StorageForward
+set_option warningAsError true
 /-!
 # Declare-then-assign fusion (binding sinking)
 
