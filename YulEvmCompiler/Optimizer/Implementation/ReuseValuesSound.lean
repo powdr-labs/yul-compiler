@@ -3225,4 +3225,209 @@ theorem rv_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
         subst hout
         simp at ho⟩
 
+set_option maxHeartbeats 3200000 in
+theorem rv_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code code' : Code Op} {res : Res D} {bound : List Ident}
+    {C C' : RvCache} (h : Step D funs V st code' res)
+    (hr : RvRel bound C C' code code') (hb : BoundOK V bound)
+    (hc : RvOk V st C) :
+    Step D funs V st code res := by
+  induction h generalizing code bound C C' with
+  | lit =>
+      rw [hr.expr_eq]
+      exact Step.lit
+  | var hv =>
+      rw [hr.expr_eq]
+      exact Step.var hv
+  | builtinOk ha hop iha =>
+      rw [hr.expr_eq]
+      exact Step.builtinOk ha hop
+  | builtinHalt ha hop iha =>
+      rw [hr.expr_eq]
+      exact Step.builtinHalt ha hop
+  | builtinArgsHalt ha iha =>
+      rw [hr.expr_eq]
+      exact Step.builtinArgsHalt ha
+  | callOk ha hl hlen hbody ho iha ihbody =>
+      rw [hr.expr_eq]
+      exact Step.callOk ha hl hlen hbody ho
+  | callHalt ha hl hlen hbody iha ihbody =>
+      rw [hr.expr_eq]
+      exact Step.callHalt ha hl hlen hbody
+  | callArgsHalt ha iha =>
+      rw [hr.expr_eq]
+      exact Step.callArgsHalt ha
+  | argsNil =>
+      rw [hr.args_eq]
+      exact Step.argsNil
+  | argsCons hrest he ihrest ihe =>
+      rw [hr.args_eq]
+      exact Step.argsCons hrest he
+  | argsRestHalt hrest ihrest =>
+      rw [hr.args_eq]
+      exact Step.argsRestHalt hrest
+  | argsHeadHalt hrest he ihrest ihe =>
+      rw [hr.args_eq]
+      exact Step.argsHeadHalt hrest he
+  | funDef =>
+      cases code with
+      | stmt s =>
+          cases s <;> simp_all [RvRel, rvCode, rvStmt]
+          exact Step.funDef
+      | expr e => simp [RvRel, rvCode] at hr
+      | args es => simp [RvRel, rvCode] at hr
+      | stmts ss => simp [RvRel, rvCode] at hr
+      | loop c post body => simp [RvRel, rvCode] at hr
+  | block hbody ihbody =>
+      cases code with
+      | stmt s =>
+          cases s with
+          | block body =>
+              simp only [RvRel, rvCode, rvStmt, Prod.mk.injEq] at hr
+              obtain ⟨hcode, hcache⟩ := hr
+              injection hcode with hbodyeq
+              cases hbodyeq; cases hcache
+              have hbody' := ihbody (code := .stmts body) (bound := bound)
+                (C := C) (C' := (rvStmts bound C body).2) rfl hb hc
+              rw [hoist_rvStmts bound C body] at hbody'
+              exact Step.block hbody'
+          | funDef n ps rs body => simp [RvRel, rvCode, rvStmt] at hr
+          | letDecl xs rhs => simp [RvRel, rvCode, rvStmt] at hr
+          | assign xs rhs => simp [RvRel, rvCode, rvStmt] at hr
+          | cond c body => simp [RvRel, rvCode, rvStmt] at hr
+          | switch c cases dflt => simp [RvRel, rvCode, rvStmt] at hr
+          | forLoop init c post body => simp [RvRel, rvCode, rvStmt] at hr
+          | exprStmt e => simp [RvRel, rvCode, rvStmt, rvExprStmt_fst] at hr
+          | «break» => simp [RvRel, rvCode, rvStmt] at hr
+          | «continue» => simp [RvRel, rvCode, rvStmt] at hr
+          | leave => simp [RvRel, rvCode, rvStmt] at hr
+      | expr e => simp [RvRel, rvCode] at hr
+      | args es => simp [RvRel, rvCode] at hr
+      | stmts ss => simp [RvRel, rvCode] at hr
+      | loop c post body => simp [RvRel, rvCode] at hr
+  | letZero =>
+      obtain ⟨rhs, rfl, heq⟩ := hr.let_inv
+      cases rhs with
+      | none => exact Step.letZero
+      | some e =>
+          obtain ⟨e', C'', hp⟩ := rvLet_some C _ e
+          rw [hp] at heq
+          cases heq
+  | letVal he hlen ihe =>
+      obtain ⟨rhs, rfl, heq⟩ := hr.let_inv
+      cases rhs with
+      | none =>
+          rw [rvLet_none] at heq
+          cases heq
+      | some e =>
+          exact Step.letVal (rvLet_expr_bwd heq hc he) hlen
+  | letHalt he ihe =>
+      obtain ⟨rhs, rfl, heq⟩ := hr.let_inv
+      cases rhs with
+      | none =>
+          rw [rvLet_none] at heq
+          cases heq
+      | some e => exact Step.letHalt (rvLet_expr_bwd heq hc he)
+  | assignVal he hlen ihe =>
+      obtain ⟨rhs, rfl, heq⟩ := hr.assign_inv
+      exact Step.assignVal (rvAssign_expr_bwd heq hc he) hlen
+  | assignHalt he ihe =>
+      obtain ⟨rhs, rfl, heq⟩ := hr.assign_inv
+      exact Step.assignHalt (rvAssign_expr_bwd heq hc he)
+  | exprStmt he ihe =>
+      rw [hr.exprStmt_inv.1]
+      exact Step.exprStmt he
+  | exprStmtHalt he ihe =>
+      rw [hr.exprStmt_inv.1]
+      exact Step.exprStmtHalt he
+  | ifTrue hcond hnz hbody ihc ihbody =>
+      obtain ⟨body, rfl, hbodyeq, hcache⟩ := hr.cond_inv
+      cases hbodyeq
+      have hbody' := ihbody (code := .stmt (.block body)) (bound := bound)
+        (C := RvCache.empty)
+        (C' := (rvStmts bound RvCache.empty body).2.kill (blockDecls body))
+        rfl hb (RvOk.empty _ _)
+      exact Step.ifTrue hcond hnz hbody'
+  | ifFalse hcond hz ihc =>
+      obtain ⟨body, rfl, hbodyeq, hcache⟩ := hr.cond_inv
+      exact Step.ifFalse hcond hz
+  | ifHalt hcond ihc =>
+      obtain ⟨body, rfl, hbodyeq, hcache⟩ := hr.cond_inv
+      exact Step.ifHalt hcond
+  | switchExec hcond hsel ihc ihsel =>
+      rw [hr.switch_eq.1]
+      exact Step.switchExec hcond hsel
+  | switchHalt hcond ihc =>
+      rw [hr.switch_eq.1]
+      exact Step.switchHalt hcond
+  | forLoop hinit hloop ihinit ihloop =>
+      rw [hr.forLoop_eq.1]
+      exact Step.forLoop hinit hloop
+  | forInitHalt hinit ihinit =>
+      rw [hr.forLoop_eq.1]
+      exact Step.forInitHalt hinit
+  | «break» =>
+      rw [hr.control_eq (Or.inl rfl)]
+      exact Step.break
+  | «continue» =>
+      rw [hr.control_eq (Or.inr (Or.inl rfl))]
+      exact Step.continue
+  | leave =>
+      rw [hr.control_eq (Or.inr (Or.inr rfl))]
+      exact Step.leave
+  | seqNil =>
+      rw [hr.stmts_nil_inv]
+      exact Step.seqNil
+  | @seqCons funs V st s' rest' V1 st1 V2 st2 o hs hrest ihs ihrest =>
+      obtain ⟨s, rest, C1, rfl, hsrel, hrestrel⟩ := hr.stmts_cons_inv
+      have hhead : RvRel bound C C1 (.stmt s) (.stmt s') := by
+        unfold RvRel
+        simp only [rvCode]
+        rw [hsrel]
+      have hs0 := ihs (code := .stmt s) (bound := bound) (C := C) (C' := C1)
+        hhead hb hc
+      obtain ⟨-, hsok⟩ := rv_fwd hs0 hhead hb hc
+      obtain ⟨hb1, hc1⟩ := hsok V1 st1 .normal rfl rfl
+      have hbound : rvBound bound (.stmt s) = rvNextBound bound s := by
+        cases s <;> rfl
+      rw [hbound] at hb1
+      have htail : RvRel (rvNextBound bound s) C1 C' (.stmts rest)
+          (.stmts rest') := by
+        unfold RvRel
+        simp only [rvCode]
+        rw [hrestrel]
+      have hrest0 := ihrest (code := .stmts rest)
+        (bound := rvNextBound bound s) (C := C1) (C' := C') htail hb1 hc1
+      exact Step.seqCons hs0 hrest0
+  | @seqStop funs V st s' rest' V1 st1 o hs hne ihs =>
+      obtain ⟨s, rest, C1, rfl, hsrel, hrestrel⟩ := hr.stmts_cons_inv
+      have hhead : RvRel bound C C1 (.stmt s) (.stmt s') := by
+        unfold RvRel
+        simp only [rvCode]
+        rw [hsrel]
+      have hs0 := ihs (code := .stmt s) (bound := bound) (C := C) (C' := C1)
+        hhead hb hc
+      exact Step.seqStop hs0 hne
+  | loopDone hcond hz ihc =>
+      rw [hr.loop_eq]
+      exact Step.loopDone hcond hz
+  | loopCondHalt hcond ihc =>
+      rw [hr.loop_eq]
+      exact Step.loopCondHalt hcond
+  | loopStep hcond hnz hbody hob hp hrest ihc ihb ihp ihr =>
+      rw [hr.loop_eq]
+      exact Step.loopStep hcond hnz hbody hob hp hrest
+  | loopPostHalt hcond hnz hbody hob hp ihc ihb ihp =>
+      rw [hr.loop_eq]
+      exact Step.loopPostHalt hcond hnz hbody hob hp
+  | loopBreak hcond hnz hbody ihc ihb =>
+      rw [hr.loop_eq]
+      exact Step.loopBreak hcond hnz hbody
+  | loopLeave hcond hnz hbody ihc ihb =>
+      rw [hr.loop_eq]
+      exact Step.loopLeave hcond hnz hbody
+  | loopBodyHalt hcond hnz hbody ihc ihb =>
+      rw [hr.loop_eq]
+      exact Step.loopBodyHalt hcond hnz hbody
+
 end YulEvmCompiler.Optimizer.ReuseValues
