@@ -1533,4 +1533,127 @@ theorem fuse_site_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
         exact this
       · nomatch hno.symm
 
+theorem FuseChain.trans {n : Nat} {V₁ V₂ V₃ : VEnv D}
+    (h₁ : FuseChain n V₁ V₂) (h₂ : FuseChain n V₂ V₃) : FuseChain n V₁ V₃ := by
+  induction h₁ with
+  | refl => exact h₂
+  | head hs _ ih => exact .head hs (ih h₂)
+
+/-! ### The sweep, forward -/
+
+/-- The sweep's generic cons equation, by exhaustive shape analysis. -/
+theorem fuseSeqFuel_cons_generic (fuel : Nat) (s : Stmt Op)
+    (rest : List (Stmt Op))
+    (h1 : ∀ x, s = .letDecl [x] none → False)
+    (h2 : ∀ x l y e rest', s = .letDecl [x] (some (.lit l)) →
+      rest = .assign [y] e :: rest' → False) :
+    fuseSeqFuel (fuel + 1) (s :: rest) = s :: fuseSeqFuel fuel rest := by
+  match s, rest with
+  | .letDecl [x] none, _ => exact (h1 x rfl).elim
+  | .letDecl [x] (some (.lit l)), .assign [y] e :: rest' =>
+      exact (h2 x l y e rest' rfl rfl).elim
+  | .letDecl [x] (some (.lit l)), [] => rfl
+  | .letDecl [x] (some (.lit l)), .assign [] e :: rest' => rfl
+  | .letDecl [x] (some (.lit l)), .assign (y :: z :: ys) e :: rest' => rfl
+  | .letDecl [x] (some (.lit l)), .letDecl xs rhs :: rest' => rfl
+  | .letDecl [x] (some (.lit l)), .block b :: rest' => rfl
+  | .letDecl [x] (some (.lit l)), .funDef n ps rs b :: rest' => rfl
+  | .letDecl [x] (some (.lit l)), .exprStmt e :: rest' => rfl
+  | .letDecl [x] (some (.lit l)), .cond c b :: rest' => rfl
+  | .letDecl [x] (some (.lit l)), .switch c cs d :: rest' => rfl
+  | .letDecl [x] (some (.lit l)), .forLoop i c p b :: rest' => rfl
+  | .letDecl [x] (some (.lit l)), .break :: rest' => rfl
+  | .letDecl [x] (some (.lit l)), .continue :: rest' => rfl
+  | .letDecl [x] (some (.lit l)), .leave :: rest' => rfl
+  | .letDecl [x] (some (.var v)), _ => rfl
+  | .letDecl [x] (some (.builtin op args)), _ => rfl
+  | .letDecl [x] (some (.call f args)), _ => rfl
+  | .letDecl [] rhs, _ => rfl
+  | .letDecl (x :: y :: xs) rhs, _ => rfl
+  | .block b, _ => rfl
+  | .funDef n ps rs b, _ => rfl
+  | .assign xs e, _ => rfl
+  | .exprStmt e, _ => rfl
+  | .cond c b, _ => rfl
+  | .switch c cs d, _ => rfl
+  | .forLoop i c p b, _ => rfl
+  | .break, _ => rfl
+  | .continue, _ => rfl
+  | .leave, _ => rfl
+
+set_option maxHeartbeats 3200000 in
+/-- **The fuse sweep, forward**: a run of a sequence yields a run of its
+swept form, with the accumulated primitive differences protected below the
+entry environment. -/
+theorem fuseSeqFuel_fwd (fuel : Nat) (ss : List (Stmt Op))
+    {funs : FunEnv D} {V : VEnv D} {st : EvmState} {V₁ : VEnv D}
+    {st₁ : EvmState} {o : Outcome}
+    (h : Step D funs V st (.stmts ss) (.sres V₁ st₁ o)) :
+    ∃ V₂, Step D funs V st (.stmts (fuseSeqFuel fuel ss)) (.sres V₂ st₁ o) ∧
+      FuseChain V.length V₁ V₂ := by
+  induction fuel, ss using fuseSeqFuel.induct generalizing funs V st V₁ st₁ o with
+  | case1 ss => exact ⟨_, h, .refl _⟩
+  | case2 fuel => exact ⟨_, h, .refl _⟩
+  | @case3 fuel x rest rest' hs ih =>
+      rw [show fuseSeqFuel (fuel + 1) (.letDecl [x] none :: rest) =
+        fuseSeqFuel fuel rest' from by rw [fuseSeqFuel, hs]]
+      obtain ⟨mid, e, tail, rfl, rfl, hmid, he⟩ := sink_inv hs
+      obtain ⟨V₂, h₂, hchain⟩ := sink_site_fwd hmid he h
+      obtain ⟨V₃, h₃, hchain₂⟩ := ih h₂
+      exact ⟨V₃, h₃, hchain.trans hchain₂⟩
+  | @case4 fuel x rest hs ih =>
+      rw [show fuseSeqFuel (fuel + 1) (.letDecl [x] none :: rest) =
+        .letDecl [x] none :: fuseSeqFuel fuel rest from by
+          rw [fuseSeqFuel, hs]]
+      cases h with
+      | seqCons hlet htail =>
+          cases hlet
+          obtain ⟨V₂, h₂, hchain⟩ := ih htail
+          exact ⟨V₂, Step.seqCons Step.letZero h₂,
+            hchain.mono (by simp [bindZeros])⟩
+      | seqStop hlet hne =>
+          cases hlet
+          exact absurd rfl hne
+  | @case5 fuel x l y e rest hguard ih =>
+      obtain ⟨hxy, hme⟩ := by
+        simpa [Bool.and_eq_true, decide_eq_true_eq] using hguard
+      subst hxy
+      rw [show fuseSeqFuel (fuel + 1)
+          (.letDecl [x] (some (.lit l)) :: .assign [x] e :: rest) =
+        fuseSeqFuel fuel (.letDecl [x] (some e) :: rest) from by
+          rw [fuseSeqFuel, if_pos hguard]]
+      obtain ⟨V₂, h₂, hchain⟩ := fuse_site_fwd (by simpa using hme) h
+      obtain ⟨V₃, h₃, hchain₂⟩ := ih h₂
+      exact ⟨V₃, h₃, hchain.trans hchain₂⟩
+  | @case6 fuel x l y e rest hguard ih =>
+      rw [show fuseSeqFuel (fuel + 1)
+          (.letDecl [x] (some (.lit l)) :: .assign [y] e :: rest) =
+        .letDecl [x] (some (.lit l)) ::
+          fuseSeqFuel fuel (.assign [y] e :: rest) from by
+          rw [fuseSeqFuel, if_neg hguard]]
+      cases h with
+      | seqCons hlet htail =>
+          rcases letSome_inv hlet with ⟨val, hev, rfl, -⟩ | ⟨-, -, hno⟩
+          · obtain ⟨V₂, h₂, hchain⟩ := ih htail
+            exact ⟨V₂, Step.seqCons
+              (Step.letVal (vars := [x]) hev (by simp)) h₂,
+              hchain.mono (by simp)⟩
+          · nomatch hno.symm
+      | seqStop hlet hne =>
+          rcases letSome_inv hlet with ⟨val, hev, rfl, hno⟩ | ⟨hev, rfl, rfl⟩
+          · exact absurd hno hne
+          · nomatch hev
+  | @case7 fuel s rest hshape1 hshape2 ih =>
+      have hgen : fuseSeqFuel (fuel + 1) (s :: rest) =
+          s :: fuseSeqFuel fuel rest :=
+        fuseSeqFuel_cons_generic fuel s rest hshape1 hshape2
+      rw [hgen]
+      cases h with
+      | seqCons hs htail =>
+          obtain ⟨V₂, h₂, hchain⟩ := ih htail
+          exact ⟨V₂, Step.seqCons hs h₂,
+            hchain.mono (venvLen_mono hs rfl)⟩
+      | seqStop hs hne =>
+          exact ⟨V₁, Step.seqStop hs hne, .refl _⟩
+
 end YulEvmCompiler.Optimizer.FuseDeclAssign
