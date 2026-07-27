@@ -1577,4 +1577,328 @@ theorem restore_rn_eq {x x' : Ident} {n : Nat} {V₀ V₁ V₂ : VEnv D}
     YulEvmCompiler.Optimizer.FuseDeclAssign.drop_to_base
       (renKeys x x' C) base (by omega)]
 
+/-! ### Splice machinery — bridges
+
+`mentionsBeforeDecl`'s generic arm speaks `stmtIdents`; the rename-identity
+lemmas speak `rnMStmt`.  `stmtIdents` is the coarsest scan, so it bounds the
+funDef-skipping one. -/
+
+mutual
+theorem exprMentions_mem_idents {z : Ident} : ∀ {e : Expr Op},
+    exprMentions z e = true → z ∈ exprIdents e
+  | .var y, h => by
+      simp only [exprMentions, decide_eq_true_eq] at h
+      simp [exprIdents, h]
+  | .builtin op args, h =>
+      argsMentions_mem_idents (by simpa [exprMentions] using h)
+  | .call f args, h => by
+      simp only [exprIdents, List.mem_cons]
+      exact Or.inr (argsMentions_mem_idents (by simpa [exprMentions] using h))
+
+theorem argsMentions_mem_idents {z : Ident} : ∀ {es : List (Expr Op)},
+    argsMentions z es = true → z ∈ argsIdents es
+  | e :: rest, h => by
+      simp only [argsMentions, Bool.or_eq_true] at h
+      simp only [argsIdents, List.mem_append]
+      rcases h with h | h
+      · exact Or.inl (exprMentions_mem_idents h)
+      · exact Or.inr (argsMentions_mem_idents h)
+end
+
+mutual
+theorem rnMStmt_mem_idents {z : Ident} : ∀ {s : Stmt Op},
+    rnMStmt z s = true → z ∈ stmtIdents s
+  | .block body, h => rnMStmts_mem_idents h
+  | .funDef _ _ _ _, h => by simp [rnMStmt] at h
+  | .letDecl vars rhs, h => by
+      simp only [rnMStmt, Bool.or_eq_true, decide_eq_true_eq] at h
+      cases rhs with
+      | none =>
+          simp only [stmtIdents]
+          rcases h with h | h
+          · exact h
+          · simp [optExprMentions] at h
+      | some e =>
+          simp only [stmtIdents, List.mem_append]
+          rcases h with h | h
+          · exact Or.inl h
+          · exact Or.inr (exprMentions_mem_idents
+              (by simpa [optExprMentions] using h))
+  | .assign vars e, h => by
+      simp only [rnMStmt, Bool.or_eq_true, decide_eq_true_eq] at h
+      simp only [stmtIdents, List.mem_append]
+      rcases h with h | h
+      · exact Or.inl h
+      · exact Or.inr (exprMentions_mem_idents h)
+  | .cond c body, h => by
+      simp only [rnMStmt, Bool.or_eq_true] at h
+      simp only [stmtIdents, List.mem_append]
+      rcases h with h | h
+      · exact Or.inl (exprMentions_mem_idents h)
+      · exact Or.inr (rnMStmts_mem_idents h)
+  | .switch c cases dflt, h => by
+      simp only [rnMStmt, Bool.or_eq_true] at h
+      simp only [stmtIdents, List.mem_append]
+      rcases h with (h | h) | h
+      · exact Or.inl (Or.inl (exprMentions_mem_idents h))
+      · exact Or.inl (Or.inr (rnMCases_mem_idents h))
+      · exact Or.inr (rnMDflt_mem_idents h)
+  | .forLoop init c post body, h => by
+      simp only [rnMStmt, Bool.or_eq_true] at h
+      simp only [stmtIdents, List.mem_append]
+      rcases h with ((h | h) | h) | h
+      · exact Or.inl (Or.inl (Or.inl (rnMStmts_mem_idents h)))
+      · exact Or.inl (Or.inl (Or.inr (exprMentions_mem_idents h)))
+      · exact Or.inl (Or.inr (rnMStmts_mem_idents h))
+      · exact Or.inr (rnMStmts_mem_idents h)
+  | .exprStmt e, h => exprMentions_mem_idents (by simpa [rnMStmt] using h)
+  | .«break», h => by simp [rnMStmt] at h
+  | .«continue», h => by simp [rnMStmt] at h
+  | .leave, h => by simp [rnMStmt] at h
+
+theorem rnMStmts_mem_idents {z : Ident} : ∀ {ss : List (Stmt Op)},
+    rnMStmts z ss = true → z ∈ stmtsIdents ss
+  | s :: rest, h => by
+      simp only [rnMStmts, Bool.or_eq_true] at h
+      simp only [stmtsIdents, List.mem_append]
+      rcases h with h | h
+      · exact Or.inl (rnMStmt_mem_idents h)
+      · exact Or.inr (rnMStmts_mem_idents h)
+
+theorem rnMCases_mem_idents {z : Ident} :
+    ∀ {cs : List (Literal × Block Op)},
+    rnMCases z cs = true → z ∈ casesIdents cs
+  | (l, b) :: rest, h => by
+      simp only [rnMCases, Bool.or_eq_true] at h
+      simp only [casesIdents, List.mem_append]
+      rcases h with h | h
+      · exact Or.inl (rnMStmts_mem_idents h)
+      · exact Or.inr (rnMCases_mem_idents h)
+
+theorem rnMDflt_mem_idents {z : Ident} : ∀ {dflt : Option (Block Op)},
+    rnMDflt z dflt = true → z ∈ dfltIdents dflt
+  | some b, h => rnMStmts_mem_idents (by simpa [rnMDflt] using h)
+end
+
+
+/-- Contrapositive form used at guard sites. -/
+theorem rnMStmt_of_not_idents {z : Ident} {s : Stmt Op}
+    (h : z ∉ stmtIdents s) : rnMStmt z s = false := by
+  cases hr : rnMStmt z s with
+  | false => rfl
+  | true => exact absurd (rnMStmt_mem_idents hr) h
+
+theorem rnMStmts_of_not_idents {z : Ident} {ss : List (Stmt Op)}
+    (h : z ∉ stmtsIdents ss) : rnMStmts z ss = false := by
+  cases hr : rnMStmts z ss with
+  | false => rfl
+  | true => exact absurd (rnMStmts_mem_idents hr) h
+
+/-- `stmtsMentions` distributes over append. -/
+theorem stmtsMentions_append (z : Ident) (a b : List (Stmt Op)) :
+    stmtsMentions (Op := Op) z (a ++ b) =
+      (stmtsMentions z a || stmtsMentions z b) := by
+  induction a with
+  | nil => simp [stmtsMentions]
+  | cons s rest ih =>
+      simp only [List.cons_append, stmtsMentions, ih, Bool.or_assoc]
+
+/-! ### New surviving bindings come from top-level `let`s
+
+Control constructs `restore` on exit and assignments update in place, so the
+segment of the final environment above the entry length is keyed by the
+sequence's own top-level binders — the promoted names of a spliced block. -/
+
+theorem topDecls_cons (s : Stmt Op) (rest : List (Stmt Op)) :
+    topDecls (s :: rest) = topDecls [s] ++ topDecls rest := by
+  cases s <;> simp [topDecls]
+
+private theorem take_len_sub_nil {V V' : VEnv D} (hle : V'.length ≤ V.length) :
+    V'.take (V'.length - V.length) = [] := by
+  rw [Nat.sub_eq_zero_of_le hle, List.take_zero]
+
+private theorem restore_len_le (V Vb : VEnv D) :
+    (restore V Vb).length ≤ V.length := by
+  unfold restore
+  rw [List.length_drop]
+  omega
+
+theorem step_stmt_new_keys {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {s : Stmt Op} {V' : VEnv D} {st' : EvmState} {o : Outcome}
+    (h : Step D funs V st (.stmt s) (.sres V' st' o)) :
+    ∀ p ∈ V'.take (V'.length - V.length), p.1 ∈ topDecls [s] := by
+  cases h with
+  | funDef => simp
+  | block hb => simp [take_len_sub_nil (restore_len_le _ _)]
+  | @letZero _ _ _ vars =>
+      intro p hp
+      rw [show (bindZeros D vars ++ V).length - V.length =
+          (bindZeros D vars).length from by
+            rw [List.length_append]; omega,
+        List.take_left' rfl] at hp
+      obtain ⟨y, hy, rfl⟩ := List.mem_map.mp hp
+      simpa [topDecls] using hy
+  | @letVal _ _ _ vars e vals _ hev hlen =>
+      intro p hp
+      rw [show (vars.zip vals ++ V).length - V.length =
+          (vars.zip vals).length from by
+            rw [List.length_append]; omega,
+        List.take_left' rfl] at hp
+      obtain ⟨a, b⟩ := p
+      simpa [topDecls] using (List.of_mem_zip hp).1
+  | letHalt _ => simp
+  | assignVal _ hlen =>
+      simp [take_len_sub_nil (Nat.le_of_eq (VEnv.setMany_length _ _ _))]
+  | assignHalt _ => simp
+  | exprStmt _ => simp
+  | exprStmtHalt _ => simp
+  | ifTrue _ hnz hb =>
+      cases hb with
+      | block _ => simp [take_len_sub_nil (restore_len_le _ _)]
+  | ifFalse _ hz => simp
+  | ifHalt _ => simp
+  | switchExec _ hb =>
+      cases hb with
+      | block _ => simp [take_len_sub_nil (restore_len_le _ _)]
+  | switchHalt _ => simp
+  | forLoop _ _ => simp [take_len_sub_nil (restore_len_le _ _)]
+  | forInitHalt _ => simp [take_len_sub_nil (restore_len_le _ _)]
+  | «break» => simp
+  | «continue» => simp
+  | leave => simp
+
+theorem step_stmts_new_keys {funs : FunEnv D} :
+    ∀ {ss : List (Stmt Op)} {V : VEnv D} {st : EvmState} {V' st' o},
+    Step D funs V st (.stmts ss) (.sres V' st' o) →
+    ∀ p ∈ V'.take (V'.length - V.length), p.1 ∈ topDecls ss := by
+  intro ss
+  induction ss with
+  | nil =>
+      intro V st V' st' o h
+      cases h with
+      | seqNil => simp
+  | cons s rest ih =>
+      intro V st V' st' o h
+      cases h with
+      | @seqCons _ _ _ _ _ V1 st1 _ _ _ hs htail =>
+          intro p hp
+          have h01 : V.length ≤ V1.length := venvLen_mono hs rfl
+          have h12 : V1.length ≤ V'.length := venvLen_mono htail rfl
+          rw [show V'.length - V.length =
+              (V'.length - V1.length) + (V1.length - V.length) from by omega,
+            List.take_add] at hp
+          rw [topDecls_cons, List.mem_append]
+          rcases List.mem_append.mp hp with hp | hp
+          · exact Or.inr (ih htail p hp)
+          · have hdrop : V'.drop (V'.length - V1.length) = restore V1 V' := rfl
+            rw [hdrop] at hp
+            have hkeys : (restore V1 V').map Prod.fst = V1.map Prod.fst :=
+              restore_keys (venvKeys_suffix htail rfl) h12
+            have hp1 : p.1 ∈ ((V1.take (V1.length - V.length)).map Prod.fst) := by
+              have hm := List.mem_map_of_mem (f := Prod.fst) hp
+              rw [List.map_take, hkeys, ← List.map_take] at hm
+              exact hm
+            obtain ⟨q, hq, hq1⟩ := List.mem_map.mp hp1
+            rw [← hq1]
+            exact Or.inl (step_stmt_new_keys hs q hq)
+      | seqStop hs hne =>
+          intro p hp
+          rw [topDecls_cons, List.mem_append]
+          exact Or.inl (step_stmt_new_keys hs p hp)
+
+/-! ### Multi-insertion frame transport
+
+The spliced tail runs over the promoted bindings prepended to the entry
+environment; each is invisible to the tail (`stmtsMentions` guard), so
+iterated `frameAdd`/`frameRemove` transports the tail derivation across the
+whole region, with results related by an insertion chain at entry depth. -/
+
+theorem _root_.YulEvmCompiler.Optimizer.InsChain.trans {n : Nat}
+    {V₁ V₂ V₃ : VEnv D}
+    (h₁ : InsChain (calls := calls) (creates := creates) n V₁ V₂)
+    (h₂ : InsChain (calls := calls) (creates := creates) n V₂ V₃) :
+    InsChain n V₁ V₃ := by
+  induction h₂ with
+  | refl => exact h₁
+  | snoc _ hins hd ih => exact .snoc ih hins hd
+
+/-- Prepending a whole region is an insertion chain at base depth. -/
+theorem insChain_prepend (A V : VEnv D) :
+    InsChain (calls := calls) (creates := creates) V.length V (A ++ V) := by
+  induction A with
+  | nil => exact .refl _
+  | cons p A ih =>
+      refine .snoc (V₀ := p :: (A ++ V)) ih
+        ⟨[], A ++ V, rfl, rfl, rfl⟩ ?_
+      rw [List.length_append]
+      exact Nat.le_add_left _ _
+
+/-- Result relation: statement results carry an insertion chain at depth
+`≥ n`; expression results are equal. -/
+def InsRes (n : Nat) : Res D → Res D → Prop
+  | .eres r₁, .eres r₂ => r₁ = r₂
+  | .sres V₁ st₁ o₁, .sres V₂ st₂ o₂ =>
+      InsChain n V₁ V₂ ∧ st₁ = st₂ ∧ o₁ = o₂
+  | _, _ => False
+
+theorem InsRes.refl (n : Nat) : ∀ res : Res D, InsRes n res res
+  | .eres _ => rfl
+  | .sres _ _ _ => ⟨.refl _, rfl, rfl⟩
+
+theorem InsRes.of_relAt {n d : Nat} {x : Ident}
+    {v : (evmWithExternal calls creates).Value} {res₁ res₂ res₃ : Res D}
+    (h₁ : InsRes n res₁ res₂) (h₂ : ResRelAt d x v res₂ res₃) (hd : n ≤ d) :
+    InsRes n res₁ res₃ := by
+  cases res₂ with
+  | eres r =>
+      obtain rfl := h₂.eres
+      cases res₁ with
+      | eres r₁ => exact h₁
+      | sres _ _ _ => exact h₁.elim
+  | sres V₂ st₂ o₂ =>
+      obtain ⟨V₃, rfl, hins⟩ := h₂.sres
+      cases res₁ with
+      | eres _ => exact h₁.elim
+      | sres V₁ st₁ o₁ =>
+          obtain ⟨hc, rfl, rfl⟩ := h₁
+          exact ⟨hc.snoc hins hd, rfl, rfl⟩
+
+theorem frameAddAll {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} {res₁ : Res D}
+    (h : Step D funs V st code res₁) :
+    ∀ A : VEnv D, (∀ p ∈ A, codeMentions p.1 code = false) →
+      ∃ res₂, Step D funs (A ++ V) st code res₂ ∧
+        InsRes V.length res₁ res₂ := by
+  intro A
+  induction A with
+  | nil => intro _; exact ⟨res₁, h, InsRes.refl _ _⟩
+  | cons p A ih =>
+      intro hm
+      obtain ⟨res₂, h₂, hrel₂⟩ := ih (fun q hq => hm q (List.mem_cons_of_mem _ hq))
+      obtain ⟨res₃, h₃, hrel₃⟩ := frameAdd h₂
+        (⟨[], A ++ V, rfl, rfl, rfl⟩ :
+          InsAt (A ++ V).length p.1 p.2 (A ++ V) ((p.1, p.2) :: (A ++ V)))
+        (hm p List.mem_cons_self)
+      refine ⟨res₃, h₃, hrel₂.of_relAt hrel₃ ?_⟩
+      rw [List.length_append]
+      exact Nat.le_add_left _ _
+
+theorem frameRemoveAll {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} :
+    ∀ (A : VEnv D) {res₂ : Res D},
+      Step D funs (A ++ V) st code res₂ →
+      (∀ p ∈ A, codeMentions p.1 code = false) →
+      ∃ res₁, Step D funs V st code res₁ ∧ InsRes V.length res₁ res₂
+  | [], res₂, h, _ => ⟨res₂, h, InsRes.refl _ _⟩
+  | p :: A, res₂, h, hm => by
+      obtain ⟨res₁', h₁', hrel'⟩ := frameRemove h
+        (⟨[], A ++ V, rfl, rfl, rfl⟩ :
+          InsAt (A ++ V).length p.1 p.2 (A ++ V) ((p.1, p.2) :: (A ++ V)))
+        (hm p List.mem_cons_self)
+      obtain ⟨res₁, h₁, hrel⟩ := frameRemoveAll A h₁'
+        (fun q hq => hm q (List.mem_cons_of_mem _ hq))
+      refine ⟨res₁, h₁, hrel.of_relAt hrel' ?_⟩
+      rw [List.length_append]
+      exact Nat.le_add_left _ _
+
 end YulEvmCompiler.Optimizer.Flatten

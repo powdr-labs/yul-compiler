@@ -1,5 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.FreshenCalls
 import YulEvmCompiler.Optimizer.Implementation.StorageForward
+import YulEvmCompiler.Optimizer.Implementation.Frame
 /-!
 # Block flattening (scaffold splicing)
 
@@ -52,7 +53,7 @@ namespace YulEvmCompiler.Optimizer.Flatten
 open YulSemantics
 open YulSemantics.EVM
 open YulEvmCompiler.Optimizer (exprIdents argsIdents stmtIdents stmtsIdents
-  casesIdents dfltIdents freshPrefix storageLayoutFreeStmts)
+  casesIdents dfltIdents freshPrefix storageLayoutFreeStmts stmtsMentions)
 
 /-! ### Occurrence and redeclaration scans -/
 
@@ -181,7 +182,14 @@ splice's mention-freeness hold *by construction*: the fresh prefix occurs
 nowhere in the original program and the counter is threaded monotonically, so
 a promoted fresh name can occur neither in the remainder of the parent
 sequence nor in any other spliced block.  Declines (`none`) when a binder is
-shadowed inside the block (the rename would capture). -/
+shadowed inside the block (the rename would capture).
+
+Freshness of the new name is *checked* (`stmtsMentions`) rather than derived
+from the prefix invariant: the check never fires in practice (the prefix
+occurs nowhere in the source program and counters are threaded
+monotonically), and it hands the soundness proof exactly the side conditions
+of the rename transport, sparing a string-freshness invariant threaded
+through the whole sweep (the `RejoinPairs` guard-by-construction recipe). -/
 def renameAll (P : String) (ctr : Nat) (binders : List Ident)
     (body : List (Stmt Op)) : Option (List (Stmt Op) × Nat) :=
   go binders body ctr
@@ -189,8 +197,9 @@ where
   go : List Ident → List (Stmt Op) → Nat → Option (List (Stmt Op) × Nat)
     | [], ss, c => some (ss, c)
     | x :: rest, ss, c =>
-        if shadowedTop x ss then none
-        else go rest (renStmts x s!"{P}{c}" ss) (c + 1)
+        let x' := s!"{P}{c}"
+        if shadowedTop x ss || x == x' || stmtsMentions x' ss then none
+        else go rest (renStmts x x' ss) (c + 1)
 
 /-- Splice pass over an already recursively-flattened sequence. Spliced
 statements were already processed by their block's own sweep, so they are
@@ -206,7 +215,12 @@ def spliceSeq (P : String) :
         match renameAll P c (topDecls inner) inner with
         | some (inner', c') =>
             let (rest', c'') := spliceSeq P rest c'
-            (inner' ++ rest', c'')
+            -- Checked, not derived (see `renameAll`): the promoted binders
+            -- are fresh by construction, so the check never fires; it hands
+            -- the frame transport its mention-freeness side condition.
+            if (topDecls inner').all (fun y => !stmtsMentions y rest') then
+              (inner' ++ rest', c'')
+            else (.block inner :: rest', c'')
         | none =>
             let (rest', c') := spliceSeq P rest c
             (.block inner :: rest', c')
