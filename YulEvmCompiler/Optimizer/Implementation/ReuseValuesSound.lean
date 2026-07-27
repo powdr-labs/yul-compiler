@@ -30,7 +30,8 @@ open YulSemantics
 open YulSemantics.EVM
 open YulEvmCompiler.Optimizer (pureTotalArity pureFn pureFn_builtin
   pureFn_builtin_inv pureTotalArity_pureFn storageLayoutFreeStmts
-  blockDecls stmtsNoNormal)
+  blockDecls stmtsNoNormal BoundOK ScopeFrame bindZeros_keys
+  scopeFrame_stmts_normal stmtsNoNormal_sound stmtNoNormal_sound)
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 local notation "D" => evmWithExternal calls creates
@@ -2273,5 +2274,145 @@ theorem rvRhs_ok {C : RvCache} {x : Ident} {e e' : Expr Op}
             · injection hp with h1 h2
               subst h2
               exact RvOk.empty _ _
+
+/-! ### Kill across the environment transitions of the semantics -/
+
+theorem RvOk.kill_prepend {V : VEnv D} {st : EvmState} {C : RvCache}
+    (hc : RvOk V st C) (xs : List Ident) (vs : List U256) :
+    RvOk ((xs.zip vs : VEnv D) ++ V) st (C.kill xs) := by
+  refine RvOk.kill (V' := (xs.zip vs : VEnv D) ++ V) hc xs (fun z hz => ?_)
+  refine YulEvmCompiler.Optimizer.VEnv.get_append_not_mem ?_
+  intro hmem
+  obtain ⟨q, hq, hqz⟩ := List.mem_map.mp hmem
+  exact hz (hqz ▸ (List.of_mem_zip hq).1)
+
+theorem RvOk.kill_bindZeros {V : VEnv D} {st : EvmState} {C : RvCache}
+    (hc : RvOk V st C) (xs : List Ident) :
+    RvOk (bindZeros D xs ++ V) st (C.kill xs) := by
+  refine RvOk.kill (V' := bindZeros D xs ++ V) hc xs (fun z hz => ?_)
+  refine YulEvmCompiler.Optimizer.VEnv.get_append_not_mem ?_
+  rw [bindZeros_keys]
+  exact hz
+
+theorem RvOk.kill_setMany {V : VEnv D} {st : EvmState} {C : RvCache}
+    (hc : RvOk V st C) (xs : List Ident) (vs : List U256) :
+    RvOk (VEnv.setMany V xs vs) st (C.kill xs) := by
+  refine RvOk.kill (V' := VEnv.setMany V xs vs) hc xs (fun z hz => ?_)
+  exact YulEvmCompiler.Optimizer.VEnv.get_setMany_not_mem hz
+
+theorem RvOk.kill_restore {ds : List Ident} {V V' : VEnv D}
+    {st : EvmState} {C : RvCache} (hc : RvOk V' st C)
+    (hf : ScopeFrame ds V V') :
+    RvOk (restore V V') st (C.kill ds) := by
+  refine RvOk.kill (V' := restore V V') hc ds (fun z hz => ?_)
+  exact hf.restore_get_eq hz
+
+/-! ### Statement-level rewrites -/
+
+theorem rvLet_some (C : RvCache) (xs : List Ident) (e : Expr Op) :
+    ∃ e' C', rvLet C xs (some e) = (some e', C') := by
+  unfold rvLet
+  match xs with
+  | [x] => exact ⟨_, _, rfl⟩
+  | [] =>
+      dsimp only
+      split
+      · exact ⟨_, _, rfl⟩
+      · exact ⟨_, _, rfl⟩
+  | _ :: _ :: _ =>
+      dsimp only
+      split
+      · exact ⟨_, _, rfl⟩
+      · exact ⟨_, _, rfl⟩
+
+theorem rvLet_none (C : RvCache) (xs : List Ident) :
+    rvLet C xs none = (none, C.kill xs) := by
+  unfold rvLet
+  match xs with
+  | [] => rfl
+  | [x] => rfl
+  | _ :: _ :: _ => rfl
+
+set_option maxHeartbeats 800000 in
+theorem rvLet_expr_fwd {C : RvCache} {xs : List Ident} {e e' : Expr Op}
+    {C' : RvCache} (hp : rvLet C xs (some e) = (some e', C'))
+    {V : VEnv D} {st : EvmState} (hc : RvOk V st C)
+    {funs : FunEnv D} {res : Res D}
+    (h : Step D funs V st (.expr e) res) :
+    Step D funs V st (.expr e') res ∧
+      (∀ vals st₁, res = .eres (.vals vals st₁) → vals.length = xs.length →
+        RvOk (xs.zip vals ++ V) st₁ C') := by
+  have hcatch : (if rvNeutralExpr e = true then (some e, C.kill xs)
+        else ((some e : Option (Expr Op)), RvCache.empty)) = (some e', C') →
+      Step D funs V st (.expr e') res ∧
+      (∀ vals st₁, res = .eres (.vals vals st₁) → vals.length = xs.length →
+        RvOk (xs.zip vals ++ V) st₁ C') := by
+    intro hp'
+    split at hp'
+    · next hne =>
+        injection hp' with h1 h2
+        injection h1 with h1
+        subst h1
+        refine ⟨h, ?_⟩
+        intro vals st₁ hres hlen
+        subst hres
+        obtain ⟨vs', st', hres', hmn⟩ := rvNeutral_step hne _ _ _ _ h
+        injection hres' with hres'
+        injection hres' with hv1 hst1
+        rw [← h2, hst1]
+        exact (hc.kill_prepend _ _).memNeutral hmn
+    · injection hp' with h1 h2
+      injection h1 with h1
+      subst h1
+      refine ⟨h, ?_⟩
+      intro vals st₁ hres hlen
+      rw [← h2]
+      exact RvOk.empty _ _
+  rcases xs with _ | ⟨x, _ | ⟨y, rest⟩⟩
+  · exact hcatch hp
+  · unfold rvLet at hp
+    injection hp with h1 h2
+    injection h1 with h1
+    have hkill : RvOk V st (C.kill [x]) := hc.kill [x] (fun _ _ => rfl)
+    have hrv : rvRhs (C.kill [x]) x e = (e', C') := by
+      rcases hq : rvRhs (C.kill [x]) x e with ⟨a, b⟩
+      rw [hq] at h1 h2
+      simp only at h1 h2
+      rw [h1, h2]
+    constructor
+    · exact rvRhs_fwd_step hrv hkill h
+    · intro vals st₁ hres hlen
+      obtain ⟨v, rfl⟩ := List.length_eq_one_iff.mp hlen
+      subst hres
+      show RvOk ((x, v) :: V) st₁ _
+      exact rvRhs_ok hrv hkill (XFree.kill C x)
+        get_cons_self (fun z hz => get_cons_ne hz) h
+  · exact hcatch hp
+
+theorem rvLet_expr_bwd {C : RvCache} {xs : List Ident} {e e' : Expr Op}
+    {C' : RvCache} (hp : rvLet C xs (some e) = (some e', C'))
+    {V : VEnv D} {st : EvmState} (hc : RvOk V st C)
+    {funs : FunEnv D} {res : Res D}
+    (h : Step D funs V st (.expr e') res) :
+    Step D funs V st (.expr e) res := by
+  have hcatch : (if rvNeutralExpr e = true then (some e, C.kill xs)
+        else ((some e : Option (Expr Op)), RvCache.empty)) = (some e', C') →
+      Step D funs V st (.expr e) res := by
+    intro hp'
+    split at hp' <;>
+      (injection hp' with h1 h2; injection h1 with h1; subst h1; exact h)
+  rcases xs with _ | ⟨x, _ | ⟨y, rest⟩⟩
+  · exact hcatch hp
+  · unfold rvLet at hp
+    injection hp with h1 h2
+    injection h1 with h1
+    have hkill : RvOk V st (C.kill [x]) := hc.kill [x] (fun _ _ => rfl)
+    have hrv : rvRhs (C.kill [x]) x e = (e', C') := by
+      rcases hq : rvRhs (C.kill [x]) x e with ⟨a, b⟩
+      rw [hq] at h1 h2
+      simp only at h1 h2
+      rw [h1, h2]
+    exact rvRhs_bwd_step hrv hkill h
+  · exact hcatch hp
 
 end YulEvmCompiler.Optimizer.ReuseValues
