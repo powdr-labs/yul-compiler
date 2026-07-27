@@ -201,4 +201,56 @@ theorem MvRel.setMany {x : Ident} {V₁ V₂ : VEnv D} (h : MvRel x V₁ V₂)
   | nil => exact h
   | cons p rest ih => exact ih (h.set p.1 p.2)
 
+/-! ### `restore` across the relation
+
+`restore outer inner` keeps `inner`'s last `outer.length` entries.  A cut at
+or above the moved region (both related environments share the newer segment)
+yields related results; a cut at or below the fixed base `B` yields *equal*
+results. -/
+
+/-- The workable form: exits whose moved region sits below the entry cut.
+`dA`/`dB` name the region lengths; the cut keeps at least the region. -/
+theorem restore_mvRel {x : Ident} {Ve₁ Ve₂ : VEnv D}
+    {C A B : VEnv D} {v : (evmWithExternal calls creates).Value}
+    (hA : ∀ p ∈ A, p.1 ≠ x)
+    (hentry_len : A.length + 1 + B.length ≤ Ve₁.length)
+    (hlen : Ve₁.length = Ve₂.length)
+    (hle₁ : Ve₁.length ≤ (C ++ (A ++ (x, v) :: B)).length) :
+    MvRel x (restore Ve₁ (C ++ (A ++ (x, v) :: B)))
+      (restore Ve₂ (C ++ ((x, v) :: (A ++ B)))) := by
+  unfold restore
+  have hlen₂ : (C ++ ((x, v) :: (A ++ B))).length =
+      (C ++ (A ++ (x, v) :: B)).length := by
+    simp [List.length_append]; omega
+  rw [hlen₂, ← hlen]
+  -- The drop count stays within `C`.
+  have hdrop : (C ++ (A ++ (x, v) :: B)).length - Ve₁.length ≤ C.length := by
+    simp only [List.length_append, List.length_cons] at hle₁ ⊢
+    omega
+  set k := (C ++ (A ++ (x, v) :: B)).length - Ve₁.length with hk
+  rw [List.drop_append_of_le_length (by omega),
+    List.drop_append_of_le_length (by omega)]
+  exact MvRel.mk (C.drop k) A B v hA
+
+/-- Dropping down to the last `n` entries ignores everything above the base. -/
+theorem drop_to_base (X B : VEnv D) {n : Nat} (h : n ≤ B.length) :
+    List.drop ((X ++ B).length - n) (X ++ B) = List.drop (B.length - n) B := by
+  have heq : (X ++ B).length - n = X.length + (B.length - n) := by
+    simp [List.length_append]; omega
+  rw [heq, List.drop_append]
+  rw [List.drop_eq_nil_of_le (Nat.le_add_right ..), List.nil_append]
+  congr 1
+  omega
+
+/-- Restoring to a base at or below `B` yields equal environments. -/
+theorem restore_mv_eq {x : Ident} {V₀ : VEnv D}
+    {C A B : VEnv D} {v : (evmWithExternal calls creates).Value}
+    (hbase : V₀.length ≤ B.length) :
+    restore V₀ (C ++ (A ++ (x, v) :: B)) =
+      restore V₀ (C ++ ((x, v) :: (A ++ B))) := by
+  unfold restore
+  rw [show C ++ (A ++ (x, v) :: B) = (C ++ A ++ [(x, v)]) ++ B from by simp,
+    show C ++ ((x, v) :: (A ++ B)) = (C ++ [(x, v)] ++ A) ++ B from by simp,
+    drop_to_base _ _ hbase, drop_to_base _ _ hbase]
+
 end YulEvmCompiler.Optimizer.FuseDeclAssign
