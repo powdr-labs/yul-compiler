@@ -1294,7 +1294,7 @@ theorem wordBytes_loadWord (mem : Nat → UInt8) (p : Nat) :
 
 /-- Bytes of `n` covered words. -/
 theorem readBytes_wordsBytes {mem : Nat → UInt8} : ∀ {ws : List U256} {a : Nat},
-    (∀ i (_ : i < ws.length), loadWord mem (a + 32 * i) = ws[i]) →
+    (∀ i (_ : i < ws.length), loadWord mem (a + 32 * i) = ws[i]!) →
     readBytes mem a (32 * ws.length) = wordsBytes ws
   | [], a, _ => by simp [readBytes, wordsBytes]
   | w :: ws, a, h => by
@@ -1318,5 +1318,342 @@ theorem readBytes_wordsBytes {mem : Nat → UInt8} : ∀ {ws : List U256} {a : N
           have := h (i + 1) (by simpa using Nat.succ_lt_succ hi)
           simpa [show a + 32 * (i + 1) = a + 32 + 32 * i from by ring]
             using this)
+
+/-! ### Coverage signatures denote the current covering words -/
+
+theorem SigDen.unique {V : VEnv D} : ∀ {sig : CellSig} {ws₁ ws₂ : List U256},
+    SigDen V sig ws₁ → SigDen V sig ws₂ → ws₁ = ws₂
+  | [], [], [], _, _ => rfl
+  | [], [], _ :: _, _, h => h.elim
+  | [], _ :: _, _, h, _ => h.elim
+  | (i, e) :: rest, w₁ :: t₁, w₂ :: t₂, h₁, h₂ => by
+      obtain ⟨he₁, ht₁⟩ := h₁
+      obtain ⟨he₂, ht₂⟩ := h₂
+      rw [he₁] at he₂
+      injection he₂ with hw
+      rw [hw, SigDen.unique ht₁ ht₂]
+  | (i, e) :: rest, [], _, h, _ => h.elim
+  | (i, e) :: rest, _ :: _, [], _, h => h.elim
+
+theorem SigDen.length {V : VEnv D} : ∀ {sig : CellSig} {ws : List U256},
+    SigDen V sig ws → ws.length = sig.length
+  | [], [], _ => rfl
+  | [], _ :: _, h => h.elim
+  | (i, e) :: rest, [], h => h.elim
+  | (i, e) :: rest, w :: t, h => by
+      simp [SigDen.length h.2]
+
+theorem coverageSig_go_den {C : RvCache} {V : VEnv D} {st : EvmState}
+    (hc : RvOk V st C) {base : Nat} : ∀ (n i : Nat) {sig : CellSig},
+    coverageSig.go C base n i = some sig →
+    sig.length = n ∧ ∃ ws, SigDen V sig ws ∧
+      ∀ j (_ : j < n), loadWord st.memory (base + 32 * (i + j)) = ws[j]!
+  | 0, i, sig, h => by
+      simp only [coverageSig.go, Option.some.injEq] at h
+      subst h
+      exact ⟨rfl, [], trivial, fun j hj => absurd hj (Nat.not_lt_zero j)⟩
+  | n + 1, i, sig, h => by
+      simp only [coverageSig.go, Option.bind_eq_bind,
+        Option.bind_eq_some_iff] at h
+      obtain ⟨v, hv, h⟩ := h
+      obtain ⟨rest, hrest, h⟩ := h
+      simp only [Option.pure_def, Option.some.injEq] at h
+      subst h
+      simp only [Option.map_eq_some_iff] at hv
+      obtain ⟨q, hq, hv⟩ := hv
+      have hqmem := List.mem_of_find?_eq_some hq
+      have hqkey : q.1 = base + 32 * i := by
+        have := List.find?_some hq
+        simpa using this
+      obtain ⟨hcell, -, -⟩ := hc.cells q hqmem
+      obtain ⟨hlen, ws, hws, hload⟩ := coverageSig_go_den hc n (i + 1) hrest
+      refine ⟨by simp [hlen], loadWord st.memory (base + 32 * i) :: ws,
+        ⟨?_, hws⟩, ?_⟩
+      · rw [hv, hqkey] at hcell
+        exact hcell
+      · intro j hj
+        cases j with
+        | zero => simp
+        | succ j =>
+            have := hload j (by omega)
+            simpa [show i + (j + 1) = i + 1 + j from by omega] using this
+
+/-- A successful coverage: the signature denotes the current covering
+words. -/
+theorem coverageSig_den {C : RvCache} {V : VEnv D} {st : EvmState}
+    (hc : RvOk V st C) {base size : Nat} {sig : CellSig}
+    (h : coverageSig C base size = some sig) :
+    size = 32 * sig.length ∧ size ≠ 0 ∧ ∃ ws, SigDen V sig ws ∧
+      ∀ j (_ : j < sig.length), loadWord st.memory (base + 32 * j) = ws[j]! := by
+  unfold coverageSig at h
+  split at h
+  · cases h
+  · next hsz =>
+      have hsz' : ¬(size == 0 || size % 32 != 0) = true := hsz
+      simp only [Bool.or_eq_true, beq_iff_eq, bne_iff_ne, ne_eq, not_or,
+        not_not] at hsz'
+      obtain ⟨hlen, ws, hws, hload⟩ := coverageSig_go_den hc _ 0 h
+      refine ⟨by omega, hsz'.1, ws, hws, ?_⟩
+      intro j hj
+      have := hload j (by omega)
+      simpa using this
+
+/-! ### Facts free of the binding target -/
+
+/-- No fact of `C` mentions `x`. -/
+structure XFree (x : Ident) (C : RvCache) : Prop where
+  aliases : ∀ p ∈ C.aliases, p.1 ≠ x ∧ p.2 ≠ x
+  cells : ∀ p ∈ C.cells, x ∉ exprVarsRv p.2
+  pures : ∀ p ∈ C.pures, p.2 ≠ x ∧ x ∉ exprVarsRv p.1
+  kecs : ∀ p ∈ C.kecs, p.2 ≠ x ∧ sigMentions x p.1.2.2 = false
+  slds : ∀ p ∈ C.slds, p.2 ≠ x ∧ x ∉ exprVarsRv p.1
+
+theorem XFree.kill (C : RvCache) (x : Ident) : XFree x (C.kill [x]) := by
+  constructor
+  · intro p hp
+    simp only [RvCache.kill, List.mem_filter, Bool.and_eq_true,
+      Bool.not_eq_true'] at hp
+    obtain ⟨-, h1, h2⟩ := hp
+    constructor
+    · intro hx; rw [hx] at h1; simp at h1
+    · intro hx; rw [hx] at h2; simp at h2
+  · intro p hp
+    simp only [RvCache.kill, List.mem_filter, Bool.not_eq_true'] at hp
+    exact fun hx => (not_any_vars hp.2 x hx) (by simp)
+  · intro p hp
+    simp only [RvCache.kill, List.mem_filter, Bool.and_eq_true,
+      Bool.not_eq_true'] at hp
+    obtain ⟨-, h1, h2⟩ := hp
+    refine ⟨?_, fun hx => (not_any_vars h2 x hx) (by simp)⟩
+    intro hx; rw [hx] at h1; simp at h1
+  · intro p hp
+    simp only [RvCache.kill, List.mem_filter, Bool.and_eq_true,
+      Bool.not_eq_true'] at hp
+    obtain ⟨-, h1, h2⟩ := hp
+    refine ⟨?_, ?_⟩
+    · intro hx; rw [hx] at h1; simp at h1
+    · have := List.any_eq_false.mp h2 x (by simp)
+      simpa using this
+  · intro p hp
+    simp only [RvCache.kill, List.mem_filter, Bool.and_eq_true,
+      Bool.not_eq_true'] at hp
+    obtain ⟨-, h1, h2⟩ := hp
+    refine ⟨?_, fun hx => (not_any_vars h2 x hx) (by simp)⟩
+    intro hx; rw [hx] at h1; simp at h1
+
+private theorem not_any_vars_kill {xs : List Ident} {vars : List Ident}
+    (h : ∀ z ∈ vars, z ∉ xs) : xs.any (vars.contains ·) = false := by
+  rw [List.any_eq_false]
+  intro z hz
+  simp only [List.contains_eq_mem, decide_eq_true_eq]
+  intro hmem
+  exact h z hmem hz
+
+/-- An `x`-free cache stays valid when only `x`'s binding changes. -/
+theorem RvOk.update_xfree {x : Ident} {C : RvCache} {V V' : VEnv D}
+    {st : EvmState} (hc : RvOk V st C) (hxf : XFree x C)
+    (hag : ∀ z, z ≠ x → VEnv.get V' z = VEnv.get V z) :
+    RvOk V' st C := by
+  constructor
+  · intro p hp
+    obtain ⟨v, h1, h2⟩ := hc.aliases p hp
+    obtain ⟨hx1, hx2⟩ := hxf.aliases p hp
+    exact ⟨v, by rw [hag p.1 hx1]; exact h1, by rw [hag p.2 hx2]; exact h2⟩
+  · intro p hp
+    obtain ⟨h1, h2, h3⟩ := hc.cells p hp
+    refine ⟨?_, h2, h3⟩
+    rw [evalPure_agree (fun z hz =>
+      hag z (fun hzx => hxf.cells p hp (hzx ▸ hz)))]
+    exact h1
+  · intro p hp
+    obtain ⟨w, h1, h2⟩ := hc.pures p hp
+    obtain ⟨hx1, hx2⟩ := hxf.pures p hp
+    refine ⟨w, ?_, by rw [hag p.2 hx1]; exact h2⟩
+    rw [evalPure_agree (fun z hz => hag z (fun hzx => hx2 (hzx ▸ hz)))]
+    exact h1
+  · intro p hp
+    obtain ⟨ws, h1, h2, h3⟩ := hc.kecs p hp
+    obtain ⟨hx1, hx2⟩ := hxf.kecs p hp
+    refine ⟨ws, ?_, by rw [hag p.2 hx1]; exact h2, h3⟩
+    refine SigDen.agree h1 (fun q hq z hz => hag z ?_)
+    intro hzx
+    subst hzx
+    simp only [sigMentions, List.any_eq_false] at hx2
+    have := hx2 q hq
+    simp [List.contains_eq_mem, hz] at this
+  · intro p hp
+    obtain ⟨k, h1, h2⟩ := hc.slds p hp
+    obtain ⟨hx1, hx2⟩ := hxf.slds p hp
+    refine ⟨k, ?_, by rw [hag p.2 hx1]; exact h2⟩
+    rw [evalPure_agree (fun z hz => hag z (fun hzx => hx2 (hzx ▸ hz)))]
+    exact h1
+
+/-- `get` after prepending one binding. -/
+theorem get_cons_ne {V : VEnv D} {x z : Ident}
+    {v : (evmWithExternal calls creates).Value} (h : z ≠ x) :
+    VEnv.get ((x, v) :: V) z = VEnv.get V z := by
+  unfold VEnv.get
+  rw [List.find?_cons_of_neg
+    (by simpa using fun hc : x = z => h hc.symm)]
+
+theorem get_cons_self {V : VEnv D} {x : Ident}
+    {v : (evmWithExternal calls creates).Value} :
+    VEnv.get ((x, v) :: V) x = some v := by
+  unfold VEnv.get
+  rw [List.find?_cons_of_pos (by simp)]
+  rfl
+
+theorem coverageSig_go_cells {C : RvCache} {base : Nat} :
+    ∀ (n i : Nat) {sig : CellSig},
+    coverageSig.go C base n i = some sig →
+    ∀ q ∈ sig, ∃ p ∈ C.cells, q.2 = p.2
+  | 0, i, sig, h => by
+      simp only [coverageSig.go, Option.some.injEq] at h
+      subst h
+      intro q hq
+      simp at hq
+  | n + 1, i, sig, h => by
+      simp only [coverageSig.go, Option.bind_eq_bind,
+        Option.bind_eq_some_iff] at h
+      obtain ⟨v, hv, h⟩ := h
+      obtain ⟨rest, hrest, h⟩ := h
+      simp only [Option.pure_def, Option.some.injEq] at h
+      subst h
+      simp only [Option.map_eq_some_iff] at hv
+      obtain ⟨q₀, hq₀, hv⟩ := hv
+      intro q hq
+      rcases List.mem_cons.mp hq with rfl | hq'
+      · exact ⟨q₀, List.mem_of_find?_eq_some hq₀, hv.symm⟩
+      · exact coverageSig_go_cells n (i + 1) hrest q hq'
+
+/-- A coverage signature of an `x`-free cache never mentions `x`. -/
+theorem coverageSig_xfree {x : Ident} {C : RvCache} (hxf : XFree x C)
+    {base size : Nat} {sig : CellSig}
+    (h : coverageSig C base size = some sig) :
+    sigMentions x sig = false := by
+  unfold coverageSig at h
+  split at h
+  · cases h
+  · simp only [sigMentions, List.any_eq_false]
+    intro q hq
+    obtain ⟨p, hp, hqe⟩ := coverageSig_go_cells _ 0 h q hq
+    simp only [List.contains_eq_mem, decide_eq_true_eq]
+    rw [hqe]
+    exact fun hmem => hxf.cells p hp hmem
+
+theorem canonVar_ne {x : Ident} {C : RvCache} (hxf : XFree x C)
+    {y : Ident} (hy : y ≠ x) : canonVar C y ≠ x := by
+  unfold canonVar
+  cases hf : C.aliases.find? (fun p => p.1 = y) with
+  | none => simpa using hy
+  | some p =>
+      simp only [Option.map_some, Option.getD_some]
+      exact (hxf.aliases p (List.mem_of_find?_eq_some hf)).2
+
+/-! ### Classifier inversions -/
+
+theorem keccakLits_inv {e : Expr Op} {a b : Nat}
+    (h : keccakLits e = some (a, b)) :
+    e = .builtin .keccak256 [.lit (.number a), .lit (.number b)] ∧
+      a + b ≤ 2 ^ 256 ∧ b < 2 ^ 256 := by
+  unfold keccakLits at h
+  split at h
+  · next a' b' =>
+      split at h
+      · next hb =>
+          injection h with h
+          injection h with h1 h2
+          subst h1; subst h2
+          exact ⟨rfl, hb.1, hb.2⟩
+      · cases h
+  · cases h
+
+theorem sloadArg_inv {e : Expr Op} {k : Expr Op}
+    (h : sloadArg e = some k) : e = .builtin .sload [k] := by
+  unfold sloadArg at h
+  split at h
+  · injection h with h
+    rw [h]
+  · cases h
+
+theorem mloadLit_inv {e : Expr Op} {k : Nat} (h : mloadLit e = some k) :
+    e = .builtin .mload [.lit (.number k)] ∧ k + 32 ≤ 2 ^ 256 := by
+  unfold mloadLit at h
+  split at h
+  · next k' =>
+      split at h
+      · next hb =>
+          injection h with h
+          subst h
+          exact ⟨rfl, hb⟩
+      · cases h
+  · cases h
+
+theorem mstoreLit_inv {e : Expr Op} {k : Nat} {v : Expr Op}
+    (h : mstoreLit e = some (k, v)) :
+    e = .builtin .mstore [.lit (.number k), v] ∧ k + 32 ≤ 2 ^ 256 := by
+  unfold mstoreLit at h
+  split at h
+  · next k' v' =>
+      split at h
+      · next hb =>
+          injection h with h
+          injection h with h1 h2
+          subst h1; subst h2
+          exact ⟨rfl, hb⟩
+      · cases h
+  · cases h
+
+theorem canonPure_go {C : RvCache} {e ce : Expr Op}
+    (h : canonPure C e = some ce) : canonPureGo C e = some ce := by
+  unfold canonPure at h
+  split at h
+  · cases h
+  · exact h
+
+/-- Construction: `keccak256` over in-range literals always evaluates. -/
+theorem keccak_lit_eval {a b : Nat} (ha : a < 2 ^ 256) (hb : b < 2 ^ 256)
+    (funs : FunEnv D) (V : VEnv D) (st : EvmState) :
+    Step D funs V st
+      (.expr (.builtin .keccak256 [.lit (.number a), .lit (.number b)]))
+      (.eres (.vals [st.env.keccakOf (readBytes st.memory a b)]
+        (touchMemory st a b))) := by
+  have hta : (Dialect.litValue D (.number a)).toNat = a := by
+    show (BitVec.ofNat 256 a).toNat = a
+    rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt ha]
+  have htb : (Dialect.litValue D (.number b)).toNat = b := by
+    show (BitVec.ofNat 256 b).toNat = b
+    rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt hb]
+  refine Step.builtinOk (Step.argsCons (Step.argsCons Step.argsNil Step.lit)
+    Step.lit) ?_
+  show stepOp _ _ _ = _
+  simp only [stepOp]
+  rw [hta, htb]
+
+/-- Construction: `mload` over an in-range literal always evaluates. -/
+theorem mload_lit_eval {k : Nat} (hk : k < 2 ^ 256)
+    (funs : FunEnv D) (V : VEnv D) (st : EvmState) :
+    Step D funs V st (.expr (.builtin .mload [.lit (.number k)]))
+      (.eres (.vals [loadWord st.memory k] (touchMemory st k 32))) := by
+  have htk : (Dialect.litValue D (.number k)).toNat = k := by
+    show (BitVec.ofNat 256 k).toNat = k
+    rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt hk]
+  refine Step.builtinOk (Step.argsCons Step.argsNil Step.lit) ?_
+  show stepOp _ _ _ = _
+  simp only [stepOp]
+  rw [htk]
+
+/-- Construction: `sload` over an evaluating key. -/
+theorem sload_eval {k : Expr Op} {kv : U256}
+    (hk : ∀ (funs : FunEnv D) (st : EvmState) (V : VEnv D),
+      evalPure V k = some kv →
+      Step D funs V st (.expr k) (.eres (.vals [kv] st)))
+    {V : VEnv D} (hkv : evalPure V k = some kv)
+    (funs : FunEnv D) (st : EvmState) :
+    Step D funs V st (.expr (.builtin .sload [k]))
+      (.eres (.vals [st.storage kv] st)) := by
+  refine Step.builtinOk (Step.argsCons Step.argsNil (hk funs st V hkv)) ?_
+  show stepOp _ _ _ = _
+  simp only [stepOp]
 
 end YulEvmCompiler.Optimizer.ReuseValues

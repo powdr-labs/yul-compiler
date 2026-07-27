@@ -205,7 +205,7 @@ where
 semantic (`toNat`-of-`litValue`) addresses. -/
 def keccakLits : Expr Op → Option (Nat × Nat)
   | .builtin .keccak256 [.lit (.number a), .lit (.number b)] =>
-      if a + b ≤ 2 ^ 256 then some (a, b) else none
+      if a + b ≤ 2 ^ 256 ∧ b < 2 ^ 256 then some (a, b) else none
   | _ => none
 
 def sloadArg : Expr Op → Option (Expr Op)
@@ -274,7 +274,9 @@ def rvRhs (C : RvCache) (x : Ident) (e : Expr Op) : Expr Op × RvCache :=
                     -- record a key whose `x` re-reads the *new* binding.
                     if (exprVarsRv ck).contains x then (e, C)
                     else (e, { C with slds := (ck, x) :: C.slds }))
-           | none => (e, C))
+           | none =>
+               -- A non-canonicalizable key may hide arbitrary effects.
+               if rvNeutralExpr e then (e, C) else (e, RvCache.empty))
       | none =>
         match mloadLit e with
         | some k =>
