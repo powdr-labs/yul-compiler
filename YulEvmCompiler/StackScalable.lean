@@ -939,4 +939,102 @@ theorem checkCert_run_bound {prog : List Asm} {d : CertData} (h : checkCert prog
   obtain ⟨hV, hb, h0fl, h0fb, R, h0rl⟩ := checkCert_sound h
   exact run_stack_bound2 hV hb h0fl h0fb h0rl yst
 
+/-! ### The untrusted frame-relative solver
+
+Produces a `CertData` by a single forward layout pass. Being untrusted, its only job is to make
+`checkCert` pass for overflow-free programs; a wrong output is simply rejected by the verifier. It is
+linear: frame layouts (`fl`/`rl`) are context-insensitive, so each position is explored once (a
+call explores the callee body *and* the caller's own continuation directly — no call stack), and
+`fbMax` is raised to the max base over call sites via re-exploration bounded by the 1023 cap. -/
+
+/-- Labels used as `pushLabel` targets — the return addresses. -/
+def pushLabelled (prog : List Asm) : List Label :=
+  prog.filterMap (fun x => match x with | .pushLabel l => some l | _ => none)
+
+def isHaltingOp : Op → Bool
+  | .stop | .ret | .revert | .invalid | .selfdestruct => true | _ => false
+
+/-- Count the `retRot` swaps immediately preceding a function's `dynJump` = its return-value count. -/
+def retCount : List Asm → Nat → Nat
+  | [], run => run
+  | .dynJump :: _, run => run
+  | .swap _ :: rest, run => retCount rest (run + 1)
+  | _ :: rest, _ => retCount rest 0
+
+abbrev AState := List Asm × FLayout × Nat × FLayout
+
+/-- Forward successors of one abstract state (mirrors `frameStep` in the forward direction). -/
+def stepSuccs (prog : List Asm) (pls : List Label) : List Asm → FLayout → Nat → FLayout →
+    Option (List AState)
+  | [], _, _, _ => some []
+  | i :: c, fl, base, rl =>
+    match i with
+    | .push _ => some [(c, .word :: fl, base, rl)]
+    | .dup n => match fl[n.val]? with | some sl => some [(c, sl :: fl, base, rl)] | none => none
+    | .pop => match fl with | .word :: fl' => some [(c, fl', base, rl)] | _ => none
+    | .swap n => match fl with
+        | sx :: rest => match rest.drop n.val with
+            | sy :: rst => some [(c, sy :: (rest.take n.val ++ sx :: rst), base, rl)]
+            | [] => none
+        | [] => none
+    | .label _ => some [(c, fl, base, rl)]
+    | .pushLabel l => some [(c, .retTo l :: fl, base, rl)]
+    | .op yop => if isHaltingOp yop then some [] else
+        match opTable yop with
+        | some o => some [(c, List.replicate o.pushArity .word ++ fl.drop o.popArity, base, rl)]
+        | none => none
+    | .jumpi l => match findLabel l prog with
+        | some t => match fl with
+            | .word :: fl' => some [(t, fl', base, rl), (c, fl', base, rl)]
+            | _ => none
+        | none => none
+    | .jump l => match findLabel l prog with
+        | some t => match c with
+            | .label Lret :: c' =>
+                if pls.contains Lret then
+                  match splitSetup Lret fl with
+                  | some (Sw, Smid) =>
+                      let k := retCount t 0
+                      some [(t, Sw ++ [.ret], base + Smid.length, List.replicate k .word),
+                            (c', List.replicate k .word ++ Smid, base, rl)]
+                  | none => none
+                else some [(t, fl, base, rl)]
+            | _ => some [(t, fl, base, rl)]
+        | none => none
+    | .dynJump => some []
+
+partial def analyzeGo (prog : List Asm) (pls : List Label) :
+    Nat → List AState → List AState → Option (List AState)
+  | 0, _, _ => none
+  | _, [], acc => some acc
+  | fuel+1, (pos, fl, base, rl) :: rest, acc =>
+    if 1023 < base then none else
+    match acc.find? (fun e => decide (e.1 = pos)) with
+    | some e =>
+        if fl = e.2.1 then
+          if base ≤ e.2.2.1 then analyzeGo prog pls fuel rest acc
+          else match stepSuccs prog pls pos fl base rl with
+               | some succs =>
+                   analyzeGo prog pls fuel (succs ++ rest)
+                     (acc.map (fun x => if decide (x.1 = pos) then (pos, fl, base, rl) else x))
+               | none => none
+        else none
+    | none => match stepSuccs prog pls pos fl base rl with
+              | some succs => analyzeGo prog pls fuel (succs ++ rest) ((pos, fl, base, rl) :: acc)
+              | none => none
+
+/-- The solver: analyse from the program entry (empty frame, base 0, `main`'s return layout `[]`). -/
+def analyze (prog : List Asm) : CertData :=
+  match analyzeGo prog (pushLabelled prog) 2000000 [(prog, [], 0, [])] [] with
+  | some acc => ⟨acc⟩
+  | none => ⟨[]⟩
+
+/-- The `compile`-facing gate: analyse then verify. -/
+def stackOK2 (prog : List Asm) : Bool := checkCert prog (analyze prog)
+
+/-- **`stackOK2` is sound**: passing it guarantees no stack overflow. -/
+theorem stackOK2_run_bound {prog : List Asm} (h : stackOK2 prog = true) (yst : EvmState) :
+    ∀ mid, ASteps (model := model) prog ⟨prog, [], yst⟩ mid → mid.stk.length ≤ 1023 :=
+  checkCert_run_bound h yst
+
 end YulEvmCompiler
