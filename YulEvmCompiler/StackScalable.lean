@@ -51,7 +51,9 @@ def frameStep (prog : List Asm) (C : Cert) : Asm → List Asm → StkLayout → 
   | .pop,         c, S, F => ∃ S', S = .word :: S' ∧ C.fl c = some S' ∧ C.fbMax c = some F
   | .swap _,      c, S, F => C.fl c = some S ∧ C.fbMax c = some F  -- WIP
   | .label _,     c, S, F => C.fl c = some S ∧ C.fbMax c = some F
-  | .op _,        c, S, F => C.fl c = some S ∧ C.fbMax c = some F  -- WIP
+  | .op yop,      c, S, F => ∃ o, opTable yop = some o ∧ Operation.popArity o ≤ S.length ∧
+      C.fl c = some (List.replicate (Operation.pushArity o) Slot.word ++ S.drop (Operation.popArity o))
+      ∧ C.fbMax c = some F
   | .jump l,      _, S, F => (∃ t, findLabel l prog = some t ∧ C.fl t = some S ∧ C.fbMax t = some F)
       ∨ True  -- WIP: the call case
   | .jumpi l,     c, S, F => ∃ S', S = .word :: S' ∧
@@ -165,11 +167,55 @@ theorem GoodStack.shrinkWord {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S
           | inl he => exact absurd he (by simp)
           | inr hm2 => exact hm2
 
+/-- Replacing the top `p` word-args of the current frame by `q` word-results (`op`). -/
+theorem GoodStack.opFrame {prog C} {args rets : List U256} {σ : List AVal} {c₀ c₁ : List Asm}
+    {S : StkLayout} {p q : Nat}
+    (h : GoodStack prog C (words args ++ σ) c₀) (h0 : C.fl c₀ = some S)
+    (hp : p ≤ S.length) (hargs : args.length = p) (hrets : rets.length = q)
+    (h1 : C.fl c₁ = some (List.replicate q Slot.word ++ S.drop p))
+    (hfb : C.fbMax c₁ = C.fbMax c₀) : GoodStack prog C (words rets ++ σ) c₁ := by
+  cases h with
+  | @root vσ c S' hfl hfb0 hm =>
+      obtain rfl := Option.some.inj (h0 ▸ hfl)
+      obtain ⟨Sargs, Sσ, rfl, hMargs, hMσ⟩ := hm.append_inv
+      have hSalen : Sargs.length = p := by rw [← hMargs.length_eq, words_length, hargs]
+      have hdrop : (Sargs ++ Sσ).drop p = Sσ := by
+        rw [← hSalen, List.drop_left]
+      refine .root h1 (by rw [hfb, hfb0]) ?_
+      rw [hdrop, ← hrets]
+      exact (StkMatch.replicate_word rets).append hMσ
+  | @call stk frame rest c cPre S' F lRet hfl hfb0 hm hmem hle hcaller heq =>
+      obtain rfl := Option.some.inj (h0 ▸ hfl)
+      have hfrlen : frame.length = S.length := hm.length_eq
+      have hple : args.length ≤ frame.length := by rw [hfrlen, hargs]; exact hp
+      -- split the frame at the args
+      have hwa : words args = frame.take args.length := by
+        have := congrArg (List.take args.length) heq
+        rwa [List.take_left' (by rw [words_length]), List.take_append_of_le_length hple] at this
+      have hσ : σ = frame.drop args.length ++ rest := by
+        have := congrArg (List.drop args.length) heq
+        rwa [List.drop_left' (by rw [words_length]), List.drop_append_of_le_length hple] at this
+      -- frame = words args ++ frame.drop args.length
+      have hframe : frame = words args ++ frame.drop args.length := by
+        rw [hwa]; exact (List.take_append_drop args.length frame).symm
+      rw [hframe] at hm
+      obtain ⟨Sa, Sf, hSeq, hMa, hMf⟩ := hm.append_inv
+      have hSalen : Sa.length = p := by rw [← hMa.length_eq, words_length, hargs]
+      have hSdrop : S.drop p = Sf := by rw [hSeq, ← hSalen, List.drop_left]
+      refine .call (lRet := lRet) (frame := words rets ++ frame.drop args.length) h1
+        (by rw [hfb, hfb0]) ?_ ?_ hle hcaller ?_
+      · rw [hSdrop, ← hrets]; exact (StkMatch.replicate_word rets).append hMf
+      · -- return address ∈ words rets ++ frame.drop args.length
+        rw [hframe] at hmem
+        cases (List.mem_append.mp hmem) with
+        | inl hin => exact absurd hin (by simp [words])
+        | inr hin => exact List.mem_append.mpr (Or.inr hin)
+      · rw [hσ, ← List.append_assoc]
+
 variable [model : ExternalModel]
 
 set_option warningAsError false in
-/-- **Preservation** (WIP). Intra-frame cases proven; `dup`/`swap`/`op`/`jumpi`/`call`/`dynJump`
-remain (`sorry`). -/
+/-- **Preservation** (WIP). Intra-frame + `op` cases proven; `dup`/`swap`/`call`/`dynJump` remain. -/
 theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
     {a b : AConf} (hstep : AStep (model := model) prog a b) (hsuf : a.code <:+ prog)
     (hinv : GoodStack prog C a.stk a.code) :
@@ -214,7 +260,11 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
       obtain ⟨S', hSeq, _, hflc, hfbc⟩ := hV _ c S F hfl hfb
       subst hSeq
       exact hinv.shrinkWord hfl hflc (by rw [hfbc, hfb])
-  | @op yop args rets c σ yst yst' hstepOp => sorry
+  | @op yop args rets c σ yst yst' hstepOp =>
+      obtain ⟨S, F, hfl, hfb⟩ := hinv.certAt
+      obtain ⟨o, hop, hple, hflc, hfbc⟩ := hV _ c S F hfl hfb
+      obtain ⟨hargs, hrets⟩ := builtin_arity hop hstepOp
+      exact hinv.opFrame hfl hple hargs hrets hflc (by rw [hfbc, hfb])
   | @dynJump l c c' σ yst hfind => sorry
 
 /-- **The invariant holds at every reachable configuration.** -/
