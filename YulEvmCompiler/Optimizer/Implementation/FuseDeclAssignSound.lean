@@ -1311,4 +1311,119 @@ theorem sink_site_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
             obtain ⟨A, B, _, _, hBd⟩ := hinsm
             omega))⟩
 
+/-- Inversion for a singleton `let` with initializer. -/
+theorem letSome_inv {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {x : Ident} {e : Expr Op} {V' : VEnv D} {st' : EvmState} {o : Outcome}
+    (h : Step D funs V st (.stmt (.letDecl [x] (some e))) (.sres V' st' o)) :
+    (∃ val, Step D funs V st (.expr e) (.eres (.vals [val] st')) ∧
+      V' = (x, val) :: V ∧ o = .normal) ∨
+    (Step D funs V st (.expr e) (.eres (.halt st')) ∧ V' = V ∧ o = .halt) := by
+  cases h with
+  | @letVal _ _ _ _ _ vals _ hev hlen =>
+      obtain ⟨val, rfl⟩ : ∃ v, vals = [v] := by
+        cases vals with
+        | nil => simp at hlen
+        | cons a t =>
+            cases t with
+            | nil => exact ⟨a, rfl⟩
+            | cons b t2 => simp at hlen
+      exact Or.inl ⟨val, hev, by simp, rfl⟩
+  | letHalt hev => exact Or.inr ⟨hev, rfl, rfl⟩
+
+set_option maxHeartbeats 1600000 in
+/-- **The sink site, backward**: a run of the rewritten
+`mid; let x := e; tail` yields a run of the original
+`let x; mid; x := e; tail`, with the same fuse-primitive difference. -/
+theorem sink_site_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {x : Ident} {mid tail : List (Stmt Op)} {e : Expr Op}
+    (hmid : ∀ s ∈ mid, mentionsStmt x s = false)
+    (he : mentionsExpr x e = false)
+    {V₂ : VEnv D} {st₁ : EvmState} {o : Outcome}
+    (h : Step D funs V st
+      (.stmts (mid ++ .letDecl [x] (some e) :: tail)) (.sres V₂ st₁ o)) :
+    ∃ V₁, Step D funs V st
+      (.stmts (.letDecl [x] none :: (mid ++ .assign [x] e :: tail)))
+      (.sres V₁ st₁ o) ∧
+      FuseChain V.length V₁ V₂ := by
+  have hmidM : codeMentions x (.stmts mid) = false := by
+    show stmtsMentions x mid = false
+    exact mentionsStmts_bridge (mentionsStmts_of_forall (fun s hs => hmid s hs))
+  have heM : exprMentions x e = false := mentionsExpr_bridge he
+  have hins0 : InsAt V.length x (evmWithExternal calls creates).zero
+      V ((x, (evmWithExternal calls creates).zero) :: V) :=
+    ⟨[], V, rfl, rfl, rfl⟩
+  rcases stmts_append_fwd h with
+    ⟨Vm₂, stm, hmidrun, hrest⟩ | ⟨hno, hmidrun⟩
+  · -- `mid` completed normally on the target side.
+    obtain ⟨resm, hmid₁, hrelm⟩ := frameAdd hmidrun hins0 hmidM
+    obtain ⟨Vm₁, hresm, hinsm⟩ := ResRelAt.sres hrelm
+    subst hresm
+    obtain ⟨A, B, rfl, rfl, hBd⟩ := hinsm
+    have hxA : ∀ p ∈ A, p.1 ≠ x :=
+      above_x_free hmidrun hmidM hBd
+    have hAfind : A.find? (fun p => p.1 = x) = none := by
+      rw [List.find?_eq_none]
+      intro p hp
+      simp [hxA p hp]
+    cases hrest with
+    | seqCons ha htail =>
+        rcases letSome_inv ha with ⟨val, hev, rfl, -⟩ | ⟨-, -, hno⟩
+        · -- Evaluate `e` on the source side (with the inserted binding).
+          obtain ⟨rese, hev₁, hrele⟩ := frameAdd hev
+            ⟨A, B, rfl, rfl, hBd⟩ (by simpa [codeMentions] using heM)
+          have hrese := ResRelAt.eres hrele
+          subst hrese
+          -- The source assignment hits the inserted binding.
+          have hsrcset : VEnv.set
+              (A ++ (x, (evmWithExternal calls creates).zero) :: B)
+              x val = A ++ (x, val) :: B := by
+            rw [set_append_of_none hAfind]
+            congr 1
+            simp [VEnv.set]
+          have hmv : MvRel x A.length V.length
+              ([] ++ (A ++ (x, val) :: B))
+              ([] ++ ((x, val) :: (A ++ B))) :=
+            MvRel.mk [] A B val hxA rfl hBd
+          simp only [List.nil_append] at hmv
+          obtain ⟨rest₁, htail₁, hrelt⟩ := Step.mv_congr_bwd htail hmv
+          obtain ⟨V₁, hres₁, hrelV⟩ := hrelt.sres_inv_right
+          subst hres₁
+          refine ⟨V₁, ?_, FuseChain.single (.mv hrelV (by omega))⟩
+          refine Step.seqCons Step.letZero ?_
+          show Step D funs ((x, (evmWithExternal calls creates).zero) :: V)
+            st (.stmts (mid ++ .assign [x] e :: tail)) _
+          refine stmts_append_normal hmid₁ ?_
+          refine Step.seqCons ?_ htail₁
+          have := Step.assignVal (vars := [x]) hev₁ (by simp)
+          rwa [show VEnv.setMany
+            (A ++ (x, (evmWithExternal calls creates).zero) :: B) [x] [val] =
+            A ++ (x, val) :: B from hsrcset] at this
+        · exact absurd hno.symm (by simp)
+    | seqStop ha hne =>
+        rcases letSome_inv ha with ⟨val, hev, rfl, hno⟩ | ⟨hev, rfl, rfl⟩
+        · exact absurd hno hne
+        · obtain ⟨rese, hev₁, hrele⟩ := frameAdd hev
+            ⟨A, B, rfl, rfl, hBd⟩ (by simpa [codeMentions] using heM)
+          have hrese := ResRelAt.eres hrele
+          subst hrese
+          refine ⟨A ++ (x, (evmWithExternal calls creates).zero) :: B, ?_,
+            FuseChain.single (.ins ⟨A, B, rfl, rfl, hBd⟩ (by omega))⟩
+          refine Step.seqCons Step.letZero ?_
+          show Step D funs ((x, (evmWithExternal calls creates).zero) :: V)
+            st (.stmts (mid ++ .assign [x] e :: tail)) _
+          refine stmts_append_normal hmid₁ ?_
+          exact Step.seqStop (Step.assignHalt (vars := [x]) hev₁)
+            (by intro hc; cases hc)
+  · -- `mid` stopped early on the target side.
+    obtain ⟨resm, hmid₁, hrelm⟩ := frameAdd hmidrun hins0 hmidM
+    obtain ⟨V₁, hresm, hinsm⟩ := ResRelAt.sres hrelm
+    subst hresm
+    refine ⟨V₁, ?_, FuseChain.single (.ins hinsm (by
+      obtain ⟨A, B, _, _, hBd⟩ := hinsm
+      omega))⟩
+    refine Step.seqCons Step.letZero ?_
+    show Step D funs ((x, (evmWithExternal calls creates).zero) :: V)
+      st (.stmts (mid ++ .assign [x] e :: tail)) _
+    exact stmts_append_early hmid₁ hno
+
 end YulEvmCompiler.Optimizer.FuseDeclAssign
