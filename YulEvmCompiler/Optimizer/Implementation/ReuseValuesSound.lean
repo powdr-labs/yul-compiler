@@ -1104,4 +1104,219 @@ theorem sstore_neutral_inv {args : List (Expr Op)}
   | builtinHalt hargs hop => exact Or.inr ⟨_, rfl⟩
   | builtinArgsHalt hargs => exact Or.inr ⟨_, rfl⟩
 
+/-! ### Word/byte decomposition — the keccak content keystone
+
+Equal covering words force equal byte ranges, so a hash keyed by cell
+content replays exactly. The BitVec fold lemmas mirror (private) proofs in
+`MemorySpillStateSound`. -/
+
+private theorem bitvec_fold_eq (l : List UInt8) :
+    ∀ acc : BitVec 256, l.length ≤ 32 → acc.toNat < 256 ^ (32 - l.length) →
+      (l.foldl (fun (acc : BitVec 256) b =>
+          (acc <<< (8 : Nat)) ||| BitVec.ofNat 256 b.toNat) acc).toNat
+        = l.foldl (fun (acc : Nat) b => acc * 256 + b.toNat) acc.toNat := by
+  induction l with
+  | nil => intro acc _ _; rfl
+  | cons b l ih =>
+    intro acc hlen hacc
+    simp only [List.length_cons] at hlen hacc
+    have hb : b.toNat < 256 := b.toNat_lt
+    have hpowle : 256 ^ (32 - (l.length + 1)) * 256 ≤ 256 ^ (32 - l.length) := by
+      rw [← Nat.pow_succ]
+      exact Nat.pow_le_pow_right (by omega) (by omega)
+    have hmul_lt : acc.toNat * 256 + b.toNat < 2 ^ 256 := by
+      have h1 : acc.toNat * 256 + b.toNat < (acc.toNat + 1) * 256 := by omega
+      have h2 : (acc.toNat + 1) * 256 ≤ 256 ^ (32 - (l.length + 1)) * 256 :=
+        Nat.mul_le_mul_right 256 hacc
+      have hpow : (256 : Nat) ^ (32 - l.length) ≤ 256 ^ 32 :=
+        Nat.pow_le_pow_right (by omega) (by omega)
+      have h32 : (256 : Nat) ^ 32 = 2 ^ 256 := by
+        calc (256 : Nat) ^ 32 = (2 ^ 8) ^ 32 := by norm_num
+          _ = 2 ^ (8 * 32) := (Nat.pow_mul 2 8 32).symm
+          _ = 2 ^ 256 := by norm_num
+      omega
+    have hstep : ((acc <<< (8 : Nat)) ||| BitVec.ofNat 256 b.toNat).toNat
+        = acc.toNat * 256 + b.toNat := by
+      have h256 : acc.toNat * 2 ^ 8 = acc.toNat * 256 := by norm_num
+      rw [BitVec.toNat_or, BitVec.toNat_shiftLeft, BitVec.toNat_ofNat]
+      rw [Nat.shiftLeft_eq]
+      rw [Nat.mod_eq_of_lt (show b.toNat < 2 ^ 256 from by omega)]
+      rw [Nat.mod_eq_of_lt (show acc.toNat * 2 ^ 8 < 2 ^ 256 from by
+        rw [h256]
+        exact lt_of_le_of_lt (Nat.le_add_right _ _) hmul_lt)]
+      rw [h256, Nat.mul_comm acc.toNat 256]
+      show 2 ^ 8 * acc.toNat ||| b.toNat = 2 ^ 8 * acc.toNat + b.toNat
+      exact (Nat.two_pow_add_eq_or_of_lt (show b.toNat < 2 ^ 8 from by omega)
+        acc.toNat).symm
+    show (l.foldl _ ((acc <<< (8 : Nat)) ||| BitVec.ofNat 256 b.toNat)).toNat = _
+    rw [ih _ (by omega) (by
+      rw [hstep]
+      have h1 : acc.toNat * 256 + b.toNat < (acc.toNat + 1) * 256 := by omega
+      have h2 : (acc.toNat + 1) * 256 ≤ 256 ^ (32 - (l.length + 1)) * 256 :=
+        Nat.mul_le_mul_right 256 hacc
+      omega)]
+    rw [hstep, List.foldl_cons]
+
+private theorem byteAt_eq' (value : U256) (i : Nat) :
+    byteAt value i = UInt8.ofNat (value.toNat / 256 ^ i % 256) := by
+  unfold byteAt
+  rw [BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow,
+    show (2 : Nat) ^ (8 * i) = 256 ^ i from by rw [pow_mul]; norm_num,
+    UInt8.ofNat_mod_size']
+
+private theorem decode_prefix' (value : U256) : ∀ n, n ≤ 32 →
+    ((List.range n).map (fun i => byteAt value (31 - i))).foldl
+        (fun acc b => acc * 256 + b.toNat) 0 =
+      value.toNat / 256 ^ (32 - n) := by
+  intro n hn
+  induction n with
+  | zero =>
+    simp
+    symm
+    apply Nat.div_eq_of_lt
+    simpa [show (256 : Nat) = 2 ^ 8 by norm_num, ← Nat.pow_mul] using value.isLt
+  | succ n ih =>
+    rw [List.range_succ, List.map_append, List.foldl_append]
+    simp only [List.map_cons, List.map_nil, List.foldl_cons, List.foldl_nil]
+    rw [ih (by omega), byteAt_eq']
+    rw [UInt8.toNat_ofNat', Nat.mod_eq_of_lt (Nat.mod_lt _ (by norm_num))]
+    have hsub : 31 - n = 32 - (n + 1) := by omega
+    rw [hsub]
+    have hpow : 256 ^ (32 - n) = 256 ^ (32 - (n + 1)) * 256 := by
+      rw [← Nat.pow_succ]
+      congr 1
+      omega
+    rw [hpow, ← Nat.div_div_eq_div_mul]
+    have hdiv := Nat.mod_add_div
+      (value.toNat / 256 ^ (32 - (n + 1))) 256
+    omega
+
+/-- The Nat byte fold, from an arbitrary accumulator. -/
+private theorem natFold_from (bs : List UInt8) : ∀ acc : Nat,
+    bs.foldl (fun acc b => acc * 256 + b.toNat) acc =
+      acc * 256 ^ bs.length +
+        bs.foldl (fun acc b => acc * 256 + b.toNat) 0 := by
+  induction bs with
+  | nil => intro acc; simp
+  | cons b bs ih =>
+      intro acc
+      simp only [List.foldl_cons, List.length_cons, Nat.zero_mul,
+        Nat.zero_add]
+      rw [ih (acc * 256 + b.toNat), ih b.toNat]
+      ring
+
+private theorem natFold_lt (bs : List UInt8) :
+    bs.foldl (fun acc b => acc * 256 + b.toNat) 0 < 256 ^ bs.length := by
+  induction bs with
+  | nil => simp
+  | cons b bs ih =>
+      simp only [List.foldl_cons, List.length_cons, Nat.zero_mul, Nat.zero_add]
+      rw [natFold_from]
+      have hb : b.toNat ≤ 255 := by
+        have := b.toNat_lt
+        omega
+      calc b.toNat * 256 ^ bs.length +
+            bs.foldl (fun acc b => acc * 256 + b.toNat) 0
+          ≤ 255 * 256 ^ bs.length +
+            bs.foldl (fun acc b => acc * 256 + b.toNat) 0 :=
+            Nat.add_le_add_right (Nat.mul_le_mul_right _ hb) _
+        _ < 255 * 256 ^ bs.length + 256 ^ bs.length :=
+            Nat.add_lt_add_left ih _
+        _ = 256 ^ (bs.length + 1) := by
+            rw [Nat.pow_succ]
+            ring
+
+private theorem natFold_inj : ∀ (bs₁ bs₂ : List UInt8),
+    bs₁.length = bs₂.length →
+    bs₁.foldl (fun acc b => acc * 256 + b.toNat) 0 =
+      bs₂.foldl (fun acc b => acc * 256 + b.toNat) 0 →
+    bs₁ = bs₂
+  | [], [], _, _ => rfl
+  | [], b :: bs, hlen, _ => by simp at hlen
+  | b :: bs, [], hlen, _ => by simp at hlen
+  | b₁ :: t₁, b₂ :: t₂, hlen, heq => by
+      simp only [List.length_cons, Nat.add_right_cancel_iff] at hlen
+      simp only [List.foldl_cons, Nat.zero_mul, Nat.zero_add] at heq
+      rw [natFold_from t₁, natFold_from t₂, hlen] at heq
+      have h₁ := natFold_lt t₁
+      have h₂ := natFold_lt t₂
+      rw [hlen] at h₁
+      have hpos : 0 < (256 : Nat) ^ t₂.length :=
+        Nat.pow_pos (by omega)
+      have hb : b₁.toNat = b₂.toNat := by
+        have e₁ : (b₁.toNat * 256 ^ t₂.length +
+            t₁.foldl (fun acc b => acc * 256 + b.toNat) 0) / 256 ^ t₂.length
+            = b₁.toNat := by
+          rw [Nat.mul_comm, Nat.mul_add_div hpos, Nat.div_eq_of_lt h₁,
+            Nat.add_zero]
+        have e₂ : (b₂.toNat * 256 ^ t₂.length +
+            t₂.foldl (fun acc b => acc * 256 + b.toNat) 0) / 256 ^ t₂.length
+            = b₂.toNat := by
+          rw [Nat.mul_comm, Nat.mul_add_div hpos, Nat.div_eq_of_lt h₂,
+            Nat.add_zero]
+        rw [← e₁, ← e₂, heq]
+      have hteq : t₁.foldl (fun acc b => acc * 256 + b.toNat) 0 =
+          t₂.foldl (fun acc b => acc * 256 + b.toNat) 0 := by
+        rw [hb] at heq
+        omega
+      rw [UInt8.toNat_inj.mp hb, natFold_inj t₁ t₂ hlen hteq]
+
+/-- **The keystone**: the big-endian bytes of a loaded word are exactly the
+memory's bytes. -/
+theorem wordBytes_loadWord (mem : Nat → UInt8) (p : Nat) :
+    wordBytes (loadWord mem p) = readBytes mem p 32 := by
+  have hform : loadWord mem p = (readBytes mem p 32).foldl
+      (fun (acc : U256) b =>
+        (acc <<< (8 : Nat)) ||| BitVec.ofNat 256 b.toNat) 0 := by
+    unfold loadWord readBytes
+    rw [List.foldl_map]
+  have hlenr : (readBytes mem p 32).length = 32 := by
+    simp [readBytes]
+  have hA : (readBytes mem p 32).foldl
+      (fun acc b => acc * 256 + b.toNat) 0 = (loadWord mem p).toNat := by
+    rw [hform,
+      show ((readBytes mem p 32).foldl
+        (fun (acc : U256) b =>
+          (acc <<< (8 : Nat)) ||| BitVec.ofNat 256 b.toNat) 0).toNat =
+      (readBytes mem p 32).foldl
+        (fun acc b => acc * 256 + b.toNat) (BitVec.toNat (0 : U256)) from
+        bitvec_fold_eq _ 0 (by rw [hlenr]) (by simp [hlenr])]
+    rfl
+  have hB : (wordBytes (loadWord mem p)).foldl
+      (fun acc b => acc * 256 + b.toNat) 0 = (loadWord mem p).toNat := by
+    show ((List.range 32).map
+        (fun i => byteAt (loadWord mem p) (31 - i))).foldl _ 0 = _
+    rw [decode_prefix' (loadWord mem p) 32 (by omega)]
+    simp
+  refine natFold_inj _ _ ?_ (by rw [hA, hB])
+  rw [hlenr]
+  simp [wordBytes]
+
+/-- Bytes of `n` covered words. -/
+theorem readBytes_wordsBytes {mem : Nat → UInt8} : ∀ {ws : List U256} {a : Nat},
+    (∀ i (_ : i < ws.length), loadWord mem (a + 32 * i) = ws[i]) →
+    readBytes mem a (32 * ws.length) = wordsBytes ws
+  | [], a, _ => by simp [readBytes, wordsBytes]
+  | w :: ws, a, h => by
+      have hsplit : readBytes mem a (32 * (ws.length + 1)) =
+          readBytes mem a 32 ++ readBytes mem (a + 32) (32 * ws.length) := by
+        unfold readBytes
+        rw [show 32 * (ws.length + 1) = 32 + 32 * ws.length from by ring,
+          List.range_add, List.map_append, List.map_map]
+        congr 1
+        apply List.map_congr_left
+        intro i _
+        show mem (a + (32 + i)) = mem (a + 32 + i)
+        congr 1
+        omega
+      show readBytes mem a (32 * (ws.length + 1)) = wordBytes w ++ wordsBytes ws
+      rw [hsplit]
+      congr 1
+      · rw [← wordBytes_loadWord mem a,
+          show loadWord mem a = w from by simpa using h 0 (Nat.succ_pos _)]
+      · exact readBytes_wordsBytes (fun i hi => by
+          have := h (i + 1) (by simpa using Nat.succ_lt_succ hi)
+          simpa [show a + 32 * (i + 1) = a + 32 + 32 * i from by ring]
+            using this)
+
 end YulEvmCompiler.Optimizer.ReuseValues
