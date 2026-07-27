@@ -1224,12 +1224,21 @@ a combined ~13k (worst `dynamic_multi_array_cleanup` +9k — flatten/reuse live
 * `flattenBlock_sound` — splice = the same `InsChain` multi-insertion
   argument (promoted binders carried dead through the mention-free-by-
   construction remainder — fresh names occur nowhere else); rename = a
-  block-local single-binder alpha simulation (occurrences all decl-or-later
-  by `shadowedTop`/`mentionsBeforeDecl`; adapt `Disambiguate`'s
-  `Ren.lean`/`Sound.lean` renaming simulation from its `dsName` freshness to
-  the `freshPrefix` scheme, or restate as a name-swap `Step` transport with
-  the env relation "equal up to keyed rename of `x`↔`x'` where `x'` is
-  program-fresh").
+  block-local single-binder keyed-rename `Step` transport
+  (`FlattenSound.lean`, `RnRel`/`renKeys` started).  The refined design,
+  after the `MvRel` experience: the `shadowedTop`/`mentionsBeforeDecl`
+  guards make the statements *before* the declaration syntactically
+  unchanged by the rename (no `x` occurrences at all), so the simulation
+  only walks the post-declaration suffix, carrying (a) target code =
+  `renStmts x x'` of source code, (b) `x'` unmentioned in source code,
+  (c) `RnRel x x'` (source `C ++ base` vs target `renKeys C ++ base`) with
+  `x ∈ keys C` (established at the declaration, preserved by push/set and
+  by nested restores, which never cut below the declaration's level).
+  Function environments stay *equal* on both sides — `renStmt` skips
+  `funDef`s and bodies cannot read outer variables — so no `FunsRel` is
+  needed.  The splice invariant threading (prefix freshness + counter
+  monotonicity through `flStmts`/`spliceSeq`) supplies the mention-freeness
+  the `InsChain` walk needs.
 * `reuseValuesBlock_sound` — the `StorageForward`/scoped-export architecture
   with five fact families; the new semantic ingredients are (i) `sload` is
   state-preserving (already in `stableTotalArity`), (ii) `touchMemory`
