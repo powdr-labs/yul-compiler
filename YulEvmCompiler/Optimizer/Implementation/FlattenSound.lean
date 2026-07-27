@@ -2475,4 +2475,478 @@ theorem spliceSeq_fwd (P : String) : ∀ (ss : List (Stmt Op)) (c : Nat)
             exact ⟨Vb', Step.seqCons hs htail',
               hchain.mono (venvLen_mono hs rfl)⟩
         | seqStop hs hne => exact ⟨Vb, Step.seqStop hs hne, .refl _⟩)
+theorem InsRes.sres_inv_right {n : Nat} {res₁ : Res D} {V₂ : VEnv D}
+    {st : EvmState} {o : Outcome} (h : InsRes n res₁ (.sres V₂ st o)) :
+    ∃ V₁, res₁ = .sres V₁ st o ∧ InsChain n V₁ V₂ := by
+  cases res₁ with
+  | eres => exact h.elim
+  | sres V₁ st₁ o₁ =>
+      obtain ⟨hc, rfl, rfl⟩ := h
+      exact ⟨V₁, rfl, hc⟩
+
+/-! ### The splice, backward -/
+
+theorem spliceSeq_bwd (P : String) : ∀ (ss : List (Stmt Op)) (c : Nat)
+    {funs : FunEnv D} {V : VEnv D} {st : EvmState} {Vb' : VEnv D}
+    {stb : EvmState} {o : Outcome},
+    Step D funs V st (.stmts (spliceSeq P ss c).1) (.sres Vb' stb o) →
+    ∃ Vb, Step D funs V st (.stmts ss) (.sres Vb stb o) ∧
+      InsChain V.length Vb Vb'
+  | [], c, funs, V, st, Vb', stb, o, h => ⟨Vb', h, .refl _⟩
+  | s :: rest, c, funs, V, st, Vb', stb, o, h => by
+      cases s
+      case block inner =>
+        by_cases hf : hasTopFunDef inner = true
+        · rcases hsp : spliceSeq P rest c with ⟨rest', c'⟩
+          rw [show (spliceSeq P (.block inner :: rest) c).1 =
+            .block inner :: rest' from by simp [spliceSeq, hf, hsp]] at h
+          cases h with
+          | seqCons hs htail =>
+              obtain ⟨Vb, htail₁, hchain⟩ := spliceSeq_bwd P rest c
+                (by rw [hsp]; exact htail)
+              exact ⟨Vb, Step.seqCons hs htail₁,
+                hchain.mono (venvLen_mono hs rfl)⟩
+          | seqStop hs hne => exact ⟨Vb', Step.seqStop hs hne, .refl _⟩
+        · rcases hren : renameAll P c (topDecls inner) inner
+            with _ | ⟨inner', c'⟩
+          · rcases hsp : spliceSeq P rest c with ⟨rest', c'⟩
+            rw [show (spliceSeq P (.block inner :: rest) c).1 =
+              .block inner :: rest' from by simp [spliceSeq, hf, hren, hsp]] at h
+            cases h with
+            | seqCons hs htail =>
+                obtain ⟨Vb, htail₁, hchain⟩ := spliceSeq_bwd P rest c
+                  (by rw [hsp]; exact htail)
+                exact ⟨Vb, Step.seqCons hs htail₁,
+                  hchain.mono (venvLen_mono hs rfl)⟩
+            | seqStop hs hne => exact ⟨Vb', Step.seqStop hs hne, .refl _⟩
+          · rcases hsp : spliceSeq P rest c' with ⟨rest', c''⟩
+            by_cases hall : (topDecls inner').all
+                (fun y => !stmtsMentions y rest') = true
+            · rw [show (spliceSeq P (.block inner :: rest) c).1 =
+                inner' ++ rest' from by simp [spliceSeq, hf, hren, hsp, hall]] at h
+              simp only [renameAll] at hren
+              have hequiv := renameAll_go_equiv (calls := calls)
+                (creates := creates) P (topDecls inner) inner c hren
+              have hhoist : hoist D inner' = [] := by
+                rw [renameAll_go_hoist P (topDecls inner) inner c hren]
+                exact hoist_nil_of_no_topFunDef (by simpa using hf)
+              rcases stmts_append_fwd h with
+                ⟨V₂, st₁, hin, hrest'⟩ | ⟨hne, hin⟩
+              · have hlen0 : V.length ≤ V₂.length := venvLen_mono hin rfl
+                have hV₂ : V₂ = V₂.take (V₂.length - V.length) ++
+                    restore V V₂ :=
+                  (List.take_append_drop _ _).symm
+                have hments : ∀ p ∈ V₂.take (V₂.length - V.length),
+                    codeMentions p.1 (Code.stmts rest') = false := by
+                  intro p hp
+                  have hpd := step_stmts_new_keys hin p hp
+                  have hy := List.all_eq_true.mp hall p.1 hpd
+                  show stmtsMentions p.1 rest' = false
+                  simpa using hy
+                rw [hV₂] at hrest'
+                obtain ⟨res₁, hrest₁, hres⟩ := frameRemoveAll _ hrest' hments
+                obtain ⟨Vr₁, rfl, hchain₂⟩ := hres.sres_inv_right
+                obtain ⟨Vb, htail₁, hchain⟩ := spliceSeq_bwd P rest c'
+                  (by rw [hsp]; exact hrest₁)
+                have hb' : Step D (hoist D inner' :: funs) V st
+                    (.stmts inner') (.sres V₂ st₁ .normal) := by
+                  rw [hhoist]
+                  exact Step.emptyScope_congr hin (.add _)
+                have hblk := (hequiv funs V st _ _ _).mpr (Step.block hb')
+                refine ⟨Vb, Step.seqCons hblk htail₁, ?_⟩
+                have hVlen : (restore V V₂).length = V.length :=
+                  restore_length hlen0
+                rw [hVlen] at hchain hchain₂
+                exact hchain.trans hchain₂
+              · have hb' : Step D (hoist D inner' :: funs) V st
+                    (.stmts inner') (.sres Vb' stb o) := by
+                  rw [hhoist]
+                  exact Step.emptyScope_congr hin (.add _)
+                have hblk := (hequiv funs V st _ _ _).mpr (Step.block hb')
+                refine ⟨restore V Vb', Step.seqStop hblk hne, ?_⟩
+                have hlen0 : V.length ≤ Vb'.length := venvLen_mono hin rfl
+                have hVb' : Vb' = Vb'.take (Vb'.length - V.length) ++
+                    restore V Vb' :=
+                  (List.take_append_drop _ _).symm
+                have hpre := insChain_prepend
+                  (Vb'.take (Vb'.length - V.length)) (restore V Vb')
+                rw [restore_length hlen0, ← hVb'] at hpre
+                exact hpre
+            · rcases hsp2 : spliceSeq P rest c' with ⟨rest2, c2⟩
+              rw [show (spliceSeq P (.block inner :: rest) c).1 =
+                .block inner :: rest' from by
+                  simp [spliceSeq, hf, hren, hsp, hall]] at h
+              cases h with
+              | seqCons hs htail =>
+                  obtain ⟨Vb, htail₁, hchain⟩ := spliceSeq_bwd P rest c'
+                    (by rw [hsp]; exact htail)
+                  exact ⟨Vb, Step.seqCons hs htail₁,
+                    hchain.mono (venvLen_mono hs rfl)⟩
+              | seqStop hs hne => exact ⟨Vb', Step.seqStop hs hne, .refl _⟩
+      all_goals (
+        rcases hsp : spliceSeq P rest c with ⟨rest', c'⟩;
+        simp only [spliceSeq, hsp] at h;
+        cases h with
+        | seqCons hs htail =>
+            obtain ⟨Vb, htail₁, hchain⟩ := spliceSeq_bwd P rest c
+              (by rw [hsp]; exact htail)
+            exact ⟨Vb, Step.seqCons hs htail₁,
+              hchain.mono (venvLen_mono hs rfl)⟩
+        | seqStop hs hne => exact ⟨Vb', Step.seqStop hs hne, .refl _⟩)
+
+/-! ### Assembly: splice as a block rewrite, and the structural lifting -/
+
+theorem spliceSeq_hoist (P : String) : ∀ (ss : List (Stmt Op)) (c : Nat),
+    hoist D (spliceSeq P ss c).1 = hoist D ss
+  | [], _ => rfl
+  | s :: rest, c => by
+      cases s
+      case block inner =>
+        by_cases hf : hasTopFunDef inner = true
+        · rcases hsp : spliceSeq P rest c with ⟨rest', c'⟩
+          rw [show (spliceSeq P (.block inner :: rest) c).1 =
+            .block inner :: rest' from by simp [spliceSeq, hf, hsp]]
+          have ih := spliceSeq_hoist P rest c
+          rw [hsp] at ih
+          simpa [hoist] using ih
+        · rcases hren : renameAll P c (topDecls inner) inner
+            with _ | ⟨inner', c'⟩
+          · rcases hsp : spliceSeq P rest c with ⟨rest', c'⟩
+            rw [show (spliceSeq P (.block inner :: rest) c).1 =
+              .block inner :: rest' from by simp [spliceSeq, hf, hren, hsp]]
+            have ih := spliceSeq_hoist P rest c
+            rw [hsp] at ih
+            simpa [hoist] using ih
+          · rcases hsp : spliceSeq P rest c' with ⟨rest', c''⟩
+            by_cases hall : (topDecls inner').all
+                (fun y => !stmtsMentions y rest') = true
+            · rw [show (spliceSeq P (.block inner :: rest) c).1 =
+                inner' ++ rest' from by simp [spliceSeq, hf, hren, hsp, hall]]
+              have hhoist : hoist D inner' = [] := by
+                simp only [renameAll] at hren
+                rw [renameAll_go_hoist P (topDecls inner) inner c hren]
+                exact hoist_nil_of_no_topFunDef (by simpa using hf)
+              have ih := spliceSeq_hoist P rest c'
+              rw [hsp] at ih
+              rw [YulEvmCompiler.Optimizer.hoist_append, hhoist,
+                List.nil_append, ih]
+              simp [hoist]
+            · rw [show (spliceSeq P (.block inner :: rest) c).1 =
+                .block inner :: rest' from by
+                  simp [spliceSeq, hf, hren, hsp, hall]]
+              have ih := spliceSeq_hoist P rest c'
+              rw [hsp] at ih
+              simpa [hoist] using ih
+      all_goals (
+        rcases hsp : spliceSeq P rest c with ⟨rest', c'⟩;
+        simp only [spliceSeq, hsp];
+        have ih := spliceSeq_hoist P rest c;
+        rw [hsp] at ih;
+        simpa [hoist] using ih)
+
+/-- The splice pass is a sound block rewrite. -/
+theorem spliceSeq_blockEquiv (P : String) (ss : List (Stmt Op)) (c : Nat) :
+    EquivBlock D ss (spliceSeq P ss c).1 := by
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    cases h with
+    | block hb =>
+        obtain ⟨Vb', hb', hchain⟩ := spliceSeq_fwd P ss c hb
+        rw [← hchain.restore_eq]
+        exact Step.block (by rw [spliceSeq_hoist]; exact hb')
+  · intro h
+    cases h with
+    | block hb =>
+        rw [spliceSeq_hoist] at hb
+        obtain ⟨Vb, hb', hchain⟩ := spliceSeq_bwd P ss c hb
+        rw [hchain.restore_eq]
+        exact Step.block hb'
+
+/- Projection equations for the counter-threaded sweep (the definitions are
+compiled through destructuring `let`s, so the pair components are exposed
+via explicit equations). -/
+
+theorem flStmts_eq (P : String) (body : List (Stmt Op)) (c : Nat) :
+    flStmts P body c =
+      spliceSeq P (flEach P body c).1 (flEach P body c).2 := by
+  unfold flStmts
+  rcases h : flEach P body c with ⟨b, c'⟩
+  simp
+
+theorem flStmt_block (P : String) (body : List (Stmt Op)) (c : Nat) :
+    flStmt P (.block body) c =
+      (.block (flStmts P body c).1, (flStmts P body c).2) := by
+  unfold flStmt
+  rcases h : flStmts P body c with ⟨b, c'⟩
+  simp
+
+theorem flStmt_funDef (P : String) (n : Ident) (ps rs : List Ident)
+    (body : List (Stmt Op)) (c : Nat) :
+    flStmt P (.funDef n ps rs body) c =
+      (.funDef n ps rs (flStmts P body c).1, (flStmts P body c).2) := by
+  unfold flStmt
+  rcases h : flStmts P body c with ⟨b, c'⟩
+  simp
+
+theorem flStmt_cond (P : String) (e : Expr Op) (body : List (Stmt Op))
+    (c : Nat) :
+    flStmt P (.cond e body) c =
+      (.cond e (flStmts P body c).1, (flStmts P body c).2) := by
+  unfold flStmt
+  rcases h : flStmts P body c with ⟨b, c'⟩
+  simp
+
+theorem flStmt_switch (P : String) (e : Expr Op)
+    (cs : List (Literal × Block Op)) (dflt : Option (Block Op)) (c : Nat) :
+    flStmt P (.switch e cs dflt) c =
+      (.switch e (flCases P cs c).1
+        (flDflt P dflt (flCases P cs c).2).1,
+       (flDflt P dflt (flCases P cs c).2).2) := by
+  unfold flStmt
+  rcases h1 : flCases P cs c with ⟨cs', c1⟩
+  rcases h2 : flDflt P dflt c1 with ⟨d', c2⟩
+  simp [h2]
+
+theorem flStmt_forLoop (P : String) (init : List (Stmt Op)) (e : Expr Op)
+    (post body : List (Stmt Op)) (c : Nat) :
+    flStmt P (.forLoop init e post body) c =
+      (.forLoop init e (flStmts P post c).1
+        (flStmts P body (flStmts P post c).2).1,
+       (flStmts P body (flStmts P post c).2).2) := by
+  unfold flStmt
+  rcases h1 : flStmts P post c with ⟨p', c1⟩
+  rcases h2 : flStmts P body c1 with ⟨b', c2⟩
+  simp [h2]
+
+theorem flEach_cons (P : String) (s : Stmt Op) (rest : List (Stmt Op))
+    (c : Nat) :
+    flEach P (s :: rest) c =
+      ((flStmt P s c).1 :: (flEach P rest (flStmt P s c).2).1,
+       (flEach P rest (flStmt P s c).2).2) := by
+  conv_lhs => unfold flEach
+
+theorem flCases_cons (P : String) (l : Literal) (b : List (Stmt Op))
+    (rest : List (Literal × Block Op)) (c : Nat) :
+    flCases P ((l, b) :: rest) c =
+      ((l, (flStmts P b c).1) :: (flCases P rest (flStmts P b c).2).1,
+       (flCases P rest (flStmts P b c).2).2) := by
+  conv_lhs => unfold flCases
+
+theorem flDflt_none (P : String) (c : Nat) :
+    flDflt P (none : Option (Block Op)) c = (none, c) := by
+  unfold flDflt
+  rfl
+
+theorem flDflt_some (P : String) (b : List (Stmt Op)) (c : Nat) :
+    flDflt P (some b) c =
+      (some (flStmts P b c).1, (flStmts P b c).2) := by
+  unfold flDflt
+  rcases h : flStmts P b c with ⟨b', c'⟩
+  simp
+
+mutual
+
+theorem flStmt_equiv (P : String) : ∀ (s : Stmt Op) (c : Nat),
+    EquivStmt D s (flStmt P s c).1
+  | .block body, c => by
+      rw [flStmt_block]
+      show EquivBlock D body (flStmts P body c).1
+      rw [flStmts_eq]
+      exact (EquivBlock.of_stmts_funs
+        (EquivStmts.of_forall₂ (flEach_forall2 P body c))
+        (flScopeRel P body c)).trans
+        (spliceSeq_blockEquiv P (flEach P body c).1 (flEach P body c).2)
+  | .funDef n ps rs body, c => by
+      rw [flStmt_funDef]
+      intro funs V st V' st' o
+      constructor
+      · intro h; cases h; exact Step.funDef
+      · intro h; cases h; exact Step.funDef
+  | .cond e body, c => by
+      rw [flStmt_cond]
+      refine EquivStmt.cond_congr
+        (@EquivExpr.refl (evmWithExternal calls creates) _ e) ?_
+      rw [flStmts_eq]
+      exact (EquivBlock.of_stmts_funs
+        (EquivStmts.of_forall₂ (flEach_forall2 P body c))
+        (flScopeRel P body c)).trans
+        (spliceSeq_blockEquiv P (flEach P body c).1 (flEach P body c).2)
+  | .switch e cases dflt, c => by
+      rw [flStmt_switch]
+      refine EquivStmt.switch_congr
+        (@EquivExpr.refl (evmWithExternal calls creates) _ e)
+        (flCases_forall2 P cases c) ?_
+      cases dflt with
+      | none =>
+          rw [flDflt_none]
+          exact @EquivBlock.refl (evmWithExternal calls creates) _ _
+      | some b =>
+          rw [flDflt_some]
+          show EquivBlock D b (flStmts P b (flCases P cases c).2).1
+          rw [flStmts_eq]
+          exact (EquivBlock.of_stmts_funs
+            (EquivStmts.of_forall₂
+              (flEach_forall2 P b (flCases P cases c).2))
+            (flScopeRel P b (flCases P cases c).2)).trans
+            (spliceSeq_blockEquiv P
+              (flEach P b (flCases P cases c).2).1
+              (flEach P b (flCases P cases c).2).2)
+  | .forLoop init e post body, c => by
+      rw [flStmt_forLoop]
+      refine EquivStmt.forLoop_congr init
+        (@EquivExpr.refl (evmWithExternal calls creates) _ e) ?_ ?_
+      · rw [flStmts_eq]
+        exact (EquivBlock.of_stmts_funs
+          (EquivStmts.of_forall₂ (flEach_forall2 P post c))
+          (flScopeRel P post c)).trans
+          (spliceSeq_blockEquiv P (flEach P post c).1 (flEach P post c).2)
+      · rw [flStmts_eq]
+        exact (EquivBlock.of_stmts_funs
+          (EquivStmts.of_forall₂
+            (flEach_forall2 P body (flStmts P post c).2))
+          (flScopeRel P body (flStmts P post c).2)).trans
+          (spliceSeq_blockEquiv P
+            (flEach P body (flStmts P post c).2).1
+            (flEach P body (flStmts P post c).2).2)
+  | .letDecl xs v, c => by
+      unfold flStmt
+      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+  | .assign xs e, c => by
+      unfold flStmt
+      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+  | .exprStmt e, c => by
+      unfold flStmt
+      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+  | .«break», c => by
+      unfold flStmt
+      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+  | .«continue», c => by
+      unfold flStmt
+      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+  | .leave, c => by
+      unfold flStmt
+      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+
+theorem flEach_forall2 (P : String) : ∀ (ss : List (Stmt Op)) (c : Nat),
+    List.Forall₂ (EquivStmt D) ss (flEach P ss c).1
+  | [], _ => by
+      unfold flEach
+      exact .nil
+  | s :: rest, c => by
+      rw [flEach_cons]
+      exact .cons (flStmt_equiv P s c)
+        (flEach_forall2 P rest (flStmt P s c).2)
+
+theorem flCases_forall2 (P : String) :
+    ∀ (cs : List (Literal × Block Op)) (c : Nat),
+    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs
+      (flCases P cs c).1
+  | [], _ => by
+      unfold flCases
+      exact .nil
+  | (l, b) :: rest, c => by
+      rw [flCases_cons]
+      refine .cons ⟨rfl, ?_⟩ (flCases_forall2 P rest (flStmts P b c).2)
+      show EquivBlock D b (flStmts P b c).1
+      rw [flStmts_eq]
+      exact (EquivBlock.of_stmts_funs
+        (EquivStmts.of_forall₂ (flEach_forall2 P b c))
+        (flScopeRel P b c)).trans
+        (spliceSeq_blockEquiv P (flEach P b c).1 (flEach P b c).2)
+
+theorem flScopeRel (P : String) : ∀ (ss : List (Stmt Op)) (c : Nat),
+    ScopeRel D (hoist D ss) (hoist D (flEach P ss c).1)
+  | [], _ => by
+      unfold flEach
+      exact .nil
+  | .funDef n ps rs body :: rest, c => by
+      rw [flEach_cons, flStmt_funDef]
+      dsimp only
+      simp only [hoist, List.filterMap_cons]
+      refine List.Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩
+        (flScopeRel P rest (flStmts P body c).2)
+      show EquivBlock D body (flStmts P body c).1
+      rw [flStmts_eq]
+      exact (EquivBlock.of_stmts_funs
+        (EquivStmts.of_forall₂ (flEach_forall2 P body c))
+        (flScopeRel P body c)).trans
+        (spliceSeq_blockEquiv P (flEach P body c).1 (flEach P body c).2)
+  | .block body :: rest, c => by
+      rw [flEach_cons, flStmt_block]
+      dsimp only
+      simpa [hoist] using flScopeRel P rest (flStmts P body c).2
+  | .letDecl xs v :: rest, c => by
+      rw [flEach_cons]
+      show ScopeRel D _ (hoist D ((flStmt P (.letDecl xs v) c).1 :: _))
+      rw [show (flStmt P (.letDecl xs v) c).1 = .letDecl xs v from by
+        unfold flStmt; rfl]
+      simpa [hoist] using flScopeRel P rest (flStmt P (.letDecl xs v) c).2
+  | .assign xs e :: rest, c => by
+      rw [flEach_cons]
+      rw [show (flStmt P (.assign xs e) c).1 = .assign xs e from by
+        unfold flStmt; rfl]
+      simpa [hoist] using flScopeRel P rest (flStmt P (.assign xs e) c).2
+  | .cond e body :: rest, c => by
+      rw [flEach_cons, flStmt_cond]
+      dsimp only
+      simpa [hoist] using flScopeRel P rest (flStmts P body c).2
+  | .«switch» e cs dflt :: rest, c => by
+      rw [flEach_cons, flStmt_switch]
+      dsimp only
+      simpa [hoist] using
+        flScopeRel P rest (flDflt P dflt (flCases P cs c).2).2
+  | .forLoop init e post body :: rest, c => by
+      rw [flEach_cons, flStmt_forLoop]
+      dsimp only
+      simpa [hoist] using
+        flScopeRel P rest (flStmts P body (flStmts P post c).2).2
+  | .exprStmt e :: rest, c => by
+      rw [flEach_cons]
+      rw [show (flStmt P (.exprStmt e) c).1 = .exprStmt e from by
+        unfold flStmt; rfl]
+      simpa [hoist] using flScopeRel P rest (flStmt P (.exprStmt e) c).2
+  | .«break» :: rest, c => by
+      rw [flEach_cons]
+      rw [show (flStmt P .«break» c).1 = .«break» from by
+        unfold flStmt; rfl]
+      simpa [hoist] using flScopeRel P rest (flStmt P .«break» c).2
+  | .«continue» :: rest, c => by
+      rw [flEach_cons]
+      rw [show (flStmt P .«continue» c).1 = .«continue» from by
+        unfold flStmt; rfl]
+      simpa [hoist] using flScopeRel P rest (flStmt P .«continue» c).2
+  | .leave :: rest, c => by
+      rw [flEach_cons]
+      rw [show (flStmt P .leave c).1 = .leave from by
+        unfold flStmt; rfl]
+      simpa [hoist] using flScopeRel P rest (flStmt P .leave c).2
+
+end
+
+/-- **Soundness of block flattening.** -/
+theorem flattenBlock_equiv (b : Block Op) :
+    EquivBlock D b (flattenBlock b) := by
+  unfold flattenBlock
+  by_cases h1 : YulEvmCompiler.Optimizer.storageLayoutFreeStmts b
+  · rw [if_pos h1]
+    by_cases h2 : YulEvmCompiler.Optimizer.storageLayoutFreeStmts
+        (flattenCore b)
+    · simp only [if_pos h2]
+      unfold flattenCore
+      cases hP : YulEvmCompiler.Optimizer.freshPrefix
+          (YulEvmCompiler.Optimizer.stmtsIdents b) with
+      | none => exact EquivBlock.refl _
+      | some P =>
+          show EquivBlock D b (flStmts P b 0).1
+          rw [flStmts_eq]
+          exact (EquivBlock.of_stmts_funs
+            (EquivStmts.of_forall₂ (flEach_forall2 P b 0))
+            (flScopeRel P b 0)).trans
+            (spliceSeq_blockEquiv P (flEach P b 0).1 (flEach P b 0).2)
+    · simp only [if_neg h2]
+      exact EquivBlock.refl _
+  · rw [if_neg h1]
+    exact EquivBlock.refl _
+
 end YulEvmCompiler.Optimizer.Flatten

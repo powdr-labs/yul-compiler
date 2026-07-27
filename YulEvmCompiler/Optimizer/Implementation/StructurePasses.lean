@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.Flatten
+import YulEvmCompiler.Optimizer.Implementation.FlattenSound
 import YulEvmCompiler.Optimizer.Implementation.FuseDeclAssignSound
 import YulEvmCompiler.Optimizer.Implementation.ReuseValues
 import YulEvmCompiler.Optimizer.Implementation.PruneDefsResolve
@@ -35,9 +36,10 @@ local notation "D" => evmWithExternal calls creates
 
 /-! ### The three remaining soundness obligations -/
 
-/-- Block soundness of flattening (proof in progress; see the module notes). -/
+/-- Block soundness of flattening (fully proved). -/
 theorem flattenBlock_sound (b : Block Op) :
-    EquivBlock D b (Flatten.flattenBlock b) := sorry
+    EquivBlock D b (Flatten.flattenBlock b) :=
+  Flatten.flattenBlock_equiv b
 
 /-- Block soundness of declare-then-assign fusion (fully proved). -/
 theorem fuseDeclAssignBlock_sound (b : Block Op) :
