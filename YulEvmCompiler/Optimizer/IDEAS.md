@@ -1189,68 +1189,41 @@ counter-move; 12/12 gasTests; 1246/1264 semantic rows improve, 12 regress by
 a combined ~13k (worst `dynamic_multi_array_cleanup` +9k — flatten/reuse live
 -range extension in copy-heavy code; accepted pending a gate follow-up).
 
-**Proof state and the worked-out continuation plan:**
+**Proof state — all four passes fully proved (zero sorries):**
 
 * `PruneDefs` — done (`PruneDefsSound.lean`, `PruneDefsResolve.lean`).
-* `fuseDeclAssignBlock_sound` — the hard core is **done**
-  (`FuseDeclAssignSound.lean`): the `MvRel x dA dB` environment-reorder
-  relation (`C ++ A ++ (x,v)::B` vs `C ++ (x,v)::A ++ B`, region lengths
-  indexed), its full get/set/setMany/push/restore algebra
-  (`restore_mvRel`, `restore_mv_eq`, `MvRel.restore_compat`), and the
-  complete 40-constructor `Step.mv_congr` transport (function bodies run in
-  fresh callee envs and are reused unchanged). Remaining assembly: (a) the
-  sink-site lemma — invert `seqCons letZero`, split the tail with
-  `stmts_append_fwd` at the assignment, carry the `(x,0)` insertion through
-  the mention-free `mid` with **one** `frameRemove` application on
-  `.stmts mid`, convert to `MvRel` at the assignment (evaluating `e` via
-  `frameRemove` on `.expr e`), transport the suffix with `mv_congr`; halt
-  paths leave a single insertion (`InsChain`); (b) the lit-fuse case — pure
-  `InsAt` (target env equals source's minus the dead literal binding on halt
-  paths, equal otherwise); (c) the `fuseSeqFuel` induction accumulating a
-  move-or-insert chain erased by the enclosing block's `restore`
-  (`restore_mv_eq` + `restore_insAt_le`), mirroring `ccPairs_fwd/bwd`;
-  (d) structural lifting through `fdStmt` (statement congruences +
-  `FunCongr.of_stmts_funs`) and the guard wrapper.  Two auxiliary lemmas
-  surfaced by the detailed walk: a **mentions bridge**
-  (`FuseDeclAssign.mentionsStmt x s = false → Frame.stmtMentions x s = false`
-  — the pass's notion additionally counts `funDef`/call names, so it is
-  strictly stronger), and a **fresh-keys lemma** mirroring
-  `venvKeys_suffix`: executing `x`-mention-free code never *adds* an `x` key
-  above the entry environment (new keys come only from executed `let`s of
-  the code, all `≠ x`; nested blocks restore theirs away; callee
-  environments are discarded).  The fresh-keys lemma licenses crossing the
-  sink's assignment: `VEnv.set (A ++ (x,0) :: B) x val` must hit the
-  inserted binding, i.e. `x ∉ keys A`.
-* `flattenBlock_sound` — splice = the same `InsChain` multi-insertion
-  argument (promoted binders carried dead through the mention-free-by-
-  construction remainder — fresh names occur nowhere else); rename = a
-  block-local single-binder keyed-rename `Step` transport
-  (`FlattenSound.lean`, `RnRel`/`renKeys` started).  The refined design,
-  after the `MvRel` experience: the `shadowedTop`/`mentionsBeforeDecl`
-  guards make the statements *before* the declaration syntactically
-  unchanged by the rename (no `x` occurrences at all), so the simulation
-  only walks the post-declaration suffix, carrying (a) target code =
-  `renStmts x x'` of source code, (b) `x'` unmentioned in source code,
-  (c) `RnRel x x'` (source `C ++ base` vs target `renKeys C ++ base`) with
-  `x ∈ keys C` (established at the declaration, preserved by push/set and
-  by nested restores, which never cut below the declaration's level).
-  Function environments stay *equal* on both sides — `renStmt` skips
-  `funDef`s and bodies cannot read outer variables — so no `FunsRel` is
-  needed.  The splice invariant threading (prefix freshness + counter
-  monotonicity through `flStmts`/`spliceSeq`) supplies the mention-freeness
-  the `InsChain` walk needs.
-* `reuseValuesBlock_sound` — the `StorageForward`/scoped-export architecture
-  with five fact families; the new semantic ingredients are (i) `sload` is
-  state-preserving (already in `stableTotalArity`), (ii) `touchMemory`
-  idempotence at already-active ranges plus a global `activeWords`
-  monotonicity lemma over `Step` (mirror `venvLen_mono`), and (iii) the
-  keccak content-signature denotation (`readBytes` decomposition into
-  covered `loadWord`s for 32-multiple ranges).
-* The optimize-after-spill wiring needs the composed theorem: extend
-  `compileObject_memorySpill_correct` with the pipeline hop at the *spilled*
-  object (its `RunResolvedObject output …` conclusion feeds
-  `optimizerPipelineObjectRounds_correct` through
-  `Normalize.normalizeObject_topRunEquiv` at the new layout).
+* `fuseDeclAssignBlock_sound` — done (`FuseDeclAssignSound.lean`): the
+  `MvRel` environment-reorder relation and its algebra, the 40-constructor
+  `Step.mv_congr`/`mv_congr_bwd` transports, `sink`/`fuseSeqFuel`
+  inversions, the `FuseChain` move-or-insert accumulation erased by the
+  enclosing `restore`, and the structural lifting.
+* `flattenBlock_sound` — done (`FlattenSound.lean`): the `RnRel` keyed
+  single-binder rename transport (forward, and backward via the
+  rename-involution role swap), the guard decomposition
+  (`shadowedTop`/`mentionsBeforeDecl` → an unchanged prefix and a
+  redeclaration-free suffix), the splice as a multi-insertion frame chain
+  (`frameAddAll`/`frameRemoveAll` over `InsChain`, new surviving keys ⊆
+  top-level binders, empty-scope transparency from `StackLayoutSound`),
+  and the counter-threaded structural lifting.  Freshness is **checked**
+  by the transform (`stmtsMentions` guards in `renameAll`/`spliceSeq`, the
+  `RejoinPairs` recipe) instead of derived from a prefix-string invariant;
+  the checks never fire in practice and gas is unchanged.
+* `reuseValuesBlock_sound` — done (`ReuseValuesSound.lean`): a functional
+  evaluator for the canonical pure fragment with `Step` totality/
+  determinism bridges, cache validity (`RvOk`) over the five fact
+  families, `MemNeutral` state transitions (`touchMemory` idempotence at
+  active ranges), the word/byte decomposition keystone (equal covering
+  `loadWord`s force equal `readBytes`, via byte-fold injectivity), the
+  per-rhs rewrite transports and post-binding validity, and the
+  `StorageForward`-shaped master inductions.  The proof surfaced and fixed
+  four transform gaps: self-referential recordings (`let x := sload(x)`),
+  assignment facts for unbound names (`bound` threading, `VEnv.set` is a
+  no-op on unbound names), literal-address wrap-around (range guards on
+  `mstoreLit`/`mloadLit`/`keccakLits`), and cache retention across a
+  non-canonicalizable (possibly effectful) `sload` key.
+* The optimize-after-spill wiring is covered by the existing composed
+  correctness chain (`Checks.lean` pins the exact classical axiom set of
+  `compile_correct`; the whole tree is sorry-free).
 
 ## Candidate next ideas (not started)
 
