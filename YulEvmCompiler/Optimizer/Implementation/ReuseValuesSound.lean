@@ -2617,4 +2617,612 @@ theorem rvExprStmt_ok {C : RvCache} {e e' : Expr Op} {C' : RvCache}
         rw [← h2]
         exact RvOk.empty _ _
 
+/-! ### The code-indexed transform relation (the `StorageForward` shape) -/
+
+def rvBoundStmts : List Ident → List (Stmt Op) → List Ident
+  | bound, [] => bound
+  | bound, s :: rest => rvBoundStmts (rvNextBound bound s) rest
+
+def rvCode (bound : List Ident) (C : RvCache) : Code Op → Code Op × RvCache
+  | .expr e => (.expr e, RvCache.empty)
+  | .args es => (.args es, RvCache.empty)
+  | .stmt s => let p := rvStmt bound C s; (.stmt p.1, p.2)
+  | .stmts ss => let p := rvStmts bound C ss; (.stmts p.1, p.2)
+  | .loop c post body => (.loop c post body, RvCache.empty)
+
+def rvBound (bound : List Ident) : Code Op → List Ident
+  | .stmt s => rvNextBound bound s
+  | .stmts ss => rvBoundStmts bound ss
+  | _ => bound
+
+def RvRel (bound : List Ident) (C C' : RvCache) (code code' : Code Op) :
+    Prop :=
+  rvCode bound C code = (code', C')
+
+theorem RvRel.expr_eq {bound : List Ident} {C C' : RvCache} {code : Code Op}
+    {e : Expr Op} (h : RvRel bound C C' code (.expr e)) : code = .expr e := by
+  cases code <;> simp_all [RvRel, rvCode]
+
+theorem RvRel.args_eq {bound : List Ident} {C C' : RvCache} {code : Code Op}
+    {es : List (Expr Op)} (h : RvRel bound C C' code (.args es)) :
+    code = .args es := by
+  cases code <;> simp_all [RvRel, rvCode]
+
+theorem RvRel.loop_eq {bound : List Ident} {C C' : RvCache} {code : Code Op}
+    {c : Expr Op} {post body : Block Op}
+    (h : RvRel bound C C' code (.loop c post body)) :
+    code = .loop c post body := by
+  cases code <;> simp_all [RvRel, rvCode]
+
+set_option linter.unusedSimpArgs false in
+theorem RvRel.let_inv {bound : List Ident} {C C' : RvCache} {code : Code Op}
+    {xs : List Ident} {rhs' : Option (Expr Op)}
+    (h : RvRel bound C C' code (.stmt (.letDecl xs rhs'))) :
+    ∃ rhs, code = .stmt (.letDecl xs rhs) ∧ rvLet C xs rhs = (rhs', C') := by
+  cases code with
+  | stmt s =>
+      cases s with
+      | letDecl vars val =>
+          simp only [RvRel, rvCode, rvStmt, Prod.mk.injEq, Code.stmt.injEq,
+            Stmt.letDecl.injEq] at h
+          obtain ⟨⟨hvars, hfst⟩, hsnd⟩ := h
+          subst vars
+          exact ⟨val, rfl, Prod.ext hfst hsnd⟩
+      | block body => simp [RvRel, rvCode, rvStmt] at h
+      | funDef n ps rs body => simp [RvRel, rvCode, rvStmt] at h
+      | assign vars val => simp [RvRel, rvCode, rvStmt] at h
+      | cond c body => simp [RvRel, rvCode, rvStmt] at h
+      | switch c cases dflt => simp [RvRel, rvCode, rvStmt] at h
+      | forLoop init c post body => simp [RvRel, rvCode, rvStmt] at h
+      | exprStmt e => simp [RvRel, rvCode, rvStmt, rvExprStmt_fst] at h
+      | «break» => simp [RvRel, rvCode, rvStmt] at h
+      | «continue» => simp [RvRel, rvCode, rvStmt] at h
+      | leave => simp [RvRel, rvCode, rvStmt] at h
+  | expr e => simp [RvRel, rvCode] at h
+  | args es => simp [RvRel, rvCode] at h
+  | stmts ss => simp [RvRel, rvCode] at h
+  | loop c post body => simp [RvRel, rvCode] at h
+
+set_option linter.unusedSimpArgs false in
+theorem RvRel.assign_inv {bound : List Ident} {C C' : RvCache}
+    {code : Code Op} {xs : List Ident} {rhs' : Expr Op}
+    (h : RvRel bound C C' code (.stmt (.assign xs rhs'))) :
+    ∃ rhs, code = .stmt (.assign xs rhs) ∧
+      rvAssign bound C xs rhs = (rhs', C') := by
+  cases code with
+  | stmt s =>
+      cases s with
+      | assign vars val =>
+          simp only [RvRel, rvCode, rvStmt, Prod.mk.injEq, Code.stmt.injEq,
+            Stmt.assign.injEq] at h
+          obtain ⟨⟨hvars, hfst⟩, hsnd⟩ := h
+          subst vars
+          exact ⟨val, rfl, Prod.ext hfst hsnd⟩
+      | block body => simp [RvRel, rvCode, rvStmt] at h
+      | funDef n ps rs body => simp [RvRel, rvCode, rvStmt] at h
+      | letDecl vars val => simp [RvRel, rvCode, rvStmt] at h
+      | cond c body => simp [RvRel, rvCode, rvStmt] at h
+      | switch c cases dflt => simp [RvRel, rvCode, rvStmt] at h
+      | forLoop init c post body => simp [RvRel, rvCode, rvStmt] at h
+      | exprStmt e => simp [RvRel, rvCode, rvStmt, rvExprStmt_fst] at h
+      | «break» => simp [RvRel, rvCode, rvStmt] at h
+      | «continue» => simp [RvRel, rvCode, rvStmt] at h
+      | leave => simp [RvRel, rvCode, rvStmt] at h
+  | expr e => simp [RvRel, rvCode] at h
+  | args es => simp [RvRel, rvCode] at h
+  | stmts ss => simp [RvRel, rvCode] at h
+  | loop c post body => simp [RvRel, rvCode] at h
+
+set_option linter.unusedSimpArgs false in
+theorem RvRel.exprStmt_inv {bound : List Ident} {C C' : RvCache}
+    {code : Code Op} {e' : Expr Op}
+    (h : RvRel bound C C' code (.stmt (.exprStmt e'))) :
+    code = .stmt (.exprStmt e') ∧ (rvExprStmt C e').2 = C' := by
+  cases code with
+  | stmt s =>
+      cases s with
+      | exprStmt e =>
+          have hfst := rvExprStmt_fst C e
+          simp only [RvRel, rvCode, rvStmt, Prod.mk.injEq,
+            Code.stmt.injEq, Stmt.exprStmt.injEq] at h
+          obtain ⟨h1, h2⟩ := h
+          rw [hfst] at h1
+          subst h1
+          exact ⟨rfl, h2⟩
+      | block body => simp [RvRel, rvCode, rvStmt] at h
+      | funDef n ps rs body => simp [RvRel, rvCode, rvStmt] at h
+      | letDecl vars val => simp [RvRel, rvCode, rvStmt] at h
+      | assign vars val => simp [RvRel, rvCode, rvStmt] at h
+      | cond c body => simp [RvRel, rvCode, rvStmt] at h
+      | switch c cases dflt => simp [RvRel, rvCode, rvStmt] at h
+      | forLoop init c post body => simp [RvRel, rvCode, rvStmt] at h
+      | «break» => simp [RvRel, rvCode, rvStmt] at h
+      | «continue» => simp [RvRel, rvCode, rvStmt] at h
+      | leave => simp [RvRel, rvCode, rvStmt] at h
+  | expr e => simp [RvRel, rvCode] at h
+  | args es => simp [RvRel, rvCode] at h
+  | stmts ss => simp [RvRel, rvCode] at h
+  | loop c post body => simp [RvRel, rvCode] at h
+
+set_option linter.unusedSimpArgs false in
+theorem RvRel.cond_inv {bound : List Ident} {C C' : RvCache}
+    {code : Code Op} {c : Expr Op} {body' : Block Op}
+    (h : RvRel bound C C' code (.stmt (.cond c body'))) :
+    ∃ body, code = .stmt (.cond c body) ∧
+      body' = (rvStmts bound RvCache.empty body).1 ∧
+      C' = if rvNeutralExpr c && stmtsNoNormal body then C
+           else RvCache.empty := by
+  cases code with
+  | stmt s =>
+      cases s <;> simp_all [RvRel, rvCode, rvStmt]
+      simpa [h.1.1] using h.2.symm
+  | expr e => simp [RvRel, rvCode] at h
+  | args es => simp [RvRel, rvCode] at h
+  | stmts ss => simp [RvRel, rvCode] at h
+  | loop c post body => simp [RvRel, rvCode] at h
+
+set_option linter.unusedSimpArgs false in
+theorem RvRel.stmts_nil_inv {bound : List Ident} {C C' : RvCache}
+    {code : Code Op} (h : RvRel bound C C' code (.stmts [])) :
+    code = .stmts [] := by
+  cases code with
+  | stmts ss => cases ss <;> simp_all [RvRel, rvCode, rvStmts]
+  | expr e => simp [RvRel, rvCode] at h
+  | args es => simp [RvRel, rvCode] at h
+  | stmt s => simp [RvRel, rvCode] at h
+  | loop c post body => simp [RvRel, rvCode] at h
+
+set_option linter.unusedSimpArgs false in
+theorem RvRel.stmts_cons_inv {bound : List Ident} {C C' : RvCache}
+    {code : Code Op} {s' : Stmt Op} {rest' : List (Stmt Op)}
+    (h : RvRel bound C C' code (.stmts (s' :: rest'))) :
+    ∃ s rest C1, code = .stmts (s :: rest) ∧ rvStmt bound C s = (s', C1) ∧
+      rvStmts (rvNextBound bound s) C1 rest = (rest', C') := by
+  cases code with
+  | stmts ss =>
+      cases ss with
+      | nil => simp [RvRel, rvCode, rvStmts] at h
+      | cons s rest =>
+          generalize hs : rvStmt bound C s = p
+          rcases p with ⟨st', C1⟩
+          simp only [RvRel, rvCode, rvStmts, hs, Prod.mk.injEq,
+            Code.stmts.injEq, List.cons.injEq] at h
+          obtain ⟨⟨hst, hrest⟩, hcache⟩ := h
+          subst hst
+          exact ⟨s, rest, C1, rfl, hs, Prod.ext hrest hcache⟩
+  | expr e => simp [RvRel, rvCode] at h
+  | args es => simp [RvRel, rvCode] at h
+  | stmt s => simp [RvRel, rvCode] at h
+  | loop c post body => simp [RvRel, rvCode] at h
+
+set_option linter.unusedSimpArgs false in
+theorem RvRel.switch_eq {bound : List Ident} {C C' : RvCache}
+    {code : Code Op} {c : Expr Op} {cases' : List (Literal × Block Op)}
+    {dflt : Option (Block Op)}
+    (h : RvRel bound C C' code (.stmt (.switch c cases' dflt))) :
+    code = .stmt (.switch c cases' dflt) ∧ C' = RvCache.empty := by
+  cases code with
+  | stmt s =>
+      cases s <;> simp_all [RvRel, rvCode, rvStmt]
+  | expr e => simp [RvRel, rvCode] at h
+  | args es => simp [RvRel, rvCode] at h
+  | stmts ss => simp [RvRel, rvCode] at h
+  | loop c post body => simp [RvRel, rvCode] at h
+
+set_option linter.unusedSimpArgs false in
+theorem RvRel.forLoop_eq {bound : List Ident} {C C' : RvCache}
+    {code : Code Op} {init : Block Op} {c : Expr Op} {post body : Block Op}
+    (h : RvRel bound C C' code (.stmt (.forLoop init c post body))) :
+    code = .stmt (.forLoop init c post body) ∧ C' = RvCache.empty := by
+  cases code with
+  | stmt s =>
+      cases s <;> simp_all [RvRel, rvCode, rvStmt]
+  | expr e => simp [RvRel, rvCode] at h
+  | args es => simp [RvRel, rvCode] at h
+  | stmts ss => simp [RvRel, rvCode] at h
+  | loop c post body => simp [RvRel, rvCode] at h
+
+set_option linter.unusedSimpArgs false in
+theorem RvRel.control_eq {bound : List Ident} {C C' : RvCache}
+    {code : Code Op} {s : Stmt Op}
+    (hs : s = .«break» ∨ s = .«continue» ∨ s = .leave)
+    (h : RvRel bound C C' code (.stmt s)) : code = .stmt s := by
+  rcases hs with rfl | rfl | rfl <;>
+    cases code with
+    | stmt t => cases t <;> simp_all [RvRel, rvCode, rvStmt]
+    | expr e => simp [RvRel, rvCode] at h
+    | args es => simp [RvRel, rvCode] at h
+    | stmts ss => simp [RvRel, rvCode] at h
+    | loop c post body => simp [RvRel, rvCode] at h
+
+/-- The sweep never changes the hoisted scope. -/
+theorem hoist_rvStmts (bound : List Ident) (C : RvCache) :
+    ∀ body : Block Op, hoist D (rvStmts bound C body).1 = hoist D body := by
+  intro body
+  induction body generalizing bound C with
+  | nil => rfl
+  | cons s rest ih =>
+      cases s with
+      | block body =>
+          simpa [rvStmts, rvStmt, rvNextBound, hoist] using
+            ih bound ((rvStmts bound C body).2.kill (blockDecls body))
+      | funDef n ps rs body =>
+          simpa [rvStmts, rvStmt, rvNextBound, hoist] using ih bound C
+      | letDecl xs rhs =>
+          simpa [rvStmts, rvStmt, rvNextBound, hoist] using
+            ih (xs ++ bound) (rvLet C xs rhs).2
+      | assign xs rhs =>
+          simpa [rvStmts, rvStmt, rvNextBound, hoist] using
+            ih bound (rvAssign bound C xs rhs).2
+      | cond c body =>
+          simpa [rvStmts, rvStmt, rvNextBound, hoist] using ih bound
+            (if rvNeutralExpr c && stmtsNoNormal body then C
+             else RvCache.empty)
+      | switch c cases dflt =>
+          simpa [rvStmts, rvStmt, rvNextBound, hoist] using
+            ih bound RvCache.empty
+      | forLoop init c post body =>
+          simpa [rvStmts, rvStmt, rvNextBound, hoist] using
+            ih bound RvCache.empty
+      | exprStmt e =>
+          simpa [rvStmts, rvStmt, rvNextBound, hoist] using
+            ih bound (rvExprStmt C e).2
+      | «break» => simpa [rvStmts, rvStmt, rvNextBound, hoist] using ih bound C
+      | «continue» =>
+          simpa [rvStmts, rvStmt, rvNextBound, hoist] using ih bound C
+      | leave => simpa [rvStmts, rvStmt, rvNextBound, hoist] using ih bound C
+
+set_option maxHeartbeats 3200000 in
+theorem rv_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code code' : Code Op} {res : Res D} {bound : List Ident}
+    {C C' : RvCache} (h : Step D funs V st code res)
+    (hr : RvRel bound C C' code code') (hb : BoundOK V bound)
+    (hc : RvOk V st C) :
+    Step D funs V st code' res ∧
+      (∀ V' st' o, res = .sres V' st' o → o = .normal →
+        BoundOK V' (rvBound bound code) ∧ RvOk V' st' C') := by
+  induction h generalizing bound C C' code' with
+  | lit =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.lit, by intros; contradiction⟩
+  | var hv =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.var hv, by intros; contradiction⟩
+  | builtinOk ha hop iha =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.builtinOk ha hop, by intros; contradiction⟩
+  | builtinHalt ha hop iha =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.builtinHalt ha hop, by intros; contradiction⟩
+  | builtinArgsHalt ha iha =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.builtinArgsHalt ha, by intros; contradiction⟩
+  | callOk ha hl hlen hbody ho iha ihbody =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.callOk ha hl hlen hbody ho, by intros; contradiction⟩
+  | callHalt ha hl hlen hbody iha ihbody =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.callHalt ha hl hlen hbody, by intros; contradiction⟩
+  | callArgsHalt ha iha =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.callArgsHalt ha, by intros; contradiction⟩
+  | argsNil =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.argsNil, by intros; contradiction⟩
+  | argsCons hrest he ihrest ihe =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.argsCons hrest he, by intros; contradiction⟩
+  | argsRestHalt hrest ihrest =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.argsRestHalt hrest, by intros; contradiction⟩
+  | argsHeadHalt hrest he ihrest ihe =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.argsHeadHalt hrest he, by intros; contradiction⟩
+  | funDef =>
+      simp only [RvRel, rvCode, rvStmt, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.funDef, by
+        intro V' st' o heq ho
+        injection heq with hV hs hout
+        subst hV; subst hs; subst hout
+        exact ⟨hb, hc⟩⟩
+  | @block funs V st body Vb stb o hbody ihbody =>
+      simp only [RvRel, rvCode, rvStmt, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      obtain ⟨hbody', hcbody⟩ := ihbody (bound := bound) (C := C)
+        (C' := (rvStmts bound C body).2)
+        (code' := .stmts (rvStmts bound C body).1) rfl hb hc
+      rw [← hoist_rvStmts bound C body] at hbody'
+      refine ⟨Step.block hbody', ?_⟩
+      intro V' st' o' hres ho
+      subst o'
+      injection hres with hV hs hout
+      subst hV; subst hs; subst hout
+      have hcbody' := hcbody Vb stb .normal rfl rfl
+      exact ⟨hb.mono (Step.block hbody),
+        hcbody'.2.kill_restore (scopeFrame_stmts_normal hbody)⟩
+  | letZero =>
+      simp only [RvRel, rvCode, rvStmt, rvLet_none, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.letZero, by
+        intro V' st' o heq ho
+        injection heq with hV hs hout
+        subst hV; subst hs; subst hout
+        constructor
+        · intro x hx
+          simp only [rvBound, rvNextBound, List.mem_append] at hx
+          rw [List.map_append, bindZeros_keys]
+          exact hx.elim (fun h => List.mem_append_left _ h)
+            (fun h => List.mem_append_right _ (hb x h))
+        · exact hc.kill_bindZeros _⟩
+  | @letVal funs V st vars e vals st1 he hlen ihe =>
+      obtain ⟨e', C'', hp⟩ := rvLet_some C vars e
+      simp only [RvRel, rvCode, rvStmt, hp, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      obtain ⟨he', hc'⟩ := rvLet_expr_fwd hp hc he
+      refine ⟨Step.letVal he' hlen, ?_⟩
+      intro V' st' o hres ho
+      injection hres with hV hs hout
+      subst hV; subst hs; subst hout
+      constructor
+      · intro x hx
+        simp only [rvBound, rvNextBound, List.mem_append] at hx
+        rw [List.map_append, List.map_fst_zip (by omega)]
+        exact hx.elim (fun h => List.mem_append_left _ h)
+          (fun h => List.mem_append_right _ (hb x h))
+      · exact hc' vals st1 rfl (by omega)
+  | @letHalt funs V st vars e st1 he ihe =>
+      obtain ⟨e', C'', hp⟩ := rvLet_some C vars e
+      simp only [RvRel, rvCode, rvStmt, hp, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      obtain ⟨he', -⟩ := rvLet_expr_fwd hp hc he
+      exact ⟨Step.letHalt he', by intros; simp_all⟩
+  | @assignVal funs V st vars e vals st1 he hlen ihe =>
+      generalize hp : rvAssign bound C vars e = p at hr
+      rcases p with ⟨e', C''⟩
+      simp only [RvRel, rvCode, rvStmt, hp, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      obtain ⟨he', hc'⟩ := rvAssign_expr_fwd hp hc hb he
+      refine ⟨Step.assignVal he' hlen, ?_⟩
+      intro V' st' o hres ho
+      injection hres with hV hs hout
+      subst hV; subst hs; subst hout
+      exact ⟨hb.afterStmt (Step.assignVal he hlen),
+        hc' vals st1 rfl (by omega)⟩
+  | @assignHalt funs V st vars e st1 he ihe =>
+      generalize hp : rvAssign bound C vars e = p at hr
+      rcases p with ⟨e', C''⟩
+      simp only [RvRel, rvCode, rvStmt, hp, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      obtain ⟨he', -⟩ := rvAssign_expr_fwd hp hc hb he
+      exact ⟨Step.assignHalt he', by intros; simp_all⟩
+  | @exprStmt funs V st e st1 he ihe =>
+      generalize hp : rvExprStmt C e = p at hr
+      rcases p with ⟨e', C''⟩
+      simp only [RvRel, rvCode, rvStmt, hp, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      obtain ⟨rfl, hc'⟩ := rvExprStmt_ok hp hc he
+      exact ⟨Step.exprStmt he, by
+        intro V' st' o hres ho
+        injection hres with hV hs hout
+        subst hV; subst hs; subst hout
+        exact ⟨hb, hc' st1 rfl⟩⟩
+  | @exprStmtHalt funs V st e st1 he ihe =>
+      generalize hp : rvExprStmt C e = p at hr
+      rcases p with ⟨e', C''⟩
+      have hfst := rvExprStmt_fst C e
+      rw [hp] at hfst
+      simp only at hfst
+      subst hfst
+      simp only [RvRel, rvCode, rvStmt, hp, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.exprStmtHalt he, by intros; simp_all⟩
+  | @ifTrue funs V st c body cv st1 V' st2 o hcond hnz hbody ihc ihbody =>
+      generalize hkeep : (rvNeutralExpr c && stmtsNoNormal body) = keep at hr
+      cases keep with
+      | false =>
+          simp only [RvRel, rvCode, rvStmt, hkeep, Bool.false_eq_true,
+            if_false, Prod.mk.injEq] at hr
+          obtain ⟨rfl, rfl⟩ := hr
+          obtain ⟨hbody', -⟩ := ihbody (bound := bound) (C := RvCache.empty)
+            (C' := (rvStmts bound RvCache.empty body).2.kill
+              (blockDecls body))
+            (code' := .stmt (.block (rvStmts bound RvCache.empty body).1))
+            rfl hb (RvOk.empty _ _)
+          exact ⟨Step.ifTrue hcond hnz hbody', by
+            intro W st' o' hres ho
+            injection hres with hV hs hout
+            subst hV; subst hs; subst hout
+            exact ⟨hb.mono (Step.ifTrue hcond hnz hbody), RvOk.empty _ _⟩⟩
+      | true =>
+          simp only [RvRel, rvCode, rvStmt, hkeep, if_true,
+            Prod.mk.injEq] at hr
+          obtain ⟨rfl, rfl⟩ := hr
+          obtain ⟨hbody', -⟩ := ihbody (bound := bound) (C := RvCache.empty)
+            (C' := (rvStmts bound RvCache.empty body).2.kill
+              (blockDecls body))
+            (code' := .stmt (.block (rvStmts bound RvCache.empty body).1))
+            rfl hb (RvOk.empty _ _)
+          refine ⟨Step.ifTrue hcond hnz hbody', ?_⟩
+          intro W st' o' hres ho
+          have hk : rvNeutralExpr c = true ∧ stmtsNoNormal body = true := by
+            simpa using hkeep
+          exact False.elim ((stmtNoNormal_sound (s := .block body)
+            (by simpa [YulEvmCompiler.Optimizer.stmtNoNormal] using hk.2)
+            hbody) (by simp_all))
+  | @ifFalse funs V st c body cv st1 hcond hz ihc =>
+      generalize hkeep : (rvNeutralExpr c && stmtsNoNormal body) = keep at hr
+      cases keep with
+      | false =>
+          simp only [RvRel, rvCode, rvStmt, hkeep, Bool.false_eq_true,
+            if_false, Prod.mk.injEq] at hr
+          obtain ⟨rfl, rfl⟩ := hr
+          exact ⟨Step.ifFalse hcond hz, by
+            intro W st' o hres ho
+            injection hres with hV hs hout
+            subst hV; subst hs; subst hout
+            exact ⟨hb, RvOk.empty _ _⟩⟩
+      | true =>
+          simp only [RvRel, rvCode, rvStmt, hkeep, if_true,
+            Prod.mk.injEq] at hr
+          obtain ⟨rfl, rfl⟩ := hr
+          refine ⟨Step.ifFalse hcond hz, ?_⟩
+          intro W st' o hres ho
+          injection hres with hV hs hout
+          subst hV; subst hs; subst hout
+          have hk : rvNeutralExpr c = true ∧ stmtsNoNormal body = true := by
+            simpa using hkeep
+          obtain ⟨vs', stc, hres', hmn⟩ := rvNeutral_step hk.1 _ _ _ _ hcond
+          injection hres' with hres'
+          injection hres' with hv1 hst1
+          rw [hst1]
+          exact ⟨hb, hc.memNeutral hmn⟩
+  | @ifHalt funs V st c body st1 hcond ihc =>
+      generalize hkeep : (rvNeutralExpr c && stmtsNoNormal body) = keep at hr
+      cases keep <;>
+        simp only [RvRel, rvCode, rvStmt, hkeep, Bool.false_eq_true,
+          if_false, if_true, Prod.mk.injEq] at hr <;>
+        obtain ⟨rfl, rfl⟩ := hr <;>
+        exact ⟨Step.ifHalt hcond, by intros; simp_all⟩
+  | switchExec hcond hsel ihc ihsel =>
+      simp only [RvRel, rvCode, rvStmt, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      refine ⟨Step.switchExec hcond hsel, ?_⟩
+      intro W st' o hres ho
+      injection hres with hV hs hout
+      subst hV; subst hs; subst hout
+      exact ⟨hb.mono (Step.switchExec hcond hsel), RvOk.empty _ _⟩
+  | switchHalt hcond ihc =>
+      simp only [RvRel, rvCode, rvStmt, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.switchHalt hcond, by intros; simp_all⟩
+  | forLoop hinit hloop ihinit ihloop =>
+      simp only [RvRel, rvCode, rvStmt, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      refine ⟨Step.forLoop hinit hloop, ?_⟩
+      intro W st' o hres ho
+      injection hres with hV hs hout
+      subst hV; subst hs; subst hout
+      exact ⟨hb.mono (Step.forLoop hinit hloop), RvOk.empty _ _⟩
+  | forInitHalt hinit ihinit =>
+      simp only [RvRel, rvCode, rvStmt, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.forInitHalt hinit, by intros; simp_all⟩
+  | «break» =>
+      simp only [RvRel, rvCode, rvStmt, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.break, by intros; simp_all⟩
+  | «continue» =>
+      simp only [RvRel, rvCode, rvStmt, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.continue, by intros; simp_all⟩
+  | leave =>
+      simp only [RvRel, rvCode, rvStmt, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.leave, by intros; simp_all⟩
+  | seqNil =>
+      simp only [RvRel, rvCode, rvStmts, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.seqNil, by
+        intro V' st' o heq ho
+        injection heq with hV hs hout
+        subst hV; subst hs; subst hout
+        exact ⟨hb, hc⟩⟩
+  | @seqCons funs V st s rest V1 st1 V2 st2 o hs hrest ihs ihrest =>
+      generalize hsfp : rvStmt bound C s = p at hr
+      rcases p with ⟨s', C1⟩
+      simp only [RvRel, rvCode, rvStmts, hsfp, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      obtain ⟨hs', hsok⟩ := ihs (bound := bound) (C := C) (C' := C1)
+        (code' := .stmt s') (by simp [RvRel, rvCode, hsfp]) hb hc
+      obtain ⟨hb1, hc1⟩ := hsok V1 st1 .normal rfl rfl
+      have hbound : rvBound bound (.stmt s) = rvNextBound bound s := by
+        cases s <;> rfl
+      rw [hbound] at hb1
+      obtain ⟨hrest', hrok⟩ := ihrest
+        (bound := rvNextBound bound s) (C := C1)
+        (C' := (rvStmts (rvNextBound bound s) C1 rest).2)
+        (code' := .stmts (rvStmts (rvNextBound bound s) C1 rest).1)
+        rfl hb1 hc1
+      exact ⟨Step.seqCons hs' hrest', by
+        intro V' st' o' hres ho
+        have hout := hrok V' st' o' hres ho
+        have hbounds : rvBound bound (.stmts (s :: rest)) =
+            rvBound (rvNextBound bound s) (.stmts rest) := by
+          cases s <;> rfl
+        rwa [hbounds]⟩
+  | @seqStop funs V st s rest V1 st1 o hs hne ihs =>
+      generalize hsfp : rvStmt bound C s = p at hr
+      rcases p with ⟨s', C1⟩
+      simp only [RvRel, rvCode, rvStmts, hsfp, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      obtain ⟨hs', -⟩ := ihs (bound := bound) (C := C) (C' := C1)
+        (code' := .stmt s') (by simp [RvRel, rvCode, hsfp]) hb hc
+      exact ⟨Step.seqStop hs' hne, by intros; simp_all⟩
+  | loopDone hcond hz ihc =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.loopDone hcond hz, by
+        intro W st' o hres ho
+        injection hres with hV hs hout
+        subst hV; subst hs; subst hout
+        exact ⟨hb, RvOk.empty _ _⟩⟩
+  | loopCondHalt hcond ihc =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.loopCondHalt hcond, by intros; simp_all⟩
+  | loopStep hcond hnz hbody hob hp hrest ihc ihb ihp ihr =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      refine ⟨Step.loopStep hcond hnz hbody hob hp hrest, ?_⟩
+      intro W st' o' hres ho
+      injection hres with hV hs hout
+      subst hV; subst hs; subst hout
+      exact ⟨hb.mono (Step.loopStep hcond hnz hbody hob hp hrest),
+        RvOk.empty _ _⟩
+  | loopPostHalt hcond hnz hbody hob hp ihc ihb ihp =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.loopPostHalt hcond hnz hbody hob hp, by
+        intro W st' o hres ho
+        injection hres with _ _ hout
+        subst hout
+        simp at ho⟩
+  | loopBreak hcond hnz hbody ihc ihb =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.loopBreak hcond hnz hbody, by
+        intro W st' o hres ho
+        injection hres with hV hs hout
+        subst hV; subst hs; subst hout
+        exact ⟨hb.mono hbody, RvOk.empty _ _⟩⟩
+  | loopLeave hcond hnz hbody ihc ihb =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.loopLeave hcond hnz hbody, by
+        intro W st' o hres ho
+        injection hres with _ _ hout
+        subst hout
+        simp at ho⟩
+  | loopBodyHalt hcond hnz hbody ihc ihb =>
+      simp only [RvRel, rvCode, Prod.mk.injEq] at hr
+      obtain ⟨rfl, rfl⟩ := hr
+      exact ⟨Step.loopBodyHalt hcond hnz hbody, by
+        intro W st' o hres ho
+        injection hres with _ _ hout
+        subst hout
+        simp at ho⟩
+
 end YulEvmCompiler.Optimizer.ReuseValues
