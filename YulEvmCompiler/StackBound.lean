@@ -61,11 +61,49 @@ def ValidHeights (prog : List Asm) (H : HeightMap) : Prop :=
 
 
 /-- Every `.code l` return-address value on the stack sits at the height `H (findLabel l)` its
-jump target expects: if it is at index `i` from the top, there are `stk.length - 1 - i` values below
-it, and returning through it (`dynJump`) lands at that height. -/
+jump target expects: splitting the stack as `above ++ .code l :: below`, the values `below` are
+exactly what remains after returning through it (`dynJump`), so its target's height is `below.length`.
+-/
 def ReturnAddrsOK (prog : List Asm) (H : HeightMap) (stk : List AVal) : Prop :=
-  ∀ i l, stk[i]? = some (.code l) →
-    ∃ c', findLabel l prog = some c' ∧ H c' = some (stk.length - 1 - i)
+  ∀ above l below, stk = above ++ .code l :: below →
+    ∃ c', findLabel l prog = some c' ∧ H c' = some below.length
+
+/-- Pushing a plain word preserves return-address consistency. -/
+theorem ReturnAddrsOK.word_cons {prog H} {σ : List AVal} {v : U256}
+    (h : ReturnAddrsOK prog H σ) : ReturnAddrsOK prog H (.word v :: σ) := by
+  intro above l below heq
+  cases above with
+  | nil => simp at heq
+  | cons x above' =>
+      rw [List.cons_append] at heq; injection heq with _ heq2; exact h above' l below heq2
+
+/-- Pushing a code address at the height its target expects preserves consistency. -/
+theorem ReturnAddrsOK.code_cons {prog H} {σ : List AVal} {l0 : Label}
+    (h : ReturnAddrsOK prog H σ)
+    (hc : ∃ c', findLabel l0 prog = some c' ∧ H c' = some σ.length) :
+    ReturnAddrsOK prog H (.code l0 :: σ) := by
+  intro above l below heq
+  cases above with
+  | nil => simp only [List.nil_append, List.cons.injEq] at heq; obtain ⟨hl, hb⟩ := heq
+           cases hl; cases hb; exact hc
+  | cons x above' =>
+      rw [List.cons_append] at heq; injection heq with _ heq2; exact h above' l below heq2
+
+/-- Popping the top preserves consistency for the tail. -/
+theorem ReturnAddrsOK.tail {prog H} {σ : List AVal} {x : AVal}
+    (h : ReturnAddrsOK prog H (x :: σ)) : ReturnAddrsOK prog H σ :=
+  fun above l below heq => h (x :: above) l below (by rw [heq, List.cons_append])
+
+/-- Appending a block of plain words on top is transparent to return-address consistency. -/
+theorem ReturnAddrsOK.words_append_iff {prog H} {vs : List U256} {σ : List AVal} :
+    ReturnAddrsOK prog H (words vs ++ σ) ↔ ReturnAddrsOK prog H σ := by
+  induction vs with
+  | nil => simp
+  | cons v vs ih =>
+      rw [words_cons, List.cons_append]
+      constructor
+      · intro h; exact ih.mp h.tail
+      · intro h; exact (ih.mpr h).word_cons
 
 /-- The reachable-configuration invariant. -/
 structure Inv (prog : List Asm) (H : HeightMap) (conf : AConf) : Prop where
@@ -105,7 +143,7 @@ theorem Inv.entry {prog : List Asm} {H : HeightMap} (h0 : H prog = some 0) (yst 
     Inv prog H ⟨prog, [], yst⟩ where
   fits := by simp
   height := by simpa using h0
-  returns := by intro i l hi; simp at hi
+  returns := by intro above l below hi; simp at hi
 
 /-- **The run stack-bound**, in the exact shape the Phase-B lemmas consume: every configuration
 reachable from the entry keeps its stack within the EVM limit. -/
