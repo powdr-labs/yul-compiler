@@ -517,6 +517,235 @@ theorem Step.mv_congr {x : Ident} {dA dB : Nat} {funs : FunEnv D}
       obtain ⟨Vb₂, rfl, hrelB⟩ := hrel'.sres_inv
       exact ⟨_, Step.loopBodyHalt h₂ hnz h₃, .sres _ _ hrelB⟩
 
+
+theorem MvRes.eres_inv_right {x : Ident} {dA dB : Nat} {r : EResult D}
+    {res₁ : Res D} (h : MvRes x dA dB res₁ (.eres r)) : res₁ = .eres r := by
+  cases h; rfl
+
+theorem MvRes.sres_inv_right {x : Ident} {dA dB : Nat} {V₂ : VEnv D} {st o}
+    {res₁ : Res D} (h : MvRes x dA dB res₁ (.sres V₂ st o)) :
+    ∃ V₁, res₁ = .sres V₁ st o ∧ MvRel x dA dB V₁ V₂ := by
+  cases h with
+  | sres _ _ hrel => exact ⟨_, rfl, hrel⟩
+
+set_option maxHeartbeats 1600000 in
+/-- The mirrored transport: a derivation over the *target* side of the
+relation yields one over the source side. -/
+theorem Step.mv_congr_bwd {x : Ident} {dA dB : Nat} {funs : FunEnv D}
+    {V₂ : VEnv D} {st : EvmState} {code : Code Op} {res₂ : Res D}
+    (h : Step D funs V₂ st code res₂) :
+    ∀ {V₁}, MvRel x dA dB V₁ V₂ →
+      ∃ res₁, Step D funs V₁ st code res₁ ∧ MvRes x dA dB res₁ res₂ := by
+  induction h with
+  | lit => intro _ _; exact ⟨_, Step.lit, .eres _⟩
+  | @var _ _ _ y v hv =>
+      intro V₁ hR
+      exact ⟨_, Step.var (by rw [hR.get y]; exact hv), .eres _⟩
+  | builtinOk ha hb iha =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.builtinOk h₂ hb, .eres _⟩
+  | builtinHalt ha hb iha =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.builtinHalt h₂ hb, .eres _⟩
+  | builtinArgsHalt ha iha =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.builtinArgsHalt h₂, .eres _⟩
+  | callOk ha hl hlen hbody ho iha ihbody =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.callOk h₂ hl hlen hbody ho, .eres _⟩
+  | callHalt ha hl hlen hbody iha ihbody =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.callHalt h₂ hl hlen hbody, .eres _⟩
+  | callArgsHalt ha iha =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.callArgsHalt h₂, .eres _⟩
+  | argsNil => intro _ _; exact ⟨_, Step.argsNil, .eres _⟩
+  | argsCons ha he iha ihe =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv_right] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihe hR
+      rw [hrel'.eres_inv_right] at h₃
+      exact ⟨_, Step.argsCons h₂ h₃, .eres _⟩
+  | argsRestHalt ha iha =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.argsRestHalt h₂, .eres _⟩
+  | argsHeadHalt ha he iha ihe =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv_right] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihe hR
+      rw [hrel'.eres_inv_right] at h₃
+      exact ⟨_, Step.argsHeadHalt h₂ h₃, .eres _⟩
+  | funDef => intro V₁ hR; exact ⟨_, Step.funDef, .sres _ _ hR⟩
+  | @block _ V _ body Vb stb o hbody ihbody =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihbody hR
+      obtain ⟨Vb₁, rfl, hrel'⟩ := hrel.sres_inv_right
+      exact ⟨_, Step.block h₂,
+        .sres _ _ (hR.restore_compat hrel'
+          (by rw [hR.length, hrel'.length]; exact venvLen_mono hbody rfl))⟩
+  | letZero =>
+      intro V₁ hR
+      exact ⟨_, Step.letZero, .sres _ _ (hR.pushMany _)⟩
+  | letVal he hlen ihe =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihe hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.letVal h₂ hlen, .sres _ _ (hR.pushMany _)⟩
+  | letHalt he ihe =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihe hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.letHalt h₂, .sres _ _ hR⟩
+  | assignVal he hlen ihe =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihe hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.assignVal h₂ hlen, .sres _ _ (hR.setMany _ _)⟩
+  | assignHalt he ihe =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihe hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.assignHalt h₂, .sres _ _ hR⟩
+  | exprStmt he ihe =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihe hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.exprStmt h₂, .sres _ _ hR⟩
+  | exprStmtHalt he ihe =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihe hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.exprStmtHalt h₂, .sres _ _ hR⟩
+  | ifTrue hc hnz hb ihc ihb =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv_right] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₂, rfl, hrel''⟩ := hrel'.sres_inv_right
+      exact ⟨_, Step.ifTrue h₂ hnz h₃, .sres _ _ hrel''⟩
+  | ifFalse hc hz ihc =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.ifFalse h₂ hz, .sres _ _ hR⟩
+  | ifHalt hc ihc =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.ifHalt h₂, .sres _ _ hR⟩
+  | switchExec hc hb ihc ihb =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv_right] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₂, rfl, hrel''⟩ := hrel'.sres_inv_right
+      exact ⟨_, Step.switchExec h₂ h₃, .sres _ _ hrel''⟩
+  | switchHalt hc ihc =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.switchHalt h₂, .sres _ _ hR⟩
+  | @forLoop _ V _ init c post body Vinit stinit Vend stend o hinit hloop ihinit ihloop =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihinit hR
+      obtain ⟨Vi₁, rfl, hrel'⟩ := hrel.sres_inv_right
+      obtain ⟨r₃, h₃, hrel₂⟩ := ihloop hrel'
+      obtain ⟨Ve₁, rfl, hrel₃⟩ := hrel₂.sres_inv_right
+      refine ⟨_, Step.forLoop h₂ h₃, .sres _ _ ?_⟩
+      exact hR.restore_compat hrel₃
+        (by rw [hR.length, hrel₃.length]
+            exact Nat.le_trans (venvLen_mono hinit rfl) (venvLen_mono hloop rfl))
+  | @forInitHalt _ V _ init c post body Vinit stinit hinit ihinit =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihinit hR
+      obtain ⟨Vi₁, rfl, hrel'⟩ := hrel.sres_inv_right
+      exact ⟨_, Step.forInitHalt h₂,
+        .sres _ _ (hR.restore_compat hrel'
+          (by rw [hR.length, hrel'.length]; exact venvLen_mono hinit rfl))⟩
+  | «break» => intro V₁ hR; exact ⟨_, Step.break, .sres _ _ hR⟩
+  | «continue» => intro V₁ hR; exact ⟨_, Step.continue, .sres _ _ hR⟩
+  | leave => intro V₁ hR; exact ⟨_, Step.leave, .sres _ _ hR⟩
+  | seqNil => intro V₁ hR; exact ⟨_, Step.seqNil, .sres _ _ hR⟩
+  | seqCons hs hrest ihs ihrest =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihs hR
+      obtain ⟨V₁', rfl, hrel'⟩ := hrel.sres_inv_right
+      obtain ⟨r₃, h₃, hrel₂⟩ := ihrest hrel'
+      obtain ⟨V₁'', rfl, hrel₃⟩ := hrel₂.sres_inv_right
+      exact ⟨_, Step.seqCons h₂ h₃, .sres _ _ hrel₃⟩
+  | seqStop hs hne ihs =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihs hR
+      obtain ⟨V₁', rfl, hrel'⟩ := hrel.sres_inv_right
+      exact ⟨_, Step.seqStop h₂ hne, .sres _ _ hrel'⟩
+  | loopDone hc hz ihc =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.loopDone h₂ hz, .sres _ _ hR⟩
+  | loopCondHalt hc ihc =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv_right] at h₂
+      exact ⟨_, Step.loopCondHalt h₂, .sres _ _ hR⟩
+  | loopStep hc hnz hb hob hp hr ihc ihb ihp ihr =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv_right] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₁, rfl, hrelB⟩ := hrel'.sres_inv_right
+      obtain ⟨r₄, h₄, hrel₄⟩ := ihp hrelB
+      obtain ⟨Vp₁, rfl, hrelP⟩ := hrel₄.sres_inv_right
+      obtain ⟨r₅, h₅, hrel₅⟩ := ihr hrelP
+      obtain ⟨Ve₁, rfl, hrelE⟩ := hrel₅.sres_inv_right
+      exact ⟨_, Step.loopStep h₂ hnz h₃ hob h₄ h₅, .sres _ _ hrelE⟩
+  | loopPostHalt hc hnz hb hob hp ihc ihb ihp =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv_right] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₁, rfl, hrelB⟩ := hrel'.sres_inv_right
+      obtain ⟨r₄, h₄, hrel₄⟩ := ihp hrelB
+      obtain ⟨Vp₁, rfl, hrelP⟩ := hrel₄.sres_inv_right
+      exact ⟨_, Step.loopPostHalt h₂ hnz h₃ hob h₄, .sres _ _ hrelP⟩
+  | loopBreak hc hnz hb ihc ihb =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv_right] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₁, rfl, hrelB⟩ := hrel'.sres_inv_right
+      exact ⟨_, Step.loopBreak h₂ hnz h₃, .sres _ _ hrelB⟩
+  | loopLeave hc hnz hb ihc ihb =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv_right] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₁, rfl, hrelB⟩ := hrel'.sres_inv_right
+      exact ⟨_, Step.loopLeave h₂ hnz h₃, .sres _ _ hrelB⟩
+  | loopBodyHalt hc hnz hb ihc ihb =>
+      intro V₁ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv_right] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₁, rfl, hrelB⟩ := hrel'.sres_inv_right
+      exact ⟨_, Step.loopBodyHalt h₂ hnz h₃, .sres _ _ hrelB⟩
+
 /-! ### Fresh keys: `x`-mention-free code never adds an `x` key
 
 The lemma that licenses crossing the sink's assignment: after the mention-free
