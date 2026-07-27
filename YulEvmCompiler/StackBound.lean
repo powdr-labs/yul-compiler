@@ -13,7 +13,7 @@ formally, `astep_sim`/`asteps_sim` carry `a.stk.length ≤ 1023` (one slot of sl
 `jump`/`jumpi`/`pushLabel` lower to `PUSH <addr>; JUMP`, transiently pushing the label address).
 
 This file discharges that hypothesis by a **static stack-*layout* analysis**: a layout map
-`H : List Asm → Option Layout` assigning each code position (a suffix of the program) the operand
+`H : List Asm → Option StkLayout` assigning each code position (a suffix of the program) the operand
 stack *layout* reached there — a list of `Slot`s recording, per stack cell, whether it holds a plain
 word or a *return-address* value, and in the latter case the **layout the target label expects on
 return** (`Slot.code R`). A decidable check `checkValid` verifies the map; when it holds every
@@ -52,25 +52,28 @@ inductive Slot
   deriving DecidableEq
 
 /-- A static operand-stack layout: top-of-stack first, mirroring `AConf.stk`. -/
-abbrev Layout := List Slot
+abbrev StkLayout := List Slot
 
-/-- The layout map assigns each analysed code position (a suffix of the program) the operand-stack
-layout reached there. `none` = not analysed (unreachable / rejected). -/
-abbrev LayoutMap := List Asm → Option Layout
+/-- The layout map assigns each analysed code position (a suffix of the program) the **set** of
+operand-stack layouts reachable there. A set (not a single layout) is essential: a function called
+from several call sites is entered at different absolute stack depths, so its shared entry position
+genuinely has one reaching layout per site. An empty list = not analysed (unreachable / rejected).
+Recursion or a stack-growing loop yields infinitely many reaching layouts, so the solver rejects it. -/
+abbrev LayoutMap := List Asm → List StkLayout
 
 /-- The runtime stack ↔ layout correspondence: words match `word`; a runtime return address
 `code l` matches `code tgt` exactly when `l` resolves to `tgt`. Purely structural, so `dup`/`swap`
 transport it for free — the return-consistency check lives in `stepConstraint` at `dynJump`. -/
-inductive StkMatch (prog : List Asm) (H : LayoutMap) : List AVal → Layout → Prop
+inductive StkMatch (prog : List Asm) (H : LayoutMap) : List AVal → StkLayout → Prop
   | nil : StkMatch prog H [] []
-  | word {v : U256} {σ : List AVal} {S : Layout} :
+  | word {v : U256} {σ : List AVal} {S : StkLayout} :
       StkMatch prog H σ S → StkMatch prog H (.word v :: σ) (.word :: S)
-  | code {l : Label} {c' : List Asm} {σ : List AVal} {S : Layout} :
+  | code {l : Label} {c' : List Asm} {σ : List AVal} {S : StkLayout} :
       findLabel l prog = some c' → StkMatch prog H σ S →
       StkMatch prog H (.code l :: σ) (.code c' :: S)
 
 /-- Matched stacks have equal length. -/
-theorem StkMatch.length_eq {prog H} {σ : List AVal} {S : Layout}
+theorem StkMatch.length_eq {prog H} {σ : List AVal} {S : StkLayout}
     (h : StkMatch prog H σ S) : σ.length = S.length := by
   induction h with
   | nil => rfl
@@ -78,7 +81,7 @@ theorem StkMatch.length_eq {prog H} {σ : List AVal} {S : Layout}
   | code _ _ ih => simp [ih]
 
 /-- Concatenation of matched stacks. -/
-theorem StkMatch.append {prog H} {σ₁ σ₂ : List AVal} {S₁ S₂ : Layout}
+theorem StkMatch.append {prog H} {σ₁ σ₂ : List AVal} {S₁ S₂ : StkLayout}
     (h₁ : StkMatch prog H σ₁ S₁) (h₂ : StkMatch prog H σ₂ S₂) :
     StkMatch prog H (σ₁ ++ σ₂) (S₁ ++ S₂) := by
   induction h₁ with
@@ -87,7 +90,7 @@ theorem StkMatch.append {prog H} {σ₁ σ₂ : List AVal} {S₁ S₂ : Layout}
   | code hf _ ih => exact .code hf ih
 
 /-- Splitting a matched concatenation. -/
-theorem StkMatch.append_inv {prog H} {σ₁ σ₂ : List AVal} {S : Layout}
+theorem StkMatch.append_inv {prog H} {σ₁ σ₂ : List AVal} {S : StkLayout}
     (h : StkMatch prog H (σ₁ ++ σ₂) S) :
     ∃ S₁ S₂, S = S₁ ++ S₂ ∧ StkMatch prog H σ₁ S₁ ∧ StkMatch prog H σ₂ S₂ := by
   induction σ₁ generalizing S with
@@ -111,7 +114,7 @@ theorem StkMatch.replicate_word {prog H} (vs : List U256) :
       rw [words_cons]; simp only [List.length_cons, List.replicate_succ]; exact .word ih
 
 /-- Conversely, whatever `words vs` matches is the all-`word` layout. -/
-theorem StkMatch.eq_replicate {prog H} {vs : List U256} {S : Layout}
+theorem StkMatch.eq_replicate {prog H} {vs : List U256} {S : StkLayout}
     (h : StkMatch prog H (words vs) S) : S = List.replicate vs.length .word := by
   induction vs generalizing S with
   | nil => cases h; rfl
@@ -133,27 +136,27 @@ theorem drop_replicate_append {α} (k : Nat) (x : α) (L : List α) :
 entry layout `S`. Mirrors each `AStep` rule's stack effect and the EVM 1024 limit (1 slot of slack
 for the label-address push). `dup`/`swap` transport whatever cells they touch — including return
 addresses — while `dynJump` requires the top cell's return layout `R` to equal the layout below it. -/
-def stepConstraint (prog : List Asm) (H : LayoutMap) : Asm → List Asm → Layout → Prop
-  | .push _,      c, S => H c = some (.word :: S) ∧ S.length + 1 ≤ 1023
-  | .dup n,       c, S => ∃ sl, S[n.val]? = some sl ∧ H c = some (sl :: S) ∧ S.length + 1 ≤ 1023
-  | .pushLabel l, c, S => (∃ c', findLabel l prog = some c' ∧ H c = some (.code c' :: S))
+def stepConstraint (prog : List Asm) (H : LayoutMap) : Asm → List Asm → StkLayout → Prop
+  | .push _,      c, S => (.word :: S) ∈ H c ∧ S.length + 1 ≤ 1023
+  | .dup n,       c, S => ∃ sl, S[n.val]? = some sl ∧ (sl :: S) ∈ H c ∧ S.length + 1 ≤ 1023
+  | .pushLabel l, c, S => (∃ c', findLabel l prog = some c' ∧ (.code c' :: S) ∈ H c)
       ∧ S.length + 1 ≤ 1023
-  | .pop,         c, S => ∃ sl S', S = sl :: S' ∧ H c = some S'
+  | .pop,         c, S => ∃ sl S', S = sl :: S' ∧ S' ∈ H c
   | .swap n,      c, S => ∃ a mid b rest, S = a :: (mid ++ b :: rest) ∧ mid.length = n.val
-      ∧ H c = some (b :: (mid ++ a :: rest))
-  | .label _,     c, S => H c = some S
+      ∧ (b :: (mid ++ a :: rest)) ∈ H c
+  | .label _,     c, S => S ∈ H c
   | .op yop,      c, S => ∃ o, opTable yop = some o ∧ Operation.popArity o ≤ S.length ∧
       (List.replicate (Operation.pushArity o) Slot.word ++ S.drop (Operation.popArity o)).length ≤ 1023 ∧
-      H c = some (List.replicate (Operation.pushArity o) Slot.word ++ S.drop (Operation.popArity o))
-  | .jump l,      _, S => ∃ c', findLabel l prog = some c' ∧ H c' = some S
+      (List.replicate (Operation.pushArity o) Slot.word ++ S.drop (Operation.popArity o)) ∈ H c
+  | .jump l,      _, S => ∃ c', findLabel l prog = some c' ∧ S ∈ H c'
   | .jumpi l,     c, S => ∃ S', S = .word :: S' ∧
-      (∃ c', findLabel l prog = some c' ∧ H c' = some S') ∧ H c = some S'
-  | .dynJump,     _, S => ∃ c' S', S = .code c' :: S' ∧ H c' = some S'
+      (∃ c', findLabel l prog = some c' ∧ S' ∈ H c') ∧ S' ∈ H c
+  | .dynJump,     _, S => ∃ c' S', S = .code c' :: S' ∧ S' ∈ H c'
 
-/-- A layout map is **valid** for `prog` when every instruction position it analyses satisfies its
-step constraint. -/
+/-- A layout map is **valid** for `prog` when every reaching layout at every analysed position
+satisfies its step constraint. -/
 def ValidHeights (prog : List Asm) (H : LayoutMap) : Prop :=
-  ∀ i c, (i :: c) <:+ prog → ∀ S, H (i :: c) = some S → stepConstraint prog H i c S
+  ∀ i c, (i :: c) <:+ prog → ∀ S, S ∈ H (i :: c) → stepConstraint prog H i c S
 
 /-! ### The invariant and its preservation -/
 
@@ -161,7 +164,7 @@ def ValidHeights (prog : List Asm) (H : LayoutMap) : Prop :=
 map assigns to the current code position. Return-address consistency is *not* a separate clause —
 it is enforced position-locally by `stepConstraint` at `dynJump` and carried by `StkMatch`. -/
 def Inv (prog : List Asm) (H : LayoutMap) (conf : AConf) : Prop :=
-  conf.stk.length ≤ 1023 ∧ ∃ S, H conf.code = some S ∧ StkMatch prog H conf.stk S
+  conf.stk.length ≤ 1023 ∧ ∃ S, S ∈ H conf.code ∧ StkMatch prog H conf.stk S
 
 /-- **The bound falls straight out of the invariant.** -/
 theorem Inv.bound {prog H} {conf : AConf} (h : Inv prog H conf) : conf.stk.length ≤ 1023 :=
@@ -344,16 +347,16 @@ theorem Inv.reach {prog : List Asm} {H : LayoutMap} (hV : ValidHeights prog H)
   | head hstep _ ih => exact ih ((hstep.suffix hsuf)) (hinv.step hV hstep hsuf)
 
 omit model in
-/-- The entry configuration `⟨prog, [], yst⟩` satisfies the invariant, provided the map assigns the
-whole program the empty layout. -/
-theorem Inv.entry {prog : List Asm} {H : LayoutMap} (h0 : H prog = some []) (yst : EvmState) :
+/-- The entry configuration `⟨prog, [], yst⟩` satisfies the invariant, provided the empty layout is
+among those the map assigns the whole program. -/
+theorem Inv.entry {prog : List Asm} {H : LayoutMap} (h0 : [] ∈ H prog) (yst : EvmState) :
     Inv prog H ⟨prog, [], yst⟩ :=
   ⟨by simp, [], h0, .nil⟩
 
 /-- **The run stack-bound**, in the exact shape the Phase-B lemmas consume: every configuration
 reachable from the entry keeps its stack within the EVM limit. -/
 theorem run_stack_bound {prog : List Asm} {H : LayoutMap}
-    (hV : ValidHeights prog H) (h0 : H prog = some []) (yst : EvmState) :
+    (hV : ValidHeights prog H) (h0 : [] ∈ H prog) (yst : EvmState) :
     ∀ mid, ASteps (model := model) prog ⟨prog, [], yst⟩ mid → mid.stk.length ≤ 1023 :=
   fun _ hsteps => (Inv.reach hV hsteps (List.suffix_refl _) (Inv.entry h0 yst)).bound
 
@@ -363,40 +366,40 @@ The layout table `H` is proposed by an *untrusted* solver; soundness rests only 
 below, so a wrong proposal is simply rejected. -/
 
 /-- Decidable mirror of `stepConstraint`. -/
-def stepOK (prog : List Asm) (H : LayoutMap) : Asm → List Asm → Layout → Bool
-  | .push _,      c, S => decide (H c = some (.word :: S)) && decide (S.length + 1 ≤ 1023)
+def stepOK (prog : List Asm) (H : LayoutMap) : Asm → List Asm → StkLayout → Bool
+  | .push _,      c, S => decide ((.word :: S) ∈ H c) && decide (S.length + 1 ≤ 1023)
   | .dup n,       c, S => match S[n.val]? with
-      | some sl => decide (H c = some (sl :: S)) && decide (S.length + 1 ≤ 1023)
+      | some sl => decide ((sl :: S) ∈ H c) && decide (S.length + 1 ≤ 1023)
       | none => false
   | .pushLabel l, c, S =>
       (match findLabel l prog with
-       | some c' => decide (H c = some (.code c' :: S))
+       | some c' => decide ((.code c' :: S) ∈ H c)
        | none => false) && decide (S.length + 1 ≤ 1023)
-  | .pop,         c, S => match S with | _ :: S' => decide (H c = some S') | [] => false
+  | .pop,         c, S => match S with | _ :: S' => decide (S' ∈ H c) | [] => false
   | .swap n,      c, S => match S with
       | a :: t => match t.drop n.val with
-                  | b :: rest => decide (H c = some (b :: (t.take n.val ++ a :: rest)))
+                  | b :: rest => decide ((b :: (t.take n.val ++ a :: rest)) ∈ H c)
                   | [] => false
       | [] => false
-  | .label _,     c, S => decide (H c = some S)
+  | .label _,     c, S => decide (S ∈ H c)
   | .op yop,      c, S => match opTable yop with
       | some o => decide (Operation.popArity o ≤ S.length)
           && decide ((List.replicate (Operation.pushArity o) Slot.word
               ++ S.drop (Operation.popArity o)).length ≤ 1023)
-          && decide (H c = some (List.replicate (Operation.pushArity o) Slot.word
-              ++ S.drop (Operation.popArity o)))
+          && decide ((List.replicate (Operation.pushArity o) Slot.word
+              ++ S.drop (Operation.popArity o)) ∈ H c)
       | none => false
-  | .jump l,      _, S => match findLabel l prog with | some c' => decide (H c' = some S) | none => false
+  | .jump l,      _, S => match findLabel l prog with | some c' => decide (S ∈ H c') | none => false
   | .jumpi l,     c, S => match S with
-      | .word :: S' => (match findLabel l prog with | some c' => decide (H c' = some S') | none => false)
-          && decide (H c = some S')
+      | .word :: S' => (match findLabel l prog with | some c' => decide (S' ∈ H c') | none => false)
+          && decide (S' ∈ H c)
       | _ => false
-  | .dynJump,     _, S => match S with | .code c' :: S' => decide (H c' = some S') | _ => false
+  | .dynJump,     _, S => match S with | .code c' :: S' => decide (S' ∈ H c') | _ => false
 
 omit model in
 set_option linter.unusedTactic false in
 /-- `stepOK` soundly implies `stepConstraint`. -/
-theorem stepOK_sound {prog : List Asm} {H : LayoutMap} {i : Asm} {c : List Asm} {S : Layout}
+theorem stepOK_sound {prog : List Asm} {H : LayoutMap} {i : Asm} {c : List Asm} {S : StkLayout}
     (h : stepOK prog H i c S = true) : stepConstraint prog H i c S := by
   cases i with
   | push v => simp only [stepOK, Bool.and_eq_true, decide_eq_true_eq] at h; exact h
@@ -453,11 +456,11 @@ theorem stepOK_sound {prog : List Asm} {H : LayoutMap} {i : Asm} {c : List Asm} 
       · next c' S' => intro h; simp only [decide_eq_true_eq] at h; exact ⟨c', S', rfl, h⟩
       · intro h; simp at h
 
-/-- The verifier: `H` satisfies every suffix position's step constraint. -/
+/-- The verifier: at every suffix position, *every* reaching layout satisfies the step constraint. -/
 def checkValid (prog : List Asm) (H : LayoutMap) : Bool :=
-  prog.tails.all (fun s => match s, H s with
-    | i :: c, some S => stepOK prog H i c S
-    | _, _ => true)
+  prog.tails.all (fun s => match s with
+    | i :: c => (H (i :: c)).all (fun S => stepOK prog H i c S)
+    | [] => true)
 
 omit model in
 /-- **Verifier soundness**: a passing `checkValid` yields `ValidHeights`. -/
@@ -465,21 +468,21 @@ theorem checkValid_sound {prog : List Asm} {H : LayoutMap} (h : checkValid prog 
     ValidHeights prog H := by
   intro i c hsuf S hHS
   rw [checkValid, List.all_eq_true] at h
-  have hmem : (i :: c) ∈ prog.tails := (List.mem_tails _ _).mpr hsuf
-  have hs := h (i :: c) hmem
-  rw [hHS] at hs
-  exact stepOK_sound hs
+  have hs := h (i :: c) ((List.mem_tails _ _).mpr hsuf)
+  dsimp only at hs
+  rw [List.all_eq_true] at hs
+  exact stepOK_sound (hs S hHS)
 
 /-! ### The untrusted layout solver + the `compile`-facing check
 
 `infer` is a forward worklist that *proposes* a layout table (unverified — soundness rests only on
-`checkValid`). At each analysed position it pushes the successors' layouts; a position revisited with
-an inconsistent layout (recursion, stack-growing loop) makes it fail, so those programs are rejected
-— exactly the "no overflow" contract. Positions are keyed by suffix length (unique among suffixes of
-a fixed program). -/
+`checkValid`). At each analysed position it accumulates the *set* of reaching layouts and pushes
+each new layout's successors. A recursion or stack-growing loop produces ever-deeper layouts, so the
+worklist never drains within the fuel budget and the program is rejected — exactly the "no overflow"
+contract. Positions are keyed by suffix length (unique among suffixes of a fixed program). -/
 
 /-- Successor positions and their layouts for one instruction. `none` = malformed / reject. -/
-def succsOf (prog : List Asm) : Asm → List Asm → Layout → Option (List (List Asm × Layout))
+def succsOf (prog : List Asm) : Asm → List Asm → StkLayout → Option (List (List Asm × StkLayout))
   | .push _,      c, S => some [(c, .word :: S)]
   | .dup n,       c, S => match S[n.val]? with | some sl => some [(c, sl :: S)] | none => none
   | .pushLabel l, c, S => match findLabel l prog with
@@ -503,38 +506,48 @@ def succsOf (prog : List Asm) : Asm → List Asm → Layout → Option (List (Li
       | _ => none
   | .dynJump,     _, S => match S with | .code tgt :: S' => some [(tgt, S')] | _ => none
 
-/-- Forward worklist accumulating a layout table; fails on inconsistent revisits. -/
+/-- Forward worklist accumulating, per position, the *set* of reaching layouts. Fuel-bounded: a
+program whose reachable layouts do not stabilise (recursion / stack-growing loop) exhausts the fuel
+and is rejected (`none`). -/
 partial def inferGo (prog : List Asm) :
-    List (List Asm × Layout) → List (Nat × Layout) → Option (List (Nat × Layout))
-  | [], acc => some acc
-  | (pos, S) :: wl, acc =>
-    match acc.find? (fun p => p.1 == pos.length) with
-    | some (_, S') => if S' == S then inferGo prog wl acc else none
-    | none =>
+    Nat → List (List Asm × StkLayout) → List (Nat × List StkLayout) →
+      Option (List (Nat × List StkLayout))
+  | 0, _, _ => none
+  | _ + 1, [], acc => some acc
+  | fuel + 1, (pos, S) :: wl, acc =>
+    if 1023 < S.length then none else  -- a layout past the limit ⇒ overflow ⇒ reject (fast on recursion)
+    let entry := acc.find? (fun p => p.1 == pos.length)
+    let known := (entry.map (·.2)).getD []
+    if known.contains S then inferGo prog fuel wl acc
+    else
+      let acc' := if entry.isSome
+                  then acc.map (fun p => if p.1 == pos.length then (p.1, S :: p.2) else p)
+                  else (pos.length, [S]) :: acc
       match pos with
-      | [] => inferGo prog wl ((pos.length, S) :: acc)
+      | [] => inferGo prog fuel wl acc'
       | i :: c => match succsOf prog i c S with
-                  | some succs => inferGo prog (succs ++ wl) ((pos.length, S) :: acc)
+                  | some succs => inferGo prog fuel (succs ++ wl) acc'
                   | none => none
 
 /-- Propose a layout table for `prog`, seeded with the empty entry layout. -/
-def infer (prog : List Asm) : Option (List (Nat × Layout)) := inferGo prog [(prog, [])] []
+def infer (prog : List Asm) : Option (List (Nat × List StkLayout)) :=
+  inferGo prog 1000000 [(prog, [])] []
 
 /-- Read a proposed table back as a layout map, keyed by suffix length. -/
-def tableToMap (t : List (Nat × Layout)) : LayoutMap :=
-  fun s => (t.find? (fun p => p.1 == s.length)).map (·.2)
+def tableToMap (t : List (Nat × List StkLayout)) : LayoutMap :=
+  fun s => ((t.find? (fun p => p.1 == s.length)).map (·.2)).getD []
 
 /-- **The compile-facing stack-overflow check.** Propose a layout table and *verify* it. -/
 def stackOK (prog : List Asm) : Bool :=
   match infer prog with
-  | some t => checkValid prog (tableToMap t) && decide (tableToMap t prog = some [])
+  | some t => checkValid prog (tableToMap t) && decide ([] ∈ tableToMap t prog)
   | none => false
 
 omit model in
-/-- **Soundness of the check**: passing `stackOK` exhibits a valid layout map assigning the whole
-program the empty entry layout — the two facts `run_stack_bound` consumes. -/
+/-- **Soundness of the check**: passing `stackOK` exhibits a valid layout map whose whole-program
+layout set contains the empty entry layout — the two facts `run_stack_bound` consumes. -/
 theorem stackOK_sound {prog : List Asm} (h : stackOK prog = true) :
-    ∃ H : LayoutMap, ValidHeights prog H ∧ H prog = some [] := by
+    ∃ H : LayoutMap, ValidHeights prog H ∧ [] ∈ H prog := by
   unfold stackOK at h
   cases he : infer prog with
   | none => rw [he] at h; simp at h
