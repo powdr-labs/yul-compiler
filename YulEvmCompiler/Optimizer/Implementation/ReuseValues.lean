@@ -201,8 +201,11 @@ where
 
 /-! ### Expression classification -/
 
+/-- Literal keccak range, bounded so the raw naturals coincide with the
+semantic (`toNat`-of-`litValue`) addresses. -/
 def keccakLits : Expr Op → Option (Nat × Nat)
-  | .builtin .keccak256 [.lit (.number a), .lit (.number b)] => some (a, b)
+  | .builtin .keccak256 [.lit (.number a), .lit (.number b)] =>
+      if a + b ≤ 2 ^ 256 then some (a, b) else none
   | _ => none
 
 def sloadArg : Expr Op → Option (Expr Op)
@@ -210,11 +213,13 @@ def sloadArg : Expr Op → Option (Expr Op)
   | _ => none
 
 def mloadLit : Expr Op → Option Nat
-  | .builtin .mload [.lit (.number k)] => some k
+  | .builtin .mload [.lit (.number k)] =>
+      if k + 32 ≤ 2 ^ 256 then some k else none
   | _ => none
 
 def mstoreLit : Expr Op → Option (Nat × Expr Op)
-  | .builtin .mstore [.lit (.number k), e] => some (k, e)
+  | .builtin .mstore [.lit (.number k), e] =>
+      if k + 32 ≤ 2 ^ 256 then some (k, e) else none
   | _ => none
 
 mutual
@@ -297,6 +302,11 @@ def rvRhs (C : RvCache) (x : Ident) (e : Expr Op) : Expr Op × RvCache :=
 
 /-! ### The sweep -/
 
+/-- Names visibly bound after a statement (`StorageForward`'s threading). -/
+def rvNextBound (bound : List Ident) : Stmt Op → List Ident
+  | .letDecl xs _ => xs ++ bound
+  | _ => bound
+
 mutual
 
 def rvLet (C : RvCache) : List Ident → Option (Expr Op) →
@@ -310,8 +320,15 @@ def rvLet (C : RvCache) : List Ident → Option (Expr Op) →
       | none => (none, C')
       | some e => if rvNeutralExpr e then (some e, C') else (some e, RvCache.empty)
 
-def rvAssign (C : RvCache) : List Ident → Expr Op → Expr Op × RvCache
-  | [x], e => rvRhs (C.kill [x]) x e
+def rvAssign (bound : List Ident) (C : RvCache) :
+    List Ident → Expr Op → Expr Op × RvCache
+  | [x], e =>
+      -- Assignment to an unbound name is a semantic no-op, so a fact
+      -- recorded for it would be baseless; `bound` mirrors `StorageForward`.
+      if bound.contains x then rvRhs (C.kill [x]) x e
+      else
+        let C' := C.kill [x]
+        if rvNeutralExpr e then (e, C') else (e, RvCache.empty)
   | xs, e =>
       let C' := C.kill xs
       if rvNeutralExpr e then (e, C') else (e, RvCache.empty)
@@ -330,16 +347,16 @@ def rvExprStmt (C : RvCache) (e : Expr Op) : Expr Op × RvCache :=
           if rvNeutralExpr e then (e, C.killCells) else (e, RvCache.empty)
       | _ => if rvNeutralExpr e then (e, C) else (e, RvCache.empty)
 
-def rvStmt (C : RvCache) : Stmt Op → Stmt Op × RvCache
+def rvStmt (bound : List Ident) (C : RvCache) : Stmt Op → Stmt Op × RvCache
   | .letDecl xs rhs => let p := rvLet C xs rhs; (.letDecl xs p.1, p.2)
-  | .assign xs e => let p := rvAssign C xs e; (.assign xs p.1, p.2)
+  | .assign xs e => let p := rvAssign bound C xs e; (.assign xs p.1, p.2)
   | .exprStmt e => let p := rvExprStmt C e; (.exprStmt p.1, p.2)
   | .block body =>
-      let (body', C') := rvStmts C body
+      let (body', C') := rvStmts bound C body
       (.block body', C'.kill (blockDecls body))
   | s@(.funDef _ _ _ _) => (s, C)
   | .cond c body =>
-      let (body', _) := rvStmts RvCache.empty body
+      let (body', _) := rvStmts bound RvCache.empty body
       let C' := if rvNeutralExpr c && stmtsNoNormal body then C
                 else RvCache.empty
       (.cond c body', C')
@@ -347,11 +364,12 @@ def rvStmt (C : RvCache) : Stmt Op → Stmt Op × RvCache
   | s@(.forLoop _ _ _ _) => (s, RvCache.empty)
   | s => (s, C)
 
-def rvStmts (C : RvCache) : List (Stmt Op) → List (Stmt Op) × RvCache
+def rvStmts (bound : List Ident) (C : RvCache) :
+    List (Stmt Op) → List (Stmt Op) × RvCache
   | [] => ([], C)
   | s :: rest =>
-      let (s', C') := rvStmt C s
-      let (rest', C'') := rvStmts C' rest
+      let (s', C') := rvStmt bound C s
+      let (rest', C'') := rvStmts (rvNextBound bound s) C' rest
       (s' :: rest', C'')
 
 end
@@ -359,7 +377,8 @@ end
 /-- The shallow pass: one linear sweep, function bodies untouched. Guarded by
 whole-block layout-freedom (see the module notes). -/
 def reuseValuesShallowBlock (body : Block Op) : Block Op :=
-  if storageLayoutFreeStmts body then (rvStmts RvCache.empty body).1 else body
+  if storageLayoutFreeStmts body then (rvStmts [] RvCache.empty body).1
+  else body
 
 mutual
 /-- Recursively apply the shallow pass at each function-body, loop-post, and
