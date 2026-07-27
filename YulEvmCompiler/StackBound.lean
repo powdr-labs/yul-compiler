@@ -27,7 +27,7 @@ sits at exactly the height `H (findLabel l)` its target expects.
 namespace YulEvmCompiler
 
 open EvmSemantics EvmSemantics.EVM
-open YulSemantics.EVM (U256 EvmState Op)
+open YulSemantics.EVM (U256 EvmState Op builtinWithExternal)
 
 /-! ### The height map and its well-formedness -/
 
@@ -46,7 +46,7 @@ def stepConstraint (prog : List Asm) (H : HeightMap) : Asm → List Asm → Nat 
   | .pop,         c, h => 1 ≤ h ∧ H c = some (h - 1)
   | .swap _,      c, h => H c = some h
   | .label _,     c, h => H c = some h
-  | .op yop,      c, h => ∀ o, opTable yop = some o →
+  | .op yop,      c, h => ∃ o, opTable yop = some o ∧
       Operation.popArity o ≤ h ∧ h - Operation.popArity o + Operation.pushArity o ≤ 1023 ∧
       H c = some (h - Operation.popArity o + Operation.pushArity o)
   | .jump l,      _, h => ∃ c', findLabel l prog = some c' ∧ H c' = some h
@@ -119,6 +119,32 @@ theorem Inv.bound {prog H} {conf : AConf} (h : Inv prog H conf) : conf.stk.lengt
 
 variable [model : ExternalModel]
 
+set_option linter.unusedTactic false in
+set_option linter.unreachableTactic false in
+set_option maxHeartbeats 2000000 in
+/-- **Op-arity coupling**: whenever a builtin (local op or external call/create) executes
+successfully to `.ok rets`, its actual argument and result counts match the `Operation`'s declared
+`popArity`/`pushArity`. This ties the abstract `AStep.op` stack effect (`words args ++ σ ↦
+words rets ++ σ`) to the height-map arithmetic in `stepConstraint`. -/
+theorem builtin_arity {yop : Op} {o : Operation} (hop : opTable yop = some o)
+    {args rets : List U256} {yst yst' : EvmState}
+    (h : builtinWithExternal model.calls model.creates yop args yst (.ok rets yst')) :
+    args.length = Operation.popArity o ∧ rets.length = Operation.pushArity o := by
+  cases yop <;>
+    simp only [opTable, Option.some.injEq, reduceCtorEq] at hop <;>
+    subst hop <;>
+    rcases args with _|⟨a,_|⟨b,_|⟨c,_|⟨d,_|⟨e,_|⟨f,_|⟨g,_|⟨hh,_⟩⟩⟩⟩⟩⟩⟩⟩ <;>
+    simp only [builtinWithExternal, YulSemantics.EVM.externalCall, YulSemantics.EVM.externalCreate,
+      YulSemantics.EVM.stepOp, YulSemantics.EVM.bin, YulSemantics.EVM.un, YulSemantics.EVM.ter,
+      YulSemantics.EVM.rd0, YulSemantics.EVM.rd1, YulSemantics.EVM.guardStatic, reduceCtorEq] at h <;>
+    (try split at h) <;>
+    (try simp only [reduceCtorEq, Option.some.injEq, YulSemantics.BuiltinResult.ok.injEq] at h)
+  all_goals (first
+    | done
+    | (refine ⟨by simp [Operation.popArity], ?_⟩; first
+        | (obtain ⟨rfl, -⟩ := h; simp [Operation.pushArity])
+        | (obtain ⟨_, -, rfl, -⟩ := h; simp [Operation.pushArity])))
+
 set_option warningAsError false in
 /-- **Preservation** (interface; the per-constructor case analysis is the substance of the
 checker's soundness). Given a well-formed height map, `Inv` is preserved by every `AStep`. -/
@@ -175,8 +201,22 @@ theorem Inv.step {prog : List Asm} {H : HeightMap} (hV : ValidHeights prog H)
       -- HARD: a swapped `.code` value would move to the wrong height (needs value-flow).
       sorry
   | @op yop args rets c σ yst yst' hstepOp =>
-      -- needs the op-arity coupling: args.length = popArity (opTable yop), rets.length = pushArity.
-      sorry
+      obtain ⟨o, hop, hpop, hbnd, hHc⟩ := hV (.op yop) c hsuf _ hinv.height
+      obtain ⟨hargs, hrets⟩ := builtin_arity hop hstepOp
+      have hwa : (words args ++ σ).length = args.length + σ.length := by
+        simp [words, List.length_append, List.length_map]
+      have hwr : (words rets ++ σ).length = rets.length + σ.length := by
+        simp [words, List.length_append, List.length_map]
+      -- height arithmetic: h - popArity + pushArity = rets.length + σ.length
+      have hcalc : (words args ++ σ).length - Operation.popArity o + Operation.pushArity o
+          = (words rets ++ σ).length := by rw [hwa, hwr, hargs, hrets]; omega
+      refine ⟨?_, ?_, ?_⟩
+      · show (words rets ++ σ).length ≤ 1023
+        rw [← hcalc]; exact hbnd
+      · show H c = some (words rets ++ σ).length
+        rw [hHc, hcalc]
+      · exact (ReturnAddrsOK.words_append_iff.mpr
+          (ReturnAddrsOK.words_append_iff.mp hinv.returns))
 
 /-- **The invariant holds at every reachable configuration**, hence the stack stays within the
 EVM limit throughout any Asm run — the hypothesis `astep_sim`/`asteps_sim` require. -/
