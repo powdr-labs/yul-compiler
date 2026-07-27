@@ -1732,4 +1732,229 @@ theorem fuseSeqFuel_bwd (fuel : Nat) (ss : List (Stmt Op))
       | seqStop hs hne =>
           exact ⟨V₂, Step.seqStop hs hne, .refl _⟩
 
+/-! ### The sweep preserves the hoisted scope -/
+
+theorem fuseSeqFuel_hoist : ∀ (fuel : Nat) (ss : List (Stmt Op)),
+    hoist D (fuseSeqFuel fuel ss) = hoist D ss := by
+  intro fuel ss
+  induction fuel, ss using fuseSeqFuel.induct with
+  | case1 ss => rfl
+  | case2 fuel => rfl
+  | @case3 fuel x rest rest' hs ih =>
+      rw [show fuseSeqFuel (fuel + 1) (.letDecl [x] none :: rest) =
+        fuseSeqFuel fuel rest' from by rw [fuseSeqFuel, hs]]
+      obtain ⟨mid, e, tail, hrest, hrest', hmid, he⟩ := sink_inv hs
+      rw [ih, hrest', hrest]
+      rw [show Stmt.letDecl (Op := Op) [x] none ::
+        (mid ++ Stmt.assign [x] e :: tail) =
+        [Stmt.letDecl [x] none] ++ (mid ++ [Stmt.assign [x] e] ++ tail)
+        from by simp,
+        show mid ++ Stmt.letDecl [x] (some e) :: tail =
+        mid ++ [Stmt.letDecl [x] (some e)] ++ tail from by simp]
+      simp only [YulEvmCompiler.Optimizer.hoist_append]
+      simp [hoist]
+  | @case4 fuel x rest hs ih =>
+      rw [show fuseSeqFuel (fuel + 1) (.letDecl [x] none :: rest) =
+        .letDecl [x] none :: fuseSeqFuel fuel rest from by rw [fuseSeqFuel, hs]]
+      simp only [hoist, List.filterMap_cons] at ih ⊢
+      exact ih
+  | @case5 fuel x l y e rest hguard ih =>
+      rw [show fuseSeqFuel (fuel + 1)
+          (.letDecl [x] (some (.lit l)) :: .assign [y] e :: rest) =
+        fuseSeqFuel fuel (.letDecl [x] (some e) :: rest) from by
+          rw [fuseSeqFuel, if_pos hguard]]
+      rw [ih]
+      simp [hoist]
+  | @case6 fuel x l y e rest hguard ih =>
+      rw [show fuseSeqFuel (fuel + 1)
+          (.letDecl [x] (some (.lit l)) :: .assign [y] e :: rest) =
+        .letDecl [x] (some (.lit l)) ::
+          fuseSeqFuel fuel (.assign [y] e :: rest) from by
+          rw [fuseSeqFuel, if_neg hguard]]
+      simp only [hoist, List.filterMap_cons] at ih ⊢
+      exact ih
+  | @case7 fuel s rest hshape1 hshape2 ih =>
+      rw [fuseSeqFuel_cons_generic fuel s rest hshape1 hshape2]
+      simp only [hoist, List.filterMap_cons] at ih ⊢
+      cases s <;> simp [ih]
+
+/-- The sweep alone is a sound block rewrite: both sides hoist the same
+scope, and the accumulated primitives vanish under the block's `restore`. -/
+theorem fuseSeq_blockEquiv (zz : Block Op) :
+    EquivBlock D zz (fuseSeq zz) := by
+  intro funs V st V' st' o
+  constructor
+  · intro h
+    cases h with
+    | block hb =>
+        obtain ⟨V₂, hstep, hchain⟩ := fuseSeqFuel_fwd (zz.length + 1) zz hb
+        rw [hchain.restore_eq (Nat.le_refl _)]
+        exact Step.block (by
+          rw [show fuseSeq zz = fuseSeqFuel (zz.length + 1) zz from rfl,
+            fuseSeqFuel_hoist]
+          exact hstep)
+  · intro h
+    cases h with
+    | block hb =>
+        rw [show fuseSeq zz = fuseSeqFuel (zz.length + 1) zz from rfl,
+          fuseSeqFuel_hoist] at hb
+        obtain ⟨V₁, hstep, hchain⟩ := fuseSeqFuel_bwd (zz.length + 1) zz hb
+        rw [← hchain.restore_eq (Nat.le_refl _)]
+        exact Step.block hstep
+
+/-! ### Lifting through the syntax -/
+
+mutual
+
+theorem fdStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (fdStmt s)
+  | .block body => by
+      unfold fdStmt
+      show EquivBlock D body (fdStmts body)
+      unfold fdStmts
+      exact (EquivBlock.of_stmts_funs
+        (EquivStmts.of_forall₂ (fdEach_forall2 body))
+        (fdScopeRel body)).trans
+        (fuseSeq_blockEquiv (fdEach body))
+  | .funDef n ps rs body => by
+      unfold fdStmt
+      intro funs V st V' st' o
+      constructor
+      · intro h; cases h; exact Step.funDef
+      · intro h; cases h; exact Step.funDef
+  | .cond c body => by
+      unfold fdStmt
+      refine EquivStmt.cond_congr
+        (@EquivExpr.refl (evmWithExternal calls creates) _ c) ?_
+      show EquivBlock D body (fdStmts body)
+      unfold fdStmts
+      exact (EquivBlock.of_stmts_funs
+        (EquivStmts.of_forall₂ (fdEach_forall2 body))
+        (fdScopeRel body)).trans
+        (fuseSeq_blockEquiv (fdEach body))
+  | .switch c cases dflt => by
+      unfold fdStmt
+      refine EquivStmt.switch_congr
+        (@EquivExpr.refl (evmWithExternal calls creates) _ c)
+        (fdCases_forall2 cases) ?_
+      cases dflt with
+      | none =>
+          unfold fdDflt
+          exact @EquivBlock.refl (evmWithExternal calls creates) _ _
+      | some b =>
+          unfold fdDflt
+          show EquivBlock D b (fdStmts b)
+          unfold fdStmts
+          exact (EquivBlock.of_stmts_funs
+            (EquivStmts.of_forall₂ (fdEach_forall2 b))
+            (fdScopeRel b)).trans
+            (fuseSeq_blockEquiv (fdEach b))
+  | .forLoop init c post body => by
+      unfold fdStmt
+      refine EquivStmt.forLoop_congr init
+        (@EquivExpr.refl (evmWithExternal calls creates) _ c) ?_ ?_
+      · show EquivBlock D post (fdStmts post)
+        unfold fdStmts
+        exact (EquivBlock.of_stmts_funs
+          (EquivStmts.of_forall₂ (fdEach_forall2 post))
+          (fdScopeRel post)).trans
+          (fuseSeq_blockEquiv (fdEach post))
+      · show EquivBlock D body (fdStmts body)
+        unfold fdStmts
+        exact (EquivBlock.of_stmts_funs
+          (EquivStmts.of_forall₂ (fdEach_forall2 body))
+          (fdScopeRel body)).trans
+          (fuseSeq_blockEquiv (fdEach body))
+  | .letDecl xs v => by
+      unfold fdStmt
+      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+  | .assign xs e => by
+      unfold fdStmt
+      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+  | .exprStmt e => by
+      unfold fdStmt
+      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+  | .break => by
+      unfold fdStmt
+      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+  | .continue => by
+      unfold fdStmt
+      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+  | .leave => by
+      unfold fdStmt
+      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+
+theorem fdEach_forall2 : ∀ ss : List (Stmt Op),
+    List.Forall₂ (EquivStmt D) ss (fdEach ss)
+  | [] => by unfold fdEach; exact .nil
+  | s :: rest => by
+      unfold fdEach
+      exact .cons (fdStmt_equiv s) (fdEach_forall2 rest)
+
+theorem fdCases_forall2 : ∀ cs : List (Literal × Block Op),
+    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs (fdCases cs)
+  | [] => by unfold fdCases; exact .nil
+  | (l, b) :: rest => by
+      unfold fdCases
+      refine .cons ⟨rfl, ?_⟩ (fdCases_forall2 rest)
+      show EquivBlock D b (fdStmts b)
+      unfold fdStmts
+      exact (EquivBlock.of_stmts_funs
+        (EquivStmts.of_forall₂ (fdEach_forall2 b))
+        (fdScopeRel b)).trans
+        (fuseSeq_blockEquiv (fdEach b))
+
+theorem fdScopeRel : ∀ ss : List (Stmt Op),
+    ScopeRel D (hoist D ss) (hoist D (fdEach ss))
+  | [] => by unfold fdEach; exact .nil
+  | .funDef n ps rs body :: rest => by
+      unfold fdEach fdStmt
+      refine List.Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩ (fdScopeRel rest)
+      show EquivBlock D body (fdStmts body)
+      unfold fdStmts
+      exact (EquivBlock.of_stmts_funs
+        (EquivStmts.of_forall₂ (fdEach_forall2 body))
+        (fdScopeRel body)).trans
+        (fuseSeq_blockEquiv (fdEach body))
+  | .block body :: rest => by
+      simpa [hoist, fdEach, fdStmt] using fdScopeRel rest
+  | .letDecl xs v :: rest => by
+      simpa [hoist, fdEach, fdStmt] using fdScopeRel rest
+  | .assign xs e :: rest => by
+      simpa [hoist, fdEach, fdStmt] using fdScopeRel rest
+  | .cond c body :: rest => by
+      simpa [hoist, fdEach, fdStmt] using fdScopeRel rest
+  | .«switch» c cs dflt :: rest => by
+      simpa [hoist, fdEach, fdStmt] using fdScopeRel rest
+  | .forLoop init c post body :: rest => by
+      simpa [hoist, fdEach, fdStmt] using fdScopeRel rest
+  | .exprStmt e :: rest => by
+      simpa [hoist, fdEach, fdStmt] using fdScopeRel rest
+  | .«break» :: rest => by
+      simpa [hoist, fdEach, fdStmt] using fdScopeRel rest
+  | .«continue» :: rest => by
+      simpa [hoist, fdEach, fdStmt] using fdScopeRel rest
+  | .leave :: rest => by
+      simpa [hoist, fdEach, fdStmt] using fdScopeRel rest
+
+end
+
+/-- **Soundness of declare-then-assign fusion.** -/
+theorem fuseDeclAssignBlock_equiv (b : Block Op) :
+    EquivBlock D b (fuseDeclAssignBlock b) := by
+  unfold fuseDeclAssignBlock
+  by_cases h1 : YulEvmCompiler.Optimizer.storageLayoutFreeStmts b
+  · rw [if_pos h1]
+    by_cases h2 : YulEvmCompiler.Optimizer.storageLayoutFreeStmts (fdStmts b)
+    · simp only [if_pos h2]
+      show EquivBlock D b (fdStmts b)
+      unfold fdStmts
+      exact (EquivBlock.of_stmts_funs
+        (EquivStmts.of_forall₂ (fdEach_forall2 b))
+        (fdScopeRel b)).trans
+        (fuseSeq_blockEquiv (fdEach b))
+    · simp only [if_neg h2]
+      exact EquivBlock.refl _
+  · rw [if_neg h1]
+    exact EquivBlock.refl _
+
 end YulEvmCompiler.Optimizer.FuseDeclAssign

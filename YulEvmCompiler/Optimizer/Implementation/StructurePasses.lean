@@ -1,5 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.Flatten
-import YulEvmCompiler.Optimizer.Implementation.FuseDeclAssign
+import YulEvmCompiler.Optimizer.Implementation.FuseDeclAssignSound
 import YulEvmCompiler.Optimizer.Implementation.ReuseValues
 import YulEvmCompiler.Optimizer.Implementation.PruneDefsResolve
 import YulEvmCompiler.Optimizer.Implementation.ResolveCongr
@@ -39,9 +39,10 @@ local notation "D" => evmWithExternal calls creates
 theorem flattenBlock_sound (b : Block Op) :
     EquivBlock D b (Flatten.flattenBlock b) := sorry
 
-/-- Block soundness of declare-then-assign fusion (proof in progress). -/
+/-- Block soundness of declare-then-assign fusion (fully proved). -/
 theorem fuseDeclAssignBlock_sound (b : Block Op) :
-    EquivBlock D b (FuseDeclAssign.fuseDeclAssignBlock b) := sorry
+    EquivBlock D b (FuseDeclAssign.fuseDeclAssignBlock b) :=
+  FuseDeclAssign.fuseDeclAssignBlock_equiv b
 
 /-- Block soundness of available-value reuse (proof in progress). -/
 theorem reuseValuesBlock_sound (b : Block Op) :
