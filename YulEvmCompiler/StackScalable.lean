@@ -202,7 +202,7 @@ inductive GoodStack (prog : List Asm) (C : Cert) : List AVal → List Asm → Pr
   | call {stk above below rest : List AVal} {c cRet : List Asm} {S Sret : FLayout} {F : Nat}
       {lRet : Label} :
       C.fl c = some S → C.fbMax c = some F → C.rl c = some Sret →
-      FMatch (above ++ .code lRet :: below) S → IsWords below →
+      FMatch (above ++ .code lRet :: below) S → S[above.length]? = some FSlot.ret → IsWords below →
       findLabel lRet prog = some cRet → rest.length ≤ F →
       (∀ ws : List AVal, FMatch ws Sret → GoodStack prog C (ws ++ rest) cRet) →
       stk = (above ++ .code lRet :: below) ++ rest →
@@ -218,7 +218,7 @@ theorem GoodStack.bound {prog C} (hb : C.Bounded) {σ : List AVal} {c : List Asm
     (h : GoodStack prog C σ c) : σ.length ≤ 1023 := by
   cases h with
   | @root σ c S R hfl hfb hrl hm => have := hb c S 0 hfl hfb; have := hm.length_eq; omega
-  | @call stk above below rest c cRet S Sret F lRet hfl hfb hrl hm hbw hfind hle _ heq =>
+  | @call stk above below rest c cRet S Sret F lRet hfl hfb hrl hm hact hbw hfind hle _ heq =>
       have hbnd := hb c S F hfl hfb; have hlen := hm.length_eq; subst heq
       rw [List.length_append]; omega
 
@@ -236,10 +236,10 @@ theorem GoodStack.growWord {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S�
   | @root σ c S R hfl hfb0 hrl0 hm =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (.word hm)
-  | @call stk above below rest c cRet S Sret F lRet hfl hfb0 hrl0 hm hbw hfind hle hres heq =>
+  | @call stk above below rest c cRet S Sret F lRet hfl hfb0 hrl0 hm hact hbw hfind hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       refine .call (above := .word v :: above) (below := below) (lRet := lRet) h1
-        (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (FMatch.word (v := v) hm) hbw hfind hle hres ?_
+        (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (FMatch.word (v := v) hm) (by simp only [List.length_cons, List.getElem?_cons_succ]; exact hact) hbw hfind hle hres ?_
       rw [heq]; rfl
 
 theorem GoodStack.growRet {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S₀ : FLayout} {l : Label}
@@ -250,10 +250,10 @@ theorem GoodStack.growRet {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S₀
   | @root σ c S R hfl hfb0 hrl0 hm =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (.ret hm)
-  | @call stk above below rest c cRet S Sret F lRet hfl hfb0 hrl0 hm hbw hfind hle hres heq =>
+  | @call stk above below rest c cRet S Sret F lRet hfl hfb0 hrl0 hm hact hbw hfind hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       refine .call (above := .code l :: above) (below := below) (lRet := lRet) h1
-        (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (FMatch.ret (l := l) hm) hbw hfind hle hres ?_
+        (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (FMatch.ret (l := l) hm) (by simp only [List.length_cons, List.getElem?_cons_succ]; exact hact) hbw hfind hle hres ?_
       rw [heq]; rfl
 
 theorem GoodStack.growRetTo {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S₀ : FLayout} {l : Label}
@@ -264,10 +264,10 @@ theorem GoodStack.growRetTo {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S�
   | @root σ c S R hfl hfb0 hrl0 hm =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (.retTo hm)
-  | @call stk above below rest c cRet S Sret F lRet hfl hfb0 hrl0 hm hbw hfind hle hres heq =>
+  | @call stk above below rest c cRet S Sret F lRet hfl hfb0 hrl0 hm hact hbw hfind hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       refine .call (above := .code l :: above) (below := below) (lRet := lRet) h1
-        (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (FMatch.retTo (l := l) hm) hbw hfind hle hres ?_
+        (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (FMatch.retTo (l := l) hm) (by simp only [List.length_cons, List.getElem?_cons_succ]; exact hact) hbw hfind hle hres ?_
       rw [heq]; rfl
 
 theorem GoodStack.same {prog C} {σ : List AVal} {c₀ c₁ : List Asm}
@@ -276,8 +276,8 @@ theorem GoodStack.same {prog C} {σ : List AVal} {c₀ c₁ : List Asm}
   cases h with
   | @root σ c S R hfl0 hfb0 hrl0 hm =>
       exact .root (by rw [hfl, hfl0]) (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) hm
-  | @call stk above below rest c cRet S Sret F lRet hfl0 hfb0 hrl0 hm hbw hfind hle hres heq =>
-      exact .call (by rw [hfl, hfl0]) (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) hm hbw hfind hle hres heq
+  | @call stk above below rest c cRet S Sret F lRet hfl0 hfb0 hrl0 hm hact hbw hfind hle hres heq =>
+      exact .call (by rw [hfl, hfl0]) (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) hm hact hbw hfind hle hres heq
 
 theorem GoodStack.shrinkWord {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S' : FLayout} {v : AVal}
     (h : GoodStack prog C (v :: σ) c₀) (h0 : C.fl c₀ = some (.word :: S'))
@@ -288,7 +288,7 @@ theorem GoodStack.shrinkWord {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       cases hm with
       | word hm' => exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) hm'
-  | @call stk above below rest c cRet S Sret F lRet hfl hfb0 hrl0 hm hbw hfind hle hres heq =>
+  | @call stk above below rest c cRet S Sret F lRet hfl hfb0 hrl0 hm hact hbw hfind hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       cases above with
       | nil => rw [List.nil_append] at hm; nomatch hm
@@ -298,7 +298,7 @@ theorem GoodStack.shrinkWord {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S
           | @word w σ'' S'' hm' =>
               obtain ⟨rfl, rfl⟩ := List.cons.inj heq
               exact .call (above := above') (below := below) (lRet := lRet) h1
-                (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) hm' hbw hfind hle hres rfl
+                (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) hm' (by simp only [List.length_cons, List.getElem?_cons_succ] at hact; exact hact) hbw hfind hle hres rfl
 
 /-- `op`: replace the top `p` word-args by `q` word-results. -/
 theorem GoodStack.opFrame {prog C} {args rets : List U256} {σ : List AVal} {c₀ c₁ : List Asm}
@@ -316,7 +316,7 @@ theorem GoodStack.opFrame {prog C} {args rets : List U256} {σ : List AVal} {c�
       have hdrop : (Sargs ++ Sσ).drop p = Sσ := by rw [← hSalen, List.drop_left]
       refine .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) ?_
       rw [hdrop, ← hrets]; exact (FMatch.replicate_word rets).append hMσ
-  | @call stk above below rest c cRet S' Sret F lRet hfl hfb0 hrl0 hm hbw hfind hle hres heq =>
+  | @call stk above below rest c cRet S' Sret F lRet hfl hfb0 hrl0 hm hact hbw hfind hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       have hple : args.length ≤ (above ++ AVal.code lRet :: below).length := by
         rw [hm.length_eq, hargs]; exact hp
@@ -349,13 +349,18 @@ theorem GoodStack.opFrame {prog C} {args rets : List U256} {σ : List AVal} {c�
       have hSalen : Sa.length = args.length := by rw [← hMa.length_eq, words_length]
       have hSdrop : S.drop p = Sf := by rw [hSeq, ← hargs, ← hSalen, List.drop_left]
       refine .call (above := words rets ++ above.drop args.length) (below := below) (lRet := lRet) h1
-        (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) ?_ hbw hfind hle hres ?_
+        (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) ?_ ?_ hbw hfind hle hres ?_
       · rw [hSdrop, ← hrets]
         have hfr2 : (words rets ++ above.drop args.length) ++ AVal.code lRet :: below
             = words rets ++ (above ++ AVal.code lRet :: below).drop args.length := by
           rw [hdropfr, List.append_assoc]
         rw [hfr2]
         exact (FMatch.replicate_word rets).append hMf
+      · rw [List.length_append, List.length_drop, words_length, hrets,
+            List.getElem?_append_right (by rw [List.length_replicate]; omega),
+            List.length_replicate, List.getElem?_drop, ← hargs,
+            show args.length + (q + (above.length - args.length) - q) = above.length from by omega]
+        exact hact
       · rw [hσ, hdropfr]; simp only [List.append_assoc]
 
 /-- The runtime cell at depth `i` matches the frame slot at depth `i`. -/
@@ -366,7 +371,7 @@ theorem GoodStack.slotAt {prog C} {σ : List AVal} {c : List Asm} {S : FLayout} 
   | @root σ' c' S' R hfl' hfb' hrl' hm =>
       obtain rfl : S = S' := Option.some.inj (hfl.symm.trans hfl')
       exact hm.at_idx hx hs
-  | @call stk above below rest c' cRet S' Sret F lRet hfl' hfb' hrl' hm hbw hfind hle hres heq =>
+  | @call stk above below rest c' cRet S' Sret F lRet hfl' hfb' hrl' hm hact hbw hfind hle hres heq =>
       obtain rfl : S = S' := Option.some.inj (hfl.symm.trans hfl')
       have hilt : i < (above ++ .code lRet :: below).length := by
         have hiS : i < S.length := by
@@ -404,7 +409,7 @@ theorem GoodStack.swapFrame {prog C} {x y : AVal} {τ ρ : List AVal} {c₀ c₁
   | @root σ' c' S' R hfl hfb0 hrl0 hm =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (hm.swap_build hτlen)
-  | @call stk above below rest c' cRet S' Sret F lRet hfl hfb0 hrl0 hm hbw hfind hle hres heq =>
+  | @call stk above below rest c' cRet S' Sret F lRet hfl hfb0 hrl0 hm hact hbw hfind hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       -- Peel the layout: frame = .word wv :: (τ ++ y :: fσ2'), with τ all words.
       obtain ⟨w, fr', hfreq, hmw, hmfr'⟩ := hm.cons_inv'
@@ -426,18 +431,27 @@ theorem GoodStack.swapFrame {prog C} {x y : AVal} {τ ρ : List AVal} {c₀ c₁
         have hfreq2 : above ++ AVal.code lRet :: below = (AVal.word wv :: τ) ++ (y :: fσ2') := by
           rw [hfreq]; rfl
         -- the leaf where `y` itself is the (deepest) return address
-        have leafNil : y = AVal.code lRet → below = fσ2' →
+        have leafNil : sy = FSlot.ret → y = AVal.code lRet → below = fσ2' →
             GoodStack prog C ((y :: (τ ++ AVal.word wv :: fσ2')) ++ rest) c₁ := by
-          rintro rfl rfl
+          rintro hsy rfl rfl
           refine .call (above := []) (below := τ ++ AVal.word wv :: below) (lRet := lRet) h1
-            (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (by rw [List.nil_append]; exact hMnew) ?_
-            hfind hle hres (by rw [List.nil_append])
+            (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (by rw [List.nil_append]; exact hMnew)
+            (by simp [hsy]) ?_ hfind hle hres (by rw [List.nil_append])
           intro z hz
           rcases List.mem_append.mp hz with hz | hz
           · exact hτw _ hz
           · rcases List.mem_cons.mp hz with rfl | hz
             · exact ⟨wv, rfl⟩
             · exact hbw _ hz
+        -- `sy = .ret`: the active return slot lies at depth `|Sτ|` in the old layout.
+        have hsyret : above = AVal.word wv :: τ → sy = FSlot.ret := by
+          intro habove
+          have h := hact
+          rw [habove] at h
+          simp only [List.length_cons, List.getElem?_cons_succ] at h
+          rw [← hτlen, List.getElem?_append_right (le_refl _), Nat.sub_self,
+              List.getElem?_cons_zero] at h
+          exact Option.some.inj h
         rw [hstk]
         rcases List.append_eq_append_iff.mp hfreq2 with ⟨t, ht1, ht2⟩ | ⟨t, ht1, ht2⟩
         · cases t with
@@ -450,22 +464,39 @@ theorem GoodStack.swapFrame {prog C} {x y : AVal} {τ ρ : List AVal} {c₀ c₁
               · exact absurd hh (by simp)
               · obtain ⟨v, hv⟩ := hτw _ hh; exact absurd hv (by simp)
           | nil =>
+              rw [List.append_nil] at ht1
               rw [List.nil_append] at ht2
               obtain ⟨hy, hbe⟩ := List.cons.inj ht2
-              exact leafNil hy.symm hbe
+              exact leafNil (hsyret ht1.symm) hy.symm hbe
         · cases t with
           | nil =>
+              rw [List.append_nil] at ht1
               rw [List.nil_append] at ht2
               obtain ⟨hy, hbe⟩ := List.cons.inj ht2
-              exact leafNil hy hbe.symm
+              exact leafNil (hsyret ht1) hy hbe.symm
           | cons t0 t' =>
               rw [List.cons_append] at ht2
               obtain ⟨rfl, rfl⟩ := List.cons.inj ht2
               refine .call (above := y :: (τ ++ AVal.word wv :: t')) (below := below) (lRet := lRet)
-                h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) ?_ hbw hfind hle hres (by simp)
-              have he : (y :: (τ ++ AVal.word wv :: t')) ++ AVal.code lRet :: below
-                  = y :: (τ ++ AVal.word wv :: (t' ++ AVal.code lRet :: below)) := by simp
-              rw [he]; exact hMnew
+                h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) ?_ ?_ hbw hfind hle hres (by simp)
+              · have he : (y :: (τ ++ AVal.word wv :: t')) ++ AVal.code lRet :: below
+                    = y :: (τ ++ AVal.word wv :: (t' ++ AVal.code lRet :: below)) := by simp
+                rw [he]; exact hMnew
+              · have hkey : Sρ[t'.length]? = some FSlot.ret := by
+                  have h := hact
+                  rw [ht1, show ((AVal.word wv :: τ) ++ (y :: t')).length
+                        = Sτ.length + 1 + t'.length + 1 from by
+                          simp only [List.length_append, List.length_cons]; omega,
+                      List.getElem?_cons_succ, List.getElem?_append_right (by omega),
+                      show Sτ.length + 1 + t'.length - Sτ.length = t'.length + 1 from by omega,
+                      List.getElem?_cons_succ] at h
+                  exact h
+                rw [show (y :: (τ ++ AVal.word wv :: t')).length = Sτ.length + 1 + t'.length + 1
+                      from by simp only [List.length_append, List.length_cons]; omega,
+                    List.getElem?_cons_succ, List.getElem?_append_right (by omega),
+                    show Sτ.length + 1 + t'.length - Sτ.length = t'.length + 1 from by omega,
+                    List.getElem?_cons_succ]
+                exact hkey
 
 variable [model : ExternalModel]
 
@@ -517,11 +548,12 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
               | retTo _ =>
                   refine GoodStack.call (above := setupW) (below := []) (lRet := Lret)
                     (rest := midframe) (cRet := cc) hflt hfbt hrlt (hMsw.append (FMatch.ret FMatch.nil))
+                    (by rw [hMsw.length_eq, List.getElem?_append_right (le_refl _), Nat.sub_self]; rfl)
                     (by intro x hx; simp at hx) hfindLret (by rw [hMmid.length_eq]; omega) ?_ ?_
                   · intro ws hws
                     exact GoodStack.root hflcc hfbcc hrlcc (hws.append hMmid)
                   · exact hσeq
-          | @call stk0 above0 below0 rest0 c0 cRet0 S0 Sret0 F0 lRet0 hfl0 hfb0 hrl0 hm0 hbw0
+          | @call stk0 above0 below0 rest0 c0 cRet0 S0 Sret0 F0 lRet0 hfl0 hfb0 hrl0 hm0 hact0 hbw0
               hfind0 hle0 hres0 heq0 =>
               obtain rfl : S0 = S := Option.some.inj (hfl0.symm.trans hfl)
               obtain rfl : F0 = F := Option.some.inj (hfb0.symm.trans hfb)
@@ -534,8 +566,64 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
               cases hMe
               cases hMlc with
               | retTo _ =>
-                  -- lRet0 (caller's own return) lives in `midframe` (below the setup)
-                  sorry
+                  have hsetlen : setupW.length = Sw.length := hMsw.length_eq
+                  -- `hact0` puts the caller's own return `.ret` strictly below the setup slot.
+                  have hSflat : (Sw ++ [FSlot.retTo Lret]) ++ Smid = Sw ++ (FSlot.retTo Lret :: Smid) := by
+                    simp
+                  have hge : setupW.length + 1 ≤ above0.length := by
+                    by_contra hlt
+                    rw [Nat.not_le, hsetlen] at hlt
+                    have h := hact0
+                    rw [hSeq, hSflat] at h
+                    rcases Nat.lt_or_ge above0.length Sw.length with hlt2 | hge2
+                    · rw [List.getElem?_append_left hlt2, List.getElem?_eq_getElem hlt2,
+                          hSwords _ (List.getElem_mem hlt2)] at h
+                      exact absurd h (by simp)
+                    · have heq2 : above0.length = Sw.length := by omega
+                      rw [heq2, List.getElem?_append_right (le_refl _), Nat.sub_self,
+                          List.getElem?_cons_zero] at h
+                      exact absurd h (by simp)
+                  obtain ⟨midAbove, hmidA⟩ :
+                      ∃ midAbove, midframe = midAbove ++ AVal.code lRet0 :: below0 := by
+                    rcases List.append_eq_append_iff.mp hfeq with ⟨e, he1, he2⟩ | ⟨e, he1, he2⟩
+                    · have hlen : setupW.length + 1 = above0.length + e.length := by
+                        have := congrArg List.length he1; simpa using this
+                      have he0 : e = [] := List.eq_nil_of_length_eq_zero (by omega)
+                      subst he0; rw [List.nil_append] at he2
+                      exact ⟨[], by rw [List.nil_append, he2]⟩
+                    · exact ⟨e, he2⟩
+                  have hlen0 : above0.length = setupW.length + 1 + midAbove.length := by
+                    have e1 := congrArg List.length hfeq
+                    rw [hmidA] at e1
+                    simp only [List.length_append, List.length_cons, List.length_nil] at e1
+                    omega
+                  have habove0 : above0 = (setupW ++ [AVal.code Lret]) ++ midAbove := by
+                    have hh := hfeq; rw [hmidA, ← List.append_assoc] at hh
+                    refine (List.append_inj hh ?_).1
+                    simp only [List.length_append, List.length_cons, List.length_nil]; omega
+                  refine GoodStack.call (above := setupW) (below := []) (lRet := Lret)
+                    (rest := midframe ++ rest0) (cRet := cc) hflt hfbt hrlt
+                    (hMsw.append (FMatch.ret FMatch.nil))
+                    (by rw [hMsw.length_eq, List.getElem?_append_right (le_refl _), Nat.sub_self]; rfl)
+                    (by intro x hx; simp at hx) hfindLret
+                    (by rw [List.length_append, hMmid.length_eq]; omega) ?_ ?_
+                  · intro ws hws
+                    refine GoodStack.call (above := ws ++ midAbove) (below := below0) (lRet := lRet0)
+                      (rest := rest0) (cRet := cRet0) hflcc hfbcc hrlcc ?_ ?_ hbw0 hfind0 hle0 hres0 ?_
+                    · have hfe : (ws ++ midAbove) ++ AVal.code lRet0 :: below0 = ws ++ midframe := by
+                        rw [hmidA]; simp [List.append_assoc]
+                      rw [hfe]; exact hws.append hMmid
+                    · rw [List.length_append, hws.length_eq, List.getElem?_append_right (by omega),
+                          show Sret.length + midAbove.length - Sret.length = midAbove.length from by omega]
+                      have h := hact0
+                      rw [hSeq, hSflat, show above0.length = Sw.length + 1 + midAbove.length from by
+                            rw [hlen0, hsetlen],
+                          List.getElem?_append_right (by omega),
+                          show Sw.length + 1 + midAbove.length - Sw.length = midAbove.length + 1
+                            from by omega, List.getElem?_cons_succ] at h
+                      exact h
+                    · rw [hmidA]; simp [List.append_assoc]
+                  · rw [heq0, hfeq]; simp [List.append_assoc]
   | @jumpiTaken l v c c' σ yst hv hfind =>
       obtain ⟨S, F, R, hfl, hfb, hrl⟩ := hinv.certAt
       obtain ⟨S', hSeq, ⟨t, hfind', hflt, hfbt, hrlt⟩, _, _, _⟩ := hV _ c S F R hfl hfb hrl
@@ -576,7 +664,7 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
       | @root σ0 c0 S0 R0 hfl0 hfb0 hrl0 hm =>
           obtain rfl : (0 : Nat) = F := Option.some.inj (hfb0.symm.trans hfb)
           omega
-      | @call stk above below rest c0 cRet S0 Sret F0 lRet hfl0 hfb0 hrl0 hm hbw hfind0 hle hres heq =>
+      | @call stk above below rest c0 cRet S0 Sret F0 lRet hfl0 hfb0 hrl0 hm hact hbw hfind0 hle hres heq =>
           obtain rfl : S = S0 := Option.some.inj (hfl.symm.trans hfl0)
           have hSretS' : Sret = S' := by
             have h1 : Sret = R := Option.some.inj (hrl0.symm.trans hrl); rw [h1, hRS']
