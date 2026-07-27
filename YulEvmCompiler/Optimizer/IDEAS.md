@@ -1141,6 +1141,54 @@ to (1)+(2). The `rets ≤ 2` inline gate is *not* the current `next*` blocker �
 their bodies contain `for` loops, which the statement inliner's classifier
 rejects outright; loop-bearing inlining stays a non-goal here.
 
+**What the dumps forced (mid-implementation redesign):** the duplicated
+keccak/sload groups sit 4–5 inliner-readback blocks deep, and *every* useful
+carrier (the hash, the word, even the `shr(7,·)` key) dies at a nested block
+exit before the second group starts — no fact-forwarding pass can connect
+them at any single level, and the same nesting is what starves
+`CoalesceCopies`/`RejoinPairs` of adjacent pairs. Two structural passes were
+added ahead of `ReuseValues`:
+
+* **`Flatten`** — splices bare inliner blocks into the parent sequence,
+  renaming *all* promoted binders to globally fresh names (`FreshenCalls`
+  prefix scheme). Unconditional renaming makes the splice's mention-freeness
+  hold by construction; the rename declines on shadowed or pre-decl-mentioned
+  binders. Runs right after `InlineCalls`.
+* **`FuseDeclAssign`** — sinks `let x; …(x-free)…; x := e` declarations to
+  their first assignment and fuses `let x := lit; x := e`; converts the
+  flattened assign-chains back into `let`-chains so `CoalesceCopies` and
+  `RejoinPairs` can consume them.
+
+All three (plus `ReuseValues`) are guarded by whole-block
+`storageLayoutFreeStmts` on input **and output** (post-checked, falling back
+to the input), so each object-path congruence reduces to the pass's block
+soundness — no commutation proofs. `PruneDefs` commutes syntactically instead
+(call names are resolution-invariant) and is **fully proved**
+(`PruneDefsSound.lean`: the hoist-shrinking congruence — `PFunsRel` upper
+segment of filtered scopes over a common tail, call-`R`-freeness invariant,
+`reachFuel` closure with an everything-live fuel-exhaustion default;
+`PruneDefsResolve.lean`: the commutation). The optimize-after-spill wiring
+also skips the pipeline when the plain spilled object cannot compile, and
+adds a stack-layout rung for the optimized-spilled candidate (this is what
+admits PoolSwap).
+
+**Measured (transforms complete; three soundness stubs remain —
+`flattenBlock_sound`, `fuseDeclAssignBlock_sound`, `reuseValuesBlock_sound`):**
+
+| Suite | Before | After | Δ | Ratio |
+|---|---:|---:|---:|---:|
+| Aave v4 | 35,808,661 | 27,330,370 | **−8,478,291 (−23.7%)** | 1.964x → 1.499x |
+| Uniswap v4 | 1,640,265 | 1,277,046 | **−363,219 (−22.1%)** | 1.808x → 1.408x |
+| gasTests | 483,580 | 404,348 | −79,232 | 1.436x → 1.200x |
+| semanticTests | 195,793,881 | 186,959,210 | −8,834,671 | 1.146x → 1.094x |
+
+All 10 Aave rows improve (`nextContinuousTenThousand` −3.18M); 43/44 Uniswap
+rows improve — PoolSwap finally compiles through the optimizer
+(`swapExactInputNoTick` 138,059 → 68,021) with one small `slot0` +993
+counter-move; 12/12 gasTests; 1246/1264 semantic rows improve, 12 regress by
+a combined ~13k (worst `dynamic_multi_array_cleanup` +9k — flatten/reuse live
+-range extension in copy-heavy code; accepted pending a gate follow-up).
+
 ## Candidate next ideas (not started)
 
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
