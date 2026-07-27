@@ -1,5 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.DeadPure
 import YulEvmCompiler.Optimizer.Implementation.FreshenCalls
+import YulEvmCompiler.Optimizer.Implementation.StorageForward
 /-!
 # Declare-then-assign fusion (binding sinking)
 
@@ -150,6 +151,12 @@ def fdDflt : Option (Block Op) → Option (Block Op)
 
 end
 
-def fuseDeclAssignBlock (body : Block Op) : Block Op := fdStmts body
+/-- The public transform, layout-free-guarded on input and output (see
+`Flatten.flattenBlock` for the guard rationale). -/
+def fuseDeclAssignBlock (body : Block Op) : Block Op :=
+  if YulEvmCompiler.Optimizer.storageLayoutFreeStmts body then
+    let out := fdStmts body
+    if YulEvmCompiler.Optimizer.storageLayoutFreeStmts out then out else body
+  else body
 
 end YulEvmCompiler.Optimizer.FuseDeclAssign

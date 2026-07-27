@@ -384,6 +384,9 @@ def rvFunDflt : Option (Block Op) → Option (Block Op)
 end
 
 def reuseValuesBlock (body : Block Op) : Block Op :=
-  reuseValuesShallowBlock (rvFunStmts body)
+  if storageLayoutFreeStmts body then
+    let out := reuseValuesShallowBlock (rvFunStmts body)
+    if storageLayoutFreeStmts out then out else body
+  else body
 
 end YulEvmCompiler.Optimizer.ReuseValues

@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.FreshenCalls
+import YulEvmCompiler.Optimizer.Implementation.StorageForward
 /-!
 # Block flattening (scaffold splicing)
 
@@ -51,7 +52,7 @@ namespace YulEvmCompiler.Optimizer.Flatten
 open YulSemantics
 open YulSemantics.EVM
 open YulEvmCompiler.Optimizer (exprIdents argsIdents stmtIdents stmtsIdents
-  casesIdents dfltIdents freshPrefix)
+  casesIdents dfltIdents freshPrefix storageLayoutFreeStmts)
 
 /-! ### Occurrence and redeclaration scans -/
 
@@ -263,11 +264,22 @@ def flEach (P : String) : List (Stmt Op) → Nat → List (Stmt Op) × Nat
 
 end
 
-/-- The public transform. Chooses a fresh prefix once per root block; the
-identity when none can be found (impossible in practice). -/
-def flattenBlock (body : Block Op) : Block Op :=
+/-- The unguarded core: choose a fresh prefix once per root block (identity
+when none can be found — impossible in practice) and sweep. -/
+def flattenCore (body : Block Op) : Block Op :=
   match freshPrefix (stmtsIdents body) with
   | some P => (flStmts P body 0).1
   | none => body
+
+/-- The public transform, layout-free-guarded on input and output: layout
+resolution is then the identity on both sides, so the object-path congruence
+is the pass's own soundness (the `RejoinPairs` recipe, with the output guard
+by construction instead of by a preservation proof). Only constructor blocks
+reference `dataoffset`/`datasize`, so runtime code is unaffected. -/
+def flattenBlock (body : Block Op) : Block Op :=
+  if storageLayoutFreeStmts body then
+    let out := flattenCore body
+    if storageLayoutFreeStmts out then out else body
+  else body
 
 end YulEvmCompiler.Optimizer.Flatten
