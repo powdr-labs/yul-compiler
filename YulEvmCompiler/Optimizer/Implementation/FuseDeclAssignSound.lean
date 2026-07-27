@@ -807,4 +807,81 @@ theorem mentionsDflt_bridge {x : Ident} : ∀ {d : Option (Block Op)},
   | some b, h => mentionsStmts_bridge (by simpa [mentionsDflt] using h)
 end
 
+/-! ### Structure of a successful `sink` -/
+
+/-- A successful `sink` splits the sequence at the first mention of `x`: an
+`x`-free prefix, the singleton assignment (whose right-hand side is `x`-free),
+and an untouched tail; the result converts that assignment to a `let`. -/
+theorem sink_inv {x : Ident} {ss ss' : List (Stmt Op)}
+    (h : sink x ss = some ss') :
+    ∃ mid e tail,
+      ss = mid ++ .assign [x] e :: tail ∧
+      ss' = mid ++ .letDecl [x] (some e) :: tail ∧
+      (∀ s ∈ mid, mentionsStmt x s = false) ∧
+      mentionsExpr x e = false := by
+  induction ss using sink.induct x generalizing ss' with
+  | case1 => simp [sink] at h
+  | case2 e rest hme =>
+      rw [sink, if_pos rfl, if_pos hme] at h
+      cases h
+  | case3 e rest hme =>
+      rw [sink, if_pos rfl, if_neg hme] at h
+      injection h with h'
+      exact ⟨[], e, rest, by simp, by simp [← h'],
+        fun s hs => absurd hs (List.not_mem_nil), by simpa using hme⟩
+  | case4 y e rest hy hm =>
+      rw [sink, if_neg hy, if_pos hm] at h
+      cases h
+  | case5 y e rest hy hm ih =>
+      rw [sink, if_neg hy, if_neg hm] at h
+      cases hrec : sink x rest with
+      | none => rw [hrec] at h; cases h
+      | some rest' =>
+          rw [hrec] at h
+          injection h with h'
+          obtain ⟨mid, e', tail, rfl, hrest', hmid, he'⟩ := ih hrec
+          refine ⟨.assign [y] e :: mid, e', tail, by simp, ?_, ?_, he'⟩
+          · rw [← h', hrest']; rfl
+          · intro s hs
+            rcases List.mem_cons.mp hs with rfl | hs'
+            · simpa using hm
+            · exact hmid s hs'
+  | case6 s rest hshape hm =>
+      rw [sink.eq_def] at h
+      split at h
+      · rename_i heq
+        cases heq
+      · rename_i y e rest2 heq
+        injection heq with h1 h2
+        exact absurd h1 (fun hc => hshape y e hc)
+      · rename_i heq
+        injection heq with h1 h2
+        subst h1; subst h2
+        rw [if_pos hm] at h
+        cases h
+  | case7 s rest hshape hm ih =>
+      rw [sink.eq_def] at h
+      split at h
+      · rename_i heq
+        cases heq
+      · rename_i y e rest2 heq
+        injection heq with h1 h2
+        exact absurd h1 (fun hc => hshape y e hc)
+      · rename_i heq
+        injection heq with h1 h2
+        subst h1; subst h2
+        rw [if_neg hm] at h
+        cases hrec : sink x rest with
+        | none => rw [hrec] at h; cases h
+        | some rest' =>
+            rw [hrec] at h
+            injection h with h'
+            obtain ⟨mid, e', tail, rfl, hrest', hmid, he'⟩ := ih hrec
+            refine ⟨s :: mid, e', tail, by simp, ?_, ?_, he'⟩
+            · rw [← h', hrest']; rfl
+            · intro s' hs
+              rcases List.mem_cons.mp hs with rfl | hs'
+              · simpa using hm
+              · exact hmid s' hs'
+
 end YulEvmCompiler.Optimizer.FuseDeclAssign
