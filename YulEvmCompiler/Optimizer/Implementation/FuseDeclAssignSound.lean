@@ -87,38 +87,44 @@ theorem mem_set_key {V : VEnv D} {y : Ident}
 
 /-- One binding moved from below `A` to above it, under a common newer
 segment `C`. `x` must not be bound by `A` (reads reach the moved binding on
-both sides); it may be bound by `C` (an identical shadow on both sides). -/
-inductive MvRel (x : Ident) : VEnv D → VEnv D → Prop
+both sides); it may be bound by `C` (an identical shadow on both sides).
+The indices pin the region lengths so `restore` compatibility is derivable:
+execution below never changes them. -/
+inductive MvRel (x : Ident) (dA dB : Nat) : VEnv D → VEnv D → Prop
   | mk (C A B : VEnv D) (v : (evmWithExternal calls creates).Value)
-      (hA : ∀ p ∈ A, p.1 ≠ x) :
-      MvRel x (C ++ (A ++ (x, v) :: B)) (C ++ ((x, v) :: (A ++ B)))
+      (hA : ∀ p ∈ A, p.1 ≠ x) (hdA : A.length = dA) (hdB : B.length = dB) :
+      MvRel x dA dB (C ++ (A ++ (x, v) :: B)) (C ++ ((x, v) :: (A ++ B)))
 
-theorem MvRel.length {x : Ident} {V₁ V₂ : VEnv D} (h : MvRel x V₁ V₂) :
+theorem MvRel.length {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
+    (h : MvRel x dA dB V₁ V₂) :
     V₁.length = V₂.length := by
   cases h with
-  | mk C A B v hA => simp [List.length_append]; omega
+  | mk C A B v hA hdA hdB => simp [List.length_append]; omega
 
 /-- Push a common binding on top. -/
-theorem MvRel.push {x : Ident} {V₁ V₂ : VEnv D} (h : MvRel x V₁ V₂)
+theorem MvRel.push {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
+    (h : MvRel x dA dB V₁ V₂)
     (p : Ident × (evmWithExternal calls creates).Value) :
-    MvRel x (p :: V₁) (p :: V₂) := by
+    MvRel x dA dB (p :: V₁) (p :: V₂) := by
   cases h with
-  | mk C A B v hA => exact MvRel.mk (p :: C) A B v hA
+  | mk C A B v hA hdA hdB => exact MvRel.mk (p :: C) A B v hA hdA hdB
 
 /-- Push a common list of bindings on top. -/
-theorem MvRel.pushMany {x : Ident} {V₁ V₂ : VEnv D} (h : MvRel x V₁ V₂)
-    (ps : VEnv D) : MvRel x (ps ++ V₁) (ps ++ V₂) := by
+theorem MvRel.pushMany {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
+    (h : MvRel x dA dB V₁ V₂)
+    (ps : VEnv D) : MvRel x dA dB (ps ++ V₁) (ps ++ V₂) := by
   cases h with
-  | mk C A B v hA =>
+  | mk C A B v hA hdA hdB =>
       have := MvRel.mk (calls := calls) (creates := creates)
-        (ps ++ C) A B v hA
+        (ps ++ C) A B v hA hdA hdB
       simpa [List.append_assoc] using this
 
 /-- Reads agree across the relation. -/
-theorem MvRel.get {x : Ident} {V₁ V₂ : VEnv D} (h : MvRel x V₁ V₂)
+theorem MvRel.get {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
+    (h : MvRel x dA dB V₁ V₂)
     (y : Ident) : VEnv.get V₁ y = VEnv.get V₂ y := by
   cases h with
-  | mk C A B v hA =>
+  | mk C A B v hA hdA hdB =>
       unfold VEnv.get
       simp only [List.find?_append]
       cases hC : C.find? (fun p => p.1 = y) with
@@ -140,16 +146,17 @@ theorem MvRel.get {x : Ident} {V₁ V₂ : VEnv D} (h : MvRel x V₁ V₂)
               List.find?_append]
 
 /-- Updates preserve the relation. -/
-theorem MvRel.set {x : Ident} {V₁ V₂ : VEnv D} (h : MvRel x V₁ V₂)
+theorem MvRel.set {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
+    (h : MvRel x dA dB V₁ V₂)
     (y : Ident) (w : (evmWithExternal calls creates).Value) :
-    MvRel x (VEnv.set V₁ y w) (VEnv.set V₂ y w) := by
+    MvRel x dA dB (VEnv.set V₁ y w) (VEnv.set V₂ y w) := by
   cases h with
-  | mk C A B v hA =>
+  | mk C A B v hA hdA hdB =>
       cases hC : C.find? (fun p => p.1 = y) with
       | some p =>
           rw [set_append_of_found (by simp [hC]) w,
             set_append_of_found (by simp [hC]) w]
-          exact MvRel.mk _ A B v hA
+          exact MvRel.mk _ A B v hA hdA hdB
       | none =>
           rw [set_append_of_none hC w, set_append_of_none hC w]
           by_cases hxy : y = x
@@ -165,7 +172,7 @@ theorem MvRel.set {x : Ident} {V₁ V₂ : VEnv D} (h : MvRel x V₁ V₂)
                 (y, w) :: (A ++ B) := by
               simp [VEnv.set]
             rw [hset1, hset2]
-            exact MvRel.mk C A B w hA
+            exact MvRel.mk C A B w hA hdA hdB
           · cases hA' : A.find? (fun p => p.1 = y) with
             | some q =>
                 rw [set_append_of_found (by simp [hA']) w,
@@ -175,6 +182,7 @@ theorem MvRel.set {x : Ident} {V₁ V₂ : VEnv D} (h : MvRel x V₁ V₂)
                       rw [if_neg (fun hc : x = y => hxy hc.symm)],
                   set_append_of_found (by simp [hA']) w]
                 refine MvRel.mk C (VEnv.set A y w) B v ?_
+                  (by rw [VEnv.set_length]; exact hdA) hdB
                 intro p hp
                 obtain ⟨q', hq', hqe⟩ := mem_set_key hp
                 rw [← hqe]
@@ -190,12 +198,14 @@ theorem MvRel.set {x : Ident} {V₁ V₂ : VEnv D} (h : MvRel x V₁ V₂)
                     (x, v) :: VEnv.set B y w from by
                       simp only [VEnv.set]
                       rw [if_neg (fun hc : x = y => hxy hc.symm)]]
-                exact MvRel.mk C A (VEnv.set B y w) v hA
+                exact MvRel.mk C A (VEnv.set B y w) v hA hdA
+                  (by rw [VEnv.set_length]; exact hdB)
 
 /-- `setMany` preserves the relation. -/
-theorem MvRel.setMany {x : Ident} {V₁ V₂ : VEnv D} (h : MvRel x V₁ V₂)
+theorem MvRel.setMany {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
+    (h : MvRel x dA dB V₁ V₂)
     (ys : List Ident) (ws : List (evmWithExternal calls creates).Value) :
-    MvRel x (VEnv.setMany V₁ ys ws) (VEnv.setMany V₂ ys ws) := by
+    MvRel x dA dB (VEnv.setMany V₁ ys ws) (VEnv.setMany V₂ ys ws) := by
   unfold VEnv.setMany
   induction (ys.zip ws) generalizing V₁ V₂ with
   | nil => exact h
@@ -216,7 +226,7 @@ theorem restore_mvRel {x : Ident} {Ve₁ Ve₂ : VEnv D}
     (hentry_len : A.length + 1 + B.length ≤ Ve₁.length)
     (hlen : Ve₁.length = Ve₂.length)
     (hle₁ : Ve₁.length ≤ (C ++ (A ++ (x, v) :: B)).length) :
-    MvRel x (restore Ve₁ (C ++ (A ++ (x, v) :: B)))
+    MvRel x A.length B.length (restore Ve₁ (C ++ (A ++ (x, v) :: B)))
       (restore Ve₂ (C ++ ((x, v) :: (A ++ B)))) := by
   unfold restore
   have hlen₂ : (C ++ ((x, v) :: (A ++ B))).length =
@@ -230,7 +240,7 @@ theorem restore_mvRel {x : Ident} {Ve₁ Ve₂ : VEnv D}
   set k := (C ++ (A ++ (x, v) :: B)).length - Ve₁.length with hk
   rw [List.drop_append_of_le_length (by omega),
     List.drop_append_of_le_length (by omega)]
-  exact MvRel.mk (C.drop k) A B v hA
+  exact MvRel.mk (C.drop k) A B v hA rfl rfl
 
 /-- Dropping down to the last `n` entries ignores everything above the base. -/
 theorem drop_to_base (X B : VEnv D) {n : Nat} (h : n ≤ B.length) :
@@ -252,5 +262,259 @@ theorem restore_mv_eq {x : Ident} {V₀ : VEnv D}
   rw [show C ++ (A ++ (x, v) :: B) = (C ++ A ++ [(x, v)]) ++ B from by simp,
     show C ++ ((x, v) :: (A ++ B)) = (C ++ [(x, v)] ++ A) ++ B from by simp,
     drop_to_base _ _ hbase, drop_to_base _ _ hbase]
+
+/-- Restore compatibility: exits related at the same region indices restore
+(to related entries) to related environments. -/
+theorem MvRel.restore_compat {x : Ident} {dA dB : Nat}
+    {Ve₁ Ve₂ Vb₁ Vb₂ : VEnv D}
+    (hentry : MvRel x dA dB Ve₁ Ve₂) (hexit : MvRel x dA dB Vb₁ Vb₂)
+    (hgrow : Ve₁.length ≤ Vb₁.length) :
+    MvRel x dA dB (restore Ve₁ Vb₁) (restore Ve₂ Vb₂) := by
+  cases hexit with
+  | mk C A B v hA hdA hdB =>
+      have hentry_len : A.length + 1 + B.length ≤ Ve₁.length := by
+        cases hentry with
+        | mk C' A' B' v' hA' hdA' hdB' =>
+            simp only [List.length_append, List.length_cons]
+            omega
+      have := restore_mvRel (calls := calls) (creates := creates)
+        (Ve₁ := Ve₁) (Ve₂ := Ve₂) (C := C) (A := A) (B := B) (v := v) hA
+        (by omega) hentry.length hgrow
+      rw [hdA, hdB] at this
+      exact this
+
+/-- The result relation for the transport: expression results are literally
+equal; statement results carry related environments. -/
+inductive MvRes (x : Ident) (dA dB : Nat) : Res D → Res D → Prop
+  | eres (r : EResult D) : MvRes x dA dB (.eres r) (.eres r)
+  | sres {V₁ V₂ : VEnv D} (st : EvmState) (o : Outcome)
+      (h : MvRel x dA dB V₁ V₂) :
+      MvRes x dA dB (.sres V₁ st o) (.sres V₂ st o)
+
+theorem MvRes.eres_inv {x : Ident} {dA dB : Nat} {r : EResult D} {res₂ : Res D}
+    (h : MvRes x dA dB (.eres r) res₂) : res₂ = .eres r := by
+  cases h; rfl
+
+theorem MvRes.sres_inv {x : Ident} {dA dB : Nat} {V₁ : VEnv D} {st o}
+    {res₂ : Res D} (h : MvRes x dA dB (.sres V₁ st o) res₂) :
+    ∃ V₂, res₂ = .sres V₂ st o ∧ MvRel x dA dB V₁ V₂ := by
+  cases h with
+  | sres _ _ hrel => exact ⟨_, rfl, hrel⟩
+
+set_option maxHeartbeats 1600000 in
+/-- **The environment-reorder transport**: a derivation over `V₁` yields one
+over the related `V₂`, with a related result. Function bodies run in fresh
+callee environments and are reused unchanged. -/
+theorem Step.mv_congr {x : Ident} {dA dB : Nat} {funs : FunEnv D}
+    {V₁ : VEnv D} {st : EvmState} {code : Code Op} {res₁ : Res D}
+    (h : Step D funs V₁ st code res₁) :
+    ∀ {V₂}, MvRel x dA dB V₁ V₂ →
+      ∃ res₂, Step D funs V₂ st code res₂ ∧ MvRes x dA dB res₁ res₂ := by
+  induction h with
+  | lit => intro _ _; exact ⟨_, Step.lit, .eres _⟩
+  | @var _ _ _ y v hv =>
+      intro V₂ hR
+      exact ⟨_, Step.var (by rw [← hR.get y]; exact hv), .eres _⟩
+  | builtinOk ha hb iha =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.builtinOk h₂ hb, .eres _⟩
+  | builtinHalt ha hb iha =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.builtinHalt h₂ hb, .eres _⟩
+  | builtinArgsHalt ha iha =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.builtinArgsHalt h₂, .eres _⟩
+  | callOk ha hl hlen hbody ho iha ihbody =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.callOk h₂ hl hlen hbody ho, .eres _⟩
+  | callHalt ha hl hlen hbody iha ihbody =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.callHalt h₂ hl hlen hbody, .eres _⟩
+  | callArgsHalt ha iha =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.callArgsHalt h₂, .eres _⟩
+  | argsNil => intro _ _; exact ⟨_, Step.argsNil, .eres _⟩
+  | argsCons ha he iha ihe =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihe hR
+      rw [hrel'.eres_inv] at h₃
+      exact ⟨_, Step.argsCons h₂ h₃, .eres _⟩
+  | argsRestHalt ha iha =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.argsRestHalt h₂, .eres _⟩
+  | argsHeadHalt ha he iha ihe =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR
+      rw [hrel.eres_inv] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihe hR
+      rw [hrel'.eres_inv] at h₃
+      exact ⟨_, Step.argsHeadHalt h₂ h₃, .eres _⟩
+  | funDef => intro V₂ hR; exact ⟨_, Step.funDef, .sres _ _ hR⟩
+  | @block _ V _ body Vb stb o hbody ihbody =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihbody hR
+      obtain ⟨Vb₂, rfl, hrel'⟩ := hrel.sres_inv
+      exact ⟨_, Step.block h₂,
+        .sres _ _ (hR.restore_compat hrel' (venvLen_mono hbody rfl))⟩
+  | letZero =>
+      intro V₂ hR
+      exact ⟨_, Step.letZero, .sres _ _ (hR.pushMany _)⟩
+  | letVal he hlen ihe =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihe hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.letVal h₂ hlen, .sres _ _ (hR.pushMany _)⟩
+  | letHalt he ihe =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihe hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.letHalt h₂, .sres _ _ hR⟩
+  | assignVal he hlen ihe =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihe hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.assignVal h₂ hlen, .sres _ _ (hR.setMany _ _)⟩
+  | assignHalt he ihe =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihe hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.assignHalt h₂, .sres _ _ hR⟩
+  | exprStmt he ihe =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihe hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.exprStmt h₂, .sres _ _ hR⟩
+  | exprStmtHalt he ihe =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihe hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.exprStmtHalt h₂, .sres _ _ hR⟩
+  | ifTrue hc hnz hb ihc ihb =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₂, rfl, hrel''⟩ := hrel'.sres_inv
+      exact ⟨_, Step.ifTrue h₂ hnz h₃, .sres _ _ hrel''⟩
+  | ifFalse hc hz ihc =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.ifFalse h₂ hz, .sres _ _ hR⟩
+  | ifHalt hc ihc =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.ifHalt h₂, .sres _ _ hR⟩
+  | switchExec hc hb ihc ihb =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₂, rfl, hrel''⟩ := hrel'.sres_inv
+      exact ⟨_, Step.switchExec h₂ h₃, .sres _ _ hrel''⟩
+  | switchHalt hc ihc =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.switchHalt h₂, .sres _ _ hR⟩
+  | @forLoop _ V _ init c post body Vinit stinit Vend stend o hinit hloop ihinit ihloop =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihinit hR
+      obtain ⟨Vi₂, rfl, hrel'⟩ := hrel.sres_inv
+      obtain ⟨r₃, h₃, hrel₂⟩ := ihloop hrel'
+      obtain ⟨Ve₂, rfl, hrel₃⟩ := hrel₂.sres_inv
+      refine ⟨_, Step.forLoop h₂ h₃, .sres _ _ ?_⟩
+      exact hR.restore_compat hrel₃
+        (Nat.le_trans (venvLen_mono hinit rfl) (venvLen_mono hloop rfl))
+  | @forInitHalt _ V _ init c post body Vinit stinit hinit ihinit =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihinit hR
+      obtain ⟨Vi₂, rfl, hrel'⟩ := hrel.sres_inv
+      exact ⟨_, Step.forInitHalt h₂,
+        .sres _ _ (hR.restore_compat hrel' (venvLen_mono hinit rfl))⟩
+  | «break» => intro V₂ hR; exact ⟨_, Step.break, .sres _ _ hR⟩
+  | «continue» => intro V₂ hR; exact ⟨_, Step.continue, .sres _ _ hR⟩
+  | leave => intro V₂ hR; exact ⟨_, Step.leave, .sres _ _ hR⟩
+  | seqNil => intro V₂ hR; exact ⟨_, Step.seqNil, .sres _ _ hR⟩
+  | seqCons hs hrest ihs ihrest =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihs hR
+      obtain ⟨V₂', rfl, hrel'⟩ := hrel.sres_inv
+      obtain ⟨r₃, h₃, hrel₂⟩ := ihrest hrel'
+      obtain ⟨V₂'', rfl, hrel₃⟩ := hrel₂.sres_inv
+      exact ⟨_, Step.seqCons h₂ h₃, .sres _ _ hrel₃⟩
+  | seqStop hs hne ihs =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihs hR
+      obtain ⟨V₂', rfl, hrel'⟩ := hrel.sres_inv
+      exact ⟨_, Step.seqStop h₂ hne, .sres _ _ hrel'⟩
+  | loopDone hc hz ihc =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.loopDone h₂ hz, .sres _ _ hR⟩
+  | loopCondHalt hc ihc =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv] at h₂
+      exact ⟨_, Step.loopCondHalt h₂, .sres _ _ hR⟩
+  | loopStep hc hnz hb hob hp hr ihc ihb ihp ihr =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₂, rfl, hrelB⟩ := hrel'.sres_inv
+      obtain ⟨r₄, h₄, hrel₄⟩ := ihp hrelB
+      obtain ⟨Vp₂, rfl, hrelP⟩ := hrel₄.sres_inv
+      obtain ⟨r₅, h₅, hrel₅⟩ := ihr hrelP
+      obtain ⟨Ve₂, rfl, hrelE⟩ := hrel₅.sres_inv
+      exact ⟨_, Step.loopStep h₂ hnz h₃ hob h₄ h₅, .sres _ _ hrelE⟩
+  | loopPostHalt hc hnz hb hob hp ihc ihb ihp =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₂, rfl, hrelB⟩ := hrel'.sres_inv
+      obtain ⟨r₄, h₄, hrel₄⟩ := ihp hrelB
+      obtain ⟨Vp₂, rfl, hrelP⟩ := hrel₄.sres_inv
+      exact ⟨_, Step.loopPostHalt h₂ hnz h₃ hob h₄, .sres _ _ hrelP⟩
+  | loopBreak hc hnz hb ihc ihb =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₂, rfl, hrelB⟩ := hrel'.sres_inv
+      exact ⟨_, Step.loopBreak h₂ hnz h₃, .sres _ _ hrelB⟩
+  | loopLeave hc hnz hb ihc ihb =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₂, rfl, hrelB⟩ := hrel'.sres_inv
+      exact ⟨_, Step.loopLeave h₂ hnz h₃, .sres _ _ hrelB⟩
+  | loopBodyHalt hc hnz hb ihc ihb =>
+      intro V₂ hR
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR
+      rw [hrel.eres_inv] at h₂
+      obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
+      obtain ⟨Vb₂, rfl, hrelB⟩ := hrel'.sres_inv
+      exact ⟨_, Step.loopBodyHalt h₂ hnz h₃, .sres _ _ hrelB⟩
 
 end YulEvmCompiler.Optimizer.FuseDeclAssign
