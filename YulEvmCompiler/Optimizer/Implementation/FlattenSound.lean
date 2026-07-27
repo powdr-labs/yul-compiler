@@ -430,6 +430,77 @@ theorem RnRel.restore_compat {x x' : Ident} {n : Nat}
   · intro p hp
     exact hx' p (List.mem_of_mem_drop hp)
 
+/-! ### Frame-level mentions, skipping `funDef`s
+
+The transport's freshness side condition only protects *executing* frames:
+reads, writes, and binders at the statement level. `funDef` statements are
+execution-inert and their bodies run in fresh callee environments, so they
+are excluded — which is exactly what lets the backward transport reuse the
+forward one with the rename's roles swapped (the renamed code may still
+mention the old name inside unrenamed function bodies). -/
+
+mutual
+def rnMStmt (z : Ident) : Stmt Op → Bool
+  | .block body => rnMStmts z body
+  | .funDef _ _ _ _ => false
+  | .letDecl vars val => (z ∈ vars) || optExprMentions z val
+  | .assign vars val => (z ∈ vars) || exprMentions z val
+  | .cond c body => exprMentions z c || rnMStmts z body
+  | .switch c cases dflt =>
+      exprMentions z c || rnMCases z cases || rnMDflt z dflt
+  | .forLoop init c post body =>
+      rnMStmts z init || exprMentions z c || rnMStmts z post ||
+        rnMStmts z body
+  | .exprStmt e => exprMentions z e
+  | .«break» => false
+  | .«continue» => false
+  | .leave => false
+
+def rnMStmts (z : Ident) : List (Stmt Op) → Bool
+  | [] => false
+  | s :: rest => rnMStmt z s || rnMStmts z rest
+
+def rnMCases (z : Ident) : List (Literal × List (Stmt Op)) → Bool
+  | [] => false
+  | (_, b) :: rest => rnMStmts z b || rnMCases z rest
+
+def rnMDflt (z : Ident) : Option (List (Stmt Op)) → Bool
+  | some b => rnMStmts z b
+  | none => false
+end
+
+def rnMCode (z : Ident) : Code Op → Bool
+  | .expr e => exprMentions z e
+  | .args es => argsMentions z es
+  | .stmt s => rnMStmt z s
+  | .stmts ss => rnMStmts z ss
+  | .loop c post body =>
+      exprMentions z c || rnMStmts z post || rnMStmts z body
+
+/-- The selected switch block inherits mention-freeness. -/
+theorem selectSwitch_not_rnM {z : Ident} {cv : U256}
+    {cases : List (Literal × Block Op)} {dflt : Option (Block Op)}
+    (hcs : rnMCases z cases = false) (hd : rnMDflt z dflt = false) :
+    rnMStmts z (selectSwitch D cv cases dflt) = false := by
+  unfold selectSwitch
+  cases hfind : cases.find? (fun p => decide (cv = Dialect.litValue D p.1)) with
+  | none =>
+      cases dflt with
+      | none => rfl
+      | some b => exact hd
+  | some p =>
+      have hmem := List.mem_of_find?_eq_some hfind
+      revert hcs
+      clear hfind
+      induction cases with
+      | nil => intro _; cases hmem
+      | cons q rest ih =>
+          intro hcs
+          simp only [rnMCases, Bool.or_eq_false_iff] at hcs
+          rcases List.mem_cons.mp hmem with rfl | hmem'
+          · exact hcs.1
+          · exact ih hmem' hcs.2
+
 /-! ### The rename on code, and its side conditions -/
 
 /-- The rename lifted to the five code classes. -/
@@ -550,7 +621,7 @@ theorem Step.rn_congr {x x' : Ident} {n : Nat}
     {res₁ : Res D}
     (h : Step D funs V₁ st code res₁) :
     ∀ {V₂}, RnRel x x' n V₁ V₂ →
-      codeMentions x' code = false →
+      rnMCode x' code = false →
       codeRedecl x code = false →
       ∃ res₂, Step D funs V₂ st (renCode x x' code) res₂ ∧
         RnRes x x' n res₁ res₂ := by
@@ -560,75 +631,75 @@ theorem Step.rn_congr {x x' : Ident} {n : Nat}
       intro V₂ hR hm _
       refine ⟨_, Step.var ?_, .eres _⟩
       rw [← hR.get_ren (by
-        simp only [codeMentions, exprMentions, decide_eq_false_iff_not] at hm
+        simp only [rnMCode, exprMentions, decide_eq_false_iff_not] at hm
         exact fun hc => hm hc.symm)]
       exact hv
   | builtinOk ha hb iha =>
       intro V₂ hR hm hd
       obtain ⟨r₂, h₂, hrel⟩ := iha hR
-        (by simpa [codeMentions, exprMentions] using hm) rfl
+        (by simpa [rnMCode, exprMentions] using hm) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.builtinOk h₂ hb, .eres _⟩
   | builtinHalt ha hb iha =>
       intro V₂ hR hm hd
       obtain ⟨r₂, h₂, hrel⟩ := iha hR
-        (by simpa [codeMentions, exprMentions] using hm) rfl
+        (by simpa [rnMCode, exprMentions] using hm) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.builtinHalt h₂ hb, .eres _⟩
   | builtinArgsHalt ha iha =>
       intro V₂ hR hm hd
       obtain ⟨r₂, h₂, hrel⟩ := iha hR
-        (by simpa [codeMentions, exprMentions] using hm) rfl
+        (by simpa [rnMCode, exprMentions] using hm) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.builtinArgsHalt h₂, .eres _⟩
   | callOk ha hl hlen hbody ho iha ihbody =>
       intro V₂ hR hm hd
       obtain ⟨r₂, h₂, hrel⟩ := iha hR
-        (by simpa [codeMentions, exprMentions] using hm) rfl
+        (by simpa [rnMCode, exprMentions] using hm) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.callOk h₂ hl hlen hbody ho, .eres _⟩
   | callHalt ha hl hlen hbody iha ihbody =>
       intro V₂ hR hm hd
       obtain ⟨r₂, h₂, hrel⟩ := iha hR
-        (by simpa [codeMentions, exprMentions] using hm) rfl
+        (by simpa [rnMCode, exprMentions] using hm) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.callHalt h₂ hl hlen hbody, .eres _⟩
   | callArgsHalt ha iha =>
       intro V₂ hR hm hd
       obtain ⟨r₂, h₂, hrel⟩ := iha hR
-        (by simpa [codeMentions, exprMentions] using hm) rfl
+        (by simpa [rnMCode, exprMentions] using hm) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.callArgsHalt h₂, .eres _⟩
   | argsNil => intro _ _ _ _; exact ⟨_, Step.argsNil, .eres _⟩
   | argsCons ha he iha ihe =>
       intro V₂ hR hm hd
-      simp only [codeMentions, argsMentions, Bool.or_eq_false_iff] at hm
-      obtain ⟨r₂, h₂, hrel⟩ := iha hR (by simpa [codeMentions] using hm.2) rfl
+      simp only [rnMCode, argsMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR (by simpa [rnMCode] using hm.2) rfl
       rw [hrel.eres_inv] at h₂
-      obtain ⟨r₃, h₃, hrel'⟩ := ihe hR (by simpa [codeMentions] using hm.1) rfl
+      obtain ⟨r₃, h₃, hrel'⟩ := ihe hR (by simpa [rnMCode] using hm.1) rfl
       rw [hrel'.eres_inv] at h₃
       exact ⟨_, Step.argsCons h₂ h₃, .eres _⟩
   | argsRestHalt ha iha =>
       intro V₂ hR hm hd
-      simp only [codeMentions, argsMentions, Bool.or_eq_false_iff] at hm
-      obtain ⟨r₂, h₂, hrel⟩ := iha hR (by simpa [codeMentions] using hm.2) rfl
+      simp only [rnMCode, argsMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR (by simpa [rnMCode] using hm.2) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.argsRestHalt h₂, .eres _⟩
   | argsHeadHalt ha he iha ihe =>
       intro V₂ hR hm hd
-      simp only [codeMentions, argsMentions, Bool.or_eq_false_iff] at hm
-      obtain ⟨r₂, h₂, hrel⟩ := iha hR (by simpa [codeMentions] using hm.2) rfl
+      simp only [rnMCode, argsMentions, Bool.or_eq_false_iff] at hm
+      obtain ⟨r₂, h₂, hrel⟩ := iha hR (by simpa [rnMCode] using hm.2) rfl
       rw [hrel.eres_inv] at h₂
-      obtain ⟨r₃, h₃, hrel'⟩ := ihe hR (by simpa [codeMentions] using hm.1) rfl
+      obtain ⟨r₃, h₃, hrel'⟩ := ihe hR (by simpa [rnMCode] using hm.1) rfl
       rw [hrel'.eres_inv] at h₃
       exact ⟨_, Step.argsHeadHalt h₂ h₃, .eres _⟩
   | funDef => intro V₂ hR _ _; exact ⟨_, Step.funDef, .sres _ _ hR⟩
   | @block _ V _ body Vb stb o hbody ihbody =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtMentions] at hm
+      simp only [rnMCode, rnMStmt] at hm
       simp only [codeRedecl, redeclStmt] at hd
       obtain ⟨r₂, h₂, hrel⟩ := ihbody hR
-        (by simpa [codeMentions] using hm)
+        (by simpa [rnMCode] using hm)
         (by simpa [codeRedecl] using hd)
       obtain ⟨Vb₂, rfl, hrel'⟩ := hrel.sres_inv
       exact ⟨_, Step.block (by rwa [renStmts_hoist]), .sres _ _
@@ -636,7 +707,7 @@ theorem Step.rn_congr {x x' : Ident} {n : Nat}
           (venvKeys_suffix hbody rfl))⟩
   | @letZero _ V _ vars =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff,
+      simp only [rnMCode, rnMStmt, Bool.or_eq_false_iff,
         decide_eq_false_iff_not] at hm
       simp only [codeRedecl, redeclStmt] at hd
       have hxv : ∀ y ∈ vars, y ≠ x := by
@@ -661,7 +732,7 @@ theorem Step.rn_congr {x x' : Ident} {n : Nat}
         exact ⟨hxv p.1 hkey, hx'v p.1 hkey⟩
   | @letVal _ V _ vars e vals st1 he hlen ihe =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff,
+      simp only [rnMCode, rnMStmt, Bool.or_eq_false_iff,
         decide_eq_false_iff_not] at hm
       simp only [codeRedecl, redeclStmt] at hd
       have hxv : ∀ y ∈ vars, y ≠ x := by
@@ -674,7 +745,7 @@ theorem Step.rn_congr {x x' : Ident} {n : Nat}
         subst hc
         exact hm.1 hy
       obtain ⟨r₂, h₂, hrel⟩ := ihe hR
-        (by simpa [codeMentions, optExprMentions] using hm.2) rfl
+        (by simpa [rnMCode, optExprMentions] using hm.2) rfl
       rw [hrel.eres_inv] at h₂
       refine ⟨_, ?_, .sres _ _ (hR.pushMany (ps := vars.zip vals) ?_)⟩
       · have hmap : vars.map (renVar x x') = vars := map_renVar_id hxv
@@ -690,73 +761,73 @@ theorem Step.rn_congr {x x' : Ident} {n : Nat}
         exact ⟨hxv p.1 hkey, hx'v p.1 hkey⟩
   | letHalt he ihe =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, rnMStmt, Bool.or_eq_false_iff] at hm
       obtain ⟨r₂, h₂, hrel⟩ := ihe hR
-        (by simpa [codeMentions, optExprMentions] using hm.2) rfl
+        (by simpa [rnMCode, optExprMentions] using hm.2) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.letHalt h₂, .sres _ _ hR⟩
   | assignVal he hlen ihe =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff,
+      simp only [rnMCode, rnMStmt, Bool.or_eq_false_iff,
         decide_eq_false_iff_not] at hm
       obtain ⟨r₂, h₂, hrel⟩ := ihe hR
-        (by simpa [codeMentions] using hm.2) rfl
+        (by simpa [rnMCode] using hm.2) rfl
       rw [hrel.eres_inv] at h₂
       refine ⟨_, Step.assignVal h₂ (by simpa using hlen), .sres _ _ ?_⟩
       exact hR.setMany_ren (fun y hy hc => hm.1 (hc ▸ hy)) _
   | assignHalt he ihe =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, rnMStmt, Bool.or_eq_false_iff] at hm
       obtain ⟨r₂, h₂, hrel⟩ := ihe hR
-        (by simpa [codeMentions] using hm.2) rfl
+        (by simpa [rnMCode] using hm.2) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.assignHalt h₂, .sres _ _ hR⟩
   | exprStmt he ihe =>
       intro V₂ hR hm hd
       obtain ⟨r₂, h₂, hrel⟩ := ihe hR
-        (by simpa [codeMentions, stmtMentions] using hm) rfl
+        (by simpa [rnMCode, rnMStmt] using hm) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.exprStmt h₂, .sres _ _ hR⟩
   | exprStmtHalt he ihe =>
       intro V₂ hR hm hd
       obtain ⟨r₂, h₂, hrel⟩ := ihe hR
-        (by simpa [codeMentions, stmtMentions] using hm) rfl
+        (by simpa [rnMCode, rnMStmt] using hm) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.exprStmtHalt h₂, .sres _ _ hR⟩
   | ifTrue hc hnz hb ihc ihb =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, rnMStmt, Bool.or_eq_false_iff] at hm
       simp only [codeRedecl, redeclStmt] at hd
-      obtain ⟨r₂, h₂, hrel⟩ := ihc hR (by simpa [codeMentions] using hm.1) rfl
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR (by simpa [rnMCode] using hm.1) rfl
       rw [hrel.eres_inv] at h₂
       obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
-        (by simpa [codeMentions, stmtMentions] using hm.2)
+        (by simpa [rnMCode, rnMStmt] using hm.2)
         (by simpa [codeRedecl, redeclStmt] using hd)
       obtain ⟨Vb₂, rfl, hrel''⟩ := hrel'.sres_inv
       exact ⟨_, Step.ifTrue h₂ hnz h₃, .sres _ _ hrel''⟩
   | ifFalse hc hz ihc =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
-      obtain ⟨r₂, h₂, hrel⟩ := ihc hR (by simpa [codeMentions] using hm.1) rfl
+      simp only [rnMCode, rnMStmt, Bool.or_eq_false_iff] at hm
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR (by simpa [rnMCode] using hm.1) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.ifFalse h₂ hz, .sres _ _ hR⟩
   | ifHalt hc ihc =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
-      obtain ⟨r₂, h₂, hrel⟩ := ihc hR (by simpa [codeMentions] using hm.1) rfl
+      simp only [rnMCode, rnMStmt, Bool.or_eq_false_iff] at hm
+      obtain ⟨r₂, h₂, hrel⟩ := ihc hR (by simpa [rnMCode] using hm.1) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.ifHalt h₂, .sres _ _ hR⟩
   | switchExec hc hb ihc ihb =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, rnMStmt, Bool.or_eq_false_iff] at hm
       simp only [codeRedecl, redeclStmt, Bool.or_eq_false_iff] at hd
       obtain ⟨r₂, h₂, hrel⟩ := ihc hR
-        (by simpa [codeMentions] using hm.1.1) rfl
+        (by simpa [rnMCode] using hm.1.1) rfl
       rw [hrel.eres_inv] at h₂
       obtain ⟨r₃, h₃, hrel'⟩ := ihb hR
         (by
-          simp only [codeMentions, stmtMentions]
-          exact selectSwitch_not_mentions hm.1.2 hm.2)
+          simp only [rnMCode, rnMStmt]
+          exact selectSwitch_not_rnM hm.1.2 hm.2)
         (by
           simp only [codeRedecl, redeclStmt]
           exact selectSwitch_not_redecl hd.1 hd.2)
@@ -766,22 +837,22 @@ theorem Step.rn_congr {x x' : Ident} {n : Nat}
       exact h₃
   | switchHalt hc ihc =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, rnMStmt, Bool.or_eq_false_iff] at hm
       obtain ⟨r₂, h₂, hrel⟩ := ihc hR
-        (by simpa [codeMentions] using hm.1.1) rfl
+        (by simpa [rnMCode] using hm.1.1) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.switchHalt h₂, .sres _ _ hR⟩
   | @forLoop _ V _ init c post body Vinit stinit Vend stend o hinit hloop ihinit ihloop =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, rnMStmt, Bool.or_eq_false_iff] at hm
       simp only [codeRedecl, redeclStmt, Bool.or_eq_false_iff] at hd
       obtain ⟨r₂, h₂, hrel⟩ := ihinit hR
-        (by simpa [codeMentions] using hm.1.1.1)
+        (by simpa [rnMCode] using hm.1.1.1)
         (by simpa [codeRedecl] using hd.1.1)
       obtain ⟨Vi₂, rfl, hrel'⟩ := hrel.sres_inv
       obtain ⟨r₃, h₃, hrel₂⟩ := ihloop hrel'
         (by
-          simp only [codeMentions, Bool.or_eq_false_iff]
+          simp only [rnMCode, Bool.or_eq_false_iff]
           exact ⟨⟨hm.1.1.2, hm.1.2⟩, hm.2⟩)
         (by
           simp only [codeRedecl, Bool.or_eq_false_iff]
@@ -794,10 +865,10 @@ theorem Step.rn_congr {x x' : Ident} {n : Nat}
           ((venvKeys_suffix hinit rfl).trans (venvKeys_suffix hloop rfl)))⟩
   | @forInitHalt _ V _ init c post body Vinit stinit hinit ihinit =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, rnMStmt, Bool.or_eq_false_iff] at hm
       simp only [codeRedecl, redeclStmt, Bool.or_eq_false_iff] at hd
       obtain ⟨r₂, h₂, hrel⟩ := ihinit hR
-        (by simpa [codeMentions] using hm.1.1.1)
+        (by simpa [rnMCode] using hm.1.1.1)
         (by simpa [codeRedecl] using hd.1.1)
       obtain ⟨Vi₂, rfl, hrel'⟩ := hrel.sres_inv
       exact ⟨_, Step.forInitHalt (by rwa [renStmts_hoist]), .sres _ _
@@ -809,58 +880,58 @@ theorem Step.rn_congr {x x' : Ident} {n : Nat}
   | seqNil => intro V₂ hR _ _; exact ⟨_, Step.seqNil, .sres _ _ hR⟩
   | seqCons hs hrest ihs ihrest =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtsMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, rnMStmts, Bool.or_eq_false_iff] at hm
       simp only [codeRedecl, redeclStmts, Bool.or_eq_false_iff] at hd
       obtain ⟨r₂, h₂, hrel⟩ := ihs hR
-        (by simpa [codeMentions] using hm.1)
+        (by simpa [rnMCode] using hm.1)
         (by simpa [codeRedecl] using hd.1)
       obtain ⟨V₂', rfl, hrel'⟩ := hrel.sres_inv
       obtain ⟨r₃, h₃, hrel₂⟩ := ihrest hrel'
-        (by simpa [codeMentions] using hm.2)
+        (by simpa [rnMCode] using hm.2)
         (by simpa [codeRedecl] using hd.2)
       obtain ⟨V₂'', rfl, hrel₃⟩ := hrel₂.sres_inv
       exact ⟨_, Step.seqCons h₂ h₃, .sres _ _ hrel₃⟩
   | seqStop hs hne ihs =>
       intro V₂ hR hm hd
-      simp only [codeMentions, stmtsMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, rnMStmts, Bool.or_eq_false_iff] at hm
       simp only [codeRedecl, redeclStmts, Bool.or_eq_false_iff] at hd
       obtain ⟨r₂, h₂, hrel⟩ := ihs hR
-        (by simpa [codeMentions] using hm.1)
+        (by simpa [rnMCode] using hm.1)
         (by simpa [codeRedecl] using hd.1)
       obtain ⟨V₂', rfl, hrel'⟩ := hrel.sres_inv
       exact ⟨_, Step.seqStop h₂ hne, .sres _ _ hrel'⟩
   | loopDone hc hz ihc =>
       intro V₂ hR hm hd
-      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, Bool.or_eq_false_iff] at hm
       obtain ⟨r₂, h₂, hrel⟩ := ihc hR
-        (by simpa [codeMentions] using hm.1.1) rfl
+        (by simpa [rnMCode] using hm.1.1) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.loopDone h₂ hz, .sres _ _ hR⟩
   | loopCondHalt hc ihc =>
       intro V₂ hR hm hd
-      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, Bool.or_eq_false_iff] at hm
       obtain ⟨r₂, h₂, hrel⟩ := ihc hR
-        (by simpa [codeMentions] using hm.1.1) rfl
+        (by simpa [rnMCode] using hm.1.1) rfl
       rw [hrel.eres_inv] at h₂
       exact ⟨_, Step.loopCondHalt h₂, .sres _ _ hR⟩
   | loopStep hc hnz hb hob hp hr ihc ihb ihp ihr =>
       intro V₂ hR hm hd
-      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, Bool.or_eq_false_iff] at hm
       simp only [codeRedecl, Bool.or_eq_false_iff] at hd
       obtain ⟨r₂, h₂, hrel⟩ := ihc hR
-        (by simpa [codeMentions] using hm.1.1) rfl
+        (by simpa [rnMCode] using hm.1.1) rfl
       rw [hrel.eres_inv] at h₂
       obtain ⟨r₃, h₃, hrelB⟩ := ihb hR
-        (by simpa [codeMentions, stmtMentions] using hm.2)
+        (by simpa [rnMCode, rnMStmt] using hm.2)
         (by simpa [codeRedecl, redeclStmt] using hd.2)
       obtain ⟨Vb₂, rfl, hrelB'⟩ := hrelB.sres_inv
       obtain ⟨r₄, h₄, hrelP⟩ := ihp hrelB'
-        (by simpa [codeMentions, stmtMentions] using hm.1.2)
+        (by simpa [rnMCode, rnMStmt] using hm.1.2)
         (by simpa [codeRedecl, redeclStmt] using hd.1)
       obtain ⟨Vp₂, rfl, hrelP'⟩ := hrelP.sres_inv
       obtain ⟨r₅, h₅, hrelE⟩ := ihr hrelP'
         (by
-          simp only [codeMentions, Bool.or_eq_false_iff]
+          simp only [rnMCode, Bool.or_eq_false_iff]
           exact ⟨⟨hm.1.1, hm.1.2⟩, hm.2⟩)
         (by
           simp only [codeRedecl, Bool.or_eq_false_iff]
@@ -869,55 +940,65 @@ theorem Step.rn_congr {x x' : Ident} {n : Nat}
       exact ⟨_, Step.loopStep h₂ hnz h₃ hob h₄ h₅, .sres _ _ hrelE'⟩
   | loopPostHalt hc hnz hb hob hp ihc ihb ihp =>
       intro V₂ hR hm hd
-      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, Bool.or_eq_false_iff] at hm
       simp only [codeRedecl, Bool.or_eq_false_iff] at hd
       obtain ⟨r₂, h₂, hrel⟩ := ihc hR
-        (by simpa [codeMentions] using hm.1.1) rfl
+        (by simpa [rnMCode] using hm.1.1) rfl
       rw [hrel.eres_inv] at h₂
       obtain ⟨r₃, h₃, hrelB⟩ := ihb hR
-        (by simpa [codeMentions, stmtMentions] using hm.2)
+        (by simpa [rnMCode, rnMStmt] using hm.2)
         (by simpa [codeRedecl, redeclStmt] using hd.2)
       obtain ⟨Vb₂, rfl, hrelB'⟩ := hrelB.sres_inv
       obtain ⟨r₄, h₄, hrelP⟩ := ihp hrelB'
-        (by simpa [codeMentions, stmtMentions] using hm.1.2)
+        (by simpa [rnMCode, rnMStmt] using hm.1.2)
         (by simpa [codeRedecl, redeclStmt] using hd.1)
       obtain ⟨Vp₂, rfl, hrelP'⟩ := hrelP.sres_inv
       exact ⟨_, Step.loopPostHalt h₂ hnz h₃ hob h₄, .sres _ _ hrelP'⟩
   | loopBreak hc hnz hb ihc ihb =>
       intro V₂ hR hm hd
-      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, Bool.or_eq_false_iff] at hm
       simp only [codeRedecl, Bool.or_eq_false_iff] at hd
       obtain ⟨r₂, h₂, hrel⟩ := ihc hR
-        (by simpa [codeMentions] using hm.1.1) rfl
+        (by simpa [rnMCode] using hm.1.1) rfl
       rw [hrel.eres_inv] at h₂
       obtain ⟨r₃, h₃, hrelB⟩ := ihb hR
-        (by simpa [codeMentions, stmtMentions] using hm.2)
+        (by simpa [rnMCode, rnMStmt] using hm.2)
         (by simpa [codeRedecl, redeclStmt] using hd.2)
       obtain ⟨Vb₂, rfl, hrelB'⟩ := hrelB.sres_inv
       exact ⟨_, Step.loopBreak h₂ hnz h₃, .sres _ _ hrelB'⟩
   | loopLeave hc hnz hb ihc ihb =>
       intro V₂ hR hm hd
-      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, Bool.or_eq_false_iff] at hm
       simp only [codeRedecl, Bool.or_eq_false_iff] at hd
       obtain ⟨r₂, h₂, hrel⟩ := ihc hR
-        (by simpa [codeMentions] using hm.1.1) rfl
+        (by simpa [rnMCode] using hm.1.1) rfl
       rw [hrel.eres_inv] at h₂
       obtain ⟨r₃, h₃, hrelB⟩ := ihb hR
-        (by simpa [codeMentions, stmtMentions] using hm.2)
+        (by simpa [rnMCode, rnMStmt] using hm.2)
         (by simpa [codeRedecl, redeclStmt] using hd.2)
       obtain ⟨Vb₂, rfl, hrelB'⟩ := hrelB.sres_inv
       exact ⟨_, Step.loopLeave h₂ hnz h₃, .sres _ _ hrelB'⟩
   | loopBodyHalt hc hnz hb ihc ihb =>
       intro V₂ hR hm hd
-      simp only [codeMentions, Bool.or_eq_false_iff] at hm
+      simp only [rnMCode, Bool.or_eq_false_iff] at hm
       simp only [codeRedecl, Bool.or_eq_false_iff] at hd
       obtain ⟨r₂, h₂, hrel⟩ := ihc hR
-        (by simpa [codeMentions] using hm.1.1) rfl
+        (by simpa [rnMCode] using hm.1.1) rfl
       rw [hrel.eres_inv] at h₂
       obtain ⟨r₃, h₃, hrelB⟩ := ihb hR
-        (by simpa [codeMentions, stmtMentions] using hm.2)
+        (by simpa [rnMCode, rnMStmt] using hm.2)
         (by simpa [codeRedecl, redeclStmt] using hd.2)
       obtain ⟨Vb₂, rfl, hrelB'⟩ := hrelB.sres_inv
       exact ⟨_, Step.loopBodyHalt h₂ hnz h₃, .sres _ _ hrelB'⟩
+
+theorem RnRes.eres_inv_right {x x' : Ident} {n : Nat} {r : EResult D}
+    {res₁ : Res D} (h : RnRes x x' n res₁ (.eres r)) : res₁ = .eres r := by
+  cases h; rfl
+
+theorem RnRes.sres_inv_right {x x' : Ident} {n : Nat} {V₂ : VEnv D} {st o}
+    {res₁ : Res D} (h : RnRes x x' n res₁ (.sres V₂ st o)) :
+    ∃ V₁, res₁ = .sres V₁ st o ∧ RnRel x x' n V₁ V₂ := by
+  cases h with
+  | sres _ _ hrel => exact ⟨_, rfl, hrel⟩
 
 end YulEvmCompiler.Optimizer.Flatten
