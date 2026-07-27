@@ -1465,4 +1465,116 @@ theorem Step.rn_congr_bwd {x x' : Ident} (hxx' : x ≠ x') {n : Nat}
   rw [renCode_invol hmfull] at h₁
   exact ⟨res₁, h₁, hrel.symm hxx'.symm⟩
 
+/-! ### Rename identity on non-mentioning code -/
+
+mutual
+theorem renExpr_id {x x' : Ident} : ∀ {e : Expr Op},
+    exprMentions x e = false → renExpr x x' e = e
+  | .lit _, _ => rfl
+  | .var y, h => by
+      simp only [exprMentions, decide_eq_false_iff_not] at h
+      simp only [renExpr, renVar]
+      rw [if_neg (fun hc : y = x => h hc.symm)]
+  | .builtin op args, h => by
+      simp only [exprMentions] at h
+      simp only [renExpr]
+      rw [renArgs_id h]
+  | .call f args, h => by
+      simp only [exprMentions] at h
+      simp only [renExpr]
+      rw [renArgs_id h]
+
+theorem renArgs_id {x x' : Ident} : ∀ {args : List (Expr Op)},
+    argsMentions x args = false → renArgs x x' args = args
+  | [], _ => rfl
+  | e :: rest, h => by
+      simp only [argsMentions, Bool.or_eq_false_iff] at h
+      simp only [renArgs]
+      rw [renExpr_id h.1, renArgs_id h.2]
+end
+
+theorem renVars_id {x x' : Ident} {ys : List Ident}
+    (h : ∀ y ∈ ys, y ≠ x) : ys.map (renVar x x') = ys :=
+  map_renVar_id h
+
+mutual
+theorem renStmt_id {x x' : Ident} : ∀ {s : Stmt Op},
+    rnMStmt x s = false → renStmt x x' s = s
+  | .block body, h => by
+      simp only [rnMStmt] at h
+      simp only [renStmt]
+      rw [renStmts_id h]
+  | .funDef n ps rs body, _ => rfl
+  | .letDecl vars rhs, h => by
+      simp only [rnMStmt, Bool.or_eq_false_iff,
+        decide_eq_false_iff_not, optExprMentions] at h
+      simp only [renStmt]
+      rw [renVars_id (fun y hy hc => h.1 (by rw [← hc]; exact hy))]
+      cases rhs with
+      | none => rfl
+      | some e =>
+          simp only [Option.map_some]
+          rw [renExpr_id h.2]
+  | .assign vars e, h => by
+      simp only [rnMStmt, Bool.or_eq_false_iff,
+        decide_eq_false_iff_not] at h
+      simp only [renStmt]
+      rw [renVars_id (fun y hy hc => h.1 (by rw [← hc]; exact hy)), renExpr_id h.2]
+  | .cond c body, h => by
+      simp only [rnMStmt, Bool.or_eq_false_iff] at h
+      simp only [renStmt]
+      rw [renExpr_id h.1, renStmts_id h.2]
+  | .switch c cases dflt, h => by
+      simp only [rnMStmt, Bool.or_eq_false_iff] at h
+      simp only [renStmt]
+      rw [renExpr_id h.1.1, renCases_id h.1.2, renDflt_id h.2]
+  | .forLoop init c post body, h => by
+      simp only [rnMStmt, Bool.or_eq_false_iff] at h
+      simp only [renStmt]
+      rw [renStmts_id h.1.1.1, renExpr_id h.1.1.2,
+        renStmts_id h.1.2, renStmts_id h.2]
+  | .exprStmt e, h => by
+      simp only [rnMStmt] at h
+      simp only [renStmt]
+      rw [renExpr_id h]
+  | .break, _ => rfl
+  | .continue, _ => rfl
+  | .leave, _ => rfl
+
+theorem renStmts_id {x x' : Ident} : ∀ {ss : List (Stmt Op)},
+    rnMStmts x ss = false → renStmts x x' ss = ss
+  | [], _ => rfl
+  | s :: rest, h => by
+      simp only [rnMStmts, Bool.or_eq_false_iff] at h
+      simp only [renStmts]
+      rw [renStmt_id h.1, renStmts_id h.2]
+
+theorem renCases_id {x x' : Ident} : ∀ {cs : List (Literal × Block Op)},
+    rnMCases x cs = false → renCases x x' cs = cs
+  | [], _ => rfl
+  | (l, b) :: rest, h => by
+      simp only [rnMCases, Bool.or_eq_false_iff] at h
+      simp only [renCases]
+      rw [renStmts_id h.1, renCases_id h.2]
+
+theorem renDflt_id {x x' : Ident} : ∀ {d : Option (Block Op)},
+    rnMDflt x d = false → renDflt x x' d = d
+  | none, _ => rfl
+  | some b, h => by
+      simp only [rnMDflt] at h
+      simp only [renDflt]
+      rw [renStmts_id h]
+end
+
+/-- Restoring both sides to a base at or below the pinned length erases the
+rename. -/
+theorem restore_rn_eq {x x' : Ident} {n : Nat} {V₀ V₁ V₂ : VEnv D}
+    (h : RnRel x x' n V₁ V₂) (hb : V₀.length ≤ n) :
+    restore V₀ V₁ = restore V₀ V₂ := by
+  obtain ⟨C, base, hx, hx', hn⟩ := h
+  unfold restore
+  rw [YulEvmCompiler.Optimizer.FuseDeclAssign.drop_to_base C base (by omega),
+    YulEvmCompiler.Optimizer.FuseDeclAssign.drop_to_base
+      (renKeys x x' C) base (by omega)]
+
 end YulEvmCompiler.Optimizer.Flatten
