@@ -95,17 +95,21 @@ def rootCalls : List (Stmt Op) → List Ident
 
 /-- Worklist closure: repeatedly add the call names of live definitions'
 bodies. Fuel `defs.length + 1` suffices — each productive round marks at
-least one further definition live. -/
+least one further definition live. On (impossible) fuel exhaustion every
+definition is declared live, so the closure property holds unconditionally
+and pruning degrades to the identity rather than to unsoundness. -/
+def reachNew (defs : List (Ident × List Ident)) (live : List Ident) :
+    List Ident :=
+  ((defs.filter (fun d => live.contains d.1)).flatMap (·.2)).filter
+    (fun n => !live.contains n && defs.any (fun d => d.1 = n))
+
 def reachFuel (defs : List (Ident × List Ident)) :
     Nat → List Ident → List Ident
-  | 0, live => live
+  | 0, live => defs.map (·.1) ++ live
   | fuel + 1, live =>
-      let new :=
-        ((defs.filter (fun d => live.contains d.1)).flatMap (·.2)).filter
-          (fun n => !live.contains n && defs.any (fun d => d.1 = n))
-      match new with
+      match reachNew defs live with
       | [] => live
-      | _ => reachFuel defs fuel (live ++ new.eraseDups)
+      | new => reachFuel defs fuel (live ++ new.eraseDups)
 
 /-- The live definition names of a root sequence. -/
 def liveDefs (body : List (Stmt Op)) : List Ident :=

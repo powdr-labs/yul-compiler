@@ -41,10 +41,51 @@ namespace YulEvmCompiler.Optimizer.FuseDeclAssign
 open YulSemantics
 open YulSemantics.EVM
 
+mutual
+/-- Does the expression mention `x` (variable read or call name)? Direct
+recursion with early exit — no intermediate lists. -/
+def mentionsExpr (x : Ident) : Expr Op → Bool
+  | .lit _ => false
+  | .var y => y = x
+  | .builtin _ args => mentionsArgs x args
+  | .call f args => f = x || mentionsArgs x args
+
+def mentionsArgs (x : Ident) : List (Expr Op) → Bool
+  | [] => false
+  | e :: rest => mentionsExpr x e || mentionsArgs x rest
+end
+
+mutual
 /-- Does the statement mention `x` at all (read, write, or declare, at any
 depth — declarations count so that shadowing regions block the sink)? -/
-def mentionsStmt (x : Ident) (s : Stmt Op) : Bool :=
-  (YulEvmCompiler.Optimizer.stmtIdents s).contains x
+def mentionsStmt (x : Ident) : Stmt Op → Bool
+  | .block body => mentionsStmts x body
+  | .funDef n ps rs body =>
+      n = x || ps.contains x || rs.contains x || mentionsStmts x body
+  | .letDecl xs none => xs.contains x
+  | .letDecl xs (some e) => xs.contains x || mentionsExpr x e
+  | .assign xs e => xs.contains x || mentionsExpr x e
+  | .exprStmt e => mentionsExpr x e
+  | .cond e body => mentionsExpr x e || mentionsStmts x body
+  | .switch e cases dflt =>
+      mentionsExpr x e || mentionsCases x cases || mentionsDflt x dflt
+  | .forLoop init e post body =>
+      mentionsStmts x init || mentionsExpr x e || mentionsStmts x post ||
+        mentionsStmts x body
+  | _ => false
+
+def mentionsStmts (x : Ident) : List (Stmt Op) → Bool
+  | [] => false
+  | s :: rest => mentionsStmt x s || mentionsStmts x rest
+
+def mentionsCases (x : Ident) : List (Literal × Block Op) → Bool
+  | [] => false
+  | (_, b) :: rest => mentionsStmts x b || mentionsCases x rest
+
+def mentionsDflt (x : Ident) : Option (Block Op) → Bool
+  | none => false
+  | some b => mentionsStmts x b
+end
 
 /-- Walk the remainder of the sequence looking for the first mention of `x`.
 If it is a same-level singleton assignment `x := e`, return the sequence with
@@ -53,7 +94,7 @@ def sink (x : Ident) : List (Stmt Op) → Option (List (Stmt Op))
   | [] => none
   | .assign [y] e :: rest =>
       if y = x then
-        if (YulEvmCompiler.Optimizer.exprIdents e).contains x then none
+        if mentionsExpr x e then none
         else some (.letDecl [x] (some e) :: rest)
       else if mentionsStmt x (.assign [y] e) then none
       else (sink x rest).map (.assign [y] e :: ·)
@@ -72,7 +113,7 @@ def fuseSeqFuel : Nat → List (Stmt Op) → List (Stmt Op)
        | some rest' => fuseSeqFuel fuel rest'
        | none => .letDecl [x] none :: fuseSeqFuel fuel rest)
   | fuel + 1, .letDecl [x] (some (.lit l)) :: .assign [y] e :: rest =>
-      if x = y && !(YulEvmCompiler.Optimizer.exprIdents e).contains x then
+      if x = y && !mentionsExpr x e then
         fuseSeqFuel fuel (.letDecl [x] (some e) :: rest)
       else
         .letDecl [x] (some (.lit l)) :: fuseSeqFuel fuel (.assign [y] e :: rest)

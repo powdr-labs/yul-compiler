@@ -141,41 +141,76 @@ end
 
 /-! ### The splice -/
 
-/-- Rename the promoted binders of `body` that occur elsewhere in the parent
-sequence (`clash`), producing the renamed statements. Declines (`none`) when a
-clashing binder is redeclared inside the block (the rename would capture). -/
-def renameClashes (P : String) (ctr : Nat) (clash : List Ident)
+/-- Occurrence check for statements strictly before `x`'s first top-level
+declaration: any mention there refers to an *outer* `x`, so a whole-block
+rename would change it. -/
+def mentionsBeforeDecl (x : Ident) : List (Stmt Op) → Bool
+  | [] => false
+  | .letDecl xs rhs :: rest =>
+      if xs.contains x then
+        -- The declaring statement itself: its initializer still reads the
+        -- outer `x` (Yul binds after evaluation).
+        (rhs.map (exprIdents · |>.contains x)).getD false
+      else
+        (rhs.map (exprIdents · |>.contains x)).getD false ||
+          mentionsBeforeDecl x rest
+  | s :: rest => (stmtIdents s).contains x || mentionsBeforeDecl x rest
+
+/-- Is a whole-block rename of top-level binder `x` capture-unsafe? True when
+`x` is declared in a *nested* scope of the sequence (its own top-level `let`s
+excluded), declared more than once at the top level, or mentioned before its
+top-level declaration (those occurrences refer to an outer `x`). -/
+def shadowedTop (x : Ident) (ss : List (Stmt Op)) : Bool :=
+  nested ss || topCount ss > 1 || mentionsBeforeDecl x ss
+where
+  nested : List (Stmt Op) → Bool
+    | [] => false
+    | .letDecl _ _ :: rest => nested rest
+    | .funDef _ _ _ _ :: rest => nested rest
+    | s :: rest => redeclStmt x s || nested rest
+  topCount : List (Stmt Op) → Nat
+    | [] => 0
+    | .letDecl xs _ :: rest =>
+        (if xs.contains x then 1 else 0) + topCount rest
+    | _ :: rest => topCount rest
+
+/-- Rename **all** promoted binders of `body` to globally fresh names.
+Renaming unconditionally (rather than only on observed collisions) makes the
+splice's mention-freeness hold *by construction*: the fresh prefix occurs
+nowhere in the original program and the counter is threaded monotonically, so
+a promoted fresh name can occur neither in the remainder of the parent
+sequence nor in any other spliced block.  Declines (`none`) when a binder is
+shadowed inside the block (the rename would capture). -/
+def renameAll (P : String) (ctr : Nat) (binders : List Ident)
     (body : List (Stmt Op)) : Option (List (Stmt Op) × Nat) :=
-  go clash body ctr
+  go binders body ctr
 where
   go : List Ident → List (Stmt Op) → Nat → Option (List (Stmt Op) × Nat)
     | [], ss, c => some (ss, c)
     | x :: rest, ss, c =>
-        if redeclStmts x ss then none
+        if shadowedTop x ss then none
         else go rest (renStmts x s!"{P}{c}" ss) (c + 1)
 
-/-- Splice pass over an already recursively-flattened sequence. `seen` is the
-identifier list of the emitted prefix. Spliced statements were already
-processed by their block's own sweep, so they are emitted as-is. -/
-def spliceSeq (P : String) (seen : List Ident) :
+/-- Splice pass over an already recursively-flattened sequence. Spliced
+statements were already processed by their block's own sweep, so they are
+emitted as-is. -/
+def spliceSeq (P : String) :
     List (Stmt Op) → Nat → List (Stmt Op) × Nat
   | [], c => ([], c)
   | .block inner :: rest, c =>
       if hasTopFunDef inner then
-        let (rest', c') := spliceSeq P (seen ++ stmtIdents (Stmt.block inner)) rest c
+        let (rest', c') := spliceSeq P rest c
         (.block inner :: rest', c')
       else
-        let others := seen ++ stmtsIdents rest
-        let clash := (topDecls inner).filter others.contains
-        match renameClashes P c clash inner with
+        match renameAll P c (topDecls inner) inner with
         | some (inner', c') =>
-            let (rest', c'') := spliceSeq P (seen ++ stmtsIdents inner') rest c'
+            let (rest', c'') := spliceSeq P rest c'
             (inner' ++ rest', c'')
         | none =>
-            let (rest', c') := spliceSeq P (seen ++ stmtIdents (Stmt.block inner)) rest c
+            let (rest', c') := spliceSeq P rest c
             (.block inner :: rest', c')
   | s :: rest, c =>
-      let (rest', c') := spliceSeq P (seen ++ stmtIdents s) rest c
+      let (rest', c') := spliceSeq P rest c
       (s :: rest', c')
 
 
@@ -217,7 +252,7 @@ of the already-emitted prefix. -/
 def flStmts (P : String) (body : List (Stmt Op)) (c : Nat) :
     List (Stmt Op) × Nat :=
   let (body, c) := flEach P body c
-  spliceSeq P [] body c
+  spliceSeq P body c
 
 def flEach (P : String) : List (Stmt Op) → Nat → List (Stmt Op) × Nat
   | [], c => ([], c)

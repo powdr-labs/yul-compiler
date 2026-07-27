@@ -339,17 +339,25 @@ def compileSource (source : String) : Option ByteArray := do
                 -- The spilled tree is ordinary Yul (guards resolved); give the
                 -- optimizer a chance before compiling it verbatim. This is the
                 -- only path large spill-only objects (PoolSwap) reach, so
-                -- without it they never see the optimizer at all.
-                let spilledOpt := YulEvmCompiler.Optimizer.optimizerPipelineObject
-                  (calls := YulSemantics.EVM.ExternalCalls.none)
-                  (creates := YulSemantics.EVM.ExternalCreates.none)
-                  (YulEvmCompiler.Optimizer.Normalize.normalizeObject
-                    (D := YulSemantics.EVM.evmWithExternal
-                      YulSemantics.EVM.ExternalCalls.none
-                      YulSemantics.EVM.ExternalCreates.none)
-                    spilled.object)
-                YulEvmCompiler.compileObject spilledOpt
-                  <|> YulEvmCompiler.compileObject spilled.object
+                -- without it they never see the optimizer at all. Objects the
+                -- plain spilled form cannot compile (live `gas`, immutables,
+                -- linker symbols) skip the expensive pipeline entirely.
+                match YulEvmCompiler.compileObject spilled.object with
+                | none => none
+                | some plainLayout =>
+                    let spilledOpt :=
+                      YulEvmCompiler.Optimizer.optimizerPipelineObject
+                        (calls := YulSemantics.EVM.ExternalCalls.none)
+                        (creates := YulSemantics.EVM.ExternalCreates.none)
+                        (YulEvmCompiler.Optimizer.Normalize.normalizeObject
+                          (D := YulSemantics.EVM.evmWithExternal
+                            YulSemantics.EVM.ExternalCalls.none
+                            YulSemantics.EVM.ExternalCreates.none)
+                          spilled.object)
+                    YulEvmCompiler.compileObject spilledOpt
+                      <|> YulEvmCompiler.compileObject
+                        (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)
+                      <|> some plainLayout
           | none => none)
       return ByteArray.mk layout.code.toArray
   | none => none

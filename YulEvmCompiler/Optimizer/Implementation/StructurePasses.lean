@@ -1,7 +1,7 @@
 import YulEvmCompiler.Optimizer.Implementation.Flatten
 import YulEvmCompiler.Optimizer.Implementation.FuseDeclAssign
 import YulEvmCompiler.Optimizer.Implementation.ReuseValues
-import YulEvmCompiler.Optimizer.Implementation.PruneDefs
+import YulEvmCompiler.Optimizer.Implementation.PruneDefsSound
 import YulEvmCompiler.Optimizer.Implementation.ResolveCongr
 /-!
 # Pass values for the structural cleanup family
@@ -42,7 +42,7 @@ def reuseValues : LocalPass D where
 /-- Unreachable-definition pruning as a verified pass. -/
 def pruneDefs : LocalPass D where
   run := PruneDefs.pruneDefsBlock
-  sound := sorry
+  sound := fun b => PruneDefs.pruneDefsBlock_sound b
 
 /-- Object-path congruence for `flatten`. -/
 theorem resolveFlattenBlock_equiv (L : Layout) (b : Block Op) :
