@@ -1,5 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.Flatten
 import YulEvmCompiler.Optimizer.Implementation.FuseDeclAssignSound
+import YulEvmCompiler.Optimizer.Implementation.StackLayoutSound
 set_option warningAsError true
 /-!
 # Soundness of block flattening — the rename transport
@@ -876,7 +877,7 @@ theorem Step.rn_congr {x x' : Ident} {n : Nat}
           (venvKeys_suffix hinit rfl))⟩
   | «break» => intro V₂ hR _ _; exact ⟨_, Step.break, .sres _ _ hR⟩
   | «continue» => intro V₂ hR _ _; exact ⟨_, Step.continue, .sres _ _ hR⟩
-  | leave => intro V₂ hR _ _; exact ⟨_, Step.leave, .sres _ _ hR⟩
+  | «leave» => intro V₂ hR _ _; exact ⟨_, Step.leave, .sres _ _ hR⟩
   | seqNil => intro V₂ hR _ _; exact ⟨_, Step.seqNil, .sres _ _ hR⟩
   | seqCons hs hrest ihs ihrest =>
       intro V₂ hR hm hd
@@ -1765,7 +1766,7 @@ theorem step_stmt_new_keys {funs : FunEnv D} {V : VEnv D} {st : EvmState}
   | forInitHalt _ => simp [take_len_sub_nil (restore_len_le _ _)]
   | «break» => simp
   | «continue» => simp
-  | leave => simp
+  | «leave» => simp
 
 theorem step_stmts_new_keys {funs : FunEnv D} :
     ∀ {ss : List (Stmt Op)} {V : VEnv D} {st : EvmState} {V' st' o},
@@ -2294,4 +2295,184 @@ theorem renBlock_equiv {x x' : Ident} (hxx' : x ≠ x') {ss : List (Stmt Op)}
         rw [← heq]
         exact Step.block hb'
 
+/-! ### `renameAll`: a fold of single-binder alpha conversions -/
+
+theorem renameAll_go_equiv (P : String) : ∀ (binders : List Ident)
+    (ss : List (Stmt Op)) (c : Nat) {ss' : List (Stmt Op)} {c' : Nat},
+    renameAll.go P binders ss c = some (ss', c') →
+    EquivStmt D (.block ss) (.block ss')
+  | [], ss, c, ss', c', h => by
+      simp only [renameAll.go, Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      exact EquivStmt.refl _
+  | y :: rest, ss, c, ss', c', h => by
+      simp only [renameAll.go] at h
+      by_cases hg : (shadowedTop y ss || y == s!"{P}{c}" ||
+          stmtsMentions s!"{P}{c}" ss) = true
+      · rw [if_pos hg] at h
+        exact absurd h (by simp)
+      · rw [if_neg hg] at h
+        simp only [Bool.or_eq_true, not_or, Bool.not_eq_true] at hg
+        obtain ⟨⟨hsh, hne⟩, hfr⟩ := hg
+        exact (renBlock_equiv (by simpa using hne) hsh hfr).trans
+          (renameAll_go_equiv P rest _ (c + 1) h)
+
+theorem renameAll_go_hoist (P : String) : ∀ (binders : List Ident)
+    (ss : List (Stmt Op)) (c : Nat) {ss' : List (Stmt Op)} {c' : Nat},
+    renameAll.go P binders ss c = some (ss', c') →
+    hoist D ss' = hoist D ss
+  | [], ss, c, ss', c', h => by
+      simp only [renameAll.go, Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      rfl
+  | y :: rest, ss, c, ss', c', h => by
+      simp only [renameAll.go] at h
+      by_cases hg : (shadowedTop y ss || y == s!"{P}{c}" ||
+          stmtsMentions s!"{P}{c}" ss) = true
+      · rw [if_pos hg] at h
+        exact absurd h (by simp)
+      · rw [if_neg hg] at h
+        rw [renameAll_go_hoist P rest _ (c + 1) h, renStmts_hoist]
+
+/-- A sequence without top-level function definitions hoists nothing. -/
+theorem hoist_nil_of_no_topFunDef : ∀ {ss : List (Stmt Op)},
+    hasTopFunDef ss = false → hoist D ss = []
+  | [], _ => rfl
+  | s :: rest, h => by
+      cases s
+      case funDef n ps rs b => exact absurd h (by simp [hasTopFunDef])
+      all_goals
+        exact hoist_nil_of_no_topFunDef (ss := rest)
+          (by simpa [hasTopFunDef] using h)
+
+theorem InsRes.sres_inv {n : Nat} {V₁ : VEnv D} {st : EvmState} {o : Outcome}
+    {res₂ : Res D} (h : InsRes n (.sres V₁ st o) res₂) :
+    ∃ V₂, res₂ = .sres V₂ st o ∧ InsChain n V₁ V₂ := by
+  cases res₂ with
+  | eres => exact h.elim
+  | sres V₂ st₂ o₂ =>
+      obtain ⟨hc, rfl, rfl⟩ := h
+      exact ⟨V₂, rfl, hc⟩
+
+/-! ### The splice, forward -/
+
+/-- A run of the input sequence yields a run of the spliced sequence: same
+state and outcome, with the promoted bindings as extra insertions at entry
+depth (erased by the enclosing block's `restore`). -/
+theorem spliceSeq_fwd (P : String) : ∀ (ss : List (Stmt Op)) (c : Nat)
+    {funs : FunEnv D} {V : VEnv D} {st : EvmState} {Vb : VEnv D}
+    {stb : EvmState} {o : Outcome},
+    Step D funs V st (.stmts ss) (.sres Vb stb o) →
+    ∃ Vb', Step D funs V st (.stmts (spliceSeq P ss c).1) (.sres Vb' stb o) ∧
+      InsChain V.length Vb Vb'
+  | [], c, funs, V, st, Vb, stb, o, h => ⟨Vb, h, .refl _⟩
+  | s :: rest, c, funs, V, st, Vb, stb, o, h => by
+      cases s
+      case block inner =>
+          by_cases hf : hasTopFunDef inner = true
+          · -- kept as-is
+            rcases hsp : spliceSeq P rest c with ⟨rest', c'⟩
+            rw [show (spliceSeq P (.block inner :: rest) c).1 =
+              .block inner :: rest' from by simp [spliceSeq, hf, hsp]]
+            cases h with
+            | seqCons hs htail =>
+                obtain ⟨Vb', htail', hchain⟩ := spliceSeq_fwd P rest c htail
+                rw [hsp] at htail'
+                exact ⟨Vb', Step.seqCons hs htail',
+                  hchain.mono (venvLen_mono hs rfl)⟩
+            | seqStop hs hne => exact ⟨Vb, Step.seqStop hs hne, .refl _⟩
+          · rcases hren : renameAll P c (topDecls inner) inner with _ | ⟨inner', c'⟩
+            · -- rename declined
+              rcases hsp : spliceSeq P rest c with ⟨rest', c'⟩
+              rw [show (spliceSeq P (.block inner :: rest) c).1 =
+                .block inner :: rest' from by simp [spliceSeq, hf, hren, hsp]]
+              cases h with
+              | seqCons hs htail =>
+                  obtain ⟨Vb', htail', hchain⟩ := spliceSeq_fwd P rest c htail
+                  rw [hsp] at htail'
+                  exact ⟨Vb', Step.seqCons hs htail',
+                    hchain.mono (venvLen_mono hs rfl)⟩
+              | seqStop hs hne => exact ⟨Vb, Step.seqStop hs hne, .refl _⟩
+            · rcases hsp : spliceSeq P rest c' with ⟨rest', c''⟩
+              by_cases hall : (topDecls inner').all
+                  (fun y => !stmtsMentions y rest') = true
+              · -- the splice
+                rw [show (spliceSeq P (.block inner :: rest) c).1 =
+                  inner' ++ rest' from by simp [spliceSeq, hf, hren, hsp, hall]]
+                simp only [renameAll] at hren
+                have hequiv := renameAll_go_equiv (calls := calls)
+                  (creates := creates) P (topDecls inner) inner c hren
+                have hhoist : hoist D inner' = [] := by
+                  rw [renameAll_go_hoist P (topDecls inner) inner c hren]
+                  exact hoist_nil_of_no_topFunDef (by simpa using hf)
+                cases h with
+                | seqCons hblk htail =>
+                    have hblk' := (hequiv funs V st _ _ _).mp hblk
+                    cases hblk' with
+                    | @block _ _ _ _ Vb₀ _ _ hb' =>
+                        rw [hhoist] at hb'
+                        have hb'' : Step D funs V st (.stmts inner')
+                            (.sres Vb₀ _ .normal) :=
+                          Step.emptyScope_congr hb' (.drop _)
+                        have hlen0 : V.length ≤ Vb₀.length :=
+                          venvLen_mono hb'' rfl
+                        have hVb₀ : Vb₀ = Vb₀.take (Vb₀.length - V.length) ++
+                            restore V Vb₀ :=
+                          (List.take_append_drop _ _).symm
+                        obtain ⟨Vr', htail', hchain⟩ :=
+                          spliceSeq_fwd P rest c' htail
+                        rw [hsp] at htail'
+                        have hments : ∀ p ∈ Vb₀.take (Vb₀.length - V.length),
+                            codeMentions p.1 (Code.stmts rest') = false := by
+                          intro p hp
+                          have hpd := step_stmts_new_keys hb'' p hp
+                          have hy := List.all_eq_true.mp hall p.1 hpd
+                          show stmtsMentions p.1 rest' = false
+                          simpa using hy
+                        obtain ⟨res₂, hrest₂, hres⟩ := frameAddAll htail' _ hments
+                        obtain ⟨Vr'', rfl, hchain₂⟩ := hres.sres_inv
+                        rw [← hVb₀] at hrest₂
+                        refine ⟨Vr'', stmts_append_normal hb'' hrest₂, ?_⟩
+                        have hVlen : (restore V Vb₀).length = V.length :=
+                          restore_length hlen0
+                        rw [hVlen] at hchain hchain₂
+                        exact hchain.trans hchain₂
+                | seqStop hblk hne =>
+                    have hblk' := (hequiv funs V st _ _ _).mp hblk
+                    cases hblk' with
+                    | @block _ _ _ _ Vb₀ _ _ hb' =>
+                        rw [hhoist] at hb'
+                        have hb'' : Step D funs V st (.stmts inner')
+                            (.sres Vb₀ _ _) :=
+                          Step.emptyScope_congr hb' (.drop _)
+                        have hlen0 : V.length ≤ Vb₀.length :=
+                          venvLen_mono hb'' rfl
+                        refine ⟨Vb₀, stmts_append_early hb'' hne, ?_⟩
+                        have hVb₀ : Vb₀ = Vb₀.take (Vb₀.length - V.length) ++
+                            restore V Vb₀ :=
+                          (List.take_append_drop _ _).symm
+                        have hpre := insChain_prepend
+                          (Vb₀.take (Vb₀.length - V.length)) (restore V Vb₀)
+                        rw [restore_length hlen0, ← hVb₀] at hpre
+                        exact hpre
+              · -- splice declined by the mention check
+                rw [show (spliceSeq P (.block inner :: rest) c).1 =
+                  .block inner :: rest' from by simp [spliceSeq, hf, hren, hsp, hall]]
+                cases h with
+                | seqCons hs htail =>
+                    obtain ⟨Vb', htail', hchain⟩ := spliceSeq_fwd P rest c' htail
+                    rw [hsp] at htail'
+                    exact ⟨Vb', Step.seqCons hs htail',
+                      hchain.mono (venvLen_mono hs rfl)⟩
+                | seqStop hs hne => exact ⟨Vb, Step.seqStop hs hne, .refl _⟩
+      all_goals (
+        rcases hsp : spliceSeq P rest c with ⟨rest', c'⟩;
+        simp only [spliceSeq, hsp];
+        cases h with
+        | seqCons hs htail =>
+            obtain ⟨Vb', htail', hchain⟩ := spliceSeq_fwd P rest c htail
+            rw [hsp] at htail'
+            exact ⟨Vb', Step.seqCons hs htail',
+              hchain.mono (venvLen_mono hs rfl)⟩
+        | seqStop hs hne => exact ⟨Vb, Step.seqStop hs hne, .refl _⟩)
 end YulEvmCompiler.Optimizer.Flatten
