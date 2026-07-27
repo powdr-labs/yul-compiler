@@ -101,11 +101,10 @@ theorem compile_correct (hexternal : ExternalsRealized model)
   · simp [compile, hpa] at hcomp
   · simp only [compile, hpa, bind, Option.bind] at hcomp
     -- extract the stack-overflow check (`stackOK`) and the lowering from the gated pipeline
-    obtain ⟨hstk, hcomp⟩ : stackOK asm = true ∧ lowerProg asm = some is := by
+    obtain ⟨hstk, hcomp⟩ : stackOK2 asm = true ∧ lowerProg asm = some is := by
       split at hcomp
       · next h => exact ⟨h, hcomp⟩
       · exact absurd hcomp (by simp)
-    obtain ⟨Hbnd, hV, h0⟩ := stackOK_sound hstk
     obtain ⟨scope, n0, Γ', n', hh, hnd, hcs, hwf⟩ := compileProgramAsm_inv hpa
     have hnodup : (labelDefs asm).Nodup := (wfCheck_iff.mp hwf).nodup
     -- the block rule exposes the `.stmts` derivation over the hoisted scope
@@ -125,7 +124,7 @@ theorem compile_correct (hexternal : ExternalsRealized model)
         have hsteps0 := (hsimS hΦ0) [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
         obtain ⟨bnd, Hb⟩ :=
-          asteps_sim hexternal hcomp hsteps0 (List.suffix_refl asm) (run_stack_bound hV h0 yst0)
+          asteps_sim hexternal hcomp hsteps0 (List.suffix_refl asm) (stackOK2_run_bound hstk yst0)
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk0 hgas
         have hcm0 : ConfMatch asm is ⟨asm, [], yst0⟩ s0 :=
@@ -137,7 +136,7 @@ theorem compile_correct (hexternal : ExternalsRealized model)
           simpa using hcm1.frame
         obtain ⟨s2, hstep2, hsm2, hcs2, hhalt2, hret2⟩ :=
           stopStep (is := is) hframe1 hcm1.smatch (assemble_eq_mkCode is) hpc1 (by
-            have hb := run_stack_bound hV h0 yst0 _ hsteps0
+            have hb := stackOK2_run_bound hstk yst0 _ hsteps0
             have hp : Operation.pushArity Operation.STOP = 0 := rfl
             have hq : Operation.popArity Operation.STOP = 0 := rfl
             dsimp only at hb
@@ -151,7 +150,7 @@ theorem compile_correct (hexternal : ExternalsRealized model)
         simp only [List.append_nil] at hsteps0
         obtain ⟨bnd, Hb⟩ :=
           arun_halt_sim hexternal hcomp hsteps0 hhalt0 (List.suffix_refl asm)
-            (run_stack_bound hV h0 yst0)
+            (stackOK2_run_bound hstk yst0)
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk0 hgas
         have hcm0 : ConfMatch asm is ⟨asm, [], yst0⟩ s0 :=
@@ -182,11 +181,10 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
   rcases hpa : compileProgram prog with _ | asm
   · simp [compile, hpa] at hcomp
   · simp only [compile, hpa, bind, Option.bind] at hcomp
-    obtain ⟨hstk, hcomp⟩ : stackOK asm = true ∧ lowerProg asm = some is := by
+    obtain ⟨hstk, hcomp⟩ : stackOK2 asm = true ∧ lowerProg asm = some is := by
       split at hcomp
       · next h => exact ⟨h, hcomp⟩
       · exact absurd hcomp (by simp)
-    obtain ⟨Hbnd, hV, h0⟩ := stackOK_sound hstk
     obtain ⟨scope, n0, Γ', n', hh, hnd, hcs, hwf⟩ := compileProgramAsm_inv hpa
     have hnodup : (labelDefs asm).Nodup := (wfCheck_iff.mp hwf).nodup
     cases hrun with
@@ -203,7 +201,7 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
         simp only [List.append_nil] at hsteps0
         obtain ⟨bnd, Hb⟩ :=
           asteps_sim hexternal (payload := 0 :: payload) hcomp hsteps0 (List.suffix_refl asm)
-            (run_stack_bound hV h0 yst0)
+            (stackOK2_run_bound hstk yst0)
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk0 hgas
         have hcm0 : ConfMatch (payload := 0 :: payload)
@@ -215,7 +213,7 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
           simp [hlen]
         obtain ⟨s2, hstep2, hsm2, hcs2, hhalt2, hret2⟩ :=
           stopSeamStep hcm1.frame hcm1.smatch hpc1 (by
-            have hb := run_stack_bound hV h0 yst0 _ hsteps0
+            have hb := stackOK2_run_bound hstk yst0 _ hsteps0
             have hp : Operation.pushArity Operation.STOP = 0 := rfl
             have hq : Operation.popArity Operation.STOP = 0 := rfl
             dsimp only at hb
@@ -229,7 +227,7 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
         obtain ⟨conf, hsteps0, hhalt0⟩ := hAS [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
         obtain ⟨bnd, Hb⟩ := arun_halt_sim hexternal (payload := 0 :: payload)
-          hcomp hsteps0 hhalt0 (List.suffix_refl asm) (run_stack_bound hV h0 yst0)
+          hcomp hsteps0 hhalt0 (List.suffix_refl asm) (stackOK2_run_bound hstk yst0)
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk0 hgas
         have hcm0 : ConfMatch (payload := 0 :: payload)

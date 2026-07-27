@@ -140,6 +140,40 @@ theorem FMatch.allWord {σ : List AVal} {S : FLayout} (h : FMatch σ S) (hw : �
   | @retTo l σ' S' _ _ =>
       exact absurd (hw (.retTo l) (by simp)) (by simp)
 
+/-! ### `NoRet`: a layout with no bare `ret` slot (main's frame; propagated) -/
+
+/-- No plain (target-less) `ret` slot — a property of `main`'s frame (it has no incoming return
+address, only words and its own pending `retTo` setups). -/
+def NoRet (S : FLayout) : Prop := ∀ s ∈ S, s ≠ FSlot.ret
+
+theorem NoRet.word {S} (h : NoRet S) : NoRet (FSlot.word :: S) := by
+  intro s hs
+  rcases List.mem_cons.mp hs with rfl | hs
+  · decide
+  · exact h s hs
+theorem NoRet.retTo {S l} (h : NoRet S) : NoRet (FSlot.retTo l :: S) := by
+  intro s hs
+  rcases List.mem_cons.mp hs with rfl | hs
+  · simp
+  · exact h s hs
+theorem NoRet.tail {S s0} (h : NoRet (s0 :: S)) : NoRet S :=
+  fun s hs => h s (List.mem_cons_of_mem _ hs)
+theorem NoRet.drop {S} (n : Nat) (h : NoRet S) : NoRet (S.drop n) :=
+  fun s hs => h s (List.mem_of_mem_drop hs)
+theorem NoRet.replicate_word_append {q S} (h : NoRet S) :
+    NoRet (List.replicate q FSlot.word ++ S) := by
+  intro s hs
+  rcases List.mem_append.mp hs with h1 | h2
+  · rw [List.eq_of_mem_replicate h1]; decide
+  · exact h s h2
+theorem NoRet.swap {sx sy : FSlot} {Sτ Sρ : FLayout} (h : NoRet (sx :: (Sτ ++ sy :: Sρ))) :
+    NoRet (sy :: (Sτ ++ sx :: Sρ)) := by
+  intro s hs; apply h s; simp only [List.mem_cons, List.mem_append] at hs ⊢; tauto
+theorem NoRet.append {S1 S2} (h1 : NoRet S1) (h2 : NoRet S2) : NoRet (S1 ++ S2) := by
+  intro s hs; rcases List.mem_append.mp hs with h | h
+  · exact h1 s h
+  · exact h2 s h
+
 /-! ### The certificate -/
 
 /-- Frame-relative certificate: per position, the frame layout `fl`, max frame base `fbMax`, and the
@@ -155,7 +189,7 @@ def Cert.Bounded (C : Cert) : Prop :=
 /-- Per-instruction step constraint, given current `fl = some S`, `fbMax = some F`, `rl = some R`. -/
 def frameStep (prog : List Asm) (C : Cert) : Asm → List Asm → FLayout → Nat → FLayout → Prop
   | .push _,      c, S, F, R => C.fl c = some (.word :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R
-  | .dup n,       c, S, F, R => ∃ sl, S[n.val]? = some sl ∧ C.fl c = some (sl :: S)
+  | .dup n,       c, S, F, R => S[n.val]? = some FSlot.word ∧ C.fl c = some (.word :: S)
       ∧ C.fbMax c = some F ∧ C.rl c = some R
   | .pushLabel l, c, S, F, R => C.fl c = some (.retTo l :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R
   | .pop,         c, S, F, R => ∃ S', S = .word :: S' ∧ C.fl c = some S' ∧ C.fbMax c = some F
@@ -181,7 +215,7 @@ def frameStep (prog : List Asm) (C : Cert) : Asm → List Asm → FLayout → Na
   | .jumpi l,     c, S, F, R => ∃ S', S = .word :: S' ∧
       (∃ t, findLabel l prog = some t ∧ C.fl t = some S' ∧ C.fbMax t = some F ∧ C.rl t = some R) ∧
       C.fl c = some S' ∧ C.fbMax c = some F ∧ C.rl c = some R
-  | .dynJump,     _, S, F, R => 1 ≤ F ∧ ∃ S', S = .ret :: S' ∧ R = S' ∧ (∀ s ∈ S', s = FSlot.word)
+  | .dynJump,     _, S, F, R => ∃ S', S = .ret :: S' ∧ R = S' ∧ (∀ s ∈ S', s = FSlot.word)
 
 def Cert.Valid (prog : List Asm) (C : Cert) : Prop :=
   ∀ i c S F R, C.fl (i :: c) = some S → C.fbMax (i :: c) = some F → C.rl (i :: c) = some R →
@@ -197,8 +231,8 @@ lRet :: below` with `below` all words. This locates it unambiguously (pending-ca
 `above`; `retRot` moves the address up through words). -/
 inductive GoodStack (prog : List Asm) (C : Cert) : List AVal → List Asm → Prop
   | root {σ : List AVal} {c : List Asm} {S R : FLayout} :
-      C.fl c = some S → C.fbMax c = some 0 → C.rl c = some R → FMatch σ S →
-      GoodStack prog C σ c
+      C.fl c = some S → C.fbMax c = some 0 → C.rl c = some R → (∀ s ∈ S, s ≠ FSlot.ret) →
+      FMatch σ S → GoodStack prog C σ c
   | call {stk above below rest : List AVal} {c cRet : List Asm} {S Sret : FLayout} {F : Nat}
       {lRet : Label} :
       C.fl c = some S → C.fbMax c = some F → C.rl c = some Sret →
@@ -217,14 +251,14 @@ theorem GoodStack.certAt {prog C} {σ : List AVal} {c : List Asm} (h : GoodStack
 theorem GoodStack.bound {prog C} (hb : C.Bounded) {σ : List AVal} {c : List Asm}
     (h : GoodStack prog C σ c) : σ.length ≤ 1023 := by
   cases h with
-  | @root σ c S R hfl hfb hrl hm => have := hb c S 0 hfl hfb; have := hm.length_eq; omega
+  | @root σ c S R hfl hfb hrl hnoret hm => have := hb c S 0 hfl hfb; have := hm.length_eq; omega
   | @call stk above below rest c cRet S Sret F lRet hfl hfb hrl hm hact hbw hfind hle _ heq =>
       have hbnd := hb c S F hfl hfb; have hlen := hm.length_eq; subst heq
       rw [List.length_append]; omega
 
 theorem GoodStack.entry {prog C} {R : FLayout} (h0fl : C.fl prog = some []) (h0fb : C.fbMax prog = some 0)
     (h0rl : C.rl prog = some R) : GoodStack prog C [] prog :=
-  .root h0fl h0fb h0rl .nil
+  .root h0fl h0fb h0rl (by simp [NoRet]) .nil
 
 /-! ### Frame grow / shrink / same -/
 
@@ -233,27 +267,13 @@ theorem GoodStack.growWord {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S�
     (hfb : C.fbMax c₁ = C.fbMax c₀) (hrl : C.rl c₁ = C.rl c₀) :
     GoodStack prog C (.word v :: σ) c₁ := by
   cases h with
-  | @root σ c S R hfl hfb0 hrl0 hm =>
+  | @root σ c S R hfl hfb0 hrl0 hnoret hm =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
-      exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (.word hm)
+      exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (NoRet.word hnoret) (.word hm)
   | @call stk above below rest c cRet S Sret F lRet hfl hfb0 hrl0 hm hact hbw hfind hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       refine .call (above := .word v :: above) (below := below) (lRet := lRet) h1
         (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (FMatch.word (v := v) hm) (by simp only [List.length_cons, List.getElem?_cons_succ]; exact hact) hbw hfind hle hres ?_
-      rw [heq]; rfl
-
-theorem GoodStack.growRet {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S₀ : FLayout} {l : Label}
-    (h : GoodStack prog C σ c₀) (h0 : C.fl c₀ = some S₀) (h1 : C.fl c₁ = some (.ret :: S₀))
-    (hfb : C.fbMax c₁ = C.fbMax c₀) (hrl : C.rl c₁ = C.rl c₀) :
-    GoodStack prog C (.code l :: σ) c₁ := by
-  cases h with
-  | @root σ c S R hfl hfb0 hrl0 hm =>
-      obtain rfl := Option.some.inj (h0 ▸ hfl)
-      exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (.ret hm)
-  | @call stk above below rest c cRet S Sret F lRet hfl hfb0 hrl0 hm hact hbw hfind hle hres heq =>
-      obtain rfl := Option.some.inj (h0 ▸ hfl)
-      refine .call (above := .code l :: above) (below := below) (lRet := lRet) h1
-        (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (FMatch.ret (l := l) hm) (by simp only [List.length_cons, List.getElem?_cons_succ]; exact hact) hbw hfind hle hres ?_
       rw [heq]; rfl
 
 theorem GoodStack.growRetTo {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S₀ : FLayout} {l : Label}
@@ -261,9 +281,9 @@ theorem GoodStack.growRetTo {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S�
     (hfb : C.fbMax c₁ = C.fbMax c₀) (hrl : C.rl c₁ = C.rl c₀) :
     GoodStack prog C (.code l :: σ) c₁ := by
   cases h with
-  | @root σ c S R hfl hfb0 hrl0 hm =>
+  | @root σ c S R hfl hfb0 hrl0 hnoret hm =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
-      exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (.retTo hm)
+      exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (NoRet.retTo hnoret) (.retTo hm)
   | @call stk above below rest c cRet S Sret F lRet hfl hfb0 hrl0 hm hact hbw hfind hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       refine .call (above := .code l :: above) (below := below) (lRet := lRet) h1
@@ -274,8 +294,8 @@ theorem GoodStack.same {prog C} {σ : List AVal} {c₀ c₁ : List Asm}
     (h : GoodStack prog C σ c₀) (hfl : C.fl c₁ = C.fl c₀) (hfb : C.fbMax c₁ = C.fbMax c₀)
     (hrl : C.rl c₁ = C.rl c₀) : GoodStack prog C σ c₁ := by
   cases h with
-  | @root σ c S R hfl0 hfb0 hrl0 hm =>
-      exact .root (by rw [hfl, hfl0]) (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) hm
+  | @root σ c S R hfl0 hfb0 hrl0 hnoret hm =>
+      exact .root (by rw [hfl, hfl0]) (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) hnoret hm
   | @call stk above below rest c cRet S Sret F lRet hfl0 hfb0 hrl0 hm hact hbw hfind hle hres heq =>
       exact .call (by rw [hfl, hfl0]) (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) hm hact hbw hfind hle hres heq
 
@@ -284,10 +304,10 @@ theorem GoodStack.shrinkWord {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S
     (h1 : C.fl c₁ = some S') (hfb : C.fbMax c₁ = C.fbMax c₀) (hrl : C.rl c₁ = C.rl c₀) :
     GoodStack prog C σ c₁ := by
   cases h with
-  | @root vσ c S R hfl hfb0 hrl0 hm =>
+  | @root vσ c S R hfl hfb0 hrl0 hnoret hm =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       cases hm with
-      | word hm' => exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) hm'
+      | word hm' => exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (NoRet.tail hnoret) hm'
   | @call stk above below rest c cRet S Sret F lRet hfl hfb0 hrl0 hm hact hbw hfind hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       cases above with
@@ -309,12 +329,13 @@ theorem GoodStack.opFrame {prog C} {args rets : List U256} {σ : List AVal} {c�
     (hfb : C.fbMax c₁ = C.fbMax c₀) (hrl : C.rl c₁ = C.rl c₀) :
     GoodStack prog C (words rets ++ σ) c₁ := by
   cases h with
-  | @root vσ c S' R hfl hfb0 hrl0 hm =>
+  | @root vσ c S' R hfl hfb0 hrl0 hnoret hm =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       obtain ⟨Sargs, Sσ, rfl, hMargs, hMσ⟩ := hm.append_inv
       have hSalen : Sargs.length = p := by rw [← hMargs.length_eq, words_length, hargs]
       have hdrop : (Sargs ++ Sσ).drop p = Sσ := by rw [← hSalen, List.drop_left]
-      refine .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) ?_
+      refine .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0])
+        (NoRet.replicate_word_append (NoRet.drop p hnoret)) ?_
       rw [hdrop, ← hrets]; exact (FMatch.replicate_word rets).append hMσ
   | @call stk above below rest c cRet S' Sret F lRet hfl hfb0 hrl0 hm hact hbw hfind hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
@@ -368,7 +389,7 @@ theorem GoodStack.slotAt {prog C} {σ : List AVal} {c : List Asm} {S : FLayout} 
     {s : FSlot} (h : GoodStack prog C σ c) (hfl : C.fl c = some S) (hx : σ[i]? = some x)
     (hs : S[i]? = some s) : FMatch [x] [s] := by
   cases h with
-  | @root σ' c' S' R hfl' hfb' hrl' hm =>
+  | @root σ' c' S' R hfl' hfb' hrl' hnoret hm =>
       obtain rfl : S = S' := Option.some.inj (hfl.symm.trans hfl')
       exact hm.at_idx hx hs
   | @call stk above below rest c' cRet S' Sret F lRet hfl' hfb' hrl' hm hact hbw hfind hle hres heq =>
@@ -406,9 +427,9 @@ theorem GoodStack.swapFrame {prog C} {x y : AVal} {τ ρ : List AVal} {c₀ c₁
     GoodStack prog C (y :: (τ ++ x :: ρ)) c₁ := by
   subst hsxw
   cases h with
-  | @root σ' c' S' R hfl hfb0 hrl0 hm =>
+  | @root σ' c' S' R hfl hfb0 hrl0 hnoret hm =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
-      exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (hm.swap_build hτlen)
+      exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (NoRet.swap hnoret) (hm.swap_build hτlen)
   | @call stk above below rest c' cRet S' Sret F lRet hfl hfb0 hrl0 hm hact hbw hfind hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       -- Peel the layout: frame = .word wv :: (τ ++ y :: fσ2'), with τ all words.
@@ -537,7 +558,7 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
           obtain ⟨Ft, hfbtEq, hFtGe⟩ := hfbt
           obtain rfl : t = c' := Option.some.inj (hfindt.symm.trans hfind)
           cases hinv with
-          | @root σr cr Sr Rr hflr hfbr hrlr hmr =>
+          | @root σr cr Sr Rr hflr hfbr hrlr hnoretr hmr =>
               obtain rfl : Sr = S := Option.some.inj (hflr.symm.trans hfl)
               obtain rfl : (0 : Nat) = F := Option.some.inj (hfbr.symm.trans hfb)
               rw [hSeq] at hmr
@@ -553,7 +574,10 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
                     (by intro x hx; simp at hx) hfindLret
                     (by rw [hMmid.length_eq]; omega) ?_ ?_
                   · intro ws hws
-                    exact GoodStack.root hflcc hfbcc hrlcc (hws.append hMmid)
+                    have hnSret : NoRet Sret := fun s hs => by rw [hSretw s hs]; simp
+                    have hnSmid : NoRet Smid := fun s hs =>
+                      hnoretr s (by rw [hSeq]; exact List.mem_append_right _ hs)
+                    exact GoodStack.root hflcc hfbcc hrlcc (NoRet.append hnSret hnSmid) (hws.append hMmid)
                   · exact hσeq
           | @call stk0 above0 below0 rest0 c0 cRet0 S0 Sret0 F0 lRet0 hfl0 hfb0 hrl0 hm0 hact0 hbw0
               hfind0 hle0 hres0 heq0 =>
@@ -644,14 +668,12 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
       exact hinv.opFrame hfl hple hargs hrets hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
   | @dup n v τ ρ c yst hτ =>
       obtain ⟨S, F, R, hfl, hfb, hrl⟩ := hinv.certAt
-      obtain ⟨sl, hidx, hflc, hfbc, hrlc⟩ := hV _ c S F R hfl hfb hrl
+      obtain ⟨hidx, hflc, hfbc, hrlc⟩ := hV _ c S F R hfl hfb hrl
       have hvidx : (τ ++ v :: ρ)[n.val]? = some v := by
         rw [← hτ, List.getElem?_append_right (Nat.le_refl _)]; simp
-      have hsm : FMatch [v] [sl] := hinv.slotAt hfl hvidx hidx
+      have hsm : FMatch [v] [FSlot.word] := hinv.slotAt hfl hvidx hidx
       cases hsm with
       | word _ => exact hinv.growWord hfl hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
-      | ret _ => exact hinv.growRet hfl hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
-      | retTo _ => exact hinv.growRetTo hfl hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
   | @swap n x y τ ρ c yst hτ =>
       obtain ⟨S, F, R, hfl, hfb, hrl⟩ := hinv.certAt
       obtain ⟨sx, mid, sy, rst, hSeq, hmidlen, hsxw, hmidw, hflc, hfbc, hrlc⟩ :=
@@ -661,11 +683,12 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
       exact hinv.swapFrame hfl hsxw hmidw hτlen hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
   | @dynJump l c c' σ yst hfind =>
       obtain ⟨S, F, R, hfl, hfb, hrl⟩ := hinv.certAt
-      obtain ⟨hF1, S', hSeq, hRS', hwords⟩ := hV _ c S F R hfl hfb hrl
+      obtain ⟨S', hSeq, hRS', hwords⟩ := hV _ c S F R hfl hfb hrl
       cases hinv with
-      | @root σ0 c0 S0 R0 hfl0 hfb0 hrl0 hm =>
-          obtain rfl : (0 : Nat) = F := Option.some.inj (hfb0.symm.trans hfb)
-          omega
+      | @root σ0 c0 S0 R0 hfl0 hfb0 hrl0 hnoret hm =>
+          obtain rfl : S0 = S := Option.some.inj (hfl0.symm.trans hfl)
+          rw [hSeq] at hnoret
+          exact absurd rfl (hnoret FSlot.ret (by simp))
       | @call stk above below rest c0 cRet S0 Sret F0 lRet hfl0 hfb0 hrl0 hm hact hbw hfind0 hle hres heq =>
           obtain rfl : S = S0 := Option.some.inj (hfl.symm.trans hfl0)
           have hSretS' : Sret = S' := by
@@ -747,8 +770,8 @@ def frameStepB (prog : List Asm) (C : Cert) : Asm → List Asm → FLayout → N
   | .push _,      c, S, F, R =>
       decide (C.fl c = some (.word :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R)
   | .dup n,       c, S, F, R => match S[n.val]? with
-      | some sl => decide (C.fl c = some (sl :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R)
-      | none => false
+      | some FSlot.word => decide (C.fl c = some (.word :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R)
+      | _ => false
   | .pushLabel l, c, S, F, R =>
       decide (C.fl c = some (.retTo l :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R)
   | .pop,         c, S, F, R => match S with
@@ -794,7 +817,7 @@ def frameStepB (prog : List Asm) (C : Cert) : Asm → List Asm → FLayout → N
           && decide (C.fl c = some S' ∧ C.fbMax c = some F ∧ C.rl c = some R)
       | _ => false
   | .dynJump,     _, S, F, R => match S with
-      | .ret :: S' => decide (1 ≤ F ∧ R = S' ∧ (∀ s ∈ S', s = FSlot.word))
+      | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
       | _ => false
 
 omit model in
@@ -806,8 +829,8 @@ theorem frameStepB_sound {prog : List Asm} {C : Cert} {i : Asm} {c : List Asm} {
   | push v => simp only [frameStepB, decide_eq_true_eq] at h; exact h
   | dup n =>
       revert h; simp only [frameStepB]; split
-      · next sl he => intro h; simp only [decide_eq_true_eq] at h; exact ⟨sl, he, h⟩
-      · intro h; simp at h
+      · next he => intro h; simp only [decide_eq_true_eq] at h; exact ⟨he, h⟩
+      · intro h; exact absurd h (by simp)
   | pushLabel l => simp only [frameStepB, decide_eq_true_eq] at h; exact h
   | pop =>
       revert h; simp only [frameStepB]; split
@@ -868,7 +891,7 @@ theorem frameStepB_sound {prog : List Asm} {C : Cert} {i : Asm} {c : List Asm} {
       · intro h; simp at h
   | dynJump =>
       revert h; simp only [frameStepB]; split
-      · next S' => intro h; simp only [decide_eq_true_eq] at h; exact ⟨h.1, S', rfl, h.2.1, h.2.2⟩
+      · next S' => intro h; simp only [decide_eq_true_eq] at h; exact ⟨S', rfl, h.1, h.2⟩
       · intro h; simp at h
 
 /-! ### The finite certificate and the top-level check -/
@@ -970,7 +993,8 @@ def stepSuccs (prog : List Asm) (pls : List Label) : List Asm → FLayout → Na
   | i :: c, fl, base, rl =>
     match i with
     | .push _ => some [(c, .word :: fl, base, rl)]
-    | .dup n => match fl[n.val]? with | some sl => some [(c, sl :: fl, base, rl)] | none => none
+    | .dup n => match fl[n.val]? with
+        | some FSlot.word => some [(c, .word :: fl, base, rl)] | _ => none
     | .pop => match fl with | .word :: fl' => some [(c, fl', base, rl)] | _ => none
     | .swap n => match fl with
         | sx :: rest => match rest.drop n.val with
@@ -979,7 +1003,7 @@ def stepSuccs (prog : List Asm) (pls : List Label) : List Asm → FLayout → Na
         | [] => none
     | .label _ => some [(c, fl, base, rl)]
     | .pushLabel l => some [(c, .retTo l :: fl, base, rl)]
-    | .op yop => if isHaltingOp yop then some [] else
+    | .op yop =>
         match opTable yop with
         | some o => some [(c, List.replicate o.pushArity .word ++ fl.drop o.popArity, base, rl)]
         | none => none
