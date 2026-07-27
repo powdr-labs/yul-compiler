@@ -144,6 +144,7 @@ def frameStep (prog : List Asm) (C : Cert) : Asm → List Asm → FLayout → Na
   | .pop,         c, S, F, R => ∃ S', S = .word :: S' ∧ C.fl c = some S' ∧ C.fbMax c = some F
       ∧ C.rl c = some R
   | .swap n,      c, S, F, R => ∃ sx mid sy rst, S = sx :: (mid ++ sy :: rst) ∧ mid.length = n.val
+      ∧ sx = FSlot.word ∧ (∀ s ∈ mid, s = FSlot.word)
       ∧ C.fl c = some (sy :: (mid ++ sx :: rst)) ∧ C.fbMax c = some F ∧ C.rl c = some R
   | .label _,     c, S, F, R => C.fl c = some S ∧ C.fbMax c = some F ∧ C.rl c = some R
   | .op yop,      c, S, F, R => ∃ o, opTable yop = some o ∧ Operation.popArity o ≤ S.length ∧
@@ -355,16 +356,77 @@ theorem swap_mem {α} [DecidableEq α] {x y z : α} {τ ρf : List α}
 theorem GoodStack.swapFrame {prog C} {x y : AVal} {τ ρ : List AVal} {c₀ c₁ : List Asm}
     {sx sy : FSlot} {Sτ Sρ : FLayout}
     (h : GoodStack prog C (x :: (τ ++ y :: ρ)) c₀) (h0 : C.fl c₀ = some (sx :: (Sτ ++ sy :: Sρ)))
+    (hsxw : sx = FSlot.word) (hmidw : ∀ s ∈ Sτ, s = FSlot.word)
     (hτlen : Sτ.length = τ.length) (h1 : C.fl c₁ = some (sy :: (Sτ ++ sx :: Sρ)))
     (hfb : C.fbMax c₁ = C.fbMax c₀) (hrl : C.rl c₁ = C.rl c₀) :
     GoodStack prog C (y :: (τ ++ x :: ρ)) c₁ := by
+  subst hsxw
   cases h with
   | @root σ' c' S' R hfl hfb0 hrl0 hm =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       exact .root h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (hm.swap_build hτlen)
   | @call stk above below rest c' cRet S' Sret F lRet hfl hfb0 hrl0 hm hbw hfind hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
-      sorry
+      -- Peel the layout: frame = .word wv :: (τ ++ y :: fσ2'), with τ all words.
+      obtain ⟨w, fr', hfreq, hmw, hmfr'⟩ := hm.cons_inv'
+      cases hmw with
+      | @word wv =>
+        obtain ⟨fσ1, fσ2, hfr'eq, hMσ1, hMσ2⟩ := hmfr'.append_inv_layout
+        obtain ⟨fa, fσ2', hfσ2eq, hMa, hMσ2'⟩ := hMσ2.cons_inv'
+        subst hfr'eq; subst hfσ2eq
+        rw [hfreq, List.cons_append] at heq
+        obtain ⟨rfl, htail⟩ := List.cons.inj heq
+        rw [List.append_assoc, List.cons_append] at htail
+        have hσ1len : τ.length = fσ1.length := by rw [hMσ1.length_eq, hτlen]
+        obtain ⟨rfl, rfl, rfl⟩ := list_split_uniq htail hσ1len
+        have hτw : IsWords τ := hMσ1.allWord hmidw
+        have hMnew : FMatch (y :: (τ ++ AVal.word wv :: fσ2')) (sy :: (Sτ ++ .word :: Sρ)) :=
+          hMa.consMatch (hMσ1.append ((FMatch.word (v := wv) FMatch.nil).consMatch hMσ2'))
+        have hstk : y :: (τ ++ AVal.word wv :: (fσ2' ++ rest))
+            = (y :: (τ ++ AVal.word wv :: fσ2')) ++ rest := by simp
+        have hfreq2 : above ++ AVal.code lRet :: below = (AVal.word wv :: τ) ++ (y :: fσ2') := by
+          rw [hfreq]; rfl
+        -- the leaf where `y` itself is the (deepest) return address
+        have leafNil : y = AVal.code lRet → below = fσ2' →
+            GoodStack prog C ((y :: (τ ++ AVal.word wv :: fσ2')) ++ rest) c₁ := by
+          rintro rfl rfl
+          refine .call (above := []) (below := τ ++ AVal.word wv :: below) (lRet := lRet) h1
+            (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) (by rw [List.nil_append]; exact hMnew) ?_
+            hfind hle hres (by rw [List.nil_append])
+          intro z hz
+          rcases List.mem_append.mp hz with hz | hz
+          · exact hτw _ hz
+          · rcases List.mem_cons.mp hz with rfl | hz
+            · exact ⟨wv, rfl⟩
+            · exact hbw _ hz
+        rw [hstk]
+        rcases List.append_eq_append_iff.mp hfreq2 with ⟨t, ht1, ht2⟩ | ⟨t, ht1, ht2⟩
+        · cases t with
+          | cons t0 t' =>
+              exfalso
+              obtain ⟨rfl, -⟩ := List.cons.inj ht2
+              have hmem : (AVal.code lRet) ∈ AVal.word wv :: τ := by
+                rw [ht1]; exact List.mem_append_right _ (by simp)
+              rcases List.mem_cons.mp hmem with hh | hh
+              · exact absurd hh (by simp)
+              · obtain ⟨v, hv⟩ := hτw _ hh; exact absurd hv (by simp)
+          | nil =>
+              rw [List.nil_append] at ht2
+              obtain ⟨hy, hbe⟩ := List.cons.inj ht2
+              exact leafNil hy.symm hbe
+        · cases t with
+          | nil =>
+              rw [List.nil_append] at ht2
+              obtain ⟨hy, hbe⟩ := List.cons.inj ht2
+              exact leafNil hy hbe.symm
+          | cons t0 t' =>
+              rw [List.cons_append] at ht2
+              obtain ⟨rfl, rfl⟩ := List.cons.inj ht2
+              refine .call (above := y :: (τ ++ AVal.word wv :: t')) (below := below) (lRet := lRet)
+                h1 (by rw [hfb, hfb0]) (by rw [hrl, hrl0]) ?_ hbw hfind hle hres (by simp)
+              have he : (y :: (τ ++ AVal.word wv :: t')) ++ AVal.code lRet :: below
+                  = y :: (τ ++ AVal.word wv :: (t' ++ AVal.code lRet :: below)) := by simp
+              rw [he]; exact hMnew
 
 variable [model : ExternalModel]
 
@@ -427,10 +489,11 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
       | ret _ => exact hinv.growRet hfl hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
   | @swap n x y τ ρ c yst hτ =>
       obtain ⟨S, F, R, hfl, hfb, hrl⟩ := hinv.certAt
-      obtain ⟨sx, mid, sy, rst, hSeq, hmidlen, hflc, hfbc, hrlc⟩ := hV _ c S F R hfl hfb hrl
+      obtain ⟨sx, mid, sy, rst, hSeq, hmidlen, hsxw, hmidw, hflc, hfbc, hrlc⟩ :=
+        hV _ c S F R hfl hfb hrl
       subst hSeq
       have hτlen : mid.length = τ.length := by rw [hmidlen, hτ]
-      exact hinv.swapFrame hfl hτlen hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
+      exact hinv.swapFrame hfl hsxw hmidw hτlen hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
   | @dynJump l c c' σ yst hfind =>
       obtain ⟨S, F, R, hfl, hfb, hrl⟩ := hinv.certAt
       obtain ⟨hF1, S', hSeq, hRS', hwords⟩ := hV _ c S F R hfl hfb hrl
