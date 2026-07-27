@@ -138,9 +138,11 @@ inductive GoodStack (prog : List Asm) (C : Cert) : List AVal → List Asm → Pr
   | root {σ : List AVal} {c : List Asm} {S : StkLayout} :
       C.fl c = some S → C.fbMax c = some 0 → StkMatch prog dH σ S →
       GoodStack prog C σ c
-  | call {stk frame rest : List AVal} {c cPre : List Asm} {S : StkLayout} {F : Nat} {lRet : Label} :
+  | call {stk frame rest : List AVal} {c cRet : List Asm} {S Sret : StkLayout} {F : Nat}
+      {lRet : Label} :
       C.fl c = some S → C.fbMax c = some F → StkMatch prog dH frame S →
-      (.code lRet) ∈ frame → rest.length ≤ F → GoodStack prog C rest cPre →
+      (.code lRet) ∈ frame → findLabel lRet prog = some cRet → rest.length ≤ F →
+      (∀ ws : List AVal, StkMatch prog dH ws Sret → GoodStack prog C (ws ++ rest) cRet) →
       stk = frame ++ rest →
       GoodStack prog C stk c
 
@@ -149,7 +151,7 @@ theorem GoodStack.certAt {prog C} {σ : List AVal} {c : List Asm}
     (h : GoodStack prog C σ c) : ∃ S F, C.fl c = some S ∧ C.fbMax c = some F := by
   cases h with
   | root hfl hfb _ => exact ⟨_, _, hfl, hfb⟩
-  | call hfl hfb _ _ _ _ _ => exact ⟨_, _, hfl, hfb⟩
+  | call hfl hfb _ _ _ _ _ _ => exact ⟨_, _, hfl, hfb⟩
 
 /-- The runtime cell at depth `i` matches the frame layout slot at depth `i`. -/
 theorem GoodStack.slotMatchAt {prog C} {σ : List AVal} {c : List Asm} {S : StkLayout}
@@ -160,7 +162,7 @@ theorem GoodStack.slotMatchAt {prog C} {σ : List AVal} {c : List Asm} {S : StkL
   | @root σ' c' S' hfl' hfb' hm =>
       obtain rfl : S = S' := Option.some.inj (hfl.symm.trans hfl')
       exact hm.slotMatch_at hx hs
-  | @call stk frame rest c' cPre S' F lRet hfl' hfb' hm hmem hle hcaller heq =>
+  | @call stk frame rest c' cRet S' Sret F lRet hfl' hfb' hm hmem hfindR hle hres heq =>
       obtain rfl : S = S' := Option.some.inj (hfl.symm.trans hfl')
       have hilt : i < frame.length := by
         have hiS : i < S.length := by
@@ -178,7 +180,7 @@ theorem GoodStack.bound {prog C} (hb : C.Bounded) {σ : List AVal} {c : List Asm
       have := hb c S 0 hfl hfb
       have hlen := hm.length_eq
       omega
-  | @call stk frame rest c cPre S F lRet hfl hfb hm hmem hle _ heq =>
+  | @call stk frame rest c cRet S Sret F lRet hfl hfb hm hmem hfindR hle hres heq =>
       have hbnd := hb c S F hfl hfb
       have hlen := hm.length_eq
       subst heq; rw [List.length_append]; omega
@@ -198,10 +200,10 @@ theorem GoodStack.growWord {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S�
   | @root σ c S hfl hfb0 hm =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       exact .root h1 (by rw [hfb, hfb0]) (.word hm)
-  | @call stk frame rest c cPre S F lRet hfl hfb0 hm hmem hle hcaller heq =>
+  | @call stk frame rest c cRet S Sret F lRet hfl hfb0 hm hmem hfindR hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       refine .call (lRet := lRet) h1 (by rw [hfb, hfb0]) (StkMatch.word (v := v) hm)
-        (List.mem_cons_of_mem _ hmem) hle hcaller ?_
+        (List.mem_cons_of_mem _ hmem) hfindR hle hres ?_
       rw [heq, List.cons_append]
 
 /-- Pushing a return address onto the current frame (`pushLabel`). -/
@@ -214,10 +216,10 @@ theorem GoodStack.growCode {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S�
   | @root σ c S hfl hfb0 hm =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       exact .root h1 (by rw [hfb, hfb0]) (.code hfind hm)
-  | @call stk frame rest c cPre S F lRet hfl hfb0 hm hmem hle hcaller heq =>
+  | @call stk frame rest c cRet S Sret F lRet hfl hfb0 hm hmem hfindR hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       refine .call (lRet := lRet) h1 (by rw [hfb, hfb0]) (StkMatch.code (l := l) hfind hm)
-        (List.mem_cons_of_mem _ hmem) hle hcaller ?_
+        (List.mem_cons_of_mem _ hmem) hfindR hle hres ?_
       rw [heq, List.cons_append]
 
 /-- Moving to a position with the same frame layout and base (`label`, local `jump`). -/
@@ -227,8 +229,8 @@ theorem GoodStack.same {prog C} {σ : List AVal} {c₀ c₁ : List Asm}
   cases h with
   | @root σ c S hfl0 hfb0 hm =>
       exact .root (by rw [hfl, hfl0]) (by rw [hfb, hfb0]) hm
-  | @call stk frame rest c cPre S F lRet hfl0 hfb0 hm hmem hle hcaller heq =>
-      exact .call (by rw [hfl, hfl0]) (by rw [hfb, hfb0]) hm hmem hle hcaller heq
+  | @call stk frame rest c cRet S Sret F lRet hfl0 hfb0 hm hmem hfindR hle hres heq =>
+      exact .call (by rw [hfl, hfl0]) (by rw [hfb, hfb0]) hm hmem hfindR hle hres heq
 
 /-- Popping a plain word off the current frame (`pop`). -/
 theorem GoodStack.shrinkWord {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S' : StkLayout} {v : AVal}
@@ -239,13 +241,13 @@ theorem GoodStack.shrinkWord {prog C} {σ : List AVal} {c₀ c₁ : List Asm} {S
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       cases hm with
       | word hm' => exact .root h1 (by rw [hfb, hfb0]) hm'
-  | @call stk frame rest c cPre S F lRet hfl hfb0 hm hmem hle hcaller heq =>
+  | @call stk frame rest c cRet S Sret F lRet hfl hfb0 hm hmem hfindR hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       cases hm with
       | @word w frame' S'' hm' =>
           rw [List.cons_append] at heq
           obtain ⟨rfl, rfl⟩ := List.cons.inj heq
-          refine .call (lRet := lRet) h1 (by rw [hfb, hfb0]) hm' ?_ hle hcaller rfl
+          refine .call (lRet := lRet) h1 (by rw [hfb, hfb0]) hm' ?_ hfindR hle hres rfl
           cases List.mem_cons.mp hmem with
           | inl he => exact absurd he (by simp)
           | inr hm2 => exact hm2
@@ -267,7 +269,7 @@ theorem GoodStack.opFrame {prog C} {args rets : List U256} {σ : List AVal} {c�
       refine .root h1 (by rw [hfb, hfb0]) ?_
       rw [hdrop, ← hrets]
       exact (StkMatch.replicate_word rets).append hMσ
-  | @call stk frame rest c cPre S' F lRet hfl hfb0 hm hmem hle hcaller heq =>
+  | @call stk frame rest c cRet S' Sret F lRet hfl hfb0 hm hmem hfindR hle hres heq =>
       obtain rfl := Option.some.inj (h0 ▸ hfl)
       have hfrlen : frame.length = S.length := hm.length_eq
       have hple : args.length ≤ frame.length := by rw [hfrlen, hargs]; exact hp
@@ -286,7 +288,7 @@ theorem GoodStack.opFrame {prog C} {args rets : List U256} {σ : List AVal} {c�
       have hSalen : Sa.length = p := by rw [← hMa.length_eq, words_length, hargs]
       have hSdrop : S.drop p = Sf := by rw [hSeq, ← hSalen, List.drop_left]
       refine .call (lRet := lRet) (frame := words rets ++ frame.drop args.length) h1
-        (by rw [hfb, hfb0]) ?_ ?_ hle hcaller ?_
+        (by rw [hfb, hfb0]) ?_ ?_ hfindR hle hres ?_
       · rw [hSdrop, ← hrets]; exact (StkMatch.replicate_word rets).append hMf
       · -- return address ∈ words rets ++ frame.drop args.length
         rw [hframe] at hmem
@@ -324,7 +326,7 @@ theorem GoodStack.swapFrame {prog C} {x y : AVal} {τ ρ : List AVal} {c₀ c₁
   | @root σ' c' S' hfl hfb0 hm =>
       obtain rfl : sx :: (Sτ ++ sy :: Sρ) = S' := Option.some.inj (h0.symm.trans hfl)
       exact .root h1 (by rw [hfb, hfb0]) (hm.swap_build hτlen)
-  | @call stk frame rest c' cPre S' F lRet hfl hfb0 hm hmem hle hcaller heq =>
+  | @call stk frame rest c' cRet S' Sret F lRet hfl hfb0 hm hmem hfindR hle hres heq =>
       obtain rfl : sx :: (Sτ ++ sy :: Sρ) = S' := Option.some.inj (h0.symm.trans hfl)
       -- frame = fx :: (fτ ++ fy :: fρ) via head + layout-append + head inversions
       obtain ⟨fx, frame1, rfl, hSMfx, hm1⟩ := hm.cons_inv'
@@ -336,7 +338,7 @@ theorem GoodStack.swapFrame {prog C} {x y : AVal} {τ ρ : List AVal} {c₀ c₁
       obtain ⟨rfl, rfl, rfl⟩ :=
         list_split_uniq hrest (by rw [hMfτ.length_eq, hτlen])
       refine .call (lRet := lRet) (frame := y :: (τ ++ x :: fρ)) h1 (by rw [hfb, hfb0]) ?_ ?_
-        hle hcaller ?_
+        hfindR hle hres ?_
       · exact StkMatch.consMatch hSMfy (hMfτ.append (StkMatch.consMatch hSMfx hMfρ))
       · exact swap_mem hmem
       · rw [List.cons_append, List.append_assoc, List.cons_append]
