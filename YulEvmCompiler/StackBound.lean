@@ -125,7 +125,58 @@ checker's soundness). Given a well-formed height map, `Inv` is preserved by ever
 theorem Inv.step {prog : List Asm} {H : HeightMap} (hV : ValidHeights prog H)
     {a b : AConf} (hstep : AStep (model := model) prog a b) (hsuf : a.code <:+ prog)
     (hinv : Inv prog H a) : Inv prog H b := by
-  sorry
+  cases hstep with
+  | @push v c σ yst =>
+      obtain ⟨hfit, hHc⟩ := hV (.push v) c hsuf _ hinv.height
+      exact ⟨by simpa using hfit, by simpa using hHc, hinv.returns.word_cons⟩
+  | @pushLabel l c σ yst hdef =>
+      obtain ⟨hfit, hHc, hfind⟩ := hV (.pushLabel l) c hsuf _ hinv.height
+      exact ⟨by simpa using hfit, by simpa using hHc, hinv.returns.code_cons hfind⟩
+  | @pop v σ c yst =>
+      obtain ⟨_, hHc⟩ := hV .pop c hsuf _ hinv.height
+      refine ⟨?_, ?_, hinv.returns.tail⟩
+      · show σ.length ≤ 1023
+        have h2 : σ.length + 1 ≤ 1023 := hinv.fits
+        omega
+      · simpa using hHc
+  | @label l c σ yst =>
+      have hHc := hV (.label l) c hsuf _ hinv.height
+      exact ⟨hinv.fits, hHc, hinv.returns⟩
+  | @jump l c c' σ yst hfind =>
+      obtain ⟨c'', hf'', hH''⟩ := hV (.jump l) c hsuf _ hinv.height
+      rw [hfind] at hf''; obtain rfl := Option.some.inj hf''
+      exact ⟨hinv.fits, hH'', hinv.returns⟩
+  | @jumpiTaken l v c c' σ yst hv hfind =>
+      obtain ⟨_, ⟨c'', hf'', hH''⟩, _⟩ := hV (.jumpi l) c hsuf _ hinv.height
+      rw [hfind] at hf''; obtain rfl := Option.some.inj hf''
+      refine ⟨?_, ?_, hinv.returns.tail⟩
+      · show σ.length ≤ 1023
+        have h2 : σ.length + 1 ≤ 1023 := hinv.fits
+        omega
+      · simpa using hH''
+  | @jumpiFall l v c σ yst hv =>
+      obtain ⟨_, _, hHc⟩ := hV (.jumpi l) c hsuf _ hinv.height
+      refine ⟨?_, ?_, hinv.returns.tail⟩
+      · show σ.length ≤ 1023
+        have h2 : σ.length + 1 ≤ 1023 := hinv.fits
+        omega
+      · simpa using hHc
+  | @dynJump l c c' σ yst hfind =>
+      obtain ⟨c'', hf'', hH''⟩ := hinv.returns [] l σ (by simp)
+      rw [hfind] at hf''; obtain rfl := Option.some.inj hf''
+      refine ⟨?_, hH'', hinv.returns.tail⟩
+      · show σ.length ≤ 1023
+        have h2 : σ.length + 1 ≤ 1023 := hinv.fits
+        omega
+  | @dup n v τ ρ c yst hτ =>
+      -- HARD: a dup'd `.code` value would land at the wrong height (needs value-flow).
+      sorry
+  | @swap n x y τ ρ c yst hτ =>
+      -- HARD: a swapped `.code` value would move to the wrong height (needs value-flow).
+      sorry
+  | @op yop args rets c σ yst yst' hstepOp =>
+      -- needs the op-arity coupling: args.length = popArity (opTable yop), rets.length = pushArity.
+      sorry
 
 /-- **The invariant holds at every reachable configuration**, hence the stack stays within the
 EVM limit throughout any Asm run — the hypothesis `astep_sim`/`asteps_sim` require. -/
