@@ -492,6 +492,16 @@ def selfdestructOps : Block Op := yul% {
 #guard (compile sumLoop).isSome
 #guard (compile factorial).isSome
 #guard (compile fibStorage).isSome
+
+-- The Asm peephole fires on `multiRet3` (the top return slot's constant
+-- assignment compiles to `push v; swap1; pop` → `pop; push v`, one byte and
+-- one `SWAP1` cheaper); the `agreeOn`/`runYul` checks below confirm behavior
+-- is unchanged.
+#guard ((compileProgram multiRet3).map fun asm =>
+    codeSize (optimizeAsm asm) + 1 == codeSize asm) = some true
+-- Where no window occurs, the peephole is the identity.
+#guard ((compileProgram sumLoop).map fun asm =>
+    optimizeAsm asm == asm) = some true
 #guard (compile byteAndOverlapCopy).isSome
 #guard (compileProgram signExtendCases).isSome
 #guard (compile signExtendCases).isSome

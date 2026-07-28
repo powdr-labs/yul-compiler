@@ -1,4 +1,5 @@
 import YulEvmCompiler.Asm
+import YulEvmCompiler.AsmPeephole
 set_option warningAsError true
 /-!
 # YulEvmCompiler.Compile
@@ -329,9 +330,12 @@ def compileProgram (prog : Block Op) : Option (List Asm) := do
   let (asm, _, _) ← compileStmts [scope] [] none none n0 prog
   if wfCheck asm then some asm else none
 
-/-- The full pipeline: Yul → labeled assembly → byte-level IR. -/
+/-- The full pipeline: Yul → labeled assembly → Asm-level peephole
+optimization → byte-level IR. `optimizeAsm` preserves the label structure
+(`codeRel_wf`), and `YulEvmCompiler.Correctness` threads its forward
+simulation (`AsmPeepholeSound`) between the phase-A and phase-B theorems. -/
 def compile (prog : Block Op) : Option (List Instr) := do
   let asm ← compileProgram prog
-  lowerProg asm
+  lowerProg (optimizeAsm asm)
 
 end YulEvmCompiler

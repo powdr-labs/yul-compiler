@@ -7,6 +7,8 @@ import YulEvmCompiler.StateRel
 import YulEvmCompiler.OpStep
 import YulEvmCompiler.Asm
 import YulEvmCompiler.AsmSem
+import YulEvmCompiler.AsmPeephole
+import YulEvmCompiler.AsmPeepholeSound
 import YulEvmCompiler.Compile
 import YulEvmCompiler.Examples
 import YulEvmCompiler.LowerDefs

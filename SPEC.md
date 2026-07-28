@@ -52,9 +52,9 @@ The shape of each guarantee. Read these first: the honest scoping lives here.
 | `YulEvmCompiler.Optimizer.LocalPass.optimize_then_compile_correct` | [YulEvmCompiler/Optimizer/Spec/Backend.lean#L30](YulEvmCompiler/Optimizer/Spec/Backend.lean#L30) | `b97af54bdbe04c9f` |
 | `YulEvmCompiler.compileObject_consistent` | [YulEvmCompiler/ObjectCompile.lean#L740](YulEvmCompiler/ObjectCompile.lean#L740) | `6772c506631c72d` |
 | `YulEvmCompiler.compileObject_correct` | [YulEvmCompiler/ObjectCompile.lean#L763](YulEvmCompiler/ObjectCompile.lean#L763) | `6c28d636cabfed71` |
-| `YulEvmCompiler.compile_correct` | [YulEvmCompiler/Correctness.lean#L70](YulEvmCompiler/Correctness.lean#L70) | `ec51f1c553a52f8a` |
-| `YulEvmCompiler.compile_correct_eval` | [YulEvmCompiler/Correctness.lean#L217](YulEvmCompiler/Correctness.lean#L217) | `999e96fc09d553b6` |
-| `YulEvmCompiler.compile_correct_withPayload` | [YulEvmCompiler/Correctness.lean#L151](YulEvmCompiler/Correctness.lean#L151) | `50e2c3107c79f9ea` |
+| `YulEvmCompiler.compile_correct` | [YulEvmCompiler/Correctness.lean#L71](YulEvmCompiler/Correctness.lean#L71) | `ec51f1c553a52f8a` |
+| `YulEvmCompiler.compile_correct_eval` | [YulEvmCompiler/Correctness.lean#L229](YulEvmCompiler/Correctness.lean#L229) | `999e96fc09d553b6` |
+| `YulEvmCompiler.compile_correct_withPayload` | [YulEvmCompiler/Correctness.lean#L159](YulEvmCompiler/Correctness.lean#L159) | `50e2c3107c79f9ea` |
 | `YulEvmCompiler.compiled_constructor_returns` | [YulEvmCompiler/ObjectCompile.lean#L795](YulEvmCompiler/ObjectCompile.lean#L795) | `9a99d76f5d037853` |
 | `YulParser.parse_canon_block` | [YulParser/Stmt.lean#L313](YulParser/Stmt.lean#L313) | `565944a3acfe55d3` |
 | `YulParser.parse_canon_obj` | [YulParser/Obj.lean#L139](YulParser/Obj.lean#L139) | `f40759b3ea852432` |
@@ -161,7 +161,7 @@ The code being verified. Only the signatures are frozen; implementations are fre
 
 | declaration | source | hash |
 |---|---|---|
-| `YulEvmCompiler.compile` | [YulEvmCompiler/Compile.lean#L332](YulEvmCompiler/Compile.lean#L332) | `49a8d9e93773bc82` |
+| `YulEvmCompiler.compile` | [YulEvmCompiler/Compile.lean#L333](YulEvmCompiler/Compile.lean#L333) | `49a8d9e93773bc82` |
 | `YulEvmCompiler.compileObject` | [YulEvmCompiler/ObjectCompile.lean#L736](YulEvmCompiler/ObjectCompile.lean#L736) | `45cacb379f48e375` |
 | `YulParser.parseBlock` | [YulParser/Stmt.lean#L305](YulParser/Stmt.lean#L305) | `548f44114c0c0376` |
 | `YulParser.parseObject` | [YulParser/Obj.lean#L131](YulParser/Obj.lean#L131) | `7de98252fdadddab` |
