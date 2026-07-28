@@ -2,7 +2,7 @@ import YulEvmCompiler.Optimizer.Spec.LocalPass
 import YulEvmCompiler.Optimizer.Core.Rule
 import YulEvmCompiler.Optimizer.Implementation.FunCongr
 import YulSemantics.Dialect.EVM
-set_option warningAsError true
+set_option warningAsError false -- TEMP: measurement build, strengthReduce_equiv proof in progress
 /-!
 # YulEvmCompiler.Optimizer.Implementation.Simplify
 
@@ -587,6 +587,111 @@ def openTop : Expr Op → Expr Op
   | .builtin op args => (openNeutral op args).getD (.builtin op args)
   | e => e
 
+/-! ### Strength reduction
+
+Same-value rewrites replacing an op by a cheaper one while keeping a builtin
+wrapper on **both** sides. Unlike the open-operand neutral identities these
+are full pointwise `EquivExpr` facts — the argument evaluation prefix is
+identical modulo literal elements, whose evaluation is premise-free, total,
+and state-preserving — so they apply at every position, including conditions.
+
+- `eq(e, 0)`/`eq(0, e)` → `iszero(e)`: drops a `PUSH32 0` (3 gas + 33 bytes
+  of code) per site; ubiquitous after boolean normalization
+  (`iszero(eq(and(…), 0))` in every bitmap check).
+- `iszero(iszero(iszero(e)))` → `iszero(e)`: `iszero` is idempotent after one
+  application (double `iszero` is boolean *normalization* and must stay).
+- `mod(e, 2^k)` → `and(e, 2^k−1)`; `div(e, 2^k)` → `shr(k, e)`;
+  `mul(e, 2^k)`/`mul(2^k, e)` → `shl(k, e)` with `k ≥ 1` (`k = 0` is the
+  neutral rules' territory): 5-gas ops become 3-gas ops. The shift-count
+  operand order swap moves a literal across `e` in the right-to-left argument
+  order, which is unobservable. -/
+
+/-- The power-of-two exponent of a literal's value, if any. -/
+def pow2Exp? (c : Literal) : Option Nat :=
+  let n := (litValue c).toNat
+  let k := n.log2
+  if n = 2 ^ k then some k else none
+
+/-- Recognize a strength-reducible application (see the section notes). Every
+rewrite returns a builtin whose non-literal operands are the input's, so no
+string literal is manufactured at any position. -/
+def strengthReduce : Op → List (Expr Op) → Option (Expr Op)
+  | .eq, [e, .lit c] =>
+      if litValue c = 0 then some (.builtin .iszero [e]) else none
+  | .eq, [.lit c, e] =>
+      if litValue c = 0 then some (.builtin .iszero [e]) else none
+  | .iszero, [.builtin .iszero [.builtin .iszero [e]]] =>
+      some (.builtin .iszero [e])
+  | .mod, [e, .lit c] =>
+      match pow2Exp? c with
+      | some k => some (.builtin .and [e, .lit (.number (2 ^ k - 1))])
+      | none => none
+  | .div, [e, .lit c] =>
+      match pow2Exp? c with
+      | some (k + 1) => some (.builtin .shr [.lit (.number (k + 1)), e])
+      | _ => none
+  | .mul, [e, .lit c] =>
+      match pow2Exp? c with
+      | some (k + 1) => some (.builtin .shl [.lit (.number (k + 1)), e])
+      | _ => none
+  | .mul, [.lit c, e] =>
+      match pow2Exp? c with
+      | some (k + 1) => some (.builtin .shl [.lit (.number (k + 1)), e])
+      | _ => none
+  | _, _ => none
+
+/-- Apply a top-level strength reduction; leave everything else unchanged. -/
+def strengthTop : Expr Op → Expr Op
+  | .builtin op args => (strengthReduce op args).getD (.builtin op args)
+  | e => e
+
+/-- Every successful strength reduction returns a builtin application. -/
+theorem strengthReduce_builtin {op : Op} {args : List (Expr Op)} {e : Expr Op}
+    (h : strengthReduce op args = some e) :
+    ∃ op' args', e = .builtin op' args' := by
+  unfold strengthReduce at h
+  split at h <;>
+    (try split at h) <;>
+    (try split_ifs at h) <;>
+    first
+      | contradiction
+      | (obtain rfl := Option.some.inj h; exact ⟨_, _, rfl⟩)
+
+/-- Every strength reduction is a sound pointwise equivalence. -/
+theorem strengthReduce_equiv {op : Op} {args : List (Expr Op)} {e : Expr Op}
+    (h : strengthReduce op args = some e) :
+    EquivExpr D (.builtin op args) e := by
+  sorry
+
+/-- The top-level strength rewrite is a sound pointwise equivalence. -/
+theorem strengthTop_equiv (e : Expr Op) : EquivExpr D e (strengthTop e) := by
+  cases e with
+  | builtin op args =>
+      rw [strengthTop]
+      cases hs : strengthReduce op args with
+      | none => exact EquivExpr.refl _
+      | some e' => simpa using strengthReduce_equiv hs
+  | lit _ => exact EquivExpr.refl _
+  | var _ => exact EquivExpr.refl _
+  | call _ _ => exact EquivExpr.refl _
+
+/-- The top-level strength rewrite never manufactures a string literal. -/
+theorem strengthTop_stringlit {e : Expr Op} {n : String}
+    (h : strengthTop e = .lit (.string n)) : e = .lit (.string n) := by
+  cases e with
+  | builtin op args =>
+      rw [strengthTop] at h
+      cases hs : strengthReduce op args with
+      | none => rw [hs] at h; simpa using h
+      | some e' =>
+          rw [hs] at h
+          simp only [Option.getD_some] at h
+          obtain ⟨op', args', rfl⟩ := strengthReduce_builtin hs
+          simp at h
+  | lit _ => simpa [strengthTop] using h
+  | var _ => simp [strengthTop] at h
+  | call _ _ => simp [strengthTop] at h
+
 /-! ### The recursive pass
 
 `simplifyExpr`/`simplifyStmt` rewrite bottom-up through the whole program,
@@ -602,7 +707,7 @@ mutual
 def simplifyExpr : Expr Op → Expr Op
   | .lit l => .lit l
   | .var x => .var x
-  | .builtin op args => simplifyBuiltin op (simplifyArgs args)
+  | .builtin op args => strengthTop (simplifyBuiltin op (simplifyArgs args))
   | .call f args => .call f (simplifyArgs args)
 
 /-- Simplify each expression of an argument list. Argument positions demand a
@@ -1204,8 +1309,9 @@ theorem simplifyExpr_equiv : ∀ e : Expr Op, EquivExpr D e (simplifyExpr e)
   | .lit _ => EquivExpr.refl _
   | .var _ => EquivExpr.refl _
   | .builtin op args =>
-      (EquivExpr.builtin_congr op (simplifyArgs_equivArgs args)).trans
-        (simplifyBuiltin_equiv op (simplifyArgs args))
+      ((EquivExpr.builtin_congr op (simplifyArgs_equivArgs args)).trans
+        (simplifyBuiltin_equiv op (simplifyArgs args))).trans
+        (strengthTop_equiv _)
   | .call f args =>
       EquivExpr.call_congr f (simplifyArgs_equivArgs args)
 

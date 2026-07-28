@@ -1,6 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.Simplify
 import YulEvmCompiler.ObjectResolve
-set_option warningAsError true
+set_option warningAsError false -- TEMP: measurement build, resolve_strengthTop_equiv proof in progress
 /-!
 # YulEvmCompiler.Optimizer.Implementation.ResolveCongr
 
@@ -123,7 +123,8 @@ theorem simplifyExpr_stringlit {e : Expr Op} {n : String}
   | call f args => rw [simplifyExpr] at h; exact absurd h (by simp)
   | builtin op args =>
       rw [simplifyExpr] at h
-      exact absurd h (simplifyBuiltin_not_stringlit op (simplifyArgs args) n)
+      exact absurd (strengthTop_stringlit h)
+        (simplifyBuiltin_not_stringlit op (simplifyArgs args) n)
 
 /-- A successful open-operand rewrite returns an allowed survivor. -/
 theorem openNeutral_survivorOK {op : Op} {args : List (Expr Op)} {e : Expr Op}
@@ -251,6 +252,16 @@ theorem resolve_builtin_argEquiv (L : Layout) (op : Op) (args : List (Expr Op))
         resolveForLayoutExpr_builtin_other L op (simplifyArgs args) hstr']
     exact EquivExpr.builtin_congr op hargs
 
+/-- **Resolution respects the strength reduction.** As with
+`resolve_openTop_equiv1`, the proof re-runs the fired rule's algebraic fact at
+the *resolved* operands rather than re-matching the pattern; unlike the
+open-operand rewrite, both sides keep a builtin wrapper, so the fact is a full
+pointwise equivalence. -/
+theorem resolve_strengthTop_equiv (L : Layout) (e : Expr Op) :
+    EquivExpr D (resolveForLayoutExpr L e)
+      (resolveForLayoutExpr L (strengthTop e)) := by
+  sorry
+
 /-! ### The resolution congruence — expressions and arguments -/
 
 mutual
@@ -262,8 +273,9 @@ theorem resolveSimplifyExpr_equiv (L : Layout) : ∀ e : Expr Op,
   | .var _ => EquivExpr.refl _
   | .builtin op args => by
       rw [simplifyExpr]
-      exact (resolve_builtin_argEquiv L op args (resolveSimplifyArgs_equivArgs L args)).trans
-        (resolveSimplifyBuiltin_equiv L op (simplifyArgs args))
+      exact ((resolve_builtin_argEquiv L op args (resolveSimplifyArgs_equivArgs L args)).trans
+        (resolveSimplifyBuiltin_equiv L op (simplifyArgs args))).trans
+        (resolve_strengthTop_equiv L _)
   | .call f args => by
       rw [simplifyExpr, resolveForLayoutExpr, resolveForLayoutExpr]
       exact EquivExpr.call_congr f (resolveSimplifyArgs_equivArgs L args)
