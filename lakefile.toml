@@ -44,3 +44,11 @@ root = "YulParserMain"
 [[lean_exe]]
 name = "checkSolidityGas"
 root = "scripts.CheckSolidityGas"
+
+# Compile-only corpus checker: reports which fixtures the compiler REJECTS
+# (e.g. via the stack-overflow gate), with no gas execution. Native for the
+# same stack-depth reason as checkSolidityGas. Use `--baseline=<f>` to print the
+# stale gas rows to drop after a gate change. See scripts/CheckSolidityCompileGate.lean.
+[[lean_exe]]
+name = "checkCompileGate"
+root = "scripts.CheckSolidityCompileGate"
