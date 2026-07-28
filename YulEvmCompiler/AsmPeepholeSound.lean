@@ -140,6 +140,14 @@ inductive Match (R : List Label) : AConf → AConf → Prop
       CodeRel R sc oc →
       Match R ⟨.jump m :: .label l :: sc, σ, y⟩
               ⟨.jumpi m :: .label l :: oc, .word w :: σ, y⟩
+  | dz1 {l : Label} {v : U256} {σ : List AVal} {sc oc : List Asm} {y : EvmState} :
+      CodeRel R sc oc →
+      Match R ⟨.op .iszero :: .jumpi l :: sc, .word (b2w (v = 0)) :: σ, y⟩
+              ⟨.jumpi l :: oc, .word v :: σ, y⟩
+  | dz2 {l : Label} {v : U256} {σ : List AVal} {sc oc : List Asm} {y : EvmState} :
+      CodeRel R sc oc →
+      Match R ⟨.jumpi l :: sc, .word (b2w (b2w (v = 0) = 0)) :: σ, y⟩
+              ⟨.jumpi l :: oc, .word v :: σ, y⟩
 
 /-- The `iszero` step the optimized side of an inverted branch executes. -/
 theorem iszero_step [model : ExternalModel] {prog' c : List Asm}
@@ -149,6 +157,66 @@ theorem iszero_step [model : ExternalModel] {prog' c : List Asm}
   have h := AStep.op (model := model) (prog := prog') (yop := .iszero)
     (args := [v]) (rets := [b2w (v = 0)]) (c := c) (σ := σ) (yst := y) (yst' := y) rfl
   simpa [words] using h
+
+/-- Invert a successful `iszero` built-in step: one argument, the `b2w`
+result, unchanged state. -/
+theorem iszero_inv [model : ExternalModel] {args rets : List U256}
+    {yst yst' : EvmState}
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates
+      .iszero args yst (.ok rets yst')) :
+    ∃ v, args = [v] ∧ rets = [b2w (v = 0)] ∧ yst' = yst := by
+  match args with
+  | [v] =>
+      obtain ⟨rfl, rfl⟩ :
+          [b2w (v = 0)] = rets ∧ yst = yst' := by
+        have h := Option.some.inj hb
+        cases h
+        exact ⟨rfl, rfl⟩
+      exact ⟨v, rfl, rfl, rfl⟩
+  | [] => exact absurd hb (by simp [YulSemantics.EVM.builtinWithExternal,
+      YulSemantics.EVM.stepOp, YulSemantics.EVM.un])
+  | _ :: _ :: _ => exact absurd hb (by simp [YulSemantics.EVM.builtinWithExternal,
+      YulSemantics.EVM.stepOp, YulSemantics.EVM.un])
+
+/-- `iszero` never halts. -/
+theorem iszero_no_halt [model : ExternalModel] {args : List U256}
+    {yst yf : EvmState}
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates
+      .iszero args yst (.halt yf)) : False := by
+  match args with
+  | [] => exact absurd hb (by simp [YulSemantics.EVM.builtinWithExternal,
+      YulSemantics.EVM.stepOp, YulSemantics.EVM.un])
+  | [v] => exact absurd hb (by simp [YulSemantics.EVM.builtinWithExternal,
+      YulSemantics.EVM.stepOp, YulSemantics.EVM.un])
+  | _ :: _ :: _ => exact absurd hb (by simp [YulSemantics.EVM.builtinWithExternal,
+      YulSemantics.EVM.stepOp, YulSemantics.EVM.un])
+
+/-- Double `iszero` preserves truthiness: the normalized value is zero
+exactly when the original is. -/
+theorem b2w_dbl_eq_zero_iff {v : U256} : b2w (b2w (v = 0) = 0) = 0 ↔ v = 0 := by
+  by_cases hv : v = 0 <;> simp [b2w, hv]
+
+/-- Invert a step from a configuration headed by an operation (the stack need
+not be in `words args ++ σ` form syntactically). -/
+theorem astep_op_inv [model : ExternalModel] {prog : List Asm} {yop : Op}
+    {c : List Asm} {σs : List AVal} {y : EvmState} {b : AConf}
+    (h : AStep (model := model) prog ⟨.op yop :: c, σs, y⟩ b) :
+    ∃ args rets σ' yst', σs = words args ++ σ'
+      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates yop args y
+          (.ok rets yst')
+      ∧ b = ⟨c, words rets ++ σ', yst'⟩ := by
+  cases h with
+  | op hb => exact ⟨_, _, _, _, rfl, hb, rfl⟩
+
+/-- Invert a halt from a configuration headed by an operation. -/
+theorem ahalt_op_inv [model : ExternalModel] {prog : List Asm} {yop : Op}
+    {c : List Asm} {σs : List AVal} {y yf : EvmState}
+    (h : AHalt (model := model) prog ⟨.op yop :: c, σs, y⟩ yf) :
+    ∃ args σ', σs = words args ++ σ'
+      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates yop args y
+          (.halt yf) := by
+  cases h with
+  | op hb => exact ⟨_, _, rfl, hb⟩
 
 /-! ### The forward simulation -/
 
@@ -170,6 +238,10 @@ theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
     | @op yop args rets c σ2 yst yst' hb =>
       cases hc with
       | keep _ hc' => exact ⟨_, .single (.op hb), .sync hc'⟩
+      | dblIszero hc' =>
+        -- first `iszero` of a doomed pair: the optimized side stutters
+        obtain ⟨v, rfl, rfl, rfl⟩ := iszero_inv hb
+        exact ⟨_, .refl _, .dz1 hc'⟩
     | @dup n v τ ρ c yst hτ =>
       cases hc with
       | keep _ hc' => exact ⟨_, .single (.dup hτ), .sync hc'⟩
@@ -189,6 +261,16 @@ theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
         have hR : l ∈ R := hRefs l (refs_of_suffix hsuf rfl)
         obtain ⟨otgt, ho, hr⟩ := codeRel_findLabel hpp hR hf
         exact ⟨_, .single (.jump ho), .sync hr⟩
+      | @jumpNext _ ctail oc' hc' =>
+        -- the jump's own label is next; source lands exactly there
+        obtain ⟨pre0, hpre⟩ := hsuf
+        have heq : prog = (pre0 ++ [Asm.jump l]) ++ Asm.label l :: ctail := by
+          rw [← hpre]; simp
+        have hfl : findLabel l prog = some ctail := by
+          rw [heq]; exact findLabel_boundary (by rw [← heq]; exact hnodup)
+        obtain rfl : c'0 = ctail := by
+          rw [hf] at hfl; exact Option.some.inj hfl
+        exact ⟨_, .single .label, .sync hc'⟩
     | @jumpiTaken l v c c'0 σ2 yst hv hf =>
       cases hc with
       | keep _ hc' =>
@@ -209,6 +291,16 @@ theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
         refine ⟨_, ?_, .sync hc'⟩
         refine .head iszero_step (.head (.jumpiFall (by simp [b2w]; exact hv)) ?_)
         exact .single .label
+      | @jumpiNext _ ctail oc' hc' =>
+        -- the jumpi's own label is next; taken lands exactly there
+        obtain ⟨pre0, hpre⟩ := hsuf
+        have heq : prog = (pre0 ++ [Asm.jumpi l]) ++ Asm.label l :: ctail := by
+          rw [← hpre]; simp
+        have hfl : findLabel l prog = some ctail := by
+          rw [heq]; exact findLabel_boundary (by rw [← heq]; exact hnodup)
+        obtain rfl : c'0 = ctail := by
+          rw [hf] at hfl; exact Option.some.inj hfl
+        exact ⟨_, .head .pop (.single .label), .sync hc'⟩
     | @jumpiFall l v c σ2 yst hv =>
       cases hc with
       | keep _ hc' => exact ⟨_, .single (.jumpiFall hv), .sync hc'⟩
@@ -217,6 +309,9 @@ theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
         subst hv
         refine ⟨_, .single iszero_step, Match.brMid ?_ hc'⟩
         simp [b2w]
+      | @jumpiNext _ ctail oc' hc' =>
+        -- not taken: fall into the label; optimized just pops the condition
+        exact ⟨_, .single .pop, .sync (CodeRel.keep _ hc')⟩
     | @pushLabel l c σ2 yst hl =>
       cases hc with
       | keep _ hc' =>
@@ -245,6 +340,23 @@ theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
       have hR : m ∈ R := hRefs m (refs_of_suffix hsuf rfl)
       obtain ⟨otgt, ho, hr⟩ := codeRel_findLabel hpp hR hf
       exact ⟨_, .single (.jumpiTaken hw ho), .sync hr⟩
+  | @dz1 l v σ sc oc y hc =>
+    -- second `iszero` of the pair; the optimized side still stutters
+    obtain ⟨args, rets, σ', yst', hσeq, hb, rfl⟩ := astep_op_inv hstep
+    obtain ⟨u, rfl, rfl, rfl⟩ := iszero_inv hb
+    obtain ⟨rfl, rfl⟩ : b2w (v = 0) = u ∧ σ = σ' := by
+      simpa [words] using hσeq
+    exact ⟨_, .refl _, .dz2 hc⟩
+  | @dz2 l v σ sc oc y hc =>
+    cases hstep with
+    | @jumpiTaken _ _ c c'0 σ2 yst hv hf =>
+      have hvne : v ≠ 0 := fun h => hv (b2w_dbl_eq_zero_iff.mpr h)
+      have hR : l ∈ R := hRefs l (refs_of_suffix hsuf rfl)
+      obtain ⟨otgt, ho, hr⟩ := codeRel_findLabel hpp hR hf
+      exact ⟨_, .single (.jumpiTaken hvne ho), .sync hr⟩
+    | @jumpiFall _ _ c σ2 yst hv =>
+      have hv0 : v = 0 := b2w_dbl_eq_zero_iff.mp hv
+      exact ⟨_, .single (.jumpiFall hv0), .sync hc⟩
 
 /-- Multi-step forward simulation (reflexive-transitive closure), threading
 the suffix and stack invariants along the source run. -/
@@ -267,12 +379,20 @@ theorem halt_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
     {b a' : AConf} {yf : EvmState}
     (hhalt : AHalt (model := model) prog b yf) (hm : Match R b a') :
     AHalt (model := model) prog' a' yf := by
-  cases hhalt with
-  | @op yop args c σ yst yst' hb =>
-    cases hm with
-    | @sync sc oc σ2 y hc =>
+  cases hm with
+  | @sync sc oc σ2 y hc =>
+    cases hhalt with
+    | @op yop args c σ yst yst' hb =>
       cases hc with
       | keep _ hc' => exact .op hb
+      | dblIszero _ => exact absurd hb iszero_no_halt
+  | dz1 hc =>
+    obtain ⟨args, σ', -, hb⟩ := ahalt_op_inv hhalt
+    exact absurd hb iszero_no_halt
+  | mid1 _ _ => exact absurd hhalt (by intro h; cases h)
+  | mid2 _ => exact absurd hhalt (by intro h; cases h)
+  | brMid _ _ => exact absurd hhalt (by intro h; cases h)
+  | dz2 _ => exact absurd hhalt (by intro h; cases h)
 
 /-! ### Endpoint inversion and the packaged bridge lemmas -/
 
@@ -284,30 +404,87 @@ theorem match_empty_left {R : List Label} {σ : List AVal} {y : EvmState}
   cases hm with
   | sync hc => rw [codeRel_nil_left hc]
 
-/-- **Bridge (normal case).** A full source run from the whole program (with
-an empty initial stack, unique label definitions) to empty code is simulated
-by the optimized program to the same endpoint. -/
-theorem optimizeAsm_asteps [model : ExternalModel] {asm : List Asm}
+/-- **Round bridge (normal case).** A full source run from the whole program
+(with an empty initial stack, unique label definitions) to empty code is
+simulated by one optimization round to the same endpoint. -/
+theorem optimizeAsmRound_asteps [model : ExternalModel] {asm : List Asm}
     (hnodup : (labelDefs asm).Nodup) {σf : List AVal} {y yf : EvmState}
     (hsteps : ASteps (model := model) asm ⟨asm, [], y⟩ ⟨[], σf, yf⟩) :
-    ASteps (model := model) (optimizeAsm asm) ⟨optimizeAsm asm, [], y⟩ ⟨[], σf, yf⟩ := by
-  have hcr := codeRel_optimize asm
+    ASteps (model := model) (optimizeAsmRound asm)
+      ⟨optimizeAsmRound asm, [], y⟩ ⟨[], σf, yf⟩ := by
+  have hcr := codeRel_optimizeRound asm
   obtain ⟨b', hb', hmb⟩ := steps_sim hnodup (fun _ h => h) hcr hsteps
     (List.suffix_refl asm) StkRefs.nil (.sync hcr)
   rw [match_empty_left hmb] at hb'
   exact hb'
 
-/-- **Bridge (halt case).** A source run that halts is simulated by the
-optimized program to a halting configuration with the same final state. -/
+/-- **Round bridge (halt case).** -/
+theorem optimizeAsmRound_ahalt [model : ExternalModel] {asm : List Asm}
+    (hnodup : (labelDefs asm).Nodup) {y : EvmState} {bconf : AConf} {yf : EvmState}
+    (hsteps : ASteps (model := model) asm ⟨asm, [], y⟩ bconf)
+    (hhalt : AHalt (model := model) asm bconf yf) :
+    ∃ b', ASteps (model := model) (optimizeAsmRound asm)
+        ⟨optimizeAsmRound asm, [], y⟩ b'
+      ∧ AHalt (model := model) (optimizeAsmRound asm) b' yf := by
+  have hcr := codeRel_optimizeRound asm
+  obtain ⟨b', hb', hmb⟩ := steps_sim hnodup (fun _ h => h) hcr hsteps
+    (List.suffix_refl asm) StkRefs.nil (.sync hcr)
+  exact ⟨b', hb', halt_sim hhalt hmb⟩
+
+/-- One round keeps label definitions unique, so the next round's bridge
+applies. -/
+theorem optimizeAsmRound_nodup {asm : List Asm}
+    (hnodup : (labelDefs asm).Nodup) :
+    (labelDefs (optimizeAsmRound asm)).Nodup :=
+  hnodup.sublist (codeRel_labelDefs_sublist (codeRel_optimizeRound asm))
+
+/-- **Bridge (normal case).** Round bridges compose along the bounded
+iteration: a full source run is simulated by `optimizeAsm` (any number of
+rounds) to the same endpoint. -/
+theorem optimizeAsmN_asteps [model : ExternalModel] (k : Nat) {asm : List Asm}
+    (hnodup : (labelDefs asm).Nodup) {σf : List AVal} {y yf : EvmState}
+    (hsteps : ASteps (model := model) asm ⟨asm, [], y⟩ ⟨[], σf, yf⟩) :
+    ASteps (model := model) (optimizeAsmN k asm)
+      ⟨optimizeAsmN k asm, [], y⟩ ⟨[], σf, yf⟩ := by
+  induction k generalizing asm with
+  | zero => exact hsteps
+  | succ k ih =>
+    rw [optimizeAsmN]
+    split
+    · exact hsteps
+    · exact ih (optimizeAsmRound_nodup hnodup) (optimizeAsmRound_asteps hnodup hsteps)
+
+/-- **Bridge (halt case).** -/
+theorem optimizeAsmN_ahalt [model : ExternalModel] (k : Nat) {asm : List Asm}
+    (hnodup : (labelDefs asm).Nodup) {y : EvmState} {bconf : AConf} {yf : EvmState}
+    (hsteps : ASteps (model := model) asm ⟨asm, [], y⟩ bconf)
+    (hhalt : AHalt (model := model) asm bconf yf) :
+    ∃ b', ASteps (model := model) (optimizeAsmN k asm)
+        ⟨optimizeAsmN k asm, [], y⟩ b'
+      ∧ AHalt (model := model) (optimizeAsmN k asm) b' yf := by
+  induction k generalizing asm bconf with
+  | zero => exact ⟨bconf, hsteps, hhalt⟩
+  | succ k ih =>
+    rw [optimizeAsmN]
+    split
+    · exact ⟨bconf, hsteps, hhalt⟩
+    · obtain ⟨b1, hb1, hh1⟩ := optimizeAsmRound_ahalt hnodup hsteps hhalt
+      exact ih (optimizeAsmRound_nodup hnodup) hb1 hh1
+
+/-- The packaged bridges for `optimizeAsm` (the production four-round pass),
+consumed by `YulEvmCompiler.Correctness`. -/
+theorem optimizeAsm_asteps [model : ExternalModel] {asm : List Asm}
+    (hnodup : (labelDefs asm).Nodup) {σf : List AVal} {y yf : EvmState}
+    (hsteps : ASteps (model := model) asm ⟨asm, [], y⟩ ⟨[], σf, yf⟩) :
+    ASteps (model := model) (optimizeAsm asm) ⟨optimizeAsm asm, [], y⟩ ⟨[], σf, yf⟩ :=
+  optimizeAsmN_asteps 4 hnodup hsteps
+
 theorem optimizeAsm_ahalt [model : ExternalModel] {asm : List Asm}
     (hnodup : (labelDefs asm).Nodup) {y : EvmState} {bconf : AConf} {yf : EvmState}
     (hsteps : ASteps (model := model) asm ⟨asm, [], y⟩ bconf)
     (hhalt : AHalt (model := model) asm bconf yf) :
     ∃ b', ASteps (model := model) (optimizeAsm asm) ⟨optimizeAsm asm, [], y⟩ b'
-      ∧ AHalt (model := model) (optimizeAsm asm) b' yf := by
-  have hcr := codeRel_optimize asm
-  obtain ⟨b', hb', hmb⟩ := steps_sim hnodup (fun _ h => h) hcr hsteps
-    (List.suffix_refl asm) StkRefs.nil (.sync hcr)
-  exact ⟨b', hb', halt_sim hhalt hmb⟩
+      ∧ AHalt (model := model) (optimizeAsm asm) b' yf :=
+  optimizeAsmN_ahalt 4 hnodup hsteps hhalt
 
 end YulEvmCompiler.Peephole
