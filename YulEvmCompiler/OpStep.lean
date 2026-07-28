@@ -189,20 +189,20 @@ theorem decoded_op {code : ByteArray} {s : State} {pre post : List UInt8}
   exact State.decoded_to_op hdec
 
 theorem decoded_push {code : ByteArray} {s : State} {pre post : List UInt8}
-    {v : UInt256}
+    {w : Fin 33} {v : UInt256}
     (hf : FrameOK code s)
-    (hcode : code = mkCode (pre ++ (Instr.push v).bytes ++ post))
+    (hcode : code = mkCode (pre ++ (Instr.push w v).bytes ++ post))
+    (hwf : v.toNat < 256 ^ w.val)
     (hpc : s.pc = UInt256.ofNat pre.length) :
-    s.decoded = some (.Push ⟨32, by decide⟩, some (v, 32)) := by
-  have hsz : code.size = pre.length + 33 + post.length := by
+    s.decoded = some (.Push ⟨w⟩, some (v, w.val)) := by
+  have hsz : code.size = pre.length + (1 + w.val) + post.length := by
     subst hcode; simp [Instr.bytes]; omega
   have hlen : pre.length < 2 ^ 256 := by
     have := hf.codeSmall; omega
   unfold State.decoded
-  rw [hf.hcode, hpc, toNat_ofNat_of_lt hlen, hcode, decodeAt_push pre post v]
+  rw [hf.hcode, hpc, toNat_ofNat_of_lt hlen, hcode, decodeAt_push pre post w v hwf]
   have hfork : s.fork = .Osaka := hf.fork
   simp [Option.bind, hfork]
-  decide
 
 /-! ### The two conclusion shapes -/
 
@@ -257,45 +257,88 @@ theorem selfDestructColdSurcharge_le (s : State) (beneficiary : AccountAddress) 
   unfold Gas.selfDestructColdSurcharge
   split <;> omega
 
-/-! ### The `PUSH32` step -/
+/-! ### The `PUSHk` step -/
 
-/-- Executing an embedded `PUSH32 u` for an arbitrary target word `u` (e.g.
-a resolved label address): pushes `u`, advances the pc by 33. -/
-theorem pushStepU {code : ByteArray} {pre post : List UInt8} {u : UInt256}
+/-- Executing an embedded `PUSHk u` for an arbitrary target word `u` (e.g. a
+resolved label address): pushes `u`, advances the pc by `1 + w.val`. The
+side condition `u.toNat < 256 ^ w.val` is the decode round-trip precondition
+(and, at `w = 0` / `PUSH0`, forces `u = 0`, the constant `PUSH0` pushes). -/
+theorem pushStepU {code : ByteArray} {pre post : List UInt8} {w : Fin 33} {u : UInt256}
     {yst : EvmState} {σ : List UInt256} {s : State}
-    (hcode : code = mkCode (pre ++ (Instr.push u).bytes ++ post))
+    (hcode : code = mkCode (pre ++ (Instr.push w u).bytes ++ post))
+    (hwf : u.toNat < 256 ^ w.val)
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = σ)
     (hgas : 40000 ≤ s.gasAvailable) :
     ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
-      ∧ s'.pc = UInt256.ofNat (pre.length + 33)
+      ∧ s'.pc = UInt256.ofNat (pre.length + (1 + w.val))
       ∧ s'.stack = u :: σ
       ∧ s.gasAvailable - 40000 ≤ s'.gasAvailable := by
-  have hsz : code.size = pre.length + 33 + post.length := by
+  have hsz : code.size = pre.length + (1 + w.val) + post.length := by
     subst hcode; simp [Instr.bytes]; omega
-  have hdec := decoded_push hf hcode hpc
+  have hdec := decoded_push hf hcode hwf hpc
   have hfork : s.fork = .Osaka := hf.fork
-  have hgas' : Gas.baseCost s.fork (.Push ⟨(32 : Fin 33), by decide⟩) ≤ s.gasAvailable := by
-    rw [hfork]
-    have : Gas.baseCost .Osaka (.Push ⟨(32 : Fin 33), by decide⟩) ≤ 40000 := by decide
-    omega
-  refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-    (StepRunning.pushN s ⟨32, by decide⟩ u 32 (by decide) hdec hgas'),
-    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
-      hf.running⟩,
-    ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
-        hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
-        hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
-  · show s.pc + UInt256.ofNat (32 + 1) = _
-    rw [hpc, ofNat_add_ofNat (by have := hf.codeSmall; omega)]
-  · show u :: s.stack = u :: σ
-    rw [hstk]
-  · show s.gasAvailable - Gas.baseCost s.fork (.Push ⟨(32 : Fin 33), by decide⟩)
-      ≥ s.gasAvailable - 40000
-    apply Nat.sub_le_sub_left
-    rw [hfork]
-    decide
+  rcases Nat.eq_zero_or_pos w.val with hw0 | hwpos
+  · -- PUSH0: the immediate is empty and the pushed word is `0`.
+    have hu0 : u.toNat = 0 := by
+      have h1 : u.toNat < 256 ^ w.val := hwf
+      rw [hw0] at h1; simpa using h1
+    have huz : u = ⟨0⟩ := by
+      obtain ⟨fv⟩ := u
+      exact congrArg UInt256.mk (Fin.ext hu0)
+    have hwz : w = (⟨0, by decide⟩ : Fin 33) := Fin.ext hw0
+    have hdecOp : s.decodedOp = some (.Push ⟨0, by decide⟩) := by
+      unfold State.decodedOp
+      rw [hdec]
+      simp only [Option.map_some, hwz]
+    have hgas0 : Gas.baseCost s.fork (.Push ⟨(0 : Fin 33), by decide⟩) ≤ s.gasAvailable := by
+      rw [hfork]
+      have : Gas.baseCost .Osaka (.Push ⟨(0 : Fin 33), by decide⟩) ≤ 40000 := by decide
+      omega
+    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+      (StepRunning.push0 s hdecOp hgas0),
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
+        hf.running⟩,
+      ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
+          hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
+          hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
+    · show s.pc.succ = _
+      rw [hpc, hw0]
+      rw [succ_ofNat (by have := hf.codeSmall; omega)]
+    · show (⟨0⟩ : UInt256) :: s.stack = u :: σ
+      rw [hstk, huz]
+    · show s.gasAvailable - Gas.baseCost s.fork (.Push ⟨(0 : Fin 33), by decide⟩)
+        ≥ s.gasAvailable - 40000
+      apply Nat.sub_le_sub_left
+      rw [hfork]
+      decide
+  · -- PUSHk, k ≥ 1: the decoded immediate is `u` itself.
+    have hgas' : Gas.baseCost s.fork (.Push ⟨w, w.isLt⟩) ≤ s.gasAvailable := by
+      rw [hfork]
+      have : Gas.baseCost .Osaka (.Push ⟨w, w.isLt⟩) ≤ 3 := by
+        simp only [Gas.baseCost]; split <;> omega
+      omega
+    refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+      (StepRunning.pushN s w u w.val hwpos hdec hgas'),
+      ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
+        hf.running⟩,
+      ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
+          hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
+          hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
+    · show s.pc + UInt256.ofNat (w.val + 1) = _
+      rw [hpc, ofNat_add_ofNat (by have := hf.codeSmall; omega)]
+      congr 1
+      omega
+    · show u :: s.stack = u :: σ
+      rw [hstk]
+    · show s.gasAvailable - Gas.baseCost s.fork (.Push ⟨w, w.isLt⟩)
+        ≥ s.gasAvailable - 40000
+      apply Nat.sub_le_sub_left
+      rw [hfork]
+      have : Gas.baseCost .Osaka (.Push ⟨w, w.isLt⟩) ≤ 3 := by
+        simp only [Gas.baseCost]; split <;> omega
+      omega
 
 /-! ### The implicit `STOP` at the end of the code -/
 

@@ -128,7 +128,7 @@ theorem decodeAt_op (pre post : List UInt8) (o : Operation)
 /-- The opcode byte `0x5f + w.val` decodes to `PUSHk` for `k = w.val`. Proved
 by exhausting the 33 concrete widths (each a fully concrete `decide`). -/
 theorem opcodeOf_push (w : Fin 33) :
-    Decode.opcodeOf (UInt8.ofNat (0x5f + w.val)) = some (.Push ⟨w, w.isLt⟩) := by
+    Decode.opcodeOf (UInt8.ofNat (0x5f + w.val)) = some (.Push ⟨w⟩) := by
   fin_cases w <;> decide
 
 /-- Folding the big-endian digits back into a number. -/
@@ -202,7 +202,7 @@ under the well-formedness side condition `v.toNat < 256 ^ w.val` (which is
 theorem decodeAt_push (pre post : List UInt8) (w : Fin 33) (v : UInt256)
     (hwf : v.toNat < 256 ^ w.val) :
     Decode.decodeAt (mkCode (pre ++ (Instr.push w v).bytes ++ post)) pre.length
-      = some (.Push ⟨w, w.isLt⟩, some (v, w.val)) := by
+      = some (.Push ⟨w⟩, some (v, w.val)) := by
   show Decode.decodeAt
     (mkCode (pre ++ (UInt8.ofNat (0x5f + w.val) :: natToBE v.toNat w.val) ++ post)) pre.length = _
   have hsz : pre.length
@@ -222,7 +222,7 @@ theorem decodeAt_push (pre post : List UInt8) (w : Fin 33) (v : UInt256)
     rw [foldl_natToBE w.val v.toNat 0 hwf]
     rw [Nat.zero_mul, Nat.zero_add]
     exact u256_ofNat_toNat v
-  show some ((Operation.Push ⟨w, w.isLt⟩ : Operation),
+  show some ((Operation.Push ⟨w⟩ : Operation),
       some (UInt256.ofNat (Data.Bytes.bytesToBigEndianNat
         ((mkCode (pre ++ UInt8.ofNat (0x5f + w.val) :: natToBE v.toNat w.val ++ post)).extract
           (pre.length + 1) (pre.length + 1 + w.val))), w.val)) = _
@@ -246,7 +246,7 @@ theorem opTable_available {yop : YulSemantics.EVM.Op} {o : Operation}
     subst h <;> decide
 
 @[simp] theorem push_available (w : Fin 33) :
-    (Operation.Push ⟨w, w.isLt⟩).availableInFork .Osaka = true := by
+    (Operation.Push ⟨w⟩).availableInFork .Osaka = true := by
   fin_cases w <;> decide
 
 /-- `DUP1..DUP16` round-trip through their bytes (they are classic opcodes,
