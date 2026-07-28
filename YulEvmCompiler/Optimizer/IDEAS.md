@@ -1292,4 +1292,23 @@ compose that result with the existing `Simplify` resolution congruence for the
 - **Double-negation / `not(not(x))` → x**, `xor(x,x) → 0`, `sub(x,x) → 0`
   (var-only, value-preserving where sound).
 - **Block flattening** of nested `{ … }` with no `funDef`s and no shadowing.
-- **Asm-level peepholes** (separate, Asm→Asm soundness contract).
+- ~~**Asm-level peepholes** (separate, Asm→Asm soundness contract).~~ ✅
+  **Landed** as `YulEvmCompiler/AsmPeephole.lean` (+ `AsmPeepholeSound.lean`):
+  `optimizeAsm` runs inside `compile` between `compileProgram` and
+  `lowerProg`, with its own whole-program forward simulation over `AStep`
+  (`CodeRel` spec relation + `Match` configuration relation, threaded through
+  `compile_correct`). Not an `Optimizer.Pass` — it works below the source
+  tier, on patterns the Yul→Yul passes cannot express. Three rewrites, each
+  mined from actually-emitted Asm (the classic `dup;pop`/`push;pop`/
+  `swap n;swap n` peepholes never fire on this backend's output):
+  1. `push v; swap1; pop → pop; push v` (constant top return-slot
+     assignment; −1 byte, −3 gas each);
+  2. `jumpi l; jump m; label l → op iszero; jumpi m; label l` (the
+     `if c { break/continue/leave }` shape; −33 bytes each, −8 gas on the
+     condition-false path, +3 on the taken path);
+  3. drop unreferenced `label`s (~¼ of emitted labels; −1 byte, −1 gas per
+     pass-through each).
+  Next candidates at this tier: adjacent-label merging (needs global
+  relabeling, a different argument than `CodeRel`'s in-place windows), and
+  iterating the scan (a dropped branch's `jumpi` can orphan its label for a
+  second round).
