@@ -7,32 +7,40 @@ An **assembly-level (Asm → Asm) peephole optimizer**: the transform and its
 label-structure preservation. This is the "separate, Asm→Asm soundness
 contract" layer: unlike the source (Yul→Yul) optimizer, it rewrites the
 compiler's labelled control-flow IR directly, so it can exploit patterns the
-source optimizer cannot express — in particular the **calling convention**
-the backend emits for return-value slots.
+source optimizer cannot express — the backend's calling convention, its
+branch layout, and its label placement.
 
-## The rewrite
+## The rewrites
 
-The single rewrite realized here is the return-slot assignment idiom
+Three rewrites, each mined from actually-emitted code (the classic
+`dup;pop` / `push;pop` / `swap n;swap n` peepholes never fire on this
+backend's output):
 
-```text
-  push v ; swap1 ; pop   ⟶   pop ; push v
-```
-
-Both sequences have the identical net effect "replace the top of the stack
-with the literal `v`", but the right-hand side is one `SWAP1` (3 gas, 1 byte)
-cheaper. The backend emits the left-hand form whenever a function body writes
-a constant into its (top) return slot (e.g. `multiRet`, `multiAssign`,
-`multiRet3`); the source optimizer never sees it because return slots are a
-backend calling-convention artifact.
+1. **Return-slot assignment** — `push v ; swap1 ; pop ⟶ pop ; push v`.
+   Identical net effect ("replace the top of the stack with the literal
+   `v`"), one `SWAP1` (3 gas, 1 byte) cheaper. Emitted whenever a function
+   body writes a constant into its top return slot.
+2. **Branch inversion** — `jumpi l ; jump m ; label l ⟶
+   op iszero ; jumpi m ; label l`. The `if cond {break/continue/leave}`
+   shape: enter the guarded body via fall-through instead of a jump. Saves
+   33 bytes, and 8 gas whenever the condition is false (the common path for
+   guard-style `if`s) at the cost of 3 gas when it is true. The label stays
+   (other references may exist); only the local entry becomes fall-through.
+3. **Dead label elimination** — drop `label l` when `l` is referenced
+   nowhere in the program (about a quarter of emitted labels: loop-exit and
+   return labels nothing jumps to). Saves the 1-byte `JUMPDEST` and 1 gas
+   per pass-through.
 
 ## Structure
 
-* `optimizeAsm` — the concrete linear scan.
-* `CodeRel` — a **spec** relation between a source suffix and an optimized
-  suffix. `optimizeAsm` is one *implementation*; `codeRel_optimize` proves it
-  always produces a `CodeRel`-related program. `CodeRel` preserves `labelDefs`,
-  `labelRefs`, `findLabel` (`codeRel_findLabel`) and does not grow `codeSize`,
-  hence preserves `WFProg` (`codeRel_wf`).
+* `peepRun R` — the concrete linear scan (`R` = labels that may be
+  referenced; `optimizeAsm` instantiates `R := labelRefs p`).
+* `CodeRel R` — a **spec** relation between a source suffix and an optimized
+  suffix. `optimizeAsm` is one *implementation*; `codeRel_optimize` proves
+  its output is always `CodeRel`-related. `CodeRel` keeps `labelDefs` a
+  sublist (retaining every label in `R`), keeps `labelRefs` a subset,
+  preserves `findLabel` for labels in `R` (`codeRel_findLabel`), and does
+  not grow `codeSize`; hence it preserves `WFProg` (`codeRel_wf`).
 
 The forward simulation against the phase-A step relation lives in
 `YulEvmCompiler.AsmPeepholeSound` (this module stays byte- and
@@ -42,73 +50,193 @@ between `compileProgram` and `lowerProg`.
 
 namespace YulEvmCompiler
 
-open YulSemantics.EVM (U256 EvmState Op)
+open YulSemantics.EVM (U256 Op)
 
 /-! ### The concrete transform -/
 
-/-- The Asm-level peephole pass: rewrite every `push v ; swap1 ; pop` window to
-the equivalent, cheaper `pop ; push v`. All other instructions pass through. -/
-def optimizeAsm : List Asm → List Asm
-  | .push v :: .swap ⟨0, _⟩ :: .pop :: rest => .pop :: .push v :: optimizeAsm rest
-  | i :: rest => i :: optimizeAsm rest
+/-- The Asm-level peephole scan, relative to the set `R` of labels that may
+be referenced. Rewrites every `push v ; swap1 ; pop` window to `pop ; push
+v`, every `jumpi l ; jump m ; label l` window to `op iszero ; jumpi m ;
+label l`, and drops `label l` when `l ∉ R`. Other instructions pass
+through. -/
+def peepRun (R : List Label) : List Asm → List Asm
+  | .push v :: .swap ⟨0, _⟩ :: .pop :: rest =>
+      .pop :: .push v :: peepRun R rest
+  | .jumpi l :: .jump m :: .label l' :: rest =>
+      if l = l' then .op .iszero :: .jumpi m :: .label l' :: peepRun R rest
+      else .jumpi l :: peepRun R (.jump m :: .label l' :: rest)
+  | .label l :: rest =>
+      if l ∈ R then .label l :: peepRun R rest else peepRun R rest
+  | i :: rest => i :: peepRun R rest
   | [] => []
+  termination_by p => p.length
+
+/-- The Asm-level peephole pass: scan with the program's own reference set,
+so exactly the unreferenced labels are dropped. -/
+def optimizeAsm (p : List Asm) : List Asm := peepRun (labelRefs p) p
 
 /-! ### The spec relation on code suffixes -/
 
 namespace Peephole
 
-/-- Relates a source program suffix to a valid optimized suffix. `optimizeAsm`
-is a particular strategy; `codeRel_optimize` shows its output is always
-`CodeRel`-related to its input. Keeping the relation separate from the concrete
-function makes the simulation and the label-structure lemmas independent of the
-scan order. -/
-inductive CodeRel : List Asm → List Asm → Prop
+/-- Relates a source program suffix to a valid optimized suffix, relative to
+the set `R` of labels that may be referenced anywhere in the program.
+`optimizeAsm` is a particular strategy; `codeRel_optimize` shows its output
+is always `CodeRel`-related to its input. Keeping the relation separate from
+the concrete function makes the simulation and the label-structure lemmas
+independent of the scan order. -/
+inductive CodeRel (R : List Label) : List Asm → List Asm → Prop
   /-- Empty programs are related. -/
-  | nil : CodeRel [] []
+  | nil : CodeRel R [] []
   /-- Keep an instruction verbatim. -/
-  | keep (i : Asm) {c c' : List Asm} : CodeRel c c' → CodeRel (i :: c) (i :: c')
+  | keep (i : Asm) {c c' : List Asm} : CodeRel R c c' → CodeRel R (i :: c) (i :: c')
   /-- Rewrite a return-slot window. `n` is `swap1` (`n.val = 0`). -/
   | window {v : U256} {n : Fin 16} (hn : n.val = 0) {c c' : List Asm} :
-      CodeRel c c' →
-      CodeRel (.push v :: .swap n :: .pop :: c) (.pop :: .push v :: c')
+      CodeRel R c c' →
+      CodeRel R (.push v :: .swap n :: .pop :: c) (.pop :: .push v :: c')
+  /-- Invert a `jumpi`-over-`jump` branch whose target is the very next
+  label. The label stays in place (other references may exist). -/
+  | brInv {l m : Label} {c c' : List Asm} :
+      CodeRel R c c' →
+      CodeRel R (.jumpi l :: .jump m :: .label l :: c)
+                (.op .iszero :: .jumpi m :: .label l :: c')
+  /-- Drop a label no instruction may reference. -/
+  | dropLabel {l : Label} (hl : l ∉ R) {c c' : List Asm} :
+      CodeRel R c c' → CodeRel R (.label l :: c) c'
 
-/-- `optimizeAsm` always produces a `CodeRel`-related program. -/
-theorem codeRel_optimize (p : List Asm) : CodeRel p (optimizeAsm p) := by
-  fun_induction optimizeAsm p with
-  | case1 v n rest ih => exact CodeRel.window (n := ⟨0, n⟩) rfl ih
-  | case2 i rest _ ih => exact CodeRel.keep i ih
-  | case3 => exact CodeRel.nil
+/-- `peepRun` always produces a `CodeRel`-related program. -/
+theorem codeRel_peepRun (R : List Label) (p : List Asm) : CodeRel R p (peepRun R p) := by
+  fun_induction peepRun R p with
+  | case1 v isLt rest ih => exact CodeRel.window (n := ⟨0, isLt⟩) rfl ih
+  | case2 m l' rest ih => exact CodeRel.brInv ih
+  | case3 l m l' rest hne ih => exact CodeRel.keep _ ih
+  | case4 l rest hmem ih => exact CodeRel.keep _ ih
+  | case5 l rest hmem ih => exact CodeRel.dropLabel hmem ih
+  | case6 i rest _ _ _ ih => exact CodeRel.keep i ih
+  | case7 => exact CodeRel.nil
+
+/-- `optimizeAsm` is `CodeRel`-related to its input, relative to the
+program's own reference set. -/
+theorem codeRel_optimize (p : List Asm) : CodeRel (labelRefs p) p (optimizeAsm p) :=
+  codeRel_peepRun (labelRefs p) p
 
 /-! ### `CodeRel` preserves label structure -/
 
-theorem codeRel_labelDefs {P Q : List Asm} (h : CodeRel P Q) :
-    labelDefs P = labelDefs Q := by
+/-- Optimization only ever *removes* label definitions (and preserves their
+order). -/
+theorem codeRel_labelDefs_sublist {R : List Label} {P Q : List Asm}
+    (h : CodeRel R P Q) : List.Sublist (labelDefs Q) (labelDefs P) := by
   induction h with
-  | nil => rfl
-  | keep i _ ih => rw [labelDefs_cons, labelDefs_cons, ih]
-  | window _ _ ih => simp only [labelDefs, List.filterMap_cons, Asm.defines]; exact ih
+  | nil => exact .refl _
+  | keep i _ ih =>
+      rw [labelDefs_cons, labelDefs_cons]
+      exact ih.append_left i.defines.toList
+  | window _ _ ih =>
+      simpa only [labelDefs_cons, Asm.defines, Option.toList_none,
+        List.nil_append] using ih
+  | brInv _ ih =>
+      simp only [labelDefs_cons, Asm.defines, Option.toList_none,
+        Option.toList_some, List.nil_append, List.singleton_append]
+      exact ih.cons_cons _
+  | dropLabel _ _ ih =>
+      simp only [labelDefs_cons, Asm.defines, Option.toList_some,
+        List.singleton_append]
+      exact ih.cons _
 
-theorem codeRel_labelRefs {P Q : List Asm} (h : CodeRel P Q) :
-    labelRefs P = labelRefs Q := by
+/-- A label in `R` is never dropped. -/
+theorem codeRel_labelDefs_mem {R : List Label} {P Q : List Asm}
+    (h : CodeRel R P Q) {l : Label} (hR : l ∈ R) (hl : l ∈ labelDefs P) :
+    l ∈ labelDefs Q := by
   induction h with
-  | nil => rfl
-  | keep i _ ih => rw [labelRefs_cons, labelRefs_cons, ih]
-  | window _ _ ih => simp only [labelRefs, List.filterMap_cons, Asm.references]; exact ih
+  | nil => exact hl
+  | keep i _ ih =>
+      rcases mem_labelDefs_cons.mp hl with h' | h'
+      · exact mem_labelDefs_cons.mpr (Or.inl h')
+      · exact mem_labelDefs_cons.mpr (Or.inr (ih h'))
+  | window _ _ ih =>
+      rcases mem_labelDefs_cons.mp hl with h' | h'
+      · exact absurd h' (by simp)
+      · rcases mem_labelDefs_cons.mp h' with h'' | h''
+        · exact absurd h'' (by simp)
+        · rcases mem_labelDefs_cons.mp h'' with h3 | h3
+          · exact absurd h3 (by simp)
+          · exact mem_labelDefs_cons.mpr (Or.inr
+              (mem_labelDefs_cons.mpr (Or.inr (ih h3))))
+  | brInv _ ih =>
+      rcases mem_labelDefs_cons.mp hl with h' | h'
+      · exact absurd h' (by simp)
+      · rcases mem_labelDefs_cons.mp h' with h'' | h''
+        · exact absurd h'' (by simp)
+        · rcases mem_labelDefs_cons.mp h'' with h3 | h3
+          · exact mem_labelDefs_cons.mpr (Or.inr
+              (mem_labelDefs_cons.mpr (Or.inr (mem_labelDefs_cons.mpr (Or.inl h3)))))
+          · exact mem_labelDefs_cons.mpr (Or.inr
+              (mem_labelDefs_cons.mpr (Or.inr (mem_labelDefs_cons.mpr (Or.inr (ih h3))))))
+  | dropLabel hdrop _ ih =>
+      rcases mem_labelDefs_cons.mp hl with h' | h'
+      · cases h'; exact absurd hR hdrop
+      · exact ih h'
 
-theorem codeRel_codeSize_le {P Q : List Asm} (h : CodeRel P Q) :
-    codeSize Q ≤ codeSize P := by
+/-- Membership in the referenced labels of a cons, by cases on the head. -/
+theorem mem_labelRefs_cons {l : Label} {i : Asm} {p : List Asm} :
+    l ∈ labelRefs (i :: p) ↔ i.references = some l ∨ l ∈ labelRefs p := by
+  rw [labelRefs_cons, List.mem_append]
+  cases h : i.references <;> simp [eq_comm]
+
+/-- Optimization never introduces a label reference. -/
+theorem codeRel_labelRefs_subset {R : List Label} {P Q : List Asm}
+    (h : CodeRel R P Q) : ∀ l ∈ labelRefs Q, l ∈ labelRefs P := by
+  induction h with
+  | nil => exact fun l hl => hl
+  | keep i _ ih =>
+      intro l hl
+      rcases mem_labelRefs_cons.mp hl with h' | h'
+      · exact mem_labelRefs_cons.mpr (Or.inl h')
+      · exact mem_labelRefs_cons.mpr (Or.inr (ih l h'))
+  | window _ _ ih =>
+      intro l hl
+      rcases mem_labelRefs_cons.mp hl with h' | h'
+      · exact absurd h' (by simp [Asm.references])
+      · rcases mem_labelRefs_cons.mp h' with h'' | h''
+        · exact absurd h'' (by simp [Asm.references])
+        · exact mem_labelRefs_cons.mpr (Or.inr (mem_labelRefs_cons.mpr (Or.inr
+            (mem_labelRefs_cons.mpr (Or.inr (ih l h''))))))
+  | brInv _ ih =>
+      intro l' hl'
+      rcases mem_labelRefs_cons.mp hl' with h' | h'
+      · exact absurd h' (by simp [Asm.references])
+      · rcases mem_labelRefs_cons.mp h' with h'' | h''
+        · -- the optimized `jumpi m` reference maps to the source `jump m`
+          exact mem_labelRefs_cons.mpr (Or.inr (mem_labelRefs_cons.mpr
+            (Or.inl (by simpa [Asm.references] using h''))))
+        · rcases mem_labelRefs_cons.mp h'' with h3 | h3
+          · exact absurd h3 (by simp [Asm.references])
+          · exact mem_labelRefs_cons.mpr (Or.inr (mem_labelRefs_cons.mpr (Or.inr
+              (mem_labelRefs_cons.mpr (Or.inr (ih l' h3))))))
+  | dropLabel _ _ ih =>
+      intro l' hl'
+      exact mem_labelRefs_cons.mpr (Or.inr (ih l' hl'))
+
+/-- Optimization never grows the lowered byte size. -/
+theorem codeRel_codeSize_le {R : List Label} {P Q : List Asm}
+    (h : CodeRel R P Q) : codeSize Q ≤ codeSize P := by
   induction h with
   | nil => simp
   | keep i _ ih => rw [codeSize_cons, codeSize_cons]; omega
   | window _ _ ih => simp only [codeSize_cons, Asm.size]; omega
+  | brInv _ ih => simp only [codeSize_cons, Asm.size]; omega
+  | dropLabel _ _ ih => simp only [codeSize_cons, Asm.size]; omega
 
-theorem codeRel_findLabel {P Q : List Asm} (h : CodeRel P Q) :
-    ∀ {l : Label} {tgt : List Asm}, findLabel l P = some tgt →
-      ∃ otgt, findLabel l Q = some otgt ∧ CodeRel tgt otgt := by
+/-- `findLabel` is preserved for every label that may be referenced, and the
+found suffixes are again related. -/
+theorem codeRel_findLabel {R : List Label} {P Q : List Asm} (h : CodeRel R P Q)
+    {l : Label} (hR : l ∈ R) :
+    ∀ {tgt : List Asm}, findLabel l P = some tgt →
+      ∃ otgt, findLabel l Q = some otgt ∧ CodeRel R tgt otgt := by
   induction h with
-  | nil => intro l tgt hf; simp [findLabel] at hf
+  | nil => intro tgt hf; simp [findLabel] at hf
   | keep i hc ih =>
-      intro l tgt hf
+      intro tgt hf
       rw [findLabel] at hf
       by_cases hi : i = .label l
       · subst hi; rw [if_pos rfl] at hf
@@ -117,25 +245,50 @@ theorem codeRel_findLabel {P Q : List Asm} (h : CodeRel P Q) :
       · rw [if_neg hi] at hf
         obtain ⟨otgt, ho, hr⟩ := ih hf
         exact ⟨otgt, by rw [findLabel, if_neg hi]; exact ho, hr⟩
+  | @brInv l0 m c c' hc ih =>
+      intro tgt hf
+      rw [findLabel, if_neg (by simp), findLabel, if_neg (by simp), findLabel] at hf
+      by_cases hi : (Asm.label l0 : Asm) = .label l
+      · rw [if_pos hi] at hf
+        obtain rfl := Option.some.inj hf
+        exact ⟨_, by
+          rw [findLabel, if_neg (by simp), findLabel, if_neg (by simp),
+            findLabel, if_pos hi], hc⟩
+      · rw [if_neg hi] at hf
+        obtain ⟨otgt, ho, hr⟩ := ih hf
+        exact ⟨otgt, by
+          rw [findLabel, if_neg (by simp), findLabel, if_neg (by simp),
+            findLabel, if_neg hi]; exact ho, hr⟩
   | window hn hc ih =>
-      intro l tgt hf
+      intro tgt hf
       rw [findLabel, if_neg (by simp), findLabel, if_neg (by simp),
         findLabel, if_neg (by simp)] at hf
       obtain ⟨otgt, ho, hr⟩ := ih hf
-      exact ⟨otgt, by rw [findLabel, if_neg (by simp), findLabel, if_neg (by simp)]; exact ho, hr⟩
+      exact ⟨otgt, by
+        rw [findLabel, if_neg (by simp), findLabel, if_neg (by simp)]
+        exact ho, hr⟩
+  | @dropLabel l0 hdrop c c' hc ih =>
+      intro tgt hf
+      have hne : (Asm.label l0 : Asm) ≠ .label l := by
+        intro hEq
+        exact hdrop (by cases hEq; exact hR)
+      rw [findLabel, if_neg hne] at hf
+      exact ih hf
 
-/-- `CodeRel` preserves whole-program well-formedness, so lowering the optimized
-program still succeeds. -/
-theorem codeRel_wf {P Q : List Asm} (h : CodeRel P Q) (hw : WFProg P) : WFProg Q where
-  nodup := codeRel_labelDefs h ▸ hw.nodup
+/-- `CodeRel` preserves whole-program well-formedness (when `R` covers the
+program's references), so lowering the optimized program still succeeds. -/
+theorem codeRel_wf {R : List Label} {P Q : List Asm} (h : CodeRel R P Q)
+    (hRefs : ∀ l ∈ labelRefs P, l ∈ R) (hw : WFProg P) : WFProg Q where
+  nodup := hw.nodup.sublist (codeRel_labelDefs_sublist h)
   refsDefined := by
     intro l hl
-    rw [← codeRel_labelDefs h]
-    exact hw.refsDefined l (by rw [codeRel_labelRefs h]; exact hl)
+    have hlP := codeRel_labelRefs_subset h l hl
+    exact codeRel_labelDefs_mem h (hRefs l hlP) (hw.refsDefined l hlP)
   small := by have := codeRel_codeSize_le h; have := hw.small; omega
 
-/-- `CodeRel [] Q` forces `Q = []`. -/
-theorem codeRel_nil_left {Q : List Asm} (h : CodeRel [] Q) : Q = [] := by
+/-- `CodeRel R [] Q` forces `Q = []`. -/
+theorem codeRel_nil_left {R : List Label} {Q : List Asm}
+    (h : CodeRel R [] Q) : Q = [] := by
   cases h; rfl
 
 end Peephole

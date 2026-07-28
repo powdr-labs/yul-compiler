@@ -12,14 +12,21 @@ Forward simulation for the Asm-level peephole optimizer
 suffixes via `findLabel`), so the soundness statement is a whole-program
 forward simulation, not a local equivalence:
 
-* `Match` — the configuration relation. Because the `push v ; swap1 ; pop ⟶
-  pop ; push v` rewrite changes the intermediate stack shape mid-window,
-  `Match` carries two "in-flight" constructors (`mid1`, `mid2`) besides the
-  synchronized `sync` state.
+* `Match R` — the configuration relation. The rewrites change the
+  intermediate code/stack shape mid-window, so `Match` carries three
+  "in-flight" constructors besides the synchronized `sync` state: `mid1`/
+  `mid2` inside a return-slot window and `brMid` inside an inverted branch
+  (source about to take the `jump`; optimized holding the `iszero`d
+  condition for its `jumpi`).
+* The simulation threads three whole-run invariants: the executing code is a
+  suffix of the program (`AStep.suffix`), label definitions are unique
+  (`wfCheck`, so a branch-inversion window *knows* `findLabel` lands on its
+  own label), and every code address on the stack is a referenced label
+  (`StkRefs`, so `dynJump` targets survive dead-label elimination).
 * `step_sim` / `steps_sim` / `halt_sim` — every source `AStep`/`AHalt` is
   matched by finitely many optimized steps preserving `Match`. The optimized
-  side *stutters* only on the initial `push` of a window and always catches
-  up within the window, so both runs reach the same endpoint.
+  side stutters (on window entry and dropped labels) and catches up within
+  the window, so both runs reach the same endpoint.
 * `optimizeAsm_asteps` / `optimizeAsm_ahalt` — the packaged bridge lemmas
   consumed by `YulEvmCompiler.Correctness`, which inserts `optimizeAsm`
   between `compileProgram` and `lowerProg`.
@@ -27,31 +34,132 @@ forward simulation, not a local equivalence:
 
 namespace YulEvmCompiler.Peephole
 
-open YulSemantics.EVM (U256 EvmState Op)
+open YulSemantics.EVM (U256 EvmState Op b2w)
+
+/-! ### Whole-run invariants -/
+
+/-- Every code address on the stack is a label that may be referenced. This
+is what lets `dynJump` survive dead-label elimination: a `.code l` value can
+only ever have been pushed by a `pushLabel l` instruction in the program (or
+supplied in the initial stack, which the bridges take empty), so `l` is a
+referenced label and its definition is never dropped. -/
+def StkRefs (R : List Label) (σ : List AVal) : Prop :=
+  ∀ l : Label, AVal.code l ∈ σ → l ∈ R
+
+theorem StkRefs.nil {R : List Label} : StkRefs R [] := fun _ h => absurd h (by simp)
+
+/-- Words carry no code addresses. -/
+theorem code_not_mem_words {l : Label} {vs : List U256} :
+    AVal.code l ∉ words vs := by
+  intro h
+  simp only [words, List.mem_map] at h
+  obtain ⟨v, -, hv⟩ := h
+  cases hv
+
+/-- An executed instruction's label reference is a program reference. -/
+theorem refs_of_suffix {prog : List Asm} {i : Asm} {c : List Asm}
+    (hsuf : (i :: c) <:+ prog) {l : Label} (hi : i.references = some l) :
+    l ∈ labelRefs prog := by
+  obtain ⟨pre, rfl⟩ := hsuf
+  rw [labelRefs_append]
+  exact List.mem_append.mpr (Or.inr (mem_labelRefs_cons.mpr (Or.inl hi)))
+
+/-- `AStep` preserves the code-address invariant: ordinary operations move
+only words, `dup`/`swap` duplicate/permute existing values, and `pushLabel`
+introduces exactly its own (referenced) label. -/
+theorem astep_stkRefs [model : ExternalModel] {R : List Label}
+    {prog : List Asm} {a b : AConf}
+    (hstep : AStep (model := model) prog a b) (hsuf : a.code <:+ prog)
+    (hRefs : ∀ l ∈ labelRefs prog, l ∈ R) (hσ : StkRefs R a.stk) :
+    StkRefs R b.stk := by
+  cases hstep with
+  | push =>
+      intro l hl
+      rcases List.mem_cons.mp hl with h | h
+      · cases h
+      · exact hσ l h
+  | @op yop args rets c σ yst yst' hb =>
+      intro l hl
+      rcases List.mem_append.mp hl with h | h
+      · exact absurd h code_not_mem_words
+      · exact hσ l (List.mem_append.mpr (Or.inr h))
+  | @dup n v τ ρ c yst hτ =>
+      intro l hl
+      rcases List.mem_cons.mp hl with h | h
+      · exact hσ l (h ▸ List.mem_append.mpr (Or.inr (List.mem_cons_self)))
+      · exact hσ l h
+  | @swap n x z τ ρ c yst hτ =>
+      intro l hl
+      apply hσ
+      simp only [List.mem_cons, List.mem_append] at hl ⊢
+      tauto
+  | pop =>
+      intro l hl
+      exact hσ l (List.mem_cons_of_mem _ hl)
+  | label => exact hσ
+  | jump _ => exact hσ
+  | jumpiTaken _ _ =>
+      intro l hl
+      exact hσ l (List.mem_cons_of_mem _ hl)
+  | jumpiFall _ =>
+      intro l hl
+      exact hσ l (List.mem_cons_of_mem _ hl)
+  | @pushLabel l0 c σ yst hl0 =>
+      intro l hl
+      rcases List.mem_cons.mp hl with h | h
+      · cases h
+        exact hRefs _ (refs_of_suffix hsuf rfl)
+      · exact hσ l h
+  | dynJump _ =>
+      intro l hl
+      exact hσ l (List.mem_cons_of_mem _ hl)
+
+/-! ### The configuration relation -/
 
 /-- A configuration correspondence between a source run (in `prog`) and its
-optimized run (in `optimizeAsm prog`). `sync` is the aligned state; `mid1`
+optimized run (in `optimizeAsm prog`). `sync` is the aligned state. `mid1`
 (source has done the window's `push`, optimized has done nothing) and `mid2`
 (source has done `push; swap1`, optimized has done `pop`) capture the two
-in-flight states inside a rewritten window, where the operand stacks differ. -/
-inductive Match : AConf → AConf → Prop
+in-flight states of a return-slot window. `brMid` captures the in-flight
+state of an inverted branch: the source is about to take the `jump m` while
+the optimized side holds the (nonzero) `iszero`d condition for its
+`jumpi m`. -/
+inductive Match (R : List Label) : AConf → AConf → Prop
   | sync {sc oc : List Asm} {σ : List AVal} {y : EvmState} :
-      CodeRel sc oc → Match ⟨sc, σ, y⟩ ⟨oc, σ, y⟩
+      CodeRel R sc oc → Match R ⟨sc, σ, y⟩ ⟨oc, σ, y⟩
   | mid1 {v : U256} {n : Fin 16} (hn : n.val = 0) {S : List AVal}
       {sc oc : List Asm} {y : EvmState} :
-      CodeRel sc oc →
-      Match ⟨.swap n :: .pop :: sc, .word v :: S, y⟩
-            ⟨.pop :: .push v :: oc, S, y⟩
+      CodeRel R sc oc →
+      Match R ⟨.swap n :: .pop :: sc, .word v :: S, y⟩
+              ⟨.pop :: .push v :: oc, S, y⟩
   | mid2 {v : U256} {x : AVal} {ρ : List AVal} {sc oc : List Asm} {y : EvmState} :
-      CodeRel sc oc →
-      Match ⟨.pop :: sc, x :: .word v :: ρ, y⟩ ⟨.push v :: oc, ρ, y⟩
+      CodeRel R sc oc →
+      Match R ⟨.pop :: sc, x :: .word v :: ρ, y⟩ ⟨.push v :: oc, ρ, y⟩
+  | brMid {l m : Label} {w : U256} (hw : w ≠ 0) {σ : List AVal}
+      {sc oc : List Asm} {y : EvmState} :
+      CodeRel R sc oc →
+      Match R ⟨.jump m :: .label l :: sc, σ, y⟩
+              ⟨.jumpi m :: .label l :: oc, .word w :: σ, y⟩
+
+/-- The `iszero` step the optimized side of an inverted branch executes. -/
+theorem iszero_step [model : ExternalModel] {prog' c : List Asm}
+    {v : U256} {σ : List AVal} {y : EvmState} :
+    AStep (model := model) prog' ⟨.op .iszero :: c, .word v :: σ, y⟩
+      ⟨c, .word (b2w (v = 0)) :: σ, y⟩ := by
+  have h := AStep.op (model := model) (prog := prog') (yop := .iszero)
+    (args := [v]) (rets := [b2w (v = 0)]) (c := c) (σ := σ) (yst := y) (yst' := y) rfl
+  simpa [words] using h
+
+/-! ### The forward simulation -/
 
 /-- Single-step forward simulation: one source `AStep` is simulated by finitely
 many optimized steps preserving `Match`. -/
-theorem step_sim [model : ExternalModel] {prog prog' : List Asm}
-    (hpp : CodeRel prog prog') {a b a' : AConf}
-    (hstep : AStep (model := model) prog a b) (hm : Match a a') :
-    ∃ b', ASteps (model := model) prog' a' b' ∧ Match b b' := by
+theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm}
+    (hnodup : (labelDefs prog).Nodup) (hRefs : ∀ l ∈ labelRefs prog, l ∈ R)
+    (hpp : CodeRel R prog prog') {a b a' : AConf}
+    (hstep : AStep (model := model) prog a b) (hsuf : a.code <:+ prog)
+    (hσ : StkRefs R a.stk) (hm : Match R a a') :
+    ∃ b', ASteps (model := model) prog' a' b' ∧ Match R b b' := by
   cases hm with
   | @sync sc oc σ y hc =>
     cases hstep with
@@ -74,27 +182,51 @@ theorem step_sim [model : ExternalModel] {prog prog' : List Asm}
     | @label l c σ2 yst =>
       cases hc with
       | keep _ hc' => exact ⟨_, .single .label, .sync hc'⟩
+      | dropLabel _ hc' => exact ⟨_, .refl _, .sync hc'⟩
     | @jump l c c'0 σ2 yst hf =>
       cases hc with
       | keep _ hc' =>
-        obtain ⟨otgt, ho, hr⟩ := codeRel_findLabel hpp hf
+        have hR : l ∈ R := hRefs l (refs_of_suffix hsuf rfl)
+        obtain ⟨otgt, ho, hr⟩ := codeRel_findLabel hpp hR hf
         exact ⟨_, .single (.jump ho), .sync hr⟩
     | @jumpiTaken l v c c'0 σ2 yst hv hf =>
       cases hc with
       | keep _ hc' =>
-        obtain ⟨otgt, ho, hr⟩ := codeRel_findLabel hpp hf
+        have hR : l ∈ R := hRefs l (refs_of_suffix hsuf rfl)
+        obtain ⟨otgt, ho, hr⟩ := codeRel_findLabel hpp hR hf
         exact ⟨_, .single (.jumpiTaken hv ho), .sync hr⟩
+      | @brInv _ m ctail oc' hc' =>
+        -- the window's own label is the unique definition of `l`, so the
+        -- source lands exactly at the window's continuation
+        obtain ⟨pre0, hpre⟩ := hsuf
+        have heq : prog = (pre0 ++ [Asm.jumpi l, Asm.jump m]) ++ Asm.label l :: ctail := by
+          rw [← hpre]; simp
+        have hfl : findLabel l prog = some ctail := by
+          rw [heq]; exact findLabel_boundary (by rw [← heq]; exact hnodup)
+        obtain rfl : c'0 = ctail := by
+          rw [hf] at hfl; exact Option.some.inj hfl
+        -- optimized: iszero (→ 0), fall through the jumpi, step the label
+        refine ⟨_, ?_, .sync hc'⟩
+        refine .head iszero_step (.head (.jumpiFall (by simp [b2w]; exact hv)) ?_)
+        exact .single .label
     | @jumpiFall l v c σ2 yst hv =>
       cases hc with
       | keep _ hc' => exact ⟨_, .single (.jumpiFall hv), .sync hc'⟩
+      | @brInv _ m _ oc' hc' =>
+        -- optimized: iszero (→ 1); hold it for the inverted jumpi
+        subst hv
+        refine ⟨_, .single iszero_step, Match.brMid ?_ hc'⟩
+        simp [b2w]
     | @pushLabel l c σ2 yst hl =>
       cases hc with
       | keep _ hc' =>
-        exact ⟨_, .single (.pushLabel (by rw [← codeRel_labelDefs hpp]; exact hl)), .sync hc'⟩
+        have hR : l ∈ R := hRefs l (refs_of_suffix hsuf rfl)
+        exact ⟨_, .single (.pushLabel (codeRel_labelDefs_mem hpp hR hl)), .sync hc'⟩
     | @dynJump l c c'0 σ2 yst hf =>
       cases hc with
       | keep _ hc' =>
-        obtain ⟨otgt, ho, hr⟩ := codeRel_findLabel hpp hf
+        have hR : l ∈ R := hσ l List.mem_cons_self
+        obtain ⟨otgt, ho, hr⟩ := codeRel_findLabel hpp hR hf
         exact ⟨_, .single (.dynJump ho), .sync hr⟩
   | @mid1 v n hn S sc oc y hc =>
     cases hstep with
@@ -107,23 +239,33 @@ theorem step_sim [model : ExternalModel] {prog prog' : List Asm}
     cases hstep with
     | @pop v2 c σ2 yst =>
       exact ⟨_, .single .push, .sync hc⟩
+  | @brMid l m w hw σ sc oc y hc =>
+    cases hstep with
+    | jump hf =>
+      have hR : m ∈ R := hRefs m (refs_of_suffix hsuf rfl)
+      obtain ⟨otgt, ho, hr⟩ := codeRel_findLabel hpp hR hf
+      exact ⟨_, .single (.jumpiTaken hw ho), .sync hr⟩
 
-/-- Multi-step forward simulation (reflexive-transitive closure). -/
-theorem steps_sim [model : ExternalModel] {prog prog' : List Asm}
-    (hpp : CodeRel prog prog') {a b a' : AConf}
-    (hsteps : ASteps (model := model) prog a b) (hm : Match a a') :
-    ∃ b', ASteps (model := model) prog' a' b' ∧ Match b b' := by
+/-- Multi-step forward simulation (reflexive-transitive closure), threading
+the suffix and stack invariants along the source run. -/
+theorem steps_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm}
+    (hnodup : (labelDefs prog).Nodup) (hRefs : ∀ l ∈ labelRefs prog, l ∈ R)
+    (hpp : CodeRel R prog prog') {a b a' : AConf}
+    (hsteps : ASteps (model := model) prog a b) (hsuf : a.code <:+ prog)
+    (hσ : StkRefs R a.stk) (hm : Match R a a') :
+    ∃ b', ASteps (model := model) prog' a' b' ∧ Match R b b' := by
   induction hsteps generalizing a' with
   | refl a => exact ⟨a', .refl _, hm⟩
-  | head hstep _ ih =>
-    obtain ⟨c', hc', hmc⟩ := step_sim hpp hstep hm
-    obtain ⟨b', hb', hmb⟩ := ih hmc
+  | @head a c b hstep hrest ih =>
+    obtain ⟨c', hc', hmc⟩ := step_sim hnodup hRefs hpp hstep hsuf hσ hm
+    obtain ⟨b', hb', hmb⟩ :=
+      ih (hstep.suffix hsuf) (astep_stkRefs hstep hsuf hRefs hσ) hmc
     exact ⟨b', hc'.trans hb', hmb⟩
 
 /-- Halting-step simulation. -/
-theorem halt_sim [model : ExternalModel] {prog prog' : List Asm}
+theorem halt_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm}
     {b a' : AConf} {yf : EvmState}
-    (hhalt : AHalt (model := model) prog b yf) (hm : Match b a') :
+    (hhalt : AHalt (model := model) prog b yf) (hm : Match R b a') :
     AHalt (model := model) prog' a' yf := by
   cases hhalt with
   | @op yop args c σ yst yst' hb =>
@@ -136,33 +278,36 @@ theorem halt_sim [model : ExternalModel] {prog prog' : List Asm}
 
 /-- With empty source code, `Match` forces the optimized configuration to be
 identical (same empty code, stack, and state). -/
-theorem match_empty_left {σ : List AVal} {y : EvmState}
-    {a' : AConf} (hm : Match ⟨[], σ, y⟩ a') :
+theorem match_empty_left {R : List Label} {σ : List AVal} {y : EvmState}
+    {a' : AConf} (hm : Match R ⟨[], σ, y⟩ a') :
     a' = ⟨[], σ, y⟩ := by
   cases hm with
   | sync hc => rw [codeRel_nil_left hc]
 
-/-- **Bridge (normal case).** A full source run from the whole program to
-empty code is simulated by the optimized program to the same endpoint. -/
+/-- **Bridge (normal case).** A full source run from the whole program (with
+an empty initial stack, unique label definitions) to empty code is simulated
+by the optimized program to the same endpoint. -/
 theorem optimizeAsm_asteps [model : ExternalModel] {asm : List Asm}
-    {σ σf : List AVal} {y yf : EvmState}
-    (hsteps : ASteps (model := model) asm ⟨asm, σ, y⟩ ⟨[], σf, yf⟩) :
-    ASteps (model := model) (optimizeAsm asm) ⟨optimizeAsm asm, σ, y⟩ ⟨[], σf, yf⟩ := by
+    (hnodup : (labelDefs asm).Nodup) {σf : List AVal} {y yf : EvmState}
+    (hsteps : ASteps (model := model) asm ⟨asm, [], y⟩ ⟨[], σf, yf⟩) :
+    ASteps (model := model) (optimizeAsm asm) ⟨optimizeAsm asm, [], y⟩ ⟨[], σf, yf⟩ := by
   have hcr := codeRel_optimize asm
-  obtain ⟨b', hb', hmb⟩ := steps_sim hcr hsteps (.sync hcr)
+  obtain ⟨b', hb', hmb⟩ := steps_sim hnodup (fun _ h => h) hcr hsteps
+    (List.suffix_refl asm) StkRefs.nil (.sync hcr)
   rw [match_empty_left hmb] at hb'
   exact hb'
 
 /-- **Bridge (halt case).** A source run that halts is simulated by the
 optimized program to a halting configuration with the same final state. -/
 theorem optimizeAsm_ahalt [model : ExternalModel] {asm : List Asm}
-    {σ : List AVal} {y : EvmState} {bconf : AConf} {yf : EvmState}
-    (hsteps : ASteps (model := model) asm ⟨asm, σ, y⟩ bconf)
+    (hnodup : (labelDefs asm).Nodup) {y : EvmState} {bconf : AConf} {yf : EvmState}
+    (hsteps : ASteps (model := model) asm ⟨asm, [], y⟩ bconf)
     (hhalt : AHalt (model := model) asm bconf yf) :
-    ∃ b', ASteps (model := model) (optimizeAsm asm) ⟨optimizeAsm asm, σ, y⟩ b'
+    ∃ b', ASteps (model := model) (optimizeAsm asm) ⟨optimizeAsm asm, [], y⟩ b'
       ∧ AHalt (model := model) (optimizeAsm asm) b' yf := by
   have hcr := codeRel_optimize asm
-  obtain ⟨b', hb', hmb⟩ := steps_sim hcr hsteps (.sync hcr)
+  obtain ⟨b', hb', hmb⟩ := steps_sim hnodup (fun _ h => h) hcr hsteps
+    (List.suffix_refl asm) StkRefs.nil (.sync hcr)
   exact ⟨b', hb', halt_sim hhalt hmb⟩
 
 end YulEvmCompiler.Peephole

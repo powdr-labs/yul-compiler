@@ -122,7 +122,7 @@ theorem compile_correct (hexternal : ExternalsRealized model)
         have hsteps0 := (hsimS hΦ0) [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
         -- Asm peephole: transport the source run to the optimized program
-        have hstepsO := Peephole.optimizeAsm_asteps hsteps0
+        have hstepsO := Peephole.optimizeAsm_asteps hnodup hsteps0
         obtain ⟨bnd, Hb⟩ :=
           asteps_sim hexternal hcomp hstepsO (List.suffix_refl (optimizeAsm asm))
         refine ⟨bnd, ?_⟩
@@ -142,7 +142,7 @@ theorem compile_correct (hexternal : ExternalsRealized model)
         obtain ⟨conf, hsteps0, hhalt0⟩ := hAS [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
         -- Asm peephole: transport the halting run to the optimized program
-        obtain ⟨confO, hstepsO, hhaltO⟩ := Peephole.optimizeAsm_ahalt hsteps0 hhalt0
+        obtain ⟨confO, hstepsO, hhaltO⟩ := Peephole.optimizeAsm_ahalt hnodup hsteps0 hhalt0
         obtain ⟨bnd, Hb⟩ :=
           arun_halt_sim hexternal hcomp hstepsO hhaltO
             (List.suffix_refl (optimizeAsm asm))
@@ -191,7 +191,7 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
         obtain ⟨-, -, hsimS⟩ := hout
         have hsteps0 := (hsimS hΦ0) [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
-        have hstepsO := Peephole.optimizeAsm_asteps hsteps0
+        have hstepsO := Peephole.optimizeAsm_asteps hnodup hsteps0
         obtain ⟨bnd, Hb⟩ :=
           asteps_sim hexternal (payload := 0 :: payload) hcomp hstepsO
             (List.suffix_refl (optimizeAsm asm))
@@ -212,7 +212,7 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
         have hAS := hout hΦ0
         obtain ⟨conf, hsteps0, hhalt0⟩ := hAS [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
-        obtain ⟨confO, hstepsO, hhaltO⟩ := Peephole.optimizeAsm_ahalt hsteps0 hhalt0
+        obtain ⟨confO, hstepsO, hhaltO⟩ := Peephole.optimizeAsm_ahalt hnodup hsteps0 hhalt0
         obtain ⟨bnd, Hb⟩ := arun_halt_sim hexternal (payload := 0 :: payload)
           hcomp hstepsO hhaltO (List.suffix_refl (optimizeAsm asm))
         refine ⟨bnd, ?_⟩
