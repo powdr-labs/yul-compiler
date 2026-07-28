@@ -270,54 +270,68 @@ def trialStableArity : Op → Option Nat
 
 mutual
 
-/-- Trial analogue of `DeadPure.alwaysEval`, without the bound-set threading:
-the estimate assumes scope-closed bodies (true for the normalized input this
-gate sees; the real `deadPure` stage re-checks with the bound set). -/
-def trialEval : Expr Op → Bool
+/-- Trial analogue of `DeadPure.alwaysEval` (mirrored exactly, including the
+bound-set threading — an import cycle via `DeadLits` prevents sharing): does
+the rhs evaluate totally and state-preservingly on every environment binding
+all of `bound`? The mirror must not be *more* optimistic than the real
+`deadPure` stage, or the gate promises removals the round never makes
+(measured: dead copies of `for`-init counters survive `deadPure`'s
+`bound` and inflated `array_storage_index_access` by +155k when the trial
+ignored the bound set). -/
+def trialEval (bound : List Ident) : Expr Op → Bool
   | .lit (.string _) => false
   | .lit _ => true
-  | .var _ => true
+  | .var x => bound.contains x
   | .builtin op args =>
-      (trialStableArity op == some args.length) && trialEvalArgs args
+      (trialStableArity op == some args.length) && trialEvalArgs bound args
   | .call _ _ => false
 
 /-- `trialEval` for each argument. -/
-def trialEvalArgs : List (Expr Op) → Bool
+def trialEvalArgs (bound : List Ident) : List (Expr Op) → Bool
   | [] => true
-  | e :: rest => trialEval e && trialEvalArgs rest
+  | e :: rest => trialEval bound e && trialEvalArgs bound rest
 
 end
 
 mutual
 
-/-- One backward sweep dropping dead singleton pure lets (any depth). -/
-def trialDropStmts : List (Stmt Op) → List (Stmt Op)
+/-- One backward sweep dropping dead singleton pure lets (any depth),
+threading the provably-bound set exactly as `DeadPure.dpStmts` does (kept
+declarations grow it; `for`-init declarations do **not** flow into post/body,
+mirroring the real stage's conservatism). -/
+def trialDropStmts (bound : List Ident) : List (Stmt Op) → List (Stmt Op)
   | [] => []
   | .letDecl [x] none :: rest =>
-      let rest' := trialDropStmts rest
+      let rest' := trialDropStmts ([x] ++ bound) rest
       if stmtsMentions x rest' then .letDecl [x] none :: rest' else rest'
   | .letDecl [x] (some rhs) :: rest =>
-      let rest' := trialDropStmts rest
-      if trialEval rhs && !stmtsMentions x rest' then rest'
+      let rest' := trialDropStmts ([x] ++ bound) rest
+      if trialEval bound rhs && !stmtsMentions x rest' then rest'
       else .letDecl [x] (some rhs) :: rest'
-  | .block body :: rest => .block (trialDropStmts body) :: trialDropStmts rest
-  | .cond c body :: rest => .cond c (trialDropStmts body) :: trialDropStmts rest
+  | .letDecl xs val :: rest =>
+      .letDecl xs val :: trialDropStmts (xs ++ bound) rest
+  | .block body :: rest =>
+      .block (trialDropStmts bound body) :: trialDropStmts bound rest
+  | .cond c body :: rest =>
+      .cond c (trialDropStmts bound body) :: trialDropStmts bound rest
   | .switch c cases dflt :: rest =>
-      .switch c (trialDropCases cases) (trialDropDflt dflt) :: trialDropStmts rest
+      .switch c (trialDropCases bound cases) (trialDropDflt bound dflt) ::
+        trialDropStmts bound rest
   | .forLoop init c post body :: rest =>
-      .forLoop init c (trialDropStmts post) (trialDropStmts body) ::
-        trialDropStmts rest
-  | s :: rest => s :: trialDropStmts rest
+      .forLoop init c (trialDropStmts bound post) (trialDropStmts bound body) ::
+        trialDropStmts bound rest
+  | s :: rest => s :: trialDropStmts bound rest
 
 /-- The sweep over `switch` cases. -/
-def trialDropCases : List (Literal × Block Op) → List (Literal × Block Op)
+def trialDropCases (bound : List Ident) :
+    List (Literal × Block Op) → List (Literal × Block Op)
   | [] => []
-  | (l, b) :: rest => (l, trialDropStmts b) :: trialDropCases rest
+  | (l, b) :: rest => (l, trialDropStmts bound b) :: trialDropCases bound rest
 
 /-- The sweep over a `switch` default. -/
-def trialDropDflt : Option (Block Op) → Option (Block Op)
+def trialDropDflt (bound : List Ident) : Option (Block Op) → Option (Block Op)
   | none => none
-  | some b => some (trialDropStmts b)
+  | some b => some (trialDropStmts bound b)
 
 end
 
@@ -378,10 +392,48 @@ end
 
 /-- The trial-shrunk scope: propagate with copies on, then drain the dead
 chains (each backward sweep exposes the next link's last use; helper copy
-chains are short, so a small fixed iteration count converges in practice). -/
-def trialShrink (body : Block Op) : Block Op :=
+chains are short, so a small fixed iteration count converges in practice).
+`encl` is the enclosing provably-bound name set the sweep may assume (function
+parameters and returns at a `funDef` entry — the same set `deadPure` starts
+its body walk with). -/
+def trialShrink (encl : List Ident) (body : Block Op) : Block Op :=
   let propagated := (trialStmts [] body).1
-  trialDropStmts (trialDropStmts (trialDropStmts propagated))
+  trialDropStmts encl (trialDropStmts encl (trialDropStmts encl propagated))
+
+mutual
+
+/-- Does any singleton var-copy `let x := y` survive at any depth (`funDef`
+bodies excluded — they gate separately)? After copies-on propagation has
+rewritten every reachable use, a surviving copy is an **orphan**: `deadPure`
+will not remove it (its source is not provably bound — the `for`-init counter
+case), and `RejoinPairs`/`CoalesceCopies` no longer see a consumer to merge it
+into. Enabling copy facts then trades each such let's single `DUP` use for a
+dangling binding *plus* the rewritten use — strictly worse than declining and
+letting the rejoin path consume it (measured +155k on
+`array_storage_index_access`). -/
+def trialOrphans : List (Stmt Op) → Bool
+  | [] => false
+  | .letDecl [_] (some (.var _)) :: _ => true
+  | .block body :: rest => trialOrphans body || trialOrphans rest
+  | .cond _ body :: rest => trialOrphans body || trialOrphans rest
+  | .switch _ cases dflt :: rest =>
+      trialOrphansCases cases || trialOrphansDflt dflt || trialOrphans rest
+  | .forLoop init _ post body :: rest =>
+      trialOrphans init || trialOrphans post || trialOrphans body ||
+        trialOrphans rest
+  | _ :: rest => trialOrphans rest
+
+/-- The orphan scan over `switch` cases. -/
+def trialOrphansCases : List (Literal × Block Op) → Bool
+  | [] => false
+  | (_, b) :: rest => trialOrphans b || trialOrphansCases rest
+
+/-- The orphan scan over a `switch` default. -/
+def trialOrphansDflt : Option (Block Op) → Bool
+  | none => false
+  | some b => trialOrphans b
+
+end
 
 /-- Enable copy facts for a scope entered with `acc` already-live bindings?
 Recomputed at **every block entry** (not just per function): the copies worth
@@ -393,7 +445,17 @@ copies then provably feed the round's own cleanup instead of deepening any
 surviving read (see the trial-shrink section notes). -/
 def copyGate (acc : Nat) (body : Block Op) : Bool :=
   decide (liveMaxStmts acc body ≤ copyDepthLimit) ||
-  decide (liveMaxStmts acc (trialShrink body) ≤ copyDepthLimit)
+  (let shrunk := trialShrink [] body
+   decide (liveMaxStmts acc shrunk ≤ copyDepthLimit) && !trialOrphans shrunk)
+
+/-- The `funDef`-entry gate: same policy, but the trial sweep may assume the
+parameters and returns are bound — the set `deadPure`'s body walk starts
+with — so the inliner's param-copy chains count as removable. -/
+def copyGateFun (ps rs : List Ident) (body : Block Op) : Bool :=
+  decide (liveMaxStmts (ps.length + rs.length) body ≤ copyDepthLimit) ||
+  (let shrunk := trialShrink (ps ++ rs) body
+   decide (liveMaxStmts (ps.length + rs.length) shrunk ≤ copyDepthLimit) &&
+     !trialOrphans shrunk)
 
 mutual
 
@@ -405,7 +467,7 @@ def propStmt (copyOK : Bool) (σ : PEnv) : Stmt Op → Stmt Op × PEnv
       (.block pb.1, prune pb.2 (blockDecls body))
   | .funDef n ps rs body =>
       (.funDef n ps rs
-        (propStmts (copyGate (ps.length + rs.length) body) [] body).1, σ)
+        (propStmts (copyGateFun ps rs body) [] body).1, σ)
   | .letDecl xs none =>
       (.letDecl xs none, letZeroEnv σ xs)
   | .letDecl xs (some e) =>
@@ -620,7 +682,7 @@ theorem propStmt_rel (copyOK : Bool) (σ : PEnv) : ∀ s : Stmt Op,
       (.stmt s) (.stmt (propStmt copyOK σ s).1)
   | .block body => .blockS (propStmts_rel (copyGate 0 body) σ body) .exportFacts
   | .funDef _ ps rs body =>
-      .funDefS (propStmts_rel (copyGate (ps.length + rs.length) body) [] body)
+      .funDefS (propStmts_rel (copyGateFun ps rs body) [] body)
   | .letDecl xs none => .letNoneS (letZeroEnv_rel σ xs)
   | .letDecl xs (some e) =>
       .letSomeS (.fold) (letEnv_rel copyOK σ xs (rhsExpr σ e))
