@@ -236,7 +236,7 @@ private structure GasOutcome where
 this compiler's and solc's optimized bytecode, replay the fixture's calls, and
 measure gas — the body of the old loop, extracted as an independent unit of
 work with no shared mutable state. -/
-private def processContract (dir : FilePath) (solcPath : String) (perScenario : Bool)
+private def processContractBody (dir : FilePath) (solcPath : String) (perScenario : Bool)
     (path : FilePath) : IO GasOutcome := do
   let name := relativeName dir path
   let contents ← IO.FS.readFile path
@@ -301,6 +301,32 @@ private def processContract (dir : FilePath) (solcPath : String) (perScenario : 
                             s!"(ours={ourDeployment.halt}/{ourDeployment.returnSize}, " ++
                             s!"solc={solcDeployment.halt}/{solcDeployment.returnSize})")
                         return { measurementFailure := some failure }
+
+/-- Fixtures slower than this are reported individually. Nearly every fixture is
+far below it, so the log stays short and lists exactly the ones that matter. -/
+private def stragglerThresholdMs : Nat := 1000
+
+/-- Time each fixture and report the slow ones.
+
+A suite's wall clock is its slowest *single* fixture, because fixtures are the
+unit of both the in-process fan-out and the CI shard split — so nothing can be
+done about a suite's duration without knowing which fixture dominates it, and
+that is not predictable from the inputs. Shard weighting uses source bytes, and
+pinned gas is the other plausible proxy; both are wrong by orders of magnitude.
+The semanticTests corpus has a 2 KB source whose compile takes eleven minutes,
+while its largest pinned fixture at 35M gas measures under five seconds.
+
+So measure it. These lines are captured into the CI summary artifact alongside
+the `Gas row:` lines, which makes a suite's cost distribution readable from a
+run instead of guessed, and gives shard weighting something real to use. -/
+private def processContract (dir : FilePath) (solcPath : String) (perScenario : Bool)
+    (path : FilePath) : IO GasOutcome := do
+  let started ← IO.monoMsNow
+  let outcome ← processContractBody dir solcPath perScenario path
+  let elapsed := (← IO.monoMsNow) - started
+  if elapsed >= stragglerThresholdMs then
+    IO.println s!"Fixture time:\t{relativeName dir path}\t{elapsed}"
+  return outcome
 
 private def usage : String :=
   "usage: CheckSolidityGas <contracts-dir> <gas-baseline.txt> " ++
