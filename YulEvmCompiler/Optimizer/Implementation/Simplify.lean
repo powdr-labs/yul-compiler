@@ -587,6 +587,455 @@ def openTop : Expr Op → Expr Op
   | .builtin op args => (openNeutral op args).getD (.builtin op args)
   | e => e
 
+/-! ### Strength reduction
+
+Same-value rewrites replacing an op by a cheaper one while keeping a builtin
+wrapper on **both** sides. Unlike the open-operand neutral identities these
+are full pointwise `EquivExpr` facts — the argument evaluation prefix is
+identical modulo literal elements, whose evaluation is premise-free, total,
+and state-preserving — so they apply at every position, including conditions.
+
+- `eq(e, 0)`/`eq(0, e)` → `iszero(e)`: drops a `PUSH32 0` (3 gas + 33 bytes
+  of code) per site; ubiquitous after boolean normalization
+  (`iszero(eq(and(…), 0))` in every bitmap check).
+- `iszero(iszero(iszero(e)))` → `iszero(e)`: `iszero` is idempotent after one
+  application (double `iszero` is boolean *normalization* and must stay).
+- `mod(e, 2^k)` → `and(e, 2^k−1)`; `div(e, 2^k)` → `shr(k, e)`;
+  `mul(e, 2^k)`/`mul(2^k, e)` → `shl(k, e)` with `k ≥ 1` (`k = 0` is the
+  neutral rules' territory): 5-gas ops become 3-gas ops. The shift-count
+  operand order swap moves a literal across `e` in the right-to-left argument
+  order, which is unobservable. -/
+
+/-- The power-of-two exponent of a literal's value, if any. -/
+def pow2Exp? (c : Literal) : Option Nat :=
+  let n := (litValue c).toNat
+  let k := n.log2
+  if n = 2 ^ k then some k else none
+
+/-- Recognize a strength-reducible application (see the section notes). Every
+rewrite returns a builtin whose non-literal operands are the input's, so no
+string literal is manufactured at any position. -/
+def strengthReduce : Op → List (Expr Op) → Option (Expr Op)
+  | .eq, [e, .lit c] =>
+      if litValue c = 0 then some (.builtin .iszero [e]) else none
+  | .eq, [.lit c, e] =>
+      if litValue c = 0 then some (.builtin .iszero [e]) else none
+  | .iszero, [.builtin .iszero [.builtin .iszero [e]]] =>
+      some (.builtin .iszero [e])
+  | .mod, [e, .lit c] =>
+      match pow2Exp? c with
+      | some k => some (.builtin .and [e, .lit (.number (2 ^ k - 1))])
+      | none => none
+  | .div, [e, .lit c] =>
+      match pow2Exp? c with
+      | some (k + 1) => some (.builtin .shr [.lit (.number (k + 1)), e])
+      | _ => none
+  | .mul, [e, .lit c] =>
+      match pow2Exp? c with
+      | some (k + 1) => some (.builtin .shl [.lit (.number (k + 1)), e])
+      | _ => none
+  | .mul, [.lit c, e] =>
+      match pow2Exp? c with
+      | some (k + 1) => some (.builtin .shl [.lit (.number (k + 1)), e])
+      | _ => none
+  | _, _ => none
+
+/-- Apply a top-level strength reduction; leave everything else unchanged. -/
+def strengthTop : Expr Op → Expr Op
+  | .builtin op args => (strengthReduce op args).getD (.builtin op args)
+  | e => e
+
+/-- Every successful strength reduction returns a builtin application. -/
+theorem strengthReduce_builtin {op : Op} {args : List (Expr Op)} {e : Expr Op}
+    (h : strengthReduce op args = some e) :
+    ∃ op' args', e = .builtin op' args' := by
+  unfold strengthReduce at h
+  split at h <;>
+    (try split at h) <;>
+    first
+      | contradiction
+      | (obtain rfl := Option.some.inj h; exact ⟨_, _, rfl⟩)
+
+/-! #### One-operand evaluation skeletons
+
+Every strength reduction wraps the *same* subexpression `e` in a different pure
+skeleton. Each skeleton evaluates `e` exactly once, in an argument position that
+pins it to a single value or a halt, and then applies a total function of that
+value; the literal operands only contribute `Step.lit` steps, which are
+premise-free, total, and state-preserving, so their presence, absence and
+position are unobservable.
+
+The lemmas below characterise the three skeletons the rewrites use — `op(e)`,
+`op(e, c)` and `op(c, e)` — as "run `e`, then apply `f`", let one skeleton be
+wrapped in a further unary op, and combine two characterisations computing the
+same function into a full pointwise `EquivExpr`. -/
+
+/-- Inversion of `[e]` argument evaluation to a value list. -/
+theorem args_expr_value_inv {funs : FunEnv D} {V st e vals st'}
+    (h : Step D funs V st (.args [e]) (.eres (.vals vals st'))) :
+    ∃ v, vals = [v] ∧ Step D funs V st (.expr e) (.eres (.vals [v] st')) := by
+  cases h with
+  | argsCons hnil he => cases hnil; exact ⟨_, rfl, he⟩
+
+/-- Inversion of `[e]` argument evaluation to a halt. -/
+theorem args_expr_halt_inv {funs : FunEnv D} {V st e st'}
+    (h : Step D funs V st (.args [e]) (.eres (.halt st'))) :
+    Step D funs V st (.expr e) (.eres (.halt st')) := by
+  cases h with
+  | argsRestHalt hnil => cases hnil
+  | argsHeadHalt hnil he => cases hnil; exact he
+
+/-- Inversion of `[e, lit]` argument evaluation to a value list. -/
+theorem args_expr_lit_value_inv {funs : FunEnv D} {V st e c vals st'}
+    (h : Step D funs V st (.args [e, .lit c]) (.eres (.vals vals st'))) :
+    ∃ v, vals = [v, litValue c] ∧
+      Step D funs V st (.expr e) (.eres (.vals [v] st')) := by
+  cases h with
+  | argsCons hrest he =>
+      cases hrest with
+      | argsCons hnil hc => cases hnil; cases hc; exact ⟨_, rfl, he⟩
+
+/-- Inversion of `[e, lit]` argument evaluation to a halt. -/
+theorem args_expr_lit_halt_inv {funs : FunEnv D} {V st e c st'}
+    (h : Step D funs V st (.args [e, .lit c]) (.eres (.halt st'))) :
+    Step D funs V st (.expr e) (.eres (.halt st')) := by
+  cases h with
+  | argsRestHalt hrest =>
+      cases hrest with
+      | argsRestHalt hnil => cases hnil
+      | argsHeadHalt hnil hc => cases hnil; cases hc
+  | argsHeadHalt hrest he =>
+      cases hrest with
+      | argsCons hnil hc => cases hnil; cases hc; exact he
+
+/-- Inversion of `[lit, e]` argument evaluation to a value list. -/
+theorem args_lit_expr_value_inv {funs : FunEnv D} {V st e c vals st'}
+    (h : Step D funs V st (.args [.lit c, e]) (.eres (.vals vals st'))) :
+    ∃ v, vals = [litValue c, v] ∧
+      Step D funs V st (.expr e) (.eres (.vals [v] st')) := by
+  cases h with
+  | argsCons hrest he =>
+      cases he with
+      | lit =>
+          cases hrest with
+          | argsCons hnil hv => cases hnil; exact ⟨_, rfl, hv⟩
+
+/-- Inversion of `[lit, e]` argument evaluation to a halt. -/
+theorem args_lit_expr_halt_inv {funs : FunEnv D} {V st e c st'}
+    (h : Step D funs V st (.args [.lit c, e]) (.eres (.halt st'))) :
+    Step D funs V st (.expr e) (.eres (.halt st')) := by
+  cases h with
+  | argsRestHalt hrest =>
+      cases hrest with
+      | argsRestHalt hnil => cases hnil
+      | argsHeadHalt hnil he => cases hnil; exact he
+  | argsHeadHalt hrest he => cases he
+
+/-- Two skeletons that compute the *same* total function of the *same*
+subexpression's single value are pointwise equivalent. -/
+theorem equiv_of_eval_iff {e₁ e₂ e : Expr Op} {g₁ g₂ : U256 → U256}
+    (hg : ∀ v, g₁ v = g₂ v)
+    (h₁ : ∀ (funs : FunEnv D) (V : VEnv D) (st : EvmState) (r : EResult D),
+      Step D funs V st (.expr e₁) (.eres r) ↔
+        ((∃ v st', r = .vals [g₁ v] st' ∧
+            Step D funs V st (.expr e) (.eres (.vals [v] st'))) ∨
+         (∃ st', r = .halt st' ∧ Step D funs V st (.expr e) (.eres (.halt st')))))
+    (h₂ : ∀ (funs : FunEnv D) (V : VEnv D) (st : EvmState) (r : EResult D),
+      Step D funs V st (.expr e₂) (.eres r) ↔
+        ((∃ v st', r = .vals [g₂ v] st' ∧
+            Step D funs V st (.expr e) (.eres (.vals [v] st'))) ∨
+         (∃ st', r = .halt st' ∧ Step D funs V st (.expr e) (.eres (.halt st'))))) :
+    EquivExpr D e₁ e₂ := by
+  intro funs V st r
+  refine (h₁ funs V st r).trans (Iff.trans ?_ (h₂ funs V st r).symm)
+  constructor
+  · rintro (⟨v, st', hr, he⟩ | hhalt)
+    · exact Or.inl ⟨v, st', hr.trans (by rw [hg]), he⟩
+    · exact Or.inr hhalt
+  · rintro (⟨v, st', hr, he⟩ | hhalt)
+    · exact Or.inl ⟨v, st', hr.trans (by rw [hg]), he⟩
+    · exact Or.inr hhalt
+
+/-- The `op(e)` skeleton for a pure unary `op`: run `e`, apply `f`. -/
+theorem builtin_unary_eval_iff {op : Op} {e : Expr Op} {f : U256 → U256}
+    (hf : ∀ w : U256, pureFn op [w] = some (f w))
+    (funs : FunEnv D) (V : VEnv D) (st : EvmState) (r : EResult D) :
+    Step D funs V st (.expr (.builtin op [e])) (.eres r) ↔
+      ((∃ v st', r = .vals [f v] st' ∧
+          Step D funs V st (.expr e) (.eres (.vals [v] st'))) ∨
+       (∃ st', r = .halt st' ∧ Step D funs V st (.expr e) (.eres (.halt st')))) := by
+  constructor
+  · intro hb
+    cases hb with
+    | builtinOk ha hop =>
+        obtain ⟨w, rfl, he⟩ := args_expr_value_inv ha
+        have hr := pureFn_builtin_inv (hf w) hop
+        injection hr with hrets hst; subst hrets; subst hst
+        exact Or.inl ⟨w, _, rfl, he⟩
+    | builtinHalt ha hop =>
+        obtain ⟨w, rfl, he⟩ := args_expr_value_inv ha
+        have hr := pureFn_builtin_inv (hf w) hop
+        simp at hr
+    | builtinArgsHalt ha => exact Or.inr ⟨_, rfl, args_expr_halt_inv ha⟩
+  · rintro (⟨v, st', rfl, he⟩ | ⟨st', rfl, he⟩)
+    · exact Step.builtinOk (Step.argsCons Step.argsNil he) (pureFn_builtin (hf v) st')
+    · exact Step.builtinArgsHalt (Step.argsHeadHalt Step.argsNil he)
+
+/-- The `op(e, c)` skeleton for a pure binary `op` with a literal right operand. -/
+theorem builtin_right_lit_eval_iff {op : Op} {e : Expr Op} {c : Literal} {f : U256 → U256}
+    (hf : ∀ w : U256, pureFn op [w, litValue c] = some (f w))
+    (funs : FunEnv D) (V : VEnv D) (st : EvmState) (r : EResult D) :
+    Step D funs V st (.expr (.builtin op [e, .lit c])) (.eres r) ↔
+      ((∃ v st', r = .vals [f v] st' ∧
+          Step D funs V st (.expr e) (.eres (.vals [v] st'))) ∨
+       (∃ st', r = .halt st' ∧ Step D funs V st (.expr e) (.eres (.halt st')))) := by
+  constructor
+  · intro hb
+    cases hb with
+    | builtinOk ha hop =>
+        obtain ⟨w, rfl, he⟩ := args_expr_lit_value_inv ha
+        have hr := pureFn_builtin_inv (hf w) hop
+        injection hr with hrets hst; subst hrets; subst hst
+        exact Or.inl ⟨w, _, rfl, he⟩
+    | builtinHalt ha hop =>
+        obtain ⟨w, rfl, he⟩ := args_expr_lit_value_inv ha
+        have hr := pureFn_builtin_inv (hf w) hop
+        simp at hr
+    | builtinArgsHalt ha => exact Or.inr ⟨_, rfl, args_expr_lit_halt_inv ha⟩
+  · rintro (⟨v, st', rfl, he⟩ | ⟨st', rfl, he⟩)
+    · exact Step.builtinOk (Step.argsCons (Step.argsCons Step.argsNil Step.lit) he)
+        (pureFn_builtin (hf v) st')
+    · exact Step.builtinArgsHalt (Step.argsHeadHalt (Step.argsCons Step.argsNil Step.lit) he)
+
+/-- The `op(c, e)` skeleton for a pure binary `op` with a literal left operand.
+Note the literal is evaluated *after* `e` (arguments run right-to-left), which
+is why moving it across `e` is unobservable. -/
+theorem builtin_left_lit_eval_iff {op : Op} {e : Expr Op} {c : Literal} {f : U256 → U256}
+    (hf : ∀ w : U256, pureFn op [litValue c, w] = some (f w))
+    (funs : FunEnv D) (V : VEnv D) (st : EvmState) (r : EResult D) :
+    Step D funs V st (.expr (.builtin op [.lit c, e])) (.eres r) ↔
+      ((∃ v st', r = .vals [f v] st' ∧
+          Step D funs V st (.expr e) (.eres (.vals [v] st'))) ∨
+       (∃ st', r = .halt st' ∧ Step D funs V st (.expr e) (.eres (.halt st')))) := by
+  constructor
+  · intro hb
+    cases hb with
+    | builtinOk ha hop =>
+        obtain ⟨w, rfl, he⟩ := args_lit_expr_value_inv ha
+        have hr := pureFn_builtin_inv (hf w) hop
+        injection hr with hrets hst; subst hrets; subst hst
+        exact Or.inl ⟨w, _, rfl, he⟩
+    | builtinHalt ha hop =>
+        obtain ⟨w, rfl, he⟩ := args_lit_expr_value_inv ha
+        have hr := pureFn_builtin_inv (hf w) hop
+        simp at hr
+    | builtinArgsHalt ha => exact Or.inr ⟨_, rfl, args_lit_expr_halt_inv ha⟩
+  · rintro (⟨v, st', rfl, he⟩ | ⟨st', rfl, he⟩)
+    · exact Step.builtinOk (Step.argsCons (Step.argsCons Step.argsNil he) Step.lit)
+        (pureFn_builtin (hf v) st')
+    · exact Step.builtinArgsHalt (Step.argsRestHalt (Step.argsHeadHalt Step.argsNil he))
+
+/-- Wrapping a characterised skeleton in one more pure unary op. -/
+theorem builtin_unary_eval_iff_comp {op : Op} {e' e : Expr Op} {f g : U256 → U256}
+    (hf : ∀ w : U256, pureFn op [w] = some (f w))
+    (hg : ∀ (funs : FunEnv D) (V : VEnv D) (st : EvmState) (r : EResult D),
+      Step D funs V st (.expr e') (.eres r) ↔
+        ((∃ v st', r = .vals [g v] st' ∧
+            Step D funs V st (.expr e) (.eres (.vals [v] st'))) ∨
+         (∃ st', r = .halt st' ∧ Step D funs V st (.expr e) (.eres (.halt st')))))
+    (funs : FunEnv D) (V : VEnv D) (st : EvmState) (r : EResult D) :
+    Step D funs V st (.expr (.builtin op [e'])) (.eres r) ↔
+      ((∃ v st', r = .vals [f (g v)] st' ∧
+          Step D funs V st (.expr e) (.eres (.vals [v] st'))) ∨
+       (∃ st', r = .halt st' ∧ Step D funs V st (.expr e) (.eres (.halt st')))) := by
+  refine (builtin_unary_eval_iff hf funs V st r).trans ?_
+  constructor
+  · rintro (⟨w, st', rfl, he⟩ | ⟨st', rfl, he⟩)
+    · rcases (hg funs V st _).1 he with ⟨v, st'', hval, hev⟩ | ⟨st'', hval, _⟩
+      · obtain ⟨hw, hst⟩ : w = g v ∧ st' = st'' := by simpa using hval
+        subst hw; subst hst
+        exact Or.inl ⟨v, st', rfl, hev⟩
+      · exact absurd hval (by simp)
+    · rcases (hg funs V st _).1 he with ⟨v, st'', hval, _⟩ | ⟨st'', hval, hev⟩
+      · exact absurd hval (by simp)
+      · obtain rfl : st' = st'' := by simpa using hval
+        exact Or.inr ⟨st', rfl, hev⟩
+  · rintro (⟨v, st', rfl, he⟩ | ⟨st', rfl, he⟩)
+    · exact Or.inl ⟨g v, st', rfl, (hg funs V st _).2 (Or.inl ⟨v, st', rfl, he⟩)⟩
+    · exact Or.inr ⟨st', rfl, (hg funs V st _).2 (Or.inr ⟨st', rfl, he⟩)⟩
+
+/-! #### The value-level facts behind each rewrite -/
+
+/-- A number literal denotes the 256-bit truncation of its number. -/
+theorem litValue_number (n : Nat) : litValue (.number n) = BitVec.ofNat 256 n := rfl
+
+/-- `pow2Exp?` certifies that the literal's value *is* the named power of two. -/
+theorem pow2Exp?_toNat {c : Literal} {k : Nat} (h : pow2Exp? c = some k) :
+    (litValue c).toNat = 2 ^ k := by
+  simp only [pow2Exp?] at h
+  split at h
+  · next hn => obtain rfl := Option.some.inj h; exact hn
+  · exact absurd h (by simp)
+
+/-- The certified power of two fits in a word (it *is* a word). -/
+theorem pow2Exp?_lt {c : Literal} {k : Nat} (h : pow2Exp? c = some k) : 2 ^ k < 2 ^ 256 := by
+  rw [← pow2Exp?_toNat h]; exact (litValue c).isLt
+
+/-- A power-of-two literal is nonzero. -/
+theorem pow2Exp?_ne_zero {c : Literal} {k : Nat} (h : pow2Exp? c = some k) :
+    litValue c ≠ 0 := by
+  intro h0
+  have hpos : 0 < (litValue c).toNat := by rw [pow2Exp?_toNat h]; exact Nat.two_pow_pos k
+  rw [h0] at hpos
+  simp at hpos
+
+/-- A certified exponent is small enough to survive `BitVec.ofNat` unchanged. -/
+theorem pow2Exp?_shift_toNat {c : Literal} {k : Nat} (h : pow2Exp? c = some k) :
+    (litValue (.number k)).toNat = k := by
+  rw [litValue_number, BitVec.toNat_ofNat]
+  exact Nat.mod_eq_of_lt (Nat.lt_trans (Nat.lt_two_pow_self) (pow2Exp?_lt h))
+
+/-! #### The seven rewrites, one lemma each
+
+Each is stated for an *arbitrary* operand expression `e`, so the resolution
+congruence in `ResolveCongr` can reuse it verbatim at resolved operands. -/
+
+/-- `eq(e, 0) ≈ iszero(e)`. -/
+theorem strength_eq_right_equiv {e : Expr Op} {c : Literal} (hc : litValue c = 0) :
+    EquivExpr D (.builtin .eq [e, .lit c]) (.builtin .iszero [e]) := by
+  refine equiv_of_eval_iff (g₁ := fun w => b2w (w = 0)) (g₂ := fun w => b2w (w = 0))
+    (fun _ => rfl) (builtin_right_lit_eval_iff ?_) (builtin_unary_eval_iff (fun _ => rfl))
+  intro w; rw [hc]; rfl
+
+/-- `eq(0, e) ≈ iszero(e)`. -/
+theorem strength_eq_left_equiv {e : Expr Op} {c : Literal} (hc : litValue c = 0) :
+    EquivExpr D (.builtin .eq [.lit c, e]) (.builtin .iszero [e]) := by
+  refine equiv_of_eval_iff (g₁ := fun w => b2w ((0 : U256) = w)) (g₂ := fun w => b2w (w = 0))
+    ?_ (builtin_left_lit_eval_iff ?_) (builtin_unary_eval_iff (fun _ => rfl))
+  · intro v
+    congr 1
+    exact decide_eq_decide.mpr eq_comm
+  · intro w; rw [hc]; rfl
+
+/-- `iszero(iszero(iszero(e))) ≈ iszero(e)`. -/
+theorem strength_iszero3_equiv (e : Expr Op) :
+    EquivExpr D (.builtin .iszero [.builtin .iszero [.builtin .iszero [e]]])
+      (.builtin .iszero [e]) := by
+  have hf : ∀ w : U256, pureFn .iszero [w] = some (b2w (w = 0)) := fun _ => rfl
+  have key : ∀ b : Bool, b2w (b2w (b2w b = 0) = 0) = b2w b := by
+    intro b; cases b <;> decide
+  exact equiv_of_eval_iff (fun v => key (decide (v = 0)))
+    (builtin_unary_eval_iff_comp hf (builtin_unary_eval_iff_comp hf (builtin_unary_eval_iff hf)))
+    (builtin_unary_eval_iff hf)
+
+/-- `mod(e, 2^k) ≈ and(e, 2^k − 1)`. -/
+theorem strength_mod_equiv {e : Expr Op} {c : Literal} {k : Nat} (hk : pow2Exp? c = some k) :
+    EquivExpr D (.builtin .mod [e, .lit c]) (.builtin .and [e, .lit (.number (2 ^ k - 1))]) := by
+  have hm : (litValue c).toNat = 2 ^ k := pow2Exp?_toNat hk
+  have hlt : 2 ^ k < 2 ^ 256 := pow2Exp?_lt hk
+  refine equiv_of_eval_iff ?_
+    (builtin_right_lit_eval_iff (f := fun w => if litValue c = 0 then 0 else w % litValue c)
+      (fun _ => rfl))
+    (builtin_right_lit_eval_iff (f := fun w => w &&& litValue (.number (2 ^ k - 1)))
+      (fun _ => rfl))
+  intro v
+  rw [if_neg (pow2Exp?_ne_zero hk)]
+  apply BitVec.eq_of_toNat_eq
+  rw [BitVec.toNat_umod, BitVec.toNat_and, hm, litValue_number, BitVec.toNat_ofNat,
+    Nat.mod_eq_of_lt (Nat.lt_of_le_of_lt (Nat.sub_le _ _) hlt)]
+  exact (Nat.and_two_pow_sub_one_eq_mod _ _).symm
+
+/-- `div(e, 2^(k+1)) ≈ shr(k+1, e)`. -/
+theorem strength_div_equiv {e : Expr Op} {c : Literal} {k : Nat}
+    (hk : pow2Exp? c = some (k + 1)) :
+    EquivExpr D (.builtin .div [e, .lit c]) (.builtin .shr [.lit (.number (k + 1)), e]) := by
+  have hm : (litValue c).toNat = 2 ^ (k + 1) := pow2Exp?_toNat hk
+  have hs : (litValue (.number (k + 1))).toNat = k + 1 := pow2Exp?_shift_toNat hk
+  refine equiv_of_eval_iff ?_
+    (builtin_right_lit_eval_iff (f := fun w => if litValue c = 0 then 0 else w / litValue c)
+      (fun _ => rfl))
+    (builtin_left_lit_eval_iff (f := fun w => w >>> (litValue (.number (k + 1))).toNat)
+      (fun _ => rfl))
+  intro v
+  rw [if_neg (pow2Exp?_ne_zero hk)]
+  apply BitVec.eq_of_toNat_eq
+  rw [BitVec.toNat_udiv, BitVec.toNat_ushiftRight, hm, hs, Nat.shiftRight_eq_div_pow]
+
+/-- `mul(e, 2^(k+1)) ≈ shl(k+1, e)`. -/
+theorem strength_mul_right_equiv {e : Expr Op} {c : Literal} {k : Nat}
+    (hk : pow2Exp? c = some (k + 1)) :
+    EquivExpr D (.builtin .mul [e, .lit c]) (.builtin .shl [.lit (.number (k + 1)), e]) := by
+  have hm : (litValue c).toNat = 2 ^ (k + 1) := pow2Exp?_toNat hk
+  have hs : (litValue (.number (k + 1))).toNat = k + 1 := pow2Exp?_shift_toNat hk
+  refine equiv_of_eval_iff ?_
+    (builtin_right_lit_eval_iff (f := fun w => w * litValue c) (fun _ => rfl))
+    (builtin_left_lit_eval_iff (f := fun w => w <<< (litValue (.number (k + 1))).toNat)
+      (fun _ => rfl))
+  intro v
+  apply BitVec.eq_of_toNat_eq
+  rw [BitVec.toNat_mul, BitVec.toNat_shiftLeft, hm, hs, Nat.shiftLeft_eq]
+
+/-- `mul(2^(k+1), e) ≈ shl(k+1, e)`. -/
+theorem strength_mul_left_equiv {e : Expr Op} {c : Literal} {k : Nat}
+    (hk : pow2Exp? c = some (k + 1)) :
+    EquivExpr D (.builtin .mul [.lit c, e]) (.builtin .shl [.lit (.number (k + 1)), e]) := by
+  have hm : (litValue c).toNat = 2 ^ (k + 1) := pow2Exp?_toNat hk
+  have hs : (litValue (.number (k + 1))).toNat = k + 1 := pow2Exp?_shift_toNat hk
+  refine equiv_of_eval_iff ?_
+    (builtin_left_lit_eval_iff (f := fun w => litValue c * w) (fun _ => rfl))
+    (builtin_left_lit_eval_iff (f := fun w => w <<< (litValue (.number (k + 1))).toNat)
+      (fun _ => rfl))
+  intro v
+  apply BitVec.eq_of_toNat_eq
+  rw [BitVec.toNat_mul, BitVec.toNat_shiftLeft, hm, hs, Nat.shiftLeft_eq, Nat.mul_comm]
+
+/-- Every strength reduction is a sound pointwise equivalence. -/
+theorem strengthReduce_equiv {op : Op} {args : List (Expr Op)} {e : Expr Op}
+    (h : strengthReduce op args = some e) :
+    EquivExpr D (.builtin op args) e := by
+  unfold strengthReduce at h
+  split at h <;> (try split_ifs at h with hc) <;> (try split at h) <;>
+    first
+      | (obtain rfl := Option.some.inj h
+         first
+           | exact strength_eq_right_equiv hc
+           | exact strength_eq_left_equiv hc
+           | exact strength_iszero3_equiv _
+           | exact strength_mod_equiv (by assumption)
+           | exact strength_div_equiv (by assumption)
+           | exact strength_mul_right_equiv (by assumption)
+           | exact strength_mul_left_equiv (by assumption))
+      | simp at h
+
+/-- The top-level strength rewrite is a sound pointwise equivalence. -/
+theorem strengthTop_equiv (e : Expr Op) : EquivExpr D e (strengthTop e) := by
+  cases e with
+  | builtin op args =>
+      rw [strengthTop]
+      cases hs : strengthReduce op args with
+      | none => exact EquivExpr.refl _
+      | some e' => simpa using strengthReduce_equiv hs
+  | lit _ => exact EquivExpr.refl _
+  | var _ => exact EquivExpr.refl _
+  | call _ _ => exact EquivExpr.refl _
+
+/-- The top-level strength rewrite never manufactures a string literal. -/
+theorem strengthTop_stringlit {e : Expr Op} {n : String}
+    (h : strengthTop e = .lit (.string n)) : e = .lit (.string n) := by
+  cases e with
+  | builtin op args =>
+      rw [strengthTop] at h
+      cases hs : strengthReduce op args with
+      | none => rw [hs] at h; simp at h
+      | some e' =>
+          rw [hs] at h
+          simp only [Option.getD_some] at h
+          obtain ⟨op', args', rfl⟩ := strengthReduce_builtin hs
+          simp at h
+  | lit _ => simpa [strengthTop] using h
+  | var _ => simp [strengthTop] at h
+  | call _ _ => simp [strengthTop] at h
+
 /-! ### The recursive pass
 
 `simplifyExpr`/`simplifyStmt` rewrite bottom-up through the whole program,
@@ -602,7 +1051,7 @@ mutual
 def simplifyExpr : Expr Op → Expr Op
   | .lit l => .lit l
   | .var x => .var x
-  | .builtin op args => simplifyBuiltin op (simplifyArgs args)
+  | .builtin op args => strengthTop (simplifyBuiltin op (simplifyArgs args))
   | .call f args => .call f (simplifyArgs args)
 
 /-- Simplify each expression of an argument list. Argument positions demand a
@@ -956,52 +1405,6 @@ theorem EquivExpr.toEquivExpr1 {e₁ e₂ : Expr Op}
     EquivExpr1 (calls := calls) (creates := creates) e₁ e₂ :=
   fun funs V st => ⟨fun _ _ => h funs V st _, fun _ => h funs V st _⟩
 
-/-- Inversion of `[e, lit]` argument evaluation to a value list. -/
-theorem args_expr_lit_value_inv {funs : FunEnv D} {V st e c vals st'}
-    (h : Step D funs V st (.args [e, .lit c]) (.eres (.vals vals st'))) :
-    ∃ v, vals = [v, litValue c] ∧
-      Step D funs V st (.expr e) (.eres (.vals [v] st')) := by
-  cases h with
-  | argsCons hrest he =>
-      cases hrest with
-      | argsCons hnil hc => cases hnil; cases hc; exact ⟨_, rfl, he⟩
-
-/-- Inversion of `[e, lit]` argument evaluation to a halt. -/
-theorem args_expr_lit_halt_inv {funs : FunEnv D} {V st e c st'}
-    (h : Step D funs V st (.args [e, .lit c]) (.eres (.halt st'))) :
-    Step D funs V st (.expr e) (.eres (.halt st')) := by
-  cases h with
-  | argsRestHalt hrest =>
-      cases hrest with
-      | argsRestHalt hnil => cases hnil
-      | argsHeadHalt hnil hc => cases hnil; cases hc
-  | argsHeadHalt hrest he =>
-      cases hrest with
-      | argsCons hnil hc => cases hnil; cases hc; exact he
-
-/-- Inversion of `[lit, e]` argument evaluation to a value list. -/
-theorem args_lit_expr_value_inv {funs : FunEnv D} {V st e c vals st'}
-    (h : Step D funs V st (.args [.lit c, e]) (.eres (.vals vals st'))) :
-    ∃ v, vals = [litValue c, v] ∧
-      Step D funs V st (.expr e) (.eres (.vals [v] st')) := by
-  cases h with
-  | argsCons hrest he =>
-      cases he with
-      | lit =>
-          cases hrest with
-          | argsCons hnil hv => cases hnil; exact ⟨_, rfl, hv⟩
-
-/-- Inversion of `[lit, e]` argument evaluation to a halt. -/
-theorem args_lit_expr_halt_inv {funs : FunEnv D} {V st e c st'}
-    (h : Step D funs V st (.args [.lit c, e]) (.eres (.halt st'))) :
-    Step D funs V st (.expr e) (.eres (.halt st')) := by
-  cases h with
-  | argsRestHalt hrest =>
-      cases hrest with
-      | argsRestHalt hnil => cases hnil
-      | argsHeadHalt hnil he => cases hnil; exact he
-  | argsHeadHalt hrest he => cases he
-
 /-- **Right-operand open neutral**: `op(e, c) ≈₁ e` when `op` maps `(v, c)`
 to `v` — for an arbitrary surviving operand. -/
 theorem open_right_equiv1 {op : Op} {e : Expr Op} {c : Literal}
@@ -1204,8 +1607,9 @@ theorem simplifyExpr_equiv : ∀ e : Expr Op, EquivExpr D e (simplifyExpr e)
   | .lit _ => EquivExpr.refl _
   | .var _ => EquivExpr.refl _
   | .builtin op args =>
-      (EquivExpr.builtin_congr op (simplifyArgs_equivArgs args)).trans
-        (simplifyBuiltin_equiv op (simplifyArgs args))
+      ((EquivExpr.builtin_congr op (simplifyArgs_equivArgs args)).trans
+        (simplifyBuiltin_equiv op (simplifyArgs args))).trans
+        (strengthTop_equiv _)
   | .call f args =>
       EquivExpr.call_congr f (simplifyArgs_equivArgs args)
 
