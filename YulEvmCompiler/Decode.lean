@@ -123,7 +123,13 @@ theorem decodeAt_op (pre post : List UInt8) (o : Operation)
   | Exchange e => exact absurd hp (by simp [plainOp])
   | _ => rfl
 
-/-! ### PUSH32 decoding -/
+/-! ### PUSHk decoding -/
+
+/-- The opcode byte `0x5f + w.val` decodes to `PUSHk` for `k = w.val`. Proved
+by exhausting the 33 concrete widths (each a fully concrete `decide`). -/
+theorem opcodeOf_push (w : Fin 33) :
+    Decode.opcodeOf (UInt8.ofNat (0x5f + w.val)) = some (.Push ⟨w, w.isLt⟩) := by
+  fin_cases w <;> decide
 
 /-- Folding the big-endian digits back into a number. -/
 private theorem foldl_natToBE (w : Nat) :
@@ -171,50 +177,55 @@ private theorem u256_ofNat_toNat (v : UInt256) : UInt256.ofNat v.toNat = v := by
     show _ % _ = _
     exact Nat.mod_eq_of_lt f.isLt
 
-/-- The extracted immediate of an embedded `PUSH32` is its 32-byte payload. -/
-private theorem extract_push_imm (pre post : List UInt8) (v : UInt256) :
-    ((mkCode (pre ++ (Instr.push v).bytes ++ post)).extract
-        (pre.length + 1) (pre.length + 1 + 32)).data.toList
-      = natToBE v.toNat 32 := by
-  show ((mkCode (pre ++ (0x7f :: natToBE v.toNat 32) ++ post)).extract
-      (pre.length + 1) (pre.length + 1 + 32)).data.toList = _
+/-- The extracted immediate of an embedded `PUSHk` is its `w.val`-byte payload. -/
+private theorem extract_push_imm (pre post : List UInt8) (w : Fin 33) (v : UInt256) :
+    ((mkCode (pre ++ (Instr.push w v).bytes ++ post)).extract
+        (pre.length + 1) (pre.length + 1 + w.val)).data.toList
+      = natToBE v.toNat w.val := by
+  show ((mkCode (pre ++ (UInt8.ofNat (0x5f + w.val) :: natToBE v.toNat w.val) ++ post)).extract
+      (pre.length + 1) (pre.length + 1 + w.val)).data.toList = _
   rw [ByteArray.data_extract]
-  show ((pre ++ (0x7f :: natToBE v.toNat 32) ++ post).toArray.extract
-      (pre.length + 1) (pre.length + 1 + 32)).toList = _
+  show ((pre ++ (UInt8.ofNat (0x5f + w.val) :: natToBE v.toNat w.val) ++ post).toArray.extract
+      (pre.length + 1) (pre.length + 1 + w.val)).toList = _
   rw [Array.toList_extract]
-  rw [show (pre ++ 0x7f :: natToBE v.toNat 32 ++ post).toArray.toList
-      = pre ++ 0x7f :: natToBE v.toNat 32 ++ post from by simp]
+  rw [show (pre ++ UInt8.ofNat (0x5f + w.val) :: natToBE v.toNat w.val ++ post).toArray.toList
+      = pre ++ UInt8.ofNat (0x5f + w.val) :: natToBE v.toNat w.val ++ post from by simp]
   rw [List.extract_eq_take_drop]
-  rw [show pre.length + 1 + 32 - (pre.length + 1) = 32 from by omega]
-  have hL : pre ++ (0x7f :: natToBE v.toNat 32) ++ post
-      = (pre ++ [0x7f]) ++ (natToBE v.toNat 32 ++ post) := by simp
+  rw [show pre.length + 1 + w.val - (pre.length + 1) = w.val from by omega]
+  have hL : pre ++ (UInt8.ofNat (0x5f + w.val) :: natToBE v.toNat w.val) ++ post
+      = (pre ++ [UInt8.ofNat (0x5f + w.val)]) ++ (natToBE v.toNat w.val ++ post) := by simp
   rw [hL, List.drop_left' (by simp), List.take_left' (length_natToBE _ _)]
 
-/-- Decoding at the start of an embedded `PUSH32`. -/
-theorem decodeAt_push (pre post : List UInt8) (v : UInt256) :
-    Decode.decodeAt (mkCode (pre ++ (Instr.push v).bytes ++ post)) pre.length
-      = some (.Push ⟨32, by decide⟩, some (v, 32)) := by
-  show Decode.decodeAt (mkCode (pre ++ (0x7f :: natToBE v.toNat 32) ++ post)) pre.length = _
-  have hsz : pre.length < (mkCode (pre ++ (0x7f :: natToBE v.toNat 32) ++ post)).size := by
+/-- Decoding at the start of an embedded `PUSHk`. Round-trips the immediate
+under the well-formedness side condition `v.toNat < 256 ^ w.val` (which is
+`True` for `w = 32`, and forces `v = 0` for `w = 0` / `PUSH0`). -/
+theorem decodeAt_push (pre post : List UInt8) (w : Fin 33) (v : UInt256)
+    (hwf : v.toNat < 256 ^ w.val) :
+    Decode.decodeAt (mkCode (pre ++ (Instr.push w v).bytes ++ post)) pre.length
+      = some (.Push ⟨w, w.isLt⟩, some (v, w.val)) := by
+  show Decode.decodeAt
+    (mkCode (pre ++ (UInt8.ofNat (0x5f + w.val) :: natToBE v.toNat w.val) ++ post)) pre.length = _
+  have hsz : pre.length
+      < (mkCode (pre ++ (UInt8.ofNat (0x5f + w.val) :: natToBE v.toNat w.val) ++ post)).size := by
     simp
   unfold Decode.decodeAt
   rw [dif_pos hsz]
-  rw [getElem_boundary pre post 0x7f (natToBE v.toNat 32) hsz]
-  rw [show Decode.opcodeOf 0x7f = some (.Push ⟨32, by decide⟩) from by decide]
+  rw [getElem_boundary pre post (UInt8.ofNat (0x5f + w.val)) (natToBE v.toNat w.val) hsz]
+  rw [opcodeOf_push w]
   have himm : UInt256.ofNat (Data.Bytes.bytesToBigEndianNat
-      ((mkCode (pre ++ (0x7f :: natToBE v.toNat 32) ++ post)).extract
-        (pre.length + 1) (pre.length + 1 + 32))) = v := by
+      ((mkCode (pre ++ (UInt8.ofNat (0x5f + w.val) :: natToBE v.toNat w.val) ++ post)).extract
+        (pre.length + 1) (pre.length + 1 + w.val))) = v := by
     unfold Data.Bytes.bytesToBigEndianNat
     rw [ByteArray.toList_eq_data]
-    rw [show (0x7f :: natToBE v.toNat 32) = (Instr.push v).bytes from rfl]
-    rw [extract_push_imm pre post v]
-    rw [foldl_natToBE 32 v.toNat 0 (u256_lt_pow v)]
+    rw [show (UInt8.ofNat (0x5f + w.val) :: natToBE v.toNat w.val) = (Instr.push w v).bytes from rfl]
+    rw [extract_push_imm pre post w v]
+    rw [foldl_natToBE w.val v.toNat 0 hwf]
     rw [Nat.zero_mul, Nat.zero_add]
     exact u256_ofNat_toNat v
-  show some ((Operation.Push ⟨32, by decide⟩ : Operation),
+  show some ((Operation.Push ⟨w, w.isLt⟩ : Operation),
       some (UInt256.ofNat (Data.Bytes.bytesToBigEndianNat
-        ((mkCode (pre ++ 0x7f :: natToBE v.toNat 32 ++ post)).extract
-          (pre.length + 1) (pre.length + 1 + 32))), 32)) = _
+        ((mkCode (pre ++ UInt8.ofNat (0x5f + w.val) :: natToBE v.toNat w.val ++ post)).extract
+          (pre.length + 1) (pre.length + 1 + w.val))), w.val)) = _
   rw [himm]
 
 /-- Every operation in the compiler's table round-trips through its byte and
@@ -234,9 +245,9 @@ theorem opTable_available {yop : YulSemantics.EVM.Op} {o : Operation}
   cases yop <;> simp only [opTable, Option.some.injEq, reduceCtorEq] at h <;>
     subst h <;> decide
 
-@[simp] theorem push32_available :
-    (Operation.Push ⟨32, by decide⟩).availableInFork .Osaka = true := by
-  decide
+@[simp] theorem push_available (w : Fin 33) :
+    (Operation.Push ⟨w, w.isLt⟩).availableInFork .Osaka = true := by
+  fin_cases w <;> decide
 
 /-- `DUP1..DUP16` round-trip through their bytes (they are classic opcodes,
 available on every fork — no EIP-8024 dependency). -/
@@ -321,10 +332,11 @@ private theorem pushDataSize_at (i : Instr) (pre rest : List UInt8) :
   unfold Decode.pushDataSize
   rw [dif_pos hsz]
   cases i with
-  | push v =>
-    have hb : (mkCode (pre ++ (Instr.push v).bytes ++ rest))[pre.length]'hsz = 0x7f :=
-      getElem_boundary pre rest 0x7f (natToBE v.toNat 32) hsz
-    rw [hb, show Decode.opcodeOf 0x7f = some (.Push ⟨32, by decide⟩) from by decide]
+  | push w v =>
+    have hb : (mkCode (pre ++ (Instr.push w v).bytes ++ rest))[pre.length]'hsz
+        = UInt8.ofNat (0x5f + w.val) :=
+      getElem_boundary pre rest (UInt8.ofNat (0x5f + w.val)) (natToBE v.toNat w.val) hsz
+    rw [hb, opcodeOf_push w]
     simp
   | op o =>
     have hb : (mkCode (pre ++ (Instr.op o).bytes ++ rest))[pre.length]'hsz
