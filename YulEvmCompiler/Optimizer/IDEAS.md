@@ -1266,6 +1266,20 @@ overlaps open PR #86 (ANF normalizer); return-var entry zero-init removal is
 optional follow-up (σ-seeding `funDefS` with `rets ↦ 0`, sound by
 `bindZeros` at `callOk`).
 
+Follow-up exposed by the trial-gate honesty work: **`DeadPure` does not treat
+`for`-init declarations as bound in post/body** (`dpStmt`'s `forLoop` case
+passes `bound` unchanged), so a dead `let x := i` copy of a loop counter
+declared in the init survives forever — `alwaysEval` cannot certify `.var i`.
+Strengthening `DcRel.forS` to thread `blockDecls init ++ bound` (init runs
+first and scopes over the loop, so its top-level declarations are bound in
+post/body) would let the copies-on propagation path fire in counter-loop
+bodies too and remove the pre-existing dead copies the current pipeline
+leaves in `array_storage_index_access`-style fixtures. Needs the `BoundOK`
+invariant extended at the two `forLoop` master-induction cases plus the
+`dpStmt_rel` constructor site; the trial sweep in `Propagate.lean`
+(`trialDropStmts`) must be updated in the same commit to mirror the new
+semantics, or the gate becomes dishonestly conservative.
+
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
 
 Generalizes (and **replaces**) `InlineIdentity` through the Core boundary:
