@@ -27,6 +27,16 @@ trust-boundary section.
   `checkSolidityGas` executable (declared in `lakefile.toml`), *not* via
   `lean --run`, because compiling large real-world contracts recurses past the
   interpreter stack; CI and `update-gas.sh` raise `ulimit -s`.
+- `CheckSolidityCompileGate.lean` — **compile-only** corpus checker: reports which
+  `.sol` fixtures the compiler *rejects* (`solc --ir` → `compileSource`, including
+  the stack-overflow gate), with **no gas execution**. Native `checkCompileGate`
+  exe (same stack-depth reason as `checkSolidityGas`). Use it — not a full
+  `checkSolidityGas` run and never `lean --run` — to find the fixtures a gate
+  change now rejects: `checkCompileGate <corpus-dir> <solc> --baseline=<gas-baseline>`
+  prints exactly the stale gas rows to drop. Most contracts compile in <0.1 s;
+  shard 8-way (`--shard=I/8`) and union the `REJECT` lines for all of
+  semanticTests in a few minutes — vs. ~24 min/shard for the gas runner, and
+  with no gas execution (which can hang) or interpreter stack overflow.
 - `UpdateCorpusGas.lean` + `update-gas.sh` — regenerate the gas baselines. The
   gas baselines are *derived data*; regenerate them with these tools rather than
   hand-editing `test/…-gas-baseline.txt`.
