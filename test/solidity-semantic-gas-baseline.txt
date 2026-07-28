@@ -692,7 +692,6 @@ inlineAssembly/transient_storage_multiple_transactions.sol	1703	1494
 inlineAssembly/transient_storage_reset_between_creation_runtime.sol	274	230
 inlineAssembly/transient_storage_sanity_checks.sol	25130	24858
 inlineAssembly/transient_storage_selfdestruct.sol	420	260
-inlineAssembly/transient_storage_simple_reentrancy_lock.sol	1824	1061
 inlineAssembly/truefalse.sol	263	159
 integer/basic.sol	384	142
 integer/int.sol	23776	1832
@@ -1034,7 +1033,6 @@ structs/struct_copy_calldata_to_storage_nested_dynamic_array_v2.sol	185973	18043
 structs/struct_copy_calldata_to_storage_v2.sol	46759	44664
 structs/struct_copy_via_local.sol	90533	88857
 structs/struct_delete_member.sol	5939	5146
-structs/struct_delete_storage_nested_small.sol	100433	96229
 structs/struct_delete_storage_with_array.sol	255463	248066
 structs/struct_delete_storage_with_arrays_small.sol	94610	90770
 structs/struct_delete_struct_in_mapping.sol	5873	5171
