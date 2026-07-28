@@ -280,8 +280,8 @@ The emitted layouts for the control constructs:
 Compilation and its proof share the same split:
 
 ```
-Yul --compileStmts--> List Asm --lowerProg--> List Instr --assemble--> ByteArray
-        (Phase A proof)          (Phase B proof)          (Decode lemmas)
+Yul --compileStmts--> List Asm --optimizeAsm--> List Asm --lowerProg--> List Instr --assemble--> ByteArray
+        (Phase A proof)        (peephole simulation)       (Phase B proof)          (Decode lemmas)
 ```
 
 Supporting the two phases:
@@ -316,8 +316,26 @@ pointwise image of `σ` (`conv` on words, resolved label address on code
 addresses), and `FrameOK`/`StateMatch` hold. Each local `AStep` maps to 1–3 EVM
 steps with an existential gas bound; bounds add along the trace.
 
-`Correctness.lean` composes the phases and caps a fall-through `.normal` with the
-implicit `STOP`.
+**Asm peephole** (`AsmPeephole.lean` + `AsmPeepholeSound.lean`,
+`Peephole.optimizeAsm_asteps`/`optimizeAsm_ahalt`): between the two phases,
+`compile` runs a verified Asm→Asm peephole pass (`optimizeAsm`). It rewrites
+three backend-generated patterns the source optimizer cannot see: the
+constant return-slot assignment `push v; swap1; pop → pop; push v`, the
+guarded-control branch `jumpi l; jump m; label l → op iszero; jumpi m;
+label l`, and unreferenced `label`s (dropped). Soundness is its own
+whole-program forward simulation over `AStep`: a `CodeRel` spec relation
+(label structure preserved for every referenceable label, `codeSize`
+non-increasing, `WFProg` preserved) plus a `Match` configuration relation
+with explicit in-flight window states. The simulation threads three run
+invariants — executing code is a suffix of the program, label definitions
+are unique (from `wfCheck`), and every stack code address is a referenced
+label — so inverted branches know `findLabel` lands on their own label and
+`dynJump` survives label dropping. Phase A runs on the un-optimized Asm,
+the bridge transports the whole trace, and Phase B lowers the optimized
+program; neither phase's proof changes.
+
+`Correctness.lean` composes the phases (through the peephole bridge) and caps
+a fall-through `.normal` with the implicit `STOP`.
 
 ### Object execution
 
