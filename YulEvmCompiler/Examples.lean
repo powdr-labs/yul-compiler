@@ -492,6 +492,25 @@ def selfdestructOps : Block Op := yul% {
 #guard (compile sumLoop).isSome
 #guard (compile factorial).isSome
 #guard (compile fibStorage).isSome
+
+-- The Asm peephole fires on `multiRet3`: the top return slot's constant
+-- assignment (`push v; swap1; pop` → `pop; push v`, one byte and one `SWAP1`
+-- cheaper) plus one dead return label. The `agreeOn`/`runYul` checks below
+-- confirm behavior is unchanged.
+#guard ((compileProgram multiRet3).map fun asm =>
+    codeSize (optimizeAsm asm) + 2 == codeSize asm) = some true
+-- Branch inversion: `breakContinue`'s two guarded control statements
+-- (`if … { continue }`, `if … { break }`) each compile to
+-- `jumpi l; jump m; label l` → `op iszero; jumpi m; label l` (33 bytes
+-- each); the source conditions end in `eq`, whose `iszero`d inversions
+-- then cancel against the source-level `iszero`s in the follow-up round
+-- (double-`iszero` elimination), and the orphaned labels drop.
+#guard ((compileProgram breakContinue).map fun asm =>
+    codeSize (optimizeAsm asm) + 72 == codeSize asm) = some true
+-- Where no window, inverted branch, or dead label occurs, the peephole is
+-- the identity.
+#guard ((compileProgram switchMatch).map fun asm =>
+    optimizeAsm asm == asm) = some true
 #guard (compile byteAndOverlapCopy).isSome
 #guard (compileProgram signExtendCases).isSome
 #guard (compile signExtendCases).isSome

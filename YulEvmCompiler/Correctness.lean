@@ -1,6 +1,7 @@
 import YulEvmCompiler.SimAsm
 import YulEvmCompiler.LowerCorrect
 import YulEvmCompiler.OpStep
+import YulEvmCompiler.AsmPeepholeSound
 set_option warningAsError true
 /-!
 # YulEvmCompiler.Correctness
@@ -100,7 +101,7 @@ theorem compile_correct (hexternal : ExternalsRealized model)
   rcases hpa : compileProgram prog with _ | asm
   · simp [compile, hpa] at hcomp
   · simp only [compile, hpa] at hcomp
-    -- `hcomp : lowerProg asm = some is`
+    -- `hcomp : lowerProg (optimizeAsm asm) = some is`
     obtain ⟨scope, n0, Γ', n', hh, hnd, hcs, hwf⟩ := compileProgramAsm_inv hpa
     have hnodup : (labelDefs asm).Nodup := (wfCheck_iff.mp hwf).nodup
     -- the block rule exposes the `.stmts` derivation over the hoisted scope
@@ -112,17 +113,21 @@ theorem compile_correct (hexternal : ExternalsRealized model)
       -- the initial function environment agreement
       have hΦ0 : SimA.FEnvOK asm (YulSemantics.hoist yulD prog :: []) [scope] :=
         SimA.hoist_ok SimA.FEnvOK.nil hh hnd hcs (List.infix_refl asm)
-      -- (assembleBytes is).length = codeSize asm
-      have hlen : (assembleBytes is).length = codeSize asm := lowerFrag_length hcomp
+      -- (assembleBytes is).length = codeSize (optimizeAsm asm)
+      have hlen : (assembleBytes is).length = codeSize (optimizeAsm asm) :=
+        lowerFrag_length hcomp
       cases o with
       | normal =>
         obtain ⟨-, -, hsimS⟩ := hout
         have hsteps0 := (hsimS hΦ0) [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
-        obtain ⟨bnd, Hb⟩ := asteps_sim hexternal hcomp hsteps0 (List.suffix_refl asm)
+        -- Asm peephole: transport the source run to the optimized program
+        have hstepsO := Peephole.optimizeAsm_asteps hnodup hsteps0
+        obtain ⟨bnd, Hb⟩ :=
+          asteps_sim hexternal hcomp hstepsO (List.suffix_refl (optimizeAsm asm))
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
-        have hcm0 : ConfMatch asm is ⟨asm, [], yst0⟩ s0 :=
+        have hcm0 : ConfMatch (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
           ⟨by simpa using hf, hm, by rw [hpc]; simp, by rw [hstk]; simp⟩
         obtain ⟨s1, hsteps1, hcm1, -⟩ := Hb s0 hcm0 hgas
         have hpc1 : s1.pc = UInt256.ofNat (assembleBytes is).length := by
@@ -136,11 +141,14 @@ theorem compile_correct (hexternal : ExternalsRealized model)
         have hAS := hout hΦ0
         obtain ⟨conf, hsteps0, hhalt0⟩ := hAS [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
+        -- Asm peephole: transport the halting run to the optimized program
+        obtain ⟨confO, hstepsO, hhaltO⟩ := Peephole.optimizeAsm_ahalt hnodup hsteps0 hhalt0
         obtain ⟨bnd, Hb⟩ :=
-          arun_halt_sim hexternal hcomp hsteps0 hhalt0 (List.suffix_refl asm)
+          arun_halt_sim hexternal hcomp hstepsO hhaltO
+            (List.suffix_refl (optimizeAsm asm))
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
-        have hcm0 : ConfMatch asm is ⟨asm, [], yst0⟩ s0 :=
+        have hcm0 : ConfMatch (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
           ⟨by simpa using hf, hm, by rw [hpc]; simp, by rw [hstk]; simp⟩
         obtain ⟨s', hsteps', hsm', hcs', hhm'⟩ := Hb s0 hcm0 hgas
         exact ⟨s', hsteps', hcs', hsm', Or.inr ⟨rfl, hhm'⟩⟩
@@ -176,18 +184,21 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
       have hout := hM [scope] none none n0 asm Γ' n' trivial trivial hcs
       have hΦ0 : SimA.FEnvOK asm (YulSemantics.hoist yulD prog :: []) [scope] :=
         SimA.hoist_ok SimA.FEnvOK.nil hh hnd hcs (List.infix_refl asm)
-      have hlen : (assembleBytes is).length = codeSize asm := lowerFrag_length hcomp
+      have hlen : (assembleBytes is).length = codeSize (optimizeAsm asm) :=
+        lowerFrag_length hcomp
       cases o with
       | normal =>
         obtain ⟨-, -, hsimS⟩ := hout
         have hsteps0 := (hsimS hΦ0) [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
+        have hstepsO := Peephole.optimizeAsm_asteps hnodup hsteps0
         obtain ⟨bnd, Hb⟩ :=
-          asteps_sim hexternal (payload := 0 :: payload) hcomp hsteps0 (List.suffix_refl asm)
+          asteps_sim hexternal (payload := 0 :: payload) hcomp hstepsO
+            (List.suffix_refl (optimizeAsm asm))
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
         have hcm0 : ConfMatch (payload := 0 :: payload)
-            asm is ⟨asm, [], yst0⟩ s0 :=
+            (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
           ⟨hf, hm, by rw [hpc]; simp, by rw [hstk]; simp⟩
         obtain ⟨s1, hsteps1, hcm1, -⟩ := Hb s0 hcm0 hgas
         have hpc1 : s1.pc = UInt256.ofNat (assembleBytes is).length := by
@@ -201,12 +212,13 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
         have hAS := hout hΦ0
         obtain ⟨conf, hsteps0, hhalt0⟩ := hAS [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
+        obtain ⟨confO, hstepsO, hhaltO⟩ := Peephole.optimizeAsm_ahalt hnodup hsteps0 hhalt0
         obtain ⟨bnd, Hb⟩ := arun_halt_sim hexternal (payload := 0 :: payload)
-          hcomp hsteps0 hhalt0 (List.suffix_refl asm)
+          hcomp hstepsO hhaltO (List.suffix_refl (optimizeAsm asm))
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
         have hcm0 : ConfMatch (payload := 0 :: payload)
-            asm is ⟨asm, [], yst0⟩ s0 :=
+            (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
           ⟨hf, hm, by rw [hpc]; simp, by rw [hstk]; simp⟩
         obtain ⟨s', hsteps', hsm', hcs', hhm'⟩ := Hb s0 hcm0 hgas
         exact ⟨s', hsteps', hcs', hsm', Or.inr ⟨rfl, hhm'⟩⟩
