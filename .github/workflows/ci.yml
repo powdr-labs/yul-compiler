@@ -33,19 +33,39 @@ env:
 #                   └────▶ solidity-gas       (Solidity corpora, native)
 #
 # `build` verifies the library once; `gas-runner` compiles the native
-# `checkSolidityGas` executable once (a ~13-minute C compile of the
-# whole dependency closure that previously ran in every matrix leg) and shares
-# the binary. The native binary also dispatches the Yul/solc differential, so
-# every fan-out leg only *runs* tests and never restores a full Lean workspace.
-# Each leg is parallelised across
-# the runner's cores by the runners themselves (see TEST_JOBS in the Lean
-# scripts). WarpBuild 32-core runners make the one-time C compile and the
-# per-leg execution both scale with cores. Which tests run is unchanged — only
-# where they run and how the work is distributed. Pull requests also run the
-# a resolved main SHA against the exact same resolved Solidity corpus SHA.
-# Successful main and scheduled runs publish their summaries as an immutable
-# bundle keyed by main SHA + corpus SHA. PRs reuse that bundle; only the first
-# run for a genuinely new input pair falls back to executing main again.
+# `checkSolidityGas` executable once (a C compile of the whole dependency
+# closure that previously ran in every matrix leg) and shares the binary. Its
+# native build tree is cached under a prefix key, so a commit that changes
+# compiler sources recompiles only the modules it affects rather than the whole
+# closure — this job gates every gas leg, so its duration lands directly on the
+# workflow's critical path. The native binary also dispatches the Yul/solc
+# differential, so every fan-out leg only *runs* tests and never restores a full
+# Lean workspace. Each leg is parallelised across the runner's cores by the
+# runners themselves (see TEST_JOBS in the Lean scripts). WarpBuild 32-core
+# runners make the one-time C compile and the per-leg execution both scale with
+# cores. Which tests run is unchanged — only where they run and how the work is
+# distributed.
+#
+# Fixtures are the unit of distribution, so no amount of sharding can split a
+# single fixture: each suite's wall clock is bounded below by its most expensive
+# *one* fixture. Measured on this workflow, the worst was one Aave fixture at
+# ~16 min, and it was not doing useful work — it was running the compiler's
+# whole fallback ladder (three optimizer pipelines plus memory spilling) over a
+# multi-megabyte object only to reject it for using immutables, which no rung of
+# that ladder can ever accept. `compileSource` now settles that with one
+# traversal, so the suite costs what its one compilable fixture costs.
+#
+# Adding machines was measured and rejected as the lever here: per-fixture legs
+# for that suite left its wall clock unchanged (the fixtures already ran
+# concurrently within the job) while quadrupling its runner count.
+#
+# Pull requests also run a resolved main SHA against the exact same resolved
+# Solidity corpus SHA. Successful main and scheduled runs publish their
+# summaries as an immutable bundle keyed by main SHA + corpus SHA, plus a second
+# bundle for the curated in-repo suites keyed on main SHA alone — those read no
+# upstream corpus, so Solidity's develop branch moving (several times a day)
+# must not force a pull request to recompute them. PRs reuse both; only the
+# first run for a genuinely new input pair falls back to executing main again.
 jobs:
   # Resolve moving branch inputs once so every head/main leg sees the same
   # revisions. In particular, Solidity's develop branch must not advance
@@ -261,6 +281,24 @@ jobs:
           path: .lake/packages/*/.lake/build
           key: lake-package-builds-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
 
+      # A miss on the binary above does not have to mean rebuilding the whole
+      # native closure. `lake build checkSolidityGas` lowers every module of
+      # this repository to C and then compiles it, and *that* is what made this
+      # job several minutes long — the packages are already prebuilt by the
+      # cache above, but this repository's own modules were recompiled from
+      # scratch for every source change. Restoring the previous commit's native
+      # build tree under a prefix key lets Lake's traces redo only the modules
+      # whose sources actually changed. This job gates every gas leg, so its
+      # duration is added to the critical path of the whole workflow.
+      - name: Cache native build tree
+        if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: .lake/build
+          key: gas-runner-tree-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'scripts/CheckSolidityGas.lean') }}
+          restore-keys: |
+            gas-runner-tree-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+
       - name: Set up Lean and fetch Mathlib cache
         if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
         uses: leanprover/lean-action@v1
@@ -445,6 +483,12 @@ jobs:
           # Curated Aave v4 fixtures checked into this repo (test/aave-v4):
           # strict compilation frontier plus realistic upstream-derived bitmap
           # stress scenarios with per-call gas baselines.
+          #
+          # One leg suffices: the three fixtures that record the compilation
+          # frontier use immutables, which `compileSource` now settles with a
+          # single traversal instead of running its whole fallback ladder over a
+          # multi-megabyte object (see `objectUsesImmutables`). The suite's cost
+          # is now PositionStatusMap's gas replay alone.
           - name: Aave v4
             kind: aave
             shard_index: 0
@@ -600,6 +644,34 @@ jobs:
           path: main-baseline
           retention-days: 30
 
+      # The curated protocol suites read no upstream corpus at all: their
+      # fixtures, baselines and known-compile-failure lists are checked into
+      # this repository (see the `Fetch Solidity gas corpora` step, which skips
+      # them). Their main-side rows are therefore fully determined by the main
+      # commit and the pinned solc, and stay valid while Solidity's develop
+      # branch moves — which it does several times a day, invalidating the
+      # combined bundle above and forcing pull requests to recompute the most
+      # expensive job in the workflow. Publish them separately, keyed only on
+      # what they actually depend on.
+      - name: Record in-repo baseline inputs
+        env:
+          MAIN_SHA: ${{ github.sha }}
+        run: |
+          mkdir -p inrepo-baseline/summaries
+          for f in main-baseline/summaries/gas-aave-*.txt \
+                   main-baseline/summaries/gas-uniswap-*.txt; do
+            [ -f "$f" ] && cp "$f" inrepo-baseline/summaries/
+          done
+          printf 'main_sha=%s\nsolc_version=%s\nschema=1\n' \
+            "$MAIN_SHA" "$SOLC_VERSION" > inrepo-baseline/metadata.env
+
+      - name: Upload reusable in-repo main baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-inrepo-baseline-${{ github.sha }}-${{ env.SOLC_VERSION }}
+          path: inrepo-baseline
+          retention-days: 30
+
   # Look for the exact main-SHA + Solidity-SHA bundle. The fallback baseline
   # jobs below run only when a bundle is absent, such as the first PR after an
   # upstream corpus update. Downloaded results are re-uploaded under the normal
@@ -664,6 +736,72 @@ jobs:
         with:
           name: baseline-summary-cached
           path: cached-main/summaries
+          retention-days: 1
+
+  # The same lookup for the curated in-repo protocol suites, whose main-side
+  # rows do not depend on the upstream corpus revision (see `Record in-repo
+  # baseline inputs`). This is the lookup that actually decides whether a pull
+  # request re-runs `Main Solidity gas (Aave v4)` — by far the longest job in
+  # the workflow — so keeping it independent of Solidity's fast-moving develop
+  # branch is what makes the reuse effective in practice.
+  baseline-inrepo-lookup:
+    name: Restore reusable in-repo main baseline
+    if: ${{ github.event_name == 'pull_request' }}
+    needs: comparison-inputs
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      hit: ${{ steps.verify.outputs.hit }}
+    steps:
+      - name: Find in-repo main baseline artifact
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MAIN_SHA: ${{ needs.comparison-inputs.outputs.main_sha }}
+        run: |
+          name="main-inrepo-baseline-$MAIN_SHA-$SOLC_VERSION"
+          run_id=$(gh api "repos/$REPO/actions/artifacts?name=$name&per_page=10" \
+            --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .workflow_run.id // empty')
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download in-repo main baseline
+        id: download
+        if: ${{ steps.find.outputs.run_id != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.find.outputs.name }}
+          path: cached-inrepo
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.find.outputs.run_id }}
+
+      - name: Verify restored in-repo metadata
+        id: verify
+        if: always()
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+          MAIN_SHA: ${{ needs.comparison-inputs.outputs.main_sha }}
+        run: |
+          hit=false
+          if [ "$DOWNLOAD_OUTCOME" = success ] && [ -f cached-inrepo/metadata.env ]; then
+            set -a; . cached-inrepo/metadata.env; set +a
+            if [ "$main_sha" = "$MAIN_SHA" ] && [ "$solc_version" = "$SOLC_VERSION" ] && \
+                [ "$schema" = 1 ]; then
+              hit=true
+            fi
+          fi
+          echo "hit=$hit" >> "$GITHUB_OUTPUT"
+
+      - name: Upload restored in-repo summaries for this run
+        if: ${{ steps.verify.outputs.hit == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-summary-inrepo-cached
+          path: cached-inrepo/summaries
           retention-days: 1
 
   # Cache-miss-only fallback: compile and test the resolved main commit against
@@ -777,8 +915,12 @@ jobs:
 
   baseline-gas-runner:
     name: Main baseline native corpus runner
-    if: ${{ github.event_name == 'pull_request' && needs.baseline-lookup.outputs.hit != 'true' }}
-    needs: [comparison-inputs, baseline-lookup]
+    # Needed by whichever baseline gas group still has work to do.
+    if: >-
+      ${{ github.event_name == 'pull_request' &&
+          (needs.baseline-lookup.outputs.hit != 'true' ||
+           needs.baseline-inrepo-lookup.outputs.hit != 'true') }}
+    needs: [comparison-inputs, baseline-lookup, baseline-inrepo-lookup]
     runs-on: warp-ubuntu-2404-x64-32x
     steps:
       - name: Checkout main
@@ -799,6 +941,17 @@ jobs:
         with:
           path: .lake/packages/*/.lake/build
           key: lake-package-builds-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+
+      # Same incremental native tree as the head runner above; a main commit
+      # whose binary is not cached still only recompiles its changed modules.
+      - name: Cache main native build tree
+        if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: .lake/build
+          key: gas-runner-tree-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'scripts/CheckSolidityGas.lean') }}
+          restore-keys: |
+            gas-runner-tree-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
 
       - name: Set up Lean and fetch main Mathlib cache
         if: ${{ steps.gas-runner-cache.outputs.cache-hit != 'true' }}
@@ -943,12 +1096,27 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
+  # Two independent reuse decisions meet here. The curated in-repo suites
+  # (Uniswap, Aave) are governed by `baseline-inrepo-lookup`, which ignores the
+  # upstream corpus revision; the corpus suites (gasTests, semanticTests) are
+  # governed by the combined `baseline-lookup`. The job runs when either group
+  # still needs work, and `LEG_NEEDED` decides per leg — so an upstream corpus
+  # update no longer drags the Aave baseline along with it.
   baseline-solidity-gas:
     name: Main Solidity gas (${{ matrix.name }})
-    if: ${{ github.event_name == 'pull_request' && needs.baseline-lookup.outputs.hit != 'true' }}
-    needs: [comparison-inputs, baseline-lookup, baseline-gas-runner]
+    if: >-
+      ${{ github.event_name == 'pull_request' &&
+          (needs.baseline-lookup.outputs.hit != 'true' ||
+           needs.baseline-inrepo-lookup.outputs.hit != 'true') }}
+    needs: [comparison-inputs, baseline-lookup, baseline-inrepo-lookup, baseline-gas-runner]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    env:
+      LEG_NEEDED: >-
+        ${{ (matrix.kind == 'uniswap' || matrix.kind == 'aave') &&
+            needs.baseline-inrepo-lookup.outputs.hit != 'true' ||
+            (matrix.kind != 'uniswap' && matrix.kind != 'aave') &&
+            needs.baseline-lookup.outputs.hit != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -990,15 +1158,18 @@ jobs:
           ref: ${{ needs.comparison-inputs.outputs.main_sha }}
 
       - name: Restore main gas runner binary
+        if: ${{ env.LEG_NEEDED == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: baseline-gas-runner-bin
           path: .lake/build/bin
 
       - name: Make main gas runner executable
+        if: ${{ env.LEG_NEEDED == 'true' }}
         run: chmod +x .lake/build/bin/checkSolidityGas
 
       - name: Cache pinned svm and solc
+        if: ${{ env.LEG_NEEDED == 'true' }}
         uses: actions/cache@v4
         with:
           path: |
@@ -1008,6 +1179,7 @@ jobs:
           key: svm-${{ runner.os }}-${{ runner.arch }}-${{ env.SVM_VERSION }}-solc-${{ env.SOLC_VERSION }}
 
       - name: Install pinned solc with svm
+        if: ${{ env.LEG_NEEDED == 'true' }}
         run: |
           if ! command -v svm >/dev/null 2>&1 || \
               ! svm --version | grep -q "^svm $SVM_VERSION "; then
@@ -1019,7 +1191,7 @@ jobs:
           echo "SOLC_PATH=$solc_path" >> "$GITHUB_ENV"
 
       - name: Fetch pinned Solidity gas corpus
-        if: ${{ matrix.kind != 'uniswap' && matrix.kind != 'aave' }}
+        if: ${{ env.LEG_NEEDED == 'true' && matrix.kind != 'uniswap' && matrix.kind != 'aave' }}
         env:
           SOLIDITY_SHA: ${{ needs.comparison-inputs.outputs.solidity_sha }}
         run: |
@@ -1034,6 +1206,7 @@ jobs:
           git -C /tmp/solidity checkout --detach FETCH_HEAD
 
       - name: Compile and gas-check Solidity contracts with main
+        if: ${{ env.LEG_NEEDED == 'true' }}
         run: |
           set -o pipefail
           ulimit -s unlimited || true
@@ -1066,7 +1239,7 @@ jobs:
           fi
 
       - name: Upload main CI summary (gas)
-        if: always()
+        if: ${{ always() && env.LEG_NEEDED == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: baseline-summary-gas-${{ matrix.kind }}-${{ matrix.shard_index }}
@@ -1087,6 +1260,7 @@ jobs:
       - solc-differential
       - solidity-gas
       - baseline-lookup
+      - baseline-inrepo-lookup
       - baseline-build
       - baseline-gas-runner
       - baseline-solc-differential
@@ -1130,7 +1304,14 @@ jobs:
           MAIN_BUILD_RESULT: ${{ needs.baseline-lookup.outputs.hit == 'true' && 'success' || needs.baseline-build.result }}
           MAIN_GAS_RUNNER_RESULT: ${{ needs.baseline-lookup.outputs.hit == 'true' && 'success' || needs.baseline-gas-runner.result }}
           MAIN_SOLC_DIFFERENTIAL_RESULT: ${{ needs.baseline-lookup.outputs.hit == 'true' && 'success' || needs.baseline-solc-differential.result }}
-          MAIN_SOLIDITY_GAS_RESULT: ${{ needs.baseline-lookup.outputs.hit == 'true' && 'success' || needs.baseline-solidity-gas.result }}
+          # Both baseline gas groups must be accounted for: each is either
+          # restored from its reuse bundle or executed by `baseline-solidity-gas`.
+          MAIN_SOLIDITY_GAS_RESULT: >-
+            ${{ (needs.baseline-lookup.outputs.hit == 'true' ||
+                 needs.baseline-solidity-gas.result == 'success') &&
+                (needs.baseline-inrepo-lookup.outputs.hit == 'true' ||
+                 needs.baseline-solidity-gas.result == 'success')
+                && 'success' || needs.baseline-solidity-gas.result }}
         run: |
           mkdir -p pr-comment
           python3 scripts/ci_pr_summary.py summaries/head \

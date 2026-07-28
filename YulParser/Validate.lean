@@ -406,4 +406,23 @@ def validateObjectSource (source : String) (object : Object Op) : Bool :=
   sourceLexWF source && validateObjectTree (inactiveBuiltins source) object &&
     immutableCalls.1.all immutableCalls.2.contains
 
+/-- Does this object tree use solc's immutable extension (`setimmutable` /
+`loadimmutable`)?
+
+The compiler has no support for immutables: both reach code generation as calls
+to functions the program never defines, so `YulEvmCompiler.compileObject` rejects
+any object containing one. Optimization cannot rescue such an object either.
+`setimmutable` writes into the code being deployed, which is an observable
+effect, so no semantics-preserving pass may drop it — and `validateObjectSource`
+above already requires every `loadimmutable` key to be assigned by some
+`setimmutable`, so an object that reads an immutable also writes one.
+
+Every rung of `compileSource`'s fallback ladder therefore fails, and reaching
+that conclusion the long way costs three full optimizer pipelines plus a memory
+spilling pass over the whole tree. On the flattened production corpora that is
+minutes of work per fixture to rediscover a property one traversal settles. -/
+def objectUsesImmutables (object : Object Op) : Bool :=
+  let immutableCalls := collectImmutableCallsObject object
+  !(immutableCalls.1.isEmpty && immutableCalls.2.isEmpty)
+
 end YulParser

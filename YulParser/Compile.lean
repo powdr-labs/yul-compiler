@@ -306,6 +306,11 @@ def compileSource (source : String) : Option ByteArray := do
           | none => none)
       return YulEvmCompiler.assemble (← asm)
   | some (.object o) =>
+      -- Immutables are unsupported, and unlike stack pressure the ladder below
+      -- cannot optimize its way out of them: every rung ends in the same
+      -- rejection (see `objectUsesImmutables`). Settle it with one traversal
+      -- instead of three optimizer pipelines over the whole tree.
+      if objectUsesImmutables o then none else
       let raw := pruneLinkerObjectTree (decodeValueObject o)
       let o := YulEvmCompiler.Optimizer.Normalize.normalizeObject
         (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
