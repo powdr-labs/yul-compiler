@@ -526,7 +526,6 @@ freeFunctions/easy.sol	259	180
 freeFunctions/free_runtimecode.sol	98	81
 freeFunctions/new_operator.sol	98	81
 freeFunctions/overloads.sol	799	242
-freeFunctions/recursion.sol	7336	5152
 freeFunctions/storage_calldata_refs.sol	46318	44978
 functionCall/array_multiple_local_vars.sol	9447	4258
 functionCall/call_attached_library_function_on_function.sol	204	145
@@ -664,7 +663,6 @@ inlineAssembly/inline_assembly_if.sol	940	680
 inlineAssembly/inline_assembly_in_modifiers.sol	635	240
 inlineAssembly/inline_assembly_memory_access.sol	3782	1709
 inlineAssembly/inline_assembly_read_and_write_stack.sol	1485	672
-inlineAssembly/inline_assembly_recursion.sol	2722	1587
 inlineAssembly/inline_assembly_storage_access.sol	24993	24540
 inlineAssembly/inline_assembly_storage_access_inside_function.sol	24982	24551
 inlineAssembly/inline_assembly_storage_access_local_var.sol	22346	22253
@@ -771,7 +769,6 @@ modifiers/function_modifier_overriding.sol	373	142
 modifiers/function_modifier_return_reference.sol	410	160
 modifiers/function_return_parameter.sol	970	173
 modifiers/function_return_parameter_complex.sol	50411	45372
-modifiers/modifer_recursive.sol	33417	29632
 modifiers/modifier_init_return.sol	3477	1454
 modifiers/return_does_not_skip_modifier.sol	27289	26771
 modifiers/return_in_modifier.sol	29520	27834
@@ -838,7 +835,6 @@ operators/userDefined/operator_parameter_and_return_cleanup_between_calls.sol	10
 operators/userDefined/operator_parameter_cleanup.sol	1192	356
 operators/userDefined/operator_precendence.sol	9013	2934
 operators/userDefined/operator_return_parameter_cleanup.sol	596	356
-operators/userDefined/recursive_operator.sol	35131	181715
 operators/userDefined/unchecked_operators.sol	862	309
 optimizer/shift_bytes.sol	1364	457
 optimizer/unused_store_storage_removal_bug.sol	24857	24522
@@ -1001,8 +997,6 @@ strings/string_escapes.sol	182	148
 strings/unicode_escapes.sol	4836	1682
 strings/unicode_string.sol	2126	717
 structs/array_of_recursive_struct.sol	20122	7141
-structs/conversion/recursive_storage_memory.sol	204632	171764
-structs/conversion/recursive_storage_memory_complex.sol	66640	54609
 structs/copy_from_mapping.sol	133247	121253
 structs/copy_from_storage.sol	4506	2912
 structs/copy_struct_array_from_storage.sol	222046	205913
@@ -1026,8 +1020,6 @@ structs/memory_structs_read_write.sol	78652	69207
 structs/msg_data_to_struct_member_copy.sol	10945	3622
 structs/nested_struct_allocation.sol	874	303
 structs/packed_storage_structs_delete.sol	49974	45226
-structs/recursive_struct_2.sol	34945	33217
-structs/recursive_structs.sol	8702	4340
 structs/simple_struct_allocation.sol	583	200
 structs/struct_assign_reference_to_struct.sol	50922	49714
 structs/struct_constructor_nested.sol	14725	13594
