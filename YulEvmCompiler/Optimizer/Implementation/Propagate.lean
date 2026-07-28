@@ -199,14 +199,6 @@ and are always created. A wrong gate costs optimization (the compile
 fallback), never coverage or soundness. -/
 def copyDepthLimit : Nat := 12
 
-/-- Enable copy facts for a scope entered with `acc` already-live bindings?
-Recomputed at **every block entry** (not just per function): the copies worth
-substituting are locally sourced and locally consumed (inlined-site blocks),
-where the small block bounds the depth delta; big frames — dispatcher arms,
-whole dispatcher bodies — recompute big and stay gated off. -/
-def copyGate (acc : Nat) (body : Block Op) : Bool :=
-  decide (liveMaxStmts acc body ≤ copyDepthLimit)
-
 /-- Production classification: number literals always; copy entries (`y ↦ x`)
 only when the enclosing scope passed the depth gate (see `copyGate`). Both
 are refinements of the relation's `classify`, so any gate policy is sound —
@@ -247,6 +239,224 @@ def assignEnv (copyOK : Bool) (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) : P
       if (lookupEnv σ x).isSome then (x, r) :: prune σ [x] else prune σ xs
   | _, _ => prune σ xs
 
+/-! ### The trial-shrink gate estimate
+
+Everything in this subsection feeds only the Bool gate policy below — the
+soundness relation (`propStmts_rel`) is gate-policy-agnostic, so none of these
+functions carry proof obligations. A wrong estimate costs optimization via the
+compile fallback chain, never coverage or soundness (same contract as the
+original input-measured gate).
+
+The statement inliner's helper bodies arrive as copy chains plus dead
+zero-inits; measured on that *input*, `liveMaxStmts` overshoots the budget and
+copy facts are never created — but the copies are exactly what the facts would
+let `deadPure`/`coalesceCopies` delete (the gate chicken-and-egg that keeps
+the Aave hot-loop helpers fat, see IDEAS.md). The trial answers "would this
+scope fit *after* the round's cleanup?": propagate the scope with copy facts
+unconditionally on, drop the then-dead pure singleton lets, and measure the
+survivor. -/
+
+/-- Arity at which an op is total on values and preserves `EvmState` — the
+rhs fragment the trial sweep may drop when dead. Mirrors
+`DeadPure.stableTotalArity` (an import cycle via `DeadLits` prevents
+sharing); used only in the gate estimate, so the mirror needs no lemma. -/
+def trialStableArity : Op → Option Nat
+  | .add | .sub | .mul | .div | .sdiv | .mod | .smod
+  | .signextend | .lt | .gt | .slt | .sgt | .eq
+  | .and | .or | .xor | .byte | .shl | .shr | .sar => some 2
+  | .clz | .iszero | .not | .sload => some 1
+  | .addmod | .mulmod => some 3
+  | _ => none
+
+mutual
+
+/-- Trial analogue of `DeadPure.alwaysEval` (mirrored exactly, including the
+bound-set threading — an import cycle via `DeadLits` prevents sharing): does
+the rhs evaluate totally and state-preservingly on every environment binding
+all of `bound`? The mirror must not be *more* optimistic than the real
+`deadPure` stage, or the gate promises removals the round never makes
+(measured: dead copies of `for`-init counters survive `deadPure`'s
+`bound` and inflated `array_storage_index_access` by +155k when the trial
+ignored the bound set). -/
+def trialEval (bound : List Ident) : Expr Op → Bool
+  | .lit (.string _) => false
+  | .lit _ => true
+  | .var x => bound.contains x
+  | .builtin op args =>
+      (trialStableArity op == some args.length) && trialEvalArgs bound args
+  | .call _ _ => false
+
+/-- `trialEval` for each argument. -/
+def trialEvalArgs (bound : List Ident) : List (Expr Op) → Bool
+  | [] => true
+  | e :: rest => trialEval bound e && trialEvalArgs bound rest
+
+end
+
+mutual
+
+/-- One backward sweep dropping dead singleton pure lets (any depth),
+threading the provably-bound set exactly as `DeadPure.dpStmts` does (kept
+declarations grow it; `for`-init declarations do **not** flow into post/body,
+mirroring the real stage's conservatism). -/
+def trialDropStmts (bound : List Ident) : List (Stmt Op) → List (Stmt Op)
+  | [] => []
+  | .letDecl [x] none :: rest =>
+      let rest' := trialDropStmts ([x] ++ bound) rest
+      if stmtsMentions x rest' then .letDecl [x] none :: rest' else rest'
+  | .letDecl [x] (some rhs) :: rest =>
+      let rest' := trialDropStmts ([x] ++ bound) rest
+      if trialEval bound rhs && !stmtsMentions x rest' then rest'
+      else .letDecl [x] (some rhs) :: rest'
+  | .letDecl xs val :: rest =>
+      .letDecl xs val :: trialDropStmts (xs ++ bound) rest
+  | .block body :: rest =>
+      .block (trialDropStmts bound body) :: trialDropStmts bound rest
+  | .cond c body :: rest =>
+      .cond c (trialDropStmts bound body) :: trialDropStmts bound rest
+  | .switch c cases dflt :: rest =>
+      .switch c (trialDropCases bound cases) (trialDropDflt bound dflt) ::
+        trialDropStmts bound rest
+  | .forLoop init c post body :: rest =>
+      .forLoop init c (trialDropStmts bound post) (trialDropStmts bound body) ::
+        trialDropStmts bound rest
+  | s :: rest => s :: trialDropStmts bound rest
+
+/-- The sweep over `switch` cases. -/
+def trialDropCases (bound : List Ident) :
+    List (Literal × Block Op) → List (Literal × Block Op)
+  | [] => []
+  | (l, b) :: rest => (l, trialDropStmts bound b) :: trialDropCases bound rest
+
+/-- The sweep over a `switch` default. -/
+def trialDropDflt (bound : List Ident) : Option (Block Op) → Option (Block Op)
+  | none => none
+  | some b => some (trialDropStmts bound b)
+
+end
+
+mutual
+
+/-- Trial propagation: `propStmt` with copy facts unconditionally on (no
+nested gate recomputation — this *is* the gate). -/
+def trialStmt (σ : PEnv) : Stmt Op → Stmt Op × PEnv
+  | .block body =>
+      let pb := trialStmts σ body
+      (.block pb.1, prune pb.2 (blockDecls body))
+  | .funDef n ps rs body =>
+      (.funDef n ps rs (trialStmts [] body).1, σ)
+  | .letDecl xs none => (.letDecl xs none, letZeroEnv σ xs)
+  | .letDecl xs (some e) =>
+      let r := rhsExpr σ e
+      (.letDecl xs (some r), letEnv true σ xs r)
+  | .assign xs e =>
+      let r := rhsExpr σ e
+      (.assign xs r, assignEnv true σ xs r)
+  | .cond c body =>
+      (.cond (substExpr σ c) (trialStmts σ body).1,
+        prune σ (writeSetStmts body))
+  | .switch c cases dflt =>
+      (.switch (substExpr σ c) (trialCases σ cases) (trialDflt σ dflt),
+        prune σ (writeSetCases cases ++ writeSetDflt dflt))
+  | .forLoop init c post body =>
+      let pinit := trialStmts σ init
+      let σL := prune pinit.2 (writeSetStmts post ++ writeSetStmts body)
+      (.forLoop pinit.1 (substExpr σL c) (trialStmts σL post).1
+        (trialStmts σL body).1,
+        prune σ (writeSetStmts init ++ writeSetStmts post ++ writeSetStmts body))
+  | .exprStmt e => (.exprStmt (substExpr σ e), σ)
+  | .break => (.break, σ)
+  | .continue => (.continue, σ)
+  | .leave => (.leave, σ)
+
+/-- Trial propagation over a sequence. -/
+def trialStmts (σ : PEnv) : List (Stmt Op) → List (Stmt Op) × PEnv
+  | [] => ([], σ)
+  | s :: rest =>
+      let ps := trialStmt σ s
+      let prest := trialStmts ps.2 rest
+      (ps.1 :: prest.1, prest.2)
+
+/-- Trial propagation over `switch` cases. -/
+def trialCases (σ : PEnv) :
+    List (Literal × Block Op) → List (Literal × Block Op)
+  | [] => []
+  | (l, b) :: rest => (l, (trialStmts σ b).1) :: trialCases σ rest
+
+/-- Trial propagation over a `switch` default. -/
+def trialDflt (σ : PEnv) : Option (Block Op) → Option (Block Op)
+  | none => none
+  | some b => some ((trialStmts σ b).1)
+
+end
+
+/-- The trial-shrunk scope: propagate with copies on, then drain the dead
+chains (each backward sweep exposes the next link's last use; helper copy
+chains are short, so a small fixed iteration count converges in practice).
+`encl` is the enclosing provably-bound name set the sweep may assume (function
+parameters and returns at a `funDef` entry — the same set `deadPure` starts
+its body walk with). -/
+def trialShrink (encl : List Ident) (body : Block Op) : Block Op :=
+  let propagated := (trialStmts [] body).1
+  trialDropStmts encl (trialDropStmts encl (trialDropStmts encl propagated))
+
+mutual
+
+/-- Does any singleton var-copy `let x := y` survive at any depth (`funDef`
+bodies excluded — they gate separately)? After copies-on propagation has
+rewritten every reachable use, a surviving copy is an **orphan**: `deadPure`
+will not remove it (its source is not provably bound — the `for`-init counter
+case), and `RejoinPairs`/`CoalesceCopies` no longer see a consumer to merge it
+into. Enabling copy facts then trades each such let's single `DUP` use for a
+dangling binding *plus* the rewritten use — strictly worse than declining and
+letting the rejoin path consume it (measured +155k on
+`array_storage_index_access`). -/
+def trialOrphans : List (Stmt Op) → Bool
+  | [] => false
+  | .letDecl [_] (some (.var _)) :: _ => true
+  | .block body :: rest => trialOrphans body || trialOrphans rest
+  | .cond _ body :: rest => trialOrphans body || trialOrphans rest
+  | .switch _ cases dflt :: rest =>
+      trialOrphansCases cases || trialOrphansDflt dflt || trialOrphans rest
+  | .forLoop init _ post body :: rest =>
+      trialOrphans init || trialOrphans post || trialOrphans body ||
+        trialOrphans rest
+  | _ :: rest => trialOrphans rest
+
+/-- The orphan scan over `switch` cases. -/
+def trialOrphansCases : List (Literal × Block Op) → Bool
+  | [] => false
+  | (_, b) :: rest => trialOrphans b || trialOrphansCases rest
+
+/-- The orphan scan over a `switch` default. -/
+def trialOrphansDflt : Option (Block Op) → Bool
+  | none => false
+  | some b => trialOrphans b
+
+end
+
+/-- Enable copy facts for a scope entered with `acc` already-live bindings?
+Recomputed at **every block entry** (not just per function): the copies worth
+substituting are locally sourced and locally consumed (inlined-site blocks),
+where the small block bounds the depth delta; big frames — dispatcher arms,
+whole dispatcher bodies — recompute big and stay gated off. A scope over the
+input budget gets a second chance if its **trial-shrunk** form fits: the
+copies then provably feed the round's own cleanup instead of deepening any
+surviving read (see the trial-shrink section notes). -/
+def copyGate (acc : Nat) (body : Block Op) : Bool :=
+  decide (liveMaxStmts acc body ≤ copyDepthLimit) ||
+  (let shrunk := trialShrink [] body
+   decide (liveMaxStmts acc shrunk ≤ copyDepthLimit) && !trialOrphans shrunk)
+
+/-- The `funDef`-entry gate: same policy, but the trial sweep may assume the
+parameters and returns are bound — the set `deadPure`'s body walk starts
+with — so the inliner's param-copy chains count as removable. -/
+def copyGateFun (ps rs : List Ident) (body : Block Op) : Bool :=
+  decide (liveMaxStmts (ps.length + rs.length) body ≤ copyDepthLimit) ||
+  (let shrunk := trialShrink (ps ++ rs) body
+   decide (liveMaxStmts (ps.length + rs.length) shrunk ≤ copyDepthLimit) &&
+     !trialOrphans shrunk)
+
 mutual
 
 /-- Propagate through one statement, returning the rewritten statement and the
@@ -257,7 +467,7 @@ def propStmt (copyOK : Bool) (σ : PEnv) : Stmt Op → Stmt Op × PEnv
       (.block pb.1, prune pb.2 (blockDecls body))
   | .funDef n ps rs body =>
       (.funDef n ps rs
-        (propStmts (copyGate (ps.length + rs.length) body) [] body).1, σ)
+        (propStmts (copyGateFun ps rs body) [] body).1, σ)
   | .letDecl xs none =>
       (.letDecl xs none, letZeroEnv σ xs)
   | .letDecl xs (some e) =>
@@ -472,7 +682,7 @@ theorem propStmt_rel (copyOK : Bool) (σ : PEnv) : ∀ s : Stmt Op,
       (.stmt s) (.stmt (propStmt copyOK σ s).1)
   | .block body => .blockS (propStmts_rel (copyGate 0 body) σ body) .exportFacts
   | .funDef _ ps rs body =>
-      .funDefS (propStmts_rel (copyGate (ps.length + rs.length) body) [] body)
+      .funDefS (propStmts_rel (copyGateFun ps rs body) [] body)
   | .letDecl xs none => .letNoneS (letZeroEnv_rel σ xs)
   | .letDecl xs (some e) =>
       .letSomeS (.fold) (letEnv_rel copyOK σ xs (rhsExpr σ e))

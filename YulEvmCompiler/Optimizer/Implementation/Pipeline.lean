@@ -145,17 +145,69 @@ def optimizerPipelineNoRejoin : LocalPass D :=
   LocalPass.ofList ((List.replicate pipelineRounds (blockRoundNoRejoin (calls := calls)
     (creates := creates))).flatten)
 
+/-- Object-path helper inlining with the *literal-admitting* classification,
+guarded by whole-block layout-freedom on input **and** output (the
+`Flatten`/`FuseDeclAssign`/`ReuseValues` recipe): when the guard holds,
+resolution is the identity on both sides and the congruence is the pass's own
+soundness. When it fails — a constructor block carrying `dataoffset`/
+`datasize`/string hooks — fall back to the resolution-stable
+`litOK := false` classification with its syntactic commutation, exactly the
+previous behavior. Deployed-object runtime code is essentially always
+layout-free, so the cleanup-mask helpers (`and(x, 0xffff…)` and friends) that
+`litOK := false` excludes finally inline on the object path. -/
+def inlineHelpersObjBlock (b : Block Op) : Block Op :=
+  if storageLayoutFreeStmts b then
+    if storageLayoutFreeStmts (inlineHelpersBlock (calls := calls)
+        (creates := creates) true ([] : FunEnv D) b) then
+      inlineHelpersBlock (calls := calls) (creates := creates) true
+        ([] : FunEnv D) b
+    else inlineHelpersBlock (calls := calls) (creates := creates) false
+      ([] : FunEnv D) b
+  else inlineHelpersBlock (calls := calls) (creates := creates) false
+    ([] : FunEnv D) b
+
+/-- The guarded object-path helper inliner is a verified pass: every branch
+returns `inlineHelpersBlock` at some `litOK`, whose soundness is
+classification-mode-independent. -/
+def inlineHelpersObj : LocalPass D where
+  run := inlineHelpersObjBlock
+  sound b := by
+    unfold inlineHelpersObjBlock
+    split
+    · split
+      · exact inlineHelpersBlock_equiv b
+      · exact inlineHelpersBlock_equiv b
+    · exact inlineHelpersBlock_equiv b
+
+/-- Resolution congruence for the guarded object-path helper inliner. -/
+theorem resolveInlineHelpersObjBlock_equiv (L : Layout) (b : Block Op) :
+    EquivBlock D (resolveForLayoutStmts L b)
+      (resolveForLayoutStmts L (inlineHelpersObjBlock (calls := calls)
+        (creates := creates) b)) := by
+  have hfalse : EquivBlock D (resolveForLayoutStmts L b)
+      (resolveForLayoutStmts L (inlineHelpersBlock (calls := calls)
+        (creates := creates) false ([] : FunEnv D) b)) := by
+    have hi := (inlineHelpersPass (calls := calls) (creates := creates) false).sound
+      (resolveForLayoutStmts L b)
+    change EquivBlock D (resolveForLayoutStmts L b)
+      (inlineHelpersBlock (calls := calls) (creates := creates) false ([] : FunEnv D)
+        (resolveForLayoutStmts L b)) at hi
+    rw [← resolve_inlineHelpersBlock_nil L b] at hi
+    exact hi
+  unfold inlineHelpersObjBlock
+  split
+  · split
+    · next h1 h2 =>
+        rw [resolve_storageLayoutFreeStmts L b h1,
+          resolve_storageLayoutFreeStmts L _ h2]
+        exact inlineHelpersBlock_equiv b
+    · exact hfalse
+  · exact hfalse
+
 /-- One object-path round, with each stage's resolution congruence. -/
 def objectRound : List (RPass calls creates) :=
   [⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
-   ⟨inlineHelpersPass false, fun L b => by
-      have hi := (inlineHelpersPass (calls := calls) (creates := creates) false).sound
-        (resolveForLayoutStmts L b)
-      change EquivBlock D (resolveForLayoutStmts L b)
-        (inlineHelpersBlock (calls := calls) (creates := creates) false ([] : FunEnv D)
-          (resolveForLayoutStmts L b)) at hi
-      rw [← resolve_inlineHelpersBlock_nil L b] at hi
-      exact hi⟩,
+   ⟨inlineHelpersObj, fun L b => resolveInlineHelpersObjBlock_equiv L b⟩,
    ⟨propagate, fun L b => by
       have hp := resolvePropagateBlock_equiv (calls := calls) (creates := creates) L b
       simpa [propagateBlock] using hp⟩,
@@ -178,14 +230,7 @@ def objectRound : List (RPass calls creates) :=
 /-- The object-path round without `rejoinPairs` (see `blockRoundNoRejoin`). -/
 def objectRoundNoRejoin : List (RPass calls creates) :=
   [⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
-   ⟨inlineHelpersPass false, fun L b => by
-      have hi := (inlineHelpersPass (calls := calls) (creates := creates) false).sound
-        (resolveForLayoutStmts L b)
-      change EquivBlock D (resolveForLayoutStmts L b)
-        (inlineHelpersBlock (calls := calls) (creates := creates) false ([] : FunEnv D)
-          (resolveForLayoutStmts L b)) at hi
-      rw [← resolve_inlineHelpersBlock_nil L b] at hi
-      exact hi⟩,
+   ⟨inlineHelpersObj, fun L b => resolveInlineHelpersObjBlock_equiv L b⟩,
    ⟨propagate, fun L b => by
       have hp := resolvePropagateBlock_equiv (calls := calls) (creates := creates) L b
       simpa [propagateBlock] using hp⟩,
