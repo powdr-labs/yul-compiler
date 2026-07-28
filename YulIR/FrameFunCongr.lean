@@ -21,21 +21,22 @@ namespace YulIR.FinFrame.Sem
 
 open YulSemantics (Outcome Ident)
 
-/-- Optimize every function body of a table with `g` (a size-preserving block transform), keeping
-each function's `nslots`/`params`/`rets` (so lookups stay defeq). -/
-def mapBodiesFuns (g : {n : Nat} → Block n → Block n) (funs : Funs) : Funs :=
-  funs.map (fun _ fd => { fd with body := g fd.body })
+/-- Optimize every function body of a table with `g` (a size-preserving block transform, allowed to
+depend on the enclosing function — e.g. on its params/returns), keeping each function's
+`nslots`/`params`/`rets` (so lookups stay defeq). -/
+def mapBodiesFuns (g : (fd : Function) → Block fd.nslots → Block fd.nslots) (funs : Funs) : Funs :=
+  funs.map (fun _ fd => { fd with body := g fd fd.body })
 
 /-- Lookup after `mapBodiesFuns`: the body is `g`-transformed, the rest unchanged. -/
-theorem mapBodiesFuns_get {g : {n : Nat} → Block n → Block n} {funs : Funs} {k : Option Ident}
+theorem mapBodiesFuns_get {g : (fd : Function) → Block fd.nslots → Block fd.nslots} {funs : Funs} {k : Option Ident}
     {fd : Function} (h : funs[k]? = some fd) :
-    (mapBodiesFuns g funs)[k]? = some ({ fd with body := g fd.body } : Function) := by
+    (mapBodiesFuns g funs)[k]? = some ({ fd with body := g fd fd.body } : Function) := by
   simp [mapBodiesFuns, Std.HashMap.getElem?_map, h]
 
 /-- Reconstruct a normal/leave call under the optimized table (`fdecl` explicit so the shared
-implicit elaborates cleanly; the body is swapped to `g fdecl.body` via local soundness). -/
-theorem callNorm_map {g : {n : Nat} → Block n → Block n}
-    (hg : ∀ (F : Funs) {m} (b : Block m), EquivBlock F (g b) b)
+implicit elaborates cleanly; the body is swapped to `g fdecl fdecl.body` via local soundness). -/
+theorem callNorm_map {g : (fd : Function) → Block fd.nslots → Block fd.nslots}
+    (hg : ∀ (F : Funs) (fd : Function), EquivBlock F (g fd fd.body) fd.body)
     {funs : Funs} {N} {σ : Store N} {st : State} {fn : Ident} {args} {fdecl : Function}
     {σ' : Store fdecl.nslots} {st' o}
     (hl : funs[some fn]? = some fdecl)
@@ -43,24 +44,24 @@ theorem callNorm_map {g : {n : Nat} → Block n → Block n}
       (seed fdecl.nslots fdecl.params (args.map (evalAtom σ))) st fdecl.body σ' st' o)
     (ho : o = .normal ∨ o = .leave) :
     Step (mapBodiesFuns g funs) σ st (.rhs (.call fn args)) (.eres (.ok (fdecl.rets.map σ') st')) :=
-  Step.callNorm (fdecl := { fdecl with body := g fdecl.body }) (mapBodiesFuns_get hl)
-    ((hg (mapBodiesFuns g funs) fdecl.body _ _ _ _ _).mpr hbody') ho
+  Step.callNorm (fdecl := { fdecl with body := g fdecl fdecl.body }) (mapBodiesFuns_get hl)
+    ((hg (mapBodiesFuns g funs) fdecl _ _ _ _ _).mpr hbody') ho
 
 /-- Reconstruct a halting call under the optimized table. -/
-theorem callHalt_map {g : {n : Nat} → Block n → Block n}
-    (hg : ∀ (F : Funs) {m} (b : Block m), EquivBlock F (g b) b)
+theorem callHalt_map {g : (fd : Function) → Block fd.nslots → Block fd.nslots}
+    (hg : ∀ (F : Funs) (fd : Function), EquivBlock F (g fd fd.body) fd.body)
     {funs : Funs} {N} {σ : Store N} {st : State} {fn : Ident} {args} {fdecl : Function}
     {σ' : Store fdecl.nslots} {st'}
     (hl : funs[some fn]? = some fdecl)
     (hbody' : ExecBlock (mapBodiesFuns g funs)
       (seed fdecl.nslots fdecl.params (args.map (evalAtom σ))) st fdecl.body σ' st' .halt) :
     Step (mapBodiesFuns g funs) σ st (.rhs (.call fn args)) (.eres (.halt st')) :=
-  Step.callHalt (fdecl := { fdecl with body := g fdecl.body }) (mapBodiesFuns_get hl)
-    ((hg (mapBodiesFuns g funs) fdecl.body _ _ _ _ _).mpr hbody')
+  Step.callHalt (fdecl := { fdecl with body := g fdecl fdecl.body }) (mapBodiesFuns_get hl)
+    ((hg (mapBodiesFuns g funs) fdecl _ _ _ _ _).mpr hbody')
 
 /-- **Forward**: any run of the original table is a run of the optimized table. -/
-theorem step_mapBodies_mp (g : {n : Nat} → Block n → Block n)
-    (hg : ∀ (F : Funs) {m} (b : Block m), EquivBlock F (g b) b)
+theorem step_mapBodies_mp (g : (fd : Function) → Block fd.nslots → Block fd.nslots)
+    (hg : ∀ (F : Funs) (fd : Function), EquivBlock F (g fd fd.body) fd.body)
     {funs : Funs} {n} {σ : Store n} {st code res}
     (h : Step funs σ st code res) : Step (mapBodiesFuns g funs) σ st code res := by
   induction h with
@@ -88,16 +89,16 @@ theorem step_mapBodies_mp (g : {n : Nat} → Block n → Block n)
 
 /-- Inversion of `mapBodiesFuns` lookup: a hit came from an original function whose body was
 `g`-transformed. -/
-theorem mapBodiesFuns_get_inv {g : {n : Nat} → Block n → Block n} {funs : Funs} {k : Option Ident}
+theorem mapBodiesFuns_get_inv {g : (fd : Function) → Block fd.nslots → Block fd.nslots} {funs : Funs} {k : Option Ident}
     {fdecl' : Function} (h : (mapBodiesFuns g funs)[k]? = some fdecl') :
-    ∃ fd, funs[k]? = some fd ∧ fdecl' = { fd with body := g fd.body } := by
+    ∃ fd, funs[k]? = some fd ∧ fdecl' = { fd with body := g fd fd.body } := by
   simp only [mapBodiesFuns, Std.HashMap.getElem?_map] at h
   obtain ⟨fd, hfd, heq⟩ := Option.map_eq_some_iff.mp h
   exact ⟨fd, hfd, heq.symm⟩
 
 /-- **Backward**: any run of the optimized table is a run of the original table. -/
-theorem step_mapBodies_mpr (g : {n : Nat} → Block n → Block n)
-    (hg : ∀ (F : Funs) {m} (b : Block m), EquivBlock F (g b) b)
+theorem step_mapBodies_mpr (g : (fd : Function) → Block fd.nslots → Block fd.nslots)
+    (hg : ∀ (F : Funs) (fd : Function), EquivBlock F (g fd fd.body) fd.body)
     {funs : Funs} {n} {σ : Store n} {st code res}
     (h : Step (mapBodiesFuns g funs) σ st code res) : Step funs σ st code res := by
   induction h with
@@ -106,11 +107,11 @@ theorem step_mapBodies_mpr (g : {n : Nat} → Block n → Block n)
   | callNorm hl' _ ho ihbody =>
       obtain ⟨fd, hfd, heq⟩ := mapBodiesFuns_get_inv hl'
       subst heq
-      exact Step.callNorm (fdecl := fd) hfd ((hg funs fd.body _ _ _ _ _).mp ihbody) ho
+      exact Step.callNorm (fdecl := fd) hfd ((hg funs fd _ _ _ _ _).mp ihbody) ho
   | callHalt hl' _ ihbody =>
       obtain ⟨fd, hfd, heq⟩ := mapBodiesFuns_get_inv hl'
       subst heq
-      exact Step.callHalt (fdecl := fd) hfd ((hg funs fd.body _ _ _ _ _).mp ihbody)
+      exact Step.callHalt (fdecl := fd) hfd ((hg funs fd _ _ _ _ _).mp ihbody)
   | assignOk _ ihr => exact .assignOk ihr
   | assignHalt _ ihr => exact .assignHalt ihr
   | condFalse hc => exact .condFalse hc
@@ -131,26 +132,26 @@ theorem step_mapBodies_mpr (g : {n : Nat} → Block n → Block n)
 
 /-- **Function-table congruence.** A locally-sound body transform `g` (`EquivBlock F (g b) b` for
 every block and table) preserves the judgment when applied to every function body. -/
-theorem step_mapBodies (g : {n : Nat} → Block n → Block n)
-    (hg : ∀ (F : Funs) {m} (b : Block m), EquivBlock F (g b) b)
+theorem step_mapBodies (g : (fd : Function) → Block fd.nslots → Block fd.nslots)
+    (hg : ∀ (F : Funs) (fd : Function), EquivBlock F (g fd fd.body) fd.body)
     {funs : Funs} {n} {σ : Store n} {st code res} :
     Step funs σ st code res ↔ Step (mapBodiesFuns g funs) σ st code res :=
   ⟨step_mapBodies_mp g hg, step_mapBodies_mpr g hg⟩
 
 /-- Whole-program payoff: optimizing every function body with a locally-sound `g` preserves runs. -/
-theorem run_mapBodies (g : {n : Nat} → Block n → Block n)
-    (hg : ∀ (F : Funs) {m} (b : Block m), EquivBlock F (g b) b)
+theorem run_mapBodies (g : (fd : Function) → Block fd.nslots → Block fd.nslots)
+    (hg : ∀ (F : Funs) (fd : Function), EquivBlock F (g fd fd.body) fd.body)
     {p : Program} {st st' o} :
     Run p st st' o ↔ Run ⟨mapBodiesFuns g p.functions⟩ st st' o := by
   simp only [Run, Program.main?]
   constructor
   · rintro ⟨fd, σ', hmain, hexec⟩
-    refine ⟨{ fd with body := g fd.body }, σ', mapBodiesFuns_get hmain, ?_⟩
-    exact (hg (mapBodiesFuns g p.functions) fd.body _ _ _ _ _).mpr (step_mapBodies_mp g hg hexec)
+    refine ⟨{ fd with body := g fd fd.body }, σ', mapBodiesFuns_get hmain, ?_⟩
+    exact (hg (mapBodiesFuns g p.functions) fd _ _ _ _ _).mpr (step_mapBodies_mp g hg hexec)
   · rintro ⟨fd', σ', hmain, hexec⟩
     obtain ⟨fd, hfd, heq⟩ := mapBodiesFuns_get_inv hmain
     subst heq
     exact ⟨fd, σ', hfd,
-      step_mapBodies_mpr g hg ((hg (mapBodiesFuns g p.functions) fd.body _ _ _ _ _).mp hexec)⟩
+      step_mapBodies_mpr g hg ((hg (mapBodiesFuns g p.functions) fd _ _ _ _ _).mp hexec)⟩
 
 end YulIR.FinFrame.Sem

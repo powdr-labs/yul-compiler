@@ -8,6 +8,8 @@ import YulEvmCompiler.Optimizer.Implementation.FreshenCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.HoistCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.StorageForwardResolve
 import YulEvmCompiler.Optimizer.Implementation.CoalesceCopiesResolve
+import YulEvmCompiler.Optimizer.Implementation.RejoinPairs
+import YulEvmCompiler.Optimizer.Implementation.StructurePasses
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Normalize
 set_option warningAsError true
@@ -108,7 +110,19 @@ draining up to three regions per sequence per round instead of spending a
 full round on each. -/
 def blockRound : List (LocalPass D) :=
   [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
-   storageForward, simplify, coalesceCopies, deadPure, deadResults, deadResults, deadResults]
+   flatten, fuseDeclAssign,
+   storageForward, simplify, coalesceCopies, reuseValues, rejoinPairs, deadPure,
+   deadResults, deadResults, deadResults, pruneDefs]
+
+/-- The block-path round without `rejoinPairs`. Rejoining merges the bindings
+the smart stack layout would otherwise re-slot, which can defeat the layout
+rescue on stack-frontier objects (measured: `PoolLiquidity`); the compile
+fallback chain therefore also retries the full pipeline without it. -/
+def blockRoundNoRejoin : List (LocalPass D) :=
+  [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
+   flatten, fuseDeclAssign,
+   storageForward, simplify, coalesceCopies, reuseValues, deadPure,
+   deadResults, deadResults, deadResults, pruneDefs]
 
 /-- Verified block pipeline at an explicit round count. Iterated inlining can
 push a caller's live locals past the backend's `DUP16`/`SWAP16` reach; fewer
@@ -125,6 +139,11 @@ def optimizerPipeline : LocalPass D :=
 /-- The light (one-round) block pipeline, the middle compile fallback. -/
 def optimizerPipelineLight : LocalPass D :=
   optimizerPipelineRounds 1
+
+/-- The full block pipeline without `rejoinPairs` (see `blockRoundNoRejoin`). -/
+def optimizerPipelineNoRejoin : LocalPass D :=
+  LocalPass.ofList ((List.replicate pipelineRounds (blockRoundNoRejoin (calls := calls)
+    (creates := creates))).flatten)
 
 /-- One object-path round, with each stage's resolution congruence. -/
 def objectRound : List (RPass calls creates) :=
@@ -143,13 +162,47 @@ def objectRound : List (RPass calls creates) :=
    ⟨hoistCalls, fun L b => resolveHoistCallsBlock_equiv L b⟩,
    ⟨freshenCalls, fun L b => resolveFreshenCallsBlock_equiv L b⟩,
    ⟨inlineCalls, fun L b => resolveInlineCallsBlock_equiv L b⟩,
+   ⟨flatten, fun L b => resolveFlattenBlock_equiv L b⟩,
+   ⟨fuseDeclAssign, fun L b => resolveFuseDeclAssignBlock_equiv L b⟩,
    ⟨storageForward, fun L b => resolveStorageForwardBlock_equiv L b⟩,
    ⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
    ⟨coalesceCopies, fun L b => resolveCoalesceCopiesBlock_equiv L b⟩,
+   ⟨reuseValues, fun L b => resolveReuseValuesBlock_equiv L b⟩,
+   ⟨rejoinPairs, fun L b => resolveRejoinPairsBlock_equiv L b⟩,
    ⟨deadPure, fun L b => resolveDeadPureBlock_equiv L b⟩,
    ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
    ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
-   ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩]
+   ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
+   ⟨pruneDefs, fun L b => resolvePruneDefsBlock_equiv L b⟩]
+
+/-- The object-path round without `rejoinPairs` (see `blockRoundNoRejoin`). -/
+def objectRoundNoRejoin : List (RPass calls creates) :=
+  [⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
+   ⟨inlineHelpersPass false, fun L b => by
+      have hi := (inlineHelpersPass (calls := calls) (creates := creates) false).sound
+        (resolveForLayoutStmts L b)
+      change EquivBlock D (resolveForLayoutStmts L b)
+        (inlineHelpersBlock (calls := calls) (creates := creates) false ([] : FunEnv D)
+          (resolveForLayoutStmts L b)) at hi
+      rw [← resolve_inlineHelpersBlock_nil L b] at hi
+      exact hi⟩,
+   ⟨propagate, fun L b => by
+      have hp := resolvePropagateBlock_equiv (calls := calls) (creates := creates) L b
+      simpa [propagateBlock] using hp⟩,
+   ⟨hoistCalls, fun L b => resolveHoistCallsBlock_equiv L b⟩,
+   ⟨freshenCalls, fun L b => resolveFreshenCallsBlock_equiv L b⟩,
+   ⟨inlineCalls, fun L b => resolveInlineCallsBlock_equiv L b⟩,
+   ⟨flatten, fun L b => resolveFlattenBlock_equiv L b⟩,
+   ⟨fuseDeclAssign, fun L b => resolveFuseDeclAssignBlock_equiv L b⟩,
+   ⟨storageForward, fun L b => resolveStorageForwardBlock_equiv L b⟩,
+   ⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
+   ⟨coalesceCopies, fun L b => resolveCoalesceCopiesBlock_equiv L b⟩,
+   ⟨reuseValues, fun L b => resolveReuseValuesBlock_equiv L b⟩,
+   ⟨deadPure, fun L b => resolveDeadPureBlock_equiv L b⟩,
+   ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
+   ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
+   ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
+   ⟨pruneDefs, fun L b => resolvePruneDefsBlock_equiv L b⟩]
 
 /-- Verified object pipeline at an explicit round count (see
 `optimizerPipelineRounds` for why the count varies). -/
@@ -200,12 +253,40 @@ def optimizerPipelineObject : Object Op → Object Op :=
 def optimizerPipelineObjectLight : Object Op → Object Op :=
   optimizerPipelineObjectRounds (calls := calls) (creates := creates) 1
 
+/-- The full object pipeline without `rejoinPairs`, as a stage list. -/
+def objectPipelineNoRejoin : LocalPass D :=
+  LocalPass.ofList (((List.replicate pipelineRounds (objectRoundNoRejoin (calls := calls)
+    (creates := creates))).flatten).map (·.pass))
+
+/-- Resolution congruence for the no-rejoin object pipeline. -/
+theorem resolveObjectPipelineNoRejoinBlock_equiv (L : Layout) (b : Block Op) :
+    EquivBlock D (resolveForLayoutStmts L b)
+      (resolveForLayoutStmts L
+        ((objectPipelineNoRejoin (calls := calls) (creates := creates)).run b)) :=
+  RPass.resolve_equiv_ofList _ L b
+
+mutual
+  /-- Run the no-rejoin object pipeline on every object code block. -/
+  def optimizerPipelineObjectNoRejoin : Object Op → Object Op
+    | .mk name code subs segs =>
+        .mk name
+          ((objectPipelineNoRejoin (calls := calls) (creates := creates)).run code)
+          (optimizerPipelineObjectsNoRejoin subs) segs
+
+  def optimizerPipelineObjectsNoRejoin : List (Object Op) → List (Object Op)
+    | [] => []
+    | o :: rest =>
+        optimizerPipelineObjectNoRejoin o :: optimizerPipelineObjectsNoRejoin rest
+end
+
+set_option maxRecDepth 4096 in
 @[simp] theorem optimizerPipelineObjectRounds_codeBlock (n : Nat) (o : Object Op) :
     (optimizerPipelineObjectRounds (calls := calls) (creates := creates) n o).codeBlock =
       (objectPipelineRounds (calls := calls) (creates := creates) n).run o.codeBlock := by
   cases o
   rfl
 
+set_option maxRecDepth 4096 in
 @[simp] theorem optimizerPipelineObject_codeBlock (o : Object Op) :
     (optimizerPipelineObject (calls := calls) (creates := creates) o).codeBlock =
       (objectPipeline (calls := calls) (creates := creates)).run o.codeBlock := by

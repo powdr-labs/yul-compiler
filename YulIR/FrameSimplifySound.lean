@@ -94,6 +94,14 @@ theorem pure_defined {op} (hp : Op.isPure op = true) {vals : List U256} {st st' 
   cases op <;> simp_all [Op.isPure, effects, stepOp, bin, YulSemantics.EVM.un, YulSemantics.EVM.ter] <;>
     (revert h; split <;> simp_all)
 
+/-- For a pure op, definedness depends only on the *arity* (argument-list length): a pure built-in
+that evaluates on one list evaluates on any equal-length list from any state. -/
+theorem pure_defined_len {op} (hp : Op.isPure op = true) {v₁ v₂ : List U256} {s₁ s₂ : State}
+    (hlen : v₁.length = v₂.length) (h : (stepOp op v₁ s₁).isSome = true) :
+    (stepOp op v₂ s₂).isSome = true := by
+  cases op <;> simp_all [Op.isPure, effects, stepOp, bin, YulSemantics.EVM.un, YulSemantics.EVM.ter] <;>
+    (rcases v₁ with _|⟨a,_|⟨b,_|⟨c,_|_⟩⟩⟩ <;> rcases v₂ with _|⟨a',_|⟨b',_|⟨c',_|_⟩⟩⟩ <;> simp_all)
+
 /-- A pure built-in returns normally (`.ok`) without changing the state. -/
 theorem pure_builtin_ok {op} (hp : Op.isPure op = true) {vals st r} (h : evm.Builtin op vals st r) :
     ∃ outs, r = .ok outs st := by
@@ -245,7 +253,7 @@ theorem simplify_equiv (funs : Funs) (b : Block n) : EquivBlock funs (simplify b
 /-- **Whole-program soundness of `simplify`**: applying it to `main` and every function body yields a
 program with identical runs. -/
 theorem simplify_program_run (p : Program) {st st' o} :
-    Run p st st' o ↔ Run ⟨mapBodiesFuns simplify p.functions⟩ st st' o :=
-  run_mapBodies simplify (fun F _ b => simplify_equiv F b)
+    Run p st st' o ↔ Run ⟨mapBodiesFuns (fun _ b => simplify b) p.functions⟩ st st' o :=
+  run_mapBodies _ (fun F fd => simplify_equiv F fd.body)
 
 end YulIR.FinFrame.Sem

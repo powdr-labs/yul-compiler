@@ -273,18 +273,36 @@ def compileSource (source : String) : Option ByteArray := do
       let optimized := (YulEvmCompiler.Optimizer.optimizerPipeline
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none)).run b
+      let noRejoin := (YulEvmCompiler.Optimizer.optimizerPipelineNoRejoin
+        (calls := YulSemantics.EVM.ExternalCalls.none)
+        (creates := YulSemantics.EVM.ExternalCreates.none)).run b
       let light := (YulEvmCompiler.Optimizer.optimizerPipelineLight
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none)).run b
       let asm := YulEvmCompiler.compile optimized
         <|> YulEvmCompiler.compile
           (YulEvmCompiler.Optimizer.stackLayoutBlock optimized)
+        <|> YulEvmCompiler.compile noRejoin
+        <|> YulEvmCompiler.compile
+          (YulEvmCompiler.Optimizer.stackLayoutBlock noRejoin)
         <|> YulEvmCompiler.compile light
         <|> YulEvmCompiler.compile
           (YulEvmCompiler.Optimizer.stackLayoutBlock light)
         <|> YulEvmCompiler.compile b
         <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillBlock? raw with
-          | some spilled => YulEvmCompiler.compile spilled.block
+          | some spilled =>
+              -- The spilled program is ordinary Yul; give the optimizer a
+              -- chance before compiling it verbatim.
+              let spilledOpt := (YulEvmCompiler.Optimizer.optimizerPipeline
+                (calls := YulSemantics.EVM.ExternalCalls.none)
+                (creates := YulSemantics.EVM.ExternalCreates.none)).run
+                  (YulEvmCompiler.Optimizer.Normalize.normalize
+                    (D := YulSemantics.EVM.evmWithExternal
+                      YulSemantics.EVM.ExternalCalls.none
+                      YulSemantics.EVM.ExternalCreates.none)
+                    spilled.block)
+              YulEvmCompiler.compile spilledOpt
+                <|> YulEvmCompiler.compile spilled.block
           | none => none)
       return YulEvmCompiler.assemble (← asm)
   | some (.object o) =>
@@ -298,11 +316,17 @@ def compileSource (source : String) : Option ByteArray := do
         (creates := YulSemantics.EVM.ExternalCreates.none) o
       let optimizedLayout :=
         YulEvmCompiler.Optimizer.stackLayoutObject optimized
+      let noRejoin := YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
+        (calls := YulSemantics.EVM.ExternalCalls.none)
+        (creates := YulSemantics.EVM.ExternalCreates.none) o
       let light := YulEvmCompiler.Optimizer.optimizerPipelineObjectLight
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none) o
       let layout ← YulEvmCompiler.compileObject optimized
         <|> YulEvmCompiler.compileObject optimizedLayout
+        <|> YulEvmCompiler.compileObject noRejoin
+        <|> YulEvmCompiler.compileObject
+          (YulEvmCompiler.Optimizer.stackLayoutObject noRejoin)
         <|> YulEvmCompiler.compileObject light
         <|> YulEvmCompiler.compileObject
           (YulEvmCompiler.Optimizer.stackLayoutObject light)
@@ -311,7 +335,29 @@ def compileSource (source : String) : Option ByteArray := do
               raw optimized with
           | some spilled =>
               if spilled.selected = 0 then none
-              else YulEvmCompiler.compileObject spilled.object
+              else
+                -- The spilled tree is ordinary Yul (guards resolved); give the
+                -- optimizer a chance before compiling it verbatim. This is the
+                -- only path large spill-only objects (PoolSwap) reach, so
+                -- without it they never see the optimizer at all. Objects the
+                -- plain spilled form cannot compile (live `gas`, immutables,
+                -- linker symbols) skip the expensive pipeline entirely.
+                match YulEvmCompiler.compileObject spilled.object with
+                | none => none
+                | some plainLayout =>
+                    let spilledOpt :=
+                      YulEvmCompiler.Optimizer.optimizerPipelineObject
+                        (calls := YulSemantics.EVM.ExternalCalls.none)
+                        (creates := YulSemantics.EVM.ExternalCreates.none)
+                        (YulEvmCompiler.Optimizer.Normalize.normalizeObject
+                          (D := YulSemantics.EVM.evmWithExternal
+                            YulSemantics.EVM.ExternalCalls.none
+                            YulSemantics.EVM.ExternalCreates.none)
+                          spilled.object)
+                    YulEvmCompiler.compileObject spilledOpt
+                      <|> YulEvmCompiler.compileObject
+                        (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)
+                      <|> some plainLayout
           | none => none)
       return ByteArray.mk layout.code.toArray
   | none => none
