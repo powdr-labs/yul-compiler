@@ -18,7 +18,6 @@ disambiguator/string_as_hex_and_hex_as_string.yul
 equalStoreEliminator/verbatim.yul
 equivalentFunctionCombiner/constant_representation_datasize.yul
 expressionInliner/double_recursive_calls.yul
-expressionSimplifier/side_effects_in_for_condition.yul
 fullInliner/double_inline.yul
 fullInliner/multi_fun_callback.yul
 fullInliner/no_inline_into_big_global_context.yul

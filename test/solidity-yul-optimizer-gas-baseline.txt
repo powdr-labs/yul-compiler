@@ -171,6 +171,7 @@ expressionSimplifier/return_vars_zero.yul	44594	44588
 expressionSimplifier/reversed.yul	27290	27290
 expressionSimplifier/selfbalance_split.yul	128366	128348
 expressionSimplifier/selfbalance_supported.yul	62730	62724
+expressionSimplifier/side_effects_in_for_condition.yul	599943714	599924982
 expressionSimplifier/smoke.yul	0	0
 expressionSimplifier/unassigend_vars_multi.yul	44462	44414
 expressionSimplifier/unassigned_vars.yul	132636	132714
