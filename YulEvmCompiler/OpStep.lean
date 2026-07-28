@@ -259,6 +259,12 @@ theorem selfDestructColdSurcharge_le (s : State) (beneficiary : AccountAddress) 
 
 /-! ### The `PUSHk` step -/
 
+/-- Every word fits in 32 bytes: the `PUSH32` decode side condition. -/
+theorem toNat_lt_pow_256_32 (u : UInt256) : u.toNat < 256 ^ 32 := by
+  have h : u.toNat < 2 ^ 256 := u.val.isLt
+  have hpow : (256 : Nat) ^ 32 = 2 ^ 256 := by norm_num
+  omega
+
 /-- Executing an embedded `PUSHk u` for an arbitrary target word `u` (e.g. a
 resolved label address): pushes `u`, advances the pc by `1 + w.val`. The
 side condition `u.toNat < 256 ^ w.val` is the decode round-trip precondition

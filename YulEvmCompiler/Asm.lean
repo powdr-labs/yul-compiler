@@ -324,18 +324,18 @@ theorem wfCheck_iff {p : List Asm} : wfCheck p = true ↔ WFProg p := by
 `prog`. `none` when a referenced label is undefined (excluded by `wfCheck`)
 or the Yul op is outside `opTable`'s verified domain. -/
 def lowerInstr (prog : List Asm) : Asm → Option (List Instr)
-  | .push v      => some [.push (conv v)]
+  | .push v      => some [.push ⟨32, by decide⟩ (conv v)]
   | .op yop      => (opTable yop).map (fun o => [.op o])
   | .dup n       => some [.op (.Dup ⟨n⟩)]
   | .swap n      => some [.op (.Swap ⟨n⟩)]
   | .pop         => some [.op .POP]
   | .label _     => some [.op .JUMPDEST]
   | .jump l      => (resolve l prog).map
-      (fun a => [.push (UInt256.ofNat a), .op .JUMP])
+      (fun a => [.push ⟨32, by decide⟩ (UInt256.ofNat a), .op .JUMP])
   | .jumpi l     => (resolve l prog).map
-      (fun a => [.push (UInt256.ofNat a), .op .JUMPI])
+      (fun a => [.push ⟨32, by decide⟩ (UInt256.ofNat a), .op .JUMPI])
   | .pushLabel l => (resolve l prog).map
-      (fun a => [.push (UInt256.ofNat a)])
+      (fun a => [.push ⟨32, by decide⟩ (UInt256.ofNat a)])
   | .dynJump     => some [.op .JUMP]
 
 /-- Lower a fragment (against the whole program `prog`). -/
@@ -355,7 +355,7 @@ theorem lowerInstr_length {prog : List Asm} {i : Asm} {is : List Instr}
     (assembleBytes is).length = i.size := by
   cases i <;> simp only [lowerInstr] at h
   case push v =>
-    obtain rfl : [Instr.push (conv v)] = is := by simpa using h
+    obtain rfl : [Instr.push ⟨32, by decide⟩ (conv v)] = is := by simpa using h
     simp [Asm.size]
   case op yop =>
     obtain ⟨o, -, rfl⟩ := Option.map_eq_some_iff.mp h
