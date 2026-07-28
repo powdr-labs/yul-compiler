@@ -1227,6 +1227,59 @@ a combined ~13k (worst `dynamic_multi_array_cleanup` +9k — flatten/reuse live
 
 ## Candidate next ideas (not started)
 
+### 🚧 Aave/Uniswap gas 5: trial-gated copy propagation + strength reduction + literal-helper object inlining (in progress — PR #TBD)
+
+Fresh dumps at post-#118 main (Aave 27.33M vs 18.24M, Uniswap 1.277M vs 907k)
+show the three `PositionStatusMap` `next*ContinuousTenThousand` rows (7.96M of
+the 9.09M Aave gap) stuck behind a copy-gate chicken-and-egg: the statement
+inliner's helper bodies (`isBorrowing`/`isUsingAsCollateral`/`next`) carry
+~13 copy/dead-init statements each, which pushes `liveMaxStmts` past
+`Propagate.copyDepthLimit = 12`, so the copy facts that would let
+`deadPure`/`coalesceCopies` delete that same bloat are never created — and the
+bodies also stay above `InlineCalls.inlineOK`'s `liveMax ≤ 13`, so they cannot
+inline into the 10k-iteration hot loops either. solc's optimized helpers are 3
+statements and it *keeps* the calls; parity is body cleanup, and beating solc
+is the per-iteration `ReuseValues` CSE of the duplicated scratch
+`mstore`/`keccak256`/`sload` group once both helpers are inlined.
+
+Three coordinated changes (this branch):
+
+1. **Trial-gated `copyGate`** — enable copy facts when the *trial-shrunk* body
+   (unverified propagate-with-copies clone + dead-pure-let sweep, used only
+   inside the Bool policy) fits the depth budget. The soundness relation is
+   gate-policy-agnostic (`propStmts_rel (copyGate 0 b) …` never unfolds the
+   gate), so this is a transform-only change.
+2. **Simplify strength reduction** — `eq(e,0)`/`eq(0,e)` → `iszero(e)` (saves
+   a PUSH32 per site), `iszero³` → `iszero`, `mod(e,2^k)` → `and(e,2^k−1)`,
+   `div(e,2^k)` → `shr(k,e)`, `mul(e,2^k)`/`mul(2^k,e)` → `shl(k,e)` — full
+   pointwise `EquivExpr` top-level rewrites (both sides keep a builtin
+   wrapper; the literal reorder across `e` is unobservable since literal
+   evaluation is premise-free and effect-free).
+3. **Guarded litOK=true object-path `InlineHelpers`** — run the literal-body
+   classification on object code blocks under the
+   `storageLayoutFreeStmts`-in/out double guard (the
+   Flatten/FuseDeclAssign/ReuseValues recipe), unlocking `and(x, mask)`
+   cleanup helpers (TickMath `_2` etc.) that `litOK=false` excludes today.
+
+Deferred: hoisting calls out of *builtin* arguments (`eq(f(a), g(b))`)
+overlaps open PR #86 (ANF normalizer); return-var entry zero-init removal is
+optional follow-up (σ-seeding `funDefS` with `rets ↦ 0`, sound by
+`bindZeros` at `callOk`).
+
+Follow-up exposed by the trial-gate honesty work: **`DeadPure` does not treat
+`for`-init declarations as bound in post/body** (`dpStmt`'s `forLoop` case
+passes `bound` unchanged), so a dead `let x := i` copy of a loop counter
+declared in the init survives forever — `alwaysEval` cannot certify `.var i`.
+Strengthening `DcRel.forS` to thread `blockDecls init ++ bound` (init runs
+first and scopes over the loop, so its top-level declarations are bound in
+post/body) would let the copies-on propagation path fire in counter-loop
+bodies too and remove the pre-existing dead copies the current pipeline
+leaves in `array_storage_index_access`-style fixtures. Needs the `BoundOK`
+invariant extended at the two `forLoop` master-induction cases plus the
+`dpStmt_rel` constructor site; the trial sweep in `Propagate.lean`
+(`trialDropStmts`) must be updated in the same commit to mirror the new
+semantics, or the gate becomes dishonestly conservative.
+
 ### ✅ `InlineHelpers` (`Implementation/InlineHelpers.lean`) — landed (this branch)
 
 Generalizes (and **replaces**) `InlineIdentity` through the Core boundary:
