@@ -20,7 +20,7 @@ commonSubexpressionEliminator/movable_functions.yul	198	624
 commonSubexpressionEliminator/non_movable_instr.yul	108	0
 commonSubexpressionEliminator/object_access.yul	108	108
 commonSubexpressionEliminator/replace_return_nonzero.yul	0	0
-commonSubexpressionEliminator/scopes.yul	282	144
+commonSubexpressionEliminator/scopes.yul	264	144
 commonSubexpressionEliminator/smoke.yul	0	0
 commonSubexpressionEliminator/trivial.yul	72	0
 commonSubexpressionEliminator/unassigned_return.yul	27236	27242
@@ -45,7 +45,7 @@ conditionalUnsimplifier/smoke.yul	0	0
 constantOptimiser/difficult.yul	0	0
 constantOptimiser/gaps.yul	192	156
 constantOptimiser/smallNumbers.yul	192	156
-controlFlowSimplifier/empty_if_movable_condition.yul	102	132
+controlFlowSimplifier/empty_if_movable_condition.yul	84	132
 controlFlowSimplifier/empty_if_non_movable_condition.yul	84	132
 controlFlowSimplifier/remove_leave.yul	0	0
 controlFlowSimplifier/switch_only_default.yul	138	132
@@ -106,7 +106,7 @@ equalStoreEliminator/value_change.yul	53810	53738
 equivalentFunctionCombiner/constant_representation.yul	72	192
 equivalentFunctionCombiner/multiple_complex.yul	1782	0
 equivalentFunctionCombiner/simple.yul	180	456
-equivalentFunctionCombiner/simple_different_vars.yul	738	0
+equivalentFunctionCombiner/simple_different_vars.yul	678	0
 equivalentFunctionCombiner/switch_case_order.yul	144	894
 expressionInliner/argument_duplication_heuristic.yul	984	0
 expressionInliner/complex_with_evm.yul	12	0
@@ -115,7 +115,7 @@ expressionInliner/no_inline_mload.yul	72	0
 expressionInliner/no_move_with_sideeffects.yul	1122	678
 expressionInliner/simple.yul	0	0
 expressionInliner/with_args.yul	0	0
-expressionJoiner/if_condition.yul	12952	12870
+expressionJoiner/if_condition.yul	12934	12870
 expressionJoiner/muli_wrong_order3.yul	47364	47346
 expressionJoiner/multi.yul	47316	47292
 expressionJoiner/multi_reference.yul	72	0
@@ -150,7 +150,7 @@ expressionSimplifier/identity_rules_simple.yul	27344	27296
 expressionSimplifier/including_function_calls.yul	27560	27458
 expressionSimplifier/invalid_match.yul	372	666
 expressionSimplifier/invariant.yul	27290	27332
-expressionSimplifier/iszero_sub_to_eq.yul	22316	22321
+expressionSimplifier/iszero_sub_to_eq.yul	22298	22321
 expressionSimplifier/large_byte_access.yul	424308	424260
 expressionSimplifier/mcopy_non_zero_size.yul	306	294
 expressionSimplifier/mcopy_zero_size.yul	288	270
@@ -178,7 +178,7 @@ expressionSimplifier/unassigned_vars.yul	132636	132714
 expressionSimplifier/zero_length_read.yul	54	48
 expressionSimplifier/zero_length_read_call.yul	15744	15738
 expressionSimplifier/zero_length_read_codecopy.yul	108	144
-expressionSplitter/control_flow.yul	486	492
+expressionSplitter/control_flow.yul	468	492
 expressionSplitter/inside_function.yul	28208	27938
 expressionSplitter/object_access.yul	198	156
 expressionSplitter/smoke.yul	0	0
@@ -233,7 +233,7 @@ fullSimplify/scoped_var_ref_in_function_call.yul	206052	206190
 fullSimplify/signextend.yul	144	228
 fullSimplify/smoke.yul	0	0
 fullSuite/abi2.yul	690	432
-fullSuite/abi_example1.yul	1908	1410
+fullSuite/abi_example1.yul	1764	1410
 fullSuite/and_or_combination.yul	143860	144022
 fullSuite/call_arguments_with_side_effects.yul	378	30
 fullSuite/call_arguments_without_side_effects.yul	13386	13956
@@ -339,8 +339,8 @@ loadResolver/zero_length_reads.yul	54	48
 loopInvariantCodeMotion/create_sload.yul	1731918	1732656
 loopInvariantCodeMotion/move_storage_function.yul	22236	2370
 loopInvariantCodeMotion/no_move_immovables.yul	228	138
-loopInvariantCodeMotion/no_move_memory.yul	582	630
-loopInvariantCodeMotion/no_move_state.yul	599920656	599959551
+loopInvariantCodeMotion/no_move_memory.yul	564	630
+loopInvariantCodeMotion/no_move_state.yul	599832096	599959551
 loopInvariantCodeMotion/no_move_state_function.yul	83240	45926
 loopInvariantCodeMotion/no_move_storage_function.yul	55046	36800
 loopInvariantCodeMotion/no_move_transient_storage.yul	1190514	1190172
@@ -449,7 +449,7 @@ unusedAssignEliminator/switch_unused.yul	232	167
 unusedFunctionParameterPruner/LiteralRematerialiser.yul	204	366
 unusedFunctionParameterPruner/multiple_param.yul	27818	27602
 unusedFunctionParameterPruner/multiple_return.yul	27758	27584
-unusedFunctionParameterPruner/nested_function.yul	30064	30148
+unusedFunctionParameterPruner/nested_function.yul	30034	30148
 unusedFunctionParameterPruner/nested_function_name_collision.yul	62268	62364
 unusedFunctionParameterPruner/no_return.yul	16084	16282
 unusedFunctionParameterPruner/no_unused.yul	16036	16192
