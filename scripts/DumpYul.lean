@@ -2,6 +2,7 @@ import YulParser.Compile
 import YulEvmCompilerTests.Solc
 import YulEvmCompilerTests.SolidityCorpus
 import YulSemantics.PrettyPrint
+set_option warningAsError true
 
 /-!
 # DumpYul — debugging aid: print the optimized Yul we feed to the backend.
