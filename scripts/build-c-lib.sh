@@ -38,9 +38,21 @@ OUT=.lake/build/c
 mkdir -p "$OUT"
 
 echo "== building static facets of the compiler libraries" >&2
-# YulCApi holds the @[export] entry points; the rest are its transitive Lake
-# dependencies, whose module objects the exports' initializer chain needs.
-lake build YulCApi:static YulParser:static YulEvmCompiler:static \
+# The `yulc` executable is built first because an executable link is the only
+# target whose dependencies are the *whole* transitive import closure: a
+# library's `:static` facet only compiles the modules the library's own root
+# reaches, so a module that just one importer outside that root pulls in
+# (YulParser.Compile imports YulEvmCompiler.Optimizer.Implementation.
+# MemorySpillSelect, which YulEvmCompiler.lean does not) never gets an object
+# file, and the archives below silently come out incomplete. Requesting the
+# executable makes every object the merged library needs exist by
+# construction; `lake build yulc` later (for the --test differential) is then
+# a no-op.
+#
+# YulCApi holds the @[export] entry points and is not reachable from the
+# executable, so it and its Lake dependencies are still requested explicitly.
+lake build yulc \
+  YulCApi:static YulParser:static YulEvmCompiler:static \
   yul-semantics/YulSemantics:static evm_semantics/EvmSemantics:static \
   mathlib/Mathlib:static batteries/Batteries:static \
   batteries/BatteriesRecycling:static aesop/Aesop:static \
