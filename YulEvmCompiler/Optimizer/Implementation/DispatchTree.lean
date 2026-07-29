@@ -539,6 +539,36 @@ theorem split_equiv (e : Expr Op) (hpure : DispatchTree.pureScrut e = true)
         obtain ⟨cv, _, hval⟩ := ltPivot_eval_inv hpure hc
         exact absurd hval (by simp)
 
+/-- The built tree is always a `switch`, so a singleton block containing it
+hoists no functions. -/
+theorem buildTree_hoist (fuel : Nat) (e : Expr Op)
+    (cases : List (Literal × Block Op)) (dflt : Option (Block Op)) :
+    hoist D [DispatchTree.buildTree fuel e cases dflt] = [] := by
+  cases fuel with
+  | zero => rfl
+  | succ n => unfold DispatchTree.buildTree; split <;> rfl
+
+/-- The dispatch tree is equivalent to the linear switch it lowers. -/
+theorem buildTree_equiv (fuel : Nat) (e : Expr Op)
+    (hpure : DispatchTree.pureScrut e = true)
+    (cases : List (Literal × Block Op)) (dflt : Option (Block Op)) :
+    EquivStmt D (DispatchTree.buildTree fuel e cases dflt) (.switch e cases dflt) := by
+  induction fuel generalizing cases with
+  | zero => exact EquivStmt.refl _
+  | succ n ih =>
+      unfold DispatchTree.buildTree
+      split
+      · exact EquivStmt.refl _
+      · refine EquivStmt.trans ?_
+          (split_equiv e hpure cases dflt (DispatchTree.choosePivot cases)).symm
+        refine EquivStmt.switch_congr (EquivExpr.refl _)
+          (List.Forall₂.cons ⟨rfl, ?_⟩ List.Forall₂.nil) ?_
+        · exact EquivBlock.of_forall₂ (List.Forall₂.cons (ih _) List.Forall₂.nil)
+            (by rw [buildTree_hoist]; rfl)
+        · simp only [Option.getD_some]
+          exact EquivBlock.of_forall₂ (List.Forall₂.cons (ih _) List.Forall₂.nil)
+            (by rw [buildTree_hoist]; rfl)
+
 /-- Soundness of the dispatch-tree rewrite: pointwise-equivalent to the input. -/
 theorem dispatchTreeBlock_sound (b : Block Op) :
     EquivBlock D b (DispatchTree.dispatchTreeBlock b) := by
