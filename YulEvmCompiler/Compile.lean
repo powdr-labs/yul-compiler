@@ -1,4 +1,6 @@
 import YulEvmCompiler.Asm
+import YulEvmCompiler.StackBound
+import YulEvmCompiler.StackScalable
 import YulEvmCompiler.AsmPeephole
 set_option warningAsError true
 /-!
@@ -330,12 +332,17 @@ def compileProgram (prog : Block Op) : Option (List Asm) := do
   let (asm, _, _) ← compileStmts [scope] [] none none n0 prog
   if wfCheck asm then some asm else none
 
-/-- The full pipeline: Yul → labeled assembly → Asm-level peephole
-optimization → byte-level IR. `optimizeAsm` preserves the label structure
-(`codeRel_wf`), and `YulEvmCompiler.Correctness` threads its forward
-simulation (`AsmPeepholeSound`) between the phase-A and phase-B theorems. -/
+/-- The full pipeline: Yul → labeled assembly → Asm-level peephole optimization → byte-level IR.
+`optimizeAsm` preserves the label structure (`codeRel_wf`), and `YulEvmCompiler.Correctness` threads
+its forward simulation (`AsmPeepholeSound`) between the phase-A and phase-B theorems. The `stackOK2`
+gate then rejects (`none`) any program whose *optimized* Asm execution could overflow the 1024-word
+EVM operand stack — recursive calls and stack-growing loops — so every accepted program is proven
+overflow-free (`StackScalable.run_stack_bound2`). The bound is taken on `optimizeAsm asm`, the code
+that actually runs. The gate is a *linear* frame-relative analysis + verified checker (`analyze`
+then `checkCert`). -/
 def compile (prog : Block Op) : Option (List Instr) := do
   let asm ← compileProgram prog
-  lowerProg (optimizeAsm asm)
+  let opt := optimizeAsm asm
+  if stackOK2 opt then lowerProg opt else none
 
 end YulEvmCompiler

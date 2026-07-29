@@ -1,16 +1,35 @@
 # Paths relative to Solidity's test/libyul/yulOptimizerTests directory.
 # Every fixture whose EVMVersion range includes Osaka is compiled. Keep exactly
-# the fixtures that do not yet parse or compile.
+# the fixtures that do not parse/compile, including those the stack-overflow gate
+# (StackScalable) rejects as not provably stack-bounded (recursion / cycles).
+circularReferencesPruner/called_from_non_function.yul
 commonSubexpressionEliminator/long_literals_as_builtin_args.yul
 commonSubexpressionEliminator/non_movable_instr2.yul
+conditionalSimplifier/side_effects_of_functions.yul
+conditionalUnsimplifier/side_effects_of_functions.yul
+deadCodeEliminator/dead_code_user_functions.yul
 disambiguator/similar_literals.yul
 disambiguator/string_as_hex_and_hex_as_string.yul
 equalStoreEliminator/verbatim.yul
 equivalentFunctionCombiner/constant_representation_datasize.yul
+expressionInliner/double_recursive_calls.yul
+fullInliner/multi_fun_callback.yul
+fullInliner/recursion.yul
+fullSuite/ackermann_function.yul
+fullSuite/ackermann_function_if.yul
 fullSuite/aztec.yul
+fullSuite/fibonacci.yul
+fullSuite/name_cleaner_reserved.yul
+fullSuite/reserved_identifiers.yul
+fullSuite/stack_compressor_msize.yul
+fullSuite/unusedFunctionParameterPruner_recursion.yul
+functionSpecializer/intersecting_recursive_cycles.yul
+functionSpecializer/recursion.yul
 loadResolver/verbatim_mload.yul
 loadResolver/verbatim_sload.yul
 loopInvariantCodeMotion/no_move_gas.yul
+loopInvariantCodeMotion/no_move_recursive_function.yul
+loopInvariantCodeMotion/no_move_state_recursive_function.yul
 stackLimitEvader/cycle.yul
 stackLimitEvader/cycle_after.yul
 stackLimitEvader/cycle_after_2.yul
@@ -27,6 +46,9 @@ stackLimitEvader/too_many_returns_16.yul
 stackLimitEvader/verbatim_many_arguments.yul
 stackLimitEvader/verbatim_many_arguments_and_returns.yul
 stackLimitEvader/verbatim_many_returns.yul
+unusedFunctionParameterPruner/recursion.yul
 unusedFunctionParameterPruner/too_many_arguments.yul
 unusedPruner/verbatim.yul
+unusedStoreEliminator/function_side_effects_2.yul
 unusedStoreEliminator/store_before_terminating_verbatim_revert.yul
+unusedStoreEliminator/write_before_recursion.yul

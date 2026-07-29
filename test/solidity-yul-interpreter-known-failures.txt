@@ -2,14 +2,15 @@
 # Every fixture whose EVMVersion range includes Osaka is run. Keep exactly the
 # fixtures that do not yet parse, compile, execute, or match their embedded
 # post-state expectation.
-access_large_memory_offsets.yul
 # Solidity's AST interpreter trace gives repeated CREATE operations a mocked
 # result; concrete EVM execution derives nonce/salt-dependent addresses.
-and_create.yul
-and_create2.yul
 # These compile as real objects. Solidity's AST-interpreter expectations use
 # synthetic hash offsets/sizes and a dummy code buffer, so they are not the
 # post-state of emitted object bytecode.
+access_large_memory_offsets.yul
+and_create.yul
+and_create2.yul
+bounded_recursion.yul
 datacopy.yul
 dataoffset.yul
 datasize.yul
@@ -19,12 +20,15 @@ external_call_unexecuted.yul
 external_callcode_unexecuted.yul
 external_delegatecall_unexecuted.yul
 external_staticcall_unexecuted.yul
+function_scopes.yul
 infinite_recursion.yul
 infinite_recursion_tracelimit.yul
 isoltestTesting/linkersymbol.yul
 isoltestTesting/loadimmutable.yul
 isoltestTesting/setimmutable_stub.yul
 mcopy_memory_access_out_of_range.yul
+recursion.yul
+recursive_function_for_loop.yul
 side_effect_free.yul
 zero_length_reads.yul
 zero_length_reads_and_revert.yul
