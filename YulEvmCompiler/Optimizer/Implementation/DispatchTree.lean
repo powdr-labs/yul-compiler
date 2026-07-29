@@ -1,6 +1,7 @@
 import YulEvmCompiler.Optimizer.Spec.LocalPass
 import YulEvmCompiler.Optimizer.Implementation.StorageForwardResolve
 import YulEvmCompiler.Optimizer.Implementation.Frame
+set_option warningAsError true
 /-!
 # DispatchTree — balanced binary-search lowering of literal-case switches
 
@@ -272,7 +273,7 @@ theorem Step.feq {g₁ : FunEnv D} {V st code r} (h : Step D g₁ V st code r) :
 /-! ### Foundational helpers -/
 
 /-- Restoring twice to the same outer frame is restoring once. -/
-theorem restore_restore {V W : VEnv D} (h : V.length ≤ W.length) :
+theorem restore_self_eq {V W : VEnv D} (h : V.length ≤ W.length) :
     restore V (restore V W) = restore V W := by
   have hlen : (restore V W).length = V.length := restore_length h
   have hunfold : restore V (restore V W)
@@ -432,7 +433,7 @@ The heart of the tree soundness: an outer switch selects the singleton block
 `[switch e cs d]`, running it as `.block [switch e cs d]`; this is equivalent to
 running the switch's own selected body `.block (selectSwitch cv cs d)` directly.
 The extra `.block` layer prepends an empty function scope (`Step.feq`) and an
-extra `restore` (`restore_restore`); both are transparent. -/
+extra `restore` (`restore_self_eq`); both are transparent. -/
 theorem block_singleton_switch {e : Expr Op} (hpure : DispatchTree.pureScrut e = true)
     {cv : U256} {cs : List (Literal × Block Op)} {d : Option (Block Op)}
     {funs V st V' st' o}
@@ -454,7 +455,7 @@ theorem block_singleton_switch {e : Expr Op} (hpure : DispatchTree.pureScrut e =
             cases hbody with
             | block hbb =>
                 have hlen := venvLen_mono hbb rfl
-                rw [restore_restore hlen]
+                rw [restore_self_eq hlen]
                 exact Step.block hbb
         | switchHalt hc =>
             cases e with
@@ -472,7 +473,7 @@ theorem block_singleton_switch {e : Expr Op} (hpure : DispatchTree.pureScrut e =
             (.stmts [.switch e cs d]) (.sres (restore V Vb) st' o) :=
           (Step.feq (stmts_single.mpr hsw)) (FEq.add funs)
         have hfin := Step.block hseq
-        rw [restore_restore hlen] at hfin
+        rw [restore_self_eq hlen] at hfin
         exact hfin
 
 /-- The outer node's `case 1` fires exactly when `lt` returned true. -/
@@ -684,10 +685,127 @@ def dispatchTree : LocalPass D where
     (dispatchTree (calls := calls) (creates := creates)).run b =
       DispatchTree.dispatchTreeBlock b := rfl
 
+/-! ### Layout-resolution congruence
+
+The pass is guarded on `storageLayoutFreeStmts`, on which layout resolution is
+the identity (`resolve_storageLayoutFreeStmts`); showing the rewrite preserves
+layout-freeness collapses the object-path obligation to plain block soundness —
+the `StorageForward`/`RejoinPairs` recipe. -/
+
+/-- Filtering preserves layout-freeness of a case list. -/
+theorem filter_layoutFreeCases (p : Literal × Block Op → Bool) :
+    ∀ (cs : List (Literal × Block Op)), storageLayoutFreeCases cs = true →
+      storageLayoutFreeCases (cs.filter p) = true
+  | [], _ => rfl
+  | (lit, body) :: rest, h => by
+      simp only [storageLayoutFreeCases, Bool.and_eq_true] at h
+      by_cases hp : p (lit, body) = true
+      · rw [List.filter_cons_of_pos hp]
+        simp only [storageLayoutFreeCases, Bool.and_eq_true]
+        exact ⟨h.1, filter_layoutFreeCases p rest h.2⟩
+      · rw [List.filter_cons_of_neg (by simpa using hp)]
+        exact filter_layoutFreeCases p rest h.2
+
+/-- The pivot comparison is layout-free when the scrutinee is. -/
+theorem ltPivot_layoutFree (e : Expr Op) (pv : U256) (he : storageLayoutFreeExpr e = true) :
+    storageLayoutFreeExpr (DispatchTree.ltPivot e pv) = true := by
+  simp [DispatchTree.ltPivot, storageLayoutFreeExpr, storageLayoutFreeArgs, he]
+
+/-- The built tree is layout-free when its inputs are. -/
+theorem buildTree_layoutFree (fuel : Nat) (e : Expr Op)
+    (cases : List (Literal × Block Op)) (dflt : Option (Block Op))
+    (he : storageLayoutFreeExpr e = true)
+    (hc : storageLayoutFreeCases cases = true)
+    (hd : storageLayoutFreeDflt dflt = true) :
+    storageLayoutFreeStmt (DispatchTree.buildTree fuel e cases dflt) = true := by
+  induction fuel generalizing cases with
+  | zero => simp [DispatchTree.buildTree, storageLayoutFreeStmt, he, hc, hd]
+  | succ n ih =>
+      simp only [DispatchTree.buildTree]
+      split
+      · simp [storageLayoutFreeStmt, he, hc, hd]
+      · have h1 := ltPivot_layoutFree e (DispatchTree.choosePivot cases) he
+        have h2 := ih (DispatchTree.loHalf (DispatchTree.choosePivot cases) cases)
+          (filter_layoutFreeCases _ cases hc)
+        have h3 := ih (DispatchTree.hiHalf (DispatchTree.choosePivot cases) cases)
+          (filter_layoutFreeCases _ cases hc)
+        simp [storageLayoutFreeStmt, storageLayoutFreeCases, storageLayoutFreeDflt,
+          storageLayoutFreeStmts, h1, h2, h3]
+
+mutual
+  /-- The rewrite preserves layout-freeness of a statement. -/
+  theorem dtStmt_layoutFree (s : Stmt Op) (h : storageLayoutFreeStmt s = true) :
+      storageLayoutFreeStmt (DispatchTree.dtStmt s) = true := by
+    cases s with
+    | block body => exact dtStmts_layoutFree body h
+    | funDef n ps rs body => exact h
+    | cond c body =>
+        simp only [storageLayoutFreeStmt, Bool.and_eq_true] at h
+        simp only [DispatchTree.dtStmt, storageLayoutFreeStmt, Bool.and_eq_true]
+        exact ⟨h.1, dtStmts_layoutFree body h.2⟩
+    | «switch» e cases dflt =>
+        simp only [storageLayoutFreeStmt, Bool.and_eq_true] at h
+        obtain ⟨⟨he, hc⟩, hd⟩ := h
+        simp only [DispatchTree.dtStmt]
+        split
+        · exact buildTree_layoutFree _ e _ _ he (dtCases_layoutFree cases hc)
+            (dtDflt_layoutFree dflt hd)
+        · simp [storageLayoutFreeStmt, he, dtCases_layoutFree cases hc,
+            dtDflt_layoutFree dflt hd]
+    | forLoop init c post body =>
+        simp only [storageLayoutFreeStmt, Bool.and_eq_true] at h
+        simp only [DispatchTree.dtStmt, storageLayoutFreeStmt, Bool.and_eq_true]
+        exact ⟨⟨⟨h.1.1.1, h.1.1.2⟩, dtStmts_layoutFree post h.1.2⟩,
+          dtStmts_layoutFree body h.2⟩
+    | letDecl _ _ => exact h
+    | assign _ _ => exact h
+    | exprStmt _ => exact h
+    | «break» => exact h
+    | «continue» => exact h
+    | «leave» => exact h
+
+  /-- The rewrite preserves layout-freeness of a statement sequence. -/
+  theorem dtStmts_layoutFree (ss : List (Stmt Op)) (h : storageLayoutFreeStmts ss = true) :
+      storageLayoutFreeStmts (DispatchTree.dtStmts ss) = true := by
+    cases ss with
+    | nil => rfl
+    | cons s rest =>
+        simp only [storageLayoutFreeStmts, Bool.and_eq_true] at h
+        simp only [DispatchTree.dtStmts, storageLayoutFreeStmts, Bool.and_eq_true]
+        exact ⟨dtStmt_layoutFree s h.1, dtStmts_layoutFree rest h.2⟩
+
+  /-- The rewrite preserves layout-freeness of a case list. -/
+  theorem dtCases_layoutFree (cs : List (Literal × Block Op))
+      (h : storageLayoutFreeCases cs = true) :
+      storageLayoutFreeCases (DispatchTree.dtCases cs) = true := by
+    cases cs with
+    | nil => rfl
+    | cons p rest =>
+        obtain ⟨lit, body⟩ := p
+        simp only [storageLayoutFreeCases, Bool.and_eq_true] at h
+        simp only [DispatchTree.dtCases, storageLayoutFreeCases, Bool.and_eq_true]
+        exact ⟨dtStmts_layoutFree body h.1, dtCases_layoutFree rest h.2⟩
+
+  /-- The rewrite preserves layout-freeness of a default body. -/
+  theorem dtDflt_layoutFree (d : Option (Block Op))
+      (h : storageLayoutFreeDflt d = true) :
+      storageLayoutFreeDflt (DispatchTree.dtDflt d) = true := by
+    cases d with
+    | none => rfl
+    | some body => exact dtStmts_layoutFree body h
+end
+
 /-- Object-path layout-resolution congruence for the dispatch-tree pass. -/
 theorem resolveDispatchTreeBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L (DispatchTree.dispatchTreeBlock b)) := by
-  sorry
+  unfold DispatchTree.dispatchTreeBlock
+  by_cases hlf : storageLayoutFreeStmts b = true
+  · rw [if_pos hlf, resolve_storageLayoutFreeStmts L b hlf,
+      resolve_storageLayoutFreeStmts L _ (dtStmts_layoutFree b hlf)]
+    exact EquivBlock.of_stmts (EquivStmts.of_forall₂ (dtStmts_forall2 b))
+      (dtStmts_hoist b).symm
+  · rw [if_neg hlf]
+    exact @EquivBlock.refl (evmWithExternal calls creates) _ _
 
 end YulEvmCompiler.Optimizer
