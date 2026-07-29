@@ -69,6 +69,10 @@ root = "scripts.UpdateCorpusGas"
 name = "traceSolidityGas"
 root = "scripts.TraceSolidityGas"
 
+[[lean_exe]]
+name = "dumpYul"
+root = "scripts.DumpYul"
+
 # The YulIR corpus benchmark/baseline runner (report/update/check). Native and
 # fixture-parallel for the same reason as updateCorpusGas: the interpreted
 # sequential walk dominated the size-baseline re-pin.

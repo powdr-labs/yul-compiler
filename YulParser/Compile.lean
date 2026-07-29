@@ -4,6 +4,7 @@ import YulEvmCompiler.Optimizer.Implementation.Pipeline
 import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
 import YulEvmCompiler.Optimizer.Implementation.MemorySpillSelect
 import YulEvmCompiler.Optimizer.Implementation.MemorySpillSound
+import YulEvmCompiler.Optimizer.Implementation.MemoryForward
 set_option warningAsError true
 /-!
 # YulParser.Compile
@@ -317,9 +318,15 @@ def compileSource (source : String) : Option ByteArray := do
       -- consumes it); the no-rejoin and light pipelines are computed inside
       -- their thunked `<|>` arms so the common first-candidate success never
       -- pays for them (see the block path above).
-      let optimized := YulEvmCompiler.Optimizer.optimizerPipelineObject
+      let optimizedBase := YulEvmCompiler.Optimizer.optimizerPipelineObject
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none) o
+      -- EXPERIMENTAL (measurement): forward literal-slot memory reads, then
+      -- re-optimize so the dead loads/copies are cleaned up.
+      let optimized := YulEvmCompiler.Optimizer.optimizerPipelineObject
+        (calls := YulSemantics.EVM.ExternalCalls.none)
+        (creates := YulSemantics.EVM.ExternalCreates.none)
+        (YulEvmCompiler.Optimizer.MemoryForward.memoryForwardObject optimizedBase)
       let tryLayouts (obj : Object YulSemantics.EVM.Op) :=
         YulEvmCompiler.compileObject obj
           <|> YulEvmCompiler.compileObject
@@ -346,7 +353,7 @@ def compileSource (source : String) : Option ByteArray := do
                 match YulEvmCompiler.compileObject spilled.object with
                 | none => none
                 | some plainLayout =>
-                    let spilledOpt :=
+                    let spilledOptBase :=
                       YulEvmCompiler.Optimizer.optimizerPipelineObject
                         (calls := YulSemantics.EVM.ExternalCalls.none)
                         (creates := YulSemantics.EVM.ExternalCreates.none)
@@ -355,6 +362,13 @@ def compileSource (source : String) : Option ByteArray := do
                             YulSemantics.EVM.ExternalCalls.none
                             YulSemantics.EVM.ExternalCreates.none)
                           spilled.object)
+                    -- EXPERIMENTAL (measurement): memory-forward + re-optimize.
+                    let spilledOpt :=
+                      YulEvmCompiler.Optimizer.optimizerPipelineObject
+                        (calls := YulSemantics.EVM.ExternalCalls.none)
+                        (creates := YulSemantics.EVM.ExternalCreates.none)
+                        (YulEvmCompiler.Optimizer.MemoryForward.memoryForwardObject
+                          spilledOptBase)
                     YulEvmCompiler.compileObject spilledOpt
                       <|> YulEvmCompiler.compileObject
                         (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)
