@@ -184,6 +184,22 @@ extra deep leaves as identities) before comparing. -/
 def symStateBeq (a b : SymState) : Bool :=
   a.inputs == b.inputs && Term.beqList a.stack b.stack
 
+/-- **INTERFACE (authorized gate relaxation).** Net-effect equality of two
+symbolic states, normalizing input reach. A state that reaches only `inputs`
+slots leaves the deeper slots `inp inputs, inp (inputs+1), …` untouched below its
+output, so its full effect over `K ≥ inputs` slots is
+`stack ++ [inp inputs, …, inp (K-1)]`. Padding both to `K = max` and comparing is
+the true net-stack equality — sound, and (unlike `symStateBeq`) it admits a
+candidate that leaves/consumes fewer deep slots than the original. This is what
+lets the store-in-place scheduler (which leaves identity slots untouched,
+reaching fewer inputs) pass the gate. The proof agent re-proves
+`optimizeWindow_equiv` against this. -/
+def symStateEquiv (a b : SymState) : Bool :=
+  let K := Nat.max a.inputs b.inputs
+  let padTo (s : SymState) : List Term :=
+    s.stack ++ (List.range (K - s.inputs)).map (fun j => .inp (s.inputs + j))
+  Term.beqList (padTo a) (padTo b)
+
 /-! ### The scheduler (untrusted) + validation gate -/
 
 /-! ### The DAG rescheduler (untrusted)
@@ -313,10 +329,44 @@ def scheduleWindowReal (target : SymState) : Option (List Asm) :=
     | none => none
     | some es1 => (emitCleanup m es1 k).map ES.code
 
-/-- The untrusted rescheduler: given the window's symbolic output, propose a
-cheaper instruction sequence, or `none` to keep the original. Correctness never
-depends on it, only on the validation gate below. -/
-def scheduleWindow (target : SymState) : Option (List Asm) := scheduleWindowReal target
+/-- Store-in-place scheduler for canonical windows (`m = k`, non-changed slots
+are identity `inp j`): leave every identity slot exactly where it is (0 ops,
+unlike the rebuild which DUPs it then cleans it up) and, for each CHANGED slot,
+compute its value and write it in with `swap; pop`. This is the key to not
+rebuilding identity slots. Candidates reach fewer inputs than the original, so
+acceptance needs `symStateEquiv`'s input normalization. -/
+def scheduleStoreInPlace (target : SymState) : Option (List Asm) :=
+  let k := target.inputs
+  let T := target.stack
+  let m := T.length
+  if m != k then none else
+  let slots := T.zipIdx
+  let hasMove := slots.any (fun (t, j) => match t with | .inp i => i != j | _ => false)
+  if hasMove then none else
+  let changed := slots.filterMap (fun (t, j) =>
+    match t with | .inp _ => none | _ => some (j, t))
+  let fuel := 8 * (Term.sizeList T) + 100
+  let init : ES := ⟨[], { stack := (List.range k).map Term.inp, inputs := k }⟩
+  match changed.foldlM (fun es (p : Nat × Term) => genValue fuel es p.2) init with
+  | none => none
+  | some es1 =>
+      match changed.reverse.foldlM (fun es (p : Nat × Term) =>
+          match findIdxBeq (Term.inp p.1) es.model.stack with
+          | none => none
+          | some d =>
+              if h : 0 < d ∧ d - 1 < 16 then
+                match emit es (.swap ⟨d - 1, h.2⟩) with
+                | some es' => emit es' .pop
+                | none => none
+              else none) es1 with
+      | none => none
+      | some es2 => some es2.code
+
+/-- Candidate schedules for a window; the gate keeps the cheapest that validates
+and beats the original. Store-in-place first (best on identity-heavy canonical
+windows), then the general rebuild (handles `m ≠ k` / permutations). -/
+def scheduleCandidates (target : SymState) : List (List Asm) :=
+  (scheduleStoreInPlace target).toList ++ (scheduleWindowReal target).toList
 
 /-- Skip windows longer than this. `Term` is a tree, so a long run of squarings
 (`r := shr(127, mul(r,r))`, no barrier between blocks) would build terms of size
@@ -330,42 +380,54 @@ def maxWindowLen : Nat := 48
 nodes (belt-and-suspenders against tree blowup within the length cap). -/
 def maxTermNodes : Nat := 4096
 
-/-- Optimize one extracted window: keep the original unless a proposed candidate
-validates (same symbolic state), is strictly cheaper, and does not grow bytes. -/
+/-- Optimize one extracted window: among the candidate schedules, keep the
+cheapest that translation-validates (net-effect-equal symbolic state via
+`symStateEquiv`) and does not grow bytes; otherwise keep the original. Accepting
+only candidates STRICTLY cheaper than the ORIGINAL (never on estimated ties) is
+what makes the `opGas` `exp` underestimate safe. -/
 def optimizeWindow (w : List Asm) : List Asm :=
   if w.length > maxWindowLen then w else
   match symExec w with
   | none => w
   | some target =>
       if Term.sizeList target.stack > maxTermNodes then w else
-      match scheduleWindow target with
-      | none => w
-      | some cand =>
-          match symExec cand with
-          | some tcand =>
-              -- Accept only a translation-validated candidate (same symbolic
-              -- state, incl. equal input reach) that is STRICTLY cheaper than the
-              -- ORIGINAL and no larger in bytes. Comparing only against the
-              -- original (never accepting estimated ties) is what makes the
-              -- `opGas` `exp` underestimate safe.
-              if symStateBeq tcand target
-                  && windowGas cand < windowGas w
-                  && codeSize cand ≤ codeSize w then cand else w
-          | none => w
+      (scheduleCandidates target).foldl (fun best cand =>
+        match symExec cand with
+        | some tcand =>
+            if symStateEquiv tcand target
+                && windowGas cand < windowGas best
+                && codeSize cand ≤ codeSize w then cand else best
+        | none => best) w
 
-/-- Split the program into maximal windows and non-window instructions, running
-`optimizeWindow` on each window. Fuel-bounded for a trivial termination
-argument; the bound `p.length + 1` always suffices. -/
+/-- Is a prefix height-preserving (`m = k`, a canonical/statement-boundary cut)
+with a bounded output DAG? Store-in-place needs this shape. -/
+def isCanonicalWindow (w : List Asm) : Bool :=
+  match symExec w with
+  | some s => s.stack.length == s.inputs && Term.sizeList s.stack ≤ maxTermNodes
+  | none => false
+
+/-- Window length inside a schedulable run: the LARGEST canonical (`m = k`,
+bounded-DAG) prefix up to `maxWindowLen`, so whole blocks become one
+store-in-place window instead of `m ≠ k` mid-computation fragments. Falls back to
+`maxWindowLen` (general rebuild) when no canonical prefix exists. Always ≥ 1. -/
+def cutLen (run : List Asm) : Nat :=
+  let cap := Nat.min run.length maxWindowLen
+  match (((List.range cap).map (· + 1)).filter (fun j => isCanonicalWindow (run.take j))).getLast? with
+  | some j => j
+  | none => Nat.max 1 cap
+
+/-- Split the program into windows (cut at canonical boundaries) and non-window
+instructions, running `optimizeWindow` on each. Fuel-bounded for a trivial
+termination argument; the bound `p.length + 1` always suffices. -/
 def scheduleAsmFuel : Nat → List Asm → List Asm
   | 0, p => p
   | _ + 1, [] => []
   | fuel + 1, i :: rest =>
       if schedulable i then
-        -- Cut a maximal schedulable run, but CAP its length so a long run (e.g.
-        -- the whole log2 squaring section) is split into bounded chunks that are
-        -- each scheduled — rather than skipped for being too big.
-        let win := ((i :: rest).takeWhile schedulable).take maxWindowLen
-        let tail := (i :: rest).drop win.length
+        let run := (i :: rest).takeWhile schedulable
+        let len := cutLen run
+        let win := run.take len
+        let tail := (i :: rest).drop len
         optimizeWindow win ++ scheduleAsmFuel fuel tail
       else
         i :: scheduleAsmFuel fuel rest
