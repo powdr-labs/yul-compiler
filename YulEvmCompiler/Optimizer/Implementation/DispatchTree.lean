@@ -569,10 +569,111 @@ theorem buildTree_equiv (fuel : Nat) (e : Expr Op)
           exact EquivBlock.of_forall₂ (List.Forall₂.cons (ih _) List.Forall₂.nil)
             (by rw [buildTree_hoist]; rfl)
 
+/-! ### Structural lifting -/
+
+/-- `hoist` distributes over a cons. -/
+theorem hoist_cons (a : Stmt Op) (l : Block Op) :
+    hoist D (a :: l) = hoist D [a] ++ hoist D l := by
+  cases a <;> simp [hoist]
+
+/-- Rewriting a single statement preserves its hoisted function contribution
+(function definitions are left verbatim; every other statement stays a
+non-`funDef`). -/
+theorem dtStmt_hoistEntry (s : Stmt Op) :
+    hoist D [DispatchTree.dtStmt s] = hoist D [s] := by
+  cases s with
+  | «switch» e cases dflt =>
+      show hoist D [DispatchTree.dtStmt (.switch e cases dflt)] = []
+      simp only [DispatchTree.dtStmt]
+      split
+      · exact buildTree_hoist _ _ _ _
+      · rfl
+  | _ => rfl
+
+/-- The rewrite preserves the block's hoisted function scope. -/
+theorem dtStmts_hoist (ss : List (Stmt Op)) :
+    hoist D (DispatchTree.dtStmts ss) = hoist D ss := by
+  induction ss with
+  | nil => rfl
+  | cons s rest ih =>
+      show hoist D (DispatchTree.dtStmt s :: DispatchTree.dtStmts rest) = hoist D (s :: rest)
+      rw [hoist_cons, dtStmt_hoistEntry, ih, ← hoist_cons]
+
+mutual
+  /-- Each statement is equivalent to its rewrite. -/
+  theorem dtStmt_equiv (s : Stmt Op) : EquivStmt D s (DispatchTree.dtStmt s) := by
+    cases s with
+    | block body =>
+        exact EquivBlock.of_stmts (EquivStmts.of_forall₂ (dtStmts_forall2 body))
+          (dtStmts_hoist body).symm
+    | funDef n ps rs body => exact EquivStmt.refl _
+    | cond c body =>
+        exact EquivStmt.cond_congr (EquivExpr.refl _)
+          (EquivBlock.of_stmts (EquivStmts.of_forall₂ (dtStmts_forall2 body))
+            (dtStmts_hoist body).symm)
+    | «switch» e cases dflt =>
+        simp only [DispatchTree.dtStmt]
+        split
+        · rename_i hq
+          have hpure : DispatchTree.pureScrut e = true := by
+            simp only [DispatchTree.qualifies, Bool.and_eq_true] at hq; exact hq.1
+          exact EquivStmt.trans
+            (EquivStmt.switch_congr (EquivExpr.refl _) (dtCases_forall2 cases)
+              (dtDflt_equiv dflt))
+            (buildTree_equiv _ e hpure (DispatchTree.dtCases cases)
+              (DispatchTree.dtDflt dflt)).symm
+        · exact EquivStmt.switch_congr (EquivExpr.refl _) (dtCases_forall2 cases)
+            (dtDflt_equiv dflt)
+    | forLoop init c post body =>
+        exact EquivStmt.forLoop_congr _ (EquivExpr.refl _)
+          (EquivBlock.of_stmts (EquivStmts.of_forall₂ (dtStmts_forall2 post))
+            (dtStmts_hoist post).symm)
+          (EquivBlock.of_stmts (EquivStmts.of_forall₂ (dtStmts_forall2 body))
+            (dtStmts_hoist body).symm)
+    | letDecl _ _ => exact EquivStmt.refl _
+    | assign _ _ => exact EquivStmt.refl _
+    | exprStmt _ => exact EquivStmt.refl _
+    | «break» => exact EquivStmt.refl _
+    | «continue» => exact EquivStmt.refl _
+    | «leave» => exact EquivStmt.refl _
+
+  /-- Statement sequences are element-wise equivalent to their rewrite. -/
+  theorem dtStmts_forall2 (ss : List (Stmt Op)) :
+      List.Forall₂ (EquivStmt D) ss (DispatchTree.dtStmts ss) := by
+    cases ss with
+    | nil => exact List.Forall₂.nil
+    | cons s rest => exact List.Forall₂.cons (dtStmt_equiv s) (dtStmts_forall2 rest)
+
+  /-- Switch cases are pairwise equivalent (equal labels, equivalent bodies). -/
+  theorem dtCases_forall2 (cs : List (Literal × Block Op)) :
+      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs
+        (DispatchTree.dtCases cs) := by
+    cases cs with
+    | nil => exact List.Forall₂.nil
+    | cons p rest =>
+        obtain ⟨lit, body⟩ := p
+        exact List.Forall₂.cons ⟨rfl, EquivBlock.of_stmts
+          (EquivStmts.of_forall₂ (dtStmts_forall2 body)) (dtStmts_hoist body).symm⟩
+          (dtCases_forall2 rest)
+
+  /-- The default body is equivalent to its rewrite. -/
+  theorem dtDflt_equiv (d : Option (Block Op)) :
+      EquivBlock D (d.getD []) ((DispatchTree.dtDflt d).getD []) := by
+    cases d with
+    | none => exact EquivBlock.refl _
+    | some body =>
+        exact EquivBlock.of_stmts (EquivStmts.of_forall₂ (dtStmts_forall2 body))
+          (dtStmts_hoist body).symm
+end
+
 /-- Soundness of the dispatch-tree rewrite: pointwise-equivalent to the input. -/
 theorem dispatchTreeBlock_sound (b : Block Op) :
     EquivBlock D b (DispatchTree.dispatchTreeBlock b) := by
-  sorry
+  unfold DispatchTree.dispatchTreeBlock
+  split
+  · exact EquivBlock.of_stmts (EquivStmts.of_forall₂ (dtStmts_forall2 b))
+      (dtStmts_hoist b).symm
+  · exact @EquivBlock.refl (evmWithExternal calls creates) _ b
 
 /-- The dispatch-tree pass as a verified `LocalPass`. -/
 def dispatchTree : LocalPass D where
