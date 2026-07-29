@@ -428,4 +428,22 @@ theorem codeRel_nil_left {R : List Label} {Q : List Asm}
 
 end Peephole
 
+/-- Iterating peephole rounds never grows the lowered byte size. -/
+theorem codeSize_optimizeAsmN_le (k : Nat) (p : List Asm) :
+    codeSize (optimizeAsmN k p) ≤ codeSize p := by
+  induction k generalizing p with
+  | zero => simp [optimizeAsmN]
+  | succ k ih =>
+    simp only [optimizeAsmN]
+    split
+    · exact Nat.le_refl _
+    · exact le_trans (ih _)
+        (Peephole.codeRel_codeSize_le (Peephole.codeRel_optimizeRound p))
+
+/-- The Asm peephole pass never grows the lowered byte size, so it preserves
+`WFProg`'s `codeSize` bound (`codeRel_wf`) — restated for `optimizeAsm`. -/
+theorem codeSize_optimizeAsm_le (p : List Asm) :
+    codeSize (optimizeAsm p) ≤ codeSize p :=
+  codeSize_optimizeAsmN_le 4 p
+
 end YulEvmCompiler

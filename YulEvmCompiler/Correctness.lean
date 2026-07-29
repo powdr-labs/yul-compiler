@@ -116,6 +116,11 @@ theorem compile_correct (hexternal : ExternalsRealized model)
       -- (assembleBytes is).length = codeSize (optimizeAsm asm)
       have hlen : (assembleBytes is).length = codeSize (optimizeAsm asm) :=
         lowerFrag_length hcomp
+      -- the optimized program still fits `labelWidth`-byte addresses
+      have hsmallO : codeSize (optimizeAsm asm) < 256 ^ labelWidth := by
+        have := codeSize_optimizeAsm_le asm
+        have := (wfCheck_iff.mp hwf).small
+        omega
       cases o with
       | normal =>
         obtain ⟨-, -, hsimS⟩ := hout
@@ -124,7 +129,7 @@ theorem compile_correct (hexternal : ExternalsRealized model)
         -- Asm peephole: transport the source run to the optimized program
         have hstepsO := Peephole.optimizeAsm_asteps hnodup hsteps0
         obtain ⟨bnd, Hb⟩ :=
-          asteps_sim hexternal hcomp hstepsO (List.suffix_refl (optimizeAsm asm))
+          asteps_sim hexternal hcomp hsmallO hstepsO (List.suffix_refl (optimizeAsm asm))
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
         have hcm0 : ConfMatch (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
@@ -144,7 +149,7 @@ theorem compile_correct (hexternal : ExternalsRealized model)
         -- Asm peephole: transport the halting run to the optimized program
         obtain ⟨confO, hstepsO, hhaltO⟩ := Peephole.optimizeAsm_ahalt hnodup hsteps0 hhalt0
         obtain ⟨bnd, Hb⟩ :=
-          arun_halt_sim hexternal hcomp hstepsO hhaltO
+          arun_halt_sim hexternal hcomp hsmallO hstepsO hhaltO
             (List.suffix_refl (optimizeAsm asm))
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
@@ -186,6 +191,10 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
         SimA.hoist_ok SimA.FEnvOK.nil hh hnd hcs (List.infix_refl asm)
       have hlen : (assembleBytes is).length = codeSize (optimizeAsm asm) :=
         lowerFrag_length hcomp
+      have hsmallO : codeSize (optimizeAsm asm) < 256 ^ labelWidth := by
+        have := codeSize_optimizeAsm_le asm
+        have := (wfCheck_iff.mp hwf).small
+        omega
       cases o with
       | normal =>
         obtain ⟨-, -, hsimS⟩ := hout
@@ -193,7 +202,7 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
         simp only [List.append_nil] at hsteps0
         have hstepsO := Peephole.optimizeAsm_asteps hnodup hsteps0
         obtain ⟨bnd, Hb⟩ :=
-          asteps_sim hexternal (payload := 0 :: payload) hcomp hstepsO
+          asteps_sim hexternal (payload := 0 :: payload) hcomp hsmallO hstepsO
             (List.suffix_refl (optimizeAsm asm))
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
@@ -214,7 +223,7 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
         simp only [List.append_nil] at hsteps0
         obtain ⟨confO, hstepsO, hhaltO⟩ := Peephole.optimizeAsm_ahalt hnodup hsteps0 hhalt0
         obtain ⟨bnd, Hb⟩ := arun_halt_sim hexternal (payload := 0 :: payload)
-          hcomp hstepsO hhaltO (List.suffix_refl (optimizeAsm asm))
+          hcomp hsmallO hstepsO hhaltO (List.suffix_refl (optimizeAsm asm))
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk hgas
         have hcm0 : ConfMatch (payload := 0 :: payload)

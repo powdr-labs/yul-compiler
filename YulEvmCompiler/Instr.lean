@@ -150,12 +150,21 @@ theorem byteWidth_le_32 (v : UInt256) : byteWidth v.toNat ≤ 32 := by
 /-- The minimal width (as a `Fin 33`) that encodes `v`. -/
 def widthOf (v : UInt256) : Fin 33 := ⟨byteWidth v.toNat, by have := byteWidth_le_32 v; omega⟩
 
+/-- `widthOf`'s underlying width is `byteWidth` (definitional; a `simp`
+handle so byte arithmetic can drop the `Fin` wrapper). -/
+@[simp] theorem widthOf_val (v : UInt256) : (widthOf v).val = byteWidth v.toNat := rfl
+
 /-- The shortest `PUSHk` that pushes `v` (`PUSH0` when `v = 0`). -/
 def pushMin (v : UInt256) : Instr := .push (widthOf v) v
 
 /-- `pushMin`'s width fits `v` — the decode round-trip side condition. -/
 theorem pushMin_wf (v : UInt256) : v.toNat < 256 ^ (widthOf v).val :=
   lt_pow_byteWidth v.toNat
+
+/-- The byte length of a minimal-width push: `1 + byteWidth v.toNat`. -/
+@[simp] theorem length_bytes_pushMin (v : UInt256) :
+    (pushMin v).bytes.length = 1 + byteWidth v.toNat := by
+  rw [pushMin, length_bytes_push, widthOf_val]
 
 @[simp] theorem size_pushMin_le (v : UInt256) : (pushMin v).size ≤ 33 := by
   rw [pushMin, size_push]
