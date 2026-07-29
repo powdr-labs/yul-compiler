@@ -1,6 +1,6 @@
 name = "yul-evm-compiler"
 version = "0.1.0"
-defaultTargets = ["YulEvmCompiler", "YulParser", "YulEvmCompilerTests", "YulIR", "YulIRBench"]
+defaultTargets = ["YulEvmCompiler", "YulParser", "YulEvmCompilerTests", "YulIR", "YulIRBench", "YulCApi"]
 
 # Source-language semantics: the Yul big-step judgment this compiler is proved against.
 [[require]]
@@ -19,6 +19,12 @@ name = "YulEvmCompiler"
 
 [[lean_lib]]
 name = "YulParser"
+
+# C-ABI exports for embedding the compiler as a native library. The C shim,
+# public header, and the static/shared library build live in c/ and
+# scripts/build-c-lib.sh (which requests this lib's :static facet).
+[[lean_lib]]
+name = "YulCApi"
 
 [[lean_lib]]
 name = "YulEvmCompilerTests"
