@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.StorageForward
+import YulEvmCompiler.Optimizer.Implementation.DeadPure
 set_option warningAsError true
 /-!
 # Rematerialize-before-spill (EXPERIMENTAL, transform-only prototype)
@@ -142,8 +143,12 @@ def rematStmt (A : List Ident) (σ : RematMap) : Stmt Op → List (Stmt Op) × R
       if storageStableExpr e' && opCountR e' ≤ rematOpLimit && !A.contains x
           && (exprVarsR e').all (fun v => !A.contains v)
           && !(exprVarsR e').contains x then
-        -- Rematerialize: drop the binding, record x ↦ e'.
-        ([], (x, e') :: σ)
+        -- Rematerialize (substitute-only): KEEP the binding and record x ↦ e'.
+        -- Every later read of `x` is replaced by `e'`, so the binding becomes
+        -- dead; the composed `deadPure` pass removes it. Keeping it here makes
+        -- the runtime environment byte-identical to the input, so soundness is
+        -- just the per-use substitution congruence.
+        ([.letDecl [x] (some e')], (x, e') :: σ)
       else
         ([.letDecl [x] (some e')], σ)
   | .letDecl xs val =>
@@ -175,8 +180,18 @@ def rematDflt (A : List Ident) (σ : RematMap) : Option (Block Op) → Option (B
   | some b => some (rematStmts A σ b).1
 end
 
-def rematBlock (body : Block Op) : Block Op :=
+/-- Substitute-only rematerialization: replaces reads, keeps every binding. -/
+def rematSubstBlock (body : Block Op) : Block Op :=
   (rematStmts (assignTargetsStmts body) [] body).1
+
+/-- Rematerialize, then delete the now-dead producer bindings with the
+existing, unconditionally-sound `DeadPure` pass. Two `dpStmts` sweeps drain
+producer chains (a root feeding another producer stays live until the consumer
+binding is dropped). Soundness composes: `rematSubstBlock` is a substitution
+congruence and each `dpStmts` sweep is `deadPure`'s proven `EquivBlock`. -/
+def rematBlock (body : Block Op) : Block Op :=
+  YulEvmCompiler.Optimizer.dpStmts [] (YulEvmCompiler.Optimizer.dpStmts []
+    (rematSubstBlock body))
 
 mutual
 def rematObject : Object Op → Object Op
