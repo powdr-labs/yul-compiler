@@ -16,9 +16,14 @@ lemmas, and gas appear.
 
 Design points (see `DESIGN.md`):
 
-* Every constructor lowers to a **fixed byte width** (`Asm.size`), so the
-  byte position of a suffix `c` of the program is
-  `codeSize prog - codeSize c` — independent of label resolution.
+* Every constructor lowers to a **label-resolution-independent byte width**
+  (`Asm.size`), so the byte position of a suffix `c` of the program is
+  `codeSize prog - codeSize c`. Constant pushes use the *minimal* `PUSHk`
+  encoding (`Instr.pushMin`), so their width depends on the constant's value
+  — but never on where labels resolve. Label pushes (`jump`/`jumpi`/
+  `pushLabel`) use a **uniform** width `labelWidth` bytes for the address, so
+  their size is fixed regardless of the resolved target; `wfCheck` bounds
+  `codeSize` by `256 ^ labelWidth`, guaranteeing every resolved address fits.
 * `.op` carries the *Yul* operation; the EVM opcode is chosen at lowering
   via `opTable`. The Asm semantics runs Yul-side `stepOp`, so phase A needs
   no per-op agreements at all.
@@ -39,7 +44,8 @@ abbrev Label := Nat
 
 /-- The labeled assembly IR. -/
 inductive Asm
-  /-- Push a (Yul-side) word: lowers to `PUSH32 (conv v)`. -/
+  /-- Push a (Yul-side) word: lowers to the minimal-width `PUSHk (conv v)`
+  (`Instr.pushMin`). -/
   | push (v : U256)
   /-- A verified Yul built-in (must be in `opTable`'s domain to lower);
   includes the halting ops. -/
@@ -52,36 +58,52 @@ inductive Asm
   | pop
   /-- Definition site of label `l`: lowers to `JUMPDEST`. -/
   | label (l : Label)
-  /-- Unconditional jump to `l`: lowers to `PUSH32 addr(l); JUMP`. -/
+  /-- Unconditional jump to `l`: lowers to `PUSH{labelWidth} addr(l); JUMP`. -/
   | jump (l : Label)
   /-- Conditional jump to `l`, consuming the condition on top of the stack:
-  lowers to `PUSH32 addr(l); JUMPI`. -/
+  lowers to `PUSH{labelWidth} addr(l); JUMPI`. -/
   | jumpi (l : Label)
   /-- Push `l`'s code address (function return addresses):
-  lowers to `PUSH32 addr(l)`. -/
+  lowers to `PUSH{labelWidth} addr(l)`. -/
   | pushLabel (l : Label)
   /-- Jump to the code address on top of the stack (function returns):
   lowers to `JUMP`. -/
   | dynJump
   deriving Repr, DecidableEq
 
+/-- The uniform number of address bytes emitted for a label push (`jump`,
+`jumpi`, `pushLabel`). Used symbolically throughout; widening it later (e.g.
+to `3`) is a one-line change here plus re-pinning `wfCheck`'s codeSize bound.
+`labelWidth = 2` covers every deployable program: EIP-170 caps runtime code
+at 24576 bytes and EIP-3860 caps initcode at 49152 — both `< 256 ^ 2`. -/
+def labelWidth : Nat := 2
+
+/-- `labelWidth` as the `Fin 33` width of the emitted `PUSHk`. -/
+def labelWidthFin : Fin 33 := ⟨labelWidth, by norm_num [labelWidth]⟩
+
+@[simp] theorem labelWidthFin_val : labelWidthFin.val = labelWidth := rfl
+
 namespace Asm
 
-/-- The byte width an instruction lowers to. Fixed per constructor — this is
-what makes suffix positions independent of label resolution. -/
+/-- The byte width an instruction lowers to. Independent of label resolution
+(constant pushes use the minimal `PUSHk` encoding, which depends on the value
+but not on the layout; label pushes use the uniform `labelWidth`-byte
+address). This is what makes suffix positions
+`codeSize prog - codeSize c`. -/
 def size : Asm → Nat
-  | push _ => 33
+  | push v => 1 + Instr.byteWidth (conv v).toNat
   | op _ => 1
   | dup _ => 1
   | swap _ => 1
   | pop => 1
   | label _ => 1
-  | jump _ => 34
-  | jumpi _ => 34
-  | pushLabel _ => 33
+  | jump _ => labelWidth + 2
+  | jumpi _ => labelWidth + 2
+  | pushLabel _ => labelWidth + 1
   | dynJump => 1
 
-theorem size_pos (i : Asm) : 1 ≤ i.size := by cases i <;> simp [size]
+theorem size_pos (i : Asm) : 1 ≤ i.size := by
+  cases i <;> simp only [size] <;> omega
 
 /-- The label an instruction defines (only `.label`). -/
 def defines : Asm → Option Label
@@ -297,14 +319,26 @@ structure WFProg (p : List Asm) : Prop where
   nodup : (labelDefs p).Nodup
   /-- Every referenced label is defined (lowering and `dynJump` are total). -/
   refsDefined : ∀ l ∈ labelRefs p, l ∈ labelDefs p
-  /-- Byte positions fit in a word (pc arithmetic never wraps). -/
-  small : codeSize p < 2 ^ 256
+  /-- Every resolved label address fits in `labelWidth` bytes: `codeSize`
+  bounds every byte position, so a `labelWidth`-byte immediate never truncates
+  a jump target. Strictly stronger than the old word bound
+  (`256 ^ labelWidth < 2 ^ 256`). -/
+  small : codeSize p < 256 ^ labelWidth
+
+/-- The old word bound, recovered from `small` (`256 ^ labelWidth < 2 ^ 256`):
+pc arithmetic never wraps. -/
+theorem WFProg.small' {p : List Asm} (hw : WFProg p) : codeSize p < 2 ^ 256 := by
+  have h := hw.small
+  have hlt : (256 : Nat) ^ labelWidth ≤ 2 ^ 256 := by
+    calc (256 : Nat) ^ labelWidth = 2 ^ 16 := by norm_num [labelWidth]
+      _ ≤ 2 ^ 256 := Nat.pow_le_pow_right (by norm_num) (by norm_num)
+  omega
 
 /-- The decidable well-formedness check the compiler runs. -/
 def wfCheck (p : List Asm) : Bool :=
   decide (labelDefs p).Nodup
     && (labelRefs p).all (fun l => decide (l ∈ labelDefs p))
-    && decide (codeSize p < 2 ^ 256)
+    && decide (codeSize p < 256 ^ labelWidth)
 
 theorem wfCheck_iff {p : List Asm} : wfCheck p = true ↔ WFProg p := by
   unfold wfCheck
@@ -324,18 +358,18 @@ theorem wfCheck_iff {p : List Asm} : wfCheck p = true ↔ WFProg p := by
 `prog`. `none` when a referenced label is undefined (excluded by `wfCheck`)
 or the Yul op is outside `opTable`'s verified domain. -/
 def lowerInstr (prog : List Asm) : Asm → Option (List Instr)
-  | .push v      => some [.push (conv v)]
+  | .push v      => some [Instr.pushMin (conv v)]
   | .op yop      => (opTable yop).map (fun o => [.op o])
   | .dup n       => some [.op (.Dup ⟨n⟩)]
   | .swap n      => some [.op (.Swap ⟨n⟩)]
   | .pop         => some [.op .POP]
   | .label _     => some [.op .JUMPDEST]
   | .jump l      => (resolve l prog).map
-      (fun a => [.push (UInt256.ofNat a), .op .JUMP])
+      (fun a => [.push labelWidthFin (UInt256.ofNat a), .op .JUMP])
   | .jumpi l     => (resolve l prog).map
-      (fun a => [.push (UInt256.ofNat a), .op .JUMPI])
+      (fun a => [.push labelWidthFin (UInt256.ofNat a), .op .JUMPI])
   | .pushLabel l => (resolve l prog).map
-      (fun a => [.push (UInt256.ofNat a)])
+      (fun a => [.push labelWidthFin (UInt256.ofNat a)])
   | .dynJump     => some [.op .JUMP]
 
 /-- Lower a fragment (against the whole program `prog`). -/
@@ -355,7 +389,7 @@ theorem lowerInstr_length {prog : List Asm} {i : Asm} {is : List Instr}
     (assembleBytes is).length = i.size := by
   cases i <;> simp only [lowerInstr] at h
   case push v =>
-    obtain rfl : [Instr.push (conv v)] = is := by simpa using h
+    obtain rfl : [Instr.pushMin (conv v)] = is := by simpa using h
     simp [Asm.size]
   case op yop =>
     obtain ⟨o, -, rfl⟩ := Option.map_eq_some_iff.mp h
@@ -374,13 +408,21 @@ theorem lowerInstr_length {prog : List Asm} {i : Asm} {is : List Instr}
     simp [Asm.size]
   case jump l =>
     obtain ⟨a, -, rfl⟩ := Option.map_eq_some_iff.mp h
-    simp [Asm.size]
+    simp only [assembleBytes_cons, assembleBytes_nil, List.append_nil,
+      List.length_append, Instr.length_bytes_push, Instr.length_bytes_op,
+      labelWidthFin_val, Asm.size]
+    omega
   case jumpi l =>
     obtain ⟨a, -, rfl⟩ := Option.map_eq_some_iff.mp h
-    simp [Asm.size]
+    simp only [assembleBytes_cons, assembleBytes_nil, List.append_nil,
+      List.length_append, Instr.length_bytes_push, Instr.length_bytes_op,
+      labelWidthFin_val, Asm.size]
+    omega
   case pushLabel l =>
     obtain ⟨a, -, rfl⟩ := Option.map_eq_some_iff.mp h
-    simp [Asm.size]
+    simp only [assembleBytes_cons, assembleBytes_nil, List.append_nil,
+      Instr.length_bytes_push, labelWidthFin_val, Asm.size]
+    omega
   case dynJump =>
     obtain rfl : [Instr.op .JUMP] = is := by simpa using h
     simp [Asm.size]

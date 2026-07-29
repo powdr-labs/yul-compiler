@@ -18,7 +18,8 @@ to EVM states `s` with
 * `FrameOK`/`StateMatch` as in `StateRel.lean`.
 
 Each local `AStep` then maps to 1–3 EVM `Step`s (label pushes and jumps
-expand to `PUSH32 addr`, `JUMP`/`JUMPI`, and the landing `JUMPDEST`). An
+expand to `PUSH{labelWidth} addr`, `JUMP`/`JUMPI`, and the landing
+`JUMPDEST`). An
 external call/create step instead maps to an arbitrary finite `Steps` trace
 through `ExternalsRealized`. Only its endpoints are constrained, so the trace
 may enter arbitrary init or runtime code, nest calls/creations, and reenter

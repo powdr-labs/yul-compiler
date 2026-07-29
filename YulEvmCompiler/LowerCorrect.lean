@@ -43,7 +43,7 @@ set_option linter.unusedTactic false in
 set_option linter.unreachableTactic false in
 theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
-    (hlow : lowerProg prog = some is)
+    (hlow : lowerProg prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
     {a b : AConf} (hstep : AStep prog a b) (hsuf : a.code <:+ prog)
     (hcap : a.stk.length ≤ 1023) :
     ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
@@ -54,7 +54,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
   | @push v c σ yst =>
     obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
       locate hlow hsuf
-    obtain rfl : [Instr.push (conv v)] = isI := by
+    obtain rfl : [Instr.pushMin (conv v)] = isI := by
       simpa [lowerInstr] using hI
     refine ⟨40000, ?_⟩
     intro s hm hgas
@@ -62,7 +62,8 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
       rw [codeSize_cons]
       omega
     obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ :=
-      pushStepU (u := conv v)
+      pushStepU (w := Instr.widthOf (conv v)) (u := conv v)
+        (hwf := Instr.pushMin_wf (conv v))
         (pre := assembleBytes isPre) (post := assembleBytes isC ++ payload)
         (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
@@ -72,7 +73,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
       exact congrArg UInt256.ofNat (by
-        simp only [Asm.size] at hsize
+        simp only [Asm.size, Instr.widthOf_val] at hsize ⊢
         omega)
     · rw [hstk']
       rfl
@@ -266,18 +267,21 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     obtain ⟨aL, isPreL, isC', hres, hposL, hbytesL, hlenPreL, hvalid⟩ :=
       locate_label_withPayload hlow hfind payload
     simp only [lowerInstr, hres] at hI
-    obtain rfl : [Instr.push (UInt256.ofNat aL), Instr.op .JUMP] = isI := by
+    obtain rfl : [Instr.push labelWidthFin (UInt256.ofNat aL), Instr.op .JUMP] = isI := by
       simpa using hI
     refine ⟨40000 + 40000 + 40000, ?_⟩
     intro s hm hgas
     have hpos : codeSize prog - codeSize (Asm.jump l :: c) = codeSize pre := by
       rw [codeSize_cons]
       omega
+    have haLsmall : aL < 256 ^ labelWidth := by omega
     have haLlt : aL < 2 ^ 256 := by
       have := codeSize_lt hlow hm.frame
       omega
+    have hwfL : (UInt256.ofNat aL).toNat < 256 ^ labelWidthFin.val := by
+      rw [labelWidthFin_val, toNat_ofNat_of_lt haLlt]; exact haLsmall
     obtain ⟨s1, st1, hf1, hsm1, hpc1, hstk1, hg1⟩ :=
-      pushStepU (u := UInt256.ofNat aL)
+      pushStepU (u := UInt256.ofNat aL) (hwf := hwfL)
         (pre := assembleBytes isPre)
         (post := (Instr.op .JUMP).bytes ++ assembleBytes isC ++ payload)
         (assembleWithPayload_at₂ hbytes payload)
@@ -286,7 +290,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         hm.stack (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) (by omega)
     obtain ⟨s2, st2, hf2, hsm2, hpc2, hstk2, hg2⟩ :=
       jumpStep (dest := UInt256.ofNat aL)
-        (pre := assembleBytes isPre ++ (Instr.push (UInt256.ofNat aL)).bytes)
+        (pre := assembleBytes isPre ++ (Instr.push labelWidthFin (UInt256.ofNat aL)).bytes)
         (post := assembleBytes isC ++ payload)
         (assembleWithPayload_at₂' hbytes payload)
         hf1 hsm1
@@ -318,18 +322,21 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     obtain ⟨aL, isPreL, isC', hres, hposL, hbytesL, hlenPreL, hvalid⟩ :=
       locate_label_withPayload hlow hfind payload
     simp only [lowerInstr, hres] at hI
-    obtain rfl : [Instr.push (UInt256.ofNat aL), Instr.op .JUMPI] = isI := by
+    obtain rfl : [Instr.push labelWidthFin (UInt256.ofNat aL), Instr.op .JUMPI] = isI := by
       simpa using hI
     refine ⟨40000 + 40000 + 40000, ?_⟩
     intro s hm hgas
     have hpos : codeSize prog - codeSize (Asm.jumpi l :: c) = codeSize pre := by
       rw [codeSize_cons]
       omega
+    have haLsmall : aL < 256 ^ labelWidth := by omega
     have haLlt : aL < 2 ^ 256 := by
       have := codeSize_lt hlow hm.frame
       omega
+    have hwfL : (UInt256.ofNat aL).toNat < 256 ^ labelWidthFin.val := by
+      rw [labelWidthFin_val, toNat_ofNat_of_lt haLlt]; exact haLsmall
     obtain ⟨s1, st1, hf1, hsm1, hpc1, hstk1, hg1⟩ :=
-      pushStepU (u := UInt256.ofNat aL)
+      pushStepU (u := UInt256.ofNat aL) (hwf := hwfL)
         (pre := assembleBytes isPre)
         (post := (Instr.op .JUMPI).bytes ++ assembleBytes isC ++ payload)
         (assembleWithPayload_at₂ hbytes payload)
@@ -344,7 +351,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         simpa using h0)
     obtain ⟨s2, st2, hf2, hsm2, hpc2, hstk2, hg2⟩ :=
       jumpiTakenStep (dest := UInt256.ofNat aL) (cond := conv v)
-        (pre := assembleBytes isPre ++ (Instr.push (UInt256.ofNat aL)).bytes)
+        (pre := assembleBytes isPre ++ (Instr.push labelWidthFin (UInt256.ofNat aL)).bytes)
         (post := assembleBytes isC ++ payload)
         (assembleWithPayload_at₂' hbytes payload)
         hf1 hsm1
@@ -382,8 +389,14 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     have hpos : codeSize prog - codeSize (Asm.jumpi l :: c) = codeSize pre := by
       rw [codeSize_cons]
       omega
+    have hres_lt := resolve_lt hres
+    have haLsmall : aL < 256 ^ labelWidth := by omega
+    have haLlt : aL < 2 ^ 256 := by
+      have := codeSize_lt hlow hm.frame; omega
+    have hwfL : (UInt256.ofNat aL).toNat < 256 ^ labelWidthFin.val := by
+      rw [labelWidthFin_val, toNat_ofNat_of_lt haLlt]; exact haLsmall
     obtain ⟨s1, st1, hf1, hsm1, hpc1, hstk1, hg1⟩ :=
-      pushStepU (u := UInt256.ofNat aL)
+      pushStepU (u := UInt256.ofNat aL) (hwf := hwfL)
         (pre := assembleBytes isPre)
         (post := (Instr.op .JUMPI).bytes ++ assembleBytes isC ++ payload)
         (assembleWithPayload_at₂ hbytes payload)
@@ -395,7 +408,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
       rfl
     obtain ⟨s2, st2, hf2, hsm2, hpc2, hstk2, hg2⟩ :=
       jumpiNotTakenStep (dest := UInt256.ofNat aL) (cond := conv v)
-        (pre := assembleBytes isPre ++ (Instr.push (UInt256.ofNat aL)).bytes)
+        (pre := assembleBytes isPre ++ (Instr.push labelWidthFin (UInt256.ofNat aL)).bytes)
         (post := assembleBytes isC ++ payload)
         (assembleWithPayload_at₂' hbytes payload)
         hf1 hsm1
@@ -411,7 +424,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     · show s2.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc2, List.length_append, Instr.length_bytes_push, hlenPre]
       exact congrArg UInt256.ofNat (by
-        simp only [Asm.size] at hsize
+        simp only [Asm.size, labelWidthFin_val] at hsize ⊢
         omega)
   | @pushLabel l c σ yst hdef =>
     obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
@@ -423,8 +436,14 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     have hpos : codeSize prog - codeSize (Asm.pushLabel l :: c) = codeSize pre := by
       rw [codeSize_cons]
       omega
+    have hres_lt := resolve_lt hres
+    have haLsmall : aL < 256 ^ labelWidth := by omega
+    have haLlt : aL < 2 ^ 256 := by
+      have := codeSize_lt hlow hm.frame; omega
+    have hwfL : (UInt256.ofNat aL).toNat < 256 ^ labelWidthFin.val := by
+      rw [labelWidthFin_val, toNat_ofNat_of_lt haLlt]; exact haLsmall
     obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ :=
-      pushStepU (u := UInt256.ofNat aL)
+      pushStepU (u := UInt256.ofNat aL) (hwf := hwfL)
         (pre := assembleBytes isPre)
         (post := assembleBytes isC ++ payload)
         (assembleWithPayload_at₁ hbytes payload)
@@ -435,7 +454,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
       exact congrArg UInt256.ofNat (by
-        simp only [Asm.size] at hsize
+        simp only [Asm.size, labelWidthFin_val] at hsize ⊢
         omega)
     · rw [hstk']
       show UInt256.ofNat aL :: mapStk prog σ
@@ -629,7 +648,7 @@ theorem ahalt_sim [model : ExternalModel]
 /-- **Phase B, many steps**: bounds add along an Asm execution. -/
 theorem asteps_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
-    (hlow : lowerProg prog = some is)
+    (hlow : lowerProg prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
     {a b : AConf} (hsteps : ASteps prog a b) (hsuf : a.code <:+ prog)
     (hbound : ∀ mid, ASteps prog a mid → mid.stk.length ≤ 1023) :
     ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
@@ -640,7 +659,7 @@ theorem asteps_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
   | refl a =>
     exact ⟨0, fun s hm _ => ⟨s, .refl _, hm, by omega⟩⟩
   | @head a₁ a₂ a₃ hstep hrest ih =>
-    obtain ⟨b1, H1⟩ := astep_sim hexternal hlow hstep hsuf (hbound a₁ (ASteps.refl a₁))
+    obtain ⟨b1, H1⟩ := astep_sim hexternal hlow hsmall hstep hsuf (hbound a₁ (ASteps.refl a₁))
     obtain ⟨b2, H2⟩ := ih (hstep.suffix hsuf) (fun mid h => hbound mid (ASteps.head hstep h))
     refine ⟨b1 + b2, ?_⟩
     intro s hm hgas
@@ -652,7 +671,7 @@ theorem asteps_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
 EVM execution ending in the matching halted state. -/
 theorem arun_halt_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
-    (hlow : lowerProg prog = some is)
+    (hlow : lowerProg prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
     {a b : AConf} {yst' : EvmState}
     (hsteps : ASteps prog a b) (hhalt : AHalt prog b yst')
     (hsuf : a.code <:+ prog)
@@ -661,7 +680,7 @@ theorem arun_halt_sim [model : ExternalModel] (hexternal : ExternalsRealized mod
       bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ StateMatch yst' s' ∧ s'.callStack = []
         ∧ HaltedMatch yst' s' := by
-  obtain ⟨b1, H1⟩ := asteps_sim hexternal hlow hsteps hsuf hbound
+  obtain ⟨b1, H1⟩ := asteps_sim hexternal hlow hsmall hsteps hsuf hbound
   obtain ⟨b2, H2⟩ := ahalt_sim hlow hhalt (hsteps.suffix hsuf) (hbound b hsteps)
   refine ⟨b1 + b2, ?_⟩
   intro s hm hgas

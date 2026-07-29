@@ -503,12 +503,14 @@ def selfdestructOps : Block Op := yul% {
     codeSize (optimizeAsm asm) + 2 == codeSize asm) = some true
 -- Branch inversion: `breakContinue`'s two guarded control statements
 -- (`if … { continue }`, `if … { break }`) each compile to
--- `jumpi l; jump m; label l` → `op iszero; jumpi m; label l` (33 bytes
--- each); the source conditions end in `eq`, whose `iszero`d inversions
--- then cancel against the source-level `iszero`s in the follow-up round
--- (double-`iszero` elimination), and the orphaned labels drop.
+-- `jumpi l; jump m; label l` → `op iszero; jumpi m; label l` (dropping the
+-- `labelWidth+2`-byte address push and reordering); the source conditions end
+-- in `eq`, whose `iszero`d inversions then cancel against the source-level
+-- `iszero`s in the follow-up round (double-`iszero` elimination), and the
+-- orphaned labels drop. Under minimal-width label pushes the aggregate saving
+-- is 12 bytes.
 #guard ((compileProgram breakContinue).map fun asm =>
-    codeSize (optimizeAsm asm) + 72 == codeSize asm) = some true
+    codeSize (optimizeAsm asm) + 12 == codeSize asm) = some true
 -- Where no window, inverted branch, or dead label occurs, the peephole is
 -- the identity.
 #guard ((compileProgram switchMatch).map fun asm =>
