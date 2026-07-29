@@ -1414,3 +1414,36 @@ the sole 41-case object, PoolManager, is a known compile failure) — the pass i
 byte-identical there at threshold 8. Kept at `minTreeCases = 8`, where the
 corpus-wide result is gasTests −6,856 (0 regr), semanticTests −14,904 (26/5),
 aave −231.
+
+## Candidate ideas from the solc gap analysis (2026-07-29, uniswap-gas-2 campaign)
+
+Systematic sweep of solc's default via-IR sequence (OptimiserSettings.h /
+Suite.cpp) + backend vs our pipeline. Full table in the campaign PR discussion;
+the five missing ideas worth implementing, ranked by impact × proof cost:
+
+1. **EqualStoreEliminator** — drop `mstore`/`sstore` whose value provably
+   equals the slot's current content (exact-state-preserving by construction;
+   store-of-equal is the identity). Reuse ReuseValues' fact cache; one-line
+   state lemma per store kind. Targets Aave loop scratch + idempotent sstores.
+2. **UnusedStoreEliminator, covered-before-read subset** — a store overwritten
+   by a later same-slot store with no intervening read/call/loop is
+   exact-state-preserving. Start same-block, literal/same-var keys, pure
+   intervening statements. Targets `mstore(0,a); …; mstore(0,b)` scratch pairs.
+3. **Strength-reduction rule expansion in Simplify** — the operand-preserving
+   subset of solc's RuleList: div/mod/mul-by-2^k → shr/and/shl, byte(31,x) →
+   and(x,0xff), and-mask combining, mod(mul(x,y),2^k) → mulmod. Each a single
+   EquivExpr via the Core rule engine; hits the 130-200% small-fixture tail.
+4. **LoopInvariantCodeMotion** — hoist a leading movable `let` whose free vars
+   are loop-invariant out of `for` bodies. Hardest proof (needs a loop
+   congruence + write-set disjointness) but the biggest Aave lever (10k-iter
+   loops recompute identical keccak/sload addresses every iteration).
+5. **Rematerialize-before-spill (StackCompressor analogue)** — before the
+   MemorySpill fallback, re-substitute cheap movable definitions at deep use
+   sites to relieve DUP16 pressure without memory round-trips; spill only the
+   remainder. EquivBlock-level proof (recompute = read), policy proof-free;
+   attacks the Pool* spill-count root cause directly.
+
+Architectural non-goal from the same analysis: adopting solc's
+ExpressionSplitter/SSA backbone — it is the opposite of our
+big-expressions + on-stack-locals design and only pays as enabler
+infrastructure for 2/4 above if their simple forms prove too weak.
