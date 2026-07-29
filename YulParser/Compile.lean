@@ -324,10 +324,14 @@ def compileSource (source : String) : Option ByteArray := do
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none) o
       let tryLayouts (obj : Object YulSemantics.EVM.Op) :=
-        -- PROTOTYPE: try the window-scheduled lowering first; the plain verified
-        -- lowering remains the fallback if scheduling trips the stackOK2 gate.
+        -- PROTOTYPE: try the window-scheduled lowering first (on both the object
+        -- and its smart-layout form, since stack-heavy objects like TickMath only
+        -- compile via the layout rescue); the plain verified lowering is the
+        -- fallback if scheduling trips the stackOK2 gate.
         YulEvmCompiler.compileObjectScheduled obj
           <|> YulEvmCompiler.compileObject obj
+          <|> YulEvmCompiler.compileObjectScheduled
+            (YulEvmCompiler.Optimizer.stackLayoutObject obj)
           <|> YulEvmCompiler.compileObject
             (YulEvmCompiler.Optimizer.stackLayoutObject obj)
       let layout ← tryLayouts optimized
@@ -337,6 +341,7 @@ def compileSource (source : String) : Option ByteArray := do
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectLight
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none) o)
+        <|> YulEvmCompiler.compileObjectScheduled o
         <|> YulEvmCompiler.compileObject o
         <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback
               raw optimized with

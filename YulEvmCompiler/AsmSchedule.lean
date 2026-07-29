@@ -98,6 +98,10 @@ costs), so minimizing it minimizes real per-execution gas. -/
 def opGas : Op → Nat
   | .mul | .div | .sdiv | .mod | .smod | .signextend => 5
   | .addmod | .mulmod => 8
+  -- `exp` is really `10 + 50·(exponent bytes)`; this static underestimate is
+  -- safe because candidates are only ever compared against the ORIGINAL window
+  -- (strictly-cheaper, never accepted on estimated ties), so a candidate that
+  -- recomputes an `exp` instead of reusing it scores no better here.
   | .exp => 10
   | _ => 3
 
@@ -172,7 +176,11 @@ def symExec (w : List Asm) : Option SymState :=
   w.foldlM symStep { stack := [], inputs := 0 }
 
 /-- Structural equality of symbolic states: same output terms and same input
-reach (the latter guarantees the untouched REST below the window lines up). -/
+reach (the latter guarantees the untouched REST below the window lines up).
+Requiring equal `inputs` is conservative — it rejects a candidate that
+legitimately reaches FEWER below-window slots than the original. A future
+relaxation would normalize both states to the max input reach (materializing the
+extra deep leaves as identities) before comparing. -/
 def symStateBeq (a b : SymState) : Bool :=
   a.inputs == b.inputs && Term.beqList a.stack b.stack
 
@@ -246,77 +254,90 @@ def genArgs : Nat → ES → List Term → Option ES
       | none => none
 end
 
-/-- The DAG rescheduler proper. -/
+/-- Emit `n` pops. -/
+def emitPops : ES → Nat → Option ES
+  | es, 0 => some es
+  | es, n + 1 => (emit es .pop).bind (fun es' => emitPops es' n)
+
+/-- The window's inputs sit below the freshly-built `m` outputs. Remove them
+with `swap⟨m-1⟩; pop`, repeated `b` times: each iteration deletes the shallowest
+input and rotates the top-`m` block left by one, so after `b = k` iterations the
+inputs are gone and the outputs are rotated left by `k` (which the builder
+pre-compensates). Requires `0 < m ≤ 16`. -/
+def emitCleanup (m : Nat) : ES → Nat → Option ES
+  | es, 0 => some es
+  | es, b + 1 =>
+      if h : 0 < m ∧ m - 1 < 16 then
+        match emit es (.swap ⟨m - 1, h.2⟩) with
+        | some es' =>
+            match emit es' .pop with
+            | some es'' => emitCleanup m es'' b
+            | none => none
+        | none => none
+      else none
+
+/-- The DAG rescheduler proper. Rebuilds the window's `m` symbolic outputs from
+its `k` inputs, with common-subexpression sharing inside each output (so a
+collapsed reassignment chain is computed once instead of via the backend's
+per-statement store/reload), then removes the inputs. Outputs are built
+pre-rotated by `k mod m` so the `emitCleanup` rotation lands them in order. -/
 def scheduleWindowReal (target : SymState) : Option (List Asm) :=
   let k := target.inputs
   let T := target.stack
   let m := T.length
-  if m != k then none else
-  let slots := T.zipIdx
-  -- a slot holding some *other* input (a pure move/permutation) is out of scope
-  let hasMove := slots.any (fun (t, j) => match t with | .inp i => i != j | _ => false)
-  if hasMove then none else
-  -- changed slots: those holding a computed value (app) or a constant (lit)
-  let changed := slots.filterMap (fun (t, j) =>
-    match t with | .inp _ => none | _ => some (j, t))
+  if m > 16 then none else
   let fuel := 4 * (Term.sizeList T) + 100
   let init : ES := ⟨[], { stack := (List.range k).map Term.inp, inputs := k }⟩
-  match changed.foldlM (fun es (p : Nat × Term) => genValue fuel es p.2) init with
-  | none => none
-  | some es1 =>
-    -- store each computed value into its slot (top value first = last built)
-    match changed.reverse.foldlM (fun es (p : Nat × Term) =>
-        match findIdxBeq (Term.inp p.1) es.model.stack with
-        | none => none
-        | some d =>
-            if h : 0 < d ∧ d - 1 < 16 then
-              match emit es (.swap ⟨d - 1, h.2⟩) with
-              | some es' => emit es' .pop
-              | none => none
-            else none) es1 with
+  if m == 0 then
+    (emitPops init k).map ES.code
+  else
+    let rot := k % m
+    -- build O[m-1] (deepest) first … O[0] (top) last, where the cleanup rotation
+    -- makes the final top-m equal T:  O[j] = T[(j + (m - rot)) % m].
+    match (List.range m).reverse.foldlM
+        (fun es j => genValue fuel es ((T[(j + (m - rot)) % m]?).getD (.lit 0))) init with
     | none => none
-    | some es2 =>
-      -- ensure the candidate reaches the same input depth `k` as the original
-      -- (so the untouched REST below lines up); pad harmlessly if not.
-      let code0 := es2.code
-      match symExec code0 with
-      | some s =>
-          if s.inputs == k then some code0
-          else if h : 0 < k ∧ k - 1 < 16 then
-            some (code0 ++ [.dup ⟨k - 1, h.2⟩, .pop])
-          else some code0
-      | none => some code0
+    | some es1 => (emitCleanup m es1 k).map ES.code
 
 /-- The untrusted rescheduler: given the window's symbolic output, propose a
 cheaper instruction sequence, or `none` to keep the original. Correctness never
 depends on it, only on the validation gate below. -/
 def scheduleWindow (target : SymState) : Option (List Asm) := scheduleWindowReal target
 
-/-- Optimize a single extracted window: keep the original unless a proposed
-candidate validates (same symbolic state), is strictly cheaper, and does not
-grow bytes. -/
-def optimizeWindow (w : List Asm) : List Asm := Id.run do
+/-- Skip windows longer than this. `Term` is a tree, so a long run of squarings
+(`r := shr(127, mul(r,r))`, no barrier between blocks) would build terms of size
+~2^(#blocks); capping the window length splits such a run into per-block windows
+(where the backend's per-statement DUP/store/reload waste actually lives) and
+keeps `symExec`/`Term.beq`/`Term.size` cost bounded, so the pass adds only
+bounded compile time. -/
+def maxWindowLen : Nat := 48
+
+/-- Bail out of scheduling a window whose symbolic output DAG exceeds this many
+nodes (belt-and-suspenders against tree blowup within the length cap). -/
+def maxTermNodes : Nat := 4096
+
+/-- Optimize one extracted window: keep the original unless a proposed candidate
+validates (same symbolic state), is strictly cheaper, and does not grow bytes. -/
+def optimizeWindow (w : List Asm) : List Asm :=
+  if w.length > maxWindowLen then w else
   match symExec w with
-  | none => return w
+  | none => w
   | some target =>
-      let big := windowGas w ≥ 80
+      if Term.sizeList target.stack > maxTermNodes then w else
       match scheduleWindow target with
-      | none =>
-          if big then
-            dbg_trace s!"[sched] BIG len={w.length} gas={windowGas w} m={target.stack.length} k={target.inputs} -> none"
-          return w
+      | none => w
       | some cand =>
           match symExec cand with
           | some tcand =>
-              let ok := symStateBeq tcand target
-              let gwin := decide (windowGas cand < windowGas w)
-              let swin := decide (codeSize cand ≤ codeSize w)
-              if big then
-                dbg_trace s!"[sched] BIG len={w.length} gas={windowGas w} m={target.stack.length} k={target.inputs} candGas={windowGas cand} candLen={cand.length} gateOK={ok} gasWin={gwin} sizeWin={swin}"
-              return (if ok && gwin && swin then cand else w)
-          | none =>
-              if big then dbg_trace s!"[sched] BIG symExec cand=none"
-              return w
+              -- Accept only a translation-validated candidate (same symbolic
+              -- state, incl. equal input reach) that is STRICTLY cheaper than the
+              -- ORIGINAL and no larger in bytes. Comparing only against the
+              -- original (never accepting estimated ties) is what makes the
+              -- `opGas` `exp` underestimate safe.
+              if symStateBeq tcand target
+                  && windowGas cand < windowGas w
+                  && codeSize cand ≤ codeSize w then cand else w
+          | none => w
 
 /-- Split the program into maximal windows and non-window instructions, running
 `optimizeWindow` on each window. Fuel-bounded for a trivial termination
