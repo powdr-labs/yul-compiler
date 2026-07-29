@@ -40,10 +40,14 @@ suites=(
   "EVM-code-transform evmCodeTransform solidity-yul-evm-code-transform-known-solc-differential-failures.txt solidity-yul-evm-code-transform-gas-baseline.txt"
 )
 
+# Native + fixture-parallel (see scripts/UpdateCorpusGas.lean); the build is
+# incremental after the first run.
+lake build updateCorpusGas
+
 for entry in "${suites[@]}"; do
   read -r suite subdir known baseline <<<"$entry"
   echo "==> Re-measuring $suite gas with solc $SOLC_VERSION"
-  lake env lean --run scripts/UpdateCorpusGas.lean \
+  .lake/build/bin/updateCorpusGas \
     "$suite" \
     "$SOLIDITY_DIR/test/libyul/$subdir" \
     "test/$known" \

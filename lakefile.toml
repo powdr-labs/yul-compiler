@@ -52,3 +52,10 @@ root = "scripts.CheckSolidityGas"
 [[lean_exe]]
 name = "checkCompileGate"
 root = "scripts.CheckSolidityCompileGate"
+
+# The gas-baseline write side (see scripts/update-gas.sh). Native and
+# fixture-parallel: a whole-corpus re-pin drops from an hour of interpreted
+# single-threaded walking to minutes.
+[[lean_exe]]
+name = "updateCorpusGas"
+root = "scripts.UpdateCorpusGas"

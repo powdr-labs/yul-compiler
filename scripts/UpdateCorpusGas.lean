@@ -2,6 +2,7 @@ import YulParser.Compile
 import YulEvmCompilerTests.Solc
 import YulEvmCompilerTests.CorpusGas
 import YulEvmCompilerTests.SolidityCorpus
+import YulEvmCompilerTests.Parallel
 
 set_option warningAsError true
 /-!
@@ -16,6 +17,11 @@ fails on a genuine regression (see YulEvmCompilerTests.CorpusGas).
 This is the write side of the gas baseline; the differential is the read side.
 Run it through scripts/update-gas.sh after an intended codegen or solc change,
 and review the diff.
+
+Fixtures are measured concurrently (`parMap`, one independent unit of work per
+fixture, results folded back in corpus order) and the runner is built as a
+native executable — a whole-corpus re-pin is minutes instead of an hour of
+single-threaded interpretation.
 -/
 
 open System YulParser
@@ -23,6 +29,7 @@ open EvmSemantics
 open YulEvmCompilerTests.Solc
 open YulEvmCompilerTests.CorpusGas
 open YulEvmCompilerTests.SolidityCorpus
+open YulEvmCompilerTests.Parallel (detectJobs parMap)
 
 private def usage : String :=
   "usage: UpdateCorpusGas <suite-name> <corpus-dir> <known-failures.txt> " ++
@@ -40,27 +47,30 @@ private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFil
     IO.eprintln s!"{corpusDir}: found no .yul fixtures"
     return 1
   let knownFailures ← readKnownFailures knownFailuresFile
-  let mut rows : Array GasRow := #[]
-  let mut skipped := 0
-  for path in files do
+  let measure (path : FilePath) : IO (Option GasRow) := do
     let name := relativeName corpusDir path
     let contents ← IO.FS.readFile path
     match runsOnLatestFork contents with
     | .ok true =>
         if knownFailures.contains name then
-          skipped := skipped + 1
+          return none
         else
           let source := fixtureSource contents
           match compileSource source with
-          | none => skipped := skipped + 1
+          | none => return none
           | some ours =>
               match ← compileWithSolc solcPath source with
-              | .error _ => skipped := skipped + 1
+              | .error _ => return none
               | .ok solc =>
                   match fixtureTotalGas name ours solc with
-                  | some (o, s) => rows := rows.push { fixture := name, ours := o, solc := s }
-                  | none => skipped := skipped + 1
-    | _ => skipped := skipped + 1
+                  | some (o, s) =>
+                      return some { fixture := name, ours := o, solc := s }
+                  | none => return none
+    | _ => return none
+  let jobs ← detectJobs
+  let outcomes ← parMap jobs files measure
+  let rows := outcomes.filterMap id
+  let skipped := files.size - rows.size
   IO.FS.writeFile gasBaselineFile (render suiteName expectedSolcVersion rows)
   IO.println s!"Re-pinned {rows.size} {suiteName} gas rows in {gasBaselineFile} (skipped {skipped})."
   return 0
