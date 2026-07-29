@@ -12,6 +12,6 @@ dispatch_medium.sol	45162	41541
 dispatch_medium_optimised.sol	45162	41541
 dispatch_small.sol	29801	29028
 dispatch_small_optimised.sol	29801	29028
-exp.sol	1387	776
-exp_optimized.sol	1387	776
+exp.sol	971	776
+exp_optimized.sol	971	776
 storage_costs.sol	27478	26869
