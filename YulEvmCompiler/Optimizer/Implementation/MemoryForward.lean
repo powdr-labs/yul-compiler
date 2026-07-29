@@ -12,11 +12,13 @@ arithmetic (`shr(128, mul(mload(224), c))`, `add(mload(448), 3)`) or inside an
 `mstore` value (`mstore(288, mload(256))`), which nothing rewrites.
 
 This pass forwards the value known to live at a literal slot into every nested
-`mload` occurrence, but only within the **state-neutral fragment**
-(`ReuseValues.rvNeutralExpr`: pure totals plus the read-only `sload`/`mload`/
-`keccak256`). A neutral expression performs no memory writes, so every cell
-fact valid at the statement boundary stays valid throughout its evaluation, and
-each rewritten `mload` reads exactly the word the establishing `mstore` wrote.
+`mload` occurrence, **evaluation-order aware**: `mfE` threads a per-slot cache
+through the left-to-right evaluation of each expression, forwarding an
+`mload(k)` leaf to the cell value while the cell is live, and clearing the cache
+the instant a subexpression may write memory (the `call`/`create` family, a
+stray `mstore`/`mstore8`/`*copy`). Reads (`mload`/`sload`/`keccak256`/`log`/
+`sstore`/`tstore`) do not clear cells. So each rewritten `mload` reads exactly
+the word the establishing `mstore` wrote, at that evaluation point.
 
 It never deletes a store (memory content is preserved exactly — the
 differential harness compares final nonzero memory). Its value is that the
@@ -24,18 +26,25 @@ forwarded loads become plain stack values, and `DeadPure`/`CoalesceCopies`/the
 smart layout then drop the load, its address push, and the surrounding shuffle.
 
 Facts:
-* `mstore(<lit k>, v)` with `v` neutral records `k ↦ classify(rewrite v)`
-  (a `lit`/`var`/`add(var,lit)`), first killing every overlapping cell.
+* `mstore(<lit k>, v)` records `k ↦ classify(rewrite v)` (a `lit`/`var`/
+  `add(var,lit)`), first killing every overlapping cell; if `v` is a call the
+  cache is cleared first, then `k` re-established.
 * `let x := mload(<lit k>)` with no live cell at `k` records `k ↦ x` (so a
   later `mload(k)` with no intervening write forwards to `x` — free-pointer
   churn).
-* A non-neutral rhs / `mstore` value (a `call`) may write memory, so it clears
-  the whole cache; a store to a non-literal address, `mstore8`, `mcopy`, the
-  `*copy` family, and any other effectful statement clear it too.
-* Assignments to known-bound variables kill the cells whose value mentions the
-  target. Control-flow joins clear the cache (a conditional whose body cannot
-  complete normally may retain it); function/loop bodies are independent
-  regions. This mirrors `StorageForward`/`ReuseValues` exactly.
+* Assignments kill the cells whose value mentions the target. Control-flow
+  joins clear the cache (a conditional whose body cannot complete normally may
+  retain the post-condition cache, because only the unselected branch reaches
+  the tail); function/loop bodies are independent regions. This mirrors
+  `StorageForward`/`ReuseValues`.
+
+Soundness proof (EquivBlock-style, as for `StorageForward`/`ReuseValues`) and
+proper pipeline wiring are **not yet done**: the transform is currently applied
+in `compileSource` as an experimental step (forward, then re-optimize). See the
+task report for the proof plan (reuse `ReuseValuesSound`'s `RvOk` cell-validity
+machinery; the new obligation is an expression-tree Step simulation for `mfE`
+that threads cell validity through evaluation and every `Op`, clearing at
+memory writers).
 -/
 
 namespace YulEvmCompiler.Optimizer.MemoryForward

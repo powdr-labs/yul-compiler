@@ -79,3 +79,7 @@ root = "scripts.DumpYul"
 [[lean_exe]]
 name = "yulIRCorpus"
 root = "scripts.YulIRCorpus"
+
+[[lean_exe]]
+name = "checkSolcDifferential"
+root = "scripts.CheckSoliditySolcDifferential"
