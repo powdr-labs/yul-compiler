@@ -446,9 +446,11 @@ theorem block_singleton_switch {e : Expr Op} (hpure : DispatchTree.pureScrut e =
         have hb2 := (Step.feq hb) (FEq.rm funs)
         rw [stmts_single] at hb2
         cases hb2 with
-        | switchExec hc hbody =>
+        | @switchExec _ _ _ _ _ _ cv2 st1 _ _ _ hc hbody =>
+            obtain ⟨hst1, _⟩ := pureScrut_val hpure hc
+            subst st1
             have hcveq := pureScrut_det hpure hc (hcv funs st)
-            subst hcveq
+            subst cv2
             cases hbody with
             | block hbb =>
                 have hlen := venvLen_mono hbb rfl
@@ -462,14 +464,80 @@ theorem block_singleton_switch {e : Expr Op} (hpure : DispatchTree.pureScrut e =
             | call _ _ => simp [DispatchTree.pureScrut] at hpure
   · intro h
     cases h with
-    | block hbb =>
+    | @block _ _ _ _ Vb _ _ hbb =>
         have hlen := venvLen_mono hbb rfl
         have hsw : Step D funs V st (.stmt (.switch e cs d))
-            (.sres (restore V _) st' o) := Step.switchExec (hcv funs st) (Step.block hbb)
-        have hseq := (Step.feq (stmts_single.mpr hsw)) (FEq.add funs)
+            (.sres (restore V Vb) st' o) := Step.switchExec (hcv funs st) (Step.block hbb)
+        have hseq : Step D (hoist D [.switch e cs d] :: funs) V st
+            (.stmts [.switch e cs d]) (.sres (restore V Vb) st' o) :=
+          (Step.feq (stmts_single.mpr hsw)) (FEq.add funs)
         have hfin := Step.block hseq
         rw [restore_restore hlen] at hfin
         exact hfin
+
+/-- The outer node's `case 1` fires exactly when `lt` returned true. -/
+theorem selectSwitch_one (B_lo B_hi : Block Op) :
+    selectSwitch D (b2w true) [(.number 1, B_lo)] (some B_hi) = B_lo := by
+  simp [selectSwitch, b2w, litValue]
+
+/-- Otherwise the node falls to its default (the upper half). -/
+theorem selectSwitch_zero (B_lo B_hi : Block Op) :
+    selectSwitch D (b2w false) [(.number 1, B_lo)] (some B_hi) = B_hi := by
+  simp [selectSwitch, b2w, litValue]
+
+/-! ### One split step -/
+
+/-- The core equivalence: a switch on a pure scrutinee equals the two-way split
+`switch lt(e, pivot) case 1 {switch over lower half} default {switch over upper
+half}`. Holds for **any** pivot — the halves are literal filters of the case
+list. -/
+theorem split_equiv (e : Expr Op) (hpure : DispatchTree.pureScrut e = true)
+    (cases : List (Literal × Block Op)) (dflt : Option (Block Op)) (pv : U256) :
+    EquivStmt D (.switch e cases dflt)
+      (.switch (DispatchTree.ltPivot e pv)
+        [(.number 1, [.switch e (DispatchTree.loHalf pv cases) dflt])]
+        (some [.switch e (DispatchTree.hiHalf pv cases) dflt])) := by
+  intro funs V st V'' st'' o
+  constructor
+  · intro h
+    cases h with
+    | @switchExec _ _ _ _ _ _ cv st1 _ _ _ hc hbody =>
+        obtain ⟨hst1, hre⟩ := pureScrut_val hpure hc
+        subst st1
+        refine Step.switchExec (ltPivot_eval pv hre) ?_
+        by_cases hlt : cv.ult pv = true
+        · rw [selectSwitch_loHalf cases dflt pv hlt] at hbody
+          rw [hlt, selectSwitch_one]
+          exact (block_singleton_switch hpure hre).mpr hbody
+        · have hlt' : cv.ult pv = false := by simpa using hlt
+          rw [selectSwitch_hiHalf cases dflt pv hlt'] at hbody
+          rw [hlt', selectSwitch_zero]
+          exact (block_singleton_switch hpure hre).mpr hbody
+    | switchHalt hc =>
+        cases e with
+        | var x => cases hc
+        | lit l => cases hc
+        | builtin _ _ => simp [DispatchTree.pureScrut] at hpure
+        | call _ _ => simp [DispatchTree.pureScrut] at hpure
+  · intro h
+    cases h with
+    | @switchExec _ _ _ _ _ _ ltv st1 _ _ _ hc hbody =>
+        obtain ⟨cv, hre, hval⟩ := ltPivot_eval_inv hpure hc
+        injection hval with hlv hs
+        injection hlv with hlv
+        subst st1; subst ltv
+        refine Step.switchExec (hre funs st) ?_
+        by_cases hlt : cv.ult pv = true
+        · rw [hlt, selectSwitch_one] at hbody
+          rw [selectSwitch_loHalf cases dflt pv hlt]
+          exact (block_singleton_switch hpure hre).mp hbody
+        · have hlt' : cv.ult pv = false := by simpa using hlt
+          rw [hlt', selectSwitch_zero] at hbody
+          rw [selectSwitch_hiHalf cases dflt pv hlt']
+          exact (block_singleton_switch hpure hre).mp hbody
+    | switchHalt hc =>
+        obtain ⟨cv, _, hval⟩ := ltPivot_eval_inv hpure hc
+        exact absurd hval (by simp)
 
 /-- Soundness of the dispatch-tree rewrite: pointwise-equivalent to the input. -/
 theorem dispatchTreeBlock_sound (b : Block Op) :
