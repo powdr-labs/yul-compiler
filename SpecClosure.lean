@@ -550,7 +550,7 @@ SPEC CLOSURE — audited this-repo surface (89 decls)
   datadef YulEvmCompiler.conv 25e701af8a9ce7bb
   datadef YulEvmCompiler.mkCode edacb826e56f9571
   datadef YulEvmCompiler.natToBE d47a19daef761803
-  datadef YulEvmCompiler.opTable e1b0c299397baebd
+  datadef YulEvmCompiler.opTable 58d5b129f84835ed
   datadef YulEvmCompiler.resolveForLayoutCases a635c809600d2d8a
   datadef YulEvmCompiler.resolveForLayoutExpr 15bc9ca915a17f5a
   datadef YulEvmCompiler.resolveForLayoutExprs deee862dd8d61de4

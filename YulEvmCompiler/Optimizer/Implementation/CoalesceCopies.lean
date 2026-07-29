@@ -307,7 +307,8 @@ theorem ccPairs_bwd : ∀ (ss : List (Stmt Op)) {funs : FunEnv D} {V : VEnv D}
             have hlet_y' : ∀ st2 : EvmState, Step D funs ((x', v) :: V) st2
                 (.stmt (.letDecl [y] (some (.var x'))))
                 (.sres ((y, v) :: (x', v) :: V) st2 .normal) := fun st2 =>
-              Step.letVal (vars := [y]) (Step.var (by simp [VEnv.get])) rfl
+              Step.letVal («D» := D) (vars := [y])
+                (Step.var (by simp [VEnv.get])) rfl
             rcases hshape with ⟨rfl, rfl, rfl⟩ | ⟨e, rfl, he⟩
             · exact ⟨V₁, Step.seqCons Step.letZero
                 (Step.seqCons (hlet_y' _) hstep₂),

@@ -159,7 +159,7 @@ theorem rightAssocAdd_equiv (a c : Expr Op) :
   · next a b c ihb iha =>
       exact (add_assoc_equiv a b c).trans
         ((EquivExpr.builtin_congr Op.add (EquivArgs.of_forall₂
-          (.cons (EquivExpr.refl a) (.cons ihb .nil)))).trans iha)
+          (.cons (EquivExpr.refl («D» := D) a) (.cons ihb .nil)))).trans iha)
   · exact EquivExpr.refl _
 
 theorem scheduleBuiltin_equiv (op : Op) (args : List (Expr Op)) :
@@ -487,7 +487,7 @@ theorem copyBackSite_equivBlock {pre suffix : Block Op} {ts ds : List Ident}
                   (VEnv.setMany Vp ds vals) := by
                 have hm0 := zip_mins (calls := calls) (creates := creates)
                   (VEnv.setMany Vp ds vals) hvals'
-                rw [VEnv.setMany_length] at hm0
+                rw [VEnv.setMany_length («D» := D)] at hm0
                 exact hm0
               have hifree : InsFree (tempIns Vp.length ts) (.stmts suffix) := by
                 intro p hp
@@ -532,7 +532,7 @@ theorem copyBackSite_equivBlock {pre suffix : Block Op} {ts ds : List Ident}
                 (VEnv.setMany Vp ds vals) := by
               have hm0 := zip_mins (calls := calls) (creates := creates)
                 (VEnv.setMany Vp ds vals) hvals'
-              rw [VEnv.setMany_length] at hm0
+              rw [VEnv.setMany_length («D» := D)] at hm0
               exact hm0
             have hifree : InsFree (tempIns Vp.length ts) (.stmts suffix) := by
               intro p hp
@@ -988,12 +988,12 @@ theorem set_ne {d : Nat} {x z : Ident} {V : VEnv D} (h : LocalAt d x V)
   · rw [VEnv.set_append_mem hza]
     refine ⟨VEnv.set above z value, below, old, ?_, ?_, hd⟩
     · rfl
-    · rw [VEnv.set_keys]
+    · rw [VEnv.set_keys («D» := D)]
       exact hx
   · rw [VEnv.set_append_not_mem hza]
     simp only [VEnv.set, if_neg (Ne.symm hz)]
     refine ⟨above, VEnv.set below z value, old, rfl, hx, ?_⟩
-    rw [VEnv.set_length, hd]
+    rw [VEnv.set_length («D» := D), hd]
 
 end LocalAt
 
@@ -1024,7 +1024,7 @@ namespace SlotRel
 theorem length {d dx : Nat} {x y : Ident} {V₁ V₂ : VEnv D}
     (h : SlotRel d dx x y V₁ V₂) : V₁.length = V₂.length + 1 := by
   obtain ⟨above, tail, value, rfl, rfl, -, -, -, -⟩ := h
-  rw [List.length_append, List.length_cons, List.length_append, VEnv.set_length]
+  rw [List.length_append, List.length_cons, List.length_append, VEnv.set_length («D» := D)]
   omega
 
 theorem get_y {d dx : Nat} {x y : Ident} {V₁ V₂ : VEnv D}
@@ -1083,16 +1083,16 @@ theorem set {d dx : Nat} {x y z : Ident} {V₁ V₂ : VEnv D}
       refine ⟨VEnv.set above z value, tail, old, ?_, ?_, ?_, ?_, hd, hlocal⟩
       · rfl
       · rfl
-      · rw [VEnv.set_keys]
+      · rw [VEnv.set_keys («D» := D)]
         exact hxa
-      · rw [VEnv.set_keys]
+      · rw [VEnv.set_keys («D» := D)]
         exact hya
     · rw [VEnv.set_append_not_mem hza, VEnv.set_append_not_mem hza]
       simp only [VEnv.set, if_neg (Ne.symm hzy)]
       have hcomm := VEnv.set_comm hzx tail value old
       rw [← hcomm]
       refine ⟨above, VEnv.set tail z value, old, rfl, rfl, hxa, hya, ?_, ?_⟩
-      · rw [VEnv.set_length, hd]
+      · rw [VEnv.set_length («D» := D), hd]
       · exact hlocal.set_ne hzx value
 
 theorem setMany {d dx : Nat} {x y : Ident} {V₁ V₂ : VEnv D}
@@ -1225,7 +1225,7 @@ theorem restore_nested {d dx : Nat} {x y : Ident} {Ve₁ Ve₂ Vb₁ Vb₂ : VEn
     omega
   have hk₂ : Vb₂.length - Ve₂.length = bodyAbove.length - entryAbove.length := by
     rw [he₂, hb₂, List.length_append, List.length_append,
-      VEnv.set_length, VEnv.set_length, hed, hbd]
+      VEnv.set_length («D» := D), VEnv.set_length («D» := D), hed, hbd]
     omega
   unfold YulSemantics.restore
   rw [hk₁, hk₂, hb₁, hb₂,
@@ -1812,12 +1812,12 @@ theorem slot_fwd {funs : FunEnv D} {V₁ : VEnv D} {st : EvmState}
       · subst z
         refine ⟨.eres (.vals [value] st), ?_, ?_⟩
         · simpa [renameCode, renameExpr] using
-            Step.var (by rw [← hslot.get_y]; exact hget)
+            Step.var («D» := D) (by rw [← hslot.get_y]; exact hget)
         · rfl
       · have hzx : z ≠ x := fun hzx => hmx hzx.symm
         refine ⟨.eres (.vals [value] st), ?_, ?_⟩
         · simpa [renameCode, renameExpr, hzy] using
-            Step.var (by rw [← hslot.get_other hzx hzy]; exact hget)
+            Step.var («D» := D) (by rw [← hslot.get_other hzx hzy]; exact hget)
         · rfl
   | builtinOk hargs hb ihargs =>
       intro d dx x y V₂ hslot hmx hdy
@@ -1886,7 +1886,7 @@ theorem slot_fwd {funs : FunEnv D} {V₁ : VEnv D} {st : EvmState}
   | @funDef funs V st n ps rs body =>
       intro d dx x y V₂ hslot _ _
       refine ⟨.sres V₂ st .normal, ?_, ?_⟩
-      · simpa [renameCode, renameStmt] using Step.funDef
+      · simpa [renameCode, renameStmt] using Step.funDef («D» := D)
       · exact ⟨hslot, rfl, rfl⟩
   | @block funs V st body Vb stb o hbody ihbody =>
       intro d dx x y V₂ hslot hmx hdy
@@ -1909,7 +1909,7 @@ theorem slot_fwd {funs : FunEnv D} {V₁ : VEnv D} {st : EvmState}
         decide_eq_false_iff_not] at hmx
       simp only [codeDeclares, stmtDeclares] at hdy
       refine ⟨.sres (bindZeros D vars ++ V₂) st .normal, ?_, ?_⟩
-      · simpa [renameCode, renameStmt] using Step.letZero
+      · simpa [renameCode, renameStmt] using Step.letZero («D» := D)
       · exact ⟨hslot.prependZeros hmx (by simpa using hdy), rfl, rfl⟩
   | @letVal _ _ _ vars e values st' hexpr hlen ih =>
       intro d dx x y V₂ hslot hmx hdy
@@ -2082,20 +2082,20 @@ theorem slot_fwd {funs : FunEnv D} {V₁ : VEnv D} {st : EvmState}
   | @«break» funs V st =>
       intro d dx x y V₂ hslot _ _
       refine ⟨.sres V₂ st .«break», ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmt] using Step.break
+      simpa [renameCode, renameStmt] using Step.break («D» := D)
   | @«continue» funs V st =>
       intro d dx x y V₂ hslot _ _
       refine ⟨.sres V₂ st .«continue», ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmt] using Step.continue
+      simpa [renameCode, renameStmt] using Step.continue («D» := D)
   | @«leave» funs V st =>
       intro d dx x y V₂ hslot _ _
       refine ⟨.sres V₂ st .leave, ?_, ?_⟩
-      · simpa [renameCode, renameStmt] using Step.leave
+      · simpa [renameCode, renameStmt] using Step.leave («D» := D)
       · exact ⟨hslot, rfl, rfl⟩
   | @seqNil funs V st =>
       intro d dx x y V₂ hslot _ _
       refine ⟨.sres V₂ st .normal, ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmts] using Step.seqNil
+      simpa [renameCode, renameStmts] using Step.seqNil («D» := D)
   | @seqCons funs V st s rest Vs sts Vr str o hstmt hrest ihstmt ihrest =>
       intro d dx x y V₂ hslot hmx hdy
       simp only [codeMentions, stmtsMentions, Bool.or_eq_false_iff] at hmx
@@ -2264,12 +2264,12 @@ theorem slot_rev_fwd {funs : FunEnv D} {V₂ : VEnv D} {st : EvmState}
       · subst z
         refine ⟨.eres (.vals [value] st), ?_, ?_⟩
         · simpa [renameCode, renameExpr] using
-            Step.var (by rw [hslot.get_y]; exact hget)
+            Step.var («D» := D) (by rw [hslot.get_y]; exact hget)
         · rfl
       · have hzy : z ≠ y := fun hzy => hmy hzy.symm
         refine ⟨.eres (.vals [value] st), ?_, ?_⟩
         · simpa [renameCode, renameExpr, hzx] using
-            Step.var (by rw [hslot.get_other hzx hzy]; exact hget)
+            Step.var («D» := D) (by rw [hslot.get_other hzx hzy]; exact hget)
         · rfl
   | builtinOk hargs hb ihargs =>
       intro d dx x y V₁ hslot hxy hmy hdx
@@ -2338,7 +2338,7 @@ theorem slot_rev_fwd {funs : FunEnv D} {V₂ : VEnv D} {st : EvmState}
   | @funDef funs V st n ps rs body =>
       intro d dx x y V₁ hslot hxy hmy hdx
       refine ⟨.sres V₁ st .normal, ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmt] using Step.funDef
+      simpa [renameCode, renameStmt] using Step.funDef («D» := D)
   | @block funs V st body Vb stb o hbody ihbody =>
       intro d dx x y V₁ hslot hxy hmy hdx
       simp only [codeMentions, stmtMentions] at hmy
@@ -2364,7 +2364,7 @@ theorem slot_rev_fwd {funs : FunEnv D} {V₂ : VEnv D} {st : EvmState}
         decide_eq_false_iff_not] at hmy
       simp only [codeDeclares, stmtDeclares] at hdx
       refine ⟨.sres (bindZeros D vars ++ V₁) st .normal, ?_, ?_⟩
-      · simpa [renameCode, renameStmt] using Step.letZero
+      · simpa [renameCode, renameStmt] using Step.letZero («D» := D)
       · exact ⟨hslot.prependZeros (by simpa using hdx) (by simpa using hmy), rfl, rfl⟩
   | @letVal funs V st vars e values st' hexpr hlen ih =>
       intro d dx x y V₁ hslot hxy hmy hdx
@@ -2534,19 +2534,19 @@ theorem slot_rev_fwd {funs : FunEnv D} {V₂ : VEnv D} {st : EvmState}
   | @«break» funs V st =>
       intro d dx x y V₁ hslot hxy hmy hdx
       refine ⟨.sres V₁ st .«break», ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmt] using Step.break
+      simpa [renameCode, renameStmt] using Step.break («D» := D)
   | @«continue» funs V st =>
       intro d dx x y V₁ hslot hxy hmy hdx
       refine ⟨.sres V₁ st .«continue», ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmt] using Step.continue
+      simpa [renameCode, renameStmt] using Step.continue («D» := D)
   | @«leave» funs V st =>
       intro d dx x y V₁ hslot hxy hmy hdx
       refine ⟨.sres V₁ st .leave, ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmt] using Step.leave
+      simpa [renameCode, renameStmt] using Step.leave («D» := D)
   | @seqNil funs V st =>
       intro d dx x y V₁ hslot hxy hmy hdx
       refine ⟨.sres V₁ st .normal, ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmts] using Step.seqNil
+      simpa [renameCode, renameStmts] using Step.seqNil («D» := D)
   | @seqCons funs V st s rest Vs sts Vr str o hstmt hrest ihstmt ihrest =>
       intro d dx x y V₁ hslot hxy hmy hdx
       simp only [codeMentions, stmtsMentions, Bool.or_eq_false_iff] at hmy
@@ -2742,7 +2742,7 @@ theorem reuseSlot_equivBlock {pre rest : Block Op} {x y : Ident}
                 Vp stp (.stmt (.assign [x] (.lit (.number 0))))
                 (.sres (VEnv.set Vp x (evmWithExternal calls creates).zero)
                   stp .normal) :=
-              Step.assignVal Step.lit rfl
+              Step.assignVal Step.lit («D» := D) rfl
             have hjoin := stmts_append_normal hpre
               (Step.seqCons hassign htarget)
             have hr := hslot'.restore_eq hxbase
@@ -2971,7 +2971,7 @@ mutual
           obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
           subst s'
           exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
-            (EquivBlock.refl _)
+            (EquivBlock.refl («D» := D) _)
             (stageOneStmts_sound P Phi' loopLayout body _ hb []),
             ScopeRel.refl _⟩
     | _, _, _, .letDecl _ _, _, h => by simp [stageOneStmt] at h
@@ -3116,7 +3116,7 @@ mutual
           obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
           subst s'
           exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
-            (EquivBlock.refl _)
+            (EquivBlock.refl («D» := D) _)
             (copyOneStmts_sound (layoutAfter layout init) body _ hb []),
             ScopeRel.refl _⟩
     | _, .letDecl _ _, _, h => by simp [copyOneStmt] at h
@@ -3260,7 +3260,7 @@ mutual
           subst s'
           have heq := reuseOneStmts_sound layout [] body _ hb [] (by simp)
           exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
-            (EquivBlock.refl _) heq, ScopeRel.refl _⟩
+            (EquivBlock.refl («D» := D) _) heq, ScopeRel.refl _⟩
     | _, .letDecl _ _, _, h => by simp [reuseOneStmt] at h
     | _, .assign _ _, _, h => by simp [reuseOneStmt] at h
     | _, .exprStmt _, _, h => by simp [reuseOneStmt] at h
@@ -3491,7 +3491,7 @@ theorem restore_erase_head_set {outer tail : VEnv D} {c r : Ident}
       (c, old) :: VEnv.set tail r result := by simp [VEnv.set, hcr]
   rw [hc, hr₁, hr₂]
   simp only [restore, List.length_cons]
-  rw [VEnv.set_length]
+  rw [VEnv.set_length («D» := D)]
   rw [show tail.length + 1 - outer.length =
       (tail.length - outer.length) + 1 by omega]
   rfl
@@ -3797,7 +3797,7 @@ theorem scopeTail_equivBlock {pre middle : Block Op} {carrier result : Ident}
                             restore V (VEnv.set Vm result value) := by
                           rw [← hrcomm]
                           apply restore_restore hOuterVc
-                          rw [VEnv.set_length]
+                          rw [VEnv.set_length («D» := D)]
                           exact hVcLen
                         have henv : restore V
                             (VEnv.set (restore Vc (VEnv.set Vm carrier value))
@@ -4035,7 +4035,7 @@ theorem scopeTail_equivBlock {pre middle : Block Op} {carrier result : Ident}
                                       restore V (VEnv.set Vm result value) := by
                                     rw [← hrcomm]
                                     apply restore_restore hOuterVc
-                                    rw [VEnv.set_length]
+                                    rw [VEnv.set_length («D» := D)]
                                     exact hVcLen
                                   have henv : restore V
                                       (VEnv.set
@@ -4433,7 +4433,7 @@ mutual
           subst s'
           have heq := scopeOneStmts_sound layout body _ hb []
           exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
-            (EquivBlock.refl _) heq, ScopeRel.refl _⟩
+            (EquivBlock.refl («D» := D) _) heq, ScopeRel.refl _⟩
     | _, .letDecl _ _, _, h => by simp [scopeOneStmt] at h
     | _, .assign _ _, _, h => by simp [scopeOneStmt] at h
     | _, .exprStmt _, _, h => by simp [scopeOneStmt] at h
@@ -5440,7 +5440,7 @@ mutual
             obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
             subst s'
             exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
-              (EquivBlock.refl _)
+              (EquivBlock.refl («D» := D) _)
               (scopeOneDeadPrefixStmts_sound body _ hb []), ScopeRel.refl _⟩
     | .letDecl _ _, _, h => by simp [StackV2.scopeOneDeadPrefixStmt] at h
     | .assign _ _, _, h => by simp [StackV2.scopeOneDeadPrefixStmt] at h
@@ -6333,7 +6333,7 @@ private theorem aliasOneStmts_bound {layout : List Ident}
     · rintro ⟨_, hrun⟩
       cases hrun with
       | block hbody =>
-          have hrunOut := Step.block (by
+          have hrunOut := Step.block («D» := D) (by
             rw [hh]
             exact (hs (hoist D body :: funs) V st hbmem _ _ _).mp hbody)
           exact ⟨_, hrunOut⟩
@@ -6406,7 +6406,7 @@ private theorem SlotRel.copyBack_restore {d dx : Nat} {x y : Ident}
     have htail := congrArg List.length hkeys
     simp only [List.length_map, List.length_cons] at htail
     have htailBase : tail.length = base.length := by omega
-    rw [List.length_cons, VEnv.set_length, htailBase]
+    rw [List.length_cons, VEnv.set_length («D» := D), htailBase]
     simp
   rw [hlen]
   simp [hV₂]

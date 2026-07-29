@@ -85,9 +85,9 @@ theorem RPass.resolve_equiv_ofList (ps : List (RPass calls creates))
     (L : Layout) (b : Block Op) :
     EquivBlock D
       (resolveForLayoutStmts L b)
-      (resolveForLayoutStmts L ((LocalPass.ofList (ps.map (·.pass))).run b)) := by
+      (resolveForLayoutStmts L ((LocalPass.ofList («D» := D) (ps.map (·.pass))).run b)) := by
   induction ps generalizing b with
-  | nil => exact EquivBlock.refl _
+  | nil => exact EquivBlock.refl («D» := D) _
   | cons p rest ih =>
       exact (p.resolve_equiv L b).trans (ih (p.pass.run b))
 

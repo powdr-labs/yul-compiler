@@ -1,3 +1,6 @@
+import Mathlib.Data.Nat.SuccPred
+import Mathlib.Tactic.ByContra
+import Mathlib.Tactic.Push
 import YulSemantics.Determinism
 import YulSemantics.ObjectRun
 set_option warningAsError true
@@ -63,7 +66,7 @@ mutual
     | .«continue» => .«continue»
     | .leave => .leave
     termination_by statement => 2 * sizeOf statement + 1
-    decreasing_by all_goals simp_wf <;> omega
+    decreasing_by all_goals simp_wf; omega
 
   def resolveForLayoutStmts (L : Layout) : List (Stmt Op) → List (Stmt Op)
     | [] => []

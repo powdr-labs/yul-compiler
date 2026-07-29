@@ -146,7 +146,7 @@ theorem let_lit_run {x : Ident} {val : Option (Expr Op)} (funs : FunEnv D)
     ∃ v, Step D funs V st (.stmt (.letDecl [x] val)) (.sres ((x, v) :: V) st .normal) := by
   rcases hval with rfl | ⟨l, rfl⟩
   · exact ⟨_, Step.letZero⟩
-  · exact ⟨_, Step.letVal Step.lit rfl⟩
+  · exact ⟨_, Step.letVal («D» := D) Step.lit rfl⟩
 
 /-- Dropping a `letDecl` never changes the hoisted function scope. -/
 theorem hoist_drop_let (pre rest : List (Stmt Op)) (x : Ident) (val : Option (Expr Op)) :

@@ -211,7 +211,7 @@ theorem find_isSome_set {x y : Ident} {C : VEnv D}
     (hx : (C.find? (fun p => p.1 = x)).isSome)
     (v : (evmWithExternal calls creates).Value) :
     ((VEnv.set C y v).find? (fun p => p.1 = x)).isSome := by
-  rw [find_key_isSome_iff, VEnv.set_keys]
+  rw [find_key_isSome_iff, VEnv.set_keys («D» := D)]
   exact find_key_isSome_iff.mp hx
 
 /-- Renaming commutes with an update to `x`/`x'` (the segment never binds
@@ -348,7 +348,7 @@ theorem RnRel.set_ren {x x' : Ident} {n : Nat} {V₁ V₂ : VEnv D}
             rw [set_append_of_none hC v,
               set_append_of_none (by rw [renKeys_find_other hyx hyx']; exact hC) v]
             exact RnRel.mk C (VEnv.set base y v) hx hx'
-              (by rw [VEnv.set_length]; exact hn)
+              (by rw [VEnv.set_length («D» := D)]; exact hn)
 
 /-- Source `setMany` matches target `setMany` on the renamed targets. -/
 theorem RnRel.setMany_ren {x x' : Ident} {n : Nat} :
@@ -722,7 +722,7 @@ theorem Step.rn_congr {x x' : Ident} {n : Nat}
         exact hm.1 hy
       refine ⟨_, ?_, .sres _ _ (hR.pushMany (ps := bindZeros _ vars) ?_)⟩
       · have hmap : vars.map (renVar x x') = vars := map_renVar_id hxv
-        show Step _ _ _ _ (.stmt (.letDecl (vars.map (renVar x x')) none)) _
+        show Step D _ _ _ (.stmt (.letDecl (vars.map (renVar x x')) none)) _
         rw [hmap]
         exact Step.letZero
       · intro p hp

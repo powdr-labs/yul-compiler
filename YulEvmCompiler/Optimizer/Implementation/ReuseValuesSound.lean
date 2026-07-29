@@ -3479,7 +3479,7 @@ theorem rvFunStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (rvFunStmt s)
         (rvFunDflt_equiv dflt)
   | .forLoop init c post body => by
       simpa [rvFunStmt] using
-        (EquivStmt.forLoop_congr init (EquivExpr.refl c)
+        (EquivStmt.forLoop_congr init (EquivExpr.refl («D» := D) c)
         ((EquivBlock.of_stmts_funs
           (EquivStmts.of_forall₂ (rvFunStmts_forall2 post))
           (rvFunScopeRel post)).trans

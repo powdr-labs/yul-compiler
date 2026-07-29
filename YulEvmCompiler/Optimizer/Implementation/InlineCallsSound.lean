@@ -105,7 +105,7 @@ theorem VEnv.setMany_append_mem {A W : VEnv D} {xs : List Ident} {vs : List U256
           simp only [List.zip_cons_cons, List.foldl_cons]
           rw [VEnv.set_append_mem (h x (by simp)) W v]
           exact ih (fun y hy => by
-            rw [VEnv.set_keys]
+            rw [VEnv.set_keys («D» := D)]
             exact h y (List.mem_cons_of_mem _ hy))
 
 /-- `restore` distributes over a common extension. -/
@@ -422,7 +422,7 @@ theorem scoped_transfer {funs₁ : FunEnv D} {V₁ : VEnv D} {st : EvmState}
           have hpost : postBound bound (Code.stmt (.assign vars e)) = bound := by
             simp [postBound, scopedStmt, hsc'.1, hsc'.2]
           rw [hpost] at hx
-          rw [VEnv.setMany_keys]
+          rw [VEnv.setMany_keys («D» := D)]
           exact hb x hx
   | @assignHalt funs V st vars e st1 he ihe =>
       intro A W bound funs₂ W' hV hsc hb
@@ -843,7 +843,7 @@ theorem argLets_fwd {rs : List Ident} :
       cases ps with
       | nil =>
           cases h with
-          | argsNil => simpa using Step.seqNil
+          | argsNil => simpa using Step.seqNil («D» := D)
       | cons p ps' => simp at hlen
   | cons a as' ih =>
       intro argvals funs V st st1 h hlen hnc hsh N hN funs₂
@@ -975,7 +975,7 @@ theorem assigns_fwd {A' : VEnv D} :
   | nil =>
       intro rs hr hx hlen funs Wb st
       cases rs with
-      | nil => simpa [VEnv.setMany] using Step.seqNil
+      | nil => simpa [VEnv.setMany] using Step.seqNil («D» := D)
       | cons r rs' => simp at hlen
   | cons x xs' ih =>
       intro rs hr hx hlen funs Wb st

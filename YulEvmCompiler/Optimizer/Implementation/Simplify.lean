@@ -1,3 +1,7 @@
+import Mathlib.Data.BitVec
+import Batteries.Data.BitVec.Lemmas
+import Mathlib.Algebra.Group.Defs
+import Mathlib.Algebra.GroupWithZero.Basic
 import YulEvmCompiler.Optimizer.Spec.LocalPass
 import YulEvmCompiler.Optimizer.Core.Rule
 import YulEvmCompiler.Optimizer.Implementation.FunCongr
@@ -1633,7 +1637,8 @@ theorem cond_lit_zero_equiv (l : Literal) (body : Block Op)
     cases h with
     | block hb =>
         cases hb
-        simpa [restore] using (Step.ifFalse (body := body) Step.lit hz)
+        simpa [restore] using
+          (Step.ifFalse («D» := D) (body := body) Step.lit hz)
 
 /-- A true literal `if` is exactly its body block. -/
 theorem cond_lit_nonzero_equiv (l : Literal) (body : Block Op)

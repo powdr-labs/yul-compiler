@@ -297,14 +297,14 @@ def inlineHelpersStmt (litOK : Bool) (static : FunEnv D) : Stmt Op → Stmt Op
   | .continue => .continue
   | .leave => .leave
   termination_by statement => 2 * sizeOf statement + 1
-  decreasing_by all_goals simp_wf <;> omega
+  decreasing_by all_goals simp_wf; omega
 
 /-- Rewrite a statement sequence under an already-established scope stack. -/
 def inlineHelpersStmts (litOK : Bool) (static : FunEnv D) : Block Op → Block Op
   | [] => []
   | s :: rest => inlineHelpersStmt litOK static s :: inlineHelpersStmts litOK static rest
   termination_by statements => 2 * sizeOf statements
-  decreasing_by all_goals simp_wf <;> omega
+  decreasing_by all_goals simp_wf; omega
 
 /-- Rewrite switch cases, each of whose body is a block. -/
 def inlineHelpersCases (litOK : Bool) (static : FunEnv D) :
@@ -314,7 +314,7 @@ def inlineHelpersCases (litOK : Bool) (static : FunEnv D) :
       (l, inlineHelpersStmts litOK (hoist D body :: static) body) ::
         inlineHelpersCases litOK static rest
   termination_by cases => 2 * sizeOf cases
-  decreasing_by all_goals simp_wf <;> omega
+  decreasing_by all_goals simp_wf; omega
 
 end
 
@@ -746,7 +746,8 @@ theorem identity_call_value {funs cenv : FunEnv D} {V st st' fn e}
          body := [.assign [ret] (.var param)] }, cenv)) :
     Step D funs V st (.expr (.call fn [e])) (.eres (.vals [v] st')) := by
   obtain ⟨Vend, hbody, hret⟩ := identity_body_value cenv param ret v st'
-  have hc := Step.callOk (Step.argsCons Step.argsNil he) hl (by simp) hbody (Or.inl rfl)
+  have hc := Step.callOk («D» := D)
+    (Step.argsCons Step.argsNil he) hl (by simp) hbody (Or.inl rfl)
   simpa [hret] using hc
 
 theorem identity_call_halt {funs : FunEnv D} {V st st' fn e}

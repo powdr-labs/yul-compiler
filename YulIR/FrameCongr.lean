@@ -1,3 +1,4 @@
+import Batteries.Data.List.Basic
 import YulIR.FrameBigStep
 
 set_option warningAsError true

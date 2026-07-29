@@ -630,7 +630,7 @@ theorem DrFrame.set {base V : VEnv D} {owned : List Ident}
   have hxA : x ∈ A.map Prod.fst := by simpa [hkeys] using hx
   refine ⟨VEnv.set A x v, ?_, ?_⟩
   · exact VEnv.set_append_mem hxA base v
-  · rw [VEnv.set_keys, hkeys]
+  · rw [VEnv.set_keys («D» := D), hkeys]
 
 mutual
 
@@ -801,7 +801,7 @@ theorem discardStmt_run {sink : Ident} {ctx ctx' : DrCtx} {s : Stmt Op}
               · have h := Step.assignVal (vars := [x]) he rfl
                 rwa [VEnv.setMany_singleton] at h
               · intro z hz
-                rw [VEnv.set_keys]
+                rw [VEnv.set_keys («D» := D)]
                 exact hb z hz
   | cond _ _ => simp [discardStmt] at hcheck
   | switch _ _ _ => simp [discardStmt] at hcheck
@@ -931,7 +931,7 @@ theorem discardStmt_inv {sink : Ident} {ctx ctx' : DrCtx} {s : Stmt Op}
                   rw [VEnv.setMany_singleton]
                   refine ⟨rfl, rfl, hframe.set hx v, ?_⟩
                   intro z hz
-                  rw [VEnv.set_keys]
+                  rw [VEnv.set_keys («D» := D)]
                   exact hb z hz
               | assignHalt he =>
                   obtain ⟨v, hv⟩ := dcEvalInv rhs hae he
@@ -2436,7 +2436,7 @@ theorem dc_fwd {funs₁ : FunEnv D} {V₁ : VEnv D} {st : EvmState}
           refine ⟨_, Step.assignVal hstepe hlen, VEnv.setMany V₂ vars vals,
             rfl, MIns.setMany vals hins hdisj, fun _ => ?_⟩
           intro y hy
-          rw [VEnv.setMany_keys]
+          rw [VEnv.setMany_keys («D» := D)]
           exact hb y hy
   | @assignHalt funs V st vars e st1 he ihe =>
       intro funs₂ V₂ ins bound bound' pc' hR hrel hins hfree hb
@@ -3223,7 +3223,7 @@ theorem dc_bwd {funs₂ : FunEnv D} {V₂ : VEnv D} {st : EvmState}
           refine ⟨_, Step.assignVal hstepe hlen, VEnv.setMany V₁ vars vals,
             rfl, MIns.setMany vals hins hdisj, fun _ => ?_⟩
           intro y hy
-          rw [VEnv.setMany_keys]
+          rw [VEnv.setMany_keys («D» := D)]
           exact hb y hy
   | @assignHalt funs V st vars e st1 he ihe =>
       intro funs₁ V₁ ins bound bound' pc hR hrel hins hfree hb
