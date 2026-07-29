@@ -333,8 +333,10 @@ def scheduleCandidates (d : Dag) (target : SymState) : List (List Asm) :=
 
 /-! ### Window extraction + gate -/
 
-/-- Window length cap (kept moderate in Phase 1 so the rebuild scheduler's
-emitted code stays bounded even when it recomputes shared subterms). -/
+/-- Window length cap. The DAG keeps `symExec` linear, but the current scheduler
+still rebuilds (no CSE materialization), so bigger windows rebuild more and
+measure WORSE (128 → +1600 on the sweep); 48 is the empirical sweet spot until a
+CSE-materializing linear scheduler lands, at which point this should rise. -/
 def maxWindowLen : Nat := 48
 
 /-- Reachable-node budget guarding scheduler cost. -/
