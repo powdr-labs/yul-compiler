@@ -5,12 +5,16 @@ set_option warningAsError true
 
 The compiler's tiny instruction IR and its assembler.
 
-Each constructor assembles to a *fixed* byte sequence, so the decode lemmas
+Each constructor assembles to a byte sequence whose length is a function of the
+constructor's fields alone (never of any external layout), so the decode lemmas
 (`YulEvmCompiler.Decode`) are one small proof per constructor:
 
-* `push v`  — `PUSH32` (`0x7f`) followed by the 32-byte big-endian immediate.
-  Non-optimizing: every pushed word uses the full width, which keeps the
-  layout arithmetic trivial (`|push v| = 33`).
+* `push w v` — `PUSHk` for `k = w.val` (`PUSH0 = 0x5f` … `PUSH32 = 0x7f`)
+  followed by the `w.val`-byte big-endian immediate. The width is carried
+  explicitly so the assembler can emit the minimal encoding of a constant
+  (`pushMin`, `byteWidth`), while the decode round-trip stays a one-liner: it
+  holds under the well-formedness side condition `v.toNat < 256 ^ w.val`
+  (`|push w v| = 1 + w.val`).
 * `op o`    — a single-byte opcode (an `EvmSemantics.Operation` with no
   immediate bytes, e.g. `ADD`, `SLOAD`, `RETURN`).
 -/
@@ -33,10 +37,12 @@ def natToBE (n : Nat) : Nat → List UInt8
 
 /-- The compiler IR. -/
 inductive Instr
-  /-- `PUSH32 v`: `0x7f` + 32 immediate bytes. -/
-  | push  (v : UInt256)
+  /-- `PUSHk v` with `k = w.val`: opcode `0x5f + w.val` + `w.val` immediate
+  bytes. `w = 0` is `PUSH0` (no immediate); `w = 32` is the full-width
+  `PUSH32`. -/
+  | push  (w : Fin 33) (v : UInt256)
   /-- A single-byte operation (no immediate). Every emitted instruction is
-  immediate-free or `PUSH32`, so instruction boundaries coincide with the
+  immediate-free or a `PUSHk`, so instruction boundaries coincide with the
   jumpdest analysis' walk — see `Decode.isValidJumpDest_boundary`. -/
   | op    (o : Operation)
   deriving Repr
@@ -79,20 +85,91 @@ def opByte : Operation → UInt8
 
 /-- The bytes an instruction assembles to. -/
 def bytes : Instr → List UInt8
-  | .push v  => 0x7f :: natToBE v.toNat 32
-  | .op o    => [opByte o]
+  | .push w v => UInt8.ofNat (0x5f + w.val) :: natToBE v.toNat w.val
+  | .op o     => [opByte o]
 
 /-- The byte length of an instruction. -/
 def size (i : Instr) : Nat := i.bytes.length
 
-@[simp] theorem size_push (v : UInt256) : (Instr.push v).size = 33 := by
-  simp [size, bytes]
+@[simp] theorem size_push (w : Fin 33) (v : UInt256) : (Instr.push w v).size = 1 + w.val := by
+  simp only [size, bytes, List.length_cons, length_natToBE]; omega
 @[simp] theorem size_op (o : Operation) : (Instr.op o).size = 1 := rfl
 
 @[simp] theorem length_bytes_op (o : Operation) : (Instr.op o).bytes.length = 1 := rfl
 
-@[simp] theorem length_bytes_push (v : UInt256) : (Instr.push v).bytes.length = 33 := by
-  simp [bytes]
+@[simp] theorem length_bytes_push (w : Fin 33) (v : UInt256) :
+    (Instr.push w v).bytes.length = 1 + w.val := by
+  simp only [bytes, List.length_cons, length_natToBE]; omega
+
+/-! ### Minimal-width pushes
+
+`byteWidth n` is the least `w` with `n < 256 ^ w` (so `byteWidth 0 = 0`, giving
+`PUSH0`). `pushMin v` emits the shortest `PUSHk` encoding of `v`. -/
+
+/-- The least width `w` such that `n < 256 ^ w`. -/
+def byteWidth (n : Nat) : Nat := if n = 0 then 0 else byteWidth (n / 256) + 1
+decreasing_by exact Nat.div_lt_self (by omega) (by omega)
+
+/-- `byteWidth n` bytes are enough to hold `n`. -/
+theorem lt_pow_byteWidth (n : Nat) : n < 256 ^ byteWidth n := by
+  induction n using byteWidth.induct with
+  | case1 => simp [byteWidth]
+  | case2 n hn ih =>
+    rw [byteWidth, if_neg hn, Nat.pow_succ]
+    have hdm := Nat.div_add_mod n 256
+    have hmod : n % 256 < 256 := Nat.mod_lt _ (by omega)
+    have hle : n / 256 + 1 ≤ 256 ^ byteWidth (n / 256) := ih
+    omega
+
+/-- `byteWidth` is minimal: any width that fits `n` is at least `byteWidth n`. -/
+theorem byteWidth_le_of_lt_pow (n w : Nat) (h : n < 256 ^ w) : byteWidth n ≤ w := by
+  induction w generalizing n with
+  | zero => simp only [Nat.pow_zero] at h; simp [byteWidth, Nat.lt_one_iff.mp h]
+  | succ w ih =>
+    rw [byteWidth]
+    split
+    · exact Nat.zero_le _
+    · next hn =>
+      have hdiv : n / 256 < 256 ^ w := by
+        rw [Nat.div_lt_iff_lt_mul (by omega), ← Nat.pow_succ]
+        exact h
+      exact Nat.succ_le_succ (ih _ hdiv)
+
+private theorem pow_256_32' : (256 : Nat) ^ 32 = 2 ^ 256 := by
+  have h8 : (256 : Nat) = 2 ^ 8 := by decide
+  calc (256 : Nat) ^ 32 = (2 ^ 8) ^ 32 := by rw [h8]
+    _ = 2 ^ (8 * 32) := (Nat.pow_mul 2 8 32).symm
+    _ = 2 ^ 256 := rfl
+
+/-- For any word, `byteWidth v.toNat ≤ 32` (since `256 ^ 32 = 2 ^ 256`). -/
+theorem byteWidth_le_32 (v : UInt256) : byteWidth v.toNat ≤ 32 := by
+  apply byteWidth_le_of_lt_pow
+  rw [pow_256_32']
+  exact v.val.isLt
+
+/-- The minimal width (as a `Fin 33`) that encodes `v`. -/
+def widthOf (v : UInt256) : Fin 33 := ⟨byteWidth v.toNat, by have := byteWidth_le_32 v; omega⟩
+
+/-- `widthOf`'s underlying width is `byteWidth` (definitional; a `simp`
+handle so byte arithmetic can drop the `Fin` wrapper). -/
+@[simp] theorem widthOf_val (v : UInt256) : (widthOf v).val = byteWidth v.toNat := rfl
+
+/-- The shortest `PUSHk` that pushes `v` (`PUSH0` when `v = 0`). -/
+def pushMin (v : UInt256) : Instr := .push (widthOf v) v
+
+/-- `pushMin`'s width fits `v` — the decode round-trip side condition. -/
+theorem pushMin_wf (v : UInt256) : v.toNat < 256 ^ (widthOf v).val :=
+  lt_pow_byteWidth v.toNat
+
+/-- The byte length of a minimal-width push: `1 + byteWidth v.toNat`. -/
+@[simp] theorem length_bytes_pushMin (v : UInt256) :
+    (pushMin v).bytes.length = 1 + byteWidth v.toNat := by
+  rw [pushMin, length_bytes_push, widthOf_val]
+
+@[simp] theorem size_pushMin_le (v : UInt256) : (pushMin v).size ≤ 33 := by
+  rw [pushMin, size_push]
+  have : (widthOf v).val ≤ 32 := byteWidth_le_32 v
+  omega
 
 end Instr
 

@@ -11,8 +11,10 @@ the object, i.e. every `data` segment is faithfully placed in the deployed
 bytecode at the recorded offset with the recorded size.
 
 `compileObject` plans and compiles the complete tree recursively. It resolves
-`dataoffset`/`datasize` to fixed-width constants, emits each object's code,
-adds a `STOP` seam, and appends child-object bytecode followed by direct data.
+`dataoffset`/`datasize` to constants (emitted with minimal-width pushes, so a
+fuel-bounded layout fixpoint re-derives sizes until stable), emits each
+object's code, adds a `STOP` seam, and appends child-object bytecode followed
+by direct data.
 Its maps include self, child, nested, and data references under the same
 string-literal keys the Yul built-ins consume. Key collisions and layouts that
 do not fit a word are rejected.
@@ -49,10 +51,11 @@ structure ObjectEntry where
   size : Nat
   deriving Repr, DecidableEq
 
-/-- A planned object layout. `codeSize` is obtained by compiling the code with
-zero placeholders for layout references. Since this compiler always emits
-fixed-width `PUSH32`, replacing those placeholders with real offsets and sizes
-does not change any instruction or label position. -/
+/-- A planned object layout. `codeSize` is obtained by re-compiling the code
+under a fuel-bounded fixpoint (`planLoop`): because constant pushes now take
+the minimal `PUSHk` width, replacing the zero placeholders with real offsets
+and sizes can change push widths (hence positions), so the layout is iterated
+until the recompiled length is stable. -/
 structure ObjectPlan where
   name : String
   codeBlock : List (YulSemantics.Stmt Op)
@@ -419,6 +422,67 @@ private def planResolver (plan : ObjectPlan) : RefResolver := fun name => do
   some ((BitVec.ofNat 256 entry.offset).toNat,
     (BitVec.ofNat 256 entry.size).toNat)
 
+/-- One iteration of the object-layout fixpoint on the assumed code size `c`.
+Given already-planned `subPlans`, build the candidate layout that assumes the
+executable code occupies `c` bytes, resolve `dataoffset`/`datasize` against it,
+recompile, and measure the true executable length `c'`.
+
+- `some (.inl plan)` — the assumed size is a fixpoint (`c' = c`) and the fully
+  assembled bytecode has the expected length: `plan` is finished.
+- `some (.inr c')` — the assumption was wrong; retry with `c'`.
+- `none` — a hard failure (layout does not fit a word, resolution/compilation
+  failed, or the assembled length disagrees with the recorded size).
+
+This calls only `compile`/`resolveObjectStmts`/entry builders on the given
+`subPlans`; it never recurses on objects, so it lives outside the
+`planObject`/`planObjects` mutual block. Because minimal-width pushes make the
+recompiled length depend on the resolved constants, `planLoop` iterates
+`planAttempt` (starting from the placeholder compile's length) until the length
+stabilises; each accepted `ObjectPlan` still passes the same decidable
+`length == size`/`length == codeSize` checks the downstream lemmas consume. -/
+private def planAttempt (name : String) (code : List (YulSemantics.Stmt Op))
+    (subPlans : List ObjectPlan) (dataSegs : List (String × Data)) (c : Nat) :
+    Option (ObjectPlan ⊕ Nat) := do
+  let childrenSize := (subPlans.map (·.bytecode.length)).sum
+  let dataSize := (dataSegs.map (fun entry => entry.2.size)).sum
+  let size := c + 1 + childrenSize + dataSize
+  if size < 2 ^ 256 then
+    let children := childEntries (c + 1) subPlans
+    let dataLayout := dataEntries (c + 1 + childrenSize) dataSegs
+    let plan : ObjectPlan := {
+      name, codeBlock := code, codeSize := c, size, subObjects := subPlans, dataSegs
+      entries := { name, offset := 0, size } :: children ++ dataLayout
+      bytecode := []
+    }
+    let resolvedCode ← resolveObjectStmts (planResolver plan) code
+    let resolvedInstructions ← compile resolvedCode
+    let executable := assembleBytes resolvedInstructions
+    let c' := executable.length
+    if c' == c then
+      let childBytecode := (subPlans.map (·.bytecode)).flatten
+      let bytecode := executable ++ [0] ++ childBytecode ++ dataRegion dataSegs
+      if bytecode.length == size then some (.inl { plan with bytecode }) else none
+    else
+      some (.inr c')
+  else
+    none
+
+/-- Fuel-bounded iteration of `planAttempt`: keep retrying with each freshly
+measured code size until a fixpoint is reached (`.inl`), a hard failure occurs
+(`none`), or the fuel runs out (`none`). With minimal-width pushes the
+placeholder-compile length can differ from the resolved length, so the loop
+genuinely iterates; it converges in a couple of rounds (values and hence widths
+are monotone in the assumed code size). -/
+private def planLoop (name : String) (code : List (YulSemantics.Stmt Op))
+    (subPlans : List ObjectPlan) (dataSegs : List (String × Data)) :
+    Nat → Nat → Option ObjectPlan
+  | 0, _ => none
+  | fuel + 1, c =>
+    match planAttempt name code subPlans dataSegs c with
+    | none => none
+    | some (.inl plan) => some plan
+    | some (.inr c') => planLoop name code subPlans dataSegs fuel c'
+
 mutual
   /-- Plan all object sizes and named byte ranges. Every object contains one
   explicit `STOP` seam between executable code and embedded child/data bytes,
@@ -430,26 +494,13 @@ mutual
         let placeholderCode ← resolveObjectStmts placeholderResolver code
         let instructions ← compile placeholderCode
         let codeSize := (assembleBytes instructions).length
-        let childrenSize := (subPlans.map (·.bytecode.length)).sum
-        let dataSize := (dataSegs.map (fun entry => entry.2.size)).sum
-        let size := codeSize + 1 + childrenSize + dataSize
-        if size < 2 ^ 256 then
-          let children := childEntries (codeSize + 1) subPlans
-          let dataLayout := dataEntries (codeSize + 1 + childrenSize) dataSegs
-          let plan : ObjectPlan := {
-            name, codeBlock := code, codeSize, size, subObjects := subPlans, dataSegs
-            entries := { name, offset := 0, size } :: children ++ dataLayout
-            bytecode := []
-          }
-          let resolvedCode ← resolveObjectStmts (planResolver plan) code
-          let resolvedInstructions ← compile resolvedCode
-          let executable := assembleBytes resolvedInstructions
-          if executable.length != codeSize then none else
-          let childBytecode := (subPlans.map (·.bytecode)).flatten
-          let bytecode := executable ++ [0] ++ childBytecode ++ dataRegion dataSegs
-          if bytecode.length == size then some { plan with bytecode } else none
-        else
-          none
+        -- Iterate the layout fixpoint starting from the placeholder-compile
+        -- length. With minimal-width pushes, resolving the (0,0) placeholders
+        -- to real offsets/sizes can change push widths and hence byte
+        -- positions, so `planLoop` re-derives the layout until the recompiled
+        -- length is stable; the accepted plan still satisfies the same
+        -- decidable length checks.
+        planLoop name code subPlans dataSegs 34 codeSize
     termination_by 2 * sizeOf o + 1
 
   def planObjects (os : List (Object Op)) : Option (List ObjectPlan) :=
@@ -572,6 +623,82 @@ private theorem planResolver_agrees (plan : ObjectPlan)
   · simpa [layoutOfPlan, entryKey, hname] using congrArg BitVec.toNat hoff
   · simpa [layoutOfPlan, entryKey, hname] using congrArg BitVec.toNat hsize
 
+/-- Full specification of an accepted `planAttempt` iteration: it exposes the
+resolved source and instruction stream behind the executable prefix, records
+the assumed code size `c` as a genuine fixpoint (`executable.length = c`), and
+fixes every field of the returned plan (name, code, children, data, entry
+layout, size, and the exact `executable ++ [STOP] ++ children ++ data`
+bytecode). These are precisely the facts the object-correctness lemmas
+consume. -/
+private theorem planAttempt_spec
+    {name : String} {code : List (YulSemantics.Stmt Op)}
+    {subPlans : List ObjectPlan} {dataSegs : List (String × Data)}
+    {c : Nat} {plan : ObjectPlan}
+    (h : planAttempt name code subPlans dataSegs c = some (.inl plan)) :
+    ∃ resolved instructions,
+      resolveObjectStmts (planResolver plan) code = some resolved ∧
+      compile resolved = some instructions ∧
+      (assembleBytes instructions).length = c ∧
+      plan.name = name ∧
+      plan.codeBlock = code ∧
+      plan.subObjects = subPlans ∧
+      plan.dataSegs = dataSegs ∧
+      plan.codeSize = c ∧
+      plan.size = c + 1 + (subPlans.map (·.bytecode.length)).sum
+                    + (dataSegs.map (fun entry => entry.2.size)).sum ∧
+      plan.size < 2 ^ 256 ∧
+      plan.entries =
+        { name, offset := 0, size := plan.size }
+          :: childEntries (c + 1) subPlans
+             ++ dataEntries (c + 1 + (subPlans.map (·.bytecode.length)).sum) dataSegs ∧
+      plan.bytecode =
+        assembleBytes instructions ++ [0]
+          ++ (subPlans.map (·.bytecode)).flatten ++ dataRegion dataSegs ∧
+      plan.bytecode.length = plan.size := by
+  simp only [planAttempt, Option.bind_eq_bind] at h
+  split at h
+  · rename_i hsmall
+    obtain ⟨resolvedCode, hresolvedCode, h⟩ := Option.bind_eq_some_iff.mp h
+    obtain ⟨resolvedInstructions, hresolvedInstr, h⟩ := Option.bind_eq_some_iff.mp h
+    split at h
+    · rename_i hcc
+      split at h
+      · rename_i hbc
+        simp only [Option.some.injEq, Sum.inl.injEq] at h
+        subst plan
+        refine ⟨resolvedCode, resolvedInstructions, hresolvedCode, hresolvedInstr,
+          ?_, rfl, rfl, rfl, rfl, rfl, ?_, hsmall, rfl, rfl, ?_⟩
+        · simpa using hcc
+        · rfl
+        · simpa using hbc
+      · simp at h
+    · simp at h
+  · simp at h
+
+/-- If the fuel-bounded fixpoint loop returns a plan, that plan was produced by
+some accepted `planAttempt` iteration. Lifts `planAttempt_spec` through the
+loop by induction on the fuel. -/
+private theorem planLoop_spec
+    {name : String} {code : List (YulSemantics.Stmt Op)}
+    {subPlans : List ObjectPlan} {dataSegs : List (String × Data)} :
+    ∀ (fuel c : Nat) {plan : ObjectPlan},
+      planLoop name code subPlans dataSegs fuel c = some plan →
+        ∃ c', planAttempt name code subPlans dataSegs c' = some (.inl plan) := by
+  intro fuel
+  induction fuel with
+  | zero => intro c plan h; simp [planLoop] at h
+  | succ fuel ih =>
+      intro c plan h
+      unfold planLoop at h
+      split at h
+      · simp at h
+      · rename_i plan' heq
+        simp only [Option.some.injEq] at h
+        subst h
+        exact ⟨c, heq⟩
+      · rename_i c' heq
+        exact ih c' h
+
 /-- A successful plan retains the resolved source and instruction stream that
 produced its executable prefix. Everything after the explicit zero byte is an
 opaque payload to the block compiler's simulation theorem. -/
@@ -587,22 +714,14 @@ private theorem planObject_compileWitness {o : Object Op} {plan : ObjectPlan}
       obtain ⟨subPlans, -, h⟩ := Option.bind_eq_some_iff.mp h
       obtain ⟨placeholderCode, -, h⟩ := Option.bind_eq_some_iff.mp h
       obtain ⟨placeholderInstructions, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · obtain ⟨resolved, hresolved, h⟩ := Option.bind_eq_some_iff.mp h
-        obtain ⟨instructions, hinstructions, h⟩ := Option.bind_eq_some_iff.mp h
-        split at h
-        · cases h
-        · split at h
-          · simp only [Option.some.injEq] at h
-            subst plan
-            refine ⟨resolved, instructions,
-              (subPlans.map (·.bytecode)).flatten ++ dataRegion dataSegs, ?_,
-              hinstructions, ?_⟩
-            · change resolveObjectStmts (planResolver _) code = some resolved
-              exact hresolved
-            · simp [List.append_assoc]
-          · cases h
-      · cases h
+      obtain ⟨c', hatt⟩ := planLoop_spec 34 _ h
+      obtain ⟨resolved, instructions, hresolved, hinstructions, -, -, -, -, -, -, -, -,
+        -, hbytecode, -⟩ := planAttempt_spec hatt
+      refine ⟨resolved, instructions,
+        (subPlans.map (·.bytecode)).flatten ++ dataRegion dataSegs, hresolved,
+        hinstructions, ?_⟩
+      rw [hbytecode]
+      simp [List.append_assoc]
 
 /-- Successful planning places every direct data segment in the recorded
 bytecode and records a matching entry for it. -/
@@ -618,67 +737,40 @@ private theorem planObject_directData {o : Object Op} {plan : ObjectPlan}
       simp only [planObject, Option.bind_eq_bind] at h
       obtain ⟨subPlans, -, h⟩ := Option.bind_eq_some_iff.mp h
       obtain ⟨placeholderCode, -, h⟩ := Option.bind_eq_some_iff.mp h
-      obtain ⟨instructions, -, h⟩ := Option.bind_eq_some_iff.mp h
-      split at h
-      · rename_i hsmall
-        obtain ⟨resolvedCode, -, h⟩ := Option.bind_eq_some_iff.mp h
-        obtain ⟨resolvedInstructions, -, h⟩ := Option.bind_eq_some_iff.mp h
-        split at h
-        · cases h
-        · rename_i hexecutable
-          split at h
-          · rename_i hlength
-            simp only [Option.some.injEq] at h
-            subst plan
-            let executable := assembleBytes resolvedInstructions
-            let childBytecode := (subPlans.map (·.bytecode)).flatten
-            let pre := executable ++ [0] ++ childBytecode
-            have hexecutable' : executable.length = (assembleBytes instructions).length := by
-              simpa [executable] using hexecutable
-            have hpre : pre.length =
-                (assembleBytes instructions).length + 1 +
-                  (subPlans.map (·.bytecode.length)).sum := by
-              have hmap : subPlans.map (List.length ∘ fun x => x.bytecode) =
-                  subPlans.map (fun x => x.bytecode.length) := by
-                apply List.map_congr_left
-                intro x hx
-                rfl
-              simp [pre, childBytecode, hexecutable']
-              rw [hmap]
-              omega
-            have hbytecode :
-                (executable ++ [0] ++ childBytecode ++ dataRegion dataSegs) =
-                  pre ++ dataRegion dataSegs := by
-              simp [pre, List.append_assoc]
-            have hlength' :
-                (executable ++ [0] ++ childBytecode ++ dataRegion dataSegs).length =
-                  (assembleBytes instructions).length + 1 +
-                    (subPlans.map (·.bytecode.length)).sum +
-                      (dataSegs.map (fun entry => entry.2.size)).sum := by
-              simpa [executable, childBytecode, YulSemantics.Data.size,
-                dataRegion, hexecutable'] using hlength
-            have hcodeSmall :
-                (executable ++ [0] ++ childBytecode ++ dataRegion dataSegs).length <
-                  2 ^ 256 := by
-              rw [hlength']
-              exact hsmall
-            refine ⟨rfl, hcodeSmall, ?_⟩
-            intro p hp
-            obtain ⟨entry, hentry, hname, hsize, hoffset, hbytes⟩ :=
-              dataEntries_correct dataSegs pre p hp
-            refine ⟨entry, ?_, hname, hsize, ?_, ?_⟩
-            · right
-              apply List.mem_append_right
-              simpa [hpre] using hentry
-            · have hoffset' : entry.offset ≤
-                  (executable ++ [0] ++ childBytecode ++ dataRegion dataSegs).length := by
-                rw [hbytecode]
-                exact hoffset
-              omega
-            · rw [hbytecode]
-              exact hbytes
-          · cases h
-      · cases h
+      obtain ⟨placeholderInstructions, -, h⟩ := Option.bind_eq_some_iff.mp h
+      obtain ⟨c', hatt⟩ := planLoop_spec 34 _ h
+      obtain ⟨resolved, instructions, -, -, hlen, -, -, -, hdata, -, -, hsmall,
+        hentries, hbytecode, hbclen⟩ := planAttempt_spec hatt
+      set executable := assembleBytes instructions with hexe
+      set childBytecode := (subPlans.map (·.bytecode)).flatten with hcbc
+      set pre := executable ++ [0] ++ childBytecode with hpreDef
+      have hchild : childBytecode.length = (subPlans.map (·.bytecode.length)).sum := by
+        have hmap : subPlans.map (List.length ∘ fun x => x.bytecode) =
+            subPlans.map (fun x => x.bytecode.length) := by
+          apply List.map_congr_left
+          intro x _
+          rfl
+        simp only [hcbc, List.length_flatten, List.map_map]
+        rw [hmap]
+      have hpre : pre.length = c' + 1 + (subPlans.map (·.bytecode.length)).sum := by
+        simp only [hpreDef, List.length_append, List.length_cons, List.length_nil, hlen,
+          hchild]
+      refine ⟨hdata, ?_, ?_⟩
+      · rw [hbclen]; exact hsmall
+      · intro p hp
+        obtain ⟨entry, hentry, hname, hsize, hoffset, hbytes⟩ :=
+          dataEntries_correct dataSegs pre p hp
+        refine ⟨entry, ?_, hname, hsize, ?_, ?_⟩
+        · rw [hentries]
+          right
+          apply List.mem_append_right
+          simpa [hpre] using hentry
+        · have hoffset' : entry.offset ≤ plan.bytecode.length := by
+            rw [hbytecode]
+            exact hoffset
+          omega
+        · rw [hbytecode]
+          exact hbytes
 
 /-- The recursive resolved compiler faithfully places every direct data
 segment in the bytecode range recorded by its public layout maps. -/
@@ -834,12 +926,13 @@ example : (compileObject demoObject).map (fun (layout : Layout) =>
       (layout.dataSize (litValue (.string "blob"))).toNat)) = some (1, 4) := by
   native_decide
 
-/-- The parent code is 167 bytes, followed by its seam; the two-byte child
-(`STOP` plus its own seam) therefore begins at byte 168. -/
+/-- With minimal-width constant pushes and `labelWidth`-byte label pushes the
+parent code is 10 bytes, followed by its seam; the two-byte child (`STOP` plus
+its own seam) therefore begins at byte 11. -/
 example : (compileObject demoNestedObject).map (fun (layout : Layout) =>
     ((layout.dataOffset (litValue (.string "sub"))).toNat,
       (layout.dataSize (litValue (.string "sub"))).toNat,
-      layout.code.length)) = some (168, 2, 170) := by
+      layout.code.length)) = some (11, 2, 13) := by
   native_decide
 
 /-- The produced layout is consistent with the object (`compileObject_consistent`
