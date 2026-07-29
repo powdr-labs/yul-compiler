@@ -279,19 +279,18 @@ theorem restore_restore {V W : VEnv D} (h : V.length ≤ W.length) :
       = (restore V W).drop ((restore V W).length - V.length) := rfl
   rw [hunfold, hlen, Nat.sub_self, List.drop_zero]
 
-/-- A variable/literal scrutinee evaluates without touching the state, to a value
-that can be re-evaluated at any configuration. -/
+/-- A variable/literal scrutinee evaluates without touching the state, and its
+value can be re-evaluated at any configuration. -/
 theorem pureScrut_val {e : Expr Op} (hpure : DispatchTree.pureScrut e = true)
-    {funs V st r} (h : Step D funs V st (.expr e) (.eres r)) :
-    ∃ cv, r = .vals [cv] st ∧
-      ∀ funs' st', Step D funs' V st' (.expr e) (.eres (.vals [cv] st')) := by
+    {funs V st v st'} (h : Step D funs V st (.expr e) (.eres (.vals [v] st'))) :
+    st' = st ∧ ∀ funs' st'', Step D funs' V st'' (.expr e) (.eres (.vals [v] st'')) := by
   cases e with
   | var x =>
       cases h with
-      | var hv => exact ⟨_, rfl, fun _ _ => Step.var hv⟩
+      | var hv => exact ⟨rfl, fun _ _ => Step.var hv⟩
   | lit l =>
       cases h with
-      | lit => exact ⟨_, rfl, fun _ _ => Step.lit⟩
+      | lit => exact ⟨rfl, fun _ _ => Step.lit⟩
   | builtin op args => simp [DispatchTree.pureScrut] at hpure
   | call fn args => simp [DispatchTree.pureScrut] at hpure
 
@@ -352,6 +351,125 @@ theorem selectSwitch_hiHalf {cv : U256} (cases : List (Literal × Block Op))
   rw [find_filter_pred (fun p => decide (cv = litValue p.1))
     (fun c => !(litValue c.1).ult pv) cases (fun x hx => by
       simp only [decide_eq_true_eq] at hx; subst hx; simp [h])]
+
+/-! ### The `lt(e, pivot)` scrutinee -/
+
+/-- Constructing the pivot comparison: it evaluates to `1`/`0` according to
+`cv <ᵤ pivot`, leaving the state untouched. -/
+theorem ltPivot_eval {e : Expr Op} {cv : U256} {funs V st} (pv : U256)
+    (hcv : ∀ funs' st', Step D funs' V st' (.expr e) (.eres (.vals [cv] st'))) :
+    Step D funs V st (.expr (DispatchTree.ltPivot e pv))
+      (.eres (.vals [b2w (cv.ult pv)] st)) := by
+  unfold DispatchTree.ltPivot
+  refine Step.builtinOk (Step.argsCons (Step.argsCons Step.argsNil Step.lit) (hcv funs st)) ?_
+  show stepOp Op.lt [cv, litValue (.number pv.toNat)] st = some (.ok [b2w (cv.ult pv)] st)
+  rw [litValue_pivot]; rfl
+
+/-- Inverting the pivot comparison: a `lt(e, pivot)` value comes from `e`
+evaluating to some `cv` (re-evaluable, state-preserving) with the value
+`b2w (cv <ᵤ pivot)`. -/
+theorem ltPivot_eval_inv {e : Expr Op} (hpure : DispatchTree.pureScrut e = true)
+    {pv : U256} {funs V st r} (h : Step D funs V st (.expr (DispatchTree.ltPivot e pv)) (.eres r)) :
+    ∃ cv, (∀ funs' st', Step D funs' V st' (.expr e) (.eres (.vals [cv] st'))) ∧
+      r = .vals [b2w (cv.ult pv)] st := by
+  unfold DispatchTree.ltPivot at h
+  cases h with
+  | @builtinOk _ _ st _ _ argvals st1 rets st2 hargs hb =>
+      cases hargs with
+      | @argsCons _ _ _ _ _ _ _ v _ hrest hhead =>
+          cases hrest with
+          | argsCons hnil hpv =>
+              cases hnil; cases hpv
+              obtain ⟨hst, hre⟩ := pureScrut_val hpure hhead
+              subst hst
+              refine ⟨v, hre, ?_⟩
+              have hbb : stepOp Op.lt [v, litValue (.number pv.toNat)] st1
+                  = some (.ok rets st2) := hb
+              rw [litValue_pivot] at hbb
+              simp only [stepOp, bin, Option.some.injEq, BuiltinResult.ok.injEq] at hbb
+              obtain ⟨hr, hs⟩ := hbb
+              rw [← hr, ← hs]
+  | @builtinHalt _ _ st _ _ argvals st1 st2 hargs hb =>
+      cases hargs with
+      | argsCons hrest hhead =>
+          cases hrest with
+          | argsCons hnil hpv =>
+              cases hnil; cases hpv
+              obtain ⟨hst, _⟩ := pureScrut_val hpure hhead
+              subst hst
+              have hbb : stepOp Op.lt [_, litValue (.number pv.toNat)] st1
+                  = some (.halt st2) := hb
+              simp [stepOp, bin] at hbb
+  | builtinArgsHalt hargs =>
+      cases hargs with
+      | argsRestHalt hrest =>
+          cases hrest with
+          | argsRestHalt hnil => cases hnil
+          | argsHeadHalt hnil hpv => cases hnil; cases hpv
+      | argsHeadHalt hrest hhead =>
+          cases e with
+          | var x => cases hhead
+          | lit l => cases hhead
+          | builtin _ _ => simp [DispatchTree.pureScrut] at hpure
+          | call _ _ => simp [DispatchTree.pureScrut] at hpure
+
+/-- A variable/literal scrutinee is deterministic across configurations. -/
+theorem pureScrut_det {e : Expr Op} (hpure : DispatchTree.pureScrut e = true)
+    {funs V st a sta funs' st' b stb}
+    (ha : Step D funs V st (.expr e) (.eres (.vals [a] sta)))
+    (hb : Step D funs' V st' (.expr e) (.eres (.vals [b] stb))) : a = b := by
+  cases e with
+  | var x =>
+      cases ha with
+      | var hva => cases hb with | var hvb => rw [hva] at hvb; exact Option.some.inj hvb
+  | lit l => cases ha with | lit => cases hb with | lit => rfl
+  | builtin _ _ => simp [DispatchTree.pureScrut] at hpure
+  | call _ _ => simp [DispatchTree.pureScrut] at hpure
+
+/-! ### Collapsing a nested leaf switch
+
+The heart of the tree soundness: an outer switch selects the singleton block
+`[switch e cs d]`, running it as `.block [switch e cs d]`; this is equivalent to
+running the switch's own selected body `.block (selectSwitch cv cs d)` directly.
+The extra `.block` layer prepends an empty function scope (`Step.feq`) and an
+extra `restore` (`restore_restore`); both are transparent. -/
+theorem block_singleton_switch {e : Expr Op} (hpure : DispatchTree.pureScrut e = true)
+    {cv : U256} {cs : List (Literal × Block Op)} {d : Option (Block Op)}
+    {funs V st V' st' o}
+    (hcv : ∀ funs' st'', Step D funs' V st'' (.expr e) (.eres (.vals [cv] st''))) :
+    Step D funs V st (.stmt (.block [.switch e cs d])) (.sres V' st' o) ↔
+    Step D funs V st (.stmt (.block (selectSwitch D cv cs d))) (.sres V' st' o) := by
+  constructor
+  · intro h
+    cases h with
+    | block hb =>
+        have hb2 := (Step.feq hb) (FEq.rm funs)
+        rw [stmts_single] at hb2
+        cases hb2 with
+        | switchExec hc hbody =>
+            have hcveq := pureScrut_det hpure hc (hcv funs st)
+            subst hcveq
+            cases hbody with
+            | block hbb =>
+                have hlen := venvLen_mono hbb rfl
+                rw [restore_restore hlen]
+                exact Step.block hbb
+        | switchHalt hc =>
+            cases e with
+            | var x => cases hc
+            | lit l => cases hc
+            | builtin _ _ => simp [DispatchTree.pureScrut] at hpure
+            | call _ _ => simp [DispatchTree.pureScrut] at hpure
+  · intro h
+    cases h with
+    | block hbb =>
+        have hlen := venvLen_mono hbb rfl
+        have hsw : Step D funs V st (.stmt (.switch e cs d))
+            (.sres (restore V _) st' o) := Step.switchExec (hcv funs st) (Step.block hbb)
+        have hseq := (Step.feq (stmts_single.mpr hsw)) (FEq.add funs)
+        have hfin := Step.block hseq
+        rw [restore_restore hlen] at hfin
+        exact hfin
 
 /-- Soundness of the dispatch-tree rewrite: pointwise-equivalent to the input. -/
 theorem dispatchTreeBlock_sound (b : Block Op) :
