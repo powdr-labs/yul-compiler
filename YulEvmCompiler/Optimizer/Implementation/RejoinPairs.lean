@@ -40,6 +40,12 @@ undo `HoistCalls`/`FreshenCalls` and hide the site from `InlineCalls`
 binder costs a live operand-stack slot and a `DUP`, and the accumulated slots
 hold helper bodies above the `liveMax` inlining gates.
 
+For the two non-binder forms (assignment and if-condition), the producer must
+additionally be storage-read-free: nesting an `sload`/`tload` inside the
+consumer hides it from `ReuseValues`, whose fact recorder sees only binder-form
+`let x := sload(k)`, costing a redundant warm SLOAD per execution (measured:
++17% on array-storage push loops).
+
 Guards: the consumer position (`f` or the condition `c`) is a **pure-total
 tree** (builtins with `pureTotalArity`, leaves that are literals or bound
 variables) with exactly one occurrence of `x`; `x` is dead afterwards (and,
@@ -129,6 +135,25 @@ end
 `PoolLiquidity`'s stack-layout rescue). -/
 def rjDepthLimit : Nat := 8
 
+mutual
+
+/-- Storage-read ops anywhere in the tree: joining such a producer nests the
+read where ReuseValues' binder-form fact recorder cannot see it, costing a
+redundant warm SLOAD per execution (measured: array-storage push loops). -/
+def exprReadsStorage : Expr Op → Bool
+  | .lit _ => false
+  | .var _ => false
+  | .builtin .sload _ => true
+  | .builtin .tload _ => true
+  | .builtin _ args => argsReadStorage args
+  | .call _ args => argsReadStorage args
+
+/-- Does a storage-read op occur anywhere in the argument list? -/
+def argsReadStorage : List (Expr Op) → Bool
+  | [] => false
+  | e :: rest => exprReadsStorage e || argsReadStorage rest
+end
+
 /-- The pair guard. -/
 def rjPair (bound : List Ident) (x y : Ident) (e f : Expr Op)
     (rest : List (Stmt Op)) : Prop :=
@@ -145,7 +170,8 @@ a variable whose declaration was just deleted. -/
 def rjAssignPair (bound : List Ident) (x y : Ident) (e f : Expr Op)
     (rest : List (Stmt Op)) : Prop :=
   x ≠ y ∧ rjTree bound x f = some 1 ∧ stmtsMentions x rest = false ∧
-    exprHasCall e = false ∧ rjDepth (rjSubst x e f) ≤ rjDepthLimit
+    exprHasCall e = false ∧ exprReadsStorage e = false ∧
+    rjDepth (rjSubst x e f) ≤ rjDepthLimit
 
 instance (bound : List Ident) (x y : Ident) (e f : Expr Op)
     (rest : List (Stmt Op)) : Decidable (rjAssignPair bound x y e f rest) := by
@@ -157,7 +183,7 @@ def rjCondPair (bound : List Ident) (x : Ident) (e c : Expr Op)
     (body rest : List (Stmt Op)) : Prop :=
   rjTree bound x c = some 1 ∧ stmtsMentions x body = false ∧
     stmtsMentions x rest = false ∧ exprHasCall e = false ∧
-    rjDepth (rjSubst x e c) ≤ rjDepthLimit
+    exprReadsStorage e = false ∧ rjDepth (rjSubst x e c) ≤ rjDepthLimit
 
 instance (bound : List Ident) (x : Ident) (e c : Expr Op)
     (body rest : List (Stmt Op)) : Decidable (rjCondPair bound x e c body rest) := by
@@ -1075,7 +1101,7 @@ theorem rjPairs_fwd : ∀ (bound : List Ident) (ss : List (Stmt Op))
   | case3 bound x e y f rest hg ih =>
       intro funs V st V₁ st₁ o hb h
       rw [rjPairs.eq_2, if_pos hg]
-      obtain ⟨hxy, htree, hm, hcall, hdepth⟩ := hg
+      obtain ⟨hxy, htree, hm, hcall, -, hdepth⟩ := hg
       cases h with
       | seqCons hlet1 htail =>
           rcases rjLetInv hlet1 with ⟨v, rfl, -, hemat⟩ | ⟨e', -, -, hno, -⟩
@@ -1132,7 +1158,7 @@ theorem rjPairs_fwd : ∀ (bound : List Ident) (ss : List (Stmt Op))
   | case5 bound x e c body rest hg ih =>
       intro funs V st V₁ st₁ o hb h
       rw [rjPairs.eq_3, if_pos hg]
-      obtain ⟨htree, hmbody, hmrest, hcall, hdepth⟩ := hg
+      obtain ⟨htree, hmbody, hmrest, hcall, -, hdepth⟩ := hg
       cases h with
       | seqCons hlet1 htail =>
           rcases rjLetInv hlet1 with ⟨v, rfl, -, hemat⟩ | ⟨e', -, -, hno, -⟩
@@ -1293,7 +1319,7 @@ theorem rjPairs_bwd : ∀ (bound : List Ident) (ss : List (Stmt Op))
   | case3 bound x e y f rest hg ih =>
       intro funs V st V₂ st₁ o hb h
       rw [rjPairs.eq_2, if_pos hg] at h
-      obtain ⟨hxy, htree, hm, hcall, hdepth⟩ := hg
+      obtain ⟨hxy, htree, hm, hcall, -, hdepth⟩ := hg
       obtain ⟨V₁', hsrc', hchain⟩ := ih hb h
       cases hsrc' with
       | seqCons hassign htail =>
@@ -1336,7 +1362,7 @@ theorem rjPairs_bwd : ∀ (bound : List Ident) (ss : List (Stmt Op))
   | case5 bound x e c body rest hg ih =>
       intro funs V st V₂ st₁ o hb h
       rw [rjPairs.eq_3, if_pos hg] at h
-      obtain ⟨htree, hmbody, hmrest, hcall, hdepth⟩ := hg
+      obtain ⟨htree, hmbody, hmrest, hcall, -, hdepth⟩ := hg
       obtain ⟨V₁', hsrc', hchain⟩ := ih hb h
       cases hsrc' with
       | seqCons hcond htail =>
