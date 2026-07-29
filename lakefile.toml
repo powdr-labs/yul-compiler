@@ -52,3 +52,12 @@ root = "scripts.CheckSolidityGas"
 [[lean_exe]]
 name = "checkCompileGate"
 root = "scripts.CheckSolidityCompileGate"
+
+# Opcode-level gas attribution for one Solidity fixture: traces this
+# compiler's and solc's runtimes side by side and aggregates executed gas by
+# opcode group and by program counter. The diagnosis companion to
+# checkSolidityGas: it localizes *where* a gas gap comes from. Native for the
+# same stack-depth reason. See scripts/TraceSolidityGas.lean.
+[[lean_exe]]
+name = "traceSolidityGas"
+root = "scripts.TraceSolidityGas"
