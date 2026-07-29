@@ -24,7 +24,7 @@ stackReuse/function_retparam_unassigned_multiple.yul	330	0
 stackReuse/function_trivial.yul	0	0
 stackReuse/function_with_body_embedded.yul	384	0
 stackReuse/functions_multi_return.yul	264	888
-stackReuse/if.yul	96	132
+stackReuse/if.yul	78	132
 stackReuse/last_use_in_nested_block.yul	24	0
 stackReuse/multi_reuse_same_variable_name.yul	174	48
 stackReuse/multi_reuse_single_slot.yul	0	0

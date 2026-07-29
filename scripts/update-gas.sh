@@ -23,6 +23,11 @@ cd "$(git rev-parse --show-toplevel)"
 SOLC_VERSION="${SOLC_VERSION:-0.8.35}"
 SOLIDITY_DIR="${SOLIDITY_DIR:-/tmp/solidity}"
 
+# Per-fixture solc-side execution cache (gitignored). The solc half of each gas
+# re-pin is deterministic given the fixture source, solc version, and call
+# sequence, so it is recorded on the first run and replayed on later runs.
+SOLC_CACHE_DIR="${SOLC_CACHE_DIR:-.solc-exec-cache}"
+
 if [[ -n "${SOLC_PATH:-}" ]]; then
   solc_path="$SOLC_PATH"
 elif command -v svm >/dev/null 2>&1; then
@@ -40,10 +45,14 @@ suites=(
   "EVM-code-transform evmCodeTransform solidity-yul-evm-code-transform-known-solc-differential-failures.txt solidity-yul-evm-code-transform-gas-baseline.txt"
 )
 
+# Native + fixture-parallel (see scripts/UpdateCorpusGas.lean); the build is
+# incremental after the first run.
+lake build updateCorpusGas
+
 for entry in "${suites[@]}"; do
   read -r suite subdir known baseline <<<"$entry"
   echo "==> Re-measuring $suite gas with solc $SOLC_VERSION"
-  lake env lean --run scripts/UpdateCorpusGas.lean \
+  .lake/build/bin/updateCorpusGas \
     "$suite" \
     "$SOLIDITY_DIR/test/libyul/$subdir" \
     "test/$known" \
@@ -60,27 +69,31 @@ echo "==> Re-measuring Solidity gasTests (compile via --via-ir, optimized runtim
 .lake/build/bin/checkSolidityGas \
   "$SOLIDITY_DIR/test/libsolidity/gasTests" \
   test/solidity-gas-baseline.txt \
-  "$solc_path" "$SOLC_VERSION" --update
+  "$solc_path" "$SOLC_VERSION" --update \
+  --solc-cache="$SOLC_CACHE_DIR"
 
 echo "==> Re-measuring Solidity semanticTests (compilable subset, lenient)"
 .lake/build/bin/checkSolidityGas \
   "$SOLIDITY_DIR/test/libsolidity/semanticTests" \
   test/solidity-semantic-gas-baseline.txt \
-  "$solc_path" "$SOLC_VERSION" --lenient --update
+  "$solc_path" "$SOLC_VERSION" --lenient --update \
+  --solc-cache="$SOLC_CACHE_DIR"
 
 echo "==> Re-measuring Uniswap v4-core fixtures (in-repo, strict + known failures)"
 .lake/build/bin/checkSolidityGas \
   test/uniswap-v4 \
   test/uniswap-v4-gas-baseline.txt \
   "$solc_path" "$SOLC_VERSION" \
-  --known=test/uniswap-v4-known-compile-failures.txt --per-scenario --update
+  --known=test/uniswap-v4-known-compile-failures.txt --per-scenario --update \
+  --solc-cache="$SOLC_CACHE_DIR"
 
 echo "==> Re-measuring Aave v4 fixtures (in-repo, strict + known failures)"
 .lake/build/bin/checkSolidityGas \
   test/aave-v4 \
   test/aave-v4-gas-baseline.txt \
   "$solc_path" "$SOLC_VERSION" \
-  --known=test/aave-v4-known-compile-failures.txt --per-scenario --update
+  --known=test/aave-v4-known-compile-failures.txt --per-scenario --update \
+  --solc-cache="$SOLC_CACHE_DIR"
 
 echo
 echo "==> Done. Review the diff — this is the review artifact:"

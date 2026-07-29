@@ -53,6 +53,13 @@ root = "scripts.CheckSolidityGas"
 name = "checkCompileGate"
 root = "scripts.CheckSolidityCompileGate"
 
+# The gas-baseline write side (see scripts/update-gas.sh). Native and
+# fixture-parallel: a whole-corpus re-pin drops from an hour of interpreted
+# single-threaded walking to minutes.
+[[lean_exe]]
+name = "updateCorpusGas"
+root = "scripts.UpdateCorpusGas"
+
 # Opcode-level gas attribution for one Solidity fixture: traces this
 # compiler's and solc's runtimes side by side and aggregates executed gas by
 # opcode group and by program counter. The diagnosis companion to
@@ -61,3 +68,10 @@ root = "scripts.CheckSolidityCompileGate"
 [[lean_exe]]
 name = "traceSolidityGas"
 root = "scripts.TraceSolidityGas"
+
+# The YulIR corpus benchmark/baseline runner (report/update/check). Native and
+# fixture-parallel for the same reason as updateCorpusGas: the interpreted
+# sequential walk dominated the size-baseline re-pin.
+[[lean_exe]]
+name = "yulIRCorpus"
+root = "scripts.YulIRCorpus"

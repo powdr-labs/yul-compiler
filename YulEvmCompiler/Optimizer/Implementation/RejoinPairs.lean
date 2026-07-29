@@ -10,32 +10,51 @@ set_option warningAsError true
 
 **Adjacent single-use expression rejoining** — the "expression rejoining" half
 of issue #65's recommendation 3. After inlining and copy coalescing, the hot
-loops are full of adjacent pairs
+loops bind an intermediate `x` to a producer `e` and then consume `x` exactly
+once, in the very next statement, and never again. This pass folds `e` into
+that single leaf position, deleting the binder and its live operand-stack
+slot. Three **consumer forms** are handled:
+
+* **adjacent binder** — `let x := e; let y := f(x)` → `let y := f[x:=e]`;
+* **assignment right-hand side** — `let x := e; y := f(x)` → `y := f[x:=e]`
+  (guarded by `x ≠ y`: for `y = x` the rewrite would assign to a variable
+  whose declaration was just deleted);
+* **if condition** — `let x := e; if c(x) { body }` → `if c[x:=e] { body }`.
 
 ```yul
 let x := and(w, 1)
 let y := iszero(eq(x, 0))
+-- ⇒ let y := iszero(eq(and(w, 1), 0))
 ```
 
-whose intermediate `x` is consumed exactly once by the very next binder and
-never again. The producer must be call-free: nesting a call back under an
-expression would undo `HoistCalls`/`FreshenCalls` and hide the site from
-`InlineCalls` (measured: the `fls` fixtures regressed when calls rejoined). Each such binder costs a live operand-stack slot and a `DUP`,
-and the accumulated slots hold helper bodies above the `liveMax` inlining
-gates. The rewrite merges the pair:
+The two non-binder forms matter because solc's unoptimized IR binds *every*
+if-condition and *every* assigned value to its own temp; joining them removes
+a live stack slot per site. Measured on TickMath's 100-iteration sweep
+benchmarks: ~30k gas from the if-condition consumer and ~8k from the
+assignment consumer, with the double-`ISZERO` that the condition join exposes
+cancelled by the existing `AsmPeephole` rule.
 
-```yul
-let y := iszero(eq(and(w, 1), 0))
-```
+The producer must be call-free: nesting a call back under an expression would
+undo `HoistCalls`/`FreshenCalls` and hide the site from `InlineCalls`
+(measured: the `fls` fixtures regressed when calls rejoined). Each merged
+binder costs a live operand-stack slot and a `DUP`, and the accumulated slots
+hold helper bodies above the `liveMax` inlining gates.
 
-Guards: the consumer's right-hand side is a **pure-total tree** (builtins
-with `pureTotalArity`, leaves that are literals or bound variables) with
-exactly one occurrence of `x`; `x` is dead afterwards; the producer `e` is
-arbitrary (it may read or write state or even halt). Moving `e` from its own
-statement into `x`'s leaf position only commutes it past pure, total,
-state-independent leaf/op evaluations, so the evaluation is unchanged; the
-depth story matches `CoalesceCopies` (a live slot is removed, and `e`'s reads
-happen at the same depth one statement later with nothing declared between).
+For the two non-binder forms (assignment and if-condition), the producer must
+additionally be storage-read-free: nesting an `sload`/`tload` inside the
+consumer hides it from `ReuseValues`, whose fact recorder sees only binder-form
+`let x := sload(k)`, costing a redundant warm SLOAD per execution (measured:
++17% on array-storage push loops).
+
+Guards: the consumer position (`f` or the condition `c`) is a **pure-total
+tree** (builtins with `pureTotalArity`, leaves that are literals or bound
+variables) with exactly one occurrence of `x`; `x` is dead afterwards (and,
+for the if form, unmentioned in `body`); the producer `e` is arbitrary (it may
+read or write state or even halt). Moving `e` from its own statement into
+`x`'s leaf position only commutes it past pure, total, state-independent
+leaf/op evaluations, so the evaluation is unchanged; the depth story matches
+`CoalesceCopies` (a live slot is removed, and `e`'s reads happen at the same
+depth one statement later with nothing declared between).
 
 The layout-free guards on `e` and the consumer keep the transform the
 identity on unresolved `dataoffset`/`datasize` regions, which makes it
@@ -116,6 +135,25 @@ end
 `PoolLiquidity`'s stack-layout rescue). -/
 def rjDepthLimit : Nat := 8
 
+mutual
+
+/-- Storage-read ops anywhere in the tree: joining such a producer nests the
+read where ReuseValues' binder-form fact recorder cannot see it, costing a
+redundant warm SLOAD per execution (measured: array-storage push loops). -/
+def exprReadsStorage : Expr Op → Bool
+  | .lit _ => false
+  | .var _ => false
+  | .builtin .sload _ => true
+  | .builtin .tload _ => true
+  | .builtin _ args => argsReadStorage args
+  | .call _ args => argsReadStorage args
+
+/-- Does a storage-read op occur anywhere in the argument list? -/
+def argsReadStorage : List (Expr Op) → Bool
+  | [] => false
+  | e :: rest => exprReadsStorage e || argsReadStorage rest
+end
+
 /-- The pair guard. -/
 def rjPair (bound : List Ident) (x y : Ident) (e f : Expr Op)
     (rest : List (Stmt Op)) : Prop :=
@@ -125,6 +163,31 @@ def rjPair (bound : List Ident) (x y : Ident) (e f : Expr Op)
 instance (bound : List Ident) (x y : Ident) (e f : Expr Op)
     (rest : List (Stmt Op)) : Decidable (rjPair bound x y e f rest) := by
   unfold rjPair; infer_instance
+
+/-- The assign-consumer pair guard: `let x := e; y := f(x)` merges into
+`y := f[x:=e]`. `x ≠ y` is essential — for `y = x` the rewrite would assign to
+a variable whose declaration was just deleted. -/
+def rjAssignPair (bound : List Ident) (x y : Ident) (e f : Expr Op)
+    (rest : List (Stmt Op)) : Prop :=
+  x ≠ y ∧ rjTree bound x f = some 1 ∧ stmtsMentions x rest = false ∧
+    exprHasCall e = false ∧ exprReadsStorage e = false ∧
+    rjDepth (rjSubst x e f) ≤ rjDepthLimit
+
+instance (bound : List Ident) (x y : Ident) (e f : Expr Op)
+    (rest : List (Stmt Op)) : Decidable (rjAssignPair bound x y e f rest) := by
+  unfold rjAssignPair; infer_instance
+
+/-- The if-condition-consumer pair guard: `let x := e; if c(x) { body }` merges
+into `if c[x:=e] { body }`. -/
+def rjCondPair (bound : List Ident) (x : Ident) (e c : Expr Op)
+    (body rest : List (Stmt Op)) : Prop :=
+  rjTree bound x c = some 1 ∧ stmtsMentions x body = false ∧
+    stmtsMentions x rest = false ∧ exprHasCall e = false ∧
+    exprReadsStorage e = false ∧ rjDepth (rjSubst x e c) ≤ rjDepthLimit
+
+instance (bound : List Ident) (x : Ident) (e c : Expr Op)
+    (body rest : List (Stmt Op)) : Decidable (rjCondPair bound x e c body rest) := by
+  unfold rjCondPair; infer_instance
 
 /-! ### The transform -/
 
@@ -137,6 +200,18 @@ def rjPairs (bound : List Ident) : List (Stmt Op) → List (Stmt Op)
       else
         .letDecl [x] (some e) ::
           rjPairs (x :: bound) (.letDecl [y] (some f) :: rest)
+  | .letDecl [x] (some e) :: .assign [y] f :: rest =>
+      if rjAssignPair bound x y e f rest then
+        rjPairs bound (.assign [y] (rjSubst x e f) :: rest)
+      else
+        .letDecl [x] (some e) ::
+          rjPairs (x :: bound) (.assign [y] f :: rest)
+  | .letDecl [x] (some e) :: .cond c body :: rest =>
+      if rjCondPair bound x e c body rest then
+        rjPairs bound (.cond (rjSubst x e c) body :: rest)
+      else
+        .letDecl [x] (some e) ::
+          rjPairs (x :: bound) (.cond c body :: rest)
   | .letDecl xs v :: rest => .letDecl xs v :: rjPairs (xs ++ bound) rest
   | s :: rest => s :: rjPairs bound rest
   | [] => []
@@ -938,6 +1013,18 @@ private theorem boundOK_after_let {funs : FunEnv D} {V V1 : VEnv D}
       · exact List.mem_append_left _ hzz
       · exact List.mem_append_right _ (hb z hzz)
 
+/-- A single-target `setMany` is a `set`. -/
+private theorem setMany_single (V : VEnv D) (y : Ident) (w : U256) :
+    VEnv.setMany V [y] [w] = VEnv.set V y w := rfl
+
+/-- `set` of a variable other than the freshly-inserted `x` commutes past the
+insertion (`set` updates the topmost matching key, and the inserted `(x,·)`
+never matches). -/
+private theorem set_cons_ne {V : VEnv D} {x y : Ident} (hxy : x ≠ y)
+    (v w : U256) :
+    VEnv.set ((x, v) :: V) y w = (x, v) :: VEnv.set V y w := by
+  simp only [VEnv.set, if_neg hxy]
+
 /-- Forward: a run of the source sequence yields a run of the rejoined
 sequence, the final environments related by dead insertions above the entry
 frame (one per merged pair). -/
@@ -1011,9 +1098,145 @@ theorem rjPairs_fwd : ∀ (bound : List Ident) (ss : List (Stmt Op))
           · exact absurd hno.symm (by simp)
       | seqStop hs hne =>
           exact ⟨V₁, Step.seqStop hs hne, .refl _⟩
-  | case3 bound xs v rest hno ih =>
+  | case3 bound x e y f rest hg ih =>
       intro funs V st V₁ st₁ o hb h
-      rw [rjPairs.eq_2 bound xs v rest hno]
+      rw [rjPairs.eq_2, if_pos hg]
+      obtain ⟨hxy, htree, hm, hcall, -, hdepth⟩ := hg
+      cases h with
+      | seqCons hlet1 htail =>
+          rcases rjLetInv hlet1 with ⟨v, rfl, -, hemat⟩ | ⟨e', -, -, hno, -⟩
+          · rcases hemat with ⟨heq, -, -⟩ | ⟨e', heq, he⟩
+            · cases heq
+            · injection heq with heq
+              subst heq
+              cases htail with
+              | seqCons hassign hrest =>
+                  cases hassign with
+                  | assignVal hf _hlen =>
+                      obtain ⟨w, hvs, hst2, htgt⟩ := rjT1_fwd f htree he hf
+                      subst hst2
+                      subst hvs
+                      rw [setMany_single, set_cons_ne hxy] at hrest
+                      have hins : InsAt V.length x v (VEnv.set V y w)
+                          ((x, v) :: VEnv.set V y w) :=
+                        ⟨[], VEnv.set V y w, rfl, rfl, VEnv.set_length V y w⟩
+                      obtain ⟨res₁, hstep₁, hrel⟩ := frameRemove hrest hins
+                        (by simpa only [codeMentions] using hm)
+                      obtain ⟨V₁', rfl, hins'⟩ := ResRelAt.sres_right hrel
+                      have hassignstep := Step.assignVal (funs := funs)
+                        (vars := [y]) htgt (rfl : [w].length = [y].length)
+                      rw [setMany_single] at hassignstep
+                      obtain ⟨V₂, htgt2, hchain⟩ := ih hb
+                        (Step.seqCons hassignstep hstep₁)
+                      exact ⟨V₂, htgt2, .snoc hchain hins' (Nat.le_refl _)⟩
+              | seqStop hassign hne =>
+                  cases hassign with
+                  | assignVal _hf _hlen => exact absurd rfl hne
+                  | assignHalt hfh =>
+                      exact absurd hfh (rjT1_fwd_nohalt f htree he)
+          · exact absurd hno.symm (by simp)
+      | seqStop hlet1 hne =>
+          rcases rjLetInv hlet1 with ⟨v, -, hnorm, -⟩ | ⟨e', heq, rfl, rfl, heh⟩
+          · exact absurd hnorm hne
+          · injection heq with heq
+            subst heq
+            obtain ⟨V₂, htgt2, hchain⟩ := ih hb
+              (Step.seqStop (Step.assignHalt (vars := [y])
+                (rjT1_halt hb heh f htree)) (by intro hc; cases hc))
+            exact ⟨V₂, htgt2, hchain⟩
+  | case4 bound x e y f rest hng ih =>
+      intro funs V st V₁ st₁ o hb h
+      rw [rjPairs.eq_2, if_neg hng]
+      cases h with
+      | seqCons hs htail =>
+          rcases rjLetInv hs with ⟨v, rfl, -, -⟩ | ⟨e', -, -, hno, -⟩
+          · obtain ⟨V₂, htgt, hchain⟩ := ih (boundOK_cons hb) htail
+            exact ⟨V₂, Step.seqCons hs htgt, hchain.mono (by simp)⟩
+          · exact absurd hno.symm (by simp)
+      | seqStop hs hne =>
+          exact ⟨V₁, Step.seqStop hs hne, .refl _⟩
+  | case5 bound x e c body rest hg ih =>
+      intro funs V st V₁ st₁ o hb h
+      rw [rjPairs.eq_3, if_pos hg]
+      obtain ⟨htree, hmbody, hmrest, hcall, -, hdepth⟩ := hg
+      cases h with
+      | seqCons hlet1 htail =>
+          rcases rjLetInv hlet1 with ⟨v, rfl, -, hemat⟩ | ⟨e', -, -, hno, -⟩
+          · rcases hemat with ⟨heq, -, -⟩ | ⟨e', heq, he⟩
+            · cases heq
+            · injection heq with heq
+              subst heq
+              cases htail with
+              | seqCons hcond hrest =>
+                  cases hcond with
+                  | ifTrue hc hnz hbody =>
+                      obtain ⟨cw, hcvs, hcst, htgtc⟩ := rjT1_fwd c htree he hc
+                      injection hcvs with hcveq; subst hcveq
+                      subst hcst
+                      have hins_blk : InsAt V.length x v V ((x, v) :: V) :=
+                        ⟨[], V, rfl, rfl, rfl⟩
+                      obtain ⟨resb, hstepb, hrelb⟩ := frameRemove hbody hins_blk
+                        (by simpa only [codeMentions, stmtMentions] using hmbody)
+                      obtain ⟨V1_body, rfl, hins_body⟩ := ResRelAt.sres_right hrelb
+                      obtain ⟨resr, hstepr, hrelr⟩ := frameRemove hrest hins_body
+                        (by simpa only [codeMentions] using hmrest)
+                      obtain ⟨V₁', rfl, hins'⟩ := ResRelAt.sres_right hrelr
+                      obtain ⟨V₂, htgt2, hchain⟩ := ih hb
+                        (Step.seqCons (Step.ifTrue htgtc hnz hstepb) hstepr)
+                      exact ⟨V₂, htgt2, .snoc hchain hins' (Nat.le_refl _)⟩
+                  | ifFalse hc hz =>
+                      obtain ⟨cw, hcvs, hcst, htgtc⟩ := rjT1_fwd c htree he hc
+                      injection hcvs with hcveq; subst hcveq
+                      subst hcst
+                      have hins : InsAt V.length x v V ((x, v) :: V) :=
+                        ⟨[], V, rfl, rfl, rfl⟩
+                      obtain ⟨resr, hstepr, hrelr⟩ := frameRemove hrest hins
+                        (by simpa only [codeMentions] using hmrest)
+                      obtain ⟨V₁', rfl, hins'⟩ := ResRelAt.sres_right hrelr
+                      obtain ⟨V₂, htgt2, hchain⟩ := ih hb
+                        (Step.seqCons (Step.ifFalse htgtc hz) hstepr)
+                      exact ⟨V₂, htgt2, .snoc hchain hins' (Nat.le_refl _)⟩
+              | seqStop hcond hne =>
+                  cases hcond with
+                  | ifTrue hc hnz hbody =>
+                      obtain ⟨cw, hcvs, hcst, htgtc⟩ := rjT1_fwd c htree he hc
+                      injection hcvs with hcveq; subst hcveq
+                      subst hcst
+                      have hins_blk : InsAt V.length x v V ((x, v) :: V) :=
+                        ⟨[], V, rfl, rfl, rfl⟩
+                      obtain ⟨resb, hstepb, hrelb⟩ := frameRemove hbody hins_blk
+                        (by simpa only [codeMentions, stmtMentions] using hmbody)
+                      obtain ⟨V1_body, rfl, hins_body⟩ := ResRelAt.sres_right hrelb
+                      obtain ⟨V₂, htgt2, hchain⟩ := ih hb
+                        (Step.seqStop (Step.ifTrue htgtc hnz hstepb) hne)
+                      exact ⟨V₂, htgt2, .snoc hchain hins_body (Nat.le_refl _)⟩
+                  | ifFalse _hc _hz => exact absurd rfl hne
+                  | ifHalt hch =>
+                      exact absurd hch (rjT1_fwd_nohalt c htree he)
+          · exact absurd hno.symm (by simp)
+      | seqStop hlet1 hne =>
+          rcases rjLetInv hlet1 with ⟨v, -, hnorm, -⟩ | ⟨e', heq, rfl, rfl, heh⟩
+          · exact absurd hnorm hne
+          · injection heq with heq
+            subst heq
+            obtain ⟨V₂, htgt2, hchain⟩ := ih hb
+              (Step.seqStop (Step.ifHalt (rjT1_halt hb heh c htree))
+                (by intro hc; cases hc))
+            exact ⟨V₂, htgt2, hchain⟩
+  | case6 bound x e c body rest hng ih =>
+      intro funs V st V₁ st₁ o hb h
+      rw [rjPairs.eq_3, if_neg hng]
+      cases h with
+      | seqCons hs htail =>
+          rcases rjLetInv hs with ⟨v, rfl, -, -⟩ | ⟨e', -, -, hno, -⟩
+          · obtain ⟨V₂, htgt, hchain⟩ := ih (boundOK_cons hb) htail
+            exact ⟨V₂, Step.seqCons hs htgt, hchain.mono (by simp)⟩
+          · exact absurd hno.symm (by simp)
+      | seqStop hs hne =>
+          exact ⟨V₁, Step.seqStop hs hne, .refl _⟩
+  | case7 bound xs v rest hno1 hno2 hno3 ih =>
+      intro funs V st V₁ st₁ o hb h
+      rw [rjPairs.eq_4 bound xs v rest hno1 hno2 hno3]
       cases h with
       | seqCons hs htail =>
           obtain ⟨V₂, htgt, hchain⟩ := ih (boundOK_after_let hb hs) htail
@@ -1021,9 +1244,9 @@ theorem rjPairs_fwd : ∀ (bound : List Ident) (ss : List (Stmt Op))
             hchain.mono (venvLen_mono hs rfl)⟩
       | seqStop hs hne =>
           exact ⟨V₁, Step.seqStop hs hne, .refl _⟩
-  | case4 bound s rest hno1 hno2 ih =>
+  | case8 bound s rest hno1 hno2 hno3 hno4 ih =>
       intro funs V st V₁ st₁ o hb h
-      rw [rjPairs.eq_3 bound s rest hno1 hno2]
+      rw [rjPairs.eq_5 bound s rest hno1 hno2 hno3 hno4]
       cases h with
       | seqCons hs htail =>
           obtain ⟨V₂, htgt, hchain⟩ := ih (hb.mono hs) htail
@@ -1031,9 +1254,9 @@ theorem rjPairs_fwd : ∀ (bound : List Ident) (ss : List (Stmt Op))
             hchain.mono (venvLen_mono hs rfl)⟩
       | seqStop hs hne =>
           exact ⟨V₁, Step.seqStop hs hne, .refl _⟩
-  | case5 bound =>
+  | case9 bound =>
       intro funs V st V₁ st₁ o hb h
-      rw [rjPairs.eq_4]
+      rw [rjPairs.eq_6]
       cases h
       exact ⟨_, Step.seqNil, .refl _⟩
 
@@ -1093,9 +1316,119 @@ theorem rjPairs_bwd : ∀ (bound : List Ident) (ss : List (Stmt Op))
           · exact absurd hno.symm (by simp)
       | seqStop hs hne =>
           exact ⟨V₂, Step.seqStop hs hne, .refl _⟩
-  | case3 bound xs v rest hno ih =>
+  | case3 bound x e y f rest hg ih =>
       intro funs V st V₂ st₁ o hb h
-      rw [rjPairs.eq_2 bound xs v rest hno] at h
+      rw [rjPairs.eq_2, if_pos hg] at h
+      obtain ⟨hxy, htree, hm, hcall, -, hdepth⟩ := hg
+      obtain ⟨V₁', hsrc', hchain⟩ := ih hb h
+      cases hsrc' with
+      | seqCons hassign htail =>
+          cases hassign with
+          | assignVal hsubf hlen =>
+              obtain ⟨w, v, sc, hws, hcst, he, hsrc⟩ :=
+                rjT1_bwd hb f htree hlen hsubf
+              subst hws
+              subst hcst
+              rw [setMany_single] at htail
+              have hins : InsAt V.length x v (VEnv.set V y w)
+                  ((x, v) :: VEnv.set V y w) :=
+                ⟨[], VEnv.set V y w, rfl, rfl, VEnv.set_length V y w⟩
+              obtain ⟨res₂, hstep₂, hrel⟩ := frameAdd htail hins
+                (by simpa only [codeMentions] using hm)
+              obtain ⟨V₁, rfl, hins'⟩ := ResRelAt.sres hrel
+              have hassign_src := Step.assignVal (funs := funs) (vars := [y])
+                hsrc (rfl : [w].length = [y].length)
+              rw [setMany_single, set_cons_ne hxy] at hassign_src
+              refine ⟨V₁, Step.seqCons (Step.letVal (vars := [x]) he rfl)
+                (Step.seqCons hassign_src hstep₂),
+                .snoc hchain hins' (Nat.le_refl _)⟩
+      | seqStop hassign hne =>
+          cases hassign with
+          | assignVal _hsub _hlen => exact absurd rfl hne
+          | assignHalt hsubfh =>
+              exact ⟨_, Step.seqStop (Step.letHalt (vars := [x])
+                (rjT1_bwd_halt hb f htree hsubfh)) hne, hchain⟩
+  | case4 bound x e y f rest hng ih =>
+      intro funs V st V₂ st₁ o hb h
+      rw [rjPairs.eq_2, if_neg hng] at h
+      cases h with
+      | seqCons hs htail =>
+          rcases rjLetInv hs with ⟨v, rfl, -, -⟩ | ⟨e', -, -, hno, -⟩
+          · obtain ⟨V₁, hsrc, hchain⟩ := ih (boundOK_cons hb) htail
+            exact ⟨V₁, Step.seqCons hs hsrc, hchain.mono (by simp)⟩
+          · exact absurd hno.symm (by simp)
+      | seqStop hs hne =>
+          exact ⟨V₂, Step.seqStop hs hne, .refl _⟩
+  | case5 bound x e c body rest hg ih =>
+      intro funs V st V₂ st₁ o hb h
+      rw [rjPairs.eq_3, if_pos hg] at h
+      obtain ⟨htree, hmbody, hmrest, hcall, -, hdepth⟩ := hg
+      obtain ⟨V₁', hsrc', hchain⟩ := ih hb h
+      cases hsrc' with
+      | seqCons hcond htail =>
+          cases hcond with
+          | ifTrue hsubc hnz hbody =>
+              obtain ⟨cw, v, sc, hcws, hcst, he, hsrcc⟩ :=
+                rjT1_bwd hb c htree rfl hsubc
+              injection hcws with hcweq; subst hcweq
+              subst hcst
+              have hins_blk : InsAt V.length x v V ((x, v) :: V) :=
+                ⟨[], V, rfl, rfl, rfl⟩
+              obtain ⟨resb, hstepb, hrelb⟩ := frameAdd hbody hins_blk
+                (by simpa only [codeMentions, stmtMentions] using hmbody)
+              obtain ⟨Vc', rfl, hins_body⟩ := ResRelAt.sres hrelb
+              obtain ⟨resr, hstepr, hrelr⟩ := frameAdd htail hins_body
+                (by simpa only [codeMentions] using hmrest)
+              obtain ⟨V₁, rfl, hins'⟩ := ResRelAt.sres hrelr
+              refine ⟨V₁, Step.seqCons (Step.letVal (vars := [x]) he rfl)
+                (Step.seqCons (Step.ifTrue hsrcc hnz hstepb) hstepr),
+                .snoc hchain hins' (Nat.le_refl _)⟩
+          | ifFalse hsubc hz =>
+              obtain ⟨cw, v, sc, hcws, hcst, he, hsrcc⟩ :=
+                rjT1_bwd hb c htree rfl hsubc
+              injection hcws with hcweq; subst hcweq
+              subst hcst
+              have hins : InsAt V.length x v V ((x, v) :: V) :=
+                ⟨[], V, rfl, rfl, rfl⟩
+              obtain ⟨resr, hstepr, hrelr⟩ := frameAdd htail hins
+                (by simpa only [codeMentions] using hmrest)
+              obtain ⟨V₁, rfl, hins'⟩ := ResRelAt.sres hrelr
+              refine ⟨V₁, Step.seqCons (Step.letVal (vars := [x]) he rfl)
+                (Step.seqCons (Step.ifFalse hsrcc hz) hstepr),
+                .snoc hchain hins' (Nat.le_refl _)⟩
+      | seqStop hcond hne =>
+          cases hcond with
+          | ifTrue hsubc hnz hbody =>
+              obtain ⟨cw, v, sc, hcws, hcst, he, hsrcc⟩ :=
+                rjT1_bwd hb c htree rfl hsubc
+              injection hcws with hcweq; subst hcweq
+              subst hcst
+              have hins_blk : InsAt V.length x v V ((x, v) :: V) :=
+                ⟨[], V, rfl, rfl, rfl⟩
+              obtain ⟨resb, hstepb, hrelb⟩ := frameAdd hbody hins_blk
+                (by simpa only [codeMentions, stmtMentions] using hmbody)
+              obtain ⟨Vc', rfl, hins_body⟩ := ResRelAt.sres hrelb
+              refine ⟨Vc', Step.seqCons (Step.letVal (vars := [x]) he rfl)
+                (Step.seqStop (Step.ifTrue hsrcc hnz hstepb) hne),
+                .snoc hchain hins_body (Nat.le_refl _)⟩
+          | ifFalse _hsubc _hz => exact absurd rfl hne
+          | ifHalt hsubch =>
+              exact ⟨_, Step.seqStop (Step.letHalt (vars := [x])
+                (rjT1_bwd_halt hb c htree hsubch)) hne, hchain⟩
+  | case6 bound x e c body rest hng ih =>
+      intro funs V st V₂ st₁ o hb h
+      rw [rjPairs.eq_3, if_neg hng] at h
+      cases h with
+      | seqCons hs htail =>
+          rcases rjLetInv hs with ⟨v, rfl, -, -⟩ | ⟨e', -, -, hno, -⟩
+          · obtain ⟨V₁, hsrc, hchain⟩ := ih (boundOK_cons hb) htail
+            exact ⟨V₁, Step.seqCons hs hsrc, hchain.mono (by simp)⟩
+          · exact absurd hno.symm (by simp)
+      | seqStop hs hne =>
+          exact ⟨V₂, Step.seqStop hs hne, .refl _⟩
+  | case7 bound xs v rest hno1 hno2 hno3 ih =>
+      intro funs V st V₂ st₁ o hb h
+      rw [rjPairs.eq_4 bound xs v rest hno1 hno2 hno3] at h
       cases h with
       | seqCons hs htail =>
           obtain ⟨V₁, hsrc, hchain⟩ := ih (boundOK_after_let hb hs) htail
@@ -1103,9 +1436,9 @@ theorem rjPairs_bwd : ∀ (bound : List Ident) (ss : List (Stmt Op))
             hchain.mono (venvLen_mono hs rfl)⟩
       | seqStop hs hne =>
           exact ⟨V₂, Step.seqStop hs hne, .refl _⟩
-  | case4 bound s rest hno1 hno2 ih =>
+  | case8 bound s rest hno1 hno2 hno3 hno4 ih =>
       intro funs V st V₂ st₁ o hb h
-      rw [rjPairs.eq_3 bound s rest hno1 hno2] at h
+      rw [rjPairs.eq_5 bound s rest hno1 hno2 hno3 hno4] at h
       cases h with
       | seqCons hs htail =>
           obtain ⟨V₁, hsrc, hchain⟩ := ih (hb.mono hs) htail
@@ -1113,9 +1446,9 @@ theorem rjPairs_bwd : ∀ (bound : List Ident) (ss : List (Stmt Op))
             hchain.mono (venvLen_mono hs rfl)⟩
       | seqStop hs hne =>
           exact ⟨V₂, Step.seqStop hs hne, .refl _⟩
-  | case5 bound =>
+  | case9 bound =>
       intro funs V st V₂ st₁ o hb h
-      rw [rjPairs.eq_4] at h
+      rw [rjPairs.eq_6] at h
       cases h
       exact ⟨_, Step.seqNil, .refl _⟩
 
@@ -1131,15 +1464,27 @@ theorem rjPairs_hoist : ∀ (bound : List Ident) (ss : List (Stmt Op)),
   | case2 bound x e y f rest hng ih =>
       rw [rjPairs.eq_1, if_neg hng]
       simpa [hoist] using ih
-  | case3 bound xs v rest hno ih =>
-      rw [rjPairs.eq_2 bound xs v rest hno]
+  | case3 bound x e y f rest hg ih =>
+      rw [rjPairs.eq_2, if_pos hg]
+      simpa [hoist] using ih
+  | case4 bound x e y f rest hng ih =>
+      rw [rjPairs.eq_2, if_neg hng]
+      simpa [hoist] using ih
+  | case5 bound x e c body rest hg ih =>
+      rw [rjPairs.eq_3, if_pos hg]
+      simpa [hoist] using ih
+  | case6 bound x e c body rest hng ih =>
+      rw [rjPairs.eq_3, if_neg hng]
+      simpa [hoist] using ih
+  | case7 bound xs v rest hno1 hno2 hno3 ih =>
+      rw [rjPairs.eq_4 bound xs v rest hno1 hno2 hno3]
       simp only [hoist, List.filterMap_cons] at ih ⊢
       rw [ih]
-  | case4 bound s rest hno1 hno2 ih =>
-      rw [rjPairs.eq_3 bound s rest hno1 hno2]
+  | case8 bound s rest hno1 hno2 hno3 hno4 ih =>
+      rw [rjPairs.eq_5 bound s rest hno1 hno2 hno3 hno4]
       simp only [hoist, List.filterMap_cons] at ih ⊢
       rw [ih]
-  | case5 bound => rw [rjPairs.eq_4]
+  | case9 bound => rw [rjPairs.eq_6]
 
 /-- Pair rejoining alone is a sound block rewrite: both sides hoist the same
 scope, and the dead insertions vanish under the block's `restore`. The
@@ -1323,6 +1668,13 @@ private theorem slf_cons {s : Stmt Op} {rest : List (Stmt Op)} :
 private theorem slf_let {xs : List Ident} {v : Option (Expr Op)} :
     storageLayoutFreeStmt (.letDecl xs v) = v.all storageLayoutFreeExpr := rfl
 
+private theorem slf_assign {xs : List Ident} {e : Expr Op} :
+    storageLayoutFreeStmt (.assign xs e) = storageLayoutFreeExpr e := rfl
+
+private theorem slf_cond {c : Expr Op} {body : List (Stmt Op)} :
+    storageLayoutFreeStmt (.cond c body) =
+      (storageLayoutFreeExpr c && storageLayoutFreeStmts body) := rfl
+
 theorem rjPairs_layoutFree : ∀ (bound : List Ident) (ss : List (Stmt Op)),
     storageLayoutFreeStmts ss = true →
     storageLayoutFreeStmts (rjPairs bound ss) = true := by
@@ -1345,19 +1697,51 @@ theorem rjPairs_layoutFree : ∀ (bound : List Ident) (ss : List (Stmt Op)),
       rw [slf_cons, Bool.and_eq_true] at h
       rw [slf_cons, Bool.and_eq_true]
       exact ⟨h.1, ih h.2⟩
-  | case3 bound xs v rest hno ih =>
+  | case3 bound x e y f rest hg ih =>
       intro h
-      rw [rjPairs.eq_2 bound xs v rest hno]
+      rw [rjPairs.eq_2, if_pos hg]
+      rw [slf_cons, slf_cons, Bool.and_eq_true, Bool.and_eq_true,
+        slf_let, slf_assign] at h
+      refine ih ?_
+      rw [slf_cons, Bool.and_eq_true, slf_assign]
+      refine ⟨?_, h.2.2⟩
+      show storageLayoutFreeExpr (rjSubst x e f) = true
+      exact rjSubst_layoutFree (by simpa [Option.all] using h.1) f h.2.1
+  | case4 bound x e y f rest hng ih =>
+      intro h
+      rw [rjPairs.eq_2, if_neg hng]
       rw [slf_cons, Bool.and_eq_true] at h
       rw [slf_cons, Bool.and_eq_true]
       exact ⟨h.1, ih h.2⟩
-  | case4 bound s rest hno1 hno2 ih =>
+  | case5 bound x e c body rest hg ih =>
       intro h
-      rw [rjPairs.eq_3 bound s rest hno1 hno2]
+      rw [rjPairs.eq_3, if_pos hg]
+      rw [slf_cons, slf_cons, Bool.and_eq_true, Bool.and_eq_true,
+        slf_let, slf_cond, Bool.and_eq_true] at h
+      refine ih ?_
+      rw [slf_cons, Bool.and_eq_true, slf_cond, Bool.and_eq_true]
+      refine ⟨⟨?_, h.2.1.2⟩, h.2.2⟩
+      show storageLayoutFreeExpr (rjSubst x e c) = true
+      exact rjSubst_layoutFree (by simpa [Option.all] using h.1) c h.2.1.1
+  | case6 bound x e c body rest hng ih =>
+      intro h
+      rw [rjPairs.eq_3, if_neg hng]
       rw [slf_cons, Bool.and_eq_true] at h
       rw [slf_cons, Bool.and_eq_true]
       exact ⟨h.1, ih h.2⟩
-  | case5 bound => intro h; rw [rjPairs.eq_4]; exact h
+  | case7 bound xs v rest hno1 hno2 hno3 ih =>
+      intro h
+      rw [rjPairs.eq_4 bound xs v rest hno1 hno2 hno3]
+      rw [slf_cons, Bool.and_eq_true] at h
+      rw [slf_cons, Bool.and_eq_true]
+      exact ⟨h.1, ih h.2⟩
+  | case8 bound s rest hno1 hno2 hno3 hno4 ih =>
+      intro h
+      rw [rjPairs.eq_5 bound s rest hno1 hno2 hno3 hno4]
+      rw [slf_cons, Bool.and_eq_true] at h
+      rw [slf_cons, Bool.and_eq_true]
+      exact ⟨h.1, ih h.2⟩
+  | case9 bound => intro h; rw [rjPairs.eq_6]; exact h
 
 mutual
 

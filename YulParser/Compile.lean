@@ -270,24 +270,26 @@ def compileSource (source : String) : Option ByteArray := do
       -- then retry the shallower one-round pipeline, with and without smart
       -- layout, before retaining the historical unoptimized fallback. Every
       -- choice is covered by its own correctness theorem.
-      let optimized := (YulEvmCompiler.Optimizer.optimizerPipeline
-        (calls := YulSemantics.EVM.ExternalCalls.none)
-        (creates := YulSemantics.EVM.ExternalCreates.none)).run b
-      let noRejoin := (YulEvmCompiler.Optimizer.optimizerPipelineNoRejoin
-        (calls := YulSemantics.EVM.ExternalCalls.none)
-        (creates := YulSemantics.EVM.ExternalCreates.none)).run b
-      let light := (YulEvmCompiler.Optimizer.optimizerPipelineLight
-        (calls := YulSemantics.EVM.ExternalCalls.none)
-        (creates := YulSemantics.EVM.ExternalCreates.none)).run b
-      let asm := YulEvmCompiler.compile optimized
-        <|> YulEvmCompiler.compile
-          (YulEvmCompiler.Optimizer.stackLayoutBlock optimized)
-        <|> YulEvmCompiler.compile noRejoin
-        <|> YulEvmCompiler.compile
-          (YulEvmCompiler.Optimizer.stackLayoutBlock noRejoin)
-        <|> YulEvmCompiler.compile light
-        <|> YulEvmCompiler.compile
-          (YulEvmCompiler.Optimizer.stackLayoutBlock light)
+      --
+      -- The fallback candidates are computed inside their `<|>` arms (which
+      -- `Option.orElse` thunks), not as up-front `let`s: Lean is strict, so
+      -- eager bindings would run the no-rejoin and light pipelines on every
+      -- program even though the first candidate compiles in the common case
+      -- (measured ~2-3x of the total compile time on the corpus runners).
+      let tryLayouts (blk : List (Stmt YulSemantics.EVM.Op)) :
+          Option (List YulEvmCompiler.Instr) :=
+        YulEvmCompiler.compile blk
+          <|> YulEvmCompiler.compile
+            (YulEvmCompiler.Optimizer.stackLayoutBlock blk)
+      let asm := tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipeline
+          (calls := YulSemantics.EVM.ExternalCalls.none)
+          (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
+        <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineNoRejoin
+          (calls := YulSemantics.EVM.ExternalCalls.none)
+          (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
+        <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineLight
+          (calls := YulSemantics.EVM.ExternalCalls.none)
+          (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
         <|> YulEvmCompiler.compile b
         <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillBlock? raw with
           | some spilled =>
@@ -311,25 +313,24 @@ def compileSource (source : String) : Option ByteArray := do
         (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
           YulSemantics.EVM.ExternalCreates.none)
         (desugarObject raw)
+      -- `optimized` stays a named binding (the spill fallback below also
+      -- consumes it); the no-rejoin and light pipelines are computed inside
+      -- their thunked `<|>` arms so the common first-candidate success never
+      -- pays for them (see the block path above).
       let optimized := YulEvmCompiler.Optimizer.optimizerPipelineObject
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none) o
-      let optimizedLayout :=
-        YulEvmCompiler.Optimizer.stackLayoutObject optimized
-      let noRejoin := YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
-        (calls := YulSemantics.EVM.ExternalCalls.none)
-        (creates := YulSemantics.EVM.ExternalCreates.none) o
-      let light := YulEvmCompiler.Optimizer.optimizerPipelineObjectLight
-        (calls := YulSemantics.EVM.ExternalCalls.none)
-        (creates := YulSemantics.EVM.ExternalCreates.none) o
-      let layout ← YulEvmCompiler.compileObject optimized
-        <|> YulEvmCompiler.compileObject optimizedLayout
-        <|> YulEvmCompiler.compileObject noRejoin
-        <|> YulEvmCompiler.compileObject
-          (YulEvmCompiler.Optimizer.stackLayoutObject noRejoin)
-        <|> YulEvmCompiler.compileObject light
-        <|> YulEvmCompiler.compileObject
-          (YulEvmCompiler.Optimizer.stackLayoutObject light)
+      let tryLayouts (obj : Object YulSemantics.EVM.Op) :=
+        YulEvmCompiler.compileObject obj
+          <|> YulEvmCompiler.compileObject
+            (YulEvmCompiler.Optimizer.stackLayoutObject obj)
+      let layout ← tryLayouts optimized
+        <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
+          (calls := YulSemantics.EVM.ExternalCalls.none)
+          (creates := YulSemantics.EVM.ExternalCreates.none) o)
+        <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectLight
+          (calls := YulSemantics.EVM.ExternalCalls.none)
+          (creates := YulSemantics.EVM.ExternalCreates.none) o)
         <|> YulEvmCompiler.compileObject o
         <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback
               raw optimized with

@@ -41,7 +41,7 @@ open YulEvmCompilerTests.CorpusGas
 open YulEvmCompilerTests.SolidityCorpus
 open YulEvmCompilerTests.InterpreterFixture
 open YulEvmCompilerTests.SolcDifferential (observe gasUsed)
-open YulEvmCompilerTests.SolTest (Call natToWord parseSpec)
+open YulEvmCompilerTests.SolTest (Call Spec natToWord parseSpec)
 open YulEvmCompilerTests.Parallel (detectJobs parMap weightedShard)
 
 /-- Optional deterministic source-size-weighted sharding, so the large
@@ -210,6 +210,187 @@ private def replayCalls (ourBase solcBase : EVM.State) (calls : Array Call)
     solcState := { solcState with accountMap := solcFinal.accountMap }
   return (measured, failure)
 
+/-! ## Optional solc-side execution cache (`--solc-cache=<dir>`)
+
+The solc half of a gas re-pin — `solcCreationBytecode`, its `deployForCalls`,
+and its share of `replayCalls` — is fully deterministic given the fixture
+source, the pinned solc version, and the call sequence. When `--solc-cache` is
+set, that half is recorded per fixture on the populating run and replayed from a
+small text file on later runs, comparing our side against the cached solc
+observation fingerprints instead of re-executing solc. The flag never changes
+behavior when absent: the live path below is left untouched. -/
+
+/-- Bump when the cache line format or the observation normalization below
+changes, so caches written by an older harness are treated as stale. -/
+private def solcCacheFormatVersion : Nat := 1
+
+/-- The single observation normalization used for BOTH sides of the gas
+comparison. It hashes exactly what `sameOutcome` compares — the observation with
+`normHalt` applied to the halt kind and the transient callee memory dropped — so
+`obsFingerprint a == obsFingerprint b` iff `sameOutcome a b` (modulo hash
+collision; this is a test cache). Memory is excluded (matching `memory := #[]`),
+and `normHalt` is folded in (matching the separate halt check plus the
+`halt := .Returned` normalization in `sameOutcome`). -/
+private def obsFingerprint (s : EVM.State) : UInt64 :=
+  let o := observe s
+  let logs := String.intercalate ";" (o.logs.toList.map fun log =>
+    s!"{log.address.val}:{reprStr (log.topics.map (·.toNat))}:{Hex.bytesToHex log.payload}")
+  let canonical := String.intercalate "|" [
+    reprStr (normHalt o.halt),
+    Hex.bytesToHex o.output,
+    Hex.bytesToHex o.returnData,
+    reprStr o.accounts,
+    logs,
+    reprStr (o.selfDestructs.map (·.val)),
+    toString o.refund.toNat
+  ]
+  hash canonical
+
+/-- One replayed solc call, as stored in the cache. `fingerprint` is the decimal
+form of `obsFingerprint`, kept as a string so the read path compares it without
+re-parsing a `UInt64`. `sig` is written for human readability only; the read
+path drives the sequence from the live call list, not from the cached sig. -/
+private structure SolcCallRecord where
+  sig : String
+  isDone : Bool
+  fingerprint : String
+  gas : Nat
+
+/-- The cached (or freshly measured) solc side of one fixture: whether solc's
+deployment produced a runtime, a repr of its deployment halt (`(cached)` when
+read back), the deployment's returndata size, and the ordered per-call records.
+`records` is meaningful only when `deployed` is true. -/
+private structure SolcSide where
+  deployed : Bool
+  deployHalt : String
+  deployReturnSize : Nat
+  records : Array SolcCallRecord
+
+/-- Run solc's deployed runtime over the whole call sequence independently of
+our side, recording one fingerprint/gas record per call. State persists across
+calls exactly as in `replayCalls`; recording stops at the first non-halting
+call, which the read path then reproduces as a live mismatch there. Running the
+full sequence (not just the leading run our side happens to match) keeps the
+cache valid even if our codegen later matches a different number of calls. -/
+private def runSolcCalls (solcBase : EVM.State) (calls : Array Call)
+    (fuel : Nat := 3000000) : Array SolcCallRecord := Id.run do
+  let mut solcState := solcBase
+  let mut records : Array SolcCallRecord := #[]
+  for call in calls do
+    let ss := withCall solcState call
+    let solcFinal := runEvm fuel ss
+    records := records.push {
+      sig := call.sig
+      isDone := solcFinal.isDone
+      fingerprint := toString (obsFingerprint solcFinal)
+      gas := gasUsed ss solcFinal
+    }
+    if !solcFinal.isDone then break
+    solcState := { solcState with accountMap := solcFinal.accountMap }
+  return records
+
+/-- The cached analogue of `replayCalls`: our side runs live and is compared
+against the cached solc fingerprints in sequence order, stopping at the first
+mismatch (or missing cached record) exactly as a live divergence would. The
+cached gas is used as solc's gas. -/
+private def replayCallsCached (ourBase : EVM.State) (calls : Array Call)
+    (records : Array SolcCallRecord) (fuel : Nat := 3000000)
+    : Array CallGas × Option String := Id.run do
+  let mut ourState := ourBase
+  let mut measured : Array CallGas := #[]
+  let mut failure : Option String := none
+  let mut index := 0
+  for call in calls do
+    let os := withCall ourState call
+    let ourFinal := runEvm fuel os
+    match records[index]? with
+    | some rec =>
+        if !(ourFinal.isDone && rec.isDone &&
+            toString (obsFingerprint ourFinal) == rec.fingerprint) then
+          failure := some (s!"at {call.sig}: differs from cached solc observation " ++
+            s!"(done={ourFinal.isDone}/{rec.isDone})")
+          break
+        measured := measured.push {
+          sig := call.sig
+          ours := gasUsed os ourFinal
+          solc := rec.gas
+        }
+        ourState := { ourState with accountMap := ourFinal.accountMap }
+    | none =>
+        failure := some s!"at {call.sig}: no cached solc observation for this call"
+        break
+    index := index + 1
+  return (measured, failure)
+
+/-- Cache key over the fixture source: the format version, source length (cheap
+extra collision safety), the pinned solc version, and the source text. -/
+private def sourceCacheHash (source solcVersion : String) : UInt64 :=
+  hash s!"{solcCacheFormatVersion}|{source.length}|{solcVersion}|{source}"
+
+/-- Cache key over the call spec (constructor args/value and every call
+descriptor) so a changed spec — including synthetic gasTests selectors —
+invalidates the cache even when the source text is unchanged. -/
+private def callsCacheHash (ctorArgs : ByteArray) (ctorValue : Nat)
+    (calls : Array Call) : UInt64 :=
+  let descriptors := calls.toList.map fun c =>
+    s!"{c.sig}#{c.value}#{Hex.bytesToHex c.calldata}"
+  hash s!"{Hex.bytesToHex ctorArgs}#{ctorValue}#{String.intercalate "," descriptors}"
+
+/-- Fixture relative paths contain `/`; map anything that is not a filename-safe
+character to `_` so the cache file name is a single flat path component. -/
+private def sanitizeCacheName (name : String) : String :=
+  String.ofList (name.toList.map fun c =>
+    if c.isAlphanum || c == '.' || c == '-' then c else '_')
+
+private def parseCallLine (line : String) : Option SolcCallRecord :=
+  match line.splitOn " " with
+  | "call" :: isDone :: fp :: gasStr :: _ =>
+      match gasStr.toNat? with
+      | some gas => some { sig := "", isDone := isDone == "1", fingerprint := fp, gas }
+      | none => none
+  | _ => none
+
+/-- Parse a cache file, returning the solc side only if the header matches the
+current format version, source hash, solc version, and call-spec hash. Any
+staleness or malformation yields `none`, which the caller treats as a miss. -/
+private def parseSolcCache (contents : String) (sourceHash callsHash : UInt64)
+    (solcVersion : String) : Option SolcSide :=
+  match (contents.splitOn "\n").filter (fun l => !l.isEmpty) with
+  | header :: deployLine :: callLines =>
+      if header != s!"v{solcCacheFormatVersion} {sourceHash} {solcVersion} {callsHash}" then none
+      else match deployLine.splitOn " " with
+        | ["deploy", ok, _haltHash, rs] =>
+            match rs.toNat?, callLines.mapM parseCallLine with
+            | some returnSize, some records =>
+                some { deployed := ok == "ok", deployHalt := "(cached)",
+                       deployReturnSize := returnSize, records := records.toArray }
+            | _, _ => none
+        | _ => none
+  | _ => none
+
+/-- Read and validate a fixture's cache file; `none` on absence, staleness, or
+malformation. -/
+private def loadSolcCache (file : System.FilePath) (sourceHash callsHash : UInt64)
+    (solcVersion : String) : IO (Option SolcSide) := do
+  if ← file.pathExists then
+    return parseSolcCache (← IO.FS.readFile file) sourceHash callsHash solcVersion
+  else
+    return none
+
+/-- Write a fixture's solc-side cache. The deployment-halt repr is stored only
+as a hash, so the read path's deployment-failure message is less specific than
+the live one — acceptable because that message is diagnostic (stderr) only. -/
+private def writeSolcCache (file : System.FilePath) (sourceHash callsHash : UInt64)
+    (solcVersion : String) (side : SolcSide) : IO Unit := do
+  let header := s!"v{solcCacheFormatVersion} {sourceHash} {solcVersion} {callsHash}"
+  let deployLine :=
+    s!"deploy {if side.deployed then "ok" else "fail"} {hash side.deployHalt} {side.deployReturnSize}"
+  let callLines := side.records.toList.map fun rec =>
+    s!"call {if rec.isDone then "1" else "0"} {rec.fingerprint} {rec.gas} {rec.sig}"
+  let text := String.intercalate "\n" (header :: deployLine :: callLines) ++ "\n"
+  if let some parent := file.parent then IO.FS.createDirAll parent
+  IO.FS.writeFile file text
+
 /-- Pin one row per external function. Repeated calls to the same signature
 are summed so existing multi-vector library fixtures still have stable keys. -/
 private def perScenarioRows (name : String) (calls : Array CallGas) : Array GasRow :=
@@ -232,11 +413,39 @@ private structure GasOutcome where
   skipped : Bool := false
   measured : Array GasRow := #[]
 
+/-- Deploy our bytecode and measure the fixture against an already-resolved solc
+side (cached or freshly measured), through the shared `obsFingerprint` replay.
+Because `obsFingerprint`-equality coincides with `sameOutcome`, the measured rows
+match the live path exactly — the reason a populating (`--solc-cache`) run
+produces the same summary as a flagless run. -/
+private def measureWithSolcSide (name : String) (perScenario : Bool)
+    (creation : ByteArray) (spec : Spec) (calls : Array Call)
+    (replayFuel : Nat) (side : SolcSide) : GasOutcome :=
+  let ourDeployment := deployForCalls creation spec.ctorArgs spec.ctorValue
+  match ourDeployment.state, side.deployed with
+  | some ourBase, true =>
+      let (callGas, replayFailure) := replayCallsCached ourBase calls side.records replayFuel
+      if spec.declaredCalls != 0 && callGas.size != calls.size then
+        { measurementFailure := some (name,
+            s!"only {callGas.size}/{calls.size} declared calls reached matching observable behavior" ++
+              (replayFailure.map fun detail => s!"; {detail}").getD "") }
+      else if callGas.isEmpty then {}
+      else if perScenario then { measured := perScenarioRows name callGas }
+      else { measured := #[totalRow name callGas] }
+  | _, _ =>
+      if spec.declaredCalls == 0 then {}
+      else
+        { measurementFailure := some (name,
+            s!"deployment did not produce runtime for declared calls " ++
+              s!"(ours={ourDeployment.halt}/{ourDeployment.returnSize}, " ++
+              s!"solc={side.deployHalt}/{side.deployReturnSize})") }
+
 /-- Compile one contract through solc's unoptimized `--via-ir` Yul, deploy both
 this compiler's and solc's optimized bytecode, replay the fixture's calls, and
 measure gas — the body of the old loop, extracted as an independent unit of
 work with no shared mutable state. -/
 private def processContract (dir : FilePath) (solcPath : String) (perScenario : Bool)
+    (solcCache : Option FilePath) (solcVersion : String)
     (path : FilePath) : IO GasOutcome := do
   let name := relativeName dir path
   let contents ← IO.FS.readFile path
@@ -252,6 +461,8 @@ private def processContract (dir : FilePath) (solcPath : String) (perScenario : 
           | none =>
               return { compileFailure := some (name, "this compiler rejected solc's unoptimized IR") }
           | some creation =>
+            match solcCache with
+            | none =>
               match ← solcCreationBytecode solcPath source with
               | .error message => return { compileFailure := some (name, message) }
               | .ok solcCreation =>
@@ -301,11 +512,53 @@ private def processContract (dir : FilePath) (solcPath : String) (perScenario : 
                             s!"(ours={ourDeployment.halt}/{ourDeployment.returnSize}, " ++
                             s!"solc={solcDeployment.halt}/{solcDeployment.returnSize})")
                         return { measurementFailure := some failure }
+            | some cacheDir =>
+              -- The call list (needed for our side and the cache key) is derived
+              -- as in the live path; only solc's creation bytecode, deployment,
+              -- and per-call execution are cached.
+              let spec := parseSpec contents
+              if spec.calls.size != spec.declaredCalls then
+                return { measurementFailure := some (name,
+                  s!"only {spec.calls.size}/{spec.declaredCalls} declared calls could be parsed") }
+              let calls ← do
+                if spec.declaredCalls == 0 then
+                  match ← solcFunctionSelectors solcPath source with
+                  | .error _ => pure #[]
+                  | .ok sels => pure (sels.toArray.map fun s =>
+                      ({ sig := s, value := 0,
+                         calldata := Hex.hexToBytes (s ++ argWords) } : Call))
+                else pure spec.calls
+              let replayFuel := if dir.fileName == some "aave-v4" then 30000000 else 3000000
+              let sourceHash := sourceCacheHash source solcVersion
+              let callsHash := callsCacheHash spec.ctorArgs spec.ctorValue calls
+              let cacheFile := cacheDir / (sanitizeCacheName name ++ ".solccache")
+              match ← loadSolcCache cacheFile sourceHash callsHash solcVersion with
+              | some side =>
+                  return measureWithSolcSide name perScenario creation spec calls replayFuel side
+              | none =>
+                  -- Cache miss/stale: run solc live (creation + deploy + full
+                  -- call sequence), write the cache, then measure through the
+                  -- same fingerprint tail the read path uses.
+                  match ← solcCreationBytecode solcPath source with
+                  | .error message => return { compileFailure := some (name, message) }
+                  | .ok solcCreation =>
+                      let solcDeployment :=
+                        deployForCalls solcCreation spec.ctorArgs spec.ctorValue
+                      let side : SolcSide := match solcDeployment.state with
+                        | some solcBase =>
+                            { deployed := true, deployHalt := solcDeployment.halt,
+                              deployReturnSize := solcDeployment.returnSize,
+                              records := runSolcCalls solcBase calls replayFuel }
+                        | none =>
+                            { deployed := false, deployHalt := solcDeployment.halt,
+                              deployReturnSize := solcDeployment.returnSize, records := #[] }
+                      writeSolcCache cacheFile sourceHash callsHash solcVersion side
+                      return measureWithSolcSide name perScenario creation spec calls replayFuel side
 
 private def usage : String :=
   "usage: CheckSolidityGas <contracts-dir> <gas-baseline.txt> " ++
     "<solc-path> <expected-solc-version> [--lenient] [--update] " ++
-    "[--per-scenario] [--known=<known-compile-failures.txt>]"
+    "[--per-scenario] [--known=<known-compile-failures.txt>] [--solc-cache=<dir>]"
 
 /-- `lenient`: treat contracts this compiler cannot handle as skips rather than
 failures. Off for the curated gasTests (every contract must compile); on for the
@@ -324,7 +577,8 @@ per fixture. Repeated calls to the same signature are summed. The in-repo
 `uniswap-v4` and `aave-v4` directories always enable this mode. -/
 private def run (dir baselineFile : FilePath)
     (solcPath expectedSolcVersion : String) (lenient update : Bool)
-    (perScenario : Bool) (known : Option (Array String)) (shard : Option Shard) : IO UInt32 := do
+    (perScenario : Bool) (known : Option (Array String)) (shard : Option Shard)
+    (solcCache : Option FilePath) : IO UInt32 := do
   match ← checkSolcVersion solcPath expectedSolcVersion with
   | .error message => IO.eprintln message; return 1
   | .ok () => pure ()
@@ -354,7 +608,8 @@ private def run (dir baselineFile : FilePath)
   -- The checked-in protocol suites always use scenario rows; keeping this
   -- directory convention automatic avoids duplicating policy in their runner
   -- invocations. The flag remains available for other local suites.
-  let outcomes : Array GasOutcome ← parMap jobs files (processContract dir solcPath perScenario)
+  let outcomes : Array GasOutcome ← parMap jobs files
+    (processContract dir solcPath perScenario solcCache expectedSolcVersion)
   for outcome in outcomes do
     if let some entry := outcome.compileFailure then compileFailures := compileFailures.push entry
     if let some entry := outcome.measurementFailure then
@@ -451,15 +706,20 @@ def main (args : List String) : IO UInt32 := do
       let nums := rest.filter (fun s => !s.startsWith "--")
       let knownFiles := flags.filterMap (fun f =>
         if f.startsWith "--known=" then some ((f.drop "--known=".length).copy) else none)
+      let cacheDirs := flags.filterMap (fun f =>
+        if f.startsWith "--solc-cache=" then some ((f.drop "--solc-cache=".length).copy) else none)
       if !flags.all (fun f =>
           f == "--update" || f == "--lenient" || f == "--per-scenario" ||
-            f.startsWith "--known=") then
+            f.startsWith "--known=" || f.startsWith "--solc-cache=") then
         IO.eprintln usage; return 64
       else
         let known ← match knownFiles with
           | [] => pure none
           | [file] => some <$> readKnownFailures (FilePath.mk file)
           | _ => IO.eprintln usage; return 64
+        let solcCache : Option FilePath := match cacheDirs with
+          | [] => none
+          | dir :: _ => some (FilePath.mk dir)
         let shard ← match nums with
           | [] => pure none
           | [rawIndex, rawCount] =>
@@ -472,5 +732,5 @@ def main (args : List String) : IO UInt32 := do
           | _ => IO.eprintln usage; return 64
         run dir baselineFile solcPath expectedSolcVersion
           (flags.contains "--lenient") (flags.contains "--update")
-          (flags.contains "--per-scenario") known shard
+          (flags.contains "--per-scenario") known shard solcCache
   | _ => IO.eprintln usage; return 64
