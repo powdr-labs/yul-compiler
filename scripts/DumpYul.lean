@@ -33,13 +33,14 @@ private def optimizedObject (o0 : Object YulSemantics.EVM.Op) :
   match YulEvmCompiler.compileObject optimized with
   | some _ => (optimized, "primary")
   | none =>
-    match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback raw optimized with
+    let rematRaw := YulEvmCompiler.Optimizer.RematSpill.rematObject raw
+    match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback rematRaw rematRaw with
     | some spilled =>
         let spilledOptBase := YulEvmCompiler.Optimizer.optimizerPipelineObject
           (calls := NC) (creates := NR)
           (YulEvmCompiler.Optimizer.Normalize.normalizeObject
             (D := YulSemantics.EVM.evmWithExternal NC NR) spilled.object)
-        (spilledOptBase, s!"spilled(selected={spilled.selected})")
+        (spilledOptBase, s!"remat-spilled(selected={spilled.selected})")
     | none => (optimized, "primary(uncompilable)")
 
 def main (args : List String) : IO UInt32 := do
