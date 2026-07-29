@@ -1,6 +1,7 @@
 import YulIR.Check
 import YulParser.Compile
 import YulEvmCompilerTests.SolidityCorpus
+import YulEvmCompilerTests.Parallel
 
 set_option warningAsError true
 /-!
@@ -18,10 +19,12 @@ and compares compiled **code size** three ways:
 vs `current` is the headline gap to the mature Yul optimizer. As passes land in `YulIR.optimize`
 the `ir-opt` column drops.
 
-Usage:
-  lake env lean --run scripts/YulIRCorpus.lean report <corpusDir>
-  lake env lean --run scripts/YulIRCorpus.lean update <corpusDir> <baselineFile>
-  lake env lean --run scripts/YulIRCorpus.lean check  <corpusDir> <baselineFile>
+Usage (native, fixture-parallel — `lake build yulIRCorpus` first; the
+interpreted `lake env lean --run scripts/YulIRCorpus.lean …` form still works
+but is many times slower):
+  .lake/build/bin/yulIRCorpus report <corpusDir>
+  .lake/build/bin/yulIRCorpus update <corpusDir> <baselineFile>
+  .lake/build/bin/yulIRCorpus check  <corpusDir> <baselineFile>
 
 `check` is CI-safe against the daily-moving corpus: each category row carries a source
 fingerprint, and only categories whose fingerprint matches the committed baseline are gated
@@ -32,6 +35,7 @@ reported.
 open System YulParser
 open YulEvmCompilerTests.SolidityCorpus
 open YulEvmCompilerTests.SolcDifferential (compareBytecode measureGas fixtureSeed)
+open YulEvmCompilerTests.Parallel (detectJobs parMap)
 
 namespace YulIRCorpus
 
@@ -80,14 +84,21 @@ def addFixture (m : Std.HashMap String Cat) (cat src : String)
   m.insert cat c
 
 /-- Walk a corpus directory and aggregate per category. Returns the map plus the number of
-skipped (non-block or non-latest-fork) fixtures. -/
+skipped (non-block or non-latest-fork) fixtures.
+
+Fixtures are measured concurrently (`parMap`, one independent unit per fixture)
+and folded back in corpus order, so the category fingerprints — mixed in
+fixture order — are byte-identical to the sequential walk. -/
 def scan (corpusDir : FilePath) : IO (Std.HashMap String Cat × Nat) := do
   let fixtures ← blockFixtures corpusDir
-  let mut m : Std.HashMap String Cat := {}
-  for (name, source, b) in fixtures do
+  let jobs ← detectJobs
+  let sizes ← parMap jobs fixtures fun (name, source, b) => do
     let cur := (compileSource source).map (·.size)
     let irNo := YulIR.Check.codeSizeOf (YulIR.Check.irRoundTrip b)
     let irOp := YulIR.Check.codeSizeOf (YulIR.Check.irOptimized b)
+    pure (name, source, cur, irNo, irOp)
+  let mut m : Std.HashMap String Cat := {}
+  for (name, source, cur, irNo, irOp) in sizes do
     m := addFixture m (categoryOf name) source cur irNo irOp
   return (m, 0)
 
