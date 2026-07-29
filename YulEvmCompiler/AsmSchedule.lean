@@ -347,8 +347,11 @@ def scheduleAsmFuel : Nat → List Asm → List Asm
   | _ + 1, [] => []
   | fuel + 1, i :: rest =>
       if schedulable i then
-        let win := (i :: rest).takeWhile schedulable
-        let tail := (i :: rest).dropWhile schedulable
+        -- Cut a maximal schedulable run, but CAP its length so a long run (e.g.
+        -- the whole log2 squaring section) is split into bounded chunks that are
+        -- each scheduled — rather than skipped for being too big.
+        let win := ((i :: rest).takeWhile schedulable).take maxWindowLen
+        let tail := (i :: rest).drop win.length
         optimizeWindow win ++ scheduleAsmFuel fuel tail
       else
         i :: scheduleAsmFuel fuel rest
