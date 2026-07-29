@@ -4,6 +4,7 @@ import YulEvmCompiler.Optimizer.Implementation.Pipeline
 import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
 import YulEvmCompiler.Optimizer.Implementation.MemorySpillSelect
 import YulEvmCompiler.Optimizer.Implementation.MemorySpillSound
+import YulEvmCompiler.Optimizer.Implementation.RematSpill
 set_option warningAsError true
 /-!
 # YulParser.Compile
@@ -332,8 +333,14 @@ def compileSource (source : String) : Option ByteArray := do
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none) o)
         <|> YulEvmCompiler.compileObject o
-        <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback
-              raw optimized with
+        -- EXPERIMENTAL (remat-before-spill): only reached when the object would
+        -- otherwise spill. Rematerialize cheap pure single-def bindings in the
+        -- guard-bearing `raw` object BEFORE spilling, shrinking the live-local
+        -- set so `MemorySpill` selects far fewer slots (measured PoolSwap:
+        -- 637 -> 233). `raw` is what `spillObjectWithFallback` actually spills.
+        <|> (let rematRaw := YulEvmCompiler.Optimizer.RematSpill.rematObject raw
+             match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback
+              rematRaw rematRaw with
           | some spilled =>
               if spilled.selected = 0 then none
               else
