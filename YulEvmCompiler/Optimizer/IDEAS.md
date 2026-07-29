@@ -1365,3 +1365,52 @@ compose that result with the existing `Simplify` resolution congruence for the
   relabeling, a different argument than `CodeRel`'s in-place windows), and
   iterating the scan (a dropped branch's `jumpi` can orphan its label for a
   second round).
+
+### ❌ Literal-slot memory-load forwarding (`MemoryForward`) (measured, parked)
+
+StorageForward's analogue for memory: thread a per-slot cache through
+left-to-right evaluation, forward `mload(k)` at literal `k` to the last stored
+value (`lit`/`var`/`add(var,lit)`), never delete a store; clobber on any
+possibly-memory-writing op, kill facts on reassignment/scope exit. Fully
+implemented with eval-order-aware invalidation and `#guard` tests (branch
+`agent/uv4-memory-forward`, PR #131), wired experimentally in `compileSource`.
+
+**Result:** −703 uniswap / −10,772 all-suite, 0 regressions — real but an order
+of magnitude under the hypothesis, so parked without the soundness proof
+(~1.5–2.5k lines, ReuseValuesSound-shaped) or pipeline wiring. Diagnosis of the
+miss: PoolSwap-class objects reach the backend via the MemorySpill fallback
+(637 spilled bindings) and the hot residual loads are spilled accumulators
+carried across sibling `if` blocks — branch-dependent memory content no
+forwarding can touch — while the matching MSTORE half is off-limits (final
+nonzero memory is observed). Also roughly doubles object compile time via the
+re-optimize arm. Do not revisit without first shrinking spill counts.
+
+### ❌ Cost-aware memory-spill victim selection (measured, rejected)
+
+Replace `selectSpills`' depth-witness victim policy with a loop-weighted static
+use-count cost model (spill the cheapest binding that still relieves pressure).
+Confirmed first that no `MemorySpill*Sound` proof reads the selection
+(`SpillFacts.selected` is write-only; heuristic rewrites keep the build green),
+so any policy is proof-free. Branch `agent/uv4-spill-select`.
+
+**Result:** rejected on measurement. Aggressive diversion (spill cheap bindings
+above each witness): +46k uniswap, swapExactInputNoTick alone +18,652 — hot
+accumulators sit far below the DUP16 frontier, so keeping one on-stack costs
+many cold spills whose aggregate exceeds the single hot spill. Conservative
+1-for-1 frontier substitution: net −6 (noise). Coordinated shift-block relief
+is correct but needs one-at-a-time processing that times out on 637-spill
+objects. The existing depth policy is near cost-optimal; the actual lever is
+the spill *count* (frame size from unconditional inlining), not the victims.
+
+### ❌ Binary-search dispatch below ~8 cases (measured, rejected; ≥8 merged)
+
+`DispatchTree` at `minTreeCases = 4` on uniswap-v4: net **+270** (17 improved /
+15 regressed). Tracing the unknown-selector probe on PoolSwap showed why: a
+4–6-case dispatcher costs ~18 gas in compares but ~760 gas in block-lowering
+JUMPs, so halving compares is invisible while early-position selectors pay the
+tree's extra depth. The uniswap fixtures top out at 6 dispatcher cases (the
+"~30 selectors" in `solc --hashes` are error selectors and sibling contracts;
+the sole 41-case object, PoolManager, is a known compile failure) — the pass is
+byte-identical there at threshold 8. Kept at `minTreeCases = 8`, where the
+corpus-wide result is gasTests −6,856 (0 regr), semanticTests −14,904 (26/5),
+aave −231.
