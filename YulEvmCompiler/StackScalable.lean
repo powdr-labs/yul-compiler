@@ -898,29 +898,88 @@ theorem frameStepB_sound {prog : List Asm} {C : Cert} {i : Asm} {c : List Asm} {
 
 /-- The untrusted solver's output: one `(positionLength, position, layout, frameBase, returnLayout)`
 per reachable position. The leading length is a precomputed lookup key: reachable positions are
-suffixes of the program, so equal length ⟹ equal position, and an O(1) `Nat` comparison prunes the
-`find?` scan before the O(length) list comparison — making verification linear rather than O(n²·len). -/
+suffixes of the program, so equal length ⟹ equal position, and an O(1) array lookup on the key
+replaces any scan — one O(length) list comparison against the stored position confirms the hit. -/
 structure CertData where
   entries : List (Nat × List Asm × FLayout × Nat × FLayout)
 
-/-- The `Cert` induced by a `CertData`: look the position up in the finite table, keyed by length. -/
-def CertData.toCert (d : CertData) : Cert where
-  fl c := (d.entries.find? (fun e => e.1 == c.length && decide (e.2.1 = c))).map (·.2.2.1)
-  fbMax c := (d.entries.find? (fun e => e.1 == c.length && decide (e.2.1 = c))).map (·.2.2.2.1)
-  rl c := (d.entries.find? (fun e => e.1 == c.length && decide (e.2.1 = c))).map (·.2.2.2.2)
+/-- Largest lookup key claimed by the table. -/
+def CertData.maxKey (d : CertData) : Nat :=
+  d.entries.foldl (fun m e => max m e.1) 0
+
+/-- Key-indexed lookup table: cell `k` holds the *first* entry with key `k` (`foldr`, so earlier
+entries overwrite later ones). Out-of-range keys are dropped — such entries are unreachable
+through `toCert` and therefore harmless. -/
+def CertData.tbl (d : CertData) (size : Nat) :
+    Array (Option (Nat × List Asm × FLayout × Nat × FLayout)) :=
+  d.entries.foldr (fun e a => if h : e.1 < a.size then a.set e.1 (some e) h else a)
+    (Array.replicate size none)
+
+omit model in
+theorem CertData.tbl_size (d : CertData) (size : Nat) : (d.tbl size).size = size := by
+  unfold CertData.tbl
+  induction d.entries with
+  | nil => simp
+  | cons e es ih => simp only [List.foldr_cons]; split <;> simp [ih]
+
+omit model in
+private theorem tbl_mem_aux {α : Type} [DecidableEq α]
+    {es : List (Nat × α)} {size k : Nat} {e : Nat × α}
+    (h : (es.foldr (fun e a => if h : e.1 < a.size then a.set e.1 (some e) h else a)
+          (Array.replicate size none))[k]? = some (some e)) : e ∈ es := by
+  induction es with
+  | nil =>
+      exfalso
+      rw [List.foldr_nil] at h
+      rcases Nat.lt_or_ge k size with hk | hk
+      · rw [Array.getElem?_eq_getElem (by simpa using hk)] at h
+        simp at h
+      · rw [Array.getElem?_eq_none (by simpa using hk)] at h
+        simp at h
+  | cons e₀ es ih =>
+      rw [List.foldr_cons] at h
+      split at h
+      · next hlt =>
+          rw [Array.getElem?_set] at h
+          split at h
+          · exact (Option.some.inj (Option.some.inj h)) ▸ List.mem_cons_self ..
+          · exact List.mem_cons_of_mem _ (ih h)
+      · exact List.mem_cons_of_mem _ (ih h)
+
+omit model in
+/-- Every populated table cell holds a genuine entry. -/
+theorem CertData.tbl_mem {d : CertData} {size k : Nat}
+    {e : Nat × List Asm × FLayout × Nat × FLayout}
+    (h : (d.tbl size)[k]? = some (some e)) : e ∈ d.entries :=
+  tbl_mem_aux (by simpa [CertData.tbl] using h)
+
+/-- The `Cert` induced by a `CertData`: an O(1) array lookup on the position's length, then one
+list comparison against the stored position. The table is built once per `Cert` value. -/
+def CertData.toCert (d : CertData) : Cert :=
+  let t := d.tbl (d.maxKey + 1)
+  { fl := fun c => match t[c.length]? with
+      | some (some e) => if e.2.1 = c then some e.2.2.1 else none
+      | _ => none
+    fbMax := fun c => match t[c.length]? with
+      | some (some e) => if e.2.1 = c then some e.2.2.2.1 else none
+      | _ => none
+    rl := fun c => match t[c.length]? with
+      | some (some e) => if e.2.1 = c then some e.2.2.2.2 else none
+      | _ => none }
 
 /-- The verifier: bounded at every entry, and `frameStep` at every instruction entry, plus the
 program-entry conditions. Each entry carries its own `(fl, fbMax, rl)`, so the current-position
-checks read them directly (no `find?`); `frameStepB` still resolves *successor* positions through
-`C`. One pass over the table ⇒ linear. -/
+checks read them directly; `frameStepB` resolves *successor* positions through `C`'s O(1) table.
+Keys are bounded by `prog.length` up front, so a hostile table cannot force a huge allocation. -/
 def checkCert (prog : List Asm) (d : CertData) : Bool :=
-  let C := d.toCert
-  (C.fl prog == some []) && (C.fbMax prog == some 0) && (C.rl prog).isSome &&
-  d.entries.all (fun e =>
-    decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023)
-    && (match e.2.1 with
-        | i :: c' => frameStepB prog C i c' e.2.2.1 e.2.2.2.1 e.2.2.2.2
-        | [] => true))
+  d.entries.all (fun e => decide (e.1 ≤ prog.length)) &&
+  (let C := d.toCert
+   (C.fl prog == some []) && (C.fbMax prog == some 0) && (C.rl prog).isSome &&
+   d.entries.all (fun e =>
+     decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023)
+     && (match e.2.1 with
+         | i :: c' => frameStepB prog C i c' e.2.2.1 e.2.2.2.1 e.2.2.2.2
+         | [] => true)))
 
 omit model in
 /-- A defined position comes from a table entry carrying that exact `(position, fl, fbMax, rl)`. -/
@@ -928,16 +987,20 @@ theorem CertData.lookup_fl {d : CertData} {c : List Asm} {S : FLayout}
     (hfl : d.toCert.fl c = some S) :
     ∃ e ∈ d.entries, e.2.1 = c ∧ e.2.2.1 = S ∧
       d.toCert.fbMax c = some e.2.2.2.1 ∧ d.toCert.rl c = some e.2.2.2.2 := by
-  have hfl' := hfl
-  simp only [CertData.toCert, Option.map_eq_some_iff] at hfl'
-  obtain ⟨e, hfound, hS⟩ := hfl'
-  have hpe : e.2.1 = c := by
-    have := List.find?_some hfound
-    simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at this
-    exact this.2
-  refine ⟨e, List.mem_of_find?_eq_some hfound, hpe, hS, ?_, ?_⟩
-  · simp only [CertData.toCert]; rw [hfound]; rfl
-  · simp only [CertData.toCert]; rw [hfound]; rfl
+  simp only [CertData.toCert] at hfl ⊢
+  rcases hget : (d.tbl (d.maxKey + 1))[c.length]? with _ | eo
+  · simp only [hget] at hfl
+    exact absurd hfl (by simp)
+  · rcases eo with _ | e
+    · simp only [hget] at hfl
+      exact absurd hfl (by simp)
+    · simp only [hget] at hfl
+      by_cases hpe : e.2.1 = c
+      · rw [if_pos hpe] at hfl
+        exact ⟨e, CertData.tbl_mem hget, hpe, Option.some.inj hfl,
+          by simp [hpe], by simp [hpe]⟩
+      · rw [if_neg hpe] at hfl
+        exact absurd hfl (by simp)
 
 omit model in
 /-- **Verifier soundness.** -/
@@ -945,7 +1008,7 @@ theorem checkCert_sound {prog : List Asm} {d : CertData} (h : checkCert prog d =
     d.toCert.Valid prog ∧ d.toCert.Bounded ∧ d.toCert.fl prog = some [] ∧
       d.toCert.fbMax prog = some 0 ∧ ∃ R, d.toCert.rl prog = some R := by
   simp only [checkCert, Bool.and_eq_true, beq_iff_eq, List.all_eq_true] at h
-  obtain ⟨⟨⟨hentfl, hentfb⟩, hentrl⟩, hall⟩ := h
+  obtain ⟨-, ⟨⟨hentfl, hentfb⟩, hentrl⟩, hall⟩ := h
   refine ⟨?_, ?_, hentfl, hentfb, ?_⟩
   · -- Valid
     intro i c S F R hfl hfb hrl
