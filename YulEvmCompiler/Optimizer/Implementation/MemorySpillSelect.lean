@@ -78,7 +78,7 @@ mutual
             else some {
               owner, name := x, kind := .read, depth := off + idx
               deficit := off + idx + 1 - 16
-              batch := layout.take idx
+              batch := []
             }
         | none => none
     | .builtin _ args => firstPressureArgs chosen owner phi layout off args
@@ -110,7 +110,7 @@ def firstPressureAssigns (chosen : SelectedPred) (owner : Owner)
           else some {
             owner, name := x, kind := .write, depth := idx + xs.length
             deficit := idx + xs.length + 1 - 16
-            batch := layout.take idx
+            batch := []
           }
       | none => firstPressureAssigns chosen owner layout xs
 
@@ -267,7 +267,7 @@ mutual
             else addPressure limit pressures {
               owner, name := x, kind := .read, depth := off + idx
               deficit := off + idx + 1 - 16
-              batch := layout.take idx
+              batch := []
             }
         | none => pressures
     | .builtin _ args =>
@@ -304,7 +304,7 @@ def collectPressureAssigns (limit : Nat) (chosen : SelectedPred) (owner : Owner)
             else addPressure limit pressures {
               owner, name := x, kind := .write, depth := idx + xs.length
               deficit := idx + xs.length + 1 - 16
-              batch := layout.take idx
+              batch := []
             }
         | none => pressures
       collectPressureAssigns limit chosen owner layout pressures' xs
@@ -486,117 +486,7 @@ def groupsClosedCheck (groups : List SpillSet) (selected : SpillSet) : Bool :=
     decide group.Nodup &&
       if group.any selected.contains then group.all selected.contains else true
 
-/-! ## Hotness cost model for victim selection
-
-Selection is a heuristic input to an already-proven-sound rewrite: `spillBlock?`
-re-validates every certificate the soundness proof consumes (`selectedWF`,
-`selectedBindingsWF`, `groupsClosedCheck`, `layoutCheck`, and the residual
-`firstPressure … = none`), and no soundness proof reads `SpillFacts.selected`.
-So this cost model changes only *which* bindings spill, never correctness.
-
-We prefer to spill *cheap* bindings — few uses, outside loops. When a read or
-write of a deep binding forces a spill, spilling a cheaper binding physically
-*above* it instead (carried in `Pressure.batch`) lifts the expensive one back
-within `DUP16` reach, because a selected binding no longer occupies a stack
-slot (`physicalDecls` filters it out on the next pressure traversal). The deep
-binding itself is always a fallback candidate, so relief always makes progress
-and, in the worst case, reproduces the previous depth-victim policy. -/
-
-/-- Each additional loop-nesting level multiplies a use's spill cost. Captures
-that a binding read once per iteration is far more expensive to round-trip
-through memory than one read once. -/
-def loopWeight : Nat := 8
-
-private def bumpCost (owner : Owner) (w : Nat) (m : Std.HashMap SpillKey Nat)
-    (x : Ident) : Std.HashMap SpillKey Nat :=
-  let k : SpillKey := { owner, name := x }
-  m.insert k (m.getD k 0 + w)
-
-private def bumpCosts (owner : Owner) (w : Nat) (m : Std.HashMap SpillKey Nat)
-    (xs : List Ident) : Std.HashMap SpillKey Nat :=
-  xs.foldl (bumpCost owner w) m
-
-mutual
-/-- Accumulate the weighted use count of every variable read in `e`. -/
-def costExpr (owner : Owner) (w : Nat) (m : Std.HashMap SpillKey Nat) :
-    Expr Op → Std.HashMap SpillKey Nat
-  | .lit _ => m
-  | .var x => bumpCost owner w m x
-  | .builtin _ args => costArgs owner w m args
-  | .call _ args => costArgs owner w m args
-
-def costArgs (owner : Owner) (w : Nat) (m : Std.HashMap SpillKey Nat) :
-    List (Expr Op) → Std.HashMap SpillKey Nat
-  | [] => m
-  | e :: rest => costArgs owner w (costExpr owner w m e) rest
-end
-
-mutual
-/-- Accumulate weighted use counts across a statement. Reads count as uses;
-declaration and assignment targets count as writes (each becomes an `mstore`
-when spilled). Loop bodies weight by `loopWeight`; `funDef` bodies switch
-owner. -/
-def costStmt (owner : Owner) (w : Nat) (m : Std.HashMap SpillKey Nat) :
-    Stmt Op → Std.HashMap SpillKey Nat
-  | .exprStmt e => costExpr owner w m e
-  | .letDecl xs val =>
-      let m := match val with | some e => costExpr owner w m e | none => m
-      bumpCosts owner w m xs
-  | .assign xs e => bumpCosts owner w (costExpr owner w m e) xs
-  | .block body => costStmts owner w m body
-  | .cond c body => costStmts owner w (costExpr owner w m c) body
-  | .switch c cases dflt =>
-      let m := costExpr owner w m c
-      let m := costCases owner w m cases
-      match dflt with | some body => costStmts owner w m body | none => m
-  | .forLoop init c post body =>
-      let m := costStmts owner w m init
-      let w' := w * loopWeight
-      let m := costExpr owner w' m c
-      let m := costStmts owner w' m body
-      costStmts owner w' m post
-  | .funDef f ps rs body =>
-      -- Params/returns become `initParams`/`initReturns`/`copyBackReturns`
-      -- stores when spilled, so charge each once.
-      bumpCosts (some f) w (costStmts (some f) w m body) (ps ++ rs)
-  | .break | .continue | .leave => m
-  termination_by s => 2 * sizeOf s
-
-def costStmts (owner : Owner) (w : Nat) (m : Std.HashMap SpillKey Nat) :
-    Block Op → Std.HashMap SpillKey Nat
-  | [] => m
-  | s :: rest => costStmts owner w (costStmt owner w m s) rest
-  termination_by ss => 2 * sizeOf ss + 1
-
-def costCases (owner : Owner) (w : Nat) (m : Std.HashMap SpillKey Nat) :
-    List (Literal × Block Op) → Std.HashMap SpillKey Nat
-  | [] => m
-  | (_, body) :: rest => costCases owner w (costStmts owner w m body) rest
-  termination_by cs => 2 * sizeOf cs + 1
-decreasing_by
-  all_goals simp_wf
-  all_goals omega
-end
-
-def buildCost (body : Block Op) : Std.HashMap SpillKey Nat :=
-  costStmts none 1 {} body
-
-/-- Choose the cheapest binding among the pressure's fallback (`p.name`) and the
-carried candidates above it (`p.batch`), skipping any already selected. Ties
-resolve toward the shallowest above-candidate (earliest in `p.batch`), which
-relieves the most simultaneous depth pressure. -/
-def pickVictim (cost : Std.HashMap SpillKey Nat) (selected : SpillSet)
-    (p : Pressure) : SpillKey :=
-  let cands := (p.batch ++ [p.name]).filterMap fun nm =>
-    let k : SpillKey := { owner := p.owner, name := nm }
-    if selected.contains k then none else some k
-  match cands with
-  | [] => { owner := p.owner, name := p.name }
-  | c :: cs => cs.foldl (fun best k =>
-      if cost.getD k 0 < cost.getD best 0 then k else best) c
-
-def selectLoop (cost : Std.HashMap SpillKey Nat) (body : Block Op)
-    (groups : List SpillSet) :
+def selectLoop (body : Block Op) (groups : List SpillSet) :
     Nat → SpillSet → Option SpillSet
   | 0, _ => none
   | fuel + 1, selected =>
@@ -605,21 +495,22 @@ def selectLoop (cost : Std.HashMap SpillKey Nat) (body : Block Op)
           match firstPressure selected body with
           | none => if selected.isEmpty then none else some selected
           | some pressure =>
-              let requested := addUnique selected (pickVictim cost selected pressure)
+              let requested :=
+                addUnique selected { owner := pressure.owner, name := pressure.name }
               let selected' := closeGroups groups fuel requested
               if selected'.length = selected.length then none
-              else selectLoop cost body groups fuel selected'
+              else selectLoop body groups fuel selected'
       | pressures =>
           let requested := pressures.foldl (fun out pressure =>
-            addUnique out (pickVictim cost out pressure)) selected
+            addUnique out { owner := pressure.owner, name := pressure.name }) selected
           let selected' := closeGroups groups fuel
             requested
           if selected'.length = selected.length then none
-          else selectLoop cost body groups fuel selected'
+          else selectLoop body groups fuel selected'
 
 def selectSpills (body : Block Op) : Option SpillSet :=
   let names := MemorySpill.declaredStmts body
-  selectLoop (buildCost body) body (coupledStmts none body) (names.length + 1) []
+  selectLoop body (coupledStmts none body) (names.length + 1) []
 
 /-! ## Lexical slot coloring inside one frame -/
 
