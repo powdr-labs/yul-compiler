@@ -22,10 +22,30 @@ open YulSemantics.EVM (U256 EvmState Op stepOp builtinWithExternal)
 an external call or creation is simulated by the unrestricted finite trace
 provided by `ExternalsRealized`. The endpoint preserves the configuration correspondence and
 each case has an existential gas bound. -/
+theorem op_arity_bound (o : Operation) : Operation.pushArity o ≤ Operation.popArity o + 1 := by
+  cases o <;> simp only [Operation.pushArity, Operation.popArity] <;> (first | omega | (split <;> omega))
+
+set_option linter.unusedSimpArgs false in
+set_option linter.unusedTactic false in
+set_option linter.unreachableTactic false in
+theorem baseCost_le_40000 (o : Operation) : Gas.baseCost .Osaka o ≤ 40000 := by
+  cases o <;>
+    simp only [Gas.baseCost] <;>
+    first
+      | decide
+      | (split <;> decide)
+      | (rename_i x; cases x <;> simp only [Gas.baseCost] <;>
+          (first | decide | (split <;> decide) | (rename_i y; have := y.isLt; omega)))
+      | (rename_i x; have := x.isLt; omega)
+
+set_option linter.unusedSimpArgs false in
+set_option linter.unusedTactic false in
+set_option linter.unreachableTactic false in
 theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
-    {a b : AConf} (hstep : AStep prog a b) (hsuf : a.code <:+ prog) :
+    {a b : AConf} (hstep : AStep prog a b) (hsuf : a.code <:+ prog)
+    (hcap : a.stk.length ≤ 1023) :
     ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
       bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ ConfMatch (payload := payload) prog is b s'
@@ -48,7 +68,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
-        hm.stack hgas
+        hm.stack (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
     refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_⟩, hg'⟩
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
@@ -76,6 +96,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (opTable_available hop)
       obtain ⟨s', hsteps, hf', hsm', hpc', hstk', hg'⟩ :=
         H hm.frame hm.smatch hdec (by rw [hm.stack, mapStk_words]) hgas
+          (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega))
       refine ⟨s', hsteps, ⟨hf', hsm', ?_, ?_⟩, hg'⟩
       · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
         rw [hpc', hm.pc, hpos]
@@ -99,6 +120,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
           (opTable_available hop)
         obtain ⟨s', hsteps, hf', hsm', hpc', hstk', hg'⟩ :=
           H hm.frame hm.smatch hdec (by rw [hm.stack, mapStk_words]) hgas
+            (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega))
         refine ⟨s', hsteps, ⟨hf', hsm', ?_, ?_⟩, hg'⟩
         · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
           rw [hpc', hm.pc, hpos]
@@ -126,7 +148,8 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
           (assembleWithPayload_at₁ hbytes payload)
           hm.frame hm.smatch
           (by rw [hm.pc, hpos, hlenPre])
-          (by rw [hm.stack, mapStk_words]) hgas
+          (by rw [hm.stack, mapStk_words])
+          (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
         obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ := hok
         refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_⟩, hg'⟩
         · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
@@ -156,7 +179,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
-        hget hgas
+        hget (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
     refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_⟩, hg'⟩
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
@@ -188,7 +211,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
-        hswap hgas
+        hswap (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
     refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, hstk'⟩, hg'⟩
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
@@ -210,7 +233,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
-        (by rw [hm.stack]; rfl) hgas
+        (by rw [hm.stack]; rfl) (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
     refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, hstk'⟩, hg'⟩
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
@@ -231,7 +254,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
       jumpdestStep
         (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
-        (by rw [hm.pc, hpos, hlenPre]) hgas
+        (by rw [hm.pc, hpos, hlenPre]) (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
     refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, by rw [hstk', hm.stack]⟩, hg'⟩
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
@@ -264,7 +287,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (assembleWithPayload_at₂ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
-        hm.stack (by omega)
+        hm.stack (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) (by omega)
     obtain ⟨s2, st2, hf2, hsm2, hpc2, hstk2, hg2⟩ :=
       jumpStep (dest := UInt256.ofNat aL)
         (pre := assembleBytes isPre ++ (Instr.push labelWidthFin (UInt256.ofNat aL)).bytes)
@@ -276,6 +299,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
               (by rw [List.length_append, Instr.length_bytes_push]))
         hstk1
         (by rw [toNat_ofNat_of_lt haLlt]; exact hvalid)
+        (by simp only [hstk1, hm.stack, mapStk, List.length_map, List.length_cons, Operation.pushArity, Operation.popArity] at hcap ⊢; omega)
         (by omega)
     obtain ⟨s3, st3, hf3, hsm3, hpc3, hstk3, hg3⟩ :=
       jumpdestStep
@@ -284,7 +308,8 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
           rw [assembleWithPayload, hbytesL]
           simp only [List.append_assoc])
         hf2 hsm2
-        (by rw [hpc2, hlenPreL]) (by omega)
+        (by rw [hpc2, hlenPreL])
+        (by simp only [hstk2, hm.stack, mapStk, List.length_map, List.length_cons, Operation.pushArity, Operation.popArity] at hcap ⊢; omega) (by omega)
     refine ⟨s3, .trans st1 (.trans st2 (.trans st3 (.refl _))),
       ⟨hf3, hsm3, ?_, ?_⟩, gasChain₃' hg1 hg2 hg3⟩
     · show s3.pc = UInt256.ofNat (codeSize prog - codeSize c')
@@ -317,7 +342,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (assembleWithPayload_at₂ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
-        hm.stack (by omega)
+        hm.stack (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) (by omega)
     have hcond : (conv v).toNat ≠ 0 := by
       rw [conv_toNat]
       intro h0
@@ -336,6 +361,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (by rw [hstk1]; rfl)
         hcond
         (by rw [toNat_ofNat_of_lt haLlt]; exact hvalid)
+        (by simp only [hstk1, hm.stack, mapStk, List.length_map, List.length_cons, Operation.pushArity, Operation.popArity] at hcap ⊢; omega)
         (by omega)
     obtain ⟨s3, st3, hf3, hsm3, hpc3, hstk3, hg3⟩ :=
       jumpdestStep
@@ -344,7 +370,8 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
           rw [assembleWithPayload, hbytesL]
           simp only [List.append_assoc])
         hf2 hsm2
-        (by rw [hpc2, hlenPreL]) (by omega)
+        (by rw [hpc2, hlenPreL])
+        (by simp only [hstk2, hm.stack, mapStk, List.length_map, List.length_cons, Operation.pushArity, Operation.popArity] at hcap ⊢; omega) (by omega)
     refine ⟨s3, .trans st1 (.trans st2 (.trans st3 (.refl _))),
       ⟨hf3, hsm3, ?_, ?_⟩, gasChain₃' hg1 hg2 hg3⟩
     · show s3.pc = UInt256.ofNat (codeSize prog - codeSize c')
@@ -375,7 +402,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (assembleWithPayload_at₂ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
-        hm.stack (by omega)
+        hm.stack (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) (by omega)
     have hcond : (conv v).toNat = 0 := by
       rw [conv_toNat, hv]
       rfl
@@ -390,6 +417,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
               (by rw [List.length_append, Instr.length_bytes_push]))
         (by rw [hstk1]; rfl)
         hcond
+        (by simp only [hstk1, hm.stack, mapStk, List.length_map, List.length_cons, Operation.pushArity, Operation.popArity] at hcap ⊢; omega)
         (by omega)
     refine ⟨s2, .trans st1 (.trans st2 (.refl _)), ⟨hf2, hsm2, ?_, hstk2⟩,
       gasChain₂' hg1 hg2⟩
@@ -421,7 +449,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
-        hm.stack hgas
+        hm.stack (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
     refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_⟩, hg'⟩
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
@@ -462,6 +490,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (by rw [hm.pc, hpos, hlenPre])
         hstktop
         (by rw [toNat_ofNat_of_lt haLlt]; exact hvalid)
+        (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega))
         (by omega)
     obtain ⟨s2, st2, hf2, hsm2, hpc2, hstk2, hg2⟩ :=
       jumpdestStep
@@ -470,7 +499,8 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
           rw [assembleWithPayload, hbytesL]
           simp only [List.append_assoc])
         hf1 hsm1
-        (by rw [hpc1, hlenPreL]) (by omega)
+        (by rw [hpc1, hlenPreL])
+        (by simp only [hstk1, hm.stack, mapStk, List.length_map, List.length_cons, Operation.pushArity, Operation.popArity] at hcap ⊢; omega) (by omega)
     refine ⟨s2, .trans st1 (.trans st2 (.refl _)), ⟨hf2, hsm2, ?_, ?_⟩,
       gasChain₂' hg1 hg2⟩
     · show s2.pc = UInt256.ofNat (codeSize prog - codeSize c')
@@ -494,7 +524,9 @@ theorem externalStaticHaltStep [model : ExternalModel]
     (hcode : code = mkCode (pre ++ (Instr.op o).bytes ++ post))
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
-    (hstk : s.stack = args.map conv ++ σ) :
+    (hstk : s.stack = args.map conv ++ σ)
+    (hcap : s.stack.length + o.pushArity ≤ 1024 + o.popArity)
+    (hgas : Gas.baseCost s.fork o ≤ s.gasAvailable) :
     HaltStep s yst' := by
   have hstatic : yst.env.static = true :=
     builtinWithExternal_halt_external_imp_static hexternal hhalt
@@ -518,7 +550,8 @@ theorem externalStaticHaltStep [model : ExternalModel]
         (EVM.Step.running hf.running hf.noPrecompile
           (StepRunning.callStatic s (conv g) (conv t) (conv val) (conv ao) (conv al)
             (conv ro) (conv rl) σ hdec hstk7 hperm
-            (by rw [conv_toNat]; intro h; exact hval (BitVec.toNat_injective (by simpa using h)))))
+            (by rw [conv_toNat]; intro h; exact hval (BitVec.toNat_injective (by simpa using h)))
+            hgas hcap))
     · exfalso
       obtain ⟨resp, -, heq⟩ := hhalt
       simp at heq
@@ -535,7 +568,7 @@ theorem externalStaticHaltStep [model : ExternalModel]
     have hstk3 : s.stack = conv val :: conv off :: conv sz :: σ := by simpa using hstk
     exact staticHaltStepGen hm hf.callStack
       (EVM.Step.running hf.running hf.noPrecompile
-        (StepRunning.createStatic s (conv val) (conv off) (conv sz) σ hdec hstk3 hperm))
+        (StepRunning.createStatic s (conv val) (conv off) (conv sz) σ hdec hstk3 hperm hgas hcap))
   case create2 =>
     obtain rfl : o = .CREATE2 := by simpa [opTable] using hop.symm
     rcases args with _|⟨val,_|⟨off,_|⟨sz,_|⟨salt,_|⟨e,rest⟩⟩⟩⟩⟩ <;>
@@ -547,7 +580,7 @@ theorem externalStaticHaltStep [model : ExternalModel]
     exact staticHaltStepGen hm hf.callStack
       (EVM.Step.running hf.running hf.noPrecompile
         (StepRunning.create2Static s (conv val) (conv off) (conv sz) (conv salt) σ
-          hdec hstk4 hperm))
+          hdec hstk4 hperm hgas hcap))
   case delegatecall =>
     exfalso
     rcases args with _|⟨g,_|⟨t,_|⟨io,_|⟨isz,_|⟨oo,_|⟨ol,_|⟨e,rest⟩⟩⟩⟩⟩⟩⟩ <;>
@@ -559,13 +592,16 @@ theorem externalStaticHaltStep [model : ExternalModel]
   case gas => simp [opTable] at hop
   all_goals exact absurd hexternal (by decide)
 
+set_option linter.unusedSimpArgs false in
+set_option linter.unusedTactic false in
+set_option linter.unreachableTactic false in
 /-- **Phase B, halting step**: a halting built-in maps to one halting EVM
 step. -/
 theorem ahalt_sim [model : ExternalModel]
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg prog = some is)
     {a : AConf} {yst' : EvmState} (hstep : AHalt prog a yst')
-    (hsuf : a.code <:+ prog) :
+    (hsuf : a.code <:+ prog) (hcap : a.stk.length ≤ 1023) :
     ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
       bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ StateMatch yst' s' ∧ s'.callStack = []
@@ -577,7 +613,7 @@ theorem ahalt_sim [model : ExternalModel]
     simp only [lowerInstr] at hI
     obtain ⟨o, hop, rfl⟩ := Option.map_eq_some_iff.mp hI
     by_cases hexternal : IsExternalOp yop
-    · refine ⟨0, ?_⟩
+    · refine ⟨40000, ?_⟩
       intro s hm hgas
       have hpos : codeSize prog - codeSize (Asm.op yop :: c) = codeSize pre := by
         rw [codeSize_cons]
@@ -588,6 +624,8 @@ theorem ahalt_sim [model : ExternalModel]
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         (by rw [hm.stack, mapStk_words])
+        (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega))
+        (by have hfork : s.fork = .Osaka := hm.frame.fork; rw [hfork]; exact le_trans (baseCost_le_40000 o) hgas)
       obtain ⟨s', hstep, hsm', hcs', hhm'⟩ := hhalt
       exact ⟨s', .trans hstep (.refl _), hsm', hcs', hhm'⟩
     · have hstepLocal :=
@@ -602,7 +640,8 @@ theorem ahalt_sim [model : ExternalModel]
         (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
-        (by rw [hm.stack, mapStk_words]) hgas
+        (by rw [hm.stack, mapStk_words])
+        (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
       obtain ⟨s', hstep, hsm', hcs', hhm'⟩ := hhalt
       exact ⟨s', .trans hstep (.refl _), hsm', hcs', hhm'⟩
 
@@ -610,7 +649,8 @@ theorem ahalt_sim [model : ExternalModel]
 theorem asteps_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
-    {a b : AConf} (hsteps : ASteps prog a b) (hsuf : a.code <:+ prog) :
+    {a b : AConf} (hsteps : ASteps prog a b) (hsuf : a.code <:+ prog)
+    (hbound : ∀ mid, ASteps prog a mid → mid.stk.length ≤ 1023) :
     ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
       bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ ConfMatch (payload := payload) prog is b s'
@@ -619,8 +659,8 @@ theorem asteps_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
   | refl a =>
     exact ⟨0, fun s hm _ => ⟨s, .refl _, hm, by omega⟩⟩
   | @head a₁ a₂ a₃ hstep hrest ih =>
-    obtain ⟨b1, H1⟩ := astep_sim hexternal hlow hsmall hstep hsuf
-    obtain ⟨b2, H2⟩ := ih (hstep.suffix hsuf)
+    obtain ⟨b1, H1⟩ := astep_sim hexternal hlow hsmall hstep hsuf (hbound a₁ (ASteps.refl a₁))
+    obtain ⟨b2, H2⟩ := ih (hstep.suffix hsuf) (fun mid h => hbound mid (ASteps.head hstep h))
     refine ⟨b1 + b2, ?_⟩
     intro s hm hgas
     obtain ⟨s1, st1, hm1, hg1⟩ := H1 s hm (by omega)
@@ -634,13 +674,14 @@ theorem arun_halt_sim [model : ExternalModel] (hexternal : ExternalsRealized mod
     (hlow : lowerProg prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
     {a b : AConf} {yst' : EvmState}
     (hsteps : ASteps prog a b) (hhalt : AHalt prog b yst')
-    (hsuf : a.code <:+ prog) :
+    (hsuf : a.code <:+ prog)
+    (hbound : ∀ mid, ASteps prog a mid → mid.stk.length ≤ 1023) :
     ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
       bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ StateMatch yst' s' ∧ s'.callStack = []
         ∧ HaltedMatch yst' s' := by
-  obtain ⟨b1, H1⟩ := asteps_sim hexternal hlow hsmall hsteps hsuf
-  obtain ⟨b2, H2⟩ := ahalt_sim hlow hhalt (hsteps.suffix hsuf)
+  obtain ⟨b1, H1⟩ := asteps_sim hexternal hlow hsmall hsteps hsuf hbound
+  obtain ⟨b2, H2⟩ := ahalt_sim hlow hhalt (hsteps.suffix hsuf) (hbound b hsteps)
   refine ⟨b1 + b2, ?_⟩
   intro s hm hgas
   obtain ⟨s1, st1, hm1, hg1⟩ := H1 s hm (by omega)

@@ -21,7 +21,17 @@ expressionInliner/double_recursive_calls.yul
 fullInliner/double_inline.yul
 fullInliner/multi_fun_callback.yul
 fullInliner/no_inline_into_big_global_context.yul
+fullInliner/recursion.yul
+fullSuite/ackermann_function.yul
+fullSuite/ackermann_function_if.yul
 fullSuite/aztec.yul
+fullSuite/fibonacci.yul
+fullSuite/name_cleaner_reserved.yul
+fullSuite/reserved_identifiers.yul
+fullSuite/stack_compressor_msize.yul
+fullSuite/unusedFunctionParameterPruner_recursion.yul
+functionSpecializer/intersecting_recursive_cycles.yul
+functionSpecializer/recursion.yul
 loadResolver/verbatim_mload.yul
 loadResolver/verbatim_sload.yul
 loopInvariantCodeMotion/move_memory_function.yul
@@ -47,6 +57,7 @@ stackLimitEvader/tree.yul
 stackLimitEvader/verbatim_many_arguments.yul
 stackLimitEvader/verbatim_many_arguments_and_returns.yul
 stackLimitEvader/verbatim_many_returns.yul
+unusedFunctionParameterPruner/recursion.yul
 unusedFunctionParameterPruner/too_many_arguments.yul
 unusedPruner/verbatim.yul
 unusedStoreEliminator/function_side_effects_2.yul

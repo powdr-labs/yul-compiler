@@ -276,6 +276,7 @@ theorem pushStepU {code : ByteArray} {pre post : List UInt8} {w : Fin 33} {u : U
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = σ)
+    (hcap : s.stack.length < 1024)
     (hgas : 40000 ≤ s.gasAvailable) :
     ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
       ∧ s'.pc = UInt256.ofNat (pre.length + (1 + w.val))
@@ -303,7 +304,7 @@ theorem pushStepU {code : ByteArray} {pre post : List UInt8} {w : Fin 33} {u : U
       have : Gas.baseCost .Osaka (.Push ⟨(0 : Fin 33), by decide⟩) ≤ 40000 := by decide
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.push0 s hdecOp hgas0),
+      (StepRunning.push0 s hdecOp hgas0 hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -326,7 +327,7 @@ theorem pushStepU {code : ByteArray} {pre post : List UInt8} {w : Fin 33} {u : U
         simp only [Gas.baseCost]; split <;> omega
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.pushN s w u w.val hwpos hdec hgas'),
+      (StepRunning.pushN s w u w.val hwpos hdec hgas' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -353,7 +354,8 @@ theorem pushStepU {code : ByteArray} {pre post : List UInt8} {w : Fin 33} {u : U
 theorem stopStep {code : ByteArray} {yst : EvmState} {s : State}
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hcodes : code = mkCode (assembleBytes is))
-    (hpc : s.pc = UInt256.ofNat (assembleBytes is).length) :
+    (hpc : s.pc = UInt256.ofNat (assembleBytes is).length)
+    (hcap : s.stack.length + Operation.pushArity .STOP ≤ 1024 + Operation.popArity .STOP) :
     ∃ s', EVM.Step s s' ∧ StateMatch yst s' ∧ s'.callStack = []
       ∧ s'.halt = .Success ∧ s'.hReturn = .empty := by
   have hlen : (assembleBytes is).length < 2 ^ 256 := by
@@ -368,7 +370,7 @@ theorem stopStep {code : ByteArray} {yst : EvmState} {s : State}
     have hfork : s.fork = .Osaka := hf.fork
     simp [Option.bind, hfork]
     decide
-  exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec),
+  exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec hcap),
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, hf.callStack, rfl, rfl⟩
 
@@ -389,6 +391,7 @@ theorem dupStep {code : ByteArray} {pre post : List UInt8} {n : Fin 16}
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hget : s.stack[n.val]? = some v)
+    (hcap : s.stack.length < 1024)
     (hgas : 40000 ≤ s.gasAvailable) :
     ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
       ∧ s'.pc = UInt256.ofNat (pre.length + 1)
@@ -402,7 +405,7 @@ theorem dupStep {code : ByteArray} {pre post : List UInt8} {n : Fin 16}
     have := dup_base_le n
     omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-    (StepRunning.dup s n v hdec hgas' hget),
+    (StepRunning.dup s n v hdec hgas' hget hcap),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -424,6 +427,7 @@ theorem swapStep {code : ByteArray} {pre post : List UInt8} {n : Fin 16}
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hswap : s.stack.exchange 0 (n.val + 1) = some stk')
+    (hcap : s.stack.length + Operation.pushArity (.Swap ⟨n⟩) ≤ 1024 + Operation.popArity (.Swap ⟨n⟩))
     (hgas : 40000 ≤ s.gasAvailable) :
     ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
       ∧ s'.pc = UInt256.ofNat (pre.length + 1)
@@ -437,7 +441,7 @@ theorem swapStep {code : ByteArray} {pre post : List UInt8} {n : Fin 16}
     have := swap_base_le n
     omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-    (StepRunning.swap s n stk' hdec hgas' hswap),
+    (StepRunning.swap s n stk' hdec hgas' hswap hcap),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -459,6 +463,7 @@ theorem popStep {code : ByteArray} {pre post : List UInt8}
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = a :: rest)
+    (hcap : s.stack.length + Operation.pushArity .POP ≤ 1024 + Operation.popArity .POP)
     (hgas : 40000 ≤ s.gasAvailable) :
     ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
       ∧ s'.pc = UInt256.ofNat (pre.length + 1)
@@ -472,7 +477,7 @@ theorem popStep {code : ByteArray} {pre post : List UInt8}
     have : Gas.baseCost .Osaka Operation.POP ≤ 40000 := by decide
     omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-    (StepRunning.pop s a rest hdec hgas' hstk),
+    (StepRunning.pop s a rest hdec hgas' hstk hcap),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -507,6 +512,7 @@ private theorem binPure
         s.decodedOp = some o →
         Gas.baseCost s.fork o ≤ s.gasAvailable →
         s.stack = a :: b :: rest →
+        s.stack.length + Operation.pushArity o ≤ 1024 + Operation.popArity o →
         StepRunning s { s with
           stack := g a b :: rest, pc := s.pc.succ,
           gasAvailable := s.gasAvailable - Gas.baseCost s.fork o })
@@ -515,6 +521,7 @@ private theorem binPure
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = args.map conv ++ σ)
+    (hcap : s.stack.length + Operation.pushArity o ≤ 1024 + Operation.popArity o)
     (hgas : 40000 ≤ s.gasAvailable) :
     match r with
     | .ok rets yst' => OkStep code s 40000 rets yst' pre.length 1 σ
@@ -532,7 +539,7 @@ private theorem binPure
   have hgas' : Gas.baseCost s.fork o ≤ s.gasAvailable := by
     rw [hfork]; omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-    (mk s (conv a) (conv b) σ hdec hgas' hstk'),
+    (mk s (conv a) (conv b) σ hdec hgas' hstk' hcap),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -559,6 +566,7 @@ private theorem nullaryRead {yv : U256} {sv : UInt256}
     (hstep : stepOp yop args yst = YulSemantics.EVM.rd0 yv args yst)
     (mk : s.decodedOp = some o →
         Gas.baseCost s.fork o ≤ s.gasAvailable →
+        s.stack.length + Operation.pushArity o ≤ 1024 + Operation.popArity o →
         StepRunning s { s with
           stack := sv :: s.stack, pc := s.pc.succ,
           gasAvailable := s.gasAvailable - Gas.baseCost s.fork o })
@@ -566,6 +574,7 @@ private theorem nullaryRead {yv : U256} {sv : UInt256}
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = args.map conv ++ σ)
+    (hcap : s.stack.length + Operation.pushArity o ≤ 1024 + Operation.popArity o)
     (hgas : 40000 ≤ s.gasAvailable) :
     match r with
     | .ok rets yst' => OkStep code s 40000 rets yst' pre.length 1 σ
@@ -580,7 +589,7 @@ private theorem nullaryRead {yv : U256} {sv : UInt256}
   have hfork : s.fork = .Osaka := hf.fork
   have hstk0 : s.stack = σ := by simpa using hstk
   have hgas' : Gas.baseCost s.fork o ≤ s.gasAvailable := by rw [hfork]; omega
-  refine ⟨_, EVM.Step.running hf.running hf.noPrecompile (mk hdec hgas'),
+  refine ⟨_, EVM.Step.running hf.running hf.noPrecompile (mk hdec hgas' hcap),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -606,6 +615,7 @@ private theorem unPure
         s.decodedOp = some o →
         Gas.baseCost s.fork o ≤ s.gasAvailable →
         s.stack = a :: rest →
+        s.stack.length + Operation.pushArity o ≤ 1024 + Operation.popArity o →
         StepRunning s { s with
           stack := g a :: rest, pc := s.pc.succ,
           gasAvailable := s.gasAvailable - Gas.baseCost s.fork o })
@@ -614,6 +624,7 @@ private theorem unPure
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = args.map conv ++ σ)
+    (hcap : s.stack.length + Operation.pushArity o ≤ 1024 + Operation.popArity o)
     (hgas : 40000 ≤ s.gasAvailable) :
     match r with
     | .ok rets yst' => OkStep code s 40000 rets yst' pre.length 1 σ
@@ -631,7 +642,7 @@ private theorem unPure
   have hgas' : Gas.baseCost s.fork o ≤ s.gasAvailable := by
     rw [hfork]; omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-    (mk s (conv a) σ hdec hgas' hstk'),
+    (mk s (conv a) σ hdec hgas' hstk' hcap),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -660,6 +671,7 @@ private theorem terPure
         s.decodedOp = some o →
         Gas.baseCost s.fork o ≤ s.gasAvailable →
         s.stack = a :: b :: c :: rest →
+        s.stack.length + Operation.pushArity o ≤ 1024 + Operation.popArity o →
         StepRunning s { s with
           stack := g a b c :: rest, pc := s.pc.succ,
           gasAvailable := s.gasAvailable - Gas.baseCost s.fork o })
@@ -668,6 +680,7 @@ private theorem terPure
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = args.map conv ++ σ)
+    (hcap : s.stack.length + Operation.pushArity o ≤ 1024 + Operation.popArity o)
     (hgas : 40000 ≤ s.gasAvailable) :
     match r with
     | .ok rets yst' => OkStep code s 40000 rets yst' pre.length 1 σ
@@ -685,7 +698,7 @@ private theorem terPure
   have hgas' : Gas.baseCost s.fork o ≤ s.gasAvailable := by
     rw [hfork]; omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-    (mk s (conv a) (conv b) (conv c) σ hdec hgas' hstk'),
+    (mk s (conv a) (conv b) (conv c) σ hdec hgas' hstk' hcap),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -724,6 +737,8 @@ private theorem logStep {yop : Op} {topicCount : Fin 5}
     (hperm : s.executionEnv.permitStateMutation = true)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = (p :: n :: topics).map conv ++ σ)
+    (hcap : s.stack.length + Operation.pushArity (.Log ⟨topicCount⟩)
+      ≤ 1024 + Operation.popArity (.Log ⟨topicCount⟩))
     (hgas : opBound yop (p :: n :: topics) ≤ s.gasAvailable) :
     OkStep code s (opBound yop (p :: n :: topics)) []
       (YulSemantics.EVM.appendLog yst topics p n) pre.length 1 σ := by
@@ -746,7 +761,7 @@ private theorem logStep {yop : Op} {topicCount : Fin 5}
     le_trans hcost hgas
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.log s topicCount (conv p) (conv n) (topics.map conv) σ
-      hdec hperm (by simpa using htopics) hstk' hgas'),
+      hdec hperm (by simpa using htopics) hstk' hgas' hcap),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩, ?_, ?_, rfl, ?_⟩
   · constructor
@@ -793,6 +808,8 @@ theorem selfdestructStep {code : ByteArray} {pre post : List UInt8}
     (hperm : s.executionEnv.permitStateMutation = true)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = [beneficiary].map conv ++ σ)
+    (hcap : s.stack.length + Operation.pushArity .SELFDESTRUCT
+      ≤ 1024 + Operation.popArity .SELFDESTRUCT)
     (hgas : 40000 ≤ s.gasAvailable) :
     HaltStep s (YulSemantics.EVM.finishSelfdestruct yst beneficiary) := by
   have hdec : s.decodedOp = some .SELFDESTRUCT :=
@@ -817,7 +834,7 @@ theorem selfdestructStep {code : ByteArray} {pre post : List UInt8}
       hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩
   have hm' := hmGas.finishSelfdestruct beneficiary
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-    (StepRunning.selfDestruct s (conv beneficiary) σ hdec hstk' hperm hgas'),
+    (StepRunning.selfDestruct s (conv beneficiary) σ hdec hstk' hperm hgas' hcap),
     hm', ?_, ?_⟩
   · simpa [sGas, State.selfDestructTo] using hf.callStack
   · refine ⟨(.selfdestruct, []), ?_, ?_⟩
@@ -851,13 +868,16 @@ theorem staticViolationStep {yop : Op} {o : Operation} (hop : opTable yop = some
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hmut : o.isStateMutating = true)
+    (hcap : s.stack.length + Operation.pushArity o ≤ 1024 + Operation.popArity o)
+    (hgas : Gas.baseCost s.fork o ≤ s.gasAvailable)
+    (hreach : s.staticReach o)
     (hperm : s.executionEnv.permitStateMutation = false) :
     HaltStep s { yst with halted := some (.staticViolation, []) } := by
   obtain ⟨hb, hplain⟩ := opTable_roundtrip hop
   have hdec := decoded_op hf hcode hpc hb hplain (opTable_available hop)
   exact staticHaltStepGen hm hf.callStack
     (EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.staticModeViolation s o hdec hmut hperm))
+      (StepRunning.staticModeViolation s o hdec hmut hcap hgas hreach hperm))
 
 set_option maxHeartbeats 1600000 in
 open YulSemantics.EVM in
@@ -873,6 +893,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = args.map conv ++ σ)
+    (hcap : s.stack.length + Operation.pushArity o ≤ 1024 + Operation.popArity o)
     (hgas : opBound yop args ≤ s.gasAvailable) :
     match r with
     | .ok rets yst' => OkStep code s (opBound yop args) rets yst' pre.length 1 σ
@@ -887,252 +908,252 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_add rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .add s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .add s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_add rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .add s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .add s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case sub =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_sub rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .sub s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .sub s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_sub rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .sub s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .sub s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case mul =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_mul rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .mul s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .mul s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_mul rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .mul s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .mul s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case div =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_div rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .div s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .div s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_div rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .div s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .div s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case sdiv =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_sdiv rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .sdiv s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .sdiv s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_sdiv rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .sdiv s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .sdiv s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case mod =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_mod rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .mod s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .mod s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_mod rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .mod s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .mod s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case smod =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_smod rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .smod s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .smod s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_smod rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .smod s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .smod s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case addmod =>
     cases r with
     | ok rets yst' =>
       exact (terPure _ _ (fun _ _ => rfl) conv_addmod rfl (by decide)
-        (fun s a b c rest h1 h2 h3 => .addmod s a b c rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b c rest h1 h2 h3 h4 => .addmod s a b c rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (terPure _ _ (fun _ _ => rfl) conv_addmod rfl (by decide)
-        (fun s a b c rest h1 h2 h3 => .addmod s a b c rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b c rest h1 h2 h3 h4 => .addmod s a b c rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case mulmod =>
     cases r with
     | ok rets yst' =>
       exact (terPure _ _ (fun _ _ => rfl) conv_mulmod rfl (by decide)
-        (fun s a b c rest h1 h2 h3 => .mulmod s a b c rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b c rest h1 h2 h3 h4 => .mulmod s a b c rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (terPure _ _ (fun _ _ => rfl) conv_mulmod rfl (by decide)
-        (fun s a b c rest h1 h2 h3 => .mulmod s a b c rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b c rest h1 h2 h3 h4 => .mulmod s a b c rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case signextend =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_signextend rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .signextend s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .signextend s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_signextend rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .signextend s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .signextend s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case clz =>
     cases r with
     | ok rets yst' =>
       exact (unPure _ _ (fun _ _ => rfl) conv_clz rfl (by decide)
-        (fun s a rest h1 h2 h3 => .clz s a rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a rest h1 h2 h3 h4 => .clz s a rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (unPure _ _ (fun _ _ => rfl) conv_clz rfl (by decide)
-        (fun s a rest h1 h2 h3 => .clz s a rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a rest h1 h2 h3 h4 => .clz s a rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case lt =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_lt rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .lt s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .lt s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_lt rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .lt s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .lt s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case gt =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_gt rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .gt s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .gt s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_gt rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .gt s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .gt s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case slt =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_slt rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .slt s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .slt s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_slt rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .slt s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .slt s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case sgt =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_sgt rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .sgt s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .sgt s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_sgt rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .sgt s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .sgt s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case eq =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_eq rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .eq s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .eq s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_eq rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .eq s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .eq s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case iszero =>
     cases r with
     | ok rets yst' =>
       exact (unPure _ _ (fun _ _ => rfl) conv_iszero rfl (by decide)
-        (fun s a rest h1 h2 h3 => .iszero s a rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a rest h1 h2 h3 h4 => .iszero s a rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (unPure _ _ (fun _ _ => rfl) conv_iszero rfl (by decide)
-        (fun s a rest h1 h2 h3 => .iszero s a rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a rest h1 h2 h3 h4 => .iszero s a rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case and =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_and rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .and s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .and s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_and rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .and s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .and s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case or =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_or rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .or s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .or s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_or rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .or s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .or s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case xor =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_xor rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .xor_ s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .xor_ s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_xor rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .xor_ s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .xor_ s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case not =>
     cases r with
     | ok rets yst' =>
       exact (unPure _ _ (fun _ _ => rfl) conv_not rfl (by decide)
-        (fun s a rest h1 h2 h3 => .not s a rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a rest h1 h2 h3 h4 => .not s a rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (unPure _ _ (fun _ _ => rfl) conv_not rfl (by decide)
-        (fun s a rest h1 h2 h3 => .not s a rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a rest h1 h2 h3 h4 => .not s a rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case byte =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_byte rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .byte_ s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .byte_ s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_byte rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .byte_ s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .byte_ s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case shl =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_shl rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .shl s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .shl s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_shl rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .shl s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .shl s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case shr =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_shr rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .shr s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .shr s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_shr rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .shr s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .shr s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case sar =>
     cases r with
     | ok rets yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_sar rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .sar s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun s a b rest h1 h2 h3 h4 => .sar s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (binPure _ _ (fun _ _ => rfl) conv_sar rfl (by decide)
-        (fun s a b rest h1 h2 h3 => .sar s a b rest h1 h2 h3)
-        hyul hcode hf hm hpc hstk hgas40).elim
+        (fun s a b rest h1 h2 h3 h4 => .sar s a b rest h1 h2 h3 h4)
+        hyul hcode hf hm hpc hstk hcap hgas40).elim
   case exp =>
     rcases args with _ | ⟨a, _ | ⟨b, _ | ⟨c, args⟩⟩⟩ <;>
       simp only [stepOp, YulSemantics.EVM.bin, Option.some.injEq,
@@ -1148,7 +1169,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     have hgas' : Gas.baseCost s.fork .EXP + Gas.expByteCost s.fork (conv b)
         ≤ s.gasAvailable := by omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.exp s (conv a) (conv b) σ hdec hgas' hstk'),
+      (StepRunning.exp s (conv a) (conv b) σ hdec hgas' hstk' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1190,7 +1211,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       rw [conv_toNat p, conv_toNat n, h4]
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.keccak256 s (conv p) (conv n) σ hdec hstk' hgas'),
+      (StepRunning.keccak256 s (conv p) (conv n) σ hdec hstk' hgas' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1228,7 +1249,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have : Gas.baseCost .Osaka Operation.POP ≤ 40000 := by decide
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.pop s (conv a) σ hdec hgas' hstk'),
+      (StepRunning.pop s (conv a) σ hdec hgas' hstk' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1260,7 +1281,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have h2 := memExpansionDelta_le_memBound s.activeWords.toNat (conv p).toNat 32
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.mload s (conv p) σ hdec hstk' hgas'),
+      (StepRunning.mload s (conv p) σ hdec hstk' hgas' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1299,7 +1320,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have h3 : opBound Op.mstore [p, v] = 40000 + memBound (conv p).toNat 32 := rfl
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.mstore s (conv p) (conv v) σ hdec hstk' hgas'),
+      (StepRunning.mstore s (conv p) (conv v) σ hdec hstk' hgas' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1342,7 +1363,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have h3 : opBound Op.mstore8 [p, v] = 40000 + memBound (conv p).toNat 1 := rfl
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.mstore8 s (conv p) (conv v) σ hdec hstk' hgas'),
+      (StepRunning.mstore8 s (conv p) (conv v) σ hdec hstk' hgas' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1394,7 +1415,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       rw [conv_toNat d, conv_toNat src, conv_toNat n, h4]
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.mcopy s (conv d) (conv src) (conv n) σ hdec hstk' hgas'),
+      (StepRunning.mcopy s (conv d) (conv src) (conv n) σ hdec hstk' hgas' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1423,12 +1444,12 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hval hyul rfl
-        (fun h1 h2 => .msize s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun h1 h2 h3 => .msize s h1 h2 h3)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hval hyul rfl
-        (fun h1 h2 => .msize s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        (fun h1 h2 h3 => .msize s h1 h2 h3)
+        hcode hf hm hpc hstk hcap hgas40).elim
   case calldataload =>
     rcases args with _ | ⟨p, _ | ⟨b, args⟩⟩ <;> simp [stepOp, YulSemantics.EVM.rd1] at hyul
     subst hyul
@@ -1443,7 +1464,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have : Gas.baseCost .Osaka Operation.CALLDATALOAD ≤ 40000 := by decide
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.calldataload s (conv p) σ hdec hgas' hstk'),
+      (StepRunning.calldataload s (conv p) σ hdec hgas' hstk' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1472,12 +1493,12 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hval hyul rfl
-        (fun h1 h2 => .calldatasize s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun h1 h2 h3 => .calldatasize s h1 h2 h3)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hval hyul rfl
-        (fun h1 h2 => .calldatasize s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        (fun h1 h2 h3 => .calldatasize s h1 h2 h3)
+        hcode hf hm hpc hstk hcap hgas40).elim
   case calldatacopy =>
     rcases args with _ | ⟨d, _ | ⟨s0, _ | ⟨nn, _ | ⟨e, args⟩⟩⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
@@ -1504,7 +1525,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       rw [conv_toNat d, conv_toNat nn, h4]
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.calldatacopy s (conv d) (conv s0) (conv nn) σ hdec hstk' hgas'),
+      (StepRunning.calldatacopy s (conv d) (conv s0) (conv nn) σ hdec hstk' hgas' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1535,12 +1556,12 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hval hyul rfl
-        (fun h1 h2 => .returndatasize s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        (fun h1 h2 h3 => .returndatasize s h1 h2 h3)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hval hyul rfl
-        (fun h1 h2 => .returndatasize s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        (fun h1 h2 h3 => .returndatasize s h1 h2 h3)
+        hcode hf hm hpc hstk hcap hgas40).elim
   case returndatacopy =>
     rcases args with _ | ⟨d, _ | ⟨s0, _ | ⟨nn, _ | ⟨e, args⟩⟩⟩⟩ <;>
       simp only [stepOp] at hyul
@@ -1577,7 +1598,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         omega
       refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
         (StepRunning.returndatacopy s (conv d) (conv s0) (conv nn) σ
-          hdec hstk' hin hgas'),
+          hdec hstk' hin hgas' hcap),
         ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1624,7 +1645,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         omega
       refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
         (StepRunning.returndatacopyOob s (conv d) (conv s0) (conv nn) σ
-          hdec hgas' hstk' hoob), ?_, hf.callStack, ?_⟩
+          hdec hcap hgas' hstk' hoob), ?_, hf.callStack, ?_⟩
       · exact ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
           hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
           hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩
@@ -1650,7 +1671,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     have hgas' : Gas.codecopyTotal s (conv d) (conv nn) ≤ s.gasAvailable := by
       unfold Gas.codecopyTotal; rw [conv_toNat d, conv_toNat nn, h4]; omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.codecopy s (conv d) (conv s0) (conv nn) σ hdec hstk' hgas'),
+      (StepRunning.codecopy s (conv d) (conv s0) (conv nn) σ hdec hstk' hgas' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1691,7 +1712,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     have hgas' : Gas.codecopyTotal s (conv d) (conv nn) ≤ s.gasAvailable := by
       unfold Gas.codecopyTotal; rw [conv_toNat d, conv_toNat nn, h4]; omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.codecopy s (conv d) (conv s0) (conv nn) σ hdec hstk' hgas'),
+      (StepRunning.codecopy s (conv d) (conv s0) (conv nn) σ hdec hstk' hgas' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1721,151 +1742,151 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hval hyul rfl
         (fun h1 h2 => .codesize s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hval hyul rfl
         (fun h1 h2 => .codesize s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case address =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.env.address hyul rfl
         (fun h1 h2 => .address s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.env.address hyul rfl
         (fun h1 h2 => .address s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case origin =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.env.origin hyul rfl
         (fun h1 h2 => .origin s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.env.origin hyul rfl
         (fun h1 h2 => .origin s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case caller =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.env.caller hyul rfl
         (fun h1 h2 => .caller s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.env.caller hyul rfl
         (fun h1 h2 => .caller s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case callvalue =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.env.callvalue hyul rfl
         (fun h1 h2 => .callvalue s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.env.callvalue hyul rfl
         (fun h1 h2 => .callvalue s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case gasprice =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.env.gasprice hyul rfl
         (fun h1 h2 => .gasprice s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.env.gasprice hyul rfl
         (fun h1 h2 => .gasprice s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case selfbalance =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.selfBalance hyul rfl
         (fun h1 h2 => .selfbalance s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.selfBalance hyul rfl
         (fun h1 h2 => .selfbalance s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case coinbase =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.env.coinbase hyul rfl
         (fun h1 h2 => .coinbase s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.env.coinbase hyul rfl
         (fun h1 h2 => .coinbase s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case timestamp =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.env.timestamp hyul rfl
         (fun h1 h2 => .timestamp s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.env.timestamp hyul rfl
         (fun h1 h2 => .timestamp s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case number =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.env.number hyul rfl
         (fun h1 h2 => .number s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.env.number hyul rfl
         (fun h1 h2 => .number s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case prevrandao =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.env.prevrandao hyul rfl
         (fun h1 h2 => .prevrandao s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.env.prevrandao hyul rfl
         (fun h1 h2 => .prevrandao s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case gaslimit =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.env.gaslimit hyul rfl
         (fun h1 h2 => .gaslimit s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.env.gaslimit hyul rfl
         (fun h1 h2 => .gaslimit s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case chainid =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.env.chainid hyul rfl
         (fun h1 h2 => .chainid s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.env.chainid hyul rfl
         (fun h1 h2 => .chainid s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case basefee =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.env.basefee hyul rfl
         (fun h1 h2 => .basefee s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.env.basefee hyul rfl
         (fun h1 h2 => .basefee s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case blobbasefee =>
     cases r with
     | ok rets yst' =>
       exact (nullaryRead rfl (by decide) hm.env.blobbasefee hyul rfl
         (fun h1 h2 => .blobbasefee s h1 h2)
-        hcode hf hm hpc hstk hgas40).weaken (le_opBound _ _)
+        hcode hf hm hpc hstk hcap hgas40).weaken (le_opBound _ _)
     | halt yst' =>
       exact (nullaryRead rfl (by decide) hm.env.blobbasefee hyul rfl
         (fun h1 h2 => .blobbasefee s h1 h2)
-        hcode hf hm hpc hstk hgas40).elim
+        hcode hf hm hpc hstk hcap hgas40).elim
   case balance =>
     rcases args with _ | ⟨a, _ | ⟨b, args⟩⟩ <;>
       simp [stepOp, YulSemantics.EVM.rd1] at hyul
@@ -1886,7 +1907,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     have hgas' : Gas.balanceTotal s (conv a) ≤ s.gasAvailable :=
       le_trans htotal hgas40
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.balance s (conv a) σ hdec hgas' hstk'),
+      (StepRunning.balance s (conv a) σ hdec hgas' hstk' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1928,7 +1949,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       rw [conv_toNat, BitVec.toNat_ofNat, toNat_u256_ofNat,
         hm.externalCode.length a]
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.extcodesize s (conv a) σ hdec hgas' hstk'),
+      (StepRunning.extcodesize s (conv a) σ hdec hgas' hstk' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -1984,7 +2005,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
       (StepRunning.extcodecopy s (conv a) (conv d) (conv s0) (conv nn) σ
-        hdec hstk' hgas'),
+        hdec hstk' hgas' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨?_, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -2035,7 +2056,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     have hgas' : Gas.extcodehashTotal s (conv a) ≤ s.gasAvailable :=
       le_trans htotal hgas40
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.extcodehash s (conv a) σ hdec hgas' hstk'),
+      (StepRunning.extcodehash s (conv a) σ hdec hgas' hstk' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -2072,7 +2093,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have : Gas.baseCost .Osaka Operation.BLOCKHASH ≤ 40000 := by decide
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.blockhash s (conv n) σ hdec hgas' hstk'),
+      (StepRunning.blockhash s (conv n) σ hdec hgas' hstk' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -2115,7 +2136,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have hval := hm.env.blobHash i
       rw [hlookup] at hval
       refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-        (StepRunning.blobhash_oob s (conv i) σ hdec hgas' hstk' hlookup),
+        (StepRunning.blobhash_oob s (conv i) σ hdec hgas' hstk' hlookup hcap),
         ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -2136,7 +2157,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have hval := hm.env.blobHash i
       rw [hlookup] at hval
       refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-        (StepRunning.blobhash s (conv i) σ h hdec hgas' hstk' hlookup),
+        (StepRunning.blobhash s (conv i) σ h hdec hgas' hstk' hlookup hcap),
         ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -2165,14 +2186,14 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         simp [stepOp, hguard] at hyul
       subst hyul
       exact logStep (yop := .log0) (topicCount := 0) rfl rfl rfl
-        hcode hf hm hperm hpc hstk hgas
+        hcode hf hm hperm hpc hstk hcap hgas
     | true =>
       have hperm : s.executionEnv.permitStateMutation = false :=
         hm.perm_of_static_true hst
       rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨extra, args⟩⟩⟩ <;>
         simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
       subst hyul
-      exact staticViolationStep (yop := .log0) rfl hcode hf hm hpc (by decide) hperm
+      exact staticViolationStep (yop := .log0) rfl hcode hf hm hpc (by decide) hcap (le_trans (by have hfork : s.fork = .Osaka := hf.fork; rw [hfork]; decide) hgas40) (by trivial) hperm
   case log1 =>
     cases hst : yst.env.static with
     | false =>
@@ -2185,14 +2206,14 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         simp [stepOp, hguard] at hyul
       subst hyul
       exact logStep (yop := .log1) (topicCount := 1) rfl rfl rfl
-        hcode hf hm hperm hpc hstk hgas
+        hcode hf hm hperm hpc hstk hcap hgas
     | true =>
       have hperm : s.executionEnv.permitStateMutation = false :=
         hm.perm_of_static_true hst
       rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨extra, args⟩⟩⟩⟩ <;>
         simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
       subst hyul
-      exact staticViolationStep (yop := .log1) rfl hcode hf hm hpc (by decide) hperm
+      exact staticViolationStep (yop := .log1) rfl hcode hf hm hpc (by decide) hcap (le_trans (by have hfork : s.fork = .Osaka := hf.fork; rw [hfork]; decide) hgas40) (by trivial) hperm
   case log2 =>
     cases hst : yst.env.static with
     | false =>
@@ -2205,14 +2226,14 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         simp [stepOp, hguard] at hyul
       subst hyul
       exact logStep (yop := .log2) (topicCount := 2) rfl rfl rfl
-        hcode hf hm hperm hpc hstk hgas
+        hcode hf hm hperm hpc hstk hcap hgas
     | true =>
       have hperm : s.executionEnv.permitStateMutation = false :=
         hm.perm_of_static_true hst
       rcases args with _ | ⟨p, _ | ⟨n, _ | ⟨t1, _ | ⟨t2, _ | ⟨extra, args⟩⟩⟩⟩⟩ <;>
         simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
       subst hyul
-      exact staticViolationStep (yop := .log2) rfl hcode hf hm hpc (by decide) hperm
+      exact staticViolationStep (yop := .log2) rfl hcode hf hm hpc (by decide) hcap (le_trans (by have hfork : s.fork = .Osaka := hf.fork; rw [hfork]; decide) hgas40) (by trivial) hperm
   case log3 =>
     cases hst : yst.env.static with
     | false =>
@@ -2226,7 +2247,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         simp [stepOp, hguard] at hyul
       subst hyul
       exact logStep (yop := .log3) (topicCount := 3) rfl rfl rfl
-        hcode hf hm hperm hpc hstk hgas
+        hcode hf hm hperm hpc hstk hcap hgas
     | true =>
       have hperm : s.executionEnv.permitStateMutation = false :=
         hm.perm_of_static_true hst
@@ -2234,7 +2255,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         _ | ⟨extra, args⟩⟩⟩⟩⟩⟩ <;>
         simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
       subst hyul
-      exact staticViolationStep (yop := .log3) rfl hcode hf hm hpc (by decide) hperm
+      exact staticViolationStep (yop := .log3) rfl hcode hf hm hpc (by decide) hcap (le_trans (by have hfork : s.fork = .Osaka := hf.fork; rw [hfork]; decide) hgas40) (by trivial) hperm
   case log4 =>
     cases hst : yst.env.static with
     | false =>
@@ -2248,7 +2269,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         simp [stepOp, hguard] at hyul
       subst hyul
       exact logStep (yop := .log4) (topicCount := 4) rfl rfl rfl
-        hcode hf hm hperm hpc hstk hgas
+        hcode hf hm hperm hpc hstk hcap hgas
     | true =>
       have hperm : s.executionEnv.permitStateMutation = false :=
         hm.perm_of_static_true hst
@@ -2256,7 +2277,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         _ | ⟨t4, _ | ⟨extra, args⟩⟩⟩⟩⟩⟩⟩ <;>
         simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
       subst hyul
-      exact staticViolationStep (yop := .log4) rfl hcode hf hm hpc (by decide) hperm
+      exact staticViolationStep (yop := .log4) rfl hcode hf hm hpc (by decide) hcap (le_trans (by have hfork : s.fork = .Osaka := hf.fork; rw [hfork]; decide) hgas40) (by trivial) hperm
   case sload =>
     rcases args with _ | ⟨k, _ | ⟨b, args⟩⟩ <;> simp [stepOp] at hyul
     subst hyul
@@ -2272,7 +2293,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have h2 := sloadCold_le s (conv k)
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.sload s (conv k) σ hdec hgas' hstk'),
+      (StepRunning.sload s (conv k) σ hdec hgas' hstk' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -2300,7 +2321,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;>
         simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
       subst hyul
-      exact staticViolationStep (yop := .sstore) rfl hcode hf hm hpc (by decide) hperm
+      exact staticViolationStep (yop := .sstore) rfl hcode hf hm hpc (by decide) hcap (le_trans (by have hfork : s.fork = .Osaka := hf.fork; rw [hfork]; decide) hgas40) (by trivial) hperm
     | false =>
       have hperm : s.executionEnv.permitStateMutation = true :=
         hm.perm_of_static_false hst
@@ -2340,7 +2361,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
           rw [hf.fork]; decide
         omega
       refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-        (StepRunning.sstore s (conv k) (conv v) σ hdec hperm hstk' hsent hgas'),
+        (StepRunning.sstore s (conv k) (conv v) σ hdec hperm hstk' hsent hgas' hcap),
         ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ?_, ?_, rfl, ?_⟩
@@ -2412,7 +2433,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have : Gas.baseCost .Osaka Operation.TLOAD ≤ 40000 := by decide
       omega
     refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.tload s (conv k) σ hdec hgas' hstk'),
+      (StepRunning.tload s (conv k) σ hdec hgas' hstk' hcap),
       ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
         hf.running⟩,
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -2437,7 +2458,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       rcases args with _ | ⟨k, _ | ⟨v, _ | ⟨c, args⟩⟩⟩ <;>
         simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
       subst hyul
-      exact staticViolationStep (yop := .tstore) rfl hcode hf hm hpc (by decide) hperm
+      exact staticViolationStep (yop := .tstore) rfl hcode hf hm hpc (by decide) hcap (le_trans (by have hfork : s.fork = .Osaka := hf.fork; rw [hfork]; decide) hgas40) (by trivial) hperm
     | false =>
       have hperm : s.executionEnv.permitStateMutation = true :=
         hm.perm_of_static_false hst
@@ -2462,7 +2483,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         have : Gas.baseCost .Osaka Operation.TSTORE ≤ 40000 := by decide
         omega
       refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-        (StepRunning.tstore s (conv k) (conv v) σ hdec hperm hgas' hstk'),
+        (StepRunning.tstore s (conv k) (conv v) σ hdec hperm hgas' hstk' hcap),
         ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
           hf.running⟩,
         ?_, ?_, rfl, ?_⟩
@@ -2530,7 +2551,8 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
         simp [stepOp, YulSemantics.EVM.guardStatic, hst] at hyul
       subst hyul
       exact staticViolationStep (yop := .selfdestruct) rfl hcode hf hm hpc
-        (by decide) hperm
+        (by decide) hcap (le_trans (by have hfork : s.fork = .Osaka := hf.fork; rw [hfork]; decide) hgas40)
+        (by show 1 ≤ s.stack.length; rw [hstk]; simp) hperm
     | false =>
       have hperm : s.executionEnv.permitStateMutation = true :=
         hm.perm_of_static_false hst
@@ -2540,7 +2562,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       rcases args with _ | ⟨beneficiary, _ | ⟨extra, args⟩⟩ <;>
         simp [stepOp, hguard] at hyul
       subst hyul
-      exact selfdestructStep hcode hf hm hperm hpc hstk hgas40
+      exact selfdestructStep hcode hf hm hperm hpc hstk hcap hgas40
   case stop =>
     rcases args with _ | ⟨a, args⟩ <;> simp [stepOp] at hyul
     subst hyul
@@ -2548,7 +2570,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     obtain ⟨hb', hplain⟩ := opTable_roundtrip (yop := .stop) rfl
     have hdec := decoded_op hf hcode hpc hb' hplain
       (opTable_available (yop := .stop) rfl)
-    exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec),
+    exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec hcap),
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, hf.callStack, (.stop, []), rfl, rfl⟩
   case invalid =>
@@ -2559,7 +2581,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
     have hdec := decoded_op hf hcode hpc hb' hplain
       (opTable_available (yop := .invalid) rfl)
     exact ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.invalidOpcode s hdec),
+      (StepRunning.invalidOpcode s hdec hcap),
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen, hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, hf.callStack, (.invalid, []), rfl, rfl⟩
   case ret =>
@@ -2578,7 +2600,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have h3 : opBound Op.ret [p, n] = 40000 + memBound (conv p).toNat (conv n).toNat := rfl
       omega
     exact ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.return_ s (conv p) (conv n) σ hdec hstk' hgas'),
+      (StepRunning.return_ s (conv p) (conv n) σ hdec hstk' hgas' hcap),
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf,
         by simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords p.toNat n.toNat,
@@ -2602,7 +2624,7 @@ theorem opStep {yop : Op} {o : Operation} (hop : opTable yop = some o)
       have h3 : opBound Op.revert [p, n] = 40000 + memBound (conv p).toNat (conv n).toNat := rfl
       omega
     exact ⟨_, EVM.Step.running hf.running hf.noPrecompile
-      (StepRunning.revert s (conv p) (conv n) σ hdec hstk' hgas'),
+      (StepRunning.revert s (conv p) (conv n) σ hdec hstk' hgas' hcap),
       ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf,
         by simpa only [conv_toNat] using activeWordsAfter_eq hm.activeWords p.toNat n.toNat,
@@ -2619,6 +2641,7 @@ theorem jumpdestStep {code : ByteArray} {pre post : List UInt8}
     (hcode : code = mkCode (pre ++ (Instr.op .JUMPDEST).bytes ++ post))
     (hf : FrameOK code s) (hm : StateMatch yst s)
     (hpc : s.pc = UInt256.ofNat pre.length)
+    (hcap : s.stack.length + Operation.pushArity .JUMPDEST ≤ 1024 + Operation.popArity .JUMPDEST)
     (hgas : 40000 ≤ s.gasAvailable) :
     ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
       ∧ s'.pc = UInt256.ofNat (pre.length + 1)
@@ -2631,7 +2654,7 @@ theorem jumpdestStep {code : ByteArray} {pre post : List UInt8}
     have : Gas.baseCost .Osaka Operation.JUMPDEST ≤ 40000 := by decide
     omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
-    (StepRunning.jumpdest s hdec hgas'),
+    (StepRunning.jumpdest s hdec hgas' hcap),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -2655,6 +2678,7 @@ theorem jumpStep {code : ByteArray} {pre post : List UInt8}
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = dest :: rest)
     (hvalid : Decode.isValidJumpDest code dest.toNat = true)
+    (hcap : s.stack.length + Operation.pushArity .JUMP ≤ 1024 + Operation.popArity .JUMP)
     (hgas : 40000 ≤ s.gasAvailable) :
     ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
       ∧ s'.pc = dest
@@ -2668,7 +2692,7 @@ theorem jumpStep {code : ByteArray} {pre post : List UInt8}
     omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.jump s dest rest hdec hgas' hstk
-      (by rw [hf.hcode]; exact hvalid)),
+      (by rw [hf.hcode]; exact hvalid) hcap),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -2686,6 +2710,7 @@ theorem jumpiNotTakenStep {code : ByteArray} {pre post : List UInt8}
     (hpc : s.pc = UInt256.ofNat pre.length)
     (hstk : s.stack = dest :: cond :: rest)
     (hcond : cond.toNat = 0)
+    (hcap : s.stack.length + Operation.pushArity .JUMPI ≤ 1024 + Operation.popArity .JUMPI)
     (hgas : 40000 ≤ s.gasAvailable) :
     ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
       ∧ s'.pc = UInt256.ofNat (pre.length + 1)
@@ -2699,7 +2724,7 @@ theorem jumpiNotTakenStep {code : ByteArray} {pre post : List UInt8}
     omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.jumpi_notTaken s dest cond rest hdec hgas' hstk
-      (by simp [UInt256.isTrue, hcond])),
+      (by simp [UInt256.isTrue, hcond]) hcap),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
@@ -2724,6 +2749,7 @@ theorem jumpiTakenStep {code : ByteArray} {pre post : List UInt8}
     (hstk : s.stack = dest :: cond :: rest)
     (hcond : cond.toNat ≠ 0)
     (hvalid : Decode.isValidJumpDest code dest.toNat = true)
+    (hcap : s.stack.length + Operation.pushArity .JUMPI ≤ 1024 + Operation.popArity .JUMPI)
     (hgas : 40000 ≤ s.gasAvailable) :
     ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
       ∧ s'.pc = dest
@@ -2737,7 +2763,7 @@ theorem jumpiTakenStep {code : ByteArray} {pre post : List UInt8}
     omega
   refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
     (StepRunning.jumpi_taken s dest cond rest hdec hgas' hstk hcond
-      (by rw [hf.hcode]; exact hvalid)),
+      (by rw [hf.hcode]; exact hvalid) hcap),
     ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack,
       hf.running⟩,
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,

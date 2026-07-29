@@ -1,6 +1,8 @@
 # Paths relative to Solidity's test/libyul/evmCodeTransform directory.
 # Every fixture whose EVMVersion range includes Osaka is compiled. Keep exactly
-# the fixtures that do not yet parse or compile.
+# the fixtures that do not parse/compile, including those the stack-overflow gate
+# (StackScalable) rejects as not provably stack-bounded (recursion / cycles).
 early_push_on_deep_swap.yul
 stackReuse/function_many_arguments.yul
 stackReuse/reuse_too_deep_slot.yul
+unassigned_return_variable.yul

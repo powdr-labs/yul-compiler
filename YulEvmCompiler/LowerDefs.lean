@@ -317,6 +317,7 @@ structure CallsRealized (external : YulSemantics.EVM.ExternalCalls) : Prop where
         FrameOK code s → StateMatch yst s →
         s.decodedOp = some o → s.stack = args.map conv ++ σ →
         bnd ≤ s.gasAvailable →
+        s.stack.length + o.pushArity ≤ 1024 + o.popArity →
         ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst' s' ∧
           s'.pc = s.pc.succ ∧ s'.stack = rets.map conv ++ σ ∧
           s.gasAvailable - bnd ≤ s'.gasAvailable
@@ -333,6 +334,7 @@ theorem CallsRealized.complete_allows_reentrancy
       FrameOK code s → StateMatch yst s →
       s.decodedOp = some o → s.stack = args.map conv ++ σ →
       bnd ≤ s.gasAvailable →
+      s.stack.length + o.pushArity ≤ 1024 + o.popArity →
       ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst' s' ∧
         s'.pc = s.pc.succ ∧ s'.stack = rets.map conv ++ σ ∧
         s.gasAvailable - bnd ≤ s'.gasAvailable :=
@@ -364,6 +366,7 @@ structure CreatesRealized (external : YulSemantics.EVM.ExternalCreates) : Prop w
         FrameOK code s → StateMatch yst s →
         s.decodedOp = some o → s.stack = args.map conv ++ σ →
         bnd ≤ s.gasAvailable →
+        s.stack.length + o.pushArity ≤ 1024 + o.popArity →
         ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst' s' ∧
           s'.pc = s.pc.succ ∧ s'.stack = rets.map conv ++ σ ∧
           s.gasAvailable - bnd ≤ s'.gasAvailable
@@ -380,6 +383,7 @@ theorem CreatesRealized.complete_allows_initcode_reentrancy
       FrameOK code s → StateMatch yst s →
       s.decodedOp = some o → s.stack = args.map conv ++ σ →
       bnd ≤ s.gasAvailable →
+      s.stack.length + o.pushArity ≤ 1024 + o.popArity →
       ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst' s' ∧
         s'.pc = s.pc.succ ∧ s'.stack = rets.map conv ++ σ ∧
         s.gasAvailable - bnd ≤ s'.gasAvailable :=
@@ -539,7 +543,8 @@ theorem CallsRealized.insufficientBalance :
     -- One goal remains: `if static ∧ value ≠ 0 then _ = .halt else externalCall …`.
     split at hsource
     · exact absurd hsource (by simp)
-    · unfold YulSemantics.EVM.externalCall at hsource
+    · rename_i hns
+      unfold YulSemantics.EVM.externalCall at hsource
       obtain ⟨response, hCall, heq⟩ := hsource
       injection heq with hrets hyst'
       obtain ⟨-, hbal, hsucc, hrdata, -⟩ := hCall
@@ -549,9 +554,15 @@ theorem CallsRealized.insufficientBalance :
         (MachineState.activeWordsAfter
           (MachineState.activeWordsAfter 0 inOff.toNat inSize.toNat)
           outOff.toNat outSize.toNat), ?_⟩
-      intro code s σ hf hm hdec hstk hbnd
+      intro code s σ hf hm hdec hstk hbnd hcap
       simp only [List.map_cons, List.map_nil, List.cons_append,
         List.nil_append] at hstk
+      have h_static : s.executionEnv.permitStateMutation = true ∨ (conv value).toNat = 0 := by
+        by_cases hv : value = 0
+        · exact Or.inr (by rw [conv_toNat, hv]; rfl)
+        · refine Or.inl (hm.perm_of_static_false ?_)
+          by_contra hst
+          exact hns ⟨by simpa using hst, hv⟩
       have hccbound : Gas.callCommitted s (conv value) (conv inOff) (conv inSize)
           (conv outOff) (conv outSize) (conv target)
           ≤ 39200 + MachineState.memCost
@@ -577,8 +588,8 @@ theorem CallsRealized.insufficientBalance :
           (s.accountMap s.executionEnv.address).balance < conv value :=
         Or.inr (by rw [← hm.selfBalance]; exact conv_lt_of_toNat hbal)
       have hstep := StepRunning.callFail s (conv gas) (conv target) (conv value)
-        (conv inOff) (conv inSize) (conv outOff) (conv outSize) σ hdec hstk hgas
-        h_afford h_fail
+        (conv inOff) (conv inSize) (conv outOff) (conv outSize) σ hdec hstk h_static hgas
+        h_afford h_fail hcap
       refine ⟨_, Steps.trans (Step.running hf.running hf.noPrecompile hstep)
         (Steps.refl _), ?_, ?_, ?_, ?_, ?_⟩
       · -- FrameOK
@@ -738,7 +749,8 @@ theorem stopSeamStep {is : List Instr} {payload : List UInt8}
     {yst : EvmState} {s : State}
     (hf : FrameOK (assembleWithPayload is (0 :: payload)) s)
     (hm : StateMatch yst s)
-    (hpc : s.pc = UInt256.ofNat (assembleBytes is).length) :
+    (hpc : s.pc = UInt256.ofNat (assembleBytes is).length)
+    (hcap : s.stack.length + Operation.pushArity .STOP ≤ 1024 + Operation.popArity .STOP) :
     ∃ s', EVM.Step s s' ∧ StateMatch yst s' ∧ s'.callStack = []
       ∧ s'.halt = .Success ∧ s'.hReturn = .empty := by
   have hcode : assembleWithPayload is (0 :: payload) =
@@ -746,7 +758,7 @@ theorem stopSeamStep {is : List Instr} {payload : List UInt8}
     simp [assembleWithPayload, Instr.bytes, Instr.opByte, List.append_assoc]
   have hdec : s.decodedOp = some .STOP := by
     exact decoded_op hf hcode hpc (by decide) trivial (by decide)
-  exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec),
+  exact ⟨_, EVM.Step.running hf.running hf.noPrecompile (StepRunning.stop s hdec hcap),
     ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
         hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
         hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩,

@@ -490,7 +490,9 @@ def selfdestructOps : Block Op := yul% {
 #guard (compileProgram breakNested).isSome
 #guard (compileProgram fibStorage).isSome
 #guard (compile sumLoop).isSome
-#guard (compile factorial).isSome
+-- `factorial` is recursive; the `compile` stack-overflow gate (`StackBound`) rejects it, as the
+-- analysis cannot bound the recursion depth statically. `compileProgram` (no gate) still succeeds.
+#guard (compile factorial).isNone
 #guard (compile fibStorage).isSome
 
 -- The Asm peephole fires on `multiRet3`: the top return slot's constant
@@ -655,7 +657,8 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn storageForwardingShadow [0, 1]
 #guard agreeOn multiRet3 [0, 1, 2]
 #guard agreeOn funCall [0]
-#guard agreeOn factorial [0]
+-- `factorial` (recursive) is rejected by the `compile` overflow gate, so it has no bytecode to
+-- run through the EVM; its interpreter-level behaviour is still checked below (`runYul`).
 #guard agreeOn leaveEarly [0, 1]
 #guard agreeOn nested [0]
 #guard agreeOn breakNested [0]
