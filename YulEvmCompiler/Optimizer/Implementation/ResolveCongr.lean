@@ -241,6 +241,7 @@ theorem resolve_openTop_equiv1 (L : Layout) (e : Expr Op) :
                  · obtain rfl := Option.some.inj hn
                    simp only [resolve_two_args, resolve_lit]
                    first
+                     | exact open_right_equiv1 (fun v => by rw [hc.1]; exact pureFn_exp_one v)
                      | exact open_right_equiv1 (fun v => by
                          rw [hc.1]; simp only [pureFn, Option.some.injEq]
                          first | simp | (rw [allOnes]; exact BitVec.and_allOnes))
@@ -285,18 +286,29 @@ theorem resolve_strengthTop_equiv (L : Layout) (e : Expr Op) :
       | some e' =>
           simp only [Option.getD_some]
           unfold strengthReduce at hn
-          split at hn <;> (try split_ifs at hn with hc) <;> (try split at hn) <;>
+          split at hn <;>
+            (repeat' first | split_ifs at hn | split at hn) <;>
             first
               | (obtain rfl := Option.some.inj hn
                  simp only [resolve_two_args, resolve_lit, resolve_iszero]
                  first
-                   | exact strength_eq_right_equiv hc
-                   | exact strength_eq_left_equiv hc
+                   | exact strength_eq_right_equiv (by assumption)
+                   | exact strength_eq_left_equiv (by assumption)
                    | exact strength_iszero3_equiv _
                    | exact strength_mod_equiv (by assumption)
                    | exact strength_div_equiv (by assumption)
                    | exact strength_mul_right_equiv (by assumption)
-                   | exact strength_mul_left_equiv (by assumption))
+                   | exact strength_mul_left_equiv (by assumption)
+                   | exact strength_exp_base0_equiv (by assumption)
+                   | exact strength_exp_base1_equiv (by assumption)
+                   | exact strength_exp_base2_equiv (by assumption)
+                   | exact strength_exp_baseNeg1_equiv (by assumption)
+                   | exact strength_exp_sq_equiv (by assumption)
+                   | exact strength_exp_expZero_equiv (by assumption)
+                   | exact strength_absorb_right_equiv (fun w => by
+                       rw [(by assumption : litValue _ = 0)]; simp [pureFn])
+                   | exact strength_absorb_left_equiv (fun w => by
+                       rw [(by assumption : litValue _ = 0)]; simp [pureFn]))
               | simp at hn
 
 /-! ### The resolution congruence — expressions and arguments -/

@@ -10,9 +10,20 @@ A local **expression + constant-control-flow** simplifier for the EVM dialect,
 the first real `Optimizer.LocalPass`. It rewrites, bottom-up:
 
 * a pure built-in applied to all-literal arguments → the folded literal
-  (`add(2,3) → 5`);
+  (`add(2,3) → 5`); this now includes `exp`, folded by modular binary
+  exponentiation (`powMod`), so folding stays feasible on huge exponents;
 * a pure built-in with a neutral literal operand kept alongside a *variable*
-  (`add(x,0) → x`, `mul(x,1) → x`, `and(x, 2²⁵⁶−1) → x`, `shl(0,x) → x`, …);
+  (`add(x,0) → x`, `mul(x,1) → x`, `and(x, 2²⁵⁶−1) → x`, `shl(0,x) → x`,
+  `exp(x,1) → x`, …);
+* `exp` strength reductions replacing the expensive `EXP` opcode (10 + 50·bytes)
+  by cheap arithmetic: `exp(0,e) → iszero(e)`, `exp(1,e) → iszero(and(e,0))`,
+  `exp(2,e) → shl(e,1)`, `exp(2²⁵⁶−1,e) → sub(1, mul(2, and(e,1)))`,
+  `exp(x,0) → iszero(and(x,0))`, and `exp(x,2) → mul(x,x)` for a leaf `x`;
+* the **absorbing-zero** rewrite `op(…,0)/op(0,…) → and(x, 0)` for
+  `mul`/`div`/`mod`/`sdiv`/`smod` — the canonical stuckness-preserving zero:
+  it consumes `x` exactly once and yields `0` at `AND`'s 3 gas, cheaper than
+  every 5-gas absorbing op it replaces (and `iszero(and(x,0))` is the analogous
+  cheap "always 1" form used by the `exp(x,0)`/`exp(1,e)` folds above);
 * an `if` whose simplified condition is literal → its body or an empty block;
 * an `if iszero(eq(x,x)) { body }` validator residue → evaluation and discard
   of the condition (preserving unbound-variable stuckness); and
@@ -31,14 +42,18 @@ unchanged.  So folding all-literal applications and neutral-operand rewrites are
 pointwise `EquivExpr`s (`YulSemantics.Equiv`), lifted through the built-in and
 statement congruences to `EquivBlock`, discharging the `LocalPass` obligation `Sound`.
 
-Two soundness fences (see `IDEAS.md`):
+Soundness fences (see `IDEAS.md`):
 
 * neutral rewrites keep the **variable on the right-hand side** — `mul(x,0) ≈ 0`
   is *unsound* (its RHS evaluates on environments where `x` is unbound, where the
-  LHS is stuck), so absorbing rewrites are deliberately excluded;
-* `exp` is **not** folded — its value uses an unbounded `Nat` power, which would
-  make the pass diverge on large exponents (soundness is unaffected; feasibility
-  is not).
+  LHS is stuck). The absorbing-zero rewrites are sound precisely because their
+  RHS `and(x, 0)` *keeps* `x` in evaluating position (it collapses to `0` only
+  after consuming `x`), so it is stuck on exactly the same environments as the
+  LHS — this is why they collapse to `and(x, 0)` rather than to the literal `0`.
+
+`exp` folding uses `powMod`, a total O(log e) modular exponentiation, so it does
+not diverge on large exponents; `BitVec.ofNat 256` supplies the required
+truncation and `exp_pureFn_agree` proves the fold agrees with `stepOp`.
 -/
 
 namespace YulEvmCompiler.Optimizer
@@ -57,7 +72,66 @@ local notation "D" => evmWithExternal calls creates
 
 `pureFn` mirrors the state-independent arms of `stepOp` (arithmetic, comparison,
 bitwise/shift), returning the result *value* as a total function of the argument
-values, for the correct arity only. `exp` is intentionally omitted. -/
+values, for the correct arity only. `exp` is folded via modular binary
+exponentiation (`powMod`, below): `O(log e)` 256-bit multiplications, so constant
+folding stays feasible even for huge exponents. -/
+
+/-- Modular exponentiation by squaring, tail-recursive with accumulator; the
+invariant is `powModGo m b e acc = acc * b ^ e % m` (see `powModGo_eq`). Only
+`O(log e)` multiplications, so it is total *and* feasible on 256-bit exponents. -/
+def powModGo (m : Nat) : Nat → Nat → Nat → Nat
+  | _, 0, acc => acc % m
+  | b, e + 1, acc =>
+      powModGo m ((b * b) % m) ((e + 1) / 2)
+        (if (e + 1) % 2 = 1 then (acc * b) % m else acc)
+  decreasing_by exact Nat.div_lt_self (Nat.succ_pos e) (by decide)
+
+/-- `b ^ e mod m`, computed by squaring. -/
+def powMod (b e m : Nat) : Nat := powModGo m (b % m) e 1
+
+/-- The accumulator invariant of `powModGo` (holds for every modulus `m`). -/
+theorem powModGo_eq (m : Nat) :
+    ∀ e b acc, powModGo m b e acc = acc * b ^ e % m := by
+  intro e
+  induction e using Nat.strongRecOn with
+  | ind e ih =>
+    intro b acc
+    match e, ih with
+    | 0, _ => simp [powModGo]
+    | e + 1, ih =>
+      have hlt : (e + 1) / 2 < e + 1 := Nat.div_lt_self (Nat.succ_pos e) (by decide)
+      rw [powModGo, ih ((e + 1) / 2) hlt]
+      have hmul2 : ∀ X Y : Nat, (X % m) * Y % m = X * Y % m := by
+        intro X Y; rw [Nat.mul_mod, Nat.mod_mod, ← Nat.mul_mod]
+      have hpow : ((b * b) % m) ^ ((e + 1) / 2) % m = b ^ (2 * ((e + 1) / 2)) % m := by
+        rw [← Nat.pow_mod, Nat.pow_mul, Nat.pow_two]
+      have hcombine : ∀ X : Nat, X * ((b * b) % m) ^ ((e + 1) / 2) % m
+                        = X * b ^ (2 * ((e + 1) / 2)) % m := by
+        intro X; rw [Nat.mul_mod X, hpow, ← Nat.mul_mod]
+      rw [hcombine]
+      rcases Nat.mod_two_eq_zero_or_one (e + 1) with h2 | h2
+      · have hd : 2 * ((e + 1) / 2) = e + 1 := by omega
+        rw [if_neg (by simp [h2]), hd]
+      · have hd : 2 * ((e + 1) / 2) = e := by omega
+        rw [if_pos (by simp [h2]), hd, hmul2 (acc * b) (b ^ e),
+          Nat.pow_succ, Nat.mul_assoc, Nat.mul_comm b (b ^ e)]
+
+/-- `powMod` computes `b ^ e mod m`. -/
+theorem powMod_eq (b e m : Nat) : powMod b e m = b ^ e % m := by
+  rw [powMod, powModGo_eq m, Nat.one_mul, ← Nat.pow_mod]
+
+/-- The folded `exp` value agrees with `stepOp`'s `BitVec.ofNat 256 (a^b)`:
+`BitVec.ofNat 256` already truncates mod `2 ^ 256`, which is exactly what the
+modular `powMod` computes. -/
+theorem exp_pureFn_agree (a b : U256) :
+    BitVec.ofNat 256 (powMod a.toNat b.toNat (2 ^ 256)) = a ^ b.toNat := by
+  have h1 : BitVec.ofNat 256 (powMod a.toNat b.toNat (2 ^ 256))
+      = BitVec.ofNat 256 (a.toNat ^ b.toNat) := by
+    rw [powMod_eq]
+    apply BitVec.eq_of_toNat_eq
+    rw [BitVec.toNat_ofNat, BitVec.toNat_ofNat, Nat.mod_mod]
+  rw [h1]
+  simp only [BitVec.ofNat_pow, BitVec.ofNat_toNat, BitVec.setWidth_eq]
 
 /-- The value computed by a pure EVM op on concrete argument words, or `none`
 for a non-pure op or an arity mismatch. Mirrors `EVM.stepOp`'s pure arms. -/
@@ -87,6 +161,7 @@ def pureFn : Op → List U256 → Option U256
   | .shl,        [a, b]    => some (b <<< a.toNat)
   | .shr,        [a, b]    => some (b >>> a.toNat)
   | .sar,        [a, b]    => some (BitVec.sshiftRight b a.toNat)
+  | .exp,        [a, b]    => some (BitVec.ofNat 256 (powMod a.toNat b.toNat (2 ^ 256)))
   | _,           _         => none
 
 /-- `pureFn` agrees with `stepOp` at every state: a pure op returns its value
@@ -95,7 +170,9 @@ theorem pureFn_stepOp {op : Op} {vs : List U256} {w : U256}
     (h : pureFn op vs = some w) (st : EvmState) :
     stepOp op vs st = some (.ok [w] st) := by
   unfold pureFn at h
-  split at h <;> simp_all [stepOp, bin, un, ter]
+  split at h <;>
+    (simp_all [stepOp, bin, un, ter]
+     try (subst h; exact (exp_pureFn_agree _ _).symm))
 
 /-- A pure op is a **local** built-in, so its open-world `Builtin` (which handles
 only the external `call`/`create`/`gas` family specially) is exactly `stepOp`. -/
@@ -113,6 +190,15 @@ theorem pureFn_builtin_inv {op : Op} {vs : List U256} {w : U256} {st : EvmState}
     r = .ok [w] st := by
   have hs := pureFn_stepOp h st
   cases op <;> simp_all [builtinWithExternal, pureFn]
+
+/-- `pureFn` on `exp` in `BitVec`-power normal form (folds `powMod` away via
+`exp_pureFn_agree`). Used by every `exp` strength-reduction fact below. -/
+theorem pureFn_exp (a b : U256) : pureFn .exp [a, b] = some (a ^ b.toNat) := by
+  simp only [pureFn]; rw [exp_pureFn_agree]
+
+/-- `a ^ 1 = a`: the neutral-exponent fact behind `exp(x, 1) → x`. -/
+theorem pureFn_exp_one (v : U256) : pureFn .exp [v, (1 : U256)] = some v := by
+  rw [pureFn_exp]; simp
 
 /-! ### Evaluating an all-literal argument list
 
@@ -570,6 +656,7 @@ def openNeutral : Op → List (Expr Op) → Option (Expr Op)
   | .xor, [e, .lit c] => if litValue c = 0 ∧ survivorOK e then some e else none
   | .mul, [e, .lit c] => if litValue c = 1 ∧ survivorOK e then some e else none
   | .div, [e, .lit c] => if litValue c = 1 ∧ survivorOK e then some e else none
+  | .exp, [e, .lit c] => if litValue c = 1 ∧ survivorOK e then some e else none
   | .and, [e, .lit c] => if litValue c = allOnes ∧ survivorOK e then some e else none
   | .add, [.lit c, e] => if litValue c = 0 ∧ survivorOK e then some e else none
   | .or,  [.lit c, e] => if litValue c = 0 ∧ survivorOK e then some e else none
@@ -604,7 +691,21 @@ and state-preserving — so they apply at every position, including conditions.
   `mul(e, 2^k)`/`mul(2^k, e)` → `shl(k, e)` with `k ≥ 1` (`k = 0` is the
   neutral rules' territory): 5-gas ops become 3-gas ops. The shift-count
   operand order swap moves a literal across `e` in the right-to-left argument
-  order, which is unobservable. -/
+  order, which is unobservable.
+- **absorbing zero**: `mul`/`div`/`mod`/`sdiv`/`smod` with a literal `0` in
+  either operand → `and(x, 0)` (3 gas vs 5). The surviving operand `x` moves
+  into `and`'s first slot; the value is `0` on both sides, and `x` stays in
+  evaluating position so stuckness is preserved (unlike the unsound collapse
+  to a bare `0`). `0/x = 0` and `0%x = 0` hold in EVM (including `x = 0`).
+- **exp folds** (now that `exp` is in `pureFn`): `exp(0,e) → iszero(e)`,
+  `exp(1,e) → iszero(and(e,0))`, `exp(2,e) → shl(e,1)`,
+  `exp(2²⁵⁶−1,e) → sub(1, mul(2, and(e,1)))`, `exp(x,0) → iszero(and(x,0))`,
+  and `exp(x,2) → mul(x,x)` for a **leaf** `x` (`.var`, so duplicating `x` is
+  unobservable). `EXP` costs 10 + 50·byteSize(exp) ≥ 60 for a nonzero exponent;
+  the replacements cost 3–20. `exp(x,0)` is folded too: `PUSH0 + EXP` (13 gas)
+  loses to `iszero(and(x,0))` = `PUSH0 + AND + ISZERO` (9 gas), because EXP's
+  zero exponent still needs its own `PUSH`. `exp(x,1) → x` is a neutral rule
+  (`openNeutral`, single-value positions only), not a strength reduction. -/
 
 /-- The power-of-two exponent of a literal's value, if any. -/
 def pow2Exp? (c : Literal) : Option Nat :=
@@ -623,21 +724,57 @@ def strengthReduce : Op → List (Expr Op) → Option (Expr Op)
   | .iszero, [.builtin .iszero [.builtin .iszero [e]]] =>
       some (.builtin .iszero [e])
   | .mod, [e, .lit c] =>
-      match pow2Exp? c with
-      | some k => some (.builtin .and [e, .lit (.number (2 ^ k - 1))])
-      | none => none
+      if litValue c = 0 then some (.builtin .and [e, .lit (.number 0)])
+      else match pow2Exp? c with
+        | some k => some (.builtin .and [e, .lit (.number (2 ^ k - 1))])
+        | none => none
+  | .mod, [.lit c, e] =>
+      if litValue c = 0 then some (.builtin .and [e, .lit (.number 0)]) else none
   | .div, [e, .lit c] =>
-      match pow2Exp? c with
-      | some (k + 1) => some (.builtin .shr [.lit (.number (k + 1)), e])
-      | _ => none
+      if litValue c = 0 then some (.builtin .and [e, .lit (.number 0)])
+      else match pow2Exp? c with
+        | some (k + 1) => some (.builtin .shr [.lit (.number (k + 1)), e])
+        | _ => none
+  | .div, [.lit c, e] =>
+      if litValue c = 0 then some (.builtin .and [e, .lit (.number 0)]) else none
   | .mul, [e, .lit c] =>
-      match pow2Exp? c with
-      | some (k + 1) => some (.builtin .shl [.lit (.number (k + 1)), e])
-      | _ => none
+      if litValue c = 0 then some (.builtin .and [e, .lit (.number 0)])
+      else match pow2Exp? c with
+        | some (k + 1) => some (.builtin .shl [.lit (.number (k + 1)), e])
+        | _ => none
   | .mul, [.lit c, e] =>
-      match pow2Exp? c with
-      | some (k + 1) => some (.builtin .shl [.lit (.number (k + 1)), e])
-      | _ => none
+      if litValue c = 0 then some (.builtin .and [e, .lit (.number 0)])
+      else match pow2Exp? c with
+        | some (k + 1) => some (.builtin .shl [.lit (.number (k + 1)), e])
+        | _ => none
+  | .sdiv, [e, .lit c] =>
+      if litValue c = 0 then some (.builtin .and [e, .lit (.number 0)]) else none
+  | .sdiv, [.lit c, e] =>
+      if litValue c = 0 then some (.builtin .and [e, .lit (.number 0)]) else none
+  | .smod, [e, .lit c] =>
+      if litValue c = 0 then some (.builtin .and [e, .lit (.number 0)]) else none
+  | .smod, [.lit c, e] =>
+      if litValue c = 0 then some (.builtin .and [e, .lit (.number 0)]) else none
+  | .exp, [.lit c, e] =>
+      if litValue c = 0 then some (.builtin .iszero [e])
+      else if litValue c = 1 then
+        some (.builtin .iszero [.builtin .and [e, .lit (.number 0)]])
+      else if litValue c = 2 then some (.builtin .shl [e, .lit (.number 1)])
+      else if litValue c = allOnes then
+        some (.builtin .sub [.lit (.number 1),
+          .builtin .mul [.lit (.number 2), .builtin .and [e, .lit (.number 1)]]])
+      else none
+  | .exp, [.var x, .lit c] =>
+      if litValue c = 2 then some (.builtin .mul [.var x, .var x])
+      else if litValue c = 0 then
+        some (.builtin .iszero [.builtin .and [.var x, .lit (.number 0)]])
+      else none
+  | .exp, [e, .lit c] =>
+      -- exp(x, 0) → iszero(and(x, 0)): PUSH0+AND+ISZERO (9 gas) beats PUSH0+EXP
+      -- (13 gas), since EXP's own zero-exponent operand still costs a PUSH.
+      if litValue c = 0 then
+        some (.builtin .iszero [.builtin .and [e, .lit (.number 0)]])
+      else none
   | _, _ => none
 
 /-- Apply a top-level strength reduction; leave everything else unchanged. -/
@@ -651,10 +788,10 @@ theorem strengthReduce_builtin {op : Op} {args : List (Expr Op)} {e : Expr Op}
     ∃ op' args', e = .builtin op' args' := by
   unfold strengthReduce at h
   split at h <;>
-    (try split at h) <;>
+    (repeat' first | split_ifs at h | split at h) <;>
     first
-      | contradiction
       | (obtain rfl := Option.some.inj h; exact ⟨_, _, rfl⟩)
+      | simp at h
 
 /-! #### One-operand evaluation skeletons
 
@@ -864,6 +1001,37 @@ theorem builtin_unary_eval_iff_comp {op : Op} {e' e : Expr Op} {f g : U256 → U
     · exact Or.inl ⟨g v, st', rfl, (hg funs V st _).2 (Or.inl ⟨v, st', rfl, he⟩)⟩
     · exact Or.inr ⟨st', rfl, (hg funs V st _).2 (Or.inr ⟨st', rfl, he⟩)⟩
 
+/-- Wrapping a characterised skeleton in one more pure binary op with a literal
+left operand (`op(c, e')`). The analogue of `builtin_unary_eval_iff_comp` for the
+`op(c, ·)` shape; used to build the nested `sub`/`mul`/`iszero` skeletons. -/
+theorem builtin_left_lit_eval_iff_comp {op : Op} {e' e : Expr Op} {c : Literal} {f g : U256 → U256}
+    (hf : ∀ w : U256, pureFn op [litValue c, w] = some (f w))
+    (hg : ∀ (funs : FunEnv D) (V : VEnv D) (st : EvmState) (r : EResult D),
+      Step D funs V st (.expr e') (.eres r) ↔
+        ((∃ v st', r = .vals [g v] st' ∧
+            Step D funs V st (.expr e) (.eres (.vals [v] st'))) ∨
+         (∃ st', r = .halt st' ∧ Step D funs V st (.expr e) (.eres (.halt st')))))
+    (funs : FunEnv D) (V : VEnv D) (st : EvmState) (r : EResult D) :
+    Step D funs V st (.expr (.builtin op [.lit c, e'])) (.eres r) ↔
+      ((∃ v st', r = .vals [f (g v)] st' ∧
+          Step D funs V st (.expr e) (.eres (.vals [v] st'))) ∨
+       (∃ st', r = .halt st' ∧ Step D funs V st (.expr e) (.eres (.halt st')))) := by
+  refine (builtin_left_lit_eval_iff hf funs V st r).trans ?_
+  constructor
+  · rintro (⟨w, st', rfl, he⟩ | ⟨st', rfl, he⟩)
+    · rcases (hg funs V st _).1 he with ⟨v, st'', hval, hev⟩ | ⟨st'', hval, _⟩
+      · obtain ⟨hw, hst⟩ : w = g v ∧ st' = st'' := by simpa using hval
+        subst hw; subst hst
+        exact Or.inl ⟨v, st', rfl, hev⟩
+      · exact absurd hval (by simp)
+    · rcases (hg funs V st _).1 he with ⟨v, st'', hval, _⟩ | ⟨st'', hval, hev⟩
+      · exact absurd hval (by simp)
+      · obtain rfl : st' = st'' := by simpa using hval
+        exact Or.inr ⟨st', rfl, hev⟩
+  · rintro (⟨v, st', rfl, he⟩ | ⟨st', rfl, he⟩)
+    · exact Or.inl ⟨g v, st', rfl, (hg funs V st _).2 (Or.inl ⟨v, st', rfl, he⟩)⟩
+    · exact Or.inr ⟨st', rfl, (hg funs V st _).2 (Or.inr ⟨st', rfl, he⟩)⟩
+
 /-! #### The value-level facts behind each rewrite -/
 
 /-- A number literal denotes the 256-bit truncation of its number. -/
@@ -894,6 +1062,20 @@ theorem pow2Exp?_shift_toNat {c : Literal} {k : Nat} (h : pow2Exp? c = some k) :
     (litValue (.number k)).toNat = k := by
   rw [litValue_number, BitVec.toNat_ofNat]
   exact Nat.mod_eq_of_lt (Nat.lt_trans (Nat.lt_two_pow_self) (pow2Exp?_lt h))
+
+/-- `(−1) ^ k` in `BitVec 256`: `1` for even `k`, all-ones for odd `k`. The one
+value fact with real content — the parity induction behind `exp(2²⁵⁶−1, e)`. -/
+theorem negone_pow (k : Nat) :
+    (BitVec.allOnes 256) ^ k = if k % 2 = 0 then 1 else BitVec.allOnes 256 := by
+  induction k using Nat.strongRecOn with
+  | ind k ih =>
+    match k, ih with
+    | 0, _ => simp
+    | 1, _ => simp
+    | k + 2, ih =>
+      have hsq : (BitVec.allOnes 256) * (BitVec.allOnes 256) = 1 := by simp
+      rw [pow_succ, pow_succ, mul_assoc, hsq, mul_one, ih k (by omega),
+        show (k + 2) % 2 = k % 2 from by omega]
 
 /-! #### The seven rewrites, one lemma each
 
@@ -989,22 +1171,204 @@ theorem strength_mul_left_equiv {e : Expr Op} {c : Literal} {k : Nat}
   apply BitVec.eq_of_toNat_eq
   rw [BitVec.toNat_mul, BitVec.toNat_shiftLeft, hm, hs, Nat.shiftLeft_eq, Nat.mul_comm]
 
+/-! #### The `exp` folds and the absorbing-zero family
+
+`exp` folding is now feasible (`pureFn`), which also makes these variable-operand
+`exp` rewrites `EquivExpr`s. The absorbing-zero family collapses a `mul`/`div`/`mod`/
+`sdiv`/`smod` with a literal-`0` operand to `and(x, 0)`: consume `x` once, produce
+`0`, at `AND`'s 3 gas instead of the 5-gas arithmetic op. -/
+
+/-- `exp(0, e) ≈ iszero(e)` (`0⁰ = 1`, `0ⁿ = 0` for `n > 0`). -/
+theorem strength_exp_base0_equiv {e : Expr Op} {c : Literal} (hc : litValue c = 0) :
+    EquivExpr D (.builtin .exp [.lit c, e]) (.builtin .iszero [e]) := by
+  refine equiv_of_eval_iff (g₁ := fun w => (litValue c) ^ w.toNat) (g₂ := fun w => b2w (w = 0)) ?_
+    (builtin_left_lit_eval_iff (f := fun w => (litValue c) ^ w.toNat) (fun w => pureFn_exp _ _))
+    (builtin_unary_eval_iff (fun _ => rfl))
+  intro w; rw [hc]
+  rcases eq_or_ne w 0 with hw | hw
+  · subst hw; simp [b2w]
+  · have hk : w.toNat ≠ 0 := fun hcz => hw (BitVec.eq_of_toNat_eq (by rw [hcz]; rfl))
+    rw [zero_pow hk, b2w, if_neg (by simpa using hw)]
+
+/-- `exp(1, e) ≈ iszero(and(e, 0))` (`1ⁿ = 1`; the RHS also evaluates `e` once,
+returning `1`). -/
+theorem strength_exp_base1_equiv {e : Expr Op} {c : Literal} (hc : litValue c = 1) :
+    EquivExpr D (.builtin .exp [.lit c, e])
+      (.builtin .iszero [.builtin .and [e, .lit (.number 0)]]) := by
+  refine equiv_of_eval_iff (g₁ := fun w => (litValue c) ^ w.toNat)
+    (g₂ := fun w => b2w ((w &&& litValue (.number 0)) = 0)) ?_
+    (builtin_left_lit_eval_iff (f := fun w => (litValue c) ^ w.toNat) (fun w => pureFn_exp _ _))
+    (builtin_unary_eval_iff_comp (f := fun x => b2w (x = 0))
+      (g := fun w => w &&& litValue (.number 0)) (fun _ => rfl)
+      (builtin_right_lit_eval_iff (f := fun w => w &&& litValue (.number 0)) (fun _ => rfl)))
+  intro w; rw [hc, one_pow, litValue_number]; simp [b2w]
+
+/-- `exp(2, e) ≈ shl(e, 1)` (`2ⁿ mod 2²⁵⁶ = 1 <<< n`; both `0` for `n ≥ 256`). -/
+theorem strength_exp_base2_equiv {e : Expr Op} {c : Literal} (hc : litValue c = 2) :
+    EquivExpr D (.builtin .exp [.lit c, e]) (.builtin .shl [e, .lit (.number 1)]) := by
+  refine equiv_of_eval_iff (g₁ := fun w => (litValue c) ^ w.toNat)
+    (g₂ := fun w => (litValue (.number 1)) <<< w.toNat) ?_
+    (builtin_left_lit_eval_iff (f := fun w => (litValue c) ^ w.toNat) (fun w => pureFn_exp _ _))
+    (builtin_right_lit_eval_iff (f := fun w => (litValue (.number 1)) <<< w.toNat) (fun _ => rfl))
+  intro w; rw [hc, litValue_number]
+  apply BitVec.eq_of_toNat_eq
+  rw [BitVec.toNat_pow, BitVec.toNat_shiftLeft]
+  simp [Nat.shiftLeft_eq]
+
+/-- `exp(2²⁵⁶−1, e) ≈ sub(1, mul(2, and(e, 1)))` (`(−1)ⁿ`: parity — `1` for even,
+`2²⁵⁶−1` for odd; `1 − 2·(n mod 2)` wraps to `2²⁵⁶−1` when odd). -/
+theorem strength_exp_baseNeg1_equiv {e : Expr Op} {c : Literal} (hc : litValue c = allOnes) :
+    EquivExpr D (.builtin .exp [.lit c, e])
+      (.builtin .sub [.lit (.number 1),
+        .builtin .mul [.lit (.number 2), .builtin .and [e, .lit (.number 1)]]]) := by
+  refine equiv_of_eval_iff (g₁ := fun w => (litValue c) ^ w.toNat)
+    (g₂ := fun w => litValue (.number 1) - litValue (.number 2) * (w &&& litValue (.number 1))) ?_
+    (builtin_left_lit_eval_iff (f := fun w => (litValue c) ^ w.toNat) (fun w => pureFn_exp _ _))
+    (builtin_left_lit_eval_iff_comp (f := fun y => litValue (.number 1) - y)
+      (g := fun w => litValue (.number 2) * (w &&& litValue (.number 1))) (fun _ => rfl)
+      (builtin_left_lit_eval_iff_comp (f := fun x => litValue (.number 2) * x)
+        (g := fun w => w &&& litValue (.number 1)) (fun _ => rfl)
+        (builtin_right_lit_eval_iff (f := fun w => w &&& litValue (.number 1)) (fun _ => rfl))))
+  intro w
+  rw [hc, allOnes, negone_pow]
+  simp only [litValue_number]
+  have hand : (w &&& BitVec.ofNat 256 1).toNat = w.toNat % 2 := by simp
+  rcases Nat.mod_two_eq_zero_or_one w.toNat with hp | hp
+  · rw [if_pos hp]
+    have h0 : w &&& BitVec.ofNat 256 1 = 0 := BitVec.eq_of_toNat_eq (by rw [hand, hp]; rfl)
+    rw [h0]; simp
+  · rw [if_neg (by omega)]
+    have h1 : w &&& BitVec.ofNat 256 1 = 1 := BitVec.eq_of_toNat_eq (by rw [hand, hp]; simp)
+    rw [h1]
+    apply BitVec.eq_of_toNat_eq; simp
+
+/-- `exp(x, 0) ≈ iszero(and(x, 0))` (`x⁰ = 1` for every `x`, `0⁰ = 1` included;
+the RHS evaluates `x` once and returns `1`). -/
+theorem strength_exp_expZero_equiv {e : Expr Op} {c : Literal} (hc : litValue c = 0) :
+    EquivExpr D (.builtin .exp [e, .lit c])
+      (.builtin .iszero [.builtin .and [e, .lit (.number 0)]]) := by
+  refine equiv_of_eval_iff (g₁ := fun w => w ^ (litValue c).toNat)
+    (g₂ := fun w => b2w ((w &&& litValue (.number 0)) = 0)) ?_
+    (builtin_right_lit_eval_iff (f := fun w => w ^ (litValue c).toNat) (fun w => pureFn_exp _ _))
+    (builtin_unary_eval_iff_comp (f := fun x => b2w (x = 0))
+      (g := fun w => w &&& litValue (.number 0)) (fun _ => rfl)
+      (builtin_right_lit_eval_iff (f := fun w => w &&& litValue (.number 0)) (fun _ => rfl)))
+  intro w; rw [hc]; simp [b2w, litValue_number]
+
+/-- `exp(x, 2) ≈ mul(x, x)` for a **variable** `x` (`a² = a·a`; the leaf guard
+keeps the double evaluation of `x` unobservable). -/
+theorem strength_exp_sq_equiv {x : Ident} {c : Literal} (hc : litValue c = 2) :
+    EquivExpr D (.builtin .exp [.var x, .lit c]) (.builtin .mul [.var x, .var x]) := by
+  have hsq : ∀ v : U256, v ^ (litValue c).toNat = v * v := by
+    intro v; rw [hc, show ((2 : U256)).toNat = 2 from rfl, pow_two]
+  have hmul : ∀ v : U256, pureFn .mul [v, v] = some (v * v) := fun _ => rfl
+  intro funs V st r
+  constructor
+  · intro hb
+    cases hb with
+    | builtinOk ha hop =>
+        obtain ⟨v, rfl, he⟩ := args_expr_lit_value_inv ha
+        cases he with
+        | var hv =>
+            have hr := pureFn_builtin_inv (pureFn_exp v (litValue c)) hop
+            injection hr with hrets hst; subst hrets; subst hst
+            rw [hsq]
+            exact Step.builtinOk
+              (Step.argsCons (Step.argsCons Step.argsNil (Step.var hv)) (Step.var hv))
+              (pureFn_builtin (hmul v) _)
+    | builtinHalt ha hop =>
+        obtain ⟨v, rfl, he⟩ := args_expr_lit_value_inv ha
+        have := pureFn_builtin_inv (pureFn_exp v (litValue c)) hop; simp at this
+    | builtinArgsHalt ha =>
+        have := args_expr_lit_halt_inv ha; cases this
+  · intro hb
+    cases hb with
+    | builtinOk ha hop =>
+        cases ha with
+        | argsCons hrest hhead =>
+            cases hhead with
+            | var hv1 =>
+                cases hrest with
+                | argsCons hnil htail =>
+                    cases htail with
+                    | var hv2 =>
+                        cases hnil
+                        rw [hv2] at hv1; injection hv1 with hvv; subst hvv
+                        have hr := pureFn_builtin_inv (hmul _) hop
+                        injection hr with hrets hst; subst hrets; subst hst
+                        rw [← hsq]
+                        exact Step.builtinOk
+                          (Step.argsCons (Step.argsCons Step.argsNil Step.lit) (Step.var hv2))
+                          (pureFn_builtin (pureFn_exp _ _) _)
+    | builtinHalt ha hop =>
+        cases ha with
+        | argsCons hrest hhead =>
+            cases hhead with
+            | var hv1 =>
+                cases hrest with
+                | argsCons hnil htail =>
+                    cases htail with
+                    | var hv2 =>
+                        cases hnil
+                        rw [hv2] at hv1; injection hv1 with hvv; subst hvv
+                        have := pureFn_builtin_inv (hmul _) hop; simp at this
+    | builtinArgsHalt ha =>
+        cases ha with
+        | argsRestHalt hrest =>
+            cases hrest with
+            | argsRestHalt hnil => cases hnil
+            | argsHeadHalt hnil ht => cases ht
+        | argsHeadHalt hrest hh => cases hh
+
+/-- **Right-operand absorbing zero**: `op(e, c) ≈ and(e, 0)` when `op` maps
+`(v, c)` to `0` (`mul`/`div`/`mod`/`sdiv`/`smod` with a literal-`0` right operand). -/
+theorem strength_absorb_right_equiv {op : Op} {e : Expr Op} {c : Literal}
+    (h0 : ∀ w : U256, pureFn op [w, litValue c] = some 0) :
+    EquivExpr D (.builtin op [e, .lit c]) (.builtin .and [e, .lit (.number 0)]) := by
+  refine equiv_of_eval_iff (g₁ := fun _ => (0 : U256))
+    (g₂ := fun w => w &&& litValue (.number 0)) ?_
+    (builtin_right_lit_eval_iff (f := fun _ => (0 : U256)) h0)
+    (builtin_right_lit_eval_iff (f := fun w => w &&& litValue (.number 0)) (fun _ => rfl))
+  intro v; rw [litValue_number]; simp
+
+/-- **Left-operand absorbing zero**: `op(c, e) ≈ and(e, 0)` when `op` maps
+`(c, v)` to `0` (the literal-`0` left-operand form; `0/x = 0`, `0%x = 0`, etc.). -/
+theorem strength_absorb_left_equiv {op : Op} {e : Expr Op} {c : Literal}
+    (h0 : ∀ w : U256, pureFn op [litValue c, w] = some 0) :
+    EquivExpr D (.builtin op [.lit c, e]) (.builtin .and [e, .lit (.number 0)]) := by
+  refine equiv_of_eval_iff (g₁ := fun _ => (0 : U256))
+    (g₂ := fun w => w &&& litValue (.number 0)) ?_
+    (builtin_left_lit_eval_iff (f := fun _ => (0 : U256)) h0)
+    (builtin_right_lit_eval_iff (f := fun w => w &&& litValue (.number 0)) (fun _ => rfl))
+  intro v; rw [litValue_number]; simp
+
 /-- Every strength reduction is a sound pointwise equivalence. -/
 theorem strengthReduce_equiv {op : Op} {args : List (Expr Op)} {e : Expr Op}
     (h : strengthReduce op args = some e) :
     EquivExpr D (.builtin op args) e := by
   unfold strengthReduce at h
-  split at h <;> (try split_ifs at h with hc) <;> (try split at h) <;>
+  split at h <;>
+    (repeat' first | split_ifs at h | split at h) <;>
     first
       | (obtain rfl := Option.some.inj h
          first
-           | exact strength_eq_right_equiv hc
-           | exact strength_eq_left_equiv hc
+           | exact strength_eq_right_equiv (by assumption)
+           | exact strength_eq_left_equiv (by assumption)
            | exact strength_iszero3_equiv _
            | exact strength_mod_equiv (by assumption)
            | exact strength_div_equiv (by assumption)
            | exact strength_mul_right_equiv (by assumption)
-           | exact strength_mul_left_equiv (by assumption))
+           | exact strength_mul_left_equiv (by assumption)
+           | exact strength_exp_base0_equiv (by assumption)
+           | exact strength_exp_base1_equiv (by assumption)
+           | exact strength_exp_base2_equiv (by assumption)
+           | exact strength_exp_baseNeg1_equiv (by assumption)
+           | exact strength_exp_sq_equiv (by assumption)
+           | exact strength_exp_expZero_equiv (by assumption)
+           | exact strength_absorb_right_equiv (fun w => by
+               rw [(by assumption : litValue _ = 0)]; simp [pureFn])
+           | exact strength_absorb_left_equiv (fun w => by
+               rw [(by assumption : litValue _ = 0)]; simp [pureFn]))
       | simp at h
 
 /-- The top-level strength rewrite is a sound pointwise equivalence. -/
@@ -1486,6 +1850,7 @@ theorem openNeutral_equiv1 {op : Op} {args : List (Expr Op)} {e : Expr Op}
       | (split_ifs at h with hc
          · obtain rfl := Option.some.inj h
            first
+             | exact open_right_equiv1 (fun v => by rw [hc.1]; exact pureFn_exp_one v)
              | exact open_right_equiv1 (fun v => by
                  rw [hc.1]; simp only [pureFn, Option.some.injEq]
                  first | simp | (rw [allOnes]; exact BitVec.and_allOnes))
@@ -1836,5 +2201,42 @@ example : simplifyStmt (.switch (.lit (.number 2))
 example : simplifyStmt (.switch (.lit (.number 3))
     [(.number 1, [.break]), (.number 2, [.leave])] (some [.continue])) =
     .block [.continue] := rfl
+-- `exp(0, x) → iszero(x)`.
+#guard match simplifyExpr (.builtin .exp [.lit (.number 0), .var "x"]) with
+  | .builtin .iszero [.var "x"] => true
+  | _ => false
+-- `exp(1, x) → iszero(and(x, 0))`.
+#guard match simplifyExpr (.builtin .exp [.lit (.number 1), .var "x"]) with
+  | .builtin .iszero [.builtin .and [.var "x", .lit (.number 0)]] => true
+  | _ => false
+-- `exp(2, x) → shl(x, 1)` (shl shift-first: `1 <<< x`).
+#guard match simplifyExpr (.builtin .exp [.lit (.number 2), .var "x"]) with
+  | .builtin .shl [.var "x", .lit (.number 1)] => true
+  | _ => false
+-- `exp(2²⁵⁶−1, x) → sub(1, mul(2, and(x, 1)))`.
+#guard match simplifyExpr (.builtin .exp [.lit (.number (2 ^ 256 - 1)), .var "x"]) with
+  | .builtin .sub [.lit (.number 1),
+      .builtin .mul [.lit (.number 2), .builtin .and [.var "x", .lit (.number 1)]]] => true
+  | _ => false
+-- `exp(x, 0) → iszero(and(x, 0))` (zero exponent still folded — see the notes).
+#guard match simplifyExpr (.builtin .exp [.var "x", .lit (.number 0)]) with
+  | .builtin .iszero [.builtin .and [.var "x", .lit (.number 0)]] => true
+  | _ => false
+-- `exp(x, 2) → mul(x, x)` for a variable leaf.
+#guard match simplifyExpr (.builtin .exp [.var "x", .lit (.number 2)]) with
+  | .builtin .mul [.var "x", .var "x"] => true
+  | _ => false
+-- `exp(x, 1) → x` at a single-value (argument) position via `openTop`.
+#guard match openTop (.builtin .exp [.var "x", .lit (.number 1)]) with
+  | .var "x" => true
+  | _ => false
+-- Absorbing zero: `mul(x, 0) → and(x, 0)`.
+#guard match simplifyExpr (.builtin .mul [.var "x", .lit (.number 0)]) with
+  | .builtin .and [.var "x", .lit (.number 0)] => true
+  | _ => false
+-- Absorbing zero, left operand and a signed op: `sdiv(0, x) → and(x, 0)`.
+#guard match simplifyExpr (.builtin .sdiv [.lit (.number 0), .var "x"]) with
+  | .builtin .and [.var "x", .lit (.number 0)] => true
+  | _ => false
 
 end YulEvmCompiler.Optimizer
