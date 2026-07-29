@@ -1,4 +1,11 @@
-import Mathlib
+-- Keep these narrow. A module's initializer calls the initializer of every module it imports, so
+-- an `import Mathlib` here is a live symbol reference that links *all* of Mathlib into `yulc` and
+-- `libyulc` (and therefore into any solc built against it).
+--   * `Mathlib.Data.Char`: `LinearOrder Char`, so `le_trans` applies to characters.
+--   * `Mathlib.Data.Nat.SuccPred`: `SuccAddOrder ℕ`, which enables the `Order.lt_add_one_iff`
+--     simp lemma `simp_wf` uses to normalise the `canon` termination goals to `≤`.
+import Mathlib.Data.Char
+import Mathlib.Data.Nat.SuccPred
 import YulParser.Lexer
 set_option warningAsError true
 /-!
