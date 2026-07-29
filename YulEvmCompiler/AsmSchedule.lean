@@ -178,30 +178,145 @@ def symStateBeq (a b : SymState) : Bool :=
 
 /-! ### The scheduler (untrusted) + validation gate -/
 
+/-! ### The DAG rescheduler (untrusted)
+
+Correctness never depends on any of this — the validation gate below re-checks
+every candidate. The scheduler targets canonical→canonical windows (`m = k`,
+non-changed slots are identity), which is exactly the shape the backend emits for
+straight-line reassignment blocks (e.g. TickMath's log2 section, where symbolic
+execution collapses 14 store/reload cycles into one DAG per updated slot). It
+computes each *changed* slot's collapsed DAG once (with common-subexpression
+sharing via the running model stack, consuming shared values in place) and stores
+it, instead of the backend's per-statement DUP/store/reload. On any difficulty
+(a move/permutation, a needed reach past `DUP16`/`SWAP16`, `m ≠ k`) it returns
+`none` and the original window is kept. -/
+
+/-! Structural size of a term (for a topological fuel bound). -/
+mutual
+def Term.size : Term → Nat
+  | .inp _ | .lit _ => 1
+  | .app _ args => 1 + Term.sizeList args
+def Term.sizeList : List Term → Nat
+  | [] => 0
+  | x :: xs => Term.size x + Term.sizeList xs
+end
+
+/-- First index of a structurally-equal term in the model stack. -/
+def findIdxBeq (t : Term) : List Term → Option Nat
+  | [] => none
+  | x :: xs => if Term.beq t x then some 0 else (findIdxBeq t xs).map (· + 1)
+
+/-- Emitter state: emitted code (reversed) and the running symbolic model. -/
+structure ES where
+  rcode : List Asm
+  model : SymState
+
+def ES.code (es : ES) : List Asm := es.rcode.reverse
+
+/-- Append one instruction, keeping the model in lockstep via `symStep`. -/
+def emit (es : ES) (i : Asm) : Option ES :=
+  (symStep es.model i).map (fun m => ⟨i :: es.rcode, m⟩)
+
+/-! `genValue` emits code leaving the value of `t` on top of the model stack
+(model height +1). It reuses any structurally-equal value already on the stack
+(`DUP`), otherwise builds it: literals via `PUSH`, `app` by emitting its
+arguments (reversed, so the first argument ends on top) then the op. It fails
+past the `DUP16` reach or on an input leaf that is not present (should not occur
+from the seeded model). -/
+mutual
+def genValue : Nat → ES → Term → Option ES
+  | 0, _, _ => none
+  | fuel + 1, es, t =>
+      match findIdxBeq t es.model.stack with
+      | some d => if h : d < 16 then emit es (.dup ⟨d, h⟩) else none
+      | none =>
+          match t with
+          | .lit v => emit es (.push v)
+          | .inp _ => none
+          | .app op args =>
+              match genArgs fuel es args.reverse with
+              | some es' => emit es' (.op op)
+              | none => none
+def genArgs : Nat → ES → List Term → Option ES
+  | _, es, [] => some es
+  | 0, _, _ => none
+  | fuel + 1, es, a :: rest =>
+      match genValue fuel es a with
+      | some es' => genArgs fuel es' rest
+      | none => none
+end
+
+/-- The DAG rescheduler proper. -/
+def scheduleWindowReal (target : SymState) : Option (List Asm) :=
+  let k := target.inputs
+  let T := target.stack
+  let m := T.length
+  if m != k then none else
+  let slots := T.zipIdx
+  -- a slot holding some *other* input (a pure move/permutation) is out of scope
+  let hasMove := slots.any (fun (t, j) => match t with | .inp i => i != j | _ => false)
+  if hasMove then none else
+  -- changed slots: those holding a computed value (app) or a constant (lit)
+  let changed := slots.filterMap (fun (t, j) =>
+    match t with | .inp _ => none | _ => some (j, t))
+  let fuel := 4 * (Term.sizeList T) + 100
+  let init : ES := ⟨[], { stack := (List.range k).map Term.inp, inputs := k }⟩
+  match changed.foldlM (fun es (p : Nat × Term) => genValue fuel es p.2) init with
+  | none => none
+  | some es1 =>
+    -- store each computed value into its slot (top value first = last built)
+    match changed.reverse.foldlM (fun es (p : Nat × Term) =>
+        match findIdxBeq (Term.inp p.1) es.model.stack with
+        | none => none
+        | some d =>
+            if h : 0 < d ∧ d - 1 < 16 then
+              match emit es (.swap ⟨d - 1, h.2⟩) with
+              | some es' => emit es' .pop
+              | none => none
+            else none) es1 with
+    | none => none
+    | some es2 =>
+      -- ensure the candidate reaches the same input depth `k` as the original
+      -- (so the untouched REST below lines up); pad harmlessly if not.
+      let code0 := es2.code
+      match symExec code0 with
+      | some s =>
+          if s.inputs == k then some code0
+          else if h : 0 < k ∧ k - 1 < 16 then
+            some (code0 ++ [.dup ⟨k - 1, h.2⟩, .pop])
+          else some code0
+      | none => some code0
+
 /-- The untrusted rescheduler: given the window's symbolic output, propose a
-cheaper instruction sequence, or `none` to keep the original. **Identity for
-now** (commit 1: infrastructure + provable core). A real DAG scheduler replaces
-this; correctness never depends on it, only on the validation gate below. -/
-def scheduleWindow (_target : SymState) : Option (List Asm) := none
+cheaper instruction sequence, or `none` to keep the original. Correctness never
+depends on it, only on the validation gate below. -/
+def scheduleWindow (target : SymState) : Option (List Asm) := scheduleWindowReal target
 
 /-- Optimize a single extracted window: keep the original unless a proposed
 candidate validates (same symbolic state), is strictly cheaper, and does not
 grow bytes. -/
-def optimizeWindow (w : List Asm) : List Asm :=
+def optimizeWindow (w : List Asm) : List Asm := Id.run do
   match symExec w with
-  | none => w
+  | none => return w
   | some target =>
+      let big := windowGas w ≥ 80
       match scheduleWindow target with
-      | none => w
+      | none =>
+          if big then
+            dbg_trace s!"[sched] BIG len={w.length} gas={windowGas w} m={target.stack.length} k={target.inputs} -> none"
+          return w
       | some cand =>
           match symExec cand with
           | some tcand =>
-              if symStateBeq tcand target
-                  && windowGas cand < windowGas w
-                  && codeSize cand ≤ codeSize w then
-                cand
-              else w
-          | none => w
+              let ok := symStateBeq tcand target
+              let gwin := decide (windowGas cand < windowGas w)
+              let swin := decide (codeSize cand ≤ codeSize w)
+              if big then
+                dbg_trace s!"[sched] BIG len={w.length} gas={windowGas w} m={target.stack.length} k={target.inputs} candGas={windowGas cand} candLen={cand.length} gateOK={ok} gasWin={gwin} sizeWin={swin}"
+              return (if ok && gwin && swin then cand else w)
+          | none =>
+              if big then dbg_trace s!"[sched] BIG symExec cand=none"
+              return w
 
 /-- Split the program into maximal windows and non-window instructions, running
 `optimizeWindow` on each window. Fuel-bounded for a trivial termination
