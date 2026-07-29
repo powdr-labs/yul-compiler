@@ -45,6 +45,38 @@ silently bypass it. Requires the Lean toolchain pinned in
 [`lean-toolchain`](./lean-toolchain) (managed by
 [`elan`](https://github.com/leanprover/elan)).
 
+### C library
+
+The compiler can be embedded in a C or C++ program (for example, as a drop-in
+Yul backend for solc: feed it solc's `--ir` output instead of running solc's
+own Yul pipeline):
+
+```sh
+scripts/build-c-lib.sh          # add --test to also run the C self-tests
+```
+
+builds, under `.lake/build/c/`:
+
+- `libyulc.so` — shared library with the whole compiler linked in; ships with
+  the two Lean runtime libraries it needs next to it (found via an `$ORIGIN`
+  rpath), so consumers link with just `-L .lake/build/c -lyulc`;
+- `libyulc.a` — the same closure, Lean runtime included, as one static
+  archive for linking into an executable
+  (`-lyulc -lpthread -ldl -lrt -lm`);
+- `yulc.h` — the public header.
+
+The interface (declared in [`c/include/yulc.h`](./c/include/yulc.h)) is one
+call: `yulc_compile(source, &bytecode, &len)` takes a complete Yul program and
+produces executable EVM bytecode, with the same acceptance and rejection
+behavior as the `yulc` CLI — status 1 is a parse failure, status 2 is a
+parsed program outside the verified supported fragment. Compilation runs on a
+dedicated 1 GiB-stack worker thread (override with the `YULC_STACK_BYTES`
+environment variable); `yulc_init` is optional, idempotent, and thread-safe.
+The Lean-side entry points live in
+[`YulParser/CApi.lean`](./YulParser/CApi.lean); the shim is
+[`c/yulc.c`](./c/yulc.c), and [`c/test_yulc.c`](./c/test_yulc.c) doubles as a
+usage example.
+
 ## What is implemented
 
 A non-optimizing compiler for programs with **variables, nested blocks, `if`,
