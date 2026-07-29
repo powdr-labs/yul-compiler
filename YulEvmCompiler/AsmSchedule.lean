@@ -242,16 +242,30 @@ def genValue : Nat → ES → Term → Option ES
           | .lit v => emit es (.push v)
           | .inp _ => none
           | .app op args =>
-              match genArgs fuel es args.reverse with
+              match genArgs fuel es args with
               | some es' => emit es' (.op op)
               | none => none
+/-- Build an op's arguments so the top-n become `[arg0, …, arg(n-1)]`. The
+deepest operand `arg(n-1)` is built first; if it is an already-computed
+INTERMEDIATE (`app`) sitting on top of the model, it is CONSUMED IN PLACE (no
+`DUP`) — the op will take it as its deepest operand — instead of copied. This is
+the chain-accumulator win: `mul(r,r)` on an intermediate `r` becomes `dup;mul`
+(1 DUP, `r` consumed) instead of two DUPs leaving `r` behind. Only intermediates
+are consumed this way, so the fixed `k`-input cleanup is unaffected; the gate
+rejects any consume that was not actually a last use. -/
 def genArgs : Nat → ES → List Term → Option ES
-  | _, es, [] => some es
   | 0, _, _ => none
-  | fuel + 1, es, a :: rest =>
-      match genValue fuel es a with
-      | some es' => genArgs fuel es' rest
-      | none => none
+  | fuel + 1, es, args =>
+      match args.reverse with
+      | [] => some es
+      | first :: restRev =>
+          let firstES :=
+            match first, es.model.stack.head? with
+            | .app _ _, some h => if Term.beq first h then some es else genValue fuel es first
+            | _, _ => genValue fuel es first
+          match firstES with
+          | none => none
+          | some e => restRev.foldlM (fun acc a => genValue fuel acc a) e
 end
 
 /-- Emit `n` pops. -/
@@ -286,7 +300,7 @@ def scheduleWindowReal (target : SymState) : Option (List Asm) :=
   let T := target.stack
   let m := T.length
   if m > 16 then none else
-  let fuel := 4 * (Term.sizeList T) + 100
+  let fuel := 8 * (Term.sizeList T) + 100
   let init : ES := ⟨[], { stack := (List.range k).map Term.inp, inputs := k }⟩
   if m == 0 then
     (emitPops init k).map ES.code
