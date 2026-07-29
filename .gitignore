@@ -1,3 +1,4 @@
 /.lake
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+.solc-exec-cache/
