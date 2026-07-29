@@ -521,8 +521,8 @@ SPEC CLOSURE — audited this-repo surface (89 decls)
   struct YulEvmCompiler.FrameOK 97dc148ae9bebed5
   relation YulEvmCompiler.HaltMatch 6557b5faae906a61
   relation YulEvmCompiler.HaltedMatch bd6cde934ed46ce6
-  struct YulEvmCompiler.Instr b8989862a6923efc
-  datadef YulEvmCompiler.Instr.bytes cb67215ba3c17cde
+  struct YulEvmCompiler.Instr 6d2465d1d211750b
+  datadef YulEvmCompiler.Instr.bytes 6cb9a3bc72e0ae11
   datadef YulEvmCompiler.Instr.opByte 1063189e226fb3ef
   relation YulEvmCompiler.IsCallOp 93349e44f6cba900
   relation YulEvmCompiler.IsCreateOp 188d5668d6c00b2b

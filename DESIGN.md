@@ -177,7 +177,7 @@ YulEvmCompiler/
   AsmSem.lean       -- byte-free, gas-free semantics of labeled assembly
   Compile.lean      -- Yul AST → labeled assembly (Option-valued)
   SimAsm.lean       -- Phase A: Yul execution → assembly execution
-  Instr.lean        -- tiny byte-level IR: PUSH32 or one-byte operation
+  Instr.lean        -- tiny byte-level IR: minimal-width PUSHk or one-byte operation
   Decode.lean       -- assembled-code decoding and jump-destination lemmas
   LowerDefs.lean    -- assembly/EVM configuration correspondence
   LowerCorrect.lean -- Phase B: assembly execution → EVM execution
@@ -229,12 +229,16 @@ inductive Asm
   | label | jump | jumpi | pushLabel | dynJump
 ```
 
-Because widths are fixed per constructor (`push`/`pushLabel` 33, `jump`/`jumpi`
-34, others 1), the byte position of any *suffix* `c` of the program is
-`codeSize prog - codeSize c` — independent of label resolution. `lowerProg`
-resolves labels and maps `Asm` to the deliberately tiny byte-level `Instr`
-(`push UInt256 | op Operation`), which `assemble` encodes as EVM bytecode.
-Literal and label-address pushes are always `PUSH32`.
+Because widths are **independent of label resolution** — a constant `push`
+takes the minimal `PUSHk` encoding of its value (`1 + byteWidth`), a label
+push (`pushLabel`/`jump`/`jumpi`) takes a uniform `labelWidth`-byte address
+(`labelWidth+1`/`labelWidth+2`), and everything else is 1 byte — the byte
+position of any *suffix* `c` of the program is `codeSize prog - codeSize c`.
+`lowerProg` resolves labels and maps `Asm` to the deliberately tiny byte-level
+`Instr` (`push (Fin 33) UInt256 | op Operation`), which `assemble` encodes as
+EVM bytecode. Constant pushes use `Instr.pushMin`; label-address pushes use the
+fixed `labelWidth` width, and `wfCheck` bounds `codeSize < 256 ^ labelWidth` so
+every resolved address fits.
 
 Label well-formedness (`WFProg`: `defs` nodup, `refs ⊆ defs`, `codeSize` small)
 is **decidable and checked**, not proved: the compiler runs `wfCheck` on its

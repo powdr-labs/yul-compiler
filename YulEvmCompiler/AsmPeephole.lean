@@ -22,8 +22,9 @@ backend's output):
    body writes a constant into its top return slot.
 2. **Branch inversion** — `jumpi l ; jump m ; label l ⟶
    op iszero ; jumpi m ; label l`. The `if cond {break/continue/leave}`
-   shape: enter the guarded body via fall-through instead of a jump. Saves
-   33 bytes, and 8 gas whenever the condition is false (the common path for
+   shape: enter the guarded body via fall-through instead of a jump. Drops
+   one `labelWidth`-byte address push (`labelWidth + 2` bytes total), and
+   saves 8 gas whenever the condition is false (the common path for
    guard-style `if`s) at the cost of 3 gas when it is true. The label stays
    (other references may exist); only the local entry becomes fall-through.
 3. **Double-`iszero` elimination** — `op iszero ; op iszero ; jumpi l ⟶
@@ -427,5 +428,23 @@ theorem codeRel_nil_left {R : List Label} {Q : List Asm}
   cases h; rfl
 
 end Peephole
+
+/-- Iterating peephole rounds never grows the lowered byte size. -/
+theorem codeSize_optimizeAsmN_le (k : Nat) (p : List Asm) :
+    codeSize (optimizeAsmN k p) ≤ codeSize p := by
+  induction k generalizing p with
+  | zero => simp [optimizeAsmN]
+  | succ k ih =>
+    simp only [optimizeAsmN]
+    split
+    · exact Nat.le_refl _
+    · exact le_trans (ih _)
+        (Peephole.codeRel_codeSize_le (Peephole.codeRel_optimizeRound p))
+
+/-- The Asm peephole pass never grows the lowered byte size, so it preserves
+`WFProg`'s `codeSize` bound (`codeRel_wf`) — restated for `optimizeAsm`. -/
+theorem codeSize_optimizeAsm_le (p : List Asm) :
+    codeSize (optimizeAsm p) ≤ codeSize p :=
+  codeSize_optimizeAsmN_le 4 p
 
 end YulEvmCompiler
