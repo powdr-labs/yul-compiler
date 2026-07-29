@@ -91,10 +91,16 @@ def buildTree (fuel : Nat) (e : Expr Op)
           [(.number 1, [buildTree fuel e (loHalf pv cases) dflt])]
           (some [buildTree fuel e (hiHalf pv cases) dflt])
 
+/-- Maximum default-body size. The default is duplicated into every leaf, so the
+rewrite only fires when it is small (the solc dispatcher's default is an empty or
+tiny revert block); a large default would bloat code. -/
+def maxDfltSize : Nat := 8
+
 /-- Whether a switch qualifies for the dispatch-tree rewrite: a re-evaluable
-scrutinee and more cases than a single leaf holds. -/
-def qualifies (e : Expr Op) (cases : List (Literal × Block Op)) : Bool :=
-  pureScrut e && (minTreeCases ≤ cases.length)
+scrutinee, more cases than a single leaf, and a small (duplicated) default. -/
+def qualifies (e : Expr Op) (cases : List (Literal × Block Op))
+    (dflt : Option (Block Op)) : Bool :=
+  pureScrut e && (minTreeCases ≤ cases.length) && ((dflt.getD []).length ≤ maxDfltSize)
 
 mutual
   /-- Rewrite a statement, recursing into control-flow bodies and rebuilding
@@ -107,7 +113,7 @@ mutual
     | .switch e cases dflt =>
         let cases' := dtCases cases
         let dflt' := dtDflt dflt
-        if qualifies e cases' then
+        if qualifies e cases' dflt' then
           buildTree cases'.length e cases' dflt'
         else
           .switch e cases' dflt'
@@ -617,7 +623,7 @@ mutual
         split
         · rename_i hq
           have hpure : DispatchTree.pureScrut e = true := by
-            simp only [DispatchTree.qualifies, Bool.and_eq_true] at hq; exact hq.1
+            simp only [DispatchTree.qualifies, Bool.and_eq_true] at hq; exact hq.1.1
           exact EquivStmt.trans
             (EquivStmt.switch_congr (EquivExpr.refl _) (dtCases_forall2 cases)
               (dtDflt_equiv dflt))
