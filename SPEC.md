@@ -94,7 +94,7 @@ The vocabulary the guarantee is phrased in.
 | `YulEvmCompiler.Instr` | [YulEvmCompiler/Instr.lean#L38](YulEvmCompiler/Instr.lean#L38) | `6d2465d1d211750b` |
 | `YulEvmCompiler.Optimizer.LocalPass` | [YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L72](YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L72) | `6b8887154f59257c` |
 | `YulEvmCompiler.StateMatch` | [YulEvmCompiler/StateRel.lean#L982](YulEvmCompiler/StateRel.lean#L982) | `79c6c401a5fb18ee` |
-| `YulParser.CTok` | [YulParser/Canon.lean#L27](YulParser/Canon.lean#L27) | `f0018424d20ab2ce` |
+| `YulParser.CTok` | [YulParser/Canon.lean#L34](YulParser/Canon.lean#L34) | `f0018424d20ab2ce` |
 | `YulParser.QuotedScan` | [YulParser/Lexer.lean#L63](YulParser/Lexer.lean#L63) | `fda150592f3cfc21` |
 
 ### Data definitions (bodies audited)
@@ -119,20 +119,20 @@ Concrete spec-level functions (outcome maps, canonicalisation, byte assembly).
 | `YulEvmCompiler.resolveForLayoutStmts` | [YulEvmCompiler/ObjectResolve.lean#L68](YulEvmCompiler/ObjectResolve.lean#L68) | `e61eedc003fbb530` |
 | `YulEvmCompiler.resultOf` | [YulEvmCompiler/StateRel.lean#L1264](YulEvmCompiler/StateRel.lean#L1264) | `9a4fae748007bd7b` |
 | `YulParser.afterBlockComment` | [YulParser/Tokens.lean#L30](YulParser/Tokens.lean#L30) | `5deac78dd9073c67` |
-| `YulParser.canon` | [YulParser/Canon.lean#L75](YulParser/Canon.lean#L75) | `b2d8eb356dc83a9c` |
-| `YulParser.decDigitVal` | [YulParser/Canon.lean#L45](YulParser/Canon.lean#L45) | `aa9b35f8e24246bf` |
-| `YulParser.decDigits` | [YulParser/Atoms.lean#L80](YulParser/Atoms.lean#L80) | `93681863713f8772` |
-| `YulParser.digitChar` | [YulParser/Atoms.lean#L77](YulParser/Atoms.lean#L77) | `bcde7b79f84349d3` |
-| `YulParser.evalDec` | [YulParser/Canon.lean#L51](YulParser/Canon.lean#L51) | `2589fcab0b0b1f30` |
-| `YulParser.evalHex` | [YulParser/Canon.lean#L48](YulParser/Canon.lean#L48) | `ac0c5eeed7026dc3` |
-| `YulParser.hexDigitVal` | [YulParser/Canon.lean#L38](YulParser/Canon.lean#L38) | `c4e40fb8db1bdaa8` |
+| `YulParser.canon` | [YulParser/Canon.lean#L82](YulParser/Canon.lean#L82) | `b2d8eb356dc83a9c` |
+| `YulParser.decDigitVal` | [YulParser/Canon.lean#L52](YulParser/Canon.lean#L52) | `aa9b35f8e24246bf` |
+| `YulParser.decDigits` | [YulParser/Atoms.lean#L90](YulParser/Atoms.lean#L90) | `93681863713f8772` |
+| `YulParser.digitChar` | [YulParser/Atoms.lean#L87](YulParser/Atoms.lean#L87) | `bcde7b79f84349d3` |
+| `YulParser.evalDec` | [YulParser/Canon.lean#L58](YulParser/Canon.lean#L58) | `2589fcab0b0b1f30` |
+| `YulParser.evalHex` | [YulParser/Canon.lean#L55](YulParser/Canon.lean#L55) | `ac0c5eeed7026dc3` |
+| `YulParser.hexDigitVal` | [YulParser/Canon.lean#L45](YulParser/Canon.lean#L45) | `c4e40fb8db1bdaa8` |
 | `YulParser.isDigitC` | [YulParser/Lexer.lean#L14](YulParser/Lexer.lean#L14) | `2e23993f4305ca29` |
 | `YulParser.isHexDigitC` | [YulParser/Lexer.lean#L15](YulParser/Lexer.lean#L15) | `98897dc36c763b56` |
 | `YulParser.isIdCont` | [YulParser/Lexer.lean#L18](YulParser/Lexer.lean#L18) | `99e813f13d1ba0b5` |
 | `YulParser.isIdStart` | [YulParser/Lexer.lean#L17](YulParser/Lexer.lean#L17) | `88b65d8694f2e093` |
-| `YulParser.isNumCont` | [YulParser/Canon.lean#L54](YulParser/Canon.lean#L54) | `b0cd4e6da5b47fc` |
+| `YulParser.isNumCont` | [YulParser/Canon.lean#L61](YulParser/Canon.lean#L61) | `b0cd4e6da5b47fc` |
 | `YulParser.isWs` | [YulParser/Core.lean#L10](YulParser/Core.lean#L10) | `1ad606963d724ee0` |
-| `YulParser.numVal` | [YulParser/Canon.lean#L58](YulParser/Canon.lean#L58) | `36fa963744b7f765` |
+| `YulParser.numVal` | [YulParser/Canon.lean#L65](YulParser/Canon.lean#L65) | `36fa963744b7f765` |
 | `YulParser.pQuotedChars` | [YulParser/Lexer.lean#L43](YulParser/Lexer.lean#L43) | `12116502d0932a55` |
 | `YulParser.printArgsC` | [YulParser/Expr.lean#L50](YulParser/Expr.lean#L50) | `fb7f406415221f23` |
 | `YulParser.printArgsTailC` | [YulParser/Expr.lean#L54](YulParser/Expr.lean#L54) | `e3f69b37a503a89e` |
@@ -144,13 +144,13 @@ Concrete spec-level functions (outcome maps, canonicalisation, byte assembly).
 | `YulParser.printDatasC` | [YulParser/Obj.lean#L71](YulParser/Obj.lean#L71) | `8fbdb53b7d48df2b` |
 | `YulParser.printExprC` | [YulParser/Expr.lean#L41](YulParser/Expr.lean#L41) | `a56c648c2737a8d3` |
 | `YulParser.printId` | [YulParser/Stmt.lean#L59](YulParser/Stmt.lean#L59) | `ad633beed9cc9c7c` |
-| `YulParser.printLitC` | [YulParser/Atoms.lean#L180](YulParser/Atoms.lean#L180) | `b9cec7d002c6808a` |
+| `YulParser.printLitC` | [YulParser/Atoms.lean#L190](YulParser/Atoms.lean#L190) | `b9cec7d002c6808a` |
 | `YulParser.printManyC` | [YulParser/SoundC.lean#L102](YulParser/SoundC.lean#L102) | `e5456a769d4dc16d` |
 | `YulParser.printNameC` | [YulParser/Obj.lean#L31](YulParser/Obj.lean#L31) | `b0caa18fdf398b08` |
 | `YulParser.printObjC` | [YulParser/Obj.lean#L61](YulParser/Obj.lean#L61) | `e2186fbe4e35780a` |
 | `YulParser.printStmtC` | [YulParser/Stmt.lean#L79](YulParser/Stmt.lean#L79) | `3de2e9120bc6a272` |
 | `YulParser.printStmtsC` | [YulParser/Stmt.lean#L110](YulParser/Stmt.lean#L110) | `edd2b2fc3c962c96` |
-| `YulParser.printStringC` | [YulParser/Atoms.lean#L176](YulParser/Atoms.lean#L176) | `ae7fc4513c9611b4` |
+| `YulParser.printStringC` | [YulParser/Atoms.lean#L186](YulParser/Atoms.lean#L186) | `ae7fc4513c9611b4` |
 | `YulParser.printSubsC` | [YulParser/Obj.lean#L67](YulParser/Obj.lean#L67) | `88f936b77e898d85` |
 | `YulParser.quotedBody` | [YulParser/Lexer.lean#L24](YulParser/Lexer.lean#L24) | `5e9244808f044035` |
 | `YulParser.scanQuoted` | [YulParser/Lexer.lean#L68](YulParser/Lexer.lean#L68) | `ad86fca43b5d2cb6` |
