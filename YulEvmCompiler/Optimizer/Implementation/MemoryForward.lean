@@ -220,6 +220,55 @@ def memoryForwardBlock (body : Block Op) : Block Op :=
     if storageLayoutFreeStmts out then out else body
   else body
 
+/-! ### Correctness spot-checks
+
+These lock in the invalidation obligations (`Stmt` has no `DecidableEq`, so we
+match on the rewritten shape). -/
+
+section Tests
+open YulEvmCompiler.Optimizer.ReuseValues (exprBeq)
+private def mL (k : Nat) : Expr Op := .builtin .mload [.lit (.number k)]
+private def mS (k : Nat) (v : Expr Op) : Stmt Op :=
+  .exprStmt (.builtin .mstore [.lit (.number k), v])
+
+/-- The rewritten rhs of the `n`th statement, if it is a singleton `let`. -/
+private def rhsOf (b : Block Op) (n : Nat) : Option (Expr Op) :=
+  match b[n]? with
+  | some (.letDecl _ (some e)) => some e
+  | _ => none
+
+private def run (b : Block Op) : Block Op := (mfStmts [] b).1
+
+/-- Straight-line store→load forwards the stored value. -/
+private def testForward : Block Op :=
+  [mS 0 (.var "a"), .letDecl ["y"] (some (mL 0))]
+#guard (rhsOf (run testForward) 1).any (exprBeq · (.var "a"))
+
+/-- Reassigning the mentioned variable invalidates the fact: `mstore(0, x);
+x := add(x,1); let y := mload(0)` must NOT forward `mload(0)` to `x`. -/
+private def testReassign : Block Op :=
+  [mS 0 (.var "x"),
+   .assign ["x"] (.builtin .add [.var "x", .lit (.number 1)]),
+   .letDecl ["y"] (some (mL 0))]
+#guard (rhsOf (run testReassign) 2).any (exprBeq · (mL 0))
+
+/-- An intervening memory write (`mstore8` to an unknown address) clears the
+cache, so the later `mload(0)` is not forwarded. -/
+private def testClobber : Block Op :=
+  [mS 0 (.var "a"),
+   .exprStmt (.builtin .mstore8 [.var "p", .var "q"]),
+   .letDecl ["y"] (some (mL 0))]
+#guard (rhsOf (run testClobber) 2).any (exprBeq · (mL 0))
+
+/-- An `mload` evaluated *before* an effectful sibling in the same expression is
+still forwarded (arg order): `mstore(0, a); let y := add(mload(0), f())`. -/
+private def testArgOrder : Block Op :=
+  [mS 0 (.var "a"),
+   .letDecl ["y"] (some (.builtin .add [mL 0, .call "f" []]))]
+#guard (rhsOf (run testArgOrder) 1).any
+  (exprBeq · (.builtin .add [.var "a", .call "f" []]))
+end Tests
+
 mutual
 /-- Apply `memoryForwardBlock` to every code block in an object tree. -/
 def memoryForwardObject : Object Op → Object Op
