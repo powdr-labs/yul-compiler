@@ -1,3 +1,5 @@
+import Mathlib.Tactic.NormNum.Ineq
+import Mathlib.Tactic.NormNum.Basic
 import YulEvmCompiler.OpTable
 set_option warningAsError true
 /-!

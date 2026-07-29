@@ -1,3 +1,5 @@
+import Mathlib.Tactic.FinCases
+import Mathlib.Tactic.IntervalCases
 import YulEvmCompiler.OpTable
 import Batteries.Data.ByteArray
 set_option warningAsError true

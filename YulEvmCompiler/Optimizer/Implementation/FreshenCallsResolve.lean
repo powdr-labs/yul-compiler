@@ -99,7 +99,7 @@ private theorem resolveFcStmt_equiv (L : Layout) (P : String) (Δ : DEnv) :
       rw [fcStmt, resolveForLayoutStmt_forLoop, resolveForLayoutStmt_forLoop]
       simpa [fcBlock, ΔL] using
         (EquivStmt.forLoop_congr (resolveForLayoutStmts L init)
-          (EquivExpr.refl (resolveForLayoutExpr L c))
+          (EquivExpr.refl («D» := D) (resolveForLayoutExpr L c))
           (EquivBlock.of_stmts_funs
             (EquivStmts.of_forall₂
               (resolveFcStmts_forall2 L P (deltaExtend ΔL post) post))

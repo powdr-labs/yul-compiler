@@ -235,7 +235,7 @@ theorem resolveSfFunStmt_equiv (L : Layout) : ∀ s : Stmt Op,
   | .forLoop init c post body => by
       rw [sfFunStmt, resolveForLayoutStmt_forLoop, resolveForLayoutStmt_forLoop]
       exact EquivStmt.forLoop_congr (resolveForLayoutStmts L init)
-        (EquivExpr.refl _)
+        (EquivExpr.refl («D» := D) _)
         ((EquivBlock.of_stmts_funs
           (EquivStmts.of_forall₂ (resolveSfFunStmts_forall2 L post))
           (resolveSfFunScopeRel L post)).trans

@@ -182,7 +182,7 @@ theorem MvRel.set {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
                       rw [if_neg (fun hc : x = y => hxy hc.symm)],
                   set_append_of_found (by simp [hA']) w]
                 refine MvRel.mk C (VEnv.set A y w) B v ?_
-                  (by rw [VEnv.set_length]; exact hdA) hdB
+                  (by rw [VEnv.set_length («D» := D)]; exact hdA) hdB
                 intro p hp
                 obtain ⟨q', hq', hqe⟩ := mem_set_key hp
                 rw [← hqe]
@@ -199,7 +199,7 @@ theorem MvRel.set {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
                       simp only [VEnv.set]
                       rw [if_neg (fun hc : x = y => hxy hc.symm)]]
                 exact MvRel.mk C A (VEnv.set B y w) v hA hdA
-                  (by rw [VEnv.set_length]; exact hdB)
+                  (by rw [VEnv.set_length («D» := D)]; exact hdB)
 
 /-- `setMany` preserves the relation. -/
 theorem MvRel.setMany {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
@@ -797,7 +797,7 @@ theorem step_new_keys_free {x : Ident} {funs : FunEnv D} {V : VEnv D}
   | assignVal =>
       intro V' st' o heq _
       injection heq with h1 _ _; subst h1
-      exact ⟨[], by rw [VEnv.setMany_keys]; rfl, by simp⟩
+      exact ⟨[], by rw [VEnv.setMany_keys («D» := D)]; rfl, by simp⟩
   | assignHalt =>
       intro V' st' o heq _
       injection heq with h1 _ _; subst h1
@@ -1501,7 +1501,7 @@ theorem fuse_site_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
     ⟨[], V, rfl, rfl, rfl⟩
   have hlet1 : ∀ st2, Step D funs V st2 (.stmt (.letDecl [x] (some (.lit l))))
       (.sres ((x, (evmWithExternal calls creates).litValue l) :: V) st2 .normal) :=
-    fun st2 => by simpa using Step.letVal (vars := [x]) Step.lit (by simp)
+    fun st2 => by simpa using Step.letVal («D» := D) (vars := [x]) Step.lit (by simp)
   cases h with
   | seqStop hlet hne =>
       rcases letSome_inv hlet with ⟨val, hev, rfl, hno⟩ | ⟨hev, rfl, rfl⟩

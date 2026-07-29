@@ -428,19 +428,19 @@ private theorem fcStmt_equiv (P : String) (Δ : DEnv) :
   | .cond c body =>
       by
         simpa [fcStmt, fcBlock] using
-          (EquivStmt.cond_congr (EquivExpr.refl c)
+          (EquivStmt.cond_congr (EquivExpr.refl («D» := D) c)
             (EquivBlock.of_stmts_funs
               (EquivStmts.of_forall₂ (fcStmts_forall2 P (deltaExtend Δ body) body))
               (fcScopeRel P (deltaExtend Δ body) body)))
   | .switch c cases dflt =>
       by
         simpa [fcStmt] using
-          (EquivStmt.switch_congr (EquivExpr.refl c)
+          (EquivStmt.switch_congr (EquivExpr.refl («D» := D) c)
             (fcCases_forall2 P Δ cases) (fcDflt_equiv P Δ dflt))
   | .forLoop init c post body => by
       let ΔL := Δ.filter (fun p => !(definedFuns init).contains p.1)
       simpa [fcStmt, fcBlock, ΔL] using
-        (EquivStmt.forLoop_congr init (EquivExpr.refl c)
+        (EquivStmt.forLoop_congr init (EquivExpr.refl («D» := D) c)
           (EquivBlock.of_stmts_funs
             (EquivStmts.of_forall₂ (fcStmts_forall2 P (deltaExtend ΔL post) post))
             (fcScopeRel P (deltaExtend ΔL post) post))

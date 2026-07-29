@@ -1707,7 +1707,7 @@ theorem sfFunStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (sfFunStmt s)
         (sfFunDflt_equiv dflt)
   | .forLoop init c post body => by
       simpa [sfFunStmt, storageForwardShallow] using
-        (EquivStmt.forLoop_congr init (EquivExpr.refl c)
+        (EquivStmt.forLoop_congr init (EquivExpr.refl («D» := D) c)
         ((EquivBlock.of_stmts_funs
           (EquivStmts.of_forall₂ (sfFunStmts_forall2 post))
           (sfFunScopeRel post)).trans
