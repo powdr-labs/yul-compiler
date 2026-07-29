@@ -11,8 +11,10 @@ the object, i.e. every `data` segment is faithfully placed in the deployed
 bytecode at the recorded offset with the recorded size.
 
 `compileObject` plans and compiles the complete tree recursively. It resolves
-`dataoffset`/`datasize` to fixed-width constants, emits each object's code,
-adds a `STOP` seam, and appends child-object bytecode followed by direct data.
+`dataoffset`/`datasize` to constants (emitted with minimal-width pushes, so a
+fuel-bounded layout fixpoint re-derives sizes until stable), emits each
+object's code, adds a `STOP` seam, and appends child-object bytecode followed
+by direct data.
 Its maps include self, child, nested, and data references under the same
 string-literal keys the Yul built-ins consume. Key collisions and layouts that
 do not fit a word are rejected.
@@ -49,10 +51,11 @@ structure ObjectEntry where
   size : Nat
   deriving Repr, DecidableEq
 
-/-- A planned object layout. `codeSize` is obtained by compiling the code with
-zero placeholders for layout references. Since this compiler always emits
-fixed-width `PUSH32`, replacing those placeholders with real offsets and sizes
-does not change any instruction or label position. -/
+/-- A planned object layout. `codeSize` is obtained by re-compiling the code
+under a fuel-bounded fixpoint (`planLoop`): because constant pushes now take
+the minimal `PUSHk` width, replacing the zero placeholders with real offsets
+and sizes can change push widths (hence positions), so the layout is iterated
+until the recompiled length is stable. -/
 structure ObjectPlan where
   name : String
   codeBlock : List (YulSemantics.Stmt Op)
@@ -432,11 +435,11 @@ recompile, and measure the true executable length `c'`.
 
 This calls only `compile`/`resolveObjectStmts`/entry builders on the given
 `subPlans`; it never recurses on objects, so it lives outside the
-`planObject`/`planObjects` mutual block. With today's fixed-width pushes the
-recompiled length is independent of the resolved constants, so the very first
-attempt (started from the placeholder compile's length) is always a fixpoint —
-`planAttempt` accepts exactly when the old single-pass code did, producing the
-identical `ObjectPlan` record. -/
+`planObject`/`planObjects` mutual block. Because minimal-width pushes make the
+recompiled length depend on the resolved constants, `planLoop` iterates
+`planAttempt` (starting from the placeholder compile's length) until the length
+stabilises; each accepted `ObjectPlan` still passes the same decidable
+`length == size`/`length == codeSize` checks the downstream lemmas consume. -/
 private def planAttempt (name : String) (code : List (YulSemantics.Stmt Op))
     (subPlans : List ObjectPlan) (dataSegs : List (String × Data)) (c : Nat) :
     Option (ObjectPlan ⊕ Nat) := do
@@ -466,8 +469,10 @@ private def planAttempt (name : String) (code : List (YulSemantics.Stmt Op))
 
 /-- Fuel-bounded iteration of `planAttempt`: keep retrying with each freshly
 measured code size until a fixpoint is reached (`.inl`), a hard failure occurs
-(`none`), or the fuel runs out (`none`). With today's fixed widths the first
-attempt is always a fixpoint, so a single unit of fuel already suffices. -/
+(`none`), or the fuel runs out (`none`). With minimal-width pushes the
+placeholder-compile length can differ from the resolved length, so the loop
+genuinely iterates; it converges in a couple of rounds (values and hence widths
+are monotone in the assumed code size). -/
 private def planLoop (name : String) (code : List (YulSemantics.Stmt Op))
     (subPlans : List ObjectPlan) (dataSegs : List (String × Data)) :
     Nat → Nat → Option ObjectPlan
@@ -490,11 +495,11 @@ mutual
         let instructions ← compile placeholderCode
         let codeSize := (assembleBytes instructions).length
         -- Iterate the layout fixpoint starting from the placeholder-compile
-        -- length. With fixed-width pushes the first attempt is already a
-        -- fixpoint (recompilation cannot change any byte position), so this
-        -- accepts exactly when the old single-pass code did, producing the
-        -- identical plan; the fuel only matters once push widths become
-        -- value-dependent.
+        -- length. With minimal-width pushes, resolving the (0,0) placeholders
+        -- to real offsets/sizes can change push widths and hence byte
+        -- positions, so `planLoop` re-derives the layout until the recompiled
+        -- length is stable; the accepted plan still satisfies the same
+        -- decidable length checks.
         planLoop name code subPlans dataSegs 34 codeSize
     termination_by 2 * sizeOf o + 1
 
@@ -921,12 +926,13 @@ example : (compileObject demoObject).map (fun (layout : Layout) =>
       (layout.dataSize (litValue (.string "blob"))).toNat)) = some (1, 4) := by
   native_decide
 
-/-- The parent code is 167 bytes, followed by its seam; the two-byte child
-(`STOP` plus its own seam) therefore begins at byte 168. -/
+/-- With minimal-width constant pushes and `labelWidth`-byte label pushes the
+parent code is 10 bytes, followed by its seam; the two-byte child (`STOP` plus
+its own seam) therefore begins at byte 11. -/
 example : (compileObject demoNestedObject).map (fun (layout : Layout) =>
     ((layout.dataOffset (litValue (.string "sub"))).toNat,
       (layout.dataSize (litValue (.string "sub"))).toNat,
-      layout.code.length)) = some (168, 2, 170) := by
+      layout.code.length)) = some (11, 2, 13) := by
   native_decide
 
 /-- The produced layout is consistent with the object (`compileObject_consistent`
