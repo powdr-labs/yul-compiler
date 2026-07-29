@@ -125,21 +125,32 @@ def schedulable : Asm → Bool
 
 /-! ### Symbolic executor -/
 
-/-- The symbolic state during window execution: the realized stack (top first)
-and the number of input leaves materialized so far (= how deep the window has
-reached below its start). -/
+/-- The symbolic state during window execution: the realized stack (top first),
+the number of input leaves materialized so far (= how deep the window has reached
+below its start), and `opExposed` — the set of input indices that have appeared
+as a DIRECT argument of a pure op. An op requires WORD operands, so a run in
+which `inp i ∈ opExposed` is only well-defined when the concrete value at slot
+`i` is a word (not a `.code` return address); `pop`/`dup`/`swap` are untyped and
+impose no such requirement. This is why the gate demands the candidate's
+`opExposed` be a SUBSET of the original's: the original's successful run witnesses
+that its op-exposed slots are words, and the candidate may only op-touch a
+subset. Without it, `symExec`-equality would wrongly accept e.g. `[pop]` vs
+`[iszero, pop]` (equal net effect symbolically, but the latter is stuck on a
+`.code` value). -/
 structure SymState where
   stack : List Term
   inputs : Nat
+  opExposed : List Nat
 
 /-- Materialize input leaves at the bottom until the realized stack has at least
 `need` elements, so an access at depth `need-1` is in range. Growth increments
-`inputs`. -/
+`inputs`; `opExposed` is unaffected (materialization is not an op use). -/
 def pad (s : SymState) (need : Nat) : SymState :=
   if s.stack.length ≥ need then s
   else
     let extra := need - s.stack.length
-    { stack := s.stack ++ (List.range extra).map (fun j => Term.inp (s.inputs + j)),
+    { s with
+      stack := s.stack ++ (List.range extra).map (fun j => Term.inp (s.inputs + j)),
       inputs := s.inputs + extra }
 
 /-- One symbolic step. Mirrors `AStep`: `push`/`pop`/`dup`/`swap` shuffle the
@@ -165,15 +176,21 @@ def symStep (s : SymState) : Asm → Option SymState
       match pureArity yop with
       | some k =>
           let s := pad s k
-          some { stack := .app yop (s.stack.take k) :: s.stack.drop k,
-                 inputs := s.inputs }
+          let args := s.stack.take k
+          -- record every input that appears as a DIRECT op argument (a bare
+          -- `inp i`); nested inputs were already recorded when their containing
+          -- subterm was formed by an earlier op.
+          let exposed := args.filterMap (fun t => match t with | .inp i => some i | _ => none)
+          some { stack := .app yop args :: s.stack.drop k,
+                 inputs := s.inputs,
+                 opExposed := exposed ++ s.opExposed }
       | none => none
   | _ => none
 
 /-- Run a window symbolically from the empty stack. `none` if it contains any
 non-admissible instruction. -/
 def symExec (w : List Asm) : Option SymState :=
-  w.foldlM symStep { stack := [], inputs := 0 }
+  w.foldlM symStep { stack := [], inputs := 0, opExposed := [] }
 
 /-- Structural equality of symbolic states: same output terms and same input
 reach (the latter guarantees the untouched REST below the window lines up).
@@ -317,7 +334,7 @@ def scheduleWindowReal (target : SymState) : Option (List Asm) :=
   let m := T.length
   if m > 16 then none else
   let fuel := 8 * (Term.sizeList T) + 100
-  let init : ES := ⟨[], { stack := (List.range k).map Term.inp, inputs := k }⟩
+  let init : ES := ⟨[], { stack := (List.range k).map Term.inp, inputs := k, opExposed := [] }⟩
   if m == 0 then
     (emitPops init k).map ES.code
   else
@@ -346,7 +363,7 @@ def scheduleStoreInPlace (target : SymState) : Option (List Asm) :=
   let changed := slots.filterMap (fun (t, j) =>
     match t with | .inp _ => none | _ => some (j, t))
   let fuel := 8 * (Term.sizeList T) + 100
-  let init : ES := ⟨[], { stack := (List.range k).map Term.inp, inputs := k }⟩
+  let init : ES := ⟨[], { stack := (List.range k).map Term.inp, inputs := k, opExposed := [] }⟩
   match changed.foldlM (fun es (p : Nat × Term) => genValue fuel es p.2) init with
   | none => none
   | some es1 =>
@@ -381,10 +398,12 @@ nodes (belt-and-suspenders against tree blowup within the length cap). -/
 def maxTermNodes : Nat := 4096
 
 /-- Optimize one extracted window: among the candidate schedules, keep the
-cheapest that translation-validates (net-effect-equal symbolic state via
-`symStateEquiv`) and does not grow bytes; otherwise keep the original. Accepting
-only candidates STRICTLY cheaper than the ORIGINAL (never on estimated ties) is
-what makes the `opGas` `exp` underestimate safe. -/
+cheapest that (1) is net-effect-equal to the original (`symStateEquiv`), (2)
+op-exposes only a SUBSET of the inputs the original op-exposed (so it never feeds
+an op a slot the original proved is a word — the `.code`-value soundness fix),
+and (3) does not grow bytes. Otherwise keep the original. Accepting only
+candidates STRICTLY cheaper than the ORIGINAL (never on estimated ties) is what
+makes the `opGas` `exp` underestimate safe. -/
 def optimizeWindow (w : List Asm) : List Asm :=
   if w.length > maxWindowLen then w else
   match symExec w with
@@ -395,6 +414,7 @@ def optimizeWindow (w : List Asm) : List Asm :=
         match symExec cand with
         | some tcand =>
             if symStateEquiv tcand target
+                && tcand.opExposed.all (· ∈ target.opExposed)
                 && windowGas cand < windowGas best
                 && codeSize cand ≤ codeSize w then cand else best
         | none => best) w
