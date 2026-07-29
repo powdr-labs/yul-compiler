@@ -1,12 +1,13 @@
 import YulParser.Compile
 set_option warningAsError true
 /-!
-# YulParser.CApi
+# YulCApi
 
-C-ABI exports for embedding this compiler as a native library (see `c/`).
-These are thin, total wrappers around the production `compileSource` entry
-point; all C-side concerns (Lean runtime initialization, string/byte buffer
-conversion, threading, and stack sizing) live in the C shim `c/yulc.c`.
+C-ABI exports for embedding this compiler as a native library (see `c/` and
+`scripts/build-c-lib.sh`). These are thin, total wrappers around the
+production `compileSource` entry point; all C-side concerns (Lean runtime
+initialization, string/byte buffer conversion, threading, and stack sizing)
+live in the C shim `c/yulc.c`.
 
 The exported status convention mirrors the `yulc` CLI: a program that fails
 `compileSource` is classified as a parse failure when `parseSource` also
@@ -14,7 +15,9 @@ rejects it, and as "parsed, but uses unsupported compiler features" otherwise.
 That classification is done by the shim via `yulc_lean_parses`.
 -/
 
-namespace YulParser.CApi
+namespace YulCApi
+
+open YulParser
 
 /-- Compile a complete Yul source program (block- or object-rooted) to
 executable EVM bytecode. `none` means the program was rejected, either by the
@@ -30,4 +33,4 @@ failures from parsed-but-unsupported programs after `leanCompile` returns
 def leanParses (source : String) : Bool :=
   (parseSource source).isSome
 
-end YulParser.CApi
+end YulCApi

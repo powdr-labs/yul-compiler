@@ -73,9 +73,10 @@ parsed program outside the verified supported fragment. Compilation runs on a
 dedicated 1 GiB-stack worker thread (override with the `YULC_STACK_BYTES`
 environment variable); `yulc_init` is optional, idempotent, and thread-safe.
 The Lean-side entry points live in
-[`YulParser/CApi.lean`](./YulParser/CApi.lean); the shim is
+[`YulCApi.lean`](./YulCApi.lean); the shim is
 [`c/yulc.c`](./c/yulc.c), and [`c/test_yulc.c`](./c/test_yulc.c) doubles as a
-usage example.
+usage example. Pushing a `libyulc-v*` tag makes CI build, test, and publish
+both libraries as a GitHub release (`c-library.yml`).
 
 ## What is implemented
 

@@ -22,7 +22,7 @@
 #   yulc.h       the public header, copied from c/include/.
 #
 # The exported interface is defined in c/include/yulc.h and implemented by
-# c/yulc.c on top of the @[export] wrappers in YulParser/CApi.lean.
+# c/yulc.c on top of the @[export] wrappers in YulCApi.lean.
 #
 # With --test, additionally builds c/test_yulc.c against BOTH libraries, runs
 # the self-tests, and differentially checks the hex output against
@@ -38,10 +38,9 @@ OUT=.lake/build/c
 mkdir -p "$OUT"
 
 echo "== building static facets of the compiler libraries" >&2
-# The C API lives in the YulParser library (YulParser/CApi.lean); the rest are
-# its transitive Lake dependencies. Static facets are requested explicitly so
-# lakefile.toml does not need a defaultFacets change.
-lake build YulParser:static YulEvmCompiler:static \
+# YulCApi holds the @[export] entry points; the rest are its transitive Lake
+# dependencies, whose module objects the exports' initializer chain needs.
+lake build YulCApi:static YulParser:static YulEvmCompiler:static \
   yul-semantics/YulSemantics:static evm_semantics/EvmSemantics:static \
   mathlib/Mathlib:static batteries/Batteries:static \
   batteries/BatteriesRecycling:static aesop/Aesop:static \
@@ -78,8 +77,14 @@ for dir in "${PACKAGE_DIRS[@]}"; do
   if [[ "$dir" == "." ]]; then name=yul-evm-compiler; else name="$(basename "$dir")"; fi
   archive="$OUT/pkg/lib_pkg_$name.a"
   rm -f "$archive"
-  find "$dir/.lake/build/ir" -name '*.c.o.export' -print0 |
-    sort -z | xargs -0 ar q "$archive"
+  # Skip stale objects whose .lean source is gone: Lake never garbage-collects
+  # build/ir, so a renamed or deleted module would otherwise leave a duplicate
+  # definition of every symbol it exported.
+  find "$dir/.lake/build/ir" -name '*.c.o.export' -print0 | sort -z |
+    while IFS= read -r -d '' obj; do
+      rel="${obj#"$dir/.lake/build/ir/"}"
+      [[ -f "$dir/${rel%.c.o.export}.lean" ]] && printf '%s\0' "$obj"
+    done | xargs -0 ar q "$archive"
   ranlib "$archive"
   ARCHIVES+=("$archive")
 done

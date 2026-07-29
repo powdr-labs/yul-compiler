@@ -1,0 +1,123 @@
+# Build the C-callable compiler libraries (scripts/build-c-lib.sh) and publish
+# them as a GitHub release.
+#
+# Trigger a release by pushing a tag of the form `libyulc-v<version>`, e.g.
+#
+#   git tag libyulc-v0.1.0 && git push origin libyulc-v0.1.0
+#
+# A workflow_dispatch run builds and tests the libraries and uploads them as a
+# workflow artifact only, without creating a release.
+#
+# The published tarball contains libyulc.so with the Lean runtime libraries it
+# loads via its $ORIGIN rpath, the merged static libyulc.a, and the public
+# yulc.h header; consumers only need to extract it somewhere and link with
+# `-L <dir> -lyulc` (see the README's "C library" section).
+name: C library release
+
+on:
+  push:
+    tags:
+      - "libyulc-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build, test & release C libraries
+    runs-on: warp-ubuntu-2404-x64-32x
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Same two-level caching as ci.yml: this repository's own build output
+      # keyed by source content, and one manifest-keyed dependency cache
+      # (Mathlib and all transitive packages).
+      - name: Cache compiled library build
+        uses: actions/cache@v4
+        with:
+          path: .lake/build
+          key: project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('YulEvmCompiler/**/*.lean', 'YulParser/**/*.lean', 'YulEvmCompilerTests/**/*.lean', 'YulIR/**/*.lean', 'scripts/*.lean') }}
+          restore-keys: |
+            project-lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+
+      - name: Cache package builds
+        uses: actions/cache@v4
+        with:
+          path: .lake/packages/*/.lake/build
+          key: lake-package-builds-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+
+      # Installs the pinned toolchain and fetches the prebuilt Mathlib olean
+      # cache. The build itself happens inside build-c-lib.sh (static facets
+      # plus the yulc CLI for the differential), so lean-action only prepares
+      # the toolchain here.
+      - name: Install toolchain (fetch Mathlib cache)
+        uses: leanprover/lean-action@v1
+        with:
+          use-mathlib-cache: "true"
+          build: "false"
+          test: "false"
+          lint: "false"
+          use-github-cache: "false"
+
+      - name: Build and test C libraries
+        run: |
+          ulimit -s unlimited || true
+          scripts/build-c-lib.sh --test
+
+      - name: Package
+        id: package
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#libyulc-}"
+          else
+            version="dev-${GITHUB_SHA::12}"
+          fi
+          name="libyulc-${version}-x86_64-linux"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          mkdir -p "dist/${name}"
+          cp .lake/build/c/libyulc.so \
+             .lake/build/c/libleanshared.so \
+             .lake/build/c/libLake_shared.so \
+             .lake/build/c/libyulc.a \
+             .lake/build/c/yulc.h \
+             LICENSE \
+             "dist/${name}/"
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          sha256sum "dist/${name}.tar.gz" | tee "dist/${name}.tar.gz.sha256"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/${{ steps.package.outputs.name }}.tar.gz*
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<EOF
+          C-callable build of the verified Yul -> EVM compiler
+          (\`yulc_compile\`: Yul source in, EVM bytecode out — see \`yulc.h\`).
+
+          The tarball contains:
+
+          - \`libyulc.so\` — link with \`-L <dir> -lyulc\`; the bundled
+            \`libleanshared.so\`/\`libLake_shared.so\` are found through its
+            \`\$ORIGIN\` rpath, so keep the files together;
+          - \`libyulc.a\` — static archive for executable links
+            (\`-lyulc -lpthread -ldl -lrt -lm\`);
+          - \`yulc.h\` — the public header.
+
+          x86_64 Linux, built from ${GITHUB_SHA} with the Lean toolchain
+          pinned in \`lean-toolchain\`.
+          EOF
+          gh release create "${GITHUB_REF_NAME}" \
+            "dist/${{ steps.package.outputs.name }}.tar.gz" \
+            "dist/${{ steps.package.outputs.name }}.tar.gz.sha256" \
+            --title "libyulc ${{ steps.package.outputs.version }}" \
+            --notes-file notes.md

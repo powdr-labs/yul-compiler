@@ -11,6 +11,5 @@ import YulParser.Obj
 import YulParser.Compat
 import YulParser.Validate
 import YulParser.Compile
-import YulParser.CApi
 import YulParser.Examples
 set_option warningAsError true
