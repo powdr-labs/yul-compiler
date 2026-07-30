@@ -279,7 +279,10 @@ def compileSource (source : String) : Option ByteArray := do
       -- (measured ~2-3x of the total compile time on the corpus runners).
       let tryLayouts (blk : List (Stmt YulSemantics.EVM.Op)) :
           Option (List YulEvmCompiler.Instr) :=
-        YulEvmCompiler.compile blk
+        -- PROTOTYPE: try the window-scheduled lowering first; the plain verified
+        -- lowering remains the fallback if scheduling trips the stackOK2 gate.
+        YulEvmCompiler.compileScheduled blk
+          <|> YulEvmCompiler.compile blk
           <|> YulEvmCompiler.compile
             (YulEvmCompiler.Optimizer.stackLayoutBlock blk)
       let asm := tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipeline
@@ -322,7 +325,14 @@ def compileSource (source : String) : Option ByteArray := do
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none) o
       let tryLayouts (obj : Object YulSemantics.EVM.Op) :=
-        YulEvmCompiler.compileObject obj
+        -- PROTOTYPE: try the window-scheduled lowering first (on both the object
+        -- and its smart-layout form, since stack-heavy objects like TickMath only
+        -- compile via the layout rescue); the plain verified lowering is the
+        -- fallback if scheduling trips the stackOK2 gate.
+        YulEvmCompiler.compileObjectScheduled obj
+          <|> YulEvmCompiler.compileObject obj
+          <|> YulEvmCompiler.compileObjectScheduled
+            (YulEvmCompiler.Optimizer.stackLayoutObject obj)
           <|> YulEvmCompiler.compileObject
             (YulEvmCompiler.Optimizer.stackLayoutObject obj)
       let layout ← tryLayouts optimized
@@ -332,6 +342,7 @@ def compileSource (source : String) : Option ByteArray := do
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectLight
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none) o)
+        <|> YulEvmCompiler.compileObjectScheduled o
         <|> YulEvmCompiler.compileObject o
         -- EXPERIMENTAL (remat-before-spill): only reached when the object would
         -- otherwise spill. Rematerialize cheap pure single-def bindings in the
