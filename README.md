@@ -1,7 +1,13 @@
 # yul-evm-compiler
 
 A **verified non-optimizing compiler for a fragment of Yul to EVM bytecode**,
-written in Lean 4.
+written in Lean 4. "Non-optimizing" describes the *core*: code generation is
+direct and its correctness never depends on any optimization. Two separately
+verified optimizers do run in front of and below it — a Yul→Yul pipeline
+(`Optimizer/`) and an Asm→Asm peephole (`AsmPeephole.lean`), each with its own
+soundness contract composed into the end-to-end theorem; both are described
+under *What is not (yet) done, and why*, next to the limits they exist to work
+around.
 
 * Source semantics: [powdr-labs/yul-semantics] — the big-step relational
   judgment `YulSemantics.Run`/`Step` over the gas-free EVM dialect
@@ -86,7 +92,7 @@ A non-optimizing compiler for programs with **variables, nested blocks, `if`,
 
 - `let` declarations (initialized or zeroed), single- and multi-variable
   assignments, built-in expression statements, `{ … }` scoping;
-- `if` → `ISZERO; PUSH32 dest; JUMPI … JUMPDEST`;
+- `if` → `ISZERO; PUSH2 dest; JUMPI … JUMPDEST`;
 - `switch` → a verified chain of literal comparisons and conditional jumps, with
   an optional `default` block;
 - `for {init} c {post} {body}` with backward jumps; `break`/`continue` compile
@@ -96,7 +102,10 @@ A non-optimizing compiler for programs with **variables, nested blocks, `if`,
   function frame and jumps to the epilogue; a `SWAP1 … SWAPk` rotation returns
   `k ≤ 16` values in source order.
 
-Literals compile to `PUSH32`; a built-in call compiles its arguments
+Literals compile to the **shortest** `PUSHk` that encodes them
+(`Instr.pushMin`, so `PUSH0` for zero); label addresses keep a **uniform**
+`labelWidth` (= 2) byte width, because `Asm.size` must not depend on where a
+label resolves. A built-in call compiles its arguments
 right-to-left (Yul's evaluation order, which puts the first argument on top of
 the stack) followed by the built-in's opcode; a program that falls off the end
 of its bytecode performs the EVM's implicit `STOP`, matching Yul's `.normal`
@@ -162,6 +171,12 @@ operations are different**: their correctness is *conditional on* the
 
 ## What is not (yet) done, and why
 
+Two entries below — **Optimizer** and **Asm peephole** — describe verified
+machinery that *is* shipped. They live in this section because they exist to work
+around the limits of the non-optimizing core (stack reach, and the structural
+slack in solc's unoptimized IR), so they only make sense next to those limits.
+Everything else here is a genuine gap.
+
 - **`gas`.** yul-semantics models `gas()` as a nondeterministic open-world
   oracle; verifying it needs a realization condition tying the chosen oracle word
   to the target frame's actual remaining gas. Until then it compiles to `none`.
@@ -208,13 +223,22 @@ operations are different**: their correctness is *conditional on* the
   gas are unchanged. Programs without a safe guard contract remain rejected.
   This fallback addresses stack reach only; `gas`, immutables, and a live
   `linkersymbol` value remain separate unsupported features.
-- **Optimizer.** A verified six-round `Simplify → Propagate →
-  InlineHelpers → HoistCalls → FreshenCalls → InlineCalls → StorageForward →
-  Simplify → DeadPure → DeadResults` pipeline runs in front of the
-  backend for **block-rooted** source
-  programs (`compileSource`); it is a total source-to-source transformation proved
+- **Optimizer.** A verified six-round pipeline runs in front of the backend for
+  **block-rooted** source
+  programs (`compileSource`). One round is
+
+  ```text
+  Simplify → Propagate → InlineHelpers → HoistCalls → FreshenCalls → InlineCalls
+    → Flatten → FuseDeclAssign → StorageForward → Simplify → CoalesceCopies
+    → ReuseValues → RejoinPairs → DeadPure → DeadStores → DeadResults ×3
+    → PruneDefs
+  ```
+
+  and the whole round is iterated, because statement-level inlining collapses
+  helper chains leaf-first and each round's leftovers feed the next round's
+  propagation and pruning. It is a total source-to-source transformation proved
   semantics-preserving (`EquivBlock`) and composed with the backend via
-  `Pass.optimize_then_compile_correct`. `Simplify` performs constant folding,
+  `LocalPass.optimize_then_compile_correct`. `Simplify` performs constant folding,
   neutral identities, literal control-flow selection, and removal of
   `if iszero(eq(x,x))` validator residue while retaining evaluation under
   `pop` so unbound-variable stuckness is unchanged. Its supported flat
@@ -243,7 +267,20 @@ operations are different**: their correctness is *conditional on* the
   boundary. `DeadPure`
   removes unused total pure expressions and storage reads, while `DeadResults`
   removes an unused zero-initialized result together with its adjacent
-  straight-line, state-preserving computation region. For
+  straight-line, state-preserving computation region. `Flatten` and
+  `FuseDeclAssign` normalize the shapes the inliner leaves behind (nested blocks
+  without definitions; a bare `let x` and its next same-level `x := e` fused
+  back into `let x := e`). `CoalesceCopies` merges an adjacent
+  `let x := rhs; let y := x` when `x` then dies, removing a live operand-stack
+  slot. `ReuseValues` records available values from `let x := e` / `x := e` and
+  rewrites later occurrences of `e` to `x` (state CSE). `RejoinPairs` folds a
+  single-use pure producer into its consumer's leaf position — binder,
+  assignment right-hand side, or `if` condition — under a stack-depth budget.
+  `DeadStores` is the write-side complement of `DeadPure`: it deletes
+  `x := e` and weakens `let x := e` to `let x` when `x` is declared by an
+  earlier `let` of the same sequence and is overwritten before any read, which
+  is sound because that sequence's `restore` erases the name at every exit.
+  `PruneDefs` drops function definitions that nothing reaches. For
   **object-rooted** programs (Solidity's `--via-ir` artifacts), `compileSource`
   runs the pipeline on *every* code block of the tree — deploy and runtime — via
   `Optimizer.optimizerPipelineObject` in the inliner's resolution-stable mode.
@@ -253,13 +290,18 @@ operations are different**: their correctness is *conditional on* the
   bridged by a resolution congruence for every pipeline stage.
   If that artifact still fails classic stack reach, the source entry point
   retries its code blocks through `Optimizer.stackLayoutBlock`. The transform
-  is itself a strong `Pass`: `StackLayoutSound.lean` proves both the
+  is itself a strong `LocalPass`: `StackLayoutSound.lean` proves both the
   state/halting-preserving addition scheduler and a bidirectional variable-
   environment simulation for liveness-guided slot reuse. A dominance- and
   liveness-guided tail rule also sinks a computation into a nested scope when
   dead locals hide the caller's result slot: a dominating carrier preserves
   the live-out value while block restoration removes the deep local frame
-  before the final result copy.
+  before the final result copy. Because that layout pass runs *after* the whole
+  pipeline, its slot reuse and live-range splitting leave behind dead stores and
+  copy chains that nothing else would see, so each layout candidate is swept by
+  `Optimizer.cleanupAfterLayout` — `(DeadStores → FuseDeclAssign →
+  CoalesceCopies → DeadPure)` twice — before compiling. The uncleaned layout
+  stays as a further fallback candidate, so acceptance can only widen.
   If every ordinary and smart-layout candidate still fails, a final guarded
   spilling fallback may rewrite selected bindings to `mload`/`mstore` cells.
   The selector batches stack-pressure failures, colors non-overlapping lexical
@@ -275,6 +317,15 @@ operations are different**: their correctness is *conditional on* the
   backend for future passes that legitimately change memory or dead bindings;
   the production pipeline currently uses only the strong `EquivBlock` tier.
   `compile`/`compileObject` never silently call an unproved transformation.
+- **Asm peephole.** Below the source tier, `compile` runs a verified Asm→Asm
+  pass (`AsmPeephole.lean`) between `compileProgram` and `lowerProg`, with its
+  own whole-program forward simulation over `AStep` (`AsmPeepholeSound.lean`)
+  threaded through `compile_correct`. It is *not* an `Optimizer.LocalPass` — it
+  works on patterns the Yul→Yul tier cannot express: a constant return-slot
+  assignment (`push v; swap1; pop → pop; push v`), branch inversion for the
+  `if c { break/continue/leave }` shape, double-`iszero` elimination in front of
+  a `jumpi` (a branch only tests truthiness), and dropping unreferenced labels;
+  the scan iterates, because each rewrite can uncover the next.
 - **Fork range.** The theorem fixes `fork = .Osaka`. Function/param/return names
   must be `Nodup`.
 - **Gas is existentially bounded, not closed-form.** By design (yul-semantics is
