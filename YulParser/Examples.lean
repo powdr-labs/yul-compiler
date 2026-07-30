@@ -81,6 +81,24 @@ program is rejected rather than miscompiled. -/
 #guard (compileSource
   "object \"A\" { code { let a := linkersymbol(\"file.sol:L\") a := 1 sstore(0, a) } }").isNone
 
+/-! Supplying the library's link-time address makes the *used* form compile:
+the occurrence is substituted with that address before anything else runs, so
+what reaches the optimizer and the backend is ordinary Yul. Only the named
+library is resolved; a different one is still rejected. -/
+def linkedL : LinkEnv := [("file.sol:L", 0x1234567890abcdef1234567890abcdef12345678)]
+
+#guard (compileSource usedLinkerObject linkedL).isSome
+#guard (compileSource
+  "object \"A\" { code { let a := linkersymbol(\"file.sol:Other\") sstore(0, a) } }"
+  linkedL).isNone
+
+/-! Linking is a substitution, so the linked program is exactly the one with
+the address written out by hand. -/
+#guard (compileSource usedLinkerObject linkedL) ==
+  (compileSource
+    ("object \"A\" { code { let a := 0x1234567890abcdef1234567890abcdef12345678 " ++
+      "sstore(0, a) } }"))
+
 /-! The source entry point also runs Solidity-compatible validation after the
 grammar has produced an AST.  These checks pin representative scope, arity,
 control-flow, literal, switch, object, and EVM-version rules locally; CI covers
