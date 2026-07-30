@@ -60,16 +60,23 @@ def skipTrivia (cs : List Char) : List Char :=
 /-- Run `p` after skipping leading trivia (whitespace and comments). -/
 def token {α : Type} (p : Parser α) : Parser α := fun cs => p (skipTrivia cs)
 
+/-- Fuelled implementation of greedy repetition. `many` shares its input list
+as the structural fuel, avoiding a length scan when repetition starts or
+advances. -/
+def manyFuel {α : Type} (p : Parser α) : List Char → List Char → List α × List Char
+  | [], cs => ([], cs)
+  | _ :: fuel, cs =>
+      match p cs with
+      | none => ([], cs)
+      | some (a, rest) =>
+          if rest == cs then ([a], rest)
+          else
+            let parsed := manyFuel p fuel rest
+            (a :: parsed.1, parsed.2)
+
 /-- Zero-or-more, greedy; always succeeds. Stops when `p` fails or fails to make progress. -/
-def many {α : Type} (p : Parser α) : List Char → List α × List Char := fun cs =>
-  match p cs with
-  | none => ([], cs)
-  | some (a, rest) =>
-    if _h : rest.length < cs.length then
-      ((a :: (many p rest).1), (many p rest).2)
-    else ([a], rest)
-termination_by cs => cs.length
-decreasing_by all_goals exact _h
+def many {α : Type} (p : Parser α) (cs : List Char) : List α × List Char :=
+  manyFuel p cs cs
 
 /-- `many` as a (always-succeeding) parser. -/
 def manyP {α : Type} (p : Parser α) : Parser (List α) := fun cs => some (many p cs)

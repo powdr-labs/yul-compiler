@@ -1,6 +1,7 @@
 import YulEvmCompiler.Optimizer.Implementation.Frame
 import YulEvmCompiler.Optimizer.Implementation.FreshenCalls
 import YulEvmCompiler.Optimizer.Implementation.DeadPure
+import YulEvmCompiler.Optimizer.Implementation.FastChecks
 import YulEvmCompiler.Compile
 import YulSemantics.Dialect.EVM
 set_option warningAsError true
@@ -349,9 +350,9 @@ def copyBackStmts (ts ds : List Ident) : Block Op :=
 
 def copyBackHere (layout : List Ident) : Block Op → Option (Block Op)
   | .letDecl ts (some call@(.call _ _)) :: rest => do
-      if ts.isEmpty || !ts.Nodup then none else
+      if ts.isEmpty || !nodupFast ts then none else
       let (ds, suffix) ← takeCopyBack ts rest
-      if ds.Nodup && ds.all layout.contains &&
+      if nodupFast ds && ds.all layout.contains &&
           ts.all (fun t => !ds.contains t && !stmtsMentions t suffix) then
         some (.assign ds call :: suffix)
       else none
@@ -484,7 +485,7 @@ def stageWanted (Phi : FMap) (layout : List Ident) (xs : List Ident)
     stagedArgsFit Phi layout names args &&
     exprFits Phi (names ++ layout) 0 (.call f (names.map Expr.var)) &&
     assignsFit (names ++ layout) xs && argsHaveCall args == false &&
-    argsShadowOK [] (names.zip args) && names.Nodup &&
+    argsShadowOK [] (names.zip args) && nodupFast names &&
     xs.all (fun x => !names.contains x)
 
 mutual
@@ -1483,7 +1484,7 @@ def prefixRegionSearch (entry : List Ident) :
       if !regionTargetsFit layout xs && xs.all entry.contains &&
           !hasDirectFun pre then
         let live := directLiveNames e suffix pre
-        if !live.isEmpty && live.Nodup &&
+        if !live.isEmpty && nodupFast live &&
             live.all (fun x => !entry.contains x && !stmtsDeclare x suffix &&
               declDominates x pre) then
           match splitAtDeadDecl live pre with
@@ -2071,7 +2072,7 @@ def shadowLoopHere (P : String) (Phi : FMap) (layout : List Ident)
     closed.contains x && writesStmts x body && valueLiveIn x body
   let picked := pickWritableShadows layout stable.length [] writable
   let sources := sortByPressure Phi layout body (stable ++ picked.reverse)
-  if sources.isEmpty || !sources.Nodup || hasLeaveStmts body then none else
+  if sources.isEmpty || !nodupFast sources || hasLeaveStmts body then none else
   let shadows := shadowNames P sources.length
   let basePairs := sources.zip shadows
   let renamedBase := renameStmts (basePairs.map fun p => (p.1, p.2)) body
@@ -2365,13 +2366,68 @@ def directDecls : Block Op → List Ident
   | .letDecl xs _ :: rest => xs ++ directDecls rest
   | _ :: rest => directDecls rest
 
+abbrev MentionSet := Std.HashSet Ident
+
+mutual
+  def addExprMentions (seen : MentionSet) : Expr Op → MentionSet
+    | .lit _ => seen
+    | .var x => seen.insert x
+    | .builtin _ args | .call _ args => addArgsMentions seen args
+
+  def addArgsMentions (seen : MentionSet) : List (Expr Op) → MentionSet
+    | [] => seen
+    | e :: rest => addArgsMentions (addExprMentions seen e) rest
+end
+
+mutual
+  def addStmtMentions (seen : MentionSet) : Stmt Op → MentionSet
+    | .block body => addStmtsMentions seen body
+    | .funDef _ ps rs body =>
+        addStmtsMentions (seen.insertMany ps |>.insertMany rs) body
+    | .letDecl xs value => addOptExprMentions (seen.insertMany xs) value
+    | .assign xs value => addExprMentions (seen.insertMany xs) value
+    | .cond condition body =>
+        addStmtsMentions (addExprMentions seen condition) body
+    | .switch condition cases dflt =>
+        addOptBlockMentions
+          (addCasesMentions (addExprMentions seen condition) cases) dflt
+    | .forLoop init condition post body =>
+        addStmtsMentions
+          (addStmtsMentions
+            (addExprMentions (addStmtsMentions seen init) condition) post) body
+    | .exprStmt e => addExprMentions seen e
+    | .break | .continue | .leave => seen
+
+  def addStmtsMentions (seen : MentionSet) : Block Op → MentionSet
+    | [] => seen
+    | statement :: rest => addStmtsMentions (addStmtMentions seen statement) rest
+
+  def addCasesMentions (seen : MentionSet) : List (Literal × Block Op) → MentionSet
+    | [] => seen
+    | (_, body) :: rest => addCasesMentions (addStmtsMentions seen body) rest
+
+  def addOptExprMentions (seen : MentionSet) : Option (Expr Op) → MentionSet
+    | none => seen
+    | some e => addExprMentions seen e
+
+  def addOptBlockMentions (seen : MentionSet) : Option (Block Op) → MentionSet
+    | none => seen
+    | some body => addStmtsMentions seen body
+end
+
+/-- Check that none of `names` is mentioned in `body` by indexing all exact
+mention positions once, rather than traversing the body once per name. -/
+def noneMentionedFast (names : List Ident) (body : Block Op) : Bool :=
+  let index := addStmtsMentions {} body
+  names.all fun name => !index.contains name
+
 def deadPrefixSearch : Block Op → Block Op → Option (Block Op)
   | _, [] => none
   | pre, s :: rest =>
       let pre' := pre ++ [s]
       let names := directDecls pre'
-      if !rest.isEmpty && !names.isEmpty && names.Nodup &&
-          names.all (fun x => !stmtsMentions x rest) && !hasDirectFun pre' then
+      if !rest.isEmpty && !names.isEmpty && nodupFast names &&
+          noneMentionedFast names rest && !hasDirectFun pre' then
         some (.block pre' :: rest)
       else deadPrefixSearch pre' rest
   termination_by _ rest => rest.length

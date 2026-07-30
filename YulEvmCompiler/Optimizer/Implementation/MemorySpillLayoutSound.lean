@@ -421,28 +421,30 @@ theorem layoutCheck_selected_nodup {base reserved : Nat} {selected : SpillSet}
     {layout : Layout} (hcheck : layoutCheck base reserved selected layout = true) :
     selected.Nodup := by
   unfold layoutCheck at hcheck
-  simp only [Bool.and_eq_true, decide_eq_true_eq] at hcheck
+  simp only [Bool.and_eq_true, nodupFast_eq_decide, decide_eq_true_eq] at hcheck
   exact hcheck.1.2
 
 theorem layoutCheck_slotKeys_nodup {base reserved : Nat} {selected : SpillSet}
     {layout : Layout} (hcheck : layoutCheck base reserved selected layout = true) :
     (layout.slots.map Prod.fst).Nodup := by
   unfold layoutCheck at hcheck
-  simp only [Bool.and_eq_true, decide_eq_true_eq] at hcheck
+  simp only [Bool.and_eq_true, nodupFast_eq_decide, decide_eq_true_eq] at hcheck
   exact hcheck.2
 
 theorem needLayoutCheck_infoOwners_nodup {layout : Layout}
     (hcheck : needLayoutCheck layout = true) :
     (layout.infos.map fun info => info.owner).Nodup := by
   unfold needLayoutCheck at hcheck
-  simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hcheck
+  simp only [Bool.and_eq_true, beq_iff_eq, nodupFast_eq_decide,
+    decide_eq_true_eq] at hcheck
   exact hcheck.1.1.1.1
 
 theorem needLayoutCheck_cacheOwners_nodup {layout : Layout}
     (hcheck : needLayoutCheck layout = true) :
     (layout.cache.map Prod.fst).Nodup := by
   unfold needLayoutCheck at hcheck
-  simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hcheck
+  simp only [Bool.and_eq_true, beq_iff_eq, nodupFast_eq_decide,
+    decide_eq_true_eq] at hcheck
   exact hcheck.1.1.1.2
 
 theorem needLayoutCheck_words {layout : Layout}
@@ -450,7 +452,7 @@ theorem needLayoutCheck_words {layout : Layout}
     layout.words = maxCached layout.cache
       (layout.infos.map fun info => info.owner) := by
   unfold needLayoutCheck at hcheck
-  simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hcheck
+  simp only [Bool.and_eq_true, beq_iff_eq] at hcheck
   exact hcheck.1.2
 
 theorem localAllocCheck_wf {alloc : LocalAlloc}
@@ -471,7 +473,7 @@ theorem needLayoutCheck_info {layout : Layout}
       cachedNeed? layout.cache info.owner =
         some (maxCached layout.cache info.callees + info.alloc.peak) := by
   unfold needLayoutCheck at hcheck
-  simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hcheck
+  simp only [Bool.and_eq_true, beq_iff_eq] at hcheck
   have hinfo := List.all_eq_true.mp hcheck.1.1.2 info hmem
   simp only [Bool.and_eq_true, beq_iff_eq] at hinfo
   refine ⟨localAllocCheck_wf hinfo.1, ?_, hinfo.2.2.2⟩
@@ -484,7 +486,7 @@ theorem needLayoutCheck_slot_owner {layout : Layout}
     (hinfoMem : info ∈ layout.infos) {key : SpillKey} {color : Nat}
     (hslot : (key, color) ∈ info.alloc.slots) : key.owner = info.owner := by
   unfold needLayoutCheck at hcheck
-  simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hcheck
+  simp only [Bool.and_eq_true, beq_iff_eq] at hcheck
   have hinfo := List.all_eq_true.mp hcheck.1.1.2 info hinfoMem
   simp only [Bool.and_eq_true, beq_iff_eq] at hinfo
   have howner := List.all_eq_true.mp hinfo.2.1 (key, color) hslot
@@ -884,7 +886,7 @@ theorem lexicalLayoutCheck_owners_nodup {layout : Layout}
     (hcheck : lexicalLayoutCheck layout = true) :
     (layout.lives.map fun trace => trace.owner).Nodup := by
   unfold lexicalLayoutCheck at hcheck
-  simp only [Bool.and_eq_true, decide_eq_true_eq] at hcheck
+  simp only [Bool.and_eq_true, nodupFast_eq_decide, decide_eq_true_eq] at hcheck
   exact hcheck.1
 
 theorem lexicalLayoutCheck_liveSet {layout : Layout}
@@ -902,7 +904,8 @@ theorem lexicalLayoutCheck_liveSet {layout : Layout}
   cases hslots : slotsForKeys? layout.slots live with
   | none => simp [hslots] at hliveCheck
   | some addresses =>
-      simp only [hslots, Bool.and_eq_true, decide_eq_true_eq] at hliveCheck
+      simp only [hslots, Bool.and_eq_true, nodupFast_eq_decide,
+        decide_eq_true_eq] at hliveCheck
       exact ⟨addresses, rfl, hliveCheck⟩
 
 theorem needLayoutCheck_lexical {layout : Layout}
@@ -1043,7 +1046,7 @@ theorem groupsClosedCheck_group {groups : List SpillSet}
         group.all selected.contains = true) := by
   unfold groupsClosedCheck at hcheck
   have hitem := List.all_eq_true.mp hcheck group hgroup
-  simp only [Bool.and_eq_true, decide_eq_true_eq] at hitem
+  simp only [Bool.and_eq_true, nodupFast_eq_decide, decide_eq_true_eq] at hitem
   refine ⟨hitem.1, ?_⟩
   intro hany
   simpa [hany] using hitem.2
@@ -1141,7 +1144,7 @@ theorem frameSignaturesWF_frame {allFrames : List Frame} {frame : Frame}
     (hframe : frame ∈ allFrames) :
     (frame.params ++ frame.returns).Nodup := by
   have hitem := List.all_eq_true.mp hcheck frame hframe
-  simpa only [decide_eq_true_eq] using hitem
+  simpa only [nodupFast_eq_decide, decide_eq_true_eq] using hitem
 
 theorem SpillFacts.frameCutoff_le_reserved {body : Block Op} {result : Result}
     {guards : List Nat} (hfacts : SpillFacts body result guards)
