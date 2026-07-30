@@ -5333,6 +5333,93 @@ theorem directDecls_mem_iff (x : Ident) : ∀ body : Block Op,
           simp [StackV2.directDecls, stmtsBinds, stmtBinds,
             directDecls_mem_iff x rest]
 
+mutual
+  theorem addExprMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ e : Expr Op,
+        (StackV2.addExprMentions seen e).contains x =
+          (seen.contains x || exprMentions x e)
+    | .lit _ => by simp [StackV2.addExprMentions, exprMentions]
+    | .var y => by
+        simp [StackV2.addExprMentions, exprMentions,
+          Bool.beq_eq_decide_eq, Eq.comm, Bool.or_comm]
+    | .builtin _ args | .call _ args => by
+        simpa [StackV2.addExprMentions, exprMentions] using
+          addArgsMentions_contains seen x args
+
+  theorem addArgsMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ args : List (Expr Op),
+        (StackV2.addArgsMentions seen args).contains x =
+          (seen.contains x || argsMentions x args)
+    | [] => by simp [StackV2.addArgsMentions, argsMentions]
+    | e :: rest => by
+        rw [StackV2.addArgsMentions, addArgsMentions_contains,
+          addExprMentions_contains]
+        simp [argsMentions, Bool.or_assoc]
+end
+
+mutual
+  theorem addStmtMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ statement : Stmt Op,
+        (StackV2.addStmtMentions seen statement).contains x =
+          (seen.contains x || stmtMentions x statement) := by
+    intro statement
+    cases statement <;>
+      simp [StackV2.addStmtMentions, stmtMentions,
+        addExprMentions_contains, addStmtsMentions_contains,
+        addCasesMentions_contains, addOptExprMentions_contains,
+        addOptBlockMentions_contains, Bool.or_assoc, Bool.or_comm,
+        Bool.or_left_comm]
+
+  theorem addStmtsMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ body : Block Op,
+        (StackV2.addStmtsMentions seen body).contains x =
+          (seen.contains x || stmtsMentions x body)
+    | [] => by simp [StackV2.addStmtsMentions, stmtsMentions]
+    | statement :: rest => by
+        rw [StackV2.addStmtsMentions, addStmtsMentions_contains,
+          addStmtMentions_contains]
+        simp [stmtsMentions, Bool.or_assoc]
+
+  theorem addCasesMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ cases : List (Literal × Block Op),
+        (StackV2.addCasesMentions seen cases).contains x =
+          (seen.contains x || casesMentions x cases)
+    | [] => by simp [StackV2.addCasesMentions, casesMentions]
+    | (_, body) :: rest => by
+        rw [StackV2.addCasesMentions, addCasesMentions_contains,
+          addStmtsMentions_contains]
+        simp [casesMentions, Bool.or_assoc]
+
+  theorem addOptExprMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ value : Option (Expr Op),
+        (StackV2.addOptExprMentions seen value).contains x =
+          (seen.contains x || optExprMentions x value)
+    | none => by simp [StackV2.addOptExprMentions, optExprMentions]
+    | some e => by
+        simpa [StackV2.addOptExprMentions, optExprMentions] using
+          addExprMentions_contains seen x e
+
+  theorem addOptBlockMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ value : Option (Block Op),
+        (StackV2.addOptBlockMentions seen value).contains x =
+          (seen.contains x || optBlockMentions x value)
+    | none => by simp [StackV2.addOptBlockMentions, optBlockMentions]
+    | some body => by
+        simpa [StackV2.addOptBlockMentions, optBlockMentions] using
+          addStmtsMentions_contains seen x body
+end
+
+theorem noneMentionedFast_eq (names : List Ident) (body : Block Op) :
+    StackV2.noneMentionedFast names body =
+      names.all (fun x => !stmtsMentions x body) := by
+  unfold StackV2.noneMentionedFast
+  induction names with
+  | nil => rfl
+  | cons name rest ih =>
+      simp only [List.all_cons]
+      rw [addStmtsMentions_contains, ih]
+      simp
+
 theorem deadPrefixSearch_sound : ∀ outer pre rest out,
     StackV2.deadPrefixSearch pre rest = some out →
       EquivBlock D (outer ++ (pre ++ rest)) (outer ++ out)
@@ -5344,10 +5431,12 @@ theorem deadPrefixSearch_sound : ∀ outer pre rest out,
       split at h
       · next hcond =>
         cases h
-        change ((((!rest.isEmpty && !names.isEmpty) && decide names.Nodup) &&
-          names.all (fun x => !stmtsMentions x rest)) &&
+        change ((((!rest.isEmpty && !names.isEmpty) && nodupFast names) &&
+          StackV2.noneMentionedFast names rest) &&
           !hasDirectFun pre') = true at hcond
-        simp only [Bool.and_eq_true] at hcond
+        rw [noneMentionedFast_eq] at hcond
+        simp only [Bool.and_eq_true, nodupFast_eq_decide,
+          decide_eq_true_eq] at hcond
         rcases hcond with ⟨⟨⟨⟨_, _⟩, _⟩, hall⟩, hfun0⟩
         have hfun : hasDirectFun pre' = false := by
           simpa using hfun0
