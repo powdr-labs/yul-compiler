@@ -75,6 +75,31 @@ def usedLinkerObject : String :=
 #guard (parseSource usedLinkerObject).isSome
 #guard (compileSource usedLinkerObject).isNone
 
+/-! Nested layout entries are keyed by `litValue (.string ·)`, which keeps only
+32 UTF-8 bytes. A grandchild object plus the `.metadata` segment solc emits in
+every object contributes two qualified names sharing a 32-byte prefix, whose
+keys therefore alias — which used to fail the whole tree's key-uniqueness check
+even though neither name is referenceable (`litWF` caps a string literal at 32
+bytes, so the validator rejects any `dataoffset`/`datasize` naming them). -/
+def nestedMetadataObject : String :=
+  "object \"Wrap\" { code { stop() } " ++
+  "object \"PreviewHub_9270\" { " ++
+  "code { let s := datasize(\"PreviewHub_9270_deployed\") " ++
+  "datacopy(0, dataoffset(\"PreviewHub_9270_deployed\"), s) return(0, s) } " ++
+  "object \"PreviewHub_9270_deployed\" { code { sstore(0, 1) } " ++
+  "data \".metadata\" hex\"a2646970667358221220\" } } }"
+
+#guard (parseSource nestedMetadataObject).isSome
+#guard (compileSource nestedMetadataObject).isSome
+
+/-! Shortening either generated name brings both keys under 32 bytes; the same
+tree compiled before the fix too, so this pins that the fix did not change it. -/
+#guard (compileSource
+  ("object \"Wrap\" { code { stop() } object \"P\" { " ++
+   "code { let s := datasize(\"Pd\") datacopy(0, dataoffset(\"Pd\"), s) return(0, s) } " ++
+   "object \"Pd\" { code { sstore(0, 1) } " ++
+   "data \".metadata\" hex\"a2646970667358221220\" } } }")).isSome
+
 /-! The prune is shadowing-proof by over-approximation: if the bound name is
 referenced anywhere in the program — even a write — the binding is kept and the
 program is rejected rather than miscompiled. -/
