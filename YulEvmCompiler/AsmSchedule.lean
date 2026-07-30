@@ -251,6 +251,49 @@ def genArgs : Nat → ES → List Nat → Option ES
           | some e => restRev.foldlM (fun acc a => genValue fuel acc a) e
 end
 
+/-- DUP a node already present on the model stack to the top. -/
+def dupToTop (es : ES) (node : Nat) : Option ES :=
+  match findIdx node es.model.stack with
+  | some d => if h : d < 16 then emit es (.dup ⟨d, h⟩) else none
+  | none => none
+
+/-- DUP a list of nodes (already present) to the top in order, so after the
+sequence the top holds them with the LAST list element deepest. Used with an
+op's `args.reverse` so the top becomes `[arg0, …, arg(n-1)]`. -/
+def dupArgsToTop : ES → List Nat → Option ES
+  | es, [] => some es
+  | es, a :: rest => (dupToTop es a).bind (fun es' => dupArgsToTop es' rest)
+
+/-! `ensure` materializes a node's value SOMEWHERE on the stack (computing it once
+if absent) WITHOUT consuming existing values — ops consume DUPs, so each node is
+computed at most once (no exponential rebuild). This is the CSE core. It fails
+(→ bail, gate keeps original) if a needed value sits past the `DUP16` reach. -/
+mutual
+def ensure : Nat → ES → Nat → Option ES
+  | 0, _, _ => none
+  | fuel + 1, es, node =>
+      match findIdx node es.model.stack with
+      | some _ => some es
+      | none =>
+          match es.dag.node node with
+          | .lit v => emit es (.push v)
+          | .inp _ => none
+          | .app op args =>
+              match ensureArgs fuel es args with
+              | none => none
+              | some es1 =>
+                  match dupArgsToTop es1 args.reverse with
+                  | none => none
+                  | some es2 => emit es2 (.op op)
+def ensureArgs : Nat → ES → List Nat → Option ES
+  | _, es, [] => some es
+  | 0, _, _ => none
+  | fuel + 1, es, a :: rest =>
+      match ensure fuel es a with
+      | none => none
+      | some es1 => ensureArgs fuel es1 rest
+end
+
 /-- Emit `n` pops. -/
 def emitPops : ES → Nat → Option ES
   | es, 0 => some es
