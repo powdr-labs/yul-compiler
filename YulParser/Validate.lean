@@ -45,8 +45,10 @@ private def lowLevelReserved (name : String) : Bool :=
   name == "pc" || name == "jump" || name == "jumpi" || name == "jumpdest" ||
     numbered "dup" || numbered "swap" || numbered "push"
 
+-- `loadimmutable` is no longer here: pinned yul-semantics models it as a real
+-- `Op`, so `parse` recognizes it and it is validated like `dataoffset`/`datasize`.
 private def specialBuiltin (name : String) : Bool :=
-  name == "memoryguard" || name == "linkersymbol" || name == "loadimmutable" ||
+  name == "memoryguard" || name == "linkersymbol" ||
     name == "setimmutable" || name.startsWith "verbatim_"
 
 private def builtinName (ctx : ValidateCtx) (name : String) : Bool :=
@@ -67,8 +69,8 @@ private def opInputs : Op → Nat
   | .call | .callcode => 7
   | .delegatecall | .staticcall => 6
   | .clz | .iszero | .not | .pop | .mload | .sload | .tload | .calldataload
-  | .datasize | .dataoffset | .balance | .extcodesize | .extcodehash | .blockhash
-  | .blobhash | .selfdestruct => 1
+  | .datasize | .dataoffset | .loadimmutable | .balance | .extcodesize
+  | .extcodehash | .blockhash | .blobhash | .selfdestruct => 1
   | .log0 => 2
   | .log1 => 3
   | .log2 => 4
@@ -146,6 +148,14 @@ private def exprOutputs (ctx : ValidateCtx) : Expr Op → Option Nat
             let name ← directString arg
             if objectNameAllowed ctx name then some (opOutputs op) else none
         | _ => none
+      else if op == .loadimmutable then
+        -- The immutable's name is a direct string literal, as for the layout
+        -- built-ins; unlike them it names no object, so no accessibility rule
+        -- applies. `validateObjectSource` separately requires a matching
+        -- `setimmutable`.
+        match args with
+        | [arg] => if (directString arg).isSome then some (opOutputs op) else none
+        | _ => none
       else
         validArgs ctx args
         some (opOutputs op)
@@ -153,7 +163,7 @@ private def exprOutputs (ctx : ValidateCtx) : Expr Op → Option Nat
       if !validIdentifier name || lowLevelReserved name then none
       if name == "memoryguard" then
         if args.length != 1 then none else validArgs ctx args; some 1
-      else if name == "linkersymbol" || name == "loadimmutable" then
+      else if name == "linkersymbol" then
         match args with
         | [arg] => if (directString arg).isSome then some 1 else none
         | _ => none
@@ -402,18 +412,22 @@ private def accessibleObjectNames : Object Op → List String
           |>.map (withPrefix child))
       name :: dataNames ++ subNames
 
+/-- Collect the immutable names read (`loadimmutable`, now an ordinary `Op`)
+and written (`setimmutable`, still a solc extension carried as a `.call`). -/
 private def collectImmutableCallsExpr : Expr Op → List String × List String
   | .lit _ | .var _ | .builtin _ [] | .call _ [] => ([], [])
-  | .builtin _ args => args.foldl (fun acc e =>
-      let found := collectImmutableCallsExpr e
-      (acc.1 ++ found.1, acc.2 ++ found.2)) ([], [])
+  | .builtin op args =>
+      let nested := args.foldl (fun acc e =>
+        let found := collectImmutableCallsExpr e
+        (acc.1 ++ found.1, acc.2 ++ found.2)) ([], [])
+      if op == .loadimmutable then
+        match args with | [.lit (.string key)] => (key :: nested.1, nested.2) | _ => nested
+      else nested
   | .call name args =>
       let nested := args.foldl (fun acc e =>
         let found := collectImmutableCallsExpr e
         (acc.1 ++ found.1, acc.2 ++ found.2)) ([], [])
-      if name == "loadimmutable" then
-        match args with | [.lit (.string key)] => (key :: nested.1, nested.2) | _ => nested
-      else if name == "setimmutable" then
+      if name == "setimmutable" then
         match args with | [_, .lit (.string key), _] => (nested.1, key :: nested.2) | _ => nested
       else nested
 
