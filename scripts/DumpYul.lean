@@ -60,8 +60,6 @@ def main (args : List String) : IO UInt32 := do
             (D := YulSemantics.EVM.evmWithExternal NC NR) (desugarObject raw)
           let optimized := YulEvmCompiler.Optimizer.optimizerPipelineObject
             (calls := NC) (creates := NR) on
-          -- The spill operates on the guard-bearing normalized object `on`.
-          let rematOn := YulEvmCompiler.Optimizer.RematSpill.rematObject on
           let selOf := fun ob =>
             match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback ob ob with
             | some r => r.selected | none => 0
@@ -70,11 +68,29 @@ def main (args : List String) : IO UInt32 := do
                 (YulEvmCompiler.Optimizer.MemorySpill.declaredStmts code).length +
                   subs.foldl (fun a s => a + declCount s) 0
           let rematRaw := YulEvmCompiler.Optimizer.RematSpill.rematObject raw
-          IO.println s!"raw (spilled): decls={declCount raw} spillCount={selOf raw}"
-          IO.println s!"remat(raw):    decls={declCount rematRaw} spillCount={selOf rematRaw}"
-          IO.println s!"normalized on: decls={declCount on} spillCount={selOf on}"
-          IO.println s!"remat(on):     decls={declCount rematOn} spillCount={selOf rematOn}"
-          IO.println s!"optimized:     decls={declCount optimized}"
+          -- Mirror compileSource's spillCompile: spill `base` (fallback
+          -- `optimized`), re-optimize, store-elim, compile; report code size.
+          let spillCompile := fun (base : Object YulSemantics.EVM.Op) =>
+            (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback
+              base optimized with
+            | some spilled =>
+                if spilled.selected = 0 then none
+                else match YulEvmCompiler.compileObject spilled.object with
+                  | none => none
+                  | some plainLayout =>
+                      let sOpt := YulEvmCompiler.Optimizer.SpillStoreElim.elimObject
+                        (YulEvmCompiler.Optimizer.optimizerPipelineObject (calls := NC)
+                          (creates := NR) (YulEvmCompiler.Optimizer.Normalize.normalizeObject
+                            (D := YulSemantics.EVM.evmWithExternal NC NR) spilled.object))
+                      YulEvmCompiler.compileObject sOpt
+                        <|> YulEvmCompiler.compileObject
+                          (YulEvmCompiler.Optimizer.stackLayoutObject sOpt)
+                        <|> some plainLayout
+            | none => none : Option YulSemantics.EVM.Layout)
+          let szOf := fun (l : Option YulSemantics.EVM.Layout) =>
+            match l with | some x => x.code.length | none => 0
+          IO.println s!"raw:   spillCount={selOf raw}   codeSize={szOf (spillCompile raw)}"
+          IO.println s!"remat: spillCount={selOf rematRaw}   codeSize={szOf (spillCompile rematRaw)}"
           return 0
         let (opt, tag) :=
           if rest.contains "--prespill" then
