@@ -397,10 +397,111 @@ def scheduleLinear (d : Dag) (target : SymState) (fuel : Nat) : Option (List Asm
           -- 3. remove the b memoized/intermediate/input values below the top-m block
           (emitCleanup m es2 b).map ES.code
 
+/-! ### Eviction-aware linear scheduler (`scheduleEvict`)
+
+Consumes each value at its LAST use instead of memoizing everything, so the live
+set stays small (the log2 chain's is ~4) and big windows don't drown in cleanup.
+`remUses[n]` = (op-arg references of `n`) + (appearances of `n` in the target `T`);
+a value with a `T` appearance keeps `remUses ≥ 1` through phase 1, so it is never
+consumed before the final layout. All correctness is absorbed by the gate. -/
+
+/-- Total use-count per node: `T` appearances plus op-arg references among the
+reachable sub-DAG (descending sweep; children have smaller ids). -/
+def computeRem (d : Dag) (T : List Nat) : Array Nat :=
+  let n := d.nodes.size
+  let rem0 : Array Nat := Array.replicate n 0
+  let rem1 := T.foldl (fun a id => if id < n then a.set! id (a[id]! + 1) else a) rem0
+  (List.range n).reverse.foldl (fun a id =>
+    if a[id]! > 0 then
+      match d.node id with
+      | .app _ args => args.foldl (fun a c => if c < n then a.set! c (a[c]! + 1) else a) a
+      | _ => a
+    else a) rem1
+
+/-- Emitter + remaining-use table. -/
+structure EvSt where
+  es : ES
+  rem : Array Nat
+
+def emitEv (ev : EvSt) (i : Asm) : Option EvSt := (emit ev.es i).map (fun es => ⟨es, ev.rem⟩)
+def EvSt.dec (ev : EvSt) (a : Nat) : EvSt := ⟨ev.es, ev.rem.set! a (ev.rem[a]! - 1)⟩
+
+/-- Bring node `a` (already present) to the top: if this is its last use
+(`remUses ≤ 1`) MOVE it (SWAP, consuming its copy — a no-op when already on top);
+otherwise DUP a copy. Decrements `remUses`. Bails past the DUP16/SWAP16 reach. -/
+def arrange1 (ev : EvSt) (a : Nat) : Option EvSt :=
+  match findIdx a ev.es.model.stack with
+  | none => none
+  | some depth =>
+      if ev.rem[a]! ≤ 1 then
+        if depth == 0 then some (ev.dec a)
+        else if h : 0 < depth ∧ depth - 1 < 16 then
+          (emitEv ev (.swap ⟨depth - 1, h.2⟩)).map (fun ev => ev.dec a)
+        else none
+      else
+        if h : depth < 16 then (emitEv ev (.dup ⟨depth, h⟩)).map (fun ev => ev.dec a)
+        else none
+
+/-- Arrange a list of args (deepest first) onto the top in order. -/
+def arrangeArgs : EvSt → List Nat → Option EvSt
+  | ev, [] => some ev
+  | ev, a :: rest => (arrange1 ev a).bind (fun ev' => arrangeArgs ev' rest)
+
+/-! `ensureEv node` ensures `node`'s value is present on the stack (computing it
+once if absent), then leaves it there. `app` first ensures its args present,
+arranges them on top (consuming last-use operands), and emits the op. -/
+mutual
+def ensureEv : Nat → EvSt → Nat → Option EvSt
+  | 0, _, _ => none
+  | fuel + 1, ev, node =>
+      match findIdx node ev.es.model.stack with
+      | some _ => some ev
+      | none =>
+          match ev.es.dag.node node with
+          | .lit v => emitEv ev (.push v)
+          | .inp _ => none
+          | .app op args =>
+              match ensureArgsEv fuel ev args with
+              | none => none
+              | some ev1 =>
+                  match arrangeArgs ev1 args.reverse with
+                  | none => none
+                  | some ev2 => emitEv ev2 (.op op)
+def ensureArgsEv : Nat → EvSt → List Nat → Option EvSt
+  | _, ev, [] => some ev
+  | 0, _, _ => none
+  | fuel + 1, ev, a :: rest =>
+      match ensureEv fuel ev a with
+      | none => none
+      | some ev1 => ensureArgsEv fuel ev1 rest
+end
+
+/-- Eviction-aware scheduler: compute every output (consuming intermediates at
+last use), then DUP the outputs into pre-rotated place and remove the (now small)
+remainder with the rotating cleanup. -/
+def scheduleEvict (d : Dag) (target : SymState) (fuel : Nat) : Option (List Asm) :=
+  let T := target.stack
+  let m := T.length
+  let k := target.inputs
+  if m > 16 then none else
+  let ev0 : EvSt := ⟨initES d k, computeRem d T⟩
+  if m == 0 then (emitPops ev0.es k).map ES.code else
+  match T.foldlM (fun ev node => ensureEv fuel ev node) ev0 with
+  | none => none
+  | some ev1 =>
+      let b := ev1.es.model.stack.length
+      let rot := b % m
+      match (List.range m).reverse.foldlM
+          (fun ev j => (dupToTop ev.es (T[(j + (m - rot)) % m]?.getD 0)).map
+            (fun es => ⟨es, ev.rem⟩)) ev1 with
+      | none => none
+      | some ev2 => (emitCleanup m ev2.es b).map ES.code
+
 /-- Candidate schedules; the gate keeps the cheapest valid one. -/
 def scheduleCandidates (d : Dag) (target : SymState) : List (List Asm) :=
   let fuel := 16 * (reachCount d target.stack) + 200
-  (scheduleLinear d target fuel).toList
+  (scheduleEvict d target fuel).toList
+    ++ (scheduleLinear d target fuel).toList
     ++ (scheduleStoreInPlace d target fuel).toList
     ++ (scheduleRebuild d target fuel).toList
 
