@@ -958,6 +958,78 @@ def frameStepLookupB (prog : List Asm) (lookup : CertLookup) :
       | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
       | _ => false
 
+/-- `frameStepLookupB` with jump targets resolved through a precomputed
+target table instead of one whole-program scan per jump. Proved equal to
+`frameStepLookupB` below, so the verifier's meaning is unchanged. -/
+def frameStepLookupMapB (tgts : Std.HashMap Label (List Asm))
+    (lookup : CertLookup) :
+    Asm → List Asm → FLayout → Nat → FLayout → Bool
+  | .push _,      c, S, F, R => decide (lookup c = some (.word :: S, F, R))
+  | .dup n,       c, S, F, R => match S[n.val]? with
+      | some FSlot.word => decide (lookup c = some (.word :: S, F, R))
+      | _ => false
+  | .pushLabel l, c, S, F, R => decide (lookup c = some (.retTo l :: S, F, R))
+  | .pop,         c, S, F, R => match S with
+      | .word :: S' => decide (lookup c = some (S', F, R))
+      | _ => false
+  | .swap n,      c, S, F, R => match S with
+      | sx :: rest => match rest.drop n.val with
+          | sy :: rst => decide (sx = FSlot.word ∧
+              (∀ s ∈ rest.take n.val, s = FSlot.word) ∧
+              lookup c = some (sy :: (rest.take n.val ++ sx :: rst), F, R))
+          | [] => false
+      | [] => false
+  | .label _,     c, S, F, R => decide (lookup c = some (S, F, R))
+  | .op yop,      c, S, F, R => match opTable yop with
+      | some o => decide (Operation.popArity o ≤ S.length ∧
+          lookup c = some
+            (List.replicate (Operation.pushArity o) FSlot.word ++
+              S.drop (Operation.popArity o), F, R))
+      | none => false
+  | .jump l,      c, S, F, R =>
+      (match tgts[l]? with
+       | some t => decide (lookup t = some (S, F, R))
+       | none => false)
+      || (match c with
+          | .label Lret :: c' =>
+              (match tgts[l]? with
+               | some t =>
+                   (match splitSetup Lret S with
+                    | some (Sw, Smid) =>
+                        (match lookup t with
+                         | some (St, Ft, Sret) =>
+                             decide (tgts[Lret]? = some c' ∧
+                               (∀ s ∈ Sw, s = FSlot.word) ∧
+                               St = Sw ++ [FSlot.ret] ∧ F + Smid.length ≤ Ft ∧
+                               (∀ s ∈ Sret, s = FSlot.word) ∧
+                               lookup c' = some (Sret ++ Smid, F, R))
+                         | none => false)
+                    | none => false)
+               | none => false)
+          | _ => false)
+  | .jumpi l,     c, S, F, R => match S with
+      | .word :: S' =>
+          (match tgts[l]? with
+           | some t => decide (lookup t = some (S', F, R))
+           | none => false)
+          && decide (lookup c = some (S', F, R))
+      | _ => false
+  | .dynJump,     _, S, _F, R => match S with
+      | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
+      | _ => false
+
+
+omit model in
+/-- Resolving jump targets through `findLabelMap` computes exactly what scanning
+with `findLabel` does. -/
+theorem frameStepLookupMapB_eq_frameStepLookupB (prog : List Asm)
+    (lookup : CertLookup) (i : Asm) (c : List Asm) (S : FLayout) (F : Nat)
+    (R : FLayout) :
+    frameStepLookupMapB (findLabelMap prog) lookup i c S F R =
+      frameStepLookupB prog lookup i c S F R := by
+  cases i <;>
+    simp only [frameStepLookupMapB, frameStepLookupB, findLabelMap_getElem?]
+
 /-! ### The finite certificate and the top-level check -/
 
 /-- The untrusted solver's output: one `(positionLength, position, layout, frameBase, returnLayout)`
@@ -1168,7 +1240,7 @@ into it, so `prog.length` was recomputed — an O(program) walk — once per ent
 and the table was rebuilt once per lookup (see `lookupIn`). With ~one entry per
 reachable instruction that made the verifier quadratic. -/
 def checkCertWith (prog : List Asm) (d : CertData) (n : Nat)
-    (t : Array (Option CertEntry)) : Bool :=
+    (t : Array (Option CertEntry)) (tgts : Std.HashMap Label (List Asm)) : Bool :=
   d.entries.all (fun e => decide (e.1 ≤ n)) &&
   (let lookup := lookupIn t
    (match lookup prog with
@@ -1177,13 +1249,13 @@ def checkCertWith (prog : List Asm) (d : CertData) (n : Nat)
    d.entries.all (fun e =>
      decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023)
      && (match e.2.1 with
-         | i :: c' => frameStepLookupB prog lookup i c'
+         | i :: c' => frameStepLookupMapB tgts lookup i c'
              e.2.2.1 e.2.2.2.1 e.2.2.2.2
          | [] => true)))
 
 /-- Bundled-lookup implementation of `checkCert`. -/
 def checkCertFast (prog : List Asm) (d : CertData) : Bool :=
-  checkCertWith prog d prog.length d.table
+  checkCertWith prog d prog.length d.table (findLabelMap prog)
 
 omit model in
 theorem checkCertFast_eq_checkCert (prog : List Asm) (d : CertData) :
@@ -1192,7 +1264,9 @@ theorem checkCertFast_eq_checkCert (prog : List Asm) (d : CertData) :
   let fastEntry := fun e : Nat × List Asm × FLayout × Nat × FLayout =>
     decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023) &&
       match e.2.1 with
-      | i :: c => frameStepLookupB prog lookup i c e.2.2.1 e.2.2.2.1 e.2.2.2.2
+      | i :: c =>
+          frameStepLookupMapB (findLabelMap prog) lookup i c
+            e.2.2.1 e.2.2.2.1 e.2.2.2.2
       | [] => true
   let slowEntry := fun e : Nat × List Asm × FLayout × Nat × FLayout =>
     decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023) &&
@@ -1205,7 +1279,8 @@ theorem checkCertFast_eq_checkCert (prog : List Asm) (d : CertData) :
     | nil => rfl
     | cons i c =>
         simp only
-        rw [frameStepLookupB_eq_frameStepB]
+        rw [frameStepLookupMapB_eq_frameStepLookupB,
+          frameStepLookupB_eq_frameStepB]
   have hall : d.entries.all fastEntry = d.entries.all slowEntry := by
     congr 1
     funext e

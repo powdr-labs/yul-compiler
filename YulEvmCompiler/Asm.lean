@@ -541,6 +541,73 @@ theorem labelAddrs_getElem? (p : List Asm) (l : Label) :
   rw [labelAddrs, labelAddrsGo_getElem?]
   simp
 
+/-- Record `i`'s label as targeting `rest`, keeping any target already recorded
+(so the *first* definition wins, as `findLabel` does). -/
+def noteTarget (i : Asm) (rest : List Asm) (m : Std.HashMap Label (List Asm)) :
+    Std.HashMap Label (List Asm) :=
+  match i with
+  | .label l => if m.contains l then m else m.insert l rest
+  | _ => m
+
+/-- `findLabel`'s answer for every label, accumulated left to right. -/
+def findLabelMapGo : List Asm → Std.HashMap Label (List Asm) →
+    Std.HashMap Label (List Asm)
+  | [], m => m
+  | i :: rest, m => findLabelMapGo rest (noteTarget i rest m)
+
+/-- Jump-target table: the code suffix after each label's first definition,
+computed in one pass. `findLabel l p` scans the whole program for one label, and
+the stack-certificate verifier resolves one per jump. -/
+def findLabelMap (p : List Asm) : Std.HashMap Label (List Asm) :=
+  findLabelMapGo p ∅
+
+/-- An instruction that is not `.label l` leaves `l`'s recorded target alone. -/
+private theorem noteTarget_ne (i : Asm) (rest : List Asm)
+    (m : Std.HashMap Label (List Asm)) (l : Label) (hi : i ≠ .label l) :
+    (noteTarget i rest m).contains l = m.contains l ∧
+      (noteTarget i rest m)[l]? = m[l]? := by
+  cases i with
+  | label l' =>
+      have hne : ¬ l' = l := fun h => hi (by rw [h])
+      by_cases hm : m.contains l'
+      · simp [noteTarget, hm]
+      · refine ⟨?_, ?_⟩
+        · simp [noteTarget, hm, Std.HashMap.contains_insert, beq_iff_eq, hne]
+        · simp [noteTarget, hm, Std.HashMap.getElem?_insert, beq_iff_eq, hne]
+  | _ => exact ⟨rfl, rfl⟩
+
+theorem findLabelMapGo_getElem? (p : List Asm) :
+    ∀ (m : Std.HashMap Label (List Asm)) (l : Label),
+      (findLabelMapGo p m)[l]? =
+        if m.contains l then m[l]? else findLabel l p := by
+  induction p with
+  | nil =>
+      intro m l
+      simp only [findLabelMapGo, findLabel]
+      by_cases h : m.contains l
+      · simp [h]
+      · simp [h, Std.HashMap.getElem?_eq_none_of_contains_eq_false
+          (by simpa using h)]
+  | cons i rest ih =>
+      intro m l
+      rw [findLabelMapGo, ih]
+      by_cases hi : i = .label l
+      · subst hi
+        by_cases hm : m.contains l
+        · simp [noteTarget, hm]
+        · simp [noteTarget, hm, findLabel]
+      · obtain ⟨hc, hg⟩ := noteTarget_ne i rest m l hi
+        rw [hc, hg]
+        by_cases hm : m.contains l
+        · simp [hm]
+        · simp [hm, findLabel, hi]
+
+/-- `findLabelMap` agrees with `findLabel` on every label. -/
+theorem findLabelMap_getElem? (p : List Asm) (l : Label) :
+    (findLabelMap p)[l]? = findLabel l p := by
+  rw [findLabelMap, findLabelMapGo_getElem?]
+  simp
+
 /-- `lowerInstr` against a precomputed address table. -/
 def lowerInstrWith (addrs : Std.HashMap Label Nat) : Asm → Option (List Instr)
   | .push v      => some [Instr.pushMin (conv v)]
