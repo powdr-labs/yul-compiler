@@ -2,6 +2,7 @@ import YulEvmCompiler.Optimizer.Implementation.DeadPure
 import YulEvmCompiler.Optimizer.Implementation.StorageForwardResolve
 import YulEvmCompiler.Optimizer.Implementation.StructurePasses
 import YulEvmCompiler.Optimizer.Implementation.CoalesceCopies
+import YulEvmCompiler.Optimizer.Implementation.DeadStoresSound
 set_option warningAsError true
 /-!
 # YulEvmCompiler.Optimizer.Implementation.DeadStores

@@ -412,6 +412,15 @@ theorem prepend_mem {k : Nat} {x : Ident} {pre V : VEnv D} (hk : k ≤ V.length)
   · simp
   · simp only [List.length_drop, List.length_map]; omega
 
+/-- A name among freshly prepended keys is above the tail. -/
+theorem of_keys_head {k : Nat} {x : Ident} {Vm V : VEnv D} {xs : List Ident}
+    (hkeys : Vm.map Prod.fst = xs ++ V.map Prod.fst) (hk : k ≤ V.length) (hx : x ∈ xs) :
+    AboveK (D := D) k x Vm := by
+  refine ⟨xs ++ (V.map Prod.fst).take (V.length - k), (V.map Prod.fst).drop (V.length - k),
+    ?_, ?_, List.mem_append_left _ hx⟩
+  · rw [hkeys, List.append_assoc, List.take_append_drop]
+  · simp only [List.length_drop, List.length_map]; omega
+
 /-- Above-the-tail depends only on keys, and execution only prepends keys. -/
 theorem of_keys_suffix {k : Nat} {x : Ident} {V V' : VEnv D}
     (h : AboveK (D := D) k x V) (hs : V.map Prod.fst <:+ V'.map Prod.fst) :
@@ -419,6 +428,18 @@ theorem of_keys_suffix {k : Nat} {x : Ident} {V V' : VEnv D}
   obtain ⟨A, T, hV, hT, hx⟩ := h
   obtain ⟨pre, hpre⟩ := hs
   exact ⟨pre ++ A, T, by rw [← hpre, hV, List.append_assoc], hT, List.mem_append_right _ hx⟩
+
+/-- Above-the-tail transports across a keys-prepending step. -/
+theorem of_keys_mono {k : Nat} {x : Ident} {Vm V : VEnv D} {xs : List Ident}
+    (hkeys : Vm.map Prod.fst = xs ++ V.map Prod.fst) (h : AboveK (D := D) k x V) :
+    AboveK (D := D) k x Vm :=
+  h.of_keys_suffix ⟨xs, hkeys.symm⟩
+
+/-- Above-the-tail depends only on keys. -/
+theorem of_keys_eq {k : Nat} {x : Ident} {Vm V : VEnv D}
+    (hkeys : Vm.map Prod.fst = V.map Prod.fst) (h : AboveK (D := D) k x V) :
+    AboveK (D := D) k x Vm :=
+  h.of_keys_suffix ⟨[], by simpa using hkeys.symm⟩
 
 /-- Peel a non-matching head. -/
 theorem peel {k : Nat} {x y : Ident} {v : D.Value} {V : VEnv D}
@@ -512,12 +533,14 @@ theorem sres {V₁ : VEnv D} {st o} {res₂ : Res D}
 
 end VChgRes
 
-/-- No dead name is mentioned by the code. -/
-def DeadFree (dead : Ident → Prop) (code : Code D.Op) : Prop :=
+/-- No dead name is mentioned by the code. Stated over the raw operation type so
+that it is inferable from the `Code` alone. -/
+def DeadFree {Op : Type} (dead : Ident → Prop) (code : Code Op) : Prop :=
   ∀ x, dead x → codeMentions x code = false
 
 /-- Mention-freeness is monotone along syntactic containment. -/
-theorem DeadFree.mono {dead : Ident → Prop} {c₁ c₂ : Code D.Op} (h : DeadFree dead c₁)
+theorem DeadFree.mono {Op : Type} {dead : Ident → Prop} {c₁ c₂ : Code Op}
+    (h : DeadFree dead c₁)
     (hsub : ∀ x, codeMentions x c₁ = false → codeMentions x c₂ = false) : DeadFree dead c₂ :=
   fun x hx => hsub x (h x hx)
 
