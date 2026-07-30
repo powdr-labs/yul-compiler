@@ -568,6 +568,7 @@ functionCall/multiple_return_values.sol	780	218
 functionCall/named_args.sol	442	331
 functionCall/named_args_overload.sol	2657	1784
 functionCall/return_size_bigger_than_expected.sol	209	78
+functionCall/send_zero_ether.sol	46834	45286
 functionCall/transaction_status.sol	509	350
 functionCall/value_test.sol	308	252
 functionSelector/function_selector_via_contract_name.sol	230	164
@@ -1050,6 +1051,7 @@ structs/struct_storage_to_mapping.sol	45313	44617
 structs/struct_storage_to_memory.sol	7673	6735
 structs/struct_storage_to_memory_function_ptr.sol	10436	9361
 structs/structs.sol	131542	128916
+tryCatch/create.sol	81186	77478
 types/assign_calldata_value_type.sol	309	164
 types/convert_fixed_bytes_to_fixed_bytes_greater_size.sol	222	186
 types/convert_fixed_bytes_to_fixed_bytes_same_size.sol	213	186
@@ -1129,10 +1131,12 @@ various/assignment_to_const_var_involving_expression.sol	171	142
 various/balance.sol	2788	144
 various/byte_optimization_bug.sol	428	340
 various/code_access_padding.sol	929	486
+various/code_access_runtime.sol	84160	77950
 various/code_length_contract_member.sol	3140	2783
 various/codebalance_assembly.sol	8398	5724
 various/codehash.sol	8701	8327
 various/codehash_assembly.sol	8686	8327
+various/contract_binary_dependencies.sol	176640	158766
 various/crazy_elementary_typenames_on_stack.sol	171	145
 various/create_calldata.sol	3223	2616
 various/create_random.sol	67114	65644
