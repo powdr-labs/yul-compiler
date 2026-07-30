@@ -1075,7 +1075,12 @@ jobs:
           if-no-files-found: ignore
 
   # Aggregate every leg's captured summary into one sticky PR comment: parsing,
-  # correctness, gas (vs solc-optimized AND codegen parity), soundness, verdict.
+  # correctness, gas (vs solc-optimized AND codegen parity), compiler runtime,
+  # soundness, verdict. Compiler runtime needs no extra CI work: the corpus
+  # runners read the clock around each fixture's compile during the runs above
+  # and print one `Compile time:` line per suite into the same captured output.
+  # A main baseline predating that line renders as "—" rather than failing, and
+  # heals on the first main run that publishes a bundle containing it.
   # Runs on pull requests only; `always()` so it also reports failing runs (that
   # is when the summary is most useful). Needs no Lean toolchain.
   pr-summary:

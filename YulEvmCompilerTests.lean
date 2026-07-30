@@ -5,4 +5,5 @@ import YulEvmCompilerTests.SolcDifferential
 import YulEvmCompilerTests.CorpusGas
 import YulEvmCompilerTests.SolTest
 import YulEvmCompilerTests.Parallel
+import YulEvmCompilerTests.Timing
 set_option warningAsError true
