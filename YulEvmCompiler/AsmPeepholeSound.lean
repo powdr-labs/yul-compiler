@@ -78,6 +78,11 @@ theorem astep_stkRefs [model : ExternalModel] {R : List Label}
       rcases List.mem_cons.mp hl with h | h
       · cases h
       · exact hσ l h
+  | pushImmutable _ =>
+      intro l hl
+      rcases List.mem_cons.mp hl with h | h
+      · cases h
+      · exact hσ l h
   | @op yop args rets c σ yst yst' hb =>
       intro l hl
       rcases List.mem_append.mp hl with h | h
@@ -235,6 +240,12 @@ theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
       cases hc with
       | keep _ hc' => exact ⟨_, .single .push, .sync hc'⟩
       | window hn hc' => exact ⟨_, .refl _, .mid1 hn hc'⟩
+    | @pushImmutable key v c σ2 yst hv =>
+      -- No peephole window ever opens on an immutable placeholder, so the pass
+      -- can only `keep` it — which is exactly what must happen: folding one
+      -- would move the 32 bytes the constructor patches.
+      cases hc with
+      | keep _ hc' => exact ⟨_, .single (.pushImmutable hv), .sync hc'⟩
     | @op yop args rets c σ2 yst yst' hb =>
       cases hc with
       | keep _ hc' => exact ⟨_, .single (.op hb), .sync hc'⟩

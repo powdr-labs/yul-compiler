@@ -77,6 +77,37 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         omega)
     · rw [hstk']
       rfl
+  | @pushImmutable key v c σ yst hv =>
+    -- Identical to `push` except the width is pinned to 32, which is what makes
+    -- the immediate's byte position independent of the value stored there.
+    obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
+      locate hlow hsuf
+    obtain rfl : [Instr.push ⟨32, by norm_num⟩ (conv v)] = isI := by
+      simpa [lowerInstr] using hI
+    refine ⟨40000, ?_⟩
+    intro s hm hgas
+    have hpos : codeSize prog - codeSize (Asm.pushImmutable key v :: c) = codeSize pre := by
+      rw [codeSize_cons]
+      omega
+    obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ :=
+      pushStepU (w := ⟨32, by norm_num⟩) (u := conv v)
+        (hwf := by
+          show (conv v).toNat < 256 ^ 32
+          rw [conv_toNat, show (256:Nat) ^ 32 = 2 ^ 256 by norm_num]
+          exact v.isLt)
+        (pre := assembleBytes isPre) (post := assembleBytes isC ++ payload)
+        (assembleWithPayload_at₁ hbytes payload)
+        hm.frame hm.smatch
+        (by rw [hm.pc, hpos, hlenPre])
+        hm.stack (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); omega) hgas
+    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_⟩, hg'⟩
+    · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
+      rw [hpc', hlenPre]
+      exact congrArg UInt256.ofNat (by
+        simp only [Asm.size] at hsize ⊢
+        omega)
+    · rw [hstk']
+      rfl
   | @op yop args rets c σ yst yst' hstepOp =>
     obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
       locate hlow hsuf
