@@ -112,6 +112,13 @@ def substArgsR (σ : RematMap) : List (Expr Op) → List (Expr Op)
   | e :: rest => substExprR σ e :: substArgsR σ rest
 end
 
+/-- Drop every fact whose key or producer free variable is among `xs`. A `let`
+that (re)declares such a name shadows the fact's basis, so — mirroring
+`ReuseValues`/`Propagate` — the fact is invalidated rather than relying on a
+global unique-names assumption. -/
+def RematMap.kill (xs : List Ident) (σ : RematMap) : RematMap :=
+  σ.filter (fun p => (p.1 :: exprVarsR p.2).all (fun w => !xs.contains w))
+
 /-- Substitute `σ` into a statement's own expressions (NOT recursing into nested
 bodies — the sweep does that, threading scope). -/
 def substShallow (σ : RematMap) : Stmt Op → Stmt Op
@@ -148,11 +155,11 @@ def rematStmt (A : List Ident) (σ : RematMap) : Stmt Op → List (Stmt Op) × R
         -- dead; the composed `deadPure` pass removes it. Keeping it here makes
         -- the runtime environment byte-identical to the input, so soundness is
         -- just the per-use substitution congruence.
-        ([.letDecl [x] (some e')], (x, e') :: σ)
+        ([.letDecl [x] (some e')], (x, e') :: RematMap.kill [x] σ)
       else
-        ([.letDecl [x] (some e')], σ)
+        ([.letDecl [x] (some e')], RematMap.kill [x] σ)
   | .letDecl xs val =>
-      ([.letDecl xs (val.map (substExprR σ))], σ)
+      ([.letDecl xs (val.map (substExprR σ))], RematMap.kill xs σ)
   | .assign xs e => ([.assign xs (substExprR σ e)], σ)
   | .exprStmt e => ([.exprStmt (substExprR σ e)], σ)
   | .block body => ([.block (rematStmts A σ body).1], σ)
