@@ -369,10 +369,40 @@ def scheduleStoreInPlace (d : Dag) (target : SymState) (fuel : Nat) : Option (Li
       | none => none
       | some es2 => some es2.code
 
+/-- CSE-materializing linear scheduler. `ensure` computes every reachable node
+ONCE (ops consume DUPs, originals stay memoized), so there is no exponential
+rebuild — the whole win of the DAG. Then it DUPs the outputs into place
+(pre-rotated by the pre-cleanup height `b`) and removes everything below with the
+rotating cleanup. Bails (→ gate keeps original) whenever a needed value would sit
+past the `DUP16`/`SWAP16` reach, which bounds the live-set depth. -/
+def scheduleLinear (d : Dag) (target : SymState) (fuel : Nat) : Option (List Asm) :=
+  let T := target.stack
+  let m := T.length
+  let k := target.inputs
+  if m > 16 then none else
+  let init := initES d k
+  if m == 0 then (emitPops init k).map ES.code else
+  -- 1. materialize every output's value on the stack (each node computed once)
+  match T.foldlM (fun es node => ensure fuel es node) init with
+  | none => none
+  | some es1 =>
+      let b := es1.model.stack.length        -- everything currently on the stack is cleaned
+      let rot := b % m
+      -- 2. DUP outputs to the top, pre-rotated so the cleanup's left-rotate lands T:
+      --    build O[m-1] (deepest) first … O[0] (top) last, O[j] = T[(j + (m-rot)) % m].
+      match (List.range m).reverse.foldlM
+          (fun es j => dupToTop es (T[(j + (m - rot)) % m]?.getD 0)) es1 with
+      | none => none
+      | some es2 =>
+          -- 3. remove the b memoized/intermediate/input values below the top-m block
+          (emitCleanup m es2 b).map ES.code
+
 /-- Candidate schedules; the gate keeps the cheapest valid one. -/
 def scheduleCandidates (d : Dag) (target : SymState) : List (List Asm) :=
   let fuel := 16 * (reachCount d target.stack) + 200
-  (scheduleStoreInPlace d target fuel).toList ++ (scheduleRebuild d target fuel).toList
+  (scheduleLinear d target fuel).toList
+    ++ (scheduleStoreInPlace d target fuel).toList
+    ++ (scheduleRebuild d target fuel).toList
 
 /-! ### Window extraction + gate -/
 
