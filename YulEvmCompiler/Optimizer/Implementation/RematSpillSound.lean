@@ -76,6 +76,30 @@ theorem substExprR_var_mem {σ : RematMap} {x : Ident} {e : Expr Op}
     substExprR σ (.var x) = e := by
   simp [substExprR, hfind]
 
+/-- **Fact creation.** Binding a fresh key `x` (absent from the existing facts
+and from its own producer's free vars) to `v = evalPure V e'` extends `RematOk`
+with the new fact `(x, e')`; existing facts survive because the new binding
+lies outside every fact variable. -/
+theorem RematOk.cons_let {V : VEnv D} {σ : RematMap} {x : Ident} {e' : Expr Op}
+    {v : U256} (hok : RematOk V σ) (hxfresh : x ∉ factVars σ)
+    (hxnotfree : x ∉ exprVarsRv e') (hev : evalPure V e' = some v) :
+    RematOk ((x, v) :: V) ((x, e') :: σ) := by
+  have hget : ∀ y, y ≠ x → VEnv.get ((x, v) :: V) y = VEnv.get V y := by
+    intro y hy; rw [VEnv.get_cons]; exact if_neg (fun h => hy h.symm)
+  intro p hp
+  rcases List.mem_cons.mp hp with hp | hp
+  · subst hp
+    refine ⟨v, ?_, ?_⟩
+    · rw [VEnv.get_cons]; exact if_pos rfl
+    · rw [evalPure_agree (fun z hz => hget z (fun h => hxnotfree (h ▸ hz)))]; exact hev
+  · obtain ⟨w, hxw, hew⟩ := hok p hp
+    obtain ⟨hkey, hfv⟩ := factVars_of_mem hp
+    have hpx : p.1 ≠ x := fun h => hxfresh (h ▸ hkey)
+    refine ⟨w, ?_, ?_⟩
+    · rw [hget p.1 hpx]; exact hxw
+    · rw [evalPure_agree (fun z hz => hget z (fun h => hxfresh (h ▸ hfv z hz)))]
+      exact hew
+
 /-! ### Expression-level substitution congruence (forward + backward) -/
 
 mutual
