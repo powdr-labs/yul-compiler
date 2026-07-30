@@ -395,14 +395,44 @@ mutual
                 · exact resolveObjectCases_eq_layout hagree cases tail ht
 end
 
+/-- Layout entries are keyed by `litValue (.string ·)`, which keeps only the
+first **32 UTF-8 bytes** of the name. Two entries whose names share a 32-byte
+prefix therefore get the *same* key, and `compileResolvedObject`'s `Nodup` guard
+rejects the *whole object tree* when that happens — even if nothing references
+either name.
+
+Ordinary input reaches it: solc emits a `.metadata` segment in every object, so
+a grandchild contributes both `"parent.child"` and `"parent.child..metadata"`,
+and those share a 32-byte prefix as soon as the two generated names total more
+than 32 bytes (`"C_1234.C_1234_deployed"` already does at modest name lengths).
+
+The second of that pair is the one to drop, and *not* because of its length: a
+qualified name is unreferenceable exactly when `Validate.objectNameAllowed`
+refuses it, i.e. when it starts with `"."` or contains `".."`. Joining a
+`.`-prefixed data-segment name onto its parent always produces `".."`, so this
+rule removes precisely the propagated `.metadata`-style entries and nothing
+else. Dropping them removes only entries no program could ever name.
+
+Length is deliberately *not* the criterion. Layout references are checked by
+`objectNameAllowed`, not `literalWordWF`, so a name over 32 bytes is perfectly
+legal — Solidity's own `long_object_name.yul` resolves the 33-byte
+`"object2.object3.object4.datablock"`, and resolution matches entry names
+exactly (`findEntry`), so it works regardless of key truncation. Filtering by
+length would break it.
+
+Direct data segments are built by `dataEntries` and are untouched, so
+`Layout.Consistent` — which quantifies over an object's *direct* segments — is
+unaffected. -/
 private def shiftChildEntries (base : Nat) (child : ObjectPlan) : List ObjectEntry :=
-  child.entries.map fun entry =>
+  child.entries.filterMap fun entry =>
     if entry.name == child.name then
-      { entry with offset := base + entry.offset, size := child.bytecode.length }
+      some { entry with offset := base + entry.offset, size := child.bytecode.length }
     else
-      { name := child.name ++ "." ++ entry.name
-        offset := base + entry.offset
-        size := entry.size }
+      let qualified := child.name ++ "." ++ entry.name
+      if qualified.startsWith "." || qualified.contains ".." then
+        none
+      else
+        some { name := qualified, offset := base + entry.offset, size := entry.size }
 
 private def childEntries : Nat → List ObjectPlan → List ObjectEntry
   | _, [] => []
