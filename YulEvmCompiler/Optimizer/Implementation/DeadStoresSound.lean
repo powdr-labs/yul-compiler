@@ -904,70 +904,73 @@ theorem SubBound.mono {V V' : VEnv D} {bound : List Ident} {funs st code st' o}
   fun x hx => dom_mono h (hb x hx)
 
 /-- Statement equivalence at environments binding `bound`. -/
-def BEquivStmt (bound : List Ident) (s₁ s₂ : Stmt D.Op) : Prop :=
+def BEquivStmt (D : Dialect) [DecidableEq D.Value] (bound : List Ident)
+    (s₁ s₂ : Stmt D.Op) : Prop :=
   ∀ funs V st V' st' o, SubBound V bound →
     (ExecStmt D funs V st s₁ V' st' o ↔ ExecStmt D funs V st s₂ V' st' o)
 
 /-- Sequence equivalence at environments binding `bound`. -/
-def BEquivStmts (bound : List Ident) (ss₁ ss₂ : List (Stmt D.Op)) : Prop :=
+def BEquivStmts (D : Dialect) [DecidableEq D.Value] (bound : List Ident)
+    (ss₁ ss₂ : List (Stmt D.Op)) : Prop :=
   ∀ funs V st V' st' o, SubBound V bound →
     (ExecStmts D funs V st ss₁ V' st' o ↔ ExecStmts D funs V st ss₂ V' st' o)
 
 /-- Block equivalence at environments binding `bound`. -/
-def BEquivBlock (bound : List Ident) (b₁ b₂ : Block D.Op) : Prop :=
-  BEquivStmt (D := D) bound (.block b₁) (.block b₂)
+def BEquivBlock (D : Dialect) [DecidableEq D.Value] (bound : List Ident)
+    (b₁ b₂ : Block D.Op) : Prop :=
+  BEquivStmt D bound (.block b₁) (.block b₂)
 
 theorem BEquivStmt.refl (bound : List Ident) (s : Stmt D.Op) :
-    BEquivStmt (D := D) bound s s := fun _ _ _ _ _ _ _ => Iff.rfl
+    BEquivStmt D bound s s := fun _ _ _ _ _ _ _ => Iff.rfl
 
 theorem BEquivStmt.symm {bound : List Ident} {s₁ s₂ : Stmt D.Op}
-    (h : BEquivStmt (D := D) bound s₁ s₂) : BEquivStmt (D := D) bound s₂ s₁ :=
+    (h : BEquivStmt D bound s₁ s₂) : BEquivStmt D bound s₂ s₁ :=
   fun funs V st V' st' o hb => (h funs V st V' st' o hb).symm
 
 theorem BEquivStmt.trans {bound : List Ident} {s₁ s₂ s₃ : Stmt D.Op}
-    (h₁ : BEquivStmt (D := D) bound s₁ s₂) (h₂ : BEquivStmt (D := D) bound s₂ s₃) :
-    BEquivStmt (D := D) bound s₁ s₃ :=
+    (h₁ : BEquivStmt D bound s₁ s₂) (h₂ : BEquivStmt D bound s₂ s₃) :
+    BEquivStmt D bound s₁ s₃ :=
   fun funs V st V' st' o hb =>
     (h₁ funs V st V' st' o hb).trans (h₂ funs V st V' st' o hb)
 
 theorem BEquivStmts.refl (bound : List Ident) (ss : List (Stmt D.Op)) :
-    BEquivStmts (D := D) bound ss ss := fun _ _ _ _ _ _ _ => Iff.rfl
+    BEquivStmts D bound ss ss := fun _ _ _ _ _ _ _ => Iff.rfl
 
 theorem BEquivStmts.symm {bound : List Ident} {ss₁ ss₂ : List (Stmt D.Op)}
-    (h : BEquivStmts (D := D) bound ss₁ ss₂) : BEquivStmts (D := D) bound ss₂ ss₁ :=
+    (h : BEquivStmts D bound ss₁ ss₂) : BEquivStmts D bound ss₂ ss₁ :=
   fun funs V st V' st' o hb => (h funs V st V' st' o hb).symm
 
 theorem BEquivStmts.trans {bound : List Ident} {ss₁ ss₂ ss₃ : List (Stmt D.Op)}
-    (h₁ : BEquivStmts (D := D) bound ss₁ ss₂) (h₂ : BEquivStmts (D := D) bound ss₂ ss₃) :
-    BEquivStmts (D := D) bound ss₁ ss₃ :=
+    (h₁ : BEquivStmts D bound ss₁ ss₂) (h₂ : BEquivStmts D bound ss₂ ss₃) :
+    BEquivStmts D bound ss₁ ss₃ :=
   fun funs V st V' st' o hb =>
     (h₁ funs V st V' st' o hb).trans (h₂ funs V st V' st' o hb)
 
 theorem BEquivBlock.refl (bound : List Ident) (b : Block D.Op) :
-    BEquivBlock (D := D) bound b b := BEquivStmt.refl _ _
+    BEquivBlock D bound b b := BEquivStmt.refl _ _
 
 theorem BEquivBlock.symm {bound : List Ident} {b₁ b₂ : Block D.Op}
-    (h : BEquivBlock (D := D) bound b₁ b₂) : BEquivBlock (D := D) bound b₂ b₁ :=
+    (h : BEquivBlock D bound b₁ b₂) : BEquivBlock D bound b₂ b₁ :=
   BEquivStmt.symm h
 
 theorem BEquivBlock.trans {bound : List Ident} {b₁ b₂ b₃ : Block D.Op}
-    (h₁ : BEquivBlock (D := D) bound b₁ b₂) (h₂ : BEquivBlock (D := D) bound b₂ b₃) :
-    BEquivBlock (D := D) bound b₁ b₃ := BEquivStmt.trans h₁ h₂
+    (h₁ : BEquivBlock D bound b₁ b₂) (h₂ : BEquivBlock D bound b₂ b₃) :
+    BEquivBlock D bound b₁ b₃ := BEquivStmt.trans h₁ h₂
 
 /-- At the empty bound set the restriction is vacuous. -/
 theorem BEquivBlock.toEquiv {b₁ b₂ : Block D.Op}
-    (h : BEquivBlock (D := D) [] b₁ b₂) : EquivBlock D b₁ b₂ :=
+    (h : BEquivBlock D [] b₁ b₂) : EquivBlock D b₁ b₂ :=
   fun funs V st V' st' o => h funs V st V' st' o (SubBound.nil V)
 
 /-- An unrestricted equivalence is a restricted one. -/
 theorem BEquivBlock.ofEquiv {bound : List Ident} {b₁ b₂ : Block D.Op}
-    (h : EquivBlock D b₁ b₂) : BEquivBlock (D := D) bound b₁ b₂ :=
+    (h : EquivBlock D b₁ b₂) : BEquivBlock D bound b₁ b₂ :=
   fun funs V st V' st' o _ => h funs V st V' st' o
 
 /-! #### Sequence congruence -/
 
 private theorem bconsImp {bound : List Ident} {s₁ s₂ : Stmt D.Op} {ss₁ ss₂}
-    (hs : BEquivStmt (D := D) bound s₁ s₂) (hss : BEquivStmts (D := D) bound ss₁ ss₂)
+    (hs : BEquivStmt D bound s₁ s₂) (hss : BEquivStmts D bound ss₁ ss₂)
     {funs V st V' st' o} (hb : SubBound V bound)
     (h : ExecStmts D funs V st (s₁ :: ss₁) V' st' o) :
     ExecStmts D funs V st (s₂ :: ss₂) V' st' o := by
@@ -979,14 +982,25 @@ private theorem bconsImp {bound : List Ident} {s₁ s₂ : Stmt D.Op} {ss₁ ss�
 
 /-- Congruence: sequences extend equivalences element-wise. -/
 theorem BEquivStmts.cons_congr {bound : List Ident} {s₁ s₂ : Stmt D.Op} {ss₁ ss₂}
-    (hs : BEquivStmt (D := D) bound s₁ s₂) (hss : BEquivStmts (D := D) bound ss₁ ss₂) :
-    BEquivStmts (D := D) bound (s₁ :: ss₁) (s₂ :: ss₂) :=
+    (hs : BEquivStmt D bound s₁ s₂) (hss : BEquivStmts D bound ss₁ ss₂) :
+    BEquivStmts D bound (s₁ :: ss₁) (s₂ :: ss₂) :=
   fun _ _ _ _ _ _ hb => ⟨bconsImp hs hss hb, bconsImp hs.symm hss.symm hb⟩
+
+/-- A `funDef` statement's execution ignores its body entirely, so rewriting the
+body is a statement-level no-op (the *block's* hoisted scope is what changes —
+see `BEquivBlock.of_stmts_funs`). -/
+theorem BEquivStmt.funDef_any (bound : List Ident) (n : Ident) (ps rs : List Ident)
+    (b₁ b₂ : Block D.Op) :
+    BEquivStmt D bound (.funDef n ps rs b₁) (.funDef n ps rs b₂) := by
+  intro funs V st V' st' o _
+  constructor
+  · intro h; cases h; exact Step.funDef
+  · intro h; cases h; exact Step.funDef
 
 /-! #### Statement congruences -/
 
 private theorem bcondImp {bound : List Ident} {c : Expr D.Op} {b₁ b₂ : Block D.Op}
-    (hb2 : BEquivBlock (D := D) bound b₁ b₂) {funs V st V' st' o} (hb : SubBound V bound)
+    (hb2 : BEquivBlock D bound b₁ b₂) {funs V st V' st' o} (hb : SubBound V bound)
     (h : ExecStmt D funs V st (.cond c b₁) V' st' o) :
     ExecStmt D funs V st (.cond c b₂) V' st' o := by
   cases h with
@@ -996,16 +1010,16 @@ private theorem bcondImp {bound : List Ident} {c : Expr D.Op} {b₁ b₂ : Block
 
 /-- Congruence: `if` with an equivalent body. -/
 theorem BEquivStmt.cond_congr {bound : List Ident} (c : Expr D.Op) {b₁ b₂ : Block D.Op}
-    (hb2 : BEquivBlock (D := D) bound b₁ b₂) :
-    BEquivStmt (D := D) bound (.cond c b₁) (.cond c b₂) :=
+    (hb2 : BEquivBlock D bound b₁ b₂) :
+    BEquivStmt D bound (.cond c b₁) (.cond c b₂) :=
   fun _ _ _ _ _ _ hb => ⟨bcondImp hb2 hb, bcondImp hb2.symm hb⟩
 
 /-- `selectSwitch` respects pairwise-related cases: equal labels, related blocks. -/
 theorem selectSwitch_bcongr {bound : List Ident} {cv : D.Value}
     {cs₁ cs₂ : List (Literal × Block D.Op)} {dflt₁ dflt₂ : Option (Block D.Op)}
-    (hcases : List.Forall₂ (fun p q => p.1 = q.1 ∧ BEquivBlock (D := D) bound p.2 q.2) cs₁ cs₂)
-    (hdflt : BEquivBlock (D := D) bound (dflt₁.getD []) (dflt₂.getD [])) :
-    BEquivBlock (D := D) bound (selectSwitch D cv cs₁ dflt₁) (selectSwitch D cv cs₂ dflt₂) := by
+    (hcases : List.Forall₂ (fun p q => p.1 = q.1 ∧ BEquivBlock D bound p.2 q.2) cs₁ cs₂)
+    (hdflt : BEquivBlock D bound (dflt₁.getD []) (dflt₂.getD [])) :
+    BEquivBlock D bound (selectSwitch D cv cs₁ dflt₁) (selectSwitch D cv cs₂ dflt₂) := by
   induction hcases with
   | nil => simpa [selectSwitch] using hdflt
   | @cons p q t₁ t₂ hpq ht ih =>
@@ -1025,7 +1039,7 @@ theorem selectSwitch_bcongr {bound : List Ident} {cv : D.Value}
         simpa only [selectSwitch, h₁, h₂] using ih
 
 private theorem bswitchImp {bound : List Ident} {c : Expr D.Op} {cs₁ cs₂ dflt₁ dflt₂}
-    (hsel : ∀ cv, BEquivBlock (D := D) bound
+    (hsel : ∀ cv, BEquivBlock D bound
       (selectSwitch D cv cs₁ dflt₁) (selectSwitch D cv cs₂ dflt₂))
     {funs V st V' st' o} (hb : SubBound V bound)
     (h : ExecStmt D funs V st (.switch c cs₁ dflt₁) V' st' o) :
@@ -1037,11 +1051,11 @@ private theorem bswitchImp {bound : List Ident} {c : Expr D.Op} {cs₁ cs₂ dfl
 /-- Congruence: `switch` with pairwise-related cases and defaults. -/
 theorem BEquivStmt.switch_congr {bound : List Ident} (c : Expr D.Op)
     {cs₁ cs₂ : List (Literal × Block D.Op)} {dflt₁ dflt₂ : Option (Block D.Op)}
-    (hcases : List.Forall₂ (fun p q => p.1 = q.1 ∧ BEquivBlock (D := D) bound p.2 q.2) cs₁ cs₂)
-    (hdflt : BEquivBlock (D := D) bound (dflt₁.getD []) (dflt₂.getD [])) :
-    BEquivStmt (D := D) bound (.switch c cs₁ dflt₁) (.switch c cs₂ dflt₂) := by
+    (hcases : List.Forall₂ (fun p q => p.1 = q.1 ∧ BEquivBlock D bound p.2 q.2) cs₁ cs₂)
+    (hdflt : BEquivBlock D bound (dflt₁.getD []) (dflt₂.getD [])) :
+    BEquivStmt D bound (.switch c cs₁ dflt₁) (.switch c cs₂ dflt₂) := by
   have hsym : List.Forall₂
-      (fun (p q : Literal × Block D.Op) => p.1 = q.1 ∧ BEquivBlock (D := D) bound p.2 q.2)
+      (fun (p q : Literal × Block D.Op) => p.1 = q.1 ∧ BEquivBlock D bound p.2 q.2)
       cs₂ cs₁ := by
     induction hcases with
     | nil => exact .nil
@@ -1052,8 +1066,8 @@ theorem BEquivStmt.switch_congr {bound : List Ident} (c : Expr D.Op)
 
 private theorem bloopImp {bound : List Ident} {c : Expr D.Op}
     {post₁ post₂ body₁ body₂ : Block D.Op}
-    (hpost : BEquivBlock (D := D) bound post₁ post₂)
-    (hbody : BEquivBlock (D := D) bound body₁ body₂) :
+    (hpost : BEquivBlock D bound post₁ post₂)
+    (hbody : BEquivBlock D bound body₁ body₂) :
     ∀ {funs V st code res}, Step D funs V st code res →
       code = .loop c post₁ body₁ → SubBound V bound →
       Step D funs V st (.loop c post₂ body₂) res := by
@@ -1094,8 +1108,8 @@ private theorem bloopImp {bound : List Ident} {c : Expr D.Op}
 
 private theorem bforImp {bound : List Ident} {init : Block D.Op} {c : Expr D.Op}
     {post₁ post₂ body₁ body₂ : Block D.Op}
-    (hpost : BEquivBlock (D := D) bound post₁ post₂)
-    (hbody : BEquivBlock (D := D) bound body₁ body₂)
+    (hpost : BEquivBlock D bound post₁ post₂)
+    (hbody : BEquivBlock D bound body₁ body₂)
     {funs V st V' st' o} (hb : SubBound V bound)
     (h : ExecStmt D funs V st (.forLoop init c post₁ body₁) V' st' o) :
     ExecStmt D funs V st (.forLoop init c post₂ body₂) V' st' o := by
@@ -1107,16 +1121,16 @@ private theorem bforImp {bound : List Ident} {init : Block D.Op} {c : Expr D.Op}
 /-- Congruence: `for` with an equivalent post-block and body. -/
 theorem BEquivStmt.forLoop_congr {bound : List Ident} (init : Block D.Op) (c : Expr D.Op)
     {post₁ post₂ body₁ body₂ : Block D.Op}
-    (hpost : BEquivBlock (D := D) bound post₁ post₂)
-    (hbody : BEquivBlock (D := D) bound body₁ body₂) :
-    BEquivStmt (D := D) bound (.forLoop init c post₁ body₁) (.forLoop init c post₂ body₂) :=
+    (hpost : BEquivBlock D bound post₁ post₂)
+    (hbody : BEquivBlock D bound body₁ body₂) :
+    BEquivStmt D bound (.forLoop init c post₁ body₁) (.forLoop init c post₂ body₂) :=
   fun _ _ _ _ _ _ hb =>
     ⟨bforImp hpost hbody hb, bforImp hpost.symm hbody.symm hb⟩
 
 /-! #### Blocks, with the hoisted scope fixed -/
 
 private theorem bblockImp {bound : List Ident} {b₁ b₂ : Block D.Op}
-    (hss : BEquivStmts (D := D) bound b₁ b₂) (hh : hoist D b₁ = hoist D b₂)
+    (hss : BEquivStmts D bound b₁ b₂) (hh : hoist D b₁ = hoist D b₂)
     {funs V st V' st' o} (hb : SubBound V bound)
     (h : ExecStmt D funs V st (.block b₁) V' st' o) :
     ExecStmt D funs V st (.block b₂) V' st' o := by
@@ -1125,8 +1139,8 @@ private theorem bblockImp {bound : List Ident} {b₁ b₂ : Block D.Op}
 
 /-- Block congruence with an unchanged hoisted scope. -/
 theorem BEquivBlock.of_stmts {bound : List Ident} {b₁ b₂ : Block D.Op}
-    (hss : BEquivStmts (D := D) bound b₁ b₂) (hh : hoist D b₁ = hoist D b₂) :
-    BEquivBlock (D := D) bound b₁ b₂ :=
+    (hss : BEquivStmts D bound b₁ b₂) (hh : hoist D b₁ = hoist D b₂) :
+    BEquivBlock D bound b₁ b₂ :=
   fun _ _ _ _ _ _ hb => ⟨bblockImp hss hh hb, bblockImp hss.symm hh.symm hb⟩
 
 /-! #### The function-environment relation
@@ -1140,7 +1154,7 @@ call rule supplies. -/
 /-- Declarations with equal signatures and `BEquivBlock (params ++ rets)` bodies. -/
 def SbFDeclRel (d₁ d₂ : FDecl D) : Prop :=
   d₁.params = d₂.params ∧ d₁.rets = d₂.rets ∧
-    BEquivBlock (D := D) (d₁.params ++ d₁.rets) d₁.body d₂.body
+    BEquivBlock D (d₁.params ++ d₁.rets) d₁.body d₂.body
 
 /-- Scopes related pairwise: equal names, related declarations. -/
 def SbScopeRel (s₁ s₂ : FScope D) : Prop :=
@@ -1182,6 +1196,15 @@ theorem SbFunsRel.symm {f₁ f₂ : FunEnv D} (h : SbFunsRel (D := D) f₁ f₂)
   | nil => exact .nil
   | cons hs _ ih => exact .cons hs.symm ih
 
+/-- Related scopes concatenate. -/
+theorem SbScopeRel.append {s₁ s₂ t₁ t₂ : FScope D}
+    (h₁ : SbScopeRel (D := D) s₁ s₂) (h₂ : SbScopeRel (D := D) t₁ t₂) :
+    SbScopeRel (D := D) (s₁ ++ t₁) (s₂ ++ t₂) := by
+  unfold SbScopeRel at h₁ h₂ ⊢
+  induction h₁ with
+  | nil => simpa using h₂
+  | cons hh _ ih => exact .cons hh ih
+
 /-- Extend related environments by a common outer scope. -/
 theorem SbFunsRel.cons_same (s : FScope D) {f₁ f₂ : FunEnv D} (h : SbFunsRel (D := D) f₁ f₂) :
     SbFunsRel (D := D) (s :: f₁) (s :: f₂) := .cons (SbScopeRel.refl s) h
@@ -1209,7 +1232,7 @@ theorem sbLookupFun {f₁ f₂ : FunEnv D} (hR : SbFunsRel (D := D) f₁ f₂) :
       lookupFun f₁ fn = some (decl, cenv) →
       ∃ decl' cenv', lookupFun f₂ fn = some (decl', cenv') ∧
         decl'.params = decl.params ∧ decl'.rets = decl.rets ∧
-        BEquivBlock (D := D) (decl.params ++ decl.rets) decl.body decl'.body ∧
+        BEquivBlock D (decl.params ++ decl.rets) decl.body decl'.body ∧
         SbFunsRel (D := D) cenv cenv' := by
   induction hR with
   | nil => intro fn decl cenv h; simp [lookupFun] at h
@@ -1318,9 +1341,9 @@ whose hoisted scopes are `SbScopeRel`-related form related blocks — the
 generalization of `BEquivBlock.of_stmts` that permits rewriting inside `funDef`
 bodies. -/
 theorem BEquivBlock.of_stmts_funs {bound : List Ident} {b₁ b₂ : Block D.Op}
-    (hss : BEquivStmts (D := D) bound b₁ b₂)
+    (hss : BEquivStmts D bound b₁ b₂)
     (hR : SbScopeRel (D := D) (hoist D b₁) (hoist D b₂)) :
-    BEquivBlock (D := D) bound b₁ b₂ := by
+    BEquivBlock D bound b₁ b₂ := by
   intro funs V st V' st' o hb
   constructor
   · intro h
