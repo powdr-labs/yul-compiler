@@ -5,6 +5,7 @@ import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
 import YulEvmCompiler.Optimizer.Implementation.MemorySpillSelect
 import YulEvmCompiler.Optimizer.Implementation.MemorySpillSound
 import YulEvmCompiler.Optimizer.Implementation.RematSpill
+import YulEvmCompiler.Optimizer.Implementation.SpillStoreElim
 set_option warningAsError true
 /-!
 # YulParser.Compile
@@ -344,40 +345,42 @@ def compileSource (source : String) : Option ByteArray := do
           (creates := YulSemantics.EVM.ExternalCreates.none) o)
         <|> YulEvmCompiler.compileObjectScheduled o
         <|> YulEvmCompiler.compileObject o
-        -- EXPERIMENTAL (remat-before-spill): only reached when the object would
-        -- otherwise spill. Rematerialize cheap pure single-def bindings in the
-        -- guard-bearing `raw` object BEFORE spilling, shrinking the live-local
-        -- set so `MemorySpill` selects far fewer slots (measured PoolSwap:
-        -- 637 -> 233). `raw` is what `spillObjectWithFallback` actually spills.
-        <|> (let rematRaw := YulEvmCompiler.Optimizer.RematSpill.rematObject raw
-             match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback
-              rematRaw rematRaw with
-          | some spilled =>
-              if spilled.selected = 0 then none
-              else
-                -- The spilled tree is ordinary Yul (guards resolved); give the
-                -- optimizer a chance before compiling it verbatim. This is the
-                -- only path large spill-only objects (PoolSwap) reach, so
-                -- without it they never see the optimizer at all. Objects the
-                -- plain spilled form cannot compile (live `gas`, immutables,
-                -- linker symbols) skip the expensive pipeline entirely.
-                match YulEvmCompiler.compileObject spilled.object with
-                | none => none
-                | some plainLayout =>
-                    let spilledOpt :=
-                      YulEvmCompiler.Optimizer.optimizerPipelineObject
-                        (calls := YulSemantics.EVM.ExternalCalls.none)
-                        (creates := YulSemantics.EVM.ExternalCreates.none)
-                        (YulEvmCompiler.Optimizer.Normalize.normalizeObject
-                          (D := YulSemantics.EVM.evmWithExternal
-                            YulSemantics.EVM.ExternalCalls.none
-                            YulSemantics.EVM.ExternalCreates.none)
-                          spilled.object)
-                    YulEvmCompiler.compileObject spilledOpt
-                      <|> YulEvmCompiler.compileObject
-                        (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)
-                      <|> some plainLayout
-          | none => none)
+        -- Spill a guard-bearing base object and compile the result (with an
+        -- optimize-after-spill pass and the covered-before-read store cleanup).
+        -- Factored so the remat'd base is an ADDITIONAL rung: try it first, then
+        -- fall back to spilling the plain `raw` — some objects spill-resolve on
+        -- `raw` but not after remat deepens use-site pressure (measured: 9
+        -- semanticTests fixtures), so remat must never *remove* the raw rung.
+        <|> (let spillCompile := fun (base : Object YulSemantics.EVM.Op) =>
+              (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback
+                base optimized with
+              | some spilled =>
+                  if spilled.selected = 0 then none
+                  else
+                    match YulEvmCompiler.compileObject spilled.object with
+                    | none => none
+                    | some plainLayout =>
+                        let spilledOpt0 :=
+                          YulEvmCompiler.Optimizer.optimizerPipelineObject
+                            (calls := YulSemantics.EVM.ExternalCalls.none)
+                            (creates := YulSemantics.EVM.ExternalCreates.none)
+                            (YulEvmCompiler.Optimizer.Normalize.normalizeObject
+                              (D := YulSemantics.EVM.evmWithExternal
+                                YulSemantics.EVM.ExternalCalls.none
+                                YulSemantics.EVM.ExternalCreates.none)
+                              spilled.object)
+                        let spilledOpt :=
+                          YulEvmCompiler.Optimizer.SpillStoreElim.elimObject spilledOpt0
+                        YulEvmCompiler.compileObject spilledOpt
+                          <|> YulEvmCompiler.compileObject
+                            (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)
+                          <|> some plainLayout
+              | none => none : Option YulSemantics.EVM.Layout)
+             -- Remat-before-spill first (shrinks the spilled set — PoolSwap
+             -- 637 → 232); fall back to plain spill when remat regresses
+             -- compilability.
+             spillCompile (YulEvmCompiler.Optimizer.RematSpill.rematObject raw)
+               <|> spillCompile raw)
       return ByteArray.mk layout.code.toArray
   | none => none
 
