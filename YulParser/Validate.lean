@@ -307,14 +307,84 @@ def sourceLexWF (source : String) : Bool :=
   let cs := source.toList
   sourceNumbersWF cs && !cs.any forbiddenBidi
 
+/-! ### Inactive builtins
+
+The solidity test fixtures pin an EVM version with a `// EVMVersion: <…` comment,
+which switches off the builtins introduced after that fork.  All four markers
+share the prefix `evmVersionMarker`; spelling them as `evmVersionMarker ++ …`
+rather than as whole literals is what makes the one-scan fast path below provable
+without reasoning about string literals. -/
+
+private def evmVersionMarker : String := "EVMVersion: <"
+
+/-- The marker spellings are exactly the ones solidity writes. -/
+example : evmVersionMarker ++ "=berlin" = "EVMVersion: <=berlin" := by rfl
+example : evmVersionMarker ++ "=shanghai" = "EVMVersion: <=shanghai" := by rfl
+example : evmVersionMarker ++ "cancun" = "EVMVersion: <cancun" := by rfl
+example : evmVersionMarker ++ "osaka" = "EVMVersion: <osaka" := by rfl
+
 private def inactiveBuiltins (source : String) : List String :=
-  if source.contains "EVMVersion: <=berlin" then
+  if source.contains (evmVersionMarker ++ "=berlin") then
     ["basefee", "blobbasefee", "blobhash", "mcopy", "tload", "tstore", "clz"]
-  else if source.contains "EVMVersion: <=shanghai" || source.contains "EVMVersion: <cancun" then
+  else if source.contains (evmVersionMarker ++ "=shanghai")
+      || source.contains (evmVersionMarker ++ "cancun") then
     ["blobbasefee", "blobhash", "mcopy", "tload", "tstore", "clz"]
-  else if source.contains "EVMVersion: <osaka" then
+  else if source.contains (evmVersionMarker ++ "osaka") then
     ["clz"]
   else []
+
+/-! ### A one-scan fast path
+
+`String.contains` with a *string* pattern runs a KMP searcher through the generic
+iterator framework, and neither loop compiles to a loop: the `for`-consumer and
+`Slice.posGE` are both well-founded recursions, so they run as
+`WellFounded.opaqueFix`, allocating a closure per step.  Every byte position the
+searcher rejects also allocates a `SearchStep` holding two `Slice.Pos` subtypes,
+each built by `Slice.pos!`/`Slice.posGE`, i.e. by a UTF-8 validity check.
+Callgrind measures ~140 instructions per source *character*, and
+`inactiveBuiltins` scans the whole source — 20 KB to 2.4 MB of generated Yul —
+four times, which came to ~10% of a compile.
+
+`inactiveBuiltinsFast` scans once instead, and over the plain `List Char`
+(`String.toList` is a C loop and `List.isInfixOf_internal` a cons-list walk, ~65
+instructions per character together); the four individual markers are only
+re-tested when the shared prefix is present, which no generated Yul contains.
+`inactiveBuiltins` stays the definition, so validation is still specified by the
+four scans; `@[csimp]` installs the fast version in compiled code. -/
+
+private def inactiveBuiltinsOfList (cs : List Char) : List String :=
+  if evmVersionMarker.toList.isInfixOf_internal cs then
+    if (evmVersionMarker ++ "=berlin").toList.isInfixOf_internal cs then
+      ["basefee", "blobbasefee", "blobhash", "mcopy", "tload", "tstore", "clz"]
+    else if (evmVersionMarker ++ "=shanghai").toList.isInfixOf_internal cs
+        || (evmVersionMarker ++ "cancun").toList.isInfixOf_internal cs then
+      ["blobbasefee", "blobhash", "mcopy", "tload", "tstore", "clz"]
+    else if (evmVersionMarker ++ "osaka").toList.isInfixOf_internal cs then
+      ["clz"]
+    else []
+  else []
+
+private def inactiveBuiltinsFast (source : String) : List String :=
+  inactiveBuiltinsOfList source.toList
+
+/-- A source with no occurrence of `p` has none of any string that starts with `p`. -/
+private theorem contains_eq_false_append {s p q : String} (h : s.contains p = false) :
+    s.contains (p ++ q) = false := by
+  simp only [String.contains_string_eq_false_iff, String.toList_append] at *
+  exact fun hc => h ((List.prefix_append _ _).isInfix.trans hc)
+
+@[csimp] theorem inactiveBuiltins_eq_inactiveBuiltinsFast :
+    @inactiveBuiltins = @inactiveBuiltinsFast := by
+  funext source
+  show inactiveBuiltins source = inactiveBuiltinsOfList source.toList
+  rw [inactiveBuiltinsOfList]
+  simp only [← String.contains_string_eq_internal]
+  by_cases hg : source.contains evmVersionMarker = true
+  · rw [if_pos hg, inactiveBuiltins]
+  · rw [Bool.not_eq_true] at hg
+    rw [if_neg (by simp [hg]), inactiveBuiltins, contains_eq_false_append hg,
+      contains_eq_false_append hg, contains_eq_false_append hg, contains_eq_false_append hg]
+    simp
 
 def validateBlockSource (source : String) (body : List (Stmt Op)) : Bool :=
   sourceLexWF source &&
