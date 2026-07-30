@@ -6,6 +6,7 @@ import YulEvmCompilerTests.SolidityCorpus
 import YulEvmCompilerTests.InterpreterFixture
 import YulEvmCompilerTests.SolTest
 import YulEvmCompilerTests.Parallel
+import YulEvmCompilerTests.Timing
 import YulEvmCompilerTests.SolcDifferentialRunner
 set_option warningAsError true
 
@@ -43,6 +44,7 @@ open YulEvmCompilerTests.InterpreterFixture
 open YulEvmCompilerTests.SolcDifferential (observe gasUsed)
 open YulEvmCompilerTests.SolTest (Call Spec natToWord parseSpec)
 open YulEvmCompilerTests.Parallel (detectJobs parMap weightedShard)
+open YulEvmCompilerTests.Timing (since timedIO toMs)
 
 /-- Optional deterministic source-size-weighted sharding, so the large
 semanticTests corpus can be split across CI jobs without concentrating its
@@ -413,6 +415,22 @@ private structure GasOutcome where
   skipped : Bool := false
   measured : Array GasRow := #[]
 
+/-- How long one contract took, split by which compiler did the work.
+
+Kept out of `GasOutcome` and threaded through a per-contract `IO.Ref` so the
+dozen existing early returns stay untouched: whatever a contract's verdict turns
+out to be, the clock readings taken along the way are still reported. -/
+private structure Timing where
+  /-- solc's `--ir` lowering of the Solidity fixture — the front-end that
+  produces *this* compiler's input, and so is charged to neither backend. -/
+  frontendNs : Nat := 0
+  /-- This compiler, unoptimized Yul → creation bytecode. -/
+  oursNs : Nat := 0
+  /-- solc's own `--bin --optimize --via-ir` compile of the same fixture. -/
+  solcNs : Nat := 0
+  /-- Whether this compiler ran, i.e. whether `oursNs` is a measurement. -/
+  compiled : Bool := false
+
 /-- Deploy our bytecode and measure the fixture against an already-resolved solc
 side (cached or freshly measured), through the shared `obsFingerprint` replay.
 Because `obsFingerprint`-equality coincides with `sameOutcome`, the measured rows
@@ -440,12 +458,20 @@ private def measureWithSolcSide (name : String) (perScenario : Bool)
               s!"(ours={ourDeployment.halt}/{ourDeployment.returnSize}, " ++
               s!"solc={side.deployHalt}/{side.deployReturnSize})") }
 
+/-- Run a `solc` invocation, charging its elapsed time to `clock`. Only the
+invocation that produces solc's own comparable bytecode is charged here; the
+selector query is measurement scaffolding for both sides, not compilation. -/
+private def timedSolc {α : Type} (clock : IO.Ref Timing) (act : IO α) : IO α := do
+  let (value, ns) ← timedIO act
+  clock.modify fun t => { t with solcNs := t.solcNs + ns }
+  return value
+
 /-- Compile one contract through solc's unoptimized `--via-ir` Yul, deploy both
 this compiler's and solc's optimized bytecode, replay the fixture's calls, and
 measure gas — the body of the old loop, extracted as an independent unit of
-work with no shared mutable state. -/
-private def processContract (dir : FilePath) (solcPath : String) (perScenario : Bool)
-    (solcCache : Option FilePath) (solcVersion : String)
+work with no shared mutable state. Timings go to `clock`. -/
+private def processContractIn (clock : IO.Ref Timing) (dir : FilePath) (solcPath : String)
+    (perScenario : Bool) (solcCache : Option FilePath) (solcVersion : String)
     (path : FilePath) : IO GasOutcome := do
   let name := relativeName dir path
   let contents ← IO.FS.readFile path
@@ -454,16 +480,25 @@ private def processContract (dir : FilePath) (solcPath : String) (perScenario : 
   | .ok false => return { skipped := true }
   | .ok true =>
       let source := fixtureSource contents
-      match ← solcUnoptimizedIR solcPath source with
+      let (irResult, frontendNs) ← timedIO (solcUnoptimizedIR solcPath source)
+      clock.modify ({ · with frontendNs })
+      match irResult with
       | .error message => return { compileFailure := some (name, message) }
       | .ok ir =>
+          -- Read the stop clock inside each branch, not after a `let creation? :=
+          -- compileSource ir`. Lean's compiler sinks a pure binding to where it
+          -- is scrutinised, so timing around the binding measures nothing (it
+          -- reported 0 ms for a 3-minute compile); the `match` is what forces it.
+          let compileStart ← IO.monoNanosNow
           match compileSource ir with
           | none =>
+              clock.modify ({ · with oursNs := ← since compileStart, compiled := true })
               return { compileFailure := some (name, "this compiler rejected solc's unoptimized IR") }
           | some creation =>
+            clock.modify ({ · with oursNs := ← since compileStart, compiled := true })
             match solcCache with
             | none =>
-              match ← solcCreationBytecode solcPath source with
+              match ← timedSolc clock (solcCreationBytecode solcPath source) with
               | .error message => return { compileFailure := some (name, message) }
               | .ok solcCreation =>
                   -- Replay the fixture's own specified calls (semanticTests).
@@ -539,7 +574,7 @@ private def processContract (dir : FilePath) (solcPath : String) (perScenario : 
                   -- Cache miss/stale: run solc live (creation + deploy + full
                   -- call sequence), write the cache, then measure through the
                   -- same fingerprint tail the read path uses.
-                  match ← solcCreationBytecode solcPath source with
+                  match ← timedSolc clock (solcCreationBytecode solcPath source) with
                   | .error message => return { compileFailure := some (name, message) }
                   | .ok solcCreation =>
                       let solcDeployment :=
@@ -554,6 +589,15 @@ private def processContract (dir : FilePath) (solcPath : String) (perScenario : 
                               deployReturnSize := solcDeployment.returnSize, records := #[] }
                       writeSolcCache cacheFile sourceHash callsHash solcVersion side
                       return measureWithSolcSide name perScenario creation spec calls replayFuel side
+
+/-- `processContractIn` plus the clock it writes to, so a worker returns both the
+contract's verdict and how the time on it was spent. -/
+private def processContract (dir : FilePath) (solcPath : String) (perScenario : Bool)
+    (solcCache : Option FilePath) (solcVersion : String)
+    (path : FilePath) : IO (GasOutcome × Timing) := do
+  let clock ← IO.mkRef ({} : Timing)
+  let outcome ← processContractIn clock dir solcPath perScenario solcCache solcVersion path
+  return (outcome, ← clock.get)
 
 private def usage : String :=
   "usage: CheckSolidityGas <contracts-dir> <gas-baseline.txt> " ++
@@ -608,14 +652,22 @@ private def run (dir baselineFile : FilePath)
   -- The checked-in protocol suites always use scenario rows; keeping this
   -- directory convention automatic avoids duplicating policy in their runner
   -- invocations. The flag remains available for other local suites.
-  let outcomes : Array GasOutcome ← parMap jobs files
+  let mut oursNs := 0
+  let mut solcNs := 0
+  let mut frontendNs := 0
+  let mut compiledCount := 0
+  let outcomes : Array (GasOutcome × Timing) ← parMap jobs files
     (processContract dir solcPath perScenario solcCache expectedSolcVersion)
-  for outcome in outcomes do
+  for (outcome, timing) in outcomes do
     if let some entry := outcome.compileFailure then compileFailures := compileFailures.push entry
     if let some entry := outcome.measurementFailure then
       measurementFailures := measurementFailures.push entry
     if outcome.skipped then skipped := skipped + 1
     measured := measured ++ outcome.measured
+    oursNs := oursNs + timing.oursNs
+    solcNs := solcNs + timing.solcNs
+    frontendNs := frontendNs + timing.frontendNs
+    if timing.compiled then compiledCount := compiledCount + 1
   let compiled := files.size - skipped - compileFailures.size
   let failureNames := compileFailures.map (·.1)
   let unexpectedFailures := match known with
@@ -675,6 +727,14 @@ private def run (dir baselineFile : FilePath)
   -- gains its own optimizer.
   let suite := dir.fileName.getD "gas"
   IO.println s!"Gas totals: suite={suite} mode=vs_solc_optimized ours={measured.foldl (fun a r => a + r.ours) 0} solc={measured.foldl (fun a r => a + r.solc) 0} comparable={measured.size}"
+  -- Machine-readable compiler runtime for the PR summary comment: the summed
+  -- per-fixture spans of each compiler on this suite (shard), so the summary can
+  -- add shards up and diff head against main. `frontend_ms` is solc's `--ir`
+  -- lowering that produces this compiler's input — reported separately because
+  -- it is front-end work neither backend figure should absorb. `fixtures` counts
+  -- the contracts this compiler ran on; solc's total excludes the ones it
+  -- rejects, which short-circuit before solc's own compile is invoked.
+  IO.println s!"Compile time: suite={suite} mode=vs_solc_optimized ours_ms={toMs oursNs} solc_ms={toMs solcNs} frontend_ms={toMs frontendNs} fixtures={compiledCount}"
   -- Per-fixture rows let the PR summary compare a head run with a main run on
   -- their exact shared fixture set. Tabs are intentional: fixture paths may
   -- contain spaces, but Solidity corpus paths cannot contain tabs.

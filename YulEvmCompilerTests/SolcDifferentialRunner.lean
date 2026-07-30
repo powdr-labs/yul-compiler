@@ -4,6 +4,7 @@ import YulEvmCompilerTests.SolcDifferential
 import YulEvmCompilerTests.CorpusGas
 import YulEvmCompilerTests.SolidityCorpus
 import YulEvmCompilerTests.Parallel
+import YulEvmCompilerTests.Timing
 set_option warningAsError true
 
 /-!
@@ -29,6 +30,7 @@ open YulEvmCompilerTests.SolcDifferential
 open YulEvmCompilerTests.CorpusGas
 open YulEvmCompilerTests.SolidityCorpus
 open YulEvmCompilerTests.Parallel (detectJobs parMap weightedShard)
+open YulEvmCompilerTests.Timing (since timedIO toMs)
 
 private structure Shard where
   index : Nat
@@ -46,6 +48,13 @@ private structure FileOutcome where
   checked : Bool := false
   failure : Option (String × String) := none
   gas : Option GasRow := none
+  /-- Nanoseconds this compiler spent turning the fixture's Yul into bytecode. -/
+  oursNs : Nat := 0
+  /-- Nanoseconds the pinned solc spent assembling the *same* Yul. -/
+  solcNs : Nat := 0
+  /-- Whether this compiler ran at all, i.e. whether the two spans above are a
+  measurement rather than a fixture that never reached compilation. -/
+  compiled : Bool := false
 
 /-- Compile one fixture with both compilers and compare — the body of the old
 loop, extracted so it is a pure `IO` unit of work with no shared mutable state. -/
@@ -58,19 +67,33 @@ private def processFile (corpusDir : FilePath) (solcPath : String)
   | .ok false => return { skipped := true }
   | .ok true =>
       let source := fixtureSource contents
+      -- Read the stop clock inside each branch, not after a `let ours? :=
+      -- compileSource source`. Lean's compiler sinks a pure binding to where it
+      -- is scrutinised, so timing around the binding measures nothing; the
+      -- `match` is what forces the compile.
+      let compileStart ← IO.monoNanosNow
       match compileSource source with
-      | none => return { checked := true, failure := some (name, "Yul compiler failed") }
+      | none =>
+          -- solc is deliberately still not run here: a fixture this compiler
+          -- rejects short-circuits exactly as before, so timing adds no work.
+          return { checked := true, oursNs := ← since compileStart, compiled := true,
+                   failure := some (name, "Yul compiler failed") }
       | some ours =>
-          match ← compileWithSolc solcPath source with
-          | .error message => return { checked := true, failure := some (name, message) }
+          let oursNs ← since compileStart
+          -- Both sides assemble the same Yul, so these two spans are directly
+          -- comparable (unlike the gas runner's, where solc also runs its front-end).
+          let (solcResult, solcNs) ← timedIO (compileWithSolc solcPath source)
+          let timed : FileOutcome := { checked := true, oursNs, solcNs, compiled := true }
+          match solcResult with
+          | .error message => return { timed with failure := some (name, message) }
           | .ok solc =>
               match compareBytecode ours solc (scenarioSeed := fixtureSeed name) with
-              | .error message => return { checked := true, failure := some (name, message) }
+              | .error message => return { timed with failure := some (name, message) }
               | .ok () =>
                   match fixtureTotalGas name ours solc with
                   | some (ours, solc) =>
-                      return { checked := true, gas := some { fixture := name, ours, solc } }
-                  | none => return { checked := true }
+                      return { timed with gas := some { fixture := name, ours, solc } }
+                  | none => return timed
 
 private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFile : FilePath)
     (solcPath expectedSolcVersion : String) (shard : Option Shard) : IO UInt32 := do
@@ -101,6 +124,9 @@ private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFil
   let mut measuredGas : Array GasRow := #[]
   let mut checked := 0
   let mut skipped := 0
+  let mut oursNs := 0
+  let mut solcNs := 0
+  let mut compiledCount := 0
   let jobs ← detectJobs
   let outcomes : Array FileOutcome ← parMap jobs files (processFile corpusDir solcPath)
   for outcome in outcomes do
@@ -109,6 +135,9 @@ private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFil
     if outcome.checked then checked := checked + 1
     if let some entry := outcome.failure then failures := failures.push entry
     if let some row := outcome.gas then measuredGas := measuredGas.push row
+    oursNs := oursNs + outcome.oursNs
+    solcNs := solcNs + outcome.solcNs
+    if outcome.compiled then compiledCount := compiledCount + 1
 
   let failureNames := failures.map (·.1)
   let unexpected := failures.filter (fun failure => !allowed.contains failure.1)
@@ -151,6 +180,15 @@ private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFil
   IO.println (s!"Gas totals: suite={suiteName} mode=codegen " ++
     s!"ours={measuredGas.foldl (fun a r => a + r.ours) 0} " ++
     s!"solc={measuredGas.foldl (fun a r => a + r.solc) 0} comparable={measuredGas.size}")
+  -- Machine-readable compiler runtime for the PR summary comment: the summed
+  -- per-fixture spans of each compiler on this suite (shard), so the summary can
+  -- add shards up and diff head against main. `frontend_ms=0` because this suite
+  -- feeds both compilers Yul directly — there is no Solidity front-end to charge.
+  -- `fixtures` counts the fixtures this compiler ran on; solc's total excludes
+  -- the few this compiler rejects, which short-circuit before solc is invoked.
+  IO.println (s!"Compile time: suite={suiteName} mode=codegen " ++
+    s!"ours_ms={toMs oursNs} solc_ms={toMs solcNs} frontend_ms=0 " ++
+    s!"fixtures={compiledCount}")
   -- Per-fixture rows let the PR summary compare a head run with a main run on
   -- their exact shared fixture set. Tabs are intentional: fixture paths may
   -- contain spaces, but Solidity corpus paths cannot contain tabs.

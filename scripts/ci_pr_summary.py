@@ -35,6 +35,7 @@ def parse(lines):
         "gas": {},            # suite -> dict (summed over shards)
         "gas_rows": {},       # suite -> fixture -> dict
         "gas_compile": {},    # suite -> dict (compiled/unsupported, summed)
+        "runtime": {},        # suite -> dict (compiler wall-clock, summed over shards)
         "soundness": {},      # marker -> value
     }
     pending_gas = None        # most recent "Gas:" counts, attached to next totals
@@ -112,6 +113,16 @@ def parse(lines):
             pending_compiled = None
             continue
 
+        m = re.search(r"Compile time: suite=(\S+) mode=(\S+) ours_ms=(\d+) solc_ms=(\d+) "
+                      r"frontend_ms=(\d+) fixtures=(\d+)", ln)
+        if m:
+            suite, mode = m.group(1), m.group(2)
+            t = data["runtime"].setdefault(
+                suite, dict(mode=mode, ours_ms=0, solc_ms=0, frontend_ms=0, fixtures=0))
+            t["ours_ms"] += int(m.group(3)); t["solc_ms"] += int(m.group(4))
+            t["frontend_ms"] += int(m.group(5)); t["fixtures"] += int(m.group(6))
+            continue
+
         fields = ln.split("\t")
         if len(fields) == 6 and fields[0] == "Gas row:":
             _, suite, mode, fixture, ours, solc = fields
@@ -159,6 +170,78 @@ def fmt_ratio_delta(delta):
         return "0.0 pp"
     sign = "+" if delta > 0 else "−"
     return f"{sign}{abs(delta):.1f} pp"
+
+
+def fmt_duration(ms):
+    """Milliseconds at a readable scale: suite totals run from ms to minutes."""
+    if ms >= 60_000:
+        return f"{ms / 60_000:.1f} min"
+    if ms >= 1_000:
+        return f"{ms / 1_000:.1f} s"
+    return f"{round(ms)} ms"
+
+
+def fmt_pct_delta(current, base):
+    """Signed percentage change vs `base`, or '—' when there is no base.
+
+    Timings are CI-runner wall-clock, so anything under half a percent is
+    reported as ≈0% rather than pretending to that precision.
+    """
+    if base is None or base == 0:
+        return "—"
+    change = (current - base) / base * 100
+    if abs(change) < 0.5:
+        return "≈0%"
+    sign = "+" if change > 0 else "−"
+    return f"{sign}{abs(change):.1f}%"
+
+
+def per_fixture_ms(ms, fixtures):
+    return None if not fixtures else ms / fixtures
+
+
+def fmt_per_fixture(ms, fixtures):
+    mean = per_fixture_ms(ms, fixtures)
+    return "—" if mean is None else fmt_duration(mean)
+
+
+def runtime_table(out, suites, base_suites=None):
+    """Render one compiler-runtime table (per-fixture spans summed per suite).
+
+    Fixture counts move with the upstream corpus, so each suite reports both the
+    total and the per-fixture mean; the mean is the figure that survives a corpus
+    that grew or shrank between the head and main runs.
+    """
+    base_suites = base_suites or {}
+    out.append("| corpus | fixtures | this compiler | Δ vs main | per fixture | "
+               "Δ/fixture vs main | solc | ours/solc |")
+    out.append("|---|--:|--:|--:|--:|--:|--:|--:|")
+    tot_ours = tot_solc = tot_fixtures = 0
+    base_ours = base_solc = base_fixtures = 0
+    have_base = False
+    for suite, t in sorted(suites.items()):
+        tot_ours += t["ours_ms"]; tot_solc += t["solc_ms"]; tot_fixtures += t["fixtures"]
+        b = base_suites.get(suite)
+        if b:
+            have_base = True
+            base_ours += b["ours_ms"]; base_solc += b["solc_ms"]
+            base_fixtures += b["fixtures"]
+        mean = per_fixture_ms(t["ours_ms"], t["fixtures"])
+        base_mean = per_fixture_ms(b["ours_ms"], b["fixtures"]) if b else None
+        mean_delta = "—" if mean is None else fmt_pct_delta(mean, base_mean)
+        out.append(
+            f"| {suite} | {fmt_int(t['fixtures'])} | {fmt_duration(t['ours_ms'])} | "
+            f"{fmt_pct_delta(t['ours_ms'], b['ours_ms'] if b else None)} | "
+            f"{fmt_per_fixture(t['ours_ms'], t['fixtures'])} | {mean_delta} | "
+            f"{fmt_duration(t['solc_ms'])} | {ratio_pct(t['ours_ms'], t['solc_ms'])} |")
+    tot_mean = per_fixture_ms(tot_ours, tot_fixtures)
+    base_tot_mean = per_fixture_ms(base_ours, base_fixtures) if have_base else None
+    tot_mean_delta = "—" if tot_mean is None else fmt_pct_delta(tot_mean, base_tot_mean)
+    out.append(
+        f"| **total** | {fmt_int(tot_fixtures)} | **{fmt_duration(tot_ours)}** | "
+        f"**{fmt_pct_delta(tot_ours, base_ours if have_base else None)}** | "
+        f"{fmt_per_fixture(tot_ours, tot_fixtures)} | **{tot_mean_delta}** | "
+        f"**{fmt_duration(tot_solc)}** | **{ratio_pct(tot_ours, tot_solc)}** |")
 
 
 def gas_comparison(suite, current, base, current_rows, base_rows):
@@ -407,8 +490,56 @@ def build_comment(data, results, sha, base=None, base_sha="", base_results=None)
         out.append("- _No gas results captured._")
         out.append("")
 
-    # ---- 4. Soundness ----
-    out.append("### 4. Soundness (formal guarantee)")
+    # ---- 4. Compiler runtime ----
+    # Informational only: no threshold here fails CI, and nothing in this
+    # section feeds the verdict. CI runners are shared and timings are noisy,
+    # so this is a trend indicator, not a benchmark.
+    out.append("### 4. Compiler runtime (informational)")
+    runtime = data["runtime"]
+    if runtime:
+        out.append("")
+        out.append("How long each compiler spent on the suites above — the same runs, "
+                   "with the clock read around each fixture's compile.")
+        out.append("")
+        vs_opt_rt = {s: t for s, t in runtime.items() if t.get("mode") == "vs_solc_optimized"}
+        codegen_rt = {s: t for s, t in runtime.items() if t.get("mode") == "codegen"}
+        base_runtime = base["runtime"] if base else {}
+        if vs_opt_rt:
+            out.append("**a) Solidity corpora** — this compiler on solc's unoptimized "
+                       "`--via-ir` Yul vs solc's own `--optimize --via-ir` compile of the "
+                       "same contract.")
+            out.append("")
+            runtime_table(out, vs_opt_rt,
+                          {s: t for s, t in base_runtime.items()
+                           if t.get("mode") == "vs_solc_optimized"})
+            frontend_ms = sum(t["frontend_ms"] for t in vs_opt_rt.values())
+            out.append("")
+            out.append(f"<sub>Excluded from both columns: {fmt_duration(frontend_ms)} of solc "
+                       "`--ir` front-end lowering, which produces this compiler's input and "
+                       "is charged to neither backend.</sub>")
+            out.append("")
+        if codegen_rt:
+            out.append("**b) Yul corpora** — both compilers assemble the *same* Yul "
+                       "(solc `--strict-assembly`, no optimizer), so these columns are "
+                       "directly comparable.")
+            out.append("")
+            runtime_table(out, codegen_rt,
+                          {s: t for s, t in base_runtime.items()
+                           if t.get("mode") == "codegen"})
+            out.append("")
+        out.append("<sub>Each figure is the sum of that suite's per-fixture compile spans, "
+                   "added across shards — independent of worker count and sharding, but "
+                   "measured on shared CI runners under saturated parallelism. Treat single-digit "
+                   "percentage moves as noise. `fixtures` counts contracts this compiler ran on; "
+                   "solc's total excludes the ones this compiler rejects, which short-circuit "
+                   "before solc is invoked. Nothing here affects the verdict.</sub>")
+        out.append("")
+    else:
+        out.append("- _No compiler runtime captured._")
+        out.append("")
+
+    # ---- 5. Soundness ----
+    out.append("### 5. Soundness (formal guarantee)")
     def mark(cond, ok_txt, bad_txt):
         return f"✅ {ok_txt}" if cond else f"🔴 {bad_txt}"
     if snd:
@@ -426,8 +557,8 @@ def build_comment(data, results, sha, base=None, base_sha="", base_results=None)
         out.append("- _No soundness result captured._")
     out.append("")
 
-    # ---- 5. Verdict ----
-    out.append("### 5. Verdict")
+    # ---- 6. Verdict ----
+    out.append("### 6. Verdict")
     out.append(verdict)
     if problems:
         out.append("")
