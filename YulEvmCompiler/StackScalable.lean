@@ -979,6 +979,60 @@ def CertData.tbl (d : CertData) (size : Nat) :
   d.entries.foldr (fun e a => if h : e.1 < a.size then a.set e.1 (some e) h else a)
     (Array.replicate size none)
 
+/-- The entry type stored in the key-indexed table. -/
+abbrev CertEntry := Nat × List Asm × FLayout × Nat × FLayout
+
+/-- The key-indexed table at its natural size. Named so it can be **bound once**
+and passed as a value: see `lookupIn`. -/
+def CertData.table (d : CertData) : Array (Option CertEntry) :=
+  d.tbl (d.maxKey + 1)
+
+/-- Equality of two certificate positions, with a pointer-equality fast path.
+
+`withPtrEq a b k h` is *definitionally* `k ()` — the fast path exists only in
+the compiled code, and `h` is the obligation that it agrees. So this is
+`decide (a = b)` by `rfl`, with no new axiom and no `implemented_by` of our own
+(`withPtrEq` is Lean core's).
+
+It matters because the positions a certificate stores are the very suffixes of
+`prog` that produced them, so they are *physically shared* with the position
+being looked up: the pointer check succeeds immediately where the structural
+comparison would walk the whole suffix. Structural `List Asm` equality was 37%
+of all instructions in a profile of a mid-sized fixture. -/
+def posEq (a b : List Asm) : Bool :=
+  withPtrEq a b (fun _ => decide (a = b)) (fun h => by simp [h])
+
+omit model in
+@[simp] theorem posEq_eq_decide (a b : List Asm) :
+    posEq a b = decide (a = b) := rfl
+
+/-- Certificate lookup against an already-built table.
+
+`CertLookup` is a function type, so a definition of the form
+`let t := …; fun c => … t …` is eta-expanded by the compiler to arity 2 and the
+`let` is floated *inside* the lambda: the table would then be reallocated and
+refolded on **every** lookup, making the verifier quadratic in the program
+length with an O(program) array allocation per lookup. Taking the table as a
+parameter is what keeps it shared; `checkCertFast` binds it once. -/
+def lookupIn (t : Array (Option CertEntry)) : CertLookup :=
+  fun c => match t[c.length]? with
+    | some (some e) =>
+        if e.2.1 = c then some (e.2.2.1, e.2.2.2.1, e.2.2.2.2) else none
+    | _ => none
+
+/-- `lookupIn` with the pointer-equality fast path on the position comparison,
+installed into compiled code by `@[csimp]` below. -/
+def lookupInFast (t : Array (Option CertEntry)) : CertLookup :=
+  fun c => match t[c.length]? with
+    | some (some e) =>
+        if posEq e.2.1 c then some (e.2.2.1, e.2.2.2.1, e.2.2.2.2) else none
+    | _ => none
+
+omit model in
+@[csimp] theorem lookupIn_eq_lookupInFast : @lookupIn = @lookupInFast := by
+  funext t c
+  simp only [lookupIn, lookupInFast, posEq_eq_decide, decide_eq_true_eq]
+
 /-- Build one shared lookup table whose successful lookup returns all three
 certificate components. -/
 def CertData.toLookup (d : CertData) : CertLookup :=
@@ -987,6 +1041,11 @@ def CertData.toLookup (d : CertData) : CertLookup :=
     | some (some e) =>
         if e.2.1 = c then some (e.2.2.1, e.2.2.2.1, e.2.2.2.2) else none
     | _ => none
+
+omit model in
+/-- The shared-table lookup *is* `toLookup`, by `let`-unfolding. -/
+theorem CertData.toLookup_eq_lookupIn (d : CertData) :
+    d.toLookup = lookupIn d.table := rfl
 
 omit model in
 theorem CertData.tbl_size (d : CertData) (size : Nat) : (d.tbl size).size = size := by
@@ -1100,10 +1159,18 @@ def checkCert (prog : List Asm) (d : CertData) : Bool :=
          | i :: c' => frameStepB prog C i c' e.2.2.1 e.2.2.2.1 e.2.2.2.2
          | [] => true)))
 
-/-- Bundled-lookup implementation of `checkCert`. -/
-def checkCertFast (prog : List Asm) (d : CertData) : Bool :=
-  d.entries.all (fun e => decide (e.1 ≤ prog.length)) &&
-  (let lookup := d.toLookup
+/-- Bundled-lookup implementation of `checkCert`, with the key-indexed table and
+the program length taken as parameters.
+
+Both are loop-invariant, and both must be *parameters* rather than `let`s to stay
+that way: a `let` whose only uses are inside the per-entry closure gets floated
+into it, so `prog.length` was recomputed — an O(program) walk — once per entry,
+and the table was rebuilt once per lookup (see `lookupIn`). With ~one entry per
+reachable instruction that made the verifier quadratic. -/
+def checkCertWith (prog : List Asm) (d : CertData) (n : Nat)
+    (t : Array (Option CertEntry)) : Bool :=
+  d.entries.all (fun e => decide (e.1 ≤ n)) &&
+  (let lookup := lookupIn t
    (match lookup prog with
     | some ([], 0, _) => true
     | _ => false) &&
@@ -1113,6 +1180,10 @@ def checkCertFast (prog : List Asm) (d : CertData) : Bool :=
          | i :: c' => frameStepLookupB prog lookup i c'
              e.2.2.1 e.2.2.2.1 e.2.2.2.2
          | [] => true)))
+
+/-- Bundled-lookup implementation of `checkCert`. -/
+def checkCertFast (prog : List Asm) (d : CertData) : Bool :=
+  checkCertWith prog d prog.length d.table
 
 omit model in
 theorem checkCertFast_eq_checkCert (prog : List Asm) (d : CertData) :
@@ -1139,7 +1210,7 @@ theorem checkCertFast_eq_checkCert (prog : List Asm) (d : CertData) :
     congr 1
     funext e
     exact hentry e
-  unfold checkCertFast checkCert
+  unfold checkCertFast checkCertWith checkCert
   simp only [CertData.toCert]
   change (_ && ((match lookup prog with | some ([], 0, _) => true | _ => false) &&
       d.entries.all fastEntry)) =
@@ -1234,71 +1305,104 @@ def retCount : List Asm → Nat → Nat
   | .swap _ :: rest, run => retCount rest (run + 1)
   | _ :: rest, _ => retCount rest 0
 
-/-- Analyzer state: `(position, fl, rl, functionEntryLength)`. The frame base is *not* carried here;
-it is solved per function in `computeBase` and grafted on afterwards. -/
-abbrev AState := List Asm × FLayout × FLayout × Nat
+/-- Every label's `findLabel` answer together with the target suffix's length,
+computed in one pass. `k` is the length of the list being walked. -/
+def labelTargetsGo : List Asm → Nat →
+    Std.HashMap Label (List Asm × Nat) → Std.HashMap Label (List Asm × Nat)
+  | [], _, m => m
+  | i :: rest, k, m =>
+      labelTargetsGo rest (k - 1)
+        (match i with
+         | .label l => if m.contains l then m else m.insert l (rest, k - 1)
+         | _ => m)
+
+/-- Jump-target table: `label ↦ (code after its first definition, that code's
+length)`.
+
+The analyzer used to call `findLabel l prog` per jump — a scan of the whole
+program each time — and then `t.length`, another one. Both are O(program) and
+there is one per jump, so resolving targets was quadratic. This resolves every
+label once. -/
+def labelTargets (prog : List Asm) : Std.HashMap Label (List Asm × Nat) :=
+  labelTargetsGo prog prog.length ∅
+
+/-- Analyzer state: `(positionLength, position, fl, rl, functionEntryLength)`.
+The frame base is *not* carried here; it is solved per function in `computeBase`
+and grafted on afterwards.
+
+The position's length is **threaded** rather than recomputed. It is the `vis`
+dedup key and it ends up in the certificate, and `List.length` on a suffix is
+O(program): computing it once per explored position made phase 1 quadratic
+(`List.length` was 31% of all instructions in a profile). Every successor's
+length is known without walking — the fall-through is one shorter, and a jump
+target's comes from `labelTargets`. -/
+abbrev AState := Nat × List Asm × FLayout × FLayout × Nat
 
 /-- A call-graph edge `(callerFrameLen, calleeFrameLen, midframeLen)`, keyed by function-entry length. -/
 abbrev CallEdge := Nat × Nat × Nat
 
-/-- Forward successors of one abstract state (mirrors `frameStep` forward), plus any call edge. -/
-def stepSuccs (prog : List Asm) (pls : List Label) : List Asm → FLayout → FLayout → Nat →
+/-- Forward successors of one abstract state (mirrors `frameStep` forward), plus
+any call edge. `k` is the length of `i :: c`, so the fall-through `c` has length
+`k - 1`; jump targets take their length from `tgts`. -/
+def stepSuccs (tgts : Std.HashMap Label (List Asm × Nat)) (pls : Std.HashSet Label)
+    (k : Nat) : List Asm → FLayout → FLayout → Nat →
     Option (List AState × List CallEdge)
   | [], _, _, _ => some ([], [])
   | i :: c, fl, rl, fe =>
+    let kc := k - 1
     match i with
-    | .push _ => some ([(c, .word :: fl, rl, fe)], [])
+    | .push _ => some ([(kc, c, .word :: fl, rl, fe)], [])
     | .dup n => match fl[n.val]? with
-        | some FSlot.word => some ([(c, .word :: fl, rl, fe)], []) | _ => none
-    | .pop => match fl with | .word :: fl' => some ([(c, fl', rl, fe)], []) | _ => none
+        | some FSlot.word => some ([(kc, c, .word :: fl, rl, fe)], []) | _ => none
+    | .pop => match fl with | .word :: fl' => some ([(kc, c, fl', rl, fe)], []) | _ => none
     | .swap n => match fl with
         | sx :: rest => match rest.drop n.val with
-            | sy :: rst => some ([(c, sy :: (rest.take n.val ++ sx :: rst), rl, fe)], [])
+            | sy :: rst => some ([(kc, c, sy :: (rest.take n.val ++ sx :: rst), rl, fe)], [])
             | [] => none
         | [] => none
-    | .label _ => some ([(c, fl, rl, fe)], [])
-    | .pushLabel l => some ([(c, .retTo l :: fl, rl, fe)], [])
+    | .label _ => some ([(kc, c, fl, rl, fe)], [])
+    | .pushLabel l => some ([(kc, c, .retTo l :: fl, rl, fe)], [])
     | .op yop =>
         match opTable yop with
-        | some o => some ([(c, List.replicate o.pushArity .word ++ fl.drop o.popArity, rl, fe)], [])
+        | some o =>
+            some ([(kc, c, List.replicate o.pushArity .word ++ fl.drop o.popArity, rl, fe)], [])
         | none => none
-    | .jumpi l => match findLabel l prog with
-        | some t => match fl with
-            | .word :: fl' => some ([(t, fl', rl, fe), (c, fl', rl, fe)], [])
+    | .jumpi l => match tgts[l]? with
+        | some (t, kt) => match fl with
+            | .word :: fl' => some ([(kt, t, fl', rl, fe), (kc, c, fl', rl, fe)], [])
             | _ => none
         | none => none
-    | .jump l => match findLabel l prog with
-        | some t => match c with
+    | .jump l => match tgts[l]? with
+        | some (t, kt) => match c with
             | .label Lret :: c' =>
                 if pls.contains Lret then
                   match splitSetup Lret fl with
                   | some (Sw, Smid) =>
-                      let k := retCount t 0
+                      let r := retCount t 0
                       -- callee enters its own frame `t`; the continuation stays in the caller frame.
-                      some ([(t, Sw ++ [.ret], List.replicate k .word, t.length),
-                             (c', List.replicate k .word ++ Smid, rl, fe)],
-                            [(fe, t.length, Smid.length)])
+                      some ([(kt, t, Sw ++ [.ret], List.replicate r .word, kt),
+                             (kc - 1, c', List.replicate r .word ++ Smid, rl, fe)],
+                            [(fe, kt, Smid.length)])
                   | none => none
-                else some ([(t, fl, rl, fe)], [])
-            | _ => some ([(t, fl, rl, fe)], [])
+                else some ([(kt, t, fl, rl, fe)], [])
+            | _ => some ([(kt, t, fl, rl, fe)], [])
         | none => none
     | .dynJump => some ([], [])
 
 /-- Phase 1: explore every reachable position once, deduping by `position.length` in `vis`; collect
 call edges. Returns `none` on an unrepresentable instruction (rejected downstream). -/
-partial def analyzeGo (prog : List Asm) (pls : List Label) :
+partial def analyzeGo (tgts : Std.HashMap Label (List Asm × Nat)) (pls : Std.HashSet Label) :
     List AState → Array (Option AState) → List CallEdge →
     Option (Array (Option AState) × List CallEdge)
   | [], vis, edges => some (vis, edges)
-  | (pos, fl, rl, fe) :: wl, vis, edges =>
-    let k := pos.length
+  | (k, pos, fl, rl, fe) :: wl, vis, edges =>
     if k ≥ vis.size then none else
     match vis[k]! with
-    | some _ => analyzeGo prog pls wl vis edges
+    | some _ => analyzeGo tgts pls wl vis edges
     | none =>
-      match stepSuccs prog pls pos fl rl fe with
+      match stepSuccs tgts pls k pos fl rl fe with
       | some (succs, es) =>
-          analyzeGo prog pls (succs ++ wl) (vis.set! k (some (pos, fl, rl, fe))) (es ++ edges)
+          analyzeGo tgts pls (succs ++ wl) (vis.set! k (some (k, pos, fl, rl, fe))) (es ++ edges)
       | none => none
 
 /-- Phase 2: solve the per-function frame base as a fixpoint over the call edges (`size` bounds the
@@ -1306,12 +1410,19 @@ frame-entry key space). Rejects a non-converging graph (recursion) or a base exc
 def computeBase (size : Nat) (edges : List CallEdge) : Option (Array Nat) := Id.run do
   let mut base : Array Nat := Array.replicate size 0
   -- A DAG converges within `edges.length` relaxation rounds; one extra round detects a cycle.
+  -- Stop as soon as a round relaxes nothing: the iteration is monotone, so a
+  -- round that changes nothing leaves every later round unchanged too — same
+  -- fixpoint, but `|E|` rounds over `|E|` edges is quadratic and real call
+  -- graphs settle in a handful.
   for _ in [0:edges.length + 1] do
+    let mut changed := false
     for e in edges do
       let nb := base[e.1]! + e.2.2
       if base[e.2.1]! < nb then
         if nb > 1023 then return none
         base := base.set! e.2.1 nb
+        changed := true
+    if !changed then break
   for e in edges do
     if base[e.2.1]! < base[e.1]! + e.2.2 then return none  -- did not converge ⇒ recursion
   return some base
@@ -1319,15 +1430,19 @@ def computeBase (size : Nat) (edges : List CallEdge) : Option (Array Nat) := Id.
 /-- The solver: explore from the entry (empty frame, `main`'s return layout `[]`, frame = whole
 program), solve the bases, then graft `fbMax = base(function)` onto every position. -/
 def analyze (prog : List Asm) : CertData :=
-  let size := prog.length + 1
-  match analyzeGo prog (pushLabelled prog) [(prog, [], [], prog.length)]
-      (Array.replicate size none) [] with
+  let n := prog.length
+  let size := n + 1
+  match analyzeGo (labelTargets prog) (Std.HashSet.ofList (pushLabelled prog))
+      [(n, prog, [], [], n)] (Array.replicate size none) [] with
   | none => ⟨[]⟩
   | some (vis, edges) =>
     match computeBase size edges with
     | none => ⟨[]⟩
     | some base =>
-      ⟨vis.toList.filterMap (fun o => o.map (fun s => (s.1.length, s.1, s.2.1, base[s.2.2.2]!, s.2.2.1)))⟩
+      -- The position length is already carried, so the certificate's lookup key
+      -- costs nothing here either.
+      ⟨vis.toList.filterMap (fun o =>
+        o.map (fun s => (s.1, s.2.1, s.2.2.1, base[s.2.2.2.2]!, s.2.2.2.1)))⟩
 
 /-- The `compile`-facing gate: analyse then verify. -/
 def stackOK2 (prog : List Asm) : Bool := checkCertFast prog (analyze prog)

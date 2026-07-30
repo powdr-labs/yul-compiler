@@ -1,5 +1,7 @@
 import Mathlib.Tactic.NormNum.Ineq
 import Mathlib.Tactic.NormNum.Basic
+import Std.Data.HashMap.Lemmas
+import Std.Data.HashSet.Lemmas
 import YulEvmCompiler.OpTable
 set_option warningAsError true
 /-!
@@ -342,6 +344,75 @@ def wfCheck (p : List Asm) : Bool :=
     && (labelRefs p).all (fun l => decide (l ∈ labelDefs p))
     && decide (codeSize p < 256 ^ labelWidth)
 
+/-! ### Verified fast well-formedness check
+
+`wfCheck` as written recomputes `labelDefs p` — a full traversal that allocates a
+fresh labels list — *inside* the `labelRefs` loop, and then scans it; and
+`List.Nodup`'s default decision procedure is a quadratic sequence of equality
+tests. With thousands of labels and references over tens of thousands of
+instructions that dominated compilation. `wfCheckFast` traverses once and answers
+both questions from a `Std.HashSet`; `@[csimp]` installs it in compiled code
+while `wfCheck` remains the specification `wfCheck_iff` is stated about. -/
+
+/-- Hash-based `Nodup` for label lists. (`Optimizer.nodupFast` is the same check
+for the optimizer's string-keyed lists; this copy keeps the assembly layer
+independent of the optimizer's module tree.) -/
+def nodupLabels (xs : List Label) : Bool :=
+  (Std.HashSet.ofList xs).size == xs.length
+
+private theorem hashSet_ofList_cons_size {α : Type} [BEq α] [Hashable α]
+    [LawfulBEq α] [LawfulHashable α] (a : α) (xs : List α) :
+    (Std.HashSet.ofList (a :: xs)).size =
+      ((Std.HashSet.ofList xs).insert a).size := by
+  apply Std.HashSet.Equiv.size_eq
+  apply Std.HashSet.Equiv.of_forall_contains_eq
+  intro x
+  simp
+  rw [BEq.comm]
+
+private theorem hashSet_ofList_size_eq_length_iff {α : Type}
+    [BEq α] [Hashable α] [LawfulBEq α] [LawfulHashable α] [DecidableEq α]
+    (xs : List α) :
+    (Std.HashSet.ofList xs).size = xs.length ↔ xs.Nodup := by
+  induction xs with
+  | nil => simp
+  | cons a xs ih =>
+      rw [hashSet_ofList_cons_size, Std.HashSet.size_insert]
+      by_cases ha : a ∈ Std.HashSet.ofList xs
+      · have hmem : a ∈ xs := by
+          simpa [Std.HashSet.mem_iff_contains] using ha
+        have hle := Std.HashSet.size_ofList_le (l := xs)
+        simp [ha, hmem]
+        omega
+      · have hmem : a ∉ xs := by
+          simpa [Std.HashSet.mem_iff_contains] using ha
+        simp [ha, hmem, ih]
+
+@[simp] theorem nodupLabels_eq_decide (xs : List Label) :
+    nodupLabels xs = decide xs.Nodup := by
+  rw [Bool.eq_iff_iff]
+  simpa [nodupLabels] using hashSet_ofList_size_eq_length_iff xs
+
+/-- One-pass well-formedness check: `labelDefs` is built once, and both the
+uniqueness and the definedness questions are answered from one hash set. -/
+def wfCheckFast (p : List Asm) : Bool :=
+  let defs := labelDefs p
+  let defSet := Std.HashSet.ofList defs
+  (defSet.size == defs.length)
+    && (labelRefs p).all (fun l => defSet.contains l)
+    && decide (codeSize p < 256 ^ labelWidth)
+
+@[csimp] theorem wfCheck_eq_wfCheckFast : @wfCheck = @wfCheckFast := by
+  funext p
+  have hnodup : ((Std.HashSet.ofList (labelDefs p)).size == (labelDefs p).length)
+      = decide (labelDefs p).Nodup := nodupLabels_eq_decide (labelDefs p)
+  have hmem : ∀ l, (Std.HashSet.ofList (labelDefs p)).contains l
+      = decide (l ∈ labelDefs p) := by
+    intro l
+    rw [Std.HashSet.contains_ofList]
+    simp
+  simp only [wfCheck, wfCheckFast, hnodup, hmem]
+
 theorem wfCheck_iff {p : List Asm} : wfCheck p = true ↔ WFProg p := by
   unfold wfCheck
   rw [Bool.and_eq_true, Bool.and_eq_true, List.all_eq_true]
@@ -384,6 +455,135 @@ def lowerFrag (prog : List Asm) : List Asm → Option (List Instr)
 
 /-- Lower a whole program. -/
 def lowerProg (p : List Asm) : Option (List Instr) := lowerFrag p p
+
+/-! ### Verified fast lowering
+
+`resolve l prog` walks the program from the start for **one** label, so
+`lowerFrag` — which calls it once per `jump`/`jumpi`/`pushLabel` — is
+`O(references × program)`, with an `Asm.label` allocation and an `Asm.size`
+computation (a bignum width loop for `push`) at every visited instruction.
+Real fixtures have thousands of references over tens of thousands of
+instructions, which made lowering quadratic.
+
+The fix computes every label's address in **one** pass and looks them up in a
+`Std.HashMap`. `lowerProg` stays the proof-facing specification: the fast
+version is proved *equal* to it and installed with `@[csimp]`, so compiled
+code runs the fast one while every theorem downstream still talks about
+`lowerProg`. No new axiom, no `implemented_by` trust step. -/
+
+/-- Record `i`'s label at byte position `off`, keeping any address already
+recorded (so the *first* definition wins, as `resolve` does). -/
+def noteLabel (i : Asm) (off : Nat) (m : Std.HashMap Label Nat) :
+    Std.HashMap Label Nat :=
+  match i with
+  | .label l => if m.contains l then m else m.insert l off
+  | _ => m
+
+/-- Address of the first definition of every label, accumulated left to right.
+`off` is the byte position of the head of `p`. -/
+def labelAddrsGo : List Asm → Nat → Std.HashMap Label Nat → Std.HashMap Label Nat
+  | [], _, m => m
+  | i :: rest, off, m => labelAddrsGo rest (off + i.size) (noteLabel i off m)
+
+/-- An instruction that is not `.label l` leaves `l`'s recorded address alone. -/
+theorem noteLabel_ne (i : Asm) (off : Nat) (m : Std.HashMap Label Nat)
+    (l : Label) (hi : i ≠ .label l) :
+    (noteLabel i off m).contains l = m.contains l ∧
+      (noteLabel i off m)[l]? = m[l]? := by
+  cases i with
+  | label l' =>
+      have hne : ¬ l' = l := fun h => hi (by rw [h])
+      by_cases hm : m.contains l'
+      · simp [noteLabel, hm]
+      · refine ⟨?_, ?_⟩
+        · simp [noteLabel, hm, Std.HashMap.contains_insert, beq_iff_eq, hne]
+        · simp [noteLabel, hm, Std.HashMap.getElem?_insert, beq_iff_eq, hne]
+  | _ => exact ⟨rfl, rfl⟩
+
+/-- Byte address of every label defined in `p`, in one pass. -/
+def labelAddrs (p : List Asm) : Std.HashMap Label Nat := labelAddrsGo p 0 ∅
+
+/-- The accumulator characterisation: a label already recorded keeps its
+address, and any other label resolves within the remaining fragment, shifted by
+the fragment's own offset. -/
+theorem labelAddrsGo_getElem? (p : List Asm) :
+    ∀ (off : Nat) (m : Std.HashMap Label Nat) (l : Label),
+      (labelAddrsGo p off m)[l]? =
+        if m.contains l then m[l]? else (resolve l p).map (off + ·) := by
+  induction p with
+  | nil =>
+      intro off m l
+      simp only [labelAddrsGo, resolve, Option.map_none]
+      by_cases h : m.contains l
+      · simp [h]
+      · simp [h, Std.HashMap.getElem?_eq_none_of_contains_eq_false
+          (by simpa using h)]
+  | cons i rest ih =>
+      intro off m l
+      rw [labelAddrsGo, ih]
+      by_cases hi : i = .label l
+      · subst hi
+        by_cases hm : m.contains l
+        · simp [noteLabel, hm]
+        · simp [noteLabel, hm, resolve]
+      · obtain ⟨hc, hg⟩ := noteLabel_ne i off m l hi
+        rw [hc, hg]
+        by_cases hm : m.contains l
+        · simp [hm]
+        · simp only [hm, if_false, Bool.false_eq_true, resolve, hi, if_false]
+          cases hr : resolve l rest with
+          | none => simp
+          | some a => simp [Nat.add_assoc]
+
+/-- `labelAddrs` agrees with `resolve` on every label. -/
+theorem labelAddrs_getElem? (p : List Asm) (l : Label) :
+    (labelAddrs p)[l]? = resolve l p := by
+  rw [labelAddrs, labelAddrsGo_getElem?]
+  simp
+
+/-- `lowerInstr` against a precomputed address table. -/
+def lowerInstrWith (addrs : Std.HashMap Label Nat) : Asm → Option (List Instr)
+  | .push v      => some [Instr.pushMin (conv v)]
+  | .op yop      => (opTable yop).map (fun o => [.op o])
+  | .dup n       => some [.op (.Dup ⟨n⟩)]
+  | .swap n      => some [.op (.Swap ⟨n⟩)]
+  | .pop         => some [.op .POP]
+  | .label _     => some [.op .JUMPDEST]
+  | .jump l      => addrs[l]?.map
+      (fun a => [.push labelWidthFin (UInt256.ofNat a), .op .JUMP])
+  | .jumpi l     => addrs[l]?.map
+      (fun a => [.push labelWidthFin (UInt256.ofNat a), .op .JUMPI])
+  | .pushLabel l => addrs[l]?.map
+      (fun a => [.push labelWidthFin (UInt256.ofNat a)])
+  | .dynJump     => some [.op .JUMP]
+
+theorem lowerInstrWith_eq (p : List Asm) (i : Asm) :
+    lowerInstrWith (labelAddrs p) i = lowerInstr p i := by
+  cases i <;> simp [lowerInstrWith, lowerInstr, labelAddrs_getElem?]
+
+/-- `lowerFrag` against a precomputed address table. -/
+def lowerFragWith (addrs : Std.HashMap Label Nat) :
+    List Asm → Option (List Instr)
+  | [] => some []
+  | i :: rest => do
+      let is1 ← lowerInstrWith addrs i
+      let is2 ← lowerFragWith addrs rest
+      return is1 ++ is2
+
+theorem lowerFragWith_eq (p : List Asm) :
+    ∀ c : List Asm, lowerFragWith (labelAddrs p) c = lowerFrag p c := by
+  intro c
+  induction c with
+  | nil => rfl
+  | cons i rest ih => simp [lowerFragWith, lowerFrag, lowerInstrWith_eq, ih]
+
+/-- One-pass lowering: build the address table once, then lower. -/
+def lowerProgFast (p : List Asm) : Option (List Instr) :=
+  lowerFragWith (labelAddrs p) p
+
+@[csimp] theorem lowerProg_eq_lowerProgFast : @lowerProg = @lowerProgFast := by
+  funext p
+  rw [lowerProgFast, lowerProg, lowerFragWith_eq]
 
 /-- Lowered width is `Asm.size`, for every constructor. -/
 theorem lowerInstr_length {prog : List Asm} {i : Asm} {is : List Instr}
