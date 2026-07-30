@@ -462,18 +462,20 @@ audited-surface-vs-artifact distinction the spec closure already makes:
 
 * **`Optimizer/Spec/`** — the *stable contract*; an auditor reads this and nothing
   under `Implementation/`.
-  * **`Spec/Pass.lean`** — a pass is a total transform
+  * **`Spec/LocalPass.lean`** — a pass is a total transform
     `run : Block D.Op → Block D.Op`; it is **sound** when
-    `Sound D run := ∀ b, EquivBlock D b (run b)`, and the `Pass` structure bundles a
-    transform with that proof, so a value of `Pass` *is* a verified optimizer — there
+    `Sound D run := ∀ b, EquivBlock D b (run b)`, and the `LocalPass` structure
+    bundles a transform with that proof, so a value of `LocalPass` *is* a verified
+    optimizer — there
     is no way to build one without discharging `Sound`. `EquivBlock` (from the pinned
     `YulSemantics.Equiv`) is *pointwise* big-step equivalence: identical final
     environment, final state (hence halt payloads), and outcome from every
     configuration — strictly stronger than observational equivalence, hence stable
-    under any context. Passes compose (`Pass.comp`, unit `Pass.id`) by transitivity,
-    a pipeline is one pass (`Pass.ofList`), and `Pass.preservesRun` extracts the
+    under any context. Passes compose (`LocalPass.comp`, unit `LocalPass.id`) by
+    transitivity, a pipeline is one pass (`LocalPass.ofList`), and
+    `LocalPass.preservesRun` extracts the
     whole-program `YulSemantics.Run` guarantee.
-  * **`Spec/Backend.lean`** — the payoff. `Pass.optimize_then_compile_correct`
+  * **`Spec/Backend.lean`** — the payoff. `LocalPass.optimize_then_compile_correct`
     composes any sound pass with `compile_correct`: the bytecode compiled from the
     *optimized* program correctly simulates the *original* program's Yul semantics.
     This is the `Run`-interface composition `AGENTS.md` prescribes; no backend proof
@@ -493,7 +495,7 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     `ObsPass` into the production pipeline is a deliberate, human-reviewed
     weakening of the headline guarantee; the theorem is ready for that review.
 * **`Optimizer/Core/`** — the incrementally introduced optimizer IR, behind the
-  unchanged `Pass` boundary.
+  unchanged `LocalPass` boundary.
   * **`Core/Basic.lean`** — the first intrinsically checked fragment: ANF values
     are literals or variables carrying membership in an explicit context; pure
     EVM operations carry their input arity in the type; and their arguments are
@@ -514,10 +516,10 @@ audited-surface-vs-artifact distinction the spec closure already makes:
     of the inliner's β argument — a substituted value evaluates in the caller
     environment exactly as the original evaluates in the callee frame.
 * **`Optimizer/Implementation/`** — concrete passes, *not* part of what an auditor
-  must read: because every `Pass` is sound by construction, a pass is trusted the
+  must read: because every `LocalPass` is sound by construction, a pass is trusted the
   moment it type-checks against the spec.
   * **`Implementation/Identity.lean`** — the identity pass, the first inhabitant:
-    returns its input unchanged, sound by reflexivity (definitionally `Pass.id`). A
+    returns its input unchanged, sound by reflexivity (definitionally `LocalPass.id`). A
     real pass replaces `run` with a transformation and `sound` with an equivalence
     proof of the same shape.
   * **`Implementation/FunCongr.lean`** — the **function-environment congruence**
@@ -705,10 +707,13 @@ CI), which must stay in sync as coverage grows.
   frames without that contract still need EIP-8024 activation upstream.
   Independent unsupported operations such as `gas`, immutables, and live
   linker-symbol values are not accepted merely because spilling succeeds.
-* **Optimizer.** A verified `Simplify → InlineIdentity → Simplify` pipeline runs
-  in front of the backend for block-rooted
-  `compileSource` inputs. The spec every pass must meet is fixed and inhabited
-  (see *The optimizer specification* above): a sound `Optimizer.Pass` is a total
+* **Optimizer.** A verified multi-stage pipeline, iterated six times, runs in
+  front of the backend for block-rooted `compileSource` inputs (see
+  `Optimizer/Implementation/Pipeline.lean` for the current stage list, and
+  `Optimizer/IDEAS.md` for the log of what each stage does and why). A cleanup
+  composition also runs behind the smart stack layout, and a separate verified
+  Asm→Asm peephole runs below the source tier inside `compile`. The spec every pass must meet is fixed and inhabited
+  (see *The optimizer specification* above): a sound `Optimizer.LocalPass` is a total
   source-to-source transform proved semantics-preserving (`EquivBlock`) and
   composed with `compile_correct`. Object-rooted inputs run the same pipeline on
   every deploy/runtime code block; resolver congruence connects the optimized
