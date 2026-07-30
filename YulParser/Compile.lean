@@ -276,9 +276,17 @@ def compileSource (source : String) : Option ByteArray := do
       -- eager bindings would run the no-rejoin and light pipelines on every
       -- program even though the first candidate compiles in the common case
       -- (measured ~2-3x of the total compile time on the corpus runners).
+      -- The smart layout's slot reuse and live-range splitting introduce
+      -- `x := y` copies and shared slots, and it runs *after* the pipeline, so
+      -- nothing has cleaned up behind it. Sweep the laid-out program with the
+      -- verified dead-store pass first, and keep the uncleaned layout as a
+      -- further fallback so acceptance can only widen.
       let tryLayouts (blk : List (Stmt YulSemantics.EVM.Op)) :
           Option (List YulEvmCompiler.Instr) :=
         YulEvmCompiler.compile blk
+          <|> YulEvmCompiler.compile
+            (YulEvmCompiler.Optimizer.deadStoresBlock
+              (YulEvmCompiler.Optimizer.stackLayoutBlock blk))
           <|> YulEvmCompiler.compile
             (YulEvmCompiler.Optimizer.stackLayoutBlock blk)
       let asm := tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipeline
@@ -323,6 +331,9 @@ def compileSource (source : String) : Option ByteArray := do
       let tryLayouts (obj : Object YulSemantics.EVM.Op) :=
         YulEvmCompiler.compileObject obj
           <|> YulEvmCompiler.compileObject
+            (YulEvmCompiler.Optimizer.deadStoresObject
+              (YulEvmCompiler.Optimizer.stackLayoutObject obj))
+          <|> YulEvmCompiler.compileObject
             (YulEvmCompiler.Optimizer.stackLayoutObject obj)
       let layout ← tryLayouts optimized
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
@@ -356,6 +367,9 @@ def compileSource (source : String) : Option ByteArray := do
                             YulSemantics.EVM.ExternalCreates.none)
                           spilled.object)
                     YulEvmCompiler.compileObject spilledOpt
+                      <|> YulEvmCompiler.compileObject
+                        (YulEvmCompiler.Optimizer.deadStoresObject
+                          (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt))
                       <|> YulEvmCompiler.compileObject
                         (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)
                       <|> some plainLayout

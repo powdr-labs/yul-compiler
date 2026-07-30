@@ -9,6 +9,7 @@ import YulEvmCompiler.Optimizer.Implementation.HoistCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.StorageForwardResolve
 import YulEvmCompiler.Optimizer.Implementation.CoalesceCopiesResolve
 import YulEvmCompiler.Optimizer.Implementation.RejoinPairs
+import YulEvmCompiler.Optimizer.Implementation.DeadStores
 import YulEvmCompiler.Optimizer.Implementation.StructurePasses
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Normalize
@@ -112,7 +113,7 @@ def blockRound : List (LocalPass D) :=
   [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
    flatten, fuseDeclAssign,
    storageForward, simplify, coalesceCopies, reuseValues, rejoinPairs, deadPure,
-   deadResults, deadResults, deadResults, pruneDefs]
+   deadStores, deadResults, deadResults, deadResults, pruneDefs]
 
 /-- The block-path round without `rejoinPairs`. Rejoining merges the bindings
 the smart stack layout would otherwise re-slot, which can defeat the layout
@@ -122,7 +123,7 @@ def blockRoundNoRejoin : List (LocalPass D) :=
   [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
    flatten, fuseDeclAssign,
    storageForward, simplify, coalesceCopies, reuseValues, deadPure,
-   deadResults, deadResults, deadResults, pruneDefs]
+   deadStores, deadResults, deadResults, deadResults, pruneDefs]
 
 /-- Verified block pipeline at an explicit round count. Iterated inlining can
 push a caller's live locals past the backend's `DUP16`/`SWAP16` reach; fewer
@@ -222,6 +223,7 @@ def objectRound : List (RPass calls creates) :=
    ⟨reuseValues, fun L b => resolveReuseValuesBlock_equiv L b⟩,
    ⟨rejoinPairs, fun L b => resolveRejoinPairsBlock_equiv L b⟩,
    ⟨deadPure, fun L b => resolveDeadPureBlock_equiv L b⟩,
+   ⟨deadStores, fun L b => resolveDeadStoresBlock_equiv L b⟩,
    ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
    ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
    ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
@@ -244,6 +246,7 @@ def objectRoundNoRejoin : List (RPass calls creates) :=
    ⟨coalesceCopies, fun L b => resolveCoalesceCopiesBlock_equiv L b⟩,
    ⟨reuseValues, fun L b => resolveReuseValuesBlock_equiv L b⟩,
    ⟨deadPure, fun L b => resolveDeadPureBlock_equiv L b⟩,
+   ⟨deadStores, fun L b => resolveDeadStoresBlock_equiv L b⟩,
    ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
    ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
    ⟨deadResults, fun L b => resolveDeadResultsBlock_equiv L b⟩,
