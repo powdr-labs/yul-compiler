@@ -5,9 +5,8 @@ written in Lean 4. "Non-optimizing" describes the *core*: code generation is
 direct and its correctness never depends on any optimization. Two separately
 verified optimizers do run in front of and below it — a Yul→Yul pipeline
 (`Optimizer/`) and an Asm→Asm peephole (`AsmPeephole.lean`), each with its own
-soundness contract composed into the end-to-end theorem; both are described
-under *What is not (yet) done, and why*, next to the limits they exist to work
-around.
+soundness contract composed into the end-to-end theorem. See
+**Optimization** below.
 
 * Source semantics: [powdr-labs/yul-semantics] — the big-step relational
   judgment `YulSemantics.Run`/`Step` over the gas-free EVM dialect
@@ -169,60 +168,13 @@ the same footing as `add`. **The CALL-, CREATE-, and `selfdestruct`-family
 operations are different**: their correctness is *conditional on* the
 `ExternalsRealized` hypothesis — see the next section.
 
-## What is not (yet) done, and why
+## Optimization
 
-Two entries below — **Optimizer** and **Asm peephole** — describe verified
-machinery that *is* shipped. They live in this section because they exist to work
-around the limits of the non-optimizing core (stack reach, and the structural
-slack in solc's unoptimized IR), so they only make sense next to those limits.
-Everything else here is a genuine gap.
+Code generation itself is direct and unoptimized, and the correctness theorem
+never depends on optimization. Two verified optimizers run around it, each with
+its own soundness contract composed into the end-to-end theorem, and each able
+to fall back to doing nothing.
 
-- **`gas`.** yul-semantics models `gas()` as a nondeterministic open-world
-  oracle; verifying it needs a realization condition tying the chosen oracle word
-  to the target frame's actual remaining gas. Until then it compiles to `none`.
-  (`datasize`/`dataoffset` are also outside `opTable`, but only because the
-  object compiler resolves them to layout constants at compile time rather than
-  runtime opcodes.)
-- **Open-world call/create coverage is conditional.** The
-  CALL/CREATE/`selfdestruct` correctness is sound and general — the theorem
-  quantifies over the external `ExternalCalls`/`ExternalCreates` relations and
-  assumes an `ExternalsRealized` hypothesis: every source-admitted call/create
-  response must be realized by a complete target `Steps` trace (with no
-  restriction on intermediate call stacks, so arbitrary callee/init code, nested
-  calls/creations, and reentrancy are covered). The interface is inhabited by a
-  real EVM behavior, not just satisfiable in principle: besides the vacuous
-  closed-world `ExternalsRealized.none`, the library proves the *genuinely
-  non-empty* `ExternalsRealized.insufficientBalanceCall` — its relation admits
-  the EVM's immediate-fail response for a value-bearing `call` the caller cannot
-  afford (success flag `0`, empty return data, world unchanged), realized by a
-  single concrete `StepRunning.callFail` step. That witness covers the
-  insufficient-balance `.call` fail class only; a fully general model (arbitrary
-  callee/init code with success-and-return) is still the client's responsibility,
-  so end-to-end open-world call/create coverage remains conditional on supplying
-  such a realization. This is a genuine distinction from the flat built-ins above.
-- **Deep stack access.** The raw backend uses up to `DUP16` for variable reads
-  and `SWAP16` for stores, and functions return up to 16 values. A raw deeper
-  access is *rejected* (`compile = none`), not miscompiled, because EIP-8024
-  (`DUPN`/`SWAPN`) is not activated on any fork modeled by evm-semantics.
-  `compileSource` retries a
-  failed optimized compile with the verified smart stack-layout pass: it
-  right-associates addition spines without changing Yul's right-to-left leaf
-  evaluation order, then coalesces non-overlapping singleton-local live ranges
-  onto reachable dead slots. This fixes issue #61's nine-live-local reproducer
-  and three of the five former Uniswap v4 stack failures while leaving bytecode
-  for already-compiling programs unchanged. As its final fallback,
-  `compileSource` can spill selected locals to the scratch interval authorized
-  by a consistent literal `memoryguard(n)`. It rejects spilling when `msize`
-  could observe the reservation, when recursion makes the active call path
-  unbounded, when a selected binding violates lexical scope, or when a tuple
-  binding cannot be spilled as one group. Lexical siblings reuse colors, and
-  caller/callee regions overlap only when their
-  lifetimes cannot: the reserved word count is the peak simultaneous lexical
-  and call-path footprint, not the total number of selected bindings. Existing
-  successful candidates still win before this fallback, so their bytecode and
-  gas are unchanged. Programs without a safe guard contract remain rejected.
-  This fallback addresses stack reach only; `gas`, immutables, and a live
-  `linkersymbol` value remain separate unsupported features.
 - **Optimizer.** A verified six-round pipeline runs in front of the backend for
   **block-rooted** source
   programs (`compileSource`). One round is
@@ -326,6 +278,55 @@ Everything else here is a genuine gap.
   `if c { break/continue/leave }` shape, double-`iszero` elimination in front of
   a `jumpi` (a branch only tests truthiness), and dropping unreferenced labels;
   the scan iterates, because each rewrite can uncover the next.
+
+## What is not (yet) done, and why
+
+- **`gas`.** yul-semantics models `gas()` as a nondeterministic open-world
+  oracle; verifying it needs a realization condition tying the chosen oracle word
+  to the target frame's actual remaining gas. Until then it compiles to `none`.
+  (`datasize`/`dataoffset` are also outside `opTable`, but only because the
+  object compiler resolves them to layout constants at compile time rather than
+  runtime opcodes.)
+- **Open-world call/create coverage is conditional.** The
+  CALL/CREATE/`selfdestruct` correctness is sound and general — the theorem
+  quantifies over the external `ExternalCalls`/`ExternalCreates` relations and
+  assumes an `ExternalsRealized` hypothesis: every source-admitted call/create
+  response must be realized by a complete target `Steps` trace (with no
+  restriction on intermediate call stacks, so arbitrary callee/init code, nested
+  calls/creations, and reentrancy are covered). The interface is inhabited by a
+  real EVM behavior, not just satisfiable in principle: besides the vacuous
+  closed-world `ExternalsRealized.none`, the library proves the *genuinely
+  non-empty* `ExternalsRealized.insufficientBalanceCall` — its relation admits
+  the EVM's immediate-fail response for a value-bearing `call` the caller cannot
+  afford (success flag `0`, empty return data, world unchanged), realized by a
+  single concrete `StepRunning.callFail` step. That witness covers the
+  insufficient-balance `.call` fail class only; a fully general model (arbitrary
+  callee/init code with success-and-return) is still the client's responsibility,
+  so end-to-end open-world call/create coverage remains conditional on supplying
+  such a realization. This is a genuine distinction from the flat built-ins above.
+- **Deep stack access.** The raw backend uses up to `DUP16` for variable reads
+  and `SWAP16` for stores, and functions return up to 16 values. A raw deeper
+  access is *rejected* (`compile = none`), not miscompiled, because EIP-8024
+  (`DUPN`/`SWAPN`) is not activated on any fork modeled by evm-semantics.
+  `compileSource` retries a
+  failed optimized compile with the verified smart stack-layout pass: it
+  right-associates addition spines without changing Yul's right-to-left leaf
+  evaluation order, then coalesces non-overlapping singleton-local live ranges
+  onto reachable dead slots. This fixes issue #61's nine-live-local reproducer
+  and three of the five former Uniswap v4 stack failures while leaving bytecode
+  for already-compiling programs unchanged. As its final fallback,
+  `compileSource` can spill selected locals to the scratch interval authorized
+  by a consistent literal `memoryguard(n)`. It rejects spilling when `msize`
+  could observe the reservation, when recursion makes the active call path
+  unbounded, when a selected binding violates lexical scope, or when a tuple
+  binding cannot be spilled as one group. Lexical siblings reuse colors, and
+  caller/callee regions overlap only when their
+  lifetimes cannot: the reserved word count is the peak simultaneous lexical
+  and call-path footprint, not the total number of selected bindings. Existing
+  successful candidates still win before this fallback, so their bytecode and
+  gas are unchanged. Programs without a safe guard contract remain rejected.
+  This fallback addresses stack reach only; `gas`, immutables, and a live
+  `linkersymbol` value remain separate unsupported features.
 - **Fork range.** The theorem fixes `fork = .Osaka`. Function/param/return names
   must be `Nodup`.
 - **Gas is existentially bounded, not closed-form.** By design (yul-semantics is
