@@ -365,8 +365,8 @@ def compileSource (source : String) : Option ByteArray := do
                           spilled.object)
                     -- EXPERIMENTAL (covered-before-read store elimination): drop
                     -- spill-slot writes that are overwritten before any read.
-                    -- (Re-optimizing afterwards yields no further gain — the
-                    -- removed stores have inline values, no dead bindings.)
+                    -- (EqualStoreElim was measured here too — only −144 on
+                    -- uniswap, parked; see Optimizer/IDEAS.md.)
                     let spilledOpt :=
                       YulEvmCompiler.Optimizer.SpillStoreElim.elimObject spilledOpt0
                     YulEvmCompiler.compileObject spilledOpt

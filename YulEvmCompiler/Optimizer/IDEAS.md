@@ -1365,3 +1365,29 @@ compose that result with the existing `Simplify` resolution congruence for the
   relabeling, a different argument than `CodeRel`'s in-place windows), and
   iterating the scan (a dropped branch's `jumpi` can orphan its label for a
   second round).
+
+### 🅿️ Equal-store elimination (`EqualStoreElim.lean`, measured, parked)
+
+Drop `mstore(k, v)` / `sstore(k, v)` when the value provably already at `k`
+equals `v` (store-of-equal is the identity). Exact-state-preserving; for `sstore`
+also **refund-neutral** — verified in the semantics: `Gas.sstoreRefund` returns
+`0` when `current = new`, and SSTORE uses warm prices throughout (no cold/warm
+access list), so a skipped identical write changes neither storage nor the
+refund counter, only saves the 100-gas charge. A content fact `k ↦ e`
+(pure-total `e`, literal `k`) is recorded by `mstore`/`sstore(k,e)` and by
+`let x := mload/sload(k)`, invalidated by any clobber, aliasing write, var
+reassignment/shadowing, CALL-family value, or control flow (straight-line runs
+only).
+
+**Measured (uniswap, wired def-only in the spill arm): −144 total** — swap −72,
+addLiquidityWide −36, removeLiquidity −36; 0 regressions, canaries untouched.
+All from identity `mstore` (a spilled binding read-unchanged and re-stored to its
+slot); **no identity `sstore` fired** — PoolSwap's sstores are genuine value
+changes. Below the 1k threshold, so **parked** (file kept, builds green, one-line
+`compileSource` wiring removed).
+
+The `sstore` case's real target is aave `PositionStatusMap`'s status-unchanged
+loop writes, which likely compile through the **main** (non-spill) arm — untested
+here (a full aave run exceeded the measurement budget on a cold solc cache). If
+revisited: wire `eqObject` into the main arm too and measure aave; that is where
+the refund-neutral identity-`sstore` elimination could actually pay off.
