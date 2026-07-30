@@ -829,6 +829,77 @@ private theorem compileResolvedObject_compileWitness {o : Object Op} {L : Layout
 layout maps. -/
 def compileObject := compileResolvedObject
 
+/-! ### PROTOTYPE, UNPROVEN: scheduled object compiler
+
+Exact mirror of the verified plan/layout machinery above, but lowering each
+object's code block with `compileScheduled` (the verified pipeline plus the
+Asm-level per-window operand-stack scheduler) instead of `compile`. Kept
+separate so the verified `compileObject` and its correctness/consistency proofs
+are untouched; a soundness proof for `Schedule.scheduleAsm` (translation
+validation) would collapse this back into `compileObject`. -/
+
+private def planAttemptS (name : String) (code : List (YulSemantics.Stmt Op))
+    (subPlans : List ObjectPlan) (dataSegs : List (String × Data)) (c : Nat) :
+    Option (ObjectPlan ⊕ Nat) := do
+  let childrenSize := (subPlans.map (·.bytecode.length)).sum
+  let dataSize := (dataSegs.map (fun entry => entry.2.size)).sum
+  let size := c + 1 + childrenSize + dataSize
+  if size < 2 ^ 256 then
+    let children := childEntries (c + 1) subPlans
+    let dataLayout := dataEntries (c + 1 + childrenSize) dataSegs
+    let plan : ObjectPlan := {
+      name, codeBlock := code, codeSize := c, size, subObjects := subPlans, dataSegs
+      entries := { name, offset := 0, size } :: children ++ dataLayout
+      bytecode := []
+    }
+    let resolvedCode ← resolveObjectStmts (planResolver plan) code
+    let resolvedInstructions ← compileScheduled resolvedCode
+    let executable := assembleBytes resolvedInstructions
+    let c' := executable.length
+    if c' == c then
+      let childBytecode := (subPlans.map (·.bytecode)).flatten
+      let bytecode := executable ++ [0] ++ childBytecode ++ dataRegion dataSegs
+      if bytecode.length == size then some (.inl { plan with bytecode }) else none
+    else
+      some (.inr c')
+  else
+    none
+
+private def planLoopS (name : String) (code : List (YulSemantics.Stmt Op))
+    (subPlans : List ObjectPlan) (dataSegs : List (String × Data)) :
+    Nat → Nat → Option ObjectPlan
+  | 0, _ => none
+  | fuel + 1, c =>
+    match planAttemptS name code subPlans dataSegs c with
+    | none => none
+    | some (.inl plan) => some plan
+    | some (.inr c') => planLoopS name code subPlans dataSegs fuel c'
+
+mutual
+  def planObjectS (o : Object Op) : Option ObjectPlan :=
+    match o with
+    | .mk name code subObjects dataSegs => do
+        let subPlans ← planObjectsS subObjects
+        let placeholderCode ← resolveObjectStmts placeholderResolver code
+        let instructions ← compileScheduled placeholderCode
+        let codeSize := (assembleBytes instructions).length
+        planLoopS name code subPlans dataSegs 34 codeSize
+    termination_by 2 * sizeOf o + 1
+
+  def planObjectsS (os : List (Object Op)) : Option (List ObjectPlan) :=
+    match os with
+    | [] => some []
+    | o :: objects => do
+        return (← planObjectS o) :: (← planObjectsS objects)
+    termination_by 2 * sizeOf os
+end
+
+/-- **PROTOTYPE, UNPROVEN.** Object compiler using the window scheduler. -/
+def compileObjectScheduled (o : Object Op) : Option Layout := do
+  let plan ← planObjectS o
+  if !(plan.entries.map entryKey).Nodup then none else
+  some (layoutOfPlan plan)
+
 /-- Public data-placement theorem for `compileObject`. -/
 theorem compileObject_consistent {o : Object Op} {L : Layout}
     (h : compileObject o = some L) : L.Consistent o :=
