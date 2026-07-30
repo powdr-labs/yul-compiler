@@ -1448,6 +1448,28 @@ def keyHonest (sa : Array (List Asm)) (n key : Nat) (pos : List Asm) : Bool :=
      | none => false)
 
 omit model in
+/-- Below this many instructions the length walks the suffix index removes are
+cheaper than building the index: a program of `n` instructions costs one
+`n + 1`-element array and `n` pushes either way, which only pays off once the
+quadratic term is the larger one. Small Yul fixtures measurably regressed without
+this gate (`objectCompiler`, ~4 ms per fixture). -/
+def suffixIndexThreshold : Nat := 512
+
+/-- The suffix index, or nothing for programs too small to benefit. Passing `#[]`
+makes `keyHonest` fail for every entry, so they all take the length-computing
+path — the same one the honesty test already falls back to. -/
+def suffixesFor (prog : List Asm) (n : Nat) : Array (List Asm) :=
+  if n < suffixIndexThreshold then #[] else suffixes prog
+
+omit model in
+theorem suffixesFor_eq (prog : List Asm) (n : Nat) :
+    suffixesFor prog n = suffixes prog ∨ suffixesFor prog n = #[] := by
+  unfold suffixesFor
+  split
+  · exact Or.inr rfl
+  · exact Or.inl rfl
+
+omit model in
 theorem keyHonest_length {prog : List Asm} {key : Nat} {pos : List Asm}
     (h : keyHonest (suffixes prog) prog.length key pos = true) : pos.length = key := by
   rw [keyHonest, Bool.and_eq_true, decide_eq_true_eq] at h
@@ -1458,6 +1480,16 @@ theorem keyHonest_length {prog : List Asm} {key : Nat} {pos : List Asm}
   rw [← hmatch]
   simp only [List.length_drop]
   omega
+
+omit model in
+/-- `keyHonest_length` for either array `suffixesFor` can hand out: an empty index
+never reports an honest key, so the fact holds vacuously there. -/
+theorem keyHonest_length_of {prog : List Asm} {sa : Array (List Asm)}
+    (hsa : sa = suffixes prog ∨ sa = #[]) {key : Nat} {pos : List Asm}
+    (h : keyHonest sa prog.length key pos = true) : pos.length = key := by
+  rcases hsa with rfl | rfl
+  · exact keyHonest_length h
+  · simp [keyHonest] at h
 
 /-- The verifier: bounded at every entry, and `frameStep` at every instruction entry, plus the
 program-entry conditions. Each entry carries its own `(fl, fbMax, rl)`, so the current-position
@@ -1503,7 +1535,8 @@ def checkCertWith (prog : List Asm) (d : CertData) (n : Nat)
 
 /-- Bundled-lookup implementation of `checkCert`. -/
 def checkCertFast (prog : List Asm) (d : CertData) : Bool :=
-  checkCertWith prog d prog.length d.table (findLabelMap prog) (suffixes prog)
+  checkCertWith prog d prog.length d.table (findLabelMap prog)
+    (suffixesFor prog prog.length)
 
 omit model in
 theorem checkCertFast_eq_checkCert (prog : List Asm) (d : CertData) :
@@ -1514,8 +1547,8 @@ theorem checkCertFast_eq_checkCert (prog : List Asm) (d : CertData) :
       match e.2.1 with
       | i :: c =>
           frameStepLookupIdxB (findLabelMap prog) lookup d.table
-            (if keyHonest (suffixes prog) prog.length e.1 (i :: c) then e.1 - 1
-             else c.length)
+            (if keyHonest (suffixesFor prog prog.length) prog.length e.1 (i :: c)
+             then e.1 - 1 else c.length)
             i c e.2.2.1 e.2.2.2.1 e.2.2.2.2
       | [] => true
   let slowEntry := fun e : Nat × List Asm × FLayout × Nat × FLayout =>
@@ -1531,11 +1564,13 @@ theorem checkCertFast_eq_checkCert (prog : List Asm) (d : CertData) :
         simp only
         -- Either index is `c`'s length: the honest-key one because `keyHonest`
         -- pins the stored position's length, the other by construction.
-        have hk : (if keyHonest (suffixes prog) prog.length e.1 (i :: c) then
-              e.1 - 1 else c.length) = c.length := by
-          by_cases hh : keyHonest (suffixes prog) prog.length e.1 (i :: c) = true
+        have hk : (if keyHonest (suffixesFor prog prog.length) prog.length e.1
+              (i :: c) then e.1 - 1 else c.length) = c.length := by
+          by_cases hh : keyHonest (suffixesFor prog prog.length) prog.length e.1
+              (i :: c) = true
           · rw [if_pos hh]
-            have hlen : (i :: c).length = e.1 := keyHonest_length hh
+            have hlen : (i :: c).length = e.1 :=
+              keyHonest_length_of (suffixesFor_eq prog prog.length) hh
             simp only [List.length_cons] at hlen
             omega
           · rw [if_neg (by simpa using hh)]
