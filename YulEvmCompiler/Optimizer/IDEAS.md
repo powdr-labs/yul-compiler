@@ -1302,45 +1302,104 @@ only when the name is never *mentioned* again, and here the name is assigned
 again (so the binder must survive) or is a plain assignment (which `DeadPure`
 does not consider at all, beyond the `x := x` self-assignment case).
 
-Three coordinated changes:
+The changes, as actually implemented (the first draft of this entry described
+the rule in terms of "dead at that point" plus escape sets — that version is
+**unsound** three ways and has been replaced by the `owned` restriction below):
 
-1. **`DeadStores`** (new pass, `Implementation/DeadStores.lean`):
-   * **R1** delete `.assign xs e` when every `x ∈ xs` is dead at that point
-     and `alwaysEval bound e`;
-   * **R2** rewrite `.letDecl xs (some e)` to `.letDecl xs none` when every
-     `x ∈ xs` is dead at that point and `alwaysEval bound e`.
+1. **`DeadStores`** (new pass, `Implementation/DeadStores.lean`), on a name
+   declared by an earlier `letDecl` of the **same statement sequence**
+   (`owned`):
+   * **R1** delete `.assign [x] e` when `owned.contains x`,
+     `alwaysEval bound e`, and `x` is dead over the rest of the sequence;
+   * **R2** rewrite `.letDecl [x] (some e)` to `.letDecl [x] none` under the
+     same deadness and `alwaysEval` conditions.
 
-   Liveness is sequence-local and conservative at every control boundary:
-   `if`/`switch` union their arms with the fall-through set; recursing into a
-   `for` uses `mentioned(cond ∪ post ∪ body) ∪ liveAfter` as the body/post
-   live-out (a sound over-approximation of the loop-carried set that still
-   exposes *within-iteration* dead stores, which is where all the Aave hits
-   are); `break`/`continue`/`leave` reset the live set to the escape set.
-   Reusing `DeadPure`'s `alwaysEval` gives totality and state preservation,
-   so removal can change neither halting nor `EvmState`.
+   Both are singleton-only. `alwaysEval` excludes calls and every
+   `stableTotalArity` op is single-valued, so a multi-name target would mean the
+   *original* statement is stuck — and `EquivBlock` is an `iff`, so turning a
+   stuck program into a running one would break the backward direction.
 
-   Soundness follows `DeadPure`'s `DcRel` architecture — skip rules
-   everywhere, a `BoundOK`-style semantic invariant, a syntactic funs
-   relation, and one bidirectional `Step` simulation — with the desync
-   relation weakened from "the unremoved side carries extra dead bindings" to
-   "the two `VEnv`s agree except on names that are dead from here on". Every
-   affected name is local to the enclosing block, so `restore` erases the
-   difference at block exit and the strong `LocalPass`/`EquivBlock` tier stays
-   reachable.
+   The `owned` restriction is what makes it sound, and it replaces escape-set
+   bookkeeping entirely. Three things it protects:
+   * **ambient variables** — `Sound` quantifies over every incoming `VEnv`, and
+     `restore` keeps outer bindings *with their in-place updates*, so deleting
+     `x := 0` in `[.assign ["x"] (.lit 0)]` would change the final environment;
+   * **function returns** — `callOk` reads `decl.rets` out of the body's final
+     environment, and `function f() -> r { r := 1 }` has `r` "dead" under any
+     purely-local liveness;
+   * **`for`-init declarations** — loop-carried, so not dead at the end of one
+     body iteration.
 
-2. **Post-layout wiring.** `compileSource`'s layout arms become
-   `compile (deadStores (stackLayout blk))` (and the object analogue), because
-   that is where the dead stores are created. The cleanup is
-   layout-preserving — R1 removes instructions only and R2 keeps the slot — so
-   a layout chosen for compilability still compiles. `deadStores` also joins
-   `blockRound`/`objectRound` so pipeline-internal dead stores go too.
+   None of the three is declared by a `letDecl` of the sequence being swept, so
+   `owned` excludes all of them. And because every sequence this pass rewrites
+   is the body of a `.block` (`Step.block` restores; `callOk` runs the callee
+   body as `.stmt (.block …)`; `cond`/`switch`/`for`-body/`for`-post all run as
+   blocks), an `owned` name is erased on *every* exit — which is why the
+   deadness test can answer `true` at `break`/`continue`/`leave` and at the end
+   of the sequence with no escape set at all.
 
-3. **`RejoinPairs`: two new consumer forms.** Post-layout residue across the
-   five fixtures is 7 `switch` conditions and 3 effectful expression
-   statements: `let x := e; switch x …` → `switch e …`, and
-   `let x := e; op(…, x, …)` for an effectful `op` whose argument list is a
-   pure-total tree with exactly one occurrence of `x`. Same guards as the
-   existing if-condition form (`rjCondPair`), same `rjDepthLimit`.
+   Shadowing is a hard stop rather than tracked, so the pass needs **no**
+   `NormalForm.UniqueNames` precondition — which matters, because
+   `stackLayoutBlock` introduces shadow copies. `Normalized` is preserved: R1
+   removes a statement and R2 only replaces `some e` with `none`, so
+   `declaredNamesStmts` is unchanged (`WellScoped`, `UniqueNames`),
+   `AnfStmt (.letDecl _ none)` is `True` (`IsANF`), and the other four fields
+   are untouched.
+
+2. **Post-layout cleanup.** `stackLayoutBlock` runs *after* the whole pipeline
+   and nothing cleans up behind its slot reuse and live-range splitting, so
+   `compileSource`'s three layout arms get a cleanup composition — and the
+   important part is that three of its four stages **were already proved**:
+
+   ```
+   cleanupAfterLayout = (deadStores ; fuseDeclAssign ; coalesceCopies ; deadPure) ^ 2
+   ```
+
+   `deadStores` deletes the dead stores and bares the dead binders;
+   `fuseDeclAssign`'s `sink` then fuses each bare binder onto its next
+   same-level assignment — exactly the deadness condition R2 tested — which is
+   what actually removes the slot's `push 0` *and* that store's `swap; pop` and
+   compiles the right-hand side one slot shallower; `coalesceCopies` collapses
+   the split-range copy chains; `deadPure` removes anything left with no reader,
+   the only one of the four that removes a scope-exit `pop`. Running the group
+   twice lets each expose work for the others.
+
+   R2 in isolation is nearly worthless and the first draft of this entry was
+   wrong to claim otherwise: `.letDecl xs none` lowers to one `push 0` per name
+   and `Instr.pushMin` makes that `PUSH0`, so `let x := 0` → `let x` is **0
+   gas** and `let x := y` → `let x` is **1**; R2 also keeps the binder, hence
+   its slot and its scope-exit `pop`. R2 earns its place only because
+   `fuseDeclAssign` follows it. (Relatedly, `AGENTS.md`'s "literal and
+   label-address pushes are always `PUSH32`" invariant is stale for literals
+   since #126 — only *label* pushes are uniform width.)
+
+   Monotonicity of acceptance is **not** claimed: `compile` gates on
+   `stackOK2 (optimizeAsm asm)`, a certificate with a soundness but no
+   monotonicity theorem. Instead the uncleaned layout stays as a further
+   thunked `<|>` arm, so acceptance provably cannot regress. (Measured: the
+   three Solidity compile corpora and the interpreter corpus are unchanged.)
+
+3. **Pipeline placement.** `deadStores` also joins `blockRound`/`objectRound`,
+   positioned *after* `reuseValues`: `ReuseValues` mines availability facts from
+   `let x := e` and `x := e`, and any reuse it could make lies inside exactly the
+   window where the deadness test sees no reader — running the dead-store sweep
+   first would silently forfeit the per-iteration `mstore`/`keccak256`/`sload`
+   CSE that is the stated lever of "gas 5".
+
+Adding a concrete pass does **not** move the trust boundary: `SpecClosure.roots`
+holds only `LocalPass.optimize_then_compile_correct`, and `stackLayout` is
+already a `LocalPass`, so the composition inherits it. No `update-spec.sh`, no
+`Checks.lean` change.
+
+Deliberately **not** in this branch, after review: two new `RejoinPairs`
+consumer forms (a different proved pass, ~10 measured sites, would make the
+baseline churn impossible to attribute); dropping `deadStoresBlock`'s
+`storageLayoutFreeStmts` gate in favour of a `DeadStoresResolve` module (the
+relation is resolution-invariant, so this is the better long-run design — the
+gate currently disables the pass on constructor blocks, which cost deploy gas
+only); and strengthening `DeadPure`'s `for` case to thread
+`blockDecls init ++ bound` (`ForInitEmpty` holds on pipeline input, so it buys
+nothing here and costs the two `forLoop` master-induction cases).
 
 Non-overlap with the open Uniswap campaign (#130 and its children #132/#133):
 that work is the selector dispatch tree, literal-slot memory forwarding, and

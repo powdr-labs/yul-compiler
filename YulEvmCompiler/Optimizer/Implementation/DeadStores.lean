@@ -1,5 +1,7 @@
 import YulEvmCompiler.Optimizer.Implementation.DeadPure
 import YulEvmCompiler.Optimizer.Implementation.StorageForwardResolve
+import YulEvmCompiler.Optimizer.Implementation.StructurePasses
+import YulEvmCompiler.Optimizer.Implementation.CoalesceCopies
 set_option warningAsError true
 /-!
 # YulEvmCompiler.Optimizer.Implementation.DeadStores
@@ -58,7 +60,22 @@ rewritten.
 
 `for`-`init` sequences are left untouched, mirroring `DeadPure` and `DeadLits`:
 their scope spans the whole loop, so the "dies at the end of the sequence"
-argument does not apply to them.
+argument does not apply to them. `bound` is likewise passed into `post`/`body`
+unchanged rather than extended with `init`'s declarations: `ForInitEmpty` is a
+field of `NormalForm.Normalized`, so on pipeline input there are none, and
+extending it would cost exactly the two `forLoop` master-induction cases for no
+measured gain.
+
+## What R2 is for
+
+On its own R2 is nearly free: `.letDecl xs none` lowers to one `push 0` per
+name, and `Instr.pushMin` makes that a `PUSH0`, so `let x := 0` becomes
+`let x` for 0 gas and `let x := y` for 1. R2 also *keeps* the binder, hence
+keeps its slot and its scope-exit `pop`. It pays because `FuseDeclAssign.sink`
+runs behind it: `let x` plus a later same-level `x := e` with no intervening
+mention — exactly `dsDead`'s kill condition — fuses back to `let x := e`,
+which removes the `PUSH0`, removes that store's `swap; pop`, and compiles `e`
+one slot shallower. So R2 is only wired where `fuseDeclAssign` follows it.
 
 Shadowing is treated as a hard stop (a re-declaration of `x` in `rest` makes
 `x` not dead) rather than tracked, so the pass is correct without
@@ -105,6 +122,9 @@ def dsDead (x : Ident) : List (Stmt Op) → Bool
   | .forLoop init c post body :: rest =>
       if stmtsMentions x init || exprMentions x c || stmtsMentions x post ||
         stmtsMentions x body then false else dsDead x rest
+  -- Dead conservatism, kept for locality of reasoning: a callee environment is
+  -- `params.zip argvals ++ bindZeros rets`, so a nested definition can never
+  -- read a caller local anyway.
   | .funDef _ ps rs body :: rest =>
       if ps.contains x || rs.contains x || stmtsMentions x body then false
       else dsDead x rest
@@ -147,9 +167,8 @@ def dsStmt (bound : List Ident) : Stmt Op → Stmt Op
   | .cond c body => .cond c (dsSweep bound [] (dsStmts bound body))
   | .switch c cases dflt => .switch c (dsCases bound cases) (dsDflt bound dflt)
   | .forLoop init c post body =>
-      .forLoop init c
-        (dsSweep (blockDecls init ++ bound) [] (dsStmts (blockDecls init ++ bound) post))
-        (dsSweep (blockDecls init ++ bound) [] (dsStmts (blockDecls init ++ bound) body))
+      .forLoop init c (dsSweep bound [] (dsStmts bound post))
+        (dsSweep bound [] (dsStmts bound body))
   | s => s
 
 /-- Rewrite each statement of a sequence. -/
@@ -173,27 +192,21 @@ end
 def dsOnce (b : Block Op) : Block Op :=
   dsSweep [] [] (dsStmts [] b)
 
-/-- `dsDead` deliberately consults the **unrewritten** remainder: then a name
-whose store this sweep drops was already unread on both sides, which keeps the
-soundness relation to "the two environments differ only on names neither side
-reads". The price is that store *chains* need more than one sweep — `y := f(x)`
-keeps `x` alive until that store itself goes — so the pass is simply iterated,
-which is sound by composition. Three rounds drain the chains measured on
-`PositionStatusMap` and `TickMath`, and the fixed bound keeps the
-quadratic-per-sequence scan off generated multi-megabyte objects. -/
-def dsIterate : Nat → Block Op → Block Op
-  | 0, b => b
-  | n + 1, b => dsIterate n (dsOnce b)
+/-- `dsDead` deliberately consults the **unrewritten** remainder: a name whose
+store this sweep drops was then already unread on *both* sides, which keeps the
+soundness relation down to "the two environments differ only on names neither
+side reads". The price is that store chains (`y := f(x)` keeps `x` alive until
+that store itself goes) need more than one sweep. Iterating the sweep on its own
+was measured to gain exactly **zero** gas on Uniswap v4, so it is not iterated
+here; the compounding that does pay comes from alternating it with
+`fuseDeclAssign`/`coalesceCopies`/`deadPure` in `cleanupAfterLayout` below.
 
-/-- The iteration budget. -/
-def dsRounds : Nat := 3
-
-/-- Eliminate dead stores in a top-level block. The whole block must be free
+Eliminate dead stores in a top-level block. The whole block must be free
 of unresolved `dataoffset`/`datasize` so that layout resolution is the
 identity on input and output alike; that is what makes this an object-path
 stage (the `StorageForward`/`RejoinPairs` recipe). -/
 def deadStoresBlock (b : Block Op) : Block Op :=
-  if storageLayoutFreeStmts b then dsIterate dsRounds b else b
+  if storageLayoutFreeStmts b then dsOnce b else b
 
 /-! ### Object trees -/
 
@@ -241,6 +254,46 @@ def deadStores : LocalPass D where
 
 @[simp] theorem deadStores_run (b : Block Op) :
     (deadStores (calls := calls) (creates := creates)).run b = deadStoresBlock b := rfl
+
+/-! ### The post-layout cleanup
+
+`stackLayoutBlock` runs *after* the whole optimizer pipeline, so nothing has
+cleaned up behind its slot reuse and live-range splitting. The cleanup is this
+pass plus three passes that were already proved, in the order that makes them
+compound:
+
+* `deadStores` deletes the dead stores and turns dead initialisers into bare
+  binders;
+* `fuseDeclAssign` fuses each bare binder back onto its next same-level
+  assignment, which is what actually removes the slot's `push 0` and that
+  store's `swap; pop`;
+* `coalesceCopies` collapses the copy chains live-range splitting introduces;
+* `deadPure` removes any binding left with no reader at all — the only one of
+  the four that removes a scope-exit `pop`.
+
+Iterating twice lets `deadPure`'s deletions expose fresh dead stores and vice
+versa. Every stage is a `LocalPass`, so the composition is sound by
+`LocalPass.ofList` with no new proof obligation beyond `deadStores`' own. -/
+def cleanupAfterLayout : LocalPass D :=
+  LocalPass.ofList
+    [deadStores, fuseDeclAssign, coalesceCopies, deadPure,
+     deadStores, fuseDeclAssign, coalesceCopies, deadPure]
+
+/-- `cleanupAfterLayout` on a block. -/
+def cleanupAfterLayoutBlock (b : Block Op) : Block Op :=
+  (cleanupAfterLayout (calls := calls) (creates := creates)).run b
+
+mutual
+  /-- `cleanupAfterLayout` on every code block of an object tree. -/
+  def cleanupAfterLayoutObject : Object Op → Object Op
+    | .mk name code subs segs =>
+        .mk name (cleanupAfterLayoutBlock (calls := calls) (creates := creates) code)
+          (cleanupAfterLayoutObjects subs) segs
+
+  def cleanupAfterLayoutObjects : List (Object Op) → List (Object Op)
+    | [] => []
+    | o :: os => cleanupAfterLayoutObject o :: cleanupAfterLayoutObjects os
+end
 
 /-! ### Regression examples (checked at build time) -/
 

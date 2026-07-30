@@ -285,7 +285,9 @@ def compileSource (source : String) : Option ByteArray := do
           Option (List YulEvmCompiler.Instr) :=
         YulEvmCompiler.compile blk
           <|> YulEvmCompiler.compile
-            (YulEvmCompiler.Optimizer.deadStoresBlock
+            (YulEvmCompiler.Optimizer.cleanupAfterLayoutBlock
+              (calls := YulSemantics.EVM.ExternalCalls.none)
+              (creates := YulSemantics.EVM.ExternalCreates.none)
               (YulEvmCompiler.Optimizer.stackLayoutBlock blk))
           <|> YulEvmCompiler.compile
             (YulEvmCompiler.Optimizer.stackLayoutBlock blk)
@@ -331,7 +333,9 @@ def compileSource (source : String) : Option ByteArray := do
       let tryLayouts (obj : Object YulSemantics.EVM.Op) :=
         YulEvmCompiler.compileObject obj
           <|> YulEvmCompiler.compileObject
-            (YulEvmCompiler.Optimizer.deadStoresObject
+            (YulEvmCompiler.Optimizer.cleanupAfterLayoutObject
+              (calls := YulSemantics.EVM.ExternalCalls.none)
+              (creates := YulSemantics.EVM.ExternalCreates.none)
               (YulEvmCompiler.Optimizer.stackLayoutObject obj))
           <|> YulEvmCompiler.compileObject
             (YulEvmCompiler.Optimizer.stackLayoutObject obj)
@@ -368,7 +372,9 @@ def compileSource (source : String) : Option ByteArray := do
                           spilled.object)
                     YulEvmCompiler.compileObject spilledOpt
                       <|> YulEvmCompiler.compileObject
-                        (YulEvmCompiler.Optimizer.deadStoresObject
+                        (YulEvmCompiler.Optimizer.cleanupAfterLayoutObject
+                          (calls := YulSemantics.EVM.ExternalCalls.none)
+                          (creates := YulSemantics.EVM.ExternalCreates.none)
                           (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt))
                       <|> YulEvmCompiler.compileObject
                         (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)
