@@ -31,16 +31,48 @@ variable {Op : Type}
 
 /-! ### Fresh names -/
 
+/-- Read back a decimal digit list. Left inverse of `Nat.toDigits 10`
+(`dsDigits_toDigits`), which is what makes the fresh-name encoding injective and
+its recogniser complete. -/
+def dsDigits : List Char → Nat :=
+  List.foldl (fun n c => n * 10 + (c.toNat - 48)) 0
+
+private theorem dsDigits_append_singleton (ds : List Char) (c : Char) :
+    dsDigits (ds ++ [c]) = dsDigits ds * 10 + (c.toNat - 48) := by
+  simp [dsDigits, List.foldl_append]
+
+/-- Reading back the decimal digits of `k` gives `k`. -/
+theorem dsDigits_toDigits (k : Nat) : dsDigits (Nat.toDigits 10 k) = k := by
+  induction k using Nat.strongRecOn with
+  | ind k ih =>
+      rw [Nat.toDigits_eq_if (by omega)]
+      split
+      · next hlt =>
+          simp [dsDigits, Nat.toNat_digitChar_sub_48_of_lt_ten hlt]
+      · next hge =>
+          have hk : 10 ≤ k := by omega
+          have hdiv : k / 10 < k := Nat.div_lt_self (by omega) (by omega)
+          rw [dsDigits_append_singleton, ih _ hdiv,
+            Nat.toNat_digitChar_sub_48_of_lt_ten (Nat.mod_lt _ (by omega))]
+          omega
+
 /-- The `k`-th fresh name: a leading `NUL` (`Char.ofNat 0`), which cannot occur
-in a valid Yul identifier, followed by a unary suffix. The `NUL` makes the name
-disjoint from every source identifier (capture-avoidance, for soundness); the
-unary suffix makes distinctness a `List.length` fact. -/
-def dsName (k : Nat) : Ident := String.ofList (Char.ofNat 0 :: List.replicate (k + 1) 'v')
+in a valid Yul identifier, followed by `k`'s decimal digits. The `NUL` makes the
+name disjoint from every source identifier (capture-avoidance, for soundness);
+the decimal suffix is canonical, so distinctness is a read-back fact
+(`dsDigits_toDigits`).
+
+The suffix used to be *unary*, which made the `k`-th name `k + 2` characters
+long and the whole family Θ(N²) bytes for N declared names. On a 730 KB fixture
+that was 28 MB of identifier text and ~75% of normalization's runtime; the
+decimal suffix makes it Θ(N log N). -/
+def dsName (k : Nat) : Ident :=
+  String.ofList (Char.ofNat 0 :: Nat.toDigits 10 k)
 
 theorem dsName_inj {i j : Nat} (h : dsName i = dsName j) : i = j := by
   simp only [dsName, String.ofList_inj, List.cons.injEq, true_and] at h
-  have := congrArg List.length h
-  simpa using this
+  have := congrArg dsDigits h
+  rwa [dsDigits_toDigits, dsDigits_toDigits] at this
 
 /-- Fresh names for a list, one per element, starting at index `n`. -/
 def freshVars (n : Nat) : List Ident → List Ident
