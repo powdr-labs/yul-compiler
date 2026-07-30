@@ -24,10 +24,10 @@ open MemorySpillExitSound
 open MemorySpillStepSound
 
 variable {base reserved : Nat}
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "G" => guardedEvm calls creates gasOracle base reserved
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-- Close any normal statement once its constructor-specific target execution
 and final control relation have been established. -/
@@ -325,12 +325,12 @@ theorem closeSeqConsWith
       exitCopies cutoff)
     (htail : ∀ {targetMiddle : WordEnv} {targetMiddleState : EvmState},
       ResultControlRel (base := base) (reserved := reserved)
-        (calls := calls) (creates := creates)
+        (calls := calls) (creates := creates) (gasOracle := gasOracle)
         globalDeclared selected layout frame signature cuts live exitNames
         source target (.stmt policyStmt)
         (.sres sourceMiddle sourceMiddleState .normal)
         (.sres targetMiddle targetMiddleState .normal) →
-      ResAboveUnchanged (calls := calls) (creates := creates)
+      ResAboveUnchanged (calls := calls) (creates := creates) (gasOracle := gasOracle)
         cutoff reserved targetState
         (.sres targetMiddle targetMiddleState .normal) →
       StepSimResult (base := base) (reserved := reserved)
@@ -859,12 +859,12 @@ spelled out: each placeholder is replaced branch-by-branch with the reusable
 closures above and in `MemorySpillStepSound`. -/
 theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
     (hfacts : SpillFacts raw result guards)
-    (hexternals : GuardedExternals calls creates result.base result.reserved)
+    (hexternals : GuardedExternals calls creates gasOracle result.base result.reserved)
     (mode : MemorySpillOriginSound.OriginMode)
     {sourceFuns : FunEnv
-      (guardedEvm calls creates result.base result.reserved)}
+      (guardedEvm calls creates gasOracle result.base result.reserved)}
     {source sourceState executedCode sourceResult}
-    (hsource : Step (guardedEvm calls creates result.base result.reserved)
+    (hsource : Step (guardedEvm calls creates gasOracle result.base result.reserved)
       sourceFuns source sourceState executedCode sourceResult) :
     StepSimMotive hfacts hexternals mode hsource := by
   induction hsource with
@@ -1361,7 +1361,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
       let nextLive := liveAfterCode result.selection policyFrame.owner live
         (.stmt (.letDecl names none))
       have hzero :
-          (guardedEvm calls creates result.base result.reserved).zero =
+          (guardedEvm calls creates gasOracle result.base result.reserved).zero =
             (0 : U256) := by
         change litValue (.number 0) = (0 : U256)
         decide
@@ -1369,7 +1369,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
         change litValue (.number 0) = (0 : U256)
         decide
       have hzeroKeys :
-          (bindZeros (guardedEvm calls creates result.base result.reserved)
+          (bindZeros (guardedEvm calls creates gasOracle result.base result.reserved)
             names).map Prod.fst = names := by
         unfold bindZeros
         rw [List.map_map]
@@ -1377,11 +1377,11 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
         exact List.map_id names
       have hzeroZip :
           names.zip (List.replicate names.length (0 : U256)) =
-            bindZeros (guardedEvm calls creates result.base result.reserved)
+            bindZeros (guardedEvm calls creates gasOracle result.base result.reserved)
               names := by
         have hz : ∀ xs : List Ident,
             xs.zip (List.replicate xs.length (0 : U256)) =
-              bindZeros (guardedEvm calls creates result.base result.reserved)
+              bindZeros (guardedEvm calls creates gasOracle result.base result.reserved)
                 xs := by
           intro xs
           induction xs with
@@ -1399,7 +1399,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
       have horiginLet : EnvDeclaredOrigin
           (MemorySpill.declaredStmts
             (resolveMemoryGuardStmts result.base result.reserved raw))
-          (bindZeros (guardedEvm calls creates result.base result.reserved)
+          (bindZeros (guardedEvm calls creates gasOracle result.base result.reserved)
             names ++ V) :=
         hctx.motive.envDeclared.prependList (by
           intro name hname
@@ -1407,7 +1407,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
           apply hctx.motive.origin.bindingOrigin.declared name
           simpa only [codeDeclared, MemorySpill.declaredStmt] using hname)
       have hboundLet : NamesBound exitNames
-          (bindZeros (guardedEvm calls creates result.base result.reserved)
+          (bindZeros (guardedEvm calls creates gasOracle result.base result.reserved)
             names ++ V) := by
         intro name hname
         obtain ⟨value, hget⟩ := hctx.exitsBound name hname
@@ -1430,7 +1430,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
             holdLive
             (by simp) hcertified (by simp)
           exact closeLetZeroWith
-            (calls := calls) (creates := creates)
+            (calls := calls) (creates := creates) (gasOracle := gasOracle)
             (base := result.base) (reserved := result.reserved)
             (names := []) (source := V) (target := target)
             (finalLive := nextLive)
@@ -1480,10 +1480,10 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
                       (by intro item hitem itemSlot hitemSlot
                           simpa using hslotEnd item itemSlot hitemSlot)
                   have hunique := hrel.unique.prependSelectedFresh
-                    (value := (guardedEvm calls creates result.base
+                    (value := (guardedEvm calls creates gasOracle result.base
                       result.reserved).zero) hfresh
                   exact closeLetZeroWith
-                    (calls := calls) (creates := creates)
+                    (calls := calls) (creates := creates) (gasOracle := gasOracle)
                     (base := result.base) (reserved := result.reserved)
                     (names := [name]) (source := V) (target := target)
                     (finalLive := nextLive)
@@ -1509,16 +1509,16 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
                     hslot hcertified holdLive hrel.liveRel heval
                     (AboveUnchanged.refl cutoff result.reserved targetState)
                   have hunique := hrel.unique.prependNoSlot
-                    (value := (guardedEvm calls creates result.base
+                    (value := (guardedEvm calls creates gasOracle result.base
                       result.reserved).zero) hslot
                   exact closeLetZeroWith
-                    (calls := calls) (creates := creates)
+                    (calls := calls) (creates := creates) (gasOracle := gasOracle)
                     (base := result.base) (reserved := result.reserved)
                     (finalLive := nextLive)
                     (by simpa [rewriteCode, rewriteStmt, hslot] using hexec)
                     ⟨by
                       have hbindSingleton :
-                          bindZeros (guardedEvm calls creates result.base
+                          bindZeros (guardedEvm calls creates gasOracle result.base
                             result.reserved) [name] ++ V =
                             (name, (0 : U256)) :: V := by
                         simp only [bindZeros, List.map_cons, List.map_nil]
@@ -1570,7 +1570,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
                 have hunique : SelectedUnique result.layout.slots
                     policyFrame.owner
                     (bindZeros
-                      (guardedEvm calls creates result.base result.reserved)
+                      (guardedEvm calls creates gasOracle result.base result.reserved)
                       (name :: second :: tail) ++ V) := by
                   apply hrel.unique.prependFreshList
                   · rw [hzeroKeys]
@@ -1579,7 +1579,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
                     rw [hzeroKeys] at hitem
                     exact hfresh item hitem
                 exact closeLetZeroWith
-                  (calls := calls) (creates := creates)
+                  (calls := calls) (creates := creates) (gasOracle := gasOracle)
                   (base := result.base) (reserved := result.reserved)
                   (names := name :: second :: tail)
                   (source := V) (target := target)
@@ -1604,14 +1604,14 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
                 have hunique : SelectedUnique result.layout.slots
                     policyFrame.owner
                     (bindZeros
-                      (guardedEvm calls creates result.base result.reserved)
+                      (guardedEvm calls creates gasOracle result.base result.reserved)
                       (name :: second :: tail) ++ V) := by
                   apply hrel.unique.prependNoSlots
                   intro item hitem
                   rw [hzeroKeys] at hitem
                   exact hnoSlots item hitem
                 exact closeLetZeroWith
-                  (calls := calls) (creates := creates)
+                  (calls := calls) (creates := creates) (gasOracle := gasOracle)
                   (base := result.base) (reserved := result.reserved)
                   (names := name :: second :: tail)
                   (source := V) (target := target)
@@ -1676,7 +1676,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
             (targets := []) rfl hlength (by simp) (by simp) (by simp)
             holdLive (by simp) hcertified habove (by simp)
           exact closeStmtNormalWith
-            (calls := calls) (creates := creates)
+            (calls := calls) (creates := creates) (gasOracle := gasOracle)
             (base := result.base) (reserved := result.reserved)
             (finalLive := nextLive)
             (policyStmt := .letDecl [] (some policyExpr))
@@ -1717,7 +1717,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
                             hcontrol.unique.prependSelectedFresh
                               (value := value) hfresh
                           exact closeStmtNormalWith
-                            (calls := calls) (creates := creates)
+                            (calls := calls) (creates := creates) (gasOracle := gasOracle)
                             (base := result.base) (reserved := result.reserved)
                             (finalLive := nextLive)
                             (policyStmt := .letDecl [name] (some policyExpr))
@@ -1734,7 +1734,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
                           have hunique := hcontrol.unique.prependNoSlot
                             (value := value) hslot
                           exact closeStmtNormalWith
-                            (calls := calls) (creates := creates)
+                            (calls := calls) (creates := creates) (gasOracle := gasOracle)
                             (base := result.base) (reserved := result.reserved)
                             (finalLive := nextLive)
                             (policyStmt := .letDecl [name] (some policyExpr))
@@ -1805,7 +1805,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
                     rw [List.map_fst_zip (Nat.le_of_eq hlength.symm)] at hitem
                     exact hfresh item hitem
                 exact closeStmtNormalWith
-                  (calls := calls) (creates := creates)
+                  (calls := calls) (creates := creates) (gasOracle := gasOracle)
                   (base := result.base) (reserved := result.reserved)
                   (finalLive := nextLive)
                   (policyStmt := .letDecl (name :: second :: tail)
@@ -1834,7 +1834,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
                   rw [List.map_fst_zip (Nat.le_of_eq hlength.symm)] at hitem
                   exact hnoSlots item hitem
                 exact closeStmtNormalWith
-                  (calls := calls) (creates := creates)
+                  (calls := calls) (creates := creates) (gasOracle := gasOracle)
                   (base := result.base) (reserved := result.reserved)
                   (finalLive := nextLive)
                   (policyStmt := .letDecl (name :: second :: tail)
@@ -1905,7 +1905,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
         hexitBound hexitSignature habove
       subst targetValues
       have hkeys := @VEnv.setMany_keys
-        (guardedEvm calls creates result.base result.reserved) inferInstance
+        (guardedEvm calls creates gasOracle result.base result.reserved) inferInstance
         V names values
       have horiginAssign : EnvDeclaredOrigin
           (MemorySpill.declaredStmts
@@ -1964,14 +1964,14 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
                               hctx.motive.origin.policyFrame_mem hslot hlive
                               hcontrol.liveRel htarget habove
                               (hslotEnd name slot hslot)
-                          rw [envSet_eq (calls := calls) (creates := creates)
+                          rw [envSet_eq (calls := calls) (creates := creates) (gasOracle := gasOracle)
                             (base := result.base) (reserved := result.reserved)
                             V name value] at hfinal
                           exact closeStmtNormalWith
-                            (calls := calls) (creates := creates)
+                            (calls := calls) (creates := creates) (gasOracle := gasOracle)
                             (base := result.base) (reserved := result.reserved)
                             (sourceFinal := @VEnv.setMany
-                              (guardedEvm calls creates result.base result.reserved)
+                              (guardedEvm calls creates gasOracle result.base result.reserved)
                               V [name] [value])
                             (finalLive := live)
                             (policyStmt := .assign [name] policyExpr)
@@ -1984,14 +1984,14 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
                           obtain ⟨hexec, hfinal, haboveFinal⟩ :=
                             execUnselectedAssign hslot hcontrol.liveRel htarget
                               habove
-                          rw [envSet_eq (calls := calls) (creates := creates)
+                          rw [envSet_eq (calls := calls) (creates := creates) (gasOracle := gasOracle)
                             (base := result.base) (reserved := result.reserved)
                             V name value] at hfinal
                           exact closeStmtNormalWith
-                            (calls := calls) (creates := creates)
+                            (calls := calls) (creates := creates) (gasOracle := gasOracle)
                             (base := result.base) (reserved := result.reserved)
                             (sourceFinal := @VEnv.setMany
-                              (guardedEvm calls creates result.base result.reserved)
+                              (guardedEvm calls creates gasOracle result.base result.reserved)
                               V [name] [value])
                             (finalLive := live)
                             (policyStmt := .assign [name] policyExpr)
@@ -2183,7 +2183,7 @@ theorem step_sim {raw : Block Op} {result : Result} {guards : List Nat}
               cases hseq with
               | seqNil =>
                   have hseqSim := simulateSeqNilLeaf
-                    (calls := calls) (creates := creates)
+                    (calls := calls) (creates := creates) (gasOracle := gasOracle)
                     (cuts := scopeMark _ _ :: cuts)
                     (sourceFuns := hoist _ [] :: funs)
                     (exitCopies := copyBackReturns result.layout.slots

@@ -18,8 +18,8 @@ open YulSemantics
 open YulSemantics.EVM
 open YulEvmCompiler
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 @[simp] theorem stackLayoutObject_codeBlock (o : Object Op) :
     (stackLayoutObject o).codeBlock = stackLayoutBlock o.codeBlock := by
@@ -31,7 +31,7 @@ pointwise `LocalPass` equivalence. -/
 theorem stackLayoutObject_topEquiv (o : Object Op) :
     EquivBlock D o.codeBlock (stackLayoutObject o).codeBlock := by
   rw [stackLayoutObject_codeBlock]
-  exact (stackLayout (calls := calls) (creates := creates)).sound o.codeBlock
+  exact (stackLayout (calls := calls) (creates := creates) (gasOracle := gasOracle)).sound o.codeBlock
 
 /-- The recursively laid-out artifact is covered by the full object compiler
 simulation, including emitted layout, payloads, and target state. -/
@@ -39,7 +39,7 @@ theorem stackLayoutObject_compileObject_correct
     [model : ExternalModel] (hexternal : ExternalsRealized model)
     {o : Object Op} {L : Layout}
     (hcomp : compileObject (stackLayoutObject o) = some L)
-    {V : VEnv (evmWithExternal model.calls model.creates)}
+    {V : VEnv (evmWithExternal model.calls model.creates model.gas)}
     {yst : EvmState} {out : Outcome}
     (hrun : RunResolvedObject (stackLayoutObject o) L V yst out) :
     ∃ b : Nat, ∀ s0 : State,

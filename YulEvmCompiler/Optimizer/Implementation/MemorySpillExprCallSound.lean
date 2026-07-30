@@ -27,10 +27,10 @@ open MemorySpillCallSound
 open MemorySpillTraceResolveSound
 
 variable {base reserved : Nat}
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "G" => guardedEvm calls creates gasOracle base reserved
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ## Static call origin and cutoff budget -/
 
@@ -124,14 +124,14 @@ mutual
     | var {hget : envGet source name = some value} :
         ExprBodyEvidence mode policyRoot selected layout (Step.var hget)
     | builtinOk {hargs : EvalArgs G funs source state args (.vals argvals state')}
-        {hbuiltin : (guardedEvm calls creates base reserved).Builtin
+        {hbuiltin : (guardedEvm calls creates gasOracle base reserved).Builtin
           op argvals state' (.ok values finalState)} :
         ArgsBodyEvidence mode policyRoot selected layout hargs →
         ExprBodyEvidence mode policyRoot selected layout
           (Step.builtinOk hargs hbuiltin)
     | builtinHalt
         {hargs : EvalArgs G funs source state args (.vals argvals state')}
-        {hbuiltin : (guardedEvm calls creates base reserved).Builtin
+        {hbuiltin : (guardedEvm calls creates gasOracle base reserved).Builtin
           op argvals state' (.halt finalState)} :
         ArgsBodyEvidence mode policyRoot selected layout hargs →
         ExprBodyEvidence mode policyRoot selected layout
@@ -275,7 +275,7 @@ theorem enterPolicyCallee {selected : SpillSet} {policyRoot : Block Op}
       slotFor? layout.slots policyCallee.owner localName = some slot →
         slot + 32 ≤ cutoff := by
     simpa [howner] using hcutoff
-  have hresult := execEntryPrologue_live (calls := calls) (creates := creates)
+  have hresult := execEntryPrologue_live (calls := calls) (creates := creates) (gasOracle := gasOracle)
     (sourceFuns := [] :: closure) hbuild hcheck hframe hentryPolicy
     (by simpa [hparams] using hfacts.bound)
     (by simpa [hparams, hreturns] using hnodup)

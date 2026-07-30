@@ -132,7 +132,8 @@ def identityHelpers : Block Op := yul% {
 def optimizedIdentityHelpers : Block Op :=
   (Optimizer.optimizerPipeline
     (calls := YulSemantics.EVM.ExternalCalls.none)
-    (creates := YulSemantics.EVM.ExternalCreates.none)).run identityHelpers
+    (creates := YulSemantics.EVM.ExternalCreates.none)
+    (gasOracle := YulSemantics.EVM.ExternalGas.any)).run identityHelpers
 
 /-- Pure expression-body wrapper helpers — the shapes solc emits for scaling,
 masking, and unchecked-arithmetic wrappers. The Core inliner substitutes the
@@ -149,7 +150,8 @@ def wrapperHelpers : Block Op := yul% {
 def optimizedWrapperHelpers : Block Op :=
   (Optimizer.optimizerPipeline
     (calls := YulSemantics.EVM.ExternalCalls.none)
-    (creates := YulSemantics.EVM.ExternalCreates.none)).run wrapperHelpers
+    (creates := YulSemantics.EVM.ExternalCreates.none)
+    (gasOracle := YulSemantics.EVM.ExternalGas.any)).run wrapperHelpers
 
 /-- A store followed by repeated literal-slot loads. `StorageForward` reuses
 the stored cheap value instead of emitting warm `SLOAD`s. -/
@@ -446,7 +448,8 @@ def stackPressure : Block Op := yul% {
 def optimizedStackPressure : Block Op :=
   (Optimizer.optimizerPipeline
     (calls := YulSemantics.EVM.ExternalCalls.none)
-    (creates := YulSemantics.EVM.ExternalCreates.none)).run stackPressure
+    (creates := YulSemantics.EVM.ExternalCreates.none)
+    (gasOracle := YulSemantics.EVM.ExternalGas.any)).run stackPressure
 
 def laidOutStackPressure : Block Op :=
   Optimizer.stackLayoutBlock optimizedStackPressure
@@ -649,7 +652,8 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
   (.builtin .sload [.lit (.number 0)])).2 == []
 #guard compile ((Optimizer.storageForward
   (calls := YulSemantics.EVM.ExternalCalls.none)
-  (creates := YulSemantics.EVM.ExternalCreates.none)).run storageForwarding) |>.isSome
+  (creates := YulSemantics.EVM.ExternalCreates.none)
+  (gasOracle := YulSemantics.EVM.ExternalGas.any)).run storageForwarding) |>.isSome
 #guard agreeOn storageForwarding [0, 1, 2]
 #guard agreeOn storageForwardingLoop [0, 1]
 #guard agreeOn storageForwardingScope [0, 1]

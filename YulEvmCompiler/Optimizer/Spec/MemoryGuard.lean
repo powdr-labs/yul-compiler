@@ -147,6 +147,13 @@ def CreatesScratchInsensitive (creates : ExternalCreates) (base reserved : Nat) 
   ∀ req left right response, ScratchRel base reserved left right →
     (creates.Create req left response ↔ creates.Create req right response)
 
+/-- Gas-oracle analogue of `CallsScratchInsensitive`: what the environment may
+report for `gas()` must not depend on the compiler-owned scratch bytes, which
+the spilling pass is free to rewrite. -/
+def GasScratchInsensitive (gasOracle : ExternalGas) (base reserved : Nat) : Prop :=
+  ∀ left right g, ScratchRel base reserved left right →
+    (gasOracle.Gas left g ↔ gasOracle.Gas right g)
+
 /-- Dynamic memory-footprint side condition for one source built-in.  Malformed
 arities need no condition because they have no successful semantic step.
 `msize` is always forbidden: it directly observes the ignored high-water mark.
@@ -182,7 +189,7 @@ def OpMemorySafe (base reserved : Nat) : Op → List U256 → Prop
 memoryguard promise.  A derivation exists only when every executed built-in's
 dynamic footprint avoids the optimizer-owned interval.  Reusing the standard
 big-step judgment avoids a second, manually mirrored semantics. -/
-@[reducible] def guardedEvm (calls : ExternalCalls) (creates : ExternalCreates)
+@[reducible] def guardedEvm (calls : ExternalCalls) (creates : ExternalCreates) (gasOracle : ExternalGas)
     (base reserved : Nat) : Dialect where
   Op := Op
   Value := U256
@@ -190,23 +197,24 @@ big-step judgment avoids a second, manually mirrored semantics. -/
   litValue := litValue
   litWF := litWF
   Builtin := fun op args st result =>
-    builtinWithExternal calls creates op args st result ∧
+    builtinWithExternal calls creates gasOracle op args st result ∧
       OpMemorySafe base reserved op args
   effects := effects
 
 /-- A safe run of raw guarded Yul after the compiler has chosen the marker
 result.  This is the source-side contract consumed by the spilling theorem. -/
-def GuardedRun (calls : ExternalCalls) (creates : ExternalCreates)
+def GuardedRun (calls : ExternalCalls) (creates : ExternalCreates) (gasOracle : ExternalGas)
     (raw : Block Op) (base reserved : Nat) (st0 : EvmState)
-    (V' : VEnv (guardedEvm calls creates base reserved)) (st' : EvmState)
+    (V' : VEnv (guardedEvm calls creates gasOracle base reserved)) (st' : EvmState)
     (o : Outcome) : Prop :=
-  Run (guardedEvm calls creates base reserved)
+  Run (guardedEvm calls creates gasOracle base reserved)
     (resolveMemoryGuardStmts base reserved raw) st0 V' st' o
 
 /-- The complete external part of a concrete reservation contract. -/
-structure GuardedExternals (calls : ExternalCalls) (creates : ExternalCreates)
+structure GuardedExternals (calls : ExternalCalls) (creates : ExternalCreates) (gasOracle : ExternalGas)
     (base reserved : Nat) : Prop where
   calls_insensitive : CallsScratchInsensitive calls base reserved
   creates_insensitive : CreatesScratchInsensitive creates base reserved
+  gas_insensitive : GasScratchInsensitive gasOracle base reserved
 
 end YulEvmCompiler.Optimizer

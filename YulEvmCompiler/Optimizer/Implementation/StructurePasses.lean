@@ -34,8 +34,8 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### The block-soundness theorems -/
 
@@ -83,7 +83,7 @@ soundness theorem — or it declined and the two sides are equal. -/
 theorem resolveFlattenBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L (Flatten.flattenBlock b)) := by
-  have hsound := flattenBlock_sound (calls := calls) (creates := creates) b
+  have hsound := flattenBlock_sound (calls := calls) (creates := creates) (gasOracle := gasOracle) b
   unfold Flatten.flattenBlock at hsound ⊢
   by_cases h1 : storageLayoutFreeStmts b
   · rw [if_pos h1] at hsound ⊢
@@ -101,7 +101,7 @@ theorem resolveFlattenBlock_equiv (L : Layout) (b : Block Op) :
 theorem resolveFuseDeclAssignBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L (FuseDeclAssign.fuseDeclAssignBlock b)) := by
-  have hsound := fuseDeclAssignBlock_sound (calls := calls) (creates := creates) b
+  have hsound := fuseDeclAssignBlock_sound (calls := calls) (creates := creates) (gasOracle := gasOracle) b
   unfold FuseDeclAssign.fuseDeclAssignBlock at hsound ⊢
   by_cases h1 : storageLayoutFreeStmts b
   · rw [if_pos h1] at hsound ⊢
@@ -119,7 +119,7 @@ theorem resolveFuseDeclAssignBlock_equiv (L : Layout) (b : Block Op) :
 theorem resolveReuseValuesBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L (ReuseValues.reuseValuesBlock b)) := by
-  have hsound := reuseValuesBlock_sound (calls := calls) (creates := creates) b
+  have hsound := reuseValuesBlock_sound (calls := calls) (creates := creates) (gasOracle := gasOracle) b
   unfold ReuseValues.reuseValuesBlock at hsound ⊢
   by_cases h1 : storageLayoutFreeStmts b
   · rw [if_pos h1] at hsound ⊢

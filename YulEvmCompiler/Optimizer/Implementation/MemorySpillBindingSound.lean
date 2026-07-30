@@ -19,10 +19,10 @@ open MemorySpillStateSound
 open MemorySpillRewriteSound
 
 variable {base reserved : Nat}
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "G" => guardedEvm calls creates gasOracle base reserved
+local notation "D" => evmWithExternal calls creates gasOracle
 
 theorem coupledGroup_dichotomy {raw : Block Op} {result : Result}
     {guards : List Nat} (hfacts : SpillFacts raw result guards)
@@ -319,7 +319,7 @@ theorem execSelectedTempBlock {funs : FunEnv D} {target : WordEnv}
       (temps.zip values ++ target)
       (storeTupleValues targetState targets values) .normal :=
     Step.seqCons hlet hstores
-  have hhoist := hoist_tempDistribution (calls := calls) (creates := creates)
+  have hhoist := hoist_tempDistribution (calls := calls) (creates := creates) (gasOracle := gasOracle)
     temps expression targets
   have hbody' : ExecStmts D
       (hoist D (.letDecl temps (some expression) ::
@@ -352,7 +352,7 @@ theorem execSelectedTempBlockHalt {funs : FunEnv D} {target : WordEnv}
   have hbody : ExecStmts D ([] :: funs) target targetInitial
       (.letDecl temps (some expression) :: distributeTemps targets temps)
       target targetState .halt := Step.seqStop hlet (by decide)
-  have hhoist := hoist_tempDistribution (calls := calls) (creates := creates)
+  have hhoist := hoist_tempDistribution (calls := calls) (creates := creates) (gasOracle := gasOracle)
     temps expression targets
   have hbody' : ExecStmts D
       (hoist D (.letDecl temps (some expression) ::

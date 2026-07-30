@@ -36,9 +36,9 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### Environment splitting lemmas
 
@@ -188,7 +188,7 @@ theorem scoped_selectSwitch {bound : List Ident} {cv : U256}
       rcases hd' with ⟨l, b⟩
       unfold scopedCases at hc
       rw [Bool.and_eq_true] at hc
-      by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+      by_cases hcv : cv = (evmWithExternal calls creates gasOracle).litValue l
       · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
         exact hc.1
       · rw [selectSwitch, List.find?_cons_of_neg (by simp [hcv])]
@@ -246,7 +246,7 @@ theorem scoped_transfer {funs₁ : FunEnv D} {V₁ : VEnv D} {st : EvmState}
       V₁ = A ++ W → scopedCode bound code = true →
       (∀ x ∈ bound, x ∈ A.map Prod.fst) →
       ∃ res₂, Step D funs₂ (A ++ W') st code res₂ ∧
-        TRes (calls := calls) (creates := creates) W W'
+        TRes (calls := calls) (creates := creates) (gasOracle := gasOracle) W W'
           (postBound bound code) res₁ res₂ := by
   induction h with
   | @lit funs V st l =>
@@ -618,7 +618,7 @@ environment and any read-agreeing variable environment. -/
 theorem exprNoCall_transfer {funs : FunEnv D} {V : VEnv D} {st : EvmState}
     {code : Code Op} {res : Res D} (h : Step D funs V st code res) :
     ∀ {V₂ : VEnv D} (funs₂ : FunEnv D),
-      NoCallAgrees (calls := calls) (creates := creates) V V₂ code →
+      NoCallAgrees (calls := calls) (creates := creates) (gasOracle := gasOracle) V V₂ code →
       Step D funs₂ V₂ st code res := by
   induction h with
   | lit =>
@@ -769,14 +769,14 @@ theorem VEnv.setMany_bindZeros {xs : List Ident} (hnd : xs.Nodup)
           have hx : x ∉ rest := (List.nodup_cons.mp hnd).1
           have hnd' : rest.Nodup := (List.nodup_cons.mp hnd).2
           show VEnv.setMany
-              ((x, (evmWithExternal calls creates).zero) :: (bindZeros D rest ++ V))
+              ((x, (evmWithExternal calls creates gasOracle).zero) :: (bindZeros D rest ++ V))
               (x :: rest) (v :: vrest) = (x, v) :: rest.zip vrest ++ V
           unfold VEnv.setMany
           simp only [List.zip_cons_cons, List.foldl_cons]
           rw [show VEnv.set
-              ((x, (evmWithExternal calls creates).zero) :: (bindZeros D rest ++ V)) x v =
+              ((x, (evmWithExternal calls creates gasOracle).zero) :: (bindZeros D rest ++ V)) x v =
             (x, v) :: (bindZeros D rest ++ V) by simp [VEnv.set]]
-          have := VEnv.setMany_cons_not_mem (calls := calls) (creates := creates)
+          have := VEnv.setMany_cons_not_mem (calls := calls) (creates := creates) (gasOracle := gasOracle)
             (x := x) (v := v) (R := bindZeros D rest ++ V) hx vrest
           unfold VEnv.setMany at this
           rw [this]
@@ -968,7 +968,7 @@ theorem assigns_fwd {A' : VEnv D} :
       Step D funs (A' ++ Wb) st
         (.stmts ((xs.zip rs).map (fun xr => .assign [xr.1] (.var xr.2))))
         (.sres (A' ++ VEnv.setMany Wb xs (rs.map
-          (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)))
+          (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates gasOracle).zero)))
           st .normal) := by
   intro xs
   induction xs with
@@ -985,7 +985,7 @@ theorem assigns_fwd {A' : VEnv D} :
           rw [List.zip_cons_cons, List.map_cons]
           have hrA : r ∈ A'.map Prod.fst := hr r (by simp)
           obtain ⟨v, hv⟩ : ∃ v, VEnv.get A' r = some v := by
-            have := VEnv.find?_key_isSome (calls := calls) (creates := creates) hrA
+            have := VEnv.find?_key_isSome (calls := calls) (creates := creates) (gasOracle := gasOracle) hrA
             obtain ⟨p, hp⟩ := Option.isSome_iff_exists.mp this
             exact ⟨p.2, by unfold VEnv.get; rw [hp]; rfl⟩
           have hgv : VEnv.get (A' ++ Wb) r = some v := by
@@ -1002,9 +1002,9 @@ theorem assigns_fwd {A' : VEnv D} :
             (fun x' hx' => hx x' (List.mem_cons_of_mem _ hx'))
             (by simpa using hlen) funs (VEnv.set Wb x v) st
           have hmany : VEnv.setMany Wb (x :: xs') ((r :: rs').map
-              (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) =
+              (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates gasOracle).zero)) =
               VEnv.setMany (VEnv.set Wb x v) xs' (rs'.map
-                (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) := by
+                (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates gasOracle).zero)) := by
             rw [List.map_cons, hv]
             rfl
           rw [hmany]
@@ -1015,7 +1015,7 @@ theorem assigns_fwd {A' : VEnv D} :
 /-- Invert a `normal` transfer result. -/
 theorem TRes.norm_inv {W W' : VEnv D} {post : List Ident} {V₁ : VEnv D}
     {st₁ : EvmState} {res₂ : Res D}
-    (h : TRes (calls := calls) (creates := creates) W W' post
+    (h : TRes (calls := calls) (creates := creates) (gasOracle := gasOracle) W W' post
       (.sres V₁ st₁ .normal) res₂) :
     ∃ A', V₁ = A' ++ W ∧ res₂ = .sres (A' ++ W') st₁ .normal ∧
       (∀ x ∈ post, x ∈ A'.map Prod.fst) := by
@@ -1025,7 +1025,7 @@ theorem TRes.norm_inv {W W' : VEnv D} {post : List Ident} {V₁ : VEnv D}
 /-- Invert a `halt` transfer result. -/
 theorem TRes.halt_inv {W W' : VEnv D} {post : List Ident} {V₁ : VEnv D}
     {st₁ : EvmState} {res₂ : Res D}
-    (h : TRes (calls := calls) (creates := creates) W W' post
+    (h : TRes (calls := calls) (creates := creates) (gasOracle := gasOracle) W W' post
       (.sres V₁ st₁ .halt) res₂) :
     ∃ A', V₁ = A' ++ W ∧ res₂ = .sres (A' ++ W') st₁ .halt := by
   cases h with
@@ -1136,7 +1136,7 @@ theorem inlineCore_fwd_normal {d : IDecl} {xs : List Ident} {as : List (Expr Op)
     (funs₂ : FunEnv D) :
     Step D funs₂ (Z ++ V) st (.stmt (inlineCore d xs as))
       (.sres (VEnv.setMany (Z ++ V) xs (d.rs.map
-        (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)))
+        (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates gasOracle).zero)))
         st2 .normal) := by
   have hvlen : argvals.length = as.length := args_length hargs
   have hpslen : d.ps.length ≤ argvals.length := by omega
@@ -1226,22 +1226,22 @@ theorem inlineCore_fwd_normal {d : IDecl} {xs : List Ident} {as : List (Expr Op)
   have c4 : Step D funs' (Z ++ V) st
       (.stmts ((([Stmt.letDecl d.rs none] ++ argLets) ++ [Stmt.block d.ss]) ++ assignsL))
       (.sres (A'' ++ VEnv.setMany (Z ++ V) xs (d.rs.map
-        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero)))
+        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates gasOracle).zero)))
         st2 .normal) :=
     stmts_append_normal c3 s4
   have hchain : Step D (hoist D ([Stmt.letDecl d.rs none] ++ argLets
       ++ [Stmt.block d.ss] ++ assignsL) :: funs₂) (Z ++ V) st
       (.stmts ([Stmt.letDecl d.rs none] ++ argLets ++ [Stmt.block d.ss] ++ assignsL))
       (.sres (A'' ++ VEnv.setMany (Z ++ V) xs (d.rs.map
-        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero)))
+        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates gasOracle).zero)))
         st2 .normal) := by
     rw [hfuns'] at c4
     exact c4
   have hfinal := Step.block (funs := funs₂) hchain
   have hlast : restore (Z ++ V) (A'' ++ VEnv.setMany (Z ++ V) xs (d.rs.map
-      (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero))) =
+      (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates gasOracle).zero))) =
       VEnv.setMany (Z ++ V) xs (d.rs.map
-        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero)) :=
+        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates gasOracle).zero)) :=
     restore_exact (VEnv.setMany_length _ _ _)
   rw [hlast] at hfinal
   rw [hVend']
@@ -1516,7 +1516,7 @@ theorem assigns_bwd {A' : VEnv D} :
       (∀ x ∈ xs, x ∉ A'.map Prod.fst) →
       xs.length = rs.length →
       Vr = A' ++ VEnv.setMany Wb xs (rs.map
-        (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) ∧
+        (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates gasOracle).zero)) ∧
       str = st ∧ o = .normal := by
   intro xs
   induction xs with
@@ -1535,13 +1535,13 @@ theorem assigns_bwd {A' : VEnv D} :
           rw [List.zip_cons_cons, List.map_cons] at h
           have hrA : r ∈ A'.map Prod.fst := hr r (by simp)
           obtain ⟨v, hv⟩ : ∃ v, VEnv.get A' r = some v := by
-            have := VEnv.find?_key_isSome (calls := calls) (creates := creates) hrA
+            have := VEnv.find?_key_isSome (calls := calls) (creates := creates) (gasOracle := gasOracle) hrA
             obtain ⟨p, hp⟩ := Option.isSome_iff_exists.mp this
             exact ⟨p.2, by unfold VEnv.get; rw [hp]; rfl⟩
           have hmany : VEnv.setMany Wb (x :: xs') ((r :: rs').map
-              (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) =
+              (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates gasOracle).zero)) =
               VEnv.setMany (VEnv.set Wb x v) xs' (rs'.map
-                (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) := by
+                (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates gasOracle).zero)) := by
             rw [List.map_cons, hv]
             rfl
           cases h with
@@ -1592,7 +1592,7 @@ theorem inlineCore_bwd {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
       Step D cenv (d.ps.zip argvals ++ bindZeros D d.rs) st1
         (.stmt (.block d.ss)) (.sres Vend str .normal) ∧
       Vr = VEnv.setMany (Z ++ V) xs (d.rs.map
-        (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)) ∧
+        (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates gasOracle).zero)) ∧
       o = .normal) ∨
     (∃ argvals st1 Vend,
       Step D funs₁ V st (.args as) (.eres (.vals argvals st1)) ∧
@@ -2072,7 +2072,7 @@ def DeltaCompat (Δ : DEnv) (funs : FunEnv D) : Prop :=
     (body₀ = p.2.ss ∨ body₀ = p.2.ss ++ [.leave])
 
 theorem DeltaCompat.nil (funs : FunEnv D) :
-    DeltaCompat (calls := calls) (creates := creates) [] funs :=
+    DeltaCompat (calls := calls) (creates := creates) (gasOracle := gasOracle) [] funs :=
   fun p hp => absurd hp (List.not_mem_nil)
 
 /-- Entries produced by `hoistDecls` carry names outside `seen`. -/
@@ -2220,9 +2220,9 @@ theorem hoist_find_none {f : Ident} : ∀ {body : List (Stmt Op)},
 /-- Entering a block preserves compatibility: its own classified declarations
 resolve in its hoisted scope, surviving outer entries resolve below it. -/
 theorem DeltaCompat.extend {Δ : DEnv} {funs : FunEnv D}
-    (h : DeltaCompat (calls := calls) (creates := creates) Δ funs)
+    (h : DeltaCompat (calls := calls) (creates := creates) (gasOracle := gasOracle) Δ funs)
     (body : List (Stmt Op)) :
-    DeltaCompat (calls := calls) (creates := creates)
+    DeltaCompat (calls := calls) (creates := creates) (gasOracle := gasOracle)
       (deltaExtend Δ body) (hoist D body :: funs) := by
   intro p hp
   unfold deltaExtend at hp
@@ -2246,9 +2246,9 @@ theorem DeltaCompat.extend {Δ : DEnv} {funs : FunEnv D}
 /-- Pruning names defined by a `for` init keeps compatibility under its
 pushed scope. -/
 theorem DeltaCompat.pruneInit {Δ : DEnv} {funs : FunEnv D}
-    (h : DeltaCompat (calls := calls) (creates := creates) Δ funs)
+    (h : DeltaCompat (calls := calls) (creates := creates) (gasOracle := gasOracle) Δ funs)
     (init : List (Stmt Op)) :
-    DeltaCompat (calls := calls) (creates := creates)
+    DeltaCompat (calls := calls) (creates := creates) (gasOracle := gasOracle)
       (Δ.filter (fun p => !(definedFuns init).contains p.1))
       (hoist D init :: funs) := by
   intro p hp
@@ -2266,31 +2266,31 @@ theorem DeltaCompat.pruneInit {Δ : DEnv} {funs : FunEnv D}
 environment. -/
 def IcFDeclRel (cenv : FunEnv D) (d₁ d₂ : FDecl D) : Prop :=
   d₁.params = d₂.params ∧ d₁.rets = d₂.rets ∧
-    ∃ Δ, DeltaCompat (calls := calls) (creates := creates) Δ cenv ∧
+    ∃ Δ, DeltaCompat (calls := calls) (creates := creates) (gasOracle := gasOracle) Δ cenv ∧
       IcRel (deltaExtend Δ d₁.body) (.stmts d₁.body) (.stmts d₂.body)
 
 /-- Scopes related pairwise, relative to the defining environment. -/
 def IcScopeRel (cenv : FunEnv D) (s₁ s₂ : FScope D) : Prop :=
   List.Forall₂ (fun p q => p.1 = q.1 ∧
-    IcFDeclRel (calls := calls) (creates := creates) cenv p.2 q.2) s₁ s₂
+    IcFDeclRel (calls := calls) (creates := creates) (gasOracle := gasOracle) cenv p.2 q.2) s₁ s₂
 
 /-- Function environments related scope-by-scope, each scope relative to its
 own defining suffix. -/
 inductive IcFunsRel : FunEnv D → FunEnv D → Prop
   | nil : IcFunsRel [] []
   | cons {s₁ s₂ : FScope D} {r₁ r₂ : FunEnv D} :
-      IcScopeRel (calls := calls) (creates := creates) (s₁ :: r₁) s₁ s₂ →
+      IcScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle) (s₁ :: r₁) s₁ s₂ →
       IcFunsRel r₁ r₂ →
       IcFunsRel (s₁ :: r₁) (s₂ :: r₂)
 
 /-- A scope lookup transports across `IcScopeRel`. -/
 theorem icScopeRel_find {cenv : FunEnv D} {s₁ s₂ : FScope D}
-    (h : IcScopeRel (calls := calls) (creates := creates) cenv s₁ s₂)
+    (h : IcScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle) cenv s₁ s₂)
     (fn : Ident) :
     (s₁.find? (fun p => p.1 = fn) = none ∧ s₂.find? (fun p => p.1 = fn) = none) ∨
     (∃ p q, s₁.find? (fun p => p.1 = fn) = some p ∧
       s₂.find? (fun p => p.1 = fn) = some q ∧ p.1 = q.1 ∧
-      IcFDeclRel (calls := calls) (creates := creates) cenv p.2 q.2) := by
+      IcFDeclRel (calls := calls) (creates := creates) (gasOracle := gasOracle) cenv p.2 q.2) := by
   induction h with
   | nil => left; simp
   | @cons p q u₁ u₂ hpq _ ih =>
@@ -2306,12 +2306,12 @@ theorem icScopeRel_find {cenv : FunEnv D} {s₁ s₂ : FScope D}
 /-- `lookupFun` transports forward across `IcFunsRel`, returning the
 defining-suffix relation. -/
 theorem lookupFun_icFunsRel {f₁ f₂ : FunEnv D}
-    (hR : IcFunsRel (calls := calls) (creates := creates) f₁ f₂)
+    (hR : IcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) f₁ f₂)
     {fn : Ident} {decl₁ : FDecl D} {cenv₁ : FunEnv D}
     (h : lookupFun f₁ fn = some (decl₁, cenv₁)) :
     ∃ decl₂ cenv₂, lookupFun f₂ fn = some (decl₂, cenv₂) ∧
-      IcFDeclRel (calls := calls) (creates := creates) cenv₁ decl₁ decl₂ ∧
-      IcFunsRel (calls := calls) (creates := creates) cenv₁ cenv₂ := by
+      IcFDeclRel (calls := calls) (creates := creates) (gasOracle := gasOracle) cenv₁ decl₁ decl₂ ∧
+      IcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) cenv₁ cenv₂ := by
   induction hR with
   | nil => cases h
   | @cons s₁ s₂ r₁ r₂ hscope hrest ih =>
@@ -2329,12 +2329,12 @@ theorem lookupFun_icFunsRel {f₁ f₂ : FunEnv D}
 
 /-- `lookupFun` transports backward across `IcFunsRel`. -/
 theorem lookupFun_icFunsRel_bwd {f₁ f₂ : FunEnv D}
-    (hR : IcFunsRel (calls := calls) (creates := creates) f₁ f₂)
+    (hR : IcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) f₁ f₂)
     {fn : Ident} {decl₂ : FDecl D} {cenv₂ : FunEnv D}
     (h : lookupFun f₂ fn = some (decl₂, cenv₂)) :
     ∃ decl₁ cenv₁, lookupFun f₁ fn = some (decl₁, cenv₁) ∧
-      IcFDeclRel (calls := calls) (creates := creates) cenv₁ decl₁ decl₂ ∧
-      IcFunsRel (calls := calls) (creates := creates) cenv₁ cenv₂ := by
+      IcFDeclRel (calls := calls) (creates := creates) (gasOracle := gasOracle) cenv₁ decl₁ decl₂ ∧
+      IcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) cenv₁ cenv₂ := by
   induction hR with
   | nil => cases h
   | @cons s₁ s₂ r₁ r₂ hscope hrest ih =>
@@ -2426,11 +2426,11 @@ extended compatibility. -/
 theorem icScopeRel_of_block {Δ : DEnv} {funs : FunEnv D}
     {body body' : List (Stmt Op)}
     (hrel : IcRel (deltaExtend Δ body) (.stmts body) (.stmts body'))
-    (hcompat : DeltaCompat (calls := calls) (creates := creates)
+    (hcompat : DeltaCompat (calls := calls) (creates := creates) (gasOracle := gasOracle)
       (deltaExtend Δ body) (hoist D body :: funs)) :
-    IcScopeRel (calls := calls) (creates := creates)
+    IcScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle)
       (hoist D body :: funs) (hoist D body) (hoist D body') := by
-  have hpairs := IcRel.hoist_scopeRel (calls := calls) (creates := creates)
+  have hpairs := IcRel.hoist_scopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle)
     hrel rfl rfl
   refine List.Forall₂.imp ?_ hpairs
   intro p q hpq
@@ -2438,7 +2438,7 @@ theorem icScopeRel_of_block {Δ : DEnv} {funs : FunEnv D}
 
 /-- Reflexive scope relation (for untouched `for`-loop inits). -/
 theorem icScopeRel_refl (cenv : FunEnv D) (s : FScope D) :
-    IcScopeRel (calls := calls) (creates := creates) cenv s s := by
+    IcScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle) cenv s s := by
   induction s with
   | nil => exact .nil
   | cons p rest ih =>
@@ -2457,7 +2457,7 @@ inductive IcRes : Res D → Res D → Prop
 
 /-- The per-class result claim: residue only on the statement-sequence class. -/
 def icResOK : Code Op → Res D → Res D → Prop
-  | .stmts _, r₁, r₂ => IcRes (calls := calls) (creates := creates) r₁ r₂
+  | .stmts _, r₁, r₂ => IcRes (calls := calls) (creates := creates) (gasOracle := gasOracle) r₁ r₂
   | _, r₁, r₂ => r₂ = r₁
 
 /-- `restore` past an inserted prefix above the preserved base. -/
@@ -2492,7 +2492,7 @@ theorem IcRel.selectRel {Δ : DEnv} {cases cases' : List (Literal × Block Op)}
       rcases head with ⟨l, b⟩
       cases hcs with
       | casesCons hb hrest =>
-          by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+          by_cases hcv : cv = (evmWithExternal calls creates gasOracle).litValue l
           · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv]),
                 selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
             exact .blockS hb
@@ -2554,11 +2554,11 @@ class, where a `let`-form site's halt may carry an inserted prefix. -/
 theorem ic_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
     {code : Code Op} {res : Res D} (h : Step D funs₁ V st code res) :
     ∀ {funs₂ : FunEnv D} {Δ : DEnv} {pc' : PCode Op},
-      IcFunsRel (calls := calls) (creates := creates) funs₁ funs₂ →
-      DeltaCompat (calls := calls) (creates := creates) Δ funs₁ →
+      IcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) funs₁ funs₂ →
+      DeltaCompat (calls := calls) (creates := creates) (gasOracle := gasOracle) Δ funs₁ →
       IcRel Δ (toPCode code) pc' →
       ∃ res₂, Step D funs₂ V st (ofPCode pc') res₂ ∧
-        icResOK (calls := calls) (creates := creates) code res res₂ := by
+        icResOK (calls := calls) (creates := creates) (gasOracle := gasOracle) code res res₂ := by
   induction h with
   | @lit funs V st l =>
       intro funs₂ Δ pc' hR hΔ hrel
@@ -2670,9 +2670,9 @@ theorem ic_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
       intro funs₂ Δ pc' hR hΔ hrel
       cases hrel with
       | @blockS _ _ body' hbrel =>
-          have hcompat := DeltaCompat.extend (calls := calls) (creates := creates)
+          have hcompat := DeltaCompat.extend (calls := calls) (creates := creates) (gasOracle := gasOracle)
             hΔ body
-          have hfr : IcFunsRel (calls := calls) (creates := creates)
+          have hfr : IcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle)
               (hoist D body :: funs) (hoist D body' :: funs₂) :=
             .cons (icScopeRel_of_block hbrel hcompat) hR
           obtain ⟨res₂, hs, hres⟩ := ihb hfr hcompat hbrel
@@ -2771,7 +2771,7 @@ theorem ic_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
       intro funs₂ Δ pc' hR hΔ hrel
       cases hrel with
       | @forS _ _ _ _ post' _ body' hpost hbody =>
-          have hfr : IcFunsRel (calls := calls) (creates := creates)
+          have hfr : IcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle)
               (hoist D init :: funs) (hoist D init :: funs₂) :=
             .cons (icScopeRel_refl _ _) hR
           obtain ⟨res₁, hs₁, hres₁⟩ := ihinit hfr (DeltaCompat.nil _)
@@ -2787,7 +2787,7 @@ theorem ic_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
       intro funs₂ Δ pc' hR hΔ hrel
       cases hrel with
       | @forS _ _ _ _ post' _ body' hpost hbody =>
-          have hfr : IcFunsRel (calls := calls) (creates := creates)
+          have hfr : IcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle)
               (hoist D init :: funs) (hoist D init :: funs₂) :=
             .cons (icScopeRel_refl _ _) hR
           obtain ⟨res₁, hs₁, hres₁⟩ := ihinit hfr (DeltaCompat.nil _)
@@ -2854,9 +2854,9 @@ theorem ic_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
                     hxout hlen_xs ha hbody' hZvars funs₂
                   have hsm : VEnv.setMany (bindZeros D xs ++ V) xs
                       (d.rs.map (fun r => (VEnv.get Vend r).getD
-                        (evmWithExternal calls creates).zero)) =
+                        (evmWithExternal calls creates gasOracle).zero)) =
                       xs.zip (d.rs.map (fun r => (VEnv.get Vend r).getD
-                        (evmWithExternal calls creates).zero)) ++ V :=
+                        (evmWithExternal calls creates gasOracle).zero)) ++ V :=
                     VEnv.setMany_bindZeros hxnd
                       (by simp only [List.length_map]; omega) V
                   rw [hsm] at hcore
@@ -2938,7 +2938,7 @@ theorem ic_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
                       (.stmt (inlineCore d [] as)) (.sres V st1 .normal) := by
                     have hsm : VEnv.setMany (([] : VEnv D) ++ V) []
                         (d.rs.map (fun r => (VEnv.get Vend r).getD
-                          (evmWithExternal calls creates).zero)) = V := rfl
+                          (evmWithExternal calls creates gasOracle).zero)) = V := rfl
                     rw [hsm] at hcore
                     exact hcore
                   cases hres₂ with
@@ -3169,11 +3169,11 @@ back across `IcRel` to the source. -/
 theorem ic_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
     {code₂ : Code Op} {res₂ : Res D} (h : Step D funs₂ V st code₂ res₂) :
     ∀ {funs₁ : FunEnv D} {Δ : DEnv} {pc : PCode Op},
-      IcFunsRel (calls := calls) (creates := creates) funs₁ funs₂ →
-      DeltaCompat (calls := calls) (creates := creates) Δ funs₁ →
+      IcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) funs₁ funs₂ →
+      DeltaCompat (calls := calls) (creates := creates) (gasOracle := gasOracle) Δ funs₁ →
       IcRel Δ pc (toPCode code₂) →
       ∃ res₁, Step D funs₁ V st (ofPCode pc) res₁ ∧
-        icResOK (calls := calls) (creates := creates) code₂ res₁ res₂ := by
+        icResOK (calls := calls) (creates := creates) (gasOracle := gasOracle) code₂ res₁ res₂ := by
   induction h with
   | @lit funs V st l =>
       intro funs₁ Δ pc hR hΔ hrel
@@ -3298,9 +3298,9 @@ theorem ic_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
       intro funs₁ Δ pc hR hΔ hrel
       cases hrel with
       | @blockS _ body _ hbrel =>
-          have hcompat := DeltaCompat.extend (calls := calls) (creates := creates)
+          have hcompat := DeltaCompat.extend (calls := calls) (creates := creates) (gasOracle := gasOracle)
             hΔ body
-          have hfr : IcFunsRel (calls := calls) (creates := creates)
+          have hfr : IcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle)
               (hoist D body :: funs₁) (hoist D body' :: funs) :=
             .cons (icScopeRel_of_block hbrel hcompat) hR
           obtain ⟨res₁, hs, hres⟩ := ihb hfr hcompat hbrel
@@ -3414,7 +3414,7 @@ theorem ic_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
       intro funs₁ Δ pc hR hΔ hrel
       cases hrel with
       | @forS _ _ _ post _ body _ hpost hbody =>
-          have hfr : IcFunsRel (calls := calls) (creates := creates)
+          have hfr : IcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle)
               (hoist D init :: funs₁) (hoist D init :: funs) :=
             .cons (icScopeRel_refl _ _) hR
           obtain ⟨res₁, hs₁, hres₁⟩ := ihinit hfr (DeltaCompat.nil _)
@@ -3431,7 +3431,7 @@ theorem ic_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
       intro funs₁ Δ pc hR hΔ hrel
       cases hrel with
       | @forS _ _ _ post _ body _ hpost hbody =>
-          have hfr : IcFunsRel (calls := calls) (creates := creates)
+          have hfr : IcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle)
               (hoist D init :: funs₁) (hoist D init :: funs) :=
             .cons (icScopeRel_refl _ _) hR
           obtain ⟨res₁, hs₁, hres₁⟩ := ihinit hfr (DeltaCompat.nil _)
@@ -3541,7 +3541,7 @@ theorem ic_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
           · obtain ⟨oc, hbody', hoc⟩ := body_denormalize_ok hb₀ hbody
             have hcall : Step D funs₁ V st (.expr (.call f as))
                 (.eres (.vals (d.rs.map (fun r => (VEnv.get Vend r).getD
-                  (evmWithExternal calls creates).zero)) st1)) := by
+                  (evmWithExternal calls creates gasOracle).zero)) st1)) := by
               refine Step.callOk hargs hlk₀ ?_ hbody' hoc
               show argvals.length = d.ps.length
               have := args_length hargs
@@ -3549,11 +3549,11 @@ theorem ic_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
             have hassign : Step D funs₁ V st
                 (.stmt (.assign xs (.call f as)))
                 (.sres (VEnv.setMany V xs (d.rs.map (fun r => (VEnv.get Vend r).getD
-                  (evmWithExternal calls creates).zero))) st1 .normal) :=
+                  (evmWithExternal calls creates gasOracle).zero))) st1 .normal) :=
               Step.assignVal hcall (by simp only [List.length_map]; omega)
             have hV1' : V1 = VEnv.setMany V xs (d.rs.map
                 (fun r => (VEnv.get Vend r).getD
-                  (evmWithExternal calls creates).zero)) := hV1
+                  (evmWithExternal calls creates gasOracle).zero)) := hV1
             obtain ⟨res₂', hs₂, hres₂⟩ := ihrest hR hΔ hrestrel
             rw [hV1'] at hs₂
             cases hres₂ with
@@ -3758,7 +3758,7 @@ theorem ic_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
 
 /-- Function environments are self-related. -/
 theorem IcFunsRel.refl : ∀ funs : FunEnv D,
-    IcFunsRel (calls := calls) (creates := creates) funs funs
+    IcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) funs funs
   | [] => .nil
   | s :: rest => .cons (icScopeRel_refl _ s) (IcFunsRel.refl rest)
 
@@ -3795,7 +3795,7 @@ def inlineCalls : LocalPass D where
       exact icStmts_rel (deltaExtend [] b) (DeltaWF.nil.extend b) b)
 
 @[simp] theorem inlineCalls_run (b : Block Op) :
-    (inlineCalls (calls := calls) (creates := creates)).run b =
+    (inlineCalls (calls := calls) (creates := creates) (gasOracle := gasOracle)).run b =
       inlineCallsBlock b := rfl
 
 end YulEvmCompiler.Optimizer

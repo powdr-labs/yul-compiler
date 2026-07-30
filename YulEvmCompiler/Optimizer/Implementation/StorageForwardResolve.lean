@@ -16,8 +16,8 @@ open YulSemantics
 open YulSemantics.EVM
 open YulEvmCompiler
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 set_option linter.unusedSimpArgs false in
 mutual
@@ -343,7 +343,7 @@ theorem resolveStorageForwardBlock_equiv (L : Layout) (b : Block Op) :
     (EquivStmts.of_forall₂ (resolveSfFunStmts_forall2 L b))
     (resolveSfFunScopeRel L b)).trans
       (by simpa [storageForwardBlock] using
-        (resolveStorageForwardShallowBlock_equiv (calls := calls) (creates := creates)
+        (resolveStorageForwardShallowBlock_equiv (calls := calls) (creates := creates) (gasOracle := gasOracle)
           L (sfFunStmts b)))
 
 end YulEvmCompiler.Optimizer

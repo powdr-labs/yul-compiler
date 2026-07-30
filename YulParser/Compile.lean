@@ -263,7 +263,7 @@ def compileSource (source : String) : Option ByteArray := do
       let raw := pruneLinkerBlock (decodeValueStmts block)
       let b := YulEvmCompiler.Optimizer.Normalize.normalize
         (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
-          YulSemantics.EVM.ExternalCreates.none)
+          YulSemantics.EVM.ExternalCreates.none YulSemantics.EVM.ExternalGas.any)
         (raw.map desugarStmt)
       -- Preserve bytecode stability for programs the full pipeline can already
       -- compile. On stack pressure, first retry its verified smart layout;
@@ -283,13 +283,16 @@ def compileSource (source : String) : Option ByteArray := do
             (YulEvmCompiler.Optimizer.stackLayoutBlock blk)
       let asm := tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipeline
           (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
+          (creates := YulSemantics.EVM.ExternalCreates.none)
+          (gasOracle := YulSemantics.EVM.ExternalGas.any)).run b)
         <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
+          (creates := YulSemantics.EVM.ExternalCreates.none)
+          (gasOracle := YulSemantics.EVM.ExternalGas.any)).run b)
         <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineLight
           (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
+          (creates := YulSemantics.EVM.ExternalCreates.none)
+          (gasOracle := YulSemantics.EVM.ExternalGas.any)).run b)
         <|> YulEvmCompiler.compile b
         <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillBlock? raw with
           | some spilled =>
@@ -297,11 +300,13 @@ def compileSource (source : String) : Option ByteArray := do
               -- chance before compiling it verbatim.
               let spilledOpt := (YulEvmCompiler.Optimizer.optimizerPipeline
                 (calls := YulSemantics.EVM.ExternalCalls.none)
-                (creates := YulSemantics.EVM.ExternalCreates.none)).run
+                (creates := YulSemantics.EVM.ExternalCreates.none)
+                (gasOracle := YulSemantics.EVM.ExternalGas.any)).run
                   (YulEvmCompiler.Optimizer.Normalize.normalize
                     (D := YulSemantics.EVM.evmWithExternal
                       YulSemantics.EVM.ExternalCalls.none
-                      YulSemantics.EVM.ExternalCreates.none)
+                      YulSemantics.EVM.ExternalCreates.none
+                      YulSemantics.EVM.ExternalGas.any)
                     spilled.block)
               YulEvmCompiler.compile spilledOpt
                 <|> YulEvmCompiler.compile spilled.block
@@ -311,7 +316,7 @@ def compileSource (source : String) : Option ByteArray := do
       let raw := pruneLinkerObjectTree (decodeValueObject o)
       let o := YulEvmCompiler.Optimizer.Normalize.normalizeObject
         (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
-          YulSemantics.EVM.ExternalCreates.none)
+          YulSemantics.EVM.ExternalCreates.none YulSemantics.EVM.ExternalGas.any)
         (desugarObject raw)
       -- `optimized` stays a named binding (the spill fallback below also
       -- consumes it); the no-rejoin and light pipelines are computed inside
@@ -319,7 +324,8 @@ def compileSource (source : String) : Option ByteArray := do
       -- pays for them (see the block path above).
       let optimized := YulEvmCompiler.Optimizer.optimizerPipelineObject
         (calls := YulSemantics.EVM.ExternalCalls.none)
-        (creates := YulSemantics.EVM.ExternalCreates.none) o
+        (creates := YulSemantics.EVM.ExternalCreates.none)
+        (gasOracle := YulSemantics.EVM.ExternalGas.any) o
       let tryLayouts (obj : Object YulSemantics.EVM.Op) :=
         YulEvmCompiler.compileObject obj
           <|> YulEvmCompiler.compileObject
@@ -327,10 +333,12 @@ def compileSource (source : String) : Option ByteArray := do
       let layout ← tryLayouts optimized
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none) o)
+          (creates := YulSemantics.EVM.ExternalCreates.none)
+          (gasOracle := YulSemantics.EVM.ExternalGas.any) o)
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectLight
           (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none) o)
+          (creates := YulSemantics.EVM.ExternalCreates.none)
+          (gasOracle := YulSemantics.EVM.ExternalGas.any) o)
         <|> YulEvmCompiler.compileObject o
         <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback
               raw optimized with
@@ -350,10 +358,12 @@ def compileSource (source : String) : Option ByteArray := do
                       YulEvmCompiler.Optimizer.optimizerPipelineObject
                         (calls := YulSemantics.EVM.ExternalCalls.none)
                         (creates := YulSemantics.EVM.ExternalCreates.none)
+                        (gasOracle := YulSemantics.EVM.ExternalGas.any)
                         (YulEvmCompiler.Optimizer.Normalize.normalizeObject
                           (D := YulSemantics.EVM.evmWithExternal
                             YulSemantics.EVM.ExternalCalls.none
-                            YulSemantics.EVM.ExternalCreates.none)
+                            YulSemantics.EVM.ExternalCreates.none
+                            YulSemantics.EVM.ExternalGas.any)
                           spilled.object)
                     YulEvmCompiler.compileObject spilledOpt
                       <|> YulEvmCompiler.compileObject

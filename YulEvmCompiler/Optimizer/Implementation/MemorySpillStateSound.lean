@@ -888,7 +888,7 @@ def OrdinaryLocal : Op → Prop
 theorem builtinWithExternal_local_iff {calls : ExternalCalls}
     {creates : ExternalCreates} {op : Op} {args : List U256} {st : EvmState}
     {result : BuiltinResult U256 EvmState} (hlocal : OrdinaryLocal op) :
-    builtinWithExternal calls creates op args st result ↔
+    builtinWithExternal calls creates gasOracle op args st result ↔
       stepOp op args st = some result := by
   cases op <;> simp_all [OrdinaryLocal, builtinWithExternal]
 
@@ -900,10 +900,10 @@ theorem guarded_local_builtin_transport {calls : ExternalCalls}
     {leftResult : BuiltinResult U256 EvmState}
     (hlocal : OrdinaryLocal op)
     (hrel : ScratchRel base reserved left right)
-    (hleft : (guardedEvm calls creates base reserved).Builtin
+    (hleft : (guardedEvm calls creates gasOracle base reserved).Builtin
       op args left leftResult) :
     ∃ rightResult,
-      (guardedEvm calls creates base reserved).Builtin op args right rightResult ∧
+      (guardedEvm calls creates gasOracle base reserved).Builtin op args right rightResult ∧
         ResultRel base reserved leftResult rightResult := by
   rcases hleft with ⟨hbuiltin, hsafe⟩
   have hstep : stepOp op args left = some leftResult :=
@@ -920,12 +920,12 @@ theorem guarded_builtin_transport {calls : ExternalCalls}
     {creates : ExternalCreates} {base reserved : Nat} {op : Op}
     {args : List U256} {left right : EvmState}
     {leftResult : BuiltinResult U256 EvmState}
-    (hexternals : GuardedExternals calls creates base reserved)
+    (hexternals : GuardedExternals calls creates gasOracle base reserved)
     (hrel : ScratchRel base reserved left right)
-    (hleft : (guardedEvm calls creates base reserved).Builtin
+    (hleft : (guardedEvm calls creates gasOracle base reserved).Builtin
       op args left leftResult) :
     ∃ rightResult,
-      (guardedEvm calls creates base reserved).Builtin op args right rightResult ∧
+      (guardedEvm calls creates gasOracle base reserved).Builtin op args right rightResult ∧
         ResultRel base reserved leftResult rightResult := by
   rcases hleft with ⟨hbuiltin, hsafe⟩
   by_cases hlocal : OrdinaryLocal op
@@ -934,8 +934,11 @@ theorem guarded_builtin_transport {calls : ExternalCalls}
       rcases args with _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, _ | ⟨e, _ | ⟨f, _ | ⟨g, rest⟩⟩⟩⟩⟩⟩⟩ <;>
       simp_all [OrdinaryLocal, builtinWithExternal, OpMemorySafe]
     case neg.gas.nil =>
-      rcases hbuiltin with ⟨gas, rfl⟩
-      exact ⟨gas, ResultRel.ok_refl_values hrel⟩
+      -- The oracle may not consult the compiler-owned scratch bytes, so the
+      -- word it permits on the left is permitted on the right as well.
+      rcases hbuiltin with ⟨gas, hgas, rfl⟩
+      exact ⟨gas, (hexternals.gas_insensitive left right gas hrel).mp hgas,
+        ResultRel.ok_refl_values hrel⟩
     case neg.call.cons.cons.cons.cons.cons.cons.cons =>
       cases rest <;> simp_all
       have hstatic : left.env.static = right.env.static :=
@@ -1006,7 +1009,7 @@ theorem guarded_builtin_reserved {calls : ExternalCalls}
     {creates : ExternalCreates} {base reserved : Nat} {op : Op}
     {args : List U256} {st : EvmState}
     {result : BuiltinResult U256 EvmState}
-    (hbuiltin : (guardedEvm calls creates base reserved).Builtin op args st result) :
+    (hbuiltin : (guardedEvm calls creates gasOracle base reserved).Builtin op args st result) :
     ResultReservedUnchanged base reserved st result := by
   rcases hbuiltin with ⟨hbuiltin, hsafe⟩
   by_cases hlocal : OrdinaryLocal op
@@ -1016,7 +1019,7 @@ theorem guarded_builtin_reserved {calls : ExternalCalls}
       rcases args with _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, _ | ⟨e, _ | ⟨f, _ | ⟨g, rest⟩⟩⟩⟩⟩⟩⟩ <;>
       simp_all [OrdinaryLocal, builtinWithExternal, OpMemorySafe]
     case neg.gas.nil =>
-      rcases hbuiltin with ⟨gas, rfl⟩
+      rcases hbuiltin with ⟨gas, -, rfl⟩
       exact ReservedUnchanged.refl base reserved st
     case neg.call.cons.cons.cons.cons.cons.cons.cons =>
       cases rest <;> simp_all

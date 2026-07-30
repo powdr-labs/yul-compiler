@@ -162,7 +162,7 @@ theorem iszero_step [model : ExternalModel] {prog' c : List Asm}
 result, unchanged state. -/
 theorem iszero_inv [model : ExternalModel] {args rets : List U256}
     {yst yst' : EvmState}
-    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas
       .iszero args yst (.ok rets yst')) :
     ∃ v, args = [v] ∧ rets = [b2w (v = 0)] ∧ yst' = yst := by
   match args with
@@ -181,7 +181,7 @@ theorem iszero_inv [model : ExternalModel] {args rets : List U256}
 /-- `iszero` never halts. -/
 theorem iszero_no_halt [model : ExternalModel] {args : List U256}
     {yst yf : EvmState}
-    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas
       .iszero args yst (.halt yf)) : False := by
   match args with
   | [] => exact absurd hb (by simp [YulSemantics.EVM.builtinWithExternal,
@@ -202,7 +202,7 @@ theorem astep_op_inv [model : ExternalModel] {prog : List Asm} {yop : Op}
     {c : List Asm} {σs : List AVal} {y : EvmState} {b : AConf}
     (h : AStep (model := model) prog ⟨.op yop :: c, σs, y⟩ b) :
     ∃ args rets σ' yst', σs = words args ++ σ'
-      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates yop args y
+      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas yop args y
           (.ok rets yst')
       ∧ b = ⟨c, words rets ++ σ', yst'⟩ := by
   cases h with
@@ -213,7 +213,7 @@ theorem ahalt_op_inv [model : ExternalModel] {prog : List Asm} {yop : Op}
     {c : List Asm} {σs : List AVal} {y yf : EvmState}
     (h : AHalt (model := model) prog ⟨.op yop :: c, σs, y⟩ yf) :
     ∃ args σ', σs = words args ++ σ'
-      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates yop args y
+      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas yop args y
           (.halt yf) := by
   cases h with
   | op hb => exact ⟨_, _, rfl, hb⟩

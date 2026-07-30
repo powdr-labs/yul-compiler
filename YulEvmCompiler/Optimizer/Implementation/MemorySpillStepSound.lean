@@ -35,10 +35,10 @@ open MemorySpillControlSound
 open MemorySpillExprCallSound
 
 variable {base reserved : Nat}
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "G" => guardedEvm calls creates gasOracle base reserved
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-- The result package produced by every branch of the `Step` induction. -/
 def StepSimResult (globalDeclared : List Ident) (selected : SpillSet)
@@ -102,11 +102,11 @@ induction hypothesis for a call's body premise can be instantiated at the
 callee owner after its entry prologue. -/
 def StepSimMotive {raw : Block Op} {result : Result} {guards : List Nat}
     (_hfacts : SpillFacts raw result guards)
-    (_hexternals : GuardedExternals calls creates result.base result.reserved)
+    (_hexternals : GuardedExternals calls creates gasOracle result.base result.reserved)
     (mode : OriginMode)
-    {sourceFuns : FunEnv (guardedEvm calls creates result.base result.reserved)}
+    {sourceFuns : FunEnv (guardedEvm calls creates gasOracle result.base result.reserved)}
     {source sourceState executedCode sourceResult}
-    (_hsource : Step (guardedEvm calls creates result.base result.reserved)
+    (_hsource : Step (guardedEvm calls creates gasOracle result.base result.reserved)
       sourceFuns source sourceState executedCode sourceResult) : Prop :=
   let policyRoot := resolveMemoryGuardStmts result.base result.reserved raw
   ∀ {policyFrame executedFrame : Frame} {live : SpillSet}
@@ -119,7 +119,7 @@ def StepSimMotive {raw : Block Op} {result : Result} {guards : List Nat}
         result.selection result.layout policyFrame
         (policyFrame.params ++ policyFrame.returns) cuts live
         source sourceState target targetState →
-      FunsCovered (guardedEvm calls creates result.base result.reserved)
+      FunsCovered (guardedEvm calls creates gasOracle result.base result.reserved)
         (fun body => body) ((frames policyRoot).map mode.execFrame) sourceFuns →
       exitCopies = copyBackReturns result.layout.slots policyFrame.owner exitNames →
       frameCutoff result.base result.layout
@@ -136,20 +136,20 @@ def StepSimMotive {raw : Block Op} {result : Result} {guards : List Nat}
 theorem simulateCallFreeExprBranch
     {raw : Block Op} {result : Result} {guards : List Nat}
     (hfacts : SpillFacts raw result guards)
-    (hexternals : GuardedExternals calls creates result.base result.reserved)
+    (hexternals : GuardedExternals calls creates gasOracle result.base result.reserved)
     {mode : OriginMode}
     {policyFrame executedFrame : Frame} {cuts : List CutMark}
     {live : SpillSet} {exitNames : List Ident}
     {policyExpr executedExpr : Expr Op} {sourceResult : EResult
-      (guardedEvm calls creates result.base result.reserved)}
+      (guardedEvm calls creates gasOracle result.base result.reserved)}
     {source target : WordEnv} {sourceState targetState : EvmState}
-    {sourceFuns : FunEnv (guardedEvm calls creates result.base result.reserved)}
+    {sourceFuns : FunEnv (guardedEvm calls creates gasOracle result.base result.reserved)}
     {exitCopies : Block Op} {cutoff : Nat}
     (hctx : ControlStepContext mode
       (resolveMemoryGuardStmts result.base result.reserved raw)
       result.selection policyFrame executedFrame live
       (.expr policyExpr) (.expr executedExpr) exitNames source)
-    (hsource : EvalExpr (guardedEvm calls creates result.base result.reserved)
+    (hsource : EvalExpr (guardedEvm calls creates gasOracle result.base result.reserved)
       sourceFuns source sourceState executedExpr sourceResult)
     (hsyntax : SpillExpr executedExpr)
     (hrel : ControlLiveRel (base := result.base) (reserved := result.reserved)
@@ -180,20 +180,20 @@ theorem simulateCallFreeExprBranch
 theorem simulateCallFreeArgsBranch
     {raw : Block Op} {result : Result} {guards : List Nat}
     (hfacts : SpillFacts raw result guards)
-    (hexternals : GuardedExternals calls creates result.base result.reserved)
+    (hexternals : GuardedExternals calls creates gasOracle result.base result.reserved)
     {mode : OriginMode}
     {policyFrame executedFrame : Frame} {cuts : List CutMark}
     {live : SpillSet} {exitNames : List Ident}
     {policyArgs executedArgs : List (Expr Op)} {sourceResult : EResult
-      (guardedEvm calls creates result.base result.reserved)}
+      (guardedEvm calls creates gasOracle result.base result.reserved)}
     {source target : WordEnv} {sourceState targetState : EvmState}
-    {sourceFuns : FunEnv (guardedEvm calls creates result.base result.reserved)}
+    {sourceFuns : FunEnv (guardedEvm calls creates gasOracle result.base result.reserved)}
     {exitCopies : Block Op} {cutoff : Nat}
     (hctx : ControlStepContext mode
       (resolveMemoryGuardStmts result.base result.reserved raw)
       result.selection policyFrame executedFrame live
       (.args policyArgs) (.args executedArgs) exitNames source)
-    (hsource : EvalArgs (guardedEvm calls creates result.base result.reserved)
+    (hsource : EvalArgs (guardedEvm calls creates gasOracle result.base result.reserved)
       sourceFuns source sourceState executedArgs sourceResult)
     (hsyntax : SpillArgs executedArgs)
     (hrel : ControlLiveRel (base := result.base) (reserved := result.reserved)
@@ -587,10 +587,10 @@ theorem closeBuiltinOkBranch
       source target (.args policyArgs) (.args executedArgs)
       (.eres (.vals argvals sourceArgState)) sourceFuns targetState
       exitCopies cutoff)
-    (hbuiltin : (guardedEvm calls creates base reserved).Builtin
+    (hbuiltin : (guardedEvm calls creates gasOracle base reserved).Builtin
       executedOp argvals sourceArgState
       (.ok values sourceFinalState))
-    (hexternals : GuardedExternals calls creates base reserved)
+    (hexternals : GuardedExternals calls creates gasOracle base reserved)
     (hbounds : ∀ name slot,
       slotFor? layout.slots frame.owner name = some slot →
         base ≤ slot ∧ slot + 32 ≤ reserved)
@@ -648,10 +648,10 @@ theorem closeBuiltinHaltBranch
       source target (.args policyArgs) (.args executedArgs)
       (.eres (.vals argvals sourceArgState)) sourceFuns targetState
       exitCopies cutoff)
-    (hbuiltin : (guardedEvm calls creates base reserved).Builtin
+    (hbuiltin : (guardedEvm calls creates gasOracle base reserved).Builtin
       executedOp argvals sourceArgState
       (.halt sourceFinalState))
-    (hexternals : GuardedExternals calls creates base reserved)
+    (hexternals : GuardedExternals calls creates gasOracle base reserved)
     (hbounds : ∀ name slot,
       slotFor? layout.slots frame.owner name = some slot →
         base ≤ slot ∧ slot + 32 ≤ reserved)

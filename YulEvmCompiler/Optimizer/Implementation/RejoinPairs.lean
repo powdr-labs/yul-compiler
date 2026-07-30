@@ -66,9 +66,9 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### The consumer-tree classifier -/
 
@@ -967,7 +967,7 @@ private theorem rjLetInv {funs : FunEnv D} {V : VEnv D} {st : EvmState}
     {x : Ident} {rhs : Option (Expr Op)} {V' : VEnv D} {st' : EvmState} {o : Outcome}
     (h : Step D funs V st (.stmt (.letDecl [x] rhs)) (.sres V' st' o)) :
     (∃ v, V' = (x, v) :: V ∧ o = .normal ∧
-      ((rhs = none ∧ v = (evmWithExternal calls creates).zero ∧ st' = st) ∨
+      ((rhs = none ∧ v = (evmWithExternal calls creates gasOracle).zero ∧ st' = st) ∨
        (∃ e, rhs = some e ∧
          Step D funs V st (.expr e) (.eres (.vals [v] st'))))) ∨
     (∃ e, rhs = some e ∧ V' = V ∧ o = .halt ∧
@@ -1034,7 +1034,7 @@ theorem rjPairs_fwd : ∀ (bound : List Ident) (ss : List (Stmt Op))
     BoundOK V bound →
     Step D funs V st (.stmts ss) (.sres V₁ st₁ o) →
     ∃ V₂, Step D funs V st (.stmts (rjPairs bound ss)) (.sres V₂ st₁ o) ∧
-      InsChain (calls := calls) (creates := creates) V.length V₂ V₁ := by
+      InsChain (calls := calls) (creates := creates) (gasOracle := gasOracle) V.length V₂ V₁ := by
   intro bound ss
   induction bound, ss using rjPairs.induct with
   | case1 bound x e y f rest hg ih =>
@@ -1267,7 +1267,7 @@ theorem rjPairs_bwd : ∀ (bound : List Ident) (ss : List (Stmt Op))
     BoundOK V bound →
     Step D funs V st (.stmts (rjPairs bound ss)) (.sres V₂ st₁ o) →
     ∃ V₁, Step D funs V st (.stmts ss) (.sres V₁ st₁ o) ∧
-      InsChain (calls := calls) (creates := creates) V.length V₂ V₁ := by
+      InsChain (calls := calls) (creates := creates) (gasOracle := gasOracle) V.length V₂ V₁ := by
   intro bound ss
   induction bound, ss using rjPairs.induct with
   | case1 bound x e y f rest hg ih =>
@@ -1528,7 +1528,7 @@ theorem rjStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (rjStmt s)
   | .cond c body => by
       unfold rjStmt
       refine EquivStmt.cond_congr
-        (@EquivExpr.refl (evmWithExternal calls creates) _ c) ?_
+        (@EquivExpr.refl (evmWithExternal calls creates gasOracle) _ c) ?_
       exact (EquivBlock.of_stmts_funs
         (EquivStmts.of_forall₂ (rjStmts_forall2 body))
         (rjScopeRel body)).trans
@@ -1536,7 +1536,7 @@ theorem rjStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (rjStmt s)
   | .switch c cases dflt => by
       unfold rjStmt
       refine EquivStmt.switch_congr
-        (@EquivExpr.refl (evmWithExternal calls creates) _ c)
+        (@EquivExpr.refl (evmWithExternal calls creates gasOracle) _ c)
         (rjCases_forall2 cases) ?_
       cases dflt with
       | none => exact EquivBlock.refl _
@@ -1549,7 +1549,7 @@ theorem rjStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (rjStmt s)
   | .forLoop init c post body => by
       unfold rjStmt
       refine EquivStmt.forLoop_congr init
-        (@EquivExpr.refl (evmWithExternal calls creates) _ c) ?_ ?_
+        (@EquivExpr.refl (evmWithExternal calls creates gasOracle) _ c) ?_ ?_
       · exact (EquivBlock.of_stmts_funs
           (EquivStmts.of_forall₂ (rjStmts_forall2 post))
           (rjScopeRel post)).trans
@@ -1623,7 +1623,7 @@ theorem rejoinPairsBlock_sound (b : Block Op) :
       (rjScopeRel b)).trans
       (rjPairs_blockEquiv (rjStmts b))
   · rw [if_neg hlf]
-    exact @EquivBlock.refl (evmWithExternal calls creates) _ b
+    exact @EquivBlock.refl (evmWithExternal calls creates gasOracle) _ b
 
 /-! ### Object-path congruence
 
@@ -1820,7 +1820,7 @@ theorem resolveRejoinPairsBlock_equiv (L : Layout) (b : Block Op) :
       (rjScopeRel b)).trans
       (rjPairs_blockEquiv (rjStmts b))
   · rw [if_neg hlf]
-    exact @EquivBlock.refl (evmWithExternal calls creates) _ _
+    exact @EquivBlock.refl (evmWithExternal calls creates gasOracle) _ _
 
 /-- **Adjacent single-use expression rejoining** — the verified pass. -/
 def rejoinPairs : LocalPass D where
@@ -1828,7 +1828,7 @@ def rejoinPairs : LocalPass D where
   sound := fun b => rejoinPairsBlock_sound b
 
 @[simp] theorem rejoinPairs_run (b : Block Op) :
-    (rejoinPairs (calls := calls) (creates := creates)).run b =
+    (rejoinPairs (calls := calls) (creates := creates) (gasOracle := gasOracle)).run b =
       rejoinPairsBlock b := rfl
 
 end YulEvmCompiler.Optimizer

@@ -77,9 +77,9 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### Syntactic side conditions -/
 

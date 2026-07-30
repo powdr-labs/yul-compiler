@@ -18,8 +18,8 @@ open YulSemantics
 open YulSemantics.EVM
 open YulEvmCompiler
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### Call names are resolution-invariant -/
 

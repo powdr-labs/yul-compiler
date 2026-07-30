@@ -64,8 +64,8 @@ open YulSemantics
 open YulSemantics.EVM
 open YulEvmCompiler
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### Resolution-congruent passes -/
 
@@ -73,15 +73,15 @@ local notation "D" => evmWithExternal calls creates
 pass before resolution is equivalent (pointwise) to not running it, *on the
 resolved code*. This is the per-stage fact `optimizerPipelineObject_correct`
 composes over the whole pipeline. -/
-structure RPass (calls : ExternalCalls) (creates : ExternalCreates) where
-  pass : LocalPass (evmWithExternal calls creates)
+structure RPass (calls : ExternalCalls) (creates : ExternalCreates) (gasOracle : ExternalGas) where
+  pass : LocalPass (evmWithExternal calls creates gasOracle)
   resolve_equiv : ∀ (L : Layout) (b : Block Op),
-    EquivBlock (evmWithExternal calls creates)
+    EquivBlock (evmWithExternal calls creates gasOracle)
       (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L (pass.run b))
 
 /-- The resolution congruence extends from stages to a whole pipeline. -/
-theorem RPass.resolve_equiv_ofList (ps : List (RPass calls creates))
+theorem RPass.resolve_equiv_ofList (ps : List (RPass calls creates gasOracle))
     (L : Layout) (b : Block Op) :
     EquivBlock D
       (resolveForLayoutStmts L b)
@@ -130,7 +130,7 @@ rounds keep frames shallower, so `compileSource` retries a **light**
 (one-round) pipeline before giving up on optimization entirely. -/
 def optimizerPipelineRounds (n : Nat) : LocalPass D :=
   LocalPass.ofList ((List.replicate n (blockRound (calls := calls)
-    (creates := creates))).flatten)
+    (creates := creates) (gasOracle := gasOracle))).flatten)
 
 /-- Verified production pipeline for top-level blocks: the round, iterated. -/
 def optimizerPipeline : LocalPass D :=
@@ -143,7 +143,7 @@ def optimizerPipelineLight : LocalPass D :=
 /-- The full block pipeline without `rejoinPairs` (see `blockRoundNoRejoin`). -/
 def optimizerPipelineNoRejoin : LocalPass D :=
   LocalPass.ofList ((List.replicate pipelineRounds (blockRoundNoRejoin (calls := calls)
-    (creates := creates))).flatten)
+    (creates := creates) (gasOracle := gasOracle))).flatten)
 
 /-- Object-path helper inlining with the *literal-admitting* classification,
 guarded by whole-block layout-freedom on input **and** output (the
@@ -158,12 +158,12 @@ layout-free, so the cleanup-mask helpers (`and(x, 0xffff…)` and friends) that
 def inlineHelpersObjBlock (b : Block Op) : Block Op :=
   if storageLayoutFreeStmts b then
     if storageLayoutFreeStmts (inlineHelpersBlock (calls := calls)
-        (creates := creates) true ([] : FunEnv D) b) then
-      inlineHelpersBlock (calls := calls) (creates := creates) true
+        (creates := creates) (gasOracle := gasOracle) true ([] : FunEnv D) b) then
+      inlineHelpersBlock (calls := calls) (creates := creates) (gasOracle := gasOracle) true
         ([] : FunEnv D) b
-    else inlineHelpersBlock (calls := calls) (creates := creates) false
+    else inlineHelpersBlock (calls := calls) (creates := creates) (gasOracle := gasOracle) false
       ([] : FunEnv D) b
-  else inlineHelpersBlock (calls := calls) (creates := creates) false
+  else inlineHelpersBlock (calls := calls) (creates := creates) (gasOracle := gasOracle) false
     ([] : FunEnv D) b
 
 /-- The guarded object-path helper inliner is a verified pass: every branch
@@ -183,14 +183,14 @@ def inlineHelpersObj : LocalPass D where
 theorem resolveInlineHelpersObjBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L (inlineHelpersObjBlock (calls := calls)
-        (creates := creates) b)) := by
+        (creates := creates) (gasOracle := gasOracle) b)) := by
   have hfalse : EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L (inlineHelpersBlock (calls := calls)
-        (creates := creates) false ([] : FunEnv D) b)) := by
-    have hi := (inlineHelpersPass (calls := calls) (creates := creates) false).sound
+        (creates := creates) (gasOracle := gasOracle) false ([] : FunEnv D) b)) := by
+    have hi := (inlineHelpersPass (calls := calls) (creates := creates) (gasOracle := gasOracle) false).sound
       (resolveForLayoutStmts L b)
     change EquivBlock D (resolveForLayoutStmts L b)
-      (inlineHelpersBlock (calls := calls) (creates := creates) false ([] : FunEnv D)
+      (inlineHelpersBlock (calls := calls) (creates := creates) (gasOracle := gasOracle) false ([] : FunEnv D)
         (resolveForLayoutStmts L b)) at hi
     rw [← resolve_inlineHelpersBlock_nil L b] at hi
     exact hi
@@ -205,11 +205,11 @@ theorem resolveInlineHelpersObjBlock_equiv (L : Layout) (b : Block Op) :
   · exact hfalse
 
 /-- One object-path round, with each stage's resolution congruence. -/
-def objectRound : List (RPass calls creates) :=
+def objectRound : List (RPass calls creates gasOracle) :=
   [⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
    ⟨inlineHelpersObj, fun L b => resolveInlineHelpersObjBlock_equiv L b⟩,
    ⟨propagate, fun L b => by
-      have hp := resolvePropagateBlock_equiv (calls := calls) (creates := creates) L b
+      have hp := resolvePropagateBlock_equiv (calls := calls) (creates := creates) (gasOracle := gasOracle) L b
       simpa [propagateBlock] using hp⟩,
    ⟨hoistCalls, fun L b => resolveHoistCallsBlock_equiv L b⟩,
    ⟨freshenCalls, fun L b => resolveFreshenCallsBlock_equiv L b⟩,
@@ -228,11 +228,11 @@ def objectRound : List (RPass calls creates) :=
    ⟨pruneDefs, fun L b => resolvePruneDefsBlock_equiv L b⟩]
 
 /-- The object-path round without `rejoinPairs` (see `blockRoundNoRejoin`). -/
-def objectRoundNoRejoin : List (RPass calls creates) :=
+def objectRoundNoRejoin : List (RPass calls creates gasOracle) :=
   [⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
    ⟨inlineHelpersObj, fun L b => resolveInlineHelpersObjBlock_equiv L b⟩,
    ⟨propagate, fun L b => by
-      have hp := resolvePropagateBlock_equiv (calls := calls) (creates := creates) L b
+      have hp := resolvePropagateBlock_equiv (calls := calls) (creates := creates) (gasOracle := gasOracle) L b
       simpa [propagateBlock] using hp⟩,
    ⟨hoistCalls, fun L b => resolveHoistCallsBlock_equiv L b⟩,
    ⟨freshenCalls, fun L b => resolveFreshenCallsBlock_equiv L b⟩,
@@ -253,7 +253,7 @@ def objectRoundNoRejoin : List (RPass calls creates) :=
 `optimizerPipelineRounds` for why the count varies). -/
 def objectPipelineRounds (n : Nat) : LocalPass D :=
   LocalPass.ofList (((List.replicate n (objectRound (calls := calls)
-    (creates := creates))).flatten).map (·.pass))
+    (creates := creates) (gasOracle := gasOracle))).flatten).map (·.pass))
 
 /-- Verified pipeline for object code blocks: the round, iterated. -/
 def objectPipeline : LocalPass D :=
@@ -263,14 +263,14 @@ def objectPipeline : LocalPass D :=
 theorem resolveObjectPipelineRoundsBlock_equiv (n : Nat) (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L
-        ((objectPipelineRounds (calls := calls) (creates := creates) n).run b)) :=
+        ((objectPipelineRounds (calls := calls) (creates := creates) (gasOracle := gasOracle) n).run b)) :=
   RPass.resolve_equiv_ofList _ L b
 
 /-- Resolution congruence for the complete iterated object pipeline. -/
 theorem resolveObjectPipelineBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L
-        ((objectPipeline (calls := calls) (creates := creates)).run b)) :=
+        ((objectPipeline (calls := calls) (creates := creates) (gasOracle := gasOracle)).run b)) :=
   RPass.resolve_equiv_ofList _ L b
 
 mutual
@@ -279,7 +279,7 @@ mutual
   def optimizerPipelineObjectRounds (n : Nat) : Object Op → Object Op
     | .mk name code subs segs =>
         .mk name
-          ((objectPipelineRounds (calls := calls) (creates := creates) n).run code)
+          ((objectPipelineRounds (calls := calls) (creates := creates) (gasOracle := gasOracle) n).run code)
           (optimizerPipelineObjectsRounds n subs) segs
 
   /-- Run the verified object pipeline on every object in a list. -/
@@ -291,23 +291,23 @@ end
 
 /-- Run the verified object pipeline on every object code block. -/
 def optimizerPipelineObject : Object Op → Object Op :=
-  optimizerPipelineObjectRounds (calls := calls) (creates := creates)
+  optimizerPipelineObjectRounds (calls := calls) (creates := creates) (gasOracle := gasOracle)
     pipelineRounds
 
 /-- The light (one-round) whole-tree optimizer, the middle compile fallback. -/
 def optimizerPipelineObjectLight : Object Op → Object Op :=
-  optimizerPipelineObjectRounds (calls := calls) (creates := creates) 1
+  optimizerPipelineObjectRounds (calls := calls) (creates := creates) (gasOracle := gasOracle) 1
 
 /-- The full object pipeline without `rejoinPairs`, as a stage list. -/
 def objectPipelineNoRejoin : LocalPass D :=
   LocalPass.ofList (((List.replicate pipelineRounds (objectRoundNoRejoin (calls := calls)
-    (creates := creates))).flatten).map (·.pass))
+    (creates := creates) (gasOracle := gasOracle))).flatten).map (·.pass))
 
 /-- Resolution congruence for the no-rejoin object pipeline. -/
 theorem resolveObjectPipelineNoRejoinBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L
-        ((objectPipelineNoRejoin (calls := calls) (creates := creates)).run b)) :=
+        ((objectPipelineNoRejoin (calls := calls) (creates := creates) (gasOracle := gasOracle)).run b)) :=
   RPass.resolve_equiv_ofList _ L b
 
 mutual
@@ -315,7 +315,7 @@ mutual
   def optimizerPipelineObjectNoRejoin : Object Op → Object Op
     | .mk name code subs segs =>
         .mk name
-          ((objectPipelineNoRejoin (calls := calls) (creates := creates)).run code)
+          ((objectPipelineNoRejoin (calls := calls) (creates := creates) (gasOracle := gasOracle)).run code)
           (optimizerPipelineObjectsNoRejoin subs) segs
 
   def optimizerPipelineObjectsNoRejoin : List (Object Op) → List (Object Op)
@@ -326,15 +326,15 @@ end
 
 set_option maxRecDepth 4096 in
 @[simp] theorem optimizerPipelineObjectRounds_codeBlock (n : Nat) (o : Object Op) :
-    (optimizerPipelineObjectRounds (calls := calls) (creates := creates) n o).codeBlock =
-      (objectPipelineRounds (calls := calls) (creates := creates) n).run o.codeBlock := by
+    (optimizerPipelineObjectRounds (calls := calls) (creates := creates) (gasOracle := gasOracle) n o).codeBlock =
+      (objectPipelineRounds (calls := calls) (creates := creates) (gasOracle := gasOracle) n).run o.codeBlock := by
   cases o
   rfl
 
 set_option maxRecDepth 4096 in
 @[simp] theorem optimizerPipelineObject_codeBlock (o : Object Op) :
-    (optimizerPipelineObject (calls := calls) (creates := creates) o).codeBlock =
-      (objectPipeline (calls := calls) (creates := creates)).run o.codeBlock := by
+    (optimizerPipelineObject (calls := calls) (creates := creates) (gasOracle := gasOracle) o).codeBlock =
+      (objectPipeline (calls := calls) (creates := creates) (gasOracle := gasOracle)).run o.codeBlock := by
   cases o
   rfl
 
@@ -344,12 +344,12 @@ theorem optimizerPipelineObjectRounds_compileObject_correct
     [model : ExternalModel] (hexternal : ExternalsRealized model) (n : Nat)
     {o : Object Op} {L : Layout}
     (hcomp : compileObject
-      (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) n o)
+      (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) (gasOracle := model.gas) n o)
         = some L)
-    {V : VEnv (evmWithExternal model.calls model.creates)}
+    {V : VEnv (evmWithExternal model.calls model.creates model.gas)}
     {yst : EvmState} {out : Outcome}
     (hrun : RunResolvedObject
-      (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) n o)
+      (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) (gasOracle := model.gas) n o)
       L V yst out) :
     ∃ b : Nat, ∀ s0 : State,
       FrameOK (mkCode L.code) s0 → StateMatch L.initState s0 →
@@ -365,12 +365,12 @@ theorem optimizerPipelineObject_compileObject_correct
     [model : ExternalModel] (hexternal : ExternalsRealized model)
     {o : Object Op} {L : Layout}
     (hcomp : compileObject
-      (optimizerPipelineObject (calls := model.calls) (creates := model.creates) o)
+      (optimizerPipelineObject (calls := model.calls) (creates := model.creates) (gasOracle := model.gas) o)
         = some L)
-    {V : VEnv (evmWithExternal model.calls model.creates)}
+    {V : VEnv (evmWithExternal model.calls model.creates model.gas)}
     {yst : EvmState} {out : Outcome}
     (hrun : RunResolvedObject
-      (optimizerPipelineObject (calls := model.calls) (creates := model.creates) o)
+      (optimizerPipelineObject (calls := model.calls) (creates := model.creates) (gasOracle := model.gas) o)
       L V yst out) :
     ∃ b : Nat, ∀ s0 : State,
       FrameOK (mkCode L.code) s0 → StateMatch L.initState s0 →
@@ -384,14 +384,14 @@ theorem optimizerPipelineObject_compileObject_correct
 (any round count). -/
 theorem optimizerPipelineObjectRounds_topEquiv (n : Nat) (o : Object Op) :
     EquivBlock D o.codeBlock
-      (optimizerPipelineObjectRounds (calls := calls) (creates := creates) n o).codeBlock := by
+      (optimizerPipelineObjectRounds (calls := calls) (creates := creates) (gasOracle := gasOracle) n o).codeBlock := by
   rw [optimizerPipelineObjectRounds_codeBlock]
-  exact (objectPipelineRounds (calls := calls) (creates := creates) n).sound o.codeBlock
+  exact (objectPipelineRounds (calls := calls) (creates := creates) (gasOracle := gasOracle) n).sound o.codeBlock
 
 /-- Every object's own code block is pointwise equivalent to its source block. -/
 theorem optimizerPipelineObject_topEquiv (o : Object Op) :
     EquivBlock D o.codeBlock
-      (optimizerPipelineObject (calls := calls) (creates := creates) o).codeBlock :=
+      (optimizerPipelineObject (calls := calls) (creates := creates) (gasOracle := gasOracle) o).codeBlock :=
   optimizerPipelineObjectRounds_topEquiv pipelineRounds o
 
 /-- End-to-end correctness for the recursively optimized object tree (any
@@ -401,9 +401,9 @@ theorem optimizerPipelineObjectRounds_correct
     [model : ExternalModel] (hexternal : ExternalsRealized model) (n : Nat)
     {o : Object Op} {L : Layout}
     (hcomp : compileObject
-      (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) n o)
+      (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) (gasOracle := model.gas) n o)
         = some L)
-    {V : VEnv (evmWithExternal model.calls model.creates)}
+    {V : VEnv (evmWithExternal model.calls model.creates model.gas)}
     {yst : EvmState} {out : Outcome}
     (hrun : RunResolvedObject o L V yst out) :
     ∃ b : Nat, ∀ s0 : State,
@@ -413,11 +413,11 @@ theorem optimizerPipelineObjectRounds_correct
         ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
          (out = .halt ∧ HaltedMatch yst s')) := by
   have hb := resolveObjectPipelineRoundsBlock_equiv
-    (calls := model.calls) (creates := model.creates) n L o.codeBlock
+    (calls := model.calls) (creates := model.creates) (gasOracle := model.gas) n L o.codeBlock
   have hrun' : RunResolvedObject
-      (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) n o)
+      (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) (gasOracle := model.gas) n o)
       L V yst out := by
-    show Run (evmWithExternal model.calls model.creates)
+    show Run (evmWithExternal model.calls model.creates model.gas)
       (resolveForLayoutStmts L
         (optimizerPipelineObjectRounds (calls := model.calls)
           (creates := model.creates) n o).codeBlock)
@@ -432,9 +432,9 @@ theorem optimizerPipelineObject_correct
     [model : ExternalModel] (hexternal : ExternalsRealized model)
     {o : Object Op} {L : Layout}
     (hcomp : compileObject
-      (optimizerPipelineObject (calls := model.calls) (creates := model.creates) o)
+      (optimizerPipelineObject (calls := model.calls) (creates := model.creates) (gasOracle := model.gas) o)
         = some L)
-    {V : VEnv (evmWithExternal model.calls model.creates)}
+    {V : VEnv (evmWithExternal model.calls model.creates model.gas)}
     {yst : EvmState} {out : Outcome}
     (hrun : RunResolvedObject o L V yst out) :
     ∃ b : Nat, ∀ s0 : State,
@@ -463,22 +463,22 @@ for **every** block: normalization is now an unconditionally-sound guarded pass
 (`Normalize.normalize_runEquivBlock`), so no `SourceValid` hypothesis survives. -/
 theorem normalize_optimizerPipelineRounds_runEquiv (n : Nat) (b : Block Op) :
     RunEquivBlock D b
-      ((optimizerPipelineRounds (calls := calls) (creates := creates) n).run
-        (@Normalize.normalize (evmWithExternal calls creates) b)) :=
-  (@Normalize.normalize_runEquivBlock (evmWithExternal calls creates) _ b).trans
+      ((optimizerPipelineRounds (calls := calls) (creates := creates) (gasOracle := gasOracle) n).run
+        (@Normalize.normalize (evmWithExternal calls creates gasOracle) b)) :=
+  (@Normalize.normalize_runEquivBlock (evmWithExternal calls creates gasOracle) _ b).trans
     (RunEquivBlock.of_equivBlock
-      ((optimizerPipelineRounds (calls := calls) (creates := creates) n).sound
-        (@Normalize.normalize (evmWithExternal calls creates) b)))
+      ((optimizerPipelineRounds (calls := calls) (creates := creates) (gasOracle := gasOracle) n).sound
+        (@Normalize.normalize (evmWithExternal calls creates gasOracle) b)))
 
 /-- **Normalize-then-optimize preserves whole-program behaviour** (object path,
 at the top code block — the `RunObject`/`RunResolvedObject` interface), for
 **every** object tree. -/
 theorem normalize_optimizerPipelineObjectRounds_topRunEquiv (n : Nat) (o : Object Op) :
     RunEquivBlock D o.codeBlock
-      (optimizerPipelineObjectRounds (calls := calls) (creates := creates) n
-        (@Normalize.normalizeObject (evmWithExternal calls creates) _ o)).codeBlock :=
-  (@Normalize.normalizeObject_topRunEquiv (evmWithExternal calls creates) _ o).trans
+      (optimizerPipelineObjectRounds (calls := calls) (creates := creates) (gasOracle := gasOracle) n
+        (@Normalize.normalizeObject (evmWithExternal calls creates gasOracle) _ o)).codeBlock :=
+  (@Normalize.normalizeObject_topRunEquiv (evmWithExternal calls creates gasOracle) _ o).trans
     (RunEquivBlock.of_equivBlock
-      (optimizerPipelineObjectRounds_topEquiv n (@Normalize.normalizeObject (evmWithExternal calls creates) _ o)))
+      (optimizerPipelineObjectRounds_topEquiv n (@Normalize.normalizeObject (evmWithExternal calls creates gasOracle) _ o)))
 
 end YulEvmCompiler.Optimizer

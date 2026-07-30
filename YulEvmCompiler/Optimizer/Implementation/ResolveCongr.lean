@@ -27,9 +27,9 @@ open YulSemantics.EVM
 open YulEvmCompiler (resolveForLayoutExpr resolveForLayoutExprs resolveForLayoutStmt
   resolveForLayoutStmts resolveForLayoutCases)
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### Resolution leaves the pass's Core rewrite targets alone -/
 
@@ -221,7 +221,7 @@ arguments: resolution can turn the surviving operand into a literal, changing
 which pattern (if any) would fire — but the fired rule's algebraic fact holds
 at resolved operands regardless. -/
 theorem resolve_openTop_equiv1 (L : Layout) (e : Expr Op) :
-    EquivExpr1 (calls := calls) (creates := creates)
+    EquivExpr1 (calls := calls) (creates := creates) (gasOracle := gasOracle)
       (resolveForLayoutExpr L e) (resolveForLayoutExpr L (openTop e)) := by
   cases e with
   | lit _ => exact EquivExpr1.refl _
@@ -375,11 +375,11 @@ theorem resolveSimplifyCond_equiv (L : Layout) (c : Expr Op) (body : Block Op) :
       by_cases hz : litValue l = 0
       · rw [if_pos hz]
         simpa only [resolveForLayoutExpr, resolveForLayoutStmt, resolveForLayoutStmts] using
-          (cond_lit_zero_equiv (calls := calls) (creates := creates) l
+          (cond_lit_zero_equiv (calls := calls) (creates := creates) (gasOracle := gasOracle) l
             (resolveForLayoutStmts L body) hz)
       · rw [if_neg hz]
         simpa only [resolveForLayoutExpr, resolveForLayoutStmt] using
-          (cond_lit_nonzero_equiv (calls := calls) (creates := creates) l
+          (cond_lit_nonzero_equiv (calls := calls) (creates := creates) (gasOracle := gasOracle) l
             (resolveForLayoutStmts L body) hz)
   | var x =>
       simp only [simplifyCond, selfEqVar?, resolveForLayoutStmt_cond]
@@ -394,7 +394,7 @@ theorem resolveSimplifyCond_equiv (L : Layout) (c : Expr Op) (body : Block Op) :
           rw [hshape]
           simpa [simplifyCond, selfEqVar?, resolveForLayoutExpr,
             resolveForLayoutExprs, resolveForLayoutStmt] using
-            (cond_selfEq_equiv (calls := calls) (creates := creates) x
+            (cond_selfEq_equiv (calls := calls) (creates := creates) (gasOracle := gasOracle) x
               (resolveForLayoutStmts L body))
   | call fn args =>
       simp only [simplifyCond, selfEqVar?, resolveForLayoutStmt_cond]
@@ -413,7 +413,7 @@ theorem resolveSimplifySwitch_equiv (L : Layout) (c : Expr Op)
       rw [simplifySwitch]
       simp only [resolveForLayoutStmt]
       rw [resolve_selectSwitch]
-      exact switch_lit_equiv (calls := calls) (creates := creates) l
+      exact switch_lit_equiv (calls := calls) (creates := creates) (gasOracle := gasOracle) l
         (resolveForLayoutCases L cases)
         (dflt.map (resolveForLayoutStmts L))
   | var x =>

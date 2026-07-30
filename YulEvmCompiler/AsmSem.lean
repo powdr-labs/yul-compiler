@@ -29,14 +29,23 @@ what each step records, and phase A discharges the premises once via
 namespace YulEvmCompiler
 
 open YulSemantics.EVM
-  (U256 EvmState Op ExternalCalls ExternalCreates builtinWithExternal)
+  (U256 EvmState Op ExternalCalls ExternalCreates ExternalGas builtinWithExternal)
 
-/-- Packages the external call/create relations used by an Asm execution. Keeping it
-as an inferred model lets structural Phase-A lemmas carry the relation without
-adding an explicit parameter to every intermediate simulation predicate. -/
+/-- Packages the open-world relations used by an Asm execution: external calls,
+external creations, and the `gas()` oracle. Keeping it as an inferred model lets
+structural Phase-A lemmas carry the relations without adding an explicit
+parameter to every intermediate simulation predicate.
+
+`gas` defaults to `ExternalGas.any`, the maximally permissive oracle this layer
+was implicitly stated against before the oracle became a parameter, so no
+existing theorem covers fewer source runs than it did. It is a real parameter
+rather than a constant because a narrower oracle is what a target realization of
+`gas()` would have to be stated against; `opTable` does not yet map `.gas`, so
+every program that reads it is still rejected by `lowerProg`. -/
 class ExternalModel where
   calls : ExternalCalls
   creates : ExternalCreates := ExternalCreates.none
+  gas : ExternalGas := ExternalGas.any
 
 /-- An Asm-level stack value: a word, or the code address of label `l`. -/
 inductive AVal
@@ -74,7 +83,7 @@ inductive AStep (prog : List Asm) [model : ExternalModel] :
   step the machine state — all by the Yul dialect's own relation. -/
   | op {yop : Op} {args rets : List U256} {c : List Asm} {σ : List AVal}
       {yst yst' : EvmState} :
-      builtinWithExternal model.calls model.creates yop args yst (.ok rets yst') →
+      builtinWithExternal model.calls model.creates model.gas yop args yst (.ok rets yst') →
       AStep (model := model) prog ⟨.op yop :: c, words args ++ σ, yst⟩
         ⟨c, words rets ++ σ, yst'⟩
   /-- `DUP(n+1)`: copy the value `n` deep onto the top. -/
@@ -126,7 +135,7 @@ inductive AHalt (prog : List Asm) [model : ExternalModel] :
     AConf → EvmState → Prop
   | op {yop : Op} {args : List U256} {c : List Asm} {σ : List AVal}
       {yst yst' : EvmState} :
-      builtinWithExternal model.calls model.creates yop args yst (.halt yst') →
+      builtinWithExternal model.calls model.creates model.gas yop args yst (.halt yst') →
       AHalt (model := model) prog ⟨.op yop :: c, words args ++ σ, yst⟩ yst'
 
 /-- Finitely many Asm steps (reflexive-transitive closure of `AStep`). -/

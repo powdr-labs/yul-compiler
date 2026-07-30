@@ -20,10 +20,10 @@ open MemorySpillStateSound
 open MemorySpillRewriteSound
 
 variable {base reserved : Nat}
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "G" => guardedEvm calls creates gasOracle base reserved
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-- Concrete target state after copying the selected parameters in order. -/
 def afterInitParams (slots : SlotMap) (owner : Owner) (target : WordEnv) :

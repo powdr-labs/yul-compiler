@@ -400,16 +400,16 @@ end DeadPure
 
 /-! ## Invariant preservation -/
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-- The dead read-only result-region elimination pass preserves
 `NormalForm.UniqueNames`: it only removes declarations, so the declared-name
 list stays a sublist of a `Nodup` list and hence stays `Nodup`. -/
 theorem deadResults_preserves_uniqueNames :
     Optimizer.Preserves NormalForm.UniqueNames
-      (deadResults (calls := calls) (creates := creates)).run :=
+      (deadResults (calls := calls) (creates := creates) (gasOracle := gasOracle)).run :=
   fun b hb =>
     List.Nodup.sublist (drStmts_declaredNames_sublist [] b) hb
 
@@ -417,7 +417,7 @@ theorem deadResults_preserves_uniqueNames :
 for the same reason: it only removes declarations. -/
 theorem deadPure_preserves_uniqueNames :
     Optimizer.Preserves NormalForm.UniqueNames
-      (deadPure (calls := calls) (creates := creates)).run :=
+      (deadPure (calls := calls) (creates := creates) (gasOracle := gasOracle)).run :=
   fun b hb =>
     List.Nodup.sublist (dpStmts_declaredNames_sublist [] b) hb
 

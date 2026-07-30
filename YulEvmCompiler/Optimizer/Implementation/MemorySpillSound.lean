@@ -28,19 +28,19 @@ open MemorySpillStmtStepSound
 open MemorySpillObjectSound
 open MemorySpillBackendSound
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-- Direct block-root simulation, before any object-layout resolution. -/
 theorem spillBlockRunSound {raw : Block Op} {result : Result}
     {guards : List Nat}
     (hfacts : SpillFacts raw result guards)
-    (hexternals : GuardedExternals calls creates result.base result.reserved)
+    (hexternals : GuardedExternals calls creates gasOracle result.base result.reserved)
     {initial : EvmState} {sourceEnv : MemorySpillObjectSound.WordEnv}
     {sourceFinal : EvmState}
     {out : Outcome}
-    (hsource : Run (guardedEvm calls creates result.base result.reserved)
+    (hsource : Run (guardedEvm calls creates gasOracle result.base result.reserved)
       (resolveMemoryGuardStmts result.base result.reserved raw)
       initial sourceEnv sourceFinal out) :
     ∃ targetEnv targetFinal,
@@ -55,7 +55,7 @@ theorem spillBlockRunSound {raw : Block Op} {result : Result}
   have hctx := hctx0.asBlockStmt
   have hrel := ControlLiveRel.rootInitial hfacts initial
   have hcovered : FunsCovered
-      (guardedEvm calls creates result.base result.reserved)
+      (guardedEvm calls creates gasOracle result.base result.reserved)
       (fun body => body)
       ((frames policyRoot).map ((.identity : OriginMode).execFrame)) [] :=
     FunsCovered.nil _ _ _
@@ -87,7 +87,7 @@ theorem spillBlockRunSound {raw : Block Op} {result : Result}
 
 /-- The concrete block transformer required by object-plan composition. -/
 theorem spillNodeRunSound (L : EVM.Layout) :
-    SpillNodeRunSound (calls := calls) (creates := creates) L := by
+    SpillNodeRunSound (calls := calls) (creates := creates) (gasOracle := gasOracle) L := by
   intro raw result guards sourceEnv sourceFinal out hfacts hexternals hsource
   let policyRoot :=
     resolveMemoryGuardStmts result.base result.reserved raw
@@ -98,7 +98,7 @@ theorem spillNodeRunSound (L : EVM.Layout) :
   have hctx := hctx0.asBlockStmt
   have hrel := ControlLiveRel.rootInitial hfacts L.initState
   have hcovered : FunsCovered
-      (guardedEvm calls creates result.base result.reserved)
+      (guardedEvm calls creates gasOracle result.base result.reserved)
       (fun body => body)
       ((frames policyRoot).map ((.object L : OriginMode).execFrame)) [] :=
     FunsCovered.nil _ _ _
@@ -138,19 +138,19 @@ theorem compile_spilled_correct
     {L : EVM.Layout} {raw : Block Op} {result : Result}
     {guards : List Nat} {instructions : List Instr}
     (hfacts : SpillFacts raw result guards)
-    (hguarded : GuardedExternals model.calls model.creates
+    (hguarded : GuardedExternals model.calls model.creates model.gas
       result.base result.reserved)
     (hcomp : compile (resolveForLayoutStmts L result.block) =
       some instructions)
     {sourceEnv : MemorySpillObjectSound.WordEnv}
     {sourceFinal : EvmState} {out : Outcome}
     (hsource : Run
-      (guardedEvm model.calls model.creates result.base result.reserved)
+      (guardedEvm model.calls model.creates model.gas result.base result.reserved)
       (resolveForLayoutStmts L
         (resolveMemoryGuardStmts result.base result.reserved raw))
       L.initState sourceEnv sourceFinal out) :
     ∃ targetEnv targetFinal,
-      Run (evmWithExternal model.calls model.creates)
+      Run (evmWithExternal model.calls model.creates model.gas)
         (resolveForLayoutStmts L result.block)
         L.initState targetEnv targetFinal out ∧
       ScratchRel result.base result.reserved sourceFinal targetFinal ∧
@@ -166,7 +166,7 @@ theorem compile_spilled_correct
           ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
            (out = .halt ∧ HaltedMatch targetFinal s')) :=
   MemorySpillBackendSound.compile_spilled_correct hexternal
-    (spillNodeRunSound (calls := model.calls) (creates := model.creates) L)
+    (spillNodeRunSound (calls := model.calls) (creates := model.creates) (gasOracle := model.gas) L)
     hfacts hguarded hcomp hsource
 
 /-- Direct production block-root composition from a successful spill choice
@@ -175,17 +175,17 @@ theorem compile_memorySpill_correct
     (hexternal : ExternalsRealized model)
     {raw : Block Op} {result : Result} {instructions : List Instr}
     (hspill : spillBlock? raw = some result)
-    (hguarded : GuardedExternals model.calls model.creates
+    (hguarded : GuardedExternals model.calls model.creates model.gas
       result.base result.reserved)
     (hcomp : compile result.block = some instructions)
     {initial sourceFinal : EvmState}
     {sourceEnv : MemorySpillObjectSound.WordEnv} {out : Outcome}
     (hsource : Run
-      (guardedEvm model.calls model.creates result.base result.reserved)
+      (guardedEvm model.calls model.creates model.gas result.base result.reserved)
       (resolveMemoryGuardStmts result.base result.reserved raw)
       initial sourceEnv sourceFinal out) :
     ∃ targetEnv targetFinal,
-      Run (evmWithExternal model.calls model.creates) result.block
+      Run (evmWithExternal model.calls model.creates model.gas) result.block
         initial targetEnv targetFinal out ∧
       ScratchRel result.base result.reserved sourceFinal targetFinal ∧
       runObservables initial sourceFinal = runObservables initial targetFinal ∧
@@ -200,7 +200,7 @@ theorem compile_memorySpill_correct
            (out = .halt ∧ HaltedMatch targetFinal s')) := by
   obtain ⟨guards, hfacts⟩ := spillBlock_facts hspill
   obtain ⟨targetEnv, targetFinal, htarget, hscratch⟩ :=
-    spillBlockRunSound (calls := model.calls) (creates := model.creates)
+    spillBlockRunSound (calls := model.calls) (creates := model.creates) (gasOracle := model.gas)
       hfacts hguarded hsource
   have hobs : runObservables initial sourceFinal =
       runObservables initial targetFinal :=
@@ -215,13 +215,13 @@ theorem compileObject_memorySpill_correct
     {raw output : Object Op} {plan : MemorySpillSelect.ObjectPlan}
     {selected : Nat} {L : EVM.Layout}
     (hbuild : spillObjectWithFallback raw
-      (optimizerPipelineObject (calls := model.calls) (creates := model.creates)
+      (optimizerPipelineObject (calls := model.calls) (creates := model.creates) (gasOracle := model.gas)
         (eraseMemoryGuardObject raw)) =
         some { «object» := output, plan := plan, selected := selected })
     (hcomp : compileObject output = some L)
     {sourceEnv : MemorySpillObjectSound.WordEnv}
     {sourceFinal : EvmState} {out : Outcome}
-    (hsource : PlannedTopRun (calls := model.calls) (creates := model.creates)
+    (hsource : PlannedTopRun (calls := model.calls) (creates := model.creates) (gasOracle := model.gas)
       L raw plan sourceEnv sourceFinal out) :
     ∃ targetEnv targetFinal,
       RunResolvedObject output L targetEnv targetFinal out ∧
@@ -237,7 +237,7 @@ theorem compileObject_memorySpill_correct
           ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
            (out = .halt ∧ HaltedMatch targetFinal s')) :=
   MemorySpillBackendSound.compileObject_memorySpill_correct hexternal hbuild
-    (spillNodeRunSound (calls := model.calls) (creates := model.creates) L)
+    (spillNodeRunSound (calls := model.calls) (creates := model.creates) (gasOracle := model.gas) L)
     hcomp hsource
 
 end YulEvmCompiler.Optimizer.MemorySpillSound

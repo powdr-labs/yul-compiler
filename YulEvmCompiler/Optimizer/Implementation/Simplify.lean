@@ -65,12 +65,12 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
 /-- The open-world EVM dialect this pass is a `LocalPass` over — the dialect the
 verified backend theorem (`LocalPass.optimize_then_compile_correct`) is stated
 against. Its `Builtin` reduces to `stepOp` on every non-external op. -/
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### The pure operation kernel
 
@@ -182,7 +182,7 @@ theorem pureFn_stepOp {op : Op} {vs : List U256} {w : U256}
 only the external `call`/`create`/`gas` family specially) is exactly `stepOp`. -/
 theorem pureFn_builtin {op : Op} {vs : List U256} {w : U256}
     (h : pureFn op vs = some w) (st : EvmState) :
-    (evmWithExternal calls creates).Builtin op vs st (.ok [w] st) := by
+    (evmWithExternal calls creates gasOracle).Builtin op vs st (.ok [w] st) := by
   have hs := pureFn_stepOp h st
   cases op <;> simp_all [builtinWithExternal, pureFn]
 
@@ -190,7 +190,7 @@ theorem pureFn_builtin {op : Op} {vs : List U256} {w : U256}
 the state unchanged. -/
 theorem pureFn_builtin_inv {op : Op} {vs : List U256} {w : U256} {st : EvmState}
     {r : BuiltinResult U256 EvmState}
-    (h : pureFn op vs = some w) (hb : (evmWithExternal calls creates).Builtin op vs st r) :
+    (h : pureFn op vs = some w) (hb : (evmWithExternal calls creates gasOracle).Builtin op vs st r) :
     r = .ok [w] st := by
   have hs := pureFn_stepOp h st
   cases op <;> simp_all [builtinWithExternal, pureFn]
@@ -265,7 +265,7 @@ theorem fold_equiv {op : Op} {lits : List Literal} {l : Literal}
     EquivExpr D (.builtin op (lits.map Expr.lit)) (.lit l) := by
   rw [pureFold, Option.map_eq_some_iff] at h
   obtain ⟨w, hw, rfl⟩ := h
-  have hlv : (evmWithExternal calls creates).litValue (Literal.number w.toNat) = w :=
+  have hlv : (evmWithExternal calls creates gasOracle).litValue (Literal.number w.toNat) = w :=
     litValue_number_toNat w
   intro funs V st r
   constructor
@@ -619,7 +619,7 @@ theorem simplifyBuiltin_equiv (op : Op) (args : List (Expr Op)) :
   | some core =>
     have herase := Core.ingestSelf_emit hcore
     simpa only [herase] using
-      (Core.simplifyTerm_sound (calls := calls) (creates := creates) core)
+      (Core.simplifyTerm_sound (calls := calls) (creates := creates) (gasOracle := gasOracle) core)
   | none => exact EquivExpr.refl _
 
 /-! ### Open-operand neutral identities
@@ -1555,14 +1555,14 @@ theorem selfEq_zero_inv {funs : FunEnv D} {V : VEnv D} {st st' : EvmState}
                               injection hv2 with hv
                               subst hv
                               have heqv := pureFn_builtin_inv
-                                (calls := calls) (creates := creates)
+                                (calls := calls) (creates := creates) (gasOracle := gasOracle)
                                 (w := 1) (by simp [pureFn, b2w]) hbeq
                               injection heqv with hvals hst
                               injection hvals with hv
                               subst hv
                               subst hst
                               have hzero := pureFn_builtin_inv
-                                (calls := calls) (creates := creates)
+                                (calls := calls) (creates := creates) (gasOracle := gasOracle)
                                 (w := 0) (by simp [pureFn, b2w]) hbzero
                               injection hzero with hvals hst
                               exact ⟨by simpa using hvals, hst⟩
@@ -1620,8 +1620,8 @@ theorem cond_selfEq_equiv (x : Ident) (body : Block Op) :
 
 /-- A false literal `if` is exactly an empty block. -/
 theorem cond_lit_zero_equiv (l : Literal) (body : Block Op)
-    (hz : (evmWithExternal calls creates).litValue l =
-      (evmWithExternal calls creates).zero) :
+    (hz : (evmWithExternal calls creates gasOracle).litValue l =
+      (evmWithExternal calls creates gasOracle).zero) :
     EquivStmt D (.cond (.lit l) body) (.block []) := by
   intro funs V st V' st' o
   constructor
@@ -1642,8 +1642,8 @@ theorem cond_lit_zero_equiv (l : Literal) (body : Block Op)
 
 /-- A true literal `if` is exactly its body block. -/
 theorem cond_lit_nonzero_equiv (l : Literal) (body : Block Op)
-    (hnz : (evmWithExternal calls creates).litValue l ≠
-      (evmWithExternal calls creates).zero) :
+    (hnz : (evmWithExternal calls creates gasOracle).litValue l ≠
+      (evmWithExternal calls creates gasOracle).zero) :
     EquivStmt D (.cond (.lit l) body) (.block body) := by
   intro funs V st V' st' o
   constructor
@@ -1659,7 +1659,7 @@ theorem cond_lit_nonzero_equiv (l : Literal) (body : Block Op)
 semantics (including first-match behavior). -/
 theorem selectSwitch_open_eq (value : U256) (cases : List (Literal × Block Op))
     (dflt : Option (Block Op)) :
-    selectSwitch (evmWithExternal calls creates) value cases dflt =
+    selectSwitch (evmWithExternal calls creates gasOracle) value cases dflt =
       selectSwitch evm value cases dflt := by
   induction cases with
   | nil => simp [selectSwitch]
@@ -1706,7 +1706,7 @@ theorem simplifyCond_equiv (c : Expr Op) (body : Block Op) :
           have hshape := selfEqVar?_some hself
           rw [hshape]
           simpa [simplifyCond, selfEqVar?] using
-            (cond_selfEq_equiv (calls := calls) (creates := creates) x body)
+            (cond_selfEq_equiv (calls := calls) (creates := creates) (gasOracle := gasOracle) x body)
   | call _ _ => exact EquivStmt.refl _
 
 /-- The `switch` smart constructor is semantics-preserving. -/
@@ -1757,13 +1757,13 @@ def EquivExpr1 (e₁ e₂ : Expr Op) : Prop :=
         Step D funs V st (.expr e₂) (.eres (.halt st')))
 
 theorem EquivExpr1.refl (e : Expr Op) :
-    EquivExpr1 (calls := calls) (creates := creates) e e :=
+    EquivExpr1 (calls := calls) (creates := creates) (gasOracle := gasOracle) e e :=
   fun _ _ _ => ⟨fun _ _ => Iff.rfl, fun _ => Iff.rfl⟩
 
 theorem EquivExpr1.trans {e₁ e₂ e₃ : Expr Op}
-    (h₁ : EquivExpr1 (calls := calls) (creates := creates) e₁ e₂)
-    (h₂ : EquivExpr1 (calls := calls) (creates := creates) e₂ e₃) :
-    EquivExpr1 (calls := calls) (creates := creates) e₁ e₃ :=
+    (h₁ : EquivExpr1 (calls := calls) (creates := creates) (gasOracle := gasOracle) e₁ e₂)
+    (h₂ : EquivExpr1 (calls := calls) (creates := creates) (gasOracle := gasOracle) e₂ e₃) :
+    EquivExpr1 (calls := calls) (creates := creates) (gasOracle := gasOracle) e₁ e₃ :=
   fun funs V st =>
     ⟨fun v st' => ((h₁ funs V st).1 v st').trans ((h₂ funs V st).1 v st'),
      fun st' => ((h₁ funs V st).2 st').trans ((h₂ funs V st).2 st')⟩
@@ -1771,14 +1771,14 @@ theorem EquivExpr1.trans {e₁ e₂ e₃ : Expr Op}
 /-- Full pointwise equivalence restricts to the value-restricted one. -/
 theorem EquivExpr.toEquivExpr1 {e₁ e₂ : Expr Op}
     (h : EquivExpr D e₁ e₂) :
-    EquivExpr1 (calls := calls) (creates := creates) e₁ e₂ :=
+    EquivExpr1 (calls := calls) (creates := creates) (gasOracle := gasOracle) e₁ e₂ :=
   fun funs V st => ⟨fun _ _ => h funs V st _, fun _ => h funs V st _⟩
 
 /-- **Right-operand open neutral**: `op(e, c) ≈₁ e` when `op` maps `(v, c)`
 to `v` — for an arbitrary surviving operand. -/
 theorem open_right_equiv1 {op : Op} {e : Expr Op} {c : Literal}
     (h : ∀ v : U256, pureFn op [v, litValue c] = some v) :
-    EquivExpr1 (calls := calls) (creates := creates) (.builtin op [e, .lit c]) e := by
+    EquivExpr1 (calls := calls) (creates := creates) (gasOracle := gasOracle) (.builtin op [e, .lit c]) e := by
   intro funs V st
   constructor
   · intro v st'
@@ -1813,7 +1813,7 @@ theorem open_right_equiv1 {op : Op} {e : Expr Op} {c : Literal}
 to `v` — for an arbitrary surviving operand. -/
 theorem open_left_equiv1 {op : Op} {e : Expr Op} {c : Literal}
     (h : ∀ v : U256, pureFn op [litValue c, v] = some v) :
-    EquivExpr1 (calls := calls) (creates := creates) (.builtin op [.lit c, e]) e := by
+    EquivExpr1 (calls := calls) (creates := creates) (gasOracle := gasOracle) (.builtin op [.lit c, e]) e := by
   intro funs V st
   constructor
   · intro v st'
@@ -1847,7 +1847,7 @@ theorem open_left_equiv1 {op : Op} {e : Expr Op} {c : Literal}
 /-- Every open-operand rewrite is value-restricted-sound. -/
 theorem openNeutral_equiv1 {op : Op} {args : List (Expr Op)} {e : Expr Op}
     (h : openNeutral op args = some e) :
-    EquivExpr1 (calls := calls) (creates := creates) (.builtin op args) e := by
+    EquivExpr1 (calls := calls) (creates := creates) (gasOracle := gasOracle) (.builtin op args) e := by
   unfold openNeutral at h
   split at h <;>
     first
@@ -1865,7 +1865,7 @@ theorem openNeutral_equiv1 {op : Op} {args : List (Expr Op)} {e : Expr Op}
 
 /-- The top-level open-operand rewrite is value-restricted-sound. -/
 theorem openTop_equiv1 : ∀ e : Expr Op,
-    EquivExpr1 (calls := calls) (creates := creates) e (openTop e)
+    EquivExpr1 (calls := calls) (creates := creates) (gasOracle := gasOracle) e (openTop e)
   | .lit _ => EquivExpr1.refl _
   | .var _ => EquivExpr1.refl _
   | .call _ _ => EquivExpr1.refl _
@@ -1881,7 +1881,7 @@ theorem openTop_equiv1 : ∀ e : Expr Op,
 singleton value or a halt, so a value-restricted head rewrite yields **full**
 argument-list equivalence. -/
 theorem EquivArgs.cons1 {e e' : Expr Op} {rest rest' : List (Expr Op)}
-    (hh : EquivExpr1 (calls := calls) (creates := creates) e e')
+    (hh : EquivExpr1 (calls := calls) (creates := creates) (gasOracle := gasOracle) e e')
     (ht : EquivArgs D rest rest') :
     EquivArgs D (e :: rest) (e' :: rest') := by
   intro funs V st r
@@ -1906,7 +1906,7 @@ theorem EquivArgs.cons1 {e e' : Expr Op} {rest rest' : List (Expr Op)}
 /-- Singleton-`let` lift: `letVal` pins the right-hand side to exactly one
 value, `letHalt` to a halt. -/
 theorem EquivStmt.letDecl1_congr {x : Ident} {e e' : Expr Op}
-    (h : EquivExpr1 (calls := calls) (creates := creates) e e') :
+    (h : EquivExpr1 (calls := calls) (creates := creates) (gasOracle := gasOracle) e e') :
     EquivStmt D (.letDecl [x] (some e)) (.letDecl [x] (some e')) := by
   intro funs V st V' st' o
   constructor
@@ -1939,7 +1939,7 @@ theorem EquivStmt.letDecl1_congr {x : Ident} {e e' : Expr Op}
 
 /-- Singleton-`assign` lift. -/
 theorem EquivStmt.assign1_congr {x : Ident} {e e' : Expr Op}
-    (h : EquivExpr1 (calls := calls) (creates := creates) e e') :
+    (h : EquivExpr1 (calls := calls) (creates := creates) (gasOracle := gasOracle) e e') :
     EquivStmt D (.assign [x] e) (.assign [x] e') := by
   intro funs V st V' st' o
   constructor

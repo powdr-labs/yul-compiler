@@ -44,9 +44,9 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### Sequence splitting and joining -/
 
@@ -164,7 +164,7 @@ theorem removeLit_equivBlock {x : Ident} {val : Option (Expr Op)}
     (hval : val = none ∨ ∃ l, val = some (.lit l))
     (hm : stmtsMentions x rest = false) :
     EquivBlock D (pre ++ .letDecl [x] val :: rest) (pre ++ rest) := by
-  have hh := hoist_drop_let (calls := calls) (creates := creates) pre rest x val
+  have hh := hoist_drop_let (calls := calls) (creates := creates) (gasOracle := gasOracle) pre rest x val
   intro funs V st V' st' o
   constructor
   · intro h
@@ -349,17 +349,17 @@ end
 def dlSound : PCode Op → PCode Op → Prop
   | .stmts ss, .stmts ss' =>
       ∀ pre : List (Stmt Op),
-        EquivBlock (evmWithExternal calls creates) (pre ++ ss) (pre ++ ss')
+        EquivBlock (evmWithExternal calls creates gasOracle) (pre ++ ss) (pre ++ ss')
   | .stmt s, .stmt s' =>
-      EquivStmt (evmWithExternal calls creates) s s' ∧
-        ScopeRel (evmWithExternal calls creates)
-          (hoist (evmWithExternal calls creates) [s])
-          (hoist (evmWithExternal calls creates) [s'])
+      EquivStmt (evmWithExternal calls creates gasOracle) s s' ∧
+        ScopeRel (evmWithExternal calls creates gasOracle)
+          (hoist (evmWithExternal calls creates gasOracle) [s])
+          (hoist (evmWithExternal calls creates gasOracle) [s'])
   | .cases cs, .cases cs' =>
       List.Forall₂ (fun p q => p.1 = q.1 ∧
-        EquivBlock (evmWithExternal calls creates) p.2 q.2) cs cs'
+        EquivBlock (evmWithExternal calls creates gasOracle) p.2 q.2) cs cs'
   | .odflt d, .odflt d' =>
-      EquivBlock (evmWithExternal calls creates) (d.getD []) (d'.getD [])
+      EquivBlock (evmWithExternal calls creates gasOracle) (d.getD []) (d'.getD [])
   | _, _ => True
 
 /-- Pairwise reflexive `Forall₂` for a common list. -/
@@ -393,7 +393,7 @@ class carries the arbitrary common prefix so removal steps chain through
 `removeLit_equivBlock` while kept steps go through the pointwise congruences
 (function bodies via `EquivBlock.of_stmts_funs`). -/
 theorem DlRel.sound {pc pc' : PCode Op} (h : DlRel pc pc') :
-    dlSound (calls := calls) (creates := creates) pc pc' := by
+    dlSound (calls := calls) (creates := creates) (gasOracle := gasOracle) pc pc' := by
   induction h with
   | @sameS s =>
       show EquivStmt D s s ∧ ScopeRel D (hoist D [s]) (hoist D [s])
@@ -454,7 +454,7 @@ theorem DlRel.sound {pc pc' : PCode Op} (h : DlRel pc pc') :
 theorem DlRel.equivBlock {b b' : Block Op}
     (h : DlRel (.stmts b) (.stmts b')) :
     EquivBlock D b b' := by
-  have := h.sound (calls := calls) (creates := creates)
+  have := h.sound (calls := calls) (creates := creates) (gasOracle := gasOracle)
   simpa using this []
 
 /-- The **DeadLits pass**: dead literal-binding elimination, bundled with its
@@ -464,7 +464,7 @@ def deadLits : LocalPass D where
   sound := fun b => DlRel.equivBlock (dlStmts_rel b)
 
 @[simp] theorem deadLits_run (b : Block Op) :
-    (deadLits (calls := calls) (creates := creates)).run b = dlStmts b := rfl
+    (deadLits (calls := calls) (creates := creates) (gasOracle := gasOracle)).run b = dlStmts b := rfl
 
 /-! ### Regression examples (checked at build time) -/
 

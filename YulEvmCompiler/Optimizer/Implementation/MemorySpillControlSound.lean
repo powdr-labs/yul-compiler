@@ -35,10 +35,10 @@ open MemorySpillTraceResolveSound
 open MemorySpillExitSound
 
 variable {base reserved : Nat}
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "G" => guardedEvm calls creates gasOracle base reserved
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-- Executed code corresponding to policy code in direct and object modes. -/
 def execCode : OriginMode → Code Op → Code Op
@@ -2099,9 +2099,9 @@ theorem ControlStepContext.switchSelectedBlock {mode : OriginMode}
         exitNames source := by
   dsimp only
   have hexecuted := ControlStepContext.switchSelection_eq
-    (base := base) (reserved := reserved) (calls := calls) (creates := creates)
+    (base := base) (reserved := reserved) (calls := calls) (creates := creates) (gasOracle := gasOracle)
     hctx value
-  rcases selectSwitch_empty_or_origin (calls := calls) (creates := creates)
+  rcases selectSwitch_empty_or_origin (calls := calls) (creates := creates) (gasOracle := gasOracle)
       (base := base) (reserved := reserved) value policyCases policyFallback with
     hempty | hnonempty
   · apply Or.inl
@@ -2411,7 +2411,7 @@ theorem guardedScopeCovered_global {allFrames : List Frame} {body : Block Op}
     ScopeCovered G (fun executed => executed) allFrames (hoist G body) := by
   intro name decl hdecl
   obtain ⟨frame, hframe, howner, hparams, hreturns, hbody⟩ :=
-    guardedScopeCovered calls creates base reserved body name decl hdecl
+    guardedScopeCovered calls creates gasOracle base reserved body name decl hdecl
   have hnested : frame ∈ nestedFramesStmts body := by
     simp only [frames, List.mem_cons] at hframe
     rcases hframe with hroot | hnested
@@ -2678,7 +2678,7 @@ theorem LiveFrameRel.popScope {selected : SpillSet}
       selected layout frame signature cuts outerLive
       (@YulSemantics.restore G outerSource source) sourceState
       (@YulSemantics.restore D outerTarget target) targetState := by
-  have henv := EnvRel.pop (calls := calls) (creates := creates)
+  have henv := EnvRel.pop (calls := calls) (creates := creates) (gasOracle := gasOracle)
     (base := base) (reserved := reserved)
     (hsource := rfl) (htarget := rfl) hinner.frameRel.env
   have hloaded : SlotsLoaded layout.slots frame.owner
@@ -2962,7 +2962,7 @@ theorem simulateCallFreeExpr
       source sourceState target targetState)
     (hexitBound : NamesBound exitNames source)
     (hexitSignature : ∀ name ∈ exitNames, name ∈ signature)
-    (hexternals : GuardedExternals calls creates base reserved)
+    (hexternals : GuardedExternals calls creates gasOracle base reserved)
     (hbounds : ∀ name slot,
       slotFor? layout.slots policyFrame.owner name = some slot →
         base ≤ slot ∧ slot + 32 ≤ reserved)
@@ -3002,7 +3002,7 @@ theorem simulateCallFreeArgs
       source sourceState target targetState)
     (hexitBound : NamesBound exitNames source)
     (hexitSignature : ∀ name ∈ exitNames, name ∈ signature)
-    (hexternals : GuardedExternals calls creates base reserved)
+    (hexternals : GuardedExternals calls creates gasOracle base reserved)
     (hbounds : ∀ name slot,
       slotFor? layout.slots policyFrame.owner name = some slot →
         base ≤ slot ∧ slot + 32 ≤ reserved)
@@ -3478,7 +3478,7 @@ theorem closeSeqNormalResult
       (rewriteStmts layout.slots frame.owner exitCopies rest)
       targetFinal targetFinalState targetOutcome)
     (hresult : ResultControlRel (base := base) (reserved := reserved)
-      (calls := calls) (creates := creates)
+      (calls := calls) (creates := creates) (gasOracle := gasOracle)
       globalDeclared selected layout frame signature cuts
       (liveStmt selected frame.owner live statement).2
       exitNames sourceMiddle targetMiddle (.stmts rest)
@@ -3489,7 +3489,7 @@ theorem closeSeqNormalResult
       (rewriteStmts layout.slots frame.owner exitCopies (statement :: rest))
       targetFinal targetFinalState targetOutcome ∧
     ResultControlRel (base := base) (reserved := reserved)
-      (calls := calls) (creates := creates)
+      (calls := calls) (creates := creates) (gasOracle := gasOracle)
       globalDeclared selected layout frame signature cuts live
       exitNames sourceStart targetStart (.stmts (statement :: rest))
       (.sres sourceFinal sourceFinalState outcome)

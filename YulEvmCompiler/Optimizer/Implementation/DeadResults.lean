@@ -19,9 +19,9 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates gasOracle
 
 mutual
 
@@ -240,7 +240,7 @@ def deadResults : LocalPass D where
     exact hrel.equivBlock
 
 @[simp] theorem deadResults_run (b : Block Op) :
-    (deadResults (calls := calls) (creates := creates)).run b = drStmts [] b := rfl
+    (deadResults (calls := calls) (creates := creates) (gasOracle := gasOracle)).run b = drStmts [] b := rfl
 
 example : drStmts ["slot"]
     [.letDecl ["ignored"] none,

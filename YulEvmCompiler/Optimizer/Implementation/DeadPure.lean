@@ -54,9 +54,9 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### The always-evaluating right-hand-side fragment -/
 
@@ -211,7 +211,7 @@ theorem selectSwitch_callFree {cv : U256} {cases : List (Literal × Block Op)}
   | cons p rest ih =>
       obtain ⟨l, body⟩ := p
       simp only [casesCallFree, Bool.and_eq_true] at hc
-      by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+      by_cases hcv : cv = (evmWithExternal calls creates gasOracle).litValue l
       · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
         exact hc.1
       · rw [selectSwitch, List.find?_cons_of_neg (by simp [hcv])]
@@ -881,10 +881,10 @@ theorem discardStmt_inv {sink : Ident} {ctx ctx' : DrCtx} {s : Stmt Op}
                     cases hstep with
                     | letZero =>
                         have hframe' : DrFrame base (x :: ctx.owned)
-                            ((x, (evmWithExternal calls creates).zero) :: V) :=
-                          hframe.cons x (evmWithExternal calls creates).zero
+                            ((x, (evmWithExternal calls creates gasOracle).zero) :: V) :=
+                          hframe.cons x (evmWithExternal calls creates gasOracle).zero
                         have hb' : BoundOK
-                            ((x, (evmWithExternal calls creates).zero) :: V)
+                            ((x, (evmWithExternal calls creates gasOracle).zero) :: V)
                             (x :: ctx.bound) := by
                           intro z hz
                           simp only [List.mem_cons] at hz
@@ -982,7 +982,7 @@ has exactly one possible observable shape. -/
 theorem discardBlock_run {bound : List Ident} {sink : Ident} {body : Block Op}
     (hcheck : (discardStmts sink ⟨sink :: bound, [sink]⟩ body).isSome = true)
     {V : VEnv D} (hb : BoundOK V bound) (funs : FunEnv D) (st : EvmState) :
-    ∃ v, Step D funs ((sink, (evmWithExternal calls creates).zero) :: V) st
+    ∃ v, Step D funs ((sink, (evmWithExternal calls creates gasOracle).zero) :: V) st
       (.stmt (.block body))
       (.sres ((sink, v) :: V) st .normal) := by
   cases hc : discardStmts sink ⟨sink :: bound, [sink]⟩ body with
@@ -999,7 +999,7 @@ theorem discardBlock_run {bound : List Ident} {sink : Ident} {body : Block Op}
           some ⟨sink :: bound, [sink]⟩ := by simp [discardStmt, hc]
       obtain ⟨V', hrun, hframe, -⟩ :=
         discardStmt_run hstmt (DrFrame.cons (DrFrame.nil V) sink
-          (evmWithExternal calls creates).zero)
+          (evmWithExternal calls creates gasOracle).zero)
           hbound funs st
       obtain ⟨A, hV', hkeys⟩ := hframe
       cases A with
@@ -1015,7 +1015,7 @@ theorem discardBlock_run {bound : List Ident} {sink : Ident} {body : Block Op}
 theorem discardBlock_inv {bound : List Ident} {sink : Ident} {body : Block Op}
     (hcheck : (discardStmts sink ⟨sink :: bound, [sink]⟩ body).isSome = true)
     {V : VEnv D} (hb : BoundOK V bound) {funs : FunEnv D} {st V' st' o}
-    (hstep : Step D funs ((sink, (evmWithExternal calls creates).zero) :: V) st
+    (hstep : Step D funs ((sink, (evmWithExternal calls creates gasOracle).zero) :: V) st
       (.stmt (.block body))
       (.sres V' st' o)) :
     ∃ v, V' = (sink, v) :: V ∧ st' = st ∧ o = .normal := by
@@ -1033,7 +1033,7 @@ theorem discardBlock_inv {bound : List Ident} {sink : Ident} {body : Block Op}
           some ⟨sink :: bound, [sink]⟩ := by simp [discardStmt, hc]
       obtain ⟨rfl, rfl, hframe, -⟩ :=
         discardStmt_inv hstmt (DrFrame.cons (DrFrame.nil V) sink
-          (evmWithExternal calls creates).zero)
+          (evmWithExternal calls creates gasOracle).zero)
           hbound hstep
       obtain ⟨A, hV', hkeys⟩ := hframe
       cases A with
@@ -1624,25 +1624,25 @@ def DcFDeclRel (d₁ d₂ : FDecl D) : Prop :=
 /-- Scopes related pairwise: equal names, `DcFDeclRel` declarations. -/
 def DcScopeRel (s₁ s₂ : FScope D) : Prop :=
   List.Forall₂ (fun p q => p.1 = q.1 ∧
-    DcFDeclRel (calls := calls) (creates := creates) p.2 q.2) s₁ s₂
+    DcFDeclRel (calls := calls) (creates := creates) (gasOracle := gasOracle) p.2 q.2) s₁ s₂
 
 /-- Function environments related scope-by-scope. -/
 def DcFunsRel (f₁ f₂ : FunEnv D) : Prop :=
-  List.Forall₂ (DcScopeRel (calls := calls) (creates := creates)) f₁ f₂
+  List.Forall₂ (DcScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle)) f₁ f₂
 
 theorem DcFDeclRel.refl (d : FDecl D) :
-    DcFDeclRel (calls := calls) (creates := creates) d d := by
+    DcFDeclRel (calls := calls) (creates := creates) (gasOracle := gasOracle) d d := by
   obtain ⟨b2, h⟩ := DcRel.reflStmts (d.params ++ d.rets) d.body
   exact ⟨rfl, rfl, b2, h⟩
 
 theorem DcScopeRel.refl (s : FScope D) :
-    DcScopeRel (calls := calls) (creates := creates) s s := by
+    DcScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle) s s := by
   induction s with
   | nil => exact .nil
   | cons p t ih => exact .cons ⟨rfl, DcFDeclRel.refl _⟩ ih
 
 theorem DcFunsRel.refl (f : FunEnv D) :
-    DcFunsRel (calls := calls) (creates := creates) f f := by
+    DcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) f f := by
   induction f with
   | nil => exact .nil
   | cons s t ih => exact .cons (DcScopeRel.refl _) ih
@@ -1651,7 +1651,7 @@ theorem DcFunsRel.refl (f : FunEnv D) :
 theorem DcRel.hoist_scopeRel {bound b2 : List Ident} {pc pc' : PCode Op}
     (h : DcRel bound b2 pc pc') :
     ∀ {ss ss' : List (Stmt Op)}, pc = .stmts ss → pc' = .stmts ss' →
-      DcScopeRel (calls := calls) (creates := creates)
+      DcScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle)
         (hoist D ss) (hoist D ss') := by
   induction h with
   | nilSS =>
@@ -1712,11 +1712,11 @@ theorem DcRel.hoist_scopeRel {bound b2 : List Ident} {pc pc' : PCode Op}
 
 /-- A scope lookup transports across `DcScopeRel` (both directions at once). -/
 theorem dcScopeRel_find {s₁ s₂ : FScope D}
-    (h : DcScopeRel (calls := calls) (creates := creates) s₁ s₂) (fn : Ident) :
+    (h : DcScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle) s₁ s₂) (fn : Ident) :
     (s₁.find? (fun p => p.1 = fn) = none ∧ s₂.find? (fun p => p.1 = fn) = none) ∨
     (∃ p q, s₁.find? (fun p => p.1 = fn) = some p ∧
       s₂.find? (fun p => p.1 = fn) = some q ∧
-      p.1 = q.1 ∧ DcFDeclRel (calls := calls) (creates := creates) p.2 q.2) := by
+      p.1 = q.1 ∧ DcFDeclRel (calls := calls) (creates := creates) (gasOracle := gasOracle) p.2 q.2) := by
   induction h with
   | nil => left; simp
   | @cons p q u₁ u₂ hpq _ ih =>
@@ -1731,14 +1731,14 @@ theorem dcScopeRel_find {s₁ s₂ : FScope D}
 
 /-- `lookupFun` transports forward across `DcFunsRel`. -/
 theorem lookupFun_dcFunsRel {f₁ f₂ : FunEnv D}
-    (hR : DcFunsRel (calls := calls) (creates := creates) f₁ f₂) :
+    (hR : DcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) f₁ f₂) :
     ∀ {fn : Ident} {decl : FDecl D} {cenv : FunEnv D},
       lookupFun f₁ fn = some (decl, cenv) →
       ∃ decl' cenv', lookupFun f₂ fn = some (decl', cenv') ∧
         decl'.params = decl.params ∧ decl'.rets = decl.rets ∧
         (∃ b2, DcRel (decl.params ++ decl.rets) b2
           (.stmts decl.body) (.stmts decl'.body)) ∧
-        DcFunsRel (calls := calls) (creates := creates) cenv cenv' := by
+        DcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) cenv cenv' := by
   induction hR with
   | nil => intro fn decl cenv h; simp [lookupFun] at h
   | @cons s₁ s₂ t₁ t₂ hs hR' ih =>
@@ -1757,14 +1757,14 @@ theorem lookupFun_dcFunsRel {f₁ f₂ : FunEnv D}
 
 /-- `lookupFun` transports backward across `DcFunsRel`. -/
 theorem lookupFun_dcFunsRel_bwd {f₁ f₂ : FunEnv D}
-    (hR : DcFunsRel (calls := calls) (creates := creates) f₁ f₂) :
+    (hR : DcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) f₁ f₂) :
     ∀ {fn : Ident} {decl' : FDecl D} {cenv' : FunEnv D},
       lookupFun f₂ fn = some (decl', cenv') →
       ∃ decl cenv, lookupFun f₁ fn = some (decl, cenv) ∧
         decl'.params = decl.params ∧ decl'.rets = decl.rets ∧
         (∃ b2, DcRel (decl.params ++ decl.rets) b2
           (.stmts decl.body) (.stmts decl'.body)) ∧
-        DcFunsRel (calls := calls) (creates := creates) cenv cenv' := by
+        DcFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) cenv cenv' := by
   induction hR with
   | nil => intro fn decl' cenv' h; simp [lookupFun] at h
   | @cons s₁ s₂ t₁ t₂ hs hR' ih =>
@@ -1805,7 +1805,7 @@ theorem DcRel.selectRel {bound b2 bd : List Ident}
       rcases head with ⟨l, b⟩
       cases hcs with
       | casesCons hb hrest =>
-          by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+          by_cases hcv : cv = (evmWithExternal calls creates gasOracle).litValue l
           · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv]),
                 selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
             exact ⟨_, hb⟩
@@ -3702,7 +3702,7 @@ def deadPure : LocalPass D where
     exact hrel.equivBlock
 
 @[simp] theorem deadPure_run (b : Block Op) :
-    (deadPure (calls := calls) (creates := creates)).run b = dpStmts [] b := rfl
+    (deadPure (calls := calls) (creates := creates) (gasOracle := gasOracle)).run b = dpStmts [] b := rfl
 
 
 /-! ### Regression examples (checked at build time) -/

@@ -579,14 +579,14 @@ theorem lookup_root_frame {body : Block Op} {name : Ident} {decl : FDecl evm}
 
 /-! ### Guarded-source and executed-mode constructors -/
 
-private def guardedDeclToEvm {calls : ExternalCalls} {creates : ExternalCreates}
+private def guardedDeclToEvm {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
     {base reserved : Nat}
-    (decl : FDecl (guardedEvm calls creates base reserved)) : FDecl evm :=
+    (decl : FDecl (guardedEvm calls creates gasOracle base reserved)) : FDecl evm :=
   { params := decl.params, rets := decl.rets, body := decl.body }
 
 private theorem guardedHoist_toEvm (calls : ExternalCalls)
     (creates : ExternalCreates) (base reserved : Nat) : ∀ body : Block Op,
-    (hoist (guardedEvm calls creates base reserved) body).map
+    (hoist (guardedEvm calls creates gasOracle base reserved) body).map
       (fun item => (item.1, guardedDeclToEvm item.2)) = hoist evm body
   | [] => rfl
   | statement :: rest => by
@@ -595,23 +595,23 @@ private theorem guardedHoist_toEvm (calls : ExternalCalls)
           guardedDeclToEvm]
       case funDef =>
         congr 1
-        change (hoist (guardedEvm calls creates base reserved) rest).map
+        change (hoist (guardedEvm calls creates gasOracle base reserved) rest).map
           (fun item => (item.1, guardedDeclToEvm item.2)) = hoist evm rest
         exact guardedHoist_toEvm calls creates base reserved rest
       all_goals
-        change (hoist (guardedEvm calls creates base reserved) rest).map
+        change (hoist (guardedEvm calls creates gasOracle base reserved) rest).map
           (fun item => (item.1, guardedDeclToEvm item.2)) = hoist evm rest
         exact guardedHoist_toEvm calls creates base reserved rest
 
-theorem guardedScopeCovered (calls : ExternalCalls) (creates : ExternalCreates)
+theorem guardedScopeCovered (calls : ExternalCalls) (creates : ExternalCreates) (gasOracle : ExternalGas)
     (base reserved : Nat) (body : Block Op) :
-    ScopeCovered (guardedEvm calls creates base reserved)
+    ScopeCovered (guardedEvm calls creates gasOracle base reserved)
       (fun executed => executed) (frames body)
-      (hoist (guardedEvm calls creates base reserved) body) := by
+      (hoist (guardedEvm calls creates gasOracle base reserved) body) := by
   intro name decl hmem
   let ordinary := guardedDeclToEvm decl
   have hmapped : (name, ordinary) ∈
-      (hoist (guardedEvm calls creates base reserved) body).map
+      (hoist (guardedEvm calls creates gasOracle base reserved) body).map
         (fun item => (item.1, guardedDeclToEvm item.2)) :=
     List.mem_map.mpr ⟨(name, decl), hmem, rfl⟩
   have hordinary : (name, ordinary) ∈ hoist evm body := by
@@ -621,32 +621,32 @@ theorem guardedScopeCovered (calls : ExternalCalls) (creates : ExternalCreates)
     scopeCovered_hoist_frames body name ordinary hordinary
   exact ⟨frame, hframe, howner, hparams, hreturns, hbody⟩
 
-theorem guardedRootFunsCovered (calls : ExternalCalls) (creates : ExternalCreates)
+theorem guardedRootFunsCovered (calls : ExternalCalls) (creates : ExternalCreates) (gasOracle : ExternalGas)
     (base reserved : Nat) (body : Block Op) :
-    FunsCovered (guardedEvm calls creates base reserved)
+    FunsCovered (guardedEvm calls creates gasOracle base reserved)
       (fun executed => executed) (frames body)
-      [hoist (guardedEvm calls creates base reserved) body] :=
-  FunsCovered.cons (guardedScopeCovered calls creates base reserved body)
-    (FunsCovered.nil (guardedEvm calls creates base reserved)
+      [hoist (guardedEvm calls creates gasOracle base reserved) body] :=
+  FunsCovered.cons (guardedScopeCovered calls creates gasOracle base reserved body)
+    (FunsCovered.nil (guardedEvm calls creates gasOracle base reserved)
       (fun executed => executed) (frames body))
 
 theorem guardedLookup_root_frame (calls : ExternalCalls)
     (creates : ExternalCreates) (base reserved : Nat) {body : Block Op}
-    {name : Ident} {decl : FDecl (guardedEvm calls creates base reserved)}
-    {closure : FunEnv (guardedEvm calls creates base reserved)}
-    (hlookup : lookupFun [hoist (guardedEvm calls creates base reserved) body]
+    {name : Ident} {decl : FDecl (guardedEvm calls creates gasOracle base reserved)}
+    {closure : FunEnv (guardedEvm calls creates gasOracle base reserved)}
+    (hlookup : lookupFun [hoist (guardedEvm calls creates gasOracle base reserved) body]
       name = some (decl, closure)) :
-    DeclCovered (guardedEvm calls creates base reserved)
+    DeclCovered (guardedEvm calls creates gasOracle base reserved)
       (fun executed => executed) (frames body) name decl :=
-  (guardedRootFunsCovered calls creates base reserved body).lookup hlookup |>.1
+  (guardedRootFunsCovered calls creates gasOracle base reserved body).lookup hlookup |>.1
 
-private def externalDeclToEvm {calls : ExternalCalls} {creates : ExternalCreates}
-    (decl : FDecl (evmWithExternal calls creates)) : FDecl evm :=
+private def externalDeclToEvm {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+    (decl : FDecl (evmWithExternal calls creates gasOracle)) : FDecl evm :=
   { params := decl.params, rets := decl.rets, body := decl.body }
 
 private theorem externalHoist_toEvm (calls : ExternalCalls)
     (creates : ExternalCreates) : ∀ body : Block Op,
-    (hoist (evmWithExternal calls creates) body).map
+    (hoist (evmWithExternal calls creates gasOracle) body).map
       (fun item => (item.1, externalDeclToEvm item.2)) = hoist evm body
   | [] => rfl
   | statement :: rest => by
@@ -655,22 +655,22 @@ private theorem externalHoist_toEvm (calls : ExternalCalls)
           externalDeclToEvm]
       case funDef =>
         congr 1
-        change (hoist (evmWithExternal calls creates) rest).map
+        change (hoist (evmWithExternal calls creates gasOracle) rest).map
           (fun item => (item.1, externalDeclToEvm item.2)) = hoist evm rest
         exact externalHoist_toEvm calls creates rest
       all_goals
-        change (hoist (evmWithExternal calls creates) rest).map
+        change (hoist (evmWithExternal calls creates gasOracle) rest).map
           (fun item => (item.1, externalDeclToEvm item.2)) = hoist evm rest
         exact externalHoist_toEvm calls creates rest
 
-theorem externalScopeCovered (calls : ExternalCalls) (creates : ExternalCreates)
+theorem externalScopeCovered (calls : ExternalCalls) (creates : ExternalCreates) (gasOracle : ExternalGas)
     (body : Block Op) :
-    ScopeCovered (evmWithExternal calls creates) (fun executed => executed)
-      (frames body) (hoist (evmWithExternal calls creates) body) := by
+    ScopeCovered (evmWithExternal calls creates gasOracle) (fun executed => executed)
+      (frames body) (hoist (evmWithExternal calls creates gasOracle) body) := by
   intro name decl hmem
   let ordinary := externalDeclToEvm decl
   have hmapped : (name, ordinary) ∈
-      (hoist (evmWithExternal calls creates) body).map
+      (hoist (evmWithExternal calls creates gasOracle) body).map
         (fun item => (item.1, externalDeclToEvm item.2)) :=
     List.mem_map.mpr ⟨(name, decl), hmem, rfl⟩
   have hordinary : (name, ordinary) ∈ hoist evm body := by
@@ -682,10 +682,10 @@ theorem externalScopeCovered (calls : ExternalCalls) (creates : ExternalCreates)
 
 theorem externalRootFunsCovered (calls : ExternalCalls)
     (creates : ExternalCreates) (body : Block Op) :
-    FunsCovered (evmWithExternal calls creates) (fun executed => executed)
-      (frames body) [hoist (evmWithExternal calls creates) body] :=
-  FunsCovered.cons (externalScopeCovered calls creates body)
-    (FunsCovered.nil (evmWithExternal calls creates)
+    FunsCovered (evmWithExternal calls creates gasOracle) (fun executed => executed)
+      (frames body) [hoist (evmWithExternal calls creates gasOracle) body] :=
+  FunsCovered.cons (externalScopeCovered calls creates gasOracle body)
+    (FunsCovered.nil (evmWithExternal calls creates gasOracle)
       (fun executed => executed) (frames body))
 
 /-- Target-dialect coverage indexed by the original policy frames.  This is
@@ -693,29 +693,29 @@ the constructor consumed by the rewrite simulation in both direct and
 object-layout-resolved modes. -/
 theorem externalExecutedScopeCovered (calls : ExternalCalls)
     (creates : ExternalCreates) (mode : OriginMode) (body : Block Op) :
-    ScopeCovered (evmWithExternal calls creates) (fun executed => executed)
+    ScopeCovered (evmWithExternal calls creates gasOracle) (fun executed => executed)
       ((frames body).map mode.execFrame)
-      (hoist (evmWithExternal calls creates) (mode.execBlock body)) := by
+      (hoist (evmWithExternal calls creates gasOracle) (mode.execBlock body)) := by
   rw [← frames_execBlock]
-  exact externalScopeCovered calls creates (mode.execBlock body)
+  exact externalScopeCovered calls creates gasOracle (mode.execBlock body)
 
 theorem externalExecutedRootFunsCovered (calls : ExternalCalls)
     (creates : ExternalCreates) (mode : OriginMode) (body : Block Op) :
-    FunsCovered (evmWithExternal calls creates) (fun executed => executed)
+    FunsCovered (evmWithExternal calls creates gasOracle) (fun executed => executed)
       ((frames body).map mode.execFrame)
-      [hoist (evmWithExternal calls creates) (mode.execBlock body)] :=
+      [hoist (evmWithExternal calls creates gasOracle) (mode.execBlock body)] :=
   FunsCovered.cons (externalExecutedScopeCovered calls creates mode body)
-    (FunsCovered.nil (evmWithExternal calls creates)
+    (FunsCovered.nil (evmWithExternal calls creates gasOracle)
       (fun executed => executed) ((frames body).map mode.execFrame))
 
 theorem externalExecutedLookup_root_frame (calls : ExternalCalls)
     (creates : ExternalCreates) (mode : OriginMode) {body : Block Op}
-    {name : Ident} {decl : FDecl (evmWithExternal calls creates)}
-    {closure : FunEnv (evmWithExternal calls creates)}
+    {name : Ident} {decl : FDecl (evmWithExternal calls creates gasOracle)}
+    {closure : FunEnv (evmWithExternal calls creates gasOracle)}
     (hlookup : lookupFun
-      [hoist (evmWithExternal calls creates) (mode.execBlock body)] name =
+      [hoist (evmWithExternal calls creates gasOracle) (mode.execBlock body)] name =
         some (decl, closure)) :
-    DeclCovered (evmWithExternal calls creates) (fun executed => executed)
+    DeclCovered (evmWithExternal calls creates gasOracle) (fun executed => executed)
       ((frames body).map mode.execFrame) name decl :=
   (externalExecutedRootFunsCovered calls creates mode body).lookup hlookup |>.1
 

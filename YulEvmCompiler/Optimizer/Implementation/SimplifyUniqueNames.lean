@@ -163,14 +163,14 @@ end
 
 /-! ## Invariant preservation -/
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
 /-- **The `simplify` pass preserves `NormalForm.UniqueNames`.** Since simplification
 never introduces a declared name (`declaredNamesStmts_simplifyStmts_sublist`), the
 output's declared-name list is a sublist of the input's, so `Nodup` transports. -/
 theorem simplify_preserves_uniqueNames :
-    Optimizer.Preserves (D := evmWithExternal calls creates)
-      NormalForm.UniqueNames (simplify (calls := calls) (creates := creates)).run :=
+    Optimizer.Preserves (D := evmWithExternal calls creates gasOracle)
+      NormalForm.UniqueNames (simplify (calls := calls) (creates := creates) (gasOracle := gasOracle)).run :=
   fun b hb => (declaredNamesStmts_simplifyStmts_sublist b).nodup hb
 
 end YulEvmCompiler.Optimizer

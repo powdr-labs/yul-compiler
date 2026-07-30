@@ -33,8 +33,8 @@ open YulEvmCompiler.Optimizer (pureTotalArity pureFn pureFn_builtin
   blockDecls stmtsNoNormal BoundOK ScopeFrame bindZeros_keys
   scopeFrame_stmts_normal stmtsNoNormal_sound stmtNoNormal_sound)
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### A functional evaluator for the canonical pure fragment -/
 
@@ -795,7 +795,7 @@ theorem rvNeutral_builtin_result {op : Op} {args : List (Expr Op)}
     (hn : rvNeutralExpr (.builtin op args) = true)
     {argvals : List U256} (hlen : argvals.length = args.length)
     {st : EvmState} {r : BuiltinResult U256 EvmState}
-    (hop : (evmWithExternal calls creates).Builtin op argvals st r) :
+    (hop : (evmWithExternal calls creates gasOracle).Builtin op argvals st r) :
     ∃ rets st', r = .ok rets st' ∧ MemNeutral st st' := by
   cases op
   case sload =>
@@ -1491,14 +1491,14 @@ theorem RvOk.update_xfree {x : Ident} {C : RvCache} {V V' : VEnv D}
 
 /-- `get` after prepending one binding. -/
 theorem get_cons_ne {V : VEnv D} {x z : Ident}
-    {v : (evmWithExternal calls creates).Value} (h : z ≠ x) :
+    {v : (evmWithExternal calls creates gasOracle).Value} (h : z ≠ x) :
     VEnv.get ((x, v) :: V) z = VEnv.get V z := by
   unfold VEnv.get
   rw [List.find?_cons_of_neg
     (by simpa using fun hc : x = z => h hc.symm)]
 
 theorem get_cons_self {V : VEnv D} {x : Ident}
-    {v : (evmWithExternal calls creates).Value} :
+    {v : (evmWithExternal calls creates gasOracle).Value} :
     VEnv.get ((x, v) :: V) x = some v := by
   unfold VEnv.get
   rw [List.find?_cons_of_pos (by simp)]
@@ -1855,7 +1855,7 @@ theorem rvRhs_bwd_step {C : RvCache} {x : Ident} {e e' : Expr Op}
                     rw [hgh] at hv
                     injection hv with hv
                     have hev := keccak_lit_eval (calls := calls)
-                      (creates := creates) ha hblt funs V st
+                      (creates := creates) (gasOracle := gasOracle) ha hblt funs V st
                     rw [(hact.touch_eq : touchMemory st a b = st),
                       hbytes, hv] at hev
                     exact hev
@@ -1885,7 +1885,7 @@ theorem rvRhs_bwd_step {C : RvCache} {x : Ident} {e e' : Expr Op}
                       rw [hgw] at hv
                       injection hv with hv
                       have hev := sload_eval (calls := calls)
-                        (creates := creates) hkv₀ funs st
+                        (creates := creates) (gasOracle := gasOracle) hkv₀ funs st
                       rw [hv] at hev
                       exact hev
               · split at hp <;>
@@ -1908,7 +1908,7 @@ theorem rvRhs_bwd_step {C : RvCache} {x : Ident} {e e' : Expr Op}
                 cases h with
                 | var hv =>
                     have hev := mload_lit_eval (calls := calls)
-                      (creates := creates) hk funs V st
+                      (creates := creates) (gasOracle := gasOracle) hk funs V st
                     rw [(hact.touch_eq : touchMemory st k 32 = st)] at hev
                     have hvv : VEnv.get V v =
                         some (loadWord st.memory k) := by
@@ -1931,7 +1931,7 @@ theorem rvRhs_bwd_step {C : RvCache} {x : Ident} {e e' : Expr Op}
                     cases h with
                     | lit =>
                         have hev := mload_lit_eval (calls := calls)
-                          (creates := creates) hk funs V st
+                          (creates := creates) (gasOracle := gasOracle) hk funs V st
                         rw [(hact.touch_eq : touchMemory st k 32 = st)] at hev
                         have : loadWord st.memory k =
                             Dialect.litValue D (.number n) := by
@@ -3457,7 +3457,7 @@ theorem reuseValuesShallow_sound (b : Block Op) :
   · have hfalse : storageLayoutFreeStmts b = false :=
       Bool.eq_false_of_not_eq_true hfree
     simpa [reuseValuesShallowBlock, hfalse] using
-      (@EquivBlock.refl (evmWithExternal calls creates) _ b)
+      (@EquivBlock.refl (evmWithExternal calls creates gasOracle) _ b)
 
 set_option linter.unusedVariables false in
 mutual

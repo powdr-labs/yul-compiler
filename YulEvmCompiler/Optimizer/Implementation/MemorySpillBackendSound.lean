@@ -24,8 +24,8 @@ open MemorySpillObjectSound
 
 variable [model : ExternalModel]
 
-local notation "D" => evmWithExternal model.calls model.creates
-local notation "G" => guardedEvm model.calls model.creates
+local notation "D" => evmWithExternal model.calls model.creates model.gas
+local notation "G" => guardedEvm model.calls model.creates model.gas
 
 omit model in
 theorem PlannedFinalRel.runObservables_eq
@@ -50,9 +50,9 @@ theorem compile_spilled_correct
     {L : EVM.Layout} {raw : Block Op} {result : Result}
     {guards : List Nat} {instructions : List Instr}
     (hspillSound : SpillNodeRunSound
-      (calls := model.calls) (creates := model.creates) L)
+      (calls := model.calls) (creates := model.creates) (gasOracle := model.gas) L)
     (hfacts : SpillFacts raw result guards)
-    (hguarded : GuardedExternals model.calls model.creates
+    (hguarded : GuardedExternals model.calls model.creates model.gas
       result.base result.reserved)
     (hcomp : compile (resolveForLayoutStmts L result.block) =
       some instructions)
@@ -92,10 +92,10 @@ theorem compileObject_planned_correct
     {L : EVM.Layout} {raw output : Object Op}
     {plan : MemorySpillSelect.ObjectPlan}
     (hplanSound : PlannedNodeRunSound
-      (calls := model.calls) (creates := model.creates) L raw output plan)
+      (calls := model.calls) (creates := model.creates) (gasOracle := model.gas) L raw output plan)
     (hcomp : compileObject output = some L)
     {sourceEnv : WordEnv} {sourceFinal : EvmState} {out : Outcome}
-    (hsource : PlannedTopRun (calls := model.calls) (creates := model.creates)
+    (hsource : PlannedTopRun (calls := model.calls) (creates := model.creates) (gasOracle := model.gas)
       L raw plan sourceEnv sourceFinal out) :
     ∃ targetEnv targetFinal,
       RunResolvedObject output L targetEnv targetFinal out ∧
@@ -125,14 +125,14 @@ theorem compileObject_memorySpill_correct
     {raw output : Object Op} {plan : MemorySpillSelect.ObjectPlan}
     {selected : Nat} {L : EVM.Layout}
     (hbuild : spillObjectWithFallback raw
-      (optimizerPipelineObject (calls := model.calls) (creates := model.creates)
+      (optimizerPipelineObject (calls := model.calls) (creates := model.creates) (gasOracle := model.gas)
         (eraseMemoryGuardObject raw)) =
         some { «object» := output, plan := plan, selected := selected })
     (hspillSound : SpillNodeRunSound
-      (calls := model.calls) (creates := model.creates) L)
+      (calls := model.calls) (creates := model.creates) (gasOracle := model.gas) L)
     (hcomp : compileObject output = some L)
     {sourceEnv : WordEnv} {sourceFinal : EvmState} {out : Outcome}
-    (hsource : PlannedTopRun (calls := model.calls) (creates := model.creates)
+    (hsource : PlannedTopRun (calls := model.calls) (creates := model.creates) (gasOracle := model.gas)
       L raw plan sourceEnv sourceFinal out) :
     ∃ targetEnv targetFinal,
       RunResolvedObject output L targetEnv targetFinal out ∧

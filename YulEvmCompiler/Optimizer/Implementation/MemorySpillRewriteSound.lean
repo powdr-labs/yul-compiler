@@ -24,10 +24,10 @@ open MemorySpillSelect
 open MemorySpillStateSound
 
 variable {base reserved : Nat}
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "G" => guardedEvm calls creates gasOracle base reserved
+local notation "D" => evmWithExternal calls creates gasOracle
 
 abbrev WordEnv := List (Ident × U256)
 
@@ -217,20 +217,20 @@ theorem envGet_envSet_other {vars : WordEnv} {name other : Ident}
           simp [envSet, envGet_cons, hhead]
         · simp [envSet, envGet_cons, hhead, hother, ih]
 
-theorem envSet_eq {calls : ExternalCalls} {creates : ExternalCreates}
+theorem envSet_eq {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
     {base reserved : Nat} (vars : WordEnv) (name : Ident) (value : U256) :
     envSet vars name value =
-      @VEnv.set (guardedEvm calls creates base reserved) vars name value := by
+      @VEnv.set (guardedEvm calls creates gasOracle base reserved) vars name value := by
   induction vars with
   | nil => rfl
   | cons item rest ih =>
       obtain ⟨head, old⟩ := item
       by_cases hhead : head = name <;> simp [envSet, VEnv.set, hhead, ih]
 
-theorem envSet_eq_ordinary {calls : ExternalCalls} {creates : ExternalCreates}
+theorem envSet_eq_ordinary {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
     (vars : WordEnv) (name : Ident) (value : U256) :
     envSet vars name value =
-      @VEnv.set (evmWithExternal calls creates) vars name value := by
+      @VEnv.set (evmWithExternal calls creates gasOracle) vars name value := by
   induction vars with
   | nil => rfl
   | cons item rest ih =>
@@ -1215,16 +1215,16 @@ theorem guardedBuiltin_sim {slots : SlotMap} {owner : Owner}
     {source : WordEnv} {left right : EvmState}
     {op : Op} {args : List U256}
     {leftResult : BuiltinResult U256 EvmState}
-    (hexternals : GuardedExternals calls creates base reserved)
+    (hexternals : GuardedExternals calls creates gasOracle base reserved)
     (hscratch : ScratchRel base reserved left right)
-    (hbuiltin : (guardedEvm calls creates base reserved).Builtin
+    (hbuiltin : (guardedEvm calls creates gasOracle base reserved).Builtin
       op args left leftResult)
     (hloaded : SlotsLoaded slots owner source right)
     (hbounds : ∀ name slot, slotFor? slots owner name = some slot →
       base ≤ slot ∧ slot + 32 ≤ reserved)
     {cutoff : Nat} (hcutoff : base ≤ cutoff) :
     ∃ rightResult,
-      (evmWithExternal calls creates).Builtin op args right rightResult ∧
+      (evmWithExternal calls creates gasOracle).Builtin op args right rightResult ∧
       ResultRel base reserved leftResult rightResult ∧
       ResultSlotsLoaded slots owner source rightResult ∧
       ResultAboveUnchanged cutoff reserved right rightResult := by
@@ -1562,7 +1562,7 @@ mutual
       (hrel : LiveFrameRel (base := base) (reserved := reserved)
         selected layout frame signature cuts live
         source sourceState target targetState)
-      (hexternals : GuardedExternals calls creates base reserved)
+      (hexternals : GuardedExternals calls creates gasOracle base reserved)
       (hbounds : ∀ name slot,
         slotFor? layout.slots frame.owner name = some slot →
           base ≤ slot ∧ slot + 32 ≤ reserved)
@@ -1670,7 +1670,7 @@ mutual
       (hrel : LiveFrameRel (base := base) (reserved := reserved)
         selected layout frame signature cuts live
         source sourceState target targetState)
-      (hexternals : GuardedExternals calls creates base reserved)
+      (hexternals : GuardedExternals calls creates gasOracle base reserved)
       (hbounds : ∀ name slot,
         slotFor? layout.slots frame.owner name = some slot →
           base ≤ slot ∧ slot + 32 ≤ reserved)

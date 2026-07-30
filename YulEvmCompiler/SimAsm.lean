@@ -37,30 +37,31 @@ open YulSemantics.EVM
 variable [model : ExternalModel]
 local notation "extCalls" => model.calls
 local notation "extCreates" => model.creates
+local notation "extGas" => model.gas
 
 /-- The Yul EVM dialect with the external relations being simulated. -/
-local notation "yulD" => evmWithExternal model.calls model.creates
+local notation "yulD" => evmWithExternal model.calls model.creates model.gas
 
 /-- The Asm-stack image of a variable environment: the values as words,
 innermost binding on top. -/
-def wimgFor (calls : ExternalCalls) (creates : ExternalCreates)
-    (V : VEnv (evmWithExternal calls creates)) : List AVal :=
+def wimgFor (calls : ExternalCalls) (creates : ExternalCreates) (gasOracle : YulSemantics.EVM.ExternalGas)
+    (V : VEnv (evmWithExternal calls creates gasOracle)) : List AVal :=
   V.map (fun p => .word p.2)
 
 /-- The layout a variable environment realizes: its names. -/
-def namesFor (calls : ExternalCalls) (creates : ExternalCreates)
-    (V : VEnv (evmWithExternal calls creates)) : List Ident :=
+def namesFor (calls : ExternalCalls) (creates : ExternalCreates) (gasOracle : YulSemantics.EVM.ExternalGas)
+    (V : VEnv (evmWithExternal calls creates gasOracle)) : List Ident :=
   V.map Prod.fst
 
 /-- Keep the outermost `depth` bindings (the semantics' `restore`, by
 target length). -/
-def trimFor (calls : ExternalCalls) (creates : ExternalCreates) (depth : Nat)
-    (V : VEnv (evmWithExternal calls creates)) : VEnv (evmWithExternal calls creates) :=
+def trimFor (calls : ExternalCalls) (creates : ExternalCreates) (gasOracle : YulSemantics.EVM.ExternalGas) (depth : Nat)
+    (V : VEnv (evmWithExternal calls creates gasOracle)) : VEnv (evmWithExternal calls creates gasOracle) :=
   V.drop (V.length - depth)
 
-local notation "wimg" => wimgFor extCalls extCreates
-local notation "names" => namesFor extCalls extCreates
-local notation "vtrim" => trimFor extCalls extCreates
+local notation "wimg" => wimgFor extCalls extCreates extGas
+local notation "names" => namesFor extCalls extCreates extGas
+local notation "vtrim" => trimFor extCalls extCreates extGas
 local notation "dzero" => YulSemantics.Dialect.zero yulD
 
 @[simp] theorem wimg_nil : wimg [] = [] := rfl
@@ -328,7 +329,7 @@ theorem asimE_op {prog : List Asm} {yst yst1 yst2 : EvmState}
     {V : VEnv yulD} {off : Nat} {asm : List Asm} {yop : Op}
     {args rets : List U256}
     (hargs : ASimE prog yst V off asm args yst1)
-    (hstep : builtinWithExternal extCalls extCreates yop args yst1 (.ok rets yst2)) :
+    (hstep : builtinWithExternal extCalls extCreates extGas yop args yst1 (.ok rets yst2)) :
     ASimE prog yst V off (asm ++ [.op yop]) rets yst2 := by
   intro pre c τ σ hp hτ
   rw [List.append_assoc]
@@ -343,7 +344,7 @@ theorem asimE_opHalt {prog : List Asm} {yst yst1 yst2 : EvmState}
     {V : VEnv yulD} {off : Nat} {asm : List Asm} {yop : Op}
     {args : List U256}
     (hargs : ASimE prog yst V off asm args yst1)
-    (hstep : builtinWithExternal extCalls extCreates yop args yst1 (.halt yst2)) :
+    (hstep : builtinWithExternal extCalls extCreates extGas yop args yst1 (.halt yst2)) :
     ASimEHalt prog yst V off (asm ++ [.op yop]) yst2 := by
   intro pre c τ σ hp hτ
   refine ⟨_, ?_, .op (c := c) (σ := τ ++ wimg V ++ σ) hstep⟩
@@ -750,7 +751,7 @@ theorem stepOp_iszero (v : U256) (st : EvmState) :
       = some (.ok [YulSemantics.EVM.b2w (v = 0)] st) := rfl
 
 theorem builtin_iszero (v : U256) (st : EvmState) :
-    builtinWithExternal extCalls extCreates .iszero [v] st
+    builtinWithExternal extCalls extCreates extGas .iszero [v] st
       (.ok [YulSemantics.EVM.b2w (v = 0)] st) := by
   simpa [builtinWithExternal] using stepOp_iszero v st
 
@@ -929,7 +930,7 @@ theorem asimE_switchCmp {prog : List Asm} {yst : EvmState} {V : VEnv yulD}
       [YulSemantics.EVM.b2w (YulSemantics.EVM.b2w (w = cv) = 0)] yst := by
   have h2 : ASimE prog yst ((x, cv) :: V) 0 [.dup 0, .push w] [w, cv] yst :=
     ASimE.compArgs (k := 1) rfl (asimE_dup0 x cv) (asimE_push w)
-  have heq : builtinWithExternal extCalls extCreates .eq [w, cv] yst
+  have heq : builtinWithExternal extCalls extCreates extGas .eq [w, cv] yst
       (.ok [YulSemantics.EVM.b2w (w = cv)] yst) := by
     simp [builtinWithExternal, stepOp, YulSemantics.EVM.bin]
   have h3 := asimE_op h2 heq

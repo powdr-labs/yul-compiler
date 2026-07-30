@@ -24,10 +24,10 @@ open MemorySpillFrameSound
 open MemorySpillOriginSound
 
 variable {base reserved : Nat}
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "G" => guardedEvm calls creates gasOracle base reserved
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ## Lookup and exact frame selection -/
 
@@ -566,12 +566,12 @@ private theorem callEnv_keys {params returns : List Ident}
       rw [ih]
 
 private theorem target_zero :
-    Dialect.zero (evmWithExternal calls creates) = (0 : U256) := by
+    Dialect.zero (evmWithExternal calls creates gasOracle) = (0 : U256) := by
   change litValue (.number 0) = (0 : U256)
   decide
 
 private theorem guarded_zero :
-    Dialect.zero (guardedEvm calls creates base reserved) = (0 : U256) := by
+    Dialect.zero (guardedEvm calls creates gasOracle base reserved) = (0 : U256) := by
   change litValue (.number 0) = (0 : U256)
   decide
 
@@ -654,7 +654,7 @@ theorem closeCallOk_normal {slots : SlotMap} {name : Ident}
         (.vals (decl.rets.map (fun ret =>
           (@VEnv.get D final ret).getD (Dialect.zero D))) finalState) := by
     simpa only [spillDecl] using htargetCall
-  have hvalues := returnValues_eq (calls := calls) (creates := creates) hsynced
+  have hvalues := returnValues_eq (calls := calls) (creates := creates) (gasOracle := gasOracle) hsynced
   rw [hvalues] at htargetCall'
   refine ⟨finalState, ?_, hfinalRel.scratch, ?_⟩
   · simpa [guarded_zero] using htargetCall'
@@ -715,7 +715,7 @@ theorem closeCallOk_leave {slots : SlotMap} {name : Ident}
         (.vals (decl.rets.map (fun ret =>
           (@VEnv.get D afterBody ret).getD (Dialect.zero D))) afterBodyState) := by
     simpa only [spillDecl] using htargetCall
-  have hvalues := returnValues_eq (calls := calls) (creates := creates) hsynced
+  have hvalues := returnValues_eq (calls := calls) (creates := creates) (gasOracle := gasOracle) hsynced
   rw [hvalues] at htargetCall'
   exact ⟨by
       simpa [guarded_zero] using htargetCall',

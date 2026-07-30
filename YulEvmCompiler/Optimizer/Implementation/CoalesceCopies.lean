@@ -56,9 +56,9 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### The transform -/
 
@@ -120,19 +120,19 @@ inserted at depth `≥ n`. -/
 inductive InsChain (n : Nat) : VEnv D → VEnv D → Prop
   | refl (V : VEnv D) : InsChain n V V
   | snoc {V₂ V₁ V₀ : VEnv D} {d : Nat} {x : Ident}
-      {v : (evmWithExternal calls creates).Value} :
+      {v : (evmWithExternal calls creates gasOracle).Value} :
       InsChain n V₂ V₁ → InsAt d x v V₁ V₀ → n ≤ d →
       InsChain n V₂ V₀
 
 theorem InsChain.mono {m n : Nat} {V₂ V₁ : VEnv D} (hmn : m ≤ n)
-    (h : InsChain (calls := calls) (creates := creates) n V₂ V₁) : InsChain m V₂ V₁ := by
+    (h : InsChain (calls := calls) (creates := creates) (gasOracle := gasOracle) n V₂ V₁) : InsChain m V₂ V₁ := by
   induction h with
   | refl => exact .refl _
   | snoc _ hins hd ih => exact .snoc ih hins (Nat.le_trans hmn hd)
 
 /-- One insertion at depth `≥ |V|` is invisible to `restore V`. -/
 theorem insertion_restore_high {d : Nat} {x : Ident}
-    {v : (evmWithExternal calls creates).Value}
+    {v : (evmWithExternal calls creates gasOracle).Value}
     {V V₁ V₀ : VEnv D} (h : InsAt d x v V₁ V₀) (hd : V.length ≤ d) :
     restore V V₀ = restore V V₁ := by
   obtain ⟨above, below, rfl, rfl, rfl⟩ := h
@@ -158,7 +158,7 @@ theorem insertion_restore_high {d : Nat} {x : Ident}
 
 /-- A whole chain of high insertions is invisible to `restore V`. -/
 theorem InsChain.restore_eq {V V₂ V₁ : VEnv D}
-    (h : InsChain (calls := calls) (creates := creates) V.length V₂ V₁) :
+    (h : InsChain (calls := calls) (creates := creates) (gasOracle := gasOracle) V.length V₂ V₁) :
     restore V V₁ = restore V V₂ := by
   induction h with
   | refl => rfl
@@ -174,7 +174,7 @@ private theorem letStep_inv {funs : FunEnv D} {V : VEnv D} {st : EvmState}
     {x : Ident} {rhs : Option (Expr Op)} {V' : VEnv D} {st' : EvmState} {o : Outcome}
     (h : Step D funs V st (.stmt (.letDecl [x] rhs)) (.sres V' st' o)) :
     (∃ v, V' = (x, v) :: V ∧ o = .normal ∧
-      ((rhs = none ∧ v = (evmWithExternal calls creates).zero ∧ st' = st) ∨
+      ((rhs = none ∧ v = (evmWithExternal calls creates gasOracle).zero ∧ st' = st) ∨
        (∃ e, rhs = some e ∧
          Step D funs V st (.expr e) (.eres (.vals [v] st'))))) ∨
     (∃ e, rhs = some e ∧ V' = V ∧ o = .halt ∧
@@ -216,7 +216,7 @@ theorem ccPairs_fwd : ∀ (ss : List (Stmt Op)) {funs : FunEnv D} {V : VEnv D}
     {st : EvmState} {V₁ : VEnv D} {st₁ : EvmState} {o : Outcome},
     Step D funs V st (.stmts ss) (.sres V₁ st₁ o) →
     ∃ V₂, Step D funs V st (.stmts (ccPairs ss)) (.sres V₂ st₁ o) ∧
-      InsChain (calls := calls) (creates := creates) V.length V₂ V₁ := by
+      InsChain (calls := calls) (creates := creates) (gasOracle := gasOracle) V.length V₂ V₁ := by
   intro ss
   induction ss using ccPairs.induct with
   | case1 x rhs y x' rest hg ih =>
@@ -286,7 +286,7 @@ theorem ccPairs_bwd : ∀ (ss : List (Stmt Op)) {funs : FunEnv D} {V : VEnv D}
     {st : EvmState} {V₂ : VEnv D} {st₁ : EvmState} {o : Outcome},
     Step D funs V st (.stmts (ccPairs ss)) (.sres V₂ st₁ o) →
     ∃ V₁, Step D funs V st (.stmts ss) (.sres V₁ st₁ o) ∧
-      InsChain (calls := calls) (creates := creates) V.length V₂ V₁ := by
+      InsChain (calls := calls) (creates := creates) (gasOracle := gasOracle) V.length V₂ V₁ := by
   intro ss
   induction ss using ccPairs.induct with
   | case1 x rhs y x' rest hg ih =>
@@ -409,14 +409,14 @@ theorem ccStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (ccStmt s)
       · intro h; cases h; exact Step.funDef
   | .cond c body => by
       unfold ccStmt
-      refine EquivStmt.cond_congr (@EquivExpr.refl (evmWithExternal calls creates) _ c) ?_
+      refine EquivStmt.cond_congr (@EquivExpr.refl (evmWithExternal calls creates gasOracle) _ c) ?_
       exact (EquivBlock.of_stmts_funs
         (EquivStmts.of_forall₂ (ccStmts_forall2 body))
         (ccScopeRel body)).trans
         (ccPairs_blockEquiv (ccStmts body))
   | .switch c cases dflt => by
       unfold ccStmt
-      refine EquivStmt.switch_congr (@EquivExpr.refl (evmWithExternal calls creates) _ c) (ccCases_forall2 cases) ?_
+      refine EquivStmt.switch_congr (@EquivExpr.refl (evmWithExternal calls creates gasOracle) _ c) (ccCases_forall2 cases) ?_
       cases dflt with
       | none => exact EquivBlock.refl _
       | some b =>
@@ -427,7 +427,7 @@ theorem ccStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (ccStmt s)
             (ccPairs_blockEquiv (ccStmts b))
   | .forLoop init c post body => by
       unfold ccStmt
-      refine EquivStmt.forLoop_congr init (@EquivExpr.refl (evmWithExternal calls creates) _ c) ?_ ?_
+      refine EquivStmt.forLoop_congr init (@EquivExpr.refl (evmWithExternal calls creates gasOracle) _ c) ?_ ?_
       · exact (EquivBlock.of_stmts_funs
           (EquivStmts.of_forall₂ (ccStmts_forall2 post))
           (ccScopeRel post)).trans
@@ -510,7 +510,7 @@ def coalesceCopies : LocalPass D where
   sound := fun b => ccBlock_equiv b
 
 @[simp] theorem coalesceCopies_run (b : Block Op) :
-    (coalesceCopies (calls := calls) (creates := creates)).run b =
+    (coalesceCopies (calls := calls) (creates := creates) (gasOracle := gasOracle)).run b =
       ccPairs (ccStmts b) := rfl
 
 end YulEvmCompiler.Optimizer

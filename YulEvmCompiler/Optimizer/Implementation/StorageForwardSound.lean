@@ -17,8 +17,8 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 def StorageVal.denote (V : VEnv D) : StorageVal → Option U256
   | .lit n => some (litValue (.number n))
@@ -61,8 +61,8 @@ theorem StorageCache.OK.lookup {V : VEnv D} {st : EvmState} {C : StorageCache}
 
 theorem StorageVal.denote_setMany_not_dep {V : VEnv D} {xs : List Ident}
     {vs : List U256} {v : StorageVal} (h : ∀ x, v.dep = some x → x ∉ xs) :
-    v.denote (calls := calls) (creates := creates) (VEnv.setMany V xs vs) =
-      v.denote (calls := calls) (creates := creates) V := by
+    v.denote (calls := calls) (creates := creates) (gasOracle := gasOracle) (VEnv.setMany V xs vs) =
+      v.denote (calls := calls) (creates := creates) (gasOracle := gasOracle) V := by
   cases v with
   | lit n => rfl
   | var x =>
@@ -75,8 +75,8 @@ theorem StorageVal.denote_setMany_not_dep {V : VEnv D} {xs : List Ident}
 
 theorem StorageVal.denote_prepend_not_dep {V : VEnv D} {xs : List Ident}
     {vs : List U256} {v : StorageVal} (h : ∀ x, v.dep = some x → x ∉ xs) :
-    v.denote (calls := calls) (creates := creates) (xs.zip vs ++ V) =
-      v.denote (calls := calls) (creates := creates) V := by
+    v.denote (calls := calls) (creates := creates) (gasOracle := gasOracle) (xs.zip vs ++ V) =
+      v.denote (calls := calls) (creates := creates) (gasOracle := gasOracle) V := by
   have hkeys : ∀ x, v.dep = some x → x ∉ (xs.zip vs).map Prod.fst := by
     intro x hx hmem
     obtain ⟨p, hp, heq⟩ := List.mem_map.mp hmem
@@ -217,7 +217,7 @@ theorem BoundOK.get_isSome {V : VEnv D} {bound : List Ident} {x : Ident}
 
 theorem StorageCache.OK.kill_prepend {V : VEnv D} {st : EvmState}
     {C : StorageCache} (hc : StorageCache.OK V st C) (xs : List Ident) (vs : List U256) :
-    StorageCache.OK (calls := calls) (creates := creates)
+    StorageCache.OK (calls := calls) (creates := creates) (gasOracle := gasOracle)
       (xs.zip vs ++ V) st (cacheKill xs C) := by
   intro p hp
   simp only [cacheKill, List.mem_filter] at hp
@@ -355,7 +355,7 @@ theorem cached_sload_iff {k : Nat} {v : StorageVal} {C : StorageCache}
     Step D funs V st (.expr (.builtin .sload [.lit (.number k)])) (.eres r) ↔
       Step D funs V st (.expr v.toExpr) (.eres r) := by
   have hv := hc.lookup hl
-  have hs := sload_lit_eval (calls := calls) (creates := creates) k funs V st
+  have hs := sload_lit_eval (calls := calls) (creates := creates) (gasOracle := gasOracle) k funs V st
   have hr := StorageVal.eval (st := st) hv funs
   constructor
   · intro h

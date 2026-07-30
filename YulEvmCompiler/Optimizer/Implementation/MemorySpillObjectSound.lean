@@ -20,10 +20,10 @@ open YulEvmCompiler
 open MemorySpill
 open MemorySpillSelect
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates
-local notation "G" => guardedEvm calls creates
+local notation "D" => evmWithExternal calls creates gasOracle
+local notation "G" => guardedEvm calls creates gasOracle
 abbrev WordEnv := List (Ident × U256)
 
 def plannedCode (fallback : Block Op) : Option Result → Block Op
@@ -253,7 +253,7 @@ def SpillNodeRunSound (L : EVM.Layout) : Prop :=
   ∀ {raw : Block Op} {result : Result} {guards : List Nat}
     {sourceEnv : WordEnv} {sourceFinal : EvmState} {out : Outcome},
     SpillFacts raw result guards →
-    GuardedExternals calls creates result.base result.reserved →
+    GuardedExternals calls creates gasOracle result.base result.reserved →
     Run (G result.base result.reserved)
       (resolveForLayoutStmts L
         (resolveMemoryGuardStmts result.base result.reserved raw))
@@ -281,7 +281,7 @@ inductive PlannedTopRun (L : EVM.Layout) (raw : Object Op) :
     MemorySpillSelect.ObjectPlan → WordEnv → EvmState → Outcome → Prop
   | spilled {result : Result} {children : List MemorySpillSelect.ObjectPlan}
       {sourceEnv : WordEnv} {sourceFinal : EvmState} {out : Outcome}
-      (externals : GuardedExternals calls creates result.base result.reserved)
+      (externals : GuardedExternals calls creates gasOracle result.base result.reserved)
       (run : Run (G result.base result.reserved)
         (resolveForLayoutStmts L
           (resolveMemoryGuardStmts result.base result.reserved raw.codeBlock))
@@ -315,12 +315,12 @@ theorem ObjectPlanRel.compose_top_run {raw fallback output : Object Op}
     {plan : MemorySpillSelect.ObjectPlan} {L : EVM.Layout}
     (hrel : ObjectPlanRel raw fallback output plan)
     (hfallback : FallbackNodeRunSound
-      (calls := calls) (creates := creates) L
+      (calls := calls) (creates := creates) (gasOracle := gasOracle) L
         (eraseMemoryGuardStmts raw.codeBlock) fallback.codeBlock)
     (hspillSound : SpillNodeRunSound
-      (calls := calls) (creates := creates) L)
+      (calls := calls) (creates := creates) (gasOracle := gasOracle) L)
     {sourceEnv : WordEnv} {sourceFinal : EvmState} {out : Outcome}
-    (hsource : PlannedTopRun (calls := calls) (creates := creates)
+    (hsource : PlannedTopRun (calls := calls) (creates := creates) (gasOracle := gasOracle)
       L raw plan sourceEnv sourceFinal out) :
     ∃ targetEnv targetFinal,
       Run D (resolveForLayoutStmts L output.codeBlock)
@@ -347,7 +347,7 @@ mutual
     | mk {rawName fallbackName : String} {rawCode fallbackCode : Block Op}
         {rawSubs fallbackSubs : List (Object Op)}
         {rawData fallbackData : List (String × Data)}
-        (top : FallbackNodeRunSound (calls := calls) (creates := creates)
+        (top : FallbackNodeRunSound (calls := calls) (creates := creates) (gasOracle := gasOracle)
           L (eraseMemoryGuardStmts rawCode) fallbackCode)
         (children : FallbackTreesRunSound L rawSubs fallbackSubs) :
         FallbackTreeRunSound L (.mk rawName rawCode rawSubs rawData)
@@ -365,8 +365,8 @@ end
 
 mutual
   theorem erasedPipelineFallback_runSound (L : EVM.Layout) (raw : Object Op) :
-      FallbackTreeRunSound (calls := calls) (creates := creates) L raw
-        (optimizerPipelineObject (calls := calls) (creates := creates)
+      FallbackTreeRunSound (calls := calls) (creates := creates) (gasOracle := gasOracle) L raw
+        (optimizerPipelineObject (calls := calls) (creates := creates) (gasOracle := gasOracle)
           (eraseMemoryGuardObject raw)) := by
     cases raw with
     | mk name code children segments =>
@@ -375,15 +375,15 @@ mutual
       apply FallbackTreeRunSound.mk
       · intro sourceEnv sourceFinal out hrun
         exact (resolveObjectPipelineBlock_equiv
-          (calls := calls) (creates := creates) L
+          (calls := calls) (creates := creates) (gasOracle := gasOracle) L
           (eraseMemoryGuardStmts code)).run_iff.mp hrun
       · exact erasedPipelineFallbacks_runSound L children
   termination_by sizeOf raw
 
   theorem erasedPipelineFallbacks_runSound (L : EVM.Layout)
       (raws : List (Object Op)) :
-      FallbackTreesRunSound (calls := calls) (creates := creates) L raws
-        (optimizerPipelineObjectsRounds (calls := calls) (creates := creates)
+      FallbackTreesRunSound (calls := calls) (creates := creates) (gasOracle := gasOracle) L raws
+        (optimizerPipelineObjectsRounds (calls := calls) (creates := creates) (gasOracle := gasOracle)
           pipelineRounds (eraseMemoryGuardObjects raws)) := by
     cases raws with
     | nil => exact .nil
@@ -397,7 +397,7 @@ end
 def PlannedNodeRunSound (L : EVM.Layout) (raw output : Object Op)
     (plan : MemorySpillSelect.ObjectPlan) : Prop :=
   ∀ {sourceEnv : WordEnv} {sourceFinal : EvmState} {out : Outcome},
-    PlannedTopRun (calls := calls) (creates := creates)
+    PlannedTopRun (calls := calls) (creates := creates) (gasOracle := gasOracle)
       L raw plan sourceEnv sourceFinal out →
     ∃ targetEnv targetFinal,
       Run D (resolveForLayoutStmts L output.codeBlock)
@@ -413,7 +413,7 @@ mutual
         {rawData outputData : List (String × Data)}
         {codeResult : Option Result}
         {childPlans : List MemorySpillSelect.ObjectPlan}
-        (top : PlannedNodeRunSound (calls := calls) (creates := creates) L
+        (top : PlannedNodeRunSound (calls := calls) (creates := creates) (gasOracle := gasOracle) L
           (.mk rawName rawCode rawSubs rawData)
           (.mk outputName outputCode outputSubs outputData)
           (.mk codeResult childPlans))
@@ -441,10 +441,10 @@ mutual
       {plan : MemorySpillSelect.ObjectPlan} {L : EVM.Layout}
       (hrel : ObjectPlanRel raw fallback output plan)
       (hfallback : FallbackTreeRunSound
-        (calls := calls) (creates := creates) L raw fallback)
+        (calls := calls) (creates := creates) (gasOracle := gasOracle) L raw fallback)
       (hspillSound : SpillNodeRunSound
-        (calls := calls) (creates := creates) L) :
-      PlannedObjectRunSound (calls := calls) (creates := creates)
+        (calls := calls) (creates := creates) (gasOracle := gasOracle) L) :
+      PlannedObjectRunSound (calls := calls) (creates := creates) (gasOracle := gasOracle)
         L raw output plan := by
     cases hrel with
     | @mk name rawCode fallbackCode rawSubs fallbackSubs outputSubs rawData
@@ -465,10 +465,10 @@ mutual
       {plans : List MemorySpillSelect.ObjectPlan} {L : EVM.Layout}
       (hrel : ObjectPlansRel raws fallbacks outputs plans)
       (hfallback : FallbackTreesRunSound
-        (calls := calls) (creates := creates) L raws fallbacks)
+        (calls := calls) (creates := creates) (gasOracle := gasOracle) L raws fallbacks)
       (hspillSound : SpillNodeRunSound
-        (calls := calls) (creates := creates) L) :
-      PlannedObjectsRunSound (calls := calls) (creates := creates)
+        (calls := calls) (creates := creates) (gasOracle := gasOracle) L) :
+      PlannedObjectsRunSound (calls := calls) (creates := creates) (gasOracle := gasOracle)
         L raws outputs plans := by
     cases hrel with
     | nil =>
@@ -484,9 +484,9 @@ end
 
 theorem PlannedObjectRunSound.top_run {L : EVM.Layout}
     {raw output : Object Op} {plan : MemorySpillSelect.ObjectPlan}
-    (hsound : PlannedObjectRunSound (calls := calls) (creates := creates)
+    (hsound : PlannedObjectRunSound (calls := calls) (creates := creates) (gasOracle := gasOracle)
       L raw output plan) :
-    PlannedNodeRunSound (calls := calls) (creates := creates)
+    PlannedNodeRunSound (calls := calls) (creates := creates) (gasOracle := gasOracle)
       L raw output plan := by
   cases hsound
   assumption
@@ -498,12 +498,12 @@ theorem spillObjectWithErasedPipelineFallback_all_runs
     {raw output : Object Op} {plan : MemorySpillSelect.ObjectPlan}
     {selected : Nat} {L : EVM.Layout}
     (hbuild : spillObjectWithFallback raw
-      (optimizerPipelineObject (calls := calls) (creates := creates)
+      (optimizerPipelineObject (calls := calls) (creates := creates) (gasOracle := gasOracle)
         (eraseMemoryGuardObject raw)) =
         some { «object» := output, plan := plan, selected := selected })
     (hspillSound : SpillNodeRunSound
-      (calls := calls) (creates := creates) L) :
-    PlannedObjectRunSound (calls := calls) (creates := creates)
+      (calls := calls) (creates := creates) (gasOracle := gasOracle) L) :
+    PlannedObjectRunSound (calls := calls) (creates := creates) (gasOracle := gasOracle)
       L raw output plan := by
   have hrel := spillObjectWithFallback_planRel hbuild
   exact hrel.compose_all_runs (erasedPipelineFallback_runSound L raw)
@@ -515,12 +515,12 @@ theorem spillObjectWithErasedPipelineFallback_top_run
     {raw output : Object Op} {plan : MemorySpillSelect.ObjectPlan}
     {selected : Nat} {L : EVM.Layout}
     (hbuild : spillObjectWithFallback raw
-      (optimizerPipelineObject (calls := calls) (creates := creates)
+      (optimizerPipelineObject (calls := calls) (creates := creates) (gasOracle := gasOracle)
         (eraseMemoryGuardObject raw)) =
         some { «object» := output, plan := plan, selected := selected })
     (hspillSound : SpillNodeRunSound
-      (calls := calls) (creates := creates) L) :
-    PlannedNodeRunSound (calls := calls) (creates := creates)
+      (calls := calls) (creates := creates) (gasOracle := gasOracle) L) :
+    PlannedNodeRunSound (calls := calls) (creates := creates) (gasOracle := gasOracle)
       L raw output plan :=
   (spillObjectWithErasedPipelineFallback_all_runs hbuild hspillSound).top_run
 
