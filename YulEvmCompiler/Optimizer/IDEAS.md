@@ -1612,3 +1612,100 @@ compose that result with the existing `Simplify` resolution congruence for the
   relabeling, a different argument than `CodeRel`'s in-place windows), and
   iterating the scan (a dropped branch's `jumpi` can orphan its label for a
   second round).
+
+## Candidate next ideas — last-use liveness (2026-07-30)
+
+### 🚧 Last-use liveness so stack-heavy functions stop needing memory spilling
+
+**The gap, measured.** `compileStmt`'s `.letDecl` prepends to `Γ`
+(`Compile.lean:219-223`) and the only pops are emitted at *block* exit
+(`compileBlock`: `isb ++ List.replicate (Γ'.length - Γ.length) .pop`). So every
+`let` in a solc-IR function body stays on the operand stack until the epilogue,
+whether or not it is ever read again. Since only `DUP1`-`DUP16`/`SWAP1`-`SWAP16`
+are active, a long function becomes uncompilable.
+
+On uniswap-v4 `PoolSwap` (solc's unoptimized `--ir`, 726 KB) the failing check is
+exactly the `Fin 16` bound on `.dup` in `compileExpr` (`Compile.lean:164-170`) and
+on `.swap` in `compileAssigns` (`:147-155`) — **no unsupported construct is
+involved**. Numbers:
+
+- first failure `DUP19` on `fun_modifyLiquidity_3292(expr_4391_self_slot,
+  expr_4410_mpos)` inside `fun_addLiquidityWide_4422`, where `Γ` holds 21 slots
+  and exactly **2** are live;
+- worst case `DUP280` in `fun_swap_3942` (`params=2`, `rets=4`), where `Γ` holds
+  280 slots — **274 locals simultaneously live in our layout**;
+- 24 of 415 deployed-object functions and 600 individual access sites exceed 16.
+
+**solc has the same 16-slot limit and the same failure.** `EVMVersion::reachable
+StackDepth() = 16`, enforced by `CodeTransform::variableHeightDiff`. Forcing solc
+onto that legacy transform (inject `pop(msize())`, which makes `MSizeFinder::
+containsMSize` true and short-circuits `YulStack::optimize`) gives
+`Variable expr_4391_self_slot is 2 slot(s) too deep` — *the same variable we fail
+on*. solc simply never uses that transform: `YulStack.cpp:106-120` forces
+`optimizeStackAllocation = true` even when the Yul optimizer is disabled
+("Defaults are the minimum necessary to avoid running into 'Stack too deep'
+constantly"), so codegen always goes through `OptimizedEVMCodeTransform` /
+`StackLayoutGenerator`. Its ingredients: backward liveness propagation per
+operation, eager `POP` at last use, rematerialization of anything
+`canBeFreelyGenerated`, slot reuse and junk slots. Memory spilling
+(`StackCompressor` → `StackLimitEvader` → `StackToMemoryMover`, using
+`memoryguard` as the base offset — our `MemorySpill` analogue) is its *last*
+resort and was **not needed** for PoolSwap: `memoryguard(0x80)` is unchanged in
+solc's output.
+
+**Not a budget problem.** `stackLayoutBlock` already selects
+`aggressiveStackLayoutBlock` (dominance-local splitting, slot reuse, tail
+scoping) when the legacy layout fails, gated by `aggressiveStackLayoutBudget`
+(8192) and `aggressiveFunctionLayoutBudget` (1024). Raising both to ~10^8 and
+recompiling PoolSwap gives **byte-identical output in the same 4.34 s** — the
+aggressive layout runs and still cannot bring 274 live slots under 16. Its
+rewrites are local; the missing capability is a global per-function one.
+
+**Why it is worth doing.** Two independent payoffs converge on the same change:
+
+- *Compile time.* PoolSwap spends ~2.0 s on three pipeline+layout+compile
+  candidates that all fail, 0.49 s on spill selection, and ~1.9 s compiling a
+  *larger* spilled program — ~62% of its 4.2 s exists only because we cannot
+  lay out the original. This is what keeps uniswap-v4 at 250-400% of solc while
+  every other fixture in the suite is already at parity.
+- *Gas.* #130's opcode-level diagnosis is the same root cause from the other
+  side: `TickMath.getTickAtSqrtPriceSweep` executes 12,111 `POP`s against solc's
+  310, and its `agent/uv4-stack-sched` bullet ("last-use slot retirement") is
+  Phase 3 below. Estimated 60-100k of the uniswap gas gap.
+- *Coverage.* `PoolManager` is currently a known compile failure; it fails the
+  same way.
+
+**Plan, cheapest first, each phase independently measurable.**
+
+0. **Diagnostics** (no semantic change). Land the per-function reporter used for
+   the numbers above — max required depth, held-vs-live slot counts, and what
+   fraction of live ranges are *nestable* — so Phase 2's ceiling is known before
+   Phase 3 is attempted.
+1. **Rematerialize freely-generatable values** (Yul→Yul, existing `LocalPass`
+   tier). solc's `canBeFreelyGenerated`: literals and nullary pure builtins
+   should never hold a slot. solc IR is full of `let _1 := 0`-style bindings.
+   Cheapest pressure reduction, reuses `Propagate`/`DeadPure` machinery, should
+   also improve gas.
+2. **Scope each binding to its live range** (Yul→Yul, existing tier). The backend
+   already pops at block exit, so wrapping the region from a declaration to its
+   last use in a nested block turns block-exit pops into *exact* liveness pops
+   with **no backend change and no new proof tier** — the existing `restore`/
+   `EquivBlock` machinery covers it. This generalizes today's narrow
+   `scopeDeadFunctionStmts`/tail-scoping from patterns to a systematic
+   transform. Known limitation, to be quantified in Phase 0: Yul block scoping
+   expresses only *nested* live ranges, not interleaved ones.
+3. **Last-use retirement in the backend** — only for whatever residue Phase 2
+   cannot express. Emit `POP` at last use in `compileStmts` and shrink `Γ`. This
+   touches `Compile.lean` and the Phase A simulation's stack invariant
+   (`SimAsm.lean`), so it is the expensive step; #133's translation-validation
+   harness is worth evaluating as an alternative to a bespoke per-rewrite proof.
+4. **Re-pin.** This changes bytecode: gas baselines re-pinned (expect
+   improvements), `*-known-compile-failures.txt` shrink. Keep the existing
+   "retain the established layout whenever it already compiles" guard so the
+   currently-supported fragment does not churn.
+
+**Relationship to open work.** #130 is the gas-side campaign for the same root
+cause and its stack bullet is Phase 3 (no branch started). #133 is an Asm→Asm
+per-window scheduler over pure/label-free/jump-free windows — complementary: it
+reorders *within* a window and cannot reduce how many values are live across a
+1400-line function, though its symbolic-execution validator may be reusable here.
