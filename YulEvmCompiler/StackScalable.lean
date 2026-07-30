@@ -894,6 +894,39 @@ theorem frameStepB_sound {prog : List Asm} {C : Cert} {i : Asm} {c : List Asm} {
       · next S' => intro h; simp only [decide_eq_true_eq] at h; exact ⟨S', rfl, h.1, h.2⟩
       · intro h; simp at h
 
+/-- Equality of two certificate positions, with a pointer-equality fast path.
+
+`withPtrEq a b k h` is *definitionally* `k ()` — the fast path exists only in
+the compiled code, and `h` is the obligation that it agrees. So this is
+`decide (a = b)` by `rfl`, with no new axiom and no `implemented_by` of our own
+(`withPtrEq` is Lean core's).
+
+It matters because the positions a certificate stores are the very suffixes of
+`prog` that produced them, so they are *physically shared* with the position
+being looked up: the pointer check succeeds immediately where the structural
+comparison would walk the whole suffix. Structural `List Asm` equality was 37%
+of all instructions in a profile of a mid-sized fixture. -/
+def posEq (a b : List Asm) : Bool :=
+  withPtrEq a b (fun _ => decide (a = b)) (fun h => by simp [h])
+
+omit model in
+@[simp] theorem posEq_eq_decide (a b : List Asm) :
+    posEq a b = decide (a = b) := rfl
+
+/-- `Option`-lifted `posEq`. The pointer check has to happen on the *lists*: the
+`some c'` wrapper the verifier compares against is freshly allocated, so a
+pointer test on the `Option` itself would always miss. -/
+def posEqOpt (a b : Option (List Asm)) : Bool :=
+  match a, b with
+  | some x, some y => posEq x y
+  | none, none => true
+  | _, _ => false
+
+omit model in
+@[simp] theorem posEqOpt_eq_decide (a b : Option (List Asm)) :
+    posEqOpt a b = decide (a = b) := by
+  cases a <;> cases b <;> simp [posEqOpt]
+
 /-- All certificate facts for one program position, returned together. -/
 abbrev CertValue := FLayout × Nat × FLayout
 
@@ -1019,6 +1052,78 @@ def frameStepLookupMapB (tgts : Std.HashMap Label (List Asm))
       | _ => false
 
 
+/-- `frameStepLookupMapB` with the return-continuation comparison given the
+pointer fast path. That conjunct compares two suffixes of the program — the
+jump-target table's entry for the return label against the actual continuation —
+and they are physically shared, so the structural comparison walked the whole
+suffix once per call site: 22% of all instructions on the largest fixture. -/
+def frameStepLookupPtrB (tgts : Std.HashMap Label (List Asm))
+    (lookup : CertLookup) :
+    Asm → List Asm → FLayout → Nat → FLayout → Bool
+  | .push _,      c, S, F, R => decide (lookup c = some (.word :: S, F, R))
+  | .dup n,       c, S, F, R => match S[n.val]? with
+      | some FSlot.word => decide (lookup c = some (.word :: S, F, R))
+      | _ => false
+  | .pushLabel l, c, S, F, R => decide (lookup c = some (.retTo l :: S, F, R))
+  | .pop,         c, S, F, R => match S with
+      | .word :: S' => decide (lookup c = some (S', F, R))
+      | _ => false
+  | .swap n,      c, S, F, R => match S with
+      | sx :: rest => match rest.drop n.val with
+          | sy :: rst => decide (sx = FSlot.word ∧
+              (∀ s ∈ rest.take n.val, s = FSlot.word) ∧
+              lookup c = some (sy :: (rest.take n.val ++ sx :: rst), F, R))
+          | [] => false
+      | [] => false
+  | .label _,     c, S, F, R => decide (lookup c = some (S, F, R))
+  | .op yop,      c, S, F, R => match opTable yop with
+      | some o => decide (Operation.popArity o ≤ S.length ∧
+          lookup c = some
+            (List.replicate (Operation.pushArity o) FSlot.word ++
+              S.drop (Operation.popArity o), F, R))
+      | none => false
+  | .jump l,      c, S, F, R =>
+      (match tgts[l]? with
+       | some t => decide (lookup t = some (S, F, R))
+       | none => false)
+      || (match c with
+          | .label Lret :: c' =>
+              (match tgts[l]? with
+               | some t =>
+                   (match splitSetup Lret S with
+                    | some (Sw, Smid) =>
+                        (match lookup t with
+                         | some (St, Ft, Sret) =>
+                             posEqOpt tgts[Lret]? (some c') &&
+                             decide ((∀ s ∈ Sw, s = FSlot.word) ∧
+                               St = Sw ++ [FSlot.ret] ∧ F + Smid.length ≤ Ft ∧
+                               (∀ s ∈ Sret, s = FSlot.word) ∧
+                               lookup c' = some (Sret ++ Smid, F, R))
+                         | none => false)
+                    | none => false)
+               | none => false)
+          | _ => false)
+  | .jumpi l,     c, S, F, R => match S with
+      | .word :: S' =>
+          (match tgts[l]? with
+           | some t => decide (lookup t = some (S', F, R))
+           | none => false)
+          && decide (lookup c = some (S', F, R))
+      | _ => false
+  | .dynJump,     _, S, _F, R => match S with
+      | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
+      | _ => false
+
+
+
+omit model in
+@[csimp] theorem frameStepLookupMapB_eq_frameStepLookupPtrB :
+    @frameStepLookupMapB = @frameStepLookupPtrB := by
+  funext tgts lookup i c S F R
+  cases i <;>
+    simp only [frameStepLookupMapB, frameStepLookupPtrB, posEqOpt_eq_decide,
+      Bool.decide_and]
+
 omit model in
 /-- Resolving jump targets through `findLabelMap` computes exactly what scanning
 with `findLabel` does. -/
@@ -1058,25 +1163,6 @@ abbrev CertEntry := Nat × List Asm × FLayout × Nat × FLayout
 and passed as a value: see `lookupIn`. -/
 def CertData.table (d : CertData) : Array (Option CertEntry) :=
   d.tbl (d.maxKey + 1)
-
-/-- Equality of two certificate positions, with a pointer-equality fast path.
-
-`withPtrEq a b k h` is *definitionally* `k ()` — the fast path exists only in
-the compiled code, and `h` is the obligation that it agrees. So this is
-`decide (a = b)` by `rfl`, with no new axiom and no `implemented_by` of our own
-(`withPtrEq` is Lean core's).
-
-It matters because the positions a certificate stores are the very suffixes of
-`prog` that produced them, so they are *physically shared* with the position
-being looked up: the pointer check succeeds immediately where the structural
-comparison would walk the whole suffix. Structural `List Asm` equality was 37%
-of all instructions in a profile of a mid-sized fixture. -/
-def posEq (a b : List Asm) : Bool :=
-  withPtrEq a b (fun _ => decide (a = b)) (fun h => by simp [h])
-
-omit model in
-@[simp] theorem posEq_eq_decide (a b : List Asm) :
-    posEq a b = decide (a = b) := rfl
 
 /-- Certificate lookup against an already-built table.
 
