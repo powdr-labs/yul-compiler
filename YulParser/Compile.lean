@@ -325,7 +325,11 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
     Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
-      let raw := pruneLinkerBlock (linkStmt libraries <$> decodeValueStmts block)
+      -- The link pass is an expensive identity when no addresses are supplied,
+      -- and these inputs are megabytes of generated Yul; skip it entirely.
+      let decoded := decodeValueStmts block
+      let raw := pruneLinkerBlock
+        (if libraries.isEmpty then decoded else decoded.map (linkStmt libraries))
       let b := YulEvmCompiler.Optimizer.Normalize.normalize
         (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
           YulSemantics.EVM.ExternalCreates.none)
@@ -383,7 +387,9 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
           | none => none)
       return YulEvmCompiler.assemble (← asm)
   | some (.object o) =>
-      let raw := pruneLinkerObjectTree (linkObject libraries (decodeValueObject o))
+      let decoded := decodeValueObject o
+      let raw := pruneLinkerObjectTree
+        (if libraries.isEmpty then decoded else linkObject libraries decoded)
       let o := YulEvmCompiler.Optimizer.Normalize.normalizeObject
         (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
           YulSemantics.EVM.ExternalCreates.none)
