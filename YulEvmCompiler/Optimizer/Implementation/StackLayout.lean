@@ -2415,13 +2415,27 @@ mutual
     | some body => addStmtsMentions seen body
 end
 
+/-- Check that none of `names` occurs in an already-built mention index. -/
+def noneMentionedIn (names : List Ident) (index : MentionSet) : Bool :=
+  names.all fun name => !index.contains name
+
 /-- Check that none of `names` is mentioned in `body` by indexing all exact
 mention positions once, rather than traversing the body once per name. -/
 def noneMentionedFast (names : List Ident) (body : Block Op) : Bool :=
-  let index := addStmtsMentions {} body
-  names.all fun name => !index.contains name
+  noneMentionedIn names (addStmtsMentions {} body)
 
-def deadPrefixSearch : Block Op → Block Op → Option (Block Op)
+/-- The mention index for every proper suffix, followed by the index for the
+whole block.  Persistent hash sets let adjacent suffix indexes share their
+unchanged structure. -/
+def suffixMentionIndices : Block Op → List MentionSet × MentionSet
+  | [] => ([], {})
+  | statement :: rest =>
+      let (indices, restIndex) := suffixMentionIndices rest
+      (restIndex :: indices, addStmtMentions restIndex statement)
+
+/-- Direct specification of the dead-prefix search.  The executable search
+below is proved to return this exact result. -/
+def deadPrefixSearchSlow : Block Op → Block Op → Option (Block Op)
   | _, [] => none
   | pre, s :: rest =>
       let pre' := pre ++ [s]
@@ -2429,8 +2443,26 @@ def deadPrefixSearch : Block Op → Block Op → Option (Block Op)
       if !rest.isEmpty && !names.isEmpty && nodupFast names &&
           noneMentionedFast names rest && !hasDirectFun pre' then
         some (.block pre' :: rest)
-      else deadPrefixSearch pre' rest
+      else deadPrefixSearchSlow pre' rest
   termination_by _ rest => rest.length
+
+/-- Search using the precomputed exact mention index for each remaining
+suffix.  This avoids rebuilding and rehashing the whole suffix at every split. -/
+def deadPrefixSearchIndexed : Block Op → Block Op → List MentionSet →
+    Option (Block Op)
+  | _, [], _ => none
+  | pre, s :: rest, index :: indices =>
+      let pre' := pre ++ [s]
+      let names := directDecls pre'
+      if !rest.isEmpty && !names.isEmpty && nodupFast names &&
+          noneMentionedIn names index && !hasDirectFun pre' then
+        some (.block pre' :: rest)
+      else deadPrefixSearchIndexed pre' rest indices
+  | _, _ :: _, [] => none
+  termination_by _ rest _ => rest.length
+
+def deadPrefixSearch (pre rest : Block Op) : Option (Block Op) :=
+  deadPrefixSearchIndexed pre rest (suffixMentionIndices rest).1
 
 def scopeDeadPrefixHere (body : Block Op) : Option (Block Op) :=
   deadPrefixSearch [] body

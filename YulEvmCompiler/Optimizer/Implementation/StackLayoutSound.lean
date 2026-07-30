@@ -5409,23 +5409,86 @@ mutual
           addStmtsMentions_contains seen x body
 end
 
-theorem noneMentionedFast_eq (names : List Ident) (body : Block Op) :
-    StackV2.noneMentionedFast names body =
+theorem noneMentionedIn_eq (names : List Ident) (index : StackV2.MentionSet)
+    (body : Block Op)
+    (hindex : ∀ x, index.contains x = stmtsMentions x body) :
+    StackV2.noneMentionedIn names index =
       names.all (fun x => !stmtsMentions x body) := by
-  unfold StackV2.noneMentionedFast
+  unfold StackV2.noneMentionedIn
   induction names with
   | nil => rfl
   | cons name rest ih =>
       simp only [List.all_cons]
-      rw [addStmtsMentions_contains, ih]
-      simp
+      rw [hindex, ih]
 
-theorem deadPrefixSearch_sound : ∀ outer pre rest out,
-    StackV2.deadPrefixSearch pre rest = some out →
+theorem noneMentionedFast_eq (names : List Ident) (body : Block Op) :
+    StackV2.noneMentionedFast names body =
+      names.all (fun x => !stmtsMentions x body) := by
+  unfold StackV2.noneMentionedFast
+  apply noneMentionedIn_eq
+  intro x
+  rw [addStmtsMentions_contains]
+  simp
+
+/-- Each entry is the exact mention index for the tail after the statement at
+the same position. -/
+def SuffixIndicesMatch : List StackV2.MentionSet → Block Op → Prop
+  | [], [] => True
+  | index :: indices, _ :: rest =>
+      (∀ x, index.contains x = stmtsMentions x rest) ∧
+        SuffixIndicesMatch indices rest
+  | _, _ => False
+
+theorem suffixMentionIndices_sound (body : Block Op) :
+    SuffixIndicesMatch (StackV2.suffixMentionIndices body).1 body ∧
+      ∀ x, (StackV2.suffixMentionIndices body).2.contains x =
+        stmtsMentions x body := by
+  induction body with
+  | nil => simp [StackV2.suffixMentionIndices, SuffixIndicesMatch, stmtsMentions]
+  | cons statement rest ih =>
+      simp only [StackV2.suffixMentionIndices]
+      rcases hresult : StackV2.suffixMentionIndices rest with ⟨indices, restIndex⟩
+      have hmatch : SuffixIndicesMatch indices rest := by
+        simpa [hresult] using ih.1
+      have hrest : ∀ x, restIndex.contains x = stmtsMentions x rest := by
+        simpa [hresult] using ih.2
+      constructor
+      · exact ⟨hrest, hmatch⟩
+      · intro x
+        rw [addStmtMentions_contains, hrest]
+        simp [stmtsMentions, Bool.or_comm]
+
+theorem deadPrefixSearchIndexed_eq_slow : ∀ pre rest indices,
+    SuffixIndicesMatch indices rest →
+      StackV2.deadPrefixSearchIndexed pre rest indices =
+        StackV2.deadPrefixSearchSlow pre rest
+  | _, [], [], _ => by
+      simp [StackV2.deadPrefixSearchIndexed, StackV2.deadPrefixSearchSlow]
+  | pre, s :: rest, index :: indices, hmatch => by
+      rw [StackV2.deadPrefixSearchIndexed, StackV2.deadPrefixSearchSlow]
+      let pre' := pre ++ [s]
+      let names := StackV2.directDecls pre'
+      have hnone : StackV2.noneMentionedIn names index =
+          StackV2.noneMentionedFast names rest := by
+        rw [noneMentionedIn_eq names index rest hmatch.1,
+          noneMentionedFast_eq]
+      rw [hnone]
+      split
+      · rfl
+      · exact deadPrefixSearchIndexed_eq_slow pre' rest indices hmatch.2
+
+theorem deadPrefixSearch_eq_slow (pre rest : Block Op) :
+    StackV2.deadPrefixSearch pre rest = StackV2.deadPrefixSearchSlow pre rest := by
+  unfold StackV2.deadPrefixSearch
+  apply deadPrefixSearchIndexed_eq_slow
+  exact (suffixMentionIndices_sound rest).1
+
+theorem deadPrefixSearchSlow_sound : ∀ outer pre rest out,
+    StackV2.deadPrefixSearchSlow pre rest = some out →
       EquivBlock D (outer ++ (pre ++ rest)) (outer ++ out)
-  | _, _, [], _, h => by simp [StackV2.deadPrefixSearch] at h
+  | _, _, [], _, h => by simp [StackV2.deadPrefixSearchSlow] at h
   | outer, pre, s :: rest, out, h => by
-      rw [StackV2.deadPrefixSearch] at h
+      rw [StackV2.deadPrefixSearchSlow] at h
       let pre' := pre ++ [s]
       let names := StackV2.directDecls pre'
       split at h
@@ -5451,18 +5514,26 @@ theorem deadPrefixSearch_sound : ∀ outer pre rest out,
           scopePrefix_after_equivBlock (calls := calls) (creates := creates)
             (outer := outer) hfun hfree
       · next hcond =>
-        have ih := deadPrefixSearch_sound outer pre' rest out h
+        have ih := deadPrefixSearchSlow_sound outer pre' rest out h
         simpa [pre', List.append_assoc] using ih
+
+theorem deadPrefixSearch_sound {outer pre rest out : Block Op}
+    (h : StackV2.deadPrefixSearch pre rest = some out) :
+    EquivBlock D (outer ++ (pre ++ rest)) (outer ++ out) := by
+  rw [deadPrefixSearch_eq_slow] at h
+  exact deadPrefixSearchSlow_sound outer pre rest out h
 
 theorem scopeDeadPrefixHere_sound {body out : Block Op}
     (h : StackV2.scopeDeadPrefixHere body = some out) :
     EquivBlock D body out := by
-  simpa using deadPrefixSearch_sound [] [] body out h
+  simpa using deadPrefixSearch_sound
+    (outer := []) (pre := []) (rest := body) (out := out) h
 
 theorem scopeDeadPrefixHere_after_sound {body out : Block Op}
     (h : StackV2.scopeDeadPrefixHere body = some out) (pre : Block Op) :
     EquivBlock D (pre ++ body) (pre ++ out) := by
-  simpa using deadPrefixSearch_sound pre [] body out h
+  simpa using deadPrefixSearch_sound
+    (outer := pre) (pre := []) (rest := body) (out := out) h
 
 theorem iterateDeadPrefixesHere_equiv (n : Nat) (body : Block Op) :
     EquivBlock D body (StackV2.iterateDeadPrefixesHere n body) := by
