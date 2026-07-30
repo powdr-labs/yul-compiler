@@ -73,6 +73,16 @@ inductive Asm
   /-- Jump to the code address on top of the stack (function returns):
   lowers to `JUMP`. -/
   | dynJump
+  /-- An **immutable** read: pushes `v`, the value `key`'s immutable holds in the
+  deployed code, always as a full-width `PUSH32`.
+
+  The fixed width is the whole point. Ordinary `push` takes the minimal `PUSHk`
+  encoding, so its byte length varies with the value; an immutable's 32 immediate
+  bytes must sit at an offset the *constructor* can compute and patch, which
+  requires that offset to be independent of the value stored there. `key` carries
+  no runtime meaning — it exists so the object layer can report where each
+  placeholder landed. -/
+  | pushImmutable (key : String) (v : U256)
   deriving Repr, DecidableEq
 
 /-- The uniform number of address bytes emitted for a label push (`jump`,
@@ -105,6 +115,8 @@ def size : Asm → Nat
   | jumpi _ => labelWidth + 2
   | pushLabel _ => labelWidth + 1
   | dynJump => 1
+  -- `PUSH32` opcode byte plus 32 immediate bytes, independent of `v`.
+  | pushImmutable _ _ => 33
 
 theorem size_pos (i : Asm) : 1 ≤ i.size := by
   cases i <;> simp only [size] <;> omega
@@ -444,6 +456,8 @@ def lowerInstr (prog : List Asm) : Asm → Option (List Instr)
   | .pushLabel l => (resolve l prog).map
       (fun a => [.push labelWidthFin (UInt256.ofNat a)])
   | .dynJump     => some [.op .JUMP]
+  -- Always the full 32-byte immediate, so the value's byte position is fixed.
+  | .pushImmutable _ v => some [.push ⟨32, by norm_num⟩ (conv v)]
 
 /-- Lower a fragment (against the whole program `prog`). -/
 def lowerFrag (prog : List Asm) : List Asm → Option (List Instr)
@@ -660,6 +674,9 @@ theorem lowerInstr_length {prog : List Asm} {i : Asm} {is : List Instr}
   case push v =>
     obtain rfl : [Instr.pushMin (conv v)] = is := by simpa using h
     simp [Asm.size]
+  case pushImmutable key v =>
+    obtain rfl : [Instr.push ⟨32, by norm_num⟩ (conv v)] = is := by simpa using h
+    simp [Asm.size, assembleBytes, Instr.bytes]
   case op yop =>
     obtain ⟨o, -, rfl⟩ := Option.map_eq_some_iff.mp h
     simp [Asm.size]

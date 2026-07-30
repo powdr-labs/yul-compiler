@@ -138,6 +138,8 @@ for the label-address push). `dup`/`swap` transport whatever cells they touch �
 addresses — while `dynJump` requires the top cell's return layout `R` to equal the layout below it. -/
 def stepConstraint (prog : List Asm) (H : LayoutMap) : Asm → List Asm → StkLayout → Prop
   | .push _,      c, S => (.word :: S) ∈ H c ∧ S.length + 1 ≤ 1023
+  -- Same stack effect as `push`; only the lowered width differs.
+  | .pushImmutable _ _, c, S => (.word :: S) ∈ H c ∧ S.length + 1 ≤ 1023
   | .dup n,       c, S => ∃ sl, S[n.val]? = some sl ∧ (sl :: S) ∈ H c ∧ S.length + 1 ≤ 1023
   | .pushLabel l, c, S => (∃ c', findLabel l prog = some c' ∧ (.code c' :: S) ∈ H c)
       ∧ S.length + 1 ≤ 1023
@@ -215,6 +217,12 @@ theorem Inv.step {prog : List Asm} {H : LayoutMap} (hV : ValidHeights prog H)
   cases hstep with
   | @push v c σ yst =>
       obtain ⟨hHc, hlen⟩ := hV (.push v) c hsuf _ hHa
+      have hL : σ.length = S.length := hm.length_eq
+      refine ⟨?_, .word :: S, hHc, .word hm⟩
+      show (AVal.word v :: σ).length ≤ 1023
+      simp only [List.length_cons, hL]; omega
+  | @pushImmutable key v c σ yst _ =>
+      obtain ⟨hHc, hlen⟩ := hV (.pushImmutable key v) c hsuf _ hHa
       have hL : σ.length = S.length := hm.length_eq
       refine ⟨?_, .word :: S, hHc, .word hm⟩
       show (AVal.word v :: σ).length ≤ 1023
@@ -368,6 +376,8 @@ below, so a wrong proposal is simply rejected. -/
 /-- Decidable mirror of `stepConstraint`. -/
 def stepOK (prog : List Asm) (H : LayoutMap) : Asm → List Asm → StkLayout → Bool
   | .push _,      c, S => decide ((.word :: S) ∈ H c) && decide (S.length + 1 ≤ 1023)
+  | .pushImmutable _ _, c, S =>
+      decide ((.word :: S) ∈ H c) && decide (S.length + 1 ≤ 1023)
   | .dup n,       c, S => match S[n.val]? with
       | some sl => decide ((sl :: S) ∈ H c) && decide (S.length + 1 ≤ 1023)
       | none => false
@@ -403,6 +413,8 @@ theorem stepOK_sound {prog : List Asm} {H : LayoutMap} {i : Asm} {c : List Asm} 
     (h : stepOK prog H i c S = true) : stepConstraint prog H i c S := by
   cases i with
   | push v => simp only [stepOK, Bool.and_eq_true, decide_eq_true_eq] at h; exact h
+  | pushImmutable key v =>
+      simp only [stepOK, Bool.and_eq_true, decide_eq_true_eq] at h; exact h
   | dup n =>
       revert h; simp only [stepOK]; split
       · next sl he =>
@@ -484,6 +496,7 @@ contract. Positions are keyed by suffix length (unique among suffixes of a fixed
 /-- Successor positions and their layouts for one instruction. `none` = malformed / reject. -/
 def succsOf (prog : List Asm) : Asm → List Asm → StkLayout → Option (List (List Asm × StkLayout))
   | .push _,      c, S => some [(c, .word :: S)]
+  | .pushImmutable _ _, c, S => some [(c, .word :: S)]
   | .dup n,       c, S => match S[n.val]? with | some sl => some [(c, sl :: S)] | none => none
   | .pushLabel l, c, S => match findLabel l prog with
                           | some tgt => some [(c, .code tgt :: S)] | none => none

@@ -107,6 +107,7 @@ theorem AStep.stkOK [model : ExternalModel] {prog : List Asm} {a b : AConf}
     (h : AStep prog a b) (ha : StkOK prog a.stk) : StkOK prog b.stk := by
   cases h with
   | push => exact ha.cons_word
+  | pushImmutable _ => exact ha.cons_word
   | op _ => exact (ha.append_right).words_append _
   | @dup n v τ ρ c yst _ =>
     intro l hl

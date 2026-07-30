@@ -70,6 +70,16 @@ inductive AStep (prog : List Asm) [model : ExternalModel] :
   /-- Push a word. -/
   | push {v : U256} {c : List Asm} {σ : List AVal} {yst : EvmState} :
       AStep (model := model) prog ⟨.push v :: c, σ, yst⟩ ⟨c, .word v :: σ, yst⟩
+  /-- Read an immutable: push the value the environment records for `key`,
+  mirroring the source built-in `loadimmutable` (which reads the same map on the
+  same keying). The premise is what ties the constant the compiler baked into
+  the instruction to the value the source semantics would produce, so a
+  placeholder that disagrees with the layout simply cannot step. -/
+  | pushImmutable {key : String} {v : U256} {c : List Asm} {σ : List AVal}
+      {yst : EvmState} :
+      v = yst.env.immutable (YulSemantics.EVM.litValue (.string key)) →
+      AStep (model := model) prog ⟨.pushImmutable key v :: c, σ, yst⟩
+        ⟨c, .word v :: σ, yst⟩
   /-- A non-halting built-in: consume the argument words, push the results,
   step the machine state — all by the Yul dialect's own relation. -/
   | op {yop : Op} {args rets : List U256} {c : List Asm} {σ : List AVal}
@@ -171,6 +181,7 @@ theorem AStep.suffix [model : ExternalModel]
     exact ⟨pre ++ [i], by simpa using hpre⟩
   cases h with
   | push => exact tail_suffix ha
+  | pushImmutable _ => exact tail_suffix ha
   | op _ => exact tail_suffix ha
   | dup _ => exact tail_suffix ha
   | swap _ => exact tail_suffix ha
