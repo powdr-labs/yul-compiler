@@ -74,6 +74,15 @@ def pureArity : Op → Option Nat
   | .clz | .iszero | .not => some 1
   | _ => none
 
+/-- Binary ops whose result is unchanged by swapping the two operands. Their DAG
+nodes are canonicalized (args sorted by id) at intern, so `op(a,b)` and `op(b,a)`
+share one id — letting the scheduler emit whichever operand order is cheaper to
+arrange and still validate. Sound: these are commutative `BitVec` operations
+(`op(a,b) = op(b,a)`), which the eventual executor↔AStep proof discharges per op. -/
+def commutative : Op → Bool
+  | .add | .mul | .and | .or | .xor | .eq => true
+  | _ => false
+
 /-- Per-op gas for choosing between candidates (exact for pure windows). -/
 def opGas : Op → Nat
   | .mul | .div | .sdiv | .mod | .smod | .signextend => 5
@@ -147,7 +156,9 @@ def symStep (d : Dag) (s : SymState) : Asm → Option (SymState × Dag)
           let args := s.stack.take k
           let exposed := args.filterMap (fun id =>
             match d.node id with | .inp i => some i | _ => none)
-          let (rid, d) := d.intern (.app yop args)
+          -- canonicalize commutative ops so op(a,b) and op(b,a) share one id
+          let canonArgs := if commutative yop then (args.toArray.qsort (· < ·)).toList else args
+          let (rid, d) := d.intern (.app yop canonArgs)
           some ({ stack := rid :: s.stack.drop k,
                   inputs := s.inputs,
                   opExposed := exposed ++ s.opExposed }, d)
