@@ -301,8 +301,11 @@ private def forbiddenBidi (c : Char) : Bool :=
   let n := c.toNat
   (0x202a ≤ n && n ≤ 0x202e) || (0x2066 ≤ n && n ≤ 0x2069)
 
+/-- `String.toList` materialises the whole source as a cons list, so converting
+once and sharing it halves the allocation for inputs that run to megabytes. -/
 def sourceLexWF (source : String) : Bool :=
-  sourceNumbersWF source.toList && !source.toList.any forbiddenBidi
+  let cs := source.toList
+  sourceNumbersWF cs && !cs.any forbiddenBidi
 
 private def inactiveBuiltins (source : String) : List String :=
   if source.contains "EVMVersion: <=berlin" then

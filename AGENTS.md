@@ -89,6 +89,9 @@ Preserve these invariants unless the change deliberately redesigns them and upda
 - The correctness theorem is a forward simulation with an existential gas bound. Yul semantics has no gas accounting (its `gas()` built-in is an open-world oracle), and target `Step` is not used as a deterministic equivalence.
 - Normal source fall-through becomes the EVM's implicit past-the-end `STOP`; source halts must preserve the exact halt kind and payload.
 - This repository must remain free of `sorry` and project-specific axioms. Do not use `axiom`, `unsafe`, or an opaque bridge to bypass proof obligations.
+- Several hot checks keep a readable definition as the **specification** and run a proved-equal fast version in compiled code, installed with `@[csimp]`: `wfCheck`/`wfCheckFast`, `lowerProg`/`lowerProgFast` (`Asm.lean`), `peepRun`/`peepRunFast` (`AsmPeephole.lean`), `lookupIn`/`lookupInFast` (`StackScalable.lean`). State theorems about the specification; if you change one, change its counterpart and the `@[csimp]` equality proof with it. `@[csimp]` is checked — it needs the equality theorem — so this is not a trust extension, unlike `implemented_by`. Expect profiles and generated C to name the `*Fast` variant.
+- `CertLookup` is a function type, so a definition of the form `let t := …; fun c => … t …` is eta-expanded to arity 2 and the `let` is floated *inside* the lambda, recomputing `t` on every call. Loop-invariant tables in the stack gate are therefore passed as **parameters** (`checkCertWith`), not bound with `let`. Check the generated C in `.lake/build/ir` when in doubt.
+- The certificate *generator* (`analyze` in `StackScalable.lean`) is deliberately unverified: soundness rests only on `checkCert` accepting, so a wrong certificate is rejected rather than trusted. It can be rewritten freely for speed. `checkCert` itself is the trusted checker — changing it means redoing `checkCert_run_bound`.
 
 ## Implementing compiler changes
 
