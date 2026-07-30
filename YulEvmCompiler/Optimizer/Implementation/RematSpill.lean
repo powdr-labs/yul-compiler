@@ -142,9 +142,9 @@ def rematStmts (A : List Ident) (σ : RematMap) :
   | s :: rest =>
       let (s', σ') := rematStmt A σ s
       let (rest', σ'') := rematStmts A σ' rest
-      (s' ++ rest', σ'')
+      (s' :: rest', σ'')
 
-def rematStmt (A : List Ident) (σ : RematMap) : Stmt Op → List (Stmt Op) × RematMap
+def rematStmt (A : List Ident) (σ : RematMap) : Stmt Op → Stmt Op × RematMap
   | .letDecl [x] (some e) =>
       let e' := substExprR σ e
       if storageStableExpr e' && opCountR e' ≤ rematOpLimit && !A.contains x
@@ -155,27 +155,27 @@ def rematStmt (A : List Ident) (σ : RematMap) : Stmt Op → List (Stmt Op) × R
         -- dead; the composed `deadPure` pass removes it. Keeping it here makes
         -- the runtime environment byte-identical to the input, so soundness is
         -- just the per-use substitution congruence.
-        ([.letDecl [x] (some e')], (x, e') :: RematMap.kill [x] σ)
+        (.letDecl [x] (some e'), (x, e') :: RematMap.kill [x] σ)
       else
-        ([.letDecl [x] (some e')], RematMap.kill [x] σ)
+        (.letDecl [x] (some e'), RematMap.kill [x] σ)
   | .letDecl xs val =>
-      ([.letDecl xs (val.map (substExprR σ))], RematMap.kill xs σ)
-  | .assign xs e => ([.assign xs (substExprR σ e)], σ)
-  | .exprStmt e => ([.exprStmt (substExprR σ e)], σ)
-  | .block body => ([.block (rematStmts A σ body).1], σ)
-  | .cond c body => ([.cond (substExprR σ c) (rematStmts A σ body).1], σ)
+      (.letDecl xs (val.map (substExprR σ)), RematMap.kill xs σ)
+  | .assign xs e => (.assign xs (substExprR σ e), σ)
+  | .exprStmt e => (.exprStmt (substExprR σ e), σ)
+  | .block body => (.block (rematStmts A σ body).1, σ)
+  | .cond c body => (.cond (substExprR σ c) (rematStmts A σ body).1, σ)
   | .switch c cases dflt =>
-      ([.switch (substExprR σ c) (rematCases A σ cases) (rematDflt A σ dflt)], σ)
+      (.switch (substExprR σ c) (rematCases A σ cases) (rematDflt A σ dflt), σ)
   | .forLoop init c post body =>
       -- `init` may declare loop locals visible in cond/post/body; sweep it
       -- threading σ, then use the post-init σ for the rest.
       let (init', σ') := rematStmts A σ init
-      ([.forLoop init' (substExprR σ' c) (rematStmts A σ' post).1
-        (rematStmts A σ' body).1], σ)
+      (.forLoop init' (substExprR σ' c) (rematStmts A σ' post).1
+        (rematStmts A σ' body).1, σ)
   | .funDef f ps rs body =>
       -- Independent scope: fresh σ, its own assign-target oracle.
-      ([.funDef f ps rs (rematStmts (assignTargetsStmts body) [] body).1], σ)
-  | s => ([s], σ)
+      (.funDef f ps rs (rematStmts (assignTargetsStmts body) [] body).1, σ)
+  | s => (s, σ)
 
 def rematCases (A : List Ident) (σ : RematMap) :
     List (Literal × Block Op) → List (Literal × Block Op)
