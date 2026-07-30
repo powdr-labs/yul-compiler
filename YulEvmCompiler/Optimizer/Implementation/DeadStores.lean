@@ -169,12 +169,31 @@ def dsDflt (bound : List Ident) : Option (Block Op) → Option (Block Op)
 
 end
 
+/-- One dead-store sweep over a whole block. -/
+def dsOnce (b : Block Op) : Block Op :=
+  dsSweep [] [] (dsStmts [] b)
+
+/-- `dsDead` deliberately consults the **unrewritten** remainder: then a name
+whose store this sweep drops was already unread on both sides, which keeps the
+soundness relation to "the two environments differ only on names neither side
+reads". The price is that store *chains* need more than one sweep — `y := f(x)`
+keeps `x` alive until that store itself goes — so the pass is simply iterated,
+which is sound by composition. Three rounds drain the chains measured on
+`PositionStatusMap` and `TickMath`, and the fixed bound keeps the
+quadratic-per-sequence scan off generated multi-megabyte objects. -/
+def dsIterate : Nat → Block Op → Block Op
+  | 0, b => b
+  | n + 1, b => dsIterate n (dsOnce b)
+
+/-- The iteration budget. -/
+def dsRounds : Nat := 3
+
 /-- Eliminate dead stores in a top-level block. The whole block must be free
 of unresolved `dataoffset`/`datasize` so that layout resolution is the
 identity on input and output alike; that is what makes this an object-path
 stage (the `StorageForward`/`RejoinPairs` recipe). -/
 def deadStoresBlock (b : Block Op) : Block Op :=
-  if storageLayoutFreeStmts b then dsSweep [] [] (dsStmts [] b) else b
+  if storageLayoutFreeStmts b then dsIterate dsRounds b else b
 
 /-! ### Object trees -/
 
