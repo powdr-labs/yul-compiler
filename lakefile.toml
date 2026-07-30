@@ -75,3 +75,7 @@ root = "scripts.TraceSolidityGas"
 [[lean_exe]]
 name = "yulIRCorpus"
 root = "scripts.YulIRCorpus"
+
+[[lean_exe]]
+name = "dumpYul"
+root = "scripts.DumpYul"
