@@ -1227,6 +1227,134 @@ a combined ~13k (worst `dynamic_multi_array_cleanup` +9k — flatten/reuse live
 
 ## Candidate next ideas (not started)
 
+### 🚧 Aave/Uniswap gas 6: dead-store elimination behind the stack layout (in progress — `agent/dead-stores`)
+
+Fresh measurement at main `da686b0` (solc 0.8.35, Osaka). Both in-repo suites
+reproduce their checked-in baselines exactly (0 regressions, 0 changed,
+0 unpinned, 0 stale):
+
+| Suite | Rows | Ours | solc | Excess | Ratio |
+|---|---:|---:|---:|---:|---:|
+| Aave v4 | 10 | 18,391,475 | 18,236,226 | 155,249 | 1.0085x |
+| Uniswap v4 | 44 | 1,062,224 | 907,063 | 155,161 | 1.1711x |
+
+`nextContinuousTenThousand` is now **825k below solc**, so Aave's residual
+excess is concentrated in five rows.
+
+Opcode attribution (`traceSolidityGas`, compiled binaries) says the same thing
+on every top row of both suites: the gap is stack traffic.
+
+| Row | Gap | POP Δ | DUP Δ | SWAP Δ | ISZERO Δ | (we win) |
+|---|---:|---:|---:|---:|---:|---|
+| `nextCollateralContinuousTenThousand` | +259,707 | +182,316 | +153,771 | — | +60,333 | — |
+| `collateralCountMaxReserveScan` | +192,060 | +149,072 | +188,259 | +35,469 | +43,149 | — |
+| `flsFullRange` | +56,368 | +19,326 | +29,004 | +17,544 | +3,846 | JUMPDEST −206 |
+| `TickMath:getTickAtSqrtPriceSweep` | +61,984 | +23,602 | +30,720 | +14,463 | +6,822 | JUMP −6,488, SHR −3,600, AND −3,600 |
+| `TickMath:getSqrtPriceAtTickSweep` | +10,218 | +3,148 | +4,128 | +387 | +6,612 | JUMP −3,648 |
+
+(The positive columns exceed the gap because aggressive inlining already wins
+big on `JUMP`/`AND`/`SHR`.) `POP` is 70–78% of the two largest Aave gaps.
+
+The backend charges `SWAP_k; POP` per `.assign` and one `push 0` per valueless
+`let`. Dumping the Yul that *actually compiles* — mirroring `compileSource`'s
+fallback chain; every one of these fixtures takes the **`full+layout`** arm —
+and running a backward liveness over it exposes a large residue of **dead
+stores**: assignments and `let` initializers whose target is overwritten
+before any read.
+
+| Fixture | dead assignments | dead `let` initializers | inside hot loops |
+|---|---:|---:|---:|
+| `PositionStatusMap` | 41 | 35 | **43** |
+| `TickBitmap` | 19 | 13 | 5 |
+| `SwapMath` | 18 | 8 | — |
+| `SqrtPriceMath` | 14 | 4 | — |
+| `TickMath` | 10 | 10 | 5 |
+
+The Aave hot ones sit inside the 10,000-trip loops (18 in the
+`collateralCount`/`borrowCount` helper, 9 each in the two `next*` helpers, 8
+and 7 in the scan helpers), so each is worth 10,000 × 7–8 gas.
+
+They are **created by `stackLayoutBlock`**: `iterateStackLayout`'s slot reuse
+and `StackV2`'s live-range splitting introduce `x := y` copies and shared
+slots, and nothing runs behind them — `stackLayoutBlock` is applied *after*
+the whole optimizer pipeline, in `compileSource`'s `tryLayouts`. Verbatim from
+the final TickMath sweep body:
+
+```yul
+let _v20 := _v19            // dead: overwritten below with no read between
+_v20 := _v19                // dead
+if iszero(slt(signextend(2, _v19), 50)) { break }
+_v20 := _v19                // live
+_v19 := signextend(2, add(_v19, 1))
+let fc2_19 := _v20          // dead initializer (binder is live, value is not)
+let fc2_18 := 0
+let fc2_20 := 0
+fc2_19 := signextend(2, _v20)
+```
+
+and from the Aave `_v6` 10,000-trip body: `fc2_131 := 0`, `fc2_130 := 0`,
+`fc2_135 := fc2_137`, `fc2_131 := fc2_137` are all dead at their point.
+
+Cost of each: dead `x := <lit>` is `PUSH0/PUSH + SWAP + POP` = 7–8 gas; dead
+`x := <var>` is `DUP + SWAP + POP` = 8 gas; a dead initializer is the whole
+right-hand side. `DeadPure` cannot take any of them — it removes a binding
+only when the name is never *mentioned* again, and here the name is assigned
+again (so the binder must survive) or is a plain assignment (which `DeadPure`
+does not consider at all, beyond the `x := x` self-assignment case).
+
+Three coordinated changes:
+
+1. **`DeadStores`** (new pass, `Implementation/DeadStores.lean`):
+   * **R1** delete `.assign xs e` when every `x ∈ xs` is dead at that point
+     and `alwaysEval bound e`;
+   * **R2** rewrite `.letDecl xs (some e)` to `.letDecl xs none` when every
+     `x ∈ xs` is dead at that point and `alwaysEval bound e`.
+
+   Liveness is sequence-local and conservative at every control boundary:
+   `if`/`switch` union their arms with the fall-through set; recursing into a
+   `for` uses `mentioned(cond ∪ post ∪ body) ∪ liveAfter` as the body/post
+   live-out (a sound over-approximation of the loop-carried set that still
+   exposes *within-iteration* dead stores, which is where all the Aave hits
+   are); `break`/`continue`/`leave` reset the live set to the escape set.
+   Reusing `DeadPure`'s `alwaysEval` gives totality and state preservation,
+   so removal can change neither halting nor `EvmState`.
+
+   Soundness follows `DeadPure`'s `DcRel` architecture — skip rules
+   everywhere, a `BoundOK`-style semantic invariant, a syntactic funs
+   relation, and one bidirectional `Step` simulation — with the desync
+   relation weakened from "the unremoved side carries extra dead bindings" to
+   "the two `VEnv`s agree except on names that are dead from here on". Every
+   affected name is local to the enclosing block, so `restore` erases the
+   difference at block exit and the strong `LocalPass`/`EquivBlock` tier stays
+   reachable.
+
+2. **Post-layout wiring.** `compileSource`'s layout arms become
+   `compile (deadStores (stackLayout blk))` (and the object analogue), because
+   that is where the dead stores are created. The cleanup is
+   layout-preserving — R1 removes instructions only and R2 keeps the slot — so
+   a layout chosen for compilability still compiles. `deadStores` also joins
+   `blockRound`/`objectRound` so pipeline-internal dead stores go too.
+
+3. **`RejoinPairs`: two new consumer forms.** Post-layout residue across the
+   five fixtures is 7 `switch` conditions and 3 effectful expression
+   statements: `let x := e; switch x …` → `switch e …`, and
+   `let x := e; op(…, x, …)` for an effectful `op` whose argument list is a
+   pure-total tree with exactly one occurrence of `x`. Same guards as the
+   existing if-condition form (`rjCondPair`), same `rjDepthLimit`.
+
+Non-overlap with the open Uniswap campaign (#130 and its children #132/#133):
+that work is the selector dispatch tree, literal-slot memory forwarding, and
+an Asm→Asm stack scheduler. This is a source-tier dead-store pass behind the
+existing Yul-level layout, and its main target is Aave, which #130 does not
+touch.
+
+Explicitly *not* pursued after measuring: boolean-position
+`iszero(iszero(e)) → e` (already handled one tier down by `AsmPeephole`'s
+double-`iszero` rule, which is why we execute ~1 `ISZERO` per `if` rather
+than 3), and the residual `ISZERO` delta itself (solc reaches ~0 per branch by
+inverting the branch *target* rather than negating the condition — an Asm-tier
+branch-layout change, adjacent to #133).
+
 ### 🚧 Aave/Uniswap gas 5: trial-gated copy propagation + strength reduction + literal-helper object inlining (in progress — PR #TBD)
 
 Fresh dumps at post-#118 main (Aave 27.33M vs 18.24M, Uniswap 1.277M vs 907k)
