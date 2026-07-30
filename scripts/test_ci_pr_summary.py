@@ -19,9 +19,9 @@ HEAD_LINES = [
     "Gas row:\toptimizer\tcodegen\tadded.yul\t160\t150",
     # Two shards of one suite, to check they are summed rather than overwritten.
     "Compile time: suite=optimizer mode=codegen ours_ms=4000 solc_ms=8000 "
-    "frontend_ms=0 fixtures=5",
+    "frontend_ms=0 fixtures=5 solc_fixtures=5 rejected_ms=0 rejected=0",
     "Compile time: suite=optimizer mode=codegen ours_ms=2000 solc_ms=4000 "
-    "frontend_ms=0 fixtures=3",
+    "frontend_ms=0 fixtures=3 solc_fixtures=3 rejected_ms=0 rejected=0",
     "sorry_scan=pass",
     "axioms=pass",
     "spec_closure=pass",
@@ -42,7 +42,7 @@ MAIN_LINES = [
     "Gas row:\toptimizer\tcodegen\tshared.yul\t150\t100",
     "Gas row:\toptimizer\tcodegen\tdropped.yul\t170\t200",
     "Compile time: suite=optimizer mode=codegen ours_ms=5000 solc_ms=11000 "
-    "frontend_ms=0 fixtures=8",
+    "frontend_ms=0 fixtures=8 solc_fixtures=8 rejected_ms=0 rejected=0",
 ]
 
 AAVE_LINES = [
@@ -54,7 +54,7 @@ AAVE_LINES = [
     "Gas row:\taave-v4\tvs_solc_optimized\tPositionStatusMap.sol:nextContinuousTenThousand()\t"
     "21450571\t5975804",
     "Compile time: suite=aave-v4 mode=vs_solc_optimized ours_ms=125000 solc_ms=60000 "
-    "frontend_ms=30000 fixtures=4",
+    "frontend_ms=30000 fixtures=4 solc_fixtures=4 rejected_ms=90000 rejected=3",
 ]
 
 
@@ -105,7 +105,8 @@ class SummaryTest(unittest.TestCase):
     def test_sums_compiler_runtime_across_shards(self):
         t = summary.parse(HEAD_LINES)["runtime"]["optimizer"]
         self.assertEqual(t, dict(mode="codegen", ours_ms=6000, solc_ms=12000,
-                                 frontend_ms=0, fixtures=8))
+                                 frontend_ms=0, fixtures=8, solc_fixtures=8,
+                                 rejected_ms=0, rejected=0))
 
     def test_renders_compiler_runtime_against_main(self):
         rendered = summary.build_comment(
@@ -133,7 +134,7 @@ class SummaryTest(unittest.TestCase):
         main = summary.parse([
             line if not line.startswith("Compile time:") else
             "Compile time: suite=optimizer mode=codegen ours_ms=6000 solc_ms=11000 "
-            "frontend_ms=0 fixtures=4"
+            "frontend_ms=0 fixtures=4 solc_fixtures=4 rejected_ms=0 rejected=0"
             for line in MAIN_LINES])
         rendered = summary.build_comment(head, {}, "", main, "")
 
@@ -149,6 +150,18 @@ class SummaryTest(unittest.TestCase):
         self.assertIn("| aave-v4 | 4 | 2.1 min | — | 31.2 s | — | 1.0 min | 208.3% |",
                       rendered)
         self.assertIn("30.0 s of solc `--ir` front-end lowering", rendered)
+        # Time spent on rejected fixtures is surfaced, not folded into the total.
+        self.assertIn("1.5 min this compiler spent on 3 fixture(s) it then rejected",
+                      rendered)
+
+    def test_flags_fixtures_solc_would_not_assemble(self):
+        """A solc compile that failed is uncharged, so its column covers less."""
+        rendered = summary.build_comment(summary.parse([
+            "Compile time: suite=aave-v4 mode=vs_solc_optimized ours_ms=100 solc_ms=40 "
+            "frontend_ms=10 fixtures=4 solc_fixtures=2 rejected_ms=0 rejected=0",
+        ]), {}, sha="")
+
+        self.assertIn("solc's column covers 2 fewer fixture(s)", rendered)
 
     def test_reports_missing_compiler_runtime(self):
         rendered = summary.build_comment(

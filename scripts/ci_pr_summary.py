@@ -114,13 +114,16 @@ def parse(lines):
             continue
 
         m = re.search(r"Compile time: suite=(\S+) mode=(\S+) ours_ms=(\d+) solc_ms=(\d+) "
-                      r"frontend_ms=(\d+) fixtures=(\d+)", ln)
+                      r"frontend_ms=(\d+) fixtures=(\d+) solc_fixtures=(\d+) "
+                      r"rejected_ms=(\d+) rejected=(\d+)", ln)
         if m:
             suite, mode = m.group(1), m.group(2)
             t = data["runtime"].setdefault(
-                suite, dict(mode=mode, ours_ms=0, solc_ms=0, frontend_ms=0, fixtures=0))
-            t["ours_ms"] += int(m.group(3)); t["solc_ms"] += int(m.group(4))
-            t["frontend_ms"] += int(m.group(5)); t["fixtures"] += int(m.group(6))
+                suite, dict(mode=mode, ours_ms=0, solc_ms=0, frontend_ms=0, fixtures=0,
+                            solc_fixtures=0, rejected_ms=0, rejected=0))
+            for i, key in enumerate(["ours_ms", "solc_ms", "frontend_ms", "fixtures",
+                                     "solc_fixtures", "rejected_ms", "rejected"], start=3):
+                t[key] += int(m.group(i))
             continue
 
         fields = ln.split("\t")
@@ -203,6 +206,29 @@ def per_fixture_ms(ms, fixtures):
 def fmt_per_fixture(ms, fixtures):
     mean = per_fixture_ms(ms, fixtures)
     return "—" if mean is None else fmt_duration(mean)
+
+
+def runtime_notes(suites):
+    """Caveats that only apply when the runs actually hit them.
+
+    Both columns are meant to cover one identical fixture set. Anything that
+    breaks that — a fixture this compiler rejected, or one solc would not
+    assemble — is called out rather than silently folded into a total.
+    """
+    notes = []
+    rejected = sum(t["rejected"] for t in suites.values())
+    if rejected:
+        rejected_ms = sum(t["rejected_ms"] for t in suites.values())
+        notes.append(
+            f"Excluded from the table: {fmt_duration(rejected_ms)} this compiler spent on "
+            f"{rejected} fixture(s) it then rejected. solc is not asked for those, so "
+            "counting them would compare the two backends on different work.")
+    shortfall = sum(max(0, t["fixtures"] - t["solc_fixtures"]) for t in suites.values())
+    if shortfall:
+        notes.append(
+            f"solc's column covers {shortfall} fewer fixture(s) than this compiler's: "
+            "its compile of that Yul failed, and a failed run is not charged.")
+    return notes
 
 
 def runtime_table(out, suites, base_suites=None):
@@ -498,41 +524,44 @@ def build_comment(data, results, sha, base=None, base_sha="", base_results=None)
     runtime = data["runtime"]
     if runtime:
         out.append("")
-        out.append("How long each compiler spent on the suites above — the same runs, "
-                   "with the clock read around each fixture's compile.")
+        out.append("Both columns measure the **same job on the same input**: unoptimized Yul → "
+                   "EVM bytecode, no optimizer on either side. solc's Solidity→Yul front-end is "
+                   "charged to neither — it runs once, before both, and its output is what each "
+                   "then compiles.")
         out.append("")
         vs_opt_rt = {s: t for s, t in runtime.items() if t.get("mode") == "vs_solc_optimized"}
         codegen_rt = {s: t for s, t in runtime.items() if t.get("mode") == "codegen"}
         base_runtime = base["runtime"] if base else {}
         if vs_opt_rt:
-            out.append("**a) Solidity corpora** — this compiler on solc's unoptimized "
-                       "`--via-ir` Yul vs solc's own `--optimize --via-ir` compile of the "
-                       "same contract.")
+            out.append("**a) Solidity corpora** — both compile the unoptimized `--ir` Yul solc "
+                       "lowered the contract to; solc via `--strict-assembly`.")
             out.append("")
             runtime_table(out, vs_opt_rt,
                           {s: t for s, t in base_runtime.items()
                            if t.get("mode") == "vs_solc_optimized"})
             frontend_ms = sum(t["frontend_ms"] for t in vs_opt_rt.values())
             out.append("")
-            out.append(f"<sub>Excluded from both columns: {fmt_duration(frontend_ms)} of solc "
-                       "`--ir` front-end lowering, which produces this compiler's input and "
-                       "is charged to neither backend.</sub>")
+            out.append(f"<sub>Charged to neither column: {fmt_duration(frontend_ms)} of solc "
+                       "`--ir` front-end lowering, which produces the Yul both compile. Also not "
+                       "counted is solc's `--optimize --via-ir` compile that the gas comparison "
+                       "runs — it starts from Solidity and includes the Yul optimizer, so it is "
+                       "not the same job.</sub>")
             out.append("")
         if codegen_rt:
-            out.append("**b) Yul corpora** — both compilers assemble the *same* Yul "
-                       "(solc `--strict-assembly`, no optimizer), so these columns are "
-                       "directly comparable.")
+            out.append("**b) Yul corpora** — the fixtures are already Yul, so both compile it "
+                       "directly; there is no front-end on either side.")
             out.append("")
             runtime_table(out, codegen_rt,
                           {s: t for s, t in base_runtime.items()
                            if t.get("mode") == "codegen"})
             out.append("")
+        for note in runtime_notes(runtime):
+            out.append(f"<sub>{note}</sub>")
+            out.append("")
         out.append("<sub>Each figure is the sum of that suite's per-fixture compile spans, "
                    "added across shards — independent of worker count and sharding, but "
                    "measured on shared CI runners under saturated parallelism. Treat single-digit "
-                   "percentage moves as noise. `fixtures` counts contracts this compiler ran on; "
-                   "solc's total excludes the ones this compiler rejects, which short-circuit "
-                   "before solc is invoked. Nothing here affects the verdict.</sub>")
+                   "percentage moves as noise. Nothing here affects the verdict.</sub>")
         out.append("")
     else:
         out.append("- _No compiler runtime captured._")

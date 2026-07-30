@@ -48,13 +48,23 @@ private structure FileOutcome where
   checked : Bool := false
   failure : Option (String × String) := none
   gas : Option GasRow := none
-  /-- Nanoseconds this compiler spent turning the fixture's Yul into bytecode. -/
+  /-- Nanoseconds this compiler spent turning the fixture's Yul into bytecode,
+  on fixtures it accepted. Both corpora here are already Yul, so there is no
+  Solidity front-end on either side to exclude. -/
   oursNs : Nat := 0
-  /-- Nanoseconds the pinned solc spent assembling the *same* Yul. -/
+  /-- Nanoseconds the pinned solc spent assembling the *same* Yul with no
+  optimizer (`--strict-assembly`) — the same job on the same input. -/
   solcNs : Nat := 0
-  /-- Whether this compiler ran at all, i.e. whether the two spans above are a
-  measurement rather than a fixture that never reached compilation. -/
+  /-- This compiler's time on fixtures it *rejected*, kept apart so the two
+  backend figures cover one identical fixture set. -/
+  rejectedNs : Nat := 0
+  /-- Whether this compiler accepted the fixture, i.e. `oursNs` is a measurement
+  and solc was asked for the same job. -/
   compiled : Bool := false
+  /-- Whether this compiler rejected it, i.e. `rejectedNs` is a measurement. -/
+  rejected : Bool := false
+  /-- Whether solc's compile succeeded, i.e. `solcNs` is a measurement. -/
+  solcCompiled : Bool := false
 
 /-- Compile one fixture with both compilers and compare — the body of the old
 loop, extracted so it is a pure `IO` unit of work with no shared mutable state. -/
@@ -76,17 +86,20 @@ private def processFile (corpusDir : FilePath) (solcPath : String)
       | none =>
           -- solc is deliberately still not run here: a fixture this compiler
           -- rejects short-circuits exactly as before, so timing adds no work.
-          return { checked := true, oursNs := ← since compileStart, compiled := true,
+          return { checked := true, rejectedNs := ← since compileStart, rejected := true,
                    failure := some (name, "Yul compiler failed") }
       | some ours =>
           let oursNs ← since compileStart
-          -- Both sides assemble the same Yul, so these two spans are directly
-          -- comparable (unlike the gas runner's, where solc also runs its front-end).
+          -- Both sides assemble the same Yul with no optimizer, so these two
+          -- spans are the same job on the same input.
           let (solcResult, solcNs) ← timedIO (compileWithSolc solcPath source)
-          let timed : FileOutcome := { checked := true, oursNs, solcNs, compiled := true }
+          let timed : FileOutcome := { checked := true, oursNs, compiled := true }
           match solcResult with
+          -- A failed solc compile is not charged: a fast error would otherwise
+          -- deflate its total against a fixture this compiler did real work on.
           | .error message => return { timed with failure := some (name, message) }
           | .ok solc =>
+              let timed := { timed with solcNs, solcCompiled := true }
               match compareBytecode ours solc (scenarioSeed := fixtureSeed name) with
               | .error message => return { timed with failure := some (name, message) }
               | .ok () =>
@@ -126,7 +139,10 @@ private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFil
   let mut skipped := 0
   let mut oursNs := 0
   let mut solcNs := 0
+  let mut rejectedNs := 0
   let mut compiledCount := 0
+  let mut rejectedCount := 0
+  let mut solcCompiledCount := 0
   let jobs ← detectJobs
   let outcomes : Array FileOutcome ← parMap jobs files (processFile corpusDir solcPath)
   for outcome in outcomes do
@@ -137,7 +153,10 @@ private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFil
     if let some row := outcome.gas then measuredGas := measuredGas.push row
     oursNs := oursNs + outcome.oursNs
     solcNs := solcNs + outcome.solcNs
+    rejectedNs := rejectedNs + outcome.rejectedNs
     if outcome.compiled then compiledCount := compiledCount + 1
+    if outcome.rejected then rejectedCount := rejectedCount + 1
+    if outcome.solcCompiled then solcCompiledCount := solcCompiledCount + 1
 
   let failureNames := failures.map (·.1)
   let unexpected := failures.filter (fun failure => !allowed.contains failure.1)
@@ -182,13 +201,15 @@ private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFil
     s!"solc={measuredGas.foldl (fun a r => a + r.solc) 0} comparable={measuredGas.size}")
   -- Machine-readable compiler runtime for the PR summary comment: the summed
   -- per-fixture spans of each compiler on this suite (shard), so the summary can
-  -- add shards up and diff head against main. `frontend_ms=0` because this suite
-  -- feeds both compilers Yul directly — there is no Solidity front-end to charge.
-  -- `fixtures` counts the fixtures this compiler ran on; solc's total excludes
-  -- the few this compiler rejects, which short-circuit before solc is invoked.
+  -- add shards up and diff head against main. Same job, same input, same
+  -- `fixtures` set: unoptimized Yul → bytecode. `frontend_ms=0` because this
+  -- corpus feeds both compilers Yul directly — there is no Solidity front-end on
+  -- either side. `rejected_ms` is this compiler's time on the `rejected` fixtures
+  -- it could not compile, kept out of `ours_ms` so the pair stays like-for-like.
   IO.println (s!"Compile time: suite={suiteName} mode=codegen " ++
     s!"ours_ms={toMs oursNs} solc_ms={toMs solcNs} frontend_ms=0 " ++
-    s!"fixtures={compiledCount}")
+    s!"fixtures={compiledCount} solc_fixtures={solcCompiledCount} " ++
+    s!"rejected_ms={toMs rejectedNs} rejected={rejectedCount}")
   -- Per-fixture rows let the PR summary compare a head run with a main run on
   -- their exact shared fixture set. Tabs are intentional: fixture paths may
   -- contain spaces, but Solidity corpus paths cannot contain tabs.
