@@ -396,34 +396,43 @@ mutual
 end
 
 /-- Layout entries are keyed by `litValue (.string ·)`, which keeps only the
-first **32 UTF-8 bytes** of the name. A qualified name longer than that aliases
-with every other name sharing its 32-byte prefix, and two aliasing keys make
-`compileResolvedObject`'s `Nodup` guard fail — rejecting the *whole object tree*
-even when nothing references either name.
+first **32 UTF-8 bytes** of the name. Two entries whose names share a 32-byte
+prefix therefore get the *same* key, and `compileResolvedObject`'s `Nodup` guard
+rejects the *whole object tree* when that happens — even if nothing references
+either name.
 
-That is reachable from ordinary input: solc emits a `.metadata` segment in every
-object, so a grandchild contributes both `"parent.child"` and
-`"parent.child..metadata"`, which share a 32-byte prefix as soon as the two
-generated names total more than 32 bytes (`"C_1234.C_1234_deployed"` already
-does at modest name lengths).
+Ordinary input reaches it: solc emits a `.metadata` segment in every object, so
+a grandchild contributes both `"parent.child"` and `"parent.child..metadata"`,
+and those share a 32-byte prefix as soon as the two generated names total more
+than 32 bytes (`"C_1234.C_1234_deployed"` already does at modest name lengths).
 
-Such a name is *unusable* anyway: `litWF (.string s)` requires `s.toUTF8.size ≤
-32`, so the validator rejects any `dataoffset`/`datasize` naming it. Dropping the
-entry therefore removes only dead weight — a program that does reference the name
-still fails to resolve and is rejected, exactly as before, rather than being
-miscompiled. Direct data segments are built by `dataEntries` and are untouched,
-so `Layout.Consistent` (which quantifies over an object's *direct* segments)
-is unaffected. -/
+The second of that pair is the one to drop, and *not* because of its length: a
+qualified name is unreferenceable exactly when `Validate.objectNameAllowed`
+refuses it, i.e. when it starts with `"."` or contains `".."`. Joining a
+`.`-prefixed data-segment name onto its parent always produces `".."`, so this
+rule removes precisely the propagated `.metadata`-style entries and nothing
+else. Dropping them removes only entries no program could ever name.
+
+Length is deliberately *not* the criterion. Layout references are checked by
+`objectNameAllowed`, not `literalWordWF`, so a name over 32 bytes is perfectly
+legal — Solidity's own `long_object_name.yul` resolves the 33-byte
+`"object2.object3.object4.datablock"`, and resolution matches entry names
+exactly (`findEntry`), so it works regardless of key truncation. Filtering by
+length would break it.
+
+Direct data segments are built by `dataEntries` and are untouched, so
+`Layout.Consistent` — which quantifies over an object's *direct* segments — is
+unaffected. -/
 private def shiftChildEntries (base : Nat) (child : ObjectPlan) : List ObjectEntry :=
   child.entries.filterMap fun entry =>
     if entry.name == child.name then
       some { entry with offset := base + entry.offset, size := child.bytecode.length }
     else
       let qualified := child.name ++ "." ++ entry.name
-      if qualified.utf8ByteSize ≤ 32 then
-        some { name := qualified, offset := base + entry.offset, size := entry.size }
-      else
+      if qualified.startsWith "." || qualified.contains ".." then
         none
+      else
+        some { name := qualified, offset := base + entry.offset, size := entry.size }
 
 private def childEntries : Nat → List ObjectPlan → List ObjectEntry
   | _, [] => []

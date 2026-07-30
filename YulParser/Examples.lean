@@ -92,6 +92,21 @@ def nestedMetadataObject : String :=
 #guard (parseSource nestedMetadataObject).isSome
 #guard (compileSource nestedMetadataObject).isSome
 
+/-! A *referenceable* qualified name must survive, however long it is. Layout
+references are validated by `objectNameAllowed`, not `literalWordWF`, so a name
+over 32 bytes is legal: this is Solidity's own `yulInterpreterTests`
+`long_object_name.yul`, resolving the 33-byte
+`"object2.object3.object4.datablock"`. Filtering propagated entries by *length*
+rather than by referenceability would reject it. -/
+def longObjectName : String :=
+  "object \"t\" { code { " ++
+  "datacopy(not(datasize(\"object2.object3.object4.datablock\")), 0, 0) } " ++
+  "object \"object2\" { code{} object \"object3\" { code{} " ++
+  "object \"object4\" { code{} data \"datablock\" \"\" } } } }"
+
+#guard (parseSource longObjectName).isSome
+#guard (compileSource longObjectName).isSome
+
 /-! Shortening either generated name brings both keys under 32 bytes; the same
 tree compiled before the fix too, so this pins that the fix did not change it. -/
 #guard (compileSource
