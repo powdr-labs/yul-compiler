@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.StackLayout
+import Std.Data.HashMap.Lemmas
 import YulEvmCompiler.Optimizer.Implementation.InlineCallsSound
 import YulEvmCompiler.Optimizer.Implementation.DeadPure
 import YulEvmCompiler.Optimizer.Implementation.BoundFunCongr
@@ -5357,6 +5358,219 @@ mutual
         simp [argsMentions, Bool.or_assoc]
 end
 
+theorem addNamesMentionPositions_getD (position : Nat)
+    (seen : StackV2.MentionPositions) (x : Ident) : ∀ names : List Ident,
+    (StackV2.addNamesMentionPositions position seen names).getD x 0 =
+      if x ∈ names then position else seen.getD x 0
+  | [] => by simp [StackV2.addNamesMentionPositions]
+  | name :: rest => by
+      rw [StackV2.addNamesMentionPositions,
+        addNamesMentionPositions_getD position (seen.insert name position) x rest]
+      by_cases hrest : x ∈ rest
+      · simp [hrest]
+      · by_cases hname : x = name
+        · subst name; simp [hrest]
+        · have hname' : name ≠ x := fun h => hname h.symm
+          rw [Std.HashMap.getD_insert]
+          simp [hrest, hname, hname']
+
+mutual
+  theorem addExprMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) : ∀ e : Expr Op,
+      (StackV2.addExprMentionPositions position seen e).getD x 0 =
+        if exprMentions x e then position else seen.getD x 0
+    | .lit _ => by simp [StackV2.addExprMentionPositions, exprMentions]
+    | .var name => by
+        simp [StackV2.addExprMentionPositions, exprMentions,
+          Std.HashMap.getD_insert, Bool.beq_eq_decide_eq, Eq.comm]
+    | .builtin _ args | .call _ args => by
+        exact addArgsMentionPositions_getD position seen x args
+
+  theorem addArgsMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) : ∀ args : List (Expr Op),
+      (StackV2.addArgsMentionPositions position seen args).getD x 0 =
+        if argsMentions x args then position else seen.getD x 0
+    | [] => by simp [StackV2.addArgsMentionPositions, argsMentions]
+    | e :: rest => by
+        rw [StackV2.addArgsMentionPositions,
+          addArgsMentionPositions_getD, addExprMentionPositions_getD]
+        by_cases he : exprMentions x e <;>
+          by_cases hr : argsMentions x rest <;> simp [argsMentions, he, hr]
+end
+
+mutual
+  theorem addStmtMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) : ∀ statement : Stmt Op,
+      (StackV2.addStmtMentionPositions position seen statement).getD x 0 =
+        if stmtMentions x statement then position else seen.getD x 0 := by
+    intro statement
+    cases statement <;>
+      simp only [StackV2.addStmtMentionPositions, stmtMentions,
+        addExprMentionPositions_getD, addStmtsMentionPositions_getD,
+        addCasesMentionPositions_getD, addOptExprMentionPositions_getD,
+        addOptBlockMentionPositions_getD, addNamesMentionPositions_getD] <;>
+      repeat' split <;> simp_all
+
+  theorem addStmtsMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) : ∀ body : Block Op,
+      (StackV2.addStmtsMentionPositions position seen body).getD x 0 =
+        if stmtsMentions x body then position else seen.getD x 0
+    | [] => by simp [StackV2.addStmtsMentionPositions, stmtsMentions]
+    | statement :: rest => by
+        rw [StackV2.addStmtsMentionPositions,
+          addStmtsMentionPositions_getD, addStmtMentionPositions_getD]
+        by_cases hs : stmtMentions x statement <;>
+          by_cases hr : stmtsMentions x rest <;> simp [stmtsMentions, hs, hr]
+
+  theorem addCasesMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) :
+      ∀ cases : List (Literal × Block Op),
+      (StackV2.addCasesMentionPositions position seen cases).getD x 0 =
+        if casesMentions x cases then position else seen.getD x 0
+    | [] => by simp [StackV2.addCasesMentionPositions, casesMentions]
+    | (_, body) :: rest => by
+        rw [StackV2.addCasesMentionPositions,
+          addCasesMentionPositions_getD, addStmtsMentionPositions_getD]
+        by_cases hb : stmtsMentions x body <;>
+          by_cases hr : casesMentions x rest <;> simp [casesMentions, hb, hr]
+
+  theorem addOptExprMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) :
+      ∀ value : Option (Expr Op),
+      (StackV2.addOptExprMentionPositions position seen value).getD x 0 =
+        if optExprMentions x value then position else seen.getD x 0
+    | none => by simp [StackV2.addOptExprMentionPositions, optExprMentions]
+    | some e => by
+        change (StackV2.addExprMentionPositions position seen e).getD x 0 = _
+        exact addExprMentionPositions_getD position seen x e
+
+  theorem addOptBlockMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) :
+      ∀ value : Option (Block Op),
+      (StackV2.addOptBlockMentionPositions position seen value).getD x 0 =
+        if optBlockMentions x value then position else seen.getD x 0
+    | none => by simp [StackV2.addOptBlockMentionPositions, optBlockMentions]
+    | some body => by
+        change (StackV2.addStmtsMentionPositions position seen body).getD x 0 = _
+        exact addStmtsMentionPositions_getD position seen x body
+end
+
+def lastMentionFrom (x : Ident) : Nat → Nat → Block Op → Nat
+  | _, latest, [] => latest
+  | position, latest, statement :: rest =>
+      lastMentionFrom x (position + 1)
+        (if stmtMentions x statement then position else latest) rest
+
+theorem mentionPositionsFrom_getD (x : Ident) :
+    ∀ (position latest : Nat) (seen : StackV2.MentionPositions) (body : Block Op),
+    seen.getD x 0 = latest →
+      (StackV2.mentionPositionsFrom position seen body).getD x 0 =
+        lastMentionFrom x position latest body
+  | _, _, _, [], h => by simpa [StackV2.mentionPositionsFrom, lastMentionFrom] using h
+  | position, latest, seen, statement :: rest, h => by
+      rw [StackV2.mentionPositionsFrom, lastMentionFrom]
+      apply mentionPositionsFrom_getD
+      rw [addStmtMentionPositions_getD, h]
+
+theorem mentionPositions_getD (x : Ident) (body : Block Op) :
+    (StackV2.mentionPositions body).getD x 0 = lastMentionFrom x 1 0 body := by
+  apply mentionPositionsFrom_getD
+  simp
+
+theorem lastMentionFrom_append (x : Ident) (position latest : Nat)
+    (preBody rest : Block Op) :
+    lastMentionFrom x position latest (preBody ++ rest) =
+      lastMentionFrom x (position + preBody.length)
+        (lastMentionFrom x position latest preBody) rest := by
+  induction preBody generalizing position latest with
+  | nil => simp [lastMentionFrom]
+  | cons statement tail ih =>
+      simpa [lastMentionFrom, Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using
+        (ih (position := position + 1)
+          (latest := if stmtMentions x statement then position else latest))
+
+theorem lastMentionFrom_lt_end (x : Ident) {position latest : Nat}
+    (hlatest : latest < position) : ∀ body : Block Op,
+    lastMentionFrom x position latest body < position + body.length
+  | [] => by simpa [lastMentionFrom] using hlatest
+  | statement :: rest => by
+      rw [lastMentionFrom, List.length_cons]
+      have hnext :
+          (if stmtMentions x statement then position else latest) <
+            position + 1 := by
+        split <;> omega
+      have ih := lastMentionFrom_lt_end x hnext rest
+      omega
+
+theorem lastMentionFrom_of_mentions_false (x : Ident) (position latest : Nat) :
+    ∀ body : Block Op, stmtsMentions x body = false →
+      lastMentionFrom x position latest body = latest
+  | [], _ => by simp [lastMentionFrom]
+  | statement :: rest, h => by
+      have hs : stmtMentions x statement = false := by
+        cases hstmt : stmtMentions x statement <;>
+          simp_all [stmtsMentions]
+      have hr : stmtsMentions x rest = false := by
+        cases hrest : stmtsMentions x rest <;>
+          simp_all [stmtsMentions]
+      rw [lastMentionFrom, if_neg (by simpa using hs)]
+      exact lastMentionFrom_of_mentions_false x (position + 1) latest rest hr
+
+theorem lastMentionFrom_ge_latest (x : Ident) {position latest : Nat}
+    (hlatest : latest ≤ position) : ∀ body : Block Op,
+    latest ≤ lastMentionFrom x position latest body
+  | [] => by simp [lastMentionFrom]
+  | statement :: rest => by
+      rw [lastMentionFrom]
+      split
+      · exact hlatest.trans (lastMentionFrom_ge_latest x (by omega) rest)
+      · exact lastMentionFrom_ge_latest x (by omega) rest
+
+theorem lastMentionFrom_ge_of_mentions_true (x : Ident) (position latest : Nat) :
+    ∀ body : Block Op, stmtsMentions x body = true →
+      position ≤ lastMentionFrom x position latest body
+  | [], h => by simp [stmtsMentions] at h
+  | statement :: rest, h => by
+      simp only [stmtsMentions, Bool.or_eq_true] at h
+      rw [lastMentionFrom]
+      rcases h with hs | hr
+      · rw [if_pos (by simpa using hs)]
+        exact lastMentionFrom_ge_latest x (by omega) rest
+      · have ih := lastMentionFrom_ge_of_mentions_true x (position + 1)
+          (if stmtMentions x statement then position else latest) rest hr
+        omega
+
+theorem lastMentionFrom_lt_start_iff (x : Ident) {position latest : Nat}
+    (hlatest : latest < position) (body : Block Op) :
+    lastMentionFrom x position latest body < position ↔
+      stmtsMentions x body = false := by
+  constructor
+  · intro hlt
+    by_contra hfalse
+    have htrue : stmtsMentions x body = true := by
+      cases h : stmtsMentions x body <;> simp_all
+    exact (Nat.not_le_of_gt hlt)
+      (lastMentionFrom_ge_of_mentions_true x position latest body htrue)
+  · intro hfalse
+    rw [lastMentionFrom_of_mentions_false x position latest body hfalse]
+    exact hlatest
+
+theorem mentionPositions_le_iff_suffix (x : Ident)
+    (preBody rest : Block Op) :
+    (StackV2.mentionPositions (preBody ++ rest)).getD x 0 ≤ preBody.length ↔
+      stmtsMentions x rest = false := by
+  rw [mentionPositions_getD, lastMentionFrom_append]
+  have hpre : lastMentionFrom x 1 0 preBody < 1 + preBody.length :=
+    lastMentionFrom_lt_end x (by omega) preBody
+  have hiff := lastMentionFrom_lt_start_iff x hpre rest
+  constructor
+  · intro hle
+    apply hiff.mp
+    omega
+  · intro hfalse
+    have hlt := hiff.mpr hfalse
+    omega
+
 mutual
   theorem addStmtMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
       ∀ statement : Stmt Op,
@@ -5477,11 +5691,236 @@ theorem deadPrefixSearchIndexed_eq_slow : ∀ pre rest indices,
       · rfl
       · exact deadPrefixSearchIndexed_eq_slow pre' rest indices hmatch.2
 
+def maxMention (positions : StackV2.MentionPositions) (names : List Ident) : Nat :=
+  names.foldl (fun latest name => max latest (positions.getD name 0)) 0
+
+def DeadPrefixStateMatches (positions : StackV2.MentionPositions)
+    (names : List Ident) (hasFun : Bool) (state : StackV2.DeadPrefixState) : Prop :=
+  (∀ x, state.names.contains x = decide (x ∈ names)) ∧
+  state.namesUnique = decide names.Nodup ∧
+  state.hasNames = !names.isEmpty ∧
+  state.lastMention = maxMention positions names ∧
+  state.hasFun = hasFun
+
+theorem directDecls_append (left right : Block Op) :
+    StackV2.directDecls (left ++ right) =
+      StackV2.directDecls left ++ StackV2.directDecls right := by
+  induction left with
+  | nil => simp [StackV2.directDecls]
+  | cons statement rest ih =>
+      cases statement <;> simp [StackV2.directDecls, ih, List.append_assoc]
+
+theorem hasDirectFun_append (left right : Block Op) :
+    hasDirectFun (left ++ right) =
+      (hasDirectFun left || hasDirectFun right) := by
+  induction left with
+  | nil => simp [hasDirectFun]
+  | cons statement rest ih =>
+      cases statement <;> simp [hasDirectFun, ih]
+
+theorem maxMention_append_name (positions : StackV2.MentionPositions)
+    (names : List Ident) (name : Ident) :
+    maxMention positions (names ++ [name]) =
+      max (maxMention positions names) (positions.getD name 0) := by
+  simp [maxMention]
+
+theorem deadPrefixState_addName_matches
+    {positions : StackV2.MentionPositions} {names : List Ident}
+    {hasFun : Bool} {state : StackV2.DeadPrefixState}
+    (h : DeadPrefixStateMatches positions names hasFun state) (name : Ident) :
+    DeadPrefixStateMatches positions (names ++ [name]) hasFun
+      (state.addName positions name) := by
+  rcases h with ⟨hmem, hunique, hnames, hlast, hfun⟩
+  constructor
+  · intro x
+    simp [StackV2.DeadPrefixState.addName, hmem, Bool.beq_eq_decide_eq,
+      List.mem_append, Eq.comm, Bool.or_comm]
+  constructor
+  · rw [StackV2.DeadPrefixState.addName, hunique, hmem]
+    by_cases hn : names.Nodup
+    · simp only [hn, decide_true, Bool.true_and, List.nodup_append,
+        List.nodup_singleton, List.mem_singleton, not_false_eq_true,
+        true_and, decide_eq_decide]
+      by_cases hm : name ∈ names
+      · have hnot : ¬ ∀ a ∈ names, ¬ name = a := by
+          intro hall
+          exact hall name hm rfl
+        simp [hm, hnot, List.nodup_append]
+      · have hall : ∀ a ∈ names, ¬ name = a := by
+          intro a ha heq
+          exact hm (heq ▸ ha)
+        simp [hm, hall, List.nodup_append]
+        exact ⟨hn, fun a ha heq => hall a ha heq.symm⟩
+    · simp [hn, List.nodup_append]
+  constructor
+  · simp [StackV2.DeadPrefixState.addName]
+  constructor
+  · simp [StackV2.DeadPrefixState.addName, hlast, maxMention_append_name]
+  · simp [StackV2.DeadPrefixState.addName, hfun]
+
+theorem deadPrefixState_addNames_matches
+    (positions : StackV2.MentionPositions) :
+    ∀ {oldNames : List Ident} {hasFun : Bool}
+      {state : StackV2.DeadPrefixState} (newNames : List Ident),
+      DeadPrefixStateMatches positions oldNames hasFun state →
+        DeadPrefixStateMatches positions (oldNames ++ newNames) hasFun
+          (state.addNames positions newNames)
+  | _, _, _, [], h => by
+      rw [StackV2.DeadPrefixState.addNames]
+      simpa using h
+  | oldNames, hasFun, state, name :: rest, h => by
+      rw [StackV2.DeadPrefixState.addNames]
+      have hadd := deadPrefixState_addName_matches h name
+      simpa [List.append_assoc] using
+        deadPrefixState_addNames_matches positions rest hadd
+
+theorem deadPrefixState_addStmt_matches
+    {positions : StackV2.MentionPositions} {pre : Block Op}
+    {state : StackV2.DeadPrefixState}
+    (h : DeadPrefixStateMatches positions (StackV2.directDecls pre)
+      (hasDirectFun pre) state) (statement : Stmt Op) :
+    DeadPrefixStateMatches positions (StackV2.directDecls (pre ++ [statement]))
+      (hasDirectFun (pre ++ [statement]))
+      (state.addStmt positions statement) := by
+  rw [directDecls_append, hasDirectFun_append]
+  cases statement with
+  | letDecl names value =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using
+        deadPrefixState_addNames_matches positions names h
+  | funDef f params rets body =>
+      rcases h with ⟨hmem, hunique, hnames, hlast, hfun⟩
+      simp only [StackV2.directDecls, List.append_nil, hasDirectFun,
+        Bool.or_true, StackV2.DeadPrefixState.addStmt]
+      exact ⟨hmem, hunique, hnames, hlast, rfl⟩
+  | block body =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+  | assign names value =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+  | cond condition body =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+  | «switch» condition cases dflt =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+  | forLoop init condition post body =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+  | exprStmt value =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+  | «break» | «continue» | «leave» =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+
+theorem deadPrefixInitialState_matches (positions : StackV2.MentionPositions)
+    (pre : Block Op) :
+    DeadPrefixStateMatches positions (StackV2.directDecls pre)
+      (hasDirectFun pre) (StackV2.deadPrefixInitialState positions pre) := by
+  have hempty : DeadPrefixStateMatches positions [] false {} := by
+    simp [DeadPrefixStateMatches, maxMention]
+  have hnames := deadPrefixState_addNames_matches positions
+    (StackV2.directDecls pre) hempty
+  rcases hnames with ⟨hmem, hunique, hhasNames, hlast, _⟩
+  exact ⟨hmem, hunique, hhasNames, hlast, rfl⟩
+
+theorem foldl_maxMention_le_iff (positions : StackV2.MentionPositions)
+    (bound : Nat) : ∀ (latest : Nat) (names : List Ident),
+    names.foldl (fun current name => max current (positions.getD name 0)) latest ≤
+        bound ↔
+      latest ≤ bound ∧ ∀ name ∈ names, positions.getD name 0 ≤ bound
+  | latest, [] => by simp
+  | latest, name :: rest => by
+      rw [List.foldl, foldl_maxMention_le_iff]
+      simp only [Nat.max_le, List.mem_cons, forall_eq_or_imp]
+      aesop
+
+theorem maxMention_le_iff (positions : StackV2.MentionPositions)
+    (names : List Ident) (bound : Nat) :
+    maxMention positions names ≤ bound ↔
+      ∀ name ∈ names, positions.getD name 0 ≤ bound := by
+  simpa [maxMention] using foldl_maxMention_le_iff positions bound 0 names
+
+theorem deadPrefixLastMention_eq_noneMentioned
+    {positions : StackV2.MentionPositions} {names : List Ident}
+    {hasFun : Bool} {state : StackV2.DeadPrefixState}
+    (hstate : DeadPrefixStateMatches positions names hasFun state)
+    (moved rest : Block Op)
+    (hpositions : positions = StackV2.mentionPositions (moved ++ rest)) :
+    decide (state.lastMention ≤ moved.length) =
+      StackV2.noneMentionedFast names rest := by
+  rcases hstate with ⟨_, _, _, hlast, _⟩
+  rw [Bool.eq_iff_iff, noneMentionedFast_eq]
+  simp only [decide_eq_true_eq]
+  rw [hlast, maxMention_le_iff]
+  rw [List.all_eq_true]
+  simp only [Bool.not_eq_true']
+  constructor
+  · intro hall name hname
+    rw [hpositions] at hall
+    exact (mentionPositions_le_iff_suffix name moved rest).mp (hall name hname)
+  · intro hall name hname
+    rw [hpositions]
+    exact (mentionPositions_le_iff_suffix name moved rest).mpr (hall name hname)
+
+theorem deadPrefixSearchPositions_eq_slow
+    (positions : StackV2.MentionPositions) :
+    ∀ (moved pre rest : Block Op) (position : Nat)
+      (state : StackV2.DeadPrefixState),
+      positions = StackV2.mentionPositions (moved ++ rest) →
+      position = moved.length + 1 →
+      DeadPrefixStateMatches positions (StackV2.directDecls pre)
+        (hasDirectFun pre) state →
+      StackV2.deadPrefixSearchPositions positions pre rest position state =
+        StackV2.deadPrefixSearchSlow pre rest
+  | _, _, [], _, _, _, _, _ => by
+      simp [StackV2.deadPrefixSearchPositions, StackV2.deadPrefixSearchSlow]
+  | moved, pre, statement :: rest, position, state,
+      hpositions, hposition, hstate => by
+      rw [StackV2.deadPrefixSearchPositions, StackV2.deadPrefixSearchSlow]
+      let moved' := moved ++ [statement]
+      let pre' := pre ++ [statement]
+      let state' := state.addStmt positions statement
+      have hstate' : DeadPrefixStateMatches positions
+          (StackV2.directDecls pre') (hasDirectFun pre') state' := by
+        exact deadPrefixState_addStmt_matches hstate statement
+      have hmovedLength : moved'.length = position := by
+        simp [moved', hposition]
+      have hpositions' : positions =
+          StackV2.mentionPositions (moved' ++ rest) := by
+        simpa [moved', List.append_assoc] using hpositions
+      have hlast : decide (state'.lastMention ≤ position) =
+          StackV2.noneMentionedFast (StackV2.directDecls pre') rest := by
+        rw [← hmovedLength]
+        exact deadPrefixLastMention_eq_noneMentioned hstate' moved' rest hpositions'
+      have hstateRec := hstate'
+      rcases hstate' with ⟨_, hunique, hhasNames, _, hhasFun⟩
+      have hcondition :
+          (!rest.isEmpty && state'.hasNames && state'.namesUnique &&
+            decide (state'.lastMention ≤ position) && !state'.hasFun) =
+          (!rest.isEmpty && !(StackV2.directDecls pre').isEmpty &&
+            nodupFast (StackV2.directDecls pre') &&
+            StackV2.noneMentionedFast (StackV2.directDecls pre') rest &&
+            !hasDirectFun pre') := by
+        rw [hhasNames, hunique, nodupFast_eq_decide, hlast, hhasFun]
+      rw [hcondition]
+      split
+      · rfl
+      · apply deadPrefixSearchPositions_eq_slow positions moved' pre' rest
+        · exact hpositions'
+        · omega
+        · exact hstateRec
+
 theorem deadPrefixSearch_eq_slow (pre rest : Block Op) :
     StackV2.deadPrefixSearch pre rest = StackV2.deadPrefixSearchSlow pre rest := by
   unfold StackV2.deadPrefixSearch
-  apply deadPrefixSearchIndexed_eq_slow
-  exact (suffixMentionIndices_sound rest).1
+  apply deadPrefixSearchPositions_eq_slow
+    (StackV2.mentionPositions rest) [] pre rest
+  · simp
+  · simp
+  · exact deadPrefixInitialState_matches _ pre
 
 theorem deadPrefixSearchSlow_sound : ∀ outer pre rest out,
     StackV2.deadPrefixSearchSlow pre rest = some out →

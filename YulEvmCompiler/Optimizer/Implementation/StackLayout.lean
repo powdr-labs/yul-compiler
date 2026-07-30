@@ -2367,6 +2367,13 @@ def directDecls : Block Op → List Ident
   | _ :: rest => directDecls rest
 
 abbrev MentionSet := Std.HashSet Ident
+abbrev MentionPositions := Std.HashMap Ident Nat
+
+def addNamesMentionPositions (position : Nat) :
+    MentionPositions → List Ident → MentionPositions
+  | seen, [] => seen
+  | seen, name :: rest =>
+      addNamesMentionPositions position (seen.insert name position) rest
 
 mutual
   def addExprMentions (seen : MentionSet) : Expr Op → MentionSet
@@ -2378,6 +2385,86 @@ mutual
     | [] => seen
     | e :: rest => addArgsMentions (addExprMentions seen e) rest
 end
+
+mutual
+  def addExprMentionPositions (position : Nat) (seen : MentionPositions) :
+      Expr Op → MentionPositions
+    | .lit _ => seen
+    | .var x => seen.insert x position
+    | .builtin _ args | .call _ args =>
+        addArgsMentionPositions position seen args
+
+  def addArgsMentionPositions (position : Nat) (seen : MentionPositions) :
+      List (Expr Op) → MentionPositions
+    | [] => seen
+    | e :: rest =>
+        addArgsMentionPositions position
+          (addExprMentionPositions position seen e) rest
+end
+
+mutual
+  def addStmtMentionPositions (position : Nat) (seen : MentionPositions) :
+      Stmt Op → MentionPositions
+    | .block body => addStmtsMentionPositions position seen body
+    | .funDef _ ps rs body =>
+        addStmtsMentionPositions position
+          (addNamesMentionPositions position
+            (addNamesMentionPositions position seen ps) rs) body
+    | .letDecl xs value =>
+        addOptExprMentionPositions position
+          (addNamesMentionPositions position seen xs) value
+    | .assign xs value =>
+        addExprMentionPositions position
+          (addNamesMentionPositions position seen xs) value
+    | .cond condition body =>
+        addStmtsMentionPositions position
+          (addExprMentionPositions position seen condition) body
+    | .switch condition cases dflt =>
+        addOptBlockMentionPositions position
+          (addCasesMentionPositions position
+            (addExprMentionPositions position seen condition) cases) dflt
+    | .forLoop init condition post body =>
+        addStmtsMentionPositions position
+          (addStmtsMentionPositions position
+            (addExprMentionPositions position
+              (addStmtsMentionPositions position seen init) condition) post) body
+    | .exprStmt e => addExprMentionPositions position seen e
+    | .break | .continue | .leave => seen
+
+  def addStmtsMentionPositions (position : Nat) (seen : MentionPositions) :
+      Block Op → MentionPositions
+    | [] => seen
+    | statement :: rest =>
+        addStmtsMentionPositions position
+          (addStmtMentionPositions position seen statement) rest
+
+  def addCasesMentionPositions (position : Nat) (seen : MentionPositions) :
+      List (Literal × Block Op) → MentionPositions
+    | [] => seen
+    | (_, body) :: rest =>
+        addCasesMentionPositions position
+          (addStmtsMentionPositions position seen body) rest
+
+  def addOptExprMentionPositions (position : Nat) (seen : MentionPositions) :
+      Option (Expr Op) → MentionPositions
+    | none => seen
+    | some e => addExprMentionPositions position seen e
+
+  def addOptBlockMentionPositions (position : Nat) (seen : MentionPositions) :
+      Option (Block Op) → MentionPositions
+    | none => seen
+    | some body => addStmtsMentionPositions position seen body
+end
+
+/-- Map each mentioned identifier to its last top-level statement position. -/
+def mentionPositionsFrom : Nat → MentionPositions → Block Op → MentionPositions
+  | _, seen, [] => seen
+  | position, seen, statement :: rest =>
+      mentionPositionsFrom (position + 1)
+        (addStmtMentionPositions position seen statement) rest
+
+def mentionPositions (body : Block Op) : MentionPositions :=
+  mentionPositionsFrom 1 {} body
 
 mutual
   def addStmtMentions (seen : MentionSet) : Stmt Op → MentionSet
@@ -2461,8 +2548,60 @@ def deadPrefixSearchIndexed : Block Op → Block Op → List MentionSet →
   | _, _ :: _, [] => none
   termination_by _ rest _ => rest.length
 
+/-- Incremental facts about declarations in the candidate prefix. -/
+structure DeadPrefixState where
+  names : MentionSet := {}
+  namesUnique : Bool := true
+  hasNames : Bool := false
+  lastMention : Nat := 0
+  hasFun : Bool := false
+
+def DeadPrefixState.addName (positions : MentionPositions)
+    (state : DeadPrefixState) (name : Ident) : DeadPrefixState :=
+  { names := state.names.insert name
+    namesUnique := state.namesUnique && !state.names.contains name
+    hasNames := true
+    lastMention := max state.lastMention (positions.getD name 0)
+    hasFun := state.hasFun }
+
+def DeadPrefixState.addNames (positions : MentionPositions) :
+    DeadPrefixState → List Ident → DeadPrefixState
+  | state, [] => state
+  | state, name :: rest =>
+      addNames positions (state.addName positions name) rest
+
+def DeadPrefixState.addStmt (positions : MentionPositions)
+    (state : DeadPrefixState) (statement : Stmt Op) : DeadPrefixState :=
+  let state := match statement with
+    | .letDecl names _ => state.addNames positions names
+    | _ => state
+  match statement with
+  | .funDef .. => { state with hasFun := true }
+  | _ => state
+
+def deadPrefixInitialState (positions : MentionPositions)
+    (pre : Block Op) : DeadPrefixState :=
+  { (DeadPrefixState.addNames positions {} (directDecls pre)) with
+      hasFun := hasDirectFun pre }
+
+/-- Dead-prefix search using one last-mention map and incrementally maintained
+prefix facts. -/
+def deadPrefixSearchPositions (positions : MentionPositions) :
+    Block Op → Block Op → Nat → DeadPrefixState → Option (Block Op)
+  | _, [], _, _ => none
+  | pre, statement :: rest, position, state =>
+      let pre' := pre ++ [statement]
+      let state' := state.addStmt positions statement
+      if !rest.isEmpty && state'.hasNames && state'.namesUnique &&
+          decide (state'.lastMention ≤ position) && !state'.hasFun then
+        some (.block pre' :: rest)
+      else deadPrefixSearchPositions positions pre' rest (position + 1) state'
+  termination_by _ rest _ _ => rest.length
+
 def deadPrefixSearch (pre rest : Block Op) : Option (Block Op) :=
-  deadPrefixSearchIndexed pre rest (suffixMentionIndices rest).1
+  let positions := mentionPositions rest
+  deadPrefixSearchPositions positions pre rest 1
+    (deadPrefixInitialState positions pre)
 
 def scopeDeadPrefixHere (body : Block Op) : Option (Block Op) :=
   deadPrefixSearch [] body
