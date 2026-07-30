@@ -1,5 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.RematSpill
 import YulEvmCompiler.Optimizer.Implementation.ReuseValuesSound
+import YulEvmCompiler.Optimizer.Implementation.Propagate
 set_option warningAsError true
 /-!
 # Soundness of substitute-only rematerialization
@@ -26,6 +27,7 @@ namespace YulEvmCompiler.Optimizer.RematSpill
 
 open YulSemantics
 open YulSemantics.EVM
+open YulEvmCompiler.Optimizer (EnvFrame codeWriteSet)
 open YulEvmCompiler.Optimizer.ReuseValues (evalPure evalPureArgs evalPure_step
   evalPure_step_inv evalPure_agree exprVarsRv)
 
@@ -41,6 +43,32 @@ theorem RematOk.lookup {V : VEnv D} {σ : RematMap} (h : RematOk V σ)
     {x : Ident} {e : Expr Op} (hmem : (x, e) ∈ σ) :
     ∃ v : U256, VEnv.get V x = some v ∧ evalPure V e = some v :=
   h (x, e) hmem
+
+/-- The variables a fact map speaks about: keys and producer free variables. -/
+def factVars (σ : RematMap) : List Ident :=
+  σ.flatMap (fun p => p.1 :: exprVarsRv p.2)
+
+theorem factVars_of_mem {σ : RematMap} {p : Ident × Expr Op} (hp : p ∈ σ) :
+    p.1 ∈ factVars σ ∧ ∀ z ∈ exprVarsRv p.2, z ∈ factVars σ := by
+  refine ⟨?_, ?_⟩
+  · exact List.mem_flatMap.mpr ⟨p, hp, by simp⟩
+  · exact fun z hz => List.mem_flatMap.mpr ⟨p, hp, by simp [hz]⟩
+
+/-- **Framing preserves the invariant.** If an environment step keeps every
+fact variable's lookup fixed (it lies outside the framed write set), then
+`RematOk` survives: each key's value is unchanged and each producer's `evalPure`
+is unchanged (`evalPure` reads only its free variables). -/
+theorem RematOk.frame {V V' : VEnv D} {σ : RematMap} {ws : List Ident}
+    (hok : RematOk V σ) (hf : EnvFrame ws V V')
+    (hdisj : ∀ w ∈ factVars σ, w ∉ ws) :
+    RematOk V' σ := by
+  intro p hp
+  obtain ⟨v, hxv, hev⟩ := hok p hp
+  obtain ⟨hkey, hfv⟩ := factVars_of_mem hp
+  refine ⟨v, ?_, ?_⟩
+  · rw [EnvFrame.get_eq hf (hdisj p.1 hkey)]; exact hxv
+  · rw [evalPure_agree (fun z hz => EnvFrame.get_eq hf (hdisj z (hfv z hz)))]
+    exact hev
 
 /-- The producer chosen for `x` by `substExprR`, when `x` is a fact key. -/
 theorem substExprR_var_mem {σ : RematMap} {x : Ident} {e : Expr Op}
