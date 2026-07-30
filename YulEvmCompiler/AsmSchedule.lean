@@ -497,6 +497,43 @@ def bringDup : Nat → EvSt → Nat → Option EvSt
       | none => recompute fuel ev a
 end
 
+/-- **Interleaved topological driver.** Node-id order is a topological order (a
+child is interned before its parent, so has a smaller id) AND it is program
+order (symExec interned in program order). Computing every reachable `app` in
+ascending id order therefore interleaves the outputs' shared sub-chains: a value
+(e.g. a log2 block's `f_i`) is produced and then consumed by BOTH its consumers
+(the next r-chain step and the log_2 accumulation, which are adjacent in program
+order) right away — so it dies within its block and the live set stays small
+(~4 + the k inputs), instead of the output-by-output driver keeping every `f_i`
+alive until a later output. Consumers MOVE at last use via `arrange1`. -/
+def scheduleTopo (d : Dag) (target : SymState) (fuel : Nat) : Option (List Asm) :=
+  let T := target.stack
+  let m := T.length
+  let k := target.inputs
+  if m > 16 then none else
+  let rem := computeRem d T
+  let n := d.nodes.size
+  let ev0 : EvSt := ⟨initES d k, rem⟩
+  if m == 0 then (emitPops ev0.es k).map ES.code else
+  match (List.range n).foldlM (fun ev id =>
+      if rem[id]! > 0 then
+        match d.node id with
+        | .app op args =>
+            if (findIdx id ev.es.model.stack).isSome then some ev
+            else match arrangeArgs fuel ev args.reverse with
+                 | none => none
+                 | some ev' => emitEv ev' (.op op)
+        | _ => some ev
+      else some ev) ev0 with
+  | none => none
+  | some ev1 =>
+      let b := ev1.es.model.stack.length
+      let rot := b % m
+      match (List.range m).reverse.foldlM
+          (fun ev j => bringDup fuel ev (T[(j + (m - rot)) % m]?.getD 0)) ev1 with
+      | none => none
+      | some ev2 => (emitCleanup m ev2.es b).map ES.code
+
 /-- Eviction-aware scheduler: compute every output (consuming intermediates at
 last use), then DUP the outputs into pre-rotated place and remove the (now small)
 remainder with the rotating cleanup. -/
@@ -520,7 +557,8 @@ def scheduleEvict (d : Dag) (target : SymState) (fuel : Nat) : Option (List Asm)
 /-- Candidate schedules; the gate keeps the cheapest valid one. -/
 def scheduleCandidates (d : Dag) (target : SymState) : List (List Asm) :=
   let fuel := 16 * (reachCount d target.stack) + 200
-  (scheduleEvict d target fuel).toList
+  (scheduleTopo d target fuel).toList
+    ++ (scheduleEvict d target fuel).toList
     ++ (scheduleLinear d target fuel).toList
     ++ (scheduleStoreInPlace d target fuel).toList
     ++ (scheduleRebuild d target fuel).toList
