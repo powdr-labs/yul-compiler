@@ -13,7 +13,7 @@ LPFeeLibrary.sol:isOverride(uint24)	506	217
 LPFeeLibrary.sol:isValid(uint24)	535	239
 LPFeeLibrary.sol:removeOverrideFlagAndValidate(uint24)	405	246
 LiquidityMath.sol:addDelta(uint128,int128)	1047	831
-PoolInitialize.sol:initialize()	25229	23034
+PoolInitialize.sol:initialize()	25207	23034
 PoolInitialize.sol:slot0()	4695	4430
 PoolLiquidity.sol:addLiquidityWide()	112610	107996
 PoolLiquidity.sol:donate()	48021	46659
@@ -40,10 +40,10 @@ SqrtPriceMath.sol:getNextSqrtPriceFromInput(uint160,uint128,uint256,bool)	3241	1
 SqrtPriceMath.sol:getNextSqrtPriceFromOutput(uint160,uint128,uint256,bool)	3226	1682
 SwapMath.sol:computeSwapStep(uint160,uint160,uint128,int256,uint24)	23929	14774
 TickBitmap.sol:flipTick(int24)	34311	33192
-TickBitmap.sol:nextInitializedTickWithinOneWord(int24,int24,bool)	22637	16773
-TickMath.sol:getSqrtPriceAtTick(int24)	2574	2380
-TickMath.sol:getSqrtPriceAtTickSweep()	83534	73316
-TickMath.sol:getTickAtSqrtPrice(uint160)	6006	4546
-TickMath.sol:getTickAtSqrtPriceSweep()	261412	203628
+TickBitmap.sol:nextInitializedTickWithinOneWord(int24,int24,bool)	22733	16773
+TickMath.sol:getSqrtPriceAtTick(int24)	2570	2380
+TickMath.sol:getSqrtPriceAtTickSweep()	83234	73316
+TickMath.sol:getTickAtSqrtPrice(uint160)	5962	4546
+TickMath.sol:getTickAtSqrtPriceSweep()	259212	203628
 UnsafeMath.sol:divRoundingUp(uint256,uint256)	612	372
 UnsafeMath.sol:simpleMulDiv(uint256,uint256,uint256)	834	396

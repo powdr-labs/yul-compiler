@@ -136,7 +136,7 @@ expressionSimplifier/byte_after_shr_non_mul_of_8.yul	27308	27308
 expressionSimplifier/combine_add_and_mod_constant.yul	186	198
 expressionSimplifier/combine_mul_and_mod_constant.yul	198	210
 expressionSimplifier/combine_shift_and_and.yul	76054	76036
-expressionSimplifier/combine_shift_and_and_2.yul	312536	312482
+expressionSimplifier/combine_shift_and_and_2.yul	312476	312482
 expressionSimplifier/combine_shift_and_and_3.yul	537632	537578
 expressionSimplifier/constant_propagation.yul	192	174
 expressionSimplifier/constants.yul	132636	132720
@@ -239,7 +239,7 @@ fullSuite/call_arguments_with_side_effects.yul	360	30
 fullSuite/call_arguments_without_side_effects.yul	13386	13956
 fullSuite/clear_after_if_continue.yul	354	306
 fullSuite/combine_shift_and_and.yul	76054	76036
-fullSuite/combine_shift_and_and_2.yul	272736	272682
+fullSuite/combine_shift_and_and_2.yul	272676	272682
 fullSuite/combine_shift_and_and_3.yul	537632	537578
 fullSuite/combine_shift_and_and_unsplit.yul	76054	76036
 fullSuite/create2_and_mask.yul	590644278	590644332

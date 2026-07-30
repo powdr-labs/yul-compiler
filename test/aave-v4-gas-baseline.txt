@@ -8,7 +8,7 @@ PositionStatusMap.sol:borrowCountMaxReserveScan()	2416152	2252886
 PositionStatusMap.sol:collateralCountIgnoresInvalidBits()	103745	99643
 PositionStatusMap.sol:collateralCountMaxReserveScan()	2473578	2297830
 PositionStatusMap.sol:constants()	24873	16434
-PositionStatusMap.sol:flsFullRange()	250133	193873
+PositionStatusMap.sol:flsFullRange()	248099	193873
 PositionStatusMap.sol:mixedPositionCountVector()	90520	82465
 PositionStatusMap.sol:nextBorrowingContinuousTenThousand()	3838532	3578808
 PositionStatusMap.sol:nextCollateralContinuousTenThousand()	3898552	3638824

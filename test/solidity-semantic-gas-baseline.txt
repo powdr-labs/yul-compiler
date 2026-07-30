@@ -20,7 +20,7 @@ abicoder/abi_decode_trivial.sol	1121	452
 abicoder/abi_encode.sol	7756	3380
 abicoder/abi_encode_call_declaration_v2.sol	89	81
 abicoder/abi_encode_call_is_consistent_v2.sol	76616	63916
-abicoder/abi_encode_call_memory_v2.sol	64931	54884
+abicoder/abi_encode_call_memory_v2.sol	64815	54884
 abicoder/abi_encode_call_special_args_v2.sol	11162	6033
 abicoder/abi_encode_decode_simple.sol	2280	1080
 abicoder/abi_encode_empty_string_not_bytes0.sol	1238	710
@@ -38,7 +38,7 @@ abicoder/calldataDecoding/array/byte_arrays.sol	2531	970
 abicoder/calldataDecoding/array/calldata_array_bytes_v2.sol	2531	970
 abicoder/calldataDecoding/array/calldata_array_dynamic_static_short_decode_v2.sol	1439	999
 abicoder/calldataDecoding/array/calldata_array_indexing_1d_2d_v2.sol	5734	3172
-abicoder/calldataDecoding/array/calldata_array_indexing_3d_dynamic_v2.sol	18982	10983
+abicoder/calldataDecoding/array/calldata_array_indexing_3d_dynamic_v2.sol	18980	10983
 abicoder/calldataDecoding/array/calldata_array_indexing_3d_v2.sol	10829	6219
 abicoder/calldataDecoding/array/calldata_array_indexing_dynamic_bytes_v2.sol	47341	8842
 abicoder/calldataDecoding/array/calldata_array_length_v2.sol	13460	9919
@@ -66,7 +66,7 @@ abicoder/calldataDecoding/struct/multiple_structs_v2.sol	900	312
 abicoder/calldataDecoding/struct/nested_static_3_fields_v2.sol	587	287
 abicoder/calldataDecoding/struct/nested_static_4_fields_v2.sol	684	230
 abicoder/calldataDecoding/struct/nested_with_bytes_v2.sol	1145	651
-abicoder/calldataDecoding/struct/nested_with_dynamic_array_v2.sol	24547	12674
+abicoder/calldataDecoding/struct/nested_with_dynamic_array_v2.sol	24543	12674
 abicoder/calldataDecoding/struct/nested_with_dynamic_struct_array_v2.sol	1301	814
 abicoder/calldataDecoding/struct/short_v2.sol	3076	1058
 abicoder/calldataDecoding/struct/simple_multiple_fields_short_types_v2.sol	1235	435
@@ -104,7 +104,7 @@ arithmetics/checked_modifier_called_by_unchecked.sol	1008	633
 arithmetics/divisiod_by_zero.sol	1126	947
 arithmetics/exp_associativity.sol	15553	8669
 arithmetics/signed_mod.sol	2874	1436
-arithmetics/unchecked_called_by_checked.sol	922	845
+arithmetics/unchecked_called_by_checked.sol	946	845
 arithmetics/unchecked_div_by_zero.sol	1126	947
 array/arrayMemoryAllocation/array_2d_zeroed_memory_index_access.sol	25643	17375
 array/arrayMemoryAllocation/array_array_static.sol	117301	56234
@@ -136,11 +136,11 @@ array/bytes_to_fixed_bytes_simple.sol	11113	8609
 array/bytes_to_fixed_bytes_too_long.sol	7844	5795
 array/calldata_array_bounds_check_nested_bytes.sol	2724	1424
 array/concat/bytes_concat_2_args.sol	4263	2415
-array/concat/bytes_concat_3_args.sol	5625	3217
+array/concat/bytes_concat_3_args.sol	5621	3217
 array/concat/bytes_concat_as_argument.sol	3994	2407
 array/concat/bytes_concat_different_types.sol	28554	18170
 array/concat/bytes_concat_empty_argument_list.sol	777	309
-array/concat/bytes_concat_empty_strings.sol	5678	2808
+array/concat/bytes_concat_empty_strings.sol	5676	2808
 array/concat/bytes_concat_nested.sol	3044	1883
 array/constant_var_as_array_length.sol	7599	6822
 array/copying/array_copy_calldata_storage.sol	640944	636966
@@ -151,10 +151,10 @@ array/copying/array_copy_clear_storage_packed.sol	198538	192536
 array/copying/array_copy_different_packing.sol	197426	187351
 array/copying/array_copy_including_array.sol	10223107	9146359
 array/copying/array_copy_memory_to_storage.sol	81259	77346
-array/copying/array_copy_nested_array.sol	693001	667355
+array/copying/array_copy_nested_array.sol	677918	667355
 array/copying/array_copy_storage_abi_signed.sol	54801	50794
 array/copying/array_copy_storage_storage_different_base.sol	207026	204503
-array/copying/array_copy_storage_storage_different_base_nested.sol	174404	168389
+array/copying/array_copy_storage_storage_different_base_nested.sol	174402	168389
 array/copying/array_copy_storage_storage_dyn_dyn.sol	237091	228659
 array/copying/array_copy_storage_storage_dynamic_dynamic.sol	254224	252427
 array/copying/array_copy_storage_storage_static_dynamic.sol	102969	102116
@@ -249,7 +249,7 @@ array/delete/delete_on_array_of_structs.sol	74332	72027
 array/delete/delete_removes_bytes_data.sol	84151	82216
 array/delete/delete_storage_array.sol	138484	135393
 array/delete/delete_storage_array_packed.sol	91193	88970
-array/delete/memory_arrays_delete.sol	18484	9114
+array/delete/memory_arrays_delete.sol	18980	9114
 array/dynamic_array_cleanup.sol	632899	622158
 array/dynamic_arrays_in_storage.sol	267685	265475
 array/dynamic_multi_array_cleanup.sol	163530	142895
@@ -286,7 +286,7 @@ array/pop/array_pop_array_transition.sol	2309111	2264414
 array/pop/array_pop_empty_exception.sol	2431	2274
 array/pop/array_pop_isolated.sol	171	142
 array/pop/array_pop_storage_empty.sol	45736	45296
-array/pop/array_pop_uint16_transition.sol	182063	164411
+array/pop/array_pop_uint16_transition.sol	182060	164411
 array/pop/array_pop_uint24_transition.sol	149406	136297
 array/pop/byte_array_pop.sol	45621	44871
 array/pop/byte_array_pop_copy_long.sol	91376	86158
@@ -559,7 +559,7 @@ functionCall/inheritance/call_base_explicit.sol	89	81
 functionCall/inheritance/call_unimplemented_base.sol	171	142
 functionCall/inheritance/super_skip_unimplemented_in_abstract_contract.sol	171	142
 functionCall/inheritance/super_skip_unimplemented_in_interface.sol	171	142
-functionCall/mapping_array_internal_argument.sol	133418	128498
+functionCall/mapping_array_internal_argument.sol	133406	128498
 functionCall/mapping_internal_argument.sol	66444	64480
 functionCall/mapping_internal_return.sol	92552	89129
 functionCall/member_accessors.sol	9442	9347
@@ -721,13 +721,13 @@ libraries/internal_library_function_attached_to_address.sol	978	500
 libraries/internal_library_function_attached_to_address_named_send_transfer.sol	392	349
 libraries/internal_library_function_attached_to_array_named_pop_push.sol	684	199
 libraries/internal_library_function_attached_to_bool.sol	4040	892
-libraries/internal_library_function_attached_to_contract.sol	44904	43720
+libraries/internal_library_function_attached_to_contract.sol	44902	43720
 libraries/internal_library_function_attached_to_dynamic_array.sol	1407	418
 libraries/internal_library_function_attached_to_enum.sol	1400	354
 libraries/internal_library_function_attached_to_fixed_array.sol	1348	259
 libraries/internal_library_function_attached_to_fixed_bytes.sol	458	302
 libraries/internal_library_function_attached_to_integer.sol	307	183
-libraries/internal_library_function_attached_to_interface.sol	44931	43720
+libraries/internal_library_function_attached_to_interface.sol	44929	43720
 libraries/internal_library_function_attached_to_internal_function_type.sol	261	206
 libraries/internal_library_function_attached_to_internal_function_type_named_selector.sol	261	206
 libraries/internal_library_function_attached_to_literal.sol	1779	715
@@ -837,7 +837,7 @@ operators/userDefined/operator_making_pure_external_call.sol	350	216
 operators/userDefined/operator_making_view_external_call.sol	350	216
 operators/userDefined/operator_parameter_and_return_cleanup_between_calls.sol	440	268
 operators/userDefined/operator_parameter_cleanup.sol	464	356
-operators/userDefined/operator_precendence.sol	4338	2934
+operators/userDefined/operator_precendence.sol	4380	2934
 operators/userDefined/operator_return_parameter_cleanup.sol	446	356
 operators/userDefined/unchecked_operators.sol	368	309
 optimizer/shift_bytes.sol	851	457
@@ -990,7 +990,7 @@ storageLayoutSpecifier/variable_cleanup_sstore.sol	23038	22290
 strings/concat/string_concat_2_args.sol	12861	7317
 strings/concat/string_concat_different_types.sol	17435	10851
 strings/concat/string_concat_empty_argument_list.sol	777	309
-strings/concat/string_concat_empty_strings.sol	5678	2808
+strings/concat/string_concat_empty_strings.sol	5676	2808
 strings/concat/string_concat_nested.sol	3044	1883
 strings/constant_string_literal.sol	4742	2112
 strings/empty_storage_string.sol	128114	109813
@@ -1128,7 +1128,7 @@ various/address_code_complex.sol	0	0
 various/assignment_to_const_var_involving_expression.sol	171	142
 various/balance.sol	2789	144
 various/byte_optimization_bug.sol	428	340
-various/code_access_padding.sol	921	486
+various/code_access_padding.sol	919	486
 various/code_length_contract_member.sol	3134	2783
 various/codebalance_assembly.sol	8398	5724
 various/codehash.sol	8702	8327
@@ -1246,7 +1246,7 @@ viaYul/storage/dirty_storage_dynamic_array.sol	45382	45245
 viaYul/storage/dirty_storage_static_array.sol	22786	22298
 viaYul/storage/dirty_storage_struct.sol	45218	44927
 viaYul/storage/mappings.sol	202526	196875
-viaYul/storage/packed_storage.sol	24302	22634
+viaYul/storage/packed_storage.sol	24315	22634
 viaYul/storage/simple_storage.sol	45296	44542
 viaYul/string_format.sol	2896	1232
 viaYul/string_literals.sol	5816	2431
