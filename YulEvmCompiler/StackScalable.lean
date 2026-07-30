@@ -894,6 +894,70 @@ theorem frameStepB_sound {prog : List Asm} {C : Cert} {i : Asm} {c : List Asm} {
       · next S' => intro h; simp only [decide_eq_true_eq] at h; exact ⟨S', rfl, h.1, h.2⟩
       · intro h; simp at h
 
+/-- All certificate facts for one program position, returned together. -/
+abbrev CertValue := FLayout × Nat × FLayout
+
+/-- Bundled executable certificate lookup. -/
+abbrev CertLookup := List Asm → Option CertValue
+
+/-- `frameStepB` with a bundled certificate API. Each successor position is
+looked up once instead of independently through `fl`, `fbMax`, and `rl`. -/
+def frameStepLookupB (prog : List Asm) (lookup : CertLookup) :
+    Asm → List Asm → FLayout → Nat → FLayout → Bool
+  | .push _,      c, S, F, R => decide (lookup c = some (.word :: S, F, R))
+  | .dup n,       c, S, F, R => match S[n.val]? with
+      | some FSlot.word => decide (lookup c = some (.word :: S, F, R))
+      | _ => false
+  | .pushLabel l, c, S, F, R => decide (lookup c = some (.retTo l :: S, F, R))
+  | .pop,         c, S, F, R => match S with
+      | .word :: S' => decide (lookup c = some (S', F, R))
+      | _ => false
+  | .swap n,      c, S, F, R => match S with
+      | sx :: rest => match rest.drop n.val with
+          | sy :: rst => decide (sx = FSlot.word ∧
+              (∀ s ∈ rest.take n.val, s = FSlot.word) ∧
+              lookup c = some (sy :: (rest.take n.val ++ sx :: rst), F, R))
+          | [] => false
+      | [] => false
+  | .label _,     c, S, F, R => decide (lookup c = some (S, F, R))
+  | .op yop,      c, S, F, R => match opTable yop with
+      | some o => decide (Operation.popArity o ≤ S.length ∧
+          lookup c = some
+            (List.replicate (Operation.pushArity o) FSlot.word ++
+              S.drop (Operation.popArity o), F, R))
+      | none => false
+  | .jump l,      c, S, F, R =>
+      (match findLabel l prog with
+       | some t => decide (lookup t = some (S, F, R))
+       | none => false)
+      || (match c with
+          | .label Lret :: c' =>
+              (match findLabel l prog with
+               | some t =>
+                   (match splitSetup Lret S with
+                    | some (Sw, Smid) =>
+                        (match lookup t with
+                         | some (St, Ft, Sret) =>
+                             decide (findLabel Lret prog = some c' ∧
+                               (∀ s ∈ Sw, s = FSlot.word) ∧
+                               St = Sw ++ [FSlot.ret] ∧ F + Smid.length ≤ Ft ∧
+                               (∀ s ∈ Sret, s = FSlot.word) ∧
+                               lookup c' = some (Sret ++ Smid, F, R))
+                         | none => false)
+                    | none => false)
+               | none => false)
+          | _ => false)
+  | .jumpi l,     c, S, F, R => match S with
+      | .word :: S' =>
+          (match findLabel l prog with
+           | some t => decide (lookup t = some (S', F, R))
+           | none => false)
+          && decide (lookup c = some (S', F, R))
+      | _ => false
+  | .dynJump,     _, S, _F, R => match S with
+      | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
+      | _ => false
+
 /-! ### The finite certificate and the top-level check -/
 
 /-- The untrusted solver's output: one `(positionLength, position, layout, frameBase, returnLayout)`
@@ -914,6 +978,15 @@ def CertData.tbl (d : CertData) (size : Nat) :
     Array (Option (Nat × List Asm × FLayout × Nat × FLayout)) :=
   d.entries.foldr (fun e a => if h : e.1 < a.size then a.set e.1 (some e) h else a)
     (Array.replicate size none)
+
+/-- Build one shared lookup table whose successful lookup returns all three
+certificate components. -/
+def CertData.toLookup (d : CertData) : CertLookup :=
+  let t := d.tbl (d.maxKey + 1)
+  fun c => match t[c.length]? with
+    | some (some e) =>
+        if e.2.1 = c then some (e.2.2.1, e.2.2.2.1, e.2.2.2.2) else none
+    | _ => none
 
 omit model in
 theorem CertData.tbl_size (d : CertData) (size : Nat) : (d.tbl size).size = size := by
@@ -953,19 +1026,65 @@ theorem CertData.tbl_mem {d : CertData} {size k : Nat}
     (h : (d.tbl size)[k]? = some (some e)) : e ∈ d.entries :=
   tbl_mem_aux (by simpa [CertData.tbl] using h)
 
-/-- The `Cert` induced by a `CertData`: an O(1) array lookup on the position's length, then one
-list comparison against the stored position. The table is built once per `Cert` value. -/
-def CertData.toCert (d : CertData) : Cert :=
-  let t := d.tbl (d.maxKey + 1)
-  { fl := fun c => match t[c.length]? with
-      | some (some e) => if e.2.1 = c then some e.2.2.1 else none
-      | _ => none
-    fbMax := fun c => match t[c.length]? with
-      | some (some e) => if e.2.1 = c then some e.2.2.2.1 else none
-      | _ => none
-    rl := fun c => match t[c.length]? with
-      | some (some e) => if e.2.1 = c then some e.2.2.2.2 else none
-      | _ => none }
+/-- Project the stable proof-facing certificate API from a bundled executable
+lookup. -/
+def CertLookup.toCert (lookup : CertLookup) : Cert :=
+  { fl := fun c => (lookup c).map (fun v => v.1)
+    fbMax := fun c => (lookup c).map (fun v => v.2.1)
+    rl := fun c => (lookup c).map (fun v => v.2.2) }
+
+/-- The `Cert` induced by a `CertData`. -/
+def CertData.toCert (d : CertData) : Cert := d.toLookup.toCert
+
+omit model in
+theorem CertLookup.eq_some_iff_fields (lookup : CertLookup) (c : List Asm)
+    (S : FLayout) (F : Nat) (R : FLayout) :
+    lookup c = some (S, F, R) ↔
+      (lookup.toCert.fl c = some S ∧ lookup.toCert.fbMax c = some F ∧
+        lookup.toCert.rl c = some R) := by
+  cases h : lookup c with
+  | none => simp [CertLookup.toCert, h]
+  | some value =>
+      rcases value with ⟨S', F', R'⟩
+      simp [CertLookup.toCert, h]
+
+omit model in
+@[simp] theorem CertLookup.decide_eq_some_fields (lookup : CertLookup)
+    (c : List Asm) (S : FLayout) (F : Nat) (R : FLayout) :
+    decide (lookup c = some (S, F, R)) =
+      decide (lookup.toCert.fl c = some S ∧ lookup.toCert.fbMax c = some F ∧
+        lookup.toCert.rl c = some R) := by
+  cases h : lookup c with
+  | none => simp [CertLookup.toCert, h]
+  | some value =>
+      rcases value with ⟨S', F', R'⟩
+      simp [CertLookup.toCert, h]
+
+omit model in
+theorem frameStepLookupB_eq_frameStepB (prog : List Asm) (lookup : CertLookup)
+    (i : Asm) (c : List Asm) (S : FLayout) (F : Nat) (R : FLayout) :
+    frameStepLookupB prog lookup i c S F R =
+      frameStepB prog lookup.toCert i c S F R := by
+  cases i with
+  | push => exact lookup.decide_eq_some_fields c (.word :: S) F R
+  | pushLabel l => exact lookup.decide_eq_some_fields c (.retTo l :: S) F R
+  | label => exact lookup.decide_eq_some_fields c S F R
+  | jump l =>
+      simp only [frameStepLookupB, frameStepB]
+      cases htgt : findLabel l prog with
+      | none => simp
+      | some t =>
+          cases ht : lookup t with
+          | none => simp [CertLookup.toCert, ht]
+          | some target =>
+              rcases target with ⟨St, Ft, Rt⟩
+              cases c with
+              | nil => simp [CertLookup.toCert, ht]
+              | cons head c' =>
+                  cases head <;> simp [CertLookup.toCert, ht]
+  | dup | pop | swap | op | jumpi | dynJump =>
+      simp only [frameStepLookupB, frameStepB]
+      repeat' split <;> simp_all
 
 /-- The verifier: bounded at every entry, and `frameStep` at every instruction entry, plus the
 program-entry conditions. Each entry carries its own `(fl, fbMax, rl)`, so the current-position
@@ -981,13 +1100,65 @@ def checkCert (prog : List Asm) (d : CertData) : Bool :=
          | i :: c' => frameStepB prog C i c' e.2.2.1 e.2.2.2.1 e.2.2.2.2
          | [] => true)))
 
+/-- Bundled-lookup implementation of `checkCert`. -/
+def checkCertFast (prog : List Asm) (d : CertData) : Bool :=
+  d.entries.all (fun e => decide (e.1 ≤ prog.length)) &&
+  (let lookup := d.toLookup
+   (match lookup prog with
+    | some ([], 0, _) => true
+    | _ => false) &&
+   d.entries.all (fun e =>
+     decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023)
+     && (match e.2.1 with
+         | i :: c' => frameStepLookupB prog lookup i c'
+             e.2.2.1 e.2.2.2.1 e.2.2.2.2
+         | [] => true)))
+
+omit model in
+theorem checkCertFast_eq_checkCert (prog : List Asm) (d : CertData) :
+    checkCertFast prog d = checkCert prog d := by
+  let lookup := d.toLookup
+  let fastEntry := fun e : Nat × List Asm × FLayout × Nat × FLayout =>
+    decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023) &&
+      match e.2.1 with
+      | i :: c => frameStepLookupB prog lookup i c e.2.2.1 e.2.2.2.1 e.2.2.2.2
+      | [] => true
+  let slowEntry := fun e : Nat × List Asm × FLayout × Nat × FLayout =>
+    decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023) &&
+      match e.2.1 with
+      | i :: c => frameStepB prog lookup.toCert i c e.2.2.1 e.2.2.2.1 e.2.2.2.2
+      | [] => true
+  have hentry (e) : fastEntry e = slowEntry e := by
+    unfold fastEntry slowEntry
+    cases hpos : e.2.1 with
+    | nil => rfl
+    | cons i c =>
+        simp only
+        rw [frameStepLookupB_eq_frameStepB]
+  have hall : d.entries.all fastEntry = d.entries.all slowEntry := by
+    congr 1
+    funext e
+    exact hentry e
+  unfold checkCertFast checkCert
+  simp only [CertData.toCert]
+  change (_ && ((match lookup prog with | some ([], 0, _) => true | _ => false) &&
+      d.entries.all fastEntry)) =
+    (_ && (lookup.toCert.fl prog == some [] && lookup.toCert.fbMax prog == some 0 &&
+      (lookup.toCert.rl prog).isSome && d.entries.all slowEntry))
+  rw [hall]
+  cases h : lookup prog with
+  | none => simp [CertLookup.toCert, h]
+  | some value =>
+      rcases value with ⟨S, F, R⟩
+      cases S <;> cases F <;> simp [CertLookup.toCert, h]
+
 omit model in
 /-- A defined position comes from a table entry carrying that exact `(position, fl, fbMax, rl)`. -/
 theorem CertData.lookup_fl {d : CertData} {c : List Asm} {S : FLayout}
     (hfl : d.toCert.fl c = some S) :
     ∃ e ∈ d.entries, e.2.1 = c ∧ e.2.2.1 = S ∧
       d.toCert.fbMax c = some e.2.2.2.1 ∧ d.toCert.rl c = some e.2.2.2.2 := by
-  simp only [CertData.toCert] at hfl ⊢
+  simp only [CertData.toCert, CertLookup.toCert, CertData.toLookup] at hfl ⊢
   rcases hget : (d.tbl (d.maxKey + 1))[c.length]? with _ | eo
   · simp only [hget] at hfl
     exact absurd hfl (by simp)
@@ -1159,11 +1330,13 @@ def analyze (prog : List Asm) : CertData :=
       ⟨vis.toList.filterMap (fun o => o.map (fun s => (s.1.length, s.1, s.2.1, base[s.2.2.2]!, s.2.2.1)))⟩
 
 /-- The `compile`-facing gate: analyse then verify. -/
-def stackOK2 (prog : List Asm) : Bool := checkCert prog (analyze prog)
+def stackOK2 (prog : List Asm) : Bool := checkCertFast prog (analyze prog)
 
 /-- **`stackOK2` is sound**: passing it guarantees no stack overflow. -/
 theorem stackOK2_run_bound {prog : List Asm} (h : stackOK2 prog = true) (yst : EvmState) :
     ∀ mid, ASteps (model := model) prog ⟨prog, [], yst⟩ mid → mid.stk.length ≤ 1023 :=
-  checkCert_run_bound h yst
+  by
+    rw [stackOK2, checkCertFast_eq_checkCert] at h
+    exact checkCert_run_bound h yst
 
 end YulEvmCompiler
