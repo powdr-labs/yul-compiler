@@ -114,15 +114,16 @@ def parse(lines):
             continue
 
         m = re.search(r"Compile time: suite=(\S+) mode=(\S+) ours_ms=(\d+) solc_ms=(\d+) "
-                      r"frontend_ms=(\d+) fixtures=(\d+) solc_fixtures=(\d+) "
-                      r"rejected_ms=(\d+) rejected=(\d+)", ln)
+                      r"frontend_ms=(\d+) fixtures=(\d+) rejected_ms=(\d+) rejected=(\d+) "
+                      r"unpaired_ms=(\d+) unpaired=(\d+)", ln)
         if m:
             suite, mode = m.group(1), m.group(2)
             t = data["runtime"].setdefault(
                 suite, dict(mode=mode, ours_ms=0, solc_ms=0, frontend_ms=0, fixtures=0,
-                            solc_fixtures=0, rejected_ms=0, rejected=0))
+                            rejected_ms=0, rejected=0, unpaired_ms=0, unpaired=0))
             for i, key in enumerate(["ours_ms", "solc_ms", "frontend_ms", "fixtures",
-                                     "solc_fixtures", "rejected_ms", "rejected"], start=3):
+                                     "rejected_ms", "rejected", "unpaired_ms",
+                                     "unpaired"], start=3):
                 t[key] += int(m.group(i))
             continue
 
@@ -209,25 +210,26 @@ def fmt_per_fixture(ms, fixtures):
 
 
 def runtime_notes(suites):
-    """Caveats that only apply when the runs actually hit them.
+    """Account for the time the table deliberately leaves out.
 
-    Both columns are meant to cover one identical fixture set. Anything that
-    breaks that — a fixture this compiler rejected, or one solc would not
-    assemble — is called out rather than silently folded into a total.
+    Both columns always cover one identical fixture set: only fixtures *both*
+    compilers finished are counted, on either side. A fixture either compiler
+    failed is excluded from both, and shows up here instead of silently
+    inflating one side or vanishing.
     """
     notes = []
     rejected = sum(t["rejected"] for t in suites.values())
     if rejected:
         rejected_ms = sum(t["rejected_ms"] for t in suites.values())
         notes.append(
-            f"Excluded from the table: {fmt_duration(rejected_ms)} this compiler spent on "
-            f"{rejected} fixture(s) it then rejected. solc is not asked for those, so "
-            "counting them would compare the two backends on different work.")
-    shortfall = sum(max(0, t["fixtures"] - t["solc_fixtures"]) for t in suites.values())
-    if shortfall:
+            f"Excluded from both columns: {fmt_duration(rejected_ms)} this compiler spent on "
+            f"{rejected} fixture(s) it then rejected. solc is not asked for those.")
+    unpaired = sum(t["unpaired"] for t in suites.values())
+    if unpaired:
+        unpaired_ms = sum(t["unpaired_ms"] for t in suites.values())
         notes.append(
-            f"solc's column covers {shortfall} fewer fixture(s) than this compiler's: "
-            "its compile of that Yul failed, and a failed run is not charged.")
+            f"Also excluded from both: {fmt_duration(unpaired_ms)} on {unpaired} fixture(s) "
+            "this compiler compiled but solc would not, so there is no pair to compare.")
     return notes
 
 
@@ -525,9 +527,10 @@ def build_comment(data, results, sha, base=None, base_sha="", base_results=None)
     if runtime:
         out.append("")
         out.append("Both columns measure the **same job on the same input**: unoptimized Yul → "
-                   "EVM bytecode, no optimizer on either side. solc's Solidity→Yul front-end is "
-                   "charged to neither — it runs once, before both, and its output is what each "
-                   "then compiles.")
+                   "EVM bytecode, no optimizer on either side, over the **same fixtures** — only "
+                   "those both compilers finished are counted, on either side. solc's "
+                   "Solidity→Yul front-end is charged to neither: it runs once, before both, and "
+                   "its output is what each then compiles.")
         out.append("")
         vs_opt_rt = {s: t for s, t in runtime.items() if t.get("mode") == "vs_solc_optimized"}
         codegen_rt = {s: t for s, t in runtime.items() if t.get("mode") == "codegen"}

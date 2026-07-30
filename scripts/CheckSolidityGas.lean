@@ -434,17 +434,22 @@ private structure Timing where
   backend columns cover one identical fixture set. Reported separately rather
   than dropped: rejecting a large contract can cost minutes. -/
   rejectedNs : Nat := 0
+  /-- This compiler's time on fixtures it compiled but solc would not — the
+  other way a fixture fails to form a comparable pair. Neither side is counted,
+  since a one-sided figure would compare the backends on different work. -/
+  unpairedNs : Nat := 0
   /-- solc `--strict-assembly`, the same unoptimized Yul → bytecode. Deliberately
   *not* solc's `--optimize --via-ir` compile (which the gas comparison also runs):
   that starts from Solidity and includes both the front-end and the Yul
   optimizer, so it would not be the same job as `oursNs`. -/
   solcNs : Nat := 0
-  /-- Whether this compiler accepted the fixture, i.e. `oursNs` is a measurement. -/
+  /-- Whether both compilers finished the job, i.e. `oursNs` and `solcNs` are a
+  comparable pair. This is the only case either column counts. -/
   compiled : Bool := false
   /-- Whether this compiler rejected it, i.e. `rejectedNs` is a measurement. -/
   rejected : Bool := false
-  /-- Whether solc's like-for-like compile succeeded, i.e. `solcNs` is one. -/
-  solcCompiled : Bool := false
+  /-- Whether solc rejected it, i.e. `unpairedNs` is a measurement. -/
+  unpaired : Bool := false
 
 /-- Deploy our bytecode and measure the fixture against an already-resolved solc
 side (cached or freshly measured), through the shared `obsFingerprint` replay.
@@ -473,15 +478,25 @@ private def measureWithSolcSide (name : String) (perScenario : Bool)
               s!"(ours={ourDeployment.halt}/{ourDeployment.returnSize}, " ++
               s!"solc={side.deployHalt}/{side.deployReturnSize})") }
 
-/-- Time solc doing exactly this compiler's job: assembling the same unoptimized
-Yul to bytecode, no optimizer. This is a measurement-only invocation — the gas
-comparison needs solc's *optimized* bytecode and compiles that separately — and
-it is the only way to get a runtime figure for the same job on the same input.
-A failed assemble is not charged, so a fast error cannot deflate solc's total. -/
-private def timeSolcOnSameYul (clock : IO.Ref Timing) (solcPath ir : String) : IO Unit := do
-  let (result, ns) ← timedIO (compileWithSolc solcPath ir)
+/-- Time solc doing exactly this compiler's job — assembling the same unoptimized
+Yul to bytecode, no optimizer — and charge the two sides only as a pair.
+
+This is a measurement-only invocation: the gas comparison needs solc's *optimized*
+bytecode and compiles that separately, and this is the only way to get a runtime
+figure for the same job on the same input.
+
+If solc will not assemble the Yul this compiler just compiled, there is no
+comparable pair, so *neither* side is counted — charging one and not the other
+would compare the backends on different work, and a fast error would deflate
+solc's total. This compiler's time still goes to `unpairedNs` so it stays
+visible rather than silently vanishing. -/
+private def chargeCompilePair (clock : IO.Ref Timing) (solcPath ir : String)
+    (oursNs : Nat) : IO Unit := do
+  let (result, solcNs) ← timedIO (compileWithSolc solcPath ir)
   if result matches .ok _ then
-    clock.modify fun t => { t with solcNs := t.solcNs + ns, solcCompiled := true }
+    clock.modify fun t => { t with oursNs, solcNs, compiled := true }
+  else
+    clock.modify fun t => { t with unpairedNs := oursNs, unpaired := true }
 
 /-- Compile one contract through solc's unoptimized `--via-ir` Yul, deploy both
 this compiler's and solc's optimized bytecode, replay the fixture's calls, and
@@ -512,10 +527,9 @@ private def processContractIn (clock : IO.Ref Timing) (dir : FilePath) (solcPath
               clock.modify ({ · with rejectedNs := ← since compileStart, rejected := true })
               return { compileFailure := some (name, "this compiler rejected solc's unoptimized IR") }
           | some creation =>
-            clock.modify ({ · with oursNs := ← since compileStart, compiled := true })
-            -- Charge solc for the identical job on the identical input. Only for
-            -- fixtures this compiler accepted, so both columns cover one set.
-            timeSolcOnSameYul clock solcPath ir
+            -- Charge solc for the identical job on the identical input, and only
+            -- as a pair, so both columns always cover one identical fixture set.
+            chargeCompilePair clock solcPath ir (← since compileStart)
             match solcCache with
             | none =>
               match ← solcCreationBytecode solcPath source with
@@ -676,9 +690,10 @@ private def run (dir baselineFile : FilePath)
   let mut solcNs := 0
   let mut frontendNs := 0
   let mut rejectedNs := 0
+  let mut unpairedNs := 0
   let mut compiledCount := 0
   let mut rejectedCount := 0
-  let mut solcCompiledCount := 0
+  let mut unpairedCount := 0
   let outcomes : Array (GasOutcome × Timing) ← parMap jobs files
     (processContract dir solcPath perScenario solcCache expectedSolcVersion)
   for (outcome, timing) in outcomes do
@@ -691,9 +706,10 @@ private def run (dir baselineFile : FilePath)
     solcNs := solcNs + timing.solcNs
     frontendNs := frontendNs + timing.frontendNs
     rejectedNs := rejectedNs + timing.rejectedNs
+    unpairedNs := unpairedNs + timing.unpairedNs
     if timing.compiled then compiledCount := compiledCount + 1
     if timing.rejected then rejectedCount := rejectedCount + 1
-    if timing.solcCompiled then solcCompiledCount := solcCompiledCount + 1
+    if timing.unpaired then unpairedCount := unpairedCount + 1
   let compiled := files.size - skipped - compileFailures.size
   let failureNames := compileFailures.map (·.1)
   let unexpectedFailures := match known with
@@ -758,14 +774,15 @@ private def run (dir baselineFile : FilePath)
   -- add shards up and diff head against main.
   --
   -- `ours_ms` and `solc_ms` are the same job on the same input — unoptimized Yul
-  -- → bytecode — over the same `fixtures` contracts. Neither includes solc's
-  -- Solidity→Yul front-end: that runs once, before both, and is reported apart
-  -- as `frontend_ms`. `solc_ms` is therefore NOT the `--optimize --via-ir`
-  -- compile the gas comparison runs, which would start from Solidity and add the
-  -- Yul optimizer. `rejected_ms` is this compiler's time on the `rejected`
-  -- contracts it could not compile, kept out of `ours_ms` so the two backend
-  -- columns stay a like-for-like pair.
-  IO.println s!"Compile time: suite={suite} mode=vs_solc_optimized ours_ms={toMs oursNs} solc_ms={toMs solcNs} frontend_ms={toMs frontendNs} fixtures={compiledCount} solc_fixtures={solcCompiledCount} rejected_ms={toMs rejectedNs} rejected={rejectedCount}"
+  -- → bytecode — over the same `fixtures` contracts: only those *both* compilers
+  -- finished are counted, on either side. Neither includes solc's Solidity→Yul
+  -- front-end: that runs once, before both, and is reported apart as
+  -- `frontend_ms`. `solc_ms` is therefore NOT the `--optimize --via-ir` compile
+  -- the gas comparison runs, which would start from Solidity and add the Yul
+  -- optimizer. The two uncounted buckets hold this compiler's time on contracts
+  -- that never formed a pair: `rejected` ones it could not compile itself, and
+  -- `unpaired` ones it compiled but solc would not.
+  IO.println s!"Compile time: suite={suite} mode=vs_solc_optimized ours_ms={toMs oursNs} solc_ms={toMs solcNs} frontend_ms={toMs frontendNs} fixtures={compiledCount} rejected_ms={toMs rejectedNs} rejected={rejectedCount} unpaired_ms={toMs unpairedNs} unpaired={unpairedCount}"
   -- Per-fixture rows let the PR summary compare a head run with a main run on
   -- their exact shared fixture set. Tabs are intentional: fixture paths may
   -- contain spaces, but Solidity corpus paths cannot contain tabs.
