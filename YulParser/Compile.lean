@@ -5,6 +5,7 @@ import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
 import YulEvmCompiler.Optimizer.Implementation.MemorySpillSelect
 import YulEvmCompiler.Optimizer.Implementation.MemorySpillSound
 import YulEvmCompiler.Optimizer.Implementation.RematSpill
+import YulEvmCompiler.Optimizer.Implementation.SpillStoreElim
 set_option warningAsError true
 /-!
 # YulParser.Compile
@@ -353,7 +354,7 @@ def compileSource (source : String) : Option ByteArray := do
                 match YulEvmCompiler.compileObject spilled.object with
                 | none => none
                 | some plainLayout =>
-                    let spilledOpt :=
+                    let spilledOpt0 :=
                       YulEvmCompiler.Optimizer.optimizerPipelineObject
                         (calls := YulSemantics.EVM.ExternalCalls.none)
                         (creates := YulSemantics.EVM.ExternalCreates.none)
@@ -362,6 +363,12 @@ def compileSource (source : String) : Option ByteArray := do
                             YulSemantics.EVM.ExternalCalls.none
                             YulSemantics.EVM.ExternalCreates.none)
                           spilled.object)
+                    -- EXPERIMENTAL (covered-before-read store elimination): drop
+                    -- spill-slot writes that are overwritten before any read.
+                    -- (Re-optimizing afterwards yields no further gain — the
+                    -- removed stores have inline values, no dead bindings.)
+                    let spilledOpt :=
+                      YulEvmCompiler.Optimizer.SpillStoreElim.elimObject spilledOpt0
                     YulEvmCompiler.compileObject spilledOpt
                       <|> YulEvmCompiler.compileObject
                         (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)
