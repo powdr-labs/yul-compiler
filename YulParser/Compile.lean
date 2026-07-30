@@ -376,11 +376,20 @@ def compileSource (source : String) : Option ByteArray := do
                             (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)
                           <|> some plainLayout
               | none => none : Option YulSemantics.EVM.Layout)
-             -- Remat-before-spill first (shrinks the spilled set — PoolSwap
-             -- 637 → 232); fall back to plain spill when remat regresses
-             -- compilability.
-             spillCompile (YulEvmCompiler.Optimizer.RematSpill.rematObject raw)
-               <|> spillCompile raw)
+             -- Remat-before-spill shrinks the spilled set (PoolSwap 637 → 232),
+             -- but on a few fixtures its recomputes bloat loop bodies and it is
+             -- dynamically worse (measured: array_copy_nested_array +15k). Pick
+             -- the variant with the smaller compiled code — that proxy chose
+             -- remat for the Pool* wins (44960 < 49918) and plain spill for the
+             -- regressors (array_copy 3900 < 4225). Fall back either way when
+             -- one variant fails to compile.
+             match spillCompile (YulEvmCompiler.Optimizer.RematSpill.rematObject raw),
+                   spillCompile raw with
+             | some remL, some rawL =>
+                 some (if remL.code.length ≤ rawL.code.length then remL else rawL)
+             | some remL, none => some remL
+             | none, some rawL => some rawL
+             | none, none => none)
       return ByteArray.mk layout.code.toArray
   | none => none
 
