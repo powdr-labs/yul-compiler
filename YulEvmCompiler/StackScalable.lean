@@ -933,6 +933,129 @@ abbrev CertValue := FLayout × Nat × FLayout
 /-- Bundled executable certificate lookup. -/
 abbrev CertLookup := List Asm → Option CertValue
 
+/-- The entry type stored in the key-indexed table. -/
+abbrev CertEntry := Nat × List Asm × FLayout × Nat × FLayout
+
+/-- Certificate lookup against an already-built table.
+
+`CertLookup` is a function type, so a definition of the form
+`let t := …; fun c => … t …` is eta-expanded by the compiler to arity 2 and the
+`let` is floated *inside* the lambda: the table would then be reallocated and
+refolded on **every** lookup, making the verifier quadratic in the program
+length with an O(program) array allocation per lookup. Taking the table as a
+parameter is what keeps it shared; `checkCertFast` binds it once. -/
+def lookupIn (t : Array (Option CertEntry)) : CertLookup :=
+  fun c => match t[c.length]? with
+    | some (some e) =>
+        if e.2.1 = c then some (e.2.2.1, e.2.2.2.1, e.2.2.2.2) else none
+    | _ => none
+
+/-- `lookupIn` with the pointer-equality fast path on the position comparison,
+installed into compiled code by `@[csimp]` below. -/
+def lookupInFast (t : Array (Option CertEntry)) : CertLookup :=
+  fun c => match t[c.length]? with
+    | some (some e) =>
+        if posEq e.2.1 c then some (e.2.2.1, e.2.2.2.1, e.2.2.2.2) else none
+    | _ => none
+
+omit model in
+@[csimp] theorem lookupIn_eq_lookupInFast : @lookupIn = @lookupInFast := by
+  funext t c
+  simp only [lookupIn, lookupInFast, posEq_eq_decide, decide_eq_true_eq]
+
+/-! ### Looking up by index instead of by length
+
+`lookupIn t c` uses `c.length` as the table index, and `c` is a suffix of the
+program, so every lookup walks it: `List.length` was 18.7% of a compile on a
+mid-sized fixture and 34.9% on the largest. The verifier performs one to three
+lookups per entry and there is roughly one entry per instruction, so this is the
+last quadratic in the gate.
+
+The lengths are all *derivable* without walking — a fall-through successor is one
+shorter than the position it came from, and a jump target's length can be
+tabulated with the target itself. What is missing is the length of the position an
+entry *stores*, which a hostile table need not report honestly in `e.1`.
+
+`suffixArr` supplies it: cell `k` holds the length-`k` suffix of the program, so
+`posEq (suffixArr prog)[e.1]! e.2.1` — O(1) by pointer for a certificate our own
+solver produced — *proves* `e.2.1.length = e.1`. When it fails, the entry falls
+back to the length-computing path, so acceptance is unchanged either way. -/
+
+/-- Certificate lookup at an explicit index. Equal to `lookupIn t c` exactly when
+`k` is `c`'s length (`lookupAt_length`). -/
+def lookupAt (t : Array (Option CertEntry)) (k : Nat) (c : List Asm) :
+    Option CertValue :=
+  match t[k]? with
+  | some (some e) =>
+      if posEq e.2.1 c then some (e.2.2.1, e.2.2.2.1, e.2.2.2.2) else none
+  | _ => none
+
+omit model in
+theorem lookupAt_length (t : Array (Option CertEntry)) (c : List Asm) :
+    lookupAt t c.length c = lookupIn t c := by
+  simp only [lookupAt, lookupIn, posEq_eq_decide, decide_eq_true_eq]
+
+/-- Every suffix of `p`, longest first, appended to `acc`. Pointers are shared
+with `p` — nothing is rebuilt — which is what makes the `posEq` check below O(1).
+-/
+def suffixesGo : List Asm → Array (List Asm) → Array (List Asm)
+  | [], acc => acc.push []
+  | p@(_ :: rest), acc => suffixesGo rest (acc.push p)
+
+/-- Suffixes of `prog`, longest first: cell `i` is `prog.drop i`, so the suffix of
+length `k` sits at index `prog.length - k`. -/
+def suffixes (prog : List Asm) : Array (List Asm) := suffixesGo prog #[]
+
+omit model in
+private theorem suffixesGo_getElem? (p : List Asm) :
+    ∀ (acc : Array (List Asm)) (i : Nat),
+      (suffixesGo p acc)[i]? =
+        if i < acc.size then acc[i]?
+        else if i ≤ acc.size + p.length then some (p.drop (i - acc.size)) else none := by
+  induction p with
+  | nil =>
+      intro acc i
+      rw [suffixesGo, Array.getElem?_push]
+      rcases Nat.lt_trichotomy i acc.size with h | h | h
+      · simp [show i ≠ acc.size by omega, h]
+      · subst h; simp
+      · simp [show i ≠ acc.size by omega, show ¬ i < acc.size by omega,
+          show ¬ i ≤ acc.size by omega]
+  | cons i₀ rest ih =>
+      intro acc i
+      rw [suffixesGo, ih]
+      simp only [Array.size_push, List.length_cons]
+      rcases Nat.lt_trichotomy i acc.size with h | h | h
+      · rw [if_pos (show i < acc.size + 1 by omega), if_pos h,
+          Array.getElem?_push_lt h, Array.getElem?_eq_getElem h]
+      · subst h
+        simp
+      · have hdrop : (i₀ :: rest).drop (i - acc.size) = rest.drop (i - (acc.size + 1)) := by
+          have h1 : i - acc.size = (i - (acc.size + 1)) + 1 := by omega
+          rw [h1, List.drop_succ_cons]
+        by_cases hle : i ≤ acc.size + 1 + rest.length
+        · simp [show ¬ i < acc.size + 1 by omega, show ¬ i < acc.size by omega,
+            hle, show i ≤ acc.size + (rest.length + 1) by omega, hdrop]
+        · simp [show ¬ i < acc.size + 1 by omega, show ¬ i < acc.size by omega,
+            hle, show ¬ i ≤ acc.size + (rest.length + 1) by omega]
+
+omit model in
+/-- Cell `i` of `suffixes prog` is `prog.drop i`. -/
+theorem suffixes_getElem? (prog : List Asm) (i : Nat) (h : i ≤ prog.length) :
+    (suffixes prog)[i]? = some (prog.drop i) := by
+  rw [suffixes, suffixesGo_getElem?]
+  simp [Nat.not_lt.mpr (Nat.zero_le i), h]
+
+omit model in
+/-- …hence it has length `prog.length - i`. This is the fact that turns a
+successful `posEq` into a proof about a stored position's length. -/
+theorem suffixes_length (prog : List Asm) (i : Nat) (h : i ≤ prog.length)
+    (c : List Asm) (hc : (suffixes prog)[i]? = some c) :
+    c.length = prog.length - i := by
+  rw [suffixes_getElem? prog i h] at hc
+  rw [← Option.some.inj hc]
+  simp
+
 /-- `frameStepB` with a bundled certificate API. Each successor position is
 looked up once instead of independently through `fl`, `fbMax`, and `rl`. -/
 def frameStepLookupB (prog : List Asm) (lookup : CertLookup) :
@@ -991,8 +1114,10 @@ def frameStepLookupB (prog : List Asm) (lookup : CertLookup) :
       | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
       | _ => false
 
-/-- The verifier's step relation as it is actually **run**, proved equal to
-`frameStepLookupB` by `frameStepLookupFastB_eq_frameStepLookupB`.
+/-- Intermediate step relation, proved equal to `frameStepLookupB` by
+`frameStepLookupFastB_eq_frameStepLookupB`. Nothing calls this at run time any
+more — `frameStepLookupIdxB` is what `checkCertWith` runs — but keeping it splits
+the equality proof along the two independent changes it represents.
 
 Two changes, both of them the same idea — stop walking the program for something
 that is already known:
@@ -1064,6 +1189,99 @@ def frameStepLookupFastB (tgts : Std.HashMap Label (List Asm))
 
 
 
+/-- `frameStepLookupFastB` with the fall-through successor looked up by **index**
+instead of by length.
+
+`kc` must be `c`'s length, which the caller knows without walking: `checkCertWith`
+establishes it for the position an entry stores, and the continuation after a
+return label is one shorter. Jump *targets* still resolve by length — they are a
+small minority of instructions, and tabulating their lengths would need a second
+map and its own accumulator proof. -/
+def frameStepLookupIdxB (tgts : Std.HashMap Label (List Asm))
+    (lookup : CertLookup) (tbl : Array (Option CertEntry)) (kc : Nat) :
+    Asm → List Asm → FLayout → Nat → FLayout → Bool
+  | .push _,      c, S, F, R => decide (lookupAt tbl kc c = some (.word :: S, F, R))
+  | .dup n,       c, S, F, R => match S[n.val]? with
+      | some FSlot.word => decide (lookupAt tbl kc c = some (.word :: S, F, R))
+      | _ => false
+  | .pushLabel l, c, S, F, R => decide (lookupAt tbl kc c = some (.retTo l :: S, F, R))
+  | .pop,         c, S, F, R => match S with
+      | .word :: S' => decide (lookupAt tbl kc c = some (S', F, R))
+      | _ => false
+  | .swap n,      c, S, F, R => match S with
+      | sx :: rest => match rest.drop n.val with
+          | sy :: rst => decide (sx = FSlot.word ∧
+              (∀ s ∈ rest.take n.val, s = FSlot.word) ∧
+              lookupAt tbl kc c = some (sy :: (rest.take n.val ++ sx :: rst), F, R))
+          | [] => false
+      | [] => false
+  | .label _,     c, S, F, R => decide (lookupAt tbl kc c = some (S, F, R))
+  | .op yop,      c, S, F, R => match opTable yop with
+      | some o => decide (Operation.popArity o ≤ S.length ∧
+          lookupAt tbl kc c = some
+            (List.replicate (Operation.pushArity o) FSlot.word ++
+              S.drop (Operation.popArity o), F, R))
+      | none => false
+  | .jump l,      c, S, F, R =>
+      (match tgts[l]? with
+       | some t => decide (lookup t = some (S, F, R))
+       | none => false)
+      || (match c with
+          | .label Lret :: c' =>
+              (match tgts[l]? with
+               | some t =>
+                   (match splitSetup Lret S with
+                    | some (Sw, Smid) =>
+                        (match lookup t with
+                         | some (St, Ft, Sret) =>
+                             posEqOpt tgts[Lret]? (some c') &&
+                             decide ((∀ s ∈ Sw, s = FSlot.word) ∧
+                               St = Sw ++ [FSlot.ret] ∧ F + Smid.length ≤ Ft ∧
+                               (∀ s ∈ Sret, s = FSlot.word) ∧
+                               lookupAt tbl (kc - 1) c' = some (Sret ++ Smid, F, R))
+                         | none => false)
+                    | none => false)
+               | none => false)
+          | _ => false)
+  | .jumpi l,     c, S, F, R => match S with
+      | .word :: S' =>
+          (match tgts[l]? with
+           | some t => decide (lookup t = some (S', F, R))
+           | none => false)
+          && decide (lookupAt tbl kc c = some (S', F, R))
+      | _ => false
+  | .dynJump,     _, S, _F, R => match S with
+      | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
+      | _ => false
+
+
+
+
+
+omit model in
+/-- Supplying the fall-through successor's index changes nothing, provided the
+index really is its length. -/
+theorem frameStepLookupIdxB_eq_frameStepLookupFastB
+    (tgts : Std.HashMap Label (List Asm)) (tbl : Array (Option CertEntry))
+    (kc : Nat) (i : Asm) (c : List Asm) (S : FLayout) (F : Nat) (R : FLayout)
+    (hk : kc = c.length) :
+    frameStepLookupIdxB tgts (lookupIn tbl) tbl kc i c S F R =
+      frameStepLookupFastB tgts (lookupIn tbl) i c S F R := by
+  subst hk
+  cases i with
+  | jump l =>
+      -- The only case with a second, one-shorter successor: the continuation
+      -- after the return label.
+      cases c with
+      | nil =>
+          simp only [frameStepLookupIdxB, frameStepLookupFastB]
+      | cons hd c' =>
+          cases hd <;>
+            simp only [frameStepLookupIdxB, frameStepLookupFastB, lookupAt_length,
+              List.length_cons, Nat.add_sub_cancel]
+  | _ =>
+      simp only [frameStepLookupIdxB, frameStepLookupFastB, lookupAt_length]
+
 omit model in
 /-- Resolving jump targets through `findLabelMap` and comparing the return
 continuation with `posEqOpt` computes exactly what scanning with `findLabel` and
@@ -1098,40 +1316,10 @@ def CertData.tbl (d : CertData) (size : Nat) :
   d.entries.foldr (fun e a => if h : e.1 < a.size then a.set e.1 (some e) h else a)
     (Array.replicate size none)
 
-/-- The entry type stored in the key-indexed table. -/
-abbrev CertEntry := Nat × List Asm × FLayout × Nat × FLayout
-
 /-- The key-indexed table at its natural size. Named so it can be **bound once**
 and passed as a value: see `lookupIn`. -/
 def CertData.table (d : CertData) : Array (Option CertEntry) :=
   d.tbl (d.maxKey + 1)
-
-/-- Certificate lookup against an already-built table.
-
-`CertLookup` is a function type, so a definition of the form
-`let t := …; fun c => … t …` is eta-expanded by the compiler to arity 2 and the
-`let` is floated *inside* the lambda: the table would then be reallocated and
-refolded on **every** lookup, making the verifier quadratic in the program
-length with an O(program) array allocation per lookup. Taking the table as a
-parameter is what keeps it shared; `checkCertFast` binds it once. -/
-def lookupIn (t : Array (Option CertEntry)) : CertLookup :=
-  fun c => match t[c.length]? with
-    | some (some e) =>
-        if e.2.1 = c then some (e.2.2.1, e.2.2.2.1, e.2.2.2.2) else none
-    | _ => none
-
-/-- `lookupIn` with the pointer-equality fast path on the position comparison,
-installed into compiled code by `@[csimp]` below. -/
-def lookupInFast (t : Array (Option CertEntry)) : CertLookup :=
-  fun c => match t[c.length]? with
-    | some (some e) =>
-        if posEq e.2.1 c then some (e.2.2.1, e.2.2.2.1, e.2.2.2.2) else none
-    | _ => none
-
-omit model in
-@[csimp] theorem lookupIn_eq_lookupInFast : @lookupIn = @lookupInFast := by
-  funext t c
-  simp only [lookupIn, lookupInFast, posEq_eq_decide, decide_eq_true_eq]
 
 /-- Build one shared lookup table whose successful lookup returns all three
 certificate components. -/
@@ -1245,6 +1433,64 @@ theorem frameStepLookupB_eq_frameStepB (prog : List Asm) (lookup : CertLookup)
       simp only [frameStepLookupB, frameStepB]
       repeat' split <;> simp_all
 
+/-- Does an entry's stored position really *are* the program suffix at its claimed
+key? `n` is the program length, so the length-`key` suffix sits at index
+`n - key` of `sa`. The `key ≤ n` test is what stops `Nat` truncation from making
+a wild key look honest.
+
+A `true` answer proves `pos.length = key` (`keyHonest_length`), which is how the
+verifier learns a position's length without walking it. For a certificate our own
+solver produced the `posEq` is a pointer hit, so this costs O(1) per entry. -/
+def keyHonest (sa : Array (List Asm)) (n key : Nat) (pos : List Asm) : Bool :=
+  decide (key ≤ n) &&
+    (match sa[n - key]? with
+     | some c => posEq c pos
+     | none => false)
+
+omit model in
+/-- Below this many instructions the length walks the suffix index removes are
+cheaper than building the index: a program of `n` instructions costs one
+`n + 1`-element array and `n` pushes either way, which only pays off once the
+quadratic term is the larger one. Small Yul fixtures measurably regressed without
+this gate (`objectCompiler`, ~4 ms per fixture). -/
+def suffixIndexThreshold : Nat := 512
+
+/-- The suffix index, or nothing for programs too small to benefit. Passing `#[]`
+makes `keyHonest` fail for every entry, so they all take the length-computing
+path — the same one the honesty test already falls back to. -/
+def suffixesFor (prog : List Asm) (n : Nat) : Array (List Asm) :=
+  if n < suffixIndexThreshold then #[] else suffixes prog
+
+omit model in
+theorem suffixesFor_eq (prog : List Asm) (n : Nat) :
+    suffixesFor prog n = suffixes prog ∨ suffixesFor prog n = #[] := by
+  unfold suffixesFor
+  split
+  · exact Or.inr rfl
+  · exact Or.inl rfl
+
+omit model in
+theorem keyHonest_length {prog : List Asm} {key : Nat} {pos : List Asm}
+    (h : keyHonest (suffixes prog) prog.length key pos = true) : pos.length = key := by
+  rw [keyHonest, Bool.and_eq_true, decide_eq_true_eq] at h
+  obtain ⟨hle, hmatch⟩ := h
+  have hidx : prog.length - key ≤ prog.length := by omega
+  rw [suffixes_getElem? prog _ hidx] at hmatch
+  simp only [posEq_eq_decide, decide_eq_true_eq] at hmatch
+  rw [← hmatch]
+  simp only [List.length_drop]
+  omega
+
+omit model in
+/-- `keyHonest_length` for either array `suffixesFor` can hand out: an empty index
+never reports an honest key, so the fact holds vacuously there. -/
+theorem keyHonest_length_of {prog : List Asm} {sa : Array (List Asm)}
+    (hsa : sa = suffixes prog ∨ sa = #[]) {key : Nat} {pos : List Asm}
+    (h : keyHonest sa prog.length key pos = true) : pos.length = key := by
+  rcases hsa with rfl | rfl
+  · exact keyHonest_length h
+  · simp [keyHonest] at h
+
 /-- The verifier: bounded at every entry, and `frameStep` at every instruction entry, plus the
 program-entry conditions. Each entry carries its own `(fl, fbMax, rl)`, so the current-position
 checks read them directly; `frameStepB` resolves *successor* positions through `C`'s O(1) table.
@@ -1268,7 +1514,8 @@ into it, so `prog.length` was recomputed — an O(program) walk — once per ent
 and the table was rebuilt once per lookup (see `lookupIn`). With ~one entry per
 reachable instruction that made the verifier quadratic. -/
 def checkCertWith (prog : List Asm) (d : CertData) (n : Nat)
-    (t : Array (Option CertEntry)) (tgts : Std.HashMap Label (List Asm)) : Bool :=
+    (t : Array (Option CertEntry)) (tgts : Std.HashMap Label (List Asm))
+    (sa : Array (List Asm)) : Bool :=
   d.entries.all (fun e => decide (e.1 ≤ n)) &&
   (let lookup := lookupIn t
    (match lookup prog with
@@ -1277,13 +1524,19 @@ def checkCertWith (prog : List Asm) (d : CertData) (n : Nat)
    d.entries.all (fun e =>
      decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023)
      && (match e.2.1 with
-         | i :: c' => frameStepLookupFastB tgts lookup i c'
-             e.2.2.1 e.2.2.2.1 e.2.2.2.2
+         | i :: c' =>
+             -- When the entry's key is honest its position's length is known, so
+             -- the fall-through successor is looked up by index; otherwise fall
+             -- back to computing the length, which cannot change the answer.
+             frameStepLookupIdxB tgts lookup t
+               (if keyHonest sa n e.1 (i :: c') then e.1 - 1 else c'.length)
+               i c' e.2.2.1 e.2.2.2.1 e.2.2.2.2
          | [] => true)))
 
 /-- Bundled-lookup implementation of `checkCert`. -/
 def checkCertFast (prog : List Asm) (d : CertData) : Bool :=
   checkCertWith prog d prog.length d.table (findLabelMap prog)
+    (suffixesFor prog prog.length)
 
 omit model in
 theorem checkCertFast_eq_checkCert (prog : List Asm) (d : CertData) :
@@ -1293,8 +1546,10 @@ theorem checkCertFast_eq_checkCert (prog : List Asm) (d : CertData) :
     decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023) &&
       match e.2.1 with
       | i :: c =>
-          frameStepLookupFastB (findLabelMap prog) lookup i c
-            e.2.2.1 e.2.2.2.1 e.2.2.2.2
+          frameStepLookupIdxB (findLabelMap prog) lookup d.table
+            (if keyHonest (suffixesFor prog prog.length) prog.length e.1 (i :: c)
+             then e.1 - 1 else c.length)
+            i c e.2.2.1 e.2.2.2.1 e.2.2.2.2
       | [] => true
   let slowEntry := fun e : Nat × List Asm × FLayout × Nat × FLayout =>
     decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023) &&
@@ -1307,7 +1562,22 @@ theorem checkCertFast_eq_checkCert (prog : List Asm) (d : CertData) :
     | nil => rfl
     | cons i c =>
         simp only
-        rw [frameStepLookupFastB_eq_frameStepLookupB,
+        -- Either index is `c`'s length: the honest-key one because `keyHonest`
+        -- pins the stored position's length, the other by construction.
+        have hk : (if keyHonest (suffixesFor prog prog.length) prog.length e.1
+              (i :: c) then e.1 - 1 else c.length) = c.length := by
+          by_cases hh : keyHonest (suffixesFor prog prog.length) prog.length e.1
+              (i :: c) = true
+          · rw [if_pos hh]
+            have hlen : (i :: c).length = e.1 :=
+              keyHonest_length_of (suffixesFor_eq prog prog.length) hh
+            simp only [List.length_cons] at hlen
+            omega
+          · rw [if_neg (by simpa using hh)]
+        have hlk : lookup = lookupIn d.table := rfl
+        rw [hlk, hk,
+          frameStepLookupIdxB_eq_frameStepLookupFastB _ _ _ _ _ _ _ _ rfl,
+          frameStepLookupFastB_eq_frameStepLookupB,
           frameStepLookupB_eq_frameStepB]
   have hall : d.entries.all fastEntry = d.entries.all slowEntry := by
     congr 1
