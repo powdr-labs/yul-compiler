@@ -850,4 +850,469 @@ theorem vchgStep {funs : FunEnv D} {V₁ : VEnv D} {st : D.State} {code : Code D
 
 end FrameLemma
 
+/-! ### Block equivalence relative to a bound set
+
+`EquivBlock` quantifies over *every* variable environment. A pass whose rewrite
+condition is "these names are provably bound here" cannot meet that inside a
+function body — the removed right-hand side is stuck on environments where its
+variables are unbound, and that stuckness is observable. `BEquivBlock bound`
+restricts the quantifier to environments binding `bound`, which is exactly what
+the call rule's `callOk` environment supplies for `params ++ rets`.
+
+This is the subset-`SubBound` counterpart of `BoundFunCongr`'s exact-layout
+`BoundEquivBlock`; because the passes using it keep the environment's *shape*,
+the halt case needs no special treatment and the relation is a plain `Iff`. -/
+
+/-- Every listed ident is in the environment's domain. -/
+def SubBound (V : VEnv D) (bound : List Ident) : Prop :=
+  ∀ x ∈ bound, x ∈ V.map Prod.fst
+
+theorem SubBound.nil (V : VEnv D) : SubBound V ([] : List Ident) :=
+  fun _ hx => absurd hx List.not_mem_nil
+
+section BoundEquiv
+
+variable [DecidableEq D.Value]
+
+/-- Boundness is monotone along execution (domains only grow). -/
+theorem SubBound.mono {V V' : VEnv D} {bound : List Ident} {funs st code st' o}
+    (hb : SubBound V bound) (h : Step D funs V st code (.sres V' st' o)) :
+    SubBound V' bound :=
+  fun x hx => dom_mono h (hb x hx)
+
+/-- Statement equivalence at environments binding `bound`. -/
+def BEquivStmt (bound : List Ident) (s₁ s₂ : Stmt D.Op) : Prop :=
+  ∀ funs V st V' st' o, SubBound V bound →
+    (ExecStmt D funs V st s₁ V' st' o ↔ ExecStmt D funs V st s₂ V' st' o)
+
+/-- Sequence equivalence at environments binding `bound`. -/
+def BEquivStmts (bound : List Ident) (ss₁ ss₂ : List (Stmt D.Op)) : Prop :=
+  ∀ funs V st V' st' o, SubBound V bound →
+    (ExecStmts D funs V st ss₁ V' st' o ↔ ExecStmts D funs V st ss₂ V' st' o)
+
+/-- Block equivalence at environments binding `bound`. -/
+def BEquivBlock (bound : List Ident) (b₁ b₂ : Block D.Op) : Prop :=
+  BEquivStmt (D := D) bound (.block b₁) (.block b₂)
+
+theorem BEquivStmt.refl (bound : List Ident) (s : Stmt D.Op) :
+    BEquivStmt (D := D) bound s s := fun _ _ _ _ _ _ _ => Iff.rfl
+
+theorem BEquivStmt.symm {bound : List Ident} {s₁ s₂ : Stmt D.Op}
+    (h : BEquivStmt (D := D) bound s₁ s₂) : BEquivStmt (D := D) bound s₂ s₁ :=
+  fun funs V st V' st' o hb => (h funs V st V' st' o hb).symm
+
+theorem BEquivStmt.trans {bound : List Ident} {s₁ s₂ s₃ : Stmt D.Op}
+    (h₁ : BEquivStmt (D := D) bound s₁ s₂) (h₂ : BEquivStmt (D := D) bound s₂ s₃) :
+    BEquivStmt (D := D) bound s₁ s₃ :=
+  fun funs V st V' st' o hb =>
+    (h₁ funs V st V' st' o hb).trans (h₂ funs V st V' st' o hb)
+
+theorem BEquivStmts.refl (bound : List Ident) (ss : List (Stmt D.Op)) :
+    BEquivStmts (D := D) bound ss ss := fun _ _ _ _ _ _ _ => Iff.rfl
+
+theorem BEquivStmts.symm {bound : List Ident} {ss₁ ss₂ : List (Stmt D.Op)}
+    (h : BEquivStmts (D := D) bound ss₁ ss₂) : BEquivStmts (D := D) bound ss₂ ss₁ :=
+  fun funs V st V' st' o hb => (h funs V st V' st' o hb).symm
+
+theorem BEquivStmts.trans {bound : List Ident} {ss₁ ss₂ ss₃ : List (Stmt D.Op)}
+    (h₁ : BEquivStmts (D := D) bound ss₁ ss₂) (h₂ : BEquivStmts (D := D) bound ss₂ ss₃) :
+    BEquivStmts (D := D) bound ss₁ ss₃ :=
+  fun funs V st V' st' o hb =>
+    (h₁ funs V st V' st' o hb).trans (h₂ funs V st V' st' o hb)
+
+theorem BEquivBlock.refl (bound : List Ident) (b : Block D.Op) :
+    BEquivBlock (D := D) bound b b := BEquivStmt.refl _ _
+
+theorem BEquivBlock.symm {bound : List Ident} {b₁ b₂ : Block D.Op}
+    (h : BEquivBlock (D := D) bound b₁ b₂) : BEquivBlock (D := D) bound b₂ b₁ :=
+  BEquivStmt.symm h
+
+theorem BEquivBlock.trans {bound : List Ident} {b₁ b₂ b₃ : Block D.Op}
+    (h₁ : BEquivBlock (D := D) bound b₁ b₂) (h₂ : BEquivBlock (D := D) bound b₂ b₃) :
+    BEquivBlock (D := D) bound b₁ b₃ := BEquivStmt.trans h₁ h₂
+
+/-- At the empty bound set the restriction is vacuous. -/
+theorem BEquivBlock.toEquiv {b₁ b₂ : Block D.Op}
+    (h : BEquivBlock (D := D) [] b₁ b₂) : EquivBlock D b₁ b₂ :=
+  fun funs V st V' st' o => h funs V st V' st' o (SubBound.nil V)
+
+/-- An unrestricted equivalence is a restricted one. -/
+theorem BEquivBlock.ofEquiv {bound : List Ident} {b₁ b₂ : Block D.Op}
+    (h : EquivBlock D b₁ b₂) : BEquivBlock (D := D) bound b₁ b₂ :=
+  fun funs V st V' st' o _ => h funs V st V' st' o
+
+/-! #### Sequence congruence -/
+
+private theorem bconsImp {bound : List Ident} {s₁ s₂ : Stmt D.Op} {ss₁ ss₂}
+    (hs : BEquivStmt (D := D) bound s₁ s₂) (hss : BEquivStmts (D := D) bound ss₁ ss₂)
+    {funs V st V' st' o} (hb : SubBound V bound)
+    (h : ExecStmts D funs V st (s₁ :: ss₁) V' st' o) :
+    ExecStmts D funs V st (s₂ :: ss₂) V' st' o := by
+  cases h with
+  | seqCons h₁ h₂ =>
+      exact Step.seqCons ((hs _ _ _ _ _ _ hb).mp h₁)
+        ((hss _ _ _ _ _ _ (hb.mono h₁)).mp h₂)
+  | seqStop h₁ h₂ => exact Step.seqStop ((hs _ _ _ _ _ _ hb).mp h₁) h₂
+
+/-- Congruence: sequences extend equivalences element-wise. -/
+theorem BEquivStmts.cons_congr {bound : List Ident} {s₁ s₂ : Stmt D.Op} {ss₁ ss₂}
+    (hs : BEquivStmt (D := D) bound s₁ s₂) (hss : BEquivStmts (D := D) bound ss₁ ss₂) :
+    BEquivStmts (D := D) bound (s₁ :: ss₁) (s₂ :: ss₂) :=
+  fun _ _ _ _ _ _ hb => ⟨bconsImp hs hss hb, bconsImp hs.symm hss.symm hb⟩
+
+/-! #### Statement congruences -/
+
+private theorem bcondImp {bound : List Ident} {c : Expr D.Op} {b₁ b₂ : Block D.Op}
+    (hb2 : BEquivBlock (D := D) bound b₁ b₂) {funs V st V' st' o} (hb : SubBound V bound)
+    (h : ExecStmt D funs V st (.cond c b₁) V' st' o) :
+    ExecStmt D funs V st (.cond c b₂) V' st' o := by
+  cases h with
+  | ifTrue h₁ h₂ h₃ => exact Step.ifTrue h₁ h₂ ((hb2 _ _ _ _ _ _ hb).mp h₃)
+  | ifFalse h₁ h₂ => exact Step.ifFalse h₁ h₂
+  | ifHalt h₁ => exact Step.ifHalt h₁
+
+/-- Congruence: `if` with an equivalent body. -/
+theorem BEquivStmt.cond_congr {bound : List Ident} (c : Expr D.Op) {b₁ b₂ : Block D.Op}
+    (hb2 : BEquivBlock (D := D) bound b₁ b₂) :
+    BEquivStmt (D := D) bound (.cond c b₁) (.cond c b₂) :=
+  fun _ _ _ _ _ _ hb => ⟨bcondImp hb2 hb, bcondImp hb2.symm hb⟩
+
+/-- `selectSwitch` respects pairwise-related cases: equal labels, related blocks. -/
+theorem selectSwitch_bcongr {bound : List Ident} {cv : D.Value}
+    {cs₁ cs₂ : List (Literal × Block D.Op)} {dflt₁ dflt₂ : Option (Block D.Op)}
+    (hcases : List.Forall₂ (fun p q => p.1 = q.1 ∧ BEquivBlock (D := D) bound p.2 q.2) cs₁ cs₂)
+    (hdflt : BEquivBlock (D := D) bound (dflt₁.getD []) (dflt₂.getD [])) :
+    BEquivBlock (D := D) bound (selectSwitch D cv cs₁ dflt₁) (selectSwitch D cv cs₂ dflt₂) := by
+  induction hcases with
+  | nil => simpa [selectSwitch] using hdflt
+  | @cons p q t₁ t₂ hpq ht ih =>
+      obtain ⟨hl, hbq⟩ := hpq
+      by_cases hcv : cv = D.litValue p.1
+      · have h₁ : List.find? (fun r => decide (cv = D.litValue r.1)) (p :: t₁) = some p :=
+          List.find?_cons_of_pos (by simp [hcv])
+        have h₂ : List.find? (fun r => decide (cv = D.litValue r.1)) (q :: t₂) = some q :=
+          List.find?_cons_of_pos (by simp [← hl, hcv])
+        simpa only [selectSwitch, h₁, h₂] using hbq
+      · have h₁ : List.find? (fun r => decide (cv = D.litValue r.1)) (p :: t₁) =
+            List.find? (fun r => decide (cv = D.litValue r.1)) t₁ :=
+          List.find?_cons_of_neg (by simp [hcv])
+        have h₂ : List.find? (fun r => decide (cv = D.litValue r.1)) (q :: t₂) =
+            List.find? (fun r => decide (cv = D.litValue r.1)) t₂ :=
+          List.find?_cons_of_neg (by simp [← hl, hcv])
+        simpa only [selectSwitch, h₁, h₂] using ih
+
+private theorem bswitchImp {bound : List Ident} {c : Expr D.Op} {cs₁ cs₂ dflt₁ dflt₂}
+    (hsel : ∀ cv, BEquivBlock (D := D) bound
+      (selectSwitch D cv cs₁ dflt₁) (selectSwitch D cv cs₂ dflt₂))
+    {funs V st V' st' o} (hb : SubBound V bound)
+    (h : ExecStmt D funs V st (.switch c cs₁ dflt₁) V' st' o) :
+    ExecStmt D funs V st (.switch c cs₂ dflt₂) V' st' o := by
+  cases h with
+  | switchExec h₁ h₂ => exact Step.switchExec h₁ ((hsel _ _ _ _ _ _ _ hb).mp h₂)
+  | switchHalt h₁ => exact Step.switchHalt h₁
+
+/-- Congruence: `switch` with pairwise-related cases and defaults. -/
+theorem BEquivStmt.switch_congr {bound : List Ident} (c : Expr D.Op)
+    {cs₁ cs₂ : List (Literal × Block D.Op)} {dflt₁ dflt₂ : Option (Block D.Op)}
+    (hcases : List.Forall₂ (fun p q => p.1 = q.1 ∧ BEquivBlock (D := D) bound p.2 q.2) cs₁ cs₂)
+    (hdflt : BEquivBlock (D := D) bound (dflt₁.getD []) (dflt₂.getD [])) :
+    BEquivStmt (D := D) bound (.switch c cs₁ dflt₁) (.switch c cs₂ dflt₂) := by
+  have hsym : List.Forall₂
+      (fun (p q : Literal × Block D.Op) => p.1 = q.1 ∧ BEquivBlock (D := D) bound p.2 q.2)
+      cs₂ cs₁ := by
+    induction hcases with
+    | nil => exact .nil
+    | cons hh _ ih => exact .cons ⟨hh.1.symm, hh.2.symm⟩ ih
+  exact fun _ _ _ _ _ _ hb =>
+    ⟨bswitchImp (fun cv => selectSwitch_bcongr hcases hdflt) hb,
+     bswitchImp (fun cv => selectSwitch_bcongr hsym hdflt.symm) hb⟩
+
+private theorem bloopImp {bound : List Ident} {c : Expr D.Op}
+    {post₁ post₂ body₁ body₂ : Block D.Op}
+    (hpost : BEquivBlock (D := D) bound post₁ post₂)
+    (hbody : BEquivBlock (D := D) bound body₁ body₂) :
+    ∀ {funs V st code res}, Step D funs V st code res →
+      code = .loop c post₁ body₁ → SubBound V bound →
+      Step D funs V st (.loop c post₂ body₂) res := by
+  intro funs V st code res h
+  induction h with
+  | @loopDone _ _ _ _ _ _ _ _ hcv hz =>
+      intro hcode _
+      injection hcode with h1 h2 h3; subst h1; subst h2; subst h3
+      exact Step.loopDone hcv hz
+  | @loopCondHalt _ _ _ _ _ _ _ hcv =>
+      intro hcode _
+      injection hcode with h1 h2 h3; subst h1; subst h2; subst h3
+      exact Step.loopCondHalt hcv
+  | @loopStep _ _ _ _ _ _ _ _ Vb stb ob Vp stp _ _ _ hcv hnz hbd hob hp _ _ _ _ ihr =>
+      intro hcode hb
+      injection hcode with h1 h2 h3; subst h1; subst h2; subst h3
+      exact Step.loopStep hcv hnz ((hbody _ _ _ _ _ _ hb).mp hbd) hob
+        ((hpost _ _ _ _ _ _ (hb.mono hbd)).mp hp)
+        (ihr rfl ((hb.mono hbd).mono hp))
+  | @loopPostHalt _ _ _ _ _ _ _ _ Vb stb ob _ _ hcv hnz hbd hob hp _ _ _ =>
+      intro hcode hb
+      injection hcode with h1 h2 h3; subst h1; subst h2; subst h3
+      exact Step.loopPostHalt hcv hnz ((hbody _ _ _ _ _ _ hb).mp hbd) hob
+        ((hpost _ _ _ _ _ _ (hb.mono hbd)).mp hp)
+  | @loopBreak _ _ _ _ _ _ _ _ _ _ hcv hnz hbd _ _ =>
+      intro hcode hb
+      injection hcode with h1 h2 h3; subst h1; subst h2; subst h3
+      exact Step.loopBreak hcv hnz ((hbody _ _ _ _ _ _ hb).mp hbd)
+  | @loopLeave _ _ _ _ _ _ _ _ _ _ hcv hnz hbd _ _ =>
+      intro hcode hb
+      injection hcode with h1 h2 h3; subst h1; subst h2; subst h3
+      exact Step.loopLeave hcv hnz ((hbody _ _ _ _ _ _ hb).mp hbd)
+  | @loopBodyHalt _ _ _ _ _ _ _ _ _ _ hcv hnz hbd _ _ =>
+      intro hcode hb
+      injection hcode with h1 h2 h3; subst h1; subst h2; subst h3
+      exact Step.loopBodyHalt hcv hnz ((hbody _ _ _ _ _ _ hb).mp hbd)
+  | _ => exact fun hcode _ => nomatch hcode
+
+private theorem bforImp {bound : List Ident} {init : Block D.Op} {c : Expr D.Op}
+    {post₁ post₂ body₁ body₂ : Block D.Op}
+    (hpost : BEquivBlock (D := D) bound post₁ post₂)
+    (hbody : BEquivBlock (D := D) bound body₁ body₂)
+    {funs V st V' st' o} (hb : SubBound V bound)
+    (h : ExecStmt D funs V st (.forLoop init c post₁ body₁) V' st' o) :
+    ExecStmt D funs V st (.forLoop init c post₂ body₂) V' st' o := by
+  cases h with
+  | forLoop hinit hloop =>
+      exact Step.forLoop hinit (bloopImp hpost hbody hloop rfl (hb.mono hinit))
+  | forInitHalt hinit => exact Step.forInitHalt hinit
+
+/-- Congruence: `for` with an equivalent post-block and body. -/
+theorem BEquivStmt.forLoop_congr {bound : List Ident} (init : Block D.Op) (c : Expr D.Op)
+    {post₁ post₂ body₁ body₂ : Block D.Op}
+    (hpost : BEquivBlock (D := D) bound post₁ post₂)
+    (hbody : BEquivBlock (D := D) bound body₁ body₂) :
+    BEquivStmt (D := D) bound (.forLoop init c post₁ body₁) (.forLoop init c post₂ body₂) :=
+  fun _ _ _ _ _ _ hb =>
+    ⟨bforImp hpost hbody hb, bforImp hpost.symm hbody.symm hb⟩
+
+/-! #### Blocks, with the hoisted scope fixed -/
+
+private theorem bblockImp {bound : List Ident} {b₁ b₂ : Block D.Op}
+    (hss : BEquivStmts (D := D) bound b₁ b₂) (hh : hoist D b₁ = hoist D b₂)
+    {funs V st V' st' o} (hb : SubBound V bound)
+    (h : ExecStmt D funs V st (.block b₁) V' st' o) :
+    ExecStmt D funs V st (.block b₂) V' st' o := by
+  cases h with
+  | block hbd => exact Step.block (hh ▸ (hss _ _ _ _ _ _ hb).mp hbd)
+
+/-- Block congruence with an unchanged hoisted scope. -/
+theorem BEquivBlock.of_stmts {bound : List Ident} {b₁ b₂ : Block D.Op}
+    (hss : BEquivStmts (D := D) bound b₁ b₂) (hh : hoist D b₁ = hoist D b₂) :
+    BEquivBlock (D := D) bound b₁ b₂ :=
+  fun _ _ _ _ _ _ hb => ⟨bblockImp hss hh hb, bblockImp hss.symm hh.symm hb⟩
+
+/-! #### The function-environment relation
+
+Rewriting inside a `funDef` body changes the `FDecl` a block hoists, so relating
+the two programs needs a relation on function environments — the congruence
+`YulSemantics.Equiv` defers. This is `FunCongr`'s development with `EquivBlock`
+replaced by `BEquivBlock (params ++ rets)`, which is exactly the boundness the
+call rule supplies. -/
+
+/-- Declarations with equal signatures and `BEquivBlock (params ++ rets)` bodies. -/
+def SbFDeclRel (d₁ d₂ : FDecl D) : Prop :=
+  d₁.params = d₂.params ∧ d₁.rets = d₂.rets ∧
+    BEquivBlock (D := D) (d₁.params ++ d₁.rets) d₁.body d₂.body
+
+/-- Scopes related pairwise: equal names, related declarations. -/
+def SbScopeRel (s₁ s₂ : FScope D) : Prop :=
+  List.Forall₂ (fun p q => p.1 = q.1 ∧ SbFDeclRel (D := D) p.2 q.2) s₁ s₂
+
+/-- Function environments related scope-by-scope. -/
+def SbFunsRel (f₁ f₂ : FunEnv D) : Prop :=
+  List.Forall₂ (SbScopeRel (D := D)) f₁ f₂
+
+theorem SbFDeclRel.refl (d : FDecl D) : SbFDeclRel (D := D) d d :=
+  ⟨rfl, rfl, BEquivBlock.refl _ _⟩
+
+theorem SbFDeclRel.symm {d₁ d₂ : FDecl D} (h : SbFDeclRel (D := D) d₁ d₂) :
+    SbFDeclRel (D := D) d₂ d₁ :=
+  ⟨h.1.symm, h.2.1.symm, by
+    have hbq := h.2.2.symm
+    rw [h.1, h.2.1] at hbq
+    exact hbq⟩
+
+theorem SbScopeRel.refl (s : FScope D) : SbScopeRel (D := D) s s := by
+  induction s with
+  | nil => exact .nil
+  | cons p t ih => exact .cons ⟨rfl, SbFDeclRel.refl _⟩ ih
+
+theorem SbScopeRel.symm {s₁ s₂ : FScope D} (h : SbScopeRel (D := D) s₁ s₂) :
+    SbScopeRel (D := D) s₂ s₁ := by
+  induction h with
+  | nil => exact .nil
+  | cons hpq _ ih => exact .cons ⟨hpq.1.symm, hpq.2.symm⟩ ih
+
+theorem SbFunsRel.refl (f : FunEnv D) : SbFunsRel (D := D) f f := by
+  induction f with
+  | nil => exact .nil
+  | cons s t ih => exact .cons (SbScopeRel.refl _) ih
+
+theorem SbFunsRel.symm {f₁ f₂ : FunEnv D} (h : SbFunsRel (D := D) f₁ f₂) :
+    SbFunsRel (D := D) f₂ f₁ := by
+  induction h with
+  | nil => exact .nil
+  | cons hs _ ih => exact .cons hs.symm ih
+
+/-- Extend related environments by a common outer scope. -/
+theorem SbFunsRel.cons_same (s : FScope D) {f₁ f₂ : FunEnv D} (h : SbFunsRel (D := D) f₁ f₂) :
+    SbFunsRel (D := D) (s :: f₁) (s :: f₂) := .cons (SbScopeRel.refl s) h
+
+/-- A scope lookup transports across `SbScopeRel`. -/
+theorem sbScopeRel_find {s₁ s₂ : FScope D} (h : SbScopeRel (D := D) s₁ s₂) (fn : Ident) :
+    (s₁.find? (fun p => p.1 = fn) = none ∧ s₂.find? (fun p => p.1 = fn) = none) ∨
+    (∃ p q, s₁.find? (fun p => p.1 = fn) = some p ∧ s₂.find? (fun p => p.1 = fn) = some q ∧
+      p.1 = q.1 ∧ SbFDeclRel (D := D) p.2 q.2) := by
+  induction h with
+  | nil => left; simp
+  | @cons p q u₁ u₂ hpq _ ih =>
+      by_cases hp : p.1 = fn
+      · right
+        refine ⟨p, q, ?_, ?_, hpq.1, hpq.2⟩
+        · exact List.find?_cons_of_pos (by simp [hp])
+        · exact List.find?_cons_of_pos (by simp [← hpq.1, hp])
+      · rw [List.find?_cons_of_neg (by simp [hp]),
+            List.find?_cons_of_neg (by simp [← hpq.1, hp])]
+        exact ih
+
+/-- `lookupFun` transports across `SbFunsRel`. -/
+theorem sbLookupFun {f₁ f₂ : FunEnv D} (hR : SbFunsRel (D := D) f₁ f₂) :
+    ∀ {fn : Ident} {decl : FDecl D} {cenv : FunEnv D},
+      lookupFun f₁ fn = some (decl, cenv) →
+      ∃ decl' cenv', lookupFun f₂ fn = some (decl', cenv') ∧
+        decl'.params = decl.params ∧ decl'.rets = decl.rets ∧
+        BEquivBlock (D := D) (decl.params ++ decl.rets) decl.body decl'.body ∧
+        SbFunsRel (D := D) cenv cenv' := by
+  induction hR with
+  | nil => intro fn decl cenv h; simp [lookupFun] at h
+  | @cons s₁ s₂ t₁ t₂ hs hR' ih =>
+      intro fn decl cenv h
+      rcases sbScopeRel_find hs fn with ⟨hn₁, hn₂⟩ | ⟨p, q, hp₁, hp₂, hkey, hd⟩
+      · rw [lookupFun, hn₁] at h
+        obtain ⟨decl', cenv', hl', hpar, hret, hbody, hRc⟩ := ih h
+        exact ⟨decl', cenv', by rw [lookupFun, hn₂]; exact hl', hpar, hret, hbody, hRc⟩
+      · rw [lookupFun, hp₁] at h
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨hd_eq, hcenv_eq⟩ := h
+        subst hd_eq; subst hcenv_eq
+        exact ⟨q.2, s₂ :: t₂, by rw [lookupFun, hp₂], hd.1.symm, hd.2.1.symm,
+          hd.2.2, List.Forall₂.cons hs hR'⟩
+
+omit [DecidableEq D.Value] in
+/-- The callee environment binds exactly the callee's parameters and returns. -/
+theorem subBound_callee {decl : FDecl D} {argvals : List D.Value}
+    (hlen : argvals.length = decl.params.length) :
+    SubBound (decl.params.zip argvals ++ bindZeros D decl.rets) (decl.params ++ decl.rets) := by
+  intro y hy
+  rw [List.map_append, bindZeros_fst, List.map_fst_zip (by omega)]
+  exact hy
+
+/-- **Function-environment congruence.** A `Step` derivation transports across an
+`SbFunsRel`: running the *same* code under a related function environment yields
+the *same* result. -/
+theorem Step.sbFunsCongr {funs₁ : FunEnv D} {V st code res}
+    (h : Step D funs₁ V st code res) :
+    ∀ {funs₂}, SbFunsRel (D := D) funs₁ funs₂ → Step D funs₂ V st code res := by
+  induction h with
+  | lit => intro _ _; exact Step.lit
+  | var hv => intro _ _; exact Step.var hv
+  | builtinOk _ hbi iha => intro _ hR; exact Step.builtinOk (iha hR) hbi
+  | builtinHalt _ hbi iha => intro _ hR; exact Step.builtinHalt (iha hR) hbi
+  | builtinArgsHalt _ iha => intro _ hR; exact Step.builtinArgsHalt (iha hR)
+  | @callOk funs V st fn args argvals st1 decl cenv Vend st2 o ha hl hlen hbody ho iha ihbody =>
+      intro funs₂ hR
+      obtain ⟨decl', cenv', hl', hpar, hret, hbodyEq, hRcenv⟩ := sbLookupFun hR hl
+      have hstep : Step D cenv' (decl.params.zip argvals ++ bindZeros D decl.rets) st1
+          (.stmt (.block decl.body)) (.sres Vend st2 o) := ihbody hRcenv
+      have hstep' : Step D cenv' (decl.params.zip argvals ++ bindZeros D decl.rets) st1
+          (.stmt (.block decl'.body)) (.sres Vend st2 o) :=
+        (hbodyEq cenv' _ st1 Vend st2 o (subBound_callee hlen)).mp hstep
+      have hbody' : Step D cenv' (decl'.params.zip argvals ++ bindZeros D decl'.rets) st1
+          (.stmt (.block decl'.body)) (.sres Vend st2 o) := by rw [hpar, hret]; exact hstep'
+      have hres := Step.callOk (iha hR) hl' (by rw [hpar]; exact hlen) hbody' ho
+      rw [hret] at hres; exact hres
+  | @callHalt funs V st fn args argvals st1 decl cenv Vend st2 ha hl hlen hbody iha ihbody =>
+      intro funs₂ hR
+      obtain ⟨decl', cenv', hl', hpar, hret, hbodyEq, hRcenv⟩ := sbLookupFun hR hl
+      have hstep : Step D cenv' (decl.params.zip argvals ++ bindZeros D decl.rets) st1
+          (.stmt (.block decl.body)) (.sres Vend st2 .halt) := ihbody hRcenv
+      have hstep' : Step D cenv' (decl.params.zip argvals ++ bindZeros D decl.rets) st1
+          (.stmt (.block decl'.body)) (.sres Vend st2 .halt) :=
+        (hbodyEq cenv' _ st1 Vend st2 .halt (subBound_callee hlen)).mp hstep
+      have hbody' : Step D cenv' (decl'.params.zip argvals ++ bindZeros D decl'.rets) st1
+          (.stmt (.block decl'.body)) (.sres Vend st2 .halt) := by rw [hpar, hret]; exact hstep'
+      exact Step.callHalt (iha hR) hl' (by rw [hpar]; exact hlen) hbody'
+  | callArgsHalt _ iha => intro _ hR; exact Step.callArgsHalt (iha hR)
+  | argsNil => intro _ _; exact Step.argsNil
+  | argsCons _ _ iha ihe => intro _ hR; exact Step.argsCons (iha hR) (ihe hR)
+  | argsRestHalt _ iha => intro _ hR; exact Step.argsRestHalt (iha hR)
+  | argsHeadHalt _ _ iha ihe => intro _ hR; exact Step.argsHeadHalt (iha hR) (ihe hR)
+  | funDef => intro _ _; exact Step.funDef
+  | @block funs V st body Vb stb o hbody ihbody =>
+      intro funs₂ hR; exact Step.block (ihbody (SbFunsRel.cons_same (hoist D body) hR))
+  | letZero => intro _ _; exact Step.letZero
+  | letVal _ hlen ihe => intro _ hR; exact Step.letVal (ihe hR) hlen
+  | letHalt _ ihe => intro _ hR; exact Step.letHalt (ihe hR)
+  | assignVal _ hlen ihe => intro _ hR; exact Step.assignVal (ihe hR) hlen
+  | assignHalt _ ihe => intro _ hR; exact Step.assignHalt (ihe hR)
+  | exprStmt _ ihe => intro _ hR; exact Step.exprStmt (ihe hR)
+  | exprStmtHalt _ ihe => intro _ hR; exact Step.exprStmtHalt (ihe hR)
+  | ifTrue _ hnz _ ihc ihb => intro _ hR; exact Step.ifTrue (ihc hR) hnz (ihb hR)
+  | ifFalse _ hz ihc => intro _ hR; exact Step.ifFalse (ihc hR) hz
+  | ifHalt _ ihc => intro _ hR; exact Step.ifHalt (ihc hR)
+  | switchExec _ _ ihc ihb => intro _ hR; exact Step.switchExec (ihc hR) (ihb hR)
+  | switchHalt _ ihc => intro _ hR; exact Step.switchHalt (ihc hR)
+  | @forLoop funs V st init c post body Vinit stinit Vend stend o hinit hloop ihinit ihloop =>
+      intro funs₂ hR
+      exact Step.forLoop (ihinit (SbFunsRel.cons_same (hoist D init) hR))
+        (ihloop (SbFunsRel.cons_same (hoist D init) hR))
+  | @forInitHalt funs V st init c post body Vinit stinit hinit ihinit =>
+      intro funs₂ hR
+      exact Step.forInitHalt (ihinit (SbFunsRel.cons_same (hoist D init) hR))
+  | «break» => intro _ _; exact Step.break
+  | «continue» => intro _ _; exact Step.continue
+  | leave => intro _ _; exact Step.leave
+  | seqNil => intro _ _; exact Step.seqNil
+  | seqCons _ _ ihs ihrest => intro _ hR; exact Step.seqCons (ihs hR) (ihrest hR)
+  | seqStop _ hne ihs => intro _ hR; exact Step.seqStop (ihs hR) hne
+  | loopDone _ hz ihc => intro _ hR; exact Step.loopDone (ihc hR) hz
+  | loopCondHalt _ ihc => intro _ hR; exact Step.loopCondHalt (ihc hR)
+  | loopStep _ hnz _ hob _ _ ihc ihb ihp ihr =>
+      intro _ hR; exact Step.loopStep (ihc hR) hnz (ihb hR) hob (ihp hR) (ihr hR)
+  | loopPostHalt _ hnz _ hob _ ihc ihb ihp =>
+      intro _ hR; exact Step.loopPostHalt (ihc hR) hnz (ihb hR) hob (ihp hR)
+  | loopBreak _ hnz _ ihc ihb => intro _ hR; exact Step.loopBreak (ihc hR) hnz (ihb hR)
+  | loopLeave _ hnz _ ihc ihb => intro _ hR; exact Step.loopLeave (ihc hR) hnz (ihb hR)
+  | loopBodyHalt _ hnz _ ihc ihb => intro _ hR; exact Step.loopBodyHalt (ihc hR) hnz (ihb hR)
+
+/-- **Block congruence with a changing function scope.** Related statement lists
+whose hoisted scopes are `SbScopeRel`-related form related blocks — the
+generalization of `BEquivBlock.of_stmts` that permits rewriting inside `funDef`
+bodies. -/
+theorem BEquivBlock.of_stmts_funs {bound : List Ident} {b₁ b₂ : Block D.Op}
+    (hss : BEquivStmts (D := D) bound b₁ b₂)
+    (hR : SbScopeRel (D := D) (hoist D b₁) (hoist D b₂)) :
+    BEquivBlock (D := D) bound b₁ b₂ := by
+  intro funs V st V' st' o hb
+  constructor
+  · intro h
+    cases h with
+    | block hbd =>
+        refine Step.block ?_
+        have h1 := Step.sbFunsCongr hbd (List.Forall₂.cons hR (SbFunsRel.refl funs))
+        exact (hss (hoist D b₂ :: funs) V st _ _ _ hb).mp h1
+  · intro h
+    cases h with
+    | block hbd =>
+        refine Step.block ?_
+        have h1 := Step.sbFunsCongr hbd (List.Forall₂.cons hR.symm (SbFunsRel.refl funs))
+        exact (hss (hoist D b₁ :: funs) V st _ _ _ hb).mpr h1
+
+end BoundEquiv
+
 end YulEvmCompiler.Optimizer
