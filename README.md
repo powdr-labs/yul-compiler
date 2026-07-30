@@ -325,8 +325,20 @@ to fall back to doing nothing.
   and call-path footprint, not the total number of selected bindings. Existing
   successful candidates still win before this fallback, so their bytecode and
   gas are unchanged. Programs without a safe guard contract remain rejected.
-  This fallback addresses stack reach only; `gas`, immutables, and a live
-  `linkersymbol` value remain separate unsupported features.
+  This fallback addresses stack reach only; `gas` and immutables remain
+  separate unsupported features.
+- **Library linking.** `compileSource` takes an optional `LinkEnv` — the same
+  `file.sol:Lib = 0xADDR` information as solc's `--libraries`, exposed on the
+  CLI as `yulc --libraries=NAME=0xADDR[,…]`. A live `linkersymbol("file:Lib")`
+  whose library the environment names is **substituted with that address before
+  anything else runs**, so what the optimizer and the backend see is ordinary
+  Yul and the correctness statement is unchanged: it is about the *linked*
+  program, exactly as `dataoffset`/`datasize` resolution makes it about the
+  concrete layout. Occurrences with no supplied address are still pruned when
+  provably dead and otherwise rejected, so no unlinked program is ever given a
+  default address. Note this is a *prerequisite*, not by itself an enabler: an
+  external library call is `delegatecall(gas(), lib, …)`, so a program needing a
+  live linker symbol also reads `gas()`, which remains unsupported.
 - **Fork range.** The theorem fixes `fork = .Osaka`. Function/param/return names
   must be `Nodup`.
 - **Gas is existentially bounded, not closed-form.** By design (yul-semantics is

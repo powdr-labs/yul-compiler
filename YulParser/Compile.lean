@@ -240,11 +240,75 @@ def pruneLinkerObjectTree {Op : Type} (o : Object Op) : Object Op :=
   let refs := objectRefs o
   pruneLinkerObject (refs.contains ·) o
 
+/-! ### Live `linkersymbol`: link-time library addresses
+
+A *used* `linkersymbol("file.sol:Lib")` is solc's placeholder for the address a
+linker substitutes — the target of the `delegatecall` that a public/external
+library function compiles to. Without a linker there is no sound value for it,
+which is why the pruner above only removes provably dead bindings and every
+remaining occurrence is rejected.
+
+Supplying the addresses closes that gap. `LinkEnv` is exactly the information
+solc's own `--libraries` flag carries, and resolution is a **substitution on
+the source program**, performed before parsing hands anything to the optimizer
+or the backend: after it, `linkersymbol` no longer occurs and what is compiled
+is an ordinary Yul program. So the correctness story is unchanged and reads the
+same way `dataoffset`/`datasize` resolution does — the guarantee is about the
+*linked* program, the one whose library references are these addresses, and a
+different link map is a different program. An unresolved live occurrence is
+still rejected rather than given a default. -/
+
+/-- Link-time library addresses, keyed by the fully qualified name solc emits
+(`"file.sol:Lib"`). Values are the 160-bit addresses, as naturals. -/
+abbrev LinkEnv := List (String × Nat)
+
+/-- The address `name` links to, if the environment supplies one. -/
+def linkAddress? (env : LinkEnv) (name : String) : Option Nat :=
+  (List.find? (fun entry => entry.1 == name) env).map Prod.snd
+
+mutual
+  /-- Replace every `linkersymbol("name")` whose name the environment resolves
+  with that address as a literal. Unresolved occurrences are left alone, so the
+  compiler still rejects them. -/
+  partial def linkExpr {Op : Type} (env : LinkEnv) : Expr Op → Expr Op
+    | .call "linkersymbol" [.lit (.string name)] =>
+        match linkAddress? env name with
+        | some address => .lit (.number address)
+        | none => .call "linkersymbol" [.lit (.string name)]
+    | .call name args => .call name (args.map (linkExpr env))
+    | .builtin op args => .builtin op (args.map (linkExpr env))
+    | e => e
+
+  partial def linkStmt {Op : Type} (env : LinkEnv) : Stmt Op → Stmt Op
+    | .block body => .block (body.map (linkStmt env))
+    | .funDef name params rets body =>
+        .funDef name params rets (body.map (linkStmt env))
+    | .letDecl names value => .letDecl names (value.map (linkExpr env))
+    | .assign names value => .assign names (linkExpr env value)
+    | .cond c body => .cond (linkExpr env c) (body.map (linkStmt env))
+    | .switch c cases dflt =>
+        .switch (linkExpr env c)
+          (cases.map (fun cb => (cb.1, cb.2.map (linkStmt env))))
+          (dflt.map (·.map (linkStmt env)))
+    | .forLoop init c post body =>
+        .forLoop (init.map (linkStmt env)) (linkExpr env c)
+          (post.map (linkStmt env)) (body.map (linkStmt env))
+    | .exprStmt e => .exprStmt (linkExpr env e)
+    | s => s
+end
+
+/-- Resolve library addresses throughout an object tree. -/
+partial def linkObject {Op : Type} (env : LinkEnv) : Object Op → Object Op
+  | .mk name code subs segs =>
+      .mk name (code.map (linkStmt env)) (subs.map (linkObject env)) segs
+
 /-- Parse and compile a complete Yul source program to executable EVM bytecode,
 using the documented compatibility parser when the verified parser does not
 apply. Hint builtins (`memoryguard`) are desugared for ordinary candidates and
-retained as reservation authority for the final spilling fallback. Provably
-dead `linkersymbol` bindings are dropped before either path.
+retained as reservation authority for the final spilling fallback. `linkersymbol`
+occurrences whose library `libraries` supplies are substituted with that
+address; provably dead bindings among the rest are dropped, and any live
+occurrence left over is still rejected.
 
 Both block- and object-rooted programs first run the full **normalization**
 front-end (`Normalize.normalize`: disambiguate every declared name, then hoist
@@ -257,10 +321,11 @@ simplification and propagation, bounded helper/call inlining with the
 normalization needed to expose it, then dead pure/result-region elimination.
 The object path applies the pipeline's resolution-stable mode to every code
 block in the tree. -/
-def compileSource (source : String) : Option ByteArray := do
+def compileSource (source : String) (libraries : LinkEnv := []) :
+    Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
-      let raw := pruneLinkerBlock (decodeValueStmts block)
+      let raw := pruneLinkerBlock (linkStmt libraries <$> decodeValueStmts block)
       let b := YulEvmCompiler.Optimizer.Normalize.normalize
         (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
           YulSemantics.EVM.ExternalCreates.none)
@@ -318,7 +383,7 @@ def compileSource (source : String) : Option ByteArray := do
           | none => none)
       return YulEvmCompiler.assemble (← asm)
   | some (.object o) =>
-      let raw := pruneLinkerObjectTree (decodeValueObject o)
+      let raw := pruneLinkerObjectTree (linkObject libraries (decodeValueObject o))
       let o := YulEvmCompiler.Optimizer.Normalize.normalizeObject
         (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
           YulSemantics.EVM.ExternalCreates.none)
