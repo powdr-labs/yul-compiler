@@ -416,8 +416,10 @@ def maxWindowLen : Nat := 48
 def maxTermNodes : Nat := 4096
 
 /-- Optimize one window: keep the cheapest candidate that is net-effect-equal
-(`symStateEquiv`), op-exposes ⊆ the original's inputs, is strictly cheaper, and
-does not grow bytes; else keep the original. -/
+(`symStateEquiv`), op-exposes ⊆ the original's inputs, reaches no DEEPER than the
+original (`tcand.inputs ≤ target.inputs`, so it can't underflow a shallow stack
+the source handled — `symStateEquiv` is symmetric and would otherwise miss this),
+is strictly cheaper, and does not grow bytes; else keep the original. -/
 def optimizeWindow (w : List Asm) : List Asm :=
   if w.length > maxWindowLen then w else
   match symExec w with
@@ -429,6 +431,7 @@ def optimizeWindow (w : List Asm) : List Asm :=
         | some (tcand, d2) =>
             if symStateEquiv d2 tcand target
                 && tcand.opExposed.all (· ∈ target.opExposed)
+                && tcand.inputs ≤ target.inputs
                 && windowGas cand < windowGas best
                 && codeSize cand ≤ codeSize w then cand else best
         | none => best) w
