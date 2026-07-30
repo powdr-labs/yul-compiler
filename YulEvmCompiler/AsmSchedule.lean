@@ -426,30 +426,16 @@ structure EvSt where
 def emitEv (ev : EvSt) (i : Asm) : Option EvSt := (emit ev.es i).map (fun es => ⟨es, ev.rem⟩)
 def EvSt.dec (ev : EvSt) (a : Nat) : EvSt := ⟨ev.es, ev.rem.set! a (ev.rem[a]! - 1)⟩
 
-/-- Bring node `a` (already present) to the top: if this is its last use
-(`remUses ≤ 1`) MOVE it (SWAP, consuming its copy — a no-op when already on top);
-otherwise DUP a copy. Decrements `remUses`. Bails past the DUP16/SWAP16 reach. -/
-def arrange1 (ev : EvSt) (a : Nat) : Option EvSt :=
-  match findIdx a ev.es.model.stack with
-  | none => none
-  | some depth =>
-      if ev.rem[a]! ≤ 1 then
-        if depth == 0 then some (ev.dec a)
-        else if h : 0 < depth ∧ depth - 1 < 16 then
-          (emitEv ev (.swap ⟨depth - 1, h.2⟩)).map (fun ev => ev.dec a)
-        else none
-      else
-        if h : depth < 16 then (emitEv ev (.dup ⟨depth, h⟩)).map (fun ev => ev.dec a)
-        else none
-
-/-- Arrange a list of args (deepest first) onto the top in order. -/
-def arrangeArgs : EvSt → List Nat → Option EvSt
-  | ev, [] => some ev
-  | ev, a :: rest => (arrange1 ev a).bind (fun ev' => arrangeArgs ev' rest)
-
 /-! `ensureEv node` ensures `node`'s value is present on the stack (computing it
-once if absent), then leaves it there. `app` first ensures its args present,
-arranges them on top (consuming last-use operands), and emits the op. -/
+once if absent), then leaves it there. `arrange1` brings one op-arg to the top:
+within DUP16 reach it MOVEs at last use (`remUses ≤ 1`, consuming) or else DUPs;
+BEYOND reach (or absent) it EVICT-BY-RECOMPUTEs — `recompute` rebuilds a fresh
+copy on top, `bringDup` supplies its sub-values (DUP if shallow, else recompute),
+never consuming, so it cannot over-consume a shared value. Recompute bails on an
+`inp` leaf (a pinned input can't be rebuilt); this is also the assertion that we
+never op-expose an input the original didn't (the original computed the same node
+from the same leaves, so `opExposed(cand) ⊆ opExposed(orig)` holds, and the gate
+re-checks it regardless). -/
 mutual
 def ensureEv : Nat → EvSt → Nat → Option EvSt
   | 0, _, _ => none
@@ -464,7 +450,7 @@ def ensureEv : Nat → EvSt → Nat → Option EvSt
               match ensureArgsEv fuel ev args with
               | none => none
               | some ev1 =>
-                  match arrangeArgs ev1 args.reverse with
+                  match arrangeArgs fuel ev1 args.reverse with
                   | none => none
                   | some ev2 => emitEv ev2 (.op op)
 def ensureArgsEv : Nat → EvSt → List Nat → Option EvSt
@@ -474,6 +460,41 @@ def ensureArgsEv : Nat → EvSt → List Nat → Option EvSt
       match ensureEv fuel ev a with
       | none => none
       | some ev1 => ensureArgsEv fuel ev1 rest
+def arrangeArgs : Nat → EvSt → List Nat → Option EvSt
+  | _, ev, [] => some ev
+  | 0, _, _ => none
+  | fuel + 1, ev, a :: rest =>
+      match arrange1 fuel ev a with
+      | none => none
+      | some ev' => arrangeArgs fuel ev' rest
+def arrange1 : Nat → EvSt → Nat → Option EvSt
+  | 0, _, _ => none
+  | fuel + 1, ev, a =>
+      match findIdx a ev.es.model.stack with
+      | none => recompute fuel ev a
+      | some depth =>
+          if h : depth < 16 then
+            if ev.rem[a]! ≤ 1 then
+              if depth == 0 then some (ev.dec a)
+              else (emitEv ev (.swap ⟨depth - 1, by omega⟩)).map (fun ev => ev.dec a)
+            else (emitEv ev (.dup ⟨depth, h⟩)).map (fun ev => ev.dec a)
+          else recompute fuel ev a
+def recompute : Nat → EvSt → Nat → Option EvSt
+  | 0, _, _ => none
+  | fuel + 1, ev, a =>
+      match ev.es.dag.node a with
+      | .lit v => emitEv ev (.push v)
+      | .inp _ => none
+      | .app op args =>
+          match args.reverse.foldlM (fun ev x => bringDup fuel ev x) ev with
+          | none => none
+          | some ev' => emitEv ev' (.op op)
+def bringDup : Nat → EvSt → Nat → Option EvSt
+  | 0, _, _ => none
+  | fuel + 1, ev, a =>
+      match findIdx a ev.es.model.stack with
+      | some d => if h : d < 16 then emitEv ev (.dup ⟨d, h⟩) else recompute fuel ev a
+      | none => recompute fuel ev a
 end
 
 /-- Eviction-aware scheduler: compute every output (consuming intermediates at
@@ -492,8 +513,7 @@ def scheduleEvict (d : Dag) (target : SymState) (fuel : Nat) : Option (List Asm)
       let b := ev1.es.model.stack.length
       let rot := b % m
       match (List.range m).reverse.foldlM
-          (fun ev j => (dupToTop ev.es (T[(j + (m - rot)) % m]?.getD 0)).map
-            (fun es => ⟨es, ev.rem⟩)) ev1 with
+          (fun ev j => bringDup fuel ev (T[(j + (m - rot)) % m]?.getD 0)) ev1 with
       | none => none
       | some ev2 => (emitCleanup m ev2.es b).map ES.code
 
