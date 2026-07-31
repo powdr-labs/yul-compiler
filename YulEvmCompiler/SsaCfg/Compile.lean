@@ -31,27 +31,19 @@ namespace YulEvmCompiler.SsaCfg
 
 open YulSemantics.EVM (Op)
 
-/-- Emit one SSA program through the shared final gates: `ToAsm`, `Asm`
-well-formedness, the peephole, the overflow certificate, label
-resolution. -/
-def finishProg (P : Prog) : Option (List YulEvmCompiler.Instr) := do
-  let asm ← ToAsm.emitProg P
+/-- Emit one SSA program through the shared final gates: `ToAsm` (in the
+given scheduling mode), `Asm` well-formedness, the peephole, the overflow
+certificate, label resolution. -/
+def finishProgOrd (ord : Bool) (P : Prog) : Option (List YulEvmCompiler.Instr) := do
+  let asm ← ToAsm.emitProgOrd ord P
   if !wfCheck asm then none else
   let opt := optimizeAsm asm
   if stackOK2 opt then lowerProg opt else none
 
-/-- Compile a top-level Yul block through the SSA-CFG dialect. -/
-def compileViaSsa (prog : YulSemantics.Block Op) :
-    Option (List YulEvmCompiler.Instr) := do
-  let P ← ofBlock prog
-  -- dominance gate: the SSA passes are sound only on programs whose uses
-  -- are dominated by their definitions (see `ToAsm.Prog.domCheck`)
-  if !(ToAsm.Prog.domCheck P) then none else
-  match finishProg (optimizeProg P), finishProg P with
-  | some a, some b => if a.length ≤ b.length then some a else some b
-  | some a, none => some a
-  | none, some b => some b
-  | none, none => none
+/-- `finishProgOrd` in the default mode (kept for the correctness
+statements' vocabulary). -/
+def finishProg (P : Prog) : Option (List YulEvmCompiler.Instr) :=
+  finishProgOrd false P
 
 /-! ## Static cost — candidate selection
 
@@ -133,5 +125,26 @@ where
         | .op o => if haltingOp o then go rest true (acc + cost i)
                    else go rest false (acc + cost i)
         | _ => go rest false (acc + cost i)
+
+
+/-- Compile a top-level Yul block through the SSA-CFG dialect: construction,
+dominance gate, then four candidates — {optimized, raw} × {next-use
+scheduling, plain} — with the statically cheapest artifact winning. Each
+candidate passes the full gate chain independently, so the choice is only
+ever among independently checked artifacts. -/
+def compileViaSsa (prog : YulSemantics.Block Op) :
+    Option (List YulEvmCompiler.Instr) := do
+  let P ← ofBlock prog
+  -- dominance gate: the SSA passes are sound only on programs whose uses
+  -- are dominated by their definitions (see `ToAsm.Prog.domCheck`)
+  if !(ToAsm.Prog.domCheck P) then none else
+  let Popt := optimizeProg P
+  let cands := [finishProgOrd true Popt, finishProgOrd false Popt,
+                finishProgOrd true P, finishProgOrd false P]
+  cands.foldl (init := none) fun best c =>
+    match best, c with
+    | none, c => c
+    | some b, some x => if instrCost x < instrCost b then some x else some b
+    | some b, none => some b
 
 end YulEvmCompiler.SsaCfg

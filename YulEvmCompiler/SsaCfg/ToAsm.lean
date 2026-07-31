@@ -221,6 +221,23 @@ def layoutOf (isFunc : Bool) (liveIn : List ValId) (b : Block) : List SSlot :=
     ++ ((diffS liveIn b.params).map .val)
     ++ (if isFunc then [SSlot.retAddr] else [])
 
+/-- Reorder a keep-list by **next use** (Koopman stack scheduling): values
+whose next use comes sooner sit nearer the top, so successive operations
+find their operands surfacing instead of fishing them up from depth; values
+without an upcoming in-block use keep their relative order below, and the
+return address stays at the bottom. -/
+def orderByFuture (kept : List SSlot) (future : List ValId) : List SSlot :=
+  let ranked := future.filterMap fun v =>
+    if kept.contains (.val v) then some (SSlot.val v) else none
+  let ranked := dedup ranked []
+  let rest := kept.filter fun s => !ranked.contains s && s != .retAddr
+  ranked ++ rest ++ (if kept.contains .retAddr then [.retAddr] else [])
+where
+  dedup : List SSlot → List SSlot → List SSlot
+    | [], seen => seen.reverse
+    | s :: rest, seen =>
+      if seen.contains s then dedup rest seen else dedup rest (s :: seen)
+
 /-- Keep-list for continuing execution: the distinct still-needed values of
 `σ` in their current relative order, plus the (unique) return address.
 Pushed call labels are never kept across an instruction — the only live one
@@ -371,15 +388,33 @@ def edgeTargetLayout (isFunc : Bool) (f : Func) (liveIn : Array (List ValId))
 
 /-- Emit one instruction from symbolic stack `sym`; `needed` is the
 needed-after set. Returns the emitted `Asm` and the new symbolic stack. -/
-def emitInstr (P : Prog) (L : LabelMap) (sym : List SSlot)
-    (needed : List ValId) : Instr → E (List Asm × List SSlot)
+def emitInstr (P : Prog) (L : LabelMap) (useFuture : Bool) (sym : List SSlot)
+    (needed : List ValId) (future : List ValId) :
+    Instr → E (List Asm × List SSlot)
   | .const d v =>
     pure ([.push v], .val d :: sym)
   | .op ds yop as => do
-    let keep := keepOf sym needed
-    let target := as.map .val ++ keep
-    let ops ← liftE (shuffle sym target)
-    pure (ops ++ [.op yop], ds.map .val ++ keep)
+    let keep := if useFuture then orderByFuture (keepOf sym needed) future
+                else keepOf sym needed
+    -- commutative operations accept either operand order on the stack (the
+    -- EVM computes the same word); try both and keep the cheaper shuffle
+    let argOrders :=
+      match yop, as with
+      | .add, [a, b] | .mul, [a, b] | .and, [a, b]
+      | .or, [a, b] | .xor, [a, b] | .eq, [a, b] =>
+        if a = b then [[a, b]] else [[a, b], [b, a]]
+      | _, _ => [as]
+    let best := argOrders.foldl (init := none) fun acc args =>
+      match shuffle sym (args.map .val ++ keep) with
+      | some ops =>
+        match acc with
+        | some (prev, _) =>
+          if ops.length < (prev : List Asm).length then some (ops, args) else acc
+        | none => some (ops, args)
+      | none => acc
+    match best with
+    | some (ops, _) => pure (ops ++ [.op yop], ds.map .val ++ keep)
+    | none => liftE none
   | .call ds fid as => do
     let callee ← liftE P.funcs[fid]?
     if callee.params.length ≠ as.length then liftE none else
@@ -392,7 +427,10 @@ def emitInstr (P : Prog) (L : LabelMap) (sym : List SSlot)
     -- push the label, then `DUP` the arguments above it. The stale argument
     -- copies stay in the caller's frame below the call and are popped by a
     -- later shuffle once dead.
-    let keep := keepOf sym (as.foldl (fun acc a => insertSorted a acc) needed)
+    let keep :=
+      if useFuture then orderByFuture
+        (keepOf sym (as.foldl (fun acc a => insertSorted a acc) needed)) future
+      else keepOf sym (as.foldl (fun acc a => insertSorted a acc) needed)
     let ops1 ← liftE (shuffle sym keep)
     let dups ← liftE <| (as.reverse.foldlM (init := ([], 0)) fun (acc, k) a =>
       match idxOf keep (.val a) with
@@ -486,8 +524,8 @@ def emitTerm (isFunc : Bool) (f : Func) (L : LabelMap) (fidx : Option Nat)
 
 /-- Emit one block: its label, its instructions (with per-position
 needed-after sets), its terminator. -/
-def emitBlock (P : Prog) (L : LabelMap) (fidx : Option Nat) (f : Func)
-    (liveIn : Array (List ValId)) (bid : BlockId) (b : Block) :
+def emitBlock (P : Prog) (L : LabelMap) (ord : Bool) (fidx : Option Nat)
+    (f : Func) (liveIn : Array (List ValId)) (bid : BlockId) (b : Block) :
     E (List Asm) := do
   let isFunc := fidx.isSome
   let sym0 ←
@@ -502,17 +540,26 @@ def emitBlock (P : Prog) (L : LabelMap) (fidx : Option Nat) (f : Func)
     unionS (liveIn[e.target]?.getD []) acc
   let base := unionS (unionS b.term.uses []) lout
   let needs := neededAfter b.instrs base
-  let (body, symEnd) ← (b.instrs.zip needs).foldlM
-    (init := (([] : List Asm), sym0)) fun (acc, sym) (i, need) => do
-      let (asm, sym') ← emitInstr P L sym need i
+  -- per-position ordered future-use sequences (next-use scheduling); empty
+  -- when the mode is off, which makes `orderByFuture` the identity order
+  let futures :=
+    if ord then
+      (b.instrs.foldr (init := ([([] : List ValId)], b.term.uses))
+        fun i (acc : List (List ValId) × List ValId) =>
+          let (lst, fut) := acc
+          (fut :: lst, i.uses ++ fut)).1
+    else List.replicate b.instrs.length []
+  let (body, symEnd) ← (b.instrs.zip (needs.zip futures)).foldlM
+    (init := (([] : List Asm), sym0)) fun (acc, sym) (i, need, future) => do
+      let (asm, sym') ← emitInstr P L ord sym need future i
       pure (acc ++ asm, sym')
   let tasm ← emitTerm isFunc f L fidx liveIn symEnd b.term
   pure (.label (blkLabel L fidx bid) :: body ++ tasm)
 
 /-- Emit a whole function (blocks in index order; the entry must be block 0,
 which both construction entry points guarantee). -/
-def emitFunc (P : Prog) (L : LabelMap) (fidx : Option Nat) (f : Func) :
-    E (List Asm) := do
+def emitFunc (P : Prog) (L : LabelMap) (ord : Bool) (fidx : Option Nat)
+    (f : Func) : E (List Asm) := do
   if f.entry ≠ 0 then liftE none else
   resetLayouts
   let liveIn ← liftE (liveInSets f)
@@ -520,7 +567,7 @@ def emitFunc (P : Prog) (L : LabelMap) (fidx : Option Nat) (f : Func) :
   if diffS (liveIn[0]?.getD []) f.params ≠ [] then liftE none else
   let idxBlocks := (List.range f.blocks.size).zip f.blocks.toList
   idxBlocks.foldlM (init := []) fun acc (bid, b) => do
-    let asm ← emitBlock P L fidx f liveIn bid b
+    let asm ← emitBlock P L ord fidx f liveIn bid b
     pure (acc ++ asm)
 
 /-- Drop `jump l` when `label l` immediately follows (the block-order
@@ -536,18 +583,23 @@ def elideJumps : List Asm → List Asm
 every function's, then the terminal label — so `main`'s `ret []` runs off
 the end of the code (the implicit `STOP`), exactly like the classic
 backend's `.normal` fall-through. -/
-def emitProg (P : Prog) : Option (List Asm) := do
+def emitProgOrd (ord : Bool) (P : Prog) : Option (List Asm) := do
   if !(P.main.params.isEmpty && P.main.nrets = 0) then none else
   let L := mkLabelMap P
   let build : E (List Asm) := do
-    let asmMain ← emitFunc P L none P.main
+    let asmMain ← emitFunc P L ord none P.main
     let idxFuncs := (List.range P.funcs.size).zip P.funcs.toList
     let asmFns ← idxFuncs.foldlM (init := []) fun acc (i, f) => do
-      let a ← emitFunc P L (some i) f
+      let a ← emitFunc P L ord (some i) f
       pure (acc ++ a)
     pure (asmMain ++ asmFns ++ [.label L.endLabel])
   let (asm, _) ← build ⟨L.endLabel + 1, {}⟩
   some (elideJumps asm)
+
+/-- The default emission (next-use ordering off); `compileViaSsa` tries both
+modes and keeps the statically cheaper artifact. -/
+def emitProg (P : Prog) : Option (List Asm) :=
+  emitProgOrd false P
 
 end ToAsm
 

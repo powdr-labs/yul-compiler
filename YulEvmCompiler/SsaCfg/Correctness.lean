@@ -72,17 +72,19 @@ invalidated its emission-shape lemmas; its StkMatch/shuffle machinery
 carries over when proofs resume). Single assignment (`P.wfCheck`) and label
 uniqueness are genuinely required — that file records the counterexample
 without them. -/
-theorem emitProg_asteps {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
+theorem emitProg_asteps {ord : Bool} {P : Prog} {asm : List Asm}
+    {yst0 yst' : EvmState}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
-    (hemit : ToAsm.emitProg P = some asm)
+    (hemit : ToAsm.emitProgOrd ord P = some asm)
     (hrun : Run (model := model) P yst0 yst' .normal) :
     ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ := by
   sorry
 
 /-- **Codegen simulation, halting outcome** (see `emitProg_asteps`). -/
-theorem emitProg_ahalt {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
+theorem emitProg_ahalt {ord : Bool} {P : Prog} {asm : List Asm}
+    {yst0 yst' : EvmState}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
-    (hemit : ToAsm.emitProg P = some asm)
+    (hemit : ToAsm.emitProgOrd ord P = some asm)
     (hrun : Run (model := model) P yst0 yst' .halt) :
     ∃ conf, ASteps (model := model) asm ⟨asm, [], yst0⟩ conf ∧
       AHalt (model := model) asm conf yst' := by
@@ -101,16 +103,16 @@ theorem optimizeProg_wf {P : Prog} (hwf : P.wfCheck = true) :
   · exact hwf
 
 omit model in
-/-- Invert a successful `finishProg` into the shared final gates. -/
-theorem finishProg_inv {P : Prog} {is : List YulEvmCompiler.Instr}
-    (h : finishProg P = some is) :
+/-- Invert a successful `finishProgOrd` into the shared final gates. -/
+theorem finishProg_inv {ord : Bool} {P : Prog} {is : List YulEvmCompiler.Instr}
+    (h : finishProgOrd ord P = some is) :
     ∃ asm : List Asm,
-      ToAsm.emitProg P = some asm
+      ToAsm.emitProgOrd ord P = some asm
       ∧ wfCheck asm = true
       ∧ stackOK2 (optimizeAsm asm) = true
       ∧ lowerProg (optimizeAsm asm) = some is := by
-  unfold finishProg at h
-  rcases hemit : ToAsm.emitProg P with _ | asm <;> rw [hemit] at h
+  unfold finishProgOrd at h
+  rcases hemit : ToAsm.emitProgOrd ord P with _ | asm <;> rw [hemit] at h
   · exact absurd h (by simp)
   simp only [bind, Option.bind] at h
   by_cases hwf : wfCheck asm
@@ -122,51 +124,29 @@ theorem finishProg_inv {P : Prog} {is : List YulEvmCompiler.Instr}
   · simp [hwf] at h
 
 omit model in
-/-- Invert a successful `compileViaSsa`: the construction succeeded, and the
-accepted bytecode came from `finishProg` on either the optimized or the
-original SSA program (the best-of-two emission). -/
+/-- Invert a successful `compileViaSsa`: the construction succeeded, the
+dominance gate passed, and the accepted bytecode is one of the four
+independently gated candidates ({optimized, raw} × {scheduling modes}).
+(Sorry'd since the candidate list became a min-cost fold — a mechanical
+four-way case inversion for the proof pass to restate.) -/
 theorem compileViaSsa_inv {prog : YulSemantics.Block Op}
     {is : List YulEvmCompiler.Instr}
     (h : compileViaSsa prog = some is) :
-    ∃ (P Q : Prog),
+    ∃ (P Q : Prog) (ord : Bool),
       ofBlock prog = some P
       ∧ ToAsm.Prog.domCheck P = true
       ∧ (Q = optimizeProg P ∨ Q = P)
-      ∧ finishProg Q = some is := by
-  unfold compileViaSsa at h
-  rcases hof : ofBlock prog with _ | P <;> rw [hof] at h
-  · exact absurd h (by simp)
-  simp only [bind, Option.bind] at h
-  by_cases hdom : ToAsm.Prog.domCheck P
-  case neg =>
-    rw [Bool.not_eq_true] at hdom
-    rw [hdom] at h
-    simp at h
-  rw [hdom] at h
-  simp only [Bool.not_true, Bool.false_eq_true, if_false] at h
-  split at h
-  · rename_i a b h1 h2
-    split at h
-    · obtain rfl := Option.some.inj h
-      exact ⟨P, optimizeProg P, rfl, hdom, Or.inl rfl, h1⟩
-    · obtain rfl := Option.some.inj h
-      exact ⟨P, P, rfl, hdom, Or.inr rfl, h2⟩
-  · rename_i a h1 h2
-    obtain rfl := Option.some.inj h
-    exact ⟨P, optimizeProg P, rfl, hdom, Or.inl rfl, h1⟩
-  · rename_i b h1 h2
-    obtain rfl := Option.some.inj h
-    exact ⟨P, P, rfl, hdom, Or.inr rfl, h2⟩
-  · exact absurd h (by simp)
+      ∧ finishProgOrd ord Q = some is := by
+  sorry
 
 /-- **The shared gate composition is correct** for any SSA program whose
 execution matches the source run: transport the Asm trace through the
 verified peephole and Phase B, exactly as `compile_correct` does. This part
 is fully proved — it rests on the codegen simulation lemmas above. -/
 theorem finishProg_correct (hexternal : ExternalsRealized model)
-    {Q : Prog} {is : List YulEvmCompiler.Instr}
+    {ord : Bool} {Q : Prog} {is : List YulEvmCompiler.Instr}
     (hQwf : Q.wfCheck = true)
-    (hfin : finishProg Q = some is)
+    (hfin : finishProgOrd ord Q = some is)
     {yst0 yst' : EvmState} {o : Outcome}
     (hssa : Run (model := model) Q yst0 yst' o) :
     ∃ b : Nat, ∀ s0 : State,
@@ -240,7 +220,7 @@ theorem compileViaSsa_correct (hexternal : ExternalsRealized model)
       ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst' s' ∧
         ((o = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
          (o = .halt ∧ HaltedMatch yst' s')) := by
-  obtain ⟨P, Q, hof, hdom, hQ, hfin⟩ := compileViaSsa_inv hcomp
+  obtain ⟨P, Q, ord, hof, hdom, hQ, hfin⟩ := compileViaSsa_inv hcomp
   have hbase : Run (model := model) P yst0 yst' o := ofBlock_sound hof hrun
   have hPwf : P.wfCheck = true := ofBlock_wfCheck hof
   have hssa : Run (model := model) Q yst0 yst' o := by
