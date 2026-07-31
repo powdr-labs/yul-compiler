@@ -76,24 +76,43 @@ def opcodeCost (b : UInt8) : Nat :=
   else if b == 0x5f then 2       -- PUSH0
   else 3                         -- PUSH/DUP/SWAP/arithmetic base
 
-/-- Static cost of assembled bytecode (skips PUSH immediates, via the
-`skip` counter). -/
+/-- Whether an opcode byte always halts the frame (`STOP`/`RETURN`/`REVERT`/
+`INVALID`/`SELFDESTRUCT`). Everything after one of these up to the next
+`JUMPDEST` is unreachable — the SSA backend's dead barriers, the classic
+backend's dead tails — and must not count toward the executed-code cost. -/
+def haltingByte (b : UInt8) : Bool :=
+  b == 0x00 || b == 0xf3 || b == 0xfd || b == 0xfe || b == 0xff
+
+/-- Static cost of assembled bytecode: PUSH immediates skipped via the
+`skip` counter, unreachable post-halt code skipped via the `dead` flag
+(cleared at the next `JUMPDEST`). -/
 def byteCodeCost (code : List UInt8) : Nat :=
-  go code 0 0
+  go code 0 false 0
 where
-  go : List UInt8 → Nat → Nat → Nat
-    | [], _, acc => acc
-    | b :: rest, skip, acc =>
-      if skip > 0 then go rest (skip - 1) acc
+  go : List UInt8 → Nat → Bool → Nat → Nat
+    | [], _, _, acc => acc
+    | b :: rest, skip, dead, acc =>
+      if skip > 0 then go rest (skip - 1) dead acc
       else
         let n := b.toNat
-        if 0x60 ≤ n && n ≤ 0x7f then go rest (n - 0x5f) (acc + 3)
-        else go rest 0 (acc + opcodeCost b)
+        let isPush := 0x60 ≤ n && n ≤ 0x7f
+        let skip' := if isPush then n - 0x5f else 0
+        if dead then
+          if b == 0x5b then go rest 0 false (acc + 1)
+          else go rest skip' true acc
+        else if haltingByte b then go rest 0 true (acc + opcodeCost b)
+        else if isPush then go rest skip' false (acc + 3)
+        else go rest 0 false (acc + opcodeCost b)
 
-/-- Static cost of a lowered instruction stream. -/
+/-- Static cost of a lowered instruction stream (same dead-code skipping as
+`byteCodeCost`). -/
 def instrCost (is : List YulEvmCompiler.Instr) : Nat :=
-  is.foldl (init := 0) fun acc i =>
-    acc + match i with
+  go is false 0
+where
+  haltingOp : EvmSemantics.Operation → Bool
+    | .STOP | .RETURN | .REVERT | .INVALID | .SELFDESTRUCT => true
+    | _ => false
+  cost : YulEvmCompiler.Instr → Nat
     | .push _ _ => 3
     | .op o =>
       match o with
@@ -102,5 +121,17 @@ def instrCost (is : List YulEvmCompiler.Instr) : Nat :=
       | .JUMPI => 10
       | .JUMPDEST => 1
       | _ => 3
+  go : List YulEvmCompiler.Instr → Bool → Nat → Nat
+    | [], _, acc => acc
+    | i :: rest, dead, acc =>
+      if dead then
+        match i with
+        | .op .JUMPDEST => go rest false (acc + 1)
+        | _ => go rest true acc
+      else
+        match i with
+        | .op o => if haltingOp o then go rest true (acc + cost i)
+                   else go rest false (acc + cost i)
+        | _ => go rest false (acc + cost i)
 
 end YulEvmCompiler.SsaCfg

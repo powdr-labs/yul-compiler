@@ -1,3 +1,8 @@
+-- PAUSED (not imported from the root): written against the pre-inheritance
+-- emitter; the entry-layout inheritance refactor in ToAsm.lean invalidated
+-- the emission-shape lemmas. Resume by re-aligning Placement/emitRest with
+-- the EmitSt-based monad; the StkMatch/shuffle/elideJumps machinery is
+-- emission-shape-independent and carries over.
 import YulEvmCompiler.AsmSem
 import YulEvmCompiler.SsaCfg.Sem
 import YulEvmCompiler.SsaCfg.ToAsm

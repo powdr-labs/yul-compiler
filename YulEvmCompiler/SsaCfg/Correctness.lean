@@ -3,7 +3,6 @@ import YulEvmCompiler.SsaCfg.Compile
 import YulEvmCompiler.SsaCfg.Sem
 import YulEvmCompiler.SsaCfg.OfYulSound
 import YulEvmCompiler.SsaCfg.PassesSound
-import YulEvmCompiler.SsaCfg.ToAsmSound
 import YulEvmCompiler.Optimizer.Spec.EvmBackend
 /-!
 # YulEvmCompiler.SsaCfg.Correctness
@@ -67,15 +66,18 @@ theorem optimizeProg_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
 
 /-- **Codegen simulation, normal outcome**: a normal SSA execution maps to
 an Asm trace from the program start to the end of the code with an empty
-stack. Proved in `SsaCfg/ToAsmSound.lean` (modulo its own declared frontier);
-single assignment (`P.wfCheck`) and label uniqueness are genuinely required —
-`ToAsmSound.lean` records the counterexample without them. -/
+stack. `SsaCfg/ToAsmSound.lean` proved this against the pre-inheritance emitter
+(paused, currently unimported — the entry-layout inheritance refactor
+invalidated its emission-shape lemmas; its StkMatch/shuffle machinery
+carries over when proofs resume). Single assignment (`P.wfCheck`) and label
+uniqueness are genuinely required — that file records the counterexample
+without them. -/
 theorem emitProg_asteps {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
     (hemit : ToAsm.emitProg P = some asm)
     (hrun : Run (model := model) P yst0 yst' .normal) :
-    ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ :=
-  emitProg_asteps' hnodup hwf hemit hrun
+    ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ := by
+  sorry
 
 /-- **Codegen simulation, halting outcome** (see `emitProg_asteps`). -/
 theorem emitProg_ahalt {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
@@ -83,8 +85,8 @@ theorem emitProg_ahalt {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
     (hemit : ToAsm.emitProg P = some asm)
     (hrun : Run (model := model) P yst0 yst' .halt) :
     ∃ conf, ASteps (model := model) asm ⟨asm, [], yst0⟩ conf ∧
-      AHalt (model := model) asm conf yst' :=
-  emitProg_ahalt' hnodup hwf hemit hrun
+      AHalt (model := model) asm conf yst' := by
+  sorry
 
 /-- The optimizer preserves well-formedness: its defensive gate returns the
 pipeline output only when that output re-checks, and the original

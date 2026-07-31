@@ -1,5 +1,6 @@
 import YulEvmCompiler.Asm
 import YulEvmCompiler.SsaCfg.Ir
+import Std.Data.HashMap
 set_option warningAsError true
 /-!
 # YulEvmCompiler.SsaCfg.ToAsm
@@ -271,31 +272,102 @@ def blkLabel (L : LabelMap) (fidx : Option Nat) (b : BlockId) : Label :=
   | none => b
   | some i => (L.funcBase[i]?.getD 0) + b
 
-/-- The emission monad: the call-return-label counter. -/
-abbrev E := StateT Nat Option
+/-- The emission state: the call-return-label counter and the current
+function's **entry-layout table** — the forward-pass inheritance that makes
+edge shuffles cheap (see `edgeTargetLayout`). -/
+structure EmitSt where
+  nextLabel : Nat
+  layouts : Std.HashMap BlockId (List SSlot) := {}
 
-def freshLabel : E Label := fun n => some (n, n + 1)
+/-- The emission monad. -/
+abbrev E := StateT EmitSt Option
+
+def freshLabel : E Label := fun s =>
+  some (s.nextLabel, { s with nextLabel := s.nextLabel + 1 })
 
 def liftE {α} : Option α → E α
   | some a => pure a
   | none => fun _ => none
 
-/-- The layout a control-flow edge must establish, in *source-side* terms:
-the target's entry layout with each parameter replaced by the corresponding
-edge argument (the parallel copy, as a stack target). -/
-def edgeLayout (isFunc : Bool) (f : Func) (liveIn : Array (List ValId))
-    (e : Edge) : Option (List SSlot) := do
-  let tb ← f.blocks[e.target]?
-  if e.args.length ≠ tb.params.length then none else
-  let lay := layoutOf isFunc (liveIn[e.target]?.getD []) tb
-  let sub := tb.params.zip e.args
-  some (lay.map fun s =>
+def getLayout (b : BlockId) : E (Option (List SSlot)) := fun s =>
+  some (s.layouts[b]?, s)
+
+def setLayout (b : BlockId) (lay : List SSlot) : E Unit := fun s =>
+  some ((), { s with layouts := s.layouts.insert b lay })
+
+/-- Clear the layout table (block ids are function-local). -/
+def resetLayouts : E Unit := fun s => some ((), { s with layouts := {} })
+
+/-- Substitute a target-side layout into source-side terms: each parameter
+replaced by the corresponding edge argument (the parallel copy, as a stack
+target). -/
+def substLayout (lay : List SSlot) (params args : List ValId) : List SSlot :=
+  let sub := params.zip args
+  lay.map fun s =>
     match s with
     | .val v =>
       match sub.find? (·.1 = v) with
       | some pa => .val pa.2
       | none => .val v
-    | s => s)
+    | s => s
+
+/-- Rename each `(arg, param)` pair's first occurrence in the stack. -/
+def renameArgs : List (ValId × ValId) → List SSlot → Option (List SSlot)
+  | [], sym => some sym
+  | (a, p) :: rest, sym =>
+    match idxOf sym (.val a) with
+    | some i => renameArgs rest (sym.set i (.val p))
+    | none => none
+
+/-- Build an **inherited entry-layout candidate** for target block `tb` from
+the predecessor's stack `sym` at edge `e` (solc-style forward layout
+inheritance): rename the edge arguments to the target's parameters in place,
+drop dead and duplicate slots, and accept only if every parameter and
+live-in value is present — otherwise the caller falls back to the canonical
+layout. Inheriting the predecessor's order makes the recording edge's
+shuffle (near-)empty and keeps chains of small blocks from churning the
+stack. -/
+def inheritCandidate (liveInT : List ValId) (tb : Block) (e : Edge)
+    (sym : List SSlot) : Option (List SSlot) := do
+  let renamed ← renameArgs (e.args.zip tb.params) sym
+  let keepVals := tb.params ++ liveInT
+  let lay := go renamed keepVals []
+  if tb.params.all (fun p => lay.contains (.val p))
+      && liveInT.all (fun v => lay.contains (.val v))
+      && !(lay.any (fun s => match s with | .code _ => true | _ => false))
+  then some lay else none
+where
+  go : List SSlot → List ValId → List SSlot → List SSlot
+    | [], _, seen => seen.reverse
+    | .val v :: rest, keepVals, seen =>
+      if keepVals.contains v && !seen.contains (.val v) then
+        go rest keepVals (.val v :: seen)
+      else go rest keepVals seen
+    | .retAddr :: rest, keepVals, seen =>
+      if seen.contains .retAddr then go rest keepVals seen
+      else go rest keepVals (.retAddr :: seen)
+    | .code l :: rest, keepVals, seen => go rest keepVals (.code l :: seen)
+
+/-- The layout a control-flow edge must establish, in *source-side* terms —
+**consulting or recording** the target's entry layout: the first edge to
+reach a block donates its (filtered, renamed) stack as the block's inherited
+entry layout; later edges and the block's own emission consult the recorded
+one. Falls back to the canonical `layoutOf` when inheritance is impossible
+(an argument not on the stack, a missing live-in). -/
+def edgeTargetLayout (isFunc : Bool) (f : Func) (liveIn : Array (List ValId))
+    (e : Edge) (sym : List SSlot) : E (List SSlot) := do
+  let tb ← liftE f.blocks[e.target]?
+  if e.args.length ≠ tb.params.length then liftE none else
+  let lay? ← getLayout e.target
+  let lay ← match lay? with
+    | some lay => pure lay
+    | none =>
+      let liveInT := diffS (liveIn[e.target]?.getD []) tb.params
+      let cand := (inheritCandidate liveInT tb e sym).getD
+        (layoutOf isFunc (liveIn[e.target]?.getD []) tb)
+      setLayout e.target cand
+      pure cand
+  pure (substLayout lay tb.params e.args)
 
 /-- Emit one instruction from symbolic stack `sym`; `needed` is the
 needed-after set. Returns the emitted `Asm` and the new symbolic stack. -/
@@ -337,12 +409,13 @@ def emitInstr (P : Prog) (L : LabelMap) (sym : List SSlot)
 def emitTerm (isFunc : Bool) (f : Func) (L : LabelMap) (fidx : Option Nat)
     (liveIn : Array (List ValId)) (sym : List SSlot) : Term → E (List Asm)
   | .jump e => do
-    let τ ← liftE (edgeLayout isFunc f liveIn e)
+    let τ ← edgeTargetLayout isFunc f liveIn e sym
     let ops ← liftE (shuffle sym τ)
     pure (ops ++ [.jump (blkLabel L fidx e.target)])
   | .branch c et ef => do
-    let τt ← liftE (edgeLayout isFunc f liveIn et)
-    let τf ← liftE (edgeLayout isFunc f liveIn ef)
+    let τt ← edgeTargetLayout isFunc f liveIn et sym
+    -- the false edge's candidate is donated by the post-`jumpi` stack `τt`
+    let τf ← edgeTargetLayout isFunc f liveIn ef τt
     -- direct scheme: land on the true edge's layout, then shuffle the
     -- fall-through onto the false edge's — possible only when the true
     -- layout still carries everything the false edge needs
@@ -417,10 +490,14 @@ def emitBlock (P : Prog) (L : LabelMap) (fidx : Option Nat) (f : Func)
     (liveIn : Array (List ValId)) (bid : BlockId) (b : Block) :
     E (List Asm) := do
   let isFunc := fidx.isSome
-  let sym0 :=
+  let sym0 ←
     if bid = f.entry then
-      f.params.map SSlot.val ++ (if isFunc then [SSlot.retAddr] else [])
-    else layoutOf isFunc (liveIn[bid]?.getD []) b
+      pure (f.params.map SSlot.val ++ (if isFunc then [SSlot.retAddr] else []))
+    else do
+      let rec? ← getLayout bid
+      pure (rec?.getD (layoutOf isFunc (liveIn[bid]?.getD []) b))
+  -- pin the chosen layout so later (back-)edges consult exactly it
+  setLayout bid sym0
   let lout := b.term.edges.foldl (init := []) fun acc e =>
     unionS (liveIn[e.target]?.getD []) acc
   let base := unionS (unionS b.term.uses []) lout
@@ -437,6 +514,7 @@ which both construction entry points guarantee). -/
 def emitFunc (P : Prog) (L : LabelMap) (fidx : Option Nat) (f : Func) :
     E (List Asm) := do
   if f.entry ≠ 0 then liftE none else
+  resetLayouts
   let liveIn ← liftE (liveInSets f)
   -- entry live-ins must be covered by the parameters
   if diffS (liveIn[0]?.getD []) f.params ≠ [] then liftE none else
@@ -468,7 +546,7 @@ def emitProg (P : Prog) : Option (List Asm) := do
       let a ← emitFunc P L (some i) f
       pure (acc ++ a)
     pure (asmMain ++ asmFns ++ [.label L.endLabel])
-  let (asm, _) ← build (L.endLabel + 1)
+  let (asm, _) ← build ⟨L.endLabel + 1, {}⟩
   some (elideJumps asm)
 
 end ToAsm

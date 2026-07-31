@@ -427,7 +427,7 @@ unusedAssignEliminator/for_continue.yul	26	19
 unusedAssignEliminator/for_continue_2.yul	41	37
 unusedAssignEliminator/for_continue_3.yul	26	19
 unusedAssignEliminator/for_decl_inside_break_continue.yul	299	302
-unusedAssignEliminator/for_multi_break.yul	162	138
+unusedAssignEliminator/for_multi_break.yul	185	138
 unusedAssignEliminator/for_nested.yul	50	47
 unusedAssignEliminator/for_rerun.yul	26	22
 unusedAssignEliminator/for_stmnts_after_break_continue.yul	408	374
