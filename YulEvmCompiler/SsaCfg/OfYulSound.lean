@@ -91,6 +91,12 @@ theorem mapM_eq_some_iff {f : α → Option β} :
 
 end Forall2
 
+theorem lt_size_of_getElem? {α : Type} {a : Array α} {i : Nat} {x : α}
+    (h : a[i]? = some x) : i < a.size := by
+  by_contra hc
+  rw [Array.getElem?_eq_none (by omega)] at h
+  exact absurd h (by simp)
+
 /-! ## Register files
 
 The single-assignment payoff, packaged as a preorder on register files: the
@@ -741,6 +747,287 @@ theorem of_mapM_freshVal {α : Type} {xs : List α} {s s' : BState}
 
 end Grows
 
+/-- The finished function *completes* a builder state — the placement invariant
+the induction carries.
+
+* `sealed`: every block the builder has laid down other than the one it is
+  currently filling is already final. This holds at every `trStmt`/`trStmts`/
+  `trScope` boundary: the construction always seals the block it is leaving
+  before `moveTo`, and the only block it reserves without immediately sealing is
+  the join/exit block it makes current on the way out.
+* `params`: **every** reserved block keeps its parameter list, current or not.
+  This is the strengthening the `cond`/`switch`/`forLoop` cases need, where a
+  join/exit block is reserved *before* the blocks that jump to it are sealed —
+  the edge-argument arity premises of `Exec.jump`/`Exec.branch*` are about the
+  finished block, but the construction only ever sees the reserved one.
+* `size`: the block array only grows. -/
+structure Completes (f : Func) (fn : FnState) : Prop where
+  sealed : ∀ (i : Nat) (b : Block), i ≠ fn.curId → fn.blocks[i]? = some b
+      → f.blocks[i]? = some b
+  params : ∀ (i : Nat) (b : Block), fn.blocks[i]? = some b
+      → ∃ bf, f.blocks[i]? = some bf ∧ bf.params = b.params
+  size : fn.blocks.size ≤ f.blocks.size
+
+/-- The weak form the `SOut` leaves consume. -/
+def Extends (f : Func) (fn : FnState) : Prop :=
+  (∀ (i : Nat) (b : Block), i ≠ fn.curId → fn.blocks[i]? = some b
+      → f.blocks[i]? = some b)
+  ∧ (∀ b : Block, fn.blocks[fn.curId]? = some b
+      → ∃ bf, f.blocks[fn.curId]? = some bf ∧ bf.params = b.params)
+
+theorem Completes.toExtends {f : Func} {fn : FnState} (h : Completes f fn) :
+    Extends f fn :=
+  ⟨h.sealed, fun b hb => h.params _ b hb⟩
+
+/-! ### Statement-class monotonicity
+
+Statements do more than expressions: they reserve blocks, seal them, move the
+current block, and fill function slots. `SGrowsAt N` is what survives, relative
+to a *base* block count `N` (in use, the block count at the start of the
+fragment):
+
+* nothing shrinks (`nextVal`, `size`, `funcsSize`);
+* **no block's parameter list ever changes** (`params`) — this is what feeds
+  the `params` field of `Completes`;
+* the only pre-existing block a fragment can disturb is the one it starts on
+  (`keep`), because every other block it seals it reserved itself;
+* correspondingly the current block either does not move or moves to a block
+  reserved at or after `N` (`curId`).
+
+The last two fields are exactly what makes the relation composable: `keep` for
+the second half applies because `curId` for the first half puts the moved-to
+block out of range. -/
+structure SGrowsAt (N : Nat) (s s' : BState) : Prop where
+  nextVal : s.fn.nextVal ≤ s'.fn.nextVal
+  size : s.fn.blocks.size ≤ s'.fn.blocks.size
+  funcsSize : s.funcs.size ≤ s'.funcs.size
+  params : ∀ (i : Nat) (b : Block), s.fn.blocks[i]? = some b →
+    ∃ b', s'.fn.blocks[i]? = some b' ∧ b'.params = b.params
+  keep : ∀ (i : Nat) (b : Block), i < N → i ≠ s.fn.curId →
+    s.fn.blocks[i]? = some b → s'.fn.blocks[i]? = some b
+  curId : s'.fn.curId = s.fn.curId ∨ N ≤ s'.fn.curId
+
+/-- Function slots are only ever appended and filled; nothing is ever removed.
+Weak enough to survive `trFunc`'s `setFn` save/restore, which is why it is
+tracked separately. -/
+def FGrows (s s' : BState) : Prop := s.funcs.size ≤ s'.funcs.size
+
+namespace FGrows
+
+theorem rfl' (s : BState) : FGrows s s := Nat.le_refl _
+
+theorem trans {s₁ s₂ s₃ : BState} (h₁ : FGrows s₁ s₂) (h₂ : FGrows s₂ s₃) :
+    FGrows s₁ s₃ := Nat.le_trans h₁ h₂
+
+theorem of_fnOnly {s s' : BState} (h : s.funcs = s'.funcs) : FGrows s s' := by
+  rw [FGrows, h]
+
+end FGrows
+
+namespace SGrowsAt
+
+theorem toFGrows {N : Nat} {s s' : BState} (h : SGrowsAt N s s') : FGrows s s' :=
+  h.funcsSize
+
+/-- A larger base is a stronger statement. -/
+theorem mono {N N' : Nat} (hle : N' ≤ N) {s s' : BState} (h : SGrowsAt N s s') :
+    SGrowsAt N' s s' :=
+  ⟨h.nextVal, h.size, h.funcsSize, h.params,
+    fun i b hi hne hb => h.keep i b (Nat.lt_of_lt_of_le hi hle) hne hb,
+    h.curId.imp id (fun hh => Nat.le_trans hle hh)⟩
+
+theorem rfl' (N : Nat) (s : BState) : SGrowsAt N s s :=
+  ⟨Nat.le_refl _, Nat.le_refl _, Nat.le_refl _, fun _ b hb => ⟨b, hb, rfl⟩,
+    fun _ _ _ _ hb => hb, Or.inl rfl⟩
+
+theorem trans {N : Nat} {s₁ s₂ s₃ : BState} (h₁ : SGrowsAt N s₁ s₂)
+    (h₂ : SGrowsAt N s₂ s₃) : SGrowsAt N s₁ s₃ := by
+  refine ⟨Nat.le_trans h₁.nextVal h₂.nextVal, Nat.le_trans h₁.size h₂.size,
+    Nat.le_trans h₁.funcsSize h₂.funcsSize, ?_, ?_, ?_⟩
+  · intro i b hb
+    obtain ⟨b', hb', hp'⟩ := h₁.params i b hb
+    obtain ⟨b'', hb'', hp''⟩ := h₂.params i b' hb'
+    exact ⟨b'', hb'', hp''.trans hp'⟩
+  · intro i b hi hne hb
+    have hne2 : i ≠ s₂.fn.curId := by
+      rcases h₁.curId with heq | hge
+      · rw [heq]; exact hne
+      · omega
+    exact h₂.keep i b hi hne2 (h₁.keep i b hi hne hb)
+  · rcases h₂.curId with heq | hge
+    · rw [heq]; exact h₁.curId
+    · exact Or.inr hge
+
+/-- From an expression-level step. -/
+theorem of_grows {N : Nat} {s s' : BState} (h : Grows s s') : SGrowsAt N s s' :=
+  ⟨h.nextVal, by rw [h.blocks], by rw [h.funcs],
+    fun i b hb => ⟨b, by rw [← h.blocks]; exact hb, rfl⟩,
+    fun _ b _ _ hb => by rw [← h.blocks]; exact hb, Or.inl h.curId.symm⟩
+
+/-- A step that changes nothing but the function table. -/
+theorem of_funcsOnly {N : Nat} {s s' : BState} (hfn : s'.fn = s.fn)
+    (hf : s.funcs.size ≤ s'.funcs.size) : SGrowsAt N s s' :=
+  ⟨by rw [hfn], by rw [hfn], hf,
+    fun i b hb => ⟨b, by rw [hfn]; exact hb, rfl⟩,
+    fun _ b _ _ hb => by rw [hfn]; exact hb, Or.inl (by rw [hfn])⟩
+
+theorem of_newBlock {N : Nat} {ps : List ValId} {s s' : BState} {bid : BlockId}
+    (h : newBlock ps s = some (bid, s')) : SGrowsAt N s s' := by
+  rw [M.newBlock_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  refine ⟨Nat.le_refl _, by simp, Nat.le_refl _, ?_, ?_, Or.inl rfl⟩
+  · intro i b hb
+    have hlt := lt_size_of_getElem? hb
+    refine ⟨b, ?_, rfl⟩
+    dsimp only
+    rw [Array.getElem?_push, if_neg (by omega : ¬ i = s.fn.blocks.size)]
+    exact hb
+  · intro i b _ _ hb
+    have hlt := lt_size_of_getElem? hb
+    dsimp only
+    rw [Array.getElem?_push, if_neg (by omega : ¬ i = s.fn.blocks.size)]
+    exact hb
+
+/-- The reserved block's id is the old block count: every `moveTo` target the
+construction produces is at or beyond the fragment's base. -/
+theorem newBlock_id {ps : List ValId} {s s' : BState} {bid : BlockId}
+    (h : newBlock ps s = some (bid, s')) : bid = s.fn.blocks.size := by
+  rw [M.newBlock_apply] at h
+  exact (M.some_pair_inj h).1.symm
+
+theorem of_sealCur {N : Nat} {t : Term} {s s' : BState} {u : Unit}
+    (h : sealCur t s = some (u, s')) : SGrowsAt N s s' := by
+  obtain ⟨b, hb, rfl⟩ := M.sealCur_inv h
+  have hlt : s.fn.curId < s.fn.blocks.size := lt_size_of_getElem? hb
+  refine ⟨Nat.le_refl _, by simp, Nat.le_refl _, ?_, ?_, Or.inl rfl⟩
+  · intro i b' hb'
+    by_cases hc : i = s.fn.curId
+    · subst hc
+      obtain rfl : b' = b := Option.some.inj (hb'.symm.trans hb)
+      refine ⟨⟨b'.params, s.fn.cur.reverse, t⟩, ?_, rfl⟩
+      dsimp only
+      rw [Array.set!_eq_setIfInBounds,
+        Array.getElem?_setIfInBounds_self_of_lt hlt]
+    · refine ⟨b', ?_, rfl⟩
+      dsimp only
+      rw [Array.set!_eq_setIfInBounds,
+        Array.getElem?_setIfInBounds_ne (Ne.symm hc)]
+      exact hb'
+  · intro i b' _ hne hb'
+    dsimp only
+    rw [Array.set!_eq_setIfInBounds,
+      Array.getElem?_setIfInBounds_ne (Ne.symm hne)]
+    exact hb'
+
+theorem of_moveTo {N : Nat} {bid : BlockId} {s s' : BState} {u : Unit}
+    (hbid : N ≤ bid ∨ bid = s.fn.curId) (h : moveTo bid s = some (u, s')) :
+    SGrowsAt N s s' := by
+  rw [M.moveTo_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  exact ⟨Nat.le_refl _, Nat.le_refl _, Nat.le_refl _,
+    fun i b hb => ⟨b, hb, rfl⟩, fun _ _ _ _ hb => hb, hbid.symm⟩
+
+theorem of_allocFunc {N : Nat} {s s' : BState} {fid : FuncId}
+    (h : allocFunc s = some (fid, s')) : SGrowsAt N s s' := by
+  rw [M.allocFunc_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  exact of_funcsOnly rfl (by simp)
+
+theorem of_fillFunc {N : Nat} {fid : FuncId} {g : Func} {s s' : BState}
+    {u : Unit} (h : fillFunc fid g s = some (u, s')) : SGrowsAt N s s' := by
+  obtain ⟨hlt, rfl⟩ := M.fillFunc_inv h
+  exact of_funcsOnly rfl (by simp)
+
+theorem of_getFn {N : Nat} {s s' : BState} {fn : FnState}
+    (h : getFn s = some (fn, s')) : SGrowsAt N s s' := by
+  rw [M.getFn_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  exact rfl' N s
+
+theorem of_liftO {N : Nat} {α : Type} {o : Option α} {a : α} {s s' : BState}
+    (h : (liftO o : M α) s = some (a, s')) : SGrowsAt N s s' := by
+  obtain ⟨-, rfl⟩ := M.liftO_inv h
+  exact rfl' N _
+
+theorem of_pure {N : Nat} {α : Type} {a b : α} {s s' : BState}
+    (h : (pure a : M α) s = some (b, s')) : SGrowsAt N s s' := by
+  obtain ⟨-, rfl⟩ := M.pure_inv h
+  exact rfl' N _
+
+theorem of_edgeArgs {N : Nat} {env : VMap} {xs : List Ident} {s s' : BState}
+    {ids : List ValId} (h : edgeArgs env xs s = some (ids, s')) :
+    SGrowsAt N s s' := of_liftO h
+
+/-- **The `Completes` transfer.** The placement invariant travels *backwards*
+along a fragment: if the finished function completes the state the fragment ends
+in, it completes the state it started in. This is the payoff of `keep`/`curId`
+— the block the fragment started on is the only pre-existing one it could have
+sealed, and it is exempt from `Completes.sealed` at the input state. -/
+theorem completes_of {f : Func} {s s' : BState}
+    (h : SGrowsAt s.fn.blocks.size s s') (hc : Completes f s'.fn) :
+    Completes f s.fn := by
+  refine ⟨?_, ?_, Nat.le_trans h.size hc.size⟩
+  · intro i b hne hb
+    have hlt : i < s.fn.blocks.size := lt_size_of_getElem? hb
+    have hne2 : i ≠ s'.fn.curId := by
+      rcases h.curId with heq | hge
+      · rw [heq]; exact hne
+      · omega
+    exact hc.sealed i b hne2 (h.keep i b hlt hne hb)
+  · intro i b hb
+    obtain ⟨b', hb', hp'⟩ := h.params i b hb
+    obtain ⟨bf, hbf, hpf⟩ := hc.params i b' hb'
+    exact ⟨bf, hbf, hpf.trans hp'⟩
+
+end SGrowsAt
+
+/-- Statement-class monotonicity at its natural base: the block count the
+fragment starts with. -/
+def SGrows (s s' : BState) : Prop := SGrowsAt s.fn.blocks.size s s'
+
+namespace SGrows
+
+theorem rfl' (s : BState) : SGrows s s := SGrowsAt.rfl' _ s
+
+/-- Own-base monotonicity is transitive: the second fragment's guarantee is
+weakened to the first one's base, which is legitimate because the block array
+only grew. -/
+theorem trans {s₀ s₁ s₂ : BState} (h₁ : SGrows s₀ s₁) (h₂ : SGrows s₁ s₂) :
+    SGrows s₀ s₂ :=
+  SGrowsAt.trans h₁ (h₂.mono h₁.size)
+
+theorem of_grows {s s' : BState} (h : Grows s s') : SGrows s s' :=
+  SGrowsAt.of_grows h
+
+end SGrows
+
+/-- `mapM` over allocating steps allocates. -/
+theorem Grows.of_mapM {α : Type} {g : α → M ValId}
+    (hg : ∀ (a : α) (s s' : BState) (v : ValId), g a s = some (v, s') → Grows s s') :
+    ∀ (l : List α) (s s' : BState) (vs : List ValId),
+      (l.mapM g) s = some (vs, s') → Grows s s' := by
+  intro l
+  induction l with
+  | nil => intro s s' vs h; exact Grows.of_pure h
+  | cons a l ih =>
+    intro s s' vs h
+    rw [List.mapM_cons] at h
+    obtain ⟨v, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨vs', s₂, h2, h3⟩ := M.bind_inv h
+    exact (hg a s s₁ v h1).trans ((ih s₁ s₂ vs' h2).trans (Grows.of_pure h3))
+
+/-- The zero-initialising allocation `trStmt`/`trFunc` use for `let`-without-value
+and for return variables. -/
+theorem Grows.of_mapM_constZero {α : Type} {l : List α} {s s' : BState}
+    {vs : List ValId}
+    (h : (l.mapM (fun _ => do let v ← freshVal; emit (.const v 0); pure v)) s
+        = some (vs, s')) : Grows s s' := by
+  refine Grows.of_mapM ?_ l s s' vs h
+  intro a s₀ s₁ v hv
+  obtain ⟨w, s₂, h1, hv⟩ := M.bind_inv hv
+  obtain ⟨u, s₃, h2, h3⟩ := M.bind_inv hv
+  exact (Grows.of_freshVal h1).trans ((Grows.of_emit h2).trans (Grows.of_pure h3))
+
 /-- **Expression translation only allocates.** -/
 theorem trExpr_grows : ∀ (e : Expr Op) (fenv : FMap) (env : VMap) (s s' : BState)
     (i : ValId), trExpr fenv env e s = some (i, s') → Grows s s' := by
@@ -804,6 +1091,271 @@ theorem trArgs_grows : ∀ (es : List (Expr Op)) (fenv : FMap) (env : VMap)
     obtain ⟨i, s₂, h2, h3⟩ := M.bind_inv h
     exact (ihrest fenv env s s₁ restIds h1).trans
       ((ihe fenv env s₁ s₂ i h2).trans (Grows.of_pure h3))
+
+/-- `foldlM` over steps that only append to the function table. -/
+theorem foldlM_funcsOnly {α β : Type} {g : β → α → M β}
+    (hg : ∀ (b : β) (a : α) (s s' : BState) (b' : β),
+      g b a s = some (b', s') → s'.fn = s.fn ∧ s.funcs.size ≤ s'.funcs.size) :
+    ∀ (l : List α) (b : β) (s : BState) (b' : β) (s' : BState),
+      (l.foldlM g b) s = some (b', s')
+        → s'.fn = s.fn ∧ s.funcs.size ≤ s'.funcs.size := by
+  intro l
+  induction l with
+  | nil =>
+    intro b s b' s' h
+    obtain ⟨-, rfl⟩ := M.pure_inv h
+    exact ⟨rfl, Nat.le_refl _⟩
+  | cons a l ih =>
+    intro b s b' s' h
+    rw [List.foldlM_cons] at h
+    obtain ⟨c, s₁, h1, h2⟩ := M.bind_inv h
+    obtain ⟨hfn1, hf1⟩ := hg b a s s₁ c h1
+    obtain ⟨hfn2, hf2⟩ := ih c s₁ b' s' h2
+    exact ⟨hfn2.trans hfn1, Nat.le_trans hf1 hf2⟩
+
+/-- Reserving a scope's function slots touches only the function table. -/
+theorem allocScope_funcsOnly {ss : List (Stmt Op)} {s s' : BState}
+    {sc : List (Ident × FuncId)} (h : allocScope ss s = some (sc, s')) :
+    s'.fn = s.fn ∧ s.funcs.size ≤ s'.funcs.size := by
+  rw [allocScope] at h
+  refine foldlM_funcsOnly ?_ ss [] s sc s' h
+  intro b a s₀ s₁ b' hb
+  cases a
+  case funDef n ps rs body =>
+    obtain ⟨fid, s₂, h1, h2⟩ := M.bind_inv hb
+    rw [M.allocFunc_apply] at h1
+    obtain ⟨rfl, rfl⟩ := M.some_pair_inj h1
+    obtain ⟨-, rfl⟩ := M.pure_inv h2
+    exact ⟨rfl, by simp⟩
+  all_goals (obtain ⟨-, rfl⟩ := M.pure_inv hb; exact ⟨rfl, Nat.le_refl _⟩)
+
+theorem allocScope_sgrows {ss : List (Stmt Op)} {s s' : BState}
+    {sc : List (Ident × FuncId)} (h : allocScope ss s = some (sc, s')) :
+    SGrows s s' :=
+  SGrowsAt.of_funcsOnly (allocScope_funcsOnly h).1 (allocScope_funcsOnly h).2
+
+/-! ### The statement-class monotonicity induction
+
+One `trStmt.induct` over the construction's five mutually recursive functions.
+Every case is a chain of the `SGrowsAt` primitive lemmas above, at the fixed
+base `N = ` the case's incoming block count; sub-fragments are weakened to that
+base with `SGrowsAt.mono`. -/
+
+/-- Motive for `trFunc`: the per-function state is saved and restored, so only
+the function table moves. -/
+def FuncGrows (fenv : FMap) (ps rs : List Ident) (body : List (Stmt Op)) : Prop :=
+  ∀ (s : BState) (g : Func) (s' : BState),
+    trFunc fenv ps rs body s = some (g, s') → s'.fn = s.fn ∧ FGrows s s'
+
+/-- Motive for `trScope`. -/
+def ScopeGrows (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (body : List (Stmt Op)) : Prop :=
+  ∀ (s : BState) (r : Option VMap) (s' : BState),
+    trScope fenv env lctx rets body s = some (r, s') → SGrows s s'
+
+/-- Motive for `trStmts`. -/
+def StmtsGrows (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (d : Bool) (ss : List (Stmt Op)) : Prop :=
+  ∀ (s : BState) (r : Option VMap) (s' : BState),
+    trStmts fenv env lctx rets d ss s = some (r, s') → SGrows s s'
+
+/-- Motive for `trStmt`. -/
+def StmtGrows (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (st : Stmt Op) : Prop :=
+  ∀ (s : BState) (r : Option VMap) (s' : BState),
+    trStmt fenv env lctx rets st s = some (r, s') → SGrows s s'
+
+/-- Motive for `trCases`. -/
+def CasesGrows (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (sv : ValId) (X : List Ident) (joinId : BlockId)
+    (cases : List (Literal × List (Stmt Op)))
+    (dflt : Option (List (Stmt Op))) : Prop :=
+  ∀ (s : BState) (u : Unit) (s' : BState),
+    trCases fenv env lctx rets sv X joinId cases dflt s = some (u, s') →
+      SGrows s s'
+
+theorem trStmt_grows : ∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (st : Stmt Op), StmtGrows fenv env lctx rets st := by
+  refine trStmt.induct FuncGrows ScopeGrows StmtsGrows StmtGrows CasesGrows
+    ?trFunc ?trScope ?stmtsNil ?stmtsFunDef ?stmtsSkip ?stmtsCons
+    ?block ?funDef ?letNoneBad ?letNone ?letSomeBad ?letSome ?assignBad ?assign
+    ?cond ?switch ?forLoop ?exprBuiltin ?exprCall ?exprBad
+    ?breakNone ?breakSome ?contNone ?contSome ?leaveNone ?leaveSome
+    ?casesNilNone ?casesNilSome ?casesCons
+  case trFunc => sorry
+  case trScope =>
+    intro fenv env lctx rets body ih s r s' h
+    rw [trScope] at h
+    obtain ⟨scope, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨renv, s₂, h2, h3⟩ := M.bind_inv h
+    have g1 : SGrows s s₁ := allocScope_sgrows h1
+    have g2 : SGrows s₁ s₂ := ih scope s₁ renv s₂ h2
+    refine (g1.trans g2).trans ?_
+    cases renv with
+    | none => exact SGrowsAt.of_pure h3
+    | some e => exact SGrowsAt.of_pure h3
+    
+  case stmtsNil =>
+    intro fenv env lctx rets d s r s' h
+    rw [trStmts] at h
+    exact SGrowsAt.of_pure h
+  case stmtsFunDef =>
+    intro fenv env lctx rets d n ps rs fbody rest ihf ihr s r s' h
+    rw [trStmts] at h
+    obtain ⟨fid, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨g, s₂, h2, h⟩ := M.bind_inv h
+    obtain ⟨u, s₃, h3, h4⟩ := M.bind_inv h
+    obtain ⟨hfn, hfg⟩ := ihf s₁ g s₂ h2
+    exact (((SGrows.trans (SGrowsAt.of_liftO h1)
+      (SGrowsAt.of_funcsOnly hfn hfg)).trans
+        (SGrowsAt.of_fillFunc h3)).trans (ihr s₃ r s' h4))
+  case stmtsSkip =>
+    intro fenv env lctx rets st rest hnf ih s r s' h
+    rw [trStmts] at h
+    · split at h
+      · exact ih s r s' h
+      · rename_i hc; exact absurd rfl hc
+    · exact hnf
+  case stmtsCons =>
+    intro fenv env lctx rets d st rest hnf hd ih4 ih3n ih3t s r s' h
+    rw [trStmts] at h
+    · rw [if_neg hd] at h
+      obtain ⟨renv, s₁, h1, h2⟩ := M.bind_inv h
+      have g1 : SGrows s s₁ := ih4 s renv s₁ h1
+      cases renv with
+      | some env' => exact SGrows.trans g1 (ih3n env' s₁ r s' h2)
+      | none => exact SGrows.trans g1 (ih3t s₁ r s' h2)
+    · exact hnf
+  case block =>
+    intro fenv env lctx rets body ih s r s' h
+    rw [trStmt] at h
+    exact ih s r s' h
+  case funDef =>
+    intro fenv env lctx rets name ps rs body s r s' h
+    rw [trStmt] at h
+    exact absurd h (by simp [reject])
+  case letNoneBad =>
+    intro fenv env lctx rets vars hgate s r s' h
+    rw [trStmt] at h
+    rw [if_pos hgate] at h
+    obtain ⟨u, s₁, h1, -⟩ := M.bind_inv h
+    exact absurd h1 (by simp [reject])
+  case letNone =>
+    intro fenv env lctx rets vars hgate s r s' h
+    rw [trStmt] at h
+    rw [if_neg hgate] at h
+    obtain ⟨u, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨-, rfl⟩ := M.pure_inv h1
+    obtain ⟨ids, s₂, h2, h3⟩ := M.bind_inv h
+    exact SGrows.trans (SGrows.of_grows (Grows.of_mapM_constZero h2))
+      (SGrowsAt.of_pure h3)
+  case letSomeBad =>
+    intro fenv env lctx rets vars e hgate s r s' h
+    rw [trStmt] at h
+    rw [if_pos hgate] at h
+    obtain ⟨u, s₁, h1, -⟩ := M.bind_inv h
+    exact absurd h1 (by simp [reject])
+  case letSome =>
+    intro fenv env lctx rets vars e hgate s r s' h
+    rw [trStmt] at h
+    rw [if_neg hgate] at h
+    obtain ⟨u, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨-, rfl⟩ := M.pure_inv h1
+    obtain ⟨ids, s₂, h2, h3⟩ := M.bind_inv h
+    exact SGrows.trans (SGrows.of_grows (trExprN_grows h2)) (SGrowsAt.of_pure h3)
+  case assignBad =>
+    intro fenv env lctx rets vars e hgate s r s' h
+    rw [trStmt] at h
+    rw [if_pos hgate] at h
+    obtain ⟨u, s₁, h1, -⟩ := M.bind_inv h
+    exact absurd h1 (by simp [reject])
+  case assign =>
+    intro fenv env lctx rets vars e hgate s r s' h
+    rw [trStmt] at h
+    rw [if_neg hgate] at h
+    obtain ⟨u, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨-, rfl⟩ := M.pure_inv h1
+    obtain ⟨ids, s₂, h2, h3⟩ := M.bind_inv h
+    exact SGrows.trans (SGrows.of_grows (trExprN_grows h2)) (SGrowsAt.of_pure h3)
+  case cond => sorry
+  case switch => sorry
+  case forLoop => sorry
+  case exprBuiltin =>
+    intro fenv env lctx rets op args s r s' h
+    rw [trStmt] at h
+    obtain ⟨as, s₁, h1, h⟩ := M.bind_inv h
+    refine SGrows.trans (SGrows.of_grows (trArgs_grows args fenv env s s₁ as h1)) ?_
+    by_cases hop : isHaltingOp op = true
+    · rw [if_pos hop] at h
+      obtain ⟨u, s₂, h2, h3⟩ := M.bind_inv h
+      exact SGrows.trans (SGrowsAt.of_sealCur h2) (SGrowsAt.of_pure h3)
+    · rw [if_neg hop] at h
+      obtain ⟨u, s₂, h2, h3⟩ := M.bind_inv h
+      exact SGrows.trans (SGrows.of_grows (Grows.of_emit h2)) (SGrowsAt.of_pure h3)
+  case exprCall =>
+    intro fenv env lctx rets fn args s r s' h
+    rw [trStmt] at h
+    obtain ⟨as, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨fid, s₂, h2, h⟩ := M.bind_inv h
+    obtain ⟨u, s₃, h3, h4⟩ := M.bind_inv h
+    exact SGrows.trans (SGrows.of_grows (trArgs_grows args fenv env s s₁ as h1))
+      (SGrows.trans (SGrowsAt.of_liftO h2)
+        (SGrows.trans (SGrows.of_grows (Grows.of_emit h3)) (SGrowsAt.of_pure h4)))
+  case exprBad =>
+    intro fenv env lctx rets e hnb hnc s r s' h
+    rw [trStmt] at h
+    · exact absurd h (by simp [reject])
+    · exact hnc
+    · exact hnb
+  case breakNone =>
+    intro fenv env rets s r s' h
+    rw [trStmt] at h
+    exact absurd h (by simp [reject])
+  case breakSome =>
+    intro fenv env rets l s r s' h
+    rw [trStmt] at h
+    obtain ⟨vals, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨u, s₂, h2, h3⟩ := M.bind_inv h
+    exact SGrows.trans (SGrowsAt.of_edgeArgs h1)
+      (SGrows.trans (SGrowsAt.of_sealCur h2) (SGrowsAt.of_pure h3))
+  case contNone =>
+    intro fenv env rets s r s' h
+    rw [trStmt] at h
+    exact absurd h (by simp [reject])
+  case contSome =>
+    intro fenv env rets l s r s' h
+    rw [trStmt] at h
+    obtain ⟨vals, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨u, s₂, h2, h3⟩ := M.bind_inv h
+    exact SGrows.trans (SGrowsAt.of_edgeArgs h1)
+      (SGrows.trans (SGrowsAt.of_sealCur h2) (SGrowsAt.of_pure h3))
+  case leaveNone =>
+    intro fenv env lctx s r s' h
+    rw [trStmt] at h
+    exact absurd h (by simp [reject])
+  case leaveSome =>
+    intro fenv env lctx rs s r s' h
+    rw [trStmt] at h
+    obtain ⟨vals, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨u, s₂, h2, h3⟩ := M.bind_inv h
+    exact SGrows.trans (SGrowsAt.of_edgeArgs h1)
+      (SGrows.trans (SGrowsAt.of_sealCur h2) (SGrowsAt.of_pure h3))
+  case casesNilNone =>
+    intro fenv env lctx rets sv X joinId s u s' h
+    rw [trCases] at h
+    obtain ⟨xvals, s₁, h1, h2⟩ := M.bind_inv h
+    exact SGrows.trans (SGrowsAt.of_edgeArgs h1) (SGrowsAt.of_sealCur h2)
+  case casesNilSome =>
+    intro fenv env lctx rets sv X joinId dbody ih s u s' h
+    rw [trCases] at h
+    obtain ⟨renv, s₁, h1, h2⟩ := M.bind_inv h
+    refine SGrows.trans (ih s renv s₁ h1) ?_
+    cases renv with
+    | none => exact SGrowsAt.of_pure h2
+    | some env' =>
+      obtain ⟨xv, s₂, h3, h4⟩ := M.bind_inv h2
+      exact SGrows.trans (SGrowsAt.of_edgeArgs h3) (SGrowsAt.of_sealCur h4)
+  case casesCons => sorry
 
 /-- **Statement-level right-hand sides only allocate** (`trExprN` is `trArgs`
 plus one `emit` for a user call, and a single `trExpr` otherwise). -/
@@ -1162,13 +1714,6 @@ theorem FMap.get_ok {P : Prog} {funs : YulSemantics.FunEnv yulD} {fenv : FMap}
 
 /-! ## Inverting the top-level build -/
 
-omit model in
-theorem lt_size_of_getElem? {α : Type} {a : Array α} {i : Nat} {x : α}
-    (h : a[i]? = some x) : i < a.size := by
-  by_contra hc
-  rw [Array.getElem?_eq_none (by omega)] at h
-  exact absurd h (by simp)
-
 /-- The builder state the top level hands to `trScope`: block `0` reserved and
 current, nothing else allocated. -/
 def initBState : BState :=
@@ -1303,18 +1848,6 @@ Everything above is unconditional. What remains is the derivation induction
 itself: a single `induction … with` over the source `Step` derivation whose
 motive is `SOut` below, mirroring `SimAsm.sim`'s `Motive`. -/
 
-/-- The finished function *completes* a builder state: every block the builder
-has laid down other than the one it is currently filling is already final, and
-the current block keeps its parameters. This holds at every `trStmt`/`trStmts`/
-`trScope` boundary — the construction always seals the block it is leaving
-before `moveTo`, and the only block it reserves without immediately sealing is
-the join/exit block it makes current on the way out. -/
-def Extends (f : Func) (fn : FnState) : Prop :=
-  (∀ (i : Nat) (b : Block), i ≠ fn.curId → fn.blocks[i]? = some b
-      → f.blocks[i]? = some b)
-  ∧ (∀ b : Block, fn.blocks[fn.curId]? = some b
-      → ∃ bf, f.blocks[fn.curId]? = some bf ∧ bf.params = b.params)
-
 /-- What a statement-class source derivation means on the SSA side, by outcome
 — the SSA analogue of `SimAsm.SOut`. `normal` hands back the register file the
 fragment ends with (an extension of the one it started with, by single
@@ -1395,7 +1928,7 @@ theorem trScope_sim {P : Prog} {f : Func}
     {body : List (Stmt Op)} {s₀ s₁ : BState} {renv : Option VMap}
     {yst yst' : EvmState} {o : Outcome}
     (_hwf : P.wfCheck = true)
-    (_hext : Extends f s₁.fn)
+    (_hcompl : Completes f s₁.fn)
     (_hfe : FEnvOK (model := model) P funs fenv)
     (_henv : EnvOK (model := model) env V R)
     (_htr : trScope fenv env lctx rets body s₀ = some (renv, s₁))
@@ -1420,22 +1953,29 @@ theorem ofBlock_sound' {prog : YulSemantics.Block Op} {P : Prog}
   obtain ⟨renv, s₁, htr, hparams, hnrets, hentry, hfuncs, hblocks⟩ :=
     buildMain_inv hbuild
   -- the finished `main` completes the builder state the top-level scope left
-  have hext : Extends P.main s₁.fn := by
+  have hext : Completes P.main s₁.fn := by
     cases renv with
     | none =>
-      refine ⟨fun i b _ hi => ?_, fun b hb => ⟨b, ?_, rfl⟩⟩
-      · rw [hblocks]; exact hi
-      · rw [hblocks]; exact hb
+      exact ⟨fun i b _ hi => by rw [hblocks]; exact hi,
+        fun i b hb => ⟨b, by rw [hblocks]; exact hb, rfl⟩,
+        by rw [hblocks]⟩
     | some e =>
       obtain ⟨b, hb, hmb⟩ := hblocks
-      refine ⟨fun i b' hne hi => ?_, fun b' hb' => ?_⟩
+      refine ⟨fun i b' hne hi => ?_, fun i b' hb' => ?_, ?_⟩
       · rw [hmb, Array.set!_eq_setIfInBounds,
           Array.getElem?_setIfInBounds_ne (Ne.symm hne)]
         exact hi
-      · obtain rfl : b' = b := Option.some.inj (hb'.symm.trans hb)
-        refine ⟨⟨b'.params, s₁.fn.cur.reverse, .ret []⟩, ?_, rfl⟩
-        rw [hmb, Array.set!_eq_setIfInBounds,
-          Array.getElem?_setIfInBounds_self_of_lt (lt_size_of_getElem? hb)]
+      · by_cases hc : i = s₁.fn.curId
+        · subst hc
+          obtain rfl : b' = b := Option.some.inj (hb'.symm.trans hb)
+          refine ⟨⟨b'.params, s₁.fn.cur.reverse, .ret []⟩, ?_, rfl⟩
+          rw [hmb, Array.set!_eq_setIfInBounds,
+            Array.getElem?_setIfInBounds_self_of_lt (lt_size_of_getElem? hb)]
+        · refine ⟨b', ?_, rfl⟩
+          rw [hmb, Array.set!_eq_setIfInBounds,
+            Array.getElem?_setIfInBounds_ne (Ne.intro fun hh => hc hh.symm)]
+          exact hb'
+      · rw [hmb]; simp
   -- the top-level source derivation is one `block` rule over `prog`
   rw [YulSemantics.Run] at hrun
   cases hrun with

@@ -2,6 +2,7 @@ import YulEvmCompiler.Correctness
 import YulEvmCompiler.SsaCfg.Compile
 import YulEvmCompiler.SsaCfg.Sem
 import YulEvmCompiler.SsaCfg.OfYulSound
+import YulEvmCompiler.SsaCfg.PassesSound
 import YulEvmCompiler.SsaCfg.ToAsmSound
 import YulEvmCompiler.Optimizer.Spec.EvmBackend
 /-!
@@ -52,13 +53,17 @@ theorem ofBlock_sound {prog : YulSemantics.Block Op} {P : Prog}
     Run (model := model) P yst0 yst' o :=
   ofBlock_sound' hof hrun
 
-/-- **SSA pass soundness** (proof in progress): the optimization pipeline
-preserves SSA executions of well-formed programs. -/
+/-- **SSA pass soundness**: the optimization pipeline preserves SSA
+executions of well-formed, dominance-respecting programs. Proved in
+`SsaCfg/PassesSound.lean` (fallback branch complete; the gate-accepted
+branch is that file's declared frontier). The dominance hypothesis is
+genuinely necessary — `PassesSound.lean` carries a kernel-checked
+counterexample without it. -/
 theorem optimizeProg_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
     (hwf : P.wfCheck = true) (hdom : ToAsm.Prog.domCheck P = true)
     (hrun : Run (model := model) P yst0 yst' o) :
-    Run (model := model) (optimizeProg P) yst0 yst' o := by
-  sorry
+    Run (model := model) (optimizeProg P) yst0 yst' o :=
+  optimizeProg_sound' hwf hdom hrun
 
 /-- **Codegen simulation, normal outcome**: a normal SSA execution maps to
 an Asm trace from the program start to the end of the code with an empty

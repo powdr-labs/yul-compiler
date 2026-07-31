@@ -1,5 +1,6 @@
 import YulEvmCompiler.SsaCfg.Passes
 import YulEvmCompiler.SsaCfg.Sem
+import YulEvmCompiler.SsaCfg.ToAsm
 import YulSemantics.Dialect.EVM
 /-!
 # YulEvmCompiler.SsaCfg.PassesSound
@@ -8,49 +9,42 @@ Soundness metatheory for the `yul-ssa-cfg` optimization passes
 (`SsaCfg/Passes.lean`), i.e. the material behind the `sorry`'d
 `SsaCfg.optimizeProg_sound` of `SsaCfg/Correctness.lean`.
 
-## ⚠ Headline result: `optimizeProg_sound` is FALSE as stated
+## Why `optimizeProg_sound` carries a dominance hypothesis
 
-The statement
+`wfCheck` alone does **not** make the pipeline sound. The statement
 
     P.wfCheck = true → Run P yst0 yst' o → Run (optimizeProg P) yst0 yst' o
 
-is **refuted** here — see `Counterexample.optimizeProg_sound_false`, a fully
-machine-checked counterexample (no `sorry`, no `native_decide`, no axioms beyond
-Lean's own). The reason is not a coding mistake in a pass: it is a *missing
-hypothesis*. Pass 1 (trivial block-parameter elimination) and pass 3 (local CSE)
-are only sound for programs that respect **SSA dominance** (every use of a value
-is dominated by its definition), and `Prog.wfCheck` deliberately does *not* check
-dominance — `Ir.lean` says so explicitly:
+is **refuted** in § `Counterexample`
+(`optimizeProg_sound_false_without_dom`) — fully machine-checked, no `sorry`, no
+`native_decide`, no axioms beyond Lean's own. That refutation is what motivated
+`ToAsm.Func.domCheck`/`Prog.domCheck` and the `hdom` hypothesis the statement
+now carries; the counterexample is kept here as the standing witness that the
+hypothesis cannot be dropped.
 
-> Dominance ("every use is dominated by its definition") is deliberately *not*
-> checked structurally here; the semantics gets stuck on an unbound `ValId` read …
+The failure is not a coding mistake in a pass. Pass 1 (trivial block-parameter
+elimination) and pass 3 (local CSE) are sound only for programs respecting **SSA
+dominance**, and `Prog.wfCheck` deliberately does not check it — `Ir.lean` argued
+that an undominated use is harmless because "the semantics gets stuck on an
+unbound `ValId` read". It is not: in this semantics **registers persist across
+blocks** and block parameters are *re-bound on every visit*, so an undominated
+use is not stuck — it reads a **stale** binding from an earlier visit. Rerouting
+such a use (pass 1 substitutes the parameter `p` by the value `v` all in-edges
+pass; pass 3 substitutes a repeated computation by an earlier `ValId`) makes it
+read the *current* value instead. `Counterexample.P` is exactly that shape:
+block 3 reads block 2's parameter `p` on a path that does not go through block 2.
 
-But "gets stuck on an unbound read" is not the only way dominance can be
-violated: in this semantics **registers persist across blocks** and a block
-parameter is *re-bound* on every visit, so a use that its definition does not
-dominate can legitimately read a **stale** binding left over from an earlier
-visit. Substituting such a use (pass 1 replaces the parameter `p` by the value
-`v` that every in-edge passes; pass 3 replaces a repeated computation by an
-earlier `ValId`) then reads the *current* value instead of the stale one, which
-changes the program's behavior. The defensive `Prog.wfCheck` re-check inside
-`optimizeProg` does not catch it: the rewritten program is perfectly well-formed.
+Two things the defensive gate does *not* do, both recorded in § `Counterexample`:
 
-The counterexample program (`Counterexample.P`) is exactly that shape: block 3
-reads the parameter `p` of block 2, which does not dominate block 3.
+* it checks the *output*, so it cannot see that the *input* violated dominance —
+  `hdomPopt` shows the rewritten program passes `wfCheck && domCheck` happily
+  (`hdomP` shows the input does not);
+* consequently no downstream check can substitute for `hdom`.
 
-### What the fix looks like
-
-Either
-* strengthen `Prog.wfCheck` with a dominance check (and re-derive the extra
-  invariant in `ofBlock_wfCheck`), or
-* keep `wfCheck` as is and give `optimizeProg_sound` an extra hypothesis stating
-  that `P` respects SSA dominance, discharged for the construction's output by a
-  new lemma next to `ofBlock_wfCheck`.
-
-Passes 2 (constant folding) and 4 (dead value elimination) do *not* need
-dominance: `constFold` only rewrites an op into the constant its operands'
-`const` definitions already force (single assignment is enough), and `dve` only
-deletes definitions that nothing reads.
+Passes 2 (constant folding) and 4 (dead value elimination) need no dominance:
+`constFold` only rewrites an op into the constant its operands' `const`
+definitions already force (single assignment suffices), and `dve` only deletes
+definitions nothing reads.
 
 ## What is proved here
 
@@ -59,6 +53,22 @@ deletes definitions that nothing reads.
   current fragment or somewhere in the enclosing function, so two register files
   agreeing there give the same execution. This is the reusable "Regs agreement"
   lemma passes 1, 3 and 4 all need.
+* **The dominance check, unpacked** (§ `ToAsm`) — the bridge from the decidable
+  `domCheck` to the fact the passes actually use:
+  * `mem_insertSorted` / `mem_unionS` / `mem_diffS` / `mem_blockUses` /
+    `mem_blockDefs` / `mem_lout` — membership in the sorted-set helpers;
+  * `liveInSets_fix` — `liveInSets` returns a genuine fixed point of the backward
+    liveness step (the fuel loop exits only on `next == cur`);
+  * `liveStep_get_eq` / `liveIn_eq` — the fixed-point equation at one block;
+  * `liveIn_of_uses`, `liveIn_of_succ` — the two propagation steps: what a block
+    reads and does not define is live in, and liveness crosses edges backwards;
+  * `domCheck_entry` — under the check, `liveIn(entry) ⊆ f.params`. Chaining the
+    two propagation lemmas along a definition-free path and hitting this is
+    precisely "no use is undominated";
+  * `liveStep_mono` and `liveInSets_least` — `liveInSets` is the *least* fixed
+    point, the engine for the dominance-*preservation* obligations;
+  * `LiveAgree` and `liveAgree_entry` — the passes' liveness-indexed simulation
+    invariant and its (proved) base case at a function's entry.
 * The **purity leaves**, transported from the pinned dialect's own
   `effects_sound_withExternal`:
   * `builtin_of_pure` — a pure op is never an open-world (`call`/`create`/`gas`)
@@ -68,16 +78,25 @@ deletes definitions that nothing reads.
     two states;
   * `evalPure_stepOp` / `evalPure_transport` — **constant-folding leaf**: what
     the folder computed on `EvmState.init` is what the op returns in *any* state.
-* The **defensive-fallback case** of the pipeline (`optimizeProg_of_wfCheck_false`,
-  `optimizeProg_sound_of_fallback`): when the pipeline output fails `wfCheck`,
-  `optimizeProg` returns the original program and soundness is reflexivity.
-* The **counterexample** (§ `Counterexample`), end to end: `P.wfCheck = true`,
-  `optimizeProg P = Popt` (the whole 3-round, 4-pass pipeline, evaluated inside
-  the kernel), `Run P yst yst .normal`, `¬ Run Popt yst yst .normal`.
+* The **defensive-fallback branch** of the pipeline gate
+  (`optimizeProg_of_gate_false`, `optimizeProg_sound_of_fallback`, and the
+  corresponding branch inside `optimizeProg_sound'`): when the output fails
+  `wfCheck && domCheck`, `optimizeProg` returns the original and soundness is
+  reflexivity.
+* `runOnce_dom` — dominance preservation for a pipeline round, by composition of
+  the four per-pass obligations.
+* The **counterexample**, end to end: `P.wfCheck = true`,
+  `ToAsm.Prog.domCheck P = false`, `optimizeProg P = Popt` (the whole 3-round,
+  4-pass pipeline, evaluated *inside the kernel*), `Run P yst yst .normal`,
+  `¬ Run Popt yst yst .normal`.
 
-Remaining `sorry`s are the per-pass simulation arguments, each marked with what
-it needs; `optimizeProg_sound'` itself is kept only to mirror
-`Correctness.optimizeProg_sound` and **must not be closed** — it is false.
+## The remaining frontier
+
+Nine `sorry`s, each documented at its declaration: the four per-pass simulation
+lemmas, the four dominance-preservation lemmas, and the gate-accepted branch of
+`optimizeProg_sound'`. The two dominance-dependent passes (1 and 3) additionally
+need a *specification* for their `Id.run` search/walk loops — that is where the
+bulk of the remaining work sits, not in the semantics.
 -/
 
 namespace YulEvmCompiler.SsaCfg
@@ -163,6 +182,262 @@ theorem Func.mem_allUses_of_block {f : Func} {i : BlockId} {b : Block} {x : ValI
     exact List.mem_iff_getElem.mpr ⟨i, by simpa using hlt, by simpa using hget⟩
   simp only [Func.allUses, List.mem_flatMap]
   exact ⟨b, hmem, by simpa [Rest.uses] using hx⟩
+
+/-! ## Dominance: the backward-liveness fixed point
+
+`ToAsm.Func.domCheck` decides SSA dominance as "nothing but the function's
+parameters is live into the entry block" (backward liveness, `ToAsm.liveInSets`).
+This section unpacks that check into the three facts a pass proof needs:
+
+* `ToAsm.liveIn_of_uses` — a value a block reads and does not define is live
+  into it;
+* `ToAsm.liveIn_of_succ` — liveness propagates backwards along edges;
+* `ToAsm.domCheck_entry` — under the check, `liveIn(entry) ⊆ f.params`.
+
+Chaining the first two along a definition-free path and hitting the third is
+exactly the argument "a non-dominated use is impossible"; `liveAgree_entry`
+below is the corresponding base case for the passes' simulation invariant. -/
+
+namespace ToAsm
+
+/-! ### Sorted-set membership -/
+
+theorem mem_insertSorted {x v : ValId} {l : List ValId} :
+    x ∈ insertSorted v l ↔ x = v ∨ x ∈ l := by
+  induction l with
+  | nil => simp [insertSorted]
+  | cons w rest ih =>
+    by_cases h1 : v < w
+    · simp [insertSorted, h1]
+    · by_cases h2 : v = w
+      · subst h2; simp [insertSorted]
+      · simp only [insertSorted, h1, h2, if_false, List.mem_cons, ih]
+        constructor
+        · rintro (rfl | rfl | h) <;> simp_all
+        · rintro (rfl | rfl | h) <;> simp_all
+
+theorem mem_unionS {x : ValId} {xs ys : List ValId} :
+    x ∈ unionS xs ys ↔ x ∈ xs ∨ x ∈ ys := by
+  unfold unionS
+  induction xs generalizing ys with
+  | nil => simp
+  | cons a as ih =>
+    simp only [List.foldl_cons, ih, mem_insertSorted, List.mem_cons]
+    tauto
+
+theorem mem_diffS {x : ValId} {xs ys : List ValId} :
+    x ∈ diffS xs ys ↔ x ∈ xs ∧ x ∉ ys := by
+  simp [diffS, List.mem_filter]
+
+theorem mem_blockUses {x : ValId} {b : Block} :
+    x ∈ blockUses b ↔ x ∈ b.instrs.flatMap Instr.uses ∨ x ∈ b.term.uses := by
+  simp [blockUses, mem_unionS]
+
+theorem mem_blockDefs {x : ValId} {b : Block} :
+    x ∈ blockDefs b ↔ x ∈ b.params ∨ x ∈ b.instrs.flatMap Instr.defs := by
+  simp [blockDefs, mem_unionS, List.mem_append]
+
+/-! ### The liveness fixed point -/
+
+theorem liveInSets_go_fix {f : Func} {fuel : Nat} {cur li : Array (List ValId)}
+    (h : liveInSets.go f fuel cur = some li) : liveStep f li = li := by
+  induction fuel generalizing cur with
+  | zero => simp [liveInSets.go] at h
+  | succ n ih =>
+    rw [liveInSets.go] at h
+    split at h
+    · rename_i heq
+      obtain rfl := Option.some.inj h
+      exact (beq_iff_eq).mp heq
+    · exact ih h
+
+/-- `liveInSets` returns a genuine fixed point of the backward liveness step. -/
+theorem liveInSets_fix {f : Func} {li : Array (List ValId)} (h : liveInSets f = some li) :
+    liveStep f li = li := liveInSets_go_fix (by unfold liveInSets at h; exact h)
+
+theorem liveStep_size {f : Func} {li : Array (List ValId)} :
+    (liveStep f li).size = f.blocks.size := by simp [liveStep]
+
+theorem liveInSets_size {f : Func} {li : Array (List ValId)} (h : liveInSets f = some li) :
+    li.size = f.blocks.size := by
+  rw [← liveInSets_fix h]; exact liveStep_size
+
+/-- One liveness step read off at one block. -/
+theorem liveStep_get_eq {f : Func} {A : Array (List ValId)} {i : Nat} {b : Block}
+    (hb : f.blocks[i]? = some b) :
+    (liveStep f A)[i]?.getD [] =
+      diffS (unionS (blockUses b)
+        (b.term.edges.foldl (init := []) fun acc (e : Edge) => unionS (A[e.target]?.getD []) acc))
+        (blockDefs b) := by
+  have hlt : i < f.blocks.size := (Array.getElem?_eq_some_iff.mp hb).1
+  have hsz : i < (liveStep f A).size := by rw [liveStep_size]; exact hlt
+  rw [Array.getElem?_eq_getElem hsz]
+  simp only [Option.getD_some, liveStep, Array.getElem_ofFn]
+  simp [hb]
+
+theorem liveStep_get_none {f : Func} {A : Array (List ValId)} {i : Nat}
+    (hb : f.blocks[i]? = none) : (liveStep f A)[i]?.getD [] = [] := by
+  rcases h : (liveStep f A)[i]? with _ | l
+  · simp
+  · have hlt : i < (liveStep f A).size := (Array.getElem?_eq_some_iff.mp h).1
+    have hlt' : i < f.blocks.size := by rw [liveStep_size] at hlt; exact hlt
+    exact absurd hb (by simp [Array.getElem?_eq_getElem hlt'])
+
+/-- The fixed-point equation, at one block. -/
+theorem liveIn_eq {f : Func} {li : Array (List ValId)} (h : liveInSets f = some li)
+    {i : BlockId} {b : Block} (hb : f.blocks[i]? = some b) :
+    li[i]?.getD [] =
+      diffS (unionS (blockUses b)
+        (b.term.edges.foldl (init := []) fun acc (e : Edge) => unionS (li[e.target]?.getD []) acc))
+        (blockDefs b) := by
+  conv_lhs => rw [← liveInSets_fix h]
+  exact liveStep_get_eq hb
+
+/-- Membership in the `liveOut` union over a block's outgoing edges. -/
+theorem mem_lout {li : Array (List ValId)} {x : ValId} {edges : List Edge}
+    {acc0 : List ValId} :
+    x ∈ edges.foldl (fun acc (e : Edge) => unionS (li[e.target]?.getD []) acc) acc0 ↔
+      (∃ e ∈ edges, x ∈ li[e.target]?.getD []) ∨ x ∈ acc0 := by
+  induction edges generalizing acc0 with
+  | nil => simp
+  | cons e es ih =>
+    simp only [List.foldl_cons, ih, mem_unionS, List.mem_cons]
+    constructor
+    · rintro (⟨e', he', hx'⟩ | hx | hacc)
+      · exact Or.inl ⟨e', Or.inr he', hx'⟩
+      · exact Or.inl ⟨e, Or.inl rfl, hx⟩
+      · exact Or.inr hacc
+    · rintro (⟨e', (rfl | he'), hx'⟩ | hacc)
+      · exact Or.inr (Or.inl hx')
+      · exact Or.inl ⟨e', he', hx'⟩
+      · exact Or.inr (Or.inr hacc)
+
+/-- A value a block reads but does not define is live into that block. -/
+theorem liveIn_of_uses {f : Func} {li : Array (List ValId)} (h : liveInSets f = some li)
+    {i : BlockId} {b : Block} (hb : f.blocks[i]? = some b) {x : ValId}
+    (hu : x ∈ blockUses b) (hd : x ∉ blockDefs b) : x ∈ li[i]?.getD [] := by
+  rw [liveIn_eq h hb, mem_diffS]
+  exact ⟨mem_unionS.mpr (Or.inl hu), hd⟩
+
+/-- A value live into a successor and not defined by the block is live into the block. -/
+theorem liveIn_of_succ {f : Func} {li : Array (List ValId)} (h : liveInSets f = some li)
+    {i : BlockId} {b : Block} (hb : f.blocks[i]? = some b) {e : Edge} {x : ValId}
+    (he : e ∈ b.term.edges) (hx : x ∈ li[e.target]?.getD []) (hd : x ∉ blockDefs b) :
+    x ∈ li[i]?.getD [] := by
+  rw [liveIn_eq h hb, mem_diffS]
+  exact ⟨mem_unionS.mpr (Or.inr (mem_lout.mpr (Or.inl ⟨e, he, hx⟩))), hd⟩
+
+/-- **The content of the dominance check**: nothing but the function's own
+parameters is live into the entry block. Together with `liveIn_of_uses` and
+`liveIn_of_succ` this is the whole of "every use is dominated by its
+definition": a use whose definition does not dominate it induces a
+definition-free path back to the entry, along which backward liveness carries
+the value into `liveIn(entry)`. -/
+theorem domCheck_entry {f : Func} {li : Array (List ValId)} (hli : liveInSets f = some li)
+    (hdom : Func.domCheck f = true) {x : ValId} (hx : x ∈ li[f.entry]?.getD []) :
+    x ∈ f.params := by
+  unfold Func.domCheck at hdom
+  rw [hli] at hdom
+  simp only [decide_eq_true_eq] at hdom
+  by_contra hp
+  have : x ∈ diffS (li[f.entry]?.getD []) f.params := mem_diffS.mpr ⟨hx, hp⟩
+  rw [hdom] at this
+  exact absurd this (by simp)
+
+/-- `liveInSets` cannot fail on a program that passes the dominance check. -/
+theorem liveInSets_isSome {f : Func} (hdom : Func.domCheck f = true) :
+    ∃ li, liveInSets f = some li := by
+  unfold Func.domCheck at hdom
+  rcases h : liveInSets f with _ | li
+  · rw [h] at hdom; exact absurd hdom (by simp)
+  · exact ⟨li, rfl⟩
+
+theorem Prog.domCheck_main {P : Prog} (h : Prog.domCheck P = true) :
+    Func.domCheck P.main = true := ((Bool.and_eq_true _ _).mp h).1
+
+theorem Prog.domCheck_funcs {P : Prog} (h : Prog.domCheck P = true) {g : Func}
+    (hg : g ∈ P.funcs) : Func.domCheck g = true := by
+  have hall := ((Bool.and_eq_true _ _).mp h).2
+  rw [Array.all_eq_true] at hall
+  obtain ⟨i, hi, rfl⟩ := Array.mem_iff_getElem.mp hg
+  exact hall i hi
+
+/-! ### Least fixed point (for dominance *preservation*) -/
+
+/-- Pointwise inclusion of liveness maps (total: an out-of-range read is `[]`). -/
+def Sub (A B : Array (List ValId)) : Prop :=
+  ∀ (i : Nat) (x : ValId), x ∈ A[i]?.getD [] → x ∈ B[i]?.getD []
+
+theorem Sub.refl (A : Array (List ValId)) : Sub A A := fun _ _ h => h
+
+theorem sub_replicate {n : Nat} {B : Array (List ValId)} :
+    Sub (Array.replicate n []) B := by
+  intro i x hx
+  rcases h : (Array.replicate n ([] : List ValId))[i]? with _ | l
+  · rw [h] at hx; simp at hx
+  · rw [h] at hx
+    have hl : l = [] := by
+      obtain ⟨hlt, hget⟩ := Array.getElem?_eq_some_iff.mp h
+      simpa using hget.symm
+    rw [hl] at hx; simp at hx
+
+/-- The backward liveness step is monotone. -/
+theorem liveStep_mono {f : Func} {A B : Array (List ValId)} (h : Sub A B) :
+    Sub (liveStep f A) (liveStep f B) := by
+  intro i x hx
+  rcases hb : f.blocks[i]? with _ | b
+  · rw [liveStep_get_none hb] at hx; simp at hx
+  · rw [liveStep_get_eq hb] at hx ⊢
+    rw [mem_diffS] at hx ⊢
+    refine ⟨?_, hx.2⟩
+    rcases mem_unionS.mp hx.1 with hu | hl
+    · exact mem_unionS.mpr (Or.inl hu)
+    · rcases mem_lout.mp hl with ⟨e, he, hxe⟩ | hnil
+      · exact mem_unionS.mpr (Or.inr (mem_lout.mpr (Or.inl ⟨e, he, h _ _ hxe⟩)))
+      · simp at hnil
+
+/-- **`liveInSets` is the least fixed point**: it is bounded by every pre-fixed
+point of the liveness step. This is the engine for dominance *preservation* — to
+show a rewritten function still passes `domCheck` it suffices to exhibit a
+pre-fixed point built from the original's live sets. -/
+theorem liveInSets_least {f : Func} {li ub : Array (List ValId)}
+    (h : liveInSets f = some li) (hub : Sub (liveStep f ub) ub) : Sub li ub := by
+  have key : ∀ (fuel : Nat) (cur : Array (List ValId)), Sub cur ub →
+      ∀ {out}, liveInSets.go f fuel cur = some out → Sub out ub := by
+    intro fuel
+    induction fuel with
+    | zero => intro cur _ out hgo; simp [liveInSets.go] at hgo
+    | succ n ih =>
+      intro cur hcur out hgo
+      rw [liveInSets.go] at hgo
+      split at hgo
+      · obtain rfl := Option.some.inj hgo; exact hcur
+      · exact ih _ (fun i x hx => hub i x (liveStep_mono hcur i x hx)) hgo
+  unfold liveInSets at h
+  exact key _ _ sub_replicate h
+
+end ToAsm
+
+/-- **The passes' simulation invariant**: two register files agree on everything
+live into block `i`, modulo the use-substitution `σ` a pass applies. This is the
+liveness-indexed strengthening of `exec_congr`'s agreement hypothesis: the frame
+lemma needs agreement on *all* uses of the function, which a pass that reroutes
+uses cannot give — but it only ever needs it for the values that are live at the
+point it is looking at, and `domCheck` is exactly what makes the live sets
+propagate soundly. -/
+def LiveAgree (li : Array (List ValId)) (i : BlockId) (σ : ValId → ValId) (R R' : Regs) : Prop :=
+  ∀ x ∈ li[i]?.getD [], R x = R' (σ x)
+
+/-- **Base case of the dominance bridge**, fully proved: at a function's entry
+block, under `domCheck`, the invariant holds for any substitution that fixes the
+function's parameters — because the check says nothing else is live there. -/
+theorem liveAgree_entry {f : Func} {li : Array (List ValId)}
+    (hli : ToAsm.liveInSets f = some li) (hdom : ToAsm.Func.domCheck f = true)
+    {σ : ValId → ValId} (hσ : ∀ x ∈ f.params, σ x = x) (args : List U256) :
+    LiveAgree li f.entry σ (Regs.empty.setMany f.params args)
+      (Regs.empty.setMany f.params args) := by
+  intro x hx
+  rw [hσ x (ToAsm.domCheck_entry hli hdom hx)]
 
 /-! ## The frame lemma -/
 
@@ -355,8 +630,10 @@ end Passes
 *original* program when the check fails, so that case of pass soundness is
 reflexivity. -/
 
-theorem optimizeProg_of_wfCheck_false {P : Prog}
-    (h : (Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc)).wfCheck = false) :
+theorem optimizeProg_of_gate_false {P : Prog}
+    (h : ((Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc)).wfCheck
+        && ToAsm.Prog.domCheck (Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc)))
+      = false) :
     optimizeProg P = P := by
   unfold optimizeProg
   simp only [h, Bool.false_eq_true, if_false]
@@ -366,10 +643,12 @@ variable [model : ExternalModel]
 
 /-- The fallback branch of pass soundness, fully proved. -/
 theorem optimizeProg_sound_of_fallback {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
-    (h : (Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc)).wfCheck = false)
+    (h : ((Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc)).wfCheck
+        && ToAsm.Prog.domCheck (Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc)))
+      = false)
     (hrun : Run (model := model) P yst0 yst' o) :
     Run (model := model) (optimizeProg P) yst0 yst' o := by
-  rw [optimizeProg_of_wfCheck_false h]; exact hrun
+  rw [optimizeProg_of_gate_false h]; exact hrun
 
 end
 
@@ -495,15 +774,33 @@ unseal Array.anyM.loop in
 theorem hwf : P.wfCheck = true := by rfl
 
 unseal Array.anyM.loop in
-/-- …and so does its optimized form, so the defensive fallback does not fire. -/
+/-- …and so does its optimized form, so the defensive `wfCheck` gate does not
+fire. -/
 theorem hwfopt : Popt.wfCheck = true := by rfl
+
+unseal Array.anyM.loop in
+/-- **`P` is exactly what the new dominance gate rejects**: `liveInSets P.main`
+is `#[[2], [2, 11], [11], [2], [], []]`, i.e. the stale value `p = 2` is live
+into the entry block while `main` has no parameters. So this program is *not* a
+counterexample to the repaired `optimizeProg_sound` (which assumes
+`ToAsm.Prog.domCheck P = true`) — it is the witness that the assumption is
+necessary. -/
+theorem hdomP : ToAsm.Prog.domCheck P = false := by rfl
+
+unseal Array.anyM.loop in
+/-- The *optimized* program, by contrast, passes the dominance check
+(`liveInSets` is `#[[], [11], [11], [1], [], []]`), so `optimizeProg`'s
+defensive gate — which checks the pipeline's *output* — does not fire either.
+That is why the un-hypothesised statement really is refuted: nothing downstream
+of the pass notices. -/
+theorem hdomPopt : ToAsm.Prog.domCheck Popt = true := by rfl
 
 /-- The pipeline really does produce `Popt`. -/
 theorem hopt : optimizeProg P = Popt := by
   have h : ({ main := optimizeFunc P.main, funcs := P.funcs.map optimizeFunc } : Prog) = Popt := by
     simp only [P, Popt, hoptf]
     simp
-  simp only [optimizeProg, h, hwfopt, if_true]
+  simp only [optimizeProg, h, hwfopt, hdomPopt, Bool.and_self, if_true]
 
 /-! ### The semantic half -/
 
@@ -589,12 +886,18 @@ theorem cx_no_run (yst : EvmState) : ¬ Run (model := model) Popt yst yst .norma
               simp only [b5, setMany_nn] at h7
               cases h7
 
-/-- **`optimizeProg_sound` is false.** The pass pipeline does not preserve
-executions of `wfCheck`-clean SSA programs: `P` is well-formed and runs to
-`.normal` with the state unchanged, but its optimized form has no such run.
+/-- **Pass soundness from `wfCheck` alone is false** — the statement
+`optimizeProg_sound` had before the dominance gate was introduced. `P` is
+well-formed and runs to `.normal` with the state unchanged, but its optimized
+form has no such run.
 
-The missing side condition is SSA dominance — see this module's header. -/
-theorem optimizeProg_sound_false :
+This does **not** contradict the repaired `optimizeProg_sound`
+(`optimizeProg_sound'` below): `hdomP` says `P` fails
+`ToAsm.Prog.domCheck`, so the repaired statement does not apply to it. What this
+theorem shows is that the dominance hypothesis is *necessary* — it cannot be
+weakened back to `wfCheck`, and the defensive gate on the pipeline's output
+cannot substitute for it (`hdomPopt`). -/
+theorem optimizeProg_sound_false_without_dom :
     ¬ ∀ (P : Prog) (yst0 yst' : EvmState) (o : Outcome), P.wfCheck = true →
         Run (model := model) P yst0 yst' o →
         Run (model := model) (optimizeProg P) yst0 yst' o := by
@@ -604,29 +907,86 @@ theorem optimizeProg_sound_false :
   rw [hopt] at this
   exact cx_no_run _ this
 
+omit model in
+/-- The same statement with the dominance hypothesis *added* is not refuted by
+this program — vacuously, because the hypothesis fails for it. Recorded so the
+two statements cannot be confused. -/
+theorem dom_hypothesis_excludes_counterexample :
+    ¬ (ToAsm.Prog.domCheck P = true) := by simp [hdomP]
+
 end Counterexample
 
 /-! ## Per-pass soundness
 
-What remains. Passes 2 and 4 are stated as they stand (they need no dominance
-hypothesis); passes 1 and 3 are *not* stated as unconditional lemmas, because
-the counterexample above refutes exactly that reading of pass 1 — they need the
-dominance side condition described in the module header, which `Prog.wfCheck`
-does not provide and which this module deliberately does not invent a definition
-for. -/
+Each pass is stated at the *function-entry* level: an execution of `f` from its
+entry block, with the register file that binds exactly `f.params`, maps to an
+execution of the rewritten function from *its* entry block with the same result.
+That is the granularity the whole-program statement needs (`Run` starts `main`
+that way, and `Exec.call` starts a callee that way), and it is where the
+liveness invariant `LiveAgree` has its base case (`liveAgree_entry`).
+
+Passes 1 and 3 carry `ToAsm.Func.domCheck` — the counterexample above shows they
+must. Passes 2 and 4 do not need it.
+
+Composing the four into `optimizeProg_sound'` needs two further ingredients:
+
+* the **preservation** lemmas below (`*_wf`, `*_dom`), because `runOnce` chains
+  four passes and `optimizeFunc` iterates that three times, so each pass has to
+  hand the next one its hypotheses; and
+* a **simultaneous** induction over the whole program rather than a
+  per-function composition, because `Exec` recurses into callees through `P`
+  (`Exec.call` looks up `P.funcs[fid]?`), so the callee's derivation has to be
+  transported at the same time as the caller's. The per-function lemmas below
+  are the block-level content of that induction, not a decomposition of it.
+-/
 
 variable [model : ExternalModel]
 
-/-- **Pass 2 (constant folding) soundness.**
+/-- **Pass 1 (trivial block-parameter elimination) soundness**, under dominance.
+
+`sorry`. The invariant is `LiveAgree li i σ R R'` for `σ = (p ↦ v)`, carried
+through the derivation block by block:
+
+* base case: `liveAgree_entry` (proved) — `domCheck` says only `f.params` is live
+  into the entry, and `σ` fixes them (`p` is a *block* parameter, so single
+  assignment puts it outside `f.params`);
+* at a jump into the rewritten block, the eliminated position carried either `v`
+  — and then both sides bind the same word, because `v ∈ blockUses pred` so
+  `ToAsm.liveIn_of_uses` puts it in the predecessor's live-in where the
+  invariant applies — or `p` itself, and then the original re-binds `p` to its
+  own current value while the optimized program reads `v`, which the invariant
+  again equates (this is precisely the step the counterexample breaks without
+  dominance: there `p` is read on a path where the binding is stale);
+* every other instruction/terminator either preserves the invariant pointwise
+  (`Regs.setMany_congr`) or reads only values the invariant covers
+  (`Regs.getMany_congr`).
+
+The remaining engineering is a *specification* for `Passes.findTrivialParam`:
+inverting its nested `Id.run` early-return search into "every in-edge argument at
+position `i` of block `bi` is `v` or `p`", and then an induction on the
+fixed-point loop of `elimTrivialParams`. -/
+theorem elimTrivialParams_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState}
+    {res : FRes} {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
+    (hdom : ToAsm.Func.domCheck f = true)
+    (heb : f.blocks[f.entry]? = some eb)
+    (heb' : (Passes.elimTrivialParams f).blocks[f.entry]? = some eb')
+    (hexec : Exec (model := model) P f (Regs.empty.setMany f.params args) st
+      ⟨eb.instrs, eb.term⟩ res) :
+    Exec (model := model) P (Passes.elimTrivialParams f) (Regs.empty.setMany f.params args) st
+      ⟨eb'.instrs, eb'.term⟩ res := by
+  sorry
+
+/-- **Pass 2 (constant folding) soundness.** No dominance hypothesis.
 
 `sorry`: needs the forward-walk invariant "for every `(d, v)` in the folder's
 `consts` map, the register file maps `d` to `v` or leaves it unbound". That
-invariant is dominance-free — it rests only on single assignment (`allDefs.Nodup`
-from `wfCheck`), which makes the `const d v` instruction the *unique* binder of
-`d`, so any binding of `d` in any reachable state is `v`. Its proof needs a
-`Nodup`-based unique-definition-site lemma for `Func.allDefs` (the list plumbing
-is the bulk of the work), after which each folded instruction is discharged by
-`Passes.evalPure_transport` and each folded `branch` by inversion of
+invariant rests only on single assignment (`allDefs.Nodup` from `wfCheck`), which
+makes the `const d v` instruction the *unique* binder of `d`, so any binding of
+`d` in any reachable state is `v` — no dominance needed, which is why the
+counterexample above leaves this pass alone. Its proof needs a `Nodup`-based
+unique-definition-site lemma for `Func.allDefs` (the list plumbing is the bulk of
+the work), after which each folded instruction is discharged by
+`Passes.evalPure_transport` (proved) and each folded `branch` by inversion of
 `Exec.branchTrue`/`branchFalse` on a known-constant condition. -/
 theorem constFold_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
@@ -638,17 +998,48 @@ theorem constFold_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState}
       ⟨eb'.instrs, eb'.term⟩ res := by
   sorry
 
-/-- **Pass 4 (dead value elimination) soundness.**
+/-- **Pass 3 (local CSE) soundness**, under dominance.
 
-`sorry`: the shape of the argument is a simulation whose invariant is
-"`R` (original) and `R'` (optimized) agree on every *live* value", stepped with
-the frame lemma `exec_congr`; the deleted instructions are exactly those whose
-destinations no value read anywhere depends on, so the invariant is preserved.
-What is missing is the liveness side: `Passes.liveSet` is a fixed point computed
-with fuel, and the proof needs (i) that the returned set is `liveStep`-closed
-(the fuel loop exits only on a size fixpoint, and `liveStep` is monotone), and
-(ii) that closure implies "every value read by a kept instruction, terminator, or
-live target parameter is in the set". No dominance hypothesis is needed. -/
+`sorry`. Same `LiveAgree` invariant as pass 1, with `σ` the accumulated
+dropped-definition substitution `d ↦ d₀`. The value-level obligation — that the
+two computations agree — is `Passes.pure_rets_eq` (proved: a pure op's results
+are a function of its arguments alone, in any state). What dominance buys is that
+`d₀`'s binding is still the *current* one at every use of `d`: the pass only
+inherits a table across a **single**-predecessor edge (`Passes.inEdgeSources`
+returning `[p]` with `p < bi`), so `d₀`'s block dominates `d`'s block, and
+`ToAsm.liveIn_of_succ` propagates that into the invariant. Without dominance the
+substituted use can read a stale `d₀`, exactly as in the counterexample.
+
+Remaining engineering: a specification for the `cse` walk (a stateful `Id.run`
+fold over blocks accumulating `CseTab` and `σ`), i.e. "every `(op, args) ↦ d₀` in
+the table at block `bi` was emitted by an instruction of a block that dominates
+`bi`, and `σ`'s domain is disjoint from its range". -/
+theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
+    {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
+    (hdom : ToAsm.Func.domCheck f = true)
+    (heb : f.blocks[f.entry]? = some eb)
+    (heb' : (Passes.cse f).blocks[f.entry]? = some eb')
+    (hexec : Exec (model := model) P f (Regs.empty.setMany f.params args) st
+      ⟨eb.instrs, eb.term⟩ res) :
+    Exec (model := model) P (Passes.cse f) (Regs.empty.setMany f.params args) st
+      ⟨eb'.instrs, eb'.term⟩ res := by
+  sorry
+
+/-- **Pass 4 (dead value elimination) soundness.** No dominance hypothesis.
+
+`sorry`: a simulation whose invariant is "`R` (original) and `R'` (optimized)
+agree on every value in `Passes.liveSet f`", stepped with the frame lemma
+`exec_congr`; the deleted instructions are exactly those whose destinations
+nothing reads, so the invariant is preserved by construction and no dominance is
+needed. The missing part is the liveness side of `Passes.liveSet` (a *forward*
+`Std.HashSet` fixed point, distinct from `ToAsm.liveInSets` used by `domCheck`):
+the proof needs (i) that the returned set is `Passes.liveStep`-closed — the fuel
+loop exits on a *size* fixpoint and `liveStep` only ever inserts, so equal size
+forces equal sets — and (ii) that closure implies "every value read by a kept
+instruction, by a terminator, or through a live target parameter is in the set".
+Plus the edge/parameter *alignment* lemma for dropped dead parameters: `dve`
+masks parameters and in-edge arguments with the same predicate computed from the
+**pre-pass** blocks, so `tb.params.length = args.length` survives. -/
 theorem dve_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (heb : f.blocks[f.entry]? = some eb)
@@ -659,20 +1050,78 @@ theorem dve_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res 
       ⟨eb'.instrs, eb'.term⟩ res := by
   sorry
 
-/-- **The statement of `SsaCfg.optimizeProg_sound`, reproduced verbatim.**
+/-! ### Dominance preservation
 
-⚠ **This theorem is FALSE and must not be closed.** It is refuted by
-`Counterexample.optimizeProg_sound_false` above (a `wfCheck`-clean program, a
-`Run` derivation for it, and a proof that the optimized program has no such
-run). It is kept here only so that the repair can be tracked against the
-statement `Correctness.lean` currently `sorry`s. Fix the *statement* first — see
-the module header: either `Prog.wfCheck` gains a dominance check, or this lemma
-(and `compileViaSsa_correct`, which consumes it) gains a dominance hypothesis
-discharged for `ofBlock`'s output. -/
+Not needed for top-level soundness — `optimizeProg`'s gate re-checks
+`wfCheck && domCheck` on the output and falls back otherwise
+(`optimizeProg_sound_of_fallback`, proved) — but needed to *compose* the four
+pass lemmas inside `runOnce`, and the reason the gate essentially never fires in
+practice. Each pass only ever removes definitions or reroutes a use to a value
+that already dominates it, so `liveIn(entry)` can only shrink; the proofs are
+computations on `ToAsm.liveInSets` of the rewritten function, in the same style
+as `ToAsm.liveIn_of_uses`/`liveIn_of_succ`. -/
+
+omit model in
+theorem elimTrivialParams_dom {f : Func} (hwf : f.wfCheck n = true)
+    (hdom : ToAsm.Func.domCheck f = true) :
+    ToAsm.Func.domCheck (Passes.elimTrivialParams f) = true := by
+  sorry
+
+omit model in
+theorem constFold_dom {f : Func} (hdom : ToAsm.Func.domCheck f = true) :
+    ToAsm.Func.domCheck (Passes.constFold f) = true := by
+  sorry
+
+omit model in
+theorem cse_dom {f : Func} (hwf : f.wfCheck n = true)
+    (hdom : ToAsm.Func.domCheck f = true) :
+    ToAsm.Func.domCheck (Passes.cse f) = true := by
+  sorry
+
+omit model in
+theorem dve_dom {f : Func} (hdom : ToAsm.Func.domCheck f = true) :
+    ToAsm.Func.domCheck (Passes.dve f) = true := by
+  sorry
+
+omit model in
+/-- Dominance preservation for one pipeline round, **proved** by composition of
+the four obligations above. The two `wfCheck` hypotheses are the ones passes 1
+and 3 need; supplying them is what the (separate) well-formedness preservation
+lemmas are for — `Correctness.optimizeProg_wf` gets the top-level version for
+free from the gate. -/
+theorem runOnce_dom {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
+    (hwf3 : (Passes.constFold (Passes.elimTrivialParams f)).wfCheck n = true)
+    (hdom : ToAsm.Func.domCheck f = true) :
+    ToAsm.Func.domCheck (Passes.runOnce f) = true := by
+  unfold Passes.runOnce
+  exact dve_dom (cse_dom hwf3 (constFold_dom (elimTrivialParams_dom hwf hdom)))
+
+/-! ### The top-level statement -/
+
+/-- **`SsaCfg.optimizeProg_sound`, reproduced verbatim** (post-fix signature:
+`hwf` *and* `hdom`).
+
+The defensive-fallback half is **proved** here; the remaining `sorry` is the
+branch where the pipeline's output passes the gate, which is where the four
+per-pass lemmas above (plus the simultaneous whole-program induction described in
+this section's header) do their work.
+
+With `hdom` this statement is, to the best of my analysis, true — the
+counterexample `Counterexample.optimizeProg_sound_false_without_dom` refutes only
+the version without it. -/
 theorem optimizeProg_sound' {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
-    (hwf : P.wfCheck = true)
+    (hwf : P.wfCheck = true) (hdom : ToAsm.Prog.domCheck P = true)
     (hrun : Run (model := model) P yst0 yst' o) :
     Run (model := model) (optimizeProg P) yst0 yst' o := by
-  sorry
+  by_cases hgate : ((Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc)).wfCheck
+      && ToAsm.Prog.domCheck (Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc))) = true
+  · -- the gate accepted the pipeline's output: this is the real content
+    have hP' : optimizeProg P = Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc) := by
+      unfold optimizeProg; simp only [hgate, if_true]
+    rw [hP']
+    sorry
+  · -- the gate rejected it: `optimizeProg` returned `P` unchanged
+    simp only [Bool.not_eq_true] at hgate
+    exact optimizeProg_sound_of_fallback hgate hrun
 
 end YulEvmCompiler.SsaCfg

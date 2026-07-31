@@ -690,6 +690,30 @@ theorem liftE_bind_inv {α β : Type} {o : Option α} {f : α → ToAsm.E β} {n
   | some a =>
     exact ⟨a, rfl, by simpa [ToAsm.liftE, StateT.bind, bind, pure, StateT.pure] using h⟩
 
+omit model in
+/-- Inverting a `bind` in the emission monad. -/
+theorem E_bind_inv {α β : Type} {x : ToAsm.E α} {g : α → ToAsm.E β} {n : Nat}
+    {r : β} {n' : Nat} (h : (x >>= g) n = some (r, n')) :
+    ∃ a m, x n = some (a, m) ∧ g a m = some (r, n') := by
+  have hb : (x n).bind (fun p => g p.1 p.2) = some (r, n') := h
+  obtain ⟨p, hp, hg⟩ := Option.bind_eq_some_iff.mp hb
+  exact ⟨p.1, p.2, hp, hg⟩
+
+omit model in
+/-- Composing a `bind` in the emission monad. -/
+theorem E_bind_eq {α β : Type} {x : ToAsm.E α} {g : α → ToAsm.E β} {n : Nat}
+    {a : α} {m : Nat} (hx : x n = some (a, m)) {r : β} {n' : Nat}
+    (hg : g a m = some (r, n')) : (x >>= g) n = some (r, n') := by
+  show (x n).bind (fun p => g p.1 p.2) = some (r, n')
+  rw [hx]; exact hg
+
+omit model in
+/-- Inverting a `pure` in the emission monad, value *and* counter. -/
+theorem E_pure_inv2 {α : Type} {X r : α} {n n' : Nat}
+    (h : (pure X : ToAsm.E α) n = some (r, n')) : X = r ∧ n = n' := by
+  have h' : some ((X, n) : α × Nat) = some (r, n') := h
+  exact (Prod.mk.injEq ..).mp (Option.some.inj h')
+
 /-- `const`: a single `PUSH`. -/
 theorem emitInstr_const_sim {P : Prog} {L : ToAsm.LabelMap} {sym : List SSlot}
     {needed : List ValId} {d : ValId} {v : U256} {n n' : Nat}
@@ -821,10 +845,81 @@ def emitRest (P : Prog) (L : ToAsm.LabelMap) (isFunc : Bool) (f : Func)
       pure (asm ++ tl)
 
 omit model in
-/-- **Bridge from `emitBlock`'s fold to `emitRest`** (proof outstanding): a
-successful block emission is the block's label followed by `emitRest` over the
-whole instruction list from the block's entry layout. Purely a `foldlM`
-rearrangement in `StateT Nat Option`; no semantic content. -/
+@[simp] theorem emitRest_nil (P : Prog) (L : ToAsm.LabelMap) (isFunc : Bool)
+    (f : Func) (fidx : Option Nat) (liveIn : Array (List ValId)) (t : Term)
+    (sym : List SSlot) :
+    emitRest P L isFunc f fidx liveIn t [] sym
+      = ToAsm.emitTerm isFunc f L fidx liveIn sym t := rfl
+
+omit model in
+theorem emitRest_cons (P : Prog) (L : ToAsm.LabelMap) (isFunc : Bool) (f : Func)
+    (fidx : Option Nat) (liveIn : Array (List ValId)) (t : Term)
+    (i : Instr) (need : List ValId) (rest : List (Instr × List ValId))
+    (sym : List SSlot) :
+    emitRest P L isFunc f fidx liveIn t ((i, need) :: rest) sym
+      = (do
+          let (asm, sym') ← ToAsm.emitInstr P L sym need i
+          let tl ← emitRest P L isFunc f fidx liveIn t rest sym'
+          pure (asm ++ tl)) := rfl
+
+omit model in
+/-- `emitBlock`'s instruction `foldlM` *is* `emitRest`, modulo the accumulator
+prefix: the fold's output is `acc0 ++ (the ops `emitRest` emits)`. -/
+private theorem foldlM_emitRest (P : Prog) (L : ToAsm.LabelMap) (isFunc : Bool)
+    (f : Func) (fidx : Option Nat) (liveIn : Array (List ValId)) (t : Term) :
+    ∀ (paired : List (Instr × List ValId)) (sym0 : List SSlot) (acc0 : List Asm)
+      (n : Nat) (body : List Asm) (symEnd : List SSlot) (n₁ : Nat),
+      (paired.foldlM (init := (acc0, sym0))
+        (fun (acc, sym) (p : Instr × List ValId) => do
+          let (asm, sym') ← ToAsm.emitInstr P L sym p.2 p.1
+          pure (acc ++ asm, sym'))) n = some ((body, symEnd), n₁) →
+      ∀ (tasm : List Asm) (n' : Nat),
+        ToAsm.emitTerm isFunc f L fidx liveIn symEnd t n₁ = some (tasm, n') →
+        ∃ body', body = acc0 ++ body' ∧
+          emitRest P L isFunc f fidx liveIn t paired sym0 n
+            = some (body' ++ tasm, n') := by
+  intro paired
+  induction paired with
+  | nil =>
+    intro sym0 acc0 n body symEnd n₁ hfold tasm n' hterm
+    rw [List.foldlM_nil] at hfold
+    obtain ⟨heq, rfl⟩ := E_pure_inv2 hfold
+    obtain ⟨rfl, rfl⟩ := (Prod.mk.injEq ..).mp heq
+    exact ⟨[], by simp, by rw [emitRest_nil]; exact hterm⟩
+  | cons q rest ih =>
+    obtain ⟨i, need⟩ := q
+    intro sym0 acc0 n body symEnd n₁ hfold tasm n' hterm
+    rw [List.foldlM_cons] at hfold
+    obtain ⟨⟨acc1, sym1⟩, m, hstep, hrest⟩ := E_bind_inv hfold
+    obtain ⟨⟨asm, sym'⟩, m', hei, hpure⟩ := E_bind_inv hstep
+    obtain ⟨heq2, rfl⟩ := E_pure_inv2 hpure
+    obtain ⟨rfl, rfl⟩ := (Prod.mk.injEq ..).mp heq2
+    obtain ⟨body', rfl, hemitrest⟩ :=
+      ih sym' (acc0 ++ asm) m' body symEnd n₁ hrest tasm n' hterm
+    refine ⟨asm ++ body', by simp, ?_⟩
+    rw [emitRest_cons]
+    refine E_bind_eq hei ?_
+    dsimp only
+    refine E_bind_eq hemitrest ?_
+    show some (asm ++ (body' ++ tasm), n') = _
+    simp
+
+omit model in
+theorem neededAfter_go_eq (base : List ValId) (instrs : List Instr) :
+    ToAsm.neededAfter instrs base = (ToAsm.neededAfter.go base instrs).1 := rfl
+
+omit model in
+theorem neededAfter_length (instrs : List Instr) (base : List ValId) :
+    (ToAsm.neededAfter instrs base).length = instrs.length := by
+  rw [neededAfter_go_eq]
+  induction instrs with
+  | nil => rfl
+  | cons i rest ih => simp [ToAsm.neededAfter.go]; simpa using ih
+
+omit model in
+/-- **Bridge from `emitBlock`'s fold to `emitRest`**: a successful block
+emission is the block's label followed by `emitRest` over the whole instruction
+list, starting from the block's entry layout. -/
 theorem emitBlock_emitRest {P : Prog} {L : ToAsm.LabelMap} {fidx : Option Nat}
     {f : Func} {liveIn : Array (List ValId)} {bid : BlockId} {b : Block}
     {n n' : Nat} {frag : List Asm}
@@ -835,8 +930,26 @@ theorem emitBlock_emitRest {P : Prog} {L : ToAsm.LabelMap} {fidx : Option Nat}
       ∧ sym0 = (if bid = f.entry then
             f.params.map SSlot.val ++ (if fidx.isSome then [SSlot.retAddr] else [])
           else ToAsm.layoutOf fidx.isSome (liveIn[bid]?.getD []) b)
-      ∧ emitRest P L fidx.isSome f fidx liveIn b.term paired sym0 n = some (frag, n') := by
-  sorry
+      ∧ emitRest P L fidx.isSome f fidx liveIn b.term paired sym0 n
+        = some (frag, n') := by
+  rw [ToAsm.emitBlock] at h
+  dsimp only at h
+  obtain ⟨⟨body, symEnd⟩, n₁, hfold, h2⟩ := E_bind_inv h
+  obtain ⟨tasm, n₂, hterm, h3⟩ := E_bind_inv h2
+  dsimp only at hfold hterm
+  obtain ⟨heq, rfl⟩ := E_pure_inv2 h3
+  obtain ⟨body', hbody, hrest⟩ :=
+    foldlM_emitRest P L fidx.isSome f fidx liveIn b.term
+      (b.instrs.zip (ToAsm.neededAfter b.instrs
+        (ToAsm.unionS (ToAsm.unionS b.term.uses [])
+          (List.foldl (fun acc e => ToAsm.unionS (liveIn[e.target]?.getD []) acc)
+            [] b.term.edges))))
+      _ [] n body symEnd n₁ hfold tasm n₂ hterm
+  rw [List.nil_append] at hbody
+  subst hbody
+  rw [List.cons_append] at heq
+  obtain rfl := ((List.cons.injEq ..).mp heq).2
+  exact ⟨_, _, List.map_fst_zip (by rw [neededAfter_length]), rfl, hrest⟩
 
 /-! ## Fragment placement
 
@@ -963,54 +1076,201 @@ theorem exec_sim {P : Prog} {asm : List Asm}
 
 /-! ## Placement of `emitProg`'s output -/
 
-omit model in
-/-- **`emitProg` places its fragments** (proof outstanding): the accepted
-program is the elision of a raw emission in which every block's body sits
-right after its label, the terminal label is last, and `main`'s entry label is
-first. This is the `SimAsm.lean` Phase-A bookkeeping (fragment concatenation
-plus `findLabel_boundary` from `Nodup`), specialized to one fragment per basic
-block. -/
-theorem emitProg_placement {P : Prog} {asm : List Asm}
-    (hwf : P.wfCheck = true) (hemit : ToAsm.emitProg P = some asm) :
-    ∃ asm₀ : List Asm, asm = ToAsm.elideJumps asm₀ ∧ Placement P asm₀ := by
-  sorry
+/-! ### Inverting the emission, and locating the fragments -/
 
-/-- Entering `main`'s entry block: one `AStep.label` off the head of the
-program lands in the entry fragment with an empty stack, which matches the
-entry layout (`main` has no parameters), so the frame-level simulation applies
-with the terminal label as the frame's "return" label. -/
-private theorem raw_entry_sim {P : Prog} {asm₀ : List Asm}
-    (hnodup₀ : (labelDefs asm₀).Nodup) (hwf : P.wfCheck = true)
-    (hpl : Placement P asm₀) {yst0 : EvmState} {res : FRes} {eb : Block}
-    (heb : P.main.blocks[P.main.entry]? = some eb)
-    (hexec : Exec (model := model) P P.main Regs.empty yst0
-      ⟨eb.instrs, eb.term⟩ res) :
-    ∃ a : AConf, ASteps (model := model) asm₀ ⟨asm₀, [], yst0⟩ a ∧
-      SimFRes (model := model) asm₀ (ToAsm.mkLabelMap P).endLabel [] a res := by
-  have hpl' := hpl
-  obtain ⟨⟨liveIn, -, hblocks⟩, -, hend, c, hhead⟩ := hpl'
-  obtain ⟨n, n', frag, tail, hblk, hfind⟩ := hblocks _ _ heb
-  -- the entry fragment heads the program
-  have hc : c = frag ++ tail := by
-    rw [hhead, findLabel, if_pos rfl] at hfind
-    exact Option.some.inj hfind
-  have hasm : asm₀ = Asm.label (ToAsm.blkLabel (ToAsm.mkLabelMap P) none P.main.entry)
-      :: (frag ++ tail) := by rw [hhead, hc]
-  obtain ⟨paired, sym0, hpair, hsym0, hrest⟩ := emitBlock_emitRest hblk
-  -- `main` takes no parameters, so its entry layout is empty
-  have hp : P.main.params = [] := by
-    have hwf' := hwf
-    rw [Prog.wfCheck] at hwf'
-    simp only [Bool.and_eq_true] at hwf'
-    simpa using hwf'.1.1.1
-  have hsym : sym0 = [] := by rw [hsym0]; simp [hp]
-  refine ⟨⟨frag ++ tail, [] ++ [], yst0⟩, ?_, ?_⟩
-  · refine ASteps.single ?_
-    rw [hasm]; exact AStep.label
-  · refine exec_sim hnodup₀ hwf hpl hexec none liveIn paired sym0 n n' frag tail
-      (ToAsm.mkLabelMap P).endLabel [] [] hpair hrest ?_ ?_
-    · rw [hsym]; exact StkMatch.nil
-    · rw [hend]; rfl
+omit model in
+theorem emitBlock_head {P : Prog} {L : ToAsm.LabelMap} {fidx : Option Nat}
+    {f : Func} {liveIn : Array (List ValId)} {bid : BlockId} {b : Block}
+    {n n' : Nat} {fr : List Asm}
+    (h : ToAsm.emitBlock P L fidx f liveIn bid b n = some (fr, n')) :
+    ∃ frag, fr = Asm.label (ToAsm.blkLabel L fidx bid) :: frag := by
+  rw [ToAsm.emitBlock] at h
+  dsimp only at h
+  obtain ⟨⟨body, symEnd⟩, n₁, hfold, h2⟩ := E_bind_inv h
+  obtain ⟨tasm, n₂, hterm, h3⟩ := E_bind_inv h2
+  obtain ⟨heq, -⟩ := E_pure_inv2 h3
+  exact ⟨body ++ tasm, by rw [← heq]; simp⟩
+
+omit model in
+theorem emitFunc_inv {P : Prog} {L : ToAsm.LabelMap} {fidx : Option Nat}
+    {f : Func} {n : Nat} {code : List Asm} {n' : Nat}
+    (h : ToAsm.emitFunc P L fidx f n = some (code, n')) :
+    f.entry = 0 ∧ ∃ liveIn, ToAsm.liveInSets f = some liveIn ∧
+      (((List.range f.blocks.size).zip f.blocks.toList).foldlM (init := ([] : List Asm))
+        (fun acc (p : Nat × Block) => do
+          let a ← ToAsm.emitBlock P L fidx f liveIn p.1 p.2
+          pure (acc ++ a))) n = some (code, n') := by
+  rw [ToAsm.emitFunc] at h
+  dsimp only at h
+  split at h
+  · exact absurd h (by simp [ToAsm.liftE])
+  · rename_i hne
+    obtain ⟨liveIn, hlive, h2⟩ := liftE_bind_inv h
+    split at h2
+    · exact absurd h2 (by simp [ToAsm.liftE])
+    · exact ⟨not_ne_iff.mp hne, liveIn, hlive, h2⟩
+
+omit model in
+theorem emitProg_inv {P : Prog} {asm : List Asm} (h : ToAsm.emitProg P = some asm) :
+    ∃ (asmMain asmFns : List Asm) (n₁ n₂ : Nat),
+      ToAsm.emitFunc P (ToAsm.mkLabelMap P) none P.main
+          ((ToAsm.mkLabelMap P).endLabel + 1) = some (asmMain, n₁)
+      ∧ (((List.range P.funcs.size).zip P.funcs.toList).foldlM (init := ([] : List Asm))
+          (fun acc (p : Nat × Func) => do
+            let a ← ToAsm.emitFunc P (ToAsm.mkLabelMap P) (some p.1) p.2
+            pure (acc ++ a))) n₁ = some (asmFns, n₂)
+      ∧ asm = ToAsm.elideJumps
+          (asmMain ++ asmFns ++ [Asm.label (ToAsm.mkLabelMap P).endLabel]) := by
+  rw [ToAsm.emitProg] at h
+  dsimp only at h
+  split at h
+  · exact absurd h (by simp)
+  · obtain ⟨⟨asm₀, k⟩, hbuild, hsome⟩ := Option.bind_eq_some_iff.mp h
+    obtain ⟨asmMain, n₁, hmain, hb2⟩ := E_bind_inv hbuild
+    obtain ⟨asmFns, n₂, hfns, hb3⟩ := E_bind_inv hb2
+    obtain ⟨heq, -⟩ := E_pure_inv2 hb3
+    exact ⟨asmMain, asmFns, n₁, n₂, hmain, hfns, by
+      rw [← Option.some.inj hsome, heq]⟩
+omit model in
+theorem zip_range_mem {α : Type} {l : List α} {i k : Nat} {x : α}
+    (hx : l[i]? = some x) (hk : i < k) : (i, x) ∈ (List.range k).zip l := by
+  refine List.mem_of_getElem? (i := i) ?_
+  rw [List.getElem?_zip_eq_some]
+  exact ⟨by simpa using List.getElem?_range hk, hx⟩
+
+omit model in
+private theorem foldlM_grow {α : Type} (emit : α → ToAsm.E (List Asm)) :
+    ∀ (l : List α) (acc0 : List Asm) (n : Nat) (code : List Asm) (n' : Nat),
+      (l.foldlM (init := acc0) (fun acc a => do let x ← emit a; pure (acc ++ x))) n
+        = some (code, n') → ∃ ops, code = acc0 ++ ops := by
+  intro l
+  induction l with
+  | nil =>
+    intro acc0 n code n' h
+    rw [List.foldlM_nil] at h
+    obtain ⟨rfl, -⟩ := E_pure_inv2 h
+    exact ⟨[], by simp⟩
+  | cons a rest ih =>
+    intro acc0 n code n' h
+    rw [List.foldlM_cons] at h
+    obtain ⟨acc1, m, hstep, htail⟩ := E_bind_inv h
+    obtain ⟨fr, m', he, hp⟩ := E_bind_inv hstep
+    obtain ⟨rfl, rfl⟩ := E_pure_inv2 hp
+    obtain ⟨ops, rfl⟩ := ih _ _ _ _ htail
+    exact ⟨fr ++ ops, by simp⟩
+
+omit model in
+private theorem foldlM_split {α : Type} (emit : α → ToAsm.E (List Asm)) :
+    ∀ (l : List α) (acc0 : List Asm) (n : Nat) (code : List Asm) (n' : Nat),
+      (l.foldlM (init := acc0) (fun acc a => do let x ← emit a; pure (acc ++ x))) n
+        = some (code, n') →
+      ∀ a ∈ l, ∃ (m m' : Nat) (fr pre post : List Asm),
+        emit a m = some (fr, m') ∧ code = pre ++ (fr ++ post) := by
+  intro l
+  induction l with
+  | nil => intro acc0 n code n' h a ha; simp at ha
+  | cons a0 rest ih =>
+    intro acc0 n code n' h a ha
+    rw [List.foldlM_cons] at h
+    obtain ⟨acc1, m, hstep, htail⟩ := E_bind_inv h
+    obtain ⟨fr0, m', he0, hp⟩ := E_bind_inv hstep
+    obtain ⟨rfl, rfl⟩ := E_pure_inv2 hp
+    rcases List.mem_cons.mp ha with rfl | ha'
+    · obtain ⟨ops, rfl⟩ := foldlM_grow emit rest _ _ _ _ htail
+      exact ⟨_, _, fr0, acc0, ops, he0, by simp⟩
+    · exact ih _ _ _ _ htail a ha'
+
+
+omit model in
+private theorem foldlM_head {α : Type} (emit : α → ToAsm.E (List Asm))
+    (a0 : α) (rest : List α) (n : Nat) (code : List Asm) (n' : Nat)
+    (h : ((a0 :: rest).foldlM (init := ([] : List Asm))
+      (fun acc a => do let x ← emit a; pure (acc ++ x))) n = some (code, n')) :
+    ∃ m' fr post, emit a0 n = some (fr, m') ∧ code = fr ++ post := by
+  rw [List.foldlM_cons] at h
+  obtain ⟨acc1, m, hstep, htail⟩ := E_bind_inv h
+  obtain ⟨fr, m', he, hp⟩ := E_bind_inv hstep
+  obtain ⟨rfl, rfl⟩ := E_pure_inv2 hp
+  obtain ⟨ops, hcode⟩ := foldlM_grow emit rest _ _ _ _ htail
+  exact ⟨_, fr, ops, he, by rw [hcode]; simp⟩
+
+omit model in
+private theorem placed_of_split (pre : List Asm) {lbl : Label}
+    {asm₀ frag post : List Asm} (hnd : (labelDefs asm₀).Nodup)
+    (hsplit : asm₀ = pre ++ (Asm.label lbl :: frag) ++ post) :
+    findLabel lbl asm₀ = some (frag ++ post) := by
+  have h2 : asm₀ = pre ++ Asm.label lbl :: (frag ++ post) := by rw [hsplit]; simp
+  rw [h2]; exact findLabel_boundary (by rw [← h2]; exact hnd)
+
+/-- **`emitProg` places its fragments**: the accepted program is the elision of
+a raw emission in which every block's body sits right after its label, the
+terminal label is last, and `main`'s entry label is first — the `SimAsm.lean`
+Phase-A bookkeeping (fragment concatenation plus `findLabel_boundary` from
+`Nodup`), specialized to one fragment per basic block. -/
+omit model in
+theorem emitProg_placement {P : Prog} {asm : List Asm}
+    (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
+    (hemit : ToAsm.emitProg P = some asm) :
+    ∃ asm₀ : List Asm, asm = ToAsm.elideJumps asm₀ ∧ Placement P asm₀ := by
+  obtain ⟨asmMain, asmFns, n₁, n₂, hmain, hfns, rfl⟩ := emitProg_inv hemit
+  have hnd0 : (labelDefs (asmMain ++ asmFns
+      ++ [Asm.label (ToAsm.mkLabelMap P).endLabel])).Nodup := by
+    rwa [ToAsm.labelDefs_elideJumps] at hnodup
+  obtain ⟨hentry, liveIn, hlive, hfoldB⟩ := emitFunc_inv hmain
+  -- `main` well-formedness: the entry block exists
+  have hmainwf : P.main.wfCheck P.funcs.size = true := by
+    simp only [Prog.wfCheck, Bool.and_eq_true] at hwf
+    exact hwf.1.2
+  have hsize : 0 < P.main.blocks.size := by
+    simp only [Func.wfCheck, Bool.and_eq_true, decide_eq_true_eq] at hmainwf
+    have h1 : P.main.entry < P.main.blocks.size := hmainwf.1.1.2
+    rw [hentry] at h1
+    exact h1
+  refine ⟨_, rfl, ⟨liveIn, hlive, ?_⟩, ?_, ?_, ?_⟩
+  · -- every block of `main` is placed
+    intro bid b hb
+    have htl : P.main.blocks.toList[bid]? = some b := Array.getElem?_toList.trans hb
+    have hbid : bid < P.main.blocks.size := by
+      obtain ⟨hlt, -⟩ := List.getElem?_eq_some_iff.mp htl
+      simpa using hlt
+    obtain ⟨m, m', fr, pre, post, hblk, hcode⟩ :=
+      foldlM_split _ _ _ _ _ _ hfoldB _ (zip_range_mem htl hbid)
+    obtain ⟨frag, rfl⟩ := emitBlock_head hblk
+    exact ⟨m, m', frag, post ++ asmFns ++ [Asm.label (ToAsm.mkLabelMap P).endLabel],
+      hblk, placed_of_split pre hnd0 (by rw [hcode]; simp)⟩
+  · -- every block of every function is placed
+    intro i g hg
+    have htlF : P.funcs.toList[i]? = some g := Array.getElem?_toList.trans hg
+    have hi : i < P.funcs.size := by
+      obtain ⟨hlt, -⟩ := List.getElem?_eq_some_iff.mp htlF
+      simpa using hlt
+    obtain ⟨mf, mf', frg, preF, postF, hfn, hcodeF⟩ :=
+      foldlM_split _ _ _ _ _ _ hfns _ (zip_range_mem htlF hi)
+    obtain ⟨hentryg, liveIng, hliveg, hfoldBg⟩ := emitFunc_inv hfn
+    refine ⟨liveIng, hliveg, ?_⟩
+    intro bid b hb
+    have htl : g.blocks.toList[bid]? = some b := Array.getElem?_toList.trans hb
+    have hbid : bid < g.blocks.size := by
+      obtain ⟨hlt, -⟩ := List.getElem?_eq_some_iff.mp htl
+      simpa using hlt
+    obtain ⟨m, m', fr, pre, post, hblk, hcode⟩ :=
+      foldlM_split _ _ _ _ _ _ hfoldBg _ (zip_range_mem htl hbid)
+    obtain ⟨frag, rfl⟩ := emitBlock_head hblk
+    exact ⟨m, m', frag, post ++ postF ++ [Asm.label (ToAsm.mkLabelMap P).endLabel],
+      hblk, placed_of_split (asmMain ++ preF ++ pre) hnd0 (by rw [hcodeF, hcode]; simp)⟩
+  · -- the terminal label is last
+    exact placed_of_split (asmMain ++ asmFns) (frag := []) (post := []) hnd0 (by simp)
+  · -- `main`'s entry label heads the program
+    obtain ⟨s, hs⟩ : ∃ s, P.main.blocks.size = s + 1 := ⟨P.main.blocks.size - 1, by omega⟩
+    obtain ⟨b₀, restB, htlm⟩ := List.exists_cons_of_ne_nil
+      (l := P.main.blocks.toList) (by
+        have hlen : P.main.blocks.toList.length = P.main.blocks.size := by simp
+        intro hnil; rw [hnil] at hlen; simp at hlen; omega)
+    rw [hs, List.range_succ_eq_map, htlm, List.zip_cons_cons] at hfoldB
+    obtain ⟨m', fr, post, hblk0, hcode0⟩ := foldlM_head _ _ _ _ _ _ hfoldB
+    obtain ⟨frag0, rfl⟩ := emitBlock_head hblk0
+    exact ⟨frag0 ++ post ++ asmFns ++ [Asm.label (ToAsm.mkLabelMap P).endLabel],
+      by rw [hcode0, hentry]; simp⟩
 
 /-! ## The codegen simulation
 
@@ -1052,7 +1312,7 @@ theorem emitProg_asteps' {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
     (hemit : ToAsm.emitProg P = some asm)
     (hrun : Run (model := model) P yst0 yst' .normal) :
     ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ := by
-  obtain ⟨asm₀, rfl, hpl⟩ := emitProg_placement hwf hemit
+  obtain ⟨asm₀, rfl, hpl⟩ := emitProg_placement hnodup hwf hemit
   have hnodup₀ : (labelDefs asm₀).Nodup := by
     rwa [ToAsm.labelDefs_elideJumps] at hnodup
   cases hrun with
@@ -1072,7 +1332,7 @@ theorem emitProg_ahalt' {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
     (hrun : Run (model := model) P yst0 yst' .halt) :
     ∃ conf, ASteps (model := model) asm ⟨asm, [], yst0⟩ conf ∧
       AHalt (model := model) asm conf yst' := by
-  obtain ⟨asm₀, rfl, hpl⟩ := emitProg_placement hwf hemit
+  obtain ⟨asm₀, rfl, hpl⟩ := emitProg_placement hnodup hwf hemit
   have hnodup₀ : (labelDefs asm₀).Nodup := by
     rwa [ToAsm.labelDefs_elideJumps] at hnodup
   cases hrun with
