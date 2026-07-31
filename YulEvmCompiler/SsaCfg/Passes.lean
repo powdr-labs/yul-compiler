@@ -1,4 +1,5 @@
 import YulEvmCompiler.SsaCfg.Ir
+import YulEvmCompiler.SsaCfg.ToAsm
 import Std.Data.HashMap
 import Std.Data.HashSet
 set_option warningAsError true
@@ -377,6 +378,6 @@ def optimizeFunc (f : Func) : Func := Id.run do
 never a miscompilation. -/
 def optimizeProg (P : Prog) : Prog :=
   let P' : Prog := { main := optimizeFunc P.main, funcs := P.funcs.map optimizeFunc }
-  if P'.wfCheck then P' else P
+  if P'.wfCheck && ToAsm.Prog.domCheck P' then P' else P
 
 end YulEvmCompiler.SsaCfg

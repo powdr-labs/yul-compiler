@@ -61,6 +61,34 @@ theorem drop : ∀ (n : Nat) {a : List α} {b : List β},
     | nil => simp
     | cons hh ht => simpa using ih ht
 
+/-- An all-or-nothing `mapM` succeeds exactly when it succeeds pointwise. Used
+for both `Regs.getMany` (`mapM R`) and `edgeArgs` (`mapM env.get`). -/
+theorem mapM_eq_some_iff {f : α → Option β} :
+    ∀ {xs : List α} {ys : List β},
+      xs.mapM f = some ys ↔ List.Forall₂ (fun x y => f x = some y) xs ys := by
+  intro xs ys
+  constructor
+  · induction xs generalizing ys with
+    | nil => intro h; simp only [List.mapM_nil, Option.pure_def] at h
+             cases h; exact .nil
+    | cons x xs ih =>
+      intro h
+      rw [List.mapM_cons] at h
+      cases hx : f x with
+      | none => rw [hx] at h; simp at h
+      | some y =>
+        rw [hx] at h
+        cases hxs : xs.mapM f with
+        | none => rw [hxs] at h; simp at h
+        | some ws =>
+          rw [hxs] at h
+          obtain rfl : ys = y :: ws := by simpa using h.symm
+          exact .cons hx (ih hxs)
+  · intro h
+    induction h with
+    | nil => rfl
+    | cons hh _ ih => rw [List.mapM_cons, hh, ih]; simp
+
 end Forall2
 
 /-! ## Register files
@@ -445,6 +473,20 @@ theorem zip_bindZeros {R : Regs} : ∀ {xs : List Ident} {is : List ValId},
       exact List.Forall₂.cons ⟨rfl, hz i (List.mem_cons_self ..)⟩
         (ih (by simpa using hlen) (fun j hj => hz j (List.mem_cons_of_mem _ hj)))
 
+/-- Pointwise version of `edgeArgs`' payoff. -/
+theorem edge_vals {env : VMap} {V : VEnv yulD} {R : Regs} (henv : EnvOK env V R) :
+    ∀ {xs : List Ident} {ids : List ValId},
+      List.Forall₂ (fun x i => VMap.get env x = some i) xs ids →
+      ∃ vals, R.getMany ids = some vals
+        ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V x = some v) xs vals := by
+  intro xs ids h
+  induction h with
+  | nil => exact ⟨[], rfl, .nil⟩
+  | @cons x i xs' ids' hh _ ih =>
+    obtain ⟨v, hv, hRi⟩ := henv.get hh
+    obtain ⟨vals, hvals, hf⟩ := ih
+    exact ⟨v :: vals, by rw [Regs.getMany_cons, hRi, hvals]; simp, .cons hv hf⟩
+
 end EnvOK
 
 end Correspondence
@@ -604,15 +646,37 @@ theorem some_pair_inj {α : Type} {a b : α} {s t : BState}
     (h : (some (a, s) : Option (α × BState)) = some (b, t)) : a = b ∧ s = t :=
   ⟨congrArg Prod.fst (Option.some.inj h), congrArg Prod.snd (Option.some.inj h)⟩
 
+/-- Invert `do let a ← x; pure (f a)`, which the elaborator compiles to a
+`Functor.map` rather than a `bind`. -/
+theorem map_inv {α β : Type} {f : α → β} {x : M α} {s : BState} {b : β}
+    {s' : BState} (h : (f <$> x) s = some (b, s')) :
+    ∃ a, x s = some (a, s') ∧ b = f a := by
+  have h' : (x s).bind (fun p => some (f p.1, p.2)) = some (b, s') := h
+  cases hx : x s with
+  | none => rw [hx] at h'; exact absurd h' (by simp)
+  | some p =>
+    rw [hx] at h'
+    simp only [Option.bind_some] at h'
+    obtain ⟨rfl, rfl⟩ := some_pair_inj h'
+    exact ⟨p.1, rfl, rfl⟩
+
+/-- Invert the `if <ok> then k else reject` form (`trExprN`'s arity gate). -/
+theorem ite_reject_inv' {α : Type} {c : Prop} [Decidable c] {k : M α}
+    {s : BState} {r : α × BState}
+    (h : (if c then k else (reject : M α)) s = some r) : c ∧ k s = some r := by
+  by_cases hc : c
+  · exact ⟨hc, by rw [if_pos hc] at h; exact h⟩
+  · rw [if_neg hc] at h; exact absurd h (by simp)
+
 end M
 
 /-! ## Freshness: the builder only allocates
 
 `Grows s s'` records everything an *expression*-level translation step can do to
 the builder state: raise `nextVal` and prepend to the current block's pending
-instruction list. Nothing already written moves, and in particular every id an
-expression defines is at least the incoming `nextVal` — which is what makes
-`Regs.Le` (and hence `EnvOK.mono`) available at every step. -/
+instruction list. Nothing already written moves, and every id an expression
+defines is at least the incoming `nextVal` — which is what makes `Regs.Le` (and
+hence `EnvOK.mono`) available at every step. -/
 
 /-- The builder state grew: `nextVal` rose, instructions were prepended to the
 current block, and nothing else changed. -/
@@ -635,40 +699,43 @@ theorem trans {s₁ s₂ s₃ : BState} (h₁ : Grows s₁ s₂) (h₂ : Grows s
     h₁.curId.trans h₂.curId, h₁.funcs.trans h₂.funcs,
     ⟨Δ₂ ++ Δ₁, by rw [e₂, e₁, List.append_assoc]⟩⟩
 
-theorem freshVal {s s' : BState} {v : ValId} (h : freshVal s = some (v, s')) :
-    Grows s s' := by
+theorem of_freshVal {s s' : BState} {v : ValId}
+    (h : SsaCfg.freshVal s = some (v, s')) : Grows s s' := by
   rw [M.freshVal_apply] at h
   obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
   exact ⟨Nat.le_succ _, rfl, rfl, rfl, ⟨[], rfl⟩⟩
 
 /-- The allocated id is exactly the old `nextVal`, and the new one is one more:
-the fact that makes freshly allocated ids provably absent from any register
+the fact that makes a freshly allocated id provably absent from any register
 file built from earlier ids. -/
-theorem freshVal_spec {s s' : BState} {v : ValId} (h : freshVal s = some (v, s')) :
+theorem freshVal_spec {s s' : BState} {v : ValId}
+    (h : SsaCfg.freshVal s = some (v, s')) :
     v = s.fn.nextVal ∧ s'.fn.nextVal = s.fn.nextVal + 1 := by
   rw [M.freshVal_apply] at h
   obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
   exact ⟨rfl, rfl⟩
 
-theorem emit {i : Instr} {s s' : BState} {u : Unit} (h : emit i s = some (u, s')) :
-    Grows s s' := by
+theorem of_emit {i : Instr} {s s' : BState} {u : Unit}
+    (h : SsaCfg.emit i s = some (u, s')) : Grows s s' := by
   rw [M.emit_apply] at h
   obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
   exact ⟨Nat.le_refl _, rfl, rfl, rfl, ⟨[i], rfl⟩⟩
 
-theorem liftO {α : Type} {o : Option α} {a : α} {s s' : BState}
-    (h : (liftO o : M α) s = some (a, s')) : Grows s s' := by
+theorem of_liftO {α : Type} {o : Option α} {a : α} {s s' : BState}
+    (h : (SsaCfg.liftO o : M α) s = some (a, s')) : Grows s s' := by
   obtain ⟨-, rfl⟩ := M.liftO_inv h
-  exact rfl' s
+  exact rfl' _
 
-theorem pure' {α : Type} {a b : α} {s s' : BState}
+theorem of_pure {α : Type} {a b : α} {s s' : BState}
     (h : (pure a : M α) s = some (b, s')) : Grows s s' := by
   obtain ⟨-, rfl⟩ := M.pure_inv h
-  exact rfl' s
+  exact rfl' _
 
 /-- `mapM freshVal` grows. -/
-theorem mapM_freshVal {α : Type} {xs : List α} {s s' : BState} {ids : List ValId}
-    (h : (xs.mapM (fun _ => freshVal)) s = some (ids, s')) : Grows s s' := by
+theorem of_mapM_freshVal {α : Type} {xs : List α} {s s' : BState}
+    {ids : List ValId}
+    (h : (xs.mapM (fun _ => SsaCfg.freshVal)) s = some (ids, s')) :
+    Grows s s' := by
   obtain ⟨-, -, rfl⟩ := M.mapM_freshVal_length h
   exact ⟨by simp, rfl, rfl, rfl, ⟨[], rfl⟩⟩
 
@@ -687,34 +754,34 @@ theorem trExpr_grows : ∀ (e : Expr Op) (fenv : FMap) (env : VMap) (s s' : BSta
     rw [trExpr] at h
     obtain ⟨v, s₁, h1, h⟩ := M.bind_inv h
     obtain ⟨u, s₂, h2, h3⟩ := M.bind_inv h
-    exact (Grows.freshVal h1).trans ((Grows.emit h2).trans (Grows.pure' h3))
+    exact (Grows.of_freshVal h1).trans ((Grows.of_emit h2).trans (Grows.of_pure h3))
   · intro x fenv env s s' i h
     rw [trExpr] at h
-    exact Grows.liftO h
+    exact Grows.of_liftO h
   · intro op args ih fenv env s s' i h
     rw [trExpr] at h
     obtain ⟨as, s₁, h1, h⟩ := M.bind_inv h
     obtain ⟨d, s₂, h2, h⟩ := M.bind_inv h
     obtain ⟨u, s₃, h3, h4⟩ := M.bind_inv h
     exact (ih fenv env s s₁ as h1).trans
-      ((Grows.freshVal h2).trans ((Grows.emit h3).trans (Grows.pure' h4)))
+      ((Grows.of_freshVal h2).trans ((Grows.of_emit h3).trans (Grows.of_pure h4)))
   · intro fn args ih fenv env s s' i h
     rw [trExpr] at h
     obtain ⟨as, s₁, h1, h⟩ := M.bind_inv h
     obtain ⟨fid, s₂, h2, h⟩ := M.bind_inv h
     obtain ⟨d, s₃, h3, h⟩ := M.bind_inv h
     obtain ⟨u, s₄, h4, h5⟩ := M.bind_inv h
-    exact (ih fenv env s s₁ as h1).trans ((Grows.liftO h2).trans
-      ((Grows.freshVal h3).trans ((Grows.emit h4).trans (Grows.pure' h5))))
+    exact (ih fenv env s s₁ as h1).trans ((Grows.of_liftO h2).trans
+      ((Grows.of_freshVal h3).trans ((Grows.of_emit h4).trans (Grows.of_pure h5))))
   · intro fenv env s s' ids h
     rw [trArgs] at h
-    exact Grows.pure' h
+    exact Grows.of_pure h
   · intro e rest ihrest ihe fenv env s s' ids h
     rw [trArgs] at h
     obtain ⟨restIds, s₁, h1, h⟩ := M.bind_inv h
     obtain ⟨i, s₂, h2, h3⟩ := M.bind_inv h
     exact (ihrest fenv env s s₁ restIds h1).trans
-      ((ihe fenv env s₁ s₂ i h2).trans (Grows.pure' h3))
+      ((ihe fenv env s₁ s₂ i h2).trans (Grows.of_pure h3))
 
 /-- **Argument-list translation only allocates.** -/
 theorem trArgs_grows : ∀ (es : List (Expr Op)) (fenv : FMap) (env : VMap)
@@ -730,16 +797,16 @@ theorem trArgs_grows : ∀ (es : List (Expr Op)) (fenv : FMap) (env : VMap)
     (fun fn args _ => trExpr_grows (.call fn args)) ?_ ?_
   · intro fenv env s s' ids h
     rw [trArgs] at h
-    exact Grows.pure' h
+    exact Grows.of_pure h
   · intro e rest ihrest ihe fenv env s s' ids h
     rw [trArgs] at h
     obtain ⟨restIds, s₁, h1, h⟩ := M.bind_inv h
     obtain ⟨i, s₂, h2, h3⟩ := M.bind_inv h
     exact (ihrest fenv env s s₁ restIds h1).trans
-      ((ihe fenv env s₁ s₂ i h2).trans (Grows.pure' h3))
+      ((ihe fenv env s₁ s₂ i h2).trans (Grows.of_pure h3))
 
 /-- **Statement-level right-hand sides only allocate** (`trExprN` is `trArgs`
-plus one `emit`, or a single `trExpr`). -/
+plus one `emit` for a user call, and a single `trExpr` otherwise). -/
 theorem trExprN_grows {fenv : FMap} {env : VMap} {n : Nat} {e : Expr Op}
     {s s' : BState} {ids : List ValId}
     (h : trExprN fenv env n e s = some (ids, s')) : Grows s s' := by
@@ -750,30 +817,49 @@ theorem trExprN_grows {fenv : FMap} {env : VMap} {n : Nat} {e : Expr Op}
     obtain ⟨fid, s₂, h2, h⟩ := M.bind_inv h
     obtain ⟨ds, s₃, h3, h⟩ := M.bind_inv h
     obtain ⟨u, s₄, h4, h5⟩ := M.bind_inv h
-    exact (trArgs_grows args fenv env s s₁ as h1).trans ((Grows.liftO h2).trans
-      ((Grows.mapM_freshVal h3).trans ((Grows.emit h4).trans (Grows.pure' h5))))
+    exact (trArgs_grows args fenv env s s₁ as h1).trans ((Grows.of_liftO h2).trans
+      ((Grows.of_mapM_freshVal h3).trans
+        ((Grows.of_emit h4).trans (Grows.of_pure h5))))
   | lit l =>
     rw [trExprN] at h
-    obtain ⟨-, h⟩ := M.ite_reject_inv (c := ¬ n = 1) (by
-      simpa using h)
-    obtain ⟨v, s₁, h1, h2⟩ := M.bind_inv h
-    exact (trExpr_grows (.lit l) fenv env s s₁ v h1).trans (Grows.pure' h2)
+    · obtain ⟨-, h⟩ := M.ite_reject_inv' h
+      obtain ⟨v, s₁, h1, h2⟩ := M.bind_inv h
+      exact (trExpr_grows (.lit l) fenv env s s₁ v h1).trans (Grows.of_pure h2)
+    · intro fn' args' hc
+      simp at hc
   | var x =>
     rw [trExprN] at h
-    obtain ⟨-, h⟩ := M.ite_reject_inv (c := ¬ n = 1) (by simpa using h)
-    obtain ⟨v, s₁, h1, h2⟩ := M.bind_inv h
-    exact (trExpr_grows (.var x) fenv env s s₁ v h1).trans (Grows.pure' h2)
+    · obtain ⟨-, h⟩ := M.ite_reject_inv' h
+      obtain ⟨v, s₁, h1, h2⟩ := M.bind_inv h
+      exact (trExpr_grows (.var x) fenv env s s₁ v h1).trans (Grows.of_pure h2)
+    · intro fn' args' hc
+      simp at hc
   | builtin op args =>
     rw [trExprN] at h
-    obtain ⟨-, h⟩ := M.ite_reject_inv (c := ¬ n = 1) (by simpa using h)
-    obtain ⟨v, s₁, h1, h2⟩ := M.bind_inv h
-    exact (trExpr_grows (.builtin op args) fenv env s s₁ v h1).trans
-      (Grows.pure' h2)
+    · obtain ⟨-, h⟩ := M.ite_reject_inv' h
+      obtain ⟨v, s₁, h1, h2⟩ := M.bind_inv h
+      exact (trExpr_grows (.builtin op args) fenv env s s₁ v h1).trans (Grows.of_pure h2)
+    · intro fn' args' hc
+      simp at hc
 
 section Semantics
 
 variable [model : ExternalModel]
 local notation "yulD" => evmWithExternal model.calls model.creates
+
+/-- **`edgeArgs` carries the right values.** The ids an edge passes read back,
+through `EnvOK`, as exactly the values the source environment records for those
+names. This is the fact behind every join edge and every non-local exit
+(`break`/`continue`/`leave`): the values the target block's parameters receive
+agree with the source configuration at the jump. -/
+theorem edgeArgs_ok {env : VMap} {V : VEnv yulD} {R : Regs} {xs : List Ident}
+    {ids : List ValId} {s s' : BState}
+    (henv : EnvOK (model := model) env V R)
+    (h : edgeArgs env xs s = some (ids, s')) :
+    s' = s ∧ ∃ vals, R.getMany ids = some vals
+      ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V x = some v) xs vals := by
+  obtain ⟨hm, rfl⟩ := M.edgeArgs_inv h
+  exact ⟨rfl, EnvOK.edge_vals henv (Forall2.mapM_eq_some_iff.mp hm)⟩
 
 /-! ## Dialect facts the construction relies on -/
 
@@ -1273,11 +1359,30 @@ needs the `M.bind_inv` decomposition of the corresponding `trX` equation, the
 freshness facts of `M.mapM_freshVal` to see that every emitted id is fresh (so
 `Regs.Le` is preserved — `Regs.Le.set`/`Regs.Le.setMany`), `EnvOK`'s
 `get`/`set`/`setMany`/`zip`/`restore` lemmas for the environment, `FMap.get_ok`
-for calls, and `isHaltingOp_halts` for the `exprStmt` halt seal. `Extends`
-supplies the placement facts about sealed blocks; it must be strengthened to
-"blocks reserved but not yet current keep their parameters" inside the `cond`,
-`switch` and `forLoop` cases, where a join/exit block is reserved before the
-blocks that jump to it are sealed.
+for calls, and `isHaltingOp_halts` for the `exprStmt` halt seal.
+
+Three sub-obligations the induction still needs, none of them stated here:
+
+1. **`modStmts` over-approximation.** If a source statement list, run from `V`,
+   ends in `V'`, then every name whose value differs between `V` and `V'` is in
+   `modStmts locals ss`. This is what licenses `cond`/`switch`/`forLoop` to
+   thread only `modifiedX env bodies` through their join/header/exit parameters
+   and to keep the *old* `ValId` for every other variable — the register file
+   persists, and an unmodified variable's id still holds its value. Missing
+   names would be unsound; extra ones are harmless (both edges pass the same
+   value).
+2. **`Grows` for the statement classes.** `trStmt`/`trStmts`/`trScope`/`trCases`
+   raise `nextVal` and only ever `set!` the block they are currently filling
+   (`trFunc` additionally saves and restores `fn`, so it grows only `funcs`).
+   Provable by the mutual induction `trStmt.induct` provides, from the
+   `Grows` lemmas above and `trExpr_grows`/`trArgs_grows`.
+3. **Strengthening `Extends`.** As stated it says "every laid-down block other
+   than the current one is final". That is the invariant at every
+   `trStmt`/`trStmts`/`trScope` boundary (the construction always seals the
+   block it leaves before `moveTo`), but *inside* the `cond`, `switch` and
+   `forLoop` cases a join/exit block is reserved before the blocks that jump to
+   it are sealed, so the induction must also carry "a reserved block keeps its
+   parameters", which is the second `Extends` field generalized to all indices.
 
 Nothing below this point depends on how the induction is organized: the
 statement is used only through the top-level specialization in

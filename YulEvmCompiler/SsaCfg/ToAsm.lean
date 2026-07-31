@@ -107,6 +107,25 @@ where
       let next := liveStep f cur
       if next == cur then some cur else go fuel next
 
+/-- **The dominance check** (decidable): under single assignment, every use
+is dominated by its definition **iff** no value is live into the entry block
+beyond the function's parameters — a non-dominated use induces a
+definition-free path from entry, which backward liveness propagates all the
+way up. This matters because registers persist across blocks and block
+parameters are re-bound on every visit: a non-dominated use is *not* stuck,
+it reads a stale binding — so the SSA optimization passes (trivial-parameter
+elimination, CSE) are only sound on programs passing this check
+(`SsaCfg/PassesSound.lean` has the kernel-checked counterexample without
+it). -/
+def Func.domCheck (f : Func) : Bool :=
+  match liveInSets f with
+  | some li => diffS (li[f.entry]?.getD []) f.params = []
+  | none => false
+
+/-- `Func.domCheck` over the whole program. -/
+def Prog.domCheck (P : Prog) : Bool :=
+  Func.domCheck P.main && P.funcs.all Func.domCheck
+
 /-! ## The greedy checked shuffler -/
 
 def countOcc (σ : List SSlot) (s : SSlot) : Nat :=

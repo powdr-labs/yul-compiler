@@ -54,7 +54,7 @@ theorem ofBlock_sound {prog : YulSemantics.Block Op} {P : Prog}
 /-- **SSA pass soundness** (proof in progress): the optimization pipeline
 preserves SSA executions of well-formed programs. -/
 theorem optimizeProg_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
-    (hwf : P.wfCheck = true)
+    (hwf : P.wfCheck = true) (hdom : ToAsm.Prog.domCheck P = true)
     (hrun : Run (model := model) P yst0 yst' o) :
     Run (model := model) (optimizeProg P) yst0 yst' o := by
   sorry
@@ -85,12 +85,12 @@ pipeline output only when that output re-checks, and the original
 otherwise. -/
 theorem optimizeProg_wf {P : Prog} (hwf : P.wfCheck = true) :
     (optimizeProg P).wfCheck = true := by
-  unfold optimizeProg
-  by_cases h : (Prog.wfCheck
-      { main := optimizeFunc P.main, funcs := P.funcs.map optimizeFunc })
-  · simp only [h, if_true]
-  · simp only [h, if_false]
-    exact hwf
+  simp only [optimizeProg]
+  split
+  · next h =>
+    have := (Bool.and_eq_true _ _).mp h
+    exact this.1
+  · exact hwf
 
 omit model in
 /-- Invert a successful `finishProg` into the shared final gates. -/
@@ -122,25 +122,33 @@ theorem compileViaSsa_inv {prog : YulSemantics.Block Op}
     (h : compileViaSsa prog = some is) :
     ∃ (P Q : Prog),
       ofBlock prog = some P
+      ∧ ToAsm.Prog.domCheck P = true
       ∧ (Q = optimizeProg P ∨ Q = P)
       ∧ finishProg Q = some is := by
   unfold compileViaSsa at h
   rcases hof : ofBlock prog with _ | P <;> rw [hof] at h
   · exact absurd h (by simp)
   simp only [bind, Option.bind] at h
+  by_cases hdom : ToAsm.Prog.domCheck P
+  case neg =>
+    rw [Bool.not_eq_true] at hdom
+    rw [hdom] at h
+    simp at h
+  rw [hdom] at h
+  simp only [Bool.not_true, Bool.false_eq_true, if_false] at h
   split at h
   · rename_i a b h1 h2
     split at h
     · obtain rfl := Option.some.inj h
-      exact ⟨P, optimizeProg P, rfl, Or.inl rfl, h1⟩
+      exact ⟨P, optimizeProg P, rfl, hdom, Or.inl rfl, h1⟩
     · obtain rfl := Option.some.inj h
-      exact ⟨P, P, rfl, Or.inr rfl, h2⟩
+      exact ⟨P, P, rfl, hdom, Or.inr rfl, h2⟩
   · rename_i a h1 h2
     obtain rfl := Option.some.inj h
-    exact ⟨P, optimizeProg P, rfl, Or.inl rfl, h1⟩
+    exact ⟨P, optimizeProg P, rfl, hdom, Or.inl rfl, h1⟩
   · rename_i b h1 h2
     obtain rfl := Option.some.inj h
-    exact ⟨P, P, rfl, Or.inr rfl, h2⟩
+    exact ⟨P, P, rfl, hdom, Or.inr rfl, h2⟩
   · exact absurd h (by simp)
 
 /-- **The shared gate composition is correct** for any SSA program whose
@@ -224,12 +232,12 @@ theorem compileViaSsa_correct (hexternal : ExternalsRealized model)
       ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst' s' ∧
         ((o = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
          (o = .halt ∧ HaltedMatch yst' s')) := by
-  obtain ⟨P, Q, hof, hQ, hfin⟩ := compileViaSsa_inv hcomp
+  obtain ⟨P, Q, hof, hdom, hQ, hfin⟩ := compileViaSsa_inv hcomp
   have hbase : Run (model := model) P yst0 yst' o := ofBlock_sound hof hrun
   have hPwf : P.wfCheck = true := ofBlock_wfCheck hof
   have hssa : Run (model := model) Q yst0 yst' o := by
     rcases hQ with rfl | rfl
-    · exact optimizeProg_sound hPwf hbase
+    · exact optimizeProg_sound hPwf hdom hbase
     · exact hbase
   have hQwf : Q.wfCheck = true := by
     rcases hQ with rfl | rfl

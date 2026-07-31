@@ -44,6 +44,9 @@ def finishProg (P : Prog) : Option (List YulEvmCompiler.Instr) := do
 def compileViaSsa (prog : YulSemantics.Block Op) :
     Option (List YulEvmCompiler.Instr) := do
   let P ← ofBlock prog
+  -- dominance gate: the SSA passes are sound only on programs whose uses
+  -- are dominated by their definitions (see `ToAsm.Prog.domCheck`)
+  if !(ToAsm.Prog.domCheck P) then none else
   match finishProg (optimizeProg P), finishProg P with
   | some a, some b => if a.length ≤ b.length then some a else some b
   | some a, none => some a
