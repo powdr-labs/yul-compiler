@@ -64,6 +64,45 @@ final gates as `compile` — `wfCheck`, the `stackOK2` overflow certificate,
   3. `fromSsa` sound: an SSA-CFG execution maps to `ASteps` over the emitted
      Asm.
 
+## Prior art (research digest)
+
+The design tracks what solc's own next-generation backend converged on
+(`libyul/backends/evm/ssa/`, PRs #15359 construction, #16464 stack layout,
+#16498 codegen, #16767 spilling; experimental since 0.8.35) and the
+literature it cites in-source:
+
+* **Construction**: Braun et al., *Simple and Efficient Construction of
+  Static Single Assignment Form*, CC 2013 — SSA directly from the AST, no
+  dominance frontiers; on structured (hence reducible) Yul it yields pruned,
+  minimal SSA. solc's builder cites it explicitly; there is a
+  machine-checked precedent (Buchwald, Lohner, Ullrich, *Verified
+  Construction of Static Single Assignment Form*, CC 2016, Isabelle/HOL,
+  swapped into CompCertSSA).
+* **φ encoding**: solc uses Pizlo-form Phi/Upsilon; MLIR/Cranelift use block
+  arguments. Semantically equivalent; block arguments make the edge's
+  parallel copy explicit at the jump site, which is both what the semantics
+  rule and the shuffle codegen want — we use block arguments.
+* **Liveness**: Rastello & Bouchez Tichadou (eds.), *SSA-based Compiler
+  Design*, Springer 2022, Alg. 9.1 (two-pass, non-iterative on reducible
+  CFGs); solc augments liveness with per-value **use counts** feeding the
+  DUP-vs-consume decision — we adopt that.
+* **Stack scheduling**: solc's new generator is a single **forward** pass in
+  topological order: entry layouts inherited from predecessors (merge blocks
+  pick the cheapest candidate by simulated shuffle cost), dead values become
+  junk/POP, per-op shuffles computed against a symbolic stack. Antecedents:
+  Koopman 1994 (intra-block stack scheduling), Shannon & Bailey 2006 (global
+  stack allocation), Park et al. 2011 (treegraph scheduling); Sethi–Ullman
+  gives the tree-order foundation and Bruno–Sethi (NP-completeness on DAGs)
+  the license to stay greedy. COSTA/GreY (Albert, Kirchner et al.; SuperStack
+  PLDI 2024) is the research line behind solc's greedy translation.
+* **Verification**: CompCertSSA (Barthe, Demange, Pichardie, TOPLAS 2014)
+  contributes the **equation lemma** — in strict SSA, a definition's
+  equation holds at every point it dominates — the semantic backbone for
+  sparse-pass proofs (SCCP/GVN verified on it in Demange et al., CC 2015).
+  Edge shuffles are verified-parallel-move territory (Rideau, Serpette,
+  Leroy, JAR 2008). Sea-of-nodes is contra-indicated (V8 retreated from it;
+  scheduling onto a stack needs a scheduled CFG anyway).
+
 ## The IR
 
 `YulEvmCompiler/SsaCfg/Ir.lean`. Values are `ValId := Nat`. Sea-of-nodes is

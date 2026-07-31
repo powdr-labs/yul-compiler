@@ -1718,31 +1718,32 @@ abbrev CallEdge := Nat × Nat × Nat
 any call edge. `k` is the length of `i :: c`, so the fall-through `c` has length
 `k - 1`; jump targets take their length from `tgts`. -/
 def stepSuccs (tgts : Std.HashMap Label (List Asm × Nat)) (pls : Std.HashSet Label)
+    (ar : Std.HashMap Nat Nat)
     (k : Nat) : List Asm → FLayout → FLayout → Nat →
-    Option (List AState × List CallEdge)
-  | [], _, _, _ => some ([], [])
+    Option (List AState × List CallEdge × List (Nat × Nat) × List (Nat × Nat))
+  | [], _, _, _ => some ([], [], [], [])
   | i :: c, fl, rl, fe =>
     let kc := k - 1
     match i with
-    | .push _ => some ([(kc, c, .word :: fl, rl, fe)], [])
+    | .push _ => some ([(kc, c, .word :: fl, rl, fe)], [], [], [])
     | .dup n => match fl[n.val]? with
-        | some FSlot.word => some ([(kc, c, .word :: fl, rl, fe)], []) | _ => none
-    | .pop => match fl with | .word :: fl' => some ([(kc, c, fl', rl, fe)], []) | _ => none
+        | some FSlot.word => some ([(kc, c, .word :: fl, rl, fe)], [], [], []) | _ => none
+    | .pop => match fl with | .word :: fl' => some ([(kc, c, fl', rl, fe)], [], [], []) | _ => none
     | .swap n => match fl with
         | sx :: rest => match rest.drop n.val with
-            | sy :: rst => some ([(kc, c, sy :: (rest.take n.val ++ sx :: rst), rl, fe)], [])
+            | sy :: rst => some ([(kc, c, sy :: (rest.take n.val ++ sx :: rst), rl, fe)], [], [], [])
             | [] => none
         | [] => none
-    | .label _ => some ([(kc, c, fl, rl, fe)], [])
-    | .pushLabel l => some ([(kc, c, .retTo l :: fl, rl, fe)], [])
+    | .label _ => some ([(kc, c, fl, rl, fe)], [], [], [])
+    | .pushLabel l => some ([(kc, c, .retTo l :: fl, rl, fe)], [], [], [])
     | .op yop =>
         match opTable yop with
         | some o =>
-            some ([(kc, c, List.replicate o.pushArity .word ++ fl.drop o.popArity, rl, fe)], [])
+            some ([(kc, c, List.replicate o.pushArity .word ++ fl.drop o.popArity, rl, fe)], [], [], [])
         | none => none
     | .jumpi l => match tgts[l]? with
         | some (t, kt) => match fl with
-            | .word :: fl' => some ([(kt, t, fl', rl, fe), (kc, c, fl', rl, fe)], [])
+            | .word :: fl' => some ([(kt, t, fl', rl, fe), (kc, c, fl', rl, fe)], [], [], [])
             | _ => none
         | none => none
     | .jump l => match tgts[l]? with
@@ -1751,31 +1752,43 @@ def stepSuccs (tgts : Std.HashMap Label (List Asm × Nat)) (pls : Std.HashSet La
                 if pls.contains Lret then
                   match splitSetup Lret fl with
                   | some (Sw, Smid) =>
-                      let r := retCount t 0
+                      -- the callee's return arity: a previous round's `dynJump`
+                      -- observation when available, else the classic-epilogue
+                      -- swap-run heuristic (a wrong guess is corrected by the
+                      -- next `analyze` round, never trusted — `checkCert`
+                      -- verifies the final certificate)
+                      let r := (ar[kt]?).getD (retCount t 0)
                       -- callee enters its own frame `t`; the continuation stays in the caller frame.
                       some ([(kt, t, Sw ++ [.ret], List.replicate r .word, kt),
                              (kc - 1, c', List.replicate r .word ++ Smid, rl, fe)],
-                            [(fe, kt, Smid.length)])
+                            [(fe, kt, Smid.length)], [(kt, r)], [])
                   | none => none
-                else some ([(kt, t, fl, rl, fe)], [])
-            | _ => some ([(kt, t, fl, rl, fe)], [])
+                else some ([(kt, t, fl, rl, fe)], [], [], [])
+            | _ => some ([(kt, t, fl, rl, fe)], [], [], [])
         | none => none
-    | .dynJump => some ([], [])
+    | .dynJump =>
+        -- record the actually observed return arity of the enclosing frame
+        match fl with
+        | .ret :: S' => some ([], [], [], [(fe, S'.length)])
+        | _ => some ([], [], [], [])
 
 /-- Phase 1: explore every reachable position once, deduping by `position.length` in `vis`; collect
 call edges. Returns `none` on an unrepresentable instruction (rejected downstream). -/
-partial def analyzeGo (tgts : Std.HashMap Label (List Asm × Nat)) (pls : Std.HashSet Label) :
+partial def analyzeGo (tgts : Std.HashMap Label (List Asm × Nat)) (pls : Std.HashSet Label)
+    (ar : Std.HashMap Nat Nat) :
     List AState → Array (Option AState) → List CallEdge →
-    Option (Array (Option AState) × List CallEdge)
-  | [], vis, edges => some (vis, edges)
-  | (k, pos, fl, rl, fe) :: wl, vis, edges =>
+    List (Nat × Nat) → List (Nat × Nat) →
+    Option (Array (Option AState) × List CallEdge × List (Nat × Nat) × List (Nat × Nat))
+  | [], vis, edges, assumed, obs => some (vis, edges, assumed, obs)
+  | (k, pos, fl, rl, fe) :: wl, vis, edges, assumed, obs =>
     if k ≥ vis.size then none else
     match vis[k]! with
-    | some _ => analyzeGo tgts pls wl vis edges
+    | some _ => analyzeGo tgts pls ar wl vis edges assumed obs
     | none =>
-      match stepSuccs tgts pls k pos fl rl fe with
-      | some (succs, es) =>
-          analyzeGo tgts pls (succs ++ wl) (vis.set! k (some (k, pos, fl, rl, fe))) (es ++ edges)
+      match stepSuccs tgts pls ar k pos fl rl fe with
+      | some (succs, es, asms, os) =>
+          analyzeGo tgts pls ar (succs ++ wl) (vis.set! k (some (k, pos, fl, rl, fe)))
+            (es ++ edges) (asms ++ assumed) (os ++ obs)
       | none => none
 
 /-- Phase 2: solve the per-function frame base as a fixpoint over the call edges (`size` bounds the
@@ -1803,19 +1816,44 @@ def computeBase (size : Nat) (edges : List CallEdge) : Option (Array Nat) := Id.
 /-- The solver: explore from the entry (empty frame, `main`'s return layout `[]`, frame = whole
 program), solve the bases, then graft `fbMax = base(function)` onto every position. -/
 def analyze (prog : List Asm) : CertData :=
-  let n := prog.length
-  let size := n + 1
-  match analyzeGo (labelTargets prog) (Std.HashSet.ofList (pushLabelled prog))
-      [(n, prog, [], [], n)] (Array.replicate size none) [] with
-  | none => ⟨[]⟩
-  | some (vis, edges) =>
-    match computeBase size edges with
-    | none => ⟨[]⟩
-    | some base =>
-      -- The position length is already carried, so the certificate's lookup key
-      -- costs nothing here either.
-      ⟨vis.toList.filterMap (fun o =>
-        o.map (fun s => (s.1, s.2.1, s.2.2.1, base[s.2.2.2.2]!, s.2.2.2.1)))⟩
+  -- Iterate the exploration until the assumed callee return arities agree
+  -- with the arities actually observed at each `dynJump` (the swap-run
+  -- heuristic seeds round 1 and is exact for the classic backend; the SSA
+  -- backend's shuffled epilogues need the observation round). A handful of
+  -- rounds always suffices — arities are fixed per function — and a wrong
+  -- certificate is merely rejected by `checkCert`, never trusted.
+  go 4 {}
+where
+  n := prog.length
+  size := n + 1
+  tgts := labelTargets prog
+  pls := Std.HashSet.ofList (pushLabelled prog)
+  go : Nat → Std.HashMap Nat Nat → CertData
+    | 0, _ => ⟨[]⟩
+    | fuel + 1, ar =>
+      match analyzeGo tgts pls ar [(n, prog, [], [], n)]
+          (Array.replicate size none) [] [] [] with
+      | none => ⟨[]⟩
+      | some (vis, edges, assumed, obs) =>
+        -- every arity assumed at a call site must agree with the arity
+        -- observed at the callee's own `dynJump`s; otherwise re-run seeded
+        -- with the observations
+        let obsMap := obs.foldl (fun m (fe, a) => m.insert fe a)
+          (∅ : Std.HashMap Nat Nat)
+        let consistent := assumed.all fun (kt, r) =>
+          match obsMap[kt]? with
+          | some a => a = r
+          | none => true
+        if !consistent then
+          go fuel (obs.foldl (fun m (fe, a) => m.insert fe a) ar)
+        else
+          match computeBase size edges with
+          | none => ⟨[]⟩
+          | some base =>
+            -- The position length is already carried, so the certificate's lookup key
+            -- costs nothing here either.
+            ⟨vis.toList.filterMap (fun o =>
+              o.map (fun s => (s.1, s.2.1, s.2.2.1, base[s.2.2.2.2]!, s.2.2.2.1)))⟩
 
 /-- The `compile`-facing gate: analyse then verify. -/
 def stackOK2 (prog : List Asm) : Bool := checkCertFast prog (analyze prog)
