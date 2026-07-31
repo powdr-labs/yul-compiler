@@ -31,7 +31,7 @@ conditionalSimplifier/clear_after_if_continue.yul	234	210
 conditionalSimplifier/clear_before_for_condition.yul	480	426
 conditionalSimplifier/clear_before_for_post.yul	27344	27344
 conditionalSimplifier/no_opt_inside_if.yul	16186	16168
-conditionalSimplifier/opt_after_terminating_if.yul	16204	16162
+conditionalSimplifier/opt_after_terminating_if.yul	16192	16162
 conditionalSimplifier/opt_switch.yul	386	271
 conditionalSimplifier/smoke.yul	0	0
 conditionalUnsimplifier/clear_after_if_break.yul	234	216
@@ -72,7 +72,7 @@ deadCodeEliminator/nested_revert.yul	324	264
 deadCodeEliminator/no_removal.yul	30	30
 deadCodeEliminator/normal_break.yul	306	228
 deadCodeEliminator/normal_continue.yul	3732	2616
-deadCodeEliminator/normal_stop.yul	1182	870
+deadCodeEliminator/normal_stop.yul	1098	870
 disambiguator/for_statement.yul	414	330
 disambiguator/function_call.yul	0	0
 disambiguator/if_statement.yul	0	96
@@ -479,7 +479,7 @@ unusedStoreEliminator/covering_calldatacopy_fixed.yul	48366	48511
 unusedStoreEliminator/create.yul	325320	325332
 unusedStoreEliminator/create_inside_function.yul	325320	325476
 unusedStoreEliminator/function_end.yul	0	0
-unusedStoreEliminator/function_side_effects.yul	22576	22479
+unusedStoreEliminator/function_side_effects.yul	22459	22479
 unusedStoreEliminator/if_overwrite_all_branches.yul	133952	133976
 unusedStoreEliminator/leave.yul	402	331
 unusedStoreEliminator/mcopy_mcopy_no_overlap.yul	408	450
@@ -519,7 +519,7 @@ unusedStoreEliminator/returndatacopy_returndatasize_nonzero_start.yul	42	42
 unusedStoreEliminator/returndatacopy_returndatasize_var.yul	60	60
 unusedStoreEliminator/store_before_conditionally_terminating_function_call.yul	45179	45137
 unusedStoreEliminator/store_before_conditionally_terminating_function_call_complex_control_flow.yul	58534	58589
-unusedStoreEliminator/store_before_conditionally_terminating_function_call_revert.yul	44674	44626
+unusedStoreEliminator/store_before_conditionally_terminating_function_call_revert.yul	44616	44626
 unusedStoreEliminator/store_before_indirectly_conditionally_terminating_function_call.yul	45179	45151
 unusedStoreEliminator/store_before_unconditionally_terminating_function_call.yul	45218	44984
 unusedStoreEliminator/tload.yul	3114	2520

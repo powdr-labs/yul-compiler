@@ -1,6 +1,7 @@
 import YulEvmCompiler.AsmSem
 import YulEvmCompiler.SsaCfg.Sem
 import YulEvmCompiler.SsaCfg.ToAsm
+import YulEvmCompiler.SsaCfg.PassesSound
 /-!
 # YulEvmCompiler.SsaCfg.ToAsmSound
 
@@ -38,12 +39,16 @@ shuffler (`shuffleGo_spec`, `shuffle_sound`), the whole `elideJumps` transport
 (`emitProg_placement`). `emitProg_asteps'` and `emitProg_ahalt'` are
 *derived*.
 
-The single remaining `sorry` frontier is inside `exec_sim`: its `opHalt` and
-`halt` cases are proved; `const`, `op`, `call`, `callHalt`, `jump`,
-`branchTrue`, `branchFalse` and `ret` are not. `const`/`op` additionally need
-a freshness side condition (`AgreeOn`) that `emitInstr_const_sim`/
-`emitInstr_op_sim` take as a hypothesis and that `exec_sim` cannot currently
-discharge — see the note on its statement.
+The single remaining `sorry` frontier is inside `exec_sim`: its `const`, `op`,
+`opHalt` and `halt` cases are proved (the whole straight-line fragment);
+`ret`, `jump`, `branchTrue`, `branchFalse`, `call` and `callHalt` are not.
+
+`exec_sim` carries two side conditions beyond the emission itself — that no
+value on the symbolic stack is defined again by the rest of the block, and
+that the rest of the block's definitions are distinct. Both are single
+assignment (`Prog.wfCheck`), re-established at a block entry from the liveness
+fixed-point equation (`PassesSound.liveIn_eq`: `liveIn` subtracts `blockDefs`);
+`instrDefs_nodup` discharges them for `main`'s entry block.
 
 Both target statements need two hypotheses beyond the ones in
 `SsaCfg/Correctness.lean`; `P.wfCheck = true` is not optional — without it the
@@ -662,10 +667,6 @@ omit model in
   cases xs <;> rfl
 
 omit model in
-theorem setMany_cons (R : Regs) (x : ValId) (xs : List ValId) (v : U256)
-    (vs : List U256) : R.setMany (x :: xs) (v :: vs) = (R.set x v).setMany xs vs := rfl
-
-omit model in
 theorem setMany_not_mem {xs : List ValId} :
     ∀ {R : Regs} {vs : List U256} {y : ValId}, y ∉ xs → (R.setMany xs vs) y = R y := by
   induction xs with
@@ -897,6 +898,103 @@ theorem emitTerm_halt_sim {isFunc : Bool} {f : Func} {L : ToAsm.LabelMap}
   rw [List.append_assoc, List.cons_append]
   exact hsteps prog (Asm.op yop :: (barrier ++ c)) st
 
+/-! ## Single assignment, as the induction needs it
+
+`emitInstr` extends the symbolic stack with an instruction's destinations
+without checking that they are not already there, so the simulation needs
+"every value still on the symbolic stack is distinct from every value the
+remaining instructions define". That is single assignment (`P.wfCheck`),
+packaged here as two side conditions on the rest-of-block being emitted. -/
+
+/-- The values the remaining instructions of a block define. -/
+def restDefs (paired : List (Instr × List ValId)) : List ValId :=
+  (paired.map Prod.fst).flatMap Instr.defs
+
+omit model in
+@[simp] theorem restDefs_nil : restDefs [] = [] := rfl
+
+omit model in
+theorem restDefs_cons (i : Instr) (need : List ValId)
+    (paired : List (Instr × List ValId)) :
+    restDefs ((i, need) :: paired) = i.defs ++ restDefs paired := by
+  simp [restDefs]
+
+omit model in
+theorem restDefs_eq {paired : List (Instr × List ValId)} {is : List Instr}
+    (h : paired.map Prod.fst = is) : restDefs paired = is.flatMap Instr.defs := by
+  rw [restDefs, h]
+
+omit model in
+theorem agreeOn_set {R : Regs} {d : ValId} {v : U256} {sym : List SSlot}
+    (h : ∀ x, SSlot.val x ∈ sym → x ≠ d) : AgreeOn R (R.set d v) sym :=
+  fun x hx => Regs.set_other _ _ (h x hx)
+
+omit model in
+theorem agreeOn_setMany {R : Regs} {ds : List ValId} {rets : List U256}
+    {sym : List SSlot} (h : ∀ x, SSlot.val x ∈ sym → x ∉ ds) :
+    AgreeOn R (R.setMany ds rets) sym :=
+  fun x hx => Regs.setMany_not_mem (h x hx)
+
+omit model in
+/-- The keep-list only ever retains slots that were already on the stack. -/
+theorem keepOf_go_mem {needed : List ValId} {s : SSlot} :
+    ∀ {σ seen : List SSlot}, s ∈ ToAsm.keepOf.go needed σ seen → s ∈ σ := by
+  intro σ
+  induction σ with
+  | nil => intro seen h; simp [ToAsm.keepOf.go] at h
+  | cons a rest ih =>
+    intro seen h
+    cases a with
+    | val w =>
+      rw [ToAsm.keepOf.go] at h
+      split at h
+      · rcases List.mem_cons.mp h with rfl | h' 
+        · exact List.mem_cons_self
+        · exact List.mem_cons_of_mem _ (ih h')
+      · exact List.mem_cons_of_mem _ (ih h)
+    | code l => exact List.mem_cons_of_mem _ (ih (by rw [ToAsm.keepOf.go] at h; exact h))
+    | retAddr =>
+      rw [ToAsm.keepOf.go] at h
+      split at h
+      · exact List.mem_cons_of_mem _ (ih h)
+      · rcases List.mem_cons.mp h with rfl | h'
+        · exact List.mem_cons_self
+        · exact List.mem_cons_of_mem _ (ih h')
+
+omit model in
+theorem keepOf_mem {σ : List SSlot} {needed : List ValId} {s : SSlot}
+    (h : s ∈ ToAsm.keepOf σ needed) : s ∈ σ := keepOf_go_mem h
+
+omit model in
+/-- One instruction's destinations, from `Prog.wfCheck`'s single-assignment
+clause: a block's instruction defs are a sublist of the function's `allDefs`. -/
+theorem sublist_flatMap_of_mem {α β : Type} {l : List α} {a : α} (g : α → List β)
+    (ha : a ∈ l) : List.Sublist (g a) (l.flatMap g) := by
+  induction l with
+  | nil => simp at ha
+  | cons x xs ih =>
+    rcases List.mem_cons.mp ha with rfl | h
+    · simp
+    · have hh := (ih h).trans (List.sublist_append_right (g x) (xs.flatMap g))
+      simpa using hh
+
+omit model in
+theorem instrDefs_nodup {f : Func} {k : Nat} (hwf : f.wfCheck k = true)
+    {bid : BlockId} {b : Block} (hb : f.blocks[bid]? = some b) :
+    (b.instrs.flatMap Instr.defs).Nodup := by
+  have hnd : f.allDefs.Nodup := by
+    simp only [Func.wfCheck, Bool.and_eq_true, decide_eq_true_eq] at hwf
+    exact hwf.1.1.1
+  have hmem : b ∈ f.blocks.toList := by
+    have := Array.getElem?_toList (xs := f.blocks) (i := bid)
+    exact List.mem_of_getElem? (this.trans hb)
+  have hsub : List.Sublist (b.instrs.flatMap Instr.defs) f.allDefs := by
+    refine List.Sublist.trans ?_ (List.sublist_append_right f.params _)
+    refine List.Sublist.trans ?_
+      (sublist_flatMap_of_mem (fun b => b.params ++ b.instrs.flatMap Instr.defs) hmem)
+    exact List.sublist_append_right _ _
+  exact hnd.sublist hsub
+
 /-! ## The rest of a block, as the big-step relation walks it
 
 `emitBlock` folds `emitInstr` over the block's instructions (paired with their
@@ -1083,6 +1181,26 @@ def SimFRes (asm : List Asm) (retLab : Label) (below : List AVal)
       ∃ conf, ASteps (model := model) asm a conf ∧
         AHalt (model := model) asm conf st'
 
+theorem SimFRes.prepend {asm : List Asm} {retLab : Label} {below : List AVal}
+    {a a' : AConf} {res : FRes} (h : ASteps (model := model) asm a a')
+    (hs : SimFRes (model := model) asm retLab below a' res) :
+    SimFRes (model := model) asm retLab below a res := by
+  cases res with
+  | ret vals st' => obtain ⟨cret, hc, hst⟩ := hs; exact ⟨cret, hc, h.trans hst⟩
+  | halt st' => obtain ⟨conf, hst, hh⟩ := hs; exact ⟨conf, h.trans hst, hh⟩
+
+omit model in
+theorem emitInstr_const_shape {P : Prog} {L : ToAsm.LabelMap} {sym : List SSlot}
+    {needed : List ValId} {d : ValId} {v : U256} {n n' : Nat}
+    {asmf : List Asm} {sym' : List SSlot}
+    (hei : ToAsm.emitInstr P L sym needed (.const d v) n = some ((asmf, sym'), n')) :
+    asmf = [Asm.push v] ∧ sym' = SSlot.val d :: sym ∧ n' = n := by
+  obtain ⟨heq, rfl⟩ := E_pure_inv2
+    (show (pure ([Asm.push v], SSlot.val d :: sym) : ToAsm.E (List Asm × List SSlot)) n
+      = some ((asmf, sym'), n') from hei)
+  obtain ⟨h1, h2⟩ := (Prod.mk.injEq ..).mp heq
+  exact ⟨h1.symm, h2.symm, rfl⟩
+
 /-! ## The main induction
 
 Every `Exec` constructor maps to a bounded `Asm` trace segment:
@@ -1105,6 +1223,7 @@ The freshness side conditions (`AgreeOn`) come from single assignment, i.e.
 from `P.wfCheck`; see the discussion at `emitProg_asteps'`. -/
 theorem exec_sim {P : Prog} {asm : List Asm}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
+    (hdom : ToAsm.Prog.domCheck P = true)
     (hplace : Placement P asm)
     {f : Func} {R : Regs} {st : EvmState} {rest : Rest} {res : FRes}
     (hexec : Exec (model := model) P f R st rest res) :
@@ -1115,23 +1234,76 @@ theorem exec_sim {P : Prog} {asm : List Asm}
       paired.map Prod.fst = rest.instrs →
       emitRest P (ToAsm.mkLabelMap P) fidx.isSome f fidx liveIn rest.term paired sym n
         = some (frag, n') →
+      (∀ v, SSlot.val v ∈ sym → v ∉ restDefs paired) →
+      (restDefs paired).Nodup →
       StkMatch R retLab sym σr →
       (findLabel retLab asm).isSome →
       SimFRes (model := model) asm retLab below
         ⟨frag ++ tail, σr ++ below, st⟩ res := by
   induction hexec
-  case const =>
+  case const f₀ R₀ st₀ d v is t res₀ hsub ih =>
     -- `AStep.push` (`emitInstr_const_sim`) then the IH on the shortened rest
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hm hret
-    sorry
-  case op =>
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
+    obtain ⟨need, paired', rfl, hpair'⟩ := map_fst_eq_cons hpair
+    dsimp only at hemit
+    rw [emitRest_cons] at hemit
+    obtain ⟨⟨asm1, sym1⟩, m, hei, h2⟩ := E_bind_inv hemit
+    obtain ⟨tl, n'', htl, h3⟩ := E_bind_inv h2
+    obtain ⟨heq, rfl⟩ := E_pure_inv2 h3
+    obtain ⟨rfl, rfl, rfl⟩ := emitInstr_const_shape hei
+    rw [restDefs_cons] at hfresh hndefs
+    have hdefs : (Instr.const d v).defs = [d] := rfl
+    rw [hdefs] at hfresh hndefs
+    have hne : ∀ x, SSlot.val x ∈ sym → x ≠ d := fun x hx hxd =>
+      hfresh x hx (by simp [hxd])
+    have hdnot : d ∉ restDefs paired' :=
+      fun hc => (List.nodup_append.mp hndefs).2.2 d (by simp) d hc rfl
+    obtain ⟨σr', hm', hsteps⟩ :=
+      emitInstr_const_sim (st := st₀) hei (agreeOn_set hne) σr hm
+    refine SimFRes.prepend ?_ (ih fidx liveIn paired' (SSlot.val d :: sym) _ _ tl tail
+      retLab below σr' hpair' htl ?_ (List.nodup_append.mp hndefs).2.1 hm' hret)
+    · rw [← heq]
+      have hst := ASteps.extend below (hsteps asm (tl ++ tail))
+      simpa [List.append_assoc] using hst
+    · intro x hx hc
+      rcases List.mem_cons.mp hx with hxd | hxs
+      · have : x = d := by injection hxd
+        subst this; exact hdnot hc
+      · exact hfresh x hxs (by simp [hc])
+  case op f₀ R₀ st₀ st₁ ds yop as args rets is t res₀ hget hb hlen hsub ih =>
     -- `emitInstr_op_sim` (fully proved above) then the IH
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hm hret
-    sorry
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
+    obtain ⟨need, paired', rfl, hpair'⟩ := map_fst_eq_cons hpair
+    dsimp only at hemit
+    rw [emitRest_cons] at hemit
+    obtain ⟨⟨asm1, sym1⟩, m, hei, h2⟩ := E_bind_inv hemit
+    obtain ⟨tl, n'', htl, h3⟩ := E_bind_inv h2
+    obtain ⟨heq, rfl⟩ := E_pure_inv2 h3
+    obtain ⟨ops, hsh, rfl, rfl⟩ := emitInstr_op_shape hei
+    rw [restDefs_cons] at hfresh hndefs
+    have hdefs : (Instr.op ds yop as).defs = ds := rfl
+    rw [hdefs] at hfresh hndefs
+    obtain ⟨hndds, hndrest, hdisj⟩ := List.nodup_append.mp hndefs
+    have hagree : AgreeOn R₀ (R₀.setMany ds rets) (ToAsm.keepOf sym need) :=
+      agreeOn_setMany (fun x hx hxd =>
+        hfresh x (keepOf_mem hx) (List.mem_append_left _ hxd))
+    obtain ⟨σr', hm', hsteps⟩ :=
+      emitInstr_op_sim (st := st₀) (st' := st₁) hei hget hb hlen hndds hagree σr hm
+    refine SimFRes.prepend ?_ (ih fidx liveIn paired' _ _ _ tl tail
+      retLab below σr' hpair' htl ?_ hndrest hm' hret)
+    · rw [← heq]
+      have hst := ASteps.extend below (hsteps asm (tl ++ tail))
+      simpa [List.append_assoc] using hst
+    · intro x hx hc
+      rcases List.mem_append.mp hx with hx1 | hx2
+      · obtain ⟨y, hy, hxy⟩ := List.mem_map.mp hx1
+        have hyx : y = x := by injection hxy
+        exact hdisj y hy x hc hyx
+      · exact hfresh x (keepOf_mem hx2) (List.mem_append_right _ hc)
   case opHalt =>
     -- the shuffle, then `AHalt.op` on the emitted `op yop`
     rename_i f₀ R₀ st₀ st₁ ds yop as args is t hget hb
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
     obtain ⟨need, paired', rfl, hpair'⟩ := map_fst_eq_cons hpair
     dsimp only at hemit
     rw [emitRest_cons] at hemit
@@ -1150,32 +1322,32 @@ theorem exec_sim {P : Prog} {asm : List Asm}
     simpa [List.append_assoc] using hst
   case call =>
     -- pushLabel / arg DUPs / jump entry / callee IH / dynJump back
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
     sorry
   case callHalt =>
     -- as `call`, but the callee's IH already produces the halting configuration
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
     sorry
   case jump =>
     -- edge shuffle onto the target's entry layout, `AStep.jump`, target IH
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
     sorry
   case branchTrue =>
     -- shuffle to `cond :: layout(true)`, `AStep.jumpiTaken`, target IH
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
     sorry
   case branchFalse =>
     -- `AStep.jumpiFall`, the fall-through shuffle, target IH
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
     sorry
   case ret =>
     -- function: epilogue rotation + `dynJump`; main: pops + `jump endLabel`
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
     sorry
   case halt =>
     -- `emitTerm_halt_sim`: the shuffle brings the operands up, then the emitted
     -- `op yop` halts; the dead barrier after it is never walked
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
     rename_i hget hb
     obtain rfl := map_fst_eq_nil hpair
     dsimp only at hemit
@@ -1388,6 +1560,7 @@ entry layout (`main` has no parameters), so the frame-level simulation applies
 with the terminal label as the frame's "return" label. -/
 private theorem raw_entry_sim {P : Prog} {asm₀ : List Asm}
     (hnodup₀ : (labelDefs asm₀).Nodup) (hwf : P.wfCheck = true)
+    (hdom : ToAsm.Prog.domCheck P = true)
     (hpl : Placement P asm₀) {yst0 : EvmState} {res : FRes} {eb : Block}
     (heb : P.main.blocks[P.main.entry]? = some eb)
     (hexec : Exec (model := model) P P.main Regs.empty yst0
@@ -1414,8 +1587,14 @@ private theorem raw_entry_sim {P : Prog} {asm₀ : List Asm}
   refine ⟨⟨frag ++ tail, [] ++ [], yst0⟩, ?_, ?_⟩
   · refine ASteps.single ?_
     rw [hasm]; exact AStep.label
-  · refine exec_sim hnodup₀ hwf hpl hexec none liveIn paired sym0 n n' frag tail
-      (ToAsm.mkLabelMap P).endLabel [] [] hpair hrest ?_ ?_
+  · have hmainwf : P.main.wfCheck P.funcs.size = true := by
+      have hwf2 := hwf
+      simp only [Prog.wfCheck, Bool.and_eq_true] at hwf2
+      exact hwf2.1.2
+    refine exec_sim hnodup₀ hwf hdom hpl hexec none liveIn paired sym0 n n' frag tail
+      (ToAsm.mkLabelMap P).endLabel [] [] hpair hrest ?_ ?_ ?_ ?_
+    · rw [hsym]; simp
+    · rw [restDefs_eq hpair]; exact instrDefs_nodup hmainwf heb
     · rw [hsym]; exact StkMatch.nil
     · rw [hend]; rfl
 
@@ -1456,6 +1635,7 @@ Both statements need two hypotheses beyond the ones in
   one-line lemma the integration can add. -/
 theorem emitProg_asteps' {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
+    (hdom : ToAsm.Prog.domCheck P = true)
     (hemit : ToAsm.emitProg P = some asm)
     (hrun : Run (model := model) P yst0 yst' .normal) :
     ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ := by
@@ -1464,7 +1644,7 @@ theorem emitProg_asteps' {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
     rwa [ToAsm.labelDefs_elideJumps] at hnodup
   cases hrun with
   | normal heb hexec =>
-    obtain ⟨a, hsteps, hsim⟩ := raw_entry_sim hnodup₀ hwf hpl heb hexec
+    obtain ⟨a, hsteps, hsim⟩ := raw_entry_sim hnodup₀ hwf hdom hpl heb hexec
     obtain ⟨cret, hcret, hsteps2⟩ := hsim
     obtain rfl : cret = [] := Option.some.inj (hcret.symm.trans hpl.2.2.1)
     have hraw : ASteps (model := model) asm₀ ⟨asm₀, [], yst0⟩ ⟨[], [], yst'⟩ := by
@@ -1475,6 +1655,7 @@ theorem emitProg_asteps' {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
 
 theorem emitProg_ahalt' {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
+    (hdom : ToAsm.Prog.domCheck P = true)
     (hemit : ToAsm.emitProg P = some asm)
     (hrun : Run (model := model) P yst0 yst' .halt) :
     ∃ conf, ASteps (model := model) asm ⟨asm, [], yst0⟩ conf ∧
@@ -1484,7 +1665,7 @@ theorem emitProg_ahalt' {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
     rwa [ToAsm.labelDefs_elideJumps] at hnodup
   cases hrun with
   | halt heb hexec =>
-    obtain ⟨a, hsteps, hsim⟩ := raw_entry_sim hnodup₀ hwf hpl heb hexec
+    obtain ⟨a, hsteps, hsim⟩ := raw_entry_sim hnodup₀ hwf hdom hpl heb hexec
     obtain ⟨conf, hsteps2, hhalt⟩ := hsim
     refine ⟨elideConf conf, ?_, ahalt_elideJumps hhalt⟩
     have := asteps_elideJumps hnodup₀ (hsteps.trans hsteps2) (List.suffix_refl _)
