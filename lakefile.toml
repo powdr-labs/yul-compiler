@@ -1,6 +1,6 @@
 name = "yul-evm-compiler"
 version = "0.1.0"
-defaultTargets = ["YulEvmCompiler", "YulParser", "YulEvmCompilerTests", "YulIR", "YulIRBench", "YulCApi"]
+defaultTargets = ["YulEvmCompiler", "YulParser", "YulEvmCompilerTests", "YulIR", "YulIRBench", "YulCApi", "Challenge"]
 
 # Source-language semantics: the Yul big-step judgment this compiler is proved against.
 [[require]]
@@ -28,6 +28,12 @@ name = "YulCApi"
 
 [[lean_lib]]
 name = "YulEvmCompilerTests"
+
+# The EIP-8200 "EVMification" challenge: the statement a candidate precompile
+# replacement must satisfy, and the reduction that discharges it for bytecode
+# this compiler produced. See Challenge/README.md.
+[[lean_lib]]
+name = "Challenge"
 
 # Experimental optimizer IR (ANF, structured, named): Yul <-> IR translation and passes.
 [[lean_lib]]
@@ -74,6 +80,14 @@ root = "scripts.UpdateCorpusGas"
 [[lean_exe]]
 name = "traceSolidityGas"
 root = "scripts.TraceSolidityGas"
+
+# The SHA-256 challenge scorer: runs a candidate implementation (Yul source or
+# raw bytecode) in the pinned executable EVM semantics and checks every vector
+# against EvmSemantics.Crypto.Sha256.hash, reporting gas. Native for the same
+# stack-depth reason as the corpus runners. See Challenge/README.md.
+[[lean_exe]]
+name = "sha256challenge"
+root = "scripts.Sha256Challenge"
 
 # The YulIR corpus benchmark/baseline runner (report/update/check). Native and
 # fixture-parallel for the same reason as updateCorpusGas: the interpreted
