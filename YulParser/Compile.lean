@@ -410,7 +410,14 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
               (YulEvmCompiler.Optimizer.stackLayoutObject obj))
           <|> YulEvmCompiler.compileObject
             (YulEvmCompiler.Optimizer.stackLayoutObject obj)
-      let layout ← tryLayouts optimized
+      -- EXPERIMENT (unverified, see CompileLive.lean): last-use retirement as
+      -- the first candidate, to measure its ceiling on gas and compile time.
+      -- EXPERIMENT (unverified, see CompileLive.lean): retirement is tried only
+      -- once the plain layout has failed, so fixtures that already compile keep
+      -- their bytecode and only currently-rescued ones change.
+      let layout ← YulEvmCompiler.compileObject optimized
+        <|> YulEvmCompiler.compileObjectLive optimized
+        <|> tryLayouts optimized
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none) o)
