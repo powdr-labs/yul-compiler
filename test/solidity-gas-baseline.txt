@@ -5,7 +5,7 @@
 # columns: fixture<TAB>ours<TAB>solc
 abiv2.sol	17063	6886
 abiv2_optimised.sol	17063	6886
-data_storage.sol	272	202
+data_storage.sol	254	202
 dispatch_large.sol	92219	76647
 dispatch_large_optimised.sol	92219	76647
 dispatch_medium.sol	45157	41541

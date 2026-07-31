@@ -13,11 +13,11 @@ identical_subobjects_no_debug_info.yul	93406	93190
 identical_subobjects_partial_debug_info.yul	93406	93190
 identical_subobjects_partial_debug_info_no_use_src.yul	93406	93190
 long_object_name.yul	44330	44330
-metadata.yul	162702	162684
+metadata.yul	162720	162684
 namedObject.yul	0	0
 namedObjectCode.yul	44330	44330
 nested_optimizer.yul	13332	13350
-prune_unreachable_function_non_returning.yul	24	30
+prune_unreachable_function_non_returning.yul	30	30
 prune_unreferenced_function.yul	66	210
 simple.yul	44330	44330
 simple_optimizer.yul	13332	13350
