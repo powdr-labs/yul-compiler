@@ -404,6 +404,8 @@ ssaTransform/switch_reassign.yul	426	318
 ssaTransform/typed.yul	90	390
 ssaTransform/used.yul	372	384
 stackCompressor/noInline.yul	0	0
+stackLimitEvader/too_many_returns_15.yul	184004	179930
+stackLimitEvader/tree.yul	1033260	1039764
 structuralSimplifier/bugfix_visit_after_change.yul	0	96
 structuralSimplifier/for_false_condition.yul	78	0
 structuralSimplifier/if_false_condition.yul	0	96
