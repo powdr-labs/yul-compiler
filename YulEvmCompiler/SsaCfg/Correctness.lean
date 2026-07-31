@@ -1,6 +1,7 @@
 import YulEvmCompiler.Correctness
 import YulEvmCompiler.SsaCfg.Compile
 import YulEvmCompiler.SsaCfg.Sem
+import YulEvmCompiler.SsaCfg.ToAsmSound
 import YulEvmCompiler.Optimizer.Spec.EvmBackend
 /-!
 # YulEvmCompiler.SsaCfg.Correctness
@@ -58,25 +59,38 @@ theorem optimizeProg_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
     Run (model := model) (optimizeProg P) yst0 yst' o := by
   sorry
 
-/-- **Codegen simulation, normal outcome** (proof in progress): a normal SSA
-execution maps to an Asm trace from the program start to the end of the code
-with an empty stack (main's `ret []` pops everything and jumps to the
-terminal label). -/
+/-- **Codegen simulation, normal outcome**: a normal SSA execution maps to
+an Asm trace from the program start to the end of the code with an empty
+stack. Proved in `SsaCfg/ToAsmSound.lean` (modulo its own declared frontier);
+single assignment (`P.wfCheck`) and label uniqueness are genuinely required —
+`ToAsmSound.lean` records the counterexample without them. -/
 theorem emitProg_asteps {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
+    (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
     (hemit : ToAsm.emitProg P = some asm)
     (hrun : Run (model := model) P yst0 yst' .normal) :
-    ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ := by
-  sorry
+    ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ :=
+  emitProg_asteps' hnodup hwf hemit hrun
 
-/-- **Codegen simulation, halting outcome** (proof in progress): a halting
-SSA execution maps to an Asm trace reaching a configuration whose head
-instruction halts with the source's final state. -/
+/-- **Codegen simulation, halting outcome** (see `emitProg_asteps`). -/
 theorem emitProg_ahalt {P : Prog} {asm : List Asm} {yst0 yst' : EvmState}
+    (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
     (hemit : ToAsm.emitProg P = some asm)
     (hrun : Run (model := model) P yst0 yst' .halt) :
     ∃ conf, ASteps (model := model) asm ⟨asm, [], yst0⟩ conf ∧
-      AHalt (model := model) asm conf yst' := by
-  sorry
+      AHalt (model := model) asm conf yst' :=
+  emitProg_ahalt' hnodup hwf hemit hrun
+
+/-- The optimizer preserves well-formedness: its defensive gate returns the
+pipeline output only when that output re-checks, and the original
+otherwise. -/
+theorem optimizeProg_wf {P : Prog} (hwf : P.wfCheck = true) :
+    (optimizeProg P).wfCheck = true := by
+  unfold optimizeProg
+  by_cases h : (Prog.wfCheck
+      { main := optimizeFunc P.main, funcs := P.funcs.map optimizeFunc })
+  · simp only [h, if_true]
+  · simp only [h, if_false]
+    exact hwf
 
 omit model in
 /-- Invert a successful `finishProg` into the shared final gates. -/
@@ -135,6 +149,7 @@ verified peephole and Phase B, exactly as `compile_correct` does. This part
 is fully proved — it rests on the codegen simulation lemmas above. -/
 theorem finishProg_correct (hexternal : ExternalsRealized model)
     {Q : Prog} {is : List YulEvmCompiler.Instr}
+    (hQwf : Q.wfCheck = true)
     (hfin : finishProg Q = some is)
     {yst0 yst' : EvmState} {o : Outcome}
     (hssa : Run (model := model) Q yst0 yst' o) :
@@ -155,7 +170,7 @@ theorem finishProg_correct (hexternal : ExternalsRealized model)
   cases hssa with
   | normal heb hexec =>
     have hsteps0 : ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ :=
-      emitProg_asteps hemit (.normal heb hexec)
+      emitProg_asteps hnodup hQwf hemit (.normal heb hexec)
     have hstepsO := Peephole.optimizeAsm_asteps hnodup hsteps0
     obtain ⟨bnd, Hb⟩ :=
       asteps_sim hexternal hlow hsmallO hstepsO
@@ -181,7 +196,7 @@ theorem finishProg_correct (hexternal : ExternalsRealized model)
     exact ⟨s2, hsteps1.snoc hstep2, hcs2, hsm2, Or.inl ⟨rfl, hhalt2, hret2⟩⟩
   | halt heb hexec =>
     obtain ⟨conf, hsteps0, hhalt0⟩ :=
-      emitProg_ahalt hemit (.halt heb hexec)
+      emitProg_ahalt hnodup hQwf hemit (.halt heb hexec)
     obtain ⟨confO, hstepsO, hhaltO⟩ :=
       Peephole.optimizeAsm_ahalt hnodup hsteps0 hhalt0
     obtain ⟨bnd, Hb⟩ :=
@@ -211,11 +226,16 @@ theorem compileViaSsa_correct (hexternal : ExternalsRealized model)
          (o = .halt ∧ HaltedMatch yst' s')) := by
   obtain ⟨P, Q, hof, hQ, hfin⟩ := compileViaSsa_inv hcomp
   have hbase : Run (model := model) P yst0 yst' o := ofBlock_sound hof hrun
+  have hPwf : P.wfCheck = true := ofBlock_wfCheck hof
   have hssa : Run (model := model) Q yst0 yst' o := by
     rcases hQ with rfl | rfl
-    · exact optimizeProg_sound (ofBlock_wfCheck hof) hbase
+    · exact optimizeProg_sound hPwf hbase
     · exact hbase
-  exact finishProg_correct hexternal hfin hssa
+  have hQwf : Q.wfCheck = true := by
+    rcases hQ with rfl | rfl
+    · exact optimizeProg_wf hPwf
+    · exact hPwf
+  exact finishProg_correct hexternal hQwf hfin hssa
 
 /-- The SSA backend, packaged under the generalized backend contract: the
 second `Optimizer.EvmBackend` inhabitant, next to `EvmBackend.classic`. -/
