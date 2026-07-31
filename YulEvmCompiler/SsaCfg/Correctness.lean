@@ -1,6 +1,7 @@
 import YulEvmCompiler.Correctness
 import YulEvmCompiler.SsaCfg.Compile
 import YulEvmCompiler.SsaCfg.Sem
+import YulEvmCompiler.SsaCfg.OfYulSound
 import YulEvmCompiler.SsaCfg.ToAsmSound
 import YulEvmCompiler.Optimizer.Spec.EvmBackend
 /-!
@@ -39,17 +40,17 @@ open YulEvmCompiler
 variable [model : ExternalModel]
 local notation "yulD" => evmWithExternal model.calls model.creates
 
-/-- **Construction soundness** (proof in progress): if the construction
-accepts `prog` and the Yul semantics runs it, the SSA program runs to the
-same final state and outcome. Non-local top-level outcomes
-(`break`/`continue`/`leave`) are impossible because the construction rejects
-them (no loop/function context at the top level). -/
+/-- **Construction soundness**: if the construction accepts `prog` and the
+Yul semantics runs it, the SSA program runs to the same final state and
+outcome. Proved in `SsaCfg/OfYulSound.lean` (modulo its single declared
+frontier lemma, the `trScope_sim` derivation induction); non-local
+top-level outcomes are discharged as impossible there. -/
 theorem ofBlock_sound {prog : YulSemantics.Block Op} {P : Prog}
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
     (hof : ofBlock prog = some P)
     (hrun : YulSemantics.Run yulD prog yst0 V' yst' o) :
-    Run (model := model) P yst0 yst' o := by
-  sorry
+    Run (model := model) P yst0 yst' o :=
+  ofBlock_sound' hof hrun
 
 /-- **SSA pass soundness** (proof in progress): the optimization pipeline
 preserves SSA executions of well-formed programs. -/
