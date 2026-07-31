@@ -1,5 +1,6 @@
 import YulEvmCompiler.Correctness
 import YulEvmCompiler.ObjectResolve
+import YulEvmCompiler.CompileLive
 set_option warningAsError true
 /-!
 # YulEvmCompiler.ObjectCompile
@@ -564,6 +565,83 @@ def compileResolvedObject (o : Object Op) : Option Layout := do
   if !(plan.entries.map entryKey).Nodup then none else
   some (layoutOfPlan plan)
 
+/-! ### Last-use-retirement object path (prototype, unverified)
+
+Mirrors the plan fixpoint above with `compileLive` in place of `compile`. New
+definitions only: nothing above is changed, so every existing proof stands. See
+`YulEvmCompiler/CompileLive.lean` for why this exists and what is unproven. -/
+
+private def planAttemptLive (name : String) (code : List (YulSemantics.Stmt Op))
+    (subPlans : List ObjectPlan) (dataSegs : List (String × Data)) (c : Nat) :
+    Option (ObjectPlan ⊕ Nat) := do
+  let childrenSize := (subPlans.map (·.bytecode.length)).sum
+  let dataSize := (dataSegs.map (fun entry => entry.2.size)).sum
+  let size := c + 1 + childrenSize + dataSize
+  if size < 2 ^ 256 then
+    let children := childEntries (c + 1) subPlans
+    let dataLayout := dataEntries (c + 1 + childrenSize) dataSegs
+    let plan : ObjectPlan := {
+      name, codeBlock := code, codeSize := c, size, subObjects := subPlans, dataSegs
+      entries := { name, offset := 0, size } :: children ++ dataLayout
+      bytecode := []
+    }
+    let resolvedCode ← resolveObjectStmts (planResolver plan) code
+    let resolvedInstructions ← compileLive resolvedCode
+    let executable := assembleBytes resolvedInstructions
+    let c' := executable.length
+    if c' == c then
+      let childBytecode := (subPlans.map (·.bytecode)).flatten
+      let bytecode := executable ++ [0] ++ childBytecode ++ dataRegion dataSegs
+      if bytecode.length == size then some (.inl { plan with bytecode }) else none
+    else
+      some (.inr c')
+  else
+    none
+
+/-- Fuel-bounded iteration of `planAttempt`: keep retrying with each freshly
+measured code size until a fixpoint is reached (`.inl`), a hard failure occurs
+(`none`), or the fuel runs out (`none`). With minimal-width pushes the
+placeholder-compile length can differ from the resolved length, so the loop
+genuinely iterates; it converges in a couple of rounds (values and hence widths
+are monotone in the assumed code size). -/
+private def planLoopLive (name : String) (code : List (YulSemantics.Stmt Op))
+    (subPlans : List ObjectPlan) (dataSegs : List (String × Data)) :
+    Nat → Nat → Option ObjectPlan
+  | 0, _ => none
+  | fuel + 1, c =>
+    match planAttemptLive name code subPlans dataSegs c with
+    | none => none
+    | some (.inl plan) => some plan
+    | some (.inr c') => planLoopLive name code subPlans dataSegs fuel c'
+
+mutual
+  /-- Plan all object sizes and named byte ranges. Every object contains one
+  explicit `STOP` seam between executable code and embedded child/data bytes,
+  so ordinary Yul fall-through cannot execute payload bytes. -/
+  def planObjectLive (o : Object Op) : Option ObjectPlan :=
+    match o with
+    | .mk name code subObjects dataSegs => do
+        let subPlans ← planObjectsLive subObjects
+        let placeholderCode ← resolveObjectStmts placeholderResolver code
+        let instructions ← compileLive placeholderCode
+        let codeSize := (assembleBytes instructions).length
+        -- Iterate the layout fixpoint starting from the placeholder-compile
+        -- length. With minimal-width pushes, resolving the (0,0) placeholders
+        -- to real offsets/sizes can change push widths and hence byte
+        -- positions, so `planLoop` re-derives the layout until the recompiled
+        -- length is stable; the accepted plan still satisfies the same
+        -- decidable length checks.
+        planLoopLive name code subPlans dataSegs 34 codeSize
+    termination_by 2 * sizeOf o + 1
+
+  def planObjectsLive (os : List (Object Op)) : Option (List ObjectPlan) :=
+    match os with
+    | [] => some []
+    | o :: objects => do
+        return (← planObjectLive o) :: (← planObjectsLive objects)
+    termination_by 2 * sizeOf os
+end
+
 /-! ### Consistency -/
 
 /-- Reading `s.length` bytes at the seam offset `A.length` of `A ++ s ++ B`
@@ -969,5 +1047,11 @@ example : (compileObject demoNestedObject).map (fun (layout : Layout) =>
 in action on a concrete instance). -/
 example (L : Layout) (h : compileObject demoObject = some L) : L.Consistent demoObject :=
   compileObject_consistent h
+
+/-- Public object compiler using last-use retirement. Unverified. -/
+def compileObjectLive (o : Object Op) : Option Layout := do
+  let plan ← planObjectLive o
+  if !(plan.entries.map entryKey).Nodup then none else
+  some (layoutOfPlan plan)
 
 end YulEvmCompiler
