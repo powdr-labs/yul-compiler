@@ -1,7 +1,3 @@
--- PAUSED (not imported from the root): proved against the pre-inliner
--- optimizeProg; the SSA inlining pass extended the pipeline. The liveness
--- fixed-point/dominance-bridge machinery and the counterexample carry over
--- when proofs resume.
 import YulEvmCompiler.SsaCfg.Passes
 import YulEvmCompiler.SsaCfg.Sem
 import YulEvmCompiler.SsaCfg.ToAsm
@@ -82,25 +78,43 @@ definitions nothing reads.
     two states;
   * `evalPure_stepOp` / `evalPure_transport` — **constant-folding leaf**: what
     the folder computed on `EvmState.init` is what the op returns in *any* state.
-* The **defensive-fallback branch** of the pipeline gate
-  (`optimizeProg_of_gate_false`, `optimizeProg_sound_of_fallback`, and the
-  corresponding branch inside `optimizeProg_sound'`): when the output fails
+* The **pipeline gate**, factored through `optimizeCandidate` so that the
+  pipeline's shape is tracked in exactly one place (`optimizeProg_candidate`,
+  definitional — it already survived one shape change, the addition of
+  `Passes.inlineProg` in front): `optimizeProg_of_gate_true`,
+  `optimizeProg_of_gate_false`, `optimizeProg_sound_of_fallback`, and the
+  corresponding branch inside `optimizeProg_sound'` — when the candidate fails
   `wfCheck && domCheck`, `optimizeProg` returns the original and soundness is
   reflexivity.
 * `runOnce_dom` — dominance preservation for a pipeline round, by composition of
   the four per-pass obligations.
 * The **counterexample**, end to end: `P.wfCheck = true`,
-  `ToAsm.Prog.domCheck P = false`, `optimizeProg P = Popt` (the whole 3-round,
-  4-pass pipeline, evaluated *inside the kernel*), `Run P yst yst .normal`,
-  `¬ Run Popt yst yst .normal`.
+  `ToAsm.Prog.domCheck P = false`, `optimizeProg P = Popt` — the *whole*
+  optimizer evaluated **inside the kernel**: `Passes.inlineProg` (proved to be
+  the identity here, `hinline`: `P` has no `call`, so `siteCounts` is empty,
+  `inlineOnce` finds nothing and `pruneFuncs` keeps everything), then three
+  rounds of the four-pass pipeline, then the gate — plus
+  `Run P yst yst .normal` and `¬ Run Popt yst yst .normal`.
 
 ## The remaining frontier
 
-Nine `sorry`s, each documented at its declaration: the four per-pass simulation
-lemmas, the four dominance-preservation lemmas, and the gate-accepted branch of
-`optimizeProg_sound'`. The two dominance-dependent passes (1 and 3) additionally
-need a *specification* for their `Id.run` search/walk loops — that is where the
-bulk of the remaining work sits, not in the semantics.
+Thirteen `sorry`s, each documented at its declaration:
+
+* pass 0 (inlining): `inlineOnce_sound`, `inlineFunc_sound`, `pruneFuncs_sound`,
+  `inlineProg_sound`;
+* passes 1–4: `elimTrivialParams_sound`, `constFold_sound`, `cse_sound`,
+  `dve_sound`;
+* dominance preservation: `elimTrivialParams_dom`, `constFold_dom`, `cse_dom`,
+  `dve_dom` (`runOnce_dom` composes them and *is* proved);
+* the gate-accepted branch of `optimizeProg_sound'`.
+
+The recurring blocker is not semantic: it is that every pass is written as an
+`Id.run` loop (`findTrivialParam`'s early-return search, the `cse` walk's
+threaded `CseTab`/`Subst`, `inlineOnce`'s site search, `pruneFuncs`' worklist),
+so each proof must first *invert* a monadic loop into a specification. The
+semantic ingredients those specifications feed into — the frame lemma, the purity
+leaves, the liveness fixed point with its propagation and least-fixed-point
+lemmas, and the `LiveAgree` base case — are all proved here.
 -/
 
 namespace YulEvmCompiler.SsaCfg
@@ -628,28 +642,45 @@ theorem evalPure_transport {calls : ExternalCalls} {creates : ExternalCreates} {
 
 end Passes
 
-/-! ## The defensive fallback
+/-! ## The pipeline gate
 
-`optimizeProg` re-runs `Prog.wfCheck` on the pipeline's output and returns the
-*original* program when the check fails, so that case of pass soundness is
-reflexivity. -/
+`optimizeProg` is `inlineProg` (program-level function inlining), then the
+per-function four-pass pipeline, then a **defensive gate**: the candidate is
+returned only if it re-checks `wfCheck && domCheck`, otherwise the *original*
+program is. Naming the candidate keeps the lemmas below (and the top-level
+proof) independent of the exact pipeline shape — only `optimizeProg_candidate`
+mentions it. -/
 
+/-- The pipeline's output *before* the defensive gate. -/
+def optimizeCandidate (P : Prog) : Prog :=
+  let P0 := Passes.inlineProg P
+  { main := optimizeFunc P0.main, funcs := P0.funcs.map optimizeFunc }
+
+/-- `optimizeProg`, refactored through `optimizeCandidate`. Definitional: this
+is the single place that tracks the pipeline's shape. -/
+theorem optimizeProg_candidate (P : Prog) :
+    optimizeProg P =
+      if (optimizeCandidate P).wfCheck && ToAsm.Prog.domCheck (optimizeCandidate P)
+      then optimizeCandidate P else P := rfl
+
+/-- Gate rejected ⇒ the optimizer is the identity. -/
 theorem optimizeProg_of_gate_false {P : Prog}
-    (h : ((Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc)).wfCheck
-        && ToAsm.Prog.domCheck (Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc)))
-      = false) :
+    (h : ((optimizeCandidate P).wfCheck && ToAsm.Prog.domCheck (optimizeCandidate P)) = false) :
     optimizeProg P = P := by
-  unfold optimizeProg
-  simp only [h, Bool.false_eq_true, if_false]
+  rw [optimizeProg_candidate, h]; simp
+
+/-- Gate accepted ⇒ the optimizer is the candidate. -/
+theorem optimizeProg_of_gate_true {P : Prog}
+    (h : ((optimizeCandidate P).wfCheck && ToAsm.Prog.domCheck (optimizeCandidate P)) = true) :
+    optimizeProg P = optimizeCandidate P := by
+  rw [optimizeProg_candidate, h]; simp
 
 section
 variable [model : ExternalModel]
 
 /-- The fallback branch of pass soundness, fully proved. -/
 theorem optimizeProg_sound_of_fallback {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
-    (h : ((Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc)).wfCheck
-        && ToAsm.Prog.domCheck (Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc)))
-      = false)
+    (h : ((optimizeCandidate P).wfCheck && ToAsm.Prog.domCheck (optimizeCandidate P)) = false)
     (hrun : Run (model := model) P yst0 yst' o) :
     Run (model := model) (optimizeProg P) yst0 yst' o := by
   rw [optimizeProg_of_gate_false h]; exact hrun
@@ -710,7 +741,9 @@ def Popt : Prog := { main := fMain', funcs := #[] }
 
 /-! ### The syntactic half: `optimizeProg P = Popt`, in the kernel -/
 
+theorem r1 : List.range' 0 1 1 = [0] := by rfl
 theorem r2 : List.range' 0 2 1 = [0,1] := by rfl
+theorem r8 : List.range' 0 8 1 = [0,1,2,3,4,5,6,7] := by rfl
 theorem r3 : List.range' 0 3 1 = [0,1,2] := by rfl
 theorem r6 : List.range' 0 6 1 = [0,1,2,3,4,5] := by rfl
 theorem r9 : List.range' 0 9 1 = [0,1,2,3,4,5,6,7,8] := by rfl
@@ -799,12 +832,39 @@ That is why the un-hypothesised statement really is refuted: nothing downstream
 of the pass notices. -/
 theorem hdomPopt : ToAsm.Prog.domCheck Popt = true := by rfl
 
+/-! #### The inliner is the identity here
+
+`P` contains no `call`, so the program-level inlining pass in front of the
+per-function pipeline does nothing — the counterexample still exercises exactly
+the pass it is about. -/
+
+theorem hsites : Passes.siteCounts { main := fMain, funcs := #[] } = #[] := by rfl
+
+theorem hio : Passes.inlineOnce #[] #[] fMain = none := by
+  simp only [Passes.inlineOnce, Std.Legacy.Range.forIn_eq_forIn_range']; rfl
+
+theorem hinlineFunc : Passes.inlineFunc #[] #[] fMain = fMain := by
+  simp only [Passes.inlineFunc, Std.Legacy.Range.forIn_eq_forIn_range',
+    Std.Legacy.Range.size]
+  simp [show (8 - 0 + 1 - 1) / 1 = 8 from rfl, r8, hio]
+
+theorem hprune : Passes.pruneFuncs { main := fMain, funcs := #[] }
+    = { main := fMain, funcs := #[] } := by
+  simp only [Passes.pruneFuncs, Std.Legacy.Range.forIn_eq_forIn_range',
+    Std.Legacy.Range.size]
+  simp [r1]
+
+theorem hinline : Passes.inlineProg P = P := by
+  simp only [P, Passes.inlineProg, Std.Legacy.Range.forIn_eq_forIn_range',
+    Std.Legacy.Range.size]
+  simp [show (3 - 0 + 1 - 1) / 1 = 3 from rfl, r3, hsites, hinlineFunc, hprune]
+
 /-- The pipeline really does produce `Popt`. -/
 theorem hopt : optimizeProg P = Popt := by
-  have h : ({ main := optimizeFunc P.main, funcs := P.funcs.map optimizeFunc } : Prog) = Popt := by
-    simp only [P, Popt, hoptf]
-    simp
-  simp only [optimizeProg, h, hwfopt, hdomPopt, Bool.and_self, if_true]
+  have h : optimizeCandidate P = Popt := by
+    simp only [optimizeCandidate, hinline]
+    simp [P, Popt, hoptf]
+  rw [optimizeProg_of_gate_true (P := P) (by rw [h, hwfopt, hdomPopt]; rfl), h]
 
 /-! ### The semantic half -/
 
@@ -919,6 +979,95 @@ theorem dom_hypothesis_excludes_counterexample :
     ¬ (ToAsm.Prog.domCheck P = true) := by simp [hdomP]
 
 end Counterexample
+
+/-! ## Pass 0: program-level inlining
+
+`Passes.inlineProg` runs *before* the per-function pipeline: `inlineFunc`
+splices eligible call sites (`inlineOnce`, budgeted fixed point), then
+`pruneFuncs` drops functions no longer reachable from `main` and remaps the
+surviving ids. It needs **no dominance hypothesis** — it only ever splices a
+callee body along the unique edge that reaches it — but it does need `wfCheck`
+(`inlineOnce` additionally re-checks the arity conditions
+`g.params.length == as.length`, `g.nrets == ds.length`, `g.entry == 0` at the
+site, so those come for free from the guard rather than from `wfCheck`).
+
+I audited the splice for the same stale-read hazard the counterexample exhibits
+and did not find one: the spliced blocks are reachable only through the call
+block, `contBlock` is reachable only through the spliced `ret` edges, and the
+callee's non-parameter ids are renamed by `+ off` with
+`off > max (maxVal f) (maxVal g)`, so they cannot capture a caller id. Duplicate
+actual arguments (`g(x, x)`) map two callee parameters onto one caller id, which
+is harmless because both were bound to the same word at the call. None of this is
+*proved* — it is the content of the `sorry`s below. -/
+
+section
+variable [model : ExternalModel]
+
+/-- **One splice preserves executions.**
+
+`sorry`. The interesting step is the `Exec.call` / `Exec.callHalt` node of the
+original derivation. In the inlined function that node becomes: `jump` into the
+spliced callee entry, the callee's own derivation re-played inside the caller,
+and its `Exec.ret` re-played as the `jump ⟨contId, vs.map ρ⟩` that binds `ds` in
+`contBlock`. The register-file obligation is exactly `LiveAgree`-style
+reasoning under the renaming `ρ`: the callee ran from the *fresh* file
+`Regs.empty.setMany g.params args`, while the splice runs from the caller's file
+extended at `ρ`-images, and the two agree on everything the callee body reads
+because (i) `ρ` sends the callee's parameters to the caller ids holding `args`
+and (ii) `ρ` sends everything else above `maxVal f`, so no caller binding is
+disturbed — `Regs.setMany_congr` plus `exec_congr` (both proved) are the
+work-horses. The `.halt` case is the same derivation truncated. -/
+theorem inlineOnce_sound {P : Prog} {counts : Array Nat} {f f' : Func} {args : List U256}
+    {st : EvmState} {res : FRes} {eb eb' : Block}
+    (hwf : f.wfCheck P.funcs.size = true)
+    (hio : Passes.inlineOnce counts P.funcs f = some f')
+    (heb : f.blocks[f.entry]? = some eb)
+    (heb' : f'.blocks[f'.entry]? = some eb')
+    (hexec : Exec (model := model) P f (Regs.empty.setMany f.params args) st
+      ⟨eb.instrs, eb.term⟩ res) :
+    Exec (model := model) P f' (Regs.empty.setMany f'.params args) st
+      ⟨eb'.instrs, eb'.term⟩ res := by
+  sorry
+
+/-- **The budgeted fixed point preserves executions**: iterate
+`inlineOnce_sound` at most eight times. `sorry` only because the loop inversion
+(`for _ in [0:8]` with early return) still has to be threaded, exactly as in
+`Counterexample.hinlineFunc`. -/
+theorem inlineFunc_sound {P : Prog} {counts : Array Nat} {f : Func} {args : List U256}
+    {st : EvmState} {res : FRes} {eb eb' : Block}
+    (hwf : f.wfCheck P.funcs.size = true)
+    (heb : f.blocks[f.entry]? = some eb)
+    (heb' : (Passes.inlineFunc counts P.funcs f).blocks[f.entry]? = some eb')
+    (hexec : Exec (model := model) P f (Regs.empty.setMany f.params args) st
+      ⟨eb.instrs, eb.term⟩ res) :
+    Exec (model := model) P (Passes.inlineFunc counts P.funcs f)
+      (Regs.empty.setMany f.params args) st ⟨eb'.instrs, eb'.term⟩ res := by
+  sorry
+
+/-- **Pruning preserves whole-program runs.** Dead-code elimination at function
+granularity: `Exec` reaches `P.funcs` only through `Exec.call`'s
+`P.funcs[fid]? = some g`, so it suffices that (i) the reachability fixed point
+in `pruneFuncs` marks every id reachable from `main` — a `used`-monotonicity
+argument on its worklist loop, the same shape as `ToAsm.liveInSets_least` — and
+(ii) `remap` is a bijection between marked ids and the kept array, which the
+`fix` rewrite applies uniformly to every call instruction. `sorry`. -/
+theorem pruneFuncs_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
+    (hwf : P.wfCheck = true) (hrun : Run (model := model) P yst0 yst' o) :
+    Run (model := model) (Passes.pruneFuncs P) yst0 yst' o := by
+  sorry
+
+/-- **Inlining soundness**, the statement the top-level proof consumes.
+
+`sorry`: composes `inlineFunc_sound` (for `main` and for every element of
+`funcs` — a *simultaneous* induction over the derivation, because `Exec.call`
+recurses into a callee that is itself being inlined) with `pruneFuncs_sound`,
+around the three-round loop of `Passes.inlineProg`. No dominance hypothesis. -/
+theorem inlineProg_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
+    (hwf : P.wfCheck = true) (hrun : Run (model := model) P yst0 yst' o) :
+    Run (model := model) (Passes.inlineProg P) yst0 yst' o := by
+  sorry
+
+end
 
 /-! ## Per-pass soundness
 
@@ -1117,12 +1266,10 @@ theorem optimizeProg_sound' {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
     (hwf : P.wfCheck = true) (hdom : ToAsm.Prog.domCheck P = true)
     (hrun : Run (model := model) P yst0 yst' o) :
     Run (model := model) (optimizeProg P) yst0 yst' o := by
-  by_cases hgate : ((Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc)).wfCheck
-      && ToAsm.Prog.domCheck (Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc))) = true
+  by_cases hgate : ((optimizeCandidate P).wfCheck
+      && ToAsm.Prog.domCheck (optimizeCandidate P)) = true
   · -- the gate accepted the pipeline's output: this is the real content
-    have hP' : optimizeProg P = Prog.mk (optimizeFunc P.main) (P.funcs.map optimizeFunc) := by
-      unfold optimizeProg; simp only [hgate, if_true]
-    rw [hP']
+    rw [optimizeProg_of_gate_true hgate]
     sorry
   · -- the gate rejected it: `optimizeProg` returned `P` unchanged
     simp only [Bool.not_eq_true] at hgate
