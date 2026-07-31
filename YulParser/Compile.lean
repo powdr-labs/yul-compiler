@@ -362,16 +362,16 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
               (YulEvmCompiler.Optimizer.stackLayoutBlock blk))
           <|> YulEvmCompiler.compile
             (YulEvmCompiler.Optimizer.stackLayoutBlock blk)
-      -- The SSA-CFG backend is the preferred candidate: it consumes the same
-      -- fully optimized Yul as the first classic candidate, dissolves
-      -- variables into dataflow, and schedules the stack by liveness. It is
-      -- Option-valued like everything else — any rejection (construction,
-      -- shuffle depth, certificate) falls through to the classic chain.
+      -- The SSA-CFG backend compiles the same fully optimized Yul as the
+      -- first classic candidate; both artifacts are kept and the cheaper
+      -- one (by the static stack-traffic cost proxy, see
+      -- `SsaCfg.instrCost`) wins. Any SSA rejection (construction, shuffle
+      -- depth, certificate) simply leaves the classic chain's result.
       let pipelined := (YulEvmCompiler.Optimizer.optimizerPipeline
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none)).run b
-      let asm := YulEvmCompiler.SsaCfg.compileViaSsa pipelined
-        <|> tryLayouts pipelined
+      let ssa := YulEvmCompiler.SsaCfg.compileViaSsa pipelined
+      let classic := tryLayouts pipelined
         <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
@@ -394,6 +394,13 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
               YulEvmCompiler.compile spilledOpt
                 <|> YulEvmCompiler.compile spilled.block
           | none => none)
+      let asm :=
+        match ssa, classic with
+        | some a, some b =>
+            if YulEvmCompiler.SsaCfg.instrCost a ≤ YulEvmCompiler.SsaCfg.instrCost b
+            then some a else some b
+        | some a, none => some a
+        | none, cb => cb
       return YulEvmCompiler.assemble (← asm)
   | some (.object o) =>
       let decoded := decodeValueObject o
@@ -419,10 +426,11 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
               (YulEvmCompiler.Optimizer.stackLayoutObject obj))
           <|> YulEvmCompiler.compileObject
             (YulEvmCompiler.Optimizer.stackLayoutObject obj)
-      -- SSA-CFG backend first on the object path too (same layout fixpoint,
-      -- SSA per code block), classic chain as fallback.
-      let layout ← YulEvmCompiler.SsaCfg.compileObjectViaSsa optimized
-        <|> tryLayouts optimized
+      -- SSA-CFG backend on the object path too (same layout fixpoint, SSA
+      -- per code block); both artifacts are kept and the cheaper bytecode
+      -- (static stack-traffic cost) wins.
+      let ssaLayout := YulEvmCompiler.SsaCfg.compileObjectViaSsa optimized
+      let classicLayout := tryLayouts optimized
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none) o)
@@ -463,6 +471,14 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
                         (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)
                       <|> some plainLayout
           | none => none)
+      let layout ←
+        match ssaLayout, classicLayout with
+        | some a, some b =>
+            if YulEvmCompiler.SsaCfg.byteCodeCost a.code
+                ≤ YulEvmCompiler.SsaCfg.byteCodeCost b.code
+            then some a else some b
+        | some a, none => some a
+        | none, cb => cb
       return ByteArray.mk layout.code.toArray
   | none => none
 
