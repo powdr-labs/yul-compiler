@@ -365,9 +365,32 @@ def emitTerm (isFunc : Bool) (f : Func) (L : LabelMap) (fidx : Option Nat)
       let ops ← liftE (shuffle sym [])
       pure (ops ++ [.jump L.endLabel])
   | .halt yop as => do
-    let target := as.map (SSlot.val) ++ removeOnce sym (as.map .val)
+    let rest := removeOnce sym (as.map .val)
+    let target := as.map (SSlot.val) ++ rest
     let ops ← liftE (shuffle sym target)
-    pure (ops ++ [.op yop])
+    -- Dead barrier (never executed — `yop` always halts): the
+    -- stack-certificate analyzer walks code linearly past a halting op, so
+    -- without this it would fall through into the next block's label with a
+    -- depleted frame and record an inconsistent layout there. Consume the
+    -- leftover frame and end on an instruction with no fall-through
+    -- successor: in a function, pad the leftover words to exactly `nrets`,
+    -- lift the return address with the epilogue rotation, and `dynJump`
+    -- (whose recorded frame also feeds the analyzer's return-arity
+    -- observations); in `main`, pop everything and jump to the terminal
+    -- label, whose recorded frame is empty.
+    if isFunc then
+      let k := f.nrets
+      if k > 16 then liftE none else
+      let words := rest.length - 1
+      let pad : List Asm :=
+        if words < k then List.replicate (k - words) (.push 0)
+        else List.replicate (words - k) .pop
+      let rots := (List.range k).filterMap fun j =>
+        if h : j < 16 then some (Asm.swap ⟨j, h⟩) else none
+      pure (ops ++ [.op yop] ++ pad ++ rots ++ [.dynJump])
+    else
+      pure (ops ++ [.op yop]
+        ++ List.replicate rest.length .pop ++ [.jump L.endLabel])
 
 /-- Emit one block: its label, its instructions (with per-position
 needed-after sets), its terminator. -/

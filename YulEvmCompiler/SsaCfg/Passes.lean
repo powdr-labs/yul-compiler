@@ -175,8 +175,19 @@ def elimTrivialParams (f0 : Func) : Func := Id.run do
 
 /-- Evaluate a pure built-in on constant arguments with the dialect's
 executable step function. Pure ops ignore the state, so the initial state
-serves; anything but a clean single-value return declines. -/
+serves; anything but a clean single-value return declines.
+
+`exp` and the shifts are computed by `stepOp` with a raw `Nat`
+power/shift, so folding them on a huge literal operand would allocate an
+astronomic intermediate (the Lean runtime panics with "Nat.pow exponent is
+too big"). They are folded only when every operand is small; everything
+else is constant-time on 256-bit words. -/
 def evalPure (yop : Op) (args : List U256) : Option U256 :=
+  let sizeDangerous : Bool :=
+    match yop with
+    | .exp | .shl | .shr | .sar => true
+    | _ => false
+  if sizeDangerous && !(args.all fun a => a.toNat < 2 ^ 16) then none else
   match YulSemantics.EVM.stepOp yop args YulSemantics.EVM.EvmState.init with
   | some (.ok [v] _) => some v
   | _ => none

@@ -1777,19 +1777,26 @@ call edges. Returns `none` on an unrepresentable instruction (rejected downstrea
 partial def analyzeGo (tgts : Std.HashMap Label (List Asm × Nat)) (pls : Std.HashSet Label)
     (ar : Std.HashMap Nat Nat) :
     List AState → Array (Option AState) → List CallEdge →
-    List (Nat × Nat) → List (Nat × Nat) →
-    Option (Array (Option AState) × List CallEdge × List (Nat × Nat) × List (Nat × Nat))
-  | [], vis, edges, assumed, obs => some (vis, edges, assumed, obs)
-  | (k, pos, fl, rl, fe) :: wl, vis, edges, assumed, obs =>
-    if k ≥ vis.size then none else
+    List (Nat × Nat) → List (Nat × Nat) → Bool →
+    Array (Option AState) × List CallEdge × List (Nat × Nat) × List (Nat × Nat) × Bool
+  | [], vis, edges, assumed, obs, dead => (vis, edges, assumed, obs, dead)
+  | (k, pos, fl, rl, fe) :: wl, vis, edges, assumed, obs, dead =>
+    if k ≥ vis.size then (vis, edges, assumed, obs, true) else
     match vis[k]! with
-    | some _ => analyzeGo tgts pls ar wl vis edges assumed obs
+    | some _ => analyzeGo tgts pls ar wl vis edges assumed obs dead
     | none =>
       match stepSuccs tgts pls ar k pos fl rl fe with
       | some (succs, es, asms, os) =>
           analyzeGo tgts pls ar (succs ++ wl) (vis.set! k (some (k, pos, fl, rl, fe)))
-            (es ++ edges) (asms ++ assumed) (os ++ obs)
-      | none => none
+            (es ++ edges) (asms ++ assumed) (os ++ obs) dead
+      | none =>
+          -- Unrepresentable here — possibly only because a wrong return-arity
+          -- assumption corrupted this path's frame. Record the position (a
+          -- surviving bad entry makes `checkCert` reject, so this is never a
+          -- soundness leak) and keep walking, so the `dynJump` observations
+          -- that correct the arity for the next round are still collected.
+          analyzeGo tgts pls ar wl (vis.set! k (some (k, pos, fl, rl, fe)))
+            edges assumed obs true
 
 /-- Phase 2: solve the per-function frame base as a fixpoint over the call edges (`size` bounds the
 frame-entry key space). Rejects a non-converging graph (recursion) or a base exceeding 1023. -/
@@ -1831,29 +1838,30 @@ where
   go : Nat → Std.HashMap Nat Nat → CertData
     | 0, _ => ⟨[]⟩
     | fuel + 1, ar =>
-      match analyzeGo tgts pls ar [(n, prog, [], [], n)]
-          (Array.replicate size none) [] [] [] with
-      | none => ⟨[]⟩
-      | some (vis, edges, assumed, obs) =>
-        -- every arity assumed at a call site must agree with the arity
-        -- observed at the callee's own `dynJump`s; otherwise re-run seeded
-        -- with the observations
-        let obsMap := obs.foldl (fun m (fe, a) => m.insert fe a)
-          (∅ : Std.HashMap Nat Nat)
-        let consistent := assumed.all fun (kt, r) =>
-          match obsMap[kt]? with
-          | some a => a = r
-          | none => true
-        if !consistent then
-          go fuel (obs.foldl (fun m (fe, a) => m.insert fe a) ar)
-        else
-          match computeBase size edges with
-          | none => ⟨[]⟩
-          | some base =>
-            -- The position length is already carried, so the certificate's lookup key
-            -- costs nothing here either.
-            ⟨vis.toList.filterMap (fun o =>
-              o.map (fun s => (s.1, s.2.1, s.2.2.1, base[s.2.2.2.2]!, s.2.2.2.1)))⟩
+      let (vis, edges, assumed, obs, _dead) :=
+        analyzeGo tgts pls ar [(n, prog, [], [], n)]
+          (Array.replicate size none) [] [] [] false
+      -- every arity assumed at a call site must agree with the arity
+      -- observed at the callee's own `dynJump`s; otherwise re-run seeded
+      -- with the observations (dead ends may be assumption artifacts and
+      -- clear up on the re-run; a genuine one survives to the final round,
+      -- where its recorded entry fails `checkCert`)
+      let obsMap := obs.foldl (fun m (fe, a) => m.insert fe a)
+        (∅ : Std.HashMap Nat Nat)
+      let consistent := assumed.all fun (kt, r) =>
+        match obsMap[kt]? with
+        | some a => a = r
+        | none => true
+      if !consistent then
+        go fuel (obs.foldl (fun m (fe, a) => m.insert fe a) ar)
+      else
+        match computeBase size edges with
+        | none => ⟨[]⟩
+        | some base =>
+          -- The position length is already carried, so the certificate's lookup key
+          -- costs nothing here either.
+          ⟨vis.toList.filterMap (fun o =>
+            o.map (fun s => (s.1, s.2.1, s.2.2.1, base[s.2.2.2.2]!, s.2.2.2.1)))⟩
 
 /-- The `compile`-facing gate: analyse then verify. -/
 def stackOK2 (prog : List Asm) : Bool := checkCertFast prog (analyze prog)
