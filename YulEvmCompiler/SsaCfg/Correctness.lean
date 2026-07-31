@@ -2,6 +2,8 @@ import YulEvmCompiler.Correctness
 import YulEvmCompiler.SsaCfg.Compile
 import YulEvmCompiler.SsaCfg.Sem
 import YulEvmCompiler.SsaCfg.OfYulSound
+import YulEvmCompiler.SsaCfg.PassesSound
+import YulEvmCompiler.SsaCfg.ToAsmSound
 import YulEvmCompiler.Optimizer.Spec.EvmBackend
 /-!
 # YulEvmCompiler.SsaCfg.Correctness
@@ -52,43 +54,42 @@ theorem ofBlock_sound {prog : YulSemantics.Block Op} {P : Prog}
   ofBlock_sound' hof hrun
 
 /-- **SSA pass soundness**: the optimization pipeline preserves SSA
-executions of well-formed, dominance-respecting programs. The dominance
-hypothesis is genuinely necessary — `SsaCfg/PassesSound.lean` (paused,
-currently unimported: the SSA inliner extended `optimizeProg` past what its
-lemmas computed against) carries a kernel-checked counterexample without
-it, plus the proved liveness/dominance bridge and purity-transport
-machinery this proof resumes from. -/
+executions of well-formed, dominance-respecting programs. Delegated to
+`SsaCfg/PassesSound.lean` (fallback branch fully proved; the gate-accepted
+branch is that file's declared frontier). The dominance hypothesis is
+genuinely necessary — that file carries a kernel-checked counterexample
+without it, on which the inliner is also kernel-checked to be inert. -/
 theorem optimizeProg_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
     (hwf : P.wfCheck = true) (hdom : ToAsm.Prog.domCheck P = true)
     (hrun : Run (model := model) P yst0 yst' o) :
-    Run (model := model) (optimizeProg P) yst0 yst' o := by
-  sorry
+    Run (model := model) (optimizeProg P) yst0 yst' o :=
+  optimizeProg_sound' hwf hdom hrun
 
 /-- **Codegen simulation, normal outcome**: a normal SSA execution maps to
 an Asm trace from the program start to the end of the code with an empty
-stack. `SsaCfg/ToAsmSound.lean` proved this against the pre-inheritance emitter
-(paused, currently unimported — the entry-layout inheritance refactor
-invalidated its emission-shape lemmas; its StkMatch/shuffle machinery
-carries over when proofs resume). Single assignment (`P.wfCheck`) and label
-uniqueness are genuinely required — that file records the counterexample
-without them. -/
+stack. Delegated to `SsaCfg/ToAsmSound.lean` (modulo its declared frontier).
+Single assignment (`P.wfCheck`) and label uniqueness are genuinely
+required — that file records the counterexample without them; the
+dominance hypothesis covers the layout-table binding at jump targets. -/
 theorem emitProg_asteps {ord : Bool} {P : Prog} {asm : List Asm}
     {yst0 yst' : EvmState}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
+    (hdom : ToAsm.Prog.domCheck P = true)
     (hemit : ToAsm.emitProgOrd ord P = some asm)
     (hrun : Run (model := model) P yst0 yst' .normal) :
-    ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ := by
-  sorry
+    ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ :=
+  emitProg_asteps' hnodup hwf hdom hemit hrun
 
 /-- **Codegen simulation, halting outcome** (see `emitProg_asteps`). -/
 theorem emitProg_ahalt {ord : Bool} {P : Prog} {asm : List Asm}
     {yst0 yst' : EvmState}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
+    (hdom : ToAsm.Prog.domCheck P = true)
     (hemit : ToAsm.emitProgOrd ord P = some asm)
     (hrun : Run (model := model) P yst0 yst' .halt) :
     ∃ conf, ASteps (model := model) asm ⟨asm, [], yst0⟩ conf ∧
-      AHalt (model := model) asm conf yst' := by
-  sorry
+      AHalt (model := model) asm conf yst' :=
+  emitProg_ahalt' hnodup hwf hdom hemit hrun
 
 /-- The optimizer preserves well-formedness: its defensive gate returns the
 pipeline output only when that output re-checks, and the original
@@ -101,6 +102,16 @@ theorem optimizeProg_wf {P : Prog} (hwf : P.wfCheck = true) :
     have := (Bool.and_eq_true _ _).mp h
     exact this.1
   · exact hwf
+
+/-- The optimizer's defensive gate also preserves the dominance check. -/
+theorem optimizeProg_dom {P : Prog} (hdom : ToAsm.Prog.domCheck P = true) :
+    ToAsm.Prog.domCheck (optimizeProg P) = true := by
+  simp only [optimizeProg]
+  split
+  · next h =>
+    have := (Bool.and_eq_true _ _).mp h
+    exact this.2
+  · exact hdom
 
 omit model in
 /-- Invert a successful `finishProgOrd` into the shared final gates. -/
@@ -145,7 +156,7 @@ verified peephole and Phase B, exactly as `compile_correct` does. This part
 is fully proved — it rests on the codegen simulation lemmas above. -/
 theorem finishProg_correct (hexternal : ExternalsRealized model)
     {ord : Bool} {Q : Prog} {is : List YulEvmCompiler.Instr}
-    (hQwf : Q.wfCheck = true)
+    (hQwf : Q.wfCheck = true) (hQdom : ToAsm.Prog.domCheck Q = true)
     (hfin : finishProgOrd ord Q = some is)
     {yst0 yst' : EvmState} {o : Outcome}
     (hssa : Run (model := model) Q yst0 yst' o) :
@@ -166,7 +177,7 @@ theorem finishProg_correct (hexternal : ExternalsRealized model)
   cases hssa with
   | normal heb hexec =>
     have hsteps0 : ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ :=
-      emitProg_asteps hnodup hQwf hemit (.normal heb hexec)
+      emitProg_asteps hnodup hQwf hQdom hemit (.normal heb hexec)
     have hstepsO := Peephole.optimizeAsm_asteps hnodup hsteps0
     obtain ⟨bnd, Hb⟩ :=
       asteps_sim hexternal hlow hsmallO hstepsO
@@ -192,7 +203,7 @@ theorem finishProg_correct (hexternal : ExternalsRealized model)
     exact ⟨s2, hsteps1.snoc hstep2, hcs2, hsm2, Or.inl ⟨rfl, hhalt2, hret2⟩⟩
   | halt heb hexec =>
     obtain ⟨conf, hsteps0, hhalt0⟩ :=
-      emitProg_ahalt hnodup hQwf hemit (.halt heb hexec)
+      emitProg_ahalt hnodup hQwf hQdom hemit (.halt heb hexec)
     obtain ⟨confO, hstepsO, hhaltO⟩ :=
       Peephole.optimizeAsm_ahalt hnodup hsteps0 hhalt0
     obtain ⟨bnd, Hb⟩ :=
@@ -231,7 +242,11 @@ theorem compileViaSsa_correct (hexternal : ExternalsRealized model)
     rcases hQ with rfl | rfl
     · exact optimizeProg_wf hPwf
     · exact hPwf
-  exact finishProg_correct hexternal hQwf hfin hssa
+  have hQdom : ToAsm.Prog.domCheck Q = true := by
+    rcases hQ with rfl | rfl
+    · exact optimizeProg_dom hdom
+    · exact hdom
+  exact finishProg_correct hexternal hQwf hQdom hfin hssa
 
 /-- The SSA backend, packaged under the generalized backend contract: the
 second `Optimizer.EvmBackend` inhabitant, next to `EvmBackend.classic`. -/

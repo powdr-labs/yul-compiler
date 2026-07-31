@@ -234,6 +234,21 @@ theorem getMany_setMany_self : ∀ {xs : List ValId} {vs : List U256} {R : Regs}
         ih hnd' (by simpa using hlen)]
       simp
 
+/-- Every id of a freshly zero-initialised block reads back `0`. -/
+theorem setMany_replicate_mem : ∀ {xs : List ValId} {R : Regs},
+    xs.Nodup → ∀ i ∈ xs,
+      (R.setMany xs (List.replicate xs.length (0 : U256))) i = some 0 := by
+  intro xs
+  induction xs with
+  | nil => intro R _ i hi; exact absurd hi (by simp)
+  | cons x xs ih =>
+    intro R hnd i hi
+    have hxni : x ∉ xs := (List.nodup_cons.mp hnd).1
+    rw [List.length_cons, List.replicate_succ, setMany_cons]
+    rcases List.mem_cons.mp hi with rfl | hmem
+    · rw [setMany_other hxni, set_same]
+    · exact ih (List.nodup_cons.mp hnd).2 i hmem
+
 end Regs
 
 /-! ## `VMap` scoping lemmas
@@ -325,6 +340,140 @@ theorem setMany_cons (V : VEnv D) (x : Ident) (xs : List Ident) (v : D.Value)
     YulSemantics.VEnv.setMany V (x :: xs) (v :: vs)
       = YulSemantics.VEnv.setMany (YulSemantics.VEnv.set V x v) xs vs := by
   simp only [YulSemantics.VEnv.setMany, List.zip_cons_cons, List.foldl_cons]
+
+/-! ### Names, in-place update, and scope exit
+
+The structural facts behind the `modStmts` analysis: execution only *prepends*
+to the environment and updates existing bindings *in place*, so the name list of
+the visible prefix never changes and `restore` really does undo a scope. -/
+
+/-- The names bound by an environment, innermost first. -/
+def names (V : VEnv D) : List Ident := V.map Prod.fst
+
+@[simp] theorem names_nil : names ([] : VEnv D) = [] := rfl
+
+@[simp] theorem names_cons (p : Ident × D.Value) (V : VEnv D) :
+    names (p :: V) = p.1 :: names V := rfl
+
+@[simp] theorem length_names (V : VEnv D) : (names V).length = V.length := by
+  simp [names]
+
+theorem names_append (A B : VEnv D) : names (A ++ B) = names A ++ names B := by
+  simp [names]
+
+theorem names_set : ∀ (V : VEnv D) (x : Ident) (v : D.Value),
+    names (YulSemantics.VEnv.set V x v) = names V := by
+  intro V
+  induction V with
+  | nil => intro x v; rfl
+  | cons p V ih =>
+    intro x v
+    obtain ⟨pn, pv⟩ := p
+    rw [YulSemantics.VEnv.set]
+    by_cases h : pn = x
+    · rw [if_pos h, names_cons, names_cons, h]
+    · rw [if_neg h, names_cons, names_cons, ih]
+
+theorem length_set (V : VEnv D) (x : Ident) (v : D.Value) :
+    (YulSemantics.VEnv.set V x v).length = V.length := by
+  rw [← length_names, ← length_names, names_set]
+
+theorem names_setMany : ∀ {xs : List Ident} {vs : List D.Value} {V : VEnv D},
+    names (YulSemantics.VEnv.setMany V xs vs) = names V := by
+  intro xs
+  induction xs with
+  | nil => intro vs V; rfl
+  | cons x xs ih =>
+    intro vs V
+    cases vs with
+    | nil => rfl
+    | cons v vs => rw [setMany_cons, ih, names_set]
+
+theorem length_setMany {xs : List Ident} {vs : List D.Value} {V : VEnv D} :
+    (YulSemantics.VEnv.setMany V xs vs).length = V.length := by
+  rw [← length_names, ← length_names, names_setMany]
+
+/-- `set` updates the *innermost* binding, so any other name reads back
+unchanged. -/
+theorem get_set_ne : ∀ (V : VEnv D) {x y : Ident} (v : D.Value), y ≠ x →
+    YulSemantics.VEnv.get (YulSemantics.VEnv.set V x v) y
+      = YulSemantics.VEnv.get V y := by
+  intro V
+  induction V with
+  | nil => intro x y v _; rfl
+  | cons p V ih =>
+    intro x y v h
+    obtain ⟨pn, pv⟩ := p
+    rw [YulSemantics.VEnv.set]
+    by_cases hp : pn = x
+    · rw [if_pos hp, get_cons, get_cons]
+      simp only []
+      rw [if_neg (by simpa using Ne.symm h), if_neg (by rw [hp]; exact Ne.symm h)]
+    · rw [if_neg hp, get_cons, get_cons]
+      by_cases hq : pn = y
+      · rw [if_pos hq, if_pos hq]
+      · rw [if_neg hq, if_neg hq, ih v h]
+
+theorem get_setMany_not_mem : ∀ {xs : List Ident} {vs : List D.Value}
+    {V : VEnv D} {y : Ident}, y ∉ xs →
+    YulSemantics.VEnv.get (YulSemantics.VEnv.setMany V xs vs) y
+      = YulSemantics.VEnv.get V y := by
+  intro xs
+  induction xs with
+  | nil => intro vs V y _; rfl
+  | cons x xs ih =>
+    intro vs V y hy
+    cases vs with
+    | nil => rfl
+    | cons v vs =>
+      have hyx : y ≠ x := fun hh => hy (by rw [hh]; exact List.mem_cons_self ..)
+      rw [setMany_cons, ih (fun hh => hy (List.mem_cons_of_mem _ hh)),
+        get_set_ne V v hyx]
+
+/-- Lookup skips a prefix that does not bind the name. -/
+theorem get_append_of_not_mem : ∀ {A : VEnv D} {B : VEnv D} {x : Ident},
+    x ∉ names A →
+    YulSemantics.VEnv.get (A ++ B) x = YulSemantics.VEnv.get B x := by
+  intro A
+  induction A with
+  | nil => intro B x _; rfl
+  | cons p A ih =>
+    intro B x hx
+    rw [List.cons_append, get_cons,
+      if_neg (fun hh => hx (by rw [names_cons, hh]; exact List.mem_cons_self ..))]
+    exact ih (fun hh => hx (List.mem_cons_of_mem _ hh))
+
+/-! ### `restore` -/
+
+theorem restore_def (V Vb : VEnv D) :
+    YulSemantics.restore V Vb = Vb.drop (Vb.length - V.length) := rfl
+
+theorem length_restore {V Vb : VEnv D} (h : V.length ≤ Vb.length) :
+    (YulSemantics.restore V Vb).length = V.length := by
+  rw [restore_def, List.length_drop]; omega
+
+@[simp] theorem restore_self (V : VEnv D) : YulSemantics.restore V V = V := by
+  rw [restore_def]; simp
+
+theorem restore_of_length_eq {V Vb : VEnv D} (h : V.length = Vb.length) :
+    YulSemantics.restore V Vb = Vb := by
+  rw [restore_def, h]; simp
+
+theorem restore_append (W V : VEnv D) :
+    YulSemantics.restore V (W ++ V) = V := by
+  rw [restore_def]
+  simp
+
+/-- Scope exit composes: restoring past two nested scopes is restoring past
+the outer one. -/
+theorem restore_trans {V V₁ V₂ : VEnv D} (h₁ : V.length ≤ V₁.length)
+    (h₂ : V₁.length ≤ V₂.length) :
+    YulSemantics.restore V V₂
+      = YulSemantics.restore V (YulSemantics.restore V₁ V₂) := by
+  rw [restore_def V V₂, restore_def V (YulSemantics.restore V₁ V₂),
+    length_restore h₂, restore_def V₁ V₂, List.drop_drop]
+  congr 1
+  omega
 
 end VEnv
 
@@ -1066,6 +1215,35 @@ theorem Grows.of_mapM_constZero {α : Type} {l : List α} {s s' : BState}
   obtain ⟨w, s₂, h1, hv⟩ := M.bind_inv hv
   obtain ⟨u, s₃, h2, h3⟩ := M.bind_inv hv
   exact (Grows.of_freshVal h1).trans ((Grows.of_emit h2).trans (Grows.of_pure h3))
+
+/-- The zero-initialising allocation, exactly: the ids are the next `|l|`, and
+the emitted instruction block is their `const _ 0`s in order. -/
+theorem constZero_apply (s : BState) :
+    (do let v ← freshVal; emit (.const v 0); pure v) s
+      = some (s.fn.nextVal, { s with fn := { s.fn with
+          nextVal := s.fn.nextVal + 1,
+          cur := Instr.const s.fn.nextVal 0 :: s.fn.cur } }) := rfl
+
+theorem mapM_constZero_spec {α : Type} : ∀ (l : List α) (s : BState),
+    (l.mapM (fun _ => do let v ← freshVal; emit (.const v 0); pure v)) s
+      = some (List.range' s.fn.nextVal l.length,
+          { s with fn := { s.fn with
+              nextVal := s.fn.nextVal + l.length,
+              cur := ((List.range' s.fn.nextVal l.length).map
+                        (fun v => Instr.const v 0)).reverse ++ s.fn.cur } }) := by
+  intro l
+  induction l with
+  | nil => intro s; rfl
+  | cons a l ih =>
+    intro s
+    have hn : s.fn.nextVal + 1 + l.length = s.fn.nextVal + (l.length + 1) :=
+      Nat.add_right_comm _ _ _
+    rw [List.mapM_cons, M.bind_eq, constZero_apply]
+    simp only [Option.bind_some]
+    rw [M.bind_eq, ih]
+    simp only [Option.bind_some, M.pure_apply, List.length_cons,
+      List.range'_succ, List.map_cons, List.reverse_cons, hn]
+    simp
 
 /-- **Expression translation only allocates.** -/
 theorem trExpr_grows : ∀ (e : Expr Op) (fenv : FMap) (env : VMap) (s s' : BState)
@@ -1811,12 +1989,14 @@ Each `emit` in the construction is one of these three steps. They are the only
 place `Exec`'s instruction rules are used, and they are unconditional. -/
 
 /-- `emit (.const d v)`. -/
-theorem simS_const {P : Prog} {f : Func} {fn : FnState} {R : Regs}
-    {st : EvmState} {d : ValId} {v : U256} :
-    SimS (model := model) P f fn R st
-      { fn with cur := .const d v :: fn.cur } (R.set d v) st := by
+theorem simS_const {P : Prog} {f : Func} {fn fn' : FnState} {R : Regs}
+    {st : EvmState} {d : ValId} {v : U256}
+    (hc : fn'.curId = fn.curId) (hcur : fn'.cur = .const d v :: fn.cur) :
+    SimS (model := model) P f fn R st fn' (R.set d v) st := by
   intro res h
   obtain ⟨rest, ⟨b, hb, hinstrs, hterm⟩, hexec⟩ := h
+  rw [hc] at hb
+  rw [hcur] at hinstrs
   refine ⟨⟨.const d v :: rest.instrs, rest.term⟩, ⟨b, hb, ?_, hterm⟩, .const hexec⟩
   simpa using hinstrs
 
@@ -1826,11 +2006,14 @@ theorem simS_op {P : Prog} {f : Func} {fn : FnState} {R : Regs}
     {args rets : List U256}
     (hargs : R.getMany as = some args)
     (hb : builtinWithExternal model.calls model.creates yop args st (.ok rets st'))
-    (hlen : ds.length = rets.length) :
-    SimS (model := model) P f fn R st
-      { fn with cur := .op ds yop as :: fn.cur } (R.setMany ds rets) st' := by
+    (hlen : ds.length = rets.length)
+    {fn' : FnState} (hc : fn'.curId = fn.curId)
+    (hcur : fn'.cur = .op ds yop as :: fn.cur) :
+    SimS (model := model) P f fn R st fn' (R.setMany ds rets) st' := by
   intro res h
   obtain ⟨rest, ⟨b, hbl, hinstrs, hterm⟩, hexec⟩ := h
+  rw [hc] at hbl
+  rw [hcur] at hinstrs
   refine ⟨⟨.op ds yop as :: rest.instrs, rest.term⟩, ⟨b, hbl, ?_, hterm⟩,
     .op hargs hb hlen hexec⟩
   simpa using hinstrs
@@ -1857,11 +2040,14 @@ theorem simS_call {P : Prog} {f g : Func} {fn : FnState} {R : Regs}
     (heb : g.blocks[g.entry]? = some eb)
     (hbody : Exec (model := model) P g (Regs.empty.setMany g.params args) st
       ⟨eb.instrs, eb.term⟩ (.ret rvals st'))
-    (hlen : ds.length = rvals.length) :
-    SimS (model := model) P f fn R st
-      { fn with cur := .call ds fid as :: fn.cur } (R.setMany ds rvals) st' := by
+    (hlen : ds.length = rvals.length)
+    {fn' : FnState} (hc : fn'.curId = fn.curId)
+    (hcur : fn'.cur = .call ds fid as :: fn.cur) :
+    SimS (model := model) P f fn R st fn' (R.setMany ds rvals) st' := by
   intro res h
   obtain ⟨rest, ⟨b, hbl, hinstrs, hterm⟩, hexec⟩ := h
+  rw [hc] at hbl
+  rw [hcur] at hinstrs
   refine ⟨⟨.call ds fid as :: rest.instrs, rest.term⟩, ⟨b, hbl, ?_, hterm⟩,
     .call hg hargs hparams heb hbody hlen hexec⟩
   simpa using hinstrs
@@ -1881,6 +2067,36 @@ theorem execFrom_callHalt {P : Prog} {f g : Func} {fn : FnState} {R : Regs}
   obtain ⟨b, hbl, hinstrs, hterm⟩ := hcur
   exact ⟨⟨.call ds fid as :: rest.instrs, rest.term⟩,
     ⟨b, hbl, by simpa using hinstrs, hterm⟩, .callHalt hg hargs hparams heb hbody⟩
+
+/-- No instructions emitted. -/
+theorem simS_id {P : Prog} {f : Func} {fn fn' : FnState} {R : Regs}
+    {st : EvmState} (hc : fn'.curId = fn.curId) (hcur : fn'.cur = fn.cur) :
+    SimS (model := model) P f fn R st fn' R st := by
+  intro res h
+  obtain ⟨rest, ⟨b, hb, hinstrs, hterm⟩, hexec⟩ := h
+  rw [hc] at hb
+  rw [hcur] at hinstrs
+  exact ⟨rest, ⟨b, hb, hinstrs, hterm⟩, hexec⟩
+
+/-- A whole block of zero-initialising `const`s — `let x` without a value, and
+`trFunc`'s return variables. -/
+theorem simS_consts {P : Prog} {f : Func} {st : EvmState} :
+    ∀ (ids : List ValId) (R : Regs) (fn fn' : FnState), fn'.curId = fn.curId →
+      fn'.cur = (ids.map (fun v => Instr.const v 0)).reverse ++ fn.cur →
+      SimS (model := model) P f fn R st fn'
+        (R.setMany ids (List.replicate ids.length 0)) st := by
+  intro ids
+  induction ids with
+  | nil => intro R fn fn' hc hcur; simpa using simS_id hc (by simpa using hcur)
+  | cons v ids ih =>
+    intro R fn fn' hc hcur
+    have hstep : SimS (model := model) P f fn R st
+        { fn with cur := .const v 0 :: fn.cur } (R.set v 0) st :=
+      simS_const rfl rfl
+    have htail := ih (R.set v 0) { fn with cur := .const v 0 :: fn.cur } fn' hc (by
+      rw [hcur]; simp)
+    rw [List.length_cons, List.replicate_succ, Regs.setMany_cons]
+    exact hstep.trans htail
 
 /-! ### Leaves: the terminators the construction seals with -/
 
@@ -1928,6 +2144,139 @@ theorem execFrom_branchFalse {P : Prog} {f : Func} {fn : FnState} {R : Regs}
     ExecFrom (model := model) P f fn R st res := by
   obtain ⟨tb, htb, hlen, hexec⟩ := hjmp
   exact ⟨⟨[], .branch c et ef⟩, hcur, .branchFalse hc htb hg hlen hexec⟩
+
+/-! ### The freshness invariant
+
+The register file only ever binds ids the builder has already handed out. This
+is what makes `Regs.Le` available at every `freshVal`: the id just allocated is
+provably unbound, so binding it *extends* the register file and every earlier
+fact survives (`EnvOK.mono`). -/
+
+/-- `R` binds nothing the builder has not yet allocated. -/
+def RegsFresh (R : Regs) (fn : FnState) : Prop :=
+  ∀ i : ValId, fn.nextVal ≤ i → R i = none
+
+namespace RegsFresh
+
+omit model in
+theorem mono {R : Regs} {fn fn' : FnState} (h : RegsFresh R fn)
+    (hle : fn.nextVal ≤ fn'.nextVal) : RegsFresh R fn' :=
+  fun i hi => h i (Nat.le_trans hle hi)
+
+omit model in
+/-- The id `freshVal` is about to hand out is unbound. -/
+theorem unbound {R : Regs} {fn : FnState} (h : RegsFresh R fn) :
+    R fn.nextVal = none := h _ (Nat.le_refl _)
+
+omit model in
+theorem set {R : Regs} {fn fn' : FnState} (h : RegsFresh R fn) (v : U256)
+    (hnv : fn.nextVal + 1 ≤ fn'.nextVal) :
+    RegsFresh (R.set fn.nextVal v) fn' := by
+  intro i hi
+  have hlt : fn.nextVal < i := Nat.lt_of_lt_of_le hnv hi
+  rw [Regs.set_other R v (Nat.ne_of_gt hlt)]
+  exact h i (Nat.le_of_lt hlt)
+
+omit model in
+/-- A whole `mapM freshVal` block of ids. -/
+theorem setMany {R : Regs} {fn fn' : FnState} (h : RegsFresh R fn) {n : Nat}
+    {vs : List U256} (hnv : fn.nextVal + n ≤ fn'.nextVal) :
+    RegsFresh (R.setMany (List.range' fn.nextVal n) vs) fn' := by
+  intro i hi
+  have hchain : fn.nextVal + n ≤ i := Nat.le_trans hnv hi
+  have hnm : i ∉ List.range' fn.nextVal n := by
+    intro hmem
+    obtain ⟨-, hb2⟩ := M.mem_range'_bounds hmem
+    exact absurd (Nat.lt_of_lt_of_le hb2 hchain) (Nat.lt_irrefl i)
+  rw [Regs.setMany_other hnm]
+  exact h i (Nat.le_trans (Nat.le_add_right _ n) hchain)
+
+end RegsFresh
+
+/-! ### Expression-class simulation
+
+The motive the `.expr` / `.args` cases of the main induction carry: the fragment
+the construction laid down transports the machine state, defines the
+expression's `ValId`, and *extends* the register file (single assignment). -/
+
+/-- One expression: `i` holds `v` in the extended register file. -/
+def EOut (P : Prog) (f : Func) (s₀ s₁ : BState) (R₀ : Regs) (i : ValId)
+    (v : U256) (yst yst' : EvmState) : Prop :=
+  ∃ R₁ : Regs, Regs.Le R₀ R₁ ∧ RegsFresh R₁ s₁.fn ∧ R₁ i = some v
+    ∧ SimS (model := model) P f s₀.fn R₀ yst s₁.fn R₁ yst'
+
+/-- An argument list: the ids read back as the value list, in source order. -/
+def EOutL (P : Prog) (f : Func) (s₀ s₁ : BState) (R₀ : Regs)
+    (ids : List ValId) (vs : List U256) (yst yst' : EvmState) : Prop :=
+  ∃ R₁ : Regs, Regs.Le R₀ R₁ ∧ RegsFresh R₁ s₁.fn ∧ R₁.getMany ids = some vs
+    ∧ SimS (model := model) P f s₀.fn R₀ yst s₁.fn R₁ yst'
+
+/-- **`lit`** — the construction emits a `const`; the source rule leaves the
+machine state alone. -/
+theorem sim_lit {P : Prog} {f : Func} {fenv : FMap} {env : VMap} {R : Regs}
+    {l : Literal} {s₀ s₁ : BState} {i : ValId} {yst : EvmState}
+    (hfresh : RegsFresh R s₀.fn)
+    (htr : trExpr fenv env (.lit l) s₀ = some (i, s₁)) :
+    EOut (model := model) P f s₀ s₁ R i (YulSemantics.EVM.litValue l) yst yst := by
+  rw [trExpr] at htr
+  obtain ⟨w, sA, h1, htr⟩ := M.bind_inv htr
+  obtain ⟨u, sB, h2, h3⟩ := M.bind_inv htr
+  rw [M.freshVal_apply] at h1
+  obtain ⟨hw, hsA⟩ := M.some_pair_inj h1
+  subst hw
+  subst hsA
+  rw [M.emit_apply] at h2
+  obtain ⟨-, hsB⟩ := M.some_pair_inj h2
+  subst hsB
+  obtain ⟨hi, hs₁⟩ := M.pure_inv h3
+  subst hi
+  subst hs₁
+  exact ⟨R.set s₀.fn.nextVal (YulSemantics.EVM.litValue l),
+    Regs.Le.set _ hfresh.unbound, hfresh.set _ (Nat.le_refl _),
+    Regs.set_same .., simS_const rfl rfl⟩
+
+/-- **`var`** — the construction resolves the name in its `VMap`; `EnvOK` says
+the id it finds holds the value the source environment records. -/
+theorem sim_var {P : Prog} {f : Func} {fenv : FMap} {env : VMap} {R : Regs}
+    {V : VEnv yulD} {x : Ident} {v : U256} {s₀ s₁ : BState} {i : ValId}
+    {yst : EvmState}
+    (hfresh : RegsFresh R s₀.fn) (henv : EnvOK (model := model) env V R)
+    (hget : YulSemantics.VEnv.get V x = some v)
+    (htr : trExpr fenv env (.var x) s₀ = some (i, s₁)) :
+    EOut (model := model) P f s₀ s₁ R i v yst yst := by
+  rw [trExpr] at htr
+  obtain ⟨hlk, hs₁⟩ := M.liftO_inv htr
+  obtain ⟨j, hj, hRj⟩ := henv.get_rev hget
+  obtain rfl : i = j := Option.some.inj (hlk.symm.trans hj)
+  subst hs₁
+  exact ⟨R, Regs.Le.rfl R, hfresh, hRj, SimS.rfl'⟩
+
+/-- **`args []`** — nothing emitted. -/
+theorem sim_args_nil {P : Prog} {f : Func} {fenv : FMap} {env : VMap} {R : Regs}
+    {s₀ s₁ : BState} {ids : List ValId} {yst : EvmState}
+    (hfresh : RegsFresh R s₀.fn)
+    (htr : trArgs fenv env [] s₀ = some (ids, s₁)) :
+    EOutL (model := model) P f s₀ s₁ R ids [] yst yst := by
+  rw [trArgs] at htr
+  obtain ⟨hids, hs₁⟩ := M.pure_inv htr
+  subst hs₁; subst hids
+  exact ⟨R, Regs.Le.rfl R, hfresh, rfl, SimS.rfl'⟩
+
+/-- **`args (e :: rest)`** — the construction translates `rest` first, matching
+the source's right-to-left evaluation order; the two fragments compose and the
+earlier ids survive because the register file only extends. -/
+theorem sim_args_cons {P : Prog} {f : Func} {s₀ sA s₁ : BState} {R : Regs}
+    {restIds : List ValId} {i : ValId} {restvals : List U256} {v : U256}
+    {yst yst1 yst2 : EvmState}
+    (hrest : EOutL (model := model) P f s₀ sA R restIds restvals yst yst1)
+    (hhead : ∀ R', Regs.Le R R' → RegsFresh R' sA.fn →
+      EOut (model := model) P f sA s₁ R' i v yst1 yst2) :
+    EOutL (model := model) P f s₀ s₁ R (i :: restIds) (v :: restvals) yst yst2 := by
+  obtain ⟨Ra, hle, hfr, hget, hsim⟩ := hrest
+  obtain ⟨Rb, hle2, hfr2, hi, hsim2⟩ := hhead Ra hle hfr
+  refine ⟨Rb, hle.trans hle2, hfr2, ?_, hsim.trans hsim2⟩
+  rw [Regs.getMany_cons, hi, Regs.getMany_mono hle2 hget]
+  simp
 
 /-! ## Function environments
 
@@ -2159,17 +2508,17 @@ def SOut (P : Prog) (f : Func) (lctx : Option LoopCtx)
     Prop :=
   match o with
   | .normal => ∃ (env' : VMap) (R₁ : Regs),
-      renv = some env' ∧ Regs.Le R₀ R₁
+      renv = some env' ∧ Regs.Le R₀ R₁ ∧ RegsFresh R₁ s₁.fn
         ∧ EnvOK (model := model) env' V' R₁
         ∧ SimS (model := model) P f s₀.fn R₀ yst s₁.fn R₁ yst'
   | .halt => ExecFrom (model := model) P f s₀.fn R₀ yst (.halt yst')
   | .break => ∃ (lc : LoopCtx) (R₁ : Regs) (vals : List U256),
-      lctx = some lc ∧ Regs.Le R₀ R₁
+      lctx = some lc ∧ Regs.Le R₀ R₁ ∧ RegsFresh R₁ s₁.fn
         ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) lc.vars vals
         ∧ ∀ res, JumpTo (model := model) P f lc.brkTgt vals R₁ yst' res
             → ExecFrom (model := model) P f s₀.fn R₀ yst res
   | .continue => ∃ (lc : LoopCtx) (R₁ : Regs) (vals : List U256),
-      lctx = some lc ∧ Regs.Le R₀ R₁
+      lctx = some lc ∧ Regs.Le R₀ R₁ ∧ RegsFresh R₁ s₁.fn
         ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) lc.vars vals
         ∧ ∀ res, JumpTo (model := model) P f lc.contTgt vals R₁ yst' res
             → ExecFrom (model := model) P f s₀.fn R₀ yst res
@@ -2178,40 +2527,155 @@ def SOut (P : Prog) (f : Func) (lctx : Option LoopCtx)
         ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) rs vals
         ∧ ExecFrom (model := model) P f s₀.fn R₀ yst (.ret vals yst')
 
-/--
-**The `modStmts` over-approximation is sound** (the remaining analysis
-obligation).
+/-! ## The `modStmts` over-approximation
 
 A statement list only changes the *outer* bindings its `modStmts` analysis
-names: if `ss`, run from `V`, ends in `V'`, then every outer variable `x` that
-the analysis does not report still reads back the value it had. (`x ∉ locals`
-excludes the names `ss` declares itself, which `restore` drops anyway; the
-analysis reports them relative to the enclosing list, which is why `locals` is
-threaded.)
+names. This is exactly what licenses `trStmt`'s `cond`, `switch` and `forLoop`
+cases to thread only `modifiedX env bodies` through their join / header / exit
+block parameters and to keep the *old* `ValId` for every other variable: SSA
+registers persist across blocks, so an unreported variable's existing id still
+holds its value. Missing names would be unsound; extra ones are harmless,
+because then both incoming edges pass the same value. -/
 
-This is exactly what licenses `trStmt`'s `cond`, `switch` and `forLoop` cases to
-thread only `modifiedX env bodies` through their join / header / exit block
-parameters and to keep the *old* `ValId` for every other variable: SSA registers
-persist across blocks, so an unreported variable's existing id still holds its
-value. Missing names would be unsound; extra ones are harmless, because then
-both incoming edges pass the same value.
+/-- `locals` names exactly the innermost bindings the enclosing statement list
+has declared so far — the invariant `modStmts` threads through its `letDecl`
+case, and the reason its `filter` may drop a name without lying. -/
+def LocalsOK (locals : List Ident) (V : VEnv yulD) : Prop :=
+  (VEnv.names V).take locals.length = locals
 
-Obligation: an induction over the source `Step` derivation whose statement-class
-motive is the displayed property, with `True` on the expression classes (they do
-not touch `V`) and the corresponding property on the loop-iteration class. The
-interesting cases are `seqCons` (compose the two `restore`s, threading `locals`
-through the `letDecl` that extends it), `block`/`forLoop` (nested `restore`),
-and `switchExec` (the selected body is one of the bodies `modCases` scanned, by
-`List.find?_mem` on `selectSwitch`).
+@[simp] theorem localsOK_nil (V : VEnv yulD) : LocalsOK [] V := by
+  simp [LocalsOK]
+
+/-- What a statement-class execution does to the environment: it preserves the
+name list, and every binding outside the locally declared prefix either keeps
+its value or is named by the analysis. -/
+def ModOut (locals mods : List Ident) (V W : VEnv yulD) : Prop :=
+  List.Forall₂ (fun (p q : Ident × U256) => p.1 = q.1) V W
+  ∧ List.Forall₂
+      (fun (p q : Ident × U256) => p.1 = q.1 ∧ (q.2 = p.2 ∨ q.1 ∈ mods))
+      (V.drop locals.length) (W.drop locals.length)
+
+/-- Reading back through a `ModOut`: a name the analysis does not report reads
+the same in both environments. -/
+theorem get_congr_of_forall₂ {mods : List Ident} {x : Ident} (hx : x ∉ mods) :
+    ∀ {V W : VEnv yulD},
+      List.Forall₂
+        (fun (p q : Ident × U256) => p.1 = q.1 ∧ (q.2 = p.2 ∨ q.1 ∈ mods)) V W →
+      YulSemantics.VEnv.get W x = YulSemantics.VEnv.get V x := by
+  intro V W h
+  induction h with
+  | nil => rfl
+  | @cons p q V' W' hpq _ ih =>
+    rw [VEnv.get_cons, VEnv.get_cons, ← hpq.1]
+    by_cases hc : p.1 = x
+    · rw [if_pos hc, if_pos hc]
+      rcases hpq.2 with heq | hmem
+      · rw [heq]
+      · exact absurd (by rw [← hc, hpq.1]; exact hmem) hx
+    · rw [if_neg hc, if_neg hc]; exact ih
+
+/--
+**The `modStmts` over-approximation is sound** — the remaining analysis
+obligation, in the form the induction can carry.
+
+Obligation: an induction over the source `Step` derivation whose motive is
+
+* `.stmt s`, `.sres V' _ _`  ↦  `LocalsOK locals V → ModOut locals (modStmt locals s) V (restore V V')`
+* `.stmts ss`, `.sres V' _ _` ↦ `LocalsOK locals V → ModOut locals (modStmts locals ss) V (restore V V')`
+* `.loop c post body`, `.sres V' _ _` ↦ the same with
+  `modStmts locals post ++ modStmts locals body`
+* expression classes ↦ `True` (they do not touch `V`)
+
+all universally quantified over `locals`. The `VEnv` section above has the
+supporting lemmas: `restore_trans` (compose the two scope exits in `seqCons`),
+`restore_append` / `restore_of_length_eq` (the `letDecl` and in-place cases),
+`names_set` / `names_setMany` / `length_setMany` (names never move, so the first
+`Forall₂` component is immediate), and `get_setMany_not_mem` (the `assignVal`
+case: `modStmt locals (.assign vars e) = vars.filter (· ∉ locals)`).
+
+The cases that carry the content:
+
+* `seqCons` — `restore V V₂ = restore V (restore V₁ V₂)`; when the head is a
+  `letDecl`, `locals` grows by `vars` and `V₁ = vars.zip vals ++ V`, so the two
+  `drop`s line up (`V₁.drop (|vars| + |locals|) = V.drop |locals|`). This is
+  why `LocalsOK` is needed: without it the shadowed outer binding of a
+  re-declared name could not be separated from the fresh inner one.
+* `switchExec` — the selected block is one of the bodies `modCases` scanned;
+  `selectSwitch` picks it with `List.find?`, so `List.find?_mem` gives the
+  membership.
+* `forLoop` — `Vinit` extends `V` by exactly `declsOf init` (only a top-level
+  `letDecl` prepends), which is what makes `LocalsOK (declsOf init ++ locals)
+  Vinit` hold for the loop-iteration sub-derivation.
+* `loopStep` — three sub-derivations (body block, post block, recursive loop)
+  composed with `restore_trans`.
 -/
-theorem modStmts_sound {funs : YulSemantics.FunEnv yulD} {V Vb : VEnv yulD}
+theorem modStmts_pos {funs : YulSemantics.FunEnv yulD} {V Vb : VEnv yulD}
     {yst ystb : EvmState} {o : Outcome} {locals : List Ident}
     {ss : List (Stmt Op)}
+    (_hloc : LocalsOK locals V)
     (_h : YulSemantics.ExecStmts yulD funs V yst ss Vb ystb o) :
-    ∀ x : Ident, x ∉ locals → x ∉ modStmts locals ss →
+    ModOut locals (modStmts locals ss) V (YulSemantics.restore V Vb) := by
+  sorry
+
+/-- **The form the construction consumes.** `modifiedX` analyses each body with
+`modStmts []`, so this is `modStmts_pos` at the empty local scope: every name
+the analysis does not report reads back unchanged after the list has run. -/
+theorem modStmts_sound {funs : YulSemantics.FunEnv yulD} {V Vb : VEnv yulD}
+    {yst ystb : EvmState} {o : Outcome} {ss : List (Stmt Op)}
+    (h : YulSemantics.ExecStmts yulD funs V yst ss Vb ystb o) :
+    ∀ x : Ident, x ∉ modStmts [] ss →
       YulSemantics.VEnv.get (YulSemantics.restore V Vb) x
         = YulSemantics.VEnv.get V x := by
-  sorry
+  intro x hx
+  obtain ⟨-, hvals⟩ := modStmts_pos (localsOK_nil V) h
+  simpa using get_congr_of_forall₂ hx (by simpa using hvals)
+
+/-! ### Statement-class leaves
+
+Per-case pieces of the main induction, each usable on its own. -/
+
+/-- **`letDecl vars none`** — the construction emits one zero `const` per
+declared name and prepends them to its `VMap`; the source rule prepends
+`bindZeros`. -/
+theorem sim_letDecl_none {P : Prog} {f : Func} {fenv : FMap} {env : VMap}
+    {R : Regs} {V : VEnv yulD} {lctx : Option LoopCtx}
+    {rets : Option (List Ident)} {vars : List Ident} {s₀ s₁ : BState}
+    {renv : Option VMap} {yst : EvmState}
+    (hfresh : RegsFresh R s₀.fn) (henv : EnvOK (model := model) env V R)
+    (htr : trStmt fenv env lctx rets (.letDecl vars none) s₀ = some (renv, s₁)) :
+    SOut (model := model) P f lctx rets s₀ s₁ R renv
+      (YulSemantics.bindZeros yulD vars ++ V) yst yst .normal := by
+  rw [trStmt] at htr
+  by_cases hgate : (vars.any env.mem || !decide vars.Nodup) = true
+  · rw [if_pos hgate] at htr
+    obtain ⟨u, sA, h1, -⟩ := M.bind_inv htr
+    exact absurd h1 (by simp [reject])
+  rw [if_neg hgate] at htr
+  obtain ⟨u, sA, h1, htr⟩ := M.bind_inv htr
+  obtain ⟨-, hsA⟩ := M.pure_inv h1
+  rw [hsA] at htr
+  obtain ⟨ids, sB, h2, h3⟩ := M.bind_inv htr
+  rw [mapM_constZero_spec] at h2
+  obtain ⟨hids, hsB⟩ := M.some_pair_inj h2
+  subst hids
+  subst hsB
+  obtain ⟨hrenv, hs₁⟩ := M.pure_inv h3
+  subst hs₁
+  have hnd : (List.range' s₀.fn.nextVal vars.length).Nodup := M.nodup_range' _ _
+  have hlen : (List.range' s₀.fn.nextVal vars.length).length = vars.length := by simp
+  have hnone : ∀ i ∈ List.range' s₀.fn.nextVal vars.length, R i = none :=
+    fun i hi => hfresh i (M.mem_range'_bounds hi).1
+  have hle := Regs.Le.setMany (vs := List.replicate
+      (List.range' s₀.fn.nextVal vars.length).length (0 : U256)) hnd hnone
+  refine ⟨vars.zip (List.range' s₀.fn.nextVal vars.length) ++ env,
+    R.setMany (List.range' s₀.fn.nextVal vars.length)
+      (List.replicate (List.range' s₀.fn.nextVal vars.length).length 0),
+    hrenv, hle, ?_, ?_, ?_⟩
+  · rw [hlen]
+    exact hfresh.setMany (Nat.le_refl _)
+  · exact EnvOK.append (EnvOK.zip_bindZeros hlen.symm
+      (fun i hi => Regs.setMany_replicate_mem hnd i hi)) (henv.mono hle)
+  · exact simS_consts _ R s₀.fn _ rfl rfl
 
 /--
 **The construction simulation — the remaining hole.**
@@ -2241,8 +2705,23 @@ Two of the three sub-obligations this proof needs are now discharged above:
   established at the top level in `ofBlock_sound'` and travels inwards along
   each fragment by `SGrowsAt.completes_of`.
 
-What is still missing, besides the induction itself, is
-`modStmts_sound` below.
+The expression-class leaves (`sim_lit`, `sim_var`, `sim_args_nil`,
+`sim_args_cons`) and the first statement-class leaf (`sim_letDecl_none`) are
+proved above, together with the freshness invariant `RegsFresh` they thread.
+
+What is still missing, besides the induction itself, is `modStmts_pos` above.
+
+One design note for the diverting cases (`break`/`continue`/`leave`, and the
+halting `exprStmt`): the block such a statement seals is *its own* current
+block, which `Completes.sealed` deliberately exempts. Those leaves therefore
+need the extra hypothesis
+
+    ∀ b, s₁.fn.blocks[s₁.fn.curId]? = some b → f.blocks[s₁.fn.curId]? = some b
+
+("the block I just sealed is final"), which the *enclosing* construct supplies:
+`cond`/`switch`/`forLoop` all `moveTo` a fresh join/exit block afterwards, so by
+the time they finish the sealed block is no longer the current one and their own
+`Completes` covers it.
 -/
 theorem trScope_sim {P : Prog} {f : Func}
     {funs : YulSemantics.FunEnv yulD} {fenv : FMap}
@@ -2318,7 +2797,7 @@ theorem ofBlock_sound' {prog : YulSemantics.Block Op} {P : Prog}
       simp_all
     cases o with
     | normal =>
-      obtain ⟨env', R₁, hrenv, _hle, _henv', hsimS⟩ := hsim
+      obtain ⟨env', R₁, hrenv, _hle, _hfr, _henv', hsimS⟩ := hsim
       -- the fall-through seal put `ret []` on the block the scope ended in
       obtain ⟨b, hb, hmb⟩ : ∃ b, s₁.fn.blocks[s₁.fn.curId]? = some b
           ∧ P.main.blocks
