@@ -1,5 +1,7 @@
 import YulParser.Source
 import YulEvmCompiler.ObjectCompile
+import YulEvmCompiler.SsaCfg.Compile
+import YulEvmCompiler.SsaCfg.Object
 import YulEvmCompiler.Optimizer.Implementation.Pipeline
 import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
 import YulEvmCompiler.Optimizer.Implementation.MemorySpillSelect
@@ -360,9 +362,16 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
               (YulEvmCompiler.Optimizer.stackLayoutBlock blk))
           <|> YulEvmCompiler.compile
             (YulEvmCompiler.Optimizer.stackLayoutBlock blk)
-      let asm := tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipeline
+      -- The SSA-CFG backend is the preferred candidate: it consumes the same
+      -- fully optimized Yul as the first classic candidate, dissolves
+      -- variables into dataflow, and schedules the stack by liveness. It is
+      -- Option-valued like everything else — any rejection (construction,
+      -- shuffle depth, certificate) falls through to the classic chain.
+      let pipelined := (YulEvmCompiler.Optimizer.optimizerPipeline
           (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
+          (creates := YulSemantics.EVM.ExternalCreates.none)).run b
+      let asm := YulEvmCompiler.SsaCfg.compileViaSsa pipelined
+        <|> tryLayouts pipelined
         <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
@@ -410,7 +419,10 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
               (YulEvmCompiler.Optimizer.stackLayoutObject obj))
           <|> YulEvmCompiler.compileObject
             (YulEvmCompiler.Optimizer.stackLayoutObject obj)
-      let layout ← tryLayouts optimized
+      -- SSA-CFG backend first on the object path too (same layout fixpoint,
+      -- SSA per code block), classic chain as fallback.
+      let layout ← YulEvmCompiler.SsaCfg.compileObjectViaSsa optimized
+        <|> tryLayouts optimized
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none) o)

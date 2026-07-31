@@ -521,7 +521,7 @@ like a function with no parameters and no returns (`ret []` is the `.normal`
 fall-through), user functions fill the slots allocated at their scopes. The
 result is checked (`Prog.wfCheck`) — following the repo's checked-not-proved
 well-formedness discipline — and rejected on failure. -/
-def ofBlock (prog : List (Stmt Op)) : Option Prog := do
+def ofBlockRaw (prog : List (Stmt Op)) : Option Prog := do
   let build : M Func := do
     let entry ← newBlock []
     moveTo entry
@@ -532,7 +532,26 @@ def ofBlock (prog : List (Stmt Op)) : Option Prog := do
     pure { params := [], nrets := 0, entry := entry, blocks := done.blocks }
   let (main, s) ← build {}
   let funcs ← s.funcs.mapM id
-  let P : Prog := ⟨main, funcs⟩
-  if P.wfCheck then some P else none
+  some ⟨main, funcs⟩
+
+/-- `ofBlockRaw` behind the well-formedness gate (the public entry point). -/
+def ofBlock (prog : List (Stmt Op)) : Option Prog :=
+  (ofBlockRaw prog).bind fun P => if P.wfCheck then some P else none
+
+/-- The successful construction's output is well-formed: `ofBlock` returns
+only programs that pass `Prog.wfCheck`. -/
+theorem ofBlock_wfCheck {prog : List (Stmt Op)} {P : Prog}
+    (hof : ofBlock prog = some P) : P.wfCheck = true := by
+  unfold ofBlock at hof
+  rcases hraw : ofBlockRaw prog with _ | Q <;> rw [hraw] at hof
+  · exact absurd hof (by simp)
+  · rw [show (some Q).bind (fun P => if P.wfCheck then some P else none)
+        = if Q.wfCheck then some Q else none from rfl] at hof
+    by_cases hwf : Q.wfCheck
+    · rw [if_pos hwf] at hof
+      obtain rfl := Option.some.inj hof
+      exact hwf
+    · rw [if_neg hwf] at hof
+      exact absurd hof (by simp)
 
 end YulEvmCompiler.SsaCfg
