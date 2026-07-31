@@ -10,8 +10,8 @@ dispatch_large.sol	92219	76647
 dispatch_large_optimised.sol	92219	76647
 dispatch_medium.sol	45157	41541
 dispatch_medium_optimised.sol	45157	41541
-dispatch_small.sol	29475	29028
-dispatch_small_optimised.sol	29475	29028
+dispatch_small.sol	29445	29028
+dispatch_small_optimised.sol	29445	29028
 exp.sol	971	776
 exp_optimized.sol	971	776
 storage_costs.sol	27263	26869

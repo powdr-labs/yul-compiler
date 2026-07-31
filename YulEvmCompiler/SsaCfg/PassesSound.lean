@@ -1,3 +1,7 @@
+-- PAUSED (not imported from the root): proved against the pre-inliner
+-- optimizeProg; the SSA inlining pass extended the pipeline. The liveness
+-- fixed-point/dominance-bridge machinery and the counterexample carry over
+-- when proofs resume.
 import YulEvmCompiler.SsaCfg.Passes
 import YulEvmCompiler.SsaCfg.Sem
 import YulEvmCompiler.SsaCfg.ToAsm

@@ -5,8 +5,8 @@
 # columns: fixture<TAB>ours<TAB>solc
 BitMath.sol:leastSignificantBit(uint256)	954	801
 BitMath.sol:mostSignificantBit(uint256)	1290	1035
-FullMath.sol:mulDiv(uint256,uint256,uint256)	1222	770
-FullMath.sol:mulDivRoundingUp(uint256,uint256,uint256)	1498	865
+FullMath.sol:mulDiv(uint256,uint256,uint256)	1256	770
+FullMath.sol:mulDivRoundingUp(uint256,uint256,uint256)	1434	865
 LPFeeLibrary.sol:getInitialLPFee(uint24)	445	315
 LPFeeLibrary.sol:isDynamicFee(uint24)	469	277
 LPFeeLibrary.sol:isOverride(uint24)	402	217
@@ -46,4 +46,4 @@ TickMath.sol:getSqrtPriceAtTickSweep()	80283	73316
 TickMath.sol:getTickAtSqrtPrice(uint160)	5102	4546
 TickMath.sol:getTickAtSqrtPriceSweep()	227871	203628
 UnsafeMath.sol:divRoundingUp(uint256,uint256)	558	372
-UnsafeMath.sol:simpleMulDiv(uint256,uint256,uint256)	782	396
+UnsafeMath.sol:simpleMulDiv(uint256,uint256,uint256)	674	396

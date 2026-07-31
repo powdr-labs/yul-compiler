@@ -359,6 +359,162 @@ def dve (f : Func) : Func :=
 def runOnce (f : Func) : Func :=
   dve (cse (constFold (elimTrivialParams f)))
 
+/-! ## Program-level pass: SSA function inlining
+
+Inlining on the CFG is a **splice**: the callee's blocks are copied with
+fresh value/block ids, its parameters are *substituted* by the call's
+argument values (zero copies — they are ordinary SSA values in the caller's
+scope), each `ret` becomes a jump to a continuation block whose parameters
+are the call's destinations, and the call site's block is split around it.
+Halting terminators halt the whole frame either way, so they splice
+verbatim. This is the optimization the per-opcode gap profile attributes
+the remaining call overhead to (`JUMP`/`JUMPDEST` plumbing, argument
+shuffling around the classic calling convention), and it is exactly the
+transform that is near-impossible as a Yul→Yul pass for multi-statement
+functions but trivial here. -/
+
+/-- Call-site counts per function id, across the whole program. -/
+def siteCounts (P : Prog) : Array Nat := Id.run do
+  let mut acc : Array Nat := Array.replicate P.funcs.size 0
+  for f in #[P.main] ++ P.funcs do
+    for b in f.blocks do
+      for i in b.instrs do
+        if let .call _ fid _ := i then
+          if fid < acc.size then acc := acc.set! fid (acc[fid]! + 1)
+  return acc
+
+/-- Inline a call site when the callee has a **single call site** (net code
+size decreases — the call/return plumbing goes and the original is pruned)
+or is small (bounded growth). Nested calls splice verbatim (function ids
+stay valid); the per-function budget bounds recursion. -/
+def inlinable (sites : Nat) (g : Func) : Bool :=
+  sites == 1
+  || (g.blocks.size ≤ 4
+      && (g.blocks.foldl (fun n b => n + b.instrs.length) 0) ≤ 20)
+
+/-- The largest value id mentioned by a function (for fresh renaming). -/
+def maxVal (f : Func) : ValId :=
+  let m := fun acc (vs : List ValId) => vs.foldl Nat.max acc
+  f.blocks.foldl (init := m (m 0 f.params) []) fun acc b =>
+    m (m (b.instrs.foldl (fun a i => m (m a i.defs) i.uses) acc) b.params)
+      b.term.uses
+
+/-- Rename every value id of an instruction through `ρ`. -/
+def renameInstr (ρ : ValId → ValId) : Instr → Instr
+  | .const d v => .const (ρ d) v
+  | .op ds yop as => .op (ds.map ρ) yop (as.map ρ)
+  | .call ds fid as => .call (ds.map ρ) fid (as.map ρ)
+
+def renameEdge (ρ : ValId → ValId) (β : BlockId → BlockId) (e : Edge) : Edge :=
+  ⟨β e.target, e.args.map ρ⟩
+
+def renameTerm (ρ : ValId → ValId) (β : BlockId → BlockId) : Term → Term
+  | .jump e => .jump (renameEdge ρ β e)
+  | .branch c t f => .branch (ρ c) (renameEdge ρ β t) (renameEdge ρ β f)
+  | .ret vs => .ret (vs.map ρ)
+  | .halt yop as => .halt yop (as.map ρ)
+
+/-- Inline the first eligible call site of `f` (callees from `funcs`);
+`none` when there is none. -/
+def inlineOnce (counts : Array Nat) (funcs : Array Func) (f : Func) :
+    Option Func := Id.run do
+  for bi in [0:f.blocks.size] do
+    let b := f.blocks[bi]!
+    for ci in [0:b.instrs.length] do
+      if let .call ds fid as := b.instrs[ci]! then
+        if let some g := funcs[fid]? then
+          if inlinable (counts[fid]?.getD 0) g && g.params.length == as.length
+              && g.nrets == ds.length && g.entry == 0 then
+            -- fresh renaming for the callee: params → args, everything else
+            -- offset past the caller's ids; callee blocks appended after the
+            -- caller's, continuation block last
+            let off := Nat.max (maxVal f) (maxVal g) + 1
+            let paramMap := g.params.zip as
+            let ρ := fun v =>
+              match paramMap.find? (·.1 == v) with
+              | some pa => pa.2
+              | none => v + off
+            let nCaller := f.blocks.size
+            let contId := nCaller + g.blocks.size
+            let β := fun (b : BlockId) => nCaller + b
+            let spliced := g.blocks.map fun gb =>
+              { params := gb.params.map ρ
+                instrs := gb.instrs.map (renameInstr ρ)
+                term :=
+                  match gb.term with
+                  | .ret vs => .jump ⟨contId, vs.map ρ⟩
+                  | t => renameTerm ρ β t }
+            let contBlock : Block :=
+              { params := ds
+                instrs := b.instrs.drop (ci + 1)
+                term := b.term }
+            let callBlock : Block :=
+              { params := b.params
+                instrs := b.instrs.take ci
+                term := .jump ⟨nCaller + g.entry, []⟩ }
+            let blocks := (f.blocks.set! bi callBlock) ++ spliced ++ #[contBlock]
+            return some { f with blocks }
+  return none
+
+/-- Inline eligible call sites to a budgeted fixed point. -/
+def inlineFunc (counts : Array Nat) (funcs : Array Func) (f0 : Func) :
+    Func := Id.run do
+  let mut f := f0
+  for _ in [0:8] do
+    match inlineOnce counts funcs f with
+    | some f' => f := f'
+    | none => return f
+  return f
+
+/-- Drop functions that are no longer referenced (transitively from `main`),
+remapping the surviving indices. -/
+def pruneFuncs (P : Prog) : Prog := Id.run do
+  let n := P.funcs.size
+  let mut used : Array Bool := Array.replicate n false
+  let callees := fun (f : Func) => f.blocks.toList.flatMap fun b =>
+    b.instrs.filterMap fun i => match i with | .call _ fid _ => some fid | _ => none
+  let mut work := callees P.main
+  for _ in [0:n + 1] do
+    let mut next : List FuncId := []
+    for fid in work do
+      if _h : fid < n then
+        if !used[fid]! then
+          used := used.set! fid true
+          next := next ++ (P.funcs[fid]?.map callees).getD []
+    work := next
+    if work.isEmpty then break
+  if used.all id then return P
+  -- remap: old fid → new fid among survivors
+  let mut remap : Array (Option FuncId) := Array.replicate n none
+  let mut kept : Array Func := #[]
+  for fid in [0:n] do
+    if used[fid]! then
+      remap := remap.set! fid (some kept.size)
+      kept := kept.push P.funcs[fid]!
+  let fix := fun (f : Func) =>
+    { f with blocks := f.blocks.map fun b =>
+        { b with instrs := b.instrs.map fun i =>
+            match i with
+            | .call ds fid as => .call ds ((remap[fid]?.join).getD fid) as
+            | i => i } }
+  return { main := fix P.main, funcs := kept.map fix }
+
+/-- Whole-program inlining: every function (and `main`) inlines its eligible
+call sites, then unreferenced functions are pruned. -/
+def inlineProg (P : Prog) : Prog := Id.run do
+  let mut P := P
+  for _ in [0:3] do
+    let counts := siteCounts P
+    let P' : Prog :=
+      { main := inlineFunc counts P.funcs P.main
+        funcs := P.funcs.map (inlineFunc counts P.funcs) }
+    let P'' := pruneFuncs P'
+    let same := P''.funcs.size == P.funcs.size
+      && siteCounts P'' == siteCounts P
+    P := P''
+    if same then return P
+  return P
+
 /-- Pipeline rounds: constant-folding a branch exposes trivial parameters,
 parameter elimination exposes CSE, and so on — three rounds settle every
 program seen so far. -/
@@ -377,7 +533,9 @@ def optimizeFunc (f : Func) : Func := Id.run do
 `Prog.wfCheck`, return the original — a pass bug is a missed optimization,
 never a miscompilation. -/
 def optimizeProg (P : Prog) : Prog :=
-  let P' : Prog := { main := optimizeFunc P.main, funcs := P.funcs.map optimizeFunc }
+  let P0 := Passes.inlineProg P
+  let P' : Prog :=
+    { main := optimizeFunc P0.main, funcs := P0.funcs.map optimizeFunc }
   if P'.wfCheck && ToAsm.Prog.domCheck P' then P' else P
 
 end YulEvmCompiler.SsaCfg

@@ -65,8 +65,10 @@ open YulEvmCompiler.Examples
 -- the classic layout rejects this one; the SSA scheduler compiles it
 #guard (YulEvmCompiler.compile stackPressure).isNone
 #guard agreeSsa stackPressure [0]
--- recursion is rejected by both backends (the stack certificate excludes
--- unbounded frames) — rejection, never miscompilation
-#guard (compileViaSsa factorial).isNone
+-- recursion: the classic backend rejects (the stack certificate excludes
+-- unbounded frames); the SSA backend's bounded inlining + constant folding
+-- fully unrolls fact(5) into a constant, so it compiles — and must agree
+#guard (YulEvmCompiler.compile factorial).isNone
+#guard agreeSsa factorial [0]
 
 end YulEvmCompiler.SsaCfg.Examples
