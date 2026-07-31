@@ -1612,3 +1612,18 @@ compose that result with the existing `Simplify` resolution congruence for the
   relabeling, a different argument than `CodeRel`'s in-place windows), and
   iterating the scan (a dropped branch's `jumpi` can orphan its label for a
   second round).
+
+## The `yul-ssa-cfg` dialect (2026-07, in progress)
+
+- 🚧 **`yul-ssa-cfg`: a second backend dialect below Yul** (this branch; see
+  `YulEvmCompiler/SsaCfg/DESIGN.md` and its PR). Not a `LocalPass` — a new
+  IR: SSA control-flow graph with block arguments, built from optimized Yul
+  (`toSsa`), optimized there (copy-prop/param simplification, dominance-scoped
+  GVN/CSE, SCCP, dead-value elimination), then code-generated straight to the
+  existing labeled `Asm` layer (`fromSsa`) with liveness-driven per-block
+  stack scheduling — the structural fix for the POP/DUP/SWAP stack traffic
+  that dominates the aave/uniswap gas gap and that no Yul→Yul pass can
+  express (variables pin stack slots at the source level). Reuses Phase B,
+  `stackOK2`, and the assembler verbatim by ending at `Asm`; adds a
+  generalized `EvmBackend` spec so `{classic, ssa}` backends satisfy one
+  contract and the verified Yul→Yul pipeline composes in front of either.
