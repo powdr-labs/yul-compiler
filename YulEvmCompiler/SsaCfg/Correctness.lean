@@ -99,10 +99,10 @@ theorem finishProg_inv {P : Prog} {is : List YulEvmCompiler.Instr}
     · simp [hwf, hstk] at h
   · simp [hwf] at h
 
+omit model in
 /-- Invert a successful `compileViaSsa`: the construction succeeded, and the
 accepted bytecode came from `finishProg` on either the optimized or the
 original SSA program (the best-of-two emission). -/
-omit model in
 theorem compileViaSsa_inv {prog : YulSemantics.Block Op}
     {is : List YulEvmCompiler.Instr}
     (h : compileViaSsa prog = some is) :
