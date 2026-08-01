@@ -11617,6 +11617,39 @@ theorem cse_alias_zone {f : Func} (hnd : f.allDefs.Nodup)
     exact Or.inl (Passes.block_def_index_unique hnd hrb hdb hrdef horigin)
   · exact Or.inr (cseAvail_strict_dom hnd hwf hrb hrdef havail)
 
+/-! ### Obstruction: the current dominance liveness is not positional
+
+The positional def-before-use lemma requested by the CSE simulation cannot be
+proved from the present `wfCheck` and `domCheck`.  `ToAsm.liveStep` computes
+
+    blockUses b \\ blockDefs b
+
+after collecting the uses of *all* instructions in the block.  Consequently a
+use before a later definition is removed by that later definition and never
+reaches `liveIn(entry)`.  The following checked witness is deliberately kept
+next to the blocked theorem: value `1` is read by the first instruction and
+defined by the second, yet both checks accept and the sole live-in set is
+empty.  Closing the requested same-block window requires the liveness
+specification/check itself to become sequential (or the CSE theorem to carry a
+successful-execution positional provenance premise); neither change is
+available while this task is restricted to this proof file. -/
+
+private def cseLaterDefCounterexampleBlock : Block :=
+  ⟨[], [.op [0] .add [1, 1], .const 1 0], .ret []⟩
+
+private def cseLaterDefCounterexample : Func :=
+  { params := [], nrets := 0, entry := 0
+    blocks := #[cseLaterDefCounterexampleBlock] }
+
+omit model in
+private theorem cseLaterDefCounterexample_checks :
+    cseLaterDefCounterexample.wfCheck 0 = true ∧
+    ToAsm.Func.domCheck cseLaterDefCounterexample = true ∧
+    ToAsm.liveInSets cseLaterDefCounterexample = some #[[]] ∧
+    1 ∈ cseLaterDefCounterexampleBlock.instrs[0]!.uses ∧
+    1 ∈ cseLaterDefCounterexampleBlock.instrs[1]!.defs := by
+  native_decide
+
 /-- **Pass 3 (local CSE) soundness**, under dominance.
 
 `sorry`. Same `LiveAgree` invariant as pass 1, with `σ` the accumulated
@@ -11680,7 +11713,15 @@ longer implies `R d = R' d0`.  `CseTabRuntime` can re-establish the equality at
 the next dropped instruction, but a whole-function substitution may rewrite a
 use before that point.  A binding-event/last-occurrence refinement of the
 entry path must rule such a use out from a successful entry-rooted `Exec`; the
-present invariant intentionally does not claim that unproved value fact. -/
+present invariant intentionally does not claim that unproved value fact.
+
+The proposed def-before-use discharge is unavailable under the theorem's
+current hypotheses: `cseLaterDefCounterexample_checks` above proves that
+`wfCheck && domCheck` accepts a same-block read whose unique definition is
+later.  In particular, `liveInSets_least` cannot expose that read because the
+`ToAsm.liveStep` whose least fixed point it characterizes has already removed
+it with the block-wide `blockDefs`.  This is the precise obstruction to the
+positional-window preservation case below. -/
 theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (hdom : ToAsm.Func.domCheck f = true)
@@ -12677,6 +12718,16 @@ The defensive-fallback half is **proved** here; the remaining `sorry` is the
 branch where the pipeline's output passes the gate, which is where the four
 per-pass lemmas above (plus the simultaneous whole-program induction described in
 this section's header) do their work.
+
+**Current obstruction.**  This branch depends immediately on `cse_sound`,
+which is blocked by the checked non-positional-liveness counterexample recorded
+above it.  In addition, this checkout contains the four `_dom` preservation
+results but no per-pass `_wf` preservation declarations for
+`elimTrivialParams`, `constFold`, `cse`, or `dve`; `runOnce_dom` therefore takes
+the intermediate `wfCheck` facts as explicit hypotheses.  The gate checks only
+the final candidate, so it does not supply those intermediate facts backwards.
+Those missing preservation links (and the simultaneous whole-program replay)
+must also exist before the composition requested in this branch can typecheck.
 
 With `hdom` this statement is, to the best of my analysis, true — the
 counterexample `Counterexample.optimizeProg_sound_false_without_dom` refutes only
