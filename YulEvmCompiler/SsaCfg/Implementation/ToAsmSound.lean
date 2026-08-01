@@ -41,19 +41,21 @@ shuffler (`shuffleGo_spec`, `shuffle_sound`), the whole `elideJumps` transport
 (`emitProg_placement`). `emitProg_asteps'` and `emitProg_ahalt'` are
 *derived*.
 
-**Status.** Everything is proved except two marked `sorry`s:
+**Status.** Everything in this file is proved except the six open cases of
+`exec_sim`. In particular the entire emission-shape layer is closed:
+`emitInstr_const_shape`/`emitInstr_op_shape` (including the commutative
+operand-order choice, via `foldl_best` and `builtin_comm`), `emitBlock_head`,
+`emitBlock_emitRest`, `emitFunc_inv`, `emitProg_inv`, `emitProg_placement` and
+`raw_entry_sim`.
 
-* `emitInstr_op_shape` — the *shape* of the cheapest-operand-order fold. Its
-  semantic content is proved (`foldl_best` for the fold invariant,
-  `builtin_comm` for the reordering licence); what remains is inverting the
-  emitter's own compiled `match best with | some (ops, _) => … | none => …`,
-  whose auxiliary matcher does not unify with a hand-written one and which
-  `split` cannot take apart (the discriminant nests the `argOrders` matcher).
-  `fun_cases ToAsm.emitInstr` on the seven lifted `.op` equations is the way in.
-
-* `exec_sim` — `const`, `op`, `opHalt` and `halt` are proved (the whole
-  straight-line fragment, including the commutative operand-order transport);
-  `ret`, `jump`, `branchTrue`, `branchFalse`, `call` and `callHalt` remain.
+`exec_sim`: `const`, `op`, `opHalt` and `halt` are proved — the whole
+straight-line fragment, with the operand-order transport. Still open: `ret`
+(needs the `SWAP1 … SWAPk` epilogue-rotation lemma: induct on the `back`
+segment with `front` growing, `x :: front ++ back ++ ra :: below ↦
+ra :: front ++ x :: back ++ below`), `jump`/`branchTrue`/`branchFalse` (edge
+shuffle onto `edgeTargetLayout`, `findLabel` from `Placement`, then the target
+IH — this is where `hdom` and the liveness fixed point re-establish the
+freshness invariant at a block entry), and the `call` pair.
 
 `exec_sim` carries two side conditions beyond the emission itself — that no
 value on the symbolic stack is defined again by the rest of the block, and
@@ -929,7 +931,65 @@ theorem emitInstr_op_shape {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
       ∧ ToAsm.shuffle sym (args.map SSlot.val ++ keep) = some ops
       ∧ asmf = ops ++ [Asm.op yop]
       ∧ sym' = ds.map SSlot.val ++ keep := by
-  sorry
+  suffices h : ∀ i : Instr, i = Instr.op ds yop as →
+      ToAsm.emitInstr P L ord sym needed future i n = some ((asmf, sym'), n') →
+      ∃ (args : List ValId) (ops : List Asm) (keep : List SSlot),
+        keep = (if ord then ToAsm.orderByFuture (ToAsm.keepOf sym needed) future
+                else ToAsm.keepOf sym needed)
+        ∧ ArgsOK yop as args
+        ∧ ToAsm.shuffle sym (args.map SSlot.val ++ keep) = some ops
+        ∧ asmf = ops ++ [Asm.op yop]
+        ∧ sym' = ds.map SSlot.val ++ keep by
+    exact h _ rfl hemit
+  intro i hi hem
+  fun_cases ToAsm.emitInstr P L ord sym needed future i
+  case case2 keep argOrders best prev args hbest =>
+    rename_i ds2 yop2 as2
+    injection hi with h1 h2 h3
+    subst h1; subst h2; subst h3
+    have hem' : (match best with
+        | some (ops, _) =>
+          (pure (ops ++ [Asm.op yop2], List.map SSlot.val ds2 ++ keep) :
+            ToAsm.E (List Asm × List SSlot))
+        | none => ToAsm.liftE none) n = some ((asmf, sym'), n') := hem
+    rw [hbest] at hem'
+    obtain ⟨heq, -⟩ := E_pure_inv2 hem'
+    obtain ⟨e1, e2⟩ := (Prod.mk.injEq ..).mp heq
+    have hQ : ArgsOK yop2 as2 args ∧
+        ToAsm.shuffle sym (args.map SSlot.val ++ keep) = some prev := by
+      refine foldl_best
+        (Q := fun p => ArgsOK yop2 as2 p.2 ∧
+          ToAsm.shuffle sym (p.2.map SSlot.val ++ keep) = some p.1)
+        argOrders none ?_ (by simp) (prev, args) hbest
+      intro a ha opsx hsh
+      refine ⟨?_, hsh⟩
+      simp only [argOrders] at ha
+      split at ha
+      all_goals
+        first
+        | (rename_i x y
+           split at ha
+           · simp only [List.mem_singleton] at ha
+             exact Or.inl (by rw [ha])
+           · simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
+             rcases ha with rfl | rfl
+             · exact Or.inl rfl
+             · exact Or.inr ⟨by simp [CommOp], x, y, rfl, rfl⟩)
+        | (simp only [List.mem_singleton] at ha; exact Or.inl ha)
+    exact ⟨args, prev, keep, rfl, hQ.1, hQ.2, e1.symm, e2.symm⟩
+  case case3 keep argOrders best hbest =>
+    rename_i ds2 yop2 as2
+    injection hi with h1 h2 h3
+    subst h1; subst h2; subst h3
+    have hem' : (match best with
+        | some (ops, _) =>
+          (pure (ops ++ [Asm.op yop2], List.map SSlot.val ds2 ++ keep) :
+            ToAsm.E (List Asm × List SSlot))
+        | none => ToAsm.liftE none) n = some ((asmf, sym'), n') := hem
+    rw [hbest] at hem'
+    exact absurd hem' (by simp [ToAsm.liftE])
+  all_goals exact absurd hi (by simp)
+
 
 /-! ## Halting terminators
 
