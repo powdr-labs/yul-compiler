@@ -1941,6 +1941,15 @@ end FPrefix
 
 namespace FOwned
 
+/-- Ownership budgets are extensional up to permutation; their list order is
+only a convenient way to state duplicate-freedom. -/
+theorem perm {owned owned' : List FuncId} {s done : BState}
+    (hp : owned.Perm owned') (ho : FOwned owned s done) :
+    FOwned owned' s done := by
+  refine ⟨hp.nodup ho.nodup, ?_, ho.filled⟩
+  intro i
+  rw [← hp.mem_iff, ho.pending]
+
 /-- Pull ownership backward across a closed nested translation which frames
 the caller's whole input table.  The explicit bound says that `owned` really
 belongs to the caller rather than to slots freshly allocated by the nested
@@ -5340,6 +5349,183 @@ theorem trFunc_prefix (fenv : FMap) (ps rs : List Ident)
     (h : trFunc fenv ps rs body s = some (g, s')) :
     FPrefix s.funcs.size s s' :=
   trFunc_fprefix fenv ps rs body s.funcs.size s g s' (Nat.le_refl _) h
+
+/-- The ordered function-slot budget consumed by a statement walk.  Function
+definitions are the only statements which consume a reservation; all other
+statements are closed translations and therefore preserve the caller's
+budget.  Successful `trStmts` runs ensure every `filterMap` entry is present. -/
+def stmtFuncIds (fenv : FMap) : List (Stmt Op) → List FuncId
+  | [] => []
+  | .funDef n _ _ _ :: rest => (fenv.get n).toList ++ stmtFuncIds fenv rest
+  | _ :: rest => stmtFuncIds fenv rest
+
+omit model in
+/-- Pull a completed output ownership budget backward through a statement
+walk.  The input additionally owns exactly the slots selected by its direct
+`funDef`s.  `hslots` is supplied by the enclosing `allocScope`; its `Nodup`
+clause rules out duplicate selection, which is precisely what permits each
+`fillFunc` to consume one distinct reservation.
+
+This is the input/output ownership transition used by the simulation motive.
+Nested statements and functions frame every input slot by `FPrefix`; the sole
+consuming step is discharged by `FOwned.back_fillFunc`. -/
+theorem trStmts_owned_back (fenv : FMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) :
+    ∀ (ss : List (Stmt Op)) (env : VMap) (d : Bool)
+      (s s' done : BState) (r : Option VMap) (owned : List FuncId),
+      (∀ i : FuncId, i ∈ stmtFuncIds fenv ss ++ owned → i < s.funcs.size) →
+      (∀ i : FuncId, i ∈ stmtFuncIds fenv ss →
+        s.funcs[i]? = some none) →
+      (stmtFuncIds fenv ss ++ owned).Nodup →
+      FOwned owned s' done →
+      trStmts fenv env lctx rets d ss s = some (r, s') →
+      FOwned (stmtFuncIds fenv ss ++ owned) s done := by
+  intro ss
+  induction ss with
+  | nil =>
+      intro env d s s' done r owned _ _ _ ho htr
+      rw [trStmts] at htr
+      obtain ⟨-, rfl⟩ := M.pure_inv htr
+      simpa [stmtFuncIds] using ho
+  | cons st rest ih =>
+      intro env d s s' done r owned hbound hslots hnd ho htr
+      let st0 := st
+      cases st with
+      | funDef n ps rs body =>
+          rw [trStmts] at htr
+          obtain ⟨fid, s1, hget, htr⟩ := M.bind_inv htr
+          obtain ⟨g, s2, hfunc, htr⟩ := M.bind_inv htr
+          obtain ⟨u, s3, hfill, htail⟩ := M.bind_inv htr
+          obtain ⟨hfid, hs1⟩ := M.liftO_inv hget
+          subst s1
+          simp only [stmtFuncIds, hfid, Option.toList_some,
+            List.singleton_append] at hbound hslots hnd ⊢
+          have hfid0 : s.funcs[fid]? = some none :=
+            hslots fid (by simp)
+          have hp := trFunc_prefix fenv ps rs body hfunc
+          have hfid2 : s2.funcs[fid]? = some none := by
+            rw [hp fid (lt_size_of_getElem? hfid0)]
+            exact hfid0
+          have hndTail : (stmtFuncIds fenv rest ++ owned).Nodup :=
+            (List.nodup_cons.mp hnd).2
+          have hfidNot : fid ∉ stmtFuncIds fenv rest ++ owned :=
+            (List.nodup_cons.mp hnd).1
+          have hs3 := (M.fillFunc_inv hfill).choose_spec
+          have hboundTail : ∀ i : FuncId,
+              i ∈ stmtFuncIds fenv rest ++ owned → i < s3.funcs.size := by
+            intro i hi
+            have hi0 := hbound i (by simp [hi])
+            have hsize : s.funcs.size ≤ s2.funcs.size :=
+              (trFunc_fprefix fenv ps rs body s.funcs.size s g s2
+                (Nat.le_refl _) hfunc).size (Nat.le_refl _)
+            rw [hs3]
+            simpa using Nat.lt_of_lt_of_le hi0 hsize
+          have hslotsTail : ∀ i : FuncId, i ∈ stmtFuncIds fenv rest →
+              s3.funcs[i]? = some none := by
+            intro i hi
+            have hiAll : i ∈ stmtFuncIds fenv rest ++ owned :=
+              List.mem_append_left _ hi
+            have hi0 : s.funcs[i]? = some none :=
+              hslots i (by simp [hi])
+            have hi2 : s2.funcs[i]? = some none := by
+              rw [hp i (lt_size_of_getElem? hi0)]
+              exact hi0
+            have hine : i ≠ fid := by
+              intro heq
+              subst i
+              exact hfidNot hiAll
+            rw [hs3, Array.getElem?_set, if_neg (Ne.symm hine)]
+            exact hi2
+          have ho3 := ih env d s3 s' done r owned hboundTail hslotsTail
+            hndTail ho htail
+          have ho2 : FOwned (fid :: (stmtFuncIds fenv rest ++ owned)) s2 done :=
+            FOwned.back_fillFunc hfid2 hfill ho3
+          have hbound2 : ∀ i : FuncId,
+              i ∈ fid :: (stmtFuncIds fenv rest ++ owned) →
+                i < s.funcs.size := by
+            intro i hi
+            exact hbound i (by simpa using hi)
+          exact FOwned.back_fprefix hp hbound2 ho2
+      | block body | letDecl vars val | assign vars e | cond e body
+      | forLoop init e post body | «break» | «continue» | leave
+      | switch e cases dflt | exprStmt e =>
+          simp only [stmtFuncIds] at hbound hslots hnd ⊢
+          have runTail (env' : VMap) (d' : Bool) (s1 : BState)
+              (hhead : trStmt fenv env lctx rets st0 s = some (some env', s1) ∨
+                trStmt fenv env lctx rets st0 s = some (none, s1))
+              (htail : trStmts fenv env' lctx rets d' rest s1 = some (r, s')) :
+              FOwned (stmtFuncIds fenv rest ++ owned) s done := by
+            have htrHead : ∃ ro, trStmt fenv env lctx rets st0 s = some (ro, s1) :=
+              hhead.elim (fun h => ⟨some env', h⟩) (fun h => ⟨none, h⟩)
+            obtain ⟨ro, hro⟩ := htrHead
+            have hp := trStmt_fprefix fenv env lctx rets st0 s.funcs.size
+              s ro s1 (Nat.le_refl _) hro
+            have hbound1 : ∀ i : FuncId,
+                i ∈ stmtFuncIds fenv rest ++ owned → i < s1.funcs.size := by
+              intro i hi
+              exact hp.size (Nat.le_refl _) |>
+                Nat.lt_of_lt_of_le (hbound i hi)
+            have hslots1 : ∀ i : FuncId, i ∈ stmtFuncIds fenv rest →
+                s1.funcs[i]? = some none := by
+              intro i hi
+              rw [hp i (hbound i (List.mem_append_left _ hi))]
+              exact hslots i hi
+            have ho1 := ih env' d' s1 s' done r owned hbound1 hslots1
+              hnd ho htail
+            exact FOwned.back_fprefix hp hbound ho1
+          rw [trStmts] at htr
+          · split at htr
+            · exact ih env true s s' done r owned hbound hslots hnd ho htr
+            · obtain ⟨renv, s1, hhead, htail⟩ := M.bind_inv htr
+              cases renv with
+              | none =>
+                  exact runTail env true s1 (Or.inr hhead) htail
+              | some env' =>
+                  exact runTail env' false s1 (Or.inl hhead) htail
+          · intro n ps rs fbody heq
+            cases heq
+
+omit model in
+/-- A single statement is a closed translation with respect to every pending
+slot which existed at entry.  Unlike `trStmts`, it cannot consume a direct
+function reservation (`funDef` is rejected by `trStmt`). -/
+theorem trStmt_owned_back (fenv : FMap) (env : VMap)
+    (lctx : Option LoopCtx) (rets : Option (List Ident)) (st : Stmt Op)
+    {s s' done : BState} {r : Option VMap} {owned : List FuncId}
+    (hbound : ∀ i : FuncId, i ∈ owned → i < s.funcs.size)
+    (ho : FOwned owned s' done)
+    (htr : trStmt fenv env lctx rets st s = some (r, s')) :
+    FOwned owned s done :=
+  FOwned.back_fprefix
+    (trStmt_fprefix fenv env lctx rets st s.funcs.size s r s'
+      (Nat.le_refl _) htr) hbound ho
+
+omit model in
+/-- The scope wrapper allocates and discharges only its own reservations, so
+it preserves every caller-owned entry slot. -/
+theorem trScope_owned_back (fenv : FMap) (env : VMap)
+    (lctx : Option LoopCtx) (rets : Option (List Ident))
+    (body : List (Stmt Op)) {s s' done : BState} {r : Option VMap}
+    {owned : List FuncId}
+    (hbound : ∀ i : FuncId, i ∈ owned → i < s.funcs.size)
+    (ho : FOwned owned s' done)
+    (htr : trScope fenv env lctx rets body s = some (r, s')) :
+    FOwned owned s done :=
+  FOwned.back_fprefix
+    (trScope_fprefix fenv env lctx rets body s.funcs.size s r s'
+      (Nat.le_refl _) htr) hbound ho
+
+omit model in
+/-- Translating a nested function saves and restores the caller function and
+frames its entire function table prefix. -/
+theorem trFunc_owned_back (fenv : FMap) (ps rs : List Ident)
+    (body : List (Stmt Op)) {s s' done : BState} {g : Func}
+    {owned : List FuncId}
+    (hbound : ∀ i : FuncId, i ∈ owned → i < s.funcs.size)
+    (ho : FOwned owned s' done)
+    (htr : trFunc fenv ps rs body s = some (g, s')) :
+    FOwned owned s done :=
+  FOwned.back_fprefix (trFunc_prefix fenv ps rs body htr) hbound ho
 
 omit model in
 /-- A pending function slot which no declaration in a statement suffix selects
