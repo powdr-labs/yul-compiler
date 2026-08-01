@@ -5405,19 +5405,29 @@ theorem trStmts_curPlaced_back {f : Func} {fenv : FMap} {env : VMap}
     (hfin : renv = none → CurFinal f s₁.fn)
     (htr : trStmts fenv env lctx rets d ss s₀ = some (renv, s₁)) :
     CurPlaced f s₀.fn := by
-  -- BLOCKED: `SGrows` plus the current `CurKeeps` is insufficient exactly when
-  -- this list ends by diverting in the block in which it started.  For example,
-  -- translate `[let x := 0; break]` from a state whose `cur` already contains a
-  -- head instruction.  The `let` prepends a `const`, then `break` seals the same
-  -- `curId` and clears `cur`, so the final state has the same `curId` and `cur =
-  -- []`.  Neither `CurKeeps` disjunct can hold: the first would require
-  -- `[] = Δ ++ s₀.fn.cur`, and the second requires the current id to change.
-  -- Nevertheless backward placement is valid, but it uses `hfin` to identify
-  -- that same-current sealed block with the finished block.  Closing this helper
-  -- therefore needs a strengthened construction relation with a third
-  -- "sealed the same current block" alternative, a composition lemma for that
-  -- relation, and a backward lemma consuming `CurFinal` in that alternative.
-  -- `CurKeeps.trans` and `trStmts_grows` alone cannot prove the stated result.
+  -- RIPPLE ANALYSIS.  `CurKeeps` has only two proof consumers in this file:
+  -- `curPlaced_back` and `CurKeeps.trans`.  Adding the same-current
+  -- seal-and-clear disjunct can therefore be handled locally at those two
+  -- matches.  It does not, however, supply the missing premise here: there is no
+  -- theorem saying that a successful `trStmts` has any `CurKeeps` shape.
+  --
+  -- Proving that theorem is not a direct-consumer edit.  It must be a new mutual
+  -- invariant over `trStmt`/`trScope`/`trStmts`/`trCases` (the same 29
+  -- construction cases as the `SGrowsAt` proof), and it additionally needs an
+  -- entering-current validity premise such as
+  -- `s₀.fn.curId < s₀.fn.blocks.size`.  Without that premise the proposed
+  -- relation is false for arbitrary `BState`: `cond`, `switch`, and `forLoop`
+  -- reserve blocks before their first `sealCur`, so an out-of-range entering
+  -- `curId` can alias a newly reserved block and the later body seal can
+  -- overwrite the entering fragment instead of preserving its instruction
+  -- prefix.  This is also why the existing `CurKeeps.trans` explicitly asks for
+  -- current-block validity.
+  --
+  -- Supplying that fact requires either strengthening this helper and threading
+  -- the premise through `seqCons`/`seqStop` and their induction motive, or adding
+  -- a builder-validity field to `SGrowsAt` and rechecking all primitive and
+  -- mutual monotonicity constructors.  Both ripple beyond `CurKeeps`' direct
+  -- consumers, so the requested stop condition applies.
   sorry
 
 /-- An expression whose evaluation halts: the fragment the construction laid

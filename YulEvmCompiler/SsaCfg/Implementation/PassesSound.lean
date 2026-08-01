@@ -1819,6 +1819,424 @@ private example (l : List Nat) (init : MProd (Option (Option Nat)) PUnit) :
 
 namespace Passes
 
+/-! ### Pass 4's liveness loop, as folds -/
+
+def dveLiveInstrStep (ins : Instr) (live : Std.HashSet ValId) : Std.HashSet ValId :=
+  match ins with
+  | .const _ _ => live
+  | .op ds yop args =>
+      if !pureOp yop || ds.any live.contains then
+        args.foldl (fun s a => s.insert a) live
+      else live
+  | .call _ _ args => args.foldl (fun s a => s.insert a) live
+
+def dveLiveTermStep (t : Term) (live : Std.HashSet ValId) : Std.HashSet ValId :=
+  match t with
+  | .jump _ => live
+  | .branch c _ _ => live.insert c
+  | .ret vs => vs.foldl (fun s a => s.insert a) live
+  | .halt _ as => as.foldl (fun s a => s.insert a) live
+
+def dveLiveEdgeStep (f : Func) (e : Edge) (live : Std.HashSet ValId) : Std.HashSet ValId :=
+  match f.blocks[e.target]? with
+  | none => live
+  | some tb =>
+      (tb.params.zip e.args).foldl (fun live pa =>
+        if live.contains pa.1 then live.insert pa.2 else live) live
+
+def dveLiveBlockStep (f : Func) (b : Block) (live : Std.HashSet ValId) : Std.HashSet ValId :=
+  b.term.edges.foldl (fun live e => dveLiveEdgeStep f e live)
+    (dveLiveTermStep b.term
+      (b.instrs.foldl (fun live ins => dveLiveInstrStep ins live) live))
+
+theorem dveLiveInstrLoop_eq (is : List Instr) (live : Std.HashSet ValId) :
+    (forIn is live (fun ins live =>
+      match ins with
+      | .const _ _ => do pure (); pure (.yield live)
+      | .op ds yop args =>
+          if !pureOp yop || ds.any live.contains then
+            do pure PUnit.unit; pure (.yield (args.foldl (fun s a => s.insert a) live))
+          else do pure PUnit.unit; pure (.yield live)
+      | .call _ _ args =>
+          do pure PUnit.unit; pure (.yield (args.foldl (fun s a => s.insert a) live))) :
+        Id (Std.HashSet ValId)) =
+      pure (is.foldl (fun live ins => dveLiveInstrStep ins live) live) := by
+  simp only [LawfulMonad.pure_bind]
+  apply Eq.trans (Id.forIn_eq_foldl (g := dveLiveInstrStep) (h := by
+    intro ins live
+    cases ins with
+    | const d v => rfl
+    | op ds yop args => simp only [dveLiveInstrStep]; split <;> rfl
+    | call ds fid args => rfl) is live)
+  rfl
+
+theorem dveLiveEdgeLoop_eq (f : Func) (es : List Edge) (live : Std.HashSet ValId) :
+    (forIn es live (fun e live =>
+      match f.blocks[e.target]? with
+      | some tb => do
+          let live ← forIn (tb.params.zip e.args) live (fun pa live =>
+            if live.contains pa.1 then pure (.yield (live.insert pa.2))
+            else pure (.yield live))
+          pure (.yield live)
+      | _ => pure (.yield live)) : Id (Std.HashSet ValId)) =
+      pure (es.foldl (fun live e => dveLiveEdgeStep f e live) live) := by
+  apply Eq.trans (Id.forIn_eq_foldl (g := dveLiveEdgeStep f) (h := by
+    intro e live
+    rcases hb : f.blocks[e.target]? with _ | tb
+    · simp [dveLiveEdgeStep, hb]
+    · simp only [dveLiveEdgeStep, hb]
+      rw [Id.forIn_eq_foldl (g := fun pa live =>
+        if live.contains pa.1 then live.insert pa.2 else live) (h := by
+          intro pa (live : Std.HashSet ValId)
+          split <;> rfl)]
+      rfl) es live)
+  rfl
+
+theorem liveStep_eq_fold (f : Func) (live : Std.HashSet ValId) :
+    liveStep f live =
+      f.blocks.toList.foldl (fun live b => dveLiveBlockStep f b live) live := by
+  unfold liveStep
+  dsimp only
+  rw [Id.forIn_array_eq_foldl (g := dveLiveBlockStep f) (h := by
+    intro b live
+    dsimp only [dveLiveBlockStep]
+    conv_lhs =>
+      congr
+      · exact dveLiveInstrLoop_eq b.instrs live
+    simp only [LawfulMonad.pure_bind]
+    cases b.term <;>
+      simp only [Term.edges, dveLiveTermStep] <;>
+      (conv_lhs =>
+        congr
+        · exact dveLiveEdgeLoop_eq f _ _) <;>
+      exact LawfulMonad.pure_bind _ _)]
+  rfl
+
+def HashSub (A B : Std.HashSet ValId) : Prop := ∀ x, x ∈ A → x ∈ B
+
+theorem HashSub.refl (A : Std.HashSet ValId) : HashSub A A := fun _ h => h
+
+theorem HashSub.trans {A B C : Std.HashSet ValId} (hAB : HashSub A B)
+    (hBC : HashSub B C) : HashSub A C := fun x hx => hBC x (hAB x hx)
+
+theorem fold_insert_sub (xs : List ValId) (s : Std.HashSet ValId) :
+    HashSub s (xs.foldl (fun s x => s.insert x) s) := by
+  induction xs generalizing s with
+  | nil => exact HashSub.refl s
+  | cons x xs ih =>
+      exact HashSub.trans (fun y hy => Std.HashSet.mem_insert.mpr (Or.inr hy)) (ih (s.insert x))
+
+theorem fold_sub {α : Type} {step : α → Std.HashSet ValId → Std.HashSet ValId}
+    (hstep : ∀ a s, HashSub s (step a s)) (xs : List α) (s : Std.HashSet ValId) :
+    HashSub s (xs.foldl (fun s a => step a s) s) := by
+  induction xs generalizing s with
+  | nil => exact HashSub.refl s
+  | cons a xs ih => exact HashSub.trans (hstep a s) (ih (step a s))
+
+theorem dveLiveInstrStep_inflationary (i : Instr) (s : Std.HashSet ValId) :
+    HashSub s (dveLiveInstrStep i s) := by
+  cases i with
+  | const d v => exact HashSub.refl s
+  | op ds yop args =>
+      simp only [dveLiveInstrStep]
+      split
+      · exact fold_insert_sub args s
+      · exact HashSub.refl s
+  | call ds fid args => exact fold_insert_sub args s
+
+theorem dveLiveTermStep_inflationary (t : Term) (s : Std.HashSet ValId) :
+    HashSub s (dveLiveTermStep t s) := by
+  cases t with
+  | jump e => exact HashSub.refl s
+  | branch c et ef => exact fun x hx => Std.HashSet.mem_insert.mpr (Or.inr hx)
+  | ret vs => exact fold_insert_sub vs s
+  | halt yop args => exact fold_insert_sub args s
+
+theorem dveLiveEdgeStep_inflationary (f : Func) (e : Edge) (s : Std.HashSet ValId) :
+    HashSub s (dveLiveEdgeStep f e s) := by
+  simp only [dveLiveEdgeStep]
+  split
+  · exact HashSub.refl s
+  · exact fold_sub (fun pa live => by
+      split
+      · exact fun x hx => Std.HashSet.mem_insert.mpr (Or.inr hx)
+      · exact HashSub.refl live) _ s
+
+theorem dveLiveBlockStep_inflationary (f : Func) (b : Block) (s : Std.HashSet ValId) :
+    HashSub s (dveLiveBlockStep f b s) := by
+  exact HashSub.trans
+    (fold_sub dveLiveInstrStep_inflationary b.instrs s |>.trans
+      (dveLiveTermStep_inflationary b.term _))
+    (fold_sub (dveLiveEdgeStep_inflationary f) b.term.edges _)
+
+theorem liveStep_inflationary (f : Func) (s : Std.HashSet ValId) :
+    HashSub s (liveStep f s) := by
+  rw [liveStep_eq_fold]
+  exact fold_sub (dveLiveBlockStep_inflationary f) f.blocks.toList s
+
+theorem hashEquiv_of_sub_size_eq {A B : Std.HashSet ValId} (hsub : HashSub A B)
+    (hsize : A.size = B.size) : A.Equiv B := by
+  have hnd : A.toList.Nodup :=
+    (Std.HashSet.distinct_toList (m := A)).imp (by simp_all)
+  have hsp : A.toList.Subperm B.toList := List.subperm_of_subset hnd (fun x hx => by
+    rw [Std.HashSet.mem_toList] at hx ⊢
+    exact hsub x hx)
+  have hp : A.toList.Perm B.toList := hsp.perm_of_length_le (by simpa using hsize.symm.le)
+  exact (Std.HashSet.equiv_iff_toList_perm).mpr hp
+
+def HashBound (s : Std.HashSet ValId) (U : List ValId) : Prop := ∀ x, x ∈ s → x ∈ U
+
+theorem fold_insert_bound {xs U : List ValId} {s : Std.HashSet ValId}
+    (hs : HashBound s U) (hxs : ∀ x ∈ xs, x ∈ U) :
+    HashBound (xs.foldl (fun s x => s.insert x) s) U := by
+  induction xs generalizing s with
+  | nil => exact hs
+  | cons a xs ih =>
+      apply ih (s := s.insert a)
+      · intro x hx
+        rw [Std.HashSet.mem_insert] at hx
+        rcases hx with hx | hx
+        · have : a = x := (beq_iff_eq).mp hx
+          subst x
+          exact hxs a (by simp)
+        · exact hs x hx
+      · exact fun x hx => hxs x (by simp [hx])
+
+theorem fold_bound {α : Type} {step : α → Std.HashSet ValId → Std.HashSet ValId}
+    {xs : List α} {U : List ValId} {s : Std.HashSet ValId}
+    (hs : HashBound s U)
+    (hstep : ∀ a ∈ xs, ∀ s, HashBound s U → HashBound (step a s) U) :
+    HashBound (xs.foldl (fun s a => step a s) s) U := by
+  induction xs generalizing s with
+  | nil => exact hs
+  | cons a xs ih =>
+      exact ih (hstep a (by simp) s hs) (fun x hx => hstep x (by simp [hx]))
+
+theorem snd_mem_of_mem_zip {α β : Type} {xs : List α} {ys : List β} {p : α × β}
+    (h : p ∈ xs.zip ys) : p.2 ∈ ys := by
+  induction xs generalizing ys with
+  | nil => simp at h
+  | cons x xs ih =>
+      cases ys with
+      | nil => simp at h
+      | cons y ys =>
+          simp only [List.zip_cons_cons, List.mem_cons] at h
+          rcases h with rfl | h
+          · simp
+          · exact List.mem_cons_of_mem _ (ih h)
+
+theorem dveLiveInstrStep_bound {i : Instr} {s : Std.HashSet ValId} {U : List ValId}
+    (hs : HashBound s U) (hi : ∀ x ∈ i.uses, x ∈ U) :
+    HashBound (dveLiveInstrStep i s) U := by
+  cases i with
+  | const d v => exact hs
+  | op ds yop args =>
+      simp only [dveLiveInstrStep]
+      split
+      · exact fold_insert_bound hs (by simpa [Instr.uses] using hi)
+      · exact hs
+  | call ds fid args => exact fold_insert_bound hs (by simpa [Instr.uses] using hi)
+
+theorem dveLiveTermStep_bound {t : Term} {s : Std.HashSet ValId} {U : List ValId}
+    (hs : HashBound s U) (ht : ∀ x ∈ t.uses, x ∈ U) :
+    HashBound (dveLiveTermStep t s) U := by
+  cases t with
+  | jump e => exact hs
+  | branch c et ef =>
+    intro x hx
+    simp only [dveLiveTermStep] at hx
+    rw [Std.HashSet.mem_insert] at hx
+    rcases hx with hx | hx
+    · have : c = x := (beq_iff_eq).mp hx
+      subst x
+      exact ht c (by simp [Term.uses])
+    · exact hs x hx
+  | ret vs => exact fold_insert_bound hs (by simpa [Term.uses] using ht)
+  | halt yop args => exact fold_insert_bound hs (by simpa [Term.uses] using ht)
+
+theorem dveLiveEdgeStep_bound {f : Func} {e : Edge} {s : Std.HashSet ValId}
+    {U : List ValId} (hs : HashBound s U) (he : ∀ x ∈ e.args, x ∈ U) :
+    HashBound (dveLiveEdgeStep f e s) U := by
+  simp only [dveLiveEdgeStep]
+  split
+  · exact hs
+  · apply fold_bound hs
+    intro pa hpa live hlive
+    split
+    · intro x hx
+      rw [Std.HashSet.mem_insert] at hx
+      rcases hx with hx | hx
+      · have heq : pa.2 = x := (beq_iff_eq).mp hx
+        rw [← heq]
+        exact he pa.2 (snd_mem_of_mem_zip hpa)
+      · exact hlive x hx
+    · exact hlive
+
+theorem edge_args_mem_term_uses {t : Term} {e : Edge} (he : e ∈ t.edges)
+    {x : ValId} (hx : x ∈ e.args) : x ∈ t.uses := by
+  cases t with
+  | jump e' =>
+      simp only [Term.edges, List.mem_singleton] at he
+      subst e
+      exact hx
+  | branch c et ef =>
+      simp [Term.edges] at he
+      rcases he with rfl | rfl
+      · simp [Term.uses, hx]
+      · simp [Term.uses, hx]
+  | ret vs => simp [Term.edges] at he
+  | halt yop args => simp [Term.edges] at he
+
+theorem dveLiveBlockStep_bound {f : Func} {b : Block} {s : Std.HashSet ValId}
+    {U : List ValId} (hs : HashBound s U)
+    (hi : ∀ i ∈ b.instrs, ∀ x ∈ i.uses, x ∈ U)
+    (ht : ∀ x ∈ b.term.uses, x ∈ U) : HashBound (dveLiveBlockStep f b s) U := by
+  have hiBound : HashBound
+      (b.instrs.foldl (fun live i => dveLiveInstrStep i live) s) U :=
+    fold_bound hs (by
+      intro i him live hlive
+      exact dveLiveInstrStep_bound hlive (hi i him))
+  have htBound := dveLiveTermStep_bound hiBound ht
+  apply fold_bound htBound
+  intro e he live hlive
+  apply dveLiveEdgeStep_bound hlive
+  intro x hx
+  exact ht x (edge_args_mem_term_uses he hx)
+
+theorem liveStep_bound {f : Func} {s : Std.HashSet ValId}
+    (hs : HashBound s f.allUses) : HashBound (liveStep f s) f.allUses := by
+  rw [liveStep_eq_fold]
+  apply fold_bound hs
+  intro b hb live hlive
+  apply dveLiveBlockStep_bound hlive
+  · intro i hi x hx
+    simp only [Func.allUses, List.mem_flatMap]
+    exact ⟨b, hb, List.mem_append.mpr (Or.inl (List.mem_flatMap.mpr ⟨i, hi, hx⟩))⟩
+  · intro x hx
+    simp only [Func.allUses, List.mem_flatMap]
+    exact ⟨b, hb, List.mem_append.mpr (Or.inr hx)⟩
+
+theorem hashSize_le_of_bound {s : Std.HashSet ValId} {U : List ValId}
+    (h : HashBound s U) : s.size ≤ U.length := by
+  rw [← Std.HashSet.length_toList]
+  exact (List.subperm_of_subset
+    ((Std.HashSet.distinct_toList (m := s)).imp (by simp_all))
+    (fun x hx => h x (Std.HashSet.mem_toList.mp hx))).length_le
+
+def dveFuel (f : Func) : Nat :=
+  f.blocks.foldl (init := f.allDefs.length + 2) fun n b =>
+    n + b.instrs.foldl (fun m i => m + i.uses.length) b.term.uses.length
+
+abbrev DVELoopState := MProd (Option (Std.HashSet ValId)) (Std.HashSet ValId)
+
+def dveLoopStep (f : Func) (_ : Nat) (r : DVELoopState) : ForInStep DVELoopState :=
+  let next := liveStep f r.2
+  if next.size == r.2.size then .done ⟨some r.2, r.2⟩
+  else .yield ⟨none, next⟩
+
+def dveLoopResult (r : DVELoopState) : Std.HashSet ValId := r.1.getD r.2
+
+theorem dveLoopFinish_eq (r : Id DVELoopState) :
+    Id.run (do
+      let s ← r
+      match s.1 with
+      | none => do
+          pure PUnit.unit
+          pure s.2
+      | some live => pure live) = dveLoopResult (Id.run r) := by
+  change (match r.1 with | none => r.2 | some live => live) = r.1.getD r.2
+  cases r.1 <;> rfl
+
+theorem liveSet_eq_loop (f : Func) :
+    liveSet f = dveLoopResult
+      (loopWith (dveLoopStep f) (List.range' 0 (dveFuel f) 1) ⟨none, ∅⟩) := by
+  unfold liveSet
+  dsimp only [dveFuel]
+  rw [Std.Legacy.Range.forIn_eq_forIn_range']
+  rw [Id.forIn_eq_loopWith (g := dveLoopStep f) (h := by
+    intro i r
+    simp only [dveLoopStep]
+    split <;> rfl)]
+  dsimp only [Id.run, Id.instMonad, Id.hasBind]
+  simp only [Std.Legacy.Range.size, dveLoopResult]
+  simp only [Nat.sub_zero, Nat.add_sub_cancel, Nat.div_one]
+  exact dveLoopFinish_eq
+    (loopWith (dveLoopStep f) (List.range' 0 (dveFuel f) 1) ⟨none, ∅⟩)
+
+theorem instrUseFuel_eq (is : List Instr) (n : Nat) :
+    is.foldl (fun m i => m + i.uses.length) n =
+      n + (is.flatMap Instr.uses).length := by
+  induction is generalizing n with
+  | nil => simp
+  | cons i is ih =>
+      rw [List.foldl_cons, ih]
+      simp only [List.flatMap_cons, List.length_append]
+      omega
+
+theorem blockUseFuel_eq (bs : List Block) (n : Nat) :
+    bs.foldl (fun n b =>
+        n + b.instrs.foldl (fun m i => m + i.uses.length) b.term.uses.length) n =
+      n + (bs.flatMap fun b => b.instrs.flatMap Instr.uses ++ b.term.uses).length := by
+  induction bs generalizing n with
+  | nil => simp
+  | cons b bs ih =>
+      rw [List.foldl_cons, instrUseFuel_eq, ih]
+      simp only [List.flatMap_cons, List.length_append]
+      omega
+
+theorem dveFuel_eq (f : Func) : dveFuel f = f.allDefs.length + 2 + f.allUses.length := by
+  simp only [dveFuel, ← Array.foldl_toList, blockUseFuel_eq, Func.allUses]
+
+theorem dveLoop_closed (f : Func) :
+    ∀ (l : List Nat) (cur : Std.HashSet ValId),
+      HashBound cur f.allUses → f.allUses.length < cur.size + l.length →
+      ∃ live, (loopWith (dveLoopStep f) l ⟨none, cur⟩).1 = some live ∧
+        live.Equiv (liveStep f live) := by
+  intro l
+  induction l with
+  | nil =>
+      intro cur hbound hfuel
+      have := hashSize_le_of_bound hbound
+      simp at hfuel
+      omega
+  | cons i is ih =>
+      intro cur hbound hfuel
+      rw [loopWith_cons]
+      by_cases hsize : ((liveStep f cur).size == cur.size) = true
+      · rw [show dveLoopStep f i ⟨none, cur⟩ = .done ⟨some cur, cur⟩ by
+          simp [dveLoopStep, hsize]]
+        refine ⟨cur, rfl, hashEquiv_of_sub_size_eq (liveStep_inflationary f cur) ?_⟩
+        exact (beq_iff_eq).mp hsize |>.symm
+      · have hsize' : ((liveStep f cur).size == cur.size) = false :=
+          Bool.eq_false_of_not_eq_true hsize
+        rw [show dveLoopStep f i ⟨none, cur⟩ = .yield ⟨none, liveStep f cur⟩ by
+          simp [dveLoopStep, hsize']]
+        have hle : cur.size ≤ (liveStep f cur).size := by
+          have h := (List.subperm_of_subset
+            ((Std.HashSet.distinct_toList (m := cur)).imp (by simp_all))
+            (fun x hx => by
+              rw [Std.HashSet.mem_toList] at hx ⊢
+              exact liveStep_inflationary f cur x hx)).length_le
+          simpa using h
+        have hlt : cur.size < (liveStep f cur).size := by
+          have hne : (liveStep f cur).size ≠ cur.size := by
+            intro h
+            exact hsize (by simpa [h])
+          omega
+        exact ih (liveStep f cur) (liveStep_bound hbound) (by simp only [List.length_cons] at hfuel ⊢; omega)
+
+theorem liveSet_closed (f : Func) : (liveSet f).Equiv (liveStep f (liveSet f)) := by
+  rw [liveSet_eq_loop]
+  obtain ⟨live, hlive, hclosed⟩ := dveLoop_closed f (List.range' 0 (dveFuel f) 1) ∅
+    (by intro x hx; simp at hx) (by simp [dveFuel_eq])
+  have hresult : dveLoopResult
+      (loopWith (dveLoopStep f) (List.range' 0 (dveFuel f) 1) ⟨none, ∅⟩) = live := by
+    simp only [dveLoopResult]
+    rw [hlive]
+    rfl
+  rw [hresult]
+  exact hclosed
+
 /-! ### Pass 2's loop, as a fold -/
 
 abbrev CFInner := MProd (Std.HashMap ValId U256) (List Instr)
@@ -3833,9 +4251,29 @@ theorem cse_dom {f : Func} (hwf : f.wfCheck n = true)
     ToAsm.Func.domCheck (Passes.cse f) = true := by
   sorry
 
+private def dveDomCounterexample : Func :=
+  { params := [], nrets := 0, entry := 0
+    blocks := #[
+      ⟨[], [.const 0 0], .jump ⟨1, [0]⟩⟩,
+      ⟨[], [], .ret []⟩] }
+
+private example :
+    ToAsm.Func.domCheck dveDomCounterexample = true ∧
+      ToAsm.Func.domCheck (Passes.dve dveDomCounterexample) = false := by
+  native_decide
+
 omit model in
 theorem dve_dom {f : Func} (hdom : ToAsm.Func.domCheck f = true) :
     ToAsm.Func.domCheck (Passes.dve f) = true := by
+  /- BLOCKED: this statement is false without `wfCheck`.  The kernel-checked
+  `dveDomCounterexample` immediately above has an edge `B0 -> B1` carrying
+  `[0]` while `B1.params = []`.  Forward DVE liveness scans
+  `B1.params.zip [0]`, so `0` is not live and `.const 0 0` is deleted; edge
+  filtering deliberately keeps the unmatched argument because `B1.params[0]?`
+  is `none`.  Consequently the rewritten entry reads an undefined `0` and
+  fails `domCheck`, although the original definition makes its `domCheck`
+  succeed.  The liveness-least argument requested here therefore needs an edge
+  arity/well-formedness hypothesis (for example `f.wfCheck n = true`). -/
   sorry
 
 omit model in

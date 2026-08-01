@@ -23,8 +23,7 @@ private def warningPolicyExempt : List String :=
    -- warnings there; remove with the ci.yml sorry-scan exception when the
    -- proofs land.
    "YulEvmCompiler/SsaCfg/Implementation/OfYulSound.lean",
-   "YulEvmCompiler/SsaCfg/Implementation/PassesSound.lean",
-   "YulEvmCompiler/SsaCfg/Implementation/ToAsmSound.lean"]
+   "YulEvmCompiler/SsaCfg/Implementation/PassesSound.lean"]
 
 /-- Keep the per-module warning policy from silently missing newly added Lean sources. -/
 private def checkWarningPolicy : IO Unit := do
