@@ -7247,6 +7247,160 @@ theorem trStmt_cur {fenv : FMap} {env : VMap} {lctx : Option LoopCtx}
     simp only [Bool.false_eq_true, if_false]
     rw [M.bind_eq, h]
     cases renv <;> simp [trStmts]
+
+omit model in
+/-- Switch dispatch always seals the block in which it starts.  This is the
+standalone `trCases` specialization of the mutual current-shape invariant. -/
+theorem trCases_cur_closed (fenv : FMap) (env : VMap)
+    (lctx : Option LoopCtx) (rets : Option (List Ident)) (sv : ValId)
+    (X : List Ident) (joinId : BlockId)
+    (cs : List (Literal × List (Stmt Op)))
+    (df : Option (List (Stmt Op))) (s s' : BState) (u : Unit)
+    (hv : CurValid s)
+    (h : trCases fenv env lctx rets sv X joinId cs df s = some (u, s')) :
+    CurValid s' ∧ CurClosed s s' := by
+  induction cs generalizing s with
+  | nil =>
+    cases df with
+    | none =>
+      rw [trCases] at h
+      obtain ⟨xvals, s₁, h1, h2⟩ := M.bind_inv h
+      have hg1 := Grows.of_liftO h1
+      have hs := curSealed_of_sealCur h2
+      refine ⟨CurValid.of_same_sgrows (hv.of_grows hg1)
+        (SGrowsAt.of_sealCur (N := s₁.fn.blocks.size) h2) hs.1, Or.inr ?_⟩
+      rcases hs with ⟨hc, b, hb, Δ, hi⟩
+      rcases CurSame.of_grows hg1 with ⟨hc1, ⟨Δ1, hi1⟩, -⟩
+      refine ⟨hc.trans hc1, b, by simpa only [hc1] using hb,
+        Δ1.reverse ++ Δ, ?_⟩
+      rw [hi, hi1]
+      simp
+    | some dbody =>
+      rw [trCases] at h
+      obtain ⟨renv, s₁, h1, h2⟩ := M.bind_inv h
+      have h1' : trStmt fenv env lctx rets (.block dbody) s = some (renv, s₁) := by
+        rw [trStmt]
+        exact h1
+      obtain ⟨hv1, hk1⟩ := trStmt_cur hv h1'
+      have hg1 := trScope_grows fenv env lctx rets dbody s renv s₁ h1
+      cases renv with
+      | none =>
+        obtain ⟨rfl, rfl⟩ := M.pure_inv h2
+        exact ⟨hv1, hk1⟩
+      | some env' =>
+        obtain ⟨xv, s₂, h3, h4⟩ := M.bind_inv h2
+        have hgE := Grows.of_liftO h3
+        have hs := curSealed_of_sealCur h4
+        have hv2 := hv1.of_grows hgE
+        have hv' := CurValid.of_same_sgrows hv2
+          (SGrowsAt.of_sealCur (N := s₂.fn.blocks.size) h4) hs.1
+        have hclosed : CurClosed s₁ s' := by
+          refine Or.inr ?_
+          rcases hs with ⟨hc, b, hb, Δ, hi⟩
+          rcases CurSame.of_grows hgE with ⟨hc1, ⟨Δ1, hi1⟩, -⟩
+          refine ⟨hc.trans hc1, b, by simpa only [hc1] using hb,
+            Δ1.reverse ++ Δ, ?_⟩
+          rw [hi, hi1]
+          simp
+        exact ⟨hv', CurOpen.transClosed hv hg1
+          (SGrows.trans (SGrows.of_grows hgE) (SGrowsAt.of_sealCur h4))
+          hk1 hclosed⟩
+  | cons p rest ih =>
+    obtain ⟨lit, cbody⟩ := p
+    rw [trCases] at h
+    obtain ⟨t, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨u2, s2, h2, h⟩ := M.bind_inv h
+    obtain ⟨e, s3, h3, h⟩ := M.bind_inv h
+    obtain ⟨u4, s4, h4, h⟩ := M.bind_inv h
+    obtain ⟨caseId, s5, h5, h⟩ := M.bind_inv h
+    obtain ⟨nextId, s6, h6, h⟩ := M.bind_inv h
+    obtain ⟨u7, s7, h7, h⟩ := M.bind_inv h
+    obtain ⟨u8, s8, h8, h⟩ := M.bind_inv h
+    obtain ⟨renv, s9, h9, h⟩ := M.bind_inv h
+    have g1 := Grows.of_freshVal h1
+    have g2 := Grows.of_emit h2
+    have g3 := Grows.of_freshVal h3
+    have g4 := Grows.of_emit h4
+    have cs4 := (((CurSame.of_grows g1).trans (CurSame.of_grows g2)).trans
+      (CurSame.of_grows g3)).trans (CurSame.of_grows g4)
+    have cs5 := cs4.trans (CurSame.of_newBlock h5)
+    have cs6 := cs5.trans (CurSame.of_newBlock h6)
+    have a1 : SGrowsAt s.fn.blocks.size s s1 := SGrowsAt.of_grows g1
+    have a2 := a1.trans (SGrowsAt.of_grows g2)
+    have a3 := a2.trans (SGrowsAt.of_grows g3)
+    have a4 := a3.trans (SGrowsAt.of_grows g4)
+    have a5 := a4.trans (SGrowsAt.of_newBlock h5)
+    have a6 := a5.trans (SGrowsAt.of_newBlock h6)
+    have a7 := a6.trans (SGrowsAt.of_sealCur h7)
+    have hcaseNe : s6.fn.curId ≠ caseId := by
+      rw [cs6.1, SGrowsAt.newBlock_id h5]
+      exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hv a4.size)
+    have hm68 : CurMoved s6 s8 := curMoved_of_seal_move hcaseNe h7 h8
+    have hm : CurMoved s s8 := cs6.transMoved hm68
+    have a8 := a7.trans (SGrowsAt.of_moveTo
+      (Or.inl (by rw [SGrowsAt.newBlock_id h5]; exact a4.size)) h8)
+    have hcaseLt : caseId < s7.fn.blocks.size :=
+      Nat.lt_of_lt_of_le (newBlock_target_lt h5)
+        ((SGrowsAt.of_newBlock (N := 0) h6).trans
+          (SGrowsAt.of_sealCur h7)).size
+    have hv8 : CurValid s8 := CurValid.of_moveTo hcaseLt h8
+    have gbody := trScope_grows fenv env lctx rets cbody s8 renv s9 h9
+    cases renv with
+    | none =>
+      obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
+      obtain ⟨ub, sb, hb2, hc2⟩ := M.bind_inv h
+      obtain ⟨-, rfl⟩ := M.pure_inv ha
+      have g6a : SGrowsAt 0 s6 sa := ((SGrowsAt.of_sealCur h7).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h8)).trans
+          (gbody.mono (Nat.zero_le _))
+      have hnextLt : nextId < sa.fn.blocks.size :=
+        Nat.lt_of_lt_of_le (newBlock_target_lt h6) g6a.size
+      have hvb : CurValid sb := CurValid.of_moveTo hnextLt hb2
+      obtain ⟨hv', -⟩ := ih sb hvb hc2
+      have hnextBase : s.fn.blocks.size ≤ nextId := by
+        rw [SGrowsAt.newBlock_id h6]
+        exact a5.size
+      have gb : SGrowsAt s.fn.blocks.size s8 sb :=
+        (gbody.mono a8.size).trans
+          (SGrowsAt.of_moveTo (Or.inl hnextBase) hb2)
+      have gr := trCases_grows fenv env lctx rets sv X joinId rest df
+        sv X joinId sb u s' hc2
+      exact ⟨hv', Or.inl (hm.forward hv a8
+        (gb.trans (gr.mono (Nat.le_trans a8.size gb.size))))⟩
+    | some env' =>
+      obtain ⟨xv, sa, ha, h⟩ := M.bind_inv h
+      obtain ⟨ub, sb, hb2, h⟩ := M.bind_inv h
+      obtain ⟨uc, sc, hc2, hd2⟩ := M.bind_inv h
+      have g6sb : SGrowsAt 0 s6 sb := (((SGrowsAt.of_sealCur h7).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h8)).trans
+          (gbody.mono (Nat.zero_le _))).trans
+            ((SGrowsAt.of_edgeArgs ha).trans (SGrowsAt.of_sealCur hb2))
+      have hnextLt : nextId < sb.fn.blocks.size :=
+        Nat.lt_of_lt_of_le (newBlock_target_lt h6) g6sb.size
+      have hvc : CurValid sc := CurValid.of_moveTo hnextLt hc2
+      obtain ⟨hv', -⟩ := ih sc hvc hd2
+      have hnextBase : s.fn.blocks.size ≤ nextId := by
+        rw [SGrowsAt.newBlock_id h6]
+        exact a5.size
+      have gb : SGrowsAt s.fn.blocks.size s8 sc :=
+        (((gbody.mono a8.size).trans (SGrowsAt.of_edgeArgs ha)).trans
+          (SGrowsAt.of_sealCur hb2)).trans
+            (SGrowsAt.of_moveTo (Or.inl hnextBase) hc2)
+      have gr := trCases_grows fenv env lctx rets sv X joinId rest df
+        sv X joinId sc u s' hd2
+      exact ⟨hv', Or.inl (hm.forward hv a8
+        (gb.trans (gr.mono (Nat.le_trans a8.size gb.size))))⟩
+
+omit model in
+/-- A non-dependent spelling of the optional default-body list.  Rewriting to
+`Option.toList` avoids dependent `match` terms acquiring local proof arguments
+when a switch equation is inverted. -/
+theorem switchBodies_eq (cases : List (Literal × List (Stmt Op)))
+    (dflt : Option (List (Stmt Op))) :
+    cases.map Prod.snd ++ (match dflt with | some b => [b] | none => []) =
+      cases.map Prod.snd ++ dflt.toList := by
+  cases dflt <;> rfl
+
 omit model in
 /-- `CurPlaced` travels backwards along an expression-level step. -/
 theorem curPlaced_back_grows {f : Func} {sA sB : BState} (hg : Grows sA sB)
@@ -8723,18 +8877,96 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
             gsuffix))) hcompl
     exact SOut.ofExprHalt
       (ihc.1 fenv env R s₀ sA cv joins hfe henv hfr hp hcomplA hcpA h1)
-  -- Precise remaining switch boundary: prove an accessible (post-`trStmt_cur`)
-  -- `trCases_curPlaced_back` from `trCases_cur_nil`, current validity, protected
-  -- joins and completion.  `switchHalt` then feeds that placement to `ihc`.
-  -- `switchExec` additionally needs a recursive `trCases_sim` which evaluates
-  -- each generated `const; eq; branch`, invokes `ihs` exactly at
-  -- `selectSwitch cv cases dflt`, and on normal return uses `Regs.BelowEq` to
-  -- keep the outer `joinParams` unbound before the common join reconstruction.
+  -- Precise remaining switch boundary: current placement is now discharged by
+  -- `trCases_cur_closed` (and `switchHalt` below is complete).  `switchExec`
+  -- alone still needs a recursive `trCases_sim`: evaluate each generated
+  -- `const; eq; branch`, invoke `ihs` exactly at `selectSwitch cv cases dflt`,
+  -- and on normal return use `Regs.BelowEq` to keep the outer `joinParams`
+  -- unbound before the common join reconstruction.  Its nil/no-default leaf
+  -- must also invert the selected empty block to recover normal/V/state.
   | switchExec hc hsel ihc ihs => sorry
-  | switchHalt hc ihc => sorry
-  -- The loop motive is now `LOut`; the seven iteration constructors still need
-  -- the same below-watermark preservation at header/exit/post parameter binds,
+  | @switchHalt funs V st c cases dflt st1 hc ihc =>
+    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv _huniq hfr hvalid hp
+      hcompl _hcp _ htr
+    let X := modifiedX env (cases.map Prod.snd ++ dflt.toList)
+    unfold trStmt at htr
+    obtain ⟨sv, sA, h1, htr⟩ := M.bind_inv htr
+    obtain ⟨joinParams, sB, h2, htr⟩ := M.bind_inv htr
+    obtain ⟨joinId, sC, h3, htr⟩ := M.bind_inv htr
+    obtain ⟨uD, sD, h4, htr⟩ := M.bind_inv htr
+    obtain ⟨uE, sE, h5, h6⟩ := M.bind_inv htr
+    obtain ⟨-, hs₁⟩ := M.pure_inv h6
+    have hXE := congrArg (modifiedX env) (switchBodies_eq cases dflt)
+    have h2X : X.mapM (fun _ => freshVal) sA = some (joinParams, sB) := by
+      exact Eq.mp (congrArg
+        (fun X' => X'.mapM (fun _ => freshVal) sA = some (joinParams, sB)) hXE) h2
+    have h4X : trCases fenv env lctx rets sv X joinId cases dflt sC =
+        some (uD, sD) := by
+      exact Eq.mp (congrArg (fun X' =>
+        trCases fenv env lctx rets sv X' joinId cases dflt sC = some (uD, sD)) hXE) h4
+    have hcomplE : Completes f sE.fn joins := by simpa only [hs₁] using hcompl
+    have g0A : Grows s₀ sA := trExpr_grows c fenv env s₀ sA sv h1
+    have hvalidA : CurValid sA := hvalid.of_grows g0A
+    have aAB : SGrowsAt sA.fn.blocks.size sA sB :=
+      SGrowsAt.of_grows (Grows.of_mapM_freshVal h2X)
+    have aAC := aAB.trans (SGrowsAt.of_newBlock h3)
+    have csAC := (CurSame.of_grows (Grows.of_mapM_freshVal h2X)).trans
+      (CurSame.of_newBlock h3)
+    have hvalidC : CurValid sC := CurValid.of_same_sgrows hvalidA aAC csAC.1
+    obtain ⟨hvalidD, hkCD⟩ := trCases_cur_closed fenv env lctx rets sv
+      X joinId cases dflt sC sD uD hvalidC h4X
+    have gCD := trCases_grows fenv env lctx rets sv X joinId cases dflt
+      sv X joinId sC uD sD h4X
+    have hjoinLt : joinId < sC.fn.blocks.size := newBlock_target_lt h3
+    have hcurLtJoin : sC.fn.curId < joinId := by
+      rw [csAC.1, SGrowsAt.newBlock_id h3]
+      exact Nat.lt_of_lt_of_le hvalidA aAB.size
+    have hjoinNeC : sC.fn.curId ≠ joinId := Nat.ne_of_lt hcurLtJoin
+    have hjoinNeD : sD.fn.curId ≠ joinId := by
+      intro heq
+      rcases gCD.curId with heqC | hge
+      · exact hjoinNeC (heqC ▸ heq)
+      · exact Nat.not_lt_of_ge (heq ▸ hge) hjoinLt
+    have hpA : ProtectedAt joins sA.fn :=
+      ProtectedAt.forward hp (SGrows.of_grows g0A)
+    have hpC : ProtectedAt joins sC.fn := ProtectedAt.forward hpA aAC
+    have hpD : ProtectedAt joins sD.fn := ProtectedAt.forward hpC gCD
+    have hcomplD : Completes f sD.fn (joinId :: joins) :=
+      Completes.of_moveTo_protected (by simp) h5 (hcomplE.protect joinId)
+    have hprotD : sD.fn.curId ∉ joinId :: joins := by
+      simp only [List.mem_cons]
+      exact fun h => h.elim hjoinNeD hpD.away
+    have hcurD : sD.fn.cur = [] := trCases_cur_nil fenv env lctx rets sv
+      X joinId cases dflt sC sD uD h4X
+    have hcpD : CurPlaced f sD.fn := CurPlaced.of_moveTo_empty hvalidD hcurD
+      hjoinNeD h5 hprotD (hcomplE.protect joinId)
+    have hfinD : CurFinal f sD.fn := curFinal_of_move_grows h5 hjoinNeD
+      hpD.away (SGrows.rfl' sE) hcomplE
+    have hprotC : sC.fn.curId ∉ joinId :: joins := by
+      simp only [List.mem_cons]
+      exact fun h => h.elim hjoinNeC hpC.away
+    have hcpC : CurPlaced f sC.fn :=
+      curPlaced_back (renv := none) hkCD hprotC hcomplD (fun _ => hfinD) hcpD
+    have hcpB : CurPlaced f sB.fn :=
+      (CurSame.of_newBlock h3).placed_back hcpC
+    have hcpA : CurPlaced f sA.fn :=
+      curPlaced_back_grows (Grows.of_mapM_freshVal h2X) hcpB
+    have hjoinBase : sA.fn.blocks.size ≤ joinId := by
+      rw [SGrowsAt.newBlock_id h3]
+      exact aAB.size
+    have htail : SGrowsAt sA.fn.blocks.size sA sE :=
+      aAC.trans ((gCD.mono aAC.size).trans
+        (SGrowsAt.of_moveTo (N := sA.fn.blocks.size) (Or.inl hjoinBase) h5))
+    have hcomplA : Completes f sA.fn joins := htail.completes_of hcomplE
+    exact SOut.ofExprHalt
+      (ihc.1 fenv env R s₀ sA sv joins hfe henv hfr hp hcomplA hcpA h1)
+  -- The loop motive is `LOut`; the seven iteration constructors still need the
+  -- same below-watermark preservation at header/exit/post parameter binds,
   -- plus the three protected continuations exposed by `trLoopCore`.
+  -- The two enclosing `for` rules additionally need the hoisted-scope bridge
+  -- `allocScope init` -> `FEnvOK P (hoist yulD init :: funs) (scope :: fenv)`;
+  -- this is the same completion-sensitive bridge blocking `block` below,
+  -- because its `FuncOK` witnesses become available only after `fillFunc`.
   | forLoop hinit hloop ihi ihl => sorry
   | forInitHalt hinit ihi => sorry
   | @«break» funs V st =>
