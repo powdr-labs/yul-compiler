@@ -1613,17 +1613,27 @@ compose that result with the existing `Simplify` resolution congruence for the
   iterating the scan (a dropped branch's `jumpi` can orphan its label for a
   second round).
 
-## The `yul-ssa-cfg` dialect (2026-07, in progress)
+## The `yul-ssa-cfg` dialect (2026-07/08, landed on PR #151, proofs in progress)
 
-- 🚧 **`yul-ssa-cfg`: a second backend dialect below Yul** (this branch; see
-  `YulEvmCompiler/SsaCfg/DESIGN.md` and its PR). Not a `LocalPass` — a new
-  IR: SSA control-flow graph with block arguments, built from optimized Yul
-  (`toSsa`), optimized there (copy-prop/param simplification, dominance-scoped
-  GVN/CSE, SCCP, dead-value elimination), then code-generated straight to the
-  existing labeled `Asm` layer (`fromSsa`) with liveness-driven per-block
-  stack scheduling — the structural fix for the POP/DUP/SWAP stack traffic
-  that dominates the aave/uniswap gas gap and that no Yul→Yul pass can
-  express (variables pin stack slots at the source level). Reuses Phase B,
-  `stackOK2`, and the assembler verbatim by ending at `Asm`; adds a
-  generalized `EvmBackend` spec so `{classic, ssa}` backends satisfy one
-  contract and the verified Yul→Yul pipeline composes in front of either.
+- 🚧 **`yul-ssa-cfg`: a second backend dialect below Yul** (PR #151; see
+  `YulEvmCompiler/SsaCfg/DESIGN.md`). Not a `LocalPass` — a new IR: SSA
+  control-flow graph with block arguments, built from optimized Yul
+  (`ofBlock`), optimized there (trivial-parameter elimination, constant
+  folding through branches, dominance-scoped CSE, dead-value elimination,
+  and program-level inlining with the single-call-site rule), then
+  code-generated straight to the existing labeled `Asm` layer with
+  entry-layout inheritance (solc-style forward pass), commutative operand
+  ordering, and a checked greedy shuffler; `compileSource` keeps both
+  backends' artifacts and picks by a dead-code-aware static cost.
+  **Measured**: uniswap-v4 gap to solc −37% (ratio 114.9% → 109.3%, single
+  functions now beating solc); codegen-parity totals below solc on all
+  three Solidity corpora; +11 corpus fixtures newly working (stack-too-deep
+  cases, behavioral matches, bounded recursion fully unrolled). The spec
+  grew by the generalized `Optimizer.EvmBackend` contract
+  (`Spec/EvmBackend.lean`, classic instance proved outright); the SSA
+  backend's own audit surface is `SsaCfg/Spec/`, its phase-obligation
+  proofs are the declared sorry frontier in `SsaCfg/Implementation/*Sound`
+  (still 🚧). Two machine-checked findings during proofs: `wfCheck` does
+  not imply SSA dominance (a stale-read counterexample; fixed with the
+  decidable `domCheck` gate), and codegen genuinely needs single
+  assignment + label uniqueness.

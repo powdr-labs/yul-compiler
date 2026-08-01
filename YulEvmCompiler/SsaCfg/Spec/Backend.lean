@@ -1,12 +1,12 @@
 import YulEvmCompiler.Correctness
-import YulEvmCompiler.SsaCfg.Compile
-import YulEvmCompiler.SsaCfg.Sem
-import YulEvmCompiler.SsaCfg.OfYulSound
-import YulEvmCompiler.SsaCfg.PassesSound
-import YulEvmCompiler.SsaCfg.ToAsmSound
+import YulEvmCompiler.SsaCfg.Implementation.Compile
+import YulEvmCompiler.SsaCfg.Spec.Sem
+import YulEvmCompiler.SsaCfg.Implementation.OfYulSound
+import YulEvmCompiler.SsaCfg.Implementation.PassesSound
+import YulEvmCompiler.SsaCfg.Implementation.ToAsmSound
 import YulEvmCompiler.Optimizer.Spec.EvmBackend
 /-!
-# YulEvmCompiler.SsaCfg.Correctness
+# YulEvmCompiler.SsaCfg.Spec.Backend
 
 The SSA backend's correctness theorem, `compileViaSsa_correct`, with the
 **same statement** as `compile_correct` — and its packaging as the second

@@ -1,10 +1,10 @@
 import YulEvmCompiler.Compile
-import YulEvmCompiler.SsaCfg.OfYul
-import YulEvmCompiler.SsaCfg.Passes
-import YulEvmCompiler.SsaCfg.ToAsm
+import YulEvmCompiler.SsaCfg.Implementation.OfYul
+import YulEvmCompiler.SsaCfg.Implementation.Passes
+import YulEvmCompiler.SsaCfg.Implementation.ToAsm
 set_option warningAsError true
 /-!
-# YulEvmCompiler.SsaCfg.Compile
+# YulEvmCompiler.SsaCfg.Implementation.Compile
 
 The **SSA backend entry point**: Yul → `yul-ssa-cfg` → labeled `Asm` → EVM
 bytecode, through the exact same final gates as the classic `compile` — the

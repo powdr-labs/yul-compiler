@@ -1,10 +1,10 @@
-import YulEvmCompiler.SsaCfg.Ir
-import YulEvmCompiler.SsaCfg.ToAsm
+import YulEvmCompiler.SsaCfg.Spec.Ir
+import YulEvmCompiler.SsaCfg.Implementation.ToAsm
 import Std.Data.HashMap
 import Std.Data.HashSet
 set_option warningAsError true
 /-!
-# YulEvmCompiler.SsaCfg.Passes
+# YulEvmCompiler.SsaCfg.Implementation.Passes
 
 **Optimization passes** over the `yul-ssa-cfg` dialect, run between the
 construction (`SsaCfg/OfYul.lean`) and the code generator

@@ -1,8 +1,8 @@
 import YulEvmCompiler.ObjectCompile
-import YulEvmCompiler.SsaCfg.Compile
+import YulEvmCompiler.SsaCfg.Implementation.Compile
 set_option warningAsError true
 /-!
-# YulEvmCompiler.SsaCfg.Object
+# YulEvmCompiler.SsaCfg.Implementation.Object
 
 The SSA backend's **object path**: the classic recursive layout fixpoint
 (`planObjectWith`/`compileResolvedObjectWith`, see `ObjectCompile.lean`)

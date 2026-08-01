@@ -103,6 +103,34 @@ literature it cites in-source:
   Leroy, JAR 2008). Sea-of-nodes is contra-indicated (V8 retreated from it;
   scheduling onto a stack needs a scheduled CFG anyway).
 
+## Layout: `Spec/` vs `Implementation/`
+
+The subtree follows the optimizer's audit discipline (`Optimizer/Spec` vs
+`Optimizer/Implementation`):
+
+* **`Spec/`** — the audit surface: anything whose *meaning* a reviewer must
+  read and agree with.
+  * `Spec/Ir.lean` — what a `yul-ssa-cfg` program *is* (syntax,
+    `Prog.wfCheck`).
+  * `Spec/Sem.lean` — the dialect's ground-truth semantics (`Exec`/`Run`
+    over the same Yul-side state and builtin relation as `AsmSem`).
+  * `Spec/Dom.lean` — liveness and the decidable dominance check
+    (`Prog.domCheck`), spec-tier because the pass obligations are stated
+    under it.
+  * `Spec/Backend.lean` — the guarantees: the three phase obligations
+    (`ofBlock_sound`, `optimizeProg_sound`, `emitProg_asteps`/`_ahalt`),
+    their fully-proved composition into `compileViaSsa_correct` (the exact
+    `compile_correct` statement shape), and the `Optimizer.EvmBackend`
+    packaging.
+* **`Implementation/`** — anything that can change without moving the
+  guarantee, caught by the theorems when wrong: the construction
+  (`OfYul`), the SSA passes (`Passes`), the code generator (`ToAsm`), the
+  pipeline/candidate selection (`Compile`), the object path (`Object`),
+  the build-time differential guards (`Examples`), and the proof bodies
+  (`OfYulSound`/`PassesSound`/`ToAsmSound` — like the optimizer's concrete
+  passes, an auditor need not read them; they are trusted the moment the
+  `Spec/Backend` obligations they discharge type-check).
+
 ## The IR
 
 `YulEvmCompiler/SsaCfg/Ir.lean`. Values are `ValId := Nat`. Sea-of-nodes is

@@ -1,8 +1,8 @@
 import YulEvmCompiler.AsmSem
-import YulEvmCompiler.SsaCfg.Ir
+import YulEvmCompiler.SsaCfg.Spec.Ir
 set_option warningAsError true
 /-!
-# YulEvmCompiler.SsaCfg.Sem
+# YulEvmCompiler.SsaCfg.Spec.Sem
 
 The big-step relational semantics of the `yul-ssa-cfg` dialect.
 

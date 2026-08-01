@@ -22,10 +22,10 @@ private def warningPolicyExempt : List String :=
    -- TEMPORARY (PR #151): the SSA-CFG proof frontier — sorries must stay
    -- warnings there; remove with the ci.yml sorry-scan exception when the
    -- proofs land.
-   "YulEvmCompiler/SsaCfg/Correctness.lean",
-   "YulEvmCompiler/SsaCfg/OfYulSound.lean",
-   "YulEvmCompiler/SsaCfg/PassesSound.lean",
-   "YulEvmCompiler/SsaCfg/ToAsmSound.lean"]
+   "YulEvmCompiler/SsaCfg/Spec/Backend.lean",
+   "YulEvmCompiler/SsaCfg/Implementation/OfYulSound.lean",
+   "YulEvmCompiler/SsaCfg/Implementation/PassesSound.lean",
+   "YulEvmCompiler/SsaCfg/Implementation/ToAsmSound.lean"]
 
 /-- Keep the per-module warning policy from silently missing newly added Lean sources. -/
 private def checkWarningPolicy : IO Unit := do

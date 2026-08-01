@@ -1,8 +1,8 @@
-import YulEvmCompiler.SsaCfg.Sem
-import YulEvmCompiler.SsaCfg.OfYul
+import YulEvmCompiler.SsaCfg.Spec.Sem
+import YulEvmCompiler.SsaCfg.Implementation.OfYul
 import YulSemantics.BigStep
 /-!
-# YulEvmCompiler.SsaCfg.OfYulSound
+# YulEvmCompiler.SsaCfg.Implementation.OfYulSound
 
 **Construction soundness** for the `yul-ssa-cfg` dialect: every terminating
 source derivation over a program the construction accepts is matched by an

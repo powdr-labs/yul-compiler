@@ -2,10 +2,10 @@
 -- against the `EmitSt` emitter (layout inheritance + commutative operand
 -- ordering). The emission-independent machinery below is fully proved.
 import YulEvmCompiler.AsmSem
-import YulEvmCompiler.SsaCfg.Sem
-import YulEvmCompiler.SsaCfg.ToAsm
+import YulEvmCompiler.SsaCfg.Spec.Sem
+import YulEvmCompiler.SsaCfg.Implementation.ToAsm
 /-!
-# YulEvmCompiler.SsaCfg.ToAsmSound
+# YulEvmCompiler.SsaCfg.Implementation.ToAsmSound
 
 **Codegen simulation** for the `yul-ssa-cfg` backend: an SSA execution
 (`SsaCfg.Run`) maps to a trace of the labeled-`Asm` machine (`ASteps`/`AHalt`)

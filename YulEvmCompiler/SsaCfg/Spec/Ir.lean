@@ -1,7 +1,7 @@
 import YulSemantics.Dialect.EVM
 set_option warningAsError true
 /-!
-# YulEvmCompiler.SsaCfg.Ir
+# YulEvmCompiler.SsaCfg.Spec.Ir
 
 The **`yul-ssa-cfg` dialect**: an SSA control-flow graph over the EVM Yul
 operation set. See `YulEvmCompiler/SsaCfg/DESIGN.md` for the design rationale.

@@ -1,7 +1,7 @@
-import YulEvmCompiler.SsaCfg.Ir
+import YulEvmCompiler.SsaCfg.Spec.Ir
 set_option warningAsError true
 /-!
-# YulEvmCompiler.SsaCfg.OfYul
+# YulEvmCompiler.SsaCfg.Implementation.OfYul
 
 **Construction**: Yul → `yul-ssa-cfg`.
 

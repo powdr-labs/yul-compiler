@@ -1,9 +1,9 @@
-import YulEvmCompiler.SsaCfg.Passes
-import YulEvmCompiler.SsaCfg.Sem
-import YulEvmCompiler.SsaCfg.ToAsm
+import YulEvmCompiler.SsaCfg.Implementation.Passes
+import YulEvmCompiler.SsaCfg.Spec.Sem
+import YulEvmCompiler.SsaCfg.Implementation.ToAsm
 import YulSemantics.Dialect.EVM
 /-!
-# YulEvmCompiler.SsaCfg.PassesSound
+# YulEvmCompiler.SsaCfg.Implementation.PassesSound
 
 Soundness metatheory for the `yul-ssa-cfg` optimization passes
 (`SsaCfg/Passes.lean`), i.e. the material behind the `sorry`'d

@@ -1,8 +1,8 @@
-import YulEvmCompiler.SsaCfg.Compile
+import YulEvmCompiler.SsaCfg.Implementation.Compile
 import YulEvmCompiler.Examples
 set_option warningAsError true
 /-!
-# YulEvmCompiler.SsaCfg.Examples
+# YulEvmCompiler.SsaCfg.Implementation.Examples
 
 Build-time checks for the SSA backend, mirroring `YulEvmCompiler.Examples`:
 

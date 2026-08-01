@@ -1,7 +1,7 @@
 import YulParser.Source
 import YulEvmCompiler.ObjectCompile
-import YulEvmCompiler.SsaCfg.Compile
-import YulEvmCompiler.SsaCfg.Object
+import YulEvmCompiler.SsaCfg.Implementation.Compile
+import YulEvmCompiler.SsaCfg.Implementation.Object
 import YulEvmCompiler.Optimizer.Implementation.Pipeline
 import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
 import YulEvmCompiler.Optimizer.Implementation.MemorySpillSelect
