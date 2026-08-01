@@ -106,6 +106,17 @@ theorem trans' {γ : Type} {r : α → β → Prop} {t : β → γ → Prop} {u 
     cases h₂ with
     | cons hh2 ht2 => exact .cons (hc _ _ _ hh hh2) (ih ht2)
 
+theorem imp_mem {r s : α → β → Prop} :
+    ∀ {l₁ : List α} {l₂ : List β}, List.Forall₂ r l₁ l₂ →
+      (∀ a ∈ l₁, ∀ b, r a b → s a b) → List.Forall₂ s l₁ l₂ := by
+  intro l₁ l₂ h
+  induction h with
+  | nil => intro _; exact .nil
+  | @cons a b l₁' l₂' hh _ ih =>
+    intro hs
+    exact .cons (hs a (List.mem_cons_self ..) b hh)
+      (ih (fun y hy c hc => hs y (List.mem_cons_of_mem _ hy) c hc))
+
 end Forall2
 
 theorem lt_size_of_getElem? {α : Type} {a : Array α} {i : Nat} {x : α}
@@ -3227,6 +3238,204 @@ theorem sim_continue {P : Prog} {f : Func} {fenv : FMap} {env : VMap} {R : Regs}
   refine ⟨l, R, vals, rfl, Regs.Le.rfl R, hfresh, hforall, fun res hjmp => ?_⟩
   exact execFrom_jump (curOK_of_sealCur hfin h2) hget hjmp
 
+/-- The construction rejects shadowing (`letDecl` checks `VMap.mem`), so the
+names a scope declares are disjoint from the ones already visible. This is what
+makes scope exit transparent to the outer environment. -/
+def NoShadow (V Vb : VEnv yulD) : Prop :=
+  ∀ x ∈ VEnv.names (Vb.take (Vb.length - V.length)), x ∉ VEnv.names V
+
+/-- **Scope exit is transparent to outer names.** An outer variable reads the
+same before and after `restore` — the bindings `restore` drops are the scope's
+own declarations, whose names no outer variable shares. This is what the
+`block`/`cond`/`switch`/`for` cases need to carry a non-local exit's edge values
+(read at the divert point, inside the scope) out through the source's
+`restore`. -/
+theorem get_restore_of_noShadow {V Vb : VEnv yulD} (hns : NoShadow V Vb)
+    {x : Ident} (hx : x ∈ VEnv.names V) :
+    YulSemantics.VEnv.get (YulSemantics.restore V Vb) x
+      = YulSemantics.VEnv.get Vb x := by
+  have hsplit : Vb = Vb.take (Vb.length - V.length)
+      ++ YulSemantics.restore V Vb := by
+    rw [VEnv.restore_def, List.take_append_drop]
+  conv_rhs => rw [hsplit]
+  rw [VEnv.get_append_of_not_mem (fun hmem => hns x hmem hx)]
+
+/-- Transport a *non-normal* `SOut` across a later builder state. The diverting
+outcomes never mention the fragment's output environment — only its freshness
+bound — so a fragment that diverts keeps its meaning when the construction goes
+on to translate the dead code after it. -/
+theorem SOut.of_nonNormal {P : Prog} {f : Func} {lctx : Option LoopCtx}
+    {rets : Option (List Ident)} {s₀ s₁ s₁' : BState} {R : Regs}
+    {renv renv' : Option VMap} {V' : VEnv yulD} {yst yst' : EvmState}
+    {o : Outcome} (ho : o ≠ .normal)
+    (hgrow : s₁.fn.nextVal ≤ s₁'.fn.nextVal)
+    (h : SOut (model := model) P f lctx rets s₀ s₁ R renv V' yst yst' o) :
+    SOut (model := model) P f lctx rets s₀ s₁' R renv' V' yst yst' o := by
+  cases o with
+  | normal => exact absurd rfl ho
+  | halt => exact h
+  | «break» =>
+    obtain ⟨lc, R₁, vals, hlc, hle, hfr, hforall, hcont⟩ := h
+    exact ⟨lc, R₁, vals, hlc, hle, hfr.mono hgrow, hforall, hcont⟩
+  | «continue» =>
+    obtain ⟨lc, R₁, vals, hlc, hle, hfr, hforall, hcont⟩ := h
+    exact ⟨lc, R₁, vals, hlc, hle, hfr.mono hgrow, hforall, hcont⟩
+  | leave => exact h
+
+/-- **`seqCons`** — the sequence combinator. A statement that completes
+normally hands its register file, environment correspondence and freshness
+bound to the rest of the list, and the two fragments' `SimS`s compose; every
+non-normal outcome of the tail is carried back through the head's `SimS`.
+
+This is a pure `SOut` combinator: it needs no construction inversion, which is
+why the `seqCons` case of the main induction is a one-liner. -/
+theorem SOut.seq {P : Prog} {f : Func} {lctx : Option LoopCtx}
+    {rets : Option (List Ident)} {s₀ sA s₁ : BState} {R : Regs}
+    {renv : Option VMap} {env' : VMap} {V1 V2 : VEnv yulD}
+    {yst yst1 yst2 : EvmState} {o : Outcome}
+    (hhead : SOut (model := model) P f lctx rets s₀ sA R (some env') V1 yst yst1 .normal)
+    (htail : ∀ R₁ : Regs, Regs.Le R R₁ → RegsFresh R₁ sA.fn →
+        EnvOK (model := model) env' V1 R₁ →
+        SOut (model := model) P f lctx rets sA s₁ R₁ renv V2 yst1 yst2 o) :
+    SOut (model := model) P f lctx rets s₀ s₁ R renv V2 yst yst2 o := by
+  obtain ⟨e', R₁, he', hle, hfr, henv', hsim⟩ := hhead
+  obtain rfl : e' = env' := (Option.some.inj he').symm
+  have ht := htail R₁ hle hfr henv'
+  cases o with
+  | normal =>
+    obtain ⟨e2, R₂, hr2, hle2, hfr2, henv2, hsim2⟩ := ht
+    exact ⟨e2, R₂, hr2, hle.trans hle2, hfr2, henv2, hsim.trans hsim2⟩
+  | halt => exact hsim _ ht
+  | «break» =>
+    obtain ⟨lc, R₂, vals, hlc, hle2, hfr2, hforall, hcont⟩ := ht
+    exact ⟨lc, R₂, vals, hlc, hle.trans hle2, hfr2, hforall,
+      fun res hj => hsim res (hcont res hj)⟩
+  | «continue» =>
+    obtain ⟨lc, R₂, vals, hlc, hle2, hfr2, hforall, hcont⟩ := ht
+    exact ⟨lc, R₂, vals, hlc, hle.trans hle2, hfr2, hforall,
+      fun res hj => hsim res (hcont res hj)⟩
+  | leave =>
+    obtain ⟨rs, vals, hrs, hforall, hex⟩ := ht
+    exact ⟨rs, vals, hrs, hforall, hsim _ hex⟩
+
+/-- **Scope exit** — the `block` combinator. The construction drops the scope's
+own `VMap` entries; the source `restore`s. `EnvOK.restore` matches the two, and
+`get_restore_of_noShadow` carries a non-local exit's edge values (read inside
+the scope) out through the `restore`. -/
+theorem SOut.scope {P : Prog} {f : Func} {lctx : Option LoopCtx}
+    {rets : Option (List Ident)} {s₀ s₁ : BState} {R : Regs}
+    {renv : Option VMap} {env : VMap} {V Vb : VEnv yulD}
+    {yst yst' : EvmState} {o : Outcome}
+    (hlen : env.length = V.length) (hns : NoShadow V Vb)
+    (hvars : ∀ lc : LoopCtx, lctx = some lc → ∀ x ∈ lc.vars, x ∈ VEnv.names V)
+    (hrets : ∀ rs, rets = some rs → ∀ x ∈ rs, x ∈ VEnv.names V)
+    (h : SOut (model := model) P f lctx rets s₀ s₁ R renv Vb yst yst' o) :
+    SOut (model := model) P f lctx rets s₀ s₁ R
+      (renv.map (fun e => e.drop (e.length - env.length)))
+      (YulSemantics.restore V Vb) yst yst' o := by
+  cases o with
+  | normal =>
+    obtain ⟨e', R₁, hr, hle, hfr, henv', hsim⟩ := h
+    exact ⟨e'.drop (e'.length - env.length), R₁, by rw [hr]; rfl, hle, hfr,
+      henv'.restore hlen, hsim⟩
+  | halt => exact h
+  | «break» =>
+    obtain ⟨lc, R₁, vals, hlc, hle, hfr, hforall, hcont⟩ := h
+    exact ⟨lc, R₁, vals, hlc, hle, hfr,
+      Forall2.imp_mem hforall (fun x hx v hv => by
+        rw [get_restore_of_noShadow hns (hvars lc hlc x hx)]; exact hv), hcont⟩
+  | «continue» =>
+    obtain ⟨lc, R₁, vals, hlc, hle, hfr, hforall, hcont⟩ := h
+    exact ⟨lc, R₁, vals, hlc, hle, hfr,
+      Forall2.imp_mem hforall (fun x hx v hv => by
+        rw [get_restore_of_noShadow hns (hvars lc hlc x hx)]; exact hv), hcont⟩
+  | leave =>
+    obtain ⟨rs, vals, hrs, hforall, hex⟩ := h
+    exact ⟨rs, vals, hrs,
+      Forall2.imp_mem hforall (fun x hx v hv => by
+        rw [get_restore_of_noShadow hns (hrets rs hrs x hx)]; exact hv), hex⟩
+
+/-- **`seqNil`** — the empty live statement list emits nothing. -/
+theorem sim_seqNil {P : Prog} {f : Func} {fenv : FMap} {env : VMap} {R : Regs}
+    {V : VEnv yulD} {lctx : Option LoopCtx} {rets : Option (List Ident)}
+    {s₀ s₁ : BState} {renv : Option VMap} {yst : EvmState}
+    (henv : EnvOK (model := model) env V R) (hfresh : RegsFresh R s₀.fn)
+    (htr : trStmts fenv env lctx rets false [] s₀ = some (renv, s₁)) :
+    SOut (model := model) P f lctx rets s₀ s₁ R renv V yst yst .normal := by
+  rw [trStmts] at htr
+  obtain ⟨hrenv, hs₁⟩ := M.pure_inv htr
+  subst hs₁
+  exact ⟨env, R, by simpa using hrenv, Regs.Le.rfl R, hfresh, henv, SimS.rfl'⟩
+
+/-- **`letDecl vars (some e)`** — the right-hand side's ids become the new
+bindings; `EnvOK.zip` pairs them with the source values. -/
+theorem sim_letDecl_some {P : Prog} {f : Func} {fenv : FMap} {env : VMap}
+    {R : Regs} {V : VEnv yulD} {lctx : Option LoopCtx}
+    {rets : Option (List Ident)} {vars : List Ident} {e : Expr Op}
+    {s₀ s₁ sA : BState} {renv : Option VMap} {ids : List ValId}
+    {vals : List U256} {yst yst1 : EvmState}
+    (henv : EnvOK (model := model) env V R)
+    (hvals : vals.length = vars.length)
+    (htrN : trExprN fenv env vars.length e s₀ = some (ids, sA))
+    (hE : EOutL (model := model) P f s₀ sA R ids vals yst yst1)
+    (htr : trStmt fenv env lctx rets (.letDecl vars (some e)) s₀
+        = some (renv, s₁)) :
+    SOut (model := model) P f lctx rets s₀ s₁ R renv
+      (vars.zip vals ++ V) yst yst1 .normal := by
+  rw [trStmt] at htr
+  by_cases hgate : (vars.any env.mem || !decide vars.Nodup) = true
+  · rw [if_pos hgate] at htr
+    obtain ⟨u, sX, h1, -⟩ := M.bind_inv htr
+    exact absurd h1 (by simp [reject])
+  rw [if_neg hgate] at htr
+  obtain ⟨u, sX, h1, htr⟩ := M.bind_inv htr
+  obtain ⟨-, hsX⟩ := M.pure_inv h1
+  rw [hsX] at htr
+  obtain ⟨ids', sA', h2, h3⟩ := M.bind_inv htr
+  obtain ⟨rfl, rfl⟩ : ids' = ids ∧ sA' = sA := by
+    have he := h2.symm.trans htrN
+    exact ⟨(M.some_pair_inj he).1, (M.some_pair_inj he).2⟩
+  obtain ⟨hrenv, hs₁⟩ := M.pure_inv h3
+  subst hs₁
+  obtain ⟨R₁, hle, hfr, hget, hsim⟩ := hE
+  refine ⟨vars.zip ids' ++ env, R₁, hrenv, hle, hfr, ?_, hsim⟩
+  refine EnvOK.append (EnvOK.zip (Regs.getMany_eq_some_iff.mp hget) ?_)
+    (henv.mono hle)
+  rw [Regs.getMany_length hget]
+  exact hvals.symm
+
+/-- **`assign vars e`** — the right-hand side's ids replace the bindings in
+place; `EnvOK.setMany` tracks `VEnv.setMany`. -/
+theorem sim_assign {P : Prog} {f : Func} {fenv : FMap} {env : VMap}
+    {R : Regs} {V : VEnv yulD} {lctx : Option LoopCtx}
+    {rets : Option (List Ident)} {vars : List Ident} {e : Expr Op}
+    {s₀ s₁ sA : BState} {renv : Option VMap} {ids : List ValId}
+    {vals : List U256} {yst yst1 : EvmState}
+    (henv : EnvOK (model := model) env V R)
+    (htrN : trExprN fenv env vars.length e s₀ = some (ids, sA))
+    (hE : EOutL (model := model) P f s₀ sA R ids vals yst yst1)
+    (htr : trStmt fenv env lctx rets (.assign vars e) s₀ = some (renv, s₁)) :
+    SOut (model := model) P f lctx rets s₀ s₁ R renv
+      (YulSemantics.VEnv.setMany V vars vals) yst yst1 .normal := by
+  rw [trStmt] at htr
+  by_cases hgate : (!vars.all env.mem) = true
+  · rw [if_pos hgate] at htr
+    obtain ⟨u, sX, h1, -⟩ := M.bind_inv htr
+    exact absurd h1 (by simp [reject])
+  rw [if_neg hgate] at htr
+  obtain ⟨u, sX, h1, htr⟩ := M.bind_inv htr
+  obtain ⟨-, hsX⟩ := M.pure_inv h1
+  rw [hsX] at htr
+  obtain ⟨ids', sA', h2, h3⟩ := M.bind_inv htr
+  obtain ⟨rfl, rfl⟩ : ids' = ids ∧ sA' = sA := by
+    have he := h2.symm.trans htrN
+    exact ⟨(M.some_pair_inj he).1, (M.some_pair_inj he).2⟩
+  obtain ⟨hrenv, hs₁⟩ := M.pure_inv h3
+  subst hs₁
+  obtain ⟨R₁, hle, hfr, hget, hsim⟩ := hE
+  exact ⟨env.setMany vars ids', R₁, hrenv, hle, hfr,
+    EnvOK.setMany (henv.mono hle) (Regs.getMany_eq_some_iff.mp hget), hsim⟩
+
 /-- **`exprStmt` of an always-halting built-in** — the construction seals the
 block with `Term.halt`, and `isHaltingOp_halts` says the source really does
 halt there, so no execution is lost. -/
@@ -3367,21 +3576,40 @@ The analysis obligation is discharged too: `modStmts_sound` is proved
 (via `mod_sim`), so `cond`/`switch`/`forLoop` may thread only
 `modifiedX env bodies`.
 
-Ten per-case leaves are proved above and plug straight into the induction:
+Seventeen per-case leaves and combinators are proved above and plug straight
+into the induction:
 
 * expressions — `sim_lit`, `sim_var`, `sim_args_nil`, `sim_args_cons`, with the
-  freshness invariant `RegsFresh` they thread;
-* statements — `sim_letDecl_none`, `sim_exprStmt_op`, `sim_exprStmt_halt`;
+  freshness invariant `RegsFresh` they thread (`EOut`/`EOutL`);
+* statements — `sim_letDecl_none`, `sim_letDecl_some`, `sim_assign`,
+  `sim_exprStmt_op`, `sim_exprStmt_halt`;
 * non-local exits — `sim_break`, `sim_continue`, `sim_leave`, using `CurFinal`
   (the block a diverting statement seals is *its own* current block, which
   `Completes.sealed` deliberately exempts; the enclosing `cond`/`switch`/
   `forLoop` supplies it, because each `moveTo`s a fresh join/exit block
-  afterwards and its own `Completes` then covers the sealed one).
+  afterwards and its own `Completes` then covers the sealed one);
+* sequencing and scoping — `sim_seqNil`, `SOut.seq` (the `seqCons`
+  combinator — pure, no construction inversion), `SOut.of_nonNormal` (the
+  `seqStop` transport across the dead code the construction still walks), and
+  `SOut.scope` (the `block` combinator, matching the construction's `drop`
+  against the source's `restore`).
 
-What remains is the `induction … with` itself plus the leaves for `letDecl`
-with a value, `assign`, `block`/`seqCons`/`seqStop`, `cond`, `switch`, the
-`for`/loop family, and user calls (`callOk`/`callHalt`, which consume
-`FMap.get_ok` and `trFunc`).
+Two invariants the remaining cases must thread, both with their payoff lemmas
+already proved:
+
+* `NoShadow` — the construction rejects shadowing (`letDecl` checks
+  `VMap.mem`), so a scope's declarations share no name with the outer
+  environment. `get_restore_of_noShadow` turns that into "scope exit is
+  transparent to outer names", which is what lets `SOut.scope` carry a
+  non-local exit's edge values (read *inside* the scope) out through the
+  source's `restore`.
+* `Completes`/`CurFinal` — see above.
+
+What remains is the `induction … with` shell itself plus the leaves for `cond`
+(join block: `edgeArgs_ok` + `modStmts_sound` + `Completes` at the join),
+`switch` (the `trCases` chain), the `for`/loop family (header/exit/post block
+choreography), and user calls `callOk`/`callHalt` (`FMap.get_ok`, `trFunc`, and
+a fresh register file for the callee).
 -/
 theorem trScope_sim {P : Prog} {f : Func}
     {funs : YulSemantics.FunEnv yulD} {fenv : FMap}
