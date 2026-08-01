@@ -147,7 +147,15 @@ def findTrivialParam (f : Func) : Option (BlockId × Nat × ValId × ValId) := I
           if ith.length == argLists.length then
             let others := (ith.filter (· != p)).eraseDups
             if let [v] := others then
-              return some (bi, i, p, v)
+              -- A `p`-valued argument is a genuine self-carry only on an
+              -- edge from `bi` itself; from any other predecessor it is a
+              -- distinct incoming value that happens to be named by the
+              -- parameter, and rewriting `p ↦ v` there would be unsound.
+              let selfOnly := (List.range f.blocks.size).all fun j =>
+                j == bi || (f.blocks[j]!.term.edges.all fun e =>
+                  e.target != bi || e.args[i]? != some p)
+              if selfOnly then
+                return some (bi, i, p, v)
   return none
 
 /-- Drop parameter position `i` of block `bi`, and position `i` of every
