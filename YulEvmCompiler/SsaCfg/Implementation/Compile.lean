@@ -127,6 +127,14 @@ where
         | _ => go rest false (acc + cost i)
 
 
+/-- Fold step selecting the cheaper of two optional artifacts (first wins
+ties; `none` never displaces a candidate). -/
+def pickMin {α : Type} (f : α → Nat) (best c : Option α) : Option α :=
+  match best, c with
+  | none, c => c
+  | some b, some x => if f x < f b then some x else some b
+  | some b, none => some b
+
 /-- Compile a top-level Yul block through the SSA-CFG dialect: construction,
 dominance gate, then four candidates — {optimized, raw} × {next-use
 scheduling, plain} — with the statically cheapest artifact winning. Each
@@ -141,10 +149,6 @@ def compileViaSsa (prog : YulSemantics.Block Op) :
   let Popt := optimizeProg P
   let cands := [finishProgOrd true Popt, finishProgOrd false Popt,
                 finishProgOrd true P, finishProgOrd false P]
-  cands.foldl (init := none) fun best c =>
-    match best, c with
-    | none, c => c
-    | some b, some x => if instrCost x < instrCost b then some x else some b
-    | some b, none => some b
+  cands.foldl (pickMin instrCost) none
 
 end YulEvmCompiler.SsaCfg

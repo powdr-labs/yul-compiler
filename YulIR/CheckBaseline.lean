@@ -22,7 +22,6 @@ private def warningPolicyExempt : List String :=
    -- TEMPORARY (PR #151): the SSA-CFG proof frontier — sorries must stay
    -- warnings there; remove with the ci.yml sorry-scan exception when the
    -- proofs land.
-   "YulEvmCompiler/SsaCfg/Spec/Backend.lean",
    "YulEvmCompiler/SsaCfg/Implementation/OfYulSound.lean",
    "YulEvmCompiler/SsaCfg/Implementation/PassesSound.lean",
    "YulEvmCompiler/SsaCfg/Implementation/ToAsmSound.lean"]
