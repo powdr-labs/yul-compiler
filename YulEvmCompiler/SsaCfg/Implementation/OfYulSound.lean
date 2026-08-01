@@ -9147,7 +9147,508 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           (ih1 fenv env R lctx rets s₀ sA (some envA) joins hfe henv huniq hfr
             hvalid hp hcomplA hcpA
             (by simp) hhead)
-  | loopDone => sorry
+  | @loopDone funs V st c post body cv st1 hc hz ihc =>
+    intro fenv env R rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp
+      hcompl hcp _hfin htr
+    unfold trLoopCore at htr
+    obtain ⟨xvals, sA, h1, htr⟩ := M.bind_inv htr
+    obtain ⟨hParams, sB, h2, htr⟩ := M.bind_inv htr
+    obtain ⟨hId, sC, h3, htr⟩ := M.bind_inv htr
+    obtain ⟨exitParams, sD, h4, htr⟩ := M.bind_inv htr
+    obtain ⟨exitId, sE, h5, htr⟩ := M.bind_inv htr
+    obtain ⟨postParams, sF, h6, htr⟩ := M.bind_inv htr
+    obtain ⟨postId, sG, h7, htr⟩ := M.bind_inv htr
+    obtain ⟨uH, sH, h8, htr⟩ := M.bind_inv htr
+    obtain ⟨uI, sI, h9, htr⟩ := M.bind_inv htr
+    obtain ⟨cvId, sJ, h10, htr⟩ := M.bind_inv htr
+    obtain ⟨bodyId, sK, h11, htr⟩ := M.bind_inv htr
+    obtain ⟨hX, sL, h12, htr⟩ := M.bind_inv htr
+    obtain ⟨uM, sM, h13, htr⟩ := M.bind_inv htr
+    obtain ⟨uN, sN, h14, htr⟩ := M.bind_inv htr
+    obtain ⟨bodyEnv, sO, h15, htr⟩ := M.bind_inv htr
+    have g0A : Grows s₀ sA := Grows.of_liftO h1
+    have gAB : Grows sA sB := Grows.of_mapM_freshVal h2
+    have gCD : Grows sC sD := Grows.of_mapM_freshVal h4
+    have gEF : Grows sE sF := Grows.of_mapM_freshVal h6
+    have a0A : SGrowsAt s₀.fn.blocks.size s₀ sA := SGrowsAt.of_grows g0A
+    have a0B := a0A.trans (SGrowsAt.of_grows gAB)
+    have a0C := a0B.trans (SGrowsAt.of_newBlock h3)
+    have a0D := a0C.trans (SGrowsAt.of_grows gCD)
+    have a0E := a0D.trans (SGrowsAt.of_newBlock h5)
+    have a0F := a0E.trans (SGrowsAt.of_grows gEF)
+    have a0G := a0F.trans (SGrowsAt.of_newBlock h7)
+    have a0H := a0G.trans (SGrowsAt.of_sealCur h8)
+    have hheadBase : s₀.fn.blocks.size ≤ hId := by
+      rw [SGrowsAt.newBlock_id h3]
+      exact a0B.size
+    have a0I := a0H.trans (SGrowsAt.of_moveTo (Or.inl hheadBase) h9)
+    have gIJ : Grows sI sJ := trExpr_grows c fenv
+      (env.setMany (modifiedX env [post, body]) hParams) sI sJ cvId h10
+    have aJK : SGrowsAt sJ.fn.blocks.size sJ sK := SGrowsAt.of_newBlock h11
+    have gKL : Grows sK sL := Grows.of_liftO h12
+    have aJL := aJK.trans (SGrowsAt.of_grows gKL)
+    have aJM := aJL.trans (SGrowsAt.of_sealCur h13)
+    have hbodyBase : sJ.fn.blocks.size ≤ bodyId := by
+      rw [SGrowsAt.newBlock_id h11]
+    have aJN := aJM.trans (SGrowsAt.of_moveTo (Or.inl hbodyBase) h14)
+    have eF : SGrowsAt 0 sE sF := SGrowsAt.of_grows gEF
+    have eG := eF.trans (SGrowsAt.of_newBlock h7)
+    have eH := eG.trans (SGrowsAt.of_sealCur h8)
+    have eI := eH.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
+    have eJ := eI.trans (SGrowsAt.of_grows gIJ)
+    have eK := eJ.trans (SGrowsAt.of_newBlock h11)
+    have eL := eK.trans (SGrowsAt.of_grows gKL)
+    have eM := eL.trans (SGrowsAt.of_sealCur h13)
+    have eN := eM.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h14)
+    have finish :
+        Completes f sN.fn (exitId :: postId :: joins) →
+        SGrowsAt 0 sE s₁ → sJ.fn.nextVal ≤ s₁.fn.nextVal →
+        s₁.fn.curId = exitId → s₁.fn.cur = [] →
+        renv = some (env.setMany (modifiedX env [post, body]) exitParams) →
+        SOut (model := model) P f none rets s₀ s₁ R renv V st st1 .normal := by
+      intro hcN ge hnextJ1 hcurExit hcurExit0 hrenv
+      have hcJ : Completes f sJ.fn (exitId :: postId :: joins) :=
+        SGrowsAt.completes_of aJN hcN
+      have hcI : Completes f sI.fn (exitId :: postId :: joins) :=
+        SGrowsAt.completes_of (SGrowsAt.of_grows gIJ) hcJ
+      have hcurI : sI.fn.curId = hId := by
+        rw [M.moveTo_apply] at h9
+        exact (congrArg (fun z => z.fn.curId) (M.some_pair_inj h9).2).symm
+      have hcurI0 : sI.fn.cur = [] := by
+        rw [M.moveTo_apply] at h9
+        simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj h9).2
+      have hheadExit : hId < exitId := by
+        rw [SGrowsAt.newBlock_id h5]
+        exact Nat.lt_of_lt_of_le (newBlock_target_lt h3)
+          (SGrowsAt.of_grows (N := 0) gCD).size
+      have hexitPost : exitId < postId := by
+        rw [SGrowsAt.newBlock_id h7]
+        exact Nat.lt_of_lt_of_le (newBlock_target_lt h5)
+          (SGrowsAt.of_grows (N := 0) gEF).size
+      have hpI0 : ProtectedAt joins sI.fn := ProtectedAt.forward hp a0I
+      have hpI : ProtectedAt (exitId :: postId :: joins) sI.fn := by
+        refine ⟨?_, ?_⟩
+        · intro i hi
+          simp only [List.mem_cons] at hi
+          rcases hi with rfl | rfl | hi
+          · exact Nat.lt_of_lt_of_le (newBlock_target_lt h5) eI.size
+          · exact Nat.lt_of_lt_of_le (newBlock_target_lt h7)
+              ((SGrowsAt.of_sealCur (N := 0) h8).trans
+                (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) h9)).size
+          · exact hpI0.below i hi
+        · simp only [List.mem_cons, not_or]
+          exact ⟨by rw [hcurI]; exact Nat.ne_of_lt hheadExit,
+            by rw [hcurI]; exact Nat.ne_of_lt (Nat.lt_trans hheadExit hexitPost),
+            hpI0.away⟩
+      have hvalidI : CurValid sI := by
+        apply CurValid.of_moveTo _ h9
+        exact Nat.lt_of_lt_of_le (newBlock_target_lt h3)
+          (((((SGrowsAt.of_grows (N := 0) gCD).trans
+            (SGrowsAt.of_newBlock h5)).trans
+            (SGrowsAt.of_grows gEF)).trans
+            (SGrowsAt.of_newBlock h7)).trans
+            (SGrowsAt.of_sealCur h8)).size
+      have hvalidJ : CurValid sJ := hvalidI.of_grows gIJ
+      have csJL : CurSame sJ sL :=
+        (CurSame.of_newBlock h11).trans (CurSame.of_grows gKL)
+      have hcurM : sM.fn.curId = sJ.fn.curId := by
+        rw [(sealCur_cur h13).choose_spec.1, csJL.1]
+      have hbodyNe : sM.fn.curId ≠ bodyId := by
+        rw [hcurM, SGrowsAt.newBlock_id h11]
+        exact Nat.ne_of_lt hvalidJ
+      have hpM : ProtectedAt (exitId :: postId :: joins) sM.fn := by
+        have hgIM : SGrowsAt sI.fn.blocks.size sI sM :=
+          ((SGrowsAt.of_grows (N := sI.fn.blocks.size) gIJ).trans
+            (aJL.mono
+              (SGrowsAt.of_grows (N := sI.fn.blocks.size) gIJ).size)).trans
+            (SGrowsAt.of_sealCur h13)
+        exact ProtectedAt.forward hpI hgIM
+      have hfinM : CurFinal f sM.fn :=
+        curFinal_of_move_grows h14 hbodyNe hpM.away (SGrows.rfl' sN) hcN
+      have hbranchL : CurOK f sL.fn
+          ⟨[], .branch cvId ⟨bodyId, []⟩ ⟨exitId, hX⟩⟩ :=
+        curOK_of_sealCur hfinM h13
+      have hbranchJ : CurOK f sJ.fn
+          ⟨[], .branch cvId ⟨bodyId, []⟩ ⟨exitId, hX⟩⟩ :=
+        CurOK.back_of_cur_eq csJL.1 (by
+          have hnew : sK.fn.cur = sJ.fn.cur := by
+            rw [M.newBlock_apply] at h11
+            simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h11).2).symm
+          have hedge : sL = sK := (M.edgeArgs_inv h12).2
+          rw [hedge, hnew]) hbranchL
+      have hcpJ : CurPlaced f sJ.fn := ⟨_, hbranchJ⟩
+      have hcpI : CurPlaced f sI.fn := curPlaced_back_grows gIJ hcpJ
+      obtain ⟨rfl, valsH, hxget, hxvals⟩ := edgeArgs_ok henv h1
+      obtain ⟨hlenH, hrangeH, hsB⟩ := M.mapM_freshVal_length h2
+      have hndH : hParams.Nodup := by
+        rw [hrangeH]
+        exact M.nodup_range' _ _
+      have hnoneH : ∀ i ∈ hParams, R i = none := by
+        intro i hi
+        rw [hrangeH] at hi
+        exact hfr i (M.mem_range'_bounds hi).1
+      let RH := R.setMany hParams valsH
+      have hleH : Regs.Le R RH := Regs.Le.setMany hndH hnoneH
+      have hbelowH : Regs.BelowEq sA.fn.nextVal R RH := by
+        apply Regs.BelowEq.setMany
+        intro i hi
+        rw [hrangeH] at hi
+        exact (M.mem_range'_bounds hi).1
+      have hfrH : RegsFresh RH sI.fn := by
+        dsimp [RH]
+        rw [hrangeH]
+        apply hfr.setMany
+        have bC : SGrowsAt 0 sB sC := SGrowsAt.of_newBlock h3
+        have bD := bC.trans (SGrowsAt.of_grows gCD)
+        have bE := bD.trans (SGrowsAt.of_newBlock h5)
+        have bF := bE.trans (SGrowsAt.of_grows gEF)
+        have bG := bF.trans (SGrowsAt.of_newBlock h7)
+        have bH := bG.trans (SGrowsAt.of_sealCur h8)
+        have bI := bH.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
+        simpa [hsB] using bI.nextVal
+      have hpgetH : RH.getMany hParams = some valsH :=
+        Regs.getMany_setMany_self hndH (by rw [hlenH]; exact hxvals.length_eq)
+      have henvH : EnvOK (model := model)
+          (env.setMany (modifiedX env [post, body]) hParams) V RH := by
+        have he : EnvOK (model := model)
+            (env.setMany (modifiedX env [post, body]) hParams)
+            (YulSemantics.VEnv.setMany V (modifiedX env [post, body]) valsH) RH :=
+          EnvOK.setMany (xs := modifiedX env [post, body]) (henv.mono hleH)
+            (Regs.getMany_eq_some_iff.mp hpgetH)
+        rw [VEnv.setMany_self hxvals] at he
+        exact he
+      have csAG : CurSame sA sG :=
+        ((((((CurSame.of_grows gAB).trans (CurSame.of_newBlock h3)).trans
+          (CurSame.of_grows gCD)).trans (CurSame.of_newBlock h5)).trans
+          (CurSame.of_grows gEF)).trans (CurSame.of_newBlock h7))
+      have hcurH : sH.fn.curId = sA.fn.curId := by
+        rw [(sealCur_cur h8).choose_spec.1, csAG.1]
+      have hcurLtHead : sA.fn.curId < hId := by
+        rw [SGrowsAt.newBlock_id h3]
+        exact Nat.lt_of_lt_of_le hvalid a0B.size
+      have hheadNe : sH.fn.curId ≠ hId := by
+        rw [hcurH, SGrowsAt.newBlock_id h3]
+        exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hvalid a0B.size)
+      have hprotH : sH.fn.curId ∉ exitId :: postId :: joins := by
+        simp only [List.mem_cons, not_or]
+        refine ⟨?_, ?_, ?_⟩
+        · rw [hcurH]
+          exact Nat.ne_of_lt
+            (Nat.lt_trans hcurLtHead hheadExit)
+        · rw [hcurH]
+          exact Nat.ne_of_lt (Nat.lt_trans (Nat.lt_trans
+            hcurLtHead hheadExit) hexitPost)
+        · rw [hcurH]
+          exact hp.away
+      have hfinH : CurFinal f sH.fn :=
+        curFinal_of_move_grows h9 hheadNe hprotH (SGrows.rfl' sI) hcI
+      have hjumpG : CurOK f sG.fn ⟨[], .jump ⟨hId, xvals⟩⟩ :=
+        curOK_of_sealCur hfinH h8
+      have hjumpA : CurOK f sA.fn ⟨[], .jump ⟨hId, xvals⟩⟩ :=
+        CurOK.back_of_cur_eq csAG.1 (by
+          have hAB : sB.fn.cur = sA.fn.cur := by
+            obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h2
+            rw [hs]
+          have hCB : sC.fn.cur = sB.fn.cur := by
+            rw [M.newBlock_apply] at h3
+            simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h3).2).symm
+          have hDC : sD.fn.cur = sC.fn.cur := by
+            obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h4
+            rw [hs]
+          have hED : sE.fn.cur = sD.fn.cur := by
+            rw [M.newBlock_apply] at h5
+            simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h5).2).symm
+          have hFE : sF.fn.cur = sE.fn.cur := by
+            obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h6
+            rw [hs]
+          have hGF : sG.fn.cur = sF.fn.cur := by
+            rw [M.newBlock_apply] at h7
+            simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h7).2).symm
+          rw [hGF, hFE, hED, hDC, hCB, hAB]) hjumpG
+      have cI : SGrowsAt 0 sC sI :=
+        ((((((SGrowsAt.of_grows gCD).trans (SGrowsAt.of_newBlock h5)).trans
+          (SGrowsAt.of_grows gEF)).trans (SGrowsAt.of_newBlock h7)).trans
+          (SGrowsAt.of_sealCur h8)).trans
+          (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9))
+      obtain ⟨hb, hhb, hbp⟩ := cI.params hId ⟨hParams, [], .ret []⟩
+        (newBlock_target_get h3)
+      have hlenHB : hb.params.length = valsH.length := by
+        rw [hbp, hlenH]
+        exact hxvals.length_eq
+      have hsimH : SimS (model := model) P f sA.fn R st sI.fn RH st := by
+        have hs := simS_jump_join (model := model) (P := P) (f := f)
+          (st := st) hcI hjumpA hhb hcurI hcurI0 hxget hlenHB
+        simpa only [hbp] using hs
+      obtain ⟨RA, hleA, hbelowA, hfrA, hcv, hsimC⟩ :=
+        ihc.1 fenv (env.setMany (modifiedX env [post, body]) hParams) RH
+          sI sJ cvId cv (exitId :: postId :: joins) hfe henvH hfrH hpI
+          hcJ hcpJ rfl h10
+      obtain ⟨rfl, valsE, hXget, hXvals⟩ :=
+        edgeArgs_ok (henvH.mono hleA) h12
+      obtain ⟨hlenE, hrangeE, hsD⟩ := M.mapM_freshVal_length h4
+      have hndE : exitParams.Nodup := by
+        rw [hrangeE]
+        exact M.nodup_range' _ _
+      have hnextCB : sC.fn.nextVal = sB.fn.nextVal := by
+        rw [M.newBlock_apply] at h3
+        exact (congrArg (fun z => z.fn.nextVal) (M.some_pair_inj h3).2).symm
+      have dI : SGrowsAt 0 sD sI :=
+        (((((SGrowsAt.of_newBlock (N := 0) h5).trans
+          (SGrowsAt.of_grows gEF)).trans (SGrowsAt.of_newBlock h7)).trans
+          (SGrowsAt.of_sealCur h8)).trans
+          (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9))
+      have hnoneE : ∀ i ∈ exitParams, RA i = none := by
+        intro i hi
+        have hiRange := hi
+        rw [hrangeE] at hiRange
+        have hiLtI : i < sI.fn.nextVal :=
+          Nat.lt_of_lt_of_le (M.mem_range'_bounds hiRange).2 (by
+            simpa [hsD] using dI.nextVal)
+        rw [hbelowA i hiLtI]
+        dsimp [RH]
+        rw [Regs.setMany_other]
+        · exact hfr i (Nat.le_trans a0C.nextVal (M.mem_range'_bounds hiRange).1)
+        · intro hiH
+          rw [hrangeH] at hiH
+          have hu := (M.mem_range'_bounds hiH).2
+          have hl := (M.mem_range'_bounds hiRange).1
+          have hend : sA.fn.nextVal + (modifiedX env [post, body]).length =
+              sC.fn.nextVal := by rw [hnextCB, hsB]
+          have hu' : i < sC.fn.nextVal := by rwa [hend] at hu
+          exact Nat.not_lt_of_ge hl hu'
+      let RE := RA.setMany exitParams valsE
+      have hleE : Regs.Le RA RE := Regs.Le.setMany hndE hnoneE
+      have hbelowE : Regs.BelowEq sA.fn.nextVal RA RE := by
+        apply Regs.BelowEq.setMany
+        intro i hi
+        rw [hrangeE] at hi
+        exact Nat.le_trans a0C.nextVal (M.mem_range'_bounds hi).1
+      have hfrE : RegsFresh RE s₁.fn := by
+        intro i hi
+        dsimp [RE]
+        rw [Regs.setMany_other]
+        · exact hfrA i (Nat.le_trans hnextJ1 hi)
+        · intro him
+          rw [hrangeE] at him
+          have hltD := (M.mem_range'_bounds him).2
+          have hD1 : sD.fn.nextVal ≤ s₁.fn.nextVal := by
+            exact Nat.le_trans
+              (SGrowsAt.of_newBlock (N := 0) h5).nextVal ge.nextVal
+          have hltD' : i < sD.fn.nextVal := by simpa [hsD] using hltD
+          exact Nat.not_lt_of_ge (Nat.le_trans hD1 hi) hltD'
+      obtain ⟨eb, heb, hep⟩ := ge.params exitId ⟨exitParams, [], .ret []⟩
+        (newBlock_target_get h5)
+      have hlenEB : eb.params.length = valsE.length := by
+        rw [hep, hlenE]
+        exact hXvals.length_eq
+      have hzero : RA cvId = some 0 := by
+        rw [hz] at hcv
+        simpa only [yulD_zero] using hcv
+      have hsimE : SimS (model := model) P f sJ.fn RA st1 s₁.fn RE st1 := by
+        have hs := simS_branchFalse_join (model := model) (P := P) (f := f)
+          (st := st1) hcompl hbranchJ hzero heb hcurExit hcurExit0 hXget hlenEB
+        simpa only [hep] using hs
+      have hpgetE : RE.getMany exitParams = some valsE :=
+        Regs.getMany_setMany_self hndE (by rw [hlenE]; exact hXvals.length_eq)
+      have henvE : EnvOK (model := model)
+          (env.setMany (modifiedX env [post, body]) exitParams) V RE := by
+        have he : EnvOK (model := model)
+            (env.setMany (modifiedX env [post, body]) exitParams)
+            (YulSemantics.VEnv.setMany V (modifiedX env [post, body]) valsE) RE :=
+          EnvOK.setMany (xs := modifiedX env [post, body])
+            (henv.mono (hleH.trans (hleA.trans hleE)))
+            (Regs.getMany_eq_some_iff.mp hpgetE)
+        rw [VEnv.setMany_self hXvals] at he
+        exact he
+      exact ⟨env.setMany (modifiedX env [post, body]) exitParams, RE, hrenv,
+        hleH.trans (hleA.trans hleE),
+        hbelowH.trans ((hbelowA.mono a0I.nextVal).trans hbelowE), hfrE,
+        henvE, huniq.setMany _ _, hsimH.trans (hsimC.trans hsimE)⟩
+    cases bodyEnv with
+    | none =>
+      change (do
+        moveTo postId
+        let envP := env.setMany (modifiedX env [post, body]) postParams
+        let renvP ← trScope fenv envP none rets post
+        if let some envP' := renvP then
+          let xvP ← edgeArgs envP' (modifiedX env [post, body])
+          sealCur (.jump ⟨hId, xvP⟩)
+        moveTo exitId
+        pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sO =
+          some (renv, s₁) at htr
+      obtain ⟨uP, sP, h16, htr⟩ := M.bind_inv htr
+      obtain ⟨uQ, sQ, h17, htr⟩ := M.bind_inv htr
+      cases uQ with
+      | none =>
+        change (do
+          moveTo exitId
+          pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sQ =
+            some (renv, s₁) at htr
+        obtain ⟨uR, sR, h18, htr⟩ := M.bind_inv htr
+        obtain ⟨hrenv, hs₁⟩ := M.pure_inv htr
+        subst s₁
+        have hcQ : Completes f sQ.fn (exitId :: postId :: joins) :=
+          Completes.of_moveTo_protected (by simp) h18
+            ((hcompl.protect postId).protect exitId)
+        have gp := trScope_grows fenv
+          (env.setMany (modifiedX env [post, body]) postParams) none rets post
+          sP none sQ h17
+        have hcP := SGrowsAt.completes_of gp hcQ
+        have hcO := Completes.of_moveTo_protected (by simp) h16 hcP
+        have gb := trScope_grows fenv
+          (env.setMany (modifiedX env [post, body]) hParams)
+          (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets body
+          sN none sO h15
+        have hcN := SGrowsAt.completes_of gb hcO
+        have ge0 := eN.trans (gb.mono (Nat.zero_le _))
+        have ge1 := ge0.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h16)
+        have ge2 := ge1.trans (gp.mono (Nat.zero_le _))
+        have ge := ge2.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h18)
+        have gn0 := gb.mono (Nat.zero_le _)
+        have gn1 := gn0.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h16)
+        have gn2 := gn1.trans (gp.mono (Nat.zero_le _))
+        have gn := gn2.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h18)
+        exact finish hcN ge
+          (Nat.le_trans aJN.nextVal gn.nextVal)
+          (by rw [M.moveTo_apply] at h18
+              exact (congrArg (fun z => z.fn.curId) (M.some_pair_inj h18).2).symm)
+          (by rw [M.moveTo_apply] at h18
+              simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj h18).2)
+          hrenv
+      | some envP =>
+        obtain ⟨xvP, sR, h18, htr⟩ := M.bind_inv htr
+        obtain ⟨uS, sS, h19, htr⟩ := M.bind_inv htr
+        obtain ⟨uT, sT, h20, htr⟩ := M.bind_inv htr
+        obtain ⟨hrenv, hs₁⟩ := M.pure_inv htr
+        subst s₁
+        have hcS : Completes f sS.fn (exitId :: postId :: joins) :=
+          Completes.of_moveTo_protected (by simp) h20
+            ((hcompl.protect postId).protect exitId)
+        have gQS : SGrows sQ sS :=
+          (SGrowsAt.of_grows (Grows.of_liftO h18)).trans
+            (SGrowsAt.of_sealCur h19)
+        have hcQ := SGrowsAt.completes_of gQS hcS
+        have gp := trScope_grows fenv
+          (env.setMany (modifiedX env [post, body]) postParams) none rets post
+          sP (some envP) sQ h17
+        have hcP := SGrowsAt.completes_of gp hcQ
+        have hcO := Completes.of_moveTo_protected (by simp) h16 hcP
+        have gb := trScope_grows fenv
+          (env.setMany (modifiedX env [post, body]) hParams)
+          (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets body
+          sN none sO h15
+        have hcN := SGrowsAt.completes_of gb hcO
+        have ge0 := eN.trans (gb.mono (Nat.zero_le _))
+        have ge1 := ge0.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h16)
+        have ge2 := ge1.trans (gp.mono (Nat.zero_le _))
+        have ge3 := ge2.trans (gQS.mono (Nat.zero_le _))
+        have ge := ge3.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h20)
+        have gn0 := gb.mono (Nat.zero_le _)
+        have gn1 := gn0.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h16)
+        have gn2 := gn1.trans (gp.mono (Nat.zero_le _))
+        have gn3 := gn2.trans (gQS.mono (Nat.zero_le _))
+        have gn := gn3.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h20)
+        exact finish hcN ge
+          (Nat.le_trans aJN.nextVal gn.nextVal)
+          (by rw [M.moveTo_apply] at h20
+              exact (congrArg (fun z => z.fn.curId) (M.some_pair_inj h20).2).symm)
+          (by rw [M.moveTo_apply] at h20
+              simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj h20).2)
+          hrenv
+    | some envB =>
+      obtain ⟨xvB, sP, h16, htr⟩ := M.bind_inv htr
+      obtain ⟨uQ, sQ, h17, htr⟩ := M.bind_inv htr
+      obtain ⟨uR, sR, h18, htr⟩ := M.bind_inv htr
+      obtain ⟨postEnv, sS, h19, htr⟩ := M.bind_inv htr
+      cases postEnv with
+      | none =>
+        change (do
+          moveTo exitId
+          pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sS =
+            some (renv, s₁) at htr
+        obtain ⟨uT, sT, h20, htr⟩ := M.bind_inv htr
+        obtain ⟨hrenv, hs₁⟩ := M.pure_inv htr
+        subst s₁
+        have hcS : Completes f sS.fn (exitId :: postId :: joins) :=
+          Completes.of_moveTo_protected (by simp) h20
+            ((hcompl.protect postId).protect exitId)
+        have gp := trScope_grows fenv
+          (env.setMany (modifiedX env [post, body]) postParams) none rets post
+          sR none sS h19
+        have hcR := SGrowsAt.completes_of gp hcS
+        have hcQ := Completes.of_moveTo_protected (by simp) h18 hcR
+        have gOQ : SGrows sO sQ :=
+          (SGrowsAt.of_grows (Grows.of_liftO h16)).trans
+            (SGrowsAt.of_sealCur h17)
+        have hcO := SGrowsAt.completes_of gOQ hcQ
+        have gb := trScope_grows fenv
+          (env.setMany (modifiedX env [post, body]) hParams)
+          (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets body
+          sN (some envB) sO h15
+        have hcN := SGrowsAt.completes_of gb hcO
+        have ge0 := eN.trans (gb.mono (Nat.zero_le _))
+        have ge1 := ge0.trans (gOQ.mono (Nat.zero_le _))
+        have ge2 := ge1.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h18)
+        have ge3 := ge2.trans (gp.mono (Nat.zero_le _))
+        have ge := ge3.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h20)
+        have gn0 := gb.mono (Nat.zero_le _)
+        have gn1 := gn0.trans (gOQ.mono (Nat.zero_le _))
+        have gn2 := gn1.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h18)
+        have gn3 := gn2.trans (gp.mono (Nat.zero_le _))
+        have gn := gn3.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h20)
+        exact finish hcN ge
+          (Nat.le_trans aJN.nextVal gn.nextVal)
+          (by rw [M.moveTo_apply] at h20
+              exact (congrArg (fun z => z.fn.curId) (M.some_pair_inj h20).2).symm)
+          (by rw [M.moveTo_apply] at h20
+              simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj h20).2)
+          hrenv
+      | some envP =>
+        obtain ⟨xvP, sT, h20, htr⟩ := M.bind_inv htr
+        obtain ⟨uU, sU, h21, htr⟩ := M.bind_inv htr
+        obtain ⟨uW, sW, h22, htr⟩ := M.bind_inv htr
+        obtain ⟨hrenv, hs₁⟩ := M.pure_inv htr
+        subst s₁
+        have hcU : Completes f sU.fn (exitId :: postId :: joins) :=
+          Completes.of_moveTo_protected (by simp) h22
+            ((hcompl.protect postId).protect exitId)
+        have gSU : SGrows sS sU :=
+          (SGrowsAt.of_grows (Grows.of_liftO h20)).trans
+            (SGrowsAt.of_sealCur h21)
+        have hcS := SGrowsAt.completes_of gSU hcU
+        have gp := trScope_grows fenv
+          (env.setMany (modifiedX env [post, body]) postParams) none rets post
+          sR (some envP) sS h19
+        have hcR := SGrowsAt.completes_of gp hcS
+        have hcQ := Completes.of_moveTo_protected (by simp) h18 hcR
+        have gOQ : SGrows sO sQ :=
+          (SGrowsAt.of_grows (Grows.of_liftO h16)).trans
+            (SGrowsAt.of_sealCur h17)
+        have hcO := SGrowsAt.completes_of gOQ hcQ
+        have gb := trScope_grows fenv
+          (env.setMany (modifiedX env [post, body]) hParams)
+          (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets body
+          sN (some envB) sO h15
+        have hcN := SGrowsAt.completes_of gb hcO
+        have ge0 := eN.trans (gb.mono (Nat.zero_le _))
+        have ge1 := ge0.trans (gOQ.mono (Nat.zero_le _))
+        have ge2 := ge1.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h18)
+        have ge3 := ge2.trans (gp.mono (Nat.zero_le _))
+        have ge4 := ge3.trans (gSU.mono (Nat.zero_le _))
+        have ge := ge4.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h22)
+        have gn0 := gb.mono (Nat.zero_le _)
+        have gn1 := gn0.trans (gOQ.mono (Nat.zero_le _))
+        have gn2 := gn1.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h18)
+        have gn3 := gn2.trans (gp.mono (Nat.zero_le _))
+        have gn4 := gn3.trans (gSU.mono (Nat.zero_le _))
+        have gn := gn4.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h22)
+        exact finish hcN ge
+          (Nat.le_trans aJN.nextVal gn.nextVal)
+          (by rw [M.moveTo_apply] at h22
+              exact (congrArg (fun z => z.fn.curId) (M.some_pair_inj h22).2).symm)
+          (by rw [M.moveTo_apply] at h22
+              simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj h22).2)
+          hrenv
   | loopCondHalt => sorry
   | loopStep => sorry
   | loopPostHalt => sorry
