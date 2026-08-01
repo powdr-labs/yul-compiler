@@ -4782,7 +4782,15 @@ extended at `ρ`-images, and the two agree on everything the callee body reads
 because (i) `ρ` sends the callee's parameters to the caller ids holding `args`
 and (ii) `ρ` sends everything else above `maxVal f`, so no caller binding is
 disturbed — `Regs.setMany_congr` plus `exec_congr` (both proved) are the
-work-horses. The `.halt` case is the same derivation truncated. -/
+work-horses. The `.halt` case is the same derivation truncated.
+
+The precise first missing proof object is an `inlineOnce = some f'` site
+inversion exporting `bi`, `ci`, the selected call/callee and the five splice
+equations.  It then feeds a renamed-callee `Exec` replay lemma.  That replay
+must handle the deliberately non-injective parameter part of `ρ` (duplicate
+actual arguments) with `inlineParam_regs_agree`, use freshness only for the
+offset-renamed non-parameters, prove appended-block lookup equations, and turn
+callee `ret` into the continuation jump. -/
 theorem inlineOnce_sound {P : Prog} {counts : Array Nat} {f f' : Func} {args : List U256}
     {st : EvmState} {res : FRes} {eb eb' : Block}
     (hPwf : P.wfCheck = true) (hwf : f.wfCheck P.funcs.size = true)
@@ -4796,9 +4804,11 @@ theorem inlineOnce_sound {P : Prog} {counts : Array Nat} {f f' : Func} {args : L
   sorry
 
 /-- **The budgeted fixed point preserves executions**: iterate
-`inlineOnce_sound` at most eight times. `sorry` only because the loop inversion
-(`for _ in [0:8]` with early return) still has to be threaded, exactly as in
-`Counterexample.hinlineFunc`. -/
+`inlineOnce_sound` at most eight times.  Besides the early-return loop
+inversion, applying the one-step theorem repeatedly requires a preservation
+lemma `inlineOnce ... f = some f' → f.wfCheck n = true → f'.wfCheck n = true`;
+that lemma is not yet present, so the dependency chain cannot currently be
+closed from the initial `hwf` alone. -/
 theorem inlineFunc_sound {P : Prog} {counts : Array Nat} {f : Func} {args : List U256}
     {st : EvmState} {res : FRes} {eb eb' : Block}
     (hPwf : P.wfCheck = true) (hwf : f.wfCheck P.funcs.size = true)
@@ -4863,6 +4873,368 @@ variable [model : ExternalModel]
 
 namespace Passes
 
+def inEdgeArgsEdgeStep (acc : Array (List (List ValId))) (e : Edge) :
+    Array (List (List ValId)) :=
+  acc.setIfInBounds e.target (e.args :: acc[e.target]!)
+
+def inEdgeArgsBlockStep (acc : Array (List (List ValId))) (b : Block) :
+    Array (List (List ValId)) :=
+  b.term.edges.foldl inEdgeArgsEdgeStep acc
+
+omit model in
+theorem inEdgeArgs_eq_fold (f : Func) :
+    inEdgeArgs f = f.blocks.toList.foldl inEdgeArgsBlockStep
+      (Array.replicate f.blocks.size []) := by
+  unfold inEdgeArgs
+  dsimp only
+  rw [Id.forIn_array_eq_foldl (g := fun b acc => inEdgeArgsBlockStep acc b) (h := by
+    intro b acc
+    rw [Id.forIn_eq_foldl (g := fun e acc => inEdgeArgsEdgeStep acc e) (h := by
+      intro e acc
+      rfl)]
+    rfl)]
+  rfl
+
+omit model in
+@[simp] theorem inEdgeArgsEdgeStep_size (acc : Array (List (List ValId))) (e : Edge) :
+    (inEdgeArgsEdgeStep acc e).size = acc.size := by
+  simp [inEdgeArgsEdgeStep]
+
+omit model in
+@[simp] theorem inEdgeArgsEdgeFold_size (acc : Array (List (List ValId))) (es : List Edge) :
+    (es.foldl inEdgeArgsEdgeStep acc).size = acc.size := by
+  induction es generalizing acc with
+  | nil => rfl
+  | cons e es ih => simp only [List.foldl_cons, ih, inEdgeArgsEdgeStep_size]
+
+omit model in
+@[simp] theorem inEdgeArgsBlockStep_size (acc : Array (List (List ValId))) (b : Block) :
+    (inEdgeArgsBlockStep acc b).size = acc.size := by
+  unfold inEdgeArgsBlockStep
+  induction b.term.edges generalizing acc with
+  | nil => rfl
+  | cons e es ih => simp only [List.foldl_cons, ih, inEdgeArgsEdgeStep_size]
+
+omit model in
+theorem inEdgeArgsEdgeStep_mem {acc : Array (List (List ValId))} {t : BlockId}
+    (ht : t < acc.size) {xs : List ValId} (hx : xs ∈ acc[t]!) (e : Edge) :
+    xs ∈ (inEdgeArgsEdgeStep acc e)[t]! := by
+  have hx' : xs ∈ acc[t] := by
+    simpa [Array.getElem!_eq_getD, Array.getElem?_eq_getElem ht] using hx
+  by_cases het : e.target = t
+  · subst t
+    simp [inEdgeArgsEdgeStep, ht, hx']
+  · simpa [inEdgeArgsEdgeStep, het, ht] using hx'
+
+omit model in
+theorem inEdgeArgsEdgeStep_self {acc : Array (List (List ValId))} {e : Edge}
+    (he : e.target < acc.size) :
+    e.args ∈ (inEdgeArgsEdgeStep acc e)[e.target]! := by
+  simp [inEdgeArgsEdgeStep, he, Array.getElem!_eq_getD]
+
+omit model in
+theorem inEdgeArgsEdgeFold_mem {acc : Array (List (List ValId))} {t : BlockId}
+    (ht : t < acc.size) {xs : List ValId} (hx : xs ∈ acc[t]!) (es : List Edge) :
+    xs ∈ (es.foldl inEdgeArgsEdgeStep acc)[t]! := by
+  induction es generalizing acc with
+  | nil => exact hx
+  | cons e es ih =>
+      rw [List.foldl_cons]
+      exact ih (by simpa using ht) (inEdgeArgsEdgeStep_mem ht hx e)
+
+omit model in
+theorem inEdgeArgsEdgeFold_of_mem {acc : Array (List (List ValId))} {e : Edge}
+    (helt : e.target < acc.size) {es : List Edge} (he : e ∈ es) :
+    e.args ∈ (es.foldl inEdgeArgsEdgeStep acc)[e.target]! := by
+  induction es generalizing acc with
+  | nil => simp at he
+  | cons e' es ih =>
+      rw [List.foldl_cons]
+      rcases List.mem_cons.mp he with rfl | he
+      · exact inEdgeArgsEdgeFold_mem (by simpa using helt)
+          (inEdgeArgsEdgeStep_self helt) es
+      · exact ih (by simpa using helt) he
+
+omit model in
+theorem inEdgeArgsBlockFold_mem {acc : Array (List (List ValId))} {t : BlockId}
+    (ht : t < acc.size) {xs : List ValId} (hx : xs ∈ acc[t]!) (bs : List Block) :
+    xs ∈ (bs.foldl inEdgeArgsBlockStep acc)[t]! := by
+  induction bs generalizing acc with
+  | nil => exact hx
+  | cons b bs ih =>
+      rw [List.foldl_cons]
+      exact ih (by simpa using ht)
+        (inEdgeArgsEdgeFold_mem ht hx b.term.edges)
+
+omit model in
+theorem inEdgeArgsBlockFold_of_mem {acc : Array (List (List ValId))}
+    {b : Block} {e : Edge} (helt : e.target < acc.size) {bs : List Block}
+    (hb : b ∈ bs) (he : e ∈ b.term.edges) :
+    e.args ∈ (bs.foldl inEdgeArgsBlockStep acc)[e.target]! := by
+  induction bs generalizing acc with
+  | nil => simp at hb
+  | cons b' bs ih =>
+      rw [List.foldl_cons]
+      rcases List.mem_cons.mp hb with rfl | hb
+      · exact inEdgeArgsBlockFold_mem (by simpa using helt)
+          (inEdgeArgsEdgeFold_of_mem helt he) bs
+      · exact ih (by
+          rw [inEdgeArgsBlockStep_size]
+          exact helt) hb
+
+omit model in
+theorem inEdgeArgs_mem_of_edge {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
+    {e : Edge} (he : e ∈ b.term.edges) (het : e.target < f.blocks.size) :
+    e.args ∈ (inEdgeArgs f)[e.target]! := by
+  rw [inEdgeArgs_eq_fold]
+  exact inEdgeArgsBlockFold_of_mem (by simpa using het) hb he
+
+abbrev TrivialCandidate := BlockId × Nat × ValId × ValId
+abbrev FindTrivialState := MProd (Option (Option TrivialCandidate)) PUnit
+
+def findTrivialParamStep (f : Func) (bi i : Nat) (_ : FindTrivialState) :
+    ForInStep FindTrivialState :=
+  let argLists := (inEdgeArgs f)[bi]!
+  let p := f.blocks[bi]!.params[i]!
+  let ith := argLists.filterMap (·[i]?)
+  if ith.length == argLists.length then
+    match (ith.filter (· != p)).eraseDups with
+    | [v] =>
+        let selfOnly := (List.range f.blocks.size).all fun j =>
+          j == bi || (f.blocks[j]!.term.edges.all fun e =>
+            e.target != bi || e.args[i]? != some p)
+        if selfOnly then .done ⟨some (some (bi, i, p, v)), PUnit.unit⟩
+        else .yield ⟨none, PUnit.unit⟩
+    | _ => .yield ⟨none, PUnit.unit⟩
+  else .yield ⟨none, PUnit.unit⟩
+
+def findTrivialBlockStep (f : Func) (bi : Nat) (_ : FindTrivialState) :
+    ForInStep FindTrivialState :=
+  if bi != f.entry then
+    let argLists := (inEdgeArgs f)[bi]!
+    if !argLists.isEmpty then
+      let r := loopWith (findTrivialParamStep f bi)
+        (List.range' 0 f.blocks[bi]!.params.length 1) ⟨none, PUnit.unit⟩
+      match r.1 with
+      | none => .yield ⟨none, PUnit.unit⟩
+      | some a => .done ⟨some a, PUnit.unit⟩
+    else .yield ⟨none, PUnit.unit⟩
+  else .yield ⟨none, PUnit.unit⟩
+
+omit model in
+theorem findTrivialParam_eq_loop (f : Func) :
+    findTrivialParam f =
+      (loopWith (findTrivialBlockStep f)
+        (List.range' 0 f.blocks.size 1) ⟨none, PUnit.unit⟩).1.getD none := by
+  unfold findTrivialParam
+  dsimp only
+  simp only [Std.Legacy.Range.forIn_eq_forIn_range', Std.Legacy.Range.size]
+  rw [Id.forIn_eq_loopWith (g := findTrivialBlockStep f) (h := by
+    intro bi r
+    unfold findTrivialBlockStep
+    split
+    · split
+      · rw [Id.forIn_eq_loopWith (g := findTrivialParamStep f bi) (h := by
+          intro i s
+          simp only [LawfulMonad.pure_bind]
+          rfl)]
+        simp_all [Id.run, bind, pure]
+        split <;> simp_all
+      · simp_all [Id.run, bind, pure]
+    · simp_all [Id.run, bind, pure])]
+  simp [Id.run, bind, pure, Option.getD]
+  split <;> simp_all
+
+omit model in
+theorem loopWith_findTrivial_done {α : Type} {g : α → FindTrivialState →
+    ForInStep FindTrivialState} {xs : List α} {c : TrivialCandidate}
+    (hg : ∀ a, g a ⟨none, PUnit.unit⟩ = .yield ⟨none, PUnit.unit⟩ ∨
+      ∃ c, g a ⟨none, PUnit.unit⟩ = .done ⟨some (some c), PUnit.unit⟩)
+    (h : (loopWith g xs ⟨none, PUnit.unit⟩).1 = some (some c)) :
+    ∃ a ∈ xs, g a ⟨none, PUnit.unit⟩ =
+      .done ⟨some (some c), PUnit.unit⟩ := by
+  induction xs with
+  | nil => simp [loopWith] at h
+  | cons a as ih =>
+      rw [loopWith_cons] at h
+      rcases hg a with ha | ⟨c', ha⟩
+      · rw [ha] at h
+        obtain ⟨b, hb, hdone⟩ := ih h
+        exact ⟨b, by simp [hb], hdone⟩
+      · rw [ha] at h
+        have hc : c' = c := by simpa using h
+        subst c'
+        exact ⟨a, by simp, ha⟩
+
+omit model in
+theorem loopWith_findTrivial_cases {α : Type} {g : α → FindTrivialState →
+    ForInStep FindTrivialState} {xs : List α}
+    (hg : ∀ a, g a ⟨none, PUnit.unit⟩ = .yield ⟨none, PUnit.unit⟩ ∨
+      ∃ c, g a ⟨none, PUnit.unit⟩ = .done ⟨some (some c), PUnit.unit⟩) :
+    (loopWith g xs ⟨none, PUnit.unit⟩).1 = none ∨
+      ∃ c, (loopWith g xs ⟨none, PUnit.unit⟩).1 = some (some c) := by
+  induction xs with
+  | nil => exact Or.inl rfl
+  | cons a as ih =>
+      rw [loopWith_cons]
+      rcases hg a with ha | ⟨c, ha⟩
+      · rw [ha]
+        exact ih
+      · rw [ha]
+        exact Or.inr ⟨c, rfl⟩
+
+omit model in
+theorem findTrivialParamStep_cases (f : Func) (bi i : Nat) :
+    findTrivialParamStep f bi i ⟨none, PUnit.unit⟩ =
+        .yield ⟨none, PUnit.unit⟩ ∨
+      ∃ c, findTrivialParamStep f bi i ⟨none, PUnit.unit⟩ =
+        .done ⟨some (some c), PUnit.unit⟩ := by
+  unfold findTrivialParamStep
+  dsimp only
+  split
+  · split
+    · split
+      · right
+        exact ⟨_, rfl⟩
+      · left
+        rfl
+    · left
+      rfl
+  · left
+    rfl
+
+omit model in
+theorem findTrivialBlockStep_cases (f : Func) (bi : Nat) :
+    findTrivialBlockStep f bi ⟨none, PUnit.unit⟩ =
+        .yield ⟨none, PUnit.unit⟩ ∨
+      ∃ c, findTrivialBlockStep f bi ⟨none, PUnit.unit⟩ =
+        .done ⟨some (some c), PUnit.unit⟩ := by
+  unfold findTrivialBlockStep
+  dsimp only
+  split
+  · split
+    · rcases loopWith_findTrivial_cases
+          (fun i => findTrivialParamStep_cases f bi i)
+          (xs := List.range' 0 f.blocks[bi]!.params.length 1) with hr | ⟨c, hr⟩
+      · left
+        simp [hr]
+      · right
+        exact ⟨c, by simp [hr]⟩
+    · left
+      rfl
+  · left
+    rfl
+
+omit model in
+theorem findTrivialParam_inv {f : Func} {bi i p v : Nat}
+    (h : findTrivialParam f = some (bi, i, p, v)) :
+    bi < f.blocks.size ∧ bi ≠ f.entry ∧
+    i < (f.blocks[bi]!).params.length ∧ (f.blocks[bi]!).params[i]! = p ∧
+    let argLists := (inEdgeArgs f)[bi]!
+    argLists ≠ [] ∧
+    (argLists.filterMap (·[i]?)).length = argLists.length ∧
+    ((argLists.filterMap (·[i]?)).filter (· != p)).eraseDups = [v] ∧
+    (List.range f.blocks.size).all (fun j =>
+      j == bi || (f.blocks[j]!.term.edges.all fun e =>
+        e.target != bi || e.args[i]? != some p)) = true := by
+  rw [findTrivialParam_eq_loop] at h
+  have hout :
+      (loopWith (findTrivialBlockStep f) (List.range' 0 f.blocks.size 1)
+        ⟨none, PUnit.unit⟩).1 = some (some (bi, i, p, v)) := by
+    cases hr : (loopWith (findTrivialBlockStep f) (List.range' 0 f.blocks.size 1)
+        ⟨none, PUnit.unit⟩).1 with
+    | none => simp [hr, Option.getD] at h
+    | some r =>
+        cases r with
+        | none => simp [hr, Option.getD] at h
+        | some c =>
+            have hc : c = (bi, i, p, v) := by simpa [hr, Option.getD] using h
+            simpa [hc] using hr
+  obtain ⟨bi', hbi'mem, hbi'step⟩ := loopWith_findTrivial_done
+    (fun j => findTrivialBlockStep_cases f j) hout
+  unfold findTrivialBlockStep at hbi'step
+  dsimp only at hbi'step
+  split at hbi'step
+  · split at hbi'step
+    · split at hbi'step
+      · contradiction
+      · rename_i _ a hloop
+        have ha : a = some (bi, i, p, v) := by simpa using hbi'step
+        rw [ha] at hloop
+        obtain ⟨i', hi'mem, hi'step⟩ := loopWith_findTrivial_done
+          (fun j => findTrivialParamStep_cases f bi' j) hloop
+        unfold findTrivialParamStep at hi'step
+        dsimp only at hi'step
+        split at hi'step
+        · split at hi'step
+          · split at hi'step
+            · rename_i _ replacement hsingle hself
+              have hcand :
+                  (bi', i', f.blocks[bi']!.params[i']!, replacement) =
+                    (bi, i, p, v) := by
+                simpa using hi'step
+              obtain ⟨rfl, rfl, rfl, rfl⟩ := hcand
+              simp_all
+            · cases hi'step
+          · cases hi'step
+        · cases hi'step
+    · cases hbi'step
+  · cases hbi'step
+
+omit model in
+theorem filterMap_length_eq_of_mem {α β : Type} {g : α → Option β} {xs : List α}
+    (hlen : (xs.filterMap g).length = xs.length) {x : α} (hx : x ∈ xs) :
+    ∃ y, g x = some y := by
+  have hs := List.filterMap_length_eq_length.mp hlen x hx
+  cases hg : g x with
+  | none => simp [hg] at hs
+  | some y => exact ⟨y, rfl⟩
+
+omit model in
+/-- Edge-level form of `findTrivialParam_inv`.  Every incoming edge carries
+position `i`; its value is `p` or the unique non-self value `v`; and a `p`
+argument can only originate in the selected block itself. -/
+theorem findTrivialParam_edge {f : Func} {bi i p v : Nat}
+    (hfind : findTrivialParam f = some (bi, i, p, v))
+    {bj : BlockId} {b : Block} (hb : f.blocks[bj]? = some b)
+    {e : Edge} (he : e ∈ b.term.edges) (het : e.target = bi) :
+    ∃ a, e.args[i]? = some a ∧ (a = p ∨ a = v) ∧ (a = p → bj = bi) := by
+  obtain ⟨hbi, _, _, _, hnonempty, hcoverage, hsingle, hself⟩ :=
+    findTrivialParam_inv hfind
+  have hbj : bj < f.blocks.size := (Array.getElem?_eq_some_iff.mp hb).1
+  have hbmem : b ∈ f.blocks.toList := by
+    exact List.mem_iff_getElem.mpr ⟨bj, by simpa using hbj,
+      by simpa using (Array.getElem?_eq_some_iff.mp hb).2⟩
+  have heargs : e.args ∈ (inEdgeArgs f)[bi]! := by
+    rw [← het]
+    exact inEdgeArgs_mem_of_edge hbmem he (het ▸ hbi)
+  obtain ⟨a, ha⟩ := filterMap_length_eq_of_mem hcoverage heargs
+  refine ⟨a, ha, ?_, ?_⟩
+  · by_cases hap : a = p
+    · exact Or.inl hap
+    · right
+      have haith : a ∈ ((inEdgeArgs f)[bi]!).filterMap (·[i]?) :=
+        List.mem_filterMap.mpr ⟨e.args, heargs, ha⟩
+      have hafilter : a ∈ (((inEdgeArgs f)[bi]!).filterMap (·[i]?)).filter (· != p) := by
+        exact List.mem_filter.mpr ⟨haith, by simpa [hap]⟩
+      have haerase : a ∈ ((((inEdgeArgs f)[bi]!).filterMap (·[i]?)).filter
+          (· != p)).eraseDups := List.mem_eraseDups.mpr hafilter
+      rw [hsingle] at haerase
+      simpa using haerase
+  · intro hap
+    have hjall := List.all_eq_true.mp hself bj (List.mem_range.mpr hbj)
+    simp only [Bool.or_eq_true, beq_iff_eq] at hjall
+    rcases hjall with hj | hj
+    · exact hj
+    · have hbang : f.blocks[bj]! = b := by
+        simp [Array.getElem!_eq_getD, hb]
+      rw [hbang] at hj
+      have heall := List.all_eq_true.mp hj e he
+      simp only [Bool.or_eq_true, bne_iff_ne] at heall
+      rcases heall with htarget | harg
+      · exact absurd het htarget
+      · exact absurd (ha.trans (congrArg some hap)) harg
+
 abbrev ElimTrivialLoopState := MProd (Option Func) Func
 
 def elimTrivialStep (_ : Nat) (r : ElimTrivialLoopState) :
@@ -4918,15 +5290,17 @@ through the derivation block by block:
   (`Regs.setMany_congr`) or reads only values the invariant covers
   (`Regs.getMany_congr`).
 
-`Passes.elimTrivialParams_eq_loop` above now supplies the fixed-point-loop
-inversion.  The remaining engineering is a specification for
-`Passes.findTrivialParam`: invert its nested early-return searches into "every
-in-edge argument at position `i` is `v` or `p`" together with the new
-`selfOnly` clause.  That clause removes the former path-sensitive case:
-`p` can occur at the eliminated position only on an edge originating at `bi`
-itself.  Once the candidate inversion is available, the missing proof is the
-one-step `Exec` induction (non-self edges read `v`; self edges preserve the
-carried value) followed by induction on `elimTrivialParams_eq_loop`. -/
+`Passes.elimTrivialParams_eq_loop` above supplies the fixed-point-loop
+inversion, and `Passes.findTrivialParam_inv` / `findTrivialParam_edge` now
+supply the complete candidate inversion, including `selfOnly`.
+
+The precise remaining obstruction is the one-removal `Exec` transport lemma.
+It must relate `substFunc (p ↦ v) (removeParam f bi i)` block lookups to the
+original lookups, align `getMany`/`setMany` after erasing position `i`, and
+re-establish `LiveAgree` at a jump: a non-self edge carries `v`, while a self
+edge may carry `p` and preserves the already-related word.  With that lemma in
+hand, the outer proof is induction over `elimTrivialParams_eq_loop`; no further
+search inversion is missing. -/
 theorem elimTrivialParams_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState}
     {res : FRes} {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (hdom : ToAsm.Func.domCheck f = true)
@@ -6198,12 +6572,13 @@ as `ToAsm.liveIn_of_uses`/`liveIn_of_succ`. -/
 
 omit model in
 /-- `elimTrivialParams_eq_loop` closes the outer fixed-point inversion.  The
-remaining missing lemma is the shared `findTrivialParam = some ...` candidate
-specification described at `elimTrivialParams_sound`.  In particular its
-`selfOnly` projection rules out every non-self incoming `p`; a one-step proof
-can then build the substituted liveness pre-fixed point from non-self incoming
-`v` edges and carry it unchanged around self edges, before induction over the
-proved loop equation. -/
+candidate specification is now `findTrivialParam_inv` / `_edge`.  The precise
+remaining lemma is one-removal dominance preservation: construct a pre-fixed
+point for the substituted function whose extra availability contains `v`
+exactly where the removed parameter `p` was live.  The successor obligation
+splits using `_edge`: non-self incoming edges provide `v`, and self edges carry
+the availability around the loop.  After that local lemma, induction over the
+proved loop equation must also thread `wfCheck` and `domCheck` preservation. -/
 theorem elimTrivialParams_dom {f : Func} (hwf : f.wfCheck n = true)
     (hdom : ToAsm.Func.domCheck f = true) :
     ToAsm.Func.domCheck (Passes.elimTrivialParams f) = true := by
