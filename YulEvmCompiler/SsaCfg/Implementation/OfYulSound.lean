@@ -5333,6 +5333,61 @@ theorem CurPlaced.ofPrefix {f : Func} {fn fn' : FnState} (h : CurPlaced f fn')
   simp
 
 omit model in
+/-- **What a fragment must guarantee for `CurPlaced` to travel backwards through
+it.** Either it is still filling the block it started in — so the pending list
+only grew — or it *sealed* that block with content extending the pending list
+and moved away.
+
+The construction always satisfies this: `sealCur` writes `cur.reverse` into the
+block it seals, `cur` only ever grows between seals, and every `moveTo` in
+`OfYul.lean` is preceded by a seal (directly, or inside the diverting
+sub-fragment of an `if let`). `SGrowsAt` does **not** record it, which is the
+single reason `seqCons`/`seqStop` cannot feed their head IH — see
+`curPlaced_back`. -/
+def CurKeeps (s s' : BState) : Prop :=
+  (s'.fn.curId = s.fn.curId ∧ ∃ Δ : List Instr, s'.fn.cur = Δ ++ s.fn.cur)
+  ∨ (s.fn.curId ≠ s'.fn.curId ∧ ∃ b : Block,
+        s'.fn.blocks[s.fn.curId]? = some b
+        ∧ ∃ Δ : List Instr, b.instrs = s.fn.cur.reverse ++ Δ)
+
+omit model in
+/-- **Backward transfer of `CurPlaced`.** The placement of the current block
+travels from a fragment's output state to its input state, given `CurKeeps`.
+This is the primitive `seqCons`/`seqStop` need in order to hand their head IH a
+`CurPlaced` at the intermediate state: `Completes` already travels backwards
+(`SGrowsAt.completes_of`), and this closes the gap for `CurPlaced`. -/
+theorem curPlaced_back {f : Func} {s s' : BState} (hk : CurKeeps s s')
+    (hcompl : Completes f s'.fn) (hcp : CurPlaced f s'.fn) : CurPlaced f s.fn := by
+  rcases hk with ⟨hc, Δ, hcur⟩ | ⟨hne, b, hb, Δ, hi⟩
+  · exact hcp.ofPrefix hc Δ hcur
+  · exact ⟨⟨Δ, b.term⟩, b, hcompl.sealed _ b hne hb, hi, rfl⟩
+
+omit model in
+/-- `CurKeeps` composes along a chain of fragments. The `SGrowsAt` witnesses
+supply the two facts the composition needs: that the block array only grows, and
+that a fragment which moves the current block moves it to a *fresh* one — so a
+block left behind is never returned to. -/
+theorem CurKeeps.trans {N : Nat} {s s₁ s₂ : BState}
+    (hcur : s.fn.curId < s.fn.blocks.size)
+    (hg₁ : SGrowsAt N s s₁) (hg₂ : SGrowsAt s₁.fn.blocks.size s₁ s₂)
+    (h₁ : CurKeeps s s₁) (h₂ : CurKeeps s₁ s₂) : CurKeeps s s₂ := by
+  rcases h₁ with ⟨hc1, Δ1, hcur1⟩ | ⟨hne1, b1, hb1, Δ1, hi1⟩
+  · rcases h₂ with ⟨hc2, Δ2, hcur2⟩ | ⟨hne2, b2, hb2, Δ2, hi2⟩
+    · exact Or.inl ⟨hc2.trans hc1, Δ2 ++ Δ1,
+        by rw [hcur2, hcur1, List.append_assoc]⟩
+    · refine Or.inr ⟨by rw [← hc1]; exact hne2, b2, by rw [← hc1]; exact hb2,
+        Δ1.reverse ++ Δ2, ?_⟩
+      rw [hi2, hcur1]
+      simp
+  · have hne2' : s.fn.curId ≠ s₂.fn.curId := by
+      rcases hg₂.curId with hc2 | hge2
+      · rw [hc2]; exact hne1
+      · exact Nat.ne_of_lt (Nat.lt_of_lt_of_le
+          (Nat.lt_of_lt_of_le hcur hg₁.size) hge2)
+    exact Or.inr ⟨hne2', b1,
+      hg₂.keep s.fn.curId b1 (Nat.lt_of_lt_of_le hcur hg₁.size) hne1 hb1, Δ1, hi1⟩
+
+omit model in
 /-- `CurPlaced` travels backwards along an expression-level step. -/
 theorem curPlaced_back_grows {f : Func} {sA sB : BState} (hg : Grows sA sB)
     (h : CurPlaced f sB.fn) : CurPlaced f sA.fn := by
@@ -5965,23 +6020,38 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ _ htr
     exact sim_seqNil henv hfr htr
   | seqCons h1 h2 ih1 ih2 =>
-    -- BLOCKED: after `trStmts_false_cons_inv`, the head ends at an intermediate
-    -- state `sA`.  `ih1` requires `CurPlaced f sA.fn`, but this case only has
-    -- `CurPlaced f s₁.fn`.  Tail `trStmts_grows` transfers `Completes` backwards,
-    -- but there is no corresponding `CurPlaced` transfer across `SGrows` (only
-    -- `curPlaced_back_grows` for expression-level `Grows`), so `SOut.seq` cannot
-    -- be fed its head `SOut`.  Independently, `seqCons` permits a `.funDef` head:
-    -- its `ih1` concerns rejected `trStmt`, whereas `trStmts` takes the special
-    -- `trFunc`/`fillFunc` branch excluded by `trStmts_false_cons_inv`.
+    -- BLOCKED on one missing structural fact, now isolated.  The head ends at an
+    -- intermediate state `sA`; `ih1` needs `CurPlaced f sA.fn` while the case has
+    -- it only at `s₁`.  `curPlaced_back` (proved above) performs exactly that
+    -- transfer, but it consumes `CurKeeps sA s₁` — "the tail did not discard the
+    -- head's pending instruction list" — and `SGrowsAt` does not record it.  So:
+    --   * add `CurKeeps` as a field of `SGrowsAt` (every primitive satisfies it:
+    --     `emit`/`freshVal`/`newBlock` grow `cur`, `sealCur` writes `cur.reverse`
+    --     into the block, `moveTo` is always reached with `cur = []`), and
+    --   * give `SGrowsAt.trans` the side condition `s.fn.curId < s.fn.blocks.size`
+    --     that `CurKeeps.trans` needs — best supplied as a further `SGrowsAt`
+    --     field, since it is an invariant of every builder state the construction
+    --     produces.
+    -- The 29-case script then recompiles unchanged, because it only ever composes
+    -- primitives through `trans`/`mono`.
+    --
+    -- Second, independent gap: `seqCons` admits a `.funDef` head.  Its `ih1` is
+    -- about `trStmt (.funDef …)`, which *rejects*, whereas `trStmts` takes the
+    -- `liftO (fenv.get n)` / `trFunc` / `fillFunc` branch.  That head is a no-op
+    -- on the environment (`funDef` gives `V1 = V`, outcome `.normal`) with a
+    -- `funcs`-only side effect, so it needs its own sub-case rather than
+    -- `SOut.seq` — and it is where the `hoist_ok` analogue gets discharged.
     sorry
   | seqStop h1 hne ih1 =>
-    -- BLOCKED: after the live-head inversion, `ih1` again requires
-    -- `CurPlaced f sA.fn` at the head's intermediate state, while the case only
-    -- supplies it at the completed-list state.  `SOut.of_nonNormal` can transport
-    -- an already obtained head result using tail growth, but cannot supply that
-    -- missing placement premise.  `trStmts_true_fn` helps only if the head returns
-    -- `none`; non-normal `SOut` does not imply that, and CFG translations such as
-    -- `cond`/`switch` may return `some` even when the realized source path diverts.
+    -- BLOCKED on the *same* `CurPlaced f sA.fn` gap as `seqCons`, and on nothing
+    -- else: `SOut.of_nonNormal` is the right interface after all.  The earlier
+    -- worry — that a non-normal source outcome might not imply the construction
+    -- returned `none` — is real (`cond`/`switch` return `some` even when the
+    -- realized path diverts) but harmless: `of_nonNormal` never inspects `renv`,
+    -- because the diverting `SOut` outcomes do not mention the output
+    -- environment.  The head's `SimS` has already produced the jump away, so the
+    -- tail's emitted code is unreachable and its builder state only has to supply
+    -- the freshness bound, which `trStmts_grows` gives.
     sorry
   | loopDone => trivial
   | loopCondHalt => trivial
