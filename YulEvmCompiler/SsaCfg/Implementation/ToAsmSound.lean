@@ -1536,6 +1536,44 @@ def BlockPlaced (P : Prog) (ord : Bool) (asm : List Asm) (fidx : Option Nat)
     ∧ findLabel (ToAsm.blkLabel (ToAsm.mkLabelMap P) fidx bid) asm
       = some (frag ++ tail)
 
+/-! ### What the edge cases still need from `Placement`
+
+`Placement` below pins, for each block, *that* it was emitted and *where* its
+fragment sits. The control-flow cases of `exec_sim` additionally need the two
+reads of the emission state's layout table to agree, which is a fact about how
+`emitFunc`'s block fold threads that table:
+
+* `edgeTargetLayout` consults `getLayout e.target`; on a miss it records
+  `(inheritCandidate …).getD (layoutOf …)` and returns
+  `substLayout lay tb.params e.args`;
+* `emitBlock bid` *first* consults `getLayout bid`, pins
+  `sym0 := rec?.getD (layoutOf …)`, and writes it back with `setLayout bid sym0`.
+
+Because `emitBlock` reads before it writes, **every value ever written to
+`layouts[bid]` during one function's emission is the same value**: whichever of
+the two writers runs first fixes it, and the other writes back what it read.
+(`resetLayouts` at the top of `emitFunc` makes this per-function, matching
+`BlockId`'s function-local scope.) So the clause to add is, per block `bid`
+with body `b` and pinned layout `lay`:
+
+    ∀ e, e.target = bid → the layout that edge shuffles onto
+                        = substLayout lay b.params e.args
+
+Landing it needs one new piece of machinery: a state-carrying variant of
+`foldlM_split`. The current one hands back, for each block, *some* start state,
+with no relation between different blocks' states — enough to locate fragments,
+not enough to relate two reads of the same table. The replacement should carry
+a table-agreement invariant (`layouts` agrees with a fixed `lay : BlockId →
+List SSlot` wherever it is defined) forward through the fold, with
+`edgeTargetLayout` and `emitBlock` each shown to preserve it.
+
+Downstream of that clause the edge cases are routine: `StkMatch` transfers
+across `substLayout` pointwise (the edge's `getMany` supplies the argument
+values, `AgreeOn` covers the non-parameter slots), freshness at the target
+entry comes from the liveness fixed point (`liveIn` subtracts `blockDefs`)
+together with `domCheck_entry` under `hdom`, and the jumps resolve through the
+`findLabel` facts `Placement` already carries. -/
+
 /-- Every block of every function is placed; the terminal label is last (so
 `main`'s `ret []` runs off the end of the code with an empty stack); and
 `main`'s entry label heads the program. -/
