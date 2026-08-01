@@ -8165,9 +8165,15 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     intro fenv env R lctx rets s₀ s₁ renv _joins _ _ _ _ _ _ _ _ _ htr
     rw [trStmt] at htr
     exact absurd htr (by simp [reject])
-  -- Blocked on the hoisted-function completion invariant described below:
-  -- `allocScope` plus the later `fillFunc`s must construct the `FEnvOK` needed
-  -- to instantiate the statement-list IH under `hoist body :: funs`.
+  -- Precise blocker: `allocScope` plus the later `fillFunc`s must construct the
+  -- `FEnvOK` needed to instantiate the statement-list IH under
+  -- `hoist body :: funs`.  `Completes` only relates `FnState.blocks` to `f`; and
+  -- `SGrowsAt.funcsSize` only records the function-table size.  Neither premise
+  -- says that an already-filled `s.funcs[i] = some g` survives as
+  -- `P.funcs[i] = g`, which is the first conjunct of `FuncOK`.  The statement
+  -- motive therefore needs a final-table completion/preservation premise (and
+  -- its backward transfer through `trStmts`) before this bridge is derivable
+  -- for arbitrary `P`.
   | block hb ihb => sorry
   | @letZero funs V st vars =>
     intro fenv env R lctx rets s₀ s₁ renv _joins _ henv huniq hfr _ _hp _ _ _ htr
@@ -8961,8 +8967,13 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     exact SOut.ofExprHalt
       (ihc.1 fenv env R s₀ sA sv joins hfe henv hfr hp hcomplA hcpA h1)
   -- The loop motive is `LOut`; the seven iteration constructors still need the
-  -- same below-watermark preservation at header/exit/post parameter binds,
-  -- plus the three protected continuations exposed by `trLoopCore`.
+  -- same below-watermark preservation at header/exit/post parameter binds.
+  -- More precisely, at the condition point the reserved post/exit blocks are
+  -- not yet final, so `Completes f fn joins` is false unless `postId` and
+  -- `exitId` are added to `joins`.  A loop-layout bridge must transfer that
+  -- protected `Completes` backward across the non-fresh `moveTo postId` and
+  -- `moveTo exitId` steps (using `Completes.of_moveTo_protected`); a single
+  -- `SGrowsAt.completes_of` cannot compose those continuations.
   -- The two enclosing `for` rules additionally need the hoisted-scope bridge
   -- `allocScope init` -> `FEnvOK P (hoist yulD init :: funs) (scope :: fenv)`;
   -- this is the same completion-sensitive bridge blocking `block` below,
