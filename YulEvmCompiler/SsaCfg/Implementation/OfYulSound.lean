@@ -4699,12 +4699,14 @@ def SOut (P : Prog) (f : Func) (lctx : Option LoopCtx)
         ∧ SimS (model := model) P f s₀.fn R₀ yst s₁.fn R₁ yst'
   | .halt => ExecFrom (model := model) P f s₀.fn R₀ yst (.halt yst')
   | .break => ∃ (lc : LoopCtx) (R₁ : Regs) (vals : List U256),
-      lctx = some lc ∧ Regs.Le R₀ R₁ ∧ RegsFresh R₁ s₁.fn
+      lctx = some lc ∧ Regs.Le R₀ R₁
+        ∧ Regs.BelowEq s₀.fn.nextVal R₀ R₁ ∧ RegsFresh R₁ s₁.fn
         ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) lc.vars vals
         ∧ ∀ res, JumpTo (model := model) P f lc.brkTgt vals R₁ yst' res
             → ExecFrom (model := model) P f s₀.fn R₀ yst res
   | .continue => ∃ (lc : LoopCtx) (R₁ : Regs) (vals : List U256),
-      lctx = some lc ∧ Regs.Le R₀ R₁ ∧ RegsFresh R₁ s₁.fn
+      lctx = some lc ∧ Regs.Le R₀ R₁
+        ∧ Regs.BelowEq s₀.fn.nextVal R₀ R₁ ∧ RegsFresh R₁ s₁.fn
         ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) lc.vars vals
         ∧ ∀ res, JumpTo (model := model) P f lc.contTgt vals R₁ yst' res
             → ExecFrom (model := model) P f s₀.fn R₀ yst res
@@ -5428,7 +5430,8 @@ theorem sim_break {P : Prog} {f : Func} {fenv : FMap} {env : VMap} {R : Regs}
   subst hsA
   obtain ⟨-, hs₁⟩ := M.pure_inv h3
   rw [hs₁] at hfin
-  refine ⟨l, R, vals, rfl, Regs.Le.rfl R, hfresh, hforall, fun res hjmp => ?_⟩
+  refine ⟨l, R, vals, rfl, Regs.Le.rfl R, Regs.BelowEq.rfl _ _, hfresh,
+    hforall, fun res hjmp => ?_⟩
   exact execFrom_jump (curOK_of_sealCur hfin h2) hget hjmp
 
 /-- **`continue`** — the same, to the loop's `post` block. -/
@@ -5447,7 +5450,8 @@ theorem sim_continue {P : Prog} {f : Func} {fenv : FMap} {env : VMap} {R : Regs}
   subst hsA
   obtain ⟨-, hs₁⟩ := M.pure_inv h3
   rw [hs₁] at hfin
-  refine ⟨l, R, vals, rfl, Regs.Le.rfl R, hfresh, hforall, fun res hjmp => ?_⟩
+  refine ⟨l, R, vals, rfl, Regs.Le.rfl R, Regs.BelowEq.rfl _ _, hfresh,
+    hforall, fun res hjmp => ?_⟩
   exact execFrom_jump (curOK_of_sealCur hfin h2) hget hjmp
 
 /-- The construction rejects shadowing (`letDecl` checks `VMap.mem`), so the
@@ -5487,11 +5491,11 @@ theorem SOut.of_nonNormal {P : Prog} {f : Func} {lctx : Option LoopCtx}
   | normal => exact absurd rfl ho
   | halt => exact h
   | «break» =>
-    obtain ⟨lc, R₁, vals, hlc, hle, hfr, hforall, hcont⟩ := h
-    exact ⟨lc, R₁, vals, hlc, hle, hfr.mono hgrow, hforall, hcont⟩
+    obtain ⟨lc, R₁, vals, hlc, hle, hbelow, hfr, hforall, hcont⟩ := h
+    exact ⟨lc, R₁, vals, hlc, hle, hbelow, hfr.mono hgrow, hforall, hcont⟩
   | «continue» =>
-    obtain ⟨lc, R₁, vals, hlc, hle, hfr, hforall, hcont⟩ := h
-    exact ⟨lc, R₁, vals, hlc, hle, hfr.mono hgrow, hforall, hcont⟩
+    obtain ⟨lc, R₁, vals, hlc, hle, hbelow, hfr, hforall, hcont⟩ := h
+    exact ⟨lc, R₁, vals, hlc, hle, hbelow, hfr.mono hgrow, hforall, hcont⟩
   | leave => exact h
 
 /-- Prepend a straight-line simulation to a statement result.  Structured
@@ -5514,12 +5518,14 @@ theorem SOut.prefix {P : Prog} {f : Func} {lctx : Option LoopCtx}
       hsim.trans hsim1⟩
   | halt => exact hsim _ h
   | «break» =>
-    obtain ⟨lc, R₁, vals, hlc, hle1, hfr, hvals, hcont⟩ := h
-    exact ⟨lc, R₁, vals, hlc, hle.trans hle1, hfr, hvals,
+    obtain ⟨lc, R₁, vals, hlc, hle1, hbelow1, hfr, hvals, hcont⟩ := h
+    exact ⟨lc, R₁, vals, hlc, hle.trans hle1,
+      hbelow.trans (hbelow1.mono hgrow), hfr, hvals,
       fun res hj => hsim res (hcont res hj)⟩
   | «continue» =>
-    obtain ⟨lc, R₁, vals, hlc, hle1, hfr, hvals, hcont⟩ := h
-    exact ⟨lc, R₁, vals, hlc, hle.trans hle1, hfr, hvals,
+    obtain ⟨lc, R₁, vals, hlc, hle1, hbelow1, hfr, hvals, hcont⟩ := h
+    exact ⟨lc, R₁, vals, hlc, hle.trans hle1,
+      hbelow.trans (hbelow1.mono hgrow), hfr, hvals,
       fun res hj => hsim res (hcont res hj)⟩
   | leave =>
     obtain ⟨rs, vals, hrs, hvals, hex⟩ := h
@@ -5554,12 +5560,14 @@ theorem SOut.seq {P : Prog} {f : Func} {lctx : Option LoopCtx}
       hsim.trans hsim2⟩
   | halt => exact hsim _ ht
   | «break» =>
-    obtain ⟨lc, R₂, vals, hlc, hle2, hfr2, hforall, hcont⟩ := ht
-    exact ⟨lc, R₂, vals, hlc, hle.trans hle2, hfr2, hforall,
+    obtain ⟨lc, R₂, vals, hlc, hle2, hbelow2, hfr2, hforall, hcont⟩ := ht
+    exact ⟨lc, R₂, vals, hlc, hle.trans hle2,
+      hbelow.trans (hbelow2.mono hgrow), hfr2, hforall,
       fun res hj => hsim res (hcont res hj)⟩
   | «continue» =>
-    obtain ⟨lc, R₂, vals, hlc, hle2, hfr2, hforall, hcont⟩ := ht
-    exact ⟨lc, R₂, vals, hlc, hle.trans hle2, hfr2, hforall,
+    obtain ⟨lc, R₂, vals, hlc, hle2, hbelow2, hfr2, hforall, hcont⟩ := ht
+    exact ⟨lc, R₂, vals, hlc, hle.trans hle2,
+      hbelow.trans (hbelow2.mono hgrow), hfr2, hforall,
       fun res hj => hsim res (hcont res hj)⟩
   | leave =>
     obtain ⟨rs, vals, hrs, hforall, hex⟩ := ht
@@ -5588,13 +5596,13 @@ theorem SOut.scope {P : Prog} {f : Func} {lctx : Option LoopCtx}
       henv'.restore hlen, huniq.drop _, hsim⟩
   | halt => exact h
   | «break» =>
-    obtain ⟨lc, R₁, vals, hlc, hle, hfr, hforall, hcont⟩ := h
-    exact ⟨lc, R₁, vals, hlc, hle, hfr,
+    obtain ⟨lc, R₁, vals, hlc, hle, hbelow, hfr, hforall, hcont⟩ := h
+    exact ⟨lc, R₁, vals, hlc, hle, hbelow, hfr,
       Forall2.imp_mem hforall (fun x hx v hv => by
         rw [get_restore_of_noShadow hns (hvars lc hlc x hx)]; exact hv), hcont⟩
   | «continue» =>
-    obtain ⟨lc, R₁, vals, hlc, hle, hfr, hforall, hcont⟩ := h
-    exact ⟨lc, R₁, vals, hlc, hle, hfr,
+    obtain ⟨lc, R₁, vals, hlc, hle, hbelow, hfr, hforall, hcont⟩ := h
+    exact ⟨lc, R₁, vals, hlc, hle, hbelow, hfr,
       Forall2.imp_mem hforall (fun x hx v hv => by
         rw [get_restore_of_noShadow hns (hvars lc hlc x hx)]; exact hv), hcont⟩
   | leave =>
@@ -7906,7 +7914,8 @@ def Motive (P : Prog) (f : Func) (funs : YulSemantics.FunEnv yulD)
 
 set_option maxHeartbeats 1000000 in
 /-- The shared nonzero-condition/body prefix for loop outcomes which bypass
-post and the back edge. Both body halt and body leave execute this prefix. -/
+post and the back edge. A body `break` uses the same prefix, then consumes its
+edge at the protected exit block and becomes a normal loop result. -/
 theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
     {funs : YulSemantics.FunEnv yulD} {V Vb : VEnv yulD}
     {st st1 stb : EvmState} {c : Expr Op} {post body : List (Stmt Op)}
@@ -7914,11 +7923,14 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
     (hfuncs : FuncTableComplete P doneFuncs)
     (ihc : Motive (model := model) P f funs V st doneFuncs hfuncs
       (.expr c) (.eres (.vals [cv] st1)))
+    (hb : YulSemantics.Step yulD funs V st1 (.stmt (.block body))
+      (.sres Vb stb o))
     (ihb : Motive (model := model) P f funs V st1 doneFuncs hfuncs
       (.stmt (.block body)) (.sres Vb stb o))
     (hnz : cv ≠ YulSemantics.Dialect.zero yulD)
-    (ho : o = .halt ∨ o = .leave) :
-    LOut (model := model) P f funs V st c post body Vb stb o := by
+    (ho : o = .halt ∨ o = .leave ∨ o = .break) :
+    LOut (model := model) P f funs V st c post body Vb stb
+      (if o = .break then .normal else o) := by
     intro fenv env R rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp
       hcompl hcp _hfin htr
     unfold trLoopCore at htr
@@ -8150,6 +8162,11 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
       exact hfr i (M.mem_range'_bounds hi).1
     let RH := R.setMany hParams valsH
     have hleH : Regs.Le R RH := Regs.Le.setMany hndH hnoneH
+    have hbelowH : Regs.BelowEq sA.fn.nextVal R RH := by
+      apply Regs.BelowEq.setMany
+      intro i hi
+      rw [hrangeH] at hi
+      exact (M.mem_range'_bounds hi).1
     have hfrH : RegsFresh RH sI.fn := by
       dsimp [RH]
       rw [hrangeH]
@@ -8395,10 +8412,249 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
       (henvH.mono hleA) (huniq.setMany _ _) hfrN hvalidN hpN
       tailBody.1 tailBody.2.1 tailBody.2.2 htrB
     have hpre := hsimH.trans (hsimC.trans hsimB)
-    rcases ho with rfl | rfl
-    · exact hpre (.halt stb) hbodySim
-    · obtain ⟨rs, vals, hrs, hvals, hex⟩ := hbodySim
+    rcases ho with rfl | rfl | rfl
+    · rw [if_neg (by decide)]
+      exact hpre (.halt stb) hbodySim
+    · rw [if_neg (by decide)]
+      obtain ⟨rs, vals, hrs, hvals, hex⟩ := hbodySim
       exact ⟨rs, vals, hrs, hvals, hpre (.ret vals stb) hex⟩
+    · rw [if_pos rfl]
+      obtain ⟨lc, RB, vals, hlc, hleB, hbelowB, hfrB, hvals, hcont⟩ :=
+        hbodySim
+      have hlc' : lc = ⟨exitId, postId, modifiedX env [post, body]⟩ :=
+        Option.some.inj hlc.symm
+      subst lc
+      have tailData :
+          SGrowsAt 0 sE s₁ ∧ sO.fn.nextVal ≤ s₁.fn.nextVal
+            ∧ s₁.fn.curId = exitId ∧ s₁.fn.cur = []
+            ∧ renv = some
+              (env.setMany (modifiedX env [post, body]) exitParams) := by
+        have gb := trScope_grows fenv
+          (env.setMany (modifiedX env [post, body]) hParams)
+          (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets body
+          sN bodyEnv sO h15
+        cases bodyEnv with
+        | none =>
+          change (do
+            moveTo postId
+            let envP := env.setMany (modifiedX env [post, body]) postParams
+            let renvP ← trScope fenv envP none rets post
+            if let some envP' := renvP then
+              let xvP ← edgeArgs envP' (modifiedX env [post, body])
+              sealCur (.jump ⟨hId, xvP⟩)
+            moveTo exitId
+            pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sO =
+              some (renv, s₁) at htr
+          obtain ⟨uP, sP, h16, htr⟩ := M.bind_inv htr
+          obtain ⟨postEnv, sQ, h17, htr⟩ := M.bind_inv htr
+          have gp := trScope_grows fenv
+            (env.setMany (modifiedX env [post, body]) postParams) none rets post
+            sP postEnv sQ h17
+          cases postEnv with
+          | none =>
+            change (do
+              moveTo exitId
+              pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sQ =
+                some (renv, s₁) at htr
+            obtain ⟨uR, sR, h18, htr⟩ := M.bind_inv htr
+            obtain ⟨hrenv, hs₁⟩ := M.pure_inv htr
+            subst s₁
+            have go1 := (SGrowsAt.of_moveTo (N := 0)
+              (Or.inl (Nat.zero_le _)) h16).trans (gp.mono (Nat.zero_le _))
+            have go := go1.trans (SGrowsAt.of_moveTo
+              (Or.inl (Nat.zero_le _)) h18)
+            exact ⟨eN.trans ((gb.mono (Nat.zero_le _)).trans go), go.nextVal,
+              by rw [M.moveTo_apply] at h18
+                 exact (congrArg (fun z => z.fn.curId)
+                   (M.some_pair_inj h18).2).symm,
+              by rw [M.moveTo_apply] at h18
+                 simpa using congrArg (fun z => z.fn.cur)
+                   (M.some_pair_inj h18).2,
+              hrenv⟩
+          | some envP =>
+            obtain ⟨xvP, sR, h18, htr⟩ := M.bind_inv htr
+            obtain ⟨uS, sS, h19, htr⟩ := M.bind_inv htr
+            obtain ⟨uT, sT, h20, htr⟩ := M.bind_inv htr
+            obtain ⟨hrenv, hs₁⟩ := M.pure_inv htr
+            subst s₁
+            have gQS : SGrows sQ sS :=
+              (SGrowsAt.of_grows (Grows.of_liftO h18)).trans
+                (SGrowsAt.of_sealCur h19)
+            have go1 := (SGrowsAt.of_moveTo (N := 0)
+              (Or.inl (Nat.zero_le _)) h16).trans (gp.mono (Nat.zero_le _))
+            have go2 := go1.trans (gQS.mono (Nat.zero_le _))
+            have go := go2.trans (SGrowsAt.of_moveTo
+              (Or.inl (Nat.zero_le _)) h20)
+            exact ⟨eN.trans ((gb.mono (Nat.zero_le _)).trans go), go.nextVal,
+              by rw [M.moveTo_apply] at h20
+                 exact (congrArg (fun z => z.fn.curId)
+                   (M.some_pair_inj h20).2).symm,
+              by rw [M.moveTo_apply] at h20
+                 simpa using congrArg (fun z => z.fn.cur)
+                   (M.some_pair_inj h20).2,
+              hrenv⟩
+        | some envB =>
+          obtain ⟨xvB, sP, h16, htr⟩ := M.bind_inv htr
+          obtain ⟨uQ, sQ, h17, htr⟩ := M.bind_inv htr
+          obtain ⟨uR, sR, h18, htr⟩ := M.bind_inv htr
+          obtain ⟨postEnv, sS, h19, htr⟩ := M.bind_inv htr
+          have gOQ : SGrows sO sQ :=
+            (SGrowsAt.of_grows (Grows.of_liftO h16)).trans
+              (SGrowsAt.of_sealCur h17)
+          have gp := trScope_grows fenv
+            (env.setMany (modifiedX env [post, body]) postParams) none rets post
+            sR postEnv sS h19
+          cases postEnv with
+          | none =>
+            change (do
+              moveTo exitId
+              pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sS =
+                some (renv, s₁) at htr
+            obtain ⟨uT, sT, h20, htr⟩ := M.bind_inv htr
+            obtain ⟨hrenv, hs₁⟩ := M.pure_inv htr
+            subst s₁
+            have go1 := (gOQ.mono (Nat.zero_le _)).trans
+              (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h18)
+            have go2 := go1.trans (gp.mono (Nat.zero_le _))
+            have go := go2.trans (SGrowsAt.of_moveTo
+              (Or.inl (Nat.zero_le _)) h20)
+            exact ⟨eN.trans ((gb.mono (Nat.zero_le _)).trans go), go.nextVal,
+              by rw [M.moveTo_apply] at h20
+                 exact (congrArg (fun z => z.fn.curId)
+                   (M.some_pair_inj h20).2).symm,
+              by rw [M.moveTo_apply] at h20
+                 simpa using congrArg (fun z => z.fn.cur)
+                   (M.some_pair_inj h20).2,
+              hrenv⟩
+          | some envP =>
+            obtain ⟨xvP, sT, h20, htr⟩ := M.bind_inv htr
+            obtain ⟨uU, sU, h21, htr⟩ := M.bind_inv htr
+            obtain ⟨uW, sW, h22, htr⟩ := M.bind_inv htr
+            obtain ⟨hrenv, hs₁⟩ := M.pure_inv htr
+            subst s₁
+            have gSU : SGrows sS sU :=
+              (SGrowsAt.of_grows (Grows.of_liftO h20)).trans
+                (SGrowsAt.of_sealCur h21)
+            have go1 := (gOQ.mono (Nat.zero_le _)).trans
+              (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h18)
+            have go2 := go1.trans (gp.mono (Nat.zero_le _))
+            have go3 := go2.trans (gSU.mono (Nat.zero_le _))
+            have go := go3.trans (SGrowsAt.of_moveTo
+              (Or.inl (Nat.zero_le _)) h22)
+            exact ⟨eN.trans ((gb.mono (Nat.zero_le _)).trans go), go.nextVal,
+              by rw [M.moveTo_apply] at h22
+                 exact (congrArg (fun z => z.fn.curId)
+                   (M.some_pair_inj h22).2).symm,
+              by rw [M.moveTo_apply] at h22
+                 simpa using congrArg (fun z => z.fn.cur)
+                   (M.some_pair_inj h22).2,
+              hrenv⟩
+      obtain ⟨ge, hnextO1, hcurExit, hcurExit0, hrenv⟩ := tailData
+      obtain ⟨hlenE, hrangeE, hsD⟩ := M.mapM_freshVal_length h4
+      have hndE : exitParams.Nodup := by
+        rw [hrangeE]
+        exact M.nodup_range' _ _
+      have dI : SGrowsAt 0 sD sI :=
+        (((((SGrowsAt.of_newBlock (N := 0) h5).trans
+          (SGrowsAt.of_grows gEF)).trans (SGrowsAt.of_newBlock h7)).trans
+          (SGrowsAt.of_sealCur h8)).trans
+          (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9))
+      have dN : SGrowsAt 0 sD sN := dI.trans
+        (((SGrowsAt.of_grows (N := 0) gIJ).trans (aJL.mono (Nat.zero_le _))).trans
+          (SGrowsAt.of_sealCur h13) |>.trans
+            (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h14))
+      have hparamsLtN : ∀ i ∈ exitParams, i < sN.fn.nextVal := by
+        intro i hi
+        rw [hrangeE] at hi
+        exact Nat.lt_of_lt_of_le (by simpa [hsD] using (M.mem_range'_bounds hi).2)
+          dN.nextVal
+      have hnoneE : ∀ i ∈ exitParams, RB i = none := by
+        intro i hi
+        rw [hbelowB i (hparamsLtN i hi)]
+        have hiRange := hi
+        rw [hrangeE] at hiRange
+        have hiLtI : i < sI.fn.nextVal := Nat.lt_of_lt_of_le
+          (by simpa [hsD] using (M.mem_range'_bounds hiRange).2) dI.nextVal
+        rw [hbelowA i hiLtI]
+        dsimp [RH]
+        rw [Regs.setMany_other]
+        · exact hfr i (Nat.le_trans a0C.nextVal
+            (M.mem_range'_bounds hiRange).1)
+        · intro hiH
+          rw [hrangeH] at hiH
+          have hu := (M.mem_range'_bounds hiH).2
+          have hl := (M.mem_range'_bounds hiRange).1
+          have hnextCB : sC.fn.nextVal = sB.fn.nextVal := by
+            rw [M.newBlock_apply] at h3
+            exact (congrArg (fun z => z.fn.nextVal)
+              (M.some_pair_inj h3).2).symm
+          have hend : sA.fn.nextVal + (modifiedX env [post, body]).length =
+              sC.fn.nextVal := by rw [hnextCB, hsB]
+          have hu' : i < sC.fn.nextVal := by rwa [hend] at hu
+          exact Nat.not_lt_of_ge hl hu'
+      let RE := RB.setMany exitParams vals
+      have hleE : Regs.Le RB RE := Regs.Le.setMany hndE hnoneE
+      have hbelowE : Regs.BelowEq sA.fn.nextVal RB RE := by
+        apply Regs.BelowEq.setMany
+        intro i hi
+        rw [hrangeE] at hi
+        exact Nat.le_trans a0C.nextVal (M.mem_range'_bounds hi).1
+      have hfrE : RegsFresh RE s₁.fn := by
+        intro i hi
+        dsimp [RE]
+        rw [Regs.setMany_other]
+        · exact hfrB i (Nat.le_trans hnextO1 hi)
+        · intro him
+          exact absurd (hparamsLtN i him)
+            (Nat.not_lt_of_ge (Nat.le_trans
+              ((trScope_grows fenv
+                (env.setMany (modifiedX env [post, body]) hParams)
+                (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets body
+                sN bodyEnv sO h15).nextVal) (Nat.le_trans hnextO1 hi)))
+      obtain ⟨eb, heb, hep⟩ := ge.params exitId ⟨exitParams, [], .ret []⟩
+        (newBlock_target_get h5)
+      have hlenEB : eb.params.length = vals.length := by
+        rw [hep, hlenE]
+        exact hvals.length_eq
+      have hsimExit : SimS (model := model) P f sA.fn R st s₁.fn RE stb := by
+        intro res hex
+        apply hpre res
+        apply hcont res
+        apply jumpTo_of_completes hcompl heb
+          hcurExit hcurExit0 hlenEB
+        simpa only [RE, hep] using hex
+      have hnames : VEnv.names Vb = VEnv.names V := by
+        have hm := (mod_sim hb).1
+        simpa [declsOfStmt] using hm
+      have hmod : ModOut [] (modStmts [] body) V Vb := by
+        have hm := (mod_sim hb).2 [] (localsOK_nil V)
+        simpa [modStmt] using hm
+      have hVexit : YulSemantics.VEnv.setMany V
+          (modifiedX env [post, body]) vals = Vb :=
+        setMany_eq_of_modOut henv huniq hnames hmod hvals
+          (fun x hx => modifiedX_mem_names hx)
+          (fun x hx hm => mem_modifiedX hx (by
+            simp only [List.flatMap_cons, List.flatMap_nil, List.append_nil]
+            exact List.mem_append_right _ hm))
+      have hpgetE : RE.getMany exitParams = some vals :=
+        Regs.getMany_setMany_self hndE (by rw [hlenE]; exact hvals.length_eq)
+      have henvE : EnvOK (model := model)
+          (env.setMany (modifiedX env [post, body]) exitParams) Vb RE := by
+        have he : EnvOK (model := model)
+            (env.setMany (modifiedX env [post, body]) exitParams)
+            (YulSemantics.VEnv.setMany V (modifiedX env [post, body]) vals) RE :=
+          EnvOK.setMany
+            (henv.mono (hleH.trans (hleA.trans (hleB.trans hleE))))
+            (Regs.getMany_eq_some_iff.mp hpgetE)
+        rwa [hVexit] at he
+      exact ⟨env.setMany (modifiedX env [post, body]) exitParams, RE, hrenv,
+        hleH.trans (hleA.trans (hleB.trans hleE)),
+        hbelowH.trans ((hbelowA.mono a0I.nextVal).trans
+          ((hbelowB.mono (Nat.le_trans a0I.nextVal
+            (Nat.le_trans (SGrowsAt.of_grows (N := 0) gIJ).nextVal
+              aJN.nextVal))).trans
+              hbelowE)),
+        hfrE, henvE, huniq.setMany _ _, hsimExit⟩
 
 
 
@@ -9513,8 +9769,12 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   -- `SGrowsAt.completes_of` cannot compose those continuations.
   -- The two enclosing `for` rules additionally need the structural
   -- hoisted-scope bridge `allocScope init` ->
-  -- `FEnvOK P (hoist yulD init :: funs) (scope :: fenv)`.  Its final-table
-  -- premise is now supplied by the induction-wide `FuncTableComplete` witness.
+  -- `FEnvOK P (hoist yulD init :: funs) (scope :: fenv)`.  The current
+  -- induction-wide `FuncTableComplete doneFuncs` says that `doneFuncs` erases
+  -- to `P.funcs`, but does not state that slots filled in the local builder
+  -- state survive into `doneFuncs`; that missing local-to-final table relation
+  -- is also the precise blocker in `block`, and must be added to the motive
+  -- before either wrapper can soundly invoke its initializer IH.
   | forLoop hinit hloop ihi ihl => sorry
   | forInitHalt hinit ihi => sorry
   | @«break» funs V st =>
@@ -10467,19 +10727,31 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       (env.setMany (modifiedX env [post, body]) hParams) RH sI sJ cvId
       (exitId :: postId :: joins) hfe henvH hfrH hpI hcJ hcpJ h10
     exact hsimH (.halt st1) hhalt
-  -- The iterating pair still needs the post-block execution followed by the
-  -- post-parameter-to-header-parameter register rebind before applying `ihr`.
+  -- Precise iterating-pair boundary: the shared condition/body layout and all
+  -- three reserved-parameter freshness facts are available above.  After a
+  -- normal post, however, `ihr` yields an `ExecFrom` at the original preheader
+  -- while the live CFG back edge is already a `JumpTo hId`.  The missing
+  -- reusable bridge is the converse of `execFrom_jump`: invert the known
+  -- preheader `CurOK ... (.jump ⟨hId, xvals⟩)` and identify its target
+  -- execution with that back-edge `JumpTo`.  `loopPostHalt` shares the prefix
+  -- but stops before this inverse-edge step; it still needs the normal/
+  -- continue body paths unified at `postId` and `EnvOK` rebuilt from
+  -- `postParams` before invoking the post IH.
   | loopStep => sorry
   | loopPostHalt => sorry
-  -- Unlike the two non-normal body exits factored through
-  -- `sim_loopBodyNonNormal`, break becomes a *normal* loop result: consume the
-  -- body's `JumpTo exitId`, bind `exitParams`, and rebuild `EnvOK` at the final
-  -- exit block (the exit half of `loopDone.finish`).
-  | loopBreak => sorry
-  | @loopLeave funs V st c post body cv st1 Vb stb _hc hnz _hb ihc ihb =>
-    exact sim_loopBodyNonNormal hfuncs ihc ihb hnz (Or.inr rfl)
-  | @loopBodyHalt funs V st c post body cv st1 Vb stb _hc hnz _hb ihc ihb =>
-    exact sim_loopBodyNonNormal hfuncs ihc ihb hnz (Or.inl rfl)
+  -- `sim_loopBodyNonNormal` also closes break: it consumes the body's
+  -- `JumpTo exitId`, binds `exitParams`, and rebuilds `EnvOK` at the exit.
+  | @loopBreak funs V st c post body cv st1 Vb stb _hc hnz hb ihc ihb =>
+    change LOut (model := model) P f funs V st c post body Vb stb .normal
+    simpa using sim_loopBodyNonNormal hfuncs ihc hb ihb hnz
+      (Or.inr (Or.inr rfl))
+  | @loopLeave funs V st c post body cv st1 Vb stb _hc hnz hb ihc ihb =>
+    change LOut (model := model) P f funs V st c post body Vb stb .leave
+    simpa using sim_loopBodyNonNormal hfuncs ihc hb ihb hnz
+      (Or.inr (Or.inl rfl))
+  | @loopBodyHalt funs V st c post body cv st1 Vb stb _hc hnz hb ihc ihb =>
+    change LOut (model := model) P f funs V st c post body Vb stb .halt
+    simpa using sim_loopBodyNonNormal hfuncs ihc hb ihb hnz (Or.inl rfl)
 
 /--
 **The construction simulation — the remaining hole.**
