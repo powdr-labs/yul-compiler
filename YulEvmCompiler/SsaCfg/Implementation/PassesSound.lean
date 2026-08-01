@@ -130,9 +130,9 @@ definitions nothing reads.
 
 ## The remaining frontier
 
-Five `sorry`s remain, each documented at its declaration:
+Four `sorry`s remain, each documented at its declaration:
 
-* pass 0 (inlining): `pruneFuncs_sound`, `inlineProg_sound`;
+* pass 0 (inlining): `inlineProg_sound`;
 * passes 1 and 3: `elimTrivialParams_sound`, `cse_sound`;
 * the gate-accepted branch of `optimizeProg_sound'`.
 
@@ -143,8 +143,8 @@ The generic tool now exists — `Id.forIn_eq_foldl` / `Id.forIn_array_eq_foldl`,
 with the recipe recorded at their declaration (`dsimp only` first, state the step
 function over `MProd`, pass `h` as a tactic block, `grind` for the
 `pure`-inside-a-`match` branches). It is applied end to end for `constFold`
-(`constFold_blocks_eq`), `inlineOnce`, and `inlineFunc`; `cse`,
-`elimTrivialParams`, and `pruneFuncs` still need the same treatment.
+(`constFold_blocks_eq`), `inlineOnce`, `inlineFunc`, and `pruneFuncs`; `cse`
+and `elimTrivialParams` still need the same treatment.
 
 **(b) DVE execution alignment.** Both fixed-point facts are now proved:
 `ToAsm.liveInSets_isSome` and `Passes.liveSet_closed`.  Closure has also been
@@ -6564,41 +6564,891 @@ theorem inlineFunc_sound {P : Prog} {counts : Array Nat} {f : Func} {args : List
     8 f args st res eb eb' heb heb'' hexec
   simpa only [Passes.inlineFunc_eq_inlineN, hpe.1] using hs
 
-/-- **Pruning preserves whole-program runs.** Dead-code elimination at function
-granularity: `Exec` reaches `P.funcs` only through `Exec.call`'s
-`P.funcs[fid]? = some g`.
+/-! ### Function pruning: pure models of the mutable loops -/
 
-The precise remaining obstruction is an implementation-characterization
-theorem for `pruneFuncs`'s two mutable loops.  It must expose the final
-`used`, `remap`, and `kept` arrays and prove both:
+def Passes.pruneCallees (f : Func) : List FuncId :=
+  f.blocks.toList.flatMap fun b =>
+    b.instrs.filterMap fun i => match i with | .call _ fid _ => some fid | _ => none
 
-* every syntactic call reachable from `main` is marked after the `n + 1`
-  worklist rounds; and
-* for every marked old id `fid`, `remap[fid]? = some (some fid')`, the kept
-  array contains the corresponding original function at `fid'`, and `fix`
-  rewrites that call to exactly `fid'`.
+def Passes.pruneWorkOne (P : Prog) (n : Nat) (fid : FuncId)
+    (s : MProd (List FuncId) (Array Bool)) : MProd (List FuncId) (Array Bool) :=
+  if h : fid < n then
+    if !s.2[fid]! then
+      ⟨s.1 ++ (P.funcs[fid]?.map pruneCallees).getD [], s.2.set! fid true⟩
+    else s
+  else s
 
-With those lookup facts, a structural `Exec` induction can map every current
-instruction suffix and recursively map call bodies.  No such loop/remap
-characterization is presently available in this file, so this theorem remains
-deferred rather than assuming the crucial reachability fact. -/
+def Passes.pruneRound (P : Prog) (n : Nat) (_ : Nat)
+    (s : MProd (Array Bool) (List FuncId)) : ForInStep (MProd (Array Bool) (List FuncId)) :=
+  let r := s.2.foldl (fun r fid => pruneWorkOne P n fid r) ⟨[], s.1⟩
+  let out := ⟨r.2, r.1⟩
+  if r.1.isEmpty then .done out else .yield out
+
+def Passes.pruneState (P : Prog) : MProd (Array Bool) (List FuncId) :=
+  loopWith (pruneRound P P.funcs.size)
+    (List.range' 0 (P.funcs.size + 1) 1)
+    ⟨Array.replicate P.funcs.size false,
+      P.main.blocks.toList.flatMap fun b =>
+        b.instrs.filterMap fun i =>
+          match i with | .call _ fid _ => some fid | _ => none⟩
+
+def Passes.pruneKeepOne (P : Prog) (used : Array Bool) (fid : FuncId)
+    (s : MProd (Array Func) (Array (Option FuncId))) :
+    MProd (Array Func) (Array (Option FuncId)) :=
+  if used[fid]! then
+    ⟨s.1.push P.funcs[fid]!, s.2.set! fid (some s.1.size)⟩
+  else s
+
+def Passes.pruneKeep (P : Prog) (used : Array Bool) :
+    MProd (Array Func) (Array (Option FuncId)) :=
+  (List.range' 0 P.funcs.size 1).foldl
+    (fun s fid => pruneKeepOne P used fid s)
+    ⟨#[], Array.replicate P.funcs.size none⟩
+
+def Passes.pruneInstr (remap : Array (Option FuncId)) : Instr → Instr
+  | .call ds fid as => .call ds ((remap[fid]?.join).getD fid) as
+  | i => i
+
+def Passes.pruneBlock (remap : Array (Option FuncId)) (b : Block) : Block :=
+  { b with instrs := b.instrs.map (pruneInstr remap) }
+
+def Passes.pruneFix (remap : Array (Option FuncId)) (f : Func) : Func :=
+  { f with blocks := f.blocks.map (pruneBlock remap) }
+
+def Passes.pruneModel (P : Prog) : Prog :=
+  let used := (pruneState P).1
+  if used.all id then P
+  else
+    let kept := (pruneKeep P used).1
+    let remap := (pruneKeep P used).2
+    { main := pruneFix remap P.main, funcs := kept.map (pruneFix remap) }
+
+theorem Passes.pruneFuncs_eq_model (P : Prog) : pruneFuncs P = pruneModel P := by
+  unfold pruneFuncs pruneModel pruneState
+  dsimp only
+  simp only [Std.Legacy.Range.forIn_eq_forIn_range', Std.Legacy.Range.size]
+  rw [Id.forIn_eq_loopWith (g := pruneRound P P.funcs.size) (h := by
+    intro i s
+    rw [Id.forIn_eq_foldl (g := pruneWorkOne P P.funcs.size) (h := by
+      intro fid r
+      simp only [pruneWorkOne]
+      split <;> rename_i hlt
+      · split <;> rfl
+      · rfl)]
+    simp only [pruneRound]
+    rfl)]
+  simp only [Id.run, bind, pure]
+  simp only [Nat.sub_zero, Nat.add_sub_cancel, Nat.div_one]
+  rw [Id.forIn_eq_foldl (g := pruneKeepOne P (pruneState P).1) (h := by
+    intro fid r
+    simp only [pruneState, pruneKeepOne]
+    split <;> rename_i hc
+    · change ForInStep.yield _ = ForInStep.yield _
+      congr 1
+      exact (if_pos hc).symm
+    · change ForInStep.yield _ = ForInStep.yield _
+      congr 1
+      exact (if_neg hc).symm)]
+  rfl
+
+theorem Passes.mem_pruneCallees {f : Func} {fid : FuncId} :
+    fid ∈ pruneCallees f ↔
+      ∃ b ∈ f.blocks.toList, ∃ ds as, Instr.call ds fid as ∈ b.instrs := by
+  simp only [pruneCallees, List.mem_flatMap, List.mem_filterMap]
+  constructor
+  · rintro ⟨b, hb, i, hi, hcall⟩
+    cases i with
+    | const => simp at hcall
+    | op => simp at hcall
+    | call ds fid' as =>
+        simp only at hcall
+        obtain rfl := Option.some.inj hcall
+        exact ⟨b, hb, ds, as, hi⟩
+  · rintro ⟨b, hb, ds, as, hi⟩
+    exact ⟨b, hb, .call ds fid as, hi, rfl⟩
+
+theorem Passes.wfCheck_callee_lt {f : Func} {n fid : Nat}
+    (hwf : f.wfCheck n = true) (hfid : fid ∈ pruneCallees f) : fid < n := by
+  obtain ⟨b, hb, ds, as, hi⟩ := mem_pruneCallees.mp hfid
+  unfold Func.wfCheck at hwf
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at hwf
+  have hblock := Array.all_eq_true_iff_forall_mem.mp hwf.2 b (by simpa using hb)
+  simp only [Bool.and_eq_true] at hblock
+  have hins := List.all_eq_true.mp hblock.2 (.call ds fid as) hi
+  simpa using hins
+
+def Passes.MarkSub (A B : Array Bool) : Prop :=
+  ∀ (i : Nat), A[i]? = some true → B[i]? = some true
+
+def Passes.UsedAt (A : Array Bool) (i : FuncId) : Prop := A[i]? = some true
+
+theorem Passes.markSub_refl (A : Array Bool) : MarkSub A A := fun _ h => h
+
+theorem Passes.markSub_trans {A B C : Array Bool} (hAB : MarkSub A B)
+    (hBC : MarkSub B C) : MarkSub A C := fun i hi => hBC i (hAB i hi)
+
+theorem Passes.pruneWorkOne_size (P : Prog) (n fid : Nat)
+    (s : MProd (List FuncId) (Array Bool)) :
+    (pruneWorkOne P n fid s).2.size = s.2.size := by
+  simp only [pruneWorkOne]
+  split
+  · split <;> simp
+  · rfl
+
+theorem Passes.pruneWorkOne_mono (P : Prog) (n fid : Nat)
+    (s : MProd (List FuncId) (Array Bool)) :
+    MarkSub s.2 (pruneWorkOne P n fid s).2 := by
+  intro i hi
+  simp only [pruneWorkOne]
+  split
+  · rename_i hfid
+    split
+    · by_cases h : fid = i
+      · subst i
+        have hin : fid < s.2.size := (Array.getElem?_eq_some_iff.mp hi).1
+        simp [Array.set!, hin]
+      · simpa [Array.set!, Array.getElem?_setIfInBounds_ne h] using hi
+    · exact hi
+  · exact hi
+
+theorem Passes.pruneWorkOne_marks (P : Prog) {n fid : Nat}
+    (s : MProd (List FuncId) (Array Bool)) (hfid : fid < n)
+    (hsz : s.2.size = n) :
+    UsedAt (pruneWorkOne P n fid s).2 fid := by
+  simp only [UsedAt, pruneWorkOne, hfid, dite_true]
+  split
+  · simp [Array.set!, hsz, hfid]
+  · rename_i hn
+    have hu : s.2[fid]! = true := by
+      cases h : s.2[fid]! <;> simp_all
+    have hin : fid < s.2.size := by omega
+    rw [Array.getElem?_eq_getElem hin]
+    simpa [Array.getElem!_eq_getD, Array.getD, hin] using hu
+
+theorem Passes.pruneWorkOne_new_origin (P : Prog) {n fid j : Nat}
+    (s : MProd (List FuncId) (Array Bool))
+    (hj : UsedAt (pruneWorkOne P n fid s).2 j) (hnot : ¬ UsedAt s.2 j) :
+    j = fid := by
+  simp only [UsedAt, pruneWorkOne] at hj
+  split at hj
+  · rename_i hfid
+    split at hj
+    · by_contra hne
+      apply hnot
+      unfold UsedAt
+      simpa [Array.set!, Array.getElem?_setIfInBounds_ne (Ne.symm hne)] using hj
+    · exact absurd hj (by simpa [UsedAt] using hnot)
+  · exact absurd hj (by simpa [UsedAt] using hnot)
+
+theorem Passes.pruneWorkOne_emits (P : Prog) {n fid : Nat}
+    (s : MProd (List FuncId) (Array Bool)) (hfid : fid < n)
+    (hsz : s.2.size = n)
+    (hnot : ¬ UsedAt s.2 fid) {g : Func} (hg : P.funcs[fid]? = some g)
+    {callee : FuncId} (hc : callee ∈ pruneCallees g) :
+    callee ∈ (pruneWorkOne P n fid s).1 := by
+  have hfalse : s.2[fid]! = false := by
+    by_contra ht
+    have ht' : s.2[fid]! = true := Bool.eq_true_of_not_eq_false ht
+    apply hnot
+    unfold UsedAt
+    have hin : fid < s.2.size := by omega
+    rw [Array.getElem?_eq_getElem hin]
+    simpa [Array.getElem!_eq_getD, Array.getD, hin] using ht'
+  simp only [pruneWorkOne, hfid, dite_true, Bool.not_eq_true, hfalse,
+    Bool.not_false, if_true]
+  apply List.mem_append_right
+  rw [hg]
+  simpa using hc
+
+def Passes.pruneWorkFrom (P : Prog) (n : Nat) (work : List FuncId)
+    (s : MProd (List FuncId) (Array Bool)) : MProd (List FuncId) (Array Bool) :=
+  work.foldl (fun r fid => pruneWorkOne P n fid r) s
+
+def Passes.pruneWork (P : Prog) (n : Nat) (work : List FuncId)
+    (used : Array Bool) : MProd (List FuncId) (Array Bool) :=
+  pruneWorkFrom P n work ⟨[], used⟩
+
+theorem Passes.pruneWorkFrom_size (P : Prog) (n : Nat) (work : List FuncId)
+    (s : MProd (List FuncId) (Array Bool)) :
+    (pruneWorkFrom P n work s).2.size = s.2.size := by
+  induction work generalizing s with
+  | nil => rfl
+  | cons fid work ih =>
+      simp only [pruneWorkFrom, List.foldl_cons]
+      change (pruneWorkFrom P n work (pruneWorkOne P n fid s)).2.size = s.2.size
+      rw [ih, pruneWorkOne_size]
+
+theorem Passes.pruneWorkFrom_mono (P : Prog) (n : Nat) (work : List FuncId)
+    (s : MProd (List FuncId) (Array Bool)) :
+    MarkSub s.2 (pruneWorkFrom P n work s).2 := by
+  induction work generalizing s with
+  | nil => exact markSub_refl s.2
+  | cons fid work ih =>
+      simp only [pruneWorkFrom, List.foldl_cons]
+      exact markSub_trans (pruneWorkOne_mono P n fid s)
+        (ih (pruneWorkOne P n fid s))
+
+theorem Passes.pruneWorkFrom_marks (P : Prog) {n : Nat} {work : List FuncId}
+    {s : MProd (List FuncId) (Array Bool)} (hsz : s.2.size = n) {fid : FuncId}
+    (hm : fid ∈ work) (hlt : fid < n) :
+    UsedAt (pruneWorkFrom P n work s).2 fid := by
+  induction work generalizing s with
+  | nil => simp at hm
+  | cons j work ih =>
+      simp only [pruneWorkFrom, List.foldl_cons]
+      rcases List.mem_cons.mp hm with rfl | hm
+      · exact (pruneWorkFrom_mono P n work (pruneWorkOne P n fid s)) fid
+          (pruneWorkOne_marks P s hlt hsz)
+      · exact ih (s := pruneWorkOne P n j s)
+          (by rw [pruneWorkOne_size, hsz]) hm
+
+theorem Passes.pruneWorkOne_next_mono (P : Prog) (n fid : Nat)
+    (s : MProd (List FuncId) (Array Bool)) :
+    ∀ x ∈ s.1, x ∈ (pruneWorkOne P n fid s).1 := by
+  intro x hx
+  simp only [pruneWorkOne]
+  split
+  · split
+    · exact List.mem_append_left _ hx
+    · exact hx
+  · exact hx
+
+theorem Passes.pruneWorkFrom_next_mono (P : Prog) (n : Nat) (work : List FuncId)
+    (s : MProd (List FuncId) (Array Bool)) :
+    ∀ x ∈ s.1, x ∈ (pruneWorkFrom P n work s).1 := by
+  induction work generalizing s with
+  | nil => exact fun _ h => h
+  | cons fid work ih =>
+      intro x hx
+      exact ih (pruneWorkOne P n fid s) x (pruneWorkOne_next_mono P n fid s x hx)
+
+theorem Passes.pruneWorkFrom_new_origin (P : Prog) {n : Nat}
+    {work : List FuncId} {s : MProd (List FuncId) (Array Bool)} {j : FuncId}
+    (hj : UsedAt (pruneWorkFrom P n work s).2 j) (hnot : ¬ UsedAt s.2 j) :
+    j ∈ work := by
+  induction work generalizing s with
+  | nil => exact absurd hj hnot
+  | cons fid work ih =>
+      simp only [pruneWorkFrom, List.foldl_cons] at hj
+      by_cases hm : UsedAt (pruneWorkOne P n fid s).2 j
+      · exact List.mem_cons.mpr (Or.inl (pruneWorkOne_new_origin P s hm hnot))
+      · exact List.mem_cons.mpr (Or.inr (ih (s := pruneWorkOne P n fid s) hj hm))
+
+theorem Passes.pruneWorkFrom_emits (P : Prog) {n : Nat}
+    {work : List FuncId} {s : MProd (List FuncId) (Array Bool)}
+    (hsz : s.2.size = n) {fid : FuncId} (hm : fid ∈ work) (hlt : fid < n)
+    (hnot : ¬ UsedAt s.2 fid) {g : Func} (hg : P.funcs[fid]? = some g)
+    {callee : FuncId} (hc : callee ∈ pruneCallees g) :
+    callee ∈ (pruneWorkFrom P n work s).1 := by
+  induction work generalizing s with
+  | nil => simp at hm
+  | cons j work ih =>
+      simp only [pruneWorkFrom, List.foldl_cons]
+      rcases List.mem_cons.mp hm with rfl | hm
+      · exact pruneWorkFrom_next_mono P n work (pruneWorkOne P n fid s) callee
+          (pruneWorkOne_emits P s hlt hsz hnot hg hc)
+      · by_cases hj : UsedAt (pruneWorkOne P n j s).2 fid
+        · have heq : fid = j := pruneWorkOne_new_origin P s hj hnot
+          subst j
+          exact pruneWorkFrom_next_mono P n work (pruneWorkOne P n fid s) callee
+            (pruneWorkOne_emits P s hlt hsz hnot hg hc)
+        · exact ih (s := pruneWorkOne P n j s)
+            (by rw [pruneWorkOne_size, hsz]) hm hj
+
+inductive Passes.PruneReach (P : Prog) : FuncId → Prop
+  | main {fid : FuncId} : fid ∈ pruneCallees P.main → PruneReach P fid
+  | step {src fid : FuncId} {f : Func} : PruneReach P src →
+      P.funcs[src]? = some f → fid ∈ pruneCallees f → PruneReach P fid
+
+def Passes.PruneFrontier (P : Prog) (used : Array Bool)
+    (work : List FuncId) : Prop :=
+  (∀ fid ∈ pruneCallees P.main, UsedAt used fid ∨ fid ∈ work) ∧
+  (∀ src f, UsedAt used src → P.funcs[src]? = some f →
+    ∀ fid ∈ pruneCallees f, UsedAt used fid ∨ fid ∈ work)
+
+def Passes.WorkValid (n : Nat) (work : List FuncId) : Prop :=
+  ∀ fid ∈ work, fid < n
+
+theorem Passes.pruneFrontier_init (P : Prog) :
+    PruneFrontier P (Array.replicate P.funcs.size false) (pruneCallees P.main) := by
+  constructor
+  · exact fun fid h => Or.inr h
+  · intro src f hs
+    unfold UsedAt at hs
+    rcases Array.getElem?_eq_some_iff.mp hs with ⟨hlt, hget⟩
+    simp at hget
+
+theorem Passes.workValid_init {P : Prog} (hwf : P.wfCheck = true) :
+    WorkValid P.funcs.size (pruneCallees P.main) := by
+  intro fid hfid
+  apply wfCheck_callee_lt (f := P.main) (n := P.funcs.size)
+  · simp only [Prog.wfCheck, Bool.and_eq_true] at hwf
+    exact hwf.1.2
+  · exact hfid
+
+theorem Passes.pruneWorkFrom_next_valid {P : Prog} (hwf : P.wfCheck = true)
+    {n : Nat} (hn : n = P.funcs.size) {work : List FuncId}
+    (hwork : WorkValid n work) {s : MProd (List FuncId) (Array Bool)}
+    (hnext : WorkValid n s.1) :
+    WorkValid n (pruneWorkFrom P n work s).1 := by
+  induction work generalizing s with
+  | nil => exact hnext
+  | cons fid work ih =>
+      have hfid : fid < n := hwork fid (by simp)
+      apply ih (s := pruneWorkOne P n fid s)
+      · exact fun j hj => hwork j (by simp [hj])
+      · intro j hj
+        by_cases hf : fid < n
+        · by_cases hu : (!s.2[fid]!) = true
+          · simp only [pruneWorkOne, hf, dite_true, hu, if_true] at hj
+            rcases List.mem_append.mp hj with hj | hj
+            · exact hnext j hj
+            · rcases hget : P.funcs[fid]? with _ | g
+              · simp [hget] at hj
+              · have hjlt := wfCheck_callee_lt (f := g) (n := P.funcs.size)
+                  (progWf_func hwf hget) (by simpa [hget] using hj)
+                simpa [hn] using hjlt
+          · simp only [pruneWorkOne, hf, dite_true, hu, if_false] at hj
+            exact hnext j hj
+        · simp only [pruneWorkOne, hf, dite_false] at hj
+          exact hnext j hj
+
+theorem Passes.pruneFrontier_advance {P : Prog} (hwf : P.wfCheck = true)
+    {used : Array Bool} {work : List FuncId} (hsz : used.size = P.funcs.size)
+    (hvalid : WorkValid P.funcs.size work) (hfront : PruneFrontier P used work) :
+    let r := pruneWork P P.funcs.size work used
+    PruneFrontier P r.2 r.1 := by
+  let r := pruneWork P P.funcs.size work used
+  have hmono : MarkSub used r.2 := by
+    exact pruneWorkFrom_mono P P.funcs.size work ⟨[], used⟩
+  have hmarks : ∀ fid ∈ work, UsedAt r.2 fid := by
+    intro fid hm
+    exact pruneWorkFrom_marks P hsz hm (hvalid fid hm)
+  constructor
+  · intro fid hm
+    rcases hfront.1 fid hm with hu | hw
+    · exact Or.inl (hmono fid hu)
+    · exact Or.inl (hmarks fid hw)
+  · intro src f hsrc hg fid hfid
+    by_cases hold : UsedAt used src
+    · rcases hfront.2 src f hold hg fid hfid with hu | hw
+      · exact Or.inl (hmono fid hu)
+      · exact Or.inl (hmarks fid hw)
+    · have hsrcWork : src ∈ work :=
+        pruneWorkFrom_new_origin P hsrc hold
+      have hsrcLt := hvalid src hsrcWork
+      exact Or.inr (pruneWorkFrom_emits P hsz hsrcWork hsrcLt hold hg hfid)
+
+def Passes.pruneAdvance (P : Prog) (n : Nat)
+    (s : MProd (Array Bool) (List FuncId)) : MProd (Array Bool) (List FuncId) :=
+  let r := pruneWork P n s.2 s.1
+  ⟨r.2, r.1⟩
+
+theorem Passes.pruneRound_eq (P : Prog) (n i : Nat)
+    (s : MProd (Array Bool) (List FuncId)) :
+    pruneRound P n i s =
+      if (pruneAdvance P n s).2.isEmpty then .done (pruneAdvance P n s)
+      else .yield (pruneAdvance P n s) := by
+  rfl
+
+theorem Passes.pruneAdvance_size (P : Prog) (n : Nat)
+    (s : MProd (Array Bool) (List FuncId)) :
+    (pruneAdvance P n s).1.size = s.1.size := by
+  exact pruneWorkFrom_size P n s.2 ⟨[], s.1⟩
+
+theorem Passes.pruneAdvance_mono (P : Prog) (n : Nat)
+    (s : MProd (Array Bool) (List FuncId)) :
+    MarkSub s.1 (pruneAdvance P n s).1 := by
+  exact pruneWorkFrom_mono P n s.2 ⟨[], s.1⟩
+
+theorem Passes.pruneAdvance_empty {P : Prog} {n : Nat}
+    {s : MProd (Array Bool) (List FuncId)} (h : s.2.isEmpty = true) :
+    pruneAdvance P n s = s := by
+  cases s with
+  | mk used work =>
+      have hw : work = [] := List.isEmpty_iff.mp h
+      subst work
+      rfl
+
+theorem Passes.pruneFold_empty {P : Prog} {n : Nat}
+    {s : MProd (Array Bool) (List FuncId)} (h : s.2.isEmpty = true)
+    (l : List Nat) : l.foldl (fun s _ => pruneAdvance P n s) s = s := by
+  induction l generalizing s with
+  | nil => rfl
+  | cons i is ih =>
+      simp only [List.foldl_cons]
+      rw [pruneAdvance_empty h]
+      exact ih h
+
+theorem Passes.loopWith_pruneRound_eq_fold (P : Prog) (n : Nat)
+    (l : List Nat) (s : MProd (Array Bool) (List FuncId)) :
+    loopWith (pruneRound P n) l s =
+      l.foldl (fun s _ => pruneAdvance P n s) s := by
+  induction l generalizing s with
+  | nil => rfl
+  | cons i is ih =>
+      rw [loopWith_cons, pruneRound_eq]
+      by_cases h : (pruneAdvance P n s).2.isEmpty = true
+      · rw [if_pos h]
+        symm
+        exact pruneFold_empty h is
+      · rw [if_neg h, List.foldl_cons]
+        exact ih (pruneAdvance P n s)
+
+def Passes.pruneIter (P : Prog) (n : Nat) :
+    Nat → MProd (Array Bool) (List FuncId) → MProd (Array Bool) (List FuncId)
+  | 0, s => s
+  | k + 1, s => pruneIter P n k (pruneAdvance P n s)
+
+theorem Passes.pruneFold_eq_iter (P : Prog) (n : Nat) (l : List Nat)
+    (s : MProd (Array Bool) (List FuncId)) :
+    l.foldl (fun s _ => pruneAdvance P n s) s = pruneIter P n l.length s := by
+  induction l generalizing s with
+  | nil => rfl
+  | cons i is ih => simpa [pruneIter] using ih (pruneAdvance P n s)
+
+theorem Passes.pruneState_eq_iter (P : Prog) :
+    pruneState P = pruneIter P P.funcs.size (P.funcs.size + 1)
+      ⟨Array.replicate P.funcs.size false, pruneCallees P.main⟩ := by
+  unfold pruneState
+  rw [loopWith_pruneRound_eq_fold, pruneFold_eq_iter]
+  simp [pruneCallees]
+
+def Passes.PruneInv (P : Prog) (s : MProd (Array Bool) (List FuncId)) : Prop :=
+  s.1.size = P.funcs.size ∧ WorkValid P.funcs.size s.2 ∧
+    PruneFrontier P s.1 s.2
+
+theorem Passes.pruneInv_init {P : Prog} (hwf : P.wfCheck = true) :
+    PruneInv P ⟨Array.replicate P.funcs.size false, pruneCallees P.main⟩ := by
+  exact ⟨by simp, workValid_init hwf, pruneFrontier_init P⟩
+
+theorem Passes.pruneInv_advance {P : Prog} (hwf : P.wfCheck = true)
+    {s : MProd (Array Bool) (List FuncId)} (h : PruneInv P s) :
+    PruneInv P (pruneAdvance P P.funcs.size s) := by
+  refine ⟨?_, ?_, ?_⟩
+  · rw [pruneAdvance_size, h.1]
+  · exact pruneWorkFrom_next_valid hwf rfl h.2.1 (fun _ h => by simp at h)
+  · exact pruneFrontier_advance hwf h.1 h.2.1 h.2.2
+
+theorem Passes.pruneReach_lt {P : Prog} (hwf : P.wfCheck = true)
+    {fid : FuncId} (h : PruneReach P fid) : fid < P.funcs.size := by
+  induction h with
+  | main hcall => exact workValid_init hwf _ hcall
+  | @step src fid f _ hg hcall ih =>
+      exact wfCheck_callee_lt (progWf_func hwf hg) hcall
+
+theorem Passes.PruneFrontier.missing {P : Prog} {used : Array Bool}
+    {work : List FuncId} (hfront : PruneFrontier P used work)
+    {fid : FuncId} (hr : PruneReach P fid) (hnot : ¬ UsedAt used fid) :
+    ∃ j ∈ work, ¬ UsedAt used j := by
+  induction hr with
+  | main hcall =>
+      rcases hfront.1 _ hcall with hu | hw
+      · exact absurd hu hnot
+      · exact ⟨_, hw, hnot⟩
+  | @step src fid f hr hg hcall ih =>
+      by_cases hs : UsedAt used src
+      · rcases hfront.2 src f hs hg fid hcall with hu | hw
+        · exact absurd hu hnot
+        · exact ⟨_, hw, hnot⟩
+      · exact ih hs
+
+def Passes.pruneMeasure (n : Nat) (used : Array Bool) : Nat :=
+  ((List.range n).map fun i => if used[i]? = some true then 1 else 0).sum
+
+theorem Passes.pruneMeasure_le (n : Nat) (used : Array Bool) :
+    pruneMeasure n used ≤ n := by
+  unfold pruneMeasure
+  have hle : ((List.range n).map fun i => if used[i]? = some true then 1 else 0).sum ≤
+      ((List.range n).map fun _ => 1).sum :=
+    List.sum_le_sum (fun i hi => by split <;> omega)
+  simpa using hle
+
+theorem Passes.pruneMeasure_mono {n : Nat} {A B : Array Bool}
+    (h : MarkSub A B) : pruneMeasure n A ≤ pruneMeasure n B := by
+  unfold pruneMeasure
+  exact List.sum_le_sum (fun i hi => by
+    by_cases hA : UsedAt A i
+    · have hB : UsedAt B i := h i hA
+      simp [UsedAt] at hA hB ⊢
+      simp [hA, hB]
+    · simp [UsedAt] at hA ⊢
+      simp [hA])
+
+theorem Passes.pruneMeasure_lt {n : Nat} {A B : Array Bool}
+    (hsub : MarkSub A B) {j : Nat} (hj : j < n)
+    (hA : ¬ UsedAt A j) (hB : UsedAt B j) :
+    pruneMeasure n A < pruneMeasure n B := by
+  unfold pruneMeasure
+  apply List.sum_lt_sum
+  · intro i hi
+    by_cases hiA : UsedAt A i
+    · have hiB := hsub i hiA
+      simp [UsedAt] at hiA hiB ⊢
+      simp [hiA, hiB]
+    · simp [UsedAt] at hiA ⊢
+      simp [hiA]
+  · refine ⟨j, List.mem_range.mpr hj, ?_⟩
+    simp [UsedAt] at hA hB ⊢
+    simp [hA, hB]
+
+theorem Passes.pruneIter_mono (P : Prog) (n k : Nat)
+    (s : MProd (Array Bool) (List FuncId)) :
+    MarkSub s.1 (pruneIter P n k s).1 := by
+  induction k generalizing s with
+  | zero => exact markSub_refl s.1
+  | succ k ih =>
+      exact markSub_trans (pruneAdvance_mono P n s)
+        (ih (pruneAdvance P n s))
+
+theorem Passes.pruneIter_measure_growth {P : Prog} (hwf : P.wfCheck = true) :
+    ∀ (k : Nat) (s : MProd (Array Bool) (List FuncId)), PruneInv P s →
+      ∀ {fid : FuncId}, PruneReach P fid →
+        ¬ UsedAt (pruneIter P P.funcs.size k s).1 fid →
+        pruneMeasure P.funcs.size s.1 + k ≤
+          pruneMeasure P.funcs.size (pruneIter P P.funcs.size k s).1 := by
+  intro k
+  induction k with
+  | zero => intro s hinv fid hr hnot; simp [pruneIter]
+  | succ k ih =>
+      intro s hinv fid hr hfinal
+      let s' := pruneAdvance P P.funcs.size s
+      have hinv' : PruneInv P s' := pruneInv_advance hwf hinv
+      have hmonoTail : MarkSub s'.1 (pruneIter P P.funcs.size k s').1 :=
+        pruneIter_mono P P.funcs.size k s'
+      have hnot' : ¬ UsedAt s'.1 fid := fun h => hfinal (hmonoTail fid h)
+      have hmissing := hinv.2.2.missing hr
+        (fun h => hnot' (pruneAdvance_mono P P.funcs.size s fid h))
+      obtain ⟨j, hjw, hjnot⟩ := hmissing
+      have hjlt : j < P.funcs.size := hinv.2.1 j hjw
+      have hjmark : UsedAt s'.1 j :=
+        pruneWorkFrom_marks P hinv.1 hjw hjlt
+      have hstep : pruneMeasure P.funcs.size s.1 < pruneMeasure P.funcs.size s'.1 :=
+        pruneMeasure_lt (pruneAdvance_mono P P.funcs.size s) hjlt hjnot hjmark
+      have htail := ih s' hinv' hr hfinal
+      simp only [pruneIter] at htail ⊢
+      dsimp only [s'] at hstep htail
+      omega
+
+theorem Passes.pruneState_marks {P : Prog} (hwf : P.wfCheck = true)
+    {fid : FuncId} (hr : PruneReach P fid) : UsedAt (pruneState P).1 fid := by
+  rw [pruneState_eq_iter]
+  by_contra hnot
+  have hgrow := pruneIter_measure_growth hwf (P.funcs.size + 1)
+    ⟨Array.replicate P.funcs.size false, pruneCallees P.main⟩
+    (pruneInv_init hwf) hr hnot
+  have hzero : pruneMeasure P.funcs.size (Array.replicate P.funcs.size false) = 0 := by
+    unfold pruneMeasure
+    apply List.sum_eq_zero
+    intro x hx
+    obtain ⟨i, hi, rfl⟩ := List.mem_map.mp hx
+    have hlt := List.mem_range.mp hi
+    simp [Array.getElem?_replicate, hlt]
+  have hbound := pruneMeasure_le P.funcs.size
+    (pruneIter P P.funcs.size (P.funcs.size + 1)
+      ⟨Array.replicate P.funcs.size false, pruneCallees P.main⟩).1
+  rw [hzero] at hgrow
+  omega
+
+theorem Passes.usedAt_getElem! {A : Array Bool} {i : Nat}
+    (h : UsedAt A i) : A[i]! = true := by
+  unfold UsedAt at h
+  obtain ⟨hlt, hget⟩ := Array.getElem?_eq_some_iff.mp h
+  simpa [Array.getElem!_eq_getD, Array.getD, hlt] using hget
+
+def Passes.pruneKeepN (P : Prog) (used : Array Bool) (m : Nat) :
+    MProd (Array Func) (Array (Option FuncId)) :=
+  (List.range m).foldl (fun s fid => pruneKeepOne P used fid s)
+    ⟨#[], Array.replicate P.funcs.size none⟩
+
+theorem Passes.pruneKeep_eq_keepN (P : Prog) (used : Array Bool) :
+    pruneKeep P used = pruneKeepN P used P.funcs.size := by
+  simp [pruneKeep, pruneKeepN, List.range_eq_range']
+
+theorem Passes.pruneKeepN_remap_size (P : Prog) (used : Array Bool) (m : Nat) :
+    (pruneKeepN P used m).2.size = P.funcs.size := by
+  unfold pruneKeepN
+  have key : ∀ (l : List Nat) (s : MProd (Array Func) (Array (Option FuncId))),
+      (l.foldl (fun s fid => pruneKeepOne P used fid s) s).2.size = s.2.size := by
+    intro l
+    induction l with
+    | nil => exact fun _ => rfl
+    | cons fid l ih =>
+        intro s
+        simp only [List.foldl_cons]
+        rw [ih]
+        simp only [pruneKeepOne]
+        split <;> simp
+  rw [key]
+  simp
+
+theorem Passes.pruneKeepN_lookup {P : Prog} {used : Array Bool}
+    (husedSize : used.size = P.funcs.size) :
+    ∀ (m : Nat), m ≤ P.funcs.size → ∀ {fid : FuncId} {g : Func}, fid < m →
+      P.funcs[fid]? = some g → UsedAt used fid →
+      ∃ fid', (pruneKeepN P used m).2[fid]? = some (some fid') ∧
+        (pruneKeepN P used m).1[fid']? = some g := by
+  intro m
+  induction m with
+  | zero =>
+      intro hm fid g hfid hfunc hused
+      exact (Nat.not_lt_zero fid hfid).elim
+  | succ m ih =>
+      intro hm fid g hfid hfunc hused
+      have hmle : m ≤ P.funcs.size := by omega
+      rw [pruneKeepN, List.range_succ, List.foldl_append]
+      simp only [List.foldl_cons, List.foldl_nil]
+      let s := pruneKeepN P used m
+      change ∃ fid', (pruneKeepOne P used m s).2[fid]? = some (some fid') ∧
+        (pruneKeepOne P used m s).1[fid']? = some g
+      have hsRemap : s.2.size = P.funcs.size := pruneKeepN_remap_size P used m
+      rcases Nat.eq_or_lt_of_le (Nat.le_of_lt_succ hfid) with heq | hfidm
+      · subst fid
+        have hmu : used[m]! = true := usedAt_getElem! hused
+        have hmf : P.funcs[m]! = g := by
+          obtain ⟨hlt, hget⟩ := Array.getElem?_eq_some_iff.mp hfunc
+          simpa [Array.getElem!_eq_getD, Array.getD, hlt] using hget
+        refine ⟨s.1.size, ?_, ?_⟩
+        · simp [pruneKeepOne, hmu, Array.set!, hsRemap, show m < P.funcs.size by omega]
+        · simp [pruneKeepOne, hmu, hmf]
+      · have heq : fid ≠ m := Nat.ne_of_lt hfidm
+        obtain ⟨fid', hremap, hkept⟩ := ih hmle
+          (fid := fid) (g := g) hfidm hfunc hused
+        by_cases hmu : used[m]! = true
+        · refine ⟨fid', ?_, ?_⟩
+          · simpa [s, pruneKeepOne, hmu,
+              Array.getElem?_setIfInBounds_ne (Ne.symm heq)] using hremap
+          · rw [show pruneKeepOne P used m s =
+                ⟨s.1.push P.funcs[m]!, s.2.set! m (some s.1.size)⟩ by
+                  simp [pruneKeepOne, hmu]]
+            simp only
+            rw [Array.getElem?_push]
+            have hlt : fid' < s.1.size := (Array.getElem?_eq_some_iff.mp hkept).1
+            rw [if_neg (Nat.ne_of_lt hlt)]
+            exact hkept
+        · refine ⟨fid', ?_, ?_⟩
+          · simpa [s, pruneKeepOne, hmu] using hremap
+          · simpa [s, pruneKeepOne, hmu] using hkept
+
+theorem Passes.pruneKeep_lookup {P : Prog} {used : Array Bool}
+    (husedSize : used.size = P.funcs.size) {fid : FuncId} {g : Func}
+    (hfunc : P.funcs[fid]? = some g) (hused : UsedAt used fid) :
+    ∃ fid', (pruneKeep P used).2[fid]? = some (some fid') ∧
+      (pruneKeep P used).1[fid']? = some g := by
+  rw [pruneKeep_eq_keepN]
+  apply pruneKeepN_lookup husedSize P.funcs.size (le_refl _) _ hfunc hused
+  exact (Array.getElem?_eq_some_iff.mp hfunc).1
+
+theorem Passes.pruneIter_size (P : Prog) (n k : Nat)
+    (s : MProd (Array Bool) (List FuncId)) :
+    (pruneIter P n k s).1.size = s.1.size := by
+  induction k generalizing s with
+  | zero => rfl
+  | succ k ih =>
+      rw [pruneIter, ih, pruneAdvance_size]
+
+theorem Passes.pruneState_used_size (P : Prog) :
+    (pruneState P).1.size = P.funcs.size := by
+  rw [pruneState_eq_iter, pruneIter_size]
+  simp
+
+def Passes.pruneRest (remap : Array (Option FuncId)) (r : Rest) : Rest :=
+  ⟨r.instrs.map (pruneInstr remap), r.term⟩
+
+theorem Passes.pruneFix_params (remap : Array (Option FuncId)) (f : Func) :
+    (pruneFix remap f).params = f.params := rfl
+
+theorem Passes.pruneFix_entry (remap : Array (Option FuncId)) (f : Func) :
+    (pruneFix remap f).entry = f.entry := rfl
+
+theorem Passes.pruneFix_block {remap : Array (Option FuncId)} {f : Func}
+    {i : BlockId} {b : Block} (hb : f.blocks[i]? = some b) :
+    (pruneFix remap f).blocks[i]? = some (pruneBlock remap b) := by
+  simp [pruneFix, hb]
+
+theorem Passes.pruneFix_kept_lookup {remap : Array (Option FuncId)}
+    {kept : Array Func} {fid : FuncId} {g : Func} (hg : kept[fid]? = some g) :
+    (kept.map (pruneFix remap))[fid]? = some (pruneFix remap g) := by
+  simp [hg]
+
+theorem Passes.pruneRemap_value {remap : Array (Option FuncId)}
+    {fid fid' : FuncId} (h : remap[fid]? = some (some fid')) :
+    (remap[fid]?.join).getD fid = fid' := by
+  rw [h]
+  rfl
+
+def Passes.PruneFuncReach (P : Prog) (f : Func) : Prop :=
+  f = P.main ∨ ∃ fid, PruneReach P fid ∧ P.funcs[fid]? = some f
+
+def Passes.PruneRestReach (P : Prog) (r : Rest) : Prop :=
+  ∀ ds fid as, Instr.call ds fid as ∈ r.instrs → PruneReach P fid
+
+theorem Passes.pruneFuncReach_call {P : Prog} {f : Func}
+    (hf : PruneFuncReach P f) {b : Block} (hb : b ∈ f.blocks.toList)
+    {ds : List ValId} {fid : FuncId} {as : List ValId}
+    (hi : Instr.call ds fid as ∈ b.instrs) : PruneReach P fid := by
+  rcases hf with rfl | ⟨src, hsrc, hlookup⟩
+  · exact PruneReach.main (mem_pruneCallees.mpr ⟨b, hb, ds, as, hi⟩)
+  · exact PruneReach.step hsrc hlookup
+      (mem_pruneCallees.mpr ⟨b, hb, ds, as, hi⟩)
+
+theorem Passes.pruneRestReach_block {P : Prog} {f : Func}
+    (hf : PruneFuncReach P f) {b : Block} (hb : b ∈ f.blocks.toList) :
+    PruneRestReach P ⟨b.instrs, b.term⟩ := by
+  intro ds fid as hi
+  exact pruneFuncReach_call hf hb hi
+
+theorem Passes.pruneRestReach_tail {P : Prog} {i : Instr} {is : List Instr}
+    {t : Term} (h : PruneRestReach P ⟨i :: is, t⟩) :
+    PruneRestReach P ⟨is, t⟩ := by
+  intro ds fid as hi
+  exact h ds fid as (by simp [hi])
+
+theorem Passes.pruneRestReach_head {P : Prog} {ds : List ValId}
+    {fid : FuncId} {as : List ValId} {is : List Instr} {t : Term}
+    (h : PruneRestReach P ⟨Instr.call ds fid as :: is, t⟩) :
+    PruneReach P fid := h ds fid as (by simp)
+
+theorem Passes.pruneExec {P : Prog} {used : Array Bool}
+    (husedSize : used.size = P.funcs.size)
+    (hall : ∀ fid, PruneReach P fid → UsedAt used fid)
+    {f : Func} {R : Regs} {st : EvmState} {rest : Rest} {res : FRes}
+    (hexec : Exec (model := model) P f R st rest res) :
+    ∀ (hfunc : PruneFuncReach P f) (hrest : PruneRestReach P rest),
+      let kept := (pruneKeep P used).1
+      let remap := (pruneKeep P used).2
+      let Q : Prog :=
+        { main := pruneFix remap P.main
+          funcs := kept.map (pruneFix remap) }
+      Exec (model := model) Q (pruneFix remap f) R st (pruneRest remap rest) res := by
+  induction hexec with
+  | @const f R st d v is t res htail ih =>
+      intro hfunc hrest
+      exact Exec.const (ih hfunc (pruneRestReach_tail hrest))
+  | @op f R st st' ds yop as args rets is t res hget hop hlen htail ih =>
+      intro hfunc hrest
+      exact Exec.op hget hop hlen (ih hfunc (pruneRestReach_tail hrest))
+  | @opHalt f R st st' ds yop as args is t hget hop =>
+      intro hfunc hrest
+      exact Exec.opHalt hget hop
+  | @call f g R st st' ds as fid args rvals eb is t res hlookup hget hplen heb
+      hbody hlen htail ihbody ih =>
+      intro hfunc hrest
+      have hreach : PruneReach P fid := pruneRestReach_head hrest
+      have hused : UsedAt used fid := hall fid hreach
+      obtain ⟨fid', hremap, hkept⟩ := pruneKeep_lookup husedSize hlookup hused
+      let kept := (pruneKeep P used).1
+      let remap := (pruneKeep P used).2
+      have hnewLookup : (kept.map (pruneFix remap))[fid']? =
+          some (pruneFix remap g) := pruneFix_kept_lookup hkept
+      have hfidValue : (remap[fid]?.join).getD fid = fid' := pruneRemap_value hremap
+      have hcalleeReach : PruneFuncReach P g := Or.inr ⟨fid, hreach, hlookup⟩
+      have hebMem : eb ∈ g.blocks.toList := by
+        simpa using block_mem_of_getElem? heb
+      have hbody' := ihbody hcalleeReach (pruneRestReach_block hcalleeReach hebMem)
+      have htail' := ih hfunc (pruneRestReach_tail hrest)
+      change Exec _ _ _ _
+        ⟨Instr.call ds ((remap[fid]?.join).getD fid) as ::
+          (pruneRest remap ⟨is, t⟩).instrs, t⟩ res
+      rw [hfidValue]
+      exact Exec.call hnewLookup hget (by simpa [pruneFix] using hplen)
+        (pruneFix_block heb) hbody' hlen htail'
+  | @callHalt f g R st st' ds as fid args eb is t hlookup hget hplen heb hbody ihbody =>
+      intro hfunc hrest
+      have hreach : PruneReach P fid := pruneRestReach_head hrest
+      have hused : UsedAt used fid := hall fid hreach
+      obtain ⟨fid', hremap, hkept⟩ := pruneKeep_lookup husedSize hlookup hused
+      let kept := (pruneKeep P used).1
+      let remap := (pruneKeep P used).2
+      have hnewLookup : (kept.map (pruneFix remap))[fid']? =
+          some (pruneFix remap g) := pruneFix_kept_lookup hkept
+      have hfidValue : (remap[fid]?.join).getD fid = fid' := pruneRemap_value hremap
+      have hcalleeReach : PruneFuncReach P g := Or.inr ⟨fid, hreach, hlookup⟩
+      have hebMem : eb ∈ g.blocks.toList := by
+        simpa using block_mem_of_getElem? heb
+      have hbody' := ihbody hcalleeReach (pruneRestReach_block hcalleeReach hebMem)
+      change Exec _ _ _ _
+        ⟨Instr.call ds ((remap[fid]?.join).getD fid) as ::
+          (pruneRest remap ⟨is, t⟩).instrs, t⟩ (.halt st')
+      rw [hfidValue]
+      exact Exec.callHalt hnewLookup hget (by simpa [pruneFix] using hplen)
+        (pruneFix_block heb) hbody'
+  | @jump f R st e tb args res htb hget hplen htail ih =>
+      intro hfunc hrest
+      have htbMem : tb ∈ f.blocks.toList := by simpa using block_mem_of_getElem? htb
+      exact Exec.jump (pruneFix_block htb) hget (by simpa [pruneBlock] using hplen)
+        (ih hfunc (pruneRestReach_block hfunc htbMem))
+  | @branchTrue f R st c v et ef tb args res hc hv htb hget hplen htail ih =>
+      intro hfunc hrest
+      have htbMem : tb ∈ f.blocks.toList := by simpa using block_mem_of_getElem? htb
+      exact Exec.branchTrue hc hv (pruneFix_block htb) hget
+        (by simpa [pruneBlock] using hplen)
+        (ih hfunc (pruneRestReach_block hfunc htbMem))
+  | @branchFalse f R st c et ef tb args res hc htb hget hplen htail ih =>
+      intro hfunc hrest
+      have htbMem : tb ∈ f.blocks.toList := by simpa using block_mem_of_getElem? htb
+      exact Exec.branchFalse hc (pruneFix_block htb) hget
+        (by simpa [pruneBlock] using hplen)
+        (ih hfunc (pruneRestReach_block hfunc htbMem))
+  | @ret f R st xs vals hget =>
+      intro hfunc hrest
+      exact Exec.ret hget
+  | @halt f R st st' yop as args hget hop =>
+      intro hfunc hrest
+      exact Exec.halt hget hop
+
+/-- **Pruning preserves whole-program runs.** The worklist invariant proves
+that every function transitively reachable from `main` is marked within the
+`n + 1` rounds.  `pruneKeep_lookup` then relates each marked old index to its
+new index and original function, and `pruneExec` transports the complete call
+tree while rewriting every call instruction through that remap. -/
 theorem pruneFuncs_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
     (hwf : P.wfCheck = true) (hrun : Run (model := model) P yst0 yst' o) :
     Run (model := model) (Passes.pruneFuncs P) yst0 yst' o := by
-  sorry
+  rw [Passes.pruneFuncs_eq_model]
+  unfold Passes.pruneModel
+  let used := (Passes.pruneState P).1
+  by_cases hallUsed : used.all id = true
+  · change Run (model := model) (if used.all id then P else _) yst0 yst' o
+    rw [if_pos hallUsed]
+    exact hrun
+  · change Run (model := model) (if used.all id then P else _) yst0 yst' o
+    rw [if_neg hallUsed]
+    have husedSize : used.size = P.funcs.size := by
+      exact Passes.pruneState_used_size P
+    have hmarks : ∀ fid, Passes.PruneReach P fid → Passes.UsedAt used fid := by
+      intro fid hr
+      exact Passes.pruneState_marks hwf hr
+    cases hrun with
+    | normal heb hexec =>
+        rename_i eb
+        refine Run.normal (Passes.pruneFix_block heb) ?_
+        have hebMem : eb ∈ P.main.blocks.toList := by
+          simpa using block_mem_of_getElem? heb
+        exact Passes.pruneExec (model := model) husedSize hmarks hexec
+          (Or.inl rfl) (Passes.pruneRestReach_block (Or.inl rfl) hebMem)
+    | halt heb hexec =>
+        rename_i eb
+        refine Run.halt (Passes.pruneFix_block heb) ?_
+        have hebMem : eb ∈ P.main.blocks.toList := by
+          simpa using block_mem_of_getElem? heb
+        exact Passes.pruneExec (model := model) husedSize hmarks hexec
+          (Or.inl rfl) (Passes.pruneRestReach_block (Or.inl rfl) hebMem)
 
 /-- **Inlining soundness**, the statement the top-level proof consumes.
 
-Besides the deferred pruning theorem, the precise remaining inlining bridge is
-a simultaneous `Exec` simulation for one program round.  `inlineFunc_sound`
-keeps the ambient program `P` fixed; a round of `inlineProg` instead replaces
-`main` and every entry of `P.funcs` together.  Consequently its call cases
-cannot use `inlineFunc_sound` sequentially: the new lookup returns the
-transformed callee while the theorem's generated derivation still looks calls
-up in the old array.  The needed strengthened caller-location induction must
-parameterize the callee lookup relation and invoke itself on both `Exec.call`
-subderivations.  After that bridge and `pruneFuncs_sound`, the three-round
-early-return loop is routine. -/
+The precise remaining bridge is a simultaneous `Exec` simulation for one
+program round. `inlineFunc_sound` keeps the ambient program `P` fixed, whereas
+a round replaces `main` and every `P.funcs` entry together. Applying the local
+theorem first and then transporting its result creates a non-structural
+recursion in `Exec.call`: the old body must be inlined and then transported to
+the new ambient array, including recursive self-calls. The existing theorem
+does not expose a call-depth-preservation fact that could justify that
+recursion. A complete proof therefore needs either a strengthened simultaneous
+caller-location induction (ordinary calls use the transformed callee while an
+eliminated call replays the old callee inside the caller), or a depth-indexed
+strengthening of `inlineCaller_exec`/`inlineFunc_sound`. After that bridge,
+`pruneFuncs_sound` and the three-round early-return loop are routine. -/
 theorem inlineProg_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
     (hwf : P.wfCheck = true) (hrun : Run (model := model) P yst0 yst' o) :
     Run (model := model) (Passes.inlineProg P) yst0 yst' o := by
