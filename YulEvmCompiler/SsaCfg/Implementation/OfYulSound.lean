@@ -6459,6 +6459,568 @@ theorem FuncTableComplete.funcOK_of_contents {P : Prog}
     rw [← hdone]
     exact href i g' (hnested i g' hi)
 
+omit model in
+theorem stmtFuncIds_mem {fenv : FMap} {ss : List (Stmt Op)}
+    {n : Ident} {ps rs : List Ident} {body : List (Stmt Op)}
+    (hmem : Stmt.funDef n ps rs body ∈ ss) :
+    (fenv.get n).toList ⊆ stmtFuncIds fenv ss := by
+  induction ss with
+  | nil => simp at hmem
+  | cons st rest ih =>
+    cases st with
+    | funDef n' ps' rs' body' =>
+      simp only [List.mem_cons] at hmem
+      rcases hmem with heq | hmem
+      · cases heq
+        simpa [stmtFuncIds]
+      · exact fun i hi => by
+          simp only [stmtFuncIds, List.mem_append]
+          exact Or.inr (ih hmem hi)
+    | block b | letDecl ps' e | assign ps' e | cond e b
+    | forLoop b e post body' | «break» | «continue» | leave
+    | switch e cases dflt | exprStmt e =>
+      simp only [List.mem_cons] at hmem
+      rcases hmem with heq | hmem
+      · cases heq
+      · simpa only [stmtFuncIds] using ih hmem
+
+theorem stmtFuncIds_length_of_trStmts (fenv : FMap) (env : VMap)
+    (lctx : Option LoopCtx) (rets : Option (List Ident)) (d : Bool) :
+    ∀ (ss : List (Stmt Op)) (s s' : BState) (r : Option VMap),
+      trStmts fenv env lctx rets d ss s = some (r, s') →
+      (stmtFuncIds fenv ss).length = (YulSemantics.hoist yulD ss).length := by
+  intro ss
+  induction ss generalizing env d with
+  | nil => intro s s' r _; rfl
+  | cons st rest ih =>
+    intro s s' r htr
+    cases st with
+    | funDef n ps rs body =>
+      rw [trStmts] at htr
+      obtain ⟨fid, s1, h1, htr⟩ := M.bind_inv htr
+      obtain ⟨g, s2, h2, htr⟩ := M.bind_inv htr
+      obtain ⟨u, s3, h3, htail⟩ := M.bind_inv htr
+      obtain ⟨hget, -⟩ := M.liftO_inv h1
+      have hh := congrArg Nat.succ (ih env d s3 s' r htail)
+      simpa [stmtFuncIds, hget, YulSemantics.hoist, Nat.add_comm] using hh
+    | block b | letDecl ps e | assign ps e | cond e b
+    | forLoop b e post body | «break» | «continue» | leave
+    | switch e cases dflt | exprStmt e =>
+      simp only [stmtFuncIds, YulSemantics.hoist, List.filterMap_cons]
+      rw [trStmts] at htr
+      · split at htr
+        · exact ih env true s s' r htr
+        · obtain ⟨renv, s1, h1, h2⟩ := M.bind_inv htr
+          cases renv with
+          | none => exact ih env true s1 s' r h2
+          | some env' => exact ih env' false s1 s' r h2
+      · intro n ps rs body heq
+        cases heq
+
+theorem allocScope_length {ss : List (Stmt Op)} {s s' : BState}
+    {scope : List (Ident × FuncId)} (h : allocScope ss s = some (scope, s')) :
+    scope.length = (YulSemantics.hoist yulD ss).length := by
+  rw [allocScope] at h
+  have fold : ∀ (l : List (Stmt Op)) (acc : List (Ident × FuncId))
+      (s0 s1 : BState) (out : List (Ident × FuncId)),
+      (l.foldlM (init := acc) fun acc (st : Stmt Op) =>
+        match st with
+        | Stmt.funDef n _ _ _ => do
+            let fid ← allocFunc
+            pure (acc ++ [(n, fid)])
+        | _ => pure acc) s0 = some (out, s1) →
+      out.length = acc.length + (YulSemantics.hoist yulD l).length := by
+    intro l
+    induction l with
+    | nil =>
+      intro acc s0 s1 out hl
+      obtain ⟨rfl, rfl⟩ := M.pure_inv hl
+      simp [YulSemantics.hoist]
+    | cons st rest ih =>
+      intro acc s0 s1 out hl
+      rw [List.foldlM_cons] at hl
+      obtain ⟨acc', t, hst, hrest⟩ := M.bind_inv hl
+      cases st with
+      | funDef n ps rs body =>
+        obtain ⟨fid, u, ha, hp⟩ := M.bind_inv hst
+        obtain ⟨rfl, rfl⟩ := M.pure_inv hp
+        have hh := ih (acc ++ [(n, fid)]) t s1 out hrest
+        simp [YulSemantics.hoist] at *
+        omega
+      | block b | letDecl ps e | assign ps e | cond e b
+      | forLoop b e post body | «break» | «continue» | leave
+      | switch e cases dflt | exprStmt e =>
+        obtain ⟨rfl, rfl⟩ := M.pure_inv hst
+        simpa [YulSemantics.hoist] using ih _ _ _ _ hrest
+  simpa using fold ss [] s s' scope h
+
+theorem allocScope_forall2 {ss : List (Stmt Op)} {s s' : BState}
+    {scope : List (Ident × FuncId)} (h : allocScope ss s = some (scope, s')) :
+    List.Forall₂ (fun (p : Ident × YulSemantics.FDecl yulD)
+      (q : Ident × FuncId) => p.1 = q.1)
+      (YulSemantics.hoist yulD ss) scope := by
+  rw [allocScope] at h
+  have fold : ∀ (l : List (Stmt Op)) (acc : List (Ident × FuncId))
+      (s0 s1 : BState) (out : List (Ident × FuncId)),
+      (l.foldlM (init := acc) fun acc (st : Stmt Op) =>
+        match st with
+        | Stmt.funDef n _ _ _ => do
+            let fid ← allocFunc
+            pure (acc ++ [(n, fid)])
+        | _ => pure acc) s0 = some (out, s1) →
+      ∃ added, out = acc ++ added ∧
+        List.Forall₂ (fun (p : Ident × YulSemantics.FDecl yulD)
+          (q : Ident × FuncId) => p.1 = q.1)
+          (YulSemantics.hoist yulD l) added := by
+    intro l
+    induction l with
+    | nil =>
+      intro acc s0 s1 out hl
+      obtain ⟨rfl, rfl⟩ := M.pure_inv hl
+      exact ⟨[], by simp [YulSemantics.hoist]⟩
+    | cons st rest ih =>
+      intro acc s0 s1 out hl
+      rw [List.foldlM_cons] at hl
+      obtain ⟨acc', t, hst, hrest⟩ := M.bind_inv hl
+      cases st with
+      | funDef n ps rs body =>
+        obtain ⟨fid, u, ha, hp⟩ := M.bind_inv hst
+        obtain ⟨rfl, rfl⟩ := M.pure_inv hp
+        obtain ⟨added, hout, hrel⟩ := ih (acc ++ [(n, fid)]) t s1 out hrest
+        refine ⟨(n, fid) :: added, ?_, ?_⟩
+        · simpa [List.append_assoc] using hout
+        · have hc : List.Forall₂
+              (fun (p : Ident × YulSemantics.FDecl yulD)
+                (q : Ident × FuncId) => p.1 = q.1)
+              ((n, { params := ps, rets := rs, body := body }) ::
+                YulSemantics.hoist yulD rest)
+              ((n, fid) :: added) := .cons rfl hrel
+          simpa [YulSemantics.hoist] using hc
+      | block b | letDecl ps e | assign ps e | cond e b
+      | forLoop b e post body | «break» | «continue» | leave
+      | switch e cases dflt | exprStmt e =>
+        obtain ⟨rfl, rfl⟩ := M.pure_inv hst
+        obtain ⟨added, hout, hrel⟩ := ih _ _ _ _ hrest
+        exact ⟨added, hout, by simpa [YulSemantics.hoist] using hrel⟩
+  obtain ⟨added, hout, hrel⟩ := fold ss [] s s' scope h
+  simpa using hout ▸ hrel
+
+theorem mem_hoist_names {ss : List (Stmt Op)} {n : Ident}
+    (h : n ∈ (YulSemantics.hoist yulD ss).map Prod.fst) :
+    ∃ ps rs body, Stmt.funDef n ps rs body ∈ ss := by
+  induction ss with
+  | nil => simp [YulSemantics.hoist] at h
+  | cons st rest ih =>
+    cases st with
+    | funDef n' ps rs body =>
+      simp only [YulSemantics.hoist, List.filterMap_cons, List.map_cons,
+        List.mem_cons] at h
+      rcases h with h | h
+      · exact ⟨ps, rs, body, by simp [h]⟩
+      · obtain ⟨ps', rs', body', hm⟩ := ih h
+        exact ⟨ps', rs', body', List.mem_cons_of_mem _ hm⟩
+    | block b | letDecl ps e | assign ps e | cond e b
+    | forLoop b e post body | «break» | «continue» | leave
+    | switch e cases dflt | exprStmt e =>
+      have hh : n ∈ (YulSemantics.hoist yulD rest).map Prod.fst := by
+        simpa [YulSemantics.hoist] using h
+      obtain ⟨ps', rs', body', hm⟩ := ih hh
+      exact ⟨ps', rs', body', List.mem_cons_of_mem _ hm⟩
+
+theorem hoist_names_nodup_of_stmtFuncIds (fenv : FMap) (env : VMap)
+    (lctx : Option LoopCtx) (rets : Option (List Ident)) (d : Bool) :
+    ∀ (ss : List (Stmt Op)) (s s' : BState) (r : Option VMap),
+      (stmtFuncIds fenv ss).Nodup →
+      trStmts fenv env lctx rets d ss s = some (r, s') →
+      ((YulSemantics.hoist yulD ss).map Prod.fst).Nodup := by
+  intro ss
+  induction ss generalizing env d with
+  | nil => intro s s' r _ _; simp [YulSemantics.hoist]
+  | cons st rest ih =>
+    intro s s' r hnd htr
+    cases st with
+    | funDef n ps rs body =>
+      rw [trStmts] at htr
+      obtain ⟨fid, s1, h1, htr⟩ := M.bind_inv htr
+      obtain ⟨g, s2, h2, htr⟩ := M.bind_inv htr
+      obtain ⟨u, s3, h3, htail⟩ := M.bind_inv htr
+      obtain ⟨hget, -⟩ := M.liftO_inv h1
+      simp only [stmtFuncIds, hget, Option.toList_some,
+        List.singleton_append] at hnd
+      have hndTail := (List.nodup_cons.mp hnd).2
+      have hnmem : n ∉ (YulSemantics.hoist yulD rest).map Prod.fst := by
+        intro hn
+        obtain ⟨ps', rs', body', hm⟩ := mem_hoist_names hn
+        apply (List.nodup_cons.mp hnd).1
+        apply stmtFuncIds_mem hm
+        simp [hget]
+      simpa [YulSemantics.hoist] using
+        (List.nodup_cons.mpr ⟨hnmem, ih env d s3 s' r hndTail htail⟩)
+    | block b | letDecl ps e | assign ps e | cond e b
+    | forLoop b e post body | «break» | «continue» | leave
+    | switch e cases dflt | exprStmt e =>
+      simp only [stmtFuncIds] at hnd
+      rw [trStmts] at htr
+      · split at htr
+        · simpa [YulSemantics.hoist] using ih env true s s' r hnd htr
+        · obtain ⟨renv, s1, h1, h2⟩ := M.bind_inv htr
+          cases renv with
+          | none => simpa [YulSemantics.hoist] using ih env true s1 s' r hnd h2
+          | some env' =>
+            simpa [YulSemantics.hoist] using ih env' false s1 s' r hnd h2
+      · intro n ps rs body heq
+        cases heq
+
+omit model in
+theorem allocScope_slots {ss : List (Stmt Op)} {s s' : BState}
+    {scope : List (Ident × FuncId)} (h : allocScope ss s = some (scope, s')) :
+    (scope.map Prod.snd).Nodup ∧
+      ∀ i : FuncId, i ∈ scope.map Prod.snd →
+        s.funcs.size ≤ i ∧ s'.funcs[i]? = some none := by
+  rw [allocScope] at h
+  have fold : ∀ (l : List (Stmt Op)) (acc : List (Ident × FuncId))
+      (s0 s1 : BState) (out : List (Ident × FuncId)) (base : Nat),
+      base ≤ s0.funcs.size →
+      (acc.map Prod.snd).Nodup →
+      (∀ i : FuncId, i ∈ acc.map Prod.snd →
+        base ≤ i ∧ s0.funcs[i]? = some none) →
+      (l.foldlM (init := acc) fun acc (st : Stmt Op) =>
+        match st with
+        | Stmt.funDef n _ _ _ => do
+            let fid ← allocFunc
+            pure (acc ++ [(n, fid)])
+        | _ => pure acc) s0 = some (out, s1) →
+      (out.map Prod.snd).Nodup ∧
+        ∀ i : FuncId, i ∈ out.map Prod.snd →
+          base ≤ i ∧ s1.funcs[i]? = some none := by
+    intro l
+    induction l with
+    | nil =>
+      intro acc s0 s1 out base _ hnd hslots hl
+      obtain ⟨rfl, rfl⟩ := M.pure_inv hl
+      exact ⟨hnd, hslots⟩
+    | cons st rest ih =>
+      intro acc s0 s1 out base hbase hnd hslots hl
+      rw [List.foldlM_cons] at hl
+      obtain ⟨acc', t, hst, hrest⟩ := M.bind_inv hl
+      cases st with
+      | funDef n ps rs body =>
+        obtain ⟨fid, u, ha, hp⟩ := M.bind_inv hst
+        rw [M.allocFunc_apply] at ha
+        obtain ⟨rfl, rfl⟩ := M.some_pair_inj ha
+        obtain ⟨rfl, rfl⟩ := M.pure_inv hp
+        have hnot : s0.funcs.size ∉ acc.map Prod.snd := by
+          intro hm
+          exact Nat.ne_of_lt (lt_size_of_getElem? (hslots _ hm).2) rfl
+        have hnd' : ((acc ++ [(n, s0.funcs.size)]).map Prod.snd).Nodup := by
+          rw [List.map_append]
+          simp only [List.map_singleton]
+          rw [List.nodup_append]
+          refine ⟨hnd, by simp, ?_⟩
+          intro a ha b hb
+          simp only [List.mem_singleton] at hb
+          subst b
+          exact fun he => hnot (he ▸ ha)
+        have hslots' : ∀ i : FuncId,
+            i ∈ (acc ++ [(n, s0.funcs.size)]).map Prod.snd →
+            base ≤ i ∧ (s0.funcs.push none)[i]? = some none := by
+          intro i hi
+          simp only [List.map_append, List.map_singleton, List.mem_append,
+            List.mem_singleton] at hi
+          rcases hi with hi | rfl
+          · refine ⟨(hslots i hi).1, ?_⟩
+            rw [Array.getElem?_push, if_neg]
+            · exact (hslots i hi).2
+            · exact Nat.ne_of_lt (lt_size_of_getElem? (hslots i hi).2)
+          · exact ⟨hbase, by simp⟩
+        exact ih (acc ++ [(n, s0.funcs.size)]) _ s1 out base
+          (Nat.le_trans hbase (by simp)) hnd' hslots' hrest
+      | block b | letDecl ps e | assign ps e | cond e b
+      | forLoop b e post body | «break» | «continue» | leave
+      | switch e cases dflt | exprStmt e =>
+        obtain ⟨rfl, rfl⟩ := M.pure_inv hst
+        exact ih _ _ _ _ base hbase hnd hslots hrest
+  exact fold ss [] s s' scope s.funcs.size (Nat.le_refl _) (by simp) (by simp) h
+
+theorem allocScope_stmtFuncIds_perm {fenv : FMap} {env : VMap}
+    {lctx : Option LoopCtx} {rets : Option (List Ident)} {d : Bool}
+    {ss : List (Stmt Op)} {s0 sA s1 done : BState}
+    {scope : List (Ident × FuncId)} {r : Option VMap}
+    {owned : List FuncId}
+    (hbound : ∀ i : FuncId, i ∈ owned → i < s0.funcs.size)
+    (ha : allocScope ss s0 = some (scope, sA))
+    (ht : trStmts (scope :: fenv) env lctx rets d ss sA = some (r, s1))
+    (ho1 : FOwned owned s1 done) :
+    (stmtFuncIds (scope :: fenv) ss).Perm (scope.map Prod.snd) := by
+  let selected := stmtFuncIds (scope :: fenv) ss
+  let slots := scope.map Prod.snd
+  have hraw := allocScope_slots ha
+  have hndSlots : slots.Nodup := hraw.1
+  have hsub : slots ⊆ selected := by
+    intro i hi
+    by_contra hnot
+    have hiA : sA.funcs[i]? = some none := (hraw.2 i hi).2
+    have hskip : ∀ (n : Ident) (ps rs : List Ident)
+        (body : List (Stmt Op)),
+        Stmt.funDef n ps rs body ∈ ss → FMap.get (scope :: fenv) n ≠ some i := by
+      intro n ps rs body hmem hget
+      apply hnot
+      apply stmtFuncIds_mem hmem
+      simp [hget]
+    have hi1 : s1.funcs[i]? = some none :=
+      trStmts_pending_survives (scope :: fenv) env lctx rets d
+        ss sA s1 r i hiA hskip ht
+    have hio : i ∈ owned := (ho1.pending i).mpr hi1
+    exact Nat.not_lt_of_ge (hraw.2 i hi).1 (hbound i hio)
+  have hlen : selected.length = slots.length := by
+    dsimp [selected, slots]
+    rw [List.length_map, stmtFuncIds_length_of_trStmts
+      (scope :: fenv) env lctx rets d ss sA s1 r ht,
+      ← allocScope_length ha]
+  have hs : slots.Subperm selected := hndSlots.subperm hsub
+  exact (hs.perm_of_length_le hlen.le).symm
+
+theorem forall2_hoist_scope_names
+    {as : List (Ident × YulSemantics.FDecl yulD)}
+    {bs : List (Ident × FuncId)}
+    (h : List.Forall₂ (fun p q => p.1 = q.1) as bs) :
+    as.map Prod.fst = bs.map Prod.fst := by
+  induction h with
+  | nil => rfl
+  | cons hh ht ih => simp [hh, ih]
+
+omit model in
+private theorem find?_scope_suffix_nodup {top : List (Ident × FuncId)}
+    {n : Ident} {fid : FuncId} {tl : List (Ident × FuncId)}
+    (hnd : (top.map Prod.fst).Nodup)
+    (hsuf : (n, fid) :: tl <:+ top) :
+    top.find? (fun q => q.1 = n) = some (n, fid) := by
+  obtain ⟨pre, hpre⟩ := hsuf
+  subst hpre
+  have hnp : n ∉ pre.map Prod.fst := by
+    rw [List.map_append, List.map_cons] at hnd
+    exact fun hm => (List.nodup_append.mp hnd).2.2 n hm n (by simp) rfl
+  clear hnd
+  induction pre with
+  | nil => simp
+  | cons a pre ih =>
+    simp only [List.map_cons, List.mem_cons, not_or] at hnp
+    rw [List.cons_append, List.find?_cons_of_neg (by
+      simp only [decide_eq_true_eq]
+      exact fun he => hnp.1 he.symm)]
+    exact ih hnp.2
+
+theorem trStmts_hoist_owned {P : Prog}
+    {doneFuncs : Array (Option Func)}
+    (hfuncs : FuncTableComplete P doneFuncs)
+    {done : BState} (hdone : done.funcs = doneFuncs)
+    {top : List (Ident × FuncId)} {fenv : FMap}
+    (htop : (top.map Prod.fst).Nodup) :
+    ∀ (ss : List (Stmt Op)) (rem : List (Ident × FuncId))
+      (env : VMap) (lctx : Option LoopCtx) (rets : Option (List Ident))
+      (d : Bool) (s s' : BState) (r : Option VMap) (owned : List FuncId),
+      List.Forall₂ (fun (p : Ident × YulSemantics.FDecl yulD)
+        (q : Ident × FuncId) => p.1 = q.1)
+        (YulSemantics.hoist yulD ss) rem →
+      rem <:+ top →
+      (∀ i : FuncId, i ∈ rem.map Prod.snd → s.funcs[i]? = some none) →
+      (∀ i : FuncId, i ∈ rem.map Prod.snd ++ owned →
+        i < s.funcs.size) →
+      (rem.map Prod.snd ++ owned).Nodup →
+      FOwned owned s' done →
+      trStmts (top :: fenv) env lctx rets d ss s = some (r, s') →
+      List.Forall₂
+        (fun (p : Ident × YulSemantics.FDecl yulD) (q : Ident × FuncId) =>
+          p.1 = q.1 ∧ FuncOK (model := model) P (top :: fenv) p.2 q.2)
+        (YulSemantics.hoist yulD ss) rem
+        ∧ FOwned (rem.map Prod.snd ++ owned) s done := by
+  intro ss
+  induction ss with
+  | nil =>
+    intro rem env lctx rets d s s' r owned hrel _ _ _ hnd ho htr
+    cases hrel
+    rw [trStmts] at htr
+    obtain ⟨-, rfl⟩ := M.pure_inv htr
+    exact ⟨List.Forall₂.nil, by simpa using ho⟩
+  | cons st rest ih =>
+    intro rem env lctx rets d s s' r owned hrel hsuf hslots hbound hnd ho htr
+    cases st with
+    | funDef n ps rs body =>
+      cases hrel with
+      | cons hname hrelTail =>
+        rename_i q remTail
+        obtain ⟨qn, qfid⟩ := q
+        dsimp only at hname
+        subst qn
+        have hsufHead : (n, qfid) :: remTail <:+ top := hsuf
+        have hfind := find?_scope_suffix_nodup htop hsufHead
+        have hget : FMap.get (top :: fenv) n = some qfid := by
+          rw [FMap.get, hfind]
+          rfl
+        rw [trStmts] at htr
+        obtain ⟨fid, s1, h1, htr⟩ := M.bind_inv htr
+        obtain ⟨g, s2, h2, htr⟩ := M.bind_inv htr
+        obtain ⟨u, s3, h3, htail⟩ := M.bind_inv htr
+        obtain ⟨hget1, hs1⟩ := M.liftO_inv h1
+        have hfidEq : fid = qfid := Option.some.inj (hget1.symm.trans hget)
+        subst fid
+        subst s1
+        have hp := trFunc_prefix (top :: fenv) ps rs body h2
+        have hq0 : s.funcs[qfid]? = some none := hslots qfid (by simp)
+        have hq2 : s2.funcs[qfid]? = some none := by
+          rw [hp qfid (lt_size_of_getElem? hq0)]
+          exact hq0
+        obtain ⟨hqLt, hs3⟩ := M.fillFunc_inv h3
+        have hndTail : (remTail.map Prod.snd ++ owned).Nodup := by
+          simpa using (List.nodup_cons.mp (by simpa using hnd)).2
+        have hqNot : qfid ∉ remTail.map Prod.snd ++ owned :=
+          (List.nodup_cons.mp (by simpa using hnd)).1
+        have hslotsTail : ∀ i : FuncId, i ∈ remTail.map Prod.snd →
+            s3.funcs[i]? = some none := by
+          intro i hi
+          have hi0 := hslots i (by simp [hi])
+          have hi2 : s2.funcs[i]? = some none := by
+            rw [hp i (lt_size_of_getElem? hi0)]
+            exact hi0
+          have hine : i ≠ qfid := by
+            intro he
+            subst i
+            exact hqNot (List.mem_append_left _ hi)
+          rw [hs3, Array.getElem?_set (h := hqLt), if_neg (Ne.symm hine)]
+          exact hi2
+        have hboundTail : ∀ i : FuncId, i ∈ remTail.map Prod.snd ++ owned →
+            i < s3.funcs.size := by
+          intro i hi
+          have hi0 : i < s.funcs.size := hbound i (by simp [hi])
+          have hsizes : s.funcs.size ≤ s2.funcs.size := hp.size (Nat.le_refl _)
+          rw [hs3]
+          simpa using Nat.lt_of_lt_of_le hi0 hsizes
+        have hsufTail : remTail <:+ top := (List.suffix_cons _ _).trans hsufHead
+        obtain ⟨hrelOut, ho3⟩ := ih remTail env lctx rets d s3 s' r owned
+          hrelTail hsufTail hslotsTail hboundTail hndTail ho htail
+        have hslot3 : s3.funcs[qfid]? = some (some g) := by
+          rw [hs3]
+          simp
+        have hfillContents : FContents s2 s3 :=
+          FContents.of_fillFunc_empty hq2 h3
+        have hok : FuncOK (model := model) P (top :: fenv)
+            { params := ps, rets := rs, body := body } qfid := by
+          apply hfuncs.funcOK_of_contents h2 hslot3
+          · intro i g' hi
+            exact hfillContents i g' hi
+          · exact ho3.filled
+          · exact hdone
+        have ho2 : FOwned (qfid :: (remTail.map Prod.snd ++ owned)) s2 done :=
+          FOwned.back_fillFunc hq2 h3 ho3
+        have hbound2 : ∀ i : FuncId,
+            i ∈ qfid :: (remTail.map Prod.snd ++ owned) → i < s.funcs.size := by
+          intro i hi
+          exact hbound i (by simpa using hi)
+        have ho0 := FOwned.back_fprefix hp hbound2 ho2
+        refine ⟨?_, ?_⟩
+        · exact .cons ⟨rfl, hok⟩ hrelOut
+        · simpa using ho0
+    | block body | letDecl vars val | assign vars e | cond e body
+    | forLoop init e post body | «break» | «continue» | leave
+    | switch e cases dflt | exprStmt e =>
+      simp only [YulSemantics.hoist, List.filterMap_cons] at hrel
+      rw [trStmts] at htr
+      · split at htr
+        · exact ih rem env lctx rets true s s' r owned hrel hsuf hslots
+            hbound hnd ho htr
+        · obtain ⟨renv, s1, h1, h2⟩ := M.bind_inv htr
+          have hp := trStmt_fprefix (top :: fenv) env lctx rets _ s.funcs.size
+            s renv s1 (Nat.le_refl _) h1
+          have hslots1 : ∀ i : FuncId, i ∈ rem.map Prod.snd →
+              s1.funcs[i]? = some none := by
+            intro i hi
+            rw [hp i (hbound i (List.mem_append_left _ hi))]
+            exact hslots i hi
+          have hbound1 : ∀ i : FuncId, i ∈ rem.map Prod.snd ++ owned →
+              i < s1.funcs.size := by
+            intro i hi
+            exact Nat.lt_of_lt_of_le (hbound i hi) (hp.size (Nat.le_refl _))
+          cases renv with
+          | none =>
+            obtain ⟨hrelOut, ho1⟩ := ih rem env lctx rets true s1 s' r owned
+              hrel hsuf hslots1 hbound1 hnd ho h2
+            exact ⟨hrelOut, FOwned.back_fprefix hp hbound ho1⟩
+          | some env' =>
+            obtain ⟨hrelOut, ho1⟩ := ih rem env' lctx rets false s1 s' r owned
+              hrel hsuf hslots1 hbound1 hnd ho h2
+            exact ⟨hrelOut, FOwned.back_fprefix hp hbound ho1⟩
+      · intro n ps rs body heq
+        cases heq
+
+/-- Relate `allocScope`'s fresh reservations to the declarations selected by
+`trStmts`, reconstruct the caller's pending-slot ownership, and realize the
+hoisted semantic scope in the completed function table. -/
+theorem allocScope_bridge {P : Prog}
+    {doneFuncs : Array (Option Func)}
+    (hfuncs : FuncTableComplete P doneFuncs)
+    {funs : YulSemantics.FunEnv yulD} {fenv : FMap}
+    (hfe : FEnvOK (model := model) P funs fenv)
+    {env : VMap} {lctx : Option LoopCtx} {rets : Option (List Ident)} {d : Bool}
+    {ss : List (Stmt Op)} {s0 sA s1 done : BState}
+    {scope : List (Ident × FuncId)} {r : Option VMap}
+    {owned : List FuncId}
+    (hdone : done.funcs = doneFuncs)
+    (hbound : ∀ i : FuncId, i ∈ owned → i < s0.funcs.size)
+    (ho1 : FOwned owned s1 done)
+    (ha : allocScope ss s0 = some (scope, sA))
+    (ht : trStmts (scope :: fenv) env lctx rets d ss sA = some (r, s1)) :
+    FEnvOK (model := model) P (YulSemantics.hoist yulD ss :: funs)
+      (scope :: fenv) ∧ FOwned owned s0 done := by
+  let selected := stmtFuncIds (scope :: fenv) ss
+  let slots := scope.map Prod.snd
+  have hraw := allocScope_slots ha
+  have hperm : selected.Perm slots :=
+    allocScope_stmtFuncIds_perm hbound ha ht ho1
+  have hndSlots : slots.Nodup := hraw.1
+  have hndSelected : (stmtFuncIds (scope :: fenv) ss).Nodup :=
+    hperm.nodup_iff.mpr hndSlots
+  have hndHoist := hoist_names_nodup_of_stmtFuncIds
+    (scope :: fenv) env lctx rets d ss sA s1 r hndSelected ht
+  have hrel := allocScope_forall2 ha
+  have hnames : (YulSemantics.hoist yulD ss).map Prod.fst =
+      scope.map Prod.fst := forall2_hoist_scope_names hrel
+  have hndNames : (scope.map Prod.fst).Nodup := by rwa [← hnames]
+  have hslots : ∀ i : FuncId, i ∈ scope.map Prod.snd →
+      sA.funcs[i]? = some none := fun i hi => (hraw.2 i hi).2
+  have hslotsSelected : ∀ i : FuncId,
+      i ∈ stmtFuncIds (scope :: fenv) ss → sA.funcs[i]? = some none := by
+    intro i hi
+    exact hslots i (hperm.mem_iff.mp hi)
+  have hsizeA : s0.funcs.size ≤ sA.funcs.size := (allocScope_funcsOnly ha).2
+  have hboundSelected : ∀ i : FuncId,
+      i ∈ stmtFuncIds (scope :: fenv) ss ++ owned → i < sA.funcs.size := by
+    intro i hi
+    rcases List.mem_append.mp hi with hi | hi
+    · exact lt_size_of_getElem? (hslotsSelected i hi)
+    · exact Nat.lt_of_lt_of_le (hbound i hi) hsizeA
+  have hndAll : (stmtFuncIds (scope :: fenv) ss ++ owned).Nodup := by
+    rw [List.nodup_append]
+    refine ⟨hndSelected, ho1.nodup, ?_⟩
+    intro i hi j hj heq
+    subst j
+    have hislot : i ∈ slots := hperm.mem_iff.mp hi
+    exact Nat.not_lt_of_ge (hraw.2 i hislot).1 (hbound i hj)
+  have hoSelected := trStmts_owned_back (scope :: fenv) lctx rets ss env d
+    sA s1 done r owned hboundSelected hslotsSelected hndAll ho1 ht
+  have hoScope : FOwned (scope.map Prod.snd ++ owned) sA done :=
+    FOwned.perm (hperm.append_right owned) hoSelected
+  have hboundScope : ∀ i : FuncId, i ∈ scope.map Prod.snd ++ owned →
+      i < sA.funcs.size := by
+    intro i hi
+    exact lt_size_of_getElem? ((hoScope.pending i).mp hi)
+  obtain ⟨hrelOK, -⟩ := trStmts_hoist_owned hfuncs hdone hndNames
+    ss scope env lctx rets d sA s1 r owned hrel (List.suffix_refl _)
+      hslots hboundScope hoScope.nodup ho1 ht
+  have hoAlloc : FOwned (owned ++ scope.map Prod.snd) sA done :=
+    FOwned.perm List.perm_append_comm hoScope
+  have ho0 : FOwned owned s0 done := FOwned.back_allocScope ha hoAlloc
+  exact ⟨FEnvOK.cons hrelOK hfe, ho0⟩
+
 /-! ## The residual obligation
 
 Everything above is unconditional. What remains is the derivation induction
@@ -9680,6 +10242,107 @@ theorem LoopLayout.of_trLoopCore {fenv : FMap} {env : VMap}
     bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
     bodyEnv, sO, h15, htail⟩⟩
 
+omit model in
+/-- The code after the body of a fixed loop layout is closed with respect to
+the function table present at body exit. -/
+theorem LoopLayout.tail_fprefix {fenv : FMap} {env : VMap}
+    {rets : Option (List Ident)} {c : Expr Op} {post body : List (Stmt Op)}
+    {s₀ s₁ : BState} {renv : Option VMap}
+    (layout : LoopLayout fenv env rets c post body s₀ s₁ renv) :
+    FPrefix layout.sO.funcs.size layout.sO s₁ := by
+  rcases layout with
+    ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
+     exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
+     postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
+     bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
+     bodyEnv, sO, h15, htail⟩
+  cases bodyEnv with
+  | none =>
+      change (do
+        moveTo postId
+        let envP := env.setMany (modifiedX env [post, body]) postParams
+        let renvP ← trScope fenv envP none rets post
+        if let some envP' := renvP then
+          let xvP ← edgeArgs envP' (modifiedX env [post, body])
+          sealCur (.jump ⟨hId, xvP⟩)
+        moveTo exitId
+        pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sO =
+          some (renv, s₁) at htail
+      obtain ⟨uP, sP, h16, htail⟩ := M.bind_inv htail
+      obtain ⟨postEnv, sQ, h17, htail⟩ := M.bind_inv htail
+      have pOP : FPrefix sO.funcs.size sO sP := FPrefix.of_moveTo h16
+      have pOQ : FPrefix sO.funcs.size sO sQ := pOP.trans
+        (trScope_fprefix fenv
+          (env.setMany (modifiedX env [post, body]) postParams) none rets post
+          sO.funcs.size sP postEnv sQ (pOP.size (Nat.le_refl _)) h17)
+      cases postEnv with
+      | none =>
+          obtain ⟨uR, sR, h18, htail⟩ := M.bind_inv htail
+          obtain ⟨-, rfl⟩ := M.pure_inv h18
+          obtain ⟨uT, sT, h19, htail⟩ := M.bind_inv htail
+          obtain ⟨-, rfl⟩ := M.pure_inv h19
+          obtain ⟨-, rfl⟩ := M.pure_inv htail
+          exact pOQ
+      | some envP =>
+          obtain ⟨xvP, sR, h18, htail⟩ := M.bind_inv htail
+          obtain ⟨uS, sS, h19, htail⟩ := M.bind_inv htail
+          obtain ⟨uT, sT, h20, htail⟩ := M.bind_inv htail
+          obtain ⟨-, rfl⟩ := M.pure_inv htail
+          exact ((pOQ.trans (FPrefix.of_edgeArgs h18)).trans
+            (FPrefix.of_sealCur h19)).trans (FPrefix.of_moveTo h20)
+  | some envB =>
+      obtain ⟨xvB, sP, h16, htail⟩ := M.bind_inv htail
+      obtain ⟨uQ, sQ, h17, htail⟩ := M.bind_inv htail
+      obtain ⟨uR, sR, h18, htail⟩ := M.bind_inv htail
+      obtain ⟨postEnv, sS, h19, htail⟩ := M.bind_inv htail
+      have pOR : FPrefix sO.funcs.size sO sR :=
+        (((FPrefix.of_edgeArgs h16).trans (FPrefix.of_sealCur h17)).trans
+          (FPrefix.of_moveTo h18))
+      have pOS : FPrefix sO.funcs.size sO sS := pOR.trans
+        (trScope_fprefix fenv
+          (env.setMany (modifiedX env [post, body]) postParams) none rets post
+          sO.funcs.size sR postEnv sS (pOR.size (Nat.le_refl _)) h19)
+      cases postEnv with
+      | none =>
+          obtain ⟨uT, sT, h20, htail⟩ := M.bind_inv htail
+          obtain ⟨-, rfl⟩ := M.pure_inv h20
+          obtain ⟨uU, sU, h21, htail⟩ := M.bind_inv htail
+          obtain ⟨-, rfl⟩ := M.pure_inv h21
+          obtain ⟨-, rfl⟩ := M.pure_inv htail
+          exact pOS
+      | some envP =>
+          obtain ⟨xvP, sT, h20, htail⟩ := M.bind_inv htail
+          obtain ⟨uU, sU, h21, htail⟩ := M.bind_inv htail
+          obtain ⟨uW, sW, h22, htail⟩ := M.bind_inv htail
+          obtain ⟨-, rfl⟩ := M.pure_inv htail
+          exact ((pOS.trans (FPrefix.of_edgeArgs h20)).trans
+            (FPrefix.of_sealCur h21)).trans (FPrefix.of_moveTo h22)
+
+omit model in
+theorem loopPostTail_fprefix {envP : Option VMap} {X : List Ident}
+    {hId exitId : BlockId} {s s' : BState} {out renv : Option VMap}
+    (h : (do
+      if let some envP' := envP then
+        let xvP ← edgeArgs envP' X
+        sealCur (.jump ⟨hId, xvP⟩)
+      moveTo exitId
+      pure out) s = some (renv, s')) :
+    FPrefix s.funcs.size s s' := by
+  cases envP with
+  | none =>
+      obtain ⟨u, s1, h1, h2⟩ := M.bind_inv h
+      obtain ⟨-, rfl⟩ := M.pure_inv h1
+      obtain ⟨u', s2, h2, h3⟩ := M.bind_inv h2
+      obtain ⟨-, rfl⟩ := M.pure_inv h3
+      exact FPrefix.of_moveTo h2
+  | some envP' =>
+      obtain ⟨xv, s1, h1, h⟩ := M.bind_inv h
+      obtain ⟨u, s2, h2, h⟩ := M.bind_inv h
+      obtain ⟨u', s3, h3, h4⟩ := M.bind_inv h
+      obtain ⟨-, rfl⟩ := M.pure_inv h4
+      exact ((FPrefix.of_edgeArgs h1).trans (FPrefix.of_sealCur h2)).trans
+        (FPrefix.of_moveTo h3)
+
 /-- Loop simulation beginning at the already-bound header parameters.  The
 `base` watermark precedes all three reserved parameter vectors, so a normal
 result may bind post/exit parameters while still preserving the caller's
@@ -9724,13 +10387,17 @@ header parameters to different values. -/
 def LOut (P : Prog) (f : Func) (funs : YulSemantics.FunEnv yulD)
     (V : VEnv yulD) (yst : EvmState) (c : Expr Op)
     (post body : List (Stmt Op)) (V' : VEnv yulD) (yst' : EvmState)
-    (o : Outcome) : Prop :=
+    (o : Outcome) (doneFuncs : Array (Option Func)) : Prop :=
   ∀ (fenv : FMap) (env : VMap) (rets : Option (List Ident))
       (s₀ s₁ : BState) (renv : Option VMap) (joins : List BlockId)
       (layout : LoopLayout fenv env rets c post body s₀ s₁ renv),
     FEnvOK (model := model) P funs fenv → env.Unique → CurValid s₀ →
     ProtectedAt joins s₀.fn → Completes f s₁.fn joins → CurPlaced f s₁.fn →
     (renv = none → CurFinal f s₁.fn) →
+    ∀ (done : BState) (owned : List FuncId),
+      done.funcs = doneFuncs →
+      (∀ i : FuncId, i ∈ owned → i < s₀.funcs.size) →
+      FOwned owned s₁ done →
     ∀ (RH : Regs),
       EnvOK (model := model)
           (env.setMany (modifiedX env [post, body]) layout.hParams) V RH →
@@ -9832,6 +10499,10 @@ def Motive (P : Prog) (f : Func) (funs : YulSemantics.FunEnv yulD)
         env.Unique → RegsFresh R s₀.fn → CurValid s₀ →
         ProtectedAt joins s₀.fn → Completes f s₁.fn joins → CurPlaced f s₁.fn →
         (renv = none → CurFinal f s₁.fn) →
+        ∀ (done : BState) (owned : List FuncId),
+        done.funcs = doneFuncs →
+        (∀ i : FuncId, i ∈ owned → i < s₀.funcs.size) →
+        FOwned owned s₁ done →
         trStmt fenv env lctx rets st s₀ = some (renv, s₁) →
         SOut (model := model) P f lctx rets s₀ s₁ R renv V' yst yst' o
   | .stmts ss, .sres V' yst' o =>
@@ -9842,10 +10513,18 @@ def Motive (P : Prog) (f : Func) (funs : YulSemantics.FunEnv yulD)
         env.Unique → RegsFresh R s₀.fn → CurValid s₀ →
         ProtectedAt joins s₀.fn → Completes f s₁.fn joins → CurPlaced f s₁.fn →
         (renv = none → CurFinal f s₁.fn) →
+        ∀ (done : BState) (owned : List FuncId),
+        done.funcs = doneFuncs →
+        (∀ i : FuncId, i ∈ stmtFuncIds fenv ss ++ owned →
+          i < s₀.funcs.size) →
+        (∀ i : FuncId, i ∈ stmtFuncIds fenv ss →
+          s₀.funcs[i]? = some none) →
+        (stmtFuncIds fenv ss ++ owned).Nodup →
+        FOwned owned s₁ done →
         trStmts fenv env lctx rets false ss s₀ = some (renv, s₁) →
         SOut (model := model) P f lctx rets s₀ s₁ R renv V' yst yst' o
   | .loop c post body, .sres V' yst' o =>
-      LOut (model := model) P f funs V yst c post body V' yst' o
+      LOut (model := model) P f funs V yst c post body V' yst' o doneFuncs
   | _, _ => True
 
 set_option maxHeartbeats 1000000 in
@@ -9866,9 +10545,10 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
     (hnz : cv ≠ YulSemantics.Dialect.zero yulD)
     (ho : o = .halt ∨ o = .leave ∨ o = .break) :
     LOut (model := model) P f funs V st c post body Vb stb
-      (if o = .break then .normal else o) := by
+      (if o = .break then .normal else o) doneFuncs := by
     intro fenv env rets s₀ s₁ renv joins layout hfe huniq hvalid hp
-      hcompl hcp _hfin R henv hfr hclean hreb
+      hcompl hcp _hfin done owned hdone hbound hown R henv hfr hclean hreb
+    have hpTail := layout.tail_fprefix
     rcases layout with
       ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
        exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
@@ -10242,12 +10922,22 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
         exact ⟨SGrowsAt.completes_of gOQ hcQ, ⟨_, hsealP⟩,
           fun hbad => nomatch hbad⟩
     have hfrN : RegsFresh RA sN.fn := hfrA.mono aJN.nextVal
+    have hboundN : ∀ i : FuncId, i ∈ owned → i < sN.funcs.size := by
+      intro i hi
+      exact Nat.lt_of_lt_of_le (hbound i hi)
+        (Nat.le_trans a0I.funcsSize
+          (Nat.le_trans (SGrows.of_grows gIJ).funcsSize aJN.funcsSize))
+    have hboundO : ∀ i : FuncId, i ∈ owned → i < sO.funcs.size := by
+      intro i hi
+      exact Nat.lt_of_lt_of_le (hboundN i hi) gbody.funcsSize
+    have hownO : FOwned owned sO done :=
+      FOwned.back_fprefix hpTail hboundO hown
     have hbodySim := ihb fenv
       (env.setMany (modifiedX env [post, body]) hParams) RA
       (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets
       sN sO bodyEnv (exitId :: postId :: joins) hfe
       (henv.mono hleA) (huniq.setMany _ _) hfrN hvalidN hpN
-      tailBody.1 tailBody.2.1 tailBody.2.2 htrB
+      tailBody.1 tailBody.2.1 tailBody.2.2 done owned hdone hboundN hownO htrB
     have hpre := hsimC.trans hsimB
     rcases ho with rfl | rfl | rfl
     · rw [if_neg (by decide)]
@@ -10872,13 +11562,17 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       env.Unique → RegsFresh R s₀.fn → CurValid s₀ → R sv = some cv →
       joinId ∈ joins → ProtectedAt joins s₀.fn →
       Completes f s₁.fn joins → CurFinal f s₁.fn →
+      ∀ (done : BState) (owned : List FuncId),
+      done.funcs = doneFuncs →
+      (∀ i : FuncId, i ∈ owned → i < s₀.funcs.size) →
+      FOwned owned s₁ done →
       trCases fenv env lctx rets sv X joinId cases dflt s₀ = some (u, s₁) →
       CasesOut (model := model) P f lctx rets X joinId s₀ s₁ R V' st1 st2 o := by
   intro cases
   induction cases with
   | nil =>
     intro fenv env R lctx rets sv X joinId s₀ s₁ u joins ihs hfe henv huniq hfr
-      hvalid _hsv _hjmem hp hcompl hfin h
+      hvalid _hsv _hjmem hp hcompl hfin done owned hdone hbound hown h
     cases dflt with
     | none =>
       rw [trCases] at h
@@ -10896,7 +11590,8 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         rw [trStmt, trScope]
         simp [allocScope, trStmts]
       have hout := ihs fenv env R lctx rets s₀ s₀ (some env) joins hfe henv huniq
-        hfr hvalid hp hcompl0 ⟨_, hseal⟩ (by simp) htrs
+        hfr hvalid hp hcompl0 ⟨_, hseal⟩ (by simp) done owned hdone hbound
+        (FOwned.back_fprefix (FPrefix.of_sealCur h2) hbound hown) htrs
       cases o with
       | normal =>
         obtain ⟨env2, R₁, henv2, hle, hbelow, hfr1, henvOK, _huniq2, hsim⟩ := hout
@@ -10924,7 +11619,7 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           trScope_none_cur_nil fenv env lctx rets dbody s₀ s₁ h1
         have hcpA : CurPlaced f s₁.fn := curPlaced_of_curFinal hvalidA hcurA hfin
         have hout := ihs fenv env R lctx rets s₀ s₁ none joins hfe henv huniq hfr
-          hvalid hp hcompl hcpA (fun _ => hfin) h1'
+          hvalid hp hcompl hcpA (fun _ => hfin) done owned hdone hbound hown h1'
         cases o with
         | normal =>
           obtain ⟨env2, R₁, hbad, -⟩ := hout
@@ -10941,7 +11636,11 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         have hsealA : CurOK f sA.fn ⟨[], .jump ⟨joinId, xv⟩⟩ :=
           curOK_of_sealCur hfin h4
         have hout := ihs fenv env R lctx rets s₀ sA (some env') joins hfe henv
-          huniq hfr hvalid hp hcomplA ⟨_, hsealA⟩ (by simp) h1'
+          huniq hfr hvalid hp hcomplA ⟨_, hsealA⟩ (by simp) done owned hdone
+          hbound (FOwned.back_fprefix (FPrefix.of_sealCur h4)
+            (fun i hi => Nat.lt_of_lt_of_le (hbound i hi)
+              (trScope_grows fenv env lctx rets dbody s₀ (some env') sA h1).funcsSize)
+            hown) h1'
         cases o with
         | normal =>
           obtain ⟨env2, R₁, henv2, hle, hbelow, hfr1, henvOK, _huniq2, hsim⟩ := hout
@@ -10956,7 +11655,7 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   | cons pcase rest ih =>
     obtain ⟨lit, cbody⟩ := pcase
     intro fenv env R lctx rets sv X joinId s₀ s₁ u joins ihs hfe henv huniq hfr
-      hvalid hsv hjmem hp hcompl hfin h
+      hvalid hsv hjmem hp hcompl hfin done owned hdone hbound hown h
     rw [trCases] at h
     obtain ⟨t, s1, h1, h⟩ := M.bind_inv h
     obtain ⟨u2, s2, h2, h⟩ := M.bind_inv h
@@ -11032,6 +11731,10 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       simS_id (by rw [hid6, hid5]) (by rw [hcur6, hcur5])
     have gbody : SGrows s8 s9 :=
       trScope_grows fenv env lctx rets cbody s8 renv s9 h9
+    have hbound9 : ∀ i : FuncId, i ∈ owned → i < s9.funcs.size := by
+      intro i hi
+      exact Nat.lt_of_lt_of_le (hbound i hi)
+        (Nat.le_trans a08.funcsSize gbody.funcsSize)
     have hnextLe8 : nextId ≤ s8.fn.blocks.size := Nat.le_of_lt hnextLt8
     have hcur9 : s9.fn.curId = caseId ∨ s8.fn.blocks.size ≤ s9.fn.curId := by
       rcases gbody.curId with hq | hq
@@ -11125,8 +11828,19 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           simS_branchTrue_body hcompl9 hbranch hE1 (by decide) hbb hbp hid8 hcur8
         have hsimPre : SimS (model := model) P f s₀.fn R st1 s8.fn R4 st1 :=
           hsim4.trans (hsim46.trans hsimTrue)
+        have p9a : FPrefix s9.funcs.size s9 sa := FPrefix.of_pure ha
+        have p9b : FPrefix s9.funcs.size sa sb := FPrefix.of_moveTo hb
+        have p9rest : FPrefix s9.funcs.size sb s₁ :=
+          trCases_fprefix fenv env lctx rets sv X joinId rest dflt
+            sv X joinId s9.funcs.size sb u s₁
+              ((p9a.trans p9b).size (Nat.le_refl _)) hc
+        have hown9 : FOwned owned s9 done :=
+          FOwned.back_fprefix ((p9a.trans p9b).trans p9rest) hbound9 hown
         have hout := ihs fenv env R4 lctx rets s8 s9 none (nextId :: joins) hfe
-          (henv.mono hle4) huniq hfr8 hvalid8 hp8 hcompl9 hcp9 (fun _ => hfin9) h9'
+          (henv.mono hle4) huniq hfr8 hvalid8 hp8 hcompl9 hcp9 (fun _ => hfin9)
+          done owned hdone
+          (fun i hi => Nat.lt_of_lt_of_le (hbound i hi) a08.funcsSize)
+          hown9 h9'
         have a91 : SGrowsAt 0 s9 s₁ :=
           ((SGrowsAt.of_pure (N := 0) ha).trans
             (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) hb)).trans
@@ -11183,9 +11897,20 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           simS_branchTrue_body hcompl9 hbranch hE1 (by decide) hbb hbp hid8 hcur8
         have hsimPre : SimS (model := model) P f s₀.fn R st1 s8.fn R4 st1 :=
           hsim4.trans (hsim46.trans hsimTrue)
+        have p9a : FPrefix s9.funcs.size s9 s9 := FPrefix.of_edgeArgs ha
+        have p9b : FPrefix s9.funcs.size s9 sb := FPrefix.of_sealCur hb
+        have p9c : FPrefix s9.funcs.size sb sc := FPrefix.of_moveTo hc
+        have p9rest : FPrefix s9.funcs.size sc s₁ :=
+          trCases_fprefix fenv env lctx rets sv X joinId rest dflt
+            sv X joinId s9.funcs.size sc u s₁
+              (((p9a.trans p9b).trans p9c).size (Nat.le_refl _)) hd
+        have hown9 : FOwned owned s9 done := FOwned.back_fprefix
+          (((p9a.trans p9b).trans p9c).trans p9rest) hbound9 hown
         have hout := ihs fenv env R4 lctx rets s8 s9 (some envB) (nextId :: joins)
           hfe (henv.mono hle4) huniq hfr8 hvalid8 hp8 hcompl9 ⟨_, hseal9⟩ (by simp)
-          h9'
+          done owned hdone
+          (fun i hi => Nat.lt_of_lt_of_le (hbound i hi) a08.funcsSize)
+          hown9 h9'
         have a91 : SGrowsAt 0 s9 s₁ :=
           ((SGrowsAt.of_sealCur (N := 0) hb).trans
             (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) hc)).trans
@@ -11257,7 +11982,10 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
             (SGrowsAt.of_newBlock (N := 0) h6)).trans a6T
         have hres := ih fenv env R4 lctx rets sv X joinId sT s₁ u joins ihs hfe
           (henv.mono hle4) huniq (hfr4.mono a4T.nextVal) hvalidT (hle4 sv cv hsv)
-          hjmem hpT hcompl hfin hT
+          hjmem hpT hcompl hfin done owned hdone
+          (fun i hi => Nat.lt_of_lt_of_le (hbound i hi)
+            (Nat.le_trans a04.funcsSize a4T.funcsSize))
+          hown hT
         obtain ⟨nb, hnb, hnbp⟩ := a6T.params nextId ⟨[], [], .ret []⟩
           (newBlock_target_get h6)
         have hsimBr : SimS (model := model) P f s6.fn R4 st1 sT.fn
@@ -11323,7 +12051,7 @@ theorem sim_switchExec {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     Motive (model := model) P f funs V st doneFuncs hfuncs
       (.stmt (.switch c cases dflt)) (.sres V' st2 o) := by
   intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp
-    hcompl _hcp _hfin htr
+    hcompl _hcp _hfin done owned hdone hbound hown htr
   let X := modifiedX env (cases.map Prod.snd ++ dflt.toList)
   unfold trStmt at htr
   obtain ⟨sv, sA, h1, htr⟩ := M.bind_inv htr
@@ -11405,12 +12133,21 @@ theorem sim_switchExec {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     rcases hi with rfl | hi
     · exact hjoinLt
     · exact hpC.below i hi
+  have hboundD : ∀ i : FuncId, i ∈ owned → i < sD.funcs.size := by
+    intro i hi
+    exact Nat.lt_of_lt_of_le (hbound i hi)
+      (((SGrows.of_grows g0A).trans aAC).trans gCD).funcsSize
+  have hownD : FOwned owned sD done :=
+    FOwned.back_fprefix (FPrefix.of_moveTo h5) hboundD hown
   have hcasesOut := trCases_sim (model := model) (P := P) (f := f) (funs := funs)
     (V := V) (st1 := st1) (st2 := st2) (cv := cv) (o := o) (V' := V')
     (doneFuncs := doneFuncs) (hfuncs := hfuncs) (dflt := dflt)
     cases fenv env RA lctx rets sv X joinId sC sD uD (joinId :: joins)
     ihs hfe (henv.mono hleA) huniq hfrC hvalidC hcv (by simp) hpC' hcomplD hfinD
-    h4X
+    done owned hdone
+    (fun i hi => Nat.lt_of_lt_of_le (hbound i hi)
+      ((SGrows.of_grows g0A).trans aAC).funcsSize)
+    hownD h4X
   have hnv0C : s₀.fn.nextVal ≤ sC.fn.nextVal :=
     Nat.le_trans g0A.nextVal aAC.nextVal
   obtain ⟨hparamLen, hparamRange, hsB⟩ := M.mapM_freshVal_length h2X
@@ -11813,7 +12550,8 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     exact hsim (.halt st2)
       (ihh.1 fenv env R₁ sA s₁ i joins hfe (henv.mono hle) hfrA hpA hcompl hcp h2)
   | @funDef funs V st n ps rs b =>
-    intro fenv env R lctx rets s₀ s₁ renv _joins _ _ _ _ _ _ _ _ _ htr
+    intro fenv env R lctx rets s₀ s₁ renv _joins _ _ _ _ _ _ _ _ _
+      _done _owned _hdone _hbound _hown htr
     rw [trStmt] at htr
     exact absurd htr (by simp [reject])
   -- **Blocked on a motive extension, not on a missing lemma.**  To invoke
@@ -11848,10 +12586,12 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   --     the *pending reservation multiset* (`FOwned`) as well.
   | block hb ihb => sorry
   | @letZero funs V st vars =>
-    intro fenv env R lctx rets s₀ s₁ renv _joins _ henv huniq hfr _ _hp _ _ _ htr
+    intro fenv env R lctx rets s₀ s₁ renv _joins _ henv huniq hfr _ _hp _ _ _
+      _done _owned _hdone _hbound _hown htr
     exact sim_letDecl_none hfr henv huniq htr
   | @letVal funs V st vars e vals st1 he hlen ihe =>
-    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr _ hp hcompl hcp _ htr
+    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr _ hp hcompl hcp _
+      _done _owned _hdone _hbound _hown htr
     have htr0 := htr
     rw [trStmt] at htr
     by_cases hgate : (vars.any env.mem || !decide vars.Nodup) = true
@@ -11867,7 +12607,8 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     exact sim_letDecl_some henv huniq hlen h1
       (ihe.2.1 fenv env R s₀ s₁ vars.length ids joins hfe henv hfr hp hcompl hcp hlen h1) htr0
   | @letHalt funs V st vars e st1 he ihe =>
-    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv _huniq hfr _ hp hcompl hcp _ htr
+    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv _huniq hfr _ hp hcompl hcp _
+      _done _owned _hdone _hbound _hown htr
     rw [trStmt] at htr
     by_cases hgate : (vars.any env.mem || !decide vars.Nodup) = true
     · rw [if_pos hgate] at htr
@@ -11882,7 +12623,8 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     exact SOut.ofExprHalt
       (ihe.2.1 fenv env R s₀ s₁ vars.length ids joins hfe henv hfr hp hcompl hcp h1)
   | @assignVal funs V st vars e vals st1 he hlen ihe =>
-    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr _ hp hcompl hcp _ htr
+    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr _ hp hcompl hcp _
+      _done _owned _hdone _hbound _hown htr
     have htr0 := htr
     rw [trStmt] at htr
     by_cases hgate : (!vars.all env.mem) = true
@@ -11898,7 +12640,8 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     exact sim_assign henv huniq h1
       (ihe.2.1 fenv env R s₀ s₁ vars.length ids joins hfe henv hfr hp hcompl hcp hlen h1) htr0
   | @assignHalt funs V st vars e st1 he ihe =>
-    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv _huniq hfr _ hp hcompl hcp _ htr
+    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv _huniq hfr _ hp hcompl hcp _
+      _done _owned _hdone _hbound _hown htr
     rw [trStmt] at htr
     by_cases hgate : (!vars.all env.mem) = true
     · rw [if_pos hgate] at htr
@@ -11912,8 +12655,16 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     obtain ⟨-, rfl⟩ := M.pure_inv h2
     exact SOut.ofExprHalt
       (ihe.2.1 fenv env R s₀ s₁ vars.length ids joins hfe henv hfr hp hcompl hcp h1)
-  | exprStmt he ihe => exact ihe.2.2 rfl
-  | exprStmtHalt he ihe => exact ihe.2.2
+  | exprStmt he ihe =>
+    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp
+      hcompl hcp hfin _done _owned _hdone _hbound _hown htr
+    exact ihe.2.2 rfl fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq
+      hfr hvalid hp hcompl hcp hfin htr
+  | exprStmtHalt he ihe =>
+    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp
+      hcompl hcp hfin _done _owned _hdone _hbound _hown htr
+    exact ihe.2.2 fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq
+      hfr hvalid hp hcompl hcp hfin htr
   -- The selected-body path below now threads the reserved join through the
   -- protected `Completes` refinement, including the non-fresh move back to the
   -- join.  Its diverting (`bodyEnv = none`) half is fully discharged.  The
@@ -11921,7 +12672,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   -- remaining hole: preservation of pre-body unbound reserved parameter ids.
   | @ifTrue funs V st c body cv st1 V' st2 o hc hnz hbody ihc ihb =>
     intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp
-      hcompl hcp _ htr
+      hcompl hcp _ done owned hdone hbound hown htr
     rw [trStmt] at htr
     obtain ⟨cvId, sA, h1, htr⟩ := M.bind_inv htr
     obtain ⟨xvals, sB, h2, htr⟩ := M.bind_inv htr
@@ -12067,9 +12818,18 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       have hsimB := simS_branchTrue_body (model := model) (P := P) (f := f)
         (st := st1)
         hcomplH hbranch hcv hnz' hbb hbp hcurG hcurG0
+      have hboundG : ∀ i : FuncId, i ∈ owned → i < sG.funcs.size := by
+        intro i hi
+        exact Nat.lt_of_lt_of_le (hbound i hi)
+          (Nat.le_trans (SGrows.of_grows g0A).funcsSize aAG.funcsSize)
+      have hboundH : ∀ i : FuncId, i ∈ owned → i < sH.funcs.size := by
+        intro i hi
+        exact Nat.lt_of_lt_of_le (hboundG i hi) gbody.funcsSize
+      have hownH : FOwned owned sH done :=
+        FOwned.back_fprefix (FPrefix.of_moveTo hb) hboundH hown
       have hbodySim := ihb fenv env RA lctx rets sG sH none (joinId :: joins)
         hfe (henv.mono hleA) huniq hfrG hvalidG hpG hcomplH hcpH
-        (fun _ => hfinH) h8'
+        (fun _ => hfinH) done owned hdone hboundG hownH h8'
       have hpre := hsimC.trans hsimB
       have hnext : sH.fn.nextVal ≤ s₁.fn.nextVal := by
         rw [M.moveTo_apply] at hb
@@ -12183,9 +12943,19 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj h7).2
       have hsimB := simS_branchTrue_body (model := model) (P := P) (f := f)
         (st := st1) hcomplH hbranch hcv hnz' hbb hbp hcurG hcurG0
+      have hboundG : ∀ i : FuncId, i ∈ owned → i < sG.funcs.size := by
+        intro i hi
+        exact Nat.lt_of_lt_of_le (hbound i hi)
+          (Nat.le_trans (SGrows.of_grows g0A).funcsSize aAG.funcsSize)
+      have hboundH : ∀ i : FuncId, i ∈ owned → i < sH.funcs.size := by
+        intro i hi
+        exact Nat.lt_of_lt_of_le (hboundG i hi) gbody.funcsSize
+      have hownH : FOwned owned sH done := FOwned.back_fprefix
+        (((FPrefix.of_edgeArgs h9).trans (FPrefix.of_sealCur h10)).trans
+          (FPrefix.of_moveTo h11)) hboundH hown
       have hbodySim := ihb fenv env RA lctx rets sG sH (some envB)
         (joinId :: joins) hfe (henv.mono hleA) huniq hfrG hvalidG hpG
-        hcomplH hcpH (by simp) h8'
+        hcomplH hcpH (by simp) done owned hdone hboundG hownH h8'
       have hpre := hsimC.trans hsimB
       cases o with
       | halt =>
@@ -12299,7 +13069,8 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           hfrJ, henvJ, huniq.setMany _ _,
           hpre.trans (hsimBody.trans hsimJ)⟩
   | @ifFalse funs V st c body cv st1 hc hz ihc =>
-    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp hcompl hcp _ htr
+    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp hcompl hcp _
+      _done _owned _hdone _hbound _hown htr
     rw [trStmt] at htr
     obtain ⟨cvId, sA, h1, htr⟩ := M.bind_inv htr
     obtain ⟨xvals, sB, h2, htr⟩ := M.bind_inv htr
@@ -12479,7 +13250,8 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       hbelowA.trans (hbelowJ.mono g0A.nextVal), hfrJ, henvJ,
       huniq.setMany _ _, hsimC.trans hsimJ⟩
   | @ifHalt funs V st c body st1 hc ihc =>
-    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv _huniq hfr hvalid hp hcompl hcp _ htr
+    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv _huniq hfr hvalid hp hcompl hcp _
+      _done _owned _hdone _hbound _hown htr
     rw [trStmt] at htr
     obtain ⟨cv, sA, h1, htr⟩ := M.bind_inv htr
     obtain ⟨xvals, sB, h2, htr⟩ := M.bind_inv htr
@@ -12560,7 +13332,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   | switchExec hc hsel ihc ihs => exact sim_switchExec hsel ihc ihs
   | @switchHalt funs V st c cases dflt st1 hc ihc =>
     intro fenv env R lctx rets s₀ s₁ renv joins hfe henv _huniq hfr hvalid hp
-      hcompl _hcp _ htr
+      hcompl _hcp _ _done _owned _hdone _hbound _hown htr
     let X := modifiedX env (cases.map Prod.snd ++ dflt.toList)
     unfold trStmt at htr
     obtain ⟨sv, sA, h1, htr⟩ := M.bind_inv htr
@@ -12683,7 +13455,8 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   | forLoop hinit hloop ihi ihl => sorry
   | forInitHalt hinit ihi => sorry
   | @«break» funs V st =>
-    intro fenv env R lctx rets s₀ s₁ renv _joins _ henv _huniq hfr _ _hp _ _ hfin htr
+    intro fenv env R lctx rets s₀ s₁ renv _joins _ henv _huniq hfr _ _hp _ _ hfin
+      _done _owned _hdone _hbound _hown htr
     cases lctx with
     | none => rw [trStmt] at htr; exact absurd htr (by simp [reject])
     | some l =>
@@ -12696,7 +13469,8 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         (hfr.mono (trStmt_grows fenv env (some l) rets .break s₀ renv s₁ htr).nextVal)
         (hfin hnone) htr
   | @«continue» funs V st =>
-    intro fenv env R lctx rets s₀ s₁ renv _joins _ henv _huniq hfr _ _hp _ _ hfin htr
+    intro fenv env R lctx rets s₀ s₁ renv _joins _ henv _huniq hfr _ _hp _ _ hfin
+      _done _owned _hdone _hbound _hown htr
     cases lctx with
     | none => rw [trStmt] at htr; exact absurd htr (by simp [reject])
     | some l =>
@@ -12709,7 +13483,8 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         (hfr.mono (trStmt_grows fenv env (some l) rets .continue s₀ renv s₁ htr).nextVal)
         (hfin hnone) htr
   | @leave funs V st =>
-    intro fenv env R lctx rets s₀ s₁ renv _joins _ henv _huniq hfr _ _hp _ _ hfin htr
+    intro fenv env R lctx rets s₀ s₁ renv _joins _ henv _huniq hfr _ _hp _ _ hfin
+      _done _owned _hdone _hbound _hown htr
     cases rets with
     | none => rw [trStmt] at htr; exact absurd htr (by simp [reject])
     | some rs =>
@@ -12720,10 +13495,12 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         exact (M.pure_inv h3).1
       exact sim_leave henv (hfin hnone) htr
   | @seqNil funs V st =>
-    intro fenv env R lctx rets s₀ s₁ renv _joins _ henv huniq hfr _ _hp _ _ _ htr
+    intro fenv env R lctx rets s₀ s₁ renv _joins _ henv huniq hfr _ _hp _ _ _
+      _done _owned _hdone _hbound _hslots _hnd _hown htr
     exact sim_seqNil henv huniq hfr htr
   | @seqCons funs V st s rest V1 st1 V2 st2 o h1 h2 ih1 ih2 =>
-    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp hcompl hcp hfin htr
+    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp hcompl hcp hfin
+      done owned hdone hbound hslots hnd hown htr
     cases s with
     | funDef n ps rs body =>
       cases h1
@@ -12731,25 +13508,70 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       obtain ⟨fid, sA, ha, htr⟩ := M.bind_inv htr
       obtain ⟨g, sB, hb, htr⟩ := M.bind_inv htr
       obtain ⟨u, sC, hc, htail⟩ := M.bind_inv htr
-      have hfnA : sA.fn = s₀.fn := congrArg BState.fn (M.liftO_inv ha).2
-      have hfnB : sB.fn = sA.fn := (trFunc_grows fenv ps rs body sA g sB hb).1
+      obtain ⟨hget, hsA⟩ := M.liftO_inv ha
+      subst sA
+      simp only [stmtFuncIds, hget, Option.toList_some,
+        List.singleton_append] at hbound hslots hnd
+      have hpFunc := trFunc_prefix fenv ps rs body hb
+      have hfid0 : s₀.funcs[fid]? = some none := hslots fid (by simp)
+      have hfidB : sB.funcs[fid]? = some none := by
+        rw [hpFunc fid (lt_size_of_getElem? hfid0)]
+        exact hfid0
+      obtain ⟨hfidLt, hsC⟩ := M.fillFunc_inv hc
+      have hndTail : (stmtFuncIds fenv rest ++ owned).Nodup :=
+        (List.nodup_cons.mp hnd).2
+      have hfidNot : fid ∉ stmtFuncIds fenv rest ++ owned :=
+        (List.nodup_cons.mp hnd).1
+      have hslotsTail : ∀ i : FuncId, i ∈ stmtFuncIds fenv rest →
+          sC.funcs[i]? = some none := by
+        intro i hi
+        have hi0 := hslots i (by simp [hi])
+        have hiB : sB.funcs[i]? = some none := by
+          rw [hpFunc i (lt_size_of_getElem? hi0)]
+          exact hi0
+        have hine : i ≠ fid := by
+          intro he
+          subst i
+          exact hfidNot (List.mem_append_left _ hi)
+        rw [hsC, Array.getElem?_set (h := hfidLt), if_neg (Ne.symm hine)]
+        exact hiB
+      have hboundTail : ∀ i : FuncId,
+          i ∈ stmtFuncIds fenv rest ++ owned → i < sC.funcs.size := by
+        intro i hi
+        have hi0 := hbound i (by simp [hi])
+        rw [hsC]
+        simpa using Nat.lt_of_lt_of_le hi0 (hpFunc.size (Nat.le_refl _))
+      have hfnB : sB.fn = s₀.fn := (trFunc_grows fenv ps rs body s₀ g sB hb).1
       have hfnC : sC.fn = sB.fn := by rw [(M.fillFunc_inv hc).choose_spec]
-      have hfn : sC.fn = s₀.fn := hfnC.trans (hfnB.trans hfnA)
+      have hfn : sC.fn = s₀.fn := hfnC.trans hfnB
       have hvalidC : CurValid sC := by rw [CurValid, hfn]; exact hvalid
       have hpC : ProtectedAt joins sC.fn := by simpa only [hfn] using hp
       simpa only [SOut, hfn] using
         (ih2 fenv env R lctx rets sC s₁ renv joins hfe henv
           huniq (by simpa only [hfn] using hfr) hvalidC
-          hpC hcompl hcp hfin htail)
+          hpC hcompl hcp hfin done owned hdone hboundTail hslotsTail
+          hndTail hown htail)
     | block body | letDecl vars val | assign vars e | cond e body
     | forLoop init e post body | «break» | «continue» | leave
     | switch e cases dflt | exprStmt e =>
+      simp only [stmtFuncIds] at hbound hslots hnd
       obtain ⟨renvA, sA, hhead, htail⟩ := trStmts_false_cons_inv
         (by intros; simp) htr
       have hvalidA : CurValid sA := (trStmt_cur hvalid hhead).1
       have hgHead : SGrows s₀ sA :=
         trStmt_grows fenv env lctx rets _ s₀ renvA sA hhead
       have hpA : ProtectedAt joins sA.fn := ProtectedAt.forward hp hgHead
+      have hpHead := trStmt_fprefix fenv env lctx rets _ s₀.funcs.size
+        s₀ renvA sA (Nat.le_refl _) hhead
+      have hboundA : ∀ i : FuncId,
+          i ∈ stmtFuncIds fenv rest ++ owned → i < sA.funcs.size := by
+        intro i hi
+        exact Nat.lt_of_lt_of_le (hbound i hi) (hpHead.size (Nat.le_refl _))
+      have hslotsA : ∀ i : FuncId, i ∈ stmtFuncIds fenv rest →
+          sA.funcs[i]? = some none := by
+        intro i hi
+        rw [hpHead i (hbound i (List.mem_append_left _ hi))]
+        exact hslots i hi
       cases renvA with
       | none =>
         obtain ⟨hrenv, hfn⟩ := trStmts_true_fn fenv env lctx rets rest sA s₁ renv htail
@@ -12757,10 +13579,13 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         have hcpA : CurPlaced f sA.fn := by simpa only [hfn] using hcp
         have hfinA : CurFinal f sA.fn := by
           simpa only [hfn] using hfin hrenv
+        have hownA := trStmts_owned_back fenv lctx rets rest env true
+          sA s₁ done renv owned hboundA hslotsA hnd hown htail
         obtain ⟨envA, R₁, hbad, -⟩ :=
           ih1 fenv env R lctx rets s₀ sA none joins hfe henv huniq hfr hvalid hp
             hcomplA hcpA
-            (fun _ => hfinA) hhead
+            (fun _ => hfinA) done (stmtFuncIds fenv rest ++ owned) hdone
+            hbound hownA hhead
         exact absurd hbad (by simp)
       | some envA =>
         have hgTail : SGrows sA s₁ :=
@@ -12768,15 +13593,20 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         have hcomplA : Completes f sA.fn joins := SGrowsAt.completes_of hgTail hcompl
         have hcpA : CurPlaced f sA.fn :=
           trStmts_curPlaced_back hvalidA hpA hcompl hcp hfin htail
+        have hownA := trStmts_owned_back fenv lctx rets rest envA false
+          sA s₁ done renv owned hboundA hslotsA hnd hown htail
         refine SOut.seq hgHead.nextVal
           (ih1 fenv env R lctx rets s₀ sA (some envA) joins hfe henv huniq hfr
             hvalid hp hcomplA hcpA
-            (by simp) hhead) ?_
+            (by simp) done (stmtFuncIds fenv rest ++ owned) hdone hbound
+            hownA hhead) ?_
         intro R₁ hle hfrA henvA huniqA
         exact ih2 fenv envA R₁ lctx rets sA s₁ renv joins hfe henvA huniqA hfrA
-          hvalidA hpA hcompl hcp hfin htail
+          hvalidA hpA hcompl hcp hfin done owned hdone hboundA hslotsA hnd
+          hown htail
   | @seqStop funs V st s rest V1 st1 o h1 hne ih1 =>
-    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp hcompl hcp hfin htr
+    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp hcompl hcp hfin
+      done owned hdone hbound hslots hnd hown htr
     cases s with
     | funDef n ps rs body =>
       cases h1
@@ -12784,35 +13614,53 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     | block body | letDecl vars val | assign vars e | cond e body
     | forLoop init e post body | «break» | «continue» | leave
     | switch e cases dflt | exprStmt e =>
+      simp only [stmtFuncIds] at hbound hslots hnd
       obtain ⟨renvA, sA, hhead, htail⟩ := trStmts_false_cons_inv
         (by intros; simp) htr
       have hvalidA : CurValid sA := (trStmt_cur hvalid hhead).1
       have hgHead : SGrows s₀ sA :=
         trStmt_grows fenv env lctx rets _ s₀ renvA sA hhead
       have hpA : ProtectedAt joins sA.fn := ProtectedAt.forward hp hgHead
+      have hpHead := trStmt_fprefix fenv env lctx rets _ s₀.funcs.size
+        s₀ renvA sA (Nat.le_refl _) hhead
+      have hboundA : ∀ i : FuncId,
+          i ∈ stmtFuncIds fenv rest ++ owned → i < sA.funcs.size := by
+        intro i hi
+        exact Nat.lt_of_lt_of_le (hbound i hi) (hpHead.size (Nat.le_refl _))
+      have hslotsA : ∀ i : FuncId, i ∈ stmtFuncIds fenv rest →
+          sA.funcs[i]? = some none := by
+        intro i hi
+        rw [hpHead i (hbound i (List.mem_append_left _ hi))]
+        exact hslots i hi
       cases renvA with
       | none =>
         obtain ⟨hrenv, hfn⟩ := trStmts_true_fn fenv env lctx rets rest sA s₁ renv htail
         have hcomplA : Completes f sA.fn joins := by simpa only [hfn] using hcompl
         have hcpA : CurPlaced f sA.fn := by simpa only [hfn] using hcp
         have hfinA : CurFinal f sA.fn := by simpa only [hfn] using hfin hrenv
+        have hownA := trStmts_owned_back fenv lctx rets rest env true
+          sA s₁ done renv owned hboundA hslotsA hnd hown htail
         exact SOut.of_nonNormal hne (by rw [hfn])
           (ih1 fenv env R lctx rets s₀ sA none joins hfe henv huniq hfr hvalid hp
             hcomplA hcpA
-            (fun _ => hfinA) hhead)
+            (fun _ => hfinA) done (stmtFuncIds fenv rest ++ owned) hdone
+            hbound hownA hhead)
       | some envA =>
         have hgTail : SGrows sA s₁ :=
           trStmts_grows fenv envA lctx rets false rest sA renv s₁ htail
         have hcomplA : Completes f sA.fn joins := SGrowsAt.completes_of hgTail hcompl
         have hcpA : CurPlaced f sA.fn :=
           trStmts_curPlaced_back hvalidA hpA hcompl hcp hfin htail
+        have hownA := trStmts_owned_back fenv lctx rets rest envA false
+          sA s₁ done renv owned hboundA hslotsA hnd hown htail
         exact SOut.of_nonNormal hne hgTail.nextVal
           (ih1 fenv env R lctx rets s₀ sA (some envA) joins hfe henv huniq hfr
             hvalid hp hcomplA hcpA
-            (by simp) hhead)
+            (by simp) done (stmtFuncIds fenv rest ++ owned) hdone hbound
+            hownA hhead)
   | @loopDone funs V st c post body cv st1 hc hz ihc =>
     intro fenv env rets s₀ s₁ renv joins layout hfe huniq hvalid hp
-      hcompl hcp _hfin R henv hfr hclean hreb
+      hcompl hcp _hfin done owned hdone hbound hown R henv hfr hclean hreb
     rcases layout with
       ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
        exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
@@ -13222,7 +14070,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           hrenv
   | @loopCondHalt funs V st c post body st1 hc ihc =>
     intro fenv env rets s₀ s₁ renv joins layout hfe huniq hvalid hp
-      hcompl hcp _hfin R henv hfr hclean hreb
+      hcompl hcp _hfin done owned hdone hbound hown R henv hfr hclean hreb
     rcases layout with
       ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
        exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
@@ -13449,7 +14297,8 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   | @loopStep funs V st c post body cv st1 Vb stb ob Vp stp Vend stend o
       hc hnz hbodyStep hob hpost hloop ihc ihb ihpost ihloop =>
     intro fenv env rets s₀ s₁ renv joins layout hfe huniq hvalid hp
-      hcompl hcp _hfin R henv hfr hclean hreb
+      hcompl hcp _hfin done owned hdone hbound hown R henv hfr hclean hreb
+    have hpTail := layout.tail_fprefix
     rcases layout with
       ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
        exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
@@ -13823,12 +14672,22 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         exact ⟨SGrowsAt.completes_of gOQ hcQ, ⟨_, hsealP⟩,
           fun hbad => nomatch hbad⟩
     have hfrN : RegsFresh RA sN.fn := hfrA.mono aJN.nextVal
+    have hboundN : ∀ i : FuncId, i ∈ owned → i < sN.funcs.size := by
+      intro i hi
+      exact Nat.lt_of_lt_of_le (hbound i hi)
+        (Nat.le_trans a0I.funcsSize
+          (Nat.le_trans (SGrows.of_grows gIJ).funcsSize aJN.funcsSize))
+    have hboundO : ∀ i : FuncId, i ∈ owned → i < sO.funcs.size := by
+      intro i hi
+      exact Nat.lt_of_lt_of_le (hboundN i hi) gbody.funcsSize
+    have hownO : FOwned owned sO done :=
+      FOwned.back_fprefix hpTail hboundO hown
     have hbodySim := ihb fenv
       (env.setMany (modifiedX env [post, body]) hParams) RA
       (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets
       sN sO bodyEnv (exitId :: postId :: joins) hfe
       (henv.mono hleA) (huniq.setMany _ _) hfrN hvalidN hpN
-      tailBody.1 tailBody.2.1 tailBody.2.2 htrB
+      tailBody.1 tailBody.2.1 tailBody.2.2 done owned hdone hboundN hownO htrB
     have hpre := hsimC.trans hsimB
     have gGNall : SGrowsAt 0 sG sN :=
       (((((SGrowsAt.of_sealCur (N := 0) h8).trans
@@ -13984,12 +14843,23 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           hcurPost0 (by rw [hlenP]; exact hvals.length_eq) hcont
       rw [VMap.setMany_overwrite env (modifiedX_nodup huniq _)
         hlenH.symm hlenP.symm] at henvP
+      have hboundPost : ∀ i : FuncId, i ∈ owned → i < sPost.funcs.size := by
+        intro i hi
+        exact Nat.lt_of_lt_of_le (hbound i hi)
+          (Nat.le_trans a0G.funcsSize gGPost.funcsSize)
+      have hboundPostOut : ∀ i : FuncId,
+          i ∈ owned → i < sPostOut.funcs.size := by
+        intro i hi
+        exact Nat.lt_of_lt_of_le (hboundPost i hi) gpost.funcsSize
+      have hownPostOut : FOwned owned sPostOut done :=
+        FOwned.back_fprefix (loopPostTail_fprefix htailPost)
+          hboundPostOut hown
       obtain ⟨envP, RPost, hpostEnv, hlePost, hbelowPost, hfrPost,
           henvPost, huniqPost, hsimPost⟩ := ihpost fenv
         (env.setMany (modifiedX env [post, body]) postParams) RP none rets
         sPost sPostOut postEnv (exitId :: joins) hfe henvP
         (huniq.setMany _ _) hfrP hvalidPost hpPost hcomplPostOut hcpPostOut
-        hfinPostOut htrPostStmt
+        hfinPostOut done owned hdone hboundPost hownPostOut htrPostStmt
       obtain rfl : postEnv = some envP := hpostEnv
       change (do
         let xvP ← edgeArgs envP (modifiedX env [post, body])
@@ -14085,7 +14955,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
          bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
          bodyEnv, sO, h15, htr⟩
       have hrec := ihloop fenv env rets s₀ sExit renv joins layout'
-        hfe huniq hvalid hp hcompl hcp _hfin
+        hfe huniq hvalid hp hcompl hcp _hfin done owned hdone hbound hown
         RNext henvNext hfrNext hcleanNext hrebNext
       have cI : SGrowsAt 0 sC sI :=
         (((((SGrowsAt.of_grows (N := 0) gCD).trans
@@ -14295,7 +15165,8 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   | @loopPostHalt funs V st c post body cv st1 Vb stb ob Vp stp
       hc hnz hbodyStep hob hpost ihc ihb ihpost =>
     intro fenv env rets s₀ s₁ renv joins layout hfe huniq hvalid hp
-      hcompl hcp _hfin R henv hfr hclean hreb
+      hcompl hcp _hfin done owned hdone hbound hown R henv hfr hclean hreb
+    have hpTail := layout.tail_fprefix
     rcases layout with
       ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
        exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
@@ -14669,12 +15540,22 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         exact ⟨SGrowsAt.completes_of gOQ hcQ, ⟨_, hsealP⟩,
           fun hbad => nomatch hbad⟩
     have hfrN : RegsFresh RA sN.fn := hfrA.mono aJN.nextVal
+    have hboundN : ∀ i : FuncId, i ∈ owned → i < sN.funcs.size := by
+      intro i hi
+      exact Nat.lt_of_lt_of_le (hbound i hi)
+        (Nat.le_trans a0I.funcsSize
+          (Nat.le_trans (SGrows.of_grows gIJ).funcsSize aJN.funcsSize))
+    have hboundO : ∀ i : FuncId, i ∈ owned → i < sO.funcs.size := by
+      intro i hi
+      exact Nat.lt_of_lt_of_le (hboundN i hi) gbody.funcsSize
+    have hownO : FOwned owned sO done :=
+      FOwned.back_fprefix hpTail hboundO hown
     have hbodySim := ihb fenv
       (env.setMany (modifiedX env [post, body]) hParams) RA
       (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets
       sN sO bodyEnv (exitId :: postId :: joins) hfe
       (henv.mono hleA) (huniq.setMany _ _) hfrN hvalidN hpN
-      tailBody.1 tailBody.2.1 tailBody.2.2 htrB
+      tailBody.1 tailBody.2.1 tailBody.2.2 done owned hdone hboundN hownO htrB
     have hpre := hsimC.trans hsimB
     have gGNall : SGrowsAt 0 sG sN :=
       (((((SGrowsAt.of_sealCur (N := 0) h8).trans
@@ -14830,11 +15711,22 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           hcurPost0 (by rw [hlenP]; exact hvals.length_eq) hcont
       rw [VMap.setMany_overwrite env (modifiedX_nodup huniq _)
         hlenH.symm hlenP.symm] at henvP
+      have hboundPost : ∀ i : FuncId, i ∈ owned → i < sPost.funcs.size := by
+        intro i hi
+        exact Nat.lt_of_lt_of_le (hbound i hi)
+          (Nat.le_trans a0G.funcsSize gGPost.funcsSize)
+      have hboundPostOut : ∀ i : FuncId,
+          i ∈ owned → i < sPostOut.funcs.size := by
+        intro i hi
+        exact Nat.lt_of_lt_of_le (hboundPost i hi) gpost.funcsSize
+      have hownPostOut : FOwned owned sPostOut done :=
+        FOwned.back_fprefix (loopPostTail_fprefix htailPost)
+          hboundPostOut hown
       have hpostHalt := ihpost fenv
         (env.setMany (modifiedX env [post, body]) postParams) RP none rets
         sPost sPostOut postEnv (exitId :: joins) hfe henvP
         (huniq.setMany _ _) hfrP hvalidPost hpPost hcomplPostOut hcpPostOut
-        hfinPostOut htrPostStmt
+        hfinPostOut done owned hdone hboundPost hownPostOut htrPostStmt
       exact hsimP (.halt stp) hpostHalt
     rcases hob with rfl | rfl
     · obtain ⟨envB, RB, hbodyEnv, hleB, hbelowB, hfrB, henvB, _huniqB,
@@ -14985,15 +15877,15 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   -- `sim_loopBodyNonNormal` also closes break: it consumes the body's
   -- `JumpTo exitId`, binds `exitParams`, and rebuilds `EnvOK` at the exit.
   | @loopBreak funs V st c post body cv st1 Vb stb _hc hnz hb ihc ihb =>
-    change LOut (model := model) P f funs V st c post body Vb stb .normal
+    change LOut (model := model) P f funs V st c post body Vb stb .normal doneFuncs
     simpa using sim_loopBodyNonNormal hfuncs ihc hb ihb hnz
       (Or.inr (Or.inr rfl))
   | @loopLeave funs V st c post body cv st1 Vb stb _hc hnz hb ihc ihb =>
-    change LOut (model := model) P f funs V st c post body Vb stb .leave
+    change LOut (model := model) P f funs V st c post body Vb stb .leave doneFuncs
     simpa using sim_loopBodyNonNormal hfuncs ihc hb ihb hnz
       (Or.inr (Or.inl rfl))
   | @loopBodyHalt funs V st c post body cv st1 Vb stb _hc hnz hb ihc ihb =>
-    change LOut (model := model) P f funs V st c post body Vb stb .halt
+    change LOut (model := model) P f funs V st c post body Vb stb .halt doneFuncs
     simpa using sim_loopBodyNonNormal hfuncs ihc hb ihb hnz (Or.inl rfl)
 
 /-!
@@ -15120,12 +16012,17 @@ theorem trScope_sim_of_fresh {P : Prog} {f : Func}
     (hcompl : Completes f s₁.fn)
     (hcp : CurPlaced f s₁.fn)
     (hfin : renv = none → CurFinal f s₁.fn)
+    (hfuncsEq : s₁.funcs = doneFuncs)
     (htr : trScope fenv env lctx rets body s₀ = some (renv, s₁))
     (hstep : YulSemantics.ExecStmt yulD funs V yst (.block body) V' yst' o) :
     SOut (model := model) P f lctx rets s₀ s₁ R renv V' yst yst' o :=
+  have hown : FOwned [] s₁ s₁ := by
+    have ho := hfuncs.owned_nil
+    rw [← hfuncsEq] at ho
+    exact ⟨ho.nodup, ho.pending, ho.filled⟩
   sim (f := f) hfuncs hstep fenv env R lctx rets s₀ s₁ renv [] hfe henv huniq
-    hfr hvalid (ProtectedAt.nil s₀.fn) hcompl hcp hfin
-    (by rw [trStmt]; exact htr)
+    hfr hvalid (ProtectedAt.nil s₀.fn) hcompl hcp hfin s₁ [] hfuncsEq
+    (by simp) hown (by rw [trStmt]; exact htr)
 
 /-! ## Construction soundness -/
 
@@ -15193,10 +16090,14 @@ theorem ofBlock_sound' {prog : YulSemantics.Block Op} {P : Prog}
   rw [YulSemantics.Run] at hrun
   cases hrun with
   | @block _ _ _ _ Vb stb o hstmts =>
+    have hmapM' : FuncTableComplete P s₁.funcs := by
+      rw [← hfuncs]
+      exact hmapM
     have hsim := trScope_sim_of_fresh (model := model) (P := P) (f := P.main)
       (funs := []) (fenv := []) (V := []) (env := []) (R := Regs.empty)
-      hmapM .nil EnvOK.nil VMap.unique_nil hfresh0 hvalid0 hext hplace.1
-      hplace.2 htr (.block hstmts)
+      (doneFuncs := s₁.funcs)
+      hmapM' .nil EnvOK.nil VMap.unique_nil hfresh0 hvalid0 hext hplace.1
+      hplace.2 rfl htr (.block hstmts)
     -- `initBState` is the entry block, empty and current
     have hentryCur : ∀ rest, CurOK P.main initBState.fn rest
         → ∃ eb, P.main.blocks[P.main.entry]? = some eb
