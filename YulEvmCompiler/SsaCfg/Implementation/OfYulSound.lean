@@ -1735,6 +1735,147 @@ theorem of_grows {s s' : BState} (h : Grows s s') : FRefines s s' :=
 
 end FRefines
 
+/-! ### Function-table prefix frames
+
+`trFunc` may recursively allocate and fill nested functions while an enclosing
+scope still has reserved `none` slots.  Size growth alone does not say that
+those caller-owned slots survived.  `FPrefix N s s'` records the stronger
+frame fact: every slot below the allocation watermark `N` is byte-for-byte
+unchanged (including a pending `none`). -/
+
+def FPrefix (N : Nat) (s s' : BState) : Prop :=
+  ∀ i : FuncId, i < N → s'.funcs[i]? = s.funcs[i]?
+
+namespace FPrefix
+
+theorem rfl' (N : Nat) (s : BState) : FPrefix N s s := fun _ _ => rfl
+
+theorem trans {N : Nat} {s₀ s₁ s₂ : BState}
+    (h₀₁ : FPrefix N s₀ s₁) (h₁₂ : FPrefix N s₁ s₂) :
+    FPrefix N s₀ s₂ := by
+  intro i hi
+  exact (h₁₂ i hi).trans (h₀₁ i hi)
+
+/-- A theorem at a larger watermark implies one at every smaller watermark. -/
+theorem mono {N N' : Nat} (hN : N' ≤ N) {s s' : BState}
+    (h : FPrefix N s s') : FPrefix N' s s' :=
+  fun i hi => h i (Nat.lt_of_lt_of_le hi hN)
+
+theorem size {N : Nat} {s s' : BState} (h : FPrefix N s s')
+    (hN : N ≤ s.funcs.size) : N ≤ s'.funcs.size := by
+  cases N with
+  | zero => exact Nat.zero_le _
+  | succ n =>
+      by_contra hn
+      have hinLt : n < s.funcs.size := Nat.lt_of_succ_le hN
+      have houtLe : s'.funcs.size ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_not_ge hn)
+      have hin := Array.getElem?_eq_getElem (xs := s.funcs) (i := n) hinLt
+      have hout := Array.getElem?_eq_none (xs := s'.funcs) (i := n) houtLe
+      have heq := h n (Nat.lt_succ_self n)
+      rw [hout, hin] at heq
+      cases heq
+
+theorem of_funcs_eq {N : Nat} {s s' : BState} (h : s'.funcs = s.funcs) :
+    FPrefix N s s' := by
+  intro i hi
+  rw [h]
+
+theorem of_grows {N : Nat} {s s' : BState} (h : Grows s s') :
+    FPrefix N s s' := of_funcs_eq h.funcs.symm
+
+theorem of_allocFunc {N : Nat} {s s' : BState} {fid : FuncId}
+    (hN : N ≤ s.funcs.size) (h : allocFunc s = some (fid, s')) :
+    FPrefix N s s' := by
+  rw [M.allocFunc_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  intro i hi
+  rw [Array.getElem?_push, if_neg
+    (Nat.ne_of_lt (Nat.lt_of_lt_of_le hi hN))]
+
+theorem of_fillFunc {N : Nat} {s s' : BState} {fid : FuncId} {g : Func}
+    {u : Unit} (hfid : N ≤ fid) (h : fillFunc fid g s = some (u, s')) :
+    FPrefix N s s' := by
+  obtain ⟨hlt, rfl⟩ := M.fillFunc_inv h
+  intro i hi
+  rw [Array.getElem?_set (h := hlt), if_neg
+    (Nat.ne_of_gt (Nat.lt_of_lt_of_le hi hfid))]
+
+theorem of_getFn {N : Nat} {s s' : BState} {fn : FnState}
+    (h : getFn s = some (fn, s')) : FPrefix N s s' := by
+  rw [M.getFn_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  exact rfl' _ _
+
+theorem of_setFn {N : Nat} {s s' : BState} {fn : FnState} {u : Unit}
+    (h : setFn fn s = some (u, s')) : FPrefix N s s' := by
+  rw [M.setFn_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  exact rfl' _ _
+
+theorem of_newBlock {N : Nat} {s s' : BState} {ps : List ValId}
+    {bid : BlockId} (h : newBlock ps s = some (bid, s')) : FPrefix N s s' := by
+  rw [M.newBlock_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  exact rfl' _ _
+
+theorem of_moveTo {N : Nat} {s s' : BState} {bid : BlockId} {u : Unit}
+    (h : moveTo bid s = some (u, s')) : FPrefix N s s' := by
+  rw [M.moveTo_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  exact rfl' _ _
+
+theorem of_sealCur {N : Nat} {s s' : BState} {t : Term} {u : Unit}
+    (h : sealCur t s = some (u, s')) : FPrefix N s s' := by
+  obtain ⟨b, hb, rfl⟩ := M.sealCur_inv h
+  exact rfl' _ _
+
+theorem of_liftO {N : Nat} {α : Type} {o : Option α} {a : α}
+    {s s' : BState} (h : (liftO o : M α) s = some (a, s')) :
+    FPrefix N s s' := by
+  obtain ⟨-, rfl⟩ := M.liftO_inv h
+  exact rfl' _ _
+
+theorem of_pure {N : Nat} {α : Type} {a b : α} {s s' : BState}
+    (h : (pure a : M α) s = some (b, s')) : FPrefix N s s' := by
+  obtain ⟨-, rfl⟩ := M.pure_inv h
+  exact rfl' _ _
+
+theorem of_edgeArgs {N : Nat} {env : VMap} {xs : List Ident}
+    {s s' : BState} {ids : List ValId}
+    (h : edgeArgs env xs s = some (ids, s')) : FPrefix N s s' :=
+  of_liftO h
+
+end FPrefix
+
+namespace FOwned
+
+/-- Pull ownership backward across a closed nested translation which frames
+the caller's whole input table.  The explicit bound says that `owned` really
+belongs to the caller rather than to slots freshly allocated by the nested
+translation; this is the small side condition the simulation motive must
+thread together with `FOwned`. -/
+theorem back_fprefix {owned : List FuncId} {s s' done : BState}
+    (hp : FPrefix s.funcs.size s s')
+    (hbound : ∀ i : FuncId, i ∈ owned → i < s.funcs.size)
+    (ho : FOwned owned s' done) : FOwned owned s done := by
+  refine ⟨ho.nodup, ?_, ?_⟩
+  · intro i
+    constructor
+    · intro hi
+      rw [← hp i (hbound i hi)]
+      exact (ho.pending i).mp hi
+    · intro hi
+      have hlt : i < s.funcs.size := lt_size_of_getElem? hi
+      apply (ho.pending i).mpr
+      rwa [hp i hlt]
+  · intro i g hi
+    have hlt : i < s.funcs.size := lt_size_of_getElem? hi
+    apply ho.filled i g
+    rwa [hp i hlt]
+
+end FOwned
+
 namespace SGrowsAt
 
 theorem toFGrows {N : Nat} {s s' : BState} (h : SGrowsAt N s s') : FGrows s s' :=
@@ -2154,6 +2295,169 @@ theorem allocScope_frefines {ss : List (Stmt Op)} {s s' : BState}
         obtain ⟨acc, t, hst, hrest⟩ := M.bind_inv hl
         exact (step init st s₀ t acc hst).trans (ih acc t s₁ out hrest)
   exact fold ss [] s s' sc h
+
+/-- `allocScope` appends reservations and therefore preserves the complete
+pre-existing function-table prefix, including pending `none` entries. -/
+theorem allocScope_fprefix {ss : List (Stmt Op)} {s s' : BState}
+    {sc : List (Ident × FuncId)} (h : allocScope ss s = some (sc, s')) :
+    FPrefix s.funcs.size s s' := by
+  rw [allocScope] at h
+  have step : ∀ (acc : List (Ident × FuncId)) (st : Stmt Op)
+      (s₀ s₁ : BState) (acc' : List (Ident × FuncId)),
+      (match st with
+        | Stmt.funDef n _ _ _ => do
+            let fid ← allocFunc
+            pure (acc ++ [(n, fid)])
+        | _ => pure acc) s₀ = some (acc', s₁) →
+        FPrefix s₀.funcs.size s₀ s₁ ∧ FGrows s₀ s₁ := by
+    intro acc st s₀ s₁ acc' hs
+    cases st with
+    | funDef n ps rs body =>
+        obtain ⟨fid, t, ha, hp⟩ := M.bind_inv hs
+        obtain ⟨-, rfl⟩ := M.pure_inv hp
+        exact ⟨FPrefix.of_allocFunc (Nat.le_refl _) ha,
+          (SGrowsAt.of_allocFunc (N := 0) ha).funcsSize⟩
+    | block body | letDecl vars val | assign vars e | cond e body
+    | forLoop init e post body | «break» | «continue» | leave
+    | switch e cases dflt | exprStmt e =>
+        obtain ⟨-, rfl⟩ := M.pure_inv hs
+        exact ⟨FPrefix.rfl' _ _, FGrows.rfl' _⟩
+  have fold : ∀ (l : List (Stmt Op)) (init : List (Ident × FuncId))
+      (s₀ s₁ : BState) (out : List (Ident × FuncId)),
+      (l.foldlM (init := init) fun acc (st : Stmt Op) =>
+        match st with
+        | Stmt.funDef n _ _ _ => do
+            let fid ← allocFunc
+            pure (acc ++ [(n, fid)])
+        | _ => pure acc) s₀ = some (out, s₁) →
+        FPrefix s₀.funcs.size s₀ s₁ := by
+    intro l
+    induction l with
+    | nil =>
+        intro init s₀ s₁ out hl
+        obtain ⟨-, rfl⟩ := M.pure_inv hl
+        exact FPrefix.rfl' _ _
+    | cons st rest ih =>
+        intro init s₀ s₁ out hl
+        rw [List.foldlM_cons] at hl
+        obtain ⟨acc, t, hst, hrest⟩ := M.bind_inv hl
+        have hs := step init st s₀ t acc hst
+        exact hs.1.trans ((ih acc t s₁ out hrest).mono hs.2)
+  exact fold ss [] s s' sc h
+
+/-- Every `funDef` translated by a statement walk must resolve to a slot at or
+above `N`.  This is the side condition under which that walk frames the prefix
+below `N`. -/
+def FillAbove (N : Nat) (fenv : FMap) (ss : List (Stmt Op)) : Prop :=
+  ∀ (n : Ident) (ps rs : List Ident) (body : List (Stmt Op)),
+    Stmt.funDef n ps rs body ∈ ss →
+    ∀ fid : FuncId, fenv.get n = some fid → N ≤ fid
+
+/-- The scope allocated for `ss` covers every declaration in `ss`, and every
+slot selected through that innermost scope is freshly appended after the
+input table.  Duplicate names are harmless here: `FMap.get` may select the
+first duplicate, but all duplicates satisfy the same lower bound. -/
+theorem allocScope_fillAbove {ss : List (Stmt Op)} {s s' : BState}
+    {scope : List (Ident × FuncId)}
+    (h : allocScope ss s = some (scope, s')) (outer : FMap) :
+    FillAbove s.funcs.size (scope :: outer) ss := by
+  rw [allocScope] at h
+  have fold : ∀ (l : List (Stmt Op)) (init : List (Ident × FuncId))
+      (s₀ s₁ : BState) (out : List (Ident × FuncId)) (N : Nat),
+      N ≤ s₀.funcs.size →
+      (l.foldlM (init := init) fun acc (st : Stmt Op) =>
+        match st with
+        | Stmt.funDef n _ _ _ => do
+            let fid ← allocFunc
+            pure (acc ++ [(n, fid)])
+        | _ => pure acc) s₀ = some (out, s₁) →
+      (∀ p ∈ out, p ∈ init ∨ N ≤ p.2) ∧
+      (∀ p ∈ init, p ∈ out) ∧
+      (∀ (n : Ident) (ps rs : List Ident) (body : List (Stmt Op)),
+        Stmt.funDef n ps rs body ∈ l → ∃ fid, (n, fid) ∈ out) := by
+    intro l
+    induction l with
+    | nil =>
+        intro baseAcc s₀ s₁ out N hN hl
+        obtain ⟨rfl, rfl⟩ := M.pure_inv hl
+        exact ⟨fun p hp => Or.inl hp, fun p hp => hp, by simp⟩
+    | cons st rest ih =>
+        intro baseAcc s₀ s₁ out N hN hl
+        rw [List.foldlM_cons] at hl
+        obtain ⟨acc, t, hst, hrest⟩ := M.bind_inv hl
+        have nonfun
+            (hnf : ∀ (n : Ident) (ps rs : List Ident) (body : List (Stmt Op)),
+              Stmt.funDef n ps rs body ≠ st)
+            (hpure : (pure baseAcc : M (List (Ident × FuncId))) s₀ =
+              some (acc, t)) :
+            (∀ p ∈ out, p ∈ baseAcc ∨ N ≤ p.2) ∧
+            (∀ p ∈ baseAcc, p ∈ out) ∧
+            (∀ (n : Ident) (ps rs : List Ident) (body : List (Stmt Op)),
+              Stmt.funDef n ps rs body ∈ st :: rest →
+                ∃ fid, (n, fid) ∈ out) := by
+          obtain ⟨rfl, rfl⟩ := M.pure_inv hpure
+          obtain ⟨hout, hkeep, hcov⟩ :=
+            ih acc t s₁ out N hN hrest
+          refine ⟨hout, hkeep, ?_⟩
+          intro n ps rs body hm
+          simp only [List.mem_cons] at hm
+          exact hm.elim (fun heq => absurd heq (hnf n ps rs body))
+            (hcov n ps rs body)
+        cases st with
+        | funDef n ps rs body =>
+            obtain ⟨fid, u, ha, hp⟩ := M.bind_inv hst
+            rw [M.allocFunc_apply] at ha
+            obtain ⟨rfl, rfl⟩ := M.some_pair_inj ha
+            obtain ⟨rfl, rfl⟩ := M.pure_inv hp
+            have ht : N ≤ ({ s₀ with funcs := s₀.funcs.push none }).funcs.size := by
+              simpa using Nat.le_trans hN (by simp : s₀.funcs.size ≤ s₀.funcs.size + 1)
+            obtain ⟨hout, hkeep, hcov⟩ :=
+              ih (baseAcc ++ [(n, s₀.funcs.size)])
+                { s₀ with funcs := s₀.funcs.push none } s₁ out N ht hrest
+            refine ⟨?_, ?_, ?_⟩
+            · intro p hpout
+              rcases hout p hpout with hpacc | hpge
+              · rw [List.mem_append] at hpacc
+                exact hpacc.elim Or.inl (fun hpone => by
+                  obtain rfl := List.mem_singleton.mp hpone
+                  right
+                  exact hN)
+              · exact Or.inr hpge
+            · intro p hpinit
+              exact hkeep p (List.mem_append_left _ hpinit)
+            · intro n' ps' rs' body' hm
+              simp only [List.mem_cons] at hm
+              rcases hm with heq | hm
+              · cases heq
+                exact ⟨s₀.funcs.size,
+                  hkeep _ (by simp)⟩
+              · exact hcov n' ps' rs' body' hm
+        | block body => exact nonfun (by intros; simp) hst
+        | letDecl vars val => exact nonfun (by intros; simp) hst
+        | assign vars e => exact nonfun (by intros; simp) hst
+        | cond e body => exact nonfun (by intros; simp) hst
+        | switch e cases dflt => exact nonfun (by intros; simp) hst
+        | forLoop init e post body => exact nonfun (by intros; simp) hst
+        | exprStmt e => exact nonfun (by intros; simp) hst
+        | «break» => exact nonfun (by intros; simp) hst
+        | «continue» => exact nonfun (by intros; simp) hst
+        | leave => exact nonfun (by intros; simp) hst
+  obtain ⟨habove, _hkeep, hcover⟩ := fold ss [] s s' scope s.funcs.size
+    (Nat.le_refl _) h
+  intro n ps rs body hmem fid hget
+  obtain ⟨fid₀, hfid₀⟩ := hcover n ps rs body hmem
+  unfold FMap.get at hget
+  cases hfind : scope.find? (·.1 = n) with
+  | none =>
+      have hall := List.find?_eq_none.mp hfind (n, fid₀) hfid₀
+      exfalso
+      apply hall
+      simp
+  | some p =>
+      have hp : p ∈ scope := List.mem_of_find?_eq_some hfind
+      have hfid : p.2 = fid := by simpa [hfind] using hget
+      rw [← hfid]
+      exact (habove p hp).elim (by simp) id
 
 theorem allocScope_sgrows {ss : List (Stmt Op)} {s s' : BState}
     {sc : List (Ident × FuncId)} (h : allocScope ss s = some (sc, s')) :
@@ -2684,6 +2988,56 @@ theorem trStmt_grows : ∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
           (SGrowsAt.of_edgeArgs (N := 0) ha).size)
             (SGrowsAt.of_sealCur (N := 0) hb2).size)
           (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) hc2).size))
+
+/-! ### Mutual function-table frame induction -/
+
+def FuncFrame (fenv : FMap) (ps rs : List Ident)
+    (body : List (Stmt Op)) : Prop :=
+  ∀ (N : Nat) (s : BState) (g : Func) (s' : BState),
+    N ≤ s.funcs.size → trFunc fenv ps rs body s = some (g, s') →
+      FPrefix N s s'
+
+def ScopeFrame (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (body : List (Stmt Op)) : Prop :=
+  ∀ (N : Nat) (s : BState) (r : Option VMap) (s' : BState),
+    N ≤ s.funcs.size → trScope fenv env lctx rets body s = some (r, s') →
+      FPrefix N s s'
+
+def StmtsFrame (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (d : Bool) (ss : List (Stmt Op)) : Prop :=
+  ∀ (N : Nat) (s : BState) (r : Option VMap) (s' : BState),
+    N ≤ s.funcs.size → FillAbove N fenv ss →
+    trStmts fenv env lctx rets d ss s = some (r, s') → FPrefix N s s'
+
+def StmtFrame (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (st : Stmt Op) : Prop :=
+  ∀ (N : Nat) (s : BState) (r : Option VMap) (s' : BState),
+    N ≤ s.funcs.size → trStmt fenv env lctx rets st s = some (r, s') →
+      FPrefix N s s'
+
+def CasesFrame (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (_sv : ValId) (_X : List Ident)
+    (_joinId : BlockId) (cases : List (Literal × List (Stmt Op)))
+    (dflt : Option (List (Stmt Op))) : Prop :=
+  ∀ (sv : ValId) (X : List Ident) (joinId : BlockId) (N : Nat)
+    (s : BState) (u : Unit) (s' : BState),
+    N ≤ s.funcs.size →
+    trCases fenv env lctx rets sv X joinId cases dflt s = some (u, s') →
+      FPrefix N s s'
+
+omit model in
+theorem FillAbove.mono {N N' : Nat} (hNN' : N ≤ N')
+    {fenv : FMap} {ss : List (Stmt Op)} (h : FillAbove N' fenv ss) :
+    FillAbove N fenv ss := by
+  intro n ps rs body hm fid hget
+  exact Nat.le_trans hNN' (h n ps rs body hm fid hget)
+
+omit model in
+theorem FillAbove.tail {N : Nat} {fenv : FMap} {st : Stmt Op}
+    {rest : List (Stmt Op)} (h : FillAbove N fenv (st :: rest)) :
+    FillAbove N fenv rest := by
+  intro n ps rs body hm
+  exact h n ps rs body (by simp [hm])
 
 omit model in
 /-- Companion of `trStmt_grows` at `trScope.induct`: the same 29-case script against the same hypothesis list. The
@@ -4440,6 +4794,414 @@ theorem trFunc_grows : ∀ (fenv : FMap) (ps rs : List Ident) (body : List (Stmt
           (SGrowsAt.of_edgeArgs (N := 0) ha).size)
             (SGrowsAt.of_sealCur (N := 0) hb2).size)
           (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) hc2).size))
+
+omit model in
+/-- **Mutual function-table frame theorem.** Every translation preserves the
+prefix below its entry allocation watermark.  The statement-list member has
+the one necessary side condition: the slots it is entitled to fill lie at or
+above that watermark.  `trScope` establishes the condition from its own
+`allocScope`, so the four public translation members are unconditional. -/
+theorem trFunc_fprefix : ∀ (fenv : FMap) (ps rs : List Ident)
+    (body : List (Stmt Op)), FuncFrame fenv ps rs body := by
+  refine trFunc.induct FuncFrame ScopeFrame StmtsFrame StmtFrame CasesFrame
+    ?trFunc ?trScope ?stmtsNil ?stmtsFunDef ?stmtsSkip ?stmtsCons
+    ?block ?funDef ?letNoneBad ?letNone ?letSomeBad ?letSome ?assignBad ?assign
+    ?cond ?switch ?forLoop ?exprBuiltin ?exprCall ?exprBad
+    ?breakNone ?breakSome ?contNone ?contSome ?leaveNone ?leaveSome
+    ?casesNilNone ?casesNilSome ?casesCons
+  case trFunc =>
+    intro fenv ps rs body ih N s g s' hN h
+    unfold trFunc at h
+    obtain ⟨saved, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨u2, s2, h2, h⟩ := M.bind_inv h
+    obtain ⟨entry, s3, h3, h⟩ := M.bind_inv h
+    obtain ⟨u4, s4, h4, h⟩ := M.bind_inv h
+    obtain ⟨pids, s5, h5, h⟩ := M.bind_inv h
+    obtain ⟨rids, s6, h6, h⟩ := M.bind_inv h
+    have p6 : FPrefix N s s6 :=
+      (((((FPrefix.of_getFn h1).trans (FPrefix.of_setFn h2)).trans
+        (FPrefix.of_newBlock h3)).trans (FPrefix.of_moveTo h4)).trans
+        (FPrefix.of_grows (Grows.of_mapM_freshVal h5))).trans
+        (FPrefix.of_grows (Grows.of_mapM_constZero h6))
+    by_cases hg : (!decide (ps ++ rs).Nodup) = true
+    · rw [if_pos hg] at h
+      obtain ⟨u7, s7, h7, -⟩ := M.bind_inv h
+      exact absurd h7 (by simp [reject])
+    · rw [if_neg hg] at h
+      obtain ⟨u7, s7, h7, h⟩ := M.bind_inv h
+      obtain ⟨renv, s8, h8, h⟩ := M.bind_inv h
+      have p7 := p6.trans (FPrefix.of_pure h7)
+      have p8 : FPrefix N s s8 := p7.trans
+        (ih pids rids N s7 renv s8 (p7.size hN) h8)
+      have finish : ∀ (sk : BState), FPrefix N s sk →
+          (getFn >>= fun done => setFn saved >>= fun _ =>
+          (pure { params := pids, nrets := rs.length, entry := entry,
+                  blocks := done.blocks } : M Func)) sk = some (g, s') →
+          FPrefix N s s' := by
+        intro sk pk hk
+        obtain ⟨done, sa, ha, hk⟩ := M.bind_inv hk
+        obtain ⟨ub, sb, hb, hc⟩ := M.bind_inv hk
+        exact ((pk.trans (FPrefix.of_getFn ha)).trans
+          (FPrefix.of_setFn hb)).trans (FPrefix.of_pure hc)
+      cases renv with
+      | none =>
+          obtain ⟨ua, sa, ha, hh⟩ := M.bind_inv h
+          exact finish sa (p8.trans (FPrefix.of_pure ha)) hh
+      | some envEnd =>
+          obtain ⟨vals, sa, ha, h⟩ := M.bind_inv h
+          obtain ⟨ub, sb, hb, hh⟩ := M.bind_inv h
+          exact finish sb ((p8.trans (FPrefix.of_liftO ha)).trans
+            (FPrefix.of_sealCur hb)) hh
+  case trScope =>
+    intro fenv env lctx rets body ih N s r s' hN h
+    rw [trScope] at h
+    obtain ⟨scope, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨renv, s2, h2, h3⟩ := M.bind_inv h
+    have pa : FPrefix N s s1 := (allocScope_fprefix h1).mono hN
+    have habove : FillAbove N (scope :: fenv) body :=
+      (allocScope_fillAbove h1 fenv).mono hN
+    have pb := ih scope N s1 renv s2 (pa.size hN) habove h2
+    cases renv <;> exact (pa.trans pb).trans (FPrefix.of_pure h3)
+  case stmtsNil =>
+    intro fenv env lctx rets d N s r s' hN ha h
+    rw [trStmts] at h
+    exact FPrefix.of_pure h
+  case stmtsFunDef =>
+    intro fenv env lctx rets d n ps rs body rest ihf ihr N s r s' hN ha h
+    rw [trStmts] at h
+    obtain ⟨fid, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨g, s2, h2, h⟩ := M.bind_inv h
+    obtain ⟨u, s3, h3, h4⟩ := M.bind_inv h
+    have hfid : N ≤ fid := ha n ps rs body (by simp) fid
+      (M.liftO_inv h1).1
+    have p1 : FPrefix N s s1 := FPrefix.of_liftO h1
+    have p2 := ihf N s1 g s2 (p1.size hN) h2
+    have p3 := FPrefix.of_fillFunc hfid h3
+    have p03 := (p1.trans p2).trans p3
+    exact p03.trans (ihr N s3 r s' (p03.size hN) ha.tail h4)
+  case stmtsSkip =>
+    intro fenv env lctx rets st rest hnf ih N s r s' hN ha h
+    rw [trStmts] at h
+    · split at h
+      · exact ih N s r s' hN ha.tail h
+      · rename_i hc; exact absurd rfl hc
+    · exact hnf
+  case stmtsCons =>
+    intro fenv env lctx rets d st rest hnf hd ihs ihN ihT N s r s' hN ha h
+    rw [trStmts] at h
+    · rw [if_neg hd] at h
+      obtain ⟨renv, s1, h1, h2⟩ := M.bind_inv h
+      have p1 := ihs N s renv s1 hN h1
+      have hN1 := Nat.le_trans hN
+        (trStmt_grows fenv env lctx rets st s renv s1 h1).funcsSize
+      cases renv with
+      | some env' => exact p1.trans (ihN env' N s1 r s' hN1 ha.tail h2)
+      | none => exact p1.trans (ihT N s1 r s' hN1 ha.tail h2)
+    · exact hnf
+  case block =>
+    intro fenv env lctx rets body ih N s r s' hN h
+    rw [trStmt] at h
+    exact ih N s r s' hN h
+  case funDef =>
+    intro fenv env lctx rets n ps rs body N s r s' hN h
+    rw [trStmt] at h
+    exact absurd h (by simp [reject])
+  case letNoneBad =>
+    intro fenv env lctx rets vars hg N s r s' hN h
+    rw [trStmt, if_pos hg] at h
+    obtain ⟨u, t, hb, -⟩ := M.bind_inv h
+    exact absurd hb (by simp [reject])
+  case letNone =>
+    intro fenv env lctx rets vars hg N s r s' hN h
+    rw [trStmt, if_neg hg] at h
+    obtain ⟨u, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨ids, s2, h2, h3⟩ := M.bind_inv h
+    exact ((FPrefix.of_pure h1).trans
+      (FPrefix.of_grows (Grows.of_mapM_constZero h2))).trans
+      (FPrefix.of_pure h3)
+  case letSomeBad =>
+    intro fenv env lctx rets vars e hg N s r s' hN h
+    rw [trStmt, if_pos hg] at h
+    obtain ⟨u, t, hb, -⟩ := M.bind_inv h
+    exact absurd hb (by simp [reject])
+  case letSome =>
+    intro fenv env lctx rets vars e hg N s r s' hN h
+    rw [trStmt, if_neg hg] at h
+    obtain ⟨u, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨ids, s2, h2, h3⟩ := M.bind_inv h
+    exact ((FPrefix.of_pure h1).trans
+      (FPrefix.of_grows (trExprN_grows h2))).trans (FPrefix.of_pure h3)
+  case assignBad =>
+    intro fenv env lctx rets vars e hg N s r s' hN h
+    rw [trStmt, if_pos hg] at h
+    obtain ⟨u, t, hb, -⟩ := M.bind_inv h
+    exact absurd hb (by simp [reject])
+  case assign =>
+    intro fenv env lctx rets vars e hg N s r s' hN h
+    rw [trStmt, if_neg hg] at h
+    obtain ⟨u, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨ids, s2, h2, h3⟩ := M.bind_inv h
+    exact ((FPrefix.of_pure h1).trans
+      (FPrefix.of_grows (trExprN_grows h2))).trans (FPrefix.of_pure h3)
+  case cond =>
+    intro fenv env lctx rets c body ih N s r s' hN h
+    rw [trStmt] at h
+    obtain ⟨cv, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨xv, s2, h2, h⟩ := M.bind_inv h
+    obtain ⟨bodyId, s3, h3, h⟩ := M.bind_inv h
+    obtain ⟨jps, s4, h4, h⟩ := M.bind_inv h
+    obtain ⟨joinId, s5, h5, h⟩ := M.bind_inv h
+    obtain ⟨u6, s6, h6, h⟩ := M.bind_inv h
+    obtain ⟨u7, s7, h7, h⟩ := M.bind_inv h
+    obtain ⟨renv, s8, h8, h⟩ := M.bind_inv h
+    have p7 : FPrefix N s s7 :=
+      ((((((FPrefix.of_grows (trExpr_grows c fenv env s s1 cv h1)).trans
+        (FPrefix.of_edgeArgs h2)).trans (FPrefix.of_newBlock h3)).trans
+        (FPrefix.of_grows (Grows.of_mapM_freshVal h4))).trans
+        (FPrefix.of_newBlock h5)).trans (FPrefix.of_sealCur h6)).trans
+        (FPrefix.of_moveTo h7)
+    have p8 : FPrefix N s s8 := p7.trans
+      (ih N s7 renv s8 (p7.size hN) h8)
+    cases renv with
+    | none =>
+        obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
+        obtain ⟨ub, sb, hb, hc⟩ := M.bind_inv h
+        exact ((p8.trans (FPrefix.of_pure ha)).trans
+          (FPrefix.of_moveTo hb)).trans (FPrefix.of_pure hc)
+    | some env' =>
+        obtain ⟨xa, sa, ha, h⟩ := M.bind_inv h
+        obtain ⟨ub, sb, hb, h⟩ := M.bind_inv h
+        obtain ⟨uc, sc, hc, hd⟩ := M.bind_inv h
+        exact (((p8.trans (FPrefix.of_edgeArgs ha)).trans
+          (FPrefix.of_sealCur hb)).trans (FPrefix.of_moveTo hc)).trans
+          (FPrefix.of_pure hd)
+  case switch =>
+    intro fenv env lctx rets c cases dflt ih N s r s' hN h
+    unfold trStmt at h
+    obtain ⟨sv, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨jps, s2, h2, h⟩ := M.bind_inv h
+    obtain ⟨jid, s3, h3, h⟩ := M.bind_inv h
+    obtain ⟨u4, s4, h4, h⟩ := M.bind_inv h
+    obtain ⟨u5, s5, h5, h6⟩ := M.bind_inv h
+    have p3 : FPrefix N s s3 := ((FPrefix.of_grows
+      (trExpr_grows c fenv env s s1 sv h1)).trans
+      (FPrefix.of_grows (Grows.of_mapM_freshVal h2))).trans
+      (FPrefix.of_newBlock h3)
+    exact ((p3.trans
+      (ih sv jid sv _ jid N s3 u4 s4 (p3.size hN) h4)).trans
+      (FPrefix.of_moveTo h5)).trans (FPrefix.of_pure h6)
+  case forLoop =>
+    intro fenv env lctx rets init c post body ihI ihB ihP N s r s' hN h
+    unfold trStmt at h
+    obtain ⟨scope, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨rinit, s2, h2, h⟩ := M.bind_inv h
+    have p1 : FPrefix N s s1 := (allocScope_fprefix h1).mono hN
+    have habove : FillAbove N (scope :: fenv) init :=
+      (allocScope_fillAbove h1 fenv).mono hN
+    have p2 := ihI scope N s1 rinit s2 (p1.size hN) habove h2
+    have pinit := p1.trans p2
+    cases rinit with
+    | none => exact pinit.trans (FPrefix.of_pure h)
+    | some envI =>
+      obtain ⟨xv, s3, h3, h⟩ := M.bind_inv h
+      obtain ⟨hps, s4, h4, h⟩ := M.bind_inv h
+      obtain ⟨hid, s5, h5, h⟩ := M.bind_inv h
+      obtain ⟨eps, s6, h6, h⟩ := M.bind_inv h
+      obtain ⟨eid, s7, h7, h⟩ := M.bind_inv h
+      obtain ⟨pps, s8, h8, h⟩ := M.bind_inv h
+      obtain ⟨pid, s9, h9, h⟩ := M.bind_inv h
+      obtain ⟨u10, s10, h10, h⟩ := M.bind_inv h
+      obtain ⟨u11, s11, h11, h⟩ := M.bind_inv h
+      obtain ⟨cv, s12, h12, h⟩ := M.bind_inv h
+      obtain ⟨bid, s13, h13, h⟩ := M.bind_inv h
+      obtain ⟨hx, s14, h14, h⟩ := M.bind_inv h
+      obtain ⟨u15, s15, h15, h⟩ := M.bind_inv h
+      obtain ⟨u16, s16, h16, h⟩ := M.bind_inv h
+      obtain ⟨rb, s17, h17, h⟩ := M.bind_inv h
+      have p3 := pinit.trans (FPrefix.of_edgeArgs h3)
+      have p4 := p3.trans (FPrefix.of_grows (Grows.of_mapM_freshVal h4))
+      have p5 := p4.trans (FPrefix.of_newBlock h5)
+      have p6 := p5.trans (FPrefix.of_grows (Grows.of_mapM_freshVal h6))
+      have p7 := p6.trans (FPrefix.of_newBlock h7)
+      have p8 := p7.trans (FPrefix.of_grows (Grows.of_mapM_freshVal h8))
+      have p9 := p8.trans (FPrefix.of_newBlock h9)
+      have p10 := p9.trans (FPrefix.of_sealCur h10)
+      have p11 := p10.trans (FPrefix.of_moveTo h11)
+      have p12 := p11.trans (FPrefix.of_grows
+        (trExpr_grows c (scope :: fenv) _ s11 s12 cv h12))
+      have p13 := p12.trans (FPrefix.of_newBlock h13)
+      have p14 := p13.trans (FPrefix.of_edgeArgs h14)
+      have p15 := p14.trans (FPrefix.of_sealCur h15)
+      have p16 := p15.trans (FPrefix.of_moveTo h16)
+      have p17 : FPrefix N s s17 := p16.trans
+        (ihB scope envI hps eid pid N s16 rb s17 (p16.size hN) h17)
+      cases rb with
+      | none =>
+        obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
+        obtain ⟨ub, sb, hb, h⟩ := M.bind_inv h
+        obtain ⟨rp, sc, hc, h⟩ := M.bind_inv h
+        have pp := (p17.trans (FPrefix.of_pure ha)).trans
+          (FPrefix.of_moveTo hb)
+        have pc := pp.trans
+          (ihP scope envI pps N sb rp sc (pp.size hN) hc)
+        cases rp with
+        | none =>
+          obtain ⟨ud, sd, hd, h⟩ := M.bind_inv h
+          obtain ⟨ue, se, he, hf⟩ := M.bind_inv h
+          exact ((pc.trans (FPrefix.of_pure hd)).trans
+            (FPrefix.of_moveTo he)).trans (FPrefix.of_pure hf)
+        | some ep =>
+          obtain ⟨xd, sd, hd, h⟩ := M.bind_inv h
+          obtain ⟨ue, se, he, h⟩ := M.bind_inv h
+          obtain ⟨uf, sf, hf, h⟩ := M.bind_inv h
+          exact (((pc.trans (FPrefix.of_edgeArgs hd)).trans
+            (FPrefix.of_sealCur he)).trans (FPrefix.of_moveTo hf)).trans
+            (FPrefix.of_pure h)
+      | some eb =>
+        obtain ⟨xa, sa, ha, h⟩ := M.bind_inv h
+        obtain ⟨ub, sb, hb, h⟩ := M.bind_inv h
+        obtain ⟨uc, sc, hc, h⟩ := M.bind_inv h
+        obtain ⟨rp, sd, hd, h⟩ := M.bind_inv h
+        have pp := ((p17.trans (FPrefix.of_edgeArgs ha)).trans
+          (FPrefix.of_sealCur hb)).trans (FPrefix.of_moveTo hc)
+        have pd := pp.trans
+          (ihP scope envI pps N sc rp sd (pp.size hN) hd)
+        cases rp with
+        | none =>
+          obtain ⟨ue, se, he, h⟩ := M.bind_inv h
+          obtain ⟨uf, sf, hf, hg⟩ := M.bind_inv h
+          exact ((pd.trans (FPrefix.of_pure he)).trans
+            (FPrefix.of_moveTo hf)).trans (FPrefix.of_pure hg)
+        | some ep =>
+          obtain ⟨xe, se, he, h⟩ := M.bind_inv h
+          obtain ⟨uf, sf, hf, h⟩ := M.bind_inv h
+          obtain ⟨ug, sg, hg, h⟩ := M.bind_inv h
+          exact (((pd.trans (FPrefix.of_edgeArgs he)).trans
+            (FPrefix.of_sealCur hf)).trans (FPrefix.of_moveTo hg)).trans
+            (FPrefix.of_pure h)
+  case exprBuiltin =>
+    intro fenv env lctx rets op args N s r s' hN h
+    rw [trStmt] at h
+    obtain ⟨as, s1, h1, h⟩ := M.bind_inv h
+    have p1 : FPrefix N s s1 :=
+      FPrefix.of_grows (trArgs_grows args fenv env s s1 as h1)
+    by_cases hop : isHaltingOp op = true
+    · rw [if_pos hop] at h
+      obtain ⟨u, s2, h2, h3⟩ := M.bind_inv h
+      exact (p1.trans (FPrefix.of_sealCur h2)).trans (FPrefix.of_pure h3)
+    · rw [if_neg hop] at h
+      obtain ⟨u, s2, h2, h3⟩ := M.bind_inv h
+      exact (p1.trans (FPrefix.of_grows (Grows.of_emit h2))).trans
+        (FPrefix.of_pure h3)
+  case exprCall =>
+    intro fenv env lctx rets fn args N s r s' hN h
+    rw [trStmt] at h
+    obtain ⟨as, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨fid, s2, h2, h⟩ := M.bind_inv h
+    obtain ⟨u, s3, h3, h4⟩ := M.bind_inv h
+    exact ((FPrefix.of_grows (trArgs_grows args fenv env s s1 as h1)).trans
+      (FPrefix.of_liftO h2)).trans
+      ((FPrefix.of_grows (Grows.of_emit h3)).trans (FPrefix.of_pure h4))
+  case exprBad =>
+    intro fenv env lctx rets e hnb hnc N s r s' hN h
+    rw [trStmt] at h
+    · exact absurd h (by simp [reject])
+    · exact hnb
+    · exact hnc
+  case breakNone =>
+    intro fenv env rets N s r s' hN h
+    rw [trStmt] at h
+    exact absurd h (by simp [reject])
+  case breakSome =>
+    intro fenv env rets l N s r s' hN h
+    rw [trStmt] at h
+    obtain ⟨vals, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨u, s2, h2, h3⟩ := M.bind_inv h
+    exact ((FPrefix.of_edgeArgs h1).trans (FPrefix.of_sealCur h2)).trans
+      (FPrefix.of_pure h3)
+  case contNone =>
+    intro fenv env rets N s r s' hN h
+    rw [trStmt] at h
+    exact absurd h (by simp [reject])
+  case contSome =>
+    intro fenv env rets l N s r s' hN h
+    rw [trStmt] at h
+    obtain ⟨vals, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨u, s2, h2, h3⟩ := M.bind_inv h
+    exact ((FPrefix.of_edgeArgs h1).trans (FPrefix.of_sealCur h2)).trans
+      (FPrefix.of_pure h3)
+  case leaveNone =>
+    intro fenv env lctx N s r s' hN h
+    rw [trStmt] at h
+    exact absurd h (by simp [reject])
+  case leaveSome =>
+    intro fenv env lctx rs N s r s' hN h
+    rw [trStmt] at h
+    obtain ⟨vals, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨u, s2, h2, h3⟩ := M.bind_inv h
+    exact ((FPrefix.of_edgeArgs h1).trans (FPrefix.of_sealCur h2)).trans
+      (FPrefix.of_pure h3)
+  case casesNilNone =>
+    intro fenv env lctx rets _sv _X _jid sv X jid N s u s' hN h
+    rw [trCases] at h
+    obtain ⟨xv, s1, h1, h2⟩ := M.bind_inv h
+    exact (FPrefix.of_edgeArgs h1).trans (FPrefix.of_sealCur h2)
+  case casesNilSome =>
+    intro fenv env lctx rets _sv _X _jid body ih sv X jid N s u s' hN h
+    rw [trCases] at h
+    obtain ⟨renv, s1, h1, h2⟩ := M.bind_inv h
+    have p1 := ih N s renv s1 hN h1
+    cases renv with
+    | none => exact p1.trans (FPrefix.of_pure h2)
+    | some env' =>
+      obtain ⟨xv, s2, h3, h4⟩ := M.bind_inv h2
+      exact (p1.trans (FPrefix.of_edgeArgs h3)).trans
+        (FPrefix.of_sealCur h4)
+  case casesCons =>
+    intro fenv env lctx rets _sv _X _jid lit body rest dflt ihB ihR
+      sv X jid N s u s' hN h
+    rw [trCases] at h
+    obtain ⟨t, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨u2, s2, h2, h⟩ := M.bind_inv h
+    obtain ⟨e, s3, h3, h⟩ := M.bind_inv h
+    obtain ⟨u4, s4, h4, h⟩ := M.bind_inv h
+    obtain ⟨cid, s5, h5, h⟩ := M.bind_inv h
+    obtain ⟨nid, s6, h6, h⟩ := M.bind_inv h
+    obtain ⟨u7, s7, h7, h⟩ := M.bind_inv h
+    obtain ⟨u8, s8, h8, h⟩ := M.bind_inv h
+    obtain ⟨renv, s9, h9, h⟩ := M.bind_inv h
+    have p8 : FPrefix N s s8 :=
+      (((((((FPrefix.of_grows (Grows.of_freshVal h1)).trans
+        (FPrefix.of_grows (Grows.of_emit h2))).trans
+        (FPrefix.of_grows (Grows.of_freshVal h3))).trans
+        (FPrefix.of_grows (Grows.of_emit h4))).trans
+        (FPrefix.of_newBlock h5)).trans (FPrefix.of_newBlock h6)).trans
+        (FPrefix.of_sealCur h7)).trans (FPrefix.of_moveTo h8)
+    have p9 : FPrefix N s s9 := p8.trans
+      (ihB N s8 renv s9 (p8.size hN) h9)
+    cases renv with
+    | none =>
+      obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
+      obtain ⟨ub, sb, hb, hc⟩ := M.bind_inv h
+      have pp := (p9.trans (FPrefix.of_pure ha)).trans
+        (FPrefix.of_moveTo hb)
+      exact pp.trans (ihR sv X jid N sb u s' (pp.size hN) hc)
+    | some env' =>
+      obtain ⟨xv, sa, ha, h⟩ := M.bind_inv h
+      obtain ⟨ub, sb, hb, h⟩ := M.bind_inv h
+      obtain ⟨uc, sc, hc, hd⟩ := M.bind_inv h
+      have pp := ((p9.trans (FPrefix.of_edgeArgs ha)).trans
+        (FPrefix.of_sealCur hb)).trans (FPrefix.of_moveTo hc)
+      exact pp.trans (ihR sv X jid N sc u s' (pp.size hN) hd)
+
+omit model in
+/-- Natural-watermark specialization used by callers protecting all slots
+that existed before a nested closed translation. -/
+theorem trFunc_prefix (fenv : FMap) (ps rs : List Ident)
+    (body : List (Stmt Op)) {s s' : BState} {g : Func}
+    (h : trFunc fenv ps rs body s = some (g, s')) :
+    FPrefix s.funcs.size s s' :=
+  trFunc_fprefix fenv ps rs body s.funcs.size s g s' (Nat.le_refl _) h
 
 omit model in
 /-- Once control has diverted, `trStmts` only fills hoisted function slots;
@@ -10649,6 +11411,19 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   -- slot, closed nested translations preserve the caller's pending slots, and
   -- `FuncTableComplete` makes the final pending set empty.  Only that stronger
   -- invariant justifies `FContents.of_fillFunc_empty` and the initializer IH.
+  --
+  -- The mutual frame part of that plan is now discharged by
+  -- `trFunc_fprefix`/`trFunc_prefix`, and `FOwned.back_fprefix` is the exact
+  -- backward bridge for a nested function.  The remaining obstruction is now
+  -- narrower and explicit: `Motive` has no `owned` parameter and therefore no
+  -- premise carrying both `FOwned owned s₁ done` and
+  -- `∀ i ∈ owned, i < s₀.funcs.size`.  Without that bound the bridge is
+  -- false: an index in `owned` could denote a slot freshly allocated by the
+  -- nested translation.  Threading this bounded ownership pair through the
+  -- statement/list/loop clauses lets the `seqCons` funDef branch apply, in
+  -- order, `FOwned.back_fillFunc`, `FOwned.back_fprefix`, and
+  -- `FOwned.back_allocFunc`; only then can `forLoop` invoke the initializer IH
+  -- with the hoisted `FEnvOK` scope.
   | forLoop hinit hloop ihi ihl => sorry
   | forInitHalt hinit ihi => sorry
   | @«break» funs V st =>
