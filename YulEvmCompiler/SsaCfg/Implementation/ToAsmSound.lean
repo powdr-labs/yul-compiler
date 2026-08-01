@@ -1536,6 +1536,95 @@ def BlockPlaced (P : Prog) (ord : Bool) (asm : List Asm) (fidx : Option Nat)
     ∧ findLabel (ToAsm.blkLabel (ToAsm.mkLabelMap P) fidx bid) asm
       = some (frag ++ tail)
 
+/-- The emission state's layout table only ever grows: an entry, once
+recorded, keeps its value. -/
+def TableSub (s s' : ToAsm.EmitSt) : Prop :=
+  ∀ (bid : BlockId) (l : List SSlot), s.layouts[bid]? = some l → s'.layouts[bid]? = some l
+
+omit model in
+theorem TableSub.refl (s : ToAsm.EmitSt) : TableSub s s := fun _ _ h => h
+
+
+omit model in
+theorem TableSub.trans {s₁ s₂ s₃ : ToAsm.EmitSt}
+    (h₁ : TableSub s₁ s₂) (h₂ : TableSub s₂ s₃) : TableSub s₁ s₃ :=
+  fun bid l h => h₂ bid l (h₁ bid l h)
+
+omit model in
+theorem tableSub_insert_self {s : ToAsm.EmitSt} {b : BlockId} {l : List SSlot}
+    (hb : s.layouts[b]? = some l) :
+    TableSub s { s with layouts := s.layouts.insert b l } := by
+  intro bid l' hbid
+  simp only [Std.HashMap.getElem?_insert]
+  by_cases hbb : b = bid
+  · subst hbb
+    rw [if_pos (by simp : (b == b) = true)]
+    exact hb.symm.trans hbid
+  · rw [if_neg (by simpa using hbb)]; exact hbid
+
+omit model in
+theorem tableSub_insert_fresh {s : ToAsm.EmitSt} {b : BlockId} {v : List SSlot}
+    (hb : s.layouts[b]? = none) :
+    TableSub s { s with layouts := s.layouts.insert b v } := by
+  intro bid l' hbid
+  simp only [Std.HashMap.getElem?_insert]
+  by_cases hbb : b = bid
+  · subst hbb; rw [hb] at hbid; exact absurd hbid (by simp)
+  · rw [if_neg (by simpa using hbb)]; exact hbid
+
+omit model in
+theorem getLayout_state {b : BlockId} {s : ToAsm.EmitSt} {r : Option (List SSlot)}
+    {s' : ToAsm.EmitSt} (h : ToAsm.getLayout b s = some (r, s')) :
+    s' = s ∧ r = s.layouts[b]? := by
+  rw [ToAsm.getLayout] at h
+  obtain ⟨h1, h2⟩ := (Prod.mk.injEq ..).mp (Option.some.inj h)
+  exact ⟨h2.symm, h1.symm⟩
+
+omit model in
+theorem freshLabel_mono {s : ToAsm.EmitSt} {l : Label} {s' : ToAsm.EmitSt}
+    (h : ToAsm.freshLabel s = some (l, s')) : TableSub s s' := by
+  rw [ToAsm.freshLabel] at h
+  obtain ⟨-, rfl⟩ := (Prod.mk.injEq ..).mp (Option.some.inj h)
+  intro bid l' hbid; exact hbid
+
+omit model in
+theorem liftE_mono {α : Type} {o : Option α} {s : ToAsm.EmitSt} {a : α}
+    {s' : ToAsm.EmitSt} (h : ToAsm.liftE o s = some (a, s')) : s' = s := by
+  cases o with
+  | none => exact absurd h (by simp [ToAsm.liftE])
+  | some x =>
+    obtain ⟨-, hs⟩ := (Prod.mk.injEq ..).mp (Option.some.inj h)
+    exact hs.symm
+
+omit model in
+/-- **The record-once branch is monotone**: `edgeTargetLayout` either reads the
+table (no write at all) or writes at a key it just observed to be absent. -/
+theorem edgeTargetLayout_mono {isFunc : Bool} {f : Func}
+    {liveIn : Array (List ValId)} {e : Edge} {sym : List SSlot}
+    {s : ToAsm.EmitSt} {τ : List SSlot} {s' : ToAsm.EmitSt}
+    (h : ToAsm.edgeTargetLayout isFunc f liveIn e sym s = some (τ, s')) :
+    TableSub s s' := by
+  unfold ToAsm.edgeTargetLayout at h
+  rcases htb : f.blocks[e.target]? with _ | tb
+  · rw [htb] at h
+    simp [ToAsm.liftE, bind, StateT.bind] at h
+  rw [htb] at h
+  simp only [ToAsm.liftE, bind, StateT.bind, Option.bind, pure,
+    StateT.pure] at h
+  by_cases hlen : e.args.length ≠ tb.params.length
+  case pos =>
+    rw [if_pos hlen] at h
+    exact absurd h (by simp)
+  rw [if_neg hlen] at h
+  simp only [bind, StateT.bind, ToAsm.getLayout, Option.bind] at h
+  rcases hrec : s.layouts[e.target]? with _ | lay <;> rw [hrec] at h <;>
+    simp only [ToAsm.setLayout, bind, StateT.bind, Option.bind, pure,
+      StateT.pure, Option.some.injEq, Prod.mk.injEq] at h
+  · obtain ⟨-, rfl⟩ := h
+    exact tableSub_insert_fresh hrec
+  · obtain ⟨-, rfl⟩ := h
+    exact TableSub.refl s
+
 /-! ### What the edge cases still need from `Placement`
 
 `Placement` below pins, for each block, *that* it was emitted and *where* its
