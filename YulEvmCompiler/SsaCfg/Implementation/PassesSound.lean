@@ -3501,15 +3501,8 @@ theorem constFold_spec (f : Func) (i : BlockId) (b' : Block)
 
 /-! ### Pass 3's loop, as a fold -/
 
-abbrev CSEInner :=
-  MProd (List Instr)
-    (MProd CseTab
-      (MProd (Std.HashSet ValId)
-        (MProd Subst (MProd (Std.HashSet ValId) (Std.HashSet ValId)))))
+abbrev CSEInner := MProd (List Instr) (MProd CseTab Subst)
 abbrev CSEOuter := MProd (Array Block) (MProd (Array CseTab) Subst)
-
-def cseBlockDefs (b : Block) : Std.HashSet ValId :=
-  b.instrs.foldl (fun s i => i.defs.foldl (fun s d => s.insert d) s) ∅
 
 def cseEntryTab (f : Func) (srcs : Array (List BlockId))
     (tables : Array CseTab) (bi : BlockId) : CseTab :=
@@ -3550,215 +3543,29 @@ theorem inEdgeSources_eq_fold (f : Func) :
   congr 1
 
 def cseInstrStep (ins0 : Instr) (st : CSEInner) : CSEInner :=
-  let used := ins0.uses.foldl (fun s a => s.insert a) st.2.2.1
-  let defined := ins0.defs.foldl (fun s d => s.insert d) st.2.2.2.2.1
-  match substInstr st.2.2.2.1 ins0 with
+  match substInstr st.2.2 ins0 with
   | .const d v =>
     match st.2.1.consts.find? (·.1 == v) with
-    | some (_, d0) =>
-      ⟨st.1, st.2.1, used, st.2.2.2.1.insert d d0, defined, st.2.2.2.2.2⟩
+    | some (_, d0) => ⟨st.1, st.2.1, st.2.2.insert d d0⟩
     | none =>
-      ⟨.const d v :: st.1, { st.2.1 with consts := (v, d) :: st.2.1.consts },
-        used, st.2.2.2.1, defined, st.2.2.2.2.2⟩
+      ⟨.const d v :: st.1, { st.2.1 with consts := (v, d) :: st.2.1.consts }, st.2.2⟩
   | .op [d] yop args =>
     if pureOp yop then
       match st.2.1.ops.find? (·.1 == (yop, args)) with
-      | some (_, d0) =>
-        if st.2.2.1.contains d then
-          ⟨.op [d] yop args :: st.1, st.2.1, used, st.2.2.2.1,
-            defined, st.2.2.2.2.2⟩
-        else
-          ⟨st.1, st.2.1, used, st.2.2.2.1.insert d d0,
-            defined, st.2.2.2.2.2⟩
+      | some (_, d0) => ⟨st.1, st.2.1, st.2.2.insert d d0⟩
       | none =>
-        if args.all (fun a =>
-            st.2.2.2.2.1.contains a || !st.2.2.2.2.2.contains a) then
-          ⟨.op [d] yop args :: st.1,
-            { st.2.1 with ops := ((yop, args), d) :: st.2.1.ops },
-            used, st.2.2.2.1, defined, st.2.2.2.2.2⟩
-        else
-          ⟨.op [d] yop args :: st.1, st.2.1, used, st.2.2.2.1,
-            defined, st.2.2.2.2.2⟩
-    else
-      ⟨.op [d] yop args :: st.1, st.2.1, used, st.2.2.2.1,
-        defined, st.2.2.2.2.2⟩
-  | ins =>
-    ⟨ins :: st.1, st.2.1, used, st.2.2.2.1, defined, st.2.2.2.2.2⟩
-
-/-- The implementation keeps `definedSoFar` first because it is declared before
-the mutable instruction/table state.  The proof model keeps the historical
-four projections first and appends the two new guard accumulators. -/
-abbrev CSEImplInner :=
-  MProd (Std.HashSet ValId)
-    (MProd (List Instr) (MProd CseTab (MProd (Std.HashSet ValId) Subst)))
-
-def cseImplToModel (blockDefs : Std.HashSet ValId) (st : CSEImplInner) : CSEInner :=
-  ⟨st.2.1, st.2.2.1, st.2.2.2.1, st.2.2.2.2, st.1, blockDefs⟩
-
-def cseModelToImpl (st : CSEInner) : CSEImplInner :=
-  ⟨st.2.2.2.2.1, st.1, st.2.1, st.2.2.1, st.2.2.2.1⟩
-
-def cseImplInstrStep (blockDefs : Std.HashSet ValId) (ins : Instr)
-    (st : CSEImplInner) : CSEImplInner :=
-  cseModelToImpl (cseInstrStep ins (cseImplToModel blockDefs st))
-
-@[simp] theorem cseImplToModel_step (blockDefs : Std.HashSet ValId)
-    (ins : Instr) (st : CSEImplInner) :
-    cseImplToModel blockDefs (cseImplInstrStep blockDefs ins st) =
-      cseInstrStep ins (cseImplToModel blockDefs st) := by
-  unfold cseImplInstrStep cseImplToModel cseModelToImpl cseInstrStep
-  cases hs : substInstr st.2.2.2.2 ins with
-  | const d v => simp only [hs]; split <;> rfl
-  | op ds yop args =>
-      cases ds with
-      | nil => simp [hs]
-      | cons d rest =>
-          cases rest with
-          | nil =>
-              simp only [hs]
-              split <;> (try split <;> (try split <;> (try split))) <;> rfl
-          | cons e es => simp [hs]
-  | call ds fid args => simp [hs]
-
-theorem cseImplFold_toModel (blockDefs : Std.HashSet ValId) (l : List Instr)
-    (st : CSEImplInner) :
-    cseImplToModel blockDefs
-        (l.foldl (fun st ins => cseImplInstrStep blockDefs ins st) st) =
-      l.foldl (fun st ins => cseInstrStep ins st) (cseImplToModel blockDefs st) := by
-  induction l generalizing st with
-  | nil => rfl
-  | cons i is ih =>
-      rw [List.foldl_cons, List.foldl_cons, ← cseImplToModel_step, ih]
-
-theorem mem_fold_insert_iff {xs : List ValId} {s : Std.HashSet ValId}
-    {x : ValId} :
-    x ∈ xs.foldl (fun s a => s.insert a) s ↔ x ∈ s ∨ x ∈ xs := by
-  induction xs generalizing s with
-  | nil => simp
-  | cons a as ih =>
-      rw [List.foldl_cons, ih, Std.HashSet.mem_insert]
-      simp only [List.mem_cons]
-      simp only [beq_iff_eq]
-      tauto
-
-@[simp] theorem cseInstrStep_used (i : Instr) (st : CSEInner) :
-    (cseInstrStep i st).2.2.1 =
-      i.uses.foldl (fun s a => s.insert a) st.2.2.1 := by
-  unfold cseInstrStep
-  split <;> (try split <;> (try split <;> (try split))) <;> rfl
-
-@[simp] theorem cseInstrStep_defined (i : Instr) (st : CSEInner) :
-    (cseInstrStep i st).2.2.2.2.1 =
-      i.defs.foldl (fun s d => s.insert d) st.2.2.2.2.1 := by
-  unfold cseInstrStep
-  split <;> (try split <;> (try split <;> (try split))) <;> rfl
-
-theorem cseInstrFold_used (l : List Instr) (st : CSEInner) {x : ValId} :
-    x ∈ (l.foldl (fun s i => cseInstrStep i s) st).2.2.1 ↔
-      x ∈ st.2.2.1 ∨ x ∈ l.flatMap Instr.uses := by
-  induction l generalizing st with
-  | nil => simp
-  | cons i is ih =>
-      rw [List.foldl_cons, ih, cseInstrStep_used, mem_fold_insert_iff,
-        List.flatMap_cons, List.mem_append]
-      tauto
-
-theorem cseInstrFold_defined (l : List Instr) (st : CSEInner) {x : ValId} :
-    x ∈ (l.foldl (fun s i => cseInstrStep i s) st).2.2.2.2.1 ↔
-      x ∈ st.2.2.2.2.1 ∨ x ∈ l.flatMap Instr.defs := by
-  induction l generalizing st with
-  | nil => simp
-  | cons i is ih =>
-      rw [List.foldl_cons, ih, cseInstrStep_defined, mem_fold_insert_iff,
-        List.flatMap_cons, List.mem_append]
-      tauto
-
-theorem mem_cseBlockDefs {b : Block} {x : ValId} :
-    x ∈ cseBlockDefs b ↔ x ∈ b.instrs.flatMap Instr.defs := by
-  have go : ∀ (l : List Instr) (s : Std.HashSet ValId),
-      x ∈ l.foldl
-          (fun s i => i.defs.foldl (fun s d => s.insert d) s) s ↔
-        x ∈ s ∨ x ∈ l.flatMap Instr.defs := by
-    intro l
-    induction l with
-    | nil => simp
-    | cons i is ih =>
-        intro s
-        rw [List.foldl_cons, ih, mem_fold_insert_iff,
-          List.flatMap_cons, List.mem_append]
-        tauto
-  unfold cseBlockDefs
-  simpa using go b.instrs ∅
-
-/-- The drop guard is exactly the strict-prefix use fact needed by the
-simulation: a destination accepted for elimination was not read by any
-already-processed instruction in its block. -/
-theorem cse_drop_dest_not_used_prefix {pre : List Instr} {i : Instr}
-    {acc : List Instr} {tab : CseTab} {used defined blockDefs : Std.HashSet ValId}
-    {σ : Subst} {d d0 : ValId} {yop : Op} {args : List ValId}
-    (hused0 : d ∉ used)
-    (hs : substInstr
-      (pre.foldl (fun s i => cseInstrStep i s)
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).2.2.2.1 i =
-        .op [d] yop args)
-    (hfind :
-      (pre.foldl (fun s i => cseInstrStep i s)
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).2.1.ops.find?
-          (·.1 == (yop, args)) = some ((yop, args), d0))
-    (hdrop :
-      ¬ (pre.foldl (fun s i => cseInstrStep i s)
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).2.2.1.contains d = true) :
-    d ∉ pre.flatMap Instr.uses := by
-  intro hd
-  have hm : d ∈ (pre.foldl (fun s i => cseInstrStep i s)
-      ⟨acc, tab, used, σ, defined, blockDefs⟩).2.2.1 :=
-    (cseInstrFold_used pre _).mpr (Or.inr hd)
-  exact hdrop (Std.HashSet.mem_iff_contains.mp hm)
-
-/-- An operation admitted to the table has no argument defined in the
-unprocessed suffix.  This is the static stability half of the entry-add
-guard. -/
-theorem cse_entry_args_not_defined_later {pre post : List Instr} {i : Instr}
-    {acc : List Instr} {tab : CseTab} {used : Std.HashSet ValId} {σ : Subst}
-    {defined blockDefs : Std.HashSet ValId} {args : List ValId}
-    (hdefs : blockDefs = cseBlockDefs ⟨[], pre ++ i :: post, .ret []⟩)
-    (hdefined0 : ∀ x, x ∉ defined)
-    (hnd : (pre ++ i :: post).flatMap Instr.defs |>.Nodup)
-    (hguard : args.all (fun a =>
-      (pre.foldl (fun s i => cseInstrStep i s)
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).2.2.2.2.1.contains a ||
-        !blockDefs.contains a) = true) :
-    ∀ a ∈ args, a ∉ post.flatMap Instr.defs := by
-  intro a ha hpost
-  have hg := List.all_eq_true.mp hguard a ha
-  rw [Bool.or_eq_true] at hg
-  have hablock : a ∈ blockDefs := by
-    rw [hdefs, mem_cseBlockDefs]
-    simp only [List.flatMap_append, List.flatMap_cons, List.mem_append]
-    exact Or.inr (Or.inr hpost)
-  rcases hg with hpre | hnot
-  · have hpre' : a ∈ pre.flatMap Instr.defs := by
-      have hm := Std.HashSet.contains_iff_mem.mp hpre
-      rcases (cseInstrFold_defined pre _).mp hm with hbase | hp
-      · exact False.elim (hdefined0 a hbase)
-      · exact hp
-    simp only [List.flatMap_append, List.flatMap_cons] at hnd
-    rw [List.nodup_append] at hnd
-    exact (hnd.2.2 a hpre' a (by
-      simp only [List.flatMap_cons, List.mem_append]
-      exact Or.inr hpost)) rfl
-  · have hc := Std.HashSet.mem_iff_contains.mp hablock
-    rw [hc] at hnot
-    simp at hnot
+        ⟨.op [d] yop args :: st.1,
+          { st.2.1 with ops := ((yop, args), d) :: st.2.1.ops }, st.2.2⟩
+    else ⟨.op [d] yop args :: st.1, st.2.1, st.2.2⟩
+  | ins => ⟨ins :: st.1, st.2.1, st.2.2⟩
 
 def cseBlockStep (f : Func) (srcs : Array (List BlockId))
     (bi : BlockId) (st : CSEOuter) : CSEOuter :=
   let b := f.blocks[bi]!
   let tab := cseEntryTab f srcs st.2.1 bi
-  let r := b.instrs.foldl (fun s i => cseInstrStep i s)
-    ⟨[], tab, ∅, st.2.2, ∅, cseBlockDefs b⟩
+  let r := b.instrs.foldl (fun s i => cseInstrStep i s) ⟨[], tab, st.2.2⟩
   ⟨st.1.push { b with instrs := r.1.reverse },
-    st.2.1.setIfInBounds bi r.2.1, r.2.2.2.1⟩
+    st.2.1.setIfInBounds bi r.2.1, r.2.2⟩
 
 theorem cse_eq (f : Func) :
     cse f =
@@ -3774,51 +3581,24 @@ theorem cse_eq (f : Func) :
     (h := by
       intro bi st
       dsimp only [cseBlockStep, cseEntryTab]
-      let bdefs :=
-        f.blocks[bi]!.instrs.foldl
-          (fun (s : Std.HashSet ValId) i =>
-            i.defs.foldl (fun s d => s.insert d) s) ∅
-      rw [Id.forIn_eq_foldl
-        (g := fun ins s => cseImplInstrStep bdefs ins s) (h := by
+      rw [Id.forIn_eq_foldl (g := cseInstrStep) (h := by
         intro i s
-        dsimp only [bdefs, cseBlockDefs]
-        cases hs : substInstr s.2.2.2.2 i with
+        cases hs : substInstr s.2.2 i with
         | const d v =>
-          simp only [cseImplInstrStep, cseImplToModel, cseModelToImpl,
-            cseInstrStep, hs]
+          simp only [cseInstrStep, hs]
           split <;> rename_i hfind <;> simp only [hfind] <;> rfl
         | op ds yop args =>
           cases ds with
-          | nil => simp [cseImplInstrStep, cseImplToModel, cseModelToImpl,
-              cseInstrStep, hs]
+          | nil => simp [cseInstrStep, hs]
           | cons d rest =>
             cases rest with
             | nil =>
-              simp only [cseImplInstrStep, cseImplToModel, cseModelToImpl,
-                cseInstrStep, hs]
+              simp only [cseInstrStep, hs]
               split
-              · split <;> rename_i hfind <;> simp only [hfind]
-                · split <;> rfl
-                · split <;> rfl
+              · split <;> rename_i hfind <;> simp only [hfind] <;> rfl
               · rfl
-            | cons e es => simp [cseImplInstrStep, cseImplToModel,
-                cseModelToImpl, cseInstrStep, hs]
-        | call ds fid args => simp [cseImplInstrStep, cseImplToModel,
-            cseModelToImpl, cseInstrStep, hs])]
-      have hc := cseImplFold_toModel bdefs f.blocks[bi]!.instrs
-        ⟨∅, [],
-          if bi == f.entry then {}
-          else match (inEdgeSources f)[bi]! with
-            | [p] => if p < bi then
-                Passes.inheritTab st.2.1[p]! f.blocks[bi]!.params
-              else {}
-            | _ => {},
-          ∅, st.2.2⟩
-      dsimp only [cseImplToModel] at hc
-      have hbdefs : bdefs = cseBlockDefs f.blocks[bi]! := by
-        simp [bdefs, cseBlockDefs]
-      rw [← hbdefs]
-      rw [← hc]
+            | cons e es => simp [cseInstrStep, hs]
+        | call ds fid args => simp [cseInstrStep, hs])]
       rfl)]
   simp [Id.run, bind, pure]
 
@@ -3865,8 +3645,7 @@ def cseBlockOut (f : Func) (bi : BlockId) : Block :=
   let b := f.blocks[bi]!
   let st := csePrefix f bi
   let tab := cseEntryTab f (inEdgeSources f) st.2.1 bi
-  let r := b.instrs.foldl (fun s i => cseInstrStep i s)
-    ⟨[], tab, ∅, st.2.2, ∅, cseBlockDefs b⟩
+  let r := b.instrs.foldl (fun s i => cseInstrStep i s) ⟨[], tab, st.2.2⟩
   { b with instrs := r.1.reverse }
 
 inductive CseExpr
@@ -4065,12 +3844,10 @@ theorem CSEInv.addOp {f : Func} {seen : List ValId} {tab : CseTab} {σ : Subst}
       exact ⟨by simp [hs.1], hs.2⟩
 
 theorem cseInstrStep_inv {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
-    {seen : List ValId} {tab : CseTab} {used : Std.HashSet ValId} {σ : Subst}
-    {defined blockDefs : Std.HashSet ValId}
-    (hinv : CSEInv f seen tab σ)
+    {seen : List ValId} {tab : CseTab} {σ : Subst} (hinv : CSEInv f seen tab σ)
     (i : Instr) (hi : i ∈ b.instrs) (hnd : (seen ++ i.defs).Nodup) :
-    let r := cseInstrStep i ⟨[], tab, used, σ, defined, blockDefs⟩
-    CSEInv f (seen ++ i.defs) r.2.1 r.2.2.2.1 ∧ SubstExt σ r.2.2.2.1 := by
+    let r := cseInstrStep i ⟨[], tab, σ⟩
+    CSEInv f (seen ++ i.defs) r.2.1 r.2.2 ∧ SubstExt σ r.2.2 := by
   have ext_refl : SubstExt σ σ := fun h => h
   cases i with
   | const d v =>
@@ -4135,15 +3912,9 @@ theorem cseInstrStep_inv {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
               unfold cseTabVals
               exact List.mem_append_left _ (List.mem_map.mpr ⟨((yop0, args0), d0), hm, rfl⟩)
             have hd0 := hinv.2.2.2.2 d0 htv
-            by_cases hu : used.contains d = true
-            · rw [if_pos hu]
-              exact ⟨hinv.weaken (fun x hx => List.mem_append_left _ hx), ext_refl⟩
-            · rw [if_neg hu]
-              exact ⟨hinv.insert hd hd0.1 hd0.2 hc' hc0,
-                CSEInv.insert_ext d0 hinv hd⟩
-          · split
-            · exact ⟨hinv.addOp hd hc, ext_refl⟩
-            · exact ⟨hinv.weaken (fun x hx => List.mem_append_left _ hx), ext_refl⟩
+            exact ⟨hinv.insert hd hd0.1 hd0.2 hc' hc0,
+              CSEInv.insert_ext d0 hinv hd⟩
+          · exact ⟨hinv.addOp hd hc, ext_refl⟩
         · rw [if_neg hp]
           exact ⟨hinv.weaken (fun x hx => List.mem_append_left _ hx), ext_refl⟩
   | call ds fid args =>
@@ -4152,11 +3923,8 @@ theorem cseInstrStep_inv {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
       intro x hx
       exact List.mem_append_left _ hx), ext_refl⟩
 
-theorem cseInstrStep_state (i : Instr) (acc : List Instr) (tab : CseTab)
-    (used : Std.HashSet ValId) (σ : Subst)
-    (defined blockDefs : Std.HashSet ValId) :
-    (cseInstrStep i ⟨acc, tab, used, σ, defined, blockDefs⟩).2 =
-      (cseInstrStep i ⟨[], tab, used, σ, defined, blockDefs⟩).2 := by
+theorem cseInstrStep_state (i : Instr) (acc : List Instr) (tab : CseTab) (σ : Subst) :
+    (cseInstrStep i ⟨acc, tab, σ⟩).2 = (cseInstrStep i ⟨[], tab, σ⟩).2 := by
   cases i with
   | const d v => simp only [cseInstrStep, substInstr]; split <;> rfl
   | op ds yop args =>
@@ -4165,9 +3933,7 @@ theorem cseInstrStep_state (i : Instr) (acc : List Instr) (tab : CseTab)
     | cons d rest =>
       cases rest with
       | cons e es => rfl
-      | nil =>
-        simp only [cseInstrStep, substInstr]
-        split <;> (try split <;> (try split)) <;> rfl
+      | nil => simp only [cseInstrStep, substInstr]; split <;> (try split) <;> rfl
   | call ds fid args => rfl
 
 theorem SubstExt.trans {σ τ υ : Subst} (h1 : SubstExt σ τ) (h2 : SubstExt τ υ) :
@@ -4182,11 +3948,9 @@ theorem SubstStable.trans {seen : List ValId} {σ τ υ : Subst}
   intro x hx
   rw [h2 x hx, h1 x hx]
 
-theorem cseInstrStep_stable {seen : List ValId} {tab : CseTab}
-    {used : Std.HashSet ValId} {σ : Subst} {defined blockDefs : Std.HashSet ValId}
+theorem cseInstrStep_stable {seen : List ValId} {tab : CseTab} {σ : Subst}
     (i : Instr) (hnd : (seen ++ i.defs).Nodup) :
-    SubstStable seen σ
-      (cseInstrStep i ⟨[], tab, used, σ, defined, blockDefs⟩).2.2.2.1 := by
+    SubstStable seen σ (cseInstrStep i ⟨[], tab, σ⟩).2.2 := by
   have fresh {d : ValId} (hd : d ∈ i.defs) : d ∉ seen := by
     rw [List.nodup_append] at hnd
     exact fun hm => (hnd.2.2 d hm d hd) rfl
@@ -4212,49 +3976,41 @@ theorem cseInstrStep_stable {seen : List ValId} {tab : CseTab}
         simp only [cseInstrStep, substInstr]
         split
         · split
-          · split
-            · rfl
-            · have hne : d ≠ x := by
-                intro hdx
-                subst x
-                exact fresh (by simp [Instr.defs]) hx
-              have hdx : (d == x) = false := by simp [hne]
-              simp [Std.HashMap.getElem?_insert, hdx]
-          · split <;> rfl
+          · have hne : d ≠ x := by
+              intro hdx
+              subst x
+              exact fresh (by simp [Instr.defs]) hx
+            have hdx : (d == x) = false := by simp [hne]
+            simp [Std.HashMap.getElem?_insert, hdx]
+          · rfl
         · rfl
   | call ds fid args => rfl
 
 theorem cseInstrFold_inv {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
     {seen : List ValId} {tab : CseTab} {σ : Subst} (hinv : CSEInv f seen tab σ)
     (l : List Instr) (hmem : ∀ i ∈ l, i ∈ b.instrs)
-    (hnd : (seen ++ l.flatMap Instr.defs).Nodup) (acc : List Instr)
-    (used defined blockDefs : Std.HashSet ValId) :
-    let r := l.foldl (fun s i => cseInstrStep i s)
-      ⟨acc, tab, used, σ, defined, blockDefs⟩
-    CSEInv f (seen ++ l.flatMap Instr.defs) r.2.1 r.2.2.2.1 ∧
-      SubstExt σ r.2.2.2.1 := by
-  induction l generalizing seen tab σ acc used defined blockDefs with
+    (hnd : (seen ++ l.flatMap Instr.defs).Nodup) (acc : List Instr) :
+    let r := l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩
+    CSEInv f (seen ++ l.flatMap Instr.defs) r.2.1 r.2.2 ∧ SubstExt σ r.2.2 := by
+  induction l generalizing seen tab σ acc with
   | nil => simpa using And.intro hinv (show SubstExt σ σ from fun h => h)
   | cons i is ih =>
     simp only [List.flatMap_cons] at hnd ⊢
     have hprefix : (seen ++ i.defs).Nodup := by
       apply List.Nodup.of_append_left (l₂ := is.flatMap Instr.defs)
       simpa [List.append_assoc] using hnd
-    have hone := cseInstrStep_inv hb (used := used) (defined := defined)
-      (blockDefs := blockDefs) hinv i
-      (hmem i (by simp)) hprefix
-    have hstate := cseInstrStep_state i acc tab used σ defined blockDefs
-    let s1 := cseInstrStep i ⟨acc, tab, used, σ, defined, blockDefs⟩
-    have hinv1 : CSEInv f (seen ++ i.defs) s1.2.1 s1.2.2.2.1 := by
+    have hone := cseInstrStep_inv hb hinv i (hmem i (by simp)) hprefix
+    have hstate := cseInstrStep_state i acc tab σ
+    let s1 := cseInstrStep i ⟨acc, tab, σ⟩
+    have hinv1 : CSEInv f (seen ++ i.defs) s1.2.1 s1.2.2 := by
       rw [hstate]
       exact hone.1
-    have hext1 : SubstExt σ s1.2.2.2.1 := by
+    have hext1 : SubstExt σ s1.2.2 := by
       rw [hstate]
       exact hone.2
     have htail : ((seen ++ i.defs) ++ is.flatMap Instr.defs).Nodup := by
       simpa [List.append_assoc] using hnd
-    have hrest := ih hinv1 (fun j hj => hmem j (by simp [hj])) htail
-      s1.1 s1.2.2.1 s1.2.2.2.2.1 s1.2.2.2.2.2
+    have hrest := ih hinv1 (fun j hj => hmem j (by simp [hj])) htail s1.1
     rw [List.foldl_cons]
     refine ⟨?_, hext1.trans hrest.2⟩
     simpa [List.append_assoc] using hrest.1
@@ -4262,33 +4018,28 @@ theorem cseInstrFold_inv {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
 theorem cseInstrFold_stable {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
     {seen : List ValId} {tab : CseTab} {σ : Subst} (hinv : CSEInv f seen tab σ)
     (l : List Instr) (hmem : ∀ i ∈ l, i ∈ b.instrs)
-    (hnd : (seen ++ l.flatMap Instr.defs).Nodup) (acc : List Instr)
-    (used defined blockDefs : Std.HashSet ValId) :
+    (hnd : (seen ++ l.flatMap Instr.defs).Nodup) (acc : List Instr) :
     SubstStable seen σ
-      (l.foldl (fun s i => cseInstrStep i s)
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).2.2.2.1 := by
-  induction l generalizing seen tab σ acc used defined blockDefs with
+      (l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩).2.2 := by
+  induction l generalizing seen tab σ acc with
   | nil => intro x hx; rfl
   | cons i is ih =>
     simp only [List.flatMap_cons] at hnd
     have hprefix : (seen ++ i.defs).Nodup := by
       apply List.Nodup.of_append_left (l₂ := is.flatMap Instr.defs)
       simpa [List.append_assoc] using hnd
-    have hone := cseInstrStep_inv hb (used := used) (defined := defined)
-      (blockDefs := blockDefs) hinv i
-      (hmem i (by simp)) hprefix
-    have hstate := cseInstrStep_state i acc tab used σ defined blockDefs
-    let s1 := cseInstrStep i ⟨acc, tab, used, σ, defined, blockDefs⟩
-    have hinv1 : CSEInv f (seen ++ i.defs) s1.2.1 s1.2.2.2.1 := by
+    have hone := cseInstrStep_inv hb hinv i (hmem i (by simp)) hprefix
+    have hstate := cseInstrStep_state i acc tab σ
+    let s1 := cseInstrStep i ⟨acc, tab, σ⟩
+    have hinv1 : CSEInv f (seen ++ i.defs) s1.2.1 s1.2.2 := by
       rw [hstate]
       exact hone.1
     have htail : ((seen ++ i.defs) ++ is.flatMap Instr.defs).Nodup := by
       simpa [List.append_assoc] using hnd
-    have hs1 : SubstStable seen σ s1.2.2.2.1 := by
+    have hs1 : SubstStable seen σ s1.2.2 := by
       rw [hstate]
       exact cseInstrStep_stable i hprefix
-    have hrest := ih hinv1 (fun j hj => hmem j (by simp [hj])) htail
-      s1.1 s1.2.2.1 s1.2.2.2.2.1 s1.2.2.2.2.2
+    have hrest := ih hinv1 (fun j hj => hmem j (by simp [hj])) htail s1.1
     rw [List.foldl_cons]
     exact hs1.trans (fun x hx => hrest x (List.mem_append_left _ hx))
 
@@ -4503,22 +4254,22 @@ theorem csePrefixInv_succ {f : Func} {n : Nat} (hnd : f.allDefs.Nodup)
     exact (instrDefs_nodup hnd).sublist (cseSeen_sublist f (n + 1))
   let tab := cseEntryTab f (inEdgeSources f) (csePrefix f n).2.1 n
   let r := b.instrs.foldl (fun s i => cseInstrStep i s)
-    ⟨[], tab, ∅, (csePrefix f n).2.2, ∅, cseBlockDefs b⟩
+    ⟨[], tab, (csePrefix f n).2.2⟩
   have htab : CSEInv f (cseSeen f n) tab (csePrefix f n).2.2 :=
     cseEntryTab_inv hpre
   have hr := cseInstrFold_inv hbmem htab b.instrs (fun i hi => hi)
-    hseenNodup [] ∅ ∅ (cseBlockDefs b)
+    hseenNodup []
   have hstable := cseInstrFold_stable hbmem htab b.instrs (fun i hi => hi)
-    hseenNodup [] ∅ ∅ (cseBlockDefs b)
+    hseenNodup []
   change CSEPrefixInv f (n + 1)
   rw [CSEPrefixInv, csePrefix_succ]
   simp only [cseBlockStep]
   rw [hbBang, hseen]
-  change CSEInv f (cseSeen f n ++ b.instrs.flatMap Instr.defs) {} r.2.2.2.1
+  change CSEInv f (cseSeen f n ++ b.instrs.flatMap Instr.defs) {} r.2.2
       ∧ ((csePrefix f n).2.1.setIfInBounds n r.2.1).size = f.blocks.size
       ∧ ∀ p < n + 1,
         CSEInv f (cseSeen f n ++ b.instrs.flatMap Instr.defs)
-          ((csePrefix f n).2.1.setIfInBounds n r.2.1)[p]! r.2.2.2.1
+          ((csePrefix f n).2.1.setIfInBounds n r.2.1)[p]! r.2.2
   refine ⟨hr.1.emptyTab, by simpa using hpre.2.1, ?_⟩
   intro p hp
   by_cases hpn : p = n
@@ -4561,7 +4312,7 @@ theorem csePrefix_ext_succ {f : Func} {n : Nat} (hnd : f.allDefs.Nodup)
   have htab : CSEInv f (cseSeen f n) tab (csePrefix f n).2.2 :=
     cseEntryTab_inv hpre
   have hr := cseInstrFold_inv hbmem htab b.instrs (fun i hi => hi)
-    hseenNodup [] ∅ ∅ (cseBlockDefs b)
+    hseenNodup []
   rw [csePrefix_succ]
   simp only [cseBlockStep]
   have hbBang : f.blocks[n]! = b := by rw [getElem!_eq_getElem hn]
@@ -4586,7 +4337,7 @@ theorem csePrefix_stable_succ {f : Func} {n : Nat} (hnd : f.allDefs.Nodup)
   have htab : CSEInv f (cseSeen f n) tab (csePrefix f n).2.2 :=
     cseEntryTab_inv hpre
   have hr := cseInstrFold_stable hbmem htab b.instrs (fun i hi => hi)
-    hseenNodup [] ∅ ∅ (cseBlockDefs b)
+    hseenNodup []
   rw [csePrefix_succ]
   simp only [cseBlockStep]
   have hbBang : f.blocks[n]! = b := by rw [getElem!_eq_getElem hn]
@@ -4726,9 +4477,8 @@ theorem substTerm_edge {σ : Subst} {t : Term} {e : Edge}
   | ret xs => simp [substTerm, Term.edges] at he
   | halt yop xs => simp [substTerm, Term.edges] at he
 
-theorem cseInstrStep_out {i : Instr} {acc : List Instr} {tab : CseTab}
-    {used : Std.HashSet ValId} {σ : Subst} {defined blockDefs : Std.HashSet ValId} :
-    let r := cseInstrStep i ⟨acc, tab, used, σ, defined, blockDefs⟩
+theorem cseInstrStep_out {i : Instr} {acc : List Instr} {tab : CseTab} {σ : Subst} :
+    let r := cseInstrStep i ⟨acc, tab, σ⟩
     r.1 = acc ∨ r.1 = substInstr σ i :: acc := by
   cases i with
   | const d v =>
@@ -4741,28 +4491,20 @@ theorem cseInstrStep_out {i : Instr} {acc : List Instr} {tab : CseTab}
           cases rest with
           | nil =>
               simp only [cseInstrStep, substInstr]
-              split <;> (try split <;> (try split <;> (try split))) <;> simp
+              split <;> (try split) <;> simp
           | cons e es => simp [cseInstrStep, substInstr]
   | call ds fid args => simp [cseInstrStep, substInstr]
 
 theorem cseInstrStep_acc_sublist {i : Instr} {acc : List Instr} {tab : CseTab}
-    {used : Std.HashSet ValId} {σ : Subst} {defined blockDefs : Std.HashSet ValId} :
-    acc.Sublist
-      (cseInstrStep i ⟨acc, tab, used, σ, defined, blockDefs⟩).1 := by
-  rcases cseInstrStep_out (i := i) (acc := acc) (tab := tab)
-      (used := used) (σ := σ) with h | h
+    {σ : Subst} : acc.Sublist (cseInstrStep i ⟨acc, tab, σ⟩).1 := by
+  rcases cseInstrStep_out (i := i) (acc := acc) (tab := tab) (σ := σ) with h | h
   · rw [h]
   · rw [h]
     exact List.Sublist.cons _ (List.Sublist.refl _)
 
 theorem cseInstrStep_tabVals {i : Instr} {acc : List Instr} {tab : CseTab}
-    {used : Std.HashSet ValId} {σ : Subst} {defined blockDefs : Std.HashSet ValId}
-    {x : ValId}
-    (hx : x ∈ cseTabVals
-      (cseInstrStep i ⟨acc, tab, used, σ, defined, blockDefs⟩).2.1) :
-    x ∈ cseTabVals tab ∨
-      x ∈ (cseInstrStep i
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).1.flatMap Instr.defs := by
+    {σ : Subst} {x : ValId} (hx : x ∈ cseTabVals (cseInstrStep i ⟨acc, tab, σ⟩).2.1) :
+    x ∈ cseTabVals tab ∨ x ∈ (cseInstrStep i ⟨acc, tab, σ⟩).1.flatMap Instr.defs := by
   cases i with
   | const d v =>
       cases hfind : tab.consts.find? (fun x => x.1 == v) with
@@ -4785,33 +4527,23 @@ theorem cseInstrStep_tabVals {i : Instr} {acc : List Instr} {tab : CseTab}
               · cases hfind : tab.ops.find? (fun x => x.1 == (yop, substVs σ args)) with
                 | some a =>
                     have hx' : x ∈ cseTabVals tab := by
-                      by_cases hu : used.contains d = true
-                      · simpa [cseInstrStep, substInstr, hp, hfind, hu] using hx
-                      · simpa [cseInstrStep, substInstr, hp, hfind, hu] using hx
+                      simpa [cseInstrStep, substInstr, hp, hfind] using hx
                     exact Or.inl hx'
                 | none =>
-                    by_cases hg : (substVs σ args).all (fun a =>
-                        defined.contains a || !blockDefs.contains a) = true
-                    · simp only [cseInstrStep, substInstr, hp, if_true, hfind, hg,
-                        cseTabVals, List.map_cons, List.mem_append, List.mem_cons,
-                        Instr.defs, List.flatMap_cons] at hx ⊢
-                      tauto
-                    · have hx' : x ∈ cseTabVals tab := by
-                        simpa [cseInstrStep, substInstr, hp, hfind, hg] using hx
-                      exact Or.inl hx'
+                    simp only [cseInstrStep, substInstr, hp, if_true, hfind, cseTabVals,
+                      List.map_cons, List.mem_append, List.mem_cons, Instr.defs,
+                      List.flatMap_cons] at hx ⊢
+                    tauto
               · have hx' : x ∈ cseTabVals tab := by
                   simpa [cseInstrStep, substInstr, hp] using hx
                 exact Or.inl hx'
   | call ds fid args => exact Or.inl hx
 
 theorem cseInstrStep_defs_resolve {f : Func} {seen : List ValId} {i : Instr}
-    {acc : List Instr} {tab : CseTab} {used : Std.HashSet ValId} {σ : Subst}
-    {defined blockDefs : Std.HashSet ValId}
-    (hinv : CSEInv f seen tab σ)
+    {acc : List Instr} {tab : CseTab} {σ : Subst} (hinv : CSEInv f seen tab σ)
     (hnd : (seen ++ i.defs).Nodup) {d : ValId} (hd : d ∈ i.defs) :
-    let r := cseInstrStep i ⟨acc, tab, used, σ, defined, blockDefs⟩
-    substV r.2.2.2.1 d ∈ r.1.flatMap Instr.defs ∨
-      substV r.2.2.2.1 d ∈ cseTabVals tab := by
+    let r := cseInstrStep i ⟨acc, tab, σ⟩
+    substV r.2.2 d ∈ r.1.flatMap Instr.defs ∨ substV r.2.2 d ∈ cseTabVals tab := by
   have hfresh : d ∉ seen := by
     rw [List.nodup_append] at hnd
     exact fun hm => (hnd.2.2 d hm d hd) rfl
@@ -4849,26 +4581,17 @@ theorem cseInstrStep_defs_resolve {f : Func} {seen : List ValId} {i : Instr}
               · cases hfind : tab.ops.find? (fun x => x.1 == (yop, substVs σ args)) with
                 | none =>
                     left
-                    by_cases hg : (substVs σ args).all (fun a =>
-                        defined.contains a || !blockDefs.contains a) = true
-                    · simp [cseInstrStep, substInstr, hp, hfind, hg, substV,
-                        Std.HashMap.getD_eq_getD_getElem?, hdnone, Instr.defs]
-                    · simp [cseInstrStep, substInstr, hp, hfind, hg, substV,
-                        Std.HashMap.getD_eq_getD_getElem?, hdnone, Instr.defs]
+                    simp [cseInstrStep, substInstr, hp, hfind, substV,
+                      Std.HashMap.getD_eq_getD_getElem?, hdnone]
+                    exact Or.inl (by simp [Instr.defs])
                 | some a =>
                     obtain ⟨key, d0⟩ := a
+                    right
                     have hm : (key, d0) ∈ tab.ops := List.mem_of_find?_eq_some hfind
                     have hd0mem : d0 ∈ cseTabVals tab :=
                       List.mem_append_left _ (List.mem_map.mpr ⟨(key, d0), hm, rfl⟩)
-                    by_cases hu : used.contains d = true
-                    · left
-                      simp [cseInstrStep, substInstr, hp, hfind, hu, substV,
-                        Std.HashMap.getD_eq_getD_getElem?, hdnone]
-                      exact Or.inl (by simp [Instr.defs])
-                    · right
-                      simpa [cseInstrStep, substInstr, hp, hfind, hu, substV,
-                        Std.HashMap.getD_eq_getD_getElem?,
-                        Std.HashMap.getElem?_insert] using hd0mem
+                    simpa [cseInstrStep, substInstr, hp, hfind, substV,
+                      Std.HashMap.getD_eq_getD_getElem?, Std.HashMap.getElem?_insert] using hd0mem
               · left
                 simp [cseInstrStep, substInstr, hp, substV,
                   Std.HashMap.getD_eq_getD_getElem?, hdnone]
@@ -4887,137 +4610,109 @@ theorem cseInstrStep_defs_resolve {f : Func} {seen : List ValId} {i : Instr}
       exact Or.inl (by simpa [Instr.defs] using hd)
 
 theorem cseInstrFold_acc_sublist (l : List Instr) (acc : List Instr)
-    (tab : CseTab) (used : Std.HashSet ValId) (σ : Subst)
-    (defined blockDefs : Std.HashSet ValId) :
-    acc.Sublist
-      (l.foldl (fun s i => cseInstrStep i s)
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).1 := by
-  induction l generalizing acc tab used σ defined blockDefs with
+    (tab : CseTab) (σ : Subst) :
+    acc.Sublist (l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩).1 := by
+  induction l generalizing acc tab σ with
   | nil => exact List.Sublist.refl _
   | cons i is ih =>
       rw [List.foldl_cons]
-      exact (cseInstrStep_acc_sublist (i := i)).trans
-        (ih _ _ _ _ _ _)
+      exact (cseInstrStep_acc_sublist (i := i)).trans (ih _ _ _)
 
 theorem cseInstrFold_tabVals (l : List Instr) (acc : List Instr)
-    (tab : CseTab) (used : Std.HashSet ValId) (σ : Subst)
-    (defined blockDefs : Std.HashSet ValId) {x : ValId}
+    (tab : CseTab) (σ : Subst) {x : ValId}
     (hx : x ∈ cseTabVals
-      (l.foldl (fun s i => cseInstrStep i s)
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).2.1) :
+      (l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩).2.1) :
     x ∈ cseTabVals tab ∨
-      x ∈ (l.foldl (fun s i => cseInstrStep i s)
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).1.flatMap Instr.defs := by
-  induction l generalizing acc tab used σ defined blockDefs with
+      x ∈ (l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩).1.flatMap Instr.defs := by
+  induction l generalizing acc tab σ with
   | nil => exact Or.inl hx
   | cons i is ih =>
       rw [List.foldl_cons] at hx ⊢
-      let s1 := cseInstrStep i ⟨acc, tab, used, σ, defined, blockDefs⟩
-      rcases ih s1.1 s1.2.1 s1.2.2.1 s1.2.2.2.1
-          s1.2.2.2.2.1 s1.2.2.2.2.2 hx with htab | hout
+      let s1 := cseInstrStep i ⟨acc, tab, σ⟩
+      rcases ih s1.1 s1.2.1 s1.2.2 hx with htab | hout
       · rcases cseInstrStep_tabVals htab with hold | hnew
         · exact Or.inl hold
         · exact Or.inr
-            (((cseInstrFold_acc_sublist is s1.1 s1.2.1 s1.2.2.1
-              s1.2.2.2.1 s1.2.2.2.2.1 s1.2.2.2.2.2).flatMap _).subset hnew)
+            (((cseInstrFold_acc_sublist is s1.1 s1.2.1 s1.2.2).flatMap _).subset hnew)
       · exact Or.inr hout
 
 theorem cseInstrFold_defs_resolve {f : Func} {b : Block}
     (hb : b ∈ f.blocks.toList) {seen : List ValId} {tab : CseTab} {σ : Subst}
     (hinv : CSEInv f seen tab σ) (l : List Instr)
     (hmem : ∀ i ∈ l, i ∈ b.instrs)
-    (hnd : (seen ++ l.flatMap Instr.defs).Nodup) (acc : List Instr)
-    (used defined blockDefs : Std.HashSet ValId) {d : ValId}
+    (hnd : (seen ++ l.flatMap Instr.defs).Nodup) (acc : List Instr) {d : ValId}
     (hd : d ∈ l.flatMap Instr.defs) :
-    let r := l.foldl (fun s i => cseInstrStep i s)
-      ⟨acc, tab, used, σ, defined, blockDefs⟩
-    substV r.2.2.2.1 d ∈ r.1.flatMap Instr.defs ∨
-      substV r.2.2.2.1 d ∈ cseTabVals tab := by
-  induction l generalizing seen tab σ acc used defined blockDefs with
+    let r := l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩
+    substV r.2.2 d ∈ r.1.flatMap Instr.defs ∨ substV r.2.2 d ∈ cseTabVals tab := by
+  induction l generalizing seen tab σ acc with
   | nil => simp at hd
   | cons i is ih =>
       simp only [List.flatMap_cons, List.mem_append] at hd
       have hprefix : (seen ++ i.defs).Nodup := by
         apply List.Nodup.of_append_left (l₂ := is.flatMap Instr.defs)
         simpa [List.append_assoc] using hnd
-      have hone := cseInstrStep_inv hb (used := used) (defined := defined)
-        (blockDefs := blockDefs) hinv i
-        (hmem i (by simp)) hprefix
-      have hstate := cseInstrStep_state i acc tab used σ defined blockDefs
-      let s1 := cseInstrStep i ⟨acc, tab, used, σ, defined, blockDefs⟩
-      have hinv1 : CSEInv f (seen ++ i.defs) s1.2.1 s1.2.2.2.1 := by
+      have hone := cseInstrStep_inv hb hinv i (hmem i (by simp)) hprefix
+      have hstate := cseInstrStep_state i acc tab σ
+      let s1 := cseInstrStep i ⟨acc, tab, σ⟩
+      have hinv1 : CSEInv f (seen ++ i.defs) s1.2.1 s1.2.2 := by
         rw [hstate]
         exact hone.1
       have htail : ((seen ++ i.defs) ++ is.flatMap Instr.defs).Nodup := by
         simpa [List.append_assoc] using hnd
       have hstable := cseInstrFold_stable hb hinv1 is
-        (fun j hj => hmem j (by simp [hj])) htail s1.1 s1.2.2.1
-        s1.2.2.2.2.1 s1.2.2.2.2.2
+        (fun j hj => hmem j (by simp [hj])) htail s1.1
       rw [List.foldl_cons]
       dsimp only
       rcases hd with hd | hd
-      · have hnow := cseInstrStep_defs_resolve hinv hprefix hd
-          (acc := acc) (used := used) (defined := defined) (blockDefs := blockDefs)
+      · have hnow := cseInstrStep_defs_resolve hinv hprefix hd (acc := acc)
         have hsubst : substV
-            (is.foldl (fun s i => cseInstrStep i s) s1).2.2.2.1 d =
-              substV s1.2.2.2.1 d := by
+            (is.foldl (fun s i => cseInstrStep i s) s1).2.2 d = substV s1.2.2 d := by
           simp only [substV, Std.HashMap.getD_eq_getD_getElem?]
           rw [hstable d (List.mem_append_right _ hd)]
         rw [hsubst]
         rcases hnow with hout | htab
         · exact Or.inl
-            (((cseInstrFold_acc_sublist is s1.1 s1.2.1 s1.2.2.1
-              s1.2.2.2.1 s1.2.2.2.2.1 s1.2.2.2.2.2).flatMap _).subset hout)
+            (((cseInstrFold_acc_sublist is s1.1 s1.2.1 s1.2.2).flatMap _).subset hout)
         · exact Or.inr htab
-      · have hrest := ih hinv1 (fun j hj => hmem j (by simp [hj])) htail
-          s1.1 s1.2.2.1 s1.2.2.2.2.1 s1.2.2.2.2.2 hd
+      · have hrest := ih hinv1 (fun j hj => hmem j (by simp [hj])) htail s1.1 hd
         rcases hrest with hout | htab1
         · exact Or.inl hout
         · rcases cseInstrStep_tabVals htab1 with htab | hnew
           · exact Or.inr htab
           · exact Or.inl
-              (((cseInstrFold_acc_sublist is s1.1 s1.2.1 s1.2.2.1
-                s1.2.2.2.1 s1.2.2.2.2.1 s1.2.2.2.2.2).flatMap _).subset hnew)
+              (((cseInstrFold_acc_sublist is s1.1 s1.2.1 s1.2.2).flatMap _).subset hnew)
 
 theorem cseInstrFold_origin {f : Func} {b : Block}
     (hb : b ∈ f.blocks.toList) {seen : List ValId} {tab : CseTab} {σ : Subst}
     (hinv : CSEInv f seen tab σ) (l : List Instr)
     (hmem : ∀ i ∈ l, i ∈ b.instrs)
     (hnd : (seen ++ l.flatMap Instr.defs).Nodup) (acc : List Instr)
-    (used defined blockDefs : Std.HashSet ValId)
     {τ : Subst}
     (hext : SubstExt
-      (l.foldl (fun s i => cseInstrStep i s)
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).2.2.2.1 τ)
+      (l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩).2.2 τ)
     (hrange : RangeFree τ) {j : Instr}
-    (hj : j ∈ (l.foldl (fun s i => cseInstrStep i s)
-      ⟨acc, tab, used, σ, defined, blockDefs⟩).1) :
+    (hj : j ∈ (l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩).1) :
     j ∈ acc ∨ ∃ i ∈ l, substInstr τ j = substInstr τ i := by
-  induction l generalizing seen tab σ acc used defined blockDefs with
+  induction l generalizing seen tab σ acc with
   | nil => exact Or.inl hj
   | cons i is ih =>
       have hprefix : (seen ++ i.defs).Nodup := by
         apply List.Nodup.of_append_left (l₂ := is.flatMap Instr.defs)
         simpa [List.append_assoc] using hnd
-      have hone := cseInstrStep_inv hb (used := used) (defined := defined)
-        (blockDefs := blockDefs) hinv i
-        (hmem i (by simp)) hprefix
-      have hstate := cseInstrStep_state i acc tab used σ defined blockDefs
-      let s1 := cseInstrStep i ⟨acc, tab, used, σ, defined, blockDefs⟩
-      have hinv1 : CSEInv f (seen ++ i.defs) s1.2.1 s1.2.2.2.1 := by
+      have hone := cseInstrStep_inv hb hinv i (hmem i (by simp)) hprefix
+      have hstate := cseInstrStep_state i acc tab σ
+      let s1 := cseInstrStep i ⟨acc, tab, σ⟩
+      have hinv1 : CSEInv f (seen ++ i.defs) s1.2.1 s1.2.2 := by
         rw [hstate]
         exact hone.1
       have htail : ((seen ++ i.defs) ++ is.flatMap Instr.defs).Nodup := by
         simpa [List.append_assoc] using hnd
       have hfoldInv := cseInstrFold_inv hb hinv1 is
-        (fun k hk => hmem k (by simp [hk])) htail s1.1 s1.2.2.1
-        s1.2.2.2.2.1 s1.2.2.2.2.2
+        (fun k hk => hmem k (by simp [hk])) htail s1.1
       rw [List.foldl_cons] at hext hj
-      rcases ih hinv1 (fun k hk => hmem k (by simp [hk])) htail s1.1
-          s1.2.2.1 s1.2.2.2.2.1 s1.2.2.2.2.2 hext hj with
+      rcases ih hinv1 (fun k hk => hmem k (by simp [hk])) htail s1.1 hext hj with
         hj1 | ⟨k, hk, heq⟩
-      · rcases cseInstrStep_out (i := i) (acc := acc) (tab := tab)
-          (used := used) (σ := σ) with
+      · rcases cseInstrStep_out (i := i) (acc := acc) (tab := tab) (σ := σ) with
           hout | hout
         · exact Or.inl (hout ▸ hj1)
         · rw [hout] at hj1
@@ -5025,12 +4720,12 @@ theorem cseInstrFold_origin {f : Func} {b : Block}
           · right
             refine ⟨i, by simp, ?_⟩
             apply substInstr_absorb
-            have honeExt : SubstExt σ s1.2.2.2.1 := by
+            have honeExt : SubstExt σ s1.2.2 := by
               rw [hstate]
               exact hone.2
-            have htailExt : SubstExt s1.2.2.2.1 τ :=
-              SubstExt.trans (σ := s1.2.2.2.1)
-                (τ := (is.foldl (fun s i => cseInstrStep i s) s1).2.2.2.1)
+            have htailExt : SubstExt s1.2.2 τ :=
+              SubstExt.trans (σ := s1.2.2)
+                (τ := (is.foldl (fun s i => cseInstrStep i s) s1).2.2)
                 (υ := τ) hfoldInv.2 hext
             intro x y hxy
             exact htailExt (honeExt hxy)
@@ -5078,8 +4773,7 @@ def cseBlockTabOut (f : Func) (i : BlockId) : CseTab :=
   let b := f.blocks[i]!
   let st := csePrefix f i
   let tab := cseEntryTab f (inEdgeSources f) st.2.1 i
-  (b.instrs.foldl (fun s ins => cseInstrStep ins s)
-    ⟨[], tab, ∅, st.2.2, ∅, cseBlockDefs b⟩).2.1
+  (b.instrs.foldl (fun s ins => cseInstrStep ins s) ⟨[], tab, st.2.2⟩).2.1
 
 theorem csePrefix_table_next {f : Func} (hnd : f.allDefs.Nodup)
     {i : BlockId} (hi : i < f.blocks.size) :
@@ -5091,7 +4785,7 @@ theorem csePrefix_table_next {f : Func} (hnd : f.allDefs.Nodup)
   have hi1 : i < ((csePrefix f i).2.1.setIfInBounds i
       ((f.blocks[i]!.instrs.foldl (fun s ins => cseInstrStep ins s)
         ⟨[], cseEntryTab f (inEdgeSources f) (csePrefix f i).2.1 i,
-          ∅, (csePrefix f i).2.2, ∅, cseBlockDefs f.blocks[i]!⟩).2.1)).size := by simpa
+          (csePrefix f i).2.2⟩).2.1)).size := by simpa
   rw [getElem!_eq_getElem hi1, Array.getElem_setIfInBounds_self]
 
 theorem csePrefix_table_to {f : Func} (hnd : f.allDefs.Nodup)
@@ -5116,7 +4810,7 @@ theorem csePrefix_table_to {f : Func} (hnd : f.allDefs.Nodup)
         have hp1 : p < ((csePrefix f n).2.1.setIfInBounds n
             ((f.blocks[n]!.instrs.foldl (fun s ins => cseInstrStep ins s)
               ⟨[], cseEntryTab f (inEdgeSources f) (csePrefix f n).2.1 n,
-                ∅, (csePrefix f n).2.2, ∅, cseBlockDefs f.blocks[n]!⟩).2.1)).size := by simpa
+                (csePrefix f n).2.2⟩).2.1)).size := by simpa
         rw [getElem!_eq_getElem hp1,
           Array.getElem_setIfInBounds_ne hp0 (Ne.symm hpn),
           ← getElem!_eq_getElem hp0]
@@ -5135,8 +4829,7 @@ theorem cseBlock_spec {f : Func} (hnd : f.allDefs.Nodup)
   let τ := (csePrefix f f.blocks.size).2.2
   let st := csePrefix f i
   let tab := cseEntryTab f (inEdgeSources f) st.2.1 i
-  let r := b.instrs.foldl (fun s ins => cseInstrStep ins s)
-    ⟨[], tab, ∅, st.2.2, ∅, cseBlockDefs b⟩
+  let r := b.instrs.foldl (fun s ins => cseInstrStep ins s) ⟨[], tab, st.2.2⟩
   have hi : i < f.blocks.size := (Array.getElem?_eq_some_iff.mp hb).1
   have hbang : f.blocks[i]! = b := by
     rw [getElem!_eq_getElem hi]
@@ -5152,17 +4845,17 @@ theorem cseBlock_spec {f : Func} (hnd : f.allDefs.Nodup)
     rw [← hseen]
     exact (instrDefs_nodup hnd).sublist (cseSeen_sublist f (i + 1))
   have hrInv := cseInstrFold_inv hbmem htab b.instrs (fun ins hins => hins)
-    hndBlock [] ∅ ∅ (cseBlockDefs b)
-  have hrPrefix : (csePrefix f (i + 1)).2.2 = r.2.2.2.1 := by
+    hndBlock []
+  have hrPrefix : (csePrefix f (i + 1)).2.2 = r.2.2 := by
     rw [csePrefix_succ]
     simp only [cseBlockStep]
     rw [hbang]
-  have hext : SubstExt r.2.2.2.1 τ := by
+  have hext : SubstExt r.2.2 τ := by
     rw [← hrPrefix]
     exact csePrefix_ext_to hnd (Nat.succ_le_of_lt hi) (Nat.le_refl _)
   have hfinalInv := (csePrefixInv hnd f.blocks.size (Nat.le_refl _)).1
   have hrange : RangeFree τ := hfinalInv.2.2.1
-  have hstable : SubstStable (cseSeen f (i + 1)) r.2.2.2.1 τ := by
+  have hstable : SubstStable (cseSeen f (i + 1)) r.2.2 τ := by
     rw [← hrPrefix]
     exact csePrefix_stable_to hnd (Nat.succ_le_of_lt hi) (Nat.le_refl _)
   have hraw : cseBlockOut f i = { b with instrs := r.1.reverse } := by
@@ -5191,7 +4884,7 @@ theorem cseBlock_spec {f : Func} (hnd : f.allDefs.Nodup)
       have hjr : j0 ∈ r.1 := by simpa using hj0
       have hxj0 : x ∈ (substInstr τ j0).uses := by rw [hjeq]; exact hxj
       have horigin := cseInstrFold_origin hbmem htab b.instrs (fun ins hins => hins)
-        hndBlock [] ∅ ∅ (cseBlockDefs b) hext hrange hjr
+        hndBlock [] hext hrange hjr
       rcases horigin with hjnil | ⟨ins, hins, heq⟩
       · simp at hjnil
       · have hxins : x ∈ (substInstr τ ins).uses := by
@@ -5210,12 +4903,11 @@ theorem cseBlock_spec {f : Func} (hnd : f.allDefs.Nodup)
       exact ToAsm.mem_blockDefs.mpr (Or.inl hp)
     · obtain ⟨ins, hins, hyd⟩ := List.mem_flatMap.mp hd
       have hres := cseInstrFold_defs_resolve hbmem htab b.instrs
-        (fun ins hins => hins) hndBlock [] ∅ ∅ (cseBlockDefs b)
-          (List.mem_flatMap.mpr ⟨ins, hins, hyd⟩)
+        (fun ins hins => hins) hndBlock [] (List.mem_flatMap.mpr ⟨ins, hins, hyd⟩)
       have hymem : y ∈ cseSeen f (i + 1) := by
         rw [hseen]
         exact List.mem_append_right _ (List.mem_flatMap.mpr ⟨ins, hins, hyd⟩)
-      have hsubst : substV τ y = substV r.2.2.2.1 y := by
+      have hsubst : substV τ y = substV r.2.2 y := by
         simp only [substV, Std.HashMap.getD_eq_getD_getElem?]
         rw [hstable y hymem]
       rw [hsubst]
@@ -5234,8 +4926,7 @@ theorem cseBlock_spec {f : Func} (hnd : f.allDefs.Nodup)
     have htabOut : cseBlockTabOut f i = r.2.1 := by
       simp [cseBlockTabOut, hbang, st, tab, r]
     rw [htabOut] at hx
-    rcases cseInstrFold_tabVals b.instrs [] tab ∅ st.2.2 ∅
-        (cseBlockDefs b) hx with hav | hout
+    rcases cseInstrFold_tabVals b.instrs [] tab st.2.2 hx with hav | hout
     · exact Or.inr hav
     · left
       apply ToAsm.mem_blockDefs.mpr
@@ -11755,24 +11446,18 @@ it to the accumulator/reverse implementation used by the pass. -/
 
 namespace Passes
 
-def cseInstrsOut (τ : Subst) :
-    List Instr → CseTab → Std.HashSet ValId → Subst →
-      Std.HashSet ValId → Std.HashSet ValId → List Instr
-  | [], _, _, _, _, _ => []
-  | i :: is, tab, used, σ, defined, blockDefs =>
-      let s := cseInstrStep i ⟨[], tab, used, σ, defined, blockDefs⟩
-      s.1.reverse.map (substInstr τ) ++
-        cseInstrsOut τ is s.2.1 s.2.2.1 s.2.2.2.1
-          s.2.2.2.2.1 s.2.2.2.2.2
+def cseInstrsOut (τ : Subst) : List Instr → CseTab → Subst → List Instr
+  | [], _, _ => []
+  | i :: is, tab, σ =>
+      let s := cseInstrStep i ⟨[], tab, σ⟩
+      s.1.reverse.map (substInstr τ) ++ cseInstrsOut τ is s.2.1 s.2.2
 
 omit model in
 theorem cseInstrStep_acc_eq (i : Instr) (acc : List Instr)
-    (tab : CseTab) (used : Std.HashSet ValId) (σ : Subst)
-    (defined blockDefs : Std.HashSet ValId) :
-    cseInstrStep i ⟨acc, tab, used, σ, defined, blockDefs⟩ =
-      let s := cseInstrStep i ⟨[], tab, used, σ, defined, blockDefs⟩
-      ⟨s.1 ++ acc, s.2.1, s.2.2.1, s.2.2.2.1,
-        s.2.2.2.2.1, s.2.2.2.2.2⟩ := by
+    (tab : CseTab) (σ : Subst) :
+    cseInstrStep i ⟨acc, tab, σ⟩ =
+      let s := cseInstrStep i ⟨[], tab, σ⟩
+      ⟨s.1 ++ acc, s.2.1, s.2.2⟩ := by
   cases i with
   | const d v =>
       simp only [cseInstrStep, substInstr]
@@ -11785,35 +11470,28 @@ theorem cseInstrStep_acc_eq (i : Instr) (acc : List Instr)
           | cons e es => rfl
           | nil =>
               simp only [cseInstrStep, substInstr]
-              split <;> (try split <;> (try split <;> (try split))) <;> rfl
+              split <;> (try split) <;> rfl
   | call ds fid args => rfl
 
 omit model in
 theorem cseInstrFold_acc_state (l : List Instr) (acc : List Instr)
-    (tab : CseTab) (used : Std.HashSet ValId) (σ : Subst)
-    (defined blockDefs : Std.HashSet ValId) :
-    let r := l.foldl (fun s i => cseInstrStep i s)
-      ⟨acc, tab, used, σ, defined, blockDefs⟩
-    let r0 := l.foldl (fun s i => cseInstrStep i s)
-      ⟨[], tab, used, σ, defined, blockDefs⟩
-    r = ⟨r0.1 ++ acc, r0.2.1, r0.2.2.1, r0.2.2.2.1,
-      r0.2.2.2.2.1, r0.2.2.2.2.2⟩ := by
-  induction l generalizing acc tab used σ defined blockDefs with
+    (tab : CseTab) (σ : Subst) :
+    let r := l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩
+    let r0 := l.foldl (fun s i => cseInstrStep i s) ⟨[], tab, σ⟩
+    r = ⟨r0.1 ++ acc, r0.2.1, r0.2.2⟩ := by
+  induction l generalizing acc tab σ with
   | nil => rfl
   | cons i is ih =>
       rw [List.foldl_cons, List.foldl_cons, cseInstrStep_acc_eq]
-      let s := cseInstrStep i ⟨[], tab, used, σ, defined, blockDefs⟩
+      let s := cseInstrStep i ⟨[], tab, σ⟩
       rw [ih (acc := s.1 ++ acc), ih (acc := s.1)]
       simp [List.append_assoc]
 
 omit model in
 theorem cseInstrFold_acc (τ : Subst) (l : List Instr) (acc : List Instr)
-    (tab : CseTab) (used : Std.HashSet ValId) (σ : Subst)
-    (defined blockDefs : Std.HashSet ValId) :
-    let r := l.foldl (fun s i => cseInstrStep i s)
-      ⟨acc, tab, used, σ, defined, blockDefs⟩
-    let r0 := l.foldl (fun s i => cseInstrStep i s)
-      ⟨[], tab, used, σ, defined, blockDefs⟩
+    (tab : CseTab) (σ : Subst) :
+    let r := l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩
+    let r0 := l.foldl (fun s i => cseInstrStep i s) ⟨[], tab, σ⟩
     r.1.reverse.map (substInstr τ) =
       acc.reverse.map (substInstr τ) ++ r0.1.reverse.map (substInstr τ)
       ∧ r.2 = r0.2 := by
@@ -11821,21 +11499,18 @@ theorem cseInstrFold_acc (τ : Subst) (l : List Instr) (acc : List Instr)
   simp [List.reverse_append, List.map_append]
 
 omit model in
-theorem cseInstrsOut_eq_fold (τ : Subst) (l : List Instr) (tab : CseTab)
-    (used : Std.HashSet ValId) (σ : Subst)
-    (defined blockDefs : Std.HashSet ValId) :
-    cseInstrsOut τ l tab used σ defined blockDefs =
-      (l.foldl (fun s i => cseInstrStep i s)
-        ⟨[], tab, used, σ, defined, blockDefs⟩).1.reverse.map
+theorem cseInstrsOut_eq_fold (τ : Subst) (l : List Instr)
+    (tab : CseTab) (σ : Subst) :
+    cseInstrsOut τ l tab σ =
+      (l.foldl (fun s i => cseInstrStep i s) ⟨[], tab, σ⟩).1.reverse.map
         (substInstr τ) := by
-  induction l generalizing tab used σ defined blockDefs with
+  induction l generalizing tab σ with
   | nil => rfl
   | cons i is ih =>
       rw [cseInstrsOut]
-      let s := cseInstrStep i ⟨[], tab, used, σ, defined, blockDefs⟩
+      let s := cseInstrStep i ⟨[], tab, σ⟩
       rw [ih]
-      have hacc := cseInstrFold_acc τ is s.1 s.2.1 s.2.2.1 s.2.2.2.1
-        s.2.2.2.2.1 s.2.2.2.2.2
+      have hacc := cseInstrFold_acc τ is s.1 s.2.1 s.2.2
       rw [List.foldl_cons]
       exact hacc.1.symm
 
@@ -11845,24 +11520,20 @@ namespace Passes
 
 omit model in
 theorem cseInstrFold_defs_source (l : List Instr) (acc : List Instr)
-    (tab : CseTab) (used : Std.HashSet ValId) (σ : Subst)
-    (defined blockDefs : Std.HashSet ValId) {x : ValId}
+    (tab : CseTab) (σ : Subst) {x : ValId}
     (hx : x ∈ (l.foldl (fun s i => cseInstrStep i s)
-      ⟨acc, tab, used, σ, defined, blockDefs⟩).1.flatMap Instr.defs) :
+      ⟨acc, tab, σ⟩).1.flatMap Instr.defs) :
     x ∈ acc.flatMap Instr.defs ∨ x ∈ l.flatMap Instr.defs := by
-  induction l generalizing acc tab used σ defined blockDefs with
+  induction l generalizing acc tab σ with
   | nil => exact Or.inl hx
   | cons i is ih =>
       rw [List.foldl_cons] at hx
-      rcases ih _ _ _ _ _ _ hx with hold | htail
-      · rcases cseInstrStep_out (i := i) (acc := acc) (tab := tab)
-          (used := used) (σ := σ) with hs | hs
-        · change x ∈ (cseInstrStep i
-            ⟨acc, tab, used, σ, defined, blockDefs⟩).1.flatMap Instr.defs at hold
+      rcases ih _ _ _ hx with hold | htail
+      · rcases cseInstrStep_out (i := i) (acc := acc) (tab := tab) (σ := σ) with hs | hs
+        · change x ∈ (cseInstrStep i ⟨acc, tab, σ⟩).1.flatMap Instr.defs at hold
           rw [hs] at hold
           exact Or.inl hold
-        · change x ∈ (cseInstrStep i
-            ⟨acc, tab, used, σ, defined, blockDefs⟩).1.flatMap Instr.defs at hold
+        · change x ∈ (cseInstrStep i ⟨acc, tab, σ⟩).1.flatMap Instr.defs at hold
           rw [hs, List.flatMap_cons] at hold
           rcases List.mem_append.mp hold with hnew | hold
           · exact Or.inr (by
@@ -11895,13 +11566,12 @@ theorem cseBlockOut_def_source {f : Func} {i : BlockId} {b : Block}
     let st := csePrefix f i
     let tab := cseEntryTab f (inEdgeSources f) st.2.1 i
     let r := b.instrs.foldl (fun s ins => cseInstrStep ins s)
-      ⟨[], tab, ∅, st.2.2, ∅, cseBlockDefs b⟩
+      ⟨[], tab, st.2.2⟩
     have hjr : j0 ∈ r.1 := by
       simpa [cseBlockOut, hbang, st, tab, r] using hj0
     have hflat : x ∈ r.1.flatMap Instr.defs :=
       List.mem_flatMap.mpr ⟨j0, hjr, hxj0⟩
-    rcases cseInstrFold_defs_source b.instrs [] tab ∅ st.2.2 ∅
-        (cseBlockDefs b) hflat with hnil | hout
+    rcases cseInstrFold_defs_source b.instrs [] tab st.2.2 hflat with hnil | hout
     · simp at hnil
     · exact hout
 
@@ -11947,10 +11617,10 @@ theorem cse_alias_zone {f : Func} (hnd : f.allDefs.Nodup)
     exact Or.inl (Passes.block_def_index_unique hnd hrb hdb hrdef horigin)
   · exact Or.inr (cseAvail_strict_dom hnd hwf hrb hrdef havail)
 
-/-! ### Historical non-positional witness
+/-! ### Obstruction: the current dominance liveness is not positional
 
-The positional def-before-use lemma cannot be proved from the present
-`wfCheck` and `domCheck` alone.  `ToAsm.liveStep` computes
+The positional def-before-use lemma requested by the CSE simulation cannot be
+proved from the present `wfCheck` and `domCheck`.  `ToAsm.liveStep` computes
 
     blockUses b \\ blockDefs b
 
@@ -11959,11 +11629,10 @@ use before a later definition is removed by that later definition and never
 reaches `liveIn(entry)`.  The following checked witness is deliberately kept
 next to the blocked theorem: value `1` is read by the first instruction and
 defined by the second, yet both checks accept and the sole live-in set is
-empty.  The implementation's `usedSoFar` guard now prevents this witness from
-creating a dropped *operation* destination: after the first instruction,
-`usedSoFar.contains 1` is true.  The witness remains useful for documenting
-why the proof must consume that guard rather than ask `domCheck` for a
-sequential fact it does not establish. -/
+empty.  Closing the requested same-block window requires the liveness
+specification/check itself to become sequential (or the CSE theorem to carry a
+successful-execution positional provenance premise); neither change is
+available while this task is restricted to this proof file. -/
 
 private def cseLaterDefCounterexampleBlock : Block :=
   ⟨[], [.op [0] .add [1, 1], .const 1 0], .ret []⟩
@@ -12016,37 +11685,43 @@ whole inherited runtime table without a reachability/path witness.
 intra-block fold as a recursive instruction list, so the kept/dropped cases can
 be matched directly against `Exec`.
 
-**Remaining obstruction after threading `usedSoFar` (2026-08-01).**  The
-four-field fold characterization above is repaired and exposes the guard at
-the exact drop branch.  It closes the ordinary window strictly before a
-dropped destination's definition: once an earlier instruction reads `d`, the
-fold keeps the later duplicate operation and never inserts `d ↦ d₀`.
+**Remaining obstruction (2026-08-01).**  `CseTabRuntime` is sufficient for a
+dropped definition and `setMany_inheritTab` is sufficient at a jump, but the
+actual output is finally rewritten by the *whole-function* substitution `τ`.
+Consequently an instruction earlier in fold order is rewritten even when the
+domain definition that inserted `d ↦ d₀` occurs later.  To transport its
+`getMany`, the induction needs `R d = R' (substV τ d)` for every actually-read
+`d`, not merely for representatives in the current table.  This is not implied
+by `CseTabRuntime`: on loop re-entry a representative can be rebound before the
+duplicate definition is encountered again.  It is safe for executions starting
+at the function entry because a use before the first execution of its unique
+definition is stuck, but the present `LiveAgree`/`domCheck` API is
+block-granular (`blockUses \\ blockDefs`) and does not expose that
+reachable-execution / intra-block def-before-use fact.  The next required lemma
+is therefore a history-sensitive strengthening saying that every substituted
+use reached by an entry-rooted `Exec` has already crossed its unique `CseDef`
+site (or an equivalent sequential-liveness lemma plus preservation around
+backedges).  Without it the kept-op case cannot establish the substituted
+argument read after a representative is rebound; this is independent of the
+now-closed target-parameter inheritance case.
 
-The blocked preservation goal is now narrower and history-sensitive.  When a
-loop re-executes the representative `d₀`, the relation may move from synced
-to the same-block window until `d` is executed again.  `BindingProvenance`
-proves that a successful read has crossed *some* unique definition site, but
-does not identify the last dynamic binding event.  Two cases still require
-that last-event fact:
+`BindingProvenance` now closes the "has already crossed its unique definition
+site" half.  The exact remaining preservation step is the same as for
+`elimTrivialParams_sound`: if a loop dynamically re-executes representative
+`d0` after the last execution of dropped definition `d`, site provenance no
+longer implies `R d = R' d0`.  `CseTabRuntime` can re-establish the equality at
+the next dropped instruction, but a whole-function substitution may rewrite a
+use before that point.  A binding-event/last-occurrence refinement of the
+entry path must rule such a use out from a successful entry-rooted `Exec`; the
+present invariant intentionally does not claim that unproved value fact.
 
-* the defining instruction itself may read its destination (`d ∈ args`);
-  `usedSoFar` is updated after the drop test, so the guard describes the strict
-  prefix and does not by itself refute that read at the definition site; and
-* `CseTabRuntime.set_of_fresh` requires that a newly bound destination is not
-  among an earlier table expression's substituted arguments.  Static
-  single-assignment allows an earlier use followed by the unique definition;
-  entry-rooted execution makes its first visit stuck, but the existing
-  site-only provenance API cannot turn that fact into preservation across a
-  hypothetical loop re-entry.
-
-Both configurations are unreachable from a successful entry-rooted `Exec`
-unless an earlier binding event exists, so they do not constitute a semantic
-counterexample.  The missing local lemma must strengthen `EntryPath` /
-`BindingProvenance` with ordered binding events (and their current words), then
-show by descent to the first event that these bootstrap windows are vacuous.
-Without it, the kept-instruction/table-runtime preservation case cannot be
-typed; the guard fact alone only settles aliases whose destination was read in
-the strict preceding prefix. -/
+The proposed def-before-use discharge is unavailable under the theorem's
+current hypotheses: `cseLaterDefCounterexample_checks` above proves that
+`wfCheck && domCheck` accepts a same-block read whose unique definition is
+later.  In particular, `liveInSets_least` cannot expose that read because the
+`ToAsm.liveStep` whose least fixed point it characterizes has already removed
+it with the block-wide `blockDefs`.  This is the precise obstruction to the
+positional-window preservation case below. -/
 theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (hdom : ToAsm.Func.domCheck f = true)
@@ -13045,9 +12720,9 @@ per-pass lemmas above (plus the simultaneous whole-program induction described i
 this section's header) do their work.
 
 **Current obstruction.**  This branch depends immediately on `cse_sound`,
-whose remaining binding-event obligation is recorded above it.  In addition,
-this checkout contains the four `_dom` preservation results but no per-pass
-`_wf` preservation declarations for
+which is blocked by the checked non-positional-liveness counterexample recorded
+above it.  In addition, this checkout contains the four `_dom` preservation
+results but no per-pass `_wf` preservation declarations for
 `elimTrivialParams`, `constFold`, `cse`, or `dve`; `runOnce_dom` therefore takes
 the intermediate `wfCheck` facts as explicit hypotheses.  The gate checks only
 the final candidate, so it does not supply those intermediate facts backwards.
