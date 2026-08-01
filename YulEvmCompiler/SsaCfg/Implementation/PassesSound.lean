@@ -12498,6 +12498,409 @@ theorem cse_alias_zone {f : Func} (hnd : f.allDefs.Nodup)
     exact Or.inl (Passes.block_def_index_unique hnd hrb hdb hrdef horigin)
   · exact Or.inr (cseAvail_strict_dom hnd hwf hrb hrdef havail)
 
+namespace Passes
+
+def Before (a b : ValId) (xs : List ValId) : Prop :=
+  ∃ pre mid post, xs = pre ++ a :: mid ++ b :: post
+
+theorem Before.asymm {a b : ValId} {xs : List ValId} (hn : xs.Nodup)
+    (hab : Before a b xs) : ¬ Before b a xs := by
+  rcases hab with ⟨pre, mid, post, rfl⟩
+  rintro ⟨pre', mid', post', heq⟩
+  let ia := pre.length
+  let ib := pre.length + 1 + mid.length
+  let ib' := pre'.length
+  let ia' := pre'.length + 1 + mid'.length
+  have hiaQ : (pre ++ a :: mid ++ b :: post)[ia]? = some a := by
+    simp [ia]
+  have hibQ : (pre ++ a :: mid ++ b :: post)[ib]? = some b := by
+    rw [show pre ++ a :: mid ++ b :: post =
+      (pre ++ [a] ++ mid) ++ (b :: post) by simp [List.append_assoc]]
+    have hib_eq : ib = (pre ++ [a] ++ mid).length := by
+      simp [ib]
+      omega
+    rw [hib_eq]
+    simp
+  have hibQ' : (pre ++ a :: mid ++ b :: post)[ib']? = some b := by
+    rw [heq]
+    simp [ib']
+  have hiaQ' : (pre ++ a :: mid ++ b :: post)[ia']? = some a := by
+    rw [heq]
+    rw [show pre' ++ b :: mid' ++ a :: post' =
+      (pre' ++ [b] ++ mid') ++ (a :: post') by simp [List.append_assoc]]
+    have hia_eq : ia' = (pre' ++ [b] ++ mid').length := by
+      simp [ia']
+      omega
+    rw [hia_eq]
+    simp
+  obtain ⟨hia_lt, hia⟩ := List.getElem?_eq_some_iff.mp hiaQ
+  obtain ⟨hib_lt, hib⟩ := List.getElem?_eq_some_iff.mp hibQ
+  obtain ⟨hib'_lt, hib'⟩ := List.getElem?_eq_some_iff.mp hibQ'
+  obtain ⟨hia'_lt, hia'⟩ := List.getElem?_eq_some_iff.mp hiaQ'
+  have hea : ia = ia' :=
+    (hn.getElem_inj_iff (hi := hia_lt) (hj := hia'_lt)).mp (hia.trans hia'.symm)
+  have heb : ib = ib' :=
+    (hn.getElem_inj_iff (hi := hib_lt) (hj := hib'_lt)).mp (hib.trans hib'.symm)
+  dsimp [ia, ib, ia', ib'] at hea heb
+  omega
+
+theorem substInstr_use_source_of_rangeFree {sigma tau : Subst}
+    (hext : SubstExt sigma tau) (hrange : RangeFree tau)
+    {d d0 : ValId} (hmap : tau[d]? = some d0)
+    {i : Instr} (hd : d ∈ (substInstr sigma i).uses) : d ∈ i.uses := by
+  obtain ⟨x, hx, hxd⟩ := substInstr_use hd
+  unfold substV at hxd
+  cases hsx : sigma[x]? with
+  | none =>
+      simp [Std.HashMap.getD_eq_getD_getElem?, hsx] at hxd
+      simpa [hxd] using hx
+  | some y =>
+      have hty : tau[x]? = some y := hext hsx
+      have hynone : tau[y]? = none := hrange hty
+      simp [Std.HashMap.getD_eq_getD_getElem?, hsx] at hxd
+      subst y
+      rw [hmap] at hynone
+      contradiction
+
+theorem instr_order_before {f : Func} {b : Block}
+    (hb : b ∈ f.blocks.toList) {pre mid post : List Instr} {i j : Instr}
+    (his : b.instrs = pre ++ i :: mid ++ j :: post)
+    {d e : ValId} (hdi : i.defs = [d]) (hej : j.defs = [e]) :
+    Before d e (cseSeen f f.blocks.size) := by
+  obtain ⟨bs, bt, hbs⟩ := List.mem_iff_append.mp hb
+  refine ⟨bs.flatMap (fun b : Block => b.instrs.flatMap Instr.defs) ++
+      pre.flatMap Instr.defs,
+    mid.flatMap Instr.defs,
+    post.flatMap Instr.defs ++
+      bt.flatMap (fun b : Block => b.instrs.flatMap Instr.defs), ?_⟩
+  have htake : f.blocks.toList.take f.blocks.size = f.blocks.toList := by simp
+  rw [cseSeen, htake, hbs]
+  simp [his, hdi, hej, List.append_assoc]
+
+inductive CseDomainDef (f : Func) (tau : Subst) : CseExpr → ValId → Prop
+  | op {b : Block} {i : Instr} {sigma : Subst} {d : ValId}
+      {yop : Op} {args : List ValId} :
+      b ∈ f.blocks.toList → i ∈ b.instrs →
+      substInstr sigma i = .op [d] yop args →
+      (∀ a ∈ args, tau[a]? ≠ none → a ∈ i.uses) →
+      CseDomainDef f tau (.op yop args) d
+
+def CseTabDomainSound (f : Func) (tau : Subst) (tab : CseTab) : Prop :=
+  ∀ {yop args d}, ((yop, args), d) ∈ tab.ops →
+    CseDomainDef f tau (.op yop args) d
+
+theorem CseTabDomainSound.empty (f : Func) (tau : Subst) :
+    CseTabDomainSound f tau {} := by simp [CseTabDomainSound]
+
+theorem CseTabDomainSound.inheritTab {f : Func} {tau : Subst} {tab : CseTab}
+    (h : CseTabDomainSound f tau tab) (ps : List ValId) :
+    CseTabDomainSound f tau (inheritTab tab ps) := by
+  intro yop args d hm
+  exact h (List.mem_filter.mp hm).1
+
+theorem CseTabDomainSound.addOp {f : Func} {tau : Subst} {tab : CseTab}
+    (h : CseTabDomainSound f tau tab) {yop : Op} {args : List ValId}
+    {d : ValId} (hd : CseDomainDef f tau (.op yop args) d) :
+    CseTabDomainSound f tau { tab with ops := ((yop, args), d) :: tab.ops } := by
+  intro yop0 args0 d0 hm
+  rcases List.mem_cons.mp hm with hnew | hold
+  · obtain ⟨hkey, rfl⟩ := Prod.mk.inj hnew
+    obtain ⟨rfl, rfl⟩ := Prod.mk.inj hkey
+    exact hd
+  · exact h hold
+
+theorem cseInstrStep_domain {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
+    {tau : Subst} (hrange : RangeFree tau)
+    {tab : CseTab} {used : Std.HashSet ValId} {sigma : Subst}
+    {defined blockDefs : Std.HashSet ValId}
+    (htab : CseTabDomainSound f tau tab) (i : Instr) (hi : i ∈ b.instrs)
+    (hext : SubstExt sigma tau) :
+    let r := cseInstrStep i ⟨[], tab, used, sigma, defined, blockDefs⟩
+    CseTabDomainSound f tau r.2.1 := by
+  cases i with
+  | const d v =>
+      simp only [cseInstrStep, substInstr]
+      split <;> exact htab
+  | call ds fid args => exact htab
+  | op ds yop args =>
+      cases ds with
+      | nil => exact htab
+      | cons d rest =>
+        cases rest with
+        | cons e es => exact htab
+        | nil =>
+          simp only [cseInstrStep, substInstr]
+          split
+          · split
+            · split <;> exact htab
+            · split
+              · apply htab.addOp
+                apply CseDomainDef.op hb hi rfl
+                intro a ha hta
+                obtain ⟨a0, ha0⟩ := Option.ne_none_iff_exists'.mp hta
+                have ha' : a ∈ (substInstr sigma (.op [d] yop args)).uses := by
+                  simpa [substInstr, Instr.uses] using ha
+                exact substInstr_use_source_of_rangeFree hext hrange ha0 ha'
+              · exact htab
+          · exact htab
+
+theorem cseInstrFold_domain {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
+    {tau : Subst} (hrange : RangeFree tau)
+    {seen : List ValId} {tab : CseTab} {sigma : Subst}
+    (hinv : CSEInv f seen tab sigma) (htab : CseTabDomainSound f tau tab)
+    (l : List Instr) (hmem : ∀ i ∈ l, i ∈ b.instrs)
+    (hnd : (seen ++ l.flatMap Instr.defs).Nodup)
+    (acc : List Instr) (used defined blockDefs : Std.HashSet ValId) :
+    let r := l.foldl (fun s i => cseInstrStep i s)
+      ⟨acc, tab, used, sigma, defined, blockDefs⟩
+    SubstExt r.2.2.2.1 tau → CseTabDomainSound f tau r.2.1 := by
+  dsimp only
+  induction l generalizing seen tab sigma acc used defined blockDefs with
+  | nil => intro _; exact htab
+  | cons i is ih =>
+      simp only [List.flatMap_cons] at hnd
+      have hprefix : (seen ++ i.defs).Nodup := by
+        apply List.Nodup.of_append_left (l₂ := is.flatMap Instr.defs)
+        simpa [List.append_assoc] using hnd
+      have hone := cseInstrStep_inv hb (used := used) (defined := defined)
+        (blockDefs := blockDefs) hinv i (hmem i (by simp)) hprefix
+      have hstate := cseInstrStep_state i acc tab used sigma defined blockDefs
+      let s1 := cseInstrStep i ⟨acc, tab, used, sigma, defined, blockDefs⟩
+      have hinv1 : CSEInv f (seen ++ i.defs) s1.2.1 s1.2.2.2.1 := by
+        rw [hstate]
+        exact hone.1
+      rw [List.foldl_cons]
+      intro hout
+      have htailInv := cseInstrFold_inv hb hinv1 is
+        (fun j hj => hmem j (by simp [hj]))
+        (by simpa [List.append_assoc] using hnd)
+        s1.1 s1.2.2.1 s1.2.2.2.2.1 s1.2.2.2.2.2
+      have hext1tau : SubstExt s1.2.2.2.1 tau := by
+        intro x y hxy
+        exact hout (htailInv.2 hxy)
+      have hext0tau : SubstExt sigma tau := by
+        have hext01 : SubstExt sigma s1.2.2.2.1 := by rw [hstate]; exact hone.2
+        intro x y hxy
+        exact hext1tau (hext01 hxy)
+      have htab1 : CseTabDomainSound f tau s1.2.1 := by
+        rw [hstate]
+        exact cseInstrStep_domain hb hrange htab i (hmem i (by simp)) hext0tau
+      have hs1eta : (⟨s1.1, s1.2.1, s1.2.2.1, s1.2.2.2.1,
+          s1.2.2.2.2.1, s1.2.2.2.2.2⟩ : CSEInner) = s1 := by
+        rcases s1 with ⟨a, tab1, used1, sigma1, defined1, blockDefs1⟩
+        rfl
+      change CseTabDomainSound f tau
+        (is.foldl (fun s i => cseInstrStep i s) s1).2.1
+      rw [← hs1eta]
+      exact ih hinv1 htab1
+        (fun j hj => hmem j (by simp [hj]))
+        (by simpa [List.append_assoc] using hnd)
+        s1.1 s1.2.2.1 s1.2.2.2.2.1 s1.2.2.2.2.2 (by
+          rw [hs1eta]
+          exact hout)
+
+def CSEPrefixDomainInv (f : Func) (tau : Subst) (n : Nat) : Prop :=
+  ∀ p < n, CseTabDomainSound f tau (csePrefix f n).2.1[p]!
+
+theorem csePrefixDomainInv {f : Func} (hnd : f.allDefs.Nodup) :
+    ∀ n ≤ f.blocks.size,
+      CSEPrefixDomainInv f (csePrefix f f.blocks.size).2.2 n := by
+  let tau := (csePrefix f f.blocks.size).2.2
+  have hrange : RangeFree tau :=
+    (csePrefixInv hnd f.blocks.size (Nat.le_refl _)).1.2.2.1
+  intro n hn
+  induction n with
+  | zero => intro p hp; omega
+  | succ n ih =>
+      have hnlt : n < f.blocks.size := by omega
+      let b := f.blocks[n]
+      have hbget : f.blocks[n]? = some b := Array.getElem?_eq_getElem hnlt
+      have hbmem : b ∈ f.blocks.toList := block_mem_of_getElem? hbget
+      have hpre := csePrefixInv hnd n (Nat.le_of_lt hnlt)
+      let tab := cseEntryTab f (inEdgeSources f) (csePrefix f n).2.1 n
+      have htab : CseTabDomainSound f tau tab := by
+        by_cases he : (n == f.entry) = true
+        · simp only [tab, cseEntryTab, if_pos he]
+          exact CseTabDomainSound.empty f tau
+        · cases hs : (inEdgeSources f)[n]! with
+          | nil =>
+              simp only [tab, cseEntryTab, if_neg he, hs]
+              exact CseTabDomainSound.empty f tau
+          | cons p ps =>
+              cases ps with
+              | nil =>
+                  by_cases hp : p < n
+                  · simpa [tab, cseEntryTab, he, hs, hp] using
+                      (CseTabDomainSound.inheritTab (ih (by omega) p hp)
+                        f.blocks[n]!.params)
+                  · simpa [tab, cseEntryTab, he, hs, hp] using
+                      CseTabDomainSound.empty f tau
+              | cons q qs =>
+                  simp only [tab, cseEntryTab, if_neg he, hs]
+                  exact CseTabDomainSound.empty f tau
+      let r := b.instrs.foldl (fun s i => cseInstrStep i s)
+        ⟨[], tab, ∅, (csePrefix f n).2.2, ∅, cseBlockDefs b⟩
+      have hseenNodup :
+          (cseSeen f n ++ b.instrs.flatMap Instr.defs).Nodup := by
+        rw [← cseSeen_succ hbget]
+        exact (instrDefs_nodup hnd).sublist (cseSeen_sublist f (n + 1))
+      have hrEq : (csePrefix f (n + 1)).2.2 = r.2.2.2.1 := by
+        rw [csePrefix_succ]
+        simp only [cseBlockStep]
+        have hbang : f.blocks[n]! = b := by rw [getElem!_eq_getElem hnlt]
+        rw [hbang]
+      have hrExt : SubstExt r.2.2.2.1 tau := by
+        rw [← hrEq]
+        exact csePrefix_ext_to hnd (Nat.succ_le_of_lt hnlt) (Nat.le_refl _)
+      have hrDom : CseTabDomainSound f tau r.2.1 :=
+        cseInstrFold_domain hbmem hrange (cseEntryTab_inv hpre) htab
+          b.instrs (fun i hi => hi) hseenNodup [] ∅ ∅ (cseBlockDefs b) hrExt
+      intro p hp
+      rw [csePrefix_succ]
+      simp only [cseBlockStep]
+      have hbang : f.blocks[n]! = b := by rw [getElem!_eq_getElem hnlt]
+      rw [hbang]
+      change CseTabDomainSound f tau
+        ((csePrefix f n).2.1.setIfInBounds n r.2.1)[p]!
+      by_cases hpn : p = n
+      · subst p
+        have hn0 : n < (csePrefix f n).2.1.size := by rw [hpre.2.1]; exact hnlt
+        have hn1 : n < ((csePrefix f n).2.1.setIfInBounds n r.2.1).size := by simpa
+        rw [getElem!_eq_getElem hn1, Array.getElem_setIfInBounds_self]
+        exact hrDom
+      · have hp0 : p < (csePrefix f n).2.1.size := by
+          rw [hpre.2.1]
+          omega
+        have hp1 : p < ((csePrefix f n).2.1.setIfInBounds n r.2.1).size := by simpa
+        rw [getElem!_eq_getElem hp1,
+          Array.getElem_setIfInBounds_ne hp0 (Ne.symm hpn), ← getElem!_eq_getElem hp0]
+        exact ih (by omega) p (by omega)
+
+theorem source_use_mem_substInstr_of_none {sigma : Subst} {i : Instr}
+    {x : ValId} (hn : sigma[x]? = none) (hx : x ∈ i.uses) :
+    x ∈ (substInstr sigma i).uses := by
+  cases i with
+  | const d v => simp [Instr.uses] at hx
+  | op ds yop args =>
+      simp only [Instr.uses] at hx ⊢
+      simp only [substInstr, substVs, List.mem_map]
+      exact ⟨x, hx, by simp [substV, Std.HashMap.getD_eq_getD_getElem?, hn]⟩
+  | call ds fid args =>
+      simp only [Instr.uses] at hx ⊢
+      simp only [substInstr, substVs, List.mem_map]
+      exact ⟨x, hx, by simp [substV, Std.HashMap.getD_eq_getD_getElem?, hn]⟩
+
+theorem cse_drop_not_self_use {f : Func} {li : Array (List ValId)}
+    (hnd : f.allDefs.Nodup) (hwf : f.wfCheck n = true)
+    (hli : ToAsm.liveInSets f = some li) (hdom : ToAsm.Func.domCheck f = true)
+    (hrange : RangeFree (csePrefix f f.blocks.size).2.2)
+    (horder : AliasOrdered (cseSeen f f.blocks.size) (csePrefix f f.blocks.size).2.2)
+    {d d0 : ValId} (hmap : (csePrefix f f.blocks.size).2.2[d]? = some d0)
+    {yop : Op} {args : List ValId}
+    (hdrop : CseDropPos f (.op yop args) d)
+    (hentry : CseEntryPos f (.op yop args) d0)
+    (hdomain : CseDomainDef f (csePrefix f f.blocks.size).2.2 (.op yop args) d0)
+    {di : BlockId} {db : Block} (hdb : f.blocks[di]? = some db)
+    {path : List BlockId} (hpath : EntryPath f path di) :
+    ∀ {i : Instr}, i ∈ db.instrs → d ∈ i.defs → d ∉ i.uses := by
+  intro i hi hddef hdUse
+  cases hdrop with
+  | @op b pre post idrop sigmaDrop _ _ _ hbDrop hseqDrop hsubstDrop
+      hdropNone hprefix =>
+    have hidropDef : idrop.defs = [d] := by
+      rw [← substInstr_defs sigmaDrop idrop, hsubstDrop]
+      rfl
+    have hiEq : i = idrop := instr_def_unique hnd
+      (block_mem_of_getElem? hdb) hbDrop hi (by
+        rw [hseqDrop]
+        simp) hddef (by simp [hidropDef])
+    subst i
+    have hbIndex : b = db := by
+      obtain ⟨bi, hblt, hbget⟩ := List.mem_iff_getElem.mp hbDrop
+      have hbg : f.blocks[bi]? = some b := Array.getElem?_eq_some_iff.mpr
+        ⟨by simpa using hblt, by simpa using hbget⟩
+      have hbDef : d ∈ ToAsm.blockDefs b := ToAsm.mem_blockDefs.mpr
+        (Or.inr (List.mem_flatMap.mpr ⟨idrop, by rw [hseqDrop]; simp,
+          by rw [hidropDef]; simp⟩))
+      have hdbDef : d ∈ ToAsm.blockDefs db := ToAsm.mem_blockDefs.mpr
+        (Or.inr (List.mem_flatMap.mpr ⟨idrop, hi, by rw [hidropDef]; simp⟩))
+      have hbi : bi = di := block_def_index_unique hnd hbg hdb hbDef hdbDef
+      subst bi
+      exact Option.some.inj (hbg.symm.trans hdb)
+    subst b
+    have hdArgs : d ∈ args := by
+      have hs := source_use_mem_substInstr_of_none hdropNone hdUse
+      rw [hsubstDrop] at hs
+      simpa [Instr.uses] using hs
+    cases hentry with
+    | @op br preR postR irep sigmaRep _ _ _ hbRep hseqRep hsubstRep hstable =>
+      cases hdomain with
+      | @op bu iuse sigmaUse _ _ _ hbUse hiUse hsubstUse hdirect =>
+        have hdUseRep0 : d ∈ iuse.uses := hdirect d hdArgs (by rw [hmap]; simp)
+        have hiUseDef : iuse.defs = [d0] := by
+          rw [← substInstr_defs sigmaUse iuse, hsubstUse]
+          rfl
+        have hiRepDef : irep.defs = [d0] := by
+          rw [← substInstr_defs sigmaRep irep, hsubstRep]
+          rfl
+        have hd0UseDef : d0 ∈ iuse.defs := by rw [hiUseDef]; simp
+        have hd0RepDef : d0 ∈ irep.defs := by rw [hiRepDef]; simp
+        have hiUseEq : iuse = irep := instr_def_unique hnd hbUse hbRep hiUse
+          (by rw [hseqRep]; simp) hd0UseDef hd0RepDef
+        subst iuse
+        have hdUseRep : d ∈ irep.uses := hdUseRep0
+        obtain ⟨ri, hrlt, hrget⟩ := List.mem_iff_getElem.mp hbRep
+        have hrb : f.blocks[ri]? = some br := by
+          apply Array.getElem?_eq_some_iff.mpr
+          exact ⟨by simpa using hrlt, by simpa using hrget⟩
+        have hdBlockDef : d ∈ ToAsm.blockDefs db :=
+          ToAsm.mem_blockDefs.mpr (Or.inr (List.mem_flatMap.mpr
+            ⟨idrop, hi, by simp [hidropDef]⟩))
+        have hrBlockDef : d0 ∈ ToAsm.blockDefs br :=
+          ToAsm.mem_blockDefs.mpr (Or.inr (List.mem_flatMap.mpr
+            ⟨irep, by rw [hseqRep]; simp, by simp [hiRepDef]⟩))
+        rcases cse_alias_zone hnd hwf hmap hdb hdBlockDef hrb hrBlockDef with hre | hrs
+        · subst ri
+          have hbr : br = db := Option.some.inj (hrb.symm.trans hdb)
+          rw [hbr] at hseqRep
+          rw [hbr] at hbRep
+          rw [hbr] at hrBlockDef
+          have hirep : irep ∈ pre := by
+            have hm : irep ∈ pre ++ idrop :: post := by simpa [hseqDrop] using
+              (show irep ∈ db.instrs from by rw [hseqRep]; simp)
+            rcases List.mem_append.mp hm with hp | ht
+            · exact hp
+            · rcases List.mem_cons.mp ht with heq | hpost
+              · subst irep
+                have hdd0 : d = d0 := by simpa [hidropDef] using hiRepDef
+                subst d0
+                exact False.elim (by have := hrange hmap; rw [hmap] at this; contradiction)
+              · obtain ⟨mid, tail, hpostEq⟩ := List.mem_iff_append.mp hpost
+                have hrev : Before d d0 (cseSeen f f.blocks.size) :=
+                  instr_order_before (block_mem_of_getElem? hdb)
+                    (pre := pre) (mid := mid) (post := tail)
+                    (i := idrop) (j := irep) (by
+                      rw [hseqDrop, hpostEq]
+                      simp [List.append_assoc])
+                    hidropDef hiRepDef
+                obtain ⟨a, m, z, hord⟩ := horder d d0 hmap
+                have hforward : Before d0 d (cseSeen f f.blocks.size) :=
+                  ⟨a, m, z, hord⟩
+                have hseenNodup : (cseSeen f f.blocks.size).Nodup := by
+                  have htake : f.blocks.toList.take f.blocks.size = f.blocks.toList := by simp
+                  simpa [cseSeen, htake] using instrDefs_nodup hnd
+                exact False.elim ((Before.asymm hseenNodup hforward) hrev)
+          exact hprefix (List.mem_flatMap.mpr ⟨irep, hirep, hdUseRep⟩)
+        · have hduseBlock : d ∈ ToAsm.blockUses br :=
+            instr_use_mem_blockUses (by rw [hseqRep]; simp) hdUseRep
+          have hdr : BlockDom f di ri :=
+            blockDef_dominates_use hnd hli hdom hdb hdBlockDef hrb hduseBlock
+          have hrmem : ri ∈ path := hrs path hpath
+          obtain ⟨prePath, hpRi, -, -⟩ := hpath.prefix_of_mem hrmem
+          exact False.elim ((hrs.not_reverse hpRi) hdr)
+
+end Passes
+
 /-! ### Historical non-positional witness
 
 The positional def-before-use lemma cannot be proved from the present
@@ -12626,22 +13029,24 @@ field).  Independently, `AliasOrdered` and `csePrefix_ordered` prove that every
 representative occurs strictly earlier in the global instruction-definition
 order than its alias.  Both facts are checked above.
 
-The remaining register leaf splits once more when the drop instruction reads
-its own destination.  `CseEntryPos` retains the entry-time substitution
-equation, but it does not retain the definition provenance of an intermediate
-alias `x ↦ d` inside that equation.  The exact missing bridge is
+The former intermediate-alias leaf is now discharged by
+`Passes.CseTabDomainSound` and `Passes.cse_drop_not_self_use`.  The former is
+derived from the real instruction/block folds and proves the range-kept fact:
+if a stored expression argument later becomes an alias key, it was a direct
+source use at the kept representative instruction.  Thus an apparent snapshot
+chain `x ↦ d ↦ d0` contradicts final `RangeFree`; same-block representatives
+then contradict the prefix/order certificates, and inherited representatives
+contradict dominance plus `cse_alias_zone`.
 
-    τ[d]? = some d0 →
-    CseDropPos f (.op yop as) d →
-    CseEntryPos f (.op yop as) d0 →
-    (the drop instruction is current) → d ∉ current.uses
+What remains is to package the already stated three-way register relation,
+thread it together with `CseTabRuntime` through `cseInstrsOut`, and perform the
+`Exec` induction.  At the `sorry` below Lean's exact target is
 
-proved by projecting entry-time substitution ranges to sites preceding `d0`
-(equivalently, by retaining `SubstExt` from the entry snapshot to the final
-substitution).  Same-block entries then contradict the entry suffix guard and
-`csePrefix_ordered`; inherited entries contradict `blockDef_dominates_use` and
-`cse_alias_zone`.  This leaf is what is still needed before the three-way
-register invariant and the `Exec` induction can be assembled.
+    Exec (model := model) P (Passes.cse f)
+      (Regs.empty.setMany f.params args) st
+      ⟨eb'.instrs, eb'.term⟩ res
+
+under precisely the hypotheses displayed in `cse_sound`'s signature.
 -/
 theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
