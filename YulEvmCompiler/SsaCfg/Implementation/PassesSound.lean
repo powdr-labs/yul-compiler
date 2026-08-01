@@ -4861,6 +4861,44 @@ Composing the four into `optimizeProg_sound'` needs two further ingredients:
 
 variable [model : ExternalModel]
 
+namespace Passes
+
+abbrev ElimTrivialLoopState := MProd (Option Func) Func
+
+def elimTrivialStep (_ : Nat) (r : ElimTrivialLoopState) :
+    ForInStep ElimTrivialLoopState :=
+  match findTrivialParam r.2 with
+  | none => .done ⟨some r.2, r.2⟩
+  | some (bi, i, p, v) =>
+      .yield ⟨none, substFunc ((∅ : Subst).insert p v) (removeParam r.2 bi i)⟩
+
+def elimTrivialFuel (f : Func) : Nat :=
+  f.blocks.foldl (fun n b => n + b.params.length) 0 + 1
+
+omit model in
+theorem elimTrivialParams_eq_loop (f : Func) :
+    elimTrivialParams f =
+      let r := loopWith elimTrivialStep
+        (List.range' 0 (elimTrivialFuel f) 1) ⟨none, f⟩
+      r.1.getD r.2 := by
+  unfold elimTrivialParams elimTrivialFuel
+  dsimp only
+  simp only [Std.Legacy.Range.forIn_eq_forIn_range', Std.Legacy.Range.size]
+  rw [Id.forIn_eq_loopWith (g := elimTrivialStep)
+    (h := by
+      intro _ r
+      cases hfind : findTrivialParam r.2 with
+      | none => simp [elimTrivialStep, hfind]
+      | some q =>
+          obtain ⟨bi, i, p, v⟩ := q
+          simp [elimTrivialStep, hfind])]
+  simp [Id.run, bind, pure, Option.getD]
+  cases h : (loopWith elimTrivialStep
+      (List.range' 0 (f.blocks.foldl (fun n b => n + b.params.length) 0 + 1))
+      ⟨none, f⟩).1 <;> simp [h]
+
+end Passes
+
 /-- **Pass 1 (trivial block-parameter elimination) soundness**, under dominance.
 
 `sorry`. The invariant is `LiveAgree li i σ R R'` for `σ = (p ↦ v)`, carried
@@ -4880,15 +4918,15 @@ through the derivation block by block:
   (`Regs.setMany_congr`) or reads only values the invariant covers
   (`Regs.getMany_congr`).
 
-The remaining engineering is a *specification* for `Passes.findTrivialParam`:
-inverting its nested `Id.run` early-return search into "every in-edge argument at
-position `i` of block `bi` is `v` or `p`", and then an induction on the
-fixed-point loop of `elimTrivialParams`.  There is one path-sensitive case after
-that inversion: an in-edge carrying `p` from a block other than `bi` would read
-a stale binding.  `domCheck` and a successful entry-rooted execution exclude
-it, but, as for inherited CSE expression arguments below, the proof needs to
-track the set of definition sites already traversed; `LiveAgree` alone records
-value equality and cannot distinguish a current binding from a stale one. -/
+`Passes.elimTrivialParams_eq_loop` above now supplies the fixed-point-loop
+inversion.  The remaining engineering is a specification for
+`Passes.findTrivialParam`: invert its nested early-return searches into "every
+in-edge argument at position `i` is `v` or `p`" together with the new
+`selfOnly` clause.  That clause removes the former path-sensitive case:
+`p` can occur at the eliminated position only on an edge originating at `bi`
+itself.  Once the candidate inversion is available, the missing proof is the
+one-step `Exec` induction (non-self edges read `v`; self edges preserve the
+carried value) followed by induction on `elimTrivialParams_eq_loop`. -/
 theorem elimTrivialParams_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState}
     {res : FRes} {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (hdom : ToAsm.Func.domCheck f = true)
@@ -5505,6 +5543,83 @@ theorem CseExprRuntime.op_result {τ : Passes.Subst} {R : Regs}
   have hrets : [w0] = rets := Passes.pure_rets_eq hp hb0 hb
   exact ⟨w0, hrets.symm, hd⟩
 
+/-! The executable view of the instruction fold.  Keeping this recursive
+form separate from `cseBlockOut` makes the semantic induction follow the
+source instruction list one constructor at a time; the lemma below reconnects
+it to the accumulator/reverse implementation used by the pass. -/
+
+namespace Passes
+
+def cseInstrsOut (τ : Subst) : List Instr → CseTab → Subst → List Instr
+  | [], _, _ => []
+  | i :: is, tab, σ =>
+      let s := cseInstrStep i ⟨[], tab, σ⟩
+      s.1.reverse.map (substInstr τ) ++ cseInstrsOut τ is s.2.1 s.2.2
+
+omit model in
+theorem cseInstrStep_acc_eq (i : Instr) (acc : List Instr)
+    (tab : CseTab) (σ : Subst) :
+    cseInstrStep i ⟨acc, tab, σ⟩ =
+      let s := cseInstrStep i ⟨[], tab, σ⟩
+      ⟨s.1 ++ acc, s.2.1, s.2.2⟩ := by
+  cases i with
+  | const d v =>
+      simp only [cseInstrStep, substInstr]
+      split <;> rfl
+  | op ds yop args =>
+      cases ds with
+      | nil => rfl
+      | cons d rest =>
+          cases rest with
+          | cons e es => rfl
+          | nil =>
+              simp only [cseInstrStep, substInstr]
+              split <;> (try split) <;> rfl
+  | call ds fid args => rfl
+
+omit model in
+theorem cseInstrFold_acc_state (l : List Instr) (acc : List Instr)
+    (tab : CseTab) (σ : Subst) :
+    let r := l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩
+    let r0 := l.foldl (fun s i => cseInstrStep i s) ⟨[], tab, σ⟩
+    r = ⟨r0.1 ++ acc, r0.2.1, r0.2.2⟩ := by
+  induction l generalizing acc tab σ with
+  | nil => rfl
+  | cons i is ih =>
+      rw [List.foldl_cons, List.foldl_cons, cseInstrStep_acc_eq]
+      let s := cseInstrStep i ⟨[], tab, σ⟩
+      rw [ih (acc := s.1 ++ acc), ih (acc := s.1)]
+      simp [List.append_assoc]
+
+omit model in
+theorem cseInstrFold_acc (τ : Subst) (l : List Instr) (acc : List Instr)
+    (tab : CseTab) (σ : Subst) :
+    let r := l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩
+    let r0 := l.foldl (fun s i => cseInstrStep i s) ⟨[], tab, σ⟩
+    r.1.reverse.map (substInstr τ) =
+      acc.reverse.map (substInstr τ) ++ r0.1.reverse.map (substInstr τ)
+      ∧ r.2 = r0.2 := by
+  rw [cseInstrFold_acc_state]
+  simp [List.reverse_append, List.map_append]
+
+omit model in
+theorem cseInstrsOut_eq_fold (τ : Subst) (l : List Instr)
+    (tab : CseTab) (σ : Subst) :
+    cseInstrsOut τ l tab σ =
+      (l.foldl (fun s i => cseInstrStep i s) ⟨[], tab, σ⟩).1.reverse.map
+        (substInstr τ) := by
+  induction l generalizing tab σ with
+  | nil => rfl
+  | cons i is ih =>
+      rw [cseInstrsOut]
+      let s := cseInstrStep i ⟨[], tab, σ⟩
+      rw [ih]
+      have hacc := cseInstrFold_acc τ is s.1 s.2.1 s.2.2
+      rw [List.foldl_cons]
+      exact hacc.1.symm
+
+end Passes
+
 /-- **Pass 3 (local CSE) soundness**, under dominance.
 
 `sorry`. Same `LiveAgree` invariant as pass 1, with `σ` the accumulated
@@ -5534,10 +5649,31 @@ corresponding jump frame directly: filter membership excludes target parameters
 from both representatives and stored expression arguments, and
 `Passes.substV_not_blockParam` shows that the final substitution cannot map an
 avoided argument back to a target parameter.  Thus `Regs.setMany` preserves the
-whole inherited runtime table without a reachability/path witness.  The
-remaining proof is the intra-block fold/execution induction: kept instructions
-extend the runtime table, dropped constants use `const_of_find`, and dropped
-pure operations use `op_of_find` followed by `CseExprRuntime.op_result`. -/
+whole inherited runtime table without a reachability/path witness.
+
+`cseInstrsOut`/`cseInstrsOut_eq_fold` above now expose the requested
+intra-block fold as a recursive instruction list, so the kept/dropped cases can
+be matched directly against `Exec`.
+
+**Remaining obstruction (2026-08-01).**  `CseTabRuntime` is sufficient for a
+dropped definition and `setMany_inheritTab` is sufficient at a jump, but the
+actual output is finally rewritten by the *whole-function* substitution `τ`.
+Consequently an instruction earlier in fold order is rewritten even when the
+domain definition that inserted `d ↦ d₀` occurs later.  To transport its
+`getMany`, the induction needs `R d = R' (substV τ d)` for every actually-read
+`d`, not merely for representatives in the current table.  This is not implied
+by `CseTabRuntime`: on loop re-entry a representative can be rebound before the
+duplicate definition is encountered again.  It is safe for executions starting
+at the function entry because a use before the first execution of its unique
+definition is stuck, but the present `LiveAgree`/`domCheck` API is
+block-granular (`blockUses \\ blockDefs`) and does not expose that
+reachable-execution / intra-block def-before-use fact.  The next required lemma
+is therefore a history-sensitive strengthening saying that every substituted
+use reached by an entry-rooted `Exec` has already crossed its unique `CseDef`
+site (or an equivalent sequential-liveness lemma plus preservation around
+backedges).  Without it the kept-op case cannot establish the substituted
+argument read after a representative is rebound; this is independent of the
+now-closed target-parameter inheritance case. -/
 theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (hdom : ToAsm.Func.domCheck f = true)
@@ -6061,12 +6197,13 @@ computations on `ToAsm.liveInSets` of the rewritten function, in the same style
 as `ToAsm.liveIn_of_uses`/`liveIn_of_succ`. -/
 
 omit model in
-/-- The structural fixed-point inversion is still missing here.  A one-step
-proof can use `ToAsm.domCheck_of_substitution` with availability `[v]` at the
-rewritten block once `findTrivialParam` has been inverted.  Its successor
-availability premise is immediate for an incoming `v`, and for a self-edge
-carrying `p`; ruling out a non-self incoming `p` is the same path-domain fact
-documented at `elimTrivialParams_sound`. -/
+/-- `elimTrivialParams_eq_loop` closes the outer fixed-point inversion.  The
+remaining missing lemma is the shared `findTrivialParam = some ...` candidate
+specification described at `elimTrivialParams_sound`.  In particular its
+`selfOnly` projection rules out every non-self incoming `p`; a one-step proof
+can then build the substituted liveness pre-fixed point from non-self incoming
+`v` edges and carry it unchanged around self edges, before induction over the
+proved loop equation. -/
 theorem elimTrivialParams_dom {f : Func} (hwf : f.wfCheck n = true)
     (hdom : ToAsm.Func.domCheck f = true) :
     ToAsm.Func.domCheck (Passes.elimTrivialParams f) = true := by
