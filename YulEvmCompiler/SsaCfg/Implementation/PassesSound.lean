@@ -164,6 +164,174 @@ open YulSemantics.EVM (U256 EvmState Op builtinWithExternal stepOp ExternalCalls
   ExternalCreates)
 open YulSemantics (Outcome)
 
+/-! ## Call-depth-indexed execution
+
+`ExecN P n f R st rest res` is the ordinary `Exec` judgment equipped with an
+upper bound on the dynamic user-call depth.  Instructions and intra-function
+control flow preserve the bound.  At a returning call, the callee runs at
+bound `n` while the caller continuation (and the complete call) runs at bound
+`n + 1`; a halting call only has the callee premise.  Leaf rules are available
+at every bound, which makes the judgment monotone.
+
+This separate inductive is needed below because an `Exec` proof lives in
+`Prop`, so its call depth cannot be computed by eliminating it into `Nat`.
+-/
+
+inductive ExecN (P : Prog) [model : ExternalModel] :
+    Nat → Func → Regs → EvmState → Rest → FRes → Prop
+  | const {n : Nat} {f : Func} {R : Regs} {st : EvmState} {d : ValId} {v : U256}
+      {is : List Instr} {t : Term} {res : FRes} :
+      ExecN P n f (R.set d v) st ⟨is, t⟩ res →
+      ExecN P n f R st ⟨.const d v :: is, t⟩ res
+  | op {n : Nat} {f : Func} {R : Regs} {st st' : EvmState} {ds : List ValId}
+      {yop : Op} {as : List ValId} {args rets : List U256} {is : List Instr}
+      {t : Term} {res : FRes} :
+      R.getMany as = some args →
+      builtinWithExternal model.calls model.creates yop args st (.ok rets st') →
+      ds.length = rets.length →
+      ExecN P n f (R.setMany ds rets) st' ⟨is, t⟩ res →
+      ExecN P n f R st ⟨.op ds yop as :: is, t⟩ res
+  | opHalt {n : Nat} {f : Func} {R : Regs} {st st' : EvmState}
+      {ds : List ValId} {yop : Op} {as : List ValId} {args : List U256}
+      {is : List Instr} {t : Term} :
+      R.getMany as = some args →
+      builtinWithExternal model.calls model.creates yop args st (.halt st') →
+      ExecN P n f R st ⟨.op ds yop as :: is, t⟩ (.halt st')
+  | call {n : Nat} {f g : Func} {R : Regs} {st st' : EvmState}
+      {ds as : List ValId} {fid : FuncId} {args rvals : List U256} {eb : Block}
+      {is : List Instr} {t : Term} {res : FRes} :
+      P.funcs[fid]? = some g →
+      R.getMany as = some args →
+      g.params.length = args.length →
+      g.blocks[g.entry]? = some eb →
+      ExecN P n g (Regs.empty.setMany g.params args) st
+        ⟨eb.instrs, eb.term⟩ (.ret rvals st') →
+      ds.length = rvals.length →
+      ExecN P (n + 1) f (R.setMany ds rvals) st' ⟨is, t⟩ res →
+      ExecN P (n + 1) f R st ⟨.call ds fid as :: is, t⟩ res
+  | callHalt {n : Nat} {f g : Func} {R : Regs} {st st' : EvmState}
+      {ds as : List ValId} {fid : FuncId} {args : List U256} {eb : Block}
+      {is : List Instr} {t : Term} :
+      P.funcs[fid]? = some g →
+      R.getMany as = some args →
+      g.params.length = args.length →
+      g.blocks[g.entry]? = some eb →
+      ExecN P n g (Regs.empty.setMany g.params args) st
+        ⟨eb.instrs, eb.term⟩ (.halt st') →
+      ExecN P (n + 1) f R st ⟨.call ds fid as :: is, t⟩ (.halt st')
+  | jump {n : Nat} {f : Func} {R : Regs} {st : EvmState} {e : Edge}
+      {tb : Block} {args : List U256} {res : FRes} :
+      f.blocks[e.target]? = some tb →
+      R.getMany e.args = some args →
+      tb.params.length = args.length →
+      ExecN P n f (R.setMany tb.params args) st ⟨tb.instrs, tb.term⟩ res →
+      ExecN P n f R st ⟨[], .jump e⟩ res
+  | branchTrue {n : Nat} {f : Func} {R : Regs} {st : EvmState}
+      {c : ValId} {v : U256} {et ef : Edge} {tb : Block} {args : List U256}
+      {res : FRes} :
+      R c = some v → v ≠ 0 →
+      f.blocks[et.target]? = some tb →
+      R.getMany et.args = some args →
+      tb.params.length = args.length →
+      ExecN P n f (R.setMany tb.params args) st ⟨tb.instrs, tb.term⟩ res →
+      ExecN P n f R st ⟨[], .branch c et ef⟩ res
+  | branchFalse {n : Nat} {f : Func} {R : Regs} {st : EvmState}
+      {c : ValId} {et ef : Edge} {tb : Block} {args : List U256} {res : FRes} :
+      R c = some 0 →
+      f.blocks[ef.target]? = some tb →
+      R.getMany ef.args = some args →
+      tb.params.length = args.length →
+      ExecN P n f (R.setMany tb.params args) st ⟨tb.instrs, tb.term⟩ res →
+      ExecN P n f R st ⟨[], .branch c et ef⟩ res
+  | ret {n : Nat} {f : Func} {R : Regs} {st : EvmState} {xs : List ValId}
+      {vals : List U256} :
+      R.getMany xs = some vals →
+      ExecN P n f R st ⟨[], .ret xs⟩ (.ret vals st)
+  | halt {n : Nat} {f : Func} {R : Regs} {st st' : EvmState} {yop : Op}
+      {as : List ValId} {args : List U256} :
+      R.getMany as = some args →
+      builtinWithExternal model.calls model.creates yop args st (.halt st') →
+      ExecN P n f R st ⟨[], .halt yop as⟩ (.halt st')
+
+/-- A call-depth bound can always be enlarged. -/
+theorem ExecN.mono {P : Prog} {n m : Nat} {f : Func} {R : Regs}
+    {st : EvmState} {rest : Rest} {res : FRes}
+    (h : ExecN (model := model) P n f R st rest res) (hnm : n ≤ m) :
+    ExecN (model := model) P m f R st rest res := by
+  induction h generalizing m with
+  | const htail ih => exact ExecN.const (ih hnm)
+  | op hget hop hlen htail ih => exact ExecN.op hget hop hlen (ih hnm)
+  | opHalt hget hop => exact ExecN.opHalt hget hop
+  | @call n f g R st st' ds as fid args rvals eb is t res
+      hfid hget hplen heb hbody hlen htail ihbody ih =>
+      have hmpos : 0 < m := lt_of_lt_of_le (Nat.zero_lt_succ n) (by simpa using hnm)
+      obtain ⟨m', rfl⟩ := Nat.exists_eq_succ_of_ne_zero (Nat.ne_of_gt hmpos)
+      exact ExecN.call hfid hget hplen heb (ihbody (by omega)) hlen (ih (by omega))
+  | @callHalt n f g R st st' ds as fid args eb is t
+      hfid hget hplen heb hbody ihbody =>
+      have hmpos : 0 < m := lt_of_lt_of_le (Nat.zero_lt_succ n) (by simpa using hnm)
+      obtain ⟨m', rfl⟩ := Nat.exists_eq_succ_of_ne_zero (Nat.ne_of_gt hmpos)
+      exact ExecN.callHalt hfid hget hplen heb (ihbody (by omega))
+  | jump htb hget hplen htail ih => exact ExecN.jump htb hget hplen (ih hnm)
+  | branchTrue hc hv htb hget hplen htail ih =>
+      exact ExecN.branchTrue hc hv htb hget hplen (ih hnm)
+  | branchFalse hc htb hget hplen htail ih =>
+      exact ExecN.branchFalse hc htb hget hplen (ih hnm)
+  | ret hget => exact ExecN.ret hget
+  | halt hget hop => exact ExecN.halt hget hop
+
+/-- Forgetting the call-depth index recovers the ordinary semantics. -/
+theorem ExecN.toExec {P : Prog} {n : Nat} {f : Func} {R : Regs}
+    {st : EvmState} {rest : Rest} {res : FRes}
+    (h : ExecN (model := model) P n f R st rest res) :
+    Exec (model := model) P f R st rest res := by
+  induction h with
+  | const htail ih => exact Exec.const ih
+  | op hget hop hlen htail ih => exact Exec.op hget hop hlen ih
+  | opHalt hget hop => exact Exec.opHalt hget hop
+  | call hfid hget hplen heb hbody hlen htail ihbody ih =>
+      exact Exec.call hfid hget hplen heb ihbody hlen ih
+  | callHalt hfid hget hplen heb hbody ihbody =>
+      exact Exec.callHalt hfid hget hplen heb ihbody
+  | jump htb hget hplen htail ih => exact Exec.jump htb hget hplen ih
+  | branchTrue hc hv htb hget hplen htail ih =>
+      exact Exec.branchTrue hc hv htb hget hplen ih
+  | branchFalse hc htb hget hplen htail ih =>
+      exact Exec.branchFalse hc htb hget hplen ih
+  | ret hget => exact Exec.ret hget
+  | halt hget hop => exact Exec.halt hget hop
+
+/-- Every terminating execution admits a finite call-depth bound. -/
+theorem Exec.toExecN {P : Prog} {f : Func} {R : Regs} {st : EvmState}
+    {rest : Rest} {res : FRes} (h : Exec (model := model) P f R st rest res) :
+    ∃ n, ExecN (model := model) P n f R st rest res := by
+  induction h with
+  | const htail ih => obtain ⟨n, hn⟩ := ih; exact ⟨n, ExecN.const hn⟩
+  | op hget hop hlen htail ih =>
+      obtain ⟨n, hn⟩ := ih
+      exact ⟨n, ExecN.op hget hop hlen hn⟩
+  | opHalt hget hop => exact ⟨0, ExecN.opHalt hget hop⟩
+  | call hfid hget hplen heb hbody hlen htail ihbody ih =>
+      obtain ⟨nb, hnb⟩ := ihbody
+      obtain ⟨nt, hnt⟩ := ih
+      refine ⟨nb + nt + 1, ExecN.call hfid hget hplen heb
+        (hnb.mono (by omega)) hlen ?_⟩
+      exact hnt.mono (by omega)
+  | callHalt hfid hget hplen heb hbody ihbody =>
+      obtain ⟨n, hn⟩ := ihbody
+      exact ⟨n + 1, ExecN.callHalt hfid hget hplen heb hn⟩
+  | jump htb hget hplen htail ih =>
+      obtain ⟨n, hn⟩ := ih
+      exact ⟨n, ExecN.jump htb hget hplen hn⟩
+  | branchTrue hc hv htb hget hplen htail ih =>
+      obtain ⟨n, hn⟩ := ih
+      exact ⟨n, ExecN.branchTrue hc hv htb hget hplen hn⟩
+  | branchFalse hc htb hget hplen htail ih =>
+      obtain ⟨n, hn⟩ := ih
+      exact ⟨n, ExecN.branchFalse hc htb hget hplen hn⟩
+  | ret hget => exact ⟨0, ExecN.ret hget⟩
+  | halt hget hop => exact ⟨0, ExecN.halt hget hop⟩
+
 /-! ## `Regs` plumbing -/
 
 namespace Regs
@@ -5560,6 +5728,159 @@ theorem Passes.inlineReplay_exec [model : ExternalModel]
       simpa [inlineReplayTerm, renameTerm] using
         (Exec.halt (f := f') (args := oargs) (renamedAgree_getMany hagree hget) hop)
 
+/-- The indexed replay raises the callee bound once to accommodate the CPS continuation. -/
+theorem Passes.inlineReplay_execN [model : ExternalModel]
+    {P : Prog} {n : Nat} {g f' : Func} {preBlocks : Array Block} {cont : Block}
+    {ps as ds : List ValId} {off contId : Nat}
+    {ρ : ValId → ValId} {β : BlockId → BlockId}
+    {Rc Ri Rcaller : Regs} {st : EvmState} {rest : Rest} {cres final : FRes}
+    (hρ : ρ = inlineRho ps as off)
+    (hβ : ∀ i, β i = preBlocks.size + i)
+    (hcontId : contId = preBlocks.size + g.blocks.size)
+    (hblocks : f'.blocks = preBlocks ++ g.blocks.map (inlineReplayBlock ρ β contId) ++ #[cont])
+    (hcontParams : cont.params = ds)
+    (hnd : g.allDefs.Nodup) (hps : ps = g.params)
+    (hlen : ps.length = as.length) (has : ∀ a ∈ as, a < off)
+    (hret : ∀ {b : Block}, b ∈ g.blocks.toList → ∀ {xs}, b.term = .ret xs →
+      xs.length = ds.length)
+    (hexec : ExecN (model := model) P n g Rc st rest cres)
+    {b : Block} (hb : b ∈ g.blocks.toList) (horigin : rest.IsSuffixOf b)
+    (hagree : RenamedAgree ps as off Rc Ri)
+    (hframe : CallerFrame off Rcaller Ri)
+    (hfinal : ∀ st', cres = .halt st' → final = .halt st')
+    (hk : ∀ (Rout : Regs) (vals : List U256) (st' : EvmState),
+      cres = .ret vals st' → CallerFrame off Rcaller Rout →
+      ExecN (model := model) P (n + 1) f' (Rout.setMany ds vals) st'
+        ⟨cont.instrs, cont.term⟩ final) :
+    ExecN (model := model) P (n + 1) f' Ri st
+      ⟨rest.instrs.map (renameInstr ρ), inlineReplayTerm ρ β contId rest.term⟩ final := by
+  subst ρ
+  induction hexec generalizing Ri b with
+  | @const n fcur R st d v is t res htail ih =>
+      have hi : Instr.const d v ∈ b.instrs :=
+        Rest.IsSuffixOf.head_mem (r := ⟨is, t⟩) horigin
+      have hd : d ∉ ps := by
+        rw [hps]
+        exact fun hp => funcParam_not_instr_def hnd hb hi hp (by simp [Instr.defs])
+      refine ExecN.const (ih hcontId hnd hps hret hb
+        (Rest.IsSuffixOf.tail (r := ⟨is, t⟩) horigin)
+        (renamedAgree_setMany (params_nodup_of_allDefs hnd hps) hlen has
+          (ds := [d]) (by simpa using hd) [v] hagree)
+        (callerFrame_setMany (as := as) (ds := [d]) (by simpa using hd) hframe [v])
+        hfinal hk hblocks)
+  | @op n fcur R st st' ods yop oas oargs rets is t res hget hop hlenRet htail ih =>
+      have hi : Instr.op ods yop oas ∈ b.instrs :=
+        Rest.IsSuffixOf.head_mem (r := ⟨is, t⟩) horigin
+      have hds : ∀ d ∈ ods, d ∉ ps := by
+        intro d hd hp
+        rw [hps] at hp
+        exact funcParam_not_instr_def hnd hb hi hp (by simpa [Instr.defs] using hd)
+      refine ExecN.op (args := oargs) (rets := rets)
+        (renamedAgree_getMany hagree hget) hop (by simpa using hlenRet)
+        (ih hcontId hnd hps hret hb
+          (Rest.IsSuffixOf.tail (r := ⟨is, t⟩) horigin)
+          (renamedAgree_setMany (params_nodup_of_allDefs hnd hps) hlen has
+            hds rets hagree)
+          (callerFrame_setMany (as := as) hds hframe rets) hfinal hk hblocks)
+  | @opHalt n fcur R st st' ods yop oas oargs is t hget hop =>
+      have hf := hfinal st' rfl
+      subst final
+      simpa [renameInstr, inlineReplayTerm, renameTerm] using
+        (ExecN.opHalt (f := f') (ds := ods.map (inlineRho ps as off))
+          (args := oargs) (renamedAgree_getMany hagree hget) hop)
+  | @call n _ callee R st st' ods oas fid oargs rvals eb is t res
+      hfid hget hplen heb hbody hlenRet htail ihbody ih =>
+      have hi : Instr.call ods fid oas ∈ b.instrs :=
+        Rest.IsSuffixOf.head_mem (r := ⟨is, t⟩) horigin
+      have hds : ∀ d ∈ ods, d ∉ ps := by
+        intro d hd hp
+        rw [hps] at hp
+        exact funcParam_not_instr_def hnd hb hi hp (by simpa [Instr.defs] using hd)
+      refine ExecN.call (args := oargs) (rvals := rvals) (g := callee) (eb := eb)
+        hfid (renamedAgree_getMany hagree hget) hplen heb (hbody.mono (by omega))
+        (by simpa using hlenRet)
+        (ih hcontId hnd hps hret hb
+          (Rest.IsSuffixOf.tail (r := ⟨is, t⟩) horigin)
+          (renamedAgree_setMany (params_nodup_of_allDefs hnd hps) hlen has
+            hds rvals hagree)
+          (callerFrame_setMany (as := as) hds hframe rvals) hfinal hk hblocks)
+  | @callHalt n _ callee R st st' ods oas fid oargs eb is t
+      hfid hget hplen heb hbody ihbody =>
+      have hf := hfinal st' rfl
+      subst final
+      simpa [renameInstr, inlineReplayTerm, renameTerm] using
+        (ExecN.callHalt (f := f') (ds := ods.map (inlineRho ps as off))
+          (args := oargs) (g := callee) (eb := eb) hfid
+          (renamedAgree_getMany hagree hget) hplen heb (hbody.mono (by omega)))
+  | @jump n _ R st e tb vals res htb hget hplen htail ih =>
+      have htbmem := block_mem_of_getElem? htb
+      have hparams : ∀ d ∈ tb.params, d ∉ ps := by
+        intro d hd hp
+        rw [hps] at hp
+        exact funcParam_not_blockParam hnd htbmem hp hd
+      refine ExecN.jump (args := vals) (tb := inlineReplayBlock
+          (inlineRho ps as off) β contId tb) ?_
+        (renamedAgree_getMany hagree hget) (by simpa [inlineReplayBlock] using hplen)
+        (ih hcontId hnd hps hret htbmem ⟨[], rfl, rfl⟩
+          (renamedAgree_setMany (params_nodup_of_allDefs hnd hps) hlen has
+            hparams vals hagree)
+          (callerFrame_setMany (as := as) hparams hframe vals) hfinal hk hblocks)
+      change f'.blocks[β e.target]? = some _
+      rw [hβ e.target]
+      exact inlineReplayBlock_get hblocks htb
+  | @branchTrue n _ R st c v et ef tb vals res hc hv htb hget hplen htail ih =>
+      have htbmem := block_mem_of_getElem? htb
+      have hparams : ∀ d ∈ tb.params, d ∉ ps := by
+        intro d hd hp
+        rw [hps] at hp
+        exact funcParam_not_blockParam hnd htbmem hp hd
+      refine ExecN.branchTrue (v := v) (args := vals)
+        (tb := inlineReplayBlock (inlineRho ps as off) β contId tb)
+        (hagree c v hc) hv ?_ (renamedAgree_getMany hagree hget)
+        (by simpa [inlineReplayBlock] using hplen)
+        (ih hcontId hnd hps hret htbmem ⟨[], rfl, rfl⟩
+          (renamedAgree_setMany (params_nodup_of_allDefs hnd hps) hlen has
+            hparams vals hagree)
+          (callerFrame_setMany (as := as) hparams hframe vals) hfinal hk hblocks)
+      change f'.blocks[β et.target]? = some _
+      rw [hβ et.target]
+      exact inlineReplayBlock_get hblocks htb
+  | @branchFalse n _ R st c et ef tb vals res hc htb hget hplen htail ih =>
+      have htbmem := block_mem_of_getElem? htb
+      have hparams : ∀ d ∈ tb.params, d ∉ ps := by
+        intro d hd hp
+        rw [hps] at hp
+        exact funcParam_not_blockParam hnd htbmem hp hd
+      refine ExecN.branchFalse (args := vals)
+        (tb := inlineReplayBlock (inlineRho ps as off) β contId tb)
+        (hagree c 0 hc) ?_
+        (renamedAgree_getMany hagree hget)
+        (by simpa [inlineReplayBlock] using hplen)
+        (ih hcontId hnd hps hret htbmem ⟨[], rfl, rfl⟩
+          (renamedAgree_setMany (params_nodup_of_allDefs hnd hps) hlen has
+            hparams vals hagree)
+          (callerFrame_setMany (as := as) hparams hframe vals) hfinal hk hblocks)
+      change f'.blocks[β ef.target]? = some _
+      rw [hβ ef.target]
+      exact inlineReplayBlock_get hblocks htb
+  | @ret n _ R st xs vals hget =>
+      have ht : b.term = .ret xs := horigin.choose_spec.2
+      have hlenVals : ds.length = vals.length := by
+        rw [← Regs.getMany_length hget, hret hb ht]
+      have hk' := hk Ri vals st rfl hframe
+      rw [← hcontParams] at hk'
+      refine ExecN.jump (args := vals) (tb := cont) ?_
+        (renamedAgree_getMany hagree hget) (by simpa [hcontParams] using hlenVals)
+        hk'
+      rw [hcontId]
+      exact inlineContBlock_get hblocks
+  | @halt n _ R st st' yop oas oargs hget hop =>
+      have hf := hfinal st' rfl
+      subst final
+      simpa [inlineReplayTerm, renameTerm] using
+        (ExecN.halt (f := f') (args := oargs) (renamedAgree_getMany hagree hget) hop)
+
+
 /-! ### Inverting one inlining splice
 
 `inlineOnce` is a pair of nested early-return loops.  As with
@@ -6304,6 +6625,385 @@ theorem Passes.inlineCaller_exec
           (by simpa [hterm, Term.uses] using hx)) hoffCaller
       exact Exec.halt (args := oargs) (by rw [← hframe.getMany hoas]; exact hget) hop
 
+/-- The positional caller replay preserves the call-depth bound. -/
+theorem Passes.inlineCaller_execN
+    {P : Prog} {n : Nat} {f f' g : Func} {bi ci : Nat} {site : Block}
+    {ds as : List ValId} {fid off contId : Nat}
+    {ρ : ValId → ValId} {β : BlockId → BlockId} {cont callBlock : Block}
+    {R Ri : Regs} {st : EvmState} {rest : Rest} {res : FRes}
+    (hsite : f.blocks[bi]? = some site)
+    (hci : ci < site.instrs.length)
+    (hcall : site.instrs[ci]? = some (.call ds fid as))
+    (hfunc : P.funcs[fid]? = some g)
+    (hgwf : g.wfCheck P.funcs.size = true)
+    (hoff : off = Nat.max (Passes.maxVal f) (Passes.maxVal g) + 1)
+    (hρ : ρ = inlineRho g.params as off)
+    (hβ : ∀ i, β i = f.blocks.size + i)
+    (hcontId : contId = f.blocks.size + g.blocks.size)
+    (hentry : g.entry = 0)
+    (hlen : g.params.length = as.length)
+    (hnrets : g.nrets = ds.length)
+    (hcallBlock : callBlock =
+      { params := site.params, instrs := site.instrs.take ci,
+        term := .jump ⟨f.blocks.size + g.entry, []⟩ })
+    (hcont : cont =
+      { params := ds, instrs := site.instrs.drop (ci + 1), term := site.term })
+    (hblocks : f'.blocks =
+      (f.blocks.set! bi callBlock) ++
+        g.blocks.map (inlineReplayBlock ρ β contId) ++ #[cont])
+    (hexec : ExecN (model := model) P n f R st rest res)
+    {j k : Nat} {cur : Block}
+    (hcur : f.blocks[j]? = some cur)
+    (hdrop : cur.instrs.drop k = rest.instrs)
+    (hterm : cur.term = rest.term)
+    (hframe : CallerFrame off R Ri) :
+    ExecN (model := model) P n f' Ri st
+      (inlineCallerRest bi ci (f.blocks.size + g.entry) j k site rest) res := by
+  have hoffCaller : Passes.maxVal f < off := by
+    rw [hoff]
+    exact maxVal_lt_inlineOffset_left f g
+  have hoffCallee : Passes.maxVal g < off := by
+    rw [hoff]
+    exact maxVal_lt_inlineOffset_right f g
+  have hsiteMem := block_mem_of_getElem? hsite
+  have hnd : g.allDefs.Nodup := by
+    unfold Func.wfCheck at hgwf
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at hgwf
+    exact hgwf.1.1.1
+  have hpsnd : g.params.Nodup := by
+    exact params_nodup_of_allDefs hnd rfl
+  have hret : ∀ {b : Block}, b ∈ g.blocks.toList → ∀ {xs},
+      b.term = .ret xs → xs.length = ds.length := by
+    intro b hb xs ht
+    rw [← hnrets]
+    exact wfCheck_ret_arity hgwf hb ht
+  induction hexec generalizing j k cur Ri with
+  | @const n _ R st d v is t res htail ih =>
+      have himem : Instr.const d v ∈ cur.instrs := mem_of_drop_eq_cons hdrop
+      have hcurSite : j = bi → cur = site := by
+        intro hj
+        subst j
+        exact Option.some.inj (hcur.symm.trans hsite)
+      have hne : j ≠ bi ∨ k ≠ ci := by
+        by_contra hn
+        simp only [not_or, not_ne_iff] at hn
+        obtain ⟨rfl, rfl⟩ := hn
+        have hcureq := hcurSite rfl
+        subst cur
+        have heq := head_eq_of_drop_eq_cons hcall hdrop
+        cases heq
+      rw [inlineCallerRest_cons_of_not_site hcurSite hne hdrop]
+      refine ExecN.const (ih hsite hoff hβ hcontId hcallBlock hblocks hcur
+        (drop_succ_eq_of_drop_eq_cons hdrop) hterm ?_ hoffCaller hsiteMem)
+      simpa [Regs.setMany_cons, Regs.setMany_nil_left] using
+        (hframe.setMany (xs := [d]) [v])
+  | @op n _ R st st' ods yop oas oargs rets is t res hget hop hlenRet htail ih =>
+      have himem : Instr.op ods yop oas ∈ cur.instrs := mem_of_drop_eq_cons hdrop
+      have hcurSite : j = bi → cur = site := by
+        intro hj; subst j; exact Option.some.inj (hcur.symm.trans hsite)
+      have hne : j ≠ bi ∨ k ≠ ci := by
+        by_contra hn
+        simp only [not_or, not_ne_iff] at hn
+        obtain ⟨rfl, rfl⟩ := hn
+        have hcureq := hcurSite rfl
+        subst cur
+        have heq := head_eq_of_drop_eq_cons hcall hdrop
+        cases heq
+      have hoas : ∀ x ∈ oas, x < off := by
+        intro x hx
+        exact lt_of_le_of_lt (instrUse_le_maxVal (block_mem_of_getElem? hcur)
+          himem (by simpa [Instr.uses] using hx)) hoffCaller
+      rw [inlineCallerRest_cons_of_not_site hcurSite hne hdrop]
+      refine ExecN.op (args := oargs) (rets := rets)
+        (by rw [← hframe.getMany hoas]; exact hget) hop hlenRet
+        (ih hsite hoff hβ hcontId hcallBlock hblocks hcur
+          (drop_succ_eq_of_drop_eq_cons hdrop) hterm ?_ hoffCaller hsiteMem)
+      exact hframe.setMany rets
+  | @opHalt n _ R st st' ods yop oas oargs is t hget hop =>
+      have himem : Instr.op ods yop oas ∈ cur.instrs := mem_of_drop_eq_cons hdrop
+      have hcurSite : j = bi → cur = site := by
+        intro hj; subst j; exact Option.some.inj (hcur.symm.trans hsite)
+      have hne : j ≠ bi ∨ k ≠ ci := by
+        by_contra hn
+        simp only [not_or, not_ne_iff] at hn
+        obtain ⟨rfl, rfl⟩ := hn
+        have hcureq := hcurSite rfl
+        subst cur
+        have heq := head_eq_of_drop_eq_cons hcall hdrop
+        cases heq
+      have hoas : ∀ x ∈ oas, x < off := by
+        intro x hx
+        exact lt_of_le_of_lt (instrUse_le_maxVal (block_mem_of_getElem? hcur)
+          himem (by simpa [Instr.uses] using hx)) hoffCaller
+      rw [inlineCallerRest_cons_of_not_site hcurSite hne hdrop]
+      exact ExecN.opHalt (args := oargs) (by rw [← hframe.getMany hoas]; exact hget) hop
+  | @call n fcur callee R st st' ods oas ofid oargs rvals eb is t res
+      hfid hget hplen heb hbody hlenRet htail ihbody ih =>
+      have himem : Instr.call ods ofid oas ∈ cur.instrs := mem_of_drop_eq_cons hdrop
+      have hcurSite : j = bi → cur = site := by
+        intro hj; subst j; exact Option.some.inj (hcur.symm.trans hsite)
+      by_cases hat : j = bi ∧ k = ci
+      · obtain ⟨rfl, rfl⟩ := hat
+        have hcureq := hcurSite rfl
+        subst cur
+        have heq := head_eq_of_drop_eq_cons hcall hdrop
+        cases heq
+        have hgEq : callee = g := Option.some.inj (hfid.symm.trans hfunc)
+        subst callee
+        rw [inlineCallerRest_site]
+        have hoas : ∀ x ∈ as, x < off := by
+          intro x hx
+          exact lt_of_le_of_lt (instrUse_le_maxVal hsiteMem himem
+            (by simpa [Instr.uses] using hx)) hoffCaller
+        have hgetRi : Ri.getMany as = some oargs := by
+          rw [← hframe.getMany hoas]
+          exact hget
+        have hentryParams : eb.params = [] := wfCheck_entry_params_nil hgwf (by
+          simpa [hentry] using heb)
+        refine ExecN.jump (args := [])
+          (tb := inlineReplayBlock ρ β contId eb) ?_ (by simp)
+          (by simp [inlineReplayBlock, hentryParams]) ?_
+        · have hbcopy := inlineReplayBlock_get hblocks heb
+          simpa using hbcopy
+        · have hreplay := inlineReplay_execN (g := g) (f' := f')
+            (preBlocks := fcur.blocks.set! j callBlock)
+            (cont := cont) (ps := g.params) (as := as) (ds := ds)
+            (off := off) (ρ := ρ) (β := β) (contId := contId)
+            (Rc := Regs.empty.setMany g.params oargs) (Rcaller := R)
+            (cres := .ret rvals st') (final := res) (b := eb)
+            hρ (fun i => by simpa using hβ i) (by simpa using hcontId) hblocks
+            (by rw [hcont]) hnd rfl hlen hoas
+            (fun {_} hb {_} ht => hret hb ht) hbody (block_mem_of_getElem? heb)
+            ⟨[], rfl, rfl⟩ (renamedAgree_entry hpsnd hlen hgetRi) hframe
+            (fun s hs => by cases hs)
+            (fun Rout vals s heq hRout => by
+              cases heq
+              have htailDrop := drop_succ_eq_of_drop_eq_cons hdrop
+              rw [hcont]
+              simpa [inlineCallerRest, htailDrop, hterm] using
+                (ih hsite hoff hβ hcontId hcallBlock hblocks
+                (j := j) (k := k + 1) (cur := site) hsite
+                (drop_succ_eq_of_drop_eq_cons hdrop) hterm
+                (hRout.setMany rvals) hoffCaller hsiteMem))
+          simpa [inlineReplayBlock, hentryParams, Regs.setMany_nil_left] using hreplay
+      · have hne : j ≠ bi ∨ k ≠ ci := by omega
+        have hoas : ∀ x ∈ oas, x < off := by
+          intro x hx
+          exact lt_of_le_of_lt (instrUse_le_maxVal (block_mem_of_getElem? hcur)
+            himem (by simpa [Instr.uses] using hx)) hoffCaller
+        rw [inlineCallerRest_cons_of_not_site hcurSite hne hdrop]
+        refine ExecN.call (args := oargs) (rvals := rvals) (g := callee) (eb := eb)
+          hfid (by rw [← hframe.getMany hoas]; exact hget) hplen heb hbody hlenRet
+          (ih hsite hoff hβ hcontId hcallBlock hblocks hcur
+            (drop_succ_eq_of_drop_eq_cons hdrop) hterm
+            (hframe.setMany rvals) hoffCaller hsiteMem)
+  | @callHalt n fcur callee R st st' ods oas ofid oargs eb is t
+      hfid hget hplen heb hbody ihbody =>
+      have himem : Instr.call ods ofid oas ∈ cur.instrs := mem_of_drop_eq_cons hdrop
+      have hcurSite : j = bi → cur = site := by
+        intro hj; subst j; exact Option.some.inj (hcur.symm.trans hsite)
+      by_cases hat : j = bi ∧ k = ci
+      · obtain ⟨rfl, rfl⟩ := hat
+        have hcureq := hcurSite rfl
+        subst cur
+        have heq := head_eq_of_drop_eq_cons hcall hdrop
+        cases heq
+        have hgEq : callee = g := Option.some.inj (hfid.symm.trans hfunc)
+        subst callee
+        rw [inlineCallerRest_site]
+        have hoas : ∀ x ∈ as, x < off := by
+          intro x hx
+          exact lt_of_le_of_lt (instrUse_le_maxVal hsiteMem himem
+            (by simpa [Instr.uses] using hx)) hoffCaller
+        have hgetRi : Ri.getMany as = some oargs := by
+          rw [← hframe.getMany hoas]
+          exact hget
+        have hentryParams : eb.params = [] := wfCheck_entry_params_nil hgwf (by
+          simpa [hentry] using heb)
+        refine ExecN.jump (args := [])
+          (tb := inlineReplayBlock ρ β contId eb) ?_ (by simp)
+          (by simp [inlineReplayBlock, hentryParams]) ?_
+        · have hbcopy := inlineReplayBlock_get hblocks heb
+          simpa using hbcopy
+        · have hreplay := inlineReplay_execN (g := g) (f' := f')
+            (preBlocks := fcur.blocks.set! j callBlock)
+            (cont := cont) (ps := g.params) (as := as) (ds := ds)
+            (off := off) (ρ := ρ) (β := β) (contId := contId)
+            (Rc := Regs.empty.setMany g.params oargs) (Rcaller := R)
+            (cres := .halt st') (final := .halt st') (b := eb)
+            hρ (fun i => by simpa using hβ i) (by simpa using hcontId) hblocks
+            (by rw [hcont]) hnd rfl hlen hoas
+            (fun {_} hb {_} ht => hret hb ht) hbody (block_mem_of_getElem? heb)
+            ⟨[], rfl, rfl⟩ (renamedAgree_entry hpsnd hlen hgetRi) hframe
+            (fun _ h => h)
+            (fun Rout vals s heq _ => by cases heq)
+          simpa [inlineReplayBlock, hentryParams, Regs.setMany_nil_left] using hreplay
+      · have hne : j ≠ bi ∨ k ≠ ci := by omega
+        have hoas : ∀ x ∈ oas, x < off := by
+          intro x hx
+          exact lt_of_le_of_lt (instrUse_le_maxVal (block_mem_of_getElem? hcur)
+            himem (by simpa [Instr.uses] using hx)) hoffCaller
+        rw [inlineCallerRest_cons_of_not_site hcurSite hne hdrop]
+        exact ExecN.callHalt (args := oargs) (g := callee) (eb := eb) hfid
+          (by rw [← hframe.getMany hoas]; exact hget) hplen heb hbody
+  | @jump n fcur R st e tb vals res htb hget hplen htail ih =>
+      have hbefore : ¬ (j = bi ∧ k ≤ ci) := by
+        rintro ⟨rfl, hk⟩
+        have hcureq : cur = site := Option.some.inj (hcur.symm.trans hsite)
+        subst cur
+        have hlenDrop := congrArg List.length hdrop
+        simp at hlenDrop
+        omega
+      simp only [inlineCallerRest, if_neg hbefore]
+      have htmem := block_mem_of_getElem? htb
+      have hargs : ∀ x ∈ e.args, x < off := by
+        intro x hx
+        exact lt_of_le_of_lt (termUse_le_maxVal (block_mem_of_getElem? hcur)
+          (by simpa [hterm, Term.uses] using hx)) hoffCaller
+      by_cases he : e.target = bi
+      · have htbSite : fcur.blocks[bi]? = some tb := by simpa [he] using htb
+        have htbeq : tb = site := Option.some.inj (htbSite.symm.trans hsite)
+        subst tb
+        have htb' : f'.blocks[e.target]? = some callBlock := by
+          rw [he]
+          exact inlineCallerBlock_get_site₂ (f := fcur) (f' := f')
+            (mid := g.blocks.map (inlineReplayBlock ρ β contId)) (tail := #[cont])
+            (Array.getElem?_eq_some_iff.mp hsite).1 hblocks
+        rw [hcallBlock] at htb'
+        refine ExecN.jump (e := e) (args := vals) htb'
+          (by rw [← hframe.getMany hargs]; exact hget)
+          (by simpa [hcallBlock] using hplen) ?_
+        simpa [inlineCallerRest, hcallBlock] using
+          (ih hsite hoff hβ hcontId hcallBlock hblocks
+          (j := bi) (k := 0) (cur := site) hsite rfl rfl
+          (hframe.setMany vals) hoffCaller hsiteMem)
+      · have htb' := inlineCallerBlock_get_other₂ (f := fcur) (f' := f')
+          (callBlock := callBlock) (mid :=
+            g.blocks.map (inlineReplayBlock ρ β contId)) (tail := #[cont]) htb he hblocks
+        refine ExecN.jump (e := e) (args := vals) htb'
+          (by rw [← hframe.getMany hargs]; exact hget) hplen ?_
+        simpa [inlineCallerRest, he] using
+          (ih hsite hoff hβ hcontId hcallBlock hblocks
+          (j := e.target) (k := 0) (cur := tb) htb rfl rfl
+          (hframe.setMany vals) hoffCaller hsiteMem)
+  | @branchTrue n fcur R st c v et ef tb vals res hc hv htb hget hplen htail ih =>
+      have hbefore : ¬ (j = bi ∧ k ≤ ci) := by
+        rintro ⟨rfl, hk⟩
+        have hcureq : cur = site := Option.some.inj (hcur.symm.trans hsite)
+        subst cur
+        have hlenDrop := congrArg List.length hdrop
+        simp at hlenDrop
+        omega
+      simp only [inlineCallerRest, if_neg hbefore]
+      have hcLt : c < off := lt_of_le_of_lt
+        (termUse_le_maxVal (block_mem_of_getElem? hcur) (by simp [hterm, Term.uses]))
+        hoffCaller
+      have hargs : ∀ x ∈ et.args, x < off := by
+        intro x hx
+        exact lt_of_le_of_lt (termUse_le_maxVal (block_mem_of_getElem? hcur)
+          (by simp [hterm, Term.uses, hx])) hoffCaller
+      by_cases he : et.target = bi
+      · have htbSite : fcur.blocks[bi]? = some tb := by simpa [he] using htb
+        have htbeq : tb = site := Option.some.inj (htbSite.symm.trans hsite)
+        subst tb
+        have htb' : f'.blocks[et.target]? = some callBlock := by
+          rw [he]
+          exact inlineCallerBlock_get_site₂ (f := fcur) (f' := f')
+            (mid := g.blocks.map (inlineReplayBlock ρ β contId)) (tail := #[cont])
+            (Array.getElem?_eq_some_iff.mp hsite).1 hblocks
+        rw [hcallBlock] at htb'
+        refine ExecN.branchTrue (et := et) (ef := ef) (v := v) (args := vals)
+          (by rw [hframe c hcLt]; exact hc) hv htb'
+          (by rw [← hframe.getMany hargs]; exact hget)
+          (by simpa [hcallBlock] using hplen) ?_
+        simpa [inlineCallerRest, hcallBlock] using
+          (ih hsite hoff hβ hcontId hcallBlock hblocks
+          (j := bi) (k := 0) (cur := site) hsite rfl rfl
+          (hframe.setMany vals) hoffCaller hsiteMem)
+      · have htb' := inlineCallerBlock_get_other₂ (f := fcur) (f' := f')
+          (callBlock := callBlock) (mid :=
+            g.blocks.map (inlineReplayBlock ρ β contId)) (tail := #[cont]) htb he hblocks
+        refine ExecN.branchTrue (et := et) (ef := ef) (v := v) (args := vals)
+          (by rw [hframe c hcLt]; exact hc) hv htb'
+          (by rw [← hframe.getMany hargs]; exact hget) hplen ?_
+        simpa [inlineCallerRest, he] using
+          (ih hsite hoff hβ hcontId hcallBlock hblocks
+          (j := et.target) (k := 0) (cur := tb) htb rfl rfl
+          (hframe.setMany vals) hoffCaller hsiteMem)
+  | @branchFalse n fcur R st c et ef tb vals res hc htb hget hplen htail ih =>
+      have hbefore : ¬ (j = bi ∧ k ≤ ci) := by
+        rintro ⟨rfl, hk⟩
+        have hcureq : cur = site := Option.some.inj (hcur.symm.trans hsite)
+        subst cur
+        have hlenDrop := congrArg List.length hdrop
+        simp at hlenDrop
+        omega
+      simp only [inlineCallerRest, if_neg hbefore]
+      have hcLt : c < off := lt_of_le_of_lt
+        (termUse_le_maxVal (block_mem_of_getElem? hcur) (by simp [hterm, Term.uses]))
+        hoffCaller
+      have hargs : ∀ x ∈ ef.args, x < off := by
+        intro x hx
+        exact lt_of_le_of_lt (termUse_le_maxVal (block_mem_of_getElem? hcur)
+          (by simp [hterm, Term.uses, hx])) hoffCaller
+      by_cases he : ef.target = bi
+      · have htbSite : fcur.blocks[bi]? = some tb := by simpa [he] using htb
+        have htbeq : tb = site := Option.some.inj (htbSite.symm.trans hsite)
+        subst tb
+        have htb' : f'.blocks[ef.target]? = some callBlock := by
+          rw [he]
+          exact inlineCallerBlock_get_site₂ (f := fcur) (f' := f')
+            (mid := g.blocks.map (inlineReplayBlock ρ β contId)) (tail := #[cont])
+            (Array.getElem?_eq_some_iff.mp hsite).1 hblocks
+        rw [hcallBlock] at htb'
+        refine ExecN.branchFalse (et := et) (ef := ef) (args := vals)
+          (by rw [hframe c hcLt]; exact hc) htb'
+          (by rw [← hframe.getMany hargs]; exact hget)
+          (by simpa [hcallBlock] using hplen) ?_
+        simpa [inlineCallerRest, hcallBlock] using
+          (ih hsite hoff hβ hcontId hcallBlock hblocks
+          (j := bi) (k := 0) (cur := site) hsite rfl rfl
+          (hframe.setMany vals) hoffCaller hsiteMem)
+      · have htb' := inlineCallerBlock_get_other₂ (f := fcur) (f' := f')
+          (callBlock := callBlock) (mid :=
+            g.blocks.map (inlineReplayBlock ρ β contId)) (tail := #[cont]) htb he hblocks
+        refine ExecN.branchFalse (et := et) (ef := ef) (args := vals)
+          (by rw [hframe c hcLt]; exact hc) htb'
+          (by rw [← hframe.getMany hargs]; exact hget) hplen ?_
+        simpa [inlineCallerRest, he] using
+          (ih hsite hoff hβ hcontId hcallBlock hblocks
+          (j := ef.target) (k := 0) (cur := tb) htb rfl rfl
+          (hframe.setMany vals) hoffCaller hsiteMem)
+  | @ret n fcur R st xs vals hget =>
+      have hbefore : ¬ (j = bi ∧ k ≤ ci) := by
+        rintro ⟨rfl, hk⟩
+        have hcureq : cur = site := Option.some.inj (hcur.symm.trans hsite)
+        subst cur
+        have hlenDrop := congrArg List.length hdrop
+        simp at hlenDrop
+        omega
+      simp only [inlineCallerRest, if_neg hbefore]
+      have hxs : ∀ x ∈ xs, x < off := by
+        intro x hx
+        exact lt_of_le_of_lt (termUse_le_maxVal (block_mem_of_getElem? hcur)
+          (by simpa [hterm, Term.uses] using hx)) hoffCaller
+      exact ExecN.ret (by rw [← hframe.getMany hxs]; exact hget)
+  | @halt n fcur R st st' yop oas oargs hget hop =>
+      have hbefore : ¬ (j = bi ∧ k ≤ ci) := by
+        rintro ⟨rfl, hk⟩
+        have hcureq : cur = site := Option.some.inj (hcur.symm.trans hsite)
+        subst cur
+        have hlenDrop := congrArg List.length hdrop
+        simp at hlenDrop
+        omega
+      simp only [inlineCallerRest, if_neg hbefore]
+      have hoas : ∀ x ∈ oas, x < off := by
+        intro x hx
+        exact lt_of_le_of_lt (termUse_le_maxVal (block_mem_of_getElem? hcur)
+          (by simpa [hterm, Term.uses] using hx)) hoffCaller
+      exact ExecN.halt (args := oargs) (by rw [← hframe.getMany hoas]; exact hget) hop
+
+
 theorem inlineOnce_sound {P : Prog} {counts : Array Nat} {f f' : Func} {args : List U256}
     {st : EvmState} {res : FRes} {eb eb' : Block}
     (hPwf : P.wfCheck = true)
@@ -6385,6 +7085,97 @@ theorem inlineOnce_sound {P : Prog} {counts : Array Nat} {f f' : Func} {args : L
       simp [Passes.inlineCallerRest, he]
   have hgwf := progWf_func hPwf hfunc
   have hsim := Passes.inlineCaller_exec (model := model)
+    (f' := f') (bi := bi) (ci := ci) (site := site) (ds := ds) (as := as)
+    (fid := fid) (off := off) (contId := contId) (ρ := ρ) (β := β)
+    (cont := cont) (callBlock := callBlock)
+    hsite hci hcall hfunc hgwf rfl rfl (fun _ => rfl) rfl hentry hlen hnrets
+    rfl rfl hblocks hexec (j := f.entry) (k := 0) (cur := eb)
+    heb rfl rfl (fun _ _ => rfl)
+  rw [hstart] at hsim
+  simpa [hparams] using hsim
+
+/-- One splice preserves an existing call-depth bound. -/
+theorem inlineOnce_soundN {P : Prog} {n : Nat} {counts : Array Nat} {f f' : Func} {args : List U256}
+    {st : EvmState} {res : FRes} {eb eb' : Block}
+    (hPwf : P.wfCheck = true)
+    (hio : Passes.inlineOnce counts P.funcs f = some f')
+    (heb : f.blocks[f.entry]? = some eb)
+    (heb' : f'.blocks[f'.entry]? = some eb')
+    (hexec : ExecN (model := model) P n f (Regs.empty.setMany f.params args) st
+      ⟨eb.instrs, eb.term⟩ res) :
+    ExecN (model := model) P n f' (Regs.empty.setMany f'.params args) st
+      ⟨eb'.instrs, eb'.term⟩ res := by
+  obtain ⟨bi, site, ci, ds, fid, as, g, hbi, hsite, hci, hcall, hfunc,
+    -, hlen, hnrets, hentry, hf'⟩ := Passes.inlineOnce_inv hio
+  let off := Nat.max (Passes.maxVal f) (Passes.maxVal g) + 1
+  let ρ : ValId → ValId := fun v =>
+    match (g.params.zip as).find? (fun pa => pa.1 == v) with
+    | some pa => pa.2
+    | none => v + off
+  let β := fun i : BlockId => f.blocks.size + i
+  let contId := f.blocks.size + g.blocks.size
+  let callBlock : Block :=
+    { params := site.params, instrs := site.instrs.take ci,
+      term := .jump ⟨f.blocks.size + g.entry, []⟩ }
+  let cont : Block :=
+    { params := ds, instrs := site.instrs.drop (ci + 1), term := site.term }
+  have hreplayFn :
+      (fun gb : Block =>
+        { params := gb.params.map ρ
+          instrs := gb.instrs.map (Passes.renameInstr ρ)
+          term := match gb.term with
+            | .ret vs => .jump ⟨contId, vs.map ρ⟩
+            | t => Passes.renameTerm ρ β t }) =
+        Passes.inlineReplayBlock ρ β contId := by
+    funext gb
+    cases gb with
+    | mk params instrs term => cases term <;> rfl
+  have hfshapeRaw : f' =
+      { f with blocks := (f.blocks.set! bi callBlock) ++
+        g.blocks.map (fun gb =>
+          { params := gb.params.map ρ
+            instrs := gb.instrs.map (Passes.renameInstr ρ)
+            term := match gb.term with
+              | .ret vs => .jump ⟨contId, vs.map ρ⟩
+              | t => Passes.renameTerm ρ β t }) ++ #[cont] } := by
+    simpa [off, ρ, β, contId, callBlock, cont] using hf'
+  have hfshape : f' =
+      { f with blocks := (f.blocks.set! bi callBlock) ++
+        g.blocks.map (Passes.inlineReplayBlock ρ β contId) ++ #[cont] } := by
+    rw [hfshapeRaw, hreplayFn]
+  have hblocks : f'.blocks = (f.blocks.set! bi callBlock) ++
+      g.blocks.map (Passes.inlineReplayBlock ρ β contId) ++ #[cont] := by
+    rw [hfshape]
+  have hparams : f'.params = f.params := by rw [hfshape]
+  have hentry' : f'.entry = f.entry := by rw [hfshape]
+  have hstart :
+      Passes.inlineCallerRest bi ci (f.blocks.size + g.entry) f.entry 0 site
+          ⟨eb.instrs, eb.term⟩ = ⟨eb'.instrs, eb'.term⟩ := by
+    by_cases he : f.entry = bi
+    · have hebsite : eb = site := by
+        rw [he] at heb
+        exact Option.some.inj (heb.symm.trans hsite)
+      subst eb
+      have heb'call : eb' = callBlock := by
+        have hout : f'.blocks[f'.entry]? = some callBlock := by
+          rw [hentry', he]
+          exact Passes.inlineCallerBlock_get_site₂ (f := f) (f' := f')
+            (mid := g.blocks.map (Passes.inlineReplayBlock ρ β contId))
+            (tail := #[cont]) hbi hblocks
+        exact Option.some.inj (heb'.symm.trans hout)
+      subst eb'
+      simp [Passes.inlineCallerRest, he, callBlock]
+    · have hout : f'.blocks[f'.entry]? = some eb := by
+        rw [hentry']
+        exact Passes.inlineCallerBlock_get_other₂ (f := f) (f' := f')
+          (callBlock := callBlock)
+          (mid := g.blocks.map (Passes.inlineReplayBlock ρ β contId))
+          (tail := #[cont]) heb he hblocks
+      have hebeq : eb' = eb := Option.some.inj (heb'.symm.trans hout)
+      subst eb'
+      simp [Passes.inlineCallerRest, he]
+  have hgwf := progWf_func hPwf hfunc
+  have hsim := Passes.inlineCaller_execN (model := model)
     (f' := f') (bi := bi) (ci := ci) (site := site) (ds := ds) (as := as)
     (fid := fid) (off := off) (contId := contId) (ρ := ρ) (β := β)
     (cont := cont) (callBlock := callBlock)
@@ -6543,6 +7334,44 @@ theorem Passes.inlineN_sound {P : Prog} {counts : Array Nat}
           simpa only [inlineN, hio] using
             (ih f' args st res e' eb' he' heb'' hexec')
 
+/-- Iterated local inlining preserves the same call-depth bound. -/
+theorem Passes.inlineN_soundN {P : Prog} {depth : Nat} {counts : Array Nat}
+    (hPwf : P.wfCheck = true) :
+    ∀ (n : Nat) (f : Func) (args : List U256) (st : EvmState) (res : FRes)
+      (eb eb' : Block),
+      f.blocks[f.entry]? = some eb →
+      (inlineN counts P.funcs n f).blocks[(inlineN counts P.funcs n f).entry]? = some eb' →
+      ExecN (model := model) P depth f (Regs.empty.setMany f.params args) st
+        ⟨eb.instrs, eb.term⟩ res →
+      ExecN (model := model) P depth (inlineN counts P.funcs n f)
+        (Regs.empty.setMany (inlineN counts P.funcs n f).params args) st
+        ⟨eb'.instrs, eb'.term⟩ res := by
+  intro n
+  induction n with
+  | zero =>
+      intro f args st res eb eb' heb heb' hexec
+      simp only [inlineN] at heb' ⊢
+      have heq : eb' = eb := Option.some.inj (heb'.symm.trans heb)
+      subst eb'
+      exact hexec
+  | succ n ih =>
+      intro f args st res eb eb' heb heb' hexec
+      cases hio : inlineOnce counts P.funcs f with
+      | none =>
+          simp only [inlineN, hio, Option.getD_none] at heb' ⊢
+          have heq : eb' = eb := Option.some.inj (heb'.symm.trans heb)
+          subst eb'
+          exact hexec
+      | some f' =>
+          obtain ⟨e', he'⟩ := inlineOnce_entry hio heb
+          have hexec' := inlineOnce_soundN (model := model) hPwf hio heb he' hexec
+          have heb'' :
+              (inlineN counts P.funcs n f').blocks[
+                (inlineN counts P.funcs n f').entry]? = some eb' := by
+            simpa only [inlineN, hio, Option.getD_some] using heb'
+          simpa only [inlineN, hio] using
+            (ih f' args st res e' eb' he' heb'' hexec')
+
 /-- **The budgeted fixed point preserves executions**: iterate
 `inlineOnce_sound` at most eight times. -/
 theorem inlineFunc_sound {P : Prog} {counts : Array Nat} {f : Func} {args : List U256}
@@ -6563,6 +7392,187 @@ theorem inlineFunc_sound {P : Prog} {counts : Array Nat} {f : Func} {args : List
   have hs := Passes.inlineN_sound (model := model) (counts := counts) hPwf
     8 f args st res eb eb' heb heb'' hexec
   simpa only [Passes.inlineFunc_eq_inlineN, hpe.1] using hs
+
+/-- The production local inliner preserves the same call-depth bound. -/
+theorem inlineFunc_soundN {P : Prog} {depth : Nat} {counts : Array Nat} {f : Func} {args : List U256}
+    {st : EvmState} {res : FRes} {eb eb' : Block}
+    (hPwf : P.wfCheck = true) (_hwf : f.wfCheck P.funcs.size = true)
+    (heb : f.blocks[f.entry]? = some eb)
+    (heb' : (Passes.inlineFunc counts P.funcs f).blocks[f.entry]? = some eb')
+    (hexec : ExecN (model := model) P depth f (Regs.empty.setMany f.params args) st
+      ⟨eb.instrs, eb.term⟩ res) :
+    ExecN (model := model) P depth (Passes.inlineFunc counts P.funcs f)
+      (Regs.empty.setMany f.params args) st ⟨eb'.instrs, eb'.term⟩ res := by
+  have hpe := Passes.inlineN_params_entry counts P.funcs 8 f
+  have heb'' :
+      (Passes.inlineN counts P.funcs 8 f).blocks[
+        (Passes.inlineN counts P.funcs 8 f).entry]? = some eb' := by
+    rw [hpe.2]
+    simpa only [Passes.inlineFunc_eq_inlineN] using heb'
+  have hs := Passes.inlineN_soundN (model := model) (counts := counts) hPwf
+    8 f args st res eb eb' heb heb'' hexec
+  simpa only [Passes.inlineFunc_eq_inlineN, hpe.1] using hs
+
+/-- The unpruned program produced by one inlining round. -/
+def Passes.inlineMap (counts : Array Nat) (P : Prog) : Prog :=
+  { main := inlineFunc counts P.funcs P.main
+    funcs := P.funcs.map (inlineFunc counts P.funcs) }
+
+theorem Passes.inlineMap_lookup {counts : Array Nat} {P : Prog}
+    {fid : FuncId} {g : Func} (h : P.funcs[fid]? = some g) :
+    (inlineMap counts P).funcs[fid]? = some (inlineFunc counts P.funcs g) := by
+  simp [inlineMap, h]
+
+/-- Iteration preserves existence of a function's entry block. -/
+theorem Passes.inlineN_entry {counts : Array Nat} {funcs : Array Func} :
+    ∀ (k : Nat) (f : Func) {eb : Block}, f.blocks[f.entry]? = some eb →
+      ∃ eb', (inlineN counts funcs k f).blocks[(inlineN counts funcs k f).entry]? =
+        some eb' := by
+  intro k
+  induction k with
+  | zero =>
+      intro f eb heb
+      exact ⟨eb, heb⟩
+  | succ k ih =>
+      intro f eb heb
+      cases hio : inlineOnce counts funcs f with
+      | none =>
+          exact ⟨eb, by simpa [inlineN, hio] using heb⟩
+      | some f' =>
+          obtain ⟨eb', heb'⟩ := inlineOnce_entry hio heb
+          simpa [inlineN, hio] using ih f' heb'
+
+theorem Passes.inlineFunc_entry {counts : Array Nat} {funcs : Array Func}
+    {f : Func} {eb : Block} (heb : f.blocks[f.entry]? = some eb) :
+    ∃ eb', (inlineFunc counts funcs f).blocks[(inlineFunc counts funcs f).entry]? =
+      some eb' := by
+  rw [inlineFunc_eq_inlineN]
+  exact inlineN_entry 8 f heb
+
+/-- Change the ambient program from `P` to its one-round function map while
+leaving the currently executing function text fixed.  At a call, the callee
+is first locally inlined under `P`; the outer strong induction then changes
+the ambient program for that new callee at the strictly smaller body bound.
+The caller continuation is handled by the structural induction hypothesis. -/
+theorem Passes.inlineMap_execN {P : Prog} {counts : Array Nat}
+    (hPwf : P.wfCheck = true) :
+    ∀ (n : Nat) (f : Func) (R : Regs) (st : EvmState) (rest : Rest) (res : FRes),
+      ExecN (model := model) P n f R st rest res →
+      ExecN (model := model) (inlineMap counts P) n f R st rest res := by
+  intro n
+  induction n using Nat.strong_induction_on with
+  | h n hdepth =>
+      intro f R st rest res hexec
+      induction hexec with
+      | const htail ih => exact ExecN.const (ih hdepth)
+      | op hget hop hlen htail ih => exact ExecN.op hget hop hlen (ih hdepth)
+      | opHalt hget hop => exact ExecN.opHalt hget hop
+      | @call k f g R st st' ds as fid args rvals eb is t res
+          hfid hget hplen heb hbody hlen htail ihbody ih =>
+          obtain ⟨eb', heb'⟩ := inlineFunc_entry
+            (counts := counts) (funcs := P.funcs) heb
+          have hpe := inlineN_params_entry counts P.funcs 8 g
+          have heb'' : (inlineFunc counts P.funcs g).blocks[g.entry]? = some eb' := by
+            simpa only [inlineFunc_eq_inlineN, hpe.2] using heb'
+          have hbodyLocal := inlineFunc_soundN (model := model)
+            (depth := k) (counts := counts) hPwf (progWf_func hPwf hfid)
+            heb heb'' hbody
+          have hbodyLocal' : ExecN (model := model) P k
+              (inlineFunc counts P.funcs g)
+              (Regs.empty.setMany (inlineFunc counts P.funcs g).params args)
+              st ⟨eb'.instrs, eb'.term⟩ (.ret rvals st') := by
+            simpa only [inlineFunc_eq_inlineN, hpe.1] using hbodyLocal
+          have hbodyMap := hdepth k (by omega)
+            (inlineFunc counts P.funcs g)
+            (Regs.empty.setMany (inlineFunc counts P.funcs g).params args)
+            st ⟨eb'.instrs, eb'.term⟩ (.ret rvals st') hbodyLocal'
+          refine ExecN.call (g := inlineFunc counts P.funcs g) (eb := eb')
+            (inlineMap_lookup hfid) hget ?_ heb' hbodyMap hlen (ih hdepth)
+          simpa only [inlineFunc_eq_inlineN, hpe.1] using hplen
+      | @callHalt k f g R st st' ds as fid args eb is t
+          hfid hget hplen heb hbody ihbody =>
+          obtain ⟨eb', heb'⟩ := inlineFunc_entry
+            (counts := counts) (funcs := P.funcs) heb
+          have hpe := inlineN_params_entry counts P.funcs 8 g
+          have heb'' : (inlineFunc counts P.funcs g).blocks[g.entry]? = some eb' := by
+            simpa only [inlineFunc_eq_inlineN, hpe.2] using heb'
+          have hbodyLocal := inlineFunc_soundN (model := model)
+            (depth := k) (counts := counts) hPwf (progWf_func hPwf hfid)
+            heb heb'' hbody
+          have hbodyLocal' : ExecN (model := model) P k
+              (inlineFunc counts P.funcs g)
+              (Regs.empty.setMany (inlineFunc counts P.funcs g).params args)
+              st ⟨eb'.instrs, eb'.term⟩ (.halt st') := by
+            simpa only [inlineFunc_eq_inlineN, hpe.1] using hbodyLocal
+          have hbodyMap := hdepth k (by omega)
+            (inlineFunc counts P.funcs g)
+            (Regs.empty.setMany (inlineFunc counts P.funcs g).params args)
+            st ⟨eb'.instrs, eb'.term⟩ (.halt st') hbodyLocal'
+          refine ExecN.callHalt (g := inlineFunc counts P.funcs g) (eb := eb')
+            (inlineMap_lookup hfid) hget ?_ heb' hbodyMap
+          simpa only [inlineFunc_eq_inlineN, hpe.1] using hplen
+      | jump htb hget hplen htail ih => exact ExecN.jump htb hget hplen (ih hdepth)
+      | branchTrue hc hv htb hget hplen htail ih =>
+          exact ExecN.branchTrue hc hv htb hget hplen (ih hdepth)
+      | branchFalse hc htb hget hplen htail ih =>
+          exact ExecN.branchFalse hc htb hget hplen (ih hdepth)
+      | ret hget => exact ExecN.ret hget
+      | halt hget hop => exact ExecN.halt hget hop
+
+/-- One unpruned whole-program inlining map preserves a run. -/
+theorem Passes.inlineMap_sound {P : Prog} {counts : Array Nat}
+    {yst0 yst' : EvmState} {o : Outcome} (hPwf : P.wfCheck = true)
+    (hrun : Run (model := model) P yst0 yst' o) :
+    Run (model := model) (inlineMap counts P) yst0 yst' o := by
+  have hPwf' := hPwf
+  simp only [Prog.wfCheck, Bool.and_eq_true] at hPwf'
+  have hmainWf : P.main.wfCheck P.funcs.size = true := by
+    exact hPwf'.1.2
+  have hmainParams : P.main.params = [] := by
+    exact List.isEmpty_iff.mp hPwf'.1.1.1
+  cases hrun with
+  | normal heb hexec =>
+      rename_i eb
+      obtain ⟨n, hexecN⟩ := hexec.toExecN
+      obtain ⟨eb', heb'⟩ := inlineFunc_entry
+        (counts := counts) (funcs := P.funcs) heb
+      have hpe := inlineN_params_entry counts P.funcs 8 P.main
+      have heb'' : (inlineFunc counts P.funcs P.main).blocks[P.main.entry]? =
+          some eb' := by
+        simpa only [inlineFunc_eq_inlineN, hpe.2] using heb'
+      have hlocal := inlineFunc_soundN (model := model) (depth := n)
+        (counts := counts) (args := []) hPwf hmainWf heb heb''
+        (by simpa [hmainParams, Regs.setMany_nil_left] using hexecN)
+      have hlocal' : ExecN (model := model) P n
+          (inlineFunc counts P.funcs P.main) Regs.empty yst0
+          ⟨eb'.instrs, eb'.term⟩ (.ret [] yst') := by
+        simpa only [inlineFunc_eq_inlineN, hpe.1, hmainParams,
+          Regs.setMany_nil_left] using hlocal
+      have hmapped := inlineMap_execN (model := model) (counts := counts)
+        hPwf n (inlineFunc counts P.funcs P.main) Regs.empty yst0
+        ⟨eb'.instrs, eb'.term⟩ (.ret [] yst') hlocal'
+      exact Run.normal (by simpa [inlineMap] using heb') hmapped.toExec
+  | halt heb hexec =>
+      rename_i eb
+      obtain ⟨n, hexecN⟩ := hexec.toExecN
+      obtain ⟨eb', heb'⟩ := inlineFunc_entry
+        (counts := counts) (funcs := P.funcs) heb
+      have hpe := inlineN_params_entry counts P.funcs 8 P.main
+      have heb'' : (inlineFunc counts P.funcs P.main).blocks[P.main.entry]? =
+          some eb' := by
+        simpa only [inlineFunc_eq_inlineN, hpe.2] using heb'
+      have hlocal := inlineFunc_soundN (model := model) (depth := n)
+        (counts := counts) (args := []) hPwf hmainWf heb heb''
+        (by simpa [hmainParams, Regs.setMany_nil_left] using hexecN)
+      have hlocal' : ExecN (model := model) P n
+          (inlineFunc counts P.funcs P.main) Regs.empty yst0
+          ⟨eb'.instrs, eb'.term⟩ (.halt yst') := by
+        simpa only [inlineFunc_eq_inlineN, hpe.1, hmainParams,
+          Regs.setMany_nil_left] using hlocal
+      have hmapped := inlineMap_execN (model := model) (counts := counts)
+        hPwf n (inlineFunc counts P.funcs P.main) Regs.empty yst0
+        ⟨eb'.instrs, eb'.term⟩ (.halt yst') hlocal'
+      exact Run.halt (by simpa [inlineMap] using heb') hmapped.toExec
 
 /-! ### Function pruning: pure models of the mutable loops -/
 
@@ -7437,31 +8447,34 @@ theorem pruneFuncs_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
 
 /-- **Inlining soundness**, the statement the top-level proof consumes.
 
-The precise remaining bridge is a simultaneous `Exec` simulation for one
-program round. `inlineFunc_sound` keeps the ambient program `P` fixed, whereas
-a round replaces `main` and every `P.funcs` entry together. Applying the local
-theorem first and then transporting its result creates a non-structural
-recursion in `Exec.call`: the old body must be inlined and then transported to
-the new ambient array, including recursive self-calls. The existing theorem
-does not expose a call-depth-preservation fact that could justify that
-recursion. A complete proof therefore needs either a strengthened simultaneous
-caller-location induction (ordinary calls use the transformed callee while an
-eliminated call replays the old callee inside the caller), or a depth-indexed
-strengthening of `inlineCaller_exec`/`inlineFunc_sound`. After that bridge,
-`pruneFuncs_sound` and the three-round early-return loop are routine.
+The call-depth bridge is now complete. `ExecN` is the separate indexed
+judgment, `Exec.toExecN`/`ExecN.toExec` connect it to `Exec`, and the indexed
+`inlineReplay_execN`, `inlineCaller_execN`, `inlineFunc_soundN`, and
+`inlineMap_execN` chain proves `inlineMap_sound`: one simultaneous, unpruned
+program map preserves a whole-program run.  The strong induction in
+`inlineMap_execN` applies the local inliner to a call body and transports that
+new body to the mapped ambient program at the strictly smaller depth.
 
-Precise obstruction after attempting the depth-indexed route: `Exec` is an
-inductive proposition, so Lean forbids eliminating an `Exec` proof into `Nat`
-(and even into a proof-indexed family of propositions).  Consequently the
-depth cannot be added as a derived function on the existing derivation.  It
-has to be a separate indexed semantic relation, say `ExecN P n ...`, with the
-same constructors, callee bodies at index `n` and caller continuations at
-index `n + 1`.  Closing the bridge then specifically requires indexed versions
-of both `inlineReplay_exec` (CPS continuation bound included) and
-`inlineCaller_exec`; merely wrapping their current `Exec` conclusions loses
-the index by proof irrelevance.  The current unindexed replay theorems therefore
-cannot justify the strictly-decreasing recursive call needed to replace
-`P.funcs` by `P.funcs.map (inlineFunc counts P.funcs)`. -/
+Precise remaining obstruction: `inlineProg` does not merely iterate
+`inlineMap`.  Each of its three rounds computes
+
+    pruneFuncs (inlineMap (siteCounts P) P)
+
+and uses that pruned program as the next round's ambient `P`.  Both
+`inlineMap_sound` and `pruneFuncs_sound` require the current program's
+`P.wfCheck = true`, but this file has no preservation theorem for either
+`inlineFunc`/`inlineMap` or `pruneFuncs`.  Thus the first unpruned round is
+proved, but the proof cannot justify pruning that round or discharge the
+callee freshness/return-shape premises in round two.  Closing this declaration
+now requires the additional syntactic lemma
+
+    P.wfCheck = true →
+      (pruneFuncs (inlineMap (siteCounts P) P)).wfCheck = true
+
+(normally factored into `inlineOnce`/`inlineFunc` and `pruneFuncs`
+well-formedness preservation), followed by the routine three-step loop
+inversion.  This obligation is independent of the now-proved `ExecN` replay
+strengthening. -/
 theorem inlineProg_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
     (hwf : P.wfCheck = true) (hrun : Run (model := model) P yst0 yst' o) :
     Run (model := model) (Passes.inlineProg P) yst0 yst' o := by
