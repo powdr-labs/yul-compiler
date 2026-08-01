@@ -8752,6 +8752,64 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
               hbelowE)),
         hfrE, henvE, huniq.setMany _ _, hsimExit⟩
 
+/-- Bind the values carried by a body fall-through/`continue` edge to the
+reserved post block's parameters.  This is the common post-entry boundary of
+`loopStep` and `loopPostHalt`: it extends the register file at the fresh post
+parameters, reconstructs the fixed post environment, and turns the body's
+edge continuation into a straight-line simulation ending at the post block. -/
+theorem sim_loopPostEntry {P : Prog} {f : Func} {X : List Ident}
+    {V Vb : VEnv yulD} {env : VMap} {R₀ RB : Regs}
+    {st stb : EvmState} {fn₀ : FnState} {sBody sPost : BState}
+    {postId : BlockId} {postParams : List ValId} {vals : List U256}
+    {pb : Block} {joins : List BlockId} {base : Nat}
+    (henv : EnvOK (model := model) env V R₀)
+    (hV : YulSemantics.VEnv.setMany V X vals = Vb)
+    (hle : Regs.Le R₀ RB) (hbelow : Regs.BelowEq base R₀ RB)
+    (hnd : postParams.Nodup) (hnone : ∀ i ∈ postParams, RB i = none)
+    (hbase : ∀ i ∈ postParams, base ≤ i)
+    (hparamsLt : ∀ i ∈ postParams, i < sBody.fn.nextVal)
+    (hfr : RegsFresh RB sBody.fn)
+    (hnext : sBody.fn.nextVal ≤ sPost.fn.nextVal)
+    (hcompl : Completes f sPost.fn joins)
+    (hpb : sPost.fn.blocks[postId]? = some pb)
+    (hpp : pb.params = postParams)
+    (hcur : sPost.fn.curId = postId) (hcur0 : sPost.fn.cur = [])
+    (hlen : postParams.length = vals.length)
+    (hcont : ∀ res, JumpTo (model := model) P f postId vals RB stb res →
+      ExecFrom (model := model) P f fn₀ R₀ st res) :
+    ∃ RP : Regs, Regs.Le R₀ RP ∧ Regs.BelowEq base R₀ RP
+      ∧ RegsFresh RP sPost.fn
+      ∧ EnvOK (model := model) (env.setMany X postParams) Vb RP
+      ∧ SimS (model := model) P f fn₀ R₀ st sPost.fn RP stb := by
+  let RP := RB.setMany postParams vals
+  have hleP : Regs.Le RB RP := Regs.Le.setMany hnd hnone
+  have hbelowP : Regs.BelowEq base RB RP :=
+    Regs.BelowEq.setMany hbase
+  have hfrP : RegsFresh RP sPost.fn := by
+    intro i hi
+    dsimp [RP]
+    rw [Regs.setMany_other]
+    · exact hfr i (Nat.le_trans hnext hi)
+    · intro him
+      exact absurd (hparamsLt i him)
+        (Nat.not_lt_of_ge (Nat.le_trans hnext hi))
+  have hpget : RP.getMany postParams = some vals :=
+    Regs.getMany_setMany_self hnd hlen
+  have henvP : EnvOK (model := model) (env.setMany X postParams) Vb RP := by
+    have he : EnvOK (model := model) (env.setMany X postParams)
+        (YulSemantics.VEnv.setMany V X vals) RP :=
+      EnvOK.setMany (henv.mono (hle.trans hleP))
+        (Regs.getMany_eq_some_iff.mp hpget)
+    rwa [hV] at he
+  have hsimP : SimS (model := model) P f fn₀ R₀ st sPost.fn RP stb := by
+    intro res hex
+    apply hcont res
+    apply jumpTo_of_completes hcompl hpb hcur hcur0
+    · rw [hpp]
+      exact hlen
+    · simpa only [RP, hpp] using hex
+  exact ⟨RP, hle.trans hleP, hbelow.trans hbelowP, hfrP, henvP, hsimP⟩
+
 
 
 set_option maxHeartbeats 1000000 in
