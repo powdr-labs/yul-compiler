@@ -3081,6 +3081,35 @@ def cseEntryTab (f : Func) (srcs : Array (List BlockId))
     | [p] => if p < bi then tables[p]! else {}
     | _ => {}
 
+/-! The source collector used by `cseEntryTab`, exposed as folds. -/
+
+def sourceEdgeStep (bi : BlockId) (acc : Array (List BlockId)) (e : Edge) :
+    Array (List BlockId) :=
+  acc.setIfInBounds e.target (bi :: acc[e.target]!)
+
+def sourceBlockStep (f : Func) (acc : Array (List BlockId)) (bi : BlockId) :
+    Array (List BlockId) :=
+  f.blocks[bi]!.term.edges.foldl (sourceEdgeStep bi) acc
+
+theorem inEdgeSources_eq_fold (f : Func) :
+    inEdgeSources f =
+      (List.range' 0 f.blocks.size 1).foldl (sourceBlockStep f)
+        (Array.replicate f.blocks.size []) := by
+  unfold inEdgeSources
+  dsimp only [sourceBlockStep, sourceEdgeStep]
+  simp only [Std.Legacy.Range.forIn_eq_forIn_range', Std.Legacy.Range.size]
+  rw [Id.forIn_eq_foldl (g := fun bi acc =>
+    f.blocks[bi]!.term.edges.foldl
+      (fun acc e => acc.setIfInBounds e.target (bi :: acc[e.target]!)) acc) (h := by
+    intro bi acc
+    rw [Id.forIn_eq_foldl (g := fun e acc =>
+      acc.setIfInBounds e.target (bi :: acc[e.target]!)) (h := by
+      intro e acc
+      rfl)]
+    rfl)]
+  simp [Id.run, bind, pure]
+  congr 1
+
 def cseInstrStep (ins0 : Instr) (st : CSEInner) : CSEInner :=
   match substInstr st.2.2 ins0 with
   | .const d v =>
@@ -3617,6 +3646,111 @@ theorem getElem!_eq_getElem {α : Type} [Inhabited α] {a : Array α} {i : Nat}
   simp [Array.getElem!_eq_getD, Array.getD_eq_getD_getElem?,
     Array.getElem?_eq_getElem h]
 
+@[simp] theorem sourceEdgeStep_size (bi : BlockId) (acc : Array (List BlockId))
+    (e : Edge) : (sourceEdgeStep bi acc e).size = acc.size := by
+  simp [sourceEdgeStep]
+
+theorem sourceEdgeStep_mem_self {bi : BlockId} {acc : Array (List BlockId)}
+    {e : Edge} (ht : e.target < acc.size) :
+    bi ∈ (sourceEdgeStep bi acc e)[e.target]! := by
+  rw [sourceEdgeStep, getElem!_eq_getElem (by simp [ht]),
+    Array.getElem_setIfInBounds_self]
+  simp
+
+theorem sourceEdgeStep_mem_preserve {bi x q : BlockId}
+    {acc : Array (List BlockId)} {e : Edge} (hq : q < acc.size)
+    (hx : x ∈ acc[q]!) : x ∈ (sourceEdgeStep bi acc e)[q]! := by
+  by_cases heq : q = e.target
+  · subst q
+    rw [sourceEdgeStep, getElem!_eq_getElem (by simp [hq]),
+      Array.getElem_setIfInBounds_self]
+    exact List.mem_cons_of_mem _ hx
+  · rw [sourceEdgeStep, getElem!_eq_getElem (by simp [hq]),
+      Array.getElem_setIfInBounds_ne hq (Ne.symm heq), ← getElem!_eq_getElem hq]
+    exact hx
+
+theorem sourceEdgeFold_mem_preserve {bi x q : BlockId}
+    {acc : Array (List BlockId)} (hq : q < acc.size) (hx : x ∈ acc[q]!)
+    (es : List Edge) :
+    x ∈ (es.foldl (sourceEdgeStep bi) acc)[q]! := by
+  induction es generalizing acc with
+  | nil => exact hx
+  | cons e es ih =>
+      rw [List.foldl_cons]
+      exact ih (by simpa using hq) (sourceEdgeStep_mem_preserve hq hx)
+
+theorem sourceEdgeFold_mem {bi : BlockId} {acc : Array (List BlockId)}
+    {e : Edge} {es : List Edge} (he : e ∈ es) (ht : e.target < acc.size) :
+    bi ∈ (es.foldl (sourceEdgeStep bi) acc)[e.target]! := by
+  induction es generalizing acc with
+  | nil => simp at he
+  | cons e0 es ih =>
+      rw [List.foldl_cons]
+      rcases List.mem_cons.mp he with rfl | he
+      · exact sourceEdgeFold_mem_preserve (by simpa using ht)
+          (sourceEdgeStep_mem_self ht) es
+      · exact ih he (by simpa using ht)
+
+@[simp] theorem sourceBlockStep_size (f : Func) (acc : Array (List BlockId))
+    (bi : BlockId) : (sourceBlockStep f acc bi).size = acc.size := by
+  unfold sourceBlockStep
+  induction f.blocks[bi]!.term.edges generalizing acc with
+  | nil => rfl
+  | cons e es ih => simpa using ih (sourceEdgeStep bi acc e)
+
+theorem sourceBlockStep_mem_preserve {f : Func} {x q : BlockId}
+    {acc : Array (List BlockId)} (hq : q < acc.size) (hx : x ∈ acc[q]!)
+    (bi : BlockId) : x ∈ (sourceBlockStep f acc bi)[q]! := by
+  exact sourceEdgeFold_mem_preserve hq hx _
+
+theorem sourceBlockStep_mem {f : Func} {bi : BlockId} {acc : Array (List BlockId)}
+    {e : Edge} (he : e ∈ f.blocks[bi]!.term.edges) (ht : e.target < acc.size) :
+    bi ∈ (sourceBlockStep f acc bi)[e.target]! := by
+  exact sourceEdgeFold_mem he ht
+
+theorem sourceBlockFold_mem_preserve {f : Func} {x q : BlockId}
+    {acc : Array (List BlockId)} (hq : q < acc.size) (hx : x ∈ acc[q]!)
+    (bis : List BlockId) : x ∈ (bis.foldl (sourceBlockStep f) acc)[q]! := by
+  induction bis generalizing acc with
+  | nil => exact hx
+  | cons bi bis ih =>
+      rw [List.foldl_cons]
+      exact ih (by simpa using hq) (sourceBlockStep_mem_preserve hq hx bi)
+
+theorem sourceBlockFold_mem {f : Func} {bi : BlockId} {acc : Array (List BlockId)}
+    {e : Edge} {bis : List BlockId} (hbi : bi ∈ bis)
+    (he : e ∈ f.blocks[bi]!.term.edges) (ht : e.target < acc.size) :
+    bi ∈ (bis.foldl (sourceBlockStep f) acc)[e.target]! := by
+  induction bis generalizing acc with
+  | nil => simp at hbi
+  | cons bj bis ih =>
+      rw [List.foldl_cons]
+      rcases List.mem_cons.mp hbi with rfl | hbi
+      · exact sourceBlockFold_mem_preserve (by simpa using ht)
+          (sourceBlockStep_mem he ht) bis
+      · exact ih hbi (by simpa using ht)
+
+theorem mem_inEdgeSources {f : Func} {bi : BlockId} {b : Block} {e : Edge}
+    (hb : f.blocks[bi]? = some b) (he : e ∈ b.term.edges)
+    (ht : e.target < f.blocks.size) : bi ∈ (inEdgeSources f)[e.target]! := by
+  have hbi : bi ∈ List.range' 0 f.blocks.size 1 := by
+    rw [List.mem_range'_1]
+    exact ⟨Nat.zero_le _, by simpa using (Array.getElem?_eq_some_iff.mp hb).1⟩
+  have hbang : f.blocks[bi]! = b := by
+    rw [getElem!_eq_getElem (Array.getElem?_eq_some_iff.mp hb).1]
+    exact (Array.getElem?_eq_some_iff.mp hb).2
+  rw [inEdgeSources_eq_fold]
+  apply sourceBlockFold_mem hbi (ht := by simpa using ht)
+  simpa [hbang] using he
+
+theorem inEdgeSources_single_eq {f : Func} {bi p : BlockId} {b : Block} {e : Edge}
+    (hb : f.blocks[bi]? = some b) (he : e ∈ b.term.edges)
+    (ht : e.target < f.blocks.size) (hs : (inEdgeSources f)[e.target]! = [p]) :
+    bi = p := by
+  have hm := mem_inEdgeSources hb he ht
+  rw [hs] at hm
+  simpa using hm
+
 def CSEPrefixInv (f : Func) (n : Nat) : Prop :=
   let st := csePrefix f n
   CSEInv f (cseSeen f n) {} st.2.2
@@ -3776,6 +3910,32 @@ theorem csePrefix_ext_to {f : Func} (hnd : f.allDefs.Nodup) {n m : Nat}
         ih hnm (by omega)
       exact SubstExt.trans hleft (csePrefix_ext_succ hnd (by omega))
 
+theorem cseSeen_mono {f : Func} {n m : Nat} (h : n ≤ m) :
+    ∀ x ∈ cseSeen f n, x ∈ cseSeen f m := by
+  intro x hx
+  unfold cseSeen at hx ⊢
+  exact ((List.take_sublist_take_left h).flatMap
+    (fun b : Block => b.instrs.flatMap Instr.defs)).subset hx
+
+theorem csePrefix_stable_to {f : Func} (hnd : f.allDefs.Nodup) {n m : Nat}
+    (hle : n ≤ m) (hm : m ≤ f.blocks.size) :
+    SubstStable (cseSeen f n) (csePrefix f n).2.2 (csePrefix f m).2.2 := by
+  induction m generalizing n with
+  | zero =>
+      have hn : n = 0 := by omega
+      subst n
+      intro x hx
+      rfl
+  | succ m ih =>
+      by_cases hn : n = m + 1
+      · subst n
+        intro x hx
+        rfl
+      · have hnm : n ≤ m := by omega
+        have hleft := ih hnm (by omega)
+        have hright := csePrefix_stable_succ hnd (n := m) (by omega)
+        exact hleft.trans (fun x hx => hright x (cseSeen_mono hnm x hx))
+
 theorem substV_absorb {σ τ : Subst} (hext : SubstExt σ τ) (hrange : RangeFree τ)
     (x : ValId) : substV τ (substV σ x) = substV τ x := by
   unfold substV
@@ -3789,6 +3949,336 @@ theorem substV_absorb {σ τ : Subst} (hext : SubstExt σ τ) (hrange : RangeFre
 theorem substVs_absorb {σ τ : Subst} (hext : SubstExt σ τ) (hrange : RangeFree τ)
     (xs : List ValId) : substVs τ (substVs σ xs) = substVs τ xs := by
   simp [substVs, substV_absorb hext hrange]
+
+theorem substInstr_absorb {σ τ : Subst} (hext : SubstExt σ τ)
+    (hrange : RangeFree τ) (i : Instr) :
+    substInstr τ (substInstr σ i) = substInstr τ i := by
+  cases i <;> simp [substInstr, substVs_absorb hext hrange]
+
+theorem substEdge_absorb {σ τ : Subst} (hext : SubstExt σ τ)
+    (hrange : RangeFree τ) (e : Edge) :
+    substEdge τ (substEdge σ e) = substEdge τ e := by
+  simp [substEdge, substVs_absorb hext hrange]
+
+theorem substTerm_absorb {σ τ : Subst} (hext : SubstExt σ τ)
+    (hrange : RangeFree τ) (t : Term) :
+    substTerm τ (substTerm σ t) = substTerm τ t := by
+  cases t <;> simp [substTerm, substV_absorb hext hrange,
+    substEdge_absorb hext hrange, substVs_absorb hext hrange]
+
+@[simp] theorem substInstr_defs (σ : Subst) (i : Instr) :
+    (substInstr σ i).defs = i.defs := by
+  cases i <;> rfl
+
+theorem substInstr_use {σ : Subst} {i : Instr} {x : ValId}
+    (hx : x ∈ (substInstr σ i).uses) : ∃ y ∈ i.uses, substV σ y = x := by
+  cases i with
+  | const d v => simp [substInstr, Instr.uses] at hx
+  | op ds yop args =>
+      simp only [substInstr, Instr.uses, substVs, List.mem_map] at hx
+      obtain ⟨y, hy, rfl⟩ := hx
+      exact ⟨y, hy, rfl⟩
+  | call ds fid args =>
+      simp only [substInstr, Instr.uses, substVs, List.mem_map] at hx
+      obtain ⟨y, hy, rfl⟩ := hx
+      exact ⟨y, hy, rfl⟩
+
+theorem substEdge_use {σ : Subst} {e : Edge} {x : ValId}
+    (hx : x ∈ (substEdge σ e).args) : ∃ y ∈ e.args, substV σ y = x := by
+  simpa [substEdge, substVs, List.mem_map] using hx
+
+theorem substTerm_use {σ : Subst} {t : Term} {x : ValId}
+    (hx : x ∈ (substTerm σ t).uses) : ∃ y ∈ t.uses, substV σ y = x := by
+  cases t with
+  | jump e =>
+      simp only [substTerm, Term.uses]
+      exact substEdge_use hx
+  | branch c et ef =>
+      simp only [substTerm, Term.uses, List.mem_cons, List.mem_append] at hx ⊢
+      rcases hx with (hc | hx) | hx
+      · exact ⟨c, Or.inl (Or.inl rfl), hc.symm⟩
+      · obtain ⟨y, hy, hxy⟩ := substEdge_use hx
+        exact ⟨y, Or.inl (Or.inr hy), hxy⟩
+      · obtain ⟨y, hy, hxy⟩ := substEdge_use hx
+        exact ⟨y, Or.inr hy, hxy⟩
+  | ret xs =>
+      simpa [substTerm, Term.uses, substVs, List.mem_map] using hx
+  | halt yop xs =>
+      simpa [substTerm, Term.uses, substVs, List.mem_map] using hx
+
+theorem substTerm_edge {σ : Subst} {t : Term} {e : Edge}
+    (he : e ∈ (substTerm σ t).edges) :
+    ∃ e0 ∈ t.edges, e0.target = e.target := by
+  cases t with
+  | jump e0 =>
+      simp only [substTerm, Term.edges, List.mem_singleton] at he ⊢
+      subst e
+      exact ⟨e0, rfl, rfl⟩
+  | branch c et ef =>
+      simp only [substTerm, Term.edges, List.mem_cons, List.mem_singleton] at he ⊢
+      rcases he with rfl | he
+      · exact ⟨et, Or.inl rfl, rfl⟩
+      · have he' : e = substEdge σ ef := by simpa using he
+        subst e
+        exact ⟨ef, by simp, rfl⟩
+  | ret xs => simp [substTerm, Term.edges] at he
+  | halt yop xs => simp [substTerm, Term.edges] at he
+
+theorem cseInstrStep_out {i : Instr} {acc : List Instr} {tab : CseTab} {σ : Subst} :
+    let r := cseInstrStep i ⟨acc, tab, σ⟩
+    r.1 = acc ∨ r.1 = substInstr σ i :: acc := by
+  cases i with
+  | const d v =>
+      simp only [cseInstrStep, substInstr]
+      split <;> simp
+  | op ds yop args =>
+      cases ds with
+      | nil => simp [cseInstrStep, substInstr]
+      | cons d rest =>
+          cases rest with
+          | nil =>
+              simp only [cseInstrStep, substInstr]
+              split <;> (try split) <;> simp
+          | cons e es => simp [cseInstrStep, substInstr]
+  | call ds fid args => simp [cseInstrStep, substInstr]
+
+theorem cseInstrStep_acc_sublist {i : Instr} {acc : List Instr} {tab : CseTab}
+    {σ : Subst} : acc.Sublist (cseInstrStep i ⟨acc, tab, σ⟩).1 := by
+  rcases cseInstrStep_out (i := i) (acc := acc) (tab := tab) (σ := σ) with h | h
+  · rw [h]
+  · rw [h]
+    exact List.Sublist.cons _ (List.Sublist.refl _)
+
+theorem cseInstrStep_tabVals {i : Instr} {acc : List Instr} {tab : CseTab}
+    {σ : Subst} {x : ValId} (hx : x ∈ cseTabVals (cseInstrStep i ⟨acc, tab, σ⟩).2.1) :
+    x ∈ cseTabVals tab ∨ x ∈ (cseInstrStep i ⟨acc, tab, σ⟩).1.flatMap Instr.defs := by
+  cases i with
+  | const d v =>
+      cases hfind : tab.consts.find? (fun x => x.1 == v) with
+      | some a =>
+          have hx' : x ∈ cseTabVals tab := by
+            simpa [cseInstrStep, substInstr, hfind] using hx
+          exact Or.inl hx'
+      | none =>
+          simp only [cseInstrStep, substInstr, hfind, cseTabVals, List.map_cons,
+            List.mem_append, List.mem_cons, Instr.defs, List.flatMap_cons] at hx ⊢
+          tauto
+  | op ds yop args =>
+      cases ds with
+      | nil => exact Or.inl hx
+      | cons d rest =>
+          cases rest with
+          | cons e es => exact Or.inl hx
+          | nil =>
+              by_cases hp : pureOp yop = true
+              · cases hfind : tab.ops.find? (fun x => x.1 == (yop, substVs σ args)) with
+                | some a =>
+                    have hx' : x ∈ cseTabVals tab := by
+                      simpa [cseInstrStep, substInstr, hp, hfind] using hx
+                    exact Or.inl hx'
+                | none =>
+                    simp only [cseInstrStep, substInstr, hp, if_true, hfind, cseTabVals,
+                      List.map_cons, List.mem_append, List.mem_cons, Instr.defs,
+                      List.flatMap_cons] at hx ⊢
+                    tauto
+              · have hx' : x ∈ cseTabVals tab := by
+                  simpa [cseInstrStep, substInstr, hp] using hx
+                exact Or.inl hx'
+  | call ds fid args => exact Or.inl hx
+
+theorem cseInstrStep_defs_resolve {f : Func} {seen : List ValId} {i : Instr}
+    {acc : List Instr} {tab : CseTab} {σ : Subst} (hinv : CSEInv f seen tab σ)
+    (hnd : (seen ++ i.defs).Nodup) {d : ValId} (hd : d ∈ i.defs) :
+    let r := cseInstrStep i ⟨acc, tab, σ⟩
+    substV r.2.2 d ∈ r.1.flatMap Instr.defs ∨ substV r.2.2 d ∈ cseTabVals tab := by
+  have hfresh : d ∉ seen := by
+    rw [List.nodup_append] at hnd
+    exact fun hm => (hnd.2.2 d hm d hd) rfl
+  have hdnone : σ[d]? = none := by
+    by_contra hn
+    obtain ⟨d0, hd0⟩ := Option.ne_none_iff_exists'.mp hn
+    exact hfresh (hinv.2.2.2.1 hd0).1
+  cases i with
+  | const d' v =>
+      simp only [Instr.defs, List.mem_singleton] at hd
+      subst d'
+      cases hfind : tab.consts.find? (fun x => x.1 == v) with
+      | none =>
+          left
+          simp [cseInstrStep, substInstr, hfind, substV,
+            Std.HashMap.getD_eq_getD_getElem?, hdnone]
+          exact Or.inl (by simp [Instr.defs])
+      | some a =>
+          obtain ⟨v0, d0⟩ := a
+          right
+          have hm : (v0, d0) ∈ tab.consts := List.mem_of_find?_eq_some hfind
+          have hd0mem : d0 ∈ cseTabVals tab := by
+            exact List.mem_append_right _ (List.mem_map.mpr ⟨(v0, d0), hm, rfl⟩)
+          simpa [cseInstrStep, substInstr, hfind, substV,
+            Std.HashMap.getD_eq_getD_getElem?, Std.HashMap.getElem?_insert] using hd0mem
+  | op ds yop args =>
+      cases ds with
+      | nil => simp [Instr.defs] at hd
+      | cons d' rest =>
+          cases rest with
+          | nil =>
+              simp only [Instr.defs, List.mem_singleton] at hd
+              subst d'
+              by_cases hp : pureOp yop = true
+              · cases hfind : tab.ops.find? (fun x => x.1 == (yop, substVs σ args)) with
+                | none =>
+                    left
+                    simp [cseInstrStep, substInstr, hp, hfind, substV,
+                      Std.HashMap.getD_eq_getD_getElem?, hdnone]
+                    exact Or.inl (by simp [Instr.defs])
+                | some a =>
+                    obtain ⟨key, d0⟩ := a
+                    right
+                    have hm : (key, d0) ∈ tab.ops := List.mem_of_find?_eq_some hfind
+                    have hd0mem : d0 ∈ cseTabVals tab :=
+                      List.mem_append_left _ (List.mem_map.mpr ⟨(key, d0), hm, rfl⟩)
+                    simpa [cseInstrStep, substInstr, hp, hfind, substV,
+                      Std.HashMap.getD_eq_getD_getElem?, Std.HashMap.getElem?_insert] using hd0mem
+              · left
+                simp [cseInstrStep, substInstr, hp, substV,
+                  Std.HashMap.getD_eq_getD_getElem?, hdnone]
+                exact Or.inl (by simp [Instr.defs])
+          | cons e es =>
+              left
+              simp only [Instr.defs] at hd
+              simp [cseInstrStep, substInstr, substV,
+                Std.HashMap.getD_eq_getD_getElem?, hdnone, hd]
+              exact Or.inl (by simpa [Instr.defs] using hd)
+  | call ds fid args =>
+      left
+      simp only [Instr.defs] at hd
+      simp [cseInstrStep, substInstr, substV,
+        Std.HashMap.getD_eq_getD_getElem?, hdnone, hd]
+      exact Or.inl (by simpa [Instr.defs] using hd)
+
+theorem cseInstrFold_acc_sublist (l : List Instr) (acc : List Instr)
+    (tab : CseTab) (σ : Subst) :
+    acc.Sublist (l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩).1 := by
+  induction l generalizing acc tab σ with
+  | nil => exact List.Sublist.refl _
+  | cons i is ih =>
+      rw [List.foldl_cons]
+      exact (cseInstrStep_acc_sublist (i := i)).trans (ih _ _ _)
+
+theorem cseInstrFold_tabVals (l : List Instr) (acc : List Instr)
+    (tab : CseTab) (σ : Subst) {x : ValId}
+    (hx : x ∈ cseTabVals
+      (l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩).2.1) :
+    x ∈ cseTabVals tab ∨
+      x ∈ (l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩).1.flatMap Instr.defs := by
+  induction l generalizing acc tab σ with
+  | nil => exact Or.inl hx
+  | cons i is ih =>
+      rw [List.foldl_cons] at hx ⊢
+      let s1 := cseInstrStep i ⟨acc, tab, σ⟩
+      rcases ih s1.1 s1.2.1 s1.2.2 hx with htab | hout
+      · rcases cseInstrStep_tabVals htab with hold | hnew
+        · exact Or.inl hold
+        · exact Or.inr
+            (((cseInstrFold_acc_sublist is s1.1 s1.2.1 s1.2.2).flatMap _).subset hnew)
+      · exact Or.inr hout
+
+theorem cseInstrFold_defs_resolve {f : Func} {b : Block}
+    (hb : b ∈ f.blocks.toList) {seen : List ValId} {tab : CseTab} {σ : Subst}
+    (hinv : CSEInv f seen tab σ) (l : List Instr)
+    (hmem : ∀ i ∈ l, i ∈ b.instrs)
+    (hnd : (seen ++ l.flatMap Instr.defs).Nodup) (acc : List Instr) {d : ValId}
+    (hd : d ∈ l.flatMap Instr.defs) :
+    let r := l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩
+    substV r.2.2 d ∈ r.1.flatMap Instr.defs ∨ substV r.2.2 d ∈ cseTabVals tab := by
+  induction l generalizing seen tab σ acc with
+  | nil => simp at hd
+  | cons i is ih =>
+      simp only [List.flatMap_cons, List.mem_append] at hd
+      have hprefix : (seen ++ i.defs).Nodup := by
+        apply List.Nodup.of_append_left (l₂ := is.flatMap Instr.defs)
+        simpa [List.append_assoc] using hnd
+      have hone := cseInstrStep_inv hb hinv i (hmem i (by simp)) hprefix
+      have hstate := cseInstrStep_state i acc tab σ
+      let s1 := cseInstrStep i ⟨acc, tab, σ⟩
+      have hinv1 : CSEInv f (seen ++ i.defs) s1.2.1 s1.2.2 := by
+        rw [hstate]
+        exact hone.1
+      have htail : ((seen ++ i.defs) ++ is.flatMap Instr.defs).Nodup := by
+        simpa [List.append_assoc] using hnd
+      have hstable := cseInstrFold_stable hb hinv1 is
+        (fun j hj => hmem j (by simp [hj])) htail s1.1
+      rw [List.foldl_cons]
+      dsimp only
+      rcases hd with hd | hd
+      · have hnow := cseInstrStep_defs_resolve hinv hprefix hd (acc := acc)
+        have hsubst : substV
+            (is.foldl (fun s i => cseInstrStep i s) s1).2.2 d = substV s1.2.2 d := by
+          simp only [substV, Std.HashMap.getD_eq_getD_getElem?]
+          rw [hstable d (List.mem_append_right _ hd)]
+        rw [hsubst]
+        rcases hnow with hout | htab
+        · exact Or.inl
+            (((cseInstrFold_acc_sublist is s1.1 s1.2.1 s1.2.2).flatMap _).subset hout)
+        · exact Or.inr htab
+      · have hrest := ih hinv1 (fun j hj => hmem j (by simp [hj])) htail s1.1 hd
+        rcases hrest with hout | htab1
+        · exact Or.inl hout
+        · rcases cseInstrStep_tabVals htab1 with htab | hnew
+          · exact Or.inr htab
+          · exact Or.inl
+              (((cseInstrFold_acc_sublist is s1.1 s1.2.1 s1.2.2).flatMap _).subset hnew)
+
+theorem cseInstrFold_origin {f : Func} {b : Block}
+    (hb : b ∈ f.blocks.toList) {seen : List ValId} {tab : CseTab} {σ : Subst}
+    (hinv : CSEInv f seen tab σ) (l : List Instr)
+    (hmem : ∀ i ∈ l, i ∈ b.instrs)
+    (hnd : (seen ++ l.flatMap Instr.defs).Nodup) (acc : List Instr)
+    {τ : Subst}
+    (hext : SubstExt
+      (l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩).2.2 τ)
+    (hrange : RangeFree τ) {j : Instr}
+    (hj : j ∈ (l.foldl (fun s i => cseInstrStep i s) ⟨acc, tab, σ⟩).1) :
+    j ∈ acc ∨ ∃ i ∈ l, substInstr τ j = substInstr τ i := by
+  induction l generalizing seen tab σ acc with
+  | nil => exact Or.inl hj
+  | cons i is ih =>
+      have hprefix : (seen ++ i.defs).Nodup := by
+        apply List.Nodup.of_append_left (l₂ := is.flatMap Instr.defs)
+        simpa [List.append_assoc] using hnd
+      have hone := cseInstrStep_inv hb hinv i (hmem i (by simp)) hprefix
+      have hstate := cseInstrStep_state i acc tab σ
+      let s1 := cseInstrStep i ⟨acc, tab, σ⟩
+      have hinv1 : CSEInv f (seen ++ i.defs) s1.2.1 s1.2.2 := by
+        rw [hstate]
+        exact hone.1
+      have htail : ((seen ++ i.defs) ++ is.flatMap Instr.defs).Nodup := by
+        simpa [List.append_assoc] using hnd
+      have hfoldInv := cseInstrFold_inv hb hinv1 is
+        (fun k hk => hmem k (by simp [hk])) htail s1.1
+      rw [List.foldl_cons] at hext hj
+      rcases ih hinv1 (fun k hk => hmem k (by simp [hk])) htail s1.1 hext hj with
+        hj1 | ⟨k, hk, heq⟩
+      · rcases cseInstrStep_out (i := i) (acc := acc) (tab := tab) (σ := σ) with
+          hout | hout
+        · exact Or.inl (hout ▸ hj1)
+        · rw [hout] at hj1
+          rcases List.mem_cons.mp hj1 with rfl | hjacc
+          · right
+            refine ⟨i, by simp, ?_⟩
+            apply substInstr_absorb
+            have honeExt : SubstExt σ s1.2.2 := by
+              rw [hstate]
+              exact hone.2
+            have htailExt : SubstExt s1.2.2 τ :=
+              SubstExt.trans (σ := s1.2.2)
+                (τ := (is.foldl (fun s i => cseInstrStep i s) s1).2.2)
+                (υ := τ) hfoldInv.2 hext
+            intro x y hxy
+            exact htailExt (honeExt hxy)
+            exact hrange
+          · exact Or.inl hjacc
+      · exact Or.inr ⟨k, by simp [hk], heq⟩
 
 theorem csePrefix_next_block (f : Func) (i : Nat) :
     (csePrefix f (i + 1)).1[i]? = some (cseBlockOut f i) := by
@@ -3817,6 +4307,214 @@ theorem cse_block_get {f : Func} {i : BlockId} {b : Block}
   simp only [substFunc, Array.getElem?_map]
   rw [cseFinal_raw_block hi]
   rfl
+
+@[simp] theorem cse_blocks_size (f : Func) : (cse f).blocks.size = f.blocks.size := by
+  rw [cse_eq]
+  simp only [substFunc, Array.size_map]
+  simpa [csePrefix] using csePrefix_blocks_size f f.blocks.size
+
+def cseAvail (f : Func) (i : BlockId) : List ValId :=
+  cseTabVals (cseEntryTab f (inEdgeSources f) (csePrefix f i).2.1 i)
+
+def cseBlockTabOut (f : Func) (i : BlockId) : CseTab :=
+  let b := f.blocks[i]!
+  let st := csePrefix f i
+  let tab := cseEntryTab f (inEdgeSources f) st.2.1 i
+  (b.instrs.foldl (fun s ins => cseInstrStep ins s) ⟨[], tab, st.2.2⟩).2.1
+
+theorem csePrefix_table_next {f : Func} (hnd : f.allDefs.Nodup)
+    {i : BlockId} (hi : i < f.blocks.size) :
+    (csePrefix f (i + 1)).2.1[i]! = cseBlockTabOut f i := by
+  have hpre := csePrefixInv hnd i (Nat.le_of_lt hi)
+  rw [csePrefix_succ]
+  simp only [cseBlockStep, cseBlockTabOut]
+  have hi0 : i < (csePrefix f i).2.1.size := by rw [hpre.2.1]; exact hi
+  have hi1 : i < ((csePrefix f i).2.1.setIfInBounds i
+      ((f.blocks[i]!.instrs.foldl (fun s ins => cseInstrStep ins s)
+        ⟨[], cseEntryTab f (inEdgeSources f) (csePrefix f i).2.1 i,
+          (csePrefix f i).2.2⟩).2.1)).size := by simpa
+  rw [getElem!_eq_getElem hi1, Array.getElem_setIfInBounds_self]
+
+theorem csePrefix_table_to {f : Func} (hnd : f.allDefs.Nodup)
+    {p n : BlockId} (hp : p < n) (hn : n ≤ f.blocks.size) :
+    (csePrefix f n).2.1[p]! = cseBlockTabOut f p := by
+  induction n generalizing p with
+  | zero => exact (Nat.not_lt_zero p hp).elim
+  | succ n ih =>
+      by_cases hpn : p = n
+      · subst p
+        exact csePrefix_table_next hnd (Nat.lt_of_succ_le hn)
+      · have hple : p ≤ n := Nat.le_of_lt_succ hp
+        have hp' : p < n := Nat.lt_of_le_of_ne hple hpn
+        have hn' : n ≤ f.blocks.size := Nat.le_trans (Nat.le_succ n) hn
+        have hold := ih hp' hn'
+        have hpre := csePrefixInv hnd n hn'
+        rw [show Nat.succ n = n + 1 from rfl, csePrefix_succ]
+        simp only [cseBlockStep]
+        have hp0 : p < (csePrefix f n).2.1.size := by
+          rw [hpre.2.1]
+          exact Nat.lt_of_lt_of_le hp' hn'
+        have hp1 : p < ((csePrefix f n).2.1.setIfInBounds n
+            ((f.blocks[n]!.instrs.foldl (fun s ins => cseInstrStep ins s)
+              ⟨[], cseEntryTab f (inEdgeSources f) (csePrefix f n).2.1 n,
+                (csePrefix f n).2.2⟩).2.1)).size := by simpa
+        rw [getElem!_eq_getElem hp1,
+          Array.getElem_setIfInBounds_ne hp0 (Ne.symm hpn),
+          ← getElem!_eq_getElem hp0]
+        exact hold
+
+theorem cseBlock_spec {f : Func} (hnd : f.allDefs.Nodup)
+    {i : BlockId} {b : Block} (hb : f.blocks[i]? = some b) :
+    let τ := (csePrefix f f.blocks.size).2.2
+    let b' := substBlock τ (cseBlockOut f i)
+    (∀ x ∈ ToAsm.blockUses b', ∃ y ∈ ToAsm.blockUses b, substV τ y = x)
+      ∧ (∀ y ∈ ToAsm.blockDefs b,
+          substV τ y ∈ ToAsm.blockDefs b' ∨ substV τ y ∈ cseAvail f i)
+      ∧ (∀ e ∈ b'.term.edges, ∃ e0 ∈ b.term.edges, e0.target = e.target)
+      ∧ (∀ x ∈ cseTabVals (cseBlockTabOut f i),
+          x ∈ ToAsm.blockDefs b' ∨ x ∈ cseAvail f i) := by
+  let τ := (csePrefix f f.blocks.size).2.2
+  let st := csePrefix f i
+  let tab := cseEntryTab f (inEdgeSources f) st.2.1 i
+  let r := b.instrs.foldl (fun s ins => cseInstrStep ins s) ⟨[], tab, st.2.2⟩
+  have hi : i < f.blocks.size := (Array.getElem?_eq_some_iff.mp hb).1
+  have hbang : f.blocks[i]! = b := by
+    rw [getElem!_eq_getElem hi]
+    exact (Array.getElem?_eq_some_iff.mp hb).2
+  have hbmem : b ∈ f.blocks.toList := by
+    exact List.mem_iff_getElem.mpr ⟨i, by simpa using hi,
+      by simpa using (Array.getElem?_eq_some_iff.mp hb).2⟩
+  have hpre := csePrefixInv hnd i (Nat.le_of_lt hi)
+  have htab : CSEInv f (cseSeen f i) tab st.2.2 := cseEntryTab_inv hpre
+  have hseen : cseSeen f (i + 1) = cseSeen f i ++ b.instrs.flatMap Instr.defs :=
+    cseSeen_succ hb
+  have hndBlock : (cseSeen f i ++ b.instrs.flatMap Instr.defs).Nodup := by
+    rw [← hseen]
+    exact (instrDefs_nodup hnd).sublist (cseSeen_sublist f (i + 1))
+  have hrInv := cseInstrFold_inv hbmem htab b.instrs (fun ins hins => hins)
+    hndBlock []
+  have hrPrefix : (csePrefix f (i + 1)).2.2 = r.2.2 := by
+    rw [csePrefix_succ]
+    simp only [cseBlockStep]
+    rw [hbang]
+  have hext : SubstExt r.2.2 τ := by
+    rw [← hrPrefix]
+    exact csePrefix_ext_to hnd (Nat.succ_le_of_lt hi) (Nat.le_refl _)
+  have hfinalInv := (csePrefixInv hnd f.blocks.size (Nat.le_refl _)).1
+  have hrange : RangeFree τ := hfinalInv.2.2.1
+  have hstable : SubstStable (cseSeen f (i + 1)) r.2.2 τ := by
+    rw [← hrPrefix]
+    exact csePrefix_stable_to hnd (Nat.succ_le_of_lt hi) (Nat.le_refl _)
+  have hraw : cseBlockOut f i = { b with instrs := r.1.reverse } := by
+    simp [cseBlockOut, hbang, st, tab, r]
+  have param_fixed {p : ValId} (hp : p ∈ b.params) : substV τ p = p := by
+    have hpnone : τ[p]? = none := by
+      by_contra hn
+      obtain ⟨q, hq⟩ := Option.ne_none_iff_exists'.mp hn
+      have hpseen := (hfinalInv.2.2.2.1 hq).1
+      unfold cseSeen at hpseen
+      have htake : f.blocks.toList.take f.blocks.size = f.blocks.toList := by simp
+      rw [htake] at hpseen
+      simp only [List.mem_flatMap] at hpseen
+      obtain ⟨b2, hb2, ins, hins, hpdef⟩ := hpseen
+      exact param_not_instr_def hnd hbmem hb2 hins hp hpdef
+    simp [substV, Std.HashMap.getD_eq_getD_getElem?, hpnone]
+  dsimp only
+  rw [hraw]
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · intro x hx
+    rw [ToAsm.mem_blockUses] at hx
+    rcases hx with hx | hx
+    · simp only [substBlock] at hx
+      obtain ⟨j, hj, hxj⟩ := List.mem_flatMap.mp hx
+      obtain ⟨j0, hj0, hjeq⟩ := List.mem_map.mp hj
+      have hjr : j0 ∈ r.1 := by simpa using hj0
+      have hxj0 : x ∈ (substInstr τ j0).uses := by rw [hjeq]; exact hxj
+      have horigin := cseInstrFold_origin hbmem htab b.instrs (fun ins hins => hins)
+        hndBlock [] hext hrange hjr
+      rcases horigin with hjnil | ⟨ins, hins, heq⟩
+      · simp at hjnil
+      · have hxins : x ∈ (substInstr τ ins).uses := by
+          rw [← heq]
+          exact hxj0
+        obtain ⟨y, hy, hxy⟩ := substInstr_use hxins
+        exact ⟨y, ToAsm.mem_blockUses.mpr
+          (Or.inl (List.mem_flatMap.mpr ⟨ins, hins, hy⟩)), hxy⟩
+    · obtain ⟨y, hy, hxy⟩ := substTerm_use hx
+      exact ⟨y, ToAsm.mem_blockUses.mpr (Or.inr hy), hxy⟩
+  · intro y hy
+    rw [ToAsm.mem_blockDefs] at hy
+    rcases hy with hp | hd
+    · left
+      rw [param_fixed hp]
+      exact ToAsm.mem_blockDefs.mpr (Or.inl hp)
+    · obtain ⟨ins, hins, hyd⟩ := List.mem_flatMap.mp hd
+      have hres := cseInstrFold_defs_resolve hbmem htab b.instrs
+        (fun ins hins => hins) hndBlock [] (List.mem_flatMap.mpr ⟨ins, hins, hyd⟩)
+      have hymem : y ∈ cseSeen f (i + 1) := by
+        rw [hseen]
+        exact List.mem_append_right _ (List.mem_flatMap.mpr ⟨ins, hins, hyd⟩)
+      have hsubst : substV τ y = substV r.2.2 y := by
+        simp only [substV, Std.HashMap.getD_eq_getD_getElem?]
+        rw [hstable y hymem]
+      rw [hsubst]
+      rcases hres with hout | hav
+      · left
+        apply ToAsm.mem_blockDefs.mpr
+        right
+        obtain ⟨j, hj, hjd⟩ := List.mem_flatMap.mp hout
+        refine List.mem_flatMap.mpr ⟨substInstr τ j, ?_, ?_⟩
+        · exact List.mem_map.mpr ⟨j, by simpa using hj, rfl⟩
+        · simpa using hjd
+      · exact Or.inr hav
+  · intro e he
+    exact substTerm_edge he
+  · intro x hx
+    have htabOut : cseBlockTabOut f i = r.2.1 := by
+      simp [cseBlockTabOut, hbang, st, tab, r]
+    rw [htabOut] at hx
+    rcases cseInstrFold_tabVals b.instrs [] tab st.2.2 hx with hav | hout
+    · exact Or.inr hav
+    · left
+      apply ToAsm.mem_blockDefs.mpr
+      right
+      obtain ⟨j, hj, hjd⟩ := List.mem_flatMap.mp hout
+      refine List.mem_flatMap.mpr ⟨substInstr τ j, ?_, ?_⟩
+      · exact List.mem_map.mpr ⟨j, by simpa using hj, rfl⟩
+      · simpa using hjd
+
+theorem cseAvail_entry (f : Func) : cseAvail f f.entry = [] := by
+  simp [cseAvail, cseEntryTab, cseTabVals]
+
+theorem cseAvail_succ {f : Func} (hnd : f.allDefs.Nodup)
+    (hwf : f.wfCheck n = true) {i : BlockId} {b : Block}
+    (hb : f.blocks[i]? = some b) {e : Edge} (he : e ∈ b.term.edges)
+    {x : ValId} (hx : x ∈ cseAvail f e.target) :
+    let τ := (csePrefix f f.blocks.size).2.2
+    let b' := substBlock τ (cseBlockOut f i)
+    x ∈ ToAsm.blockDefs b' ∨ x ∈ cseAvail f i := by
+  obtain ⟨tb, htb, -⟩ := wfCheck_edge_arity hwf (b := b) (by
+    exact List.mem_iff_getElem.mpr ⟨i, by
+      simpa using (Array.getElem?_eq_some_iff.mp hb).1,
+      by simpa using (Array.getElem?_eq_some_iff.mp hb).2⟩) he
+  have ht : e.target < f.blocks.size := (Array.getElem?_eq_some_iff.mp htb).1
+  unfold cseAvail at hx
+  rw [cseEntryTab] at hx
+  split at hx
+  · simp [cseTabVals] at hx
+  · cases hs : (inEdgeSources f)[e.target]! with
+    | nil => simp [hs, cseTabVals] at hx
+    | cons p ps =>
+        cases ps with
+        | cons q qs => simp [hs, cseTabVals] at hx
+        | nil =>
+            by_cases hp : p < e.target
+            · simp only [hs, hp, if_true] at hx
+              have hip : i = p := inEdgeSources_single_eq hb he ht hs
+              subst p
+              rw [csePrefix_table_to hnd hp (Nat.le_of_lt ht)] at hx
+              exact (cseBlock_spec hnd hb).2.2.2 x hx
+            · simp [hs, hp, cseTabVals] at hx
 
 end Passes
 
@@ -4373,10 +5071,15 @@ returning `[p]` with `p < bi`), so `d₀`'s block dominates `d`'s block, and
 `ToAsm.liveIn_of_succ` propagates that into the invariant. Without dominance the
 substituted use can read a stale `d₀`, exactly as in the counterexample.
 
-Remaining engineering: a specification for the `cse` walk (a stateful `Id.run`
-fold over blocks accumulating `CseTab` and `σ`), i.e. "every `(op, args) ↦ d₀` in
-the table at block `bi` was emitted by an instruction of a block that dominates
-`bi`, and `σ`'s domain is disjoint from its range". -/
+The static provenance obligation is now proved below: `Passes.cseBlock_spec`
+resolves every dropped definition to either an earlier emitted definition in the
+same block or `cseAvail`, while `Passes.cseAvail_succ` proves that inherited
+availability comes from the actual unique predecessor; these facts close
+`cse_dom`.  What remains here is their runtime analogue: carry, alongside the
+register substitution invariant, that every entry-table representative contains
+the value certified by its `CseDef`.  A kept instruction then steps on substituted
+arguments, while a dropped `const`/pure op is skipped using that table fact and
+`pure_rets_eq`; jumps hand the end-table fact to `cseAvail_succ`. -/
 theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (hdom : ToAsm.Func.domCheck f = true)
@@ -4388,7 +5091,7 @@ theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res 
       ⟨eb'.instrs, eb'.term⟩ res := by
   sorry
 
-/-- **Pass 4 (dead value elimination) soundness.** No dominance hypothesis.
+/- **Pass 4 (dead value elimination) soundness.** No dominance hypothesis.
 
 `sorry`: a simulation whose invariant is "`R` (original) and `R'` (optimized)
 agree on every value in `Passes.liveSet f`", stepped with the frame lemma
@@ -4400,6 +5103,477 @@ lemma: `dve` masks target parameters, incoming argument ids, and hence the value
 returned by `Regs.getMany` at the same positions; the proof must show the two
 filtered lists have equal length and that `Regs.setMany` preserves agreement on
 the live set. -/
+
+namespace Passes
+
+/-- The positional parameter predicate used by DVE on every incoming edge. -/
+def dveKeepParam (f : Func) (bi : BlockId) (i : Nat) : Bool :=
+  match f.blocks[bi]? with
+  | some b =>
+    match b.params[i]? with
+    | some p => (liveSet f).contains p
+    | none => true
+  | none => true
+
+/-- The edge and terminator portions of `dveBlock`, named for the execution
+simulation below. -/
+def dveEdge (f : Func) (e : Edge) : Edge :=
+  { e with args :=
+      (e.args.zipIdx.filter fun ai => dveKeepParam f e.target ai.2).map (·.1) }
+
+def dveTerm (f : Func) (t : Term) : Term := mapEdges (dveEdge f) t
+
+theorem dveBlock_term (f : Func) (bi : BlockId) (b : Block) :
+    (dveBlock f bi b).term = dveTerm f b.term := by
+  rfl
+
+theorem dveBlock_instrs (f : Func) (bi : BlockId) (b : Block) :
+    (dveBlock f bi b).instrs = b.instrs.filter (dveKeepInstr (liveSet f)) := by
+  rfl
+
+/-- The slightly unusual `zipIdx` presentation of an edge mask is extensionally
+the ordinary filtering of the zipped target parameters and edge arguments. -/
+theorem dveEdge_args_eq_zip {f : Func} {e : Edge} {tb : Block}
+    (htb : f.blocks[e.target]? = some tb)
+    (hlen : e.args.length = tb.params.length) :
+    (dveEdge f e).args =
+      (tb.params.zip e.args |>.filter fun pa => (liveSet f).contains pa.1).map (·.2) := by
+  simp only [dveEdge, dveKeepParam, htb]
+  generalize tb.params = ps at hlen ⊢
+  generalize e.args = xs at hlen ⊢
+  induction xs generalizing ps with
+  | nil =>
+    have : ps = [] := List.eq_nil_of_length_eq_zero (by simpa using hlen.symm)
+    simp [this]
+  | cons a as ih =>
+    cases ps with
+    | nil => simp at hlen
+    | cons p ps =>
+      simp only [List.length_cons, Nat.succ.injEq] at hlen
+      simp only [List.zipIdx_cons]
+      rw [show as.zipIdx 1 = as.zipIdx.map (fun ai => (ai.1, 1 + ai.2)) by
+        simpa using (List.zipIdx_eq_map_add (l := as) (i := 1))]
+      simp only [List.zipIdx_cons, List.getElem?_cons_zero, Option.some, List.filter_cons,
+        List.map_cons, List.zip_cons_cons]
+      simp only [List.filter_map]
+      have hpred :
+          ((fun ai : ValId × Nat =>
+              match (p :: ps)[ai.2]? with
+              | some p => (liveSet f).contains p
+              | none => true) ∘ fun ai => (ai.1, 1 + ai.2)) =
+            (fun ai : ValId × Nat =>
+              match ps[ai.2]? with
+              | some p => (liveSet f).contains p
+              | none => true) := by
+        funext ai
+        simp [Function.comp_def, Nat.add_comm]
+      rw [hpred]
+      have hmap : ((fun x : ValId × Nat => x.1) ∘
+          fun ai : ValId × Nat => (ai.1, 1 + ai.2)) =
+          (fun x : ValId × Nat => x.1) := by rfl
+      split
+      · simp only [List.map_cons, List.map_map, hmap]
+        exact congrArg (a :: ·) (ih ps hlen)
+      · simp only [List.map_map, hmap]
+        exact ih ps hlen
+
+/-- Reading an edge after masking it returns the correspondingly masked values. -/
+theorem filterGetMany {live : Std.HashSet ValId} {R R' : Regs}
+    {ps xs : List ValId} {vs : List U256}
+    (hlen : xs.length = ps.length) (hget : R.getMany xs = some vs)
+    (hagree : ∀ x ∈ live, R x = R' x)
+    (hselected : ∀ x ∈ (ps.zip xs |>.filter fun pa => live.contains pa.1).map (·.2),
+      x ∈ live) :
+    R'.getMany ((ps.zip xs |>.filter fun pa => live.contains pa.1).map (·.2)) =
+      some ((ps.zip vs |>.filter fun pv => live.contains pv.1).map (·.2)) := by
+  induction ps generalizing xs vs with
+  | nil =>
+    have hxs : xs = [] := List.eq_nil_of_length_eq_zero (by simpa using hlen)
+    subst xs
+    simp only [Regs.getMany_nil, Option.some.injEq] at hget
+    subst vs
+    rfl
+  | cons p ps ih =>
+    cases xs with
+    | nil => simp at hlen
+    | cons a xs =>
+      simp only [List.length_cons, Nat.succ.injEq] at hlen
+      rw [Regs.getMany_cons] at hget
+      cases ha : R a with
+      | none => simp [ha] at hget
+      | some v =>
+        cases htail : R.getMany xs with
+        | none => simp [ha, htail] at hget
+        | some vals =>
+          simp only [ha, htail, Option.bind_some, Option.map_some, Option.some.injEq] at hget
+          subst vs
+          by_cases hp : p ∈ live
+          · have hpB : live.contains p = true := Std.HashSet.mem_iff_contains.mp hp
+            have haLive : a ∈ live := hselected a (by simp [hpB])
+            have ha' : R' a = some v := by rw [← hagree a haLive, ha]
+            simpa [hpB, Regs.getMany_cons, ha'] using
+              ih hlen htail (fun x hx => hselected x (by simp [hpB, hx]))
+          · have hpB : live.contains p = false := by
+              exact Bool.eq_false_of_not_eq_true (fun h => hp (Std.HashSet.contains_iff_mem.mp h))
+            simpa [hpB] using ih hlen htail
+              (fun x hx => hselected x (by simp [hpB, hx]))
+
+/-- Parallel binding by all target parameters agrees on live values with
+binding only the live parameters and their positionally filtered values. -/
+theorem filterSetMany {live : Std.HashSet ValId} {R R' : Regs}
+    {ps : List ValId} {vs : List U256} (hnodup : ps.Nodup)
+    (hlen : vs.length = ps.length) (hagree : ∀ x ∈ live, R x = R' x) :
+    (ps.filter live.contains).length =
+        ((ps.zip vs |>.filter fun pv => live.contains pv.1).map (·.2)).length
+    ∧ ∀ x ∈ live,
+      (R.setMany ps vs) x =
+        (R'.setMany (ps.filter live.contains)
+          ((ps.zip vs |>.filter fun pv => live.contains pv.1).map (·.2))) x := by
+  induction ps generalizing R R' vs with
+  | nil =>
+    have hvs : vs = [] := List.eq_nil_of_length_eq_zero (by simpa using hlen)
+    subst vs
+    exact ⟨rfl, hagree⟩
+  | cons p ps ih =>
+    cases vs with
+    | nil => simp at hlen
+    | cons v vs =>
+      simp only [List.length_cons, Nat.succ.injEq] at hlen
+      rw [List.nodup_cons] at hnodup
+      by_cases hp : p ∈ live
+      · have hpB : live.contains p = true := Std.HashSet.mem_iff_contains.mp hp
+        obtain ⟨hlen', hagree'⟩ := ih hnodup.2 hlen (Regs.set_congr hagree p v)
+        exact ⟨by simp [hpB, hlen'], by simpa [hpB, Regs.setMany_cons] using hagree'⟩
+      · have hpB : live.contains p = false := by
+          exact Bool.eq_false_of_not_eq_true (fun h => hp (Std.HashSet.contains_iff_mem.mp h))
+        have hagreeHead : ∀ x ∈ live, (R.set p v) x = R' x := by
+          intro x hx
+          rw [Regs.set_other _ _ (by intro heq; subst x; exact hp hx)]
+          exact hagree x hx
+        obtain ⟨hlen', hagree'⟩ := ih hnodup.2 hlen hagreeHead
+        exact ⟨by simpa [hpB] using hlen',
+          by simpa [hpB, Regs.setMany_cons] using hagree'⟩
+
+theorem dveBlock_params {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
+    {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b) :
+    (dveBlock f bi b).params = b.params.filter (liveSet f).contains := by
+  by_cases hi : bi = f.entry
+  · subst bi
+    unfold Func.wfCheck at hwf
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at hwf
+    have he := hwf.1.2
+    rw [hb] at he
+    have hempty : b.params = [] := List.isEmpty_iff.mp he
+    simp [dveBlock, hempty]
+  · simp [dveBlock, hi]
+
+theorem blockParams_nodup {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
+    {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b) : b.params.Nodup := by
+  have hnd := wfCheck_defs_nodup hwf
+  have hbmem : b ∈ f.blocks.toList :=
+    List.mem_of_getElem? (Array.getElem?_toList.trans hb)
+  rw [List.nodup_iff_count_le_one]
+  intro d
+  have hall := List.nodup_iff_count_le_one.mp hnd d
+  rw [allDefs_eq, List.count_append] at hall
+  have hblock := count_le_count_flatMap
+    (g := fun b : Block => blockAllDefs b) (d := d) hbmem
+  change (b.params ++ b.instrs.flatMap Instr.defs).count d ≤
+    (f.blocks.toList.flatMap blockAllDefs).count d at hblock
+  rw [List.count_append] at hblock
+  omega
+
+theorem dveInstr_uses_live {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
+    {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b)
+    {i : Instr} (hi : i ∈ b.instrs) (hkeep : dveKeepInstr (liveSet f) i = true)
+    {x : ValId} (hx : x ∈ i.uses) : x ∈ liveSet f := by
+  apply dveBlock_uses_live hwf hb
+  rw [ToAsm.mem_blockUses]
+  exact Or.inl (List.mem_flatMap.mpr
+    ⟨i, List.mem_filter.mpr ⟨hi, hkeep⟩, hx⟩)
+
+theorem dveTerm_uses_live {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
+    {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b)
+    {x : ValId} (hx : x ∈ (dveTerm f b.term).uses) : x ∈ liveSet f := by
+  apply dveBlock_uses_live hwf hb
+  rw [ToAsm.mem_blockUses]
+  exact Or.inr (by simpa [dveBlock_term] using hx)
+
+theorem dveEdge_args_live {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
+    {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b)
+    {e : Edge} (he : e ∈ b.term.edges) {x : ValId} (hx : x ∈ (dveEdge f e).args) :
+    x ∈ liveSet f := by
+  apply dveTerm_uses_live hwf hb
+  cases ht : b.term with
+  | jump ej =>
+    simp only [ht, Term.edges, List.mem_singleton] at he
+    subst ej
+    simpa [dveTerm, mapEdges, Term.uses] using hx
+  | branch c et ef =>
+    simp only [ht, Term.edges, List.mem_cons] at he
+    rcases he with rfl | he
+    · simp [dveTerm, ht, mapEdges, Term.uses, hx]
+    · have he' : e = ef := by simpa using he
+      subst e
+      simp [dveTerm, ht, mapEdges, Term.uses, hx]
+  | ret vs => simp [ht, Term.edges] at he
+  | halt yop as => simp [ht, Term.edges] at he
+
+theorem getMany_length_dve {R : Regs} {xs : List ValId} {vs : List U256}
+    (h : R.getMany xs = some vs) : xs.length = vs.length := by
+  induction xs generalizing vs with
+  | nil => simp only [Regs.getMany_nil, Option.some.injEq] at h; subst vs; rfl
+  | cons x xs ih =>
+    rw [Regs.getMany_cons] at h
+    cases hx : R x with
+    | none => simp [hx] at h
+    | some v =>
+      cases hxs : R.getMany xs with
+      | none => simp [hx, hxs] at h
+      | some vals =>
+        simp only [hx, hxs, Option.bind_some, Option.map_some, Option.some.injEq] at h
+        subst vs
+        simp [ih hxs]
+
+/-- DVE simulates any suffix of a source block while the two register files
+agree on the closed live set. -/
+theorem dve_exec_aux {P : Prog} {f : Func} (hwf : f.wfCheck P.funcs.size = true)
+    {R : Regs} {st : EvmState} {rest : Rest} {res : FRes}
+    (hexec : Exec (model := model) P f R st rest res) :
+    ∀ {bi : BlockId} {b : Block} {R' : Regs},
+      f.blocks[bi]? = some b → rest.term = b.term → rest.instrs <:+ b.instrs →
+      (∀ x ∈ liveSet f, R x = R' x) →
+      Exec (model := model) P (dve f) R' st
+        ⟨rest.instrs.filter (dveKeepInstr (liveSet f)), dveTerm f rest.term⟩ res := by
+  induction hexec with
+  | @const f R st d v is t res hnext ih =>
+    intro bi b R' hb ht hs hagree
+    have hs' : is <:+ b.instrs :=
+      List.IsSuffix.trans (show is <:+ .const d v :: is from ⟨[.const d v], rfl⟩) hs
+    by_cases hd : d ∈ liveSet f
+    · have hdB : (liveSet f).contains d = true := Std.HashSet.mem_iff_contains.mp hd
+      simp only [List.filter_cons, dveKeepInstr, hdB, if_true]
+      exact Exec.const (ih hwf hb ht hs' (Regs.set_congr hagree d v))
+    · have hdB : (liveSet f).contains d = false := by
+        exact Bool.eq_false_of_not_eq_true (fun h => hd (Std.HashSet.contains_iff_mem.mp h))
+      simp only [List.filter_cons, dveKeepInstr, hdB, if_false]
+      apply ih hwf hb ht hs'
+      intro x hx
+      rw [Regs.set_other _ _ (by intro heq; subst x; exact hd hx)]
+      exact hagree x hx
+  | @op f R st st' ds yop as args rets is t res hget hbi hlen hnext ih =>
+    intro bi b R' hb ht hs hagree
+    have hs' : is <:+ b.instrs :=
+      List.IsSuffix.trans (show is <:+ .op ds yop as :: is from ⟨[.op ds yop as], rfl⟩) hs
+    have hi : .op ds yop as ∈ b.instrs := hs.mem (by simp)
+    by_cases hk : (!pureOp yop || ds.any (liveSet f).contains) = true
+    · have hargs : ∀ x ∈ as, x ∈ liveSet f := by
+        intro x hx
+        exact dveInstr_uses_live hwf hb hi (by simpa [dveKeepInstr] using hk)
+          (by simpa [Instr.uses] using hx)
+      have hget' : R'.getMany as = some args := by
+        rw [← Regs.getMany_congr (R1 := R) (R2 := R')
+          (fun x hx => hagree x (hargs x hx))]
+        exact hget
+      simp only [List.filter_cons, dveKeepInstr, hk, if_true]
+      exact Exec.op hget' hbi hlen
+        (ih hwf hb ht hs' (Regs.setMany_congr hagree ds rets))
+    · have hk' : (!pureOp yop || ds.any (liveSet f).contains) = false :=
+        Bool.eq_false_of_not_eq_true hk
+      have hp : pureOp yop = true := by
+        cases hpy : pureOp yop <;> simp_all
+      have hds : ∀ x ∈ liveSet f, x ∉ ds := by
+        intro x hx hxd
+        have : ds.any (liveSet f).contains = true :=
+          List.any_eq_true.mpr ⟨x, hxd, Std.HashSet.mem_iff_contains.mp hx⟩
+        simp [this] at hk'
+      have hst : st' = st := pure_state_eq hp hbi
+      subst st'
+      simp only [List.filter_cons, dveKeepInstr, hk', if_false]
+      apply ih hwf hb ht hs'
+      intro x hx
+      rw [Regs.setMany_of_not_mem _ ds rets (hds x hx)]
+      exact hagree x hx
+  | @opHalt f R st st' ds yop as args is t hget hbi =>
+    intro bi b R' hb ht hs hagree
+    have hi : .op ds yop as ∈ b.instrs := hs.mem (by simp)
+    have hkeep : (!pureOp yop || ds.any (liveSet f).contains) = true := by
+      by_contra hk
+      have hk' : (!pureOp yop || ds.any (liveSet f).contains) = false := by
+        exact Bool.eq_false_of_not_eq_true hk
+      have hp : pureOp yop = true := by
+        cases hpy : pureOp yop <;> simp_all
+      exact Passes.pure_no_halt hp hbi
+    have hargs : ∀ x ∈ as, x ∈ liveSet f := by
+      intro x hx
+      exact dveInstr_uses_live hwf hb hi (by simpa [dveKeepInstr] using hkeep)
+        (by simpa [Instr.uses] using hx)
+    have hget' : R'.getMany as = some args := by
+      rw [← Regs.getMany_congr (R1 := R) (R2 := R')
+        (fun x hx => hagree x (hargs x hx))]
+      exact hget
+    simp only [List.filter_cons, dveKeepInstr, hkeep, if_true]
+    exact Exec.opHalt hget' hbi
+  | @call f g R st st' ds as fid args rvals eb is t res hfid hget hplen heb hbody hlen hnext ihbody ih =>
+    intro bi b R' hb ht hs hagree
+    have hs' : is <:+ b.instrs :=
+      List.IsSuffix.trans (show is <:+ .call ds fid as :: is from ⟨[.call ds fid as], rfl⟩) hs
+    have hi : .call ds fid as ∈ b.instrs := hs.mem (by simp)
+    have hargs : ∀ x ∈ as, x ∈ liveSet f := by
+      intro x hx
+      exact dveInstr_uses_live hwf hb hi (by simp [dveKeepInstr])
+        (by simpa [Instr.uses] using hx)
+    have hget' : R'.getMany as = some args := by
+      rw [← Regs.getMany_congr (R1 := R) (R2 := R')
+        (fun x hx => hagree x (hargs x hx))]
+      exact hget
+    simp only [List.filter_cons, dveKeepInstr, Bool.true_eq, if_true]
+    exact Exec.call hfid hget' hplen heb hbody hlen
+      (ih hwf hb ht hs' (Regs.setMany_congr hagree ds rvals))
+  | @callHalt f g R st st' ds as fid args eb is t hfid hget hplen heb hbody ihbody =>
+    intro bi b R' hb ht hs hagree
+    have hi : .call ds fid as ∈ b.instrs := hs.mem (by simp)
+    have hargs : ∀ x ∈ as, x ∈ liveSet f := by
+      intro x hx
+      exact dveInstr_uses_live hwf hb hi (by simp [dveKeepInstr])
+        (by simpa [Instr.uses] using hx)
+    have hget' : R'.getMany as = some args := by
+      rw [← Regs.getMany_congr (R1 := R) (R2 := R')
+        (fun x hx => hagree x (hargs x hx))]
+      exact hget
+    simp only [List.filter_cons, dveKeepInstr, Bool.true_eq, if_true]
+    exact Exec.callHalt hfid hget' hplen heb hbody
+  | @jump f R st e tb vals res htb hget hlen hnext ih =>
+    intro bi b R' hb ht hs hagree
+    have he : e ∈ b.term.edges := by rw [← ht]; simp [Term.edges]
+    have harity : e.args.length = tb.params.length := by
+      rw [getMany_length_dve hget, hlen]
+    have hedge := dveEdge_args_eq_zip htb harity
+    have hselected :
+        ∀ x ∈ (tb.params.zip e.args |>.filter fun pa => (liveSet f).contains pa.1).map (·.2),
+          x ∈ liveSet f := by
+      intro x hx
+      apply dveEdge_args_live hwf hb he
+      rw [hedge]
+      exact hx
+    have hget' := filterGetMany harity hget hagree hselected
+    obtain ⟨hlen', hagree'⟩ := filterSetMany (blockParams_nodup hwf htb) hlen.symm hagree
+    have htb' : (dve f).blocks[e.target]? = some (dveBlock f e.target tb) := by
+      rw [dve_blocks_get, htb]
+      rfl
+    have hbody := ih hwf htb rfl (show tb.instrs <:+ tb.instrs from ⟨[], rfl⟩) hagree'
+    have hout : Exec (model := model) P (dve f) R' st
+        ⟨[], .jump (dveEdge f e)⟩ res := by
+      refine Exec.jump (args :=
+        (tb.params.zip vals |>.filter fun pv => (liveSet f).contains pv.1).map (·.2))
+        htb' ?_ ?_ ?_
+      · rw [hedge]
+        exact hget'
+      · rw [dveBlock_params hwf htb]
+        exact hlen'
+      · rw [dveBlock_params hwf htb]
+        simpa [dveBlock_instrs, dveBlock_term] using hbody
+    simpa [dveTerm, mapEdges] using hout
+  | @branchTrue f R st c v et ef tb vals res hc hv htb hget hlen hnext ih =>
+    intro bi b R' hb ht hs hagree
+    have hcLive : c ∈ liveSet f := by
+      apply dveTerm_uses_live hwf hb
+      rw [← ht]
+      simp [dveTerm, mapEdges, Term.uses]
+    have hc' : R' c = some v := by rw [← hagree c hcLive]; exact hc
+    have he : et ∈ b.term.edges := by rw [← ht]; simp [Term.edges]
+    have harity : et.args.length = tb.params.length := by
+      rw [getMany_length_dve hget, hlen]
+    have hedge := dveEdge_args_eq_zip htb harity
+    have hselected :
+        ∀ x ∈ (tb.params.zip et.args |>.filter fun pa => (liveSet f).contains pa.1).map (·.2),
+          x ∈ liveSet f := by
+      intro x hx
+      apply dveEdge_args_live hwf hb he
+      rw [hedge]
+      exact hx
+    have hget' := filterGetMany harity hget hagree hselected
+    obtain ⟨hlen', hagree'⟩ := filterSetMany (blockParams_nodup hwf htb) hlen.symm hagree
+    have htb' : (dve f).blocks[et.target]? = some (dveBlock f et.target tb) := by
+      rw [dve_blocks_get, htb]
+      rfl
+    have hbody := ih hwf htb rfl (show tb.instrs <:+ tb.instrs from ⟨[], rfl⟩) hagree'
+    have hout : Exec (model := model) P (dve f) R' st
+        ⟨[], .branch c (dveEdge f et) (dveEdge f ef)⟩ res := by
+      refine Exec.branchTrue (v := v) (args :=
+        (tb.params.zip vals |>.filter fun pv => (liveSet f).contains pv.1).map (·.2))
+        hc' hv htb' ?_ ?_ ?_
+      · rw [hedge]
+        exact hget'
+      · rw [dveBlock_params hwf htb]
+        exact hlen'
+      · rw [dveBlock_params hwf htb]
+        simpa [dveBlock_instrs, dveBlock_term] using hbody
+    simpa [dveTerm, mapEdges] using hout
+  | @branchFalse f R st c et ef tb vals res hc htb hget hlen hnext ih =>
+    intro bi b R' hb ht hs hagree
+    have hcLive : c ∈ liveSet f := by
+      apply dveTerm_uses_live hwf hb
+      rw [← ht]
+      simp [dveTerm, mapEdges, Term.uses]
+    have hc' : R' c = some 0 := by rw [← hagree c hcLive]; exact hc
+    have he : ef ∈ b.term.edges := by rw [← ht]; simp [Term.edges]
+    have harity : ef.args.length = tb.params.length := by
+      rw [getMany_length_dve hget, hlen]
+    have hedge := dveEdge_args_eq_zip htb harity
+    have hselected :
+        ∀ x ∈ (tb.params.zip ef.args |>.filter fun pa => (liveSet f).contains pa.1).map (·.2),
+          x ∈ liveSet f := by
+      intro x hx
+      apply dveEdge_args_live hwf hb he
+      rw [hedge]
+      exact hx
+    have hget' := filterGetMany harity hget hagree hselected
+    obtain ⟨hlen', hagree'⟩ := filterSetMany (blockParams_nodup hwf htb) hlen.symm hagree
+    have htb' : (dve f).blocks[ef.target]? = some (dveBlock f ef.target tb) := by
+      rw [dve_blocks_get, htb]
+      rfl
+    have hbody := ih hwf htb rfl (show tb.instrs <:+ tb.instrs from ⟨[], rfl⟩) hagree'
+    have hout : Exec (model := model) P (dve f) R' st
+        ⟨[], .branch c (dveEdge f et) (dveEdge f ef)⟩ res := by
+      refine Exec.branchFalse (args :=
+        (tb.params.zip vals |>.filter fun pv => (liveSet f).contains pv.1).map (·.2))
+        hc' htb' ?_ ?_ ?_
+      · rw [hedge]
+        exact hget'
+      · rw [dveBlock_params hwf htb]
+        exact hlen'
+      · rw [dveBlock_params hwf htb]
+        simpa [dveBlock_instrs, dveBlock_term] using hbody
+    simpa [dveTerm, mapEdges] using hout
+  | @ret f R st xs vals hget =>
+    intro bi b R' hb ht hs hagree
+    have hxs : ∀ x ∈ xs, x ∈ liveSet f := by
+      intro x hx
+      apply dveTerm_uses_live hwf hb
+      rw [← ht]
+      simpa [dveTerm, mapEdges, Term.uses] using hx
+    have hget' : R'.getMany xs = some vals := by
+      rw [← Regs.getMany_congr (R1 := R) (R2 := R')
+        (fun x hx => hagree x (hxs x hx))]
+      exact hget
+    simpa [dveTerm, mapEdges] using (Exec.ret (P := P) (f := dve f) hget')
+  | @halt f R st st' yop as args hget hbi =>
+    intro bi b R' hb ht hs hagree
+    have has : ∀ x ∈ as, x ∈ liveSet f := by
+      intro x hx
+      apply dveTerm_uses_live hwf hb
+      rw [← ht]
+      simpa [dveTerm, mapEdges, Term.uses] using hx
+    have hget' : R'.getMany as = some args := by
+      rw [← Regs.getMany_congr (R1 := R) (R2 := R')
+        (fun x hx => hagree x (has x hx))]
+      exact hget
+    simpa [dveTerm, mapEdges] using
+      (Exec.halt (P := P) (f := dve f) hget' hbi)
+
+end Passes
+
 theorem dve_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (heb : f.blocks[f.entry]? = some eb)
@@ -4408,7 +5582,14 @@ theorem dve_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res 
       ⟨eb.instrs, eb.term⟩ res) :
     Exec (model := model) P (Passes.dve f) (Regs.empty.setMany f.params args) st
       ⟨eb'.instrs, eb'.term⟩ res := by
-  sorry
+  rw [Passes.dve_blocks_get, heb] at heb'
+  have hebEq : eb' = Passes.dveBlock f f.entry eb := by
+    simpa using (Option.some.inj heb').symm
+  subst eb'
+  have hsim := Passes.dve_exec_aux hwf hexec heb rfl
+    (show eb.instrs <:+ eb.instrs from ⟨[], rfl⟩)
+    (fun _ _ => rfl)
+  simpa [Passes.dveBlock_instrs, Passes.dveBlock_term] using hsim
 
 /-! ### Dominance preservation
 
@@ -4443,7 +5624,48 @@ omit model in
 theorem cse_dom {f : Func} (hwf : f.wfCheck n = true)
     (hdom : ToAsm.Func.domCheck f = true) :
     ToAsm.Func.domCheck (Passes.cse f) = true := by
-  sorry
+  let τ := (Passes.csePrefix f f.blocks.size).2.2
+  have hnd : f.allDefs.Nodup := by
+    have hwf' := hwf
+    unfold Func.wfCheck at hwf'
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at hwf'
+    exact hwf'.1.1.1
+  have hfinalInv := (Passes.csePrefixInv hnd f.blocks.size (Nat.le_refl _)).1
+  have hparam (p : ValId) (hp : p ∈ f.params) : Passes.substV τ p = p := by
+    have hpnone : τ[p]? = none := by
+      by_contra hn
+      obtain ⟨q, hq⟩ := Option.ne_none_iff_exists'.mp hn
+      have hpseen := (hfinalInv.2.2.2.1 hq).1
+      unfold Passes.cseSeen at hpseen
+      have htake : f.blocks.toList.take f.blocks.size = f.blocks.toList := by simp
+      rw [htake] at hpseen
+      simp only [List.mem_flatMap] at hpseen
+      obtain ⟨b, hb, ins, hins, hpdef⟩ := hpseen
+      exact funcParam_not_instr_def hnd hb hins hp hpdef
+    simp [Passes.substV, Std.HashMap.getD_eq_getD_getElem?, hpnone]
+  apply ToAsm.domCheck_of_substitution (f := f) (g := Passes.cse f)
+    (Passes.substV τ) (Passes.cseAvail f)
+    hdom rfl rfl hparam (Passes.cseAvail_entry f)
+  intro i b' hb'
+  have hi : i < f.blocks.size := by
+    have hi' : i < (Passes.cse f).blocks.size :=
+      (Array.getElem?_eq_some_iff.mp hb').1
+    simpa using hi'
+  let b := f.blocks[i]
+  have hb : f.blocks[i]? = some b := Array.getElem?_eq_getElem hi
+  have hbout := Passes.cse_block_get hb
+  rw [hb'] at hbout
+  have heq : b' = Passes.substBlock τ (Passes.cseBlockOut f i) := by
+    simpa [τ] using Option.some.inj hbout
+  subst b'
+  have hspec := Passes.cseBlock_spec hnd hb
+  refine ⟨b, hb, hspec.1, hspec.2.1, hspec.2.2.1, ?_⟩
+  intro e he x hx
+  obtain ⟨e0, he0, htarget⟩ := hspec.2.2.1 e he
+  have hs := Passes.cseAvail_succ hnd hwf hb he0 (x := x) (by
+    rw [htarget]
+    exact hx)
+  simpa [τ] using hs
 
 private def dveDomCounterexample : Func :=
   { params := [], nrets := 0, entry := 0
