@@ -4640,6 +4640,40 @@ theorem funcs_mapM_getElem? {a : Array (Option Func)} {fs : Array Func}
   have := this a.toList fs.toList hlist i g (by simpa using hi)
   simpa using this
 
+/-- A builder function table is *complete for* `P` when every allocated slot
+has been filled and erasing the `Option` layer gives exactly `P.funcs`.
+
+This is deliberately a fact about one fixed, completed table rather than the
+table of each intermediate builder state.  `allocScope` reserves all of a
+scope's slots before its statement walk fills them, and `trFunc` may reserve
+further slots while outer ones are still pending.  The construction simulation
+therefore keeps the eventual completed table fixed across every recursive IH;
+the hoist/call bridges only have to prove that their filled slots survive into
+that table. -/
+def FuncTableComplete (P : Prog) (done : Array (Option Func)) : Prop :=
+  done.mapM id = some P.funcs
+
+omit model in
+theorem FuncTableComplete.get {P : Prog} {done : Array (Option Func)}
+    (h : FuncTableComplete P done) {i : Nat} {g : Func}
+    (hi : done[i]? = some (some g)) : P.funcs[i]? = some g :=
+  funcs_mapM_getElem? h hi
+
+/-- Package the function-table half of `FuncOK` once the structural hoist walk
+has shown that the translated function and every nested function it allocated
+survive into the fixed completed table. -/
+theorem FuncTableComplete.funcOK {P : Prog} {done : Array (Option Func)}
+    (h : FuncTableComplete P done) {fenv : FMap}
+    {decl : YulSemantics.FDecl yulD} {fid : FuncId} {g : Func}
+    {s₀ s₁ : BState}
+    (htr : trFunc fenv decl.params decl.rets decl.body s₀ = some (g, s₁))
+    (hslot : done[fid]? = some (some g))
+    (hnested : ∀ (i : Nat) (g' : Func),
+      s₁.funcs[i]? = some (some g') → done[i]? = some (some g')) :
+    FuncOK (model := model) P fenv decl fid :=
+  ⟨g, s₀, s₁, h.get hslot, htr,
+    fun i g' hi => h.get (hnested i g' hi)⟩
+
 /-! ## The residual obligation
 
 Everything above is unconditional. What remains is the derivation induction
@@ -7784,12 +7818,18 @@ Shape notes:
   falls through leaves its current block *unsealed*, so `CurFinal` is false
   there — and unnecessary, since only a diverting statement needs its own
   sealed block to be final.
+* `doneFuncs` and its `FuncTableComplete` witness are fixed across the whole
+  source induction.  Intermediate scopes may still contain pending `none`
+  slots; once an `allocScope`/`trFunc` inversion shows that a filled slot
+  survives into `doneFuncs`, `FuncTableComplete.get` places it in `P.funcs`.
 
 The `.loop` clause is deliberately `True` for now: the loop-iteration class
 needs the header/exit/post choreography, which is the round that attacks the
 `for` family. Every other clause is final. -/
 def Motive (P : Prog) (f : Func) (funs : YulSemantics.FunEnv yulD)
-    (V : VEnv yulD) (yst : EvmState) :
+    (V : VEnv yulD) (yst : EvmState)
+    (doneFuncs : Array (Option Func))
+    (_hfuncs : FuncTableComplete P doneFuncs) :
     YulSemantics.Code Op → YulSemantics.Res yulD → Prop
   | .expr e, .eres (.vals vs yst') =>
       (∀ (fenv : FMap) (env : VMap) (R : Regs) (s₀ s₁ : BState) (i : ValId)
@@ -7867,13 +7907,16 @@ def Motive (P : Prog) (f : Func) (funs : YulSemantics.FunEnv yulD)
 set_option maxHeartbeats 1000000 in
 /-- **The construction simulation induction.** One `induction … with` over the
 source `Step` derivation, with `Motive` above. Cases still open carry their own
-`sorry`; everything else is discharged by the per-case lemmas above. -/
+`sorry`; everything else is discharged by the per-case lemmas above.  The
+completed function table is an induction-wide parameter, so every recursive IH
+uses the same final table and completion proof. -/
 theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     {V : VEnv yulD} {yst : EvmState} {c : YulSemantics.Code Op}
-    {res : YulSemantics.Res yulD}
+    {res : YulSemantics.Res yulD} {doneFuncs : Array (Option Func)}
+    (hfuncs : FuncTableComplete P doneFuncs)
     (h : YulSemantics.Step yulD funs V yst c res) :
-    Motive (model := model) P f funs V yst c res := by
-  induction h generalizing P f with
+    Motive (model := model) P f funs V yst doneFuncs hfuncs c res := by
+  induction h generalizing f with
   | @lit funs V st l =>
     refine ⟨?_, ?_, ?_⟩
     · intro fenv env R s₀ s₁ i v _joins _ _ hfr _hp _ _ hvs htr
@@ -8165,15 +8208,11 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     intro fenv env R lctx rets s₀ s₁ renv _joins _ _ _ _ _ _ _ _ _ htr
     rw [trStmt] at htr
     exact absurd htr (by simp [reject])
-  -- Precise blocker: `allocScope` plus the later `fillFunc`s must construct the
-  -- `FEnvOK` needed to instantiate the statement-list IH under
-  -- `hoist body :: funs`.  `Completes` only relates `FnState.blocks` to `f`; and
-  -- `SGrowsAt.funcsSize` only records the function-table size.  Neither premise
-  -- says that an already-filled `s.funcs[i] = some g` survives as
-  -- `P.funcs[i] = g`, which is the first conjunct of `FuncOK`.  The statement
-  -- motive therefore needs a final-table completion/preservation premise (and
-  -- its backward transfer through `trStmts`) before this bridge is derivable
-  -- for arbitrary `P`.
+  -- The final-table premise is now fixed across the motive.  This case still
+  -- needs the structural `allocScope`/`trStmts` walk which pairs `hoist body`
+  -- with the allocated scope, shows each `fillFunc` result survives into
+  -- `doneFuncs`, applies `FuncTableComplete.funcOK`, and packages those facts
+  -- as the new `FEnvOK` scope.
   | block hb ihb => sorry
   | @letZero funs V st vars =>
     intro fenv env R lctx rets s₀ s₁ renv _joins _ henv huniq hfr _ _hp _ _ _ htr
@@ -8974,10 +9013,10 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   -- protected `Completes` backward across the non-fresh `moveTo postId` and
   -- `moveTo exitId` steps (using `Completes.of_moveTo_protected`); a single
   -- `SGrowsAt.completes_of` cannot compose those continuations.
-  -- The two enclosing `for` rules additionally need the hoisted-scope bridge
-  -- `allocScope init` -> `FEnvOK P (hoist yulD init :: funs) (scope :: fenv)`;
-  -- this is the same completion-sensitive bridge blocking `block` below,
-  -- because its `FuncOK` witnesses become available only after `fillFunc`.
+  -- The two enclosing `for` rules additionally need the structural
+  -- hoisted-scope bridge `allocScope init` ->
+  -- `FEnvOK P (hoist yulD init :: funs) (scope :: fenv)`.  Its final-table
+  -- premise is now supplied by the induction-wide `FuncTableComplete` witness.
   | forLoop hinit hloop ihi ihl => sorry
   | forInitHalt hinit ihi => sorry
   | @«break» funs V st =>
@@ -9194,12 +9233,13 @@ induction (every clause final except `.loop`, which the `for` round fills), and
 monotonicity for *all five* construction functions, which the compound cases
 need to see that a reserved block survives to the finished function.
 
-One prerequisite the shell still needs, not yet built: the analogue of
-`SimAsm.hoist_ok` — from `allocScope body` and the source's `hoist body`,
-construct `FEnvOK P (hoist yulD body :: funs) (scope :: fenv)`. Each entry's
-`FuncOK` is established when `trStmts` reaches the corresponding `funDef` and
-calls `fillFunc`, so the lemma has to be proved together with the `funDef` case
-rather than before it.
+The function-table invariant needed by the remaining hoist/call work is now in
+the motive: one `doneFuncs` table and its `FuncTableComplete` proof stay fixed
+through every recursive IH.  What remains in the `block` case is the structural
+analogue of `SimAsm.hoist_ok`: walk the successful `allocScope body` and
+`trStmts` equations, pair their entries with the source's `hoist body`, and
+show each resulting `fillFunc` slot survives into `doneFuncs`.  At that point
+`FuncTableComplete.funcOK` packages the `P.funcs` and nested-slot conjuncts.
 
 What remains is the `induction … with` shell itself — which for `cond`,
 `switch` and the loop family is now mostly the `trStmt`/`trCases` equation
@@ -9214,9 +9254,11 @@ theorem trScope_sim {P : Prog} {f : Func}
     {V V' : VEnv yulD} {env : VMap} {R : Regs}
     {lctx : Option LoopCtx} {rets : Option (List Ident)}
     {body : List (Stmt Op)} {s₀ s₁ : BState} {renv : Option VMap}
+    {doneFuncs : Array (Option Func)}
     {yst yst' : EvmState} {o : Outcome}
     (_hwf : P.wfCheck = true)
     (_hcompl : Completes f s₁.fn)
+    (_hfuncs : FuncTableComplete P doneFuncs)
     (_hfe : FEnvOK (model := model) P funs fenv)
     (_henv : EnvOK (model := model) env V R)
     (_huniq : env.Unique)
@@ -9274,7 +9316,7 @@ theorem ofBlock_sound' {prog : YulSemantics.Block Op} {P : Prog}
   | @block _ _ _ _ Vb stb o hstmts =>
     have hsim := trScope_sim (model := model) (P := P) (f := P.main)
       (funs := []) (fenv := []) (V := []) (env := []) (R := Regs.empty)
-      hwf hext .nil EnvOK.nil VMap.unique_nil htr (.block hstmts)
+      hwf hext hmapM .nil EnvOK.nil VMap.unique_nil htr (.block hstmts)
     -- `initBState` is the entry block, empty and current
     have hentryCur : ∀ rest, CurOK P.main initBState.fn rest
         → ∃ eb, P.main.blocks[P.main.entry]? = some eb
