@@ -5553,6 +5553,21 @@ block itself; this is that witness. -/
 def CurPlaced (f : Func) (fn : FnState) : Prop := ∃ rest, CurOK f fn rest
 
 omit model in
+/-- If an empty current block is left by `moveTo`, completion of the moved-to
+state places that former current block in the finished function. -/
+theorem CurPlaced.of_moveTo_empty {f : Func} {s s' : BState} {bid : BlockId}
+    {u : Unit} (hv : s.fn.curId < s.fn.blocks.size) (hcur : s.fn.cur = [])
+    (hne : s.fn.curId ≠ bid) (hmv : moveTo bid s = some (u, s'))
+    (hcompl : Completes f s'.fn) : CurPlaced f s.fn := by
+  rw [M.moveTo_apply] at hmv
+  obtain ⟨-, rfl⟩ := M.some_pair_inj hmv
+  let b := s.fn.blocks[s.fn.curId]
+  have hb : s.fn.blocks[s.fn.curId]? = some b :=
+    Array.getElem?_eq_getElem hv
+  have hf : f.blocks[s.fn.curId]? = some b := hcompl.sealed _ b hne hb
+  exact ⟨⟨b.instrs, b.term⟩, b, hf, by rw [hcur]; simp, rfl⟩
+
+omit model in
 /-- `CurPlaced` travels backwards along instructions emitted into the same
 block. -/
 theorem CurPlaced.ofPrefix {f : Func} {fn fn' : FnState} (h : CurPlaced f fn')
@@ -6619,6 +6634,285 @@ theorem trStmts_cur : ∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
         (gb.trans (gr.mono (Nat.le_trans a8.size gb.size))))⟩
 
 omit model in
+/-- A diverting scope has no pending instructions in its current block.
+
+This is deliberately separate from `CurResult`: the latter records how the
+*incoming* block is preserved, whereas this fact is about the output selected
+by a later structured-control `moveTo`. -/
+theorem trScope_none_cur_nil : ∀ (fenv : FMap) (env : VMap)
+    (lctx : Option LoopCtx) (rets : Option (List Ident))
+    (body : List (Stmt Op)) (s s' : BState),
+    trScope fenv env lctx rets body s = some (none, s') → s'.fn.cur = [] := by
+  let ScopeNil := fun (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (body : List (Stmt Op)) =>
+      ∀ (s s' : BState),
+        trScope fenv env lctx rets body s = some (none, s') → s'.fn.cur = []
+  let StmtsNil := fun (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (d : Bool) (ss : List (Stmt Op)) =>
+      if d then True else ∀ (s s' : BState),
+        trStmts fenv env lctx rets d ss s = some (none, s') → s'.fn.cur = []
+  let StmtNil := fun (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (st : Stmt Op) =>
+      ∀ (s s' : BState),
+        trStmt fenv env lctx rets st s = some (none, s') → s'.fn.cur = []
+  have hall : ∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+      (rets : Option (List Ident)) (d : Bool) (body : List (Stmt Op)),
+      StmtsNil fenv env lctx rets d body := by
+    refine trStmts.induct (fun _ _ _ _ => True) ScopeNil StmtsNil StmtNil
+      (fun _ _ _ _ _ _ _ _ _ => True)
+      ?trFunc ?trScope ?stmtsNil ?stmtsFunDef ?stmtsSkip ?stmtsCons
+      ?block ?funDef ?letNoneBad ?letNone ?letSomeBad ?letSome ?assignBad ?assign
+      ?cond ?switch ?forLoop ?exprBuiltin ?exprCall ?exprBad
+      ?breakNone ?breakSome ?contNone ?contSome ?leaveNone ?leaveSome
+      ?casesNilNone ?casesNilSome ?casesCons
+    case trFunc => intros; trivial
+    case trScope =>
+      intro fenv env lctx rets body ih s s' h
+      rw [trScope] at h
+      obtain ⟨scope, s1, h1, h⟩ := M.bind_inv h
+      obtain ⟨renv, s2, h2, h3⟩ := M.bind_inv h
+      cases renv with
+      | none =>
+        obtain ⟨-, hs⟩ := M.pure_inv h3
+        rw [hs]
+        exact ih scope s1 s2 h2
+      | some env' => exact absurd h3 (by simp)
+    case stmtsNil =>
+      intro fenv env lctx rets d
+      cases d <;> simp only [StmtsNil, Bool.false_eq_true, ↓reduceIte]
+      intro s s' h
+      rw [trStmts] at h
+      exact absurd h (by simp)
+    case stmtsFunDef =>
+      intro fenv env lctx rets d n ps rs fbody rest ihf ihr
+      cases d with
+      | true => simp [StmtsNil]
+      | false =>
+        simp only [StmtsNil, Bool.false_eq_true, ↓reduceIte]
+        intro s s' h
+        rw [trStmts] at h
+        obtain ⟨fid, s1, h1, h⟩ := M.bind_inv h
+        obtain ⟨g, s2, h2, h⟩ := M.bind_inv h
+        obtain ⟨u, s3, h3, h4⟩ := M.bind_inv h
+        exact ihr s3 s' h4
+    case stmtsSkip => intros; simp [StmtsNil]
+    case stmtsCons =>
+      intro fenv env lctx rets d st rest hnf hd ihs ihr0 ihr1
+      have hd0 : d = false := Bool.eq_false_of_not_eq_true hd
+      subst d
+      simp only [StmtsNil, Bool.false_eq_true, ↓reduceIte]
+      intro s s' h
+      rw [trStmts] at h
+      · rw [if_neg hd] at h
+        obtain ⟨renv, s1, h1, h2⟩ := M.bind_inv h
+        cases renv with
+        | some env' => exact ihr0 env' s1 s' h2
+        | none =>
+          obtain ⟨-, hfn⟩ := trStmts_true_fn fenv env lctx rets rest
+            s1 s' none h2
+          rw [hfn]
+          exact ihs s s1 h1
+      · exact hnf
+    case block =>
+      intro fenv env lctx rets body ih s s' h
+      rw [trStmt] at h
+      exact ih s s' h
+    case funDef =>
+      intro fenv env lctx rets name ps rs body s s' h
+      rw [trStmt] at h
+      exact absurd h (by simp [reject])
+    case letNoneBad =>
+      intro fenv env lctx rets vars hgate s s' h
+      rw [trStmt, if_pos hgate] at h
+      obtain ⟨u, s1, h1, -⟩ := M.bind_inv h
+      exact absurd h1 (by simp [reject])
+    case letNone =>
+      intro fenv env lctx rets vars hgate s s' h
+      rw [trStmt, if_neg hgate] at h
+      obtain ⟨u, s1, h1, h⟩ := M.bind_inv h
+      obtain ⟨ids, s2, h2, h3⟩ := M.bind_inv h
+      exact absurd h3 (by simp)
+    case letSomeBad =>
+      intro fenv env lctx rets vars e hgate s s' h
+      rw [trStmt, if_pos hgate] at h
+      obtain ⟨u, s1, h1, -⟩ := M.bind_inv h
+      exact absurd h1 (by simp [reject])
+    case letSome =>
+      intro fenv env lctx rets vars e hgate s s' h
+      rw [trStmt, if_neg hgate] at h
+      obtain ⟨u, s1, h1, h⟩ := M.bind_inv h
+      obtain ⟨ids, s2, h2, h3⟩ := M.bind_inv h
+      exact absurd h3 (by simp)
+    case assignBad =>
+      intro fenv env lctx rets vars e hgate s s' h
+      rw [trStmt, if_pos hgate] at h
+      obtain ⟨u, s1, h1, -⟩ := M.bind_inv h
+      exact absurd h1 (by simp [reject])
+    case assign =>
+      intro fenv env lctx rets vars e hgate s s' h
+      rw [trStmt, if_neg hgate] at h
+      obtain ⟨u, s1, h1, h⟩ := M.bind_inv h
+      obtain ⟨ids, s2, h2, h3⟩ := M.bind_inv h
+      exact absurd h3 (by simp)
+    case cond =>
+      intro fenv env lctx rets c body ih s s' h
+      rw [trStmt] at h
+      obtain ⟨cv, s1, h1, h⟩ := M.bind_inv h
+      obtain ⟨xvals, s2, h2, h⟩ := M.bind_inv h
+      obtain ⟨bodyId, s3, h3, h⟩ := M.bind_inv h
+      obtain ⟨joinParams, s4, h4, h⟩ := M.bind_inv h
+      obtain ⟨joinId, s5, h5, h⟩ := M.bind_inv h
+      obtain ⟨u6, s6, h6, h⟩ := M.bind_inv h
+      obtain ⟨u7, s7, h7, h⟩ := M.bind_inv h
+      obtain ⟨renv, s8, h8, h⟩ := M.bind_inv h
+      cases renv with
+      | none =>
+        obtain ⟨u9, s9, h9, h10⟩ := M.bind_inv h
+        obtain ⟨u10, s10, hmove, hpure⟩ := M.bind_inv h10
+        exact absurd hpure (by simp)
+      | some env' =>
+        obtain ⟨xv, s9, h9, h⟩ := M.bind_inv h
+        obtain ⟨u10, s10, h10, h⟩ := M.bind_inv h
+        obtain ⟨u11, s11, h11, h12⟩ := M.bind_inv h
+        exact absurd h12 (by simp)
+    case switch =>
+      intro fenv env lctx rets c cases dflt ih s s' h
+      unfold trStmt at h
+      obtain ⟨sv, s1, h1, h⟩ := M.bind_inv h
+      obtain ⟨joinParams, s2, h2, h⟩ := M.bind_inv h
+      obtain ⟨joinId, s3, h3, h⟩ := M.bind_inv h
+      obtain ⟨u4, s4, h4, h⟩ := M.bind_inv h
+      obtain ⟨u5, s5, h5, h6⟩ := M.bind_inv h
+      exact absurd h6 (by simp)
+    case forLoop =>
+      intro fenv env lctx rets init c post body ihInit ihBody ihPost s s' h
+      unfold trStmt at h
+      obtain ⟨scope, s1, h1, h⟩ := M.bind_inv h
+      obtain ⟨rinit, s2, h2, h⟩ := M.bind_inv h
+      cases rinit with
+      | none =>
+        obtain ⟨-, hs⟩ := M.pure_inv h
+        rw [hs]
+        exact ihInit scope s1 s2 h2
+      | some envI =>
+        obtain ⟨xvals, s3, h3, h⟩ := M.bind_inv h
+        obtain ⟨hParams, s4, h4, h⟩ := M.bind_inv h
+        obtain ⟨hId, s5, h5, h⟩ := M.bind_inv h
+        obtain ⟨exitParams, s6, h6, h⟩ := M.bind_inv h
+        obtain ⟨exitId, s7, h7, h⟩ := M.bind_inv h
+        obtain ⟨postParams, s8, h8, h⟩ := M.bind_inv h
+        obtain ⟨postId, s9, h9, h⟩ := M.bind_inv h
+        obtain ⟨u10, s10, h10, h⟩ := M.bind_inv h
+        obtain ⟨u11, s11, h11, h⟩ := M.bind_inv h
+        obtain ⟨cv, s12, h12, h⟩ := M.bind_inv h
+        obtain ⟨bodyId, s13, h13, h⟩ := M.bind_inv h
+        obtain ⟨hX, s14, h14, h⟩ := M.bind_inv h
+        obtain ⟨u15, s15, h15, h⟩ := M.bind_inv h
+        obtain ⟨u16, s16, h16, h⟩ := M.bind_inv h
+        obtain ⟨renvB, s17, h17, h⟩ := M.bind_inv h
+        cases renvB with
+        | none =>
+          obtain ⟨u18, s18, h18, h⟩ := M.bind_inv h
+          obtain ⟨u19, s19, h19, h⟩ := M.bind_inv h
+          obtain ⟨renvP, s20, h20, h⟩ := M.bind_inv h
+          cases renvP with
+          | none =>
+            obtain ⟨u21, s21, h21, h⟩ := M.bind_inv h
+            obtain ⟨u22, s22, h22, h23⟩ := M.bind_inv h
+            exact absurd h23 (by simp)
+          | some envP =>
+            obtain ⟨xvP, s21, h21, h⟩ := M.bind_inv h
+            obtain ⟨u22, s22, h22, h⟩ := M.bind_inv h
+            obtain ⟨u23, s23, h23, h⟩ := M.bind_inv h
+            exact absurd h (by simp)
+        | some envB =>
+          obtain ⟨xvB, s18, h18, h⟩ := M.bind_inv h
+          obtain ⟨u19, s19, h19, h⟩ := M.bind_inv h
+          obtain ⟨u20, s20, h20, h⟩ := M.bind_inv h
+          obtain ⟨renvP, s21, h21, h⟩ := M.bind_inv h
+          cases renvP with
+          | none =>
+            obtain ⟨u22, s22, h22, h⟩ := M.bind_inv h
+            obtain ⟨u23, s23, h23, h24⟩ := M.bind_inv h
+            exact absurd h24 (by simp)
+          | some envP =>
+            obtain ⟨xvP, s22, h22, h⟩ := M.bind_inv h
+            obtain ⟨u23, s23, h23, h⟩ := M.bind_inv h
+            obtain ⟨u24, s24, h24, h25⟩ := M.bind_inv h
+            exact absurd h25 (by simp)
+    case exprBuiltin =>
+      intro fenv env lctx rets op args s s' h
+      rw [trStmt] at h
+      obtain ⟨as, s1, h1, h⟩ := M.bind_inv h
+      by_cases hop : isHaltingOp op = true
+      · rw [if_pos hop] at h
+        obtain ⟨u, s2, h2, h3⟩ := M.bind_inv h
+        obtain ⟨-, rfl⟩ := M.pure_inv h3
+        exact (sealCur_cur h2).choose_spec.2.1
+      · rw [if_neg hop] at h
+        obtain ⟨u, s2, h2, h3⟩ := M.bind_inv h
+        exact absurd h3 (by simp)
+    case exprCall =>
+      intro fenv env lctx rets fn args s s' h
+      rw [trStmt] at h
+      obtain ⟨as, s1, h1, h⟩ := M.bind_inv h
+      obtain ⟨fid, s2, h2, h⟩ := M.bind_inv h
+      obtain ⟨u, s3, h3, h4⟩ := M.bind_inv h
+      exact absurd h4 (by simp)
+    case exprBad =>
+      intro fenv env lctx rets e hnb hnc s s' h
+      rw [trStmt] at h
+      · exact absurd h (by simp [reject])
+      · exact hnb
+      · exact hnc
+    case breakNone =>
+      intro fenv env rets s s' h
+      rw [trStmt] at h
+      exact absurd h (by simp [reject])
+    case breakSome =>
+      intro fenv env rets l s s' h
+      rw [trStmt] at h
+      obtain ⟨vals, s1, h1, h⟩ := M.bind_inv h
+      obtain ⟨u, s2, h2, h3⟩ := M.bind_inv h
+      obtain ⟨-, rfl⟩ := M.pure_inv h3
+      exact (sealCur_cur h2).choose_spec.2.1
+    case contNone =>
+      intro fenv env rets s s' h
+      rw [trStmt] at h
+      exact absurd h (by simp [reject])
+    case contSome =>
+      intro fenv env rets l s s' h
+      rw [trStmt] at h
+      obtain ⟨vals, s1, h1, h⟩ := M.bind_inv h
+      obtain ⟨u, s2, h2, h3⟩ := M.bind_inv h
+      obtain ⟨-, rfl⟩ := M.pure_inv h3
+      exact (sealCur_cur h2).choose_spec.2.1
+    case leaveNone =>
+      intro fenv env lctx s s' h
+      rw [trStmt] at h
+      exact absurd h (by simp [reject])
+    case leaveSome =>
+      intro fenv env lctx rs s s' h
+      rw [trStmt] at h
+      obtain ⟨vals, s1, h1, h⟩ := M.bind_inv h
+      obtain ⟨u, s2, h2, h3⟩ := M.bind_inv h
+      obtain ⟨-, rfl⟩ := M.pure_inv h3
+      exact (sealCur_cur h2).choose_spec.2.1
+    case casesNilNone => intros; trivial
+    case casesNilSome => intros; trivial
+    case casesCons => intros; trivial
+  intro fenv env lctx rets body s s' h
+  rw [trScope] at h
+  obtain ⟨scope, s1, h1, h⟩ := M.bind_inv h
+  obtain ⟨renv, s2, h2, h3⟩ := M.bind_inv h
+  cases renv with
+  | none =>
+    obtain ⟨-, hs⟩ := M.pure_inv h3
+    rw [hs]
+    exact hall (scope :: fenv) env lctx rets false body s1 s2 h2
+  | some env' => exact absurd h3 (by simp)
+
+omit model in
 /-- Statement-current validity as a corollary of the list invariant, using a
 singleton list.  Function definitions are handled by `trStmts` itself and are
 rejected by `trStmt`. -/
@@ -7435,16 +7729,17 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       (ihe.2.1 fenv env R s₀ s₁ vars.length ids hfe henv hfr hcompl hcp h1)
   | exprStmt he ihe => exact ihe.2.2 rfl
   | exprStmtHalt he ihe => exact ihe.2.2
-  -- Visible-name uniqueness is now threaded, and `setMany_eq_of_modOut` closes
-  -- the former join-environment reconstruction gap.  The remaining blocker is
-  -- placement at the *output* of the selected `trScope`, needed to instantiate
-  -- `ihb`.  The enclosing conditional subsequently seals/moves that output, so
-  -- the needed fact is true, but the current `CurResult` summary forgets that a
-  -- successful `trScope` returning `none` has an empty pending current block.
-  -- A focused `trScope_none_cur_nil` lemma (or that strengthening of
-  -- `CurResult`) would supply `CurPlaced f sH.fn` from the later `moveTo` and
-  -- `Completes`; without it the non-normal selected-arm cases cannot consume
-  -- their IH.  This is independent of the now-discharged uniqueness issue.
+  -- `trScope_none_cur_nil` now supplies the formerly missing `CurPlaced` at
+  -- the selected body's output.  The next premise of `ihb`, however, is
+  -- genuinely unavailable: `Completes f sH.fn` requires the enclosing join
+  -- block (reserved before the body and non-current at `sH`) to equal its
+  -- final block in `f`.  At the conditional output that join is current/open,
+  -- so the available `Completes f s₁.fn` deliberately gives only parameter
+  -- agreement there; later statements may extend the join, making exact
+  -- equality false.  Closing this case therefore needs a completion invariant
+  -- parameterized by protected enclosing joins (and corresponding backwards
+  -- transfer/edge lemmas), not another current-placement fact.  The switch-arm
+  -- pair has the same common-join obligation.
   | ifTrue hc hnz hbody ihc ihb => sorry
   | @ifFalse funs V st c body cv st1 hc hz ihc =>
     intro fenv env R lctx rets s₀ s₁ renv hfe henv huniq hfr hvalid hcompl hcp _ htr
