@@ -221,6 +221,31 @@ theorem setMany_congr {S : ValId → Prop} {R1 R2 : Regs} (h : ∀ x, S x → R1
     | nil => simpa [setMany_nil_right] using h
     | cons v vs => simpa [setMany_cons] using ih (set_congr h y v) (vs := vs)
 
+/-- Read a use list after substitution when the two register files agree on
+the original uses modulo that substitution. -/
+theorem getMany_substVs {σ : Passes.Subst} {R R' : Regs}
+    {xs : List ValId} {vs : List U256}
+    (hagree : ∀ x ∈ xs, R x = R' (Passes.substV σ x))
+    (hget : R.getMany xs = some vs) :
+    R'.getMany (Passes.substVs σ xs) = some vs := by
+  induction xs generalizing vs with
+  | nil => simpa [Passes.substVs] using hget
+  | cons x xs ih =>
+      rw [getMany_cons] at hget
+      cases hx : R x with
+      | none => simp [hx] at hget
+      | some v =>
+          cases htail : R.getMany xs with
+          | none => simp [hx, htail] at hget
+          | some vals =>
+              simp only [hx, htail, Option.bind_some, Option.map_some,
+                Option.some.injEq] at hget
+              subst vs
+              have hx' : R' (Passes.substV σ x) = some v := by
+                rw [← hagree x (by simp), hx]
+              have ht' := ih (fun y hy => hagree y (by simp [hy])) htail
+              simpa [Passes.substVs, getMany_cons, hx'] using ht'
+
 end Regs
 
 /-! ## Read sets -/
@@ -4655,7 +4680,12 @@ through the derivation block by block:
 The remaining engineering is a *specification* for `Passes.findTrivialParam`:
 inverting its nested `Id.run` early-return search into "every in-edge argument at
 position `i` of block `bi` is `v` or `p`", and then an induction on the
-fixed-point loop of `elimTrivialParams`. -/
+fixed-point loop of `elimTrivialParams`.  There is one path-sensitive case after
+that inversion: an in-edge carrying `p` from a block other than `bi` would read
+a stale binding.  `domCheck` and a successful entry-rooted execution exclude
+it, but, as for inherited CSE expression arguments below, the proof needs to
+track the set of definition sites already traversed; `LiveAgree` alone records
+value equality and cannot distinguish a current binding from a stale one. -/
 theorem elimTrivialParams_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState}
     {res : FRes} {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (hdom : ToAsm.Func.domCheck f = true)
@@ -5059,6 +5089,147 @@ theorem constFold_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState}
   exact constFold_exec_aux hwf hnd hexec hebmem (fun i hi => hi) hm
     (constRegs_entry hnd args)
 
+/-! ### CSE execution invariant -/
+
+/-- Runtime meaning of a CSE expression.  For an operation entry we retain one
+actual evaluation of the pure operation.  Its arguments are read through the
+final substitution, exactly as they are in the emitted block, and the entry's
+representative contains its (necessarily singleton) result.  Keeping the
+historic state in the witness is intentional: `pure_rets_eq` transports the
+result to a later occurrence without requiring the two machine states to be
+equal. -/
+def CseExprRuntime (τ : Passes.Subst) (R : Regs) :
+    Passes.CseExpr → ValId → Prop
+  | .const v, d => R d = some v
+  | .op yop as, d =>
+      ∃ vals w s s',
+        R.getMany (Passes.substVs τ as) = some vals ∧
+        builtinWithExternal model.calls model.creates yop vals s (.ok [w] s') ∧
+        R d = some w
+
+/-- Every entry in the currently available CSE table has its advertised
+runtime meaning.  This is the semantic counterpart of `CseTabSound`: the
+latter supplies the definition-site certificate, while this predicate records
+that the certified representative has actually executed on the current path. -/
+def CseTabRuntime (τ : Passes.Subst) (R : Regs) (tab : Passes.CseTab) : Prop :=
+  (∀ {yop as d}, ((yop, as), d) ∈ tab.ops →
+    CseExprRuntime τ R (.op yop as) d) ∧
+  (∀ {v d}, (v, d) ∈ tab.consts → CseExprRuntime τ R (.const v) d)
+
+/-- Registers read by the operation expressions in a runtime CSE table, after
+the final use substitution. -/
+def cseTabRuntimeUses (τ : Passes.Subst) (tab : Passes.CseTab) : List ValId :=
+  tab.ops.flatMap fun e => Passes.substVs τ e.1.2
+
+theorem CseTabRuntime.empty (τ : Passes.Subst) (R : Regs) :
+    CseTabRuntime τ R {} := by
+  simp [CseTabRuntime]
+
+/-- Binding a register outside both the table representatives and the
+substituted expression arguments preserves the runtime table invariant. -/
+theorem CseTabRuntime.set_of_fresh {τ : Passes.Subst} {R : Regs}
+    {tab : Passes.CseTab} (h : CseTabRuntime τ R tab) {d : ValId} {w : U256}
+    (hvals : d ∉ Passes.cseTabVals tab) (huses : d ∉ cseTabRuntimeUses τ tab) :
+    CseTabRuntime τ (R.set d w) tab := by
+  refine ⟨?_, ?_⟩
+  · intro yop as d0 hm
+    obtain ⟨vals, v, s, s', hg, hb, hd0⟩ := h.1 hm
+    have hd0ne : d0 ≠ d := by
+      intro heq
+      apply hvals
+      subst d0
+      exact List.mem_append_left _ (List.mem_map.mpr ⟨((yop, as), d), hm, rfl⟩)
+    have harg : ∀ x ∈ Passes.substVs τ as, x ≠ d := by
+      intro x hx heq
+      apply huses
+      subst x
+      exact List.mem_flatMap.mpr ⟨((yop, as), d0), hm, hx⟩
+    refine ⟨vals, v, s, s', ?_, hb, ?_⟩
+    · rw [← Regs.getMany_congr (R1 := R) (R2 := R.set d w) (by
+        intro x hx
+        rw [Regs.set_other _ _ (harg x hx)])]
+      exact hg
+    · rw [Regs.set_other _ _ hd0ne]
+      exact hd0
+  · intro v d0 hm
+    have hd0ne : d0 ≠ d := by
+      intro heq
+      apply hvals
+      subst d0
+      exact List.mem_append_right _ (List.mem_map.mpr ⟨(v, d), hm, rfl⟩)
+    rw [CseExprRuntime, Regs.set_other _ _ hd0ne]
+    exact h.2 hm
+
+theorem CseTabRuntime.addConst {τ : Passes.Subst} {R : Regs}
+    {tab : Passes.CseTab} (h : CseTabRuntime τ R tab) {d : ValId} {v : U256}
+    (hvals : d ∉ Passes.cseTabVals tab) (huses : d ∉ cseTabRuntimeUses τ tab) :
+    CseTabRuntime τ (R.set d v) { tab with consts := (v, d) :: tab.consts } := by
+  have hold := h.set_of_fresh hvals huses (w := v)
+  refine ⟨hold.1, ?_⟩
+  intro v0 d0 hm
+  rcases List.mem_cons.mp hm with hhead | htail
+  · obtain ⟨rfl, rfl⟩ := Prod.mk.inj hhead
+    simp [CseExprRuntime]
+  · exact hold.2 htail
+
+theorem CseTabRuntime.addOp {τ : Passes.Subst} {R : Regs}
+    {tab : Passes.CseTab} (h : CseTabRuntime τ R tab)
+    {d : ValId} {yop : Op} {as : List ValId} {vals : List U256} {w : U256}
+    {s s' : EvmState}
+    (hvals : d ∉ Passes.cseTabVals tab) (huses : d ∉ cseTabRuntimeUses τ tab)
+    (hg : (R.set d w).getMany (Passes.substVs τ as) = some vals)
+    (hb : builtinWithExternal model.calls model.creates yop vals s (.ok [w] s')) :
+    CseTabRuntime τ (R.set d w) { tab with ops := ((yop, as), d) :: tab.ops } := by
+  have hold := h.set_of_fresh hvals huses (w := w)
+  refine ⟨?_, hold.2⟩
+  intro yop0 as0 d0 hm
+  rcases List.mem_cons.mp hm with hhead | htail
+  · obtain ⟨hkey, rfl⟩ := Prod.mk.inj hhead
+    obtain ⟨rfl, rfl⟩ := Prod.mk.inj hkey
+    exact ⟨vals, w, s, s', hg, hb, by simp⟩
+  · exact hold.1 htail
+
+theorem CseTabRuntime.const_of_find {τ : Passes.Subst} {R : Regs}
+    {tab : Passes.CseTab} (h : CseTabRuntime τ R tab)
+    {v v0 : U256} {d : ValId}
+    (hf : tab.consts.find? (fun x => x.1 == v) = some (v0, d)) :
+    v0 = v ∧ R d = some v := by
+  have hm : (v0, d) ∈ tab.consts := List.mem_of_find?_eq_some hf
+  have hv : v0 = v := beq_iff_eq.mp (List.find?_some
+    (p := fun x : U256 × ValId => x.1 == v) (a := (v0, d)) hf)
+  subst v0
+  exact ⟨rfl, h.2 hm⟩
+
+theorem CseTabRuntime.op_of_find {τ : Passes.Subst} {R : Regs}
+    {tab : Passes.CseTab} (h : CseTabRuntime τ R tab)
+    {yop yop0 : Op} {as as0 : List ValId} {d : ValId}
+    (hf : tab.ops.find? (fun x => x.1 == (yop, as)) = some ((yop0, as0), d)) :
+    yop0 = yop ∧ as0 = as ∧ CseExprRuntime τ R (.op yop as) d := by
+  have hm : ((yop0, as0), d) ∈ tab.ops := List.mem_of_find?_eq_some hf
+  have heq : (yop0, as0) = (yop, as) :=
+    beq_iff_eq.mp (List.find?_some
+      (p := fun x : (Op × List ValId) × ValId => x.1 == (yop, as))
+      (a := ((yop0, as0), d)) hf)
+  obtain ⟨rfl, rfl⟩ := Prod.mk.inj heq
+  exact ⟨rfl, rfl, h.1 hm⟩
+
+/-- Consume an operation-table runtime certificate at a repeated pure
+operation.  The stored and current evaluations have the same arguments, so
+purity fixes the result; well-formed CSE operations have one destination and
+therefore one result. -/
+theorem CseExprRuntime.op_result {τ : Passes.Subst} {R : Regs}
+    {yop : Op} {as : List ValId} {d : ValId}
+    (hr : CseExprRuntime τ R (.op yop as) d)
+    (hp : Passes.pureOp yop = true) {vals rets : List U256} {st st' : EvmState}
+    (hg : R.getMany (Passes.substVs τ as) = some vals)
+    (hb : builtinWithExternal model.calls model.creates yop vals st (.ok rets st')) :
+    ∃ w, rets = [w] ∧ R d = some w := by
+  obtain ⟨vals0, w0, s, s', hg0, hb0, hd⟩ := hr
+  have hvals : vals0 = vals := Option.some.inj (hg0.symm.trans hg)
+  subst vals0
+  have hrets : [w0] = rets := Passes.pure_rets_eq hp hb0 hb
+  exact ⟨w0, hrets.symm, hd⟩
+
 /-- **Pass 3 (local CSE) soundness**, under dominance.
 
 `sorry`. Same `LiveAgree` invariant as pass 1, with `σ` the accumulated
@@ -5079,7 +5250,20 @@ availability comes from the actual unique predecessor; these facts close
 register substitution invariant, that every entry-table representative contains
 the value certified by its `CseDef`.  A kept instruction then steps on substituted
 arguments, while a dropped `const`/pure op is skipped using that table fact and
-`pure_rets_eq`; jumps hand the end-table fact to `cseAvail_succ`. -/
+`pure_rets_eq`; jumps hand the end-table fact to `cseAvail_succ`.
+
+The runtime predicate and its lookup leaf are now explicit above as
+`CseTabRuntime` and `CseExprRuntime.op_result`.  The precise remaining
+obstruction is preservation of `CseTabRuntime` when `Exec.jump` rebinds a
+successor's block parameters.  Representatives themselves are earlier
+instruction definitions and hence are disjoint from those parameters, but an
+entry's *expression arguments* can mention a parameter that is about to be
+rebound.  Such an entry can only arise from an undominated/stale read on the
+first traversal; a successful entry-rooted `Exec` plus `domCheck` rules that
+out.  Formalizing that last sentence needs a path-domain invariant (registers
+are bound only by function parameters and definition sites already traversed),
+in addition to `LiveAgree`; `cseAvail_succ` tracks representatives only and
+therefore cannot by itself establish this argument-stability fact. -/
 theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (hdom : ToAsm.Func.domCheck f = true)
@@ -5603,6 +5787,12 @@ computations on `ToAsm.liveInSets` of the rewritten function, in the same style
 as `ToAsm.liveIn_of_uses`/`liveIn_of_succ`. -/
 
 omit model in
+/-- The structural fixed-point inversion is still missing here.  A one-step
+proof can use `ToAsm.domCheck_of_substitution` with availability `[v]` at the
+rewritten block once `findTrivialParam` has been inverted.  Its successor
+availability premise is immediate for an incoming `v`, and for a self-edge
+carrying `p`; ruling out a non-self incoming `p` is the same path-domain fact
+documented at `elimTrivialParams_sound`. -/
 theorem elimTrivialParams_dom {f : Func} (hwf : f.wfCheck n = true)
     (hdom : ToAsm.Func.domCheck f = true) :
     ToAsm.Func.domCheck (Passes.elimTrivialParams f) = true := by
