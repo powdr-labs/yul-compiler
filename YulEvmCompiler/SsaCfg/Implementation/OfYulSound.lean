@@ -240,6 +240,65 @@ theorem setMany_cons (R : Regs) (x : ValId) (xs : List ValId) (v : U256)
     R.setMany (x :: xs) (v :: vs) = (R.set x v).setMany xs vs := by
   simp only [setMany, List.zip_cons_cons, List.foldl_cons]
 
+theorem set_set (R : Regs) (x : ValId) (v w : U256) :
+    (R.set x v).set x w = R.set x w := by
+  funext y
+  by_cases h : y = x
+  · subst y; simp
+  · rw [set_other, set_other, set_other] <;> exact h
+
+theorem set_comm (R : Regs) {x y : ValId} (hxy : x ≠ y) (v w : U256) :
+    (R.set x v).set y w = (R.set y w).set x v := by
+  funext z
+  by_cases hzx : z = x
+  · subst z
+    rw [set_other _ _ hxy, set_same, set_same]
+  · by_cases hzy : z = y
+    · subst z
+      rw [set_same, set_other _ _ (Ne.symm hxy), set_same]
+    · rw [set_other _ _ hzy, set_other _ _ hzx,
+        set_other _ _ hzx, set_other _ _ hzy]
+
+theorem setMany_comm (R : Regs) {x : ValId} {xs : List ValId}
+    (hx : x ∉ xs) (v : U256) (vs : List U256) :
+    (R.set x v).setMany xs vs = (R.setMany xs vs).set x v := by
+  induction xs generalizing R vs with
+  | nil => simp
+  | cons y ys ih =>
+    cases vs with
+    | nil => simp
+    | cons w ws =>
+      have hxy : x ≠ y := fun h => hx (h ▸ List.mem_cons_self ..)
+      have hxn : x ∉ ys := fun h => hx (List.mem_cons_of_mem _ h)
+      rw [setMany_cons, setMany_cons, set_comm _ hxy, ih _ hxn]
+
+theorem setMany_overwrite (R : Regs) {xs : List ValId} {vs ws : List U256}
+    (hnd : xs.Nodup) (hlv : xs.length = vs.length)
+    (hlw : xs.length = ws.length) :
+    (R.setMany xs vs).setMany xs ws = R.setMany xs ws := by
+  induction xs generalizing R vs ws with
+  | nil => simp
+  | cons x xs ih =>
+    cases vs with
+    | nil => simp at hlv
+    | cons v vs =>
+      cases ws with
+      | nil => simp at hlw
+      | cons w ws =>
+        have hx : x ∉ xs := (List.nodup_cons.mp hnd).1
+        have hnd' : xs.Nodup := (List.nodup_cons.mp hnd).2
+        have hlv' : xs.length = vs.length := by simpa using hlv
+        have hlw' : xs.length = ws.length := by simpa using hlw
+        calc
+          ((R.setMany (x :: xs) (v :: vs)).setMany (x :: xs) (w :: ws)) =
+              (((R.set x v).setMany xs vs).set x w).setMany xs ws := by
+                rw [setMany_cons, setMany_cons]
+          _ = (((R.set x v).set x w).setMany xs vs).setMany xs ws := by
+                rw [setMany_comm (R.set x v) hx]
+          _ = ((R.set x w).setMany xs vs).setMany xs ws := by rw [set_set]
+          _ = (R.set x w).setMany xs ws := ih _ hnd' hlv' hlw'
+          _ = R.setMany (x :: xs) (w :: ws) := by rw [setMany_cons]
+
 /-- Ids outside the bound list are untouched. -/
 theorem setMany_other : ∀ {xs : List ValId} {vs : List U256} {R : Regs} {y : ValId},
     y ∉ xs → (R.setMany xs vs) y = R y := by
@@ -361,6 +420,67 @@ theorem setMany_cons (m : VMap) (x : Ident) (xs : List Ident) (i : ValId)
     (is : List ValId) : m.setMany (x :: xs) (i :: is) = (m.set x i).setMany xs is := by
   simp only [setMany, List.zip_cons_cons, List.foldl_cons]
 
+theorem set_set (m : VMap) (x : Ident) (i j : ValId) :
+    (m.set x i).set x j = m.set x j := by
+  induction m with
+  | nil => rfl
+  | cons p m ih =>
+    by_cases h : p.1 = x
+    · simp [VMap.set, h]
+    · simp [VMap.set, h, ih]
+
+theorem set_comm (m : VMap) {x y : Ident} (hxy : x ≠ y) (i j : ValId) :
+    (m.set x i).set y j = (m.set y j).set x i := by
+  induction m with
+  | nil => rfl
+  | cons p m ih =>
+    by_cases hx : p.1 = x
+    · have hy : p.1 ≠ y := fun h => hxy (hx.symm.trans h)
+      simp [VMap.set, hx, hy, hxy]
+    · by_cases hy : p.1 = y
+      · simp [VMap.set, hx, hy, hxy, Ne.symm hxy]
+      · simp [VMap.set, hx, hy, ih]
+
+theorem setMany_comm (m : VMap) {x : Ident} {xs : List Ident}
+    (hx : x ∉ xs) (i : ValId) (is : List ValId) :
+    (m.set x i).setMany xs is = (m.setMany xs is).set x i := by
+  induction xs generalizing m is with
+  | nil => simp
+  | cons y ys ih =>
+    cases is with
+    | nil => simp
+    | cons j js =>
+      have hxy : x ≠ y := fun h => hx (h ▸ List.mem_cons_self ..)
+      have hxn : x ∉ ys := fun h => hx (List.mem_cons_of_mem _ h)
+      rw [setMany_cons, setMany_cons, set_comm _ hxy, ih _ hxn]
+
+theorem setMany_overwrite (m : VMap) {xs : List Ident} {is js : List ValId}
+    (hnd : xs.Nodup) (hli : xs.length = is.length)
+    (hlj : xs.length = js.length) :
+    (m.setMany xs is).setMany xs js = m.setMany xs js := by
+  induction xs generalizing m is js with
+  | nil => simp
+  | cons x xs ih =>
+    cases is with
+    | nil => simp at hli
+    | cons i is =>
+      cases js with
+      | nil => simp at hlj
+      | cons j js =>
+        have hx : x ∉ xs := (List.nodup_cons.mp hnd).1
+        have hnd' : xs.Nodup := (List.nodup_cons.mp hnd).2
+        have hli' : xs.length = is.length := by simpa using hli
+        have hlj' : xs.length = js.length := by simpa using hlj
+        calc
+          ((m.setMany (x :: xs) (i :: is)).setMany (x :: xs) (j :: js)) =
+              (((m.set x i).setMany xs is).set x j).setMany xs js := by
+                rw [setMany_cons, setMany_cons]
+          _ = (((m.set x i).set x j).setMany xs is).setMany xs js := by
+                rw [setMany_comm (m.set x i) hx]
+          _ = ((m.set x j).setMany xs is).setMany xs js := by rw [set_set]
+          _ = (m.set x j).setMany xs js := ih _ hnd' hli' hlj'
+          _ = m.setMany (x :: xs) (j :: js) := by rw [setMany_cons]
+
 theorem length_set : ∀ (m : VMap) (x : Ident) (i : ValId), (m.set x i).length = m.length := by
   intro m x i
   induction m with
@@ -386,6 +506,24 @@ name occurs exactly once.  `trStmt` preserves this by rejecting shadowing. -/
 def Unique (m : VMap) : Prop := (m.map Prod.fst).Nodup
 
 @[simp] theorem unique_nil : Unique ([] : VMap) := by simp [Unique]
+
+theorem eraseDups_names_eq_self {m : VMap} (h : m.Unique) :
+    (m.map Prod.fst).eraseDups = m.map Prod.fst := by
+  have aux : ∀ l : List Ident, l.Nodup → l.eraseDups = l := by
+    intro l hl
+    induction l with
+    | nil => rfl
+    | cons a l ih =>
+      rw [List.eraseDups_cons]
+      have hn := List.nodup_cons.mp hl
+      have hf : l.filter (fun b => !b == a) = l := by
+        apply List.filter_eq_self.mpr
+        intro b hb
+        change (!(b == a)) = true
+        rw [Bool.not_eq_true']
+        exact beq_eq_false_iff_ne.mpr (fun he => hn.1 (he ▸ hb))
+      rw [hf, ih hn.2]
+  exact aux _ h
 
 theorem names_set : ∀ (m : VMap) (x : Ident) (i : ValId),
     (m.set x i).map Prod.fst = m.map Prod.fst := by
@@ -477,6 +615,84 @@ theorem setMany_cons (V : VEnv D) (x : Ident) (xs : List Ident) (v : D.Value)
     YulSemantics.VEnv.setMany V (x :: xs) (v :: vs)
       = YulSemantics.VEnv.setMany (YulSemantics.VEnv.set V x v) xs vs := by
   simp only [YulSemantics.VEnv.setMany, List.zip_cons_cons, List.foldl_cons]
+
+theorem set_set (V : VEnv D) (x : Ident) (v w : D.Value) :
+    YulSemantics.VEnv.set (YulSemantics.VEnv.set V x v) x w =
+      YulSemantics.VEnv.set V x w := by
+  induction V with
+  | nil => rfl
+  | cons p V ih =>
+    by_cases h : p.1 = x
+    · simp [YulSemantics.VEnv.set, h]
+    · simp [YulSemantics.VEnv.set, h, ih]
+
+theorem set_comm (V : VEnv D) {x y : Ident} (hxy : x ≠ y)
+    (v w : D.Value) :
+    YulSemantics.VEnv.set (YulSemantics.VEnv.set V x v) y w =
+      YulSemantics.VEnv.set (YulSemantics.VEnv.set V y w) x v := by
+  induction V with
+  | nil => rfl
+  | cons p V ih =>
+    by_cases hx : p.1 = x
+    · have hy : p.1 ≠ y := fun h => hxy (hx.symm.trans h)
+      simp [YulSemantics.VEnv.set, hx, hy, hxy]
+    · by_cases hy : p.1 = y
+      · simp [YulSemantics.VEnv.set, hx, hy, hxy, Ne.symm hxy]
+      · simp [YulSemantics.VEnv.set, hx, hy, ih]
+
+theorem setMany_comm (V : VEnv D) {x : Ident} {xs : List Ident}
+    (hx : x ∉ xs) (v : D.Value) (vs : List D.Value) :
+    YulSemantics.VEnv.setMany (YulSemantics.VEnv.set V x v) xs vs =
+      YulSemantics.VEnv.set (YulSemantics.VEnv.setMany V xs vs) x v := by
+  induction xs generalizing V vs with
+  | nil => simp
+  | cons y ys ih =>
+    cases vs with
+    | nil => simp
+    | cons w ws =>
+      have hxy : x ≠ y := fun h => hx (h ▸ List.mem_cons_self ..)
+      have hxn : x ∉ ys := fun h => hx (List.mem_cons_of_mem _ h)
+      rw [setMany_cons, setMany_cons, set_comm _ hxy, ih _ hxn]
+
+theorem setMany_overwrite (V : VEnv D) {xs : List Ident}
+    {vs ws : List D.Value} (hnd : xs.Nodup) (hlv : xs.length = vs.length)
+    (hlw : xs.length = ws.length) :
+    YulSemantics.VEnv.setMany (YulSemantics.VEnv.setMany V xs vs) xs ws =
+      YulSemantics.VEnv.setMany V xs ws := by
+  induction xs generalizing V vs ws with
+  | nil => simp
+  | cons x xs ih =>
+    cases vs with
+    | nil => simp at hlv
+    | cons v vs =>
+      cases ws with
+      | nil => simp at hlw
+      | cons w ws =>
+        have hx : x ∉ xs := (List.nodup_cons.mp hnd).1
+        have hnd' : xs.Nodup := (List.nodup_cons.mp hnd).2
+        have hlv' : xs.length = vs.length := by simpa using hlv
+        have hlw' : xs.length = ws.length := by simpa using hlw
+        calc
+          YulSemantics.VEnv.setMany
+              (YulSemantics.VEnv.setMany V (x :: xs) (v :: vs))
+              (x :: xs) (w :: ws) =
+              YulSemantics.VEnv.setMany
+                (YulSemantics.VEnv.set
+                  (YulSemantics.VEnv.setMany
+                    (YulSemantics.VEnv.set V x v) xs vs) x w) xs ws := by
+                    rw [setMany_cons, setMany_cons]
+          _ = YulSemantics.VEnv.setMany
+                (YulSemantics.VEnv.setMany
+                  (YulSemantics.VEnv.set
+                    (YulSemantics.VEnv.set V x v) x w) xs vs) xs ws := by
+                  rw [setMany_comm (YulSemantics.VEnv.set V x v) hx]
+          _ = YulSemantics.VEnv.setMany
+                (YulSemantics.VEnv.setMany
+                  (YulSemantics.VEnv.set V x w) xs vs) xs ws := by rw [set_set]
+          _ = YulSemantics.VEnv.setMany
+                (YulSemantics.VEnv.set V x w) xs ws := ih _ hnd' hlv' hlw'
+          _ = YulSemantics.VEnv.setMany V (x :: xs) (w :: ws) := by
+                rw [setMany_cons]
 
 /-! ### Names, in-place update, and scope exit
 
@@ -4365,6 +4581,28 @@ theorem jumpTo_of_execFrom_jump {P : Prog} {f : Func} {fn : FnState} {R : Regs}
     | jump htarget hargs hlen hbody =>
       exact ⟨_, hargs, ⟨_, htarget, hlen, hbody⟩⟩
 
+/-- Package execution from an empty current target block back into `JumpTo`.
+This is the other half of the loop back-edge bridge: the recursive header IH
+starts at the builder's empty `sI.cur`, while the post terminator expects a
+`JumpTo` witness for the same finished block. -/
+theorem jumpTo_of_execFrom_empty {P : Prog} {f : Func} {fn : FnState}
+    {R : Regs} {st : EvmState} {bid : BlockId} {params : List ValId}
+    {vals : List U256} {b : Block} {res : FRes}
+    (hb : f.blocks[bid]? = some b) (hparams : b.params = params)
+    (hcur : fn.curId = bid) (hcur0 : fn.cur = [])
+    (hlen : params.length = vals.length)
+    (hex : ExecFrom (model := model) P f fn (R.setMany params vals) st res) :
+    JumpTo (model := model) P f bid vals R st res := by
+  obtain ⟨rest, ⟨b', hb', hi, ht⟩, hexec⟩ := hex
+  rw [hcur] at hb'
+  have hbb : b' = b := Option.some.inj (hb'.symm.trans hb)
+  subst b'
+  refine ⟨b, hb, by simpa only [hparams] using hlen, ?_⟩
+  rw [hparams]
+  rw [hcur0] at hi
+  have hi' : b.instrs = rest.instrs := by simpa using hi
+  simpa only [hi', ht] using hexec
+
 /-- A block sealed with `branch c t f`, true edge. -/
 theorem execFrom_branchTrue {P : Prog} {f : Func} {fn : FnState} {R : Regs}
     {st : EvmState} {c : ValId} {v : U256} {et ef : Edge} {vals : List U256}
@@ -4826,6 +5064,12 @@ theorem modifiedX_mem_names {env : VMap} {bodies : List (List (Stmt Op))}
     {x : Ident} (h : x ∈ modifiedX env bodies) : x ∈ env.map Prod.fst := by
   simp only [modifiedX] at h
   exact List.mem_eraseDups.mp (List.mem_filter.mp h).1
+
+omit model in
+theorem modifiedX_nodup {env : VMap} (h : env.Unique)
+    (bodies : List (List (Stmt Op))) : (modifiedX env bodies).Nodup := by
+  rw [modifiedX, VMap.eraseDups_names_eq_self h]
+  exact h.filter _
 
 omit model in
 theorem mem_modifiedX {env : VMap}
@@ -7885,22 +8129,167 @@ def trLoopCore (fenv : FMap) (env : VMap) (rets : Option (List Ident))
   moveTo exitId
   pure (some (env.setMany X exitParams))
 
-/-- The genuine loop-iteration induction clause.  Unlike the former `True`,
-this exposes the complete generated header/body/post/exit continuation and
-requires the same environment, freshness, placement and protected-join
-invariants as statement simulation. -/
+/-- A named decomposition of the one statically generated loop.  The source
+loop induction revisits `sI`, but never translates another copy of the loop;
+keeping the complete layout in one witness lets its IH reuse precisely these
+header/body/post/exit blocks. -/
+structure LoopLayout (fenv : FMap) (env : VMap) (rets : Option (List Ident))
+    (c : Expr Op) (post body : List (Stmt Op)) (s₀ s₁ : BState)
+    (renv : Option VMap) where
+  xvals : List ValId
+  sA : BState
+  h1 : edgeArgs env (modifiedX env [post, body]) s₀ = some (xvals, sA)
+  hParams : List ValId
+  sB : BState
+  h2 : (modifiedX env [post, body]).mapM (fun _ => freshVal) sA =
+    some (hParams, sB)
+  hId : BlockId
+  sC : BState
+  h3 : newBlock hParams sB = some (hId, sC)
+  exitParams : List ValId
+  sD : BState
+  h4 : (modifiedX env [post, body]).mapM (fun _ => freshVal) sC =
+    some (exitParams, sD)
+  exitId : BlockId
+  sE : BState
+  h5 : newBlock exitParams sD = some (exitId, sE)
+  postParams : List ValId
+  sF : BState
+  h6 : (modifiedX env [post, body]).mapM (fun _ => freshVal) sE =
+    some (postParams, sF)
+  postId : BlockId
+  sG : BState
+  h7 : newBlock postParams sF = some (postId, sG)
+  sH : BState
+  h8 : sealCur (.jump ⟨hId, xvals⟩) sG = some ((), sH)
+  sI : BState
+  h9 : moveTo hId sH = some ((), sI)
+  cvId : ValId
+  sJ : BState
+  h10 : trExpr fenv
+      (env.setMany (modifiedX env [post, body]) hParams) c sI =
+    some (cvId, sJ)
+  bodyId : BlockId
+  sK : BState
+  h11 : newBlock [] sJ = some (bodyId, sK)
+  hX : List ValId
+  sL : BState
+  h12 : edgeArgs (env.setMany (modifiedX env [post, body]) hParams)
+      (modifiedX env [post, body]) sK = some (hX, sL)
+  sM : BState
+  h13 : sealCur (.branch cvId ⟨bodyId, []⟩ ⟨exitId, hX⟩) sL =
+    some ((), sM)
+  sN : BState
+  h14 : moveTo bodyId sM = some ((), sN)
+  bodyEnv : Option VMap
+  sO : BState
+  h15 : trScope fenv
+      (env.setMany (modifiedX env [post, body]) hParams)
+      (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets body sN =
+    some (bodyEnv, sO)
+  tail : (do
+      if let some envB := bodyEnv then
+        let xvB ← edgeArgs envB (modifiedX env [post, body])
+        sealCur (.jump ⟨postId, xvB⟩)
+      moveTo postId
+      let envP := env.setMany (modifiedX env [post, body]) postParams
+      let renvP ← trScope fenv envP none rets post
+      if let some envP' := renvP then
+        let xvP ← edgeArgs envP' (modifiedX env [post, body])
+        sealCur (.jump ⟨hId, xvP⟩)
+      moveTo exitId
+      pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sO =
+    some (renv, s₁)
+
+/-- Successful construction exposes exactly one `LoopLayout`. -/
+theorem LoopLayout.of_trLoopCore {fenv : FMap} {env : VMap}
+    {rets : Option (List Ident)} {c : Expr Op} {post body : List (Stmt Op)}
+    {s₀ s₁ : BState} {renv : Option VMap}
+    (h : trLoopCore fenv env rets c post body s₀ = some (renv, s₁)) :
+    Nonempty (LoopLayout fenv env rets c post body s₀ s₁ renv) := by
+  unfold trLoopCore at h
+  obtain ⟨xvals, sA, h1, h⟩ := M.bind_inv h
+  obtain ⟨hParams, sB, h2, h⟩ := M.bind_inv h
+  obtain ⟨hId, sC, h3, h⟩ := M.bind_inv h
+  obtain ⟨exitParams, sD, h4, h⟩ := M.bind_inv h
+  obtain ⟨exitId, sE, h5, h⟩ := M.bind_inv h
+  obtain ⟨postParams, sF, h6, h⟩ := M.bind_inv h
+  obtain ⟨postId, sG, h7, h⟩ := M.bind_inv h
+  obtain ⟨uH, sH, h8, h⟩ := M.bind_inv h
+  obtain ⟨uI, sI, h9, h⟩ := M.bind_inv h
+  obtain ⟨cvId, sJ, h10, h⟩ := M.bind_inv h
+  obtain ⟨bodyId, sK, h11, h⟩ := M.bind_inv h
+  obtain ⟨hX, sL, h12, h⟩ := M.bind_inv h
+  obtain ⟨uM, sM, h13, h⟩ := M.bind_inv h
+  obtain ⟨uN, sN, h14, h⟩ := M.bind_inv h
+  obtain ⟨bodyEnv, sO, h15, htail⟩ := M.bind_inv h
+  exact ⟨⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
+    exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
+    postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
+    bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
+    bodyEnv, sO, h15, htail⟩⟩
+
+/-- Loop simulation beginning at the already-bound header parameters.  The
+`base` watermark precedes all three reserved parameter vectors, so a normal
+result may bind post/exit parameters while still preserving the caller's
+register file below `base`. -/
+def LHOut (P : Prog) (f : Func) (rets : Option (List Ident)) (base : Nat)
+    (sH s₁ : BState) (RH : Regs) (renv : Option VMap)
+    (V' : VEnv yulD) (yst yst' : EvmState) (o : Outcome) : Prop :=
+  match o with
+  | .normal => ∃ (env' : VMap) (R₁ : Regs),
+      renv = some env' ∧ Regs.BelowEq base RH R₁
+        ∧ RegsFresh R₁ s₁.fn ∧ EnvOK (model := model) env' V' R₁
+        ∧ env'.Unique
+        ∧ SimS (model := model) P f sH.fn RH yst s₁.fn R₁ yst'
+  | .halt => ExecFrom (model := model) P f sH.fn RH yst (.halt yst')
+  | .leave => ∃ (rs : List Ident) (vals : List U256),
+      rets = some rs
+        ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) rs vals
+        ∧ ExecFrom (model := model) P f sH.fn RH yst (.ret vals yst')
+  | .break | .continue => False
+
+/-- At a loop header, only its parameter vector may be bound among ids
+reserved since the preheader watermark.  A back edge obtains such a file by
+starting from the preheader file and rebinding exactly `hParams`; the live file
+may contain more iteration temporaries and is reached later with `Exec.mono`. -/
+def HeaderClean (base : Nat) (hParams : List ValId) (R : Regs) : Prop :=
+  ∀ i, base ≤ i → i ∉ hParams → R i = none
+
+/-- Rebinding the header parameter vector updates exactly the source variables
+represented by the header map.  This packages the no-alias placement fact the
+static layout establishes for its fresh parameter ids. -/
+def HeaderRebind (envH : VMap) (X : List Ident) (hParams : List ValId)
+    (V : VEnv yulD) (R : Regs) : Prop :=
+  ∀ (vals : List U256) (W : VEnv yulD),
+    X.length = vals.length →
+    YulSemantics.VEnv.setMany V X vals = W →
+    EnvOK (model := model) envH W (R.setMany hParams vals)
+
+/-- The genuine loop-iteration induction clause is parametric in the register
+file at the shared header.  This is the crucial difference from `SOut`: the
+static `LoopLayout` is fixed, while a recursive source iteration may rebind the
+header parameters to different values. -/
 def LOut (P : Prog) (f : Func) (funs : YulSemantics.FunEnv yulD)
     (V : VEnv yulD) (yst : EvmState) (c : Expr Op)
     (post body : List (Stmt Op)) (V' : VEnv yulD) (yst' : EvmState)
     (o : Outcome) : Prop :=
-  ∀ (fenv : FMap) (env : VMap) (R : Regs) (rets : Option (List Ident))
-      (s₀ s₁ : BState) (renv : Option VMap) (joins : List BlockId),
-    FEnvOK (model := model) P funs fenv → EnvOK (model := model) env V R →
-    env.Unique → RegsFresh R s₀.fn → CurValid s₀ →
+  ∀ (fenv : FMap) (env : VMap) (rets : Option (List Ident))
+      (s₀ s₁ : BState) (renv : Option VMap) (joins : List BlockId)
+      (layout : LoopLayout fenv env rets c post body s₀ s₁ renv),
+    FEnvOK (model := model) P funs fenv → env.Unique → CurValid s₀ →
     ProtectedAt joins s₀.fn → Completes f s₁.fn joins → CurPlaced f s₁.fn →
     (renv = none → CurFinal f s₁.fn) →
-    trLoopCore fenv env rets c post body s₀ = some (renv, s₁) →
-    SOut (model := model) P f none rets s₀ s₁ R renv V' yst yst' o
+    ∀ (RH : Regs),
+      EnvOK (model := model)
+          (env.setMany (modifiedX env [post, body]) layout.hParams) V RH →
+      RegsFresh RH layout.sI.fn →
+      HeaderClean layout.sA.fn.nextVal layout.hParams RH →
+      HeaderRebind (model := model)
+        (env.setMany (modifiedX env [post, body]) layout.hParams)
+        (modifiedX env [post, body]) layout.hParams V RH →
+      LHOut (model := model) P f rets layout.sA.fn.nextVal layout.sI s₁ RH
+        renv V' yst yst' o
 
 /-- **The induction motive** for the construction simulation: what a source
 derivation of each syntactic class means on the SSA side, against *any*
@@ -8027,24 +8416,15 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
     (ho : o = .halt ∨ o = .leave ∨ o = .break) :
     LOut (model := model) P f funs V st c post body Vb stb
       (if o = .break then .normal else o) := by
-    intro fenv env R rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp
-      hcompl hcp _hfin htr
-    unfold trLoopCore at htr
-    obtain ⟨xvals, sA, h1, htr⟩ := M.bind_inv htr
-    obtain ⟨hParams, sB, h2, htr⟩ := M.bind_inv htr
-    obtain ⟨hId, sC, h3, htr⟩ := M.bind_inv htr
-    obtain ⟨exitParams, sD, h4, htr⟩ := M.bind_inv htr
-    obtain ⟨exitId, sE, h5, htr⟩ := M.bind_inv htr
-    obtain ⟨postParams, sF, h6, htr⟩ := M.bind_inv htr
-    obtain ⟨postId, sG, h7, htr⟩ := M.bind_inv htr
-    obtain ⟨uH, sH, h8, htr⟩ := M.bind_inv htr
-    obtain ⟨uI, sI, h9, htr⟩ := M.bind_inv htr
-    obtain ⟨cvId, sJ, h10, htr⟩ := M.bind_inv htr
-    obtain ⟨bodyId, sK, h11, htr⟩ := M.bind_inv htr
-    obtain ⟨hX, sL, h12, htr⟩ := M.bind_inv htr
-    obtain ⟨uM, sM, h13, htr⟩ := M.bind_inv htr
-    obtain ⟨uN, sN, h14, htr⟩ := M.bind_inv htr
-    obtain ⟨bodyEnv, sO, h15, htr⟩ := M.bind_inv htr
+    intro fenv env rets s₀ s₁ renv joins layout hfe huniq hvalid hp
+      hcompl hcp _hfin R henv hfr hclean hreb
+    rcases layout with
+      ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
+       exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
+       postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
+       bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
+       bodyEnv, sO, h15, htr⟩
+    simp only [LoopLayout.hParams, LoopLayout.sI, LoopLayout.sA] at henv hfr hclean hreb ⊢
     have g0A : Grows s₀ sA := Grows.of_liftO h1
     have gAB : Grows sA sB := Grows.of_mapM_freshVal h2
     have gCD : Grows sC sD := Grows.of_mapM_freshVal h4
@@ -8061,6 +8441,12 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
       rw [SGrowsAt.newBlock_id h3]
       exact a0B.size
     have a0I := a0H.trans (SGrowsAt.of_moveTo (Or.inl hheadBase) h9)
+    have aAI : SGrowsAt 0 sA sI :=
+      (((((((SGrowsAt.of_grows (N := 0) gAB).trans
+        (SGrowsAt.of_newBlock h3)).trans (SGrowsAt.of_grows gCD)).trans
+        (SGrowsAt.of_newBlock h5)).trans (SGrowsAt.of_grows gEF)).trans
+        (SGrowsAt.of_newBlock h7)).trans (SGrowsAt.of_sealCur h8)).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
     have gIJ : Grows sI sJ := trExpr_grows c fenv
       (env.setMany (modifiedX env [post, body]) hParams) sI sJ cvId h10
     have aJK : SGrowsAt sJ.fn.blocks.size sJ sK := SGrowsAt.of_newBlock h11
@@ -8247,109 +8633,13 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
         rw [hedge, hnew]) hbranchL
     have hcpJ : CurPlaced f sJ.fn := ⟨_, hbranchJ⟩
     have hcpI : CurPlaced f sI.fn := curPlaced_back_grows gIJ hcpJ
-    obtain ⟨rfl, valsH, hxget, hxvals⟩ := edgeArgs_ok henv h1
     obtain ⟨hlenH, hrangeH, hsB⟩ := M.mapM_freshVal_length h2
     have hndH : hParams.Nodup := by
       rw [hrangeH]
       exact M.nodup_range' _ _
-    have hnoneH : ∀ i ∈ hParams, R i = none := by
-      intro i hi
-      rw [hrangeH] at hi
-      exact hfr i (M.mem_range'_bounds hi).1
-    let RH := R.setMany hParams valsH
-    have hleH : Regs.Le R RH := Regs.Le.setMany hndH hnoneH
-    have hbelowH : Regs.BelowEq sA.fn.nextVal R RH := by
-      apply Regs.BelowEq.setMany
-      intro i hi
-      rw [hrangeH] at hi
-      exact (M.mem_range'_bounds hi).1
-    have hfrH : RegsFresh RH sI.fn := by
-      dsimp [RH]
-      rw [hrangeH]
-      apply hfr.setMany
-      have bC : SGrowsAt 0 sB sC := SGrowsAt.of_newBlock h3
-      have bD := bC.trans (SGrowsAt.of_grows gCD)
-      have bE := bD.trans (SGrowsAt.of_newBlock h5)
-      have bF := bE.trans (SGrowsAt.of_grows gEF)
-      have bG := bF.trans (SGrowsAt.of_newBlock h7)
-      have bH := bG.trans (SGrowsAt.of_sealCur h8)
-      have bI := bH.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
-      simpa [hsB] using bI.nextVal
-    have hpgetH : RH.getMany hParams = some valsH :=
-      Regs.getMany_setMany_self hndH (by rw [hlenH]; exact hxvals.length_eq)
-    have henvH : EnvOK (model := model)
-        (env.setMany (modifiedX env [post, body]) hParams) V RH := by
-      have he : EnvOK (model := model)
-          (env.setMany (modifiedX env [post, body]) hParams)
-          (YulSemantics.VEnv.setMany V (modifiedX env [post, body]) valsH) RH :=
-        EnvOK.setMany (xs := modifiedX env [post, body]) (henv.mono hleH)
-          (Regs.getMany_eq_some_iff.mp hpgetH)
-      rw [VEnv.setMany_self hxvals] at he
-      exact he
-    have csAG : CurSame sA sG :=
-      ((((((CurSame.of_grows gAB).trans (CurSame.of_newBlock h3)).trans
-        (CurSame.of_grows gCD)).trans (CurSame.of_newBlock h5)).trans
-        (CurSame.of_grows gEF)).trans (CurSame.of_newBlock h7))
-    have hcurH : sH.fn.curId = sA.fn.curId := by
-      rw [(sealCur_cur h8).choose_spec.1, csAG.1]
-    have hcurLtHead : sA.fn.curId < hId := by
-      rw [SGrowsAt.newBlock_id h3]
-      exact Nat.lt_of_lt_of_le hvalid a0B.size
-    have hheadNe : sH.fn.curId ≠ hId := by
-      rw [hcurH, SGrowsAt.newBlock_id h3]
-      exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hvalid a0B.size)
-    have hprotH : sH.fn.curId ∉ exitId :: postId :: joins := by
-      simp only [List.mem_cons, not_or]
-      refine ⟨?_, ?_, ?_⟩
-      · rw [hcurH]
-        exact Nat.ne_of_lt (Nat.lt_trans hcurLtHead hheadExit)
-      · rw [hcurH]
-        exact Nat.ne_of_lt (Nat.lt_trans (Nat.lt_trans
-          hcurLtHead hheadExit) hexitPost)
-      · rw [hcurH]
-        exact hp.away
-    have hfinH : CurFinal f sH.fn :=
-      curFinal_of_move_grows h9 hheadNe hprotH (SGrows.rfl' sI) hcI
-    have hjumpG : CurOK f sG.fn ⟨[], .jump ⟨hId, xvals⟩⟩ :=
-      curOK_of_sealCur hfinH h8
-    have hjumpA : CurOK f sA.fn ⟨[], .jump ⟨hId, xvals⟩⟩ :=
-      CurOK.back_of_cur_eq csAG.1 (by
-        have hAB : sB.fn.cur = sA.fn.cur := by
-          obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h2
-          rw [hs]
-        have hCB : sC.fn.cur = sB.fn.cur := by
-          rw [M.newBlock_apply] at h3
-          simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h3).2).symm
-        have hDC : sD.fn.cur = sC.fn.cur := by
-          obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h4
-          rw [hs]
-        have hED : sE.fn.cur = sD.fn.cur := by
-          rw [M.newBlock_apply] at h5
-          simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h5).2).symm
-        have hFE : sF.fn.cur = sE.fn.cur := by
-          obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h6
-          rw [hs]
-        have hGF : sG.fn.cur = sF.fn.cur := by
-          rw [M.newBlock_apply] at h7
-          simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h7).2).symm
-        rw [hGF, hFE, hED, hDC, hCB, hAB]) hjumpG
-    have cI : SGrowsAt 0 sC sI :=
-      ((((((SGrowsAt.of_grows gCD).trans (SGrowsAt.of_newBlock h5)).trans
-        (SGrowsAt.of_grows gEF)).trans (SGrowsAt.of_newBlock h7)).trans
-        (SGrowsAt.of_sealCur h8)).trans
-        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9))
-    obtain ⟨hb, hhb, hbp⟩ := cI.params hId ⟨hParams, [], .ret []⟩
-      (newBlock_target_get h3)
-    have hlenHB : hb.params.length = valsH.length := by
-      rw [hbp, hlenH]
-      exact hxvals.length_eq
-    have hsimH : SimS (model := model) P f sA.fn R st sI.fn RH st := by
-      have hs := simS_jump_join (model := model) (P := P) (f := f)
-        (st := st) hcI hjumpA hhb hcurI hcurI0 hxget hlenHB
-      simpa only [hbp] using hs
     obtain ⟨RA, hleA, hbelowA, hfrA, hcv, hsimC⟩ := ihc.1 fenv
-      (env.setMany (modifiedX env [post, body]) hParams) RH sI sJ cvId cv
-      (exitId :: postId :: joins) hfe henvH hfrH hpI hcJ hcpJ rfl h10
+      (env.setMany (modifiedX env [post, body]) hParams) R sI sJ cvId cv
+      (exitId :: postId :: joins) hfe henv hfr hpI hcJ hcpJ rfl h10
     have hnz' : cv ≠ 0 := by simpa only [yulD_zero] using hnz
     have aKN : SGrowsAt 0 sK sN :=
       ((SGrowsAt.of_grows gKL).trans (SGrowsAt.of_sealCur h13)).trans
@@ -8505,9 +8795,9 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
       (env.setMany (modifiedX env [post, body]) hParams) RA
       (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets
       sN sO bodyEnv (exitId :: postId :: joins) hfe
-      (henvH.mono hleA) (huniq.setMany _ _) hfrN hvalidN hpN
+      (henv.mono hleA) (huniq.setMany _ _) hfrN hvalidN hpN
       tailBody.1 tailBody.2.1 tailBody.2.2 htrB
-    have hpre := hsimH.trans (hsimC.trans hsimB)
+    have hpre := hsimC.trans hsimB
     rcases ho with rfl | rfl | rfl
     · rw [if_neg (by decide)]
       exact hpre (.halt stb) hbodySim
@@ -8672,10 +8962,11 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
         have hiLtI : i < sI.fn.nextVal := Nat.lt_of_lt_of_le
           (by simpa [hsD] using (M.mem_range'_bounds hiRange).2) dI.nextVal
         rw [hbelowA i hiLtI]
-        dsimp [RH]
-        rw [Regs.setMany_other]
-        · exact hfr i (Nat.le_trans a0C.nextVal
-            (M.mem_range'_bounds hiRange).1)
+        apply hclean i
+        · exact Nat.le_trans
+            ((SGrowsAt.of_grows (N := 0) gAB).trans
+              (SGrowsAt.of_newBlock h3)).nextVal
+            (M.mem_range'_bounds hiRange).1
         · intro hiH
           rw [hrangeH] at hiH
           have hu := (M.mem_range'_bounds hiH).2
@@ -8694,7 +8985,10 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
         apply Regs.BelowEq.setMany
         intro i hi
         rw [hrangeE] at hi
-        exact Nat.le_trans a0C.nextVal (M.mem_range'_bounds hi).1
+        exact Nat.le_trans
+          ((SGrowsAt.of_grows (N := 0) gAB).trans
+            (SGrowsAt.of_newBlock h3)).nextVal
+          (M.mem_range'_bounds hi).1
       have hfrE : RegsFresh RE s₁.fn := by
         intro i hi
         dsimp [RE]
@@ -8712,7 +9006,7 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
       have hlenEB : eb.params.length = vals.length := by
         rw [hep, hlenE]
         exact hvals.length_eq
-      have hsimExit : SimS (model := model) P f sA.fn R st s₁.fn RE stb := by
+      have hsimExit : SimS (model := model) P f sI.fn R st s₁.fn RE stb := by
         intro res hex
         apply hpre res
         apply hcont res
@@ -8727,9 +9021,14 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
         simpa [modStmt] using hm
       have hVexit : YulSemantics.VEnv.setMany V
           (modifiedX env [post, body]) vals = Vb :=
-        setMany_eq_of_modOut henv huniq hnames hmod hvals
-          (fun x hx => modifiedX_mem_names hx)
-          (fun x hx hm => mem_modifiedX hx (by
+        setMany_eq_of_modOut (xs := modifiedX env [post, body]) henv
+          (huniq.setMany _ _) hnames hmod hvals
+          (fun x hx => by
+            rw [VMap.names_setMany]
+            exact modifiedX_mem_names hx)
+          (fun x hx hm => mem_modifiedX (by
+            rw [VMap.names_setMany] at hx
+            exact hx) (by
             simp only [List.flatMap_cons, List.flatMap_nil, List.append_nil]
             exact List.mem_append_right _ hm))
       have hpgetE : RE.getMany exitParams = some vals :=
@@ -8737,19 +9036,22 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
       have henvE : EnvOK (model := model)
           (env.setMany (modifiedX env [post, body]) exitParams) Vb RE := by
         have he : EnvOK (model := model)
-            (env.setMany (modifiedX env [post, body]) exitParams)
+            ((env.setMany (modifiedX env [post, body]) hParams).setMany
+              (modifiedX env [post, body]) exitParams)
             (YulSemantics.VEnv.setMany V (modifiedX env [post, body]) vals) RE :=
           EnvOK.setMany
-            (henv.mono (hleH.trans (hleA.trans (hleB.trans hleE))))
+            (henv.mono (hleA.trans (hleB.trans hleE)))
             (Regs.getMany_eq_some_iff.mp hpgetE)
+        rw [VMap.setMany_overwrite env (modifiedX_nodup huniq _)
+          hlenH.symm hlenE.symm] at he
         rwa [hVexit] at he
-      exact ⟨env.setMany (modifiedX env [post, body]) exitParams, RE, hrenv,
-        hleH.trans (hleA.trans (hleB.trans hleE)),
-        hbelowH.trans ((hbelowA.mono a0I.nextVal).trans
-          ((hbelowB.mono (Nat.le_trans a0I.nextVal
+      have hbelowFinal : Regs.BelowEq sA.fn.nextVal R RE :=
+        (hbelowA.mono aAI.nextVal).trans
+          ((hbelowB.mono (Nat.le_trans aAI.nextVal
             (Nat.le_trans (SGrowsAt.of_grows (N := 0) gIJ).nextVal
-              aJN.nextVal))).trans
-              hbelowE)),
+              aJN.nextVal))).trans hbelowE)
+      exact ⟨env.setMany (modifiedX env [post, body]) exitParams, RE, hrenv,
+        hbelowFinal,
         hfrE, henvE, huniq.setMany _ _, hsimExit⟩
 
 /-- Bind the values carried by a body fall-through/`continue` edge to the
@@ -10169,24 +10471,15 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
             hvalid hp hcomplA hcpA
             (by simp) hhead)
   | @loopDone funs V st c post body cv st1 hc hz ihc =>
-    intro fenv env R rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp
-      hcompl hcp _hfin htr
-    unfold trLoopCore at htr
-    obtain ⟨xvals, sA, h1, htr⟩ := M.bind_inv htr
-    obtain ⟨hParams, sB, h2, htr⟩ := M.bind_inv htr
-    obtain ⟨hId, sC, h3, htr⟩ := M.bind_inv htr
-    obtain ⟨exitParams, sD, h4, htr⟩ := M.bind_inv htr
-    obtain ⟨exitId, sE, h5, htr⟩ := M.bind_inv htr
-    obtain ⟨postParams, sF, h6, htr⟩ := M.bind_inv htr
-    obtain ⟨postId, sG, h7, htr⟩ := M.bind_inv htr
-    obtain ⟨uH, sH, h8, htr⟩ := M.bind_inv htr
-    obtain ⟨uI, sI, h9, htr⟩ := M.bind_inv htr
-    obtain ⟨cvId, sJ, h10, htr⟩ := M.bind_inv htr
-    obtain ⟨bodyId, sK, h11, htr⟩ := M.bind_inv htr
-    obtain ⟨hX, sL, h12, htr⟩ := M.bind_inv htr
-    obtain ⟨uM, sM, h13, htr⟩ := M.bind_inv htr
-    obtain ⟨uN, sN, h14, htr⟩ := M.bind_inv htr
-    obtain ⟨bodyEnv, sO, h15, htr⟩ := M.bind_inv htr
+    intro fenv env rets s₀ s₁ renv joins layout hfe huniq hvalid hp
+      hcompl hcp _hfin R henv hfr hclean hreb
+    rcases layout with
+      ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
+       exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
+       postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
+       bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
+       bodyEnv, sO, h15, htr⟩
+    simp only [LoopLayout.hParams, LoopLayout.sI, LoopLayout.sA] at henv hfr hclean hreb ⊢
     have g0A : Grows s₀ sA := Grows.of_liftO h1
     have gAB : Grows sA sB := Grows.of_mapM_freshVal h2
     have gCD : Grows sC sD := Grows.of_mapM_freshVal h4
@@ -10203,6 +10496,12 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       rw [SGrowsAt.newBlock_id h3]
       exact a0B.size
     have a0I := a0H.trans (SGrowsAt.of_moveTo (Or.inl hheadBase) h9)
+    have aAI : SGrowsAt 0 sA sI :=
+      (((((((SGrowsAt.of_grows (N := 0) gAB).trans
+        (SGrowsAt.of_newBlock h3)).trans (SGrowsAt.of_grows gCD)).trans
+        (SGrowsAt.of_newBlock h5)).trans (SGrowsAt.of_grows gEF)).trans
+        (SGrowsAt.of_newBlock h7)).trans (SGrowsAt.of_sealCur h8)).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
     have gIJ : Grows sI sJ := trExpr_grows c fenv
       (env.setMany (modifiedX env [post, body]) hParams) sI sJ cvId h10
     have aJK : SGrowsAt sJ.fn.blocks.size sJ sK := SGrowsAt.of_newBlock h11
@@ -10226,7 +10525,8 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         SGrowsAt 0 sE s₁ → sJ.fn.nextVal ≤ s₁.fn.nextVal →
         s₁.fn.curId = exitId → s₁.fn.cur = [] →
         renv = some (env.setMany (modifiedX env [post, body]) exitParams) →
-        SOut (model := model) P f none rets s₀ s₁ R renv V st st1 .normal := by
+        LHOut (model := model) P f rets sA.fn.nextVal sI s₁ R
+          renv V st st1 .normal := by
       intro hcN ge hnextJ1 hcurExit hcurExit0 hrenv
       have hcJ : Completes f sJ.fn (exitId :: postId :: joins) :=
         SGrowsAt.completes_of aJN hcN
@@ -10299,113 +10599,16 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           rw [hedge, hnew]) hbranchL
       have hcpJ : CurPlaced f sJ.fn := ⟨_, hbranchJ⟩
       have hcpI : CurPlaced f sI.fn := curPlaced_back_grows gIJ hcpJ
-      obtain ⟨rfl, valsH, hxget, hxvals⟩ := edgeArgs_ok henv h1
       obtain ⟨hlenH, hrangeH, hsB⟩ := M.mapM_freshVal_length h2
       have hndH : hParams.Nodup := by
         rw [hrangeH]
         exact M.nodup_range' _ _
-      have hnoneH : ∀ i ∈ hParams, R i = none := by
-        intro i hi
-        rw [hrangeH] at hi
-        exact hfr i (M.mem_range'_bounds hi).1
-      let RH := R.setMany hParams valsH
-      have hleH : Regs.Le R RH := Regs.Le.setMany hndH hnoneH
-      have hbelowH : Regs.BelowEq sA.fn.nextVal R RH := by
-        apply Regs.BelowEq.setMany
-        intro i hi
-        rw [hrangeH] at hi
-        exact (M.mem_range'_bounds hi).1
-      have hfrH : RegsFresh RH sI.fn := by
-        dsimp [RH]
-        rw [hrangeH]
-        apply hfr.setMany
-        have bC : SGrowsAt 0 sB sC := SGrowsAt.of_newBlock h3
-        have bD := bC.trans (SGrowsAt.of_grows gCD)
-        have bE := bD.trans (SGrowsAt.of_newBlock h5)
-        have bF := bE.trans (SGrowsAt.of_grows gEF)
-        have bG := bF.trans (SGrowsAt.of_newBlock h7)
-        have bH := bG.trans (SGrowsAt.of_sealCur h8)
-        have bI := bH.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
-        simpa [hsB] using bI.nextVal
-      have hpgetH : RH.getMany hParams = some valsH :=
-        Regs.getMany_setMany_self hndH (by rw [hlenH]; exact hxvals.length_eq)
-      have henvH : EnvOK (model := model)
-          (env.setMany (modifiedX env [post, body]) hParams) V RH := by
-        have he : EnvOK (model := model)
-            (env.setMany (modifiedX env [post, body]) hParams)
-            (YulSemantics.VEnv.setMany V (modifiedX env [post, body]) valsH) RH :=
-          EnvOK.setMany (xs := modifiedX env [post, body]) (henv.mono hleH)
-            (Regs.getMany_eq_some_iff.mp hpgetH)
-        rw [VEnv.setMany_self hxvals] at he
-        exact he
-      have csAG : CurSame sA sG :=
-        ((((((CurSame.of_grows gAB).trans (CurSame.of_newBlock h3)).trans
-          (CurSame.of_grows gCD)).trans (CurSame.of_newBlock h5)).trans
-          (CurSame.of_grows gEF)).trans (CurSame.of_newBlock h7))
-      have hcurH : sH.fn.curId = sA.fn.curId := by
-        rw [(sealCur_cur h8).choose_spec.1, csAG.1]
-      have hcurLtHead : sA.fn.curId < hId := by
-        rw [SGrowsAt.newBlock_id h3]
-        exact Nat.lt_of_lt_of_le hvalid a0B.size
-      have hheadNe : sH.fn.curId ≠ hId := by
-        rw [hcurH, SGrowsAt.newBlock_id h3]
-        exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hvalid a0B.size)
-      have hprotH : sH.fn.curId ∉ exitId :: postId :: joins := by
-        simp only [List.mem_cons, not_or]
-        refine ⟨?_, ?_, ?_⟩
-        · rw [hcurH]
-          exact Nat.ne_of_lt
-            (Nat.lt_trans hcurLtHead hheadExit)
-        · rw [hcurH]
-          exact Nat.ne_of_lt (Nat.lt_trans (Nat.lt_trans
-            hcurLtHead hheadExit) hexitPost)
-        · rw [hcurH]
-          exact hp.away
-      have hfinH : CurFinal f sH.fn :=
-        curFinal_of_move_grows h9 hheadNe hprotH (SGrows.rfl' sI) hcI
-      have hjumpG : CurOK f sG.fn ⟨[], .jump ⟨hId, xvals⟩⟩ :=
-        curOK_of_sealCur hfinH h8
-      have hjumpA : CurOK f sA.fn ⟨[], .jump ⟨hId, xvals⟩⟩ :=
-        CurOK.back_of_cur_eq csAG.1 (by
-          have hAB : sB.fn.cur = sA.fn.cur := by
-            obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h2
-            rw [hs]
-          have hCB : sC.fn.cur = sB.fn.cur := by
-            rw [M.newBlock_apply] at h3
-            simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h3).2).symm
-          have hDC : sD.fn.cur = sC.fn.cur := by
-            obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h4
-            rw [hs]
-          have hED : sE.fn.cur = sD.fn.cur := by
-            rw [M.newBlock_apply] at h5
-            simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h5).2).symm
-          have hFE : sF.fn.cur = sE.fn.cur := by
-            obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h6
-            rw [hs]
-          have hGF : sG.fn.cur = sF.fn.cur := by
-            rw [M.newBlock_apply] at h7
-            simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h7).2).symm
-          rw [hGF, hFE, hED, hDC, hCB, hAB]) hjumpG
-      have cI : SGrowsAt 0 sC sI :=
-        ((((((SGrowsAt.of_grows gCD).trans (SGrowsAt.of_newBlock h5)).trans
-          (SGrowsAt.of_grows gEF)).trans (SGrowsAt.of_newBlock h7)).trans
-          (SGrowsAt.of_sealCur h8)).trans
-          (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9))
-      obtain ⟨hb, hhb, hbp⟩ := cI.params hId ⟨hParams, [], .ret []⟩
-        (newBlock_target_get h3)
-      have hlenHB : hb.params.length = valsH.length := by
-        rw [hbp, hlenH]
-        exact hxvals.length_eq
-      have hsimH : SimS (model := model) P f sA.fn R st sI.fn RH st := by
-        have hs := simS_jump_join (model := model) (P := P) (f := f)
-          (st := st) hcI hjumpA hhb hcurI hcurI0 hxget hlenHB
-        simpa only [hbp] using hs
       obtain ⟨RA, hleA, hbelowA, hfrA, hcv, hsimC⟩ :=
-        ihc.1 fenv (env.setMany (modifiedX env [post, body]) hParams) RH
-          sI sJ cvId cv (exitId :: postId :: joins) hfe henvH hfrH hpI
+        ihc.1 fenv (env.setMany (modifiedX env [post, body]) hParams) R
+          sI sJ cvId cv (exitId :: postId :: joins) hfe henv hfr hpI
           hcJ hcpJ rfl h10
       obtain ⟨rfl, valsE, hXget, hXvals⟩ :=
-        edgeArgs_ok (henvH.mono hleA) h12
+        edgeArgs_ok (henv.mono hleA) h12
       obtain ⟨hlenE, hrangeE, hsD⟩ := M.mapM_freshVal_length h4
       have hndE : exitParams.Nodup := by
         rw [hrangeE]
@@ -10426,9 +10629,11 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           Nat.lt_of_lt_of_le (M.mem_range'_bounds hiRange).2 (by
             simpa [hsD] using dI.nextVal)
         rw [hbelowA i hiLtI]
-        dsimp [RH]
-        rw [Regs.setMany_other]
-        · exact hfr i (Nat.le_trans a0C.nextVal (M.mem_range'_bounds hiRange).1)
+        apply hclean i
+        · exact Nat.le_trans
+            ((SGrowsAt.of_grows (N := 0) gAB).trans
+              (SGrowsAt.of_newBlock h3)).nextVal
+            (M.mem_range'_bounds hiRange).1
         · intro hiH
           rw [hrangeH] at hiH
           have hu := (M.mem_range'_bounds hiH).2
@@ -10443,7 +10648,10 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         apply Regs.BelowEq.setMany
         intro i hi
         rw [hrangeE] at hi
-        exact Nat.le_trans a0C.nextVal (M.mem_range'_bounds hi).1
+        exact Nat.le_trans
+          ((SGrowsAt.of_grows (N := 0) gAB).trans
+            (SGrowsAt.of_newBlock h3)).nextVal
+          (M.mem_range'_bounds hi).1
       have hfrE : RegsFresh RE s₁.fn := by
         intro i hi
         dsimp [RE]
@@ -10474,17 +10682,19 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       have henvE : EnvOK (model := model)
           (env.setMany (modifiedX env [post, body]) exitParams) V RE := by
         have he : EnvOK (model := model)
-            (env.setMany (modifiedX env [post, body]) exitParams)
+            ((env.setMany (modifiedX env [post, body]) hParams).setMany
+              (modifiedX env [post, body]) exitParams)
             (YulSemantics.VEnv.setMany V (modifiedX env [post, body]) valsE) RE :=
           EnvOK.setMany (xs := modifiedX env [post, body])
-            (henv.mono (hleH.trans (hleA.trans hleE)))
+            (henv.mono (hleA.trans hleE))
             (Regs.getMany_eq_some_iff.mp hpgetE)
+        rw [VMap.setMany_overwrite env (modifiedX_nodup huniq _)
+          hlenH.symm hlenE.symm] at he
         rw [VEnv.setMany_self hXvals] at he
         exact he
       exact ⟨env.setMany (modifiedX env [post, body]) exitParams, RE, hrenv,
-        hleH.trans (hleA.trans hleE),
-        hbelowH.trans ((hbelowA.mono a0I.nextVal).trans hbelowE), hfrE,
-        henvE, huniq.setMany _ _, hsimH.trans (hsimC.trans hsimE)⟩
+        (hbelowA.mono aAI.nextVal).trans hbelowE, hfrE,
+        henvE, huniq.setMany _ _, hsimC.trans hsimE⟩
     cases bodyEnv with
     | none =>
       change (do
@@ -10671,24 +10881,15 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
               simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj h22).2)
           hrenv
   | @loopCondHalt funs V st c post body st1 hc ihc =>
-    intro fenv env R rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp
-      hcompl hcp _hfin htr
-    unfold trLoopCore at htr
-    obtain ⟨xvals, sA, h1, htr⟩ := M.bind_inv htr
-    obtain ⟨hParams, sB, h2, htr⟩ := M.bind_inv htr
-    obtain ⟨hId, sC, h3, htr⟩ := M.bind_inv htr
-    obtain ⟨exitParams, sD, h4, htr⟩ := M.bind_inv htr
-    obtain ⟨exitId, sE, h5, htr⟩ := M.bind_inv htr
-    obtain ⟨postParams, sF, h6, htr⟩ := M.bind_inv htr
-    obtain ⟨postId, sG, h7, htr⟩ := M.bind_inv htr
-    obtain ⟨uH, sH, h8, htr⟩ := M.bind_inv htr
-    obtain ⟨uI, sI, h9, htr⟩ := M.bind_inv htr
-    obtain ⟨cvId, sJ, h10, htr⟩ := M.bind_inv htr
-    obtain ⟨bodyId, sK, h11, htr⟩ := M.bind_inv htr
-    obtain ⟨hX, sL, h12, htr⟩ := M.bind_inv htr
-    obtain ⟨uM, sM, h13, htr⟩ := M.bind_inv htr
-    obtain ⟨uN, sN, h14, htr⟩ := M.bind_inv htr
-    obtain ⟨bodyEnv, sO, h15, htr⟩ := M.bind_inv htr
+    intro fenv env rets s₀ s₁ renv joins layout hfe huniq hvalid hp
+      hcompl hcp _hfin R henv hfr hclean hreb
+    rcases layout with
+      ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
+       exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
+       postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
+       bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
+       bodyEnv, sO, h15, htr⟩
+    simp only [LoopLayout.hParams, LoopLayout.sI, LoopLayout.sA] at henv hfr hclean hreb ⊢
     have g0A : Grows s₀ sA := Grows.of_liftO h1
     have gAB : Grows sA sB := Grows.of_mapM_freshVal h2
     have gCD : Grows sC sD := Grows.of_mapM_freshVal h4
@@ -10705,6 +10906,12 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       rw [SGrowsAt.newBlock_id h3]
       exact a0B.size
     have a0I := a0H.trans (SGrowsAt.of_moveTo (Or.inl hheadBase) h9)
+    have aAI : SGrowsAt 0 sA sI :=
+      (((((((SGrowsAt.of_grows (N := 0) gAB).trans
+        (SGrowsAt.of_newBlock h3)).trans (SGrowsAt.of_grows gCD)).trans
+        (SGrowsAt.of_newBlock h5)).trans (SGrowsAt.of_grows gEF)).trans
+        (SGrowsAt.of_newBlock h7)).trans (SGrowsAt.of_sealCur h8)).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
     have gIJ : Grows sI sJ := trExpr_grows c fenv
       (env.setMany (modifiedX env [post, body]) hParams) sI sJ cvId h10
     have aJK : SGrowsAt sJ.fn.blocks.size sJ sK := SGrowsAt.of_newBlock h11
@@ -10891,136 +11098,25 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         rw [hedge, hnew]) hbranchL
     have hcpJ : CurPlaced f sJ.fn := ⟨_, hbranchJ⟩
     have hcpI : CurPlaced f sI.fn := curPlaced_back_grows gIJ hcpJ
-    obtain ⟨rfl, valsH, hxget, hxvals⟩ := edgeArgs_ok henv h1
     obtain ⟨hlenH, hrangeH, hsB⟩ := M.mapM_freshVal_length h2
     have hndH : hParams.Nodup := by
       rw [hrangeH]
       exact M.nodup_range' _ _
-    have hnoneH : ∀ i ∈ hParams, R i = none := by
-      intro i hi
-      rw [hrangeH] at hi
-      exact hfr i (M.mem_range'_bounds hi).1
-    let RH := R.setMany hParams valsH
-    have hleH : Regs.Le R RH := Regs.Le.setMany hndH hnoneH
-    have hfrH : RegsFresh RH sI.fn := by
-      dsimp [RH]
-      rw [hrangeH]
-      apply hfr.setMany
-      have bC : SGrowsAt 0 sB sC := SGrowsAt.of_newBlock h3
-      have bD := bC.trans (SGrowsAt.of_grows gCD)
-      have bE := bD.trans (SGrowsAt.of_newBlock h5)
-      have bF := bE.trans (SGrowsAt.of_grows gEF)
-      have bG := bF.trans (SGrowsAt.of_newBlock h7)
-      have bH := bG.trans (SGrowsAt.of_sealCur h8)
-      have bI := bH.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
-      simpa [hsB] using bI.nextVal
-    have hpgetH : RH.getMany hParams = some valsH :=
-      Regs.getMany_setMany_self hndH (by rw [hlenH]; exact hxvals.length_eq)
-    have henvH : EnvOK (model := model)
-        (env.setMany (modifiedX env [post, body]) hParams) V RH := by
-      have he : EnvOK (model := model)
-          (env.setMany (modifiedX env [post, body]) hParams)
-          (YulSemantics.VEnv.setMany V (modifiedX env [post, body]) valsH) RH :=
-        EnvOK.setMany (xs := modifiedX env [post, body]) (henv.mono hleH)
-          (Regs.getMany_eq_some_iff.mp hpgetH)
-      rw [VEnv.setMany_self hxvals] at he
-      exact he
-    have csAG : CurSame sA sG :=
-      ((((((CurSame.of_grows gAB).trans (CurSame.of_newBlock h3)).trans
-        (CurSame.of_grows gCD)).trans (CurSame.of_newBlock h5)).trans
-        (CurSame.of_grows gEF)).trans (CurSame.of_newBlock h7))
-    have hcurH : sH.fn.curId = sA.fn.curId := by
-      rw [(sealCur_cur h8).choose_spec.1, csAG.1]
-    have hcurLtHead : sA.fn.curId < hId := by
-      rw [SGrowsAt.newBlock_id h3]
-      exact Nat.lt_of_lt_of_le hvalid a0B.size
-    have hheadNe : sH.fn.curId ≠ hId := by
-      rw [hcurH, SGrowsAt.newBlock_id h3]
-      exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hvalid a0B.size)
-    have hprotH : sH.fn.curId ∉ exitId :: postId :: joins := by
-      simp only [List.mem_cons, not_or]
-      refine ⟨?_, ?_, ?_⟩
-      · rw [hcurH]
-        exact Nat.ne_of_lt (Nat.lt_trans hcurLtHead hheadExit)
-      · rw [hcurH]
-        exact Nat.ne_of_lt (Nat.lt_trans (Nat.lt_trans
-          hcurLtHead hheadExit) hexitPost)
-      · rw [hcurH]
-        exact hp.away
-    have hfinH : CurFinal f sH.fn :=
-      curFinal_of_move_grows h9 hheadNe hprotH (SGrows.rfl' sI) hcI
-    have hjumpG : CurOK f sG.fn ⟨[], .jump ⟨hId, xvals⟩⟩ :=
-      curOK_of_sealCur hfinH h8
-    have hjumpA : CurOK f sA.fn ⟨[], .jump ⟨hId, xvals⟩⟩ :=
-      CurOK.back_of_cur_eq csAG.1 (by
-        have hAB : sB.fn.cur = sA.fn.cur := by
-          obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h2
-          rw [hs]
-        have hCB : sC.fn.cur = sB.fn.cur := by
-          rw [M.newBlock_apply] at h3
-          simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h3).2).symm
-        have hDC : sD.fn.cur = sC.fn.cur := by
-          obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h4
-          rw [hs]
-        have hED : sE.fn.cur = sD.fn.cur := by
-          rw [M.newBlock_apply] at h5
-          simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h5).2).symm
-        have hFE : sF.fn.cur = sE.fn.cur := by
-          obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h6
-          rw [hs]
-        have hGF : sG.fn.cur = sF.fn.cur := by
-          rw [M.newBlock_apply] at h7
-          simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h7).2).symm
-        rw [hGF, hFE, hED, hDC, hCB, hAB]) hjumpG
-    have cI : SGrowsAt 0 sC sI :=
-      ((((((SGrowsAt.of_grows gCD).trans (SGrowsAt.of_newBlock h5)).trans
-        (SGrowsAt.of_grows gEF)).trans (SGrowsAt.of_newBlock h7)).trans
-        (SGrowsAt.of_sealCur h8)).trans
-        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9))
-    obtain ⟨hb, hhb, hbp⟩ := cI.params hId ⟨hParams, [], .ret []⟩
-      (newBlock_target_get h3)
-    have hlenHB : hb.params.length = valsH.length := by
-      rw [hbp, hlenH]
-      exact hxvals.length_eq
-    have hsimH : SimS (model := model) P f sA.fn R st sI.fn RH st := by
-      have hs := simS_jump_join (model := model) (P := P) (f := f)
-        (st := st) hcI hjumpA hhb hcurI hcurI0 hxget hlenHB
-      simpa only [hbp] using hs
     have hhalt := ihc.1 fenv
-      (env.setMany (modifiedX env [post, body]) hParams) RH sI sJ cvId
-      (exitId :: postId :: joins) hfe henvH hfrH hpI hcJ hcpJ h10
-    exact hsimH (.halt st1) hhalt
-  -- BLOCKED: the recursive `LOut` IH is stated at a freshly translated
-  -- preheader.  Reusing it here requires a register file which is both fresh
-  -- above the original entry watermark and satisfies `EnvOK env Vp`.  After
-  -- an iteration, the live file instead preserves the original below-watermark
-  -- bindings and carries updated loop variables in fresh SSA ids.  Updating
-  -- the old ids makes the synthetic recursive file conflict with the live one,
-  -- so neither `Regs.Le` nor `Exec.mono` can transport the IH's header
-  -- execution to the real back edge.  Closing this case needs a header-entry
-  -- loop IH (or a proved execution weakening relation parameterized by the
-  -- header's live registers), not another `Completes`/`CurFinal` transfer.
-  | loopStep => sorry
-  | @loopPostHalt funs V st c post body cv st1 Vb stb ob Vp stp
-      hc hnz hbodyStep hob hpost ihc ihb ihpost =>
-    intro fenv env R rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp
-      hcompl hcp _hfin htr
-    unfold trLoopCore at htr
-    obtain ⟨xvals, sA, h1, htr⟩ := M.bind_inv htr
-    obtain ⟨hParams, sB, h2, htr⟩ := M.bind_inv htr
-    obtain ⟨hId, sC, h3, htr⟩ := M.bind_inv htr
-    obtain ⟨exitParams, sD, h4, htr⟩ := M.bind_inv htr
-    obtain ⟨exitId, sE, h5, htr⟩ := M.bind_inv htr
-    obtain ⟨postParams, sF, h6, htr⟩ := M.bind_inv htr
-    obtain ⟨postId, sG, h7, htr⟩ := M.bind_inv htr
-    obtain ⟨uH, sH, h8, htr⟩ := M.bind_inv htr
-    obtain ⟨uI, sI, h9, htr⟩ := M.bind_inv htr
-    obtain ⟨cvId, sJ, h10, htr⟩ := M.bind_inv htr
-    obtain ⟨bodyId, sK, h11, htr⟩ := M.bind_inv htr
-    obtain ⟨hX, sL, h12, htr⟩ := M.bind_inv htr
-    obtain ⟨uM, sM, h13, htr⟩ := M.bind_inv htr
-    obtain ⟨uN, sN, h14, htr⟩ := M.bind_inv htr
-    obtain ⟨bodyEnv, sO, h15, htr⟩ := M.bind_inv htr
+      (env.setMany (modifiedX env [post, body]) hParams) R sI sJ cvId
+      (exitId :: postId :: joins) hfe henv hfr hpI hcJ hcpJ h10
+    exact hhalt
+  | @loopStep funs V st c post body cv st1 Vb stb ob Vp stp Vend stend o
+      hc hnz hbodyStep hob hpost hloop ihc ihb ihpost ihloop =>
+    intro fenv env rets s₀ s₁ renv joins layout hfe huniq hvalid hp
+      hcompl hcp _hfin R henv hfr hclean hreb
+    rcases layout with
+      ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
+       exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
+       postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
+       bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
+       bodyEnv, sO, h15, htr⟩
+    simp only [LoopLayout.hParams, LoopLayout.sI, LoopLayout.sA] at henv hfr hclean hreb ⊢
     have g0A : Grows s₀ sA := Grows.of_liftO h1
     have gAB : Grows sA sB := Grows.of_mapM_freshVal h2
     have gCD : Grows sC sD := Grows.of_mapM_freshVal h4
@@ -11037,6 +11133,12 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       rw [SGrowsAt.newBlock_id h3]
       exact a0B.size
     have a0I := a0H.trans (SGrowsAt.of_moveTo (Or.inl hheadBase) h9)
+    have aAI : SGrowsAt 0 sA sI :=
+      (((((((SGrowsAt.of_grows (N := 0) gAB).trans
+        (SGrowsAt.of_newBlock h3)).trans (SGrowsAt.of_grows gCD)).trans
+        (SGrowsAt.of_newBlock h5)).trans (SGrowsAt.of_grows gEF)).trans
+        (SGrowsAt.of_newBlock h7)).trans (SGrowsAt.of_sealCur h8)).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
     have gIJ : Grows sI sJ := trExpr_grows c fenv
       (env.setMany (modifiedX env [post, body]) hParams) sI sJ cvId h10
     have aJK : SGrowsAt sJ.fn.blocks.size sJ sK := SGrowsAt.of_newBlock h11
@@ -11223,109 +11325,13 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         rw [hedge, hnew]) hbranchL
     have hcpJ : CurPlaced f sJ.fn := ⟨_, hbranchJ⟩
     have hcpI : CurPlaced f sI.fn := curPlaced_back_grows gIJ hcpJ
-    obtain ⟨rfl, valsH, hxget, hxvals⟩ := edgeArgs_ok henv h1
     obtain ⟨hlenH, hrangeH, hsB⟩ := M.mapM_freshVal_length h2
     have hndH : hParams.Nodup := by
       rw [hrangeH]
       exact M.nodup_range' _ _
-    have hnoneH : ∀ i ∈ hParams, R i = none := by
-      intro i hi
-      rw [hrangeH] at hi
-      exact hfr i (M.mem_range'_bounds hi).1
-    let RH := R.setMany hParams valsH
-    have hleH : Regs.Le R RH := Regs.Le.setMany hndH hnoneH
-    have hbelowH : Regs.BelowEq sA.fn.nextVal R RH := by
-      apply Regs.BelowEq.setMany
-      intro i hi
-      rw [hrangeH] at hi
-      exact (M.mem_range'_bounds hi).1
-    have hfrH : RegsFresh RH sI.fn := by
-      dsimp [RH]
-      rw [hrangeH]
-      apply hfr.setMany
-      have bC : SGrowsAt 0 sB sC := SGrowsAt.of_newBlock h3
-      have bD := bC.trans (SGrowsAt.of_grows gCD)
-      have bE := bD.trans (SGrowsAt.of_newBlock h5)
-      have bF := bE.trans (SGrowsAt.of_grows gEF)
-      have bG := bF.trans (SGrowsAt.of_newBlock h7)
-      have bH := bG.trans (SGrowsAt.of_sealCur h8)
-      have bI := bH.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
-      simpa [hsB] using bI.nextVal
-    have hpgetH : RH.getMany hParams = some valsH :=
-      Regs.getMany_setMany_self hndH (by rw [hlenH]; exact hxvals.length_eq)
-    have henvH : EnvOK (model := model)
-        (env.setMany (modifiedX env [post, body]) hParams) V RH := by
-      have he : EnvOK (model := model)
-          (env.setMany (modifiedX env [post, body]) hParams)
-          (YulSemantics.VEnv.setMany V (modifiedX env [post, body]) valsH) RH :=
-        EnvOK.setMany (xs := modifiedX env [post, body]) (henv.mono hleH)
-          (Regs.getMany_eq_some_iff.mp hpgetH)
-      rw [VEnv.setMany_self hxvals] at he
-      exact he
-    have csAG : CurSame sA sG :=
-      ((((((CurSame.of_grows gAB).trans (CurSame.of_newBlock h3)).trans
-        (CurSame.of_grows gCD)).trans (CurSame.of_newBlock h5)).trans
-        (CurSame.of_grows gEF)).trans (CurSame.of_newBlock h7))
-    have hcurH : sH.fn.curId = sA.fn.curId := by
-      rw [(sealCur_cur h8).choose_spec.1, csAG.1]
-    have hcurLtHead : sA.fn.curId < hId := by
-      rw [SGrowsAt.newBlock_id h3]
-      exact Nat.lt_of_lt_of_le hvalid a0B.size
-    have hheadNe : sH.fn.curId ≠ hId := by
-      rw [hcurH, SGrowsAt.newBlock_id h3]
-      exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hvalid a0B.size)
-    have hprotH : sH.fn.curId ∉ exitId :: postId :: joins := by
-      simp only [List.mem_cons, not_or]
-      refine ⟨?_, ?_, ?_⟩
-      · rw [hcurH]
-        exact Nat.ne_of_lt (Nat.lt_trans hcurLtHead hheadExit)
-      · rw [hcurH]
-        exact Nat.ne_of_lt (Nat.lt_trans (Nat.lt_trans
-          hcurLtHead hheadExit) hexitPost)
-      · rw [hcurH]
-        exact hp.away
-    have hfinH : CurFinal f sH.fn :=
-      curFinal_of_move_grows h9 hheadNe hprotH (SGrows.rfl' sI) hcI
-    have hjumpG : CurOK f sG.fn ⟨[], .jump ⟨hId, xvals⟩⟩ :=
-      curOK_of_sealCur hfinH h8
-    have hjumpA : CurOK f sA.fn ⟨[], .jump ⟨hId, xvals⟩⟩ :=
-      CurOK.back_of_cur_eq csAG.1 (by
-        have hAB : sB.fn.cur = sA.fn.cur := by
-          obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h2
-          rw [hs]
-        have hCB : sC.fn.cur = sB.fn.cur := by
-          rw [M.newBlock_apply] at h3
-          simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h3).2).symm
-        have hDC : sD.fn.cur = sC.fn.cur := by
-          obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h4
-          rw [hs]
-        have hED : sE.fn.cur = sD.fn.cur := by
-          rw [M.newBlock_apply] at h5
-          simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h5).2).symm
-        have hFE : sF.fn.cur = sE.fn.cur := by
-          obtain ⟨-, -, hs⟩ := M.mapM_freshVal_length h6
-          rw [hs]
-        have hGF : sG.fn.cur = sF.fn.cur := by
-          rw [M.newBlock_apply] at h7
-          simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h7).2).symm
-        rw [hGF, hFE, hED, hDC, hCB, hAB]) hjumpG
-    have cI : SGrowsAt 0 sC sI :=
-      ((((((SGrowsAt.of_grows gCD).trans (SGrowsAt.of_newBlock h5)).trans
-        (SGrowsAt.of_grows gEF)).trans (SGrowsAt.of_newBlock h7)).trans
-        (SGrowsAt.of_sealCur h8)).trans
-        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9))
-    obtain ⟨hHeader, hhb, hbp⟩ := cI.params hId ⟨hParams, [], .ret []⟩
-      (newBlock_target_get h3)
-    have hlenHB : hHeader.params.length = valsH.length := by
-      rw [hbp, hlenH]
-      exact hxvals.length_eq
-    have hsimH : SimS (model := model) P f sA.fn R st sI.fn RH st := by
-      have hs := simS_jump_join (model := model) (P := P) (f := f)
-        (st := st) hcI hjumpA hhb hcurI hcurI0 hxget hlenHB
-      simpa only [hbp] using hs
     obtain ⟨RA, hleA, hbelowA, hfrA, hcv, hsimC⟩ := ihc.1 fenv
-      (env.setMany (modifiedX env [post, body]) hParams) RH sI sJ cvId cv
-      (exitId :: postId :: joins) hfe henvH hfrH hpI hcJ hcpJ rfl h10
+      (env.setMany (modifiedX env [post, body]) hParams) R sI sJ cvId cv
+      (exitId :: postId :: joins) hfe henv hfr hpI hcJ hcpJ rfl h10
     have hnz' : cv ≠ 0 := by simpa only [yulD_zero] using hnz
     have aKN : SGrowsAt 0 sK sN :=
       ((SGrowsAt.of_grows gKL).trans (SGrowsAt.of_sealCur h13)).trans
@@ -11481,9 +11487,9 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       (env.setMany (modifiedX env [post, body]) hParams) RA
       (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets
       sN sO bodyEnv (exitId :: postId :: joins) hfe
-      (henvH.mono hleA) (huniq.setMany _ _) hfrN hvalidN hpN
+      (henv.mono hleA) (huniq.setMany _ _) hfrN hvalidN hpN
       tailBody.1 tailBody.2.1 tailBody.2.2 htrB
-    have hpre := hsimH.trans (hsimC.trans hsimB)
+    have hpre := hsimC.trans hsimB
     have gGNall : SGrowsAt 0 sG sN :=
       (((((SGrowsAt.of_sealCur (N := 0) h8).trans
         (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)).trans
@@ -11508,14 +11514,15 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         List.Forall₂ (fun x v => YulSemantics.VEnv.get Vb x = some v)
           (modifiedX env [post, body]) vals →
         (∀ res, JumpTo (model := model) P f postId vals RB stb res →
-          ExecFrom (model := model) P f sA.fn R st res) →
-        SOut (model := model) P f none rets sA s₁ R renv Vp st stp .halt := by
+          ExecFrom (model := model) P f sI.fn R st res) →
+        LHOut (model := model) P f rets sA.fn.nextVal sI s₁ R
+          renv Vend st stend o := by
       intro sPost sPostOut postEnv RB vals gOP hcurPost hcurPost0 hvalidPost
         htrPost htailPost hleB hbelowB hfrB hvals hcont
       have gpost : SGrows sPost sPostOut := trScope_grows fenv
         (env.setMany (modifiedX env [post, body]) postParams) none rets post
         sPost postEnv sPostOut htrPost
-      have hpostBase : sA.fn.blocks.size ≤ postId := by
+      have hpostBase : s₀.fn.blocks.size ≤ postId := by
         rw [SGrowsAt.newBlock_id h7]
         exact a0F.size
       have hpPost : ProtectedAt (exitId :: joins) sPost.fn := by
@@ -11572,10 +11579,12 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         have hiLtI : i < sI.fn.nextVal := Nat.lt_of_lt_of_le
           (by simpa [hsF] using (M.mem_range'_bounds hiRange).2) fI.nextVal
         rw [hbelowA i hiLtI]
-        dsimp [RH]
-        rw [Regs.setMany_other]
-        · exact hfr i (Nat.le_trans a0E.nextVal
-            (M.mem_range'_bounds hiRange).1)
+        apply hclean i
+        · exact Nat.le_trans
+            (((SGrowsAt.of_grows (N := 0) gAB).trans
+              (SGrowsAt.of_newBlock h3)).trans (SGrowsAt.of_grows gCD) |>.trans
+              (SGrowsAt.of_newBlock h5)).nextVal
+            (M.mem_range'_bounds hiRange).1
         · intro hiH
           rw [hrangeH] at hiH
           have hu := (M.mem_range'_bounds hiH).2
@@ -11594,7 +11603,11 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       have hbaseP : ∀ i ∈ postParams, sA.fn.nextVal ≤ i := by
         intro i hi
         rw [hrangeP] at hi
-        exact Nat.le_trans a0E.nextVal (M.mem_range'_bounds hi).1
+        exact Nat.le_trans
+          (((SGrowsAt.of_grows (N := 0) gAB).trans
+            (SGrowsAt.of_newBlock h3)).trans (SGrowsAt.of_grows gCD) |>.trans
+            (SGrowsAt.of_newBlock h5)).nextVal
+          (M.mem_range'_bounds hi).1
       have gGPost : SGrowsAt 0 sG sPost :=
         (gGNall.trans (gbody.mono (Nat.zero_le _))).trans gOP
       obtain ⟨pb, hpb, hpp⟩ := gGPost.params postId
@@ -11608,28 +11621,189 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         have hmod : ModOut [] (modStmts [] body) V Vb := by
           have hm := (mod_sim hbodyStep).2 [] (localsOK_nil V)
           simpa [modStmt] using hm
-        exact setMany_eq_of_modOut henv huniq hnames hmod hvals
-          (fun x hx => modifiedX_mem_names hx)
-          (fun x hx hm => mem_modifiedX hx (by
+        exact setMany_eq_of_modOut (xs := modifiedX env [post, body]) henv
+          (huniq.setMany _ _) hnames hmod hvals
+          (fun x hx => by
+            rw [VMap.names_setMany]
+            exact modifiedX_mem_names hx)
+          (fun x hx hm => mem_modifiedX (by
+            rw [VMap.names_setMany] at hx
+            exact hx) (by
             simp only [List.flatMap_cons, List.flatMap_nil, List.append_nil]
             exact List.mem_append_right _ hm))
-      have hleBody : Regs.Le R RB := hleH.trans (hleA.trans hleB)
+      have hleBody : Regs.Le R RB := hleA.trans hleB
       have hbelowBody : Regs.BelowEq sA.fn.nextVal R RB :=
-        hbelowH.trans ((hbelowA.mono a0I.nextVal).trans
-          (hbelowB.mono (Nat.le_trans a0I.nextVal
+        (hbelowA.mono aAI.nextVal).trans
+          (hbelowB.mono (Nat.le_trans aAI.nextVal
             (Nat.le_trans (SGrowsAt.of_grows (N := 0) gIJ).nextVal
-              aJN.nextVal))))
+              aJN.nextVal)))
       obtain ⟨RP, hleP, hbelowP, hfrP, henvP, hsimP⟩ :=
         sim_loopPostEntry (model := model) (P := P) (f := f) (sBody := sO)
           (base := sA.fn.nextVal) henv hVbody hleBody hbelowBody hndP hnoneP
           hbaseP hparamsLtO hfrB hnextOP hcomplPost hpb hpp hcurPost
           hcurPost0 (by rw [hlenP]; exact hvals.length_eq) hcont
-      have hpostHalt := ihpost fenv
+      rw [VMap.setMany_overwrite env (modifiedX_nodup huniq _)
+        hlenH.symm hlenP.symm] at henvP
+      obtain ⟨envP, RPost, hpostEnv, hlePost, hbelowPost, hfrPost,
+          henvPost, huniqPost, hsimPost⟩ := ihpost fenv
         (env.setMany (modifiedX env [post, body]) postParams) RP none rets
         sPost sPostOut postEnv (exitId :: joins) hfe henvP
         (huniq.setMany _ _) hfrP hvalidPost hpPost hcomplPostOut hcpPostOut
         hfinPostOut htrPostStmt
-      exact hsimP (.halt stp) hpostHalt
+      obtain rfl : postEnv = some envP := hpostEnv
+      change (do
+        let xvP ← edgeArgs envP (modifiedX env [post, body])
+        sealCur (.jump ⟨hId, xvP⟩)
+        moveTo exitId
+        pure (some (env.setMany (modifiedX env [post, body]) exitParams)))
+          sPostOut = some (renv, s₁) at htailPost
+      obtain ⟨xvNext, sEdge, hargsNext, htailPost⟩ := M.bind_inv htailPost
+      obtain ⟨uSeal, sSealed, hsealNext, htailPost⟩ := M.bind_inv htailPost
+      obtain ⟨uExit, sExit, hmoveExit, htailPost⟩ := M.bind_inv htailPost
+      obtain ⟨hrenv, hs₁⟩ := M.pure_inv htailPost
+      subst s₁
+      obtain ⟨rfl, valsNext, hgetNext, hvalsNext⟩ :=
+        edgeArgs_ok henvPost hargsNext
+      have hnamesBody : VEnv.names Vb = VEnv.names V := by
+        have hm := (mod_sim hbodyStep).1
+        simpa [declsOfStmt] using hm
+      have hnamesPost : VEnv.names Vp = VEnv.names Vb := by
+        have hm := (mod_sim hpost).1
+        simpa [declsOfStmt] using hm
+      have hnamesNext : VEnv.names Vp = VEnv.names V :=
+        hnamesPost.trans hnamesBody
+      have hmodBody : ModOut [] (modStmts [] body) V Vb := by
+        have hm := (mod_sim hbodyStep).2 [] (localsOK_nil V)
+        simpa [modStmt] using hm
+      have hmodPost : ModOut [] (modStmts [] post) Vb Vp := by
+        have hm := (mod_sim hpost).2 [] (localsOK_nil Vb)
+        simpa [modStmt] using hm
+      have hmodNext : ModOut []
+          (modStmts [] body ++ modStmts [] post) V Vp :=
+        ModOut.trans hmodBody hmodPost (fun _ hn => by
+          rw [← VEnv.length_names, hnamesBody, VEnv.length_names]
+          exact hn)
+      have hVnext : YulSemantics.VEnv.setMany V
+          (modifiedX env [post, body]) valsNext = Vp :=
+        setMany_eq_of_modOut (xs := modifiedX env [post, body]) henv
+          (huniq.setMany _ _) hnamesNext hmodNext hvalsNext
+          (fun x hx => by
+            rw [VMap.names_setMany]
+            exact modifiedX_mem_names hx)
+          (fun x hx hm => mem_modifiedX (by
+            rw [VMap.names_setMany] at hx
+            exact hx) (by
+            simp only [List.flatMap_cons, List.flatMap_nil, List.append_nil]
+            rcases List.mem_append.mp hm with hb | hp'
+            · exact List.mem_append_right _ hb
+            · exact List.mem_append_left _ hp'))
+      let RNext := R.setMany hParams valsNext
+      have hlenNext : hParams.length = valsNext.length :=
+        hlenH.trans hvalsNext.length_eq
+      have henvNext : EnvOK (model := model)
+          (env.setMany (modifiedX env [post, body]) hParams) Vp RNext := by
+        exact hreb valsNext Vp hvalsNext.length_eq hVnext
+      have bI : SGrowsAt 0 sB sI :=
+        ((((((SGrowsAt.of_newBlock (N := 0) h3).trans
+          (SGrowsAt.of_grows gCD)).trans (SGrowsAt.of_newBlock h5)).trans
+          (SGrowsAt.of_grows gEF)).trans (SGrowsAt.of_newBlock h7)).trans
+          (SGrowsAt.of_sealCur h8)).trans
+          (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
+      have hendI : sA.fn.nextVal + (modifiedX env [post, body]).length ≤
+          sI.fn.nextVal := by
+        have hn := bI.nextVal
+        rw [hsB] at hn
+        exact hn
+      have hfrNext : RegsFresh RNext sI.fn := by
+        intro i hi
+        dsimp [RNext]
+        rw [Regs.setMany_other]
+        · exact hfr i hi
+        · intro him
+          rw [hrangeH] at him
+          exact absurd (Nat.lt_of_lt_of_le (M.mem_range'_bounds him).2 hendI)
+            (Nat.not_lt_of_ge hi)
+      have hcleanNext : HeaderClean sA.fn.nextVal hParams RNext := by
+        intro i hi hnot
+        dsimp [RNext]
+        rw [Regs.setMany_other hnot]
+        exact hclean i hi hnot
+      have hrebNext : HeaderRebind (model := model)
+          (env.setMany (modifiedX env [post, body]) hParams)
+          (modifiedX env [post, body]) hParams Vp RNext := by
+        intro vals' W hlen' hset'
+        dsimp [RNext]
+        rw [Regs.setMany_overwrite R hndH hlenNext (hlenH.trans hlen')]
+        apply hreb vals' W hlen'
+        rw [← hset', ← hVnext,
+          VEnv.setMany_overwrite V (modifiedX_nodup huniq _)
+            hvalsNext.length_eq hlen']
+      let layout' : LoopLayout fenv env rets c post body s₀ sExit renv :=
+        ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
+         exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
+         postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
+         bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
+         bodyEnv, sO, h15, htr⟩
+      have hrec := ihloop fenv env rets s₀ sExit renv joins layout'
+        hfe huniq hvalid hp hcompl hcp _hfin
+        RNext henvNext hfrNext hcleanNext hrebNext
+      have cI : SGrowsAt 0 sC sI :=
+        (((((SGrowsAt.of_grows (N := 0) gCD).trans
+          (SGrowsAt.of_newBlock h5)).trans (SGrowsAt.of_grows gEF)).trans
+          (SGrowsAt.of_newBlock h7)).trans (SGrowsAt.of_sealCur h8)).trans
+          (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
+      obtain ⟨hbH, hhbH, hhpH⟩ := cI.params hId
+        ⟨hParams, [], .ret []⟩ (newBlock_target_get h3)
+      have hleToPost : Regs.Le R RPost := hleP.trans hlePost
+      have hleBack : Regs.Le RNext (RPost.setMany hParams valsNext) := by
+        exact Regs.Le.setManyBoth hleToPost
+      have hlenBack : hbH.params.length = valsNext.length := by
+        rw [hhpH]
+        exact hlenNext
+      have gPostSeal : SGrows sEdge sSealed :=
+        (SGrowsAt.of_grows (Grows.of_liftO hargsNext)).trans
+          (SGrowsAt.of_sealCur hsealNext)
+      have hpSealed : ProtectedAt (exitId :: joins) sSealed.fn :=
+        ProtectedAt.forward hpPostOut gPostSeal
+      have hcExit : Completes f sExit.fn (exitId :: joins) := by
+        exact hcompl.protect exitId
+      have hcSealed : Completes f sSealed.fn (exitId :: joins) :=
+        Completes.of_moveTo_protected (by simp) hmoveExit hcExit
+      have hneExit : sSealed.fn.curId ≠ exitId := fun he =>
+        hpSealed.away (by simp [he])
+      have hfinSealed : CurFinal f sSealed.fn :=
+        curFinal_of_move_grows hmoveExit hneExit hpSealed.away
+          (SGrows.rfl' sExit) hcExit
+      have hcurBack : CurOK f sEdge.fn
+          ⟨[], .jump ⟨hId, xvNext⟩⟩ :=
+        curOK_of_sealCur hfinSealed hsealNext
+      have hbridge : ∀ res,
+          ExecFrom (model := model) P f sI.fn RNext stp res →
+          ExecFrom (model := model) P f sI.fn R st res := by
+        intro res hex
+        have hjump : JumpTo (model := model) P f hId valsNext RPost stp res :=
+          jumpTo_of_completes hcI hhbH hcurI hcurI0 hlenBack (by
+            simpa only [hhpH] using hex.mono hleBack)
+        exact hsimP res (hsimPost res
+          (execFrom_jump hcurBack hgetNext hjump))
+      have hbaseH : ∀ i ∈ hParams, sA.fn.nextVal ≤ i := by
+        intro i hi
+        rw [hrangeH] at hi
+        exact (M.mem_range'_bounds hi).1
+      have hbelowNext : Regs.BelowEq sA.fn.nextVal R RNext :=
+        Regs.BelowEq.setMany hbaseH
+      cases o with
+      | normal =>
+        obtain ⟨envEnd, REnd, hrenvEnd, hbelowEnd, hfrEnd, henvEnd,
+          huniqEnd, hsimEnd⟩ := hrec
+        exact ⟨envEnd, REnd, hrenvEnd, hbelowNext.trans hbelowEnd,
+          hfrEnd, henvEnd, huniqEnd, fun res hex => hbridge res (hsimEnd res hex)⟩
+      | halt => exact hbridge (.halt stend) hrec
+      | leave =>
+        obtain ⟨rs, retVals, hrets, hretVals, hex⟩ := hrec
+        exact ⟨rs, retVals, hrets, hretVals, hbridge (.ret retVals stend) hex⟩
+      | «break» => exact hrec.elim
+      | «continue» => exact hrec.elim
     rcases hob with rfl | rfl
     · obtain ⟨envB, RB, hbodyEnv, hleB, hbelowB, hfrB, henvB, _huniqB,
           hsimBody⟩ := hbodySim
@@ -11653,7 +11827,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           ((gGNall.trans (gbody.mono (Nat.zero_le _))).trans
             (gOQ.mono (Nat.zero_le _))).size)
         h18
-      have hpostBase : sA.fn.blocks.size ≤ postId := by
+      have hpostBase : s₀.fn.blocks.size ≤ postId := by
         rw [SGrowsAt.newBlock_id h7]
         exact a0F.size
       have hpRPost : ProtectedAt (exitId :: joins) sR.fn := by
@@ -11701,7 +11875,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       have hcurJump : CurOK f sP.fn ⟨[], .jump ⟨postId, xvB⟩⟩ :=
         curOK_of_sealCur hfinQ h17
       have hcont : ∀ res, JumpTo (model := model) P f postId vals RB stb res →
-          ExecFrom (model := model) P f sA.fn R st res := by
+          ExecFrom (model := model) P f sI.fn R st res := by
         intro res hj
         exact hpre res (hsimBody res (execFrom_jump hcurJump hgetB hj))
       exact finish
@@ -11739,7 +11913,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         obtain ⟨postEnv, sQ, h17, htailPost⟩ := M.bind_inv htr
         have hcont : ∀ res,
             JumpTo (model := model) P f postId vals RB stb res →
-            ExecFrom (model := model) P f sA.fn R st res :=
+            ExecFrom (model := model) P f sI.fn R st res :=
           fun res hj => hpre res (hcontB res hj)
         exact finish (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) h16)
           (by rw [M.moveTo_apply] at h16
@@ -11760,7 +11934,699 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
             (SGrowsAt.of_sealCur h17)
         have hcont : ∀ res,
             JumpTo (model := model) P f postId vals RB stb res →
-            ExecFrom (model := model) P f sA.fn R st res :=
+            ExecFrom (model := model) P f sI.fn R st res :=
+          fun res hj => hpre res (hcontB res hj)
+        exact finish
+          ((gOQ.mono (Nat.zero_le _)).trans
+            (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) h18))
+          (by rw [M.moveTo_apply] at h18
+              exact (congrArg (fun z => z.fn.curId) (M.some_pair_inj h18).2).symm)
+          (by rw [M.moveTo_apply] at h18
+              simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj h18).2)
+          (CurValid.of_moveTo
+            (Nat.lt_of_lt_of_le (newBlock_target_lt h7)
+              ((gGNall.trans (gbody.mono (Nat.zero_le _))).trans
+                (gOQ.mono (Nat.zero_le _))).size)
+            h18)
+          h19 htailPost hleB hbelowB hfrB hvals hcont
+
+  -- `sim_loopBodyNonNormal` also closes break: it consumes the body's
+  -- `JumpTo exitId`, binds `exitParams`, and rebuilds `EnvOK` at the exit.
+  | @loopPostHalt funs V st c post body cv st1 Vb stb ob Vp stp
+      hc hnz hbodyStep hob hpost ihc ihb ihpost =>
+    intro fenv env rets s₀ s₁ renv joins layout hfe huniq hvalid hp
+      hcompl hcp _hfin R henv hfr hclean hreb
+    rcases layout with
+      ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
+       exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
+       postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
+       bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
+       bodyEnv, sO, h15, htr⟩
+    simp only [LoopLayout.hParams, LoopLayout.sI, LoopLayout.sA] at henv hfr hclean hreb ⊢
+    have g0A : Grows s₀ sA := Grows.of_liftO h1
+    have gAB : Grows sA sB := Grows.of_mapM_freshVal h2
+    have gCD : Grows sC sD := Grows.of_mapM_freshVal h4
+    have gEF : Grows sE sF := Grows.of_mapM_freshVal h6
+    have a0A : SGrowsAt s₀.fn.blocks.size s₀ sA := SGrowsAt.of_grows g0A
+    have a0B := a0A.trans (SGrowsAt.of_grows gAB)
+    have a0C := a0B.trans (SGrowsAt.of_newBlock h3)
+    have a0D := a0C.trans (SGrowsAt.of_grows gCD)
+    have a0E := a0D.trans (SGrowsAt.of_newBlock h5)
+    have a0F := a0E.trans (SGrowsAt.of_grows gEF)
+    have a0G := a0F.trans (SGrowsAt.of_newBlock h7)
+    have a0H := a0G.trans (SGrowsAt.of_sealCur h8)
+    have hheadBase : s₀.fn.blocks.size ≤ hId := by
+      rw [SGrowsAt.newBlock_id h3]
+      exact a0B.size
+    have a0I := a0H.trans (SGrowsAt.of_moveTo (Or.inl hheadBase) h9)
+    have aAI : SGrowsAt 0 sA sI :=
+      (((((((SGrowsAt.of_grows (N := 0) gAB).trans
+        (SGrowsAt.of_newBlock h3)).trans (SGrowsAt.of_grows gCD)).trans
+        (SGrowsAt.of_newBlock h5)).trans (SGrowsAt.of_grows gEF)).trans
+        (SGrowsAt.of_newBlock h7)).trans (SGrowsAt.of_sealCur h8)).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
+    have gIJ : Grows sI sJ := trExpr_grows c fenv
+      (env.setMany (modifiedX env [post, body]) hParams) sI sJ cvId h10
+    have aJK : SGrowsAt sJ.fn.blocks.size sJ sK := SGrowsAt.of_newBlock h11
+    have gKL : Grows sK sL := Grows.of_liftO h12
+    have aJL := aJK.trans (SGrowsAt.of_grows gKL)
+    have aJM := aJL.trans (SGrowsAt.of_sealCur h13)
+    have hbodyBase : sJ.fn.blocks.size ≤ bodyId := by
+      rw [SGrowsAt.newBlock_id h11]
+    have aJN := aJM.trans (SGrowsAt.of_moveTo (Or.inl hbodyBase) h14)
+    have eF : SGrowsAt 0 sE sF := SGrowsAt.of_grows gEF
+    have eG := eF.trans (SGrowsAt.of_newBlock h7)
+    have eH := eG.trans (SGrowsAt.of_sealCur h8)
+    have eI := eH.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
+    have eJ := eI.trans (SGrowsAt.of_grows gIJ)
+    have eK := eJ.trans (SGrowsAt.of_newBlock h11)
+    have eL := eK.trans (SGrowsAt.of_grows gKL)
+    have eM := eL.trans (SGrowsAt.of_sealCur h13)
+    have eN := eM.trans (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h14)
+    have hcN : Completes f sN.fn (exitId :: postId :: joins) := by
+      have gb := trScope_grows fenv
+        (env.setMany (modifiedX env [post, body]) hParams)
+        (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets body
+        sN bodyEnv sO h15
+      cases bodyEnv with
+      | none =>
+        change (do
+          moveTo postId
+          let envP := env.setMany (modifiedX env [post, body]) postParams
+          let renvP ← trScope fenv envP none rets post
+          if let some envP' := renvP then
+            let xvP ← edgeArgs envP' (modifiedX env [post, body])
+            sealCur (.jump ⟨hId, xvP⟩)
+          moveTo exitId
+          pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sO =
+            some (renv, s₁) at htr
+        obtain ⟨uP, sP, h16, htr⟩ := M.bind_inv htr
+        obtain ⟨postEnv, sQ, h17, htr⟩ := M.bind_inv htr
+        have gp := trScope_grows fenv
+          (env.setMany (modifiedX env [post, body]) postParams) none rets post
+          sP postEnv sQ h17
+        cases postEnv with
+        | none =>
+          change (do
+            moveTo exitId
+            pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sQ =
+              some (renv, s₁) at htr
+          obtain ⟨uR, sR, h18, htr⟩ := M.bind_inv htr
+          obtain ⟨-, hs₁⟩ := M.pure_inv htr
+          subst s₁
+          have hcQ : Completes f sQ.fn (exitId :: postId :: joins) :=
+            Completes.of_moveTo_protected (by simp) h18
+              ((hcompl.protect postId).protect exitId)
+          have hcP := SGrowsAt.completes_of gp hcQ
+          have hcO := Completes.of_moveTo_protected (by simp) h16 hcP
+          exact SGrowsAt.completes_of gb hcO
+        | some envP =>
+          obtain ⟨xvP, sR, h18, htr⟩ := M.bind_inv htr
+          obtain ⟨uS, sS, h19, htr⟩ := M.bind_inv htr
+          obtain ⟨uT, sT, h20, htr⟩ := M.bind_inv htr
+          obtain ⟨-, hs₁⟩ := M.pure_inv htr
+          subst s₁
+          have hcS : Completes f sS.fn (exitId :: postId :: joins) :=
+            Completes.of_moveTo_protected (by simp) h20
+              ((hcompl.protect postId).protect exitId)
+          have gQS : SGrows sQ sS :=
+            (SGrowsAt.of_grows (Grows.of_liftO h18)).trans
+              (SGrowsAt.of_sealCur h19)
+          have hcQ := SGrowsAt.completes_of gQS hcS
+          have hcP := SGrowsAt.completes_of gp hcQ
+          have hcO := Completes.of_moveTo_protected (by simp) h16 hcP
+          exact SGrowsAt.completes_of gb hcO
+      | some envB =>
+        obtain ⟨xvB, sP, h16, htr⟩ := M.bind_inv htr
+        obtain ⟨uQ, sQ, h17, htr⟩ := M.bind_inv htr
+        obtain ⟨uR, sR, h18, htr⟩ := M.bind_inv htr
+        obtain ⟨postEnv, sS, h19, htr⟩ := M.bind_inv htr
+        have gp := trScope_grows fenv
+          (env.setMany (modifiedX env [post, body]) postParams) none rets post
+          sR postEnv sS h19
+        have gOQ : SGrows sO sQ :=
+          (SGrowsAt.of_grows (Grows.of_liftO h16)).trans
+            (SGrowsAt.of_sealCur h17)
+        cases postEnv with
+        | none =>
+          change (do
+            moveTo exitId
+            pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sS =
+              some (renv, s₁) at htr
+          obtain ⟨uT, sT, h20, htr⟩ := M.bind_inv htr
+          obtain ⟨-, hs₁⟩ := M.pure_inv htr
+          subst s₁
+          have hcS : Completes f sS.fn (exitId :: postId :: joins) :=
+            Completes.of_moveTo_protected (by simp) h20
+              ((hcompl.protect postId).protect exitId)
+          have hcR := SGrowsAt.completes_of gp hcS
+          have hcQ := Completes.of_moveTo_protected (by simp) h18 hcR
+          have hcO := SGrowsAt.completes_of gOQ hcQ
+          exact SGrowsAt.completes_of gb hcO
+        | some envP =>
+          obtain ⟨xvP, sT, h20, htr⟩ := M.bind_inv htr
+          obtain ⟨uU, sU, h21, htr⟩ := M.bind_inv htr
+          obtain ⟨uW, sW, h22, htr⟩ := M.bind_inv htr
+          obtain ⟨-, hs₁⟩ := M.pure_inv htr
+          subst s₁
+          have hcU : Completes f sU.fn (exitId :: postId :: joins) :=
+            Completes.of_moveTo_protected (by simp) h22
+              ((hcompl.protect postId).protect exitId)
+          have gSU : SGrows sS sU :=
+            (SGrowsAt.of_grows (Grows.of_liftO h20)).trans
+              (SGrowsAt.of_sealCur h21)
+          have hcS := SGrowsAt.completes_of gSU hcU
+          have hcR := SGrowsAt.completes_of gp hcS
+          have hcQ := Completes.of_moveTo_protected (by simp) h18 hcR
+          have hcO := SGrowsAt.completes_of gOQ hcQ
+          exact SGrowsAt.completes_of gb hcO
+    have hcJ : Completes f sJ.fn (exitId :: postId :: joins) :=
+      SGrowsAt.completes_of aJN hcN
+    have hcI : Completes f sI.fn (exitId :: postId :: joins) :=
+      SGrowsAt.completes_of (SGrowsAt.of_grows gIJ) hcJ
+    have hcurI : sI.fn.curId = hId := by
+      rw [M.moveTo_apply] at h9
+      exact (congrArg (fun z => z.fn.curId) (M.some_pair_inj h9).2).symm
+    have hcurI0 : sI.fn.cur = [] := by
+      rw [M.moveTo_apply] at h9
+      simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj h9).2
+    have hheadExit : hId < exitId := by
+      rw [SGrowsAt.newBlock_id h5]
+      exact Nat.lt_of_lt_of_le (newBlock_target_lt h3)
+        (SGrowsAt.of_grows (N := 0) gCD).size
+    have hexitPost : exitId < postId := by
+      rw [SGrowsAt.newBlock_id h7]
+      exact Nat.lt_of_lt_of_le (newBlock_target_lt h5)
+        (SGrowsAt.of_grows (N := 0) gEF).size
+    have hpI0 : ProtectedAt joins sI.fn := ProtectedAt.forward hp a0I
+    have hpI : ProtectedAt (exitId :: postId :: joins) sI.fn := by
+      refine ⟨?_, ?_⟩
+      · intro i hi
+        simp only [List.mem_cons] at hi
+        rcases hi with rfl | rfl | hi
+        · exact Nat.lt_of_lt_of_le (newBlock_target_lt h5) eI.size
+        · exact Nat.lt_of_lt_of_le (newBlock_target_lt h7)
+            ((SGrowsAt.of_sealCur (N := 0) h8).trans
+              (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) h9)).size
+        · exact hpI0.below i hi
+      · simp only [List.mem_cons, not_or]
+        exact ⟨by rw [hcurI]; exact Nat.ne_of_lt hheadExit,
+          by rw [hcurI]; exact Nat.ne_of_lt (Nat.lt_trans hheadExit hexitPost),
+          hpI0.away⟩
+    have hvalidI : CurValid sI := by
+      apply CurValid.of_moveTo _ h9
+      exact Nat.lt_of_lt_of_le (newBlock_target_lt h3)
+        (((((SGrowsAt.of_grows (N := 0) gCD).trans
+          (SGrowsAt.of_newBlock h5)).trans
+          (SGrowsAt.of_grows gEF)).trans
+          (SGrowsAt.of_newBlock h7)).trans
+          (SGrowsAt.of_sealCur h8)).size
+    have hvalidJ : CurValid sJ := hvalidI.of_grows gIJ
+    have csJL : CurSame sJ sL :=
+      (CurSame.of_newBlock h11).trans (CurSame.of_grows gKL)
+    have hcurM : sM.fn.curId = sJ.fn.curId := by
+      rw [(sealCur_cur h13).choose_spec.1, csJL.1]
+    have hbodyNe : sM.fn.curId ≠ bodyId := by
+      rw [hcurM, SGrowsAt.newBlock_id h11]
+      exact Nat.ne_of_lt hvalidJ
+    have hpM : ProtectedAt (exitId :: postId :: joins) sM.fn := by
+      have hgIM : SGrowsAt sI.fn.blocks.size sI sM :=
+        ((SGrowsAt.of_grows (N := sI.fn.blocks.size) gIJ).trans
+          (aJL.mono
+            (SGrowsAt.of_grows (N := sI.fn.blocks.size) gIJ).size)).trans
+          (SGrowsAt.of_sealCur h13)
+      exact ProtectedAt.forward hpI hgIM
+    have hfinM : CurFinal f sM.fn :=
+      curFinal_of_move_grows h14 hbodyNe hpM.away (SGrows.rfl' sN) hcN
+    have hbranchL : CurOK f sL.fn
+        ⟨[], .branch cvId ⟨bodyId, []⟩ ⟨exitId, hX⟩⟩ :=
+      curOK_of_sealCur hfinM h13
+    have hbranchJ : CurOK f sJ.fn
+        ⟨[], .branch cvId ⟨bodyId, []⟩ ⟨exitId, hX⟩⟩ :=
+      CurOK.back_of_cur_eq csJL.1 (by
+        have hnew : sK.fn.cur = sJ.fn.cur := by
+          rw [M.newBlock_apply] at h11
+          simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h11).2).symm
+        have hedge : sL = sK := (M.edgeArgs_inv h12).2
+        rw [hedge, hnew]) hbranchL
+    have hcpJ : CurPlaced f sJ.fn := ⟨_, hbranchJ⟩
+    have hcpI : CurPlaced f sI.fn := curPlaced_back_grows gIJ hcpJ
+    obtain ⟨hlenH, hrangeH, hsB⟩ := M.mapM_freshVal_length h2
+    have hndH : hParams.Nodup := by
+      rw [hrangeH]
+      exact M.nodup_range' _ _
+    obtain ⟨RA, hleA, hbelowA, hfrA, hcv, hsimC⟩ := ihc.1 fenv
+      (env.setMany (modifiedX env [post, body]) hParams) R sI sJ cvId cv
+      (exitId :: postId :: joins) hfe henv hfr hpI hcJ hcpJ rfl h10
+    have hnz' : cv ≠ 0 := by simpa only [yulD_zero] using hnz
+    have aKN : SGrowsAt 0 sK sN :=
+      ((SGrowsAt.of_grows gKL).trans (SGrowsAt.of_sealCur h13)).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h14)
+    obtain ⟨bb, hbb, hbp⟩ := aKN.params bodyId ⟨[], [], .ret []⟩
+      (newBlock_target_get h11)
+    have hcurN : sN.fn.curId = bodyId := by
+      rw [M.moveTo_apply] at h14
+      exact (congrArg (fun z => z.fn.curId) (M.some_pair_inj h14).2).symm
+    have hcurN0 : sN.fn.cur = [] := by
+      rw [M.moveTo_apply] at h14
+      simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj h14).2
+    have hsimB := simS_branchTrue_body (model := model) (P := P) (f := f)
+      (st := st1) hcN hbranchJ hcv hnz' hbb hbp hcurN hcurN0
+    have hvalidN : CurValid sN := by
+      apply CurValid.of_moveTo _ h14
+      exact Nat.lt_of_lt_of_le (newBlock_target_lt h11)
+        ((SGrowsAt.of_grows (N := 0) gKL).trans
+          (SGrowsAt.of_sealCur h13)).size
+    have aIJ : SGrows sI sJ := SGrowsAt.of_grows gIJ
+    have gIN : SGrows sI sN :=
+      SGrowsAt.trans aIJ (aJN.mono aIJ.size)
+    have hpN : ProtectedAt (exitId :: postId :: joins) sN.fn :=
+      ProtectedAt.forward hpI gIN
+    have gbody : SGrows sN sO := trScope_grows fenv
+      (env.setMany (modifiedX env [post, body]) hParams)
+      (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets body
+      sN bodyEnv sO h15
+    have hpO : ProtectedAt (exitId :: postId :: joins) sO.fn :=
+      ProtectedAt.forward hpN gbody
+    have htrB : trStmt fenv
+        (env.setMany (modifiedX env [post, body]) hParams)
+        (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets
+        (.block body) sN = some (bodyEnv, sO) := by
+      rw [trStmt]
+      exact h15
+    have hvalidO : CurValid sO := (trStmt_cur hvalidN htrB).1
+    have tailBody :
+        Completes f sO.fn (exitId :: postId :: joins) ∧
+        CurPlaced f sO.fn ∧
+        (bodyEnv = none → CurFinal f sO.fn) := by
+      cases bodyEnv with
+      | none =>
+        change (do
+          moveTo postId
+          let envP := env.setMany (modifiedX env [post, body]) postParams
+          let renvP ← trScope fenv envP none rets post
+          if let some envP' := renvP then
+            let xvP ← edgeArgs envP' (modifiedX env [post, body])
+            sealCur (.jump ⟨hId, xvP⟩)
+          moveTo exitId
+          pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sO =
+            some (renv, s₁) at htr
+        obtain ⟨uP, sP, h16, htr⟩ := M.bind_inv htr
+        obtain ⟨postEnv, sQ, h17, htr⟩ := M.bind_inv htr
+        have gp := trScope_grows fenv
+          (env.setMany (modifiedX env [post, body]) postParams) none rets post
+          sP postEnv sQ h17
+        have hcP : Completes f sP.fn (exitId :: postId :: joins) := by
+          cases postEnv with
+          | none =>
+            change (do
+              moveTo exitId
+              pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sQ =
+                some (renv, s₁) at htr
+            obtain ⟨uR, sR, h18, htr⟩ := M.bind_inv htr
+            obtain ⟨-, hs₁⟩ := M.pure_inv htr
+            subst s₁
+            have hcQ : Completes f sQ.fn (exitId :: postId :: joins) :=
+              Completes.of_moveTo_protected (by simp) h18
+                ((hcompl.protect postId).protect exitId)
+            exact SGrowsAt.completes_of gp hcQ
+          | some envP =>
+            obtain ⟨xvP, sR, h18, htr⟩ := M.bind_inv htr
+            obtain ⟨uS, sS, h19, htr⟩ := M.bind_inv htr
+            obtain ⟨uT, sT, h20, htr⟩ := M.bind_inv htr
+            obtain ⟨-, hs₁⟩ := M.pure_inv htr
+            subst s₁
+            have hcS : Completes f sS.fn (exitId :: postId :: joins) :=
+              Completes.of_moveTo_protected (by simp) h20
+                ((hcompl.protect postId).protect exitId)
+            have gQS : SGrows sQ sS :=
+              (SGrowsAt.of_grows (Grows.of_liftO h18)).trans
+                (SGrowsAt.of_sealCur h19)
+            exact SGrowsAt.completes_of gp
+              (SGrowsAt.completes_of gQS hcS)
+        have hpostNe : sO.fn.curId ≠ postId := fun he =>
+          hpO.away (by simp [he])
+        have hcurO0 := trScope_none_cur_nil fenv
+          (env.setMany (modifiedX env [post, body]) hParams)
+          (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets body
+          sN sO h15
+        have hcomplO := Completes.of_moveTo_protected (by simp) h16 hcP
+        have hfinO := curFinal_of_move_grows h16 hpostNe hpO.away
+          (SGrows.rfl' sP) hcP
+        exact ⟨hcomplO,
+          CurPlaced.of_moveTo_empty hvalidO hcurO0 hpostNe h16 hpO.away hcP,
+          fun _ => hfinO⟩
+      | some envB =>
+        obtain ⟨xvB, sP, h16, htr⟩ := M.bind_inv htr
+        obtain ⟨uQ, sQ, h17, htr⟩ := M.bind_inv htr
+        obtain ⟨uR, sR, h18, htr⟩ := M.bind_inv htr
+        obtain ⟨postEnv, sS, h19, htr⟩ := M.bind_inv htr
+        have gp := trScope_grows fenv
+          (env.setMany (modifiedX env [post, body]) postParams) none rets post
+          sR postEnv sS h19
+        have hcR : Completes f sR.fn (exitId :: postId :: joins) := by
+          cases postEnv with
+          | none =>
+            change (do
+              moveTo exitId
+              pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sS =
+                some (renv, s₁) at htr
+            obtain ⟨uT, sT, h20, htr⟩ := M.bind_inv htr
+            obtain ⟨-, hs₁⟩ := M.pure_inv htr
+            subst s₁
+            have hcS : Completes f sS.fn (exitId :: postId :: joins) :=
+              Completes.of_moveTo_protected (by simp) h20
+                ((hcompl.protect postId).protect exitId)
+            exact SGrowsAt.completes_of gp hcS
+          | some envP =>
+            obtain ⟨xvP, sT, h20, htr⟩ := M.bind_inv htr
+            obtain ⟨uU, sU, h21, htr⟩ := M.bind_inv htr
+            obtain ⟨uW, sW, h22, htr⟩ := M.bind_inv htr
+            obtain ⟨-, hs₁⟩ := M.pure_inv htr
+            subst s₁
+            have hcU : Completes f sU.fn (exitId :: postId :: joins) :=
+              Completes.of_moveTo_protected (by simp) h22
+                ((hcompl.protect postId).protect exitId)
+            have gSU : SGrows sS sU :=
+              (SGrowsAt.of_grows (Grows.of_liftO h20)).trans
+                (SGrowsAt.of_sealCur h21)
+            exact SGrowsAt.completes_of gp
+              (SGrowsAt.completes_of gSU hcU)
+        have hcQ : Completes f sQ.fn (exitId :: postId :: joins) :=
+          Completes.of_moveTo_protected (by simp) h18 hcR
+        have gOQ : SGrows sO sQ :=
+          (SGrowsAt.of_grows (Grows.of_liftO h16)).trans
+            (SGrowsAt.of_sealCur h17)
+        have hpostNe : sQ.fn.curId ≠ postId := by
+          have hpQ := ProtectedAt.forward hpO gOQ
+          exact fun he => hpQ.away (by simp [he])
+        have hfinQ := curFinal_of_move_grows h18 hpostNe
+          (ProtectedAt.forward hpO gOQ).away (SGrows.rfl' sR) hcR
+        have hsealP : CurOK f sP.fn ⟨[], .jump ⟨postId, xvB⟩⟩ :=
+          curOK_of_sealCur hfinQ h17
+        have hsP : sP = sO := (M.edgeArgs_inv h16).2
+        subst sP
+        exact ⟨SGrowsAt.completes_of gOQ hcQ, ⟨_, hsealP⟩,
+          fun hbad => nomatch hbad⟩
+    have hfrN : RegsFresh RA sN.fn := hfrA.mono aJN.nextVal
+    have hbodySim := ihb fenv
+      (env.setMany (modifiedX env [post, body]) hParams) RA
+      (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets
+      sN sO bodyEnv (exitId :: postId :: joins) hfe
+      (henv.mono hleA) (huniq.setMany _ _) hfrN hvalidN hpN
+      tailBody.1 tailBody.2.1 tailBody.2.2 htrB
+    have hpre := hsimC.trans hsimB
+    have gGNall : SGrowsAt 0 sG sN :=
+      (((((SGrowsAt.of_sealCur (N := 0) h8).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)).trans
+        (SGrowsAt.of_grows gIJ)).trans (aJL.mono (Nat.zero_le _))).trans
+        (SGrowsAt.of_sealCur h13)).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h14)
+    have finish : ∀ {sPost sPostOut : BState} {postEnv : Option VMap}
+        {RB : Regs} {vals : List U256},
+        SGrowsAt 0 sO sPost → sPost.fn.curId = postId → sPost.fn.cur = [] →
+        CurValid sPost →
+        trScope fenv (env.setMany (modifiedX env [post, body]) postParams)
+            none rets post sPost = some (postEnv, sPostOut) →
+        (do
+          if let some envP := postEnv then
+            let xvP ← edgeArgs envP (modifiedX env [post, body])
+            sealCur (.jump ⟨hId, xvP⟩)
+          moveTo exitId
+          pure (some (env.setMany (modifiedX env [post, body]) exitParams)))
+            sPostOut = some (renv, s₁) →
+        Regs.Le RA RB → Regs.BelowEq sN.fn.nextVal RA RB →
+        RegsFresh RB sO.fn →
+        List.Forall₂ (fun x v => YulSemantics.VEnv.get Vb x = some v)
+          (modifiedX env [post, body]) vals →
+        (∀ res, JumpTo (model := model) P f postId vals RB stb res →
+          ExecFrom (model := model) P f sI.fn R st res) →
+        LHOut (model := model) P f rets sA.fn.nextVal sI s₁ R
+          renv Vp st stp .halt := by
+      intro sPost sPostOut postEnv RB vals gOP hcurPost hcurPost0 hvalidPost
+        htrPost htailPost hleB hbelowB hfrB hvals hcont
+      have gpost : SGrows sPost sPostOut := trScope_grows fenv
+        (env.setMany (modifiedX env [post, body]) postParams) none rets post
+        sPost postEnv sPostOut htrPost
+      have hpostBase : s₀.fn.blocks.size ≤ postId := by
+        rw [SGrowsAt.newBlock_id h7]
+        exact a0F.size
+      have hpPost : ProtectedAt (exitId :: joins) sPost.fn := by
+        refine ⟨?_, ?_⟩
+        · intro i hi
+          apply Nat.lt_of_lt_of_le (hpO.below i ?_) gOP.size
+          simp only [List.mem_cons] at hi ⊢
+          rcases hi with rfl | hi
+          · exact Or.inl rfl
+          · exact Or.inr (Or.inr hi)
+        · rw [hcurPost]
+          simp only [List.mem_cons, not_or]
+          exact ⟨Nat.ne_of_gt hexitPost, fun hmem =>
+            Nat.not_lt_of_ge hpostBase (hp.below postId hmem)⟩
+      have hpPostOut : ProtectedAt (exitId :: joins) sPostOut.fn :=
+        ProtectedAt.forward hpPost gpost
+      have htrPostStmt : trStmt fenv
+          (env.setMany (modifiedX env [post, body]) postParams) none rets
+          (.block post) sPost = some (postEnv, sPostOut) := by
+        rw [trStmt]
+        exact htrPost
+      have hvalidPostOut : CurValid sPostOut :=
+        (trStmt_cur hvalidPost htrPostStmt).1
+      obtain ⟨hcomplPostOut, hcpPostOut, hfinPostOut⟩ :=
+        loopPost_back hvalidPostOut hpPostOut htrPost htailPost hcompl
+      have hcomplPost : Completes f sPost.fn (exitId :: joins) :=
+        SGrowsAt.completes_of gpost hcomplPostOut
+      obtain ⟨hlenP, hrangeP, hsF⟩ := M.mapM_freshVal_length h6
+      have hndP : postParams.Nodup := by
+        rw [hrangeP]
+        exact M.nodup_range' _ _
+      have fI : SGrowsAt 0 sF sI :=
+        ((SGrowsAt.of_newBlock (N := 0) h7).trans
+          (SGrowsAt.of_sealCur h8)).trans
+          (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h9)
+      have fN : SGrowsAt 0 sF sN := fI.trans
+        (((SGrowsAt.of_grows (N := 0) gIJ).trans
+          (aJL.mono (Nat.zero_le _))).trans
+          (SGrowsAt.of_sealCur h13) |>.trans
+            (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h14))
+      have hparamsLtN : ∀ i ∈ postParams, i < sN.fn.nextVal := by
+        intro i hi
+        rw [hrangeP] at hi
+        exact Nat.lt_of_lt_of_le
+          (by simpa [hsF] using (M.mem_range'_bounds hi).2) fN.nextVal
+      have hparamsLtO : ∀ i ∈ postParams, i < sO.fn.nextVal := by
+        intro i hi
+        exact Nat.lt_of_lt_of_le (hparamsLtN i hi) gbody.nextVal
+      have hnoneP : ∀ i ∈ postParams, RB i = none := by
+        intro i hi
+        rw [hbelowB i (hparamsLtN i hi)]
+        have hiRange := hi
+        rw [hrangeP] at hiRange
+        have hiLtI : i < sI.fn.nextVal := Nat.lt_of_lt_of_le
+          (by simpa [hsF] using (M.mem_range'_bounds hiRange).2) fI.nextVal
+        rw [hbelowA i hiLtI]
+        apply hclean i
+        · exact Nat.le_trans
+            (((SGrowsAt.of_grows (N := 0) gAB).trans
+              (SGrowsAt.of_newBlock h3)).trans (SGrowsAt.of_grows gCD) |>.trans
+              (SGrowsAt.of_newBlock h5)).nextVal
+            (M.mem_range'_bounds hiRange).1
+        · intro hiH
+          rw [hrangeH] at hiH
+          have hu := (M.mem_range'_bounds hiH).2
+          have hl := (M.mem_range'_bounds hiRange).1
+          have hnextCB : sC.fn.nextVal = sB.fn.nextVal := by
+            rw [M.newBlock_apply] at h3
+            exact (congrArg (fun z => z.fn.nextVal)
+              (M.some_pair_inj h3).2).symm
+          have hendH : sA.fn.nextVal + (modifiedX env [post, body]).length =
+              sC.fn.nextVal := by rw [hnextCB, hsB]
+          have huC : i < sC.fn.nextVal := by rwa [hendH] at hu
+          have hCE : sC.fn.nextVal ≤ sE.fn.nextVal :=
+            (SGrowsAt.of_grows (N := 0) gCD).trans
+              (SGrowsAt.of_newBlock h5) |>.nextVal
+          exact Nat.not_lt_of_ge (Nat.le_trans hCE hl) huC
+      have hbaseP : ∀ i ∈ postParams, sA.fn.nextVal ≤ i := by
+        intro i hi
+        rw [hrangeP] at hi
+        exact Nat.le_trans
+          (((SGrowsAt.of_grows (N := 0) gAB).trans
+            (SGrowsAt.of_newBlock h3)).trans (SGrowsAt.of_grows gCD) |>.trans
+            (SGrowsAt.of_newBlock h5)).nextVal
+          (M.mem_range'_bounds hi).1
+      have gGPost : SGrowsAt 0 sG sPost :=
+        (gGNall.trans (gbody.mono (Nat.zero_le _))).trans gOP
+      obtain ⟨pb, hpb, hpp⟩ := gGPost.params postId
+        ⟨postParams, [], .ret []⟩ (newBlock_target_get h7)
+      have hnextOP : sO.fn.nextVal ≤ sPost.fn.nextVal := gOP.nextVal
+      have hVbody : YulSemantics.VEnv.setMany V
+          (modifiedX env [post, body]) vals = Vb := by
+        have hnames : VEnv.names Vb = VEnv.names V := by
+          have hm := (mod_sim hbodyStep).1
+          simpa [declsOfStmt] using hm
+        have hmod : ModOut [] (modStmts [] body) V Vb := by
+          have hm := (mod_sim hbodyStep).2 [] (localsOK_nil V)
+          simpa [modStmt] using hm
+        exact setMany_eq_of_modOut (xs := modifiedX env [post, body]) henv
+          (huniq.setMany _ _) hnames hmod hvals
+          (fun x hx => by
+            rw [VMap.names_setMany]
+            exact modifiedX_mem_names hx)
+          (fun x hx hm => mem_modifiedX (by
+            rw [VMap.names_setMany] at hx
+            exact hx) (by
+            simp only [List.flatMap_cons, List.flatMap_nil, List.append_nil]
+            exact List.mem_append_right _ hm))
+      have hleBody : Regs.Le R RB := hleA.trans hleB
+      have hbelowBody : Regs.BelowEq sA.fn.nextVal R RB :=
+        (hbelowA.mono aAI.nextVal).trans
+          (hbelowB.mono (Nat.le_trans aAI.nextVal
+            (Nat.le_trans (SGrowsAt.of_grows (N := 0) gIJ).nextVal
+              aJN.nextVal)))
+      obtain ⟨RP, hleP, hbelowP, hfrP, henvP, hsimP⟩ :=
+        sim_loopPostEntry (model := model) (P := P) (f := f) (sBody := sO)
+          (base := sA.fn.nextVal) henv hVbody hleBody hbelowBody hndP hnoneP
+          hbaseP hparamsLtO hfrB hnextOP hcomplPost hpb hpp hcurPost
+          hcurPost0 (by rw [hlenP]; exact hvals.length_eq) hcont
+      rw [VMap.setMany_overwrite env (modifiedX_nodup huniq _)
+        hlenH.symm hlenP.symm] at henvP
+      have hpostHalt := ihpost fenv
+        (env.setMany (modifiedX env [post, body]) postParams) RP none rets
+        sPost sPostOut postEnv (exitId :: joins) hfe henvP
+        (huniq.setMany _ _) hfrP hvalidPost hpPost hcomplPostOut hcpPostOut
+        hfinPostOut htrPostStmt
+      exact hsimP (.halt stp) hpostHalt
+    rcases hob with rfl | rfl
+    · obtain ⟨envB, RB, hbodyEnv, hleB, hbelowB, hfrB, henvB, _huniqB,
+          hsimBody⟩ := hbodySim
+      obtain rfl : bodyEnv = some envB := hbodyEnv
+      obtain ⟨xvB, sP, h16, htr⟩ := M.bind_inv htr
+      obtain ⟨uQ, sQ, h17, htr⟩ := M.bind_inv htr
+      obtain ⟨uR, sR, h18, htr⟩ := M.bind_inv htr
+      obtain ⟨postEnv, sS, h19, htailPost⟩ := M.bind_inv htr
+      obtain ⟨rfl, vals, hgetB, hvals⟩ := edgeArgs_ok henvB h16
+      have gOQ : SGrows sP sQ :=
+        (SGrowsAt.of_grows (Grows.of_liftO h16)).trans
+          (SGrowsAt.of_sealCur h17)
+      have hpQ := ProtectedAt.forward hpO gOQ
+      have gp := trScope_grows fenv
+        (env.setMany (modifiedX env [post, body]) postParams) none rets post
+        sR postEnv sS h19
+      have gQR : SGrowsAt 0 sQ sR :=
+        SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) h18
+      have hvalidR : CurValid sR := CurValid.of_moveTo
+        (Nat.lt_of_lt_of_le (newBlock_target_lt h7)
+          ((gGNall.trans (gbody.mono (Nat.zero_le _))).trans
+            (gOQ.mono (Nat.zero_le _))).size)
+        h18
+      have hpostBase : s₀.fn.blocks.size ≤ postId := by
+        rw [SGrowsAt.newBlock_id h7]
+        exact a0F.size
+      have hpRPost : ProtectedAt (exitId :: joins) sR.fn := by
+        refine ⟨?_, ?_⟩
+        · intro i hi
+          have hi' : i ∈ exitId :: postId :: joins := by
+            simp only [List.mem_cons] at hi ⊢
+            rcases hi with rfl | hi
+            · exact Or.inl rfl
+            · exact Or.inr (Or.inr hi)
+          exact Nat.lt_of_lt_of_le (hpQ.below i hi') gQR.size
+        · have hcurR : sR.fn.curId = postId := by
+            rw [M.moveTo_apply] at h18
+            exact (congrArg (fun z => z.fn.curId)
+              (M.some_pair_inj h18).2).symm
+          rw [hcurR]
+          simp only [List.mem_cons, not_or]
+          exact ⟨Nat.ne_of_gt hexitPost, fun hmem =>
+            Nat.not_lt_of_ge hpostBase (hp.below postId hmem)⟩
+      have hvalidS : CurValid sS :=
+        (trStmt_cur hvalidR (by rw [trStmt]; exact h19)).1
+      have hpS : ProtectedAt (exitId :: joins) sS.fn :=
+        ProtectedAt.forward hpRPost gp
+      have hback := loopPost_back hvalidS hpS h19 htailPost hcompl
+      have hcR := (SGrowsAt.completes_of gp hback.1).protect postId
+      have hpQ' : ProtectedAt (postId :: exitId :: joins) sQ.fn := by
+        refine ⟨?_, ?_⟩
+        · intro i hi
+          apply hpQ.below i
+          simp only [List.mem_cons] at hi ⊢
+          rcases hi with rfl | rfl | hi
+          · exact Or.inr (Or.inl rfl)
+          · exact Or.inl rfl
+          · exact Or.inr (Or.inr hi)
+        · intro hi
+          apply hpQ.away
+          simp only [List.mem_cons] at hi ⊢
+          rcases hi with h | h | h
+          · exact Or.inr (Or.inl h)
+          · exact Or.inl h
+          · exact Or.inr (Or.inr h)
+      have hfinQ := curFinal_of_move_grows h18
+        (fun he => hpQ'.away (by simp [he])) hpQ'.away
+        (SGrows.rfl' sR) hcR
+      have hcurJump : CurOK f sP.fn ⟨[], .jump ⟨postId, xvB⟩⟩ :=
+        curOK_of_sealCur hfinQ h17
+      have hcont : ∀ res, JumpTo (model := model) P f postId vals RB stb res →
+          ExecFrom (model := model) P f sI.fn R st res := by
+        intro res hj
+        exact hpre res (hsimBody res (execFrom_jump hcurJump hgetB hj))
+      exact finish
+        (((SGrowsAt.of_grows (N := 0) (Grows.of_liftO h16)).trans
+          (SGrowsAt.of_sealCur h17)).trans
+          (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) h18))
+        (by rw [M.moveTo_apply] at h18
+            exact (congrArg (fun z => z.fn.curId) (M.some_pair_inj h18).2).symm)
+        (by rw [M.moveTo_apply] at h18
+            simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj h18).2)
+        (CurValid.of_moveTo
+          (Nat.lt_of_lt_of_le (newBlock_target_lt h7)
+            ((gGNall.trans (gbody.mono (Nat.zero_le _))).trans
+              (gOQ.mono (Nat.zero_le _))).size)
+          h18)
+        h19 htailPost hleB hbelowB hfrB hvals hcont
+    · obtain ⟨lc, RB, vals, hlc, hleB, hbelowB, hfrB, hvals, hcontB⟩ :=
+        hbodySim
+      have hlc' : lc = ⟨exitId, postId, modifiedX env [post, body]⟩ :=
+        Option.some.inj hlc.symm
+      subst lc
+      cases bodyEnv with
+      | none =>
+        change (do
+          moveTo postId
+          let envP := env.setMany (modifiedX env [post, body]) postParams
+          let renvP ← trScope fenv envP none rets post
+          if let some envP' := renvP then
+            let xvP ← edgeArgs envP' (modifiedX env [post, body])
+            sealCur (.jump ⟨hId, xvP⟩)
+          moveTo exitId
+          pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sO =
+            some (renv, s₁) at htr
+        obtain ⟨uP, sP, h16, htr⟩ := M.bind_inv htr
+        obtain ⟨postEnv, sQ, h17, htailPost⟩ := M.bind_inv htr
+        have hcont : ∀ res,
+            JumpTo (model := model) P f postId vals RB stb res →
+            ExecFrom (model := model) P f sI.fn R st res :=
+          fun res hj => hpre res (hcontB res hj)
+        exact finish (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) h16)
+          (by rw [M.moveTo_apply] at h16
+              exact (congrArg (fun z => z.fn.curId) (M.some_pair_inj h16).2).symm)
+          (by rw [M.moveTo_apply] at h16
+              simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj h16).2)
+          (CurValid.of_moveTo
+            (Nat.lt_of_lt_of_le (newBlock_target_lt h7)
+              (gGNall.trans (gbody.mono (Nat.zero_le _))).size) h16)
+          h17 htailPost hleB hbelowB hfrB hvals hcont
+      | some envB =>
+        obtain ⟨xvB, sP, h16, htr⟩ := M.bind_inv htr
+        obtain ⟨uQ, sQ, h17, htr⟩ := M.bind_inv htr
+        obtain ⟨uR, sR, h18, htr⟩ := M.bind_inv htr
+        obtain ⟨postEnv, sS, h19, htailPost⟩ := M.bind_inv htr
+        have gOQ : SGrows sO sQ :=
+          (SGrowsAt.of_grows (Grows.of_liftO h16)).trans
+            (SGrowsAt.of_sealCur h17)
+        have hcont : ∀ res,
+            JumpTo (model := model) P f postId vals RB stb res →
+            ExecFrom (model := model) P f sI.fn R st res :=
           fun res hj => hpre res (hcontB res hj)
         exact finish
           ((gOQ.mono (Nat.zero_le _)).trans
