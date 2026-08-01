@@ -48,7 +48,7 @@ local notation "yulD" => evmWithExternal model.calls model.creates
 /-- **Construction soundness**: if the construction accepts `prog` and the
 Yul semantics runs it, the SSA program runs to the same final state and
 outcome. Proved in `SsaCfg/OfYulSound.lean` (modulo its single declared
-frontier lemma, the `trScope_sim` derivation induction); non-local
+frontier lemma, the `trScope_sim_of_fresh` derivation induction); non-local
 top-level outcomes are discharged as impossible there. -/
 theorem ofBlock_sound {prog : YulSemantics.Block Op} {P : Prog}
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}

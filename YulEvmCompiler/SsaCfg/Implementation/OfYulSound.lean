@@ -14810,7 +14810,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     change LOut (model := model) P f funs V st c post body Vb stb .halt
     simpa using sim_loopBodyNonNormal hfuncs ihc hb ihb hnz (Or.inl rfl)
 
-/--
+/-!
 **The construction simulation — the remaining hole.**
 
 Obligation: by induction on the source `Step` derivation (one
@@ -14904,50 +14904,19 @@ for the `if`-false and loop-exit edges, which pass a variable its own current
 value) — and the user-call pair `callOk`/`callHalt` (`FMap.get_ok`, `trFunc`,
 and a fresh register file for the callee).
 -/
-theorem trScope_sim {P : Prog} {f : Func}
-    {funs : YulSemantics.FunEnv yulD} {fenv : FMap}
-    {V V' : VEnv yulD} {env : VMap} {R : Regs}
-    {lctx : Option LoopCtx} {rets : Option (List Ident)}
-    {body : List (Stmt Op)} {s₀ s₁ : BState} {renv : Option VMap}
-    {doneFuncs : Array (Option Func)}
-    {yst yst' : EvmState} {o : Outcome}
-    (_hwf : P.wfCheck = true)
-    (_hcompl : Completes f s₁.fn)
-    (_hfuncs : FuncTableComplete P doneFuncs)
-    (_hfe : FEnvOK (model := model) P funs fenv)
-    (_henv : EnvOK (model := model) env V R)
-    (_huniq : env.Unique)
-    (_htr : trScope fenv env lctx rets body s₀ = some (renv, s₁))
-    (_hstep : YulSemantics.ExecStmt yulD funs V yst (.block body) V' yst' o) :
-    SOut (model := model) P f lctx rets s₀ s₁ R renv V' yst yst' o := by
-  -- **This statement is not provable — it is false as written.**  `SOut`'s
-  -- `normal` clause asserts `∃ R₁, Regs.Le R R₁ ∧ RegsFresh R₁ s₁.fn`, so it
-  -- forces every register `R` binds to be below `s₁.fn.nextVal`.  Nothing in
-  -- the premises constrains `R` at all.  Concretely, take `body := []`,
-  -- `env := []`, `V := []`, `fenv := []`, `funs := []`, `s₀ = s₁ = initBState`
-  -- (so `trScope … [] initBState = some (some [], initBState)`), any `f` with
-  -- `Completes f initBState.fn` (e.g. `f.blocks := #[]`… `Completes` is
-  -- vacuous when the builder has no blocks beyond the current one), and
-  -- `R := fun _ => some 0`.  Every premise holds and the conclusion demands
-  -- `R₁ = Regs.empty` while `Regs.Le R R₁` demands `R₁ 0 = some 0`.
-  --
-  -- Three further premises are equally missing (each independent of the ones
-  -- listed above, and each demanded by `Motive`'s `.stmt` clause):
-  --   * `CurValid s₀`         — `s₀.fn.curId < s₀.fn.blocks.size`;
-  --   * `CurPlaced f s₁.fn`   — the block the scope ends in is placed in `f`
-  --                             (`Completes` deliberately exempts it);
-  --   * `renv = none → CurFinal f s₁.fn` for the diverting case.
-  --
-  -- `trScope_sim_of_fresh` below is this theorem with exactly those four
-  -- premises added; it is proved outright from `sim`, and `ofBlock_sound'`
-  -- now uses it (discharging all four at the top-level instantiation, where
-  -- `R = Regs.empty` and `s₀ = initBState`).  Deleting this declaration in
-  -- favour of that one is a one-line change; it is left in place only because
-  -- the statement was pinned.
-  sorry
+/-! `trScope_sim` (the scope wrapper WITHOUT register-freshness premises) was
+deleted: the statement is false as written.  `SOut.normal` asserts
+`∃ R₁, Regs.Le R R₁ ∧ RegsFresh R₁ s₁.fn`, yet nothing constrained `R`:
+with `body := []`, empty environments, `s₀ = s₁ = initBState`, and
+`R := fun _ => some 0`, every premise holds while the conclusion forces both
+`R₁ = Regs.empty` and `R₁ 0 = some 0`.  `CurValid s₀`, `CurPlaced f s₁.fn`,
+and `renv = none → CurFinal f s₁.fn` were likewise underivable.
+`trScope_sim_of_fresh` below is that statement with exactly the four missing
+premises added; `ofBlock_sound'` uses it, discharging all four at the
+top-level instantiation (`R = Regs.empty`, `s₀ = initBState`). -/
 
-/-- **The scope wrapper, with the premises `Motive` actually needs.**  Same
-conclusion as `trScope_sim`, plus the four facts that statement omits.  Every
+/-- **The scope wrapper, with the premises `Motive` actually needs.**  The
+conclusion of the deleted false wrapper above, plus the four facts it omitted.  Every
 one of them holds at the top-level instantiation in `ofBlock_sound'`. -/
 theorem trScope_sim_of_fresh {P : Prog} {f : Func}
     {funs : YulSemantics.FunEnv yulD} {fenv : FMap}
