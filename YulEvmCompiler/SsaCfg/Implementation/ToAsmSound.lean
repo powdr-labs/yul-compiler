@@ -2390,6 +2390,54 @@ private theorem placed_of_split (pre : List Asm) {lbl : Label}
   rw [h2]; exact findLabel_boundary (by rw [← h2]; exact hnd)
 
 omit model in
+/-- `emitFunc` resets the layout table before emitting any block: the state the
+block fold starts from has an empty table. (Additive companion to
+`emitFunc_inv`, which does not record this.) -/
+theorem emitFunc_inv_fresh {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
+    {fidx : Option Nat} {f : Func} {n : ToAsm.EmitSt} {code : List Asm}
+    {n' : ToAsm.EmitSt}
+    (h : ToAsm.emitFunc P L ord fidx f n = some (code, n')) :
+    f.entry = 0 ∧ ∃ (n₀ : ToAsm.EmitSt) (liveIn : Array (List ValId)),
+      (∀ bid : BlockId, n₀.layouts[bid]? = none) ∧
+      ToAsm.liveInSets f = some liveIn ∧
+      (((List.range f.blocks.size).zip f.blocks.toList).foldlM (init := ([] : List Asm))
+        (fun acc (p : Nat × Block) => do
+          let a ← ToAsm.emitBlock P L ord fidx f liveIn p.1 p.2
+          pure (acc ++ a))) n₀ = some (code, n') := by
+  rw [ToAsm.emitFunc] at h
+  dsimp only at h
+  split at h
+  · exact absurd h (by simp [ToAsm.liftE])
+  · rename_i hne
+    obtain ⟨u, n₀, hreset, h1⟩ := E_bind_inv h
+    have hn₀ : n₀ = { n with layouts := (∅ : Std.HashMap BlockId (List SSlot)) } := by
+      have h5 : some ((u, { n with layouts := (∅ : Std.HashMap BlockId (List SSlot)) }) :
+          Unit × ToAsm.EmitSt) = some (u, n₀) := hreset
+      exact (((Prod.mk.injEq ..).mp (Option.some.inj h5)).2).symm
+    obtain ⟨liveIn, hlive, h2⟩ := liftE_bind_inv h1
+    split at h2
+    · exact absurd h2 (by simp [ToAsm.liftE])
+    · refine ⟨not_ne_iff.mp hne, n₀, liveIn, ?_, hlive, h2⟩
+      intro bid
+      rw [hn₀]
+      simp
+
+omit model in
+/-- Monotonicity of a block fold that never touches the entry block: away from
+the entry, `emitBlock`'s side condition is vacuous. -/
+theorem emitFunc_blocks_mono {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
+    {fidx : Option Nat} {f : Func} {liveIn : Array (List ValId)}
+    (l : List (Nat × Block)) (hne : ∀ p ∈ l, p.1 ≠ f.entry) :
+    ∀ (acc0 : List Asm) (s : ToAsm.EmitSt) (code : List Asm) (s' : ToAsm.EmitSt),
+      (l.foldlM (init := acc0) (fun acc (p : Nat × Block) => do
+        let a ← ToAsm.emitBlock P L ord fidx f liveIn p.1 p.2
+        pure (acc ++ a))) s = some (code, s') → TableSub s s' := by
+  intro acc0 s code s' h
+  exact foldlM_mono (fun p => ToAsm.emitBlock P L ord fidx f liveIn p.1 p.2)
+    l acc0 s code s'
+    (fun a ha sp r sq he => emitBlock_mono (fun hb => absurd hb (hne a ha)) he) h
+
+omit model in
 /-- **`emitProg` places its fragments**: the accepted program is the elision of
 a raw emission in which every block's body sits right after its label, the
 terminal label is last, and `main`'s entry label is first — the `SimAsm.lean`
