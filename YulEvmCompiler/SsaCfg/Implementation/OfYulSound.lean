@@ -172,6 +172,18 @@ theorem Le.set {R : Regs} {x : ValId} (v : U256) (hfresh : R x = none) :
   · exact absurd (hxy ▸ hy) (by rw [hfresh]; simp)
   · rw [set_other R v hxy]; exact hy
 
+/-- Applying the same binding to two related register files preserves the
+extension relation. -/
+theorem Le.setBoth {R R' : Regs} (h : Le R R') (x : ValId) (v : U256) :
+    Le (R.set x v) (R'.set x v) := by
+  intro y w hy
+  by_cases hyx : y = x
+  · subst y
+    simpa using hy
+  · rw [set_other R' v hyx]
+    rw [set_other R v hyx] at hy
+    exact h y w hy
+
 /-! ### `getMany` -/
 
 theorem getMany_eq_some_iff {R : Regs} {xs : List ValId} {vs : List U256} :
@@ -270,6 +282,21 @@ theorem Le.setMany : ∀ {xs : List ValId} {vs : List U256} {R : Regs},
       have hyx : y ≠ x := fun h => hxni (h ▸ hy)
       rw [set_other R v hyx]
       exact hfresh y (List.mem_cons_of_mem _ hy)
+
+/-- Applying the same list of bindings to related files preserves the
+extension relation. -/
+theorem Le.setManyBoth : ∀ {xs : List ValId} {vs : List U256} {R R' : Regs},
+    Le R R' → Le (R.setMany xs vs) (R'.setMany xs vs) := by
+  intro xs
+  induction xs with
+  | nil => intro vs R R' h; simpa using h
+  | cons x xs ih =>
+    intro vs R R' h
+    cases vs with
+    | nil => simpa using h
+    | cons v vs =>
+      rw [setMany_cons, setMany_cons]
+      exact ih (h.setBoth x v)
 
 /-- Reading back a freshly bound parameter list. -/
 theorem getMany_setMany_self : ∀ {xs : List ValId} {vs : List U256} {R : Regs},
@@ -4114,6 +4141,47 @@ def JumpTo (P : Prog) (f : Func) (bid : BlockId) (vals : List U256) (R : Regs)
     ∧ Exec (model := model) P f (R.setMany tb.params vals) st
         ⟨tb.instrs, tb.term⟩ res
 
+/-- SSA execution is monotone in already-defined registers.  The generated
+code only reads registers and applies the same bindings on both sides, so
+extra bindings cannot invalidate an execution.  Loop iterations use this to
+re-enter a statically shared header with the register facts accumulated by the
+previous iteration. -/
+theorem Exec.mono {P : Prog} {f : Func} {R R' : Regs} {st : EvmState}
+    {rest : Rest} {res : FRes} (hle : Regs.Le R R')
+    (h : Exec (model := model) P f R st rest res) :
+    Exec (model := model) P f R' st rest res := by
+  induction h generalizing R' with
+  | const h ih =>
+    exact .const (ih (hle.setBoth _ _))
+  | op hargs hb hlen hrest ih =>
+    exact .op (Regs.getMany_mono hle hargs) hb hlen
+      (ih (hle.setManyBoth))
+  | opHalt hargs hb =>
+    exact .opHalt (Regs.getMany_mono hle hargs) hb
+  | call hg hargs hparams heb hbody hlen hrest _ihbody ihrest =>
+    exact .call hg (Regs.getMany_mono hle hargs) hparams heb hbody hlen
+      (ihrest hle.setManyBoth)
+  | callHalt hg hargs hparams heb hbody =>
+    exact .callHalt hg (Regs.getMany_mono hle hargs) hparams heb hbody
+  | jump htarget hargs hlen hbody ih =>
+    exact .jump htarget (Regs.getMany_mono hle hargs) hlen
+      (ih hle.setManyBoth)
+  | branchTrue hc hnz htarget hargs hlen hbody ih =>
+    exact .branchTrue (hle _ _ hc) hnz htarget
+      (Regs.getMany_mono hle hargs) hlen (ih hle.setManyBoth)
+  | branchFalse hc htarget hargs hlen hbody ih =>
+    exact .branchFalse (hle _ _ hc) htarget
+      (Regs.getMany_mono hle hargs) hlen (ih hle.setManyBoth)
+  | ret hvals => exact .ret (Regs.getMany_mono hle hvals)
+  | halt hargs hb => exact .halt (Regs.getMany_mono hle hargs) hb
+
+theorem ExecFrom.mono {P : Prog} {f : Func} {fn : FnState} {R R' : Regs}
+    {st : EvmState} {res : FRes} (hle : Regs.Le R R')
+    (h : ExecFrom (model := model) P f fn R st res) :
+    ExecFrom (model := model) P f fn R' st res := by
+  obtain ⟨rest, hcur, hex⟩ := h
+  exact ⟨rest, hcur, hex.mono hle⟩
+
 namespace SimS
 
 theorem rfl' {P : Prog} {f : Func} {fn : FnState} {R : Regs} {st : EvmState} :
@@ -4268,6 +4336,34 @@ theorem execFrom_jump {P : Prog} {f : Func} {fn : FnState} {R : Regs}
     ExecFrom (model := model) P f fn R st res := by
   obtain ⟨tb, htb, hlen, hexec⟩ := hjmp
   exact ⟨⟨[], .jump e⟩, hcur, .jump htb hg hlen hexec⟩
+
+/-- Converse of `execFrom_jump` when the finished current block is known to
+end at that jump.  This is the loop back-edge bridge: the recursive loop IH
+produces an `ExecFrom` at the original preheader, while the current iteration
+has reached a `JumpTo` into the header.  Uniqueness of the finished current
+block identifies the existential continuation with the known jump. -/
+theorem jumpTo_of_execFrom_jump {P : Prog} {f : Func} {fn : FnState} {R : Regs}
+    {st : EvmState} {e : Edge} {res : FRes}
+    (hcur : CurOK f fn ⟨[], .jump e⟩)
+    (hex : ExecFrom (model := model) P f fn R st res) :
+    ∃ vals, R.getMany e.args = some vals ∧
+      JumpTo (model := model) P f e.target vals R st res := by
+  obtain ⟨b, hb, hib, htb⟩ := hcur
+  obtain ⟨rest, ⟨b', hb', hib', htb'⟩, hexec⟩ := hex
+  have hbb : b' = b := Option.some.inj (hb'.symm.trans hb)
+  subst b'
+  have hi : rest.instrs = [] := by
+    apply List.append_cancel_left
+    simpa only [List.append_nil] using hib'.symm.trans hib
+  have ht : rest.term = .jump e := htb'.symm.trans htb
+  cases rest with
+  | mk instrs term =>
+    simp only at hi ht
+    subst instrs
+    subst term
+    cases hexec with
+    | jump htarget hargs hlen hbody =>
+      exact ⟨_, hargs, ⟨_, htarget, hlen, hbody⟩⟩
 
 /-- A block sealed with `branch c t f`, true edge. -/
 theorem execFrom_branchTrue {P : Prog} {f : Func} {fn : FnState} {R : Regs}
@@ -10727,16 +10823,14 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       (env.setMany (modifiedX env [post, body]) hParams) RH sI sJ cvId
       (exitId :: postId :: joins) hfe henvH hfrH hpI hcJ hcpJ h10
     exact hsimH (.halt st1) hhalt
-  -- Precise iterating-pair boundary: the shared condition/body layout and all
-  -- three reserved-parameter freshness facts are available above.  After a
-  -- normal post, however, `ihr` yields an `ExecFrom` at the original preheader
-  -- while the live CFG back edge is already a `JumpTo hId`.  The missing
-  -- reusable bridge is the converse of `execFrom_jump`: invert the known
-  -- preheader `CurOK ... (.jump ⟨hId, xvals⟩)` and identify its target
-  -- execution with that back-edge `JumpTo`.  `loopPostHalt` shares the prefix
-  -- but stops before this inverse-edge step; it still needs the normal/
-  -- continue body paths unified at `postId` and `EnvOK` rebuilt from
-  -- `postParams` before invoking the post IH.
+  -- Precise iterating-pair boundary: `Exec.mono`/`ExecFrom.mono` and
+  -- `jumpTo_of_execFrom_jump` now provide the inverse preheader/header-edge
+  -- bridge, including the extra register bindings accumulated by an
+  -- iteration.  What remains is the shared body-to-post entry construction:
+  -- unify normal fall-through and `continue` at `postId`, bind `postParams`,
+  -- rebuild `EnvOK`/freshness/below-watermark facts, and invoke the post IH.
+  -- `loopStep` then feeds the recursive IH through the proved inverse-edge
+  -- bridge; `loopPostHalt` stops after the post IH.
   | loopStep => sorry
   | loopPostHalt => sorry
   -- `sim_loopBodyNonNormal` also closes break: it consumes the body's
