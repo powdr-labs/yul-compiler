@@ -7021,6 +7021,61 @@ theorem allocScope_bridge {P : Prog}
   have ho0 : FOwned owned s0 done := FOwned.back_allocScope ha hoAlloc
   exact ⟨FEnvOK.cons hrelOK hfe, ho0⟩
 
+/-- The exact initializer premises consumed by the statement-list clause of
+`Motive`, reconstructed from an enclosing `allocScope` and the completed
+function table. -/
+theorem allocScope_motive_inputs {P : Prog}
+    {doneFuncs : Array (Option Func)}
+    (hfuncs : FuncTableComplete P doneFuncs)
+    {funs : YulSemantics.FunEnv yulD} {fenv : FMap}
+    (hfe : FEnvOK (model := model) P funs fenv)
+    {env : VMap} {lctx : Option LoopCtx} {rets : Option (List Ident)} {d : Bool}
+    {ss : List (Stmt Op)} {s0 sA s1 done : BState}
+    {scope : List (Ident × FuncId)} {r : Option VMap}
+    {owned : List FuncId}
+    (hdone : done.funcs = doneFuncs)
+    (hbound : ∀ i : FuncId, i ∈ owned → i < s0.funcs.size)
+    (ho1 : FOwned owned s1 done)
+    (ha : allocScope ss s0 = some (scope, sA))
+    (ht : trStmts (scope :: fenv) env lctx rets d ss sA = some (r, s1)) :
+    FEnvOK (model := model) P (YulSemantics.hoist yulD ss :: funs)
+        (scope :: fenv)
+      ∧ (∀ i : FuncId, i ∈ stmtFuncIds (scope :: fenv) ss ++ owned →
+          i < sA.funcs.size)
+      ∧ (∀ i : FuncId, i ∈ stmtFuncIds (scope :: fenv) ss →
+          sA.funcs[i]? = some none)
+      ∧ (stmtFuncIds (scope :: fenv) ss ++ owned).Nodup
+      ∧ FOwned owned s0 done := by
+  let selected := stmtFuncIds (scope :: fenv) ss
+  let slots := scope.map Prod.snd
+  have hraw := allocScope_slots ha
+  have hperm : selected.Perm slots :=
+    allocScope_stmtFuncIds_perm hbound ha ht ho1
+  have hslots : ∀ i : FuncId, i ∈ scope.map Prod.snd →
+      sA.funcs[i]? = some none := fun i hi => (hraw.2 i hi).2
+  have hslotsSelected : ∀ i : FuncId,
+      i ∈ stmtFuncIds (scope :: fenv) ss → sA.funcs[i]? = some none := by
+    intro i hi
+    exact hslots i (hperm.mem_iff.mp hi)
+  have hsizeA : s0.funcs.size ≤ sA.funcs.size := (allocScope_funcsOnly ha).2
+  have hboundSelected : ∀ i : FuncId,
+      i ∈ stmtFuncIds (scope :: fenv) ss ++ owned → i < sA.funcs.size := by
+    intro i hi
+    rcases List.mem_append.mp hi with hi | hi
+    · exact lt_size_of_getElem? (hslotsSelected i hi)
+    · exact Nat.lt_of_lt_of_le (hbound i hi) hsizeA
+  have hndSelected : (stmtFuncIds (scope :: fenv) ss).Nodup :=
+    hperm.nodup_iff.mpr hraw.1
+  have hndAll : (stmtFuncIds (scope :: fenv) ss ++ owned).Nodup := by
+    rw [List.nodup_append]
+    refine ⟨hndSelected, ho1.nodup, ?_⟩
+    intro i hi j hj heq
+    subst j
+    have hislot : i ∈ slots := hperm.mem_iff.mp hi
+    exact Nat.not_lt_of_ge (hraw.2 i hislot).1 (hbound i hj)
+  obtain ⟨hfe', ho0⟩ := allocScope_bridge hfuncs hfe hdone hbound ho1 ha ht
+  exact ⟨hfe', hboundSelected, hslotsSelected, hndAll, ho0⟩
+
 /-! ## The residual obligation
 
 Everything above is unconditional. What remains is the derivation induction
@@ -10319,6 +10374,204 @@ theorem LoopLayout.tail_fprefix {fenv : FMap} {env : VMap}
             (FPrefix.of_sealCur h21)).trans (FPrefix.of_moveTo h22)
 
 omit model in
+/-- A complete loop layout preserves every function-table slot that existed at
+its preheader. -/
+theorem LoopLayout.fprefix {fenv : FMap} {env : VMap}
+    {rets : Option (List Ident)} {c : Expr Op} {post body : List (Stmt Op)}
+    {s₀ s₁ : BState} {renv : Option VMap}
+    (layout : LoopLayout fenv env rets c post body s₀ s₁ renv) :
+    FPrefix s₀.funcs.size s₀ s₁ := by
+  have ptail := layout.tail_fprefix
+  rcases layout with
+    ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
+     exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
+     postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
+     bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
+     bodyEnv, sO, h15, htail⟩
+  have p0A : FPrefix s₀.funcs.size s₀ sA := FPrefix.of_edgeArgs h1
+  have p0B := p0A.trans (FPrefix.of_grows (Grows.of_mapM_freshVal h2))
+  have p0C := p0B.trans (FPrefix.of_newBlock h3)
+  have p0D := p0C.trans (FPrefix.of_grows (Grows.of_mapM_freshVal h4))
+  have p0E := p0D.trans (FPrefix.of_newBlock h5)
+  have p0F := p0E.trans (FPrefix.of_grows (Grows.of_mapM_freshVal h6))
+  have p0G := p0F.trans (FPrefix.of_newBlock h7)
+  have p0H := p0G.trans (FPrefix.of_sealCur h8)
+  have p0I := p0H.trans (FPrefix.of_moveTo h9)
+  have p0J := p0I.trans
+    (FPrefix.of_grows (trExpr_grows c fenv
+      (env.setMany (modifiedX env [post, body]) hParams) sI sJ cvId h10))
+  have p0K := p0J.trans (FPrefix.of_newBlock h11)
+  have p0L := p0K.trans (FPrefix.of_edgeArgs h12)
+  have p0M := p0L.trans (FPrefix.of_sealCur h13)
+  have p0N := p0M.trans (FPrefix.of_moveTo h14)
+  have p0O := p0N.trans
+    (trScope_fprefix fenv
+      (env.setMany (modifiedX env [post, body]) hParams)
+      (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets body
+      s₀.funcs.size sN bodyEnv sO (p0N.size (Nat.le_refl _)) h15)
+  exact p0O.trans (ptail.mono (p0O.size (Nat.le_refl _)))
+
+omit model in
+/-- Everything after entering the loop header grows above the loop's entry
+block watermark.  This is the framing fact needed to recover placement of the
+initializer's open continuation from the completed loop layout. -/
+theorem LoopLayout.header_tail_sgrows {fenv : FMap} {env : VMap}
+    {rets : Option (List Ident)} {c : Expr Op} {post body : List (Stmt Op)}
+    {s₀ s₁ : BState} {renv : Option VMap}
+    (layout : LoopLayout fenv env rets c post body s₀ s₁ renv) :
+    SGrowsAt s₀.fn.blocks.size layout.sI s₁ := by
+  rcases layout with
+    ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
+     exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
+     postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
+     bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
+     bodyEnv, sO, h15, htail⟩
+  have g0A : Grows s₀ sA := Grows.of_liftO h1
+  have a0B : SGrowsAt s₀.fn.blocks.size s₀ sB :=
+    (SGrowsAt.of_grows g0A).trans
+      (SGrowsAt.of_grows (Grows.of_mapM_freshVal h2))
+  have a0C := a0B.trans (SGrowsAt.of_newBlock h3)
+  have a0D := a0C.trans (SGrowsAt.of_grows (Grows.of_mapM_freshVal h4))
+  have a0E := a0D.trans (SGrowsAt.of_newBlock h5)
+  have a0F := a0E.trans (SGrowsAt.of_grows (Grows.of_mapM_freshVal h6))
+  have a0G := a0F.trans (SGrowsAt.of_newBlock h7)
+  have a0H := a0G.trans (SGrowsAt.of_sealCur h8)
+  have hheader : s₀.fn.blocks.size ≤ hId := by
+    rw [SGrowsAt.newBlock_id h3]
+    exact a0B.size
+  have a0I := a0H.trans (SGrowsAt.of_moveTo (Or.inl hheader) h9)
+  have aIJ : SGrowsAt s₀.fn.blocks.size sI sJ :=
+    SGrowsAt.of_grows (trExpr_grows c fenv
+      (env.setMany (modifiedX env [post, body]) hParams) sI sJ cvId h10)
+  have aIK := aIJ.trans (SGrowsAt.of_newBlock h11)
+  have aIL := aIK.trans (SGrowsAt.of_edgeArgs h12)
+  have aIM := aIL.trans (SGrowsAt.of_sealCur h13)
+  have hbody : s₀.fn.blocks.size ≤ bodyId := by
+    rw [SGrowsAt.newBlock_id h11]
+    exact Nat.le_trans a0I.size aIJ.size
+  have aIN := aIM.trans (SGrowsAt.of_moveTo (Or.inl hbody) h14)
+  have gbody := trScope_grows fenv
+    (env.setMany (modifiedX env [post, body]) hParams)
+    (some ⟨exitId, postId, modifiedX env [post, body]⟩) rets body
+    sN bodyEnv sO h15
+  have aIO := aIN.trans (gbody.mono (Nat.le_trans a0I.size aIN.size))
+  have hpost : s₀.fn.blocks.size ≤ postId := by
+    rw [SGrowsAt.newBlock_id h7]
+    exact a0F.size
+  have hexit : s₀.fn.blocks.size ≤ exitId := by
+    rw [SGrowsAt.newBlock_id h5]
+    exact a0D.size
+  cases bodyEnv with
+  | none =>
+      change (do
+        moveTo postId
+        let envP := env.setMany (modifiedX env [post, body]) postParams
+        let renvP ← trScope fenv envP none rets post
+        if let some envP' := renvP then
+          let xvP ← edgeArgs envP' (modifiedX env [post, body])
+          sealCur (.jump ⟨hId, xvP⟩)
+        moveTo exitId
+        pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sO =
+          some (renv, s₁) at htail
+      obtain ⟨uP, sP, h16, htail⟩ := M.bind_inv htail
+      obtain ⟨postEnv, sQ, h17, htail⟩ := M.bind_inv htail
+      have aIP := aIO.trans (SGrowsAt.of_moveTo (Or.inl hpost) h16)
+      have gp := trScope_grows fenv
+        (env.setMany (modifiedX env [post, body]) postParams) none rets post
+        sP postEnv sQ h17
+      have aIQ := aIP.trans (gp.mono (Nat.le_trans a0I.size aIP.size))
+      cases postEnv with
+      | none =>
+          obtain ⟨uR, sR, h18, htail⟩ := M.bind_inv htail
+          obtain ⟨uT, sT, h19, htail⟩ := M.bind_inv htail
+          exact ((aIQ.trans (SGrowsAt.of_pure h18)).trans
+            (SGrowsAt.of_moveTo (Or.inl hexit) h19)).trans
+              (SGrowsAt.of_pure htail)
+      | some envP =>
+          obtain ⟨xvP, sR, h18, htail⟩ := M.bind_inv htail
+          obtain ⟨uS, sS, h19, htail⟩ := M.bind_inv htail
+          obtain ⟨uT, sT, h20, htail⟩ := M.bind_inv htail
+          obtain ⟨-, rfl⟩ := M.pure_inv htail
+          exact (((aIQ.trans (SGrowsAt.of_edgeArgs h18)).trans
+            (SGrowsAt.of_sealCur h19)).trans
+              (SGrowsAt.of_moveTo (Or.inl hexit) h20))
+  | some envB =>
+      obtain ⟨xvB, sP, h16, htail⟩ := M.bind_inv htail
+      obtain ⟨uQ, sQ, h17, htail⟩ := M.bind_inv htail
+      obtain ⟨uR, sR, h18, htail⟩ := M.bind_inv htail
+      obtain ⟨postEnv, sS, h19, htail⟩ := M.bind_inv htail
+      have aIR := (((aIO.trans (SGrowsAt.of_edgeArgs h16)).trans
+        (SGrowsAt.of_sealCur h17)).trans
+          (SGrowsAt.of_moveTo (Or.inl hpost) h18))
+      have gp := trScope_grows fenv
+        (env.setMany (modifiedX env [post, body]) postParams) none rets post
+        sR postEnv sS h19
+      have aIS := aIR.trans (gp.mono (Nat.le_trans a0I.size aIR.size))
+      cases postEnv with
+      | none =>
+          obtain ⟨uT, sT, h20, htail⟩ := M.bind_inv htail
+          obtain ⟨uU, sU, h21, htail⟩ := M.bind_inv htail
+          exact ((aIS.trans (SGrowsAt.of_pure h20)).trans
+            (SGrowsAt.of_moveTo (Or.inl hexit) h21)).trans
+              (SGrowsAt.of_pure htail)
+      | some envP =>
+          obtain ⟨xvP, sT, h20, htail⟩ := M.bind_inv htail
+          obtain ⟨uU, sU, h21, htail⟩ := M.bind_inv htail
+          obtain ⟨uW, sW, h22, htail⟩ := M.bind_inv htail
+          obtain ⟨-, rfl⟩ := M.pure_inv htail
+          exact (((aIS.trans (SGrowsAt.of_edgeArgs h20)).trans
+            (SGrowsAt.of_sealCur h21)).trans
+              (SGrowsAt.of_moveTo (Or.inl hexit) h22))
+
+omit model in
+/-- The preheader in a successful loop layout is sealed and left for the fresh
+header, and later construction cannot return to it. -/
+theorem LoopLayout.curMoved {fenv : FMap} {env : VMap}
+    {rets : Option (List Ident)} {c : Expr Op} {post body : List (Stmt Op)}
+    {s₀ s₁ : BState} {renv : Option VMap}
+    (layout : LoopLayout fenv env rets c post body s₀ s₁ renv)
+    (hvalid : CurValid s₀) : CurMoved s₀ s₁ := by
+  have htail := layout.header_tail_sgrows
+  rcases layout with
+    ⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
+     exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
+     postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
+     bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
+     bodyEnv, sO, h15, htr⟩
+  have cs0G : CurSame s₀ sG :=
+    ((((((CurSame.of_grows (Grows.of_liftO h1)).trans
+      (CurSame.of_grows (Grows.of_mapM_freshVal h2))).trans
+      (CurSame.of_newBlock h3)).trans
+      (CurSame.of_grows (Grows.of_mapM_freshVal h4))).trans
+      (CurSame.of_newBlock h5)).trans
+      (CurSame.of_grows (Grows.of_mapM_freshVal h6))).trans
+      (CurSame.of_newBlock h7)
+  have hne : sG.fn.curId ≠ hId := by
+    rw [cs0G.1, SGrowsAt.newBlock_id h3]
+    have a0B : SGrowsAt s₀.fn.blocks.size s₀ sB :=
+      (SGrowsAt.of_grows (N := s₀.fn.blocks.size) (Grows.of_liftO h1)).trans
+        (SGrowsAt.of_grows (Grows.of_mapM_freshVal h2))
+    exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hvalid a0B.size)
+  have hmGI : CurMoved sG sI := curMoved_of_seal_move hne h8 h9
+  have hm0I : CurMoved s₀ sI := cs0G.transMoved hmGI
+  have a0B : SGrows s₀ sB :=
+    (SGrowsAt.of_grows (N := s₀.fn.blocks.size) (Grows.of_liftO h1)).trans
+      (SGrowsAt.of_grows (Grows.of_mapM_freshVal h2))
+  have a0C := a0B.trans (SGrowsAt.of_newBlock h3)
+  have a0D := a0C.trans (SGrowsAt.of_grows (Grows.of_mapM_freshVal h4))
+  have a0E := a0D.trans (SGrowsAt.of_newBlock h5)
+  have a0F := a0E.trans (SGrowsAt.of_grows (Grows.of_mapM_freshVal h6))
+  have a0G := a0F.trans (SGrowsAt.of_newBlock h7)
+  have a0H := a0G.trans (SGrowsAt.of_sealCur h8)
+  have hheader : s₀.fn.blocks.size ≤ hId := by
+    rw [SGrowsAt.newBlock_id h3]
+    exact a0B.size
+  have g0I : SGrows s₀ sI :=
+    SGrowsAt.trans a0H
+      (SGrowsAt.of_moveTo (N := s₀.fn.blocks.size) (Or.inl hheader) h9)
+  exact hm0I.forward hvalid g0I htail
+
+omit model in
 theorem loopPostTail_fprefix {envP : Option VMap} {X : List Ident}
     {hId exitId : BlockId} {s s' : BState} {out renv : Option VMap}
     (h : (do
@@ -13452,6 +13705,18 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   -- order, `FOwned.back_fillFunc`, `FOwned.back_fprefix`, and
   -- `FOwned.back_allocFunc`; only then can `forLoop` invoke the initializer IH
   -- with the hoisted `FEnvOK` scope.
+  -- Precise remaining reconstruction goal.  After inverting `allocScope` and
+  -- `trStmts`, the `some envI` arm ends in the *outer* pure
+  --   `some ((envI.setMany X exitParams).drop
+  --     ((envI.setMany X exitParams).length - env.length))`.
+  -- `LOut`, however, consumes a `LoopLayout` whose identical four-way
+  -- body/post tail ends in the *inner* pure
+  --   `some (envI.setMany X exitParams)`.
+  -- `LoopLayout.header_tail_sgrows`, `.curMoved`, and `.fprefix` now discharge
+  -- all block-placement and ownership framing once that tail equation is
+  -- reconstructed.  What remains is to invert the four `bodyEnv`/`postEnv`
+  -- arms, replace only that final pure, and package the common `LoopLayout`;
+  -- then `allocScope_motive_inputs` supplies every premise of `ihi`.
   | forLoop hinit hloop ihi ihl => sorry
   | forInitHalt hinit ihi => sorry
   | @«break» funs V st =>
