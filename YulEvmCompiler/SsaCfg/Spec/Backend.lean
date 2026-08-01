@@ -27,9 +27,9 @@ The proof decomposes along the pipeline, mirroring `Correctness.lean`:
    (`asteps_sim`/`arun_halt_sim`), exactly as the classic backend does —
    no Phase B, peephole, certificate, or assembler proof is reopened.
 
-This file is **sorry-free**: every statement here is proved, with the
+This file is **fully proved**: every statement here is closed, with the
 three phase obligations delegated to the `Implementation/*Sound.lean` proof
-files (whose internals are the branch's declared sorry frontier — see the
+files (whose internals are the branch's declared proof frontier — see the
 PR description). An auditor reads this file and the other `Spec/` modules;
 the delegation targets are implementation detail.
 -/

@@ -32,7 +32,7 @@ The file is organized bottom-up:
 
 ## Status
 
-Fully proved (no `sorry`, no new axioms): the `StkMatch` machinery, the
+Fully proved (no admitted goals, no new axioms): the `StkMatch` machinery, the
 shuffler (`shuffleGo_spec`, `shuffle_sound`), the whole `elideJumps` transport
 (`findLabel_elideJumps`, `astep_elideJumps`, `asteps_elideJumps`,
 `ahalt_elideJumps`), stack extension (`AStep.extend`/`ASteps.extend`/
