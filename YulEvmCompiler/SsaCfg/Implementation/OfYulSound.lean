@@ -3859,6 +3859,15 @@ def CurOK (f : Func) (fn : FnState) (rest : Rest) : Prop :=
   ∃ b, f.blocks[fn.curId]? = some b
     ∧ b.instrs = fn.cur.reverse ++ rest.instrs ∧ b.term = rest.term
 
+omit model in
+/-- Exact backward transport of a finished current block when builder-only
+steps changed neither its id nor its pending instruction list. -/
+theorem CurOK.back_of_cur_eq {f : Func} {fn fn' : FnState} {rest : Rest}
+    (hid : fn'.curId = fn.curId) (hcur : fn'.cur = fn.cur)
+    (h : CurOK f fn' rest) : CurOK f fn rest := by
+  obtain ⟨b, hb, hi, ht⟩ := h
+  exact ⟨b, by simpa only [hid] using hb, by simpa only [hcur] using hi, ht⟩
+
 /-- Execution of the rest of the block the builder is currently filling. -/
 def ExecFrom (P : Prog) (f : Func) (fn : FnState) (R : Regs) (st : EvmState)
     (res : FRes) : Prop :=
@@ -5019,6 +5028,29 @@ theorem curFinal_of_move_grows {f : Func} {s sM sEnd : BState}
   exact hcompl.sealed s.fn.curId b hneEnd hkeep
 
 omit model in
+/-- Variant of `curFinal_of_move_grows` for a surrounding structured
+translation.  Its later current block may be another block reserved by the
+same construct, so freshness is measured against the construct's base `N`.
+The block being left predates that base and therefore remains protected by
+`SGrowsAt.keep`. -/
+theorem curFinal_of_move_sgrowsAt {f : Func} {N : Nat} {s sM sEnd : BState}
+    {bid : BlockId} {u : Unit}
+    (hold : s.fn.curId < N)
+    (hmv : moveTo bid s = some (u, sM)) (hne : s.fn.curId ≠ bid)
+    (hg : SGrowsAt N sM sEnd) (hcompl : Completes f sEnd.fn) :
+    CurFinal f s.fn := by
+  rw [M.moveTo_apply] at hmv
+  obtain ⟨-, rfl⟩ := M.some_pair_inj hmv
+  intro b hb
+  have hkeep : sEnd.fn.blocks[s.fn.curId]? = some b :=
+    hg.keep s.fn.curId b hold hne hb
+  have hneEnd : s.fn.curId ≠ sEnd.fn.curId := by
+    rcases hg.curId with heq | hge
+    · simpa [heq] using hne
+    · exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hold hge)
+  exact hcompl.sealed s.fn.curId b hneEnd hkeep
+
+omit model in
 /-- What `sealCur` leaves behind: same current block id, empty pending list, and
 the block now carrying the emitted instructions and the terminator. -/
 theorem sealCur_cur {t : Term} {s s' : BState} {u : Unit}
@@ -5448,6 +5480,14 @@ theorem transMoved {s s₁ s₂ : BState} (h₁ : CurSame s s₁)
   rw [hi2, hi1]
   simp
 
+omit model in
+/-- Backward transfer of current-block placement through builder steps that
+leave the current block open. -/
+theorem placed_back {f : Func} {s s' : BState} (h : CurSame s s')
+    (hp : CurPlaced f s'.fn) : CurPlaced f s.fn := by
+  obtain ⟨hc, ⟨Δ, hcur⟩, -⟩ := h
+  exact hp.ofPrefix hc Δ hcur
+
 end CurSame
 
 omit model in
@@ -5615,6 +5655,16 @@ theorem newBlock_target_lt {ps : List ValId} {s s' : BState} {bid : BlockId}
     (h : newBlock ps s = some (bid, s')) : bid < s'.fn.blocks.size := by
   rw [SGrowsAt.newBlock_id h, newBlock_size h]
   exact Nat.lt_succ_self _
+
+omit model in
+/-- The block just reserved by `newBlock` is present with exactly the supplied
+parameter list. -/
+theorem newBlock_target_get {ps : List ValId} {s s' : BState} {bid : BlockId}
+    (h : newBlock ps s = some (bid, s')) :
+    s'.fn.blocks[bid]? = some ⟨ps, [], .ret []⟩ := by
+  rw [M.newBlock_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  simp
 
 /-! ### Current-block validity and shape of the mutual translation -/
 
@@ -7158,12 +7208,261 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       (ihe.2.1 fenv env R s₀ s₁ vars.length ids hfe henv hfr hcompl hcp h1)
   | exprStmt he ihe => exact ihe.2.2 rfl
   | exprStmtHalt he ihe => exact ihe.2.2
-  -- Blocked on a packaged join-environment lemma: bind the reserved join
-  -- parameters, prove `EnvOK (env.setMany X joinParams) V'`, and use
-  -- `modStmts_sound` for every binding not in `X` on both incoming edges.
+  -- The normal true arm still needs the construction's no-duplicate-visible-
+  -- names invariant threaded through `Motive`: `modifiedX` contains each name
+  -- once and `VMap.setMany` updates its first binding.  With duplicate names,
+  -- `EnvOK` plus `modStmts_sound` cannot recover the values of shadowed tail
+  -- bindings (a changed visible name is deliberately exempted by the latter),
+  -- so the desired join reconstruction is not derivable from the current
+  -- hypotheses.  The real construction starts unique and rejects shadowing;
+  -- the missing work is to carry that fact through normal `SOut`/`seqCons`,
+  -- then use it to prove `EnvOK (env.setMany X joinParams) V'` from the edge
+  -- arguments.  `ifFalse` below avoids the gap via `VEnv.setMany_self`.
   | ifTrue hc hnz hbody ihc ihb => sorry
-  | ifFalse hc hz ihc => sorry
-  | ifHalt hc ihc => sorry
+  | @ifFalse funs V st c body cv st1 hc hz ihc =>
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hvalid hcompl hcp _ htr
+    rw [trStmt] at htr
+    obtain ⟨cvId, sA, h1, htr⟩ := M.bind_inv htr
+    obtain ⟨xvals, sB, h2, htr⟩ := M.bind_inv htr
+    obtain ⟨bodyId, sC, h3, htr⟩ := M.bind_inv htr
+    obtain ⟨joinParams, sD, h4, htr⟩ := M.bind_inv htr
+    obtain ⟨joinId, sE, h5, htr⟩ := M.bind_inv htr
+    obtain ⟨uF, sF, h6, htr⟩ := M.bind_inv htr
+    obtain ⟨uG, sG, h7, htr⟩ := M.bind_inv htr
+    obtain ⟨bodyEnv, sH, h8, htr⟩ := M.bind_inv htr
+    have g0A : Grows s₀ sA := trExpr_grows c fenv env s₀ sA cvId h1
+    have hvalidA : CurValid sA := hvalid.of_grows g0A
+    have gAB : Grows sA sB := Grows.of_liftO h2
+    have gCD : Grows sC sD := Grows.of_mapM_freshVal h4
+    have aAB : SGrowsAt sA.fn.blocks.size sA sB := SGrowsAt.of_grows gAB
+    have aAC := SGrowsAt.trans aAB
+      (SGrowsAt.of_newBlock (N := sA.fn.blocks.size) h3)
+    have aAD := SGrowsAt.trans aAC
+      (SGrowsAt.of_grows (N := sA.fn.blocks.size) gCD)
+    have aAE := SGrowsAt.trans aAD
+      (SGrowsAt.of_newBlock (N := sA.fn.blocks.size) h5)
+    have hbodyBase : sA.fn.blocks.size ≤ bodyId := by
+      rw [SGrowsAt.newBlock_id h3]
+      exact aAB.size
+    have hjoinBase : sA.fn.blocks.size ≤ joinId := by
+      rw [SGrowsAt.newBlock_id h5]
+      exact aAD.size
+    have csAE : CurSame sA sE :=
+      (((CurSame.of_grows gAB).trans (CurSame.of_newBlock h3)).trans
+        (CurSame.of_grows gCD)).trans (CurSame.of_newBlock h5)
+    have hbodyNe : sE.fn.curId ≠ bodyId := by
+      rw [csAE.1, SGrowsAt.newBlock_id h3]
+      exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hvalidA aAB.size)
+    have gbody : SGrows sG sH :=
+      trScope_grows fenv env lctx rets body sG bodyEnv sH h8
+    have tailData : SGrowsAt sA.fn.blocks.size sG s₁
+        ∧ s₁.fn.curId = joinId ∧ s₁.fn.cur = []
+        ∧ renv = some (env.setMany (modifiedX env [body]) joinParams) := by
+      cases bodyEnv with
+      | none =>
+        obtain ⟨ua, sa, ha, htr⟩ := M.bind_inv htr
+        obtain ⟨ub, sb, hb, hc'⟩ := M.bind_inv htr
+        obtain ⟨-, hsa⟩ := M.pure_inv ha
+        obtain ⟨hrenv, hs₁⟩ := M.pure_inv hc'
+        subst hsa
+        subst hs₁
+        refine ⟨SGrowsAt.trans (gbody.mono
+          (Nat.le_trans aAE.size
+            ((SGrowsAt.of_sealCur (N := sA.fn.blocks.size) h6).trans
+              (SGrowsAt.of_moveTo (N := sA.fn.blocks.size)
+                (Or.inl hbodyBase) h7)).size))
+            (SGrowsAt.of_moveTo (N := sA.fn.blocks.size) (Or.inl hjoinBase) hb),
+          ?_, ?_, hrenv⟩
+        · rw [M.moveTo_apply] at hb
+          exact (congrArg (fun z => z.fn.curId) (M.some_pair_inj hb).2).symm
+        · rw [M.moveTo_apply] at hb
+          simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj hb).2
+      | some env' =>
+        obtain ⟨xv, sa, ha, htr⟩ := M.bind_inv htr
+        obtain ⟨ub, sb, hb, htr⟩ := M.bind_inv htr
+        obtain ⟨uc, sc, hc', hd⟩ := M.bind_inv htr
+        obtain ⟨hrenv, hs₁⟩ := M.pure_inv hd
+        subst hs₁
+        have abase : sA.fn.blocks.size ≤ sG.fn.blocks.size := by
+          exact (SGrowsAt.trans aAE
+            (SGrowsAt.trans (SGrowsAt.of_sealCur (N := sA.fn.blocks.size) h6)
+              (SGrowsAt.of_moveTo (N := sA.fn.blocks.size)
+                (Or.inl hbodyBase) h7))).size
+        refine ⟨SGrowsAt.trans
+          (SGrowsAt.trans
+            (SGrowsAt.trans (gbody.mono abase)
+              (SGrowsAt.of_edgeArgs (N := sA.fn.blocks.size) ha))
+            (SGrowsAt.of_sealCur (N := sA.fn.blocks.size) hb))
+          (SGrowsAt.of_moveTo (N := sA.fn.blocks.size) (Or.inl hjoinBase) hc'),
+          ?_, ?_, hrenv⟩
+        · rw [M.moveTo_apply] at hc'
+          exact (congrArg (fun z => z.fn.curId) (M.some_pair_inj hc').2).symm
+        · rw [M.moveTo_apply] at hc'
+          simpa using congrArg (fun z => z.fn.cur) (M.some_pair_inj hc').2
+    obtain ⟨gsuffix, hcur, hcur0, hrenv⟩ := tailData
+    have hcurFE : sF.fn.curId = sE.fn.curId := (sealCur_cur h6).choose_spec.1
+    have hfinalF : CurFinal f sF.fn :=
+      curFinal_of_move_sgrowsAt (by rw [hcurFE, csAE.1]; exact hvalidA)
+        h7 (by rw [hcurFE]; exact hbodyNe) gsuffix hcompl
+    have hbranchE : CurOK f sE.fn
+        ⟨[], .branch cvId ⟨bodyId, []⟩ ⟨joinId, xvals⟩⟩ :=
+      curOK_of_sealCur hfinalF h6
+    have hcurIdAE : sE.fn.curId = sA.fn.curId := csAE.1
+    have hcurAE : sE.fn.cur = sA.fn.cur := by
+      have hBA : sB = sA := (M.edgeArgs_inv h2).2
+      have hCB : sC.fn.cur = sB.fn.cur := by
+        rw [M.newBlock_apply] at h3
+        simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h3).2).symm
+      have hDC : sD.fn.cur = sC.fn.cur := by
+        obtain ⟨-, -, hsD⟩ := M.mapM_freshVal_length h4
+        rw [hsD]
+      have hED : sE.fn.cur = sD.fn.cur := by
+        rw [M.newBlock_apply] at h5
+        simpa using (congrArg (fun z => z.fn.cur) (M.some_pair_inj h5).2).symm
+      rw [hED, hDC, hCB, hBA]
+    have hbranch : CurOK f sA.fn
+        ⟨[], .branch cvId ⟨bodyId, []⟩ ⟨joinId, xvals⟩⟩ :=
+      CurOK.back_of_cur_eq hcurIdAE hcurAE hbranchE
+    obtain ⟨RA, hleA, hfrA, hcv, hsimC⟩ :=
+      ihc.1 fenv env R s₀ sA cvId cv hfe henv hfr
+        (SGrowsAt.completes_of
+          (SGrowsAt.trans aAE
+            (SGrowsAt.trans (SGrowsAt.of_sealCur (N := sA.fn.blocks.size) h6)
+              (SGrowsAt.trans
+                (SGrowsAt.of_moveTo (N := sA.fn.blocks.size)
+                  (Or.inl hbodyBase) h7) gsuffix))) hcompl)
+        (csAE.placed_back ⟨_, hbranchE⟩) rfl h1
+    obtain ⟨hsB, vals, hxget, hxvals⟩ := edgeArgs_ok (henv.mono hleA) h2
+    have hparams := M.mapM_freshVal_length h4
+    obtain ⟨hparamLen, hparamRange, hsD⟩ := hparams
+    have hnd : joinParams.Nodup := by rw [hparamRange]; exact M.nodup_range' _ _
+    have hfrC : RegsFresh RA sC.fn := hfrA.mono aAC.nextVal
+    have hnone : ∀ i ∈ joinParams, RA i = none := by
+      intro i hi
+      rw [hparamRange] at hi
+      exact hfrC i (M.mem_range'_bounds hi).1
+    have hleJ : Regs.Le RA (RA.setMany joinParams vals) :=
+      Regs.Le.setMany hnd hnone
+    have hD1 : SGrowsAt sA.fn.blocks.size sD s₁ :=
+      SGrowsAt.trans (SGrowsAt.of_newBlock (N := sA.fn.blocks.size) h5)
+        (SGrowsAt.trans (SGrowsAt.of_sealCur (N := sA.fn.blocks.size) h6)
+          (SGrowsAt.trans
+            (SGrowsAt.of_moveTo (N := sA.fn.blocks.size) (Or.inl hbodyBase) h7)
+            gsuffix))
+    have hnext : sC.fn.nextVal + (modifiedX env [body]).length ≤ s₁.fn.nextVal := by
+      simpa [hsD] using hD1.nextVal
+    have hfrJ : RegsFresh (RA.setMany joinParams vals) s₁.fn := by
+      rw [hparamRange]
+      exact hfrC.setMany hnext
+    have hnew := newBlock_target_get h5
+    have hE1 : SGrowsAt sA.fn.blocks.size sE s₁ :=
+      SGrowsAt.trans (SGrowsAt.of_sealCur (N := sA.fn.blocks.size) h6)
+        (SGrowsAt.trans
+          (SGrowsAt.of_moveTo (N := sA.fn.blocks.size) (Or.inl hbodyBase) h7)
+          gsuffix)
+    obtain ⟨jb, hjb, hjp⟩ := hE1.params joinId
+      ⟨joinParams, [], .ret []⟩ hnew
+    have hvalsLen : (modifiedX env [body]).length = vals.length := hxvals.length_eq
+    have hjbLen : jb.params.length = vals.length := by
+      rw [hjp, hparamLen, hvalsLen]
+    have hzero : RA cvId = some 0 := by
+      rw [hz] at hcv
+      simpa only [yulD_zero] using hcv
+    have hsimJ : SimS (model := model) P f sA.fn RA st1 s₁.fn
+        (RA.setMany joinParams vals) st1 := by
+      have hs := simS_branchFalse_join (model := model) (P := P) (f := f)
+        (st := st1) hcompl hbranch hzero hjb hcur hcur0 hxget hjbLen
+      simpa only [hjp] using hs
+    have henvJ : EnvOK (model := model)
+        (env.setMany (modifiedX env [body]) joinParams) V
+        (RA.setMany joinParams vals) := by
+      have hpget : (RA.setMany joinParams vals).getMany joinParams = some vals :=
+        Regs.getMany_setMany_self hnd (by rw [hparamLen]; exact hvalsLen)
+      have he : EnvOK (model := model)
+          (env.setMany (modifiedX env [body]) joinParams)
+          (YulSemantics.VEnv.setMany V (modifiedX env [body]) vals)
+          (RA.setMany joinParams vals) :=
+        EnvOK.setMany (henv.mono (hleA.trans hleJ))
+          (Regs.getMany_eq_some_iff.mp hpget)
+      rw [VEnv.setMany_self hxvals] at he
+      exact he
+    exact ⟨env.setMany (modifiedX env [body]) joinParams,
+      RA.setMany joinParams vals, hrenv, hleA.trans hleJ, hfrJ, henvJ,
+      hsimC.trans hsimJ⟩
+  | @ifHalt funs V st c body st1 hc ihc =>
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hvalid hcompl hcp _ htr
+    rw [trStmt] at htr
+    obtain ⟨cv, sA, h1, htr⟩ := M.bind_inv htr
+    obtain ⟨xvals, sB, h2, htr⟩ := M.bind_inv htr
+    obtain ⟨bodyId, sC, h3, htr⟩ := M.bind_inv htr
+    obtain ⟨joinParams, sD, h4, htr⟩ := M.bind_inv htr
+    obtain ⟨joinId, sE, h5, htr⟩ := M.bind_inv htr
+    obtain ⟨uF, sF, h6, htr⟩ := M.bind_inv htr
+    obtain ⟨uG, sG, h7, htr⟩ := M.bind_inv htr
+    obtain ⟨bodyEnv, sH, h8, htr⟩ := M.bind_inv htr
+    have g0A : Grows s₀ sA := trExpr_grows c fenv env s₀ sA cv h1
+    have hvalidA : CurValid sA := hvalid.of_grows g0A
+    have gAB : Grows sA sB := Grows.of_liftO h2
+    have gCD : Grows sC sD := Grows.of_mapM_freshVal h4
+    have csAE : CurSame sA sE :=
+      (((CurSame.of_grows gAB).trans (CurSame.of_newBlock h3)).trans
+        (CurSame.of_grows gCD)).trans (CurSame.of_newBlock h5)
+    have aAB : SGrowsAt sA.fn.blocks.size sA sB := SGrowsAt.of_grows gAB
+    have aAC := SGrowsAt.trans aAB
+      (SGrowsAt.of_newBlock (N := sA.fn.blocks.size) h3)
+    have aAD := SGrowsAt.trans aAC (SGrowsAt.of_grows (N := sA.fn.blocks.size) gCD)
+    have aAE := SGrowsAt.trans aAD
+      (SGrowsAt.of_newBlock (N := sA.fn.blocks.size) h5)
+    have aAF := SGrowsAt.trans aAE
+      (SGrowsAt.of_sealCur (N := sA.fn.blocks.size) h6)
+    have hbodyBase : sA.fn.blocks.size ≤ bodyId := by
+      rw [SGrowsAt.newBlock_id h3]
+      exact aAB.size
+    have aAG := SGrowsAt.trans aAF
+      (SGrowsAt.of_moveTo (N := sA.fn.blocks.size) (Or.inl hbodyBase) h7)
+    have gbody : SGrows sG sH :=
+      trScope_grows fenv env lctx rets body sG bodyEnv sH h8
+    have hjoinBase : sA.fn.blocks.size ≤ joinId := by
+      rw [SGrowsAt.newBlock_id h5]
+      exact aAD.size
+    have hbodyNe : sE.fn.curId ≠ bodyId := by
+      rw [csAE.1, SGrowsAt.newBlock_id h3]
+      exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hvalidA aAB.size)
+    have gsuffix : SGrowsAt sA.fn.blocks.size sG s₁ := by
+      cases bodyEnv with
+      | none =>
+        obtain ⟨ua, sa, ha, htr⟩ := M.bind_inv htr
+        obtain ⟨ub, sb, hb, hc'⟩ := M.bind_inv htr
+        obtain ⟨-, rfl⟩ := M.pure_inv ha
+        obtain ⟨rfl, rfl⟩ := M.pure_inv hc'
+        exact SGrowsAt.trans (gbody.mono aAG.size)
+          (SGrowsAt.of_moveTo (N := sA.fn.blocks.size) (Or.inl hjoinBase) hb)
+      | some env' =>
+        obtain ⟨xv, sa, ha, htr⟩ := M.bind_inv htr
+        obtain ⟨ub, sb, hb, htr⟩ := M.bind_inv htr
+        obtain ⟨uc, sc, hc', hd⟩ := M.bind_inv htr
+        obtain ⟨rfl, rfl⟩ := M.pure_inv hd
+        exact SGrowsAt.trans (SGrowsAt.trans
+          (SGrowsAt.trans (gbody.mono aAG.size)
+            (SGrowsAt.of_edgeArgs (N := sA.fn.blocks.size) ha))
+          (SGrowsAt.of_sealCur (N := sA.fn.blocks.size) hb))
+            (SGrowsAt.of_moveTo (N := sA.fn.blocks.size) (Or.inl hjoinBase) hc')
+    have hcurFE : sF.fn.curId = sE.fn.curId := (sealCur_cur h6).choose_spec.1
+    have hfinalF : CurFinal f sF.fn :=
+      curFinal_of_move_sgrowsAt (by rw [hcurFE, csAE.1]; exact hvalidA)
+        h7 (by rw [hcurFE]; exact hbodyNe) gsuffix hcompl
+    have hcpE : CurPlaced f sE.fn :=
+      ⟨⟨[], .branch cv ⟨bodyId, []⟩ ⟨joinId, xvals⟩⟩,
+        curOK_of_sealCur hfinalF h6⟩
+    have hcpA : CurPlaced f sA.fn := csAE.placed_back hcpE
+    have hcomplA : Completes f sA.fn := SGrowsAt.completes_of
+      (SGrowsAt.trans aAE
+        (SGrowsAt.trans (SGrowsAt.of_sealCur (N := sA.fn.blocks.size) h6)
+          (SGrowsAt.trans
+            (SGrowsAt.of_moveTo (N := sA.fn.blocks.size) (Or.inl hbodyBase) h7)
+            gsuffix))) hcompl
+    exact SOut.ofExprHalt
+      (ihc.1 fenv env R s₀ sA cv hfe henv hfr hcomplA hcpA h1)
   -- Blocked on the analogous selected-chain lemma for `trCases`: identify the
   -- `selectSwitch` body reached by the emitted equality-test chain and rebuild
   -- the common join environment/parameter register file.
