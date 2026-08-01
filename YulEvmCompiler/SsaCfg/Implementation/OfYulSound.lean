@@ -4801,9 +4801,24 @@ prefix below its entry allocation watermark.  The statement-list member has
 the one necessary side condition: the slots it is entitled to fill lie at or
 above that watermark.  `trScope` establishes the condition from its own
 `allocScope`, so the four public translation members are unconditional. -/
-theorem trFunc_fprefix : ∀ (fenv : FMap) (ps rs : List Ident)
-    (body : List (Stmt Op)), FuncFrame fenv ps rs body := by
-  refine trFunc.induct FuncFrame ScopeFrame StmtsFrame StmtFrame CasesFrame
+theorem trFrames_fprefix :
+    (∀ (fenv : FMap) (ps rs : List Ident)
+      (body : List (Stmt Op)), FuncFrame fenv ps rs body) ∧
+    (∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+      (rets : Option (List Ident)) (body : List (Stmt Op)),
+        ScopeFrame fenv env lctx rets body) ∧
+    (∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+      (rets : Option (List Ident)) (d : Bool) (ss : List (Stmt Op)),
+        StmtsFrame fenv env lctx rets d ss) ∧
+    (∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+      (rets : Option (List Ident)) (st : Stmt Op),
+        StmtFrame fenv env lctx rets st) ∧
+    (∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+      (rets : Option (List Ident)) (sv : ValId) (X : List Ident)
+      (joinId : BlockId) (cases : List (Literal × List (Stmt Op)))
+      (dflt : Option (List (Stmt Op))),
+        CasesFrame fenv env lctx rets sv X joinId cases dflt) := by
+  refine trFunc.mutual_induct FuncFrame ScopeFrame StmtsFrame StmtFrame CasesFrame
     ?trFunc ?trScope ?stmtsNil ?stmtsFunDef ?stmtsSkip ?stmtsCons
     ?block ?funDef ?letNoneBad ?letNone ?letSomeBad ?letSome ?assignBad ?assign
     ?cond ?switch ?forLoop ?exprBuiltin ?exprCall ?exprBad
@@ -5193,6 +5208,38 @@ theorem trFunc_fprefix : ∀ (fenv : FMap) (ps rs : List Ident)
       have pp := ((p9.trans (FPrefix.of_edgeArgs ha)).trans
         (FPrefix.of_sealCur hb)).trans (FPrefix.of_moveTo hc)
       exact pp.trans (ihR sv X jid N sc u s' (pp.size hN) hd)
+
+omit model in
+theorem trFunc_fprefix : ∀ (fenv : FMap) (ps rs : List Ident)
+    (body : List (Stmt Op)), FuncFrame fenv ps rs body :=
+  trFrames_fprefix.1
+
+omit model in
+theorem trScope_fprefix : ∀ (fenv : FMap) (env : VMap)
+    (lctx : Option LoopCtx) (rets : Option (List Ident))
+    (body : List (Stmt Op)), ScopeFrame fenv env lctx rets body :=
+  trFrames_fprefix.2.1
+
+omit model in
+theorem trStmts_fprefix : ∀ (fenv : FMap) (env : VMap)
+    (lctx : Option LoopCtx) (rets : Option (List Ident)) (d : Bool)
+    (ss : List (Stmt Op)), StmtsFrame fenv env lctx rets d ss :=
+  trFrames_fprefix.2.2.1
+
+omit model in
+theorem trStmt_fprefix : ∀ (fenv : FMap) (env : VMap)
+    (lctx : Option LoopCtx) (rets : Option (List Ident)) (st : Stmt Op),
+    StmtFrame fenv env lctx rets st :=
+  trFrames_fprefix.2.2.2.1
+
+omit model in
+theorem trCases_fprefix : ∀ (fenv : FMap) (env : VMap)
+    (lctx : Option LoopCtx) (rets : Option (List Ident)) (sv : ValId)
+    (X : List Ident) (joinId : BlockId)
+    (cases : List (Literal × List (Stmt Op)))
+    (dflt : Option (List (Stmt Op))),
+    CasesFrame fenv env lctx rets sv X joinId cases dflt :=
+  trFrames_fprefix.2.2.2.2
 
 omit model in
 /-- Natural-watermark specialization used by callers protecting all slots
