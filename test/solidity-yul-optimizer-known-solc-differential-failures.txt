@@ -48,15 +48,11 @@ stackLimitEvader/cycle_before_after.yul
 stackLimitEvader/function_arg.yul
 stackLimitEvader/intersecting_cycles.yul
 stackLimitEvader/stub.yul
-stackLimitEvader/too_many_args_14.yul
-stackLimitEvader/too_many_args_15.yul
 stackLimitEvader/too_many_args_16.yul
-stackLimitEvader/too_many_returns_16.yul
 stackLimitEvader/verbatim_many_arguments.yul
 stackLimitEvader/verbatim_many_arguments_and_returns.yul
 stackLimitEvader/verbatim_many_returns.yul
 unusedFunctionParameterPruner/recursion.yul
-unusedFunctionParameterPruner/too_many_arguments.yul
 unusedPruner/verbatim.yul
 unusedStoreEliminator/function_side_effects_2.yul
 unusedStoreEliminator/store_before_terminating_verbatim_revert.yul
