@@ -1519,6 +1519,17 @@ Weak enough to survive `trFunc`'s `setFn` save/restore, which is why it is
 tracked separately. -/
 def FGrows (s s' : BState) : Prop := s.funcs.size ≤ s'.funcs.size
 
+/-- Content half of function-table growth.  Reserved `none` slots may be
+refined to a function, but an already-filled slot keeps the same function.
+This is the pointwise prefix order needed to transport a local `trFunc`
+result into the completed top-level table. -/
+def FContents (s s' : BState) : Prop :=
+  ∀ (i : Nat) (g : Func), s.funcs[i]? = some (some g) →
+    s'.funcs[i]? = some (some g)
+
+/-- Size growth together with preservation of every filled entry. -/
+def FRefines (s s' : BState) : Prop := FGrows s s' ∧ FContents s s'
+
 namespace FGrows
 
 theorem rfl' (s : BState) : FGrows s s := Nat.le_refl _
@@ -1542,6 +1553,74 @@ theorem of_setFn {fn : FnState} {s s' : BState} {u : Unit}
   exact of_fnOnly rfl
 
 end FGrows
+
+namespace FContents
+
+theorem rfl' (s : BState) : FContents s s := fun _ _ h => h
+
+theorem trans {s₁ s₂ s₃ : BState} (h₁ : FContents s₁ s₂)
+    (h₂ : FContents s₂ s₃) : FContents s₁ s₃ :=
+  fun i g hi => h₂ i g (h₁ i g hi)
+
+theorem of_funcs_eq {s s' : BState} (h : s.funcs = s'.funcs) :
+    FContents s s' := by
+  intro i g hi
+  rwa [← h]
+
+theorem of_getFn {s s' : BState} {fn : FnState}
+    (h : getFn s = some (fn, s')) : FContents s s' := by
+  rw [M.getFn_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  exact rfl' _
+
+theorem of_setFn {fn : FnState} {s s' : BState} {u : Unit}
+    (h : setFn fn s = some (u, s')) : FContents s s' := by
+  rw [M.setFn_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  exact of_funcs_eq rfl
+
+theorem of_allocFunc {s s' : BState} {fid : FuncId}
+    (h : allocFunc s = some (fid, s')) : FContents s s' := by
+  rw [M.allocFunc_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  intro i g hi
+  have hlt := lt_size_of_getElem? hi
+  rw [Array.getElem?_push, if_neg (by omega : ¬ i = s.funcs.size)]
+  exact hi
+
+/-- Filling a genuinely reserved slot preserves every function that was
+already present.  The `allocScope`/`trStmts` singleton recovery establishes
+the `none` premise for the particular slot selected by `FMap.get`. -/
+theorem of_fillFunc_empty {fid : FuncId} {g : Func} {s s' : BState}
+    {u : Unit} (hempty : s.funcs[fid]? = some none)
+    (h : fillFunc fid g s = some (u, s')) : FContents s s' := by
+  obtain ⟨hlt, rfl⟩ := M.fillFunc_inv h
+  intro i g' hi
+  have hne : i ≠ fid := by
+    intro heq
+    subst i
+    have hbad : some g' = none := Option.some.inj (hi.symm.trans hempty)
+    cases hbad
+  rw [Array.getElem?_set (h := hlt), if_neg (Ne.symm hne)]
+  exact hi
+
+theorem of_grows {s s' : BState} (h : Grows s s') : FContents s s' :=
+  of_funcs_eq h.funcs
+
+end FContents
+
+namespace FRefines
+
+theorem rfl' (s : BState) : FRefines s s := ⟨FGrows.rfl' s, FContents.rfl' s⟩
+
+theorem trans {s₁ s₂ s₃ : BState} (h₁ : FRefines s₁ s₂)
+    (h₂ : FRefines s₂ s₃) : FRefines s₁ s₃ :=
+  ⟨FGrows.trans h₁.1 h₂.1, FContents.trans h₁.2 h₂.2⟩
+
+theorem of_grows {s s' : BState} (h : Grows s s') : FRefines s s' :=
+  ⟨FGrows.of_fnOnly h.funcs, FContents.of_grows h⟩
+
+end FRefines
 
 namespace SGrowsAt
 
@@ -1916,6 +1995,52 @@ theorem allocScope_funcsOnly {ss : List (Stmt Op)} {s s' : BState}
     obtain ⟨-, rfl⟩ := M.pure_inv h2
     exact ⟨rfl, by simp⟩
   all_goals (obtain ⟨-, rfl⟩ := M.pure_inv hb; exact ⟨rfl, Nat.le_refl _⟩)
+
+/-- Reserving a whole scope is genuine function-table refinement: it appends
+`none` slots and leaves every already-filled entry untouched. -/
+theorem allocScope_frefines {ss : List (Stmt Op)} {s s' : BState}
+    {sc : List (Ident × FuncId)} (h : allocScope ss s = some (sc, s')) :
+    FRefines s s' := by
+  rw [allocScope] at h
+  have step : ∀ (acc : List (Ident × FuncId)) (st : Stmt Op)
+      (s₀ s₁ : BState) (acc' : List (Ident × FuncId)),
+      (match st with
+        | Stmt.funDef n _ _ _ => do
+            let fid ← allocFunc
+            pure (acc ++ [(n, fid)])
+        | _ => pure acc) s₀ = some (acc', s₁) → FRefines s₀ s₁ := by
+    intro acc st s₀ s₁ acc' hs
+    cases st with
+    | funDef n ps rs body =>
+        obtain ⟨fid, t, ha, hp⟩ := M.bind_inv hs
+        obtain ⟨-, rfl⟩ := M.pure_inv hp
+        exact ⟨(SGrowsAt.of_allocFunc (N := 0) ha).funcsSize,
+          FContents.of_allocFunc ha⟩
+    | block body | letDecl vars val | assign vars e | cond e body
+    | forLoop init e post body | «break» | «continue» | leave
+    | switch e cases dflt | exprStmt e =>
+        obtain ⟨-, rfl⟩ := M.pure_inv hs
+        exact FRefines.rfl' _
+  have fold : ∀ (l : List (Stmt Op)) (init : List (Ident × FuncId))
+      (s₀ s₁ : BState) (out : List (Ident × FuncId)),
+      (l.foldlM (init := init) fun acc (st : Stmt Op) =>
+        match st with
+        | Stmt.funDef n _ _ _ => do
+            let fid ← allocFunc
+            pure (acc ++ [(n, fid)])
+        | _ => pure acc) s₀ = some (out, s₁) → FRefines s₀ s₁ := by
+    intro l
+    induction l with
+    | nil =>
+        intro init s₀ s₁ out hl
+        obtain ⟨-, rfl⟩ := M.pure_inv hl
+        exact FRefines.rfl' _
+    | cons st rest ih =>
+        intro init s₀ s₁ out hl
+        rw [List.foldlM_cons] at hl
+        obtain ⟨acc, t, hst, hrest⟩ := M.bind_inv hl
+        exact (step init st s₀ t acc hst).trans (ih acc t s₁ out hrest)
+  exact fold ss [] s s' sc h
 
 theorem allocScope_sgrows {ss : List (Stmt Op)} {s s' : BState}
     {sc : List (Ident × FuncId)} (h : allocScope ss s = some (sc, s')) :
@@ -5007,6 +5132,27 @@ theorem FuncTableComplete.funcOK {P : Prog} {done : Array (Option Func)}
     FuncOK (model := model) P fenv decl fid :=
   ⟨g, s₀, s₁, h.get hslot, htr,
     fun i g' hi => h.get (hnested i g' hi)⟩
+
+/-- Content refinement is the local-to-final transport consumed by hoisted
+scope construction: once the just-filled declaration slot and every nested
+slot are present in a local builder table, `FContents` moves them to the one
+completed table and `FuncTableComplete` erases the `Option` layer. -/
+theorem FuncTableComplete.funcOK_of_contents {P : Prog}
+    {done : Array (Option Func)} (h : FuncTableComplete P done)
+    {fenv : FMap} {decl : YulSemantics.FDecl yulD} {fid : FuncId}
+    {g : Func} {s₀ s₁ sLocal sDone : BState}
+    (htr : trFunc fenv decl.params decl.rets decl.body s₀ = some (g, s₁))
+    (hslot : sLocal.funcs[fid]? = some (some g))
+    (hnested : ∀ (i : Nat) (g' : Func),
+      s₁.funcs[i]? = some (some g') → sLocal.funcs[i]? = some (some g'))
+    (href : FContents sLocal sDone) (hdone : sDone.funcs = done) :
+    FuncOK (model := model) P fenv decl fid := by
+  apply h.funcOK htr
+  · rw [← hdone]
+    exact href fid g hslot
+  · intro i g' hi
+    rw [← hdone]
+    exact href i g' (hnested i g' hi)
 
 /-! ## The residual obligation
 
@@ -10334,12 +10480,16 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   -- `SGrowsAt.completes_of` cannot compose those continuations.
   -- The two enclosing `for` rules additionally need the structural
   -- hoisted-scope bridge `allocScope init` ->
-  -- `FEnvOK P (hoist yulD init :: funs) (scope :: fenv)`.  The current
-  -- induction-wide `FuncTableComplete doneFuncs` says that `doneFuncs` erases
-  -- to `P.funcs`, but does not state that slots filled in the local builder
-  -- state survive into `doneFuncs`; that missing local-to-final table relation
-  -- is also the precise blocker in `block`, and must be added to the motive
-  -- before either wrapper can soundly invoke its initializer IH.
+  -- `FEnvOK P (hoist yulD init :: funs) (scope :: fenv)`.  `FContents` and
+  -- `FuncTableComplete.funcOK_of_contents` now provide the filled-slot
+  -- transport itself.  The precise remaining piece is a sixth mutually
+  -- threaded builder invariant which (1) recovers that each `FMap.get` used by
+  -- the hoist walk names its own reserved `none` singleton, so
+  -- `FContents.of_fillFunc_empty` applies, and (2) supplies the resulting
+  -- local-end-state -> `doneFuncs` witness as a premise of the statement/loop
+  -- motive.  `FuncTableComplete doneFuncs` alone deliberately has no relation
+  -- to an arbitrary local builder state, so invoking `ihi` before that witness
+  -- is threaded would be unsound.
   | forLoop hinit hloop ihi ihl => sorry
   | forInitHalt hinit ihi => sorry
   | @«break» funs V st =>
