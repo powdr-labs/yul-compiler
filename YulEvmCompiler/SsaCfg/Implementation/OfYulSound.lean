@@ -5342,6 +5342,80 @@ theorem trFunc_prefix (fenv : FMap) (ps rs : List Ident)
   trFunc_fprefix fenv ps rs body s.funcs.size s g s' (Nat.le_refl _) h
 
 omit model in
+/-- A pending function slot which no declaration in a statement suffix selects
+survives that suffix.  Nested scopes and nested function translations frame
+the whole table present at their entry; the only operation which can touch the
+protected slot is therefore the direct `fillFunc` at a `funDef` head. -/
+theorem trStmts_pending_survives (fenv : FMap) (env : VMap)
+    (lctx : Option LoopCtx) (rets : Option (List Ident)) (d : Bool) :
+    ∀ (ss : List (Stmt Op)) (s s' : BState) (r : Option VMap) (i : FuncId),
+      s.funcs[i]? = some none →
+      (∀ (n : Ident) (ps rs : List Ident) (body : List (Stmt Op)),
+        Stmt.funDef n ps rs body ∈ ss → fenv.get n ≠ some i) →
+      trStmts fenv env lctx rets d ss s = some (r, s') →
+      s'.funcs[i]? = some none := by
+  intro ss
+  induction ss generalizing env d with
+  | nil =>
+      intro s s' r i hi _ h
+      rw [trStmts] at h
+      obtain ⟨-, rfl⟩ := M.pure_inv h
+      exact hi
+  | cons st rest ih =>
+      intro s s' r i hi hskip h
+      cases st with
+      | funDef n ps rs body =>
+          rw [trStmts] at h
+          obtain ⟨fid, s1, h1, h⟩ := M.bind_inv h
+          obtain ⟨g, s2, h2, h⟩ := M.bind_inv h
+          obtain ⟨u, s3, h3, h4⟩ := M.bind_inv h
+          obtain ⟨hget, hs1⟩ := M.liftO_inv h1
+          subst s1
+          have hlt : i < s.funcs.size := lt_size_of_getElem? hi
+          have hi2 : s2.funcs[i]? = some none := by
+            rw [trFunc_prefix fenv ps rs body h2 i hlt]
+            exact hi
+          have hne : i ≠ fid := by
+            intro heq
+            subst fid
+            exact hskip n ps rs body (by simp) hget
+          obtain ⟨hfid, hs3⟩ := M.fillFunc_inv h3
+          have hi3 : s3.funcs[i]? = some none := by
+            rw [hs3]
+            rw [Array.getElem?_set (h := hfid), if_neg (Ne.symm hne)]
+            exact hi2
+          have hskipRest : ∀ (n' : Ident) (ps' rs' : List Ident)
+              (body' : List (Stmt Op)),
+              Stmt.funDef n' ps' rs' body' ∈ rest →
+                fenv.get n' ≠ some i := by
+            intro n' ps' rs' body' hm
+            exact hskip n' ps' rs' body' (List.mem_cons_of_mem _ hm)
+          exact ih env d s3 s' r i hi3 hskipRest h4
+      | block body | letDecl vars val | assign vars e | cond e body
+      | forLoop init e post body | «break» | «continue» | leave
+      | switch e cases dflt | exprStmt e =>
+          have hskipRest : ∀ (n : Ident) (ps rs : List Ident)
+              (body : List (Stmt Op)),
+              Stmt.funDef n ps rs body ∈ rest → fenv.get n ≠ some i := by
+            intro n ps rs body hm
+            exact hskip n ps rs body (List.mem_cons_of_mem _ hm)
+          rw [trStmts] at h
+          · split at h
+            · exact ih env true s s' r i hi hskipRest h
+            · obtain ⟨renv, s1, h1, h2⟩ := M.bind_inv h
+              have hlt : i < s.funcs.size := lt_size_of_getElem? hi
+              have hi1 : s1.funcs[i]? = some none := by
+                have hp := trStmt_fprefix fenv env lctx rets _ s.funcs.size
+                  s renv s1 (Nat.le_refl _) h1
+                rw [hp i hlt]
+                exact hi
+              cases renv with
+              | none => exact ih env true s1 s' r i hi1 hskipRest h2
+              | some env' => exact ih env' false s1 s' r i hi1 hskipRest h2
+          · intro n ps rs fbody heq
+            cases heq
+
+omit model in
 /-- Once control has diverted, `trStmts` only fills hoisted function slots;
 the caller's per-function construction state is restored exactly. -/
 theorem trStmts_true_fn (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
