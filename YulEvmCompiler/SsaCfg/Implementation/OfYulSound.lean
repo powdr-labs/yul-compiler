@@ -4999,6 +4999,26 @@ def CurFinal (f : Func) (fn : FnState) : Prop :=
   ∀ b : Block, fn.blocks[fn.curId]? = some b → f.blocks[fn.curId]? = some b
 
 omit model in
+/-- After leaving a sealed block, statement-level growth preserves it: it is
+no longer the exceptional current block in `SGrows.keep`. -/
+theorem curFinal_of_move_grows {f : Func} {s sM sEnd : BState}
+    {bid : BlockId} {u : Unit}
+    (hmv : moveTo bid s = some (u, sM)) (hne : s.fn.curId ≠ bid)
+    (hg : SGrows sM sEnd) (hcompl : Completes f sEnd.fn) :
+    CurFinal f s.fn := by
+  rw [M.moveTo_apply] at hmv
+  obtain ⟨-, rfl⟩ := M.some_pair_inj hmv
+  intro b hb
+  have hlt : s.fn.curId < s.fn.blocks.size := lt_size_of_getElem? hb
+  have hkeep : sEnd.fn.blocks[s.fn.curId]? = some b :=
+    hg.keep s.fn.curId b hlt hne hb
+  have hneEnd : s.fn.curId ≠ sEnd.fn.curId := by
+    rcases hg.curId with heq | hge
+    · simpa [heq] using hne
+    · exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hlt (by simpa using hge))
+  exact hcompl.sealed s.fn.curId b hneEnd hkeep
+
+omit model in
 /-- What `sealCur` leaves behind: same current block id, empty pending list, and
 the block now carrying the emitted instructions and the terminator. -/
 theorem sealCur_cur {t : Term} {s s' : BState} {u : Unit}
@@ -5944,8 +5964,25 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   | @seqNil funs V st =>
     intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ _ htr
     exact sim_seqNil henv hfr htr
-  | seqCons h1 h2 ih1 ih2 => sorry
-  | seqStop h1 hne ih1 => sorry
+  | seqCons h1 h2 ih1 ih2 =>
+    -- BLOCKED: after `trStmts_false_cons_inv`, the head ends at an intermediate
+    -- state `sA`.  `ih1` requires `CurPlaced f sA.fn`, but this case only has
+    -- `CurPlaced f s₁.fn`.  Tail `trStmts_grows` transfers `Completes` backwards,
+    -- but there is no corresponding `CurPlaced` transfer across `SGrows` (only
+    -- `curPlaced_back_grows` for expression-level `Grows`), so `SOut.seq` cannot
+    -- be fed its head `SOut`.  Independently, `seqCons` permits a `.funDef` head:
+    -- its `ih1` concerns rejected `trStmt`, whereas `trStmts` takes the special
+    -- `trFunc`/`fillFunc` branch excluded by `trStmts_false_cons_inv`.
+    sorry
+  | seqStop h1 hne ih1 =>
+    -- BLOCKED: after the live-head inversion, `ih1` again requires
+    -- `CurPlaced f sA.fn` at the head's intermediate state, while the case only
+    -- supplies it at the completed-list state.  `SOut.of_nonNormal` can transport
+    -- an already obtained head result using tail growth, but cannot supply that
+    -- missing placement premise.  `trStmts_true_fn` helps only if the head returns
+    -- `none`; non-normal `SOut` does not imply that, and CFG translations such as
+    -- `cond`/`switch` may return `some` even when the realized source path diverts.
+    sorry
   | loopDone => trivial
   | loopCondHalt => trivial
   | loopStep => trivial
