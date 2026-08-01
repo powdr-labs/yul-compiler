@@ -1641,6 +1641,39 @@ theorem edgeTargetLayout_mono {isFunc : Bool} {f : Func}
     exact TableSub.refl s
 
 omit model in
+/-- **What `edgeTargetLayout` returned, and where it lives in the table.** Both
+branches leave the target's entry defined and equal to the layout the returned
+target `τ` was substituted from: the read branch because the entry was already
+there and the state is unchanged, the record branch from the insert. -/
+theorem edgeTargetLayout_value {isFunc : Bool} {f : Func}
+    {liveIn : Array (List ValId)} {e : Edge} {sym : List SSlot}
+    {s : ToAsm.EmitSt} {τ : List SSlot} {s' : ToAsm.EmitSt}
+    (h : ToAsm.edgeTargetLayout isFunc f liveIn e sym s = some (τ, s')) :
+    ∃ (tb : Block) (lay : List SSlot),
+      f.blocks[e.target]? = some tb
+      ∧ s'.layouts[e.target]? = some lay
+      ∧ τ = ToAsm.substLayout lay tb.params e.args := by
+  unfold ToAsm.edgeTargetLayout at h
+  rcases htb : f.blocks[e.target]? with _ | tb
+  · rw [htb] at h
+    simp [ToAsm.liftE, bind, StateT.bind] at h
+  rw [htb] at h
+  simp only [ToAsm.liftE, bind, StateT.bind, Option.bind, pure, StateT.pure] at h
+  by_cases hlen : e.args.length ≠ tb.params.length
+  case pos =>
+    rw [if_pos hlen] at h
+    exact absurd h (by simp)
+  rw [if_neg hlen] at h
+  simp only [bind, StateT.bind, ToAsm.getLayout, Option.bind] at h
+  rcases hrec : s.layouts[e.target]? with _ | lay <;> rw [hrec] at h <;>
+    simp only [ToAsm.setLayout, bind, StateT.bind, Option.bind, pure, StateT.pure,
+      Option.some.injEq, Prod.mk.injEq] at h
+  · obtain ⟨hτ, rfl⟩ := h
+    exact ⟨tb, _, rfl, by simp, hτ.symm⟩
+  · obtain ⟨hτ, rfl⟩ := h
+    exact ⟨tb, lay, rfl, hrec, hτ.symm⟩
+
+omit model in
 /-- `emitInstr` never touches the layout table: `const`/`op` are
 state-transparent and `call` only allocates a fresh label. -/
 theorem emitInstr_mono {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
@@ -2294,6 +2327,51 @@ theorem layout_agree {sA sB sF : ToAsm.EmitSt} {bid : BlockId}
   have e₂ := hB bid l₂ h₂
   rw [e₁] at e₂
   exact Option.some.inj e₂
+
+omit model in
+/-- The shape of a two-way edge. Both schemes first fix the two target layouts
+(in order: the true edge, then the false edge from the post-`jumpi` stack), and
+then either land directly on `cond :: τt` or route the taken edge through a
+fresh stub. -/
+theorem emitTerm_branch_shape {isFunc : Bool} {f : Func} {L : ToAsm.LabelMap}
+    {fidx : Option Nat} {liveIn : Array (List ValId)} {sym : List SSlot}
+    {c : ValId} {et ef : Edge} {s : ToAsm.EmitSt} {asmf : List Asm}
+    {s' : ToAsm.EmitSt}
+    (h : ToAsm.emitTerm isFunc f L fidx liveIn sym (.branch c et ef) s
+      = some (asmf, s')) :
+    ∃ (τt τf : List SSlot) (s1 s2 : ToAsm.EmitSt),
+      ToAsm.edgeTargetLayout isFunc f liveIn et sym s = some (τt, s1)
+      ∧ ToAsm.edgeTargetLayout isFunc f liveIn ef τt s1 = some (τf, s2)
+      ∧ ((∃ opst opsf,
+            ToAsm.shuffle sym (SSlot.val c :: τt) = some opst
+            ∧ ToAsm.shuffle τt τf = some opsf
+            ∧ asmf = opst ++ [Asm.jumpi (ToAsm.blkLabel L fidx et.target)]
+                ++ opsf ++ [Asm.jump (ToAsm.blkLabel L fidx ef.target)])
+        ∨ (∃ (U : List SSlot) (stub : Label) (ops0 opsf opst : List Asm),
+            ToAsm.shuffle sym (SSlot.val c :: U) = some ops0
+            ∧ ToAsm.shuffle U τf = some opsf
+            ∧ ToAsm.shuffle U τt = some opst
+            ∧ asmf = ops0 ++ [Asm.jumpi stub] ++ opsf
+                ++ [Asm.jump (ToAsm.blkLabel L fidx ef.target)]
+                ++ [Asm.label stub] ++ opst
+                ++ [Asm.jump (ToAsm.blkLabel L fidx et.target)])) := by
+  simp only [ToAsm.emitTerm] at h
+  obtain ⟨τt, s1, hτt, h1⟩ := E_bind_inv h
+  obtain ⟨τf, s2, hτf, h2⟩ := E_bind_inv h1
+  refine ⟨τt, τf, s1, s2, hτt, hτf, ?_⟩
+  rcases hsa : ToAsm.shuffle sym (SSlot.val c :: τt) with _ | opst <;>
+    rcases hsb : ToAsm.shuffle τt τf with _ | opsf <;>
+    rw [hsa, hsb] at h2 <;> simp only [] at h2
+  case some.some =>
+    obtain ⟨heq, -⟩ := E_pure_inv2 h2
+    exact Or.inl ⟨opst, opsf, hsa, hsb, heq.symm⟩
+  all_goals
+    obtain ⟨stub, s3, hfl, h3⟩ := E_bind_inv h2
+    obtain ⟨ops0, hs0, h4⟩ := liftE_bind_inv h3
+    obtain ⟨opsf', hsf, h5⟩ := liftE_bind_inv h4
+    obtain ⟨opst', hst, h6⟩ := liftE_bind_inv h5
+    obtain ⟨heq, -⟩ := E_pure_inv2 h6
+    exact Or.inr ⟨_, stub, ops0, opsf', opst', hs0, hsf, hst, heq.symm⟩
 
 omit model in
 /-- The shape of an unconditional edge: consult/record the target layout, then

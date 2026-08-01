@@ -254,6 +254,115 @@ theorem Func.mem_allUses_of_block {f : Func} {i : BlockId} {b : Block} {x : ValI
   simp only [Func.allUses, List.mem_flatMap]
   exact ⟨b, hmem, by simpa [Rest.uses] using hx⟩
 
+/-! ## Single assignment
+
+`wfCheck` gives `Func.allDefs.Nodup`; these lemmas turn that into the form the
+value-level passes need — a value has exactly one definition site, so any
+binding of it in any execution comes from *that* instruction. The argument is by
+counting occurrences in `allDefs`, which avoids index arithmetic through the
+nested `flatMap`. -/
+
+theorem one_le_count_flatMap {α β : Type} [DecidableEq β] {l : List α} {g : α → List β}
+    {x : α} {d : β} (hx : x ∈ l) (hd : d ∈ g x) : 1 ≤ (l.flatMap g).count d :=
+  List.count_pos_iff.mpr (List.mem_flatMap.mpr ⟨x, hx, hd⟩)
+
+theorem count_le_count_flatMap {α β : Type} [DecidableEq β] {l : List α} {g : α → List β}
+    {x : α} {d : β} (hx : x ∈ l) : (g x).count d ≤ (l.flatMap g).count d := by
+  induction l with
+  | nil => simp at hx
+  | cons a rest ih =>
+    rw [List.flatMap_cons, List.count_append]
+    rcases List.mem_cons.mp hx with rfl | hx'
+    · omega
+    · have := ih hx'; omega
+
+theorem two_le_count_flatMap {α β : Type} [DecidableEq β] {l : List α} {g : α → List β}
+    {x y : α} {d : β} (hx : x ∈ l) (hy : y ∈ l) (hne : x ≠ y)
+    (hdx : d ∈ g x) (hdy : d ∈ g y) : 2 ≤ (l.flatMap g).count d := by
+  induction l with
+  | nil => simp at hx
+  | cons a rest ih =>
+    rw [List.flatMap_cons, List.count_append]
+    rcases List.mem_cons.mp hx with rfl | hx'
+    · have hy' : y ∈ rest := by
+        rcases List.mem_cons.mp hy with rfl | h
+        · exact absurd rfl hne
+        · exact h
+      have h1 : 1 ≤ (g x).count d := List.count_pos_iff.mpr hdx
+      have h2 : 1 ≤ (rest.flatMap g).count d := one_le_count_flatMap hy' hdy
+      omega
+    · rcases List.mem_cons.mp hy with rfl | hy'
+      · have h1 : 1 ≤ (g y).count d := List.count_pos_iff.mpr hdy
+        have h2 : 1 ≤ (rest.flatMap g).count d := one_le_count_flatMap hx' hdx
+        omega
+      · have := ih hx' hy'
+        omega
+
+/-! ### Single assignment: one definition site per value -/
+
+/-- The per-block contribution to `Func.allDefs`. -/
+abbrev blockAllDefs (b : Block) : List ValId := b.params ++ b.instrs.flatMap Instr.defs
+
+theorem allDefs_eq (f : Func) :
+    f.allDefs = f.params ++ f.blocks.toList.flatMap blockAllDefs := rfl
+
+theorem two_le_count_allDefs {f : Func} {d : ValId}
+    (h2 : 2 ≤ (f.blocks.toList.flatMap blockAllDefs).count d) : ¬ f.allDefs.Nodup := by
+  intro hnd
+  have hle := List.nodup_iff_count_le_one.mp hnd d
+  rw [allDefs_eq, List.count_append] at hle
+  omega
+
+/-- **Single assignment, instruction form**: two instructions of a well-formed
+function that define the same value are the same instruction. -/
+theorem instr_def_unique {f : Func} (h : f.allDefs.Nodup)
+    {b1 b2 : Block} (hb1 : b1 ∈ f.blocks.toList) (hb2 : b2 ∈ f.blocks.toList)
+    {x1 x2 : Instr} (hx1 : x1 ∈ b1.instrs) (hx2 : x2 ∈ b2.instrs)
+    {d : ValId} (hd1 : d ∈ x1.defs) (hd2 : d ∈ x2.defs) : x1 = x2 := by
+  by_contra hne
+  refine two_le_count_allDefs (f := f) (d := d) ?_ h
+  by_cases hb : b1 = b2
+  · subst hb
+    have h2 : 2 ≤ (b1.instrs.flatMap Instr.defs).count d :=
+      two_le_count_flatMap hx1 hx2 hne hd1 hd2
+    have hle : (blockAllDefs b1).count d ≤ (f.blocks.toList.flatMap blockAllDefs).count d :=
+      count_le_count_flatMap hb1
+    rw [show blockAllDefs b1 = b1.params ++ b1.instrs.flatMap Instr.defs from rfl,
+      List.count_append] at hle
+    omega
+  · refine two_le_count_flatMap hb1 hb2 hb ?_ ?_ <;>
+      exact List.mem_append_right _ (List.mem_flatMap.mpr ⟨_, by assumption, by assumption⟩)
+
+/-- **Single assignment, parameter form**: a block parameter is never also an
+instruction destination. -/
+theorem param_not_instr_def {f : Func} (h : f.allDefs.Nodup)
+    {b1 b2 : Block} (hb1 : b1 ∈ f.blocks.toList) (hb2 : b2 ∈ f.blocks.toList)
+    {x : Instr} (hx : x ∈ b2.instrs) {d : ValId} (hp : d ∈ b1.params) (hd : d ∈ x.defs) :
+    False := by
+  refine two_le_count_allDefs (f := f) (d := d) ?_ h
+  by_cases hb : b1 = b2
+  · subst hb
+    have h1 : 1 ≤ b1.params.count d := List.count_pos_iff.mpr hp
+    have h2 : 1 ≤ (b1.instrs.flatMap Instr.defs).count d := one_le_count_flatMap hx hd
+    have hle : (blockAllDefs b1).count d ≤ (f.blocks.toList.flatMap blockAllDefs).count d :=
+      count_le_count_flatMap hb1
+    rw [show blockAllDefs b1 = b1.params ++ b1.instrs.flatMap Instr.defs from rfl,
+      List.count_append] at hle
+    omega
+  · exact two_le_count_flatMap hb1 hb2 hb (List.mem_append_left _ hp)
+      (List.mem_append_right _ (List.mem_flatMap.mpr ⟨x, hx, hd⟩))
+
+/-- **Single assignment, function-parameter form**. -/
+theorem funcParam_not_instr_def {f : Func} (h : f.allDefs.Nodup)
+    {b : Block} (hb : b ∈ f.blocks.toList) {x : Instr} (hx : x ∈ b.instrs)
+    {d : ValId} (hp : d ∈ f.params) (hd : d ∈ x.defs) : False := by
+  have hle := List.nodup_iff_count_le_one.mp h d
+  rw [allDefs_eq, List.count_append] at hle
+  have h1 : 1 ≤ f.params.count d := List.count_pos_iff.mpr hp
+  have h2 : 1 ≤ (f.blocks.toList.flatMap blockAllDefs).count d :=
+    one_le_count_flatMap hb (List.mem_append_right _ (List.mem_flatMap.mpr ⟨x, hx, hd⟩))
+  omega
+
 /-! ## Dominance: the backward-liveness fixed point
 
 `ToAsm.Func.domCheck` decides SSA dominance as "nothing but the function's
@@ -1783,6 +1892,99 @@ theorem cfTerm_edges (b : Block) (m : Std.HashMap ValId U256) {e : Edge}
     exact ⟨e0, he0, by rw [he]⟩
 
 
+/-! ### Pass 2's step-by-step correspondence -/
+
+/-- The constant map after one folded instruction. -/
+def cfInstrMap (i : Instr) (m : Std.HashMap ValId U256) : Std.HashMap ValId U256 :=
+  match i with
+  | .const d v => m.insert d v
+  | .op [d] yop args =>
+    match (if pureOp yop then
+            (match args.mapM (m[·]?) with
+             | some vs => evalPure yop vs
+             | none => none)
+           else none) with
+    | some v => m.insert d v
+    | none => m
+  | _ => m
+
+/-- The instruction `constFold` emits for one source instruction. -/
+def cfInstrOut (i : Instr) (m : Std.HashMap ValId U256) : Instr :=
+  match i with
+  | .const d v => .const d v
+  | .op [d] yop args =>
+    match (if pureOp yop then
+            (match args.mapM (m[·]?) with
+             | some vs => evalPure yop vs
+             | none => none)
+           else none) with
+    | some v => .const d v
+    | none => .op [d] yop args
+  | i => i
+
+/-- **The step-by-step correspondence**: one fold step updates the map and
+conses one rewritten instruction, both determined by the *incoming map alone*. -/
+theorem cfInstrStep_eq (i : Instr) (m : Std.HashMap ValId U256) (acc : List Instr) :
+    cfInstrStep i ⟨m, acc⟩ = ⟨cfInstrMap i m, cfInstrOut i m :: acc⟩ := by
+  cases i with
+  | const d v => rfl
+  | op ds yop args =>
+    cases ds with
+    | nil => rfl
+    | cons d rest =>
+      cases rest with
+      | nil =>
+        simp only [cfInstrStep, cfInstrMap, cfInstrOut]
+        split <;> (try split) <;> grind
+      | cons e es => rfl
+  | call ds fid args => rfl
+
+/-- The accumulator only ever grows at the front, so a fold started from `acc`
+is the fold started from `[]`, appended. -/
+theorem cfInstr_fold_split (l : List Instr) (m : Std.HashMap ValId U256) (acc : List Instr) :
+    (l.foldl (fun s i => cfInstrStep i s) ⟨m, acc⟩).2
+      = (l.foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).2 ++ acc := by
+  induction l generalizing m acc with
+  | nil => rfl
+  | cons i is ih =>
+    have hstep : ∀ a : List Instr,
+        (List.foldl (fun s i => cfInstrStep i s) ⟨m, a⟩ (i :: is))
+          = List.foldl (fun s i => cfInstrStep i s) ⟨cfInstrMap i m, cfInstrOut i m :: a⟩ is := by
+      intro a; rw [List.foldl_cons, cfInstrStep_eq]
+    rw [hstep acc, hstep [], ih (cfInstrMap i m) (cfInstrOut i m :: acc),
+      ih (cfInstrMap i m) [cfInstrOut i m]]
+    simp
+
+/-- The block's rewritten instruction list, one step at a time: the head is the
+rewrite of the head under the incoming map, and the tail is the rewrite of the
+tail under the *updated* map. This is the shape a simulation over `Exec`
+consumes. -/
+theorem cfInstr_fold_cons (i : Instr) (is : List Instr) (m : Std.HashMap ValId U256) :
+    ((i :: is).foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).2.reverse
+      = cfInstrOut i m ::
+        (is.foldl (fun s i => cfInstrStep i s) ⟨cfInstrMap i m, []⟩).2.reverse := by
+  rw [List.foldl_cons, cfInstrStep_eq, cfInstr_fold_split]
+  simp
+
+/-- The empty case. -/
+theorem cfInstr_fold_nil (m : Std.HashMap ValId U256) :
+    (([] : List Instr).foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).2.reverse = [] := rfl
+
+/-- The map after a fold, step by step. -/
+theorem cfInstr_foldMap_cons (i : Instr) (is : List Instr) (m : Std.HashMap ValId U256) :
+    ((i :: is).foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).1
+      = (is.foldl (fun s i => cfInstrStep i s) ⟨cfInstrMap i m, []⟩).1 := by
+  rw [List.foldl_cons, cfInstrStep_eq]
+  have : ∀ (a : List Instr) (m' : Std.HashMap ValId U256),
+      (is.foldl (fun s i => cfInstrStep i s) ⟨m', a⟩).1
+        = (is.foldl (fun s i => cfInstrStep i s) ⟨m', []⟩).1 := by
+    intro a m'
+    induction is generalizing m' a with
+    | nil => rfl
+    | cons j js ih => rw [List.foldl_cons, List.foldl_cons, cfInstrStep_eq, cfInstrStep_eq,
+        ih (cfInstrOut j m' :: a) (cfInstrMap j m'), ih [cfInstrOut j m'] (cfInstrMap j m')]
+  exact this _ _
+
 /-! ### Pass 2's structural specification -/
 
 /-- One block step pushes a `CFRel`-rewrite of the source block. -/
@@ -2000,35 +2202,36 @@ The loop is no longer in the way: `constFold_blocks_eq` (proved) turns it into a
 `List.foldl` over `cfBlockStep`, and `constFold_spec` (proved) relates output
 blocks to input blocks index by index — that is what closed `constFold_dom`.
 
-What soundness additionally needs, and what the remaining `sorry` is:
+What soundness additionally needs, and what the remaining `sorry` is. The
+single-assignment lemmas (`instr_def_unique`, `param_not_instr_def`,
+`funcParam_not_instr_def`) and the step-by-step correspondence
+(`Passes.cfInstrStep_eq`, `cfInstr_fold_cons`, `cfInstr_foldMap_cons`) are now
+proved; what is left is the invariant that ties them together.
 
-* the **consistency** invariant for the folder's map, which is *not* "`R`
-  contains `m`" but "`m` never disagrees with `R`": `m[d]? = some v → R d = some w
-  → w = v`. Consistency is the right form because `constFold` threads its map in
-  *block-index* order while an execution visits blocks in *control-flow* order,
-  so entries for not-yet-executed blocks are simply unconstrained (`R d = none`),
-  and any use of such a `d` is stuck in the original too — vacuous;
-* that invariant is maintained only because single assignment makes the `const`
-  instruction the **unique** binder of its destination, so it needs a
-  `Nodup`-based unique-definition-site lemma for `Func.allDefs` (also the piece
-  that rules out a jump re-binding a `d` in the map's domain);
-* an instruction-level refinement of `cfInstr_fold` giving the step-by-step
-  correspondence (the current version gives the aggregate defs/uses facts that
-  dominance needs, not the per-instruction one a simulation needs);
-* then each folded instruction is discharged by `Passes.evalPure_transport`
-  (proved) and each folded `branch` by inversion of
-  `Exec.branchTrue`/`branchFalse` on a known-constant condition.
-
-`sorry`: needs the forward-walk invariant "for every `(d, v)` in the folder's
-`consts` map, the register file maps `d` to `v` or leaves it unbound". That
-invariant rests only on single assignment (`allDefs.Nodup` from `wfCheck`), which
-makes the `const d v` instruction the *unique* binder of `d`, so any binding of
-`d` in any reachable state is `v` — no dominance needed, which is why the
-counterexample above leaves this pass alone. Its proof needs a `Nodup`-based
-unique-definition-site lemma for `Func.allDefs` (the list plumbing is the bulk of
-the work), after which each folded instruction is discharged by
-`Passes.evalPure_transport` (proved) and each folded `branch` by inversion of
-`Exec.branchTrue`/`branchFalse` on a known-constant condition. -/
+* The invariant is **consistency**, not containment: `m[d]? = some v → R d =
+  some w → w = v`. Entries for not-yet-executed definitions are unconstrained
+  (`R d = none`), and a use of such a `d` is stuck in the original too.
+* Consistency is used in *both* directions, and both are already available:
+  forward at a folded op (`args.mapM (m[·]?) = some vs` together with
+  `R.getMany args = some argvals` forces `argvals = vs`, and then
+  `Passes.evalPure_transport` gives the value and leaves the state alone), and
+  backward at a binding (`instr_def_unique` says the instruction now binding `d`
+  *is* `d`'s only definition site, and `param_not_instr_def` /
+  `funcParam_not_instr_def` rule out a jump or a function parameter re-binding
+  something in the map's domain).
+* The remaining difficulty is that the map is **not flow-sensitive**: `constFold`
+  threads it in *block-index* order while an execution visits blocks in
+  *control-flow* order, so the map in force at block `k` was computed from blocks
+  `0..k-1` whether or not the execution visited them. Consistency therefore
+  cannot be carried by the forward simulation alone; it has to be established
+  once, by induction over the **fold order** (block index, then instruction
+  index), and only then consumed by the simulation. That induction is
+  well-founded because a folded op's arguments are entered into the map strictly
+  earlier in the same fold — `cfInstr_foldMap_cons` is the step lemma it needs.
+* With consistency in hand the simulation itself is routine: register files stay
+  *equal* on the two sides (a folded op binds the same destination to the same
+  word), so `exec_congr` handles the register side and the machine state is
+  untouched. -/
 theorem constFold_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (heb : f.blocks[f.entry]? = some eb)
