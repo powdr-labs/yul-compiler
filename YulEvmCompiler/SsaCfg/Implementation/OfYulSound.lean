@@ -512,6 +512,39 @@ theorem set_drop_of_mem_take : ∀ (V : VEnv D) (x : Ident) (v : D.Value) (k : N
           · exact absurd rfl h
           · exact hm)
 
+/-- Re-setting a binding to the value it already holds is a no-op. -/
+theorem set_get_self : ∀ {V : VEnv D} {x : Ident} {v : D.Value},
+    YulSemantics.VEnv.get V x = some v → YulSemantics.VEnv.set V x v = V := by
+  intro V
+  induction V with
+  | nil => intro x v _; rfl
+  | cons p V ih =>
+    intro x v hg
+    obtain ⟨pn, pv⟩ := p
+    rw [get_cons] at hg
+    rw [YulSemantics.VEnv.set]
+    by_cases h : pn = x
+    · rw [if_pos h] at hg ⊢
+      obtain rfl : pv = v := Option.some.inj hg
+      rw [h]
+    · rw [if_neg h] at hg ⊢
+      rw [ih hg]
+
+/-- Assigning a list of variables their current values is a no-op — the
+`if`-false and loop-exit edges pass exactly these. -/
+theorem setMany_self {V : VEnv D} : ∀ {xs : List Ident} {vs : List D.Value},
+    List.Forall₂ (fun x v => YulSemantics.VEnv.get V x = some v) xs vs →
+    YulSemantics.VEnv.setMany V xs vs = V := by
+  intro xs
+  induction xs with
+  | nil => intro vs _; rfl
+  | cons x xs ih =>
+    intro vs h
+    cases h with
+    | @cons v vs' _ _ hh ht =>
+      rw [setMany_cons, set_get_self hh]
+      exact ih ht
+
 /-! ### `restore` -/
 
 theorem restore_def (V Vb : VEnv D) :
@@ -3367,6 +3400,108 @@ theorem sim_seqNil {P : Prog} {f : Func} {fenv : FMap} {env : VMap} {R : Regs}
   subst hs₁
   exact ⟨env, R, by simpa using hrenv, Regs.Le.rfl R, hfresh, henv, SimS.rfl'⟩
 
+/-- **The edge into a reserved join block.** `cond`'s join, `switch`'s join and
+the loop's header/exit/post blocks are all *reserved* (`newBlock`) before the
+edges into them are sealed, so the construction never sees their finished
+bodies — only their parameter lists. `Completes.params` is exactly the
+strengthening that bridges that gap: it fixes the finished block's parameters,
+which is what `Exec`'s jump/branch rules need to bind the edge arguments. -/
+theorem jumpTo_of_completes {P : Prog} {f : Func} {sRes sCont : BState}
+    {bid : BlockId} {b : Block} {vals : List U256} {R : Regs} {st : EvmState}
+    {res : FRes}
+    (hcompl : Completes f sRes.fn)
+    (hres : sRes.fn.blocks[bid]? = some b)
+    (hcur : sCont.fn.curId = bid) (hcur0 : sCont.fn.cur = [])
+    (hlen : b.params.length = vals.length)
+    (hex : ExecFrom (model := model) P f sCont.fn (R.setMany b.params vals) st res) :
+    JumpTo (model := model) P f bid vals R st res := by
+  obtain ⟨rest, ⟨jb, hjb, hi, ht⟩, hexec⟩ := hex
+  rw [hcur] at hjb
+  rw [hcur0] at hi
+  simp only [List.reverse_nil, List.nil_append] at hi
+  obtain ⟨bf, hbf, hbp⟩ := hcompl.params bid b hres
+  have heq : jb = bf := (Option.some.inj (hbf.symm.trans hjb)).symm
+  rw [heq] at hi ht
+  refine ⟨jb, hjb, by rw [heq, hbp]; exact hlen, ?_⟩
+  rw [heq, hbp, hi, ht]
+  cases rest
+  exact hexec
+
+/-! ### Edges into reserved blocks, as `SimS` steps
+
+`cond`, `switch` and the loop family all end a block with an edge into a block
+the construction reserved earlier. These three steps are the whole content of
+those cases; what is left for the induction shell is the (mechanical) inversion
+of the corresponding `trStmt` equation. -/
+
+/-- A fall-through `jump` into a reserved join block. -/
+theorem simS_jump_join {P : Prog} {f : Func} {R : Regs} {sEnd s₁ : BState}
+    {joinId : BlockId} {xv : List ValId} {vals : List U256} {jb : Block}
+    {st : EvmState}
+    (hcompl : Completes f s₁.fn)
+    (hseal : CurOK f sEnd.fn ⟨[], .jump ⟨joinId, xv⟩⟩)
+    (hres : s₁.fn.blocks[joinId]? = some jb)
+    (hcur : s₁.fn.curId = joinId) (hcur0 : s₁.fn.cur = [])
+    (hg : R.getMany xv = some vals)
+    (hlen : jb.params.length = vals.length) :
+    SimS (model := model) P f sEnd.fn R st s₁.fn
+      (R.setMany jb.params vals) st := by
+  intro res hex
+  exact execFrom_jump hseal hg
+    (jumpTo_of_completes hcompl hres hcur hcur0 hlen hex)
+
+/-- The *false* edge of an `if`: straight to the join, carrying the current
+values of the join's variable set. -/
+theorem simS_branchFalse_join {P : Prog} {f : Func} {R : Regs} {sA s₁ : BState}
+    {cv0 : ValId} {bodyId joinId : BlockId} {xvals : List ValId}
+    {vals : List U256} {jb : Block} {st : EvmState}
+    (hcompl : Completes f s₁.fn)
+    (hbranch : CurOK f sA.fn ⟨[], .branch cv0 ⟨bodyId, []⟩ ⟨joinId, xvals⟩⟩)
+    (hc : R cv0 = some 0)
+    (hres : s₁.fn.blocks[joinId]? = some jb)
+    (hcur : s₁.fn.curId = joinId) (hcur0 : s₁.fn.cur = [])
+    (hg : R.getMany xvals = some vals)
+    (hlen : jb.params.length = vals.length) :
+    SimS (model := model) P f sA.fn R st s₁.fn
+      (R.setMany jb.params vals) st := by
+  intro res hex
+  exact execFrom_branchFalse hbranch hc hg
+    (jumpTo_of_completes hcompl hres hcur hcur0 hlen hex)
+
+/-- The *true* edge of an `if`: into the body block, which takes no arguments,
+so the register file is unchanged. -/
+theorem simS_branchTrue_body {P : Prog} {f : Func} {R : Regs} {sA sB s₁ : BState}
+    {cv0 : ValId} {v : U256} {bodyId joinId : BlockId} {xvals : List ValId}
+    {bb : Block} {st : EvmState}
+    (hcompl : Completes f s₁.fn)
+    (hbranch : CurOK f sA.fn ⟨[], .branch cv0 ⟨bodyId, []⟩ ⟨joinId, xvals⟩⟩)
+    (hc : R cv0 = some v) (hv : v ≠ 0)
+    (hres : s₁.fn.blocks[bodyId]? = some bb) (hbp : bb.params = [])
+    (hcur : sB.fn.curId = bodyId) (hcur0 : sB.fn.cur = []) :
+    SimS (model := model) P f sA.fn R st sB.fn R st := by
+  intro res hex
+  refine execFrom_branchTrue (vals := []) hbranch hc hv (by simp) ?_
+  refine jumpTo_of_completes hcompl hres hcur hcur0 (by rw [hbp]; simp) ?_
+  rw [hbp]
+  simpa using hex
+
+/-- An expression whose evaluation halts: the fragment the construction laid
+down reaches that halt from the fragment's entry configuration. -/
+def EOutHalt (P : Prog) (f : Func) (s₀ : BState) (R₀ : Regs)
+    (yst yst' : EvmState) : Prop :=
+  ExecFrom (model := model) P f s₀.fn R₀ yst (.halt yst')
+
+/-- **Every "the right-hand side halted" statement rule at once.** `letHalt`,
+`assignHalt`, `exprStmtHalt`, `ifHalt` and `switchHalt` all leave the
+environment untouched and report `.halt`; on the SSA side the halt happens
+inside the expression's own fragment, which is a prefix of the statement's, so
+the statement's `SOut` *is* the expression's. -/
+theorem SOut.ofExprHalt {P : Prog} {f : Func} {lctx : Option LoopCtx}
+    {rets : Option (List Ident)} {s₀ s₁ : BState} {R : Regs}
+    {renv : Option VMap} {V : VEnv yulD} {yst yst' : EvmState}
+    (h : EOutHalt (model := model) P f s₀ R yst yst') :
+    SOut (model := model) P f lctx rets s₀ s₁ R renv V yst yst' .halt := h
+
 /-- **`letDecl vars (some e)`** — the right-hand side's ids become the new
 bindings; `EnvOK.zip` pairs them with the source values. -/
 theorem sim_letDecl_some {P : Prog} {f : Func} {fenv : FMap} {env : VMap}
@@ -3592,7 +3727,18 @@ into the induction:
   combinator — pure, no construction inversion), `SOut.of_nonNormal` (the
   `seqStop` transport across the dead code the construction still walks), and
   `SOut.scope` (the `block` combinator, matching the construction's `drop`
-  against the source's `restore`).
+  against the source's `restore`);
+* every "the right-hand side halted" rule at once — `SOut.ofExprHalt` covers
+  `letHalt`, `assignHalt`, `exprStmtHalt`, `ifHalt` and `switchHalt`;
+* **edges into reserved blocks** — `jumpTo_of_completes` and its three `SimS`
+  specialisations `simS_jump_join`, `simS_branchFalse_join`,
+  `simS_branchTrue_body`. These are the whole semantic content of `cond`,
+  `switch` and the loop family: those constructs reserve their join / body /
+  header / exit / post blocks *before* sealing the edges into them, so the
+  construction never sees the finished bodies — only the parameter lists, which
+  is exactly what `Completes.params` fixes. What is left for those cases is the
+  mechanical inversion of the corresponding `trStmt` equation, which belongs in
+  the induction shell.
 
 Two invariants the remaining cases must thread, both with their payoff lemmas
 already proved:
@@ -3605,11 +3751,13 @@ already proved:
   source's `restore`.
 * `Completes`/`CurFinal` — see above.
 
-What remains is the `induction … with` shell itself plus the leaves for `cond`
-(join block: `edgeArgs_ok` + `modStmts_sound` + `Completes` at the join),
-`switch` (the `trCases` chain), the `for`/loop family (header/exit/post block
-choreography), and user calls `callOk`/`callHalt` (`FMap.get_ok`, `trFunc`, and
-a fresh register file for the callee).
+What remains is the `induction … with` shell itself — which for `cond`,
+`switch` and the loop family is now mostly the `trStmt`/`trCases` equation
+inversion feeding the edge steps above (plus `edgeArgs_ok` for the edge values,
+`modStmts_sound` for the variables the join does *not* carry, and `setMany_self`
+for the `if`-false and loop-exit edges, which pass a variable its own current
+value) — and the user-call pair `callOk`/`callHalt` (`FMap.get_ok`, `trFunc`,
+and a fresh register file for the callee).
 -/
 theorem trScope_sim {P : Prog} {f : Func}
     {funs : YulSemantics.FunEnv yulD} {fenv : FMap}
