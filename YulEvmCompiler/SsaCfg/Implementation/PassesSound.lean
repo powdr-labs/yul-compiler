@@ -130,13 +130,13 @@ definitions nothing reads.
 
 ## The remaining frontier
 
-Eleven `sorry`s, each documented at its declaration:
+Ten `sorry`s, each documented at its declaration:
 
 * pass 0 (inlining): `inlineOnce_sound`, `inlineFunc_sound`, `pruneFuncs_sound`,
   `inlineProg_sound`;
 * passes 1, 3 and 4: `elimTrivialParams_sound`, `cse_sound`, `dve_sound`;
-* dominance preservation: `elimTrivialParams_dom`, `cse_dom`, `dve_dom`
-  (`constFold_dom` and `runOnce_dom` *are* proved);
+* dominance preservation: `elimTrivialParams_dom`, `cse_dom`
+  (`constFold_dom`, `dve_dom`, and `runOnce_dom` *are* proved);
 * the gate-accepted branch of `optimizeProg_sound'`.
 
 Two kinds of obligation remain, and it is worth separating them.
@@ -151,18 +151,12 @@ function over `MProd`, pass `h` as a tactic block, `grind` for the
 (`findTrivialParam`, `inlineFunc`) need the `ForInStep.done` variant of the
 bridge, which is not proved here.
 
-**(b) One shared fuel-loop fact.** The first of the two — convergence of
-`ToAsm.liveInSets` — is now **proved** (`liveInSets_isSome`); what remains is:
-
-* `Passes.liveSet` is `Passes.liveStep`-**closed**. Its loop exits on a *size*
-  fixpoint rather than a set fixpoint, so closure needs (i) `liveStep` is
-  inflationary (it only ever inserts), (ii) `A ⊆ B` with `|A| = |B|` forces
-  `A = B` for `Std.HashSet` (via `toList` `Nodup` + `Subperm`), and (iii) the
-  same fuel-adequacy argument as above so the loop cannot fall out of the
-  bottom. Note this is a *proof* obligation, not a lurking miscompilation: were
-  `liveSet` ever to under-approximate, `dve` would delete a definition that a
-  kept instruction reads, and that program fails `domCheck` — so the defensive
-  gate rejects the candidate and `optimizeProg` returns the original.
+**(b) DVE execution alignment.** Both fixed-point facts are now proved:
+`ToAsm.liveInSets_isSome` and `Passes.liveSet_closed`.  Closure has also been
+unpacked into `dveBlock_uses_live`, including the `wfCheck`-backed positional
+edge argument case.  What remains for `dve_sound` is the runtime counterpart:
+filter target parameters, edge ids, and the values returned by `Regs.getMany`
+with the same mask, then carry live-register agreement across `setMany`.
 
 The semantic ingredients that all of these feed into — the frame lemma, the
 purity leaves, the liveness fixed point with its propagation and
@@ -2237,6 +2231,209 @@ theorem liveSet_closed (f : Func) : (liveSet f).Equiv (liveStep f (liveSet f)) :
   rw [hresult]
   exact hclosed
 
+theorem liveSet_mem_step_iff {f : Func} {x : ValId} :
+    x ∈ liveStep f (liveSet f) ↔ x ∈ liveSet f :=
+  (liveSet_closed f).mem_iff.symm
+
+theorem mem_fold_insert_of_mem {xs : List ValId} {s : Std.HashSet ValId} {x : ValId}
+    (hx : x ∈ xs) : x ∈ xs.foldl (fun s a => s.insert a) s := by
+  induction xs generalizing s with
+  | nil => simp at hx
+  | cons a as ih =>
+      rw [List.foldl_cons]
+      rcases List.mem_cons.mp hx with hx | hx
+      · subst x
+        exact fold_insert_sub as (s.insert a) a
+          (Std.HashSet.mem_insert.mpr (Or.inl (beq_iff_eq.mpr rfl)))
+      · exact ih hx
+
+/-- If a selected fold step puts `x` in the accumulator whenever the
+accumulator contains `base`, then the complete inflationary fold contains
+`x`. -/
+theorem mem_fold_of_selected_step {alpha : Type}
+    {step : alpha → Std.HashSet ValId → Std.HashSet ValId}
+    (hinfl : ∀ a s, HashSub s (step a s)) {base s : Std.HashSet ValId}
+    (hbase : HashSub base s) {xs : List alpha} {a : alpha} (ha : a ∈ xs)
+    {x : ValId} (hstep : ∀ s, HashSub base s → x ∈ step a s) :
+    x ∈ xs.foldl (fun s a => step a s) s := by
+  induction xs generalizing s with
+  | nil => simp at ha
+  | cons b bs ih =>
+      rw [List.foldl_cons]
+      rcases List.mem_cons.mp ha with rfl | ha
+      · exact fold_sub hinfl bs (step a s) x (hstep s hbase)
+      · exact ih (HashSub.trans hbase (hinfl b s)) ha
+
+def dveKeepInstr (live : Std.HashSet ValId) : Instr → Bool
+  | .const d _ => live.contains d
+  | .op ds yop _ => !pureOp yop || ds.any live.contains
+  | .call .. => true
+
+theorem dveLiveInstrStep_mem_use {live s : Std.HashSet ValId}
+    (hsub : HashSub live s) {i : Instr}
+    (hkeep : dveKeepInstr live i = true) {x : ValId} (hx : x ∈ i.uses) :
+    x ∈ dveLiveInstrStep i s := by
+  cases i with
+  | const d v => simp [Instr.uses] at hx
+  | op ds yop args =>
+      simp only [dveKeepInstr] at hkeep
+      simp only [Instr.uses] at hx
+      simp only [dveLiveInstrStep]
+      have hk : (!pureOp yop || ds.any s.contains) = true := by
+        simp only [Bool.or_eq_true] at hkeep ⊢
+        rcases hkeep with hp | hd
+        · exact Or.inl hp
+        · obtain ⟨d, hd, hdlive⟩ := List.any_eq_true.mp hd
+          exact Or.inr (List.any_eq_true.mpr
+            ⟨d, hd, Std.HashSet.mem_iff_contains.mp (hsub d
+              (Std.HashSet.contains_iff_mem.mp hdlive))⟩)
+      rw [if_pos hk]
+      exact mem_fold_insert_of_mem hx
+  | call ds fid args =>
+      exact mem_fold_insert_of_mem (by simpa [Instr.uses] using hx)
+
+theorem wfCheck_edge_arity {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
+    {b : Block} (hb : b ∈ f.blocks.toList) {e : Edge} (he : e ∈ b.term.edges) :
+    ∃ tb, f.blocks[e.target]? = some tb ∧ e.args.length = tb.params.length := by
+  unfold Func.wfCheck at hwf
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at hwf
+  have hb' : b ∈ f.blocks := by simpa using hb
+  have hblock := Array.all_eq_true_iff_forall_mem.mp hwf.2 b hb'
+  simp only [Bool.and_eq_true] at hblock
+  have hedge := List.all_eq_true.mp hblock.1.2 e he
+  cases hopt : f.blocks[e.target]? with
+  | none => simp [hopt] at hedge
+  | some tb =>
+      refine ⟨tb, rfl, ?_⟩
+      simpa [hopt] using hedge
+
+/-- Under the edge-arity invariant, an argument retained by DVE is propagated
+by the forward liveness step from its live target parameter. -/
+theorem dveLiveEdgeStep_mem_filtered {f : Func} {e : Edge} {tb : Block}
+    (htb : f.blocks[e.target]? = some tb) (hlen : e.args.length = tb.params.length)
+    {s : Std.HashSet ValId} (hsub : HashSub (liveSet f) s)
+    {x : ValId}
+    (hx : x ∈ (e.args.zipIdx.filter fun ai =>
+      match tb.params[ai.2]? with
+      | some p => (liveSet f).contains p
+      | none => true).map (fun ai => ai.1)) :
+    x ∈ dveLiveEdgeStep f e s := by
+  simp only [List.mem_map, List.mem_filter] at hx
+  obtain ⟨ai, ⟨hai, hkeep⟩, haix⟩ := hx
+  obtain ⟨i, hi, hget⟩ := List.mem_iff_getElem.mp hai
+  have hiArgs : i < e.args.length := by simpa using hi
+  have hpair : ai = (e.args[i], i) := by
+    rw [← hget, List.getElem_zipIdx hi]
+    simp
+  have hxarg : e.args[i] = x := by simpa [hpair] using haix
+  have hiParams : i < tb.params.length := by omega
+  have hparam : tb.params[i]? = some tb.params[i] := List.getElem?_eq_getElem hiParams
+  have hpLive : tb.params[i] ∈ liveSet f := by
+    rw [hpair, hparam] at hkeep
+    exact Std.HashSet.contains_iff_mem.mp hkeep
+  have hpai : (tb.params[i], x) ∈ tb.params.zip e.args := by
+    rw [List.mem_iff_getElem]
+    refine ⟨i, ?_, ?_⟩
+    · simp only [List.length_zip]
+      omega
+    · rw [List.getElem_zip]
+      simp [hxarg]
+  simp only [dveLiveEdgeStep, htb]
+  apply mem_fold_of_selected_step
+    (fun pa s => by
+      split
+      · exact fun y hy => Std.HashSet.mem_insert.mpr (Or.inr hy)
+      · exact HashSub.refl s)
+    hsub hpai
+  intro s hs
+  have hpS : tb.params[i] ∈ s := hs _ hpLive
+  rw [if_pos (Std.HashSet.mem_iff_contains.mp hpS)]
+  exact Std.HashSet.mem_insert.mpr (Or.inl (by simp))
+
+theorem dveLiveBlockStep_mem_term {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
+    {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b)
+    {s : Std.HashSet ValId} (hsub : HashSub (liveSet f) s) {x : ValId}
+    (hx : x ∈ (dveBlock f bi b).term.uses) :
+    x ∈ b.term.edges.foldl (fun s e => dveLiveEdgeStep f e s)
+      (dveLiveTermStep b.term s) := by
+  have hbmem : b ∈ f.blocks.toList := by
+    obtain ⟨hlt, hget⟩ := Array.getElem?_eq_some_iff.mp hb
+    exact List.mem_iff_getElem.mpr ⟨bi, by simpa using hlt, by simpa using hget⟩
+  cases hterm : b.term with
+  | jump e =>
+      simp only [dveBlock, hterm, mapEdges, Term.uses] at hx
+      obtain ⟨tb, htb, hlen⟩ := wfCheck_edge_arity hwf hbmem (e := e)
+        (by simp [hterm, Term.edges])
+      simp only [htb] at hx
+      simpa [hterm, Term.edges, dveLiveTermStep] using
+        dveLiveEdgeStep_mem_filtered htb hlen hsub hx
+  | branch c et ef =>
+      simp only [dveBlock, hterm, mapEdges, Term.uses, List.mem_cons, List.mem_append] at hx
+      rcases hx with hxct | hxf
+      · rcases hxct with hxc | hxt
+        · subst x
+          simpa [hterm, Term.edges, dveLiveTermStep] using
+            fold_sub (dveLiveEdgeStep_inflationary f) [et, ef] (s.insert c) c
+            (Std.HashSet.mem_insert.mpr (Or.inl (by simp)))
+        · obtain ⟨tb, htb, hlen⟩ := wfCheck_edge_arity hwf hbmem (e := et)
+            (by simp [hterm, Term.edges])
+          simp only [htb] at hxt
+          simp only [hterm, Term.edges, dveLiveTermStep]
+          apply mem_fold_of_selected_step (dveLiveEdgeStep_inflationary f)
+            (HashSub.trans hsub (dveLiveTermStep_inflationary (.branch c et ef) s))
+            (xs := [et, ef]) (a := et) (by simp)
+          intro s' hs'
+          exact dveLiveEdgeStep_mem_filtered htb hlen hs' hxt
+      · obtain ⟨tb, htb, hlen⟩ := wfCheck_edge_arity hwf hbmem (e := ef)
+          (by simp [hterm, Term.edges])
+        simp only [htb] at hxf
+        simp only [hterm, Term.edges, dveLiveTermStep]
+        apply mem_fold_of_selected_step (dveLiveEdgeStep_inflationary f)
+          (HashSub.trans hsub (dveLiveTermStep_inflationary (.branch c et ef) s))
+          (xs := [et, ef]) (a := ef) (by simp)
+        intro s' hs'
+        exact dveLiveEdgeStep_mem_filtered htb hlen hs' hxf
+  | ret vs =>
+      simpa [hterm, Term.edges, dveLiveTermStep] using
+        mem_fold_insert_of_mem (by simpa [dveBlock, hterm, mapEdges, Term.uses] using hx)
+  | halt yop as =>
+      simpa [hterm, Term.edges, dveLiveTermStep] using
+        mem_fold_insert_of_mem (by simpa [dveBlock, hterm, mapEdges, Term.uses] using hx)
+
+theorem dveBlock_instr_keep {f : Func} {bi : BlockId} {b : Block} {i : Instr}
+    (h : i ∈ (dveBlock f bi b).instrs) :
+    dveKeepInstr (liveSet f) i = true := by
+  change i ∈ b.instrs.filter (dveKeepInstr (liveSet f)) at h
+  exact (List.mem_filter.mp h).2
+
+/-- Every value read by the DVE output is in the closed forward live set.  The
+well-formedness premise is used only for positional edge-argument alignment. -/
+theorem dveBlock_uses_live {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
+    {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b) {x : ValId}
+    (hx : x ∈ ToAsm.blockUses (dveBlock f bi b)) : x ∈ liveSet f := by
+  apply liveSet_mem_step_iff.mp
+  rw [liveStep_eq_fold]
+  have hbmem : b ∈ f.blocks.toList := by
+    obtain ⟨hlt, hget⟩ := Array.getElem?_eq_some_iff.mp hb
+    exact List.mem_iff_getElem.mpr ⟨bi, by simpa using hlt, by simpa using hget⟩
+  apply mem_fold_of_selected_step (dveLiveBlockStep_inflationary f)
+    (HashSub.refl (liveSet f)) hbmem
+  intro s hsub
+  rw [ToAsm.mem_blockUses] at hx
+  rcases hx with hi | ht
+  · simp only [List.mem_flatMap] at hi
+    obtain ⟨ins, hins, huse⟩ := hi
+    have hins' : ins ∈ b.instrs := List.mem_of_mem_filter hins
+    have hkeep : dveKeepInstr (liveSet f) ins = true := dveBlock_instr_keep hins
+    have hinner : x ∈ b.instrs.foldl (fun s i => dveLiveInstrStep i s) s := by
+      apply mem_fold_of_selected_step dveLiveInstrStep_inflationary hsub hins'
+      intro s' hs'
+      exact dveLiveInstrStep_mem_use hs' hkeep huse
+    exact fold_sub (dveLiveEdgeStep_inflationary f) b.term.edges _ x
+      (dveLiveTermStep_inflationary b.term _ x hinner)
+  · exact dveLiveBlockStep_mem_term hwf hb
+      (HashSub.trans hsub (fold_sub dveLiveInstrStep_inflationary b.instrs s)) ht
+
 /-! ### Pass 2's loop, as a fold -/
 
 abbrev CFInner := MProd (Std.HashMap ValId U256) (List Instr)
@@ -4197,15 +4394,12 @@ theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res 
 agree on every value in `Passes.liveSet f`", stepped with the frame lemma
 `exec_congr`; the deleted instructions are exactly those whose destinations
 nothing reads, so the invariant is preserved by construction and no dominance is
-needed. The missing part is the liveness side of `Passes.liveSet` (a *forward*
-`Std.HashSet` fixed point, distinct from `ToAsm.liveInSets` used by `domCheck`):
-the proof needs (i) that the returned set is `Passes.liveStep`-closed — the fuel
-loop exits on a *size* fixpoint and `liveStep` only ever inserts, so equal size
-forces equal sets — and (ii) that closure implies "every value read by a kept
-instruction, by a terminator, or through a live target parameter is in the set".
-Plus the edge/parameter *alignment* lemma for dropped dead parameters: `dve`
-masks parameters and in-edge arguments with the same predicate computed from the
-**pre-pass** blocks, so `tb.params.length = args.length` survives. -/
+needed. `liveSet_closed` and `dveBlock_uses_live` now discharge the static
+liveness half.  The remaining part is the runtime edge/parameter alignment
+lemma: `dve` masks target parameters, incoming argument ids, and hence the values
+returned by `Regs.getMany` at the same positions; the proof must show the two
+filtered lists have equal length and that `Regs.setMany` preserves agreement on
+the live set. -/
 theorem dve_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (heb : f.blocks[f.entry]? = some eb)
@@ -4263,31 +4457,85 @@ private example :
   native_decide
 
 omit model in
-theorem dve_dom {f : Func} (hdom : ToAsm.Func.domCheck f = true) :
+/-- `wfCheck` is required here because DVE filters edge arguments positionally;
+without matching edge/target arities the documented counterexample applies. -/
+theorem dve_dom {f : Func} (hwf : f.wfCheck n = true)
+    (hdom : ToAsm.Func.domCheck f = true) :
     ToAsm.Func.domCheck (Passes.dve f) = true := by
-  /- BLOCKED: this statement is false without `wfCheck`.  The kernel-checked
-  `dveDomCounterexample` immediately above has an edge `B0 -> B1` carrying
-  `[0]` while `B1.params = []`.  Forward DVE liveness scans
-  `B1.params.zip [0]`, so `0` is not live and `.const 0 0` is deleted; edge
-  filtering deliberately keeps the unmatched argument because `B1.params[0]?`
-  is `none`.  Consequently the rewritten entry reads an undefined `0` and
-  fails `domCheck`, although the original definition makes its `domCheck`
-  succeed.  The liveness-least argument requested here therefore needs an edge
-  arity/well-formedness hypothesis (for example `f.wfCheck n = true`). -/
-  sorry
+  obtain ⟨li, hli⟩ := ToAsm.liveInSets_isSome f
+  obtain ⟨li', hli'⟩ := ToAsm.liveInSets_isSome (Passes.dve f)
+  let ub := li.map (fun xs => xs.filter (Passes.liveSet f).contains)
+  have mem_ub (i : Nat) (x : ValId) :
+      x ∈ ub[i]?.getD [] ↔ x ∈ li[i]?.getD [] ∧ x ∈ Passes.liveSet f := by
+    by_cases hi : i < li.size
+    · have hiub : i < ub.size := by simpa [ub] using hi
+      rw [Array.getElem?_eq_getElem hiub, Array.getElem?_eq_getElem hi]
+      simp only [Option.getD_some, ub, Array.getElem_map, List.mem_filter]
+      exact and_congr_right (fun _ => Std.HashSet.contains_iff_mem)
+    · have hge : li.size ≤ i := Nat.not_lt.mp hi
+      have hgeub : ub.size ≤ i := by simpa [ub] using hge
+      rw [Array.getElem?_eq_none_iff.mpr hge, Array.getElem?_eq_none_iff.mpr hgeub]
+      simp
+  have hub : ToAsm.Sub (ToAsm.liveStep (Passes.dve f) ub) ub := by
+    intro i x hx
+    rcases hb' : (Passes.dve f).blocks[i]? with _ | b'
+    · rw [ToAsm.liveStep_get_none hb'] at hx
+      simp at hx
+    · rw [ToAsm.liveStep_get_eq hb', ToAsm.mem_diffS] at hx
+      rw [Passes.dve_blocks_get] at hb'
+      rcases hb : f.blocks[i]? with _ | b
+      · simp [hb] at hb'
+      · have hb'eq : b' = Passes.dveBlock f i b := by
+          symm
+          simpa [hb] using hb'
+        subst b'
+        rw [mem_ub]
+        have finish (hxLive : x ∈ Passes.liveSet f) (hxOld : x ∈ li[i]?.getD []) :
+            x ∈ li[i]?.getD [] ∧ x ∈ Passes.liveSet f := ⟨hxOld, hxLive⟩
+        rcases ToAsm.mem_unionS.mp hx.1 with hu | hl
+        · have hxLive := Passes.dveBlock_uses_live hwf hb hu
+          have huOld := Passes.dveBlock_uses_sub hu
+          have hnot : x ∉ ToAsm.blockDefs b := by
+            intro hd
+            have hd' := Passes.dveBlock_defs_of_live (i := i)
+              (Std.HashSet.mem_iff_contains.mp hxLive) hd
+            exact hx.2 hd'
+          exact finish hxLive (ToAsm.liveIn_of_uses hli hb huOld hnot)
+        · rcases ToAsm.mem_lout.mp hl with ⟨e, he, hxe⟩ | hnil
+          · rw [mem_ub] at hxe
+            obtain ⟨e0, he0, htarget⟩ := Passes.dveBlock_edge_target he
+            have hnot : x ∉ ToAsm.blockDefs b := by
+              intro hd
+              have hd' := Passes.dveBlock_defs_of_live (i := i)
+                (Std.HashSet.mem_iff_contains.mp hxe.2) hd
+              exact hx.2 hd'
+            exact finish hxe.2 (ToAsm.liveIn_of_succ hli hb he0
+              (by rw [htarget]; exact hxe.1) hnot)
+          · simp at hnil
+  have hsub : ToAsm.Sub li' ub := ToAsm.liveInSets_least hli' hub
+  unfold ToAsm.Func.domCheck
+  rw [hli']
+  simp only [decide_eq_true_eq]
+  rw [List.eq_nil_iff_forall_not_mem]
+  intro x hx
+  rw [ToAsm.mem_diffS] at hx
+  have hxub := hsub _ _ hx.1
+  rw [mem_ub] at hxub
+  exact hx.2 (ToAsm.domCheck_entry hli hdom hxub.1)
 
 omit model in
 /-- Dominance preservation for one pipeline round, **proved** by composition of
-the four obligations above. The two `wfCheck` hypotheses are the ones passes 1
-and 3 need; supplying them is what the (separate) well-formedness preservation
+the four obligations above. The three `wfCheck` hypotheses are the ones passes
+1, 3, and 4 need; supplying them is what the (separate) well-formedness preservation
 lemmas are for — `Correctness.optimizeProg_wf` gets the top-level version for
 free from the gate. -/
 theorem runOnce_dom {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
     (hwf3 : (Passes.constFold (Passes.elimTrivialParams f)).wfCheck n = true)
+    (hwf4 : (Passes.cse (Passes.constFold (Passes.elimTrivialParams f))).wfCheck n = true)
     (hdom : ToAsm.Func.domCheck f = true) :
     ToAsm.Func.domCheck (Passes.runOnce f) = true := by
   unfold Passes.runOnce
-  exact dve_dom (cse_dom hwf3 (constFold_dom (elimTrivialParams_dom hwf hdom)))
+  exact dve_dom hwf4 (cse_dom hwf3 (constFold_dom (elimTrivialParams_dom hwf hdom)))
 
 /-! ### The top-level statement -/
 
