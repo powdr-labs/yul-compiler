@@ -95,6 +95,7 @@ theorem emitProg_ahalt {ord : Bool} {P : Prog} {asm : List Asm}
       AHalt (model := model) asm conf yst' :=
   emitProg_ahalt' hnodup hwf hdom hemit hrun
 
+omit model in
 /-- The optimizer preserves well-formedness: its defensive gate returns the
 pipeline output only when that output re-checks, and the original
 otherwise. -/
@@ -107,6 +108,7 @@ theorem optimizeProg_wf {P : Prog} (hwf : P.wfCheck = true) :
     exact this.1
   · exact hwf
 
+omit model in
 /-- The optimizer's defensive gate also preserves the dominance check. -/
 theorem optimizeProg_dom {P : Prog} (hdom : ToAsm.Prog.domCheck P = true) :
     ToAsm.Prog.domCheck (optimizeProg P) = true := by

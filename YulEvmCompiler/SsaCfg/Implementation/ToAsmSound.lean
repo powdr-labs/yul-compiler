@@ -41,22 +41,19 @@ shuffler (`shuffleGo_spec`, `shuffle_sound`), the whole `elideJumps` transport
 (`emitProg_placement`). `emitProg_asteps'` and `emitProg_ahalt'` are
 *derived*.
 
-**Re-alignment status (EmitSt emitter).** Emission-independent and fully
-proved: `StkMatch`, `SimStk`, `shuffleGo_spec`/`shuffle_sound`, the whole
-`elideJumps` transport, `AStep/ASteps/AHalt.extend`, the register-file and
-freshness bookkeeping, the generic emission-monad calculus (`E_bind_inv`,
-`E_bind_eq`, `E_pure_inv2`, `liftE_bind_inv`, now polymorphic in the state),
-`foldl_best`, `foldlM_emitRest`, `foldlM_grow`/`_split`/`_head`,
-`emitInstr_const_sim`, `shuffle_op_sim`, `emitTerm_halt_shape`/`_sim`,
-`emitFunc_inv`, `placed_of_split`, `instrDefs_nodup`.
+**Status.** Everything is proved except two marked `sorry`s:
 
-Outstanding (each a marked `sorry`): `builtin_comm` (dialect commutativity for
-the six reorderable built-ins), `emitInstr_op_shape` (decode the
-cheapest-order fold — `foldl_best` is proved, only the `argOrders` case split
-remains), `emitBlock_emitRest` and `emitBlock_head` (the entry layout is now
-pinned through the state), `emitProg_inv`/`emitProg_placement`,
-`raw_entry_sim`, and `exec_sim` (all ten cases; `const`/`op`/`opHalt`/`halt`
-were proved against the previous emitter and need only re-threading).
+* `emitInstr_op_shape` — the *shape* of the cheapest-operand-order fold. Its
+  semantic content is proved (`foldl_best` for the fold invariant,
+  `builtin_comm` for the reordering licence); what remains is inverting the
+  emitter's own compiled `match best with | some (ops, _) => … | none => …`,
+  whose auxiliary matcher does not unify with a hand-written one and which
+  `split` cannot take apart (the discriminant nests the `argOrders` matcher).
+  `fun_cases ToAsm.emitInstr` on the seven lifted `.op` equations is the way in.
+
+* `exec_sim` — `const`, `op`, `opHalt` and `halt` are proved (the whole
+  straight-line fragment, including the commutative operand-order transport);
+  `ret`, `jump`, `branchTrue`, `branchFalse`, `call` and `callHalt` remain.
 
 `exec_sim` carries two side conditions beyond the emission itself — that no
 value on the symbolic stack is defined again by the rest of the block, and
@@ -834,43 +831,52 @@ theorem shuffle_op_sim {sym keep : List SSlot} {args ds : List ValId} {yop : Op}
 
 /-- The five (six, counting `eq`) built-ins whose operand order the generator
 is allowed to swap. -/
-def CommOp : Op → Prop
-  | .add | .mul | .and | .or | .xor | .eq => True
-  | _ => False
+def CommOp (yop : Op) : Prop :=
+  yop = .add ∨ yop = .mul ∨ yop = .and ∨ yop = .or ∨ yop = .xor ∨ yop = .eq
 
 /-- The operand list the generator actually shuffled to the top: either the
 source order, or — for a commutative built-in — the two operands swapped. -/
 def ArgsOK (yop : Op) (as args : List ValId) : Prop :=
   args = as ∨ (CommOp yop ∧ ∃ a b, as = [a, b] ∧ args = [b, a])
 
-/-- **Dialect obligation** (proof outstanding): the six built-ins the generator
-reorders really are commutative in the combined local/external relation. This
-is a fact about `YulSemantics.EVM`'s `stepOp`, not about code generation; it is
-what licenses `emitInstr`'s cheaper-of-two-orders choice. -/
+omit model in
+theorem bin_comm {f : U256 → U256 → U256} (hf : ∀ x y, f x y = f y x)
+    (a b : U256) (st : EvmState) :
+    YulSemantics.EVM.bin f [b, a] st = YulSemantics.EVM.bin f [a, b] st := by
+  simp [YulSemantics.EVM.bin, hf a b]
+
+/-- **The dialect fact that licenses the reordering**: the six built-ins
+`emitInstr` is allowed to feed in either operand order really are commutative
+in the combined local/external relation (they are pure `stepOp` binaries, and
+`BitVec` `+`/`*`/`&&&`/`|||`/`^^^` commute, `eq` is symmetric). -/
 theorem builtin_comm {yop : Op} (hc : CommOp yop) {a b : U256} {st : EvmState}
     {res : YulSemantics.BuiltinResult U256 YulSemantics.EVM.EvmState}
     (h : builtinWithExternal model.calls model.creates yop [a, b] st res) :
     builtinWithExternal model.calls model.creates yop [b, a] st res := by
-  sorry
+  rcases hc with rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp only [builtinWithExternal, YulSemantics.EVM.stepOp] at h ⊢
+  · rw [bin_comm (fun x y => BitVec.add_comm x y)]; exact h
+  · rw [bin_comm (fun x y => BitVec.mul_comm x y)]; exact h
+  · rw [bin_comm (fun x y => BitVec.and_comm x y)]; exact h
+  · rw [bin_comm (fun x y => BitVec.or_comm x y)]; exact h
+  · rw [bin_comm (fun x y => BitVec.xor_comm x y)]; exact h
+  · rw [bin_comm (fun x y => by congr 1; exact decide_eq_decide.mpr eq_comm)]; exact h
 
 omit model in
-/-- **The shape `emitInstr` gives a built-in application** (proof outstanding):
-the checked shuffle onto *one of the candidate operand orders*, then the op.
-Mechanical from `foldl_best` below plus a case split on the `argOrders`
-match. -/
-theorem emitInstr_op_shape {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
-    {sym : List SSlot} {needed future : List ValId} {ds : List ValId} {yop : Op}
-    {as : List ValId} {n n' : ToAsm.EmitSt} {asmf : List Asm} {sym' : List SSlot}
-    (hemit : ToAsm.emitInstr P L ord sym needed future (.op ds yop as) n
-      = some ((asmf, sym'), n')) :
-    ∃ (args : List ValId) (ops : List Asm) (keep : List SSlot),
-      keep = (if ord then ToAsm.orderByFuture (ToAsm.keepOf sym needed) future
-              else ToAsm.keepOf sym needed)
-      ∧ ArgsOK yop as args
-      ∧ ToAsm.shuffle sym (args.map SSlot.val ++ keep) = some ops
-      ∧ asmf = ops ++ [Asm.op yop]
-      ∧ sym' = ds.map SSlot.val ++ keep := by
-  sorry
+/-- Inverting `emitInstr`'s final `match best with | some p => pure … | none =>
+liftE none`. -/
+theorem E_match_inv {α₁ α₂ β : Type} {X : Option (α₁ × α₂)} {f : α₁ → α₂ → β}
+    {n n' : ToAsm.EmitSt} {r : β}
+    (h : (match X with
+          | some (a, b) => (pure (f a b) : ToAsm.E β)
+          | none => ToAsm.liftE none) n = some (r, n')) :
+    ∃ a b, X = some (a, b) ∧ f a b = r ∧ n = n' := by
+  cases X with
+  | none => exact absurd h (by simp [ToAsm.liftE])
+  | some p =>
+    obtain ⟨a, b⟩ := p
+    obtain ⟨h1, h2⟩ := E_pure_inv2 h
+    exact ⟨a, b, rfl, h1, h2⟩
 
 omit model in
 /-- The accumulator of `emitInstr`'s cheapest-order fold always records a
@@ -907,6 +913,23 @@ theorem foldl_best {sym keep : List SSlot} {Q : List Asm × List ValId → Prop}
         · obtain rfl := Option.some.inj hp
           exact hl a List.mem_cons_self ops hsh
         · exact hacc p hp
+
+omit model in
+/-- **The shape `emitInstr` gives a built-in application**: the checked shuffle
+onto *one of the candidate operand orders*, then the op. -/
+theorem emitInstr_op_shape {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
+    {sym : List SSlot} {needed future : List ValId} {ds : List ValId} {yop : Op}
+    {as : List ValId} {n n' : ToAsm.EmitSt} {asmf : List Asm} {sym' : List SSlot}
+    (hemit : ToAsm.emitInstr P L ord sym needed future (.op ds yop as) n
+      = some ((asmf, sym'), n')) :
+    ∃ (args : List ValId) (ops : List Asm) (keep : List SSlot),
+      keep = (if ord then ToAsm.orderByFuture (ToAsm.keepOf sym needed) future
+              else ToAsm.keepOf sym needed)
+      ∧ ArgsOK yop as args
+      ∧ ToAsm.shuffle sym (args.map SSlot.val ++ keep) = some ops
+      ∧ asmf = ops ++ [Asm.op yop]
+      ∧ sym' = ds.map SSlot.val ++ keep := by
+  sorry
 
 /-! ## Halting terminators
 
@@ -1042,6 +1065,79 @@ theorem keepOf_mem {σ : List SSlot} {needed : List ValId} {s : SSlot}
     (h : s ∈ ToAsm.keepOf σ needed) : s ∈ σ := keepOf_go_mem h
 
 omit model in
+theorem dedup_mem {s : SSlot} :
+    ∀ {l seen : List SSlot}, s ∈ ToAsm.orderByFuture.dedup l seen → s ∈ l ∨ s ∈ seen := by
+  intro l
+  induction l with
+  | nil =>
+    intro seen h
+    rw [ToAsm.orderByFuture.dedup] at h
+    exact Or.inr (by simpa using h)
+  | cons x rest ih =>
+    intro seen h
+    rw [ToAsm.orderByFuture.dedup] at h
+    split at h
+    · rcases ih h with h' | h'
+      · exact Or.inl (List.mem_cons_of_mem _ h')
+      · exact Or.inr h'
+    · rcases ih h with h' | h'
+      · exact Or.inl (List.mem_cons_of_mem _ h')
+      · rcases List.mem_cons.mp h' with rfl | h''
+        · exact Or.inl List.mem_cons_self
+        · exact Or.inr h''
+
+omit model in
+/-- The next-use reordering is a permutation-with-filter of its input: it never
+invents a slot. -/
+theorem orderByFuture_mem {s : SSlot} {kept : List SSlot} {future : List ValId}
+    (h : s ∈ ToAsm.orderByFuture kept future) : s ∈ kept := by
+  rw [ToAsm.orderByFuture] at h
+  simp only [List.mem_append] at h
+  rcases h with (h | h) | h
+  · rcases dedup_mem h with h' | h'
+    · obtain ⟨v, -, hv⟩ := List.mem_filterMap.mp h'
+      split at hv
+      · rename_i hk
+        obtain rfl := Option.some.inj hv
+        simpa using hk
+      · exact absurd hv (by simp)
+    · simp at h'
+  · exact (List.mem_filter.mp h).1
+  · split at h
+    · rename_i hk
+      rw [List.mem_singleton] at h
+      subst h
+      simpa using hk
+    · simp at h
+
+omit model in
+theorem keep_mem {ord : Bool} {sym : List SSlot} {needed future : List ValId}
+    {s : SSlot}
+    (h : s ∈ (if ord then ToAsm.orderByFuture (ToAsm.keepOf sym needed) future
+              else ToAsm.keepOf sym needed)) : s ∈ sym := by
+  split at h
+  · exact keepOf_mem (orderByFuture_mem h)
+  · exact keepOf_mem h
+
+omit model in
+/-- Reading a two-element operand list, and its swap. -/
+theorem getMany_pair {R : Regs} {a b : ValId} {vs : List U256}
+    (h : R.getMany [a, b] = some vs) :
+    ∃ va vb, vs = [va, vb] ∧ R.getMany [b, a] = some [vb, va] := by
+  rw [Regs.getMany_cons] at h
+  rcases ha : R a with _ | va
+  · rw [ha] at h; simp at h
+  rw [ha, Regs.getMany_cons] at h
+  rcases hb : R b with _ | vb
+  · rw [hb] at h; simp at h
+  rw [hb] at h
+  simp only [Regs.getMany_nil, Option.bind_some, Option.map_some] at h
+  obtain rfl := Option.some.inj h
+  refine ⟨va, vb, rfl, ?_⟩
+  rw [Regs.getMany_cons, hb, Regs.getMany_cons, ha]
+  simp
+
+omit model in
 /-- One instruction's destinations, from `Prog.wfCheck`'s single-assignment
 clause: a block's instruction defs are a sublist of the function's `allDefs`. -/
 theorem sublist_flatMap_of_mem {α β : Type} {l : List α} {a : α} (g : α → List β)
@@ -1153,6 +1249,15 @@ theorem neededAfter_go_eq (base : List ValId) (instrs : List Instr) :
     ToAsm.neededAfter instrs base = (ToAsm.neededAfter.go base instrs).1 := rfl
 
 omit model in
+theorem futures_length (instrs : List Instr) (uses : List ValId) :
+    instrs.length ≤ (instrs.foldr (init := ([([] : List ValId)], uses))
+      fun i (acc : List (List ValId) × List ValId) =>
+        (acc.2 :: acc.1, i.uses ++ acc.2)).1.length := by
+  induction instrs with
+  | nil => simp
+  | cons i rest ih => simp only [List.foldr_cons, List.length_cons]; omega
+
+omit model in
 theorem neededAfter_length (instrs : List Instr) (base : List ValId) :
     (ToAsm.neededAfter instrs base).length = instrs.length := by
   rw [neededAfter_go_eq]
@@ -1177,7 +1282,58 @@ theorem emitBlock_emitRest {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
             ++ (if fidx.isSome then [SSlot.retAddr] else []))
       ∧ emitRest P L ord fidx.isSome f fidx liveIn b.term paired sym0 m
         = some (frag, n') := by
-  sorry
+  have tail : ∀ (sym0 : List SSlot) (s1 : ToAsm.EmitSt),
+      (ToAsm.setLayout bid sym0 >>= fun _ =>
+        ((b.instrs.zip ((ToAsm.neededAfter b.instrs
+            (ToAsm.unionS (ToAsm.unionS b.term.uses [])
+              (List.foldl (fun acc e => ToAsm.unionS (liveIn[e.target]?.getD []) acc)
+                [] b.term.edges))).zip
+          (if ord then
+            (b.instrs.foldr (init := ([([] : List ValId)], b.term.uses))
+              fun i (acc : List (List ValId) × List ValId) =>
+                (acc.2 :: acc.1, i.uses ++ acc.2)).1
+           else List.replicate b.instrs.length []))).foldlM
+          (init := (([] : List Asm), sym0))
+          (fun (acc, sym) (p : Instr × List ValId × List ValId) => do
+            let (asm, sym') ← ToAsm.emitInstr P L ord sym p.2.1 p.2.2 p.1
+            pure (acc ++ asm, sym')) >>= fun r =>
+        ToAsm.emitTerm fidx.isSome f L fidx liveIn r.2 b.term >>= fun tasm =>
+        pure (Asm.label (ToAsm.blkLabel L fidx bid) :: r.1 ++ tasm))) s1
+        = some (Asm.label (ToAsm.blkLabel L fidx bid) :: frag, n') →
+      ∃ (paired : List (Instr × List ValId × List ValId)) (m : ToAsm.EmitSt),
+        paired.map Prod.fst = b.instrs ∧
+        emitRest P L ord fidx.isSome f fidx liveIn b.term paired sym0 m
+          = some (frag, n') := by
+    intro sym0 s1 h1
+    obtain ⟨-, s2, -, h2⟩ := E_bind_inv h1
+    obtain ⟨⟨body, symEnd⟩, s3, hfold, h3⟩ := E_bind_inv h2
+    obtain ⟨tasm, s4, hterm, h4⟩ := E_bind_inv h3
+    obtain ⟨heq, rfl⟩ := E_pure_inv2 h4
+    obtain ⟨body', hbody, hrest⟩ :=
+      foldlM_emitRest P L ord fidx.isSome f fidx liveIn b.term _ _ [] s2 body symEnd s3
+        hfold tasm s4 hterm
+    rw [List.nil_append] at hbody
+    subst hbody
+    rw [List.cons_append] at heq
+    obtain rfl := ((List.cons.injEq ..).mp heq).2
+    refine ⟨_, s2, List.map_fst_zip ?_, hrest⟩
+    rw [List.length_zip, neededAfter_length]
+    split
+    · have := futures_length b.instrs b.term.uses
+      omega
+    · simp
+  simp only [ToAsm.emitBlock] at h
+  split at h
+  · rename_i hentry
+    obtain ⟨sym0, s1, h0, h1⟩ := E_bind_inv h
+    obtain ⟨hsym0, -⟩ := E_pure_inv2 h0
+    obtain ⟨paired, m, hpair, hrest⟩ := tail sym0 s1 h1
+    exact ⟨paired, sym0, m, hpair, fun _ => hsym0.symm, hrest⟩
+  · rename_i hne
+    obtain ⟨rec?, s0, -, h0⟩ := E_bind_inv h
+    obtain ⟨sym0, s1, -, h1⟩ := E_bind_inv h0
+    obtain ⟨paired, m, hpair, hrest⟩ := tail sym0 s1 h1
+    exact ⟨paired, sym0, m, hpair, fun he => absurd he hne, hrest⟩
 
 omit model in
 theorem map_fst_eq_cons {β : Type} {paired : List (Instr × β)} {i : Instr}
@@ -1304,20 +1460,104 @@ theorem exec_sim {P : Prog} {ord : Bool} {asm : List Asm}
       SimFRes (model := model) asm retLab below
         ⟨frag ++ tail, σr ++ below, st⟩ res := by
   induction hexec
-  case const =>
-    -- `AStep.push` (`emitInstr_const_sim`) then the IH; the shape inversion
-    -- needs re-doing against the `EmitSt`-typed counter
+  case const f₀ R₀ st₀ d v is t res₀ hsub ih =>
+    -- `AStep.push` (`emitInstr_const_sim`) then the IH on the shortened rest
     intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
-    sorry
-  case op =>
-    -- `emitInstr_op_shape` + `shuffle_op_sim`; the chosen operand order must be
+    obtain ⟨needF, paired', rfl, hpair'⟩ := map_fst_eq_cons hpair
+    obtain ⟨need, future⟩ := needF
+    dsimp only at hemit
+    rw [emitRest_cons] at hemit
+    obtain ⟨⟨asm1, sym1⟩, m, hei, h2⟩ := E_bind_inv hemit
+    obtain ⟨tl, n'', htl, h3⟩ := E_bind_inv h2
+    obtain ⟨heq, rfl⟩ := E_pure_inv2 h3
+    obtain ⟨ha1, hs1, -⟩ := emitInstr_const_shape hei
+    subst ha1; subst hs1
+    rw [restDefs_cons] at hfresh hndefs
+    have hdefs : (Instr.const d v).defs = [d] := rfl
+    rw [hdefs] at hfresh hndefs
+    have hne : ∀ x, SSlot.val x ∈ sym → x ≠ d := fun x hx hxd =>
+      hfresh x hx (by simp [hxd])
+    have hdnot : d ∉ restDefs paired' :=
+      fun hc => (List.nodup_append.mp hndefs).2.2 d (by simp) d hc rfl
+    obtain ⟨σr', hm', hsteps⟩ :=
+      emitInstr_const_sim (st := st₀) hei (agreeOn_set hne) σr hm
+    refine SimFRes.prepend ?_ (ih fidx liveIn paired' (SSlot.val d :: sym) _ _ tl tail
+      retLab below σr' hpair' htl ?_ (List.nodup_append.mp hndefs).2.1 hm' hret)
+    · rw [← heq]
+      have hst := ASteps.extend below (hsteps asm (tl ++ tail))
+      simpa [List.append_assoc] using hst
+    · intro x hx hc
+      rcases List.mem_cons.mp hx with hxd | hxs
+      · have : x = d := by injection hxd
+        subst this; exact hdnot hc
+      · exact hfresh x hxs (by simp [hc])
+  case op f₀ R₀ st₀ st₁ ds yop as args rets is t res₀ hget hb hlen hsub ih =>
+    -- `emitInstr_op_shape` + `shuffle_op_sim`; the chosen operand order is
     -- transported across `builtin_comm` for the commutative built-ins
     intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
-    sorry
-  case opHalt =>
+    obtain ⟨needF, paired', rfl, hpair'⟩ := map_fst_eq_cons hpair
+    obtain ⟨need, future⟩ := needF
+    dsimp only at hemit
+    rw [emitRest_cons] at hemit
+    obtain ⟨⟨asm1, sym1⟩, m, hei, h2⟩ := E_bind_inv hemit
+    obtain ⟨tl, n'', htl, h3⟩ := E_bind_inv h2
+    obtain ⟨heq, rfl⟩ := E_pure_inv2 h3
+    obtain ⟨args', ops, keep, hkeep, hargs, hsh, ha1, hs1⟩ := emitInstr_op_shape hei
+    subst ha1; subst hs1
+    rw [restDefs_cons] at hfresh hndefs
+    have hdefs : (Instr.op ds yop as).defs = ds := rfl
+    rw [hdefs] at hfresh hndefs
+    obtain ⟨hndds, hndrest, hdisj⟩ := List.nodup_append.mp hndefs
+    obtain ⟨vals, hget', hb'⟩ : ∃ vals, R₀.getMany args' = some vals ∧
+        builtinWithExternal model.calls model.creates yop vals st₀ (.ok rets st₁) := by
+      rcases hargs with rfl | ⟨hc, a, b, rfl, rfl⟩
+      · exact ⟨args, hget, hb⟩
+      · obtain ⟨va, vb, rfl, hswap⟩ := getMany_pair hget
+        exact ⟨[vb, va], hswap, builtin_comm hc hb⟩
+    have hagree : AgreeOn R₀ (R₀.setMany ds rets) keep :=
+      agreeOn_setMany (fun x hx hxd =>
+        hfresh x (by rw [hkeep] at hx; exact keep_mem hx) (List.mem_append_left _ hxd))
+    obtain ⟨σr', hm', hsteps⟩ :=
+      shuffle_op_sim (st := st₀) (st' := st₁) hsh hget' hb' hlen hndds hagree σr hm
+    refine SimFRes.prepend ?_ (ih fidx liveIn paired' _ _ _ tl tail
+      retLab below σr' hpair' htl ?_ hndrest hm' hret)
+    · rw [← heq]
+      have hst := ASteps.extend below (hsteps asm (tl ++ tail))
+      simpa [List.append_assoc] using hst
+    · intro x hx hc
+      rcases List.mem_append.mp hx with hx1 | hx2
+      · obtain ⟨y, hy, hxy⟩ := List.mem_map.mp hx1
+        have hyx : y = x := by injection hxy
+        exact hdisj y hy x hc hyx
+      · exact hfresh x (by rw [hkeep] at hx2; exact keep_mem hx2)
+          (List.mem_append_right _ hc)
+  case opHalt f₀ R₀ st₀ st₁ ds yop as args is t hget hb =>
     -- the shuffle, then `AHalt.op`; same operand-order transport as `op`
     intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
-    sorry
+    obtain ⟨needF, paired', rfl, hpair'⟩ := map_fst_eq_cons hpair
+    obtain ⟨need, future⟩ := needF
+    dsimp only at hemit
+    rw [emitRest_cons] at hemit
+    obtain ⟨⟨asm1, sym1⟩, m, hei, h2⟩ := E_bind_inv hemit
+    obtain ⟨tl, n'', htl, h3⟩ := E_bind_inv h2
+    obtain ⟨heq, -⟩ := E_pure_inv2 h3
+    obtain ⟨args', ops, keep, hkeep, hargs, hsh, ha1, -⟩ := emitInstr_op_shape hei
+    subst ha1
+    obtain ⟨vals, hget', hb'⟩ : ∃ vals, R₀.getMany args' = some vals ∧
+        builtinWithExternal model.calls model.creates yop vals st₀ (.halt st₁) := by
+      rcases hargs with rfl | ⟨hc, a, b, rfl, rfl⟩
+      · exact ⟨args, hget, hb⟩
+      · obtain ⟨va, vb, rfl, hswap⟩ := getMany_pair hget
+        exact ⟨[vb, va], hswap, builtin_comm hc hb⟩
+    obtain ⟨τr, hτr, hsteps⟩ :=
+      shuffle_sound (model := model) (R := R₀) (retLab := retLab) hsh σr hm
+    obtain ⟨σa, σk, rfl, hσa, hσk⟩ := StkMatch.append_inv hτr
+    obtain rfl : σa = words vals := hσa.det (StkMatch.of_vals hget')
+    refine ⟨⟨Asm.op yop :: (tl ++ tail), words vals ++ (σk ++ below), st₀⟩, ?_,
+      AHalt.op hb'⟩
+    have hst := ASteps.extend below (hsteps asm (Asm.op yop :: (tl ++ tail)) st₀)
+    rw [← heq]
+    simpa [List.append_assoc] using hst
   case call =>
     -- pushLabel / arg DUPs / jump entry / callee IH / dynJump back
     intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
@@ -1364,7 +1604,21 @@ theorem emitBlock_head {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
     {b : Block} {n n' : ToAsm.EmitSt} {fr : List Asm}
     (h : ToAsm.emitBlock P L ord fidx f liveIn bid b n = some (fr, n')) :
     ∃ frag, fr = Asm.label (ToAsm.blkLabel L fidx bid) :: frag := by
-  sorry
+  simp only [ToAsm.emitBlock] at h
+  split at h
+  · obtain ⟨sym0, s1, -, h1⟩ := E_bind_inv h
+    obtain ⟨-, s2, -, h2⟩ := E_bind_inv h1
+    obtain ⟨⟨body, symEnd⟩, s3, hfold, h3⟩ := E_bind_inv h2
+    obtain ⟨tasm, s4, hterm, h4⟩ := E_bind_inv h3
+    obtain ⟨heq, -⟩ := E_pure_inv2 h4
+    exact ⟨body ++ tasm, by rw [← heq]; simp⟩
+  · obtain ⟨rec?, s0, -, h0⟩ := E_bind_inv h
+    obtain ⟨sym0, s1, -, h1⟩ := E_bind_inv h0
+    obtain ⟨-, s2, -, h2⟩ := E_bind_inv h1
+    obtain ⟨⟨body, symEnd⟩, s3, hfold, h3⟩ := E_bind_inv h2
+    obtain ⟨tasm, s4, hterm, h4⟩ := E_bind_inv h3
+    obtain ⟨heq, -⟩ := E_pure_inv2 h4
+    exact ⟨body ++ tasm, by rw [← heq]; simp⟩
 
 omit model in
 theorem emitFunc_inv {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
@@ -1400,7 +1654,16 @@ theorem emitProg_inv {P : Prog} {ord : Bool} {asm : List Asm}
             pure (acc ++ a))) n₁ = some (asmFns, n₂)
       ∧ asm = ToAsm.elideJumps
           (asmMain ++ asmFns ++ [Asm.label (ToAsm.mkLabelMap P).endLabel]) := by
-  sorry
+  rw [ToAsm.emitProgOrd] at h
+  dsimp only at h
+  split at h
+  · exact absurd h (by simp)
+  · obtain ⟨⟨asm₀, k⟩, hbuild, hsome⟩ := Option.bind_eq_some_iff.mp h
+    obtain ⟨asmMain, n₁, hmain, hb2⟩ := E_bind_inv hbuild
+    obtain ⟨asmFns, n₂, hfns, hb3⟩ := E_bind_inv hb2
+    obtain ⟨heq, -⟩ := E_pure_inv2 hb3
+    exact ⟨asmMain, asmFns, n₁, n₂, hmain, hfns, by
+      rw [← Option.some.inj hsome, heq]⟩
 
 omit model in
 theorem zip_range_mem {α : Type} {l : List α} {i k : Nat} {x : α}
@@ -1483,7 +1746,60 @@ theorem emitProg_placement {P : Prog} {ord : Bool} {asm : List Asm}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
     (hemit : ToAsm.emitProgOrd ord P = some asm) :
     ∃ asm₀ : List Asm, asm = ToAsm.elideJumps asm₀ ∧ Placement P ord asm₀ := by
-  sorry
+  obtain ⟨asmMain, asmFns, n₁, n₂, hmain, hfns, rfl⟩ := emitProg_inv hemit
+  have hnd0 : (labelDefs (asmMain ++ asmFns
+      ++ [Asm.label (ToAsm.mkLabelMap P).endLabel])).Nodup := by
+    rwa [ToAsm.labelDefs_elideJumps] at hnodup
+  obtain ⟨hentry, n₀, liveIn, hlive, hfoldB⟩ := emitFunc_inv hmain
+  have hmainwf : P.main.wfCheck P.funcs.size = true := by
+    simp only [Prog.wfCheck, Bool.and_eq_true] at hwf
+    exact hwf.1.2
+  have hsize : 0 < P.main.blocks.size := by
+    simp only [Func.wfCheck, Bool.and_eq_true, decide_eq_true_eq] at hmainwf
+    have h1 : P.main.entry < P.main.blocks.size := hmainwf.1.1.2
+    rw [hentry] at h1
+    exact h1
+  refine ⟨_, rfl, ⟨liveIn, hlive, ?_⟩, ?_, ?_, ?_⟩
+  · intro bid b hb
+    have htl : P.main.blocks.toList[bid]? = some b := Array.getElem?_toList.trans hb
+    have hbid : bid < P.main.blocks.size := by
+      obtain ⟨hlt, -⟩ := List.getElem?_eq_some_iff.mp htl
+      simpa using hlt
+    obtain ⟨m, m', fr, pre, post, hblk, hcode⟩ :=
+      foldlM_split _ _ _ _ _ _ hfoldB _ (zip_range_mem htl hbid)
+    obtain ⟨frag, rfl⟩ := emitBlock_head hblk
+    exact ⟨m, m', frag, post ++ asmFns ++ [Asm.label (ToAsm.mkLabelMap P).endLabel],
+      hblk, placed_of_split pre hnd0 (by rw [hcode]; simp)⟩
+  · intro i g hg
+    have htlF : P.funcs.toList[i]? = some g := Array.getElem?_toList.trans hg
+    have hi : i < P.funcs.size := by
+      obtain ⟨hlt, -⟩ := List.getElem?_eq_some_iff.mp htlF
+      simpa using hlt
+    obtain ⟨mf, mf', frg, preF, postF, hfn, hcodeF⟩ :=
+      foldlM_split _ _ _ _ _ _ hfns _ (zip_range_mem htlF hi)
+    obtain ⟨hentryg, n₀g, liveIng, hliveg, hfoldBg⟩ := emitFunc_inv hfn
+    refine ⟨liveIng, hliveg, ?_⟩
+    intro bid b hb
+    have htl : g.blocks.toList[bid]? = some b := Array.getElem?_toList.trans hb
+    have hbid : bid < g.blocks.size := by
+      obtain ⟨hlt, -⟩ := List.getElem?_eq_some_iff.mp htl
+      simpa using hlt
+    obtain ⟨m, m', fr, pre, post, hblk, hcode⟩ :=
+      foldlM_split _ _ _ _ _ _ hfoldBg _ (zip_range_mem htl hbid)
+    obtain ⟨frag, rfl⟩ := emitBlock_head hblk
+    exact ⟨m, m', frag, post ++ postF ++ [Asm.label (ToAsm.mkLabelMap P).endLabel],
+      hblk, placed_of_split (asmMain ++ preF ++ pre) hnd0 (by rw [hcodeF, hcode]; simp)⟩
+  · exact placed_of_split (asmMain ++ asmFns) (frag := []) (post := []) hnd0 (by simp)
+  · obtain ⟨s, hs⟩ : ∃ s, P.main.blocks.size = s + 1 := ⟨P.main.blocks.size - 1, by omega⟩
+    obtain ⟨b₀, restB, htlm⟩ := List.exists_cons_of_ne_nil
+      (l := P.main.blocks.toList) (by
+        have hlen : P.main.blocks.toList.length = P.main.blocks.size := by simp
+        intro hnil; rw [hnil] at hlen; simp at hlen; omega)
+    rw [hs, List.range_succ_eq_map, htlm, List.zip_cons_cons] at hfoldB
+    obtain ⟨m', fr, post, hblk0, hcode0⟩ := foldlM_head _ _ _ _ _ _ hfoldB
+    obtain ⟨frag0, rfl⟩ := emitBlock_head hblk0
+    exact ⟨frag0 ++ post ++ asmFns ++ [Asm.label (ToAsm.mkLabelMap P).endLabel],
+      by rw [hcode0, hentry]; simp⟩
 
 /-- Entering `main`'s entry block: one `AStep.label` off the head of the
 program lands in the entry fragment with an empty stack, which matches the
@@ -1498,7 +1814,34 @@ private theorem raw_entry_sim {P : Prog} {ord : Bool} {asm₀ : List Asm}
       ⟨eb.instrs, eb.term⟩ res) :
     ∃ a : AConf, ASteps (model := model) asm₀ ⟨asm₀, [], yst0⟩ a ∧
       SimFRes (model := model) asm₀ (ToAsm.mkLabelMap P).endLabel [] a res := by
-  sorry
+  have hpl' := hpl
+  obtain ⟨⟨liveIn, -, hblocks⟩, -, hend, c, hhead⟩ := hpl'
+  obtain ⟨n, n', frag, tail, hblk, hfind⟩ := hblocks _ _ heb
+  have hc : c = frag ++ tail := by
+    rw [hhead, findLabel, if_pos rfl] at hfind
+    exact Option.some.inj hfind
+  have hasm : asm₀ = Asm.label (ToAsm.blkLabel (ToAsm.mkLabelMap P) none P.main.entry)
+      :: (frag ++ tail) := by rw [hhead, hc]
+  obtain ⟨paired, sym0, m, hpair, hsym0, hrest⟩ := emitBlock_emitRest hblk
+  have hp : P.main.params = [] := by
+    have hwf' := hwf
+    rw [Prog.wfCheck] at hwf'
+    simp only [Bool.and_eq_true] at hwf'
+    simpa using hwf'.1.1.1
+  have hsym : sym0 = [] := by rw [hsym0 rfl]; simp [hp]
+  have hmainwf : P.main.wfCheck P.funcs.size = true := by
+    have hwf2 := hwf
+    simp only [Prog.wfCheck, Bool.and_eq_true] at hwf2
+    exact hwf2.1.2
+  refine ⟨⟨frag ++ tail, [] ++ [], yst0⟩, ?_, ?_⟩
+  · refine ASteps.single ?_
+    rw [hasm]; exact AStep.label
+  · refine exec_sim hnodup₀ hwf hdom hpl hexec none liveIn paired sym0 m n' frag tail
+      (ToAsm.mkLabelMap P).endLabel [] [] hpair hrest ?_ ?_ ?_ ?_
+    · rw [hsym]; simp
+    · rw [restDefs_eq hpair]; exact instrDefs_nodup hmainwf heb
+    · rw [hsym]; exact StkMatch.nil
+    · rw [hend]; rfl
 
 /-! ## The codegen simulation
 
