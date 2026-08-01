@@ -1666,6 +1666,53 @@ theorem of_allocFunc {owned : List FuncId} {s s' done : BState}
     · rw [if_neg hieq] at hi
       exact ho.filled i g hi
 
+/-- Reserving all declarations of a scope appends exactly the function ids
+recorded in the resulting scope map to the pending-slot budget. -/
+theorem of_allocScope {owned : List FuncId} {ss : List (Stmt Op)}
+    {s s' done : BState} {scope : List (Ident × FuncId)}
+    (ho : FOwned owned s done)
+    (h : allocScope ss s = some (scope, s')) :
+    FOwned (owned ++ scope.map Prod.snd) s' done := by
+  rw [allocScope] at h
+  have fold : ∀ (l : List (Stmt Op)) (acc : List (Ident × FuncId))
+      (s₀ s₁ : BState) (out : List (Ident × FuncId))
+      (base : List FuncId),
+      FOwned (owned ++ base) s₀ done →
+      acc.map Prod.snd = base →
+      (l.foldlM (init := acc) fun acc (st : Stmt Op) =>
+        match st with
+        | Stmt.funDef n _ _ _ => do
+            let fid ← allocFunc
+            pure (acc ++ [(n, fid)])
+        | _ => pure acc) s₀ = some (out, s₁) →
+      FOwned (owned ++ out.map Prod.snd) s₁ done := by
+    intro l
+    induction l with
+    | nil =>
+        intro acc s₀ s₁ out base hown hacc hl
+        obtain ⟨rfl, rfl⟩ := M.pure_inv hl
+        simpa [hacc] using hown
+    | cons st rest ih =>
+        intro acc s₀ s₁ out base hown hacc hl
+        rw [List.foldlM_cons] at hl
+        obtain ⟨acc', t, hst, hrest⟩ := M.bind_inv hl
+        cases st with
+        | funDef n ps rs body =>
+            obtain ⟨fid, u, ha, hp⟩ := M.bind_inv hst
+            obtain ⟨rfl, rfl⟩ := M.pure_inv hp
+            have halloc := FOwned.of_allocFunc hown ha
+            apply ih (acc ++ [(n, fid)]) t s₁ out (base ++ [fid])
+            · simpa [List.append_assoc] using halloc
+            · simp [hacc]
+            · exact hrest
+        | block body | letDecl vars val | assign vars e | cond e body
+        | forLoop init e post body | «break» | «continue» | leave
+        | switch e cases dflt | exprStmt e =>
+            have heq := M.pure_inv hst
+            rw [heq.1, heq.2] at hrest
+            exact ih acc s₀ s₁ out base hown hacc hrest
+  exact fold ss [] s s' scope [] (by simpa using ho) rfl h
+
 /-- Backwards form of allocation: the newly appended owned reservation is
 removed when reconstructing the caller state. -/
 theorem back_allocFunc {owned : List FuncId} {s s' done : BState}
@@ -1691,6 +1738,50 @@ theorem back_allocFunc {owned : List FuncId} {s s' done : BState}
     · intro heq
       subst i
       simpa using hi
+
+/-- Backwards form of whole-scope allocation: remove precisely the reservation
+suffix recorded by the generated scope map. -/
+theorem back_allocScope {owned : List FuncId} {ss : List (Stmt Op)}
+    {s s' done : BState} {scope : List (Ident × FuncId)}
+    (h : allocScope ss s = some (scope, s'))
+    (ho : FOwned (owned ++ scope.map Prod.snd) s' done) :
+    FOwned owned s done := by
+  rw [allocScope] at h
+  have fold : ∀ (l : List (Stmt Op)) (acc : List (Ident × FuncId))
+      (s₀ s₁ : BState) (out : List (Ident × FuncId)),
+      (l.foldlM (init := acc) fun acc (st : Stmt Op) =>
+        match st with
+        | Stmt.funDef n _ _ _ => do
+            let fid ← allocFunc
+            pure (acc ++ [(n, fid)])
+        | _ => pure acc) s₀ = some (out, s₁) →
+      FOwned (owned ++ out.map Prod.snd) s₁ done →
+      FOwned (owned ++ acc.map Prod.snd) s₀ done := by
+    intro l
+    induction l with
+    | nil =>
+        intro acc s₀ s₁ out hl hown
+        obtain ⟨rfl, rfl⟩ := M.pure_inv hl
+        exact hown
+    | cons st rest ih =>
+        intro acc s₀ s₁ out hl hown
+        rw [List.foldlM_cons] at hl
+        obtain ⟨acc', t, hst, hrest⟩ := M.bind_inv hl
+        have hmid := ih acc' t s₁ out hrest hown
+        cases st with
+        | funDef n ps rs body =>
+            obtain ⟨fid, u, ha, hp⟩ := M.bind_inv hst
+            obtain ⟨rfl, rfl⟩ := M.pure_inv hp
+            have hback := FOwned.back_allocFunc
+              (owned := owned ++ acc.map Prod.snd) ha (by
+              simpa [List.map_append, List.append_assoc] using hmid)
+            simpa using hback
+        | block body | letDecl vars val | assign vars e | cond e body
+        | forLoop init e post body | «break» | «continue» | leave
+        | switch e cases dflt | exprStmt e =>
+            have heq := M.pure_inv hst
+            simpa [heq.1, heq.2] using hmid
+  simpa using fold ss [] s s' scope h ho
 
 /-- Filling an owned empty slot consumes exactly that index.  The theorem is
 stated backwards because a completed suffix tells us both that the output slot
