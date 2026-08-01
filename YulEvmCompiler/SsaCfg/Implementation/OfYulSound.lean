@@ -1530,6 +1530,20 @@ def FContents (s s' : BState) : Prop :=
 /-- Size growth together with preservation of every filled entry. -/
 def FRefines (s s' : BState) : Prop := FGrows s s' ∧ FContents s s'
 
+/-- Exact ownership of the function slots which are still pending in a local
+builder state.  `owned` is not a list of function *names*: it is the
+duplicate-free list of the concrete array indices whose reservations this
+translation still has to discharge.  This index-level formulation is what
+prevents two equal hoisted names from silently sharing one reservation.
+
+The filled-prefix clause connects the local table to the one fixed completed
+table used by the construction simulation.  Slots not allocated yet are
+deliberately unconstrained. -/
+structure FOwned (owned : List FuncId) (s done : BState) : Prop where
+  nodup : owned.Nodup
+  pending : ∀ i : FuncId, i ∈ owned ↔ s.funcs[i]? = some none
+  filled : FContents s done
+
 namespace FGrows
 
 theorem rfl' (s : BState) : FGrows s s := Nat.le_refl _
@@ -1608,6 +1622,105 @@ theorem of_grows {s s' : BState} (h : Grows s s') : FContents s s' :=
   of_funcs_eq h.funcs
 
 end FContents
+
+namespace FOwned
+
+theorem of_funcs_eq {owned : List FuncId} {s s' done : BState}
+    (hfuncs : s.funcs = s'.funcs) (h : FOwned owned s' done) :
+    FOwned owned s done := by
+  refine ⟨h.nodup, ?_, ?_⟩
+  · intro i
+    rw [h.pending, hfuncs]
+  · exact FContents.trans (FContents.of_funcs_eq hfuncs) h.filled
+
+theorem rfl_of_no_pending {s : BState}
+    (h : ∀ i : FuncId, s.funcs[i]? ≠ some none) : FOwned [] s s := by
+  refine ⟨List.nodup_nil, ?_, FContents.rfl' s⟩
+  intro i
+  simp only [List.not_mem_nil, false_iff]
+  exact h i
+
+/-- Reserving a slot adds precisely its fresh array index to the ownership
+budget. -/
+theorem of_allocFunc {owned : List FuncId} {s s' done : BState}
+    {fid : FuncId} (ho : FOwned owned s done)
+    (h : allocFunc s = some (fid, s')) : FOwned (owned ++ [fid]) s' done := by
+  rw [M.allocFunc_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  have hnot : s.funcs.size ∉ owned := by
+    intro hm
+    have := (ho.pending s.funcs.size).mp hm
+    simpa using this
+  refine ⟨ho.nodup.append (by simp) (by simpa), ?_, ?_⟩
+  · intro i
+    rw [List.mem_append, List.mem_singleton, Array.getElem?_push]
+    by_cases hi : i = s.funcs.size
+    · subst i
+      simp [hnot]
+    · simp [hi, ho.pending]
+  · intro i g hi
+    rw [Array.getElem?_push] at hi
+    by_cases hieq : i = s.funcs.size
+    · rw [if_pos hieq] at hi
+      cases Option.some.inj hi
+    · rw [if_neg hieq] at hi
+      exact ho.filled i g hi
+
+/-- Backwards form of allocation: the newly appended owned reservation is
+removed when reconstructing the caller state. -/
+theorem back_allocFunc {owned : List FuncId} {s s' done : BState}
+    {fid : FuncId} (h : allocFunc s = some (fid, s'))
+    (ho : FOwned (owned ++ [fid]) s' done) : FOwned owned s done := by
+  rw [M.allocFunc_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  have hnd : owned.Nodup := (ho.nodup.of_append_left)
+  have hnot : s.funcs.size ∉ owned := by
+    have hd := (List.nodup_append'.mp ho.nodup).2.2
+    exact fun hm => (List.disjoint_left.mp hd) hm (by simp)
+  refine ⟨hnd, ?_, ?_⟩
+  · intro i
+    by_cases hi : i = s.funcs.size
+    · subst i
+      simp [hnot]
+    · have hp := ho.pending i
+      simpa [Array.getElem?_push, hi] using hp
+  · intro i g hi
+    apply ho.filled i g
+    rw [Array.getElem?_push, if_neg]
+    · exact hi
+    · intro heq
+      subst i
+      simpa using hi
+
+/-- Filling an owned empty slot consumes exactly that index.  The theorem is
+stated backwards because a completed suffix tells us both that the output slot
+contains `g` and that it agrees with `done`; reconstructing the input then
+restores `fid` to the pending budget. -/
+theorem back_fillFunc {owned : List FuncId} {fid : FuncId} {g : Func}
+    {s s' done : BState} {u : Unit}
+    (hempty : s.funcs[fid]? = some none)
+    (h : fillFunc fid g s = some (u, s'))
+    (ho : FOwned owned s' done) : FOwned (fid :: owned) s done := by
+  have hfill := h
+  obtain ⟨hlt, rfl⟩ := M.fillFunc_inv h
+  have hslot : ({ s with funcs := s.funcs.set fid (some g) hlt }).funcs[fid]?
+      = some (some g) := by simp
+  have hnot : fid ∉ owned := by
+    intro hm
+    have hp := (ho.pending fid).mp hm
+    rw [hslot] at hp
+    cases Option.some.inj hp
+  refine ⟨List.nodup_cons.mpr ⟨hnot, ho.nodup⟩, ?_, ?_⟩
+  · intro i
+    by_cases hi : i = fid
+    · subst i
+      simp [hempty]
+    · have hp := ho.pending i
+      rw [Array.getElem?_set (h := hlt), if_neg (Ne.symm hi)] at hp
+      simpa [hi] using hp
+  · exact FContents.trans (FContents.of_fillFunc_empty hempty hfill) ho.filled
+
+end FOwned
 
 namespace FRefines
 
@@ -5117,6 +5230,38 @@ theorem FuncTableComplete.get {P : Prog} {done : Array (Option Func)}
     (h : FuncTableComplete P done) {i : Nat} {g : Func}
     (hi : done[i]? = some (some g)) : P.funcs[i]? = some g :=
   funcs_mapM_getElem? h hi
+
+omit model in
+/-- A completed table has no pending reservations, hence owns the empty
+budget.  This is the top-level instantiation of the slot-ownership invariant. -/
+theorem FuncTableComplete.owned_nil {P : Prog} {done : Array (Option Func)}
+    (h : FuncTableComplete P done) : FOwned [] { fn := {}, funcs := done }
+      { fn := {}, funcs := done } := by
+  apply FOwned.rfl_of_no_pending
+  intro i hi
+  have hlist : done.toList.mapM id = some P.funcs.toList := by
+    have hm := congrArg (Option.map Array.toList) h
+    simpa [Array.mapM_eq_mapM_toList, Option.map_some] using hm
+  have noNone : ∀ (l : List (Option Func)) (fs : List Func),
+      l.mapM id = some fs → ∀ j : Nat, l[j]? ≠ some none := by
+    intro l
+    induction l with
+    | nil => simp
+    | cons x xs ih =>
+      intro fs hm j
+      rw [List.mapM_cons] at hm
+      cases x with
+      | none => simp at hm
+      | some g =>
+        cases ht : xs.mapM id with
+        | none => rw [ht] at hm; simp at hm
+        | some gs =>
+          rw [ht] at hm
+          obtain rfl : fs = g :: gs := by simpa using hm.symm
+          cases j with
+          | zero => simp
+          | succ j => simpa using ih gs ht j
+  exact noNone done.toList P.funcs.toList hlist i (by simpa using hi)
 
 /-- Package the function-table half of `FuncOK` once the structural hoist walk
 has shown that the translated function and every nested function it allocated
