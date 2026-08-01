@@ -4934,6 +4934,249 @@ theorem Regs.setMany_rename_congr {R R' : Regs} {ρ : ValId → ValId}
     (renameTerm ρ β t).uses = t.uses.map ρ := by
   cases t <;> simp [renameTerm, Term.uses, renameEdge, List.map_append]
 
+/-! ### Inverting one inlining splice
+
+`inlineOnce` is a pair of nested early-return loops.  As with
+`findTrivialParam`, exposing a pure `loopWith` model keeps the inversion local:
+the successful result must have been produced by one concrete instruction
+step, and unfolding that step gives the complete splice equation. -/
+
+namespace Passes
+
+abbrev InlineState := MProd (Option (Option Func)) PUnit
+
+theorem loopWith_inline_done {α : Type} {g : α → InlineState →
+    ForInStep InlineState} {xs : List α} {f : Func}
+    (hg : ∀ a, g a ⟨none, PUnit.unit⟩ = .yield ⟨none, PUnit.unit⟩ ∨
+      ∃ f, g a ⟨none, PUnit.unit⟩ = .done ⟨some (some f), PUnit.unit⟩)
+    (h : (loopWith g xs ⟨none, PUnit.unit⟩).1 = some (some f)) :
+    ∃ a ∈ xs, g a ⟨none, PUnit.unit⟩ =
+      .done ⟨some (some f), PUnit.unit⟩ := by
+  induction xs with
+  | nil => simp [loopWith] at h
+  | cons a as ih =>
+      rw [loopWith_cons] at h
+      rcases hg a with ha | ⟨f', ha⟩
+      · rw [ha] at h
+        obtain ⟨b, hb, hdone⟩ := ih h
+        exact ⟨b, by simp [hb], hdone⟩
+      · rw [ha] at h
+        have hf : f' = f := by simpa using h
+        subst f'
+        exact ⟨a, by simp, ha⟩
+
+theorem loopWith_inline_cases {α : Type} {g : α → InlineState →
+    ForInStep InlineState} {xs : List α}
+    (hg : ∀ a, g a ⟨none, PUnit.unit⟩ = .yield ⟨none, PUnit.unit⟩ ∨
+      ∃ f, g a ⟨none, PUnit.unit⟩ = .done ⟨some (some f), PUnit.unit⟩) :
+    (loopWith g xs ⟨none, PUnit.unit⟩).1 = none ∨
+      ∃ f, (loopWith g xs ⟨none, PUnit.unit⟩).1 = some (some f) := by
+  induction xs with
+  | nil => exact Or.inl rfl
+  | cons a as ih =>
+      rw [loopWith_cons]
+      rcases hg a with ha | ⟨f, ha⟩
+      · rw [ha]
+        exact ih
+      · rw [ha]
+        exact Or.inr ⟨f, rfl⟩
+
+def inlineInstrStep (counts : Array Nat) (funcs : Array Func) (f : Func)
+    (bi ci : Nat) (_ : InlineState) : ForInStep InlineState :=
+  let b := f.blocks[bi]!
+  match b.instrs[ci]! with
+  | .call ds fid as =>
+      match funcs[fid]? with
+      | some g =>
+          if inlinable (counts[fid]?.getD 0) g && g.params.length == as.length
+              && g.nrets == ds.length && g.entry == 0 then
+            let off := Nat.max (maxVal f) (maxVal g) + 1
+            let paramMap := g.params.zip as
+            let ρ := fun v =>
+              match paramMap.find? (·.1 == v) with
+              | some pa => pa.2
+              | none => v + off
+            let nCaller := f.blocks.size
+            let contId := nCaller + g.blocks.size
+            let β := fun (b : BlockId) => nCaller + b
+            let spliced := g.blocks.map fun gb =>
+              { params := gb.params.map ρ
+                instrs := gb.instrs.map (renameInstr ρ)
+                term :=
+                  match gb.term with
+                  | .ret vs => .jump ⟨contId, vs.map ρ⟩
+                  | t => renameTerm ρ β t }
+            let contBlock : Block :=
+              { params := ds
+                instrs := b.instrs.drop (ci + 1)
+                term := b.term }
+            let callBlock : Block :=
+              { params := b.params
+                instrs := b.instrs.take ci
+                term := .jump ⟨nCaller + g.entry, []⟩ }
+            let blocks := (f.blocks.set! bi callBlock) ++ spliced ++ #[contBlock]
+            .done ⟨some (some { f with blocks }), PUnit.unit⟩
+          else .yield ⟨none, PUnit.unit⟩
+      | none => .yield ⟨none, PUnit.unit⟩
+  | _ => .yield ⟨none, PUnit.unit⟩
+
+def inlineBlockStep (counts : Array Nat) (funcs : Array Func) (f : Func)
+    (bi : Nat) (_ : InlineState) : ForInStep InlineState :=
+  let b := f.blocks[bi]!
+  let r := loopWith (inlineInstrStep counts funcs f bi)
+    (List.range' 0 b.instrs.length 1) ⟨none, PUnit.unit⟩
+  match r.1 with
+  | none => .yield ⟨none, PUnit.unit⟩
+  | some a => .done ⟨some a, PUnit.unit⟩
+
+theorem inlineOnce_eq_loop (counts : Array Nat) (funcs : Array Func) (f : Func) :
+    inlineOnce counts funcs f =
+      (loopWith (inlineBlockStep counts funcs f)
+        (List.range' 0 f.blocks.size 1) ⟨none, PUnit.unit⟩).1.getD none := by
+  unfold inlineOnce
+  dsimp only
+  simp only [Std.Legacy.Range.forIn_eq_forIn_range', Std.Legacy.Range.size]
+  rw [Id.forIn_eq_loopWith (g := inlineBlockStep counts funcs f) (h := by
+    intro bi r
+    unfold inlineBlockStep
+    rw [Id.forIn_eq_loopWith (g := inlineInstrStep counts funcs f bi) (h := by
+      intro ci s
+      simp only [LawfulMonad.pure_bind]
+      cases hi : f.blocks[bi]!.instrs[ci]! with
+      | const d v => simp [inlineInstrStep, hi]
+      | op ds yop as => simp [inlineInstrStep, hi]
+      | call ds fid as =>
+          cases hg : funcs[fid]? with
+          | none => simp [inlineInstrStep, hi, hg]
+          | some g =>
+              by_cases hc : inlinable (counts[fid]?.getD 0) g &&
+                  g.params.length == as.length && g.nrets == ds.length && g.entry == 0
+              · simp [inlineInstrStep, hi, hg, hc]
+                rfl
+              · simp [inlineInstrStep, hi, hg, hc])]
+    simp_all [Id.run, bind, pure]
+    split <;> simp_all)]
+  simp [Id.run, bind, pure, Option.getD]
+  split <;> simp_all
+
+theorem inlineInstrStep_cases (counts : Array Nat) (funcs : Array Func)
+    (f : Func) (bi ci : Nat) :
+    inlineInstrStep counts funcs f bi ci ⟨none, PUnit.unit⟩ =
+        .yield ⟨none, PUnit.unit⟩ ∨
+      ∃ f', inlineInstrStep counts funcs f bi ci ⟨none, PUnit.unit⟩ =
+        .done ⟨some (some f'), PUnit.unit⟩ := by
+  unfold inlineInstrStep
+  dsimp only
+  split <;> try { exact Or.inl rfl }
+  split <;> try { exact Or.inl rfl }
+  split
+  · exact Or.inr ⟨_, rfl⟩
+  · exact Or.inl rfl
+
+theorem inlineBlockStep_cases (counts : Array Nat) (funcs : Array Func)
+    (f : Func) (bi : Nat) :
+    inlineBlockStep counts funcs f bi ⟨none, PUnit.unit⟩ =
+        .yield ⟨none, PUnit.unit⟩ ∨
+      ∃ f', inlineBlockStep counts funcs f bi ⟨none, PUnit.unit⟩ =
+        .done ⟨some (some f'), PUnit.unit⟩ := by
+  unfold inlineBlockStep
+  dsimp only
+  rcases loopWith_inline_cases
+      (fun ci => inlineInstrStep_cases counts funcs f bi ci)
+      (xs := List.range' 0 f.blocks[bi]!.instrs.length 1) with hr | ⟨f', hr⟩
+  · left
+    simp [hr]
+  · right
+    exact ⟨f', by simp [hr]⟩
+
+/-- Successful `inlineOnce` inversion.  The final equality is the five-part
+splice definition (renaming, copied blocks, continuation, split call block,
+and concatenated block array) in a form callers can unfold selectively. -/
+theorem inlineOnce_inv {counts : Array Nat} {funcs : Array Func} {f f' : Func}
+    (h : inlineOnce counts funcs f = some f') :
+    ∃ bi b ci ds fid as g,
+      bi < f.blocks.size ∧ f.blocks[bi]? = some b ∧
+      ci < b.instrs.length ∧ b.instrs[ci]? = some (.call ds fid as) ∧
+      funcs[fid]? = some g ∧
+      inlinable (counts[fid]?.getD 0) g = true ∧
+      g.params.length = as.length ∧ g.nrets = ds.length ∧ g.entry = 0 ∧
+      f' =
+        let off := Nat.max (maxVal f) (maxVal g) + 1
+        let paramMap := g.params.zip as
+        let ρ := fun v =>
+          match paramMap.find? (·.1 == v) with
+          | some pa => pa.2
+          | none => v + off
+        let nCaller := f.blocks.size
+        let contId := nCaller + g.blocks.size
+        let β := fun (b : BlockId) => nCaller + b
+        let spliced := g.blocks.map fun gb =>
+          { params := gb.params.map ρ
+            instrs := gb.instrs.map (renameInstr ρ)
+            term := match gb.term with
+              | .ret vs => .jump ⟨contId, vs.map ρ⟩
+              | t => renameTerm ρ β t }
+        let contBlock : Block :=
+          { params := ds, instrs := b.instrs.drop (ci + 1), term := b.term }
+        let callBlock : Block :=
+          { params := b.params, instrs := b.instrs.take ci,
+            term := .jump ⟨nCaller + g.entry, []⟩ }
+        { f with blocks := (f.blocks.set! bi callBlock) ++ spliced ++ #[contBlock] } := by
+  rw [inlineOnce_eq_loop] at h
+  have hout :
+      (loopWith (inlineBlockStep counts funcs f)
+        (List.range' 0 f.blocks.size 1) ⟨none, PUnit.unit⟩).1 =
+        some (some f') := by
+    cases hr : (loopWith (inlineBlockStep counts funcs f)
+        (List.range' 0 f.blocks.size 1) ⟨none, PUnit.unit⟩).1 with
+    | none => simp [hr, Option.getD] at h
+    | some r =>
+        cases r with
+        | none => simp [hr, Option.getD] at h
+        | some q =>
+            have hq : q = f' := by simpa [hr, Option.getD] using h
+            simpa [hq] using hr
+  obtain ⟨bi, hbimem, hbistep⟩ := loopWith_inline_done
+    (fun j => inlineBlockStep_cases counts funcs f j) hout
+  unfold inlineBlockStep at hbistep
+  dsimp only at hbistep
+  split at hbistep
+  · cases hbistep
+  · rename_i r hr
+    have hr' : r = some f' := by simpa using hbistep
+    rw [hr'] at hr
+    obtain ⟨ci, hcimem, hcistep⟩ := loopWith_inline_done
+      (fun j => inlineInstrStep_cases counts funcs f bi j) hr
+    unfold inlineInstrStep at hcistep
+    dsimp only at hcistep
+    split at hcistep <;> try { cases hcistep }
+    rename_i ds fid as hcall
+    split at hcistep <;> try { cases hcistep }
+    rename_i g hg
+    split at hcistep <;> try { cases hcistep }
+    rename_i hguard
+    have hbi : bi < f.blocks.size := by simpa using hbimem
+    have hci : ci < f.blocks[bi]!.instrs.length := by simpa using hcimem
+    have hbget : f.blocks[bi]? = some f.blocks[bi]! := by
+      rw [Array.getElem?_eq_getElem hbi, getElem!_eq_getElem hbi]
+    have hparts : inlinable (counts[fid]?.getD 0) g = true ∧
+        g.params.length = as.length ∧ g.nrets = ds.length ∧ g.entry = 0 := by
+      have hpraw := (by simpa only [Bool.and_eq_true, beq_iff_eq] using hguard)
+      exact ⟨hpraw.1.1.1, hpraw.1.1.2, hpraw.1.2, hpraw.2⟩
+    refine ⟨bi, f.blocks[bi]!, ci, ds, fid, as, g, hbi, hbget, hci, ?_, hg,
+      ?_, ?_, ?_, ?_, ?_⟩
+    · apply List.getElem?_eq_some_iff.mpr
+      refine ⟨hci, ?_⟩
+      rw [getElem!_pos (f.blocks[bi]!.instrs) ci hci] at hcall
+      exact hcall
+    · exact hparts.1
+    · exact hparts.2.1
+    · exact hparts.2.2.1
+    · exact hparts.2.2.2
+    · simpa using hcistep.symm
+
+end Passes
+
 section
 variable [model : ExternalModel]
 
@@ -4952,13 +5195,19 @@ and (ii) `ρ` sends everything else above `maxVal f`, so no caller binding is
 disturbed — `Regs.setMany_congr` plus `exec_congr` (both proved) are the
 work-horses. The `.halt` case is the same derivation truncated.
 
-The precise first missing proof object is an `inlineOnce = some f'` site
-inversion exporting `bi`, `ci`, the selected call/callee and the five splice
-equations.  It then feeds a renamed-callee `Exec` replay lemma.  That replay
-must handle the deliberately non-injective parameter part of `ρ` (duplicate
-actual arguments) with `inlineParam_regs_agree`, use freshness only for the
-offset-renamed non-parameters, prove appended-block lookup equations, and turn
-callee `ret` into the continuation jump. -/
+`Passes.inlineOnce_inv` above now supplies the formerly missing site inversion:
+`bi`, `ci`, the selected call/callee, every guard, and the complete splice
+equation.  The remaining first proof object is the renamed-callee `Exec` replay.
+It cannot use `Regs.setMany_rename_congr` as stated: `ρ` is deliberately
+non-injective on formals when actual arguments repeat.  The replay therefore
+needs a partitioned agreement invariant (formal reads use
+`inlineParam_regs_agree`; instruction/block destinations use injectivity of
+`v ↦ v + off`) plus two freshness leaves not yet available here: every caller
+id occurring at the site is `< off`, and every non-parameter callee definition
+is sent outside the caller range.  With those facts, a CPS induction must prove
+the appended-block lookups and turn callee `ret` into the continuation jump;
+without that partitioned invariant the first `.const`/`.op` destination update
+already cannot be justified. -/
 theorem inlineOnce_sound {P : Prog} {counts : Array Nat} {f f' : Func} {args : List U256}
     {st : EvmState} {res : FRes} {eb eb' : Block}
     (hPwf : P.wfCheck = true) (hwf : f.wfCheck P.funcs.size = true)
