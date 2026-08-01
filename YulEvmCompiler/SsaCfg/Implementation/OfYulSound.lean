@@ -5241,6 +5241,32 @@ theorem simS_branchTrue_body {P : Prog} {f : Func} {R : Regs} {sA sB s₁ : BSta
   rw [hbp]
   simpa using hex
 
+/-- The finished function's current block continues where the builder left off.
+
+The *normal* path never needs this — `SimS` is continuation-passing, so it
+consumes an `ExecFrom` at the output state and produces one at the input. A
+*halting* fragment has no continuation to consume, so it has to exhibit the
+block itself; this is that witness. -/
+def CurPlaced (f : Func) (fn : FnState) : Prop := ∃ rest, CurOK f fn rest
+
+omit model in
+/-- `CurPlaced` travels backwards along instructions emitted into the same
+block. -/
+theorem CurPlaced.ofPrefix {f : Func} {fn fn' : FnState} (h : CurPlaced f fn')
+    (hc : fn'.curId = fn.curId) (Δ : List Instr) (hcur : fn'.cur = Δ ++ fn.cur) :
+    CurPlaced f fn := by
+  obtain ⟨rest, b, hb, hi, ht⟩ := h
+  refine ⟨⟨Δ.reverse ++ rest.instrs, rest.term⟩, b, by rw [← hc]; exact hb, ?_, ht⟩
+  rw [hi, hcur]
+  simp
+
+omit model in
+/-- `CurPlaced` travels backwards along an expression-level step. -/
+theorem curPlaced_back_grows {f : Func} {sA sB : BState} (hg : Grows sA sB)
+    (h : CurPlaced f sB.fn) : CurPlaced f sA.fn := by
+  obtain ⟨Δ, hΔ⟩ := hg.cur
+  exact h.ofPrefix hg.curId.symm Δ hΔ
+
 /-- An expression whose evaluation halts: the fragment the construction laid
 down reaches that halt from the fragment's entry configuration. -/
 def EOutHalt (P : Prog) (f : Func) (s₀ : BState) (R₀ : Regs)
@@ -5257,6 +5283,46 @@ theorem SOut.ofExprHalt {P : Prog} {f : Func} {lctx : Option LoopCtx}
     {renv : Option VMap} {V : VEnv yulD} {yst yst' : EvmState}
     (h : EOutHalt (model := model) P f s₀ R yst yst') :
     SOut (model := model) P f lctx rets s₀ s₁ R renv V yst yst' .halt := h
+
+omit model in
+/-- `trExprN` on a right-hand side that is *not* a user call is `trExpr` plus a
+singleton: the arity gate forces `n = 1`. -/
+theorem trExprN_nonCall_inv {fenv : FMap} {env : VMap} {n : Nat} {e : Expr Op}
+    {s₀ s₁ : BState} {ids : List ValId}
+    (hne : ∀ (fn : Ident) (args : List (Expr Op)), e ≠ .call fn args)
+    (h : trExprN fenv env n e s₀ = some (ids, s₁)) :
+    n = 1 ∧ ∃ i : ValId, ids = [i] ∧ trExpr fenv env e s₀ = some (i, s₁) := by
+  cases e with
+  | call fn args => exact absurd rfl (hne fn args)
+  | lit l =>
+    rw [trExprN] at h
+    · obtain ⟨hn, h⟩ := M.ite_reject_inv' h
+      obtain ⟨i, sX, h1, h2⟩ := M.bind_inv h
+      obtain ⟨hids, hsX⟩ := M.pure_inv h2
+      exact ⟨hn, i, hids, by rw [← hsX] at h1; exact h1⟩
+    · intro fn' args' hc; exact absurd hc (hne fn' args')
+  | var x =>
+    rw [trExprN] at h
+    · obtain ⟨hn, h⟩ := M.ite_reject_inv' h
+      obtain ⟨i, sX, h1, h2⟩ := M.bind_inv h
+      obtain ⟨hids, hsX⟩ := M.pure_inv h2
+      exact ⟨hn, i, hids, by rw [← hsX] at h1; exact h1⟩
+    · intro fn' args' hc; exact absurd hc (hne fn' args')
+  | builtin op args =>
+    rw [trExprN] at h
+    · obtain ⟨hn, h⟩ := M.ite_reject_inv' h
+      obtain ⟨i, sX, h1, h2⟩ := M.bind_inv h
+      obtain ⟨hids, hsX⟩ := M.pure_inv h2
+      exact ⟨hn, i, hids, by rw [← hsX] at h1; exact h1⟩
+    · intro fn' args' hc; exact absurd hc (hne fn' args')
+
+/-- A one-value expression result read as a one-element argument list. -/
+theorem EOut.toEOutL {P : Prog} {f : Func} {s₀ s₁ : BState} {R : Regs}
+    {i : ValId} {v : U256} {yst yst' : EvmState}
+    (h : EOut (model := model) P f s₀ s₁ R i v yst yst') :
+    EOutL (model := model) P f s₀ s₁ R [i] [v] yst yst' := by
+  obtain ⟨R₁, hle, hfr, hi, hsim⟩ := h
+  exact ⟨R₁, hle, hfr, by rw [Regs.getMany_cons, hi]; simp, hsim⟩
 
 /-- **`letDecl vars (some e)`** — the right-hand side's ids become the new
 bindings; `EnvOK.zip` pairs them with the source values. -/
@@ -5463,46 +5529,46 @@ def Motive (P : Prog) (f : Func) (funs : YulSemantics.FunEnv yulD)
       (∀ (fenv : FMap) (env : VMap) (R : Regs) (s₀ s₁ : BState) (i : ValId)
           (v : U256),
         FEnvOK (model := model) P funs fenv → EnvOK (model := model) env V R →
-        RegsFresh R s₀.fn → Completes f s₁.fn → vs = [v] →
+        RegsFresh R s₀.fn → Completes f s₁.fn → CurPlaced f s₁.fn → vs = [v] →
         trExpr fenv env e s₀ = some (i, s₁) →
         EOut (model := model) P f s₀ s₁ R i v yst yst')
       ∧ (∀ (fenv : FMap) (env : VMap) (R : Regs) (s₀ s₁ : BState) (n : Nat)
           (ids : List ValId),
         FEnvOK (model := model) P funs fenv → EnvOK (model := model) env V R →
-        RegsFresh R s₀.fn → Completes f s₁.fn →
+        RegsFresh R s₀.fn → Completes f s₁.fn → CurPlaced f s₁.fn →
         trExprN fenv env n e s₀ = some (ids, s₁) →
         EOutL (model := model) P f s₀ s₁ R ids vs yst yst')
   | .expr e, .eres (.halt yst') =>
       (∀ (fenv : FMap) (env : VMap) (R : Regs) (s₀ s₁ : BState) (i : ValId),
         FEnvOK (model := model) P funs fenv → EnvOK (model := model) env V R →
-        RegsFresh R s₀.fn → Completes f s₁.fn →
+        RegsFresh R s₀.fn → Completes f s₁.fn → CurPlaced f s₁.fn →
         trExpr fenv env e s₀ = some (i, s₁) →
         EOutHalt (model := model) P f s₀ R yst yst')
       ∧ (∀ (fenv : FMap) (env : VMap) (R : Regs) (s₀ s₁ : BState) (n : Nat)
           (ids : List ValId),
         FEnvOK (model := model) P funs fenv → EnvOK (model := model) env V R →
-        RegsFresh R s₀.fn → Completes f s₁.fn →
+        RegsFresh R s₀.fn → Completes f s₁.fn → CurPlaced f s₁.fn →
         trExprN fenv env n e s₀ = some (ids, s₁) →
         EOutHalt (model := model) P f s₀ R yst yst')
   | .args es, .eres (.vals vs yst') =>
       ∀ (fenv : FMap) (env : VMap) (R : Regs) (s₀ s₁ : BState)
         (ids : List ValId),
         FEnvOK (model := model) P funs fenv → EnvOK (model := model) env V R →
-        RegsFresh R s₀.fn → Completes f s₁.fn →
+        RegsFresh R s₀.fn → Completes f s₁.fn → CurPlaced f s₁.fn →
         trArgs fenv env es s₀ = some (ids, s₁) →
         EOutL (model := model) P f s₀ s₁ R ids vs yst yst'
   | .args es, .eres (.halt yst') =>
       ∀ (fenv : FMap) (env : VMap) (R : Regs) (s₀ s₁ : BState)
         (ids : List ValId),
         FEnvOK (model := model) P funs fenv → EnvOK (model := model) env V R →
-        RegsFresh R s₀.fn → Completes f s₁.fn →
+        RegsFresh R s₀.fn → Completes f s₁.fn → CurPlaced f s₁.fn →
         trArgs fenv env es s₀ = some (ids, s₁) →
         EOutHalt (model := model) P f s₀ R yst yst'
   | .stmt st, .sres V' yst' o =>
       ∀ (fenv : FMap) (env : VMap) (R : Regs) (lctx : Option LoopCtx)
         (rets : Option (List Ident)) (s₀ s₁ : BState) (renv : Option VMap),
         FEnvOK (model := model) P funs fenv → EnvOK (model := model) env V R →
-        RegsFresh R s₀.fn → Completes f s₁.fn →
+        RegsFresh R s₀.fn → Completes f s₁.fn → CurPlaced f s₁.fn →
         (renv = none → CurFinal f s₁.fn) →
         trStmt fenv env lctx rets st s₀ = some (renv, s₁) →
         SOut (model := model) P f lctx rets s₀ s₁ R renv V' yst yst' o
@@ -5510,11 +5576,233 @@ def Motive (P : Prog) (f : Func) (funs : YulSemantics.FunEnv yulD)
       ∀ (fenv : FMap) (env : VMap) (R : Regs) (lctx : Option LoopCtx)
         (rets : Option (List Ident)) (s₀ s₁ : BState) (renv : Option VMap),
         FEnvOK (model := model) P funs fenv → EnvOK (model := model) env V R →
-        RegsFresh R s₀.fn → Completes f s₁.fn →
+        RegsFresh R s₀.fn → Completes f s₁.fn → CurPlaced f s₁.fn →
         (renv = none → CurFinal f s₁.fn) →
         trStmts fenv env lctx rets false ss s₀ = some (renv, s₁) →
         SOut (model := model) P f lctx rets s₀ s₁ R renv V' yst yst' o
   | _, _ => True
+
+set_option maxHeartbeats 1000000 in
+/-- **The construction simulation induction.** One `induction … with` over the
+source `Step` derivation, with `Motive` above. Cases still open carry their own
+`sorry`; everything else is discharged by the per-case lemmas above. -/
+theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
+    {V : VEnv yulD} {yst : EvmState} {c : YulSemantics.Code Op}
+    {res : YulSemantics.Res yulD}
+    (h : YulSemantics.Step yulD funs V yst c res) :
+    Motive (model := model) P f funs V yst c res := by
+  induction h with
+  | @lit funs V st l =>
+    refine ⟨?_, ?_⟩
+    · intro fenv env R s₀ s₁ i v _ _ hfr _ _ hvs htr
+      obtain rfl : v = YulSemantics.EVM.litValue l := by simpa using hvs.symm
+      exact sim_lit hfr htr
+    · intro fenv env R s₀ s₁ n ids _ _ hfr _ _ htr
+      obtain ⟨-, i, rfl, htrE⟩ := trExprN_nonCall_inv (by intro fn args; simp) htr
+      exact (sim_lit hfr htrE).toEOutL
+  | @var funs V st x v hget =>
+    refine ⟨?_, ?_⟩
+    · intro fenv env R s₀ s₁ i v' _ henv hfr _ _ hvs htr
+      obtain rfl : v' = v := by simpa using hvs.symm
+      exact sim_var hfr henv hget htr
+    · intro fenv env R s₀ s₁ n ids _ henv hfr _ _ htr
+      obtain ⟨-, i, rfl, htrE⟩ := trExprN_nonCall_inv (by intro fn args; simp) htr
+      exact (sim_var hfr henv hget htrE).toEOutL
+  | builtinOk hargs hb iha => sorry
+  | builtinHalt hargs hb iha => sorry
+  | @builtinArgsHalt funs V st op args st1 hargs iha =>
+    have key : ∀ (fenv : FMap) (env : VMap) (R : Regs) (s₀ s₁ : BState)
+        (i : ValId), FEnvOK (model := model) P funs fenv →
+        EnvOK (model := model) env V R → RegsFresh R s₀.fn →
+        Completes f s₁.fn → CurPlaced f s₁.fn →
+        trExpr fenv env (.builtin op args) s₀ = some (i, s₁) →
+        EOutHalt (model := model) P f s₀ R st st1 := by
+      intro fenv env R s₀ s₁ i hfe henv hfr hcompl hcp htr
+      rw [trExpr] at htr
+      obtain ⟨as, sA, h1, htr'⟩ := M.bind_inv htr
+      obtain ⟨d, sB, h2, htr''⟩ := M.bind_inv htr'
+      obtain ⟨u, sC, h3, h4⟩ := M.bind_inv htr''
+      obtain ⟨-, rfl⟩ := M.pure_inv h4
+      have hg1 : Grows sA s₁ := (Grows.of_freshVal h2).trans (Grows.of_emit h3)
+      exact iha fenv env R s₀ sA as hfe henv hfr
+        (SGrowsAt.completes_of (SGrows.of_grows hg1) hcompl)
+        (curPlaced_back_grows hg1 hcp) h1
+    refine ⟨key, ?_⟩
+    intro fenv env R s₀ s₁ n ids hfe henv hfr hcompl hcp htr
+    obtain ⟨-, i, -, htrE⟩ := trExprN_nonCall_inv (by intro fn args'; simp) htr
+    exact key fenv env R s₀ s₁ i hfe henv hfr hcompl hcp htrE
+  | callOk hargs hlk harity hbody ho iha ihb => sorry
+  | callHalt hargs hlk harity hbody iha ihb => sorry
+  | callArgsHalt hargs iha => sorry
+  | @argsNil funs V st =>
+    intro fenv env R s₀ s₁ ids _ _ hfr _ _ htr
+    exact sim_args_nil hfr htr
+  | @argsCons funs V st e rest restvals st1 v st2 hrest hhead ihr ihh =>
+    intro fenv env R s₀ s₁ ids hfe henv hfr hcompl hcp htr
+    rw [trArgs] at htr
+    obtain ⟨restIds, sA, h1, htr'⟩ := M.bind_inv htr
+    obtain ⟨i, s₁, h2, h3⟩ := M.bind_inv htr'
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h3
+    have hgE : Grows sA s₁ := trExpr_grows e fenv env sA s₁ i h2
+    have hcomplA : Completes f sA.fn :=
+      SGrowsAt.completes_of (SGrows.of_grows hgE) hcompl
+    have hcpA : CurPlaced f sA.fn := curPlaced_back_grows hgE hcp
+    refine sim_args_cons
+      (ihr fenv env R s₀ sA restIds hfe henv hfr hcomplA hcpA h1) ?_
+    intro R' hle hfrA
+    exact (ihh.1 fenv env R' sA s₁ i v hfe (henv.mono hle) hfrA hcompl hcp rfl h2)
+  | @argsRestHalt funs V st e rest st1 hrest ihr =>
+    intro fenv env R s₀ s₁ ids hfe henv hfr hcompl hcp htr
+    rw [trArgs] at htr
+    obtain ⟨restIds, sA, h1, htr'⟩ := M.bind_inv htr
+    obtain ⟨i, s₁, h2, h3⟩ := M.bind_inv htr'
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h3
+    have hgE : Grows sA s₁ := trExpr_grows e fenv env sA s₁ i h2
+    exact ihr fenv env R s₀ sA restIds hfe henv hfr
+      (SGrowsAt.completes_of (SGrows.of_grows hgE) hcompl)
+      (curPlaced_back_grows hgE hcp) h1
+  | @argsHeadHalt funs V st e rest restvals st1 st2 hrest hhead ihr ihh =>
+    intro fenv env R s₀ s₁ ids hfe henv hfr hcompl hcp htr
+    rw [trArgs] at htr
+    obtain ⟨restIds, sA, h1, htr'⟩ := M.bind_inv htr
+    obtain ⟨i, s₁, h2, h3⟩ := M.bind_inv htr'
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h3
+    have hgE : Grows sA s₁ := trExpr_grows e fenv env sA s₁ i h2
+    have hcomplA : Completes f sA.fn :=
+      SGrowsAt.completes_of (SGrows.of_grows hgE) hcompl
+    have hcpA : CurPlaced f sA.fn := curPlaced_back_grows hgE hcp
+    obtain ⟨R₁, hle, hfrA, hget, hsim⟩ :=
+      ihr fenv env R s₀ sA restIds hfe henv hfr hcomplA hcpA h1
+    exact hsim (.halt st2)
+      (ihh.1 fenv env R₁ sA s₁ i hfe (henv.mono hle) hfrA hcompl hcp h2)
+  | @funDef funs V st n ps rs b =>
+    intro fenv env R lctx rets s₀ s₁ renv _ _ _ _ _ _ htr
+    rw [trStmt] at htr
+    exact absurd htr (by simp [reject])
+  | block hb ihb => sorry
+  | @letZero funs V st vars =>
+    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ _ htr
+    exact sim_letDecl_none hfr henv htr
+  | @letVal funs V st vars e vals st1 he hlen ihe =>
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hcompl hcp _ htr
+    have htr0 := htr
+    rw [trStmt] at htr
+    by_cases hgate : (vars.any env.mem || !decide vars.Nodup) = true
+    · rw [if_pos hgate] at htr
+      obtain ⟨u, sX, hx, -⟩ := M.bind_inv htr
+      exact absurd hx (by simp [reject])
+    rw [if_neg hgate] at htr
+    obtain ⟨u, sX, hx, htr'⟩ := M.bind_inv htr
+    obtain ⟨-, hsX⟩ := M.pure_inv hx
+    rw [hsX] at htr'
+    obtain ⟨ids, sA, h1, h2⟩ := M.bind_inv htr'
+    obtain ⟨-, rfl⟩ := M.pure_inv h2
+    exact sim_letDecl_some henv hlen h1
+      (ihe.2 fenv env R s₀ s₁ vars.length ids hfe henv hfr hcompl hcp h1) htr0
+  | @letHalt funs V st vars e st1 he ihe =>
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hcompl hcp _ htr
+    rw [trStmt] at htr
+    by_cases hgate : (vars.any env.mem || !decide vars.Nodup) = true
+    · rw [if_pos hgate] at htr
+      obtain ⟨u, sX, hx, -⟩ := M.bind_inv htr
+      exact absurd hx (by simp [reject])
+    rw [if_neg hgate] at htr
+    obtain ⟨u, sX, hx, htr'⟩ := M.bind_inv htr
+    obtain ⟨-, hsX⟩ := M.pure_inv hx
+    rw [hsX] at htr'
+    obtain ⟨ids, sA, h1, h2⟩ := M.bind_inv htr'
+    obtain ⟨-, rfl⟩ := M.pure_inv h2
+    exact SOut.ofExprHalt
+      (ihe.2 fenv env R s₀ s₁ vars.length ids hfe henv hfr hcompl hcp h1)
+  | @assignVal funs V st vars e vals st1 he hlen ihe =>
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hcompl hcp _ htr
+    have htr0 := htr
+    rw [trStmt] at htr
+    by_cases hgate : (!vars.all env.mem) = true
+    · rw [if_pos hgate] at htr
+      obtain ⟨u, sX, hx, -⟩ := M.bind_inv htr
+      exact absurd hx (by simp [reject])
+    rw [if_neg hgate] at htr
+    obtain ⟨u, sX, hx, htr'⟩ := M.bind_inv htr
+    obtain ⟨-, hsX⟩ := M.pure_inv hx
+    rw [hsX] at htr'
+    obtain ⟨ids, sA, h1, h2⟩ := M.bind_inv htr'
+    obtain ⟨-, rfl⟩ := M.pure_inv h2
+    exact sim_assign henv h1
+      (ihe.2 fenv env R s₀ s₁ vars.length ids hfe henv hfr hcompl hcp h1) htr0
+  | @assignHalt funs V st vars e st1 he ihe =>
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hcompl hcp _ htr
+    rw [trStmt] at htr
+    by_cases hgate : (!vars.all env.mem) = true
+    · rw [if_pos hgate] at htr
+      obtain ⟨u, sX, hx, -⟩ := M.bind_inv htr
+      exact absurd hx (by simp [reject])
+    rw [if_neg hgate] at htr
+    obtain ⟨u, sX, hx, htr'⟩ := M.bind_inv htr
+    obtain ⟨-, hsX⟩ := M.pure_inv hx
+    rw [hsX] at htr'
+    obtain ⟨ids, sA, h1, h2⟩ := M.bind_inv htr'
+    obtain ⟨-, rfl⟩ := M.pure_inv h2
+    exact SOut.ofExprHalt
+      (ihe.2 fenv env R s₀ s₁ vars.length ids hfe henv hfr hcompl hcp h1)
+  | exprStmt he ihe => sorry
+  | exprStmtHalt he ihe => sorry
+  | ifTrue hc hnz hbody ihc ihb => sorry
+  | ifFalse hc hz ihc => sorry
+  | ifHalt hc ihc => sorry
+  | switchExec hc hsel ihc ihs => sorry
+  | switchHalt hc ihc => sorry
+  | forLoop hinit hloop ihi ihl => sorry
+  | forInitHalt hinit ihi => sorry
+  | @«break» funs V st =>
+    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ hfin htr
+    cases lctx with
+    | none => rw [trStmt] at htr; exact absurd htr (by simp [reject])
+    | some l =>
+      have hnone : renv = none := by
+        rw [trStmt] at htr
+        obtain ⟨vals, sA, h1, htr⟩ := M.bind_inv htr
+        obtain ⟨u, sB, h2, h3⟩ := M.bind_inv htr
+        exact (M.pure_inv h3).1
+      exact sim_break henv
+        (hfr.mono (trStmt_grows fenv env (some l) rets .break s₀ renv s₁ htr).nextVal)
+        (hfin hnone) htr
+  | @«continue» funs V st =>
+    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ hfin htr
+    cases lctx with
+    | none => rw [trStmt] at htr; exact absurd htr (by simp [reject])
+    | some l =>
+      have hnone : renv = none := by
+        rw [trStmt] at htr
+        obtain ⟨vals, sA, h1, htr⟩ := M.bind_inv htr
+        obtain ⟨u, sB, h2, h3⟩ := M.bind_inv htr
+        exact (M.pure_inv h3).1
+      exact sim_continue henv
+        (hfr.mono (trStmt_grows fenv env (some l) rets .continue s₀ renv s₁ htr).nextVal)
+        (hfin hnone) htr
+  | @leave funs V st =>
+    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ hfin htr
+    cases rets with
+    | none => rw [trStmt] at htr; exact absurd htr (by simp [reject])
+    | some rs =>
+      have hnone : renv = none := by
+        rw [trStmt] at htr
+        obtain ⟨vals, sA, h1, htr⟩ := M.bind_inv htr
+        obtain ⟨u, sB, h2, h3⟩ := M.bind_inv htr
+        exact (M.pure_inv h3).1
+      exact sim_leave henv (hfin hnone) htr
+  | @seqNil funs V st =>
+    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ _ htr
+    exact sim_seqNil henv hfr htr
+  | seqCons h1 h2 ih1 ih2 => sorry
+  | seqStop h1 hne ih1 => sorry
+  | loopDone => trivial
+  | loopCondHalt => trivial
+  | loopStep => trivial
+  | loopPostHalt => trivial
+  | loopBreak => trivial
+  | loopLeave => trivial
+  | loopBodyHalt => trivial
 
 /--
 **The construction simulation — the remaining hole.**
