@@ -2282,6 +2282,93 @@ private theorem foldlM_split {α : Type} (emit : α → ToAsm.E (List Asm)) :
 
 
 omit model in
+/-- **The agreement lemma** — the point of the whole `TableSub` chain: two
+reads of the same block's layout, taken at any two states that both feed into
+the same final state, must return the same layout. This is what identifies the
+layout an edge shuffles onto with the layout its target block pinned. -/
+theorem layout_agree {sA sB sF : ToAsm.EmitSt} {bid : BlockId}
+    {l₁ l₂ : List SSlot}
+    (h₁ : sA.layouts[bid]? = some l₁) (hA : TableSub sA sF)
+    (h₂ : sB.layouts[bid]? = some l₂) (hB : TableSub sB sF) : l₁ = l₂ := by
+  have e₁ := hA bid l₁ h₁
+  have e₂ := hB bid l₂ h₂
+  rw [e₁] at e₂
+  exact Option.some.inj e₂
+
+omit model in
+/-- The shape of an unconditional edge: consult/record the target layout, then
+shuffle onto it, then jump. -/
+theorem emitTerm_jump_shape {isFunc : Bool} {f : Func} {L : ToAsm.LabelMap}
+    {fidx : Option Nat} {liveIn : Array (List ValId)} {sym : List SSlot}
+    {e : Edge} {s : ToAsm.EmitSt} {asmf : List Asm} {s' : ToAsm.EmitSt}
+    (h : ToAsm.emitTerm isFunc f L fidx liveIn sym (.jump e) s = some (asmf, s')) :
+    ∃ (τ : List SSlot) (s1 : ToAsm.EmitSt) (ops : List Asm),
+      ToAsm.edgeTargetLayout isFunc f liveIn e sym s = some (τ, s1)
+      ∧ ToAsm.shuffle sym τ = some ops
+      ∧ asmf = ops ++ [Asm.jump (ToAsm.blkLabel L fidx e.target)] := by
+  simp only [ToAsm.emitTerm] at h
+  obtain ⟨τ, s1, hτ, h1⟩ := E_bind_inv h
+  obtain ⟨ops, hsh, h2⟩ := liftE_bind_inv h1
+  obtain ⟨heq, -⟩ := E_pure_inv2 h2
+  exact ⟨τ, s1, ops, hτ, hsh, heq.symm⟩
+
+omit model in
+/-- The append-fold is monotone in the layout table when each element is. -/
+private theorem foldlM_mono {α : Type} (emit : α → ToAsm.E (List Asm)) :
+    ∀ (l : List α) (acc0 : List Asm) (s : ToAsm.EmitSt) (code : List Asm)
+      (s' : ToAsm.EmitSt),
+      (∀ a ∈ l, ∀ sp r sq, emit a sp = some (r, sq) → TableSub sp sq) →
+      (l.foldlM (init := acc0) (fun acc a => do let x ← emit a; pure (acc ++ x))) s
+        = some (code, s') → TableSub s s' := by
+  intro l
+  induction l with
+  | nil =>
+    intro acc0 s code s' _ h
+    rw [List.foldlM_nil] at h
+    obtain ⟨-, rfl⟩ := E_pure_inv2 h
+    exact TableSub.refl _
+  | cons a rest ih =>
+    intro acc0 s code s' hm h
+    rw [List.foldlM_cons] at h
+    obtain ⟨acc1, s1, hstep, htail⟩ := E_bind_inv h
+    obtain ⟨fr, s2, he, hp⟩ := E_bind_inv hstep
+    obtain ⟨-, rfl⟩ := E_pure_inv2 hp
+    exact TableSub.trans (hm a List.mem_cons_self _ _ _ he)
+      (ih _ _ _ _ (fun x hx => hm x (List.mem_cons_of_mem _ hx)) htail)
+
+omit model in
+/-- **The state-carrying fragment locator**: like `foldlM_split`, but it also
+hands back the state *before* the element's emission and a `TableSub` from the
+state *after* it to the fold's final state. That is what lets two reads of the
+layout table — an edge's `getLayout` and the target block's own pin — be
+compared through `layout_agree`. -/
+private theorem foldlM_split_mono {α : Type} (emit : α → ToAsm.E (List Asm)) :
+    ∀ (l : List α) (acc0 : List Asm) (s : ToAsm.EmitSt) (code : List Asm)
+      (s' : ToAsm.EmitSt),
+      (∀ a ∈ l, ∀ sp r sq, emit a sp = some (r, sq) → TableSub sp sq) →
+      (l.foldlM (init := acc0) (fun acc a => do let x ← emit a; pure (acc ++ x))) s
+        = some (code, s') →
+      ∀ a ∈ l, ∃ (sp sq : ToAsm.EmitSt) (fr pre post : List Asm),
+        emit a sp = some (fr, sq) ∧ TableSub sq s' ∧ code = pre ++ (fr ++ post) := by
+  intro l
+  induction l with
+  | nil => intro acc0 s code s' _ h a ha; exact absurd ha (by simp)
+  | cons a0 rest ih =>
+    intro acc0 s code s' hm h a ha
+    rw [List.foldlM_cons] at h
+    obtain ⟨acc1, s1, hstep, htail⟩ := E_bind_inv h
+    obtain ⟨fr0, s2, he0, hp⟩ := E_bind_inv hstep
+    obtain ⟨rfl, rfl⟩ := E_pure_inv2 hp
+    have hmr : ∀ x ∈ rest, ∀ sp r sq, emit x sp = some (r, sq) → TableSub sp sq :=
+      fun x hx => hm x (List.mem_cons_of_mem _ hx)
+    rcases List.mem_cons.mp ha with rfl | ha'
+    · obtain ⟨ops, rfl⟩ := foldlM_grow emit rest _ _ _ _ htail
+      refine ⟨s, s2, fr0, acc0, ops, he0,
+        foldlM_mono emit rest _ _ _ _ hmr htail, ?_⟩
+      rw [List.append_assoc]
+    · exact ih _ _ _ _ hmr htail a ha'
+
+omit model in
 private theorem foldlM_head {α : Type} (emit : α → ToAsm.E (List Asm))
     (a0 : α) (rest : List α) (n : ToAsm.EmitSt) (code : List Asm) (n' : ToAsm.EmitSt)
     (h : ((a0 :: rest).foldlM (init := ([] : List Asm))
