@@ -88,6 +88,13 @@ definitions nothing reads.
   reflexivity.
 * `runOnce_dom` — dominance preservation for a pipeline round, by composition of
   the four per-pass obligations.
+* **Pass 4's structural specification** (`Passes.dve_blocks_get` and friends):
+  `dve` is the one pass written without an `Id.run` loop, so its output is
+  directly readable — `dveBlock_uses_sub` (uses only shrink),
+  `dveBlock_defs_sub` / `dveBlock_defs_of_live` (definitions only shrink, and a
+  live definition is always kept), `dveBlock_edge_target` (edge targets are
+  untouched). This is the complete structural half of both `dve_sound` and
+  `dve_dom`.
 * The **counterexample**, end to end: `P.wfCheck = true`,
   `ToAsm.Prog.domCheck P = false`, `optimizeProg P = Popt` — the *whole*
   optimizer evaluated **inside the kernel**: `Passes.inlineProg` (proved to be
@@ -108,13 +115,40 @@ Thirteen `sorry`s, each documented at its declaration:
   `dve_dom` (`runOnce_dom` composes them and *is* proved);
 * the gate-accepted branch of `optimizeProg_sound'`.
 
-The recurring blocker is not semantic: it is that every pass is written as an
-`Id.run` loop (`findTrivialParam`'s early-return search, the `cse` walk's
-threaded `CseTab`/`Subst`, `inlineOnce`'s site search, `pruneFuncs`' worklist),
-so each proof must first *invert* a monadic loop into a specification. The
-semantic ingredients those specifications feed into — the frame lemma, the purity
-leaves, the liveness fixed point with its propagation and least-fixed-point
-lemmas, and the `LiveAgree` base case — are all proved here.
+Two kinds of obligation remain, and it is worth separating them.
+
+**(a) Loop inversion.** Every pass except `dve` is written as an `Id.run` loop
+(`findTrivialParam`'s early-return search, the `cse` walk's threaded
+`CseTab`/`Subst`, `inlineOnce`'s site search, `pruneFuncs`' worklist), so each
+proof must first *invert* a monadic loop into a structural specification of the
+form proved here for `dve`. The technique is settled — the counterexample's
+`hinlineFunc`/`hinline` do exactly this concretely — but it has to be redone,
+generically, per pass.
+
+**(b) Two shared fuel-loop facts**, which gate the whole
+dominance-preservation quartet and `dve_sound`:
+
+* `ToAsm.liveInSets` **converges** (returns `some`) on every function. Without
+  this, no `*_dom` lemma is provable at all, because `Func.domCheck` is `false`
+  by definition when `liveInSets` runs out of fuel. The argument is Kleene
+  iteration from `⊥`: `liveStep_mono` (proved here) makes the iterates
+  increasing, each iterate is contained in the finite universe of ids mentioned
+  in some `uses` list, and `fuel = blocks.size * (total + 1) + 2` exceeds the
+  maximum number of strict increases. Needs: `unionS`/`diffS` produce `Nodup`
+  lists, and a sum-of-lengths measure.
+* `Passes.liveSet` is `Passes.liveStep`-**closed**. Its loop exits on a *size*
+  fixpoint rather than a set fixpoint, so closure needs (i) `liveStep` is
+  inflationary (it only ever inserts), (ii) `A ⊆ B` with `|A| = |B|` forces
+  `A = B` for `Std.HashSet` (via `toList` `Nodup` + `Subperm`), and (iii) the
+  same fuel-adequacy argument as above so the loop cannot fall out of the
+  bottom. Note this is a *proof* obligation, not a lurking miscompilation: were
+  `liveSet` ever to under-approximate, `dve` would delete a definition that a
+  kept instruction reads, and that program fails `domCheck` — so the defensive
+  gate rejects the candidate and `optimizeProg` returns the original.
+
+The semantic ingredients that all of these feed into — the frame lemma, the
+purity leaves, the liveness fixed point with its propagation and
+least-fixed-point lemmas, and the `LiveAgree` base case — are proved here.
 -/
 
 namespace YulEvmCompiler.SsaCfg
@@ -979,6 +1013,149 @@ theorem dom_hypothesis_excludes_counterexample :
     ¬ (ToAsm.Prog.domCheck P = true) := by simp [hdomP]
 
 end Counterexample
+
+namespace Passes
+
+/-! ### Pass 4's structural specification
+
+`dve` is the one pass written *without* an `Id.run` loop — a `mapIdx` with
+filters — so its output is directly readable, and these lemmas are the complete
+structural half of both `dve_sound` and `dve_dom`. -/
+
+/-- The block rewrite `dve` performs, as a function (its `mapIdx` body). -/
+def dveBlock (f : Func) (bi : BlockId) (b : Block) : Block :=
+  let live := liveSet f
+  let keepParam : BlockId → Nat → Bool := fun bi i =>
+    match f.blocks[bi]? with
+    | some b =>
+      match b.params[i]? with
+      | some p => live.contains p
+      | none => true
+    | none => true
+  { params := if bi == f.entry then b.params else b.params.filter live.contains
+    instrs := b.instrs.filter fun i =>
+      match i with
+      | .const d _ => live.contains d
+      | .op ds yop _ => !pureOp yop || ds.any live.contains
+      | .call .. => true
+    term := mapEdges (fun (e : Edge) =>
+      { e with args := (e.args.zipIdx.filter fun ai => keepParam e.target ai.2).map (·.1) }) b.term }
+
+/-- `dve` is a plain `mapIdx`: block `i` of the output is `dveBlock f i` of block
+`i` of the input. -/
+theorem dve_blocks_get (f : Func) (i : BlockId) :
+    (dve f).blocks[i]? = (f.blocks[i]?).map (dveBlock f i) := by
+  simp only [dve, Array.getElem?_mapIdx]
+  rfl
+
+theorem dve_params (f : Func) : (dve f).params = f.params := rfl
+theorem dve_entry (f : Func) : (dve f).entry = f.entry := rfl
+theorem dve_size (f : Func) : (dve f).blocks.size = f.blocks.size := by simp [dve]
+
+/-! ### What the rewrite does to the liveness data -/
+
+theorem mem_filterArgs {p : Nat → Bool} {as : List ValId} {x : ValId}
+    (h : x ∈ (as.zipIdx.filter fun ai => p ai.2).map (·.1)) : x ∈ as := by
+  simp only [List.mem_map, List.mem_filter] at h
+  obtain ⟨ai, ⟨hmem, -⟩, rfl⟩ := h
+  exact List.fst_mem_of_mem_zipIdx hmem
+
+theorem mapEdges_uses_sub {g : Edge → Edge} (hargs : ∀ e x, x ∈ (g e).args → x ∈ e.args)
+    (t : Term) {x : ValId} (h : x ∈ (mapEdges g t).uses) : x ∈ t.uses := by
+  cases t with
+  | jump e => exact hargs _ _ h
+  | branch c t0 f0 =>
+    have h' : x = c ∨ x ∈ (g t0).args ∨ x ∈ (g f0).args := by
+      simpa [mapEdges, Term.uses] using h
+    have h'' : x = c ∨ x ∈ t0.args ∨ x ∈ f0.args := by
+      rcases h' with h1 | h1 | h1
+      · exact Or.inl h1
+      · exact Or.inr (Or.inl (hargs _ _ h1))
+      · exact Or.inr (Or.inr (hargs _ _ h1))
+    simpa [Term.uses] using h''
+  | ret vs => exact h
+  | halt yop as => exact h
+
+theorem mapEdges_edges {g : Edge → Edge} (t : Term) {e : Edge}
+    (h : e ∈ (mapEdges g t).edges) : ∃ e0 ∈ t.edges, g e0 = e := by
+  cases t with
+  | jump e0 =>
+    have he : e = g e0 := by simpa [mapEdges, Term.edges] using h
+    exact ⟨e0, by simp [Term.edges], he.symm⟩
+  | branch c t0 f0 =>
+    have he : e = g t0 ∨ e = g f0 := by simpa [mapEdges, Term.edges] using h
+    rcases he with rfl | rfl
+    · exact ⟨t0, by simp [Term.edges], rfl⟩
+    · exact ⟨f0, by simp [Term.edges], rfl⟩
+  | ret vs => simp [mapEdges, Term.edges] at h
+  | halt yop as => simp [mapEdges, Term.edges] at h
+
+
+/-- Uses can only shrink: `dve` deletes instructions and drops edge arguments. -/
+theorem dveBlock_uses_sub {f : Func} {i : BlockId} {b : Block} {x : ValId}
+    (h : x ∈ ToAsm.blockUses (dveBlock f i b)) : x ∈ ToAsm.blockUses b := by
+  rw [ToAsm.mem_blockUses] at h ⊢
+  rcases h with h | h
+  · refine Or.inl ?_
+    simp only [List.mem_flatMap] at h ⊢
+    obtain ⟨ins, hins, hx⟩ := h
+    exact ⟨ins, List.mem_of_mem_filter hins, hx⟩
+  · refine Or.inr (mapEdges_uses_sub ?_ b.term h)
+    intro e y hy
+    simp only [List.mem_map, List.mem_filter] at hy
+    obtain ⟨ai, ⟨hmem, -⟩, rfl⟩ := hy
+    exact List.fst_mem_of_mem_zipIdx hmem
+
+/-- Definitions can only shrink: `dve` deletes definitions, never adds one. -/
+theorem dveBlock_defs_sub {f : Func} {i : BlockId} {b : Block} {x : ValId}
+    (h : x ∈ ToAsm.blockDefs (dveBlock f i b)) : x ∈ ToAsm.blockDefs b := by
+  rw [ToAsm.mem_blockDefs] at h ⊢
+  rcases h with h | h
+  · refine Or.inl ?_
+    by_cases he : (i == f.entry) = true
+    · simpa [dveBlock, he] using h
+    · have : x ∈ b.params.filter (liveSet f).contains := by simpa [dveBlock, he] using h
+      exact List.mem_of_mem_filter this
+  · refine Or.inr ?_
+    simp only [List.mem_flatMap] at h ⊢
+    obtain ⟨ins, hins, hx⟩ := h
+    exact ⟨ins, List.mem_of_mem_filter hins, hx⟩
+
+/-- …and a **live** definition is always kept. -/
+theorem dveBlock_defs_of_live {f : Func} {i : BlockId} {b : Block} {x : ValId}
+    (hlive : (liveSet f).contains x = true) (h : x ∈ ToAsm.blockDefs b) :
+    x ∈ ToAsm.blockDefs (dveBlock f i b) := by
+  rw [ToAsm.mem_blockDefs] at h ⊢
+  rcases h with h | h
+  · refine Or.inl ?_
+    by_cases he : (i == f.entry) = true
+    · simpa [dveBlock, he] using h
+    · have : x ∈ b.params.filter (liveSet f).contains := List.mem_filter.mpr ⟨h, by simpa using hlive⟩
+      simpa [dveBlock, he] using this
+  · refine Or.inr ?_
+    simp only [List.mem_flatMap] at h ⊢
+    obtain ⟨ins, hins, hx⟩ := h
+    refine ⟨ins, List.mem_filter.mpr ⟨hins, ?_⟩, hx⟩
+    cases ins with
+    | const d v =>
+      simp only [Instr.defs, List.mem_singleton] at hx
+      subst hx
+      simpa using hlive
+    | op ds yop as =>
+      simp only [Instr.defs] at hx
+      by_cases hp : pureOp yop
+      · simp only [hp, Bool.not_true, Bool.false_or]
+        exact List.any_eq_true.mpr ⟨x, hx, hlive⟩
+      · simp [hp]
+    | call ds g as => simp
+
+/-- Edge targets are untouched (only argument *positions* are dropped). -/
+theorem dveBlock_edge_target {f : Func} {i : BlockId} {b : Block} {e : Edge}
+    (h : e ∈ (dveBlock f i b).term.edges) : ∃ e0 ∈ b.term.edges, e0.target = e.target := by
+  obtain ⟨e0, hmem, rfl⟩ := mapEdges_edges b.term h
+  exact ⟨e0, hmem, rfl⟩
+
+end Passes
 
 /-! ## Pass 0: program-level inlining
 
