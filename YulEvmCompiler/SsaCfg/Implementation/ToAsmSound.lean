@@ -48,14 +48,22 @@ operand-order choice, via `foldl_best` and `builtin_comm`), `emitBlock_head`,
 `emitBlock_emitRest`, `emitFunc_inv`, `emitProg_inv`, `emitProg_placement` and
 `raw_entry_sim`.
 
-`exec_sim`: `const`, `op`, `opHalt` and `halt` are proved — the whole
-straight-line fragment, with the operand-order transport. Still open: `ret`
-(needs the `SWAP1 … SWAPk` epilogue-rotation lemma: induct on the `back`
-segment with `front` growing, `x :: front ++ back ++ ra :: below ↦
-ra :: front ++ x :: back ++ below`), `jump`/`branchTrue`/`branchFalse` (edge
-shuffle onto `edgeTargetLayout`, `findLabel` from `Placement`, then the target
-IH — this is where `hdom` and the liveness fixed point re-establish the
-freshness invariant at a block entry), and the `call` pair.
+`exec_sim`: `const`, `op`, `opHalt`, `halt` and `ret` are proved — every case
+that does not cross a control-flow edge. `ret` uses the epilogue-rotation
+lemma `rot_steps`/`rots_steps` (`SWAP1 … SWAPk` lifts the return address from
+under the `k` results to the top) and, in `main`, the internal side condition
+`fidx = none → retLab = endLabel`, which `raw_entry_sim` discharges by `rfl`.
+
+Still open: `jump`, `branchTrue`, `branchFalse` and the `call` pair. The
+edge cases need one invariant this file does not yet carry: with entry-layout
+inheritance, `edgeTargetLayout` reads/records the emission state's layout
+table while `emitBlock` pins its own `sym0` from the same table, so
+`Placement` must additionally record that *the layout an incoming edge
+shuffles onto is the target block's pinned layout with its parameters
+substituted by the edge arguments*. Everything downstream of that
+(re-establishing freshness at the target entry from the liveness fixed point
+and `domCheck_entry`, and the `AStep.jump`/`jumpi` resolution) is already in
+place.
 
 `exec_sim` carries two side conditions beyond the emission itself — that no
 value on the symbolic stack is defined again by the rest of the block, and
@@ -662,6 +670,75 @@ theorem AHalt.extend {prog : List Asm} {a : AConf} {yst' : EvmState}
   cases h with
   | op hb => simpa [List.append_assoc] using AHalt.op hb
 
+/-- The epilogue rotation `SWAP(m+1) … SWAP(m+r+1)`. -/
+def rotOps (m r : Nat) : List Asm :=
+  (List.range' m (r + 1)).filterMap fun j =>
+    if h : j < 16 then some (Asm.swap ⟨j, h⟩) else none
+
+theorem rotOps_succ (m r : Nat) (hm : m < 16) :
+    rotOps m (r + 1) = Asm.swap ⟨m, hm⟩ :: rotOps (m + 1) r := by
+  show (List.range' m (r + 2)).filterMap _ = _
+  rw [show List.range' m (r + 2) = m :: List.range' (m + 1) (r + 1) from rfl,
+    List.filterMap_cons]
+  simp [rotOps, hm]
+
+theorem rotOps_zero (m : Nat) (hm : m < 16) :
+    rotOps m 0 = [Asm.swap ⟨m, hm⟩] := by
+  show (List.range' m 1).filterMap _ = _
+  rw [show List.range' m 1 = [m] from rfl]
+  simp [hm]
+
+/-- **The epilogue rotation**: `SWAP1 … SWAPk` lifts the return address from
+under `k` result words to the top, leaving the results in order. -/
+theorem rot_steps {prog c : List Asm} {yst : EvmState} :
+    ∀ (back front : List AVal) (x ra : AVal) (below : List AVal),
+      front.length + back.length + 1 ≤ 16 →
+      ASteps (model := model) prog
+        ⟨rotOps front.length back.length ++ c, x :: (front ++ back ++ ra :: below), yst⟩
+        ⟨c, ra :: (front ++ x :: back ++ below), yst⟩ := by
+  intro back
+  induction back with
+  | nil =>
+    intro front x ra below hlen
+    have hm : front.length < 16 := by simp at hlen; omega
+    simp only [List.length_nil, List.append_nil]
+    rw [rotOps_zero front.length hm, List.singleton_append]
+    refine ASteps.single ?_
+    have := AStep.swap (model := model) (prog := prog) (n := ⟨front.length, hm⟩)
+      (a := x) (b := ra) (τ := front) (ρ := below) (c := c) (yst := yst) rfl
+    simpa using this
+  | cons y back ih =>
+    intro front x ra below hlen
+    have hm : front.length < 16 := by simp at hlen; omega
+    simp only [List.length_cons, List.append_assoc, List.cons_append]
+    rw [rotOps_succ front.length back.length hm, List.cons_append]
+    refine ASteps.head (b := ⟨rotOps (front.length + 1) back.length ++ c,
+        y :: (front ++ x :: (back ++ ra :: below)), yst⟩) ?_ ?_
+    · exact AStep.swap (model := model) (prog := prog) (n := ⟨front.length, hm⟩)
+        (a := x) (b := y) (τ := front) (ρ := back ++ ra :: below)
+        (c := rotOps (front.length + 1) back.length ++ c) (yst := yst) rfl
+    · have hnext := ih (front ++ [x]) y ra below (by simp at hlen ⊢; omega)
+      rw [List.length_append] at hnext
+      simpa [List.append_assoc] using hnext
+
+
+
+theorem rots_steps {prog c : List Asm} {yst : EvmState} {vs : List AVal} {ra : AVal}
+    {below : List AVal} (hk : vs.length ≤ 16) :
+    ASteps (model := model) prog
+      ⟨((List.range vs.length).filterMap
+          (fun j => if h : j < 16 then some (Asm.swap ⟨j, h⟩) else none)) ++ c,
+        vs ++ ra :: below, yst⟩
+      ⟨c, ra :: (vs ++ below), yst⟩ := by
+  cases vs with
+  | nil => simpa using ASteps.refl (model := model) (prog := prog) ⟨c, ra :: below, yst⟩
+  | cons v vs =>
+    have hh := rot_steps (model := model) (prog := prog) (c := c) (yst := yst) vs [] v ra below
+      (by simp at hk ⊢; omega)
+    rw [List.range_eq_range']
+    simpa [rotOps] using hh
+
+
 /-! ## Register-file bookkeeping
 
 An instruction's *definitions* must be fresh with respect to whatever is
@@ -1227,6 +1304,34 @@ theorem instrDefs_nodup {f : Func} {k : Nat} (hwf : f.wfCheck k = true)
     exact List.sublist_append_right _ _
   exact hnd.sublist hsub
 
+omit model in
+theorem emitTerm_ret_shape {isFunc : Bool} {f : Func} {L : ToAsm.LabelMap}
+    {fidx : Option Nat} {liveIn : Array (List ValId)} {sym : List SSlot}
+    {xs : List ValId} {n n' : ToAsm.EmitSt} {asmf : List Asm}
+    (hemit : ToAsm.emitTerm isFunc f L fidx liveIn sym (.ret xs) n = some (asmf, n')) :
+    (isFunc = true ∧ xs.length ≤ 16 ∧ ∃ ops,
+        ToAsm.shuffle sym (xs.map SSlot.val ++ [SSlot.retAddr]) = some ops ∧
+        asmf = ops ++ ((List.range xs.length).filterMap
+          (fun j => if h : j < 16 then some (Asm.swap ⟨j, h⟩) else none)) ++ [Asm.dynJump])
+    ∨ (isFunc = false ∧ xs = [] ∧ ∃ ops, ToAsm.shuffle sym [] = some ops
+        ∧ asmf = ops ++ [Asm.jump L.endLabel]) := by
+  rw [ToAsm.emitTerm] at hemit
+  split at hemit
+  · rename_i hf
+    obtain ⟨ops, hsh, heq⟩ := liftE_bind_inv hemit
+    dsimp only at heq
+    split at heq
+    · rename_i hk
+      exact Or.inl ⟨hf, hk, ops, hsh, (E_pure_inv2 heq).1.symm⟩
+    · exact absurd heq (by simp [ToAsm.liftE])
+  · rename_i hf
+    split at hemit
+    · exact absurd hemit (by simp [ToAsm.liftE])
+    · rename_i hxs
+      obtain ⟨ops, hsh, heq⟩ := liftE_bind_inv hemit
+      exact Or.inr ⟨by simpa using hf, by simpa using hxs, ops, hsh,
+        (E_pure_inv2 heq).1.symm⟩
+
 /-! ## The rest of a block, as the big-step relation walks it
 
 `emitBlock` folds `emitInstr` over the block's instructions (paired with their
@@ -1517,12 +1622,13 @@ theorem exec_sim {P : Prog} {ord : Bool} {asm : List Asm}
       (restDefs paired).Nodup →
       StkMatch R retLab sym σr →
       (findLabel retLab asm).isSome →
+      (fidx = none → retLab = (ToAsm.mkLabelMap P).endLabel) →
       SimFRes (model := model) asm retLab below
         ⟨frag ++ tail, σr ++ below, st⟩ res := by
   induction hexec
   case const f₀ R₀ st₀ d v is t res₀ hsub ih =>
     -- `AStep.push` (`emitInstr_const_sim`) then the IH on the shortened rest
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret hmainRet
     obtain ⟨needF, paired', rfl, hpair'⟩ := map_fst_eq_cons hpair
     obtain ⟨need, future⟩ := needF
     dsimp only at hemit
@@ -1542,7 +1648,7 @@ theorem exec_sim {P : Prog} {ord : Bool} {asm : List Asm}
     obtain ⟨σr', hm', hsteps⟩ :=
       emitInstr_const_sim (st := st₀) hei (agreeOn_set hne) σr hm
     refine SimFRes.prepend ?_ (ih fidx liveIn paired' (SSlot.val d :: sym) _ _ tl tail
-      retLab below σr' hpair' htl ?_ (List.nodup_append.mp hndefs).2.1 hm' hret)
+      retLab below σr' hpair' htl ?_ (List.nodup_append.mp hndefs).2.1 hm' hret hmainRet)
     · rw [← heq]
       have hst := ASteps.extend below (hsteps asm (tl ++ tail))
       simpa [List.append_assoc] using hst
@@ -1554,7 +1660,7 @@ theorem exec_sim {P : Prog} {ord : Bool} {asm : List Asm}
   case op f₀ R₀ st₀ st₁ ds yop as args rets is t res₀ hget hb hlen hsub ih =>
     -- `emitInstr_op_shape` + `shuffle_op_sim`; the chosen operand order is
     -- transported across `builtin_comm` for the commutative built-ins
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret hmainRet
     obtain ⟨needF, paired', rfl, hpair'⟩ := map_fst_eq_cons hpair
     obtain ⟨need, future⟩ := needF
     dsimp only at hemit
@@ -1580,7 +1686,7 @@ theorem exec_sim {P : Prog} {ord : Bool} {asm : List Asm}
     obtain ⟨σr', hm', hsteps⟩ :=
       shuffle_op_sim (st := st₀) (st' := st₁) hsh hget' hb' hlen hndds hagree σr hm
     refine SimFRes.prepend ?_ (ih fidx liveIn paired' _ _ _ tl tail
-      retLab below σr' hpair' htl ?_ hndrest hm' hret)
+      retLab below σr' hpair' htl ?_ hndrest hm' hret hmainRet)
     · rw [← heq]
       have hst := ASteps.extend below (hsteps asm (tl ++ tail))
       simpa [List.append_assoc] using hst
@@ -1593,7 +1699,7 @@ theorem exec_sim {P : Prog} {ord : Bool} {asm : List Asm}
           (List.mem_append_right _ hc)
   case opHalt f₀ R₀ st₀ st₁ ds yop as args is t hget hb =>
     -- the shuffle, then `AHalt.op`; same operand-order transport as `op`
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret hmainRet
     obtain ⟨needF, paired', rfl, hpair'⟩ := map_fst_eq_cons hpair
     obtain ⟨need, future⟩ := needF
     dsimp only at hemit
@@ -1620,32 +1726,94 @@ theorem exec_sim {P : Prog} {ord : Bool} {asm : List Asm}
     simpa [List.append_assoc] using hst
   case call =>
     -- pushLabel / arg DUPs / jump entry / callee IH / dynJump back
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret hmainRet
     sorry
   case callHalt =>
     -- as `call`, but the callee's IH already produces the halting configuration
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret hmainRet
     sorry
   case jump =>
     -- edge shuffle onto the target's entry layout, `AStep.jump`, target IH
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret hmainRet
     sorry
   case branchTrue =>
     -- shuffle to `cond :: layout(true)`, `AStep.jumpiTaken`, target IH
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret hmainRet
     sorry
   case branchFalse =>
     -- `AStep.jumpiFall`, the fall-through shuffle, target IH
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret hmainRet
     sorry
-  case ret =>
+  case ret f₀ R₀ st₀ xs vals hget =>
     -- function: epilogue rotation + `dynJump`; main: pops + `jump endLabel`
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
-    sorry
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret hmainRet
+    obtain rfl := map_fst_eq_nil hpair
+    dsimp only at hemit
+    rw [emitRest_nil] at hemit
+    obtain ⟨cret, hcret⟩ : ∃ c, findLabel retLab asm = some c := Option.isSome_iff_exists.mp hret
+    refine ⟨cret, hcret, ?_⟩
+    rcases emitTerm_ret_shape hemit with ⟨-, hk, ops, hsh, rfl⟩ | ⟨hf, rfl, ops, hsh, rfl⟩
+    · -- the function epilogue: shuffle, `SWAP1 … SWAPk`, `dynJump`
+      obtain ⟨τr, hτr, hsteps⟩ :=
+        shuffle_sound (model := model) (R := R₀) (retLab := retLab) hsh σr hm
+      have hxv : StkMatch R₀ retLab (xs.map SSlot.val) (words vals) := StkMatch.of_vals hget
+      obtain ⟨σa, σb, rfl, hσa, hσb⟩ := StkMatch.append_inv hτr
+      obtain rfl : σa = words vals := hσa.det hxv
+      obtain ⟨rb, σc, rfl, hrb, hσc⟩ := StkMatch.cons_inv hσb
+      obtain rfl : rb = AVal.code retLab := by
+        simpa [slotVal] using hrb.symm
+      obtain rfl : σc = [] := by
+        cases σc with
+        | nil => rfl
+        | cons _ _ => simp [StkMatch] at hσc
+      have hvlen : (words vals).length ≤ 16 := by
+        have hlen := hxv.length_eq
+        simp only [List.length_map, words_length] at hlen
+        simp only [words_length]
+        omega
+      refine ASteps.trans (b := ⟨((List.range xs.length).filterMap
+          (fun j => if h : j < 16 then some (Asm.swap ⟨j, h⟩) else none))
+            ++ Asm.dynJump :: tail,
+          words vals ++ (AVal.code retLab :: below), st₀⟩) ?_
+        (ASteps.trans (b := ⟨Asm.dynJump :: tail,
+          AVal.code retLab :: (words vals ++ below), st₀⟩) ?_
+          (ASteps.single (AStep.dynJump hcret)))
+      · have hst := ASteps.extend below
+          (hsteps asm (((List.range xs.length).filterMap
+            (fun j => if h : j < 16 then some (Asm.swap ⟨j, h⟩) else none))
+              ++ Asm.dynJump :: tail) st₀)
+        simpa [List.append_assoc] using hst
+      · have hrot := rots_steps (model := model) (prog := asm)
+          (c := Asm.dynJump :: tail) (yst := st₀) (vs := words vals)
+          (ra := AVal.code retLab) (below := below) hvlen
+        have hxl : xs.length = (words vals).length := by
+          have hlen := hxv.length_eq
+          simpa using hlen
+        rw [hxl]
+        simpa using hrot
+    · -- `main`: the shuffle empties the frame, then `jump` the terminal label
+      obtain rfl : vals = [] := by simpa [Regs.getMany] using hget.symm
+      have hfn : fidx = none := by
+        cases fidx with
+        | none => rfl
+        | some i => simp at hf
+      have hcret' : findLabel (ToAsm.mkLabelMap P).endLabel asm = some cret := by
+        rw [← hmainRet hfn]; exact hcret
+      obtain ⟨τr, hτr, hsteps⟩ :=
+        shuffle_sound (model := model) (R := R₀) (retLab := retLab) hsh σr hm
+      obtain rfl : τr = [] := by
+        cases τr with
+        | nil => rfl
+        | cons _ _ => simp [StkMatch] at hτr
+      refine ASteps.trans (b := ⟨Asm.jump (ToAsm.mkLabelMap P).endLabel :: tail, below, st₀⟩) ?_
+        (ASteps.single (AStep.jump hcret'))
+      have hst := ASteps.extend below
+        (hsteps asm (Asm.jump (ToAsm.mkLabelMap P).endLabel :: tail) st₀)
+      simpa using hst
   case halt =>
     -- `emitTerm_halt_sim`: the shuffle brings the operands up, then the emitted
     -- `op yop` halts; the dead barrier after it is never walked
-    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret
+    intro fidx liveIn paired sym n n' frag tail retLab below σr hpair hemit hfresh hndefs hm hret hmainRet
     rename_i hget hb
     obtain rfl := map_fst_eq_nil hpair
     dsimp only at hemit
@@ -1897,7 +2065,7 @@ private theorem raw_entry_sim {P : Prog} {ord : Bool} {asm₀ : List Asm}
   · refine ASteps.single ?_
     rw [hasm]; exact AStep.label
   · refine exec_sim hnodup₀ hwf hdom hpl hexec none liveIn paired sym0 m n' frag tail
-      (ToAsm.mkLabelMap P).endLabel [] [] hpair hrest ?_ ?_ ?_ ?_
+      (ToAsm.mkLabelMap P).endLabel [] [] hpair hrest ?_ ?_ ?_ ?_ (fun _ => rfl)
     · rw [hsym]; simp
     · rw [restDefs_eq hpair]; exact instrDefs_nodup hmainwf heb
     · rw [hsym]; exact StkMatch.nil
