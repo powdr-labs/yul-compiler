@@ -276,6 +276,21 @@ def cse (f : Func) : Func := Id.run do
         | [p] => if p < bi then inheritTab tables[p]! b.params else {}
         | _ => {}
     let mut instrs : List Instr := []
+    -- Same-block order guards. The block-level `domCheck` cannot see a
+    -- same-block read placed before its def (kernel-checked counterexample in
+    -- PassesSound); such a read strands the first visit at runtime, so genuine
+    -- SSA never trips these guards — they exist to make the soundness
+    -- invariant local by construction:
+    -- * a duplicate op is dropped only when its destination was not read
+    --   earlier in the block (`usedSoFar`), and
+    -- * a table entry is recorded only when none of its arguments (nor its
+    --   destination) is defined later in this block (`blockDefs \ definedSoFar`),
+    --   so an entry's arguments can never be redefined between the
+    --   representative and a duplicate.
+    let blockDefs : Std.HashSet ValId :=
+      b.instrs.foldl (fun s i => i.defs.foldl (fun s d => s.insert d) s) ∅
+    let mut definedSoFar : Std.HashSet ValId := ∅
+    let mut usedSoFar : Std.HashSet ValId := ∅
     for ins0 in b.instrs do
       match substInstr σ ins0 with
       | .const d v =>
@@ -287,13 +302,20 @@ def cse (f : Func) : Func := Id.run do
       | .op [d] yop args =>
         if pureOp yop then
           match tab.ops.find? (·.1 == (yop, args)) with
-          | some (_, d0) => σ := σ.insert d d0
+          | some (_, d0) =>
+            if usedSoFar.contains d then
+              instrs := .op [d] yop args :: instrs
+            else
+              σ := σ.insert d d0
           | none =>
-            tab := { tab with ops := ((yop, args), d) :: tab.ops }
+            if args.all (fun a => definedSoFar.contains a || !blockDefs.contains a) then
+              tab := { tab with ops := ((yop, args), d) :: tab.ops }
             instrs := .op [d] yop args :: instrs
         else
           instrs := .op [d] yop args :: instrs
       | ins => instrs := ins :: instrs
+      definedSoFar := ins0.defs.foldl (fun s d => s.insert d) definedSoFar
+      usedSoFar := ins0.uses.foldl (fun s a => s.insert a) usedSoFar
     tables := tables.setIfInBounds bi tab
     blocks := blocks.push { b with instrs := instrs.reverse }
   -- apply the accumulated substitution everywhere (idempotent: its range —
