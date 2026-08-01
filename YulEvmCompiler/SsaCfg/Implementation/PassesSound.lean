@@ -88,6 +88,22 @@ definitions nothing reads.
   reflexivity.
 * `runOnce_dom` — dominance preservation for a pipeline round, by composition of
   the four per-pass obligations.
+* **`ToAsm.liveInSets_isSome` — the liveness fixed point always converges.**
+  `Func.domCheck` is `false` by definition when `liveInSets` exhausts its fuel,
+  so this is a prerequisite of *every* dominance-preservation statement. Proved
+  by the Kleene argument: the sorted-set helpers produce `Pairwise (· < ·)` lists
+  (`insertSorted_pairwise`, `unionS_pairwise`, `diffS_pairwise`), such a list is
+  determined by its elements (`pairwise_lt_ext`), every iterate stays inside the
+  finite `liveUniverse` (`liveStep_liveUniverse`), so `liveMeasure` — the sum of
+  the live-set sizes — strictly increases at each non-exiting round
+  (`measure_lt`) while staying bounded (`measure_le`, `liveUniverse_length_le`).
+  The fuel `blocks.size * (total + 1) + 2` therefore always suffices
+  (`go_isSome`).
+* **`ToAsm.domCheck_of_shrinking`** — a reusable dominance-preservation
+  criterion, built on the two above: a rewrite that keeps `params`/`entry`, only
+  shrinks what each block reads, only keeps what each block defines, and only
+  drops outgoing edges, preserves `Func.domCheck`. This is `constFold_dom`
+  modulo that pass's structural specification.
 * **Pass 4's structural specification** (`Passes.dve_blocks_get` and friends):
   `dve` is the one pass written without an `Id.run` loop, so its output is
   directly readable — `dveBlock_uses_sub` (uses only shrink),
@@ -125,17 +141,9 @@ form proved here for `dve`. The technique is settled — the counterexample's
 `hinlineFunc`/`hinline` do exactly this concretely — but it has to be redone,
 generically, per pass.
 
-**(b) Two shared fuel-loop facts**, which gate the whole
-dominance-preservation quartet and `dve_sound`:
+**(b) One shared fuel-loop fact.** The first of the two — convergence of
+`ToAsm.liveInSets` — is now **proved** (`liveInSets_isSome`); what remains is:
 
-* `ToAsm.liveInSets` **converges** (returns `some`) on every function. Without
-  this, no `*_dom` lemma is provable at all, because `Func.domCheck` is `false`
-  by definition when `liveInSets` runs out of fuel. The argument is Kleene
-  iteration from `⊥`: `liveStep_mono` (proved here) makes the iterates
-  increasing, each iterate is contained in the finite universe of ids mentioned
-  in some `uses` list, and `fuel = blocks.size * (total + 1) + 2` exceeds the
-  maximum number of strict increases. Needs: `unionS`/`diffS` produce `Nodup`
-  lists, and a sum-of-lengths measure.
 * `Passes.liveSet` is `Passes.liveStep`-**closed**. Its loop exits on a *size*
   fixpoint rather than a set fixpoint, so closure needs (i) `liveStep` is
   inflationary (it only ever inserts), (ii) `A ⊆ B` with `|A| = |B|` forces
@@ -396,14 +404,6 @@ theorem domCheck_entry {f : Func} {li : Array (List ValId)} (hli : liveInSets f 
   rw [hdom] at this
   exact absurd this (by simp)
 
-/-- `liveInSets` cannot fail on a program that passes the dominance check. -/
-theorem liveInSets_isSome {f : Func} (hdom : Func.domCheck f = true) :
-    ∃ li, liveInSets f = some li := by
-  unfold Func.domCheck at hdom
-  rcases h : liveInSets f with _ | li
-  · rw [h] at hdom; exact absurd hdom (by simp)
-  · exact ⟨li, rfl⟩
-
 theorem Prog.domCheck_main {P : Prog} (h : Prog.domCheck P = true) :
     Func.domCheck P.main = true := ((Bool.and_eq_true _ _).mp h).1
 
@@ -467,6 +467,353 @@ theorem liveInSets_least {f : Func} {li ub : Array (List ValId)}
       · exact ih _ (fun i x hx => hub i x (liveStep_mono hcur i x hx)) hgo
   unfold liveInSets at h
   exact key _ _ sub_replicate h
+
+/-! ### Convergence of the liveness fixed point
+
+`Func.domCheck` is `false` *by definition* when `liveInSets` runs out of fuel, so
+every statement about dominance preservation first needs to know that it never
+does. `liveInSets_isSome` below closes that gap: the iterates increase (Kleene,
+from `liveStep_mono`), each is contained in the finite universe of ids the
+function mentions, and the sum of their sizes strictly increases at every
+non-exiting round — so the fuel `blocks.size * (total + 1) + 2` always
+suffices. -/
+
+/-! ### Sortedness of the helper sets -/
+
+theorem nodup_of_pairwise_lt {l : List ValId} (h : l.Pairwise (· < ·)) : l.Nodup :=
+  h.imp (fun hlt => Nat.ne_of_lt hlt)
+
+theorem insertSorted_pairwise {v : ValId} {l : List ValId} (h : l.Pairwise (· < ·)) :
+    (insertSorted v l).Pairwise (· < ·) := by
+  induction l with
+  | nil => simp [insertSorted]
+  | cons w rest ih =>
+    rw [List.pairwise_cons] at h
+    by_cases h1 : v < w
+    · simp only [insertSorted, h1, if_true]
+      refine List.pairwise_cons.mpr ⟨?_, List.pairwise_cons.mpr ⟨h.1, h.2⟩⟩
+      intro y hy
+      rcases List.mem_cons.mp hy with rfl | hy
+      · exact h1
+      · exact Nat.lt_trans h1 (h.1 y hy)
+    · by_cases h2 : v = w
+      · subst h2
+        simp only [insertSorted, h1, if_false]
+        exact List.pairwise_cons.mpr ⟨h.1, h.2⟩
+      · simp only [insertSorted, h1, h2, if_false]
+        refine List.pairwise_cons.mpr ⟨?_, ih h.2⟩
+        intro y hy
+        rcases mem_insertSorted.mp hy with rfl | hy
+        · exact Nat.lt_of_le_of_ne (Nat.not_lt.mp h1) (fun heq => h2 heq.symm)
+        · exact h.1 y hy
+
+theorem unionS_pairwise {xs ys : List ValId} (h : ys.Pairwise (· < ·)) :
+    (unionS xs ys).Pairwise (· < ·) := by
+  unfold unionS
+  induction xs generalizing ys with
+  | nil => exact h
+  | cons a as ih => exact ih (insertSorted_pairwise h)
+
+theorem diffS_pairwise {xs ys : List ValId} (h : xs.Pairwise (· < ·)) :
+    (diffS xs ys).Pairwise (· < ·) :=
+  h.sublist List.filter_sublist
+
+theorem nil_pairwise : ([] : List ValId).Pairwise (· < ·) := List.Pairwise.nil
+
+/-! ### Extensionality: a sorted list is determined by its elements -/
+
+theorem pairwise_lt_ext : ∀ {l1 l2 : List ValId}, l1.Pairwise (· < ·) → l2.Pairwise (· < ·) →
+    (∀ x, x ∈ l1 ↔ x ∈ l2) → l1 = l2 := by
+  intro l1
+  induction l1 with
+  | nil =>
+    intro l2 _ _ hmem
+    cases l2 with
+    | nil => rfl
+    | cons b t2 => exact absurd ((hmem b).mpr (by simp)) (by simp)
+  | cons a t ih =>
+    intro l2 h1 h2 hmem
+    cases l2 with
+    | nil => exact absurd ((hmem a).mp (by simp)) (by simp)
+    | cons b t2 =>
+      rw [List.pairwise_cons] at h1 h2
+      have hab : a = b := by
+        by_contra hne
+        have ha : a ∈ b :: t2 := (hmem a).mp (by simp)
+        have hb : b ∈ a :: t := (hmem b).mpr (by simp)
+        rcases List.mem_cons.mp ha with rfl | ha'
+        · exact hne rfl
+        rcases List.mem_cons.mp hb with rfl | hb'
+        · exact hne rfl
+        exact absurd (Nat.lt_trans (h1.1 b hb') (h2.1 a ha')) (Nat.lt_irrefl _)
+      subst hab
+      refine congrArg (a :: ·) (ih h1.2 h2.2 ?_)
+      intro x
+      constructor
+      · intro hx
+        rcases List.mem_cons.mp ((hmem x).mp (by simp [hx])) with rfl | hx'
+        · exact absurd (h1.1 x hx) (Nat.lt_irrefl _)
+        · exact hx'
+      · intro hx
+        rcases List.mem_cons.mp ((hmem x).mpr (by simp [hx])) with rfl | hx'
+        · exact absurd (h2.1 x hx) (Nat.lt_irrefl _)
+        · exact hx'
+
+/-! ### Iterate invariants -/
+
+/-- Every id any liveness iterate can contain. -/
+def liveUniverse (f : Func) : List ValId := f.blocks.toList.flatMap blockUses
+
+theorem mem_liveUniverse {f : Func} {i : BlockId} {b : Block} {x : ValId}
+    (hb : f.blocks[i]? = some b) (hx : x ∈ blockUses b) : x ∈ liveUniverse f := by
+  have hmem : b ∈ f.blocks.toList := by
+    obtain ⟨hlt, hget⟩ := Array.getElem?_eq_some_iff.mp hb
+    exact List.mem_iff_getElem.mpr ⟨i, by simpa using hlt, by simpa using hget⟩
+  simp only [liveUniverse, List.mem_flatMap]
+  exact ⟨b, hmem, hx⟩
+
+theorem lout_pairwise {li : Array (List ValId)} (edges : List Edge) {acc : List ValId}
+    (h : acc.Pairwise (· < ·)) :
+    (edges.foldl (fun acc (e : Edge) => unionS (li[e.target]?.getD []) acc) acc).Pairwise
+      (· < ·) := by
+  induction edges generalizing acc with
+  | nil => exact h
+  | cons e es ih => exact ih (unionS_pairwise h)
+
+theorem liveStep_pairwise {f : Func} {A : Array (List ValId)} (i : Nat) :
+    ((liveStep f A)[i]?.getD []).Pairwise (· < ·) := by
+  rcases hb : f.blocks[i]? with _ | b
+  · rw [liveStep_get_none hb]; exact List.Pairwise.nil
+  · rw [liveStep_get_eq hb]
+    exact diffS_pairwise (unionS_pairwise (lout_pairwise _ List.Pairwise.nil))
+
+theorem liveStep_liveUniverse {f : Func} {A : Array (List ValId)}
+    (hA : ∀ (i : Nat) (x : ValId), x ∈ A[i]?.getD [] → x ∈ liveUniverse f) :
+    ∀ (i : Nat) (x : ValId), x ∈ (liveStep f A)[i]?.getD [] → x ∈ liveUniverse f := by
+  intro i x hx
+  rcases hb : f.blocks[i]? with _ | b
+  · rw [liveStep_get_none hb] at hx; simp at hx
+  · rw [liveStep_get_eq hb, mem_diffS] at hx
+    rcases mem_unionS.mp hx.1 with hu | hl
+    · exact mem_liveUniverse hb hu
+    · rcases mem_lout.mp hl with ⟨e, -, hxe⟩ | hnil
+      · exact hA _ _ hxe
+      · simp at hnil
+
+/-! ### The measure -/
+
+/-- Sum of the live-set sizes over the first `n` blocks. -/
+def liveMeasure (n : Nat) (A : Array (List ValId)) : Nat :=
+  ((List.range n).map fun i => (A[i]?.getD []).length).sum
+
+theorem sum_le_sum {l : List Nat} {F G : Nat → Nat} (h : ∀ i ∈ l, F i ≤ G i) :
+    ((l.map F).sum) ≤ ((l.map G).sum) := by
+  induction l with
+  | nil => simp
+  | cons a as ih =>
+    simp only [List.map_cons, List.sum_cons]
+    exact Nat.add_le_add (h a (by simp)) (ih fun i hi => h i (by simp [hi]))
+
+theorem sum_lt_sum {l : List Nat} {F G : Nat → Nat} (hle : ∀ i ∈ l, F i ≤ G i)
+    {j : Nat} (hj : j ∈ l) (hlt : F j < G j) : ((l.map F).sum) < ((l.map G).sum) := by
+  induction l with
+  | nil => simp at hj
+  | cons a as ih =>
+    simp only [List.map_cons, List.sum_cons]
+    rcases List.mem_cons.mp hj with rfl | hj'
+    · exact Nat.add_lt_add_of_lt_of_le hlt (sum_le_sum fun i hi => hle i (by simp [hi]))
+    · exact Nat.add_lt_add_of_le_of_lt (hle a (by simp))
+        (ih (fun i hi => hle i (by simp [hi])) hj')
+
+theorem sum_le_const {l : List Nat} {F : Nat → Nat} {c : Nat} (h : ∀ i ∈ l, F i ≤ c) :
+    ((l.map F).sum) ≤ l.length * c := by
+  induction l with
+  | nil => simp
+  | cons a as ih =>
+    simp only [List.map_cons, List.sum_cons, List.length_cons]
+    have := ih fun i hi => h i (by simp [hi])
+    have ha := h a (by simp)
+    calc F a + (as.map F).sum ≤ c + as.length * c := Nat.add_le_add ha this
+      _ = (as.length + 1) * c := by ring
+
+
+theorem length_le_liveUniverse {f : Func} {l : List ValId} (hp : l.Pairwise (· < ·))
+    (hs : ∀ x ∈ l, x ∈ liveUniverse f) : l.length ≤ (liveUniverse f).length :=
+  (List.subperm_of_subset (nodup_of_pairwise_lt hp) hs).length_le
+
+theorem measure_le {f : Func} {n : Nat} {A : Array (List ValId)}
+    (hp : ∀ (i : Nat), (A[i]?.getD []).Pairwise (· < ·))
+    (hu : ∀ (i : Nat) (x : ValId), x ∈ A[i]?.getD [] → x ∈ liveUniverse f) :
+    liveMeasure n A ≤ n * (liveUniverse f).length := by
+  have h := sum_le_const (l := List.range n) (F := fun i => (A[i]?.getD []).length)
+    (c := (liveUniverse f).length) (fun i _ => length_le_liveUniverse (hp i) (fun x hx => hu i x hx))
+  simpa [liveMeasure] using h
+
+theorem measure_lt {n : Nat} {A B : Array (List ValId)}
+    (hsub : Sub A B) (hpA : ∀ (i : Nat), (A[i]?.getD []).Pairwise (· < ·))
+    (hpB : ∀ (i : Nat), (B[i]?.getD []).Pairwise (· < ·))
+    (hsA : A.size = n) (hsB : B.size = n) (hne : A ≠ B) :
+    liveMeasure n A < liveMeasure n B := by
+  have hle : ∀ (i : Nat), (A[i]?.getD []).length ≤ (B[i]?.getD []).length := fun i =>
+    (List.subperm_of_subset (nodup_of_pairwise_lt (hpA i)) (fun x hx => hsub i x hx)).length_le
+  have hex : ∃ (i : Nat), A[i]? ≠ B[i]? := by
+    by_contra hc
+    exact hne (Array.ext_getElem? fun i => by by_contra h; exact hc ⟨i, h⟩)
+  obtain ⟨i, hi⟩ := hex
+  have hin : i < n := by
+    by_contra hge
+    have hge' : n ≤ i := Nat.not_lt.mp hge
+    have h1 : A[i]? = none := by rw [Array.getElem?_eq_none_iff]; omega
+    have h2 : B[i]? = none := by rw [Array.getElem?_eq_none_iff]; omega
+    exact hi (h1.trans h2.symm)
+  have hAi : A[i]? = some (A[i]?.getD []) := by
+    rw [Array.getElem?_eq_getElem (by omega)]; simp
+  have hBi : B[i]? = some (B[i]?.getD []) := by
+    rw [Array.getElem?_eq_getElem (by omega)]; simp
+  have hne' : A[i]?.getD [] ≠ B[i]?.getD [] := by
+    intro heq; exact hi (hAi.trans (heq ▸ hBi.symm))
+  -- a member of B[i] outside A[i]
+  have hmem : ∃ (x : ValId), x ∈ B[i]?.getD [] ∧ x ∉ A[i]?.getD [] := by
+    by_contra hc
+    refine hne' (pairwise_lt_ext (hpA i) (hpB i) (fun x => ⟨fun hx => hsub i x hx, fun hx => ?_⟩))
+    by_contra hxA
+    exact hc ⟨x, hx, hxA⟩
+  obtain ⟨x, hxB, hxA⟩ := hmem
+  have hlt : (A[i]?.getD []).length < (B[i]?.getD []).length := by
+    have hsub' : A[i]?.getD [] ⊆ (B[i]?.getD []).erase x := by
+      intro y hy
+      refine (List.mem_erase_of_ne (fun h => hxA ?_)).mpr (hsub i y hy)
+      rw [← h]; exact hy
+    have h1 := (List.subperm_of_subset (nodup_of_pairwise_lt (hpA i)) hsub').length_le
+    rw [List.length_erase_of_mem hxB] at h1
+    have h2 : 0 < (B[i]?.getD []).length := List.length_pos_of_mem hxB
+    omega
+  exact sum_lt_sum (l := List.range n) (fun j _ => hle j) (List.mem_range.mpr hin) hlt
+
+
+theorem replicate_getD (n i : Nat) :
+    ((Array.replicate n ([] : List ValId))[i]?.getD []) = [] := by
+  rcases h : (Array.replicate n ([] : List ValId))[i]? with _ | l
+  · simp
+  · obtain ⟨hlt, hget⟩ := Array.getElem?_eq_some_iff.mp h
+    simp only [Option.getD_some]
+    simpa using hget.symm
+
+theorem liveUniverse_length_le (f : Func) :
+    (liveUniverse f).length ≤
+      f.blocks.foldl (init := 0)
+        (fun acc b => acc + (blockDefs b).length + (blockUses b).length) := by
+  have key : ∀ (l : List Block) (acc : Nat),
+      acc + ((l.map fun b => (blockUses b).length).sum) ≤
+        l.foldl (fun acc b => acc + (blockDefs b).length + (blockUses b).length) acc := by
+    intro l
+    induction l with
+    | nil => intro acc; simp
+    | cons b bs ih =>
+      intro acc
+      simp only [List.map_cons, List.sum_cons, List.foldl_cons]
+      have h := ih (acc + (blockDefs b).length + (blockUses b).length)
+      omega
+  rw [← Array.foldl_toList]
+  simp only [liveUniverse, List.length_flatMap]
+  simpa using key f.blocks.toList 0
+
+theorem go_isSome {f : Func} :
+    ∀ (fuel : Nat) (cur : Array (List ValId)),
+      cur.size = f.blocks.size →
+      (∀ (i : Nat), (cur[i]?.getD []).Pairwise (· < ·)) →
+      (∀ (i : Nat) (x : ValId), x ∈ cur[i]?.getD [] → x ∈ liveUniverse f) →
+      Sub cur (liveStep f cur) →
+      f.blocks.size * (liveUniverse f).length < liveMeasure f.blocks.size cur + fuel →
+      ∃ li, liveInSets.go f fuel cur = some li := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro cur hsz hp hu hsub hfuel
+    have := measure_le (f := f) (n := f.blocks.size) hp hu
+    omega
+  | succ k ih =>
+    intro cur hsz hp hu hsub hfuel
+    rw [liveInSets.go]
+    split
+    · exact ⟨cur, rfl⟩
+    · rename_i hbeq
+      have hne : liveStep f cur ≠ cur := fun h => hbeq (by simp [h])
+      have hlt : liveMeasure f.blocks.size cur < liveMeasure f.blocks.size (liveStep f cur) :=
+        measure_lt hsub hp (fun i => liveStep_pairwise i) hsz liveStep_size (Ne.symm hne)
+      exact ih (liveStep f cur) liveStep_size (fun i => liveStep_pairwise i)
+        (liveStep_liveUniverse hu) (liveStep_mono hsub) (by omega)
+
+/-- **`liveInSets` always converges.** The fuel `blocks.size * (total + 1) + 2`
+always suffices: the iterates increase (Kleene, via `liveStep_mono`), each is
+contained in the finite universe of mentioned ids, so the sum of their sizes —
+which strictly increases at every non-exiting round — is bounded by
+`blocks.size * total`. -/
+theorem liveInSets_isSome (f : Func) : ∃ li, liveInSets f = some li := by
+  refine go_isSome _ _ (by simp) (fun i => by rw [replicate_getD]; exact List.Pairwise.nil)
+    (fun i x hx => by rw [replicate_getD] at hx; simp at hx) sub_replicate ?_
+  have h0 : liveMeasure f.blocks.size (Array.replicate f.blocks.size []) = 0 := by
+    simp [liveMeasure, replicate_getD]
+  have hU := liveUniverse_length_le f
+  rw [h0]
+  have : f.blocks.size * (liveUniverse f).length
+      ≤ f.blocks.size * (f.blocks.foldl (init := 0)
+          fun acc b => acc + (blockDefs b).length + (blockUses b).length) :=
+    Nat.mul_le_mul_left _ hU
+  have hexp : f.blocks.size * ((f.blocks.foldl (init := 0)
+      fun acc b => acc + (blockDefs b).length + (blockUses b).length) + 1)
+      = f.blocks.size * (f.blocks.foldl (init := 0)
+          fun acc b => acc + (blockDefs b).length + (blockUses b).length) + f.blocks.size := by
+    ring
+  omega
+
+
+/-! ### A reusable dominance-preservation criterion -/
+
+/-- **Dominance preservation criterion.** A rewrite that keeps the function's
+parameters and entry, only ever *shrinks* what a block reads, only ever *keeps*
+what a block defines, and only ever drops outgoing edges, preserves
+`Func.domCheck`. -/
+theorem domCheck_of_shrinking {f g : Func}
+    (hdom : Func.domCheck f = true)
+    (hparams : g.params = f.params) (hentry : g.entry = f.entry)
+    (hrel : ∀ (i : BlockId) (b' : Block), g.blocks[i]? = some b' →
+      ∃ b, f.blocks[i]? = some b
+        ∧ (∀ x ∈ blockUses b', x ∈ blockUses b)
+        ∧ (∀ x ∈ blockDefs b, x ∈ blockDefs b')
+        ∧ (∀ e ∈ b'.term.edges, ∃ e0 ∈ b.term.edges, e0.target = e.target)) :
+    Func.domCheck g = true := by
+  obtain ⟨li, hli⟩ := liveInSets_isSome f
+  obtain ⟨li', hli'⟩ := liveInSets_isSome g
+  -- the original's live sets are a pre-fixed point for the rewritten function
+  have hub : Sub (liveStep g li) li := by
+    intro i x hx
+    rcases hb' : g.blocks[i]? with _ | b'
+    · rw [liveStep_get_none hb'] at hx; simp at hx
+    · rw [liveStep_get_eq hb', mem_diffS] at hx
+      obtain ⟨b, hb, huses, hdefs, hedges⟩ := hrel i b' hb'
+      rw [liveIn_eq hli hb, mem_diffS]
+      refine ⟨?_, fun hmem => hx.2 (hdefs x hmem)⟩
+      rcases mem_unionS.mp hx.1 with hu | hl
+      · exact mem_unionS.mpr (Or.inl (huses x hu))
+      · rcases mem_lout.mp hl with ⟨e, he, hxe⟩ | hnil
+        · obtain ⟨e0, he0, hteq⟩ := hedges e he
+          exact mem_unionS.mpr (Or.inr (mem_lout.mpr (Or.inl ⟨e0, he0, by rw [hteq]; exact hxe⟩)))
+        · simp at hnil
+  have hsub : Sub li' li := liveInSets_least hli' hub
+  -- hence nothing beyond the parameters is live into the rewritten entry
+  unfold Func.domCheck
+  rw [hli']
+  simp only [decide_eq_true_eq]
+  rw [List.eq_nil_iff_forall_not_mem]
+  intro x hx
+  rw [mem_diffS] at hx
+  refine hx.2 ?_
+  rw [hparams]
+  refine domCheck_entry hli hdom ?_
+  rw [← hentry]
+  exact hsub _ _ hx.1
+
 
 end ToAsm
 
