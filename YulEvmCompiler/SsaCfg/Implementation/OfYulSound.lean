@@ -5333,22 +5333,140 @@ theorem CurPlaced.ofPrefix {f : Func} {fn fn' : FnState} (h : CurPlaced f fn')
   simp
 
 omit model in
-/-- **What a fragment must guarantee for `CurPlaced` to travel backwards through
-it.** Either it is still filling the block it started in — so the pending list
-only grew — or it *sealed* that block with content extending the pending list
-and moved away.
-
-The construction always satisfies this: `sealCur` writes `cur.reverse` into the
-block it seals, `cur` only ever grows between seals, and every `moveTo` in
-`OfYul.lean` is preceded by a seal (directly, or inside the diverting
-sub-fragment of an `if let`). `SGrowsAt` does **not** record it, which is the
-single reason `seqCons`/`seqStop` cannot feed their head IH — see
-`curPlaced_back`. -/
-def CurKeeps (s s' : BState) : Prop :=
-  (s'.fn.curId = s.fn.curId ∧ ∃ Δ : List Instr, s'.fn.cur = Δ ++ s.fn.cur)
-  ∨ (s.fn.curId ≠ s'.fn.curId ∧ ∃ b : Block,
+/-- A fragment that leaves its incoming block open.  Besides the pending-list
+prefix, remember that the reserved block at the current id was not overwritten;
+this is what lets an already-sealed predecessor survive the dead-code walk. -/
+def CurSame (s s' : BState) : Prop :=
+  s'.fn.curId = s.fn.curId
+    ∧ (∃ Δ : List Instr, s'.fn.cur = Δ ++ s.fn.cur)
+    ∧ ∀ b : Block, s.fn.blocks[s.fn.curId]? = some b →
         s'.fn.blocks[s.fn.curId]? = some b
-        ∧ ∃ Δ : List Instr, b.instrs = s.fn.cur.reverse ++ Δ)
+
+/-- The incoming block was sealed and the construction moved to another block. -/
+def CurMoved (s s' : BState) : Prop :=
+  s.fn.curId ≠ s'.fn.curId ∧ ∃ b : Block,
+    s'.fn.blocks[s.fn.curId]? = some b
+      ∧ ∃ Δ : List Instr, b.instrs = s.fn.cur.reverse ++ Δ
+
+/-- The incoming block was sealed but remains current.  This is the shape of a
+bare `break`/`continue`/`leave`/halting expression before an enclosing construct
+moves to its join. -/
+def CurSealed (s s' : BState) : Prop :=
+  s'.fn.curId = s.fn.curId ∧ ∃ b : Block,
+    s'.fn.blocks[s.fn.curId]? = some b
+      ∧ ∃ Δ : List Instr, b.instrs = s.fn.cur.reverse ++ Δ
+
+/-- A fall-through fragment is either still filling its incoming block or has
+sealed it and moved to a fresh continuation. -/
+def CurOpen (s s' : BState) : Prop := CurSame s s' ∨ CurMoved s s'
+
+/-- A diverting fragment has sealed its incoming block, with or without a later
+move performed by an enclosing structured construct. -/
+def CurClosed (s s' : BState) : Prop := CurMoved s s' ∨ CurSealed s s'
+
+/-- The non-result-sensitive union used by the backwards-placement consumer. -/
+def CurKeeps (s s' : BState) : Prop := CurOpen s s' ∨ CurSealed s s'
+
+/-- The result-sensitive form threaded through the construction induction.
+Fall-through must be open; diversion must be closed. -/
+def CurResult : Option VMap → BState → BState → Prop
+  | some _, s, s' => CurOpen s s'
+  | none, s, s' => CurClosed s s'
+
+/-- The builder's current id names a reserved block.  This premise is true at
+the top-level entry and is the validity fact that must be threaded through the
+mutual construction induction. -/
+def CurValid (s : BState) : Prop := s.fn.curId < s.fn.blocks.size
+
+namespace CurValid
+
+omit model in
+theorem of_grows {s s' : BState} (hv : CurValid s) (hg : Grows s s') :
+    CurValid s' := by
+  rw [CurValid, ← hg.curId, ← hg.blocks]
+  exact hv
+
+omit model in
+theorem of_same_sgrows {N : Nat} {s s' : BState} (hv : CurValid s)
+    (hg : SGrowsAt N s s') (hc : s'.fn.curId = s.fn.curId) : CurValid s' := by
+  rw [CurValid, hc]
+  exact Nat.lt_of_lt_of_le hv hg.size
+
+omit model in
+theorem of_moveTo {bid : BlockId} {s s' : BState} {u : Unit}
+    (hlt : bid < s.fn.blocks.size) (h : moveTo bid s = some (u, s')) :
+    CurValid s' := by
+  rw [M.moveTo_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  exact hlt
+
+end CurValid
+
+namespace CurSame
+
+omit model in
+theorem rfl' (s : BState) : CurSame s s :=
+  ⟨rfl, ⟨[], rfl⟩, fun _ hb => hb⟩
+
+omit model in
+theorem of_grows {s s' : BState} (h : Grows s s') : CurSame s s' :=
+  ⟨h.curId.symm, h.cur, fun b hb => by rw [← h.blocks]; exact hb⟩
+
+omit model in
+theorem of_fnEq {s s' : BState} (h : s'.fn = s.fn) : CurSame s s' := by
+  rw [CurSame, h]
+  exact ⟨rfl, ⟨[], rfl⟩, fun _ hb => hb⟩
+
+omit model in
+theorem trans {s s₁ s₂ : BState} (h₁ : CurSame s s₁) (h₂ : CurSame s₁ s₂) :
+    CurSame s s₂ := by
+  rcases h₁ with ⟨hc1, ⟨Δ1, hi1⟩, hb1⟩
+  rcases h₂ with ⟨hc2, ⟨Δ2, hi2⟩, hb2⟩
+  refine ⟨hc2.trans hc1, ⟨Δ2 ++ Δ1, by rw [hi2, hi1, List.append_assoc]⟩,
+    fun b hb => ?_⟩
+  rw [← hc1]
+  exact hb2 b (by simpa only [hc1] using hb1 b hb)
+
+omit model in
+theorem of_newBlock {ps : List ValId} {s s' : BState} {bid : BlockId}
+    (h : newBlock ps s = some (bid, s')) : CurSame s s' := by
+  rw [M.newBlock_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  refine ⟨rfl, ⟨[], rfl⟩, fun b hb => ?_⟩
+  have hlt := lt_size_of_getElem? hb
+  dsimp only
+  rw [Array.getElem?_push, if_neg (Nat.ne_of_lt hlt)]
+  exact hb
+
+omit model in
+theorem transMoved {s s₁ s₂ : BState} (h₁ : CurSame s s₁)
+    (h₂ : CurMoved s₁ s₂) : CurMoved s s₂ := by
+  rcases h₁ with ⟨hc1, ⟨Δ1, hi1⟩, -⟩
+  rcases h₂ with ⟨hne2, b, hb, Δ2, hi2⟩
+  refine ⟨by rw [← hc1]; exact hne2, b, by simpa only [hc1] using hb,
+    Δ1.reverse ++ Δ2, ?_⟩
+  rw [hi2, hi1]
+  simp
+
+end CurSame
+
+omit model in
+theorem curSealed_of_sealCur {t : Term} {s s' : BState} {u : Unit}
+    (h : sealCur t s = some (u, s')) : CurSealed s s' := by
+  obtain ⟨b, hc, -, hb⟩ := sealCur_cur h
+  exact ⟨hc, ⟨b.params, s.fn.cur.reverse, t⟩, by simpa only [hc] using hb,
+    [], by simp⟩
+
+omit model in
+theorem curMoved_of_seal_move {t : Term} {bid : BlockId} {s sA s' : BState}
+    {u v : Unit} (hne : s.fn.curId ≠ bid)
+    (hseal : sealCur t s = some (u, sA))
+    (hmove : moveTo bid sA = some (v, s')) : CurMoved s s' := by
+  obtain ⟨b, hc, -, hb⟩ := sealCur_cur hseal
+  rw [M.moveTo_apply] at hmove
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj hmove
+  refine ⟨hne, ⟨b.params, s.fn.cur.reverse, t⟩, ?_, [], by simp⟩
+  simpa only [hc] using hb
 
 omit model in
 /-- **Backward transfer of `CurPlaced`.** The placement of the current block
@@ -5356,25 +5474,39 @@ travels from a fragment's output state to its input state, given `CurKeeps`.
 This is the primitive `seqCons`/`seqStop` need in order to hand their head IH a
 `CurPlaced` at the intermediate state: `Completes` already travels backwards
 (`SGrowsAt.completes_of`), and this closes the gap for `CurPlaced`. -/
-theorem curPlaced_back {f : Func} {s s' : BState} (hk : CurKeeps s s')
-    (hcompl : Completes f s'.fn) (hcp : CurPlaced f s'.fn) : CurPlaced f s.fn := by
-  rcases hk with ⟨hc, Δ, hcur⟩ | ⟨hne, b, hb, Δ, hi⟩
-  · exact hcp.ofPrefix hc Δ hcur
-  · exact ⟨⟨Δ, b.term⟩, b, hcompl.sealed _ b hne hb, hi, rfl⟩
+theorem curPlaced_back {f : Func} {s s' : BState} {renv : Option VMap}
+    (hk : CurResult renv s s') (hcompl : Completes f s'.fn)
+    (hfin : renv = none → CurFinal f s'.fn) (hcp : CurPlaced f s'.fn) :
+    CurPlaced f s.fn := by
+  cases renv with
+  | some env =>
+    rcases hk with ⟨hc, ⟨Δ, hcur⟩, -⟩ | ⟨hne, b, hb, Δ, hi⟩
+    · exact hcp.ofPrefix hc Δ hcur
+    · exact ⟨⟨Δ, b.term⟩, b, hcompl.sealed _ b hne hb, hi, rfl⟩
+  | none =>
+    rcases hk with ⟨hne, b, hb, Δ, hi⟩ | ⟨hc, b, hb, Δ, hi⟩
+    · exact ⟨⟨Δ, b.term⟩, b, hcompl.sealed _ b hne hb, hi, rfl⟩
+    · have hf : f.blocks[s.fn.curId]? = some b := by
+        rw [← hc]
+        exact hfin rfl b (by simpa only [hc] using hb)
+      exact ⟨⟨Δ, b.term⟩, b, hf, hi, rfl⟩
 
 omit model in
 /-- `CurKeeps` composes along a chain of fragments. The `SGrowsAt` witnesses
 supply the two facts the composition needs: that the block array only grows, and
 that a fragment which moves the current block moves it to a *fresh* one — so a
 block left behind is never returned to. -/
-theorem CurKeeps.trans {N : Nat} {s s₁ s₂ : BState}
+theorem CurOpen.trans {N : Nat} {s s₁ s₂ : BState}
     (hcur : s.fn.curId < s.fn.blocks.size)
     (hg₁ : SGrowsAt N s s₁) (hg₂ : SGrowsAt s₁.fn.blocks.size s₁ s₂)
-    (h₁ : CurKeeps s s₁) (h₂ : CurKeeps s₁ s₂) : CurKeeps s s₂ := by
-  rcases h₁ with ⟨hc1, Δ1, hcur1⟩ | ⟨hne1, b1, hb1, Δ1, hi1⟩
-  · rcases h₂ with ⟨hc2, Δ2, hcur2⟩ | ⟨hne2, b2, hb2, Δ2, hi2⟩
-    · exact Or.inl ⟨hc2.trans hc1, Δ2 ++ Δ1,
-        by rw [hcur2, hcur1, List.append_assoc]⟩
+    (h₁ : CurOpen s s₁) (h₂ : CurOpen s₁ s₂) : CurOpen s s₂ := by
+  rcases h₁ with ⟨hc1, ⟨Δ1, hcur1⟩, hbcur1⟩ | ⟨hne1, b1, hb1, Δ1, hi1⟩
+  · rcases h₂ with ⟨hc2, ⟨Δ2, hcur2⟩, hbcur2⟩ | ⟨hne2, b2, hb2, Δ2, hi2⟩
+    · exact Or.inl ⟨hc2.trans hc1, ⟨Δ2 ++ Δ1,
+        by rw [hcur2, hcur1, List.append_assoc]⟩, fun b hb => by
+          rw [← hc1]
+          apply hbcur2
+          simpa only [hc1] using hbcur1 b hb⟩
     · refine Or.inr ⟨by rw [← hc1]; exact hne2, b2, by rw [← hc1]; exact hb2,
         Δ1.reverse ++ Δ2, ?_⟩
       rw [hi2, hcur1]
@@ -5388,12 +5520,927 @@ theorem CurKeeps.trans {N : Nat} {s s₁ s₂ : BState}
       hg₂.keep s.fn.curId b1 (Nat.lt_of_lt_of_le hcur hg₁.size) hne1 hb1, Δ1, hi1⟩
 
 omit model in
+/-- An open prefix composes with a diverting suffix. -/
+theorem CurOpen.transClosed {N : Nat} {s s₁ s₂ : BState}
+  (hcur : s.fn.curId < s.fn.blocks.size)
+    (hg₁ : SGrowsAt N s s₁) (hg₂ : SGrowsAt s₁.fn.blocks.size s₁ s₂)
+    (h₁ : CurOpen s s₁) (h₂ : CurClosed s₁ s₂) : CurClosed s s₂ := by
+  rcases h₂ with hmove | hseal
+  · rcases h₁ with ⟨hc1, ⟨Δ1, hcur1⟩, -⟩ | ⟨hne1, b1, hb1, Δ1, hi1⟩
+    · rcases hmove with ⟨hne2, b2, hb2, Δ2, hi2⟩
+      refine Or.inl ⟨by rw [← hc1]; exact hne2, b2, by simpa only [hc1] using hb2,
+        Δ1.reverse ++ Δ2, ?_⟩
+      rw [hi2, hcur1]
+      simp
+    · have hne2' : s.fn.curId ≠ s₂.fn.curId := by
+        rcases hg₂.curId with hc2 | hge2
+        · rw [hc2]; exact hne1
+        · exact Nat.ne_of_lt (Nat.lt_of_lt_of_le
+            (Nat.lt_of_lt_of_le hcur hg₁.size) hge2)
+      exact Or.inl ⟨hne2', b1,
+        hg₂.keep s.fn.curId b1 (Nat.lt_of_lt_of_le hcur hg₁.size) hne1 hb1,
+        Δ1, hi1⟩
+  rcases h₁ with ⟨hc1, ⟨Δ1, hcur1⟩, -⟩ | ⟨hne1, b1, hb1, Δ1, hi1⟩
+  · rcases hseal with ⟨hc2, b2, hb2, Δ2, hi2⟩
+    refine Or.inr ⟨hc2.trans hc1, b2, by simpa only [hc1] using hb2,
+      Δ1.reverse ++ Δ2, ?_⟩
+    rw [hi2, hcur1]
+    simp
+  · have hne2' : s.fn.curId ≠ s₂.fn.curId := by
+      rcases hg₂.curId with hc2 | hge2
+      · rw [hc2]; exact hne1
+      · exact Nat.ne_of_lt (Nat.lt_of_lt_of_le
+          (Nat.lt_of_lt_of_le hcur hg₁.size) hge2)
+    exact Or.inl ⟨hne2', b1,
+      hg₂.keep s.fn.curId b1 (Nat.lt_of_lt_of_le hcur hg₁.size) hne1 hb1, Δ1, hi1⟩
+
+omit model in
+theorem CurOpen.transMoved {N : Nat} {s s₁ s₂ : BState}
+    (hcur : CurValid s) (hg₁ : SGrowsAt N s s₁)
+    (hg₂ : SGrowsAt s₁.fn.blocks.size s₁ s₂)
+    (h₁ : CurOpen s s₁) (h₂ : CurMoved s₁ s₂) : CurMoved s s₂ := by
+  rcases h₁ with hs | hm
+  · exact hs.transMoved h₂
+  · rcases hm with ⟨hne1, b, hb, Δ, hi⟩
+    have hne2 : s.fn.curId ≠ s₂.fn.curId := by
+      rcases hg₂.curId with hc | hge
+      · rw [hc]; exact hne1
+      · exact Nat.ne_of_lt (Nat.lt_of_lt_of_le
+          (Nat.lt_of_lt_of_le hcur hg₁.size) hge)
+    exact ⟨hne2, b,
+      hg₂.keep s.fn.curId b (Nat.lt_of_lt_of_le hcur hg₁.size) hne1 hb,
+      Δ, hi⟩
+
+omit model in
+/-- Dead-code traversal leaves `fn` unchanged, so it preserves a preceding
+closed fragment. -/
+theorem CurClosed.transSame {N : Nat} {s s₁ s₂ : BState}
+    (hcur : s.fn.curId < s.fn.blocks.size)
+    (hg₁ : SGrowsAt N s s₁) (hg₂ : SGrowsAt s₁.fn.blocks.size s₁ s₂)
+    (h₁ : CurClosed s s₁) (h₂ : CurSame s₁ s₂) : CurClosed s s₂ := by
+  rcases h₁ with ⟨hne1, b1, hb1, Δ1, hi1⟩ | ⟨hc1, b1, hb1, Δ1, hi1⟩
+  · have hne2 : s.fn.curId ≠ s₂.fn.curId := by rw [h₂.1]; exact hne1
+    exact Or.inl ⟨hne2, b1,
+      hg₂.keep s.fn.curId b1 (Nat.lt_of_lt_of_le hcur hg₁.size) hne1 hb1, Δ1, hi1⟩
+  · exact Or.inr ⟨h₂.1.trans hc1, b1, by
+      rw [← hc1]
+      exact h₂.2.2 b1 (by simpa only [hc1] using hb1), Δ1, hi1⟩
+
+omit model in
+/-- Once the incoming block has been sealed and the builder has moved to a
+fresh block, any later statement-level growth preserves that sealed block and
+cannot return to its id. -/
+theorem CurMoved.forward {s s₁ s₂ : BState}
+    (hcur : CurValid s) (_hg₁ : SGrows s s₁)
+    (hg₂ : SGrowsAt s.fn.blocks.size s₁ s₂) (hm : CurMoved s s₁) :
+    CurMoved s s₂ := by
+  rcases hm with ⟨hne1, b, hb, Δ, hi⟩
+  have hne2 : s.fn.curId ≠ s₂.fn.curId := by
+    rcases hg₂.curId with hc | hge
+    · rw [hc]; exact hne1
+    · exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hcur hge)
+  exact ⟨hne2, b,
+    hg₂.keep s.fn.curId b hcur hne1 hb, Δ, hi⟩
+
+omit model in
+theorem newBlock_size {ps : List ValId} {s s' : BState} {bid : BlockId}
+    (h : newBlock ps s = some (bid, s')) :
+    s'.fn.blocks.size = s.fn.blocks.size + 1 := by
+  rw [M.newBlock_apply] at h
+  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
+  simp
+
+omit model in
+theorem newBlock_target_lt {ps : List ValId} {s s' : BState} {bid : BlockId}
+    (h : newBlock ps s = some (bid, s')) : bid < s'.fn.blocks.size := by
+  rw [SGrowsAt.newBlock_id h, newBlock_size h]
+  exact Nat.lt_succ_self _
+
+/-! ### Current-block validity and shape of the mutual translation -/
+
+def ScopeCur (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (body : List (Stmt Op)) : Prop :=
+  ∀ (s : BState) (r : Option VMap) (s' : BState), CurValid s →
+    trScope fenv env lctx rets body s = some (r, s') →
+      CurValid s' ∧ CurResult r s s'
+
+def StmtsCur (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (d : Bool) (ss : List (Stmt Op)) : Prop :=
+  if d then True else
+    ∀ (s : BState) (r : Option VMap) (s' : BState), CurValid s →
+      trStmts fenv env lctx rets d ss s = some (r, s') →
+        CurValid s' ∧ CurResult r s s'
+
+def StmtCur (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (st : Stmt Op) : Prop :=
+  ∀ (s : BState) (r : Option VMap) (s' : BState), CurValid s →
+    trStmt fenv env lctx rets st s = some (r, s') →
+      CurValid s' ∧ CurResult r s s'
+
+def CasesCur (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (_sv : ValId) (_X : List Ident)
+    (_joinId : BlockId) (cases : List (Literal × List (Stmt Op)))
+    (dflt : Option (List (Stmt Op))) : Prop :=
+  ∀ (sv : ValId) (X : List Ident) (joinId : BlockId) (s : BState) (u : Unit)
+    (s' : BState), CurValid s →
+    trCases fenv env lctx rets sv X joinId cases dflt s = some (u, s') →
+      CurValid s' ∧ CurClosed s s'
+
+omit model in
+/-- A successful translation preserves current-id validity and records whether
+its incoming block stayed open or was sealed.  `trFunc` is irrelevant to the
+caller-current invariant because it restores the saved `FnState`; its motive is
+therefore `True`, while the other four mutually recursive functions carry the
+result-sensitive relation. -/
+theorem trStmts_cur : ∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
+    (rets : Option (List Ident)) (d : Bool) (ss : List (Stmt Op)),
+    StmtsCur fenv env lctx rets d ss := by
+  refine trStmts.induct (fun _ _ _ _ => True) ScopeCur StmtsCur StmtCur CasesCur
+    ?trFunc ?trScope ?stmtsNil ?stmtsFunDef ?stmtsSkip ?stmtsCons
+    ?block ?funDef ?letNoneBad ?letNone ?letSomeBad ?letSome ?assignBad ?assign
+    ?cond ?switch ?forLoop ?exprBuiltin ?exprCall ?exprBad
+    ?breakNone ?breakSome ?contNone ?contSome ?leaveNone ?leaveSome
+    ?casesNilNone ?casesNilSome ?casesCons
+  case trFunc =>
+    intro fenv ps rs body ih
+    trivial
+  case trScope =>
+    intro fenv env lctx rets body ih s r s' hv h
+    rw [trScope] at h
+    obtain ⟨scope, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨renv, s₂, h2, h3⟩ := M.bind_inv h
+    obtain ⟨hfn1, -⟩ := allocScope_funcsOnly h1
+    have hv1 : CurValid s₁ := by rw [CurValid, hfn1]; exact hv
+    obtain ⟨hv2, hk2⟩ := ih scope s₁ renv s₂ hv1 h2
+    have hg2 := trStmts_grows (scope :: fenv) env lctx rets false body
+      s₁ renv s₂ h2
+    cases renv with
+    | none =>
+      obtain ⟨rfl, rfl⟩ := M.pure_inv h3
+      refine ⟨hv2, ?_⟩
+      exact CurOpen.transClosed hv (allocScope_sgrows h1)
+        hg2 (Or.inl (CurSame.of_fnEq hfn1)) hk2
+    | some env' =>
+      obtain ⟨rfl, rfl⟩ := M.pure_inv h3
+      refine ⟨hv2, ?_⟩
+      exact CurOpen.trans hv (allocScope_sgrows h1)
+        hg2 (Or.inl (CurSame.of_fnEq hfn1)) hk2
+  case stmtsNil =>
+    intro fenv env lctx rets d
+    cases d <;> simp only [StmtsCur, Bool.false_eq_true, ↓reduceIte]
+    intro s r s' hv h
+    rw [trStmts] at h
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h
+    exact ⟨hv, Or.inl (CurSame.rfl' _)⟩
+  case stmtsFunDef =>
+    intro fenv env lctx rets d n ps rs fbody rest ihf ihr
+    cases d with
+    | true => simp [StmtsCur]
+    | false =>
+      simp only [StmtsCur, Bool.false_eq_true, ↓reduceIte]
+      intro s r s' hv h
+      rw [trStmts] at h
+      obtain ⟨fid, s₁, h1, h⟩ := M.bind_inv h
+      obtain ⟨g, s₂, h2, h⟩ := M.bind_inv h
+      obtain ⟨u, s₃, h3, h4⟩ := M.bind_inv h
+      have hfn1 : s₁.fn = s.fn := congrArg BState.fn (M.liftO_inv h1).2
+      have hfn2 : s₂.fn = s₁.fn := (trFunc_grows fenv ps rs fbody s₁ g s₂ h2).1
+      have hfn3 : s₃.fn = s₂.fn := by rw [(M.fillFunc_inv h3).choose_spec]
+      have hfn : s₃.fn = s.fn := hfn3.trans (hfn2.trans hfn1)
+      have hv3 : CurValid s₃ := by rw [CurValid, hfn]; exact hv
+      obtain ⟨hv', hk⟩ := ihr s₃ r s' hv3 h4
+      have hgpre : SGrows s s₃ := ((SGrows.trans (SGrowsAt.of_liftO h1)
+        (SGrowsAt.of_funcsOnly hfn2
+          (trFunc_grows fenv ps rs fbody s₁ g s₂ h2).2)).trans
+            (SGrowsAt.of_fillFunc h3))
+      have hs : CurOpen s s₃ := Or.inl (CurSame.of_fnEq hfn)
+      have hgtail := trStmts_grows fenv env lctx rets false rest s₃ r s' h4
+      refine ⟨hv', ?_⟩
+      cases r with
+      | none => exact CurOpen.transClosed hv hgpre hgtail hs hk
+      | some e => exact CurOpen.trans hv hgpre hgtail hs hk
+  case stmtsSkip =>
+    intro fenv env lctx rets st rest hnf ih
+    simp [StmtsCur]
+  case stmtsCons =>
+    intro fenv env lctx rets d st rest hnf hd ih4 ih3n ih3t
+    have hd0 : d = false := Bool.eq_false_of_not_eq_true hd
+    subst d
+    simp only [StmtsCur, Bool.false_eq_true, ↓reduceIte]
+    intro s r s' hv h
+    rw [trStmts] at h
+    · rw [if_neg hd] at h
+      obtain ⟨renv, s₁, h1, h2⟩ := M.bind_inv h
+      obtain ⟨hv1, hk1⟩ := ih4 s renv s₁ hv h1
+      have hg1 := trStmt_grows fenv env lctx rets st s renv s₁ h1
+      cases renv with
+      | some env' =>
+        obtain ⟨hv2, hk2⟩ := ih3n env' s₁ r s' hv1 h2
+        have hg2 := trStmts_grows fenv env' lctx rets false rest s₁ r s' h2
+        refine ⟨hv2, ?_⟩
+        cases r with
+        | none => exact CurOpen.transClosed hv hg1 hg2 hk1 hk2
+        | some e => exact CurOpen.trans hv hg1 hg2 hk1 hk2
+      | none =>
+        obtain ⟨hr, hfn⟩ := trStmts_true_fn fenv env lctx rets rest s₁ s' r h2
+        subst r
+        have hs : CurSame s₁ s' := CurSame.of_fnEq hfn
+        have hg2 := trStmts_grows fenv env lctx rets true rest s₁ none s' h2
+        exact ⟨by rw [CurValid, hfn]; exact hv1,
+          CurClosed.transSame hv hg1 hg2 hk1 hs⟩
+    · exact hnf
+  case block =>
+    intro fenv env lctx rets body ih s r s' hv h
+    rw [trStmt] at h
+    exact ih s r s' hv h
+  case funDef =>
+    intro fenv env lctx rets name ps rs body s r s' hv h
+    rw [trStmt] at h
+    exact absurd h (by simp [reject])
+  case letNoneBad =>
+    intro fenv env lctx rets vars hgate s r s' hv h
+    rw [trStmt, if_pos hgate] at h
+    obtain ⟨u, s₁, h1, -⟩ := M.bind_inv h
+    exact absurd h1 (by simp [reject])
+  case letNone =>
+    intro fenv env lctx rets vars hgate s r s' hv h
+    rw [trStmt, if_neg hgate] at h
+    obtain ⟨u, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨ids, s₂, h2, h3⟩ := M.bind_inv h
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h3
+    have hg := (Grows.of_pure h1).trans (Grows.of_mapM_constZero h2)
+    exact ⟨hv.of_grows hg, Or.inl (CurSame.of_grows hg)⟩
+  case letSomeBad =>
+    intro fenv env lctx rets vars e hgate s r s' hv h
+    rw [trStmt, if_pos hgate] at h
+    obtain ⟨u, s₁, h1, -⟩ := M.bind_inv h
+    exact absurd h1 (by simp [reject])
+  case letSome =>
+    intro fenv env lctx rets vars e hgate s r s' hv h
+    rw [trStmt, if_neg hgate] at h
+    obtain ⟨u, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨ids, s₂, h2, h3⟩ := M.bind_inv h
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h3
+    have hg := (Grows.of_pure h1).trans (trExprN_grows h2)
+    exact ⟨hv.of_grows hg, Or.inl (CurSame.of_grows hg)⟩
+  case assignBad =>
+    intro fenv env lctx rets vars e hgate s r s' hv h
+    rw [trStmt, if_pos hgate] at h
+    obtain ⟨u, s₁, h1, -⟩ := M.bind_inv h
+    exact absurd h1 (by simp [reject])
+  case assign =>
+    intro fenv env lctx rets vars e hgate s r s' hv h
+    rw [trStmt, if_neg hgate] at h
+    obtain ⟨u, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨ids, s₂, h2, h3⟩ := M.bind_inv h
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h3
+    have hg := (Grows.of_pure h1).trans (trExprN_grows h2)
+    exact ⟨hv.of_grows hg, Or.inl (CurSame.of_grows hg)⟩
+  case cond =>
+    intro fenv env lctx rets c body ih s r s' hv h
+    rw [trStmt] at h
+    obtain ⟨cv, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨xvals, s2, h2, h⟩ := M.bind_inv h
+    obtain ⟨bodyId, s3, h3, h⟩ := M.bind_inv h
+    obtain ⟨joinParams, s4, h4, h⟩ := M.bind_inv h
+    obtain ⟨joinId, s5, h5, h⟩ := M.bind_inv h
+    obtain ⟨u6, s6, h6, h⟩ := M.bind_inv h
+    obtain ⟨u7, s7, h7, h⟩ := M.bind_inv h
+    obtain ⟨renv, s8, h8, h⟩ := M.bind_inv h
+    have g1 := trExpr_grows c fenv env s s1 cv h1
+    have g2 := Grows.of_liftO h2
+    have g4 := Grows.of_mapM_freshVal h4
+    have cs5 := ((((CurSame.of_grows g1).trans (CurSame.of_grows g2)).trans
+      (CurSame.of_newBlock h3)).trans (CurSame.of_grows g4)).trans
+        (CurSame.of_newBlock h5)
+    have a1 : SGrowsAt s.fn.blocks.size s s1 := SGrowsAt.of_grows g1
+    have a2 := a1.trans (SGrowsAt.of_edgeArgs h2)
+    have a3 := a2.trans (SGrowsAt.of_newBlock h3)
+    have a4 := a3.trans (SGrowsAt.of_grows g4)
+    have a5 := a4.trans (SGrowsAt.of_newBlock h5)
+    have a6 := a5.trans (SGrowsAt.of_sealCur h6)
+    have hbodyNe : s5.fn.curId ≠ bodyId := by
+      rw [cs5.1, SGrowsAt.newBlock_id h3]
+      exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hv a2.size)
+    have hm57 := curMoved_of_seal_move hbodyNe h6 h7
+    have hm : CurMoved s s7 := cs5.transMoved hm57
+    have hbodyBase : s.fn.blocks.size ≤ bodyId := by
+      rw [SGrowsAt.newBlock_id h3]
+      exact a2.size
+    have a7 := a6.trans (SGrowsAt.of_moveTo (Or.inl hbodyBase) h7)
+    have hbodyLt : bodyId < s6.fn.blocks.size :=
+      Nat.lt_of_lt_of_le (newBlock_target_lt h3)
+        (((SGrowsAt.of_grows (N := 0) g4).trans
+          (SGrowsAt.of_newBlock h5)).trans (SGrowsAt.of_sealCur h6)).size
+    have hv7 := CurValid.of_moveTo hbodyLt h7
+    obtain ⟨hv8, hk8⟩ := ih s7 renv s8 hv7 h8
+    have gbody := trScope_grows fenv env lctx rets body s7 renv s8 h8
+    have hjoinBase : s.fn.blocks.size ≤ joinId := by
+      rw [SGrowsAt.newBlock_id h5]
+      exact a4.size
+    cases renv with
+    | none =>
+      obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
+      obtain ⟨ub, sb, hb2, hc2⟩ := M.bind_inv h
+      obtain ⟨-, rfl⟩ := M.pure_inv ha
+      obtain ⟨rfl, rfl⟩ := M.pure_inv hc2
+      have g5a : SGrowsAt 0 s5 sa := ((SGrowsAt.of_sealCur h6).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h7)).trans
+          (gbody.mono (Nat.zero_le _))
+      have hjoinLt : joinId < sa.fn.blocks.size :=
+        Nat.lt_of_lt_of_le (newBlock_target_lt h5) g5a.size
+      have hv' := CurValid.of_moveTo hjoinLt hb2
+      have gb : SGrowsAt s.fn.blocks.size s7 s' :=
+        (gbody.mono a7.size).trans (SGrowsAt.of_moveTo (Or.inl hjoinBase) hb2)
+      exact ⟨hv', Or.inr (hm.forward hv a7 gb)⟩
+    | some env' =>
+      obtain ⟨xv, sa, ha, h⟩ := M.bind_inv h
+      obtain ⟨ub, sb, hb2, h⟩ := M.bind_inv h
+      obtain ⟨uc, sc, hc2, hd2⟩ := M.bind_inv h
+      obtain ⟨rfl, rfl⟩ := M.pure_inv hd2
+      have g5sb : SGrowsAt 0 s5 sb := (((SGrowsAt.of_sealCur h6).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h7)).trans
+          (gbody.mono (Nat.zero_le _))).trans
+            ((SGrowsAt.of_edgeArgs ha).trans (SGrowsAt.of_sealCur hb2))
+      have hjoinLt : joinId < sb.fn.blocks.size :=
+        Nat.lt_of_lt_of_le (newBlock_target_lt h5) g5sb.size
+      have hv' := CurValid.of_moveTo hjoinLt hc2
+      have gb : SGrowsAt s.fn.blocks.size s7 s' :=
+        (((gbody.mono a7.size).trans (SGrowsAt.of_edgeArgs ha)).trans
+          (SGrowsAt.of_sealCur hb2)).trans
+            (SGrowsAt.of_moveTo (Or.inl hjoinBase) hc2)
+      exact ⟨hv', Or.inr (hm.forward hv a7 gb)⟩
+  case switch =>
+    intro fenv env lctx rets c cases dflt ih s r s' hv h
+    unfold trStmt at h
+    obtain ⟨sv, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨joinParams, s2, h2, h⟩ := M.bind_inv h
+    obtain ⟨joinId, s3, h3, h⟩ := M.bind_inv h
+    obtain ⟨u4, s4, h4, h⟩ := M.bind_inv h
+    obtain ⟨u5, s5, h5, h6⟩ := M.bind_inv h
+    have g1 := trExpr_grows c fenv env s s1 sv h1
+    have g2 := Grows.of_mapM_freshVal h2
+    have cs3 := ((CurSame.of_grows g1).trans (CurSame.of_grows g2)).trans
+      (CurSame.of_newBlock h3)
+    have a1 : SGrowsAt s.fn.blocks.size s s1 := SGrowsAt.of_grows g1
+    have a2 := a1.trans (SGrowsAt.of_grows g2)
+    have a3 := a2.trans (SGrowsAt.of_newBlock h3)
+    have hv3 := CurValid.of_same_sgrows hv a3 cs3.1
+    have hh : CurValid s4 ∧ CurClosed s3 s4 := by
+      apply ih 0 0
+      · exact hv3
+      · exact h4
+    obtain ⟨hv4, hk4⟩ := hh
+    have gcases : SGrows s3 s4 := by
+      apply trCases_grows fenv env lctx rets 0 [] 0 cases dflt
+      exact h4
+    have hjoinBase : s.fn.blocks.size ≤ joinId := by
+      rw [SGrowsAt.newBlock_id h3]
+      exact a2.size
+    have g3s4 : SGrowsAt 0 s3 s4 := gcases.mono (Nat.zero_le _)
+    have hjoinLt : joinId < s4.fn.blocks.size :=
+      Nat.lt_of_lt_of_le (newBlock_target_lt h3) g3s4.size
+    have hv5 := CurValid.of_moveTo hjoinLt h5
+    rcases hk4 with hm | hs
+    · have hm0 : CurMoved s s4 := cs3.transMoved hm
+      have a4 := a3.trans (gcases.mono a3.size)
+      have hout : CurOpen s s5 := Or.inr (hm0.forward hv a4
+        (SGrowsAt.of_moveTo (Or.inl hjoinBase) h5))
+      obtain ⟨rfl, rfl⟩ := M.pure_inv h6
+      exact ⟨hv5, hout⟩
+    · have hm35 : CurMoved s3 s5 := by
+        rcases hs with ⟨hc, b, hb, Δ, hi⟩
+        rw [M.moveTo_apply] at h5
+        obtain ⟨rfl, rfl⟩ := M.some_pair_inj h5
+        have hne : s3.fn.curId ≠ joinId := by
+          rw [cs3.1, SGrowsAt.newBlock_id h3]
+          exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hv a2.size)
+        exact ⟨hne, b, by simpa only [hc] using hb, Δ, hi⟩
+      have hout : CurOpen s s5 := Or.inr (cs3.transMoved hm35)
+      obtain ⟨rfl, rfl⟩ := M.pure_inv h6
+      exact ⟨hv5, hout⟩
+  case forLoop =>
+    intro fenv env lctx rets init c post body ihInit ihBody ihPost s r s' hv h
+    unfold trStmt at h
+    obtain ⟨scope, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨rinit, s2, h2, h⟩ := M.bind_inv h
+    obtain ⟨hfn1, -⟩ := allocScope_funcsOnly h1
+    have hv1 : CurValid s1 := by rw [CurValid, hfn1]; exact hv
+    obtain ⟨hv2, hk2⟩ := ihInit scope s1 rinit s2 hv1 h2
+    have a1 : SGrows s s1 := allocScope_sgrows h1
+    have gi := trStmts_grows (scope :: fenv) env lctx rets false init
+      s1 rinit s2 h2
+    have a2 := a1.trans gi
+    cases rinit with
+    | none =>
+      obtain ⟨rfl, rfl⟩ := M.pure_inv h
+      exact ⟨hv2, CurOpen.transClosed hv a1 gi
+        (Or.inl (CurSame.of_fnEq hfn1)) hk2⟩
+    | some envI =>
+      obtain ⟨xvals, s3, h3, h⟩ := M.bind_inv h
+      obtain ⟨hParams, s4, h4, h⟩ := M.bind_inv h
+      obtain ⟨hId, s5, h5, h⟩ := M.bind_inv h
+      obtain ⟨exitParams, s6, h6, h⟩ := M.bind_inv h
+      obtain ⟨exitId, s7, h7, h⟩ := M.bind_inv h
+      obtain ⟨postParams, s8, h8, h⟩ := M.bind_inv h
+      obtain ⟨postId, s9, h9, h⟩ := M.bind_inv h
+      obtain ⟨u10, s10, h10, h⟩ := M.bind_inv h
+      obtain ⟨u11, s11, h11, h⟩ := M.bind_inv h
+      obtain ⟨cv, s12, h12, h⟩ := M.bind_inv h
+      obtain ⟨bodyId, s13, h13, h⟩ := M.bind_inv h
+      obtain ⟨hX, s14, h14, h⟩ := M.bind_inv h
+      obtain ⟨u15, s15, h15, h⟩ := M.bind_inv h
+      obtain ⟨u16, s16, h16, h⟩ := M.bind_inv h
+      obtain ⟨renvB, s17, h17, h⟩ := M.bind_inv h
+      have hopen2 : CurOpen s s2 := CurOpen.trans hv a1 gi
+        (Or.inl (CurSame.of_fnEq hfn1)) hk2
+      have g3 := Grows.of_liftO h3
+      have g4 := Grows.of_mapM_freshVal h4
+      have g6 := Grows.of_mapM_freshVal h6
+      have g8 := Grows.of_mapM_freshVal h8
+      have cs9 := ((((((CurSame.of_grows g3).trans (CurSame.of_grows g4)).trans
+        (CurSame.of_newBlock h5)).trans (CurSame.of_grows g6)).trans
+          (CurSame.of_newBlock h7)).trans (CurSame.of_grows g8)).trans
+            (CurSame.of_newBlock h9)
+      have b3 : SGrowsAt s2.fn.blocks.size s2 s3 := SGrowsAt.of_grows g3
+      have b4 := b3.trans (SGrowsAt.of_grows g4)
+      have b5 := b4.trans (SGrowsAt.of_newBlock h5)
+      have b6 := b5.trans (SGrowsAt.of_grows g6)
+      have b7 := b6.trans (SGrowsAt.of_newBlock h7)
+      have b8 := b7.trans (SGrowsAt.of_grows g8)
+      have b9 := b8.trans (SGrowsAt.of_newBlock h9)
+      have b10 := b9.trans (SGrowsAt.of_sealCur h10)
+      have hheadNe : s9.fn.curId ≠ hId := by
+        rw [cs9.1, SGrowsAt.newBlock_id h5]
+        exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hv2 b4.size)
+      have hm911 := curMoved_of_seal_move hheadNe h10 h11
+      have hm2 : CurMoved s2 s11 := cs9.transMoved hm911
+      have hhead2 : s2.fn.blocks.size ≤ hId := by
+        rw [SGrowsAt.newBlock_id h5]
+        exact b4.size
+      have b11 := b10.trans (SGrowsAt.of_moveTo (Or.inl hhead2) h11)
+      have hm : CurMoved s s11 := hopen2.transMoved hv a2 b11 hm2
+      have a11 := a2.trans b11
+      have hheadLt : hId < s10.fn.blocks.size :=
+        Nat.lt_of_lt_of_le (newBlock_target_lt h5)
+          (((((SGrowsAt.of_grows (N := 0) g6).trans
+            (SGrowsAt.of_newBlock h7)).trans (SGrowsAt.of_grows g8)).trans
+              (SGrowsAt.of_newBlock h9)).trans (SGrowsAt.of_sealCur h10)).size
+      have hv11 := CurValid.of_moveTo hheadLt h11
+      have gc := trExpr_grows c (scope :: fenv) _ s11 s12 cv h12
+      have hv12 := hv11.of_grows gc
+      have hv13 := CurValid.of_same_sgrows hv12
+        (SGrowsAt.of_newBlock (N := s12.fn.blocks.size) h13)
+        (CurSame.of_newBlock h13).1
+      have hv14 := hv13.of_grows (Grows.of_liftO h14)
+      have hs15 := curSealed_of_sealCur h15
+      have hv15 := CurValid.of_same_sgrows hv14
+        (SGrowsAt.of_sealCur (N := s14.fn.blocks.size) h15) hs15.1
+      have hbodyLt : bodyId < s15.fn.blocks.size :=
+        Nat.lt_of_lt_of_le (newBlock_target_lt h13)
+          ((SGrowsAt.of_edgeArgs (N := 0) h14).trans
+            (SGrowsAt.of_sealCur h15)).size
+      have hv16 := CurValid.of_moveTo hbodyLt h16
+      obtain ⟨hv17, hk17⟩ := ihBody scope envI hParams exitId postId
+        s16 renvB s17 hv16 h17
+      have gBody := trScope_grows (scope :: fenv) _ (some ⟨exitId, postId, _⟩)
+        rets body s16 renvB s17 h17
+      have hbodyBase : s.fn.blocks.size ≤ bodyId := by
+        rw [SGrowsAt.newBlock_id h13]
+        exact (a11.trans (SGrowsAt.of_grows gc)).size
+      have q16 : SGrowsAt s.fn.blocks.size s11 s16 := ((((
+        SGrowsAt.of_grows gc).trans (SGrowsAt.of_newBlock h13)).trans
+          (SGrowsAt.of_edgeArgs h14)).trans (SGrowsAt.of_sealCur h15)).trans
+            (SGrowsAt.of_moveTo (Or.inl hbodyBase) h16)
+      have a16 : SGrowsAt s.fn.blocks.size s s16 := SGrowsAt.trans a11 q16
+      have g7s11 : SGrowsAt 0 s7 s11 := ((SGrowsAt.of_grows g8).trans
+        (SGrowsAt.of_newBlock h9)).trans ((SGrowsAt.of_sealCur h10).trans
+          (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h11))
+      have g11s16z : SGrowsAt 0 s11 s16 := ((((SGrowsAt.of_grows gc).trans
+        (SGrowsAt.of_newBlock h13)).trans (SGrowsAt.of_edgeArgs h14)).trans
+          (SGrowsAt.of_sealCur h15)).trans
+            (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h16)
+      have hpostBase : s.fn.blocks.size ≤ postId := by
+        rw [SGrowsAt.newBlock_id h9]
+        exact (a2.trans b8).size
+      have hexitBase : s.fn.blocks.size ≤ exitId := by
+        rw [SGrowsAt.newBlock_id h7]
+        exact (a2.trans b6).size
+      cases renvB with
+      | none =>
+        obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
+        obtain ⟨ub, sb, hb2, h⟩ := M.bind_inv h
+        obtain ⟨renvP, sc, hc2, h⟩ := M.bind_inv h
+        obtain ⟨-, rfl⟩ := M.pure_inv ha
+        have g9s11 : SGrowsAt 0 s9 s11 := (SGrowsAt.of_sealCur h10).trans
+          (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h11)
+        have g9sa : SGrowsAt 0 s9 sa := (g9s11.trans g11s16z).trans
+          (gBody.mono (Nat.zero_le _))
+        have hpostLt : postId < sa.fn.blocks.size :=
+          Nat.lt_of_lt_of_le (newBlock_target_lt h9) g9sa.size
+        have hvb := CurValid.of_moveTo hpostLt hb2
+        obtain ⟨hvc, hkc⟩ := ihPost scope envI postParams sb renvP sc hvb hc2
+        have gPost := trScope_grows (scope :: fenv) _ none rets post
+          sb renvP sc hc2
+        have qBody : SGrowsAt s.fn.blocks.size s16 sa :=
+          gBody.mono a16.size
+        have qPostIn : SGrowsAt s.fn.blocks.size s11 sb :=
+          (q16.trans qBody).trans (SGrowsAt.of_moveTo (Or.inl hpostBase) hb2)
+        cases renvP with
+        | none =>
+          obtain ⟨ud, sd, hd, h⟩ := M.bind_inv h
+          obtain ⟨ue, se, he, hf⟩ := M.bind_inv h
+          obtain ⟨-, rfl⟩ := M.pure_inv hd
+          obtain ⟨rfl, rfl⟩ := M.pure_inv hf
+          have g7sd : SGrowsAt 0 s7 sd := (g7s11.trans g11s16z).trans
+            (((gBody.mono (Nat.zero_le _)).trans
+              (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) hb2)).trans
+                (gPost.mono (Nat.zero_le _)))
+          have hexitLt : exitId < sd.fn.blocks.size :=
+            Nat.lt_of_lt_of_le (newBlock_target_lt h7) g7sd.size
+          have hv' := CurValid.of_moveTo hexitLt he
+          have qFinal := (qPostIn.trans (gPost.mono
+            (Nat.le_trans a11.size qPostIn.size))).trans
+            (SGrowsAt.of_moveTo (Or.inl hexitBase) he)
+          exact ⟨hv', Or.inr (hm.forward hv a11 qFinal)⟩
+        | some envP' =>
+          obtain ⟨xvP, sd, hd, h⟩ := M.bind_inv h
+          obtain ⟨ue, se, he, h⟩ := M.bind_inv h
+          obtain ⟨uf, sf, hf, hg2⟩ := M.bind_inv h
+          obtain ⟨rfl, rfl⟩ := M.pure_inv hg2
+          have g16se : SGrowsAt 0 s16 se := ((((gBody.mono (Nat.zero_le _)).trans
+            (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) hb2)).trans
+              (gPost.mono (Nat.zero_le _))).trans
+                (SGrowsAt.of_edgeArgs hd)).trans (SGrowsAt.of_sealCur he)
+          have g7se : SGrowsAt 0 s7 se := (g7s11.trans g11s16z).trans g16se
+          have hexitLt : exitId < se.fn.blocks.size :=
+            Nat.lt_of_lt_of_le (newBlock_target_lt h7) g7se.size
+          have hv' := CurValid.of_moveTo hexitLt hf
+          have qFinal := (((qPostIn.trans (gPost.mono
+            (Nat.le_trans a11.size qPostIn.size))).trans
+              (SGrowsAt.of_edgeArgs hd)).trans (SGrowsAt.of_sealCur he)).trans
+                (SGrowsAt.of_moveTo (Or.inl hexitBase) hf)
+          exact ⟨hv', Or.inr (hm.forward hv a11 qFinal)⟩
+      | some envB =>
+        obtain ⟨xvB, sa, ha, h⟩ := M.bind_inv h
+        obtain ⟨ua', sa', ha', h⟩ := M.bind_inv h
+        obtain ⟨ub, sb, hb2, h⟩ := M.bind_inv h
+        obtain ⟨renvP, sc, hc2, h⟩ := M.bind_inv h
+        have g9s11 : SGrowsAt 0 s9 s11 := (SGrowsAt.of_sealCur h10).trans
+          (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h11)
+        have gBodyClosed0 : SGrowsAt 0 s16 sa' :=
+          ((gBody.mono (Nat.zero_le _)).trans (SGrowsAt.of_edgeArgs ha)).trans
+            (SGrowsAt.of_sealCur ha')
+        have g9sa' : SGrowsAt 0 s9 sa' := (g9s11.trans g11s16z).trans
+          gBodyClosed0
+        have hpostLt : postId < sa'.fn.blocks.size :=
+          Nat.lt_of_lt_of_le (newBlock_target_lt h9) g9sa'.size
+        have hvb := CurValid.of_moveTo hpostLt hb2
+        obtain ⟨hvc, hkc⟩ := ihPost scope envI postParams sb renvP sc hvb hc2
+        have gPost := trScope_grows (scope :: fenv) _ none rets post
+          sb renvP sc hc2
+        have qBody : SGrowsAt s.fn.blocks.size s16 s17 :=
+          gBody.mono a16.size
+        have qPostIn : SGrowsAt s.fn.blocks.size s11 sb := ((((q16.trans qBody).trans
+          (SGrowsAt.of_edgeArgs ha)).trans (SGrowsAt.of_sealCur ha')).trans
+            (SGrowsAt.of_moveTo (Or.inl hpostBase) hb2))
+        cases renvP with
+        | none =>
+          obtain ⟨ud, sd, hd, h⟩ := M.bind_inv h
+          obtain ⟨ue, se, he, hf⟩ := M.bind_inv h
+          obtain ⟨-, rfl⟩ := M.pure_inv hd
+          obtain ⟨rfl, rfl⟩ := M.pure_inv hf
+          have g7sd : SGrowsAt 0 s7 sd := (g7s11.trans g11s16z).trans
+            ((gBodyClosed0.trans
+              (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) hb2)).trans
+                (gPost.mono (Nat.zero_le _)))
+          have hexitLt : exitId < sd.fn.blocks.size :=
+            Nat.lt_of_lt_of_le (newBlock_target_lt h7) g7sd.size
+          have hv' := CurValid.of_moveTo hexitLt he
+          have qFinal := (qPostIn.trans (gPost.mono
+            (Nat.le_trans a11.size qPostIn.size))).trans
+            (SGrowsAt.of_moveTo (Or.inl hexitBase) he)
+          exact ⟨hv', Or.inr (hm.forward hv a11 qFinal)⟩
+        | some envP' =>
+          obtain ⟨xvP, sd, hd, h⟩ := M.bind_inv h
+          obtain ⟨ue, se, he, h⟩ := M.bind_inv h
+          obtain ⟨uf, sf, hf, hg2⟩ := M.bind_inv h
+          obtain ⟨rfl, rfl⟩ := M.pure_inv hg2
+          have g16se : SGrowsAt 0 s16 se := (((gBodyClosed0.trans
+            (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) hb2)).trans
+              (gPost.mono (Nat.zero_le _))).trans
+                (SGrowsAt.of_edgeArgs hd)).trans (SGrowsAt.of_sealCur he)
+          have g7se : SGrowsAt 0 s7 se := (g7s11.trans g11s16z).trans g16se
+          have hexitLt : exitId < se.fn.blocks.size :=
+            Nat.lt_of_lt_of_le (newBlock_target_lt h7) g7se.size
+          have hv' := CurValid.of_moveTo hexitLt hf
+          have qFinal := (((qPostIn.trans (gPost.mono
+            (Nat.le_trans a11.size qPostIn.size))).trans
+              (SGrowsAt.of_edgeArgs hd)).trans (SGrowsAt.of_sealCur he)).trans
+                (SGrowsAt.of_moveTo (Or.inl hexitBase) hf)
+          exact ⟨hv', Or.inr (hm.forward hv a11 qFinal)⟩
+  case exprBuiltin =>
+    intro fenv env lctx rets op args s r s' hv h
+    rw [trStmt] at h
+    obtain ⟨as, s₁, h1, h⟩ := M.bind_inv h
+    have hg1 := trArgs_grows args fenv env s s₁ as h1
+    by_cases hop : isHaltingOp op = true
+    · rw [if_pos hop] at h
+      obtain ⟨u, s₂, h2, h3⟩ := M.bind_inv h
+      obtain ⟨rfl, rfl⟩ := M.pure_inv h3
+      have hseal := curSealed_of_sealCur h2
+      refine ⟨CurValid.of_same_sgrows (hv.of_grows hg1)
+        (SGrowsAt.of_sealCur (N := s₁.fn.blocks.size) h2) hseal.1, Or.inr ?_⟩
+      rcases hseal with ⟨hc, b, hb, Δ, hi⟩
+      rcases CurSame.of_grows hg1 with ⟨hc1, ⟨Δ1, hi1⟩, -⟩
+      refine ⟨hc.trans hc1, b, by simpa only [hc1] using hb,
+        Δ1.reverse ++ Δ, ?_⟩
+      rw [hi, hi1]
+      simp
+    · rw [if_neg hop] at h
+      obtain ⟨u, s₂, h2, h3⟩ := M.bind_inv h
+      obtain ⟨rfl, rfl⟩ := M.pure_inv h3
+      have hg := hg1.trans (Grows.of_emit h2)
+      exact ⟨hv.of_grows hg, Or.inl (CurSame.of_grows hg)⟩
+  case exprCall =>
+    intro fenv env lctx rets fn args s r s' hv h
+    rw [trStmt] at h
+    obtain ⟨as, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨fid, s₂, h2, h⟩ := M.bind_inv h
+    obtain ⟨u, s₃, h3, h4⟩ := M.bind_inv h
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h4
+    have hg := (trArgs_grows args fenv env s s₁ as h1).trans
+      ((Grows.of_liftO h2).trans (Grows.of_emit h3))
+    exact ⟨hv.of_grows hg, Or.inl (CurSame.of_grows hg)⟩
+  case exprBad =>
+    intro fenv env lctx rets e hnb hnc s r s' hv h
+    rw [trStmt] at h
+    · exact absurd h (by simp [reject])
+    · exact hnb
+    · exact hnc
+  case breakNone =>
+    intro fenv env rets s r s' hv h
+    rw [trStmt] at h
+    exact absurd h (by simp [reject])
+  case breakSome =>
+    intro fenv env rets l s r s' hv h
+    rw [trStmt] at h
+    obtain ⟨vals, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨u, s₂, h2, h3⟩ := M.bind_inv h
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h3
+    have hg1 := Grows.of_liftO h1
+    have hs := curSealed_of_sealCur h2
+    refine ⟨CurValid.of_same_sgrows (hv.of_grows hg1)
+      (SGrowsAt.of_sealCur (N := s₁.fn.blocks.size) h2) hs.1, Or.inr ?_⟩
+    rcases hs with ⟨hc, b, hb, Δ, hi⟩
+    rcases CurSame.of_grows hg1 with ⟨hc1, ⟨Δ1, hi1⟩, -⟩
+    refine ⟨hc.trans hc1, b, by simpa only [hc1] using hb,
+      Δ1.reverse ++ Δ, ?_⟩
+    rw [hi, hi1]
+    simp
+  case contNone =>
+    intro fenv env rets s r s' hv h
+    rw [trStmt] at h
+    exact absurd h (by simp [reject])
+  case contSome =>
+    intro fenv env rets l s r s' hv h
+    rw [trStmt] at h
+    obtain ⟨vals, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨u, s₂, h2, h3⟩ := M.bind_inv h
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h3
+    have hg1 := Grows.of_liftO h1
+    have hs := curSealed_of_sealCur h2
+    refine ⟨CurValid.of_same_sgrows (hv.of_grows hg1)
+      (SGrowsAt.of_sealCur (N := s₁.fn.blocks.size) h2) hs.1, Or.inr ?_⟩
+    rcases hs with ⟨hc, b, hb, Δ, hi⟩
+    rcases CurSame.of_grows hg1 with ⟨hc1, ⟨Δ1, hi1⟩, -⟩
+    refine ⟨hc.trans hc1, b, by simpa only [hc1] using hb,
+      Δ1.reverse ++ Δ, ?_⟩
+    rw [hi, hi1]
+    simp
+  case leaveNone =>
+    intro fenv env lctx s r s' hv h
+    rw [trStmt] at h
+    exact absurd h (by simp [reject])
+  case leaveSome =>
+    intro fenv env lctx rs s r s' hv h
+    rw [trStmt] at h
+    obtain ⟨vals, s₁, h1, h⟩ := M.bind_inv h
+    obtain ⟨u, s₂, h2, h3⟩ := M.bind_inv h
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h3
+    have hg1 := Grows.of_liftO h1
+    have hs := curSealed_of_sealCur h2
+    refine ⟨CurValid.of_same_sgrows (hv.of_grows hg1)
+      (SGrowsAt.of_sealCur (N := s₁.fn.blocks.size) h2) hs.1, Or.inr ?_⟩
+    rcases hs with ⟨hc, b, hb, Δ, hi⟩
+    rcases CurSame.of_grows hg1 with ⟨hc1, ⟨Δ1, hi1⟩, -⟩
+    refine ⟨hc.trans hc1, b, by simpa only [hc1] using hb,
+      Δ1.reverse ++ Δ, ?_⟩
+    rw [hi, hi1]
+    simp
+  case casesNilNone =>
+    intro fenv env lctx rets _sv _X _joinId sv X joinId s u s' hv h
+    rw [trCases] at h
+    obtain ⟨xvals, s₁, h1, h2⟩ := M.bind_inv h
+    have hg1 := Grows.of_liftO h1
+    have hs := curSealed_of_sealCur h2
+    refine ⟨CurValid.of_same_sgrows (hv.of_grows hg1)
+      (SGrowsAt.of_sealCur (N := s₁.fn.blocks.size) h2) hs.1, Or.inr ?_⟩
+    rcases hs with ⟨hc, b, hb, Δ, hi⟩
+    rcases CurSame.of_grows hg1 with ⟨hc1, ⟨Δ1, hi1⟩, -⟩
+    refine ⟨hc.trans hc1, b, by simpa only [hc1] using hb,
+      Δ1.reverse ++ Δ, ?_⟩
+    rw [hi, hi1]
+    simp
+  case casesNilSome =>
+    intro fenv env lctx rets _sv _X _joinId dbody ih sv X joinId s u s' hv h
+    rw [trCases] at h
+    obtain ⟨renv, s₁, h1, h2⟩ := M.bind_inv h
+    obtain ⟨hv1, hk1⟩ := ih s renv s₁ hv h1
+    have hg1 := trScope_grows fenv env lctx rets dbody s renv s₁ h1
+    cases renv with
+    | none =>
+      obtain ⟨rfl, rfl⟩ := M.pure_inv h2
+      exact ⟨hv1, hk1⟩
+    | some env' =>
+      obtain ⟨xv, s₂, h3, h4⟩ := M.bind_inv h2
+      have hgE := Grows.of_liftO h3
+      have hs := curSealed_of_sealCur h4
+      have hv2 := hv1.of_grows hgE
+      have hv' := CurValid.of_same_sgrows hv2
+        (SGrowsAt.of_sealCur (N := s₂.fn.blocks.size) h4) hs.1
+      have hclosed : CurClosed s₁ s' := by
+        refine Or.inr ?_
+        rcases hs with ⟨hc, b, hb, Δ, hi⟩
+        rcases CurSame.of_grows hgE with ⟨hc1, ⟨Δ1, hi1⟩, -⟩
+        refine ⟨hc.trans hc1, b, by simpa only [hc1] using hb,
+          Δ1.reverse ++ Δ, ?_⟩
+        rw [hi, hi1]
+        simp
+      exact ⟨hv', CurOpen.transClosed hv hg1
+        (SGrows.trans (SGrows.of_grows hgE) (SGrowsAt.of_sealCur h4))
+        hk1 hclosed⟩
+  case casesCons =>
+    intro fenv env lctx rets _sv _X _joinId lit cbody restCases dflt ihc ihr
+      sv X joinId s u s' hv h
+    rw [trCases] at h
+    obtain ⟨t, s1, h1, h⟩ := M.bind_inv h
+    obtain ⟨u2, s2, h2, h⟩ := M.bind_inv h
+    obtain ⟨e, s3, h3, h⟩ := M.bind_inv h
+    obtain ⟨u4, s4, h4, h⟩ := M.bind_inv h
+    obtain ⟨caseId, s5, h5, h⟩ := M.bind_inv h
+    obtain ⟨nextId, s6, h6, h⟩ := M.bind_inv h
+    obtain ⟨u7, s7, h7, h⟩ := M.bind_inv h
+    obtain ⟨u8, s8, h8, h⟩ := M.bind_inv h
+    obtain ⟨renv, s9, h9, h⟩ := M.bind_inv h
+    have g1 := Grows.of_freshVal h1
+    have g2 := Grows.of_emit h2
+    have g3 := Grows.of_freshVal h3
+    have g4 := Grows.of_emit h4
+    have cs4 := (((CurSame.of_grows g1).trans (CurSame.of_grows g2)).trans
+      (CurSame.of_grows g3)).trans (CurSame.of_grows g4)
+    have cs5 := cs4.trans (CurSame.of_newBlock h5)
+    have cs6 := cs5.trans (CurSame.of_newBlock h6)
+    have a1 : SGrowsAt s.fn.blocks.size s s1 := SGrowsAt.of_grows g1
+    have a2 := a1.trans (SGrowsAt.of_grows g2)
+    have a3 := a2.trans (SGrowsAt.of_grows g3)
+    have a4 := a3.trans (SGrowsAt.of_grows g4)
+    have a5 := a4.trans (SGrowsAt.of_newBlock h5)
+    have a6 := a5.trans (SGrowsAt.of_newBlock h6)
+    have a7 := a6.trans (SGrowsAt.of_sealCur h7)
+    have hcaseNe : s6.fn.curId ≠ caseId := by
+      have hid := SGrowsAt.newBlock_id h5
+      rw [cs6.1, hid]
+      exact Nat.ne_of_lt (Nat.lt_of_lt_of_le hv a4.size)
+    have hm68 : CurMoved s6 s8 := curMoved_of_seal_move hcaseNe h7 h8
+    have hm : CurMoved s s8 := cs6.transMoved hm68
+    have a8 := a7.trans (SGrowsAt.of_moveTo
+      (Or.inl (by rw [SGrowsAt.newBlock_id h5]; exact a4.size)) h8)
+    have hcaseLt : caseId < s7.fn.blocks.size := by
+      exact Nat.lt_of_lt_of_le (newBlock_target_lt h5)
+        ((SGrowsAt.of_newBlock (N := 0) h6).trans
+          (SGrowsAt.of_sealCur h7)).size
+    have hv8 : CurValid s8 := CurValid.of_moveTo hcaseLt h8
+    obtain ⟨hv9, hk9⟩ := ihc s8 renv s9 hv8 h9
+    have gbody := trScope_grows fenv env lctx rets cbody s8 renv s9 h9
+    cases renv with
+    | none =>
+      obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
+      obtain ⟨ub, sb, hb2, hc2⟩ := M.bind_inv h
+      obtain ⟨-, rfl⟩ := M.pure_inv ha
+      have g6a : SGrowsAt 0 s6 sa := ((SGrowsAt.of_sealCur h7).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h8)).trans
+          (gbody.mono (Nat.zero_le _))
+      have hnextLt : nextId < sa.fn.blocks.size :=
+        Nat.lt_of_lt_of_le (newBlock_target_lt h6) g6a.size
+      have hvb : CurValid sb := CurValid.of_moveTo hnextLt hb2
+      obtain ⟨hv', hkrest⟩ := ihr sv X joinId sb u s' hvb hc2
+      have hnextBase : s.fn.blocks.size ≤ nextId := by
+        rw [SGrowsAt.newBlock_id h6]
+        exact a5.size
+      have gb : SGrowsAt s.fn.blocks.size s8 sb :=
+        (gbody.mono a8.size).trans
+          (SGrowsAt.of_moveTo (Or.inl hnextBase) hb2)
+      have gr := trCases_grows fenv env lctx rets sv X joinId restCases dflt
+        sv X joinId sb u s' hc2
+      exact ⟨hv', Or.inl (hm.forward hv a8
+        (gb.trans (gr.mono (Nat.le_trans a8.size gb.size))))⟩
+    | some env' =>
+      obtain ⟨xv, sa, ha, h⟩ := M.bind_inv h
+      obtain ⟨ub, sb, hb2, h⟩ := M.bind_inv h
+      obtain ⟨uc, sc, hc2, hd2⟩ := M.bind_inv h
+      have g6sb : SGrowsAt 0 s6 sb := (((SGrowsAt.of_sealCur h7).trans
+        (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h8)).trans
+          (gbody.mono (Nat.zero_le _))).trans
+            ((SGrowsAt.of_edgeArgs ha).trans (SGrowsAt.of_sealCur hb2))
+      have hnextLt : nextId < sb.fn.blocks.size :=
+        Nat.lt_of_lt_of_le (newBlock_target_lt h6) g6sb.size
+      have hvc : CurValid sc := CurValid.of_moveTo hnextLt hc2
+      obtain ⟨hv', hkrest⟩ := ihr sv X joinId sc u s' hvc hd2
+      have hnextBase : s.fn.blocks.size ≤ nextId := by
+        rw [SGrowsAt.newBlock_id h6]
+        exact a5.size
+      have gb : SGrowsAt s.fn.blocks.size s8 sc :=
+        (((gbody.mono a8.size).trans (SGrowsAt.of_edgeArgs ha)).trans
+          (SGrowsAt.of_sealCur hb2)).trans
+            (SGrowsAt.of_moveTo (Or.inl hnextBase) hc2)
+      have gr := trCases_grows fenv env lctx rets sv X joinId restCases dflt
+        sv X joinId sc u s' hd2
+      exact ⟨hv', Or.inl (hm.forward hv a8
+        (gb.trans (gr.mono (Nat.le_trans a8.size gb.size))))⟩
+
+omit model in
+/-- Statement-current validity as a corollary of the list invariant, using a
+singleton list.  Function definitions are handled by `trStmts` itself and are
+rejected by `trStmt`. -/
+theorem trStmt_cur {fenv : FMap} {env : VMap} {lctx : Option LoopCtx}
+    {rets : Option (List Ident)} {st : Stmt Op} {s s' : BState}
+    {renv : Option VMap} (hv : CurValid s)
+    (h : trStmt fenv env lctx rets st s = some (renv, s')) :
+    CurValid s' ∧ CurResult renv s s' := by
+  cases st with
+  | funDef n ps rs body =>
+    rw [trStmt] at h
+    exact absurd h (by simp [reject])
+  | block body =>
+    apply trStmts_cur fenv env lctx rets false [.block body] s renv s' hv
+    rw [trStmts] <;> try { intros; contradiction }
+    simp only [Bool.false_eq_true, if_false]
+    rw [M.bind_eq, h]; cases renv <;> simp [trStmts]
+  | letDecl vars val =>
+    apply trStmts_cur fenv env lctx rets false [.letDecl vars val] s renv s' hv
+    rw [trStmts] <;> try { intros; contradiction }
+    simp only [Bool.false_eq_true, if_false]
+    rw [M.bind_eq, h]; cases renv <;> simp [trStmts]
+  | assign vars e =>
+    apply trStmts_cur fenv env lctx rets false [.assign vars e] s renv s' hv
+    rw [trStmts] <;> try { intros; contradiction }
+    simp only [Bool.false_eq_true, if_false]
+    rw [M.bind_eq, h]; cases renv <;> simp [trStmts]
+  | cond e body =>
+    apply trStmts_cur fenv env lctx rets false [.cond e body] s renv s' hv
+    rw [trStmts] <;> try { intros; contradiction }
+    simp only [Bool.false_eq_true, if_false]
+    rw [M.bind_eq, h]; cases renv <;> simp [trStmts]
+  | switch e cases dflt =>
+    apply trStmts_cur fenv env lctx rets false [.switch e cases dflt] s renv s' hv
+    rw [trStmts] <;> try { intros; contradiction }
+    simp only [Bool.false_eq_true, if_false]
+    rw [M.bind_eq, h]; cases renv <;> simp [trStmts]
+  | forLoop init e post body =>
+    apply trStmts_cur fenv env lctx rets false [.forLoop init e post body] s renv s' hv
+    rw [trStmts] <;> try { intros; contradiction }
+    simp only [Bool.false_eq_true, if_false]
+    rw [M.bind_eq, h]; cases renv <;> simp [trStmts]
+  | exprStmt e =>
+    apply trStmts_cur fenv env lctx rets false [.exprStmt e] s renv s' hv
+    rw [trStmts] <;> try { intros; contradiction }
+    simp only [Bool.false_eq_true, if_false]
+    rw [M.bind_eq, h]; cases renv <;> simp [trStmts]
+  | «break» =>
+    apply trStmts_cur fenv env lctx rets false [.break] s renv s' hv
+    rw [trStmts] <;> try { intros; contradiction }
+    simp only [Bool.false_eq_true, if_false]
+    rw [M.bind_eq, h]; cases renv <;> simp [trStmts]
+  | «continue» =>
+    apply trStmts_cur fenv env lctx rets false [.continue] s renv s' hv
+    rw [trStmts] <;> try { intros; contradiction }
+    simp only [Bool.false_eq_true, if_false]
+    rw [M.bind_eq, h]; cases renv <;> simp [trStmts]
+  | leave =>
+    apply trStmts_cur fenv env lctx rets false [.leave] s renv s' hv
+    rw [trStmts] <;> try { intros; contradiction }
+    simp only [Bool.false_eq_true, if_false]
+    rw [M.bind_eq, h]
+    cases renv <;> simp [trStmts]
+omit model in
 /-- `CurPlaced` travels backwards along an expression-level step. -/
 theorem curPlaced_back_grows {f : Func} {sA sB : BState} (hg : Grows sA sB)
     (h : CurPlaced f sB.fn) : CurPlaced f sA.fn := by
   obtain ⟨Δ, hΔ⟩ := hg.cur
   exact h.ofPrefix hg.curId.symm Δ hΔ
 
+omit model in
 /-- Backward placement across a statement-list construction.  The `CurFinal`
 premise is used precisely when the list diverts after sealing (and therefore
 clearing) the same current block; in the fall-through case `curPlaced_back`
@@ -5401,34 +6448,22 @@ and the list's growth witness suffice. -/
 theorem trStmts_curPlaced_back {f : Func} {fenv : FMap} {env : VMap}
     {lctx : Option LoopCtx} {rets : Option (List Ident)} {d : Bool}
     {ss : List (Stmt Op)} {s₀ s₁ : BState} {renv : Option VMap}
+    (hvalid : CurValid s₀)
     (hcompl : Completes f s₁.fn) (hcp : CurPlaced f s₁.fn)
     (hfin : renv = none → CurFinal f s₁.fn)
     (htr : trStmts fenv env lctx rets d ss s₀ = some (renv, s₁)) :
     CurPlaced f s₀.fn := by
-  -- RIPPLE ANALYSIS.  `CurKeeps` has only two proof consumers in this file:
-  -- `curPlaced_back` and `CurKeeps.trans`.  Adding the same-current
-  -- seal-and-clear disjunct can therefore be handled locally at those two
-  -- matches.  It does not, however, supply the missing premise here: there is no
-  -- theorem saying that a successful `trStmts` has any `CurKeeps` shape.
-  --
-  -- Proving that theorem is not a direct-consumer edit.  It must be a new mutual
-  -- invariant over `trStmt`/`trScope`/`trStmts`/`trCases` (the same 29
-  -- construction cases as the `SGrowsAt` proof), and it additionally needs an
-  -- entering-current validity premise such as
-  -- `s₀.fn.curId < s₀.fn.blocks.size`.  Without that premise the proposed
-  -- relation is false for arbitrary `BState`: `cond`, `switch`, and `forLoop`
-  -- reserve blocks before their first `sealCur`, so an out-of-range entering
-  -- `curId` can alias a newly reserved block and the later body seal can
-  -- overwrite the entering fragment instead of preserving its instruction
-  -- prefix.  This is also why the existing `CurKeeps.trans` explicitly asks for
-  -- current-block validity.
-  --
-  -- Supplying that fact requires either strengthening this helper and threading
-  -- the premise through `seqCons`/`seqStop` and their induction motive, or adding
-  -- a builder-validity field to `SGrowsAt` and rechecking all primitive and
-  -- mutual monotonicity constructors.  Both ripple beyond `CurKeeps`' direct
-  -- consumers, so the requested stop condition applies.
-  sorry
+  cases d with
+  | false =>
+    obtain ⟨-, hk⟩ := trStmts_cur fenv env lctx rets false ss s₀ renv s₁
+      hvalid htr
+    exact curPlaced_back hk hcompl hfin hcp
+  | true =>
+    obtain ⟨hrenv, hfn⟩ := trStmts_true_fn fenv env lctx rets ss
+      s₀ s₁ renv htr
+    have : renv = none := hrenv
+    subst renv
+    simpa only [hfn] using hcp
 
 /-- An expression whose evaluation halts: the fragment the construction laid
 down reaches that halt from the fragment's entry configuration. -/
@@ -5732,7 +6767,8 @@ def Motive (P : Prog) (f : Func) (funs : YulSemantics.FunEnv yulD)
       ∀ (fenv : FMap) (env : VMap) (R : Regs) (lctx : Option LoopCtx)
         (rets : Option (List Ident)) (s₀ s₁ : BState) (renv : Option VMap),
         FEnvOK (model := model) P funs fenv → EnvOK (model := model) env V R →
-        RegsFresh R s₀.fn → Completes f s₁.fn → CurPlaced f s₁.fn →
+        RegsFresh R s₀.fn → CurValid s₀ →
+        Completes f s₁.fn → CurPlaced f s₁.fn →
         (renv = none → CurFinal f s₁.fn) →
         trStmt fenv env lctx rets st s₀ = some (renv, s₁) →
         SOut (model := model) P f lctx rets s₀ s₁ R renv V' yst yst' o
@@ -5740,7 +6776,8 @@ def Motive (P : Prog) (f : Func) (funs : YulSemantics.FunEnv yulD)
       ∀ (fenv : FMap) (env : VMap) (R : Regs) (lctx : Option LoopCtx)
         (rets : Option (List Ident)) (s₀ s₁ : BState) (renv : Option VMap),
         FEnvOK (model := model) P funs fenv → EnvOK (model := model) env V R →
-        RegsFresh R s₀.fn → Completes f s₁.fn → CurPlaced f s₁.fn →
+        RegsFresh R s₀.fn → CurValid s₀ →
+        Completes f s₁.fn → CurPlaced f s₁.fn →
         (renv = none → CurFinal f s₁.fn) →
         trStmts fenv env lctx rets false ss s₀ = some (renv, s₁) →
         SOut (model := model) P f lctx rets s₀ s₁ R renv V' yst yst' o
@@ -5937,15 +6974,15 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     exact hsim (.halt st2)
       (ihh.1 fenv env R₁ sA s₁ i hfe (henv.mono hle) hfrA hcompl hcp h2)
   | @funDef funs V st n ps rs b =>
-    intro fenv env R lctx rets s₀ s₁ renv _ _ _ _ _ _ htr
+    intro fenv env R lctx rets s₀ s₁ renv _ _ _ _ _ _ _ htr
     rw [trStmt] at htr
     exact absurd htr (by simp [reject])
   | block hb ihb => sorry
   | @letZero funs V st vars =>
-    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ _ htr
+    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ _ _ htr
     exact sim_letDecl_none hfr henv htr
   | @letVal funs V st vars e vals st1 he hlen ihe =>
-    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hcompl hcp _ htr
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr _ hcompl hcp _ htr
     have htr0 := htr
     rw [trStmt] at htr
     by_cases hgate : (vars.any env.mem || !decide vars.Nodup) = true
@@ -5961,7 +6998,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     exact sim_letDecl_some henv hlen h1
       (ihe.2 fenv env R s₀ s₁ vars.length ids hfe henv hfr hcompl hcp hlen h1) htr0
   | @letHalt funs V st vars e st1 he ihe =>
-    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hcompl hcp _ htr
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr _ hcompl hcp _ htr
     rw [trStmt] at htr
     by_cases hgate : (vars.any env.mem || !decide vars.Nodup) = true
     · rw [if_pos hgate] at htr
@@ -5976,7 +7013,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     exact SOut.ofExprHalt
       (ihe.2 fenv env R s₀ s₁ vars.length ids hfe henv hfr hcompl hcp h1)
   | @assignVal funs V st vars e vals st1 he hlen ihe =>
-    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hcompl hcp _ htr
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr _ hcompl hcp _ htr
     have htr0 := htr
     rw [trStmt] at htr
     by_cases hgate : (!vars.all env.mem) = true
@@ -5992,7 +7029,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     exact sim_assign henv h1
       (ihe.2 fenv env R s₀ s₁ vars.length ids hfe henv hfr hcompl hcp hlen h1) htr0
   | @assignHalt funs V st vars e st1 he ihe =>
-    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hcompl hcp _ htr
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr _ hcompl hcp _ htr
     rw [trStmt] at htr
     by_cases hgate : (!vars.all env.mem) = true
     · rw [if_pos hgate] at htr
@@ -6016,7 +7053,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   | forLoop hinit hloop ihi ihl => sorry
   | forInitHalt hinit ihi => sorry
   | @«break» funs V st =>
-    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ hfin htr
+    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ _ hfin htr
     cases lctx with
     | none => rw [trStmt] at htr; exact absurd htr (by simp [reject])
     | some l =>
@@ -6029,7 +7066,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         (hfr.mono (trStmt_grows fenv env (some l) rets .break s₀ renv s₁ htr).nextVal)
         (hfin hnone) htr
   | @«continue» funs V st =>
-    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ hfin htr
+    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ _ hfin htr
     cases lctx with
     | none => rw [trStmt] at htr; exact absurd htr (by simp [reject])
     | some l =>
@@ -6042,7 +7079,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         (hfr.mono (trStmt_grows fenv env (some l) rets .continue s₀ renv s₁ htr).nextVal)
         (hfin hnone) htr
   | @leave funs V st =>
-    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ hfin htr
+    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ _ hfin htr
     cases rets with
     | none => rw [trStmt] at htr; exact absurd htr (by simp [reject])
     | some rs =>
@@ -6053,10 +7090,10 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         exact (M.pure_inv h3).1
       exact sim_leave henv (hfin hnone) htr
   | @seqNil funs V st =>
-    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ _ htr
+    intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ _ _ htr
     exact sim_seqNil henv hfr htr
   | @seqCons funs V st s rest V1 st1 V2 st2 o h1 h2 ih1 ih2 =>
-    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hcompl hcp hfin htr
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hvalid hcompl hcp hfin htr
     cases s with
     | funDef n ps rs body =>
       cases h1
@@ -6068,14 +7105,17 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       have hfnB : sB.fn = sA.fn := (trFunc_grows fenv ps rs body sA g sB hb).1
       have hfnC : sC.fn = sB.fn := by rw [(M.fillFunc_inv hc).choose_spec]
       have hfn : sC.fn = s₀.fn := hfnC.trans (hfnB.trans hfnA)
+      have hvalidC : CurValid sC := by rw [CurValid, hfn]; exact hvalid
       simpa only [SOut, hfn] using
         (ih2 fenv env R lctx rets sC s₁ renv hfe henv
-          (by simpa only [hfn] using hfr) hcompl hcp hfin htail)
+          (by simpa only [hfn] using hfr) hvalidC
+          hcompl hcp hfin htail)
     | block body | letDecl vars val | assign vars e | cond e body
     | forLoop init e post body | «break» | «continue» | leave
     | switch e cases dflt | exprStmt e =>
       obtain ⟨renvA, sA, hhead, htail⟩ := trStmts_false_cons_inv
         (by intros; simp) htr
+      have hvalidA : CurValid sA := (trStmt_cur hvalid hhead).1
       cases renvA with
       | none =>
         obtain ⟨hrenv, hfn⟩ := trStmts_true_fn fenv env lctx rets rest sA s₁ renv htail
@@ -6084,7 +7124,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         have hfinA : CurFinal f sA.fn := by
           simpa only [hfn] using hfin hrenv
         obtain ⟨envA, R₁, hbad, -⟩ :=
-          ih1 fenv env R lctx rets s₀ sA none hfe henv hfr hcomplA hcpA
+          ih1 fenv env R lctx rets s₀ sA none hfe henv hfr hvalid hcomplA hcpA
             (fun _ => hfinA) hhead
         exact absurd hbad (by simp)
       | some envA =>
@@ -6092,15 +7132,15 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           trStmts_grows fenv envA lctx rets false rest sA renv s₁ htail
         have hcomplA : Completes f sA.fn := SGrowsAt.completes_of hgTail hcompl
         have hcpA : CurPlaced f sA.fn :=
-          trStmts_curPlaced_back hcompl hcp hfin htail
+          trStmts_curPlaced_back hvalidA hcompl hcp hfin htail
         refine SOut.seq
-          (ih1 fenv env R lctx rets s₀ sA (some envA) hfe henv hfr hcomplA hcpA
+          (ih1 fenv env R lctx rets s₀ sA (some envA) hfe henv hfr hvalid hcomplA hcpA
             (by simp) hhead) ?_
         intro R₁ hle hfrA henvA
         exact ih2 fenv envA R₁ lctx rets sA s₁ renv hfe henvA hfrA
-          hcompl hcp hfin htail
+          hvalidA hcompl hcp hfin htail
   | @seqStop funs V st s rest V1 st1 o h1 hne ih1 =>
-    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hcompl hcp hfin htr
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hvalid hcompl hcp hfin htr
     cases s with
     | funDef n ps rs body =>
       cases h1
@@ -6110,6 +7150,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     | switch e cases dflt | exprStmt e =>
       obtain ⟨renvA, sA, hhead, htail⟩ := trStmts_false_cons_inv
         (by intros; simp) htr
+      have hvalidA : CurValid sA := (trStmt_cur hvalid hhead).1
       cases renvA with
       | none =>
         obtain ⟨hrenv, hfn⟩ := trStmts_true_fn fenv env lctx rets rest sA s₁ renv htail
@@ -6117,16 +7158,16 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         have hcpA : CurPlaced f sA.fn := by simpa only [hfn] using hcp
         have hfinA : CurFinal f sA.fn := by simpa only [hfn] using hfin hrenv
         exact SOut.of_nonNormal hne (by rw [hfn])
-          (ih1 fenv env R lctx rets s₀ sA none hfe henv hfr hcomplA hcpA
+          (ih1 fenv env R lctx rets s₀ sA none hfe henv hfr hvalid hcomplA hcpA
             (fun _ => hfinA) hhead)
       | some envA =>
         have hgTail : SGrows sA s₁ :=
           trStmts_grows fenv envA lctx rets false rest sA renv s₁ htail
         have hcomplA : Completes f sA.fn := SGrowsAt.completes_of hgTail hcompl
         have hcpA : CurPlaced f sA.fn :=
-          trStmts_curPlaced_back hcompl hcp hfin htail
+          trStmts_curPlaced_back hvalidA hcompl hcp hfin htail
         exact SOut.of_nonNormal hne hgTail.nextVal
-          (ih1 fenv env R lctx rets s₀ sA (some envA) hfe henv hfr hcomplA hcpA
+          (ih1 fenv env R lctx rets s₀ sA (some envA) hfe henv hfr hvalid hcomplA hcpA
             (by simp) hhead)
   | loopDone => trivial
   | loopCondHalt => trivial
