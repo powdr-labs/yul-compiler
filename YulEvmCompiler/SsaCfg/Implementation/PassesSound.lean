@@ -130,9 +130,9 @@ definitions nothing reads.
 
 ## The remaining frontier
 
-Three `sorry`s remain, each documented at its declaration:
+Two `sorry`s remain, each documented at its declaration:
 
-* passes 1 and 3: `elimTrivialParams_sound`, `cse_sound`;
+* pass 3: `cse_sound`;
 * the gate-accepted branch of `optimizeProg_sound'`.
 
 Two kinds of obligation remain, and it is worth separating them.
@@ -1593,6 +1593,7 @@ theorem evalPure_transport {calls : ExternalCalls} {creates : ExternalCreates} {
   exact ⟨pure_rets_eq hp hb hb0, pure_state_eq hp hb⟩
 
 end Passes
+
 
 /-! ## The pipeline gate
 
@@ -10043,9 +10044,691 @@ theorem substFunc_allDefs (σ : Subst) (f : Func) :
 
 end Passes
 
+/-! ### Block dominance and the stale-zone cut -/
+
+/-- `d` dominates the entry of block `i`: every entry-rooted path to `i`
+has already visited `d` (with the reflexive `d = i` case explicit). -/
+def BlockDom (f : Func) (d i : BlockId) : Prop :=
+  ∀ path, EntryPath f path i → d = i ∨ d ∈ path
+
+/-- Strict block dominance, as supplied by a value on every incoming edge. -/
+def StrictBlockDom (f : Func) (d i : BlockId) : Prop :=
+  ∀ path, EntryPath f path i → d ∈ path
+
+theorem BlockDom.refl (f : Func) (i : BlockId) : BlockDom f i i := by
+  intro path hp
+  exact Or.inl rfl
+
+theorem BlockDom.pred {f : Func} {d i : BlockId} (h : BlockDom f d i)
+    {path : List BlockId} {j : BlockId} {b : Block} (hp : EntryPath f path j)
+    (hb : f.blocks[j]? = some b) {e : Edge} (he : e ∈ b.term.edges)
+    (het : e.target = i) (hdi : d ≠ i) : BlockDom f d j := by
+  intro pre hpre
+  have hnext : EntryPath f (pre ++ [j]) i := by
+    rw [← het]
+    exact .edge hpre hb he
+  rcases h (pre ++ [j]) hnext with hbad | hd
+  · exact False.elim (hdi hbad)
+  · rw [List.mem_append] at hd
+    rcases hd with hd | hd
+    · exact Or.inr hd
+    · exact Or.inl (by simpa using hd)
+
+/-- A block in an `EntryPath` predecessor list is reached by a strictly
+shorter prefix. -/
+theorem EntryPath.prefix_of_mem {f : Func} {path : List BlockId} {i j : BlockId}
+    (hp : EntryPath f path i) (hj : j ∈ path) :
+    ∃ pre, EntryPath f pre j ∧ pre.length < path.length ∧
+      ∀ x, x ∈ pre → x ∈ path := by
+  induction hp with
+  | entry => simp at hj
+  | @edge path i b e hp hb he ih =>
+      rw [List.mem_append] at hj
+      rcases hj with hj | hj
+      · obtain ⟨pre, hpre, hlen, hsub⟩ := ih hj
+        refine ⟨pre, hpre, ?_, fun x hx => List.mem_append_left _ (hsub x hx)⟩
+        simp only [List.length_append, List.length_singleton]
+        omega
+      · have hji : j = i := by simpa using hj
+        subst j
+        refine ⟨path, hp, ?_, fun x hx => List.mem_append_left _ hx⟩
+        simp
+
+/-- Every reachable block has a path ending at its first visit. -/
+theorem EntryPath.first_visit {f : Func} {path : List BlockId} {i : BlockId}
+    (hp : EntryPath f path i) :
+    ∃ pre, EntryPath f pre i ∧ i ∉ pre := by
+  by_cases hi : i ∈ path
+  · obtain ⟨pre, hpre, hlen, -⟩ := hp.prefix_of_mem hi
+    exact hpre.first_visit
+  · exact ⟨path, hp, hi⟩
+termination_by path.length
+decreasing_by exact hlen
+
+/-- A strict dominator cannot be dominated back by its target at a reachable
+site. -/
+theorem StrictBlockDom.not_reverse {f : Func} {d i : BlockId}
+    (hs : StrictBlockDom f d i) {path : List BlockId}
+    (hp : EntryPath f path d) : ¬ BlockDom f i d := by
+  intro hr
+  obtain ⟨pre, hpre, hdnot⟩ := hp.first_visit
+  rcases hr pre hpre with hid | hi
+  · subst i
+    exact hdnot (hs pre hpre)
+  · obtain ⟨prei, hprei, -, hsub⟩ := hpre.prefix_of_mem hi
+    exact hdnot (hsub d (hs prei hprei))
+
+/-- Under `domCheck`, the unique block defining `x` dominates every block
+that reads `x`. -/
+theorem blockDef_dominates_use {f : Func} {li : Array (List ValId)}
+    (hnd : f.allDefs.Nodup) (hli : ToAsm.liveInSets f = some li)
+    (hdom : ToAsm.Func.domCheck f = true)
+    {di : BlockId} {db : Block} (hdb : f.blocks[di]? = some db)
+    {x : ValId} (hxdef : x ∈ ToAsm.blockDefs db)
+    {i : BlockId} {b : Block} (hb : f.blocks[i]? = some b)
+    (hxuse : x ∈ ToAsm.blockUses b) : BlockDom f di i := by
+  intro path hp
+  by_cases hieq : di = i
+  · exact Or.inl hieq
+  · right
+    have hxnot : x ∉ ToAsm.blockDefs b := by
+      intro hxb
+      exact hieq (Passes.block_def_index_unique hnd hdb hb hxdef hxb)
+    have hxlive := ToAsm.liveIn_of_uses hli hb hxuse hxnot
+    rcases hp.live_origin hli hdom hxlive with hparam | horigin
+    · have hxflat : x ∈ f.blocks.toList.flatMap blockAllDefs := by
+        apply List.mem_flatMap.mpr
+        refine ⟨db, block_mem_of_getElem? hdb, ?_⟩
+        simpa [blockAllDefs, ToAsm.mem_blockDefs] using hxdef
+      exact False.elim ((List.nodup_append.mp hnd).2.2 x hparam x hxflat rfl)
+    · obtain ⟨j, hj, c, hc, hxc⟩ := horigin
+      have hji := Passes.block_def_index_unique hnd hdb hc hxdef hxc
+      simpa [hji] using hj
+
+theorem edge_arg_mem_blockUses {b : Block} {e : Edge} (he : e ∈ b.term.edges)
+    {x : ValId} (hx : x ∈ e.args) : x ∈ ToAsm.blockUses b := by
+  rw [ToAsm.mem_blockUses]
+  right
+  cases ht : b.term with
+  | jump ej =>
+      simp only [ht, Term.edges, List.mem_singleton] at he
+      subst e
+      simpa [ht, Term.uses] using hx
+  | branch c et ef =>
+      simp only [ht, Term.edges, List.mem_cons, List.mem_singleton,
+        List.not_mem_nil, or_false] at he
+      rcases he with rfl | rfl
+      · simp [ht, Term.uses, hx]
+      · simp [ht, Term.uses, hx]
+  | ret xs => simp [ht, Term.edges] at he
+  | halt yop as => simp [ht, Term.edges] at he
+
+theorem instr_use_mem_blockUses {b : Block} {ins : Instr} (hi : ins ∈ b.instrs)
+    {x : ValId} (hx : x ∈ ins.uses) : x ∈ ToAsm.blockUses b := by
+  rw [ToAsm.mem_blockUses]
+  exact Or.inl (List.mem_flatMap.mpr ⟨ins, hi, hx⟩)
+
+theorem term_use_mem_blockUses {b : Block} {x : ValId} (hx : x ∈ b.term.uses) :
+    x ∈ ToAsm.blockUses b := by
+  rw [ToAsm.mem_blockUses]
+  exact Or.inr hx
+
+/-- The unique definition of a selected trivial parameter's replacement is a
+strict dominator of the parameter block.  A first arrival cannot use the
+allowed self value `p`; it therefore reads `v`, while later self arrivals
+inherit the fact from the earlier visit. -/
+theorem trivial_replacement_strict_dom {f : Func} {li : Array (List ValId)}
+    (hnd : f.allDefs.Nodup) (hli : ToAsm.liveInSets f = some li)
+    (hdom : ToAsm.Func.domCheck f = true)
+    {bi i p v : Nat} (hfind : Passes.findTrivialParam f = some (bi, i, p, v))
+    {vi : BlockId} {vb : Block} (hvb : f.blocks[vi]? = some vb)
+    (hvdef : v ∈ ToAsm.blockDefs vb) : StrictBlockDom f vi bi := by
+  obtain ⟨-, hbientry, -, -, -, -, -, -⟩ := Passes.findTrivialParam_inv hfind
+  intro path hp
+  have go : ∀ {path j}, EntryPath f path j → j = bi → vi ∈ path := by
+    intro path j hp
+    induction hp with
+    | entry =>
+        intro hentry
+        exact False.elim (hbientry hentry.symm)
+    | @edge path j b e hp hb he ih =>
+        intro htarget
+        by_cases hj : j = bi
+        · have hprev := ih hj
+          exact List.mem_append_left _ hprev
+        · obtain ⟨a, ha, hapv, hapself⟩ :=
+            Passes.findTrivialParam_edge hfind hb he htarget
+          have hav : a = v := by
+            rcases hapv with hap | hav
+            · exact False.elim (hj (hapself hap))
+            · exact hav
+          have hvarg : v ∈ e.args := by
+            subst a
+            exact List.mem_iff_getElem?.mpr ⟨i, ha⟩
+          have hvuse := edge_arg_mem_blockUses he hvarg
+          rcases blockDef_dominates_use hnd hli hdom hvb hvdef hb hvuse path hp with
+            hvi | hvi
+          · subst j
+            exact List.mem_append_right _ (by simp)
+          · exact List.mem_append_left _ hvi
+  exact go hp rfl
+
+/-- Register relation for one trivial-parameter removal.  Outside `p` the
+two executions are in exact lockstep.  The alias itself is required only in
+the dominance region of `p`; outside that region it is the bounded stale
+zone. -/
+def TrivialAgree (f : Func) (bi : BlockId) (p v : ValId) (cur : BlockId)
+    (R R' : Regs) : Prop :=
+  (∀ x, x ≠ p → R x = R' x) ∧
+  (BlockDom f bi cur → R p = R' v)
+
+theorem TrivialAgree.getMany {f : Func} {li : Array (List ValId)}
+    (hnd : f.allDefs.Nodup) (hli : ToAsm.liveInSets f = some li)
+    (hdom : ToAsm.Func.domCheck f = true)
+    {bi i p v cur : Nat} (hfind : Passes.findTrivialParam f = some (bi, i, p, v))
+    {pb b : Block} (hpb : f.blocks[bi]? = some pb)
+    (hpdef : p ∈ ToAsm.blockDefs pb) (hb : f.blocks[cur]? = some b)
+    {R R' : Regs} (ha : TrivialAgree f bi p v cur R R')
+    {xs : List ValId} (hxs : ∀ x ∈ xs, x ∈ ToAsm.blockUses b)
+    {vals : List U256} (hg : R.getMany xs = some vals) :
+    R'.getMany (Passes.substVs ((∅ : Passes.Subst).insert p v) xs) = some vals := by
+  apply Regs.getMany_substVs (hget := hg)
+  intro x hx
+  rw [Passes.substV_single]
+  by_cases hxp : x = p
+  · subst x
+    simp only [if_true]
+    exact ha.2 (blockDef_dominates_use hnd hli hdom hpb hpdef hb (hxs p hx))
+  · simp [hxp, ha.1 x hxp]
+
+theorem TrivialAgree.get {f : Func} {li : Array (List ValId)}
+    (hnd : f.allDefs.Nodup) (hli : ToAsm.liveInSets f = some li)
+    (hdom : ToAsm.Func.domCheck f = true)
+    {bi p v cur : Nat} {pb b : Block} (hpb : f.blocks[bi]? = some pb)
+    (hpdef : p ∈ ToAsm.blockDefs pb) (hb : f.blocks[cur]? = some b)
+    {R R' : Regs} (ha : TrivialAgree f bi p v cur R R')
+    {x : ValId} (hxuse : x ∈ ToAsm.blockUses b) {w : U256}
+    (hx : R x = some w) :
+    R' (Passes.substV ((∅ : Passes.Subst).insert p v) x) = some w := by
+  rw [Passes.substV_single]
+  by_cases hxp : x = p
+  · subst x
+    simp only [if_true]
+    rw [← ha.2 (blockDef_dominates_use hnd hli hdom hpb hpdef hb hxuse)]
+    exact hx
+  · simp [hxp, ← ha.1 x hxp, hx]
+
+/-- Equal bindings preserve `TrivialAgree`.  If the instruction redefines
+the replacement `v`, its block strictly dominates `bi`; hence it lies outside
+`p`'s dominance region and the alias clause is intentionally dormant. -/
+theorem TrivialAgree.setMany_instr {f : Func} {li : Array (List ValId)}
+    (hnd : f.allDefs.Nodup) (hli : ToAsm.liveInSets f = some li)
+    (hdom : ToAsm.Func.domCheck f = true)
+    {bi k p v cur : Nat} (hfind : Passes.findTrivialParam f = some (bi, k, p, v))
+    {pb b : Block} (hpb : f.blocks[bi]? = some pb) (hp : p ∈ pb.params)
+    (hb : f.blocks[cur]? = some b) {path : List BlockId}
+    (hpath : EntryPath f path cur)
+    {ins : Instr} (hins : ins ∈ b.instrs)
+    {R R' : Regs} (ha : TrivialAgree f bi p v cur R R')
+    (vals : List U256) :
+    TrivialAgree f bi p v cur (R.setMany ins.defs vals)
+      (R'.setMany ins.defs vals) := by
+  have hpnot : p ∉ ins.defs := by
+    intro hpd
+    exact param_not_instr_def hnd (block_mem_of_getElem? hpb)
+      (block_mem_of_getElem? hb) hins hp hpd
+  refine ⟨?_, ?_⟩
+  · intro x hxp
+    exact Regs.setMany_congr (S := fun y => y ≠ p) ha.1 ins.defs vals x hxp
+  · intro hcur
+    have hvnot : v ∉ ins.defs := by
+      intro hvd
+      have hvblock : v ∈ ToAsm.blockDefs b := by
+        rw [ToAsm.mem_blockDefs]
+        exact Or.inr (List.mem_flatMap.mpr ⟨ins, hins, hvd⟩)
+      have hs := trivial_replacement_strict_dom hnd hli hdom hfind hb hvblock
+      exact (hs.not_reverse hpath) hcur
+    rw [Regs.setMany_of_not_mem R ins.defs vals hpnot,
+      Regs.setMany_of_not_mem R' ins.defs vals hvnot]
+    exact ha.2 hcur
+
+theorem Regs.getMany_eraseIdx {R : Regs} {xs : List ValId} {vals : List U256}
+    (hg : R.getMany xs = some vals) (i : Nat) :
+    R.getMany (xs.eraseIdx i) = some (vals.eraseIdx i) := by
+  induction xs generalizing vals i with
+  | nil =>
+      simp only [Regs.getMany_nil, Option.some.injEq] at hg
+      subst vals
+      simp
+  | cons x xs ih =>
+      rw [Regs.getMany_cons] at hg
+      cases hx : R x with
+      | none => simp [hx] at hg
+      | some w =>
+          cases ht : R.getMany xs with
+          | none => simp [hx, ht] at hg
+          | some ws =>
+              simp only [hx, ht, Option.bind_some, Option.map_some,
+                Option.some.injEq] at hg
+              subst vals
+              cases i with
+              | zero => exact ht
+              | succ i =>
+                  simp only [List.eraseIdx]
+                  simpa [Regs.getMany_cons, hx] using ih ht i
+
+/-- Removing the same parameter/value position preserves every binding except
+the removed parameter. -/
+theorem Regs.setMany_eraseIdx_agree {R R' : Regs} {ps : List ValId}
+    {vals : List U256} (hnd : ps.Nodup) (hlen : vals.length = ps.length)
+    {i : Nat} {p : ValId} (hp : ps[i]? = some p)
+    (ha : ∀ x, x ≠ p → R x = R' x) :
+    ∀ x, x ≠ p →
+      (R.setMany ps vals) x =
+        (R'.setMany (ps.eraseIdx i) (vals.eraseIdx i)) x := by
+  induction ps generalizing R R' vals i with
+  | nil => simp at hp
+  | cons q qs ih =>
+      cases vals with
+      | nil => simp at hlen
+      | cons w ws =>
+          simp only [List.length_cons, Nat.succ.injEq] at hlen
+          rw [List.nodup_cons] at hnd
+          cases i with
+          | zero =>
+              simp only [List.getElem?_cons_zero, Option.some.injEq] at hp
+              subst q
+              intro x hxp
+              simp only [List.eraseIdx_zero, Regs.setMany_cons]
+              apply Regs.setMany_congr (S := fun y => y ≠ p) _ qs ws x hxp
+              intro y hyp
+              rw [Regs.set_other _ _ hyp]
+              exact ha y hyp
+          | succ i =>
+              simp only [List.getElem?_cons_succ] at hp
+              have hqp : q ≠ p := by
+                intro heq
+                subst q
+                exact hnd.1 (List.mem_iff_getElem?.mpr ⟨i, hp⟩)
+              simp only [List.eraseIdx, Regs.setMany_cons]
+              exact ih hnd.2 hlen hp
+                (Regs.set_congr (S := fun y => y ≠ p) ha q w)
+
+theorem mem_zip_of_getElem?_eq {ps : List ValId} {xs : List ValId}
+    {i : Nat} {p a : ValId} (hp : ps[i]? = some p) (ha : xs[i]? = some a) :
+    (p, a) ∈ ps.zip xs := by
+  induction i generalizing ps xs with
+  | zero =>
+      cases ps <;> cases xs <;> simp_all
+  | succ i ih =>
+      cases ps <;> cases xs <;> simp_all [ih]
+
+theorem blockParams_nodup_of_defs {f : Func} (hnd : f.allDefs.Nodup)
+    {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b) : b.params.Nodup := by
+  have hbmem : b ∈ f.blocks.toList := block_mem_of_getElem? hb
+  rw [List.nodup_iff_count_le_one]
+  intro d
+  have hall := List.nodup_iff_count_le_one.mp hnd d
+  rw [allDefs_eq, List.count_append] at hall
+  have hblock := count_le_count_flatMap
+    (g := fun b : Block => blockAllDefs b) (d := d) hbmem
+  change (b.params ++ b.instrs.flatMap Instr.defs).count d ≤
+    (f.blocks.toList.flatMap blockAllDefs).count d at hblock
+  rw [List.count_append] at hblock
+  omega
+
+namespace Passes
+
+def elimEdge (bi i : Nat) (e : Edge) : Edge :=
+  if e.target = bi then { e with args := e.args.eraseIdx i } else e
+
+@[simp] theorem elimEdge_target (bi i : Nat) (e : Edge) :
+    (elimEdge bi i e).target = e.target := by
+  unfold elimEdge
+  split <;> rfl
+
+def elimTerm (bi i : Nat) (t : Term) : Term := mapEdges (elimEdge bi i) t
+
+def elimRest (bi i : Nat) (σ : Subst) (r : Rest) : Rest :=
+  ⟨r.instrs.map (substInstr σ), substTerm σ (elimTerm bi i r.term)⟩
+
+theorem elimBlock_rest (bi i j : Nat) (σ : Subst) (b : Block) :
+    Rest.mk (substBlock σ (removedBlock bi i j b)).instrs
+        (substBlock σ (removedBlock bi i j b)).term =
+      elimRest bi i σ ⟨b.instrs, b.term⟩ := by
+  have hedge : (fun e : Edge =>
+      if e.target = bi then { e with args := e.args.eraseIdx i } else e) =
+      elimEdge bi i := by
+    funext e
+    rfl
+  by_cases hj : j = bi <;>
+    simp [substBlock, removedBlock, elimRest, elimTerm, hj, hedge]
+
+end Passes
+
+theorem TrivialAgree.edge {f : Func} {li : Array (List ValId)}
+    (hnd : f.allDefs.Nodup) (hli : ToAsm.liveInSets f = some li)
+    (hdom : ToAsm.Func.domCheck f = true)
+    {bi k p v cur : Nat} (hfind : Passes.findTrivialParam f = some (bi, k, p, v))
+    {pb b tb : Block} (hpb : f.blocks[bi]? = some pb)
+    (hp : p ∈ pb.params) (hpdef : p ∈ ToAsm.blockDefs pb)
+    (hb : f.blocks[cur]? = some b) {path : List BlockId}
+    (hpath : EntryPath f path cur)
+    {e : Edge} (he : e ∈ b.term.edges) (htb : f.blocks[e.target]? = some tb)
+    {R R' : Regs} (ha : TrivialAgree f bi p v cur R R')
+    {vals : List U256} (hg : R.getMany e.args = some vals)
+    (hlen : tb.params.length = vals.length) :
+    let σ := ((∅ : Passes.Subst).insert p v)
+    let e' := Passes.substEdge σ (Passes.elimEdge bi k e)
+    let vals' := if e.target = bi then vals.eraseIdx k else vals
+    R'.getMany e'.args = some vals' ∧
+    (Passes.substBlock σ (Passes.removedBlock bi k e.target tb)).params.length =
+      vals'.length ∧
+    TrivialAgree f bi p v e.target
+      (R.setMany tb.params vals)
+      (R'.setMany
+        (Passes.substBlock σ (Passes.removedBlock bi k e.target tb)).params vals') := by
+  dsimp only
+  have hread : R'.getMany
+      (Passes.substVs ((∅ : Passes.Subst).insert p v) e.args) = some vals :=
+    ha.getMany hnd hli hdom hfind hpb hpdef hb
+      (fun x hx => edge_arg_mem_blockUses he hx) hg
+  obtain ⟨hbi, -, hk, hpget, -, -, -, -⟩ := Passes.findTrivialParam_inv hfind
+  have hvp : v ≠ p := by
+    intro hvp
+    subst v
+    obtain ⟨_, _, _, _, _, _, hsingle, _⟩ := Passes.findTrivialParam_inv hfind
+    have hm : p ∈ ((((Passes.inEdgeArgs f)[bi]!).filterMap (·[k]?)).filter
+        (· != p)).eraseDups := by simpa [hsingle]
+    have hm' := List.mem_filter.mp (List.mem_eraseDups.mp hm)
+    simpa using hm'.2
+  by_cases het : e.target = bi
+  · rw [het] at htb ⊢
+    have htbeq : tb = pb := Option.some.inj (htb.symm.trans hpb)
+    subst tb
+    have hpgetQ : pb.params[k]? = some p := by
+      have hbidx : f.blocks[bi] = pb := (Array.getElem?_eq_some_iff.mp hpb).2
+      have hbang : f.blocks[bi]! = pb :=
+        (Passes.getElem!_eq_getElem hbi).trans hbidx
+      have hk' : k < pb.params.length := by simpa [hbang] using hk
+      have hpEq : pb.params[k] = p := by
+        have hpget' := hpget
+        rw [hbang] at hpget'
+        simpa [List.getElem!_eq_getElem?_getD,
+          List.getElem?_eq_getElem hk'] using hpget'
+      rw [List.getElem?_eq_getElem hk', hpEq]
+    have hndp := blockParams_nodup_of_defs hnd hpb
+    have hargslen : e.args.length = vals.length := Regs.getMany_length hg
+    have hpa : pb.params.length = e.args.length := by omega
+    obtain ⟨a, haidx, hapv, -⟩ :=
+      Passes.findTrivialParam_edge hfind hb he het
+    have hpair : (p, a) ∈ pb.params.zip e.args :=
+      mem_zip_of_getElem?_eq hpgetQ haidx
+    have hkpb : k < pb.params.length := (List.getElem?_eq_some_iff.mp hpgetQ).1
+    have hvnot : v ∉ pb.params := by
+      intro hv
+      have hvdef : v ∈ ToAsm.blockDefs pb :=
+        ToAsm.mem_blockDefs.mpr (Or.inl hv)
+      have hs := trivial_replacement_strict_dom hnd hli hdom hfind hpb hvdef
+      have hnext0 : EntryPath f (path ++ [cur]) e.target := .edge hpath hb he
+      have hnext : EntryPath f (path ++ [cur]) bi := by simpa [het] using hnext0
+      exact (hs.not_reverse hnext) (BlockDom.refl f bi)
+    have hgetErase := Regs.getMany_eraseIdx hread k
+    have hgetOut : R'.getMany
+        (Passes.substEdge ((∅ : Passes.Subst).insert p v)
+          (Passes.elimEdge bi k e)).args = some (vals.eraseIdx k) := by
+      simpa [Passes.elimEdge, Passes.substEdge, Passes.substVs,
+        List.eraseIdx_map, het] using hgetErase
+    simp only [if_pos rfl]
+    refine ⟨hgetOut, ?_, ?_⟩
+    · simp [Passes.substBlock, Passes.removedBlock, List.length_eraseIdx,
+        hkpb, hlen]
+    · refine ⟨?_, ?_⟩
+      · simpa [Passes.substBlock, Passes.removedBlock] using
+          Regs.setMany_eraseIdx_agree hndp (by omega) hpgetQ ha.1
+      · intro _
+        simp [Passes.substBlock, Passes.removedBlock]
+        rw [Regs.setMany_of_not_mem R' (pb.params.eraseIdx k)
+          (vals.eraseIdx k) (fun hm => hvnot (List.mem_of_mem_eraseIdx hm))]
+        rw [Regs.setMany_getMany_of_mem_zip hndp hpa hg hpair]
+        rcases hapv with hap | hav
+        · subst a
+          have hpdom := blockDef_dominates_use hnd hli hdom hpb hpdef hb
+              (edge_arg_mem_blockUses he
+                (List.mem_iff_getElem?.mpr ⟨k, haidx⟩))
+          exact ha.2 hpdom
+        · subst a
+          exact ha.1 v hvp
+  · have hgetOut : R'.getMany
+        (Passes.substEdge ((∅ : Passes.Subst).insert p v)
+          (Passes.elimEdge bi k e)).args = some vals := by
+      simpa [Passes.elimEdge, het, Passes.substEdge] using hread
+    simp only [het, if_false]
+    have hpnot : p ∉ tb.params := by
+      intro hpt
+      have hptdef : p ∈ ToAsm.blockDefs tb := ToAsm.mem_blockDefs.mpr (Or.inl hpt)
+      exact het (Passes.block_def_index_unique (i := bi) (j := e.target)
+        hnd hpb htb hpdef hptdef).symm
+    refine ⟨hgetOut, by simpa [Passes.substBlock, Passes.removedBlock, het] using hlen,
+      ?_⟩
+    refine ⟨?_, ?_⟩
+    · simpa [Passes.substBlock, Passes.removedBlock, het] using
+        Regs.setMany_congr (S := fun x => x ≠ p) ha.1 tb.params vals
+    · intro htarget
+      have hcur := htarget.pred hpath hb he rfl (Ne.symm het)
+      have hvnot : v ∉ tb.params := by
+        intro hv
+        have hvdef : v ∈ ToAsm.blockDefs tb := ToAsm.mem_blockDefs.mpr (Or.inl hv)
+        have hs := trivial_replacement_strict_dom hnd hli hdom hfind htb hvdef
+        have hnext : EntryPath f (path ++ [cur]) e.target := .edge hpath hb he
+        exact (hs.not_reverse hnext) htarget
+      simp only [Passes.substBlock, Passes.removedBlock, het, if_false]
+      rw [Regs.setMany_of_not_mem R tb.params vals hpnot,
+        Regs.setMany_of_not_mem R' tb.params vals hvnot]
+      exact ha.2 hcur
+
+/-- Lockstep replay for one selected trivial parameter. -/
+theorem elimTrivialParam_one_exec {P : Prog} {f : Func} {li : Array (List ValId)}
+    (hnd : f.allDefs.Nodup) (hli : ToAsm.liveInSets f = some li)
+    (hdom : ToAsm.Func.domCheck f = true)
+    {bi k p v : Nat} (hfind : Passes.findTrivialParam f = some (bi, k, p, v))
+    {pb : Block} (hpb : f.blocks[bi]? = some pb) (hp : p ∈ pb.params)
+    (hpdef : p ∈ ToAsm.blockDefs pb)
+    {R : Regs} {st : EvmState} {rest : Rest} {res : FRes}
+    (h : Exec (model := model) P f R st rest res) :
+    ∀ {cur : BlockId} {b : Block} {path : List BlockId},
+      f.blocks[cur]? = some b → EntryPath f path cur →
+      (∀ ins ∈ rest.instrs, ins ∈ b.instrs) → rest.term = b.term →
+      ∀ {R' : Regs}, TrivialAgree f bi p v cur R R' →
+      Exec (model := model) P
+        (Passes.substFunc ((∅ : Passes.Subst).insert p v)
+          (Passes.removeParam f bi k)) R' st
+        (Passes.elimRest bi k ((∅ : Passes.Subst).insert p v) rest) res := by
+  induction h with
+  | @const f R st d w is t res htail ih =>
+      intro cur b path hb hpath hmem hterm R' ha
+      have hi : Instr.const d w ∈ b.instrs := hmem _ (by simp)
+      rw [Passes.elimRest]
+      simp only [List.map_cons, Passes.substInstr]
+      refine Exec.const (ih hnd hli hdom hfind hpb hb hpath
+        (fun ins hins => hmem ins (List.mem_cons_of_mem _ hins)) hterm ?_)
+      simpa [Instr.defs, Regs.setMany_cons, Regs.setMany_nil_left] using
+        ha.setMany_instr hnd hli hdom hfind hpb hp hb hpath hi [w]
+  | @op f R st st' ds yop as args rets is t res hg hop hlen htail ih =>
+      intro cur b path hb hpath hmem hterm R' ha
+      have hi : Instr.op ds yop as ∈ b.instrs := hmem _ (by simp)
+      have hg' := ha.getMany hnd hli hdom hfind hpb hpdef hb
+        (fun x hx => instr_use_mem_blockUses hi (by simpa [Instr.uses] using hx)) hg
+      rw [Passes.elimRest]
+      simp only [List.map_cons, Passes.substInstr]
+      refine Exec.op hg' hop hlen (ih hnd hli hdom hfind hpb hb hpath
+        (fun ins hins => hmem ins (List.mem_cons_of_mem _ hins)) hterm ?_)
+      exact ha.setMany_instr hnd hli hdom hfind hpb hp hb hpath hi rets
+  | @opHalt f R st st' ds yop as args is t hg hop =>
+      intro cur b path hb hpath hmem hterm R' ha
+      have hi : Instr.op ds yop as ∈ b.instrs := hmem _ (by simp)
+      have hg' := ha.getMany hnd hli hdom hfind hpb hpdef hb
+        (fun x hx => instr_use_mem_blockUses hi (by simpa [Instr.uses] using hx)) hg
+      rw [Passes.elimRest]
+      simp only [List.map_cons, Passes.substInstr]
+      exact Exec.opHalt hg' hop
+  | @call f g R st st' ds as fid args rvals eb is t res hfid hg hplen heb
+      hbody hlen htail ihbody ih =>
+      intro cur b path hb hpath hmem hterm R' ha
+      have hi : Instr.call ds fid as ∈ b.instrs := hmem _ (by simp)
+      have hg' := ha.getMany hnd hli hdom hfind hpb hpdef hb
+        (fun x hx => instr_use_mem_blockUses hi (by simpa [Instr.uses] using hx)) hg
+      rw [Passes.elimRest]
+      simp only [List.map_cons, Passes.substInstr]
+      refine Exec.call hfid hg' hplen heb hbody hlen
+        (ih hnd hli hdom hfind hpb hb hpath
+        (fun ins hins => hmem ins (List.mem_cons_of_mem _ hins)) hterm ?_)
+      exact ha.setMany_instr hnd hli hdom hfind hpb hp hb hpath hi rvals
+  | @callHalt f g R st st' ds as fid args eb is t hfid hg hplen heb hbody ihbody =>
+      intro cur b path hb hpath hmem hterm R' ha
+      have hi : Instr.call ds fid as ∈ b.instrs := hmem _ (by simp)
+      have hg' := ha.getMany hnd hli hdom hfind hpb hpdef hb
+        (fun x hx => instr_use_mem_blockUses hi (by simpa [Instr.uses] using hx)) hg
+      rw [Passes.elimRest]
+      simp only [List.map_cons, Passes.substInstr]
+      exact Exec.callHalt hfid hg' hplen heb hbody
+  | @jump f R st e tb vals res htb hg hlen htail ih =>
+      intro cur b path hb hpath hmem hterm R' ha
+      have he : e ∈ b.term.edges := by rw [← hterm]; simp [Term.edges]
+      obtain ⟨hg', hlen', ha'⟩ :=
+        ha.edge hnd hli hdom hfind hpb hp hpdef hb hpath he htb hg hlen
+      have htb' := Passes.elimStep_blocks_get
+        (f := f) (bi := bi) (i := k) (p := p) (v := v) htb
+      have htb'' : (Passes.substFunc ((∅ : Passes.Subst).insert p v)
+          (Passes.removeParam f bi k)).blocks[
+            (Passes.substEdge ((∅ : Passes.Subst).insert p v)
+              (Passes.elimEdge bi k e)).target]? =
+          some (Passes.substBlock ((∅ : Passes.Subst).insert p v)
+            (Passes.removedBlock bi k e.target tb)) := by
+        simpa [Passes.substEdge] using htb'
+      have htail' := ih hnd hli hdom hfind hpb htb
+        (.edge hpath hb he) (fun ins hins => hins) rfl ha'
+      have htail'' : Exec (model := model) P
+          (Passes.substFunc ((∅ : Passes.Subst).insert p v)
+            (Passes.removeParam f bi k))
+          (R'.setMany
+            (Passes.substBlock ((∅ : Passes.Subst).insert p v)
+              (Passes.removedBlock bi k e.target tb)).params
+            (if e.target = bi then vals.eraseIdx k else vals)) st
+          ⟨(Passes.substBlock ((∅ : Passes.Subst).insert p v)
+              (Passes.removedBlock bi k e.target tb)).instrs,
+            (Passes.substBlock ((∅ : Passes.Subst).insert p v)
+              (Passes.removedBlock bi k e.target tb)).term⟩ res := by
+        rw [Passes.elimBlock_rest]
+        exact htail'
+      simpa [Passes.elimRest, Passes.elimTerm, Passes.elimEdge,
+        Passes.substTerm, Passes.mapEdges] using
+        (Exec.jump
+          (e := Passes.substEdge ((∅ : Passes.Subst).insert p v)
+            (Passes.elimEdge bi k e)) htb'' hg' hlen' htail'')
+  | @branchTrue f R st c w et ef tb vals res hc hw htb hg hlen htail ih =>
+      intro cur b path hb hpath hmem hterm R' ha
+      have het : et ∈ b.term.edges := by rw [← hterm]; simp [Term.edges]
+      have hcuse : c ∈ ToAsm.blockUses b := term_use_mem_blockUses (b := b) (by
+        rw [← hterm]
+        simp [Term.uses])
+      have hc' := ha.get hnd hli hdom hpb hpdef hb hcuse hc
+      obtain ⟨hg', hlen', ha'⟩ :=
+        ha.edge hnd hli hdom hfind hpb hp hpdef hb hpath het htb hg hlen
+      have htb' := Passes.elimStep_blocks_get
+        (f := f) (bi := bi) (i := k) (p := p) (v := v) htb
+      have htb'' : (Passes.substFunc ((∅ : Passes.Subst).insert p v)
+          (Passes.removeParam f bi k)).blocks[
+            (Passes.substEdge ((∅ : Passes.Subst).insert p v)
+              (Passes.elimEdge bi k et)).target]? =
+          some (Passes.substBlock ((∅ : Passes.Subst).insert p v)
+            (Passes.removedBlock bi k et.target tb)) := by
+        simpa [Passes.substEdge] using htb'
+      have htail' := ih hnd hli hdom hfind hpb htb
+        (.edge hpath hb het) (fun ins hins => hins) rfl ha'
+      have htail'' : Exec (model := model) P
+          (Passes.substFunc ((∅ : Passes.Subst).insert p v)
+            (Passes.removeParam f bi k))
+          (R'.setMany
+            (Passes.substBlock ((∅ : Passes.Subst).insert p v)
+              (Passes.removedBlock bi k et.target tb)).params
+            (if et.target = bi then vals.eraseIdx k else vals)) st
+          ⟨(Passes.substBlock ((∅ : Passes.Subst).insert p v)
+              (Passes.removedBlock bi k et.target tb)).instrs,
+            (Passes.substBlock ((∅ : Passes.Subst).insert p v)
+              (Passes.removedBlock bi k et.target tb)).term⟩ res := by
+        rw [Passes.elimBlock_rest]
+        exact htail'
+      simpa [Passes.elimRest, Passes.elimTerm, Passes.elimEdge,
+        Passes.substTerm, Passes.mapEdges] using
+        (Exec.branchTrue
+          (et := Passes.substEdge ((∅ : Passes.Subst).insert p v)
+            (Passes.elimEdge bi k et))
+          (ef := Passes.substEdge ((∅ : Passes.Subst).insert p v)
+            (Passes.elimEdge bi k ef))
+          hc' hw htb'' hg' hlen' htail'')
+  | @branchFalse f R st c et ef tb vals res hc htb hg hlen htail ih =>
+      intro cur b path hb hpath hmem hterm R' ha
+      have hef : ef ∈ b.term.edges := by rw [← hterm]; simp [Term.edges]
+      have hcuse : c ∈ ToAsm.blockUses b := term_use_mem_blockUses (b := b) (by
+        rw [← hterm]
+        simp [Term.uses])
+      have hc' := ha.get hnd hli hdom hpb hpdef hb hcuse hc
+      obtain ⟨hg', hlen', ha'⟩ :=
+        ha.edge hnd hli hdom hfind hpb hp hpdef hb hpath hef htb hg hlen
+      have htb' := Passes.elimStep_blocks_get
+        (f := f) (bi := bi) (i := k) (p := p) (v := v) htb
+      have htb'' : (Passes.substFunc ((∅ : Passes.Subst).insert p v)
+          (Passes.removeParam f bi k)).blocks[
+            (Passes.substEdge ((∅ : Passes.Subst).insert p v)
+              (Passes.elimEdge bi k ef)).target]? =
+          some (Passes.substBlock ((∅ : Passes.Subst).insert p v)
+            (Passes.removedBlock bi k ef.target tb)) := by
+        simpa [Passes.substEdge] using htb'
+      have htail' := ih hnd hli hdom hfind hpb htb
+        (.edge hpath hb hef) (fun ins hins => hins) rfl ha'
+      have htail'' : Exec (model := model) P
+          (Passes.substFunc ((∅ : Passes.Subst).insert p v)
+            (Passes.removeParam f bi k))
+          (R'.setMany
+            (Passes.substBlock ((∅ : Passes.Subst).insert p v)
+              (Passes.removedBlock bi k ef.target tb)).params
+            (if ef.target = bi then vals.eraseIdx k else vals)) st
+          ⟨(Passes.substBlock ((∅ : Passes.Subst).insert p v)
+              (Passes.removedBlock bi k ef.target tb)).instrs,
+            (Passes.substBlock ((∅ : Passes.Subst).insert p v)
+              (Passes.removedBlock bi k ef.target tb)).term⟩ res := by
+        rw [Passes.elimBlock_rest]
+        exact htail'
+      simpa [Passes.elimRest, Passes.elimTerm, Passes.elimEdge,
+        Passes.substTerm, Passes.mapEdges] using
+        (Exec.branchFalse
+          (et := Passes.substEdge ((∅ : Passes.Subst).insert p v)
+            (Passes.elimEdge bi k et))
+          (ef := Passes.substEdge ((∅ : Passes.Subst).insert p v)
+            (Passes.elimEdge bi k ef))
+          hc' htb'' hg' hlen' htail'')
+  | @ret f R st xs vals hg =>
+      intro cur b path hb hpath hmem hterm R' ha
+      have hg' := ha.getMany hnd hli hdom hfind hpb hpdef hb
+        (fun x hx => term_use_mem_blockUses (b := b) (by
+          rw [← hterm]
+          simpa [Term.uses] using hx)) hg
+      simpa [Passes.elimRest, Passes.elimTerm, Passes.substTerm,
+        Passes.substVs, Passes.mapEdges] using (Exec.ret hg')
+  | @halt f R st st' yop as args hg hop =>
+      intro cur b path hb hpath hmem hterm R' ha
+      have hg' := ha.getMany hnd hli hdom hfind hpb hpdef hb
+        (fun x hx => term_use_mem_blockUses (b := b) (by
+          rw [← hterm]
+          simpa [Term.uses] using hx)) hg
+      simpa [Passes.elimRest, Passes.elimTerm, Passes.substTerm,
+        Passes.substVs, Passes.mapEdges] using (Exec.halt hg' hop)
+
 /-- **Pass 1 (trivial block-parameter elimination) soundness**, under dominance.
 
-`sorry`. The invariant is `LiveAgree li i σ R R'` for `σ = (p ↦ v)`, carried
+**Proved below.** The invariant refines `LiveAgree` into a lockstep relation
+with a dominance-delimited stale zone for `σ = (p ↦ v)`, carried
 through the derivation block by block:
 
 * base case: `liveAgree_entry` (proved) — `domCheck` says only `f.params` is live
@@ -10104,16 +10787,52 @@ same failed step.
 
 This is the shared missing preservation lemma with CSE below, not a remaining
 loop-inversion or edge-arity obligation. -/
-theorem elimTrivialParams_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState}
-    {res : FRes} {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
-    (hdom : ToAsm.Func.domCheck f = true)
+theorem elimTrivialParam_one_sound {P : Prog} {f : Func} {args : List U256}
+    {st : EvmState} {res : FRes} {bi k p v : Nat}
+    (hnd : f.allDefs.Nodup) (hdom : ToAsm.Func.domCheck f = true)
+    (hfind : Passes.findTrivialParam f = some (bi, k, p, v))
+    {eb eb' : Block}
     (heb : f.blocks[f.entry]? = some eb)
-    (heb' : (Passes.elimTrivialParams f).blocks[f.entry]? = some eb')
+    (heb' : (Passes.substFunc ((∅ : Passes.Subst).insert p v)
+      (Passes.removeParam f bi k)).blocks[f.entry]? = some eb')
     (hexec : Exec (model := model) P f (Regs.empty.setMany f.params args) st
       ⟨eb.instrs, eb.term⟩ res) :
-    Exec (model := model) P (Passes.elimTrivialParams f) (Regs.empty.setMany f.params args) st
-      ⟨eb'.instrs, eb'.term⟩ res := by
-  sorry
+    Exec (model := model) P
+      (Passes.substFunc ((∅ : Passes.Subst).insert p v)
+        (Passes.removeParam f bi k))
+      (Regs.empty.setMany f.params args) st ⟨eb'.instrs, eb'.term⟩ res := by
+  obtain ⟨hbi, hbientry, hk, hpget, -, -, -, -⟩ :=
+    Passes.findTrivialParam_inv hfind
+  let pb := f.blocks[bi]
+  have hpb : f.blocks[bi]? = some pb := Array.getElem?_eq_getElem hbi
+  have hbang : f.blocks[bi]! = pb := Passes.getElem!_eq_getElem hbi
+  have hk' : k < pb.params.length := by simpa [hbang] using hk
+  have hpEq : pb.params[k] = p := by
+    have hpget' := hpget
+    rw [hbang] at hpget'
+    simpa [List.getElem!_eq_getElem?_getD,
+      List.getElem?_eq_getElem hk'] using hpget'
+  have hp : p ∈ pb.params := by rw [← hpEq]; exact List.getElem_mem hk'
+  have hpdef : p ∈ ToAsm.blockDefs pb := ToAsm.mem_blockDefs.mpr (Or.inl hp)
+  obtain ⟨li, hli⟩ := ToAsm.liveInSets_isSome f
+  have ha : TrivialAgree f bi p v f.entry
+      (Regs.empty.setMany f.params args) (Regs.empty.setMany f.params args) := by
+    refine ⟨fun _ _ => rfl, ?_⟩
+    intro hd
+    rcases hd [] EntryPath.entry with heq | hm
+    · exact False.elim (hbientry heq)
+    · simp at hm
+  have hsim := elimTrivialParam_one_exec hnd hli hdom hfind hpb hp hpdef
+    hexec heb EntryPath.entry (fun ins hins => hins) rfl ha
+  have hout := Passes.elimStep_blocks_get
+    (bi := bi) (i := k) (p := p) (v := v) heb
+  rw [heb'] at hout
+  have heq : eb' = Passes.substBlock ((∅ : Passes.Subst).insert p v)
+      (Passes.removedBlock bi k f.entry eb) := by
+    exact Option.some.inj hout
+  subst eb'
+  rw [Passes.elimBlock_rest]
+  exact hsim
 
 /-! ### Constant-folding execution invariant -/
 
@@ -10797,6 +11516,107 @@ theorem cseInstrsOut_eq_fold (τ : Subst) (l : List Instr)
 
 end Passes
 
+namespace Passes
+
+omit model in
+theorem cseInstrFold_defs_source (l : List Instr) (acc : List Instr)
+    (tab : CseTab) (σ : Subst) {x : ValId}
+    (hx : x ∈ (l.foldl (fun s i => cseInstrStep i s)
+      ⟨acc, tab, σ⟩).1.flatMap Instr.defs) :
+    x ∈ acc.flatMap Instr.defs ∨ x ∈ l.flatMap Instr.defs := by
+  induction l generalizing acc tab σ with
+  | nil => exact Or.inl hx
+  | cons i is ih =>
+      rw [List.foldl_cons] at hx
+      rcases ih _ _ _ hx with hold | htail
+      · rcases cseInstrStep_out (i := i) (acc := acc) (tab := tab) (σ := σ) with hs | hs
+        · change x ∈ (cseInstrStep i ⟨acc, tab, σ⟩).1.flatMap Instr.defs at hold
+          rw [hs] at hold
+          exact Or.inl hold
+        · change x ∈ (cseInstrStep i ⟨acc, tab, σ⟩).1.flatMap Instr.defs at hold
+          rw [hs, List.flatMap_cons] at hold
+          rcases List.mem_append.mp hold with hnew | hold
+          · exact Or.inr (by
+              rw [List.flatMap_cons]
+              apply List.mem_append_left
+              simpa using hnew)
+          · exact Or.inl hold
+      · exact Or.inr (by
+          rw [List.flatMap_cons]
+          exact List.mem_append_right _ htail)
+
+omit model in
+theorem cseBlockOut_def_source {f : Func} {i : BlockId} {b : Block}
+    (hb : f.blocks[i]? = some b) {x : ValId}
+    (hx : x ∈ ToAsm.blockDefs
+      (substBlock (csePrefix f f.blocks.size).2.2 (cseBlockOut f i))) :
+    x ∈ ToAsm.blockDefs b := by
+  have hi : i < f.blocks.size := (Array.getElem?_eq_some_iff.mp hb).1
+  have hbang : f.blocks[i]! = b := by
+    rw [getElem!_eq_getElem hi]
+    exact (Array.getElem?_eq_some_iff.mp hb).2
+  rw [ToAsm.mem_blockDefs] at hx ⊢
+  rcases hx with hp | hd
+  · exact Or.inl (by simpa [substBlock, cseBlockOut, hbang] using hp)
+  · right
+    simp only [substBlock, List.mem_flatMap] at hd
+    obtain ⟨j, hj, hxj⟩ := hd
+    obtain ⟨j0, hj0, rfl⟩ := List.mem_map.mp hj
+    have hxj0 : x ∈ j0.defs := by simpa using hxj
+    let st := csePrefix f i
+    let tab := cseEntryTab f (inEdgeSources f) st.2.1 i
+    let r := b.instrs.foldl (fun s ins => cseInstrStep ins s)
+      ⟨[], tab, st.2.2⟩
+    have hjr : j0 ∈ r.1 := by
+      simpa [cseBlockOut, hbang, st, tab, r] using hj0
+    have hflat : x ∈ r.1.flatMap Instr.defs :=
+      List.mem_flatMap.mpr ⟨j0, hjr, hxj0⟩
+    rcases cseInstrFold_defs_source b.instrs [] tab st.2.2 hflat with hnil | hout
+    · simp at hnil
+    · exact hout
+
+end Passes
+
+/-- Runtime-independent stale-zone fact for inherited CSE entries: the
+representative's unique defining block strictly dominates the block at which
+the entry is available. -/
+theorem cseAvail_strict_dom {f : Func} (hnd : f.allDefs.Nodup)
+    (hwf : f.wfCheck n = true) {di : BlockId} {db : Block}
+    (hdb : f.blocks[di]? = some db) {x : ValId}
+    (hxdef : x ∈ ToAsm.blockDefs db) {i : BlockId}
+    (hx : x ∈ Passes.cseAvail f i) : StrictBlockDom f di i := by
+  intro path hp
+  induction hp with
+  | entry =>
+      rw [Passes.cseAvail_entry] at hx
+      simp at hx
+  | @edge path j b e hp hb he ih =>
+      rcases Passes.cseAvail_succ hnd hwf hb he hx with hlocal | havail
+      · have horigin := Passes.cseBlockOut_def_source hb hlocal
+        have hji := Passes.block_def_index_unique hnd hdb hb hxdef horigin
+        subst j
+        exact List.mem_append_right _ (by simp)
+      · exact List.mem_append_left _ (ih havail)
+
+/-- Every final CSE alias is either represented earlier in the same block or
+by a definition in a strict predecessor chain. -/
+theorem cse_alias_zone {f : Func} (hnd : f.allDefs.Nodup)
+    (hwf : f.wfCheck n = true) {d d0 : ValId}
+    (hmap : (Passes.csePrefix f f.blocks.size).2.2[d]? = some d0)
+    {di : BlockId} {db : Block} (hdb : f.blocks[di]? = some db)
+    (hddef : d ∈ ToAsm.blockDefs db) {ri : BlockId} {rb : Block}
+    (hrb : f.blocks[ri]? = some rb) (hrdef : d0 ∈ ToAsm.blockDefs rb) :
+    ri = di ∨ StrictBlockDom f ri di := by
+  let τ := (Passes.csePrefix f f.blocks.size).2.2
+  have hsubst : Passes.substV τ d = d0 := by
+    simp [τ, Passes.substV, Std.HashMap.getD_eq_getD_getElem?, hmap]
+  have hresolve := (Passes.cseBlock_spec hnd hdb).2.1 d hddef
+  rw [hsubst] at hresolve
+  rcases hresolve with hlocal | havail
+  · have horigin := Passes.cseBlockOut_def_source hdb hlocal
+    exact Or.inl (Passes.block_def_index_unique hnd hrb hdb hrdef horigin)
+  · exact Or.inr (cseAvail_strict_dom hnd hwf hrb hrdef havail)
+
 /-- **Pass 3 (local CSE) soundness**, under dominance.
 
 `sorry`. Same `LiveAgree` invariant as pass 1, with `σ` the accumulated
@@ -10874,7 +11694,7 @@ theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res 
 
 /- **Pass 4 (dead value elimination) soundness.** No dominance hypothesis.
 
-`sorry`: a simulation whose invariant is "`R` (original) and `R'` (optimized)
+The proved simulation uses the invariant "`R` (original) and `R'` (optimized)
 agree on every value in `Passes.liveSet f`", stepped with the frame lemma
 `exec_congr`; the deleted instructions are exactly those whose destinations
 nothing reads, so the invariant is preserved by construction and no dominance is
@@ -11616,6 +12436,86 @@ theorem elimTrivialParams_dom {f : Func} (hwf : f.wfCheck n = true)
     r.1.getD r.2 = r.2 at hr
   rw [hr.2.2]
   exact hr.2.1
+
+/-- **Pass 1 (trivial block-parameter elimination) soundness.**  The loop
+threads the one-removal lockstep theorem together with single-assignment and
+dominance preservation. -/
+theorem elimTrivialParams_sound {P : Prog} {f : Func} {args : List U256}
+    {st : EvmState} {res : FRes} {eb eb' : Block}
+    (hwf : f.wfCheck P.funcs.size = true)
+    (hdom : ToAsm.Func.domCheck f = true)
+    (heb : f.blocks[f.entry]? = some eb)
+    (heb' : (Passes.elimTrivialParams f).blocks[f.entry]? = some eb')
+    (hexec : Exec (model := model) P f (Regs.empty.setMany f.params args) st
+      ⟨eb.instrs, eb.term⟩ res) :
+    Exec (model := model) P (Passes.elimTrivialParams f)
+      (Regs.empty.setMany f.params args) st ⟨eb'.instrs, eb'.term⟩ res := by
+  have hnd : f.allDefs.Nodup := wfCheck_defs_nodup hwf
+  have loopSound : ∀ (xs : List Nat) (r : Passes.ElimTrivialLoopState),
+      r.2.params = f.params → r.2.entry = f.entry →
+      r.2.allDefs.Nodup → ToAsm.Func.domCheck r.2 = true →
+      r.1.getD r.2 = r.2 →
+      ∀ {b : Block}, r.2.blocks[f.entry]? = some b →
+        Exec (model := model) P r.2 (Regs.empty.setMany f.params args) st
+          ⟨b.instrs, b.term⟩ res →
+        let out := loopWith Passes.elimTrivialStep xs r
+        ∃ b', out.2.blocks[f.entry]? = some b' ∧
+          Exec (model := model) P out.2 (Regs.empty.setMany f.params args) st
+            ⟨b'.instrs, b'.term⟩ res ∧
+          out.1.getD out.2 = out.2 := by
+    intro xs
+    induction xs with
+    | nil =>
+        intro r hparams hentry hrnd hrdom hr b hb hrun
+        exact ⟨b, hb, hrun, hr⟩
+    | cons n ns ih =>
+        intro r hparams hentry hrnd hrdom hr b hb hrun
+        rw [loopWith_cons]
+        unfold Passes.elimTrivialStep
+        cases hfind : Passes.findTrivialParam r.2 with
+        | none =>
+            exact ⟨b, hb, hrun, by simp⟩
+        | some q =>
+            obtain ⟨bi, k, p, v⟩ := q
+            let g := Passes.substFunc ((∅ : Passes.Subst).insert p v)
+              (Passes.removeParam r.2 bi k)
+            have hentryCur : r.2.entry = f.entry := hentry
+            have hbcur : r.2.blocks[r.2.entry]? = some b := by simpa [hentryCur] using hb
+            have hrunCur : Exec (model := model) P r.2
+                (Regs.empty.setMany r.2.params args) st ⟨b.instrs, b.term⟩ res := by
+              simpa [hparams] using hrun
+            have hentrylt : r.2.entry < g.blocks.size := by
+              simpa [g, Passes.substFunc, Passes.removeParam] using
+                (Array.getElem?_eq_some_iff.mp hbcur).1
+            let b' := g.blocks[r.2.entry]
+            have hb' : g.blocks[r.2.entry]? = some b' := by
+              exact Array.getElem?_eq_getElem hentrylt
+            have hrun' := elimTrivialParam_one_sound hrnd hrdom hfind
+              hbcur hb' hrunCur
+            apply ih (⟨none, g⟩ : Passes.ElimTrivialLoopState)
+            · simpa [g, Passes.substFunc, Passes.removeParam] using hparams
+            · simpa [g, Passes.substFunc, Passes.removeParam] using hentry
+            · change g.allDefs.Nodup
+              simp only [g, Passes.substFunc_allDefs]
+              exact hrnd.sublist (Passes.removeParam_allDefs_sublist r.2 bi k)
+            · exact elimTrivialParam_one_dom hrnd hrdom hfind
+            · rfl
+            · simpa [hentry] using hb'
+            · simpa [hparams] using hrun'
+  rw [Passes.elimTrivialParams_eq_loop] at heb' ⊢
+  let r := loopWith Passes.elimTrivialStep
+    (List.range' 0 (Passes.elimTrivialFuel f) 1)
+    (⟨none, f⟩ : Passes.ElimTrivialLoopState)
+  have hs := loopSound (List.range' 0 (Passes.elimTrivialFuel f) 1)
+    (⟨none, f⟩ : Passes.ElimTrivialLoopState) rfl rfl hnd hdom rfl heb hexec
+  change ∃ b', r.2.blocks[f.entry]? = some b' ∧
+    Exec (model := model) P r.2 (Regs.empty.setMany f.params args) st
+      ⟨b'.instrs, b'.term⟩ res ∧ r.1.getD r.2 = r.2 at hs
+  obtain ⟨bout, hbout, hrunout, hr⟩ := hs
+  rw [hr] at heb' ⊢
+  have heq : eb' = bout := Option.some.inj (heb'.symm.trans hbout)
+  subst eb'
+  exact hrunout
 
 omit model in
 /-- **Dominance preservation for pass 2** — proved. `ToAsm.domCheck_of_shrinking`
