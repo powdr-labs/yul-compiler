@@ -87,7 +87,16 @@ definitions nothing reads.
   `wfCheck && domCheck`, `optimizeProg` returns the original and soundness is
   reflexivity.
 * `runOnce_dom` — dominance preservation for a pipeline round, by composition of
-  the four per-pass obligations.
+  the four per-pass obligations, and **`constFold_dom`** — the first of those four,
+  proved via `ToAsm.domCheck_of_shrinking` and pass 2's structural specification
+  (`Passes.constFold_spec`: every output block is a `CFRel`-rewrite of the input
+  block at the same index; `cfTerm_cases`, `cfInstrStep_cons`, `cfInstr_fold`,
+  `cfBlockStep_spec`, `cfBlock_fold`).
+* Both **`forIn` bridges**: `Id.forIn_eq_foldl` for pure-`yield` loops and
+  `Id.forIn_eq_loopWith` for **early-return** loops (with `loopWith` as the pure
+  model, `loopWith_yield` relating the two, and the `MProd (Option ρ) σ`
+  early-return protocol recorded as a worked example). The second unblocks
+  `findTrivialParam`, `inlineOnce` and `inlineFunc`, which all `return` early.
 * **`ToAsm.liveInSets_isSome` — the liveness fixed point always converges.**
   `Func.domCheck` is `false` by definition when `liveInSets` exhausts its fuel,
   so this is a prerequisite of *every* dominance-preservation statement. Proved
@@ -121,14 +130,14 @@ definitions nothing reads.
 
 ## The remaining frontier
 
-Thirteen `sorry`s, each documented at its declaration:
+Twelve `sorry`s, each documented at its declaration:
 
 * pass 0 (inlining): `inlineOnce_sound`, `inlineFunc_sound`, `pruneFuncs_sound`,
   `inlineProg_sound`;
 * passes 1–4: `elimTrivialParams_sound`, `constFold_sound`, `cse_sound`,
   `dve_sound`;
-* dominance preservation: `elimTrivialParams_dom`, `constFold_dom`, `cse_dom`,
-  `dve_dom` (`runOnce_dom` composes them and *is* proved);
+* dominance preservation: `elimTrivialParams_dom`, `cse_dom`, `dve_dom`
+  (`constFold_dom` and `runOnce_dom` *are* proved);
 * the gate-accepted branch of `optimizeProg_sound'`.
 
 Two kinds of obligation remain, and it is worth separating them.
@@ -1534,6 +1543,69 @@ theorem Id.forIn_array_eq_foldl {α β : Type} {body : α → β → Id (ForInSt
   rw [← Array.forIn_toList]; exact Id.forIn_eq_foldl h _ init
 
 
+/-! ### Early-return loops -/
+
+/-- The pure model of a `for` loop whose body may break: fold until a step
+returns `.done`, then stop. -/
+def loopWith {α β : Type} (g : α → β → ForInStep β) : List α → β → β
+  | [], b => b
+  | a :: as, b =>
+    match g a b with
+    | .yield b' => loopWith g as b'
+    | .done b' => b'
+
+@[simp] theorem loopWith_nil {α β : Type} (g : α → β → ForInStep β) (b : β) :
+    loopWith g [] b = b := rfl
+
+theorem loopWith_cons {α β : Type} (g : α → β → ForInStep β) (a : α) (as : List α) (b : β) :
+    loopWith g (a :: as) b =
+      match g a b with
+      | .yield b' => loopWith g as b'
+      | .done b' => b' := rfl
+
+/-- **`forIn`-to-`loopWith` bridge**: the early-return counterpart of
+`Id.forIn_eq_foldl`. A `for` loop in `Id` whose body may `return` is
+`loopWith`. -/
+theorem Id.forIn_eq_loopWith {α β : Type} {body : α → β → Id (ForInStep β)}
+    {g : α → β → ForInStep β} (h : ∀ a b, body a b = pure (g a b)) (l : List α) (init : β) :
+    (forIn l init body : Id β) = loopWith g l init := by
+  induction l generalizing init with
+  | nil => rfl
+  | cons a as ih =>
+    rw [List.forIn_cons, h a init, loopWith_cons]
+    cases g a init with
+    | yield b' => simpa using ih b'
+    | done b' => rfl
+
+theorem Id.forIn_array_eq_loopWith {α β : Type} {body : α → β → Id (ForInStep β)}
+    {g : α → β → ForInStep β} (h : ∀ a b, body a b = pure (g a b)) (as : Array α) (init : β) :
+    (forIn as init body : Id β) = loopWith g as.toList init := by
+  rw [← Array.forIn_toList]; exact Id.forIn_eq_loopWith h _ init
+
+/-- The yielding bridge is the special case where no step is `.done`. -/
+theorem loopWith_yield {α β : Type} (g : α → β → β) (l : List α) (init : β) :
+    loopWith (fun a b => ForInStep.yield (g a b)) l init = l.foldl (fun b a => g a b) init := by
+  induction l generalizing init with
+  | nil => rfl
+  | cons a as ih => rw [loopWith_cons]; exact ih (g a init)
+
+/-! ### The early-return protocol
+
+`return` inside a `for` compiles to a loop whose state is
+`MProd (Option ρ) σ` — an `Option` holding the returned value alongside the real
+mutable state — with `.done` carrying `some result`. This example records the
+shape (it is what `findTrivialParam`, `inlineOnce` and `inlineFunc` all use), so
+the next application of the bridge does not have to rediscover it. -/
+
+private example (l : List Nat) (init : MProd (Option (Option Nat)) PUnit) :
+    (forIn l init (fun (x : Nat) (_ : MProd (Option (Option Nat)) PUnit) =>
+        (if x > 10 then pure (ForInStep.done ⟨some (some x), PUnit.unit⟩)
+         else pure (ForInStep.yield ⟨none, PUnit.unit⟩) : Id _)))
+      = loopWith (fun (x : Nat) (_ : MProd (Option (Option Nat)) PUnit) =>
+          if x > 10 then ForInStep.done ⟨some (some x), PUnit.unit⟩
+          else ForInStep.yield ⟨none, PUnit.unit⟩) l init :=
+  Id.forIn_eq_loopWith (fun x r => by split <;> rfl) l init
+
 namespace Passes
 
 /-! ### Pass 2's loop, as a fold -/
@@ -1656,6 +1728,120 @@ def CFRel (b b' : Block) : Prop :=
 theorem mem_flatMap_reverse {α β} [BEq β] {l : List α} {f : α → List β} {x : β} :
     x ∈ l.reverse.flatMap f ↔ x ∈ l.flatMap f := by
   simp only [List.mem_flatMap, List.mem_reverse]
+
+/-! ### The terminator rewrite, one constructor at a time -/
+
+theorem cfTerm_jump (b : Block) (m : Std.HashMap ValId U256) {e : Edge} (hb : b.term = .jump e) :
+    cfTerm b m = b.term := by simp only [cfTerm, hb]
+
+theorem cfTerm_ret (b : Block) (m : Std.HashMap ValId U256) {vs : List ValId}
+    (hb : b.term = .ret vs) : cfTerm b m = b.term := by simp only [cfTerm, hb]
+
+theorem cfTerm_halt (b : Block) (m : Std.HashMap ValId U256) {yop : Op} {as : List ValId}
+    (hb : b.term = .halt yop as) : cfTerm b m = b.term := by simp only [cfTerm, hb]
+
+theorem cfTerm_branch (b : Block) (m : Std.HashMap ValId U256) {c : ValId} {t e : Edge}
+    (hb : b.term = .branch c t e) :
+    cfTerm b m = b.term ∨ cfTerm b m = .jump t ∨ cfTerm b m = .jump e := by
+  simp only [cfTerm, hb]
+  split
+  · rename_i v _
+    by_cases hv : (v == 0) = true
+    · exact Or.inr (Or.inr (by rw [if_pos hv]))
+    · exact Or.inr (Or.inl (by rw [if_neg hv]))
+  · exact Or.inl rfl
+
+/-- Constant folding either leaves a terminator alone or replaces a `branch` by a
+`jump` along one of its own edges. -/
+theorem cfTerm_cases (b : Block) (m : Std.HashMap ValId U256) :
+    cfTerm b m = b.term ∨ ∃ e0 ∈ b.term.edges, cfTerm b m = .jump e0 := by
+  rcases hb : b.term with e | ⟨c, t, e⟩ | vs | ⟨yop, as⟩
+  · exact Or.inl ((cfTerm_jump b m hb).trans hb)
+  · rcases cfTerm_branch b m hb with h | h | h
+    · exact Or.inl (h.trans hb)
+    · exact Or.inr ⟨t, by simp [Term.edges], h⟩
+    · exact Or.inr ⟨e, by simp [Term.edges], h⟩
+  · exact Or.inl ((cfTerm_ret b m hb).trans hb)
+  · exact Or.inl ((cfTerm_halt b m hb).trans hb)
+
+theorem cfTerm_uses (b : Block) (m : Std.HashMap ValId U256) {x : ValId}
+    (hx : x ∈ (cfTerm b m).uses) : x ∈ b.term.uses := by
+  rcases cfTerm_cases b m with h | ⟨e0, he0, h⟩
+  · rwa [h] at hx
+  · rw [h] at hx
+    simp only [Term.uses] at hx
+    rcases hb : b.term with e | ⟨c, t, e⟩ | vs | ⟨yop, as⟩ <;> rw [hb] at he0 <;>
+      simp only [Term.edges, List.mem_cons] at he0 <;>
+      simp only [Term.uses, List.mem_cons, List.mem_append] <;> grind
+
+theorem cfTerm_edges (b : Block) (m : Std.HashMap ValId U256) {e : Edge}
+    (he : e ∈ (cfTerm b m).edges) : ∃ e0 ∈ b.term.edges, e0.target = e.target := by
+  rcases cfTerm_cases b m with h | ⟨e0, he0, h⟩
+  · rw [h] at he; exact ⟨e, he, rfl⟩
+  · rw [h] at he
+    simp only [Term.edges, List.mem_singleton] at he
+    exact ⟨e0, he0, by rw [he]⟩
+
+
+/-! ### Pass 2's structural specification -/
+
+/-- One block step pushes a `CFRel`-rewrite of the source block. -/
+theorem cfBlockStep_spec (b : Block) (st : CFOuter) :
+    ∃ b', (cfBlockStep b st).1 = st.1.push b' ∧ CFRel b b' := by
+  refine ⟨_, rfl, ?_, ?_, ?_⟩
+  · intro x hx
+    rw [ToAsm.mem_blockUses] at hx ⊢
+    rcases hx with hx | hx
+    · refine Or.inl ?_
+      have h := (cfInstr_fold b.instrs ⟨st.2, []⟩).2 x (by
+        simpa [mem_flatMap_reverse] using hx)
+      simpa using h
+    · exact Or.inr (cfTerm_uses b _ hx)
+  · intro x hx
+    rw [ToAsm.mem_blockDefs] at hx ⊢
+    rcases hx with hx | hx
+    · exact Or.inl hx
+    · refine Or.inr ?_
+      have h := ((cfInstr_fold b.instrs ⟨st.2, []⟩).1 x).mpr (Or.inr hx)
+      simpa [mem_flatMap_reverse] using h
+  · intro e he
+    exact cfTerm_edges b _ he
+
+/-- The block fold builds the output array index by index. -/
+theorem cfBlock_fold (l : List Block) (st : CFOuter) (i : Nat) (b' : Block)
+    (h : (l.foldl (fun st b => cfBlockStep b st) st).1[i]? = some b') :
+    st.1[i]? = some b' ∨
+      ∃ (j : Nat) (b : Block), l[j]? = some b ∧ i = st.1.size + j ∧ CFRel b b' := by
+  induction l generalizing st with
+  | nil => exact Or.inl h
+  | cons b bs ih =>
+    obtain ⟨b'', hpush, hrel⟩ := cfBlockStep_spec b st
+    have hstep : (List.foldl (fun st b => cfBlockStep b st) st (b :: bs))
+        = List.foldl (fun st b => cfBlockStep b st) (cfBlockStep b st) bs := rfl
+    rw [hstep] at h
+    rcases ih (cfBlockStep b st) h with h1 | ⟨j, b0, hj, hij, hrel0⟩
+    · rw [hpush, Array.getElem?_push] at h1
+      split at h1
+      · rename_i hi
+        obtain rfl := Option.some.inj h1
+        exact Or.inr ⟨0, b, rfl, by omega, hrel⟩
+      · exact Or.inl h1
+    · refine Or.inr ⟨j + 1, b0, by simpa using hj, ?_, hrel0⟩
+      rw [hpush] at hij
+      simp only [Array.size_push] at hij
+      omega
+
+/-- **Pass 2's structural specification**: every block of the output is a
+`CFRel`-rewrite of the block at the same index of the input. -/
+theorem constFold_spec (f : Func) (i : BlockId) (b' : Block)
+    (h : (constFold f).blocks[i]? = some b') : ∃ b, f.blocks[i]? = some b ∧ CFRel b b' := by
+  rw [constFold_blocks_eq] at h
+  rcases cfBlock_fold f.blocks.toList ⟨#[], ∅⟩ i b' h with h1 | ⟨j, b, hj, hij, hrel⟩
+  · simp at h1
+  · refine ⟨b, ?_, hrel⟩
+    have : i = j := by simpa using hij
+    subst this
+    simpa using hj
 
 end Passes
 
@@ -1811,9 +1997,27 @@ theorem elimTrivialParams_sound {P : Prog} {f : Func} {args : List U256} {st : E
 /-- **Pass 2 (constant folding) soundness.** No dominance hypothesis.
 
 The loop is no longer in the way: `constFold_blocks_eq` (proved) turns it into a
-`List.foldl` over `cfBlockStep`, and `cfInstr_fold` (proved) says the instruction
-fold preserves definitions and invents no uses. What is still missing for
-*soundness* is the value-level part described below.
+`List.foldl` over `cfBlockStep`, and `constFold_spec` (proved) relates output
+blocks to input blocks index by index — that is what closed `constFold_dom`.
+
+What soundness additionally needs, and what the remaining `sorry` is:
+
+* the **consistency** invariant for the folder's map, which is *not* "`R`
+  contains `m`" but "`m` never disagrees with `R`": `m[d]? = some v → R d = some w
+  → w = v`. Consistency is the right form because `constFold` threads its map in
+  *block-index* order while an execution visits blocks in *control-flow* order,
+  so entries for not-yet-executed blocks are simply unconstrained (`R d = none`),
+  and any use of such a `d` is stuck in the original too — vacuous;
+* that invariant is maintained only because single assignment makes the `const`
+  instruction the **unique** binder of its destination, so it needs a
+  `Nodup`-based unique-definition-site lemma for `Func.allDefs` (also the piece
+  that rules out a jump re-binding a `d` in the map's domain);
+* an instruction-level refinement of `cfInstr_fold` giving the step-by-step
+  correspondence (the current version gives the aggregate defs/uses facts that
+  dominance needs, not the per-instruction one a simulation needs);
+* then each folded instruction is discharged by `Passes.evalPure_transport`
+  (proved) and each folded `branch` by inversion of
+  `Exec.branchTrue`/`branchFalse` on a known-constant condition.
 
 `sorry`: needs the forward-walk invariant "for every `(d, v)` in the folder's
 `consts` map, the register file maps `d` to `v` or leaves it unbound". That
@@ -1905,19 +2109,16 @@ theorem elimTrivialParams_dom {f : Func} (hwf : f.wfCheck n = true)
   sorry
 
 omit model in
-/-- **Dominance preservation for pass 2.**
-
-`sorry`, but the argument is now assembled except for two mechanical steps:
-`ToAsm.domCheck_of_shrinking` (proved) reduces it to `Passes.CFRel` block by
-block; `Passes.constFold_blocks_eq` (proved) exposes the loop as a fold;
-`Passes.cfInstr_fold` (proved) gives the instruction half of `CFRel`. What
-remains is (i) `cfTerm_cases` — constant folding either leaves a terminator alone
-or replaces a `branch` by a `jump` along one of *its own* edges, which gives the
-terminator half — and (ii) the induction over the block fold that transports
-`CFRel` to `(constFold f).blocks[i]?`, tracking `Array.push` against the index. -/
+/-- **Dominance preservation for pass 2** — proved. `ToAsm.domCheck_of_shrinking`
+reduces it to `Passes.CFRel` block by block, and `Passes.constFold_spec`
+(the pass's structural specification, obtained from the `forIn`-to-`foldl`
+bridge) supplies exactly that. -/
 theorem constFold_dom {f : Func} (hdom : ToAsm.Func.domCheck f = true) :
     ToAsm.Func.domCheck (Passes.constFold f) = true := by
-  sorry
+  refine ToAsm.domCheck_of_shrinking hdom rfl rfl ?_
+  intro i b' hb'
+  obtain ⟨b, hb, hrel⟩ := Passes.constFold_spec f i b' hb'
+  exact ⟨b, hb, hrel.1, hrel.2.1, hrel.2.2⟩
 
 omit model in
 theorem cse_dom {f : Func} (hwf : f.wfCheck n = true)
