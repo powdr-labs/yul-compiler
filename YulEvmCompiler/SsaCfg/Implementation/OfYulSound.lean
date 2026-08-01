@@ -7698,6 +7698,50 @@ theorem mod_sim {funs : YulSemantics.FunEnv yulD} {V : VEnv yulD}
     exact ⟨⟨_, ih.1⟩, fun locals hloc =>
       (ih.2 locals hloc).mono_mods (fun x hx => List.mem_append_right _ hx)⟩
 
+/-- The small induction motive used to isolate the name-spine invariant of the
+`.loop` code class. -/
+def LoopNamesMotive (V : VEnv yulD) :
+    YulSemantics.Code Op → YulSemantics.Res yulD → Prop
+  | .loop _ _ _, .sres V' _ _ => VEnv.names V' = VEnv.names V
+  | _, _ => True
+
+/-- Loop bodies and posts are blocks, so each iteration restores their local
+bindings before either repeating or returning.  Consequently an entire loop
+keeps the environment's name spine unchanged. -/
+theorem loop_names_sim {funs : YulSemantics.FunEnv yulD} {V : VEnv yulD}
+    {yst : EvmState} {code : YulSemantics.Code Op}
+    {res : YulSemantics.Res yulD}
+    (h : YulSemantics.Step yulD funs V yst code res) :
+    LoopNamesMotive V code res := by
+  induction h <;> simp only [LoopNamesMotive]
+  case loopStep funs V st c post body cv st1 Vb stb ob Vp stp Vend stend o
+      hc hnz hb hob hp hl ihc ihb ihp ihl =>
+    have hnb : VEnv.names Vb = VEnv.names V := by
+      simpa [declsOfStmt] using (mod_sim hb).1
+    have hnp : VEnv.names Vp = VEnv.names Vb := by
+      simpa [declsOfStmt] using (mod_sim hp).1
+    exact ihl.trans (hnp.trans hnb)
+  case loopPostHalt funs V st c post body cv st1 Vb stb ob Vp stp
+      hc hnz hb hob hp ihc ihb ihp =>
+    have hnb : VEnv.names Vb = VEnv.names V := by
+      simpa [declsOfStmt] using (mod_sim hb).1
+    have hnp : VEnv.names Vp = VEnv.names Vb := by
+      simpa [declsOfStmt] using (mod_sim hp).1
+    exact hnp.trans hnb
+  case loopBreak funs V st c post body cv st1 Vb stb hc hnz hb ihc ihb =>
+    simpa [declsOfStmt] using (mod_sim hb).1
+  case loopLeave funs V st c post body cv st1 Vb stb hc hnz hb ihc ihb =>
+    simpa [declsOfStmt] using (mod_sim hb).1
+  case loopBodyHalt funs V st c post body cv st1 Vb stb hc hnz hb ihc ihb =>
+    simpa [declsOfStmt] using (mod_sim hb).1
+
+theorem loop_names {funs : YulSemantics.FunEnv yulD} {V V' : VEnv yulD}
+    {yst yst' : EvmState} {c : Expr Op} {post body : List (Stmt Op)}
+    {o : Outcome}
+    (h : YulSemantics.Step yulD funs V yst (.loop c post body)
+      (.sres V' yst' o)) : VEnv.names V' = VEnv.names V :=
+  loop_names_sim h
+
 theorem modStmts_pos {funs : YulSemantics.FunEnv yulD} {V Vb : VEnv yulD}
     {yst ystb : EvmState} {o : Outcome} {locals : List Ident}
     {ss : List (Stmt Op)}
@@ -14762,7 +14806,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   -- then `allocScope_motive_inputs` supplies every premise of `ihi`.
   | @forLoop funs V st init c post body Vinit stinit Vend stend o
       hinit hloop ihi ihl =>
-    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp
+    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hctx hfr hvalid hp
       hcompl hcp hfin done owned hdone hbound hown htr
     obtain ⟨scope, sA, sI, rinit, ha, hi, htail⟩ := trStmt_forLoop_inv htr
     have hfnA : sA.fn = s₀.fn := (allocScope_funcsOnly ha).1
@@ -14787,7 +14831,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         obtain ⟨hfe', hbound', hslots, hnd, -⟩ :=
           allocScope_motive_inputs hfuncs hfe hdone hbound hown ha hi
         have hout := ihi (scope :: fenv) env R lctx rets sA sI none joins
-          hfe' henv huniq hfrA hvalidA hpA hcompl hcp hfin
+          hfe' henv huniq hctx hfrA hvalidA hpA hcompl hcp hfin
           done owned hdone hbound' hslots hnd hown hi
         obtain ⟨env', R', hbad, -⟩ := hout
         cases hbad
@@ -14804,7 +14848,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         obtain ⟨hfe', hbound', hslots, hnd, -⟩ :=
           allocScope_motive_inputs hfuncs hfe hdone hbound hownI ha hi
         have hinitOut := ihi (scope :: fenv) env R lctx rets
-          sA sI (some envI) joins hfe' henv huniq hfrA hvalidA hpA
+          sA sI (some envI) joins hfe' henv huniq hctx hfrA hvalidA hpA
           hcomplI hcpI (fun hbad => nomatch hbad)
           done owned hdone hbound' hslots hnd hownI hi
         have hinner : SOut (model := model) P f lctx rets sA s₁ R
@@ -14813,13 +14857,30 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           intro RI hleI hfrI henvI huniqI
           obtain ⟨RH, hbelowH, hfrH, henvH, hcleanH, hrebH, hsimH⟩ :=
             layout.enter henvI huniqI hfrI hvalidI hpI hcompl
+          have hctxI : CtxVars lctx rets envI := by
+            obtain ⟨W, hnamesI, -⟩ := (mod_sim hinit).1
+            refine hctx.mono (fun x hx => ?_)
+            rw [henv.names] at hx
+            rw [henvI.names, hnamesI]
+            exact List.mem_append_right W hx
+          have hctxLoop : CtxVars none rets envI := by
+            constructor
+            · intro lc hnone
+              cases hnone
+            · exact hctxI.2
           have hloopOut := ihl (scope :: fenv) envI rets sI s₁
-            (some envX) joins layout hfe' huniqI hvalidI hpI hcompl hcp
+            (some envX) joins layout hfe' huniqI hctxLoop hvalidI hpI hcompl hcp
             (fun hbad => nomatch hbad) done owned hdone hboundI hown
             RH henvH hfrH hcleanH hrebH
           have hbase : sI.fn.nextVal ≤ layout.sA.fn.nextVal := by
             rw [(M.edgeArgs_inv layout.h1).2]
           exact LHOut.prefix hbase hbelowH hfrI hsimH hloopOut
+        have hnsEnd : NoShadow (model := model) V Vend := by
+          obtain ⟨W, hnamesInit, hdisj⟩ :=
+            (ns_sim hinit (scope :: fenv) env lctx rets sA sI (some envI)
+              henv.names hi).1
+          apply noShadow_of_NSOut
+          exact ⟨W, (loop_names hloop).trans hnamesInit, hdisj⟩
         subst renv
         rcases loop_outcome_ssa hloop with rfl | rfl | rfl
         · obtain ⟨envEnd, REnd, henvEnd, hleEnd, hbelowEnd, hfrEnd,
@@ -14835,19 +14896,14 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           rwa [hfnA] at hinner
         · obtain ⟨rs, vals, hrs, hvals, hex⟩ := hinner
           refine ⟨rs, vals, hrs, ?_, ?_⟩
-          · -- Blocked: the generalized motive has no premise saying that
-            -- `rets` names belong to the outer environment `V`.  `hvals` is
-            -- over `Vend`, but this goal is over the initializer-scope drop.
-            -- A local initializer may legally declare a fresh name appearing
-            -- in an arbitrary `rets`, so this implication is false without a
-            -- context-validity premise.
-            show List.Forall₂
-              (fun x v => YulSemantics.VEnv.get
-                (YulSemantics.restore V Vend) x = some v) rs vals
-            sorry
+          · exact Forall2.imp_mem hvals (fun x hx v hv => by
+              rw [get_restore_of_noShadow hnsEnd]
+              · exact hv
+              · rw [← henv.names]
+                exact hctx.2 rs hrs x hx)
           · simpa only [hfnA] using hex
   | @forInitHalt funs V st init c post body Vinit stinit hinit ihi =>
-    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hfr hvalid hp
+    intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hctx hfr hvalid hp
       hcompl hcp hfin done owned hdone hbound hown htr
     obtain ⟨scope, sA, sI, rinit, ha, hi, htail⟩ := trStmt_forLoop_inv htr
     have hfnA : sA.fn = s₀.fn := (allocScope_funcsOnly ha).1
@@ -14872,7 +14928,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         obtain ⟨hfe', hbound', hslots, hnd, -⟩ :=
           allocScope_motive_inputs hfuncs hfe hdone hbound hown ha hi
         have hout := ihi (scope :: fenv) env R lctx rets sA sI none joins
-          hfe' henv huniq hfrA hvalidA hpA hcompl hcp hfin
+          hfe' henv huniq hctx hfrA hvalidA hpA hcompl hcp hfin
           done owned hdone hbound' hslots hnd hown hi
         change ExecFrom (model := model) P f s₀.fn R st (.halt stinit)
         change ExecFrom (model := model) P f sA.fn R st (.halt stinit) at hout
@@ -14890,7 +14946,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         obtain ⟨hfe', hbound', hslots, hnd, -⟩ :=
           allocScope_motive_inputs hfuncs hfe hdone hbound hownI ha hi
         have hout := ihi (scope :: fenv) env R lctx rets sA sI (some envI) joins
-          hfe' henv huniq hfrA hvalidA hpA hcomplI hcpI
+          hfe' henv huniq hctx hfrA hvalidA hpA hcomplI hcpI
           (fun hbad => nomatch hbad) done owned hdone hbound' hslots hnd hownI hi
         change ExecFrom (model := model) P f s₀.fn R st (.halt stinit)
         change ExecFrom (model := model) P f sA.fn R st (.halt stinit) at hout
