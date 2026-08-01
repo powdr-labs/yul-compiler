@@ -7448,7 +7448,20 @@ recursion. A complete proof therefore needs either a strengthened simultaneous
 caller-location induction (ordinary calls use the transformed callee while an
 eliminated call replays the old callee inside the caller), or a depth-indexed
 strengthening of `inlineCaller_exec`/`inlineFunc_sound`. After that bridge,
-`pruneFuncs_sound` and the three-round early-return loop are routine. -/
+`pruneFuncs_sound` and the three-round early-return loop are routine.
+
+Precise obstruction after attempting the depth-indexed route: `Exec` is an
+inductive proposition, so Lean forbids eliminating an `Exec` proof into `Nat`
+(and even into a proof-indexed family of propositions).  Consequently the
+depth cannot be added as a derived function on the existing derivation.  It
+has to be a separate indexed semantic relation, say `ExecN P n ...`, with the
+same constructors, callee bodies at index `n` and caller continuations at
+index `n + 1`.  Closing the bridge then specifically requires indexed versions
+of both `inlineReplay_exec` (CPS continuation bound included) and
+`inlineCaller_exec`; merely wrapping their current `Exec` conclusions loses
+the index by proof irrelevance.  The current unindexed replay theorems therefore
+cannot justify the strictly-decreasing recursive call needed to replace
+`P.funcs` by `P.funcs.map (inlineFunc counts P.funcs)`. -/
 theorem inlineProg_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
     (hwf : P.wfCheck = true) (hrun : Run (model := model) P yst0 yst' o) :
     Run (model := model) (Passes.inlineProg P) yst0 yst' o := by
