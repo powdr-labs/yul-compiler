@@ -994,6 +994,19 @@ theorem foldl_best {sym keep : List SSlot} {Q : List Asm × List ValId → Prop}
         · exact hacc p hp
 
 omit model in
+theorem emitInstr_const_shape {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
+    {sym : List SSlot} {needed future : List ValId} {d : ValId} {v : U256}
+    {n n' : ToAsm.EmitSt} {asmf : List Asm} {sym' : List SSlot}
+    (hei : ToAsm.emitInstr P L ord sym needed future (.const d v) n
+      = some ((asmf, sym'), n')) :
+    asmf = [Asm.push v] ∧ sym' = SSlot.val d :: sym ∧ n' = n := by
+  obtain ⟨heq, rfl⟩ := E_pure_inv2
+    (show (pure ([Asm.push v], SSlot.val d :: sym) : ToAsm.E (List Asm × List SSlot)) n
+      = some ((asmf, sym'), n') from hei)
+  obtain ⟨h1, h2⟩ := (Prod.mk.injEq ..).mp heq
+  exact ⟨h1.symm, h2.symm, rfl⟩
+
+omit model in
 /-- **The shape `emitInstr` gives a built-in application**: the checked shuffle
 onto *one of the candidate operand orders*, then the op. -/
 theorem emitInstr_op_shape {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
@@ -1007,7 +1020,8 @@ theorem emitInstr_op_shape {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
       ∧ ArgsOK yop as args
       ∧ ToAsm.shuffle sym (args.map SSlot.val ++ keep) = some ops
       ∧ asmf = ops ++ [Asm.op yop]
-      ∧ sym' = ds.map SSlot.val ++ keep := by
+      ∧ sym' = ds.map SSlot.val ++ keep
+      ∧ n' = n := by
   suffices h : ∀ i : Instr, i = Instr.op ds yop as →
       ToAsm.emitInstr P L ord sym needed future i n = some ((asmf, sym'), n') →
       ∃ (args : List ValId) (ops : List Asm) (keep : List SSlot),
@@ -1016,7 +1030,8 @@ theorem emitInstr_op_shape {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
         ∧ ArgsOK yop as args
         ∧ ToAsm.shuffle sym (args.map SSlot.val ++ keep) = some ops
         ∧ asmf = ops ++ [Asm.op yop]
-        ∧ sym' = ds.map SSlot.val ++ keep by
+        ∧ sym' = ds.map SSlot.val ++ keep
+        ∧ n' = n by
     exact h _ rfl hemit
   intro i hi hem
   fun_cases ToAsm.emitInstr P L ord sym needed future i
@@ -1030,7 +1045,7 @@ theorem emitInstr_op_shape {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
             ToAsm.E (List Asm × List SSlot))
         | none => ToAsm.liftE none) n = some ((asmf, sym'), n') := hem
     rw [hbest] at hem'
-    obtain ⟨heq, -⟩ := E_pure_inv2 hem'
+    obtain ⟨heq, hst⟩ := E_pure_inv2 hem'
     obtain ⟨e1, e2⟩ := (Prod.mk.injEq ..).mp heq
     have hQ : ArgsOK yop2 as2 args ∧
         ToAsm.shuffle sym (args.map SSlot.val ++ keep) = some prev := by
@@ -1053,7 +1068,7 @@ theorem emitInstr_op_shape {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
              · exact Or.inl rfl
              · exact Or.inr ⟨by simp [CommOp], x, y, rfl, rfl⟩)
         | (simp only [List.mem_singleton] at ha; exact Or.inl ha)
-    exact ⟨args, prev, keep, rfl, hQ.1, hQ.2, e1.symm, e2.symm⟩
+    exact ⟨args, prev, keep, rfl, hQ.1, hQ.2, e1.symm, e2.symm, hst.symm⟩
   case case3 keep argOrders best hbest =>
     rename_i ds2 yop2 as2
     injection hi with h1 h2 h3
@@ -1625,6 +1640,182 @@ theorem edgeTargetLayout_mono {isFunc : Bool} {f : Func}
   · obtain ⟨-, rfl⟩ := h
     exact TableSub.refl s
 
+omit model in
+/-- `emitInstr` never touches the layout table: `const`/`op` are
+state-transparent and `call` only allocates a fresh label. -/
+theorem emitInstr_mono {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
+    {sym : List SSlot} {needed future : List ValId} {i : Instr}
+    {s : ToAsm.EmitSt} {r : List Asm × List SSlot} {s' : ToAsm.EmitSt}
+    (h : ToAsm.emitInstr P L ord sym needed future i s = some (r, s')) :
+    TableSub s s' := by
+  obtain ⟨asmf, sym'⟩ := r
+  cases i with
+  | const d v =>
+    obtain ⟨-, -, rfl⟩ := emitInstr_const_shape h
+    exact TableSub.refl _
+  | op ds yop as =>
+    obtain ⟨-, -, -, -, -, -, -, -, rfl⟩ := emitInstr_op_shape h
+    exact TableSub.refl _
+  | call ds fid as =>
+    simp only [ToAsm.emitInstr] at h
+    obtain ⟨callee, -, h1⟩ := liftE_bind_inv h
+    split at h1
+    · exact absurd h1 (by simp [ToAsm.liftE])
+    split at h1
+    · exact absurd h1 (by simp [ToAsm.liftE])
+    obtain ⟨retLab, s1, hfl, h2⟩ := E_bind_inv h1
+    obtain ⟨ops1, -, h3⟩ := liftE_bind_inv h2
+    obtain ⟨dups, -, h4⟩ := liftE_bind_inv h3
+    obtain ⟨-, rfl⟩ := E_pure_inv2 h4
+    exact freshLabel_mono hfl
+
+omit model in
+theorem emitTerm_mono {isFunc : Bool} {f : Func} {L : ToAsm.LabelMap}
+    {fidx : Option Nat} {liveIn : Array (List ValId)} {sym : List SSlot}
+    {t : Term} {s : ToAsm.EmitSt} {r : List Asm} {s' : ToAsm.EmitSt}
+    (h : ToAsm.emitTerm isFunc f L fidx liveIn sym t s = some (r, s')) :
+    TableSub s s' := by
+  cases t with
+  | jump e =>
+    simp only [ToAsm.emitTerm] at h
+    obtain ⟨τ, s1, hτ, h1⟩ := E_bind_inv h
+    obtain ⟨ops, -, h2⟩ := liftE_bind_inv h1
+    obtain ⟨-, rfl⟩ := E_pure_inv2 h2
+    exact edgeTargetLayout_mono hτ
+  | branch c et ef =>
+    simp only [ToAsm.emitTerm] at h
+    obtain ⟨τt, s1, hτt, h1⟩ := E_bind_inv h
+    obtain ⟨τf, s2, hτf, h2⟩ := E_bind_inv h1
+    refine TableSub.trans (edgeTargetLayout_mono hτt)
+      (TableSub.trans (edgeTargetLayout_mono hτf) ?_)
+    rcases hsa : ToAsm.shuffle sym (SSlot.val c :: τt) with _ | opst <;>
+      rcases hsb : ToAsm.shuffle τt τf with _ | opsf <;>
+      rw [hsa, hsb] at h2 <;> simp only [] at h2
+    case some.some =>
+      obtain ⟨-, rfl⟩ := E_pure_inv2 h2
+      exact TableSub.refl _
+    all_goals
+      obtain ⟨stub, s3, hfl, h3⟩ := E_bind_inv h2
+      obtain ⟨ops0, -, h4⟩ := liftE_bind_inv h3
+      obtain ⟨opsf, -, h5⟩ := liftE_bind_inv h4
+      obtain ⟨opst, -, h6⟩ := liftE_bind_inv h5
+      obtain ⟨-, rfl⟩ := E_pure_inv2 h6
+      exact freshLabel_mono hfl
+  | ret xs =>
+    rcases emitTerm_ret_shape h with ⟨-, -, -, -, -⟩ | ⟨-, -, -, -, -⟩ <;>
+      · simp only [ToAsm.emitTerm] at h
+        split at h
+        · obtain ⟨ops, -, h1⟩ := liftE_bind_inv h
+          split at h1
+          · obtain ⟨-, rfl⟩ := E_pure_inv2 h1; exact TableSub.refl _
+          · exact absurd h1 (by simp [ToAsm.liftE])
+        · split at h
+          · exact absurd h (by simp [ToAsm.liftE])
+          · obtain ⟨ops, -, h1⟩ := liftE_bind_inv h
+            obtain ⟨-, rfl⟩ := E_pure_inv2 h1; exact TableSub.refl _
+  | halt yop as =>
+    obtain ⟨ops, barrier, -, -⟩ := emitTerm_halt_shape h
+    simp only [ToAsm.emitTerm] at h
+    obtain ⟨ops', -, h1⟩ := liftE_bind_inv h
+    split at h1
+    · split at h1
+      · exact absurd h1 (by simp [ToAsm.liftE])
+      · obtain ⟨-, rfl⟩ := E_pure_inv2 h1; exact TableSub.refl _
+    · obtain ⟨-, rfl⟩ := E_pure_inv2 h1; exact TableSub.refl _
+
+omit model in
+theorem foldlM_instrs_mono (P : Prog) (L : ToAsm.LabelMap) (ord : Bool) :
+    ∀ (paired : List (Instr × List ValId × List ValId)) (acc0 : List Asm)
+      (sym0 : List SSlot) (s : ToAsm.EmitSt) (r : List Asm × List SSlot)
+      (s' : ToAsm.EmitSt),
+      (paired.foldlM (init := (acc0, sym0))
+        (fun (acc, sym) (p : Instr × List ValId × List ValId) => do
+          let (asm, sym') ← ToAsm.emitInstr P L ord sym p.2.1 p.2.2 p.1
+          pure (acc ++ asm, sym'))) s = some (r, s') → TableSub s s' := by
+  intro paired
+  induction paired with
+  | nil =>
+    intro acc0 sym0 s r s' h
+    rw [List.foldlM_nil] at h
+    obtain ⟨-, rfl⟩ := E_pure_inv2 h
+    exact TableSub.refl _
+  | cons q rest ih =>
+    obtain ⟨i, need, future⟩ := q
+    intro acc0 sym0 s r s' h
+    rw [List.foldlM_cons] at h
+    obtain ⟨⟨acc1, sym1⟩, s1, hstep, htail⟩ := E_bind_inv h
+    obtain ⟨⟨asm, sym2⟩, s2, hei, hpure⟩ := E_bind_inv hstep
+    obtain ⟨-, rfl⟩ := E_pure_inv2 hpure
+    exact TableSub.trans (emitInstr_mono hei) (ih _ _ _ _ _ htail)
+
+omit model in
+/-- `emitBlock` writes back what it read (`tableSub_insert_self`) or records a
+key it just observed absent (`tableSub_insert_fresh`). The entry block does not
+consult the table first, so it needs its key to still be absent — true because
+`emitFunc` resets the table and emits the entry (block `0`) first. -/
+theorem emitBlock_mono {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
+    {fidx : Option Nat} {f : Func} {liveIn : Array (List ValId)} {bid : BlockId}
+    {b : Block} {s : ToAsm.EmitSt} {r : List Asm} {s' : ToAsm.EmitSt}
+    (hentry : bid = f.entry → s.layouts[bid]? = none)
+    (h : ToAsm.emitBlock P L ord fidx f liveIn bid b s = some (r, s')) :
+    TableSub s s' := by
+  have tail : ∀ (sym0 : List SSlot) (s1 : ToAsm.EmitSt),
+      TableSub s1 { s1 with layouts := s1.layouts.insert bid sym0 } →
+      s1 = s →
+      (ToAsm.setLayout bid sym0 >>= fun _ =>
+        ((b.instrs.zip ((ToAsm.neededAfter b.instrs
+            (ToAsm.unionS (ToAsm.unionS b.term.uses [])
+              (List.foldl (fun acc e => ToAsm.unionS (liveIn[e.target]?.getD []) acc)
+                [] b.term.edges))).zip
+          (if ord then
+            (b.instrs.foldr (init := ([([] : List ValId)], b.term.uses))
+              fun i (acc : List (List ValId) × List ValId) =>
+                (acc.2 :: acc.1, i.uses ++ acc.2)).1
+           else List.replicate b.instrs.length []))).foldlM
+          (init := (([] : List Asm), sym0))
+          (fun (acc, sym) (p : Instr × List ValId × List ValId) => do
+            let (asm, sym') ← ToAsm.emitInstr P L ord sym p.2.1 p.2.2 p.1
+            pure (acc ++ asm, sym')) >>= fun rr =>
+        ToAsm.emitTerm fidx.isSome f L fidx liveIn rr.2 b.term >>= fun tasm =>
+        pure (Asm.label (ToAsm.blkLabel L fidx bid) :: rr.1 ++ tasm))) s1
+        = some (r, s') → TableSub s s' := by
+    intro sym0 s1 hins hs1 h1
+    subst hs1
+    obtain ⟨u, s2, hset, h2⟩ := E_bind_inv h1
+    have hs2 : s2 = { s1 with layouts := s1.layouts.insert bid sym0 } := by
+      have h5 : some ((u, { s1 with layouts := s1.layouts.insert bid sym0 }) :
+          Unit × ToAsm.EmitSt) = some (u, s2) := hset
+      exact (((Prod.mk.injEq ..).mp (Option.some.inj h5)).2).symm
+    obtain ⟨⟨body, symEnd⟩, s3, hfold, h3⟩ := E_bind_inv h2
+    obtain ⟨tasm, s4, hterm, h4⟩ := E_bind_inv h3
+    obtain ⟨-, rfl⟩ := E_pure_inv2 h4
+    refine TableSub.trans hins ?_
+    rw [← hs2]
+    exact TableSub.trans (foldlM_instrs_mono P L ord _ _ _ _ _ _ hfold)
+      (emitTerm_mono hterm)
+  simp only [ToAsm.emitBlock] at h
+  split at h
+  · rename_i hen
+    obtain ⟨sym0, s1, h0, h1⟩ := E_bind_inv h
+    obtain ⟨hv, hst⟩ := E_pure_inv2 h0
+    exact tail sym0 s1 (by rw [← hst]; exact tableSub_insert_fresh (hentry hen)) hst.symm h1
+  · rename_i hne
+    obtain ⟨rec?, s0, hg, h0⟩ := E_bind_inv h
+    obtain ⟨rfl, hlay⟩ := getLayout_state hg
+    obtain ⟨sym0, s1, h0', h1⟩ := E_bind_inv h0
+    obtain ⟨hv, hst⟩ := E_pure_inv2 h0'
+    refine tail sym0 s1 ?_ hst.symm h1
+    rw [← hst]
+    cases hr : rec? with
+    | none =>
+      refine tableSub_insert_fresh ?_
+      rw [← hlay, hr]
+    | some l =>
+      refine tableSub_insert_self ?_
+      rw [← hlay, hr]
+      rw [hr] at hv
+      simpa using hv
+
 /-! ### What the edge cases still need from `Placement`
 
 `Placement` below pins, for each block, *that* it was emitted and *where* its
@@ -1648,7 +1839,14 @@ with body `b` and pinned layout `lay`:
     ∀ e, e.target = bid → the layout that edge shuffles onto
                         = substLayout lay b.params e.args
 
-Landing it needs one new piece of machinery: a state-carrying variant of
+The write-once invariant itself is now proved: `TableSub` (the table only
+grows, entries keeping their value) is preserved by `edgeTargetLayout`
+(`edgeTargetLayout_mono`), `emitInstr` (`emitInstr_mono`), `emitTerm`
+(`emitTerm_mono`), the instruction fold (`foldlM_instrs_mono`) and `emitBlock`
+(`emitBlock_mono`, whose entry-block case needs its key still absent — true
+because `emitFunc` resets the table and emits block `0` first).
+
+What is still missing is one new piece of machinery: a state-carrying variant of
 `foldlM_split`. The current one hands back, for each block, *some* start state,
 with no relation between different blocks' states — enough to locate fragments,
 not enough to relate two reads of the same table. The replacement should carry
@@ -1698,19 +1896,6 @@ theorem SimFRes.prepend {asm : List Asm} {retLab : Label} {below : List AVal}
   cases res with
   | ret vals st' => obtain ⟨cret, hc, hst⟩ := hs; exact ⟨cret, hc, h.trans hst⟩
   | halt st' => obtain ⟨conf, hst, hh⟩ := hs; exact ⟨conf, h.trans hst, hh⟩
-
-omit model in
-theorem emitInstr_const_shape {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
-    {sym : List SSlot} {needed future : List ValId} {d : ValId} {v : U256}
-    {n n' : ToAsm.EmitSt} {asmf : List Asm} {sym' : List SSlot}
-    (hei : ToAsm.emitInstr P L ord sym needed future (.const d v) n
-      = some ((asmf, sym'), n')) :
-    asmf = [Asm.push v] ∧ sym' = SSlot.val d :: sym ∧ n' = n := by
-  obtain ⟨heq, rfl⟩ := E_pure_inv2
-    (show (pure ([Asm.push v], SSlot.val d :: sym) : ToAsm.E (List Asm × List SSlot)) n
-      = some ((asmf, sym'), n') from hei)
-  obtain ⟨h1, h2⟩ := (Prod.mk.injEq ..).mp heq
-  exact ⟨h1.symm, h2.symm, rfl⟩
 
 /-! ## The main induction
 
@@ -1795,7 +1980,7 @@ theorem exec_sim {P : Prog} {ord : Bool} {asm : List Asm}
     obtain ⟨⟨asm1, sym1⟩, m, hei, h2⟩ := E_bind_inv hemit
     obtain ⟨tl, n'', htl, h3⟩ := E_bind_inv h2
     obtain ⟨heq, rfl⟩ := E_pure_inv2 h3
-    obtain ⟨args', ops, keep, hkeep, hargs, hsh, ha1, hs1⟩ := emitInstr_op_shape hei
+    obtain ⟨args', ops, keep, hkeep, hargs, hsh, ha1, hs1, -⟩ := emitInstr_op_shape hei
     subst ha1; subst hs1
     rw [restDefs_cons] at hfresh hndefs
     have hdefs : (Instr.op ds yop as).defs = ds := rfl
@@ -1834,7 +2019,7 @@ theorem exec_sim {P : Prog} {ord : Bool} {asm : List Asm}
     obtain ⟨⟨asm1, sym1⟩, m, hei, h2⟩ := E_bind_inv hemit
     obtain ⟨tl, n'', htl, h3⟩ := E_bind_inv h2
     obtain ⟨heq, -⟩ := E_pure_inv2 h3
-    obtain ⟨args', ops, keep, hkeep, hargs, hsh, ha1, -⟩ := emitInstr_op_shape hei
+    obtain ⟨args', ops, keep, hkeep, hargs, hsh, ha1, -, -⟩ := emitInstr_op_shape hei
     subst ha1
     obtain ⟨vals, hget', hb'⟩ : ∃ vals, R₀.getMany args' = some vals ∧
         builtinWithExternal model.calls model.creates yop vals st₀ (.halt st₁) := by
