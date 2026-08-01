@@ -1846,8 +1846,34 @@ grows, entries keeping their value) is preserved by `edgeTargetLayout`
 (`emitBlock_mono`, whose entry-block case needs its key still absent — true
 because `emitFunc` resets the table and emits block `0` first).
 
-What is still missing is one new piece of machinery: a state-carrying variant of
-`foldlM_split`. The current one hands back, for each block, *some* start state,
+Still missing (NOT yet in this file — an earlier draft of this comment
+wrongly described them as proved): the state-carrying locator
+(`foldlM_mono`/`foldlM_split_mono` — for each block, the states before and
+after its emission plus a `TableSub` to the fold's final state), the
+`layout_agree` identification (an edge's `getLayout e.target` and the
+target's own pin both agree with the final table, hence with each other),
+the `Placement2` packaging over `emitFunc`'s fold (peeling the entry block,
+whose `hentry` obligation `emitBlock_mono` carries, from `resetLayouts`
+plus entry-first order), and the `emitTerm_jump_shape`/`branch` decoders
+the edge cases consume.
+
+Tactic notes for this file, learned the hard way:
+
+* `split` fails with an internal error on matches whose discriminant nests
+  another matcher (`emitInstr`'s `best` fold, `emitTerm`'s two-`shuffle`
+  match). Use `rcases hx : <term>` on the discriminants and `rw [hx] at h`, or
+  — when the term is unwriteable — `fun_cases` on the defining function after
+  generalizing the argument (`suffices h : ∀ i, i = … → …`), which gives the
+  spurious constructor branches an equation that kills them.
+* A hand-written `match` never unifies with the emitter's compiled matcher, but
+  `have h' : (match … ) = … := h` typechecks by defeq. That is the way to get a
+  `let`-bound discriminant into scope.
+* `getLayout_state` is oriented `rec? = s.layouts[bid]?`; rewrites into a goal
+  need `← hlay`.
+* Derive a `setLayout` equation immediately after the `E_bind_inv` that
+  produces it — interposing further `obtain … rfl` steps puts it out of scope.
+* `obtain … rfl` picks which state variable to eliminate; check the goal rather
+  than assuming, or avoid `rfl` patterns and rewrite explicitly. The current one hands back, for each block, *some* start state,
 with no relation between different blocks' states — enough to locate fragments,
 not enough to relate two reads of the same table. The replacement should carry
 a table-agreement invariant (`layouts` agrees with a fixed `lay : BlockId →
