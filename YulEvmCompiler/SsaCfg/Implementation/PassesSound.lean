@@ -1079,6 +1079,169 @@ theorem liveAgree_entry {f : Func} {li : Array (List ValId)}
   intro x hx
   rw [hσ x (ToAsm.domCheck_entry hli hdom hx)]
 
+/-! ### Entry-rooted definition provenance
+
+`LiveAgree` is deliberately local to one block.  The two substitution passes
+also need the history fact which justifies that local invariant: a live value
+at a reached block did not appear in the persistent register file by accident;
+its unique definition has occurred on the path from the function entry (unless
+it is a function parameter).  Keeping the path explicit retains repeated block
+visits, which is essential for loop-carried block parameters and CSE values.
+
+The statement below is the common, pass-independent part of that provenance
+argument.  It uses only the CFG and the liveness fixed point, so both trivial
+parameter elimination and CSE can instantiate it. -/
+
+/-- A finite CFG path rooted at the function entry.  `path` contains the
+visited predecessor blocks, in execution order; `i` is the currently reached
+block. -/
+inductive EntryPath (f : Func) : List BlockId → BlockId → Prop
+  | entry : EntryPath f [] f.entry
+  | edge {path : List BlockId} {i : BlockId} {b : Block} {e : Edge} :
+      EntryPath f path i →
+      f.blocks[i]? = some b →
+      e ∈ b.term.edges →
+      EntryPath f (path ++ [i]) e.target
+
+/-- A value has crossed a defining block on an entry-rooted path. -/
+def DefinedOnPath (f : Func) (path : List BlockId) (x : ValId) : Prop :=
+  ∃ i ∈ path, ∃ b, f.blocks[i]? = some b ∧ x ∈ ToAsm.blockDefs b
+
+theorem DefinedOnPath.snoc {f : Func} {path : List BlockId} {i : BlockId}
+    {b : Block} {x : ValId} (hb : f.blocks[i]? = some b)
+    (hx : x ∈ ToAsm.blockDefs b) : DefinedOnPath f (path ++ [i]) x := by
+  exact ⟨i, by simp, b, hb, hx⟩
+
+theorem DefinedOnPath.mono_snoc {f : Func} {path : List BlockId}
+    {i : BlockId} {x : ValId} (h : DefinedOnPath f path x) :
+    DefinedOnPath f (path ++ [i]) x := by
+  obtain ⟨j, hj, b, hb, hx⟩ := h
+  exact ⟨j, List.mem_append_left _ hj, b, hb, hx⟩
+
+/-- **Entry-rooted provenance invariant.**  Under `domCheck`, every value live
+at a block reached from entry is either an entry parameter or its definition
+has occurred in one of the predecessor blocks on the concrete path.  The proof
+is the forward/path form of the usual backwards-liveness dominance argument:
+crossing an edge either crosses the unique definition or propagates liveness to
+the predecessor. -/
+theorem EntryPath.live_origin {f : Func} {li : Array (List ValId)}
+    (hli : ToAsm.liveInSets f = some li)
+    (hdom : ToAsm.Func.domCheck f = true)
+    {path : List BlockId} {i : BlockId} (hp : EntryPath f path i)
+    {x : ValId} (hx : x ∈ li[i]?.getD []) :
+    x ∈ f.params ∨ DefinedOnPath f path x := by
+  induction hp with
+  | entry =>
+      exact Or.inl (ToAsm.domCheck_entry hli hdom hx)
+  | @edge path i b e hp hb he ih =>
+      by_cases hd : x ∈ ToAsm.blockDefs b
+      · exact Or.inr (DefinedOnPath.snoc hb hd)
+      · rcases ih (ToAsm.liveIn_of_succ hli hb he hx hd) with hparam | hpath
+        · exact Or.inl hparam
+        · exact Or.inr hpath.mono_snoc
+
+/-- Register-domain part of entry-rooted provenance.  At a configuration in
+block `b`, after the instructions in `done` have executed, every bound id came
+from a function parameter, a predecessor block on the concrete path, a current
+block parameter, or an already-executed instruction in this block. -/
+def BindingProvenance (f : Func) (path : List BlockId) (b : Block)
+    (done : List Instr) (R : Regs) : Prop :=
+  ∀ {x : ValId} {v : U256}, R x = some v →
+    x ∈ f.params ∨ DefinedOnPath f path x ∨ x ∈ b.params ∨
+      x ∈ done.flatMap Instr.defs
+
+theorem Regs.eq_some_setMany {R : Regs} {xs : List ValId} {vs : List U256}
+    {x : ValId} {v : U256} (h : (R.setMany xs vs) x = some v) :
+    R x = some v ∨ x ∈ xs := by
+  by_cases hx : x ∈ xs
+  · exact Or.inr hx
+  · left
+    rw [Regs.setMany_of_not_mem R xs vs hx] at h
+    exact h
+
+theorem Regs.eq_some_of_getMany {R : Regs} {xs : List ValId} {vals : List U256}
+    (hget : R.getMany xs = some vals) {x : ValId} (hx : x ∈ xs) :
+    ∃ v, R x = some v := by
+  induction xs generalizing vals with
+  | nil => simp at hx
+  | cons y ys ih =>
+      rw [Regs.getMany_cons] at hget
+      cases hy : R y with
+      | none => simp [hy] at hget
+      | some w =>
+          cases hys : R.getMany ys with
+          | none => simp [hy, hys] at hget
+          | some ws =>
+              rcases List.mem_cons.mp hx with rfl | hx
+              · exact ⟨w, hy⟩
+              · exact ih hys hx
+
+/-- Any successful register read is backed by one of the concrete provenance
+sites carried by `BindingProvenance`. -/
+theorem BindingProvenance.read {f : Func} {path : List BlockId} {b : Block}
+    {done : List Instr} {R : Regs} (h : BindingProvenance f path b done R)
+    {xs : List ValId} {vals : List U256} (hget : R.getMany xs = some vals)
+    {x : ValId} (hx : x ∈ xs) :
+    x ∈ f.params ∨ DefinedOnPath f path x ∨ x ∈ b.params ∨
+      x ∈ done.flatMap Instr.defs := by
+  obtain ⟨v, hv⟩ := Regs.eq_some_of_getMany hget hx
+  exact h hv
+
+theorem bindingProvenance_entry {f : Func} {b : Block} (args : List U256) :
+    BindingProvenance f [] b [] (Regs.empty.setMany f.params args) := by
+  intro x v hx
+  rcases Regs.eq_some_setMany hx with hempty | hp
+  · simp [Regs.empty] at hempty
+  · exact Or.inl hp
+
+/-- Executing one instruction preserves binding provenance and records its
+destinations in the completed prefix.  This lemma is independent of the
+instruction's value semantics: those semantics determine the words, while SSA
+shape determines their provenance sites. -/
+theorem BindingProvenance.setMany_instr {f : Func} {path : List BlockId}
+    {b : Block} {done : List Instr} {R : Regs} (h : BindingProvenance f path b done R)
+    {i : Instr} {vals : List U256} :
+    BindingProvenance f path b (done ++ [i]) (R.setMany i.defs vals) := by
+  intro x v hx
+  rcases Regs.eq_some_setMany hx with hold | hnew
+  · rcases h hold with hp | hpath | hparam | hdone
+    · exact Or.inl hp
+    · exact Or.inr (Or.inl hpath)
+    · exact Or.inr (Or.inr (Or.inl hparam))
+    · exact Or.inr (Or.inr (Or.inr (by
+        rw [List.flatMap_append]
+        exact List.mem_append_left _ hdone)))
+  · exact Or.inr (Or.inr (Or.inr (by
+      rw [List.flatMap_append]
+      exact List.mem_append_right _ (by simpa using hnew))))
+
+theorem BindingProvenance.set_const {f : Func} {path : List BlockId}
+    {b : Block} {done : List Instr} {R : Regs} (h : BindingProvenance f path b done R)
+    {d : ValId} {w : U256} :
+    BindingProvenance f path b (done ++ [.const d w]) (R.set d w) := by
+  change BindingProvenance f path b (done ++ [.const d w])
+    (R.setMany (Instr.defs (.const d w)) [w])
+  exact h.setMany_instr (i := .const d w) (vals := [w])
+
+/-- At a terminator, an edge turns everything defined in the source block into
+path provenance and introduces precisely the target block parameters. -/
+theorem BindingProvenance.edge {f : Func} {path : List BlockId}
+    {i : BlockId} {b tb : Block} {R : Regs}
+    (hb : f.blocks[i]? = some b)
+    (h : BindingProvenance f path b b.instrs R)
+    (vals : List U256) :
+    BindingProvenance f (path ++ [i]) tb [] (R.setMany tb.params vals) := by
+  intro x v hx
+  rcases Regs.eq_some_setMany hx with hold | hparam
+  · rcases h hold with hp | hpath | hbparam | hdone
+    · exact Or.inl hp
+    · exact Or.inr (Or.inl hpath.mono_snoc)
+    · exact Or.inr (Or.inl (DefinedOnPath.snoc hb
+        (ToAsm.mem_blockDefs.mpr (Or.inl hbparam))))
+    · exact Or.inr (Or.inl (DefinedOnPath.snoc hb
+        (ToAsm.mem_blockDefs.mpr (Or.inr hdone))))
+  · exact Or.inr (Or.inr (Or.inl hparam))
+
 /-! ## The frame lemma -/
 
 section Frame
@@ -5503,6 +5666,22 @@ make that history/reachability fact available to the `Exec` induction (or give
 an equivalent binding-provenance invariant).  The outer loop can then thread
 the now-proved one-step `allDefs.Nodup` and `domCheck` preservation facts through
 `elimTrivialParams_eq_loop`; no search inversion remains missing. -/
+/-
+**Value-provenance preservation still missing (2026-08-01).**
+`EntryPath.live_origin` and `BindingProvenance` above now prove, and preserve
+across instruction bindings and edges, the complete *site* provenance needed
+here.  The lift from sites to current words fails at a revisited definition:
+after the path executes the unique definition of `v` again, the preservation
+goal is `R p = R v`, but `BindingProvenance` yields only that the current `p`
+came from an earlier visit to `bi`.  `findTrivialParam_edge` establishes the
+equality when that visit binds `p`; it does not show that no later dynamic
+occurrence of `v` intervenes.  Closing this requires the path to carry binding
+events (including their words) and a last-occurrence theorem derived from
+`domCheck`; merely adding another block-local `LiveAgree` field repeats the
+same failed step.
+
+This is the shared missing preservation lemma with CSE below, not a remaining
+loop-inversion or edge-arity obligation. -/
 theorem elimTrivialParams_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState}
     {res : FRes} {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (hdom : ToAsm.Func.domCheck f = true)
@@ -6249,7 +6428,17 @@ use reached by an entry-rooted `Exec` has already crossed its unique `CseDef`
 site (or an equivalent sequential-liveness lemma plus preservation around
 backedges).  Without it the kept-op case cannot establish the substituted
 argument read after a representative is rebound; this is independent of the
-now-closed target-parameter inheritance case. -/
+now-closed target-parameter inheritance case.
+
+`BindingProvenance` now closes the "has already crossed its unique definition
+site" half.  The exact remaining preservation step is the same as for
+`elimTrivialParams_sound`: if a loop dynamically re-executes representative
+`d0` after the last execution of dropped definition `d`, site provenance no
+longer implies `R d = R' d0`.  `CseTabRuntime` can re-establish the equality at
+the next dropped instruction, but a whole-function substitution may rewrite a
+use before that point.  A binding-event/last-occurrence refinement of the
+entry path must rule such a use out from a successful entry-rooted `Exec`; the
+present invariant intentionally does not claim that unproved value fact. -/
 theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (hdom : ToAsm.Func.domCheck f = true)
