@@ -5394,6 +5394,32 @@ theorem curPlaced_back_grows {f : Func} {sA sB : BState} (hg : Grows sA sB)
   obtain ⟨Δ, hΔ⟩ := hg.cur
   exact h.ofPrefix hg.curId.symm Δ hΔ
 
+/-- Backward placement across a statement-list construction.  The `CurFinal`
+premise is used precisely when the list diverts after sealing (and therefore
+clearing) the same current block; in the fall-through case `curPlaced_back`
+and the list's growth witness suffice. -/
+theorem trStmts_curPlaced_back {f : Func} {fenv : FMap} {env : VMap}
+    {lctx : Option LoopCtx} {rets : Option (List Ident)} {d : Bool}
+    {ss : List (Stmt Op)} {s₀ s₁ : BState} {renv : Option VMap}
+    (hcompl : Completes f s₁.fn) (hcp : CurPlaced f s₁.fn)
+    (hfin : renv = none → CurFinal f s₁.fn)
+    (htr : trStmts fenv env lctx rets d ss s₀ = some (renv, s₁)) :
+    CurPlaced f s₀.fn := by
+  -- BLOCKED: `SGrows` plus the current `CurKeeps` is insufficient exactly when
+  -- this list ends by diverting in the block in which it started.  For example,
+  -- translate `[let x := 0; break]` from a state whose `cur` already contains a
+  -- head instruction.  The `let` prepends a `const`, then `break` seals the same
+  -- `curId` and clears `cur`, so the final state has the same `curId` and `cur =
+  -- []`.  Neither `CurKeeps` disjunct can hold: the first would require
+  -- `[] = Δ ++ s₀.fn.cur`, and the second requires the current id to change.
+  -- Nevertheless backward placement is valid, but it uses `hfin` to identify
+  -- that same-current sealed block with the finished block.  Closing this helper
+  -- therefore needs a strengthened construction relation with a third
+  -- "sealed the same current block" alternative, a composition lemma for that
+  -- relation, and a backward lemma consuming `CurFinal` in that alternative.
+  -- `CurKeeps.trans` and `trStmts_grows` alone cannot prove the stated result.
+  sorry
+
 /-- An expression whose evaluation halts: the fragment the construction laid
 down reaches that halt from the fragment's entry configuration. -/
 def EOutHalt (P : Prog) (f : Func) (s₀ : BState) (R₀ : Regs)
@@ -6019,40 +6045,79 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   | @seqNil funs V st =>
     intro fenv env R lctx rets s₀ s₁ renv _ henv hfr _ _ _ htr
     exact sim_seqNil henv hfr htr
-  | seqCons h1 h2 ih1 ih2 =>
-    -- BLOCKED on one missing structural fact, now isolated.  The head ends at an
-    -- intermediate state `sA`; `ih1` needs `CurPlaced f sA.fn` while the case has
-    -- it only at `s₁`.  `curPlaced_back` (proved above) performs exactly that
-    -- transfer, but it consumes `CurKeeps sA s₁` — "the tail did not discard the
-    -- head's pending instruction list" — and `SGrowsAt` does not record it.  So:
-    --   * add `CurKeeps` as a field of `SGrowsAt` (every primitive satisfies it:
-    --     `emit`/`freshVal`/`newBlock` grow `cur`, `sealCur` writes `cur.reverse`
-    --     into the block, `moveTo` is always reached with `cur = []`), and
-    --   * give `SGrowsAt.trans` the side condition `s.fn.curId < s.fn.blocks.size`
-    --     that `CurKeeps.trans` needs — best supplied as a further `SGrowsAt`
-    --     field, since it is an invariant of every builder state the construction
-    --     produces.
-    -- The 29-case script then recompiles unchanged, because it only ever composes
-    -- primitives through `trans`/`mono`.
-    --
-    -- Second, independent gap: `seqCons` admits a `.funDef` head.  Its `ih1` is
-    -- about `trStmt (.funDef …)`, which *rejects*, whereas `trStmts` takes the
-    -- `liftO (fenv.get n)` / `trFunc` / `fillFunc` branch.  That head is a no-op
-    -- on the environment (`funDef` gives `V1 = V`, outcome `.normal`) with a
-    -- `funcs`-only side effect, so it needs its own sub-case rather than
-    -- `SOut.seq` — and it is where the `hoist_ok` analogue gets discharged.
-    sorry
-  | seqStop h1 hne ih1 =>
-    -- BLOCKED on the *same* `CurPlaced f sA.fn` gap as `seqCons`, and on nothing
-    -- else: `SOut.of_nonNormal` is the right interface after all.  The earlier
-    -- worry — that a non-normal source outcome might not imply the construction
-    -- returned `none` — is real (`cond`/`switch` return `some` even when the
-    -- realized path diverts) but harmless: `of_nonNormal` never inspects `renv`,
-    -- because the diverting `SOut` outcomes do not mention the output
-    -- environment.  The head's `SimS` has already produced the jump away, so the
-    -- tail's emitted code is unreachable and its builder state only has to supply
-    -- the freshness bound, which `trStmts_grows` gives.
-    sorry
+  | @seqCons funs V st s rest V1 st1 V2 st2 o h1 h2 ih1 ih2 =>
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hcompl hcp hfin htr
+    cases s with
+    | funDef n ps rs body =>
+      cases h1
+      rw [trStmts] at htr
+      obtain ⟨fid, sA, ha, htr⟩ := M.bind_inv htr
+      obtain ⟨g, sB, hb, htr⟩ := M.bind_inv htr
+      obtain ⟨u, sC, hc, htail⟩ := M.bind_inv htr
+      have hfnA : sA.fn = s₀.fn := congrArg BState.fn (M.liftO_inv ha).2
+      have hfnB : sB.fn = sA.fn := (trFunc_grows fenv ps rs body sA g sB hb).1
+      have hfnC : sC.fn = sB.fn := by rw [(M.fillFunc_inv hc).choose_spec]
+      have hfn : sC.fn = s₀.fn := hfnC.trans (hfnB.trans hfnA)
+      simpa only [SOut, hfn] using
+        (ih2 fenv env R lctx rets sC s₁ renv hfe henv
+          (by simpa only [hfn] using hfr) hcompl hcp hfin htail)
+    | block body | letDecl vars val | assign vars e | cond e body
+    | forLoop init e post body | «break» | «continue» | leave
+    | switch e cases dflt | exprStmt e =>
+      obtain ⟨renvA, sA, hhead, htail⟩ := trStmts_false_cons_inv
+        (by intros; simp) htr
+      cases renvA with
+      | none =>
+        obtain ⟨hrenv, hfn⟩ := trStmts_true_fn fenv env lctx rets rest sA s₁ renv htail
+        have hcomplA : Completes f sA.fn := by simpa only [hfn] using hcompl
+        have hcpA : CurPlaced f sA.fn := by simpa only [hfn] using hcp
+        have hfinA : CurFinal f sA.fn := by
+          simpa only [hfn] using hfin hrenv
+        obtain ⟨envA, R₁, hbad, -⟩ :=
+          ih1 fenv env R lctx rets s₀ sA none hfe henv hfr hcomplA hcpA
+            (fun _ => hfinA) hhead
+        exact absurd hbad (by simp)
+      | some envA =>
+        have hgTail : SGrows sA s₁ :=
+          trStmts_grows fenv envA lctx rets false rest sA renv s₁ htail
+        have hcomplA : Completes f sA.fn := SGrowsAt.completes_of hgTail hcompl
+        have hcpA : CurPlaced f sA.fn :=
+          trStmts_curPlaced_back hcompl hcp hfin htail
+        refine SOut.seq
+          (ih1 fenv env R lctx rets s₀ sA (some envA) hfe henv hfr hcomplA hcpA
+            (by simp) hhead) ?_
+        intro R₁ hle hfrA henvA
+        exact ih2 fenv envA R₁ lctx rets sA s₁ renv hfe henvA hfrA
+          hcompl hcp hfin htail
+  | @seqStop funs V st s rest V1 st1 o h1 hne ih1 =>
+    intro fenv env R lctx rets s₀ s₁ renv hfe henv hfr hcompl hcp hfin htr
+    cases s with
+    | funDef n ps rs body =>
+      cases h1
+      exact absurd rfl hne
+    | block body | letDecl vars val | assign vars e | cond e body
+    | forLoop init e post body | «break» | «continue» | leave
+    | switch e cases dflt | exprStmt e =>
+      obtain ⟨renvA, sA, hhead, htail⟩ := trStmts_false_cons_inv
+        (by intros; simp) htr
+      cases renvA with
+      | none =>
+        obtain ⟨hrenv, hfn⟩ := trStmts_true_fn fenv env lctx rets rest sA s₁ renv htail
+        have hcomplA : Completes f sA.fn := by simpa only [hfn] using hcompl
+        have hcpA : CurPlaced f sA.fn := by simpa only [hfn] using hcp
+        have hfinA : CurFinal f sA.fn := by simpa only [hfn] using hfin hrenv
+        exact SOut.of_nonNormal hne (by rw [hfn])
+          (ih1 fenv env R lctx rets s₀ sA none hfe henv hfr hcomplA hcpA
+            (fun _ => hfinA) hhead)
+      | some envA =>
+        have hgTail : SGrows sA s₁ :=
+          trStmts_grows fenv envA lctx rets false rest sA renv s₁ htail
+        have hcomplA : Completes f sA.fn := SGrowsAt.completes_of hgTail hcompl
+        have hcpA : CurPlaced f sA.fn :=
+          trStmts_curPlaced_back hcompl hcp hfin htail
+        exact SOut.of_nonNormal hne hgTail.nextVal
+          (ih1 fenv env R lctx rets s₀ sA (some envA) hfe henv hfr hcomplA hcpA
+            (by simp) hhead)
   | loopDone => trivial
   | loopCondHalt => trivial
   | loopStep => trivial
