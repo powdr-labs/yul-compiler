@@ -130,12 +130,11 @@ definitions nothing reads.
 
 ## The remaining frontier
 
-Twelve `sorry`s, each documented at its declaration:
+Eleven `sorry`s, each documented at its declaration:
 
 * pass 0 (inlining): `inlineOnce_sound`, `inlineFunc_sound`, `pruneFuncs_sound`,
   `inlineProg_sound`;
-* passes 1–4: `elimTrivialParams_sound`, `constFold_sound`, `cse_sound`,
-  `dve_sound`;
+* passes 1, 3 and 4: `elimTrivialParams_sound`, `cse_sound`, `dve_sound`;
 * dominance preservation: `elimTrivialParams_dom`, `cse_dom`, `dve_dom`
   (`constFold_dom` and `runOnce_dom` *are* proved);
 * the gate-accepted branch of `optimizeProg_sound'`.
@@ -187,6 +186,19 @@ theorem setMany_nil_right (R : Regs) (xs : List ValId) : R.setMany xs [] = R := 
 
 theorem setMany_cons (R : Regs) (x : ValId) (xs : List ValId) (v : U256) (vs : List U256) :
     R.setMany (x :: xs) (v :: vs) = (R.set x v).setMany xs vs := rfl
+
+/-- Parallel binding leaves an id outside the destination list untouched. -/
+theorem setMany_of_not_mem (R : Regs) {d : ValId} (xs : List ValId) (vs : List U256)
+    (hd : d ∉ xs) : (R.setMany xs vs) d = R d := by
+  induction xs generalizing R vs with
+  | nil => rfl
+  | cons x xs ih =>
+    simp only [List.mem_cons, not_or] at hd
+    cases vs with
+    | nil => rw [setMany_nil_right]
+    | cons v vs =>
+      rw [setMany_cons, ih (R := R.set x v) (vs := vs) hd.2]
+      exact set_other R v hd.1
 
 /-- Reading a list of ids only depends on the register file at those ids. -/
 theorem getMany_congr {R1 R2 : Regs} {xs : List ValId} (h : ∀ x ∈ xs, R1 x = R2 x) :
@@ -1985,6 +1997,313 @@ theorem cfInstr_foldMap_cons (i : Instr) (is : List Instr) (m : Std.HashMap ValI
         ih (cfInstrOut j m' :: a) (cfInstrMap j m'), ih [cfInstrOut j m'] (cfInstrMap j m')]
   exact this _ _
 
+/-- A fold step can only change the lookup of an instruction destination. -/
+theorem cfInstrMap_get_of_not_def (i : Instr) (m : Std.HashMap ValId U256) {d : ValId}
+    (hd : d ∉ i.defs) : (cfInstrMap i m)[d]? = m[d]? := by
+  cases i with
+  | const x v =>
+    simp only [Instr.defs, List.mem_singleton] at hd
+    have hxd : (x == d) = false := by simp [Ne.symm hd]
+    simp [cfInstrMap, Std.HashMap.getElem?_insert, hxd]
+  | op ds yop args =>
+    cases ds with
+    | nil => rfl
+    | cons x xs =>
+      cases xs with
+      | nil =>
+        simp only [Instr.defs, List.mem_singleton] at hd
+        simp only [cfInstrMap]
+        split
+        · have hxd : (x == d) = false := by simp [Ne.symm hd]
+          simp [Std.HashMap.getElem?_insert, hxd]
+        · rfl
+      | cons y ys => rfl
+  | call ds fid args => rfl
+
+/-- If a lookup appears in one step from an absent input lookup, the
+instruction defines that key. -/
+theorem cfInstrMap_def_of_get (i : Instr) (m : Std.HashMap ValId U256) {d : ValId} {v : U256}
+    (h0 : m[d]? = none) (h : (cfInstrMap i m)[d]? = some v) : d ∈ i.defs := by
+  by_contra hd
+  rw [cfInstrMap_get_of_not_def i m hd, h0] at h
+  simp at h
+
+/-- A whole instruction fold preserves a lookup when none of its instructions
+defines the key. -/
+theorem cfInstr_foldMap_get_of_not_def (l : List Instr) (m : Std.HashMap ValId U256)
+    {d : ValId} (hd : d ∉ l.flatMap Instr.defs) :
+    (l.foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).1[d]? = m[d]? := by
+  induction l generalizing m with
+  | nil => rfl
+  | cons i is ih =>
+    simp only [List.flatMap_cons, List.mem_append, not_or] at hd
+    have hacc := cfInstr_foldMap_cons i is m
+    rw [List.foldl_cons, cfInstrStep_eq] at hacc
+    rw [List.foldl_cons, cfInstrStep_eq, hacc, ih (cfInstrMap i m) hd.2,
+      cfInstrMap_get_of_not_def i m hd.1]
+
+/-- Every key in a fold map either came from the incoming map or is defined by
+one of the folded instructions. -/
+theorem cfInstr_foldMap_domain (l : List Instr) (m : Std.HashMap ValId U256)
+    {d : ValId} {v : U256}
+    (h : (l.foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).1[d]? = some v) :
+    (∃ w, m[d]? = some w) ∨ d ∈ l.flatMap Instr.defs := by
+  by_cases h0 : m[d]? = none
+  · right
+    by_contra hd
+    rw [cfInstr_foldMap_get_of_not_def l m hd, h0] at h
+    simp at h
+  · left
+    exact Option.ne_none_iff_exists'.mp h0
+
+/-- Instruction definitions, flattened out of the blocks, form a sublist of
+`allDefs`. -/
+theorem instrDefs_sublist_allDefs (f : Func) :
+    (f.blocks.toList.flatMap fun b => b.instrs.flatMap Instr.defs).Sublist f.allDefs := by
+  rw [allDefs_eq]
+  apply List.Sublist.trans _ (List.sublist_append_right f.params _)
+  induction f.blocks.toList with
+  | nil => exact .slnil
+  | cons b bs ih =>
+    simp only [List.flatMap_cons]
+    exact List.Sublist.append (List.sublist_append_right b.params _) ih
+
+/-- The instruction-definition traversal is duplicate-free in an SSA
+function. -/
+theorem instrDefs_nodup {f : Func} (h : f.allDefs.Nodup) :
+    (f.blocks.toList.flatMap fun b => b.instrs.flatMap Instr.defs).Nodup :=
+  h.sublist (instrDefs_sublist_allDefs f)
+
+/-- The instruction accumulator does not affect the map component of a fold. -/
+theorem cfInstr_foldMap_acc (l : List Instr) (m : Std.HashMap ValId U256)
+    (acc : List Instr) :
+    (l.foldl (fun s i => cfInstrStep i s) ⟨m, acc⟩).1 =
+      (l.foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).1 := by
+  induction l generalizing m acc with
+  | nil => rfl
+  | cons i is ih =>
+    rw [List.foldl_cons, List.foldl_cons, cfInstrStep_eq, cfInstrStep_eq,
+      ih (cfInstrMap i m) (cfInstrOut i m :: acc),
+      ih (cfInstrMap i m) [cfInstrOut i m]]
+
+/-- The exact block and map produced from a given incoming constant map. -/
+def cfBlockOut (b : Block) (m : Std.HashMap ValId U256) : Block :=
+  let r := b.instrs.foldl (fun s i => cfInstrStep i s) ⟨m, []⟩
+  { b with instrs := r.2.reverse, term := cfTerm b r.1 }
+
+def cfBlockMap (b : Block) (m : Std.HashMap ValId U256) : Std.HashMap ValId U256 :=
+  (b.instrs.foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).1
+
+theorem cfBlockStep_eq' (b : Block) (st : CFOuter) :
+    cfBlockStep b st = ⟨st.1.push (cfBlockOut b st.2), cfBlockMap b st.2⟩ := by
+  simp only [cfBlockStep, cfBlockOut, cfBlockMap]
+
+/-- Later block steps preserve every already-emitted block. -/
+theorem cfBlock_fold_get_old (l : List Block) (st : CFOuter) {i : Nat} {b : Block}
+    (h : st.1[i]? = some b) :
+    (l.foldl (fun st b => cfBlockStep b st) st).1[i]? = some b := by
+  induction l generalizing st with
+  | nil => exact h
+  | cons x xs ih =>
+    apply ih (st := cfBlockStep x st)
+    rw [cfBlockStep_eq', Array.getElem?_push]
+    have hi : i < st.1.size := (Array.getElem?_eq_some_iff.mp h).1
+    have hne : i ≠ st.1.size := Nat.ne_of_lt hi
+    rw [Array.getElem?_eq_getElem hi] at h
+    simp only [hne, ↓reduceIte]
+    rw [Array.getElem?_eq_getElem hi]
+    exact h
+
+/-- Exact, index-preserving correspondence for a source block in the outer
+fold. -/
+theorem cfBlock_fold_get (l : List Block) (st : CFOuter) {j : Nat} {b : Block}
+    (h : l[j]? = some b) :
+    ∃ m, (l.foldl (fun st b => cfBlockStep b st) st).1[st.1.size + j]? =
+        some (cfBlockOut b m) := by
+  induction l generalizing st j with
+  | nil => simp at h
+  | cons x xs ih =>
+    cases j with
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at h
+      subst x
+      refine ⟨st.2, ?_⟩
+      rw [List.foldl_cons]
+      apply cfBlock_fold_get_old
+      rw [cfBlockStep_eq', Array.getElem?_push]
+      simp
+    | succ j =>
+      simp only [List.getElem?_cons_succ] at h
+      rw [List.foldl_cons]
+      obtain ⟨m, hm⟩ := ih (st := cfBlockStep x st) h
+      refine ⟨m, ?_⟩
+      rw [cfBlockStep_eq'] at hm ⊢
+      simp only [Array.size_push] at hm
+      simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using hm
+
+/-- Every source block has the exact folded block at the same index. -/
+theorem constFold_block_get {f : Func} {i : BlockId} {b : Block}
+    (h : f.blocks[i]? = some b) :
+    ∃ m, (constFold f).blocks[i]? = some (cfBlockOut b m) := by
+  rw [constFold_blocks_eq]
+  have hl : f.blocks.toList[i]? = some b := by simpa using h
+  obtain ⟨m, hm⟩ := cfBlock_fold_get f.blocks.toList ⟨#[], ∅⟩ hl
+  refine ⟨m, ?_⟩
+  simpa using hm
+
+/-! ### Static constant certificates -/
+
+/-- A value forced by a definition in `f`.  The recursive `op` constructor is
+well-founded in exactly the folder's instruction order: all argument
+certificates already occur in the incoming map. -/
+inductive ConstDef (f : Func) : ValId → U256 → Prop
+  | const {b : Block} {d : ValId} {v : U256} :
+      b ∈ f.blocks.toList → .const d v ∈ b.instrs → ConstDef f d v
+  | op {b : Block} {d : ValId} {yop : Op} {as : List ValId} {vs : List U256} {v : U256} :
+      b ∈ f.blocks.toList → .op [d] yop as ∈ b.instrs → pureOp yop = true →
+      List.Forall₂ (ConstDef f) as vs → evalPure yop vs = some v → ConstDef f d v
+
+/-- Every certificate names an actual instruction destination. -/
+theorem ConstDef.site {f : Func} {d : ValId} {v : U256} (h : ConstDef f d v) :
+    ∃ b ∈ f.blocks.toList, ∃ i ∈ b.instrs, d ∈ i.defs := by
+  cases h with
+  | const hb hi => exact ⟨_, hb, _, hi, by simp [Instr.defs]⟩
+  | op hb hi hp hvs he => exact ⟨_, hb, _, hi, by simp [Instr.defs]⟩
+
+/-- A constant map is sound when each successful lookup carries a static
+certificate. -/
+def CFMapSound (f : Func) (m : Std.HashMap ValId U256) : Prop :=
+  ∀ {d v}, m[d]? = some v → ConstDef f d v
+
+theorem cfMapSound_empty (f : Func) : CFMapSound f ∅ := by
+  intro d v h
+  simp at h
+
+/-- Successful `mapM` lookups in a sound map produce pointwise constant
+certificates. -/
+theorem cfMapSound_mapM {f : Func} {m : Std.HashMap ValId U256}
+    (hm : CFMapSound f m) {as : List ValId} {vs : List U256}
+    (h : as.mapM (m[·]?) = some vs) : List.Forall₂ (ConstDef f) as vs := by
+  induction as generalizing vs with
+  | nil => simp at h; subst vs; exact .nil
+  | cons a as ih =>
+    simp only [List.mapM_cons] at h
+    cases ha : m[a]? with
+    | none => simp [ha] at h
+    | some v =>
+      cases ht : as.mapM (m[·]?) with
+      | none => simp [ha, ht] at h
+      | some ws =>
+        simp [ha, ht] at h
+        subst vs
+        exact .cons (hm ha) (ih ht)
+
+/-- One folder step extends a sound map when its instruction belongs to the
+function. -/
+theorem cfInstrMap_sound {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
+    {i : Instr} (hi : i ∈ b.instrs) {m : Std.HashMap ValId U256}
+    (hm : CFMapSound f m) : CFMapSound f (cfInstrMap i m) := by
+  intro d v hd
+  cases i with
+  | const x w =>
+    rw [cfInstrMap, Std.HashMap.getElem?_insert] at hd
+    split at hd
+    · rename_i hxd
+      have : x = d := by simpa using hxd
+      subst d
+      simp at hd
+      subst v
+      exact .const hb hi
+    · exact hm hd
+  | op ds yop as =>
+    cases ds with
+    | nil => exact hm hd
+    | cons x xs =>
+      cases xs with
+      | cons y ys => exact hm hd
+      | nil =>
+        simp only [cfInstrMap] at hd
+        split at hd
+        · rename_i w hfold
+          rw [Std.HashMap.getElem?_insert] at hd
+          split at hd
+          · rename_i hxd
+            have : x = d := by simpa using hxd
+            subst d
+            simp at hd
+            subst v
+            by_cases hp : pureOp yop = true
+            · cases hs : as.mapM (m[·]?) with
+              | none => simp [hp, hs] at hfold
+              | some vs =>
+                simp [hp, hs] at hfold
+                exact .op hb hi hp (cfMapSound_mapM hm hs) hfold
+            · have hp' : pureOp yop = false := Bool.eq_false_of_not_eq_true hp
+              simp [hp'] at hfold
+          · exact hm hd
+        · exact hm hd
+  | call ds fid as => exact hm hd
+
+/-- Folding a list of instructions from a sound map preserves soundness. -/
+theorem cfInstr_foldMap_sound {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
+    {l : List Instr} (hl : ∀ i ∈ l, i ∈ b.instrs) {m : Std.HashMap ValId U256}
+    (hm : CFMapSound f m) :
+    CFMapSound f (l.foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).1 := by
+  induction l generalizing m with
+  | nil => exact hm
+  | cons i is ih =>
+    rw [List.foldl_cons, cfInstrStep_eq]
+    rw [cfInstr_foldMap_acc]
+    apply ih (fun j hj => hl j (by simp [hj]))
+    exact cfInstrMap_sound hb (hl i (by simp)) hm
+
+theorem cfBlockMap_sound {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
+    {m : Std.HashMap ValId U256} (hm : CFMapSound f m) :
+    CFMapSound f (cfBlockMap b m) := by
+  exact cfInstr_foldMap_sound hb (fun i hi => hi) hm
+
+/-- Strengthening of `cfBlock_fold_get`: the incoming map at the selected
+block is sound. -/
+theorem cfBlock_fold_get_sound {f : Func} {l : List Block}
+    (hl : ∀ b ∈ l, b ∈ f.blocks.toList) (st : CFOuter)
+    (hst : CFMapSound f st.2) {j : Nat} {b : Block} (h : l[j]? = some b) :
+    ∃ m, (l.foldl (fun st b => cfBlockStep b st) st).1[st.1.size + j]? =
+        some (cfBlockOut b m) ∧ CFMapSound f m := by
+  induction l generalizing st j with
+  | nil => simp at h
+  | cons x xs ih =>
+    cases j with
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at h
+      subst x
+      refine ⟨st.2, ?_, hst⟩
+      rw [List.foldl_cons]
+      apply cfBlock_fold_get_old
+      rw [cfBlockStep_eq', Array.getElem?_push]
+      simp
+    | succ j =>
+      simp only [List.getElem?_cons_succ] at h
+      rw [List.foldl_cons]
+      have hx : x ∈ f.blocks.toList := hl x (by simp)
+      have hsound : CFMapSound f (cfBlockStep x st).2 := by
+        rw [cfBlockStep_eq']
+        exact cfBlockMap_sound hx hst
+      obtain ⟨m, hm, hms⟩ := ih (fun y hy => hl y (by simp [hy]))
+        (cfBlockStep x st) hsound h
+      refine ⟨m, ?_, hms⟩
+      rw [cfBlockStep_eq'] at hm ⊢
+      simp only [Array.size_push] at hm
+      simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using hm
+
+theorem constFold_block_get_sound {f : Func} {i : BlockId} {b : Block}
+    (h : f.blocks[i]? = some b) :
+    ∃ m, (constFold f).blocks[i]? = some (cfBlockOut b m) ∧ CFMapSound f m := by
+  rw [constFold_blocks_eq]
+  have hl : f.blocks.toList[i]? = some b := by simpa using h
+  obtain ⟨m, hm, hms⟩ := cfBlock_fold_get_sound
+    (f := f) (fun b hb => hb) ⟨#[], ∅⟩ (cfMapSound_empty f) hl
+  exact ⟨m, by simpa using hm, hms⟩
+
 /-! ### Pass 2's structural specification -/
 
 /-- One block step pushes a `CFRel`-rewrite of the source block. -/
@@ -2196,6 +2515,342 @@ theorem elimTrivialParams_sound {P : Prog} {f : Func} {args : List U256} {st : E
       ⟨eb'.instrs, eb'.term⟩ res := by
   sorry
 
+/-! ### Constant-folding execution invariant -/
+
+theorem wfCheck_defs_nodup {f : Func} {n : Nat} (h : f.wfCheck n = true) :
+    f.allDefs.Nodup := by
+  unfold Func.wfCheck at h
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+  exact h.1.1.1
+
+theorem wfCheck_op_arity {f : Func} {n : Nat} (h : f.wfCheck n = true)
+    {b : Block} (hb : b ∈ f.blocks.toList) {ds : List ValId} {yop : Op} {as : List ValId}
+    (hi : .op ds yop as ∈ b.instrs) : ds.length ≤ 1 := by
+  unfold Func.wfCheck at h
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+  have hb' : b ∈ f.blocks := by simpa using hb
+  have hblock := Array.all_eq_true_iff_forall_mem.mp h.2 b hb'
+  simp only [Bool.and_eq_true] at hblock
+  have hins := List.all_eq_true.mp hblock.2 (Instr.op ds yop as) hi
+  simpa using hins
+
+/-- Register consistency consumes the static certificates constructed by the
+folder. -/
+def ConstRegs (f : Func) (R : Regs) : Prop :=
+  ∀ {d v w}, Passes.ConstDef f d v → R d = some w → w = v
+
+theorem constRegs_entry {f : Func} (hnd : f.allDefs.Nodup) (args : List U256) :
+    ConstRegs f (Regs.empty.setMany f.params args) := by
+  intro d v w hc hr
+  obtain ⟨b, hb, i, hi, hd⟩ := hc.site
+  have hnot : d ∉ f.params := by
+    intro hp
+    exact funcParam_not_instr_def hnd hb hi hp hd
+  rw [Regs.setMany_of_not_mem _ f.params args hnot] at hr
+  simp [Regs.empty] at hr
+
+theorem constRegs_setMany_params {f : Func} (hnd : f.allDefs.Nodup)
+    {R : Regs} (hR : ConstRegs f R) {b : Block} (hb : b ∈ f.blocks.toList)
+    (vs : List U256) : ConstRegs f (R.setMany b.params vs) := by
+  intro d v w hc hr
+  obtain ⟨b', hb', i, hi, hd⟩ := hc.site
+  have hnot : d ∉ b.params := by
+    intro hp
+    exact param_not_instr_def hnd hb hb' hi hp hd
+  rw [Regs.setMany_of_not_mem _ b.params vs hnot] at hr
+  exact hR hc hr
+
+/-- The exact rewrite of an arbitrary instruction suffix and its terminator. -/
+def Passes.cfRest (is : List Instr) (t : Term) (m : Std.HashMap ValId U256) : Rest :=
+  let r := is.foldl (fun s i => Passes.cfInstrStep i s) ⟨m, []⟩
+  ⟨r.2.reverse, Passes.cfTerm { params := [], instrs := is, term := t } r.1⟩
+
+theorem Passes.cfRest_cons (i : Instr) (is : List Instr) (t : Term)
+    (m : Std.HashMap ValId U256) :
+    cfRest (i :: is) t m =
+      ⟨cfInstrOut i m :: (cfRest is t (cfInstrMap i m)).instrs,
+        (cfRest is t (cfInstrMap i m)).term⟩ := by
+  simp only [cfRest]
+  rw [cfInstr_fold_cons, cfInstr_foldMap_cons]
+  cases t <;> rfl
+
+theorem Passes.cfRest_nil (t : Term) (m : Std.HashMap ValId U256) :
+    cfRest [] t m = ⟨[], cfTerm { params := [], instrs := [], term := t } m⟩ := rfl
+
+theorem Passes.cfBlockOut_rest (b : Block) (m : Std.HashMap ValId U256) :
+    Rest.mk (cfBlockOut b m).instrs (cfBlockOut b m).term = cfRest b.instrs b.term m := by
+  rfl
+
+/-- A certified destination's unique instruction site determines which kind of
+certificate it carries. -/
+theorem constDef_instr_cases {f : Func} (hnd : f.allDefs.Nodup)
+    {b : Block} (hb : b ∈ f.blocks.toList) {i : Instr} (hi : i ∈ b.instrs)
+    {d : ValId} (hd : d ∈ i.defs) {v : U256} (hc : Passes.ConstDef f d v) :
+    i = .const d v ∨
+      ∃ yop as vs, i = .op [d] yop as ∧ Passes.pureOp yop = true ∧
+        List.Forall₂ (Passes.ConstDef f) as vs ∧ Passes.evalPure yop vs = some v := by
+  cases hc with
+  | @const b' _ _ hb' hi' =>
+    have heq := instr_def_unique hnd hb hb' hi hi' hd (by simp [Instr.defs])
+    exact Or.inl heq
+  | @op b' _ yop as vs _ hb' hi' hp hvs he =>
+    have heq := instr_def_unique hnd hb hb' hi hi' hd (by simp [Instr.defs])
+    exact Or.inr ⟨yop, as, vs, heq, hp, hvs, he⟩
+
+theorem constRegs_getMany {f : Func} {R : Regs} (hR : ConstRegs f R)
+    {as : List ValId} {vs args : List U256}
+    (hc : List.Forall₂ (Passes.ConstDef f) as vs) (hg : R.getMany as = some args) :
+    args = vs := by
+  induction hc generalizing args with
+  | nil => simp at hg; exact hg
+  | @cons a v as vs hav htail ih =>
+    rw [Regs.getMany_cons] at hg
+    cases ha : R a with
+    | none => simp [ha] at hg
+    | some w =>
+      cases hs : R.getMany as with
+      | none => simp [ha, hs] at hg
+      | some ws =>
+        simp [ha, hs] at hg
+        subst args
+        rw [hR hav ha, ih hs]
+
+theorem constRegs_const {f : Func} (hnd : f.allDefs.Nodup)
+    {b : Block} (hb : b ∈ f.blocks.toList) {d : ValId} {v : U256}
+    (hi : .const d v ∈ b.instrs) {R : Regs} (hR : ConstRegs f R) :
+    ConstRegs f (R.set d v) := by
+  intro x u w hc hr
+  by_cases hxd : x = d
+  · subst x
+    simp at hr
+    subst w
+    rcases constDef_instr_cases hnd hb hi (by simp [Instr.defs]) hc with h | ⟨yop, as, vs, h, -⟩
+    · injection h
+    · cases h
+  · rw [Regs.set_other _ _ hxd] at hr
+    exact hR hc hr
+
+theorem constRegs_call {f : Func} (hnd : f.allDefs.Nodup)
+    {b : Block} (hb : b ∈ f.blocks.toList) {ds : List ValId} {fid : FuncId}
+    {as : List ValId} (hi : .call ds fid as ∈ b.instrs) {R : Regs}
+    (hR : ConstRegs f R) (rets : List U256) : ConstRegs f (R.setMany ds rets) := by
+  intro d v w hc hr
+  have hnot : d ∉ ds := by
+    intro hd
+    rcases constDef_instr_cases hnd hb hi (by simpa [Instr.defs] using hd) hc with h | ⟨yop, as', vs, h, -⟩
+    · cases h
+    · cases h
+  rw [Regs.setMany_of_not_mem _ ds rets hnot] at hr
+  exact hR hc hr
+
+theorem constRegs_op {f : Func} (hwf : f.wfCheck n = true) (hnd : f.allDefs.Nodup)
+    {b : Block} (hb : b ∈ f.blocks.toList) {ds : List ValId} {yop : Op}
+    {as : List ValId} (hi : .op ds yop as ∈ b.instrs) {R : Regs} (hR : ConstRegs f R)
+    {st st' : EvmState} {args rets : List U256} (hg : R.getMany as = some args)
+    (hbi : builtinWithExternal model.calls model.creates yop args st (.ok rets st'))
+    (hlen : ds.length = rets.length) : ConstRegs f (R.setMany ds rets) := by
+  have harity := wfCheck_op_arity hwf hb hi
+  cases ds with
+  | nil =>
+    intro d v w hc hr
+    exact hR hc hr
+  | cons d ds =>
+    cases ds with
+    | cons e es => simp at harity
+    | nil =>
+      cases rets with
+      | nil => simp at hlen
+      | cons r rs =>
+        cases rs with
+        | cons s ss => simp at hlen
+        | nil =>
+          intro x u w hc hr
+          by_cases hxd : x = d
+          · subst x
+            simp [Regs.setMany, Regs.set] at hr
+            subst w
+            rcases constDef_instr_cases hnd hb hi (by simp [Instr.defs]) hc with h | ⟨yop', as', vs, h, hp, hvs, he⟩
+            · cases h
+            · injection h with _ hyop has
+              subst yop'
+              subst as'
+              have hargs : args = vs := constRegs_getMany hR hvs hg
+              subst args
+              have hv := (Passes.evalPure_transport hp he hbi).1
+              simpa using hv
+          · rw [Regs.setMany_of_not_mem _ [d] [r] (by simp [hxd])] at hr
+            exact hR hc hr
+
+theorem Passes.pure_no_halt {yop : Op} (hp : pureOp yop = true) {args : List U256}
+    {st st' : EvmState}
+    (h : builtinWithExternal model.calls model.creates yop args st (.halt st')) : False := by
+  have hn := (YulSemantics.EVM.effects_sound_withExternal model.calls model.creates).halt yop
+    (pureOp_flags hp).2.2.2 args st (.halt st') h
+  simp [YulSemantics.BuiltinResult.isHalt] at hn
+
+/-- Lockstep simulation of an arbitrary suffix.  `CFMapSound` was established
+statically by the fold-order induction; `ConstRegs` merely records that the
+original execution has respected those certificates so far. -/
+theorem constFold_exec_aux {P : Prog} {f : Func} {R : Regs} {st : EvmState}
+    {rest : Rest} {res : FRes} (hwf : f.wfCheck n = true) (hnd : f.allDefs.Nodup)
+    (h : Exec (model := model) P f R st rest res) :
+    ∀ {b}, b ∈ f.blocks.toList → (∀ i ∈ rest.instrs, i ∈ b.instrs) →
+      ∀ {m}, Passes.CFMapSound f m → ConstRegs f R →
+        Exec (model := model) P (Passes.constFold f) R st
+          (Passes.cfRest rest.instrs rest.term m) res := by
+  induction h with
+  | @const f R st d v is t res htail ih =>
+    intro b hb hmem m hm hR
+    rw [Passes.cfRest_cons]
+    simp only [Passes.cfInstrOut, Passes.cfInstrMap]
+    have hi0 : Instr.const d v ∈ b.instrs := hmem _ (by simp)
+    refine Exec.const (ih hwf hnd hb
+      (fun i hi => hmem i (List.mem_cons_of_mem _ hi))
+      (Passes.cfInstrMap_sound hb hi0 hm)
+      (constRegs_const hnd hb hi0 hR))
+  | @op f R st st' ds yop as args rets is t res hg hbi hlen htail ih =>
+    intro b hb hmem m hm hR
+    rw [Passes.cfRest_cons]
+    have hi : Instr.op ds yop as ∈ b.instrs := hmem _ (by simp)
+    have hR' : ConstRegs f (R.setMany ds rets) :=
+      constRegs_op hwf hnd hb hi hR hg hbi hlen
+    cases ds with
+    | nil =>
+      simp only [Passes.cfInstrOut, Passes.cfInstrMap]
+      exact Exec.op hg hbi hlen
+        (ih hwf hnd hb (fun i hi' => hmem i (List.mem_cons_of_mem _ hi')) hm hR')
+    | cons d ds =>
+      cases ds with
+      | cons e es =>
+        simp only [Passes.cfInstrOut, Passes.cfInstrMap]
+        exact Exec.op hg hbi hlen
+          (ih hwf hnd hb (fun i hi' => hmem i (List.mem_cons_of_mem _ hi')) hm hR')
+      | nil =>
+        simp only [Passes.cfInstrOut, Passes.cfInstrMap]
+        split
+        · rename_i v hfold
+          have hp : Passes.pureOp yop = true := by
+            by_contra hp
+            have hp' : Passes.pureOp yop = false := Bool.eq_false_of_not_eq_true hp
+            simp [hp'] at hfold
+          cases hs : as.mapM (m[·]?) with
+          | none => simp [hp, hs] at hfold
+          | some vs =>
+            have hargs : args = vs := constRegs_getMany hR
+              (Passes.cfMapSound_mapM hm hs) hg
+            subst args
+            have hv := Passes.evalPure_transport hp (by simpa [hp, hs] using hfold) hbi
+            have hre : rets = [v] := hv.1
+            have hst : st' = st := hv.2
+            subst rets
+            subst st'
+            refine Exec.const ?_
+            have hm' : Passes.CFMapSound f (m.insert d v) := by
+              have hsnd : Passes.CFMapSound f
+                  (Passes.cfInstrMap (.op [d] yop as) m) :=
+                Passes.cfInstrMap_sound hb hi hm
+              intro x u hx
+              apply hsnd
+              simpa [Passes.cfInstrMap, hfold] using hx
+            exact ih hwf hnd hb (fun i hi' => hmem i (List.mem_cons_of_mem _ hi'))
+              hm' hR'
+        · exact Exec.op hg hbi hlen
+            (ih hwf hnd hb (fun i hi' => hmem i (List.mem_cons_of_mem _ hi')) hm hR')
+  | @opHalt f R st st' ds yop as args is t hg hbi =>
+    intro b hb hmem m hm hR
+    rw [Passes.cfRest_cons]
+    cases ds with
+    | nil =>
+      simp only [Passes.cfInstrOut, Passes.cfInstrMap]
+      exact Exec.opHalt hg hbi
+    | cons d ds =>
+      cases ds with
+      | cons e es =>
+        simp only [Passes.cfInstrOut, Passes.cfInstrMap]
+        exact Exec.opHalt hg hbi
+      | nil =>
+        simp only [Passes.cfInstrOut, Passes.cfInstrMap]
+        split
+        · rename_i v hfold
+          have hp : Passes.pureOp yop = true := by
+            by_contra hp
+            have hp' : Passes.pureOp yop = false := Bool.eq_false_of_not_eq_true hp
+            simp [hp'] at hfold
+          exact absurd hbi (Passes.pure_no_halt hp)
+        · exact Exec.opHalt hg hbi
+  | @call f g R st st' ds as fid args rvals eb is t res hfid hg hplen heb hbody hlen htail
+      ihbody ih =>
+    intro b hb hmem m hm hR
+    rw [Passes.cfRest_cons]
+    simp only [Passes.cfInstrOut, Passes.cfInstrMap]
+    have hi : Instr.call ds fid as ∈ b.instrs := hmem _ (by simp)
+    refine Exec.call hfid hg hplen heb hbody hlen ?_
+    exact ih hwf hnd hb (fun i hi' => hmem i (List.mem_cons_of_mem _ hi')) hm
+      (constRegs_call hnd hb hi hR rvals)
+  | @callHalt f g R st st' ds as fid args eb is t hfid hg hplen heb hbody ihbody =>
+    intro b hb hmem m hm hR
+    rw [Passes.cfRest_cons]
+    simp only [Passes.cfInstrOut, Passes.cfInstrMap]
+    exact Exec.callHalt hfid hg hplen heb hbody
+  | @jump f R st e tb args res htb hg hplen hbody ih =>
+    intro b hb hmem m hm hR
+    rw [Passes.cfRest_nil]
+    obtain ⟨m', htb', hm'⟩ := Passes.constFold_block_get_sound htb
+    have htbmem : tb ∈ f.blocks.toList := by
+      obtain ⟨hlt, hget⟩ := Array.getElem?_eq_some_iff.mp htb
+      exact List.mem_iff_getElem.mpr ⟨e.target, by simpa using hlt, by simpa using hget⟩
+    refine Exec.jump htb' hg hplen ?_
+    rw [Passes.cfBlockOut_rest]
+    exact ih hwf hnd htbmem (fun i hi => hi) hm'
+      (constRegs_setMany_params hnd hR htbmem args)
+  | @branchTrue f R st c v et ef tb args res hc hv htb hg hplen hbody ih =>
+    intro b hb hmem m hm hR
+    rw [Passes.cfRest_nil]
+    obtain ⟨m', htb', hm'⟩ := Passes.constFold_block_get_sound htb
+    have htbmem : tb ∈ f.blocks.toList := by
+      obtain ⟨hlt, hget⟩ := Array.getElem?_eq_some_iff.mp htb
+      exact List.mem_iff_getElem.mpr ⟨et.target, by simpa using hlt, by simpa using hget⟩
+    have hnext := ih hwf hnd htbmem (fun i hi => hi) hm'
+      (constRegs_setMany_params hnd hR htbmem args)
+    simp only [Passes.cfTerm]
+    split
+    · rename_i w hw
+      have hwv : v = w := hR (hm hw) hc
+      subst w
+      have hvb : ¬ (v == 0) = true := by simpa [beq_iff_eq] using hv
+      rw [if_neg hvb]
+      rw [← Passes.cfBlockOut_rest] at hnext
+      exact Exec.jump htb' hg hplen hnext
+    · exact Exec.branchTrue hc hv htb' hg hplen
+        (by rw [← Passes.cfBlockOut_rest] at hnext; exact hnext)
+  | @branchFalse f R st c et ef tb args res hc htb hg hplen hbody ih =>
+    intro b hb hmem m hm hR
+    rw [Passes.cfRest_nil]
+    obtain ⟨m', htb', hm'⟩ := Passes.constFold_block_get_sound htb
+    have htbmem : tb ∈ f.blocks.toList := by
+      obtain ⟨hlt, hget⟩ := Array.getElem?_eq_some_iff.mp htb
+      exact List.mem_iff_getElem.mpr ⟨ef.target, by simpa using hlt, by simpa using hget⟩
+    have hnext := ih hwf hnd htbmem (fun i hi => hi) hm'
+      (constRegs_setMany_params hnd hR htbmem args)
+    simp only [Passes.cfTerm]
+    split
+    · rename_i w hw
+      have hw0 : w = 0 := (hR (hm hw) hc).symm
+      subst w
+      rw [if_pos (by simp)]
+      rw [← Passes.cfBlockOut_rest] at hnext
+      exact Exec.jump htb' hg hplen hnext
+    · exact Exec.branchFalse hc htb' hg hplen
+        (by rw [← Passes.cfBlockOut_rest] at hnext; exact hnext)
+  | @ret f R st xs vals hg =>
+    intro b hb hmem m hm hR
+    rw [Passes.cfRest_nil]
+    exact Exec.ret hg
+  | @halt f R st st' yop as args hg hbi =>
+    intro b hb hmem m hm hR
+    rw [Passes.cfRest_nil]
+    exact Exec.halt hg hbi
+
 /-- **Pass 2 (constant folding) soundness.** No dominance hypothesis.
 
 The loop is no longer in the way: `constFold_blocks_eq` (proved) turns it into a
@@ -2240,7 +2895,17 @@ theorem constFold_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState}
       ⟨eb.instrs, eb.term⟩ res) :
     Exec (model := model) P (Passes.constFold f) (Regs.empty.setMany f.params args) st
       ⟨eb'.instrs, eb'.term⟩ res := by
-  sorry
+  have hnd : f.allDefs.Nodup := wfCheck_defs_nodup hwf
+  obtain ⟨m, hebo, hm⟩ := Passes.constFold_block_get_sound heb
+  rw [heb'] at hebo
+  have heq : eb' = Passes.cfBlockOut eb m := Option.some.inj hebo
+  subst eb'
+  have hebmem : eb ∈ f.blocks.toList := by
+    obtain ⟨hlt, hget⟩ := Array.getElem?_eq_some_iff.mp heb
+    exact List.mem_iff_getElem.mpr ⟨f.entry, by simpa using hlt, by simpa using hget⟩
+  rw [Passes.cfBlockOut_rest]
+  exact constFold_exec_aux hwf hnd hexec hebmem (fun i hi => hi) hm
+    (constRegs_entry hnd args)
 
 /-- **Pass 3 (local CSE) soundness**, under dominance.
 
