@@ -130,13 +130,13 @@ definitions nothing reads.
 
 ## The remaining frontier
 
-Ten `sorry`s, each documented at its declaration:
+Eight `sorry`s, each documented at its declaration:
 
 * pass 0 (inlining): `inlineOnce_sound`, `inlineFunc_sound`, `pruneFuncs_sound`,
   `inlineProg_sound`;
-* passes 1, 3 and 4: `elimTrivialParams_sound`, `cse_sound`, `dve_sound`;
-* dominance preservation: `elimTrivialParams_dom`, `cse_dom`
-  (`constFold_dom`, `dve_dom`, and `runOnce_dom` *are* proved);
+* passes 1 and 3: `elimTrivialParams_sound`, `cse_sound`;
+* dominance preservation: `elimTrivialParams_dom`
+  (`constFold_dom`, `cse_dom`, `dve_dom`, and `runOnce_dom` *are* proved);
 * the gate-accepted branch of `optimizeProg_sound'`.
 
 Two kinds of obligation remain, and it is worth separating them.
@@ -3103,7 +3103,9 @@ def cseEntryTab (f : Func) (srcs : Array (List BlockId))
     (tables : Array CseTab) (bi : BlockId) : CseTab :=
   if bi == f.entry then {}
   else match srcs[bi]! with
-    | [p] => if p < bi then tables[p]! else {}
+    | [p] => if p < bi then
+        Passes.inheritTab tables[p]! f.blocks[bi]!.params
+      else {}
     | _ => {}
 
 /-! The source collector used by `cseEntryTab`, exposed as folds. -/
@@ -3641,6 +3643,26 @@ theorem CSEInv.emptyTab {f : Func} {seen : List ValId} {tab : CseTab} {σ : Subs
   refine ⟨⟨by simp, by simp⟩, h.2.1, h.2.2.1, h.2.2.2.1, ?_⟩
   simp [cseTabVals]
 
+theorem cseTabVals_inheritTab {tab : CseTab} {ps : List ValId} {x : ValId}
+    (hx : x ∈ cseTabVals (Passes.inheritTab tab ps)) :
+    x ∈ cseTabVals tab := by
+  simp only [cseTabVals, Passes.inheritTab, List.mem_append, List.mem_map,
+    List.mem_filter] at hx ⊢
+  rcases hx with ⟨e, ⟨he, -⟩, rfl⟩ | ⟨e, ⟨he, -⟩, rfl⟩
+  · exact Or.inl ⟨e, he, rfl⟩
+  · exact Or.inr ⟨e, he, rfl⟩
+
+theorem CSEInv.inheritTab {f : Func} {seen : List ValId} {tab : CseTab}
+    {σ : Subst} (h : CSEInv f seen tab σ) (ps : List ValId) :
+    CSEInv f seen (Passes.inheritTab tab ps) σ := by
+  refine ⟨⟨?_, ?_⟩, h.2.1, h.2.2.1, h.2.2.2.1, ?_⟩
+  · intro yop args d hm
+    exact h.1.1 (List.mem_filter.mp hm).1
+  · intro v d hm
+    exact h.1.2 (List.mem_filter.mp hm).1
+  · intro x hx
+    exact h.2.2.2.2 x (cseTabVals_inheritTab hx)
+
 theorem CSEInv.transportTable {f : Func} {seen seen' : List ValId}
     {tab tab' : CseTab} {σ τ : Subst}
     (hold : CSEInv f seen tab σ) (hnew : CSEInv f seen' tab' τ)
@@ -3802,7 +3824,8 @@ theorem cseEntryTab_inv {f : Func} {n : Nat} (hpre : CSEPrefixInv f n) :
       cases ps with
       | nil =>
         by_cases hp : p < n
-        · simpa [cseEntryTab, he, hs, hp] using hpre.2.2 p hp
+        · simpa [cseEntryTab, he, hs, hp] using
+            (hpre.2.2 p hp).inheritTab f.blocks[n]!.params
         · simpa [cseEntryTab, he, hs, hp] using hpre.1.emptyTab
       | cons q qs =>
         rw [cseEntryTab, if_neg he, hs]
@@ -4538,7 +4561,7 @@ theorem cseAvail_succ {f : Func} (hnd : f.allDefs.Nodup)
               have hip : i = p := inEdgeSources_single_eq hb he ht hs
               subst p
               rw [csePrefix_table_to hnd hp (Nat.le_of_lt ht)] at hx
-              exact (cseBlock_spec hnd hb).2.2.2 x hx
+              exact (cseBlock_spec hnd hb).2.2.2 x (cseTabVals_inheritTab hx)
             · simp [hs, hp, cseTabVals] at hx
 
 end Passes
@@ -4561,7 +4584,187 @@ callee's non-parameter ids are renamed by `+ off` with
 `off > max (maxVal f) (maxVal g)`, so they cannot capture a caller id. Duplicate
 actual arguments (`g(x, x)`) map two callee parameters onto one caller id, which
 is harmless because both were bound to the same word at the call. None of this is
-*proved* — it is the content of the `sorry`s below. -/
+*proved* — it is the content of the `sorry`s below.
+
+There is one additional precondition that the original provisional statement of
+`inlineOnce_sound` missed. The renaming table is `g.params.zip as` followed by
+`List.find?`, so it sends a duplicated callee parameter to its *first* actual
+argument. `Regs.setMany`, on the other hand, binds left-to-right and therefore
+leaves the *last* actual argument in that register. Caller well-formedness alone
+is therefore insufficient: a malformed callee with duplicate parameters is a
+direct counterexample. The production entry point already has `P.wfCheck =
+true`, which supplies `g.allDefs.Nodup`; the one-step and fixed-point statements
+below carry that whole-program hypothesis explicitly. -/
+
+/-- Whole-program well-formedness supplies the per-callee fact needed by the
+inliner. Unlike caller well-formedness, this rules out duplicate callee
+parameters and collisions between parameters and local definitions. -/
+theorem progWf_func {P : Prog} (hwf : P.wfCheck = true) {fid : FuncId} {g : Func}
+    (hg : P.funcs[fid]? = some g) : g.wfCheck P.funcs.size = true := by
+  simp only [Prog.wfCheck, Bool.and_eq_true] at hwf
+  have hi : fid < P.funcs.size := (Array.getElem?_eq_some_iff.mp hg).1
+  rw [Array.getElem?_eq_getElem hi] at hg
+  obtain rfl := Option.some.inj hg
+  rw [Array.all_eq_true] at hwf
+  exact hwf.2 fid hi
+
+/-- In particular, the parameter side of an inliner's renaming table has no
+duplicate keys. -/
+theorem progWf_func_params_nodup {P : Prog} (hwf : P.wfCheck = true)
+    {fid : FuncId} {g : Func} (hg : P.funcs[fid]? = some g) : g.params.Nodup := by
+  have hgf := progWf_func hwf hg
+  unfold Func.wfCheck at hgf
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at hgf
+  unfold Func.allDefs at hgf
+  exact (List.nodup_append.mp hgf.1.1.1).1
+
+/-- Lookup in `params.zip actuals` returns the unique pair carrying a given
+parameter. This is the list-level fact that reconciles `inlineOnce`'s `find?`
+renaming with call semantics' positional `setMany`. -/
+theorem findParam_zip_of_mem {ps as : List ValId} (hnd : ps.Nodup)
+    {p a : ValId} (hm : (p, a) ∈ ps.zip as) :
+    (ps.zip as).find? (fun pa => pa.1 == p) = some (p, a) := by
+  induction ps generalizing as with
+  | nil => simp at hm
+  | cons q qs ih =>
+      cases as with
+      | nil => simp at hm
+      | cons b bs =>
+          rw [List.nodup_cons] at hnd
+          rcases List.mem_cons.mp hm with hhead | htail
+          · obtain ⟨rfl, rfl⟩ := Prod.mk.inj hhead
+            simp
+          · have hpqs : p ∈ qs := by
+              exact (List.of_mem_zip htail).1
+            have hqp : q ≠ p := fun heq => hnd.1 (heq ▸ hpqs)
+            simpa [hqp] using ih hnd.2 htail
+
+/-- Binding formal parameters to the values read from actual parameters agrees
+at corresponding positions. The arbitrary base register file makes the lemma
+stable under the caller-register frame used by an inlined body. -/
+theorem Regs.setMany_getMany_of_mem_zip {R S : Regs} {ps as : List ValId}
+    {vals : List U256} (hnd : ps.Nodup) (hlen : ps.length = as.length)
+    (hget : R.getMany as = some vals) {p a : ValId} (hm : (p, a) ∈ ps.zip as) :
+    (S.setMany ps vals) p = R a := by
+  induction ps generalizing S as vals with
+  | nil => simp at hm
+  | cons q qs ih =>
+      cases as with
+      | nil => simp at hlen
+      | cons b bs =>
+          simp only [List.length_cons, Nat.succ.injEq] at hlen
+          rw [Regs.getMany_cons] at hget
+          cases hb : R b with
+          | none => simp [hb] at hget
+          | some v =>
+              cases ht : R.getMany bs with
+              | none => simp [hb, ht] at hget
+              | some vs =>
+                  simp only [hb, ht, Option.bind_some, Option.map_some,
+                    Option.some.injEq] at hget
+                  subst vals
+                  rw [List.nodup_cons] at hnd
+                  rcases List.mem_cons.mp hm with hhead | htail
+                  · obtain ⟨rfl, rfl⟩ := Prod.mk.inj hhead
+                    rw [Regs.setMany_cons,
+                      Regs.setMany_of_not_mem (S.set p v) qs vs hnd.1,
+                      Regs.set_same, hb]
+                  · exact ih hnd.2 hlen ht htail (S := S.set q v)
+
+/-- The concrete value-renaming function used by `inlineOnce` sends a callee
+parameter to its corresponding caller actual. -/
+theorem inlineRho_param {ps as : List ValId} (hnd : ps.Nodup) {p a : ValId}
+    (hm : (p, a) ∈ ps.zip as) (off : Nat) :
+    (match (ps.zip as).find? (fun pa => pa.1 == p) with
+      | some pa => pa.2
+      | none => p + off) = a := by
+  rw [findParam_zip_of_mem hnd hm]
+
+/-- Entry-register agreement for a renamed inlined callee parameter. This is
+the base case of the eventual callee-body renaming simulation. -/
+theorem inlineParam_regs_agree {R S : Regs} {ps as : List ValId} {vals : List U256}
+    (hnd : ps.Nodup) (hlen : ps.length = as.length)
+    (hget : R.getMany as = some vals) {p a : ValId} (hm : (p, a) ∈ ps.zip as)
+    (off : Nat) :
+    (S.setMany ps vals) p =
+      R (match (ps.zip as).find? (fun pa => pa.1 == p) with
+        | some pa => pa.2
+        | none => p + off) := by
+  rw [inlineRho_param hnd hm off]
+  exact Regs.setMany_getMany_of_mem_zip hnd hlen hget hm
+
+/-- Generic read transport through a value-id renaming. -/
+theorem Regs.getMany_map_of_agree {R R' : Regs} {ρ : ValId → ValId}
+    {xs : List ValId} {vals : List U256}
+    (hagree : ∀ x ∈ xs, R x = R' (ρ x)) (hget : R.getMany xs = some vals) :
+    R'.getMany (xs.map ρ) = some vals := by
+  induction xs generalizing vals with
+  | nil => simpa using hget
+  | cons x xs ih =>
+      rw [Regs.getMany_cons] at hget
+      cases hx : R x with
+      | none => simp [hx] at hget
+      | some v =>
+          cases ht : R.getMany xs with
+          | none => simp [hx, ht] at hget
+          | some vs =>
+              simp only [hx, ht, Option.bind_some, Option.map_some,
+                Option.some.injEq] at hget
+              subst vals
+              have hx' : R' (ρ x) = some v := by
+                rw [← hagree x (by simp), hx]
+              have ht' := ih (fun y hy => hagree y (by simp [hy])) ht
+              simpa [Regs.getMany_cons, hx'] using ht'
+
+/-- Register agreement is preserved when corresponding destinations are bound
+through an injective renaming. -/
+theorem Regs.setMany_rename_congr {R R' : Regs} {ρ : ValId → ValId}
+    (hinj : Function.Injective ρ) (hagree : ∀ x, R x = R' (ρ x))
+    (xs : List ValId) (vals : List U256) :
+    ∀ x, (R.setMany xs vals) x = (R'.setMany (xs.map ρ) vals) (ρ x) := by
+  induction xs generalizing R R' vals with
+  | nil =>
+      intro x
+      change R x = R'.setMany [] vals (ρ x)
+      rw [Regs.setMany_nil_left]
+      exact hagree x
+  | cons d ds ih =>
+      cases vals with
+      | nil =>
+          intro x
+          rw [Regs.setMany_nil_right, Regs.setMany_nil_right]
+          exact hagree x
+      | cons v vs =>
+          rw [Regs.setMany_cons, List.map_cons, Regs.setMany_cons]
+          apply ih (vals := vs)
+          intro x
+          by_cases hxd : x = d
+          · subst x
+            simp
+          · have hrho : ρ x ≠ ρ d := fun h => hxd (hinj h)
+            rw [Regs.set_other _ _ hxd, Regs.set_other _ _ hrho]
+            exact hagree x
+
+@[simp] theorem Passes.renameInstr_defs (ρ : ValId → ValId) (i : Instr) :
+    (renameInstr ρ i).defs = i.defs.map ρ := by
+  cases i <;> simp [renameInstr, Instr.defs]
+
+@[simp] theorem Passes.renameInstr_uses (ρ : ValId → ValId) (i : Instr) :
+    (renameInstr ρ i).uses = i.uses.map ρ := by
+  cases i <;> simp [renameInstr, Instr.uses]
+
+@[simp] theorem Passes.renameEdge_args (ρ : ValId → ValId)
+    (β : BlockId → BlockId) (e : Edge) :
+    (renameEdge ρ β e).args = e.args.map ρ := rfl
+
+@[simp] theorem Passes.renameEdge_target (ρ : ValId → ValId)
+    (β : BlockId → BlockId) (e : Edge) :
+    (renameEdge ρ β e).target = β e.target := rfl
+
+@[simp] theorem Passes.renameTerm_uses (ρ : ValId → ValId)
+    (β : BlockId → BlockId) (t : Term) :
+    (renameTerm ρ β t).uses = t.uses.map ρ := by
+  cases t <;> simp [renameTerm, Term.uses, renameEdge, List.map_append]
 
 section
 variable [model : ExternalModel]
@@ -4582,7 +4785,7 @@ disturbed — `Regs.setMany_congr` plus `exec_congr` (both proved) are the
 work-horses. The `.halt` case is the same derivation truncated. -/
 theorem inlineOnce_sound {P : Prog} {counts : Array Nat} {f f' : Func} {args : List U256}
     {st : EvmState} {res : FRes} {eb eb' : Block}
-    (hwf : f.wfCheck P.funcs.size = true)
+    (hPwf : P.wfCheck = true) (hwf : f.wfCheck P.funcs.size = true)
     (hio : Passes.inlineOnce counts P.funcs f = some f')
     (heb : f.blocks[f.entry]? = some eb)
     (heb' : f'.blocks[f'.entry]? = some eb')
@@ -4598,7 +4801,7 @@ theorem inlineOnce_sound {P : Prog} {counts : Array Nat} {f f' : Func} {args : L
 `Counterexample.hinlineFunc`. -/
 theorem inlineFunc_sound {P : Prog} {counts : Array Nat} {f : Func} {args : List U256}
     {st : EvmState} {res : FRes} {eb eb' : Block}
-    (hwf : f.wfCheck P.funcs.size = true)
+    (hPwf : P.wfCheck = true) (hwf : f.wfCheck P.funcs.size = true)
     (heb : f.blocks[f.entry]? = some eb)
     (heb' : (Passes.inlineFunc counts P.funcs f).blocks[f.entry]? = some eb')
     (hexec : Exec (model := model) P f (Regs.empty.setMany f.params args) st
@@ -5125,6 +5328,31 @@ theorem CseTabRuntime.empty (τ : Passes.Subst) (R : Regs) :
     CseTabRuntime τ R {} := by
   simp [CseTabRuntime]
 
+theorem CseTabRuntime.inheritTab {τ : Passes.Subst} {R : Regs}
+    {tab : Passes.CseTab} (h : CseTabRuntime τ R tab) (ps : List ValId) :
+    CseTabRuntime τ R (Passes.inheritTab tab ps) := by
+  refine ⟨?_, ?_⟩
+  · intro yop as d hm
+    exact h.1 (List.mem_filter.mp hm).1
+  · intro v d hm
+    exact h.2 (List.mem_filter.mp hm).1
+
+theorem Passes.substV_not_blockParam {f : Func} {τ : Passes.Subst}
+    (hnd : f.allDefs.Nodup) (hsub : Passes.CseSubSound f τ)
+    {b : Block} (hb : b ∈ f.blocks.toList) {x : ValId}
+    (hx : x ∉ b.params) : Passes.substV τ x ∉ b.params := by
+  intro hp
+  unfold Passes.substV at hp
+  cases ht : τ[x]? with
+  | none =>
+      simp [Std.HashMap.getD_eq_getD_getElem?, ht] at hp
+      exact hx hp
+  | some y =>
+      simp [Std.HashMap.getD_eq_getD_getElem?, ht] at hp
+      obtain ⟨e, -, hy⟩ := hsub ht
+      obtain ⟨b0, hb0, i, hi, hyd⟩ := hy.site
+      exact param_not_instr_def hnd hb hb0 hi hp hyd
+
 /-- Binding a register outside both the table representatives and the
 substituted expression arguments preserves the runtime table invariant. -/
 theorem CseTabRuntime.set_of_fresh {τ : Passes.Subst} {R : Regs}
@@ -5159,6 +5387,53 @@ theorem CseTabRuntime.set_of_fresh {τ : Passes.Subst} {R : Regs}
       exact List.mem_append_right _ (List.mem_map.mpr ⟨(v, d), hm, rfl⟩)
     rw [CseExprRuntime, Regs.set_other _ _ hd0ne]
     exact h.2 hm
+
+theorem CseTabRuntime.setMany_inheritTab {f : Func} {τ : Passes.Subst}
+    {R : Regs} {tab : Passes.CseTab} {b : Block}
+    (hnd : f.allDefs.Nodup) (hsub : Passes.CseSubSound f τ)
+    (hb : b ∈ f.blocks.toList) (h : CseTabRuntime τ R tab)
+    (vs : List U256) :
+    CseTabRuntime τ (R.setMany b.params vs)
+      (Passes.inheritTab tab b.params) := by
+  have h0 := h.inheritTab b.params
+  have hvals : ∀ p ∈ b.params,
+      p ∉ Passes.cseTabVals (Passes.inheritTab tab b.params) := by
+    intro p hp hmem
+    simp only [Passes.cseTabVals, Passes.inheritTab, List.mem_append,
+      List.mem_map, List.mem_filter] at hmem
+    rcases hmem with ⟨e, ⟨-, he⟩, rfl⟩ | ⟨e, ⟨-, he⟩, rfl⟩ <;>
+      simp [hp] at he
+  have huses : ∀ p ∈ b.params,
+      p ∉ cseTabRuntimeUses τ (Passes.inheritTab tab b.params) := by
+    intro p hp hmem
+    simp only [cseTabRuntimeUses, List.mem_flatMap] at hmem
+    obtain ⟨⟨⟨yop, as⟩, d⟩, he, hx⟩ := hmem
+    have he0 := (List.mem_filter.mp he).2
+    rw [Bool.not_eq_true', Bool.or_eq_false_iff] at he0
+    have hstored : ∀ x ∈ as, x ∉ b.params := by
+      intro x hxa hxp
+      exact (List.any_eq_false.mp he0.1 x hxa) (by simpa using hxp)
+    have hxmem : ∃ x ∈ as, Passes.substV τ x = p := by
+      simpa [Passes.substVs] using hx
+    obtain ⟨x, hxa, hxp⟩ := hxmem
+    exact (Passes.substV_not_blockParam hnd hsub hb (hstored x hxa)) (hxp ▸ hp)
+  have go : ∀ (qs : List ValId) (vs : List U256) (R0 : Regs),
+      (∀ q ∈ qs, q ∈ b.params) →
+      CseTabRuntime τ R0 (Passes.inheritTab tab b.params) →
+      CseTabRuntime τ (R0.setMany qs vs) (Passes.inheritTab tab b.params) := by
+    intro qs
+    induction qs with
+    | nil => intro vs R0 hqs hr; exact hr
+    | cons p ps ih =>
+        intro vs R0 hqs hr
+        cases vs with
+        | nil => rw [Regs.setMany_nil_right]; exact hr
+        | cons v vs =>
+            rw [Regs.setMany_cons]
+            apply ih vs (R0.set p v) (fun q hq => hqs q (by simp [hq]))
+            exact CseTabRuntime.set_of_fresh hr
+              (hvals p (hqs p (by simp))) (huses p (hqs p (by simp)))
+  exact go b.params vs R (fun q hq => hq) h0
 
 theorem CseTabRuntime.addConst {τ : Passes.Subst} {R : Regs}
     {tab : Passes.CseTab} (h : CseTabRuntime τ R tab) {d : ValId} {v : U256}
@@ -5252,18 +5527,17 @@ the value certified by its `CseDef`.  A kept instruction then steps on substitut
 arguments, while a dropped `const`/pure op is skipped using that table fact and
 `pure_rets_eq`; jumps hand the end-table fact to `cseAvail_succ`.
 
-The runtime predicate and its lookup leaf are now explicit above as
-`CseTabRuntime` and `CseExprRuntime.op_result`.  The precise remaining
-obstruction is preservation of `CseTabRuntime` when `Exec.jump` rebinds a
-successor's block parameters.  Representatives themselves are earlier
-instruction definitions and hence are disjoint from those parameters, but an
-entry's *expression arguments* can mention a parameter that is about to be
-rebound.  Such an entry can only arise from an undominated/stale read on the
-first traversal; a successful entry-rooted `Exec` plus `domCheck` rules that
-out.  Formalizing that last sentence needs a path-domain invariant (registers
-are bound only by function parameters and definition sites already traversed),
-in addition to `LiveAgree`; `cseAvail_succ` tracks representatives only and
-therefore cannot by itself establish this argument-stability fact. -/
+The runtime predicate and its lookup leaf are explicit above as
+`CseTabRuntime` and `CseExprRuntime.op_result`.  Inherited tables are now
+filtered by `Passes.inheritTab`.  `CseTabRuntime.setMany_inheritTab` proves the
+corresponding jump frame directly: filter membership excludes target parameters
+from both representatives and stored expression arguments, and
+`Passes.substV_not_blockParam` shows that the final substitution cannot map an
+avoided argument back to a target parameter.  Thus `Regs.setMany` preserves the
+whole inherited runtime table without a reachability/path witness.  The
+remaining proof is the intra-block fold/execution induction: kept instructions
+extend the runtime table, dropped constants use `const_of_find`, and dropped
+pure operations use `op_of_find` followed by `CseExprRuntime.op_result`. -/
 theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (hdom : ToAsm.Func.domCheck f = true)

@@ -239,6 +239,16 @@ structure CseTab where
   consts : List (U256 × ValId) := []
   deriving Inhabited
 
+/-- Restrict an inherited CSE table to entries that avoid the target block's
+parameters. Under `domCheck` the sole predecessor dominates the target, so no
+entry's expression arguments or representative can mention a target parameter
+and the filter keeps everything; it exists so that the fact is local by
+construction — inherited entries are untouched when a jump rebinds the
+target's parameters. -/
+def inheritTab (t : CseTab) (ps : List ValId) : CseTab :=
+  { ops := t.ops.filter fun e => !(e.1.2.any ps.contains || ps.contains e.2)
+    consts := t.consts.filter fun e => !ps.contains e.2 }
+
 /-- Local common-subexpression elimination. Blocks are processed in index
 order; a block whose *sole* in-edge comes from an already-processed
 predecessor inherits that predecessor's end-of-block table (the unique
@@ -255,7 +265,7 @@ def cse (f : Func) : Func := Id.run do
     let mut tab : CseTab :=
       if bi == f.entry then {}
       else match ins[bi]! with
-        | [p] => if p < bi then tables[p]! else {}
+        | [p] => if p < bi then inheritTab tables[p]! b.params else {}
         | _ => {}
     let mut instrs : List Instr := []
     for ins0 in b.instrs do
