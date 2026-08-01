@@ -3925,6 +3925,7 @@ inductive CseDropPos (f : Func) : CseExpr → ValId → Prop
       {d : ValId} {yop : Op} {args : List ValId} :
       b ∈ f.blocks.toList → b.instrs = pre ++ i :: post →
       substInstr σ i = .op [d] yop args →
+      σ[d]? = none →
       d ∉ pre.flatMap Instr.uses →
       CseDropPos f (.op yop args) d
 
@@ -4347,19 +4348,32 @@ what turns the two executable guards into durable proof fields. -/
 theorem cseInstrFold_pos {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
     (pre l : List Instr) (hseq : b.instrs = pre ++ l)
     (hdefsNodup : b.instrs.flatMap Instr.defs |>.Nodup)
+    {seen : List ValId}
+    (hseenNodup : (seen ++ l.flatMap Instr.defs).Nodup)
     (acc : List Instr) (tab : CseTab) (used : Std.HashSet ValId) (σ : Subst)
     (defined blockDefs : Std.HashSet ValId)
     (hused : ∀ x, x ∈ used ↔ x ∈ pre.flatMap Instr.uses)
     (hdefined : ∀ x, x ∈ defined ↔ x ∈ pre.flatMap Instr.defs)
     (hblockDefs : ∀ x, x ∈ blockDefs ↔ x ∈ b.instrs.flatMap Instr.defs)
+    (hinv : CSEInv f seen tab σ)
     (htab : CseTabPosSound f tab) (hsub : CseSubPosSound f σ) :
     let r := l.foldl (fun s i => cseInstrStep i s)
       ⟨acc, tab, used, σ, defined, blockDefs⟩
     CseTabPosSound f r.2.1 ∧ CseSubPosSound f r.2.2.2.1 := by
-  induction l generalizing pre acc tab used σ defined blockDefs with
+  induction l generalizing pre seen acc tab used σ defined blockDefs with
   | nil => exact ⟨htab, hsub⟩
   | cons i is ih =>
     let s1 := cseInstrStep i ⟨acc, tab, used, σ, defined, blockDefs⟩
+    have hprefix : (seen ++ i.defs).Nodup := by
+      apply List.Nodup.of_append_left (l₂ := is.flatMap Instr.defs)
+      simpa [List.append_assoc] using hseenNodup
+    have hstepInv := cseInstrStep_inv hb (used := used) (defined := defined)
+      (blockDefs := blockDefs) hinv i
+      (by rw [hseq]; simp) hprefix
+    have hinv1 : CSEInv f (seen ++ i.defs) s1.2.1 s1.2.2.2.1 := by
+      have hstate := cseInstrStep_state i acc tab used σ defined blockDefs
+      rw [hstate]
+      exact hstepInv.1
     have hpos1 : CseTabPosSound f s1.2.1 ∧
         CseSubPosSound f s1.2.2.2.1 := by
       cases hs : substInstr σ i with
@@ -4394,8 +4408,22 @@ theorem cseInstrFold_pos {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
                             intro hd
                             have hm : d ∈ used := (hused d).mpr hd
                             exact hu (Std.HashSet.mem_iff_contains.mp hm)
+                          have hdnone : σ[d]? = none := by
+                            by_contra hn
+                            obtain ⟨d1, hd1⟩ := Option.ne_none_iff_exists'.mp hn
+                            have hdseen := (hinv.2.2.2.1 hd1).1
+                            have hddef : d ∈ i.defs := by
+                              have hm : d ∈ (substInstr σ i).defs := by
+                                rw [hs]
+                                simp [Instr.defs]
+                              cases i <;> simpa [substInstr, Instr.defs] using hm
+                            have hdfresh : d ∉ seen := by
+                              rw [List.nodup_append] at hprefix
+                              exact fun hd => hprefix.2.2 d hd d
+                                hddef rfl
+                            exact hdfresh hdseen
                           have hdrop : CseDropPos f (.op yop args) d :=
-                            .op hb hseq hs hdpre
+                            .op hb hseq hs hdnone hdpre
                           have hm : (key, d0) ∈ tab.ops :=
                             List.mem_of_find?_eq_some hfind
                           have hkey : key = (yop, args) :=
@@ -4462,6 +4490,8 @@ theorem cseInstrFold_pos {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
       simp
     have hseq1 : b.instrs = (pre ++ [i]) ++ is := by
       simpa [List.append_assoc] using hseq
+    have hseenNodup1 : ((seen ++ i.defs) ++ is.flatMap Instr.defs).Nodup := by
+      simpa [List.append_assoc] using hseenNodup
     have hblockDefs1 : ∀ x, x ∈ s1.2.2.2.2.2 ↔
         x ∈ b.instrs.flatMap Instr.defs := by
       intro x
@@ -4469,9 +4499,11 @@ theorem cseInstrFold_pos {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
       exact hblockDefs x
     rw [List.foldl_cons]
     exact ih (pre := pre ++ [i]) (hseq := hseq1)
+      (seen := seen ++ i.defs) (hseenNodup := hseenNodup1)
       (acc := s1.1) (tab := s1.2.1) (used := s1.2.2.1)
       (σ := s1.2.2.2.1) (defined := s1.2.2.2.2.1)
-      (blockDefs := s1.2.2.2.2.2) hused1 hdefined1 hblockDefs1 hpos1.1 hpos1.2
+      (blockDefs := s1.2.2.2.2.2) hused1 hdefined1 hblockDefs1
+      hinv1 hpos1.1 hpos1.2
 
 theorem cseInstrFold_stable {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
     {seen : List ValId} {tab : CseTab} {σ : Subst} (hinv : CSEInv f seen tab σ)
@@ -4818,9 +4850,15 @@ theorem csePrefixPosInv_succ {f : Func} {n : Nat}
       simpa using (List.Sublist.flatMap (List.singleton_sublist.mpr hbmem)
         (fun b : Block => b.instrs.flatMap Instr.defs))
     exact hall.sublist hsub
-  have hr := cseInstrFold_pos hbmem [] b.instrs rfl hbdefs [] tab ∅
+  have hseenNodup :
+      (cseSeen f n ++ b.instrs.flatMap Instr.defs).Nodup := by
+    rw [← cseSeen_succ hbget]
+    exact (instrDefs_nodup hnd).sublist (cseSeen_sublist f (n + 1))
+  have hr := cseInstrFold_pos hbmem [] b.instrs rfl hbdefs
+    (seen := cseSeen f n) hseenNodup [] tab ∅
     (csePrefix f n).2.2 ∅ (cseBlockDefs b)
-    (by simp) (by simp) (fun x => mem_cseBlockDefs) (cseEntryTab_pos hpre) hpre.1
+    (by simp) (by simp) (fun x => mem_cseBlockDefs)
+    (cseEntryTab_inv hregular) (cseEntryTab_pos hpre) hpre.1
   change CSEPrefixPosInv f (n + 1)
   rw [CSEPrefixPosInv, csePrefix_succ]
   simp only [cseBlockStep]
@@ -4868,6 +4906,174 @@ theorem cseFinalSubSound {f : Func} (hnd : f.allDefs.Nodup) :
   have hpos : CseSubPosSound f (csePrefix f f.blocks.size).2.2 :=
     hposFinal.1
   exact ⟨hdef, hpos⟩
+
+/-- The representative of every final CSE alias was processed strictly before
+its dropped destination.  This is the global fold-order companion to the local
+prefix/suffix certificates in `CseSubPosSound`. -/
+def AliasOrdered (seen : List ValId) (σ : Subst) : Prop :=
+  ∀ d d0, σ[d]? = some d0 →
+    ∃ pre mid post, seen = pre ++ (d0 :: mid) ++ d :: post
+
+theorem AliasOrdered.empty : AliasOrdered [] (∅ : Subst) := by
+  intro d d0 h
+  simp at h
+
+theorem AliasOrdered.insert {seen : List ValId} {σ : Subst}
+    (ho : AliasOrdered seen σ) {d d0 : ValId}
+    (hd : d ∉ seen) (hd0 : d0 ∈ seen) :
+    AliasOrdered (seen ++ [d]) (σ.insert d d0) := by
+  intro x y hxy
+  rw [Std.HashMap.getElem?_insert] at hxy
+  split at hxy
+  · rename_i heq
+    have hxd : x = d := (beq_iff_eq.mp heq).symm
+    subst x
+    have hyd : y = d0 := (Option.some.inj hxy).symm
+    subst y
+    obtain ⟨pre, post, hseen⟩ := List.mem_iff_append.mp hd0
+    exact ⟨pre, post, [], by simp [hseen, List.append_assoc]⟩
+  · obtain ⟨pre, mid, post, hseen⟩ := ho x y hxy
+    exact ⟨pre, mid, post ++ [d], by simp [hseen, List.append_assoc]⟩
+
+theorem AliasOrdered.weaken {seen seen' : List ValId} {σ : Subst}
+    (ho : AliasOrdered seen σ) (hs : ∃ tail, seen' = seen ++ tail) :
+    AliasOrdered seen' σ := by
+  obtain ⟨tail, rfl⟩ := hs
+  intro d d0 h
+  obtain ⟨pre, mid, post, hseen⟩ := ho d d0 h
+  exact ⟨pre, mid, post ++ tail, by simp [hseen, List.append_assoc]⟩
+
+theorem AliasOrdered.step {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
+    {seen : List ValId} {tab : CseTab} {used : Std.HashSet ValId} {σ : Subst}
+    {defined blockDefs : Std.HashSet ValId}
+    (hinv : CSEInv f seen tab σ) (ho : AliasOrdered seen σ)
+    (i : Instr) (_hi : i ∈ b.instrs) (hnd : (seen ++ i.defs).Nodup) :
+    let r := cseInstrStep i ⟨[], tab, used, σ, defined, blockDefs⟩
+    AliasOrdered (seen ++ i.defs) r.2.2.2.1 := by
+  have hkeep : AliasOrdered (seen ++ i.defs) σ :=
+    ho.weaken ⟨i.defs, rfl⟩
+  cases i with
+  | const d v =>
+      have hd : d ∉ seen := by
+        rw [List.nodup_append] at hnd
+        exact fun hm => (hnd.2.2 d hm d (by simp [Instr.defs])) rfl
+      simp only [cseInstrStep, substInstr]
+      split
+      · rename_i w d0 hfind
+        have hm : (w, d0) ∈ tab.consts := List.mem_of_find?_eq_some hfind
+        have hd0 : d0 ∈ seen := (hinv.2.2.2.2 d0 (by
+          exact List.mem_append_right _
+            (List.mem_map.mpr ⟨(w, d0), hm, rfl⟩))).1
+        change AliasOrdered (seen ++ [d]) (σ.insert d d0)
+        exact ho.insert hd hd0
+      · change AliasOrdered (seen ++ [d]) σ
+        exact hkeep
+  | op ds yop args =>
+      cases ds with
+      | nil =>
+          simp only [cseInstrStep, substInstr, Instr.defs, List.append_nil]
+          intro d d0 h
+          exact ho d d0 h
+      | cons d rest =>
+          cases rest with
+          | cons e es =>
+              change AliasOrdered (seen ++ d :: e :: es) σ
+              exact hkeep
+          | nil =>
+              have hd : d ∉ seen := by
+                rw [List.nodup_append] at hnd
+                exact fun hm => (hnd.2.2 d hm d (by simp [Instr.defs])) rfl
+              simp only [cseInstrStep, substInstr]
+              split
+              · split
+                · rename_i key d0 hfind
+                  split
+                  · change AliasOrdered (seen ++ [d]) σ
+                    exact hkeep
+                  · have hm : (key, d0) ∈ tab.ops :=
+                      List.mem_of_find?_eq_some hfind
+                    have hd0 : d0 ∈ seen := (hinv.2.2.2.2 d0 (by
+                      exact List.mem_append_left _
+                        (List.mem_map.mpr ⟨(key, d0), hm, rfl⟩))).1
+                    change AliasOrdered (seen ++ [d]) (σ.insert d d0)
+                    exact ho.insert hd hd0
+                · split <;> change AliasOrdered (seen ++ [d]) σ <;>
+                    exact hkeep
+              · change AliasOrdered (seen ++ [d]) σ
+                exact hkeep
+  | call ds fid args =>
+      change AliasOrdered (seen ++ ds) σ
+      exact hkeep
+
+theorem cseInstrFold_ordered {f : Func} {b : Block}
+    (hb : b ∈ f.blocks.toList) {seen : List ValId} {tab : CseTab} {σ : Subst}
+    (hinv : CSEInv f seen tab σ) (ho : AliasOrdered seen σ)
+    (l : List Instr) (hmem : ∀ i ∈ l, i ∈ b.instrs)
+    (hnd : (seen ++ l.flatMap Instr.defs).Nodup) (acc : List Instr)
+    (used defined blockDefs : Std.HashSet ValId) :
+    let r := l.foldl (fun s i => cseInstrStep i s)
+      ⟨acc, tab, used, σ, defined, blockDefs⟩
+    AliasOrdered (seen ++ l.flatMap Instr.defs) r.2.2.2.1 := by
+  induction l generalizing seen tab σ acc used defined blockDefs with
+  | nil =>
+      simp only [List.foldl_nil, List.flatMap_nil, List.append_nil]
+      intro d d0 h
+      exact ho d d0 h
+  | cons i is ih =>
+      have hprefix : (seen ++ i.defs).Nodup := by
+        apply List.Nodup.of_append_left (l₂ := is.flatMap Instr.defs)
+        simpa [List.append_assoc] using hnd
+      have hstep := cseInstrStep_inv hb (used := used) (defined := defined)
+        (blockDefs := blockDefs) hinv i (hmem i (by simp)) hprefix
+      have hord := AliasOrdered.step hb (used := used) (defined := defined)
+        (blockDefs := blockDefs) hinv ho i (hmem i (by simp)) hprefix
+      let s1 := cseInstrStep i ⟨acc, tab, used, σ, defined, blockDefs⟩
+      have hstate := cseInstrStep_state i acc tab used σ defined blockDefs
+      have hinv1 : CSEInv f (seen ++ i.defs) s1.2.1 s1.2.2.2.1 := by
+        rw [hstate]
+        exact hstep.1
+      have hord1 : AliasOrdered (seen ++ i.defs) s1.2.2.2.1 := by
+        rw [hstate]
+        exact hord
+      rw [List.foldl_cons]
+      simpa [List.flatMap_cons, List.append_assoc] using
+        ih hinv1 hord1 (fun j hj => hmem j (by simp [hj]))
+          (by simpa [List.flatMap_cons, List.append_assoc] using hnd)
+          s1.1 s1.2.2.1 s1.2.2.2.2.1 s1.2.2.2.2.2
+
+theorem csePrefix_ordered {f : Func} (hnd : f.allDefs.Nodup) :
+    ∀ n ≤ f.blocks.size,
+      AliasOrdered (cseSeen f n) (csePrefix f n).2.2 := by
+  intro n hn
+  induction n with
+  | zero => exact AliasOrdered.empty
+  | succ n ih =>
+      have hnlt : n < f.blocks.size := by omega
+      let b := f.blocks[n]
+      have hb : f.blocks[n]? = some b := Array.getElem?_eq_getElem hnlt
+      have hbmem : b ∈ f.blocks.toList := by
+        exact List.mem_iff_getElem.mpr ⟨n, by simpa using hnlt,
+          by simpa using (Array.getElem?_eq_some_iff.mp hb).2⟩
+      have hpre := csePrefixInv hnd n (Nat.le_of_lt hnlt)
+      let tab := cseEntryTab f (inEdgeSources f) (csePrefix f n).2.1 n
+      let r := b.instrs.foldl (fun s i => cseInstrStep i s)
+        ⟨[], tab, ∅, (csePrefix f n).2.2, ∅, cseBlockDefs b⟩
+      have hoN : AliasOrdered (cseSeen f n) (csePrefix f n).2.2 :=
+        ih (Nat.le_of_lt hnlt)
+      have hr := cseInstrFold_ordered hbmem
+        (hinv := cseEntryTab_inv hpre) (ho := hoN)
+        b.instrs (fun i hi => hi)
+        (by
+          rw [← cseSeen_succ hb]
+          exact (instrDefs_nodup hnd).sublist (cseSeen_sublist f (n + 1)))
+        [] ∅ ∅ (cseBlockDefs b)
+      rw [csePrefix_succ]
+      simp only [cseBlockStep]
+      have hbang : f.blocks[n]! = b := by
+        rw [getElem!_eq_getElem hnlt]
+      rw [hbang]
+      rw [cseSeen_succ hb]
+      exact hr
 
 theorem cseEntryTab_sound {f : Func} (hnd : f.allDefs.Nodup)
     {n : Nat} (hn : n ≤ f.blocks.size) :
@@ -12413,6 +12619,29 @@ instruction itself); the cross-block window is contradicted by
 instruction, `CseExprRuntime.op_result` establishes the synced branch.  This is
 a per-visit preservation/consumption goal, not a path-indexed stored-argument
 history theorem.
+
+The fold certificate now additionally records that the dropped destination was
+unmapped immediately before the operation (`CseDropPos.op`'s `σ[d]? = none`
+field).  Independently, `AliasOrdered` and `csePrefix_ordered` prove that every
+representative occurs strictly earlier in the global instruction-definition
+order than its alias.  Both facts are checked above.
+
+The remaining register leaf splits once more when the drop instruction reads
+its own destination.  `CseEntryPos` retains the entry-time substitution
+equation, but it does not retain the definition provenance of an intermediate
+alias `x ↦ d` inside that equation.  The exact missing bridge is
+
+    τ[d]? = some d0 →
+    CseDropPos f (.op yop as) d →
+    CseEntryPos f (.op yop as) d0 →
+    (the drop instruction is current) → d ∉ current.uses
+
+proved by projecting entry-time substitution ranges to sites preceding `d0`
+(equivalently, by retaining `SubstExt` from the entry snapshot to the final
+substitution).  Same-block entries then contradict the entry suffix guard and
+`csePrefix_ordered`; inherited entries contradict `blockDef_dominates_use` and
+`cse_alias_zone`.  This leaf is what is still needed before the three-way
+register invariant and the `Exec` induction can be assembled.
 -/
 theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
