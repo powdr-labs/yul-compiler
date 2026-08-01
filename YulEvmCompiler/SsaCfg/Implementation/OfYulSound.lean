@@ -10490,6 +10490,20 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   -- motive.  `FuncTableComplete doneFuncs` alone deliberately has no relation
   -- to an arbitrary local builder state, so invoking `ihi` before that witness
   -- is threaded would be unsound.
+  --
+  -- Precise failed re-establishment (`seqCons`/`seqStop`, at a `funDef` head):
+  -- a pointwise `FContents local doneFuncs` premise is insufficient to recover
+  -- the required `local.funcs[fid]? = some none`.  With duplicate hoisted
+  -- names, both `FMap.get`s select the first reservation; `fillFunc` overwrites
+  -- it and the second reservation stays `none`.  `trScope` itself still
+  -- succeeds, and the contradiction appears only when the enclosing completed
+  -- build's `mapM id` rejects that leftover slot.  The sixth invariant must
+  -- therefore thread the *pending reservation multiset* (equivalently, a
+  -- none-slot budget) through `trFunc`/`trScope`/`trStmts`/`trStmt`/`trCases`:
+  -- `allocFunc` adds one owned pending slot, each `fillFunc` consumes its own
+  -- slot, closed nested translations preserve the caller's pending slots, and
+  -- `FuncTableComplete` makes the final pending set empty.  Only that stronger
+  -- invariant justifies `FContents.of_fillFunc_empty` and the initializer IH.
   | forLoop hinit hloop ihi ihl => sorry
   | forInitHalt hinit ihi => sorry
   | @«break» funs V st =>
