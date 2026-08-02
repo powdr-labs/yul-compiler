@@ -128,14 +128,14 @@ jobs:
           mkdir -p ci-summary; f=ci-summary/soundness.txt; : > "$f"; ok=1
           # TEMPORARY (PR #151): the SSA-CFG backend lands code-first with its
           # simulation proofs in progress (per the PR plan); the declared sorry
-          # frontier is exactly the two remaining Implementation/*Sound.lean proof
-          # files (ToAsmSound and the Spec/ tier are sorry-free and
+          # frontier is exactly the one remaining Implementation/*Sound.lean proof
+          # file (OfYulSound, ToAsmSound and the Spec/ tier are sorry-free and
           # fully gated). The frontier is additive-only: the pre-existing
           # headline theorems (Checks.lean) stay sorry-free and every other
           # file stays gated. Remove this exclusion when the frontier closes.
           if grep -rn --include='*.lean' -w 'sorry' \
               YulEvmCompiler YulParser YulEvmCompilerTests \
-              | grep -vE '^YulEvmCompiler/SsaCfg/Implementation/(OfYulSound|PassesSound)\.lean:'; then
+              | grep -vE '^YulEvmCompiler/SsaCfg/Implementation/PassesSound\.lean:'; then
             echo "::error::found a sorry in compiler, parser, or test-framework sources"
             echo "sorry_scan=fail" >> "$f"; ok=0
           else echo "sorry_scan=pass" >> "$f"; fi

@@ -1,18 +1,17 @@
 import YulEvmCompiler.SsaCfg.Spec.Sem
 import YulEvmCompiler.SsaCfg.Implementation.OfYul
 import YulSemantics.BigStep
+set_option warningAsError true
 /-!
 # YulEvmCompiler.SsaCfg.Implementation.OfYulSound
 
 **Construction soundness** for the `yul-ssa-cfg` dialect: every terminating
 source derivation over a program the construction accepts is matched by an
-SSA-CFG execution (`ofBlock_sound'`, the statement `Correctness.ofBlock_sound`
-currently `sorry`s).
+SSA-CFG execution (`ofBlock_sound'`).
 
-This file is the bottom-up half of that proof: the reusable infrastructure is
-proved outright, the top-level plumbing is proved outright, and the remaining
-holes are the statement-class simulation induction and the builder-state
-monotonicity facts it consumes (each `sorry` carries the exact obligation).
+This file is the bottom-up half of that proof: the reusable infrastructure,
+the statement-class simulation induction, and the top-level plumbing are all
+proved outright.
 -/
 
 namespace YulEvmCompiler.SsaCfg
@@ -436,9 +435,9 @@ theorem set_comm (m : VMap) {x y : Ident} (hxy : x ≠ y) (i j : ValId) :
   | cons p m ih =>
     by_cases hx : p.1 = x
     · have hy : p.1 ≠ y := fun h => hxy (hx.symm.trans h)
-      simp [VMap.set, hx, hy, hxy]
+      simp [VMap.set, hx, hxy]
     · by_cases hy : p.1 = y
-      · simp [VMap.set, hx, hy, hxy, Ne.symm hxy]
+      · simp [VMap.set, hy, Ne.symm hxy]
       · simp [VMap.set, hx, hy, ih]
 
 theorem setMany_comm (m : VMap) {x : Ident} {xs : List Ident}
@@ -519,7 +518,6 @@ theorem eraseDups_names_eq_self {m : VMap} (h : m.Unique) :
       have hf : l.filter (fun b => !b == a) = l := by
         apply List.filter_eq_self.mpr
         intro b hb
-        change (!(b == a)) = true
         rw [Bool.not_eq_true']
         exact beq_eq_false_iff_ne.mpr (fun he => hn.1 (he ▸ hb))
       rw [hf, ih hn.2]
@@ -635,9 +633,9 @@ theorem set_comm (V : VEnv D) {x y : Ident} (hxy : x ≠ y)
   | cons p V ih =>
     by_cases hx : p.1 = x
     · have hy : p.1 ≠ y := fun h => hxy (hx.symm.trans h)
-      simp [YulSemantics.VEnv.set, hx, hy, hxy]
+      simp [YulSemantics.VEnv.set, hx, hxy]
     · by_cases hy : p.1 = y
-      · simp [YulSemantics.VEnv.set, hx, hy, hxy, Ne.symm hxy]
+      · simp [YulSemantics.VEnv.set, hy, Ne.symm hxy]
       · simp [YulSemantics.VEnv.set, hx, hy, ih]
 
 theorem setMany_comm (V : VEnv D) {x : Ident} {xs : List Ident}
@@ -796,7 +794,6 @@ theorem get_set_of_mem : ∀ (V : VEnv D) (x : Ident) (v : D.Value),
     by_cases h : pn = x
     · subst pn; simp [get_cons]
     · rw [if_neg h, get_cons]
-      simp only [Prod.fst]
       rw [if_neg h]
       exact ih x v (by
         rcases List.mem_cons.mp hx with he | he
@@ -1650,7 +1647,7 @@ theorem of_allocFunc {owned : List FuncId} {s s' done : BState}
   have hnot : s.funcs.size ∉ owned := by
     intro hm
     have := (ho.pending s.funcs.size).mp hm
-    simpa using this
+    simp at this
   refine ⟨ho.nodup.append (by simp) (by simpa), ?_, ?_⟩
   · intro i
     rw [List.mem_append, List.mem_singleton, Array.getElem?_push]
@@ -1737,7 +1734,7 @@ theorem back_allocFunc {owned : List FuncId} {s s' done : BState}
     · exact hi
     · intro heq
       subst i
-      simpa using hi
+      simp at hi
 
 /-- Backwards form of whole-scope allocation: remove precisely the reservation
 suffix recorded by the generated scope map. -/
@@ -6176,6 +6173,7 @@ def FuncOK (P : Prog) (fenv : FMap) (decl : YulSemantics.FDecl yulD)
   ∃ (g : Func) (s₀ s₁ : BState),
     P.funcs[fid]? = some g
     ∧ trFunc fenv decl.params decl.rets decl.body s₀ = some (g, s₁)
+    ∧ (∀ i : FuncId, s₁.funcs[i]? = some none → i < s₀.funcs.size)
     ∧ ∀ (i : Nat) (g' : Func), s₁.funcs[i]? = some (some g') → P.funcs[i]? = some g'
 
 /-- Scopewise agreement between the semantic function environment and the
@@ -6372,6 +6370,39 @@ theorem funcs_mapM_getElem? {a : Array (Option Func)} {fs : Array Func}
   have := this a.toList fs.toList hlist i g (by simpa using hi)
   simpa using this
 
+omit model in
+/-- Converse elementwise consequence of a successful whole-table `mapM id`:
+every function recorded in the erased table came from the corresponding
+filled builder slot. -/
+theorem funcs_mapM_getElem?_rev {a : Array (Option Func)} {fs : Array Func}
+    (h : a.mapM id = some fs) {i : Nat} {g : Func}
+    (hi : fs[i]? = some g) : a[i]? = some (some g) := by
+  have hlist : a.toList.mapM id = some fs.toList := by
+    have hm := congrArg (Option.map Array.toList) h
+    simpa [Array.mapM_eq_mapM_toList, Option.map_some] using hm
+  have : ∀ (l : List (Option Func)) (l' : List Func), l.mapM id = some l' →
+      ∀ (j : Nat) (x : Func), l'[j]? = some x → l[j]? = some (some x) := by
+    intro l
+    induction l with
+    | nil =>
+      intro l' hl j x hj
+      obtain rfl : l' = [] := (Option.some.inj hl).symm
+      exact absurd hj (by simp)
+    | cons o l ih =>
+      intro l' hl j x hj
+      rw [List.mapM_cons] at hl
+      cases o with
+      | none => exact absurd hl (by simp)
+      | some y =>
+        rcases ht : l.mapM id with _ | t <;> rw [ht] at hl
+        · exact absurd hl (by simp)
+        · obtain rfl : l' = y :: t := by simpa using hl.symm
+          cases j with
+          | zero => simpa using hj
+          | succ j => simpa using ih t ht j x (by simpa using hj)
+  have hm := this a.toList fs.toList hlist i g (by simpa using hi)
+  simpa using hm
+
 /-- A builder function table is *complete for* `P` when every allocated slot
 has been filled and erasing the `Option` layer gives exactly `P.funcs`.
 
@@ -6390,6 +6421,12 @@ theorem FuncTableComplete.get {P : Prog} {done : Array (Option Func)}
     (h : FuncTableComplete P done) {i : Nat} {g : Func}
     (hi : done[i]? = some (some g)) : P.funcs[i]? = some g :=
   funcs_mapM_getElem? h hi
+
+omit model in
+theorem FuncTableComplete.get_rev {P : Prog} {done : Array (Option Func)}
+    (h : FuncTableComplete P done) {i : Nat} {g : Func}
+    (hi : P.funcs[i]? = some g) : done[i]? = some (some g) :=
+  funcs_mapM_getElem?_rev h hi
 
 omit model in
 /-- A completed table has no pending reservations, hence owns the empty
@@ -6431,11 +6468,12 @@ theorem FuncTableComplete.funcOK {P : Prog} {done : Array (Option Func)}
     {decl : YulSemantics.FDecl yulD} {fid : FuncId} {g : Func}
     {s₀ s₁ : BState}
     (htr : trFunc fenv decl.params decl.rets decl.body s₀ = some (g, s₁))
+    (hbudget : ∀ i : FuncId, s₁.funcs[i]? = some none → i < s₀.funcs.size)
     (hslot : done[fid]? = some (some g))
     (hnested : ∀ (i : Nat) (g' : Func),
       s₁.funcs[i]? = some (some g') → done[i]? = some (some g')) :
     FuncOK (model := model) P fenv decl fid :=
-  ⟨g, s₀, s₁, h.get hslot, htr,
+  ⟨g, s₀, s₁, h.get hslot, htr, hbudget,
     fun i g' hi => h.get (hnested i g' hi)⟩
 
 /-- Content refinement is the local-to-final transport consumed by hoisted
@@ -6447,12 +6485,13 @@ theorem FuncTableComplete.funcOK_of_contents {P : Prog}
     {fenv : FMap} {decl : YulSemantics.FDecl yulD} {fid : FuncId}
     {g : Func} {s₀ s₁ sLocal sDone : BState}
     (htr : trFunc fenv decl.params decl.rets decl.body s₀ = some (g, s₁))
+    (hbudget : ∀ i : FuncId, s₁.funcs[i]? = some none → i < s₀.funcs.size)
     (hslot : sLocal.funcs[fid]? = some (some g))
     (hnested : ∀ (i : Nat) (g' : Func),
       s₁.funcs[i]? = some (some g') → sLocal.funcs[i]? = some (some g'))
     (href : FContents sLocal sDone) (hdone : sDone.funcs = done) :
     FuncOK (model := model) P fenv decl fid := by
-  apply h.funcOK htr
+  apply h.funcOK htr hbudget
   · rw [← hdone]
     exact href fid g hslot
   · intro i g' hi
@@ -6472,7 +6511,7 @@ theorem stmtFuncIds_mem {fenv : FMap} {ss : List (Stmt Op)}
       simp only [List.mem_cons] at hmem
       rcases hmem with heq | hmem
       · cases heq
-        simpa [stmtFuncIds]
+        simp [stmtFuncIds]
       · exact fun i hi => by
           simp only [stmtFuncIds, List.mem_append]
           exact Or.inr (ih hmem hi)
@@ -6903,13 +6942,6 @@ theorem trStmts_hoist_owned {P : Prog}
           simp
         have hfillContents : FContents s2 s3 :=
           FContents.of_fillFunc_empty hq2 h3
-        have hok : FuncOK (model := model) P (top :: fenv)
-            { params := ps, rets := rs, body := body } qfid := by
-          apply hfuncs.funcOK_of_contents h2 hslot3
-          · intro i g' hi
-            exact hfillContents i g' hi
-          · exact ho3.filled
-          · exact hdone
         have ho2 : FOwned (qfid :: (remTail.map Prod.snd ++ owned)) s2 done :=
           FOwned.back_fillFunc hq2 h3 ho3
         have hbound2 : ∀ i : FuncId,
@@ -6917,6 +6949,17 @@ theorem trStmts_hoist_owned {P : Prog}
           intro i hi
           exact hbound i (by simpa using hi)
         have ho0 := FOwned.back_fprefix hp hbound2 ho2
+        have hbudget : ∀ i : FuncId, s2.funcs[i]? = some none →
+            i < s.funcs.size := by
+          intro i hi
+          exact hbound2 i ((ho2.pending i).mpr hi)
+        have hok : FuncOK (model := model) P (top :: fenv)
+            { params := ps, rets := rs, body := body } qfid := by
+          apply hfuncs.funcOK_of_contents h2 hbudget hslot3
+          · intro i g' hi
+            exact hfillContents i g' hi
+          · exact ho3.filled
+          · exact hdone
         refine ⟨?_, ?_⟩
         · exact .cons ⟨rfl, hok⟩ hrelOut
         · simpa using ho0
@@ -7777,7 +7820,7 @@ theorem setMany_eq_of_modOut {env : VMap} {R : Regs} {V W : VEnv yulD}
     (hnames : VEnv.names W = VEnv.names V) (hmod : ModOut [] mods V W)
     (hvals : List.Forall₂
       (fun x v => YulSemantics.VEnv.get W x = some v) xs vals)
-    (hxs : ∀ x ∈ xs, x ∈ env.map Prod.fst)
+    (_hxs : ∀ x ∈ xs, x ∈ env.map Prod.fst)
     (hcover : ∀ x ∈ env.map Prod.fst, x ∈ mods → x ∈ xs) :
     YulSemantics.VEnv.setMany V xs vals = W := by
   apply VEnv.eq_of_names_get
@@ -10879,6 +10922,7 @@ structure LoopLayout (fenv : FMap) (env : VMap) (rets : Option (List Ident))
       pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sO =
     some (renv, s₁)
 
+omit model in
 /-- Successful construction exposes exactly one `LoopLayout`. -/
 theorem LoopLayout.of_trLoopCore {fenv : FMap} {env : VMap}
     {rets : Option (List Ident)} {c : Expr Op} {post body : List (Stmt Op)}
@@ -11487,7 +11531,7 @@ theorem LoopLayout.enter {P : Prog} {f : Func} {fenv : FMap} {env : VMap}
     {s₀ s₁ : BState} {renv : Option VMap} {joins : List BlockId}
     {V : VEnv yulD} {R : Regs} {yst : EvmState}
     (layout : LoopLayout fenv env rets c post body s₀ s₁ renv)
-    (henv : EnvOK (model := model) env V R) (huniq : env.Unique)
+    (henv : EnvOK (model := model) env V R) (_huniq : env.Unique)
     (hfr : RegsFresh R s₀.fn) (hvalid : CurValid s₀)
     (hp : ProtectedAt joins s₀.fn) (hcompl : Completes f s₁.fn joins) :
     ∃ RH : Regs,
@@ -11507,7 +11551,7 @@ theorem LoopLayout.enter {P : Prog} {f : Func} {fenv : FMap} {env : VMap}
      postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
      bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
      bodyEnv, sO, h15, htr⟩
-  simp only [LoopLayout.sI, LoopLayout.hParams, LoopLayout.sA] at htail ⊢
+  simp only [] at htail ⊢
   obtain ⟨hsA, vals, hget, hvals⟩ := edgeArgs_ok henv h1
   subst sA
   obtain ⟨hlenH, hrangeH, hsB⟩ := M.mapM_freshVal_length h2
@@ -11826,7 +11870,7 @@ theorem sim_loopBodyNonNormal {P : Prog} {f : Func}
        postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
        bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
        bodyEnv, sO, h15, htr⟩
-    simp only [LoopLayout.hParams, LoopLayout.sI, LoopLayout.sA] at henv hfr hclean hreb ⊢
+    simp only [] at henv hfr hclean hreb ⊢
     have g0A : Grows s₀ sA := Grows.of_liftO h1
     have gAB : Grows sA sB := Grows.of_mapM_freshVal h2
     have gCD : Grows sC sD := Grows.of_mapM_freshVal h4
@@ -12525,6 +12569,7 @@ theorem sim_loopPostEntry {P : Prog} {f : Func} {X : List Ident}
     · simpa only [RP, hpp] using hex
   exact ⟨RP, hle.trans hleP, hbelow.trans hbelowP, hfrP, henvP, hsimP⟩
 
+omit model in
 /-- Backward reconstruction at the output of the loop post fragment.  The
 overall loop builder always leaves the post block by moving to the protected
 exit block.  If the post diverts, that move directly makes its sealed current
@@ -12588,6 +12633,7 @@ theorem loopPost_back {f : Func} {fenv : FMap} {env : VMap}
     subst sR
     exact ⟨SGrowsAt.completes_of gQS hcS, hplacedR, fun h => nomatch h⟩
 
+omit model in
 /-- The matching backward reconstruction at the body boundary.  A diverting
 body leaves a sealed block before the protected move to `postId`; a normal
 body receives the generated fall-through jump first. -/
@@ -13528,10 +13574,9 @@ theorem sim_switchExec {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
 
 set_option maxHeartbeats 1000000 in
 /-- **The construction simulation induction.** One `induction … with` over the
-source `Step` derivation, with `Motive` above. Cases still open carry their own
-`sorry`; everything else is discharged by the per-case lemmas above.  The
-completed function table is an induction-wide parameter, so every recursive IH
-uses the same final table and completion proof. -/
+source `Step` derivation, with `Motive` above. The completed function table is
+an induction-wide parameter, so every recursive IH uses the same final table
+and completion proof. -/
 theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     {V : VEnv yulD} {yst : EvmState} {c : YulSemantics.Code Op}
     {res : YulSemantics.Res yulD} {doneFuncs : Array (Option Func)}
@@ -13743,31 +13788,766 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
   -- callee's `Exec` into the caller's `.call ds fid as`, and the `.leave`/
   -- fall-through return values come from `SOut`'s `leave` clause and from the
   -- `sealCur (.ret vals)` tail exactly as in `ofBlock_sound'`'s `main`.
-  --
-  -- Two inputs of the statement clause are **not** reconstructible from
-  -- `FuncOK` as it currently stands, and are what this case is blocked on:
-  --
-  --   * `FOwned owned sY done` with `∀ i ∈ owned, i < sX.funcs.size`.  The
-  --     `pending` half can be taken literally (`owned :=` the pending indices
-  --     of `sY`) and the `filled` half follows from `FuncOK`'s third conjunct
-  --     once `FuncTableComplete` is inverted the *other* way
-  --     (`P.funcs[i]? = some g' → done[i]? = some (some g')`, the converse of
-  --     `FuncTableComplete.get`, which is not proved yet).  The **bound** is
-  --     the real gap: it says no slot allocated *inside* the callee body is
-  --     still pending at `sY`, i.e. "a scope fills everything it reserves".
-  --     `trStmts_owned_back`/`FOwned.back_allocScope` only travel backwards
-  --     from an `FOwned` that is already known at the end, so this needs a new
-  --     forward mutual induction over `trFunc`/`trScope`/`trStmts`/`trStmt`/
-  --     `trCases` (the skeleton of `trStmts_grows`), or — cheaper — an extra
-  --     conjunct in `FuncOK` recording the callee run's own slot budget.
-  --   * `Completes g sY.fn` / `CurPlaced g sY.fn` / `renvC = none → CurFinal g
-  --     sY.fn`.  These are the `ofBlock_sound'` top-level argument transplanted
-  --     to a callee: they need `g.blocks = (getFn after the ret seal).blocks`
-  --     from the `trFunc` inversion, which is available, but only *after* the
-  --     `sealCur (.ret vals)` branch is split — mechanical, and blocked behind
-  --     the same inversion.
-  | callOk hargs hlk harity hbody ho iha ihb => sorry
-  | callHalt hargs hlk harity hbody iha ihb => sorry
+  -- `FuncOK`'s pending-slot budget and `FuncTableComplete.get_rev` provide the
+  -- `FOwned` witness needed by the recursive body simulation.  Splitting the
+  -- final return seal reconstructs `Completes`, `CurPlaced`, and `CurFinal` for
+  -- the callee in both fall-through and explicit-leave paths.
+  | @callOk funs V st fn args argvals st1 decl cenv Vend st2 o
+      hargs hlk harity hbody ho iha ihb =>
+    have calleeExec : ∀ (fenv : FMap),
+        FEnvOK (model := model) P funs fenv →
+        ∃ (fid : FuncId) (g : Func) (eb : Block),
+          FMap.get fenv fn = some fid ∧ P.funcs[fid]? = some g
+          ∧ g.params.length = argvals.length
+          ∧ g.blocks[g.entry]? = some eb
+          ∧ Exec (model := model) P g (Regs.empty.setMany g.params argvals) st1
+              ⟨eb.instrs, eb.term⟩
+              (.ret (decl.rets.map fun r =>
+                (YulSemantics.VEnv.get Vend r).getD (YulSemantics.Dialect.zero yulD)) st2) := by
+      intro fenv hfe
+      obtain ⟨fid, fenv', hfid, hok, hfe'⟩ := FMap.get_ok hfe hlk
+      obtain ⟨g, sP, sQ, hg, htrF, hbudget, hcontents⟩ := hok
+      unfold trFunc at htrF
+      obtain ⟨saved, s1, h1, htrF⟩ := M.bind_inv htrF
+      obtain ⟨u2, s2, h2, htrF⟩ := M.bind_inv htrF
+      obtain ⟨entry, s3, h3, htrF⟩ := M.bind_inv htrF
+      obtain ⟨u4, s4, h4, htrF⟩ := M.bind_inv htrF
+      obtain ⟨pids, s5, h5, htrF⟩ := M.bind_inv htrF
+      obtain ⟨rids, sX, h6, htrF⟩ := M.bind_inv htrF
+      by_cases hgate : (!decide (decl.params ++ decl.rets).Nodup) = true
+      · rw [if_pos hgate] at htrF
+        obtain ⟨u7, s7, h7, -⟩ := M.bind_inv htrF
+        exact absurd h7 (by simp [reject])
+      rw [if_neg hgate] at htrF
+      obtain ⟨u7, s7, h7, htrF⟩ := M.bind_inv htrF
+      obtain ⟨renvC, sY, h8, htail⟩ := M.bind_inv htrF
+      obtain ⟨hu7, hs7⟩ := M.pure_inv h7
+      subst u7
+      subst s7
+      have htrBody : trStmt fenv'
+          (decl.params.zip pids ++ decl.rets.zip rids) none (some decl.rets)
+          (.block decl.body) sX = some (renvC, sY) := by
+        rw [trStmt]
+        exact h8
+      have hvalid4 : CurValid s4 :=
+        CurValid.of_moveTo (newBlock_target_lt h3) h4
+      have hvalidX : CurValid sX :=
+        CurValid.of_grows (CurValid.of_grows hvalid4 (Grows.of_mapM_freshVal h5))
+          (Grows.of_mapM_constZero h6)
+      have hcurX : sX.fn.curId = entry := by
+        rw [M.moveTo_apply] at h4
+        have hc4 := congrArg (fun z => z.fn.curId) (M.some_pair_inj h4).2
+        exact (Grows.of_mapM_constZero h6).curId.symm.trans
+          ((Grows.of_mapM_freshVal h5).curId.symm.trans hc4.symm)
+      obtain ⟨hlenP, hrangeP, hs5⟩ := M.mapM_freshVal_length h5
+      have hcur4 : s4.fn.cur = [] := by
+        rw [M.moveTo_apply] at h4
+        exact congrArg (fun z => z.fn.cur) (M.some_pair_inj h4).2 |>.symm
+      have hcur5 : s5.fn.cur = [] := by rw [hs5]; exact hcur4
+      have h6run := h6
+      rw [mapM_constZero_spec] at h6
+      obtain ⟨hrids, hsX⟩ := M.some_pair_inj h6
+      have hlenR : rids.length = decl.rets.length := by rw [← hrids]; simp
+      have hnext5 : s5.fn.nextVal = s4.fn.nextVal + decl.params.length := by
+        rw [hs5]
+      have hndP : pids.Nodup := by rw [hrangeP]; exact M.nodup_range' _ _
+      have hndR : rids.Nodup := by rw [← hrids]; exact M.nodup_range' _ _
+      let RP := Regs.empty.setMany pids argvals
+      let RR := RP.setMany rids (List.replicate rids.length 0)
+      have hpget : RP.getMany pids = some argvals :=
+        Regs.getMany_setMany_self hndP (hlenP.trans harity.symm)
+      have hnoneR : ∀ i ∈ rids, RP i = none := by
+        intro i hi
+        rw [← hrids] at hi
+        dsimp [RP]
+        rw [Regs.setMany_other]
+        · rfl
+        · intro hip
+          rw [hrangeP] at hip
+          obtain ⟨hipLo, hipHi⟩ := M.mem_range'_bounds hip
+          obtain ⟨hiLo, -⟩ := M.mem_range'_bounds hi
+          rw [hnext5] at hiLo
+          omega
+      have hleR : Regs.Le RP RR := Regs.Le.setMany hndR hnoneR
+      have henv0 : EnvOK (model := model)
+          (decl.params.zip pids ++ decl.rets.zip rids)
+          (decl.params.zip argvals ++ YulSemantics.bindZeros yulD decl.rets) RR := by
+        exact EnvOK.append
+          (EnvOK.zip (Regs.getMany_eq_some_iff.mp
+            (Regs.getMany_mono hleR hpget)) hlenP.symm)
+          (EnvOK.zip_bindZeros hlenR.symm
+            (fun i hi => Regs.setMany_replicate_mem hndR i hi))
+      have huniq0 : VMap.Unique
+          (decl.params.zip pids ++ decl.rets.zip rids) := by
+        rw [VMap.Unique, List.map_append, List.map_fst_zip, List.map_fst_zip]
+        · by_contra hn
+          apply hgate
+          simp [hn]
+        · exact hlenR.symm.le
+        · exact hlenP.symm.le
+      have hctx0 : CtxVars none (some decl.rets)
+          (decl.params.zip pids ++ decl.rets.zip rids) := by
+        constructor
+        · simp
+        · intro rs hrs x hx
+          obtain rfl := Option.some.inj hrs
+          simp only [List.map_append, List.map_fst_zip hlenP.symm.le,
+            List.map_fst_zip hlenR.symm.le, List.mem_append]
+          exact Or.inr hx
+      have hfrP : RegsFresh RP s5.fn := by
+        intro i hi
+        dsimp [RP]
+        rw [Regs.setMany_other]
+        · rfl
+        · intro hip
+          rw [hrangeP] at hip
+          rw [hnext5] at hi
+          exact Nat.not_lt_of_ge hi (M.mem_range'_bounds hip).2
+      have hfrR : RegsFresh RR sX.fn := by
+        dsimp [RR]
+        rw [← hrids]
+        apply hfrP.setMany
+        rw [← hsX]
+      have hsizePX : sP.funcs.size ≤ sX.funcs.size := by
+        have fp5 := FGrows.trans (FGrows.of_getFn h1)
+          (FGrows.trans (FGrows.of_setFn h2)
+            (FGrows.trans (FGrows.of_newBlock h3)
+              (FGrows.trans (FGrows.of_moveTo h4)
+                (FGrows.of_grows (Grows.of_mapM_freshVal h5)))))
+        exact FGrows.trans fp5
+          (FGrows.of_grows (Grows.of_mapM_constZero h6run))
+      let done : BState := { fn := {}, funcs := doneFuncs }
+      have ownedY (hsq : sQ.funcs = sY.funcs) :
+          ∃ owned : List FuncId,
+            (∀ i : FuncId, i ∈ owned → i < sX.funcs.size)
+            ∧ FOwned owned sY done := by
+        let owned := (List.range sY.funcs.size).filter fun i =>
+          match sY.funcs[i]? with | some none => true | _ => false
+        have hpending : ∀ i : FuncId,
+            i ∈ owned ↔ sY.funcs[i]? = some none := by
+          intro i
+          constructor
+          · intro hi
+            obtain ⟨-, hp⟩ := List.mem_filter.mp hi
+            split at hp <;> simp_all
+          · intro hi
+            apply List.mem_filter.mpr
+            refine ⟨List.mem_range.mpr (lt_size_of_getElem? hi), ?_⟩
+            simp [hi]
+        have hown : FOwned owned sY done := by
+          refine ⟨List.Nodup.filter _ List.nodup_range, hpending, ?_⟩
+          intro i g' hi
+          change doneFuncs[i]? = some (some g')
+          apply hfuncs.get_rev
+          apply hcontents i g'
+          rw [hsq]
+          exact hi
+        refine ⟨owned, ?_, hown⟩
+        intro i hi
+        exact Nat.lt_of_lt_of_le (hbudget i (by rw [hsq]; exact (hpending i).mp hi))
+          hsizePX
+      have retvals_eq : ∀ {rs : List Ident} {vals : List U256},
+          List.Forall₂ (fun x v =>
+            YulSemantics.VEnv.get Vend x = some v) rs vals →
+          vals = rs.map (fun r => (YulSemantics.VEnv.get Vend r).getD
+            (YulSemantics.Dialect.zero yulD)) := by
+        intro rs vals hv
+        induction hv with
+        | nil => rfl
+        | cons hh _ ih => simp only [List.map_cons, hh, Option.getD_some, ih]
+      have hsimConst : SimS (model := model) P g s5.fn RP st1 sX.fn RR st1 := by
+        dsimp [RR]
+        apply simS_consts rids RP s5.fn sX.fn
+        · exact (Grows.of_mapM_constZero h6run).curId.symm
+        · rw [← hsX, hcur5, ← hrids]
+      have entry_of {res : FRes}
+          (hex : ExecFrom (model := model) P g s5.fn RP st1 res) :
+          ∃ eb : Block, g.blocks[entry]? = some eb
+            ∧ Exec (model := model) P g RP st1 ⟨eb.instrs, eb.term⟩ res := by
+        obtain ⟨rest, hc, he⟩ := hex
+        obtain ⟨eb, heb, hi, ht⟩ := hc
+        have hentry5 : s5.fn.curId = entry := by
+          rw [hs5]
+          rw [M.moveTo_apply] at h4
+          exact congrArg (fun z => z.fn.curId) (M.some_pair_inj h4).2 |>.symm
+        rw [hentry5] at heb
+        rw [hcur5] at hi
+        have hi' : eb.instrs = rest.instrs := by simpa using hi
+        refine ⟨eb, heb, ?_⟩
+        simpa only [hi', ht] using he
+      have hvalidY : CurValid sY := (trStmt_cur hvalidX htrBody).1
+      have finish_inv : ∀ (sk : BState),
+          ((do
+            let doneFn ← getFn
+            setFn saved
+            (pure (⟨pids, decl.rets.length, entry, doneFn.blocks⟩ : Func) : M Func))
+              sk = some (g, sQ)) →
+          g.params = pids ∧ g.nrets = decl.rets.length ∧ g.entry = entry
+            ∧ g.blocks = sk.fn.blocks ∧ sQ.funcs = sk.funcs := by
+        intro sk hf
+        obtain ⟨doneFn, sa, ha, hf⟩ := M.bind_inv hf
+        rw [M.getFn_apply] at ha
+        obtain ⟨rfl, rfl⟩ := M.some_pair_inj ha
+        obtain ⟨ub, sb, hb, hc⟩ := M.bind_inv hf
+        rw [M.setFn_apply] at hb
+        obtain ⟨rfl, rfl⟩ := M.some_pair_inj hb
+        obtain ⟨rfl, rfl⟩ := M.pure_inv hc
+        exact ⟨rfl, rfl, rfl, rfl, rfl⟩
+      cases renvC with
+      | none =>
+        obtain ⟨ua, sa, ha, htail⟩ := M.bind_inv htail
+        obtain ⟨hua, hsa⟩ := M.pure_inv ha
+        subst ua
+        subst sa
+        obtain ⟨hgparams, hgnrets, hgentry, hgblocks, hsq⟩ := finish_inv sY htail
+        have hcomplY : Completes g sY.fn :=
+          ⟨fun _ _ _ _ hi => by rwa [hgblocks],
+            fun _ b hb => ⟨b, by rwa [hgblocks], rfl⟩, by rw [hgblocks]⟩
+        have hfinY : CurFinal g sY.fn :=
+          fun _ hb => by rwa [hgblocks]
+        have hcpY : CurPlaced g sY.fn :=
+          curPlaced_of_curFinal hvalidY
+            (trScope_none_cur_nil fenv'
+              (decl.params.zip pids ++ decl.rets.zip rids) none
+              (some decl.rets) decl.body sX sY h8) hfinY
+        obtain ⟨owned, hboundY, hownY⟩ := ownedY hsq
+        have hsout := ihb fenv'
+          (decl.params.zip pids ++ decl.rets.zip rids) RR none
+          (some decl.rets) sX sY none [] hfe' henv0 huniq0 hctx0 hfrR
+          hvalidX (ProtectedAt.nil sX.fn) hcomplY hcpY (fun _ => hfinY)
+          done owned rfl hboundY hownY htrBody
+        rcases ho with ho | ho
+        · subst o
+          obtain ⟨envEnd, REnd, hbad, -⟩ := hsout
+          exact absurd hbad (by simp)
+        · subst o
+          obtain ⟨rs, vals, hrs, hvals, hex⟩ := hsout
+          obtain rfl : rs = decl.rets := Option.some.inj hrs.symm
+          rw [retvals_eq hvals] at hex
+          obtain ⟨eb, heb, he⟩ := entry_of (hsimConst _ hex)
+          exact ⟨fid, g, eb, hfid, hg, by rw [hgparams]; omega,
+            by rw [hgentry]; exact heb, by simpa [RP, hgparams] using he⟩
+      | some envEnd =>
+        obtain ⟨vals, sa, hedge, htail⟩ := M.bind_inv htail
+        obtain ⟨hedgeMap, hsa⟩ := M.edgeArgs_inv hedge
+        subst sa
+        obtain ⟨ub, sb, hseal, htail⟩ := M.bind_inv htail
+        obtain ⟨hgparams, hgnrets, hgentry, hgblocks, hsqb⟩ := finish_inv sb htail
+        obtain ⟨b, hb, hblocks⟩ := M.sealCur_inv hseal
+        have hsq : sQ.funcs = sY.funcs := by rw [hsqb, hblocks]
+        have hcomplY : Completes g sY.fn := by
+          refine ⟨fun i b' _ hne hi => ?_, fun i b' hi => ?_, ?_⟩
+          · rw [hgblocks, hblocks, Array.set!_eq_setIfInBounds,
+              Array.getElem?_setIfInBounds_ne (Ne.symm hne)]
+            exact hi
+          · by_cases hc : i = sY.fn.curId
+            · subst i
+              obtain rfl : b' = b := Option.some.inj (hi.symm.trans hb)
+              refine ⟨⟨b'.params, sY.fn.cur.reverse, .ret vals⟩, ?_, rfl⟩
+              rw [hgblocks, hblocks, Array.set!_eq_setIfInBounds,
+                Array.getElem?_setIfInBounds_self_of_lt (lt_size_of_getElem? hb)]
+            · refine ⟨b', ?_, rfl⟩
+              rw [hgblocks, hblocks, Array.set!_eq_setIfInBounds,
+                Array.getElem?_setIfInBounds_ne (Ne.intro fun hh => hc hh.symm)]
+              exact hi
+          · rw [hgblocks, hblocks]
+            simp
+        have hfinImp : some envEnd = none → CurFinal g sY.fn := by
+          simp
+        have hcpY : CurPlaced g sY.fn := by
+          refine ⟨⟨[], .ret vals⟩, ⟨b.params, sY.fn.cur.reverse, .ret vals⟩, ?_, by simp, rfl⟩
+          rw [hgblocks, hblocks, Array.set!_eq_setIfInBounds,
+            Array.getElem?_setIfInBounds_self_of_lt (lt_size_of_getElem? hb)]
+        obtain ⟨owned, hboundY, hownY⟩ := ownedY hsq
+        have hsout := ihb fenv'
+          (decl.params.zip pids ++ decl.rets.zip rids) RR none
+          (some decl.rets) sX sY (some envEnd) [] hfe' henv0 huniq0 hctx0 hfrR
+          hvalidX (ProtectedAt.nil sX.fn) hcomplY hcpY hfinImp
+          done owned rfl hboundY hownY htrBody
+        rcases ho with ho | ho
+        · subst o
+          obtain ⟨env', REnd, henvEq, -, -, -, henvEnd, -, hsimBody⟩ := hsout
+          obtain rfl : env' = envEnd := (Option.some.inj henvEq).symm
+          obtain ⟨_, rvals, hrget, hrvals⟩ := edgeArgs_ok henvEnd hedge
+          have hrEq := retvals_eq hrvals
+          rw [hrEq] at hrget
+          have hcurRet : CurOK g sY.fn ⟨[], .ret vals⟩ := by
+            refine ⟨⟨b.params, sY.fn.cur.reverse, .ret vals⟩, ?_, by simp, rfl⟩
+            rw [hgblocks, hblocks, Array.set!_eq_setIfInBounds,
+              Array.getElem?_setIfInBounds_self_of_lt (lt_size_of_getElem? hb)]
+          have hex := (hsimConst.trans hsimBody) _ (execFrom_ret hcurRet hrget)
+          obtain ⟨eb, heb, he⟩ := entry_of hex
+          exact ⟨fid, g, eb, hfid, hg, by rw [hgparams]; omega,
+            by rw [hgentry]; exact heb, by simpa [RP, hgparams] using he⟩
+        · subst o
+          obtain ⟨rs, rvals, hrs, hrvals, hex⟩ := hsout
+          obtain rfl : rs = decl.rets := Option.some.inj hrs.symm
+          rw [retvals_eq hrvals] at hex
+          obtain ⟨eb, heb, he⟩ := entry_of (hsimConst _ hex)
+          exact ⟨fid, g, eb, hfid, hg, by rw [hgparams]; omega,
+            by rw [hgentry]; exact heb, by simpa [RP, hgparams] using he⟩
+    have key : ∀ (fenv : FMap) (env : VMap) (R : Regs) (s₀ s₁ : BState)
+        (i : ValId) (v : U256) (joins : List BlockId),
+        FEnvOK (model := model) P funs fenv → EnvOK (model := model) env V R →
+        RegsFresh R s₀.fn → ProtectedAt joins s₀.fn →
+        Completes f s₁.fn joins → CurPlaced f s₁.fn →
+        decl.rets.map (fun r => (YulSemantics.VEnv.get Vend r).getD
+          (YulSemantics.Dialect.zero yulD)) = [v] →
+        trExpr fenv env (.call fn args) s₀ = some (i, s₁) →
+        EOut (model := model) P f s₀ s₁ R i v st st2 := by
+      intro fenv env R s₀ s₁ i v joins hfe henv hfr hp hcompl hcp hvals htr
+      rw [trExpr] at htr
+      obtain ⟨as, sA, h1, htr⟩ := M.bind_inv htr
+      obtain ⟨fid, sB, h2, htr⟩ := M.bind_inv htr
+      obtain ⟨d, sC, h3, htr⟩ := M.bind_inv htr
+      obtain ⟨u, sD, h4, h5⟩ := M.bind_inv htr
+      obtain ⟨hi, hsD⟩ := M.pure_inv h5
+      subst i
+      subst sD
+      obtain ⟨hfid, hsB⟩ := M.liftO_inv h2
+      subst sB
+      have h3run := h3
+      rw [M.freshVal_apply] at h3
+      obtain ⟨hd, hsC⟩ := M.some_pair_inj h3
+      subst d
+      subst sC
+      have h4run := h4
+      rw [M.emit_apply] at h4
+      obtain ⟨-, hs₁⟩ := M.some_pair_inj h4
+      obtain ⟨fid', g, eb, hgetF, hg, hparams, heb, hcallee⟩ := calleeExec fenv hfe
+      obtain rfl : fid' = fid := Option.some.inj (hgetF.symm.trans hfid)
+      have hretLen : decl.rets.length = 1 := by
+        simpa using congrArg List.length hvals
+      have hgrow : Grows sA s₁ :=
+        (Grows.of_freshVal h3run).trans (Grows.of_emit h4run)
+      obtain ⟨RA, hleA, hbelowA, hfrA, hget, hsimA⟩ :=
+        iha fenv env R s₀ sA as joins hfe henv hfr hp
+          (SGrowsAt.completes_of (SGrows.of_grows hgrow) hcompl)
+          (curPlaced_back_grows hgrow hcp) h1
+      have hstep := simS_call (model := model) (P := P) (f := f)
+        (fn := sA.fn) (fn' := s₁.fn) (R := RA) (ds := [sA.fn.nextVal])
+        (as := as) (fid := fid') hg hget (by omega) heb hcallee
+        (by simp [hretLen]) (by rw [← hs₁]) (by rw [← hs₁])
+      refine ⟨RA.set sA.fn.nextVal v, hleA.trans (Regs.Le.set _ hfrA.unbound),
+        hbelowA.trans ((Regs.BelowEq.set _ (Nat.le_refl _)).mono
+          (trArgs_grows args fenv env s₀ sA as h1).nextVal),
+        hfrA.set _ (by rw [← hs₁]), Regs.set_same .., ?_⟩
+      simpa [Regs.setMany, hvals] using hsimA.trans hstep
+    refine ⟨key, ?_, ?_⟩
+    · intro fenv env R s₀ s₁ n ids joins hfe henv hfr hp hcompl hcp hlen htr
+      rw [trExprN] at htr
+      obtain ⟨as, sA, h1, htr⟩ := M.bind_inv htr
+      obtain ⟨fid, sB, h2, htr⟩ := M.bind_inv htr
+      obtain ⟨ds, sC, h3, htr⟩ := M.bind_inv htr
+      obtain ⟨u, sD, h4, h5⟩ := M.bind_inv htr
+      obtain ⟨hids, hsD⟩ := M.pure_inv h5
+      subst sD
+      obtain ⟨hfid, hsB⟩ := M.liftO_inv h2
+      subst sB
+      obtain ⟨hdsLen, hds, hsC⟩ := M.mapM_freshVal_length h3
+      subst sC
+      have h4run := h4
+      rw [M.emit_apply] at h4
+      obtain ⟨-, hs₁⟩ := M.some_pair_inj h4
+      obtain ⟨fid', g, eb, hgetF, hg, hparams, heb, hcallee⟩ := calleeExec fenv hfe
+      obtain rfl : fid' = fid := Option.some.inj (hgetF.symm.trans hfid)
+      have hnd : ds.Nodup := by rw [hds]; exact M.nodup_range' _ _
+      have hgrow : Grows sA s₁ :=
+        (Grows.of_mapM_freshVal h3).trans (Grows.of_emit h4run)
+      obtain ⟨RA, hleA, hbelowA, hfrA, hget, hsimA⟩ :=
+        iha fenv env R s₀ sA as joins hfe henv hfr hp
+          (SGrowsAt.completes_of (SGrows.of_grows hgrow) hcompl)
+          (curPlaced_back_grows hgrow hcp) h1
+      have hnoneA : ∀ d ∈ ds, RA d = none := by
+        intro d hd
+        rw [hds] at hd
+        exact hfrA d (M.mem_range'_bounds hd).1
+      have hleD : Regs.Le RA (RA.setMany ds
+          (decl.rets.map fun r => (YulSemantics.VEnv.get Vend r).getD
+            (YulSemantics.Dialect.zero yulD))) := Regs.Le.setMany hnd hnoneA
+      have hfrD : RegsFresh (RA.setMany ds
+          (decl.rets.map fun r => (YulSemantics.VEnv.get Vend r).getD
+            (YulSemantics.Dialect.zero yulD))) s₁.fn := by
+        rw [hds]
+        apply hfrA.setMany
+        rw [← hs₁]
+      have hdsRetLen : ds.length = (decl.rets.map fun r =>
+          (YulSemantics.VEnv.get Vend r).getD
+            (YulSemantics.Dialect.zero yulD)).length := by
+        calc
+          ds.length = (List.range n).length := hdsLen
+          _ = n := by simp
+          _ = (decl.rets.map fun r =>
+              (YulSemantics.VEnv.get Vend r).getD
+                (YulSemantics.Dialect.zero yulD)).length := by simpa using hlen.symm
+      have hbelowD : Regs.BelowEq sA.fn.nextVal RA
+          (RA.setMany ds (decl.rets.map fun r =>
+            (YulSemantics.VEnv.get Vend r).getD
+              (YulSemantics.Dialect.zero yulD))) := by
+        apply Regs.BelowEq.setMany
+        intro d hd
+        rw [hds] at hd
+        exact (M.mem_range'_bounds hd).1
+      have hstep := simS_call (model := model) (P := P) (f := f)
+        (fn := sA.fn) (fn' := s₁.fn) (R := RA) (ds := ds)
+        (as := as) (fid := fid') hg hget (by omega) heb hcallee
+        hdsRetLen (by rw [← hs₁]) (by rw [← hs₁])
+      refine ⟨_, hleA.trans hleD,
+        hbelowA.trans (hbelowD.mono
+          (trArgs_grows args fenv env s₀ sA as h1).nextVal),
+        hfrD, ?_, hsimA.trans hstep⟩
+      rw [hids]
+      exact Regs.getMany_setMany_self hnd hdsRetLen
+    · intro hvals fenv env R lctx rs s₀ s₁ renv joins hfe henv huniq hfr _ hp
+        hcompl hcp _ htr
+      rw [trStmt] at htr
+      obtain ⟨as, sA, h1, htr⟩ := M.bind_inv htr
+      obtain ⟨fid, sB, h2, htr⟩ := M.bind_inv htr
+      obtain ⟨u, sC, h3, h4⟩ := M.bind_inv htr
+      obtain ⟨hrenv, hsC⟩ := M.pure_inv h4
+      subst renv
+      subst sC
+      obtain ⟨hfid, hsB⟩ := M.liftO_inv h2
+      subst sB
+      have h3run := h3
+      rw [M.emit_apply] at h3
+      obtain ⟨-, hs₁⟩ := M.some_pair_inj h3
+      obtain ⟨fid', g, eb, hgetF, hg, hparams, heb, hcallee⟩ := calleeExec fenv hfe
+      obtain rfl : fid' = fid := Option.some.inj (hgetF.symm.trans hfid)
+      have hretLen : decl.rets.length = 0 := by
+        simpa using congrArg List.length hvals
+      have hgrow : Grows sA s₁ := Grows.of_emit h3run
+      obtain ⟨RA, hleA, hbelowA, hfrA, hget, hsimA⟩ :=
+        iha fenv env R s₀ sA as joins hfe henv hfr hp
+          (SGrowsAt.completes_of (SGrows.of_grows hgrow) hcompl)
+          (curPlaced_back_grows hgrow hcp) h1
+      have hstep := simS_call (model := model) (P := P) (f := f)
+        (fn := sA.fn) (fn' := s₁.fn) (R := RA) (ds := [])
+        (as := as) (fid := fid') hg hget (by omega) heb hcallee
+        (by simp [hretLen]) (by rw [← hs₁]) (by rw [← hs₁])
+      have hfrEnd : RegsFresh RA s₁.fn := by
+        rw [← hs₁]
+        exact hfrA
+      exact ⟨env, RA, rfl, hleA, hbelowA, hfrEnd, henv.mono hleA, huniq,
+        by simpa using hsimA.trans hstep⟩
+  | @callHalt funs V st fn args argvals st1 decl cenv Vend st2
+      hargs hlk harity hbody iha ihb =>
+    have calleeHalt : ∀ (fenv : FMap),
+        FEnvOK (model := model) P funs fenv →
+        ∃ (fid : FuncId) (g : Func) (eb : Block),
+          FMap.get fenv fn = some fid ∧ P.funcs[fid]? = some g
+          ∧ g.params.length = argvals.length
+          ∧ g.blocks[g.entry]? = some eb
+          ∧ Exec (model := model) P g (Regs.empty.setMany g.params argvals) st1
+              ⟨eb.instrs, eb.term⟩ (.halt st2) := by
+      intro fenv hfe
+      obtain ⟨fid, fenv', hfid, hok, hfe'⟩ := FMap.get_ok hfe hlk
+      obtain ⟨g, sP, sQ, hg, htrF, hbudget, hcontents⟩ := hok
+      unfold trFunc at htrF
+      obtain ⟨saved, s1, h1, htrF⟩ := M.bind_inv htrF
+      obtain ⟨u2, s2, h2, htrF⟩ := M.bind_inv htrF
+      obtain ⟨entry, s3, h3, htrF⟩ := M.bind_inv htrF
+      obtain ⟨u4, s4, h4, htrF⟩ := M.bind_inv htrF
+      obtain ⟨pids, s5, h5, htrF⟩ := M.bind_inv htrF
+      obtain ⟨rids, sX, h6, htrF⟩ := M.bind_inv htrF
+      by_cases hgate : (!decide (decl.params ++ decl.rets).Nodup) = true
+      · rw [if_pos hgate] at htrF
+        obtain ⟨u7, s7, h7, -⟩ := M.bind_inv htrF
+        exact absurd h7 (by simp [reject])
+      rw [if_neg hgate] at htrF
+      obtain ⟨u7, s7, h7, htrF⟩ := M.bind_inv htrF
+      obtain ⟨renvC, sY, h8, htail⟩ := M.bind_inv htrF
+      obtain ⟨hu7, hs7⟩ := M.pure_inv h7
+      subst u7
+      subst s7
+      have htrBody : trStmt fenv'
+          (decl.params.zip pids ++ decl.rets.zip rids) none (some decl.rets)
+          (.block decl.body) sX = some (renvC, sY) := by
+        rw [trStmt]
+        exact h8
+      have hvalid4 : CurValid s4 := CurValid.of_moveTo (newBlock_target_lt h3) h4
+      have hvalidX : CurValid sX :=
+        CurValid.of_grows (CurValid.of_grows hvalid4 (Grows.of_mapM_freshVal h5))
+          (Grows.of_mapM_constZero h6)
+      obtain ⟨hlenP, hrangeP, hs5⟩ := M.mapM_freshVal_length h5
+      have hcur4 : s4.fn.cur = [] := by
+        rw [M.moveTo_apply] at h4
+        exact congrArg (fun z => z.fn.cur) (M.some_pair_inj h4).2 |>.symm
+      have hcur5 : s5.fn.cur = [] := by rw [hs5]; exact hcur4
+      have h6run := h6
+      rw [mapM_constZero_spec] at h6
+      obtain ⟨hrids, hsX⟩ := M.some_pair_inj h6
+      have hlenR : rids.length = decl.rets.length := by rw [← hrids]; simp
+      have hnext5 : s5.fn.nextVal = s4.fn.nextVal + decl.params.length := by rw [hs5]
+      have hndP : pids.Nodup := by rw [hrangeP]; exact M.nodup_range' _ _
+      have hndR : rids.Nodup := by rw [← hrids]; exact M.nodup_range' _ _
+      let RP := Regs.empty.setMany pids argvals
+      let RR := RP.setMany rids (List.replicate rids.length 0)
+      have hpget : RP.getMany pids = some argvals :=
+        Regs.getMany_setMany_self hndP (hlenP.trans harity.symm)
+      have hnoneR : ∀ i ∈ rids, RP i = none := by
+        intro i hi
+        rw [← hrids] at hi
+        dsimp [RP]
+        rw [Regs.setMany_other]
+        · rfl
+        · intro hip
+          rw [hrangeP] at hip
+          obtain ⟨-, hipHi⟩ := M.mem_range'_bounds hip
+          obtain ⟨hiLo, -⟩ := M.mem_range'_bounds hi
+          rw [hnext5] at hiLo
+          omega
+      have hleR : Regs.Le RP RR := Regs.Le.setMany hndR hnoneR
+      have henv0 : EnvOK (model := model)
+          (decl.params.zip pids ++ decl.rets.zip rids)
+          (decl.params.zip argvals ++ YulSemantics.bindZeros yulD decl.rets) RR :=
+        EnvOK.append
+          (EnvOK.zip (Regs.getMany_eq_some_iff.mp (Regs.getMany_mono hleR hpget))
+            hlenP.symm)
+          (EnvOK.zip_bindZeros hlenR.symm
+            (fun i hi => Regs.setMany_replicate_mem hndR i hi))
+      have huniq0 : VMap.Unique
+          (decl.params.zip pids ++ decl.rets.zip rids) := by
+        rw [VMap.Unique, List.map_append, List.map_fst_zip, List.map_fst_zip]
+        · by_contra hn
+          apply hgate
+          simp [hn]
+        · exact hlenR.symm.le
+        · exact hlenP.symm.le
+      have hctx0 : CtxVars none (some decl.rets)
+          (decl.params.zip pids ++ decl.rets.zip rids) := by
+        constructor
+        · simp
+        · intro rs hrs x hx
+          obtain rfl := Option.some.inj hrs
+          simp only [List.map_append, List.map_fst_zip hlenP.symm.le,
+            List.map_fst_zip hlenR.symm.le, List.mem_append]
+          exact Or.inr hx
+      have hfrP : RegsFresh RP s5.fn := by
+        intro i hi
+        dsimp [RP]
+        rw [Regs.setMany_other]
+        · rfl
+        · intro hip
+          rw [hrangeP] at hip
+          rw [hnext5] at hi
+          exact Nat.not_lt_of_ge hi (M.mem_range'_bounds hip).2
+      have hfrR : RegsFresh RR sX.fn := by
+        dsimp [RR]
+        rw [← hrids]
+        apply hfrP.setMany
+        rw [← hsX]
+      have hsizePX : sP.funcs.size ≤ sX.funcs.size := by
+        have fp5 := FGrows.trans (FGrows.of_getFn h1)
+          (FGrows.trans (FGrows.of_setFn h2)
+            (FGrows.trans (FGrows.of_newBlock h3)
+              (FGrows.trans (FGrows.of_moveTo h4)
+                (FGrows.of_grows (Grows.of_mapM_freshVal h5)))))
+        exact FGrows.trans fp5 (FGrows.of_grows (Grows.of_mapM_constZero h6run))
+      let done : BState := { fn := {}, funcs := doneFuncs }
+      have ownedY (hsq : sQ.funcs = sY.funcs) :
+          ∃ owned : List FuncId,
+            (∀ i : FuncId, i ∈ owned → i < sX.funcs.size) ∧ FOwned owned sY done := by
+        let owned := (List.range sY.funcs.size).filter fun i =>
+          match sY.funcs[i]? with | some none => true | _ => false
+        have hpending : ∀ i : FuncId, i ∈ owned ↔ sY.funcs[i]? = some none := by
+          intro i
+          constructor
+          · intro hi
+            obtain ⟨-, hp⟩ := List.mem_filter.mp hi
+            split at hp <;> simp_all
+          · intro hi
+            apply List.mem_filter.mpr
+            refine ⟨List.mem_range.mpr (lt_size_of_getElem? hi), ?_⟩
+            simp [hi]
+        have hown : FOwned owned sY done := by
+          refine ⟨List.Nodup.filter _ List.nodup_range, hpending, ?_⟩
+          intro i g' hi
+          change doneFuncs[i]? = some (some g')
+          apply hfuncs.get_rev
+          apply hcontents i g'
+          rw [hsq]
+          exact hi
+        refine ⟨owned, ?_, hown⟩
+        intro i hi
+        exact Nat.lt_of_lt_of_le
+          (hbudget i (by rw [hsq]; exact (hpending i).mp hi)) hsizePX
+      have hsimConst : SimS (model := model) P g s5.fn RP st1 sX.fn RR st1 := by
+        dsimp [RR]
+        apply simS_consts rids RP s5.fn sX.fn
+        · exact (Grows.of_mapM_constZero h6run).curId.symm
+        · rw [← hsX, hcur5, ← hrids]
+      have entry_of (hex : ExecFrom (model := model) P g s5.fn RP st1 (.halt st2)) :
+          ∃ eb : Block, g.blocks[entry]? = some eb
+            ∧ Exec (model := model) P g RP st1 ⟨eb.instrs, eb.term⟩ (.halt st2) := by
+        obtain ⟨rest, hc, he⟩ := hex
+        obtain ⟨eb, heb, hi, ht⟩ := hc
+        have hentry5 : s5.fn.curId = entry := by
+          rw [hs5]
+          rw [M.moveTo_apply] at h4
+          exact congrArg (fun z => z.fn.curId) (M.some_pair_inj h4).2 |>.symm
+        rw [hentry5] at heb
+        rw [hcur5] at hi
+        have hi' : eb.instrs = rest.instrs := by simpa using hi
+        exact ⟨eb, heb, by simpa only [hi', ht] using he⟩
+      have hvalidY : CurValid sY := (trStmt_cur hvalidX htrBody).1
+      have finish_inv : ∀ (sk : BState),
+          ((do
+            let doneFn ← getFn
+            setFn saved
+            (pure (⟨pids, decl.rets.length, entry, doneFn.blocks⟩ : Func) : M Func))
+              sk = some (g, sQ)) →
+          g.params = pids ∧ g.nrets = decl.rets.length ∧ g.entry = entry
+            ∧ g.blocks = sk.fn.blocks ∧ sQ.funcs = sk.funcs := by
+        intro sk hf
+        obtain ⟨doneFn, sa, ha, hf⟩ := M.bind_inv hf
+        rw [M.getFn_apply] at ha
+        obtain ⟨rfl, rfl⟩ := M.some_pair_inj ha
+        obtain ⟨ub, sb, hb, hc⟩ := M.bind_inv hf
+        rw [M.setFn_apply] at hb
+        obtain ⟨rfl, rfl⟩ := M.some_pair_inj hb
+        obtain ⟨rfl, rfl⟩ := M.pure_inv hc
+        exact ⟨rfl, rfl, rfl, rfl, rfl⟩
+      cases renvC with
+      | none =>
+        obtain ⟨ua, sa, ha, hfinish⟩ := M.bind_inv htail
+        obtain ⟨hua, hsa⟩ := M.pure_inv ha
+        subst ua
+        subst sa
+        obtain ⟨hgparams, hgnrets, hgentry, hgblocks, hsq⟩ := finish_inv sY hfinish
+        have hcomplY : Completes g sY.fn :=
+          ⟨fun _ _ _ _ hi => by rwa [hgblocks],
+            fun _ b hb => ⟨b, by rwa [hgblocks], rfl⟩, by rw [hgblocks]⟩
+        have hfinY : CurFinal g sY.fn := fun _ hb => by rwa [hgblocks]
+        have hcpY : CurPlaced g sY.fn := curPlaced_of_curFinal hvalidY
+          (trScope_none_cur_nil fenv'
+            (decl.params.zip pids ++ decl.rets.zip rids) none (some decl.rets)
+            decl.body sX sY h8) hfinY
+        obtain ⟨owned, hboundY, hownY⟩ := ownedY hsq
+        have hsout := ihb fenv' (decl.params.zip pids ++ decl.rets.zip rids) RR
+          none (some decl.rets) sX sY none [] hfe' henv0 huniq0 hctx0 hfrR
+          hvalidX (ProtectedAt.nil sX.fn) hcomplY hcpY (fun _ => hfinY)
+          done owned rfl hboundY hownY htrBody
+        obtain ⟨eb, heb, he⟩ := entry_of (hsimConst _ hsout)
+        exact ⟨fid, g, eb, hfid, hg, by rw [hgparams]; omega,
+          by rw [hgentry]; exact heb, by simpa [RP, hgparams] using he⟩
+      | some envEnd =>
+        obtain ⟨vals, sa, hedge, htail⟩ := M.bind_inv htail
+        obtain ⟨-, hsa⟩ := M.edgeArgs_inv hedge
+        subst sa
+        obtain ⟨ub, sb, hseal, hfinish⟩ := M.bind_inv htail
+        obtain ⟨hgparams, hgnrets, hgentry, hgblocks, hsqb⟩ := finish_inv sb hfinish
+        obtain ⟨b, hb, hblocks⟩ := M.sealCur_inv hseal
+        have hsq : sQ.funcs = sY.funcs := by rw [hsqb, hblocks]
+        have hcomplY : Completes g sY.fn := by
+          refine ⟨fun i b' _ hne hi => ?_, fun i b' hi => ?_, ?_⟩
+          · rw [hgblocks, hblocks, Array.set!_eq_setIfInBounds,
+              Array.getElem?_setIfInBounds_ne (Ne.symm hne)]
+            exact hi
+          · by_cases hc : i = sY.fn.curId
+            · subst i
+              obtain rfl : b' = b := Option.some.inj (hi.symm.trans hb)
+              refine ⟨⟨b'.params, sY.fn.cur.reverse, .ret vals⟩, ?_, rfl⟩
+              rw [hgblocks, hblocks, Array.set!_eq_setIfInBounds,
+                Array.getElem?_setIfInBounds_self_of_lt (lt_size_of_getElem? hb)]
+            · refine ⟨b', ?_, rfl⟩
+              rw [hgblocks, hblocks, Array.set!_eq_setIfInBounds,
+                Array.getElem?_setIfInBounds_ne (Ne.intro fun hh => hc hh.symm)]
+              exact hi
+          · rw [hgblocks, hblocks]
+            simp
+        have hcpY : CurPlaced g sY.fn := by
+          refine ⟨⟨[], .ret vals⟩, ⟨b.params, sY.fn.cur.reverse, .ret vals⟩,
+            ?_, by simp, rfl⟩
+          rw [hgblocks, hblocks, Array.set!_eq_setIfInBounds,
+            Array.getElem?_setIfInBounds_self_of_lt (lt_size_of_getElem? hb)]
+        obtain ⟨owned, hboundY, hownY⟩ := ownedY hsq
+        have hsout := ihb fenv' (decl.params.zip pids ++ decl.rets.zip rids) RR
+          none (some decl.rets) sX sY (some envEnd) [] hfe' henv0 huniq0 hctx0
+          hfrR hvalidX (ProtectedAt.nil sX.fn) hcomplY hcpY (by simp)
+          done owned rfl hboundY hownY htrBody
+        obtain ⟨eb, heb, he⟩ := entry_of (hsimConst _ hsout)
+        exact ⟨fid, g, eb, hfid, hg, by rw [hgparams]; omega,
+          by rw [hgentry]; exact heb, by simpa [RP, hgparams] using he⟩
+    have haltAfterArgs : ∀ (fenv : FMap) (env : VMap) (R : Regs)
+        (s₀ sA s₁ : BState) (as ds : List ValId) (fid : FuncId)
+        (joins : List BlockId),
+        FEnvOK (model := model) P funs fenv → EnvOK (model := model) env V R →
+        RegsFresh R s₀.fn → ProtectedAt joins s₀.fn → Completes f s₁.fn joins →
+        CurPlaced f s₁.fn → trArgs fenv env args s₀ = some (as, sA) →
+        FMap.get fenv fn = some fid → Grows sA s₁ →
+        s₁.fn.curId = sA.fn.curId → s₁.fn.cur = .call ds fid as :: sA.fn.cur →
+        EOutHalt (model := model) P f s₀ R st st2 := by
+      intro fenv env R s₀ sA s₁ as ds fid joins hfe henv hfr hp hcompl hcp
+        htrArgs hfid hpost hcurId hcur
+      obtain ⟨fid', g, eb, hgetF, hg, hparams, heb, hcallee⟩ := calleeHalt fenv hfe
+      obtain rfl : fid' = fid := Option.some.inj (hgetF.symm.trans hfid)
+      obtain ⟨RA, -, -, -, hget, hsimA⟩ :=
+        iha fenv env R s₀ sA as joins hfe henv hfr hp
+          (SGrowsAt.completes_of (SGrows.of_grows hpost) hcompl)
+          (curPlaced_back_grows hpost hcp)
+          htrArgs
+      obtain ⟨rest, hcurOK⟩ := hcp
+      have hcurCall : CurOK f { sA.fn with cur := .call ds fid' as :: sA.fn.cur } rest := by
+        obtain ⟨b, hb, hi, ht⟩ := hcurOK
+        refine ⟨b, by simpa only [hcurId] using hb, ?_, ht⟩
+        simpa only [hcur] using hi
+      exact hsimA _ (execFrom_callHalt hcurCall hg hget (by omega) heb hcallee)
+    refine ⟨?_, ?_, ?_⟩
+    · intro fenv env R s₀ s₁ i joins hfe henv hfr hp hcompl hcp htr
+      rw [trExpr] at htr
+      obtain ⟨as, sA, h1, htr⟩ := M.bind_inv htr
+      obtain ⟨fid, sB, h2, htr⟩ := M.bind_inv htr
+      obtain ⟨d, sC, h3, htr⟩ := M.bind_inv htr
+      obtain ⟨u, sD, h4, h5⟩ := M.bind_inv htr
+      obtain ⟨-, hsD⟩ := M.pure_inv h5
+      subst sD
+      obtain ⟨hfid, hsB⟩ := M.liftO_inv h2
+      subst sB
+      have hg := (Grows.of_freshVal h3).trans (Grows.of_emit h4)
+      exact haltAfterArgs fenv env R s₀ sA s₁ as [d] fid joins hfe henv hfr hp
+        hcompl hcp h1 hfid hg hg.curId.symm (by
+          obtain ⟨Δ, hΔ⟩ := hg.cur
+          rw [M.freshVal_apply] at h3
+          obtain ⟨-, hsC⟩ := M.some_pair_inj h3
+          rw [M.emit_apply] at h4
+          obtain ⟨-, hs₁⟩ := M.some_pair_inj h4
+          rw [← hs₁, ← hsC]
+        )
+    · intro fenv env R s₀ s₁ n ids joins hfe henv hfr hp hcompl hcp htr
+      rw [trExprN] at htr
+      obtain ⟨as, sA, h1, htr⟩ := M.bind_inv htr
+      obtain ⟨fid, sB, h2, htr⟩ := M.bind_inv htr
+      obtain ⟨ds, sC, h3, htr⟩ := M.bind_inv htr
+      obtain ⟨u, sD, h4, h5⟩ := M.bind_inv htr
+      obtain ⟨-, hsD⟩ := M.pure_inv h5
+      subst sD
+      obtain ⟨hfid, hsB⟩ := M.liftO_inv h2
+      subst sB
+      have hg := (Grows.of_mapM_freshVal h3).trans (Grows.of_emit h4)
+      exact haltAfterArgs fenv env R s₀ sA s₁ as ds fid joins hfe henv hfr hp
+        hcompl hcp h1 hfid hg hg.curId.symm (by
+          obtain ⟨-, -, hsC⟩ := M.mapM_freshVal_length h3
+          rw [M.emit_apply] at h4
+          obtain ⟨-, hs₁⟩ := M.some_pair_inj h4
+          rw [← hs₁, hsC]
+        )
+    · intro fenv env R lctx rs s₀ s₁ renv joins hfe henv _huniq hfr _ hp
+        hcompl hcp _ htr
+      rw [trStmt] at htr
+      obtain ⟨as, sA, h1, htr⟩ := M.bind_inv htr
+      obtain ⟨fid, sB, h2, htr⟩ := M.bind_inv htr
+      obtain ⟨u, sC, h3, h4⟩ := M.bind_inv htr
+      obtain ⟨-, hsC⟩ := M.pure_inv h4
+      subst sC
+      obtain ⟨hfid, hsB⟩ := M.liftO_inv h2
+      subst sB
+      have hg := Grows.of_emit h3
+      exact SOut.ofExprHalt (haltAfterArgs fenv env R s₀ sA s₁ as [] fid joins
+        hfe henv hfr hp hcompl hcp h1 hfid hg hg.curId.symm (by
+          rw [M.emit_apply] at h3
+          obtain ⟨-, hs₁⟩ := M.some_pair_inj h3
+          rw [← hs₁]))
   | @callArgsHalt funs V st fn args st1 hargs iha =>
     have key : ∀ (fenv : FMap) (env : VMap) (R : Regs) (s₀ s₁ : BState)
         (i : ValId) (joins : List BlockId), FEnvOK (model := model) P funs fenv →
@@ -14232,7 +15012,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       have hcurHI : sI.fn.cur = sH.fn.cur := by
         obtain ⟨Δ, he⟩ := gHI.cur
         have hEq : sI = sH := (M.edgeArgs_inv h9).2
-        simpa only [hEq]
+        simp only [hEq]
       have hsealH : CurOK f sH.fn ⟨[], .jump ⟨joinId, xvB⟩⟩ :=
         CurOK.back_of_cur_eq gHI.curId.symm hcurHI hsealI
       have hcpH : CurPlaced f sH.fn := ⟨_, hsealH⟩
@@ -15165,7 +15945,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
        postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
        bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
        bodyEnv, sO, h15, htr⟩
-    simp only [LoopLayout.hParams, LoopLayout.sI, LoopLayout.sA] at henv hfr hclean hreb ⊢
+    simp only [] at henv hfr hclean hreb ⊢
     have g0A : Grows s₀ sA := Grows.of_liftO h1
     have gAB : Grows sA sB := Grows.of_mapM_freshVal h2
     have gCD : Grows sC sD := Grows.of_mapM_freshVal h4
@@ -15575,7 +16355,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
        postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
        bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
        bodyEnv, sO, h15, htr⟩
-    simp only [LoopLayout.hParams, LoopLayout.sI, LoopLayout.sA] at henv hfr hclean hreb ⊢
+    simp only [] at henv hfr hclean hreb ⊢
     have g0A : Grows s₀ sA := Grows.of_liftO h1
     have gAB : Grows sA sB := Grows.of_mapM_freshVal h2
     have gCD : Grows sC sD := Grows.of_mapM_freshVal h4
@@ -15803,7 +16583,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
        postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
        bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
        bodyEnv, sO, h15, htr⟩
-    simp only [LoopLayout.hParams, LoopLayout.sI, LoopLayout.sA] at henv hfr hclean hreb ⊢
+    simp only [] at henv hfr hclean hreb ⊢
     have g0A : Grows s₀ sA := Grows.of_liftO h1
     have gAB : Grows sA sB := Grows.of_mapM_freshVal h2
     have gCD : Grows sC sD := Grows.of_mapM_freshVal h4
@@ -16673,7 +17453,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
        postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
        bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
        bodyEnv, sO, h15, htr⟩
-    simp only [LoopLayout.hParams, LoopLayout.sI, LoopLayout.sA] at henv hfr hclean hreb ⊢
+    simp only [] at henv hfr hclean hreb ⊢
     have g0A : Grows s₀ sA := Grows.of_liftO h1
     have gAB : Grows sA sB := Grows.of_mapM_freshVal h2
     have gCD : Grows sC sD := Grows.of_mapM_freshVal h4
