@@ -1613,9 +1613,9 @@ compose that result with the existing `Simplify` resolution congruence for the
   iterating the scan (a dropped branch's `jumpi` can orphan its label for a
   second round).
 
-## The `yul-ssa-cfg` dialect (2026-07/08, landed on PR #151, proofs in progress)
+## The `yul-ssa-cfg` dialect (2026-07/08, landed on PR #151, fully proved)
 
-- 🚧 **`yul-ssa-cfg`: a second backend dialect below Yul** (PR #151; see
+- ✅ **`yul-ssa-cfg`: a second backend dialect below Yul** (PR #151; see
   `YulEvmCompiler/SsaCfg/DESIGN.md`). Not a `LocalPass` — a new IR: SSA
   control-flow graph with block arguments, built from optimized Yul
   (`ofBlock`), optimized there (trivial-parameter elimination, constant
@@ -1631,9 +1631,12 @@ compose that result with the existing `Simplify` resolution congruence for the
   cases, behavioral matches, bounded recursion fully unrolled). The spec
   grew by the generalized `Optimizer.EvmBackend` contract
   (`Spec/EvmBackend.lean`, classic instance proved outright); the SSA
-  backend's own audit surface is `SsaCfg/Spec/`, its phase-obligation
-  proofs are the declared sorry frontier in `SsaCfg/Implementation/*Sound`
-  (still 🚧). Two machine-checked findings during proofs: `wfCheck` does
+  backend's own audit surface is `SsaCfg/Spec/`, and its three
+  phase-obligation proofs (`SsaCfg/Implementation/*Sound`) are **fully
+  proved** — `compileViaSsa_correct` checks with only
+  `[propext, Classical.choice, Quot.sound]`, the CI sorry scan runs with
+  no exclusions, and every proof file is gated with `warningAsError`.
+  Machine-checked findings during proofs: `wfCheck` does
   not imply SSA dominance (a stale-read counterexample; fixed with the
   decidable `domCheck` gate), and codegen genuinely needs single
   assignment + label uniqueness.

@@ -18,11 +18,7 @@ Optimization effectiveness is tracked over Solidity's real `yulOptimizerTests` c
 -/
 
 private def warningPolicyExempt : List String :=
-  ["Checks.lean", "SpecClosure.lean",
-   -- TEMPORARY (PR #151): the SSA-CFG proof frontier — sorries must stay
-   -- warnings there; remove with the ci.yml sorry-scan exception when the
-   -- proofs land.
-   "YulEvmCompiler/SsaCfg/Implementation/PassesSound.lean"]
+  ["Checks.lean", "SpecClosure.lean"]
 
 /-- Keep the per-module warning policy from silently missing newly added Lean sources. -/
 private def checkWarningPolicy : IO Unit := do

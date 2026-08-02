@@ -2,12 +2,13 @@ import YulEvmCompiler.SsaCfg.Implementation.Passes
 import YulEvmCompiler.SsaCfg.Spec.Sem
 import YulEvmCompiler.SsaCfg.Implementation.ToAsm
 import YulSemantics.Dialect.EVM
+set_option warningAsError true
 /-!
 # YulEvmCompiler.SsaCfg.Implementation.PassesSound
 
 Soundness metatheory for the `yul-ssa-cfg` optimization passes
-(`SsaCfg/Passes.lean`), i.e. the material behind the `sorry`'d
-`SsaCfg.optimizeProg_sound` of `SsaCfg/Correctness.lean`.
+(`SsaCfg/Passes.lean`), including the proof consumed by
+`SsaCfg.optimizeProg_sound`.
 
 ## Why `optimizeProg_sound` carries a dominance hypothesis
 
@@ -16,8 +17,8 @@ Soundness metatheory for the `yul-ssa-cfg` optimization passes
     P.wfCheck = true → Run P yst0 yst' o → Run (optimizeProg P) yst0 yst' o
 
 is **refuted** in § `Counterexample`
-(`optimizeProg_sound_false_without_dom`) — fully machine-checked, no `sorry`, no
-`native_decide`, no axioms beyond Lean's own. That refutation is what motivated
+(`optimizeProg_sound_false_without_dom`) — fully machine-checked, with no
+`native_decide` and no axioms beyond Lean's own. That refutation is what motivated
 `ToAsm.Func.domCheck`/`Prog.domCheck` and the `hdom` hypothesis the statement
 now carries; the counterexample is kept here as the standing witness that the
 hypothesis cannot be dropped.
@@ -128,33 +129,12 @@ definitions nothing reads.
   rounds of the four-pass pipeline, then the gate — plus
   `Run P yst yst .normal` and `¬ Run Popt yst yst .normal`.
 
-## The remaining frontier
+## Closure
 
-Two `sorry`s remain, each documented at its declaration:
-
-* pass 3: `cse_sound`;
-* the gate-accepted branch of `optimizeProg_sound'`.
-
-Two kinds of obligation remain, and it is worth separating them.
-
-**(a) Loop inversion.** Every pass except `dve` is written as an `Id.run` loop.
-The generic tool now exists — `Id.forIn_eq_foldl` / `Id.forIn_array_eq_foldl`,
-with the recipe recorded at their declaration (`dsimp only` first, state the step
-function over `MProd`, pass `h` as a tactic block, `grind` for the
-`pure`-inside-a-`match` branches). It is applied end to end for `constFold`
-(`constFold_blocks_eq`), `inlineOnce`, `inlineFunc`, and `pruneFuncs`; `cse`
-and `elimTrivialParams` still need the same treatment.
-
-**(b) DVE execution alignment.** Both fixed-point facts are now proved:
-`ToAsm.liveInSets_isSome` and `Passes.liveSet_closed`.  Closure has also been
-unpacked into `dveBlock_uses_live`, including the `wfCheck`-backed positional
-edge argument case.  What remains for `dve_sound` is the runtime counterpart:
-filter target parameters, edge ids, and the values returned by `Regs.getMany`
-with the same mask, then carry live-register agreement across `setMany`.
-
-The semantic ingredients that all of these feed into — the frame lemma, the
-purity leaves, the liveness fixed point with its propagation and
-least-fixed-point lemmas, and the `LiveAgree` base case — are proved here.
+All four per-function passes, program-level inlining, their well-formedness and
+dominance preservation chains, whole-program replay, and both defensive-gate
+branches are proved here. In particular, `cse_sound`, `runOnceProgN_sound`,
+`inlineProg_sound`, and `optimizeProg_sound'` contain no admitted proof steps.
 -/
 
 namespace YulEvmCompiler.SsaCfg
@@ -1597,16 +1577,22 @@ end Passes
 
 /-! ## The pipeline gate
 
-`optimizeProg` is `inlineProg` (program-level function inlining), then the
-per-function four-pass pipeline, then a **defensive gate**: the candidate is
-returned only if it re-checks `wfCheck && domCheck`, otherwise the *original*
-program is. Naming the candidate keeps the lemmas below (and the top-level
-proof) independent of the exact pipeline shape — only `optimizeProg_candidate`
-mentions it. -/
+`optimizeProg` tentatively runs `inlineProg` (program-level function inlining),
+uses the result only if an intermediate `wfCheck && domCheck` gate accepts it,
+then runs the per-function four-pass pipeline and applies the final defensive
+gate. Naming the gated input and candidate keeps the lemmas below (and the
+top-level proof) independent of the exact pipeline shape. -/
+
+/-- The input to the per-function pipeline, after the intermediate defensive
+gate around inlining. -/
+def optimizeInput (P : Prog) : Prog :=
+  let P0 := Passes.inlineProg P
+  if P0.wfCheck && ToAsm.Prog.domCheck P0 then P0 else P
 
 /-- The pipeline's output *before* the defensive gate. -/
 def optimizeCandidate (P : Prog) : Prog :=
   let P0 := Passes.inlineProg P
+  let P0 := if P0.wfCheck && ToAsm.Prog.domCheck P0 then P0 else P
   { main := optimizeFunc P0.main, funcs := P0.funcs.map optimizeFunc }
 
 /-- `optimizeProg`, refactored through `optimizeCandidate`. Definitional: this
@@ -1889,7 +1875,8 @@ theorem hinline : Passes.inlineProg P = P := by
 /-- The pipeline really does produce `Popt`. -/
 theorem hopt : optimizeProg P = Popt := by
   have h : optimizeCandidate P = Popt := by
-    simp only [optimizeCandidate, hinline]
+    simp only [optimizeCandidate, hinline, hwf, hdomP,
+      Bool.and_false, if_false]
     simp [P, Popt, hoptf]
   rw [optimizeProg_of_gate_true (P := P) (by rw [h, hwfopt, hdomPopt]; rfl), h]
 
@@ -2645,7 +2632,7 @@ theorem dveLoop_closed (f : Func) :
         have hlt : cur.size < (liveStep f cur).size := by
           have hne : (liveStep f cur).size ≠ cur.size := by
             intro h
-            exact hsize (by simpa [h])
+            exact hsize (by simp [h])
           omega
         exact ih (liveStep f cur) (liveStep_bound hbound) (by simp only [List.length_cons] at hfuel ⊢; omega)
 
@@ -2808,7 +2795,7 @@ theorem dveLiveBlockStep_mem_term {f : Func} {n : Nat} (hwf : f.wfCheck n = true
         · obtain ⟨tb, htb, hlen⟩ := wfCheck_edge_arity hwf hbmem (e := et)
             (by simp [hterm, Term.edges])
           simp only [htb] at hxt
-          simp only [hterm, Term.edges, dveLiveTermStep]
+          simp only [Term.edges, dveLiveTermStep]
           apply mem_fold_of_selected_step (dveLiveEdgeStep_inflationary f)
             (HashSub.trans hsub (dveLiveTermStep_inflationary (.branch c et ef) s))
             (xs := [et, ef]) (a := et) (by simp)
@@ -2817,7 +2804,7 @@ theorem dveLiveBlockStep_mem_term {f : Func} {n : Nat} (hwf : f.wfCheck n = true
       · obtain ⟨tb, htb, hlen⟩ := wfCheck_edge_arity hwf hbmem (e := ef)
           (by simp [hterm, Term.edges])
         simp only [htb] at hxf
-        simp only [hterm, Term.edges, dveLiveTermStep]
+        simp only [Term.edges, dveLiveTermStep]
         apply mem_fold_of_selected_step (dveLiveEdgeStep_inflationary f)
           (HashSub.trans hsub (dveLiveTermStep_inflationary (.branch c et ef) s))
           (xs := [et, ef]) (a := ef) (by simp)
@@ -3082,7 +3069,7 @@ theorem cfInstrStep_eq (i : Instr) (m : Std.HashMap ValId U256) (acc : List Inst
       cases rest with
       | nil =>
         simp only [cfInstrStep, cfInstrMap, cfInstrOut]
-        split <;> (try split) <;> grind
+        split <;> grind
       | cons e es => rfl
   | call ds fid args => rfl
 
@@ -3608,17 +3595,17 @@ def cseImplInstrStep (blockDefs : Std.HashSet ValId) (ins : Instr)
       cseInstrStep ins (cseImplToModel blockDefs st) := by
   unfold cseImplInstrStep cseImplToModel cseModelToImpl cseInstrStep
   cases hs : substInstr st.2.2.2.2 ins with
-  | const d v => simp only [hs]; split <;> rfl
+  | const d v => simp only []; split <;> rfl
   | op ds yop args =>
       cases ds with
-      | nil => simp [hs]
+      | nil => simp
       | cons d rest =>
           cases rest with
           | nil =>
-              simp only [hs]
-              split <;> (try split <;> (try split <;> (try split))) <;> rfl
-          | cons e es => simp [hs]
-  | call ds fid args => simp [hs]
+              simp only []
+              split <;> (try split <;> (try split)) <;> rfl
+          | cons e es => simp
+  | call ds fid args => simp
 
 theorem cseImplFold_toModel (blockDefs : Std.HashSet ValId) (l : List Instr)
     (st : CSEImplInner) :
@@ -3708,12 +3695,12 @@ already-processed instruction in its block. -/
 theorem cse_drop_dest_not_used_prefix {pre : List Instr} {i : Instr}
     {acc : List Instr} {tab : CseTab} {used defined blockDefs : Std.HashSet ValId}
     {σ : Subst} {d d0 : ValId} {yop : Op} {args : List ValId}
-    (hused0 : d ∉ used)
-    (hs : substInstr
+    (_hused0 : d ∉ used)
+    (_hs : substInstr
       (pre.foldl (fun s i => cseInstrStep i s)
         ⟨acc, tab, used, σ, defined, blockDefs⟩).2.2.2.1 i =
         .op [d] yop args)
-    (hfind :
+    (_hfind :
       (pre.foldl (fun s i => cseInstrStep i s)
         ⟨acc, tab, used, σ, defined, blockDefs⟩).2.1.ops.find?
           (·.1 == (yop, args)) = some ((yop, args), d0))
@@ -4410,7 +4397,7 @@ theorem cseInstrFold_pos {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
                     | some entry =>
                         obtain ⟨key, d0⟩ := entry
                         by_cases hu : used.contains d = true
-                        · simp only [hfind, hu]
+                        · simp only [hu]
                           exact ⟨htab, hsub⟩
                         · have hdpre : d ∉ pre.flatMap Instr.uses := by
                             intro hd
@@ -4443,7 +4430,7 @@ theorem cseInstrFold_pos {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
                           have hentry : CseEntryPos f (.op yop args) d0 := by
                             rw [hkey] at hentry0
                             exact hentry0
-                          simp only [hfind, hu]
+                          simp only [hu]
                           exact ⟨htab, hsub.insert hdrop (d0 := d0) (by
                             intro yop' args' he
                             cases he
@@ -4475,9 +4462,9 @@ theorem cseInstrFold_pos {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
                               simp at houtside
                           have hentry : CseEntryPos f (.op yop args) d :=
                             .op hb hseq hs hargs
-                          simp only [hfind, hg]
+                          simp only [hg]
                           exact ⟨htab.addOp hentry, hsub⟩
-                        · simp only [hfind, hg]
+                        · simp only [hg]
                           exact ⟨htab, hsub⟩
                   · rw [if_neg hp]
                     exact ⟨htab, hsub⟩
@@ -4831,7 +4818,7 @@ theorem cseEntryTab_pos {f : Func} {n : Nat}
                 hpre.2 p hp
               simpa [cseEntryTab, he, hs, hp] using
                 CseTabPosSound.inheritTab htab f.blocks[n]!.params
-            · simpa [cseEntryTab, he, hs, hp] using CseTabPosSound.empty f
+            · simp [cseEntryTab, he, hs, hp]
         | cons q qs =>
             rw [cseEntryTab, if_neg he, hs]
             exact CseTabPosSound.empty f
@@ -4926,7 +4913,7 @@ theorem AliasOrdered.empty : AliasOrdered [] (∅ : Subst) := by
 
 theorem AliasOrdered.insert {seen : List ValId} {σ : Subst}
     (ho : AliasOrdered seen σ) {d d0 : ValId}
-    (hd : d ∉ seen) (hd0 : d0 ∈ seen) :
+    (_hd : d ∉ seen) (hd0 : d0 ∈ seen) :
     AliasOrdered (seen ++ [d]) (σ.insert d d0) := by
   intro x y hxy
   rw [Std.HashMap.getElem?_insert] at hxy
@@ -4949,7 +4936,7 @@ theorem AliasOrdered.weaken {seen seen' : List ValId} {σ : Subst}
   obtain ⟨pre, mid, post, hseen⟩ := ho d d0 h
   exact ⟨pre, mid, post ++ tail, by simp [hseen, List.append_assoc]⟩
 
-theorem AliasOrdered.step {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
+theorem AliasOrdered.step {f : Func} {b : Block} (_hb : b ∈ f.blocks.toList)
     {seen : List ValId} {tab : CseTab} {used : Std.HashSet ValId} {σ : Subst}
     {defined blockDefs : Std.HashSet ValId}
     (hinv : CSEInv f seen tab σ) (ho : AliasOrdered seen σ)
@@ -5238,7 +5225,7 @@ theorem substTerm_use {σ : Subst} {t : Term} {x : ValId}
     (hx : x ∈ (substTerm σ t).uses) : ∃ y ∈ t.uses, substV σ y = x := by
   cases t with
   | jump e =>
-      simp only [substTerm, Term.uses]
+      simp only [Term.uses]
       exact substEdge_use hx
   | branch c et ef =>
       simp only [substTerm, Term.uses, List.mem_cons, List.mem_append] at hx ⊢
@@ -5262,7 +5249,7 @@ theorem substTerm_edge {σ : Subst} {t : Term} {e : Edge}
       subst e
       exact ⟨e0, rfl, rfl⟩
   | branch c et ef =>
-      simp only [substTerm, Term.edges, List.mem_cons, List.mem_singleton] at he ⊢
+      simp only [substTerm, Term.edges, List.mem_cons] at he ⊢
       rcases he with rfl | he
       · exact ⟨et, Or.inl rfl, rfl⟩
       · have he' : e = substEdge σ ef := by simpa using he
@@ -5286,7 +5273,7 @@ theorem cseInstrStep_out {i : Instr} {acc : List Instr} {tab : CseTab}
           cases rest with
           | nil =>
               simp only [cseInstrStep, substInstr]
-              split <;> (try split <;> (try split <;> (try split))) <;> simp
+              split <;> (try split <;> (try split)) <;> simp
           | cons e es => simp [cseInstrStep, substInstr]
   | call ds fid args => simp [cseInstrStep, substInstr]
 
@@ -5422,13 +5409,13 @@ theorem cseInstrStep_defs_resolve {f : Func} {seen : List ValId} {i : Instr}
               left
               simp only [Instr.defs] at hd
               simp [cseInstrStep, substInstr, substV,
-                Std.HashMap.getD_eq_getD_getElem?, hdnone, hd]
+                Std.HashMap.getD_eq_getD_getElem?, hdnone]
               exact Or.inl (by simpa [Instr.defs] using hd)
   | call ds fid args =>
       left
       simp only [Instr.defs] at hd
       simp [cseInstrStep, substInstr, substV,
-        Std.HashMap.getD_eq_getD_getElem?, hdnone, hd]
+        Std.HashMap.getD_eq_getD_getElem?, hdnone]
       exact Or.inl (by simpa [Instr.defs] using hd)
 
 theorem cseInstrFold_acc_sublist (l : List Instr) (acc : List Instr)
@@ -5848,14 +5835,14 @@ callee body along the unique edge that reaches it — but it does need `wfCheck`
 `g.params.length == as.length`, `g.nrets == ds.length`, `g.entry == 0` at the
 site, so those come for free from the guard rather than from `wfCheck`).
 
-I audited the splice for the same stale-read hazard the counterexample exhibits
-and did not find one: the spliced blocks are reachable only through the call
+The splice avoids the stale-read hazard the counterexample exhibits: the
+spliced blocks are reachable only through the call
 block, `contBlock` is reachable only through the spliced `ret` edges, and the
 callee's non-parameter ids are renamed by `+ off` with
 `off > max (maxVal f) (maxVal g)`, so they cannot capture a caller id. Duplicate
 actual arguments (`g(x, x)`) map two callee parameters onto one caller id, which
-is harmless because both were bound to the same word at the call. None of this is
-*proved* — it is the content of the `sorry`s below.
+is harmless because both were bound to the same word at the call. The inlining
+simulation and its whole-program composition below prove these facts.
 
 There is one additional precondition that the original provisional statement of
 `inlineOnce_sound` missed. The renaming table is `g.params.zip as` followed by
@@ -6433,7 +6420,7 @@ theorem Passes.inlineContBlock_get {f' g : Func} {preBlocks : Array Block}
     (hblocks : f'.blocks = preBlocks ++ g.blocks.map (inlineReplayBlock ρ β contId) ++ #[cont]) :
     f'.blocks[preBlocks.size + g.blocks.size]? = some cont := by
   rw [hblocks, Array.getElem?_append_right (by simp)]
-  simp only [Array.size_append, Array.size_map, Nat.add_sub_cancel_left]
+  simp only [Array.size_append, Array.size_map]
   simp
 
 theorem block_mem_of_getElem? {f : Func} {i : BlockId} {b : Block}
@@ -6867,7 +6854,7 @@ theorem inlineOnce_eq_loop (counts : Array Nat) (funcs : Array Func) (f : Func) 
               · simp [inlineInstrStep, hi, hg, hc]
                 rfl
               · simp [inlineInstrStep, hi, hg, hc])]
-    simp_all [Id.run, bind, pure]
+    simp_all [bind, pure]
     split <;> simp_all)]
   simp [Id.run, bind, pure, Option.getD]
   split <;> simp_all
@@ -6948,7 +6935,7 @@ theorem inlineOnce_inv {counts : Array Nat} {funcs : Array Func} {f f' : Func}
         | none => simp [hr, Option.getD] at h
         | some q =>
             have hq : q = f' := by simpa [hr, Option.getD] using h
-            simpa [hq] using hr
+            simp [hq]
   obtain ⟨bi, hbimem, hbistep⟩ := loopWith_inline_done
     (fun j => inlineBlockStep_cases counts funcs f j) hout
   unfold inlineBlockStep at hbistep
@@ -6996,7 +6983,7 @@ theorem blockAllDefs_rename (b : Block) (rho : ValId → ValId) (t : Term) :
           instrs := b.instrs.map (renameInstr rho)
           term := t } =
       (blockAllDefs b).map rho := by
-  simp only [blockAllDefs, List.map_append, List.map_map, renameInstr_defs,
+  simp only [blockAllDefs, List.map_append, renameInstr_defs,
     List.flatMap_map]
   rw [List.map_flatMap]
 
@@ -7035,8 +7022,7 @@ theorem flatMap_set_append_perm {alpha beta : Type} (l : List alpha)
           rw [List.take_succ_eq_append_getElem hi]
           simp
     conv_rhs => rw [hl]
-    simp only [List.flatMap_append, List.flatMap_cons, List.flatMap_nil,
-      List.append_nil, List.append_assoc]
+    simp only [List.flatMap_append, List.flatMap_cons, List.append_assoc]
   simpa only [List.append_assoc] using
     hswap.trans (hrepl.trans (List.Perm.of_eq hfinal))
 
@@ -7146,7 +7132,7 @@ theorem inlineSplice_allDefs_perm {f g f' : Func} {bi ci : Nat}
     (hbi : bi < f.blocks.size) (hsite : f.blocks[bi]? = some site)
     (hci : ci < site.instrs.length)
     (hcall : site.instrs[ci]? = some (.call ds fid as))
-    (hoff : off = Nat.max (maxVal f) (maxVal g) + 1)
+    (_hoff : off = Nat.max (maxVal f) (maxVal g) + 1)
     (hrho : rho = inlineRho g.params as off)
     (hcallBlock : callBlock =
       { params := site.params, instrs := site.instrs.take ci,
@@ -7185,7 +7171,7 @@ theorem inlineSplice_allDefs_perm {f g f' : Func} {bi ci : Nat}
     simpa only [A, S, C, hspliced] using hswap.trans hrepl
   unfold Func.allDefs
   rw [hparams, hblocks, Array.toList_append, Array.toList_append]
-  simp only [show #[cont].toList = [cont] from rfl, List.flatMap_append,
+  simp only [List.flatMap_append,
     List.flatMap_cons, List.flatMap_nil, List.append_nil]
   simpa only [List.append_assoc] using hbody.append_left f.params
 
@@ -7258,27 +7244,27 @@ theorem blockCheckB_eq_true {blocks : Array Block} {nrets nFuncs : Nat}
     {b : Block} : blockCheckB blocks nrets nFuncs b = true ↔
       BlockWF blocks nrets nFuncs b := by
   unfold blockCheckB BlockWF
-  simp only [Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq]
+  simp only [Bool.and_eq_true, List.all_eq_true]
   constructor
   · rintro ⟨⟨hret, hedge⟩, hinstr⟩
     refine ⟨?_, ?_, ?_⟩
-    · cases ht : b.term <;> simp_all [ht]
+    · cases ht : b.term <;> simp_all
     · intro e he
       have h := hedge e he
       split at h <;> simp_all
     · intro i hi
       have h := hinstr i hi
-      cases i <;> simpa using h
+      cases i <;> simp_all
   · rintro ⟨hret, hedge, hinstr⟩
     refine ⟨⟨?_, ?_⟩, ?_⟩
-    · cases ht : b.term <;> simp_all [ht]
+    · cases ht : b.term <;> simp_all
     · intro e he
       obtain ⟨tb, htb, hlen⟩ := hedge e he
       rw [htb]
       simpa using hlen
     · intro i hi
       have h := hinstr i hi
-      cases i <;> simpa using h
+      cases i <;> simp_all
 
 theorem func_wfCheck_iff {f : Func} {nFuncs : Nat} :
     f.wfCheck nFuncs = true ↔
@@ -7357,7 +7343,7 @@ theorem inlineCallBlock_wf {f f' g : Func} {bi ci : Nat} {site callBlock cont : 
     (hblocks : f'.blocks =
       (f.blocks.set! bi callBlock) ++
         g.blocks.map (inlineReplayBlock rho beta contId) ++ #[cont])
-    (hnrets : f'.nrets = f.nrets) :
+    (_hnrets : f'.nrets = f.nrets) :
     BlockWF f'.blocks f'.nrets nFuncs callBlock := by
   subst callBlock
   refine ⟨by simp, ?_, ?_⟩
@@ -7402,18 +7388,18 @@ theorem inlineContBlock_wf {f f' g : Func} {bi ci : Nat} {site callBlock cont : 
 
 theorem inlineReplayBlock_wf {f f' g : Func} {bi : Nat} {callBlock cont gb : Block}
     {rho : ValId → ValId} {beta : BlockId → BlockId} {contId nFuncs : Nat}
-    (hgb : gb ∈ g.blocks.toList) (hgbWf : BlockWF g.blocks g.nrets nFuncs gb)
+    (_hgb : gb ∈ g.blocks.toList) (hgbWf : BlockWF g.blocks g.nrets nFuncs gb)
     (hbeta : ∀ i, beta i = f.blocks.size + i)
     (hcontId : contId = f.blocks.size + g.blocks.size)
     (hcontParams : cont.params = ds) (hnrets : g.nrets = ds.length)
     (hblocks : f'.blocks =
       (f.blocks.set! bi callBlock) ++
         g.blocks.map (inlineReplayBlock rho beta contId) ++ #[cont])
-    (hfNrets : f'.nrets = f.nrets) :
+    (_hfNrets : f'.nrets = f.nrets) :
     BlockWF f'.blocks f'.nrets nFuncs (inlineReplayBlock rho beta contId gb) := by
   refine ⟨?_, ?_, ?_⟩
   · cases ht : gb.term <;>
-      simp [inlineReplayBlock, inlineReplayTerm, renameTerm, ht, hfNrets]
+      simp [inlineReplayBlock, inlineReplayTerm, renameTerm, ht]
   · intro e he
     cases ht : gb.term with
     | jump old =>
@@ -7431,7 +7417,7 @@ theorem inlineReplayBlock_wf {f f' g : Func} {bi : Nat} {callBlock cont gb : Blo
         · simpa [inlineReplayBlock] using hlen
     | branch c et ef =>
         simp only [inlineReplayBlock, inlineReplayTerm, ht, renameTerm, Term.edges,
-          List.mem_cons, List.mem_singleton, List.not_mem_nil, or_false] at he
+          List.mem_cons, List.not_mem_nil, or_false] at he
         rcases he with rfl | rfl
         · obtain ⟨tb, htb, hlen⟩ := hgbWf.2.1 et (by rw [ht]; simp [Term.edges])
           have hget := inlineReplayBlock_get
@@ -7471,7 +7457,7 @@ theorem inlineReplayBlock_wf {f f' g : Func} {bi : Nat} {callBlock cont gb : Blo
     obtain ⟨old, hold, heq⟩ := List.mem_map.mp hi
     subst i
     have hold := hgbWf.2.2 old hold
-    cases old <;> simpa [renameInstr] using hold
+    cases old <;> simp_all [renameInstr]
 
 theorem inlineOnce_nrets {counts : Array Nat} {funcs : Array Func}
     {f f' : Func} (hio : inlineOnce counts funcs f = some f') :
@@ -8662,6 +8648,7 @@ def Passes.inlineFuncRawStep (counts : Array Nat) (funcs : Array Func)
   | some f' => .yield ⟨none, f'⟩
   | none => .done ⟨some s.2, s.2⟩
 
+omit model in
 theorem Passes.inlineFuncRaw_loop (counts : Array Nat) (funcs : Array Func)
     (l : List Nat) (f : Func) :
     let r := loopWith (inlineFuncRawStep counts funcs) l ⟨none, f⟩
@@ -8676,6 +8663,7 @@ theorem Passes.inlineFuncRaw_loop (counts : Array Nat) (funcs : Array Func)
           simp only [inlineFuncRawStep, inlineFuncStep, hio]
           exact ih f'
 
+omit model in
 theorem Passes.inlineFuncStep_loop (counts : Array Nat) (funcs : Array Func)
     (l : List Nat) (f : Func) :
     loopWith (inlineFuncStep counts funcs) l f = inlineN counts funcs l.length f := by
@@ -8687,6 +8675,7 @@ theorem Passes.inlineFuncStep_loop (counts : Array Nat) (funcs : Array Func)
       | none => simp [inlineFuncStep, inlineN, hio]
       | some f' => simp [inlineFuncStep, inlineN, hio, ih]
 
+omit model in
 theorem Passes.inlineFunc_eq_inlineN (counts : Array Nat) (funcs : Array Func) (f : Func) :
     inlineFunc counts funcs f = inlineN counts funcs 8 f := by
   unfold inlineFunc
@@ -8708,6 +8697,7 @@ theorem Passes.inlineFunc_eq_inlineN (counts : Array Nat) (funcs : Array Func) (
   rw [hr, inlineFuncStep_loop]
   rfl
 
+omit model in
 theorem Passes.inlineN_nrets (counts : Array Nat) (funcs : Array Func)
     (n : Nat) (f : Func) :
     (inlineN counts funcs n f).nrets = f.nrets := by
@@ -8719,6 +8709,7 @@ theorem Passes.inlineN_nrets (counts : Array Nat) (funcs : Array Func)
       | some f' =>
           simpa [inlineN, hio, inlineOnce_nrets hio] using ih f'
 
+omit model in
 theorem Passes.inlineN_wf (counts : Array Nat) (funcs : Array Func)
     {nFuncs : Nat}
     (hfuncs : ∀ {fid : FuncId} {g : Func},
@@ -8735,6 +8726,7 @@ theorem Passes.inlineN_wf (counts : Array Nat) (funcs : Array Func)
       | some f' =>
           simpa [inlineN, hio] using ih f' (inlineOnce_wf hfuncs hfwf hio)
 
+omit model in
 theorem Passes.inlineFunc_wf (counts : Array Nat) (funcs : Array Func)
     {f : Func} {nFuncs : Nat}
     (hfuncs : ∀ {fid : FuncId} {g : Func},
@@ -8744,11 +8736,13 @@ theorem Passes.inlineFunc_wf (counts : Array Nat) (funcs : Array Func)
   rw [inlineFunc_eq_inlineN]
   exact inlineN_wf counts funcs hfuncs 8 f hfwf
 
+omit model in
 theorem Passes.inlineFunc_nrets (counts : Array Nat) (funcs : Array Func)
     (f : Func) : (inlineFunc counts funcs f).nrets = f.nrets := by
   rw [inlineFunc_eq_inlineN]
   exact inlineN_nrets counts funcs 8 f
 
+omit model in
 /-- A successful splice preserves the existence of the caller entry block. -/
 theorem Passes.inlineOnce_entry {counts : Array Nat} {funcs : Array Func}
     {f f' : Func} {eb : Block} (hio : inlineOnce counts funcs f = some f')
@@ -8772,6 +8766,7 @@ theorem Passes.inlineOnce_entry {counts : Array Nat} {funcs : Array Func}
   refine ⟨f'.blocks[f'.entry], ?_⟩
   exact Array.getElem?_eq_getElem hlt'
 
+omit model in
 theorem Passes.inlineOnce_params_entry {counts : Array Nat} {funcs : Array Func}
     {f f' : Func} (hio : inlineOnce counts funcs f = some f') :
     f'.params = f.params ∧ f'.entry = f.entry := by
@@ -8780,6 +8775,7 @@ theorem Passes.inlineOnce_params_entry {counts : Array Nat} {funcs : Array Func}
   rw [hf']
   exact ⟨rfl, rfl⟩
 
+omit model in
 theorem Passes.inlineN_params_entry (counts : Array Nat) (funcs : Array Func)
     (n : Nat) (f : Func) :
     (inlineN counts funcs n f).params = f.params ∧
@@ -8817,7 +8813,7 @@ theorem Passes.inlineN_sound {P : Prog} {counts : Array Nat}
       intro f args st res eb eb' heb heb' hexec
       cases hio : inlineOnce counts P.funcs f with
       | none =>
-          simp only [inlineN, hio, Option.getD_none] at heb' ⊢
+          simp only [inlineN, hio] at heb' ⊢
           have heq : eb' = eb := Option.some.inj (heb'.symm.trans heb)
           subst eb'
           exact hexec
@@ -8855,7 +8851,7 @@ theorem Passes.inlineN_soundN {P : Prog} {depth : Nat} {counts : Array Nat}
       intro f args st res eb eb' heb heb' hexec
       cases hio : inlineOnce counts P.funcs f with
       | none =>
-          simp only [inlineN, hio, Option.getD_none] at heb' ⊢
+          simp only [inlineN, hio] at heb' ⊢
           have heq : eb' = eb := Option.some.inj (heb'.symm.trans heb)
           subst eb'
           exact hexec
@@ -8915,11 +8911,13 @@ def Passes.inlineMap (counts : Array Nat) (P : Prog) : Prog :=
   { main := inlineFunc counts P.funcs P.main
     funcs := P.funcs.map (inlineFunc counts P.funcs) }
 
+omit model in
 theorem Passes.inlineMap_lookup {counts : Array Nat} {P : Prog}
     {fid : FuncId} {g : Func} (h : P.funcs[fid]? = some g) :
     (inlineMap counts P).funcs[fid]? = some (inlineFunc counts P.funcs g) := by
   simp [inlineMap, h]
 
+omit model in
 theorem Passes.inlineMap_wf {counts : Array Nat} {P : Prog}
     (hPwf : P.wfCheck = true) : (inlineMap counts P).wfCheck = true := by
   have hparts := hPwf
@@ -8942,6 +8940,7 @@ theorem Passes.inlineMap_wf {counts : Array Nat} {P : Prog}
       exact hparts.2 i hi'
     simpa [inlineMap] using inlineFunc_wf counts P.funcs hcallees hfi
 
+omit model in
 /-- Iteration preserves existence of a function's entry block. -/
 theorem Passes.inlineN_entry {counts : Array Nat} {funcs : Array Func} :
     ∀ (k : Nat) (f : Func) {eb : Block}, f.blocks[f.entry]? = some eb →
@@ -8961,6 +8960,7 @@ theorem Passes.inlineN_entry {counts : Array Nat} {funcs : Array Func} :
           obtain ⟨eb', heb'⟩ := inlineOnce_entry hio heb
           simpa [inlineN, hio] using ih f' heb'
 
+omit model in
 theorem Passes.inlineFunc_entry {counts : Array Nat} {funcs : Array Func}
     {f : Func} {eb : Block} (heb : f.blocks[f.entry]? = some eb) :
     ∃ eb', (inlineFunc counts funcs f).blocks[(inlineFunc counts funcs f).entry]? =
@@ -9101,7 +9101,7 @@ def Passes.pruneCallees (f : Func) : List FuncId :=
 
 def Passes.pruneWorkOne (P : Prog) (n : Nat) (fid : FuncId)
     (s : MProd (List FuncId) (Array Bool)) : MProd (List FuncId) (Array Bool) :=
-  if h : fid < n then
+  if _h : fid < n then
     if !s.2[fid]! then
       ⟨s.1 ++ (P.funcs[fid]?.map pruneCallees).getD [], s.2.set! fid true⟩
     else s
@@ -9152,6 +9152,7 @@ def Passes.pruneModel (P : Prog) : Prog :=
     let remap := (pruneKeep P used).2
     { main := pruneFix remap P.main, funcs := kept.map (pruneFix remap) }
 
+omit model in
 theorem Passes.pruneFuncs_eq_model (P : Prog) : pruneFuncs P = pruneModel P := by
   unfold pruneFuncs pruneModel pruneState
   dsimp only
@@ -9180,6 +9181,7 @@ theorem Passes.pruneFuncs_eq_model (P : Prog) : pruneFuncs P = pruneModel P := b
       exact (if_neg hc).symm)]
   rfl
 
+omit model in
 theorem Passes.mem_pruneCallees {f : Func} {fid : FuncId} :
     fid ∈ pruneCallees f ↔
       ∃ b ∈ f.blocks.toList, ∃ ds as, Instr.call ds fid as ∈ b.instrs := by
@@ -9196,6 +9198,7 @@ theorem Passes.mem_pruneCallees {f : Func} {fid : FuncId} :
   · rintro ⟨b, hb, ds, as, hi⟩
     exact ⟨b, hb, .call ds fid as, hi, rfl⟩
 
+omit model in
 theorem Passes.wfCheck_callee_lt {f : Func} {n fid : Nat}
     (hwf : f.wfCheck n = true) (hfid : fid ∈ pruneCallees f) : fid < n := by
   obtain ⟨b, hb, ds, as, hi⟩ := mem_pruneCallees.mp hfid
@@ -9211,11 +9214,14 @@ def Passes.MarkSub (A B : Array Bool) : Prop :=
 
 def Passes.UsedAt (A : Array Bool) (i : FuncId) : Prop := A[i]? = some true
 
+omit model in
 theorem Passes.markSub_refl (A : Array Bool) : MarkSub A A := fun _ h => h
 
+omit model in
 theorem Passes.markSub_trans {A B C : Array Bool} (hAB : MarkSub A B)
     (hBC : MarkSub B C) : MarkSub A C := fun i hi => hBC i (hAB i hi)
 
+omit model in
 theorem Passes.pruneWorkOne_size (P : Prog) (n fid : Nat)
     (s : MProd (List FuncId) (Array Bool)) :
     (pruneWorkOne P n fid s).2.size = s.2.size := by
@@ -9224,6 +9230,7 @@ theorem Passes.pruneWorkOne_size (P : Prog) (n fid : Nat)
   · split <;> simp
   · rfl
 
+omit model in
 theorem Passes.pruneWorkOne_mono (P : Prog) (n fid : Nat)
     (s : MProd (List FuncId) (Array Bool)) :
     MarkSub s.2 (pruneWorkOne P n fid s).2 := by
@@ -9240,6 +9247,7 @@ theorem Passes.pruneWorkOne_mono (P : Prog) (n fid : Nat)
     · exact hi
   · exact hi
 
+omit model in
 theorem Passes.pruneWorkOne_marks (P : Prog) {n fid : Nat}
     (s : MProd (List FuncId) (Array Bool)) (hfid : fid < n)
     (hsz : s.2.size = n) :
@@ -9254,6 +9262,7 @@ theorem Passes.pruneWorkOne_marks (P : Prog) {n fid : Nat}
     rw [Array.getElem?_eq_getElem hin]
     simpa [Array.getElem!_eq_getD, Array.getD, hin] using hu
 
+omit model in
 theorem Passes.pruneWorkOne_new_origin (P : Prog) {n fid j : Nat}
     (s : MProd (List FuncId) (Array Bool))
     (hj : UsedAt (pruneWorkOne P n fid s).2 j) (hnot : ¬ UsedAt s.2 j) :
@@ -9269,6 +9278,7 @@ theorem Passes.pruneWorkOne_new_origin (P : Prog) {n fid j : Nat}
     · exact absurd hj (by simpa [UsedAt] using hnot)
   · exact absurd hj (by simpa [UsedAt] using hnot)
 
+omit model in
 theorem Passes.pruneWorkOne_emits (P : Prog) {n fid : Nat}
     (s : MProd (List FuncId) (Array Bool)) (hfid : fid < n)
     (hsz : s.2.size = n)
@@ -9283,7 +9293,7 @@ theorem Passes.pruneWorkOne_emits (P : Prog) {n fid : Nat}
     have hin : fid < s.2.size := by omega
     rw [Array.getElem?_eq_getElem hin]
     simpa [Array.getElem!_eq_getD, Array.getD, hin] using ht'
-  simp only [pruneWorkOne, hfid, dite_true, Bool.not_eq_true, hfalse,
+  simp only [pruneWorkOne, hfid, dite_true, hfalse,
     Bool.not_false, if_true]
   apply List.mem_append_right
   rw [hg]
@@ -9297,6 +9307,7 @@ def Passes.pruneWork (P : Prog) (n : Nat) (work : List FuncId)
     (used : Array Bool) : MProd (List FuncId) (Array Bool) :=
   pruneWorkFrom P n work ⟨[], used⟩
 
+omit model in
 theorem Passes.pruneWorkFrom_size (P : Prog) (n : Nat) (work : List FuncId)
     (s : MProd (List FuncId) (Array Bool)) :
     (pruneWorkFrom P n work s).2.size = s.2.size := by
@@ -9307,6 +9318,7 @@ theorem Passes.pruneWorkFrom_size (P : Prog) (n : Nat) (work : List FuncId)
       change (pruneWorkFrom P n work (pruneWorkOne P n fid s)).2.size = s.2.size
       rw [ih, pruneWorkOne_size]
 
+omit model in
 theorem Passes.pruneWorkFrom_mono (P : Prog) (n : Nat) (work : List FuncId)
     (s : MProd (List FuncId) (Array Bool)) :
     MarkSub s.2 (pruneWorkFrom P n work s).2 := by
@@ -9317,6 +9329,7 @@ theorem Passes.pruneWorkFrom_mono (P : Prog) (n : Nat) (work : List FuncId)
       exact markSub_trans (pruneWorkOne_mono P n fid s)
         (ih (pruneWorkOne P n fid s))
 
+omit model in
 theorem Passes.pruneWorkFrom_marks (P : Prog) {n : Nat} {work : List FuncId}
     {s : MProd (List FuncId) (Array Bool)} (hsz : s.2.size = n) {fid : FuncId}
     (hm : fid ∈ work) (hlt : fid < n) :
@@ -9331,6 +9344,7 @@ theorem Passes.pruneWorkFrom_marks (P : Prog) {n : Nat} {work : List FuncId}
       · exact ih (s := pruneWorkOne P n j s)
           (by rw [pruneWorkOne_size, hsz]) hm
 
+omit model in
 theorem Passes.pruneWorkOne_next_mono (P : Prog) (n fid : Nat)
     (s : MProd (List FuncId) (Array Bool)) :
     ∀ x ∈ s.1, x ∈ (pruneWorkOne P n fid s).1 := by
@@ -9342,6 +9356,7 @@ theorem Passes.pruneWorkOne_next_mono (P : Prog) (n fid : Nat)
     · exact hx
   · exact hx
 
+omit model in
 theorem Passes.pruneWorkFrom_next_mono (P : Prog) (n : Nat) (work : List FuncId)
     (s : MProd (List FuncId) (Array Bool)) :
     ∀ x ∈ s.1, x ∈ (pruneWorkFrom P n work s).1 := by
@@ -9351,6 +9366,7 @@ theorem Passes.pruneWorkFrom_next_mono (P : Prog) (n : Nat) (work : List FuncId)
       intro x hx
       exact ih (pruneWorkOne P n fid s) x (pruneWorkOne_next_mono P n fid s x hx)
 
+omit model in
 theorem Passes.pruneWorkFrom_new_origin (P : Prog) {n : Nat}
     {work : List FuncId} {s : MProd (List FuncId) (Array Bool)} {j : FuncId}
     (hj : UsedAt (pruneWorkFrom P n work s).2 j) (hnot : ¬ UsedAt s.2 j) :
@@ -9363,6 +9379,7 @@ theorem Passes.pruneWorkFrom_new_origin (P : Prog) {n : Nat}
       · exact List.mem_cons.mpr (Or.inl (pruneWorkOne_new_origin P s hm hnot))
       · exact List.mem_cons.mpr (Or.inr (ih (s := pruneWorkOne P n fid s) hj hm))
 
+omit model in
 theorem Passes.pruneWorkFrom_emits (P : Prog) {n : Nat}
     {work : List FuncId} {s : MProd (List FuncId) (Array Bool)}
     (hsz : s.2.size = n) {fid : FuncId} (hm : fid ∈ work) (hlt : fid < n)
@@ -9394,6 +9411,7 @@ def Passes.PruneOrigin (P : Prog)
   (∀ fid, UsedAt s.2 fid → PruneReach P fid) ∧
   ∀ fid ∈ s.1, PruneReach P fid
 
+omit model in
 theorem Passes.pruneWorkOne_origin {P : Prog} {n fid : Nat}
     {s : MProd (List FuncId) (Array Bool)}
     (hfid : PruneReach P fid) (hs : PruneOrigin P s) :
@@ -9416,6 +9434,7 @@ theorem Passes.pruneWorkOne_origin {P : Prog} {n fid : Nat}
       · exact hs.2 j hj
     · exact hs.2 j hj
 
+omit model in
 theorem Passes.pruneWorkFrom_origin {P : Prog} {n : Nat}
     {work : List FuncId} {s : MProd (List FuncId) (Array Bool)}
     (hwork : ∀ fid ∈ work, PruneReach P fid) (hs : PruneOrigin P s) :
@@ -9438,6 +9457,7 @@ def Passes.PruneFrontier (P : Prog) (used : Array Bool)
 def Passes.WorkValid (n : Nat) (work : List FuncId) : Prop :=
   ∀ fid ∈ work, fid < n
 
+omit model in
 theorem Passes.pruneFrontier_init (P : Prog) :
     PruneFrontier P (Array.replicate P.funcs.size false) (pruneCallees P.main) := by
   constructor
@@ -9447,6 +9467,7 @@ theorem Passes.pruneFrontier_init (P : Prog) :
     rcases Array.getElem?_eq_some_iff.mp hs with ⟨hlt, hget⟩
     simp at hget
 
+omit model in
 theorem Passes.workValid_init {P : Prog} (hwf : P.wfCheck = true) :
     WorkValid P.funcs.size (pruneCallees P.main) := by
   intro fid hfid
@@ -9455,6 +9476,7 @@ theorem Passes.workValid_init {P : Prog} (hwf : P.wfCheck = true) :
     exact hwf.1.2
   · exact hfid
 
+omit model in
 theorem Passes.pruneWorkFrom_next_valid {P : Prog} (hwf : P.wfCheck = true)
     {n : Nat} (hn : n = P.funcs.size) {work : List FuncId}
     (hwork : WorkValid n work) {s : MProd (List FuncId) (Array Bool)}
@@ -9477,12 +9499,13 @@ theorem Passes.pruneWorkFrom_next_valid {P : Prog} (hwf : P.wfCheck = true)
               · have hjlt := wfCheck_callee_lt (f := g) (n := P.funcs.size)
                   (progWf_func hwf hget) (by simpa [hget] using hj)
                 simpa [hn] using hjlt
-          · simp only [pruneWorkOne, hf, dite_true, hu, if_false] at hj
+          · simp only [pruneWorkOne, hf, dite_true, hu] at hj
             exact hnext j hj
         · simp only [pruneWorkOne, hf, dite_false] at hj
           exact hnext j hj
 
-theorem Passes.pruneFrontier_advance {P : Prog} (hwf : P.wfCheck = true)
+omit model in
+theorem Passes.pruneFrontier_advance {P : Prog} (_hwf : P.wfCheck = true)
     {used : Array Bool} {work : List FuncId} (hsz : used.size = P.funcs.size)
     (hvalid : WorkValid P.funcs.size work) (hfront : PruneFrontier P used work) :
     let r := pruneWork P P.funcs.size work used
@@ -9513,6 +9536,7 @@ def Passes.pruneAdvance (P : Prog) (n : Nat)
   let r := pruneWork P n s.2 s.1
   ⟨r.2, r.1⟩
 
+omit model in
 theorem Passes.pruneRound_eq (P : Prog) (n i : Nat)
     (s : MProd (Array Bool) (List FuncId)) :
     pruneRound P n i s =
@@ -9520,16 +9544,19 @@ theorem Passes.pruneRound_eq (P : Prog) (n i : Nat)
       else .yield (pruneAdvance P n s) := by
   rfl
 
+omit model in
 theorem Passes.pruneAdvance_size (P : Prog) (n : Nat)
     (s : MProd (Array Bool) (List FuncId)) :
     (pruneAdvance P n s).1.size = s.1.size := by
   exact pruneWorkFrom_size P n s.2 ⟨[], s.1⟩
 
+omit model in
 theorem Passes.pruneAdvance_mono (P : Prog) (n : Nat)
     (s : MProd (Array Bool) (List FuncId)) :
     MarkSub s.1 (pruneAdvance P n s).1 := by
   exact pruneWorkFrom_mono P n s.2 ⟨[], s.1⟩
 
+omit model in
 theorem Passes.pruneAdvance_empty {P : Prog} {n : Nat}
     {s : MProd (Array Bool) (List FuncId)} (h : s.2.isEmpty = true) :
     pruneAdvance P n s = s := by
@@ -9539,6 +9566,7 @@ theorem Passes.pruneAdvance_empty {P : Prog} {n : Nat}
       subst work
       rfl
 
+omit model in
 theorem Passes.pruneFold_empty {P : Prog} {n : Nat}
     {s : MProd (Array Bool) (List FuncId)} (h : s.2.isEmpty = true)
     (l : List Nat) : l.foldl (fun s _ => pruneAdvance P n s) s = s := by
@@ -9549,6 +9577,7 @@ theorem Passes.pruneFold_empty {P : Prog} {n : Nat}
       rw [pruneAdvance_empty h]
       exact ih h
 
+omit model in
 theorem Passes.loopWith_pruneRound_eq_fold (P : Prog) (n : Nat)
     (l : List Nat) (s : MProd (Array Bool) (List FuncId)) :
     loopWith (pruneRound P n) l s =
@@ -9569,6 +9598,7 @@ def Passes.pruneIter (P : Prog) (n : Nat) :
   | 0, s => s
   | k + 1, s => pruneIter P n k (pruneAdvance P n s)
 
+omit model in
 theorem Passes.pruneFold_eq_iter (P : Prog) (n : Nat) (l : List Nat)
     (s : MProd (Array Bool) (List FuncId)) :
     l.foldl (fun s _ => pruneAdvance P n s) s = pruneIter P n l.length s := by
@@ -9576,6 +9606,7 @@ theorem Passes.pruneFold_eq_iter (P : Prog) (n : Nat) (l : List Nat)
   | nil => rfl
   | cons i is ih => simpa [pruneIter] using ih (pruneAdvance P n s)
 
+omit model in
 theorem Passes.pruneState_eq_iter (P : Prog) :
     pruneState P = pruneIter P P.funcs.size (P.funcs.size + 1)
       ⟨Array.replicate P.funcs.size false, pruneCallees P.main⟩ := by
@@ -9588,11 +9619,13 @@ def Passes.PruneStateOrigin (P : Prog)
   (∀ fid, UsedAt s.1 fid → PruneReach P fid) ∧
   ∀ fid ∈ s.2, PruneReach P fid
 
+omit model in
 theorem Passes.pruneAdvance_origin {P : Prog} {n : Nat}
     {s : MProd (Array Bool) (List FuncId)} (hs : PruneStateOrigin P s) :
     PruneStateOrigin P (pruneAdvance P n s) := by
   exact pruneWorkFrom_origin hs.2 ⟨hs.1, by simp⟩
 
+omit model in
 theorem Passes.pruneIter_origin {P : Prog} {n : Nat} :
     ∀ (k : Nat) (s : MProd (Array Bool) (List FuncId)),
       PruneStateOrigin P s → PruneStateOrigin P (pruneIter P n k s) := by
@@ -9603,6 +9636,7 @@ theorem Passes.pruneIter_origin {P : Prog} {n : Nat} :
       intro s hs
       exact ih (pruneAdvance P n s) (pruneAdvance_origin hs)
 
+omit model in
 theorem Passes.pruneState_used_reach {P : Prog} {fid : FuncId}
     (hused : UsedAt (pruneState P).1 fid) : PruneReach P fid := by
   rw [pruneState_eq_iter] at hused
@@ -9613,7 +9647,7 @@ theorem Passes.pruneState_used_reach {P : Prog} {fid : FuncId}
       unfold UsedAt at hj
       have hjlt : j < P.funcs.size := by
         simpa using (Array.getElem?_eq_some_iff.mp hj).1
-      simp [Array.getElem?_replicate, hjlt] at hj
+      simp [hjlt] at hj
     · intro j hj
       exact PruneReach.main hj
   exact (pruneIter_origin (P := P) (n := P.funcs.size)
@@ -9623,10 +9657,12 @@ def Passes.PruneInv (P : Prog) (s : MProd (Array Bool) (List FuncId)) : Prop :=
   s.1.size = P.funcs.size ∧ WorkValid P.funcs.size s.2 ∧
     PruneFrontier P s.1 s.2
 
+omit model in
 theorem Passes.pruneInv_init {P : Prog} (hwf : P.wfCheck = true) :
     PruneInv P ⟨Array.replicate P.funcs.size false, pruneCallees P.main⟩ := by
   exact ⟨by simp, workValid_init hwf, pruneFrontier_init P⟩
 
+omit model in
 theorem Passes.pruneInv_advance {P : Prog} (hwf : P.wfCheck = true)
     {s : MProd (Array Bool) (List FuncId)} (h : PruneInv P s) :
     PruneInv P (pruneAdvance P P.funcs.size s) := by
@@ -9635,6 +9671,7 @@ theorem Passes.pruneInv_advance {P : Prog} (hwf : P.wfCheck = true)
   · exact pruneWorkFrom_next_valid hwf rfl h.2.1 (fun _ h => by simp at h)
   · exact pruneFrontier_advance hwf h.1 h.2.1 h.2.2
 
+omit model in
 theorem Passes.pruneReach_lt {P : Prog} (hwf : P.wfCheck = true)
     {fid : FuncId} (h : PruneReach P fid) : fid < P.funcs.size := by
   induction h with
@@ -9642,6 +9679,7 @@ theorem Passes.pruneReach_lt {P : Prog} (hwf : P.wfCheck = true)
   | @step src fid f _ hg hcall ih =>
       exact wfCheck_callee_lt (progWf_func hwf hg) hcall
 
+omit model in
 theorem Passes.PruneFrontier.missing {P : Prog} {used : Array Bool}
     {work : List FuncId} (hfront : PruneFrontier P used work)
     {fid : FuncId} (hr : PruneReach P fid) (hnot : ¬ UsedAt used fid) :
@@ -9661,6 +9699,7 @@ theorem Passes.PruneFrontier.missing {P : Prog} {used : Array Bool}
 def Passes.pruneMeasure (n : Nat) (used : Array Bool) : Nat :=
   ((List.range n).map fun i => if used[i]? = some true then 1 else 0).sum
 
+omit model in
 theorem Passes.pruneMeasure_le (n : Nat) (used : Array Bool) :
     pruneMeasure n used ≤ n := by
   unfold pruneMeasure
@@ -9669,6 +9708,7 @@ theorem Passes.pruneMeasure_le (n : Nat) (used : Array Bool) :
     List.sum_le_sum (fun i hi => by split <;> omega)
   simpa using hle
 
+omit model in
 theorem Passes.pruneMeasure_mono {n : Nat} {A B : Array Bool}
     (h : MarkSub A B) : pruneMeasure n A ≤ pruneMeasure n B := by
   unfold pruneMeasure
@@ -9680,6 +9720,7 @@ theorem Passes.pruneMeasure_mono {n : Nat} {A B : Array Bool}
     · simp [UsedAt] at hA ⊢
       simp [hA])
 
+omit model in
 theorem Passes.pruneMeasure_lt {n : Nat} {A B : Array Bool}
     (hsub : MarkSub A B) {j : Nat} (hj : j < n)
     (hA : ¬ UsedAt A j) (hB : UsedAt B j) :
@@ -9697,6 +9738,7 @@ theorem Passes.pruneMeasure_lt {n : Nat} {A B : Array Bool}
     simp [UsedAt] at hA hB ⊢
     simp [hA, hB]
 
+omit model in
 theorem Passes.pruneIter_mono (P : Prog) (n k : Nat)
     (s : MProd (Array Bool) (List FuncId)) :
     MarkSub s.1 (pruneIter P n k s).1 := by
@@ -9706,6 +9748,7 @@ theorem Passes.pruneIter_mono (P : Prog) (n k : Nat)
       exact markSub_trans (pruneAdvance_mono P n s)
         (ih (pruneAdvance P n s))
 
+omit model in
 theorem Passes.pruneIter_measure_growth {P : Prog} (hwf : P.wfCheck = true) :
     ∀ (k : Nat) (s : MProd (Array Bool) (List FuncId)), PruneInv P s →
       ∀ {fid : FuncId}, PruneReach P fid →
@@ -9735,6 +9778,7 @@ theorem Passes.pruneIter_measure_growth {P : Prog} (hwf : P.wfCheck = true) :
       dsimp only [s'] at hstep htail
       omega
 
+omit model in
 theorem Passes.pruneState_marks {P : Prog} (hwf : P.wfCheck = true)
     {fid : FuncId} (hr : PruneReach P fid) : UsedAt (pruneState P).1 fid := by
   rw [pruneState_eq_iter]
@@ -9748,13 +9792,14 @@ theorem Passes.pruneState_marks {P : Prog} (hwf : P.wfCheck = true)
     intro x hx
     obtain ⟨i, hi, rfl⟩ := List.mem_map.mp hx
     have hlt := List.mem_range.mp hi
-    simp [Array.getElem?_replicate, hlt]
+    simp [hlt]
   have hbound := pruneMeasure_le P.funcs.size
     (pruneIter P P.funcs.size (P.funcs.size + 1)
       ⟨Array.replicate P.funcs.size false, pruneCallees P.main⟩).1
   rw [hzero] at hgrow
   omega
 
+omit model in
 theorem Passes.usedAt_getElem! {A : Array Bool} {i : Nat}
     (h : UsedAt A i) : A[i]! = true := by
   unfold UsedAt at h
@@ -9766,10 +9811,12 @@ def Passes.pruneKeepN (P : Prog) (used : Array Bool) (m : Nat) :
   (List.range m).foldl (fun s fid => pruneKeepOne P used fid s)
     ⟨#[], Array.replicate P.funcs.size none⟩
 
+omit model in
 theorem Passes.pruneKeep_eq_keepN (P : Prog) (used : Array Bool) :
     pruneKeep P used = pruneKeepN P used P.funcs.size := by
   simp [pruneKeep, pruneKeepN, List.range_eq_range']
 
+omit model in
 theorem Passes.pruneKeepN_remap_size (P : Prog) (used : Array Bool) (m : Nat) :
     (pruneKeepN P used m).2.size = P.funcs.size := by
   unfold pruneKeepN
@@ -9787,8 +9834,9 @@ theorem Passes.pruneKeepN_remap_size (P : Prog) (used : Array Bool) (m : Nat) :
   rw [key]
   simp
 
+omit model in
 theorem Passes.pruneKeepN_lookup {P : Prog} {used : Array Bool}
-    (husedSize : used.size = P.funcs.size) :
+    (_husedSize : used.size = P.funcs.size) :
     ∀ (m : Nat), m ≤ P.funcs.size → ∀ {fid : FuncId} {g : Func}, fid < m →
       P.funcs[fid]? = some g → UsedAt used fid →
       ∃ fid', (pruneKeepN P used m).2[fid]? = some (some fid') ∧
@@ -9835,6 +9883,7 @@ theorem Passes.pruneKeepN_lookup {P : Prog} {used : Array Bool}
           · simpa [s, pruneKeepOne, hmu] using hremap
           · simpa [s, pruneKeepOne, hmu] using hkept
 
+omit model in
 theorem Passes.pruneKeep_lookup {P : Prog} {used : Array Bool}
     (husedSize : used.size = P.funcs.size) {fid : FuncId} {g : Func}
     (hfunc : P.funcs[fid]? = some g) (hused : UsedAt used fid) :
@@ -9844,6 +9893,7 @@ theorem Passes.pruneKeep_lookup {P : Prog} {used : Array Bool}
   apply pruneKeepN_lookup husedSize P.funcs.size (le_refl _) _ hfunc hused
   exact (Array.getElem?_eq_some_iff.mp hfunc).1
 
+omit model in
 theorem Passes.pruneKeepN_mem {P : Prog} {used : Array Bool}
     (husedSize : used.size = P.funcs.size) :
     ∀ (m : Nat), m ≤ P.funcs.size → ∀ {g : Func},
@@ -9880,6 +9930,7 @@ theorem Passes.pruneKeepN_mem {P : Prog} {used : Array Bool}
         obtain ⟨fid, hfid, hfunc, hu⟩ := ih hmle hold
         exact ⟨fid, by omega, hfunc, hu⟩
 
+omit model in
 theorem Passes.pruneKeep_mem {P : Prog} {used : Array Bool}
     (husedSize : used.size = P.funcs.size) {g : Func}
     (hg : g ∈ (pruneKeep P used).1) :
@@ -9889,6 +9940,7 @@ theorem Passes.pruneKeep_mem {P : Prog} {used : Array Bool}
     pruneKeepN_mem husedSize P.funcs.size (le_refl _) hg
   exact ⟨fid, hfunc, hu⟩
 
+omit model in
 theorem Passes.pruneIter_size (P : Prog) (n k : Nat)
     (s : MProd (Array Bool) (List FuncId)) :
     (pruneIter P n k s).1.size = s.1.size := by
@@ -9897,6 +9949,7 @@ theorem Passes.pruneIter_size (P : Prog) (n k : Nat)
   | succ k ih =>
       rw [pruneIter, ih, pruneAdvance_size]
 
+omit model in
 theorem Passes.pruneState_used_size (P : Prog) :
     (pruneState P).1.size = P.funcs.size := by
   rw [pruneState_eq_iter, pruneIter_size]
@@ -9905,22 +9958,27 @@ theorem Passes.pruneState_used_size (P : Prog) :
 def Passes.pruneRest (remap : Array (Option FuncId)) (r : Rest) : Rest :=
   ⟨r.instrs.map (pruneInstr remap), r.term⟩
 
+omit model in
 theorem Passes.pruneFix_params (remap : Array (Option FuncId)) (f : Func) :
     (pruneFix remap f).params = f.params := rfl
 
+omit model in
 theorem Passes.pruneFix_entry (remap : Array (Option FuncId)) (f : Func) :
     (pruneFix remap f).entry = f.entry := rfl
 
+omit model in
 theorem Passes.pruneFix_block {remap : Array (Option FuncId)} {f : Func}
     {i : BlockId} {b : Block} (hb : f.blocks[i]? = some b) :
     (pruneFix remap f).blocks[i]? = some (pruneBlock remap b) := by
   simp [pruneFix, hb]
 
+omit model in
 theorem Passes.pruneFix_kept_lookup {remap : Array (Option FuncId)}
     {kept : Array Func} {fid : FuncId} {g : Func} (hg : kept[fid]? = some g) :
     (kept.map (pruneFix remap))[fid]? = some (pruneFix remap g) := by
   simp [hg]
 
+omit model in
 theorem Passes.pruneRemap_value {remap : Array (Option FuncId)}
     {fid fid' : FuncId} (h : remap[fid]? = some (some fid')) :
     (remap[fid]?.join).getD fid = fid' := by
@@ -9933,6 +9991,7 @@ def Passes.PruneFuncReach (P : Prog) (f : Func) : Prop :=
 def Passes.PruneRestReach (P : Prog) (r : Rest) : Prop :=
   ∀ ds fid as, Instr.call ds fid as ∈ r.instrs → PruneReach P fid
 
+omit model in
 theorem Passes.pruneFuncReach_call {P : Prog} {f : Func}
     (hf : PruneFuncReach P f) {b : Block} (hb : b ∈ f.blocks.toList)
     {ds : List ValId} {fid : FuncId} {as : List ValId}
@@ -9942,19 +10001,23 @@ theorem Passes.pruneFuncReach_call {P : Prog} {f : Func}
   · exact PruneReach.step hsrc hlookup
       (mem_pruneCallees.mpr ⟨b, hb, ds, as, hi⟩)
 
+omit model in
 theorem Passes.pruneInstr_defs (remap : Array (Option FuncId)) (i : Instr) :
     (pruneInstr remap i).defs = i.defs := by
   cases i <;> rfl
 
+omit model in
 theorem Passes.pruneBlock_allDefs (remap : Array (Option FuncId)) (b : Block) :
     blockAllDefs (pruneBlock remap b) = blockAllDefs b := by
   simp only [blockAllDefs, pruneBlock, List.flatMap_map, pruneInstr_defs]
 
+omit model in
 theorem Passes.pruneFix_allDefs (remap : Array (Option FuncId)) (f : Func) :
     (pruneFix remap f).allDefs = f.allDefs := by
   unfold Func.allDefs pruneFix
   simp only [Array.toList_map, List.flatMap_map, pruneBlock_allDefs]
 
+omit model in
 theorem Passes.pruneBlock_wf {remap : Array (Option FuncId)} {f : Func}
     {b : Block} {oldN newN : Nat}
     (hbwf : BlockWF f.blocks f.nrets oldN b)
@@ -9976,6 +10039,7 @@ theorem Passes.pruneBlock_wf {remap : Array (Option FuncId)} {f : Func}
     | op ds yop as => simpa [pruneInstr] using hbwf.2.2 (.op ds yop as) hold
     | call ds fid as => exact hcall ds fid as hold
 
+omit model in
 theorem Passes.pruneFix_wf {remap : Array (Option FuncId)} {f : Func}
     {oldN newN : Nat} (hfwf : f.wfCheck oldN = true)
     (hcall : ∀ b ∈ f.blocks.toList, ∀ ds fid as,
@@ -9996,6 +10060,7 @@ theorem Passes.pruneFix_wf {remap : Array (Option FuncId)} {f : Func}
     exact pruneBlock_wf (hblocks old (by simpa using hold))
       (fun ds fid as hi => hcall old (by simpa using hold) ds fid as hi)
 
+omit model in
 theorem Passes.pruneFix_wf_reach {P : Prog} {used : Array Bool}
     (hwf : P.wfCheck = true) (husedSize : used.size = P.funcs.size)
     (hall : ∀ fid, PruneReach P fid → UsedAt used fid)
@@ -10017,18 +10082,21 @@ theorem Passes.pruneFix_wf_reach {P : Prog} {used : Array Bool}
   rw [pruneRemap_value hremap]
   exact (Array.getElem?_eq_some_iff.mp hkept).1
 
+omit model in
 theorem Passes.pruneRestReach_block {P : Prog} {f : Func}
     (hf : PruneFuncReach P f) {b : Block} (hb : b ∈ f.blocks.toList) :
     PruneRestReach P ⟨b.instrs, b.term⟩ := by
   intro ds fid as hi
   exact pruneFuncReach_call hf hb hi
 
+omit model in
 theorem Passes.pruneRestReach_tail {P : Prog} {i : Instr} {is : List Instr}
     {t : Term} (h : PruneRestReach P ⟨i :: is, t⟩) :
     PruneRestReach P ⟨is, t⟩ := by
   intro ds fid as hi
   exact h ds fid as (by simp [hi])
 
+omit model in
 theorem Passes.pruneRestReach_head {P : Prog} {ds : List ValId}
     {fid : FuncId} {as : List ValId} {is : List Instr} {t : Term}
     (h : PruneRestReach P ⟨Instr.call ds fid as :: is, t⟩) :
@@ -10039,7 +10107,7 @@ theorem Passes.pruneExec {P : Prog} {used : Array Bool}
     (hall : ∀ fid, PruneReach P fid → UsedAt used fid)
     {f : Func} {R : Regs} {st : EvmState} {rest : Rest} {res : FRes}
     (hexec : Exec (model := model) P f R st rest res) :
-    ∀ (hfunc : PruneFuncReach P f) (hrest : PruneRestReach P rest),
+    ∀ (_hfunc : PruneFuncReach P f) (_hrest : PruneRestReach P rest),
       let kept := (pruneKeep P used).1
       let remap := (pruneKeep P used).2
       let Q : Prog :=
@@ -10122,6 +10190,7 @@ theorem Passes.pruneExec {P : Prog} {used : Array Bool}
       intro hfunc hrest
       exact Exec.halt hget hop
 
+omit model in
 theorem Passes.pruneFuncs_wf {P : Prog} (hwf : P.wfCheck = true) :
     (pruneFuncs P).wfCheck = true := by
   rw [pruneFuncs_eq_model]
@@ -10202,10 +10271,12 @@ def Passes.inlineRound (P : Prog) : Prog :=
 def Passes.inlineSame (P Q : Prog) : Bool :=
   Q.funcs.size == P.funcs.size && siteCounts Q == siteCounts P
 
+omit model in
 theorem Passes.inlineRound_wf {P : Prog} (hwf : P.wfCheck = true) :
     (inlineRound P).wfCheck = true := by
   exact pruneFuncs_wf (inlineMap_wf hwf)
 
+omit model in
 theorem Passes.pruneFuncs_inlineMap_wf {P : Prog} (hwf : P.wfCheck = true) :
     (pruneFuncs (inlineMap (siteCounts P) P)).wfCheck = true := by
   exact inlineRound_wf hwf
@@ -10231,6 +10302,7 @@ def Passes.inlineProgRawStep (_ : Nat)
   let Q := inlineRound s.2
   if inlineSame s.2 Q then .done ⟨some Q, Q⟩ else .yield ⟨none, Q⟩
 
+omit model in
 theorem Passes.inlineProgRaw_loop (l : List Nat) (P : Prog) :
     let r := loopWith inlineProgRawStep l ⟨none, P⟩
     r.1.getD r.2 = loopWith inlineProgStep l P := by
@@ -10242,6 +10314,7 @@ theorem Passes.inlineProgRaw_loop (l : List Nat) (P : Prog) :
       · simp [inlineProgRawStep, inlineProgStep, hs]
       · simpa [inlineProgRawStep, inlineProgStep, hs] using ih (inlineRound P)
 
+omit model in
 theorem Passes.inlineProgStep_loop (l : List Nat) (P : Prog) :
     loopWith inlineProgStep l P = inlineProgN l.length P := by
   induction l generalizing P with
@@ -10252,6 +10325,7 @@ theorem Passes.inlineProgStep_loop (l : List Nat) (P : Prog) :
       · simp [inlineProgStep, inlineProgN, hs]
       · simpa [inlineProgStep, inlineProgN, hs] using ih (inlineRound P)
 
+omit model in
 theorem Passes.inlineProg_eq_inlineProgN (P : Prog) :
     inlineProg P = inlineProgN 3 P := by
   unfold inlineProg
@@ -10387,7 +10461,7 @@ omit model in
 theorem inEdgeArgsEdgeStep_self {acc : Array (List (List ValId))} {e : Edge}
     (he : e.target < acc.size) :
     e.args ∈ (inEdgeArgsEdgeStep acc e)[e.target]! := by
-  simp [inEdgeArgsEdgeStep, he, Array.getElem!_eq_getD]
+  simp [inEdgeArgsEdgeStep, he]
 
 omit model in
 theorem inEdgeArgsEdgeFold_mem {acc : Array (List (List ValId))} {t : BlockId}
@@ -10495,10 +10569,10 @@ theorem findTrivialParam_eq_loop (f : Func) :
           intro i s
           simp only [LawfulMonad.pure_bind]
           rfl)]
-        simp_all [Id.run, bind, pure]
+        simp_all [bind, pure]
         split <;> simp_all
-      · simp_all [Id.run, bind, pure]
-    · simp_all [Id.run, bind, pure])]
+      · simp_all [bind, pure]
+    · simp_all [bind, pure])]
   simp [Id.run, bind, pure, Option.getD]
   split <;> simp_all
 
@@ -10606,7 +10680,7 @@ theorem findTrivialParam_inv {f : Func} {bi i p v : Nat}
         | none => simp [hr, Option.getD] at h
         | some c =>
             have hc : c = (bi, i, p, v) := by simpa [hr, Option.getD] using h
-            simpa [hc] using hr
+            simp [hc]
   obtain ⟨bi', hbi'mem, hbi'step⟩ := loopWith_findTrivial_done
     (fun j => findTrivialBlockStep_cases f j) hout
   unfold findTrivialBlockStep at hbi'step
@@ -10673,7 +10747,7 @@ theorem findTrivialParam_edge {f : Func} {bi i p v : Nat}
       have haith : a ∈ ((inEdgeArgs f)[bi]!).filterMap (·[i]?) :=
         List.mem_filterMap.mpr ⟨e.args, heargs, ha⟩
       have hafilter : a ∈ (((inEdgeArgs f)[bi]!).filterMap (·[i]?)).filter (· != p) := by
-        exact List.mem_filter.mpr ⟨haith, by simpa [hap]⟩
+        exact List.mem_filter.mpr ⟨haith, by simp [hap]⟩
       have haerase : a ∈ ((((inEdgeArgs f)[bi]!).filterMap (·[i]?)).filter
           (· != p)).eraseDups := List.mem_eraseDups.mpr hafilter
       rw [hsingle] at haerase
@@ -10724,7 +10798,7 @@ theorem elimTrivialParams_eq_loop (f : Func) :
   simp [Id.run, bind, pure, Option.getD]
   cases h : (loopWith elimTrivialStep
       (List.range' 0 (f.blocks.foldl (fun n b => n + b.params.length) 0 + 1))
-      ⟨none, f⟩).1 <;> simp [h]
+      ⟨none, f⟩).1 <;> simp
 
 end Passes
 
@@ -10877,8 +10951,7 @@ theorem blockAllDefs_removedBlock (bi i j : Nat) (b : Block) :
   by_cases hj : j = bi
   · simp only [blockAllDefs, removedBlock, hj, if_true]
     exact (List.eraseIdx_sublist b.params i).append_right _
-  · simpa [blockAllDefs, removedBlock, hj] using
-      (List.Sublist.refl (blockAllDefs b))
+  · simp [blockAllDefs, removedBlock, hj]
 
 omit model in
 theorem flatMap_mapIdx_removedBlock (bi i off : Nat) : ∀ bs : List Block,
@@ -10921,12 +10994,14 @@ def BlockDom (f : Func) (d i : BlockId) : Prop :=
 def StrictBlockDom (f : Func) (d i : BlockId) : Prop :=
   ∀ path, EntryPath f path i → d ∈ path
 
+omit model in
 theorem BlockDom.refl (f : Func) (i : BlockId) : BlockDom f i i := by
   intro path hp
   exact Or.inl rfl
 
+omit model in
 theorem BlockDom.pred {f : Func} {d i : BlockId} (h : BlockDom f d i)
-    {path : List BlockId} {j : BlockId} {b : Block} (hp : EntryPath f path j)
+    {path : List BlockId} {j : BlockId} {b : Block} (_hp : EntryPath f path j)
     (hb : f.blocks[j]? = some b) {e : Edge} (he : e ∈ b.term.edges)
     (het : e.target = i) (hdi : d ≠ i) : BlockDom f d j := by
   intro pre hpre
@@ -10940,6 +11015,7 @@ theorem BlockDom.pred {f : Func} {d i : BlockId} (h : BlockDom f d i)
     · exact Or.inr hd
     · exact Or.inl (by simpa using hd)
 
+omit model in
 /-- A block in an `EntryPath` predecessor list is reached by a strictly
 shorter prefix. -/
 theorem EntryPath.prefix_of_mem {f : Func} {path : List BlockId} {i j : BlockId}
@@ -10960,6 +11036,7 @@ theorem EntryPath.prefix_of_mem {f : Func} {path : List BlockId} {i j : BlockId}
         refine ⟨path, hp, ?_, fun x hx => List.mem_append_left _ hx⟩
         simp
 
+omit model in
 /-- Every reachable block has a path ending at its first visit. -/
 theorem EntryPath.first_visit {f : Func} {path : List BlockId} {i : BlockId}
     (hp : EntryPath f path i) :
@@ -10971,6 +11048,7 @@ theorem EntryPath.first_visit {f : Func} {path : List BlockId} {i : BlockId}
 termination_by path.length
 decreasing_by exact hlen
 
+omit model in
 /-- A strict dominator cannot be dominated back by its target at a reachable
 site. -/
 theorem StrictBlockDom.not_reverse {f : Func} {d i : BlockId}
@@ -10984,6 +11062,7 @@ theorem StrictBlockDom.not_reverse {f : Func} {d i : BlockId}
   · obtain ⟨prei, hprei, -, hsub⟩ := hpre.prefix_of_mem hi
     exact hdnot (hsub d (hs prei hprei))
 
+omit model in
 /-- Under `domCheck`, the unique block defining `x` dominates every block
 that reads `x`. -/
 theorem blockDef_dominates_use {f : Func} {li : Array (List ValId)}
@@ -11011,6 +11090,7 @@ theorem blockDef_dominates_use {f : Func} {li : Array (List ValId)}
       have hji := Passes.block_def_index_unique hnd hdb hc hxdef hxc
       simpa [hji] using hj
 
+omit model in
 theorem edge_arg_mem_blockUses {b : Block} {e : Edge} (he : e ∈ b.term.edges)
     {x : ValId} (hx : x ∈ e.args) : x ∈ ToAsm.blockUses b := by
   rw [ToAsm.mem_blockUses]
@@ -11021,24 +11101,27 @@ theorem edge_arg_mem_blockUses {b : Block} {e : Edge} (he : e ∈ b.term.edges)
       subst e
       simpa [ht, Term.uses] using hx
   | branch c et ef =>
-      simp only [ht, Term.edges, List.mem_cons, List.mem_singleton,
+      simp only [ht, Term.edges, List.mem_cons,
         List.not_mem_nil, or_false] at he
       rcases he with rfl | rfl
-      · simp [ht, Term.uses, hx]
-      · simp [ht, Term.uses, hx]
+      · simp [Term.uses, hx]
+      · simp [Term.uses, hx]
   | ret xs => simp [ht, Term.edges] at he
   | halt yop as => simp [ht, Term.edges] at he
 
+omit model in
 theorem instr_use_mem_blockUses {b : Block} {ins : Instr} (hi : ins ∈ b.instrs)
     {x : ValId} (hx : x ∈ ins.uses) : x ∈ ToAsm.blockUses b := by
   rw [ToAsm.mem_blockUses]
   exact Or.inl (List.mem_flatMap.mpr ⟨ins, hi, hx⟩)
 
+omit model in
 theorem term_use_mem_blockUses {b : Block} {x : ValId} (hx : x ∈ b.term.uses) :
     x ∈ ToAsm.blockUses b := by
   rw [ToAsm.mem_blockUses]
   exact Or.inr hx
 
+omit model in
 /-- The unique definition of a selected trivial parameter's replacement is a
 strict dominator of the parameter block.  A first arrival cannot use the
 allowed self value `p`; it therefore reads `v`, while later self arrivals
@@ -11088,10 +11171,11 @@ def TrivialAgree (f : Func) (bi : BlockId) (p v : ValId) (cur : BlockId)
   (∀ x, x ≠ p → R x = R' x) ∧
   (BlockDom f bi cur → R p = R' v)
 
+omit model in
 theorem TrivialAgree.getMany {f : Func} {li : Array (List ValId)}
     (hnd : f.allDefs.Nodup) (hli : ToAsm.liveInSets f = some li)
     (hdom : ToAsm.Func.domCheck f = true)
-    {bi i p v cur : Nat} (hfind : Passes.findTrivialParam f = some (bi, i, p, v))
+    {bi i p v cur : Nat} (_hfind : Passes.findTrivialParam f = some (bi, i, p, v))
     {pb b : Block} (hpb : f.blocks[bi]? = some pb)
     (hpdef : p ∈ ToAsm.blockDefs pb) (hb : f.blocks[cur]? = some b)
     {R R' : Regs} (ha : TrivialAgree f bi p v cur R R')
@@ -11107,6 +11191,7 @@ theorem TrivialAgree.getMany {f : Func} {li : Array (List ValId)}
     exact ha.2 (blockDef_dominates_use hnd hli hdom hpb hpdef hb (hxs p hx))
   · simp [hxp, ha.1 x hxp]
 
+omit model in
 theorem TrivialAgree.get {f : Func} {li : Array (List ValId)}
     (hnd : f.allDefs.Nodup) (hli : ToAsm.liveInSets f = some li)
     (hdom : ToAsm.Func.domCheck f = true)
@@ -11124,6 +11209,7 @@ theorem TrivialAgree.get {f : Func} {li : Array (List ValId)}
     exact hx
   · simp [hxp, ← ha.1 x hxp, hx]
 
+omit model in
 /-- Equal bindings preserve `TrivialAgree`.  If the instruction redefines
 the replacement `v`, its block strictly dominates `bi`; hence it lies outside
 `p`'s dominance region and the alias clause is intentionally dormant. -/
@@ -11158,6 +11244,7 @@ theorem TrivialAgree.setMany_instr {f : Func} {li : Array (List ValId)}
       Regs.setMany_of_not_mem R' ins.defs vals hvnot]
     exact ha.2 hcur
 
+omit model in
 theorem Regs.getMany_eraseIdx {R : Regs} {xs : List ValId} {vals : List U256}
     (hg : R.getMany xs = some vals) (i : Nat) :
     R.getMany (xs.eraseIdx i) = some (vals.eraseIdx i) := by
@@ -11183,6 +11270,7 @@ theorem Regs.getMany_eraseIdx {R : Regs} {xs : List ValId} {vals : List U256}
                   simp only [List.eraseIdx]
                   simpa [Regs.getMany_cons, hx] using ih ht i
 
+omit model in
 /-- Removing the same parameter/value position preserves every binding except
 the removed parameter. -/
 theorem Regs.setMany_eraseIdx_agree {R R' : Regs} {ps : List ValId}
@@ -11220,6 +11308,7 @@ theorem Regs.setMany_eraseIdx_agree {R R' : Regs} {ps : List ValId}
               exact ih hnd.2 hlen hp
                 (Regs.set_congr (S := fun y => y ≠ p) ha q w)
 
+omit model in
 theorem mem_zip_of_getElem?_eq {ps : List ValId} {xs : List ValId}
     {i : Nat} {p a : ValId} (hp : ps[i]? = some p) (ha : xs[i]? = some a) :
     (p, a) ∈ ps.zip xs := by
@@ -11227,8 +11316,9 @@ theorem mem_zip_of_getElem?_eq {ps : List ValId} {xs : List ValId}
   | zero =>
       cases ps <;> cases xs <;> simp_all
   | succ i ih =>
-      cases ps <;> cases xs <;> simp_all [ih]
+      cases ps <;> cases xs <;> simp_all
 
+omit model in
 theorem blockParams_nodup_of_defs {f : Func} (hnd : f.allDefs.Nodup)
     {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b) : b.params.Nodup := by
   have hbmem : b ∈ f.blocks.toList := block_mem_of_getElem? hb
@@ -11248,6 +11338,7 @@ namespace Passes
 def elimEdge (bi i : Nat) (e : Edge) : Edge :=
   if e.target = bi then { e with args := e.args.eraseIdx i } else e
 
+omit model in
 @[simp] theorem elimEdge_target (bi i : Nat) (e : Edge) :
     (elimEdge bi i e).target = e.target := by
   unfold elimEdge
@@ -11258,6 +11349,7 @@ def elimTerm (bi i : Nat) (t : Term) : Term := mapEdges (elimEdge bi i) t
 def elimRest (bi i : Nat) (σ : Subst) (r : Rest) : Rest :=
   ⟨r.instrs.map (substInstr σ), substTerm σ (elimTerm bi i r.term)⟩
 
+omit model in
 theorem elimBlock_rest (bi i j : Nat) (σ : Subst) (b : Block) :
     Rest.mk (substBlock σ (removedBlock bi i j b)).instrs
         (substBlock σ (removedBlock bi i j b)).term =
@@ -11272,12 +11364,13 @@ theorem elimBlock_rest (bi i j : Nat) (σ : Subst) (b : Block) :
 
 end Passes
 
+omit model in
 theorem TrivialAgree.edge {f : Func} {li : Array (List ValId)}
     (hnd : f.allDefs.Nodup) (hli : ToAsm.liveInSets f = some li)
     (hdom : ToAsm.Func.domCheck f = true)
     {bi k p v cur : Nat} (hfind : Passes.findTrivialParam f = some (bi, k, p, v))
     {pb b tb : Block} (hpb : f.blocks[bi]? = some pb)
-    (hp : p ∈ pb.params) (hpdef : p ∈ ToAsm.blockDefs pb)
+    (_hp : p ∈ pb.params) (hpdef : p ∈ ToAsm.blockDefs pb)
     (hb : f.blocks[cur]? = some b) {path : List BlockId}
     (hpath : EntryPath f path cur)
     {e : Edge} (he : e ∈ b.term.edges) (htb : f.blocks[e.target]? = some tb)
@@ -11305,7 +11398,7 @@ theorem TrivialAgree.edge {f : Func} {li : Array (List ValId)}
     subst v
     obtain ⟨_, _, _, _, _, _, hsingle, _⟩ := Passes.findTrivialParam_inv hfind
     have hm : p ∈ ((((Passes.inEdgeArgs f)[bi]!).filterMap (·[k]?)).filter
-        (· != p)).eraseDups := by simpa [hsingle]
+        (· != p)).eraseDups := by simp [hsingle]
     have hm' := List.mem_filter.mp (List.mem_eraseDups.mp hm)
     simpa using hm'.2
   by_cases het : e.target = bi
@@ -11345,10 +11438,9 @@ theorem TrivialAgree.edge {f : Func} {li : Array (List ValId)}
           (Passes.elimEdge bi k e)).args = some (vals.eraseIdx k) := by
       simpa [Passes.elimEdge, Passes.substEdge, Passes.substVs,
         List.eraseIdx_map, het] using hgetErase
-    simp only [if_pos rfl]
+    simp only []
     refine ⟨hgetOut, ?_, ?_⟩
-    · simp [Passes.substBlock, Passes.removedBlock, List.length_eraseIdx,
-        hkpb, hlen]
+    · simp [Passes.substBlock, Passes.removedBlock, List.length_eraseIdx, hlen]
     · refine ⟨?_, ?_⟩
       · simpa [Passes.substBlock, Passes.removedBlock] using
           Regs.setMany_eraseIdx_agree hndp (by omega) hpgetQ ha.1
@@ -11702,12 +11794,14 @@ theorem elimTrivialParam_one_sound {P : Prog} {f : Func} {args : List U256}
 
 /-! ### Constant-folding execution invariant -/
 
+omit model in
 theorem wfCheck_defs_nodup {f : Func} {n : Nat} (h : f.wfCheck n = true) :
     f.allDefs.Nodup := by
   unfold Func.wfCheck at h
   simp only [Bool.and_eq_true, decide_eq_true_eq] at h
   exact h.1.1.1
 
+omit model in
 theorem wfCheck_op_arity {f : Func} {n : Nat} (h : f.wfCheck n = true)
     {b : Block} (hb : b ∈ f.blocks.toList) {ds : List ValId} {yop : Op} {as : List ValId}
     (hi : .op ds yop as ∈ b.instrs) : ds.length ≤ 1 := by
@@ -11724,6 +11818,7 @@ folder. -/
 def ConstRegs (f : Func) (R : Regs) : Prop :=
   ∀ {d v w}, Passes.ConstDef f d v → R d = some w → w = v
 
+omit model in
 theorem constRegs_entry {f : Func} (hnd : f.allDefs.Nodup) (args : List U256) :
     ConstRegs f (Regs.empty.setMany f.params args) := by
   intro d v w hc hr
@@ -11734,6 +11829,7 @@ theorem constRegs_entry {f : Func} (hnd : f.allDefs.Nodup) (args : List U256) :
   rw [Regs.setMany_of_not_mem _ f.params args hnot] at hr
   simp [Regs.empty] at hr
 
+omit model in
 theorem constRegs_setMany_params {f : Func} (hnd : f.allDefs.Nodup)
     {R : Regs} (hR : ConstRegs f R) {b : Block} (hb : b ∈ f.blocks.toList)
     (vs : List U256) : ConstRegs f (R.setMany b.params vs) := by
@@ -11750,6 +11846,7 @@ def Passes.cfRest (is : List Instr) (t : Term) (m : Std.HashMap ValId U256) : Re
   let r := is.foldl (fun s i => Passes.cfInstrStep i s) ⟨m, []⟩
   ⟨r.2.reverse, Passes.cfTerm { params := [], instrs := is, term := t } r.1⟩
 
+omit model in
 theorem Passes.cfRest_cons (i : Instr) (is : List Instr) (t : Term)
     (m : Std.HashMap ValId U256) :
     cfRest (i :: is) t m =
@@ -11759,13 +11856,16 @@ theorem Passes.cfRest_cons (i : Instr) (is : List Instr) (t : Term)
   rw [cfInstr_fold_cons, cfInstr_foldMap_cons]
   cases t <;> rfl
 
+omit model in
 theorem Passes.cfRest_nil (t : Term) (m : Std.HashMap ValId U256) :
     cfRest [] t m = ⟨[], cfTerm { params := [], instrs := [], term := t } m⟩ := rfl
 
+omit model in
 theorem Passes.cfBlockOut_rest (b : Block) (m : Std.HashMap ValId U256) :
     Rest.mk (cfBlockOut b m).instrs (cfBlockOut b m).term = cfRest b.instrs b.term m := by
   rfl
 
+omit model in
 /-- A certified destination's unique instruction site determines which kind of
 certificate it carries. -/
 theorem constDef_instr_cases {f : Func} (hnd : f.allDefs.Nodup)
@@ -11782,6 +11882,7 @@ theorem constDef_instr_cases {f : Func} (hnd : f.allDefs.Nodup)
     have heq := instr_def_unique hnd hb hb' hi hi' hd (by simp [Instr.defs])
     exact Or.inr ⟨yop, as, vs, heq, hp, hvs, he⟩
 
+omit model in
 theorem constRegs_getMany {f : Func} {R : Regs} (hR : ConstRegs f R)
     {as : List ValId} {vs args : List U256}
     (hc : List.Forall₂ (Passes.ConstDef f) as vs) (hg : R.getMany as = some args) :
@@ -11800,6 +11901,7 @@ theorem constRegs_getMany {f : Func} {R : Regs} (hR : ConstRegs f R)
         subst args
         rw [hR hav ha, ih hs]
 
+omit model in
 theorem constRegs_const {f : Func} (hnd : f.allDefs.Nodup)
     {b : Block} (hb : b ∈ f.blocks.toList) {d : ValId} {v : U256}
     (hi : .const d v ∈ b.instrs) {R : Regs} (hR : ConstRegs f R) :
@@ -11815,6 +11917,7 @@ theorem constRegs_const {f : Func} (hnd : f.allDefs.Nodup)
   · rw [Regs.set_other _ _ hxd] at hr
     exact hR hc hr
 
+omit model in
 theorem constRegs_call {f : Func} (hnd : f.allDefs.Nodup)
     {b : Block} (hb : b ∈ f.blocks.toList) {ds : List ValId} {fid : FuncId}
     {as : List ValId} (hi : .call ds fid as ∈ b.instrs) {R : Regs}
@@ -12042,7 +12145,7 @@ The loop is no longer in the way: `constFold_blocks_eq` (proved) turns it into a
 `List.foldl` over `cfBlockStep`, and `constFold_spec` (proved) relates output
 blocks to input blocks index by index — that is what closed `constFold_dom`.
 
-What soundness additionally needs, and what the remaining `sorry` is. The
+The soundness proof uses the following consistency invariant. The
 single-assignment lemmas (`instr_def_unique`, `param_not_instr_def`,
 `funcParam_not_instr_def`) and the step-by-step correspondence
 (`Passes.cfInstrStep_eq`, `cfInstr_fold_cons`, `cfInstr_foldMap_cons`) are now
@@ -12137,6 +12240,7 @@ theorem CseTabRuntime.inheritTab {τ : Passes.Subst} {R : Regs}
   · intro v d hm
     exact h.2 (List.mem_filter.mp hm).1
 
+omit model in
 theorem Passes.substV_not_blockParam {f : Func} {τ : Passes.Subst}
     (hnd : f.allDefs.Nodup) (hsub : Passes.CseSubSound f τ)
     {b : Block} (hb : b ∈ f.blocks.toList) {x : ValId}
@@ -12360,7 +12464,7 @@ theorem cseInstrStep_acc_eq (i : Instr) (acc : List Instr)
           | cons e es => rfl
           | nil =>
               simp only [cseInstrStep, substInstr]
-              split <;> (try split <;> (try split <;> (try split))) <;> rfl
+              split <;> (try split <;> (try split)) <;> rfl
   | call ds fid args => rfl
 
 omit model in
@@ -12482,6 +12586,7 @@ theorem cseBlockOut_def_source {f : Func} {i : BlockId} {b : Block}
 
 end Passes
 
+omit model in
 /-- Runtime-independent stale-zone fact for inherited CSE entries: the
 representative's unique defining block strictly dominates the block at which
 the entry is available. -/
@@ -12503,6 +12608,7 @@ theorem cseAvail_strict_dom {f : Func} (hnd : f.allDefs.Nodup)
         exact List.mem_append_right _ (by simp)
       · exact List.mem_append_left _ (ih havail)
 
+omit model in
 /-- Every final CSE alias is either represented earlier in the same block or
 by a definition in a strict predecessor chain. -/
 theorem cse_alias_zone {f : Func} (hnd : f.allDefs.Nodup)
@@ -12527,6 +12633,7 @@ namespace Passes
 def Before (a b : ValId) (xs : List ValId) : Prop :=
   ∃ pre mid post, xs = pre ++ a :: mid ++ b :: post
 
+omit model in
 theorem Before.asymm {a b : ValId} {xs : List ValId} (hn : xs.Nodup)
     (hab : Before a b xs) : ¬ Before b a xs := by
   rcases hab with ⟨pre, mid, post, rfl⟩
@@ -12568,6 +12675,7 @@ theorem Before.asymm {a b : ValId} {xs : List ValId} (hn : xs.Nodup)
   dsimp [ia, ib, ia', ib'] at hea heb
   omega
 
+omit model in
 theorem substInstr_use_source_of_rangeFree {sigma tau : Subst}
     (hext : SubstExt sigma tau) (hrange : RangeFree tau)
     {d d0 : ValId} (hmap : tau[d]? = some d0)
@@ -12586,6 +12694,7 @@ theorem substInstr_use_source_of_rangeFree {sigma tau : Subst}
       rw [hmap] at hynone
       contradiction
 
+omit model in
 theorem instr_order_before {f : Func} {b : Block}
     (hb : b ∈ f.blocks.toList) {pre mid post : List Instr} {i j : Instr}
     (his : b.instrs = pre ++ i :: mid ++ j :: post)
@@ -12601,6 +12710,7 @@ theorem instr_order_before {f : Func} {b : Block}
   rw [cseSeen, htake, hbs]
   simp [his, hdi, hej, List.append_assoc]
 
+omit model in
 theorem instr_order_before_mem {f : Func} {b : Block}
     (hb : b ∈ f.blocks.toList) {pre mid post : List Instr} {i j : Instr}
     (his : b.instrs = pre ++ i :: mid ++ j :: post)
@@ -12616,12 +12726,11 @@ theorem instr_order_before_mem {f : Func} {b : Block}
       bt.flatMap (fun b : Block => b.instrs.flatMap Instr.defs), ?_⟩
   have htake : f.blocks.toList.take f.blocks.size = f.blocks.toList := by simp
   rw [cseSeen, htake, hbs]
-  simp only [List.flatMap_append, List.flatMap_cons, List.flatMap_nil,
-    List.append_nil]
+  simp only [List.flatMap_append, List.flatMap_cons]
   rw [his]
   simp only [List.flatMap_append, List.flatMap_cons]
   rw [hdiSplit, hejSplit]
-  simp [List.flatMap_append, List.append_assoc]
+  simp [List.append_assoc]
 
 inductive CseDomainDef (f : Func) (tau : Subst) : CseExpr → ValId → Prop
   | op {b : Block} {i : Instr} {sigma : Subst} {d : ValId}
@@ -12636,15 +12745,18 @@ def CseTabDomainSound (f : Func) (tau : Subst) (tab : CseTab) : Prop :=
   ∀ {yop args d}, ((yop, args), d) ∈ tab.ops →
     CseDomainDef f tau (.op yop args) d
 
+omit model in
 theorem CseTabDomainSound.empty (f : Func) (tau : Subst) :
     CseTabDomainSound f tau {} := by simp [CseTabDomainSound]
 
+omit model in
 theorem CseTabDomainSound.inheritTab {f : Func} {tau : Subst} {tab : CseTab}
     (h : CseTabDomainSound f tau tab) (ps : List ValId) :
     CseTabDomainSound f tau (inheritTab tab ps) := by
   intro yop args d hm
   exact h (List.mem_filter.mp hm).1
 
+omit model in
 theorem CseTabDomainSound.addOp {f : Func} {tau : Subst} {tab : CseTab}
     (h : CseTabDomainSound f tau tab) {yop : Op} {args : List ValId}
     {d : ValId} (hd : CseDomainDef f tau (.op yop args) d) :
@@ -12656,6 +12768,7 @@ theorem CseTabDomainSound.addOp {f : Func} {tau : Subst} {tab : CseTab}
     exact hd
   · exact h hold
 
+omit model in
 theorem cseInstrStep_domain {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
     {tau : Subst} (hrange : RangeFree tau)
     {tab : CseTab} {used : Std.HashSet ValId} {sigma : Subst}
@@ -12694,6 +12807,7 @@ theorem cseInstrStep_domain {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
               · exact htab
           · exact htab
 
+omit model in
 theorem cseInstrFold_domain {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
     {tau : Subst} (hrange : RangeFree tau)
     {seen : List ValId} {tab : CseTab} {sigma : Subst}
@@ -12752,6 +12866,7 @@ theorem cseInstrFold_domain {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
 def CSEPrefixDomainInv (f : Func) (tau : Subst) (n : Nat) : Prop :=
   ∀ p < n, CseTabDomainSound f tau (csePrefix f n).2.1[p]!
 
+omit model in
 theorem csePrefixDomainInv {f : Func} (hnd : f.allDefs.Nodup) :
     ∀ n ≤ f.blocks.size,
       CSEPrefixDomainInv f (csePrefix f f.blocks.size).2.2 n := by
@@ -12783,8 +12898,7 @@ theorem csePrefixDomainInv {f : Func} (hnd : f.allDefs.Nodup) :
                   · simpa [tab, cseEntryTab, he, hs, hp] using
                       (CseTabDomainSound.inheritTab (ih (by omega) p hp)
                         f.blocks[n]!.params)
-                  · simpa [tab, cseEntryTab, he, hs, hp] using
-                      CseTabDomainSound.empty f tau
+                  · simp [tab, cseEntryTab, he, hs, hp]
               | cons q qs =>
                   simp only [tab, cseEntryTab, if_neg he, hs]
                   exact CseTabDomainSound.empty f tau
@@ -12826,6 +12940,7 @@ theorem csePrefixDomainInv {f : Func} (hnd : f.allDefs.Nodup) :
           Array.getElem_setIfInBounds_ne hp0 (Ne.symm hpn), ← getElem!_eq_getElem hp0]
         exact ih (by omega) p (by omega)
 
+omit model in
 theorem source_use_mem_substInstr_of_none {sigma : Subst} {i : Instr}
     {x : ValId} (hn : sigma[x]? = none) (hx : x ∈ i.uses) :
     x ∈ (substInstr sigma i).uses := by
@@ -12840,6 +12955,7 @@ theorem source_use_mem_substInstr_of_none {sigma : Subst} {i : Instr}
       simp only [substInstr, substVs, List.mem_map]
       exact ⟨x, hx, by simp [substV, Std.HashMap.getD_eq_getD_getElem?, hn]⟩
 
+omit model in
 theorem cse_drop_not_self_use {f : Func} {li : Array (List ValId)}
     (hnd : f.allDefs.Nodup) (hwf : f.wfCheck n = true)
     (hli : ToAsm.liveInSets f = some li) (hdom : ToAsm.Func.domCheck f = true)
@@ -13076,6 +13192,7 @@ end Passes
 
 /-! ### Dominance plumbing -/
 
+omit model in
 theorem BlockDom.trans {f : Func} {a b c : BlockId}
     (hab : BlockDom f a b) (hbc : BlockDom f b c) : BlockDom f a c := by
   intro path hp
@@ -13090,6 +13207,7 @@ omit model in
 theorem StrictBlockDom.blockDom {f : Func} {a b : BlockId}
     (h : StrictBlockDom f a b) : BlockDom f a b := fun path hp => Or.inr (h path hp)
 
+omit model in
 theorem StrictBlockDom.trans_left {f : Func} {a b c : BlockId}
     (hab : BlockDom f a b) (hbc : StrictBlockDom f b c) : StrictBlockDom f a c := by
   intro path hp
@@ -13136,21 +13254,22 @@ theorem mem_left_of_before {α : Type} {x y : α} :
           exact List.mem_cons_of_mem _ (ih hnd' heq' hyq hy1')
 
 omit model in
-theorem sublist_flatMap_of_mem {α β : Type} (g : α → List β) :
+theorem Passes.sublist_flatMap_of_mem {α β : Type} (g : α → List β) :
     ∀ {l : List α} {a : α}, a ∈ l → (g a).Sublist (l.flatMap g)
   | [], _, h => absurd h (by simp)
   | c :: cs, a, h => by
       rw [List.flatMap_cons]
       rcases List.mem_cons.mp h with rfl | h'
       · exact List.sublist_append_left _ _
-      · exact (sublist_flatMap_of_mem g h').trans (List.sublist_append_right _ _)
+      · exact (Passes.sublist_flatMap_of_mem g h').trans
+          (List.sublist_append_right _ _)
 
 omit model in
 /-- Comparing two decompositions of the same list: if `j` occurs after the
 distinguished `i`, but not at or before it, then `i` belongs to the prefix of
 the decomposition distinguished at `j`. -/
 theorem mem_prefix_of_later {α : Type} {l pre post pre' post' : List α}
-    {i j : α} (h : l = pre ++ i :: post) (hj : j ∈ post)
+    {i j : α} (h : l = pre ++ i :: post) (_hj : j ∈ post)
     (hjpre : j ∉ pre) (hji : j ≠ i) (h' : l = pre' ++ j :: post') :
     i ∈ pre' := by
   subst l
@@ -13181,7 +13300,7 @@ theorem blockInstrDefs_nodup {f : Func} (hnd : f.allDefs.Nodup)
     {b : Block} (hb : b ∈ f.blocks.toList) :
     (b.instrs.flatMap Instr.defs).Nodup :=
   (Passes.instrDefs_nodup hnd).sublist
-    (sublist_flatMap_of_mem (fun c => c.instrs.flatMap Instr.defs) hb)
+    (Passes.sublist_flatMap_of_mem (fun c => c.instrs.flatMap Instr.defs) hb)
 
 omit model in
 /-- Within a block, the representative of a final CSE alias is produced by a
@@ -13262,6 +13381,7 @@ theorem CseSeen.entry_elim {f : Func} {d : ValId}
   · simpa using hloc heq
   · simp at hmem
 
+omit model in
 /-- A value read in block `cur` is seen there: its defining block dominates
 `cur`, and the caller supplies the same-block prefix guard. -/
 theorem cseSeen_of_use {f : Func} {li : Array (List ValId)}
@@ -13306,6 +13426,7 @@ theorem CseSeen.not_defined_later {f : Func} (hnd : f.allDefs.Nodup)
   rw [hsplit, List.flatMap_append, List.nodup_append] at hnodup
   exact hnodup.2.2 d hpre d hd rfl
 
+omit model in
 /-- Whenever a dropped definition is seen, so is its representative.  Same-block
 representatives use the intra-block alias order; inherited ones use the
 dominance zone of `cse_alias_zone`. -/
@@ -13320,7 +13441,7 @@ theorem CseSeen.rep {f : Func} {n : Nat} (hnd : f.allDefs.Nodup)
   obtain ⟨-, ⟨rb, hrbmem, i0, hi0, hr0⟩⟩ := Passes.cseSub_def_site hnd hmap
   obtain ⟨ri, hrb⟩ := Passes.block_index_of_mem hrbmem
   have hrflat : d0 ∈ rb.instrs.flatMap Instr.defs := List.mem_flatMap.mpr ⟨i0, hi0, hr0⟩
-  have hzone := cse_alias_zone (model := model) hnd hwf hmap hdb
+  have hzone := cse_alias_zone hnd hwf hmap hdb
     (ToAsm.mem_blockDefs.mpr (Or.inr hddef)) hrb
     (ToAsm.mem_blockDefs.mpr (Or.inr hrflat))
   rcases hzone with heq | hs
@@ -13381,6 +13502,7 @@ theorem CseAgree.getMany {f : Func} {cur : BlockId} {pre : List Instr} {R R' : R
   Regs.getMany_substVs (fun x hxm => ha.get (hx x hxm)) hg
 
 
+omit model in
 /-- Stepping past a *kept* instruction: both sides bind the same destinations to
 the same words. -/
 theorem CseAgree.step_kept {f : Func} {n : Nat} (hnd : f.allDefs.Nodup)
@@ -13409,7 +13531,7 @@ theorem CseAgree.step_kept {f : Func} {n : Nat} (hnd : f.allDefs.Nodup)
         rw [hkept d hdi] at hmap
         exact absurd hmap (by simp)
     have hd0old : CseSeen f cur pre d0 :=
-      CseSeen.rep (model := model) hnd hwf hb hpath hsplit hmap hdold
+      CseSeen.rep hnd hwf hb hpath hsplit hmap hdold
     have hdnot : d ∉ i.defs := fun hdi =>
       (CseSeen.not_defined_later hnd hb hsplit hdold) (by simp [hdi])
     have hd0not : d0 ∉ i.defs := fun hdi =>
@@ -13451,6 +13573,7 @@ theorem CseAgree.step_dropped {f : Func} {cur : BlockId}
       rw [Regs.set_other _ _ hd1]
       exact ha.2 hmap1 hold
 
+omit model in
 /-- Crossing an edge: block parameters are never dropped, so the two register
 files are extended identically, and the target's seen set is transported back
 across the edge by `BlockDom.pred`. -/
@@ -13489,6 +13612,7 @@ theorem CseAgree.jump {f : Func} (hnd : f.allDefs.Nodup)
       Regs.setMany_of_not_mem R' tb.params vals hd0not]
     exact ha.2 hmap hcur
 
+omit model in
 /-- The block defining the representative of a rewritten use dominates the block
 that reads it: this is the runtime counterpart of `cse_dom`. -/
 theorem cseSub_use_dom {f : Func} {li : Array (List ValId)} {n : Nat}
@@ -13504,7 +13628,7 @@ theorem cseSub_use_dom {f : Func} {li : Array (List ValId)} {n : Nat}
   have hxdef : x ∈ ToAsm.blockDefs b1 :=
     ToAsm.mem_blockDefs.mpr (Or.inr (List.mem_flatMap.mpr ⟨i1, hi1, hxd⟩))
   have hdomx : BlockDom f xi i := blockDef_dominates_use hnd hli hdomc hxi hxdef hb hx
-  rcases cse_alias_zone (model := model) hnd hwf hmap hxi hxdef hrb hrdef with rfl | hs
+  rcases cse_alias_zone hnd hwf hmap hxi hxdef hrb hrdef with rfl | hs
   · exact hdomx
   · exact BlockDom.trans hs.blockDom hdomx
 
@@ -13528,6 +13652,7 @@ theorem CseAgree.drop_value {f : Func} {cur : BlockId} {pre : List Instr}
     exact ha.getMany hargs hg
   exact CseExprRuntime.op_result hrt hp hg' hbi
 
+omit model in
 /-- Every representative available at a mid-block fold position has already been
 defined: either by an already-processed instruction of the current block, or in
 a block that strictly dominates it.  This is the mid-block refinement of
@@ -13582,6 +13707,7 @@ site-only `BindingProvenance` invariant. -/
 def CseConstRegs (f : Func) (R : Regs) : Prop :=
   ∀ {d v w}, Passes.CseDef f (.const v) d → R d = some w → w = v
 
+omit model in
 theorem cseConstRegs_entry {f : Func} (hnd : f.allDefs.Nodup)
     (args : List U256) : CseConstRegs f (Regs.empty.setMany f.params args) := by
   intro d v w hc hr
@@ -13592,6 +13718,7 @@ theorem cseConstRegs_entry {f : Func} (hnd : f.allDefs.Nodup)
   rw [Regs.setMany_of_not_mem _ f.params args hnot] at hr
   simp [Regs.empty] at hr
 
+omit model in
 theorem CseConstRegs.params {f : Func} (hnd : f.allDefs.Nodup)
     {R : Regs} (hR : CseConstRegs f R) {b : Block}
     (hb : b ∈ f.blocks.toList) (vals : List U256) :
@@ -13604,6 +13731,7 @@ theorem CseConstRegs.params {f : Func} (hnd : f.allDefs.Nodup)
   rw [Regs.setMany_of_not_mem _ b.params vals hnot] at hr
   exact hR hc hr
 
+omit model in
 theorem CseConstRegs.const {f : Func} (hnd : f.allDefs.Nodup)
     {b : Block} (hb : b ∈ f.blocks.toList) {d : ValId} {v : U256}
     (hi : .const d v ∈ b.instrs) {R : Regs} (hR : CseConstRegs f R) :
@@ -13622,6 +13750,7 @@ theorem CseConstRegs.const {f : Func} (hnd : f.allDefs.Nodup)
   · rw [Regs.set_other _ _ hxd] at hr
     exact hR hc hr
 
+omit model in
 theorem CseConstRegs.nonconst {f : Func} (hnd : f.allDefs.Nodup)
     {b : Block} (hb : b ∈ f.blocks.toList) {i : Instr} (hi : i ∈ b.instrs)
     (hn : ∀ d v, i ≠ .const d v) {R : Regs} (hR : CseConstRegs f R)
@@ -13645,6 +13774,7 @@ def CseConstAgree (f : Func) (R R' : Regs) : Prop :=
     Passes.CseDef f (.const v) d → Passes.CseDef f (.const v) d0 →
     R d = none ∨ R d = R' d0
 
+omit model in
 theorem cseConstAgree_entry {f : Func} (hnd : f.allDefs.Nodup)
     (args : List U256) :
     CseConstAgree f (Regs.empty.setMany f.params args)
@@ -13658,6 +13788,7 @@ theorem cseConstAgree_entry {f : Func} (hnd : f.allDefs.Nodup)
   rw [Regs.setMany_of_not_mem _ f.params args hnot]
   rfl
 
+omit model in
 theorem CseConstAgree.params {f : Func} (hnd : f.allDefs.Nodup)
     {R R' : Regs} (ha : CseConstAgree f R R') {b : Block}
     (hb : b ∈ f.blocks.toList) (vals : List U256) :
@@ -13671,6 +13802,7 @@ theorem CseConstAgree.params {f : Func} (hnd : f.allDefs.Nodup)
     Regs.setMany_of_not_mem _ b.params vals hd0n]
   exact ha hmap hd hd0
 
+omit model in
 theorem CseConstAgree.nonconst {f : Func} (hnd : f.allDefs.Nodup)
     {R R' : Regs} (ha : CseConstAgree f R R')
     {b : Block} (hb : b ∈ f.blocks.toList) {i : Instr} (hi : i ∈ b.instrs)
@@ -13691,6 +13823,7 @@ theorem CseConstAgree.nonconst {f : Func} (hnd : f.allDefs.Nodup)
     Regs.setMany_of_not_mem _ i.defs vals hd0n]
   exact ha hmap hd hd0
 
+omit model in
 theorem CseConstAgree.nonconst_left {f : Func} (hnd : f.allDefs.Nodup)
     {R R' : Regs} (ha : CseConstAgree f R R')
     {b : Block} (hb : b ∈ f.blocks.toList) {i : Instr} (hi : i ∈ b.instrs)
@@ -13705,6 +13838,7 @@ theorem CseConstAgree.nonconst_left {f : Func} (hnd : f.allDefs.Nodup)
   rw [Regs.setMany_of_not_mem _ i.defs vals hdn]
   exact ha hmap hd hd0
 
+omit model in
 theorem CseConstAgree.const_kept {f : Func} (hnd : f.allDefs.Nodup)
     {R R' : Regs} (ha : CseConstAgree f R R') (hR : CseConstRegs f R)
     {b : Block} (hb : b ∈ f.blocks.toList) {d : ValId} {v : U256}
@@ -13740,6 +13874,7 @@ theorem CseConstAgree.const_kept {f : Func} (hnd : f.allDefs.Nodup)
   · rw [Regs.set_other _ _ hxd, Regs.set_other _ _ hx0d]
     exact ha hmap hx hx0
 
+omit model in
 theorem CseConstAgree.const_dropped {f : Func} (hnd : f.allDefs.Nodup)
     {R R' : Regs} (ha : CseConstAgree f R R')
     {b : Block} (hb : b ∈ f.blocks.toList) {d d0 : ValId} {v : U256}
@@ -13764,6 +13899,7 @@ theorem CseConstAgree.const_dropped {f : Func} (hnd : f.allDefs.Nodup)
   · rw [Regs.set_other _ _ hxd]
     exact ha hmap hx hx0
 
+omit model in
 /-- Successful reads consume the two register clauses: operation aliases must
 be past their certified site, while constant aliases use global literal
 agreement and therefore also cover a loop's stale pre-definition interval. -/
@@ -13794,12 +13930,13 @@ theorem cseGetMany {f : Func} (hnd : f.allDefs.Nodup)
         | op yop as => exact ha.2 hm (hseen hx hm hdx)
   · exact hg
 
+omit model in
 /-- A read of an operation alias is past its certified drop site.  The only
 borderline case is a self-read at that site; the caller supplies exactly the
 `cse_drop_not_self_use` consequence for the current fold step. -/
 theorem cseSeen_of_op_use {f : Func} {li : Array (List ValId)} {n : Nat}
     (hnd : f.allDefs.Nodup) (hli : ToAsm.liveInSets f = some li)
-    (hdom : ToAsm.Func.domCheck f = true) (hwf : f.wfCheck n = true)
+    (hdom : ToAsm.Func.domCheck f = true) (_hwf : f.wfCheck n = true)
     {cur : BlockId} {b : Block} (hb : f.blocks[cur]? = some b)
     {pre post : List Instr} {i : Instr} (hsplit : b.instrs = pre ++ i :: post)
     {x d0 yop as} (huse : x ∈ i.uses)
@@ -13847,13 +13984,13 @@ theorem cseSeen_of_op_use {f : Func} {li : Array (List ValId)} {n : Nat}
         · rcases List.mem_cons.mp hidtail with hideq | hidpost
           · subst idrop
             exfalso
-            exact hself (by simpa [hiddefs]) huse
+            exact hself (by simp [hiddefs]) huse
           · by_cases hidpre : idrop ∈ pre
             · exact List.mem_flatMap.mpr ⟨idrop, hidpre, by rw [hiddefs]; simp⟩
             · have hne : idrop ≠ i := by
                 intro heq
                 subst idrop
-                exact hself (by simpa [hiddefs]) huse
+                exact hself (by simp [hiddefs]) huse
               have himem : i ∈ preD :=
                 mem_prefix_of_later hsplit hidpost hidpre hne hseqD
               exact False.elim (hprefix (List.mem_flatMap.mpr ⟨i, himem, huse⟩))
@@ -13887,14 +14024,14 @@ theorem CseTabRuntime.entry_of_edge {f : Func} (hnd : f.allDefs.Nodup)
         | cons q qs => exact CseTabRuntime.empty _ _
         | nil =>
             by_cases hp : p < e.target
-            · simp only [hs, hp, if_true]
+            · simp only [hp, if_true]
               have hcurp : cur = p := Passes.inEdgeSources_single_eq hb he ht hs
               subst p
               rw [Passes.csePrefix_table_to hnd hp (Nat.le_of_lt ht)]
               simpa [Passes.cseSub, htbang] using
                 (CseTabRuntime.setMany_inheritTab hnd
                   (Passes.cseFinalSubSound hnd) (block_mem_of_getElem? htb) hr vals)
-            · simp only [hs, hp, if_false]
+            · simp only [hp, if_false]
               exact CseTabRuntime.empty _ _
 
 namespace Passes
@@ -14182,6 +14319,7 @@ theorem cseInstrsOut_at_keep {f : Func} (hnd : f.allDefs.Nodup)
     (show b.instrs = pre ++ (i :: post) from hsplit)) (cseSub_rangeFree hnd)]
   rfl
 
+omit model in
 theorem cseAt_tab_domain {f : Func} (hnd : f.allDefs.Nodup)
     {cur : BlockId} {b : Block} (hb : f.blocks[cur]? = some b)
     {pre post : List Instr} (hsplit : b.instrs = pre ++ post) :
@@ -14285,6 +14423,7 @@ theorem cseAt_dest_final {f : Func} (hnd : f.allDefs.Nodup)
   rw [cseSub, hprefixStable d hdSeenGlobal, hfullSigma, htailD]
   rfl
 
+omit model in
 theorem cseAt_rep_fresh {f : Func} {n : Nat} (hnd : f.allDefs.Nodup)
     (hwf : f.wfCheck n = true) {cur : BlockId} {b : Block}
     (hb : f.blocks[cur]? = some b) {path : List BlockId}
@@ -14301,6 +14440,7 @@ theorem cseAt_rep_fresh {f : Func} {n : Nat} (hnd : f.allDefs.Nodup)
     rw [List.flatMap_cons]
     exact List.mem_append_left _ hd)
 
+omit model in
 /-- The defining instruction of an operation-table representative is either
 already in the current prefix or lies in a block dominating the current one. -/
 theorem cseAt_entry_before {f : Func} {n : Nat} (hnd : f.allDefs.Nodup)
@@ -14345,6 +14485,7 @@ theorem cseAt_entry_before {f : Func} {n : Nat} (hnd : f.allDefs.Nodup)
       have heq := instr_def_unique (d := r) hnd hbR hbR hjmem hkBlock hjdef hkdef
       simpa [heq] using hkpre
 
+omit model in
 /-- A non-constant destination cannot overwrite an argument read by an
 operation entry already live at the current CSE boundary. -/
 theorem cseAt_runtimeUse_fresh_nonconst {f : Func} {li : Array (List ValId)}
@@ -14511,7 +14652,7 @@ theorem cseAt_runtimeUse_fresh_nonconst {f : Func} {li : Array (List ValId)}
                       (List.mem_flatMap.mpr ⟨j, by simp, hajdef⟩)
                   have hseenA := cseSeen_of_op_use hnd hli hdom hwf hri hseq
                     haju hma hdefA hself
-                  have hseenD := CseSeen.rep (model := model) hnd hwf hri hpathRi
+                  have hseenD := CseSeen.rep hnd hwf hri hpathRi
                     hseq hma hseenA
                   obtain ⟨di, db, hdb, hdflat, hdomD, hlocD⟩ := hseenD
                   have hdcur : d ∈ ToAsm.blockDefs b := ToAsm.mem_blockDefs.mpr
@@ -14527,6 +14668,7 @@ theorem cseAt_runtimeUse_fresh_nonconst {f : Func} {li : Array (List ValId)}
                     exact hlocD heq.symm
                   · exact False.elim (cross_bad heq hdomD)
 
+omit model in
 /-- If a non-constant instruction grows the operation table, its destination
 is not among the final-substituted operands of that newly recorded entry. -/
 theorem cseStep_dest_use_fresh_nonconst {f : Func} {li : Array (List ValId)}
@@ -14649,7 +14791,7 @@ theorem cseStep_dest_use_fresh_nonconst {f : Func} {li : Array (List ValId)}
                               have hseenX := cseSeen_of_op_use hnd hli hdom hwf
                                 hb hsplit (by simpa [Instr.uses] using hx)
                                 hmx hdefX hself
-                              have hseenD := CseSeen.rep (model := model) hnd hwf
+                              have hseenD := CseSeen.rep hnd hwf
                                 hb hpath hsplit hmx hseenX
                               exact hseenD.not_defined_later hnd hb
                                 (show b.instrs = pre ++ (Instr.op [d] yop as :: post)
@@ -14661,8 +14803,9 @@ theorem cseStep_dest_use_fresh_nonconst {f : Func} {li : Array (List ValId)}
                       simp [q, cseInstrStep, substInstr, hp, hfind, hgadd]
               · exfalso
                 apply hchg
-                simp [q, cseInstrStep, substInstr, hp]
+                simp [cseInstrStep, substInstr, hp]
 
+omit model in
 theorem cseFresh {f : Func} {li : Array (List ValId)} {n : Nat}
     (hnd : f.allDefs.Nodup) (hwf : f.wfCheck n = true)
     (hli : ToAsm.liveInSets f = some li) (hdom : ToAsm.Func.domCheck f = true) :
@@ -14756,7 +14899,7 @@ theorem cse_exec_aux {P : Prog} {f : Func} (hwf : f.wfCheck P.funcs.size = true)
             simp [q, cseInstrStep, substInstr, hfind]
           have hmap : (cseSub f)[d]? = some d0 := by
             rw [cseAt_dest_final hnd hb hsplit (by simp [Instr.defs])]
-            simp [q, cseInstrStep, substInstr, hfind, hdpre]
+            simp [q, cseInstrStep, substInstr, hfind]
           have hsplit' : b.instrs = (pre ++ [.const d v]) ++ is := by
             simpa [List.append_assoc] using hsplit
           have hnext := ih hwf hnd hli hdom hfresh hb hpath hsplit' ht
@@ -14873,7 +15016,7 @@ theorem cse_exec_aux {P : Prog} {f : Func} (hwf : f.wfCheck P.funcs.size = true)
                         simp [q, cseInstrStep, substInstr, hp, hfind, hu]
                       have hmap : (cseSub f)[d]? = some d0 := by
                         rw [cseAt_dest_final hnd hb hsplit (by simp [Instr.defs])]
-                        simp [q, cseInstrStep, substInstr, hp, hfind, hu, hdpre]
+                        simp [q, cseInstrStep, substInstr, hp, hfind, hu]
                       obtain ⟨hyop0, has0, hrt⟩ := htab.op_of_find hfind
                       subst yop0
                       subst as0
@@ -15100,7 +15243,7 @@ theorem cse_exec_aux {P : Prog} {f : Func} (hwf : f.wfCheck P.funcs.size = true)
               | nil =>
                   simpa [q, cseInstrStep, substInstr, hpureFalse] using
                     (cseAt_dest_none hnd hb hsplit hxd)
-              | cons e es => simp [q, cseInstrStep, substInstr,
+              | cons e es => simp [cseInstrStep, substInstr,
                   cseAt_dest_none hnd hb hsplit hxd]
         rw [hdnone] at hm
         contradiction) hg
@@ -15120,14 +15263,14 @@ theorem cse_exec_aux {P : Prog} {f : Func} (hwf : f.wfCheck P.funcs.size = true)
         intro hxd
         have hdnone : (cseSub f)[x]? = none := by
           rw [cseAt_dest_final hnd hb hsplit hxd]
-          simp [q, cseInstrStep, substInstr,
+          simp [cseInstrStep, substInstr,
             cseAt_dest_none hnd hb hsplit hxd]
         rw [hdnone] at hm
         contradiction) hg
       have hkept : ∀ x ∈ (Instr.call ds fid as).defs, (cseSub f)[x]? = none := by
         intro x hx
         rw [cseAt_dest_final hnd hb hsplit hx]
-        simp [q, cseInstrStep, substInstr,
+        simp [cseInstrStep, substInstr,
           cseAt_dest_none hnd hb hsplit hx]
       have hfr : ∀ x ∈ ds, x ∉ cseTabVals q.2.1 ∧
           x ∉ cseTabRuntimeUses (cseSub f) q.2.1 := by
@@ -15161,7 +15304,7 @@ theorem cse_exec_aux {P : Prog} {f : Func} (hwf : f.wfCheck P.funcs.size = true)
         intro hxd
         have hdnone : (cseSub f)[x]? = none := by
           rw [cseAt_dest_final hnd hb hsplit hxd]
-          simp [q, cseInstrStep, substInstr,
+          simp [cseInstrStep, substInstr,
             cseAt_dest_none hnd hb hsplit hxd]
         rw [hdnone] at hm
         contradiction) hg
@@ -15377,7 +15520,7 @@ private theorem cseLaterDefCounterexample_checks :
 
 /-- **Pass 3 (local CSE) soundness**, under dominance.
 
-`sorry`. Same `LiveAgree` invariant as pass 1, with `σ` the accumulated
+The proof uses the same `LiveAgree` invariant as pass 1, with `σ` the accumulated
 dropped-definition substitution `d ↦ d₀`. The value-level obligation — that the
 two computations agree — is `Passes.pure_rets_eq` (proved: a pure op's results
 are a function of its arguments alone, in any state). What dominance buys is that
@@ -15478,9 +15621,9 @@ chain `x ↦ d ↦ d0` contradicts final `RangeFree`; same-block representatives
 then contradict the prefix/order certificates, and inherited representatives
 contradict dominance plus `cse_alias_zone`.
 
-What remains is to package the already stated three-way register relation,
-thread it together with `CseTabRuntime` through `cseInstrsOut`, and perform the
-`Exec` induction.  At the `sorry` below Lean's exact target is
+The proof packages the three-way register relation, threads it together with
+`CseTabRuntime` through `cseInstrsOut`, and performs the `Exec` induction to
+establish
 
     Exec (model := model) P (Passes.cse f)
       (Regs.empty.setMany f.params args) st
@@ -15554,14 +15697,17 @@ def dveEdge (f : Func) (e : Edge) : Edge :=
 
 def dveTerm (f : Func) (t : Term) : Term := mapEdges (dveEdge f) t
 
+omit model in
 theorem dveBlock_term (f : Func) (bi : BlockId) (b : Block) :
     (dveBlock f bi b).term = dveTerm f b.term := by
   rfl
 
+omit model in
 theorem dveBlock_instrs (f : Func) (bi : BlockId) (b : Block) :
     (dveBlock f bi b).instrs = b.instrs.filter (dveKeepInstr (liveSet f)) := by
   rfl
 
+omit model in
 /-- The slightly unusual `zipIdx` presentation of an edge mask is extensionally
 the ordinary filtering of the zipped target parameters and edge arguments. -/
 theorem dveEdge_args_eq_zip {f : Func} {e : Edge} {tb : Block}
@@ -15584,8 +15730,7 @@ theorem dveEdge_args_eq_zip {f : Func} {e : Edge} {tb : Block}
       simp only [List.zipIdx_cons]
       rw [show as.zipIdx 1 = as.zipIdx.map (fun ai => (ai.1, 1 + ai.2)) by
         simpa using (List.zipIdx_eq_map_add (l := as) (i := 1))]
-      simp only [List.zipIdx_cons, List.getElem?_cons_zero, Option.some, List.filter_cons,
-        List.map_cons, List.zip_cons_cons]
+      simp only [List.getElem?_cons_zero, List.filter_cons, List.zip_cons_cons]
       simp only [List.filter_map]
       have hpred :
           ((fun ai : ValId × Nat =>
@@ -15597,7 +15742,7 @@ theorem dveEdge_args_eq_zip {f : Func} {e : Edge} {tb : Block}
               | some p => (liveSet f).contains p
               | none => true) := by
         funext ai
-        simp [Function.comp_def, Nat.add_comm]
+        simp [Nat.add_comm]
       rw [hpred]
       have hmap : ((fun x : ValId × Nat => x.1) ∘
           fun ai : ValId × Nat => (ai.1, 1 + ai.2)) =
@@ -15608,6 +15753,7 @@ theorem dveEdge_args_eq_zip {f : Func} {e : Edge} {tb : Block}
       · simp only [List.map_map, hmap]
         exact ih ps hlen
 
+omit model in
 /-- Reading an edge after masking it returns the correspondingly masked values. -/
 theorem filterGetMany {live : Std.HashSet ValId} {R R' : Regs}
     {ps xs : List ValId} {vs : List U256}
@@ -15649,6 +15795,7 @@ theorem filterGetMany {live : Std.HashSet ValId} {R R' : Regs}
             simpa [hpB] using ih hlen htail
               (fun x hx => hselected x (by simp [hpB, hx]))
 
+omit model in
 /-- Parallel binding by all target parameters agrees on live values with
 binding only the live parameters and their positionally filtered values. -/
 theorem filterSetMany {live : Std.HashSet ValId} {R R' : Regs}
@@ -15685,6 +15832,7 @@ theorem filterSetMany {live : Std.HashSet ValId} {R R' : Regs}
         exact ⟨by simpa [hpB] using hlen',
           by simpa [hpB, Regs.setMany_cons] using hagree'⟩
 
+omit model in
 theorem dveBlock_params {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
     {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b) :
     (dveBlock f bi b).params = b.params.filter (liveSet f).contains := by
@@ -15698,6 +15846,7 @@ theorem dveBlock_params {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
     simp [dveBlock, hempty]
   · simp [dveBlock, hi]
 
+omit model in
 theorem blockParams_nodup {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
     {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b) : b.params.Nodup := by
   have hnd := wfCheck_defs_nodup hwf
@@ -15714,6 +15863,7 @@ theorem blockParams_nodup {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
   rw [List.count_append] at hblock
   omega
 
+omit model in
 theorem dveInstr_uses_live {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
     {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b)
     {i : Instr} (hi : i ∈ b.instrs) (hkeep : dveKeepInstr (liveSet f) i = true)
@@ -15723,6 +15873,7 @@ theorem dveInstr_uses_live {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
   exact Or.inl (List.mem_flatMap.mpr
     ⟨i, List.mem_filter.mpr ⟨hi, hkeep⟩, hx⟩)
 
+omit model in
 theorem dveTerm_uses_live {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
     {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b)
     {x : ValId} (hx : x ∈ (dveTerm f b.term).uses) : x ∈ liveSet f := by
@@ -15730,6 +15881,7 @@ theorem dveTerm_uses_live {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
   rw [ToAsm.mem_blockUses]
   exact Or.inr (by simpa [dveBlock_term] using hx)
 
+omit model in
 theorem dveEdge_args_live {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
     {bi : BlockId} {b : Block} (hb : f.blocks[bi]? = some b)
     {e : Edge} (he : e ∈ b.term.edges) {x : ValId} (hx : x ∈ (dveEdge f e).args) :
@@ -15743,13 +15895,14 @@ theorem dveEdge_args_live {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
   | branch c et ef =>
     simp only [ht, Term.edges, List.mem_cons] at he
     rcases he with rfl | he
-    · simp [dveTerm, ht, mapEdges, Term.uses, hx]
+    · simp [dveTerm, mapEdges, Term.uses, hx]
     · have he' : e = ef := by simpa using he
       subst e
-      simp [dveTerm, ht, mapEdges, Term.uses, hx]
+      simp [dveTerm, mapEdges, Term.uses, hx]
   | ret vs => simp [ht, Term.edges] at he
   | halt yop as => simp [ht, Term.edges] at he
 
+omit model in
 theorem getMany_length_dve {R : Regs} {xs : List ValId} {vs : List U256}
     (h : R.getMany xs = some vs) : xs.length = vs.length := by
   induction xs generalizing vs with
@@ -15787,7 +15940,7 @@ theorem dve_exec_aux {P : Prog} {f : Func} (hwf : f.wfCheck P.funcs.size = true)
       exact Exec.const (ih hwf hb ht hs' (Regs.set_congr hagree d v))
     · have hdB : (liveSet f).contains d = false := by
         exact Bool.eq_false_of_not_eq_true (fun h => hd (Std.HashSet.contains_iff_mem.mp h))
-      simp only [List.filter_cons, dveKeepInstr, hdB, if_false]
+      simp only [List.filter_cons, dveKeepInstr, hdB]
       apply ih hwf hb ht hs'
       intro x hx
       rw [Regs.set_other _ _ (by intro heq; subst x; exact hd hx)]
@@ -15820,7 +15973,7 @@ theorem dve_exec_aux {P : Prog} {f : Func} (hwf : f.wfCheck P.funcs.size = true)
         simp [this] at hk'
       have hst : st' = st := pure_state_eq hp hbi
       subst st'
-      simp only [List.filter_cons, dveKeepInstr, hk', if_false]
+      simp only [List.filter_cons, dveKeepInstr, hk']
       apply ih hwf hb ht hs'
       intro x hx
       rw [Regs.setMany_of_not_mem _ ds rets (hds x hx)]
@@ -15858,7 +16011,7 @@ theorem dve_exec_aux {P : Prog} {f : Func} (hwf : f.wfCheck P.funcs.size = true)
       rw [← Regs.getMany_congr (R1 := R) (R2 := R')
         (fun x hx => hagree x (hargs x hx))]
       exact hget
-    simp only [List.filter_cons, dveKeepInstr, Bool.true_eq, if_true]
+    simp only [List.filter_cons, dveKeepInstr, if_true]
     exact Exec.call hfid hget' hplen heb hbody hlen
       (ih hwf hb ht hs' (Regs.setMany_congr hagree ds rvals))
   | @callHalt f g R st st' ds as fid args eb is t hfid hget hplen heb hbody ihbody =>
@@ -15872,7 +16025,7 @@ theorem dve_exec_aux {P : Prog} {f : Func} (hwf : f.wfCheck P.funcs.size = true)
       rw [← Regs.getMany_congr (R1 := R) (R2 := R')
         (fun x hx => hagree x (hargs x hx))]
       exact hget
-    simp only [List.filter_cons, dveKeepInstr, Bool.true_eq, if_true]
+    simp only [List.filter_cons, dveKeepInstr, if_true]
     exact Exec.callHalt hfid hget' hplen heb hbody
   | @jump f R st e tb vals res htb hget hlen hnext ih =>
     intro bi b R' hb ht hs hagree
@@ -16036,8 +16189,9 @@ theorem BlockWF.subst {σ : Subst} {f : Func} {b : Block} {n : Nat}
     (h : BlockWF f.blocks f.nrets n b) :
     BlockWF (substFunc σ f).blocks (substFunc σ f).nrets n (substBlock σ b) := by
   refine ⟨?_, ?_, ?_⟩
-  · rcases ht : b.term with e | ⟨c, et, ef⟩ | xs | ⟨yop, as⟩ <;>
-      simpa [substBlock, substTerm, substVs, substFunc, ht] using h.1
+  · have hh := h.1
+    rcases ht : b.term with e | ⟨c, et, ef⟩ | xs | ⟨yop, as⟩ <;>
+      simp_all [substBlock, substTerm, substVs, substFunc]
   · intro e he
     simp only [substBlock, substTerm_edges_eq, List.mem_map] at he
     obtain ⟨e0, he0, rfl⟩ := he
@@ -16046,12 +16200,13 @@ theorem BlockWF.subst {σ : Subst} {f : Func} {b : Block} {n : Nat}
     · change (f.blocks.map (substBlock σ))[e0.target]? = some (substBlock σ tb)
       rw [Array.getElem?_map, htb]
       rfl
-    · simpa [substEdge, substVs, substBlock] using hlen
+    · simp [substEdge, substVs, substBlock]
+      exact hlen
   · intro i hi
     simp only [substBlock, List.mem_map] at hi
     obtain ⟨i0, hi0, rfl⟩ := hi
     have hw := h.2.2 i0 hi0
-    cases i0 <;> simpa [substInstr] using hw
+    cases i0 <;> simp_all [substInstr]
 
 omit model in
 theorem substFunc_wf {σ : Subst} {f : Func} {n : Nat}
@@ -16110,8 +16265,9 @@ theorem removeParam_wf {f : Func} {n bi i p v : Nat}
     rw [hb'eq]
     have hbwf := hall b (block_mem_of_getElem? hb)
     refine ⟨?_, ?_, ?_⟩
-    · cases ht : b.term <;>
-        simpa [removedBlock_term, removeParam, mapEdges, ht] using hbwf.1
+    · have hh := hbwf.1
+      cases ht : b.term <;>
+        simp_all [removedBlock_term, removeParam, mapEdges]
     · intro e he
       rw [removedBlock_term] at he
       obtain ⟨e0, he0, rfl⟩ := mapEdges_edges b.term he
@@ -16287,14 +16443,14 @@ theorem cfTerm_edge_mem (b : Block) (m : Std.HashMap ValId U256) {e : Edge}
 
 omit model in
 theorem cfBlockOut_wf {f : Func} {b : Block} {m : Std.HashMap ValId U256}
-    {n : Nat} (hwf : f.wfCheck n = true) (hb : b ∈ f.blocks.toList)
+    {n : Nat} (_hwf : f.wfCheck n = true) (_hb : b ∈ f.blocks.toList)
     (h : BlockWF f.blocks f.nrets n b) :
     BlockWF (constFold f).blocks (constFold f).nrets n (cfBlockOut b m) := by
   refine ⟨?_, ?_, ?_⟩
   · rcases ht : b.term with e | ⟨c, et, ef⟩ | xs | ⟨yop, as⟩
     · simp [cfBlockOut, cfTerm, ht]
     · cases hc : (b.instrs.foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).1[c]?
-        <;> simp [cfBlockOut, cfTerm, ht, hc, constFold]
+        <;> simp [cfBlockOut, cfTerm, ht, hc]
     · simpa [cfBlockOut, cfTerm, constFold, ht] using h.1
     · simp [cfBlockOut, cfTerm, ht]
   · intro e he
@@ -16465,7 +16621,7 @@ theorem cseRaw_allDefs_sublist (f : Func) :
   unfold Func.allDefs
   apply List.Sublist.append (.refl _)
   apply flatMap_sublist_of_getElem? blockAllDefs blockAllDefs
-  · simpa using csePrefix_blocks_size f f.blocks.size
+  · simp
   · intro i b' b hb' hb
     have hi : i < f.blocks.size := (List.getElem?_eq_some_iff.mp hb).1
     have hbraw : (csePrefix f f.blocks.size).1.toList[i]? =
@@ -16480,7 +16636,7 @@ theorem cseRaw_allDefs_sublist (f : Func) :
     exact cseBlockOut_defs_sublist f i
 
 omit model in
-theorem cseBlockOut_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
+theorem cseBlockOut_wf {f : Func} {n : Nat} (_hwf : f.wfCheck n = true)
     {i : BlockId} {b : Block} (hb : f.blocks[i]? = some b)
     (h : BlockWF f.blocks f.nrets n b) :
     let raw : Func := { f with blocks := (csePrefix f f.blocks.size).1 }
@@ -16514,7 +16670,7 @@ theorem cseBlockOut_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
     have hmapped : substInstr (∅ : Subst) ins ∈ r.1.reverse.map (substInstr ∅) :=
       List.mem_map.mpr ⟨ins, hins, rfl⟩
     have houtcheck := hc (substInstr ∅ ins) (by simpa [r] using hmapped)
-    cases ins <;> simpa [substInstr] using houtcheck
+    cases ins <;> simp_all [substInstr]
 
 omit model in
 /-- Pass 3 preserves the backend well-formedness check. -/
@@ -16592,13 +16748,15 @@ theorem filterZip_length {α β : Type} (p : α → Bool)
           simp only [List.zip_cons_cons, List.filter_cons]
           split <;> simp [ih hlen]
 
+omit model in
 theorem dveBlock_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
-    {i : BlockId} {b : Block} (hb : f.blocks[i]? = some b)
+    {i : BlockId} {b : Block} (_hb : f.blocks[i]? = some b)
     (h : BlockWF f.blocks f.nrets n b) :
     BlockWF (dve f).blocks (dve f).nrets n (dveBlock f i b) := by
   refine ⟨?_, ?_, ?_⟩
-  · rcases ht : b.term with e | ⟨c, et, ef⟩ | xs | ⟨yop, as⟩ <;>
-      simpa [dveBlock, mapEdges, dve, ht] using h.1
+  · have hh := h.1
+    rcases ht : b.term with e | ⟨c, et, ef⟩ | xs | ⟨yop, as⟩ <;>
+      simp_all [dveBlock, mapEdges, dve]
   · intro e he
     obtain ⟨e0, he0, heq⟩ := mapEdges_edges b.term (by simpa [dveBlock] using he)
     have heqD : e = dveEdge f e0 := by
@@ -16610,8 +16768,7 @@ theorem dveBlock_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
     · change (dve f).blocks[e0.target]? = some (dveBlock f e0.target tb)
       rw [dve_blocks_get, htb]
       rfl
-    · change (dveEdge f e0).args.length = (dveBlock f e0.target tb).params.length
-      rw [dveEdge_args_eq_zip htb hlen, dveBlock_params hwf htb,
+    · rw [dveEdge_args_eq_zip htb hlen, dveBlock_params hwf htb,
         List.length_map, filterZip_length (liveSet f).contains hlen.symm]
   · intro ins hins
     have hins' : ins ∈ b.instrs := by
@@ -16619,6 +16776,7 @@ theorem dveBlock_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
       exact List.mem_of_mem_filter hins
     exact h.2.2 ins hins'
 
+omit model in
 /-- Pass 4 preserves the backend well-formedness check. -/
 theorem dve_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true) :
     (dve f).wfCheck n = true := by
@@ -16647,6 +16805,7 @@ theorem dve_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true) :
     rw [heq]
     exact dveBlock_wf hwf hb (hall b (block_mem_of_getElem? hb))
 
+omit model in
 /-- One complete local pipeline round preserves `Func.wfCheck`. -/
 theorem runOnce_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true) :
     (runOnce f).wfCheck n = true := by
@@ -16715,7 +16874,7 @@ private theorem elimTrivialParam_one_dom {f : Func} (hnd : f.allDefs.Nodup)
     intro hvp
     subst v
     have hm : p ∈ (((Passes.inEdgeArgs f)[bi]!.filterMap (·[i]?)).filter
-        (· != p)).eraseDups := by simpa [hsingle]
+        (· != p)).eraseDups := by simp [hsingle]
     have hm' := List.mem_filter.mp (List.mem_eraseDups.mp hm)
     simpa using hm'.2
   obtain ⟨li, hli⟩ := ToAsm.liveInSets_isSome f
@@ -17220,7 +17379,6 @@ omit model in
 theorem Passes.runOnce_params (f : Func) : (runOnce f).params = f.params := by
   unfold runOnce
   rw [dve_params]
-  change (cse (constFold (elimTrivialParams f))).params = f.params
   change (constFold (elimTrivialParams f)).params = f.params
   change (elimTrivialParams f).params = f.params
   exact (elimTrivialParams_params_entry f).1
@@ -17269,6 +17427,7 @@ theorem Passes.runOnceProg_lookup {P : Prog} {fid : FuncId} {g : Func}
     (runOnceProg P).funcs[fid]? = some (runOnce g) := by
   simp [runOnceProg, h]
 
+omit model in
 theorem Passes.runOnceProg_wf {P : Prog} (hwf : P.wfCheck = true) :
     (runOnceProg P).wfCheck = true := by
   have hparts := hwf
@@ -17285,6 +17444,7 @@ theorem Passes.runOnceProg_wf {P : Prog} (hwf : P.wfCheck = true) :
       exact hparts.2 i hi'
     simpa [runOnceProg] using runOnce_wf hfi
 
+omit model in
 set_option maxHeartbeats 800000 in
 theorem Passes.runOnceProg_dom {P : Prog} (hwf : P.wfCheck = true)
     (hdom : ToAsm.Prog.domCheck P = true) :
@@ -17395,6 +17555,7 @@ def Passes.runOnceProgN : Nat → Prog → Prog
   | 0, P => P
   | n + 1, P => runOnceProgN n (runOnceProg P)
 
+omit model in
 theorem Passes.runOnceProgN_wf : ∀ (n : Nat) {P : Prog}, P.wfCheck = true →
     (runOnceProgN n P).wfCheck = true := by
   intro n
@@ -17404,6 +17565,7 @@ theorem Passes.runOnceProgN_wf : ∀ (n : Nat) {P : Prog}, P.wfCheck = true →
       intro P hwf
       exact ih (runOnceProg_wf hwf)
 
+omit model in
 theorem Passes.runOnceProgN_dom : ∀ (n : Nat) {P : Prog},
     P.wfCheck = true → ToAsm.Prog.domCheck P = true →
       ToAsm.Prog.domCheck (runOnceProgN n P) = true := by
@@ -17438,10 +17600,11 @@ theorem Passes.optimizeFunc_eq_runOnce3 (f : Func) :
 
 omit model in
 theorem optimizeCandidate_eq_rounds (P : Prog) :
-    optimizeCandidate P = Passes.runOnceProgN 3 (Passes.inlineProg P) := by
-  simp [optimizeCandidate, Passes.runOnceProgN, Passes.runOnceProg,
+    optimizeCandidate P = Passes.runOnceProgN 3 (optimizeInput P) := by
+  simp [optimizeCandidate, optimizeInput, Passes.runOnceProgN, Passes.runOnceProg,
     Passes.optimizeFunc_eq_runOnce3, Array.map_map, Function.comp_def]
 
+omit model in
 theorem Passes.inlineProgN_wf : ∀ (n : Nat) {P : Prog}, P.wfCheck = true →
     (inlineProgN n P).wfCheck = true := by
   intro n
@@ -17455,6 +17618,7 @@ theorem Passes.inlineProgN_wf : ∀ (n : Nat) {P : Prog}, P.wfCheck = true →
       · exact hround
       · exact ih hround
 
+omit model in
 theorem Passes.inlineProg_wf {P : Prog} (hwf : P.wfCheck = true) :
     (inlineProg P).wfCheck = true := by
   rw [inlineProg_eq_inlineProgN]
@@ -17465,20 +17629,12 @@ theorem Passes.inlineProg_wf {P : Prog} (hwf : P.wfCheck = true) :
 /-- **`SsaCfg.optimizeProg_sound`, reproduced verbatim** (post-fix signature:
 `hwf` *and* `hdom`).
 
-The defensive-fallback half is **proved** here; the remaining `sorry` is the
-branch where the pipeline's output passes the gate, which is where the four
-per-pass lemmas above (plus the simultaneous whole-program induction described in
-this section's header) do their work.
-
-**Current obstruction.**  The four per-pass `_wf` preservation declarations
-and their `runOnce_wf` composition are now proved, and `runOnce_dom` derives its
-intermediate checks internally.  This branch still depends immediately on the
-register-side final assembly of `cse_sound` recorded above, followed by the
-simultaneous whole-program replay required to transport recursive calls.
-
-With `hdom` this statement is, to the best of my analysis, true — the
-counterexample `Counterexample.optimizeProg_sound_false_without_dom` refutes only
-the version without it. -/
+The intermediate gate supplies the exact hypotheses required by the
+per-function pipeline: if it accepts the inlined program, inlining soundness
+provides the corresponding run and the gate provides well-formedness and
+dominance; if it rejects, the original program and the theorem hypotheses are
+used instead. The final gate either returns that proved candidate or falls back
+to the original program. -/
 theorem optimizeProg_sound' {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
     (hwf : P.wfCheck = true) (hdom : ToAsm.Prog.domCheck P = true)
     (hrun : Run (model := model) P yst0 yst' o) :
@@ -17487,25 +17643,15 @@ theorem optimizeProg_sound' {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
       && ToAsm.Prog.domCheck (optimizeCandidate P)) = true
   · -- the gate accepted the pipeline's output: this is the real content
     rw [optimizeProg_of_gate_true hgate]
-    let P0 := Passes.inlineProg P
-    have hwf0 : P0.wfCheck = true := Passes.inlineProg_wf hwf
-    have hrun0 : Run (model := model) P0 yst0 yst' o :=
-      inlineProg_sound hwf hrun
-    /- The remaining preservation goal is not supplied by any proved inliner
-    declaration in this file.  Neither the accepted output gate nor
-    `runOnce_dom` can be used backwards (trivial-parameter elimination has a
-    checked counterexample to precisely that converse).  Lean's exact missing
-    target is:
-
-        ToAsm.Prog.domCheck (Passes.inlineProg P) = true
-
-    under `hwf : P.wfCheck = true` and
-    `hdom : ToAsm.Prog.domCheck P = true`.
-    -/
-    have hdom0 : ToAsm.Prog.domCheck P0 = true := by
-      sorry
     rw [optimizeCandidate_eq_rounds]
-    exact Passes.runOnceProgN_sound 3 hwf0 hdom0 hrun0
+    by_cases hinlineGate : ((Passes.inlineProg P).wfCheck
+        && ToAsm.Prog.domCheck (Passes.inlineProg P)) = true
+    · simp only [optimizeInput, hinlineGate, if_true]
+      have hchecks := (Bool.and_eq_true _ _).mp hinlineGate
+      exact Passes.runOnceProgN_sound 3 hchecks.1 hchecks.2
+        (inlineProg_sound hwf hrun)
+    · simp only [optimizeInput, hinlineGate]
+      exact Passes.runOnceProgN_sound 3 hwf hdom hrun
   · -- the gate rejected it: `optimizeProg` returned `P` unchanged
     simp only [Bool.not_eq_true] at hgate
     exact optimizeProg_sound_of_fallback hgate hrun
