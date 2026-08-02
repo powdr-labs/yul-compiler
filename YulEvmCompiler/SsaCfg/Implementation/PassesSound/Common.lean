@@ -31,6 +31,54 @@ at every bound, which makes the judgment monotone.
 
 This separate inductive is needed below because an `Exec` proof lives in
 `Prop`, so its call depth cannot be computed by eliminating it into `Nat`.
+
+### Why the index is load-bearing — do not try to delete it
+
+Inlining is the only pass that uses `ExecN`, and a single step of it needs the
+index: the two call cases of `Passes.inlineMap_execN` in
+`PassesSound/Inline.lean`, factored into `Passes.inlineMap_callee`.  That step
+is a *strong* induction on the bound, not a structural induction on the
+derivation, and it cannot be turned into one.
+
+* Every other whole-program transport here changes the ambient program *first*
+  and rewrites the callee's text *second*.  See `Passes.runOnceProg_exec` in
+  `PassesSound/Pipeline.lean`: a plain structural `Exec` induction whose call
+  case feeds the structural `ihbody` — already in the mapped program — to
+  `runOnce_sound`.  That ordering works only because `runOnce_sound` is
+  polymorphic in the ambient program; the local pipeline passes never read the
+  function table.
+* Inlining is not ambient-polymorphic.  `inlineFunc counts P.funcs g` splices
+  bodies taken from `P.funcs` into `g`, and `Passes.inlineCaller_execN` needs
+  the spliced callee to be the function the *ambient* program resolves the call
+  to (its hypothesis `hfunc : P.funcs[fid]? = some g`, against a splice
+  `hblocks` built from `g.blocks`).  Under the mapped ambient program
+  `Q = inlineMap counts P` the call at `fid` resolves to
+  `inlineFunc counts P.funcs g` rather than `g`, so the ambient-first ordering
+  does not even state: transporting under `Q` yields
+  `inlineFunc counts Q.funcs g`, whose splice source is the *already inlined*
+  callee bodies — a different function text from the
+  `inlineFunc counts P.funcs g` that `inlineMap` actually builds.  `inlineMap`
+  cannot be redefined to match, because `Passes.inlineProg_eq_inlineProgN` pins
+  it to the implementation.
+* So the callee must be inlined under `P` first (`inlineFunc_soundN`) and the
+  ambient program changed afterwards.  The derivation handed to that second
+  step is *freshly constructed* by `inlineFunc_soundN`, not a sub-derivation of
+  the derivation being eliminated, so no structural induction hypothesis
+  applies to it and a well-founded measure is unavoidable.
+
+Call depth is that measure.  Inlining never increases it — a call at bound
+`n + 1` becomes straight-line code at bound `n + 1`, which is what the
+`n`-to-`n + 1` accounting and the two `ExecN.mono` uses inside
+`Passes.inlineReplay_execN` pay for — while the ambient change recurses at the
+callee's strictly smaller bound.
+
+Everything upstream of `Passes.inlineMap_execN` (`inlineReplay_execN`,
+`inlineCaller_execN`, `inlineOnce_soundN`, `inlineN_soundN`,
+`inlineFunc_soundN`) is a structural or `Nat` induction that merely *carries*
+the bound; the index cannot be dropped there either, since it is exactly the
+preservation of the bound along that chain that lets `inlineMap_execN` recurse.
+Downstream, `inlineProgN_sound` and `inlineProg_sound` are already index-free
+`Run`-level recursions.
 -/
 
 inductive ExecN (P : Prog) [model : ExternalModel] :
@@ -120,13 +168,11 @@ theorem ExecN.mono {P : Prog} {n m : Nat} {f : Func} {R : Regs}
   | opHalt hget hop => exact ExecN.opHalt hget hop
   | @call n f g R st st' ds as fid args rvals eb is t res
       hfid hget hplen heb hbody hlen htail ihbody ih =>
-      have hmpos : 0 < m := lt_of_lt_of_le (Nat.zero_lt_succ n) (by simpa using hnm)
-      obtain ⟨m', rfl⟩ := Nat.exists_eq_succ_of_ne_zero (Nat.ne_of_gt hmpos)
+      obtain ⟨m', rfl⟩ := Nat.exists_eq_succ_of_ne_zero (by omega : m ≠ 0)
       exact ExecN.call hfid hget hplen heb (ihbody (by omega)) hlen (ih (by omega))
   | @callHalt n f g R st st' ds as fid args eb is t
       hfid hget hplen heb hbody ihbody =>
-      have hmpos : 0 < m := lt_of_lt_of_le (Nat.zero_lt_succ n) (by simpa using hnm)
-      obtain ⟨m', rfl⟩ := Nat.exists_eq_succ_of_ne_zero (Nat.ne_of_gt hmpos)
+      obtain ⟨m', rfl⟩ := Nat.exists_eq_succ_of_ne_zero (by omega : m ≠ 0)
       exact ExecN.callHalt hfid hget hplen heb (ihbody (by omega))
   | jump htb hget hplen htail ih => exact ExecN.jump htb hget hplen (ih hnm)
   | branchTrue hc hv htb hget hplen htail ih =>
