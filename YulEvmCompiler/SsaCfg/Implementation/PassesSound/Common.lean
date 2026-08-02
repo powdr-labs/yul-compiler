@@ -1063,21 +1063,6 @@ inductive EntryPath (f : Func) : List BlockId → BlockId → Prop
       e ∈ b.term.edges →
       EntryPath f (path ++ [i]) e.target
 
-/-- A value has crossed a defining block on an entry-rooted path. -/
-def DefinedOnPath (f : Func) (path : List BlockId) (x : ValId) : Prop :=
-  ∃ i ∈ path, ∃ b, f.blocks[i]? = some b ∧ x ∈ ToAsm.blockDefs b
-
-theorem DefinedOnPath.snoc {f : Func} {path : List BlockId} {i : BlockId}
-    {b : Block} {x : ValId} (hb : f.blocks[i]? = some b)
-    (hx : x ∈ ToAsm.blockDefs b) : DefinedOnPath f (path ++ [i]) x := by
-  exact ⟨i, by simp, b, hb, hx⟩
-
-theorem DefinedOnPath.mono_snoc {f : Func} {path : List BlockId}
-    {i : BlockId} {x : ValId} (h : DefinedOnPath f path x) :
-    DefinedOnPath f (path ++ [i]) x := by
-  obtain ⟨j, hj, b, hb, hx⟩ := h
-  exact ⟨j, List.mem_append_left _ hj, b, hb, hx⟩
-
 /-- **Entry-rooted provenance invariant.**  Under `domCheck`, every value live
 at a block reached from entry is either an entry parameter or its definition
 has occurred in one of the predecessor blocks on the concrete path.  The proof
@@ -1089,16 +1074,18 @@ theorem EntryPath.live_origin {f : Func} {li : Array (List ValId)}
     (hdom : ToAsm.Func.domCheck f = true)
     {path : List BlockId} {i : BlockId} (hp : EntryPath f path i)
     {x : ValId} (hx : x ∈ li[i]?.getD []) :
-    x ∈ f.params ∨ DefinedOnPath f path x := by
+    x ∈ f.params ∨ ∃ j ∈ path, ∃ b, f.blocks[j]? = some b ∧
+      x ∈ ToAsm.blockDefs b := by
   induction hp with
   | entry =>
       exact Or.inl (ToAsm.domCheck_entry hli hdom hx)
   | @edge path i b e hp hb he ih =>
       by_cases hd : x ∈ ToAsm.blockDefs b
-      · exact Or.inr (DefinedOnPath.snoc hb hd)
+      · exact Or.inr ⟨i, by simp, b, hb, hd⟩
       · rcases ih (ToAsm.liveIn_of_succ hli hb he hx hd) with hparam | hpath
         · exact Or.inl hparam
-        · exact Or.inr hpath.mono_snoc
+        · obtain ⟨j, hj, c, hc, hxc⟩ := hpath
+          exact Or.inr ⟨j, List.mem_append_left _ hj, c, hc, hxc⟩
 
 theorem Regs.eq_some_setMany {R : Regs} {xs : List ValId} {vs : List U256}
     {x : ValId} {v : U256} (h : (R.setMany xs vs) x = some v) :
