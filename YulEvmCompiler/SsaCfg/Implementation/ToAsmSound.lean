@@ -1,6 +1,3 @@
--- Not imported from the root yet: the emission-shape layer is mid-realignment
--- against the `EmitSt` emitter (layout inheritance + commutative operand
--- ordering). The emission-independent machinery below is fully proved.
 import YulEvmCompiler.AsmSem
 import YulEvmCompiler.SsaCfg.Spec.Sem
 import YulEvmCompiler.SsaCfg.Implementation.ToAsm
@@ -42,29 +39,16 @@ shuffler (`shuffleGo_spec`, `shuffle_sound`), the whole `elideJumps` transport
 (`emitProg_placement`). `emitProg_asteps'` and `emitProg_ahalt'` are
 *derived*.
 
-**Status.** Everything in this file is proved except the six open cases of
-`exec_sim`. In particular the entire emission-shape layer is closed:
+The entire emission-shape layer is closed:
 `emitInstr_const_shape`/`emitInstr_op_shape` (including the commutative
 operand-order choice, via `foldl_best` and `builtin_comm`), `emitBlock_head`,
 `emitBlock_emitRest`, `emitFunc_inv`, `emitProg_inv`, `emitProg_placement` and
 `raw_entry_sim`.
 
-`exec_sim`: `const`, `op`, `opHalt`, `halt` and `ret` are proved — every case
-that does not cross a control-flow edge. `ret` uses the epilogue-rotation
+`exec_sim`'s `ret` case uses the epilogue-rotation
 lemma `rot_steps`/`rots_steps` (`SWAP1 … SWAPk` lifts the return address from
 under the `k` results to the top) and, in `main`, the internal side condition
 `fidx = none → retLab = endLabel`, which `raw_entry_sim` discharges by `rfl`.
-
-Still open: `jump`, `branchTrue`, `branchFalse` and the `call` pair. The
-edge cases need one invariant this file does not yet carry: with entry-layout
-inheritance, `edgeTargetLayout` reads/records the emission state's layout
-table while `emitBlock` pins its own `sym0` from the same table, so
-`Placement` must additionally record that *the layout an incoming edge
-shuffles onto is the target block's pinned layout with its parameters
-substituted by the edge arguments*. Everything downstream of that
-(re-establishing freshness at the target entry from the liveness fixed point
-and `domCheck_entry`, and the `AStep.jump`/`jumpi` resolution) is already in
-place.
 
 `exec_sim` carries two side conditions beyond the emission itself — that no
 value on the symbolic stack is defined again by the rest of the block, and
@@ -492,43 +476,6 @@ theorem findLabel_elideJumps (l : Label) (p : List Asm) :
     · rw [findLabel, findLabel, if_neg ha, if_neg ha, ih]
   | case4 => simp [findLabel]
 
-omit model in
-/-- Elision consumes the head instruction either as itself (the usual case)
-or not at all (the dropped `jump`). -/
-theorem elideJumps_cons_cases (i : Asm) (q : List Asm) :
-    elideJumps (i :: q) = i :: elideJumps q ∨ elideJumps (i :: q) = elideJumps q := by
-  cases i
-  case jump l =>
-    cases q
-    case nil => left; simp [elideJumps]
-    case cons a rest =>
-      cases a
-      case label l' =>
-        by_cases hl : l = l'
-        · subst hl; right; simp [elideJumps]
-        · left; simp [elideJumps, hl]
-      all_goals (left; simp [elideJumps])
-  all_goals (left; simp [elideJumps])
-
-omit model in
-theorem elideJumps_cons_suffix (i : Asm) (q : List Asm) :
-    elideJumps q <:+ elideJumps (i :: q) := by
-  rcases elideJumps_cons_cases i q with h | h
-  · exact ⟨[i], by rw [h]; simp⟩
-  · exact ⟨[], by rw [h]; simp⟩
-
-omit model in
-/-- Every suffix of the un-elided program elides to a suffix of the elided
-program — the fragment-placement fact the transport needs. -/
-theorem elideJumps_suffix {c p : List Asm} (h : c <:+ p) :
-    elideJumps c <:+ elideJumps p := by
-  obtain ⟨pre, rfl⟩ := h
-  induction pre with
-  | nil => simp
-  | cons i pre ih =>
-    rw [List.cons_append]
-    exact ih.trans (elideJumps_cons_suffix i (pre ++ c))
-
 omit model in @[simp] theorem elideJumps_push (v : U256) (c : List Asm) :
     elideJumps (Asm.push v :: c) = Asm.push v :: elideJumps c := by simp [elideJumps]
 omit model in @[simp] theorem elideJumps_op (yop : Op) (c : List Asm) :
@@ -755,10 +702,6 @@ namespace Regs
 
 omit model in
 @[simp] theorem setMany_nil (R : Regs) (vs : List U256) : R.setMany [] vs = R := rfl
-
-omit model in
-@[simp] theorem setMany_nil_vals (R : Regs) (xs : List ValId) : R.setMany xs [] = R := by
-  cases xs <;> rfl
 
 omit model in
 theorem setMany_cons (R : Regs) (x : ValId) (xs : List ValId) (v : U256)
@@ -1052,22 +995,6 @@ theorem builtin_comm {yop : Op} (hc : CommOp yop) {a b : U256} {st : EvmState}
   · rw [bin_comm (fun x y => by congr 1; exact decide_eq_decide.mpr eq_comm)]; exact h
 
 omit model in
-/-- Inverting `emitInstr`'s final `match best with | some p => pure … | none =>
-liftE none`. -/
-theorem E_match_inv {α₁ α₂ β : Type} {X : Option (α₁ × α₂)} {f : α₁ → α₂ → β}
-    {n n' : ToAsm.EmitSt} {r : β}
-    (h : (match X with
-          | some (a, b) => (pure (f a b) : ToAsm.E β)
-          | none => ToAsm.liftE none) n = some (r, n')) :
-    ∃ a b, X = some (a, b) ∧ f a b = r ∧ n = n' := by
-  cases X with
-  | none => exact absurd h (by simp [ToAsm.liftE])
-  | some p =>
-    obtain ⟨a, b⟩ := p
-    obtain ⟨h1, h2⟩ := E_pure_inv2 h
-    exact ⟨a, b, rfl, h1, h2⟩
-
-omit model in
 /-- The accumulator of `emitInstr`'s cheapest-order fold always records a
 successful shuffle for one of the candidate orders. -/
 theorem foldl_best {sym keep : List SSlot} {Q : List Asm × List ValId → Prop} :
@@ -1270,9 +1197,6 @@ packaged here as two side conditions on the rest-of-block being emitted. -/
 /-- The values the remaining instructions of a block define. -/
 def restDefs {β : Type} (paired : List (Instr × β)) : List ValId :=
   (paired.map Prod.fst).flatMap Instr.defs
-
-omit model in
-@[simp] theorem restDefs_nil {β : Type} : restDefs ([] : List (Instr × β)) = [] := rfl
 
 omit model in
 theorem restDefs_cons {β : Type} (i : Instr) (need : β)
@@ -1681,17 +1605,7 @@ theorem map_fst_eq_nil {β : Type} {paired : List (Instr × β)}
 The classic Phase A (`SimAsm.lean`) locates each fragment inside the whole
 program by list appends and resolves labels with `findLabel_boundary` from the
 compile-time `Nodup` fact. The same holds here, one fragment per basic block;
-`Placement` packages it. -/
-
-/-- Block `bid` of function `fidx` has its emitted body sitting in `asm`
-right after its label. -/
-def BlockPlaced (P : Prog) (ord : Bool) (asm : List Asm) (fidx : Option Nat)
-    (f : Func) (liveIn : Array (List ValId)) (bid : BlockId) (b : Block) : Prop :=
-  ∃ (n n' : ToAsm.EmitSt) (frag tail : List Asm),
-    ToAsm.emitBlock P (ToAsm.mkLabelMap P) ord fidx f liveIn bid b n
-      = some (Asm.label (ToAsm.blkLabel (ToAsm.mkLabelMap P) fidx bid) :: frag, n')
-    ∧ findLabel (ToAsm.blkLabel (ToAsm.mkLabelMap P) fidx bid) asm
-      = some (frag ++ tail)
+`Placement2` packages it. -/
 
 /-- The emission state's layout table only ever grows: an entry, once
 recorded, keeps its value. -/
@@ -1743,15 +1657,6 @@ theorem freshLabel_mono {s : ToAsm.EmitSt} {l : Label} {s' : ToAsm.EmitSt}
   rw [ToAsm.freshLabel] at h
   obtain ⟨-, rfl⟩ := (Prod.mk.injEq ..).mp (Option.some.inj h)
   intro bid l' hbid; exact hbid
-
-omit model in
-theorem liftE_mono {α : Type} {o : Option α} {s : ToAsm.EmitSt} {a : α}
-    {s' : ToAsm.EmitSt} (h : ToAsm.liftE o s = some (a, s')) : s' = s := by
-  cases o with
-  | none => exact absurd h (by simp [ToAsm.liftE])
-  | some x =>
-    obtain ⟨-, hs⟩ := (Prod.mk.injEq ..).mp (Option.some.inj h)
-    exact hs.symm
 
 omit model in
 /-- **The record-once branch is monotone**: `edgeTargetLayout` either reads the
@@ -2014,12 +1919,13 @@ theorem emitRest_mono {P : Prog} {L : ToAsm.LabelMap} {ord isFunc : Bool}
     obtain ⟨-, rfl⟩ := E_pure_inv2 h2
     exact TableSub.trans (emitInstr_mono hi) (ih _ _ _ _ hrest)
 
-/-! ### What the edge cases still need from `Placement`
+/-! ### The layout-table agreement invariant
 
-`Placement` below pins, for each block, *that* it was emitted and *where* its
-fragment sits. The control-flow cases of `exec_sim` additionally need the two
-reads of the emission state's layout table to agree, which is a fact about how
-`emitFunc`'s block fold threads that table:
+`Placement2` below pins, for each block, *that* it was emitted, *where* its
+fragment sits, and the function-wide final layout table its post-emission state
+embeds into. The control-flow cases of `exec_sim` need the two reads of the
+emission state's layout table to agree, which is a fact about how `emitFunc`'s
+block fold threads that table:
 
 * `edgeTargetLayout` consults `getLayout e.target`; on a miss it records
   `(inheritCandidate …).getD (layoutOf …)` and returns
@@ -2031,29 +1937,18 @@ Because `emitBlock` reads before it writes, **every value ever written to
 `layouts[bid]` during one function's emission is the same value**: whichever of
 the two writers runs first fixes it, and the other writes back what it read.
 (`resetLayouts` at the top of `emitFunc` makes this per-function, matching
-`BlockId`'s function-local scope.) So the clause to add is, per block `bid`
-with body `b` and pinned layout `lay`:
+`BlockId`'s function-local scope.)
 
-    ∀ e, e.target = bid → the layout that edge shuffles onto
-                        = substLayout lay b.params e.args
-
-The write-once invariant itself is now proved: `TableSub` (the table only
-grows, entries keeping their value) is preserved by `edgeTargetLayout`
+The write-once invariant is `TableSub` (the table only
+grows, entries keeping their value); it is preserved by `edgeTargetLayout`
 (`edgeTargetLayout_mono`), `emitInstr` (`emitInstr_mono`), `emitTerm`
 (`emitTerm_mono`), the instruction fold (`foldlM_instrs_mono`) and `emitBlock`
 (`emitBlock_mono`, whose entry-block case needs its key still absent — true
-because `emitFunc` resets the table and emits block `0` first).
-
-Still missing (NOT yet in this file — an earlier draft of this comment
-wrongly described them as proved): the state-carrying locator
-(`foldlM_mono`/`foldlM_split_mono` — for each block, the states before and
-after its emission plus a `TableSub` to the fold's final state), the
-`layout_agree` identification (an edge's `getLayout e.target` and the
-target's own pin both agree with the final table, hence with each other),
-the `Placement2` packaging over `emitFunc`'s fold (peeling the entry block,
-whose `hentry` obligation `emitBlock_mono` carries, from `resetLayouts`
-plus entry-first order), and the `emitTerm_jump_shape`/`branch` decoders
-the edge cases consume.
+because `emitFunc` resets the table and emits block `0` first). The
+state-carrying locator (`foldlM_mono`/`foldlM_split_mono`) then hands each
+block the states before and after its emission plus a `TableSub` to the fold's
+final state, and `layout_agree_early` identifies an edge's `getLayout e.target`
+with the target's own pin, both agreeing with the final table.
 
 Tactic notes for this file, learned the hard way:
 
@@ -2071,31 +1966,14 @@ Tactic notes for this file, learned the hard way:
 * Derive a `setLayout` equation immediately after the `E_bind_inv` that
   produces it — interposing further `obtain … rfl` steps puts it out of scope.
 * `obtain … rfl` picks which state variable to eliminate; check the goal rather
-  than assuming, or avoid `rfl` patterns and rewrite explicitly. The current one hands back, for each block, *some* start state,
-with no relation between different blocks' states — enough to locate fragments,
-not enough to relate two reads of the same table. The replacement should carry
-a table-agreement invariant (`layouts` agrees with a fixed `lay : BlockId →
-List SSlot` wherever it is defined) forward through the fold, with
-`edgeTargetLayout` and `emitBlock` each shown to preserve it.
+  than assuming, or avoid `rfl` patterns and rewrite explicitly.
 
-Downstream of that clause the edge cases are routine: `StkMatch` transfers
+Downstream of the agreement the edge cases are routine: `StkMatch` transfers
 across `substLayout` pointwise (the edge's `getMany` supplies the argument
 values, `AgreeOn` covers the non-parameter slots), freshness at the target
 entry comes from the liveness fixed point (`liveIn` subtracts `blockDefs`)
 together with `domCheck_entry` under `hdom`, and the jumps resolve through the
-`findLabel` facts `Placement` already carries. -/
-
-/-- Every block of every function is placed; the terminal label is last (so
-`main`'s `ret []` runs off the end of the code with an empty stack); and
-`main`'s entry label heads the program. -/
-def Placement (P : Prog) (ord : Bool) (asm : List Asm) : Prop :=
-  (∃ liveIn, ToAsm.liveInSets P.main = some liveIn ∧
-      ∀ bid b, P.main.blocks[bid]? = some b →
-        BlockPlaced P ord asm none P.main liveIn bid b)
-  ∧ (∀ i g, P.funcs[i]? = some g → ∃ liveIn, ToAsm.liveInSets g = some liveIn ∧
-      ∀ bid b, g.blocks[bid]? = some b → BlockPlaced P ord asm (some i) g liveIn bid b)
-  ∧ findLabel (ToAsm.mkLabelMap P).endLabel asm = some []
-  ∧ (∃ c, asm = Asm.label (ToAsm.blkLabel (ToAsm.mkLabelMap P) none P.main.entry) :: c)
+`findLabel` facts `Placement2` already carries. -/
 
 /-- A placed block whose post-emission layout table embeds into the final table
 of its enclosing function's block fold. -/
@@ -2112,7 +1990,9 @@ def BlockPlaced2 (P : Prog) (ord : Bool) (asm : List Asm) (fidx : Option Nat)
     ∧ findLabel (ToAsm.blkLabel (ToAsm.mkLabelMap P) fidx bid) asm
       = some (frag ++ tail)
 
-/-- `Placement` strengthened with a common final layout table per function. -/
+/-- Every block of every function is placed, with a common final layout table
+per function; the terminal label is last (so `main`'s `ret []` runs off the end
+of the code with an empty stack); and `main`'s entry label heads the program. -/
 def Placement2 (P : Prog) (ord : Bool) (asm : List Asm) : Prop :=
   (∃ liveIn final, ToAsm.liveInSets P.main = some liveIn ∧
       ∀ bid b, P.main.blocks[bid]? = some b →
@@ -2123,21 +2003,6 @@ def Placement2 (P : Prog) (ord : Bool) (asm : List Asm) : Prop :=
         BlockPlaced2 P ord asm (some i) g liveIn final bid b)
   ∧ findLabel (ToAsm.mkLabelMap P).endLabel asm = some []
   ∧ (∃ c, asm = Asm.label (ToAsm.blkLabel (ToAsm.mkLabelMap P) none P.main.entry) :: c)
-
-omit model in
-theorem Placement2.toPlacement {P : Prog} {ord : Bool} {asm : List Asm}
-    (h : Placement2 P ord asm) : Placement P ord asm := by
-  obtain ⟨⟨liveMain, finalMain, hliveMain, hmain⟩, hfns, hend, hentry⟩ := h
-  refine ⟨⟨liveMain, hliveMain, ?_⟩, ?_, hend, hentry⟩
-  · intro bid b hb
-    obtain ⟨n, n', frag, tail, hemit, -, -, hfind⟩ := hmain bid b hb
-    exact ⟨n, n', frag, tail, hemit, hfind⟩
-  · intro i g hg
-    obtain ⟨liveIn, final, hlive, hblocks⟩ := hfns i g hg
-    refine ⟨liveIn, hlive, ?_⟩
-    intro bid b hb
-    obtain ⟨n, n', frag, tail, hemit, -, -, hfind⟩ := hblocks bid b hb
-    exact ⟨n, n', frag, tail, hemit, hfind⟩
 
 /-! ## The frame-level simulation goal -/
 
@@ -2374,24 +2239,6 @@ private theorem frame_wf {P : Prog} (hwf : P.wfCheck = true) {f : Func}
     exact hwf.2 i hi
 
 omit model in
-private theorem frame_dom {P : Prog} (hdom : ToAsm.Prog.domCheck P = true)
-    {f : Func} {fidx : Option Nat}
-    (hframe : match fidx with
-      | none => f = P.main
-      | some i => P.funcs[i]? = some f) :
-    ToAsm.Func.domCheck f = true := by
-  simp only [ToAsm.Prog.domCheck, Bool.and_eq_true] at hdom
-  cases fidx with
-  | none => rw [hframe]; exact hdom.1
-  | some i =>
-    change P.funcs[i]? = some f at hframe
-    have hi : i < P.funcs.size := (Array.getElem?_eq_some_iff.mp hframe).1
-    rw [Array.getElem?_eq_getElem hi] at hframe
-    obtain rfl := Option.some.inj hframe
-    rw [Array.all_eq_true] at hdom
-    exact hdom.2 i hi
-
-omit model in
 private theorem liveIn_eq_early {f : Func} {li : Array (List ValId)}
     (h : ToAsm.liveInSets f = some li) {i : BlockId} {b : Block}
     (hb : f.blocks[i]? = some b) :
@@ -2446,20 +2293,6 @@ private theorem mem_unionS_early {x : ValId} {xs ys : List ValId} :
   | cons a as ih =>
     simp only [List.foldl_cons, ih, mem_insertSorted_early, List.mem_cons]
     tauto
-
-omit model in
-private theorem domCheck_entry_early {f : Func} {li : Array (List ValId)}
-    (hli : ToAsm.liveInSets f = some li) (hdom : ToAsm.Func.domCheck f = true)
-    {x : ValId} (hx : x ∈ li[f.entry]?.getD []) : x ∈ f.params := by
-  unfold ToAsm.Func.domCheck at hdom
-  rw [hli] at hdom
-  by_contra hp
-  have hx' : x ∈ ToAsm.diffS (li[f.entry]?.getD []) f.params := by
-    simp [ToAsm.diffS, hx, hp]
-  have hempty : ToAsm.diffS (li[f.entry]?.getD []) f.params = [] := by
-    simpa only [decide_eq_true_eq] using hdom
-  rw [hempty] at hx'
-  simp at hx'
 
 omit model in
 private theorem inheritCandidate_go_val_mem {v : ValId} {keep : List ValId} :
@@ -2895,7 +2728,7 @@ Every `Exec` constructor maps to a bounded `Asm` trace segment:
   `AHalt.op`, whose `builtinWithExternal` premise is literally the SSA rule's
   (`emitInstr_op_sim`);
 * `call`/`callHalt` — `pushLabel`, the argument `DUP`s, `jump` to the callee's
-  entry (placed by `Placement`), the callee's IH with the fresh register file,
+  entry (placed by `Placement2`), the callee's IH with the fresh register file,
   and `dynJump` back through the `.code retLab` still on the stack;
 * `jump`/`branchTrue`/`branchFalse` — the edge shuffle onto the target's entry
   layout (`edgeLayout`), then `AStep.jump`/`jumpi` resolved by
@@ -3725,83 +3558,6 @@ private theorem foldlM_split {α : Type} (emit : α → ToAsm.E (List Asm)) :
       exact ⟨_, _, fr0, acc0, ops, he0, by simp⟩
     · exact ih _ _ _ _ htail a ha'
 
-
-omit model in
-/-- **The agreement lemma** — the point of the whole `TableSub` chain: two
-reads of the same block's layout, taken at any two states that both feed into
-the same final state, must return the same layout. This is what identifies the
-layout an edge shuffles onto with the layout its target block pinned. -/
-theorem layout_agree {sA sB sF : ToAsm.EmitSt} {bid : BlockId}
-    {l₁ l₂ : List SSlot}
-    (h₁ : sA.layouts[bid]? = some l₁) (hA : TableSub sA sF)
-    (h₂ : sB.layouts[bid]? = some l₂) (hB : TableSub sB sF) : l₁ = l₂ := by
-  have e₁ := hA bid l₁ h₁
-  have e₂ := hB bid l₂ h₂
-  rw [e₁] at e₂
-  exact Option.some.inj e₂
-
-omit model in
-/-- The shape of a two-way edge. Both schemes first fix the two target layouts
-(in order: the true edge, then the false edge from the post-`jumpi` stack), and
-then either land directly on `cond :: τt` or route the taken edge through a
-fresh stub. -/
-theorem emitTerm_branch_shape {isFunc : Bool} {f : Func} {L : ToAsm.LabelMap}
-    {fidx : Option Nat} {liveIn : Array (List ValId)} {sym : List SSlot}
-    {c : ValId} {et ef : Edge} {s : ToAsm.EmitSt} {asmf : List Asm}
-    {s' : ToAsm.EmitSt}
-    (h : ToAsm.emitTerm isFunc f L fidx liveIn sym (.branch c et ef) s
-      = some (asmf, s')) :
-    ∃ (τt τf : List SSlot) (s1 s2 : ToAsm.EmitSt),
-      ToAsm.edgeTargetLayout isFunc f liveIn et sym s = some (τt, s1)
-      ∧ ToAsm.edgeTargetLayout isFunc f liveIn ef τt s1 = some (τf, s2)
-      ∧ ((∃ opst opsf,
-            ToAsm.shuffle sym (SSlot.val c :: τt) = some opst
-            ∧ ToAsm.shuffle τt τf = some opsf
-            ∧ asmf = opst ++ [Asm.jumpi (ToAsm.blkLabel L fidx et.target)]
-                ++ opsf ++ [Asm.jump (ToAsm.blkLabel L fidx ef.target)])
-        ∨ (∃ (U : List SSlot) (stub : Label) (ops0 opsf opst : List Asm),
-            ToAsm.shuffle sym (SSlot.val c :: U) = some ops0
-            ∧ ToAsm.shuffle U τf = some opsf
-            ∧ ToAsm.shuffle U τt = some opst
-            ∧ asmf = ops0 ++ [Asm.jumpi stub] ++ opsf
-                ++ [Asm.jump (ToAsm.blkLabel L fidx ef.target)]
-                ++ [Asm.label stub] ++ opst
-                ++ [Asm.jump (ToAsm.blkLabel L fidx et.target)])) := by
-  simp only [ToAsm.emitTerm] at h
-  obtain ⟨τt, s1, hτt, h1⟩ := E_bind_inv h
-  obtain ⟨τf, s2, hτf, h2⟩ := E_bind_inv h1
-  refine ⟨τt, τf, s1, s2, hτt, hτf, ?_⟩
-  rcases hsa : ToAsm.shuffle sym (SSlot.val c :: τt) with _ | opst <;>
-    rcases hsb : ToAsm.shuffle τt τf with _ | opsf <;>
-    rw [hsa, hsb] at h2 <;> simp only [] at h2
-  case some.some =>
-    obtain ⟨heq, -⟩ := E_pure_inv2 h2
-    exact Or.inl ⟨opst, opsf, rfl, rfl, heq.symm⟩
-  all_goals
-    obtain ⟨stub, s3, hfl, h3⟩ := E_bind_inv h2
-    obtain ⟨ops0, hs0, h4⟩ := liftE_bind_inv h3
-    obtain ⟨opsf', hsf, h5⟩ := liftE_bind_inv h4
-    obtain ⟨opst', hst, h6⟩ := liftE_bind_inv h5
-    obtain ⟨heq, -⟩ := E_pure_inv2 h6
-    exact Or.inr ⟨_, stub, ops0, opsf', opst', hs0, hsf, hst, heq.symm⟩
-
-omit model in
-/-- The shape of an unconditional edge: consult/record the target layout, then
-shuffle onto it, then jump. -/
-theorem emitTerm_jump_shape {isFunc : Bool} {f : Func} {L : ToAsm.LabelMap}
-    {fidx : Option Nat} {liveIn : Array (List ValId)} {sym : List SSlot}
-    {e : Edge} {s : ToAsm.EmitSt} {asmf : List Asm} {s' : ToAsm.EmitSt}
-    (h : ToAsm.emitTerm isFunc f L fidx liveIn sym (.jump e) s = some (asmf, s')) :
-    ∃ (τ : List SSlot) (s1 : ToAsm.EmitSt) (ops : List Asm),
-      ToAsm.edgeTargetLayout isFunc f liveIn e sym s = some (τ, s1)
-      ∧ ToAsm.shuffle sym τ = some ops
-      ∧ asmf = ops ++ [Asm.jump (ToAsm.blkLabel L fidx e.target)] := by
-  simp only [ToAsm.emitTerm] at h
-  obtain ⟨τ, s1, hτ, h1⟩ := E_bind_inv h
-  obtain ⟨ops, hsh, h2⟩ := liftE_bind_inv h1
-  obtain ⟨heq, -⟩ := E_pure_inv2 h2
-  exact ⟨τ, s1, ops, hτ, hsh, heq.symm⟩
-
 omit model in
 /-- The append-fold is monotone in the layout table when each element is. -/
 private theorem foldlM_mono {α : Type} (emit : α → ToAsm.E (List Asm)) :
@@ -3831,7 +3587,7 @@ omit model in
 hands back the state *before* the element's emission and a `TableSub` from the
 state *after* it to the fold's final state. That is what lets two reads of the
 layout table — an edge's `getLayout` and the target block's own pin — be
-compared through `layout_agree`. -/
+compared. -/
 private theorem foldlM_split_mono {α : Type} (emit : α → ToAsm.E (List Asm)) :
     ∀ (l : List α) (acc0 : List Asm) (s : ToAsm.EmitSt) (code : List Asm)
       (s' : ToAsm.EmitSt),
@@ -3957,21 +3713,6 @@ theorem emitFunc_layoutsOK {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
     rw [hn₀ bid] at hlay
     simp at hlay
   · exact hfold
-
-omit model in
-/-- Monotonicity of a block fold that never touches the entry block: away from
-the entry, `emitBlock`'s side condition is vacuous. -/
-theorem emitFunc_blocks_mono {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
-    {fidx : Option Nat} {f : Func} {liveIn : Array (List ValId)}
-    (l : List (Nat × Block)) (hne : ∀ p ∈ l, p.1 ≠ f.entry) :
-    ∀ (acc0 : List Asm) (s : ToAsm.EmitSt) (code : List Asm) (s' : ToAsm.EmitSt),
-      (l.foldlM (init := acc0) (fun acc (p : Nat × Block) => do
-        let a ← ToAsm.emitBlock P L ord fidx f liveIn p.1 p.2
-        pure (acc ++ a))) s = some (code, s') → TableSub s s' := by
-  intro acc0 s code s' h
-  exact foldlM_mono (fun p => ToAsm.emitBlock P L ord fidx f liveIn p.1 p.2)
-    l acc0 s code s'
-    (fun a ha sp r sq he => emitBlock_mono (fun hb => absurd hb (hne a ha)) he) h
 
 omit model in
 /-- Locate every block emitted by one function and connect its post-emission
@@ -4163,8 +3904,7 @@ Both statements need two hypotheses beyond the ones in
   it; only `P.wfCheck` (which is `false` here — `allDefs = [0, 0]`) rules it
   out. `ofBlock_wfCheck` supplies it for the unoptimized candidate, and
   `optimizeProg` re-checks `Prog.wfCheck` on its own output
-  (`SsaCfg/Passes.lean`), so `P.wfCheck → (optimizeProg P).wfCheck` is a
-  one-line lemma the integration can add. -/
+  (`SsaCfg/Passes.lean`), which is what `optimizeProg_wf` reads off. -/
 theorem emitProg_asteps' {P : Prog} {ord : Bool} {asm : List Asm} {yst0 yst' : EvmState}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
     (hdom : ToAsm.Prog.domCheck P = true)
