@@ -216,12 +216,6 @@ theorem getMany_mono {R R' : Regs} (h : Le R R') {xs : List ValId}
   rw [getMany_eq_some_iff] at hg ⊢
   exact Forall2.imp (fun x v hxv => h x v hxv) hg
 
-theorem getMany_append {R : Regs} {xs ys : List ValId} {vs ws : List U256}
-    (hx : R.getMany xs = some vs) (hy : R.getMany ys = some ws) :
-    R.getMany (xs ++ ys) = some (vs ++ ws) := by
-  rw [getMany_eq_some_iff] at hx hy ⊢
-  exact Forall2.append hx hy
-
 theorem getMany_length {R : Regs} {xs : List ValId} {vs : List U256}
     (h : R.getMany xs = some vs) : xs.length = vs.length :=
   Forall2.length_eq (getMany_eq_some_iff.mp h)
@@ -480,26 +474,6 @@ theorem setMany_overwrite (m : VMap) {xs : List Ident} {is js : List ValId}
           _ = (m.set x j).setMany xs js := ih _ hnd' hli' hlj'
           _ = m.setMany (x :: xs) (j :: js) := by rw [setMany_cons]
 
-theorem length_set : ∀ (m : VMap) (x : Ident) (i : ValId), (m.set x i).length = m.length := by
-  intro m x i
-  induction m with
-  | nil => rfl
-  | cons p m ih =>
-    by_cases h : p.1 = x
-    · simp [VMap.set, h]
-    · simp [VMap.set, h, ih]
-
-theorem length_setMany : ∀ {xs : List Ident} {is : List ValId} {m : VMap},
-    (m.setMany xs is).length = m.length := by
-  intro xs
-  induction xs with
-  | nil => intro is m; rfl
-  | cons x xs ih =>
-    intro is m
-    cases is with
-    | nil => rfl
-    | cons i is => rw [setMany_cons, ih, length_set]
-
 /-- The construction's visible-variable invariant: every currently visible
 name occurs exactly once.  `trStmt` preserves this by rejecting shadowing. -/
 def Unique (m : VMap) : Prop := (m.map Prod.fst).Nodup
@@ -568,24 +542,6 @@ theorem Unique.zip_append {m : VMap} {vars : List Ident} {ids : List ValId}
       rw [hdis x hxv] at this
       cases this)
   · omega
-
-/-- `get` succeeds exactly on the visible names (`mem`, the no-shadowing gate). -/
-theorem get_isSome_iff_mem (m : VMap) (x : Ident) :
-    (VMap.get m x).isSome = m.mem x := by
-  simp only [VMap.mem]
-  induction m with
-  | nil => rfl
-  | cons p m ih =>
-    rw [get_cons, List.any_cons]
-    by_cases h : p.1 = x
-    · simp [h]
-    · simpa [h] using ih
-
-theorem exists_get_of_mem {m : VMap} {x : Ident} (h : m.mem x = true) :
-    ∃ i, VMap.get m x = some i := by
-  have := get_isSome_iff_mem m x
-  rw [h] at this
-  exact Option.isSome_iff_exists.mp this
 
 end VMap
 
@@ -724,10 +680,6 @@ theorem names_set : ∀ (V : VEnv D) (x : Ident) (v : D.Value),
     by_cases h : pn = x
     · rw [if_pos h, names_cons, names_cons, h]
     · rw [if_neg h, names_cons, names_cons, ih]
-
-theorem length_set (V : VEnv D) (x : Ident) (v : D.Value) :
-    (YulSemantics.VEnv.set V x v).length = V.length := by
-  rw [← length_names, ← length_names, names_set]
 
 theorem names_setMany : ∀ {xs : List Ident} {vs : List D.Value} {V : VEnv D},
     names (YulSemantics.VEnv.setMany V xs vs) = names V := by
@@ -957,26 +909,6 @@ theorem length_restore {V Vb : VEnv D} (h : V.length ≤ Vb.length) :
 @[simp] theorem restore_self (V : VEnv D) : YulSemantics.restore V V = V := by
   rw [restore_def]; simp
 
-theorem restore_of_length_eq {V Vb : VEnv D} (h : V.length = Vb.length) :
-    YulSemantics.restore V Vb = Vb := by
-  rw [restore_def, h]; simp
-
-theorem restore_append (W V : VEnv D) :
-    YulSemantics.restore V (W ++ V) = V := by
-  rw [restore_def]
-  simp
-
-/-- Scope exit composes: restoring past two nested scopes is restoring past
-the outer one. -/
-theorem restore_trans {V V₁ V₂ : VEnv D} (h₁ : V.length ≤ V₁.length)
-    (h₂ : V₁.length ≤ V₂.length) :
-    YulSemantics.restore V V₂
-      = YulSemantics.restore V (YulSemantics.restore V₁ V₂) := by
-  rw [restore_def V V₂, restore_def V (YulSemantics.restore V₁ V₂),
-    length_restore h₂, restore_def V₁ V₂, List.drop_drop]
-  congr 1
-  omega
-
 end VEnv
 
 section Correspondence
@@ -1197,9 +1129,6 @@ theorem pure_inv {α} {a a' : α} {s s' : BState} (h : (pure a : M α) s = some 
 
 @[simp] theorem reject_apply {α} (s : BState) : (reject : M α) s = none := rfl
 
-theorem reject_inv {α} {s : BState} {r : α × BState} (h : (reject : M α) s = some r) :
-    False := by simp at h
-
 theorem liftO_inv {α} {o : Option α} {s : BState} {a : α} {s' : BState}
     (h : (liftO o : M α) s = some (a, s')) : o = some a ∧ s' = s := by
   cases o with
@@ -1209,15 +1138,6 @@ theorem liftO_inv {α} {o : Option α} {s : BState} {a : α} {s' : BState}
     have h1 : b = a := congrArg Prod.fst h'
     have h2 : s = s' := congrArg Prod.snd h'
     exact ⟨by rw [h1], h2.symm⟩
-
-/-- Invert the `if <bad> then reject else k` gate the construction uses for
-its rejections (shadowing, duplicate names, missing loop/function context). -/
-theorem ite_reject_inv {α} {c : Prop} [Decidable c] {k : M α} {s : BState}
-    {r : α × BState} (h : (if c then (reject : M α) else k) s = some r) :
-    ¬ c ∧ k s = some r := by
-  by_cases hc : c
-  · rw [if_pos hc] at h; exact absurd h (by simp)
-  · exact ⟨hc, by rw [if_neg hc] at h; exact h⟩
 
 /-! ### The primitives -/
 
@@ -1317,20 +1237,6 @@ theorem some_pair_inj {α : Type} {a b : α} {s t : BState}
     (h : (some (a, s) : Option (α × BState)) = some (b, t)) : a = b ∧ s = t :=
   ⟨congrArg Prod.fst (Option.some.inj h), congrArg Prod.snd (Option.some.inj h)⟩
 
-/-- Invert `do let a ← x; pure (f a)`, which the elaborator compiles to a
-`Functor.map` rather than a `bind`. -/
-theorem map_inv {α β : Type} {f : α → β} {x : M α} {s : BState} {b : β}
-    {s' : BState} (h : (f <$> x) s = some (b, s')) :
-    ∃ a, x s = some (a, s') ∧ b = f a := by
-  have h' : (x s).bind (fun p => some (f p.1, p.2)) = some (b, s') := h
-  cases hx : x s with
-  | none => rw [hx] at h'; exact absurd h' (by simp)
-  | some p =>
-    rw [hx] at h'
-    simp only [Option.bind_some] at h'
-    obtain ⟨rfl, rfl⟩ := some_pair_inj h'
-    exact ⟨p.1, rfl, rfl⟩
-
 /-- Invert the `if <ok> then k else reject` form (`trExprN`'s arity gate). -/
 theorem ite_reject_inv' {α : Type} {c : Prop} [Decidable c] {k : M α}
     {s : BState} {r : α × BState}
@@ -1375,16 +1281,6 @@ theorem of_freshVal {s s' : BState} {v : ValId}
   rw [M.freshVal_apply] at h
   obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
   exact ⟨Nat.le_succ _, rfl, rfl, rfl, ⟨[], rfl⟩⟩
-
-/-- The allocated id is exactly the old `nextVal`, and the new one is one more:
-the fact that makes a freshly allocated id provably absent from any register
-file built from earlier ids. -/
-theorem freshVal_spec {s s' : BState} {v : ValId}
-    (h : SsaCfg.freshVal s = some (v, s')) :
-    v = s.fn.nextVal ∧ s'.fn.nextVal = s.fn.nextVal + 1 := by
-  rw [M.freshVal_apply] at h
-  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
-  exact ⟨rfl, rfl⟩
 
 theorem of_emit {i : Instr} {s s' : BState} {u : Unit}
     (h : SsaCfg.emit i s = some (u, s')) : Grows s s' := by
@@ -1433,18 +1329,6 @@ structure Completes (f : Func) (fn : FnState)
   params : ∀ (i : Nat) (b : Block), fn.blocks[i]? = some b
       → ∃ bf, f.blocks[i]? = some bf ∧ bf.params = b.params
   size : fn.blocks.size ≤ f.blocks.size
-
-/-- The weak form the `SOut` leaves consume. -/
-def Extends (f : Func) (fn : FnState) : Prop :=
-  (∀ (i : Nat) (b : Block), i ≠ fn.curId → fn.blocks[i]? = some b
-      → f.blocks[i]? = some b)
-  ∧ (∀ b : Block, fn.blocks[fn.curId]? = some b
-      → ∃ bf, f.blocks[fn.curId]? = some bf ∧ bf.params = b.params)
-
-theorem Completes.toExtends {f : Func} {fn : FnState} (h : Completes f fn) :
-    Extends f fn :=
-  ⟨fun i b hne hb => h.sealed i b (by simp) hne hb,
-    fun b hb => h.params _ b hb⟩
 
 theorem Completes.protect {f : Func} {fn : FnState} {joins : List BlockId}
     (h : Completes f fn joins) (joinId : BlockId) :
@@ -1524,9 +1408,6 @@ def FContents (s s' : BState) : Prop :=
   ∀ (i : Nat) (g : Func), s.funcs[i]? = some (some g) →
     s'.funcs[i]? = some (some g)
 
-/-- Size growth together with preservation of every filled entry. -/
-def FRefines (s s' : BState) : Prop := FGrows s s' ∧ FContents s s'
-
 /-- Exact ownership of the function slots which are still pending in a local
 builder state.  `owned` is not a list of function *names*: it is the
 duplicate-free list of the concrete array indices whose reservations this
@@ -1573,32 +1454,6 @@ theorem trans {s₁ s₂ s₃ : BState} (h₁ : FContents s₁ s₂)
     (h₂ : FContents s₂ s₃) : FContents s₁ s₃ :=
   fun i g hi => h₂ i g (h₁ i g hi)
 
-theorem of_funcs_eq {s s' : BState} (h : s.funcs = s'.funcs) :
-    FContents s s' := by
-  intro i g hi
-  rwa [← h]
-
-theorem of_getFn {s s' : BState} {fn : FnState}
-    (h : getFn s = some (fn, s')) : FContents s s' := by
-  rw [M.getFn_apply] at h
-  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
-  exact rfl' _
-
-theorem of_setFn {fn : FnState} {s s' : BState} {u : Unit}
-    (h : setFn fn s = some (u, s')) : FContents s s' := by
-  rw [M.setFn_apply] at h
-  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
-  exact of_funcs_eq rfl
-
-theorem of_allocFunc {s s' : BState} {fid : FuncId}
-    (h : allocFunc s = some (fid, s')) : FContents s s' := by
-  rw [M.allocFunc_apply] at h
-  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
-  intro i g hi
-  have hlt := lt_size_of_getElem? hi
-  rw [Array.getElem?_push, if_neg (by omega : ¬ i = s.funcs.size)]
-  exact hi
-
 /-- Filling a genuinely reserved slot preserves every function that was
 already present.  The `allocScope`/`trStmts` singleton recovery establishes
 the `none` premise for the particular slot selected by `FMap.get`. -/
@@ -1615,20 +1470,9 @@ theorem of_fillFunc_empty {fid : FuncId} {g : Func} {s s' : BState}
   rw [Array.getElem?_set (h := hlt), if_neg (Ne.symm hne)]
   exact hi
 
-theorem of_grows {s s' : BState} (h : Grows s s') : FContents s s' :=
-  of_funcs_eq h.funcs
-
 end FContents
 
 namespace FOwned
-
-theorem of_funcs_eq {owned : List FuncId} {s s' done : BState}
-    (hfuncs : s.funcs = s'.funcs) (h : FOwned owned s' done) :
-    FOwned owned s done := by
-  refine ⟨h.nodup, ?_, ?_⟩
-  · intro i
-    rw [h.pending, hfuncs]
-  · exact FContents.trans (FContents.of_funcs_eq hfuncs) h.filled
 
 theorem rfl_of_no_pending {s : BState}
     (h : ∀ i : FuncId, s.funcs[i]? ≠ some none) : FOwned [] s s := by
@@ -1636,79 +1480,6 @@ theorem rfl_of_no_pending {s : BState}
   intro i
   simp only [List.not_mem_nil, false_iff]
   exact h i
-
-/-- Reserving a slot adds precisely its fresh array index to the ownership
-budget. -/
-theorem of_allocFunc {owned : List FuncId} {s s' done : BState}
-    {fid : FuncId} (ho : FOwned owned s done)
-    (h : allocFunc s = some (fid, s')) : FOwned (owned ++ [fid]) s' done := by
-  rw [M.allocFunc_apply] at h
-  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
-  have hnot : s.funcs.size ∉ owned := by
-    intro hm
-    have := (ho.pending s.funcs.size).mp hm
-    simp at this
-  refine ⟨ho.nodup.append (by simp) (by simpa), ?_, ?_⟩
-  · intro i
-    rw [List.mem_append, List.mem_singleton, Array.getElem?_push]
-    by_cases hi : i = s.funcs.size
-    · subst i
-      simp [hnot]
-    · simp [hi, ho.pending]
-  · intro i g hi
-    rw [Array.getElem?_push] at hi
-    by_cases hieq : i = s.funcs.size
-    · rw [if_pos hieq] at hi
-      cases Option.some.inj hi
-    · rw [if_neg hieq] at hi
-      exact ho.filled i g hi
-
-/-- Reserving all declarations of a scope appends exactly the function ids
-recorded in the resulting scope map to the pending-slot budget. -/
-theorem of_allocScope {owned : List FuncId} {ss : List (Stmt Op)}
-    {s s' done : BState} {scope : List (Ident × FuncId)}
-    (ho : FOwned owned s done)
-    (h : allocScope ss s = some (scope, s')) :
-    FOwned (owned ++ scope.map Prod.snd) s' done := by
-  rw [allocScope] at h
-  have fold : ∀ (l : List (Stmt Op)) (acc : List (Ident × FuncId))
-      (s₀ s₁ : BState) (out : List (Ident × FuncId))
-      (base : List FuncId),
-      FOwned (owned ++ base) s₀ done →
-      acc.map Prod.snd = base →
-      (l.foldlM (init := acc) fun acc (st : Stmt Op) =>
-        match st with
-        | Stmt.funDef n _ _ _ => do
-            let fid ← allocFunc
-            pure (acc ++ [(n, fid)])
-        | _ => pure acc) s₀ = some (out, s₁) →
-      FOwned (owned ++ out.map Prod.snd) s₁ done := by
-    intro l
-    induction l with
-    | nil =>
-        intro acc s₀ s₁ out base hown hacc hl
-        obtain ⟨rfl, rfl⟩ := M.pure_inv hl
-        simpa [hacc] using hown
-    | cons st rest ih =>
-        intro acc s₀ s₁ out base hown hacc hl
-        rw [List.foldlM_cons] at hl
-        obtain ⟨acc', t, hst, hrest⟩ := M.bind_inv hl
-        cases st with
-        | funDef n ps rs body =>
-            obtain ⟨fid, u, ha, hp⟩ := M.bind_inv hst
-            obtain ⟨rfl, rfl⟩ := M.pure_inv hp
-            have halloc := FOwned.of_allocFunc hown ha
-            apply ih (acc ++ [(n, fid)]) t s₁ out (base ++ [fid])
-            · simpa [List.append_assoc] using halloc
-            · simp [hacc]
-            · exact hrest
-        | block body | letDecl vars val | assign vars e | cond e body
-        | forLoop init e post body | «break» | «continue» | leave
-        | switch e cases dflt | exprStmt e =>
-            have heq := M.pure_inv hst
-            rw [heq.1, heq.2] at hrest
-            exact ih acc s₀ s₁ out base hown hacc hrest
-  exact fold ss [] s s' scope [] (by simpa using ho) rfl h
 
 /-- Backwards form of allocation: the newly appended owned reservation is
 removed when reconstructing the caller state. -/
@@ -1809,19 +1580,6 @@ theorem back_fillFunc {owned : List FuncId} {fid : FuncId} {g : Func}
   · exact FContents.trans (FContents.of_fillFunc_empty hempty hfill) ho.filled
 
 end FOwned
-
-namespace FRefines
-
-theorem rfl' (s : BState) : FRefines s s := ⟨FGrows.rfl' s, FContents.rfl' s⟩
-
-theorem trans {s₁ s₂ s₃ : BState} (h₁ : FRefines s₁ s₂)
-    (h₂ : FRefines s₂ s₃) : FRefines s₁ s₃ :=
-  ⟨FGrows.trans h₁.1 h₂.1, FContents.trans h₁.2 h₂.2⟩
-
-theorem of_grows {s s' : BState} (h : Grows s s') : FRefines s s' :=
-  ⟨FGrows.of_fnOnly h.funcs, FContents.of_grows h⟩
-
-end FRefines
 
 /-! ### Function-table prefix frames
 
@@ -1975,9 +1733,6 @@ end FOwned
 
 namespace SGrowsAt
 
-theorem toFGrows {N : Nat} {s s' : BState} (h : SGrowsAt N s s') : FGrows s s' :=
-  h.funcsSize
-
 /-- A larger base is a stronger statement. -/
 theorem mono {N N' : Nat} (hle : N' ≤ N) {s s' : BState} (h : SGrowsAt N s s') :
     SGrowsAt N' s s' :=
@@ -2086,12 +1841,6 @@ theorem of_fillFunc {N : Nat} {fid : FuncId} {g : Func} {s s' : BState}
     {u : Unit} (h : fillFunc fid g s = some (u, s')) : SGrowsAt N s s' := by
   obtain ⟨hlt, rfl⟩ := M.fillFunc_inv h
   exact of_funcsOnly rfl (by simp)
-
-theorem of_getFn {N : Nat} {s s' : BState} {fn : FnState}
-    (h : getFn s = some (fn, s')) : SGrowsAt N s s' := by
-  rw [M.getFn_apply] at h
-  obtain ⟨rfl, rfl⟩ := M.some_pair_inj h
-  exact rfl' N s
 
 theorem of_liftO {N : Nat} {α : Type} {o : Option α} {a : α} {s s' : BState}
     (h : (liftO o : M α) s = some (a, s')) : SGrowsAt N s s' := by
@@ -2346,52 +2095,6 @@ theorem allocScope_funcsOnly {ss : List (Stmt Op)} {s s' : BState}
     obtain ⟨-, rfl⟩ := M.pure_inv h2
     exact ⟨rfl, by simp⟩
   all_goals (obtain ⟨-, rfl⟩ := M.pure_inv hb; exact ⟨rfl, Nat.le_refl _⟩)
-
-/-- Reserving a whole scope is genuine function-table refinement: it appends
-`none` slots and leaves every already-filled entry untouched. -/
-theorem allocScope_frefines {ss : List (Stmt Op)} {s s' : BState}
-    {sc : List (Ident × FuncId)} (h : allocScope ss s = some (sc, s')) :
-    FRefines s s' := by
-  rw [allocScope] at h
-  have step : ∀ (acc : List (Ident × FuncId)) (st : Stmt Op)
-      (s₀ s₁ : BState) (acc' : List (Ident × FuncId)),
-      (match st with
-        | Stmt.funDef n _ _ _ => do
-            let fid ← allocFunc
-            pure (acc ++ [(n, fid)])
-        | _ => pure acc) s₀ = some (acc', s₁) → FRefines s₀ s₁ := by
-    intro acc st s₀ s₁ acc' hs
-    cases st with
-    | funDef n ps rs body =>
-        obtain ⟨fid, t, ha, hp⟩ := M.bind_inv hs
-        obtain ⟨-, rfl⟩ := M.pure_inv hp
-        exact ⟨(SGrowsAt.of_allocFunc (N := 0) ha).funcsSize,
-          FContents.of_allocFunc ha⟩
-    | block body | letDecl vars val | assign vars e | cond e body
-    | forLoop init e post body | «break» | «continue» | leave
-    | switch e cases dflt | exprStmt e =>
-        obtain ⟨-, rfl⟩ := M.pure_inv hs
-        exact FRefines.rfl' _
-  have fold : ∀ (l : List (Stmt Op)) (init : List (Ident × FuncId))
-      (s₀ s₁ : BState) (out : List (Ident × FuncId)),
-      (l.foldlM (init := init) fun acc (st : Stmt Op) =>
-        match st with
-        | Stmt.funDef n _ _ _ => do
-            let fid ← allocFunc
-            pure (acc ++ [(n, fid)])
-        | _ => pure acc) s₀ = some (out, s₁) → FRefines s₀ s₁ := by
-    intro l
-    induction l with
-    | nil =>
-        intro init s₀ s₁ out hl
-        obtain ⟨-, rfl⟩ := M.pure_inv hl
-        exact FRefines.rfl' _
-    | cons st rest ih =>
-        intro init s₀ s₁ out hl
-        rw [List.foldlM_cons] at hl
-        obtain ⟨acc, t, hst, hrest⟩ := M.bind_inv hl
-        exact (step init st s₀ t acc hst).trans (ih acc t s₁ out hrest)
-  exact fold ss [] s s' sc h
 
 /-- `allocScope` appends reservations and therefore preserves the complete
 pre-existing function-table prefix, including pending `none` entries. -/
@@ -5318,12 +5021,6 @@ theorem trScope_fprefix : ∀ (fenv : FMap) (env : VMap)
   trFrames_fprefix.2.1
 
 omit model in
-theorem trStmts_fprefix : ∀ (fenv : FMap) (env : VMap)
-    (lctx : Option LoopCtx) (rets : Option (List Ident)) (d : Bool)
-    (ss : List (Stmt Op)), StmtsFrame fenv env lctx rets d ss :=
-  trFrames_fprefix.2.2.1
-
-omit model in
 theorem trStmt_fprefix : ∀ (fenv : FMap) (env : VMap)
     (lctx : Option LoopCtx) (rets : Option (List Ident)) (st : Stmt Op),
     StmtFrame fenv env lctx rets st :=
@@ -5483,48 +5180,6 @@ theorem trStmts_owned_back (fenv : FMap) (lctx : Option LoopCtx)
             cases heq
 
 omit model in
-/-- A single statement is a closed translation with respect to every pending
-slot which existed at entry.  Unlike `trStmts`, it cannot consume a direct
-function reservation (`funDef` is rejected by `trStmt`). -/
-theorem trStmt_owned_back (fenv : FMap) (env : VMap)
-    (lctx : Option LoopCtx) (rets : Option (List Ident)) (st : Stmt Op)
-    {s s' done : BState} {r : Option VMap} {owned : List FuncId}
-    (hbound : ∀ i : FuncId, i ∈ owned → i < s.funcs.size)
-    (ho : FOwned owned s' done)
-    (htr : trStmt fenv env lctx rets st s = some (r, s')) :
-    FOwned owned s done :=
-  FOwned.back_fprefix
-    (trStmt_fprefix fenv env lctx rets st s.funcs.size s r s'
-      (Nat.le_refl _) htr) hbound ho
-
-omit model in
-/-- The scope wrapper allocates and discharges only its own reservations, so
-it preserves every caller-owned entry slot. -/
-theorem trScope_owned_back (fenv : FMap) (env : VMap)
-    (lctx : Option LoopCtx) (rets : Option (List Ident))
-    (body : List (Stmt Op)) {s s' done : BState} {r : Option VMap}
-    {owned : List FuncId}
-    (hbound : ∀ i : FuncId, i ∈ owned → i < s.funcs.size)
-    (ho : FOwned owned s' done)
-    (htr : trScope fenv env lctx rets body s = some (r, s')) :
-    FOwned owned s done :=
-  FOwned.back_fprefix
-    (trScope_fprefix fenv env lctx rets body s.funcs.size s r s'
-      (Nat.le_refl _) htr) hbound ho
-
-omit model in
-/-- Translating a nested function saves and restores the caller function and
-frames its entire function table prefix. -/
-theorem trFunc_owned_back (fenv : FMap) (ps rs : List Ident)
-    (body : List (Stmt Op)) {s s' done : BState} {g : Func}
-    {owned : List FuncId}
-    (hbound : ∀ i : FuncId, i ∈ owned → i < s.funcs.size)
-    (ho : FOwned owned s' done)
-    (htr : trFunc fenv ps rs body s = some (g, s')) :
-    FOwned owned s done :=
-  FOwned.back_fprefix (trFunc_prefix fenv ps rs body htr) hbound ho
-
-omit model in
 /-- A pending function slot which no declaration in a statement suffix selects
 survives that suffix.  Nested scopes and nested function translations frame
 the whole table present at their entry; the only operation which can touch the
@@ -5668,13 +5323,6 @@ theorem edgeArgs_ok {env : VMap} {V : VEnv yulD} {R : Regs} {xs : List Ident}
 
 /-- The dialect zero is the machine zero (so `bindZeros` matches `const _ 0`). -/
 theorem yulD_zero : YulSemantics.Dialect.zero yulD = (0 : U256) := rfl
-
-/-- The source dialect's built-in relation *is* the one the SSA semantics
-steps by, so no per-operation agreement is owed. -/
-theorem yulD_Builtin (op : Op) (args : List U256) (st : EvmState)
-    (r : YulSemantics.BuiltinResult U256 EvmState) :
-    (yulD).Builtin op args st r
-      ↔ builtinWithExternal model.calls model.creates op args st r := Iff.rfl
 
 set_option linter.unnecessarySeqFocus false in
 /-- `isHaltingOp` is sound: the operations the construction turns into a
@@ -5947,56 +5595,6 @@ theorem execFrom_jump {P : Prog} {f : Func} {fn : FnState} {R : Regs}
     ExecFrom (model := model) P f fn R st res := by
   obtain ⟨tb, htb, hlen, hexec⟩ := hjmp
   exact ⟨⟨[], .jump e⟩, hcur, .jump htb hg hlen hexec⟩
-
-/-- Converse of `execFrom_jump` when the finished current block is known to
-end at that jump.  This is the loop back-edge bridge: the recursive loop IH
-produces an `ExecFrom` at the original preheader, while the current iteration
-has reached a `JumpTo` into the header.  Uniqueness of the finished current
-block identifies the existential continuation with the known jump. -/
-theorem jumpTo_of_execFrom_jump {P : Prog} {f : Func} {fn : FnState} {R : Regs}
-    {st : EvmState} {e : Edge} {res : FRes}
-    (hcur : CurOK f fn ⟨[], .jump e⟩)
-    (hex : ExecFrom (model := model) P f fn R st res) :
-    ∃ vals, R.getMany e.args = some vals ∧
-      JumpTo (model := model) P f e.target vals R st res := by
-  obtain ⟨b, hb, hib, htb⟩ := hcur
-  obtain ⟨rest, ⟨b', hb', hib', htb'⟩, hexec⟩ := hex
-  have hbb : b' = b := Option.some.inj (hb'.symm.trans hb)
-  subst b'
-  have hi : rest.instrs = [] := by
-    apply List.append_cancel_left
-    simpa only [List.append_nil] using hib'.symm.trans hib
-  have ht : rest.term = .jump e := htb'.symm.trans htb
-  cases rest with
-  | mk instrs term =>
-    simp only at hi ht
-    subst instrs
-    subst term
-    cases hexec with
-    | jump htarget hargs hlen hbody =>
-      exact ⟨_, hargs, ⟨_, htarget, hlen, hbody⟩⟩
-
-/-- Package execution from an empty current target block back into `JumpTo`.
-This is the other half of the loop back-edge bridge: the recursive header IH
-starts at the builder's empty `sI.cur`, while the post terminator expects a
-`JumpTo` witness for the same finished block. -/
-theorem jumpTo_of_execFrom_empty {P : Prog} {f : Func} {fn : FnState}
-    {R : Regs} {st : EvmState} {bid : BlockId} {params : List ValId}
-    {vals : List U256} {b : Block} {res : FRes}
-    (hb : f.blocks[bid]? = some b) (hparams : b.params = params)
-    (hcur : fn.curId = bid) (hcur0 : fn.cur = [])
-    (hlen : params.length = vals.length)
-    (hex : ExecFrom (model := model) P f fn (R.setMany params vals) st res) :
-    JumpTo (model := model) P f bid vals R st res := by
-  obtain ⟨rest, ⟨b', hb', hi, ht⟩, hexec⟩ := hex
-  rw [hcur] at hb'
-  have hbb : b' = b := Option.some.inj (hb'.symm.trans hb)
-  subst b'
-  refine ⟨b, hb, by simpa only [hparams] using hlen, ?_⟩
-  rw [hparams]
-  rw [hcur0] at hi
-  have hi' : b.instrs = rest.instrs := by simpa using hi
-  simpa only [hi', ht] using hexec
 
 /-- A block sealed with `branch c t f`, true edge. -/
 theorem execFrom_branchTrue {P : Prog} {f : Func} {fn : FnState} {R : Regs}
@@ -7119,11 +6717,11 @@ theorem allocScope_motive_inputs {P : Prog}
   obtain ⟨hfe', ho0⟩ := allocScope_bridge hfuncs hfe hdone hbound ho1 ha ht
   exact ⟨hfe', hboundSelected, hslotsSelected, hndAll, ho0⟩
 
-/-! ## The residual obligation
+/-! ## The simulation motive
 
-Everything above is unconditional. What remains is the derivation induction
-itself: a single `induction … with` over the source `Step` derivation whose
-motive is `SOut` below, mirroring `SimAsm.sim`'s `Motive`. -/
+Everything above is unconditional. The derivation induction itself is a single
+`induction … with` over the source `Step` derivation whose motive is `SOut`
+below, mirroring `SimAsm.sim`'s `Motive`. -/
 
 /-- What a statement-class source derivation means on the SSA side, by outcome
 — the SSA analogue of `SimAsm.SOut`. `normal` hands back the register file the
@@ -7346,12 +6944,6 @@ theorem mono_mods {locals mods mods' : List Ident} {V W : VEnv yulD}
   ⟨h.1, fun n hn => Forall2.imp (fun _ _ hpq =>
     ⟨hpq.1, hpq.2.imp id (fun hm => hsub _ hm)⟩) (h.2 n hn)⟩
 
-/-- Weakening the local scope: fewer locals is a stronger statement. -/
-theorem mono_locals {locals locals' mods : List Ident} {V W : VEnv yulD}
-    (hle : locals.length ≤ locals'.length) (h : ModOut locals mods V W) :
-    ModOut locals' mods V W :=
-  ⟨h.1, fun n hn => h.2 n (by omega)⟩
-
 /-- Composition. The side condition says the second fragment's guarantee reaches
 every depth the first one does — immediate when the head neither declares nor
 the tail's `locals` grows, and provided by the `letDecl` length shape otherwise. -/
@@ -7505,7 +7097,7 @@ def ModMotive (V : VEnv yulD) :
           ModOut locals (modStmts locals post ++ modStmts locals body) V V'
   | _, _ => True
 
-/-- `ModOut` with a `restore` on the right — the shape `modStmts_pos` states. -/
+/-- `ModOut` with a `restore` on the right. -/
 theorem ModOut.restoreR {locals mods : List Ident} {V W : VEnv yulD}
     (h : ModOut locals mods V W) :
     ModOut locals mods V (YulSemantics.restore V W) := h.restore_right
@@ -7784,32 +7376,6 @@ theorem loop_names {funs : YulSemantics.FunEnv yulD} {V V' : VEnv yulD}
     (h : YulSemantics.Step yulD funs V yst (.loop c post body)
       (.sres V' yst' o)) : VEnv.names V' = VEnv.names V :=
   loop_names_sim h
-
-theorem modStmts_pos {funs : YulSemantics.FunEnv yulD} {V Vb : VEnv yulD}
-    {yst ystb : EvmState} {o : Outcome} {locals : List Ident}
-    {ss : List (Stmt Op)}
-    (hloc : LocalsOK locals V)
-    (h : YulSemantics.ExecStmts yulD funs V yst ss Vb ystb o) :
-    ModOut locals (modStmts locals ss) V (YulSemantics.restore V Vb) :=
-  ((mod_sim h).2 locals hloc).restoreR
-/-- **The form the construction consumes.** `modifiedX` analyses each body with
-`modStmts []`, so this is `modStmts_pos` at the empty local scope: every name
-the analysis does not report reads back unchanged after the list has run. -/
-theorem modStmts_sound {funs : YulSemantics.FunEnv yulD} {V Vb : VEnv yulD}
-    {yst ystb : EvmState} {o : Outcome} {ss : List (Stmt Op)}
-    (h : YulSemantics.ExecStmts yulD funs V yst ss Vb ystb o) :
-    ∀ x : Ident, x ∉ modStmts [] ss →
-      YulSemantics.VEnv.get (YulSemantics.restore V Vb) x
-        = YulSemantics.VEnv.get V x := by
-  intro x hx
-  obtain ⟨hlen, hvals⟩ := modStmts_pos (localsOK_nil V) h
-  have hrl : (YulSemantics.restore V Vb).length = V.length := by
-    rw [VEnv.restore_def, List.length_drop]
-    rw [VEnv.restore_def, List.length_drop] at hlen
-    omega
-  have hf := hvals V.length (by simp)
-  rw [Nat.sub_self, List.drop_zero, hrl, Nat.sub_self, List.drop_zero] at hf
-  exact get_congr_of_forall₂ hx hf
 
 /-- Reconstruct a join environment from the values carried for every possibly
 modified visible name.  Uniqueness is exactly what turns agreement of visible
@@ -8347,9 +7913,6 @@ def CurOpen (s s' : BState) : Prop := CurSame s s' ∨ CurMoved s s'
 move performed by an enclosing structured construct. -/
 def CurClosed (s s' : BState) : Prop := CurMoved s s' ∨ CurSealed s s'
 
-/-- The non-result-sensitive union used by the backwards-placement consumer. -/
-def CurKeeps (s s' : BState) : Prop := CurOpen s s' ∨ CurSealed s s'
-
 /-- The result-sensitive form threaded through the construction induction.
 Fall-through must be open; diversion must be closed. -/
 def CurResult : Option VMap → BState → BState → Prop
@@ -8461,7 +8024,8 @@ theorem curMoved_of_seal_move {t : Term} {bid : BlockId} {s sA s' : BState}
 
 omit model in
 /-- **Backward transfer of `CurPlaced`.** The placement of the current block
-travels from a fragment's output state to its input state, given `CurKeeps`.
+travels from a fragment's output state to its input state, given the
+fragment's `CurResult`.
 This is the primitive `seqCons`/`seqStop` need in order to hand their head IH a
 `CurPlaced` at the intermediate state: `Completes` already travels backwards
 (`SGrowsAt.completes_of`), and this closes the gap for `CurPlaced`. -/
@@ -8485,7 +8049,7 @@ theorem curPlaced_back {f : Func} {s s' : BState} {renv : Option VMap}
       exact ⟨⟨Δ, b.term⟩, b, hf, hi, rfl⟩
 
 omit model in
-/-- `CurKeeps` composes along a chain of fragments. The `SGrowsAt` witnesses
+/-- `CurOpen` composes along a chain of fragments. The `SGrowsAt` witnesses
 supply the two facts the composition needs: that the block array only grows, and
 that a fragment which moves the current block moves it to a *fresh* one — so a
 block left behind is never returned to. -/
@@ -9699,99 +9263,6 @@ theorem trCases_cur_nil (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
       obtain ⟨uc, sc, hc, hd⟩ := M.bind_inv h
       exact ih sc hd
 
-/- The accessible version of this lemma is placed below `trStmt_cur`, whose
-block-specialisation it uses.  Keeping the proof text here while that theorem
-is defined would be an illegal forward reference.
-omit model in
-/-- Switch-chain translation keeps the selected/current block id in bounds. -/
-theorem trCases_cur_valid (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
-    (rets : Option (List Ident)) (sv : ValId) (X : List Ident)
-    (joinId : BlockId) (cs : List (Literal × List (Stmt Op)))
-    (df : Option (List (Stmt Op))) (s s' : BState) (u : Unit)
-    (hv : CurValid s)
-    (h : trCases fenv env lctx rets sv X joinId cs df s = some (u, s')) :
-    CurValid s' := by
-  induction cs generalizing s with
-  | nil =>
-    cases df with
-    | none =>
-      rw [trCases] at h
-      obtain ⟨xv, sA, h1, h2⟩ := M.bind_inv h
-      have hvA := hv.of_grows (Grows.of_liftO h1)
-      exact CurValid.of_same_sgrows hvA (SGrowsAt.of_sealCur h2)
-        (curSealed_of_sealCur h2).1
-    | some body =>
-      rw [trCases] at h
-      obtain ⟨renv, sA, h1, h2⟩ := M.bind_inv h
-      have h1' : trStmt fenv env lctx rets (.block body) s = some (renv, sA) := by
-        rw [trStmt]
-        exact h1
-      have hvA := (trStmt_cur hv h1').1
-      cases renv with
-      | none =>
-        obtain ⟨-, rfl⟩ := M.pure_inv h2
-        exact hvA
-      | some env' =>
-        obtain ⟨xv, sB, h3, h4⟩ := M.bind_inv h2
-        have hvB := hvA.of_grows (Grows.of_liftO h3)
-        exact CurValid.of_same_sgrows hvB (SGrowsAt.of_sealCur h4)
-          (curSealed_of_sealCur h4).1
-  | cons p rest ih =>
-    obtain ⟨lit, body⟩ := p
-    rw [trCases] at h
-    obtain ⟨t, s1, h1, h⟩ := M.bind_inv h
-    obtain ⟨u2, s2, h2, h⟩ := M.bind_inv h
-    obtain ⟨e, s3, h3, h⟩ := M.bind_inv h
-    obtain ⟨u4, s4, h4, h⟩ := M.bind_inv h
-    obtain ⟨caseId, s5, h5, h⟩ := M.bind_inv h
-    obtain ⟨nextId, s6, h6, h⟩ := M.bind_inv h
-    obtain ⟨u7, s7, h7, h⟩ := M.bind_inv h
-    obtain ⟨u8, s8, h8, h⟩ := M.bind_inv h
-    obtain ⟨renv, s9, h9, h⟩ := M.bind_inv h
-    have a1 : SGrowsAt s.fn.blocks.size s s1 := SGrowsAt.of_grows (Grows.of_freshVal h1)
-    have a2 := a1.trans (SGrowsAt.of_grows (Grows.of_emit h2))
-    have a3 := a2.trans (SGrowsAt.of_grows (Grows.of_freshVal h3))
-    have a4 := a3.trans (SGrowsAt.of_grows (Grows.of_emit h4))
-    have a5 := a4.trans (SGrowsAt.of_newBlock h5)
-    have a6 := a5.trans (SGrowsAt.of_newBlock h6)
-    have a7 := a6.trans (SGrowsAt.of_sealCur h7)
-    have hcase : s.fn.blocks.size ≤ caseId := by
-      rw [SGrowsAt.newBlock_id h5]
-      exact a4.size
-    have hv8 : CurValid s8 := CurValid.of_moveTo
-      (Nat.lt_of_lt_of_le (newBlock_target_lt h5)
-        ((SGrowsAt.of_newBlock (N := 0) h6).trans
-          (SGrowsAt.of_sealCur h7)).size) h8
-    have h9' : trStmt fenv env lctx rets (.block body) s8 = some (renv, s9) := by
-      rw [trStmt]
-      exact h9
-    have hv9 := (trStmt_cur hv8 h9').1
-    have gbody := trScope_grows fenv env lctx rets body s8 renv s9 h9
-    cases renv with
-    | none =>
-      obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-      obtain ⟨ub, sb, hb, hc⟩ := M.bind_inv h
-      have g6a : SGrowsAt 0 s6 sa :=
-        ((SGrowsAt.of_sealCur h7).trans
-          (SGrowsAt.of_moveTo (Or.inl (by simpa using hcase)) h8)).trans
-            (gbody.mono (Nat.zero_le _))
-      have hvb : CurValid sb := CurValid.of_moveTo
-        (Nat.lt_of_lt_of_le (newBlock_target_lt h6) g6a.size) hb
-      exact ih sb hvb hc
-    | some env' =>
-      obtain ⟨xv, sa, ha, h⟩ := M.bind_inv h
-      obtain ⟨ub, sb, hb, h⟩ := M.bind_inv h
-      obtain ⟨uc, sc, hc, hd⟩ := M.bind_inv h
-      have g6b : SGrowsAt 0 s6 sb :=
-        (((SGrowsAt.of_sealCur h7).trans
-          (SGrowsAt.of_moveTo (Or.inl (by simpa using hcase)) h8)).trans
-            (gbody.mono (Nat.zero_le _))).trans
-              ((SGrowsAt.of_edgeArgs ha).trans (SGrowsAt.of_sealCur hb))
-      have hvc : CurValid sc := CurValid.of_moveTo
-        (Nat.lt_of_lt_of_le (newBlock_target_lt h6) g6b.size) hc
-      exact ih sc hvc hd
--/
-
 omit model in
 /-- Statement-current validity as a corollary of the list invariant, using a
 singleton list.  Function definitions are handled by `trStmts` itself and are
@@ -10813,43 +10284,6 @@ def EStmtOut (P : Prog) (f : Func) (funs : YulSemantics.FunEnv yulD)
     trStmt fenv env lctx rets (.exprStmt e) s₀ = some (renv, s₁) →
     SOut (model := model) P f lctx rets s₀ s₁ R renv V' yst yst' o
 
-/-- The construction tail corresponding exactly to the source `.loop` code
-class, after the `for` initializer has run and its hoisted scope/environment
-have been installed.  Keeping this as a named relation is what lets the loop
-iteration IH talk about the header/body/post cycle independently of the outer
-initializer and its final scope drop. -/
-def trLoopCore (fenv : FMap) (env : VMap) (rets : Option (List Ident))
-    (c : Expr Op) (post body : List (Stmt Op)) : M (Option VMap) := do
-  let X := modifiedX env [post, body]
-  let xvals ← edgeArgs env X
-  let hParams ← X.mapM (fun _ => freshVal)
-  let hId ← newBlock hParams
-  let exitParams ← X.mapM (fun _ => freshVal)
-  let exitId ← newBlock exitParams
-  let postParams ← X.mapM (fun _ => freshVal)
-  let postId ← newBlock postParams
-  sealCur (.jump ⟨hId, xvals⟩)
-  moveTo hId
-  let envH := env.setMany X hParams
-  let cv ← trExpr fenv envH c
-  let bodyId ← newBlock []
-  let hX ← edgeArgs envH X
-  sealCur (.branch cv ⟨bodyId, []⟩ ⟨exitId, hX⟩)
-  moveTo bodyId
-  let lctx' : LoopCtx := ⟨exitId, postId, X⟩
-  let renvB ← trScope fenv envH (some lctx') rets body
-  if let some envB := renvB then
-    let xvB ← edgeArgs envB X
-    sealCur (.jump ⟨postId, xvB⟩)
-  moveTo postId
-  let envP := env.setMany X postParams
-  let renvP ← trScope fenv envP none rets post
-  if let some envP' := renvP then
-    let xvP ← edgeArgs envP' X
-    sealCur (.jump ⟨hId, xvP⟩)
-  moveTo exitId
-  pure (some (env.setMany X exitParams))
-
 /-- A named decomposition of the one statically generated loop.  The source
 loop induction revisits `sI`, but never translates another copy of the loop;
 keeping the complete layout in one witness lets its IH reuse precisely these
@@ -10921,35 +10355,6 @@ structure LoopLayout (fenv : FMap) (env : VMap) (rets : Option (List Ident))
       moveTo exitId
       pure (some (env.setMany (modifiedX env [post, body]) exitParams))) sO =
     some (renv, s₁)
-
-omit model in
-/-- Successful construction exposes exactly one `LoopLayout`. -/
-theorem LoopLayout.of_trLoopCore {fenv : FMap} {env : VMap}
-    {rets : Option (List Ident)} {c : Expr Op} {post body : List (Stmt Op)}
-    {s₀ s₁ : BState} {renv : Option VMap}
-    (h : trLoopCore fenv env rets c post body s₀ = some (renv, s₁)) :
-    Nonempty (LoopLayout fenv env rets c post body s₀ s₁ renv) := by
-  unfold trLoopCore at h
-  obtain ⟨xvals, sA, h1, h⟩ := M.bind_inv h
-  obtain ⟨hParams, sB, h2, h⟩ := M.bind_inv h
-  obtain ⟨hId, sC, h3, h⟩ := M.bind_inv h
-  obtain ⟨exitParams, sD, h4, h⟩ := M.bind_inv h
-  obtain ⟨exitId, sE, h5, h⟩ := M.bind_inv h
-  obtain ⟨postParams, sF, h6, h⟩ := M.bind_inv h
-  obtain ⟨postId, sG, h7, h⟩ := M.bind_inv h
-  obtain ⟨uH, sH, h8, h⟩ := M.bind_inv h
-  obtain ⟨uI, sI, h9, h⟩ := M.bind_inv h
-  obtain ⟨cvId, sJ, h10, h⟩ := M.bind_inv h
-  obtain ⟨bodyId, sK, h11, h⟩ := M.bind_inv h
-  obtain ⟨hX, sL, h12, h⟩ := M.bind_inv h
-  obtain ⟨uM, sM, h13, h⟩ := M.bind_inv h
-  obtain ⟨uN, sN, h14, h⟩ := M.bind_inv h
-  obtain ⟨bodyEnv, sO, h15, htail⟩ := M.bind_inv h
-  exact ⟨⟨xvals, sA, h1, hParams, sB, h2, hId, sC, h3,
-    exitParams, sD, h4, exitId, sE, h5, postParams, sF, h6,
-    postId, sG, h7, sH, h8, sI, h9, cvId, sJ, h10,
-    bodyId, sK, h11, hX, sL, h12, sM, h13, sN, h14,
-    bodyEnv, sO, h15, htail⟩⟩
 
 omit model in
 /-- Replace only the final scope-dropping `pure` in the loop tail.  The four
@@ -12632,53 +12037,6 @@ theorem loopPost_back {f : Func} {fenv : FMap} {env : VMap}
     have hsR : sR = sQ := (M.edgeArgs_inv hargs).2
     subst sR
     exact ⟨SGrowsAt.completes_of gQS hcS, hplacedR, fun h => nomatch h⟩
-
-omit model in
-/-- The matching backward reconstruction at the body boundary.  A diverting
-body leaves a sealed block before the protected move to `postId`; a normal
-body receives the generated fall-through jump first. -/
-theorem loopBody_back {f : Func} {fenv : FMap} {env : VMap}
-    {lctx : LoopCtx} {rets : Option (List Ident)} {body : List (Stmt Op)}
-    {X : List Ident} {postId : BlockId} {sN sO sP : BState}
-    {bodyEnv : Option VMap} {joins : List BlockId}
-    (hvalidO : CurValid sO) (hpO : ProtectedAt joins sO.fn)
-    (hpostMem : postId ∈ joins)
-    (hbody : trScope fenv env (some lctx) rets body sN = some (bodyEnv, sO))
-    (htail : (do
-      if let some envB := bodyEnv then
-        let xvB ← edgeArgs envB X
-        sealCur (.jump ⟨postId, xvB⟩)
-      moveTo postId) sO = some ((), sP))
-    (hcomplP : Completes f sP.fn joins) :
-    Completes f sO.fn joins ∧ CurPlaced f sO.fn ∧
-      (bodyEnv = none → CurFinal f sO.fn) := by
-  cases bodyEnv with
-  | none =>
-    change moveTo postId sO = some ((), sP) at htail
-    have hne : sO.fn.curId ≠ postId := fun he => hpO.away (he ▸ hpostMem)
-    have hcur0 : sO.fn.cur = [] :=
-      trScope_none_cur_nil fenv env (some lctx) rets body sN sO hbody
-    have hfin : CurFinal f sO.fn :=
-      curFinal_of_move_grows htail hne hpO.away (SGrows.rfl' sP) hcomplP
-    exact ⟨Completes.of_moveTo_protected hpostMem htail hcomplP,
-      CurPlaced.of_moveTo_empty hvalidO hcur0 hne htail hpO.away hcomplP,
-      fun _ => hfin⟩
-  | some envB =>
-    obtain ⟨xvB, sQ, hargs, htail⟩ := M.bind_inv htail
-    obtain ⟨uR, sR, hseal, hmove⟩ := M.bind_inv htail
-    have gOR : SGrows sO sR :=
-      (SGrowsAt.of_grows (Grows.of_liftO hargs)).trans
-        (SGrowsAt.of_sealCur hseal)
-    have hpR : ProtectedAt joins sR.fn := ProtectedAt.forward hpO gOR
-    have hcR : Completes f sR.fn joins :=
-      Completes.of_moveTo_protected hpostMem hmove hcomplP
-    have hne : sR.fn.curId ≠ postId := fun he => hpR.away (he ▸ hpostMem)
-    have hfinR : CurFinal f sR.fn :=
-      curFinal_of_move_grows hmove hne hpR.away (SGrows.rfl' sP) hcomplP
-    have hplacedQ : CurPlaced f sQ.fn := ⟨_, curOK_of_sealCur hfinR hseal⟩
-    have hsQ : sQ = sO := (M.edgeArgs_inv hargs).2
-    subst sQ
-    exact ⟨SGrowsAt.completes_of gOR hcR, hplacedQ, fun h => nomatch h⟩
 
 
 
@@ -15525,65 +14883,6 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     have hcomplA : Completes f sA.fn joins := htail.completes_of hcomplE
     exact SOut.ofExprHalt
       (ihc.1 fenv env R s₀ sA sv joins hfe henv hfr hp hcomplA hcpA h1)
-  -- The loop motive is `LOut`; the seven iteration constructors still need the
-  -- same below-watermark preservation at header/exit/post parameter binds.
-  -- More precisely, at the condition point the reserved post/exit blocks are
-  -- not yet final, so `Completes f fn joins` is false unless `postId` and
-  -- `exitId` are added to `joins`.  A loop-layout bridge must transfer that
-  -- protected `Completes` backward across the non-fresh `moveTo postId` and
-  -- `moveTo exitId` steps (using `Completes.of_moveTo_protected`); a single
-  -- `SGrowsAt.completes_of` cannot compose those continuations.
-  -- The two enclosing `for` rules additionally need the structural
-  -- hoisted-scope bridge `allocScope init` ->
-  -- `FEnvOK P (hoist yulD init :: funs) (scope :: fenv)`.  `FContents` and
-  -- `FuncTableComplete.funcOK_of_contents` now provide the filled-slot
-  -- transport itself.  The precise remaining piece is a sixth mutually
-  -- threaded builder invariant which (1) recovers that each `FMap.get` used by
-  -- the hoist walk names its own reserved `none` singleton, so
-  -- `FContents.of_fillFunc_empty` applies, and (2) supplies the resulting
-  -- local-end-state -> `doneFuncs` witness as a premise of the statement/loop
-  -- motive.  `FuncTableComplete doneFuncs` alone deliberately has no relation
-  -- to an arbitrary local builder state, so invoking `ihi` before that witness
-  -- is threaded would be unsound.
-  --
-  -- Precise failed re-establishment (`seqCons`/`seqStop`, at a `funDef` head):
-  -- a pointwise `FContents local doneFuncs` premise is insufficient to recover
-  -- the required `local.funcs[fid]? = some none`.  With duplicate hoisted
-  -- names, both `FMap.get`s select the first reservation; `fillFunc` overwrites
-  -- it and the second reservation stays `none`.  `trScope` itself still
-  -- succeeds, and the contradiction appears only when the enclosing completed
-  -- build's `mapM id` rejects that leftover slot.  The sixth invariant must
-  -- therefore thread the *pending reservation multiset* (equivalently, a
-  -- none-slot budget) through `trFunc`/`trScope`/`trStmts`/`trStmt`/`trCases`:
-  -- `allocFunc` adds one owned pending slot, each `fillFunc` consumes its own
-  -- slot, closed nested translations preserve the caller's pending slots, and
-  -- `FuncTableComplete` makes the final pending set empty.  Only that stronger
-  -- invariant justifies `FContents.of_fillFunc_empty` and the initializer IH.
-  --
-  -- The mutual frame part of that plan is now discharged by
-  -- `trFunc_fprefix`/`trFunc_prefix`, and `FOwned.back_fprefix` is the exact
-  -- backward bridge for a nested function.  The remaining obstruction is now
-  -- narrower and explicit: `Motive` has no `owned` parameter and therefore no
-  -- premise carrying both `FOwned owned s₁ done` and
-  -- `∀ i ∈ owned, i < s₀.funcs.size`.  Without that bound the bridge is
-  -- false: an index in `owned` could denote a slot freshly allocated by the
-  -- nested translation.  Threading this bounded ownership pair through the
-  -- statement/list/loop clauses lets the `seqCons` funDef branch apply, in
-  -- order, `FOwned.back_fillFunc`, `FOwned.back_fprefix`, and
-  -- `FOwned.back_allocFunc`; only then can `forLoop` invoke the initializer IH
-  -- with the hoisted `FEnvOK` scope.
-  -- Precise remaining reconstruction goal.  After inverting `allocScope` and
-  -- `trStmts`, the `some envI` arm ends in the *outer* pure
-  --   `some ((envI.setMany X exitParams).drop
-  --     ((envI.setMany X exitParams).length - env.length))`.
-  -- `LOut`, however, consumes a `LoopLayout` whose identical four-way
-  -- body/post tail ends in the *inner* pure
-  --   `some (envI.setMany X exitParams)`.
-  -- `LoopLayout.header_tail_sgrows`, `.curMoved`, and `.fprefix` now discharge
-  -- all block-placement and ownership framing once that tail equation is
-  -- reconstructed.  What remains is to invert the four `bodyEnv`/`postEnv`
-  -- arms, replace only that final pure, and package the common `LoopLayout`;
-  -- then `allocScope_motive_inputs` supplies every premise of `ihi`.
   | @forLoop funs V st init c post body Vinit stinit Vend stend o
       hinit hloop ihi ihl =>
     intro fenv env R lctx rets s₀ s₁ renv joins hfe henv huniq hctx hfr hvalid hp
@@ -18170,103 +17469,6 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     change LOut (model := model) P f funs V st c post body Vb stb .halt doneFuncs
     simpa using sim_loopBodyNonNormal hfuncs ihc hb ihb hnz (Or.inl rfl)
 
-/-!
-**The construction simulation — the remaining hole.**
-
-Obligation: by induction on the source `Step` derivation (one
-`induction … with` over the single indexed inductive, as in `SimAsm.sim`),
-with `SOut` above as the statement-class motive and the analogous
-expression-class motive
-`∀ s₀ i s₁, trExpr fenv env e s₀ = some (i, s₁) → ∃ R₁, Regs.Le R R₁ ∧ R₁ i = some v ∧ SimS P f s₀.fn R yst s₁.fn R₁ yst'`
-(and its `.halt` variant, and `trArgs`' list version). Each construction case
-needs the `M.bind_inv` decomposition of the corresponding `trX` equation, the
-freshness facts of `M.mapM_freshVal` to see that every emitted id is fresh (so
-`Regs.Le` is preserved — `Regs.Le.set`/`Regs.Le.setMany`), `EnvOK`'s
-`get`/`set`/`setMany`/`zip`/`restore` lemmas for the environment, `FMap.get_ok`
-for calls, and `isHaltingOp_halts` for the `exprStmt` halt seal.
-
-Two of the three sub-obligations this proof needs are now discharged above:
-
-* **builder monotonicity** — `trStmt_grows` (and `trExpr_grows`/`trArgs_grows`/
-  `trExprN_grows`) give `SGrowsAt`: `nextVal` and the block/function arrays only
-  grow, no block's parameter list ever changes, and the only pre-existing block
-  a fragment can seal is the one it starts on. `SGrowsAt.completes_of` turns
-  that into the backwards transfer of the placement invariant.
-* **the placement invariant** — `Completes` (strengthened to "every reserved
-  block keeps its parameters", which the `cond`/`switch`/`forLoop` cases need
-  because they reserve the join/exit block before sealing its predecessors) is
-  established at the top level in `ofBlock_sound'` and travels inwards along
-  each fragment by `SGrowsAt.completes_of`.
-
-The analysis obligation is discharged too: `modStmts_sound` is proved
-(via `mod_sim`), so `cond`/`switch`/`forLoop` may thread only
-`modifiedX env bodies`.
-
-Seventeen per-case leaves and combinators are proved above and plug straight
-into the induction:
-
-* expressions — `sim_lit`, `sim_var`, `sim_args_nil`, `sim_args_cons`, with the
-  freshness invariant `RegsFresh` they thread (`EOut`/`EOutL`);
-* statements — `sim_letDecl_none`, `sim_letDecl_some`, `sim_assign`,
-  `sim_exprStmt_op`, `sim_exprStmt_halt`;
-* non-local exits — `sim_break`, `sim_continue`, `sim_leave`, using `CurFinal`
-  (the block a diverting statement seals is *its own* current block, which
-  `Completes.sealed` deliberately exempts; the enclosing `cond`/`switch`/
-  `forLoop` supplies it, because each `moveTo`s a fresh join/exit block
-  afterwards and its own `Completes` then covers the sealed one);
-* sequencing and scoping — `sim_seqNil`, `SOut.seq` (the `seqCons`
-  combinator — pure, no construction inversion), `SOut.of_nonNormal` (the
-  `seqStop` transport across the dead code the construction still walks), and
-  `SOut.scope` (the `block` combinator, matching the construction's `drop`
-  against the source's `restore`);
-* every "the right-hand side halted" rule at once — `SOut.ofExprHalt` covers
-  `letHalt`, `assignHalt`, `exprStmtHalt`, `ifHalt` and `switchHalt`;
-* **edges into reserved blocks** — `jumpTo_of_completes` and its three `SimS`
-  specialisations `simS_jump_join`, `simS_branchFalse_join`,
-  `simS_branchTrue_body`. These are the whole semantic content of `cond`,
-  `switch` and the loop family: those constructs reserve their join / body /
-  header / exit / post blocks *before* sealing the edges into them, so the
-  construction never sees the finished bodies — only the parameter lists, which
-  is exactly what `Completes.params` fixes. What is left for those cases is the
-  mechanical inversion of the corresponding `trStmt` equation, which belongs in
-  the induction shell.
-
-Two invariants the remaining cases must thread, both with their payoff lemmas
-proved *and* their producers landed:
-
-* `NoShadow` — the construction rejects shadowing (`letDecl` checks
-  `VMap.mem`), so a scope's declarations share no name with the outer
-  environment. `get_restore_of_noShadow` turns that into "scope exit is
-  transparent to outer names", which is what lets `SOut.scope` carry a
-  non-local exit's edge values (read *inside* the scope) out through the
-  source's `restore`.  The producer is `ns_sim`: one induction over the source
-  derivation against an accepted construction run, whose `letDecl` cases read
-  the `vars.any env.mem` rejection off the accepted run and whose remaining
-  cases get `VEnv.names V' = declsOfStmt st ++ VEnv.names V` from `mod_sim`.
-  `noShadow_of_NSOut` converts its output.  The companion premise `CtxVars`
-  (the loop/return context is made of *visible* names) is threaded through the
-  motive, because `SOut.scope`'s `break`/`continue`/`leave` clauses genuinely
-  need it: a `restore` only preserves the reading of an *outer* name, and
-  nothing inside a block can establish that its `lctx`/`rets` names are outer.
-* `Completes`/`CurFinal` — see above.
-
-Groundwork for the shell is in place: `Motive` below is the statement of the
-induction (every clause final except `.loop`, which the `for` round fills), and
-`trScope_grows`/`trStmts_grows`/`trCases_grows`/`trFunc_grows` give the builder
-monotonicity for *all five* construction functions, which the compound cases
-need to see that a reserved block survives to the finished function.
-
-The function-table invariant needed by the remaining hoist/call work is in the
-motive: one `doneFuncs` table and its `FuncTableComplete` proof stay fixed
-through every recursive IH, and `FOwned` tracks the pending reservation
-multiset alongside it.  The structural analogue of `SimAsm.hoist_ok` is
-`trStmts_hoist_owned`/`allocScope_bridge`, packaged for the induction by
-`allocScope_motive_inputs`; the `block` case consumes it and is closed.
-
-What remains is the loop family (`forLoop`/`forInitHalt`) and the user-call
-pair `callOk`/`callHalt`; the precise obstruction of each is written above its
-hole in `sim`.
--/
 /-! `trScope_sim` (the scope wrapper WITHOUT register-freshness premises) was
 deleted: the statement is false as written.  `SOut.normal` asserts
 `∃ R₁, Regs.Le R R₁ ∧ RegsFresh R₁ s₁.fn`, yet nothing constrained `R`:

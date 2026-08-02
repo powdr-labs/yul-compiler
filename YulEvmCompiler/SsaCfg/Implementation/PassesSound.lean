@@ -50,10 +50,6 @@ definitions nothing reads.
 ## What is proved here
 
 * `Regs` plumbing: `setMany_cons`, `getMany_congr`, `set_congr`, `setMany_congr`.
-* The **frame lemma** `exec_congr`: `Exec` only reads registers named in the
-  current fragment or somewhere in the enclosing function, so two register files
-  agreeing there give the same execution. This is the reusable "Regs agreement"
-  lemma passes 1, 3 and 4 all need.
 * **The dominance check, unpacked** (§ `ToAsm`) — the bridge from the decidable
   `domCheck` to the fact the passes actually use:
   * `mem_insertSorted` / `mem_unionS` / `mem_diffS` / `mem_blockUses` /
@@ -67,9 +63,7 @@ definitions nothing reads.
     two propagation lemmas along a definition-free path and hitting this is
     precisely "no use is undominated";
   * `liveStep_mono` and `liveInSets_least` — `liveInSets` is the *least* fixed
-    point, the engine for the dominance-*preservation* obligations;
-  * `LiveAgree` and `liveAgree_entry` — the passes' liveness-indexed simulation
-    invariant and its (proved) base case at a function's entry.
+    point, the engine for the dominance-*preservation* obligations.
 * The **purity leaves**, transported from the pinned dialect's own
   `effects_sound_withExternal`:
   * `builtin_of_pure` — a pure op is never an open-world (`call`/`create`/`gas`)
@@ -95,8 +89,8 @@ definitions nothing reads.
   `cfBlockStep_spec`, `cfBlock_fold`).
 * Both **`forIn` bridges**: `Id.forIn_eq_foldl` for pure-`yield` loops and
   `Id.forIn_eq_loopWith` for **early-return** loops (with `loopWith` as the pure
-  model, `loopWith_yield` relating the two, and the `MProd (Option ρ) σ`
-  early-return protocol recorded as a worked example). The second unblocks
+  model and the `MProd (Option ρ) σ` early-return protocol recorded as a worked
+  example). The second unblocks
   `findTrivialParam`, `inlineOnce` and `inlineFunc`, which all `return` early.
 * **`ToAsm.liveInSets_isSome` — the liveness fixed point always converges.**
   `Func.domCheck` is `false` by definition when `liveInSets` exhausts its fuel,
@@ -117,8 +111,8 @@ definitions nothing reads.
 * **Pass 4's structural specification** (`Passes.dve_blocks_get` and friends):
   `dve` is the one pass written without an `Id.run` loop, so its output is
   directly readable — `dveBlock_uses_sub` (uses only shrink),
-  `dveBlock_defs_sub` / `dveBlock_defs_of_live` (definitions only shrink, and a
-  live definition is always kept), `dveBlock_edge_target` (edge targets are
+  `dveBlock_defs_of_live` (a live definition is always kept),
+  `dveBlock_edge_target` (edge targets are
   untouched). This is the complete structural half of both `dve_sound` and
   `dve_dom`.
 * The **counterexample**, end to end: `P.wfCheck = true`,
@@ -392,40 +386,11 @@ end Regs
 
 /-! ## Read sets -/
 
-/-- The values the rest of a block reads directly. -/
-def Rest.uses (r : Rest) : List ValId := r.instrs.flatMap Instr.uses ++ r.term.uses
-
 /-- Every value read anywhere in a function (all blocks, instructions and
 terminators). A jump can transfer control to any block of `f`, so this is the
-read set the frame lemma has to fix. -/
+read set a register-agreement frame has to fix. -/
 def Func.allUses (f : Func) : List ValId :=
   f.blocks.toList.flatMap fun b => b.instrs.flatMap Instr.uses ++ b.term.uses
-
-theorem Rest.uses_tail {i : Instr} {is : List Instr} {t : Term} {x : ValId}
-    (h : x ∈ (Rest.mk is t).uses) : x ∈ (Rest.mk (i :: is) t).uses := by
-  simp only [Rest.uses, List.mem_append, List.mem_flatMap] at h ⊢
-  rcases h with ⟨j, hj, hx⟩ | h
-  · exact Or.inl ⟨j, by simp [hj], hx⟩
-  · exact Or.inr h
-
-theorem Rest.mem_uses_of_instr {i : Instr} {is : List Instr} {t : Term} {x : ValId}
-    (h : x ∈ i.uses) : x ∈ (Rest.mk (i :: is) t).uses := by
-  simp only [Rest.uses, List.mem_append, List.mem_flatMap]
-  exact Or.inl ⟨i, by simp, h⟩
-
-theorem Rest.mem_uses_of_term {is : List Instr} {t : Term} {x : ValId} (h : x ∈ t.uses) :
-    x ∈ (Rest.mk is t).uses := by
-  simp only [Rest.uses, List.mem_append]
-  exact Or.inr h
-
-theorem Func.mem_allUses_of_block {f : Func} {i : BlockId} {b : Block} {x : ValId}
-    (hb : f.blocks[i]? = some b) (hx : x ∈ (Rest.mk b.instrs b.term).uses) :
-    x ∈ f.allUses := by
-  have hmem : b ∈ f.blocks.toList := by
-    obtain ⟨hlt, hget⟩ := Array.getElem?_eq_some_iff.mp hb
-    exact List.mem_iff_getElem.mpr ⟨i, by simpa using hlt, by simpa using hget⟩
-  simp only [Func.allUses, List.mem_flatMap]
-  exact ⟨b, hmem, by simpa [Rest.uses] using hx⟩
 
 /-! ## Single assignment
 
@@ -548,8 +513,7 @@ This section unpacks that check into the three facts a pass proof needs:
 * `ToAsm.domCheck_entry` — under the check, `liveIn(entry) ⊆ f.params`.
 
 Chaining the first two along a definition-free path and hitting the third is
-exactly the argument "a non-dominated use is impossible"; `liveAgree_entry`
-below is the corresponding base case for the passes' simulation invariant. -/
+exactly the argument "a non-dominated use is impossible". -/
 
 namespace ToAsm
 
@@ -610,10 +574,6 @@ theorem liveInSets_fix {f : Func} {li : Array (List ValId)} (h : liveInSets f = 
 
 theorem liveStep_size {f : Func} {li : Array (List ValId)} :
     (liveStep f li).size = f.blocks.size := by simp [liveStep]
-
-theorem liveInSets_size {f : Func} {li : Array (List ValId)} (h : liveInSets f = some li) :
-    li.size = f.blocks.size := by
-  rw [← liveInSets_fix h]; exact liveStep_size
 
 /-- One liveness step read off at one block. -/
 theorem liveStep_get_eq {f : Func} {A : Array (List ValId)} {i : Nat} {b : Block}
@@ -713,8 +673,6 @@ theorem Prog.domCheck_funcs {P : Prog} (h : Prog.domCheck P = true) {g : Func}
 def Sub (A B : Array (List ValId)) : Prop :=
   ∀ (i : Nat) (x : ValId), x ∈ A[i]?.getD [] → x ∈ B[i]?.getD []
 
-theorem Sub.refl (A : Array (List ValId)) : Sub A A := fun _ _ h => h
-
 theorem sub_replicate {n : Nat} {B : Array (List ValId)} :
     Sub (Array.replicate n []) B := by
   intro i x hx
@@ -810,8 +768,6 @@ theorem unionS_pairwise {xs ys : List ValId} (h : ys.Pairwise (· < ·)) :
 theorem diffS_pairwise {xs ys : List ValId} (h : xs.Pairwise (· < ·)) :
     (diffS xs ys).Pairwise (· < ·) :=
   h.sublist List.filter_sublist
-
-theorem nil_pairwise : ([] : List ValId).Pairwise (· < ·) := List.Pairwise.nil
 
 /-! ### Extensionality: a sorted list is determined by its elements -/
 
@@ -1200,35 +1156,14 @@ theorem domCheck_of_substitution {f g : Func} (σ : ValId → ValId)
 
 end ToAsm
 
-/-- **The passes' simulation invariant**: two register files agree on everything
-live into block `i`, modulo the use-substitution `σ` a pass applies. This is the
-liveness-indexed strengthening of `exec_congr`'s agreement hypothesis: the frame
-lemma needs agreement on *all* uses of the function, which a pass that reroutes
-uses cannot give — but it only ever needs it for the values that are live at the
-point it is looking at, and `domCheck` is exactly what makes the live sets
-propagate soundly. -/
-def LiveAgree (li : Array (List ValId)) (i : BlockId) (σ : ValId → ValId) (R R' : Regs) : Prop :=
-  ∀ x ∈ li[i]?.getD [], R x = R' (σ x)
-
-/-- **Base case of the dominance bridge**, fully proved: at a function's entry
-block, under `domCheck`, the invariant holds for any substitution that fixes the
-function's parameters — because the check says nothing else is live there. -/
-theorem liveAgree_entry {f : Func} {li : Array (List ValId)}
-    (hli : ToAsm.liveInSets f = some li) (hdom : ToAsm.Func.domCheck f = true)
-    {σ : ValId → ValId} (hσ : ∀ x ∈ f.params, σ x = x) (args : List U256) :
-    LiveAgree li f.entry σ (Regs.empty.setMany f.params args)
-      (Regs.empty.setMany f.params args) := by
-  intro x hx
-  rw [hσ x (ToAsm.domCheck_entry hli hdom hx)]
-
 /-! ### Entry-rooted definition provenance
 
-`LiveAgree` is deliberately local to one block.  The two substitution passes
-also need the history fact which justifies that local invariant: a live value
-at a reached block did not appear in the persistent register file by accident;
-its unique definition has occurred on the path from the function entry (unless
-it is a function parameter).  Keeping the path explicit retains repeated block
-visits, which is essential for loop-carried block parameters and CSE values.
+The two substitution passes need the history fact behind their block-local
+register invariants: a live value at a reached block did not appear in the
+persistent register file by accident; its unique definition has occurred on the
+path from the function entry (unless it is a function parameter).  Keeping the
+path explicit retains repeated block visits, which is essential for
+loop-carried block parameters and CSE values.
 
 The statement below is the common, pass-independent part of that provenance
 argument.  It uses only the CFG and the liveness fixed point, so both trivial
@@ -1282,16 +1217,6 @@ theorem EntryPath.live_origin {f : Func} {li : Array (List ValId)}
         · exact Or.inl hparam
         · exact Or.inr hpath.mono_snoc
 
-/-- Register-domain part of entry-rooted provenance.  At a configuration in
-block `b`, after the instructions in `done` have executed, every bound id came
-from a function parameter, a predecessor block on the concrete path, a current
-block parameter, or an already-executed instruction in this block. -/
-def BindingProvenance (f : Func) (path : List BlockId) (b : Block)
-    (done : List Instr) (R : Regs) : Prop :=
-  ∀ {x : ValId} {v : U256}, R x = some v →
-    x ∈ f.params ∨ DefinedOnPath f path x ∨ x ∈ b.params ∨
-      x ∈ done.flatMap Instr.defs
-
 theorem Regs.eq_some_setMany {R : Regs} {xs : List ValId} {vs : List U256}
     {x : ValId} {v : U256} (h : (R.setMany xs vs) x = some v) :
     R x = some v ∨ x ∈ xs := by
@@ -1317,180 +1242,6 @@ theorem Regs.eq_some_of_getMany {R : Regs} {xs : List ValId} {vals : List U256}
               rcases List.mem_cons.mp hx with rfl | hx
               · exact ⟨w, hy⟩
               · exact ih hys hx
-
-/-- Any successful register read is backed by one of the concrete provenance
-sites carried by `BindingProvenance`. -/
-theorem BindingProvenance.read {f : Func} {path : List BlockId} {b : Block}
-    {done : List Instr} {R : Regs} (h : BindingProvenance f path b done R)
-    {xs : List ValId} {vals : List U256} (hget : R.getMany xs = some vals)
-    {x : ValId} (hx : x ∈ xs) :
-    x ∈ f.params ∨ DefinedOnPath f path x ∨ x ∈ b.params ∨
-      x ∈ done.flatMap Instr.defs := by
-  obtain ⟨v, hv⟩ := Regs.eq_some_of_getMany hget hx
-  exact h hv
-
-theorem bindingProvenance_entry {f : Func} {b : Block} (args : List U256) :
-    BindingProvenance f [] b [] (Regs.empty.setMany f.params args) := by
-  intro x v hx
-  rcases Regs.eq_some_setMany hx with hempty | hp
-  · simp [Regs.empty] at hempty
-  · exact Or.inl hp
-
-/-- Executing one instruction preserves binding provenance and records its
-destinations in the completed prefix.  This lemma is independent of the
-instruction's value semantics: those semantics determine the words, while SSA
-shape determines their provenance sites. -/
-theorem BindingProvenance.setMany_instr {f : Func} {path : List BlockId}
-    {b : Block} {done : List Instr} {R : Regs} (h : BindingProvenance f path b done R)
-    {i : Instr} {vals : List U256} :
-    BindingProvenance f path b (done ++ [i]) (R.setMany i.defs vals) := by
-  intro x v hx
-  rcases Regs.eq_some_setMany hx with hold | hnew
-  · rcases h hold with hp | hpath | hparam | hdone
-    · exact Or.inl hp
-    · exact Or.inr (Or.inl hpath)
-    · exact Or.inr (Or.inr (Or.inl hparam))
-    · exact Or.inr (Or.inr (Or.inr (by
-        rw [List.flatMap_append]
-        exact List.mem_append_left _ hdone)))
-  · exact Or.inr (Or.inr (Or.inr (by
-      rw [List.flatMap_append]
-      exact List.mem_append_right _ (by simpa using hnew))))
-
-theorem BindingProvenance.set_const {f : Func} {path : List BlockId}
-    {b : Block} {done : List Instr} {R : Regs} (h : BindingProvenance f path b done R)
-    {d : ValId} {w : U256} :
-    BindingProvenance f path b (done ++ [.const d w]) (R.set d w) := by
-  change BindingProvenance f path b (done ++ [.const d w])
-    (R.setMany (Instr.defs (.const d w)) [w])
-  exact h.setMany_instr (i := .const d w) (vals := [w])
-
-/-- At a terminator, an edge turns everything defined in the source block into
-path provenance and introduces precisely the target block parameters. -/
-theorem BindingProvenance.edge {f : Func} {path : List BlockId}
-    {i : BlockId} {b tb : Block} {R : Regs}
-    (hb : f.blocks[i]? = some b)
-    (h : BindingProvenance f path b b.instrs R)
-    (vals : List U256) :
-    BindingProvenance f (path ++ [i]) tb [] (R.setMany tb.params vals) := by
-  intro x v hx
-  rcases Regs.eq_some_setMany hx with hold | hparam
-  · rcases h hold with hp | hpath | hbparam | hdone
-    · exact Or.inl hp
-    · exact Or.inr (Or.inl hpath.mono_snoc)
-    · exact Or.inr (Or.inl (DefinedOnPath.snoc hb
-        (ToAsm.mem_blockDefs.mpr (Or.inl hbparam))))
-    · exact Or.inr (Or.inl (DefinedOnPath.snoc hb
-        (ToAsm.mem_blockDefs.mpr (Or.inr hdone))))
-  · exact Or.inr (Or.inr (Or.inl hparam))
-
-/-! ## The frame lemma -/
-
-section Frame
-variable [model : ExternalModel]
-
-/-- **Regs agreement (frame lemma)**. An `Exec` derivation reads registers only
-through the `uses` of the instruction/terminator it is currently at, and control
-never leaves the enclosing function's blocks, so two register files that agree on
-`f.allUses` and on the current fragment's uses admit the *same* executions.
-
-This is the central reusable lemma for the passes that delete definitions
-(pass 4) or reroute uses (passes 1 and 3): it lets one replace the original
-register file by the optimized one wherever the two agree on what is read. -/
-theorem exec_congr {P : Prog} {f : Func} {R1 : Regs} {st : EvmState} {rest : Rest}
-    {res : FRes} (h : Exec (model := model) P f R1 st rest res) :
-    ∀ R2 : Regs, (∀ x ∈ f.allUses, R1 x = R2 x) → (∀ x ∈ rest.uses, R1 x = R2 x) →
-      Exec (model := model) P f R2 st rest res := by
-  induction h with
-  | @const f R st d v is t res _ ih =>
-    intro R2 hU hR
-    refine Exec.const (ih (R2.set d v) ?_ ?_)
-    · exact Regs.set_congr (S := fun x => x ∈ f.allUses) hU d v
-    · exact Regs.set_congr (S := fun x => x ∈ (Rest.mk is t).uses)
-        (fun x hx => hR x (Rest.uses_tail hx)) d v
-  | @op f R st st' ds yop as args rets is t res hg hb hlen _ ih =>
-    intro R2 hU hR
-    refine Exec.op (args := args) (rets := rets) ?_ hb hlen (ih _ ?_ ?_)
-    · rw [← Regs.getMany_congr (R1 := R) (R2 := R2)
-        (fun x hx => hR x (Rest.mem_uses_of_instr (i := .op ds yop as)
-          (by simpa [Instr.uses] using hx)))]
-      exact hg
-    · exact Regs.setMany_congr (S := fun x => x ∈ f.allUses) hU ds rets
-    · exact Regs.setMany_congr (S := fun x => x ∈ (Rest.mk is t).uses)
-        (fun x hx => hR x (Rest.uses_tail hx)) ds rets
-  | @opHalt f R st st' ds yop as args is t hg hb =>
-    intro R2 _ hR
-    refine Exec.opHalt (args := args) ?_ hb
-    rw [← Regs.getMany_congr (R1 := R) (R2 := R2)
-      (fun x hx => hR x (Rest.mem_uses_of_instr (i := .op ds yop as)
-        (by simpa [Instr.uses] using hx)))]
-    exact hg
-  | @call f g R st st' ds as fid args rvals eb is t res hfid hg hplen heb _ hlen _ ihbody ih =>
-    intro R2 hU hR
-    refine Exec.call (args := args) (rvals := rvals) (g := g) (eb := eb) hfid ?_ hplen heb
-      (ihbody _ (fun _ _ => rfl) (fun _ _ => rfl)) hlen (ih _ ?_ ?_)
-    · rw [← Regs.getMany_congr (R1 := R) (R2 := R2)
-        (fun x hx => hR x (Rest.mem_uses_of_instr (i := .call ds fid as)
-          (by simpa [Instr.uses] using hx)))]
-      exact hg
-    · exact Regs.setMany_congr (S := fun x => x ∈ f.allUses) hU ds rvals
-    · exact Regs.setMany_congr (S := fun x => x ∈ (Rest.mk is t).uses)
-        (fun x hx => hR x (Rest.uses_tail hx)) ds rvals
-  | @callHalt f g R st st' ds as fid args eb is t hfid hg hplen heb _ ihbody =>
-    intro R2 _ hR
-    refine Exec.callHalt (args := args) (g := g) (eb := eb) hfid ?_ hplen heb
-      (ihbody _ (fun _ _ => rfl) (fun _ _ => rfl))
-    rw [← Regs.getMany_congr (R1 := R) (R2 := R2)
-      (fun x hx => hR x (Rest.mem_uses_of_instr (i := .call ds fid as)
-        (by simpa [Instr.uses] using hx)))]
-    exact hg
-  | @jump f R st e tb args res htb hg hplen _ ih =>
-    intro R2 hU hR
-    refine Exec.jump (args := args) (tb := tb) htb ?_ hplen (ih _ ?_ ?_)
-    · rw [← Regs.getMany_congr (R1 := R) (R2 := R2)
-        (fun x hx => hR x (Rest.mem_uses_of_term (by simpa [Term.uses] using hx)))]
-      exact hg
-    · exact Regs.setMany_congr (S := fun x => x ∈ f.allUses) hU tb.params args
-    · exact Regs.setMany_congr (S := fun x => x ∈ (Rest.mk tb.instrs tb.term).uses)
-        (fun x hx => hU x (Func.mem_allUses_of_block htb hx)) tb.params args
-  | @branchTrue f R st c v et ef tb args res hc hv htb hg hplen _ ih =>
-    intro R2 hU hR
-    have hcU : c ∈ (Rest.mk ([] : List Instr) (Term.branch c et ef)).uses := by
-      simp [Rest.uses, Term.uses]
-    refine Exec.branchTrue (v := v) (args := args) (tb := tb) (by rw [← hR c hcU]; exact hc) hv
-      htb ?_ hplen (ih _ ?_ ?_)
-    · rw [← Regs.getMany_congr (R1 := R) (R2 := R2)
-        (fun x hx => hR x (Rest.mem_uses_of_term (by simp [Term.uses]; exact Or.inr (Or.inl hx))))]
-      exact hg
-    · exact Regs.setMany_congr (S := fun x => x ∈ f.allUses) hU tb.params args
-    · exact Regs.setMany_congr (S := fun x => x ∈ (Rest.mk tb.instrs tb.term).uses)
-        (fun x hx => hU x (Func.mem_allUses_of_block htb hx)) tb.params args
-  | @branchFalse f R st c et ef tb args res hc htb hg hplen _ ih =>
-    intro R2 hU hR
-    have hcU : c ∈ (Rest.mk ([] : List Instr) (Term.branch c et ef)).uses := by
-      simp [Rest.uses, Term.uses]
-    refine Exec.branchFalse (args := args) (tb := tb) (by rw [← hR c hcU]; exact hc) htb ?_ hplen
-      (ih _ ?_ ?_)
-    · rw [← Regs.getMany_congr (R1 := R) (R2 := R2)
-        (fun x hx => hR x (Rest.mem_uses_of_term (by simp [Term.uses]; exact Or.inr (Or.inr hx))))]
-      exact hg
-    · exact Regs.setMany_congr (S := fun x => x ∈ f.allUses) hU tb.params args
-    · exact Regs.setMany_congr (S := fun x => x ∈ (Rest.mk tb.instrs tb.term).uses)
-        (fun x hx => hU x (Func.mem_allUses_of_block htb hx)) tb.params args
-  | @ret f R st xs vals hg =>
-    intro R2 _ hR
-    refine Exec.ret ?_
-    rw [← Regs.getMany_congr (R1 := R) (R2 := R2)
-      (fun x hx => hR x (Rest.mem_uses_of_term (by simpa [Term.uses] using hx)))]
-    exact hg
-  | @halt f R st st' yop as args hg hb =>
-    intro R2 _ hR
-    refine Exec.halt (args := args) ?_ hb
-    rw [← Regs.getMany_congr (R1 := R) (R2 := R2)
-      (fun x hx => hR x (Rest.mem_uses_of_term (by simpa [Term.uses] using hx)))]
-    exact hg
-
-end Frame
 
 /-! ## Purity leaves
 
@@ -2034,12 +1785,6 @@ theorem dve_size (f : Func) : (dve f).blocks.size = f.blocks.size := by simp [dv
 
 /-! ### What the rewrite does to the liveness data -/
 
-theorem mem_filterArgs {p : Nat → Bool} {as : List ValId} {x : ValId}
-    (h : x ∈ (as.zipIdx.filter fun ai => p ai.2).map (·.1)) : x ∈ as := by
-  simp only [List.mem_map, List.mem_filter] at h
-  obtain ⟨ai, ⟨hmem, -⟩, rfl⟩ := h
-  exact List.fst_mem_of_mem_zipIdx hmem
-
 theorem mapEdges_uses_sub {g : Edge → Edge} (hargs : ∀ e x, x ∈ (g e).args → x ∈ e.args)
     (t : Term) {x : ValId} (h : x ∈ (mapEdges g t).uses) : x ∈ t.uses := by
   cases t with
@@ -2085,21 +1830,6 @@ theorem dveBlock_uses_sub {f : Func} {i : BlockId} {b : Block} {x : ValId}
     simp only [List.mem_map, List.mem_filter] at hy
     obtain ⟨ai, ⟨hmem, -⟩, rfl⟩ := hy
     exact List.fst_mem_of_mem_zipIdx hmem
-
-/-- Definitions can only shrink: `dve` deletes definitions, never adds one. -/
-theorem dveBlock_defs_sub {f : Func} {i : BlockId} {b : Block} {x : ValId}
-    (h : x ∈ ToAsm.blockDefs (dveBlock f i b)) : x ∈ ToAsm.blockDefs b := by
-  rw [ToAsm.mem_blockDefs] at h ⊢
-  rcases h with h | h
-  · refine Or.inl ?_
-    by_cases he : (i == f.entry) = true
-    · simpa [dveBlock, he] using h
-    · have : x ∈ b.params.filter (liveSet f).contains := by simpa [dveBlock, he] using h
-      exact List.mem_of_mem_filter this
-  · refine Or.inr ?_
-    simp only [List.mem_flatMap] at h ⊢
-    obtain ⟨ins, hins, hx⟩ := h
-    exact ⟨ins, List.mem_of_mem_filter hins, hx⟩
 
 /-- …and a **live** definition is always kept. -/
 theorem dveBlock_defs_of_live {f : Func} {i : BlockId} {b : Block} {x : ValId}
@@ -2198,18 +1928,6 @@ theorem Id.forIn_eq_loopWith {α β : Type} {body : α → β → Id (ForInStep 
     cases g a init with
     | yield b' => simpa using ih b'
     | done b' => rfl
-
-theorem Id.forIn_array_eq_loopWith {α β : Type} {body : α → β → Id (ForInStep β)}
-    {g : α → β → ForInStep β} (h : ∀ a b, body a b = pure (g a b)) (as : Array α) (init : β) :
-    (forIn as init body : Id β) = loopWith g as.toList init := by
-  rw [← Array.forIn_toList]; exact Id.forIn_eq_loopWith h _ init
-
-/-- The yielding bridge is the special case where no step is `.done`. -/
-theorem loopWith_yield {α β : Type} (g : α → β → β) (l : List α) (init : β) :
-    loopWith (fun a b => ForInStep.yield (g a b)) l init = l.foldl (fun b a => g a b) init := by
-  induction l generalizing init with
-  | nil => rfl
-  | cons a as ih => rw [loopWith_cons]; exact ih (g a init)
 
 /-! ### The early-return protocol
 
@@ -3100,10 +2818,6 @@ theorem cfInstr_fold_cons (i : Instr) (is : List Instr) (m : Std.HashMap ValId U
   rw [List.foldl_cons, cfInstrStep_eq, cfInstr_fold_split]
   simp
 
-/-- The empty case. -/
-theorem cfInstr_fold_nil (m : Std.HashMap ValId U256) :
-    (([] : List Instr).foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).2.reverse = [] := rfl
-
 /-- The map after a fold, step by step. -/
 theorem cfInstr_foldMap_cons (i : Instr) (is : List Instr) (m : Std.HashMap ValId U256) :
     ((i :: is).foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).1
@@ -3118,65 +2832,6 @@ theorem cfInstr_foldMap_cons (i : Instr) (is : List Instr) (m : Std.HashMap ValI
     | cons j js ih => rw [List.foldl_cons, List.foldl_cons, cfInstrStep_eq, cfInstrStep_eq,
         ih (cfInstrOut j m' :: a) (cfInstrMap j m'), ih [cfInstrOut j m'] (cfInstrMap j m')]
   exact this _ _
-
-/-- A fold step can only change the lookup of an instruction destination. -/
-theorem cfInstrMap_get_of_not_def (i : Instr) (m : Std.HashMap ValId U256) {d : ValId}
-    (hd : d ∉ i.defs) : (cfInstrMap i m)[d]? = m[d]? := by
-  cases i with
-  | const x v =>
-    simp only [Instr.defs, List.mem_singleton] at hd
-    have hxd : (x == d) = false := by simp [Ne.symm hd]
-    simp [cfInstrMap, Std.HashMap.getElem?_insert, hxd]
-  | op ds yop args =>
-    cases ds with
-    | nil => rfl
-    | cons x xs =>
-      cases xs with
-      | nil =>
-        simp only [Instr.defs, List.mem_singleton] at hd
-        simp only [cfInstrMap]
-        split
-        · have hxd : (x == d) = false := by simp [Ne.symm hd]
-          simp [Std.HashMap.getElem?_insert, hxd]
-        · rfl
-      | cons y ys => rfl
-  | call ds fid args => rfl
-
-/-- If a lookup appears in one step from an absent input lookup, the
-instruction defines that key. -/
-theorem cfInstrMap_def_of_get (i : Instr) (m : Std.HashMap ValId U256) {d : ValId} {v : U256}
-    (h0 : m[d]? = none) (h : (cfInstrMap i m)[d]? = some v) : d ∈ i.defs := by
-  by_contra hd
-  rw [cfInstrMap_get_of_not_def i m hd, h0] at h
-  simp at h
-
-/-- A whole instruction fold preserves a lookup when none of its instructions
-defines the key. -/
-theorem cfInstr_foldMap_get_of_not_def (l : List Instr) (m : Std.HashMap ValId U256)
-    {d : ValId} (hd : d ∉ l.flatMap Instr.defs) :
-    (l.foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).1[d]? = m[d]? := by
-  induction l generalizing m with
-  | nil => rfl
-  | cons i is ih =>
-    simp only [List.flatMap_cons, List.mem_append, not_or] at hd
-    have hacc := cfInstr_foldMap_cons i is m
-    rw [List.foldl_cons, cfInstrStep_eq] at hacc
-    rw [List.foldl_cons, cfInstrStep_eq, hacc, ih (cfInstrMap i m) hd.2,
-      cfInstrMap_get_of_not_def i m hd.1]
-
-/-- Every key in a fold map either came from the incoming map or is defined by
-one of the folded instructions. -/
-theorem cfInstr_foldMap_domain (l : List Instr) (m : Std.HashMap ValId U256)
-    {d : ValId} {v : U256}
-    (h : (l.foldl (fun s i => cfInstrStep i s) ⟨m, []⟩).1[d]? = some v) :
-    (∃ w, m[d]? = some w) ∨ d ∈ l.flatMap Instr.defs := by
-  by_cases h0 : m[d]? = none
-  · right
-    by_contra hd
-    rw [cfInstr_foldMap_get_of_not_def l m hd, h0] at h
-    simp at h
-  · left
-    exact Option.ne_none_iff_exists'.mp h0
 
 /-- Instruction definitions, flattened out of the blocks, form a sublist of
 `allDefs`. -/
@@ -3235,43 +2890,6 @@ theorem cfBlock_fold_get_old (l : List Block) (st : CFOuter) {i : Nat} {b : Bloc
     simp only [hne, ↓reduceIte]
     rw [Array.getElem?_eq_getElem hi]
     exact h
-
-/-- Exact, index-preserving correspondence for a source block in the outer
-fold. -/
-theorem cfBlock_fold_get (l : List Block) (st : CFOuter) {j : Nat} {b : Block}
-    (h : l[j]? = some b) :
-    ∃ m, (l.foldl (fun st b => cfBlockStep b st) st).1[st.1.size + j]? =
-        some (cfBlockOut b m) := by
-  induction l generalizing st j with
-  | nil => simp at h
-  | cons x xs ih =>
-    cases j with
-    | zero =>
-      simp only [List.getElem?_cons_zero, Option.some.injEq] at h
-      subst x
-      refine ⟨st.2, ?_⟩
-      rw [List.foldl_cons]
-      apply cfBlock_fold_get_old
-      rw [cfBlockStep_eq', Array.getElem?_push]
-      simp
-    | succ j =>
-      simp only [List.getElem?_cons_succ] at h
-      rw [List.foldl_cons]
-      obtain ⟨m, hm⟩ := ih (st := cfBlockStep x st) h
-      refine ⟨m, ?_⟩
-      rw [cfBlockStep_eq'] at hm ⊢
-      simp only [Array.size_push] at hm
-      simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using hm
-
-/-- Every source block has the exact folded block at the same index. -/
-theorem constFold_block_get {f : Func} {i : BlockId} {b : Block}
-    (h : f.blocks[i]? = some b) :
-    ∃ m, (constFold f).blocks[i]? = some (cfBlockOut b m) := by
-  rw [constFold_blocks_eq]
-  have hl : f.blocks.toList[i]? = some b := by simpa using h
-  obtain ⟨m, hm⟩ := cfBlock_fold_get f.blocks.toList ⟨#[], ∅⟩ hl
-  refine ⟨m, ?_⟩
-  simpa using hm
 
 /-! ### Static constant certificates -/
 
@@ -3384,7 +3002,7 @@ theorem cfBlockMap_sound {f : Func} {b : Block} (hb : b ∈ f.blocks.toList)
     CFMapSound f (cfBlockMap b m) := by
   exact cfInstr_foldMap_sound hb (fun i hi => hi) hm
 
-/-- Strengthening of `cfBlock_fold_get`: the incoming map at the selected
+/-- Strengthening of `cfBlock_fold_get_old`: the incoming map at the selected
 block is sound. -/
 theorem cfBlock_fold_get_sound {f : Func} {l : List Block}
     (hl : ∀ b ∈ l, b ∈ f.blocks.toList) (st : CFOuter)
@@ -3688,65 +3306,6 @@ theorem mem_cseBlockDefs {b : Block} {x : ValId} :
         tauto
   unfold cseBlockDefs
   simpa using go b.instrs ∅
-
-/-- The drop guard is exactly the strict-prefix use fact needed by the
-simulation: a destination accepted for elimination was not read by any
-already-processed instruction in its block. -/
-theorem cse_drop_dest_not_used_prefix {pre : List Instr} {i : Instr}
-    {acc : List Instr} {tab : CseTab} {used defined blockDefs : Std.HashSet ValId}
-    {σ : Subst} {d d0 : ValId} {yop : Op} {args : List ValId}
-    (_hused0 : d ∉ used)
-    (_hs : substInstr
-      (pre.foldl (fun s i => cseInstrStep i s)
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).2.2.2.1 i =
-        .op [d] yop args)
-    (_hfind :
-      (pre.foldl (fun s i => cseInstrStep i s)
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).2.1.ops.find?
-          (·.1 == (yop, args)) = some ((yop, args), d0))
-    (hdrop :
-      ¬ (pre.foldl (fun s i => cseInstrStep i s)
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).2.2.1.contains d = true) :
-    d ∉ pre.flatMap Instr.uses := by
-  intro hd
-  have hm : d ∈ (pre.foldl (fun s i => cseInstrStep i s)
-      ⟨acc, tab, used, σ, defined, blockDefs⟩).2.2.1 :=
-    (cseInstrFold_used pre _).mpr (Or.inr hd)
-  exact hdrop (Std.HashSet.mem_iff_contains.mp hm)
-
-/-- An operation admitted to the table has no argument defined in the
-unprocessed suffix.  This is the static stability half of the entry-add
-guard. -/
-theorem cse_entry_args_not_defined_later {pre post : List Instr} {i : Instr}
-    {acc : List Instr} {tab : CseTab} {used : Std.HashSet ValId} {σ : Subst}
-    {defined blockDefs : Std.HashSet ValId} {args : List ValId}
-    (hdefs : blockDefs = cseBlockDefs ⟨[], pre ++ i :: post, .ret []⟩)
-    (hdefined0 : ∀ x, x ∉ defined)
-    (hnd : (pre ++ i :: post).flatMap Instr.defs |>.Nodup)
-    (hguard : args.all (fun a =>
-      (pre.foldl (fun s i => cseInstrStep i s)
-        ⟨acc, tab, used, σ, defined, blockDefs⟩).2.2.2.2.1.contains a ||
-        !blockDefs.contains a) = true) :
-    ∀ a ∈ args, a ∉ (i :: post).flatMap Instr.defs := by
-  intro a ha hpost
-  have hg := List.all_eq_true.mp hguard a ha
-  rw [Bool.or_eq_true] at hg
-  have hablock : a ∈ blockDefs := by
-    rw [hdefs, mem_cseBlockDefs]
-    simp only [List.flatMap_append, List.flatMap_cons, List.mem_append]
-    exact Or.inr (by simpa [List.flatMap_cons] using hpost)
-  rcases hg with hpre | hnot
-  · have hpre' : a ∈ pre.flatMap Instr.defs := by
-      have hm := Std.HashSet.contains_iff_mem.mp hpre
-      rcases (cseInstrFold_defined pre _).mp hm with hbase | hp
-      · exact False.elim (hdefined0 a hbase)
-      · exact hp
-    simp only [List.flatMap_append, List.flatMap_cons] at hnd
-    rw [List.nodup_append] at hnd
-    exact (hnd.2.2 a hpre' a hpost) rfl
-  · have hc := Std.HashSet.mem_iff_contains.mp hablock
-    rw [hc] at hnot
-    simp at hnot
 
 def cseBlockStep (f : Func) (srcs : Array (List BlockId))
     (bi : BlockId) (st : CSEOuter) : CSEOuter :=
@@ -5189,17 +4748,6 @@ theorem substInstr_absorb {σ τ : Subst} (hext : SubstExt σ τ)
     substInstr τ (substInstr σ i) = substInstr τ i := by
   cases i <;> simp [substInstr, substVs_absorb hext hrange]
 
-theorem substEdge_absorb {σ τ : Subst} (hext : SubstExt σ τ)
-    (hrange : RangeFree τ) (e : Edge) :
-    substEdge τ (substEdge σ e) = substEdge τ e := by
-  simp [substEdge, substVs_absorb hext hrange]
-
-theorem substTerm_absorb {σ τ : Subst} (hext : SubstExt σ τ)
-    (hrange : RangeFree τ) (t : Term) :
-    substTerm τ (substTerm σ t) = substTerm τ t := by
-  cases t <;> simp [substTerm, substV_absorb hext hrange,
-    substEdge_absorb hext hrange, substVs_absorb hext hrange]
-
 @[simp] theorem substInstr_defs (σ : Subst) (i : Instr) :
     (substInstr σ i).defs = i.defs := by
   cases i <;> rfl
@@ -5844,8 +5392,8 @@ actual arguments (`g(x, x)`) map two callee parameters onto one caller id, which
 is harmless because both were bound to the same word at the call. The inlining
 simulation and its whole-program composition below prove these facts.
 
-There is one additional precondition that the original provisional statement of
-`inlineOnce_sound` missed. The renaming table is `g.params.zip as` followed by
+There is one additional precondition that a provisional statement of one-step
+inlining soundness easily misses. The renaming table is `g.params.zip as` followed by
 `List.find?`, so it sends a duplicated callee parameter to its *first* actual
 argument. `Regs.setMany`, on the other hand, binds left-to-right and therefore
 leaves the *last* actual argument in that register. Caller well-formedness alone
@@ -5865,16 +5413,6 @@ theorem progWf_func {P : Prog} (hwf : P.wfCheck = true) {fid : FuncId} {g : Func
   obtain rfl := Option.some.inj hg
   rw [Array.all_eq_true] at hwf
   exact hwf.2 fid hi
-
-/-- In particular, the parameter side of an inliner's renaming table has no
-duplicate keys. -/
-theorem progWf_func_params_nodup {P : Prog} (hwf : P.wfCheck = true)
-    {fid : FuncId} {g : Func} (hg : P.funcs[fid]? = some g) : g.params.Nodup := by
-  have hgf := progWf_func hwf hg
-  unfold Func.wfCheck at hgf
-  simp only [Bool.and_eq_true, decide_eq_true_eq] at hgf
-  unfold Func.allDefs at hgf
-  exact (List.nodup_append.mp hgf.1.1.1).1
 
 /-- Lookup in `params.zip actuals` returns the unique pair carrying a given
 parameter. This is the list-level fact that reconciles `inlineOnce`'s `find?`
@@ -5973,35 +5511,6 @@ theorem Regs.getMany_map_of_agree {R R' : Regs} {ρ : ValId → ValId}
                 rw [← hagree x (by simp), hx]
               have ht' := ih (fun y hy => hagree y (by simp [hy])) ht
               simpa [Regs.getMany_cons, hx'] using ht'
-
-/-- Register agreement is preserved when corresponding destinations are bound
-through an injective renaming. -/
-theorem Regs.setMany_rename_congr {R R' : Regs} {ρ : ValId → ValId}
-    (hinj : Function.Injective ρ) (hagree : ∀ x, R x = R' (ρ x))
-    (xs : List ValId) (vals : List U256) :
-    ∀ x, (R.setMany xs vals) x = (R'.setMany (xs.map ρ) vals) (ρ x) := by
-  induction xs generalizing R R' vals with
-  | nil =>
-      intro x
-      change R x = R'.setMany [] vals (ρ x)
-      rw [Regs.setMany_nil_left]
-      exact hagree x
-  | cons d ds ih =>
-      cases vals with
-      | nil =>
-          intro x
-          rw [Regs.setMany_nil_right, Regs.setMany_nil_right]
-          exact hagree x
-      | cons v vs =>
-          rw [Regs.setMany_cons, List.map_cons, Regs.setMany_cons]
-          apply ih (vals := vs)
-          intro x
-          by_cases hxd : x = d
-          · subst x
-            simp
-          · have hrho : ρ x ≠ ρ d := fun h => hxd (hinj h)
-            rw [Regs.set_other _ _ hxd, Regs.set_other _ _ hrho]
-            exact hagree x
 
 @[simp] theorem Passes.renameInstr_defs (ρ : ValId → ValId) (i : Instr) :
     (renameInstr ρ i).defs = i.defs.map ρ := by
@@ -6426,160 +5935,6 @@ theorem Passes.inlineContBlock_get {f' g : Func} {preBlocks : Array Block}
 theorem block_mem_of_getElem? {f : Func} {i : BlockId} {b : Block}
     (h : f.blocks[i]? = some b) : b ∈ f.blocks.toList :=
   List.mem_of_getElem? (Array.getElem?_toList.trans h)
-
-/-- Replay a callee execution in the renamed, appended block partition.  A
-callee return is interpreted in CPS: it jumps to `cont`, binds `ds`, and hands
-control to `hk`; a halt remains a halt. -/
-theorem Passes.inlineReplay_exec [model : ExternalModel]
-    {P : Prog} {g f' : Func} {preBlocks : Array Block} {cont : Block}
-    {ps as ds : List ValId} {off contId : Nat}
-    {ρ : ValId → ValId} {β : BlockId → BlockId}
-    {Rc Ri Rcaller : Regs} {st : EvmState} {rest : Rest} {cres final : FRes}
-    (hρ : ρ = inlineRho ps as off)
-    (hβ : ∀ i, β i = preBlocks.size + i)
-    (hcontId : contId = preBlocks.size + g.blocks.size)
-    (hblocks : f'.blocks = preBlocks ++ g.blocks.map (inlineReplayBlock ρ β contId) ++ #[cont])
-    (hcontParams : cont.params = ds)
-    (hnd : g.allDefs.Nodup) (hps : ps = g.params)
-    (hlen : ps.length = as.length) (has : ∀ a ∈ as, a < off)
-    (hret : ∀ {b : Block}, b ∈ g.blocks.toList → ∀ {xs}, b.term = .ret xs →
-      xs.length = ds.length)
-    (hexec : Exec (model := model) P g Rc st rest cres)
-    {b : Block} (hb : b ∈ g.blocks.toList) (horigin : rest.IsSuffixOf b)
-    (hagree : RenamedAgree ps as off Rc Ri)
-    (hframe : CallerFrame off Rcaller Ri)
-    (hfinal : ∀ st', cres = .halt st' → final = .halt st')
-    (hk : ∀ (Rout : Regs) (vals : List U256) (st' : EvmState),
-      cres = .ret vals st' → CallerFrame off Rcaller Rout →
-      Exec (model := model) P f' (Rout.setMany ds vals) st'
-        ⟨cont.instrs, cont.term⟩ final) :
-    Exec (model := model) P f' Ri st
-      ⟨rest.instrs.map (renameInstr ρ), inlineReplayTerm ρ β contId rest.term⟩ final := by
-  subst ρ
-  induction hexec generalizing Ri b with
-  | @const fcur R st d v is t res htail ih =>
-      have hi : Instr.const d v ∈ b.instrs :=
-        Rest.IsSuffixOf.head_mem (r := ⟨is, t⟩) horigin
-      have hd : d ∉ ps := by
-        rw [hps]
-        exact fun hp => funcParam_not_instr_def hnd hb hi hp (by simp [Instr.defs])
-      refine Exec.const (ih hcontId hnd hps hret hb
-        (Rest.IsSuffixOf.tail (r := ⟨is, t⟩) horigin)
-        (renamedAgree_setMany (params_nodup_of_allDefs hnd hps) hlen has
-          (ds := [d]) (by simpa using hd) [v] hagree)
-        (callerFrame_setMany (as := as) (ds := [d]) (by simpa using hd) hframe [v])
-        hfinal hk hblocks)
-  | @op fcur R st st' ods yop oas oargs rets is t res hget hop hlenRet htail ih =>
-      have hi : Instr.op ods yop oas ∈ b.instrs :=
-        Rest.IsSuffixOf.head_mem (r := ⟨is, t⟩) horigin
-      have hds : ∀ d ∈ ods, d ∉ ps := by
-        intro d hd hp
-        rw [hps] at hp
-        exact funcParam_not_instr_def hnd hb hi hp (by simpa [Instr.defs] using hd)
-      refine Exec.op (args := oargs) (rets := rets)
-        (renamedAgree_getMany hagree hget) hop (by simpa using hlenRet)
-        (ih hcontId hnd hps hret hb
-          (Rest.IsSuffixOf.tail (r := ⟨is, t⟩) horigin)
-          (renamedAgree_setMany (params_nodup_of_allDefs hnd hps) hlen has
-            hds rets hagree)
-          (callerFrame_setMany (as := as) hds hframe rets) hfinal hk hblocks)
-  | @opHalt fcur R st st' ods yop oas oargs is t hget hop =>
-      have hf := hfinal st' rfl
-      subst final
-      simpa [renameInstr, inlineReplayTerm, renameTerm] using
-        (Exec.opHalt (f := f') (ds := ods.map (inlineRho ps as off))
-          (args := oargs) (renamedAgree_getMany hagree hget) hop)
-  | @call _ callee R st st' ods oas fid oargs rvals eb is t res
-      hfid hget hplen heb hbody hlenRet htail ihbody ih =>
-      have hi : Instr.call ods fid oas ∈ b.instrs :=
-        Rest.IsSuffixOf.head_mem (r := ⟨is, t⟩) horigin
-      have hds : ∀ d ∈ ods, d ∉ ps := by
-        intro d hd hp
-        rw [hps] at hp
-        exact funcParam_not_instr_def hnd hb hi hp (by simpa [Instr.defs] using hd)
-      refine Exec.call (args := oargs) (rvals := rvals) (g := callee) (eb := eb)
-        hfid (renamedAgree_getMany hagree hget) hplen heb hbody
-        (by simpa using hlenRet)
-        (ih hcontId hnd hps hret hb
-          (Rest.IsSuffixOf.tail (r := ⟨is, t⟩) horigin)
-          (renamedAgree_setMany (params_nodup_of_allDefs hnd hps) hlen has
-            hds rvals hagree)
-          (callerFrame_setMany (as := as) hds hframe rvals) hfinal hk hblocks)
-  | @callHalt _ callee R st st' ods oas fid oargs eb is t
-      hfid hget hplen heb hbody ihbody =>
-      have hf := hfinal st' rfl
-      subst final
-      simpa [renameInstr, inlineReplayTerm, renameTerm] using
-        (Exec.callHalt (f := f') (ds := ods.map (inlineRho ps as off))
-          (args := oargs) (g := callee) (eb := eb) hfid
-          (renamedAgree_getMany hagree hget) hplen heb hbody)
-  | @jump _ R st e tb vals res htb hget hplen htail ih =>
-      have htbmem := block_mem_of_getElem? htb
-      have hparams : ∀ d ∈ tb.params, d ∉ ps := by
-        intro d hd hp
-        rw [hps] at hp
-        exact funcParam_not_blockParam hnd htbmem hp hd
-      refine Exec.jump (args := vals) (tb := inlineReplayBlock
-          (inlineRho ps as off) β contId tb) ?_
-        (renamedAgree_getMany hagree hget) (by simpa [inlineReplayBlock] using hplen)
-        (ih hcontId hnd hps hret htbmem ⟨[], rfl, rfl⟩
-          (renamedAgree_setMany (params_nodup_of_allDefs hnd hps) hlen has
-            hparams vals hagree)
-          (callerFrame_setMany (as := as) hparams hframe vals) hfinal hk hblocks)
-      change f'.blocks[β e.target]? = some _
-      rw [hβ e.target]
-      exact inlineReplayBlock_get hblocks htb
-  | @branchTrue _ R st c v et ef tb vals res hc hv htb hget hplen htail ih =>
-      have htbmem := block_mem_of_getElem? htb
-      have hparams : ∀ d ∈ tb.params, d ∉ ps := by
-        intro d hd hp
-        rw [hps] at hp
-        exact funcParam_not_blockParam hnd htbmem hp hd
-      refine Exec.branchTrue (v := v) (args := vals)
-        (tb := inlineReplayBlock (inlineRho ps as off) β contId tb)
-        (hagree c v hc) hv ?_ (renamedAgree_getMany hagree hget)
-        (by simpa [inlineReplayBlock] using hplen)
-        (ih hcontId hnd hps hret htbmem ⟨[], rfl, rfl⟩
-          (renamedAgree_setMany (params_nodup_of_allDefs hnd hps) hlen has
-            hparams vals hagree)
-          (callerFrame_setMany (as := as) hparams hframe vals) hfinal hk hblocks)
-      change f'.blocks[β et.target]? = some _
-      rw [hβ et.target]
-      exact inlineReplayBlock_get hblocks htb
-  | @branchFalse _ R st c et ef tb vals res hc htb hget hplen htail ih =>
-      have htbmem := block_mem_of_getElem? htb
-      have hparams : ∀ d ∈ tb.params, d ∉ ps := by
-        intro d hd hp
-        rw [hps] at hp
-        exact funcParam_not_blockParam hnd htbmem hp hd
-      refine Exec.branchFalse (args := vals)
-        (tb := inlineReplayBlock (inlineRho ps as off) β contId tb)
-        (hagree c 0 hc) ?_
-        (renamedAgree_getMany hagree hget)
-        (by simpa [inlineReplayBlock] using hplen)
-        (ih hcontId hnd hps hret htbmem ⟨[], rfl, rfl⟩
-          (renamedAgree_setMany (params_nodup_of_allDefs hnd hps) hlen has
-            hparams vals hagree)
-          (callerFrame_setMany (as := as) hparams hframe vals) hfinal hk hblocks)
-      change f'.blocks[β ef.target]? = some _
-      rw [hβ ef.target]
-      exact inlineReplayBlock_get hblocks htb
-  | @ret _ R st xs vals hget =>
-      have ht : b.term = .ret xs := horigin.choose_spec.2
-      have hlenVals : ds.length = vals.length := by
-        rw [← Regs.getMany_length hget, hret hb ht]
-      have hk' := hk Ri vals st rfl hframe
-      rw [← hcontParams] at hk'
-      refine Exec.jump (args := vals) (tb := cont) ?_
-        (renamedAgree_getMany hagree hget) (by simpa [hcontParams] using hlenVals)
-        hk'
-      rw [hcontId]
-      exact inlineContBlock_get hblocks
-  | @halt _ R st st' yop oas oargs hget hop =>
-      have hf := hfinal st' rfl
-      subst final
-      simpa [inlineReplayTerm, renameTerm] using
-        (Exec.halt (f := f') (args := oargs) (renamedAgree_getMany hagree hget) hop)
 
 /-- The indexed replay raises the callee bound once to accommodate the CPS continuation. -/
 theorem Passes.inlineReplay_execN [model : ExternalModel]
@@ -7572,18 +6927,18 @@ variable [model : ExternalModel]
 /- **One splice preserves executions.**
 
 The callee-side part of the interesting `Exec.call` / `Exec.callHalt` node is
-now proved by `Passes.inlineReplay_exec`. In the inlined function that node
+now proved by `Passes.inlineReplay_execN`. In the inlined function that node
 becomes: `jump` into the
 spliced callee entry, the callee's own derivation re-played inside the caller,
 and its `Exec.ret` re-played as the `jump ⟨contId, vs.map ρ⟩` that binds `ds` in
-`contBlock`. The register-file obligation is exactly `LiveAgree`-style
-reasoning under the renaming `ρ`: the callee ran from the *fresh* file
+`contBlock`. The register-file obligation is register agreement under the
+renaming `ρ`: the callee ran from the *fresh* file
 `Regs.empty.setMany g.params args`, while the splice runs from the caller's file
 extended at `ρ`-images, and the two agree on everything the callee body reads
 because (i) `ρ` sends the callee's parameters to the caller ids holding `args`
 and (ii) `ρ` sends everything else above `maxVal f`, so no caller binding is
-disturbed — `Regs.setMany_congr` plus `exec_congr` (both proved) are the
-work-horses. The `.halt` case is the same derivation truncated.
+disturbed — `Regs.setMany_congr` is the work-horse. The `.halt` case is the
+same derivation truncated.
 
 `Passes.inlineOnce_inv` above supplies the site inversion:
 `bi`, `ci`, the selected call/callee, every guard, and the complete splice
@@ -7591,7 +6946,7 @@ equation.  The remaining first proof object is the renamed-callee `Exec` replay.
 The non-injective-formal problem is discharged by the partitioned invariants
 `Passes.RenamedAgree` and `Passes.CallerFrame`: the former is one-way (only a
 successful callee read must be reproduced), while the latter preserves every
-caller register below `off`. `Passes.inlineReplay_exec` carries both through
+caller register below `off`. `Passes.inlineReplay_execN` carries both through
 renamed instructions and block edges, proves appended-block lookups, turns
 callee `ret` into the continuation jump, and propagates halts.
 
@@ -7601,7 +6956,7 @@ an ordinary caller block, the prefix before `(bi, ci)`, the selected call itself
 and the new continuation containing `drop (ci + 1)`.  On a back-edge to `bi` it
 must re-enter the prefix case (and inline the call again); on a return it must
 enter the continuation case with the `CallerFrame` produced by
-`inlineReplay_exec`.  A plain structural equality test on the current
+`inlineReplay_execN`.  A plain structural equality test on the current
 instruction is insufficient because an equal call instruction may occur in the
 prefix at a different position. -/
 omit model in
@@ -7687,385 +7042,6 @@ theorem Passes.CallerFrame.setMany {off : Nat} {R R' : Regs}
     CallerFrame off (R.setMany xs vals) (R'.setMany xs vals) := by
   intro x hx
   exact Regs.setMany_congr (S := fun y => y < off) h xs vals x hx
-
-/-- Caller execution replay indexed by the exact source location `(j,k)`.
-This is the positional invariant needed to identify the unique splice site. -/
-theorem Passes.inlineCaller_exec
-    {P : Prog} {f f' g : Func} {bi ci : Nat} {site : Block}
-    {ds as : List ValId} {fid off contId : Nat}
-    {ρ : ValId → ValId} {β : BlockId → BlockId} {cont callBlock : Block}
-    {R Ri : Regs} {st : EvmState} {rest : Rest} {res : FRes}
-    (hsite : f.blocks[bi]? = some site)
-    (hci : ci < site.instrs.length)
-    (hcall : site.instrs[ci]? = some (.call ds fid as))
-    (hfunc : P.funcs[fid]? = some g)
-    (hgwf : g.wfCheck P.funcs.size = true)
-    (hoff : off = Nat.max (Passes.maxVal f) (Passes.maxVal g) + 1)
-    (hρ : ρ = inlineRho g.params as off)
-    (hβ : ∀ i, β i = f.blocks.size + i)
-    (hcontId : contId = f.blocks.size + g.blocks.size)
-    (hentry : g.entry = 0)
-    (hlen : g.params.length = as.length)
-    (hnrets : g.nrets = ds.length)
-    (hcallBlock : callBlock =
-      { params := site.params, instrs := site.instrs.take ci,
-        term := .jump ⟨f.blocks.size + g.entry, []⟩ })
-    (hcont : cont =
-      { params := ds, instrs := site.instrs.drop (ci + 1), term := site.term })
-    (hblocks : f'.blocks =
-      (f.blocks.set! bi callBlock) ++
-        g.blocks.map (inlineReplayBlock ρ β contId) ++ #[cont])
-    (hexec : Exec (model := model) P f R st rest res)
-    {j k : Nat} {cur : Block}
-    (hcur : f.blocks[j]? = some cur)
-    (hdrop : cur.instrs.drop k = rest.instrs)
-    (hterm : cur.term = rest.term)
-    (hframe : CallerFrame off R Ri) :
-    Exec (model := model) P f' Ri st
-      (inlineCallerRest bi ci (f.blocks.size + g.entry) j k site rest) res := by
-  have hoffCaller : Passes.maxVal f < off := by
-    rw [hoff]
-    exact maxVal_lt_inlineOffset_left f g
-  have hoffCallee : Passes.maxVal g < off := by
-    rw [hoff]
-    exact maxVal_lt_inlineOffset_right f g
-  have hsiteMem := block_mem_of_getElem? hsite
-  have hnd : g.allDefs.Nodup := by
-    unfold Func.wfCheck at hgwf
-    simp only [Bool.and_eq_true, decide_eq_true_eq] at hgwf
-    exact hgwf.1.1.1
-  have hpsnd : g.params.Nodup := by
-    exact params_nodup_of_allDefs hnd rfl
-  have hret : ∀ {b : Block}, b ∈ g.blocks.toList → ∀ {xs},
-      b.term = .ret xs → xs.length = ds.length := by
-    intro b hb xs ht
-    rw [← hnrets]
-    exact wfCheck_ret_arity hgwf hb ht
-  induction hexec generalizing j k cur Ri with
-  | @const _ R st d v is t res htail ih =>
-      have himem : Instr.const d v ∈ cur.instrs := mem_of_drop_eq_cons hdrop
-      have hcurSite : j = bi → cur = site := by
-        intro hj
-        subst j
-        exact Option.some.inj (hcur.symm.trans hsite)
-      have hne : j ≠ bi ∨ k ≠ ci := by
-        by_contra hn
-        simp only [not_or, not_ne_iff] at hn
-        obtain ⟨rfl, rfl⟩ := hn
-        have hcureq := hcurSite rfl
-        subst cur
-        have heq := head_eq_of_drop_eq_cons hcall hdrop
-        cases heq
-      rw [inlineCallerRest_cons_of_not_site hcurSite hne hdrop]
-      refine Exec.const (ih hsite hoff hβ hcontId hcallBlock hblocks hcur
-        (drop_succ_eq_of_drop_eq_cons hdrop) hterm ?_ hoffCaller hsiteMem)
-      simpa [Regs.setMany_cons, Regs.setMany_nil_left] using
-        (hframe.setMany (xs := [d]) [v])
-  | @op _ R st st' ods yop oas oargs rets is t res hget hop hlenRet htail ih =>
-      have himem : Instr.op ods yop oas ∈ cur.instrs := mem_of_drop_eq_cons hdrop
-      have hcurSite : j = bi → cur = site := by
-        intro hj; subst j; exact Option.some.inj (hcur.symm.trans hsite)
-      have hne : j ≠ bi ∨ k ≠ ci := by
-        by_contra hn
-        simp only [not_or, not_ne_iff] at hn
-        obtain ⟨rfl, rfl⟩ := hn
-        have hcureq := hcurSite rfl
-        subst cur
-        have heq := head_eq_of_drop_eq_cons hcall hdrop
-        cases heq
-      have hoas : ∀ x ∈ oas, x < off := by
-        intro x hx
-        exact lt_of_le_of_lt (instrUse_le_maxVal (block_mem_of_getElem? hcur)
-          himem (by simpa [Instr.uses] using hx)) hoffCaller
-      rw [inlineCallerRest_cons_of_not_site hcurSite hne hdrop]
-      refine Exec.op (args := oargs) (rets := rets)
-        (by rw [← hframe.getMany hoas]; exact hget) hop hlenRet
-        (ih hsite hoff hβ hcontId hcallBlock hblocks hcur
-          (drop_succ_eq_of_drop_eq_cons hdrop) hterm ?_ hoffCaller hsiteMem)
-      exact hframe.setMany rets
-  | @opHalt _ R st st' ods yop oas oargs is t hget hop =>
-      have himem : Instr.op ods yop oas ∈ cur.instrs := mem_of_drop_eq_cons hdrop
-      have hcurSite : j = bi → cur = site := by
-        intro hj; subst j; exact Option.some.inj (hcur.symm.trans hsite)
-      have hne : j ≠ bi ∨ k ≠ ci := by
-        by_contra hn
-        simp only [not_or, not_ne_iff] at hn
-        obtain ⟨rfl, rfl⟩ := hn
-        have hcureq := hcurSite rfl
-        subst cur
-        have heq := head_eq_of_drop_eq_cons hcall hdrop
-        cases heq
-      have hoas : ∀ x ∈ oas, x < off := by
-        intro x hx
-        exact lt_of_le_of_lt (instrUse_le_maxVal (block_mem_of_getElem? hcur)
-          himem (by simpa [Instr.uses] using hx)) hoffCaller
-      rw [inlineCallerRest_cons_of_not_site hcurSite hne hdrop]
-      exact Exec.opHalt (args := oargs) (by rw [← hframe.getMany hoas]; exact hget) hop
-  | @call fcur callee R st st' ods oas ofid oargs rvals eb is t res
-      hfid hget hplen heb hbody hlenRet htail ihbody ih =>
-      have himem : Instr.call ods ofid oas ∈ cur.instrs := mem_of_drop_eq_cons hdrop
-      have hcurSite : j = bi → cur = site := by
-        intro hj; subst j; exact Option.some.inj (hcur.symm.trans hsite)
-      by_cases hat : j = bi ∧ k = ci
-      · obtain ⟨rfl, rfl⟩ := hat
-        have hcureq := hcurSite rfl
-        subst cur
-        have heq := head_eq_of_drop_eq_cons hcall hdrop
-        cases heq
-        have hgEq : callee = g := Option.some.inj (hfid.symm.trans hfunc)
-        subst callee
-        rw [inlineCallerRest_site]
-        have hoas : ∀ x ∈ as, x < off := by
-          intro x hx
-          exact lt_of_le_of_lt (instrUse_le_maxVal hsiteMem himem
-            (by simpa [Instr.uses] using hx)) hoffCaller
-        have hgetRi : Ri.getMany as = some oargs := by
-          rw [← hframe.getMany hoas]
-          exact hget
-        have hentryParams : eb.params = [] := wfCheck_entry_params_nil hgwf (by
-          simpa [hentry] using heb)
-        refine Exec.jump (args := [])
-          (tb := inlineReplayBlock ρ β contId eb) ?_ (by simp)
-          (by simp [inlineReplayBlock, hentryParams]) ?_
-        · have hbcopy := inlineReplayBlock_get hblocks heb
-          simpa using hbcopy
-        · have hreplay := inlineReplay_exec (g := g) (f' := f')
-            (preBlocks := fcur.blocks.set! j callBlock)
-            (cont := cont) (ps := g.params) (as := as) (ds := ds)
-            (off := off) (ρ := ρ) (β := β) (contId := contId)
-            (Rc := Regs.empty.setMany g.params oargs) (Rcaller := R)
-            (cres := .ret rvals st') (final := res) (b := eb)
-            hρ (fun i => by simpa using hβ i) (by simpa using hcontId) hblocks
-            (by rw [hcont]) hnd rfl hlen hoas
-            (fun {_} hb {_} ht => hret hb ht) hbody (block_mem_of_getElem? heb)
-            ⟨[], rfl, rfl⟩ (renamedAgree_entry hpsnd hlen hgetRi) hframe
-            (fun s hs => by cases hs)
-            (fun Rout vals s heq hRout => by
-              cases heq
-              have htailDrop := drop_succ_eq_of_drop_eq_cons hdrop
-              rw [hcont]
-              simpa [inlineCallerRest, htailDrop, hterm] using
-                (ih hsite hoff hβ hcontId hcallBlock hblocks
-                (j := j) (k := k + 1) (cur := site) hsite
-                (drop_succ_eq_of_drop_eq_cons hdrop) hterm
-                (hRout.setMany rvals) hoffCaller hsiteMem))
-          simpa [inlineReplayBlock, hentryParams, Regs.setMany_nil_left] using hreplay
-      · have hne : j ≠ bi ∨ k ≠ ci := by omega
-        have hoas : ∀ x ∈ oas, x < off := by
-          intro x hx
-          exact lt_of_le_of_lt (instrUse_le_maxVal (block_mem_of_getElem? hcur)
-            himem (by simpa [Instr.uses] using hx)) hoffCaller
-        rw [inlineCallerRest_cons_of_not_site hcurSite hne hdrop]
-        refine Exec.call (args := oargs) (rvals := rvals) (g := callee) (eb := eb)
-          hfid (by rw [← hframe.getMany hoas]; exact hget) hplen heb hbody hlenRet
-          (ih hsite hoff hβ hcontId hcallBlock hblocks hcur
-            (drop_succ_eq_of_drop_eq_cons hdrop) hterm
-            (hframe.setMany rvals) hoffCaller hsiteMem)
-  | @callHalt fcur callee R st st' ods oas ofid oargs eb is t
-      hfid hget hplen heb hbody ihbody =>
-      have himem : Instr.call ods ofid oas ∈ cur.instrs := mem_of_drop_eq_cons hdrop
-      have hcurSite : j = bi → cur = site := by
-        intro hj; subst j; exact Option.some.inj (hcur.symm.trans hsite)
-      by_cases hat : j = bi ∧ k = ci
-      · obtain ⟨rfl, rfl⟩ := hat
-        have hcureq := hcurSite rfl
-        subst cur
-        have heq := head_eq_of_drop_eq_cons hcall hdrop
-        cases heq
-        have hgEq : callee = g := Option.some.inj (hfid.symm.trans hfunc)
-        subst callee
-        rw [inlineCallerRest_site]
-        have hoas : ∀ x ∈ as, x < off := by
-          intro x hx
-          exact lt_of_le_of_lt (instrUse_le_maxVal hsiteMem himem
-            (by simpa [Instr.uses] using hx)) hoffCaller
-        have hgetRi : Ri.getMany as = some oargs := by
-          rw [← hframe.getMany hoas]
-          exact hget
-        have hentryParams : eb.params = [] := wfCheck_entry_params_nil hgwf (by
-          simpa [hentry] using heb)
-        refine Exec.jump (args := [])
-          (tb := inlineReplayBlock ρ β contId eb) ?_ (by simp)
-          (by simp [inlineReplayBlock, hentryParams]) ?_
-        · have hbcopy := inlineReplayBlock_get hblocks heb
-          simpa using hbcopy
-        · have hreplay := inlineReplay_exec (g := g) (f' := f')
-            (preBlocks := fcur.blocks.set! j callBlock)
-            (cont := cont) (ps := g.params) (as := as) (ds := ds)
-            (off := off) (ρ := ρ) (β := β) (contId := contId)
-            (Rc := Regs.empty.setMany g.params oargs) (Rcaller := R)
-            (cres := .halt st') (final := .halt st') (b := eb)
-            hρ (fun i => by simpa using hβ i) (by simpa using hcontId) hblocks
-            (by rw [hcont]) hnd rfl hlen hoas
-            (fun {_} hb {_} ht => hret hb ht) hbody (block_mem_of_getElem? heb)
-            ⟨[], rfl, rfl⟩ (renamedAgree_entry hpsnd hlen hgetRi) hframe
-            (fun _ h => h)
-            (fun Rout vals s heq _ => by cases heq)
-          simpa [inlineReplayBlock, hentryParams, Regs.setMany_nil_left] using hreplay
-      · have hne : j ≠ bi ∨ k ≠ ci := by omega
-        have hoas : ∀ x ∈ oas, x < off := by
-          intro x hx
-          exact lt_of_le_of_lt (instrUse_le_maxVal (block_mem_of_getElem? hcur)
-            himem (by simpa [Instr.uses] using hx)) hoffCaller
-        rw [inlineCallerRest_cons_of_not_site hcurSite hne hdrop]
-        exact Exec.callHalt (args := oargs) (g := callee) (eb := eb) hfid
-          (by rw [← hframe.getMany hoas]; exact hget) hplen heb hbody
-  | @jump fcur R st e tb vals res htb hget hplen htail ih =>
-      have hbefore : ¬ (j = bi ∧ k ≤ ci) := by
-        rintro ⟨rfl, hk⟩
-        have hcureq : cur = site := Option.some.inj (hcur.symm.trans hsite)
-        subst cur
-        have hlenDrop := congrArg List.length hdrop
-        simp at hlenDrop
-        omega
-      simp only [inlineCallerRest, if_neg hbefore]
-      have htmem := block_mem_of_getElem? htb
-      have hargs : ∀ x ∈ e.args, x < off := by
-        intro x hx
-        exact lt_of_le_of_lt (termUse_le_maxVal (block_mem_of_getElem? hcur)
-          (by simpa [hterm, Term.uses] using hx)) hoffCaller
-      by_cases he : e.target = bi
-      · have htbSite : fcur.blocks[bi]? = some tb := by simpa [he] using htb
-        have htbeq : tb = site := Option.some.inj (htbSite.symm.trans hsite)
-        subst tb
-        have htb' : f'.blocks[e.target]? = some callBlock := by
-          rw [he]
-          exact inlineCallerBlock_get_site₂ (f := fcur) (f' := f')
-            (mid := g.blocks.map (inlineReplayBlock ρ β contId)) (tail := #[cont])
-            (Array.getElem?_eq_some_iff.mp hsite).1 hblocks
-        rw [hcallBlock] at htb'
-        refine Exec.jump (e := e) (args := vals) htb'
-          (by rw [← hframe.getMany hargs]; exact hget)
-          (by simpa [hcallBlock] using hplen) ?_
-        simpa [inlineCallerRest, hcallBlock] using
-          (ih hsite hoff hβ hcontId hcallBlock hblocks
-          (j := bi) (k := 0) (cur := site) hsite rfl rfl
-          (hframe.setMany vals) hoffCaller hsiteMem)
-      · have htb' := inlineCallerBlock_get_other₂ (f := fcur) (f' := f')
-          (callBlock := callBlock) (mid :=
-            g.blocks.map (inlineReplayBlock ρ β contId)) (tail := #[cont]) htb he hblocks
-        refine Exec.jump (e := e) (args := vals) htb'
-          (by rw [← hframe.getMany hargs]; exact hget) hplen ?_
-        simpa [inlineCallerRest, he] using
-          (ih hsite hoff hβ hcontId hcallBlock hblocks
-          (j := e.target) (k := 0) (cur := tb) htb rfl rfl
-          (hframe.setMany vals) hoffCaller hsiteMem)
-  | @branchTrue fcur R st c v et ef tb vals res hc hv htb hget hplen htail ih =>
-      have hbefore : ¬ (j = bi ∧ k ≤ ci) := by
-        rintro ⟨rfl, hk⟩
-        have hcureq : cur = site := Option.some.inj (hcur.symm.trans hsite)
-        subst cur
-        have hlenDrop := congrArg List.length hdrop
-        simp at hlenDrop
-        omega
-      simp only [inlineCallerRest, if_neg hbefore]
-      have hcLt : c < off := lt_of_le_of_lt
-        (termUse_le_maxVal (block_mem_of_getElem? hcur) (by simp [hterm, Term.uses]))
-        hoffCaller
-      have hargs : ∀ x ∈ et.args, x < off := by
-        intro x hx
-        exact lt_of_le_of_lt (termUse_le_maxVal (block_mem_of_getElem? hcur)
-          (by simp [hterm, Term.uses, hx])) hoffCaller
-      by_cases he : et.target = bi
-      · have htbSite : fcur.blocks[bi]? = some tb := by simpa [he] using htb
-        have htbeq : tb = site := Option.some.inj (htbSite.symm.trans hsite)
-        subst tb
-        have htb' : f'.blocks[et.target]? = some callBlock := by
-          rw [he]
-          exact inlineCallerBlock_get_site₂ (f := fcur) (f' := f')
-            (mid := g.blocks.map (inlineReplayBlock ρ β contId)) (tail := #[cont])
-            (Array.getElem?_eq_some_iff.mp hsite).1 hblocks
-        rw [hcallBlock] at htb'
-        refine Exec.branchTrue (et := et) (ef := ef) (v := v) (args := vals)
-          (by rw [hframe c hcLt]; exact hc) hv htb'
-          (by rw [← hframe.getMany hargs]; exact hget)
-          (by simpa [hcallBlock] using hplen) ?_
-        simpa [inlineCallerRest, hcallBlock] using
-          (ih hsite hoff hβ hcontId hcallBlock hblocks
-          (j := bi) (k := 0) (cur := site) hsite rfl rfl
-          (hframe.setMany vals) hoffCaller hsiteMem)
-      · have htb' := inlineCallerBlock_get_other₂ (f := fcur) (f' := f')
-          (callBlock := callBlock) (mid :=
-            g.blocks.map (inlineReplayBlock ρ β contId)) (tail := #[cont]) htb he hblocks
-        refine Exec.branchTrue (et := et) (ef := ef) (v := v) (args := vals)
-          (by rw [hframe c hcLt]; exact hc) hv htb'
-          (by rw [← hframe.getMany hargs]; exact hget) hplen ?_
-        simpa [inlineCallerRest, he] using
-          (ih hsite hoff hβ hcontId hcallBlock hblocks
-          (j := et.target) (k := 0) (cur := tb) htb rfl rfl
-          (hframe.setMany vals) hoffCaller hsiteMem)
-  | @branchFalse fcur R st c et ef tb vals res hc htb hget hplen htail ih =>
-      have hbefore : ¬ (j = bi ∧ k ≤ ci) := by
-        rintro ⟨rfl, hk⟩
-        have hcureq : cur = site := Option.some.inj (hcur.symm.trans hsite)
-        subst cur
-        have hlenDrop := congrArg List.length hdrop
-        simp at hlenDrop
-        omega
-      simp only [inlineCallerRest, if_neg hbefore]
-      have hcLt : c < off := lt_of_le_of_lt
-        (termUse_le_maxVal (block_mem_of_getElem? hcur) (by simp [hterm, Term.uses]))
-        hoffCaller
-      have hargs : ∀ x ∈ ef.args, x < off := by
-        intro x hx
-        exact lt_of_le_of_lt (termUse_le_maxVal (block_mem_of_getElem? hcur)
-          (by simp [hterm, Term.uses, hx])) hoffCaller
-      by_cases he : ef.target = bi
-      · have htbSite : fcur.blocks[bi]? = some tb := by simpa [he] using htb
-        have htbeq : tb = site := Option.some.inj (htbSite.symm.trans hsite)
-        subst tb
-        have htb' : f'.blocks[ef.target]? = some callBlock := by
-          rw [he]
-          exact inlineCallerBlock_get_site₂ (f := fcur) (f' := f')
-            (mid := g.blocks.map (inlineReplayBlock ρ β contId)) (tail := #[cont])
-            (Array.getElem?_eq_some_iff.mp hsite).1 hblocks
-        rw [hcallBlock] at htb'
-        refine Exec.branchFalse (et := et) (ef := ef) (args := vals)
-          (by rw [hframe c hcLt]; exact hc) htb'
-          (by rw [← hframe.getMany hargs]; exact hget)
-          (by simpa [hcallBlock] using hplen) ?_
-        simpa [inlineCallerRest, hcallBlock] using
-          (ih hsite hoff hβ hcontId hcallBlock hblocks
-          (j := bi) (k := 0) (cur := site) hsite rfl rfl
-          (hframe.setMany vals) hoffCaller hsiteMem)
-      · have htb' := inlineCallerBlock_get_other₂ (f := fcur) (f' := f')
-          (callBlock := callBlock) (mid :=
-            g.blocks.map (inlineReplayBlock ρ β contId)) (tail := #[cont]) htb he hblocks
-        refine Exec.branchFalse (et := et) (ef := ef) (args := vals)
-          (by rw [hframe c hcLt]; exact hc) htb'
-          (by rw [← hframe.getMany hargs]; exact hget) hplen ?_
-        simpa [inlineCallerRest, he] using
-          (ih hsite hoff hβ hcontId hcallBlock hblocks
-          (j := ef.target) (k := 0) (cur := tb) htb rfl rfl
-          (hframe.setMany vals) hoffCaller hsiteMem)
-  | @ret fcur R st xs vals hget =>
-      have hbefore : ¬ (j = bi ∧ k ≤ ci) := by
-        rintro ⟨rfl, hk⟩
-        have hcureq : cur = site := Option.some.inj (hcur.symm.trans hsite)
-        subst cur
-        have hlenDrop := congrArg List.length hdrop
-        simp at hlenDrop
-        omega
-      simp only [inlineCallerRest, if_neg hbefore]
-      have hxs : ∀ x ∈ xs, x < off := by
-        intro x hx
-        exact lt_of_le_of_lt (termUse_le_maxVal (block_mem_of_getElem? hcur)
-          (by simpa [hterm, Term.uses] using hx)) hoffCaller
-      exact Exec.ret (by rw [← hframe.getMany hxs]; exact hget)
-  | @halt fcur R st st' yop oas oargs hget hop =>
-      have hbefore : ¬ (j = bi ∧ k ≤ ci) := by
-        rintro ⟨rfl, hk⟩
-        have hcureq : cur = site := Option.some.inj (hcur.symm.trans hsite)
-        subst cur
-        have hlenDrop := congrArg List.length hdrop
-        simp at hlenDrop
-        omega
-      simp only [inlineCallerRest, if_neg hbefore]
-      have hoas : ∀ x ∈ oas, x < off := by
-        intro x hx
-        exact lt_of_le_of_lt (termUse_le_maxVal (block_mem_of_getElem? hcur)
-          (by simpa [hterm, Term.uses] using hx)) hoffCaller
-      exact Exec.halt (args := oargs) (by rw [← hframe.getMany hoas]; exact hget) hop
 
 /-- The positional caller replay preserves the call-depth bound. -/
 theorem Passes.inlineCaller_execN
@@ -8446,96 +7422,6 @@ theorem Passes.inlineCaller_execN
       exact ExecN.halt (args := oargs) (by rw [← hframe.getMany hoas]; exact hget) hop
 
 
-theorem inlineOnce_sound {P : Prog} {counts : Array Nat} {f f' : Func} {args : List U256}
-    {st : EvmState} {res : FRes} {eb eb' : Block}
-    (hPwf : P.wfCheck = true)
-    (hio : Passes.inlineOnce counts P.funcs f = some f')
-    (heb : f.blocks[f.entry]? = some eb)
-    (heb' : f'.blocks[f'.entry]? = some eb')
-    (hexec : Exec (model := model) P f (Regs.empty.setMany f.params args) st
-      ⟨eb.instrs, eb.term⟩ res) :
-    Exec (model := model) P f' (Regs.empty.setMany f'.params args) st
-      ⟨eb'.instrs, eb'.term⟩ res := by
-  obtain ⟨bi, site, ci, ds, fid, as, g, hbi, hsite, hci, hcall, hfunc,
-    -, hlen, hnrets, hentry, hf'⟩ := Passes.inlineOnce_inv hio
-  let off := Nat.max (Passes.maxVal f) (Passes.maxVal g) + 1
-  let ρ : ValId → ValId := fun v =>
-    match (g.params.zip as).find? (fun pa => pa.1 == v) with
-    | some pa => pa.2
-    | none => v + off
-  let β := fun i : BlockId => f.blocks.size + i
-  let contId := f.blocks.size + g.blocks.size
-  let callBlock : Block :=
-    { params := site.params, instrs := site.instrs.take ci,
-      term := .jump ⟨f.blocks.size + g.entry, []⟩ }
-  let cont : Block :=
-    { params := ds, instrs := site.instrs.drop (ci + 1), term := site.term }
-  have hreplayFn :
-      (fun gb : Block =>
-        { params := gb.params.map ρ
-          instrs := gb.instrs.map (Passes.renameInstr ρ)
-          term := match gb.term with
-            | .ret vs => .jump ⟨contId, vs.map ρ⟩
-            | t => Passes.renameTerm ρ β t }) =
-        Passes.inlineReplayBlock ρ β contId := by
-    funext gb
-    cases gb with
-    | mk params instrs term => cases term <;> rfl
-  have hfshapeRaw : f' =
-      { f with blocks := (f.blocks.set! bi callBlock) ++
-        g.blocks.map (fun gb =>
-          { params := gb.params.map ρ
-            instrs := gb.instrs.map (Passes.renameInstr ρ)
-            term := match gb.term with
-              | .ret vs => .jump ⟨contId, vs.map ρ⟩
-              | t => Passes.renameTerm ρ β t }) ++ #[cont] } := by
-    simpa [off, ρ, β, contId, callBlock, cont] using hf'
-  have hfshape : f' =
-      { f with blocks := (f.blocks.set! bi callBlock) ++
-        g.blocks.map (Passes.inlineReplayBlock ρ β contId) ++ #[cont] } := by
-    rw [hfshapeRaw, hreplayFn]
-  have hblocks : f'.blocks = (f.blocks.set! bi callBlock) ++
-      g.blocks.map (Passes.inlineReplayBlock ρ β contId) ++ #[cont] := by
-    rw [hfshape]
-  have hparams : f'.params = f.params := by rw [hfshape]
-  have hentry' : f'.entry = f.entry := by rw [hfshape]
-  have hstart :
-      Passes.inlineCallerRest bi ci (f.blocks.size + g.entry) f.entry 0 site
-          ⟨eb.instrs, eb.term⟩ = ⟨eb'.instrs, eb'.term⟩ := by
-    by_cases he : f.entry = bi
-    · have hebsite : eb = site := by
-        rw [he] at heb
-        exact Option.some.inj (heb.symm.trans hsite)
-      subst eb
-      have heb'call : eb' = callBlock := by
-        have hout : f'.blocks[f'.entry]? = some callBlock := by
-          rw [hentry', he]
-          exact Passes.inlineCallerBlock_get_site₂ (f := f) (f' := f')
-            (mid := g.blocks.map (Passes.inlineReplayBlock ρ β contId))
-            (tail := #[cont]) hbi hblocks
-        exact Option.some.inj (heb'.symm.trans hout)
-      subst eb'
-      simp [Passes.inlineCallerRest, he, callBlock]
-    · have hout : f'.blocks[f'.entry]? = some eb := by
-        rw [hentry']
-        exact Passes.inlineCallerBlock_get_other₂ (f := f) (f' := f')
-          (callBlock := callBlock)
-          (mid := g.blocks.map (Passes.inlineReplayBlock ρ β contId))
-          (tail := #[cont]) heb he hblocks
-      have hebeq : eb' = eb := Option.some.inj (heb'.symm.trans hout)
-      subst eb'
-      simp [Passes.inlineCallerRest, he]
-  have hgwf := progWf_func hPwf hfunc
-  have hsim := Passes.inlineCaller_exec (model := model)
-    (f' := f') (bi := bi) (ci := ci) (site := site) (ds := ds) (as := as)
-    (fid := fid) (off := off) (contId := contId) (ρ := ρ) (β := β)
-    (cont := cont) (callBlock := callBlock)
-    hsite hci hcall hfunc hgwf rfl rfl (fun _ => rfl) rfl hentry hlen hnrets
-    rfl rfl hblocks hexec (j := f.entry) (k := 0) (cur := eb)
-    heb rfl rfl (fun _ _ => rfl)
-  rw [hstart] at hsim
-  simpa [hparams] using hsim
-
 /-- One splice preserves an existing call-depth bound. -/
 theorem inlineOnce_soundN {P : Prog} {n : Nat} {counts : Array Nat} {f f' : Func} {args : List U256}
     {st : EvmState} {res : FRes} {eb eb' : Block}
@@ -8790,43 +7676,6 @@ theorem Passes.inlineN_params_entry (counts : Array Nat) (funcs : Array Func)
           have hi := ih f'
           simpa [inlineN, hio, hs.1, hs.2] using hi
 
-theorem Passes.inlineN_sound {P : Prog} {counts : Array Nat}
-    (hPwf : P.wfCheck = true) :
-    ∀ (n : Nat) (f : Func) (args : List U256) (st : EvmState) (res : FRes)
-      (eb eb' : Block),
-      f.blocks[f.entry]? = some eb →
-      (inlineN counts P.funcs n f).blocks[(inlineN counts P.funcs n f).entry]? = some eb' →
-      Exec (model := model) P f (Regs.empty.setMany f.params args) st
-        ⟨eb.instrs, eb.term⟩ res →
-      Exec (model := model) P (inlineN counts P.funcs n f)
-        (Regs.empty.setMany (inlineN counts P.funcs n f).params args) st
-        ⟨eb'.instrs, eb'.term⟩ res := by
-  intro n
-  induction n with
-  | zero =>
-      intro f args st res eb eb' heb heb' hexec
-      simp only [inlineN] at heb' ⊢
-      have heq : eb' = eb := Option.some.inj (heb'.symm.trans heb)
-      subst eb'
-      exact hexec
-  | succ n ih =>
-      intro f args st res eb eb' heb heb' hexec
-      cases hio : inlineOnce counts P.funcs f with
-      | none =>
-          simp only [inlineN, hio] at heb' ⊢
-          have heq : eb' = eb := Option.some.inj (heb'.symm.trans heb)
-          subst eb'
-          exact hexec
-      | some f' =>
-          obtain ⟨e', he'⟩ := inlineOnce_entry hio heb
-          have hexec' := inlineOnce_sound (model := model) hPwf hio heb he' hexec
-          have heb'' :
-              (inlineN counts P.funcs n f').blocks[
-                (inlineN counts P.funcs n f').entry]? = some eb' := by
-            simpa only [inlineN, hio, Option.getD_some] using heb'
-          simpa only [inlineN, hio] using
-            (ih f' args st res e' eb' he' heb'' hexec')
-
 /-- Iterated local inlining preserves the same call-depth bound. -/
 theorem Passes.inlineN_soundN {P : Prog} {depth : Nat} {counts : Array Nat}
     (hPwf : P.wfCheck = true) :
@@ -8864,27 +7713,6 @@ theorem Passes.inlineN_soundN {P : Prog} {depth : Nat} {counts : Array Nat}
             simpa only [inlineN, hio, Option.getD_some] using heb'
           simpa only [inlineN, hio] using
             (ih f' args st res e' eb' he' heb'' hexec')
-
-/-- **The budgeted fixed point preserves executions**: iterate
-`inlineOnce_sound` at most eight times. -/
-theorem inlineFunc_sound {P : Prog} {counts : Array Nat} {f : Func} {args : List U256}
-    {st : EvmState} {res : FRes} {eb eb' : Block}
-    (hPwf : P.wfCheck = true) (_hwf : f.wfCheck P.funcs.size = true)
-    (heb : f.blocks[f.entry]? = some eb)
-    (heb' : (Passes.inlineFunc counts P.funcs f).blocks[f.entry]? = some eb')
-    (hexec : Exec (model := model) P f (Regs.empty.setMany f.params args) st
-      ⟨eb.instrs, eb.term⟩ res) :
-    Exec (model := model) P (Passes.inlineFunc counts P.funcs f)
-      (Regs.empty.setMany f.params args) st ⟨eb'.instrs, eb'.term⟩ res := by
-  have hpe := Passes.inlineN_params_entry counts P.funcs 8 f
-  have heb'' :
-      (Passes.inlineN counts P.funcs 8 f).blocks[
-        (Passes.inlineN counts P.funcs 8 f).entry]? = some eb' := by
-    rw [hpe.2]
-    simpa only [Passes.inlineFunc_eq_inlineN] using heb'
-  have hs := Passes.inlineN_sound (model := model) (counts := counts) hPwf
-    8 f args st res eb eb' heb heb'' hexec
-  simpa only [Passes.inlineFunc_eq_inlineN, hpe.1] using hs
 
 /-- The production local inliner preserves the same call-depth bound. -/
 theorem inlineFunc_soundN {P : Prog} {depth : Nat} {counts : Array Nat} {f : Func} {args : List U256}
@@ -9709,18 +8537,6 @@ theorem Passes.pruneMeasure_le (n : Nat) (used : Array Bool) :
   simpa using hle
 
 omit model in
-theorem Passes.pruneMeasure_mono {n : Nat} {A B : Array Bool}
-    (h : MarkSub A B) : pruneMeasure n A ≤ pruneMeasure n B := by
-  unfold pruneMeasure
-  exact List.sum_le_sum (fun i hi => by
-    by_cases hA : UsedAt A i
-    · have hB : UsedAt B i := h i hA
-      simp [UsedAt] at hA hB ⊢
-      simp [hA, hB]
-    · simp [UsedAt] at hA ⊢
-      simp [hA])
-
-omit model in
 theorem Passes.pruneMeasure_lt {n : Nat} {A B : Array Bool}
     (hsub : MarkSub A B) {j : Nat} (hj : j < n)
     (hA : ¬ UsedAt A j) (hB : UsedAt B j) :
@@ -9957,14 +8773,6 @@ theorem Passes.pruneState_used_size (P : Prog) :
 
 def Passes.pruneRest (remap : Array (Option FuncId)) (r : Rest) : Rest :=
   ⟨r.instrs.map (pruneInstr remap), r.term⟩
-
-omit model in
-theorem Passes.pruneFix_params (remap : Array (Option FuncId)) (f : Func) :
-    (pruneFix remap f).params = f.params := rfl
-
-omit model in
-theorem Passes.pruneFix_entry (remap : Array (Option FuncId)) (f : Func) :
-    (pruneFix remap f).entry = f.entry := rfl
 
 omit model in
 theorem Passes.pruneFix_block {remap : Array (Option FuncId)} {f : Func}
@@ -10276,11 +9084,6 @@ theorem Passes.inlineRound_wf {P : Prog} (hwf : P.wfCheck = true) :
     (inlineRound P).wfCheck = true := by
   exact pruneFuncs_wf (inlineMap_wf hwf)
 
-omit model in
-theorem Passes.pruneFuncs_inlineMap_wf {P : Prog} (hwf : P.wfCheck = true) :
-    (pruneFuncs (inlineMap (siteCounts P) P)).wfCheck = true := by
-  exact inlineRound_wf hwf
-
 theorem inlineRound_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
     (hwf : P.wfCheck = true) (hrun : Run (model := model) P yst0 yst' o) :
     Run (model := model) (Passes.inlineRound P) yst0 yst' o := by
@@ -10382,8 +9185,8 @@ Each pass is stated at the *function-entry* level: an execution of `f` from its
 entry block, with the register file that binds exactly `f.params`, maps to an
 execution of the rewritten function from *its* entry block with the same result.
 That is the granularity the whole-program statement needs (`Run` starts `main`
-that way, and `Exec.call` starts a callee that way), and it is where the
-liveness invariant `LiveAgree` has its base case (`liveAgree_entry`).
+that way, and `Exec.call` starts a callee that way), and it is where each pass's
+register invariant has its base case.
 
 Passes 1 and 3 carry `ToAsm.Func.domCheck` — the counterexample above shows they
 must. Passes 2 and 4 do not need it.
@@ -11685,13 +10488,12 @@ theorem elimTrivialParam_one_exec {P : Prog} {f : Func} {li : Array (List ValId)
 
 /-- **Pass 1 (trivial block-parameter elimination) soundness**, under dominance.
 
-**Proved below.** The invariant refines `LiveAgree` into a lockstep relation
-with a dominance-delimited stale zone for `σ = (p ↦ v)`, carried
-through the derivation block by block:
+The invariant is a lockstep relation with a dominance-delimited stale zone for
+`σ = (p ↦ v)`, carried through the derivation block by block:
 
-* base case: `liveAgree_entry` (proved) — `domCheck` says only `f.params` is live
-  into the entry, and `σ` fixes them (`p` is a *block* parameter, so single
-  assignment puts it outside `f.params`);
+* base case: `domCheck` says only `f.params` is live into the entry, and `σ`
+  fixes them (`p` is a *block* parameter, so single assignment puts it outside
+  `f.params`);
 * at a jump into the rewritten block, the eliminated position carried either `v`
   — and then both sides bind the same word, because `v ∈ blockUses pred` so
   `ToAsm.liveIn_of_uses` puts it in the predecessor's live-in where the
@@ -11704,47 +10506,12 @@ through the derivation block by block:
   (`Regs.getMany_congr`).
 
 `Passes.elimTrivialParams_eq_loop` above supplies the fixed-point-loop
-inversion, and `Passes.findTrivialParam_inv` / `findTrivialParam_edge` now
-supply the complete candidate inversion, including `selfOnly`.
-
-The block-lookup half of the one-removal transport is now
-`Passes.elimStep_blocks_get`.  The precise remaining obstruction is its
-sequential/register half: an induction over `Exec` must strengthen
-`LiveAgree` with an intra-block relation that distinguishes values already
-defined in the current instruction prefix (block live-in deliberately excludes
-all definitions in the block), then prove the paired `getMany`/`setMany` lemma
-for `eraseIdx i`.  At a jump, `_edge` gives the required split: a non-self edge
+inversion, `Passes.findTrivialParam_inv` / `findTrivialParam_edge` supply the
+complete candidate inversion including `selfOnly`, and
+`Passes.elimStep_blocks_get` is the block-lookup half of the one-removal
+transport.  At a jump, `_edge` gives the required split: a non-self edge
 carries `v`, while a self edge may carry `p` and preserves the already-related
-word.
-
-The remaining path-sensitive case is now isolated more precisely.  On a jump
-from `bi` to another block where `p` is live, that target may itself define
-`v` (in particular as a block parameter), so `setMany` can rebind `v` while
-leaving `p` unchanged.  `LiveAgree` alone does not exclude this local state.
-An entry-rooted successful execution must exclude it because the candidate's
-non-self `v` edge into `bi` and the later `p` use would otherwise require the
-two distinct definition blocks to dominate each other; operationally, the
-first traversal is stuck before both bindings exist.  The missing lemma must
-make that history/reachability fact available to the `Exec` induction (or give
-an equivalent binding-provenance invariant).  The outer loop can then thread
-the now-proved one-step `allDefs.Nodup` and `domCheck` preservation facts through
-`elimTrivialParams_eq_loop`; no search inversion remains missing. -/
-/-
-**Value-provenance preservation still missing (2026-08-01).**
-`EntryPath.live_origin` and `BindingProvenance` above now prove, and preserve
-across instruction bindings and edges, the complete *site* provenance needed
-here.  The lift from sites to current words fails at a revisited definition:
-after the path executes the unique definition of `v` again, the preservation
-goal is `R p = R v`, but `BindingProvenance` yields only that the current `p`
-came from an earlier visit to `bi`.  `findTrivialParam_edge` establishes the
-equality when that visit binds `p`; it does not show that no later dynamic
-occurrence of `v` intervenes.  Closing this requires the path to carry binding
-events (including their words) and a last-occurrence theorem derived from
-`domCheck`; merely adding another block-local `LiveAgree` field repeats the
-same failed step.
-
-This is the shared missing preservation lemma with CSE below, not a remaining
-loop-inversion or edge-arity obligation. -/
+word. -/
 theorem elimTrivialParam_one_sound {P : Prog} {f : Func} {args : List U256}
     {st : EvmState} {res : FRes} {bi k p v : Nat}
     (hnd : f.allDefs.Nodup) (hdom : ToAsm.Func.domCheck f = true)
@@ -12141,15 +10908,15 @@ theorem constFold_exec_aux {P : Prog} {f : Func} {R : Regs} {st : EvmState}
 
 /-- **Pass 2 (constant folding) soundness.** No dominance hypothesis.
 
-The loop is no longer in the way: `constFold_blocks_eq` (proved) turns it into a
-`List.foldl` over `cfBlockStep`, and `constFold_spec` (proved) relates output
-blocks to input blocks index by index — that is what closed `constFold_dom`.
+`constFold_blocks_eq` turns the loop into a `List.foldl` over `cfBlockStep`, and
+`constFold_spec` relates output blocks to input blocks index by index — that is
+what closes `constFold_dom`.
 
-The soundness proof uses the following consistency invariant. The
-single-assignment lemmas (`instr_def_unique`, `param_not_instr_def`,
-`funcParam_not_instr_def`) and the step-by-step correspondence
-(`Passes.cfInstrStep_eq`, `cfInstr_fold_cons`, `cfInstr_foldMap_cons`) are now
-proved; what is left is the invariant that ties them together.
+The soundness proof rests on the single-assignment lemmas
+(`instr_def_unique`, `param_not_instr_def`, `funcParam_not_instr_def`), the
+step-by-step correspondence (`Passes.cfInstrStep_eq`, `cfInstr_fold_cons`,
+`cfInstr_foldMap_cons`), and the following consistency invariant tying them
+together.
 
 * The invariant is **consistency**, not containment: `m[d]? = some v → R d =
   some w → w = v`. Entries for not-yet-executed definitions are unconstrained
@@ -12162,7 +10929,7 @@ proved; what is left is the invariant that ties them together.
   *is* `d`'s only definition site, and `param_not_instr_def` /
   `funcParam_not_instr_def` rule out a jump or a function parameter re-binding
   something in the map's domain).
-* The remaining difficulty is that the map is **not flow-sensitive**: `constFold`
+* The subtlety is that the map is **not flow-sensitive**: `constFold`
   threads it in *block-index* order while an execution visits blocks in
   *control-flow* order, so the map in force at block `k` was computed from blocks
   `0..k-1` whether or not the execution visited them. Consistency therefore
@@ -12173,7 +10940,7 @@ proved; what is left is the invariant that ties them together.
   earlier in the same fold — `cfInstr_foldMap_cons` is the step lemma it needs.
 * With consistency in hand the simulation itself is routine: register files stay
   *equal* on the two sides (a folded op binds the same destination to the same
-  word), so `exec_congr` handles the register side and the machine state is
+  word), so the register side is a congruence and the machine state is
   untouched. -/
 theorem constFold_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
@@ -13099,25 +11866,6 @@ theorem cseSub_def_site {f : Func} (hnd : f.allDefs.Nodup) {d d0 : ValId}
   exact ⟨hd.site, hd0.site⟩
 
 omit model in
-/-- No block parameter is ever dropped. -/
-theorem cseSub_blockParam_none {f : Func} (hnd : f.allDefs.Nodup)
-    {b : Block} (hb : b ∈ f.blocks.toList) {p : ValId} (hp : p ∈ b.params) :
-    (cseSub f)[p]? = none := by
-  by_contra hn
-  obtain ⟨q, hq⟩ := Option.ne_none_iff_exists'.mp hn
-  obtain ⟨⟨b0, hb0, i, hi, hpd⟩, -⟩ := cseSub_def_site hnd hq
-  exact param_not_instr_def hnd hb hb0 hi hp hpd
-
-omit model in
-/-- No function parameter is ever dropped. -/
-theorem cseSub_funcParam_none {f : Func} (hnd : f.allDefs.Nodup)
-    {p : ValId} (hp : p ∈ f.params) : (cseSub f)[p]? = none := by
-  by_contra hn
-  obtain ⟨q, hq⟩ := Option.ne_none_iff_exists'.mp hn
-  obtain ⟨⟨b0, hb0, i, hi, hpd⟩, -⟩ := cseSub_def_site hnd hq
-  exact funcParam_not_instr_def hnd hb0 hi hp hpd
-
-omit model in
 theorem block_index_of_mem {f : Func} {b : Block} (hb : b ∈ f.blocks.toList) :
     ∃ i : Nat, f.blocks[i]? = some b := by
   obtain ⟨i, hi, hget⟩ := List.mem_iff_getElem.mp hb
@@ -13206,16 +11954,6 @@ theorem BlockDom.trans {f : Func} {a b c : BlockId}
 omit model in
 theorem StrictBlockDom.blockDom {f : Func} {a b : BlockId}
     (h : StrictBlockDom f a b) : BlockDom f a b := fun path hp => Or.inr (h path hp)
-
-omit model in
-theorem StrictBlockDom.trans_left {f : Func} {a b c : BlockId}
-    (hab : BlockDom f a b) (hbc : StrictBlockDom f b c) : StrictBlockDom f a c := by
-  intro path hp
-  have hb := hbc path hp
-  obtain ⟨pre, hpre, -, hsub⟩ := hp.prefix_of_mem hb
-  rcases hab pre hpre with rfl | ha
-  · exact hb
-  · exact hsub _ ha
 
 /-! ### Two list lemmas for the intra-block alias order -/
 
@@ -13365,14 +12103,6 @@ def CseSeen (f : Func) (cur : BlockId) (pre : List Instr) (d : ValId) : Prop :=
     BlockDom f di cur ∧ (di = cur → d ∈ pre.flatMap Instr.defs)
 
 omit model in
-theorem CseSeen.mono {f : Func} {cur : BlockId} {pre pre' : List Instr}
-    {d : ValId} (h : CseSeen f cur pre d)
-    (hsub : ∀ x ∈ pre.flatMap Instr.defs, x ∈ pre'.flatMap Instr.defs) :
-    CseSeen f cur pre' d := by
-  obtain ⟨di, db, hdb, hdef, hdom, hloc⟩ := h
-  exact ⟨di, db, hdb, hdef, hdom, fun heq => hsub _ (hloc heq)⟩
-
-omit model in
 /-- Nothing is seen before the first instruction of the entry block. -/
 theorem CseSeen.entry_elim {f : Func} {d : ValId}
     (h : CseSeen f f.entry [] d) : False := by
@@ -13476,30 +12206,6 @@ theorem CseAgree.of_entry {f : Func} {cur : BlockId} {R : Regs}
   intro d d0 _ hseen
   subst hcur
   exact absurd hseen (fun h => h.entry_elim)
-
-omit model in
-/-- The read leaf: a source read of `x` transports to a read of `substV τ x`. -/
-theorem CseAgree.get {f : Func} {cur : BlockId} {pre : List Instr} {R R' : Regs}
-    (ha : CseAgree f cur pre R R') {x : ValId}
-    (hx : (Passes.cseSub f)[x]? = none ∨ CseSeen f cur pre x) :
-    R x = R' (Passes.substV (Passes.cseSub f) x) := by
-  cases hxm : (Passes.cseSub f)[x]? with
-  | none =>
-      rw [Passes.substV, Std.HashMap.getD_eq_getD_getElem?, hxm]
-      exact ha.1 x hxm
-  | some d0 =>
-      rw [Passes.substV, Std.HashMap.getD_eq_getD_getElem?, hxm]
-      rcases hx with hn | hs
-      · rw [hn] at hxm; exact absurd hxm (by simp)
-      · exact ha.2 hxm hs
-
-omit model in
-theorem CseAgree.getMany {f : Func} {cur : BlockId} {pre : List Instr} {R R' : Regs}
-    (ha : CseAgree f cur pre R R') {xs : List ValId}
-    (hx : ∀ x ∈ xs, (Passes.cseSub f)[x]? = none ∨ CseSeen f cur pre x)
-    {vs : List U256} (hg : R.getMany xs = some vs) :
-    R'.getMany (Passes.substVs (Passes.cseSub f) xs) = some vs :=
-  Regs.getMany_substVs (fun x hxm => ha.get (hx x hxm)) hg
 
 
 omit model in
@@ -13632,26 +12338,6 @@ theorem cseSub_use_dom {f : Func} {li : Array (List ValId)} {n : Nat}
   · exact hdomx
   · exact BlockDom.trans hs.blockDom hdomx
 
-/-- The drop leaf: at a dropped pure operation the source's own evaluation is
-transported onto the table representative.  `hkey` is the fold's key equation —
-the entry was matched on the current instruction's substituted arguments — after
-the final substitution has absorbed the intermediate one. -/
-theorem CseAgree.drop_value {f : Func} {cur : BlockId} {pre : List Instr}
-    {R R' : Regs} (ha : CseAgree f cur pre R R')
-    {yop : Op} {as args : List ValId} {d0 : ValId}
-    (hrt : CseExprRuntime (model := model) (Passes.cseSub f) R' (.op yop args) d0)
-    (hkey : Passes.substVs (Passes.cseSub f) args = Passes.substVs (Passes.cseSub f) as)
-    (hp : Passes.pureOp yop = true)
-    (hargs : ∀ x ∈ as, (Passes.cseSub f)[x]? = none ∨ CseSeen f cur pre x)
-    {vals rets : List U256} {st st' : EvmState}
-    (hg : R.getMany as = some vals)
-    (hbi : builtinWithExternal model.calls model.creates yop vals st (.ok rets st')) :
-    ∃ w, rets = [w] ∧ R' d0 = some w := by
-  have hg' : R'.getMany (Passes.substVs (Passes.cseSub f) args) = some vals := by
-    rw [hkey]
-    exact ha.getMany hargs hg
-  exact CseExprRuntime.op_result hrt hp hg' hbi
-
 omit model in
 /-- Every representative available at a mid-block fold position has already been
 defined: either by an already-processed instruction of the current block, or in
@@ -13703,7 +12389,7 @@ theorem cseSeen_of_tabVal {f : Func} {n : Nat} (hnd : f.allDefs.Nodup)
 
 /-- Values whose CSE certificate is a literal constant can only contain that
 literal once bound.  This is the small value-sensitive companion to the
-site-only `BindingProvenance` invariant. -/
+site-only definition-provenance invariant. -/
 def CseConstRegs (f : Func) (R : Regs) : Prop :=
   ∀ {d v w}, Passes.CseDef f (.const v) d → R d = some w → w = v
 
@@ -14173,11 +12859,6 @@ theorem CseTabSound.mono {f : Func} {a b : CseTab}
     (h : CseTabSound f b) (hle : CseTabLE a b) : CseTabSound f a := by
   exact ⟨⟨fun hm => h.1.1 (hle.1 _ hm), fun hm => h.1.2 (hle.2 _ hm)⟩,
     fun hm => h.2 (hle.1 _ hm)⟩
-
-omit model in
-theorem CseTabDomainSound.mono {f : Func} {τ : Subst} {a b : CseTab}
-    (h : CseTabDomainSound f τ b) (hle : CseTabLE a b) :
-    CseTabDomainSound f τ a := fun hm => h (hle.1 _ hm)
 
 omit model in
 theorem cseAt_tab_le {f : Func} {cur : BlockId} {b : Block}
@@ -15520,8 +14201,8 @@ private theorem cseLaterDefCounterexample_checks :
 
 /-- **Pass 3 (local CSE) soundness**, under dominance.
 
-The proof uses the same `LiveAgree` invariant as pass 1, with `σ` the accumulated
-dropped-definition substitution `d ↦ d₀`. The value-level obligation — that the
+The proof uses the same register-agreement invariant as pass 1, with `σ` the
+accumulated dropped-definition substitution `d ↦ d₀`. The value-level obligation — that the
 two computations agree — is `Passes.pure_rets_eq` (proved: a pure op's results
 are a function of its arguments alone, in any state). What dominance buys is that
 `d₀`'s binding is still the *current* one at every use of `d`: the pass only
@@ -15530,18 +14211,18 @@ returning `[p]` with `p < bi`), so `d₀`'s block dominates `d`'s block, and
 `ToAsm.liveIn_of_succ` propagates that into the invariant. Without dominance the
 substituted use can read a stale `d₀`, exactly as in the counterexample.
 
-The static provenance obligation is now proved below: `Passes.cseBlock_spec`
-resolves every dropped definition to either an earlier emitted definition in the
-same block or `cseAvail`, while `Passes.cseAvail_succ` proves that inherited
-availability comes from the actual unique predecessor; these facts close
-`cse_dom`.  What remains here is their runtime analogue: carry, alongside the
-register substitution invariant, that every entry-table representative contains
-the value certified by its `CseDef`.  A kept instruction then steps on substituted
-arguments, while a dropped `const`/pure op is skipped using that table fact and
-`pure_rets_eq`; jumps hand the end-table fact to `cseAvail_succ`.
+The static provenance half is `Passes.cseBlock_spec`, which resolves every
+dropped definition to either an earlier emitted definition in the same block or
+`cseAvail`, together with `Passes.cseAvail_succ`, which proves that inherited
+availability comes from the actual unique predecessor; these facts also close
+`cse_dom`.  Their runtime analogue carries, alongside the register substitution
+invariant, that every entry-table representative contains the value certified by
+its `CseDef`.  A kept instruction then steps on substituted arguments, while a
+dropped `const`/pure op is skipped using that table fact and `pure_rets_eq`;
+jumps hand the end-table fact to `cseAvail_succ`.
 
 The runtime predicate and its lookup leaf are explicit above as
-`CseTabRuntime` and `CseExprRuntime.op_result`.  Inherited tables are now
+`CseTabRuntime` and `CseExprRuntime.op_result`.  Inherited tables are
 filtered by `Passes.inheritTab`.  `CseTabRuntime.setMany_inheritTab` proves the
 corresponding jump frame directly: filter membership excludes target parameters
 from both representatives and stored expression arguments, and
@@ -15549,88 +14230,10 @@ from both representatives and stored expression arguments, and
 avoided argument back to a target parameter.  Thus `Regs.setMany` preserves the
 whole inherited runtime table without a reachability/path witness.
 
-`cseInstrsOut`/`cseInstrsOut_eq_fold` above now expose the requested
-intra-block fold as a recursive instruction list, so the kept/dropped cases can
-be matched directly against `Exec`.
+`cseInstrsOut`/`cseInstrsOut_eq_fold` above expose the intra-block fold as a
+recursive instruction list, so the kept/dropped cases can be matched directly
+against `Exec`; the fold also tracks `blockDefs` and `definedSoFar`. -/
 
-The repaired fold now also tracks `blockDefs` and `definedSoFar`; the checked
-boundary immediately below records the remaining static-to-runtime bridge. -/
-
-/-
-**Current checked boundary after guard-certificate threading.**
-
-The certificate loss described in the previous round is closed above:
-`CseDropPos` and `CseEntryPos` retain the exact prefix/suffix witnesses,
-`CseSubSound` and `CseTabSound` pair them with definition provenance, and
-`csePrefixPosInv` preserves them through `csePrefix_succ` (including
-`inheritTab`).  `cseFinalSubSound`, `cseEntryTab_sound`, and
-`cseBlockTabOut_sound` expose the resulting final projections.
-
-The remaining missing lemma is now purely the runtime three-way invariant.  At
-each source configuration and for every final alias `τ[d]? = some d₀`, it
-must retain exactly one of
-
-    R d = none ∨ R d = R' d₀ ∨
-      (the current point is before d's certified operation site ∧
-       d is absent from the processed-prefix uses).
-
-The local third branch follows directly from `CseDropPos.op`.  When a table
-representative is rebound in an earlier block, `cse_alias_zone` supplies the
-cross-block window; a read of `d` there would make d's defining block dominate
-the reader via `blockDef_dominates_use`, contradicting that zone.  At the
-certified drop site, `CseExprRuntime.op_result` changes the third branch to the
-synced branch.  In parallel, `CseEntryPos.op` supplies the freshness premise for
-`CseTabRuntime.set_of_fresh`; inherited entries use the same dominance
-contradiction to show that none of their arguments is defined in the target
-block.  These two projection lemmas, followed by the routine `Exec` induction,
-were the intended final assembly.
-
-**Current checked boundary.**  No table history is needed.  At every dynamic
-block entry the runtime table is re-established: empty entry tables use
-`CseTabRuntime.empty`, and a table inherited from the edge just taken uses
-`CseTabRuntime.setMany_inheritTab`.  Within a block, `set_of_fresh`, `addConst`,
-and `addOp` are the required local preservation leaves, while a dropped op is
-discharged directly by `CseExprRuntime.op_result` against the *current* table.
-
-The remaining unassembled goal is the register half of the lockstep.  For the
-current source instruction `i`, its processed prefix `pre`, and a final alias,
-the three-way clause must eliminate its window at an actual read:
-
-    τ[d]? = some d0 → d ∈ i.uses → R d = some w → R' d0 = some w
-
-The synced branch is immediate.  The same-block window is contradicted by the
-`CseDropPos.op` prefix guard (and the entry argument guard for the drop
-instruction itself); the cross-block window is contradicted by
-`blockDef_dominates_use` together with `cse_alias_zone`.  After the dropped
-instruction, `CseExprRuntime.op_result` establishes the synced branch.  This is
-a per-visit preservation/consumption goal, not a path-indexed stored-argument
-history theorem.
-
-The fold certificate now additionally records that the dropped destination was
-unmapped immediately before the operation (`CseDropPos.op`'s `σ[d]? = none`
-field).  Independently, `AliasOrdered` and `csePrefix_ordered` prove that every
-representative occurs strictly earlier in the global instruction-definition
-order than its alias.  Both facts are checked above.
-
-The former intermediate-alias leaf is now discharged by
-`Passes.CseTabDomainSound` and `Passes.cse_drop_not_self_use`.  The former is
-derived from the real instruction/block folds and proves the range-kept fact:
-if a stored expression argument later becomes an alias key, it was a direct
-source use at the kept representative instruction.  Thus an apparent snapshot
-chain `x ↦ d ↦ d0` contradicts final `RangeFree`; same-block representatives
-then contradict the prefix/order certificates, and inherited representatives
-contradict dominance plus `cse_alias_zone`.
-
-The proof packages the three-way register relation, threads it together with
-`CseTabRuntime` through `cseInstrsOut`, and performs the `Exec` induction to
-establish
-
-    Exec (model := model) P (Passes.cse f)
-      (Regs.empty.setMany f.params args) st
-      ⟨eb'.instrs, eb'.term⟩ res
-
-under precisely the hypotheses displayed in `cse_sound`'s signature.
--/
 theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res : FRes}
     {eb eb' : Block} (hwf : f.wfCheck P.funcs.size = true)
     (hdom : ToAsm.Func.domCheck f = true)
@@ -15668,14 +14271,13 @@ theorem cse_sound {P : Prog} {f : Func} {args : List U256} {st : EvmState} {res 
 /- **Pass 4 (dead value elimination) soundness.** No dominance hypothesis.
 
 The proved simulation uses the invariant "`R` (original) and `R'` (optimized)
-agree on every value in `Passes.liveSet f`", stepped with the frame lemma
-`exec_congr`; the deleted instructions are exactly those whose destinations
-nothing reads, so the invariant is preserved by construction and no dominance is
-needed. `liveSet_closed` and `dveBlock_uses_live` now discharge the static
-liveness half.  The remaining part is the runtime edge/parameter alignment
-lemma: `dve` masks target parameters, incoming argument ids, and hence the values
-returned by `Regs.getMany` at the same positions; the proof must show the two
-filtered lists have equal length and that `Regs.setMany` preserves agreement on
+agree on every value in `Passes.liveSet f`"; the deleted instructions are
+exactly those whose destinations nothing reads, so the invariant is preserved by
+construction and no dominance is needed. `liveSet_closed` and
+`dveBlock_uses_live` discharge the static liveness half.  The runtime half is
+edge/parameter alignment: `dve` masks target parameters, incoming argument ids,
+and hence the values returned by `Regs.getMany` at the same positions, so the
+two filtered lists have equal length and `Regs.setMany` preserves agreement on
 the live set. -/
 
 namespace Passes
@@ -17555,27 +16157,6 @@ def Passes.runOnceProgN : Nat → Prog → Prog
   | 0, P => P
   | n + 1, P => runOnceProgN n (runOnceProg P)
 
-omit model in
-theorem Passes.runOnceProgN_wf : ∀ (n : Nat) {P : Prog}, P.wfCheck = true →
-    (runOnceProgN n P).wfCheck = true := by
-  intro n
-  induction n with
-  | zero => exact fun h => h
-  | succ n ih =>
-      intro P hwf
-      exact ih (runOnceProg_wf hwf)
-
-omit model in
-theorem Passes.runOnceProgN_dom : ∀ (n : Nat) {P : Prog},
-    P.wfCheck = true → ToAsm.Prog.domCheck P = true →
-      ToAsm.Prog.domCheck (runOnceProgN n P) = true := by
-  intro n
-  induction n with
-  | zero => exact fun _ h => h
-  | succ n ih =>
-      intro P hwf hdom
-      exact ih (runOnceProg_wf hwf) (runOnceProg_dom hwf hdom)
-
 theorem Passes.runOnceProgN_sound : ∀ (n : Nat) {P : Prog}
     {yst0 yst' : EvmState} {o : Outcome},
     P.wfCheck = true → ToAsm.Prog.domCheck P = true →
@@ -17603,26 +16184,6 @@ theorem optimizeCandidate_eq_rounds (P : Prog) :
     optimizeCandidate P = Passes.runOnceProgN 3 (optimizeInput P) := by
   simp [optimizeCandidate, optimizeInput, Passes.runOnceProgN, Passes.runOnceProg,
     Passes.optimizeFunc_eq_runOnce3, Array.map_map, Function.comp_def]
-
-omit model in
-theorem Passes.inlineProgN_wf : ∀ (n : Nat) {P : Prog}, P.wfCheck = true →
-    (inlineProgN n P).wfCheck = true := by
-  intro n
-  induction n with
-  | zero => exact fun h => h
-  | succ n ih =>
-      intro P hwf
-      have hround := inlineRound_wf hwf
-      simp only [inlineProgN]
-      split
-      · exact hround
-      · exact ih hround
-
-omit model in
-theorem Passes.inlineProg_wf {P : Prog} (hwf : P.wfCheck = true) :
-    (inlineProg P).wfCheck = true := by
-  rw [inlineProg_eq_inlineProgN]
-  exact inlineProgN_wf 3 hwf
 
 /-! ### The top-level statement -/
 
