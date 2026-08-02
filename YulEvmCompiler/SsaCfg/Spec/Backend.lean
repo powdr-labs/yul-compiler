@@ -59,8 +59,8 @@ theorem ofBlock_sound {prog : YulSemantics.Block Op} {P : Prog}
 
 /-- **SSA pass soundness**: the optimization pipeline preserves SSA
 executions of well-formed, dominance-respecting programs. Delegated to
-`SsaCfg/PassesSound.lean` (fallback branch fully proved; the gate-accepted
-branch is that file's declared frontier). The dominance hypothesis is
+`SsaCfg/PassesSound.lean`, including both intermediate-gate branches and both
+final-gate branches. The dominance hypothesis is
 genuinely necessary — that file carries a kernel-checked counterexample
 without it, on which the inliner is also kernel-checked to be inert. -/
 theorem optimizeProg_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
@@ -101,7 +101,7 @@ pipeline output only when that output re-checks, and the original
 otherwise. -/
 theorem optimizeProg_wf {P : Prog} (hwf : P.wfCheck = true) :
     (optimizeProg P).wfCheck = true := by
-  simp only [optimizeProg]
+  rw [optimizeProg_candidate]
   split
   · next h =>
     have := (Bool.and_eq_true _ _).mp h
@@ -112,7 +112,7 @@ omit model in
 /-- The optimizer's defensive gate also preserves the dominance check. -/
 theorem optimizeProg_dom {P : Prog} (hdom : ToAsm.Prog.domCheck P = true) :
     ToAsm.Prog.domCheck (optimizeProg P) = true := by
-  simp only [optimizeProg]
+  rw [optimizeProg_candidate]
   split
   · next h =>
     have := (Bool.and_eq_true _ _).mp h

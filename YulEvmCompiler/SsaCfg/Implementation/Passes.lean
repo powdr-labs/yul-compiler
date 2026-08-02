@@ -574,6 +574,13 @@ def optimizeFunc (f : Func) : Func := Id.run do
 never a miscompilation. -/
 def optimizeProg (P : Prog) : Prog :=
   let P0 := Passes.inlineProg P
+  -- Intermediate defensive gate: the per-function passes are proved sound
+  -- for well-formed, dominance-respecting inputs, so if inlining ever broke
+  -- either check we would fall back to the un-inlined program rather than
+  -- feed the passes an unverified input. Inlining preserves both checks on
+  -- every real program; the gate exists so the fact is local by
+  -- construction rather than a global theorem about the inliner.
+  let P0 := if P0.wfCheck && ToAsm.Prog.domCheck P0 then P0 else P
   let P' : Prog :=
     { main := optimizeFunc P0.main, funcs := P0.funcs.map optimizeFunc }
   if P'.wfCheck && ToAsm.Prog.domCheck P' then P' else P
