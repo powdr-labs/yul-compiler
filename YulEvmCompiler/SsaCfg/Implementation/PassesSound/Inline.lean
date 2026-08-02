@@ -1726,11 +1726,62 @@ theorem Passes.inlineFunc_entry {counts : Array Nat} {funcs : Array Func}
   rw [inlineFunc_eq_inlineN]
   exact inlineN_entry 8 f heb
 
+omit model in
+/-- `inlineFunc` keeps the parameter list and the entry block, the latter in
+both of the spellings the `Exec` rules and `inlineFunc_soundN` ask for.  This
+packages the `inlineFunc_eq_inlineN`/`inlineN_params_entry` shuffle that every
+`inlineFunc` transport otherwise repeats. -/
+theorem Passes.inlineFunc_entry_params {counts : Array Nat} {funcs : Array Func}
+    {f : Func} {eb : Block} (heb : f.blocks[f.entry]? = some eb) :
+    (inlineFunc counts funcs f).params = f.params ∧
+      ∃ eb', (inlineFunc counts funcs f).blocks[
+            (inlineFunc counts funcs f).entry]? = some eb' ∧
+        (inlineFunc counts funcs f).blocks[f.entry]? = some eb' := by
+  obtain ⟨eb', heb'⟩ := inlineFunc_entry (counts := counts) (funcs := funcs) heb
+  have hpe := inlineN_params_entry counts funcs 8 f
+  refine ⟨by simpa only [inlineFunc_eq_inlineN] using hpe.1, eb', heb', ?_⟩
+  simpa only [inlineFunc_eq_inlineN, hpe.2] using heb'
+
+/-- The callee half shared by the two call cases of `inlineMap_execN`.
+
+This is the one step of the whole inlining proof that needs the `ExecN` index.
+The callee is inlined under the *old* ambient program `P` — it has to be, since
+`inlineMap` splices bodies drawn from `P.funcs`, so the ambient-first ordering
+used by `Passes.runOnceProg_exec` is unavailable here — and the resulting
+`hbodyLocal'` is therefore a freshly built derivation rather than a
+sub-derivation of the one being eliminated.  Only then is the ambient program
+changed, by `hdepth` at the callee's strictly smaller call-depth bound.  See
+the note at `ExecN` in `PassesSound/Common.lean`. -/
+theorem Passes.inlineMap_callee {P : Prog} {counts : Array Nat} {k : Nat}
+    {fid : FuncId} {g : Func} {args : List U256} {st : EvmState} {eb : Block}
+    {cres : FRes} (hPwf : P.wfCheck = true)
+    (hdepth : ∀ m, m < k + 1 → ∀ (f : Func) (R : Regs) (st : EvmState)
+      (rest : Rest) (res : FRes), ExecN (model := model) P m f R st rest res →
+      ExecN (model := model) (inlineMap counts P) m f R st rest res)
+    (hfid : P.funcs[fid]? = some g)
+    (hplen : g.params.length = args.length)
+    (heb : g.blocks[g.entry]? = some eb)
+    (hbody : ExecN (model := model) P k g (Regs.empty.setMany g.params args) st
+      ⟨eb.instrs, eb.term⟩ cres) :
+    ∃ eb', (inlineFunc counts P.funcs g).blocks[
+          (inlineFunc counts P.funcs g).entry]? = some eb' ∧
+      (inlineFunc counts P.funcs g).params.length = args.length ∧
+      ExecN (model := model) (inlineMap counts P) k (inlineFunc counts P.funcs g)
+        (Regs.empty.setMany (inlineFunc counts P.funcs g).params args) st
+        ⟨eb'.instrs, eb'.term⟩ cres := by
+  obtain ⟨hparams, eb', heb', heb''⟩ :=
+    inlineFunc_entry_params (counts := counts) (funcs := P.funcs) heb
+  have hbodyLocal := inlineFunc_soundN (model := model)
+    (depth := k) (counts := counts) hPwf (progWf_func hPwf hfid) heb heb'' hbody
+  refine ⟨eb', heb', by rw [hparams]; exact hplen, ?_⟩
+  exact hdepth k (by omega) _ _ _ _ _ (by rw [hparams]; exact hbodyLocal)
+
 /-- Change the ambient program from `P` to its one-round function map while
 leaving the currently executing function text fixed.  At a call, the callee
 is first locally inlined under `P`; the outer strong induction then changes
-the ambient program for that new callee at the strictly smaller body bound.
-The caller continuation is handled by the structural induction hypothesis. -/
+the ambient program for that new callee at the strictly smaller body bound
+(`inlineMap_callee`).  The caller continuation is handled by the structural
+induction hypothesis. -/
 theorem Passes.inlineMap_execN {P : Prog} {counts : Array Nat}
     (hPwf : P.wfCheck = true) :
     ∀ (n : Nat) (f : Func) (R : Regs) (st : EvmState) (rest : Rest) (res : FRes),
@@ -1746,48 +1797,16 @@ theorem Passes.inlineMap_execN {P : Prog} {counts : Array Nat}
       | opHalt hget hop => exact ExecN.opHalt hget hop
       | @call k f g R st st' ds as fid args rvals eb is t res
           hfid hget hplen heb hbody hlen htail ihbody ih =>
-          obtain ⟨eb', heb'⟩ := inlineFunc_entry
-            (counts := counts) (funcs := P.funcs) heb
-          have hpe := inlineN_params_entry counts P.funcs 8 g
-          have heb'' : (inlineFunc counts P.funcs g).blocks[g.entry]? = some eb' := by
-            simpa only [inlineFunc_eq_inlineN, hpe.2] using heb'
-          have hbodyLocal := inlineFunc_soundN (model := model)
-            (depth := k) (counts := counts) hPwf (progWf_func hPwf hfid)
-            heb heb'' hbody
-          have hbodyLocal' : ExecN (model := model) P k
-              (inlineFunc counts P.funcs g)
-              (Regs.empty.setMany (inlineFunc counts P.funcs g).params args)
-              st ⟨eb'.instrs, eb'.term⟩ (.ret rvals st') := by
-            simpa only [inlineFunc_eq_inlineN, hpe.1] using hbodyLocal
-          have hbodyMap := hdepth k (by omega)
-            (inlineFunc counts P.funcs g)
-            (Regs.empty.setMany (inlineFunc counts P.funcs g).params args)
-            st ⟨eb'.instrs, eb'.term⟩ (.ret rvals st') hbodyLocal'
-          refine ExecN.call (g := inlineFunc counts P.funcs g) (eb := eb')
-            (inlineMap_lookup hfid) hget ?_ heb' hbodyMap hlen (ih hdepth)
-          simpa only [inlineFunc_eq_inlineN, hpe.1] using hplen
+          obtain ⟨eb', heb', hplen', hbodyMap⟩ :=
+            inlineMap_callee (counts := counts) hPwf hdepth hfid hplen heb hbody
+          exact ExecN.call (g := inlineFunc counts P.funcs g) (eb := eb')
+            (inlineMap_lookup hfid) hget hplen' heb' hbodyMap hlen (ih hdepth)
       | @callHalt k f g R st st' ds as fid args eb is t
           hfid hget hplen heb hbody ihbody =>
-          obtain ⟨eb', heb'⟩ := inlineFunc_entry
-            (counts := counts) (funcs := P.funcs) heb
-          have hpe := inlineN_params_entry counts P.funcs 8 g
-          have heb'' : (inlineFunc counts P.funcs g).blocks[g.entry]? = some eb' := by
-            simpa only [inlineFunc_eq_inlineN, hpe.2] using heb'
-          have hbodyLocal := inlineFunc_soundN (model := model)
-            (depth := k) (counts := counts) hPwf (progWf_func hPwf hfid)
-            heb heb'' hbody
-          have hbodyLocal' : ExecN (model := model) P k
-              (inlineFunc counts P.funcs g)
-              (Regs.empty.setMany (inlineFunc counts P.funcs g).params args)
-              st ⟨eb'.instrs, eb'.term⟩ (.halt st') := by
-            simpa only [inlineFunc_eq_inlineN, hpe.1] using hbodyLocal
-          have hbodyMap := hdepth k (by omega)
-            (inlineFunc counts P.funcs g)
-            (Regs.empty.setMany (inlineFunc counts P.funcs g).params args)
-            st ⟨eb'.instrs, eb'.term⟩ (.halt st') hbodyLocal'
-          refine ExecN.callHalt (g := inlineFunc counts P.funcs g) (eb := eb')
-            (inlineMap_lookup hfid) hget ?_ heb' hbodyMap
-          simpa only [inlineFunc_eq_inlineN, hpe.1] using hplen
+          obtain ⟨eb', heb', hplen', hbodyMap⟩ :=
+            inlineMap_callee (counts := counts) hPwf hdepth hfid hplen heb hbody
+          exact ExecN.callHalt (g := inlineFunc counts P.funcs g) (eb := eb')
+            (inlineMap_lookup hfid) hget hplen' heb' hbodyMap
       | jump htb hget hplen htail ih => exact ExecN.jump htb hget hplen (ih hdepth)
       | branchTrue hc hv htb hget hplen htail ih =>
           exact ExecN.branchTrue hc hv htb hget hplen (ih hdepth)
@@ -1795,6 +1814,35 @@ theorem Passes.inlineMap_execN {P : Prog} {counts : Array Nat}
           exact ExecN.branchFalse hc htb hget hplen (ih hdepth)
       | ret hget => exact ExecN.ret hget
       | halt hget hop => exact ExecN.halt hget hop
+
+/-- The `P.main` half shared by both cases of `inlineMap_sound`: inline `P.main`
+locally under `P`, then change the ambient program.  The `ExecN` index is
+confined to this proof — it enters through `Exec.toExecN` and leaves through
+`ExecN.toExec`, so the statement is in plain `Exec` on both sides. -/
+theorem Passes.inlineMap_mainExec {P : Prog} {counts : Array Nat}
+    {yst0 : EvmState} {eb : Block} {res : FRes} (hPwf : P.wfCheck = true)
+    (hmainWf : P.main.wfCheck P.funcs.size = true)
+    (hmainParams : P.main.params = [])
+    (heb : P.main.blocks[P.main.entry]? = some eb)
+    (hexec : Exec (model := model) P P.main Regs.empty yst0
+      ⟨eb.instrs, eb.term⟩ res) :
+    ∃ eb', (inlineFunc counts P.funcs P.main).blocks[
+          (inlineFunc counts P.funcs P.main).entry]? = some eb' ∧
+      Exec (model := model) (inlineMap counts P) (inlineFunc counts P.funcs P.main)
+        Regs.empty yst0 ⟨eb'.instrs, eb'.term⟩ res := by
+  obtain ⟨n, hexecN⟩ := hexec.toExecN
+  obtain ⟨hparams, eb', heb', heb''⟩ :=
+    inlineFunc_entry_params (counts := counts) (funcs := P.funcs) heb
+  have hlocal := inlineFunc_soundN (model := model) (depth := n)
+    (counts := counts) (args := []) hPwf hmainWf heb heb''
+    (by simpa [hmainParams, Regs.setMany_nil_left] using hexecN)
+  have hlocal' : ExecN (model := model) P n
+      (inlineFunc counts P.funcs P.main) Regs.empty yst0
+      ⟨eb'.instrs, eb'.term⟩ res := by
+    simpa only [hparams, hmainParams, Regs.setMany_nil_left] using hlocal
+  exact ⟨eb', heb', (inlineMap_execN (model := model) (counts := counts)
+    hPwf n (inlineFunc counts P.funcs P.main) Regs.empty yst0
+    ⟨eb'.instrs, eb'.term⟩ res hlocal').toExec⟩
 
 /-- One unpruned whole-program inlining map preserves a run. -/
 theorem Passes.inlineMap_sound {P : Prog} {counts : Array Nat}
@@ -1810,46 +1858,14 @@ theorem Passes.inlineMap_sound {P : Prog} {counts : Array Nat}
   cases hrun with
   | normal heb hexec =>
       rename_i eb
-      obtain ⟨n, hexecN⟩ := hexec.toExecN
-      obtain ⟨eb', heb'⟩ := inlineFunc_entry
-        (counts := counts) (funcs := P.funcs) heb
-      have hpe := inlineN_params_entry counts P.funcs 8 P.main
-      have heb'' : (inlineFunc counts P.funcs P.main).blocks[P.main.entry]? =
-          some eb' := by
-        simpa only [inlineFunc_eq_inlineN, hpe.2] using heb'
-      have hlocal := inlineFunc_soundN (model := model) (depth := n)
-        (counts := counts) (args := []) hPwf hmainWf heb heb''
-        (by simpa [hmainParams, Regs.setMany_nil_left] using hexecN)
-      have hlocal' : ExecN (model := model) P n
-          (inlineFunc counts P.funcs P.main) Regs.empty yst0
-          ⟨eb'.instrs, eb'.term⟩ (.ret [] yst') := by
-        simpa only [inlineFunc_eq_inlineN, hpe.1, hmainParams,
-          Regs.setMany_nil_left] using hlocal
-      have hmapped := inlineMap_execN (model := model) (counts := counts)
-        hPwf n (inlineFunc counts P.funcs P.main) Regs.empty yst0
-        ⟨eb'.instrs, eb'.term⟩ (.ret [] yst') hlocal'
-      exact Run.normal (by simpa [inlineMap] using heb') hmapped.toExec
+      obtain ⟨eb', heb', hmapped⟩ :=
+        inlineMap_mainExec (counts := counts) hPwf hmainWf hmainParams heb hexec
+      exact Run.normal (by simpa [inlineMap] using heb') hmapped
   | halt heb hexec =>
       rename_i eb
-      obtain ⟨n, hexecN⟩ := hexec.toExecN
-      obtain ⟨eb', heb'⟩ := inlineFunc_entry
-        (counts := counts) (funcs := P.funcs) heb
-      have hpe := inlineN_params_entry counts P.funcs 8 P.main
-      have heb'' : (inlineFunc counts P.funcs P.main).blocks[P.main.entry]? =
-          some eb' := by
-        simpa only [inlineFunc_eq_inlineN, hpe.2] using heb'
-      have hlocal := inlineFunc_soundN (model := model) (depth := n)
-        (counts := counts) (args := []) hPwf hmainWf heb heb''
-        (by simpa [hmainParams, Regs.setMany_nil_left] using hexecN)
-      have hlocal' : ExecN (model := model) P n
-          (inlineFunc counts P.funcs P.main) Regs.empty yst0
-          ⟨eb'.instrs, eb'.term⟩ (.halt yst') := by
-        simpa only [inlineFunc_eq_inlineN, hpe.1, hmainParams,
-          Regs.setMany_nil_left] using hlocal
-      have hmapped := inlineMap_execN (model := model) (counts := counts)
-        hPwf n (inlineFunc counts P.funcs P.main) Regs.empty yst0
-        ⟨eb'.instrs, eb'.term⟩ (.halt yst') hlocal'
-      exact Run.halt (by simpa [inlineMap] using heb') hmapped.toExec
+      obtain ⟨eb', heb', hmapped⟩ :=
+        inlineMap_mainExec (counts := counts) hPwf hmainWf hmainParams heb hexec
+      exact Run.halt (by simpa [inlineMap] using heb') hmapped
 
 /-! ### Function pruning: pure models of the mutable loops -/
 
