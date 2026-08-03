@@ -54,7 +54,7 @@ small branch joins, where its v1 canonical entry layouts churn the stack
 the scheduler matures, `compileSource` keeps **both** artifacts and picks by
 a static gas proxy: a per-opcode weighted count in which the stack-traffic
 opcodes (`DUP`/`SWAP`/`POP`/`PUSH`, jumps) carry their real costs and
-everything else a uniform base — both candidates compile zeroImmutables the same source,
+everything else a uniform base — both candidates compile the same source,
 so state-op costs cancel and the difference concentrates exactly in the
 traffic the two layouts disagree on. -/
 

@@ -976,7 +976,7 @@ omit model in
 /-! ### Looking up by index instead of by length
 
 `lookupIn t c` uses `c.length` as the table index, and `c` is a suffix of the
-program, so every lookup walks it: `List.length` was 18.7% of a compile zeroImmutables on a
+program, so every lookup walks it: `List.length` was 18.7% of a compile on a
 mid-sized fixture and 34.9% on the largest. The verifier performs one to three
 lookups per entry and there is roughly one entry per instruction, so this is the
 last quadratic in the gate.

@@ -1238,7 +1238,7 @@ not be spilled, but they also need not fall back to the large raw block: the
 caller already has a semantics-preserving, recursively optimized ordinary
 object with the same object/data shape.  The paired constructor uses that code
 only at nodes where spilling is unavailable, while guarded nodes still use the
-spill result.  Existing compile zeroImmutables candidates run before this path, so it cannot
+spill result.  Existing compile candidates run before this path, so it cannot
 change bytecode or gas for an already-compilable source.
 -/
 

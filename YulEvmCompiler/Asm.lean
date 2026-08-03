@@ -324,7 +324,7 @@ theorem mem_labelDefs_iff_findLabel {l : Label} :
     · rw [if_neg hi, ← ih, mem_labelDefs_cons]
       exact ⟨fun h => h.resolve_left hi, Or.inr⟩
 
-/-! ### Whole-program well-formedness (checked at compile zeroImmutables time) -/
+/-! ### Whole-program well-formedness (checked at compile time) -/
 
 /-- The label well-formedness the correctness proof relies on. The compiler
 *checks* this (decidably, `wfCheck`) on its final output, so downstream

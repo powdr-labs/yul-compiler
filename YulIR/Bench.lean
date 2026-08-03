@@ -9,7 +9,7 @@ set_option warningAsError true
 /-!
 # YulIR.Bench — gas / code-size comparison: IR pipeline vs. current pipeline
 
-For a Yul top-level block, compile zeroImmutables it three ways to EVM bytecode and compare:
+For a Yul top-level block, compile it three ways to EVM bytecode and compare:
 
 * **raw**     — the backend only (`compile`, with the stack-layout fallback), no optimizer;
 * **current** — today's production path (`Optimizer.optimizerPipeline`, then the backend);

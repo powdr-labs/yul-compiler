@@ -7,7 +7,7 @@ set_option warningAsError true
 The SSA backend's **object path**: the classic recursive layout fixpoint
 (`planObjectWith`/`compileResolvedObjectWith`, see `ObjectCompile.lean`)
 driven by `compileViaSsa` as the per-code-block compiler. Deploy and runtime
-code blocks of the object tree compile zeroImmutables through the SSA dialect; layout
+code blocks of the object tree compile through the SSA dialect; layout
 resolution, the `STOP` seam, child embedding, and data segments are exactly
 the classic machinery.
 -/

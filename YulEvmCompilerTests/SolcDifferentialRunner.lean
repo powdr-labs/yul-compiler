@@ -215,7 +215,7 @@ private def run (suiteName : String) (corpusDir knownFailuresFile gasBaselineFil
   -- compilers finished. `frontend_ms=0` because this corpus feeds both compilers
   -- Yul directly — there is no Solidity front-end on either side. The two
   -- uncounted buckets hold this compiler's time on fixtures that never formed a
-  -- pair: `rejected` ones it could not compile zeroImmutables itself, and `unpaired` ones it
+  -- pair: `rejected` ones it could not compile itself, and `unpaired` ones it
   -- compiled but solc would not.
   IO.println (s!"Compile time: suite={suiteName} mode=codegen " ++
     s!"ours_ms={toMs oursNs} solc_ms={toMs solcNs} frontend_ms=0 " ++

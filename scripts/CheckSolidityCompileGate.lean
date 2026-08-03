@@ -30,9 +30,9 @@ run just to read its "stale" list — or, worse, running the checker interpreted
 (`lake env lean --run`), which overflows the interpreter stack on large
 contracts and runs the optimizer ~100× slower.
 
-This tool answers the narrow question directly: it does only the compile zeroImmutables phase,
+This tool answers the narrow question directly: it does only the compile phase,
 compiled natively (hence a `lean_exe`, exactly like `checkSolidityGas` — see the
-note in `lakefile.toml`). Most contracts compile zeroImmutables in well under 0.1 s; only a
+note in `lakefile.toml`). Most contracts compile in well under 0.1 s; only a
 handful of large ones cost a few seconds each (the optimizer's multi-strategy
 retries), so shard 8-way and union the `REJECT` lines to cover all of
 semanticTests in a few minutes — versus ~24 min *per shard* for the gas runner,

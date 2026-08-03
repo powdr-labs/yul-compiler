@@ -15,7 +15,7 @@ Shared logic behind the `YulIR` baseline (`UpdateBaseline` / `CheckBaseline`):
   `yul-semantics` interpreter from several initial states and compare an observable
   fingerprint of the final state + outcome (the `VEnv` differs by `_ir_*` temps, so it
   is excluded; function-typed state fields are sampled at probe keys);
-* **backend metrics** — compile zeroImmutables the program raw / via the current optimizer / via the IR
+* **backend metrics** — compile the program raw / via the current optimizer / via the IR
   round-trip, and report code size and execution gas (IR vs current) using the existing
   differential harness (`SolcDifferential.measureGas` / `compareBytecode`).
 

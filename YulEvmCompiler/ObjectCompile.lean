@@ -563,7 +563,7 @@ private def planAttempt (name : String) (code : List (YulSemantics.Stmt Op))
 /-- Fuel-bounded iteration of `planAttempt`: keep retrying with each freshly
 measured code size until a fixpoint is reached (`.inl`), a hard failure occurs
 (`none`), or the fuel runs out (`none`). With minimal-width pushes the
-placeholder-compile zeroImmutables length can differ from the resolved length, so the loop
+placeholder-compile length can differ from the resolved length, so the loop
 genuinely iterates; it converges in a couple of rounds (values and hence widths
 are monotone in the assumed code size). -/
 private def planLoop (name : String) (code : List (YulSemantics.Stmt Op))
@@ -701,7 +701,7 @@ private theorem entryMap_of_mem (project : ObjectEntry → Nat) :
         simp only [entryMap, if_neg hne]
         exact ih hnodup.2 entry h
 
-/-- The resolver used to compile zeroImmutables a plan returns exactly the values exposed by
+/-- The resolver used to compile a plan returns exactly the values exposed by
 that plan's public layout maps. This is the semantic link between the partial
 reference-resolution pass and `dataoffset`/`datasize` in `RunObject`. -/
 private theorem planResolver_agrees (plan : ObjectPlan)

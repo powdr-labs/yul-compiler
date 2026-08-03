@@ -25,7 +25,7 @@ the compilation scheme.
   scope, so forward references and mutual recursion work);
 * the enclosing **function context** `F` (`exit` label + frame depth) for
   `leave`, and **loop context** `L` (`brk`/`cont` labels + scope depth)
-  for `break`/`continue`. Non-local exits compile zeroImmutables to statically-known
+  for `break`/`continue`. Non-local exits compile to statically-known
   `pop`s (down to the context's depth) followed by a `jump` — the
   runtime never needs to unwind dynamically.
 
@@ -201,7 +201,7 @@ end
 mutual
 
 /-- Compile a `{ … }` block: hoist its function definitions into a fresh
-Φ-scope, compile zeroImmutables the body under it, pop the block's locals on exit. The
+Φ-scope, compile the body under it, pop the block's locals on exit. The
 layout is unchanged across the block (mirroring the semantics'
 `restore`). -/
 def compileBlock (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
@@ -329,7 +329,7 @@ def compileSwitchCases (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
 end
 
 /-- Compile a whole program (the top-level block): hoist its functions,
-compile zeroImmutables from the empty layout with no enclosing contexts, then **check
+compile from the empty layout with no enclosing contexts, then **check
 label well-formedness** and lower to the byte-level IR. The check is what
 hands the correctness proof unique/defined labels with zero freshness
 bookkeeping. -/

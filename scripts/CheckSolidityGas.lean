@@ -439,7 +439,7 @@ private structure Timing where
   since a one-sided figure would compare the backends on different work. -/
   unpairedNs : Nat := 0
   /-- solc `--strict-assembly`, the same unoptimized Yul → bytecode. Deliberately
-  *not* solc's `--optimize --via-ir` compile zeroImmutables (which the gas comparison also runs):
+  *not* solc's `--optimize --via-ir` compile (which the gas comparison also runs):
   that starts from Solidity and includes both the front-end and the Yul
   optimizer, so it would not be the same job as `oursNs`. -/
   solcNs : Nat := 0
@@ -645,7 +645,7 @@ only the gas of the compilable, behaviorally comparable subset is pinned.
 
 `known`: a checked-in list of fixtures this compiler is expected to reject
 (same convention as the compile-corpus known-failure lists). Strict otherwise:
-an unlisted compile zeroImmutables failure fails the run, and so does a stale entry that now
+an unlisted compile failure fails the run, and so does a stale entry that now
 compiles — the list must always match reality. Used for the curated Uniswap
 v4-core and Aave v4 suites, whose heaviest fixtures sit beyond the current
 compiler's supported fragment on purpose, to record the frontier.
@@ -780,7 +780,7 @@ private def run (dir baselineFile : FilePath)
   -- `frontend_ms`. `solc_ms` is therefore NOT the `--optimize --via-ir` compile
   -- the gas comparison runs, which would start from Solidity and add the Yul
   -- optimizer. The two uncounted buckets hold this compiler's time on contracts
-  -- that never formed a pair: `rejected` ones it could not compile zeroImmutables itself, and
+  -- that never formed a pair: `rejected` ones it could not compile itself, and
   -- `unpaired` ones it compiled but solc would not.
   IO.println s!"Compile time: suite={suite} mode=vs_solc_optimized ours_ms={toMs oursNs} solc_ms={toMs solcNs} frontend_ms={toMs frontendNs} fixtures={compiledCount} rejected_ms={toMs rejectedNs} rejected={rejectedCount} unpaired_ms={toMs unpairedNs} unpaired={unpairedCount}"
   -- Per-fixture rows let the PR summary compare a head run with a main run on

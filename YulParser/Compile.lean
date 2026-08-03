@@ -331,7 +331,7 @@ partial def expandSetImmutablesObject (o : Object YulSemantics.EVM.Op) :
           (YulEvmCompiler.objectImmutableOffsets sub).getD []
       .mk name (YulEvmCompiler.expandSetImmutablesStmts offsets code) subs segs
 
-/-- Parse and compile zeroImmutables a complete Yul source program to executable EVM bytecode,
+/-- Parse and compile a complete Yul source program to executable EVM bytecode,
 using the documented compatibility parser when the verified parser does not
 apply. Hint builtins (`memoryguard`) are desugared for ordinary candidates and
 retained as reservation authority for the final spilling fallback. `linkersymbol`
@@ -373,7 +373,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
       -- `Option.orElse` thunks), not as up-front `let`s: Lean is strict, so
       -- eager bindings would run the no-rejoin and light pipelines on every
       -- program even though the first candidate compiles in the common case
-      -- (measured ~2-3x of the total compile zeroImmutables time on the corpus runners).
+      -- (measured ~2-3x of the total compile time on the corpus runners).
       -- The smart layout's slot reuse and live-range splitting introduce
       -- `x := y` copies and shared slots, and it runs *after* the pipeline, so
       -- nothing has cleaned up behind it. Sweep the laid-out program with the
@@ -476,7 +476,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
                 -- optimizer a chance before compiling it verbatim. This is the
                 -- only path large spill-only objects (PoolSwap) reach, so
                 -- without it they never see the optimizer at all. Objects the
-                -- plain spilled form cannot compile zeroImmutables (live `gas`, immutables,
+                -- plain spilled form cannot compile (live `gas`, immutables,
                 -- linker symbols) skip the expensive pipeline entirely.
                 match YulEvmCompiler.compileObject (expandSetImmutablesObject spilled.object) with
                 | none => none
