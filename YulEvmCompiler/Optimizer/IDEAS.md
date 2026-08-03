@@ -2024,6 +2024,12 @@ the 24 gas from dropping the reachability pass.)
   |---|---:|---:|---:|---:|---|
   | uniswap-v4 | 950,753 | **938,264** | −12,489 | 907,063 | +43,690 → **+31,201** (−28.6%) |
   | aave-v4 | 15,511,431 | **15,107,139** | −404,292 | 18,236,226 | −2,724,795 → **−3,129,087** |
+  | semanticTests | 171,275,914 | **170,985,673** | −290,241 | 170,738,458 | +537,456 → **+247,215** (−54.0%) |
+  | gasTests | 344,994 | 344,766 | −228 | 336,827 | |
+  | yulOptimizerTests codegen | 2,406,371,147 | 2,406,370,531 | −616 | 2,406,469,737 | |
+
+  **−707,866 gas** across the five baselines, 635 rows better and **none above
+  main**.
 
   **0 regressions**; 22 of 44 uniswap rows and 10 of 10 aave rows improve.
   Largest movers: `TickMath.getTickAtSqrtPriceSweep` −9,699 (its gap
