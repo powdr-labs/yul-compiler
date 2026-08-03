@@ -399,7 +399,7 @@ argument count still matches its target's arity. -/
 theorem mergeOnce_params_get {f g : Func} (h : mergeOnce f = some g) (j : Nat) :
     (g.blocks[j]?.map Block.params) = (f.blocks[j]?.map Block.params) := by
   obtain ⟨bi, t, hok, rfl⟩ := mergeOnce_inv h
-  obtain ⟨hbi, ht, -, hne, -, htp⟩ := hok
+  obtain ⟨hbi, ht, -, hne, -, htp, -⟩ := hok
   exact params_get_two_set f.blocks bi t _ hbi ht hne
     (by simp [getElem!_eq_getElem hbi]) (by simpa [getElem!_eq_getElem ht] using htp) j
 
@@ -440,7 +440,7 @@ theorem mergeOnce_wfStruct {f g : Func} {n : Nat}
   obtain ⟨hentry, ⟨eb, heb, hebp⟩, hall⟩ := hs
   have hp := mergeOnce_params_get h
   obtain ⟨bi, t, hok, hgdef⟩ := mergeOnce_inv h
-  obtain ⟨hbi, ht, hte, hne, hjump, htp⟩ := hok
+  obtain ⟨hbi, ht, hte, hne, hjump, htp, hsole⟩ := hok
   subst hgdef
   have hmemf : ∀ k : Nat, k < f.blocks.size → f.blocks[k]! ∈ f.blocks.toList :=
     fun k hk => by

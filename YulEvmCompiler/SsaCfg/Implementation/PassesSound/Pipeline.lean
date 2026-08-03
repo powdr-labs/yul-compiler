@@ -1,4 +1,4 @@
-import YulEvmCompiler.SsaCfg.Implementation.PassesSound.Invert
+import YulEvmCompiler.SsaCfg.Implementation.PassesSound.CoalesceSound
 set_option warningAsError true
 
 /-!
@@ -574,28 +574,6 @@ theorem Passes.elimTrivialParams_params_entry (f : Func) :
   rw [hr.2.2]
   exact ⟨hr.1, hr.2.1⟩
 
-set_option warningAsError false in
-/-- Straight-line block coalescing preserves the function's observable
-execution.
-
-TODO(proof): the merged block runs `bi`'s instructions and then `t`'s,
-which is exactly the two-block execution with the intervening `jump`
-elided; the `jump`'s parallel copy (`args → t.params`) is realized by the
-global substitution instead. Blocks dropped by `dropUnreachable` are
-unreachable, so no execution visits them. -/
-theorem coalesce_sound {P : Prog} {f : Func} {args : List U256}
-    {st : EvmState} {res : FRes} {eb eb' : Block}
-    (hwf : f.wfCheck P.funcs.size = true)
-    (hdom : ToAsm.Func.domCheck f = true)
-    (heb : f.blocks[f.entry]? = some eb)
-    (heb' : (Passes.coalesce f).blocks[(Passes.coalesce f).entry]? = some eb')
-    (hexec : Exec (model := model) P f (Regs.empty.setMany f.params args) st
-      ⟨eb.instrs, eb.term⟩ res) :
-    Exec (model := model) P (Passes.coalesce f)
-      (Regs.empty.setMany (Passes.coalesce f).params args) st
-      ⟨eb'.instrs, eb'.term⟩ res := by
-  sorry
-
 /-- The local simulations composed in the order used by `runOnce`. -/
 theorem runOnce_sound {P : Prog} {f : Func} {args : List U256}
     {st : EvmState} {res : FRes} {eb eb' : Block}
@@ -642,7 +620,7 @@ theorem runOnce_sound {P : Prog} {f : Func} {args : List U256}
   have h1 := elimTrivialParams_sound hwf hdom heb heb1' hexec
   have h1' : Exec (model := model) P f1 (Regs.empty.setMany f1.params args) st
       ⟨eb1.instrs, eb1.term⟩ res := by simpa [f1, hparams1] using h1
-  have h2 := coalesce_sound hwf1 hdom1 heb1 heb2' h1'
+  have h2 := coalesce_sound heb1 heb2' h1'
   have h2' : Exec (model := model) P f2 (Regs.empty.setMany f2.params args) st
       ⟨eb2.instrs, eb2.term⟩ res := by simpa [f2] using h2
   have h3 := invertBranches_sound heb2 heb3' h2'

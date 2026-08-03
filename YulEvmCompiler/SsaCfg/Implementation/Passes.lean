@@ -488,6 +488,10 @@ def mergeOK (f : Func) (bi t : BlockId) : Prop :=
   bi < f.blocks.size ∧ t < f.blocks.size ∧ t ≠ f.entry ∧ t ≠ bi
     ∧ f.blocks[bi]!.term = .jump ⟨t, []⟩
     ∧ f.blocks[t]!.params = []
+    -- `bi` is `t`'s *only* predecessor. `findMerge` establishes this from
+    -- the in-edge count; stating it directly is what the soundness proof
+    -- consumes, and it is what makes blanking `t` safe.
+    ∧ ∀ j < f.blocks.size, j ≠ bi → ∀ e ∈ f.blocks[j]!.term.edges, e.target ≠ t
 
 instance instDecidableMergeOK (f : Func) (bi t : BlockId) :
     Decidable (mergeOK f bi t) := by
