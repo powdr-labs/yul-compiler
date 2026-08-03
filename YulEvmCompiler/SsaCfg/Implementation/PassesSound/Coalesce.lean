@@ -244,6 +244,26 @@ theorem invertBranches_get {f : Func} {i : Nat} {b : Block}
       some { b with term := invertTerm (blockIszeroSources (useCounts f) b) b.term } := by
   simp [invertBranches, Array.getElem?_map, h]
 
+/-- An instruction the `iszeroPair` view accepts *is* that `iszero`. -/
+theorem iszeroPair_eq {i : Instr} {d a : ValId} (h : iszeroPair i = some (d, a)) :
+    i = .op [d] .iszero [a] := by
+  cases i with
+  | const _ _ => simp [iszeroPair] at h
+  | call _ _ _ => simp [iszeroPair] at h
+  | op ds yop as =>
+      cases ds with
+      | nil => simp [iszeroPair] at h
+      | cons d0 ds0 =>
+        cases ds0 with
+        | cons _ _ => simp [iszeroPair] at h
+        | nil =>
+          cases as with
+          | nil => simp [iszeroPair] at h
+          | cons a0 as0 =>
+            cases as0 with
+            | cons _ _ => simp [iszeroPair] at h
+            | nil => cases yop <;> simp_all [iszeroPair]
+
 /-- The argument of an `iszero` instruction is one of its operands. -/
 theorem iszeroPair_uses {i : Instr} {d a : ValId} (h : iszeroPair i = some (d, a)) :
     a ∈ i.uses := by
@@ -270,28 +290,40 @@ the pass touches. -/
     (invertBranches f).allDefs = f.allDefs := by
   simp only [Func.allDefs, invertBranches, Array.toList_map, List.flatMap_map]
 
-/-- Everything the per-block `iszero` table maps to is an operand of one of
-that block's own instructions — in fact of its *last* one. This is what
-makes the pass's use set shrink (and its soundness local). -/
-theorem blockIszeroSources_mem {uses : Std.HashMap ValId Nat} {b : Block}
+/-- **The table inversion.** A hit `c ↦ x` means the block's *last*
+instruction is exactly `c ← iszero(x)`, with `c ≠ x`. Everything the
+well-formedness, dominance and soundness proofs need about the pass comes
+from this one lemma. -/
+theorem blockIszeroSources_spec {uses : Std.HashMap ValId Nat} {b : Block}
     {c x : ValId} (h : (blockIszeroSources uses b)[c]? = some x) :
-    ∃ i ∈ b.instrs, x ∈ i.uses := by
+    b.instrs.getLast? = some (.op [c] .iszero [x]) ∧ c ≠ x := by
   unfold blockIszeroSources at h
   split at h
   case _ i hlast =>
       split at h
       case _ d a heq =>
-          by_cases hu : uses.getD d 0 == 1
+          by_cases hu : (uses.getD d 0 == 1 && d != a) = true
           · rw [if_pos hu, Std.HashMap.getElem?_insert] at h
             by_cases hcd : c = d
             · subst hcd
               simp only [beq_self_eq_true, if_pos] at h
-              exact ⟨i, List.mem_of_getLast? hlast,
-                (Option.some.inj h).symm ▸ iszeroPair_uses heq⟩
+              obtain rfl : x = a := (Option.some.inj h).symm
+              simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at hu
+              refine ⟨?_, hu.2⟩
+              rw [hlast, iszeroPair_eq heq]
             · rw [if_neg (by simpa using Ne.symm hcd)] at h; simp at h
           · rw [if_neg hu] at h; simp at h
       case _ => simp at h
   case _ => simp at h
+
+/-- Everything the table maps to is an operand of one of the block's own
+instructions — in fact of its last one. This is what makes the pass's use
+set shrink. -/
+theorem blockIszeroSources_mem {uses : Std.HashMap ValId Nat} {b : Block}
+    {c x : ValId} (h : (blockIszeroSources uses b)[c]? = some x) :
+    ∃ i ∈ b.instrs, x ∈ i.uses := by
+  obtain ⟨hlast, -⟩ := blockIszeroSources_spec h
+  exact ⟨.op [c] .iszero [x], List.mem_of_getLast? hlast, by simp [Instr.uses]⟩
 
 /-- The rewritten terminator's uses are the original's, except that the
 condition may have been replaced by something the `iszero` table maps to. -/

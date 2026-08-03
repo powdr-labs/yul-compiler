@@ -1,4 +1,4 @@
-import YulEvmCompiler.SsaCfg.Implementation.PassesSound.Wf
+import YulEvmCompiler.SsaCfg.Implementation.PassesSound.Invert
 set_option warningAsError true
 
 /-!
@@ -596,25 +596,6 @@ theorem coalesce_sound {P : Prog} {f : Func} {args : List U256}
       ⟨eb'.instrs, eb'.term⟩ res := by
   sorry
 
-set_option warningAsError false in
-/-- Branch-sense normalization preserves the function's observable
-execution.
-
-TODO(proof): `iszero x` is nonzero exactly when `x` is zero, and `branch`
-selects its true edge exactly when its condition is nonzero, so
-`branch (iszero x) t f` and `branch x f t` select the same edge in every
-state. -/
-theorem invertBranches_sound {P : Prog} {f : Func} {args : List U256}
-    {st : EvmState} {res : FRes} {eb eb' : Block}
-    (hwf : f.wfCheck P.funcs.size = true)
-    (heb : f.blocks[f.entry]? = some eb)
-    (heb' : (Passes.invertBranches f).blocks[f.entry]? = some eb')
-    (hexec : Exec (model := model) P f (Regs.empty.setMany f.params args) st
-      ⟨eb.instrs, eb.term⟩ res) :
-    Exec (model := model) P (Passes.invertBranches f)
-      (Regs.empty.setMany f.params args) st ⟨eb'.instrs, eb'.term⟩ res := by
-  sorry
-
 /-- The local simulations composed in the order used by `runOnce`. -/
 theorem runOnce_sound {P : Prog} {f : Func} {args : List U256}
     {st : EvmState} {res : FRes} {eb eb' : Block}
@@ -664,7 +645,7 @@ theorem runOnce_sound {P : Prog} {f : Func} {args : List U256}
   have h2 := coalesce_sound hwf1 hdom1 heb1 heb2' h1'
   have h2' : Exec (model := model) P f2 (Regs.empty.setMany f2.params args) st
       ⟨eb2.instrs, eb2.term⟩ res := by simpa [f2] using h2
-  have h3 := invertBranches_sound hwf2 heb2 heb3' h2'
+  have h3 := invertBranches_sound heb2 heb3' h2'
   have h3' : Exec (model := model) P f3 (Regs.empty.setMany f3.params args) st
       ⟨eb3.instrs, eb3.term⟩ res := by simpa [f3, hparams3] using h3
   have h4 := constFold_sound hwf3 heb3 heb4' h3'

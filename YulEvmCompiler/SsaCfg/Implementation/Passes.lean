@@ -614,7 +614,13 @@ def blockIszeroSources (uses : Std.HashMap ValId Nat) (b : Block) :
   | some i =>
       match iszeroPair i with
       | some (d, a) =>
-          if uses.getD d 0 == 1 then (∅ : Std.HashMap ValId ValId).insert d a else ∅
+          -- `d ≠ a` is nonsense to violate (an `iszero` reading its own
+          -- result), and having it by construction is what lets the
+          -- soundness proof conclude that executing the `iszero` leaves its
+          -- *argument's* binding alone.
+          if uses.getD d 0 == 1 && d != a then
+            (∅ : Std.HashMap ValId ValId).insert d a
+          else ∅
       | none => ∅
   | none => ∅
 
