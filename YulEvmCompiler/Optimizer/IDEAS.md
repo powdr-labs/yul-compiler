@@ -1747,3 +1747,33 @@ the refund-neutral identity-`sstore` elimination could actually pay off.
   not imply SSA dominance (a stale-read counterexample; fixed with the
   decidable `domCheck` gate), and codegen genuinely needs single
   assignment + label uniqueness.
+
+- **HoistCalls builtin-argument hoist + measured gate negatives** (branch
+  `agent/uv4-abi-inline`, commit 03ecc40). Root cause of the out-of-line ABI
+  encode chains on small functions: `cleanup_t_bool = iszero(iszero(v))` is a
+  *nested* builtin body that Core `ingest` rejects, so InlineHelpers cannot
+  inline it in place (unlike flat `cleanup_t_uint24 = and(v,mask)`); its sole
+  call site `mstore(pos, cleanup_t_bool(value))` is a call nested in a builtin
+  argument, unreachable by statement-level InlineCalls, pinning the whole
+  `abi_encode_t_bool` chain out of line. Fix (proven, sorry-free): hoist a
+  trailing builtin-argument call into a preceding `let` so InlineCalls consumes
+  it. **Measured negatives on the *unrestricted* hoist** (fires on any
+  `op(var, userCall(callfree_args))`): enabling that much extra statement
+  inlining grows frames and trips the MemorySpill/stack-layout fallback in
+  loop/codec-heavy code — aave `PositionStatusMap.nextContinuousTenThousand`
+  +843,951 gas (a big-loop blowup), semantic array/storage/struct codecs
+  +1k–3.3k on ~28 rows, and the whole aave suite went net-negative. Gating to
+  *pure-total single-expression* callees only (the cleanup shape) removes all
+  those catastrophes (aave net 0, no >100 loop blowups) and keeps the LPFee/
+  ProtocolFee/TickBitmap wins, but (a) loses the broad `dispatch_large` win the
+  unrestricted hoist gave (that win shared the frame-growing mechanism), and
+  (b) leaves ~9 semantic rows >100 gas (e.g. `bool_conversion` +334) that are
+  irreducible with this approach — the same `cleanup_t_bool` inlining that wins
+  LPFee reshapes those via the stack scheduler. The regression-free way to get
+  the bool win is the *root* fix: teach Core `Term`/`ingest` one level of
+  nested pure builtins so `cleanup_t_bool` inlines in place exactly like
+  `cleanup_t_uint24` (which is regression-free), rather than routing through a
+  hoist that also enables broader statement inlining. A loop-depth-aware gate
+  (don't hoist inside `for` bodies) would clear the loop-context semantic rows
+  more cheaply but needs a signature change threaded through the proven
+  traversal.
