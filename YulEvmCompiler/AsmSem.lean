@@ -193,44 +193,71 @@ theorem AStep.suffix [model : ExternalModel]
   | pushLabel _ => exact tail_suffix ha
   | dynJump hfind => exact findLabel_suffix hfind
 
-/-- **No step ever rewrites the immutable map.** Every environment update in the
-source semantics is a `{ st.env with … }` touching balances, code hashes,
-nonces, storage or transient storage; none touches `immutable`. This is what
-lets phase B's layout-consistency obligation for immutables be stated once and
-carried along a whole run. -/
+/-! ### The immutable map is never rewritten
+
+Phase B's `ConfMatch.imms` states, once, that the constants baked into the
+emitted bytes are the ones the environment records. For that to survive a whole
+run, no step may rewrite `env.immutable`. It does not: every environment update
+in the source semantics is a `{ st.env with … }` over balances, code hashes,
+nonces, storage or transient storage, and the open-world endpoints install a
+`CallWorld`, which has the same shape. Each fact below is definitional. -/
+
+section ImmutablePreserved
+open YulSemantics.EVM
+
+@[simp] private theorem touchMemory_immutable (st : EvmState) (o n : Nat) :
+    (touchMemory st o n).env.immutable = st.env.immutable := rfl
+
+@[simp] private theorem touchMemory2_immutable (st : EvmState) (a b c d : Nat) :
+    (touchMemory2 st a b c d).env.immutable = st.env.immutable := rfl
+
+@[simp] private theorem install_immutable (w : CallWorld) (st : EvmState) :
+    (w.install st).env.immutable = st.env.immutable := rfl
+
+@[simp] private theorem appendLog_immutable (st : EvmState) (topics : List U256)
+    (o n : U256) :
+    (appendLog st topics o n).env.immutable = st.env.immutable := rfl
+
+@[simp] private theorem finishCall_immutable (kind : CallKind) (st : EvmState)
+    (r : CallResponse) (a b c d : Nat) :
+    (finishCall kind st r a b c d).env.immutable = st.env.immutable := by
+  unfold finishCall
+  split <;> rfl
+
+@[simp] private theorem finishCreate_immutable (st : EvmState) (r : CreateResponse)
+    (o n : Nat) :
+    (finishCreate st r o n).env.immutable = st.env.immutable := by
+  unfold finishCreate
+  split <;> rfl
+
+end ImmutablePreserved
+
+/-- **No step ever rewrites the immutable map.** This is what lets phase B's
+layout-consistency obligation for immutables be stated once and carried along a
+whole run. -/
+theorem builtinWithExternal_immutable_eq
+    {calls : ExternalCalls} {creates : ExternalCreates} {yop : Op}
+    {args rets : List U256} {yst yst' : EvmState}
+    (hb : builtinWithExternal calls creates yop args yst (.ok rets yst')) :
+    yst'.env.immutable = yst.env.immutable := by
+  cases yop <;>
+        rcases args with _ | ⟨x, _ | ⟨y, _ | ⟨z, _ | ⟨w, _ | ⟨u, _ | ⟨t, _ | ⟨r, args⟩⟩⟩⟩⟩⟩⟩ <;>
+        simp_all [YulSemantics.EVM.builtinWithExternal, YulSemantics.EVM.externalCall,
+          YulSemantics.EVM.externalCreate, YulSemantics.EVM.stepOp,
+          YulSemantics.EVM.un, YulSemantics.EVM.bin, YulSemantics.EVM.ter,
+          YulSemantics.EVM.rd0, YulSemantics.EVM.rd1, YulSemantics.EVM.guardStatic] <;>
+        (try (split at hb)) <;>
+        (try (obtain ⟨-, rfl⟩ := hb; simp)) <;>
+        (try (obtain ⟨_, -, -, rfl⟩ := hb; simp)) <;>
+        (try (obtain ⟨-, _, -, hres⟩ := hb; simp_all)) <;>
+        (try simp_all)
+
+/-- **No step ever rewrites the immutable map.** -/
 theorem AStep.immutable_eq [model : ExternalModel]
     {prog : List Asm} {a b : AConf} (h : AStep (model := model) prog a b) :
     b.yst.env.immutable = a.yst.env.immutable := by
   cases h with
-  | @op yop args rets c σ yst yst' hb =>
-      -- Every environment update in the source semantics is a `{ st.env with … }`
-      -- over balances, code hashes, nonces, storage or transient storage; the
-      -- open-world call/create endpoints install a `CallWorld`, which is the same
-      -- shape. None of them mentions `immutable`.
-      have hgen : ∀ (w : EvmState), (w.env.immutable) = (w.env.immutable) := fun _ => rfl
-      clear hgen
-      cases yop <;>
-        rcases args with _ | ⟨x, _ | ⟨y, _ | ⟨z, _ | ⟨w, _ | ⟨u, _ | ⟨t, _ | ⟨r, args⟩⟩⟩⟩⟩⟩⟩ <;>
-        simp only [YulSemantics.EVM.builtinWithExternal, YulSemantics.EVM.externalCall,
-          YulSemantics.EVM.externalCreate, YulSemantics.EVM.finishCall,
-          YulSemantics.EVM.finishCreate, YulSemantics.EVM.CallWorld.install,
-          YulSemantics.EVM.stepOp, YulSemantics.EVM.un, YulSemantics.EVM.bin,
-          YulSemantics.EVM.ter, YulSemantics.EVM.rd0, YulSemantics.EVM.rd1,
-          YulSemantics.EVM.guardStatic, YulSemantics.EVM.touchMemory] at hb <;>
-        first
-          | exact absurd hb (by simp)
-          | (obtain ⟨-, rfl⟩ := hb; rfl)
-          | (obtain ⟨resp, -, hres⟩ := hb; subst hres; rfl)
-          | (obtain ⟨resp, -, -, hres⟩ := hb; subst hres; rfl)
-          | (split at hb <;>
-              first
-                | exact absurd hb (by simp)
-                | (obtain ⟨-, rfl⟩ := hb; rfl)
-                | (obtain ⟨resp, -, hres⟩ := hb; subst hres; rfl)
-                | (obtain ⟨resp, -, -, hres⟩ := hb
-                   split at hres <;> subst hres <;> rfl)
-                | (obtain ⟨resp, -, -, hres⟩ := hb; subst hres; rfl))
-          | rfl
+  | @op yop args rets c σ yst yst' hb => exact builtinWithExternal_immutable_eq hb
   | _ => rfl
 
 theorem ASteps.suffix [model : ExternalModel]

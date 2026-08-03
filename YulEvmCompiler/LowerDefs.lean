@@ -308,6 +308,19 @@ structure ConfMatch (prog : List Asm) (is : List Instr) (a : AConf)
   imms : ∀ key v, Asm.pushImmutable key v ∈ prog →
     v = a.yst.env.immutable (YulSemantics.EVM.litValue (.string key))
 
+/-- Transport the immutable layout-consistency obligation across a step. The
+program is fixed and no step rewrites `env.immutable` (`AStep.immutable_eq`), so
+the obligation is re-established from the same hypothesis. -/
+theorem ConfMatch.imms_step {prog : List Asm} {is : List Instr}
+    {payload : List UInt8} {a : AConf} {s : State} {yst' : EvmState}
+    (hm : ConfMatch (payload := payload) prog is a s)
+    (h : yst'.env.immutable = a.yst.env.immutable) :
+    ∀ key v, Asm.pushImmutable key v ∈ prog →
+      v = yst'.env.immutable (YulSemantics.EVM.litValue (.string key)) := by
+  intro key v hmem
+  rw [h]
+  exact hm.imms key v hmem
+
 /-! ### Open-world call and creation realization
 
 The source semantics deliberately does not choose a callee implementation.
