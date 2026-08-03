@@ -173,25 +173,30 @@ private def expandSetImmutable (offsets : List (String × Nat)) (name : String)
 /-- Rewrite every `setimmutable` in a code block against the recorded offsets.
 Run *before* layout resolution, so the resolver and its semantic-preservation
 proof never see the extension. -/
-partial def expandSetImmutablesStmts (offsets : List (String × Nat)) :
+partial def expandSetImmutablesStmts (offsets : List (String × Nat))
+    (ambiguous : List String) :
     List (YulSemantics.Stmt Op) → List (YulSemantics.Stmt Op)
   | [] => []
   | stmt :: rest =>
-      let tail := expandSetImmutablesStmts offsets rest
+      let tail := expandSetImmutablesStmts offsets ambiguous rest
       match stmt with
       | .exprStmt (.call "setimmutable" [base, .lit (.string name), value]) =>
-          expandSetImmutable offsets name base value :: tail
-      | .block body => .block (expandSetImmutablesStmts offsets body) :: tail
+          -- An ambiguous name is left as the raw call, so the backend rejects
+          -- the program. Expanding it to no stores would be just as wrong as
+          -- expanding it to the wrong ones — the immutable would stay zero.
+          if ambiguous.contains name then stmt :: tail
+          else expandSetImmutable offsets name base value :: tail
+      | .block body => .block (expandSetImmutablesStmts offsets ambiguous body) :: tail
       | .funDef n ps rs body =>
-          .funDef n ps rs (expandSetImmutablesStmts offsets body) :: tail
-      | .cond c body => .cond c (expandSetImmutablesStmts offsets body) :: tail
+          .funDef n ps rs (expandSetImmutablesStmts offsets ambiguous body) :: tail
+      | .cond c body => .cond c (expandSetImmutablesStmts offsets ambiguous body) :: tail
       | .switch c cases dflt =>
-          .switch c (cases.map (fun cb => (cb.1, expandSetImmutablesStmts offsets cb.2)))
-            (dflt.map (expandSetImmutablesStmts offsets)) :: tail
+          .switch c (cases.map (fun cb => (cb.1, expandSetImmutablesStmts offsets ambiguous cb.2)))
+            (dflt.map (expandSetImmutablesStmts offsets ambiguous)) :: tail
       | .forLoop init c post body =>
-          .forLoop (expandSetImmutablesStmts offsets init) c
-            (expandSetImmutablesStmts offsets post)
-            (expandSetImmutablesStmts offsets body) :: tail
+          .forLoop (expandSetImmutablesStmts offsets ambiguous init) c
+            (expandSetImmutablesStmts offsets ambiguous post)
+            (expandSetImmutablesStmts offsets ambiguous body) :: tail
       | other => other :: tail
 
 private def placeholderResolver : RefResolver := fun _ => some (0, 0)

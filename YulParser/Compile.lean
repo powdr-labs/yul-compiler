@@ -361,10 +361,21 @@ partial def expandSetImmutablesObject (o : Object YulSemantics.EVM.Op) :
   match o with
   | .mk name code subs segs =>
       let subs := subs.map expandSetImmutablesObject
-      let offsets :=
-        subs.flatMap fun sub =>
-          (YulEvmCompiler.objectImmutableOffsets sub).getD []
-      .mk name (YulEvmCompiler.expandSetImmutablesStmts offsets code) subs segs
+      let perChild := subs.map fun sub =>
+        (YulEvmCompiler.objectImmutableOffsets sub).getD []
+      -- `setimmutable(base, name, value)` names no child, and `base` points at a
+      -- copy of *one* of them. If two children declare the same immutable, the
+      -- offsets are not comparable against a single base — patching one child at
+      -- the other's offsets would overwrite its executable bytes. Such a name is
+      -- left unexpanded, so the backend rejects the program rather than
+      -- miscompiling it.
+      let declaredBy (n : String) : Nat :=
+        (perChild.filter fun offs => offs.any (fun p => p.1 == n)).length
+      let all := perChild.flatten
+      let ambiguous := (all.map Prod.fst).filter fun n => declaredBy n > 1
+      let offsets := all.filter fun p => declaredBy p.1 == 1
+      .mk name
+        (YulEvmCompiler.expandSetImmutablesStmts offsets ambiguous code) subs segs
 
 /-- Parse and compile a complete Yul source program to executable EVM bytecode,
 using the documented compatibility parser when the verified parser does not
@@ -389,6 +400,11 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
     Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
+      -- A block-rooted program has no object tree, so nothing could ever patch a
+      -- placeholder: a `loadimmutable` here would compile to a hard-coded zero.
+      -- Reject instead. (The grammar still accepts it — this is a compilation
+      -- limit, not a syntax rule, so the upstream syntax corpus is unaffected.)
+      if !(collectImmutableCallsStmts block).1.isEmpty then none else
       -- The link pass is an expensive identity when no addresses are supplied,
       -- and these inputs are megabytes of generated Yul; skip it entirely.
       let decoded := decodeValueStmts block

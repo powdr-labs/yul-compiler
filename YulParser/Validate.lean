@@ -396,25 +396,9 @@ private theorem contains_eq_false_append {s p q : String} (h : s.contains p = fa
       contains_eq_false_append hg, contains_eq_false_append hg, contains_eq_false_append hg]
     simp
 
-def validateBlockSource (source : String) (body : List (Stmt Op)) : Bool :=
-  sourceLexWF source &&
-    (validateBlock { inactiveBuiltins := inactiveBuiltins source } body).isSome
-
-private def withPrefix (prefixName : String) (name : String) : String :=
-  prefixName ++ "." ++ name
-
-private def accessibleObjectNames : Object Op → List String
-  | .mk name _ subs datas =>
-      let dataNames := (datas.map Prod.fst).filter (fun n => !n.startsWith ".")
-      let subNames := subs.flatMap fun sub =>
-        let child := Object.name sub
-        child :: ((accessibleObjectNames sub).filter (fun n => n != child && !n.startsWith ".")
-          |>.map (withPrefix child))
-      name :: dataNames ++ subNames
-
 /-- Collect the immutable names read (`loadimmutable`, now an ordinary `Op`)
 and written (`setimmutable`, still a solc extension carried as a `.call`). -/
-private def collectImmutableCallsExpr : Expr Op → List String × List String
+def collectImmutableCallsExpr : Expr Op → List String × List String
   | .lit _ | .var _ | .builtin _ [] | .call _ [] => ([], [])
   | .builtin op args =>
       let nested := args.foldl (fun acc e =>
@@ -432,7 +416,7 @@ private def collectImmutableCallsExpr : Expr Op → List String × List String
       else nested
 
 mutual
-private partial def collectImmutableCallsStmt : Stmt Op → List String × List String
+partial def collectImmutableCallsStmt : Stmt Op → List String × List String
   | .block body | .funDef _ _ _ body => collectImmutableCallsStmts body
   | .letDecl _ value => value.map collectImmutableCallsExpr |>.getD ([], [])
   | .assign _ value | .exprStmt value => collectImmutableCallsExpr value
@@ -449,14 +433,31 @@ private partial def collectImmutableCallsStmt : Stmt Op → List String × List 
         (combineImmutable (collectImmutableCallsStmts post) (collectImmutableCallsStmts body)))
   | .«break» | .«continue» | .leave => ([], [])
 
-private partial def collectImmutableCallsStmts : List (Stmt Op) → List String × List String
+partial def collectImmutableCallsStmts : List (Stmt Op) → List String × List String
   | [] => ([], [])
   | statement :: statements => combineImmutable (collectImmutableCallsStmt statement)
       (collectImmutableCallsStmts statements)
 
-private partial def combineImmutable (a b : List String × List String) : List String × List String :=
+partial def combineImmutable (a b : List String × List String) : List String × List String :=
   (a.1 ++ b.1, a.2 ++ b.2)
 end
+
+
+def validateBlockSource (source : String) (body : List (Stmt Op)) : Bool :=
+  sourceLexWF source &&
+    (validateBlock { inactiveBuiltins := inactiveBuiltins source } body).isSome
+
+private def withPrefix (prefixName : String) (name : String) : String :=
+  prefixName ++ "." ++ name
+
+private def accessibleObjectNames : Object Op → List String
+  | .mk name _ subs datas =>
+      let dataNames := (datas.map Prod.fst).filter (fun n => !n.startsWith ".")
+      let subNames := subs.flatMap fun sub =>
+        let child := Object.name sub
+        child :: ((accessibleObjectNames sub).filter (fun n => n != child && !n.startsWith ".")
+          |>.map (withPrefix child))
+      name :: dataNames ++ subNames
 
 mutual
 private partial def collectImmutableCallsObject : Object Op → List String × List String

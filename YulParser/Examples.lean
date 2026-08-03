@@ -129,6 +129,28 @@ def immutablePair : String :=
 #guard (parseSource immutablePair).isSome
 #guard (compileSource immutablePair).isSome
 
+/-! A block-rooted program has no object tree, so nothing could ever patch a
+placeholder: a `loadimmutable` there is rejected rather than compiled to a
+hard-coded zero. The *grammar* still accepts it — upstream's syntax corpus has a
+fixture for exactly this — so the limit lives in compilation, not parsing. -/
+#guard (parseSource "{ sstore(0, loadimmutable(\"x\")) }").isSome
+#guard (compileSource "{ sstore(0, loadimmutable(\"x\")) }").isNone
+
+/-! Two sibling objects declaring the same immutable put its placeholder at
+different offsets, but `setimmutable(base, name, value)` names no child and
+`base` points at a copy of one of them. Patching one at the other's offsets
+would overwrite its code, so the ambiguous name is rejected. -/
+def siblingImmutables : String :=
+  "object \"A\" {\n" ++
+  "  code { let s := datasize(\"B\") codecopy(0, dataoffset(\"B\"), s)\n" ++
+  "         setimmutable(0, \"x\", caller()) return(0, s) }\n" ++
+  "  object \"B\" { code { sstore(0, loadimmutable(\"x\")) } }\n" ++
+  "  object \"C\" { code { sstore(1, 1) sstore(2, 2) sstore(3, loadimmutable(\"x\")) } }\n" ++
+  "}\n"
+
+#guard (parseSource siblingImmutables).isSome
+#guard (compileSource siblingImmutables).isNone
+
 /-! A `loadimmutable` with no matching `setimmutable` is rejected by validation:
 nothing would ever write that placeholder. -/
 #guard (parseSource
