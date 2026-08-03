@@ -1071,6 +1071,7 @@ looked up once instead of independently through `fl`, `fbMax`, and `rl`. -/
 def frameStepLookupB (prog : List Asm) (lookup : CertLookup) :
     Asm → List Asm → FLayout → Nat → FLayout → Bool
   | .push _,      c, S, F, R => decide (lookup c = some (.word :: S, F, R))
+  | .pushImmutable _ _, c, S, F, R => decide (lookup c = some (.word :: S, F, R))
   | .dup n,       c, S, F, R => match S[n.val]? with
       | some FSlot.word => decide (lookup c = some (.word :: S, F, R))
       | _ => false
@@ -1143,6 +1144,7 @@ def frameStepLookupFastB (tgts : Std.HashMap Label (List Asm))
     (lookup : CertLookup) :
     Asm → List Asm → FLayout → Nat → FLayout → Bool
   | .push _,      c, S, F, R => decide (lookup c = some (.word :: S, F, R))
+  | .pushImmutable _ _, c, S, F, R => decide (lookup c = some (.word :: S, F, R))
   | .dup n,       c, S, F, R => match S[n.val]? with
       | some FSlot.word => decide (lookup c = some (.word :: S, F, R))
       | _ => false
@@ -1211,6 +1213,8 @@ def frameStepLookupIdxB (tgts : Std.HashMap Label (List Asm))
     (lookup : CertLookup) (tbl : Array (Option CertEntry)) (kc : Nat) :
     Asm → List Asm → FLayout → Nat → FLayout → Bool
   | .push _,      c, S, F, R => decide (lookupAt tbl kc c = some (.word :: S, F, R))
+  | .pushImmutable _ _, c, S, F, R =>
+      decide (lookupAt tbl kc c = some (.word :: S, F, R))
   | .dup n,       c, S, F, R => match S[n.val]? with
       | some FSlot.word => decide (lookupAt tbl kc c = some (.word :: S, F, R))
       | _ => false
@@ -1424,6 +1428,7 @@ theorem frameStepLookupB_eq_frameStepB (prog : List Asm) (lookup : CertLookup)
       frameStepB prog lookup.toCert i c S F R := by
   cases i with
   | push => exact lookup.decide_eq_some_fields c (.word :: S) F R
+  | pushImmutable key v => exact lookup.decide_eq_some_fields c (.word :: S) F R
   | pushLabel l => exact lookup.decide_eq_some_fields c (.retTo l :: S) F R
   | label => exact lookup.decide_eq_some_fields c S F R
   | jump l =>
