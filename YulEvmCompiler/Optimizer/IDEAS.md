@@ -1904,6 +1904,13 @@ compose that result with the existing `Simplify` resolution congruence for the
   −91,334, `PoolSwap.addLiquidityWide` −1,507, `PoolSwap.removeLiquidity` −1,496
   and `PoolSwap.swapExactInputNoTick` −1,290.
 
+  Measured **head against main** by CI rather than by baseline diff, the total
+  across the four Solidity gas corpora is **−251,692** (aave −103,641,
+  semanticTests −142,569, uniswap −5,172, gasTests −310), with the yul codegen
+  corpora at −614 and +306. The re-pin diff of `solidity-gas-baseline.txt`
+  looks like −52,224, but ~51,914 of that was main's own pin being stale and
+  belongs to no change on this branch.
+
   **Compiler runtime is 1.05x** on both suites (aave 900 → 944 ms, uniswap
   11,509 → 12,027 ms, same machine, same load). That is the whole reason the two
   sections above were dropped rather than kept: they cost 1.8x and 2.4–3.8x for
