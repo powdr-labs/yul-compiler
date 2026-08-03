@@ -1966,3 +1966,64 @@ fixture — do that first next time, before building the model.
 (The uniswap figures in this section, 48,584/48,794, predate the later
 proof-driven simplifications; the landed gap is 48,862, the difference being
 the 24 gas from dropping the reachability pass.)
+
+## Asm-level operand-order peepholes: late constant pushes and flipped comparisons (2026-08-03)
+
+- 🚧 **This branch.** Two `Asm → Asm` peephole rewrites, both mined by
+  disassembling our runtime bytecode next to solc's with per-`pc` execution
+  counts and censusing *executed* instruction windows rather than static ones.
+
+### What the profile says
+
+  After the constant-rematerialization branch the remaining uniswap-v4 gap is
+  +43,690 (950,753 vs 907,063) and aave is already −2,724,795. Per-opcode diff
+  on the two largest rows:
+
+  | | `TickMath.getTickAtSqrtPriceSweep` ours / solc | `getSqrtPriceAtTickSweep` ours / solc |
+  |---|---|---|
+  | `SWAP*` execs | **14,548 / 5,835** | **2,006 / 1,041** |
+  | `PUSH*` execs | 16,027 / 17,961 | 6,112 / 6,579 |
+  | `DUP*` execs | 8,267 / 8,556 | 2,506 / 2,504 |
+
+  We execute **2.5x solc's `SWAP`s** (+26,139 gas on that one row) while
+  pushing *fewer* constants than solc does. So the gap is not missing
+  arithmetic and not missing rematerialization: it is operand *ordering*.
+
+  Censusing executed 3-windows finds the shape difference exactly. Ours:
+  `PUSH DUP SWAP` 3,143 executions. solc: `DUP PUSH SHR` 2,500 — the same
+  computation with the constant pushed **after** the operand is duplicated
+  instead of before it, so no swap is needed.
+
+### The two rewrites
+
+  1. **Late constant push** — `push v ; dup n ; swap1 ⟶ dup (n-1) ; push v`
+     (and `push v ; dup1 ; swap1 ⟶ push v ; dup1`). Both windows leave the
+     stack identical: duplicating below a freshly pushed literal and then
+     exchanging is the same as duplicating first and pushing on top. Saves one
+     `SWAP1` (3 gas) and 1 byte per site. The emitter produces this window
+     whenever an `.op`'s topmost operand is a constant and a lower operand is
+     still live, which is the dominant shape in shift/mask code.
+
+  2. **Flipped comparison** — `swap1 ; lt ⟶ gt`, `swap1 ; gt ⟶ lt`,
+     `swap1 ; slt ⟶ sgt`, `swap1 ; sgt ⟶ slt`. The shuffler already tries both
+     operand orders for the *commutative* ops; the ordered comparisons have a
+     reversed twin instead, which is the same trick one opcode wider. Saves 3
+     gas and 1 byte. (`swap1 ; add|mul|and|or|xor|eq ⟶ op` is the commutative
+     leftover of the same rule and comes for free.)
+
+  Both live in `YulEvmCompiler/AsmPeephole.lean`, so they apply to **both**
+  backends — the classic scope-pinned one and the SSA-CFG one — and reuse the
+  existing `Peephole.CodeRel` spec relation and its label-structure lemmas.
+
+### Executions the rules fire on (measured, before implementing)
+
+  | profile | rule 1 | rule 2 |
+  |---|---:|---:|
+  | `TickMath.getTickAtSqrtPriceSweep` | 3,143 | 100 |
+  | `PositionStatusMap.nextContinuousTenThousand` | 30,168 | 10,081 |
+  | `PositionStatusMap.flsFullRange` | 762 | 1,270 |
+  | `SwapMath.computeSwapStep` | 2 | 7 |
+
+  At 3 gas each that is ≈9.4k on the single worst uniswap row (whose whole gap
+  is 14.5k), ≈90k + 30k on aave's hottest row, and ≈2.3k + 3.8k on
+  `flsFullRange` (a row we currently lose by 12,868).
