@@ -524,13 +524,13 @@ SPEC CLOSURE — audited this-repo surface (89 decls)
   struct YulEvmCompiler.Instr 6d2465d1d211750b
   datadef YulEvmCompiler.Instr.bytes 6cb9a3bc72e0ae11
   datadef YulEvmCompiler.Instr.opByte 1063189e226fb3ef
-  relation YulEvmCompiler.IsCallOp 93349e44f6cba900
-  relation YulEvmCompiler.IsCreateOp 188d5668d6c00b2b
+  relation YulEvmCompiler.IsCallOp 4068ec650592c03e
+  relation YulEvmCompiler.IsCreateOp b78befe1df320f16
   relation YulEvmCompiler.LogEntryMatch 44220474a51dc6b6
   relation YulEvmCompiler.LogsMatch 6d1d2dd35bc25e39
   relation YulEvmCompiler.MemMatch e48211ef54b0d862
   struct YulEvmCompiler.Optimizer.LocalPass 6b8887154f59257c
-  statement YulEvmCompiler.Optimizer.LocalPass.optimize_then_compile_correct b97af54bdbe04c9f
+  statement YulEvmCompiler.Optimizer.LocalPass.optimize_then_compile_correct ea1a4175b830c48f
   relation YulEvmCompiler.Optimizer.Sound d9d7947b1bb2287
   relation YulEvmCompiler.RunResolvedObject 22471129a83f65e3
   relation YulEvmCompiler.SelfdestructEntryMatch 3b1f6c17c9cc3b3f
@@ -539,20 +539,20 @@ SPEC CLOSURE — audited this-repo surface (89 decls)
   datadef YulEvmCompiler.assemble c1c9c0c9a1ad80c8
   datadef YulEvmCompiler.assembleBytes 29d8e692638cce98
   datadef YulEvmCompiler.assembleWithPayload 55ba5256c2c91c08
-  artifact YulEvmCompiler.compile 49a8d9e93773bc82
+  artifact YulEvmCompiler.compile 918e30bebf09508c
   artifact YulEvmCompiler.compileObject 45cacb379f48e375
   statement YulEvmCompiler.compileObject_consistent 6772c506631c72d
   statement YulEvmCompiler.compileObject_correct 6c28d636cabfed71
-  statement YulEvmCompiler.compile_correct ec51f1c553a52f8a
-  statement YulEvmCompiler.compile_correct_eval 999e96fc09d553b6
-  statement YulEvmCompiler.compile_correct_withPayload 50e2c3107c79f9ea
+  statement YulEvmCompiler.compile_correct aaec2685370d8fb
+  statement YulEvmCompiler.compile_correct_eval 900a08a3e3b1524d
+  statement YulEvmCompiler.compile_correct_withPayload bb02b0fbc1a60e31
   statement YulEvmCompiler.compiled_constructor_returns 9a99d76f5d037853
   datadef YulEvmCompiler.conv 25e701af8a9ce7bb
   datadef YulEvmCompiler.mkCode edacb826e56f9571
   datadef YulEvmCompiler.natToBE d47a19daef761803
-  datadef YulEvmCompiler.opTable 58d5b129f84835ed
+  datadef YulEvmCompiler.opTable d48771ade3ef37b6
   datadef YulEvmCompiler.resolveForLayoutCases a635c809600d2d8a
-  datadef YulEvmCompiler.resolveForLayoutExpr 15bc9ca915a17f5a
+  datadef YulEvmCompiler.resolveForLayoutExpr 6e8a6c9691954597
   datadef YulEvmCompiler.resolveForLayoutExprs deee862dd8d61de4
   datadef YulEvmCompiler.resolveForLayoutStmt ef48ed8902b73d01
   datadef YulEvmCompiler.resolveForLayoutStmts e61eedc003fbb530
