@@ -1640,3 +1640,122 @@ compose that result with the existing `Simplify` resolution congruence for the
   not imply SSA dominance (a stale-read counterexample; fixed with the
   decidable `domCheck` gate), and codegen genuinely needs single
   assignment + label uniqueness.
+
+## SSA pass-pipeline rebalance: coalescing, branch inversion, CSE off (2026-08-03)
+
+- 🟢 **Ready for review (PR #153) — fully proved, CI green.** Four changes to
+  the `yul-ssa-cfg` optimization layer (`SsaCfg/Implementation/Passes.lean`),
+  all found by ablating each pass against emitted cost on the uniswap-v4
+  fixtures rather than by reasoning about the IR:
+
+  1. **Straight-line block coalescing** (`coalesce`). A block whose single
+     in-edge is an unconditional `jump` is appended to its predecessor. The
+     construction emits a block boundary per `if`/`switch`/`for` join and the
+     inliner splits every call site into three blocks; each surviving
+     boundary costs a `JUMPDEST`, a `jump`, *and* an edge shuffle between
+     independently chosen layouts. Worth **8,833 gas** on uniswap alone.
+
+  2. **Branch-sense normalization** (`invertBranches`).
+     `branch (iszero x) t f ≡ branch x f t`, after which dead-value
+     elimination deletes the `iszero`. Solidity's unoptimized IR spells every
+     negative test `if iszero(cond)`, and the opcode profile showed this as
+     the largest non-shuffle excess against solc: on
+     `TickMath.getSqrtPriceAtTickSweep` we executed **2,105 `ISZERO`** to
+     solc's 1. Natural on a CFG (swap two edges), awkward on Yul
+     (restructure an `if` into its complement).
+
+  3. **CSE removed from the pipeline** (kept defined and proved). Measured:
+     running it *raises* emitted cost on every uniswap fixture tried
+     (`BitMath` +36%, `LiquidityMath` +31%, `TickBitmap` +9%). On a stack
+     machine a CSE'd value must stay live inside a 16-deep `DUP`/`SWAP`
+     reach, and the shuffle traffic it adds (`DUP`+`SWAP`, 6 gas per
+     intervening op) exceeds the `ADD`/`SHL`-class arithmetic (3 gas) it
+     saves. It *reduces* IR instruction count (547 → 399 on `SqrtPriceMath`)
+     and *increases* emitted code. A live-range-aware variant could switch it
+     back on.
+
+  4. **Size-neutral inliner cost model.** `inlinable`'s ad-hoc
+     `blocks ≤ 4 ∧ instrs ≤ 20` shape test is replaced by an emitted-size
+     model: fully inlining a callee deletes its body and every site's
+     plumbing, so the net change is
+     `(sites-1)·bodySize − sites·callSiteSize`, and we inline exactly when
+     that is non-positive. **This is where the entire aave win comes from** —
+     the three pass changes leave aave untouched.
+
+  **Measured** (all six baselines re-pinned):
+
+  | suite | gap to solc before | after |
+  |---|---:|---:|
+  | semanticTests | +7,606,408 | **+671,122 (−91.2%)** |
+  | uniswap-v4 | +84,617 | **+48,862 (−42.3%)** |
+  | aave-v4 | −1,502,662 | **−2,621,154** |
+
+  semanticTests moves **−6,935,286 gas** (917 fixtures better, 7 worse) and
+  is by far the largest win; uniswap has zero per-fixture regressions; aave
+  totals **−1,118,492 (−6.7%)** with 9 of 10 fixtures better.
+  `stackLimitEvader/{stub,too_many_args_16}.yul` newly compile *and* match
+  solc, so they left both known-failure baselines.
+
+  **Proof technique** (all 8 obligations discharged; `optimizeProg_sound'`
+  checks with only `[propext, Classical.choice, Quot.sound]`): restrict each
+  pass until its invariant is *local by construction*, and **measure that the
+  restriction is free** before relying on it. Four instances — the `iszero`
+  pinned to the block's last instruction (0 gas) kills the provenance
+  argument and makes the use set shrink so `domCheck_of_shrinking` applies;
+  merging only into a paramless target (0 gas, since `elimTrivialParams` runs
+  first and already removed those params) deletes the edge's parallel copy so
+  the register file is identical on both sides; blanking the absorbed block
+  in place rather than deleting it (24 gas) deletes the whole
+  BFS/renumbering argument; and guarding the pass on
+  `allDefs.Nodup && domCheck` of its own result (0 gas, never fires) yields
+  `coalesce_dom` outright. `mergeOnce` re-validating its own preconditions
+  (`mergeOK`) also avoids inverting `findMerge`'s search loop.
+
+  ⚠️ **Ablation caveat**: per-fixture *static* ablation understates passes
+  that compose. Coalescing looked marginal that way (1–2% on 3 of 6
+  fixtures); deleting it from the real pipeline costs 8,833 gas. Confirm a
+  pass's value by removing it from `runOnce` and running the suite.
+
+- ❌ **Growth-positive SSA inlining does not pay.** The *size-neutral* rule
+  (above, `growthBudget = 0`) is the version that landed. Going further does
+  not: at `growthBudget = 192` the uniswap gap *rises* to 64,103, and forcing
+  full inlining is worth −4,054 gas on `SqrtPriceMath`, −2,626 on
+  `TickBitmap`, −1,978 on `SwapMath` but +7,024 on the `TickMath` sweeps,
+  netting ≈ 0. The blocker is structural, not a threshold: candidates are
+  selected by `instrCost`, a **static size** proxy, which counts a shared
+  function body *once* while it executes *once per call site*, so inlined
+  code can essentially never win selection at any threshold. Fixing it needs
+  an execution-weighted cost — but see the negative result below, where that
+  was tried and refuted. Raising the *iteration* budget (8 → 64) is also a
+  trap: it breaks the `agreeSsa factorial` build-time guard and the
+  `PassesSound/Inline.lean` proofs, and is worth 11 gas.
+
+### Negative result: execution-weighted candidate cost (tried 2026-08-03, reverted)
+
+Built and measured, then reverted. `SsaCfg.instrCost` ranks candidates by
+static *size*; the hypothesis was that its loop-blindness explains the
+remaining regressions (aave `nextContinuousTenThousand` +234,867,
+`loopInvariantCodeMotion/no_move_state` +132,512), since both are
+loop-dominated fixtures where a *smaller* artifact loses on gas.
+
+The replacement scaled each emitted `Asm` instruction by its block's
+estimated execution count: `loopFactor^depth` (back-edges detected as edges
+whose target index ≤ source index — valid because the CFG is reducible and
+laid out in construction order) times a call-graph frequency fixpoint.
+
+**It did not work.** uniswap got slightly *worse* (48,794 vs 48,584, with
+`TickBitmap.nextInitializedTickWithinOneWord` +210) and the aave regression
+was completely unmoved (4,455,802, byte-identical outcome). So the
+loop-blindness hypothesis for those fixtures is **refuted**: the deciding
+comparison is not the one being reweighted. Remaining suspects, in order:
+the SSA-vs-classic comparison in `compileSource` (`byteCodeCost`, which this
+did not touch), or all four SSA candidates genuinely being worse for that
+program, which would make it a *scheduler* problem rather than a selection
+problem.
+
+Worth retrying only after instrumenting which candidate actually wins per
+fixture — do that first next time, before building the model.
+
+(The uniswap figures in this section, 48,584/48,794, predate the later
+proof-driven simplifications; the landed gap is 48,862, the difference being
+the 24 gas from dropping the reachability pass.)
