@@ -203,3 +203,500 @@ theorem selectSwitch_callNames_sub {cv : U256}
             show g ∈ stmtsCallNames b ++ casesCallNames rest
             exact List.mem_append.mpr (Or.inr h)))
         · exact List.mem_append.mpr (Or.inr h)
+
+/-! ### The carry-transfer engine -/
+
+/-- **The carry-transfer engine.** Carry code (calls permitted) transfers from
+`funs₁, A ++ W` to any `funs₂, A ++ W'` that **agrees** with `funs₁` on the
+code's call names, producing only `normal`/`halt` outcomes. Direct calls
+resolve identically (agreement) and their bodies run under the shared captured
+scope, so they are reused verbatim; the environment extension `W`/`W'` stays
+inert below the checked part. -/
+theorem carry_transfer {funs₁ : FunEnv D} {V₁ : VEnv D} {st : EvmState}
+    {code : Code Op} {res₁ : Res D}
+    (h : Step D funs₁ V₁ st code res₁) :
+    ∀ {A W : VEnv D} {bound : List Ident} (funs₂ : FunEnv D) (W' : VEnv D),
+      V₁ = A ++ W → carryCode bound code = true →
+      (∀ x ∈ bound, x ∈ A.map Prod.fst) →
+      FunsAgree (calls := calls) (creates := creates) funs₁ funs₂ (carryCallNames code) →
+      ∃ res₂, Step D funs₂ (A ++ W') st code res₂ ∧
+        TRes (calls := calls) (creates := creates) W W'
+          (carryPostBound bound code) res₁ res₂ := by
+  induction h with
+  | @lit funs V st l =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      exact ⟨_, Step.lit, .eres _⟩
+  | @var funs V st x v hv =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      have hx : x ∈ bound := by
+        unfold carryCode carryExpr at hsc
+        have := List.all_eq_true.mp hsc x (by simp [exprVars])
+        simpa using this
+      have hxA : x ∈ A.map Prod.fst := hb x hx
+      have hgv : VEnv.get A x = some v := by
+        rw [← VEnv.get_append_mem hxA W]; exact hv
+      refine ⟨_, Step.var ?_, .eres _⟩
+      rw [VEnv.get_append_mem hxA W']; exact hgv
+  | @builtinOk funs V st op args argvals st1 rets st2 ha hbi iha =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      have hargs : carryArgs bound args = true := carryExpr_builtin_args hsc
+      obtain ⟨res₂, hstep, htr⟩ := iha funs₂ W' hV (by simp [carryCode, hargs])
+        hb (by simpa [carryCallNames, exprCallNames] using hag)
+      cases htr with
+      | eres => exact ⟨_, Step.builtinOk hstep hbi, .eres _⟩
+  | @builtinHalt funs V st op args argvals st1 st2 ha hbi iha =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      have hargs : carryArgs bound args = true := carryExpr_builtin_args hsc
+      obtain ⟨res₂, hstep, htr⟩ := iha funs₂ W' hV (by simp [carryCode, hargs])
+        hb (by simpa [carryCallNames, exprCallNames] using hag)
+      cases htr with
+      | eres => exact ⟨_, Step.builtinHalt hstep hbi, .eres _⟩
+  | @builtinArgsHalt funs V st op args st1 ha iha =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      have hargs : carryArgs bound args = true := carryExpr_builtin_args hsc
+      obtain ⟨res₂, hstep, htr⟩ := iha funs₂ W' hV (by simp [carryCode, hargs])
+        hb (by simpa [carryCallNames, exprCallNames] using hag)
+      cases htr with
+      | eres => exact ⟨_, Step.builtinArgsHalt hstep, .eres _⟩
+  | @callOk funs V st fn args argvals st1 decl cenv Vend st2 o ha hlk harity hbody ho iha ihbody =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      have hargs : carryArgs bound args = true := carryExpr_call_args hsc
+      have hagfn : lookupFun funs fn = lookupFun funs₂ fn :=
+        hag fn (by simp [carryCallNames, exprCallNames])
+      obtain ⟨res₂, hstep, htr⟩ := iha funs₂ W' hV (by simp [carryCode, hargs])
+        hb (by
+          refine hag.mono ?_
+          intro y hy
+          show y ∈ carryCallNames (Code.expr (.call fn args))
+          simp only [carryCallNames, exprCallNames]
+          exact List.mem_cons_of_mem fn (by simpa [carryCallNames] using hy))
+      cases htr with
+      | eres =>
+          refine ⟨_, Step.callOk hstep ?_ harity hbody ho, .eres _⟩
+          rw [← hagfn]; exact hlk
+  | @callHalt funs V st fn args argvals st1 decl cenv Vend st2 ha hlk harity hbody iha ihbody =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      have hargs : carryArgs bound args = true := carryExpr_call_args hsc
+      have hagfn : lookupFun funs fn = lookupFun funs₂ fn :=
+        hag fn (by simp [carryCallNames, exprCallNames])
+      obtain ⟨res₂, hstep, htr⟩ := iha funs₂ W' hV (by simp [carryCode, hargs])
+        hb (by
+          refine hag.mono ?_
+          intro y hy
+          show y ∈ carryCallNames (Code.expr (.call fn args))
+          simp only [carryCallNames, exprCallNames]
+          exact List.mem_cons_of_mem fn (by simpa [carryCallNames] using hy))
+      cases htr with
+      | eres =>
+          refine ⟨_, Step.callHalt hstep ?_ harity hbody, .eres _⟩
+          rw [← hagfn]; exact hlk
+  | @callArgsHalt funs V st fn args st1 ha iha =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      have hargs : carryArgs bound args = true := carryExpr_call_args hsc
+      obtain ⟨res₂, hstep, htr⟩ := iha funs₂ W' hV (by simp [carryCode, hargs])
+        hb (by
+          refine hag.mono ?_
+          intro y hy
+          show y ∈ carryCallNames (Code.expr (.call fn args))
+          simp only [carryCallNames, exprCallNames]
+          exact List.mem_cons_of_mem fn (by simpa [carryCallNames] using hy))
+      cases htr with
+      | eres => exact ⟨_, Step.callArgsHalt hstep, .eres _⟩
+  | @argsNil funs V st =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      exact ⟨_, Step.argsNil, .eres _⟩
+  | @argsCons funs V st e rest restvals st1 v st2 hrest he ihrest ihe =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      unfold carryCode carryArgs at hsc
+      rw [Bool.and_eq_true] at hsc
+      have hagE : FunsAgree (calls := calls) (creates := creates) funs funs₂ (exprCallNames e) :=
+        hag.mono (fun y hy => by
+          show y ∈ argsCallNames (e :: rest)
+          exact List.mem_append.mpr (Or.inl hy))
+      have hagR : FunsAgree (calls := calls) (creates := creates) funs funs₂ (argsCallNames rest) :=
+        hag.mono (fun y hy => by
+          show y ∈ argsCallNames (e :: rest)
+          exact List.mem_append.mpr (Or.inr hy))
+      obtain ⟨res₂, hstep₁, htr₁⟩ := ihrest funs₂ W' hV (by simp [carryCode, hsc.2]) hb hagR
+      obtain ⟨res₃, hstep₂, htr₂⟩ := ihe funs₂ W' hV (by simp [carryCode, hsc.1]) hb hagE
+      cases htr₁ with
+      | eres =>
+          cases htr₂ with
+          | eres => exact ⟨_, Step.argsCons hstep₁ hstep₂, .eres _⟩
+  | @argsRestHalt funs V st e rest st1 hrest ihrest =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      unfold carryCode carryArgs at hsc
+      rw [Bool.and_eq_true] at hsc
+      have hagR : FunsAgree (calls := calls) (creates := creates) funs funs₂ (argsCallNames rest) :=
+        hag.mono (fun y hy => by
+          show y ∈ argsCallNames (e :: rest)
+          exact List.mem_append.mpr (Or.inr hy))
+      obtain ⟨res₂, hstep₁, htr₁⟩ := ihrest funs₂ W' hV (by simp [carryCode, hsc.2]) hb hagR
+      cases htr₁ with
+      | eres => exact ⟨_, Step.argsRestHalt hstep₁, .eres _⟩
+  | @argsHeadHalt funs V st e rest restvals st1 st2 hrest he ihrest ihe =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      unfold carryCode carryArgs at hsc
+      rw [Bool.and_eq_true] at hsc
+      have hagE : FunsAgree (calls := calls) (creates := creates) funs funs₂ (exprCallNames e) :=
+        hag.mono (fun y hy => by
+          show y ∈ argsCallNames (e :: rest)
+          exact List.mem_append.mpr (Or.inl hy))
+      have hagR : FunsAgree (calls := calls) (creates := creates) funs funs₂ (argsCallNames rest) :=
+        hag.mono (fun y hy => by
+          show y ∈ argsCallNames (e :: rest)
+          exact List.mem_append.mpr (Or.inr hy))
+      obtain ⟨res₂, hstep₁, htr₁⟩ := ihrest funs₂ W' hV (by simp [carryCode, hsc.2]) hb hagR
+      obtain ⟨res₃, hstep₂, htr₂⟩ := ihe funs₂ W' hV (by simp [carryCode, hsc.1]) hb hagE
+      cases htr₁ with
+      | eres =>
+          cases htr₂ with
+          | eres => exact ⟨_, Step.argsHeadHalt hstep₁ hstep₂, .eres _⟩
+  | funDef =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      simp [carryCode, carryStmt] at hsc
+  | @block funs V st body Vb stb o hbody ihbody =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      have hstmts : carryStmts bound body = true := by
+        simp only [carryCode, carryStmt] at hsc
+        by_cases hc : carryStmts bound body = true
+        · exact hc
+        · simp [hc] at hsc
+      have hpost : carryPostBound bound (Code.stmt (.block body)) = bound := by
+        simp [carryPostBound, carryStmt, hstmts]
+      have hhoist : hoist D body = [] := carryStmts_hoist_nil hstmts
+      have hagb : FunsAgree (calls := calls) (creates := creates)
+          (hoist D body :: funs) (hoist D body :: funs₂) (carryCallNames (.stmts body)) := by
+        rw [hhoist]
+        exact FunsAgree.cons_nil (by simpa [carryCallNames, stmtCallNames] using hag)
+      obtain ⟨res₂, hstep, htr⟩ :=
+        ihbody (hoist D body :: funs₂) W' rfl hstmts hb hagb
+      have hlenV : (A ++ W).length ≤ Vb.length := venvLen_mono hbody rfl
+      have hkeysV := venvKeys_suffix hbody rfl
+      cases htr with
+      | @norm A' st' hk =>
+          have hlen : A.length ≤ A'.length := by
+            rw [List.length_append, List.length_append] at hlenV
+            omega
+          refine ⟨_, Step.block hstep, ?_⟩
+          rw [hpost, restore_append hlen, restore_append hlen]
+          exact .norm (fun x hx => by
+            rw [restore_keys (keys_suffix_cancel hkeysV) hlen]
+            exact hb x hx)
+      | @halt A' st' =>
+          have hlen : A.length ≤ A'.length := by
+            rw [List.length_append, List.length_append] at hlenV
+            omega
+          refine ⟨_, Step.block hstep, ?_⟩
+          rw [restore_append hlen, restore_append hlen]
+          exact .halt
+  | @letZero funs V st vars =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      refine ⟨_, Step.letZero, ?_⟩
+      rw [show bindZeros D vars ++ (A ++ W) = (bindZeros D vars ++ A) ++ W from
+            (List.append_assoc _ _ _).symm,
+          show bindZeros D vars ++ (A ++ W') = (bindZeros D vars ++ A) ++ W' from
+            (List.append_assoc _ _ _).symm]
+      refine .norm (fun x hx => ?_)
+      have hpost : carryPostBound bound (Code.stmt (.letDecl vars none)) = vars ++ bound := by
+        simp [carryPostBound, carryStmt]
+      rw [hpost] at hx
+      rw [List.map_append, bindZeros_keys]
+      rcases List.mem_append.mp hx with hx | hx
+      · exact List.mem_append.mpr (Or.inl hx)
+      · exact List.mem_append.mpr (Or.inr (hb x hx))
+  | @letVal funs V st vars e vals st1 he hlen ihe =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      have hse : carryExpr bound e = true := by
+        simp only [carryCode, carryStmt] at hsc
+        by_cases hc : carryExpr bound e = true
+        · exact hc
+        · simp [hc] at hsc
+      obtain ⟨res₂, hstep, htr⟩ := ihe funs₂ W' rfl hse hb
+        (by simpa [carryCallNames, stmtCallNames] using hag)
+      cases htr with
+      | eres =>
+          refine ⟨_, Step.letVal hstep hlen, ?_⟩
+          rw [show vars.zip vals ++ (A ++ W) = (vars.zip vals ++ A) ++ W from
+                (List.append_assoc _ _ _).symm,
+              show vars.zip vals ++ (A ++ W') = (vars.zip vals ++ A) ++ W' from
+                (List.append_assoc _ _ _).symm]
+          refine .norm (fun x hx => ?_)
+          have hpost : carryPostBound bound (Code.stmt (.letDecl vars (some e))) =
+              vars ++ bound := by
+            simp [carryPostBound, carryStmt, hse]
+          rw [hpost] at hx
+          rw [List.map_append, List.map_fst_zip (by omega)]
+          rcases List.mem_append.mp hx with hx | hx
+          · exact List.mem_append.mpr (Or.inl hx)
+          · exact List.mem_append.mpr (Or.inr (hb x hx))
+  | @letHalt funs V st vars e st1 he ihe =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      have hse : carryExpr bound e = true := by
+        simp only [carryCode, carryStmt] at hsc
+        by_cases hc : carryExpr bound e = true
+        · exact hc
+        · simp [hc] at hsc
+      obtain ⟨res₂, hstep, htr⟩ := ihe funs₂ W' rfl hse hb
+        (by simpa [carryCallNames, stmtCallNames] using hag)
+      cases htr with
+      | eres => exact ⟨_, Step.letHalt hstep, .halt⟩
+  | @assignVal funs V st vars e vals st1 he hlen ihe =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      have hsc' : vars.all bound.contains = true ∧ carryExpr bound e = true := by
+        simp only [carryCode, carryStmt] at hsc
+        by_cases hc : (vars.all bound.contains && carryExpr bound e) = true
+        · rw [Bool.and_eq_true] at hc
+          exact hc
+        · simp [hc] at hsc
+      have hvars : ∀ x ∈ vars, x ∈ A.map Prod.fst := fun x hx =>
+        hb x (all_contains_subset hsc'.1 x hx)
+      obtain ⟨res₂, hstep, htr⟩ := ihe funs₂ W' rfl hsc'.2 hb
+        (by simpa [carryCallNames, stmtCallNames] using hag)
+      cases htr with
+      | eres =>
+          refine ⟨_, Step.assignVal hstep hlen, ?_⟩
+          rw [VEnv.setMany_append_mem hvars, VEnv.setMany_append_mem hvars]
+          refine .norm (fun x hx => ?_)
+          have hpost : carryPostBound bound (Code.stmt (.assign vars e)) = bound := by
+            simp [carryPostBound, carryStmt, hsc'.1, hsc'.2]
+          rw [hpost] at hx
+          rw [VEnv.setMany_keys («D» := D)]
+          exact hb x hx
+  | @assignHalt funs V st vars e st1 he ihe =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      have hse : carryExpr bound e = true := by
+        simp only [carryCode, carryStmt] at hsc
+        by_cases hc : (vars.all bound.contains && carryExpr bound e) = true
+        · rw [Bool.and_eq_true] at hc
+          exact hc.2
+        · simp [hc] at hsc
+      obtain ⟨res₂, hstep, htr⟩ := ihe funs₂ W' rfl hse hb
+        (by simpa [carryCallNames, stmtCallNames] using hag)
+      cases htr with
+      | eres => exact ⟨_, Step.assignHalt hstep, .halt⟩
+  | @exprStmt funs V st e st1 he ihe =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      have hse : carryExpr bound e = true := by
+        simp only [carryCode, carryStmt] at hsc
+        by_cases hc : carryExpr bound e = true
+        · exact hc
+        · simp [hc] at hsc
+      obtain ⟨res₂, hstep, htr⟩ := ihe funs₂ W' rfl hse hb
+        (by simpa [carryCallNames, stmtCallNames] using hag)
+      cases htr with
+      | eres =>
+          refine ⟨_, Step.exprStmt hstep, ?_⟩
+          refine .norm (fun x hx => ?_)
+          have hpost : carryPostBound bound (Code.stmt (.exprStmt e)) = bound := by
+            simp [carryPostBound, carryStmt, hse]
+          rw [hpost] at hx
+          exact hb x hx
+  | @exprStmtHalt funs V st e st1 he ihe =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      have hse : carryExpr bound e = true := by
+        simp only [carryCode, carryStmt] at hsc
+        by_cases hc : carryExpr bound e = true
+        · exact hc
+        · simp [hc] at hsc
+      obtain ⟨res₂, hstep, htr⟩ := ihe funs₂ W' rfl hse hb
+        (by simpa [carryCallNames, stmtCallNames] using hag)
+      cases htr with
+      | eres => exact ⟨_, Step.exprStmtHalt hstep, .halt⟩
+  | @ifTrue funs V st c body cv st1 V' st2 o hc hcv hbody ihc ihbody =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      have hsc' : carryExpr bound c = true ∧ carryStmts bound body = true := by
+        simp only [carryCode, carryStmt] at hsc
+        by_cases hcnd : (carryExpr bound c && carryStmts bound body) = true
+        · rw [Bool.and_eq_true] at hcnd
+          exact hcnd
+        · simp [hcnd] at hsc
+      have hagc : FunsAgree (calls := calls) (creates := creates) funs funs₂ (exprCallNames c) :=
+        hag.mono (fun y hy => by
+          show y ∈ stmtCallNames (.cond c body)
+          exact List.mem_append.mpr (Or.inl hy))
+      have hagb : FunsAgree (calls := calls) (creates := creates) funs funs₂
+          (carryCallNames (.stmt (.block body))) :=
+        hag.mono (fun y hy => by
+          show y ∈ stmtCallNames (.cond c body)
+          exact List.mem_append.mpr (Or.inr (by simpa [carryCallNames, stmtCallNames] using hy)))
+      obtain ⟨res₂, hstepc, htrc⟩ := ihc funs₂ W' rfl hsc'.1 hb hagc
+      have hscb : carryCode bound (Code.stmt (.block body)) = true := by
+        simp [carryCode, carryStmt, hsc'.2]
+      obtain ⟨res₃, hstepb, htrb⟩ := ihbody funs₂ W' rfl hscb hb hagb
+      cases htrc with
+      | eres =>
+          have hpostb : carryPostBound bound (Code.stmt (.block body)) = bound := by
+            simp [carryPostBound, carryStmt, hsc'.2]
+          have hpost : carryPostBound bound (Code.stmt (.cond c body)) = bound := by
+            simp [carryPostBound, carryStmt, hsc'.1, hsc'.2]
+          rw [hpostb] at htrb
+          rw [hpost]
+          cases htrb with
+          | norm hk => exact ⟨_, Step.ifTrue hstepc hcv hstepb, .norm hk⟩
+          | halt => exact ⟨_, Step.ifTrue hstepc hcv hstepb, .halt⟩
+  | @ifFalse funs V st c body cv st1 hc hcv ihc =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      have hcnd : (carryExpr bound c && carryStmts bound body) = true := by
+        simp only [carryCode, carryStmt] at hsc
+        by_cases hcnd : (carryExpr bound c && carryStmts bound body) = true
+        · exact hcnd
+        · simp [hcnd] at hsc
+      have hsc' : carryExpr bound c = true := by
+        rw [Bool.and_eq_true] at hcnd
+        exact hcnd.1
+      have hagc : FunsAgree (calls := calls) (creates := creates) funs funs₂ (exprCallNames c) :=
+        hag.mono (fun y hy => by
+          show y ∈ stmtCallNames (.cond c body)
+          exact List.mem_append.mpr (Or.inl hy))
+      obtain ⟨res₂, hstepc, htrc⟩ := ihc funs₂ W' rfl hsc' hb hagc
+      cases htrc with
+      | eres =>
+          refine ⟨_, Step.ifFalse hstepc hcv, .norm (fun x hx => ?_)⟩
+          exact hb x (by
+            simpa [carryPostBound, carryStmt, hcnd] using hx)
+  | @ifHalt funs V st c body st1 hc ihc =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      have hsc' : carryExpr bound c = true := by
+        simp only [carryCode, carryStmt] at hsc
+        by_cases hcnd : (carryExpr bound c && carryStmts bound body) = true
+        · rw [Bool.and_eq_true] at hcnd
+          exact hcnd.1
+        · simp [hcnd] at hsc
+      have hagc : FunsAgree (calls := calls) (creates := creates) funs funs₂ (exprCallNames c) :=
+        hag.mono (fun y hy => by
+          show y ∈ stmtCallNames (.cond c body)
+          exact List.mem_append.mpr (Or.inl hy))
+      obtain ⟨res₂, hstepc, htrc⟩ := ihc funs₂ W' rfl hsc' hb hagc
+      cases htrc with
+      | eres => exact ⟨_, Step.ifHalt hstepc, .halt⟩
+  | @switchExec funs V st c cases' dflt cv st1 V' st2 o hc hsel ihc ihsel =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      have hsc' : carryExpr bound c = true ∧ carryCases bound cases' = true ∧
+          carryDflt bound dflt = true := by
+        simp only [carryCode, carryStmt] at hsc
+        by_cases hcnd : (carryExpr bound c && carryCases bound cases' &&
+            carryDflt bound dflt) = true
+        · rw [Bool.and_eq_true, Bool.and_eq_true] at hcnd
+          exact ⟨hcnd.1.1, hcnd.1.2, hcnd.2⟩
+        · simp [hcnd] at hsc
+      have hagc : FunsAgree (calls := calls) (creates := creates) funs funs₂ (exprCallNames c) :=
+        hag.mono (fun y hy => by
+          show y ∈ stmtCallNames (.switch c cases' dflt)
+          exact List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inl hy))))
+      have hagsel : FunsAgree (calls := calls) (creates := creates) funs funs₂
+          (carryCallNames (.stmt (.block (selectSwitch D cv cases' dflt)))) := by
+        refine hag.mono (fun y hy => ?_)
+        show y ∈ stmtCallNames (.switch c cases' dflt)
+        have hsub := selectSwitch_callNames_sub (calls := calls) (creates := creates)
+          (cv := cv) (cases := cases') (dflt := dflt) y
+          (by simpa [carryCallNames, stmtCallNames] using hy)
+        rcases List.mem_append.mp hsub with hh | hh
+        · exact List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inr hh)))
+        · exact List.mem_append.mpr (Or.inr hh)
+      obtain ⟨res₂, hstepc, htrc⟩ := ihc funs₂ W' rfl hsc'.1 hb hagc
+      have hsels : carryStmts bound (selectSwitch D cv cases' dflt) = true :=
+        carry_selectSwitch hsc'.2.1 hsc'.2.2
+      have hscb : carryCode bound (Code.stmt (.block (selectSwitch D cv cases' dflt))) =
+          true := by
+        simp [carryCode, carryStmt, hsels]
+      obtain ⟨res₃, hstepb, htrb⟩ := ihsel funs₂ W' rfl hscb hb hagsel
+      cases htrc with
+      | eres =>
+          have hpostb : carryPostBound bound
+              (Code.stmt (.block (selectSwitch D cv cases' dflt))) = bound := by
+            simp [carryPostBound, carryStmt, hsels]
+          have hpost : carryPostBound bound (Code.stmt (.switch c cases' dflt)) = bound := by
+            simp [carryPostBound, carryStmt, hsc'.1, hsc'.2.1, hsc'.2.2]
+          rw [hpostb] at htrb
+          rw [hpost]
+          cases htrb with
+          | norm hk => exact ⟨_, Step.switchExec hstepc hstepb, .norm hk⟩
+          | halt => exact ⟨_, Step.switchExec hstepc hstepb, .halt⟩
+  | @switchHalt funs V st c cases' dflt st1 hc ihc =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      have hsc' : carryExpr bound c = true := by
+        simp only [carryCode, carryStmt] at hsc
+        by_cases hcnd : (carryExpr bound c && carryCases bound cases' &&
+            carryDflt bound dflt) = true
+        · rw [Bool.and_eq_true, Bool.and_eq_true] at hcnd
+          exact hcnd.1.1
+        · simp [hcnd] at hsc
+      have hagc : FunsAgree (calls := calls) (creates := creates) funs funs₂ (exprCallNames c) :=
+        hag.mono (fun y hy => by
+          show y ∈ stmtCallNames (.switch c cases' dflt)
+          exact List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inl hy))))
+      obtain ⟨res₂, hstepc, htrc⟩ := ihc funs₂ W' rfl hsc' hb hagc
+      cases htrc with
+      | eres => exact ⟨_, Step.switchHalt hstepc, .halt⟩
+  | forLoop | forInitHalt =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      simp [carryCode, carryStmt] at hsc
+  | «break» =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      simp [carryCode, carryStmt] at hsc
+  | «continue» =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      simp [carryCode, carryStmt] at hsc
+  | «leave» =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      simp [carryCode, carryStmt] at hsc
+  | @seqNil funs V st =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      exact ⟨_, Step.seqNil, .norm (fun x hx => by simp [carryPostBound] at hx)⟩
+  | @seqCons funs V st s rest V1 st1 V2 st2 o hs hrest ihs ihrest =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      obtain ⟨bound₁, hstmt, hrest'⟩ := carryStmts_cons_inv hsc
+      have hags : FunsAgree (calls := calls) (creates := creates) funs funs₂ (stmtCallNames s) :=
+        hag.mono (fun y hy => by
+          show y ∈ stmtsCallNames (s :: rest)
+          exact List.mem_append.mpr (Or.inl hy))
+      have hagr : FunsAgree (calls := calls) (creates := creates) funs funs₂ (stmtsCallNames rest) :=
+        hag.mono (fun y hy => by
+          show y ∈ stmtsCallNames (s :: rest)
+          exact List.mem_append.mpr (Or.inr hy))
+      obtain ⟨res₂, hstep₁, htr₁⟩ := ihs funs₂ W' rfl (by simp [carryCode, hstmt])
+        hb (by simpa [carryCallNames] using hags)
+      have hpost₁ : carryPostBound bound (Code.stmt s) = bound₁ := by
+        simp [carryPostBound, hstmt]
+      rw [hpost₁] at htr₁
+      cases htr₁ with
+      | @norm A₁ st₁' hk =>
+          obtain ⟨res₃, hstep₂, htr₂⟩ := ihrest funs₂ W' rfl hrest' hk
+            (by simpa [carryCallNames] using hagr)
+          cases htr₂ with
+          | norm hk₂ => exact ⟨_, Step.seqCons hstep₁ hstep₂, .norm hk₂⟩
+          | halt => exact ⟨_, Step.seqCons hstep₁ hstep₂, .halt⟩
+  | @seqStop funs V st s rest V1 st1 o hs hne ihs =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      subst hV
+      obtain ⟨bound₁, hstmt, hrest'⟩ := carryStmts_cons_inv hsc
+      have hags : FunsAgree (calls := calls) (creates := creates) funs funs₂ (stmtCallNames s) :=
+        hag.mono (fun y hy => by
+          show y ∈ stmtsCallNames (s :: rest)
+          exact List.mem_append.mpr (Or.inl hy))
+      obtain ⟨res₂, hstep₁, htr₁⟩ := ihs funs₂ W' rfl (by simp [carryCode, hstmt])
+        hb (by simpa [carryCallNames] using hags)
+      cases htr₁ with
+      | norm hk => exact absurd rfl hne
+      | halt => exact ⟨_, Step.seqStop hstep₁ (by simp), .halt⟩
+  | loopDone | loopCondHalt | loopStep | loopPostHalt | loopBreak | loopLeave
+  | loopBodyHalt =>
+      intro A W bound funs₂ W' hV hsc hb hag
+      simp [carryCode] at hsc
