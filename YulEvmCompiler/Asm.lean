@@ -637,6 +637,7 @@ def lowerInstrWith (addrs : Std.HashMap Label Nat) : Asm → Option (List Instr)
   | .pushLabel l => addrs[l]?.map
       (fun a => [.push labelWidthFin (UInt256.ofNat a)])
   | .dynJump     => some [.op .JUMP]
+  | .pushImmutable _ v => some [.push ⟨32, by norm_num⟩ (conv v)]
 
 theorem lowerInstrWith_eq (p : List Asm) (i : Asm) :
     lowerInstrWith (labelAddrs p) i = lowerInstr p i := by
