@@ -221,7 +221,7 @@ theorem Inv.step {prog : List Asm} {H : LayoutMap} (hV : ValidHeights prog H)
       refine ⟨?_, .word :: S, hHc, .word hm⟩
       show (AVal.word v :: σ).length ≤ 1023
       simp only [List.length_cons, hL]; omega
-  | @pushImmutable key v c σ yst _ =>
+  | @pushImmutable key v c σ yst =>
       obtain ⟨hHc, hlen⟩ := hV (.pushImmutable key v) c hsuf _ hHa
       have hL : σ.length = S.length := hm.length_eq
       refine ⟨?_, .word :: S, hHc, .word hm⟩

@@ -77,7 +77,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         omega)
     · rw [hstk']
       rfl
-  | @pushImmutable key v c σ yst hv =>
+  | @pushImmutable key v c σ yst =>
     -- Identical to `push` except the width is pinned to 32, which is what makes
     -- the immediate's byte position independent of the value stored there.
     obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=

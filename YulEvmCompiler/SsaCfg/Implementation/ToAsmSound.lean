@@ -516,9 +516,9 @@ theorem astep_elideJumps {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
   cases h with
   | @push v c σ yst =>
     simp only [elideConf, ToAsm.elideJumps_push]; exact ASteps.single AStep.push
-  | @pushImmutable key v c σ yst hv =>
+  | @pushImmutable key v c σ yst =>
     simp only [elideConf, ToAsm.elideJumps_pushImmutable]
-    exact ASteps.single (AStep.pushImmutable hv)
+    exact ASteps.single AStep.pushImmutable
   | @op yop args rets c σ yst yst' hb =>
     simp only [elideConf, ToAsm.elideJumps_op]; exact ASteps.single (AStep.op hb)
   | @dup n v τ ρ c yst hlen =>
@@ -594,7 +594,7 @@ theorem AStep.extend {prog : List Asm} {a b : AConf} (below : List AVal)
       ⟨b.code, b.stk ++ below, b.yst⟩ := by
   cases h with
   | push => simpa using AStep.push
-  | pushImmutable hv => simpa using AStep.pushImmutable hv
+  | pushImmutable => simpa using AStep.pushImmutable
   | op hb => simpa [List.append_assoc] using AStep.op hb
   | @dup n v τ ρ c yst hlen =>
     have := AStep.dup (model := model) (prog := prog) (n := n) (v := v) (τ := τ)

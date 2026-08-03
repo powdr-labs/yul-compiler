@@ -107,7 +107,7 @@ theorem AStep.stkOK [model : ExternalModel] {prog : List Asm} {a b : AConf}
     (h : AStep prog a b) (ha : StkOK prog a.stk) : StkOK prog b.stk := by
   cases h with
   | push => exact ha.cons_word
-  | pushImmutable _ => exact ha.cons_word
+  | pushImmutable => exact ha.cons_word
   | op _ => exact (ha.append_right).words_append _
   | @dup n v τ ρ c yst _ =>
     intro l hl
@@ -294,6 +294,19 @@ structure ConfMatch (prog : List Asm) (is : List Instr) (a : AConf)
   smatch : StateMatch a.yst s
   pc : s.pc = UInt256.ofNat (codeSize prog - codeSize a.code)
   stack : s.stack = mapStk prog a.stk
+  /-- Every immutable placeholder in the program holds the value the
+  environment records for its key.
+
+  This is the compiler's *layout-consistency* obligation for immutables, the
+  exact counterpart of `Layout.Consistent` for data segments: the constants
+  baked into the emitted bytes must be the ones the deployed code's environment
+  reports. Phase A deliberately does not carry it — `AStep.pushImmutable` pushes
+  the environment's value, so the source built-in is matched regardless — which
+  keeps the burden here, where the emitted bytes actually exist. It is
+  preserved along a run because no built-in ever writes `env.immutable`
+  (`AStep.immutable_eq`). -/
+  imms : ∀ key v, Asm.pushImmutable key v ∈ prog →
+    v = a.yst.env.immutable (YulSemantics.EVM.litValue (.string key))
 
 /-! ### Open-world call and creation realization
 

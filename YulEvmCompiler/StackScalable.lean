@@ -535,7 +535,7 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
       obtain ⟨S, F, R, hfl, hfb, hrl⟩ := hinv.certAt
       obtain ⟨hflc, hfbc, hrlc⟩ := hV _ c S F R hfl hfb hrl
       exact hinv.growWord hfl hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
-  | @pushImmutable key v c σ yst _ =>
+  | @pushImmutable key v c σ yst =>
       obtain ⟨S, F, R, hfl, hfb, hrl⟩ := hinv.certAt
       obtain ⟨hflc, hfbc, hrlc⟩ := hV _ c S F R hfl hfb hrl
       exact hinv.growWord hfl hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
