@@ -1,4 +1,4 @@
-import YulEvmCompiler.SsaCfg.Implementation.PassesSound.Wf
+import YulEvmCompiler.SsaCfg.Implementation.PassesSound.CoalesceSound
 set_option warningAsError true
 
 /-!
@@ -480,16 +480,62 @@ theorem dve_dom {f : Func} (hwf : f.wfCheck n = true)
   exact hx.2 (ToAsm.domCheck_entry hli hdom hxub.1)
 
 omit model in
+/-- **Dominance preservation for block coalescing** — read off the pass's
+own guard. Merging *grows* a block's use set (it absorbs the target's), so
+this is the one pass `domCheck_of_shrinking` cannot serve; rather than
+re-derive the liveness fixed point, `Passes.coalesce` checks dominance on
+its result and falls back to its input, which is behavior-neutral and never
+fires in practice. -/
+theorem coalesce_dom {f : Func}
+    (hdom : ToAsm.Func.domCheck f = true) :
+    ToAsm.Func.domCheck (Passes.coalesce f) = true := by
+  rcases Passes.coalesce_cases f with ⟨h, -, hd⟩ | h
+  · rw [h]; exact hd
+  · rw [h]; exact hdom
+
+omit model in
+/-- **Dominance preservation for branch-sense normalization** — proved. The
+rewrite replaces a branch condition by the argument of the `iszero` that
+defined it, and that `iszero` lives in the *same block*, so the block's use
+set only shrinks; `ToAsm.domCheck_of_shrinking` does the rest. (This is
+exactly why the pass is restricted to same-block `iszero`s: a cross-block
+condition could make a value newly live into the branch's block, and the
+liveness fixed point would have to be re-derived.) -/
+theorem invertBranches_dom {f : Func}
+    (hdom : ToAsm.Func.domCheck f = true) :
+    ToAsm.Func.domCheck (Passes.invertBranches f) = true := by
+  refine ToAsm.domCheck_of_shrinking hdom rfl rfl ?_
+  intro i b' hb'
+  have hi : i < f.blocks.size := by
+    have hi' : i < (Passes.invertBranches f).blocks.size :=
+      (Array.getElem?_eq_some_iff.mp hb').1
+    simpa using hi'
+  have hb : f.blocks[i]? = some f.blocks[i] := Array.getElem?_eq_getElem hi
+  have heq : b' = { f.blocks[i] with
+      term := Passes.invertTerm (Passes.blockIszeroSources (Passes.useCounts f)
+        f.blocks[i]) f.blocks[i].term } :=
+    Option.some.inj (hb'.symm.trans (Passes.invertBranches_get hb))
+  subst b'
+  refine ⟨f.blocks[i], hb, ?_, ?_, ?_⟩
+  · exact fun x hx => Passes.invertBranches_blockUses hx
+  · intro x hx
+    simpa [ToAsm.blockDefs] using hx
+  · intro e he
+    exact ⟨e, Passes.invertTerm_mem_edges he, rfl⟩
+
+omit model in
 /-- Dominance preservation for one pipeline round, including the intermediate
-`wfCheck` facts supplied by the four preservation lemmas above. -/
+`wfCheck` facts supplied by the preservation lemmas above. -/
 theorem runOnce_dom {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
     (hdom : ToAsm.Func.domCheck f = true) :
     ToAsm.Func.domCheck (Passes.runOnce f) = true := by
   have hwf1 := Passes.elimTrivialParams_wf hwf
-  have hwf3 := Passes.constFold_wf hwf1
-  have hwf4 := Passes.cse_wf hwf3
+  have hwf2 := Passes.coalesce_wf hwf1
+  have hwf3 := Passes.invertBranches_wf hwf2
+  have hwf4 := Passes.constFold_wf hwf3
   unfold Passes.runOnce
-  exact dve_dom hwf4 (cse_dom hwf3 (constFold_dom (elimTrivialParams_dom hwf hdom)))
+  exact dve_dom hwf4 (constFold_dom (invertBranches_dom
+    (coalesce_dom (elimTrivialParams_dom hwf hdom))))
 
 omit model in
 theorem Passes.elimTrivialParams_params_entry (f : Func) :
@@ -528,7 +574,7 @@ theorem Passes.elimTrivialParams_params_entry (f : Func) :
   rw [hr.2.2]
   exact ⟨hr.1, hr.2.1⟩
 
-/-- The four local simulations composed in the order used by `runOnce`. -/
+/-- The local simulations composed in the order used by `runOnce`. -/
 theorem runOnce_sound {P : Prog} {f : Func} {args : List U256}
     {st : EvmState} {res : FRes} {eb eb' : Block}
     (hwf : f.wfCheck P.funcs.size = true)
@@ -541,50 +587,59 @@ theorem runOnce_sound {P : Prog} {f : Func} {args : List U256}
       (Regs.empty.setMany (Passes.runOnce f).params args) st
       ⟨eb'.instrs, eb'.term⟩ res := by
   let f1 := Passes.elimTrivialParams f
-  let f2 := Passes.constFold f1
-  let f3 := Passes.cse f2
+  let f2 := Passes.coalesce f1
+  let f3 := Passes.invertBranches f2
+  let f4 := Passes.constFold f3
   have hwf1 : f1.wfCheck P.funcs.size = true := Passes.elimTrivialParams_wf hwf
-  have hwf2 : f2.wfCheck P.funcs.size = true := Passes.constFold_wf hwf1
-  have hwf3 : f3.wfCheck P.funcs.size = true := Passes.cse_wf hwf2
+  have hwf2 : f2.wfCheck P.funcs.size = true := Passes.coalesce_wf hwf1
+  have hwf3 : f3.wfCheck P.funcs.size = true := Passes.invertBranches_wf hwf2
+  have hwf4 : f4.wfCheck P.funcs.size = true := Passes.constFold_wf hwf3
   have hdom1 : ToAsm.Func.domCheck f1 = true := elimTrivialParams_dom hwf hdom
-  have hdom2 : ToAsm.Func.domCheck f2 = true := constFold_dom hdom1
-  have hdom3 : ToAsm.Func.domCheck f3 = true := cse_dom hwf2 hdom2
+  have hdom2 : ToAsm.Func.domCheck f2 = true := coalesce_dom hdom1
+  have hdom3 : ToAsm.Func.domCheck f3 = true := invertBranches_dom hdom2
   obtain ⟨-, -, ⟨eb1, heb1, -⟩, -⟩ := Passes.func_wfCheck_iff.mp hwf1
   obtain ⟨-, -, ⟨eb2, heb2, -⟩, -⟩ := Passes.func_wfCheck_iff.mp hwf2
   obtain ⟨-, -, ⟨eb3, heb3, -⟩, -⟩ := Passes.func_wfCheck_iff.mp hwf3
+  obtain ⟨-, -, ⟨eb4, heb4, -⟩, -⟩ := Passes.func_wfCheck_iff.mp hwf4
   have hfields1 := Passes.elimTrivialParams_params_entry f
   have hparams1 : f1.params = f.params := by simpa [f1] using hfields1.1
   have hentry1 : f1.entry = f.entry := by simpa [f1] using hfields1.2
-  have hparams2 : f2.params = f1.params := by rfl
-  have hentry2 : f2.entry = f1.entry := by rfl
+  have hparams2 : f2.params = f1.params := Passes.coalesce_params f1
   have hparams3 : f3.params = f2.params := by rfl
   have hentry3 : f3.entry = f2.entry := by rfl
+  have hparams4 : f4.params = f3.params := by rfl
+  have hentry4 : f4.entry = f3.entry := by rfl
   have heb1' : (Passes.elimTrivialParams f).blocks[f.entry]? = some eb1 := by
     simpa [f1, hentry1] using heb1
-  have heb2' : (Passes.constFold f1).blocks[f1.entry]? = some eb2 := by
-    simpa [f2, hentry2] using heb2
-  have heb3' : (Passes.cse f2).blocks[f2.entry]? = some eb3 := by
+  have heb2' : (Passes.coalesce f1).blocks[(Passes.coalesce f1).entry]? = some eb2 := by
+    simpa [f2] using heb2
+  have heb3' : (Passes.invertBranches f2).blocks[f2.entry]? = some eb3 := by
     simpa [f3, hentry3] using heb3
+  have heb4' : (Passes.constFold f3).blocks[f3.entry]? = some eb4 := by
+    simpa [f4, hentry4] using heb4
   have h1 := elimTrivialParams_sound hwf hdom heb heb1' hexec
   have h1' : Exec (model := model) P f1 (Regs.empty.setMany f1.params args) st
       ⟨eb1.instrs, eb1.term⟩ res := by simpa [f1, hparams1] using h1
-  have h2 := constFold_sound hwf1 heb1 heb2' h1'
+  have h2 := coalesce_sound heb1 heb2' h1'
   have h2' : Exec (model := model) P f2 (Regs.empty.setMany f2.params args) st
-      ⟨eb2.instrs, eb2.term⟩ res := by simpa [f2, hparams2] using h2
-  have h3 := cse_sound hwf2 hdom2 heb2 heb3' h2'
+      ⟨eb2.instrs, eb2.term⟩ res := by simpa [f2] using h2
+  have h3 := invertBranches_sound heb2 heb3' h2'
   have h3' : Exec (model := model) P f3 (Regs.empty.setMany f3.params args) st
       ⟨eb3.instrs, eb3.term⟩ res := by simpa [f3, hparams3] using h3
-  have heb4 : (Passes.dve f3).blocks[f3.entry]? = some eb' := by
-    simpa [Passes.runOnce, f1, f2, f3, Passes.dve_entry] using heb'
-  have h4 := dve_sound hwf3 heb3 heb4 h3'
-  simpa [Passes.runOnce, f1, f2, f3, Passes.dve_params] using h4
+  have h4 := constFold_sound hwf3 heb3 heb4' h3'
+  have h4' : Exec (model := model) P f4 (Regs.empty.setMany f4.params args) st
+      ⟨eb4.instrs, eb4.term⟩ res := by simpa [f4, hparams4] using h4
+  have heb5 : (Passes.dve f4).blocks[f4.entry]? = some eb' := by
+    simpa [Passes.runOnce, f1, f2, f3, f4, Passes.dve_entry] using heb'
+  have h5 := dve_sound hwf4 heb4 heb5 h4'
+  simpa [Passes.runOnce, f1, f2, f3, f4, Passes.dve_params] using h5
 
 omit model in
 theorem Passes.runOnce_params (f : Func) : (runOnce f).params = f.params := by
   unfold runOnce
   rw [dve_params]
-  change (constFold (elimTrivialParams f)).params = f.params
-  change (elimTrivialParams f).params = f.params
+  change (invertBranches (coalesce (elimTrivialParams f))).params = f.params
+  rw [invertBranches_params, coalesce_params]
   exact (elimTrivialParams_params_entry f).1
 
 omit model in
@@ -617,7 +672,8 @@ theorem Passes.runOnce_nrets (f : Func) : (runOnce f).nrets = f.nrets := by
     rw [hr.2]
     exact hr.1
   unfold runOnce
-  change (elimTrivialParams f).nrets = f.nrets
+  change (coalesce (elimTrivialParams f)).nrets = f.nrets
+  rw [coalesce_nrets]
   exact he
 
 /-- Map one local pipeline round over every function without changing function
