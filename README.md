@@ -325,8 +325,19 @@ to fall back to doing nothing.
   and call-path footprint, not the total number of selected bindings. Existing
   successful candidates still win before this fallback, so their bytecode and
   gas are unchanged. Programs without a safe guard contract remain rejected.
-  This fallback addresses stack reach only; `gas` and immutables remain
-  separate unsupported features.
+  This fallback addresses stack reach only; `gas` remains a separate
+  unsupported feature.
+- **Immutables.** `loadimmutable(name)` compiles to a fixed-width `PUSH32`
+  placeholder (`Asm.pushImmutable`) whose 32 immediate bytes therefore sit at a
+  value-independent offset, and `setimmutable(base, name, value)` is **desugared
+  in the front end** to one `mstore` per recorded placeholder offset before the
+  object layer runs. Two consequences worth stating plainly. The correctness
+  theorem covers the *desugared* program — `setimmutable` has no source
+  semantics to preserve, so this is a front-end desugaring in the same family as
+  `memoryguard`, not a proved source-to-source pass. And the emitted constants
+  must match the layout the code runs under: that is `ConfMatch.imms`, the
+  counterpart of `Layout.Consistent` for data segments, discharged because no
+  step ever rewrites `env.immutable`.
 - **Library linking.** `compileSource` takes an optional `LinkEnv` — the same
   `file.sol:Lib = 0xADDR` information as solc's `--libraries`, exposed on the
   CLI as `yulc --libraries=NAME=0xADDR[,…]`. A live `linkersymbol("file:Lib")`

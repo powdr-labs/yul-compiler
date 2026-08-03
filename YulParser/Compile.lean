@@ -315,9 +315,39 @@ object's compiled layout records, so the call is **eliminable**: it expands to
 one ordinary `mstore` per offset, before anything else runs.
 
 That keeps the extension entirely in the front end — the object layer, its
-layout-resolution proof and `compileObject_correct` never see it — exactly as
-`linkersymbol` resolution does. The guarantee is therefore about the *expanded*
-program, the one whose immutables are written at those offsets. -/
+layout-resolution proof and `compileObject_correct` never see it.
+
+**Scope limit, stated plainly.** `setimmutable` has no source semantics — it is
+not an `Op` — so there is no source run to preserve, and *no semantic-preservation
+theorem relates the original object to the expanded one*. The correctness theorem
+covers the **desugared** program: the one that performs those `mstore`s. This is
+a front-end desugaring in the same family as `memoryguard`, not a proved
+`Optimizer.Pass`. Proving it would mean modeling `setimmutable` upstream and
+relating the patched code bytes to compiling at the patched assignment. -/
+
+/-- Does this object tree read or write an immutable? -/
+partial def usesImmutablesExpr : Expr YulSemantics.EVM.Op → Bool
+  | .builtin .loadimmutable _ => true
+  | .call "setimmutable" _ => true
+  | .call _ args => args.any usesImmutablesExpr
+  | .builtin _ args => args.any usesImmutablesExpr
+  | _ => false
+
+partial def usesImmutablesStmt : Stmt YulSemantics.EVM.Op → Bool
+  | .block body | .funDef _ _ _ body => body.any usesImmutablesStmt
+  | .letDecl _ v => (v.map usesImmutablesExpr).getD false
+  | .assign _ v | .exprStmt v => usesImmutablesExpr v
+  | .cond c body => usesImmutablesExpr c || body.any usesImmutablesStmt
+  | .switch c cases dflt =>
+      usesImmutablesExpr c || cases.any (fun cb => cb.2.any usesImmutablesStmt) ||
+        ((dflt.map (·.any usesImmutablesStmt)).getD false)
+  | .forLoop init c post body =>
+      init.any usesImmutablesStmt || usesImmutablesExpr c ||
+        post.any usesImmutablesStmt || body.any usesImmutablesStmt
+  | _ => false
+
+partial def usesImmutablesObject : Object YulSemantics.EVM.Op → Bool
+  | .mk _ code subs _ => code.any usesImmutablesStmt || subs.any usesImmutablesObject
 
 /-- Expand every `setimmutable` in an object tree against the placeholder
 offsets of that object's own children. -/
@@ -458,7 +488,14 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
       -- SSA-CFG backend on the object path too (same layout fixpoint, SSA
       -- per code block); both artifacts are kept and the cheaper bytecode
       -- (static stack-traffic cost) wins.
-      let ssaLayout := YulEvmCompiler.SsaCfg.compileObjectViaSsa (expandSetImmutablesObject optimized)
+      -- The constructor's patch offsets are read off the *classic* plan
+      -- (`objectImmutableOffsets`), but the SSA object path schedules its code
+      -- independently and records no offsets, so a winning SSA artifact could
+      -- be patched at the wrong positions. Withhold that candidate whenever the
+      -- tree touches an immutable.
+      let ssaLayout :=
+        if usesImmutablesObject optimized then none
+        else YulEvmCompiler.SsaCfg.compileObjectViaSsa (expandSetImmutablesObject optimized)
       let classicLayout := tryLayouts optimized
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
