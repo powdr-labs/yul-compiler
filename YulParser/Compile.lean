@@ -317,13 +317,18 @@ one ordinary `mstore` per offset, before anything else runs.
 That keeps the extension entirely in the front end — the object layer, its
 layout-resolution proof and `compileObject_correct` never see it.
 
-**Scope limit, stated plainly.** `setimmutable` has no source semantics — it is
-not an `Op` — so there is no source run to preserve, and *no semantic-preservation
-theorem relates the original object to the expanded one*. The correctness theorem
-covers the **desugared** program: the one that performs those `mstore`s. This is
-a front-end desugaring in the same family as `memoryguard`, not a proved
-`Optimizer.Pass`. Proving it would mean modeling `setimmutable` upstream and
-relating the patched code bytes to compiling at the patched assignment. -/
+**What is proved, and what is not.** The offsets are a theorem:
+`immutableOffsets_correct` shows every offset this expansion patches really does
+locate that immutable's 32-byte immediate in the emitted code, so a wrong offset
+— the silent-miscompilation risk — is ruled out.
+
+What remains unproved is the *meaning*: `setimmutable` has no source semantics
+(it is not an `Op`), so there is no source run to preserve and no
+semantic-preservation theorem relates the original object to the expanded one.
+The correctness theorem covers the **desugared** program, the one that performs
+these `mstore`s. That is a front-end desugaring in the same family as
+`memoryguard`, not a proved `Optimizer.Pass`; closing it would mean modeling
+`setimmutable` upstream. -/
 
 /-- Does this object tree read or write an immutable? -/
 partial def usesImmutablesExpr : Expr YulSemantics.EVM.Op → Bool

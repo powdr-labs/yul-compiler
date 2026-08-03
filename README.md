@@ -331,13 +331,15 @@ to fall back to doing nothing.
   placeholder (`Asm.pushImmutable`) whose 32 immediate bytes therefore sit at a
   value-independent offset, and `setimmutable(base, name, value)` is **desugared
   in the front end** to one `mstore` per recorded placeholder offset before the
-  object layer runs. Two consequences worth stating plainly. The correctness
-  theorem covers the *desugared* program — `setimmutable` has no source
-  semantics to preserve, so this is a front-end desugaring in the same family as
-  `memoryguard`, not a proved source-to-source pass. And the emitted constants
-  must match the layout the code runs under: that is `ConfMatch.imms`, the
-  counterpart of `Layout.Consistent` for data segments, discharged because no
-  step ever rewrites `env.immutable`.
+  object layer runs. Those offsets are a theorem, not a trusted computation:
+  `immutableOffsets_correct` shows each one really does locate that immutable's
+  32-byte immediate in the emitted code, so a wrong offset cannot silently
+  miscompile. The emitted constants must also match the layout the code runs
+  under — that is `ConfMatch.imms`, the counterpart of `Layout.Consistent` for
+  data segments, discharged because no step ever rewrites `env.immutable`.
+  What is *not* proved is `setimmutable`'s meaning: it has no source semantics,
+  so the correctness theorem covers the desugared program, in the same family as
+  `memoryguard` desugaring rather than a proved source-to-source pass.
 - **Library linking.** `compileSource` takes an optional `LinkEnv` — the same
   `file.sol:Lib = 0xADDR` information as solc's `--libraries`, exposed on the
   CLI as `yulc --libraries=NAME=0xADDR[,…]`. A live `linkersymbol("file:Lib")`

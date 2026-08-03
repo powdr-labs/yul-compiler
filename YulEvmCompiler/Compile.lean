@@ -381,4 +381,73 @@ def immutableOffsets : List Asm → Nat → List (String × Nat)
       (key, p + 1) :: immutableOffsets rest (p + 33)
   | i :: rest, p => immutableOffsets rest (p + i.size)
 
+/-- Dropping past a prefix. -/
+private theorem drop_append_ge {α : Type} :
+    ∀ (a b : List α) (n : Nat), a.length ≤ n → (a ++ b).drop n = b.drop (n - a.length)
+  | [], b, n, _ => by simp
+  | x :: a, b, 0, h => by simp at h
+  | x :: a, b, n + 1, h => by
+      simp only [List.cons_append, List.drop_succ_cons, List.length_cons]
+      rw [drop_append_ge a b n (by simpa using h),
+        show n + 1 - (a.length + 1) = n - a.length by omega]
+
+/-- **The reported offsets are right.** Reading 32 bytes at any offset
+`immutableOffsets` reports yields exactly the immediate `lowerProg` emitted for
+that immutable. `setimmutable` patches at those offsets and nothing else checks
+them, so a wrong one would be a silent miscompilation; this rules that out.
+Stated for a fragment at an arbitrary base so the induction goes through. -/
+theorem immutableOffsets_spec {imm : String → U256} {prog : List Asm} :
+    ∀ (c : List Asm) (base : Nat) (frag : List Instr),
+      lowerFrag imm prog c = some frag →
+      ∀ key off, (key, off) ∈ immutableOffsets c base →
+        base ≤ off ∧
+          ((assembleBytes frag).drop (off - base)).take 32
+            = natToBE (conv (imm key)).toNat 32 := by
+  intro c
+  induction c with
+  | nil => intro base frag _ key off hmem; simp [immutableOffsets] at hmem
+  | cons i rest ih =>
+    intro base frag hlow key off hmem
+    simp only [lowerFrag, Option.bind_eq_bind] at hlow
+    obtain ⟨is1, his1, hlow⟩ := Option.bind_eq_some_iff.mp hlow
+    obtain ⟨is2, his2, hlow⟩ := Option.bind_eq_some_iff.mp hlow
+    obtain rfl : is1 ++ is2 = frag := by simpa using hlow
+    have hlen : (assembleBytes is1).length = i.size := lowerInstr_length his1
+    have hsplit : assembleBytes (is1 ++ is2) = assembleBytes is1 ++ assembleBytes is2 := by
+      simp [assembleBytes]
+    cases i with
+    | pushImmutable k =>
+        obtain rfl : [Instr.push ⟨32, by norm_num⟩ (conv (imm k))] = is1 := by
+          simpa [lowerInstr] using his1
+        have hb : assembleBytes [Instr.push ⟨32, by norm_num⟩ (conv (imm k))]
+            = UInt8.ofNat (0x5f + 32) :: natToBE (conv (imm k)).toNat 32 := by
+          simp [assembleBytes, Instr.bytes]
+        have hb33 : (assembleBytes [Instr.push ⟨32, by norm_num⟩ (conv (imm k))]).length = 33 := by
+          rw [hb]; simp
+        simp only [immutableOffsets, List.mem_cons, Prod.mk.injEq] at hmem
+        rcases hmem with ⟨rfl, rfl⟩ | h
+        · refine ⟨by omega, ?_⟩
+          rw [hsplit, hb, show base + 1 - base = 1 by omega]
+          simp
+        · obtain ⟨hge, hbytes⟩ := ih (base + 33) is2 his2 key off h
+          refine ⟨by omega, ?_⟩
+          rw [hsplit, drop_append_ge _ _ _ (by rw [hb33]; omega), hb33, Nat.sub_sub]
+          exact hbytes
+    | _ =>
+        simp only [immutableOffsets] at hmem
+        obtain ⟨hge, hbytes⟩ := ih (base + Asm.size _) is2 his2 key off hmem
+        refine ⟨by omega, ?_⟩
+        rw [hsplit, drop_append_ge _ _ _ (by rw [hlen]; omega), hlen]
+        rw [Nat.sub_sub]
+        exact hbytes
+
+/-- Whole-program form: every offset `immutableOffsets` reports for the accepted
+program locates that immutable's immediate in the emitted bytes. -/
+theorem immutableOffsets_correct {imm : String → U256} {p : List Asm} {is : List Instr}
+    (hlow : lowerProg imm p = some is) {key : String} {off : Nat}
+    (hmem : (key, off) ∈ immutableOffsets p 0) :
+    ((assembleBytes is).drop off).take 32 = natToBE (conv (imm key)).toNat 32 := by
+  have := (immutableOffsets_spec (imm := imm) (prog := p) p 0 is hlow key off hmem).2
+  simpa using this
+
 end YulEvmCompiler
