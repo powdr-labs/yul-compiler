@@ -38,14 +38,18 @@ abbrev SlotMap := List (SpillKey × Nat)
 def isSelected (selected : SpillSet) (owner : Owner) (x : Ident) : Bool :=
   selected.contains { owner, name := x }
 
-abbrev SelectedPred := Owner → Ident → Bool
+structure SelectedPred where
+  index : Std.HashSet SpillKey
+
+@[inline] def SelectedPred.contains (selected : SelectedPred)
+    (owner : Owner) (name : Ident) : Bool :=
+  selected.index.contains { owner, name }
 
 /-- Build the hot-path membership index once per pressure traversal.  The
 proof-facing spill set remains a list, while large protocol objects avoid a
 linear string scan at every variable occurrence. -/
 def selectedPred (selected : SpillSet) : SelectedPred :=
-  let index := Std.HashSet.ofList selected
-  fun owner name => index.contains { owner, name }
+  { index := Std.HashSet.ofList selected }
 
 inductive PressureKind
   | read
@@ -64,14 +68,14 @@ structure Pressure where
   deriving Repr
 
 def physicalDecls (chosen : SelectedPred) (owner : Owner) (xs : List Ident) : List Ident :=
-  xs.filter fun x => !chosen owner x
+  xs.filter fun x => !chosen.contains owner x
 
 mutual
   def firstPressureExpr (chosen : SelectedPred) (owner : Owner) (phi : FMap)
       (layout : List Ident) (off : Nat) : Expr Op → Option Pressure
     | .lit _ => none
     | .var x =>
-        if chosen owner x then none else
+        if chosen.contains owner x then none else
         match layout.findIdx? (· = x) with
         | some idx =>
             if off + idx < 16 then none
@@ -103,7 +107,7 @@ def firstPressureAssigns (chosen : SelectedPred) (owner : Owner)
     (layout : List Ident) : List Ident → Option Pressure
   | [] => none
   | x :: xs =>
-      if chosen owner x then firstPressureAssigns chosen owner layout xs else
+      if chosen.contains owner x then firstPressureAssigns chosen owner layout xs else
       match layout.findIdx? (· = x) with
       | some idx =>
           if idx + xs.length < 16 then firstPressureAssigns chosen owner layout xs
@@ -117,7 +121,7 @@ def firstPressureAssigns (chosen : SelectedPred) (owner : Owner)
 def firstReturnCopyPressure (chosen : SelectedPred) (owner : Owner)
     (signature returns layout : List Ident) : Option Pressure :=
   returns.findSome? fun r =>
-    if !chosen owner r then none else
+    if !chosen.contains owner r then none else
     match layout.findIdx? (· = r) with
     | some idx =>
         if idx < 16 then none else
@@ -247,20 +251,27 @@ def pressureBatchLimit : Nat := 32
 def samePressureBinding (a b : Pressure) : Bool :=
   a.owner == b.owner && a.name == b.name
 
-def addPressure (limit : Nat) (pressures : List Pressure)
-    (pressure : Pressure) : List Pressure :=
-  if limit ≤ pressures.length || pressures.any (samePressureBinding pressure) then
+structure PressureBatch where
+  values : List Pressure := []
+  size : Nat := 0
+
+@[inline] def PressureBatch.full (limit : Nat) (pressures : PressureBatch) : Bool :=
+  limit ≤ pressures.size
+
+def addPressure (limit : Nat) (pressures : PressureBatch)
+    (pressure : Pressure) : PressureBatch :=
+  if pressures.full limit || pressures.values.any (samePressureBinding pressure) then
     pressures
   else
-    pressure :: pressures
+    { values := pressure :: pressures.values, size := pressures.size + 1 }
 
 mutual
   def collectPressureExpr (limit : Nat) (chosen : SelectedPred) (owner : Owner)
-      (phi : FMap) (layout : List Ident) (off : Nat) (pressures : List Pressure) :
-      Expr Op → List Pressure
+      (phi : FMap) (layout : List Ident) (off : Nat) (pressures : PressureBatch) :
+      Expr Op → PressureBatch
     | .lit _ => pressures
     | .var x =>
-        if limit ≤ pressures.length || chosen owner x then pressures else
+        if pressures.full limit || chosen.contains owner x then pressures else
         match layout.findIdx? (· = x) with
         | some idx =>
             if off + idx < 16 then pressures
@@ -281,8 +292,8 @@ mutual
             collectPressureArgs limit chosen owner phi layout off pressures args
 
   def collectPressureArgs (limit : Nat) (chosen : SelectedPred) (owner : Owner)
-      (phi : FMap) (layout : List Ident) (off : Nat) (pressures : List Pressure) :
-      List (Expr Op) → List Pressure
+      (phi : FMap) (layout : List Ident) (off : Nat) (pressures : PressureBatch) :
+      List (Expr Op) → PressureBatch
     | [] => pressures
     | e :: rest =>
         let pressures' :=
@@ -292,12 +303,12 @@ mutual
 end
 
 def collectPressureAssigns (limit : Nat) (chosen : SelectedPred) (owner : Owner)
-    (layout : List Ident) (pressures : List Pressure) :
-    List Ident → List Pressure
+    (layout : List Ident) (pressures : PressureBatch) :
+    List Ident → PressureBatch
   | [] => pressures
   | x :: xs =>
       let pressures' :=
-        if limit ≤ pressures.length || chosen owner x then pressures else
+        if pressures.full limit || chosen.contains owner x then pressures else
         match layout.findIdx? (· = x) with
         | some idx =>
             if idx + xs.length < 16 then pressures
@@ -311,9 +322,9 @@ def collectPressureAssigns (limit : Nat) (chosen : SelectedPred) (owner : Owner)
 
 def collectReturnCopyPressures (limit : Nat) (chosen : SelectedPred)
     (owner : Owner) (signature returns layout : List Ident)
-    (pressures : List Pressure) : List Pressure :=
+    (pressures : PressureBatch) : PressureBatch :=
   returns.foldl (fun pressures r =>
-    if limit ≤ pressures.length || !chosen owner r then pressures else
+    if pressures.full limit || !chosen.contains owner r then pressures else
     match layout.findIdx? (· = r) with
     | some idx =>
         if idx < 16 then pressures else
@@ -333,8 +344,8 @@ def collectReturnCopyPressures (limit : Nat) (chosen : SelectedPred)
 mutual
   def collectPressureBlock (limit : Nat) (chosen : SelectedPred) (owner : Owner)
       (signature returns : List Ident) (phi : FMap) (layout : List Ident)
-      (pressures : List Pressure) (body : Block Op) : List Pressure :=
-    if limit ≤ pressures.length then pressures else
+      (pressures : PressureBatch) (body : Block Op) : PressureBatch :=
+    if pressures.full limit then pressures else
     let (scope, _) := hoistInfos 0 body
     (collectPressureStmts limit chosen owner signature returns (scope :: phi)
       layout pressures body).1
@@ -342,7 +353,7 @@ mutual
 
   def collectPressureStmt (limit : Nat) (chosen : SelectedPred) (owner : Owner)
       (signature returns : List Ident) (phi : FMap) (layout : List Ident)
-      (pressures : List Pressure) : Stmt Op → List Pressure × List Ident
+      (pressures : PressureBatch) : Stmt Op → PressureBatch × List Ident
     | .exprStmt e =>
         (collectPressureExpr limit chosen owner phi layout 0 pressures e, layout)
     | .letDecl xs val =>
@@ -402,10 +413,10 @@ mutual
 
   def collectPressureStmts (limit : Nat) (chosen : SelectedPred) (owner : Owner)
       (signature returns : List Ident) (phi : FMap) (layout : List Ident)
-      (pressures : List Pressure) : Block Op → List Pressure × List Ident
+      (pressures : PressureBatch) : Block Op → PressureBatch × List Ident
     | [] => (pressures, layout)
     | s :: rest =>
-        if limit ≤ pressures.length then (pressures, layout) else
+        if pressures.full limit then (pressures, layout) else
         let result := collectPressureStmt limit chosen owner signature returns phi
           layout pressures s
         collectPressureStmts limit chosen owner signature returns phi result.2
@@ -414,11 +425,11 @@ mutual
 
   def collectPressureCases (limit : Nat) (chosen : SelectedPred) (owner : Owner)
       (signature returns : List Ident) (phi : FMap) (layout : List Ident)
-      (pressures : List Pressure) :
-      List (Literal × Block Op) → List Pressure
+      (pressures : PressureBatch) :
+      List (Literal × Block Op) → PressureBatch
     | [] => pressures
     | (_, body) :: rest =>
-        if limit ≤ pressures.length then pressures else
+        if pressures.full limit then pressures else
         let pressures' := collectPressureBlock limit chosen owner signature returns phi
           layout pressures body
         collectPressureCases limit chosen owner signature returns phi layout
@@ -432,7 +443,7 @@ end
 def collectPressureBatch (selected : SpillSet) (body : Block Op) : List Pressure :=
   let (scope, _) := hoistInfos 0 body
   (collectPressureStmts pressureBatchLimit (selectedPred selected) none [] [] [scope]
-    [] [] body).1.reverse
+    [] {} body).1.values.reverse
 
 mutual
   def coupledStmt (owner : Owner) : Stmt Op → List (List SpillKey)
@@ -461,29 +472,37 @@ mutual
     all_goals omega
 end
 
-def addUnique (xs : SpillSet) (x : SpillKey) : SpillSet :=
-  if xs.contains x then xs else x :: xs
+structure SpillDelta where
+  values : SpillSet
+  changed : Bool := false
 
-def addGroup (xs group : SpillSet) : SpillSet :=
-  group.foldl addUnique xs
+def addUnique (out : SpillDelta) (x : SpillKey) : SpillDelta :=
+  if out.values.contains x then out
+  else { values := x :: out.values, changed := true }
 
-def closeGroupsOnce (groups : List SpillSet) (selected : SpillSet) : SpillSet :=
+def addGroup (out : SpillDelta) (group : SpillSet) : SpillDelta :=
+  group.foldl addUnique out
+
+def closeGroupsOnce (groups : List SpillSet) (selected : SpillSet) : SpillDelta :=
   groups.foldl (fun out group =>
-    if group.any selected.contains then addGroup out group else out) selected
+    if group.any selected.contains then addGroup out group else out)
+    { values := selected }
 
-def closeGroups (groups : List SpillSet) : Nat → SpillSet → SpillSet
-  | 0, selected => selected
+def closeGroups (groups : List SpillSet) : Nat → SpillSet → SpillDelta
+  | 0, selected => { values := selected }
   | fuel + 1, selected =>
-      let selected' := closeGroupsOnce groups selected
-      if selected'.length = selected.length then selected
-      else closeGroups groups fuel selected'
+      let step := closeGroupsOnce groups selected
+      if !step.changed then { values := selected }
+      else
+        let rest := closeGroups groups fuel step.values
+        { values := rest.values, changed := true }
 
 /-- Executable certificate that every coupled multi-result group is selected
 all-or-none.  The rewrite relies on this property: a tuple is either retained
 entirely on the operand stack or distributed entirely into spill slots. -/
 def groupsClosedCheck (groups : List SpillSet) (selected : SpillSet) : Bool :=
   groups.all fun group =>
-    decide group.Nodup &&
+    nodupFast group &&
       if group.any selected.contains then group.all selected.contains else true
 
 def selectLoop (body : Block Op) (groups : List SpillSet) :
@@ -496,21 +515,21 @@ def selectLoop (body : Block Op) (groups : List SpillSet) :
           | none => if selected.isEmpty then none else some selected
           | some pressure =>
               let requested :=
-                addUnique selected { owner := pressure.owner, name := pressure.name }
-              let selected' := closeGroups groups fuel requested
-              if selected'.length = selected.length then none
-              else selectLoop body groups fuel selected'
+                addUnique { values := selected }
+                  { owner := pressure.owner, name := pressure.name }
+              let closed := closeGroups groups fuel requested.values
+              if !(requested.changed || closed.changed) then none
+              else selectLoop body groups fuel closed.values
       | pressures =>
           let requested := pressures.foldl (fun out pressure =>
-            addUnique out { owner := pressure.owner, name := pressure.name }) selected
-          let selected' := closeGroups groups fuel
-            requested
-          if selected'.length = selected.length then none
-          else selectLoop body groups fuel selected'
+            addUnique out { owner := pressure.owner, name := pressure.name })
+              { values := selected }
+          let closed := closeGroups groups fuel requested.values
+          if !(requested.changed || closed.changed) then none
+          else selectLoop body groups fuel closed.values
 
 def selectSpills (body : Block Op) : Option SpillSet :=
-  let names := MemorySpill.declaredStmts body
-  selectLoop body (coupledStmts none body) (names.length + 1) []
+  selectLoop body (coupledStmts none body) ((MemorySpill.declaredStmts body).length + 1) []
 
 /-! ## Lexical slot coloring inside one frame -/
 
@@ -793,13 +812,13 @@ def frameNames (frame : Frame) : List Ident :=
   frame.params ++ frame.returns ++ frameNamesStmts frame.body
 
 def framesWF (fs : List Frame) : Bool :=
-  (fs.map (·.owner)).Nodup
+  nodupFast (fs.map (·.owner))
 
 /-- Every function calling-convention environment has one unambiguous binding
 per parameter/return name.  The backend already rejects duplicate signatures;
 the spilling simulation needs the same fact before executing its prologue. -/
 def frameSignaturesWF (fs : List Frame) : Bool :=
-  fs.all fun frame => decide (frame.params ++ frame.returns).Nodup
+  fs.all fun frame => nodupFast (frame.params ++ frame.returns)
 
 def selectedWF (fs : List Frame) (selected : SpillSet) : Bool :=
   selected.all fun key =>
@@ -943,11 +962,11 @@ def slotsForKeys? (slots : SlotMap) : SpillSet → Option (List Nat)
 
 def liveSetCheck (slots : SlotMap) (keys : SpillSet) : Bool :=
   match slotsForKeys? slots keys with
-  | some addresses => decide keys.Nodup && decide addresses.Nodup
+  | some addresses => nodupFast keys && nodupFast addresses
   | none => false
 
 def lexicalLayoutCheck (layout : Layout) : Bool :=
-  (layout.lives.map (fun trace => trace.owner)).Nodup &&
+  nodupFast (layout.lives.map (fun trace => trace.owner)) &&
     layout.lives.all fun trace => trace.sets.all (liveSetCheck layout.slots)
 
 /-- Executable proof boundary for the call-path allocator.  Cache and frame
@@ -955,8 +974,8 @@ owners are unique, every direct callee has a cached need, every frame cache
 entry satisfies `calleePeak + localPeak`, and `words` is the maximum cached
 frame need. -/
 def needLayoutCheck (layout : Layout) : Bool :=
-  ((layout.infos.map (fun info => info.owner)).Nodup &&
-    (layout.cache.map Prod.fst).Nodup &&
+  (nodupFast (layout.infos.map (fun info => info.owner)) &&
+    nodupFast (layout.cache.map Prod.fst) &&
     (layout.infos.all fun info =>
       localAllocCheck info.alloc &&
         ((info.alloc.slots.all fun item => item.1.owner == info.owner) &&
@@ -976,7 +995,7 @@ def layoutCheck (base reserved : Nat) (selected : SpillSet) (layout : Layout) : 
         selected.contains item.1 && decide (base ≤ item.2) &&
           decide (item.2 + 32 ≤ reserved) && decide ((item.2 - base) % 32 = 0))) &&
       (selected.all fun key => (layout.slots.find? fun item => item.1 = key).isSome)) &&
-    decide selected.Nodup) && decide (layout.slots.map Prod.fst).Nodup)
+    nodupFast selected) && nodupFast (layout.slots.map Prod.fst))
 
 /-! Small allocation guards pin the distinction between selected bindings and
 reserved words.  Sibling lexical scopes and sibling callees reuse addresses;

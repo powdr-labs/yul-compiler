@@ -1,3 +1,9 @@
+import Mathlib.Algebra.Divisibility.Basic
+import Mathlib.Algebra.Order.GroupWithZero.Basic
+import Mathlib.Data.BitVec
+import Mathlib.Tactic.NormNum.Basic
+import Mathlib.Tactic.Positivity
+import Mathlib.Tactic.Ring
 import EvmSemantics.Data.UInt256
 import YulSemantics.Dialect.EVM
 set_option warningAsError true

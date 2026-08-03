@@ -112,22 +112,33 @@ theorem closed_printManyC {α : Type} {pr : α → List Char} {as : List α}
   | cons a as ih =>
     exact closed_append (h a (by simp)) (ih (fun x hx => h x (by simp [hx])))
 
+theorem manyFuelC_raw {α : Type} {p : Parser α} {pr : α → List Char}
+    (hp : SoundC p pr) (fuel cs : List Char) :
+    canon (printManyC pr (manyFuel p fuel cs).1) ++ canon (manyFuel p fuel cs).2 = canon cs
+      ∧ Closed (printManyC pr (manyFuel p fuel cs).1) := by
+  induction fuel generalizing cs with
+  | nil => simp [manyFuel, printManyC, closed_nil]
+  | cons _ fuel ih =>
+      simp only [manyFuel]
+      split
+      · simp [printManyC, closed_nil]
+      · rename_i a rest hpc
+        split
+        · simp only [printManyC]
+          obtain ⟨e, c⟩ := hp cs a rest hpc
+          exact ⟨by rw [List.append_nil]; exact e,
+            by rw [List.append_nil]; exact c⟩
+        · simp only [printManyC]
+          obtain ⟨e, c⟩ := hp cs a rest hpc
+          obtain ⟨ih1, ih2⟩ := ih rest
+          refine ⟨?_, closed_append c ih2⟩
+          rw [c (printManyC pr (manyFuel p fuel rest).1), List.append_assoc, ih1, e]
+
 theorem manyC_raw {α : Type} {p : Parser α} {pr : α → List Char} (hp : SoundC p pr)
     (cs : List Char) :
     canon (printManyC pr (many p cs).1) ++ canon (many p cs).2 = canon cs
       ∧ Closed (printManyC pr (many p cs).1) := by
-  fun_induction many p cs with
-  | case1 cs hpc => simp [printManyC, closed_nil]
-  | case2 cs a rest hpc hlt ih =>
-    simp only [printManyC]
-    obtain ⟨e, c⟩ := hp cs a rest hpc
-    obtain ⟨ih1, ih2⟩ := ih
-    refine ⟨?_, closed_append c ih2⟩
-    rw [c (printManyC pr (many p rest).1), List.append_assoc, ih1, e]
-  | case3 cs a rest hpc hlt =>
-    simp only [printManyC]
-    obtain ⟨e, c⟩ := hp cs a rest hpc
-    exact ⟨by rw [List.append_nil]; exact e, by rw [List.append_nil]; exact c⟩
+  simpa only [many] using manyFuelC_raw hp cs cs
 
 theorem manyC {α : Type} {p : Parser α} {pr : α → List Char} (hp : SoundC p pr) :
     SoundC (manyP p) (printManyC pr) := by

@@ -11,7 +11,7 @@ at the `YulSemantics.Run` interface.
 
 ## The one contract that matters
 
-`Spec/Pass.lean` defines `Optimizer.Pass`: a total `run : Block D.Op → Block D.Op`
+`Spec/LocalPass.lean` defines `Optimizer.LocalPass`: a total `run : Block D.Op → Block D.Op`
 bundled with its only proof obligation,
 
 ```
@@ -22,16 +22,16 @@ Sound D run  :=  ∀ b, EquivBlock D b (run b)
 equivalence — same final `VEnv`, same machine state (hence same halt payload),
 same outcome, from every function env / variable env / initial state. It is
 strictly stronger than observational equivalence, which is the point: a sound
-replacement is undetectable in any context, so passes compose (`Pass.comp`) and
+replacement is undetectable in any context, so passes compose (`LocalPass.comp`) and
 local rewrites lift through the `YulSemantics.Equiv` congruences.
 
-**Possessing a `Pass` value *is* possessing a verified optimizer.** An auditor who
-trusts `Spec/Pass.lean` need not read any individual pass proof.
+**Possessing a `LocalPass` value *is* possessing a verified optimizer.** An auditor who
+trusts `Spec/LocalPass.lean` need not read any individual pass proof.
 
 ## Three layers
 
-- `Spec/` — the stable, audited surface. `Pass.lean` (the contract above),
-  `Backend.lean` (`Pass.optimize_then_compile_correct`: a sound pass composes with
+- `Spec/` — the stable, audited surface. `LocalPass.lean` (the contract above),
+  `Backend.lean` (`LocalPass.optimize_then_compile_correct`: a sound pass composes with
   the backend), `Observe.lean` (the weaker **observational tier** `ObsPass` /
   `ObsEquivBlock` for passes `EquivBlock` cannot express — dead bindings, scratch
   memory, dead stores before `revert`), and `MemoryGuard.lean` /

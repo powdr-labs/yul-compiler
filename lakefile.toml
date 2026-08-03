@@ -1,12 +1,12 @@
 name = "yul-evm-compiler"
 version = "0.1.0"
-defaultTargets = ["YulEvmCompiler", "YulParser", "YulEvmCompilerTests", "YulIR", "YulIRBench"]
+defaultTargets = ["YulEvmCompiler", "YulParser", "YulEvmCompilerTests", "YulIR", "YulIRBench", "YulCApi"]
 
 # Source-language semantics: the Yul big-step judgment this compiler is proved against.
 [[require]]
 name = "yul-semantics"
 git = "https://github.com/powdr-labs/yul-semantics"
-rev = "81b9e3ecaf4f17e3ade277af20383f87dde70862"
+rev = "4c6f9753cc0e5850f6bdaf6fb0df76457204699a"
 
 # Target-language semantics: the EVM small-step/big-step relations.
 [[require]]
@@ -19,6 +19,12 @@ name = "YulEvmCompiler"
 
 [[lean_lib]]
 name = "YulParser"
+
+# C-ABI exports for embedding the compiler as a native library. The C shim,
+# public header, and the static/shared library build live in c/ and
+# scripts/build-c-lib.sh (which requests this lib's :static facet).
+[[lean_lib]]
+name = "YulCApi"
 
 [[lean_lib]]
 name = "YulEvmCompilerTests"

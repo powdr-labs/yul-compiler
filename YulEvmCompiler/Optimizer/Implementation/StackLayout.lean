@@ -1,6 +1,7 @@
 import YulEvmCompiler.Optimizer.Implementation.Frame
 import YulEvmCompiler.Optimizer.Implementation.FreshenCalls
 import YulEvmCompiler.Optimizer.Implementation.DeadPure
+import YulEvmCompiler.Optimizer.Implementation.FastChecks
 import YulEvmCompiler.Compile
 import YulSemantics.Dialect.EVM
 set_option warningAsError true
@@ -349,9 +350,9 @@ def copyBackStmts (ts ds : List Ident) : Block Op :=
 
 def copyBackHere (layout : List Ident) : Block Op → Option (Block Op)
   | .letDecl ts (some call@(.call _ _)) :: rest => do
-      if ts.isEmpty || !ts.Nodup then none else
+      if ts.isEmpty || !nodupFast ts then none else
       let (ds, suffix) ← takeCopyBack ts rest
-      if ds.Nodup && ds.all layout.contains &&
+      if nodupFast ds && ds.all layout.contains &&
           ts.all (fun t => !ds.contains t && !stmtsMentions t suffix) then
         some (.assign ds call :: suffix)
       else none
@@ -484,7 +485,7 @@ def stageWanted (Phi : FMap) (layout : List Ident) (xs : List Ident)
     stagedArgsFit Phi layout names args &&
     exprFits Phi (names ++ layout) 0 (.call f (names.map Expr.var)) &&
     assignsFit (names ++ layout) xs && argsHaveCall args == false &&
-    argsShadowOK [] (names.zip args) && names.Nodup &&
+    argsShadowOK [] (names.zip args) && nodupFast names &&
     xs.all (fun x => !names.contains x)
 
 mutual
@@ -1483,7 +1484,7 @@ def prefixRegionSearch (entry : List Ident) :
       if !regionTargetsFit layout xs && xs.all entry.contains &&
           !hasDirectFun pre then
         let live := directLiveNames e suffix pre
-        if !live.isEmpty && live.Nodup &&
+        if !live.isEmpty && nodupFast live &&
             live.all (fun x => !entry.contains x && !stmtsDeclare x suffix &&
               declDominates x pre) then
           match splitAtDeadDecl live pre with
@@ -2071,7 +2072,7 @@ def shadowLoopHere (P : String) (Phi : FMap) (layout : List Ident)
     closed.contains x && writesStmts x body && valueLiveIn x body
   let picked := pickWritableShadows layout stable.length [] writable
   let sources := sortByPressure Phi layout body (stable ++ picked.reverse)
-  if sources.isEmpty || !sources.Nodup || hasLeaveStmts body then none else
+  if sources.isEmpty || !nodupFast sources || hasLeaveStmts body then none else
   let shadows := shadowNames P sources.length
   let basePairs := sources.zip shadows
   let renamedBase := renameStmts (basePairs.map fun p => (p.1, p.2)) body
@@ -2365,16 +2366,242 @@ def directDecls : Block Op → List Ident
   | .letDecl xs _ :: rest => xs ++ directDecls rest
   | _ :: rest => directDecls rest
 
-def deadPrefixSearch : Block Op → Block Op → Option (Block Op)
+abbrev MentionSet := Std.HashSet Ident
+abbrev MentionPositions := Std.HashMap Ident Nat
+
+def addNamesMentionPositions (position : Nat) :
+    MentionPositions → List Ident → MentionPositions
+  | seen, [] => seen
+  | seen, name :: rest =>
+      addNamesMentionPositions position (seen.insert name position) rest
+
+mutual
+  def addExprMentions (seen : MentionSet) : Expr Op → MentionSet
+    | .lit _ => seen
+    | .var x => seen.insert x
+    | .builtin _ args | .call _ args => addArgsMentions seen args
+
+  def addArgsMentions (seen : MentionSet) : List (Expr Op) → MentionSet
+    | [] => seen
+    | e :: rest => addArgsMentions (addExprMentions seen e) rest
+end
+
+mutual
+  def addExprMentionPositions (position : Nat) (seen : MentionPositions) :
+      Expr Op → MentionPositions
+    | .lit _ => seen
+    | .var x => seen.insert x position
+    | .builtin _ args | .call _ args =>
+        addArgsMentionPositions position seen args
+
+  def addArgsMentionPositions (position : Nat) (seen : MentionPositions) :
+      List (Expr Op) → MentionPositions
+    | [] => seen
+    | e :: rest =>
+        addArgsMentionPositions position
+          (addExprMentionPositions position seen e) rest
+end
+
+mutual
+  def addStmtMentionPositions (position : Nat) (seen : MentionPositions) :
+      Stmt Op → MentionPositions
+    | .block body => addStmtsMentionPositions position seen body
+    | .funDef _ ps rs body =>
+        addStmtsMentionPositions position
+          (addNamesMentionPositions position
+            (addNamesMentionPositions position seen ps) rs) body
+    | .letDecl xs value =>
+        addOptExprMentionPositions position
+          (addNamesMentionPositions position seen xs) value
+    | .assign xs value =>
+        addExprMentionPositions position
+          (addNamesMentionPositions position seen xs) value
+    | .cond condition body =>
+        addStmtsMentionPositions position
+          (addExprMentionPositions position seen condition) body
+    | .switch condition cases dflt =>
+        addOptBlockMentionPositions position
+          (addCasesMentionPositions position
+            (addExprMentionPositions position seen condition) cases) dflt
+    | .forLoop init condition post body =>
+        addStmtsMentionPositions position
+          (addStmtsMentionPositions position
+            (addExprMentionPositions position
+              (addStmtsMentionPositions position seen init) condition) post) body
+    | .exprStmt e => addExprMentionPositions position seen e
+    | .break | .continue | .leave => seen
+
+  def addStmtsMentionPositions (position : Nat) (seen : MentionPositions) :
+      Block Op → MentionPositions
+    | [] => seen
+    | statement :: rest =>
+        addStmtsMentionPositions position
+          (addStmtMentionPositions position seen statement) rest
+
+  def addCasesMentionPositions (position : Nat) (seen : MentionPositions) :
+      List (Literal × Block Op) → MentionPositions
+    | [] => seen
+    | (_, body) :: rest =>
+        addCasesMentionPositions position
+          (addStmtsMentionPositions position seen body) rest
+
+  def addOptExprMentionPositions (position : Nat) (seen : MentionPositions) :
+      Option (Expr Op) → MentionPositions
+    | none => seen
+    | some e => addExprMentionPositions position seen e
+
+  def addOptBlockMentionPositions (position : Nat) (seen : MentionPositions) :
+      Option (Block Op) → MentionPositions
+    | none => seen
+    | some body => addStmtsMentionPositions position seen body
+end
+
+/-- Map each mentioned identifier to its last top-level statement position. -/
+def mentionPositionsFrom : Nat → MentionPositions → Block Op → MentionPositions
+  | _, seen, [] => seen
+  | position, seen, statement :: rest =>
+      mentionPositionsFrom (position + 1)
+        (addStmtMentionPositions position seen statement) rest
+
+def mentionPositions (body : Block Op) : MentionPositions :=
+  mentionPositionsFrom 1 {} body
+
+mutual
+  def addStmtMentions (seen : MentionSet) : Stmt Op → MentionSet
+    | .block body => addStmtsMentions seen body
+    | .funDef _ ps rs body =>
+        addStmtsMentions (seen.insertMany ps |>.insertMany rs) body
+    | .letDecl xs value => addOptExprMentions (seen.insertMany xs) value
+    | .assign xs value => addExprMentions (seen.insertMany xs) value
+    | .cond condition body =>
+        addStmtsMentions (addExprMentions seen condition) body
+    | .switch condition cases dflt =>
+        addOptBlockMentions
+          (addCasesMentions (addExprMentions seen condition) cases) dflt
+    | .forLoop init condition post body =>
+        addStmtsMentions
+          (addStmtsMentions
+            (addExprMentions (addStmtsMentions seen init) condition) post) body
+    | .exprStmt e => addExprMentions seen e
+    | .break | .continue | .leave => seen
+
+  def addStmtsMentions (seen : MentionSet) : Block Op → MentionSet
+    | [] => seen
+    | statement :: rest => addStmtsMentions (addStmtMentions seen statement) rest
+
+  def addCasesMentions (seen : MentionSet) : List (Literal × Block Op) → MentionSet
+    | [] => seen
+    | (_, body) :: rest => addCasesMentions (addStmtsMentions seen body) rest
+
+  def addOptExprMentions (seen : MentionSet) : Option (Expr Op) → MentionSet
+    | none => seen
+    | some e => addExprMentions seen e
+
+  def addOptBlockMentions (seen : MentionSet) : Option (Block Op) → MentionSet
+    | none => seen
+    | some body => addStmtsMentions seen body
+end
+
+/-- Check that none of `names` occurs in an already-built mention index. -/
+def noneMentionedIn (names : List Ident) (index : MentionSet) : Bool :=
+  names.all fun name => !index.contains name
+
+/-- Check that none of `names` is mentioned in `body` by indexing all exact
+mention positions once, rather than traversing the body once per name. -/
+def noneMentionedFast (names : List Ident) (body : Block Op) : Bool :=
+  noneMentionedIn names (addStmtsMentions {} body)
+
+/-- The mention index for every proper suffix, followed by the index for the
+whole block.  Persistent hash sets let adjacent suffix indexes share their
+unchanged structure. -/
+def suffixMentionIndices : Block Op → List MentionSet × MentionSet
+  | [] => ([], {})
+  | statement :: rest =>
+      let (indices, restIndex) := suffixMentionIndices rest
+      (restIndex :: indices, addStmtMentions restIndex statement)
+
+/-- Direct specification of the dead-prefix search.  The executable search
+below is proved to return this exact result. -/
+def deadPrefixSearchSlow : Block Op → Block Op → Option (Block Op)
   | _, [] => none
   | pre, s :: rest =>
       let pre' := pre ++ [s]
       let names := directDecls pre'
-      if !rest.isEmpty && !names.isEmpty && names.Nodup &&
-          names.all (fun x => !stmtsMentions x rest) && !hasDirectFun pre' then
+      if !rest.isEmpty && !names.isEmpty && nodupFast names &&
+          noneMentionedFast names rest && !hasDirectFun pre' then
         some (.block pre' :: rest)
-      else deadPrefixSearch pre' rest
+      else deadPrefixSearchSlow pre' rest
   termination_by _ rest => rest.length
+
+/-- Search using the precomputed exact mention index for each remaining
+suffix.  This avoids rebuilding and rehashing the whole suffix at every split. -/
+def deadPrefixSearchIndexed : Block Op → Block Op → List MentionSet →
+    Option (Block Op)
+  | _, [], _ => none
+  | pre, s :: rest, index :: indices =>
+      let pre' := pre ++ [s]
+      let names := directDecls pre'
+      if !rest.isEmpty && !names.isEmpty && nodupFast names &&
+          noneMentionedIn names index && !hasDirectFun pre' then
+        some (.block pre' :: rest)
+      else deadPrefixSearchIndexed pre' rest indices
+  | _, _ :: _, [] => none
+  termination_by _ rest _ => rest.length
+
+/-- Incremental facts about declarations in the candidate prefix. -/
+structure DeadPrefixState where
+  names : MentionSet := {}
+  namesUnique : Bool := true
+  hasNames : Bool := false
+  lastMention : Nat := 0
+  hasFun : Bool := false
+
+def DeadPrefixState.addName (positions : MentionPositions)
+    (state : DeadPrefixState) (name : Ident) : DeadPrefixState :=
+  { names := state.names.insert name
+    namesUnique := state.namesUnique && !state.names.contains name
+    hasNames := true
+    lastMention := max state.lastMention (positions.getD name 0)
+    hasFun := state.hasFun }
+
+def DeadPrefixState.addNames (positions : MentionPositions) :
+    DeadPrefixState → List Ident → DeadPrefixState
+  | state, [] => state
+  | state, name :: rest =>
+      addNames positions (state.addName positions name) rest
+
+def DeadPrefixState.addStmt (positions : MentionPositions)
+    (state : DeadPrefixState) (statement : Stmt Op) : DeadPrefixState :=
+  let state := match statement with
+    | .letDecl names _ => state.addNames positions names
+    | _ => state
+  match statement with
+  | .funDef .. => { state with hasFun := true }
+  | _ => state
+
+def deadPrefixInitialState (positions : MentionPositions)
+    (pre : Block Op) : DeadPrefixState :=
+  { (DeadPrefixState.addNames positions {} (directDecls pre)) with
+      hasFun := hasDirectFun pre }
+
+/-- Dead-prefix search using one last-mention map and incrementally maintained
+prefix facts. -/
+def deadPrefixSearchPositions (positions : MentionPositions) :
+    Block Op → Block Op → Nat → DeadPrefixState → Option (Block Op)
+  | _, [], _, _ => none
+  | pre, statement :: rest, position, state =>
+      let pre' := pre ++ [statement]
+      let state' := state.addStmt positions statement
+      if !rest.isEmpty && state'.hasNames && state'.namesUnique &&
+          decide (state'.lastMention ≤ position) && !state'.hasFun then
+        some (.block pre' :: rest)
+      else deadPrefixSearchPositions positions pre' rest (position + 1) state'
+  termination_by _ rest _ _ => rest.length
+
+def deadPrefixSearch (pre rest : Block Op) : Option (Block Op) :=
+  let positions := mentionPositions rest
+  deadPrefixSearchPositions positions pre rest 1
+    (deadPrefixInitialState positions pre)
 
 def scopeDeadPrefixHere (body : Block Op) : Option (Block Op) :=
   deadPrefixSearch [] body

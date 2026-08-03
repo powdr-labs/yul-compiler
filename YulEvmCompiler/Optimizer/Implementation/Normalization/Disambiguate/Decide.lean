@@ -38,27 +38,24 @@ So `x` is a fresh name iff its characters are a `NUL` followed by one-or-more
 `dsName k` is recognised (`isDsNameL_dsName`), so the guard never mistakes a
 fresh name for a source one. -/
 
-/-- Recognise the character list of a `dsName`: a leading `NUL` then a nonempty
-run of `'v'`s. -/
+/-- Recognise the character list of a `dsName`: a leading `NUL` then exactly the
+canonical decimal digits of some index. Phrased as a *round trip* — read the
+suffix back and re-print it — so completeness (`isDsNameL_toList_imp`) is
+immediate with `k := dsDigits rest`, and no separate canonical-numeral side
+condition is needed. -/
 def isDsNameL : List Char → Bool
-  | c :: rest => (c == Char.ofNat 0) && !rest.isEmpty && rest.all (· == 'v')
+  | c :: rest =>
+      (c == Char.ofNat 0) && !rest.isEmpty && (rest == Nat.toDigits 10 (dsDigits rest))
   | [] => false
 
 /-- Decidable mirror of `NotFresh`. -/
 def notFreshB (x : Ident) : Bool := !isDsNameL x.toList
 
-private theorem all_replicate_v (n : Nat) : (List.replicate n 'v').all (· == 'v') = true := by
-  simp only [List.all_eq_true]
-  intro x hx
-  simp [List.eq_of_mem_replicate hx]
-
 theorem isDsNameL_dsName (k : Nat) : isDsNameL (dsName k).toList = true := by
-  have hlist : (dsName k).toList = Char.ofNat 0 :: List.replicate (k + 1) 'v' := by
+  have hlist : (dsName k).toList = Char.ofNat 0 :: Nat.toDigits 10 k := by
     rw [dsName, String.toList_ofList]
-  rw [hlist, List.replicate_succ, isDsNameL, List.isEmpty_cons]
-  rw [← List.replicate_succ]
-  simp only [beq_self_eq_true, Bool.not_false, Bool.true_and, Bool.and_true]
-  exact all_replicate_v (k + 1)
+  rw [hlist, isDsNameL, dsDigits_toDigits]
+  simp [Nat.toDigits_ne_nil]
 
 theorem notFreshB_sound {x : Ident} (h : notFreshB x = true) : NotFresh x := by
   intro k hk

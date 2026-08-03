@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.StackLayout
+import Std.Data.HashMap.Lemmas
 import YulEvmCompiler.Optimizer.Implementation.InlineCallsSound
 import YulEvmCompiler.Optimizer.Implementation.DeadPure
 import YulEvmCompiler.Optimizer.Implementation.BoundFunCongr
@@ -159,7 +160,7 @@ theorem rightAssocAdd_equiv (a c : Expr Op) :
   · next a b c ihb iha =>
       exact (add_assoc_equiv a b c).trans
         ((EquivExpr.builtin_congr Op.add (EquivArgs.of_forall₂
-          (.cons (EquivExpr.refl a) (.cons ihb .nil)))).trans iha)
+          (.cons (EquivExpr.refl («D» := D) a) (.cons ihb .nil)))).trans iha)
   · exact EquivExpr.refl _
 
 theorem scheduleBuiltin_equiv (op : Op) (args : List (Expr Op)) :
@@ -487,7 +488,7 @@ theorem copyBackSite_equivBlock {pre suffix : Block Op} {ts ds : List Ident}
                   (VEnv.setMany Vp ds vals) := by
                 have hm0 := zip_mins (calls := calls) (creates := creates)
                   (VEnv.setMany Vp ds vals) hvals'
-                rw [VEnv.setMany_length] at hm0
+                rw [VEnv.setMany_length («D» := D)] at hm0
                 exact hm0
               have hifree : InsFree (tempIns Vp.length ts) (.stmts suffix) := by
                 intro p hp
@@ -532,7 +533,7 @@ theorem copyBackSite_equivBlock {pre suffix : Block Op} {ts ds : List Ident}
                 (VEnv.setMany Vp ds vals) := by
               have hm0 := zip_mins (calls := calls) (creates := creates)
                 (VEnv.setMany Vp ds vals) hvals'
-              rw [VEnv.setMany_length] at hm0
+              rw [VEnv.setMany_length («D» := D)] at hm0
               exact hm0
             have hifree : InsFree (tempIns Vp.length ts) (.stmts suffix) := by
               intro p hp
@@ -988,12 +989,12 @@ theorem set_ne {d : Nat} {x z : Ident} {V : VEnv D} (h : LocalAt d x V)
   · rw [VEnv.set_append_mem hza]
     refine ⟨VEnv.set above z value, below, old, ?_, ?_, hd⟩
     · rfl
-    · rw [VEnv.set_keys]
+    · rw [VEnv.set_keys («D» := D)]
       exact hx
   · rw [VEnv.set_append_not_mem hza]
     simp only [VEnv.set, if_neg (Ne.symm hz)]
     refine ⟨above, VEnv.set below z value, old, rfl, hx, ?_⟩
-    rw [VEnv.set_length, hd]
+    rw [VEnv.set_length («D» := D), hd]
 
 end LocalAt
 
@@ -1024,7 +1025,7 @@ namespace SlotRel
 theorem length {d dx : Nat} {x y : Ident} {V₁ V₂ : VEnv D}
     (h : SlotRel d dx x y V₁ V₂) : V₁.length = V₂.length + 1 := by
   obtain ⟨above, tail, value, rfl, rfl, -, -, -, -⟩ := h
-  rw [List.length_append, List.length_cons, List.length_append, VEnv.set_length]
+  rw [List.length_append, List.length_cons, List.length_append, VEnv.set_length («D» := D)]
   omega
 
 theorem get_y {d dx : Nat} {x y : Ident} {V₁ V₂ : VEnv D}
@@ -1083,16 +1084,16 @@ theorem set {d dx : Nat} {x y z : Ident} {V₁ V₂ : VEnv D}
       refine ⟨VEnv.set above z value, tail, old, ?_, ?_, ?_, ?_, hd, hlocal⟩
       · rfl
       · rfl
-      · rw [VEnv.set_keys]
+      · rw [VEnv.set_keys («D» := D)]
         exact hxa
-      · rw [VEnv.set_keys]
+      · rw [VEnv.set_keys («D» := D)]
         exact hya
     · rw [VEnv.set_append_not_mem hza, VEnv.set_append_not_mem hza]
       simp only [VEnv.set, if_neg (Ne.symm hzy)]
       have hcomm := VEnv.set_comm hzx tail value old
       rw [← hcomm]
       refine ⟨above, VEnv.set tail z value, old, rfl, rfl, hxa, hya, ?_, ?_⟩
-      · rw [VEnv.set_length, hd]
+      · rw [VEnv.set_length («D» := D), hd]
       · exact hlocal.set_ne hzx value
 
 theorem setMany {d dx : Nat} {x y : Ident} {V₁ V₂ : VEnv D}
@@ -1225,7 +1226,7 @@ theorem restore_nested {d dx : Nat} {x y : Ident} {Ve₁ Ve₂ Vb₁ Vb₂ : VEn
     omega
   have hk₂ : Vb₂.length - Ve₂.length = bodyAbove.length - entryAbove.length := by
     rw [he₂, hb₂, List.length_append, List.length_append,
-      VEnv.set_length, VEnv.set_length, hed, hbd]
+      VEnv.set_length («D» := D), VEnv.set_length («D» := D), hed, hbd]
     omega
   unfold YulSemantics.restore
   rw [hk₁, hk₂, hb₁, hb₂,
@@ -1812,12 +1813,12 @@ theorem slot_fwd {funs : FunEnv D} {V₁ : VEnv D} {st : EvmState}
       · subst z
         refine ⟨.eres (.vals [value] st), ?_, ?_⟩
         · simpa [renameCode, renameExpr] using
-            Step.var (by rw [← hslot.get_y]; exact hget)
+            Step.var («D» := D) (by rw [← hslot.get_y]; exact hget)
         · rfl
       · have hzx : z ≠ x := fun hzx => hmx hzx.symm
         refine ⟨.eres (.vals [value] st), ?_, ?_⟩
         · simpa [renameCode, renameExpr, hzy] using
-            Step.var (by rw [← hslot.get_other hzx hzy]; exact hget)
+            Step.var («D» := D) (by rw [← hslot.get_other hzx hzy]; exact hget)
         · rfl
   | builtinOk hargs hb ihargs =>
       intro d dx x y V₂ hslot hmx hdy
@@ -1886,7 +1887,7 @@ theorem slot_fwd {funs : FunEnv D} {V₁ : VEnv D} {st : EvmState}
   | @funDef funs V st n ps rs body =>
       intro d dx x y V₂ hslot _ _
       refine ⟨.sres V₂ st .normal, ?_, ?_⟩
-      · simpa [renameCode, renameStmt] using Step.funDef
+      · simpa [renameCode, renameStmt] using Step.funDef («D» := D)
       · exact ⟨hslot, rfl, rfl⟩
   | @block funs V st body Vb stb o hbody ihbody =>
       intro d dx x y V₂ hslot hmx hdy
@@ -1909,7 +1910,7 @@ theorem slot_fwd {funs : FunEnv D} {V₁ : VEnv D} {st : EvmState}
         decide_eq_false_iff_not] at hmx
       simp only [codeDeclares, stmtDeclares] at hdy
       refine ⟨.sres (bindZeros D vars ++ V₂) st .normal, ?_, ?_⟩
-      · simpa [renameCode, renameStmt] using Step.letZero
+      · simpa [renameCode, renameStmt] using Step.letZero («D» := D)
       · exact ⟨hslot.prependZeros hmx (by simpa using hdy), rfl, rfl⟩
   | @letVal _ _ _ vars e values st' hexpr hlen ih =>
       intro d dx x y V₂ hslot hmx hdy
@@ -2082,20 +2083,20 @@ theorem slot_fwd {funs : FunEnv D} {V₁ : VEnv D} {st : EvmState}
   | @«break» funs V st =>
       intro d dx x y V₂ hslot _ _
       refine ⟨.sres V₂ st .«break», ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmt] using Step.break
+      simpa [renameCode, renameStmt] using Step.break («D» := D)
   | @«continue» funs V st =>
       intro d dx x y V₂ hslot _ _
       refine ⟨.sres V₂ st .«continue», ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmt] using Step.continue
+      simpa [renameCode, renameStmt] using Step.continue («D» := D)
   | @«leave» funs V st =>
       intro d dx x y V₂ hslot _ _
       refine ⟨.sres V₂ st .leave, ?_, ?_⟩
-      · simpa [renameCode, renameStmt] using Step.leave
+      · simpa [renameCode, renameStmt] using Step.leave («D» := D)
       · exact ⟨hslot, rfl, rfl⟩
   | @seqNil funs V st =>
       intro d dx x y V₂ hslot _ _
       refine ⟨.sres V₂ st .normal, ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmts] using Step.seqNil
+      simpa [renameCode, renameStmts] using Step.seqNil («D» := D)
   | @seqCons funs V st s rest Vs sts Vr str o hstmt hrest ihstmt ihrest =>
       intro d dx x y V₂ hslot hmx hdy
       simp only [codeMentions, stmtsMentions, Bool.or_eq_false_iff] at hmx
@@ -2264,12 +2265,12 @@ theorem slot_rev_fwd {funs : FunEnv D} {V₂ : VEnv D} {st : EvmState}
       · subst z
         refine ⟨.eres (.vals [value] st), ?_, ?_⟩
         · simpa [renameCode, renameExpr] using
-            Step.var (by rw [hslot.get_y]; exact hget)
+            Step.var («D» := D) (by rw [hslot.get_y]; exact hget)
         · rfl
       · have hzy : z ≠ y := fun hzy => hmy hzy.symm
         refine ⟨.eres (.vals [value] st), ?_, ?_⟩
         · simpa [renameCode, renameExpr, hzx] using
-            Step.var (by rw [hslot.get_other hzx hzy]; exact hget)
+            Step.var («D» := D) (by rw [hslot.get_other hzx hzy]; exact hget)
         · rfl
   | builtinOk hargs hb ihargs =>
       intro d dx x y V₁ hslot hxy hmy hdx
@@ -2338,7 +2339,7 @@ theorem slot_rev_fwd {funs : FunEnv D} {V₂ : VEnv D} {st : EvmState}
   | @funDef funs V st n ps rs body =>
       intro d dx x y V₁ hslot hxy hmy hdx
       refine ⟨.sres V₁ st .normal, ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmt] using Step.funDef
+      simpa [renameCode, renameStmt] using Step.funDef («D» := D)
   | @block funs V st body Vb stb o hbody ihbody =>
       intro d dx x y V₁ hslot hxy hmy hdx
       simp only [codeMentions, stmtMentions] at hmy
@@ -2364,7 +2365,7 @@ theorem slot_rev_fwd {funs : FunEnv D} {V₂ : VEnv D} {st : EvmState}
         decide_eq_false_iff_not] at hmy
       simp only [codeDeclares, stmtDeclares] at hdx
       refine ⟨.sres (bindZeros D vars ++ V₁) st .normal, ?_, ?_⟩
-      · simpa [renameCode, renameStmt] using Step.letZero
+      · simpa [renameCode, renameStmt] using Step.letZero («D» := D)
       · exact ⟨hslot.prependZeros (by simpa using hdx) (by simpa using hmy), rfl, rfl⟩
   | @letVal funs V st vars e values st' hexpr hlen ih =>
       intro d dx x y V₁ hslot hxy hmy hdx
@@ -2534,19 +2535,19 @@ theorem slot_rev_fwd {funs : FunEnv D} {V₂ : VEnv D} {st : EvmState}
   | @«break» funs V st =>
       intro d dx x y V₁ hslot hxy hmy hdx
       refine ⟨.sres V₁ st .«break», ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmt] using Step.break
+      simpa [renameCode, renameStmt] using Step.break («D» := D)
   | @«continue» funs V st =>
       intro d dx x y V₁ hslot hxy hmy hdx
       refine ⟨.sres V₁ st .«continue», ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmt] using Step.continue
+      simpa [renameCode, renameStmt] using Step.continue («D» := D)
   | @«leave» funs V st =>
       intro d dx x y V₁ hslot hxy hmy hdx
       refine ⟨.sres V₁ st .leave, ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmt] using Step.leave
+      simpa [renameCode, renameStmt] using Step.leave («D» := D)
   | @seqNil funs V st =>
       intro d dx x y V₁ hslot hxy hmy hdx
       refine ⟨.sres V₁ st .normal, ?_, ⟨hslot, rfl, rfl⟩⟩
-      simpa [renameCode, renameStmts] using Step.seqNil
+      simpa [renameCode, renameStmts] using Step.seqNil («D» := D)
   | @seqCons funs V st s rest Vs sts Vr str o hstmt hrest ihstmt ihrest =>
       intro d dx x y V₁ hslot hxy hmy hdx
       simp only [codeMentions, stmtsMentions, Bool.or_eq_false_iff] at hmy
@@ -2742,7 +2743,7 @@ theorem reuseSlot_equivBlock {pre rest : Block Op} {x y : Ident}
                 Vp stp (.stmt (.assign [x] (.lit (.number 0))))
                 (.sres (VEnv.set Vp x (evmWithExternal calls creates).zero)
                   stp .normal) :=
-              Step.assignVal Step.lit rfl
+              Step.assignVal Step.lit («D» := D) rfl
             have hjoin := stmts_append_normal hpre
               (Step.seqCons hassign htarget)
             have hr := hslot'.restore_eq hxbase
@@ -2971,7 +2972,7 @@ mutual
           obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
           subst s'
           exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
-            (EquivBlock.refl _)
+            (EquivBlock.refl («D» := D) _)
             (stageOneStmts_sound P Phi' loopLayout body _ hb []),
             ScopeRel.refl _⟩
     | _, _, _, .letDecl _ _, _, h => by simp [stageOneStmt] at h
@@ -3116,7 +3117,7 @@ mutual
           obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
           subst s'
           exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
-            (EquivBlock.refl _)
+            (EquivBlock.refl («D» := D) _)
             (copyOneStmts_sound (layoutAfter layout init) body _ hb []),
             ScopeRel.refl _⟩
     | _, .letDecl _ _, _, h => by simp [copyOneStmt] at h
@@ -3260,7 +3261,7 @@ mutual
           subst s'
           have heq := reuseOneStmts_sound layout [] body _ hb [] (by simp)
           exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
-            (EquivBlock.refl _) heq, ScopeRel.refl _⟩
+            (EquivBlock.refl («D» := D) _) heq, ScopeRel.refl _⟩
     | _, .letDecl _ _, _, h => by simp [reuseOneStmt] at h
     | _, .assign _ _, _, h => by simp [reuseOneStmt] at h
     | _, .exprStmt _, _, h => by simp [reuseOneStmt] at h
@@ -3491,7 +3492,7 @@ theorem restore_erase_head_set {outer tail : VEnv D} {c r : Ident}
       (c, old) :: VEnv.set tail r result := by simp [VEnv.set, hcr]
   rw [hc, hr₁, hr₂]
   simp only [restore, List.length_cons]
-  rw [VEnv.set_length]
+  rw [VEnv.set_length («D» := D)]
   rw [show tail.length + 1 - outer.length =
       (tail.length - outer.length) + 1 by omega]
   rfl
@@ -3797,7 +3798,7 @@ theorem scopeTail_equivBlock {pre middle : Block Op} {carrier result : Ident}
                             restore V (VEnv.set Vm result value) := by
                           rw [← hrcomm]
                           apply restore_restore hOuterVc
-                          rw [VEnv.set_length]
+                          rw [VEnv.set_length («D» := D)]
                           exact hVcLen
                         have henv : restore V
                             (VEnv.set (restore Vc (VEnv.set Vm carrier value))
@@ -4035,7 +4036,7 @@ theorem scopeTail_equivBlock {pre middle : Block Op} {carrier result : Ident}
                                       restore V (VEnv.set Vm result value) := by
                                     rw [← hrcomm]
                                     apply restore_restore hOuterVc
-                                    rw [VEnv.set_length]
+                                    rw [VEnv.set_length («D» := D)]
                                     exact hVcLen
                                   have henv : restore V
                                       (VEnv.set
@@ -4433,7 +4434,7 @@ mutual
           subst s'
           have heq := scopeOneStmts_sound layout body _ hb []
           exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
-            (EquivBlock.refl _) heq, ScopeRel.refl _⟩
+            (EquivBlock.refl («D» := D) _) heq, ScopeRel.refl _⟩
     | _, .letDecl _ _, _, h => by simp [scopeOneStmt] at h
     | _, .assign _ _, _, h => by simp [scopeOneStmt] at h
     | _, .exprStmt _, _, h => by simp [scopeOneStmt] at h
@@ -5333,21 +5334,611 @@ theorem directDecls_mem_iff (x : Ident) : ∀ body : Block Op,
           simp [StackV2.directDecls, stmtsBinds, stmtBinds,
             directDecls_mem_iff x rest]
 
-theorem deadPrefixSearch_sound : ∀ outer pre rest out,
-    StackV2.deadPrefixSearch pre rest = some out →
+mutual
+  theorem addExprMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ e : Expr Op,
+        (StackV2.addExprMentions seen e).contains x =
+          (seen.contains x || exprMentions x e)
+    | .lit _ => by simp [StackV2.addExprMentions, exprMentions]
+    | .var y => by
+        simp [StackV2.addExprMentions, exprMentions,
+          Bool.beq_eq_decide_eq, Eq.comm, Bool.or_comm]
+    | .builtin _ args | .call _ args => by
+        simpa [StackV2.addExprMentions, exprMentions] using
+          addArgsMentions_contains seen x args
+
+  theorem addArgsMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ args : List (Expr Op),
+        (StackV2.addArgsMentions seen args).contains x =
+          (seen.contains x || argsMentions x args)
+    | [] => by simp [StackV2.addArgsMentions, argsMentions]
+    | e :: rest => by
+        rw [StackV2.addArgsMentions, addArgsMentions_contains,
+          addExprMentions_contains]
+        simp [argsMentions, Bool.or_assoc]
+end
+
+theorem addNamesMentionPositions_getD (position : Nat)
+    (seen : StackV2.MentionPositions) (x : Ident) : ∀ names : List Ident,
+    (StackV2.addNamesMentionPositions position seen names).getD x 0 =
+      if x ∈ names then position else seen.getD x 0
+  | [] => by simp [StackV2.addNamesMentionPositions]
+  | name :: rest => by
+      rw [StackV2.addNamesMentionPositions,
+        addNamesMentionPositions_getD position (seen.insert name position) x rest]
+      by_cases hrest : x ∈ rest
+      · simp [hrest]
+      · by_cases hname : x = name
+        · subst name; simp [hrest]
+        · have hname' : name ≠ x := fun h => hname h.symm
+          rw [Std.HashMap.getD_insert]
+          simp [hrest, hname, hname']
+
+mutual
+  theorem addExprMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) : ∀ e : Expr Op,
+      (StackV2.addExprMentionPositions position seen e).getD x 0 =
+        if exprMentions x e then position else seen.getD x 0
+    | .lit _ => by simp [StackV2.addExprMentionPositions, exprMentions]
+    | .var name => by
+        simp [StackV2.addExprMentionPositions, exprMentions,
+          Std.HashMap.getD_insert, Bool.beq_eq_decide_eq, Eq.comm]
+    | .builtin _ args | .call _ args => by
+        exact addArgsMentionPositions_getD position seen x args
+
+  theorem addArgsMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) : ∀ args : List (Expr Op),
+      (StackV2.addArgsMentionPositions position seen args).getD x 0 =
+        if argsMentions x args then position else seen.getD x 0
+    | [] => by simp [StackV2.addArgsMentionPositions, argsMentions]
+    | e :: rest => by
+        rw [StackV2.addArgsMentionPositions,
+          addArgsMentionPositions_getD, addExprMentionPositions_getD]
+        by_cases he : exprMentions x e <;>
+          by_cases hr : argsMentions x rest <;> simp [argsMentions, he, hr]
+end
+
+mutual
+  theorem addStmtMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) : ∀ statement : Stmt Op,
+      (StackV2.addStmtMentionPositions position seen statement).getD x 0 =
+        if stmtMentions x statement then position else seen.getD x 0 := by
+    intro statement
+    cases statement <;>
+      simp only [StackV2.addStmtMentionPositions, stmtMentions,
+        addExprMentionPositions_getD, addStmtsMentionPositions_getD,
+        addCasesMentionPositions_getD, addOptExprMentionPositions_getD,
+        addOptBlockMentionPositions_getD, addNamesMentionPositions_getD] <;>
+      repeat' split <;> simp_all
+
+  theorem addStmtsMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) : ∀ body : Block Op,
+      (StackV2.addStmtsMentionPositions position seen body).getD x 0 =
+        if stmtsMentions x body then position else seen.getD x 0
+    | [] => by simp [StackV2.addStmtsMentionPositions, stmtsMentions]
+    | statement :: rest => by
+        rw [StackV2.addStmtsMentionPositions,
+          addStmtsMentionPositions_getD, addStmtMentionPositions_getD]
+        by_cases hs : stmtMentions x statement <;>
+          by_cases hr : stmtsMentions x rest <;> simp [stmtsMentions, hs, hr]
+
+  theorem addCasesMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) :
+      ∀ cases : List (Literal × Block Op),
+      (StackV2.addCasesMentionPositions position seen cases).getD x 0 =
+        if casesMentions x cases then position else seen.getD x 0
+    | [] => by simp [StackV2.addCasesMentionPositions, casesMentions]
+    | (_, body) :: rest => by
+        rw [StackV2.addCasesMentionPositions,
+          addCasesMentionPositions_getD, addStmtsMentionPositions_getD]
+        by_cases hb : stmtsMentions x body <;>
+          by_cases hr : casesMentions x rest <;> simp [casesMentions, hb, hr]
+
+  theorem addOptExprMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) :
+      ∀ value : Option (Expr Op),
+      (StackV2.addOptExprMentionPositions position seen value).getD x 0 =
+        if optExprMentions x value then position else seen.getD x 0
+    | none => by simp [StackV2.addOptExprMentionPositions, optExprMentions]
+    | some e => by
+        change (StackV2.addExprMentionPositions position seen e).getD x 0 = _
+        exact addExprMentionPositions_getD position seen x e
+
+  theorem addOptBlockMentionPositions_getD (position : Nat)
+      (seen : StackV2.MentionPositions) (x : Ident) :
+      ∀ value : Option (Block Op),
+      (StackV2.addOptBlockMentionPositions position seen value).getD x 0 =
+        if optBlockMentions x value then position else seen.getD x 0
+    | none => by simp [StackV2.addOptBlockMentionPositions, optBlockMentions]
+    | some body => by
+        change (StackV2.addStmtsMentionPositions position seen body).getD x 0 = _
+        exact addStmtsMentionPositions_getD position seen x body
+end
+
+def lastMentionFrom (x : Ident) : Nat → Nat → Block Op → Nat
+  | _, latest, [] => latest
+  | position, latest, statement :: rest =>
+      lastMentionFrom x (position + 1)
+        (if stmtMentions x statement then position else latest) rest
+
+theorem mentionPositionsFrom_getD (x : Ident) :
+    ∀ (position latest : Nat) (seen : StackV2.MentionPositions) (body : Block Op),
+    seen.getD x 0 = latest →
+      (StackV2.mentionPositionsFrom position seen body).getD x 0 =
+        lastMentionFrom x position latest body
+  | _, _, _, [], h => by simpa [StackV2.mentionPositionsFrom, lastMentionFrom] using h
+  | position, latest, seen, statement :: rest, h => by
+      rw [StackV2.mentionPositionsFrom, lastMentionFrom]
+      apply mentionPositionsFrom_getD
+      rw [addStmtMentionPositions_getD, h]
+
+theorem mentionPositions_getD (x : Ident) (body : Block Op) :
+    (StackV2.mentionPositions body).getD x 0 = lastMentionFrom x 1 0 body := by
+  apply mentionPositionsFrom_getD
+  simp
+
+theorem lastMentionFrom_append (x : Ident) (position latest : Nat)
+    (preBody rest : Block Op) :
+    lastMentionFrom x position latest (preBody ++ rest) =
+      lastMentionFrom x (position + preBody.length)
+        (lastMentionFrom x position latest preBody) rest := by
+  induction preBody generalizing position latest with
+  | nil => simp [lastMentionFrom]
+  | cons statement tail ih =>
+      simpa [lastMentionFrom, Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using
+        (ih (position := position + 1)
+          (latest := if stmtMentions x statement then position else latest))
+
+theorem lastMentionFrom_lt_end (x : Ident) {position latest : Nat}
+    (hlatest : latest < position) : ∀ body : Block Op,
+    lastMentionFrom x position latest body < position + body.length
+  | [] => by simpa [lastMentionFrom] using hlatest
+  | statement :: rest => by
+      rw [lastMentionFrom, List.length_cons]
+      have hnext :
+          (if stmtMentions x statement then position else latest) <
+            position + 1 := by
+        split <;> omega
+      have ih := lastMentionFrom_lt_end x hnext rest
+      omega
+
+theorem lastMentionFrom_of_mentions_false (x : Ident) (position latest : Nat) :
+    ∀ body : Block Op, stmtsMentions x body = false →
+      lastMentionFrom x position latest body = latest
+  | [], _ => by simp [lastMentionFrom]
+  | statement :: rest, h => by
+      have hs : stmtMentions x statement = false := by
+        cases hstmt : stmtMentions x statement <;>
+          simp_all [stmtsMentions]
+      have hr : stmtsMentions x rest = false := by
+        cases hrest : stmtsMentions x rest <;>
+          simp_all [stmtsMentions]
+      rw [lastMentionFrom, if_neg (by simpa using hs)]
+      exact lastMentionFrom_of_mentions_false x (position + 1) latest rest hr
+
+theorem lastMentionFrom_ge_latest (x : Ident) {position latest : Nat}
+    (hlatest : latest ≤ position) : ∀ body : Block Op,
+    latest ≤ lastMentionFrom x position latest body
+  | [] => by simp [lastMentionFrom]
+  | statement :: rest => by
+      rw [lastMentionFrom]
+      split
+      · exact hlatest.trans (lastMentionFrom_ge_latest x (by omega) rest)
+      · exact lastMentionFrom_ge_latest x (by omega) rest
+
+theorem lastMentionFrom_ge_of_mentions_true (x : Ident) (position latest : Nat) :
+    ∀ body : Block Op, stmtsMentions x body = true →
+      position ≤ lastMentionFrom x position latest body
+  | [], h => by simp [stmtsMentions] at h
+  | statement :: rest, h => by
+      simp only [stmtsMentions, Bool.or_eq_true] at h
+      rw [lastMentionFrom]
+      rcases h with hs | hr
+      · rw [if_pos (by simpa using hs)]
+        exact lastMentionFrom_ge_latest x (by omega) rest
+      · have ih := lastMentionFrom_ge_of_mentions_true x (position + 1)
+          (if stmtMentions x statement then position else latest) rest hr
+        omega
+
+theorem lastMentionFrom_lt_start_iff (x : Ident) {position latest : Nat}
+    (hlatest : latest < position) (body : Block Op) :
+    lastMentionFrom x position latest body < position ↔
+      stmtsMentions x body = false := by
+  constructor
+  · intro hlt
+    by_contra hfalse
+    have htrue : stmtsMentions x body = true := by
+      cases h : stmtsMentions x body <;> simp_all
+    exact (Nat.not_le_of_gt hlt)
+      (lastMentionFrom_ge_of_mentions_true x position latest body htrue)
+  · intro hfalse
+    rw [lastMentionFrom_of_mentions_false x position latest body hfalse]
+    exact hlatest
+
+theorem mentionPositions_le_iff_suffix (x : Ident)
+    (preBody rest : Block Op) :
+    (StackV2.mentionPositions (preBody ++ rest)).getD x 0 ≤ preBody.length ↔
+      stmtsMentions x rest = false := by
+  rw [mentionPositions_getD, lastMentionFrom_append]
+  have hpre : lastMentionFrom x 1 0 preBody < 1 + preBody.length :=
+    lastMentionFrom_lt_end x (by omega) preBody
+  have hiff := lastMentionFrom_lt_start_iff x hpre rest
+  constructor
+  · intro hle
+    apply hiff.mp
+    omega
+  · intro hfalse
+    have hlt := hiff.mpr hfalse
+    omega
+
+mutual
+  theorem addStmtMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ statement : Stmt Op,
+        (StackV2.addStmtMentions seen statement).contains x =
+          (seen.contains x || stmtMentions x statement) := by
+    intro statement
+    cases statement <;>
+      simp [StackV2.addStmtMentions, stmtMentions,
+        addExprMentions_contains, addStmtsMentions_contains,
+        addCasesMentions_contains, addOptExprMentions_contains,
+        addOptBlockMentions_contains, Bool.or_assoc, Bool.or_comm,
+        Bool.or_left_comm]
+
+  theorem addStmtsMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ body : Block Op,
+        (StackV2.addStmtsMentions seen body).contains x =
+          (seen.contains x || stmtsMentions x body)
+    | [] => by simp [StackV2.addStmtsMentions, stmtsMentions]
+    | statement :: rest => by
+        rw [StackV2.addStmtsMentions, addStmtsMentions_contains,
+          addStmtMentions_contains]
+        simp [stmtsMentions, Bool.or_assoc]
+
+  theorem addCasesMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ cases : List (Literal × Block Op),
+        (StackV2.addCasesMentions seen cases).contains x =
+          (seen.contains x || casesMentions x cases)
+    | [] => by simp [StackV2.addCasesMentions, casesMentions]
+    | (_, body) :: rest => by
+        rw [StackV2.addCasesMentions, addCasesMentions_contains,
+          addStmtsMentions_contains]
+        simp [casesMentions, Bool.or_assoc]
+
+  theorem addOptExprMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ value : Option (Expr Op),
+        (StackV2.addOptExprMentions seen value).contains x =
+          (seen.contains x || optExprMentions x value)
+    | none => by simp [StackV2.addOptExprMentions, optExprMentions]
+    | some e => by
+        simpa [StackV2.addOptExprMentions, optExprMentions] using
+          addExprMentions_contains seen x e
+
+  theorem addOptBlockMentions_contains (seen : StackV2.MentionSet) (x : Ident) :
+      ∀ value : Option (Block Op),
+        (StackV2.addOptBlockMentions seen value).contains x =
+          (seen.contains x || optBlockMentions x value)
+    | none => by simp [StackV2.addOptBlockMentions, optBlockMentions]
+    | some body => by
+        simpa [StackV2.addOptBlockMentions, optBlockMentions] using
+          addStmtsMentions_contains seen x body
+end
+
+theorem noneMentionedIn_eq (names : List Ident) (index : StackV2.MentionSet)
+    (body : Block Op)
+    (hindex : ∀ x, index.contains x = stmtsMentions x body) :
+    StackV2.noneMentionedIn names index =
+      names.all (fun x => !stmtsMentions x body) := by
+  unfold StackV2.noneMentionedIn
+  induction names with
+  | nil => rfl
+  | cons name rest ih =>
+      simp only [List.all_cons]
+      rw [hindex, ih]
+
+theorem noneMentionedFast_eq (names : List Ident) (body : Block Op) :
+    StackV2.noneMentionedFast names body =
+      names.all (fun x => !stmtsMentions x body) := by
+  unfold StackV2.noneMentionedFast
+  apply noneMentionedIn_eq
+  intro x
+  rw [addStmtsMentions_contains]
+  simp
+
+/-- Each entry is the exact mention index for the tail after the statement at
+the same position. -/
+def SuffixIndicesMatch : List StackV2.MentionSet → Block Op → Prop
+  | [], [] => True
+  | index :: indices, _ :: rest =>
+      (∀ x, index.contains x = stmtsMentions x rest) ∧
+        SuffixIndicesMatch indices rest
+  | _, _ => False
+
+theorem suffixMentionIndices_sound (body : Block Op) :
+    SuffixIndicesMatch (StackV2.suffixMentionIndices body).1 body ∧
+      ∀ x, (StackV2.suffixMentionIndices body).2.contains x =
+        stmtsMentions x body := by
+  induction body with
+  | nil => simp [StackV2.suffixMentionIndices, SuffixIndicesMatch, stmtsMentions]
+  | cons statement rest ih =>
+      simp only [StackV2.suffixMentionIndices]
+      rcases hresult : StackV2.suffixMentionIndices rest with ⟨indices, restIndex⟩
+      have hmatch : SuffixIndicesMatch indices rest := by
+        simpa [hresult] using ih.1
+      have hrest : ∀ x, restIndex.contains x = stmtsMentions x rest := by
+        simpa [hresult] using ih.2
+      constructor
+      · exact ⟨hrest, hmatch⟩
+      · intro x
+        rw [addStmtMentions_contains, hrest]
+        simp [stmtsMentions, Bool.or_comm]
+
+theorem deadPrefixSearchIndexed_eq_slow : ∀ pre rest indices,
+    SuffixIndicesMatch indices rest →
+      StackV2.deadPrefixSearchIndexed pre rest indices =
+        StackV2.deadPrefixSearchSlow pre rest
+  | _, [], [], _ => by
+      simp [StackV2.deadPrefixSearchIndexed, StackV2.deadPrefixSearchSlow]
+  | pre, s :: rest, index :: indices, hmatch => by
+      rw [StackV2.deadPrefixSearchIndexed, StackV2.deadPrefixSearchSlow]
+      let pre' := pre ++ [s]
+      let names := StackV2.directDecls pre'
+      have hnone : StackV2.noneMentionedIn names index =
+          StackV2.noneMentionedFast names rest := by
+        rw [noneMentionedIn_eq names index rest hmatch.1,
+          noneMentionedFast_eq]
+      rw [hnone]
+      split
+      · rfl
+      · exact deadPrefixSearchIndexed_eq_slow pre' rest indices hmatch.2
+
+def maxMention (positions : StackV2.MentionPositions) (names : List Ident) : Nat :=
+  names.foldl (fun latest name => max latest (positions.getD name 0)) 0
+
+def DeadPrefixStateMatches (positions : StackV2.MentionPositions)
+    (names : List Ident) (hasFun : Bool) (state : StackV2.DeadPrefixState) : Prop :=
+  (∀ x, state.names.contains x = decide (x ∈ names)) ∧
+  state.namesUnique = decide names.Nodup ∧
+  state.hasNames = !names.isEmpty ∧
+  state.lastMention = maxMention positions names ∧
+  state.hasFun = hasFun
+
+theorem directDecls_append (left right : Block Op) :
+    StackV2.directDecls (left ++ right) =
+      StackV2.directDecls left ++ StackV2.directDecls right := by
+  induction left with
+  | nil => simp [StackV2.directDecls]
+  | cons statement rest ih =>
+      cases statement <;> simp [StackV2.directDecls, ih, List.append_assoc]
+
+theorem hasDirectFun_append (left right : Block Op) :
+    hasDirectFun (left ++ right) =
+      (hasDirectFun left || hasDirectFun right) := by
+  induction left with
+  | nil => simp [hasDirectFun]
+  | cons statement rest ih =>
+      cases statement <;> simp [hasDirectFun, ih]
+
+theorem maxMention_append_name (positions : StackV2.MentionPositions)
+    (names : List Ident) (name : Ident) :
+    maxMention positions (names ++ [name]) =
+      max (maxMention positions names) (positions.getD name 0) := by
+  simp [maxMention]
+
+theorem deadPrefixState_addName_matches
+    {positions : StackV2.MentionPositions} {names : List Ident}
+    {hasFun : Bool} {state : StackV2.DeadPrefixState}
+    (h : DeadPrefixStateMatches positions names hasFun state) (name : Ident) :
+    DeadPrefixStateMatches positions (names ++ [name]) hasFun
+      (state.addName positions name) := by
+  rcases h with ⟨hmem, hunique, hnames, hlast, hfun⟩
+  constructor
+  · intro x
+    simp [StackV2.DeadPrefixState.addName, hmem, Bool.beq_eq_decide_eq,
+      List.mem_append, Eq.comm, Bool.or_comm]
+  constructor
+  · rw [StackV2.DeadPrefixState.addName, hunique, hmem]
+    by_cases hn : names.Nodup
+    · simp only [hn, decide_true, Bool.true_and, List.nodup_append,
+        List.nodup_singleton, List.mem_singleton, not_false_eq_true,
+        true_and, decide_eq_decide]
+      by_cases hm : name ∈ names
+      · have hnot : ¬ ∀ a ∈ names, ¬ name = a := by
+          intro hall
+          exact hall name hm rfl
+        simp [hm, hnot, List.nodup_append]
+      · have hall : ∀ a ∈ names, ¬ name = a := by
+          intro a ha heq
+          exact hm (heq ▸ ha)
+        simp [hm, hall, List.nodup_append]
+        exact ⟨hn, fun a ha heq => hall a ha heq.symm⟩
+    · simp [hn, List.nodup_append]
+  constructor
+  · simp [StackV2.DeadPrefixState.addName]
+  constructor
+  · simp [StackV2.DeadPrefixState.addName, hlast, maxMention_append_name]
+  · simp [StackV2.DeadPrefixState.addName, hfun]
+
+theorem deadPrefixState_addNames_matches
+    (positions : StackV2.MentionPositions) :
+    ∀ {oldNames : List Ident} {hasFun : Bool}
+      {state : StackV2.DeadPrefixState} (newNames : List Ident),
+      DeadPrefixStateMatches positions oldNames hasFun state →
+        DeadPrefixStateMatches positions (oldNames ++ newNames) hasFun
+          (state.addNames positions newNames)
+  | _, _, _, [], h => by
+      rw [StackV2.DeadPrefixState.addNames]
+      simpa using h
+  | oldNames, hasFun, state, name :: rest, h => by
+      rw [StackV2.DeadPrefixState.addNames]
+      have hadd := deadPrefixState_addName_matches h name
+      simpa [List.append_assoc] using
+        deadPrefixState_addNames_matches positions rest hadd
+
+theorem deadPrefixState_addStmt_matches
+    {positions : StackV2.MentionPositions} {pre : Block Op}
+    {state : StackV2.DeadPrefixState}
+    (h : DeadPrefixStateMatches positions (StackV2.directDecls pre)
+      (hasDirectFun pre) state) (statement : Stmt Op) :
+    DeadPrefixStateMatches positions (StackV2.directDecls (pre ++ [statement]))
+      (hasDirectFun (pre ++ [statement]))
+      (state.addStmt positions statement) := by
+  rw [directDecls_append, hasDirectFun_append]
+  cases statement with
+  | letDecl names value =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using
+        deadPrefixState_addNames_matches positions names h
+  | funDef f params rets body =>
+      rcases h with ⟨hmem, hunique, hnames, hlast, hfun⟩
+      simp only [StackV2.directDecls, List.append_nil, hasDirectFun,
+        Bool.or_true, StackV2.DeadPrefixState.addStmt]
+      exact ⟨hmem, hunique, hnames, hlast, rfl⟩
+  | block body =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+  | assign names value =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+  | cond condition body =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+  | «switch» condition cases dflt =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+  | forLoop init condition post body =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+  | exprStmt value =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+  | «break» | «continue» | «leave» =>
+      simpa [StackV2.directDecls, hasDirectFun,
+        StackV2.DeadPrefixState.addStmt] using h
+
+theorem deadPrefixInitialState_matches (positions : StackV2.MentionPositions)
+    (pre : Block Op) :
+    DeadPrefixStateMatches positions (StackV2.directDecls pre)
+      (hasDirectFun pre) (StackV2.deadPrefixInitialState positions pre) := by
+  have hempty : DeadPrefixStateMatches positions [] false {} := by
+    simp [DeadPrefixStateMatches, maxMention]
+  have hnames := deadPrefixState_addNames_matches positions
+    (StackV2.directDecls pre) hempty
+  rcases hnames with ⟨hmem, hunique, hhasNames, hlast, _⟩
+  exact ⟨hmem, hunique, hhasNames, hlast, rfl⟩
+
+theorem foldl_maxMention_le_iff (positions : StackV2.MentionPositions)
+    (bound : Nat) : ∀ (latest : Nat) (names : List Ident),
+    names.foldl (fun current name => max current (positions.getD name 0)) latest ≤
+        bound ↔
+      latest ≤ bound ∧ ∀ name ∈ names, positions.getD name 0 ≤ bound
+  | latest, [] => by simp
+  | latest, name :: rest => by
+      rw [List.foldl, foldl_maxMention_le_iff]
+      simp only [Nat.max_le, List.mem_cons, forall_eq_or_imp]
+      aesop
+
+theorem maxMention_le_iff (positions : StackV2.MentionPositions)
+    (names : List Ident) (bound : Nat) :
+    maxMention positions names ≤ bound ↔
+      ∀ name ∈ names, positions.getD name 0 ≤ bound := by
+  simpa [maxMention] using foldl_maxMention_le_iff positions bound 0 names
+
+theorem deadPrefixLastMention_eq_noneMentioned
+    {positions : StackV2.MentionPositions} {names : List Ident}
+    {hasFun : Bool} {state : StackV2.DeadPrefixState}
+    (hstate : DeadPrefixStateMatches positions names hasFun state)
+    (moved rest : Block Op)
+    (hpositions : positions = StackV2.mentionPositions (moved ++ rest)) :
+    decide (state.lastMention ≤ moved.length) =
+      StackV2.noneMentionedFast names rest := by
+  rcases hstate with ⟨_, _, _, hlast, _⟩
+  rw [Bool.eq_iff_iff, noneMentionedFast_eq]
+  simp only [decide_eq_true_eq]
+  rw [hlast, maxMention_le_iff]
+  rw [List.all_eq_true]
+  simp only [Bool.not_eq_true']
+  constructor
+  · intro hall name hname
+    rw [hpositions] at hall
+    exact (mentionPositions_le_iff_suffix name moved rest).mp (hall name hname)
+  · intro hall name hname
+    rw [hpositions]
+    exact (mentionPositions_le_iff_suffix name moved rest).mpr (hall name hname)
+
+theorem deadPrefixSearchPositions_eq_slow
+    (positions : StackV2.MentionPositions) :
+    ∀ (moved pre rest : Block Op) (position : Nat)
+      (state : StackV2.DeadPrefixState),
+      positions = StackV2.mentionPositions (moved ++ rest) →
+      position = moved.length + 1 →
+      DeadPrefixStateMatches positions (StackV2.directDecls pre)
+        (hasDirectFun pre) state →
+      StackV2.deadPrefixSearchPositions positions pre rest position state =
+        StackV2.deadPrefixSearchSlow pre rest
+  | _, _, [], _, _, _, _, _ => by
+      simp [StackV2.deadPrefixSearchPositions, StackV2.deadPrefixSearchSlow]
+  | moved, pre, statement :: rest, position, state,
+      hpositions, hposition, hstate => by
+      rw [StackV2.deadPrefixSearchPositions, StackV2.deadPrefixSearchSlow]
+      let moved' := moved ++ [statement]
+      let pre' := pre ++ [statement]
+      let state' := state.addStmt positions statement
+      have hstate' : DeadPrefixStateMatches positions
+          (StackV2.directDecls pre') (hasDirectFun pre') state' := by
+        exact deadPrefixState_addStmt_matches hstate statement
+      have hmovedLength : moved'.length = position := by
+        simp [moved', hposition]
+      have hpositions' : positions =
+          StackV2.mentionPositions (moved' ++ rest) := by
+        simpa [moved', List.append_assoc] using hpositions
+      have hlast : decide (state'.lastMention ≤ position) =
+          StackV2.noneMentionedFast (StackV2.directDecls pre') rest := by
+        rw [← hmovedLength]
+        exact deadPrefixLastMention_eq_noneMentioned hstate' moved' rest hpositions'
+      have hstateRec := hstate'
+      rcases hstate' with ⟨_, hunique, hhasNames, _, hhasFun⟩
+      have hcondition :
+          (!rest.isEmpty && state'.hasNames && state'.namesUnique &&
+            decide (state'.lastMention ≤ position) && !state'.hasFun) =
+          (!rest.isEmpty && !(StackV2.directDecls pre').isEmpty &&
+            nodupFast (StackV2.directDecls pre') &&
+            StackV2.noneMentionedFast (StackV2.directDecls pre') rest &&
+            !hasDirectFun pre') := by
+        rw [hhasNames, hunique, nodupFast_eq_decide, hlast, hhasFun]
+      rw [hcondition]
+      split
+      · rfl
+      · apply deadPrefixSearchPositions_eq_slow positions moved' pre' rest
+        · exact hpositions'
+        · omega
+        · exact hstateRec
+
+theorem deadPrefixSearch_eq_slow (pre rest : Block Op) :
+    StackV2.deadPrefixSearch pre rest = StackV2.deadPrefixSearchSlow pre rest := by
+  unfold StackV2.deadPrefixSearch
+  apply deadPrefixSearchPositions_eq_slow
+    (StackV2.mentionPositions rest) [] pre rest
+  · simp
+  · simp
+  · exact deadPrefixInitialState_matches _ pre
+
+theorem deadPrefixSearchSlow_sound : ∀ outer pre rest out,
+    StackV2.deadPrefixSearchSlow pre rest = some out →
       EquivBlock D (outer ++ (pre ++ rest)) (outer ++ out)
-  | _, _, [], _, h => by simp [StackV2.deadPrefixSearch] at h
+  | _, _, [], _, h => by simp [StackV2.deadPrefixSearchSlow] at h
   | outer, pre, s :: rest, out, h => by
-      rw [StackV2.deadPrefixSearch] at h
+      rw [StackV2.deadPrefixSearchSlow] at h
       let pre' := pre ++ [s]
       let names := StackV2.directDecls pre'
       split at h
       · next hcond =>
         cases h
-        change ((((!rest.isEmpty && !names.isEmpty) && decide names.Nodup) &&
-          names.all (fun x => !stmtsMentions x rest)) &&
+        change ((((!rest.isEmpty && !names.isEmpty) && nodupFast names) &&
+          StackV2.noneMentionedFast names rest) &&
           !hasDirectFun pre') = true at hcond
-        simp only [Bool.and_eq_true] at hcond
+        rw [noneMentionedFast_eq] at hcond
+        simp only [Bool.and_eq_true, nodupFast_eq_decide,
+          decide_eq_true_eq] at hcond
         rcases hcond with ⟨⟨⟨⟨_, _⟩, _⟩, hall⟩, hfun0⟩
         have hfun : hasDirectFun pre' = false := by
           simpa using hfun0
@@ -5362,18 +5953,26 @@ theorem deadPrefixSearch_sound : ∀ outer pre rest out,
           scopePrefix_after_equivBlock (calls := calls) (creates := creates)
             (outer := outer) hfun hfree
       · next hcond =>
-        have ih := deadPrefixSearch_sound outer pre' rest out h
+        have ih := deadPrefixSearchSlow_sound outer pre' rest out h
         simpa [pre', List.append_assoc] using ih
+
+theorem deadPrefixSearch_sound {outer pre rest out : Block Op}
+    (h : StackV2.deadPrefixSearch pre rest = some out) :
+    EquivBlock D (outer ++ (pre ++ rest)) (outer ++ out) := by
+  rw [deadPrefixSearch_eq_slow] at h
+  exact deadPrefixSearchSlow_sound outer pre rest out h
 
 theorem scopeDeadPrefixHere_sound {body out : Block Op}
     (h : StackV2.scopeDeadPrefixHere body = some out) :
     EquivBlock D body out := by
-  simpa using deadPrefixSearch_sound [] [] body out h
+  simpa using deadPrefixSearch_sound
+    (outer := []) (pre := []) (rest := body) (out := out) h
 
 theorem scopeDeadPrefixHere_after_sound {body out : Block Op}
     (h : StackV2.scopeDeadPrefixHere body = some out) (pre : Block Op) :
     EquivBlock D (pre ++ body) (pre ++ out) := by
-  simpa using deadPrefixSearch_sound pre [] body out h
+  simpa using deadPrefixSearch_sound
+    (outer := pre) (pre := []) (rest := body) (out := out) h
 
 theorem iterateDeadPrefixesHere_equiv (n : Nat) (body : Block Op) :
     EquivBlock D body (StackV2.iterateDeadPrefixesHere n body) := by
@@ -5440,7 +6039,7 @@ mutual
             obtain ⟨body', hb, hs'⟩ := Option.map_eq_some_iff.mp h
             subst s'
             exact ⟨EquivStmt.forLoop_congr init (fun _ _ _ _ => Iff.rfl)
-              (EquivBlock.refl _)
+              (EquivBlock.refl («D» := D) _)
               (scopeOneDeadPrefixStmts_sound body _ hb []), ScopeRel.refl _⟩
     | .letDecl _ _, _, h => by simp [StackV2.scopeOneDeadPrefixStmt] at h
     | .assign _ _, _, h => by simp [StackV2.scopeOneDeadPrefixStmt] at h
@@ -6333,7 +6932,7 @@ private theorem aliasOneStmts_bound {layout : List Ident}
     · rintro ⟨_, hrun⟩
       cases hrun with
       | block hbody =>
-          have hrunOut := Step.block (by
+          have hrunOut := Step.block («D» := D) (by
             rw [hh]
             exact (hs (hoist D body :: funs) V st hbmem _ _ _).mp hbody)
           exact ⟨_, hrunOut⟩
@@ -6406,7 +7005,7 @@ private theorem SlotRel.copyBack_restore {d dx : Nat} {x y : Ident}
     have htail := congrArg List.length hkeys
     simp only [List.length_map, List.length_cons] at htail
     have htailBase : tail.length = base.length := by omega
-    rw [List.length_cons, VEnv.set_length, htailBase]
+    rw [List.length_cons, VEnv.set_length («D» := D), htailBase]
     simp
   rw [hlen]
   simp [hV₂]

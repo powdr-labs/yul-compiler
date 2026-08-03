@@ -1,11 +1,22 @@
 # Optimizer ideas log
 
 A running log of Yul→Yul optimizer passes we have tried, are trying, or might try.
-Each pass is a value of `Optimizer.Pass` (`Spec/Pass.lean`): a total
+Each pass is a value of `Optimizer.LocalPass` (`Spec/LocalPass.lean`): a total
 `run : Block → Block` bundled with `Sound D run : ∀ b, EquivBlock D b (run b)`.
-Possessing a `Pass` *is* possessing a verified optimizer — soundness is the only
-proof obligation, and it composes with the verified backend via
-`Pass.optimize_then_compile_correct` (`Spec/Backend.lean`).
+Possessing a `LocalPass` *is* possessing a verified optimizer — soundness is the
+only proof obligation, and it composes with the verified backend via
+`LocalPass.optimize_then_compile_correct` (`Spec/Backend.lean`).
+
+**How to read this file.** Entries are appended in the order they were tried and
+then marked **in place** — ✅ landed, ❌ measured and rejected, 🚧 in progress.
+The `## Candidate next ideas …` section headings are therefore *historical*: they
+record where an idea was added, not its current status. Trust the per-entry icon,
+not the heading it sits under. "(this branch)" in an older entry means the branch
+that introduced it, all of which have long since merged.
+
+As of the last refresh **nothing here is 🚧**; work in flight lives in open PRs
+(#130 uniswap-v4 campaign 2, #132 DispatchTree, #133 Asm→Asm stack scheduler),
+and the not-yet-started ideas are the bullet list at the very end of this file.
 
 The goal is to reduce **runtime gas** of contracts compiled by this compiler.
 The gas harnesses (see `AGENTS.md`) compile solc's *fully unoptimized* IR (or the
@@ -58,15 +69,24 @@ a lot of structural slack to remove.
 
 ## Gas targets (which baseline a pass can move)
 
-- `test/solidity-yul-optimizer-gas-baseline.txt` — `yulOptimizerTests`, ~552 rows,
-  **644/651 fixtures block-rooted** → moved by a top-level `Block` pass through
-  the `compile` (block) path. **Biggest, easiest target.**
+Row counts below are the current pinned ones; re-check them after a re-pin
+rather than trusting this list.
+
+- `test/solidity-yul-optimizer-gas-baseline.txt` — `yulOptimizerTests`, 545 rows,
+  mostly block-rooted → moved by a top-level `Block` pass through the `compile`
+  (block) path. **Biggest, easiest target.**
 - `test/solidity-yul-evm-code-transform-gas-baseline.txt` — `evmCodeTransform`,
-  ~40 rows, mostly block-rooted (smaller, stack-transform oriented).
-- `test/solidity-yul-object-compiler-gas-baseline.txt` — `objectCompiler`, mostly
-  object-rooted → needs the object path.
-- `test/solidity-gas-baseline.txt`, `test/solidity-semantic-gas-baseline.txt` —
+  40 rows, mostly block-rooted (smaller, stack-transform oriented).
+- `test/solidity-yul-object-compiler-gas-baseline.txt` — `objectCompiler`, 21
+  rows, mostly object-rooted → needs the object path.
+- `test/solidity-gas-baseline.txt` (`gasTests`, 12 rows) and
+  `test/solidity-semantic-gas-baseline.txt` (`semanticTests`, 1,259 rows) —
   real `.sol` via solc `--via-ir`, object-rooted → needs the object path.
+- `test/aave-v4-gas-baseline.txt` (10 rows) and
+  `test/uniswap-v4-gas-baseline.txt` (44 rows) — the in-repo real-Solidity
+  integration fixtures, object-rooted. These are the two the recent gas campaigns
+  are scored on, and the only ones with 10,000-iteration loops, so a
+  per-iteration saving shows up here far more than anywhere else.
 - `measureGas` runs the compiled bytecode *directly* (no deploy), so a block
   pass's savings show up immediately in the two Yul block-rooted baselines.
 
@@ -134,7 +154,7 @@ stack-layout pass:
    admitted only with a general proof that prepending the generated block's
    empty function scope preserves lookup and execution.
 
-Soundness stays in the existing strong `Pass` tier.  Copy-back uses `MIns` and
+Soundness stays in the existing strong `LocalPass` tier.  Copy-back uses `MIns` and
 `InsFree`: the source carries dead temporary bindings through the suffix while
 the target does not, and enclosing `restore` erases the difference in both
 directions, including halts.  Argument staging proves an `EvalArgs`
@@ -193,7 +213,7 @@ function environments — equal signatures, `EquivBlock` bodies), `Step.funs_con
 congruence that lets the hoisted scope change). Enables optimizing inside `funDef`
 bodies. Reusable by any future pass.
 
-### 🚧 `Simplify` (`Implementation/Simplify.lean`) — IN PROGRESS (this branch)
+### ✅ `Simplify` (`Implementation/Simplify.lean`) — landed
 A local **constant-folding + neutral-element** expression simplifier that
 recurses through the whole program, **including function bodies** (via
 `FunCongr`). Only a `for`-loop's `init` is left untouched (it is both executed
@@ -209,7 +229,7 @@ and hoisted; changing it needs a `for`-specific congruence — see below).
   `shl(0,x)`, `shr(0,x)` → `x`. Collapsed to two parameterized lemmas
   (`[var,lit]` and `[lit,var]`) discharged by a per-identity `stepOp` reduction.
 - **Wiring**: inserted into `compileSource`'s block branch (`compile (P.run …)`);
-  soundness is `Pass.optimize_then_compile_correct`.
+  soundness is `LocalPass.optimize_then_compile_correct`.
 - **Constant control flow**: after expression simplification, literal `if`
   conditions select the body/empty block and literal `switch` conditions select
   the matching case/default block.
@@ -233,7 +253,7 @@ is provably equivalent to the source.
 **Full end-to-end soundness** (`simplifyObject_correct`): compiling
 `simplifyObject o` yields bytecode that correctly simulates the **original**
 object `o`'s resolved run under the compiler's layout — the object analogue of
-`Pass.optimize_then_compile_correct`, with **no caveat**. The bridge is the
+`LocalPass.optimize_then_compile_correct`, with **no caveat**. The bridge is the
 **resolution congruence** `ResolveCongr.resolveSimplifyBlock_equiv`:
 `EquivBlock (resolveForLayoutStmts L b) (resolveForLayoutStmts L (simplifyStmts b))`
 — proved by a structural induction using that expression rewrites are disjoint
@@ -244,7 +264,7 @@ Gas (real Solidity contracts, `checkSolidityGas`): `libsolidity/semanticTests`
 619/648 down (−185,438 gas); `libsolidity/gasTests` 12/12 down; `objectCompiler`
 3 down. All zero-regression.
 
-`Pass.optimizeTopCode` + `Pass.optimizeTop_compileObject_correct` remain as an
+`LocalPass.optimizeTopCode` + `LocalPass.optimizeTop_compileObject_correct` remain as an
 alternative single-object theorem for the offset-free/leaf fragment.
 
 ### ✅ Constant control-flow folding (`agent/optimizer-control-flow`)
@@ -545,7 +565,7 @@ preserve that relation; and the enclosing block's `restore` erases the local
 layout difference.  The transform is conservative around shadowing,
 multi-value declarations, function boundaries, loop-carried values, and
   non-local control until their side conditions are proved. The implementation
-  is an ordinary strong `Pass`; unsupported multi-value coalescing remains a
+  is an ordinary strong `LocalPass`; unsupported multi-value coalescing remains a
   later extension rather than an unproved acceptance path.
 
 **Result:** issue #61's exact nine-local reproducer compiles and executes
@@ -665,7 +685,7 @@ operations, `gas`, and every open-world operation are rejected.  The explicit
 total-operation whitelist is intentional: the dialect effect flags alone do
 not prove arity/totality, and `mload`/Keccak can change active memory.
 
-Soundness stays in the strong `Pass` tier.  It is a contextual block theorem,
+Soundness stays in the strong `LocalPass` tier.  It is a contextual block theorem,
 not a false standalone statement equivalence: the source executes the harmless
 region and carries one inserted, possibly updated dead binding through the
 `x`-free suffix; the enclosing block's `restore` erases that binding and
@@ -859,7 +879,7 @@ condition in both normal and halt cases. Extend `simplifyCond`, show the pattern
 is stable under object layout resolution, and keep only zero-regression gas
 improvements.
 
-**Results** (fully proved in the unchanged strong `Pass` spec, object-resolution
+**Results** (fully proved in the unchanged strong `LocalPass` spec, object-resolution
 congruence included): `semanticTests` 199/846 rows improve by **19,230 gas**
 with zero regressions (`calling_other_functions.sol` −75; the top three
 dynamic-array loops −90/−105/−90); curated `gasTests` 11/12 improve by
@@ -1080,7 +1100,7 @@ ordinary candidates fail), keeping its 417 KB bytecode and 706 definitions
 out of the optimizer's reach entirely — likely the single biggest Uniswap
 bytecode lever.
 
-### 🚧 Aave/Uniswap gas 4: available-value reuse + dead-definition pruning + optimize-after-spill (`optimizer/aave-uniswap-gas-4`)
+### ✅ Aave/Uniswap gas 4: available-value reuse + dead-definition pruning + optimize-after-spill ([#118](https://github.com/powdr-labs/yul-compiler/pull/118), merged)
 
 Three coordinated changes attacking the largest post-#117 Aave/Uniswap costs
 (issue #65). Fresh ranking: Aave 35.81M vs 18.24M (1.96x) — the three
@@ -1225,9 +1245,236 @@ a combined ~13k (worst `dynamic_multi_array_cleanup` +9k — flatten/reuse live
   correctness chain (`Checks.lean` pins the exact classical axiom set of
   `compile_correct`; the whole tree is sorry-free).
 
-## Candidate next ideas (not started)
+## Candidate next ideas (added later; see the per-entry icons)
 
-### 🚧 Aave/Uniswap gas 5: trial-gated copy propagation + strength reduction + literal-helper object inlining (in progress — PR #TBD)
+### ✅ Aave/Uniswap gas 6: dead-store elimination behind the stack layout ([#139](https://github.com/powdr-labs/yul-compiler/pull/139), merged)
+
+Fresh measurement at main `da686b0` (solc 0.8.35, Osaka). Both in-repo suites
+reproduce their checked-in baselines exactly (0 regressions, 0 changed,
+0 unpinned, 0 stale):
+
+| Suite | Rows | Ours | solc | Excess | Ratio |
+|---|---:|---:|---:|---:|---:|
+| Aave v4 | 10 | 18,391,475 | 18,236,226 | 155,249 | 1.0085x |
+| Uniswap v4 | 44 | 1,062,224 | 907,063 | 155,161 | 1.1711x |
+
+`nextContinuousTenThousand` is now **825k below solc**, so Aave's residual
+excess is concentrated in five rows.
+
+Opcode attribution (`traceSolidityGas`, compiled binaries) says the same thing
+on every top row of both suites: the gap is stack traffic.
+
+| Row | Gap | POP Δ | DUP Δ | SWAP Δ | ISZERO Δ | (we win) |
+|---|---:|---:|---:|---:|---:|---|
+| `nextCollateralContinuousTenThousand` | +259,707 | +182,316 | +153,771 | — | +60,333 | — |
+| `collateralCountMaxReserveScan` | +192,060 | +149,072 | +188,259 | +35,469 | +43,149 | — |
+| `flsFullRange` | +56,368 | +19,326 | +29,004 | +17,544 | +3,846 | JUMPDEST −206 |
+| `TickMath:getTickAtSqrtPriceSweep` | +61,984 | +23,602 | +30,720 | +14,463 | +6,822 | JUMP −6,488, SHR −3,600, AND −3,600 |
+| `TickMath:getSqrtPriceAtTickSweep` | +10,218 | +3,148 | +4,128 | +387 | +6,612 | JUMP −3,648 |
+
+(The positive columns exceed the gap because aggressive inlining already wins
+big on `JUMP`/`AND`/`SHR`.) `POP` is 70–78% of the two largest Aave gaps.
+
+The backend charges `SWAP_k; POP` per `.assign` and one `push 0` per valueless
+`let`. Dumping the Yul that *actually compiles* — mirroring `compileSource`'s
+fallback chain; every one of these fixtures takes the **`full+layout`** arm —
+and running a backward liveness over it exposes a large residue of **dead
+stores**: assignments and `let` initializers whose target is overwritten
+before any read.
+
+| Fixture | dead assignments | dead `let` initializers | inside hot loops |
+|---|---:|---:|---:|
+| `PositionStatusMap` | 41 | 35 | **43** |
+| `TickBitmap` | 19 | 13 | 5 |
+| `SwapMath` | 18 | 8 | — |
+| `SqrtPriceMath` | 14 | 4 | — |
+| `TickMath` | 10 | 10 | 5 |
+
+The Aave hot ones sit inside the 10,000-trip loops (18 in the
+`collateralCount`/`borrowCount` helper, 9 each in the two `next*` helpers, 8
+and 7 in the scan helpers), so each is worth 10,000 × 7–8 gas.
+
+They are **created by `stackLayoutBlock`**: `iterateStackLayout`'s slot reuse
+and `StackV2`'s live-range splitting introduce `x := y` copies and shared
+slots, and nothing runs behind them — `stackLayoutBlock` is applied *after*
+the whole optimizer pipeline, in `compileSource`'s `tryLayouts`. Verbatim from
+the final TickMath sweep body:
+
+```yul
+let _v20 := _v19            // dead: overwritten below with no read between
+_v20 := _v19                // dead
+if iszero(slt(signextend(2, _v19), 50)) { break }
+_v20 := _v19                // live
+_v19 := signextend(2, add(_v19, 1))
+let fc2_19 := _v20          // dead initializer (binder is live, value is not)
+let fc2_18 := 0
+let fc2_20 := 0
+fc2_19 := signextend(2, _v20)
+```
+
+and from the Aave `_v6` 10,000-trip body: `fc2_131 := 0`, `fc2_130 := 0`,
+`fc2_135 := fc2_137`, `fc2_131 := fc2_137` are all dead at their point.
+
+Cost of each: dead `x := <lit>` is `PUSH0/PUSH + SWAP + POP` = 7–8 gas; dead
+`x := <var>` is `DUP + SWAP + POP` = 8 gas; a dead initializer is the whole
+right-hand side. `DeadPure` cannot take any of them — it removes a binding
+only when the name is never *mentioned* again, and here the name is assigned
+again (so the binder must survive) or is a plain assignment (which `DeadPure`
+does not consider at all, beyond the `x := x` self-assignment case).
+
+The changes, as actually implemented (the first draft of this entry described
+the rule in terms of "dead at that point" plus escape sets — that version is
+**unsound** three ways and has been replaced by the `owned` restriction below):
+
+1. **`DeadStores`** (new pass, `Implementation/DeadStores.lean`), on a name
+   declared by an earlier `letDecl` of the **same statement sequence**
+   (`owned`):
+   * **R1** delete `.assign [x] e` when `owned.contains x`,
+     `alwaysEval bound e`, and `x` is dead over the rest of the sequence;
+   * **R2** rewrite `.letDecl [x] (some e)` to `.letDecl [x] none` under the
+     same deadness and `alwaysEval` conditions.
+
+   Both are singleton-only. `alwaysEval` excludes calls and every
+   `stableTotalArity` op is single-valued, so a multi-name target would mean the
+   *original* statement is stuck — and `EquivBlock` is an `iff`, so turning a
+   stuck program into a running one would break the backward direction.
+
+   The `owned` restriction is what makes it sound, and it replaces escape-set
+   bookkeeping entirely. Three things it protects:
+   * **ambient variables** — `Sound` quantifies over every incoming `VEnv`, and
+     `restore` keeps outer bindings *with their in-place updates*, so deleting
+     `x := 0` in `[.assign ["x"] (.lit 0)]` would change the final environment;
+   * **function returns** — `callOk` reads `decl.rets` out of the body's final
+     environment, and `function f() -> r { r := 1 }` has `r` "dead" under any
+     purely-local liveness;
+   * **`for`-init declarations** — loop-carried, so not dead at the end of one
+     body iteration.
+
+   None of the three is declared by a `letDecl` of the sequence being swept, so
+   `owned` excludes all of them. And because every sequence this pass rewrites
+   is the body of a `.block` (`Step.block` restores; `callOk` runs the callee
+   body as `.stmt (.block …)`; `cond`/`switch`/`for`-body/`for`-post all run as
+   blocks), an `owned` name is erased on *every* exit — which is why the
+   deadness test can answer `true` at `break`/`continue`/`leave` and at the end
+   of the sequence with no escape set at all.
+
+   Shadowing is a hard stop rather than tracked, so the pass needs **no**
+   `NormalForm.UniqueNames` precondition — which matters, because
+   `stackLayoutBlock` introduces shadow copies. `Normalized` is preserved: R1
+   removes a statement and R2 only replaces `some e` with `none`, so
+   `declaredNamesStmts` is unchanged (`WellScoped`, `UniqueNames`),
+   `AnfStmt (.letDecl _ none)` is `True` (`IsANF`), and the other four fields
+   are untouched.
+
+2. **Post-layout cleanup.** `stackLayoutBlock` runs *after* the whole pipeline
+   and nothing cleans up behind its slot reuse and live-range splitting, so
+   `compileSource`'s three layout arms get a cleanup composition — and the
+   important part is that three of its four stages **were already proved**:
+
+   ```
+   cleanupAfterLayout = (deadStores ; fuseDeclAssign ; coalesceCopies ; deadPure) ^ 2
+   ```
+
+   `deadStores` deletes the dead stores and bares the dead binders;
+   `fuseDeclAssign`'s `sink` then fuses each bare binder onto its next
+   same-level assignment — exactly the deadness condition R2 tested — which is
+   what actually removes the slot's `push 0` *and* that store's `swap; pop` and
+   compiles the right-hand side one slot shallower; `coalesceCopies` collapses
+   the split-range copy chains; `deadPure` removes anything left with no reader,
+   the only one of the four that removes a scope-exit `pop`. Running the group
+   twice lets each expose work for the others.
+
+   R2 in isolation is nearly worthless and the first draft of this entry was
+   wrong to claim otherwise: `.letDecl xs none` lowers to one `push 0` per name
+   and `Instr.pushMin` makes that `PUSH0`, so `let x := 0` → `let x` is **0
+   gas** and `let x := y` → `let x` is **1**; R2 also keeps the binder, hence
+   its slot and its scope-exit `pop`. R2 earns its place only because
+   `fuseDeclAssign` follows it. (Relatedly, `AGENTS.md`'s "literal and
+   label-address pushes are always `PUSH32`" invariant is stale for literals
+   since #126 — only *label* pushes are uniform width.)
+
+   Monotonicity of acceptance is **not** claimed: `compile` gates on
+   `stackOK2 (optimizeAsm asm)`, a certificate with a soundness but no
+   monotonicity theorem. Instead the uncleaned layout stays as a further
+   thunked `<|>` arm, so acceptance provably cannot regress. (Measured: the
+   three Solidity compile corpora and the interpreter corpus are unchanged.)
+
+3. **Pipeline placement.** `deadStores` also joins `blockRound`/`objectRound`,
+   positioned *after* `reuseValues`: `ReuseValues` mines availability facts from
+   `let x := e` and `x := e`, and any reuse it could make lies inside exactly the
+   window where the deadness test sees no reader — running the dead-store sweep
+   first would silently forfeit the per-iteration `mstore`/`keccak256`/`sload`
+   CSE that is the stated lever of "gas 5".
+
+Adding a concrete pass does **not** move the trust boundary: `SpecClosure.roots`
+holds only `LocalPass.optimize_then_compile_correct`, and `stackLayout` is
+already a `LocalPass`, so the composition inherits it. No `update-spec.sh`, no
+`Checks.lean` change.
+
+Deliberately **not** in this branch, after review: two new `RejoinPairs`
+consumer forms (a different proved pass, ~10 measured sites, would make the
+baseline churn impossible to attribute); dropping `deadStoresBlock`'s
+`storageLayoutFreeStmts` gate in favour of a `DeadStoresResolve` module (the
+relation is resolution-invariant, so this is the better long-run design — the
+gate currently disables the pass on constructor blocks, which cost deploy gas
+only); and strengthening `DeadPure`'s `for` case to thread
+`blockDecls init ++ bound` (`ForInitEmpty` holds on pipeline input, so it buys
+nothing here and costs the two `forLoop` master-induction cases).
+
+Non-overlap with the open Uniswap campaign (#130 and its children #132/#133):
+that work is the selector dispatch tree, literal-slot memory forwarding, and
+an Asm→Asm stack scheduler. This is a source-tier dead-store pass behind the
+existing Yul-level layout, and its main target is Aave, which #130 does not
+touch.
+
+Explicitly *not* pursued after measuring: boolean-position
+`iszero(iszero(e)) → e` (already handled one tier down by `AsmPeephole`'s
+double-`iszero` rule, which is why we execute ~1 `ISZERO` per `if` rather
+than 3), and the residual `ISZERO` delta itself (solc reaches ~0 per branch by
+inverting the branch *target* rather than negating the condition — an Asm-tier
+branch-layout change, adjacent to #133).
+
+**Outcome as merged.** Both in-repo suites, vs solc 0.8.35 / Osaka, corpus
+`902f848`, zero regressions on either:
+
+| Suite | before | after | solc | ratio |
+|---|---:|---:|---:|---:|
+| Aave v4 | 18,391,475 | **16,733,564** | 18,236,226 | 1.0085x → **0.9176x** |
+| Uniswap v4 | 1,062,224 | **1,042,109** | 907,063 | 1.1711x → 1.1489x |
+| Combined | 19,453,699 | **17,775,673** | 19,143,289 | 1.0162x → **0.9286x** |
+
+Aave v4 and the combined total are now **below solc**. The two
+`next{Borrowing,Collateral}ContinuousTenThousand` rows crossed from +259,7xx
+*above* solc to −40,3xx *below* it, which is the 10,000-trip loops the `POP`
+attribution predicted. The semantic suite moved too, unprompted: 661 rows
+changed, 658 down, totalling **−1,006,990** (`array_storage_push_pop` −249,717,
+`array_storage_push_empty_length_address` −210,125,
+`array_storage_length_access` −180,180, `array_storage_index_access` −112,572).
+Across every re-pinned baseline: **748 rows down, 4 up**, roughly **−2.69M gas**.
+
+Behaviour was independently checked: the solc differential matches on every
+comparable fixture in all three Yul corpora with unchanged known-failure sets,
+and compile acceptance is unchanged. The improved rows include solc's own
+`unusedAssignEliminator`/`unusedPruner` fixtures, which is what this pass is.
+
+Four rows *rise* (+4,184 total): `fullSuite/abi2.yul` +30,
+`array_storage_index_zeroed_test` +4,112,
+`abicoder/…/member_array_dynamic2_v2` +34,
+`inlineAssembly/keccak256_optimizer_cache_bug` +8 — all the same cause, the
+cleanup occasionally leading `tryLayouts` to a slightly worse *accepted* arm.
+
+**Two findings worth reusing.** (1) `.letDecl xs none` lowers to one `push 0`
+per name and `Instr.pushMin` makes that a `PUSH0`, so weakening `let x := 0` to
+`let x` is worth **0 gas** and keeps the binder's slot and scope-exit `pop` — a
+rewrite of that shape only pays with `FuseDeclAssign.sink` behind it. (2) The
+soundness proof did **not** need a `DcRel`-scale relation: because `dsSweep`
+leaves every compound statement syntactically identical, the simulation
+transports nested code at *equal* code with one frame lemma, so there is no
+relation on nested syntax and no function-environment relation inside the sweep
+(~2,400 lines total, in `DeadStoresSound.lean`'s `VChg` value-change frame
+relation and `BEquivBlock`).
+
+### ✅ Aave/Uniswap gas 5: trial-gated copy propagation + strength reduction + literal-helper object inlining ([#120](https://github.com/powdr-labs/yul-compiler/pull/120), merged)
 
 Fresh dumps at post-#118 main (Aave 27.33M vs 18.24M, Uniswap 1.277M vs 907k)
 show the three `PositionStatusMap` `next*ContinuousTenThousand` rows (7.96M of
@@ -1350,7 +1597,7 @@ compose that result with the existing `Simplify` resolution congruence for the
   `optimizeAsm` runs inside `compile` between `compileProgram` and
   `lowerProg`, with its own whole-program forward simulation over `AStep`
   (`CodeRel` spec relation + `Match` configuration relation, threaded through
-  `compile_correct`). Not an `Optimizer.Pass` — it works below the source
+  `compile_correct`). Not an `Optimizer.LocalPass` — it works below the source
   tier, on patterns the Yul→Yul passes cannot express. Three rewrites, each
   mined from actually-emitted Asm (the classic `dup;pop`/`push;pop`/
   `swap n;swap n` peepholes never fire on this backend's output):
@@ -1473,3 +1720,30 @@ loop writes, which likely compile through the **main** (non-spill) arm — untes
 here (a full aave run exceeded the measurement budget on a cold solc cache). If
 revisited: wire `eqObject` into the main arm too and measure aave; that is where
 the refund-neutral identity-`sstore` elimination could actually pay off.
+## The `yul-ssa-cfg` dialect (2026-07/08, landed on PR #151, fully proved)
+
+- ✅ **`yul-ssa-cfg`: a second backend dialect below Yul** (PR #151; see
+  `YulEvmCompiler/SsaCfg/DESIGN.md`). Not a `LocalPass` — a new IR: SSA
+  control-flow graph with block arguments, built from optimized Yul
+  (`ofBlock`), optimized there (trivial-parameter elimination, constant
+  folding through branches, dominance-scoped CSE, dead-value elimination,
+  and program-level inlining with the single-call-site rule), then
+  code-generated straight to the existing labeled `Asm` layer with
+  entry-layout inheritance (solc-style forward pass), commutative operand
+  ordering, and a checked greedy shuffler; `compileSource` keeps both
+  backends' artifacts and picks by a dead-code-aware static cost.
+  **Measured**: uniswap-v4 gap to solc −37% (ratio 114.9% → 109.3%, single
+  functions now beating solc); codegen-parity totals below solc on all
+  three Solidity corpora; +11 corpus fixtures newly working (stack-too-deep
+  cases, behavioral matches, bounded recursion fully unrolled). The spec
+  grew by the generalized `Optimizer.EvmBackend` contract
+  (`Spec/EvmBackend.lean`, classic instance proved outright); the SSA
+  backend's own audit surface is `SsaCfg/Spec/`, and its three
+  phase-obligation proofs (`SsaCfg/Implementation/*Sound`) are **fully
+  proved** — `compileViaSsa_correct` checks with only
+  `[propext, Classical.choice, Quot.sound]`, the CI sorry scan runs with
+  no exclusions, and every proof file is gated with `warningAsError`.
+  Machine-checked findings during proofs: `wfCheck` does
+  not imply SSA dominance (a stale-read counterexample; fixed with the
+  decidable `domCheck` gate), and codegen genuinely needs single
+  assignment + label uniqueness.

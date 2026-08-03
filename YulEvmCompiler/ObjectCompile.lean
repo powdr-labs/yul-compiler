@@ -395,14 +395,44 @@ mutual
                 · exact resolveObjectCases_eq_layout hagree cases tail ht
 end
 
+/-- Layout entries are keyed by `litValue (.string ·)`, which keeps only the
+first **32 UTF-8 bytes** of the name. Two entries whose names share a 32-byte
+prefix therefore get the *same* key, and `compileResolvedObject`'s `Nodup` guard
+rejects the *whole object tree* when that happens — even if nothing references
+either name.
+
+Ordinary input reaches it: solc emits a `.metadata` segment in every object, so
+a grandchild contributes both `"parent.child"` and `"parent.child..metadata"`,
+and those share a 32-byte prefix as soon as the two generated names total more
+than 32 bytes (`"C_1234.C_1234_deployed"` already does at modest name lengths).
+
+The second of that pair is the one to drop, and *not* because of its length: a
+qualified name is unreferenceable exactly when `Validate.objectNameAllowed`
+refuses it, i.e. when it starts with `"."` or contains `".."`. Joining a
+`.`-prefixed data-segment name onto its parent always produces `".."`, so this
+rule removes precisely the propagated `.metadata`-style entries and nothing
+else. Dropping them removes only entries no program could ever name.
+
+Length is deliberately *not* the criterion. Layout references are checked by
+`objectNameAllowed`, not `literalWordWF`, so a name over 32 bytes is perfectly
+legal — Solidity's own `long_object_name.yul` resolves the 33-byte
+`"object2.object3.object4.datablock"`, and resolution matches entry names
+exactly (`findEntry`), so it works regardless of key truncation. Filtering by
+length would break it.
+
+Direct data segments are built by `dataEntries` and are untouched, so
+`Layout.Consistent` — which quantifies over an object's *direct* segments — is
+unaffected. -/
 private def shiftChildEntries (base : Nat) (child : ObjectPlan) : List ObjectEntry :=
-  child.entries.map fun entry =>
+  child.entries.filterMap fun entry =>
     if entry.name == child.name then
-      { entry with offset := base + entry.offset, size := child.bytecode.length }
+      some { entry with offset := base + entry.offset, size := child.bytecode.length }
     else
-      { name := child.name ++ "." ++ entry.name
-        offset := base + entry.offset
-        size := entry.size }
+      let qualified := child.name ++ "." ++ entry.name
+      if qualified.startsWith "." || qualified.contains ".." then
+        none
+      else
+        some { name := qualified, offset := base + entry.offset, size := entry.size }
 
 private def childEntries : Nat → List ObjectPlan → List ObjectEntry
   | _, [] => []
@@ -829,16 +859,21 @@ private theorem compileResolvedObject_compileWitness {o : Object Op} {L : Layout
 layout maps. -/
 def compileObject := compileResolvedObject
 
-/-! ### PROTOTYPE, UNPROVEN: scheduled object compiler
+/-! ### Backend-parameterized object planning
 
-Exact mirror of the verified plan/layout machinery above, but lowering each
-object's code block with `compileScheduled` (the verified pipeline plus the
-Asm-level per-window operand-stack scheduler) instead of `compile`. Kept
-separate so the verified `compileObject` and its correctness/consistency proofs
-are untouched; a soundness proof for `Schedule.scheduleAsm` (translation
-validation) would collapse this back into `compileObject`. -/
+The same planning pipeline as `planObject`/`compileResolvedObject`, but with
+the per-code-block compiler taken as a parameter, so an alternative verified
+backend (the SSA-CFG backend, `YulEvmCompiler.SsaCfg.compileViaSsa`) can
+drive the identical layout fixpoint. These are deliberately *parallel*
+definitions — the proved `planObject` chain above is untouched — and they
+live in this file only to reach the private resolver/entry helpers. The SSA
+object-execution theorem will relate `compileResolvedObjectWith` to
+`RunResolvedObject` the same way `compileObject_correct` does for the
+classic chain. -/
 
-private def planAttemptS (name : String) (code : List (YulSemantics.Stmt Op))
+/-- `planAttempt` with the block compiler as a parameter. -/
+def planAttemptWith (compileFn : YulSemantics.Block Op → Option (List Instr))
+    (name : String) (code : List (YulSemantics.Stmt Op))
     (subPlans : List ObjectPlan) (dataSegs : List (String × Data)) (c : Nat) :
     Option (ObjectPlan ⊕ Nat) := do
   let childrenSize := (subPlans.map (·.bytecode.length)).sum
@@ -853,7 +888,7 @@ private def planAttemptS (name : String) (code : List (YulSemantics.Stmt Op))
       bytecode := []
     }
     let resolvedCode ← resolveObjectStmts (planResolver plan) code
-    let resolvedInstructions ← compileScheduled resolvedCode
+    let resolvedInstructions ← compileFn resolvedCode
     let executable := assembleBytes resolvedInstructions
     let c' := executable.length
     if c' == c then
@@ -865,40 +900,56 @@ private def planAttemptS (name : String) (code : List (YulSemantics.Stmt Op))
   else
     none
 
-private def planLoopS (name : String) (code : List (YulSemantics.Stmt Op))
+/-- `planLoop` with the block compiler as a parameter. -/
+def planLoopWith (compileFn : YulSemantics.Block Op → Option (List Instr))
+    (name : String) (code : List (YulSemantics.Stmt Op))
     (subPlans : List ObjectPlan) (dataSegs : List (String × Data)) :
     Nat → Nat → Option ObjectPlan
   | 0, _ => none
   | fuel + 1, c =>
-    match planAttemptS name code subPlans dataSegs c with
+    match planAttemptWith compileFn name code subPlans dataSegs c with
     | none => none
     | some (.inl plan) => some plan
-    | some (.inr c') => planLoopS name code subPlans dataSegs fuel c'
+    | some (.inr c') => planLoopWith compileFn name code subPlans dataSegs fuel c'
 
 mutual
-  def planObjectS (o : Object Op) : Option ObjectPlan :=
+  /-- `planObject` with the block compiler as a parameter. -/
+  def planObjectWith (compileFn : YulSemantics.Block Op → Option (List Instr))
+      (o : Object Op) : Option ObjectPlan :=
     match o with
     | .mk name code subObjects dataSegs => do
-        let subPlans ← planObjectsS subObjects
+        let subPlans ← planObjectsWith compileFn subObjects
         let placeholderCode ← resolveObjectStmts placeholderResolver code
-        let instructions ← compileScheduled placeholderCode
+        let instructions ← compileFn placeholderCode
         let codeSize := (assembleBytes instructions).length
-        planLoopS name code subPlans dataSegs 34 codeSize
+        planLoopWith compileFn name code subPlans dataSegs 34 codeSize
     termination_by 2 * sizeOf o + 1
 
-  def planObjectsS (os : List (Object Op)) : Option (List ObjectPlan) :=
+  def planObjectsWith (compileFn : YulSemantics.Block Op → Option (List Instr))
+      (os : List (Object Op)) : Option (List ObjectPlan) :=
     match os with
     | [] => some []
     | o :: objects => do
-        return (← planObjectS o) :: (← planObjectsS objects)
+        return (← planObjectWith compileFn o) :: (← planObjectsWith compileFn objects)
     termination_by 2 * sizeOf os
 end
 
-/-- **PROTOTYPE, UNPROVEN.** Object compiler using the window scheduler. -/
-def compileObjectScheduled (o : Object Op) : Option Layout := do
-  let plan ← planObjectS o
+/-- `compileResolvedObject` with the block compiler as a parameter. -/
+def compileResolvedObjectWith
+    (compileFn : YulSemantics.Block Op → Option (List Instr))
+    (o : Object Op) : Option Layout := do
+  let plan ← planObjectWith compileFn o
   if !(plan.entries.map entryKey).Nodup then none else
   some (layoutOfPlan plan)
+
+/-- **PROTOTYPE, UNPROVEN.** Object compiler using the Asm window scheduler:
+the backend-parameterized planning chain instantiated with `compileScheduled`
+(the verified pipeline plus `Schedule.scheduleAsm`). A soundness proof for the
+scheduler (translation validation, see `AsmScheduleSound`) collapses this into
+`compileObject`. -/
+def compileObjectScheduled (o : Object Op) : Option Layout :=
+  compileResolvedObjectWith compileScheduled o
+
 
 /-- Public data-placement theorem for `compileObject`. -/
 theorem compileObject_consistent {o : Object Op} {L : Layout}

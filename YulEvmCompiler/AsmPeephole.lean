@@ -92,6 +92,56 @@ def peepRun (R : List Label) : List Asm → List Asm
   | [] => []
   termination_by p => p.length
 
+/-! ### Verified fast dead-label test
+
+`peepRun`'s only use of `R` is the membership test at `.label l`, and `R` is the
+program's whole reference list — thousands of entries — so the scan is
+`O(labels × references)` per round, four rounds per compile. `peepRunP` takes the
+test as a `Label → Bool`, and `peepRunFast` supplies a `Std.HashSet`. `peepRun`
+stays the specification `CodeRel` and the soundness proofs are stated about;
+`@[csimp]` installs the fast version in compiled code. -/
+
+/-- `peepRun` with the dead-label test abstracted. -/
+def peepRunP (mem : Label → Bool) : List Asm → List Asm
+  | .push v :: .swap ⟨0, _⟩ :: .pop :: rest =>
+      .pop :: .push v :: peepRunP mem rest
+  | .op .iszero :: .op .iszero :: .jumpi l :: rest =>
+      .jumpi l :: peepRunP mem rest
+  | .jumpi l :: .jump m :: .label l' :: rest =>
+      if l = l' then .op .iszero :: .jumpi m :: .label l' :: peepRunP mem rest
+      else .jumpi l :: peepRunP mem (.jump m :: .label l' :: rest)
+  | .jumpi l :: .label l' :: rest =>
+      if l = l' then .pop :: .label l' :: peepRunP mem rest
+      else .jumpi l :: peepRunP mem (.label l' :: rest)
+  | .jump l :: .label l' :: rest =>
+      if l = l' then .label l' :: peepRunP mem rest
+      else .jump l :: peepRunP mem (.label l' :: rest)
+  | .label l :: rest =>
+      if mem l then .label l :: peepRunP mem rest else peepRunP mem rest
+  | i :: rest => i :: peepRunP mem rest
+  | [] => []
+  termination_by p => p.length
+
+/-- A membership test that agrees with `· ∈ R` gives exactly `peepRun R`. -/
+theorem peepRunP_eq_peepRun (mem : Label → Bool) (R : List Label)
+    (h : ∀ l, mem l = decide (l ∈ R)) :
+    ∀ p : List Asm, peepRunP mem p = peepRun R p := by
+  intro p
+  -- `simp_all` uses `h` from the local context to line the dead-label test up
+  -- with `· ∈ R` in the two `.label` cases.
+  fun_induction peepRunP mem p <;> rw [peepRun] <;> simp_all
+
+/-- `peepRun` with the dead-label test backed by a hash set. -/
+def peepRunFast (R : List Label) (p : List Asm) : List Asm :=
+  peepRunP (Std.HashSet.ofList R).contains p
+
+@[csimp] theorem peepRun_eq_peepRunFast : @peepRun = @peepRunFast := by
+  funext R p
+  refine (peepRunP_eq_peepRun _ R ?_ p).symm
+  intro l
+  rw [Std.HashSet.contains_ofList]
+  simp
+
 /-- One round of the Asm-level peephole pass: scan with the program's own
 reference set, so exactly the unreferenced labels are dropped. -/
 def optimizeAsmRound (p : List Asm) : List Asm := peepRun (labelRefs p) p

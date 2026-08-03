@@ -26,6 +26,10 @@ checkout.
   regression classification (solc total as a source fingerprint), baseline
   parse/render.
 - `Parallel.lean` — sharding/concurrency helpers.
+- `Timing.lean` — per-fixture wall-clock helpers for the compiler-runtime figures
+  in the CI summary. **Time pure compilation by reading the clock inside the
+  `match` on its result**, not around a `let` binding: Lean sinks a pure binding
+  to where it is scrutinised, so the naive version measures nothing.
 
 ## What differential tests may and may not compare
 

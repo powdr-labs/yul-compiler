@@ -161,7 +161,7 @@ theorem hoistUnaryCore_equiv_of (P : String) (xs : List Ident) (f g : Ident)
                           | var hv =>
                           have hvv : v = vOuter := by simpa [VEnv.get] using hv
                           subst vOuter
-                          have hargs0 := Step.argsCons Step.argsNil hinner0
+                          have hargs0 := Step.argsCons Step.argsNil («D» := D) hinner0
                           have hcall0 := Step.callOk hargs0
                             (by simpa [lookupFun] using hl) harity hbody hout
                           have hassign0 := Step.assignVal hcall0 hxs
@@ -195,7 +195,7 @@ theorem hoistUnaryCore_equiv_of (P : String) (xs : List Ident) (f g : Ident)
                           | var hv =>
                           have hvv : v = vOuter := by simpa [VEnv.get] using hv
                           subst vOuter
-                          have hargs0 := Step.argsCons Step.argsNil hinner0
+                          have hargs0 := Step.argsCons Step.argsNil («D» := D) hinner0
                           have hcall0 := Step.callHalt hargs0
                             (by simpa [lookupFun] using hl) harity hbody
                           simpa [restore] using
@@ -293,18 +293,18 @@ private theorem hcStmt_equiv (P : String) (Δ : DEnv) :
       · exact EquivStmt.refl _
   | .cond c body => by
       simpa [hcStmt, hcBlock] using
-        (EquivStmt.cond_congr (EquivExpr.refl c)
+        (EquivStmt.cond_congr (EquivExpr.refl («D» := D) c)
           (EquivBlock.of_stmts_funs
             (EquivStmts.of_forall₂ (hcStmts_forall2 P (deltaExtend Δ body) body))
             (hcScopeRel P (deltaExtend Δ body) body)))
   | .switch c cases dflt => by
       simpa [hcStmt] using
-        (EquivStmt.switch_congr (EquivExpr.refl c)
+        (EquivStmt.switch_congr (EquivExpr.refl («D» := D) c)
           (hcCases_forall2 P Δ cases) (hcDflt_equiv P Δ dflt))
   | .forLoop init c post body => by
       let ΔL := Δ.filter (fun p => !(definedFuns init).contains p.1)
       simpa [hcStmt, hcBlock, ΔL] using
-        (EquivStmt.forLoop_congr init (EquivExpr.refl c)
+        (EquivStmt.forLoop_congr init (EquivExpr.refl («D» := D) c)
           (EquivBlock.of_stmts_funs
             (EquivStmts.of_forall₂ (hcStmts_forall2 P (deltaExtend ΔL post) post))
             (hcScopeRel P (deltaExtend ΔL post) post))

@@ -121,7 +121,7 @@ theorem discardStmt_resolve (L : Layout) {sink : Ident} : ∀
   | _, .continue, _, h => by simp [discardStmt] at h
   | _, .leave, _, h => by simp [discardStmt] at h
   termination_by _ s _ _ => 2 * sizeOf s + 1
-  decreasing_by all_goals simp_wf
+  decreasing_by all_goals simp_wf; omega
 
 theorem discardStmts_resolve (L : Layout) {sink : Ident} : ∀
     (ctx : DrCtx) (ss : Block Op) (ctx' : DrCtx),

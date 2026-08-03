@@ -19,6 +19,16 @@ import YulEvmCompiler.ObjectCompile
 import YulEvmCompiler.Optimizer.Spec.LocalPass
 import YulEvmCompiler.Optimizer.Spec.GlobalPass
 import YulEvmCompiler.Optimizer.Spec.Backend
+import YulEvmCompiler.Optimizer.Spec.EvmBackend
+import YulEvmCompiler.SsaCfg.Spec.Ir
+import YulEvmCompiler.SsaCfg.Spec.Sem
+import YulEvmCompiler.SsaCfg.Implementation.OfYul
+import YulEvmCompiler.SsaCfg.Implementation.Passes
+import YulEvmCompiler.SsaCfg.Implementation.ToAsm
+import YulEvmCompiler.SsaCfg.Implementation.Compile
+import YulEvmCompiler.SsaCfg.Implementation.Object
+import YulEvmCompiler.SsaCfg.Spec.Backend
+import YulEvmCompiler.SsaCfg.Implementation.Examples
 import YulEvmCompiler.Optimizer.Core.Basic
 import YulEvmCompiler.Optimizer.Core.Rule
 import YulEvmCompiler.Optimizer.Core.Subst

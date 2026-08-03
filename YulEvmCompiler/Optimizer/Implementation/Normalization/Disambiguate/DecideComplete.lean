@@ -36,23 +36,15 @@ theorem isDsNameL_toList_imp {x : Ident} (h : isDsNameL x.toList = true) :
   | cons c rest =>
       rw [hL] at h
       simp only [isDsNameL, Bool.and_eq_true, beq_iff_eq] at h
-      obtain ⟨⟨hc, hne⟩, hall⟩ := h
-      have hmem : ∀ y ∈ rest, y = 'v' := by
-        intro y hy
-        have := List.all_eq_true.mp hall y hy
-        simpa using this
-      have hrep : rest = List.replicate rest.length 'v' := List.eq_replicate_of_mem hmem
-      have hlen : rest.length ≠ 0 := by
-        simp only [ne_eq, List.length_eq_zero_iff]
-        intro h0; subst h0; simp at hne
-      obtain ⟨m, hm⟩ := Nat.exists_eq_succ_of_ne_zero hlen
-      refine ⟨m, ?_⟩
-      have hrest : rest = List.replicate (m + 1) 'v' := hrep.trans (by rw [hm])
-      have hx : x.toList = Char.ofNat 0 :: List.replicate (m + 1) 'v' := by
-        rw [hL, hc, hrest]
+      obtain ⟨⟨hc, _⟩, hround⟩ := h
+      -- The recogniser *is* the round trip, so the witness reads straight off it.
+      refine ⟨dsDigits rest, ?_⟩
+      have hx : x.toList = Char.ofNat 0 :: Nat.toDigits 10 (dsDigits rest) := by
+        rw [hL, hc]
+        exact congrArg (fun l => Char.ofNat 0 :: l) hround
       calc x = String.ofList x.toList := String.ofList_toList.symm
-        _ = String.ofList (Char.ofNat 0 :: List.replicate (m + 1) 'v') := by rw [hx]
-        _ = dsName m := rfl
+        _ = String.ofList (Char.ofNat 0 :: Nat.toDigits 10 (dsDigits rest)) := by rw [hx]
+        _ = dsName (dsDigits rest) := rfl
 
 /-- **Completeness of the fresh-name check.** -/
 theorem notFreshB_complete {x : Ident} (h : NotFresh x) : notFreshB x = true := by

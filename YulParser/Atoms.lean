@@ -1,3 +1,13 @@
+-- Narrow, on purpose: these used to arrive transitively through `YulParser.Canon`'s
+-- `import Mathlib`, which linked all of Mathlib into the compiler binary.
+--   * `Batteries.Data.Char.Basic`: `Char.toNat_ofNat` for the `digitChar` lemmas.
+--   * `Mathlib.Data.List.TakeWhile`: `List.mem_takeWhile_imp`.
+--   * `Mathlib.Tactic.FinCases` / `Mathlib.Tactic.IntervalCases`: `fin_cases`,
+--     `interval_cases`.
+import Batteries.Data.Char.Basic
+import Mathlib.Data.List.TakeWhile
+import Mathlib.Tactic.FinCases
+import Mathlib.Tactic.IntervalCases
 import YulParser.SoundC
 import YulSemantics.Ast
 set_option warningAsError true

@@ -75,11 +75,69 @@ def usedLinkerObject : String :=
 #guard (parseSource usedLinkerObject).isSome
 #guard (compileSource usedLinkerObject).isNone
 
+/-! Nested layout entries are keyed by `litValue (.string ·)`, which keeps only
+32 UTF-8 bytes. A grandchild object plus the `.metadata` segment solc emits in
+every object contributes two qualified names sharing a 32-byte prefix, whose
+keys therefore alias — which used to fail the whole tree's key-uniqueness check
+even though neither name is referenceable (`litWF` caps a string literal at 32
+bytes, so the validator rejects any `dataoffset`/`datasize` naming them). -/
+def nestedMetadataObject : String :=
+  "object \"Wrap\" { code { stop() } " ++
+  "object \"PreviewHub_9270\" { " ++
+  "code { let s := datasize(\"PreviewHub_9270_deployed\") " ++
+  "datacopy(0, dataoffset(\"PreviewHub_9270_deployed\"), s) return(0, s) } " ++
+  "object \"PreviewHub_9270_deployed\" { code { sstore(0, 1) } " ++
+  "data \".metadata\" hex\"a2646970667358221220\" } } }"
+
+#guard (parseSource nestedMetadataObject).isSome
+#guard (compileSource nestedMetadataObject).isSome
+
+/-! A *referenceable* qualified name must survive, however long it is. Layout
+references are validated by `objectNameAllowed`, not `literalWordWF`, so a name
+over 32 bytes is legal: this is Solidity's own `yulInterpreterTests`
+`long_object_name.yul`, resolving the 33-byte
+`"object2.object3.object4.datablock"`. Filtering propagated entries by *length*
+rather than by referenceability would reject it. -/
+def longObjectName : String :=
+  "object \"t\" { code { " ++
+  "datacopy(not(datasize(\"object2.object3.object4.datablock\")), 0, 0) } " ++
+  "object \"object2\" { code{} object \"object3\" { code{} " ++
+  "object \"object4\" { code{} data \"datablock\" \"\" } } } }"
+
+#guard (parseSource longObjectName).isSome
+#guard (compileSource longObjectName).isSome
+
+/-! Shortening either generated name brings both keys under 32 bytes; the same
+tree compiled before the fix too, so this pins that the fix did not change it. -/
+#guard (compileSource
+  ("object \"Wrap\" { code { stop() } object \"P\" { " ++
+   "code { let s := datasize(\"Pd\") datacopy(0, dataoffset(\"Pd\"), s) return(0, s) } " ++
+   "object \"Pd\" { code { sstore(0, 1) } " ++
+   "data \".metadata\" hex\"a2646970667358221220\" } } }")).isSome
+
 /-! The prune is shadowing-proof by over-approximation: if the bound name is
 referenced anywhere in the program — even a write — the binding is kept and the
 program is rejected rather than miscompiled. -/
 #guard (compileSource
   "object \"A\" { code { let a := linkersymbol(\"file.sol:L\") a := 1 sstore(0, a) } }").isNone
+
+/-! Supplying the library's link-time address makes the *used* form compile:
+the occurrence is substituted with that address before anything else runs, so
+what reaches the optimizer and the backend is ordinary Yul. Only the named
+library is resolved; a different one is still rejected. -/
+def linkedL : LinkEnv := [("file.sol:L", 0x1234567890abcdef1234567890abcdef12345678)]
+
+#guard (compileSource usedLinkerObject linkedL).isSome
+#guard (compileSource
+  "object \"A\" { code { let a := linkersymbol(\"file.sol:Other\") sstore(0, a) } }"
+  linkedL).isNone
+
+/-! Linking is a substitution, so the linked program is exactly the one with
+the address written out by hand. -/
+#guard (compileSource usedLinkerObject linkedL) ==
+  (compileSource
+    ("object \"A\" { code { let a := 0x1234567890abcdef1234567890abcdef12345678 " ++
+      "sstore(0, a) } }"))
 
 /-! The source entry point also runs Solidity-compatible validation after the
 grammar has produced an AST.  These checks pin representative scope, arity,

@@ -894,6 +894,407 @@ theorem frameStepB_sound {prog : List Asm} {C : Cert} {i : Asm} {c : List Asm} {
       · next S' => intro h; simp only [decide_eq_true_eq] at h; exact ⟨S', rfl, h.1, h.2⟩
       · intro h; simp at h
 
+/-- Equality of two certificate positions, with a pointer-equality fast path.
+
+`withPtrEq a b k h` is *definitionally* `k ()` — the fast path exists only in
+the compiled code, and `h` is the obligation that it agrees. So this is
+`decide (a = b)` by `rfl`, with no new axiom and no `implemented_by` of our own
+(`withPtrEq` is Lean core's).
+
+It matters because the positions a certificate stores are the very suffixes of
+`prog` that produced them, so they are *physically shared* with the position
+being looked up: the pointer check succeeds immediately where the structural
+comparison would walk the whole suffix. Structural `List Asm` equality was 37%
+of all instructions in a profile of a mid-sized fixture. -/
+def posEq (a b : List Asm) : Bool :=
+  withPtrEq a b (fun _ => decide (a = b)) (fun h => by simp [h])
+
+omit model in
+@[simp] theorem posEq_eq_decide (a b : List Asm) :
+    posEq a b = decide (a = b) := rfl
+
+/-- `Option`-lifted `posEq`. The pointer check has to happen on the *lists*: the
+`some c'` wrapper the verifier compares against is freshly allocated, so a
+pointer test on the `Option` itself would always miss. -/
+def posEqOpt (a b : Option (List Asm)) : Bool :=
+  match a, b with
+  | some x, some y => posEq x y
+  | none, none => true
+  | _, _ => false
+
+omit model in
+@[simp] theorem posEqOpt_eq_decide (a b : Option (List Asm)) :
+    posEqOpt a b = decide (a = b) := by
+  cases a <;> cases b <;> simp [posEqOpt]
+
+/-- All certificate facts for one program position, returned together. -/
+abbrev CertValue := FLayout × Nat × FLayout
+
+/-- Bundled executable certificate lookup. -/
+abbrev CertLookup := List Asm → Option CertValue
+
+/-- The entry type stored in the key-indexed table. -/
+abbrev CertEntry := Nat × List Asm × FLayout × Nat × FLayout
+
+/-- Certificate lookup against an already-built table.
+
+`CertLookup` is a function type, so a definition of the form
+`let t := …; fun c => … t …` is eta-expanded by the compiler to arity 2 and the
+`let` is floated *inside* the lambda: the table would then be reallocated and
+refolded on **every** lookup, making the verifier quadratic in the program
+length with an O(program) array allocation per lookup. Taking the table as a
+parameter is what keeps it shared; `checkCertFast` binds it once. -/
+def lookupIn (t : Array (Option CertEntry)) : CertLookup :=
+  fun c => match t[c.length]? with
+    | some (some e) =>
+        if e.2.1 = c then some (e.2.2.1, e.2.2.2.1, e.2.2.2.2) else none
+    | _ => none
+
+/-- `lookupIn` with the pointer-equality fast path on the position comparison,
+installed into compiled code by `@[csimp]` below. -/
+def lookupInFast (t : Array (Option CertEntry)) : CertLookup :=
+  fun c => match t[c.length]? with
+    | some (some e) =>
+        if posEq e.2.1 c then some (e.2.2.1, e.2.2.2.1, e.2.2.2.2) else none
+    | _ => none
+
+omit model in
+@[csimp] theorem lookupIn_eq_lookupInFast : @lookupIn = @lookupInFast := by
+  funext t c
+  simp only [lookupIn, lookupInFast, posEq_eq_decide, decide_eq_true_eq]
+
+/-! ### Looking up by index instead of by length
+
+`lookupIn t c` uses `c.length` as the table index, and `c` is a suffix of the
+program, so every lookup walks it: `List.length` was 18.7% of a compile on a
+mid-sized fixture and 34.9% on the largest. The verifier performs one to three
+lookups per entry and there is roughly one entry per instruction, so this is the
+last quadratic in the gate.
+
+The lengths are all *derivable* without walking — a fall-through successor is one
+shorter than the position it came from, and a jump target's length can be
+tabulated with the target itself. What is missing is the length of the position an
+entry *stores*, which a hostile table need not report honestly in `e.1`.
+
+`suffixArr` supplies it: cell `k` holds the length-`k` suffix of the program, so
+`posEq (suffixArr prog)[e.1]! e.2.1` — O(1) by pointer for a certificate our own
+solver produced — *proves* `e.2.1.length = e.1`. When it fails, the entry falls
+back to the length-computing path, so acceptance is unchanged either way. -/
+
+/-- Certificate lookup at an explicit index. Equal to `lookupIn t c` exactly when
+`k` is `c`'s length (`lookupAt_length`). -/
+def lookupAt (t : Array (Option CertEntry)) (k : Nat) (c : List Asm) :
+    Option CertValue :=
+  match t[k]? with
+  | some (some e) =>
+      if posEq e.2.1 c then some (e.2.2.1, e.2.2.2.1, e.2.2.2.2) else none
+  | _ => none
+
+omit model in
+theorem lookupAt_length (t : Array (Option CertEntry)) (c : List Asm) :
+    lookupAt t c.length c = lookupIn t c := by
+  simp only [lookupAt, lookupIn, posEq_eq_decide, decide_eq_true_eq]
+
+/-- Every suffix of `p`, longest first, appended to `acc`. Pointers are shared
+with `p` — nothing is rebuilt — which is what makes the `posEq` check below O(1).
+-/
+def suffixesGo : List Asm → Array (List Asm) → Array (List Asm)
+  | [], acc => acc.push []
+  | p@(_ :: rest), acc => suffixesGo rest (acc.push p)
+
+/-- Suffixes of `prog`, longest first: cell `i` is `prog.drop i`, so the suffix of
+length `k` sits at index `prog.length - k`. -/
+def suffixes (prog : List Asm) : Array (List Asm) := suffixesGo prog #[]
+
+omit model in
+private theorem suffixesGo_getElem? (p : List Asm) :
+    ∀ (acc : Array (List Asm)) (i : Nat),
+      (suffixesGo p acc)[i]? =
+        if i < acc.size then acc[i]?
+        else if i ≤ acc.size + p.length then some (p.drop (i - acc.size)) else none := by
+  induction p with
+  | nil =>
+      intro acc i
+      rw [suffixesGo, Array.getElem?_push]
+      rcases Nat.lt_trichotomy i acc.size with h | h | h
+      · simp [show i ≠ acc.size by omega, h]
+      · subst h; simp
+      · simp [show i ≠ acc.size by omega, show ¬ i < acc.size by omega,
+          show ¬ i ≤ acc.size by omega]
+  | cons i₀ rest ih =>
+      intro acc i
+      rw [suffixesGo, ih]
+      simp only [Array.size_push, List.length_cons]
+      rcases Nat.lt_trichotomy i acc.size with h | h | h
+      · rw [if_pos (show i < acc.size + 1 by omega), if_pos h,
+          Array.getElem?_push_lt h, Array.getElem?_eq_getElem h]
+      · subst h
+        simp
+      · have hdrop : (i₀ :: rest).drop (i - acc.size) = rest.drop (i - (acc.size + 1)) := by
+          have h1 : i - acc.size = (i - (acc.size + 1)) + 1 := by omega
+          rw [h1, List.drop_succ_cons]
+        by_cases hle : i ≤ acc.size + 1 + rest.length
+        · simp [show ¬ i < acc.size + 1 by omega, show ¬ i < acc.size by omega,
+            hle, show i ≤ acc.size + (rest.length + 1) by omega, hdrop]
+        · simp [show ¬ i < acc.size + 1 by omega, show ¬ i < acc.size by omega,
+            hle, show ¬ i ≤ acc.size + (rest.length + 1) by omega]
+
+omit model in
+/-- Cell `i` of `suffixes prog` is `prog.drop i`. -/
+theorem suffixes_getElem? (prog : List Asm) (i : Nat) (h : i ≤ prog.length) :
+    (suffixes prog)[i]? = some (prog.drop i) := by
+  rw [suffixes, suffixesGo_getElem?]
+  simp [Nat.not_lt.mpr (Nat.zero_le i), h]
+
+omit model in
+/-- …hence it has length `prog.length - i`. This is the fact that turns a
+successful `posEq` into a proof about a stored position's length. -/
+theorem suffixes_length (prog : List Asm) (i : Nat) (h : i ≤ prog.length)
+    (c : List Asm) (hc : (suffixes prog)[i]? = some c) :
+    c.length = prog.length - i := by
+  rw [suffixes_getElem? prog i h] at hc
+  rw [← Option.some.inj hc]
+  simp
+
+/-- `frameStepB` with a bundled certificate API. Each successor position is
+looked up once instead of independently through `fl`, `fbMax`, and `rl`. -/
+def frameStepLookupB (prog : List Asm) (lookup : CertLookup) :
+    Asm → List Asm → FLayout → Nat → FLayout → Bool
+  | .push _,      c, S, F, R => decide (lookup c = some (.word :: S, F, R))
+  | .dup n,       c, S, F, R => match S[n.val]? with
+      | some FSlot.word => decide (lookup c = some (.word :: S, F, R))
+      | _ => false
+  | .pushLabel l, c, S, F, R => decide (lookup c = some (.retTo l :: S, F, R))
+  | .pop,         c, S, F, R => match S with
+      | .word :: S' => decide (lookup c = some (S', F, R))
+      | _ => false
+  | .swap n,      c, S, F, R => match S with
+      | sx :: rest => match rest.drop n.val with
+          | sy :: rst => decide (sx = FSlot.word ∧
+              (∀ s ∈ rest.take n.val, s = FSlot.word) ∧
+              lookup c = some (sy :: (rest.take n.val ++ sx :: rst), F, R))
+          | [] => false
+      | [] => false
+  | .label _,     c, S, F, R => decide (lookup c = some (S, F, R))
+  | .op yop,      c, S, F, R => match opTable yop with
+      | some o => decide (Operation.popArity o ≤ S.length ∧
+          lookup c = some
+            (List.replicate (Operation.pushArity o) FSlot.word ++
+              S.drop (Operation.popArity o), F, R))
+      | none => false
+  | .jump l,      c, S, F, R =>
+      (match findLabel l prog with
+       | some t => decide (lookup t = some (S, F, R))
+       | none => false)
+      || (match c with
+          | .label Lret :: c' =>
+              (match findLabel l prog with
+               | some t =>
+                   (match splitSetup Lret S with
+                    | some (Sw, Smid) =>
+                        (match lookup t with
+                         | some (St, Ft, Sret) =>
+                             decide (findLabel Lret prog = some c' ∧
+                               (∀ s ∈ Sw, s = FSlot.word) ∧
+                               St = Sw ++ [FSlot.ret] ∧ F + Smid.length ≤ Ft ∧
+                               (∀ s ∈ Sret, s = FSlot.word) ∧
+                               lookup c' = some (Sret ++ Smid, F, R))
+                         | none => false)
+                    | none => false)
+               | none => false)
+          | _ => false)
+  | .jumpi l,     c, S, F, R => match S with
+      | .word :: S' =>
+          (match findLabel l prog with
+           | some t => decide (lookup t = some (S', F, R))
+           | none => false)
+          && decide (lookup c = some (S', F, R))
+      | _ => false
+  | .dynJump,     _, S, _F, R => match S with
+      | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
+      | _ => false
+
+/-- Intermediate step relation, proved equal to `frameStepLookupB` by
+`frameStepLookupFastB_eq_frameStepLookupB`. Nothing calls this at run time any
+more — `frameStepLookupIdxB` is what `checkCertWith` runs — but keeping it splits
+the equality proof along the two independent changes it represents.
+
+Two changes, both of them the same idea — stop walking the program for something
+that is already known:
+
+* jump targets come from a precomputed table rather than a `findLabel l prog`
+  scan per jump;
+* the return-continuation conjunct compares the table's entry for the return
+  label against the actual continuation with `posEqOpt`. Those two are
+  physically-shared suffixes of the program, so the structural comparison walked
+  the whole suffix once per call site — 22% of all instructions on the largest
+  fixture. -/
+def frameStepLookupFastB (tgts : Std.HashMap Label (List Asm))
+    (lookup : CertLookup) :
+    Asm → List Asm → FLayout → Nat → FLayout → Bool
+  | .push _,      c, S, F, R => decide (lookup c = some (.word :: S, F, R))
+  | .dup n,       c, S, F, R => match S[n.val]? with
+      | some FSlot.word => decide (lookup c = some (.word :: S, F, R))
+      | _ => false
+  | .pushLabel l, c, S, F, R => decide (lookup c = some (.retTo l :: S, F, R))
+  | .pop,         c, S, F, R => match S with
+      | .word :: S' => decide (lookup c = some (S', F, R))
+      | _ => false
+  | .swap n,      c, S, F, R => match S with
+      | sx :: rest => match rest.drop n.val with
+          | sy :: rst => decide (sx = FSlot.word ∧
+              (∀ s ∈ rest.take n.val, s = FSlot.word) ∧
+              lookup c = some (sy :: (rest.take n.val ++ sx :: rst), F, R))
+          | [] => false
+      | [] => false
+  | .label _,     c, S, F, R => decide (lookup c = some (S, F, R))
+  | .op yop,      c, S, F, R => match opTable yop with
+      | some o => decide (Operation.popArity o ≤ S.length ∧
+          lookup c = some
+            (List.replicate (Operation.pushArity o) FSlot.word ++
+              S.drop (Operation.popArity o), F, R))
+      | none => false
+  | .jump l,      c, S, F, R =>
+      (match tgts[l]? with
+       | some t => decide (lookup t = some (S, F, R))
+       | none => false)
+      || (match c with
+          | .label Lret :: c' =>
+              (match tgts[l]? with
+               | some t =>
+                   (match splitSetup Lret S with
+                    | some (Sw, Smid) =>
+                        (match lookup t with
+                         | some (St, Ft, Sret) =>
+                             posEqOpt tgts[Lret]? (some c') &&
+                             decide ((∀ s ∈ Sw, s = FSlot.word) ∧
+                               St = Sw ++ [FSlot.ret] ∧ F + Smid.length ≤ Ft ∧
+                               (∀ s ∈ Sret, s = FSlot.word) ∧
+                               lookup c' = some (Sret ++ Smid, F, R))
+                         | none => false)
+                    | none => false)
+               | none => false)
+          | _ => false)
+  | .jumpi l,     c, S, F, R => match S with
+      | .word :: S' =>
+          (match tgts[l]? with
+           | some t => decide (lookup t = some (S', F, R))
+           | none => false)
+          && decide (lookup c = some (S', F, R))
+      | _ => false
+  | .dynJump,     _, S, _F, R => match S with
+      | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
+      | _ => false
+
+
+
+
+/-- `frameStepLookupFastB` with the fall-through successor looked up by **index**
+instead of by length.
+
+`kc` must be `c`'s length, which the caller knows without walking: `checkCertWith`
+establishes it for the position an entry stores, and the continuation after a
+return label is one shorter. Jump *targets* still resolve by length — they are a
+small minority of instructions, and tabulating their lengths would need a second
+map and its own accumulator proof. -/
+def frameStepLookupIdxB (tgts : Std.HashMap Label (List Asm))
+    (lookup : CertLookup) (tbl : Array (Option CertEntry)) (kc : Nat) :
+    Asm → List Asm → FLayout → Nat → FLayout → Bool
+  | .push _,      c, S, F, R => decide (lookupAt tbl kc c = some (.word :: S, F, R))
+  | .dup n,       c, S, F, R => match S[n.val]? with
+      | some FSlot.word => decide (lookupAt tbl kc c = some (.word :: S, F, R))
+      | _ => false
+  | .pushLabel l, c, S, F, R => decide (lookupAt tbl kc c = some (.retTo l :: S, F, R))
+  | .pop,         c, S, F, R => match S with
+      | .word :: S' => decide (lookupAt tbl kc c = some (S', F, R))
+      | _ => false
+  | .swap n,      c, S, F, R => match S with
+      | sx :: rest => match rest.drop n.val with
+          | sy :: rst => decide (sx = FSlot.word ∧
+              (∀ s ∈ rest.take n.val, s = FSlot.word) ∧
+              lookupAt tbl kc c = some (sy :: (rest.take n.val ++ sx :: rst), F, R))
+          | [] => false
+      | [] => false
+  | .label _,     c, S, F, R => decide (lookupAt tbl kc c = some (S, F, R))
+  | .op yop,      c, S, F, R => match opTable yop with
+      | some o => decide (Operation.popArity o ≤ S.length ∧
+          lookupAt tbl kc c = some
+            (List.replicate (Operation.pushArity o) FSlot.word ++
+              S.drop (Operation.popArity o), F, R))
+      | none => false
+  | .jump l,      c, S, F, R =>
+      (match tgts[l]? with
+       | some t => decide (lookup t = some (S, F, R))
+       | none => false)
+      || (match c with
+          | .label Lret :: c' =>
+              (match tgts[l]? with
+               | some t =>
+                   (match splitSetup Lret S with
+                    | some (Sw, Smid) =>
+                        (match lookup t with
+                         | some (St, Ft, Sret) =>
+                             posEqOpt tgts[Lret]? (some c') &&
+                             decide ((∀ s ∈ Sw, s = FSlot.word) ∧
+                               St = Sw ++ [FSlot.ret] ∧ F + Smid.length ≤ Ft ∧
+                               (∀ s ∈ Sret, s = FSlot.word) ∧
+                               lookupAt tbl (kc - 1) c' = some (Sret ++ Smid, F, R))
+                         | none => false)
+                    | none => false)
+               | none => false)
+          | _ => false)
+  | .jumpi l,     c, S, F, R => match S with
+      | .word :: S' =>
+          (match tgts[l]? with
+           | some t => decide (lookup t = some (S', F, R))
+           | none => false)
+          && decide (lookupAt tbl kc c = some (S', F, R))
+      | _ => false
+  | .dynJump,     _, S, _F, R => match S with
+      | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
+      | _ => false
+
+
+
+
+
+omit model in
+/-- Supplying the fall-through successor's index changes nothing, provided the
+index really is its length. -/
+theorem frameStepLookupIdxB_eq_frameStepLookupFastB
+    (tgts : Std.HashMap Label (List Asm)) (tbl : Array (Option CertEntry))
+    (kc : Nat) (i : Asm) (c : List Asm) (S : FLayout) (F : Nat) (R : FLayout)
+    (hk : kc = c.length) :
+    frameStepLookupIdxB tgts (lookupIn tbl) tbl kc i c S F R =
+      frameStepLookupFastB tgts (lookupIn tbl) i c S F R := by
+  subst hk
+  cases i with
+  | jump l =>
+      -- The only case with a second, one-shorter successor: the continuation
+      -- after the return label.
+      cases c with
+      | nil =>
+          simp only [frameStepLookupIdxB, frameStepLookupFastB]
+      | cons hd c' =>
+          cases hd <;>
+            simp only [frameStepLookupIdxB, frameStepLookupFastB, lookupAt_length,
+              List.length_cons, Nat.add_sub_cancel]
+  | _ =>
+      simp only [frameStepLookupIdxB, frameStepLookupFastB, lookupAt_length]
+
+omit model in
+/-- Resolving jump targets through `findLabelMap` and comparing the return
+continuation with `posEqOpt` computes exactly what scanning with `findLabel` and
+a structural comparison does. -/
+theorem frameStepLookupFastB_eq_frameStepLookupB (prog : List Asm)
+    (lookup : CertLookup) (i : Asm) (c : List Asm) (S : FLayout) (F : Nat)
+    (R : FLayout) :
+    frameStepLookupFastB (findLabelMap prog) lookup i c S F R =
+      frameStepLookupB prog lookup i c S F R := by
+  cases i <;>
+    simp only [frameStepLookupFastB, frameStepLookupB, findLabelMap_getElem?,
+      posEqOpt_eq_decide, Bool.decide_and]
+
 /-! ### The finite certificate and the top-level check -/
 
 /-- The untrusted solver's output: one `(positionLength, position, layout, frameBase, returnLayout)`
@@ -914,6 +1315,25 @@ def CertData.tbl (d : CertData) (size : Nat) :
     Array (Option (Nat × List Asm × FLayout × Nat × FLayout)) :=
   d.entries.foldr (fun e a => if h : e.1 < a.size then a.set e.1 (some e) h else a)
     (Array.replicate size none)
+
+/-- The key-indexed table at its natural size. Named so it can be **bound once**
+and passed as a value: see `lookupIn`. -/
+def CertData.table (d : CertData) : Array (Option CertEntry) :=
+  d.tbl (d.maxKey + 1)
+
+/-- Build one shared lookup table whose successful lookup returns all three
+certificate components. -/
+def CertData.toLookup (d : CertData) : CertLookup :=
+  let t := d.tbl (d.maxKey + 1)
+  fun c => match t[c.length]? with
+    | some (some e) =>
+        if e.2.1 = c then some (e.2.2.1, e.2.2.2.1, e.2.2.2.2) else none
+    | _ => none
+
+omit model in
+/-- The shared-table lookup *is* `toLookup`, by `let`-unfolding. -/
+theorem CertData.toLookup_eq_lookupIn (d : CertData) :
+    d.toLookup = lookupIn d.table := rfl
 
 omit model in
 theorem CertData.tbl_size (d : CertData) (size : Nat) : (d.tbl size).size = size := by
@@ -953,19 +1373,123 @@ theorem CertData.tbl_mem {d : CertData} {size k : Nat}
     (h : (d.tbl size)[k]? = some (some e)) : e ∈ d.entries :=
   tbl_mem_aux (by simpa [CertData.tbl] using h)
 
-/-- The `Cert` induced by a `CertData`: an O(1) array lookup on the position's length, then one
-list comparison against the stored position. The table is built once per `Cert` value. -/
-def CertData.toCert (d : CertData) : Cert :=
-  let t := d.tbl (d.maxKey + 1)
-  { fl := fun c => match t[c.length]? with
-      | some (some e) => if e.2.1 = c then some e.2.2.1 else none
-      | _ => none
-    fbMax := fun c => match t[c.length]? with
-      | some (some e) => if e.2.1 = c then some e.2.2.2.1 else none
-      | _ => none
-    rl := fun c => match t[c.length]? with
-      | some (some e) => if e.2.1 = c then some e.2.2.2.2 else none
-      | _ => none }
+/-- Project the stable proof-facing certificate API from a bundled executable
+lookup. -/
+def CertLookup.toCert (lookup : CertLookup) : Cert :=
+  { fl := fun c => (lookup c).map (fun v => v.1)
+    fbMax := fun c => (lookup c).map (fun v => v.2.1)
+    rl := fun c => (lookup c).map (fun v => v.2.2) }
+
+/-- The `Cert` induced by a `CertData`. -/
+def CertData.toCert (d : CertData) : Cert := d.toLookup.toCert
+
+omit model in
+theorem CertLookup.eq_some_iff_fields (lookup : CertLookup) (c : List Asm)
+    (S : FLayout) (F : Nat) (R : FLayout) :
+    lookup c = some (S, F, R) ↔
+      (lookup.toCert.fl c = some S ∧ lookup.toCert.fbMax c = some F ∧
+        lookup.toCert.rl c = some R) := by
+  cases h : lookup c with
+  | none => simp [CertLookup.toCert, h]
+  | some value =>
+      rcases value with ⟨S', F', R'⟩
+      simp [CertLookup.toCert, h]
+
+omit model in
+@[simp] theorem CertLookup.decide_eq_some_fields (lookup : CertLookup)
+    (c : List Asm) (S : FLayout) (F : Nat) (R : FLayout) :
+    decide (lookup c = some (S, F, R)) =
+      decide (lookup.toCert.fl c = some S ∧ lookup.toCert.fbMax c = some F ∧
+        lookup.toCert.rl c = some R) := by
+  cases h : lookup c with
+  | none => simp [CertLookup.toCert, h]
+  | some value =>
+      rcases value with ⟨S', F', R'⟩
+      simp [CertLookup.toCert, h]
+
+omit model in
+theorem frameStepLookupB_eq_frameStepB (prog : List Asm) (lookup : CertLookup)
+    (i : Asm) (c : List Asm) (S : FLayout) (F : Nat) (R : FLayout) :
+    frameStepLookupB prog lookup i c S F R =
+      frameStepB prog lookup.toCert i c S F R := by
+  cases i with
+  | push => exact lookup.decide_eq_some_fields c (.word :: S) F R
+  | pushLabel l => exact lookup.decide_eq_some_fields c (.retTo l :: S) F R
+  | label => exact lookup.decide_eq_some_fields c S F R
+  | jump l =>
+      simp only [frameStepLookupB, frameStepB]
+      cases htgt : findLabel l prog with
+      | none => simp
+      | some t =>
+          cases ht : lookup t with
+          | none => simp [CertLookup.toCert, ht]
+          | some target =>
+              rcases target with ⟨St, Ft, Rt⟩
+              cases c with
+              | nil => simp [CertLookup.toCert, ht]
+              | cons head c' =>
+                  cases head <;> simp [CertLookup.toCert, ht]
+  | dup | pop | swap | op | jumpi | dynJump =>
+      simp only [frameStepLookupB, frameStepB]
+      repeat' split <;> simp_all
+
+/-- Does an entry's stored position really *are* the program suffix at its claimed
+key? `n` is the program length, so the length-`key` suffix sits at index
+`n - key` of `sa`. The `key ≤ n` test is what stops `Nat` truncation from making
+a wild key look honest.
+
+A `true` answer proves `pos.length = key` (`keyHonest_length`), which is how the
+verifier learns a position's length without walking it. For a certificate our own
+solver produced the `posEq` is a pointer hit, so this costs O(1) per entry. -/
+def keyHonest (sa : Array (List Asm)) (n key : Nat) (pos : List Asm) : Bool :=
+  decide (key ≤ n) &&
+    (match sa[n - key]? with
+     | some c => posEq c pos
+     | none => false)
+
+omit model in
+/-- Below this many instructions the length walks the suffix index removes are
+cheaper than building the index: a program of `n` instructions costs one
+`n + 1`-element array and `n` pushes either way, which only pays off once the
+quadratic term is the larger one. Small Yul fixtures measurably regressed without
+this gate (`objectCompiler`, ~4 ms per fixture). -/
+def suffixIndexThreshold : Nat := 512
+
+/-- The suffix index, or nothing for programs too small to benefit. Passing `#[]`
+makes `keyHonest` fail for every entry, so they all take the length-computing
+path — the same one the honesty test already falls back to. -/
+def suffixesFor (prog : List Asm) (n : Nat) : Array (List Asm) :=
+  if n < suffixIndexThreshold then #[] else suffixes prog
+
+omit model in
+theorem suffixesFor_eq (prog : List Asm) (n : Nat) :
+    suffixesFor prog n = suffixes prog ∨ suffixesFor prog n = #[] := by
+  unfold suffixesFor
+  split
+  · exact Or.inr rfl
+  · exact Or.inl rfl
+
+omit model in
+theorem keyHonest_length {prog : List Asm} {key : Nat} {pos : List Asm}
+    (h : keyHonest (suffixes prog) prog.length key pos = true) : pos.length = key := by
+  rw [keyHonest, Bool.and_eq_true, decide_eq_true_eq] at h
+  obtain ⟨hle, hmatch⟩ := h
+  have hidx : prog.length - key ≤ prog.length := by omega
+  rw [suffixes_getElem? prog _ hidx] at hmatch
+  simp only [posEq_eq_decide, decide_eq_true_eq] at hmatch
+  rw [← hmatch]
+  simp only [List.length_drop]
+  omega
+
+omit model in
+/-- `keyHonest_length` for either array `suffixesFor` can hand out: an empty index
+never reports an honest key, so the fact holds vacuously there. -/
+theorem keyHonest_length_of {prog : List Asm} {sa : Array (List Asm)}
+    (hsa : sa = suffixes prog ∨ sa = #[]) {key : Nat} {pos : List Asm}
+    (h : keyHonest sa prog.length key pos = true) : pos.length = key := by
+  rcases hsa with rfl | rfl
+  · exact keyHonest_length h
+  · simp [keyHonest] at h
 
 /-- The verifier: bounded at every entry, and `frameStep` at every instruction entry, plus the
 program-entry conditions. Each entry carries its own `(fl, fbMax, rl)`, so the current-position
@@ -981,13 +1505,104 @@ def checkCert (prog : List Asm) (d : CertData) : Bool :=
          | i :: c' => frameStepB prog C i c' e.2.2.1 e.2.2.2.1 e.2.2.2.2
          | [] => true)))
 
+/-- Bundled-lookup implementation of `checkCert`, with the key-indexed table and
+the program length taken as parameters.
+
+Both are loop-invariant, and both must be *parameters* rather than `let`s to stay
+that way: a `let` whose only uses are inside the per-entry closure gets floated
+into it, so `prog.length` was recomputed — an O(program) walk — once per entry,
+and the table was rebuilt once per lookup (see `lookupIn`). With ~one entry per
+reachable instruction that made the verifier quadratic. -/
+def checkCertWith (prog : List Asm) (d : CertData) (n : Nat)
+    (t : Array (Option CertEntry)) (tgts : Std.HashMap Label (List Asm))
+    (sa : Array (List Asm)) : Bool :=
+  d.entries.all (fun e => decide (e.1 ≤ n)) &&
+  (let lookup := lookupIn t
+   (match lookup prog with
+    | some ([], 0, _) => true
+    | _ => false) &&
+   d.entries.all (fun e =>
+     decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023)
+     && (match e.2.1 with
+         | i :: c' =>
+             -- When the entry's key is honest its position's length is known, so
+             -- the fall-through successor is looked up by index; otherwise fall
+             -- back to computing the length, which cannot change the answer.
+             frameStepLookupIdxB tgts lookup t
+               (if keyHonest sa n e.1 (i :: c') then e.1 - 1 else c'.length)
+               i c' e.2.2.1 e.2.2.2.1 e.2.2.2.2
+         | [] => true)))
+
+/-- Bundled-lookup implementation of `checkCert`. -/
+def checkCertFast (prog : List Asm) (d : CertData) : Bool :=
+  checkCertWith prog d prog.length d.table (findLabelMap prog)
+    (suffixesFor prog prog.length)
+
+omit model in
+theorem checkCertFast_eq_checkCert (prog : List Asm) (d : CertData) :
+    checkCertFast prog d = checkCert prog d := by
+  let lookup := d.toLookup
+  let fastEntry := fun e : Nat × List Asm × FLayout × Nat × FLayout =>
+    decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023) &&
+      match e.2.1 with
+      | i :: c =>
+          frameStepLookupIdxB (findLabelMap prog) lookup d.table
+            (if keyHonest (suffixesFor prog prog.length) prog.length e.1 (i :: c)
+             then e.1 - 1 else c.length)
+            i c e.2.2.1 e.2.2.2.1 e.2.2.2.2
+      | [] => true
+  let slowEntry := fun e : Nat × List Asm × FLayout × Nat × FLayout =>
+    decide (e.2.2.1.length + e.2.2.2.1 ≤ 1023) &&
+      match e.2.1 with
+      | i :: c => frameStepB prog lookup.toCert i c e.2.2.1 e.2.2.2.1 e.2.2.2.2
+      | [] => true
+  have hentry (e) : fastEntry e = slowEntry e := by
+    unfold fastEntry slowEntry
+    cases hpos : e.2.1 with
+    | nil => rfl
+    | cons i c =>
+        simp only
+        -- Either index is `c`'s length: the honest-key one because `keyHonest`
+        -- pins the stored position's length, the other by construction.
+        have hk : (if keyHonest (suffixesFor prog prog.length) prog.length e.1
+              (i :: c) then e.1 - 1 else c.length) = c.length := by
+          by_cases hh : keyHonest (suffixesFor prog prog.length) prog.length e.1
+              (i :: c) = true
+          · rw [if_pos hh]
+            have hlen : (i :: c).length = e.1 :=
+              keyHonest_length_of (suffixesFor_eq prog prog.length) hh
+            simp only [List.length_cons] at hlen
+            omega
+          · rw [if_neg (by simpa using hh)]
+        have hlk : lookup = lookupIn d.table := rfl
+        rw [hlk, hk,
+          frameStepLookupIdxB_eq_frameStepLookupFastB _ _ _ _ _ _ _ _ rfl,
+          frameStepLookupFastB_eq_frameStepLookupB,
+          frameStepLookupB_eq_frameStepB]
+  have hall : d.entries.all fastEntry = d.entries.all slowEntry := by
+    congr 1
+    funext e
+    exact hentry e
+  unfold checkCertFast checkCertWith checkCert
+  simp only [CertData.toCert]
+  change (_ && ((match lookup prog with | some ([], 0, _) => true | _ => false) &&
+      d.entries.all fastEntry)) =
+    (_ && (lookup.toCert.fl prog == some [] && lookup.toCert.fbMax prog == some 0 &&
+      (lookup.toCert.rl prog).isSome && d.entries.all slowEntry))
+  rw [hall]
+  cases h : lookup prog with
+  | none => simp [CertLookup.toCert, h]
+  | some value =>
+      rcases value with ⟨S, F, R⟩
+      cases S <;> cases F <;> simp [CertLookup.toCert, h]
+
 omit model in
 /-- A defined position comes from a table entry carrying that exact `(position, fl, fbMax, rl)`. -/
 theorem CertData.lookup_fl {d : CertData} {c : List Asm} {S : FLayout}
     (hfl : d.toCert.fl c = some S) :
     ∃ e ∈ d.entries, e.2.1 = c ∧ e.2.2.1 = S ∧
       d.toCert.fbMax c = some e.2.2.2.1 ∧ d.toCert.rl c = some e.2.2.2.2 := by
-  simp only [CertData.toCert] at hfl ⊢
+  simp only [CertData.toCert, CertLookup.toCert, CertData.toLookup] at hfl ⊢
   rcases hget : (d.tbl (d.maxKey + 1))[c.length]? with _ | eo
   · simp only [hget] at hfl
     exact absurd hfl (by simp)
@@ -1063,84 +1678,144 @@ def retCount : List Asm → Nat → Nat
   | .swap _ :: rest, run => retCount rest (run + 1)
   | _ :: rest, _ => retCount rest 0
 
-/-- Analyzer state: `(position, fl, rl, functionEntryLength)`. The frame base is *not* carried here;
-it is solved per function in `computeBase` and grafted on afterwards. -/
-abbrev AState := List Asm × FLayout × FLayout × Nat
+/-- Every label's `findLabel` answer together with the target suffix's length,
+computed in one pass. `k` is the length of the list being walked. -/
+def labelTargetsGo : List Asm → Nat →
+    Std.HashMap Label (List Asm × Nat) → Std.HashMap Label (List Asm × Nat)
+  | [], _, m => m
+  | i :: rest, k, m =>
+      labelTargetsGo rest (k - 1)
+        (match i with
+         | .label l => if m.contains l then m else m.insert l (rest, k - 1)
+         | _ => m)
+
+/-- Jump-target table: `label ↦ (code after its first definition, that code's
+length)`.
+
+The analyzer used to call `findLabel l prog` per jump — a scan of the whole
+program each time — and then `t.length`, another one. Both are O(program) and
+there is one per jump, so resolving targets was quadratic. This resolves every
+label once. -/
+def labelTargets (prog : List Asm) : Std.HashMap Label (List Asm × Nat) :=
+  labelTargetsGo prog prog.length ∅
+
+/-- Analyzer state: `(positionLength, position, fl, rl, functionEntryLength)`.
+The frame base is *not* carried here; it is solved per function in `computeBase`
+and grafted on afterwards.
+
+The position's length is **threaded** rather than recomputed. It is the `vis`
+dedup key and it ends up in the certificate, and `List.length` on a suffix is
+O(program): computing it once per explored position made phase 1 quadratic
+(`List.length` was 31% of all instructions in a profile). Every successor's
+length is known without walking — the fall-through is one shorter, and a jump
+target's comes from `labelTargets`. -/
+abbrev AState := Nat × List Asm × FLayout × FLayout × Nat
 
 /-- A call-graph edge `(callerFrameLen, calleeFrameLen, midframeLen)`, keyed by function-entry length. -/
 abbrev CallEdge := Nat × Nat × Nat
 
-/-- Forward successors of one abstract state (mirrors `frameStep` forward), plus any call edge. -/
-def stepSuccs (prog : List Asm) (pls : List Label) : List Asm → FLayout → FLayout → Nat →
-    Option (List AState × List CallEdge)
-  | [], _, _, _ => some ([], [])
+/-- Forward successors of one abstract state (mirrors `frameStep` forward), plus
+any call edge. `k` is the length of `i :: c`, so the fall-through `c` has length
+`k - 1`; jump targets take their length from `tgts`. -/
+def stepSuccs (tgts : Std.HashMap Label (List Asm × Nat)) (pls : Std.HashSet Label)
+    (ar : Std.HashMap Nat Nat)
+    (k : Nat) : List Asm → FLayout → FLayout → Nat →
+    Option (List AState × List CallEdge × List (Nat × Nat) × List (Nat × Nat))
+  | [], _, _, _ => some ([], [], [], [])
   | i :: c, fl, rl, fe =>
+    let kc := k - 1
     match i with
-    | .push _ => some ([(c, .word :: fl, rl, fe)], [])
+    | .push _ => some ([(kc, c, .word :: fl, rl, fe)], [], [], [])
     | .dup n => match fl[n.val]? with
-        | some FSlot.word => some ([(c, .word :: fl, rl, fe)], []) | _ => none
-    | .pop => match fl with | .word :: fl' => some ([(c, fl', rl, fe)], []) | _ => none
+        | some FSlot.word => some ([(kc, c, .word :: fl, rl, fe)], [], [], []) | _ => none
+    | .pop => match fl with | .word :: fl' => some ([(kc, c, fl', rl, fe)], [], [], []) | _ => none
     | .swap n => match fl with
         | sx :: rest => match rest.drop n.val with
-            | sy :: rst => some ([(c, sy :: (rest.take n.val ++ sx :: rst), rl, fe)], [])
+            | sy :: rst => some ([(kc, c, sy :: (rest.take n.val ++ sx :: rst), rl, fe)], [], [], [])
             | [] => none
         | [] => none
-    | .label _ => some ([(c, fl, rl, fe)], [])
-    | .pushLabel l => some ([(c, .retTo l :: fl, rl, fe)], [])
+    | .label _ => some ([(kc, c, fl, rl, fe)], [], [], [])
+    | .pushLabel l => some ([(kc, c, .retTo l :: fl, rl, fe)], [], [], [])
     | .op yop =>
         match opTable yop with
-        | some o => some ([(c, List.replicate o.pushArity .word ++ fl.drop o.popArity, rl, fe)], [])
+        | some o =>
+            some ([(kc, c, List.replicate o.pushArity .word ++ fl.drop o.popArity, rl, fe)], [], [], [])
         | none => none
-    | .jumpi l => match findLabel l prog with
-        | some t => match fl with
-            | .word :: fl' => some ([(t, fl', rl, fe), (c, fl', rl, fe)], [])
+    | .jumpi l => match tgts[l]? with
+        | some (t, kt) => match fl with
+            | .word :: fl' => some ([(kt, t, fl', rl, fe), (kc, c, fl', rl, fe)], [], [], [])
             | _ => none
         | none => none
-    | .jump l => match findLabel l prog with
-        | some t => match c with
+    | .jump l => match tgts[l]? with
+        | some (t, kt) => match c with
             | .label Lret :: c' =>
                 if pls.contains Lret then
                   match splitSetup Lret fl with
                   | some (Sw, Smid) =>
-                      let k := retCount t 0
+                      -- the callee's return arity: a previous round's `dynJump`
+                      -- observation when available, else the classic-epilogue
+                      -- swap-run heuristic (a wrong guess is corrected by the
+                      -- next `analyze` round, never trusted — `checkCert`
+                      -- verifies the final certificate)
+                      let r := (ar[kt]?).getD (retCount t 0)
                       -- callee enters its own frame `t`; the continuation stays in the caller frame.
-                      some ([(t, Sw ++ [.ret], List.replicate k .word, t.length),
-                             (c', List.replicate k .word ++ Smid, rl, fe)],
-                            [(fe, t.length, Smid.length)])
+                      some ([(kt, t, Sw ++ [.ret], List.replicate r .word, kt),
+                             (kc - 1, c', List.replicate r .word ++ Smid, rl, fe)],
+                            [(fe, kt, Smid.length)], [(kt, r)], [])
                   | none => none
-                else some ([(t, fl, rl, fe)], [])
-            | _ => some ([(t, fl, rl, fe)], [])
+                else some ([(kt, t, fl, rl, fe)], [], [], [])
+            | _ => some ([(kt, t, fl, rl, fe)], [], [], [])
         | none => none
-    | .dynJump => some ([], [])
+    | .dynJump =>
+        -- record the actually observed return arity of the enclosing frame
+        match fl with
+        | .ret :: S' => some ([], [], [], [(fe, S'.length)])
+        | _ => some ([], [], [], [])
 
 /-- Phase 1: explore every reachable position once, deduping by `position.length` in `vis`; collect
 call edges. Returns `none` on an unrepresentable instruction (rejected downstream). -/
-partial def analyzeGo (prog : List Asm) (pls : List Label) :
+partial def analyzeGo (tgts : Std.HashMap Label (List Asm × Nat)) (pls : Std.HashSet Label)
+    (ar : Std.HashMap Nat Nat) :
     List AState → Array (Option AState) → List CallEdge →
-    Option (Array (Option AState) × List CallEdge)
-  | [], vis, edges => some (vis, edges)
-  | (pos, fl, rl, fe) :: wl, vis, edges =>
-    let k := pos.length
-    if k ≥ vis.size then none else
+    List (Nat × Nat) → List (Nat × Nat) → Bool →
+    Array (Option AState) × List CallEdge × List (Nat × Nat) × List (Nat × Nat) × Bool
+  | [], vis, edges, assumed, obs, dead => (vis, edges, assumed, obs, dead)
+  | (k, pos, fl, rl, fe) :: wl, vis, edges, assumed, obs, dead =>
+    if k ≥ vis.size then (vis, edges, assumed, obs, true) else
     match vis[k]! with
-    | some _ => analyzeGo prog pls wl vis edges
+    | some _ => analyzeGo tgts pls ar wl vis edges assumed obs dead
     | none =>
-      match stepSuccs prog pls pos fl rl fe with
-      | some (succs, es) =>
-          analyzeGo prog pls (succs ++ wl) (vis.set! k (some (pos, fl, rl, fe))) (es ++ edges)
-      | none => none
+      match stepSuccs tgts pls ar k pos fl rl fe with
+      | some (succs, es, asms, os) =>
+          analyzeGo tgts pls ar (succs ++ wl) (vis.set! k (some (k, pos, fl, rl, fe)))
+            (es ++ edges) (asms ++ assumed) (os ++ obs) dead
+      | none =>
+          -- Unrepresentable here — possibly only because a wrong return-arity
+          -- assumption corrupted this path's frame. Record the position (a
+          -- surviving bad entry makes `checkCert` reject, so this is never a
+          -- soundness leak) and keep walking, so the `dynJump` observations
+          -- that correct the arity for the next round are still collected.
+          analyzeGo tgts pls ar wl (vis.set! k (some (k, pos, fl, rl, fe)))
+            edges assumed obs true
 
 /-- Phase 2: solve the per-function frame base as a fixpoint over the call edges (`size` bounds the
 frame-entry key space). Rejects a non-converging graph (recursion) or a base exceeding 1023. -/
 def computeBase (size : Nat) (edges : List CallEdge) : Option (Array Nat) := Id.run do
   let mut base : Array Nat := Array.replicate size 0
   -- A DAG converges within `edges.length` relaxation rounds; one extra round detects a cycle.
+  -- Stop as soon as a round relaxes nothing: the iteration is monotone, so a
+  -- round that changes nothing leaves every later round unchanged too — same
+  -- fixpoint, but `|E|` rounds over `|E|` edges is quadratic and real call
+  -- graphs settle in a handful.
   for _ in [0:edges.length + 1] do
+    let mut changed := false
     for e in edges do
       let nb := base[e.1]! + e.2.2
       if base[e.2.1]! < nb then
         if nb > 1023 then return none
         base := base.set! e.2.1 nb
+        changed := true
+    if !changed then break
   for e in edges do
     if base[e.2.1]! < base[e.1]! + e.2.2 then return none  -- did not converge ⇒ recursion
   return some base
@@ -1148,22 +1823,54 @@ def computeBase (size : Nat) (edges : List CallEdge) : Option (Array Nat) := Id.
 /-- The solver: explore from the entry (empty frame, `main`'s return layout `[]`, frame = whole
 program), solve the bases, then graft `fbMax = base(function)` onto every position. -/
 def analyze (prog : List Asm) : CertData :=
-  let size := prog.length + 1
-  match analyzeGo prog (pushLabelled prog) [(prog, [], [], prog.length)]
-      (Array.replicate size none) [] with
-  | none => ⟨[]⟩
-  | some (vis, edges) =>
-    match computeBase size edges with
-    | none => ⟨[]⟩
-    | some base =>
-      ⟨vis.toList.filterMap (fun o => o.map (fun s => (s.1.length, s.1, s.2.1, base[s.2.2.2]!, s.2.2.1)))⟩
+  -- Iterate the exploration until the assumed callee return arities agree
+  -- with the arities actually observed at each `dynJump` (the swap-run
+  -- heuristic seeds round 1 and is exact for the classic backend; the SSA
+  -- backend's shuffled epilogues need the observation round). A handful of
+  -- rounds always suffices — arities are fixed per function — and a wrong
+  -- certificate is merely rejected by `checkCert`, never trusted.
+  go 4 {}
+where
+  n := prog.length
+  size := n + 1
+  tgts := labelTargets prog
+  pls := Std.HashSet.ofList (pushLabelled prog)
+  go : Nat → Std.HashMap Nat Nat → CertData
+    | 0, _ => ⟨[]⟩
+    | fuel + 1, ar =>
+      let (vis, edges, assumed, obs, _dead) :=
+        analyzeGo tgts pls ar [(n, prog, [], [], n)]
+          (Array.replicate size none) [] [] [] false
+      -- every arity assumed at a call site must agree with the arity
+      -- observed at the callee's own `dynJump`s; otherwise re-run seeded
+      -- with the observations (dead ends may be assumption artifacts and
+      -- clear up on the re-run; a genuine one survives to the final round,
+      -- where its recorded entry fails `checkCert`)
+      let obsMap := obs.foldl (fun m (fe, a) => m.insert fe a)
+        (∅ : Std.HashMap Nat Nat)
+      let consistent := assumed.all fun (kt, r) =>
+        match obsMap[kt]? with
+        | some a => a = r
+        | none => true
+      if !consistent then
+        go fuel (obs.foldl (fun m (fe, a) => m.insert fe a) ar)
+      else
+        match computeBase size edges with
+        | none => ⟨[]⟩
+        | some base =>
+          -- The position length is already carried, so the certificate's lookup key
+          -- costs nothing here either.
+          ⟨vis.toList.filterMap (fun o =>
+            o.map (fun s => (s.1, s.2.1, s.2.2.1, base[s.2.2.2.2]!, s.2.2.2.1)))⟩
 
 /-- The `compile`-facing gate: analyse then verify. -/
-def stackOK2 (prog : List Asm) : Bool := checkCert prog (analyze prog)
+def stackOK2 (prog : List Asm) : Bool := checkCertFast prog (analyze prog)
 
 /-- **`stackOK2` is sound**: passing it guarantees no stack overflow. -/
 theorem stackOK2_run_bound {prog : List Asm} (h : stackOK2 prog = true) (yst : EvmState) :
     ∀ mid, ASteps (model := model) prog ⟨prog, [], yst⟩ mid → mid.stk.length ≤ 1023 :=
-  checkCert_run_bound h yst
+  by
+    rw [stackOK2, checkCertFast_eq_checkCert] at h
+    exact checkCert_run_bound h yst
 
 end YulEvmCompiler

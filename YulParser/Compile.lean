@@ -1,5 +1,7 @@
 import YulParser.Source
 import YulEvmCompiler.ObjectCompile
+import YulEvmCompiler.SsaCfg.Implementation.Compile
+import YulEvmCompiler.SsaCfg.Implementation.Object
 import YulEvmCompiler.Optimizer.Implementation.Pipeline
 import YulEvmCompiler.Optimizer.Implementation.StackLayoutObject
 import YulEvmCompiler.Optimizer.Implementation.MemorySpillSelect
@@ -242,11 +244,75 @@ def pruneLinkerObjectTree {Op : Type} (o : Object Op) : Object Op :=
   let refs := objectRefs o
   pruneLinkerObject (refs.contains ·) o
 
+/-! ### Live `linkersymbol`: link-time library addresses
+
+A *used* `linkersymbol("file.sol:Lib")` is solc's placeholder for the address a
+linker substitutes — the target of the `delegatecall` that a public/external
+library function compiles to. Without a linker there is no sound value for it,
+which is why the pruner above only removes provably dead bindings and every
+remaining occurrence is rejected.
+
+Supplying the addresses closes that gap. `LinkEnv` is exactly the information
+solc's own `--libraries` flag carries, and resolution is a **substitution on
+the source program**, performed before parsing hands anything to the optimizer
+or the backend: after it, `linkersymbol` no longer occurs and what is compiled
+is an ordinary Yul program. So the correctness story is unchanged and reads the
+same way `dataoffset`/`datasize` resolution does — the guarantee is about the
+*linked* program, the one whose library references are these addresses, and a
+different link map is a different program. An unresolved live occurrence is
+still rejected rather than given a default. -/
+
+/-- Link-time library addresses, keyed by the fully qualified name solc emits
+(`"file.sol:Lib"`). Values are the 160-bit addresses, as naturals. -/
+abbrev LinkEnv := List (String × Nat)
+
+/-- The address `name` links to, if the environment supplies one. -/
+def linkAddress? (env : LinkEnv) (name : String) : Option Nat :=
+  (List.find? (fun entry => entry.1 == name) env).map Prod.snd
+
+mutual
+  /-- Replace every `linkersymbol("name")` whose name the environment resolves
+  with that address as a literal. Unresolved occurrences are left alone, so the
+  compiler still rejects them. -/
+  partial def linkExpr {Op : Type} (env : LinkEnv) : Expr Op → Expr Op
+    | .call "linkersymbol" [.lit (.string name)] =>
+        match linkAddress? env name with
+        | some address => .lit (.number address)
+        | none => .call "linkersymbol" [.lit (.string name)]
+    | .call name args => .call name (args.map (linkExpr env))
+    | .builtin op args => .builtin op (args.map (linkExpr env))
+    | e => e
+
+  partial def linkStmt {Op : Type} (env : LinkEnv) : Stmt Op → Stmt Op
+    | .block body => .block (body.map (linkStmt env))
+    | .funDef name params rets body =>
+        .funDef name params rets (body.map (linkStmt env))
+    | .letDecl names value => .letDecl names (value.map (linkExpr env))
+    | .assign names value => .assign names (linkExpr env value)
+    | .cond c body => .cond (linkExpr env c) (body.map (linkStmt env))
+    | .switch c cases dflt =>
+        .switch (linkExpr env c)
+          (cases.map (fun cb => (cb.1, cb.2.map (linkStmt env))))
+          (dflt.map (·.map (linkStmt env)))
+    | .forLoop init c post body =>
+        .forLoop (init.map (linkStmt env)) (linkExpr env c)
+          (post.map (linkStmt env)) (body.map (linkStmt env))
+    | .exprStmt e => .exprStmt (linkExpr env e)
+    | s => s
+end
+
+/-- Resolve library addresses throughout an object tree. -/
+partial def linkObject {Op : Type} (env : LinkEnv) : Object Op → Object Op
+  | .mk name code subs segs =>
+      .mk name (code.map (linkStmt env)) (subs.map (linkObject env)) segs
+
 /-- Parse and compile a complete Yul source program to executable EVM bytecode,
 using the documented compatibility parser when the verified parser does not
 apply. Hint builtins (`memoryguard`) are desugared for ordinary candidates and
-retained as reservation authority for the final spilling fallback. Provably
-dead `linkersymbol` bindings are dropped before either path.
+retained as reservation authority for the final spilling fallback. `linkersymbol`
+occurrences whose library `libraries` supplies are substituted with that
+address; provably dead bindings among the rest are dropped, and any live
+occurrence left over is still rejected.
 
 Both block- and object-rooted programs first run the full **normalization**
 front-end (`Normalize.normalize`: disambiguate every declared name, then hoist
@@ -259,10 +325,15 @@ simplification and propagation, bounded helper/call inlining with the
 normalization needed to expose it, then dead pure/result-region elimination.
 The object path applies the pipeline's resolution-stable mode to every code
 block in the tree. -/
-def compileSource (source : String) : Option ByteArray := do
+def compileSource (source : String) (libraries : LinkEnv := []) :
+    Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
-      let raw := pruneLinkerBlock (decodeValueStmts block)
+      -- The link pass is an expensive identity when no addresses are supplied,
+      -- and these inputs are megabytes of generated Yul; skip it entirely.
+      let decoded := decodeValueStmts block
+      let raw := pruneLinkerBlock
+        (if libraries.isEmpty then decoded else decoded.map (linkStmt libraries))
       let b := YulEvmCompiler.Optimizer.Normalize.normalize
         (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
           YulSemantics.EVM.ExternalCreates.none)
@@ -278,6 +349,11 @@ def compileSource (source : String) : Option ByteArray := do
       -- eager bindings would run the no-rejoin and light pipelines on every
       -- program even though the first candidate compiles in the common case
       -- (measured ~2-3x of the total compile time on the corpus runners).
+      -- The smart layout's slot reuse and live-range splitting introduce
+      -- `x := y` copies and shared slots, and it runs *after* the pipeline, so
+      -- nothing has cleaned up behind it. Sweep the laid-out program with the
+      -- verified dead-store pass first, and keep the uncleaned layout as a
+      -- further fallback so acceptance can only widen.
       let tryLayouts (blk : List (Stmt YulSemantics.EVM.Op)) :
           Option (List YulEvmCompiler.Instr) :=
         -- PROTOTYPE: try the window-scheduled lowering first; the plain verified
@@ -285,10 +361,22 @@ def compileSource (source : String) : Option ByteArray := do
         YulEvmCompiler.compileScheduled blk
           <|> YulEvmCompiler.compile blk
           <|> YulEvmCompiler.compile
+            (YulEvmCompiler.Optimizer.cleanupAfterLayoutBlock
+              (calls := YulSemantics.EVM.ExternalCalls.none)
+              (creates := YulSemantics.EVM.ExternalCreates.none)
+              (YulEvmCompiler.Optimizer.stackLayoutBlock blk))
+          <|> YulEvmCompiler.compile
             (YulEvmCompiler.Optimizer.stackLayoutBlock blk)
-      let asm := tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipeline
+      -- The SSA-CFG backend compiles the same fully optimized Yul as the
+      -- first classic candidate; both artifacts are kept and the cheaper
+      -- one (by the static stack-traffic cost proxy, see
+      -- `SsaCfg.instrCost`) wins. Any SSA rejection (construction, shuffle
+      -- depth, certificate) simply leaves the classic chain's result.
+      let pipelined := (YulEvmCompiler.Optimizer.optimizerPipeline
           (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
+          (creates := YulSemantics.EVM.ExternalCreates.none)).run b
+      let ssa := YulEvmCompiler.SsaCfg.compileViaSsa pipelined
+      let classic := tryLayouts pipelined
         <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
@@ -311,9 +399,18 @@ def compileSource (source : String) : Option ByteArray := do
               YulEvmCompiler.compile spilledOpt
                 <|> YulEvmCompiler.compile spilled.block
           | none => none)
+      let asm :=
+        match ssa, classic with
+        | some a, some b =>
+            if YulEvmCompiler.SsaCfg.instrCost a ≤ YulEvmCompiler.SsaCfg.instrCost b
+            then some a else some b
+        | some a, none => some a
+        | none, cb => cb
       return YulEvmCompiler.assemble (← asm)
   | some (.object o) =>
-      let raw := pruneLinkerObjectTree (decodeValueObject o)
+      let decoded := decodeValueObject o
+      let raw := pruneLinkerObjectTree
+        (if libraries.isEmpty then decoded else linkObject libraries decoded)
       let o := YulEvmCompiler.Optimizer.Normalize.normalizeObject
         (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
           YulSemantics.EVM.ExternalCreates.none)
@@ -335,8 +432,17 @@ def compileSource (source : String) : Option ByteArray := do
           <|> YulEvmCompiler.compileObjectScheduled
             (YulEvmCompiler.Optimizer.stackLayoutObject obj)
           <|> YulEvmCompiler.compileObject
+            (YulEvmCompiler.Optimizer.cleanupAfterLayoutObject
+              (calls := YulSemantics.EVM.ExternalCalls.none)
+              (creates := YulSemantics.EVM.ExternalCreates.none)
+              (YulEvmCompiler.Optimizer.stackLayoutObject obj))
+          <|> YulEvmCompiler.compileObject
             (YulEvmCompiler.Optimizer.stackLayoutObject obj)
-      let layout ← tryLayouts optimized
+      -- SSA-CFG backend on the object path too (same layout fixpoint, SSA
+      -- per code block); both artifacts are kept and the cheaper bytecode
+      -- (static stack-traffic cost) wins.
+      let ssaLayout := YulEvmCompiler.SsaCfg.compileObjectViaSsa optimized
+      let classicLayout := tryLayouts optimized
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none) o)
@@ -373,6 +479,11 @@ def compileSource (source : String) : Option ByteArray := do
                           YulEvmCompiler.Optimizer.SpillStoreElim.elimObject spilledOpt0
                         YulEvmCompiler.compileObject spilledOpt
                           <|> YulEvmCompiler.compileObject
+                            (YulEvmCompiler.Optimizer.cleanupAfterLayoutObject
+                              (calls := YulSemantics.EVM.ExternalCalls.none)
+                              (creates := YulSemantics.EVM.ExternalCreates.none)
+                              (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt))
+                          <|> YulEvmCompiler.compileObject
                             (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)
                           <|> some plainLayout
               | none => none : Option YulSemantics.EVM.Layout)
@@ -390,6 +501,14 @@ def compileSource (source : String) : Option ByteArray := do
              | some remL, none => some remL
              | none, some rawL => some rawL
              | none, none => none)
+      let layout ←
+        match ssaLayout, classicLayout with
+        | some a, some b =>
+            if YulEvmCompiler.SsaCfg.byteCodeCost a.code
+                ≤ YulEvmCompiler.SsaCfg.byteCodeCost b.code
+            then some a else some b
+        | some a, none => some a
+        | none, cb => cb
       return ByteArray.mk layout.code.toArray
   | none => none
 
