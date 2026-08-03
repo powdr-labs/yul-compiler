@@ -137,7 +137,7 @@ def optimizerPipelineRounds (n : Nat) : LocalPass D :=
 def optimizerPipeline : LocalPass D :=
   optimizerPipelineRounds pipelineRounds
 
-/-- The light (one-round) block pipeline, the middle compile fallback. -/
+/-- The light (one-round) block pipeline, the middle compile zeroImmutables fallback. -/
 def optimizerPipelineLight : LocalPass D :=
   optimizerPipelineRounds 1
 
@@ -297,7 +297,7 @@ def optimizerPipelineObject : Object Op → Object Op :=
   optimizerPipelineObjectRounds (calls := calls) (creates := creates)
     pipelineRounds
 
-/-- The light (one-round) whole-tree optimizer, the middle compile fallback. -/
+/-- The light (one-round) whole-tree optimizer, the middle compile zeroImmutables fallback. -/
 def optimizerPipelineObjectLight : Object Op → Object Op :=
   optimizerPipelineObjectRounds (calls := calls) (creates := creates) 1
 

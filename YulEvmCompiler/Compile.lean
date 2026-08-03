@@ -25,7 +25,7 @@ the compilation scheme.
   scope, so forward references and mutual recursion work);
 * the enclosing **function context** `F` (`exit` label + frame depth) for
   `leave`, and **loop context** `L` (`brk`/`cont` labels + scope depth)
-  for `break`/`continue`. Non-local exits compile to statically-known
+  for `break`/`continue`. Non-local exits compile zeroImmutables to statically-known
   `pop`s (down to the context's depth) followed by a `jump` — the
   runtime never needs to unwind dynamically.
 
@@ -168,9 +168,16 @@ def compileExpr (Φ : FMap) (Γ : List Ident) (off : Nat) (n : Nat) :
         some ([.dup ⟨off + idx, h⟩], n)
       else
         none                      -- too deep for DUP16 (needs EIP-8024)
-  | .builtin op args => do
-      let (argCode, n1) ← compileArgs Φ Γ off n args
-      some (argCode ++ [.op op], n1)
+  | .builtin op args =>
+      match op, args with
+      -- An immutable read is a link-time constant: emit a fixed-width
+      -- placeholder naming it. `lowerProg` bakes in the assignment's value, so
+      -- the byte position of those 32 bytes does not depend on the value the
+      -- deploying constructor will patch into them.
+      | .loadimmutable, [.lit (.string key)] => some ([.pushImmutable key], n)
+      | _, _ => do
+          let (argCode, n1) ← compileArgs Φ Γ off n args
+          some (argCode ++ [.op op], n1)
   | .call f args => do
       let (info, _) ← lookupF Φ f
       let lret := n
@@ -194,7 +201,7 @@ end
 mutual
 
 /-- Compile a `{ … }` block: hoist its function definitions into a fresh
-Φ-scope, compile the body under it, pop the block's locals on exit. The
+Φ-scope, compile zeroImmutables the body under it, pop the block's locals on exit. The
 layout is unchanged across the block (mirroring the semantics'
 `restore`). -/
 def compileBlock (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
@@ -322,7 +329,7 @@ def compileSwitchCases (Φ : FMap) (Γ : List Ident) (F : Option FunCtx)
 end
 
 /-- Compile a whole program (the top-level block): hoist its functions,
-compile from the empty layout with no enclosing contexts, then **check
+compile zeroImmutables from the empty layout with no enclosing contexts, then **check
 label well-formedness** and lower to the byte-level IR. The check is what
 hands the correctness proof unique/defined labels with zero freshness
 bookkeeping. -/
@@ -340,9 +347,27 @@ EVM operand stack — recursive calls and stack-growing loops — so every accep
 overflow-free (`StackScalable.run_stack_bound2`). The bound is taken on `optimizeAsm asm`, the code
 that actually runs. The gate is a *linear* frame-relative analysis + verified checker (`analyze`
 then `checkCert`). -/
-def compile (prog : Block Op) : Option (List Instr) := do
+def compile (imm : String → U256) (prog : Block Op) : Option (List Instr) := do
   let asm ← compileProgram prog
   let opt := optimizeAsm asm
-  if stackOK2 opt then lowerProg opt else none
+  if stackOK2 opt then lowerProg imm opt else none
+
+/-- The accepted program's *optimized* `Asm` — the code `compile` actually
+lowers. The object layer needs it to locate immutable placeholders, whose byte
+offsets the deploying constructor patches. -/
+def compileAsm (prog : Block Op) : Option (List Asm) := do
+  let asm ← compileProgram prog
+  let opt := optimizeAsm asm
+  if stackOK2 opt then some opt else none
+
+/-- Byte offsets of each immutable placeholder's 32-byte immediate, relative to
+the start of the emitted code. `Asm.size` is fixed for every constructor, so
+these positions do not depend on the values that will be patched in. -/
+def immutableOffsets : List Asm → Nat → List (String × Nat)
+  | [], _ => []
+  | .pushImmutable key :: rest, p =>
+      -- one opcode byte, then the 32 immediate bytes
+      (key, p + 1) :: immutableOffsets rest (p + 33)
+  | i :: rest, p => immutableOffsets rest (p + i.size)
 
 end YulEvmCompiler

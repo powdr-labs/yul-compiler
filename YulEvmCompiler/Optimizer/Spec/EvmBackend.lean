@@ -38,13 +38,16 @@ call/create responses are realized, every accepted program, and every source
 run, the emitted bytecode simulates the run from every matching initial
 state with enough gas. -/
 def EvmBackend.Correct
-    (compileFn : YulSemantics.Block Op → Option (List Instr)) : Prop :=
+    (compileFn : (String → YulSemantics.EVM.U256) →
+      YulSemantics.Block Op → Option (List Instr)) : Prop :=
   ∀ (model : ExternalModel), ExternalsRealized model →
-    ∀ {prog : YulSemantics.Block Op} {is : List Instr},
-      compileFn prog = some is →
+    ∀ {imm : String → YulSemantics.EVM.U256}
+      {prog : YulSemantics.Block Op} {is : List Instr},
+      compileFn imm prog = some is →
       ∀ {yst0 : EvmState}
         {V' : VEnv (evmWithExternal model.calls model.creates)}
         {yst' : EvmState} {o : Outcome},
+        (∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key))) →
         Run (evmWithExternal model.calls model.creates) prog yst0 V' yst' o →
         ∃ b : Nat, ∀ s0 : State,
           FrameOK (assemble is) s0 → StateMatch yst0 s0 →
@@ -59,7 +62,8 @@ compiler — the same by-construction discipline as `Optimizer.LocalPass`. -/
 structure EvmBackend where
   /-- The compilation function (`Option`-valued: rejection, never
   miscompilation). -/
-  compile : YulSemantics.Block Op → Option (List Instr)
+  compile : (String → YulSemantics.EVM.U256) →
+    YulSemantics.Block Op → Option (List Instr)
   /-- The proof obligation: the `compile_correct` statement shape. -/
   correct : EvmBackend.Correct compile
 
@@ -68,8 +72,8 @@ field is exactly `compile_correct`. -/
 def EvmBackend.classic : EvmBackend where
   compile := YulEvmCompiler.compile
   correct := by
-    intro model hext prog is hcomp yst0 V' yst' o hrun
-    exact compile_correct hext hcomp hrun
+    intro model hext imm prog is hcomp yst0 V' yst' o himm hrun
+    exact compile_correct hext hcomp himm hrun
 
 section Compose
 
@@ -84,8 +88,9 @@ apply the backend's own correctness. -/
 theorem LocalPass.optimize_then_backend_correct
     (B : EvmBackend) (P : LocalPass yulD) (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List Instr}
-    (hcomp : B.compile (P.run prog) = some is)
+    (hcomp : B.compile imm (P.run prog) = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
+    (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     (hrun : Run yulD prog yst0 V' yst' o) :
     ∃ b : Nat, ∀ s0 : State,
       FrameOK (assemble is) s0 → StateMatch yst0 s0 →
@@ -93,7 +98,7 @@ theorem LocalPass.optimize_then_backend_correct
       ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst' s' ∧
         ((o = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
          (o = .halt ∧ HaltedMatch yst' s')) :=
-  B.correct model hexternal hcomp (P.run_optimized hrun)
+  B.correct model hexternal hcomp himm (P.run_optimized hrun)
 
 end Compose
 

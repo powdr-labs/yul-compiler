@@ -489,11 +489,11 @@ def selfdestructOps : Block Op := yul% {
 #guard (compileProgram nested).isSome
 #guard (compileProgram breakNested).isSome
 #guard (compileProgram fibStorage).isSome
-#guard (compile sumLoop).isSome
+#guard (compile zeroImmutables sumLoop).isSome
 -- `factorial` is recursive; the `compile` stack-overflow gate (`StackBound`) rejects it, as the
 -- analysis cannot bound the recursion depth statically. `compileProgram` (no gate) still succeeds.
-#guard (compile factorial).isNone
-#guard (compile fibStorage).isSome
+#guard (compile zeroImmutables factorial).isNone
+#guard (compile zeroImmutables fibStorage).isSome
 
 -- The Asm peephole fires on `multiRet3`: the top return slot's constant
 -- assignment (`push v; swap1; pop` → `pop; push v`, one byte and one `SWAP1`
@@ -515,31 +515,31 @@ def selfdestructOps : Block Op := yul% {
 -- the identity.
 #guard ((compileProgram switchMatch).map fun asm =>
     optimizeAsm asm == asm) = some true
-#guard (compile byteAndOverlapCopy).isSome
+#guard (compile zeroImmutables byteAndOverlapCopy).isSome
 #guard (compileProgram signExtendCases).isSome
-#guard (compile signExtendCases).isSome
+#guard (compile zeroImmutables signExtendCases).isSome
 #guard (compileProgram calldataOps).isSome
-#guard (compile calldataOps).isSome
+#guard (compile zeroImmutables calldataOps).isSome
 #guard (compileProgram returndataOps).isSome
-#guard (compile returndataOps).isSome
+#guard (compile zeroImmutables returndataOps).isSome
 #guard (compileProgram memorySizeOps).isSome
-#guard (compile memorySizeOps).isSome
+#guard (compile zeroImmutables memorySizeOps).isSome
 #guard (compileProgram keccakOps).isSome
-#guard (compile keccakOps).isSome
+#guard (compile zeroImmutables keccakOps).isSome
 #guard (compileProgram accountAndBlobReads).isSome
-#guard (compile accountAndBlobReads).isSome
+#guard (compile zeroImmutables accountAndBlobReads).isSome
 #guard (compileProgram externalCodeAndBlockReads).isSome
-#guard (compile externalCodeAndBlockReads).isSome
+#guard (compile zeroImmutables externalCodeAndBlockReads).isSome
 #guard (compileProgram logOps).isSome
-#guard (compile logOps).isSome
+#guard (compile zeroImmutables logOps).isSome
 #guard (compileProgram externalCalls).isSome
-#guard (compile externalCalls).isSome
+#guard (compile zeroImmutables externalCalls).isSome
 #guard (compileProgram externalCreates).isSome
-#guard (compile externalCreates).isSome
+#guard (compile zeroImmutables externalCreates).isSome
 #guard (compileProgram selfdestructOps).isSome
-#guard (compile selfdestructOps).isSome
-#guard !(compile optimizedStackPressure).isSome
-#guard (compile laidOutStackPressure).isSome
+#guard (compile zeroImmutables selfdestructOps).isSome
+#guard !(compile zeroImmutables optimizedStackPressure).isSome
+#guard (compile zeroImmutables laidOutStackPressure).isSome
 #guard (Optimizer.scopeTailHere ["x", "r"] tailCarrierCandidate).isSome
 
 /-! ### The upstream Fibonacci contract
@@ -550,7 +550,7 @@ computes `fib n` in a `for` loop, writes it to **memory** (`mstore`), and
 `return`s it. With `calldataload` and `mstore` now in the verified op set
 (`opTable`) it compiles all the way to bytecode. -/
 #guard (compileProgram FibExample.fibContract).isSome
-#guard (compile FibExample.fibContract).isSome
+#guard (compile zeroImmutables FibExample.fibContract).isSome
 
 /-! ### Differential execution: Yul interpreter vs. compiled bytecode -/
 
@@ -603,7 +603,7 @@ def agreeOnWithInputs (prog : Block Op) (cd rd : List UInt8) (keys : List Nat) :
     { EvmState.init with
       env := { EvmState.init.env with calldata := cd, keccakOf := targetKeccakOracle }
       returndata := rd }
-  match compile prog, Interp.run YulSemantics.EVM.exec 100000 prog yst0 with
+  match compile zeroImmutables prog, Interp.run YulSemantics.EVM.exec 100000 prog yst0 with
   | some is, .ok (_, yst, _) =>
       let s0 := evmInit (assemble is)
       let s := runEvm 100000
@@ -635,9 +635,9 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard agreeOn switchDefault [0]
 #guard agreeOn multiRet [0, 1]
 #guard agreeOn multiAssign [0, 1]
-#guard compile optimizedIdentityHelpers |>.isSome
+#guard compile zeroImmutables optimizedIdentityHelpers |>.isSome
 #guard agreeOn optimizedIdentityHelpers [0, 1]
-#guard compile optimizedWrapperHelpers |>.isSome
+#guard compile zeroImmutables optimizedWrapperHelpers |>.isSome
 #guard agreeOn optimizedWrapperHelpers [0, 1]
 #guard agreeOn wrapperHelpers [0, 1]
 #guard hasForwardedStorageLoads (Optimizer.storageForwardBlock storageForwarding)
@@ -647,7 +647,7 @@ def agreeOn (prog : Block Op) (keys : List Nat) : Bool :=
 #guard keepsLoadAfterLocalRestore (Optimizer.storageForwardBlock storageForwardingShadow)
 #guard (Optimizer.sfAssign [] [] ["missing"]
   (.builtin .sload [.lit (.number 0)])).2 == []
-#guard compile ((Optimizer.storageForward
+#guard compile zeroImmutables ((Optimizer.storageForward
   (calls := YulSemantics.EVM.ExternalCalls.none)
   (creates := YulSemantics.EVM.ExternalCreates.none)).run storageForwarding) |>.isSome
 #guard agreeOn storageForwarding [0, 1, 2]
@@ -683,7 +683,7 @@ def agreeAccountAndBlobReads : Bool :=
         selfBalance := ySelf
         balanceOf := fun a => if a = 1 then yOther else 0
         blobHashOf := fun i => if i = 0 then yBlob else 0 } }
-  match compile accountAndBlobReads,
+  match compile zeroImmutables accountAndBlobReads,
       Interp.run YulSemantics.EVM.exec 100000 accountAndBlobReads yst0 with
   | some is, .ok (_, yst, _) =>
       let s0 := evmInit (assemble is)
@@ -722,7 +722,7 @@ def agreeExternalCodeAndBlockReads : Bool :=
         extCodeOf := fun a => if a = 1 then extBytes else []
         keccakOf := targetKeccakOracle
         blockHashOf := fun n => if n = 7 then yBlock else 0 } }
-  match compile externalCodeAndBlockReads,
+  match compile zeroImmutables externalCodeAndBlockReads,
       Interp.run YulSemantics.EVM.exec 100000 externalCodeAndBlockReads yst0 with
   | some is, .ok (_, yst, _) =>
       let s0 := evmInit (assemble is)
@@ -762,7 +762,7 @@ def agreeSelfdestruct (beneficiary : Nat) (createdThisTx : Bool) : Bool :=
         selfBalance := 7
         balanceOf := initialBalance
         createdThisTx := createdThisTx } }
-  match compile selfdestructOps,
+  match compile zeroImmutables selfdestructOps,
       Interp.run YulSemantics.EVM.exec 100000 selfdestructOps yst0 with
   | some is, .ok (_, yst, _) =>
       let code := assemble is
@@ -812,7 +812,7 @@ def agreeReturn (prog : Block Op) (cd : List UInt8) : Bool :=
   let yst0 : EvmState :=
     { EvmState.init with env := { EvmState.init.env with
         calldata := cd, keccakOf := targetKeccakOracle } }
-  match compile prog, Interp.run YulSemantics.EVM.exec 100000 prog yst0 with
+  match compile zeroImmutables prog, Interp.run YulSemantics.EVM.exec 100000 prog yst0 with
   | some is, .ok (_, yst, _) =>
       let s0 := evmInit (assemble is)
       let s := runEvm 100000

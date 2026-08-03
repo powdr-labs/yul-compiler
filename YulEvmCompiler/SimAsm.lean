@@ -322,6 +322,17 @@ theorem ASimEHalt.extend {prog : List Asm} {yst yst' : EvmState}
   rw [List.append_assoc]
   exact hsteps
 
+/-- The placeholder simulates a `loadimmutable` read: the Asm step pushes the
+value the environment records for the key, which is exactly what the source
+built-in produces. Nothing about the compile-time assignment is needed here —
+that agreement is phase B's `ConfMatch.imms`. -/
+theorem asimE_pushImmutable {prog : List Asm} {yst : EvmState} {V : VEnv yulD}
+    {off : Nat} {key : String} :
+    ASimE prog yst V off [.pushImmutable key]
+      [yst.env.immutable (YulSemantics.EVM.litValue (.string key))] yst := by
+  intro pre c τ σ hp hτ
+  exact ASteps.single (by rw [hp]; exact AStep.pushImmutable)
+
 /-- The built-in step, non-halting: consume the argument words (which sit
 as the innermost temporaries), push the results. -/
 theorem asimE_op {prog : List Asm} {yst yst1 yst2 : EvmState}
@@ -1640,13 +1651,17 @@ private theorem expr_var_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
 
 private theorem expr_builtin_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
     {op : Op} {args : List (Expr Op)} {asm : List Asm} {n' : Nat}
+    (hnotImm : ∀ key, ¬ (op = .loadimmutable ∧ args = [.lit (.string key)]))
     (h : compileExpr Φ Γ off n (.builtin op args) = some (asm, n')) :
     ∃ argCode, compileArgs Φ Γ off n args = some (argCode, n')
       ∧ asm = argCode ++ [.op op] := by
-  simp only [compileExpr, Option.bind_eq_bind] at h
-  obtain ⟨⟨argCode, n1⟩, hargs, h2⟩ := Option.bind_eq_some_iff.mp h
-  simp only [Option.some.injEq, Prod.mk.injEq] at h2
-  exact ⟨argCode, h2.2 ▸ hargs, h2.1.symm⟩
+  simp only [compileExpr] at h
+  split at h
+  · exact absurd ⟨rfl, rfl⟩ (hnotImm _)
+  · simp only [Option.bind_eq_bind] at h
+    obtain ⟨⟨argCode, n1⟩, hargs, h2⟩ := Option.bind_eq_some_iff.mp h
+    simp only [Option.some.injEq, Prod.mk.injEq] at h2
+    exact ⟨argCode, h2.2 ▸ hargs, h2.1.symm⟩
 
 private theorem expr_call_inv {Φ : FMap} {Γ : List Ident} {off n : Nat}
     {f : Ident} {args : List (Expr Op)} {asm : List Asm} {n' : Nat}
@@ -2347,17 +2362,46 @@ theorem sim {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     intro Φ off n asm n' hc hΦ
     obtain ⟨idx, h16, hidx, rfl, rfl⟩ := expr_var_inv hc
     exact asimE_var h16 hget hidx
-  | builtinOk hargs hb ihargs =>
+  | @builtinOk funs0 V0 st yop args0 argvals st1 rets st2 hargs hb ihargs =>
     intro Φ off n asm n' hc hΦ
-    obtain ⟨argCode, hargs', rfl⟩ := expr_builtin_inv hc
-    exact asimE_op ((ihargs Φ off n argCode n' hargs').2 hΦ) hb
+    by_cases himm : ∃ key, yop = .loadimmutable ∧ args0 = [.lit (.string key)]
+    · obtain ⟨key, rfl, rfl⟩ := himm
+      -- `loadimmutable` is an ordinary environment read: the argument list is
+      -- the key's literal, the state is untouched, and the result is the map's
+      -- entry — exactly what the placeholder's `AStep` produces.
+      obtain ⟨rfl, rfl⟩ : [Asm.pushImmutable key] = asm ∧ n = n' := by
+        simpa [compileExpr] using hc
+      obtain ⟨rfl, rfl⟩ : argvals = [YulSemantics.EVM.litValue (.string key)] ∧ st = st1 := by
+        cases hargs with
+        | argsCons hrest hhead =>
+            cases hrest
+            cases hhead
+            exact ⟨rfl, rfl⟩
+      simp only [YulSemantics.EVM.builtinWithExternal, YulSemantics.EVM.stepOp,
+        YulSemantics.EVM.rd1, Option.some.injEq] at hb
+      obtain ⟨rfl, rfl⟩ := hb
+      exact asimE_pushImmutable
+    · obtain ⟨argCode, hargs', rfl⟩ :=
+        expr_builtin_inv (fun key hk => himm ⟨key, hk.1, hk.2⟩) hc
+      exact asimE_op ((ihargs Φ off n argCode n' hargs').2 hΦ) hb
   | builtinHalt hargs hb ihargs =>
     intro Φ off n asm n' hc hΦ
-    obtain ⟨argCode, hargs', rfl⟩ := expr_builtin_inv hc
+    obtain ⟨argCode, hargs', rfl⟩ := expr_builtin_inv (by
+      rintro key ⟨rfl, rfl⟩
+      -- an environment read never halts
+      rename_i argvals _ _
+      rcases argvals with _ | ⟨a, _ | ⟨b, rest⟩⟩ <;>
+        simp_all [YulSemantics.EVM.builtinWithExternal, YulSemantics.EVM.stepOp,
+          YulSemantics.EVM.rd1]) hc
     exact asimE_opHalt ((ihargs Φ off n argCode n' hargs').2 hΦ) hb
   | builtinArgsHalt hargs ihargs =>
     intro Φ off n asm n' hc hΦ
-    obtain ⟨argCode, hargs', rfl⟩ := expr_builtin_inv hc
+    obtain ⟨argCode, hargs', rfl⟩ := expr_builtin_inv (by
+      rintro key ⟨rfl, rfl⟩
+      -- evaluating a single string literal cannot halt
+      cases hargs with
+      | argsRestHalt hh => cases hh
+      | argsHeadHalt _ hh => cases hh) hc
     exact (ihargs Φ off n argCode n' hargs' hΦ).extend _
   | callOk hargs hlk harity hbody ho ihargs ihbody =>
     rename_i funs0 V0 st0 fn args0 argvals st1 decl cenv Vend st2 o

@@ -115,6 +115,29 @@ tree compiled before the fix too, so this pins that the fix did not change it. -
    "object \"Pd\" { code { sstore(0, 1) } " ++
    "data \".metadata\" hex\"a2646970667358221220\" } } }")).isSome
 
+/-! Immutables. `loadimmutable` compiles to a fixed-width `PUSH32` placeholder
+in the deployed object, and the constructor's `setimmutable` becomes one
+`mstore` per recorded placeholder offset — so the returned runtime carries the
+value the constructor computed. -/
+def immutablePair : String :=
+  "object \"A\" {\n" ++
+  "  code { let s := datasize(\"A_deployed\") codecopy(0, dataoffset(\"A_deployed\"), s)\n" ++
+  "         setimmutable(0, \"42\", caller()) return(0, s) }\n" ++
+  "  object \"A_deployed\" { code { sstore(0, loadimmutable(\"42\")) } }\n" ++
+  "}\n"
+
+#guard (parseSource immutablePair).isSome
+#guard (compileSource immutablePair).isSome
+
+/-! A `loadimmutable` with no matching `setimmutable` is rejected by validation:
+nothing would ever write that placeholder. -/
+#guard (parseSource
+  "object \"A\" { code { sstore(0, loadimmutable(\"42\")) } }").isNone
+
+/-! `setimmutable` alone is fine — it simply patches nothing. -/
+#guard (compileSource
+  "object \"A\" { code { setimmutable(0, \"42\", 7) stop() } }").isSome
+
 /-! The prune is shadowing-proof by over-approximation: if the bound name is
 referenced anywhere in the program — even a write — the binding is kept and the
 program is rejected rather than miscompiled. -/

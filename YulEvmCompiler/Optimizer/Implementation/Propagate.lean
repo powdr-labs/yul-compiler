@@ -244,7 +244,7 @@ def assignEnv (copyOK : Bool) (σ : PEnv) (xs : List Ident) (rhs' : Expr Op) : P
 Everything in this subsection feeds only the Bool gate policy below — the
 soundness relation (`propStmts_rel`) is gate-policy-agnostic, so none of these
 functions carry proof obligations. A wrong estimate costs optimization via the
-compile fallback chain, never coverage or soundness (same contract as the
+compile zeroImmutables fallback chain, never coverage or soundness (same contract as the
 original input-measured gate).
 
 The statement inliner's helper bodies arrive as copy chains plus dead

@@ -14,7 +14,7 @@ Each `#guard_msgs in #print axioms …` pins the *exact* axiom set of a main
 correctness theorem. If a `sorry` (which shows up as `sorryAx`) or any new
 axiom ever slips into the proof — directly or through a dependency edit — the
 printed message changes, `#guard_msgs` reports a mismatch, and elaboration
-fails. So this file failing to compile is a hard signal that the compiler is
+fails. So this file failing to compile zeroImmutables is a hard signal that the compiler is
 no longer proved correct on the terms recorded here.
 
 The expected set is exactly Lean's three standard classical-mathematics axioms

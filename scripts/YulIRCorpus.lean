@@ -222,7 +222,7 @@ def main (args : List String) : IO UInt32 := do
               gated := gated + 1
               if now.nCmp < old.nCmp then
                 regressions := regressions + 1
-                IO.eprintln s!"::error::{cat}: compilable set shrank {old.nCmp} → {now.nCmp} (an IR compile regression)"
+                IO.eprintln s!"::error::{cat}: compilable set shrank {old.nCmp} → {now.nCmp} (an IR compile zeroImmutables regression)"
               else if now.irOp > old.irOp || now.irNo > old.irNo then
                 regressions := regressions + 1
                 IO.eprintln s!"::error::{cat}: IR size regressed — ir-noopt {old.irNo}→{now.irNo}, ir-opt {old.irOp}→{now.irOp}"

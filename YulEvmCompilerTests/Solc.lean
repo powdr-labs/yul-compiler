@@ -3,7 +3,7 @@ set_option warningAsError true
 /-!
 # Driving a pinned `solc` as an external process
 
-Shared helpers for the runners that compile the same strict-assembly Yul source
+Shared helpers for the runners that compile zeroImmutables the same strict-assembly Yul source
 with `solc` and this compiler. Extracted so the behavioral differential and the
 gas comparisons invoke `solc` identically: the same `--strict-assembly`,
 `--evm-version osaka` invocation and the same pinned-version guard.

@@ -212,8 +212,9 @@ tier exists to express. -/
 theorem optimize_then_compile_correct
     [model : ExternalModel] (hexternal : ExternalsRealized model)
     (P : ObsPass) {prog : Block Op} {is : List Instr}
-    (hcomp : compile (P.run prog) = some is)
+    (hcomp : compile imm (P.run prog) = some is)
     {yst0 : EvmState} {V' : VEnv (evmWithExternal model.calls model.creates)}
+    (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     {yst' : EvmState} {o : Outcome}
     (hrun : Run (evmWithExternal model.calls model.creates) prog yst0 V' yst' o) :
     ∃ V₂ yst₂,
@@ -227,7 +228,7 @@ theorem optimize_then_compile_correct
            (o = .halt ∧ HaltedMatch yst₂ s')) := by
   obtain ⟨V₂, yst₂, hrun₂, hobs⟩ :=
     (P.sound model.calls model.creates prog).1 yst0 V' yst' o hrun
-  exact ⟨V₂, yst₂, hrun₂, hobs, compile_correct hexternal hcomp hrun₂⟩
+  exact ⟨V₂, yst₂, hrun₂, hobs, compile_correct hexternal hcomp himm hrun₂⟩
 
 end ObsPass
 

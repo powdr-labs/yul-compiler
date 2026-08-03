@@ -2793,7 +2793,9 @@ multi-megabyte functions from turning a known rejection into an unbounded
 compile-time search. -/
 def stackLayoutBlock (b : Block Op) : Block Op :=
   let legacy := legacyStackLayoutBlock b
-  if (compile legacy).isSome then legacy
+  -- Heuristic only: whether a layout compiles does not depend on the
+  -- immutable assignment, so any one will do.
+  if (compile (fun _ => 0) legacy).isSome then legacy
   else if withinAggressiveStackLayoutBudget b then aggressiveStackLayoutBlock b
   else legacy
 
