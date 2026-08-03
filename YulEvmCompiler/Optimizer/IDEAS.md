@@ -1640,3 +1640,49 @@ compose that result with the existing `Simplify` resolution congruence for the
   not imply SSA dominance (a stale-read counterexample; fixed with the
   decidable `domCheck` gate), and codegen genuinely needs single
   assignment + label uniqueness.
+
+## SSA pass-pipeline rebalance: coalescing, branch inversion, CSE off (2026-08-03)
+
+- 🟡 **In progress (PR: SSA pass-pipeline rebalance).** Three changes to the
+  `yul-ssa-cfg` per-function pipeline (`SsaCfg/Implementation/Passes.lean`),
+  all found by ablating each pass against emitted cost on the uniswap-v4
+  fixtures rather than by reasoning about the IR:
+
+  1. **Straight-line block coalescing** (`coalesce`). A block whose single
+     in-edge is an unconditional `jump` is appended to its predecessor, the
+     edge's parallel copy becoming a global substitution. The construction
+     emits a block boundary per `if`/`switch`/`for` join and the inliner
+     splits every call site into three blocks; each surviving boundary costs
+     a `JUMPDEST`, a `jump`, *and* an edge shuffle between independently
+     chosen layouts.
+
+  2. **Branch-sense normalization** (`invertBranches`).
+     `branch (iszero x) t f ≡ branch x f t`, after which dead-value
+     elimination deletes the `iszero`. Solidity's unoptimized IR spells every
+     negative test `if iszero(cond)`, and the opcode profile showed this as
+     the largest non-shuffle excess against solc: on
+     `TickMath.getSqrtPriceAtTickSweep` we executed **2,105 `ISZERO`** to
+     solc's 1. Natural on a CFG (swap two edges), awkward on Yul
+     (restructure an `if` into its complement).
+
+  3. **CSE removed from the pipeline** (kept defined and proved). Measured:
+     running it *raises* emitted cost on every uniswap fixture tried
+     (`BitMath` +36%, `LiquidityMath` +31%, `TickBitmap` +9%). On a stack
+     machine a CSE'd value must stay live inside a 16-deep `DUP`/`SWAP`
+     reach, and the shuffle traffic it adds (`DUP`+`SWAP`, 6 gas per
+     intervening op) exceeds the `ADD`/`SHL`-class arithmetic (3 gas) it
+     saves. A live-range-aware or cost-aware variant could switch it back on.
+
+  **Measured**: uniswap-v4 gap to solc **84,617 → 48,644 (−42.5%)** with
+  **zero per-fixture regressions**; aave-v4 total **−1,146,563 gas (−6.9%)**.
+
+- ❌ **Aggressive SSA inlining does not pay under the current selection.**
+  Relaxing `inlinable` to a net-growth cost model does inline every call
+  (uniswap `SqrtPriceMath`: 32 call sites → 0) and is worth −4,054 gas there,
+  −2,626 on `TickBitmap`, −1,978 on `SwapMath` — but +7,024 on the `TickMath`
+  sweeps, netting ≈ 0. The blocker is structural, not a threshold: candidates
+  are selected by `instrCost`, a **static size** proxy, which counts a shared
+  function body *once* while it executes *once per call site*. Inlined code
+  therefore can essentially never win selection regardless of the threshold.
+  Fixing this needs an execution-weighted cost (charge each body by its
+  call-site count, ideally loop-weighted), not a different budget.

@@ -125,11 +125,30 @@ theorem hdve : Passes.dve fMain' = fMain' := by
     Passes.mapEdges, Func.allDefs, Instr.defs, Instr.uses, Term.uses, Term.edges,
     Std.HashSet.size_insert, Std.HashSet.mem_insert, Std.HashSet.size_empty]
 
+/-- No block of the counterexample has a single-predecessor `jump` target
+(`B1`, the only `jump` target, has two in-edges), so coalescing is a no-op. -/
+theorem hfindMerge' : Passes.findMerge fMain' = none := by
+  simp only [Passes.findMerge, Std.Legacy.Range.forIn_eq_forIn_range']; rfl
+
+theorem hmerge' : Passes.mergeOnce fMain' = none := by
+  simp [Passes.mergeOnce, hfindMerge']
+
+theorem hcoal' : Passes.coalesce fMain' = fMain' := by
+  simp only [Passes.coalesce, Std.Legacy.Range.forIn_eq_forIn_range',
+    Std.Legacy.Range.size]
+  simp [show fMain'.blocks.size = 6 from rfl, r6, hmerge']
+
+/-- The counterexample has no `iszero`, so branch-sense normalization is a
+no-op. -/
+theorem hinv' : Passes.invertBranches fMain' = fMain' := by
+  simp [Passes.invertBranches, Passes.iszeroSources, fMain', b0,b1',b2',b3',b4,b5,
+    Passes.invertBranches.go]
+
 theorem hrun1 : Passes.runOnce fMain = fMain' := by
-  simp only [Passes.runOnce, hetp, hcf, hcse, hdve]
+  simp only [Passes.runOnce, hetp, hcoal', hinv', hcf, hdve]
 
 theorem hrun2 : Passes.runOnce fMain' = fMain' := by
-  simp only [Passes.runOnce, hetp', hcf, hcse, hdve]
+  simp only [Passes.runOnce, hetp', hcoal', hinv', hcf, hdve]
 
 theorem hoptf : optimizeFunc fMain = fMain' := by
   simp only [optimizeFunc, Passes.pipelineRounds, Std.Legacy.Range.forIn_eq_forIn_range',

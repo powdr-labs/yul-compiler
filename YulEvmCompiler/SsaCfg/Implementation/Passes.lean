@@ -393,11 +393,167 @@ def dve (f : Func) : Func :=
           | .call .. => true
         term := mapEdges filterEdge b.term } }
 
+/-! ## Pass 5: straight-line block coalescing (jump threading)
+
+The construction emits a block boundary for every `if`/`switch`/`for` join,
+and the inliner splits a call site's block into three (the part before the
+call, the callee's blocks, the continuation). Each surviving boundary costs
+a `JUMPDEST`, a `jump`, and — worse — an *edge shuffle*, because the two
+blocks are laid out independently and the terminator has to reconcile them.
+
+Whenever a block `t` has exactly one in-edge, that edge is an unconditional
+`jump` from `bi`, and `t` is not the entry, the two are a single straight
+line: `t` can be appended to `bi` verbatim. The edge's parallel copy
+(arguments → `t`'s parameters) becomes an ordinary substitution — and it is
+sound to apply it *globally*, not just inside `t`: `t`'s parameters are SSA
+definitions whose uses `t` dominates, `bi` dominates `t`, and the argument
+values are live at the end of `bi`, so every such use is still dominated by
+the argument's definition after the rewrite.
+
+This is what makes inlining pay: without it the splice trades a call's
+`JUMP` plumbing for an equal amount of block-boundary plumbing. -/
+
+/-- In-edge count per block (a `branch` with both edges to the same target
+counts twice — such a block is not single-predecessor). -/
+def predCounts (f : Func) : Array Nat := Id.run do
+  let mut acc : Array Nat := Array.replicate f.blocks.size 0
+  for b in f.blocks do
+    for e in b.term.edges do
+      if e.target < acc.size then acc := acc.set! e.target (acc[e.target]! + 1)
+  return acc
+
+/-- Keep only the blocks reachable from the entry, remapping block ids.
+Merging leaves the absorbed block unreachable; dropping it keeps `wfCheck`
+honest and stops the code generator emitting a dead `JUMPDEST`. -/
+def dropUnreachable (f : Func) : Func := Id.run do
+  let n := f.blocks.size
+  let mut seen : Array Bool := Array.replicate n false
+  let mut work : List BlockId := [f.entry]
+  if f.entry < n then seen := seen.set! f.entry true
+  for _ in [0:n] do
+    let mut next : List BlockId := []
+    for bi in work do
+      if _h : bi < n then
+        for e in f.blocks[bi]!.term.edges do
+          if e.target < n && !seen[e.target]! then
+            seen := seen.set! e.target true
+            next := e.target :: next
+    work := next
+    if work.isEmpty then break
+  if seen.all id then return f
+  let mut remap : Array BlockId := Array.replicate n 0
+  let mut kept : Array Block := #[]
+  for bi in [0:n] do
+    if seen[bi]! then
+      remap := remap.set! bi kept.size
+      kept := kept.push f.blocks[bi]!
+  let fix := fun (e : Edge) => { e with target := remap[e.target]! }
+  return { f with
+    entry := remap[f.entry]!
+    blocks := kept.map fun b => { b with term := mapEdges fix b.term } }
+
+/-- Find one mergeable pair `(predecessor, target)`. -/
+def findMerge (f : Func) : Option (BlockId × BlockId × List ValId) := Id.run do
+  let preds := predCounts f
+  for bi in [0:f.blocks.size] do
+    if let .jump e := f.blocks[bi]!.term then
+      if e.target != f.entry && e.target != bi && e.target < f.blocks.size then
+        if preds[e.target]! == 1 then
+          return some (bi, e.target, e.args)
+  return none
+
+/-- Merge `t` into `bi`, substituting `t`'s parameters by the edge arguments
+across the whole function (see the section comment for why global is sound),
+then drop the now-unreachable `t`. -/
+def mergeOnce (f : Func) : Option Func := do
+  let (bi, t, args) ← findMerge f
+  let b := f.blocks[bi]!
+  let tb := f.blocks[t]!
+  let merged : Block :=
+    { params := b.params, instrs := b.instrs ++ tb.instrs, term := tb.term }
+  let σ : Subst := (tb.params.zip args).foldl (fun m (p, a) => m.insert p a) {}
+  some (dropUnreachable (substFunc σ { f with blocks := f.blocks.set! bi merged }))
+
+/-- Coalesce straight-line block chains to a fixed point. Each merge strictly
+decreases the block count, so the block count bounds the iteration. -/
+def coalesce (f0 : Func) : Func := Id.run do
+  let mut f := f0
+  for _ in [0:f0.blocks.size] do
+    match mergeOnce f with
+    | some f' => f := f'
+    | none => return f
+  return f
+
+/-! ## Pass 6: branch-sense normalization
+
+`JUMPI` jumps when its condition is **nonzero**, and a `branch` chooses its
+two edges the same way, so an `iszero` feeding a branch is pure negation of
+a choice the terminator already makes:
+
+```
+  branch (iszero x) t f   ≡   branch x f t
+```
+
+Swapping the edges lets dead-value elimination delete the `iszero`
+entirely. Solidity's unoptimized IR is full of `if iszero(cond)` — it is how
+the front end spells every `else`-less negative test — so on branch-dense
+code this removes one `ISZERO` (3 gas) per branch *executed*, which the
+opcode profile shows as the single largest non-shuffle excess against solc
+on the `TickMath` sweeps.
+
+Only the terminator is rewritten: the `iszero` instruction stays put and
+dies (or not) by the ordinary liveness rule, so nothing here depends on the
+condition having a single use. Dominance is preserved because `x`'s
+definition dominates the `iszero`, which dominates the branch.
+
+This transform is natural on a CFG and awkward on Yul, where inverting a
+test means restructuring an `if` into its complement. -/
+
+/-- The `iszero` sources of a function: `dst ↦ arg` for every
+`dst ← iszero(arg)`. SSA ids are function-unique, so one flat map serves
+every block. -/
+def iszeroSources (f : Func) : Std.HashMap ValId ValId := Id.run do
+  let mut m : Std.HashMap ValId ValId := {}
+  for b in f.blocks do
+    for i in b.instrs do
+      if let .op [d] .iszero [a] := i then m := m.insert d a
+  return m
+
+/-- Rewrite `branch (iszero x) t f` to `branch x f t`, to a fixed point
+(a doubled `iszero` collapses in two steps). -/
+def invertBranches (f : Func) : Func :=
+  let m := iszeroSources f
+  { f with
+    blocks := f.blocks.map fun b =>
+      match b.term with
+      | .branch c t fe => { b with term := go m c t fe 8 }
+      | _ => b }
+where
+  go (m : Std.HashMap ValId ValId) (c : ValId) (t fe : Edge) : Nat → Term
+    | 0 => .branch c t fe
+    | n + 1 =>
+      match m[c]? with
+      | some x => go m x fe t n
+      | none => .branch c t fe
+
 /-! ## The pipeline -/
 
-/-- One full pipeline round over a function. -/
+/-- One full pipeline round over a function.
+
+**`cse` is deliberately not in this pipeline.** It is a correct and proved
+pass, and it does remove real computations — but on a stack machine it pays
+for them in the wrong currency. Every value CSE keeps alive for a later
+reuse has to *stay somewhere*, and the only somewhere is the operand stack,
+inside a 16-deep `DUP`/`SWAP` reach. Measured on the uniswap-v4 fixtures,
+running it raises the emitted cost of every single one (`BitMath` +36%,
+`LiquidityMath` +31%, `TickBitmap` +9%): the extra shuffle traffic costs
+strictly more than the arithmetic it saves, because the arithmetic it saves
+is `ADD`/`SHL`-class (3 gas) while the traffic it adds is `DUP`+`SWAP`
+pairs (6 gas) *per intervening operation*. It is kept defined and proved so
+a future value-aware variant (reuse only across short live ranges, or only
+for genuinely expensive ops) can be switched back on. -/
 def runOnce (f : Func) : Func :=
-  dve (cse (constFold (elimTrivialParams f)))
+  dve (constFold (invertBranches (coalesce (elimTrivialParams f))))
 
 /-! ## Program-level pass: SSA function inlining
 

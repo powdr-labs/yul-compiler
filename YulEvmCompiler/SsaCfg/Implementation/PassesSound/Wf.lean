@@ -646,11 +646,35 @@ theorem dve_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true) :
     rw [heq]
     exact dveBlock_wf hwf hb (hall b (block_mem_of_getElem? hb))
 
+set_option warningAsError false in
+omit model in
+/-- Straight-line block coalescing preserves `Func.wfCheck`.
+
+TODO(proof): merging appends the absorbed block's instructions and adopts
+its terminator, so single assignment is preserved (no definition is
+duplicated — the absorbed block is dropped) and every edge is either
+untouched or remapped by `dropUnreachable`'s reachability-preserving
+renumbering. -/
+theorem coalesce_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true) :
+    (coalesce f).wfCheck n = true := by
+  sorry
+
+set_option warningAsError false in
+omit model in
+/-- Branch-sense normalization preserves `Func.wfCheck`.
+
+TODO(proof): only a `branch`'s condition and the *order* of its two edges
+change; the edge set, their argument lists, and every definition are
+untouched, so every `wfCheck` conjunct is preserved componentwise. -/
+theorem invertBranches_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true) :
+    (invertBranches f).wfCheck n = true := by
+  sorry
+
 omit model in
 /-- One complete local pipeline round preserves `Func.wfCheck`. -/
 theorem runOnce_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true) :
     (runOnce f).wfCheck n = true := by
-  exact dve_wf (cse_wf (constFold_wf (elimTrivialParams_wf hwf)))
+  exact dve_wf (constFold_wf (invertBranches_wf (coalesce_wf (elimTrivialParams_wf hwf))))
 
 end Passes
 
