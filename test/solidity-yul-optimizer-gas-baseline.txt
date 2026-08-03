@@ -404,6 +404,7 @@ ssaTransform/switch_reassign.yul	426	318
 ssaTransform/typed.yul	180	390
 ssaTransform/used.yul	372	384
 stackCompressor/noInline.yul	0	0
+stackLimitEvader/function_arg.yul	836076	837774
 stackLimitEvader/stub.yul	951468	953520
 stackLimitEvader/too_many_args_14.yul	839364	840156
 stackLimitEvader/too_many_args_15.yul	972672	973482
