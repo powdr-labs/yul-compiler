@@ -27,6 +27,14 @@ private theorem resolve_hoistBuiltinArg (L : Layout) (P : String) (op : Op)
     resolveForLayoutStmt_letDecl, resolveForLayoutStmt_exprStmt,
     resolveForLayoutExpr, resolveForLayoutExprs]
 
+private theorem resolve_hoistBuiltinArgLit (L : Layout) (P : String) (op : Op)
+    (c : Literal) (g : Ident) (gas : List (Expr Op)) :
+    resolveForLayoutStmt L (hoistBuiltinArgLit P op c g gas) =
+      hoistBuiltinArgLit P op c g (resolveForLayoutExprs L gas) := by
+  simp [hoistBuiltinArgLit, resolveForLayoutStmt_block,
+    resolveForLayoutStmt_letDecl, resolveForLayoutStmt_exprStmt,
+    resolveForLayoutExpr, resolveForLayoutExprs]
+
 /-- Resolution commutes with the expression-statement dispatch, up to
 `EquivStmt`. -/
 theorem resolveHcExprStmt_equiv (L : Layout) (P : String) (Δ : DEnv) (e : Expr Op) :
@@ -46,6 +54,19 @@ theorem resolveHcExprStmt_equiv (L : Layout) (P : String) (Δ : DEnv) (e : Expr 
                   simp [resolveForLayoutExpr, resolveForLayoutExprs]]
               exact hoistBuiltinArg_equiv_of P op p g (resolveForLayoutExprs L gas)
                 (by rw [argsHaveCall_resolve]; exact hnc) hpt
+          · exact EquivStmt.refl _
+      · exact EquivStmt.refl _
+  · next op c g gas =>
+      split
+      · next inner hlk =>
+          split
+          · next hw =>
+              rw [resolveForLayoutStmt_exprStmt, resolve_hoistBuiltinArgLit,
+                show resolveForLayoutExpr L (.builtin op [.lit c, .call g gas])
+                    = .builtin op [.lit c, .call g (resolveForLayoutExprs L gas)] from by
+                  simp [resolveForLayoutExpr, resolveForLayoutExprs]]
+              exact hoistBuiltinArgLit_equiv_of P op c g (resolveForLayoutExprs L gas)
+                (by rw [argsHaveCall_resolve]; exact hoistBuiltinLitWanted_inv hw)
           · exact EquivStmt.refl _
       · exact EquivStmt.refl _
   · exact EquivStmt.refl _
