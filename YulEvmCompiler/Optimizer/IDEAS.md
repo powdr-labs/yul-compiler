@@ -890,6 +890,39 @@ frontier; its other 552 rows, all 23 object-compiler rows, and all 40
 EVM-code-transform rows are unchanged. No solc fingerprint moved and no known
 failure baseline changed.
 
+### ❌ Self-eq residue strengthening to `pop(x)` (measured, rejected)
+
+The strengthening the self-equality entry above logged as a follow-up — reduce
+the discard `pop(iszero(eq(x,x)))` to `pop(x)` (the surviving variable), so the
+now-dead `EQ`/`ISZERO` disappear — is **fully proved** in the strong `LocalPass`
+tier (`selfEq_eval`/`selfEq_no_halt`, object-resolution congruence included, no
+sorries, axiom gate clean) but **loses gas** and was rejected.
+
+`pop(x)` keeps the validated variable `x` referenced, which **pins its binding
+live and defeats dead-code elimination** of the value it was cleaned from. When
+that value is otherwise unused (the common case — a validator only *checks* the
+argument), the old `pop(iszero(eq(x,x)))` was a pure discard the downstream
+pure/dead passes removed wholesale, taking the source computation with it;
+`pop(x)` instead anchors the whole cleaned-argument chain and it stays emitted.
+Inside a loop the retained per-iteration cost compounds catastrophically.
+
+**Measured** on current main (solc 0.8.35) against a freshly regenerated
+clean-main baseline: **+346,137 gas on `semanticTests` `various/negative_stack_height.sol`**
+(a hot-loop fixture) alone, with ≈10 `semanticTests` rows regressed overall and
+a net semantic **+~250k gas** — the change is net-negative and trips the
+per-suite ceiling guard. The original branch reported this rewrite as
+`uniswap −405 / gasTests −675`, but that measurement **only covered
+uniswap-v4 + gasTests**; `semanticTests` (where the regression lives) was never
+run for it.
+
+Rework paths (either would recover the win without the DCE hazard): **(a)** fire
+the `pop(x)` form only when `x` has no other use in scope, falling back to the
+proven `pop(iszero(eq(x,x)))` discard otherwise; **(b)** teach `DeadPure` to
+delete a `pop(var)` outright under a unique-names / well-scopedness premise
+(needs a statement-level deletion proof, not just the expression rewrite). Until
+then the shipped form stays the condition-preserving discard from the entry
+above.
+
 ### ✅ Scoped fact export across block exits (`optimizer/propagate-scoped-export`)
 
 Issue #65's 2026-07-25 refresh showed the Aave `PositionStatusMap` hot loops
