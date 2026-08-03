@@ -42,7 +42,7 @@ open YulSemantics.EVM (U256 EvmState Op evmWithExternal)
 open YulSemantics (Outcome VEnv)
 open YulEvmCompiler
 
-variable [model : ExternalModel]
+variable [model : ExternalModel] {imm : String → YulSemantics.EVM.U256}
 local notation "yulD" => evmWithExternal model.calls model.creates
 
 /-- **Construction soundness**: if the construction accepts `prog` and the
@@ -122,12 +122,12 @@ theorem optimizeProg_dom {P : Prog} (hdom : ToAsm.Prog.domCheck P = true) :
 omit model in
 /-- Invert a successful `finishProgOrd` into the shared final gates. -/
 theorem finishProg_inv {ord : Bool} {P : Prog} {is : List YulEvmCompiler.Instr}
-    (h : finishProgOrd ord P = some is) :
+    (h : finishProgOrd imm ord P = some is) :
     ∃ asm : List Asm,
       ToAsm.emitProgOrd ord P = some asm
       ∧ wfCheck asm = true
       ∧ stackOK2 (optimizeAsm asm) = true
-      ∧ lowerProg (optimizeAsm asm) = some is := by
+      ∧ lowerProg imm (optimizeAsm asm) = some is := by
   unfold finishProgOrd at h
   rcases hemit : ToAsm.emitProgOrd ord P with _ | asm <;> rw [hemit] at h
   · exact absurd h (by simp)
@@ -170,12 +170,12 @@ dominance gate passed, and the accepted bytecode is one of the four
 independently gated candidates ({optimized, raw} × {scheduling modes}). -/
 theorem compileViaSsa_inv {prog : YulSemantics.Block Op}
     {is : List YulEvmCompiler.Instr}
-    (h : compileViaSsa prog = some is) :
+    (h : compileViaSsa prog imm = some is) :
     ∃ (P Q : Prog) (ord : Bool),
       ofBlock prog = some P
       ∧ ToAsm.Prog.domCheck P = true
       ∧ (Q = optimizeProg P ∨ Q = P)
-      ∧ finishProgOrd ord Q = some is := by
+      ∧ finishProgOrd imm ord Q = some is := by
   unfold compileViaSsa at h
   rcases hof : ofBlock prog with _ | P <;> rw [hof] at h
   · exact absurd h (by simp)
@@ -203,8 +203,9 @@ is fully proved — it rests on the codegen simulation lemmas above. -/
 theorem finishProg_correct (hexternal : ExternalsRealized model)
     {ord : Bool} {Q : Prog} {is : List YulEvmCompiler.Instr}
     (hQwf : Q.wfCheck = true) (hQdom : ToAsm.Prog.domCheck Q = true)
-    (hfin : finishProgOrd ord Q = some is)
+    (hfin : finishProgOrd imm ord Q = some is)
     {yst0 yst' : EvmState} {o : Outcome}
+    (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     (hssa : Run (model := model) Q yst0 yst' o) :
     ∃ b : Nat, ∀ s0 : State,
       FrameOK (assemble is) s0 → StateMatch yst0 s0 →
@@ -230,8 +231,8 @@ theorem finishProg_correct (hexternal : ExternalsRealized model)
         (List.suffix_refl (optimizeAsm asm)) (stackOK2_run_bound hstk yst0)
     refine ⟨bnd, ?_⟩
     intro s0 hf hm hpc hstk0 hgas
-    have hcm0 : ConfMatch (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
-      ⟨by simpa using hf, hm, by rw [hpc]; simp, by rw [hstk0]; simp⟩
+    have hcm0 : ConfMatch imm (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
+      ⟨by simpa using hf, hm, by rw [hpc]; simp, by rw [hstk0]; simp, himm⟩
     obtain ⟨s1, hsteps1, hcm1, -⟩ := Hb s0 hcm0 hgas
     have hpc1 : s1.pc = UInt256.ofNat (assembleBytes is).length := by
       rw [hcm1.pc]; simp [hlen]
@@ -257,8 +258,8 @@ theorem finishProg_correct (hexternal : ExternalsRealized model)
         (List.suffix_refl (optimizeAsm asm)) (stackOK2_run_bound hstk yst0)
     refine ⟨bnd, ?_⟩
     intro s0 hf hm hpc hstk0 hgas
-    have hcm0 : ConfMatch (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
-      ⟨by simpa using hf, hm, by rw [hpc]; simp, by rw [hstk0]; simp⟩
+    have hcm0 : ConfMatch imm (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
+      ⟨by simpa using hf, hm, by rw [hpc]; simp, by rw [hstk0]; simp, himm⟩
     obtain ⟨s', hsteps', hsm', hcs', hhm'⟩ := Hb s0 hcm0 hgas
     exact ⟨s', hsteps', hcs', hsm', Or.inr ⟨rfl, hhm'⟩⟩
 
@@ -268,8 +269,9 @@ on either the optimized program (through the pass-soundness lemma) or the
 original construction (which needs no pass soundness at all). -/
 theorem compileViaSsa_correct (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List YulEvmCompiler.Instr}
-    (hcomp : compileViaSsa prog = some is)
+    (hcomp : compileViaSsa prog imm = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
+    (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     (hrun : YulSemantics.Run yulD prog yst0 V' yst' o) :
     ∃ b : Nat, ∀ s0 : State,
       FrameOK (assemble is) s0 → StateMatch yst0 s0 →
@@ -292,14 +294,14 @@ theorem compileViaSsa_correct (hexternal : ExternalsRealized model)
     rcases hQ with rfl | rfl
     · exact optimizeProg_dom hdom
     · exact hdom
-  exact finishProg_correct hexternal hQwf hQdom hfin hssa
+  exact finishProg_correct hexternal hQwf hQdom hfin himm hssa
 
 /-- The SSA backend, packaged under the generalized backend contract: the
 second `Optimizer.EvmBackend` inhabitant, next to `EvmBackend.classic`. -/
 def evmBackend : Optimizer.EvmBackend where
-  compile := compileViaSsa
+  compile := fun prog imm => compileViaSsa prog imm
   correct := by
-    intro model hext prog is hcomp yst0 V' yst' o hrun
-    exact compileViaSsa_correct hext hcomp hrun
+    intro model hext imm prog is hcomp yst0 V' yst' o himm hrun
+    exact compileViaSsa_correct hext hcomp himm hrun
 
 end YulEvmCompiler.SsaCfg

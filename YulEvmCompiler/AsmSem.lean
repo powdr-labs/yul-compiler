@@ -70,6 +70,16 @@ inductive AStep (prog : List Asm) [model : ExternalModel] :
   /-- Push a word. -/
   | push {v : U256} {c : List Asm} {σ : List AVal} {yst : EvmState} :
       AStep (model := model) prog ⟨.push v :: c, σ, yst⟩ ⟨c, .word v :: σ, yst⟩
+  /-- Read an immutable: push the value the environment records for `key`,
+  mirroring the source built-in `loadimmutable` (which reads the same map on the
+  same keying). The premise is what ties the constant the compiler baked into
+  the instruction to the value the source semantics would produce, so a
+  placeholder that disagrees with the layout simply cannot step. -/
+  | pushImmutable {key : String} {c : List Asm} {σ : List AVal}
+      {yst : EvmState} :
+      AStep (model := model) prog ⟨.pushImmutable key :: c, σ, yst⟩
+        ⟨c, .word (yst.env.immutable (YulSemantics.EVM.litValue (.string key))) :: σ,
+          yst⟩
   /-- A non-halting built-in: consume the argument words, push the results,
   step the machine state — all by the Yul dialect's own relation. -/
   | op {yop : Op} {args rets : List U256} {c : List Asm} {σ : List AVal}
@@ -171,6 +181,7 @@ theorem AStep.suffix [model : ExternalModel]
     exact ⟨pre ++ [i], by simpa using hpre⟩
   cases h with
   | push => exact tail_suffix ha
+  | pushImmutable => exact tail_suffix ha
   | op _ => exact tail_suffix ha
   | dup _ => exact tail_suffix ha
   | swap _ => exact tail_suffix ha
@@ -181,6 +192,65 @@ theorem AStep.suffix [model : ExternalModel]
   | jumpiFall _ => exact tail_suffix ha
   | pushLabel _ => exact tail_suffix ha
   | dynJump hfind => exact findLabel_suffix hfind
+
+/-! ### The immutable map is never rewritten
+
+Phase B's `ConfMatch.imms` states, once, that the constants baked into the
+emitted bytes are the ones the environment records. For that to survive a whole
+run, no step may rewrite `env.immutable`. It does not: every environment update
+in the source semantics is a `{ st.env with … }` over balances, code hashes,
+nonces, storage or transient storage, and the open-world endpoints install a
+`CallWorld`, which has the same shape. Each fact below is definitional. -/
+
+section ImmutablePreserved
+open YulSemantics.EVM
+
+@[simp] private theorem touchMemory_immutable (st : EvmState) (o n : Nat) :
+    (touchMemory st o n).env.immutable = st.env.immutable := rfl
+
+@[simp] private theorem touchMemory2_immutable (st : EvmState) (a b c d : Nat) :
+    (touchMemory2 st a b c d).env.immutable = st.env.immutable := rfl
+
+@[simp] private theorem install_immutable (w : CallWorld) (st : EvmState) :
+    (w.install st).env.immutable = st.env.immutable := rfl
+
+@[simp] private theorem appendLog_immutable (st : EvmState) (topics : List U256)
+    (o n : U256) :
+    (appendLog st topics o n).env.immutable = st.env.immutable := rfl
+
+@[simp] private theorem finishCall_immutable (kind : CallKind) (st : EvmState)
+    (r : CallResponse) (a b c d : Nat) :
+    (finishCall kind st r a b c d).env.immutable = st.env.immutable := by
+  unfold finishCall
+  split <;> rfl
+
+@[simp] private theorem finishCreate_immutable (st : EvmState) (r : CreateResponse)
+    (o n : Nat) :
+    (finishCreate st r o n).env.immutable = st.env.immutable := by
+  unfold finishCreate
+  split <;> rfl
+
+end ImmutablePreserved
+
+/-- **No step ever rewrites the immutable map.** This is what lets phase B's
+layout-consistency obligation for immutables be stated once and carried along a
+whole run. -/
+theorem builtinWithExternal_immutable_eq
+    {calls : ExternalCalls} {creates : ExternalCreates} {yop : Op}
+    {args rets : List U256} {yst yst' : EvmState}
+    (hb : builtinWithExternal calls creates yop args yst (.ok rets yst')) :
+    yst'.env.immutable = yst.env.immutable := by
+  cases yop <;>
+        rcases args with _ | ⟨x, _ | ⟨y, _ | ⟨z, _ | ⟨w, _ | ⟨u, _ | ⟨t, _ | ⟨r, args⟩⟩⟩⟩⟩⟩⟩ <;>
+        simp_all [YulSemantics.EVM.builtinWithExternal, YulSemantics.EVM.externalCall,
+          YulSemantics.EVM.externalCreate, YulSemantics.EVM.stepOp,
+          YulSemantics.EVM.un, YulSemantics.EVM.bin, YulSemantics.EVM.ter,
+          YulSemantics.EVM.rd0, YulSemantics.EVM.rd1, YulSemantics.EVM.guardStatic] <;>
+        (try (split at hb)) <;>
+        (try (obtain ⟨-, rfl⟩ := hb; simp)) <;>
+        (try (obtain ⟨_, -, -, rfl⟩ := hb; simp)) <;>
+        (try (obtain ⟨-, _, -, hres⟩ := hb; simp_all)) <;>
+        (try simp_all)
 
 theorem ASteps.suffix [model : ExternalModel]
     {prog : List Asm} {a b : AConf}

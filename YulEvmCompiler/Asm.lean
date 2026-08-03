@@ -73,6 +73,16 @@ inductive Asm
   /-- Jump to the code address on top of the stack (function returns):
   lowers to `JUMP`. -/
   | dynJump
+  /-- An **immutable** read: pushes `v`, the value `key`'s immutable holds in the
+  deployed code, always as a full-width `PUSH32`.
+
+  The fixed width is the whole point. Ordinary `push` takes the minimal `PUSHk`
+  encoding, so its byte length varies with the value; an immutable's 32 immediate
+  bytes must sit at an offset the *constructor* can compute and patch, which
+  requires that offset to be independent of the value stored there. `key` carries
+  no runtime meaning — it exists so the object layer can report where each
+  placeholder landed. -/
+  | pushImmutable (key : String)
   deriving Repr, DecidableEq
 
 /-- The uniform number of address bytes emitted for a label push (`jump`,
@@ -105,6 +115,8 @@ def size : Asm → Nat
   | jumpi _ => labelWidth + 2
   | pushLabel _ => labelWidth + 1
   | dynJump => 1
+  -- `PUSH32` opcode byte plus 32 immediate bytes, independent of `v`.
+  | pushImmutable _ => 33
 
 theorem size_pos (i : Asm) : 1 ≤ i.size := by
   cases i <;> simp only [size] <;> omega
@@ -430,7 +442,7 @@ theorem wfCheck_iff {p : List Asm} : wfCheck p = true ↔ WFProg p := by
 /-- Lower one instruction, resolving labels against the whole program
 `prog`. `none` when a referenced label is undefined (excluded by `wfCheck`)
 or the Yul op is outside `opTable`'s verified domain. -/
-def lowerInstr (prog : List Asm) : Asm → Option (List Instr)
+def lowerInstr (imm : String → U256) (prog : List Asm) : Asm → Option (List Instr)
   | .push v      => some [Instr.pushMin (conv v)]
   | .op yop      => (opTable yop).map (fun o => [.op o])
   | .dup n       => some [.op (.Dup ⟨n⟩)]
@@ -444,17 +456,20 @@ def lowerInstr (prog : List Asm) : Asm → Option (List Instr)
   | .pushLabel l => (resolve l prog).map
       (fun a => [.push labelWidthFin (UInt256.ofNat a)])
   | .dynJump     => some [.op .JUMP]
+  -- Always the full 32-byte immediate, so the value's byte position is fixed.
+  | .pushImmutable key => some [.push ⟨32, by norm_num⟩ (conv (imm key))]
 
 /-- Lower a fragment (against the whole program `prog`). -/
-def lowerFrag (prog : List Asm) : List Asm → Option (List Instr)
+def lowerFrag (imm : String → U256) (prog : List Asm) : List Asm → Option (List Instr)
   | [] => some []
   | i :: rest => do
-      let is1 ← lowerInstr prog i
-      let is2 ← lowerFrag prog rest
+      let is1 ← lowerInstr imm prog i
+      let is2 ← lowerFrag imm prog rest
       return is1 ++ is2
 
 /-- Lower a whole program. -/
-def lowerProg (p : List Asm) : Option (List Instr) := lowerFrag p p
+def lowerProg (imm : String → U256) (p : List Asm) : Option (List Instr) :=
+  lowerFrag imm p p
 
 /-! ### Verified fast lowering
 
@@ -609,7 +624,8 @@ theorem findLabelMap_getElem? (p : List Asm) (l : Label) :
   simp
 
 /-- `lowerInstr` against a precomputed address table. -/
-def lowerInstrWith (addrs : Std.HashMap Label Nat) : Asm → Option (List Instr)
+def lowerInstrWith (imm : String → U256) (addrs : Std.HashMap Label Nat) :
+    Asm → Option (List Instr)
   | .push v      => some [Instr.pushMin (conv v)]
   | .op yop      => (opTable yop).map (fun o => [.op o])
   | .dup n       => some [.op (.Dup ⟨n⟩)]
@@ -623,43 +639,47 @@ def lowerInstrWith (addrs : Std.HashMap Label Nat) : Asm → Option (List Instr)
   | .pushLabel l => addrs[l]?.map
       (fun a => [.push labelWidthFin (UInt256.ofNat a)])
   | .dynJump     => some [.op .JUMP]
+  | .pushImmutable key => some [.push ⟨32, by norm_num⟩ (conv (imm key))]
 
-theorem lowerInstrWith_eq (p : List Asm) (i : Asm) :
-    lowerInstrWith (labelAddrs p) i = lowerInstr p i := by
+theorem lowerInstrWith_eq (imm : String → U256) (p : List Asm) (i : Asm) :
+    lowerInstrWith imm (labelAddrs p) i = lowerInstr imm p i := by
   cases i <;> simp [lowerInstrWith, lowerInstr, labelAddrs_getElem?]
 
 /-- `lowerFrag` against a precomputed address table. -/
-def lowerFragWith (addrs : Std.HashMap Label Nat) :
+def lowerFragWith (imm : String → U256) (addrs : Std.HashMap Label Nat) :
     List Asm → Option (List Instr)
   | [] => some []
   | i :: rest => do
-      let is1 ← lowerInstrWith addrs i
-      let is2 ← lowerFragWith addrs rest
+      let is1 ← lowerInstrWith imm addrs i
+      let is2 ← lowerFragWith imm addrs rest
       return is1 ++ is2
 
-theorem lowerFragWith_eq (p : List Asm) :
-    ∀ c : List Asm, lowerFragWith (labelAddrs p) c = lowerFrag p c := by
+theorem lowerFragWith_eq (imm : String → U256) (p : List Asm) :
+    ∀ c : List Asm, lowerFragWith imm (labelAddrs p) c = lowerFrag imm p c := by
   intro c
   induction c with
   | nil => rfl
   | cons i rest ih => simp [lowerFragWith, lowerFrag, lowerInstrWith_eq, ih]
 
 /-- One-pass lowering: build the address table once, then lower. -/
-def lowerProgFast (p : List Asm) : Option (List Instr) :=
-  lowerFragWith (labelAddrs p) p
+def lowerProgFast (imm : String → U256) (p : List Asm) : Option (List Instr) :=
+  lowerFragWith imm (labelAddrs p) p
 
 @[csimp] theorem lowerProg_eq_lowerProgFast : @lowerProg = @lowerProgFast := by
-  funext p
+  funext imm p
   rw [lowerProgFast, lowerProg, lowerFragWith_eq]
 
 /-- Lowered width is `Asm.size`, for every constructor. -/
-theorem lowerInstr_length {prog : List Asm} {i : Asm} {is : List Instr}
-    (h : lowerInstr prog i = some is) :
+theorem lowerInstr_length {imm : String → U256} {prog : List Asm} {i : Asm}
+    {is : List Instr} (h : lowerInstr imm prog i = some is) :
     (assembleBytes is).length = i.size := by
   cases i <;> simp only [lowerInstr] at h
   case push v =>
     obtain rfl : [Instr.pushMin (conv v)] = is := by simpa using h
     simp [Asm.size]
+  case pushImmutable key =>
+    obtain rfl : [Instr.push ⟨32, by norm_num⟩ (conv (imm key))] = is := by simpa using h
+    simp [Asm.size, assembleBytes, Instr.bytes]
   case op yop =>
     obtain ⟨o, -, rfl⟩ := Option.map_eq_some_iff.mp h
     simp [Asm.size]
@@ -696,11 +716,11 @@ theorem lowerInstr_length {prog : List Asm} {i : Asm} {is : List Instr}
     obtain rfl : [Instr.op .JUMP] = is := by simpa using h
     simp [Asm.size]
 
-@[simp] theorem lowerFrag_nil (prog : List Asm) : lowerFrag prog [] = some [] := rfl
+@[simp] theorem lowerFrag_nil (prog : List Asm) : lowerFrag imm prog [] = some [] := rfl
 
 theorem lowerFrag_cons {prog : List Asm} {i : Asm} {p : List Asm} {is : List Instr}
-    (h : lowerFrag prog (i :: p) = some is) :
-    ∃ is1 is2, lowerInstr prog i = some is1 ∧ lowerFrag prog p = some is2
+    (h : lowerFrag imm prog (i :: p) = some is) :
+    ∃ is1 is2, lowerInstr imm prog i = some is1 ∧ lowerFrag imm prog p = some is2
       ∧ is = is1 ++ is2 := by
   rw [lowerFrag, Option.bind_eq_bind] at h
   obtain ⟨is1, h1, h'⟩ := Option.bind_eq_some_iff.mp h
@@ -709,16 +729,16 @@ theorem lowerFrag_cons {prog : List Asm} {i : Asm} {p : List Asm} {is : List Ins
 
 theorem lowerFrag_cons' {prog : List Asm} {i : Asm} {p : List Asm}
     {is1 is2 : List Instr}
-    (h1 : lowerInstr prog i = some is1) (h2 : lowerFrag prog p = some is2) :
-    lowerFrag prog (i :: p) = some (is1 ++ is2) := by
+    (h1 : lowerInstr imm prog i = some is1) (h2 : lowerFrag imm prog p = some is2) :
+    lowerFrag imm prog (i :: p) = some (is1 ++ is2) := by
   rw [lowerFrag, Option.bind_eq_bind, h1, Option.bind_some, h2]
   rfl
 
 /-- Splitting a successful fragment lowering at an append. -/
 theorem lowerFrag_append {prog : List Asm} :
     ∀ {p q : List Asm} {is : List Instr},
-      lowerFrag prog (p ++ q) = some is →
-      ∃ is1 is2, lowerFrag prog p = some is1 ∧ lowerFrag prog q = some is2
+      lowerFrag imm prog (p ++ q) = some is →
+      ∃ is1 is2, lowerFrag imm prog p = some is1 ∧ lowerFrag imm prog q = some is2
         ∧ is = is1 ++ is2 := by
   intro p
   induction p with
@@ -733,8 +753,8 @@ theorem lowerFrag_append {prog : List Asm} :
 /-- Joining fragment lowerings across an append. -/
 theorem lowerFrag_append' {prog : List Asm} :
     ∀ {p q : List Asm} {is1 is2 : List Instr},
-      lowerFrag prog p = some is1 → lowerFrag prog q = some is2 →
-      lowerFrag prog (p ++ q) = some (is1 ++ is2) := by
+      lowerFrag imm prog p = some is1 → lowerFrag imm prog q = some is2 →
+      lowerFrag imm prog (p ++ q) = some (is1 ++ is2) := by
   intro p
   induction p with
   | nil =>
@@ -751,7 +771,7 @@ theorem lowerFrag_append' {prog : List Asm} :
 /-- Lowered fragment byte length is its `codeSize`. -/
 theorem lowerFrag_length {prog : List Asm} :
     ∀ {p : List Asm} {is : List Instr},
-      lowerFrag prog p = some is →
+      lowerFrag imm prog p = some is →
       (assembleBytes is).length = codeSize p := by
   intro p
   induction p with

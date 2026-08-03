@@ -34,16 +34,16 @@ open YulSemantics.EVM (Op)
 /-- Emit one SSA program through the shared final gates: `ToAsm` (in the
 given scheduling mode), `Asm` well-formedness, the peephole, the overflow
 certificate, label resolution. -/
-def finishProgOrd (ord : Bool) (P : Prog) : Option (List YulEvmCompiler.Instr) := do
+def finishProgOrd (imm : String → YulSemantics.EVM.U256) (ord : Bool) (P : Prog) : Option (List YulEvmCompiler.Instr) := do
   let asm ← ToAsm.emitProgOrd ord P
   if !wfCheck asm then none else
   let opt := optimizeAsm asm
-  if stackOK2 opt then lowerProg opt else none
+  if stackOK2 opt then lowerProg imm opt else none
 
 /-- `finishProgOrd` in the default mode (kept for the correctness
 statements' vocabulary). -/
-def finishProg (P : Prog) : Option (List YulEvmCompiler.Instr) :=
-  finishProgOrd false P
+def finishProg (imm : String → YulSemantics.EVM.U256) (P : Prog) : Option (List YulEvmCompiler.Instr) :=
+  finishProgOrd imm false P
 
 /-! ## Static cost — candidate selection
 
@@ -140,15 +140,16 @@ dominance gate, then four candidates — {optimized, raw} × {next-use
 scheduling, plain} — with the statically cheapest artifact winning. Each
 candidate passes the full gate chain independently, so the choice is only
 ever among independently checked artifacts. -/
-def compileViaSsa (prog : YulSemantics.Block Op) :
+def compileViaSsa (prog : YulSemantics.Block Op)
+    (imm : String → YulSemantics.EVM.U256 := YulEvmCompiler.unpatchedImmutables) :
     Option (List YulEvmCompiler.Instr) := do
   let P ← ofBlock prog
   -- dominance gate: the SSA passes are sound only on programs whose uses
   -- are dominated by their definitions (see `ToAsm.Prog.domCheck`)
   if !(ToAsm.Prog.domCheck P) then none else
   let Popt := optimizeProg P
-  let cands := [finishProgOrd true Popt, finishProgOrd false Popt,
-                finishProgOrd true P, finishProgOrd false P]
+  let cands := [finishProgOrd imm true Popt, finishProgOrd imm false Popt,
+                finishProgOrd imm true P, finishProgOrd imm false P]
   cands.foldl (pickMin instrCost) none
 
 end YulEvmCompiler.SsaCfg

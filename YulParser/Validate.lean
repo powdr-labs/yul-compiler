@@ -45,8 +45,10 @@ private def lowLevelReserved (name : String) : Bool :=
   name == "pc" || name == "jump" || name == "jumpi" || name == "jumpdest" ||
     numbered "dup" || numbered "swap" || numbered "push"
 
+-- `loadimmutable` is no longer here: pinned yul-semantics models it as a real
+-- `Op`, so `parse` recognizes it and it is validated like `dataoffset`/`datasize`.
 private def specialBuiltin (name : String) : Bool :=
-  name == "memoryguard" || name == "linkersymbol" || name == "loadimmutable" ||
+  name == "memoryguard" || name == "linkersymbol" ||
     name == "setimmutable" || name.startsWith "verbatim_"
 
 private def builtinName (ctx : ValidateCtx) (name : String) : Bool :=
@@ -67,8 +69,8 @@ private def opInputs : Op → Nat
   | .call | .callcode => 7
   | .delegatecall | .staticcall => 6
   | .clz | .iszero | .not | .pop | .mload | .sload | .tload | .calldataload
-  | .datasize | .dataoffset | .balance | .extcodesize | .extcodehash | .blockhash
-  | .blobhash | .selfdestruct => 1
+  | .datasize | .dataoffset | .loadimmutable | .balance | .extcodesize
+  | .extcodehash | .blockhash | .blobhash | .selfdestruct => 1
   | .log0 => 2
   | .log1 => 3
   | .log2 => 4
@@ -146,6 +148,14 @@ private def exprOutputs (ctx : ValidateCtx) : Expr Op → Option Nat
             let name ← directString arg
             if objectNameAllowed ctx name then some (opOutputs op) else none
         | _ => none
+      else if op == .loadimmutable then
+        -- The immutable's name is a direct string literal, as for the layout
+        -- built-ins; unlike them it names no object, so no accessibility rule
+        -- applies. `validateObjectSource` separately requires a matching
+        -- `setimmutable`.
+        match args with
+        | [arg] => if (directString arg).isSome then some (opOutputs op) else none
+        | _ => none
       else
         validArgs ctx args
         some (opOutputs op)
@@ -153,7 +163,7 @@ private def exprOutputs (ctx : ValidateCtx) : Expr Op → Option Nat
       if !validIdentifier name || lowLevelReserved name then none
       if name == "memoryguard" then
         if args.length != 1 then none else validArgs ctx args; some 1
-      else if name == "linkersymbol" || name == "loadimmutable" then
+      else if name == "linkersymbol" then
         match args with
         | [arg] => if (directString arg).isSome then some 1 else none
         | _ => none
@@ -386,39 +396,27 @@ private theorem contains_eq_false_append {s p q : String} (h : s.contains p = fa
       contains_eq_false_append hg, contains_eq_false_append hg, contains_eq_false_append hg]
     simp
 
-def validateBlockSource (source : String) (body : List (Stmt Op)) : Bool :=
-  sourceLexWF source &&
-    (validateBlock { inactiveBuiltins := inactiveBuiltins source } body).isSome
-
-private def withPrefix (prefixName : String) (name : String) : String :=
-  prefixName ++ "." ++ name
-
-private def accessibleObjectNames : Object Op → List String
-  | .mk name _ subs datas =>
-      let dataNames := (datas.map Prod.fst).filter (fun n => !n.startsWith ".")
-      let subNames := subs.flatMap fun sub =>
-        let child := Object.name sub
-        child :: ((accessibleObjectNames sub).filter (fun n => n != child && !n.startsWith ".")
-          |>.map (withPrefix child))
-      name :: dataNames ++ subNames
-
-private def collectImmutableCallsExpr : Expr Op → List String × List String
+/-- Collect the immutable names read (`loadimmutable`, now an ordinary `Op`)
+and written (`setimmutable`, still a solc extension carried as a `.call`). -/
+def collectImmutableCallsExpr : Expr Op → List String × List String
   | .lit _ | .var _ | .builtin _ [] | .call _ [] => ([], [])
-  | .builtin _ args => args.foldl (fun acc e =>
-      let found := collectImmutableCallsExpr e
-      (acc.1 ++ found.1, acc.2 ++ found.2)) ([], [])
+  | .builtin op args =>
+      let nested := args.foldl (fun acc e =>
+        let found := collectImmutableCallsExpr e
+        (acc.1 ++ found.1, acc.2 ++ found.2)) ([], [])
+      if op == .loadimmutable then
+        match args with | [.lit (.string key)] => (key :: nested.1, nested.2) | _ => nested
+      else nested
   | .call name args =>
       let nested := args.foldl (fun acc e =>
         let found := collectImmutableCallsExpr e
         (acc.1 ++ found.1, acc.2 ++ found.2)) ([], [])
-      if name == "loadimmutable" then
-        match args with | [.lit (.string key)] => (key :: nested.1, nested.2) | _ => nested
-      else if name == "setimmutable" then
+      if name == "setimmutable" then
         match args with | [_, .lit (.string key), _] => (nested.1, key :: nested.2) | _ => nested
       else nested
 
 mutual
-private partial def collectImmutableCallsStmt : Stmt Op → List String × List String
+partial def collectImmutableCallsStmt : Stmt Op → List String × List String
   | .block body | .funDef _ _ _ body => collectImmutableCallsStmts body
   | .letDecl _ value => value.map collectImmutableCallsExpr |>.getD ([], [])
   | .assign _ value | .exprStmt value => collectImmutableCallsExpr value
@@ -435,14 +433,31 @@ private partial def collectImmutableCallsStmt : Stmt Op → List String × List 
         (combineImmutable (collectImmutableCallsStmts post) (collectImmutableCallsStmts body)))
   | .«break» | .«continue» | .leave => ([], [])
 
-private partial def collectImmutableCallsStmts : List (Stmt Op) → List String × List String
+partial def collectImmutableCallsStmts : List (Stmt Op) → List String × List String
   | [] => ([], [])
   | statement :: statements => combineImmutable (collectImmutableCallsStmt statement)
       (collectImmutableCallsStmts statements)
 
-private partial def combineImmutable (a b : List String × List String) : List String × List String :=
+partial def combineImmutable (a b : List String × List String) : List String × List String :=
   (a.1 ++ b.1, a.2 ++ b.2)
 end
+
+
+def validateBlockSource (source : String) (body : List (Stmt Op)) : Bool :=
+  sourceLexWF source &&
+    (validateBlock { inactiveBuiltins := inactiveBuiltins source } body).isSome
+
+private def withPrefix (prefixName : String) (name : String) : String :=
+  prefixName ++ "." ++ name
+
+private def accessibleObjectNames : Object Op → List String
+  | .mk name _ subs datas =>
+      let dataNames := (datas.map Prod.fst).filter (fun n => !n.startsWith ".")
+      let subNames := subs.flatMap fun sub =>
+        let child := Object.name sub
+        child :: ((accessibleObjectNames sub).filter (fun n => n != child && !n.startsWith ".")
+          |>.map (withPrefix child))
+      name :: dataNames ++ subNames
 
 mutual
 private partial def collectImmutableCallsObject : Object Op → List String × List String
