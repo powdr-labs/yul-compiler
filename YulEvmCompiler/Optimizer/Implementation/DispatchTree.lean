@@ -579,7 +579,7 @@ theorem buildTree_equiv (fuel : Nat) (e : Expr Op)
 /-! ### Structural lifting -/
 
 /-- `hoist` distributes over a cons. -/
-theorem hoist_cons (a : Stmt Op) (l : Block Op) :
+private theorem dtHoist_cons (a : Stmt Op) (l : Block Op) :
     hoist D (a :: l) = hoist D [a] ++ hoist D l := by
   cases a <;> simp [hoist]
 
@@ -604,7 +604,7 @@ theorem dtStmts_hoist (ss : List (Stmt Op)) :
   | nil => rfl
   | cons s rest ih =>
       show hoist D (DispatchTree.dtStmt s :: DispatchTree.dtStmts rest) = hoist D (s :: rest)
-      rw [hoist_cons, dtStmt_hoistEntry, ih, ← hoist_cons]
+      rw [dtHoist_cons, dtStmt_hoistEntry, ih, ← dtHoist_cons]
 
 mutual
   /-- Each statement is equivalent to its rewrite. -/
