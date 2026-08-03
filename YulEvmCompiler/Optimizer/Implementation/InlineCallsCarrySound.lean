@@ -32,17 +32,51 @@ two:
    `cyBlock`-transformed function bodies. This hop is the callee-body's
    share of the whole-pass simulation and must be discharged the same way
    `InlineCallsSound` discharges an ordinary call: through the Δ-indexed
-   relation carrying `DeltaCompat Δ cenv` (a *conditional* body equivalence),
+   relation carrying `CarryCompat Δ cenv` (a *conditional* body equivalence),
    **not** `FunCongr.Step.funs_congr` — its `FunsRel` demands *unconditional*
    `EquivBlock` between a source body and its transform, which is **false**
    (at a `funs` where an inlined callee is undefined the source is stuck while
    `inlineCore` steps). For an *ordinary* call `InlineCallsSound` gets this from
    the `Step` induction hypothesis `ihbody`; at an inline **site** no such
-   hypothesis is in scope, so hop 2 needs the simulation applied to the callee
-   body via **structural recursion on program size** (`d.ss` is a strict
-   subterm of the whole program). That size-recursive assembly — mirroring
-   `IcRel`/`IcFunsRel`/`ic_fwd`/`ic_bwd` with the site cases using hop 1 plus
-   the size IH — is the remaining work.
+   hypothesis is in scope.
+
+## Status and the remaining assembly (validated architecture)
+
+Everything up to and including the function-environment relation is proved
+below (sorry-free): the classification inversions, `CarryWF`/`CarryCompat`
+with the carried-name lookup-equality invariant and its `carrySurvives`
+preservation, `CyRel` with the transform-inhabits derivation (`cyStmts_rel`),
+reflexivity, and `CyFDeclRel`/`CyScopeRel`/`CyFunsRel` with `lookupFun`
+transport, `CyRel.hoist_scopeRel`, `cyScopeRel_of_block`, and `CyRel.selectRel`.
+
+The remaining engines are `cy_fwd`/`cy_bwd` (mirroring `ic_fwd`/`ic_bwd`) plus a
+callee-body transfer `carry_body_fwd`/`carry_body_bwd`. The recursion for hop 2
+is **structural on the `Step` derivation, not on program size**: the site's
+transplanted body is `d.ss` verbatim (untransformed — `cyStmt` inserts it from
+`Δ`), so the target runs the *same* code under a `CyFunsRel`-related `funs`.
+`cy_fwd`'s site case hands the callee-body sub-derivation (a genuine subterm of
+`h`, reached through `seqCons → letVal → callOk`) to `carry_body_fwd`, which
+fuses hop 1 (agreement `cenv → funs₁`, mirroring `carry_transfer`) with hop 2
+(`CyFunsRel funs₁ → funs₂`); at each *internal* call it recurses into `cy_fwd`
+on the callee body (again a subterm). Both recurse only on derivation subterms,
+so the pair is well-founded by structural recursion — **verified feasible** by
+spike: Lean's equation compiler accepts recursion on `Step` subterms reached
+through nested inversions, for a single recursive function and for a mutual
+pair. It must be written in *term-level equation form* (`theorem cy_fwd :
+(h : Step …) → … | .lit => … | …`), because the `induction`/`cases` tactic form
+does **not** host external mutual subterm calls under well-founded recursion (it
+times out at `whnf`). A Nat recursion on program size does **not** work here:
+at a site the fuel would drop to `sizeOf d.ss`, but the reflexive body then
+calls functions whose transformed bodies contain sites over *other* program
+function bodies of size `> sizeOf d.ss` — sizes jump across calls, not only into
+sub-blocks, so no "Δ-entries `< N`" invariant survives a call.
+
+The site assembly reuses `InlineCallsSound`'s call-free-argument machinery
+verbatim (`argLets_fwd`/`assigns_fwd`/`argLets_bwd`/`assigns_bwd`, applicable
+because `siteOK` guarantees call-free args); only the body leg swaps
+`scoped_transfer` for the `carry_body_*` transfer. `body_normalize_halt` is
+reusable as-is; the normal path needs a `carry_transfer`-based analog of
+`body_normalize_ok` (a carry body has no `leave`, so it cannot yield `leave`).
 -/
 
 namespace YulEvmCompiler.Optimizer
