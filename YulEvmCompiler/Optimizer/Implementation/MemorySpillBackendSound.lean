@@ -54,7 +54,7 @@ theorem compile_spilled_correct
     (hfacts : SpillFacts raw result guards)
     (hguarded : GuardedExternals model.calls model.creates
       result.base result.reserved)
-    (hcomp : compile zeroImmutables (resolveForLayoutStmts L result.block) =
+    (hcomp : compile (resolveForLayoutStmts L result.block) =
       some instructions)
     (himm : ∀ key, (0 : YulSemantics.EVM.U256) =
       L.initState.env.immutable (YulSemantics.EVM.litValue (.string key)))

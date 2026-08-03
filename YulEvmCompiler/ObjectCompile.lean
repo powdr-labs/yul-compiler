@@ -196,12 +196,6 @@ partial def expandSetImmutablesStmts (offsets : List (String × Nat)) :
 
 private def placeholderResolver : RefResolver := fun _ => some (0, 0)
 
-/-- The assignment the object layer compiles against. Placeholders are emitted
-as zeros and the deploying constructor patches the real values in; their byte
-positions are fixed (`Asm.size` of `pushImmutable` is a constant), so the layout
-does not depend on this choice. -/
-def zeroImmutables : String → U256 := fun _ => 0
-
 /-- A partial planning resolver agrees with the total maps exposed by a
 compiled layout whenever the partial resolver accepts a name. -/
 private def ResolverAgrees (resolve : RefResolver) (L : Layout) : Prop :=
@@ -546,7 +540,7 @@ private def planAttempt (name : String) (code : List (YulSemantics.Stmt Op))
     }
     let resolvedCode ← resolveObjectStmts (planResolver plan) code
     let resolvedAsm ← compileAsm resolvedCode
-    let resolvedInstructions ← compile zeroImmutables resolvedCode
+    let resolvedInstructions ← compile resolvedCode
     let executable := assembleBytes resolvedInstructions
     let c' := executable.length
     if c' == c then
@@ -585,7 +579,7 @@ mutual
     | .mk name code subObjects dataSegs => do
         let subPlans ← planObjects subObjects
         let placeholderCode ← resolveObjectStmts placeholderResolver code
-        let instructions ← compile zeroImmutables placeholderCode
+        let instructions ← compile placeholderCode
         let codeSize := (assembleBytes instructions).length
         -- Iterate the layout fixpoint starting from the placeholder-compile
         -- length. With minimal-width pushes, resolving the (0,0) placeholders
@@ -736,7 +730,7 @@ private theorem planAttempt_spec
     (h : planAttempt name code subPlans dataSegs c = some (.inl plan)) :
     ∃ resolved instructions,
       resolveObjectStmts (planResolver plan) code = some resolved ∧
-      compile zeroImmutables resolved = some instructions ∧
+      compile resolved = some instructions ∧
       (assembleBytes instructions).length = c ∧
       plan.name = name ∧
       plan.codeBlock = code ∧
@@ -806,7 +800,7 @@ private theorem planObject_compileWitness {o : Object Op} {plan : ObjectPlan}
     (h : planObject o = some plan) :
     ∃ resolved instructions payload,
       resolveObjectStmts (planResolver plan) o.codeBlock = some resolved ∧
-      compile zeroImmutables resolved = some instructions ∧
+      compile resolved = some instructions ∧
       plan.bytecode = assembleBytes instructions ++ 0 :: payload := by
   cases o with
   | mk name code subObjects dataSegs =>
@@ -907,7 +901,7 @@ private theorem compileResolvedObject_compileWitness {o : Object Op} {L : Layout
     (h : compileResolvedObject o = some L) :
     ∃ resolved instructions payload,
       resolved = resolveForLayoutStmts L o.codeBlock ∧
-      compile zeroImmutables resolved = some instructions ∧
+      compile resolved = some instructions ∧
       L.code = assembleBytes instructions ++ 0 :: payload := by
   simp only [compileResolvedObject, Option.bind_eq_bind] at h
   obtain ⟨plan, hplan, h⟩ := Option.bind_eq_some_iff.mp h

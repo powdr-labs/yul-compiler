@@ -170,7 +170,7 @@ dominance gate passed, and the accepted bytecode is one of the four
 independently gated candidates ({optimized, raw} × {scheduling modes}). -/
 theorem compileViaSsa_inv {prog : YulSemantics.Block Op}
     {is : List YulEvmCompiler.Instr}
-    (h : compileViaSsa imm prog = some is) :
+    (h : compileViaSsa prog imm = some is) :
     ∃ (P Q : Prog) (ord : Bool),
       ofBlock prog = some P
       ∧ ToAsm.Prog.domCheck P = true
@@ -269,7 +269,7 @@ on either the optimized program (through the pass-soundness lemma) or the
 original construction (which needs no pass soundness at all). -/
 theorem compileViaSsa_correct (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List YulEvmCompiler.Instr}
-    (hcomp : compileViaSsa imm prog = some is)
+    (hcomp : compileViaSsa prog imm = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
     (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     (hrun : YulSemantics.Run yulD prog yst0 V' yst' o) :
@@ -299,7 +299,7 @@ theorem compileViaSsa_correct (hexternal : ExternalsRealized model)
 /-- The SSA backend, packaged under the generalized backend contract: the
 second `Optimizer.EvmBackend` inhabitant, next to `EvmBackend.classic`. -/
 def evmBackend : Optimizer.EvmBackend where
-  compile := compileViaSsa
+  compile := fun prog imm => compileViaSsa prog imm
   correct := by
     intro model hext imm prog is hcomp yst0 V' yst' o himm hrun
     exact compileViaSsa_correct hext hcomp himm hrun

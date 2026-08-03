@@ -140,7 +140,8 @@ dominance gate, then four candidates — {optimized, raw} × {next-use
 scheduling, plain} — with the statically cheapest artifact winning. Each
 candidate passes the full gate chain independently, so the choice is only
 ever among independently checked artifacts. -/
-def compileViaSsa (imm : String → YulSemantics.EVM.U256) (prog : YulSemantics.Block Op) :
+def compileViaSsa (prog : YulSemantics.Block Op)
+    (imm : String → YulSemantics.EVM.U256 := YulEvmCompiler.unpatchedImmutables) :
     Option (List YulEvmCompiler.Instr) := do
   let P ← ofBlock prog
   -- dominance gate: the SSA passes are sound only on programs whose uses

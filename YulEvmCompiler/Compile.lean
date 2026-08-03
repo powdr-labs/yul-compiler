@@ -339,6 +339,16 @@ def compileProgram (prog : Block Op) : Option (List Asm) := do
   let (asm, _, _) ← compileStmts [scope] [] none none n0 prog
   if wfCheck asm then some asm else none
 
+/-- The assignment used when emitting *unpatched* code: every immutable's
+placeholder is written as zero, for the deploying constructor's `setimmutable`
+to overwrite with the real value.
+
+It is not "no immutables" — the placeholders are there, and `immutableOffsets`
+records where. The choice of value is immaterial to the layout, because
+`Asm.size` of `pushImmutable` is a constant, which is exactly what lets the
+constructor compute the offsets it patches. -/
+def unpatchedImmutables : String → U256 := fun _ => 0
+
 /-- The full pipeline: Yul → labeled assembly → Asm-level peephole optimization → byte-level IR.
 `optimizeAsm` preserves the label structure (`codeRel_wf`), and `YulEvmCompiler.Correctness` threads
 its forward simulation (`AsmPeepholeSound`) between the phase-A and phase-B theorems. The `stackOK2`
@@ -347,7 +357,8 @@ EVM operand stack — recursive calls and stack-growing loops — so every accep
 overflow-free (`StackScalable.run_stack_bound2`). The bound is taken on `optimizeAsm asm`, the code
 that actually runs. The gate is a *linear* frame-relative analysis + verified checker (`analyze`
 then `checkCert`). -/
-def compile (imm : String → U256) (prog : Block Op) : Option (List Instr) := do
+def compile (prog : Block Op)
+    (imm : String → U256 := unpatchedImmutables) : Option (List Instr) := do
   let asm ← compileProgram prog
   let opt := optimizeAsm asm
   if stackOK2 opt then lowerProg imm opt else none

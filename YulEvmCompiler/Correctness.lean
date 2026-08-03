@@ -88,7 +88,7 @@ callee/init code, nested calls/creations, and reentrant executions are
 included. -/
 theorem compile_correct (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List Instr}
-    (hcomp : compile imm prog = some is)
+    (hcomp : compile prog imm = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
     (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     (hrun : YulSemantics.Run yulD prog yst0 V' yst' o) :
@@ -184,7 +184,7 @@ seam, while a source halt preserves its exact halt result before reaching the
 payload. -/
 theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List Instr} {payload : List UInt8}
-    (hcomp : compile imm prog = some is)
+    (hcomp : compile prog imm = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
     (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     (hrun : YulSemantics.Run yulD prog yst0 V' yst' o) :
@@ -269,7 +269,7 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
 that falls through; `resultOf` of the recorded halt otherwise). -/
 theorem compile_correct_eval (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List Instr}
-    (hcomp : compile imm prog = some is)
+    (hcomp : compile prog imm = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
     (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     (hrun : YulSemantics.Run yulD prog yst0 V' yst' o) :

@@ -723,7 +723,7 @@ private def run (dir baselineFile : FilePath)
 
   if update then
     unless lenient || unexpectedFailures.isEmpty do
-      IO.eprintln "Contracts that failed to compile zeroImmutables (fix before pinning):"
+      IO.eprintln "Contracts that failed to compile (fix before pinning):"
       for (name, message) in unexpectedFailures do IO.eprintln s!"  {name}: {message}"
       return 1
     unless lenient || measurementFailures.isEmpty do

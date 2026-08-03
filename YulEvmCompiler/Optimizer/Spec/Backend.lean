@@ -40,7 +40,7 @@ the end-to-end statement that optimizing before compiling is correct. -/
 theorem LocalPass.optimize_then_compile_correct
     (P : LocalPass yulD) (hexternal : ExternalsRealized model)
     {prog : Block Op} {is : List Instr}
-    (hcomp : compile imm (P.run prog) = some is)
+    (hcomp : compile (P.run prog) imm = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
     (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     (hrun : Run yulD prog yst0 V' yst' o) :

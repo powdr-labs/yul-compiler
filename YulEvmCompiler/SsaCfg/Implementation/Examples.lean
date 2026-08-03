@@ -33,7 +33,7 @@ def agreeSsa (prog : YulSemantics.Block YulSemantics.EVM.Op) (keys : List Nat) :
     { YulSemantics.EVM.EvmState.init with
       env := { YulSemantics.EVM.EvmState.init.env with
         keccakOf := YulEvmCompiler.targetKeccakOracle } }
-  match compileViaSsa zeroImmutables prog, Interp.run YulSemantics.EVM.exec 100000 prog yst0 with
+  match compileViaSsa prog, Interp.run YulSemantics.EVM.exec 100000 prog yst0 with
   | some is, .ok (_, yst, _) =>
       let s0 := evmInit (assemble is)
       let s := runEvm 100000 s0
@@ -63,12 +63,12 @@ open YulEvmCompiler.Examples
 #guard agreeSsa breakNested [0]
 #guard agreeSsa fibStorage [0]
 -- the classic layout rejects this one; the SSA scheduler compiles it
-#guard (YulEvmCompiler.compile YulEvmCompiler.zeroImmutables stackPressure).isNone
+#guard (YulEvmCompiler.compile stackPressure).isNone
 #guard agreeSsa stackPressure [0]
 -- recursion: the classic backend rejects (the stack certificate excludes
 -- unbounded frames); the SSA backend's bounded inlining + constant folding
 -- fully unrolls fact(5) into a constant, so it compiles — and must agree
-#guard (YulEvmCompiler.compile YulEvmCompiler.zeroImmutables factorial).isNone
+#guard (YulEvmCompiler.compile factorial).isNone
 #guard agreeSsa factorial [0]
 
 end YulEvmCompiler.SsaCfg.Examples

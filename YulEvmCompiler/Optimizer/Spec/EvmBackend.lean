@@ -38,12 +38,12 @@ call/create responses are realized, every accepted program, and every source
 run, the emitted bytecode simulates the run from every matching initial
 state with enough gas. -/
 def EvmBackend.Correct
-    (compileFn : (String → YulSemantics.EVM.U256) →
-      YulSemantics.Block Op → Option (List Instr)) : Prop :=
+    (compileFn : YulSemantics.Block Op →
+      (String → YulSemantics.EVM.U256) → Option (List Instr)) : Prop :=
   ∀ (model : ExternalModel), ExternalsRealized model →
     ∀ {imm : String → YulSemantics.EVM.U256}
       {prog : YulSemantics.Block Op} {is : List Instr},
-      compileFn imm prog = some is →
+      compileFn prog imm = some is →
       ∀ {yst0 : EvmState}
         {V' : VEnv (evmWithExternal model.calls model.creates)}
         {yst' : EvmState} {o : Outcome},
@@ -62,15 +62,15 @@ compiler — the same by-construction discipline as `Optimizer.LocalPass`. -/
 structure EvmBackend where
   /-- The compilation function (`Option`-valued: rejection, never
   miscompilation). -/
-  compile : (String → YulSemantics.EVM.U256) →
-    YulSemantics.Block Op → Option (List Instr)
+  compile : YulSemantics.Block Op →
+    (String → YulSemantics.EVM.U256) → Option (List Instr)
   /-- The proof obligation: the `compile_correct` statement shape. -/
   correct : EvmBackend.Correct compile
 
 /-- The classic labeled-assembly backend as an `EvmBackend`: the `correct`
 field is exactly `compile_correct`. -/
 def EvmBackend.classic : EvmBackend where
-  compile := YulEvmCompiler.compile
+  compile := fun prog imm => YulEvmCompiler.compile prog imm
   correct := by
     intro model hext imm prog is hcomp yst0 V' yst' o himm hrun
     exact compile_correct hext hcomp himm hrun
@@ -88,7 +88,7 @@ apply the backend's own correctness. -/
 theorem LocalPass.optimize_then_backend_correct
     (B : EvmBackend) (P : LocalPass yulD) (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List Instr}
-    (hcomp : B.compile imm (P.run prog) = some is)
+    (hcomp : B.compile (P.run prog) imm = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
     (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     (hrun : Run yulD prog yst0 V' yst' o) :

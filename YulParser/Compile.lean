@@ -381,13 +381,13 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
       -- further fallback so acceptance can only widen.
       let tryLayouts (blk : List (Stmt YulSemantics.EVM.Op)) :
           Option (List YulEvmCompiler.Instr) :=
-        YulEvmCompiler.compile YulEvmCompiler.zeroImmutables blk
-          <|> YulEvmCompiler.compile YulEvmCompiler.zeroImmutables
+        YulEvmCompiler.compile blk
+          <|> YulEvmCompiler.compile
             (YulEvmCompiler.Optimizer.cleanupAfterLayoutBlock
               (calls := YulSemantics.EVM.ExternalCalls.none)
               (creates := YulSemantics.EVM.ExternalCreates.none)
               (YulEvmCompiler.Optimizer.stackLayoutBlock blk))
-          <|> YulEvmCompiler.compile YulEvmCompiler.zeroImmutables
+          <|> YulEvmCompiler.compile
             (YulEvmCompiler.Optimizer.stackLayoutBlock blk)
       -- The SSA-CFG backend compiles the same fully optimized Yul as the
       -- first classic candidate; both artifacts are kept and the cheaper
@@ -397,7 +397,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
       let pipelined := (YulEvmCompiler.Optimizer.optimizerPipeline
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none)).run b
-      let ssa := YulEvmCompiler.SsaCfg.compileViaSsa YulEvmCompiler.zeroImmutables pipelined
+      let ssa := YulEvmCompiler.SsaCfg.compileViaSsa pipelined
       let classic := tryLayouts pipelined
         <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
@@ -405,7 +405,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
         <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineLight
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
-        <|> YulEvmCompiler.compile YulEvmCompiler.zeroImmutables b
+        <|> YulEvmCompiler.compile b
         <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillBlock? raw with
           | some spilled =>
               -- The spilled program is ordinary Yul; give the optimizer a
@@ -418,8 +418,8 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
                       YulSemantics.EVM.ExternalCalls.none
                       YulSemantics.EVM.ExternalCreates.none)
                     spilled.block)
-              YulEvmCompiler.compile YulEvmCompiler.zeroImmutables spilledOpt
-                <|> YulEvmCompiler.compile YulEvmCompiler.zeroImmutables spilled.block
+              YulEvmCompiler.compile spilledOpt
+                <|> YulEvmCompiler.compile spilled.block
           | none => none)
       let asm :=
         match ssa, classic with

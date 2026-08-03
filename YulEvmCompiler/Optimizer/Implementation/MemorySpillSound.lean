@@ -140,7 +140,7 @@ theorem compile_spilled_correct
     (hfacts : SpillFacts raw result guards)
     (hguarded : GuardedExternals model.calls model.creates
       result.base result.reserved)
-    (hcomp : compile zeroImmutables (resolveForLayoutStmts L result.block) =
+    (hcomp : compile (resolveForLayoutStmts L result.block) =
       some instructions)
     (himm : ∀ key, (0 : YulSemantics.EVM.U256) =
       L.initState.env.immutable (YulSemantics.EVM.litValue (.string key)))
@@ -179,7 +179,7 @@ theorem compile_memorySpill_correct
     (hspill : spillBlock? raw = some result)
     (hguarded : GuardedExternals model.calls model.creates
       result.base result.reserved)
-    (hcomp : compile imm result.block = some instructions)
+    (hcomp : compile result.block imm = some instructions)
     {initial sourceFinal : EvmState}
     (himm : ∀ key, imm key =
       initial.env.immutable (YulSemantics.EVM.litValue (.string key)))

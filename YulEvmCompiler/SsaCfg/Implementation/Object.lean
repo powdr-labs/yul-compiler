@@ -19,6 +19,6 @@ open YulSemantics.EVM (Op)
 
 /-- Compile a full object tree with the SSA backend on every code block. -/
 def compileObjectViaSsa (o : Object Op) : Option YulSemantics.EVM.Layout :=
-  compileResolvedObjectWith (compileViaSsa zeroImmutables) o
+  compileResolvedObjectWith (compileViaSsa) o
 
 end YulEvmCompiler.SsaCfg
