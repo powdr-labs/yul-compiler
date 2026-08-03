@@ -1969,15 +1969,16 @@ the 24 gas from dropping the reachability pass.)
 
 ## Asm-level operand-order peepholes: late constant pushes and flipped comparisons (2026-08-03)
 
-- 🚧 **This branch.** Two `Asm → Asm` peephole rewrites, both mined by
-  disassembling our runtime bytecode next to solc's with per-`pc` execution
-  counts and censusing *executed* instruction windows rather than static ones.
+- 🟢 **Landed on this branch (PR #157), fully proved.** Two `Asm → Asm` peephole
+  rewrites, both mined by disassembling our runtime bytecode next to solc's with
+  per-`pc` execution counts and censusing *executed* instruction windows rather
+  than static ones.
 
-### What the profile says
+### What the profile said
 
-  After the constant-rematerialization branch the remaining uniswap-v4 gap is
-  +43,690 (950,753 vs 907,063) and aave is already −2,724,795. Per-opcode diff
-  on the two largest rows:
+  After the constant-rematerialization branch the uniswap-v4 gap was +43,690
+  (950,753 vs 907,063) and aave was already −2,724,795. Per-opcode diff on the
+  two largest uniswap rows:
 
   | | `TickMath.getTickAtSqrtPriceSweep` ours / solc | `getSqrtPriceAtTickSweep` ours / solc |
   |---|---|---|
@@ -1985,11 +1986,11 @@ the 24 gas from dropping the reachability pass.)
   | `PUSH*` execs | 16,027 / 17,961 | 6,112 / 6,579 |
   | `DUP*` execs | 8,267 / 8,556 | 2,506 / 2,504 |
 
-  We execute **2.5x solc's `SWAP`s** (+26,139 gas on that one row) while
-  pushing *fewer* constants than solc does. So the gap is not missing
-  arithmetic and not missing rematerialization: it is operand *ordering*.
+  We executed **2.5x solc's `SWAP`s** (+26,139 gas on that one row) while
+  pushing *fewer* constants than solc does. So the gap was not missing
+  arithmetic and not missing rematerialization: it was operand *ordering*.
 
-  Censusing executed 3-windows finds the shape difference exactly. Ours:
+  Censusing executed 3-windows found the shape difference exactly. Ours:
   `PUSH DUP SWAP` 3,143 executions. solc: `DUP PUSH SHR` 2,500 — the same
   computation with the constant pushed **after** the operand is duplicated
   instead of before it, so no swap is needed.
@@ -1997,25 +1998,40 @@ the 24 gas from dropping the reachability pass.)
 ### The two rewrites
 
   1. **Late constant push** — `push v ; dup n ; swap1 ⟶ dup (n-1) ; push v`
-     (and `push v ; dup1 ; swap1 ⟶ push v ; dup1`). Both windows leave the
-     stack identical: duplicating below a freshly pushed literal and then
-     exchanging is the same as duplicating first and pushing on top. Saves one
-     `SWAP1` (3 gas) and 1 byte per site. The emitter produces this window
-     whenever an `.op`'s topmost operand is a constant and a lower operand is
-     still live, which is the dominant shape in shift/mask code.
+     (and `push v ; dup1 ; swap1 ⟶ push v ; dup1`, where the `swap1` exchanges
+     two copies of the literal). Duplicating from below a freshly pushed literal
+     and then exchanging reaches exactly the stack you get by duplicating first
+     and pushing on top: one `SWAP1` (3 gas, 1 byte) cheaper. Both backends
+     emit this window whenever an operation's *topmost* operand is a literal and
+     a lower operand is still live — `shr(0x80, x)` keeping `x` compiles to
+     `push 0x80 ; dup2 ; swap1 ; shr` for us against solc's
+     `dup1 ; push 0x80 ; shr`.
 
   2. **Flipped comparison** — `swap1 ; lt ⟶ gt`, `swap1 ; gt ⟶ lt`,
-     `swap1 ; slt ⟶ sgt`, `swap1 ; sgt ⟶ slt`. The shuffler already tries both
-     operand orders for the *commutative* ops; the ordered comparisons have a
-     reversed twin instead, which is the same trick one opcode wider. Saves 3
-     gas and 1 byte. (`swap1 ; add|mul|and|or|xor|eq ⟶ op` is the commutative
-     leftover of the same rule and comes for free.)
+     `swap1 ; slt ⟶ sgt`, `swap1 ; sgt ⟶ slt`, plus
+     `swap1 ; add|mul|and|or|xor|eq ⟶ op`. The code generator already tries both
+     operand orders for the commutative built-ins; the ordered comparisons have
+     a reversed twin *opcode* instead, and a `SWAP1` in front of one is always
+     that twin. 3 gas and 1 byte per site.
 
   Both live in `YulEvmCompiler/AsmPeephole.lean`, so they apply to **both**
   backends — the classic scope-pinned one and the SSA-CFG one — and reuse the
   existing `Peephole.CodeRel` spec relation and its label-structure lemmas.
 
-### Executions the rules fire on (measured, before implementing)
+### Measured
+
+  | suite | before | after | Δ | solc | gap before → after |
+  |---|---:|---:|---:|---:|---|
+  | uniswap-v4 | 950,753 | **938,264** | −12,489 | 907,063 | +43,690 → **+31,201** (−28.6%) |
+  | aave-v4 | 15,511,431 | **15,107,139** | −404,292 | 18,236,226 | −2,724,795 → **−3,129,087** |
+
+  **0 regressions**; 22 of 44 uniswap rows and 10 of 10 aave rows improve.
+  Largest movers: `TickMath.getTickAtSqrtPriceSweep` −9,699 (its gap
+  14,506 → 4,807), `getSqrtPriceAtTickSweep` −903, `SwapMath.computeSwapStep`
+  −357, and every aave row. Re-profiling `TickMath` afterwards finds **zero**
+  remaining instances of either window.
+
+  Executions the rules fire on, measured before implementing:
 
   | profile | rule 1 | rule 2 |
   |---|---:|---:|
@@ -2024,6 +2040,58 @@ the 24 gas from dropping the reachability pass.)
   | `PositionStatusMap.flsFullRange` | 762 | 1,270 |
   | `SwapMath.computeSwapStep` | 2 | 7 |
 
-  At 3 gas each that is ≈9.4k on the single worst uniswap row (whose whole gap
-  is 14.5k), ≈90k + 30k on aave's hottest row, and ≈2.3k + 3.8k on
-  `flsFullRange` (a row we currently lose by 12,868).
+### Proved
+
+  `flipOp_inv` is the whole semantic content of rule 2: a built-in with a
+  reversed twin is binary and pure and the twin computes the same word from the
+  reversed operands — the comparisons because the dialect *defines* `gt` as
+  `b2w (b.ult a)` against `lt`'s `b2w (a.ult b)`, the rest by commutativity.
+  Rule 1 needs two in-flight `Match` states per `dup` shape: with a deep `dup`
+  the optimized side must **stutter** on window entry (that the slot its
+  shallower `dup` reaches exists is exactly what the source's own `dup` is about
+  to witness), and with `dup1` both sides push first. No new axioms, no sorries;
+  `Checks.lean` and `SpecClosure.lean` pass.
+
+### ❌ Negative results from the same instrumentation (do not rebuild these)
+
+  **The shuffler's swap runs are already minimal.** Every executed maximal
+  `SWAP` run was decomposed into the permutation it realizes and compared
+  against the minimum number of star transpositions — `m + c` for `m` non-fixed
+  points in `c` cycles, `m + c - 2` when the top is itself in a cycle. Across
+  `PoolSwap.swapExactInputNoTick` that leaves **48 gas** (eight executions of a
+  `swap1 ; swap1` pair) and across `TickMath.getTickAtSqrtPriceSweep`
+  **zero**. A rotation-minimizing peephole is not worth building.
+
+  **`push v ; swap1 ; swap2 ; …` is not the same bug as rule 1.** Burying a
+  freshly pushed literal looks like waste, but the literal doubles as a scratch
+  slot for the rotation and the sequence is at the minimum for the layout it
+  reaches. 30,203 executions on aave's hottest row, all of them already optimal.
+
+  **`rematDistance = 0` is still a loss, even now.** The pass's `= 8` threshold
+  exists because copying every same-block constant use "gave the emitter
+  something more to shuffle" — which is precisely the window rule 1 now
+  removes, so it was worth re-testing. It still loses: 0 gives aave
+  15,093,328 (−13,811) but uniswap 938,402 (+138) spread over 15 regressing
+  rows including **+315 on `getTickAtSqrtPriceSweep`, the largest-gap row**.
+  Kept at 8.
+
+### The next lever, with the evidence for it
+
+  What remains on uniswap is **layouts that need more permutation, not
+  permutation realized badly** — and it is concentrated in the `Pool*` rows
+  (16,807 of the remaining 31,201). On `PoolSwap.swapExactInputNoTick`, ours
+  against solc: `SWAP*` **1,830 / 324**, `DUP*` 528 / 538, `PUSH*` 901 / 807,
+  `POP` 69 / 52. Same number of duplications, **5.6x** the exchanges: our values
+  are in the wrong *order* at each use rather than present in excess, and
+  +4,518 of that row's +5,618 gap is exactly the extra `SWAP`s.
+
+  That is the entry-layout choice, not the shuffler. `layoutOf`'s canonical
+  fallback sorts non-parameter live-ins by `ValId` (arbitrary), and
+  `edgeTargetLayout` lets the *first* edge to reach a block donate its order —
+  for a loop header that is the preheader, never the hot back edge. The fix
+  solc uses is a backward pass computing each block's *ideal* entry layout from
+  its own operations, which the predecessors then have to establish. Worth
+  noting for whoever picks this up: the shuffler is **checked**, so changing a
+  layout choice cannot break `ToAsmSound` — a layout the shuffler cannot reach
+  is a rejection, not a miscompilation.
+

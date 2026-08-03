@@ -16,7 +16,7 @@ Eight rewrites, each mined from actually-emitted code (the classic
 `dup;pop` / `push;pop` / `swap n;swap n` peepholes never fire on this
 backend's output):
 
-0. **Late constant push** — `push v ; dup n ; swap1 ⟶ dup (n-1) ; push v`
+1. **Late constant push** — `push v ; dup n ; swap1 ⟶ dup (n-1) ; push v`
    (and `push v ; dup1 ; swap1 ⟶ push v ; dup1`, where the `SWAP1` exchanges
    two copies of `v`). Duplicating a value from below a freshly pushed
    literal and then exchanging leaves exactly the stack you get by
@@ -30,37 +30,37 @@ backend's output):
    3,143 executions in `TickMath.getTickAtSqrtPriceSweep` (whose whole gap
    to solc was 14,506 gas) and 30,168 in
    `PositionStatusMap.nextContinuousTenThousand`.
-1. **Flipped comparison** — `swap1 ; lt ⟶ gt` and the `gt`/`slt`/`sgt`
+2. **Flipped comparison** — `swap1 ; lt ⟶ gt` and the `gt`/`slt`/`sgt`
    mirrors, plus `swap1 ; add|mul|and|or|xor|eq ⟶ op` for the commutative
    ops. The code generator already tries both operand orders for the
    commutative built-ins; the ordered comparisons have a reversed twin
    opcode instead, and a `SWAP1` immediately in front of one is always that
    twin. 3 gas and 1 byte per site, 11,458 executions across the profiled
    fixtures.
-2. **Return-slot assignment** — `push v ; swap1 ; pop ⟶ pop ; push v`.
+3. **Return-slot assignment** — `push v ; swap1 ; pop ⟶ pop ; push v`.
    Identical net effect ("replace the top of the stack with the literal
    `v`"), one `SWAP1` (3 gas, 1 byte) cheaper. Emitted whenever a function
    body writes a constant into its top return slot.
-3. **Branch inversion** — `jumpi l ; jump m ; label l ⟶
+4. **Branch inversion** — `jumpi l ; jump m ; label l ⟶
    op iszero ; jumpi m ; label l`. The `if cond {break/continue/leave}`
    shape: enter the guarded body via fall-through instead of a jump. Drops
    one `labelWidth`-byte address push (`labelWidth + 2` bytes total), and
    saves 8 gas whenever the condition is false (the common path for
    guard-style `if`s) at the cost of 3 gas when it is true. The label stays
    (other references may exist); only the local entry becomes fall-through.
-4. **Double-`iszero` elimination** — `op iszero ; op iszero ; jumpi l ⟶
+5. **Double-`iszero` elimination** — `op iszero ; op iszero ; jumpi l ⟶
    jumpi l`. A branch only tests truthiness, which `iszero ∘ iszero`
    preserves; 2 bytes and 6 gas per condition evaluation. Only sound in the
    `jumpi` context (elsewhere the normalized 0/1 value is observable).
    Branch inversion produces these whenever the source condition already
    ended in `iszero`, so iteration matters (below).
-5. **Jump to next** — `jump l ; label l ⟶ label l` and `jumpi l ; label l
+6. **Jump to next** — `jump l ; label l ⟶ label l` and `jumpi l ; label l
    ⟶ pop ; label l`: both branches land at the fall-through anyway.
-6. **Dead label elimination** — drop `label l` when `l` is referenced
+7. **Dead label elimination** — drop `label l` when `l` is referenced
    nowhere in the program (about a quarter of emitted labels: loop-exit and
    return labels nothing jumps to). Saves the 1-byte `JUMPDEST` and 1 gas
    per pass-through.
-7. **Iteration** — `optimizeAsm` runs up to four rounds (`optimizeAsmN`,
+8. **Iteration** — `optimizeAsm` runs up to four rounds (`optimizeAsmN`,
    early-stopping at a fixpoint): removing a double `iszero` uncovers a
    branch-inversion window, and an inverted branch orphans its `jumpi`'s
    label for dead-label elimination.
@@ -88,8 +88,9 @@ open YulSemantics.EVM (U256 Op)
 
 /-! ### The concrete transform -/
 
-/-- Predecessor of a `dup` index, as a `Fin 16` (`DUP(n+1) ↦ DUP n`). -/
-def Fin.pred16 (n : Fin 16) : Fin 16 :=
+/-- One slot shallower: the `dup` index reaching the same value once the
+literal above it is gone (`DUP(n+1) ↦ DUP n`). -/
+def dupPred (n : Fin 16) : Fin 16 :=
   ⟨n.val - 1, Nat.lt_of_le_of_lt (Nat.sub_le _ _) n.isLt⟩
 
 /-- The late-constant-push replacement for `push v ; dup n ; swap1`.
@@ -100,7 +101,7 @@ reached by duplicating one slot shallower and pushing the literal after.
 For `n.val = 0` the `dup` copies the literal itself, so the `swap1` exchanges
 two equal words and is simply dead. -/
 def latePush (v : U256) (n : Fin 16) : List Asm :=
-  if 0 < n.val then [.dup (Fin.pred16 n), .push v] else [.push v, .dup n]
+  if 0 < n.val then [.dup (dupPred n), .push v] else [.push v, .dup n]
 
 /-- The opcode computing the same result on the reversed operand order, when
 one exists: the commutative built-ins are their own mirror and the ordered

@@ -161,7 +161,7 @@ inductive Match (R : List Label) : AConf → AConf → Prop
       {S : List AVal} {sc oc : List Asm} {y : EvmState} :
       CodeRel R sc oc →
       Match R ⟨.dup n :: .swap m :: sc, .word v :: S, y⟩
-              ⟨.dup (Fin.pred16 n) :: .push v :: oc, S, y⟩
+              ⟨.dup (dupPred n) :: .push v :: oc, S, y⟩
   /-- Late constant push, deep `dup`: both sides have duplicated; the source
   still owes its `swap1` and the optimized side its `push`. -/
   | lp2 {v : U256} {m : Fin 16} (hm : m.val = 0) {x : AVal} {S : List AVal}
@@ -350,7 +350,7 @@ theorem latePush_entry [model : ExternalModel] {R : List Label} {prog' : List As
     ∃ b', ASteps (model := model) prog' ⟨latePush v n ++ c', σ, y⟩ b'
       ∧ Match R ⟨.dup n :: .swap m :: c, .word v :: σ, y⟩ b' := by
   by_cases hn : 0 < n.val
-  · rw [show latePush v n = [Asm.dup (Fin.pred16 n), Asm.push v] from by
+  · rw [show latePush v n = [Asm.dup (dupPred n), Asm.push v] from by
       simp [YulEvmCompiler.latePush, hn]]
     exact ⟨_, .refl _, Match.lp1 hn hm hc⟩
   · have hn0 : n.val = 0 := by omega
@@ -516,8 +516,8 @@ theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
     | cons a τ' =>
       obtain ⟨rfl, rfl⟩ : AVal.word v = a ∧ S = τ' ++ x :: ρ := by
         simpa using hσeq
-      have hlen : τ'.length = (Fin.pred16 n).val := by
-        simp only [Fin.pred16, List.length_cons] at hτ ⊢; omega
+      have hlen : τ'.length = (dupPred n).val := by
+        simp only [dupPred, List.length_cons] at hτ ⊢; omega
       exact ⟨_, .single (.dup hlen), Match.lp2 hm hc⟩
   | @lp2 v m hm x S sc oc y hc =>
     obtain ⟨a, bb, τ, ρ, hσeq, hτ, rfl⟩ := astep_swap_inv hstep
