@@ -702,21 +702,14 @@ def inlineOnce (counts : Array Nat) (funcs : Array Func) (f : Func) :
             return some { f with blocks }
   return none
 
-/-- Per-function inlining budget: how many call sites one function may
-absorb per program round. With `funcSizeCap` it is what bounds recursive
-unrolling (a self-recursive callee always exposes a fresh site) and keeps
-`inlineOnce`'s quadratic rescan off pathological inputs. -/
-def inlineBudget : Nat := 64
-
-/-- Hard ceiling on how large one function may grow by inlining. -/
-def funcSizeCap : Nat := 4096
-
-/-- Inline eligible call sites to a budgeted fixed point. -/
+/-- Inline eligible call sites to a budgeted fixed point. The budget is what
+bounds recursive unrolling — a self-recursive callee always exposes a fresh
+site — and it is load-bearing: `Examples.agreeSsa factorial` depends on
+small bounded recursion unrolling *exactly* this far. -/
 def inlineFunc (counts : Array Nat) (funcs : Array Func) (f0 : Func) :
     Func := Id.run do
   let mut f := f0
-  for _ in [0:inlineBudget] do
-    if bodySize f > funcSizeCap then return f
+  for _ in [0:8] do
     match inlineOnce counts funcs f with
     | some f' => f := f'
     | none => return f
@@ -759,7 +752,7 @@ def pruneFuncs (P : Prog) : Prog := Id.run do
 call sites, then unreferenced functions are pruned. -/
 def inlineProg (P : Prog) : Prog := Id.run do
   let mut P := P
-  for _ in [0:6] do
+  for _ in [0:3] do
     let counts := siteCounts P
     let P' : Prog :=
       { main := inlineFunc counts P.funcs P.main

@@ -15,9 +15,9 @@ LPFeeLibrary.sol:removeOverrideFlagAndValidate(uint24)	274	246
 LiquidityMath.sol:addDelta(uint128,int128)	1017	831
 PoolInitialize.sol:initialize()	24465	23034
 PoolInitialize.sol:slot0()	4529	4430
-PoolLiquidity.sol:addLiquidityWide()	110342	107996
+PoolLiquidity.sol:addLiquidityWide()	110469	107996
 PoolLiquidity.sol:donate()	46993	46659
-PoolLiquidity.sol:removeLiquidity()	86951	84879
+PoolLiquidity.sol:removeLiquidity()	87078	84879
 PoolLiquidity.sol:slot0()	4543	4455
 PoolSwap.sol:addLiquidityWide()	112884	108108
 PoolSwap.sol:donate()	30537	29581

@@ -4,7 +4,7 @@
 # CI fails if this compiler's total rises above it while solc's is unchanged.
 # columns: fixture<TAB>ours<TAB>solc
 PositionStatusMap.sol:borrowCountIgnoresInvalidBits()	101823	99659
-PositionStatusMap.sol:borrowCountMaxReserveScan()	2110563	2252886
+PositionStatusMap.sol:borrowCountMaxReserveScan()	2110552	2252886
 PositionStatusMap.sol:collateralCountIgnoresInvalidBits()	101833	99643
 PositionStatusMap.sol:collateralCountMaxReserveScan()	2167826	2297830
 PositionStatusMap.sol:constants()	24768	16434
