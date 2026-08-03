@@ -920,6 +920,720 @@ theorem carry_body_fwd {cenv : FunEnv D} {V₁ : VEnv D} {st : EvmState}
       exact absurd hsc (by simp [carryBodyCode, carryCode])
   termination_by structural h
 
+/-- **Site call helper (normal outcome).** Match the callee-call derivation's
+`callOk`, recurse into `carry_body_fwd` on the *direct* body child `hbody`, and
+hand back the transferred+normalized callee body in the scope that
+`inlineCore_carry_fwd_normal` expects. Single-level descent: the only recursive
+call is `carry_body_fwd hbody` with `hbody` a direct child of the principal
+`he`. -/
+theorem cy_fwd_siteCallOk {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} {res : Res D}
+    (he : Step D funs₁ V st code res)
+    {f : Ident} {as : List (Expr Op)} {vals : List U256} {stv : EvmState}
+    (hcode : code = .expr (.call f as)) (hres : res = .eres (.vals vals stv))
+    {d : IDecl} {body₀ : List (Stmt Op)} {cenv₀ : FunEnv D}
+    (hlk₀ : lookupFun funs₁ f = some (⟨d.ps, d.rs, body₀⟩, cenv₀))
+    (hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave])
+    (hsc : carryStmts (d.ps ++ d.rs) d.ss = true)
+    (hlen_as : as.length = d.ps.length)
+    (hagbody : ∀ g ∈ stmtsCallNames d.ss, lookupFun funs₁ g = lookupFun cenv₀ g)
+    {funs₂ : FunEnv D} (hR : CyFunsRel (calls := calls) (creates := creates) funs₁ funs₂)
+    (xs : List Ident) (Z : VEnv D) :
+    ∃ argvals st1' Vend st2',
+      Step D funs₁ V st (.args as) (.eres (.vals argvals st1')) ∧
+      argvals.length = d.ps.length ∧
+      vals = d.rs.map (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero) ∧
+      stv = st2' ∧
+      Step D (hoist D ([Stmt.letDecl d.rs none]
+          ++ (d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2))
+          ++ [Stmt.block d.ss]
+          ++ (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2))) :: funs₂)
+        (d.ps.zip argvals ++ bindZeros D d.rs ++ (Z ++ V)) st1'
+        (.stmt (.block d.ss)) (.sres (Vend ++ (Z ++ V)) st2' .normal) := by
+  match he with
+  | @Step.callOk _ _ _ _ _ fn args argvals st1' decl cenv Vend st2' o' ha hlk harity hbody ho =>
+      injection hcode with hcode2
+      injection hcode2 with hfn hargs
+      subst fn; subst args
+      injection hres with hres2
+      injection hres2 with hvals hstv
+      rw [hlk₀] at hlk
+      injection hlk with hlk
+      injection hlk with hdecl hcenv
+      set S : FScope D := hoist D ([Stmt.letDecl d.rs none]
+        ++ (d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2))
+        ++ [Stmt.block d.ss]
+        ++ (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2))) with hS
+      have hSnil : S = [] := hS.trans (inlineStmts_hoist_nil d xs as)
+      have hRb : CyFunsRel (calls := calls) (creates := creates) (S :: funs₁) (S :: funs₂) :=
+        .cons (cyScopeRel_refl _ _) hR
+      obtain ⟨res₂, hstepb, htr⟩ := carry_body_fwd hbody
+        (A := d.ps.zip argvals ++ bindZeros D d.rs) (W := ([] : VEnv D))
+        (bound := d.ps ++ d.rs)
+        (S :: funs₁) (S :: funs₂) (Z ++ V) (by rw [← hdecl]; simp)
+        (by rw [← hdecl]
+            rcases hb₀ with rfl | rfl
+            · exact Or.inl hsc
+            · exact Or.inr ⟨d.ss, rfl, hsc⟩)
+        (fun x hx => by
+          rw [calleeFrame_keys (by have := args_length ha; omega)]; exact hx)
+        (by rw [← hdecl, ← hcenv, hSnil]
+            refine FunsAgree.cons_nil_right ?_
+            intro g hg
+            have hgd : g ∈ stmtsCallNames d.ss := by
+              rcases hb₀ with rfl | rfl
+              · simpa [carryCallNames, stmtCallNames] using hg
+              · simpa [carryCallNames, stmtCallNames, stmtsCallNames_append_leave] using hg
+            exact (hagbody g hgd).symm) hRb
+      subst hdecl hcenv
+      have htbody_raw : Step D (S :: funs₂)
+          (d.ps.zip argvals ++ bindZeros D d.rs ++ (Z ++ V)) st1'
+          (.stmt (.block body₀)) (.sres (Vend ++ (Z ++ V)) st2' o') := by
+        rcases ho with rfl | rfl
+        · obtain ⟨A'', hVe, hres₂, _⟩ := TResL.norm_inv htr
+          have hae : A'' = Vend := by simpa using hVe.symm
+          rw [hae] at hres₂; rw [hres₂] at hstepb; exact hstepb
+        · obtain ⟨A'', hVe, hres₂⟩ := TResL.leave_inv htr
+          have hae : A'' = Vend := by simpa using hVe.symm
+          rw [hae] at hres₂; rw [hres₂] at hstepb; exact hstepb
+      have htbody := carry_body_normalize_ok hb₀ hsc
+        (fun x hx => by
+          rw [List.map_append, calleeFrame_keys (by have := args_length ha; omega)]
+          exact List.mem_append.mpr (Or.inl hx))
+        htbody_raw ho
+      exact ⟨argvals, st1', Vend, st2', ha, harity, hvals.symm, hstv.symm, htbody⟩
+  | @Step.callHalt .. => exact absurd hres (by simp)
+  | @Step.callArgsHalt .. => exact absurd hres (by simp)
+  | .lit => exact absurd hcode (by simp)
+  | .var .. => exact absurd hcode (by simp)
+  | .builtinOk .. => exact absurd hcode (by simp)
+  | .builtinHalt .. => exact absurd hcode (by simp)
+  | .builtinArgsHalt .. => exact absurd hcode (by simp)
+  | .argsNil => exact absurd hcode (by simp)
+  | .argsCons .. => exact absurd hcode (by simp)
+  | .argsRestHalt .. => exact absurd hcode (by simp)
+  | .argsHeadHalt .. => exact absurd hcode (by simp)
+  | .funDef => exact absurd hcode (by simp)
+  | .block .. => exact absurd hcode (by simp)
+  | .letZero => exact absurd hcode (by simp)
+  | .letVal .. => exact absurd hcode (by simp)
+  | .letHalt .. => exact absurd hcode (by simp)
+  | .assignVal .. => exact absurd hcode (by simp)
+  | .assignHalt .. => exact absurd hcode (by simp)
+  | .exprStmt .. => exact absurd hcode (by simp)
+  | .exprStmtHalt .. => exact absurd hcode (by simp)
+  | .ifTrue .. => exact absurd hcode (by simp)
+  | .ifFalse .. => exact absurd hcode (by simp)
+  | .ifHalt .. => exact absurd hcode (by simp)
+  | .switchExec .. => exact absurd hcode (by simp)
+  | .switchHalt .. => exact absurd hcode (by simp)
+  | .forLoop .. => exact absurd hcode (by simp)
+  | .forInitHalt .. => exact absurd hcode (by simp)
+  | .«break» => exact absurd hcode (by simp)
+  | .«continue» => exact absurd hcode (by simp)
+  | .«leave» => exact absurd hcode (by simp)
+  | .seqNil => exact absurd hcode (by simp)
+  | .seqCons .. => exact absurd hcode (by simp)
+  | .seqStop .. => exact absurd hcode (by simp)
+  | .loopDone .. => exact absurd hcode (by simp)
+  | .loopCondHalt .. => exact absurd hcode (by simp)
+  | .loopStep .. => exact absurd hcode (by simp)
+  | .loopPostHalt .. => exact absurd hcode (by simp)
+  | .loopBreak .. => exact absurd hcode (by simp)
+  | .loopLeave .. => exact absurd hcode (by simp)
+  | .loopBodyHalt .. => exact absurd hcode (by simp)
+  termination_by structural he
+
+/-- **Site call helper (halting outcome).** Robust variable-index match over the
+callee-call derivation (mirroring `cy_fwd`/`carry_body_fwd`, so the mutual
+structural recursion stays well-founded): only `callHalt`/`callArgsHalt` apply,
+the former recursing into `carry_body_fwd` on the direct body child. Returns the
+transferred halting body (for `inlineCore_carry_fwd_bodyhalt`) or the halting
+args step (for `inlineCore_fwd_argshalt`). -/
+theorem cy_fwd_siteCallHalt {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} {res : Res D}
+    (he : Step D funs₁ V st code res)
+    {f : Ident} {as : List (Expr Op)} {sth : EvmState}
+    (hcode : code = .expr (.call f as)) (hres : res = .eres (.halt sth))
+    {d : IDecl} {body₀ : List (Stmt Op)} {cenv₀ : FunEnv D}
+    (hlk₀ : lookupFun funs₁ f = some (⟨d.ps, d.rs, body₀⟩, cenv₀))
+    (hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave])
+    (hsc : carryStmts (d.ps ++ d.rs) d.ss = true)
+    (hlen_as : as.length = d.ps.length)
+    (hagbody : ∀ g ∈ stmtsCallNames d.ss, lookupFun funs₁ g = lookupFun cenv₀ g)
+    {funs₂ : FunEnv D} (hR : CyFunsRel (calls := calls) (creates := creates) funs₁ funs₂)
+    (xs : List Ident) (Z : VEnv D) :
+    (∃ argvals st1' Vend,
+      Step D funs₁ V st (.args as) (.eres (.vals argvals st1')) ∧
+      argvals.length = d.ps.length ∧
+      Step D (hoist D ([Stmt.letDecl d.rs none]
+          ++ (d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2))
+          ++ [Stmt.block d.ss]
+          ++ (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2))) :: funs₂)
+        (d.ps.zip argvals ++ bindZeros D d.rs ++ (Z ++ V)) st1'
+        (.stmt (.block d.ss)) (.sres (Vend ++ (Z ++ V)) sth .halt))
+    ∨ Step D funs₁ V st (.args as) (.eres (.halt sth)) := by
+  match he with
+  | @Step.callHalt _ _ _ _ _ fn args argvals st1' decl cenv Vend st2' ha hlk harity hbody =>
+      injection hcode with hcode2
+      injection hcode2 with hfn hargs
+      subst fn; subst args
+      injection hres with hres2
+      injection hres2 with hsth
+      subst hsth
+      rw [hlk₀] at hlk
+      injection hlk with hlk
+      injection hlk with hdecl hcenv
+      set S : FScope D := hoist D ([Stmt.letDecl d.rs none]
+        ++ (d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2))
+        ++ [Stmt.block d.ss]
+        ++ (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2))) with hS
+      have hSnil : S = [] := hS.trans (inlineStmts_hoist_nil d xs as)
+      have hRb : CyFunsRel (calls := calls) (creates := creates) (S :: funs₁) (S :: funs₂) :=
+        .cons (cyScopeRel_refl _ _) hR
+      obtain ⟨res₂, hstepb, htr⟩ := carry_body_fwd hbody
+        (A := d.ps.zip argvals ++ bindZeros D d.rs) (W := ([] : VEnv D))
+        (bound := d.ps ++ d.rs)
+        (S :: funs₁) (S :: funs₂) (Z ++ V) (by rw [← hdecl]; simp)
+        (by rw [← hdecl]
+            rcases hb₀ with rfl | rfl
+            · exact Or.inl hsc
+            · exact Or.inr ⟨d.ss, rfl, hsc⟩)
+        (fun x hx => by
+          rw [calleeFrame_keys (by have := args_length ha; omega)]; exact hx)
+        (by rw [← hdecl, ← hcenv, hSnil]
+            refine FunsAgree.cons_nil_right ?_
+            intro g hg
+            have hgd : g ∈ stmtsCallNames d.ss := by
+              rcases hb₀ with rfl | rfl
+              · simpa [carryCallNames, stmtCallNames] using hg
+              · simpa [carryCallNames, stmtCallNames, stmtsCallNames_append_leave] using hg
+            exact (hagbody g hgd).symm) hRb
+      subst hdecl hcenv
+      obtain ⟨A'', hVe, hres₂⟩ := TResL.halt_inv htr
+      have hae : A'' = Vend := by simpa using hVe.symm
+      rw [hae] at hres₂; rw [hres₂] at hstepb
+      have htbody := body_normalize_halt hb₀ hstepb
+      exact Or.inl ⟨argvals, st1', Vend, ha, harity, htbody⟩
+  | @Step.callArgsHalt _ _ _ _ _ fn args st1' ha =>
+      injection hcode with hcode2
+      injection hcode2 with hfn hargs
+      subst fn; subst args
+      injection hres with hres2
+      injection hres2 with hsth
+      subst hsth
+      exact Or.inr ha
+  | .lit => exact absurd hcode (by simp)
+  | .var .. => exact absurd hcode (by simp)
+  | .builtinOk .. => exact absurd hcode (by simp)
+  | .builtinHalt .. => exact absurd hcode (by simp)
+  | .builtinArgsHalt .. => exact absurd hcode (by simp)
+  | .callOk .. => exact absurd hres (by simp)
+  | .argsNil => exact absurd hcode (by simp)
+  | .argsCons .. => exact absurd hcode (by simp)
+  | .argsRestHalt .. => exact absurd hcode (by simp)
+  | .argsHeadHalt .. => exact absurd hcode (by simp)
+  | .funDef => exact absurd hcode (by simp)
+  | .block .. => exact absurd hcode (by simp)
+  | .letZero => exact absurd hcode (by simp)
+  | .letVal .. => exact absurd hcode (by simp)
+  | .letHalt .. => exact absurd hcode (by simp)
+  | .assignVal .. => exact absurd hcode (by simp)
+  | .assignHalt .. => exact absurd hcode (by simp)
+  | .exprStmt .. => exact absurd hcode (by simp)
+  | .exprStmtHalt .. => exact absurd hcode (by simp)
+  | .ifTrue .. => exact absurd hcode (by simp)
+  | .ifFalse .. => exact absurd hcode (by simp)
+  | .ifHalt .. => exact absurd hcode (by simp)
+  | .switchExec .. => exact absurd hcode (by simp)
+  | .switchHalt .. => exact absurd hcode (by simp)
+  | .forLoop .. => exact absurd hcode (by simp)
+  | .forInitHalt .. => exact absurd hcode (by simp)
+  | .«break» => exact absurd hcode (by simp)
+  | .«continue» => exact absurd hcode (by simp)
+  | .«leave» => exact absurd hcode (by simp)
+  | .seqNil => exact absurd hcode (by simp)
+  | .seqCons .. => exact absurd hcode (by simp)
+  | .seqStop .. => exact absurd hcode (by simp)
+  | .loopDone .. => exact absurd hcode (by simp)
+  | .loopCondHalt .. => exact absurd hcode (by simp)
+  | .loopStep .. => exact absurd hcode (by simp)
+  | .loopPostHalt .. => exact absurd hcode (by simp)
+  | .loopBreak .. => exact absurd hcode (by simp)
+  | .loopLeave .. => exact absurd hcode (by simp)
+  | .loopBodyHalt .. => exact absurd hcode (by simp)
+  termination_by structural he
+
+/-- Statement-level site helper: `let`-form, normal (`seqCons`) mode.
+Variable-index principal (structural argument owned locally). -/
+theorem cy_fwd_siteLetStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} {sres : Res D}
+    (hs : Step D funs₁ V st code sres)
+    {f : Ident} {as : List (Expr Op)} {xs : List Ident} {V1 : VEnv D} {st1 : EvmState}
+    (hcode : code = .stmt (.letDecl xs (some (.call f as))))
+    (hsres : sres = .sres V1 st1 .normal)
+    {Δ : DEnv} {d : IDecl} {funs₂ : FunEnv D}
+    (hR : CyFunsRel (calls := calls) (creates := creates) funs₁ funs₂)
+    (hΔ : CarryCompat (calls := calls) (creates := creates) Δ funs₁)
+    (hld : lookupDelta Δ f = some d) (hnd : (d.ps ++ d.rs).Nodup)
+    (hsc : carryStmts (d.ps ++ d.rs) d.ss = true) (hok : siteOK d xs as true = true) :
+    Step D funs₂ (bindZeros D xs ++ V) st (.stmt (inlineCore d xs as))
+      (.sres V1 st1 .normal) := by
+  obtain ⟨hlen_as, hlen_xs, hxnd, hnc, hsh, hxout, hxlet⟩ := siteOK_inv hok
+  obtain ⟨body₀, cenv₀, hlk₀, hb₀, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
+  match hs with
+  | @Step.letVal _ _ _ _ _ vars e vals st1' he hlenv =>
+      injection hcode with hcode2
+      injection hcode2 with hvars hsome
+      injection hsome with he'
+      subst vars; subst e
+      injection hsres with hV1 hst1 ho
+      subst hV1; subst hst1
+      obtain ⟨argvals, st1'', Vend, st2', ha, hargl, hvals', hstv, htbody⟩ :=
+        cy_fwd_siteCallOk he rfl rfl hlk₀ hb₀ hsc hlen_as hagbody hR xs (bindZeros D xs)
+      have hcore := inlineCore_carry_fwd_normal hnd hlen_as hnc hsh hxout hlen_xs
+        (Z := bindZeros D xs) ha htbody
+        (fun y hy => by rw [bindZeros_keys]; exact hxlet rfl y hy)
+      have hsm : VEnv.setMany (bindZeros D xs ++ V) xs (d.rs.map
+          (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)) =
+          xs.zip (d.rs.map (fun r => (VEnv.get Vend r).getD
+            (evmWithExternal calls creates).zero)) ++ V :=
+        VEnv.setMany_bindZeros hxnd (by simp only [List.length_map]; omega) V
+      rw [hsm] at hcore
+      rw [hvals', hstv]; exact hcore
+  | @Step.letHalt _ _ _ _ _ vars e st1' he =>
+      injection hsres with hV1 hst1 ho
+      exact absurd ho (by simp)
+  | .lit => exact absurd hcode (by simp)
+  | .var .. => exact absurd hcode (by simp)
+  | .builtinOk .. => exact absurd hcode (by simp)
+  | .builtinHalt .. => exact absurd hcode (by simp)
+  | .builtinArgsHalt .. => exact absurd hcode (by simp)
+  | .callOk .. => exact absurd hcode (by simp)
+  | .callHalt .. => exact absurd hcode (by simp)
+  | .callArgsHalt .. => exact absurd hcode (by simp)
+  | .argsNil => exact absurd hcode (by simp)
+  | .argsCons .. => exact absurd hcode (by simp)
+  | .argsRestHalt .. => exact absurd hcode (by simp)
+  | .argsHeadHalt .. => exact absurd hcode (by simp)
+  | .funDef => exact absurd hcode (by simp)
+  | .block .. => exact absurd hcode (by simp)
+  | .letZero => exact absurd hcode (by simp)
+  | .assignVal .. => exact absurd hcode (by simp)
+  | .assignHalt .. => exact absurd hcode (by simp)
+  | .exprStmt .. => exact absurd hcode (by simp)
+  | .exprStmtHalt .. => exact absurd hcode (by simp)
+  | .ifTrue .. => exact absurd hcode (by simp)
+  | .ifFalse .. => exact absurd hcode (by simp)
+  | .ifHalt .. => exact absurd hcode (by simp)
+  | .switchExec .. => exact absurd hcode (by simp)
+  | .switchHalt .. => exact absurd hcode (by simp)
+  | .forLoop .. => exact absurd hcode (by simp)
+  | .forInitHalt .. => exact absurd hcode (by simp)
+  | .«break» => exact absurd hcode (by simp)
+  | .«continue» => exact absurd hcode (by simp)
+  | .«leave» => exact absurd hcode (by simp)
+  | .seqNil => exact absurd hcode (by simp)
+  | .seqCons .. => exact absurd hcode (by simp)
+  | .seqStop .. => exact absurd hcode (by simp)
+  | .loopDone .. => exact absurd hcode (by simp)
+  | .loopCondHalt .. => exact absurd hcode (by simp)
+  | .loopStep .. => exact absurd hcode (by simp)
+  | .loopPostHalt .. => exact absurd hcode (by simp)
+  | .loopBreak .. => exact absurd hcode (by simp)
+  | .loopLeave .. => exact absurd hcode (by simp)
+  | .loopBodyHalt .. => exact absurd hcode (by simp)
+
+/-- Statement-level site helper: `assign`-form, normal (`seqCons`) mode.
+Variable-index principal (structural argument owned locally). -/
+theorem cy_fwd_siteAssignStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} {sres : Res D}
+    (hs : Step D funs₁ V st code sres)
+    {f : Ident} {as : List (Expr Op)} {xs : List Ident} {V1 : VEnv D} {st1 : EvmState}
+    (hcode : code = .stmt (.assign xs (.call f as)))
+    (hsres : sres = .sres V1 st1 .normal)
+    {Δ : DEnv} {d : IDecl} {funs₂ : FunEnv D}
+    (hR : CyFunsRel (calls := calls) (creates := creates) funs₁ funs₂)
+    (hΔ : CarryCompat (calls := calls) (creates := creates) Δ funs₁)
+    (hld : lookupDelta Δ f = some d) (hnd : (d.ps ++ d.rs).Nodup)
+    (hsc : carryStmts (d.ps ++ d.rs) d.ss = true) (hok : siteOK d xs as false = true) :
+    Step D funs₂ V st (.stmt (inlineCore d xs as)) (.sres V1 st1 .normal) := by
+  obtain ⟨hlen_as, hlen_xs, hxnd, hnc, hsh, hxout, -⟩ := siteOK_inv hok
+  obtain ⟨body₀, cenv₀, hlk₀, hb₀, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
+  match hs with
+  | @Step.assignVal _ _ _ _ _ vars e vals st1' he hlenv =>
+      injection hcode with hcode2
+      injection hcode2 with hvars he'
+      subst vars; subst e
+      injection hsres with hV1 hst1 ho
+      subst hV1; subst hst1
+      obtain ⟨argvals, st1'', Vend, st2', ha, hargl, hvals', hstv, htbody⟩ :=
+        cy_fwd_siteCallOk he rfl rfl hlk₀ hb₀ hsc hlen_as hagbody hR xs ([] : VEnv D)
+      have hcore := inlineCore_carry_fwd_normal hnd hlen_as hnc hsh hxout hlen_xs
+        (Z := ([] : VEnv D)) ha htbody (fun y hy => by simp)
+      rw [hvals', hstv]; exact hcore
+  | @Step.assignHalt _ _ _ _ _ vars e st1' he =>
+      injection hsres with hV1 hst1 ho
+      exact absurd ho (by simp)
+  | .lit => exact absurd hcode (by simp)
+  | .var .. => exact absurd hcode (by simp)
+  | .builtinOk .. => exact absurd hcode (by simp)
+  | .builtinHalt .. => exact absurd hcode (by simp)
+  | .builtinArgsHalt .. => exact absurd hcode (by simp)
+  | .callOk .. => exact absurd hcode (by simp)
+  | .callHalt .. => exact absurd hcode (by simp)
+  | .callArgsHalt .. => exact absurd hcode (by simp)
+  | .argsNil => exact absurd hcode (by simp)
+  | .argsCons .. => exact absurd hcode (by simp)
+  | .argsRestHalt .. => exact absurd hcode (by simp)
+  | .argsHeadHalt .. => exact absurd hcode (by simp)
+  | .funDef => exact absurd hcode (by simp)
+  | .block .. => exact absurd hcode (by simp)
+  | .letZero => exact absurd hcode (by simp)
+  | .letVal .. => exact absurd hcode (by simp)
+  | .letHalt .. => exact absurd hcode (by simp)
+  | .exprStmt .. => exact absurd hcode (by simp)
+  | .exprStmtHalt .. => exact absurd hcode (by simp)
+  | .ifTrue .. => exact absurd hcode (by simp)
+  | .ifFalse .. => exact absurd hcode (by simp)
+  | .ifHalt .. => exact absurd hcode (by simp)
+  | .switchExec .. => exact absurd hcode (by simp)
+  | .switchHalt .. => exact absurd hcode (by simp)
+  | .forLoop .. => exact absurd hcode (by simp)
+  | .forInitHalt .. => exact absurd hcode (by simp)
+  | .«break» => exact absurd hcode (by simp)
+  | .«continue» => exact absurd hcode (by simp)
+  | .«leave» => exact absurd hcode (by simp)
+  | .seqNil => exact absurd hcode (by simp)
+  | .seqCons .. => exact absurd hcode (by simp)
+  | .seqStop .. => exact absurd hcode (by simp)
+  | .loopDone .. => exact absurd hcode (by simp)
+  | .loopCondHalt .. => exact absurd hcode (by simp)
+  | .loopStep .. => exact absurd hcode (by simp)
+  | .loopPostHalt .. => exact absurd hcode (by simp)
+  | .loopBreak .. => exact absurd hcode (by simp)
+  | .loopLeave .. => exact absurd hcode (by simp)
+  | .loopBodyHalt .. => exact absurd hcode (by simp)
+
+/-- Statement-level site helper: `exprStmt`-form, normal (`seqCons`) mode.
+Variable-index principal (structural argument owned locally). -/
+theorem cy_fwd_siteExprStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} {sres : Res D}
+    (hs : Step D funs₁ V st code sres)
+    {f : Ident} {as : List (Expr Op)} {V1 : VEnv D} {st1 : EvmState}
+    (hcode : code = .stmt (.exprStmt (.call f as)))
+    (hsres : sres = .sres V1 st1 .normal)
+    {Δ : DEnv} {d : IDecl} {funs₂ : FunEnv D}
+    (hR : CyFunsRel (calls := calls) (creates := creates) funs₁ funs₂)
+    (hΔ : CarryCompat (calls := calls) (creates := creates) Δ funs₁)
+    (hld : lookupDelta Δ f = some d) (hnd : (d.ps ++ d.rs).Nodup)
+    (hsc : carryStmts (d.ps ++ d.rs) d.ss = true) (hok : siteOK d [] as false = true) :
+    Step D funs₂ V st (.stmt (inlineCore d [] as)) (.sres V1 st1 .normal) := by
+  obtain ⟨hlen_as, hlen_xs, -, hnc, hsh, -, -⟩ := siteOK_inv hok
+  obtain ⟨body₀, cenv₀, hlk₀, hb₀, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
+  match hs with
+  | @Step.exprStmt _ _ _ _ _ e st1' he =>
+      injection hcode with hcode2
+      injection hcode2 with he'
+      subst e
+      injection hsres with hV1 hst1 ho
+      subst hV1; subst hst1
+      obtain ⟨argvals, st1'', Vend, st2', ha, hargl, hvals', hstv, htbody⟩ :=
+        cy_fwd_siteCallOk he rfl rfl hlk₀ hb₀ hsc hlen_as hagbody hR ([] : List Ident) ([] : VEnv D)
+      have hcore := inlineCore_carry_fwd_normal hnd hlen_as hnc hsh
+        (fun x hx => by cases hx) hlen_xs (Z := ([] : VEnv D)) ha htbody
+        (fun y hy => by simp)
+      have hsm : VEnv.setMany (([] : VEnv D) ++ V) [] (d.rs.map
+          (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)) = V := rfl
+      rw [hsm] at hcore
+      rw [hstv]; exact hcore
+  | @Step.exprStmtHalt _ _ _ _ _ e st1' he =>
+      injection hsres with hV1 hst1 ho
+      exact absurd ho (by simp)
+  | .lit => exact absurd hcode (by simp)
+  | .var .. => exact absurd hcode (by simp)
+  | .builtinOk .. => exact absurd hcode (by simp)
+  | .builtinHalt .. => exact absurd hcode (by simp)
+  | .builtinArgsHalt .. => exact absurd hcode (by simp)
+  | .callOk .. => exact absurd hcode (by simp)
+  | .callHalt .. => exact absurd hcode (by simp)
+  | .callArgsHalt .. => exact absurd hcode (by simp)
+  | .argsNil => exact absurd hcode (by simp)
+  | .argsCons .. => exact absurd hcode (by simp)
+  | .argsRestHalt .. => exact absurd hcode (by simp)
+  | .argsHeadHalt .. => exact absurd hcode (by simp)
+  | .funDef => exact absurd hcode (by simp)
+  | .block .. => exact absurd hcode (by simp)
+  | .letZero => exact absurd hcode (by simp)
+  | .letVal .. => exact absurd hcode (by simp)
+  | .letHalt .. => exact absurd hcode (by simp)
+  | .assignVal .. => exact absurd hcode (by simp)
+  | .assignHalt .. => exact absurd hcode (by simp)
+  | .ifTrue .. => exact absurd hcode (by simp)
+  | .ifFalse .. => exact absurd hcode (by simp)
+  | .ifHalt .. => exact absurd hcode (by simp)
+  | .switchExec .. => exact absurd hcode (by simp)
+  | .switchHalt .. => exact absurd hcode (by simp)
+  | .forLoop .. => exact absurd hcode (by simp)
+  | .forInitHalt .. => exact absurd hcode (by simp)
+  | .«break» => exact absurd hcode (by simp)
+  | .«continue» => exact absurd hcode (by simp)
+  | .«leave» => exact absurd hcode (by simp)
+  | .seqNil => exact absurd hcode (by simp)
+  | .seqCons .. => exact absurd hcode (by simp)
+  | .seqStop .. => exact absurd hcode (by simp)
+  | .loopDone .. => exact absurd hcode (by simp)
+  | .loopCondHalt .. => exact absurd hcode (by simp)
+  | .loopStep .. => exact absurd hcode (by simp)
+  | .loopPostHalt .. => exact absurd hcode (by simp)
+  | .loopBreak .. => exact absurd hcode (by simp)
+  | .loopLeave .. => exact absurd hcode (by simp)
+  | .loopBodyHalt .. => exact absurd hcode (by simp)
+
+/-- Statement-level site helper: `let`-form, halting (`seqStop`) mode.
+Written over a fully variable-index principal so this member owns a valid
+structural argument inside the mutual block. -/
+theorem cy_fwd_siteLet_seqStop {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} {sres : Res D}
+    (hs : Step D funs₁ V st code sres)
+    {f : Ident} {as : List (Expr Op)} {xs : List Ident} {V1 : VEnv D} {st1 : EvmState}
+    {o : Outcome}
+    (hcode : code = .stmt (.letDecl xs (some (.call f as)))) (hsres : sres = .sres V1 st1 o)
+    (hne : o ≠ .normal)
+    {Δ : DEnv} {d : IDecl} {funs₂ : FunEnv D}
+    (hR : CyFunsRel (calls := calls) (creates := creates) funs₁ funs₂)
+    (hΔ : CarryCompat (calls := calls) (creates := creates) Δ funs₁)
+    (hld : lookupDelta Δ f = some d) (hnd : (d.ps ++ d.rs).Nodup)
+    (hsc : carryStmts (d.ps ++ d.rs) d.ss = true) (hok : siteOK d xs as true = true)
+    (rest rest' : List (Stmt Op)) :
+    ∃ res₂, Step D funs₂ V st
+        (.stmts (.letDecl xs none :: inlineCore d xs as :: rest')) res₂ ∧
+      cyResOK (calls := calls) (creates := creates)
+        (.stmts (.letDecl xs (some (.call f as)) :: rest)) (.sres V1 st1 o) res₂ := by
+  obtain ⟨hlen_as, hlen_xs, hxnd, hnc, hsh, hxout, hxlet⟩ := siteOK_inv hok
+  obtain ⟨body₀, cenv₀, hlk₀, hb₀, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
+  have hZvars : ∀ y ∈ varsList as, y ∉ (bindZeros D xs).map Prod.fst :=
+    fun y hy => by rw [bindZeros_keys]; exact hxlet rfl y hy
+  match hs with
+  | @Step.letHalt _ _ _ _ _ vars e st1' he =>
+      injection hcode with hcode2
+      injection hcode2 with hvars hsome
+      injection hsome with he'
+      subst vars; subst e
+      injection hsres with hV1 hst1 ho
+      subst hV1; subst hst1; subst ho
+      rcases cy_fwd_siteCallHalt he rfl rfl hlk₀ hb₀ hsc hlen_as hagbody hR xs (bindZeros D xs)
+        with ⟨argvals, st1'', Vend, ha, hargl, htbody⟩ | ha
+      · have hcore := inlineCore_carry_fwd_bodyhalt (xs := xs) (Z := bindZeros D xs)
+          hlen_as hnc hsh ha htbody hZvars
+        exact ⟨_, Step.seqCons Step.letZero (Step.seqStop hcore (by simp)), .haltIns _ _ _⟩
+      · have hcore := inlineCore_fwd_argshalt (d := d) (xs := xs) (Z := bindZeros D xs)
+          hlen_as hnc hsh ha hZvars funs₂
+        exact ⟨_, Step.seqCons Step.letZero (Step.seqStop hcore (by simp)), .haltIns _ _ _⟩
+  | @Step.letVal _ _ _ _ _ vars e vals st1' he hlenv =>
+      injection hsres with hV1 hst1 ho
+      exact absurd ho.symm hne
+  | @Step.letZero _ _ _ _ _ vars =>
+      injection hcode with hcode2
+      exact absurd hcode2 (by simp)
+  | .lit => exact absurd hcode (by simp)
+  | .var .. => exact absurd hcode (by simp)
+  | .builtinOk .. => exact absurd hcode (by simp)
+  | .builtinHalt .. => exact absurd hcode (by simp)
+  | .builtinArgsHalt .. => exact absurd hcode (by simp)
+  | .callOk .. => exact absurd hcode (by simp)
+  | .callHalt .. => exact absurd hcode (by simp)
+  | .callArgsHalt .. => exact absurd hcode (by simp)
+  | .argsNil => exact absurd hcode (by simp)
+  | .argsCons .. => exact absurd hcode (by simp)
+  | .argsRestHalt .. => exact absurd hcode (by simp)
+  | .argsHeadHalt .. => exact absurd hcode (by simp)
+  | .funDef => exact absurd hcode (by simp)
+  | .block .. => exact absurd hcode (by simp)
+  | .assignVal .. => exact absurd hcode (by simp)
+  | .assignHalt .. => exact absurd hcode (by simp)
+  | .exprStmt .. => exact absurd hcode (by simp)
+  | .exprStmtHalt .. => exact absurd hcode (by simp)
+  | .ifTrue .. => exact absurd hcode (by simp)
+  | .ifFalse .. => exact absurd hcode (by simp)
+  | .ifHalt .. => exact absurd hcode (by simp)
+  | .switchExec .. => exact absurd hcode (by simp)
+  | .switchHalt .. => exact absurd hcode (by simp)
+  | .forLoop .. => exact absurd hcode (by simp)
+  | .forInitHalt .. => exact absurd hcode (by simp)
+  | .«break» => exact absurd hcode (by simp)
+  | .«continue» => exact absurd hcode (by simp)
+  | .«leave» => exact absurd hcode (by simp)
+  | .seqNil => exact absurd hcode (by simp)
+  | .seqCons .. => exact absurd hcode (by simp)
+  | .seqStop .. => exact absurd hcode (by simp)
+  | .loopDone .. => exact absurd hcode (by simp)
+  | .loopCondHalt .. => exact absurd hcode (by simp)
+  | .loopStep .. => exact absurd hcode (by simp)
+  | .loopPostHalt .. => exact absurd hcode (by simp)
+  | .loopBreak .. => exact absurd hcode (by simp)
+  | .loopLeave .. => exact absurd hcode (by simp)
+  | .loopBodyHalt .. => exact absurd hcode (by simp)
+
+/-- Statement-level site helper: `assign`-form, halting (`seqStop`) mode.
+Written over a fully variable-index principal so this member owns a valid
+structural argument inside the mutual block. -/
+theorem cy_fwd_siteAssign_seqStop {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} {sres : Res D}
+    (hs : Step D funs₁ V st code sres)
+    {f : Ident} {as : List (Expr Op)} {xs : List Ident} {V1 : VEnv D} {st1 : EvmState}
+    {o : Outcome}
+    (hcode : code = .stmt (.assign xs (.call f as))) (hsres : sres = .sres V1 st1 o)
+    (hne : o ≠ .normal)
+    {Δ : DEnv} {d : IDecl} {funs₂ : FunEnv D}
+    (hR : CyFunsRel (calls := calls) (creates := creates) funs₁ funs₂)
+    (hΔ : CarryCompat (calls := calls) (creates := creates) Δ funs₁)
+    (hld : lookupDelta Δ f = some d) (hnd : (d.ps ++ d.rs).Nodup)
+    (hsc : carryStmts (d.ps ++ d.rs) d.ss = true) (hok : siteOK d xs as false = true)
+    (rest rest' : List (Stmt Op)) :
+    ∃ res₂, Step D funs₂ V st (.stmts (inlineCore d xs as :: rest')) res₂ ∧
+      cyResOK (calls := calls) (creates := creates)
+        (.stmts (.assign xs (.call f as) :: rest)) (.sres V1 st1 o) res₂ := by
+  obtain ⟨hlen_as, hlen_xs, hxnd, hnc, hsh, hxout, -⟩ := siteOK_inv hok
+  obtain ⟨body₀, cenv₀, hlk₀, hb₀, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
+  match hs with
+  | @Step.assignHalt _ _ _ _ _ vars e st1' he =>
+      injection hcode with hcode2
+      injection hcode2 with hvars he'
+      subst vars; subst e
+      injection hsres with hV1 hst1 ho
+      subst hV1; subst hst1; subst ho
+      rcases cy_fwd_siteCallHalt he rfl rfl hlk₀ hb₀ hsc hlen_as hagbody hR xs ([] : VEnv D)
+        with ⟨argvals, st1'', Vend, ha, hargl, htbody⟩ | ha
+      · have hcore := inlineCore_carry_fwd_bodyhalt (xs := xs) (Z := ([] : VEnv D))
+          hlen_as hnc hsh ha htbody (fun y hy => by simp)
+        exact ⟨_, Step.seqStop hcore (by simp), .refl _⟩
+      · have hcore := inlineCore_fwd_argshalt (d := d) (xs := xs) (Z := ([] : VEnv D))
+          hlen_as hnc hsh ha (fun y hy => by simp) funs₂
+        exact ⟨_, Step.seqStop hcore (by simp), .refl _⟩
+  | @Step.assignVal _ _ _ _ _ vars e vals st1' he hlenv =>
+      injection hsres with hV1 hst1 ho
+      exact absurd ho.symm hne
+  | .lit => exact absurd hcode (by simp)
+  | .var .. => exact absurd hcode (by simp)
+  | .builtinOk .. => exact absurd hcode (by simp)
+  | .builtinHalt .. => exact absurd hcode (by simp)
+  | .builtinArgsHalt .. => exact absurd hcode (by simp)
+  | .callOk .. => exact absurd hcode (by simp)
+  | .callHalt .. => exact absurd hcode (by simp)
+  | .callArgsHalt .. => exact absurd hcode (by simp)
+  | .argsNil => exact absurd hcode (by simp)
+  | .argsCons .. => exact absurd hcode (by simp)
+  | .argsRestHalt .. => exact absurd hcode (by simp)
+  | .argsHeadHalt .. => exact absurd hcode (by simp)
+  | .funDef => exact absurd hcode (by simp)
+  | .block .. => exact absurd hcode (by simp)
+  | .letZero => exact absurd hcode (by simp)
+  | .letVal .. => exact absurd hcode (by simp)
+  | .letHalt .. => exact absurd hcode (by simp)
+  | .exprStmt .. => exact absurd hcode (by simp)
+  | .exprStmtHalt .. => exact absurd hcode (by simp)
+  | .ifTrue .. => exact absurd hcode (by simp)
+  | .ifFalse .. => exact absurd hcode (by simp)
+  | .ifHalt .. => exact absurd hcode (by simp)
+  | .switchExec .. => exact absurd hcode (by simp)
+  | .switchHalt .. => exact absurd hcode (by simp)
+  | .forLoop .. => exact absurd hcode (by simp)
+  | .forInitHalt .. => exact absurd hcode (by simp)
+  | .«break» => exact absurd hcode (by simp)
+  | .«continue» => exact absurd hcode (by simp)
+  | .«leave» => exact absurd hcode (by simp)
+  | .seqNil => exact absurd hcode (by simp)
+  | .seqCons .. => exact absurd hcode (by simp)
+  | .seqStop .. => exact absurd hcode (by simp)
+  | .loopDone .. => exact absurd hcode (by simp)
+  | .loopCondHalt .. => exact absurd hcode (by simp)
+  | .loopStep .. => exact absurd hcode (by simp)
+  | .loopPostHalt .. => exact absurd hcode (by simp)
+  | .loopBreak .. => exact absurd hcode (by simp)
+  | .loopLeave .. => exact absurd hcode (by simp)
+  | .loopBodyHalt .. => exact absurd hcode (by simp)
+
+/-- Statement-level site helper: `exprStmt`-form, halting (`seqStop`) mode.
+Written over a fully variable-index principal (the `exprStmt`/`halt` shape is
+recovered from `hcode`/`hres`) so this member owns a valid structural argument
+inside the mutual block — unlike a fixed-`exprStmt`-index principal whose result
+env coincides with the input env in both statement arms. -/
+theorem cy_fwd_siteExpr_seqStop {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
+    {code : Code Op} {sres : Res D}
+    (hs : Step D funs₁ V st code sres)
+    {f : Ident} {as : List (Expr Op)} {V1 : VEnv D} {st1 : EvmState} {o : Outcome}
+    (hcode : code = .stmt (.exprStmt (.call f as))) (hsres : sres = .sres V1 st1 o)
+    (hne : o ≠ .normal)
+    {Δ : DEnv} {d : IDecl} {funs₂ : FunEnv D}
+    (hR : CyFunsRel (calls := calls) (creates := creates) funs₁ funs₂)
+    (hΔ : CarryCompat (calls := calls) (creates := creates) Δ funs₁)
+    (hld : lookupDelta Δ f = some d) (hnd : (d.ps ++ d.rs).Nodup)
+    (hsc : carryStmts (d.ps ++ d.rs) d.ss = true) (hok : siteOK d [] as false = true)
+    (rest rest' : List (Stmt Op)) :
+    ∃ res₂, Step D funs₂ V st (.stmts (inlineCore d [] as :: rest')) res₂ ∧
+      cyResOK (calls := calls) (creates := creates)
+        (.stmts (.exprStmt (.call f as) :: rest)) (.sres V1 st1 o) res₂ := by
+  obtain ⟨hlen_as, hlen_xs, -, hnc, hsh, -, -⟩ := siteOK_inv hok
+  obtain ⟨body₀, cenv₀, hlk₀, hb₀, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
+  match hs with
+  | @Step.exprStmtHalt _ _ _ _ _ e st1' he =>
+      injection hcode with hcode2
+      injection hcode2 with he'
+      subst he'
+      injection hsres with hV1 hst1 ho
+      subst hV1; subst hst1; subst ho
+      rcases cy_fwd_siteCallHalt he rfl rfl hlk₀ hb₀ hsc hlen_as hagbody hR
+        ([] : List Ident) ([] : VEnv D) with ⟨argvals, st1', Vend, ha, hargl, htbody⟩ | ha
+      · have hcore := inlineCore_carry_fwd_bodyhalt (xs := ([] : List Ident)) (Z := ([] : VEnv D))
+          hlen_as hnc hsh ha htbody (fun y hy => by simp)
+        exact ⟨_, Step.seqStop hcore (by simp), .refl _⟩
+      · have hcore := inlineCore_fwd_argshalt (d := d) (xs := ([] : List Ident)) (Z := ([] : VEnv D))
+          hlen_as hnc hsh ha (fun y hy => by simp) funs₂
+        exact ⟨_, Step.seqStop hcore (by simp), .refl _⟩
+  | @Step.exprStmt _ _ _ _ _ e st1' he =>
+      injection hsres with hV1 hst1 ho
+      exact absurd ho.symm hne
+  | .lit => exact absurd hcode (by simp)
+  | .var .. => exact absurd hcode (by simp)
+  | .builtinOk .. => exact absurd hcode (by simp)
+  | .builtinHalt .. => exact absurd hcode (by simp)
+  | .builtinArgsHalt .. => exact absurd hcode (by simp)
+  | .callOk .. => exact absurd hcode (by simp)
+  | .callHalt .. => exact absurd hcode (by simp)
+  | .callArgsHalt .. => exact absurd hcode (by simp)
+  | .argsNil => exact absurd hcode (by simp)
+  | .argsCons .. => exact absurd hcode (by simp)
+  | .argsRestHalt .. => exact absurd hcode (by simp)
+  | .argsHeadHalt .. => exact absurd hcode (by simp)
+  | .funDef => exact absurd hcode (by simp)
+  | .block .. => exact absurd hcode (by simp)
+  | .letZero => exact absurd hcode (by simp)
+  | .letVal .. => exact absurd hcode (by simp)
+  | .letHalt .. => exact absurd hcode (by simp)
+  | .assignVal .. => exact absurd hcode (by simp)
+  | .assignHalt .. => exact absurd hcode (by simp)
+  | .ifTrue .. => exact absurd hcode (by simp)
+  | .ifFalse .. => exact absurd hcode (by simp)
+  | .ifHalt .. => exact absurd hcode (by simp)
+  | .switchExec .. => exact absurd hcode (by simp)
+  | .switchHalt .. => exact absurd hcode (by simp)
+  | .forLoop .. => exact absurd hcode (by simp)
+  | .forInitHalt .. => exact absurd hcode (by simp)
+  | .«break» => exact absurd hcode (by simp)
+  | .«continue» => exact absurd hcode (by simp)
+  | .«leave» => exact absurd hcode (by simp)
+  | .seqNil => exact absurd hcode (by simp)
+  | .seqCons .. => exact absurd hcode (by simp)
+  | .seqStop .. => exact absurd hcode (by simp)
+  | .loopDone .. => exact absurd hcode (by simp)
+  | .loopCondHalt .. => exact absurd hcode (by simp)
+  | .loopStep .. => exact absurd hcode (by simp)
+  | .loopPostHalt .. => exact absurd hcode (by simp)
+  | .loopBreak .. => exact absurd hcode (by simp)
+  | .loopLeave .. => exact absurd hcode (by simp)
+  | .loopBodyHalt .. => exact absurd hcode (by simp)
+
 end
 
 end YulEvmCompiler.Optimizer
