@@ -12,7 +12,7 @@ identical_subobjects_full_debug_info.yul	92938	93190
 identical_subobjects_no_debug_info.yul	92938	93190
 identical_subobjects_partial_debug_info.yul	92938	93190
 identical_subobjects_partial_debug_info_no_use_src.yul	92938	93190
-immutable_long_name_does_not_end_up_in_bytecode.yul	0	54
+immutable_long_name_does_not_end_up_in_bytecode.yul	54	54
 jump_tags.yul	168	432
 long_object_name.yul	44330	44330
 metadata.yul	162702	162684
