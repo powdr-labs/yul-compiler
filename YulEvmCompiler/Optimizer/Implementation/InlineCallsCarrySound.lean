@@ -1011,3 +1011,483 @@ theorem CarryCompat.pruneInit {Δ : DEnv} {funs : FunEnv D}
       have h1 := List.all_eq_true.mp hsurv.2 g hg; simpa using h1
     rw [lookupFun_cons_hoist_not_mem hgnf]; exact hag g hg
 
+/-! ### The carry-inlining relation
+
+Skip-rule relation over `PCode`, mirroring `IcRel` verbatim except: the block/
+body/branch rules extend the context via `carryDeltaExtend` (with the
+`carrySurvives` prune), the `for` prunes via `carrySurvives`, and the three
+*site* rules carry the *carry* classification (`carryStmts`) and the profit
+gate (`carryOK`, discharged where relevant). -/
+inductive CyRel : DEnv → PCode Op → PCode Op → Prop
+  | expr {Δ : DEnv} {e : Expr Op} : CyRel Δ (.expr e) (.expr e)
+  | args {Δ : DEnv} {es : List (Expr Op)} : CyRel Δ (.args es) (.args es)
+  | blockS {Δ : DEnv} {body body' : Block Op} :
+      CyRel (carryDeltaExtend Δ body) (.stmts body) (.stmts body') →
+      CyRel Δ (.stmt (.block body)) (.stmt (.block body'))
+  | funDefS {Δ : DEnv} {n : Ident} {ps rs : List Ident} {body body' : Block Op} :
+      CyRel (carryDeltaExtend Δ body) (.stmts body) (.stmts body') →
+      CyRel Δ (.stmt (.funDef n ps rs body)) (.stmt (.funDef n ps rs body'))
+  | letS {Δ : DEnv} {xs : List Ident} {v : Option (Expr Op)} :
+      CyRel Δ (.stmt (.letDecl xs v)) (.stmt (.letDecl xs v))
+  | assignS {Δ : DEnv} {xs : List Ident} {e : Expr Op} :
+      CyRel Δ (.stmt (.assign xs e)) (.stmt (.assign xs e))
+  | exprStmtS {Δ : DEnv} {e : Expr Op} :
+      CyRel Δ (.stmt (.exprStmt e)) (.stmt (.exprStmt e))
+  | condS {Δ : DEnv} {c : Expr Op} {body body' : Block Op} :
+      CyRel (carryDeltaExtend Δ body) (.stmts body) (.stmts body') →
+      CyRel Δ (.stmt (.cond c body)) (.stmt (.cond c body'))
+  | switchS {Δ : DEnv} {c : Expr Op} {cases cases' : List (Literal × Block Op)}
+      {dflt dflt' : Option (Block Op)} :
+      CyRel Δ (.cases cases) (.cases cases') →
+      CyRel Δ (.odflt dflt) (.odflt dflt') →
+      CyRel Δ (.stmt (.switch c cases dflt)) (.stmt (.switch c cases' dflt'))
+  | forS {Δ : DEnv} {init : Block Op} {c : Expr Op} {post post' body body' : Block Op} :
+      CyRel (carryDeltaExtend (Δ.filter (carrySurvives (definedFuns init))) post)
+        (.stmts post) (.stmts post') →
+      CyRel (carryDeltaExtend (Δ.filter (carrySurvives (definedFuns init))) body)
+        (.stmts body) (.stmts body') →
+      CyRel Δ (.stmt (.forLoop init c post body))
+        (.stmt (.forLoop init c post' body'))
+  | breakS {Δ : DEnv} : CyRel Δ (.stmt .break) (.stmt .break)
+  | continueS {Δ : DEnv} : CyRel Δ (.stmt .continue) (.stmt .continue)
+  | leaveS {Δ : DEnv} : CyRel Δ (.stmt .leave) (.stmt .leave)
+  | nilSS {Δ : DEnv} : CyRel Δ (.stmts []) (.stmts [])
+  | consSS {Δ : DEnv} {s s' : Stmt Op} {rest rest' : List (Stmt Op)} :
+      CyRel Δ (.stmt s) (.stmt s') → CyRel Δ (.stmts rest) (.stmts rest') →
+      CyRel Δ (.stmts (s :: rest)) (.stmts (s' :: rest'))
+  | siteLet {Δ : DEnv} {f : Ident} {d : IDecl} {xs : List Ident}
+      {as : List (Expr Op)} {rest rest' : List (Stmt Op)} :
+      lookupDelta Δ f = some d →
+      (d.ps ++ d.rs).Nodup →
+      carryStmts (d.ps ++ d.rs) d.ss = true →
+      siteOK d xs as true = true →
+      CyRel Δ (.stmts rest) (.stmts rest') →
+      CyRel Δ (.stmts (.letDecl xs (some (.call f as)) :: rest))
+        (.stmts (.letDecl xs none :: inlineCore d xs as :: rest'))
+  | siteAssign {Δ : DEnv} {f : Ident} {d : IDecl} {xs : List Ident}
+      {as : List (Expr Op)} {rest rest' : List (Stmt Op)} :
+      lookupDelta Δ f = some d →
+      (d.ps ++ d.rs).Nodup →
+      carryStmts (d.ps ++ d.rs) d.ss = true →
+      siteOK d xs as false = true →
+      CyRel Δ (.stmts rest) (.stmts rest') →
+      CyRel Δ (.stmts (.assign xs (.call f as) :: rest))
+        (.stmts (inlineCore d xs as :: rest'))
+  | siteExpr {Δ : DEnv} {f : Ident} {d : IDecl}
+      {as : List (Expr Op)} {rest rest' : List (Stmt Op)} :
+      lookupDelta Δ f = some d →
+      (d.ps ++ d.rs).Nodup →
+      carryStmts (d.ps ++ d.rs) d.ss = true →
+      siteOK d [] as false = true →
+      CyRel Δ (.stmts rest) (.stmts rest') →
+      CyRel Δ (.stmts (.exprStmt (.call f as) :: rest))
+        (.stmts (inlineCore d [] as :: rest'))
+  | loopL {Δ : DEnv} {c : Expr Op} {post post' body body' : Block Op} :
+      CyRel (carryDeltaExtend Δ post) (.stmts post) (.stmts post') →
+      CyRel (carryDeltaExtend Δ body) (.stmts body) (.stmts body') →
+      CyRel Δ (.loop c post body) (.loop c post' body')
+  | casesNil {Δ : DEnv} : CyRel Δ (.cases []) (.cases [])
+  | casesCons {Δ : DEnv} {l : Literal} {b b' : Block Op}
+      {rest rest' : List (Literal × Block Op)} :
+      CyRel (carryDeltaExtend Δ b) (.stmts b) (.stmts b') →
+      CyRel Δ (.cases rest) (.cases rest') →
+      CyRel Δ (.cases ((l, b) :: rest)) (.cases ((l, b') :: rest'))
+  | odfltNone {Δ : DEnv} : CyRel Δ (.odflt none) (.odflt none)
+  | odfltSome {Δ : DEnv} {b b' : Block Op} :
+      CyRel (carryDeltaExtend Δ b) (.stmts b) (.stmts b') →
+      CyRel Δ (.odflt (some b)) (.odflt (some b'))
+
+/-! ### The transform inhabits the relation -/
+
+mutual
+
+/-- The statement-list transform inhabits the relation. -/
+theorem cyStmts_rel (Δ : DEnv) (hwf : CarryWF Δ) :
+    ∀ ss : List (Stmt Op), CyRel Δ (.stmts ss) (.stmts (cyStmts Δ ss))
+  | [] => by rw [cyStmts]; exact .nilSS
+  | .letDecl xs (some (.call f as)) :: rest => by
+      rw [cyStmts, cyStmt]
+      split
+      · next d hld =>
+          obtain ⟨hnd, hsc⟩ := hwf (f, d) (lookupDelta_mem hld)
+          by_cases hok : (carryOK d && siteOK d xs as true) = true
+          · rw [if_pos hok]
+            rw [Bool.and_eq_true] at hok
+            exact .siteLet hld hnd hsc hok.2 (cyStmts_rel Δ hwf rest)
+          · rw [if_neg hok]
+            exact .consSS .letS (cyStmts_rel Δ hwf rest)
+      · exact .consSS .letS (cyStmts_rel Δ hwf rest)
+  | .assign xs (.call f as) :: rest => by
+      rw [cyStmts, cyStmt]
+      split
+      · next d hld =>
+          obtain ⟨hnd, hsc⟩ := hwf (f, d) (lookupDelta_mem hld)
+          by_cases hok : (carryOK d && siteOK d xs as false) = true
+          · rw [if_pos hok]
+            rw [Bool.and_eq_true] at hok
+            exact .siteAssign hld hnd hsc hok.2 (cyStmts_rel Δ hwf rest)
+          · rw [if_neg hok]
+            exact .consSS .assignS (cyStmts_rel Δ hwf rest)
+      · exact .consSS .assignS (cyStmts_rel Δ hwf rest)
+  | .exprStmt (.call f as) :: rest => by
+      rw [cyStmts, cyStmt]
+      split
+      · next d hld =>
+          obtain ⟨hnd, hsc⟩ := hwf (f, d) (lookupDelta_mem hld)
+          by_cases hok : (carryOK d && siteOK d [] as false) = true
+          · rw [if_pos hok]
+            rw [Bool.and_eq_true] at hok
+            exact .siteExpr hld hnd hsc hok.2 (cyStmts_rel Δ hwf rest)
+          · rw [if_neg hok]
+            exact .consSS .exprStmtS (cyStmts_rel Δ hwf rest)
+      · exact .consSS .exprStmtS (cyStmts_rel Δ hwf rest)
+  | .block body :: rest => by
+      rw [cyStmts, cyStmt, cyBlock]
+      exact .consSS (.blockS (cyStmts_rel _ (hwf.extend body) body))
+        (cyStmts_rel Δ hwf rest)
+  | .funDef n ps rs body :: rest => by
+      rw [cyStmts, cyStmt, cyBlock]
+      exact .consSS (.funDefS (cyStmts_rel _ (hwf.extend body) body))
+        (cyStmts_rel Δ hwf rest)
+  | .letDecl xs none :: rest => by
+      rw [cyStmts]; simp only [cyStmt]
+      exact .consSS .letS (cyStmts_rel Δ hwf rest)
+  | .letDecl xs (some (.lit l)) :: rest => by
+      rw [cyStmts]; simp only [cyStmt]
+      exact .consSS .letS (cyStmts_rel Δ hwf rest)
+  | .letDecl xs (some (.var y)) :: rest => by
+      rw [cyStmts]; simp only [cyStmt]
+      exact .consSS .letS (cyStmts_rel Δ hwf rest)
+  | .letDecl xs (some (.builtin op es)) :: rest => by
+      rw [cyStmts]; simp only [cyStmt]
+      exact .consSS .letS (cyStmts_rel Δ hwf rest)
+  | .assign xs (.lit l) :: rest => by
+      rw [cyStmts]; simp only [cyStmt]
+      exact .consSS .assignS (cyStmts_rel Δ hwf rest)
+  | .assign xs (.var y) :: rest => by
+      rw [cyStmts]; simp only [cyStmt]
+      exact .consSS .assignS (cyStmts_rel Δ hwf rest)
+  | .assign xs (.builtin op es) :: rest => by
+      rw [cyStmts]; simp only [cyStmt]
+      exact .consSS .assignS (cyStmts_rel Δ hwf rest)
+  | .exprStmt (.lit l) :: rest => by
+      rw [cyStmts]; simp only [cyStmt]
+      exact .consSS .exprStmtS (cyStmts_rel Δ hwf rest)
+  | .exprStmt (.var y) :: rest => by
+      rw [cyStmts]; simp only [cyStmt]
+      exact .consSS .exprStmtS (cyStmts_rel Δ hwf rest)
+  | .exprStmt (.builtin op es) :: rest => by
+      rw [cyStmts]; simp only [cyStmt]
+      exact .consSS .exprStmtS (cyStmts_rel Δ hwf rest)
+  | .cond c body :: rest => by
+      rw [cyStmts, cyStmt, cyBlock]
+      exact .consSS (.condS (cyStmts_rel _ (hwf.extend body) body))
+        (cyStmts_rel Δ hwf rest)
+  | .switch c cases dflt :: rest => by
+      rw [cyStmts, cyStmt]
+      exact .consSS (.switchS (cyCases_rel Δ hwf cases) (cyDflt_rel Δ hwf dflt))
+        (cyStmts_rel Δ hwf rest)
+  | .forLoop init c post body :: rest => by
+      rw [cyStmts, cyStmt]
+      simp only [cyBlock]
+      exact .consSS (.forS
+          (cyStmts_rel _ ((hwf.filter _).extend post) post)
+          (cyStmts_rel _ ((hwf.filter _).extend body) body))
+        (cyStmts_rel Δ hwf rest)
+  | .break :: rest => by
+      rw [cyStmts]; simp only [cyStmt]
+      exact .consSS .breakS (cyStmts_rel Δ hwf rest)
+  | .continue :: rest => by
+      rw [cyStmts]; simp only [cyStmt]
+      exact .consSS .continueS (cyStmts_rel Δ hwf rest)
+  | .leave :: rest => by
+      rw [cyStmts]; simp only [cyStmt]
+      exact .consSS .leaveS (cyStmts_rel Δ hwf rest)
+
+/-- The case-list transform inhabits the relation. -/
+theorem cyCases_rel (Δ : DEnv) (hwf : CarryWF Δ) :
+    ∀ cs : List (Literal × Block Op), CyRel Δ (.cases cs) (.cases (cyCases Δ cs))
+  | [] => by rw [cyCases]; exact .casesNil
+  | (l, b) :: rest => by
+      rw [cyCases, cyBlock]
+      exact .casesCons (cyStmts_rel _ (hwf.extend b) b) (cyCases_rel Δ hwf rest)
+
+/-- The default transform inhabits the relation. -/
+theorem cyDflt_rel (Δ : DEnv) (hwf : CarryWF Δ) :
+    ∀ dflt : Option (Block Op), CyRel Δ (.odflt dflt) (.odflt (cyDflt Δ dflt))
+  | none => by rw [cyDflt]; exact .odfltNone
+  | some b => by
+      rw [cyDflt, cyBlock]
+      exact .odfltSome (cyStmts_rel _ (hwf.extend b) b)
+
+end
+
+/-! ### Reflexivity (the all-skip derivation) -/
+
+mutual
+
+theorem CyRel.reflStmt (Δ : DEnv) : ∀ s : Stmt Op, CyRel Δ (.stmt s) (.stmt s)
+  | .block body => .blockS (CyRel.reflStmts _ body)
+  | .funDef n ps rs body => .funDefS (CyRel.reflStmts _ body)
+  | .letDecl xs v => .letS
+  | .assign xs e => .assignS
+  | .exprStmt e => .exprStmtS
+  | .cond c body => .condS (CyRel.reflStmts _ body)
+  | .switch c cases dflt =>
+      .switchS (CyRel.reflCases Δ cases) (CyRel.reflDflt Δ dflt)
+  | .forLoop init c post body =>
+      .forS (CyRel.reflStmts _ post) (CyRel.reflStmts _ body)
+  | .break => .breakS
+  | .continue => .continueS
+  | .leave => .leaveS
+
+theorem CyRel.reflStmts (Δ : DEnv) : ∀ ss : List (Stmt Op),
+    CyRel Δ (.stmts ss) (.stmts ss)
+  | [] => .nilSS
+  | s :: rest => .consSS (CyRel.reflStmt Δ s) (CyRel.reflStmts Δ rest)
+
+theorem CyRel.reflCases (Δ : DEnv) : ∀ cs : List (Literal × Block Op),
+    CyRel Δ (.cases cs) (.cases cs)
+  | [] => .casesNil
+  | (l, b) :: rest => .casesCons (CyRel.reflStmts _ b) (CyRel.reflCases Δ rest)
+
+theorem CyRel.reflDflt (Δ : DEnv) : ∀ dflt : Option (Block Op),
+    CyRel Δ (.odflt dflt) (.odflt dflt)
+  | none => .odfltNone
+  | some b => .odfltSome (CyRel.reflStmts _ b)
+
+end
+
+/-! ### Function-environment relation -/
+
+/-- Declarations related by the carry transform, relative to the defining
+environment. -/
+def CyFDeclRel (cenv : FunEnv D) (d₁ d₂ : FDecl D) : Prop :=
+  d₁.params = d₂.params ∧ d₁.rets = d₂.rets ∧
+    ∃ Δ, CarryCompat (calls := calls) (creates := creates) Δ cenv ∧
+      CyRel (carryDeltaExtend Δ d₁.body) (.stmts d₁.body) (.stmts d₂.body)
+
+/-- Scopes related pairwise, relative to the defining environment. -/
+def CyScopeRel (cenv : FunEnv D) (s₁ s₂ : FScope D) : Prop :=
+  List.Forall₂ (fun p q => p.1 = q.1 ∧
+    CyFDeclRel (calls := calls) (creates := creates) cenv p.2 q.2) s₁ s₂
+
+/-- Function environments related scope-by-scope, each scope relative to its
+own defining suffix. -/
+inductive CyFunsRel : FunEnv D → FunEnv D → Prop
+  | nil : CyFunsRel [] []
+  | cons {s₁ s₂ : FScope D} {r₁ r₂ : FunEnv D} :
+      CyScopeRel (calls := calls) (creates := creates) (s₁ :: r₁) s₁ s₂ →
+      CyFunsRel r₁ r₂ →
+      CyFunsRel (s₁ :: r₁) (s₂ :: r₂)
+
+/-- A scope lookup transports across `CyScopeRel`. -/
+theorem cyScopeRel_find {cenv : FunEnv D} {s₁ s₂ : FScope D}
+    (h : CyScopeRel (calls := calls) (creates := creates) cenv s₁ s₂)
+    (fn : Ident) :
+    (s₁.find? (fun p => p.1 = fn) = none ∧ s₂.find? (fun p => p.1 = fn) = none) ∨
+    (∃ p q, s₁.find? (fun p => p.1 = fn) = some p ∧
+      s₂.find? (fun p => p.1 = fn) = some q ∧ p.1 = q.1 ∧
+      CyFDeclRel (calls := calls) (creates := creates) cenv p.2 q.2) := by
+  induction h with
+  | nil => left; simp
+  | @cons p q u₁ u₂ hpq _ ih =>
+      by_cases hp : p.1 = fn
+      · right
+        refine ⟨p, q, ?_, ?_, hpq.1, hpq.2⟩
+        · exact List.find?_cons_of_pos (by simp [hp])
+        · exact List.find?_cons_of_pos (by simp [← hpq.1, hp])
+      · rw [List.find?_cons_of_neg (by simp [hp]),
+            List.find?_cons_of_neg (by simp [← hpq.1, hp])]
+        exact ih
+
+/-- `lookupFun` transports forward across `CyFunsRel`. -/
+theorem lookupFun_cyFunsRel {f₁ f₂ : FunEnv D}
+    (hR : CyFunsRel (calls := calls) (creates := creates) f₁ f₂)
+    {fn : Ident} {decl₁ : FDecl D} {cenv₁ : FunEnv D}
+    (h : lookupFun f₁ fn = some (decl₁, cenv₁)) :
+    ∃ decl₂ cenv₂, lookupFun f₂ fn = some (decl₂, cenv₂) ∧
+      CyFDeclRel (calls := calls) (creates := creates) cenv₁ decl₁ decl₂ ∧
+      CyFunsRel (calls := calls) (creates := creates) cenv₁ cenv₂ := by
+  induction hR with
+  | nil => cases h
+  | @cons s₁ s₂ r₁ r₂ hscope hrest ih =>
+      unfold lookupFun at h ⊢
+      rcases cyScopeRel_find hscope fn with ⟨h1, h2⟩ | ⟨p, q, h1, h2, hname, hdecl⟩
+      · rw [h1] at h
+        rw [h2]
+        exact ih h
+      · rw [h1] at h
+        rw [h2]
+        injection h with h
+        injection h with hd hc
+        subst hd hc
+        exact ⟨q.2, s₂ :: r₂, rfl, hdecl, .cons hscope hrest⟩
+
+/-- `lookupFun` transports backward across `CyFunsRel`. -/
+theorem lookupFun_cyFunsRel_bwd {f₁ f₂ : FunEnv D}
+    (hR : CyFunsRel (calls := calls) (creates := creates) f₁ f₂)
+    {fn : Ident} {decl₂ : FDecl D} {cenv₂ : FunEnv D}
+    (h : lookupFun f₂ fn = some (decl₂, cenv₂)) :
+    ∃ decl₁ cenv₁, lookupFun f₁ fn = some (decl₁, cenv₁) ∧
+      CyFDeclRel (calls := calls) (creates := creates) cenv₁ decl₁ decl₂ ∧
+      CyFunsRel (calls := calls) (creates := creates) cenv₁ cenv₂ := by
+  induction hR with
+  | nil => cases h
+  | @cons s₁ s₂ r₁ r₂ hscope hrest ih =>
+      unfold lookupFun at h ⊢
+      rcases cyScopeRel_find hscope fn with ⟨h1, h2⟩ | ⟨p, q, h1, h2, hname, hdecl⟩
+      · rw [h2] at h
+        rw [h1]
+        exact ih h
+      · rw [h2] at h
+        rw [h1]
+        injection h with h
+        injection h with hd hc
+        subst hd hc
+        exact ⟨p.2, s₁ :: r₁, rfl, hdecl, .cons hscope hrest⟩
+
+/-- Extract the hoisted-scope alignment from a related statement sequence. -/
+theorem CyRel.hoist_scopeRel {Δ : DEnv} {pc pc' : PCode Op}
+    (h : CyRel Δ pc pc') :
+    ∀ {ss ss' : List (Stmt Op)}, pc = .stmts ss → pc' = .stmts ss' →
+      List.Forall₂ (fun (p q : Ident × FDecl D) => p.1 = q.1 ∧
+        p.2.params = q.2.params ∧ p.2.rets = q.2.rets ∧
+        CyRel (carryDeltaExtend Δ p.2.body) (.stmts p.2.body) (.stmts q.2.body))
+        (hoist D ss) (hoist D ss') := by
+  induction h with
+  | nilSS =>
+      intro ss ss' hss hss'
+      injection hss with h1; injection hss' with h2
+      subst h1; subst h2
+      exact .nil
+  | consSS hs _ _ ihrest =>
+      intro ss ss' hss hss'
+      injection hss with h1; injection hss' with h2
+      subst h1; subst h2
+      have htail := ihrest rfl rfl
+      cases hs with
+      | funDefS hbody => exact .cons ⟨rfl, rfl, rfl, hbody⟩ htail
+      | blockS _ => simpa [hoist] using htail
+      | letS => simpa [hoist] using htail
+      | assignS => simpa [hoist] using htail
+      | condS _ => simpa [hoist] using htail
+      | switchS _ _ => simpa [hoist] using htail
+      | forS _ _ => simpa [hoist] using htail
+      | exprStmtS => simpa [hoist] using htail
+      | breakS => simpa [hoist] using htail
+      | continueS => simpa [hoist] using htail
+      | leaveS => simpa [hoist] using htail
+  | siteLet hld hnd hsc hok _ ihrest =>
+      intro ss ss' hss hss'
+      injection hss with h1; injection hss' with h2
+      subst h1; subst h2
+      have htail := ihrest rfl rfl
+      show List.Forall₂ _ (hoist D (_ :: _)) (hoist D (_ :: _ :: _))
+      simpa [hoist, inlineCore] using htail
+  | siteAssign hld hnd hsc hok _ ihrest =>
+      intro ss ss' hss hss'
+      injection hss with h1; injection hss' with h2
+      subst h1; subst h2
+      have htail := ihrest rfl rfl
+      simpa [hoist, inlineCore] using htail
+  | siteExpr hld hnd hsc hok _ ihrest =>
+      intro ss ss' hss hss'
+      injection hss with h1; injection hss' with h2
+      subst h1; subst h2
+      have htail := ihrest rfl rfl
+      simpa [hoist, inlineCore] using htail
+  | expr => exact fun h _ => nomatch h
+  | args => exact fun h _ => nomatch h
+  | blockS _ _ => exact fun h _ => nomatch h
+  | funDefS _ _ => exact fun h _ => nomatch h
+  | letS => exact fun h _ => nomatch h
+  | assignS => exact fun h _ => nomatch h
+  | exprStmtS => exact fun h _ => nomatch h
+  | condS _ _ => exact fun h _ => nomatch h
+  | switchS _ _ _ _ => exact fun h _ => nomatch h
+  | forS _ _ _ _ => exact fun h _ => nomatch h
+  | breakS => exact fun h _ => nomatch h
+  | continueS => exact fun h _ => nomatch h
+  | leaveS => exact fun h _ => nomatch h
+  | loopL _ _ _ _ => exact fun h _ => nomatch h
+  | casesNil => exact fun h _ => nomatch h
+  | casesCons _ _ _ _ => exact fun h _ => nomatch h
+  | odfltNone => exact fun h _ => nomatch h
+  | odfltSome _ _ => exact fun h _ => nomatch h
+
+/-- The scope-alignment of a related block yields `CyScopeRel`. -/
+theorem cyScopeRel_of_block {Δ : DEnv} {funs : FunEnv D}
+    {body body' : List (Stmt Op)}
+    (hrel : CyRel (carryDeltaExtend Δ body) (.stmts body) (.stmts body'))
+    (hcompat : CarryCompat (calls := calls) (creates := creates)
+      (carryDeltaExtend Δ body) (hoist D body :: funs)) :
+    CyScopeRel (calls := calls) (creates := creates)
+      (hoist D body :: funs) (hoist D body) (hoist D body') := by
+  have hpairs := CyRel.hoist_scopeRel (calls := calls) (creates := creates)
+    hrel rfl rfl
+  refine List.Forall₂.imp ?_ hpairs
+  intro p q hpq
+  exact ⟨hpq.1, hpq.2.1, hpq.2.2.1, carryDeltaExtend Δ body, hcompat, hpq.2.2.2⟩
+
+/-- Reflexive scope relation (for untouched `for`-loop inits). -/
+theorem cyScopeRel_refl (cenv : FunEnv D) (s : FScope D) :
+    CyScopeRel (calls := calls) (creates := creates) cenv s s := by
+  induction s with
+  | nil => exact .nil
+  | cons p rest ih =>
+      refine .cons ⟨rfl, rfl, rfl, [], CarryCompat.nil _, ?_⟩ ih
+      exact CyRel.reflStmts _ _
+
+/-- Function environments are self-related. -/
+theorem CyFunsRel.refl : ∀ funs : FunEnv D,
+    CyFunsRel (calls := calls) (creates := creates) funs funs
+  | [] => .nil
+  | s :: rest => .cons (cyScopeRel_refl _ s) (CyFunsRel.refl rest)
+
+/-! ### Result correspondence -/
+
+/-- Result correspondence: identical, except a `halt` reached inside an inlined
+`let`-form site carries the site's zero-bound targets as an environment prefix
+(erased at the nearest enclosing block's `restore`). -/
+inductive CyRes : Res D → Res D → Prop
+  | refl (r : Res D) : CyRes r r
+  | haltIns (Zp V₁ : VEnv D) (st : EvmState) :
+      CyRes (.sres V₁ st .halt) (.sres (Zp ++ V₁) st .halt)
+
+/-- The per-class result claim: residue only on the statement-sequence class. -/
+def cyResOK : Code Op → Res D → Res D → Prop
+  | .stmts _, r₁, r₂ => CyRes (calls := calls) (creates := creates) r₁ r₂
+  | _, r₁, r₂ => r₂ = r₁
+
+/-- The switch selection of related case lists/defaults is a related block. -/
+theorem CyRel.selectRel {Δ : DEnv} {cases cases' : List (Literal × Block Op)}
+    {dflt dflt' : Option (Block Op)}
+    (hcs : CyRel Δ (.cases cases) (.cases cases'))
+    (hd : CyRel Δ (.odflt dflt) (.odflt dflt')) (cv : U256) :
+    CyRel Δ (.stmt (.block (selectSwitch D cv cases dflt)))
+      (.stmt (.block (selectSwitch D cv cases' dflt'))) := by
+  induction cases generalizing cases' with
+  | nil =>
+      cases hcs
+      cases hd with
+      | odfltNone =>
+          show CyRel Δ (.stmt (.block (Option.getD none [])))
+            (.stmt (.block (Option.getD none [])))
+          exact .blockS (CyRel.reflStmts _ _)
+      | odfltSome hb =>
+          simpa [selectSwitch] using CyRel.blockS hb
+  | cons head rest ih =>
+      rcases head with ⟨l, b⟩
+      cases hcs with
+      | casesCons hb hrest =>
+          by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+          · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv]),
+                selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
+            exact .blockS hb
+          · rw [selectSwitch, List.find?_cons_of_neg (by simp [hcv]),
+                selectSwitch, List.find?_cons_of_neg (by simp [hcv])]
+            have := ih hrest
+            rw [selectSwitch, selectSwitch] at this
+            exact this
+
