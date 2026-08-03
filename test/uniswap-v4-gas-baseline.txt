@@ -42,8 +42,8 @@ SwapMath.sol:computeSwapStep(uint160,uint160,uint128,int256,uint24)	17357	14774
 TickBitmap.sol:flipTick(int24)	33276	33192
 TickBitmap.sol:nextInitializedTickWithinOneWord(int24,int24,bool)	17749	16773
 TickMath.sol:getSqrtPriceAtTick(int24)	2162	2380
-TickMath.sol:getSqrtPriceAtTickSweep()	77124	73316
+TickMath.sol:getSqrtPriceAtTickSweep()	77136	73316
 TickMath.sol:getTickAtSqrtPrice(uint160)	4870	4546
-TickMath.sol:getTickAtSqrtPriceSweep()	218122	203628
+TickMath.sol:getTickAtSqrtPriceSweep()	218134	203628
 UnsafeMath.sol:divRoundingUp(uint256,uint256)	474	372
 UnsafeMath.sol:simpleMulDiv(uint256,uint256,uint256)	484	396
