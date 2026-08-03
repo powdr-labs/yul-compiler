@@ -479,19 +479,19 @@ theorem dve_dom {f : Func} (hwf : f.wfCheck n = true)
   rw [mem_ub] at hxub
   exact hx.2 (ToAsm.domCheck_entry hli hdom hxub.1)
 
-set_option warningAsError false in
 omit model in
-/-- Dominance preservation for straight-line block coalescing.
-
-TODO(proof): merging appends `t`'s body to its *unique* predecessor `bi`,
-which dominates it, so every definition that dominated a use before still
-does; the global `t.params ↦ args` substitution replaces each parameter by
-a value live at the end of `bi`, hence dominating everything `t`
-dominated. -/
-theorem coalesce_dom {f : Func} (hwf : f.wfCheck n = true)
+/-- **Dominance preservation for block coalescing** — read off the pass's
+own guard. Merging *grows* a block's use set (it absorbs the target's), so
+this is the one pass `domCheck_of_shrinking` cannot serve; rather than
+re-derive the liveness fixed point, `Passes.coalesce` checks dominance on
+its result and falls back to its input, which is behavior-neutral and never
+fires in practice. -/
+theorem coalesce_dom {f : Func}
     (hdom : ToAsm.Func.domCheck f = true) :
     ToAsm.Func.domCheck (Passes.coalesce f) = true := by
-  sorry
+  rcases Passes.coalesce_cases f with ⟨h, -, hd⟩ | h
+  · rw [h]; exact hd
+  · rw [h]; exact hdom
 
 omit model in
 /-- **Dominance preservation for branch-sense normalization** — proved. The
@@ -535,7 +535,7 @@ theorem runOnce_dom {f : Func} {n : Nat} (hwf : f.wfCheck n = true)
   have hwf4 := Passes.constFold_wf hwf3
   unfold Passes.runOnce
   exact dve_dom hwf4 (constFold_dom (invertBranches_dom
-    (coalesce_dom hwf1 (elimTrivialParams_dom hwf hdom))))
+    (coalesce_dom (elimTrivialParams_dom hwf hdom))))
 
 omit model in
 theorem Passes.elimTrivialParams_params_entry (f : Func) :
@@ -636,7 +636,7 @@ theorem runOnce_sound {P : Prog} {f : Func} {args : List U256}
   have hwf3 : f3.wfCheck P.funcs.size = true := Passes.invertBranches_wf hwf2
   have hwf4 : f4.wfCheck P.funcs.size = true := Passes.constFold_wf hwf3
   have hdom1 : ToAsm.Func.domCheck f1 = true := elimTrivialParams_dom hwf hdom
-  have hdom2 : ToAsm.Func.domCheck f2 = true := coalesce_dom hwf1 hdom1
+  have hdom2 : ToAsm.Func.domCheck f2 = true := coalesce_dom hdom1
   have hdom3 : ToAsm.Func.domCheck f3 = true := invertBranches_dom hdom2
   obtain ⟨-, -, ⟨eb1, heb1, -⟩, -⟩ := Passes.func_wfCheck_iff.mp hwf1
   obtain ⟨-, -, ⟨eb2, heb2, -⟩, -⟩ := Passes.func_wfCheck_iff.mp hwf2

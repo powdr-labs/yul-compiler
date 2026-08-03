@@ -49,13 +49,25 @@ theorem nrets_with (f : Func) (e : BlockId) (bs : Array Block) :
 
 /-- Every function `mergeOnce` can produce keeps `params` and `nrets`: the
 merge only ever rebuilds `blocks` (and renumbers `entry`). -/
+theorem mergeOnce_entry {f g : Func} (h : mergeOnce f = some g) :
+    g.entry = f.entry := by
+  unfold mergeOnce at h
+  cases hm : findMerge f with
+  | none => rw [hm] at h; exact absurd h (by simp)
+  | some q =>
+      obtain ⟨bi, t⟩ := q
+      rw [hm] at h
+      dsimp only [Option.bind] at h
+      obtain rfl := (Option.some.inj h).symm
+      rfl
+
 theorem mergeOnce_fields {f g : Func} (h : mergeOnce f = some g) :
     g.params = f.params ∧ g.nrets = f.nrets := by
   unfold mergeOnce at h
   cases hm : findMerge f with
   | none => rw [hm] at h; exact absurd h (by simp)
   | some q =>
-      obtain ⟨bi, t, args⟩ := q
+      obtain ⟨bi, t⟩ := q
       rw [hm] at h
       dsimp only [Option.bind] at h
       obtain rfl := (Option.some.inj h).symm
@@ -71,11 +83,11 @@ def coalesceStep (_ : Nat) (r : ElimTrivialLoopState) :
   | some f' => .yield ⟨none, f'⟩
   | none => .done ⟨some r.2, r.2⟩
 
-theorem coalesce_eq_loop (f : Func) :
-    coalesce f =
+theorem coalesceRaw_eq_loop (f : Func) :
+    coalesceRaw f =
       let r := loopWith coalesceStep (List.range' 0 f.blocks.size 1) ⟨none, f⟩
       r.1.getD r.2 := by
-  unfold coalesce
+  unfold coalesceRaw
   dsimp only
   simp only [Std.Legacy.Range.forIn_eq_forIn_range', Std.Legacy.Range.size]
   rw [Id.forIn_eq_loopWith (g := coalesceStep)
@@ -89,9 +101,9 @@ theorem coalesce_eq_loop (f : Func) :
       (List.range' 0 f.blocks.size 1) (⟨none, f⟩ : ElimTrivialLoopState)).1 <;> simp
 
 /-- Lift a property preserved by one merge to the whole fixed point. -/
-theorem coalesce_induction {motive : Func → Prop} (f : Func) (hf : motive f)
+theorem coalesceRaw_induction {motive : Func → Prop} (f : Func) (hf : motive f)
     (step : ∀ g g', motive g → mergeOnce g = some g' → motive g') :
-    motive (coalesce f) := by
+    motive (coalesceRaw f) := by
   have loopInv : ∀ (xs : List Nat) (r : ElimTrivialLoopState),
       motive r.2 → (∀ h, r.1 = some h → motive h) →
       let out := loopWith coalesceStep xs r
@@ -112,16 +124,51 @@ theorem coalesce_induction {motive : Func → Prop} (f : Func) (hf : motive f)
         | none => simpa using hr
         | some g' =>
             exact ih ⟨none, g'⟩ (step r.2 g' hr hm) (by simp)
-  rw [coalesce_eq_loop]
+  rw [coalesceRaw_eq_loop]
   exact loopInv (List.range' 0 f.blocks.size 1) ⟨none, f⟩ hf (by simp)
 
-theorem coalesce_params (f : Func) : (coalesce f).params = f.params := by
-  exact coalesce_induction (motive := fun g => g.params = f.params) f rfl
+theorem coalesceRaw_params (f : Func) : (coalesceRaw f).params = f.params :=
+  coalesceRaw_induction (motive := fun g => g.params = f.params) f rfl
     (fun _ _ hg hm => (mergeOnce_fields hm).1.trans hg)
 
-theorem coalesce_nrets (f : Func) : (coalesce f).nrets = f.nrets := by
-  exact coalesce_induction (motive := fun g => g.nrets = f.nrets) f rfl
+theorem coalesceRaw_nrets (f : Func) : (coalesceRaw f).nrets = f.nrets :=
+  coalesceRaw_induction (motive := fun g => g.nrets = f.nrets) f rfl
     (fun _ _ hg hm => (mergeOnce_fields hm).2.trans hg)
+
+theorem coalesceRaw_entry (f : Func) : (coalesceRaw f).entry = f.entry :=
+  coalesceRaw_induction (motive := fun g => g.entry = f.entry) f rfl
+    (fun _ _ hg hm => (mergeOnce_entry hm).trans hg)
+
+/-- The guard leaves only two possibilities: the coalesced function (with
+its checks passing) or the input untouched. -/
+theorem coalesce_cases (f : Func) :
+    (coalesce f = coalesceRaw f ∧ (coalesceRaw f).allDefs.Nodup ∧
+        ToAsm.Func.domCheck (coalesceRaw f) = true)
+      ∨ coalesce f = f := by
+  unfold coalesce
+  dsimp only
+  by_cases hg : (decide (coalesceRaw f).allDefs.Nodup
+      && ToAsm.Func.domCheck (coalesceRaw f)) = true
+  · rw [if_pos hg]
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at hg
+    exact Or.inl ⟨rfl, hg.1, hg.2⟩
+  · rw [if_neg hg]
+    exact Or.inr rfl
+
+theorem coalesce_params (f : Func) : (coalesce f).params = f.params := by
+  rcases coalesce_cases f with ⟨h, -, -⟩ | h
+  · rw [h]; exact coalesceRaw_params f
+  · rw [h]
+
+theorem coalesce_nrets (f : Func) : (coalesce f).nrets = f.nrets := by
+  rcases coalesce_cases f with ⟨h, -, -⟩ | h
+  · rw [h]; exact coalesceRaw_nrets f
+  · rw [h]
+
+theorem coalesce_entry (f : Func) : (coalesce f).entry = f.entry := by
+  rcases coalesce_cases f with ⟨h, -, -⟩ | h
+  · rw [h]; exact coalesceRaw_entry f
+  · rw [h]
 
 /-! ### Structural facts about branch-sense normalization
 

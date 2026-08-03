@@ -133,10 +133,18 @@ theorem hfindMerge' : Passes.findMerge fMain' = none := by
 theorem hmerge' : Passes.mergeOnce fMain' = none := by
   simp [Passes.mergeOnce, hfindMerge']
 
-theorem hcoal' : Passes.coalesce fMain' = fMain' := by
-  simp only [Passes.coalesce, Std.Legacy.Range.forIn_eq_forIn_range',
+theorem hcoalRaw' : Passes.coalesceRaw fMain' = fMain' := by
+  simp only [Passes.coalesceRaw, Std.Legacy.Range.forIn_eq_forIn_range',
     Std.Legacy.Range.size]
   simp [show fMain'.blocks.size = 6 from rfl, r6, hmerge']
+
+/-- The guard returns `fMain'` whichever way it goes, since coalescing is
+already the identity here. -/
+theorem hcoal' : Passes.coalesce fMain' = fMain' := by
+  unfold Passes.coalesce
+  dsimp only
+  rw [hcoalRaw']
+  split <;> rfl
 
 /-- The counterexample has no `iszero`, so branch-sense normalization is a
 no-op. -/

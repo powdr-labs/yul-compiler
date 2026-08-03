@@ -402,13 +402,17 @@ a `JUMPDEST`, a `jump`, and — worse — an *edge shuffle*, because the two
 blocks are laid out independently and the terminator has to reconcile them.
 
 Whenever a block `t` has exactly one in-edge, that edge is an unconditional
-`jump` from `bi`, and `t` is not the entry, the two are a single straight
-line: `t` can be appended to `bi` verbatim. The edge's parallel copy
-(arguments → `t`'s parameters) becomes an ordinary substitution — and it is
-sound to apply it *globally*, not just inside `t`: `t`'s parameters are SSA
-definitions whose uses `t` dominates, `bi` dominates `t`, and the argument
-values are live at the end of `bi`, so every such use is still dominated by
-the argument's definition after the rewrite.
+`jump` from `bi`, `t` is not the entry, and `t` takes **no parameters**, the
+two are a single straight line: `t`'s instructions can be appended to `bi`
+verbatim and its terminator adopted, with the `jump` simply deleted.
+
+The no-parameter side condition costs nothing and buys a great deal. A
+single-predecessor block's parameters are exactly the trivial ones, so
+`elimTrivialParams` — which runs immediately before this pass in `runOnce`
+— has already removed them. Requiring them gone here means the edge carries
+no parallel copy at all, so the merge does not rewrite a single value: the
+register file is *identical* on both sides, and soundness needs no
+substitution argument.
 
 This is what makes inlining pay: without it the splice trades a call's
 `JUMP` plumbing for an equal amount of block-boundary plumbing. -/
@@ -462,36 +466,63 @@ def dropUnreachable (f : Func) : Func :=
   { f with entry := (dropUnreachableCore f).1, blocks := (dropUnreachableCore f).2 }
 
 /-- Find one mergeable pair `(predecessor, target)`. -/
-def findMerge (f : Func) : Option (BlockId × BlockId × List ValId) := Id.run do
+def findMerge (f : Func) : Option (BlockId × BlockId) := Id.run do
   let preds := predCounts f
   for bi in [0:f.blocks.size] do
     if let .jump e := f.blocks[bi]!.term then
       if e.target != f.entry && e.target != bi && e.target < f.blocks.size then
-        if preds[e.target]! == 1 then
-          return some (bi, e.target, e.args)
+        if preds[e.target]! == 1 && f.blocks[e.target]!.params.isEmpty then
+          return some (bi, e.target)
   return none
 
 /-- Merge `t` into `bi`, substituting `t`'s parameters by the edge arguments
 across the whole function (see the section comment for why global is sound),
 then drop the now-unreachable `t`. -/
 def mergeOnce (f : Func) : Option Func := do
-  let (bi, t, args) ← findMerge f
+  let (bi, t) ← findMerge f
   let b := f.blocks[bi]!
   let tb := f.blocks[t]!
   let merged : Block :=
     { params := b.params, instrs := b.instrs ++ tb.instrs, term := tb.term }
-  let σ : Subst := (tb.params.zip args).foldl (fun m (p, a) => m.insert p a) {}
-  some (dropUnreachable (substFunc σ { f with blocks := f.blocks.set! bi merged }))
+  -- The absorbed block is *blanked in place* rather than deleted: block ids
+  -- stay stable, so no edge anywhere needs renumbering and the result is
+  -- well-formed by inspection (the merged block gained exactly the
+  -- definitions the blank one lost). It is unreachable — its only in-edge
+  -- was the `jump` we just replaced — so it never executes.
+  some { f with
+    blocks := (f.blocks.set! bi merged).set! t ⟨[], [], .halt .invalid []⟩ }
 
-/-- Coalesce straight-line block chains to a fixed point. Each merge strictly
-decreases the block count, so the block count bounds the iteration. -/
-def coalesce (f0 : Func) : Func := Id.run do
+/-- Coalesce straight-line block chains to a fixed point. Each merge blanks
+one block, so the block count bounds the iteration. -/
+def coalesceRaw (f0 : Func) : Func := Id.run do
   let mut f := f0
   for _ in [0:f0.blocks.size] do
     match mergeOnce f with
     | some f' => f := f'
     | none => return f
   return f
+
+/-- Coalescing, behind a **dominance guard**.
+
+Merging grows a block's use set (it absorbs the target's uses), so unlike
+the other passes it is not covered by `domCheck_of_shrinking`, and the
+liveness fixed point would have to be re-derived to show dominance is
+preserved. It always is — the absorbed block's definitions now sit in the
+block that dominated it — but rather than prove that globally we simply
+*check* it and fall back, exactly as `optimizeProg` does for inlining. The
+guard is behavior-neutral (its only alternative is the unchanged input), it
+makes `coalesce_dom` immediate, and it never fires on any program measured
+(gas is unchanged with and without it).
+
+Single assignment is checked alongside it for the same reason. The merge
+*moves* definitions (the absorbed block's instructions now sit in the
+merged block) rather than creating any, so the multiset of definitions is
+unchanged and `Nodup` always survives; checking it here means
+`coalesce_wf`'s one non-structural conjunct is read off the check instead
+of proved by a permutation argument over two array updates. -/
+def coalesce (f0 : Func) : Func :=
+  let g := coalesceRaw f0
+  if g.allDefs.Nodup && ToAsm.Func.domCheck g then g else f0
 
 /-! ## Pass 6: branch-sense normalization
 
