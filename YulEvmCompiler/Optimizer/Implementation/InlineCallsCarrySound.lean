@@ -716,3 +716,298 @@ theorem carry_transfer {funs₁ : FunEnv D} {V₁ : VEnv D} {st : EvmState}
   | loopBodyHalt =>
       intro A W bound funs₂ W' hV hsc hb hag
       simp [carryCode] at hsc
+
+/-! ### Classification inversions (carry) -/
+
+/-- `carryClassifyDecl` unpacked. -/
+theorem carryClassifyDecl_inv {f : Ident} {ps rs : List Ident} {body : Block Op}
+    {d : IDecl} (h : carryClassifyDecl f ps rs body = some d) :
+    d.ps = ps ∧ d.rs = rs ∧ (ps ++ rs).Nodup ∧
+    carryStmts (ps ++ rs) d.ss = true ∧
+    (body = d.ss ∨ body = d.ss ++ [.leave]) := by
+  simp only [carryClassifyDecl] at h
+  split at h
+  · exact absurd h (by simp)
+  · next hplain =>
+      split at h
+      · next hc =>
+          rw [Bool.and_eq_true] at hc
+          split at h
+          · next hcl =>
+              injection h with h
+              subst h
+              refine ⟨rfl, rfl, by simpa using hc.1, hc.2, ?_⟩
+              unfold dropTrailingLeave
+              split
+              · next hlast =>
+                  right
+                  have hne : body ≠ [] := by
+                    intro he; rw [he] at hlast; cases hlast
+                  have hgl : body.getLast hne = .leave := by
+                    rw [List.getLast?_eq_some_getLast hne] at hlast
+                    injection hlast
+                  rw [← hgl]
+                  exact (List.dropLast_append_getLast hne).symm
+              · left; rfl
+          · exact absurd h (by simp)
+      · exact absurd h (by simp)
+
+/-- Entries produced by `carryHoistDecls` carry names outside `seen`. -/
+theorem carryHoistDecls_not_seen {seen : List Ident} : ∀ {body : List (Stmt Op)}
+    {p : Ident × IDecl}, p ∈ carryHoistDecls seen body → p.1 ∉ seen := by
+  intro body
+  induction body generalizing seen with
+  | nil => intro p hp; cases hp
+  | cons s rest ih =>
+      intro p hp
+      cases s with
+      | funDef f ps rs fbody =>
+          unfold carryHoistDecls at hp
+          split at hp
+          · exact ih hp
+          · next hseen =>
+              split at hp
+              · rcases List.mem_cons.mp hp with rfl | hp
+                · simpa using hseen
+                · have := ih hp
+                  intro hmem
+                  exact this (List.mem_cons_of_mem _ hmem)
+              · have := ih hp
+                intro hmem
+                exact this (List.mem_cons_of_mem _ hmem)
+      | block body => exact ih hp
+      | letDecl xs v => exact ih hp
+      | assign xs e => exact ih hp
+      | exprStmt e => exact ih hp
+      | cond c body => exact ih hp
+      | «switch» c cases dflt => exact ih hp
+      | forLoop init c post body => exact ih hp
+      | «break» => exact ih hp
+      | «continue» => exact ih hp
+      | «leave» => exact ih hp
+
+/-- A `carryHoistDecls` entry is found by `find?` on the hoisted scope, at a
+declaration it classified. -/
+theorem carryHoistDecls_find {seen : List Ident} : ∀ {body : List (Stmt Op)}
+    {f : Ident} {d : IDecl}, (f, d) ∈ carryHoistDecls seen body →
+    ∃ ps rs fbody, (hoist D body).find? (fun p => p.1 = f) =
+        some (f, ⟨ps, rs, fbody⟩) ∧ carryClassifyDecl f ps rs fbody = some d := by
+  intro body
+  induction body generalizing seen with
+  | nil => intro f d hp; cases hp
+  | cons s rest ih =>
+      intro f d hp
+      cases s with
+      | funDef g ps rs fbody =>
+          rw [show hoist D (.funDef g ps rs fbody :: rest) =
+            (g, ⟨ps, rs, fbody⟩) :: hoist D rest from rfl]
+          unfold carryHoistDecls at hp
+          split at hp
+          · next hseen =>
+              have hne : f ≠ g := by
+                intro he
+                have := carryHoistDecls_not_seen hp
+                rw [he] at this
+                exact this (by simpa using hseen)
+              rw [List.find?_cons_of_neg (by simpa using Ne.symm hne)]
+              exact ih hp
+          · next hseen =>
+              split at hp
+              · next d' hcl =>
+                  rcases List.mem_cons.mp hp with heq | hp
+                  · injection heq with h1 h2
+                    subst h1
+                    rw [List.find?_cons_of_pos (by simp)]
+                    exact ⟨ps, rs, fbody, rfl, h2 ▸ hcl⟩
+                  · have hne : f ≠ g := by
+                      intro he
+                      have := carryHoistDecls_not_seen hp
+                      rw [he] at this
+                      exact this (List.mem_cons_self ..)
+                    rw [List.find?_cons_of_neg (by simpa using Ne.symm hne)]
+                    exact ih hp
+              · have hne : f ≠ g := by
+                  intro he
+                  have := carryHoistDecls_not_seen hp
+                  rw [he] at this
+                  exact this (List.mem_cons_self ..)
+                rw [List.find?_cons_of_neg (by simpa using Ne.symm hne)]
+                exact ih hp
+      | block body =>
+          rw [show hoist D (.block body :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | letDecl xs v =>
+          rw [show hoist D (.letDecl xs v :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | assign xs e =>
+          rw [show hoist D (.assign xs e :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | exprStmt e =>
+          rw [show hoist D (.exprStmt e :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | cond c body =>
+          rw [show hoist D (.cond c body :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | «switch» c cases dflt =>
+          rw [show hoist D (.switch c cases dflt :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | forLoop init c post body =>
+          rw [show hoist D (.forLoop init c post body :: rest) =
+            hoist D rest from rfl]
+          exact ih hp
+      | «break» =>
+          rw [show hoist D (.break :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | «continue» =>
+          rw [show hoist D (.continue :: rest) = hoist D rest from rfl]
+          exact ih hp
+      | «leave» =>
+          rw [show hoist D (.leave :: rest) = hoist D rest from rfl]
+          exact ih hp
+
+/-! ### Carry well-formedness of the declaration context -/
+
+/-- Every tracked declaration is carry-classified: distinct parameter/return
+names and a carry-scoped body. -/
+def CarryWF (Δ : DEnv) : Prop :=
+  ∀ p ∈ Δ, (p.2.ps ++ p.2.rs).Nodup ∧
+    carryStmts (p.2.ps ++ p.2.rs) p.2.ss = true
+
+/-- `carryHoistDecls` only produces carry-classified declarations. -/
+theorem carryHoistDecls_wf {seen : List Ident} : ∀ {body : List (Stmt Op)}
+    {p : Ident × IDecl}, p ∈ carryHoistDecls seen body →
+    (p.2.ps ++ p.2.rs).Nodup ∧ carryStmts (p.2.ps ++ p.2.rs) p.2.ss = true := by
+  intro body
+  induction body generalizing seen with
+  | nil => intro p hp; cases hp
+  | cons s rest ih =>
+      intro p hp
+      cases s with
+      | funDef f ps rs fbody =>
+          unfold carryHoistDecls at hp
+          split at hp
+          · exact ih hp
+          · split at hp
+            · next d hcl =>
+                rcases List.mem_cons.mp hp with rfl | hp
+                · obtain ⟨hps, hrs, hnd, hsc, -⟩ := carryClassifyDecl_inv hcl
+                  refine ⟨?_, ?_⟩
+                  · show (d.ps ++ d.rs).Nodup
+                    rw [hps, hrs]; exact hnd
+                  · show carryStmts (d.ps ++ d.rs) d.ss = true
+                    rw [hps, hrs]; exact hsc
+                · exact ih hp
+            · exact ih hp
+      | block body => exact ih hp
+      | letDecl xs v => exact ih hp
+      | assign xs e => exact ih hp
+      | exprStmt e => exact ih hp
+      | cond c body => exact ih hp
+      | «switch» c cases dflt => exact ih hp
+      | forLoop init c post body => exact ih hp
+      | «break» => exact ih hp
+      | «continue» => exact ih hp
+      | «leave» => exact ih hp
+
+/-- `carryDeltaExtend` preserves carry well-formedness. -/
+theorem CarryWF.extend {Δ : DEnv} (h : CarryWF Δ) (body : List (Stmt Op)) :
+    CarryWF (carryDeltaExtend Δ body) := by
+  intro p hp
+  unfold carryDeltaExtend at hp
+  rcases List.mem_append.mp hp with hp | hp
+  · exact carryHoistDecls_wf hp
+  · exact h p (List.mem_filter.mp hp).1
+
+/-- Pruning preserves carry well-formedness. -/
+theorem CarryWF.filter {Δ : DEnv} (h : CarryWF Δ) (q : Ident × IDecl → Bool) :
+    CarryWF (Δ.filter q) :=
+  fun p hp => h p (List.mem_filter.mp hp).1
+
+/-- The empty declaration context is carry well-formed. -/
+theorem CarryWF.nil : CarryWF ([] : DEnv) :=
+  fun p hp => absurd hp (List.not_mem_nil)
+
+/-! ### Declaration-context compatibility (with the carried-name invariant) -/
+
+/-- Every tracked declaration resolves, via `lookupFun`, to a declaration whose
+signature matches and whose body is the tracked one up to a trailing `leave`;
+**and** every name the body carries a call to resolves at the *ambient* scope
+exactly as at the callee's captured *defining* scope. The last conjunct is the
+no-shadowing invariant `carrySurvives` maintains — it is what lets the
+transplanted body's inner calls agree between the two scopes. -/
+def CarryCompat (Δ : DEnv) (funs : FunEnv D) : Prop :=
+  ∀ p ∈ Δ, ∃ body₀ cenv,
+    lookupFun funs p.1 = some (⟨p.2.ps, p.2.rs, body₀⟩, cenv) ∧
+    (body₀ = p.2.ss ∨ body₀ = p.2.ss ++ [.leave]) ∧
+    (∀ g ∈ stmtsCallNames p.2.ss, lookupFun funs g = lookupFun cenv g)
+
+theorem CarryCompat.nil (funs : FunEnv D) :
+    CarryCompat (calls := calls) (creates := creates) [] funs :=
+  fun p hp => absurd hp (List.not_mem_nil)
+
+/-- Ambient lookup below a block ignores names the block does not define. -/
+theorem lookupFun_cons_hoist_not_mem {f : Ident} {body : List (Stmt Op)}
+    {funs : FunEnv D} (hnf : f ∉ definedFuns body) :
+    lookupFun (hoist D body :: funs) f = lookupFun funs f := by
+  have hn : (hoist D body).find? (fun p => p.1 = f) = none :=
+    hoist_find_none (by simpa using hnf)
+  simp only [lookupFun, hn]
+
+/-- Entering a block preserves carry compatibility: its own carry-classified
+declarations resolve in its hoisted scope (with the carried-name invariant
+reflexive there), surviving entries resolve below it (their carried names are
+unshadowed, so both the declaration and its carried names still agree). -/
+theorem CarryCompat.extend {Δ : DEnv} {funs : FunEnv D}
+    (h : CarryCompat (calls := calls) (creates := creates) Δ funs)
+    (body : List (Stmt Op)) :
+    CarryCompat (calls := calls) (creates := creates)
+      (carryDeltaExtend Δ body) (hoist D body :: funs) := by
+  intro p hp
+  unfold carryDeltaExtend at hp
+  rcases List.mem_append.mp hp with hp | hp
+  · obtain ⟨py, pd⟩ := p
+    obtain ⟨ps, rs, fbody, hfind, hcl⟩ := carryHoistDecls_find hp
+    obtain ⟨hps, hrs, -, -, hbody⟩ := carryClassifyDecl_inv hcl
+    refine ⟨fbody, hoist D body :: funs, ?_, hbody, ?_⟩
+    · show lookupFun (hoist D body :: funs) py = _
+      unfold lookupFun
+      rw [hfind]
+      simp only [hps, hrs]
+    · intro g hg; rfl
+  · rw [List.mem_filter] at hp
+    obtain ⟨hmem, hsurv⟩ := hp
+    obtain ⟨body₀, cenv, hlk, hb, hag⟩ := h p hmem
+    unfold carrySurvives at hsurv
+    rw [Bool.and_eq_true] at hsurv
+    have hpnf : p.1 ∉ definedFuns body := by
+      have h1 := hsurv.1; simpa using h1
+    refine ⟨body₀, cenv, ?_, hb, ?_⟩
+    · rw [lookupFun_cons_hoist_not_mem hpnf]; exact hlk
+    · intro g hg
+      have hgnf : g ∉ definedFuns body := by
+        have h1 := List.all_eq_true.mp hsurv.2 g hg; simpa using h1
+      rw [lookupFun_cons_hoist_not_mem hgnf]; exact hag g hg
+
+/-- Pruning names surviving a `for` init keeps carry compatibility under the
+pushed init scope. -/
+theorem CarryCompat.pruneInit {Δ : DEnv} {funs : FunEnv D}
+    (h : CarryCompat (calls := calls) (creates := creates) Δ funs)
+    (init : List (Stmt Op)) :
+    CarryCompat (calls := calls) (creates := creates)
+      (Δ.filter (carrySurvives (definedFuns init)))
+      (hoist D init :: funs) := by
+  intro p hp
+  rw [List.mem_filter] at hp
+  obtain ⟨hmem, hsurv⟩ := hp
+  obtain ⟨body₀, cenv, hlk, hb, hag⟩ := h p hmem
+  unfold carrySurvives at hsurv
+  rw [Bool.and_eq_true] at hsurv
+  have hpnf : p.1 ∉ definedFuns init := by
+    have h1 := hsurv.1; simpa using h1
+  refine ⟨body₀, cenv, ?_, hb, ?_⟩
+  · rw [lookupFun_cons_hoist_not_mem hpnf]; exact hlk
+  · intro g hg
+    have hgnf : g ∉ definedFuns init := by
+      have h1 := List.all_eq_true.mp hsurv.2 g hg; simpa using h1
+    rw [lookupFun_cons_hoist_not_mem hgnf]; exact hag g hg
+
