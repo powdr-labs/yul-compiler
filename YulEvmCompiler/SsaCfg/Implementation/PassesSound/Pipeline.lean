@@ -493,18 +493,35 @@ theorem coalesce_dom {f : Func} (hwf : f.wfCheck n = true)
     ToAsm.Func.domCheck (Passes.coalesce f) = true := by
   sorry
 
-set_option warningAsError false in
 omit model in
-/-- Dominance preservation for branch-sense normalization.
-
-TODO(proof): the rewrite replaces a branch condition `c` by the argument
-`x` of the `iszero` that defined it. `x`'s definition dominates that
-`iszero`, which dominates the branch, so the new use is dominated too; no
-other position changes. -/
+/-- **Dominance preservation for branch-sense normalization** — proved. The
+rewrite replaces a branch condition by the argument of the `iszero` that
+defined it, and that `iszero` lives in the *same block*, so the block's use
+set only shrinks; `ToAsm.domCheck_of_shrinking` does the rest. (This is
+exactly why the pass is restricted to same-block `iszero`s: a cross-block
+condition could make a value newly live into the branch's block, and the
+liveness fixed point would have to be re-derived.) -/
 theorem invertBranches_dom {f : Func}
     (hdom : ToAsm.Func.domCheck f = true) :
     ToAsm.Func.domCheck (Passes.invertBranches f) = true := by
-  sorry
+  refine ToAsm.domCheck_of_shrinking hdom rfl rfl ?_
+  intro i b' hb'
+  have hi : i < f.blocks.size := by
+    have hi' : i < (Passes.invertBranches f).blocks.size :=
+      (Array.getElem?_eq_some_iff.mp hb').1
+    simpa using hi'
+  have hb : f.blocks[i]? = some f.blocks[i] := Array.getElem?_eq_getElem hi
+  have heq : b' = { f.blocks[i] with
+      term := Passes.invertTerm (Passes.blockIszeroSources (Passes.useCounts f)
+        f.blocks[i]) f.blocks[i].term } :=
+    Option.some.inj (hb'.symm.trans (Passes.invertBranches_get hb))
+  subst b'
+  refine ⟨f.blocks[i], hb, ?_, ?_, ?_⟩
+  · exact fun x hx => Passes.invertBranches_blockUses hx
+  · intro x hx
+    simpa [ToAsm.blockDefs] using hx
+  · intro e he
+    exact ⟨e, Passes.invertTerm_mem_edges he, rfl⟩
 
 omit model in
 /-- Dominance preservation for one pipeline round, including the intermediate
@@ -596,28 +613,6 @@ theorem invertBranches_sound {P : Prog} {f : Func} {args : List U256}
       ⟨eb.instrs, eb.term⟩ res) :
     Exec (model := model) P (Passes.invertBranches f)
       (Regs.empty.setMany f.params args) st ⟨eb'.instrs, eb'.term⟩ res := by
-  sorry
-
-omit model in
-theorem Passes.invertBranches_params (f : Func) :
-    (invertBranches f).params = f.params := rfl
-
-omit model in
-theorem Passes.invertBranches_entry (f : Func) :
-    (invertBranches f).entry = f.entry := rfl
-
-set_option warningAsError false in
-omit model in
-/-- TODO(proof): `coalesce` only ever rebuilds `blocks` (and renumbers
-`entry` through `dropUnreachable`); `params` is carried by `{ f with … }`
-at every step. -/
-theorem Passes.coalesce_params (f : Func) : (coalesce f).params = f.params := by
-  sorry
-
-set_option warningAsError false in
-omit model in
-/-- TODO(proof): as `coalesce_params` — `nrets` is never written. -/
-theorem Passes.coalesce_nrets (f : Func) : (coalesce f).nrets = f.nrets := by
   sorry
 
 /-- The local simulations composed in the order used by `runOnce`. -/

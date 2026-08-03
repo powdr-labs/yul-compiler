@@ -141,8 +141,8 @@ theorem hcoal' : Passes.coalesce fMain' = fMain' := by
 /-- The counterexample has no `iszero`, so branch-sense normalization is a
 no-op. -/
 theorem hinv' : Passes.invertBranches fMain' = fMain' := by
-  simp [Passes.invertBranches, Passes.iszeroSources, fMain', b0,b1',b2',b3',b4,b5,
-    Passes.invertBranches.go]
+  simp [Passes.invertBranches, Passes.blockIszeroSources, Passes.iszeroPair,
+    fMain', b0,b1',b2',b3',b4,b5, Passes.invertTerm, Passes.invertTerm.go]
 
 theorem hrun1 : Passes.runOnce fMain = fMain' := by
   simp only [Passes.runOnce, hetp, hcoal', hinv', hcf, hdve]

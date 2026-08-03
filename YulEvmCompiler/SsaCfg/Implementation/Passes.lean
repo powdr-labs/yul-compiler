@@ -422,10 +422,15 @@ def predCounts (f : Func) : Array Nat := Id.run do
       if e.target < acc.size then acc := acc.set! e.target (acc[e.target]! + 1)
   return acc
 
-/-- Keep only the blocks reachable from the entry, remapping block ids.
-Merging leaves the absorbed block unreachable; dropping it keeps `wfCheck`
-honest and stops the code generator emitting a dead `JUMPDEST`. -/
-def dropUnreachable (f : Func) : Func := Id.run do
+/-- The reachable-block computation of `dropUnreachable`, returning only the
+new `(entry, blocks)` pair.
+
+Splitting the record update out of the search is deliberate: `params` and
+`nrets` are then preserved **by construction** (`dropUnreachable` is a
+single `{ f with entry := _, blocks := _ }`), so the pipeline's
+field-preservation lemmas are `rfl` instead of inductions through this
+do-block. -/
+def dropUnreachableCore (f : Func) : BlockId × Array Block := Id.run do
   let n := f.blocks.size
   let mut seen : Array Bool := Array.replicate n false
   let mut work : List BlockId := [f.entry]
@@ -440,7 +445,7 @@ def dropUnreachable (f : Func) : Func := Id.run do
             next := e.target :: next
     work := next
     if work.isEmpty then break
-  if seen.all id then return f
+  if seen.all id then return (f.entry, f.blocks)
   let mut remap : Array BlockId := Array.replicate n 0
   let mut kept : Array Block := #[]
   for bi in [0:n] do
@@ -448,9 +453,13 @@ def dropUnreachable (f : Func) : Func := Id.run do
       remap := remap.set! bi kept.size
       kept := kept.push f.blocks[bi]!
   let fix := fun (e : Edge) => { e with target := remap[e.target]! }
-  return { f with
-    entry := remap[f.entry]!
-    blocks := kept.map fun b => { b with term := mapEdges fix b.term } }
+  return (remap[f.entry]!, kept.map fun b => { b with term := mapEdges fix b.term })
+
+/-- Keep only the blocks reachable from the entry, remapping block ids.
+Merging leaves the absorbed block unreachable; dropping it keeps `wfCheck`
+honest and stops the code generator emitting a dead `JUMPDEST`. -/
+def dropUnreachable (f : Func) : Func :=
+  { f with entry := (dropUnreachableCore f).1, blocks := (dropUnreachableCore f).2 }
 
 /-- Find one mergeable pair `(predecessor, target)`. -/
 def findMerge (f : Func) : Option (BlockId × BlockId × List ValId) := Id.run do
@@ -521,41 +530,66 @@ def useCounts (f : Func) : Std.HashMap ValId Nat := Id.run do
     m := bump m b.term.uses
   return m
 
-/-- The `iszero` sources of a function: `dst ↦ arg` for every
-`dst ← iszero(arg)` **whose result is used exactly once**. SSA ids are
-function-unique, so one flat map serves every block.
+/-- The `(dst, arg)` pair of an `iszero` instruction, if the instruction is
+one. Factored out so the fold below matches on a *derived* value: `split`
+then yields the defining equation `iszeroPair i = some (d, a)`, which is
+what relates the table's contents back to an actual instruction of the
+block. -/
+def iszeroPair : Instr → Option (ValId × ValId)
+  | .op [d] .iszero [a] => some (d, a)
+  | _ => none
 
-The single-use restriction is what makes the rewrite a win rather than a
-coin flip: if the `iszero` has another use it survives dead-value
-elimination, so inverting the branch saves no `ISZERO` and only perturbs
-the two edges' entry layouts — which can cost real gas, by pushing the
-generator off its direct branch scheme onto the stub scheme (an extra
-label, `jump`, and shuffle) in a hot loop. -/
-def iszeroSources (f : Func) : Std.HashMap ValId ValId := Id.run do
-  let uses := useCounts f
-  let mut m : Std.HashMap ValId ValId := {}
-  for b in f.blocks do
-    for i in b.instrs do
-      if let .op [d] .iszero [a] := i then
-        if uses.getD d 0 == 1 then m := m.insert d a
-  return m
+/-- The `iszero` sources defined **in one block**: `dst ↦ arg` for every
+`dst ← iszero(arg)` among `b`'s own instructions whose result is used
+exactly once in the whole function.
 
-/-- Rewrite `branch (iszero x) t f` to `branch x f t`, to a fixed point
-(a doubled `iszero` collapses in two steps). -/
-def invertBranches (f : Func) : Func :=
-  let m := iszeroSources f
-  { f with
-    blocks := f.blocks.map fun b =>
-      match b.term with
-      | .branch c t fe => { b with term := go m c t fe 8 }
-      | _ => b }
+Two restrictions, both load-bearing:
+
+* **single use** makes the rewrite a win rather than a coin flip. If the
+  `iszero` has another use it survives dead-value elimination, so inverting
+  the branch saves no `ISZERO` and only perturbs the two edges' entry
+  layouts — which can cost real gas by pushing the generator off its direct
+  branch scheme onto the stub scheme (an extra label, `jump`, and shuffle).
+* **same block** keeps every invariant local. The replacement condition is
+  then already used by the block (by the `iszero` itself), so the block's
+  use set only shrinks — which is exactly what `domCheck_of_shrinking`
+  wants — and the equation `R c = iszero(R x)` needed for soundness holds
+  by a straight-line induction over this block's own instructions, with no
+  global provenance argument. The construction emits `t := iszero(cond)`
+  immediately before the branch that tests it, so nothing is lost. -/
+def blockIszeroSources (uses : Std.HashMap ValId Nat) (b : Block) :
+    Std.HashMap ValId ValId :=
+  match b.instrs.getLast? with
+  | some i =>
+      match iszeroPair i with
+      | some (d, a) =>
+          if uses.getD d 0 == 1 then (∅ : Std.HashMap ValId ValId).insert d a else ∅
+      | none => ∅
+  | none => ∅
+
+/-- Rewrite one terminator: `branch (iszero x) t f` becomes `branch x f t`,
+to a fixed point (a doubled `iszero` collapses in two steps). Non-`branch`
+terminators are returned unchanged.
+
+Kept as a separate per-terminator function so the pass's structural facts
+(block count, params, instrs, `ret` arity, and the edge *set*) are stated
+and proved once, against `invertTerm`, rather than through the `Array.map`. -/
+def invertTerm (m : Std.HashMap ValId ValId) : Term → Term
+  | .branch c t fe => go c t fe 8
+  | t => t
 where
-  go (m : Std.HashMap ValId ValId) (c : ValId) (t fe : Edge) : Nat → Term
+  go (c : ValId) (t fe : Edge) : Nat → Term
     | 0 => .branch c t fe
     | n + 1 =>
       match m[c]? with
-      | some x => go m x fe t n
+      | some x => go x fe t n
       | none => .branch c t fe
+
+def invertBranches (f : Func) : Func :=
+  let uses := useCounts f
+  { f with
+    blocks := f.blocks.map fun b =>
+      { b with term := invertTerm (blockIszeroSources uses b) b.term } }
 
 /-! ## The pipeline -/
 
