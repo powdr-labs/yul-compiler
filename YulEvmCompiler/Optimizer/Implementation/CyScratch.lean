@@ -304,78 +304,7 @@ theorem cy_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
           cases hres₂ with
           | refl => exact ⟨_, Step.seqCons hs₁ hs₂, .refl _⟩
           | haltIns Zp => exact ⟨_, Step.seqCons hs₁ hs₂, .haltIns _ _ _⟩
-      | @siteLet _ f d xs as _ rest' hld hnd hsc hok hrestrel =>
-          obtain ⟨hlen_as, hlen_xs, hxnd, hnc, hsh, hxout, hxlet⟩ := siteOK_inv hok
-          obtain ⟨body₀, cenv₀, hlk₀, hb₀, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
-          cases hs with
-          | @letVal _ _ _ _ _ vals stv he hlenv =>
-              cases he with
-              | @callOk _ _ _ _ _ argvals st1' decl cenv Vend st2' o' ha hlk harity hbody ho =>
-                  rw [hlk₀] at hlk
-                  injection hlk with hlk; injection hlk with hdecl hcenv
-                  -- hdecl : ⟨d.ps,d.rs,body₀⟩ = decl, hcenv : cenv₀ = cenv (NOT subst yet)
-                  set S : FScope D := hoist D ([Stmt.letDecl d.rs none]
-                    ++ (d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2))
-                    ++ [Stmt.block d.ss]
-                    ++ (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2)))
-                    with hS
-                  have hSnil : S = [] := hS.trans (inlineStmts_hoist_nil d xs as)
-                  set funsT : FunEnv D := S :: funs₂ with hfunsT
-                  have hRb : CyFunsRel (calls := calls) (creates := creates)
-                      (S :: funs₁) funsT :=
-                    .cons (cyScopeRel_refl _ _) hR
-                  -- recurse on the RAW hbody (in decl/cenv terms) BEFORE subst
-                  obtain ⟨res₂, hstepb, htr⟩ := carry_body_fwd hbody
-                    (A := d.ps.zip argvals ++ bindZeros D d.rs) (W := ([] : VEnv D))
-                    (bound := d.ps ++ d.rs)
-                    (S :: funs₁) funsT (bindZeros D xs ++ V) (by rw [← hdecl]; simp)
-                    (by
-                      rw [← hdecl]
-                      rcases hb₀ with rfl | rfl
-                      · exact Or.inl hsc
-                      · exact Or.inr ⟨d.ss, rfl, hsc⟩)
-                    (fun x hx => by
-                      rw [calleeFrame_keys (by have := args_length ha; omega)]; exact hx)
-                    (by
-                      rw [← hdecl, ← hcenv, hSnil]
-                      refine FunsAgree.cons_nil_right ?_
-                      intro g hg
-                      have hgd : g ∈ stmtsCallNames d.ss := by
-                        rcases hb₀ with rfl | rfl
-                        · simpa [carryCallNames, stmtCallNames] using hg
-                        · simpa [carryCallNames, stmtCallNames, stmtsCallNames_append_leave]
-                            using hg
-                      exact (hagbody g hgd).symm) hRb
-                  subst hdecl hcenv
-                  have htbody_raw : Step D funsT
-                      (d.ps.zip argvals ++ bindZeros D d.rs ++ (bindZeros D xs ++ V)) st1'
-                      (.stmt (.block body₀)) (.sres (Vend ++ (bindZeros D xs ++ V)) st2' o') := by
-                    rcases ho with rfl | rfl
-                    · obtain ⟨A'', hVe, hres₂, _⟩ := TResL.norm_inv htr
-                      have hae : A'' = Vend := by simpa using hVe.symm
-                      rw [hae] at hres₂; rw [hres₂] at hstepb; exact hstepb
-                    · obtain ⟨A'', hVe, hres₂⟩ := TResL.leave_inv htr
-                      have hae : A'' = Vend := by simpa using hVe.symm
-                      rw [hae] at hres₂; rw [hres₂] at hstepb; exact hstepb
-                  have htbody := carry_body_normalize_ok hb₀ hsc
-                    (fun x hx => by
-                      rw [List.map_append, calleeFrame_keys (by have := args_length ha; omega)]
-                      exact List.mem_append.mpr (Or.inl hx))
-                    htbody_raw ho
-                  have hcore := inlineCore_carry_fwd_normal (funs₂ := funs₂) hnd hlen_as hnc hsh
-                    hxout hlen_xs (Z := bindZeros D xs) ha htbody
-                    (fun y hy => by rw [bindZeros_keys]; exact hxlet rfl y hy)
-                  have hsm : VEnv.setMany (bindZeros D xs ++ V) xs (d.rs.map
-                      (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)) =
-                      xs.zip (d.rs.map (fun r => (VEnv.get Vend r).getD
-                        (evmWithExternal calls creates).zero)) ++ V :=
-                    VEnv.setMany_bindZeros hxnd (by simp only [List.length_map]; omega) V
-                  rw [hsm] at hcore
-                  obtain ⟨res₃, hs₂, hres₃⟩ := cy_fwd hrest hR hΔ hrestrel
-                  cases hres₃ with
-                  | refl => exact ⟨_, Step.seqCons Step.letZero (Step.seqCons hcore hs₂), .refl _⟩
-                  | haltIns Zp => exact ⟨_, Step.seqCons Step.letZero
-                      (Step.seqCons hcore hs₂), .haltIns _ _ _⟩
+      | @siteLet _ f d xs as _ rest' hld hnd hsc hok hrestrel => sorry
       | @siteAssign _ f d xs as _ rest' hld hnd hsc hok hrestrel => sorry
       | @siteExpr _ f d as _ rest' hld hnd hsc hok hrestrel => sorry
   | @Step.seqStop _ _ _ V st s rest V1 st1 o hs hne =>
