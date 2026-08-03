@@ -1909,17 +1909,26 @@ compose that result with the existing `Simplify` resolution congruence for the
   sections above were dropped rather than kept: they cost 1.8x and 2.4–3.8x for
   90 gas and 0 gas respectively.
 
-### Proof debt
+### Proved
 
-  One lemma, `rematProg_sound` (`SsaCfg/Spec/Backend.lean`). The
-  well-formedness and dominance halves are proved from the pass's own defensive
-  gate, and `compileViaSsa_inv` keeps its original four-case shape — only its
-  optimized candidate changed from `optimizeProg P` to
-  `rematProg (optimizeProg P)`. `rematConsts` should be among the cheapest
-  soundness proofs in the directory: it only ever *adds* `const` definitions,
-  with fresh ids, immediately in front of the use they feed, so no pre-existing
-  value changes, every copy is dominated by construction, and `dve` behind it is
-  already proved.
+  `rematProg_sound` is discharged (`PassesSound/Remat.lean`);
+  `compileViaSsa_correct` still checks with only
+  `[propext, Classical.choice, Quot.sound]` and the repository is sorry-free.
+  The invariant is deliberately local, the technique that has now worked four
+  times on this backend: **register agreement below `maxIdOf f`**. Every id the
+  original function can mention is ≤ `maxIdOf f` and every inserted copy gets an
+  id strictly above it, so a copy can never disturb anything the original reads
+  — freshness for soundness is only "above the bound", never distinctness. Pass
+  2's `ConstRegs` is reused verbatim to show the copy's literal is the value the
+  original already holds.
+
+  One implementation concession, of the same "make the invariant local by
+  construction" kind `coalesce` already uses: `dve` is proved sound only for
+  single-assignment input, and the copies' ids are distinct only because the
+  pass counts up from `maxIdOf`. Rather than derive that as a global theorem
+  about the counter, `Passes.rematStep` *checks* `wfCheck` on its own output and
+  falls back to the untouched function otherwise. Measured: the gate never
+  fires, all five suites byte-identical.
 
 ### Negative result: execution-weighted candidate cost (tried 2026-08-03, reverted)
 

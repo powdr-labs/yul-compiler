@@ -13,6 +13,7 @@ import YulEvmCompiler.SsaCfg.Implementation.PassesSound.Cse
 import YulEvmCompiler.SsaCfg.Implementation.PassesSound.Dve
 import YulEvmCompiler.SsaCfg.Implementation.PassesSound.Wf
 import YulEvmCompiler.SsaCfg.Implementation.PassesSound.Pipeline
+import YulEvmCompiler.SsaCfg.Implementation.PassesSound.Remat
 set_option warningAsError true
 /-!
 # YulEvmCompiler.SsaCfg.Implementation.PassesSound
@@ -126,6 +127,13 @@ definitions nothing reads.
   `dveBlock_edge_target` (edge targets are
   untouched). This is the complete structural half of both `dve_sound` and
   `dve_dom`.
+* **Pass 6 (constant rematerialization)**, in `PassesSound/Remat.lean`: the
+  `forIn`-to-`foldl` bridge for its three nested loops, the recursive model the
+  simulation peels (`rematCopies`/`rematSeq`/`rematRest`), the `maxIdOf` bound
+  on every id the function mentions, and `rematConsts_sound` — whose invariant
+  is register agreement below `maxIdOf f` plus pass 2's `ConstRegs`, so a copy's
+  literal is provably the value the original already holds. `rematProg_sound'`
+  composes it with `dve_sound` and both defensive-gate branches.
 * The **counterexample**, end to end: `P.wfCheck = true`,
   `ToAsm.Prog.domCheck P = false`, `optimizeProg P = Popt` — the *whole*
   optimizer evaluated **inside the kernel**: `Passes.inlineProg` (proved to be

@@ -983,6 +983,25 @@ def optimizeFunc (f : Func) : Func := Id.run do
     f := Passes.runOnce f
   return f
 
+namespace Passes
+
+/-- One function's rematerialization: insert the copies, then let `dve` delete
+the definitions they orphaned.
+
+The inner `wfCheck` is the same "make the invariant local by construction"
+device `coalesce` uses for its dominance side condition. `dve` is only proved
+sound for single-assignment input, and the copies' ids are fresh only because
+the pass counts up from `maxIdOf`; rather than re-derive that freshness as a
+global theorem about the counter, the pass simply checks it — and falls back to
+the untouched function otherwise, which is behavior-neutral and never fires in
+practice. (Soundness of `rematConsts` itself needs no such check: its copies
+only have to be *above* `maxIdOf`, not distinct.) -/
+def rematStep (nFuncs : Nat) (g : Func) : Func :=
+  let g' := rematConsts g
+  if g'.wfCheck nFuncs then dve g' else g
+
+end Passes
+
 /-- **Constant rematerialization, program-level.**  Kept out of `runOnce` and
 applied after `optimizeProg` rather than inside its rounds, for two reasons:
 the rewrite has nothing to hand the other passes (it only shortens live ranges,
@@ -995,7 +1014,7 @@ gain.
 that the pass only adds pushes. The same defensive gate as `optimizeProg`: if
 the result ever failed well-formedness or dominance, keep the input. -/
 def rematCandidate (P : Prog) : Prog :=
-  let step := fun g => Passes.dve (Passes.rematConsts g)
+  let step := Passes.rematStep P.funcs.size
   { main := step P.main, funcs := P.funcs.map step }
 
 def rematProg (P : Prog) : Prog :=

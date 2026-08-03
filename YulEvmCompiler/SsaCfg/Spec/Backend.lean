@@ -6,9 +6,6 @@ import YulEvmCompiler.SsaCfg.Implementation.PassesSound
 import YulEvmCompiler.SsaCfg.Implementation.ToAsmSound
 import YulEvmCompiler.Optimizer.Spec.EvmBackend
 set_option warningAsError true
--- `rematProg_sound` below is this branch's stated proof debt; see the section
--- comment. Restore `warningAsError true` once it is discharged.
-set_option warningAsError false
 /-!
 # YulEvmCompiler.SsaCfg.Spec.Backend
 
@@ -167,25 +164,26 @@ theorem foldl_min_mem {α : Type} (f : α → Nat) {r : α} :
         · exact Or.inl hacc
     · exact Or.inr (List.mem_cons_of_mem _ hmem)
 
-/-! ### The one deferred obligation
+/-! ### Rematerialization
 
-`compileViaSsa` now runs `rematProg` behind the pass pipeline, so the optimized
-candidate is `rematProg (optimizeProg P)` rather than `optimizeProg P`.  That
-adds exactly one unproved lemma, `rematProg_sound` below; the well-formedness
-and dominance halves follow from the pass's own defensive gate, and the
-inversion lemma keeps its original four-case shape.
+`compileViaSsa` runs `rematProg` behind the pass pipeline, so the optimized
+candidate is `rematProg (optimizeProg P)` rather than `optimizeProg P`.  The
+well-formedness and dominance halves follow from the pass's own defensive gate,
+and the inversion lemma keeps its original four-case shape.
 
-`rematConsts` should be among the cheapest soundness proofs in this directory:
-it only ever *adds* `const` definitions, with fresh ids, immediately in front
-of the use they feed.  No pre-existing value changes, every copy is dominated
-by construction, and `dve` behind it is already proved. -/
+`rematConsts` only ever *adds* `const` definitions, with ids above `maxIdOf f`,
+immediately in front of the use they feed: no pre-existing value changes, every
+copy is dominated by construction, and `dve` behind it is already proved.  The
+simulation is in `SsaCfg/PassesSound/Remat.lean`; no dominance hypothesis is
+needed, so `_hdom` goes unused. -/
 
-/-- **Deferred.** Rematerializing constants preserves the source run. -/
+/-- **Rematerialization soundness**: rematerializing constants preserves the
+source run. -/
 theorem rematProg_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
-    (_hwf : P.wfCheck = true) (_hdom : ToAsm.Prog.domCheck P = true)
-    (_hrun : Run (model := model) P yst0 yst' o) :
-    Run (model := model) (rematProg P) yst0 yst' o := by
-  sorry
+    (hwf : P.wfCheck = true) (_hdom : ToAsm.Prog.domCheck P = true)
+    (hrun : Run (model := model) P yst0 yst' o) :
+    Run (model := model) (rematProg P) yst0 yst' o :=
+  rematProg_sound' hwf hrun
 
 omit model in
 /-- `rematProg`'s defensive gate preserves well-formedness. -/
