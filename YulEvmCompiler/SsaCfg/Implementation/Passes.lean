@@ -579,14 +579,43 @@ def siteCounts (P : Prog) : Array Nat := Id.run do
           if fid < acc.size then acc := acc.set! fid (acc[fid]! + 1)
   return acc
 
-/-- Inline a call site when the callee has a **single call site** (net code
-size decreases — the call/return plumbing goes and the original is pruned)
-or is small (bounded growth). Nested calls splice verbatim (function ids
-stay valid); the per-function budget bounds recursion. -/
+/-- Approximate emitted size of a function body, in `Asm`-ish units: one per
+instruction, plus two per block (its `JUMPDEST` and its terminator's jump). -/
+def bodySize (g : Func) : Nat :=
+  g.blocks.foldl (fun n b => n + b.instrs.length + 2) 0
+
+/-- Approximate emitted size of one call *site*: the return-label push, the
+entry `jump`, the landing `JUMPDEST`, the `dynJump` back, plus the argument
+and result shuffling the calling convention forces at both ends. This is the
+plumbing inlining deletes, and the `JUMP`/`JUMPDEST` gas the opcode profile
+attributes call overhead to. -/
+def callSiteSize (g : Func) : Nat :=
+  4 + g.params.length + g.nrets
+
+/-- Inline a call site when the whole-program size cost is acceptable.
+
+Inlining *every* site of a callee deletes the original body (`pruneFuncs`)
+along with every site's plumbing, so fully inlining a callee with `sites`
+call sites changes emitted size by
+
+```
+  (sites - 1) * bodySize g  -  sites * callSiteSize g
+```
+
+— negative (a pure win) at `sites = 1`, growing linearly after that.
+`growthBudget` is how much emitted size we trade for the removed call
+overhead. Nested calls splice verbatim (function ids stay valid); the
+per-function budget bounds recursion. -/
+def growthBudget : Nat := 0
+
+/-- Bodies at or below this size are always worth inlining: their call
+plumbing costs a comparable amount to the body itself. -/
+def smallBody : Nat := 16
+
 def inlinable (sites : Nat) (g : Func) : Bool :=
   sites == 1
-  || (g.blocks.size ≤ 4
-      && (g.blocks.foldl (fun n b => n + b.instrs.length) 0) ≤ 20)
+  || bodySize g ≤ smallBody
+  || (sites - 1) * bodySize g ≤ growthBudget + sites * callSiteSize g
 
 /-- The largest value id mentioned by a function (for fresh renaming). -/
 def maxVal (f : Func) : ValId :=
@@ -652,11 +681,21 @@ def inlineOnce (counts : Array Nat) (funcs : Array Func) (f : Func) :
             return some { f with blocks }
   return none
 
+/-- Per-function inlining budget: how many call sites one function may
+absorb per program round. With `funcSizeCap` it is what bounds recursive
+unrolling (a self-recursive callee always exposes a fresh site) and keeps
+`inlineOnce`'s quadratic rescan off pathological inputs. -/
+def inlineBudget : Nat := 64
+
+/-- Hard ceiling on how large one function may grow by inlining. -/
+def funcSizeCap : Nat := 4096
+
 /-- Inline eligible call sites to a budgeted fixed point. -/
 def inlineFunc (counts : Array Nat) (funcs : Array Func) (f0 : Func) :
     Func := Id.run do
   let mut f := f0
-  for _ in [0:8] do
+  for _ in [0:inlineBudget] do
+    if bodySize f > funcSizeCap then return f
     match inlineOnce counts funcs f with
     | some f' => f := f'
     | none => return f
@@ -699,7 +738,7 @@ def pruneFuncs (P : Prog) : Prog := Id.run do
 call sites, then unreferenced functions are pruned. -/
 def inlineProg (P : Prog) : Prog := Id.run do
   let mut P := P
-  for _ in [0:3] do
+  for _ in [0:6] do
     let counts := siteCounts P
     let P' : Prog :=
       { main := inlineFunc counts P.funcs P.main
