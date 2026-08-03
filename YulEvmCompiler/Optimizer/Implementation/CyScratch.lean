@@ -1,7 +1,7 @@
 import YulEvmCompiler.Optimizer.Implementation.InlineCallsCarrySound
 set_option warningAsError false
 set_option linter.unusedVariables false
-set_option maxHeartbeats 1000000
+set_option maxHeartbeats 8000000
 
 namespace YulEvmCompiler.Optimizer
 
@@ -69,6 +69,45 @@ theorem inlineStmts_hoist_nil (d : IDecl) (xs : List Ident) (as : List (Expr Op)
     apply List.filterMap_eq_nil_iff.mpr
     intro a _; rfl
   rw [h1, h2, h3, h4]; rfl
+
+/-- Invert a `CyRel` over a non-empty statement list into the four possible
+shapes, returning the head statement's form as an **equation** (`hpc`) rather
+than substituting it. This keeps the seqCons/seqStop head derivation `hs`
+carrying an unrefined `.stmt s` code index, so `cy_fwd`'s mutual recursion on it
+(directly or through the site helpers) still threads `brecOn`'s `below` — unlike
+`cases hrel`, whose index unification would substitute `s` and break it. -/
+theorem cyRel_stmts_cons_inv {Δ : DEnv} {s : Stmt Op} {rest : List (Stmt Op)}
+    {pc' : PCode Op}
+    (hrel : CyRel Δ (.stmts (s :: rest)) pc') :
+    (∃ s' rest', pc' = .stmts (s' :: rest') ∧
+        CyRel Δ (.stmt s) (.stmt s') ∧
+        CyRel Δ (.stmts rest) (.stmts rest'))
+  ∨ (∃ (f : Ident) (d : IDecl) (xs : List Ident) (as : List (Expr Op)) (rest' : List (Stmt Op)),
+        s = .letDecl xs (some (.call f as)) ∧
+        pc' = .stmts (.letDecl xs none :: inlineCore d xs as :: rest') ∧
+        lookupDelta Δ f = some d ∧ (d.ps ++ d.rs).Nodup ∧
+        carryStmts (d.ps ++ d.rs) d.ss = true ∧ siteOK d xs as true = true ∧
+        CyRel Δ (.stmts rest) (.stmts rest'))
+  ∨ (∃ (f : Ident) (d : IDecl) (xs : List Ident) (as : List (Expr Op)) (rest' : List (Stmt Op)),
+        s = .assign xs (.call f as) ∧
+        pc' = .stmts (inlineCore d xs as :: rest') ∧
+        lookupDelta Δ f = some d ∧ (d.ps ++ d.rs).Nodup ∧
+        carryStmts (d.ps ++ d.rs) d.ss = true ∧ siteOK d xs as false = true ∧
+        CyRel Δ (.stmts rest) (.stmts rest'))
+  ∨ (∃ (f : Ident) (d : IDecl) (as : List (Expr Op)) (rest' : List (Stmt Op)),
+        s = .exprStmt (.call f as) ∧
+        pc' = .stmts (inlineCore d [] as :: rest') ∧
+        lookupDelta Δ f = some d ∧ (d.ps ++ d.rs).Nodup ∧
+        carryStmts (d.ps ++ d.rs) d.ss = true ∧ siteOK d [] as false = true ∧
+        CyRel Δ (.stmts rest) (.stmts rest')) := by
+  cases hrel with
+  | consSS hsrel hrestrel => exact Or.inl ⟨_, _, rfl, hsrel, hrestrel⟩
+  | siteLet hld hnd hsc hok hrestrel =>
+      exact Or.inr (Or.inl ⟨_, _, _, _, _, rfl, rfl, hld, hnd, hsc, hok, hrestrel⟩)
+  | siteAssign hld hnd hsc hok hrestrel =>
+      exact Or.inr (Or.inr (Or.inl ⟨_, _, _, _, _, rfl, rfl, hld, hnd, hsc, hok, hrestrel⟩))
+  | siteExpr hld hnd hsc hok hrestrel =>
+      exact Or.inr (Or.inr (Or.inr ⟨_, _, _, _, rfl, rfl, hld, hnd, hsc, hok, hrestrel⟩))
 
 mutual
 
@@ -296,27 +335,46 @@ theorem cy_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
       | nilSS => exact ⟨_, Step.seqNil, .refl _⟩
   | @Step.seqCons _ _ _ V st s rest V1 st1 V2 st2 o hs hrest =>
       intro funs₂ Δ pc' hR hΔ hrel
-      cases hrel with
-      | consSS hsrel hrestrel =>
-          obtain ⟨res₁, hs₁, heq₁⟩ := cy_fwd hs hR hΔ hsrel
-          rw [show res₁ = _ from heq₁] at hs₁
-          obtain ⟨res₂, hs₂, hres₂⟩ := cy_fwd hrest hR hΔ hrestrel
-          cases hres₂ with
-          | refl => exact ⟨_, Step.seqCons hs₁ hs₂, .refl _⟩
-          | haltIns Zp => exact ⟨_, Step.seqCons hs₁ hs₂, .haltIns _ _ _⟩
-      | @siteLet _ f d xs as _ rest' hld hnd hsc hok hrestrel => sorry
-      | @siteAssign _ f d xs as _ rest' hld hnd hsc hok hrestrel => sorry
-      | @siteExpr _ f d as _ rest' hld hnd hsc hok hrestrel => sorry
+      rcases cyRel_stmts_cons_inv hrel with
+        ⟨s', rest', rfl, hsrel, hrestrel⟩
+        | ⟨f, d, xs, as, rest', hpc, rfl, hld, hnd, hsc, hok, hrestrel⟩
+        | ⟨f, d, xs, as, rest', hpc, rfl, hld, hnd, hsc, hok, hrestrel⟩
+        | ⟨f, d, as, rest', hpc, rfl, hld, hnd, hsc, hok, hrestrel⟩
+      · obtain ⟨res₁, hs₁, heq₁⟩ := cy_fwd hs hR hΔ hsrel
+        rw [show res₁ = _ from heq₁] at hs₁
+        obtain ⟨res₂, hs₂, hres₂⟩ := cy_fwd hrest hR hΔ hrestrel
+        cases hres₂ with
+        | refl => exact ⟨_, Step.seqCons hs₁ hs₂, .refl _⟩
+        | haltIns Zp => exact ⟨_, Step.seqCons hs₁ hs₂, .haltIns _ _ _⟩
+      · have hcore := cy_fwd_siteLetStmt_seqCons hs (by rw [hpc]) rfl hR hΔ hld hnd hsc hok
+        obtain ⟨res₃, hs₂, hres₃⟩ := cy_fwd hrest hR hΔ hrestrel
+        cases hres₃ with
+        | refl => exact ⟨_, Step.seqCons Step.letZero (Step.seqCons hcore hs₂), .refl _⟩
+        | haltIns Zp => exact ⟨_, Step.seqCons Step.letZero
+            (Step.seqCons hcore hs₂), .haltIns _ _ _⟩
+      · have hcore := cy_fwd_siteAssignStmt_seqCons hs (by rw [hpc]) rfl hR hΔ hld hnd hsc hok
+        obtain ⟨res₃, hs₂, hres₃⟩ := cy_fwd hrest hR hΔ hrestrel
+        cases hres₃ with
+        | refl => exact ⟨_, Step.seqCons hcore hs₂, .refl _⟩
+        | haltIns Zp => exact ⟨_, Step.seqCons hcore hs₂, .haltIns _ _ _⟩
+      · have hcore := cy_fwd_siteExprStmt_seqCons hs (by rw [hpc]) rfl hR hΔ hld hnd hsc hok
+        obtain ⟨res₃, hs₂, hres₃⟩ := cy_fwd hrest hR hΔ hrestrel
+        cases hres₃ with
+        | refl => exact ⟨_, Step.seqCons hcore hs₂, .refl _⟩
+        | haltIns Zp => exact ⟨_, Step.seqCons hcore hs₂, .haltIns _ _ _⟩
   | @Step.seqStop _ _ _ V st s rest V1 st1 o hs hne =>
       intro funs₂ Δ pc' hR hΔ hrel
-      cases hrel with
-      | consSS hsrel hrestrel =>
-          obtain ⟨res₁, hs₁, heq₁⟩ := cy_fwd hs hR hΔ hsrel
-          rw [show res₁ = _ from heq₁] at hs₁
-          exact ⟨_, Step.seqStop hs₁ hne, .refl _⟩
-      | @siteLet _ f d xs as _ rest' hld hnd hsc hok hrestrel => sorry
-      | @siteAssign _ f d xs as _ rest' hld hnd hsc hok hrestrel => sorry
-      | @siteExpr _ f d as _ rest' hld hnd hsc hok hrestrel => sorry
+      rcases cyRel_stmts_cons_inv hrel with
+        ⟨s', rest', rfl, hsrel, hrestrel⟩
+        | ⟨f, d, xs, as, rest', hpc, rfl, hld, hnd, hsc, hok, hrestrel⟩
+        | ⟨f, d, xs, as, rest', hpc, rfl, hld, hnd, hsc, hok, hrestrel⟩
+        | ⟨f, d, as, rest', hpc, rfl, hld, hnd, hsc, hok, hrestrel⟩
+      · obtain ⟨res₁, hs₁, heq₁⟩ := cy_fwd hs hR hΔ hsrel
+        rw [show res₁ = _ from heq₁] at hs₁
+        exact ⟨_, Step.seqStop hs₁ hne, .refl _⟩
+      · exact cy_fwd_siteLet_seqStop hs (by rw [hpc]) rfl hne hR hΔ hld hnd hsc hok rest rest'
+      · exact cy_fwd_siteAssign_seqStop hs (by rw [hpc]) rfl hne hR hΔ hld hnd hsc hok rest rest'
+      · exact cy_fwd_siteExpr_seqStop hs (by rw [hpc]) rfl hne hR hΔ hld hnd hsc hok rest rest'
   | .loopDone hc hcz =>
       intro funs₂ Δ pc' hR hΔ hrel; cases hrel with
       | loopL hpost hbody =>
@@ -1164,8 +1222,7 @@ theorem cy_fwd_siteCallHalt {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
   | .loopBodyHalt .. => exact absurd hcode (by simp)
   termination_by structural he
 
-/-- Statement-level site helper: `let`-form, normal (`seqCons`) mode.
-Variable-index principal (structural argument owned locally). -/
+/-- Statement-level site helper: `let`-form, normal (`seqCons`) mode. -/
 theorem cy_fwd_siteLetStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
     {code : Code Op} {sres : Res D}
     (hs : Step D funs₁ V st code sres)
@@ -1183,14 +1240,14 @@ theorem cy_fwd_siteLetStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : EvmSt
   obtain ⟨body₀, cenv₀, hlk₀, hb₀, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
   match hs with
   | @Step.letVal _ _ _ _ _ vars e vals st1' he hlenv =>
-      injection hcode with hcode2
-      injection hcode2 with hvars hsome
-      injection hsome with he'
+      obtain ⟨argvals, st1'', Vend, st2', ha, hargl, hvals', hstv, htbody⟩ :=
+        cy_fwd_siteCallOk he
+          (by injection hcode with hc; injection hc with h1 h2; injection h2 with h3; rw [h3])
+          rfl hlk₀ hb₀ hsc hlen_as hagbody hR xs (bindZeros D xs)
+      injection hcode with hc; injection hc with h1 h2; injection h2 with h3
       subst vars; subst e
       injection hsres with hV1 hst1 ho
       subst hV1; subst hst1
-      obtain ⟨argvals, st1'', Vend, st2', ha, hargl, hvals', hstv, htbody⟩ :=
-        cy_fwd_siteCallOk he rfl rfl hlk₀ hb₀ hsc hlen_as hagbody hR xs (bindZeros D xs)
       have hcore := inlineCore_carry_fwd_normal hnd hlen_as hnc hsh hxout hlen_xs
         (Z := bindZeros D xs) ha htbody
         (fun y hy => by rw [bindZeros_keys]; exact hxlet rfl y hy)
@@ -1201,9 +1258,6 @@ theorem cy_fwd_siteLetStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : EvmSt
         VEnv.setMany_bindZeros hxnd (by simp only [List.length_map]; omega) V
       rw [hsm] at hcore
       rw [hvals', hstv]; exact hcore
-  | @Step.letHalt _ _ _ _ _ vars e st1' he =>
-      injection hsres with hV1 hst1 ho
-      exact absurd ho (by simp)
   | .lit => exact absurd hcode (by simp)
   | .var .. => exact absurd hcode (by simp)
   | .builtinOk .. => exact absurd hcode (by simp)
@@ -1243,9 +1297,12 @@ theorem cy_fwd_siteLetStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : EvmSt
   | .loopBreak .. => exact absurd hcode (by simp)
   | .loopLeave .. => exact absurd hcode (by simp)
   | .loopBodyHalt .. => exact absurd hcode (by simp)
+  | @Step.letHalt _ _ _ _ _ vars e st1' he =>
+      injection hsres with hV1 hst1 ho
+      exact absurd ho (by simp)
+  termination_by structural hs
 
-/-- Statement-level site helper: `assign`-form, normal (`seqCons`) mode.
-Variable-index principal (structural argument owned locally). -/
+/-- Statement-level site helper: `assign`-form, normal (`seqCons`) mode. -/
 theorem cy_fwd_siteAssignStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
     {code : Code Op} {sres : Res D}
     (hs : Step D funs₁ V st code sres)
@@ -1262,19 +1319,17 @@ theorem cy_fwd_siteAssignStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : Ev
   obtain ⟨body₀, cenv₀, hlk₀, hb₀, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
   match hs with
   | @Step.assignVal _ _ _ _ _ vars e vals st1' he hlenv =>
-      injection hcode with hcode2
-      injection hcode2 with hvars he'
+      obtain ⟨argvals, st1'', Vend, st2', ha, hargl, hvals', hstv, htbody⟩ :=
+        cy_fwd_siteCallOk he
+          (by injection hcode with hc; injection hc with h1 h2; rw [h2])
+          rfl hlk₀ hb₀ hsc hlen_as hagbody hR xs ([] : VEnv D)
+      injection hcode with hc; injection hc with h1 h2
       subst vars; subst e
       injection hsres with hV1 hst1 ho
       subst hV1; subst hst1
-      obtain ⟨argvals, st1'', Vend, st2', ha, hargl, hvals', hstv, htbody⟩ :=
-        cy_fwd_siteCallOk he rfl rfl hlk₀ hb₀ hsc hlen_as hagbody hR xs ([] : VEnv D)
       have hcore := inlineCore_carry_fwd_normal hnd hlen_as hnc hsh hxout hlen_xs
         (Z := ([] : VEnv D)) ha htbody (fun y hy => by simp)
       rw [hvals', hstv]; exact hcore
-  | @Step.assignHalt _ _ _ _ _ vars e st1' he =>
-      injection hsres with hV1 hst1 ho
-      exact absurd ho (by simp)
   | .lit => exact absurd hcode (by simp)
   | .var .. => exact absurd hcode (by simp)
   | .builtinOk .. => exact absurd hcode (by simp)
@@ -1314,9 +1369,12 @@ theorem cy_fwd_siteAssignStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : Ev
   | .loopBreak .. => exact absurd hcode (by simp)
   | .loopLeave .. => exact absurd hcode (by simp)
   | .loopBodyHalt .. => exact absurd hcode (by simp)
+  | @Step.assignHalt _ _ _ _ _ vars e st1' he =>
+      injection hsres with hV1 hst1 ho
+      exact absurd ho (by simp)
+  termination_by structural hs
 
-/-- Statement-level site helper: `exprStmt`-form, normal (`seqCons`) mode.
-Variable-index principal (structural argument owned locally). -/
+/-- Statement-level site helper: `exprStmt`-form, normal (`seqCons`) mode. -/
 theorem cy_fwd_siteExprStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
     {code : Code Op} {sres : Res D}
     (hs : Step D funs₁ V st code sres)
@@ -1333,13 +1391,14 @@ theorem cy_fwd_siteExprStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : EvmS
   obtain ⟨body₀, cenv₀, hlk₀, hb₀, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
   match hs with
   | @Step.exprStmt _ _ _ _ _ e st1' he =>
-      injection hcode with hcode2
-      injection hcode2 with he'
+      obtain ⟨argvals, st1'', Vend, st2', ha, hargl, hvals', hstv, htbody⟩ :=
+        cy_fwd_siteCallOk he
+          (by injection hcode with hc; injection hc with h2; rw [h2])
+          rfl hlk₀ hb₀ hsc hlen_as hagbody hR ([] : List Ident) ([] : VEnv D)
+      injection hcode with hc; injection hc with h2
       subst e
       injection hsres with hV1 hst1 ho
       subst hV1; subst hst1
-      obtain ⟨argvals, st1'', Vend, st2', ha, hargl, hvals', hstv, htbody⟩ :=
-        cy_fwd_siteCallOk he rfl rfl hlk₀ hb₀ hsc hlen_as hagbody hR ([] : List Ident) ([] : VEnv D)
       have hcore := inlineCore_carry_fwd_normal hnd hlen_as hnc hsh
         (fun x hx => by cases hx) hlen_xs (Z := ([] : VEnv D)) ha htbody
         (fun y hy => by simp)
@@ -1347,9 +1406,6 @@ theorem cy_fwd_siteExprStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : EvmS
           (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)) = V := rfl
       rw [hsm] at hcore
       rw [hstv]; exact hcore
-  | @Step.exprStmtHalt _ _ _ _ _ e st1' he =>
-      injection hsres with hV1 hst1 ho
-      exact absurd ho (by simp)
   | .lit => exact absurd hcode (by simp)
   | .var .. => exact absurd hcode (by simp)
   | .builtinOk .. => exact absurd hcode (by simp)
@@ -1389,10 +1445,12 @@ theorem cy_fwd_siteExprStmt_seqCons {funs₁ : FunEnv D} {V : VEnv D} {st : EvmS
   | .loopBreak .. => exact absurd hcode (by simp)
   | .loopLeave .. => exact absurd hcode (by simp)
   | .loopBodyHalt .. => exact absurd hcode (by simp)
+  | @Step.exprStmtHalt _ _ _ _ _ e st1' he =>
+      injection hsres with hV1 hst1 ho
+      exact absurd ho (by simp)
+  termination_by structural hs
 
-/-- Statement-level site helper: `let`-form, halting (`seqStop`) mode.
-Written over a fully variable-index principal so this member owns a valid
-structural argument inside the mutual block. -/
+/-- Statement-level site helper: `let`-form, halting (`seqStop`) mode. -/
 theorem cy_fwd_siteLet_seqStop {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
     {code : Code Op} {sres : Res D}
     (hs : Step D funs₁ V st code sres)
@@ -1416,26 +1474,20 @@ theorem cy_fwd_siteLet_seqStop {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
     fun y hy => by rw [bindZeros_keys]; exact hxlet rfl y hy
   match hs with
   | @Step.letHalt _ _ _ _ _ vars e st1' he =>
-      injection hcode with hcode2
-      injection hcode2 with hvars hsome
-      injection hsome with he'
-      subst vars; subst e
-      injection hsres with hV1 hst1 ho
-      subst hV1; subst hst1; subst ho
-      rcases cy_fwd_siteCallHalt he rfl rfl hlk₀ hb₀ hsc hlen_as hagbody hR xs (bindZeros D xs)
+      rcases cy_fwd_siteCallHalt he
+          (by injection hcode with hc; injection hc with h1 h2; injection h2 with h3; rw [h3])
+          rfl hlk₀ hb₀ hsc hlen_as hagbody hR xs (bindZeros D xs)
         with ⟨argvals, st1'', Vend, ha, hargl, htbody⟩ | ha
-      · have hcore := inlineCore_carry_fwd_bodyhalt (xs := xs) (Z := bindZeros D xs)
+      · injection hsres with hV1 hst1 ho
+        subst hV1; subst hst1; subst ho
+        have hcore := inlineCore_carry_fwd_bodyhalt (xs := xs) (Z := bindZeros D xs)
           hlen_as hnc hsh ha htbody hZvars
         exact ⟨_, Step.seqCons Step.letZero (Step.seqStop hcore (by simp)), .haltIns _ _ _⟩
-      · have hcore := inlineCore_fwd_argshalt (d := d) (xs := xs) (Z := bindZeros D xs)
+      · injection hsres with hV1 hst1 ho
+        subst hV1; subst hst1; subst ho
+        have hcore := inlineCore_fwd_argshalt (d := d) (xs := xs) (Z := bindZeros D xs)
           hlen_as hnc hsh ha hZvars funs₂
         exact ⟨_, Step.seqCons Step.letZero (Step.seqStop hcore (by simp)), .haltIns _ _ _⟩
-  | @Step.letVal _ _ _ _ _ vars e vals st1' he hlenv =>
-      injection hsres with hV1 hst1 ho
-      exact absurd ho.symm hne
-  | @Step.letZero _ _ _ _ _ vars =>
-      injection hcode with hcode2
-      exact absurd hcode2 (by simp)
   | .lit => exact absurd hcode (by simp)
   | .var .. => exact absurd hcode (by simp)
   | .builtinOk .. => exact absurd hcode (by simp)
@@ -1474,10 +1526,14 @@ theorem cy_fwd_siteLet_seqStop {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
   | .loopBreak .. => exact absurd hcode (by simp)
   | .loopLeave .. => exact absurd hcode (by simp)
   | .loopBodyHalt .. => exact absurd hcode (by simp)
+  | @Step.letVal _ _ _ _ _ vars e vals st1' he hlenv =>
+      injection hsres with hV1 hst1 ho
+      exact absurd ho.symm hne
+  | @Step.letZero _ _ _ _ _ vars =>
+      injection hcode with hc; exact absurd hc (by simp)
+  termination_by structural hs
 
-/-- Statement-level site helper: `assign`-form, halting (`seqStop`) mode.
-Written over a fully variable-index principal so this member owns a valid
-structural argument inside the mutual block. -/
+/-- Statement-level site helper: `assign`-form, halting (`seqStop`) mode. -/
 theorem cy_fwd_siteAssign_seqStop {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
     {code : Code Op} {sres : Res D}
     (hs : Step D funs₁ V st code sres)
@@ -1498,22 +1554,20 @@ theorem cy_fwd_siteAssign_seqStop {funs₁ : FunEnv D} {V : VEnv D} {st : EvmSta
   obtain ⟨body₀, cenv₀, hlk₀, hb₀, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
   match hs with
   | @Step.assignHalt _ _ _ _ _ vars e st1' he =>
-      injection hcode with hcode2
-      injection hcode2 with hvars he'
-      subst vars; subst e
-      injection hsres with hV1 hst1 ho
-      subst hV1; subst hst1; subst ho
-      rcases cy_fwd_siteCallHalt he rfl rfl hlk₀ hb₀ hsc hlen_as hagbody hR xs ([] : VEnv D)
+      rcases cy_fwd_siteCallHalt he
+          (by injection hcode with hc; injection hc with h1 h2; rw [h2])
+          rfl hlk₀ hb₀ hsc hlen_as hagbody hR xs ([] : VEnv D)
         with ⟨argvals, st1'', Vend, ha, hargl, htbody⟩ | ha
-      · have hcore := inlineCore_carry_fwd_bodyhalt (xs := xs) (Z := ([] : VEnv D))
+      · injection hsres with hV1 hst1 ho
+        subst hV1; subst hst1; subst ho
+        have hcore := inlineCore_carry_fwd_bodyhalt (xs := xs) (Z := ([] : VEnv D))
           hlen_as hnc hsh ha htbody (fun y hy => by simp)
         exact ⟨_, Step.seqStop hcore (by simp), .refl _⟩
-      · have hcore := inlineCore_fwd_argshalt (d := d) (xs := xs) (Z := ([] : VEnv D))
+      · injection hsres with hV1 hst1 ho
+        subst hV1; subst hst1; subst ho
+        have hcore := inlineCore_fwd_argshalt (d := d) (xs := xs) (Z := ([] : VEnv D))
           hlen_as hnc hsh ha (fun y hy => by simp) funs₂
         exact ⟨_, Step.seqStop hcore (by simp), .refl _⟩
-  | @Step.assignVal _ _ _ _ _ vars e vals st1' he hlenv =>
-      injection hsres with hV1 hst1 ho
-      exact absurd ho.symm hne
   | .lit => exact absurd hcode (by simp)
   | .var .. => exact absurd hcode (by simp)
   | .builtinOk .. => exact absurd hcode (by simp)
@@ -1553,12 +1607,12 @@ theorem cy_fwd_siteAssign_seqStop {funs₁ : FunEnv D} {V : VEnv D} {st : EvmSta
   | .loopBreak .. => exact absurd hcode (by simp)
   | .loopLeave .. => exact absurd hcode (by simp)
   | .loopBodyHalt .. => exact absurd hcode (by simp)
+  | @Step.assignVal _ _ _ _ _ vars e vals st1' he hlenv =>
+      injection hsres with hV1 hst1 ho
+      exact absurd ho.symm hne
+  termination_by structural hs
 
-/-- Statement-level site helper: `exprStmt`-form, halting (`seqStop`) mode.
-Written over a fully variable-index principal (the `exprStmt`/`halt` shape is
-recovered from `hcode`/`hres`) so this member owns a valid structural argument
-inside the mutual block — unlike a fixed-`exprStmt`-index principal whose result
-env coincides with the input env in both statement arms. -/
+/-- Statement-level site helper: `exprStmt`-form, halting (`seqStop`) mode. -/
 theorem cy_fwd_siteExpr_seqStop {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
     {code : Code Op} {sres : Res D}
     (hs : Step D funs₁ V st code sres)
@@ -1578,22 +1632,20 @@ theorem cy_fwd_siteExpr_seqStop {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState
   obtain ⟨body₀, cenv₀, hlk₀, hb₀, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
   match hs with
   | @Step.exprStmtHalt _ _ _ _ _ e st1' he =>
-      injection hcode with hcode2
-      injection hcode2 with he'
-      subst he'
-      injection hsres with hV1 hst1 ho
-      subst hV1; subst hst1; subst ho
-      rcases cy_fwd_siteCallHalt he rfl rfl hlk₀ hb₀ hsc hlen_as hagbody hR
-        ([] : List Ident) ([] : VEnv D) with ⟨argvals, st1', Vend, ha, hargl, htbody⟩ | ha
-      · have hcore := inlineCore_carry_fwd_bodyhalt (xs := ([] : List Ident)) (Z := ([] : VEnv D))
+      rcases cy_fwd_siteCallHalt he
+          (by injection hcode with hc; injection hc with h2; rw [h2])
+          rfl hlk₀ hb₀ hsc hlen_as hagbody hR ([] : List Ident) ([] : VEnv D)
+        with ⟨argvals, st1'', Vend, ha, hargl, htbody⟩ | ha
+      · injection hsres with hV1 hst1 ho
+        subst hV1; subst hst1; subst ho
+        have hcore := inlineCore_carry_fwd_bodyhalt (xs := ([] : List Ident)) (Z := ([] : VEnv D))
           hlen_as hnc hsh ha htbody (fun y hy => by simp)
         exact ⟨_, Step.seqStop hcore (by simp), .refl _⟩
-      · have hcore := inlineCore_fwd_argshalt (d := d) (xs := ([] : List Ident)) (Z := ([] : VEnv D))
+      · injection hsres with hV1 hst1 ho
+        subst hV1; subst hst1; subst ho
+        have hcore := inlineCore_fwd_argshalt (d := d) (xs := ([] : List Ident)) (Z := ([] : VEnv D))
           hlen_as hnc hsh ha (fun y hy => by simp) funs₂
         exact ⟨_, Step.seqStop hcore (by simp), .refl _⟩
-  | @Step.exprStmt _ _ _ _ _ e st1' he =>
-      injection hsres with hV1 hst1 ho
-      exact absurd ho.symm hne
   | .lit => exact absurd hcode (by simp)
   | .var .. => exact absurd hcode (by simp)
   | .builtinOk .. => exact absurd hcode (by simp)
@@ -1633,6 +1685,10 @@ theorem cy_fwd_siteExpr_seqStop {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState
   | .loopBreak .. => exact absurd hcode (by simp)
   | .loopLeave .. => exact absurd hcode (by simp)
   | .loopBodyHalt .. => exact absurd hcode (by simp)
+  | @Step.exprStmt _ _ _ _ _ e st1' he =>
+      injection hsres with hV1 hst1 ho
+      exact absurd ho.symm hne
+  termination_by structural hs
 
 end
 
