@@ -1525,3 +1525,326 @@ theorem CyRel.selectRel {Δ : DEnv} {cases cases' : List (Literal × Block Op)}
             rw [selectSwitch, selectSwitch] at this
             exact this
 
+
+/-! ### Transfer-result relation that also carries a `leave` outcome.
+Carry bodies may end in a trailing `leave`; unlike `TRes`, `TResL` admits it. -/
+inductive TResL (W W' : VEnv D) (post : List Ident) : Res D → Res D → Prop
+  | eres (r : EResult D) : TResL W W' post (.eres r) (.eres r)
+  | norm {A' : VEnv D} {st' : EvmState}
+      (hk : ∀ x ∈ post, x ∈ A'.map Prod.fst) :
+      TResL W W' post (.sres (A' ++ W) st' .normal) (.sres (A' ++ W') st' .normal)
+  | halt {A' : VEnv D} {st' : EvmState} :
+      TResL W W' post (.sres (A' ++ W) st' .halt) (.sres (A' ++ W') st' .halt)
+  | leave {A' : VEnv D} {st' : EvmState} :
+      TResL W W' post (.sres (A' ++ W) st' .leave) (.sres (A' ++ W') st' .leave)
+
+/-! ### Carry body statements, permitting a single trailing `leave`. -/
+def carryLeaveStmts (bound : List Ident) (ss : List (Stmt Op)) : Prop :=
+  carryStmts bound ss = true ∨
+    ∃ pre, ss = pre ++ [.leave] ∧ carryStmts bound pre = true
+
+theorem carryLeaveStmts_of_carry {bound : List Ident} {ss : List (Stmt Op)}
+    (h : carryStmts bound ss = true) : carryLeaveStmts bound ss := Or.inl h
+
+/-- Split a carry-leave sequence at its head: either a genuine carry statement
+followed by another carry-leave sequence, or the terminal `leave`. -/
+theorem carryLeaveStmts_cons_inv {bound : List Ident} {s : Stmt Op}
+    {rest : List (Stmt Op)} (h : carryLeaveStmts bound (s :: rest)) :
+    (∃ bound₁, carryStmt bound s = some bound₁ ∧ carryLeaveStmts bound₁ rest) ∨
+    (s = .leave ∧ rest = []) := by
+  rcases h with h | ⟨pre, hpre, hsc⟩
+  · obtain ⟨bound₁, hstmt, hrest⟩ := carryStmts_cons_inv h
+    exact Or.inl ⟨bound₁, hstmt, Or.inl hrest⟩
+  · cases pre with
+    | nil =>
+        simp only [List.nil_append] at hpre
+        injection hpre with h1 h2
+        subst h1; subst h2
+        exact Or.inr ⟨rfl, rfl⟩
+    | cons p pre' =>
+        rw [List.cons_append] at hpre
+        injection hpre with h1 h2
+        subst h1; subst h2
+        obtain ⟨bound₁, hstmt, hrest⟩ := carryStmts_cons_inv hsc
+        exact Or.inl ⟨bound₁, hstmt, Or.inr ⟨pre', rfl, hrest⟩⟩
+
+/-- Invert a `normal` `TResL`. -/
+theorem TResL.norm_inv {W W' : VEnv D} {post : List Ident} {V₁ : VEnv D}
+    {st₁ : EvmState} {res₂ : Res D}
+    (h : TResL (calls := calls) (creates := creates) W W' post
+      (.sres V₁ st₁ .normal) res₂) :
+    ∃ A', V₁ = A' ++ W ∧ res₂ = .sres (A' ++ W') st₁ .normal ∧
+      (∀ x ∈ post, x ∈ A'.map Prod.fst) := by
+  cases h with
+  | norm hk => exact ⟨_, rfl, rfl, hk⟩
+
+/-- Invert a `halt` `TResL`. -/
+theorem TResL.halt_inv {W W' : VEnv D} {post : List Ident} {V₁ : VEnv D}
+    {st₁ : EvmState} {res₂ : Res D}
+    (h : TResL (calls := calls) (creates := creates) W W' post
+      (.sres V₁ st₁ .halt) res₂) :
+    ∃ A', V₁ = A' ++ W ∧ res₂ = .sres (A' ++ W') st₁ .halt := by
+  cases h with
+  | halt => exact ⟨_, rfl, rfl⟩
+
+/-- Invert a `leave` `TResL`. -/
+theorem TResL.leave_inv {W W' : VEnv D} {post : List Ident} {V₁ : VEnv D}
+    {st₁ : EvmState} {res₂ : Res D}
+    (h : TResL (calls := calls) (creates := creates) W W' post
+      (.sres V₁ st₁ .leave) res₂) :
+    ∃ A', V₁ = A' ++ W ∧ res₂ = .sres (A' ++ W') st₁ .leave := by
+  cases h with
+  | «leave» => exact ⟨_, rfl, rfl⟩
+
+/-- `stmtsCallNames` distributes over `++`. -/
+theorem stmtsCallNames_append (a b : List (Stmt Op)) :
+    stmtsCallNames (a ++ b) = stmtsCallNames a ++ stmtsCallNames b := by
+  induction a with
+  | nil => rfl
+  | cons s rest ih =>
+      rw [List.cons_append,
+        show stmtsCallNames (s :: (rest ++ b)) =
+          stmtCallNames s ++ stmtsCallNames (rest ++ b) from rfl,
+        ih,
+        show stmtsCallNames (s :: rest) = stmtCallNames s ++ stmtsCallNames rest from rfl,
+        List.append_assoc]
+
+/-- A trailing `leave` contributes no call names. -/
+theorem stmtsCallNames_append_leave (ss : List (Stmt Op)) :
+    stmtsCallNames (ss ++ [.leave]) = stmtsCallNames ss := by
+  rw [stmtsCallNames_append]
+  simp [stmtsCallNames, stmtCallNames]
+
+/-! ### Carry body-code check: like `carryCode` but a block/sequence may bear a
+trailing `leave`. -/
+def carryBodyCode (bound : List Ident) : Code Op → Prop
+  | .stmt (.block body) => carryLeaveStmts bound body
+  | .stmts ss => carryLeaveStmts bound ss
+  | c => carryCode bound c = true
+
+/-- Agreement is reflexive. -/
+theorem FunsAgree.refl (funs : FunEnv D) (names : List Ident) :
+    FunsAgree (calls := calls) (creates := creates) funs funs names :=
+  fun _ _ => rfl
+
+/-- Normalize a **carry** callee body to its trailing-`leave`-free form at a
+`normal`/`leave` outcome: a carry body cannot itself yield `leave`, so the run
+is `normal`. (Mirror of `body_normalize_ok`, using `carry_transfer`.) -/
+theorem carry_body_normalize_ok {d : IDecl} {body₀ : List (Stmt Op)}
+    (hb : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave])
+    (hsc : carryStmts (d.ps ++ d.rs) d.ss = true)
+    {cenv : FunEnv D} {E : VEnv D} {st1 st2 : EvmState} {Vend : VEnv D}
+    {o : Outcome}
+    (hkeys : ∀ x ∈ d.ps ++ d.rs, x ∈ E.map Prod.fst)
+    (hbody : Step D cenv E st1 (.stmt (.block body₀)) (.sres Vend st2 o))
+    (ho : o = .normal ∨ o = .leave) :
+    Step D cenv E st1 (.stmt (.block d.ss)) (.sres Vend st2 .normal) := by
+  have hscode : carryCode (d.ps ++ d.rs) (Code.stmt (.block d.ss)) = true := by
+    simp [carryCode, carryStmt, hsc]
+  rcases hb with rfl | rfl
+  · rcases ho with rfl | rfl
+    · exact hbody
+    · obtain ⟨res₂, -, htr⟩ := carry_transfer hbody
+        (A := E) (W := ([] : VEnv D)) (bound := d.ps ++ d.rs) cenv []
+        (by simp) hscode hkeys (FunsAgree.refl _ _)
+      cases htr
+  · obtain ⟨o', hbody', hcase⟩ := block_trailing_leave_fwd hbody
+    rcases hcase with ⟨-, rfl⟩ | ⟨rfl, hne⟩
+    · exact hbody'
+    · rcases ho with rfl | rfl
+      · exact absurd rfl hne
+      · obtain ⟨res₂, -, htr⟩ := carry_transfer hbody'
+          (A := E) (W := ([] : VEnv D)) (bound := d.ps ++ d.rs) cenv []
+          (by simp) hscode hkeys (FunsAgree.refl _ _)
+        cases htr
+
+/-! ### Site assembly (forward): the argument/read-out machinery is reused
+verbatim from `InlineCallsSound`; only the callee body is supplied
+pre-transferred (via `carry_body_fwd`) rather than by `scoped_transfer`. -/
+
+/-- Forward, normal path — the transferred callee body is given by `htbody`. -/
+theorem inlineCore_carry_fwd_normal {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
+    (hnd : (d.ps ++ d.rs).Nodup)
+    (hlen_as : as.length = d.ps.length)
+    (hnc : argsHaveCall as = false)
+    (hsh : argsShadowOK d.rs (d.ps.zip as) = true)
+    (hxout : ∀ x ∈ xs, x ∉ d.ps ++ d.rs)
+    (hlen_xs : xs.length = d.rs.length)
+    {funs funs₂ : FunEnv D} {V Z : VEnv D} {st st1 st2 : EvmState}
+    {argvals : List U256} {A'' : VEnv D}
+    (hargs : Step D funs V st (.args as) (.eres (.vals argvals st1)))
+    (htbody : Step D (hoist D ([Stmt.letDecl d.rs none]
+        ++ ((d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2)))
+        ++ [Stmt.block d.ss]
+        ++ (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2))) :: funs₂)
+        (d.ps.zip argvals ++ bindZeros D d.rs ++ (Z ++ V)) st1
+        (.stmt (.block d.ss)) (.sres (A'' ++ (Z ++ V)) st2 .normal))
+    (hZ : ∀ y ∈ varsList as, y ∉ Z.map Prod.fst) :
+    Step D funs₂ (Z ++ V) st (.stmt (inlineCore d xs as))
+      (.sres (VEnv.setMany (Z ++ V) xs (d.rs.map
+        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero)))
+        st2 .normal) := by
+  have hvlen : argvals.length = as.length := args_length hargs
+  have hpslen : d.ps.length ≤ argvals.length := by omega
+  have hkeysA'' : A''.map Prod.fst = d.ps ++ d.rs := by
+    have hshape := block_stmt_shape htbody
+    have hlA : A''.length = (d.ps.zip argvals ++ bindZeros D d.rs).length := by
+      have := hshape.2
+      simp only [List.length_append] at this ⊢
+      omega
+    have hmm : A''.map Prod.fst ++ (Z ++ V).map Prod.fst =
+        (d.ps.zip argvals ++ bindZeros D d.rs).map Prod.fst ++ (Z ++ V).map Prod.fst := by
+      rw [← List.map_append, ← List.map_append]
+      have := hshape.1
+      simpa [List.append_assoc] using this
+    exact (append_cancel_of_length hmm (by simpa using hlA)).1.trans
+      (calleeFrame_keys hpslen)
+  set argLets : List (Stmt Op) :=
+    (d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2)) with hargLets
+  set assignsL : List (Stmt Op) :=
+    (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2)) with hassignsL
+  set funs' : FunEnv D := hoist D
+    ([Stmt.letDecl d.rs none] ++ argLets ++ [Stmt.block d.ss] ++ assignsL) :: funs₂
+    with hfuns'
+  have hN : ∀ y ∈ varsList as, y ∉ (bindZeros D d.rs ++ Z).map Prod.fst := by
+    intro y hy
+    rw [List.map_append, bindZeros_keys]
+    intro hmem
+    rcases List.mem_append.mp hmem with hm | hm
+    · have hrs := argsShadowOK_rs hsh y
+      rw [zip_snds hlen_as.symm] at hrs
+      exact hrs hy hm
+    · exact hZ y hy hm
+  have s2 := argLets_fwd (rs := d.rs) hargs hlen_as.symm hnc hsh hN funs'
+  have s4 := assigns_fwd (A' := A'')
+    (fun r hr => by rw [hkeysA'']; exact List.mem_append.mpr (Or.inr hr))
+    (fun x hx => by rw [hkeysA'']; exact hxout x hx)
+    hlen_xs funs' (Z ++ V) st2
+  have c1 : Step D funs' (Z ++ V) st (.stmts [Stmt.letDecl d.rs none])
+      (.sres (bindZeros D d.rs ++ (Z ++ V)) st .normal) :=
+    Step.seqCons Step.letZero Step.seqNil
+  have s2' : Step D funs' (bindZeros D d.rs ++ (Z ++ V)) st (.stmts argLets)
+      (.sres (d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V))) st1 .normal) := by
+    have h := s2
+    rw [show (bindZeros D d.rs ++ Z) ++ V = bindZeros D d.rs ++ (Z ++ V) from
+      List.append_assoc _ _ _] at h
+    exact h
+  have c2 : Step D funs' (Z ++ V) st
+      (.stmts ([Stmt.letDecl d.rs none] ++ argLets))
+      (.sres (d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V))) st1 .normal) :=
+    stmts_append_normal c1 s2'
+  have c3b : Step D funs' (d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V))) st1
+      (.stmts [Stmt.block d.ss])
+      (.sres (A'' ++ (Z ++ V)) st2 .normal) := by
+    have h := Step.seqCons htbody Step.seqNil
+    rw [show d.ps.zip argvals ++ bindZeros D d.rs ++ (Z ++ V) =
+      d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V)) by
+      simp [List.append_assoc]] at h
+    exact h
+  have c3 : Step D funs' (Z ++ V) st
+      (.stmts (([Stmt.letDecl d.rs none] ++ argLets) ++ [Stmt.block d.ss]))
+      (.sres (A'' ++ (Z ++ V)) st2 .normal) :=
+    stmts_append_normal c2 c3b
+  have c4 : Step D funs' (Z ++ V) st
+      (.stmts ((([Stmt.letDecl d.rs none] ++ argLets) ++ [Stmt.block d.ss]) ++ assignsL))
+      (.sres (A'' ++ VEnv.setMany (Z ++ V) xs (d.rs.map
+        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero)))
+        st2 .normal) :=
+    stmts_append_normal c3 s4
+  have hfinal := Step.block (funs := funs₂) c4
+  have hlast : restore (Z ++ V) (A'' ++ VEnv.setMany (Z ++ V) xs (d.rs.map
+      (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero))) =
+      VEnv.setMany (Z ++ V) xs (d.rs.map
+        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero)) :=
+    restore_exact (VEnv.setMany_length _ _ _)
+  rw [hlast] at hfinal
+  show Step D funs₂ (Z ++ V) st (.stmt (.block ([Stmt.letDecl d.rs none] ++ argLets
+      ++ [Stmt.block d.ss] ++ assignsL))) _
+  exact hfinal
+
+/-- Forward, body-halt path — the transferred callee body (halting) is `htbody`. -/
+theorem inlineCore_carry_fwd_bodyhalt {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
+    (hlen_as : as.length = d.ps.length)
+    (hnc : argsHaveCall as = false)
+    (hsh : argsShadowOK d.rs (d.ps.zip as) = true)
+    {funs funs₂ : FunEnv D} {V Z : VEnv D} {st st1 st2 : EvmState}
+    {argvals : List U256} {A'' : VEnv D}
+    (hargs : Step D funs V st (.args as) (.eres (.vals argvals st1)))
+    (htbody : Step D (hoist D ([Stmt.letDecl d.rs none]
+        ++ ((d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2)))
+        ++ [Stmt.block d.ss]
+        ++ (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2))) :: funs₂)
+        (d.ps.zip argvals ++ bindZeros D d.rs ++ (Z ++ V)) st1
+        (.stmt (.block d.ss)) (.sres (A'' ++ (Z ++ V)) st2 .halt))
+    (hZ : ∀ y ∈ varsList as, y ∉ Z.map Prod.fst) :
+    Step D funs₂ (Z ++ V) st (.stmt (inlineCore d xs as))
+      (.sres (Z ++ V) st2 .halt) := by
+  have hvlen : argvals.length = as.length := args_length hargs
+  have hpslen : d.ps.length ≤ argvals.length := by omega
+  set argLets : List (Stmt Op) :=
+    (d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2)) with hargLets
+  set assignsL : List (Stmt Op) :=
+    (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2)) with hassignsL
+  set funs' : FunEnv D := hoist D
+    ([Stmt.letDecl d.rs none] ++ argLets ++ [Stmt.block d.ss] ++ assignsL) :: funs₂
+    with hfuns'
+  have hN : ∀ y ∈ varsList as, y ∉ (bindZeros D d.rs ++ Z).map Prod.fst := by
+    intro y hy
+    rw [List.map_append, bindZeros_keys]
+    intro hmem
+    rcases List.mem_append.mp hmem with hm | hm
+    · have hrs := argsShadowOK_rs hsh y
+      rw [zip_snds hlen_as.symm] at hrs
+      exact hrs hy hm
+    · exact hZ y hy hm
+  have s2 := argLets_fwd (rs := d.rs) hargs hlen_as.symm hnc hsh hN funs'
+  have c1 : Step D funs' (Z ++ V) st (.stmts [Stmt.letDecl d.rs none])
+      (.sres (bindZeros D d.rs ++ (Z ++ V)) st .normal) :=
+    Step.seqCons Step.letZero Step.seqNil
+  have s2' : Step D funs' (bindZeros D d.rs ++ (Z ++ V)) st (.stmts argLets)
+      (.sres (d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V))) st1 .normal) := by
+    have h := s2
+    rw [show (bindZeros D d.rs ++ Z) ++ V = bindZeros D d.rs ++ (Z ++ V) from
+      List.append_assoc _ _ _] at h
+    exact h
+  have c2 : Step D funs' (Z ++ V) st
+      (.stmts ([Stmt.letDecl d.rs none] ++ argLets))
+      (.sres (d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V))) st1 .normal) :=
+    stmts_append_normal c1 s2'
+  have c3b : Step D funs' (d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V))) st1
+      (.stmts [Stmt.block d.ss])
+      (.sres (A'' ++ (Z ++ V)) st2 .halt) := by
+    have h : Step D funs' (d.ps.zip argvals ++ bindZeros D d.rs ++ (Z ++ V)) st1
+        (.stmts [Stmt.block d.ss]) (.sres (A'' ++ (Z ++ V)) st2 .halt) :=
+      Step.seqStop htbody (by simp)
+    rw [show d.ps.zip argvals ++ bindZeros D d.rs ++ (Z ++ V) =
+      d.ps.zip argvals ++ (bindZeros D d.rs ++ (Z ++ V)) by
+      simp [List.append_assoc]] at h
+    exact h
+  have c3 : Step D funs' (Z ++ V) st
+      (.stmts (([Stmt.letDecl d.rs none] ++ argLets) ++ [Stmt.block d.ss]))
+      (.sres (A'' ++ (Z ++ V)) st2 .halt) :=
+    stmts_append_normal c2 c3b
+  have c4 : Step D funs' (Z ++ V) st
+      (.stmts ((([Stmt.letDecl d.rs none] ++ argLets) ++ [Stmt.block d.ss]) ++ assignsL))
+      (.sres (A'' ++ (Z ++ V)) st2 .halt) :=
+    stmts_append_early c3 (by simp)
+  have hfinal := Step.block (funs := funs₂) c4
+  rw [restore_exact rfl] at hfinal
+  exact hfinal
+
+/-! ### Empty-scope lifts for the function-environment relations. -/
+
+/-- Agreement is insensitive to a leading empty scope on the right. -/
+theorem FunsAgree.cons_nil_right {funs₁ funs₂ : FunEnv D} {names : List Ident}
+    (h : FunsAgree (calls := calls) (creates := creates) funs₁ funs₂ names) :
+    FunsAgree (calls := calls) (creates := creates) funs₁ ([] :: funs₂) names := by
+  intro g hg
+  have e : lookupFun (([] : FScope D) :: funs₂) g = lookupFun funs₂ g := rfl
+  rw [e]; exact h g hg
+
+/-- `CyFunsRel` lifts through a common prepended empty scope. -/
+theorem CyFunsRel.cons_nil {funs₁ funs₂ : FunEnv D}
+    (h : CyFunsRel (calls := calls) (creates := creates) funs₁ funs₂) :
+    CyFunsRel (calls := calls) (creates := creates) ([] :: funs₁) ([] :: funs₂) :=
+  .cons (cyScopeRel_refl _ _) h
