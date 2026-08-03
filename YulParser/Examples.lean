@@ -136,6 +136,20 @@ fixture for exactly this — so the limit lives in compilation, not parsing. -/
 #guard (parseSource "{ sstore(0, loadimmutable(\"x\")) }").isSome
 #guard (compileSource "{ sstore(0, loadimmutable(\"x\")) }").isNone
 
+/-! An immutable is patched by the **parent** of the object that reads it.
+Validation pairs reads with writes only globally, so a setter sitting in an
+unrelated sibling satisfies it while patching nothing — the reader would deploy
+with its placeholder still zero. The pairing is re-checked per scope. -/
+def crossScopeImmutable : String :=
+  "object \"A\" {\n" ++
+  "  code { let s := datasize(\"B\") codecopy(0, dataoffset(\"B\"), s) return(0, s) }\n" ++
+  "  object \"B\" { code { sstore(0, loadimmutable(\"x\")) } }\n" ++
+  "  object \"C\" { code { setimmutable(0, \"x\", caller()) stop() } }\n" ++
+  "}\n"
+
+#guard (parseSource crossScopeImmutable).isSome
+#guard (compileSource crossScopeImmutable).isNone
+
 /-! Two sibling objects declaring the same immutable put its placeholder at
 different offsets, but `setimmutable(base, name, value)` names no child and
 `base` points at a copy of one of them. Patching one at the other's offsets
