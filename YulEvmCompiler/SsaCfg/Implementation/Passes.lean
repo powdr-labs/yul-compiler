@@ -509,14 +509,35 @@ definition dominates the `iszero`, which dominates the branch.
 This transform is natural on a CFG and awkward on Yul, where inverting a
 test means restructuring an `if` into its complement. -/
 
+/-- Uses of each value across a whole function (instruction arguments,
+terminator uses, and edge arguments), with multiplicity. -/
+def useCounts (f : Func) : Std.HashMap ValId Nat := Id.run do
+  let mut m : Std.HashMap ValId Nat := {}
+  let bump := fun (m : Std.HashMap ValId Nat) (vs : List ValId) =>
+    vs.foldl (fun m v => m.insert v ((m.getD v 0) + 1)) m
+  for b in f.blocks do
+    for i in b.instrs do
+      m := bump m i.uses
+    m := bump m b.term.uses
+  return m
+
 /-- The `iszero` sources of a function: `dst ↦ arg` for every
-`dst ← iszero(arg)`. SSA ids are function-unique, so one flat map serves
-every block. -/
+`dst ← iszero(arg)` **whose result is used exactly once**. SSA ids are
+function-unique, so one flat map serves every block.
+
+The single-use restriction is what makes the rewrite a win rather than a
+coin flip: if the `iszero` has another use it survives dead-value
+elimination, so inverting the branch saves no `ISZERO` and only perturbs
+the two edges' entry layouts — which can cost real gas, by pushing the
+generator off its direct branch scheme onto the stub scheme (an extra
+label, `jump`, and shuffle) in a hot loop. -/
 def iszeroSources (f : Func) : Std.HashMap ValId ValId := Id.run do
+  let uses := useCounts f
   let mut m : Std.HashMap ValId ValId := {}
   for b in f.blocks do
     for i in b.instrs do
-      if let .op [d] .iszero [a] := i then m := m.insert d a
+      if let .op [d] .iszero [a] := i then
+        if uses.getD d 0 == 1 then m := m.insert d a
   return m
 
 /-- Rewrite `branch (iszero x) t f` to `branch x f t`, to a fixed point
