@@ -11,7 +11,6 @@ datasize_code.yul
 datasize_self.yul
 identical_subobjects_with_subject_references.yul
 immutable_long_name_does_not_end_up_in_bytecode.yul
-jump_tags.yul
 leading_and_trailing_dots.yul
 linkersymbol.yul
 manySubObjects.yul

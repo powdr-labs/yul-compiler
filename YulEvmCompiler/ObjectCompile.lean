@@ -859,6 +859,89 @@ private theorem compileResolvedObject_compileWitness {o : Object Op} {L : Layout
 layout maps. -/
 def compileObject := compileResolvedObject
 
+/-! ### Backend-parameterized object planning
+
+The same planning pipeline as `planObject`/`compileResolvedObject`, but with
+the per-code-block compiler taken as a parameter, so an alternative verified
+backend (the SSA-CFG backend, `YulEvmCompiler.SsaCfg.compileViaSsa`) can
+drive the identical layout fixpoint. These are deliberately *parallel*
+definitions — the proved `planObject` chain above is untouched — and they
+live in this file only to reach the private resolver/entry helpers. The SSA
+object-execution theorem will relate `compileResolvedObjectWith` to
+`RunResolvedObject` the same way `compileObject_correct` does for the
+classic chain. -/
+
+/-- `planAttempt` with the block compiler as a parameter. -/
+def planAttemptWith (compileFn : YulSemantics.Block Op → Option (List Instr))
+    (name : String) (code : List (YulSemantics.Stmt Op))
+    (subPlans : List ObjectPlan) (dataSegs : List (String × Data)) (c : Nat) :
+    Option (ObjectPlan ⊕ Nat) := do
+  let childrenSize := (subPlans.map (·.bytecode.length)).sum
+  let dataSize := (dataSegs.map (fun entry => entry.2.size)).sum
+  let size := c + 1 + childrenSize + dataSize
+  if size < 2 ^ 256 then
+    let children := childEntries (c + 1) subPlans
+    let dataLayout := dataEntries (c + 1 + childrenSize) dataSegs
+    let plan : ObjectPlan := {
+      name, codeBlock := code, codeSize := c, size, subObjects := subPlans, dataSegs
+      entries := { name, offset := 0, size } :: children ++ dataLayout
+      bytecode := []
+    }
+    let resolvedCode ← resolveObjectStmts (planResolver plan) code
+    let resolvedInstructions ← compileFn resolvedCode
+    let executable := assembleBytes resolvedInstructions
+    let c' := executable.length
+    if c' == c then
+      let childBytecode := (subPlans.map (·.bytecode)).flatten
+      let bytecode := executable ++ [0] ++ childBytecode ++ dataRegion dataSegs
+      if bytecode.length == size then some (.inl { plan with bytecode }) else none
+    else
+      some (.inr c')
+  else
+    none
+
+/-- `planLoop` with the block compiler as a parameter. -/
+def planLoopWith (compileFn : YulSemantics.Block Op → Option (List Instr))
+    (name : String) (code : List (YulSemantics.Stmt Op))
+    (subPlans : List ObjectPlan) (dataSegs : List (String × Data)) :
+    Nat → Nat → Option ObjectPlan
+  | 0, _ => none
+  | fuel + 1, c =>
+    match planAttemptWith compileFn name code subPlans dataSegs c with
+    | none => none
+    | some (.inl plan) => some plan
+    | some (.inr c') => planLoopWith compileFn name code subPlans dataSegs fuel c'
+
+mutual
+  /-- `planObject` with the block compiler as a parameter. -/
+  def planObjectWith (compileFn : YulSemantics.Block Op → Option (List Instr))
+      (o : Object Op) : Option ObjectPlan :=
+    match o with
+    | .mk name code subObjects dataSegs => do
+        let subPlans ← planObjectsWith compileFn subObjects
+        let placeholderCode ← resolveObjectStmts placeholderResolver code
+        let instructions ← compileFn placeholderCode
+        let codeSize := (assembleBytes instructions).length
+        planLoopWith compileFn name code subPlans dataSegs 34 codeSize
+    termination_by 2 * sizeOf o + 1
+
+  def planObjectsWith (compileFn : YulSemantics.Block Op → Option (List Instr))
+      (os : List (Object Op)) : Option (List ObjectPlan) :=
+    match os with
+    | [] => some []
+    | o :: objects => do
+        return (← planObjectWith compileFn o) :: (← planObjectsWith compileFn objects)
+    termination_by 2 * sizeOf os
+end
+
+/-- `compileResolvedObject` with the block compiler as a parameter. -/
+def compileResolvedObjectWith
+    (compileFn : YulSemantics.Block Op → Option (List Instr))
+    (o : Object Op) : Option Layout := do
+  let plan ← planObjectWith compileFn o
+  if !(plan.entries.map entryKey).Nodup then none else
+  some (layoutOfPlan plan)
+
 /-- Public data-placement theorem for `compileObject`. -/
 theorem compileObject_consistent {o : Object Op} {L : Layout}
     (h : compileObject o = some L) : L.Consistent o :=

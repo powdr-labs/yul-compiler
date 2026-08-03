@@ -6,6 +6,5 @@
 # where our return stack overflows while solc remains running at the fuel bound.
 early_push_on_deep_swap.yul
 literal_loop.yul
-stackReuse/function_many_arguments.yul
 stackReuse/reuse_too_deep_slot.yul
 unassigned_return_variable.yul
