@@ -475,22 +475,42 @@ def findMerge (f : Func) : Option (BlockId × BlockId) := Id.run do
           return some (bi, e.target)
   return none
 
-/-- Merge `t` into `bi`, substituting `t`'s parameters by the edge arguments
-across the whole function (see the section comment for why global is sound),
-then drop the now-unreachable `t`. -/
-def mergeOnce (f : Func) : Option Func := do
-  let (bi, t) ← findMerge f
-  let b := f.blocks[bi]!
-  let tb := f.blocks[t]!
-  let merged : Block :=
-    { params := b.params, instrs := b.instrs ++ tb.instrs, term := tb.term }
-  -- The absorbed block is *blanked in place* rather than deleted: block ids
-  -- stay stable, so no edge anywhere needs renumbering and the result is
-  -- well-formed by inspection (the merged block gained exactly the
-  -- definitions the blank one lost). It is unreachable — its only in-edge
-  -- was the `jump` we just replaced — so it never executes.
-  some { f with
-    blocks := (f.blocks.set! bi merged).set! t ⟨[], [], .halt .invalid []⟩ }
+/-- The blank left behind by a merge: unreachable, and well-formed under
+any `nrets` (it is not a `ret`). -/
+def blankBlock : Block := ⟨[], [], .halt .invalid []⟩
+
+/-- Everything a merge needs to be sound and well-formed, as one decidable
+predicate. `findMerge` already establishes all of it, but re-checking it
+here is what makes the facts available to the proofs *by inspection*
+instead of by inverting the search loop — and it costs a handful of
+comparisons. -/
+def mergeOK (f : Func) (bi t : BlockId) : Prop :=
+  bi < f.blocks.size ∧ t < f.blocks.size ∧ t ≠ f.entry ∧ t ≠ bi
+    ∧ f.blocks[bi]!.term = .jump ⟨t, []⟩
+    ∧ f.blocks[t]!.params = []
+
+instance instDecidableMergeOK (f : Func) (bi t : BlockId) :
+    Decidable (mergeOK f bi t) := by
+  unfold mergeOK; infer_instance
+
+/-- Merge `t` into `bi`: append its instructions, adopt its terminator, and
+blank it in place. -/
+def mergeOnce (f : Func) : Option Func :=
+  match findMerge f with
+  | none => none
+  | some (bi, t) =>
+    if _h : mergeOK f bi t then
+      let merged : Block :=
+        { params := f.blocks[bi]!.params,
+          instrs := f.blocks[bi]!.instrs ++ f.blocks[t]!.instrs,
+          term := f.blocks[t]!.term }
+      -- The absorbed block is *blanked in place* rather than deleted: block
+      -- ids stay stable, so no edge anywhere needs renumbering and the
+      -- result is well-formed by inspection (the merged block gained
+      -- exactly the definitions the blank one lost). It is unreachable —
+      -- its only in-edge was the `jump` we just replaced.
+      some { f with blocks := (f.blocks.set! bi merged).set! t blankBlock }
+    else none
 
 /-- Coalesce straight-line block chains to a fixed point. Each merge blanks
 one block, so the block count bounds the iteration. -/

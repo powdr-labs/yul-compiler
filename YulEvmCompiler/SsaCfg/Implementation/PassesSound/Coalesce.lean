@@ -47,31 +47,39 @@ theorem nrets_with (f : Func) (e : BlockId) (bs : Array Block) :
 @[simp] theorem substFunc_nrets (σ : Subst) (f : Func) :
     (substFunc σ f).nrets = f.nrets := rfl
 
-/-- Every function `mergeOnce` can produce keeps `params` and `nrets`: the
-merge only ever rebuilds `blocks` (and renumbers `entry`). -/
+/-- Invert one merge: it fires only at a pair satisfying `mergeOK`, and its
+result is the two-block update. Everything the well-formedness and
+soundness proofs need is read off this, not off `findMerge`'s search. -/
+theorem mergeOnce_inv {f g : Func} (h : mergeOnce f = some g) :
+    ∃ bi t, mergeOK f bi t ∧
+      g = { f with blocks :=
+        (f.blocks.set! bi
+          { params := f.blocks[bi]!.params,
+            instrs := f.blocks[bi]!.instrs ++ f.blocks[t]!.instrs,
+            term := f.blocks[t]!.term }).set! t blankBlock } := by
+  unfold mergeOnce at h
+  cases hm : findMerge f with
+  | none => rw [hm] at h; exact absurd h (by simp)
+  | some q =>
+      obtain ⟨bi, t⟩ := q
+      rw [hm] at h
+      dsimp only at h
+      by_cases hok : mergeOK f bi t
+      · rw [dif_pos hok] at h
+        exact ⟨bi, t, hok, (Option.some.inj h).symm⟩
+      · rw [dif_neg hok] at h
+        exact absurd h (by simp)
+
 theorem mergeOnce_entry {f g : Func} (h : mergeOnce f = some g) :
     g.entry = f.entry := by
-  unfold mergeOnce at h
-  cases hm : findMerge f with
-  | none => rw [hm] at h; exact absurd h (by simp)
-  | some q =>
-      obtain ⟨bi, t⟩ := q
-      rw [hm] at h
-      dsimp only [Option.bind] at h
-      obtain rfl := (Option.some.inj h).symm
-      rfl
+  obtain ⟨bi, t, -, rfl⟩ := mergeOnce_inv h
+  rfl
 
+/-- Every function `mergeOnce` can produce keeps `params` and `nrets`. -/
 theorem mergeOnce_fields {f g : Func} (h : mergeOnce f = some g) :
     g.params = f.params ∧ g.nrets = f.nrets := by
-  unfold mergeOnce at h
-  cases hm : findMerge f with
-  | none => rw [hm] at h; exact absurd h (by simp)
-  | some q =>
-      obtain ⟨bi, t⟩ := q
-      rw [hm] at h
-      dsimp only [Option.bind] at h
-      obtain rfl := (Option.some.inj h).symm
-      exact ⟨rfl, rfl⟩
+  obtain ⟨bi, t, -, rfl⟩ := mergeOnce_inv h
+  exact ⟨rfl, rfl⟩
 
 /-! ### The fixed-point loop -/
 
@@ -330,6 +338,148 @@ theorem invertBranches_blockUses {f : Func} {b : Block} {y : ValId}
       · obtain ⟨i, hi, hyi⟩ := blockIszeroSources_mem hd
         exact Or.inl (List.mem_flatMap.mpr ⟨i, hi, hyi⟩)
     · simp at hnil
+
+/-! ### Well-formedness
+
+The one non-structural conjunct (`allDefs.Nodup`) comes from the pass's own
+guard; the rest is preserved by every single merge, because no block's
+`params` changes (the merged block keeps its own, and the absorbed block
+already had none) and the merged block's instructions and terminator are
+exactly ones that were already present. -/
+
+/-- Updating two positions of a block array, where the new blocks have the
+same parameter lists as the old ones, leaves every parameter list alone. -/
+theorem params_get_two_set (bs : Array Block) (bi t : BlockId) (mb : Block)
+    (hbi : bi < bs.size) (ht : t < bs.size) (hne : t ≠ bi)
+    (hmb : mb.params = bs[bi].params) (htp : bs[t].params = []) (j : Nat) :
+    (((bs.set! bi mb).set! t blankBlock)[j]?.map Block.params)
+      = (bs[j]?.map Block.params) := by
+  by_cases hjt : j = t
+  · subst hjt
+    simp [Array.set!, ht, blankBlock, htp]
+  · by_cases hjb : j = bi
+    · subst hjb
+      simp [Array.set!, Ne.symm hjt, hbi, hmb]
+    · simp [Array.set!, Ne.symm hjt, Ne.symm hjb]
+
+/-- No block's parameter list changes across a merge, so every edge's
+argument count still matches its target's arity. -/
+theorem mergeOnce_params_get {f g : Func} (h : mergeOnce f = some g) (j : Nat) :
+    (g.blocks[j]?.map Block.params) = (f.blocks[j]?.map Block.params) := by
+  obtain ⟨bi, t, hok, rfl⟩ := mergeOnce_inv h
+  obtain ⟨hbi, ht, -, hne, -, htp⟩ := hok
+  exact params_get_two_set f.blocks bi t _ hbi ht hne
+    (by simp [getElem!_eq_getElem hbi]) (by simpa [getElem!_eq_getElem ht] using htp) j
+
+/-- Structural well-formedness (everything except single assignment). -/
+def WfStruct (f : Func) (n : Nat) : Prop :=
+  f.entry < f.blocks.size ∧ (∃ eb, f.blocks[f.entry]? = some eb ∧ eb.params = []) ∧
+    ∀ b ∈ f.blocks.toList, BlockWF f.blocks f.nrets n b
+
+/-- Look up the same index in a parameter-preserving rewrite of a block
+array: the block is still there, with the same parameters. -/
+theorem params_transfer {bs bs' : Array Block} {k : Nat} {b : Block}
+    (hp : ∀ j : Nat, bs'[j]?.map Block.params = bs[j]?.map Block.params)
+    (h : bs[k]? = some b) : ∃ b', bs'[k]? = some b' ∧ b'.params = b.params := by
+  have hk0 := hp k
+  rw [h] at hk0
+  rcases hk : bs'[k]? with _ | b'
+  · rw [hk] at hk0; simp at hk0
+  · rw [hk] at hk0
+    exact ⟨b', rfl, Option.some.inj (by simpa using hk0)⟩
+
+/-- Transfer an edge's arity obligation across such a rewrite. -/
+theorem edge_ok_transfer {bs bs' : Array Block} {k L : Nat}
+    (hp : ∀ j : Nat, bs'[j]?.map Block.params = bs[j]?.map Block.params)
+    (h : ∃ tb, bs[k]? = some tb ∧ L = tb.params.length) :
+    ∃ tb', bs'[k]? = some tb' ∧ L = tb'.params.length := by
+  obtain ⟨tb, htb, hlen⟩ := h
+  obtain ⟨tb', htb', hpp⟩ := params_transfer hp htb
+  exact ⟨tb', htb', by rw [hpp]; exact hlen⟩
+
+theorem mergeOnce_size {f g : Func} (h : mergeOnce f = some g) :
+    g.blocks.size = f.blocks.size := by
+  obtain ⟨bi, t, -, rfl⟩ := mergeOnce_inv h
+  simp [Array.set!]
+
+/-- One merge preserves structural well-formedness. -/
+theorem mergeOnce_wfStruct {f g : Func} {n : Nat}
+    (hs : WfStruct f n) (h : mergeOnce f = some g) : WfStruct g n := by
+  obtain ⟨hentry, ⟨eb, heb, hebp⟩, hall⟩ := hs
+  have hp := mergeOnce_params_get h
+  obtain ⟨bi, t, hok, hgdef⟩ := mergeOnce_inv h
+  obtain ⟨hbi, ht, hte, hne, hjump, htp⟩ := hok
+  subst hgdef
+  have hmemf : ∀ k : Nat, k < f.blocks.size → f.blocks[k]! ∈ f.blocks.toList :=
+    fun k hk => by
+      rw [getElem!_eq_getElem hk]
+      exact List.mem_iff_getElem.mpr ⟨k, by simpa using hk, by simp⟩
+  refine ⟨by simpa [Array.set!] using hentry, ?_, ?_⟩
+  · obtain ⟨eb', heb', hpp⟩ := params_transfer hp heb
+    exact ⟨eb', heb', by rw [hpp]; exact hebp⟩
+  · intro b' hb'
+    obtain ⟨j, hj, hjeq⟩ := List.mem_iff_getElem.mp hb'
+    rw [← hjeq, Array.getElem_toList]
+    have hjf : j < f.blocks.size := by
+      have : j < ((f.blocks.set! bi
+        ⟨f.blocks[bi]!.params, f.blocks[bi]!.instrs ++ f.blocks[t]!.instrs,
+          f.blocks[t]!.term⟩).set! t blankBlock).size := by simpa using hj
+      simpa [Array.set!] using this
+    by_cases hjt : j = t
+    · subst hjt
+      have hb : ((f.blocks.set! bi
+          ⟨f.blocks[bi]!.params, f.blocks[bi]!.instrs ++ f.blocks[j]!.instrs,
+            f.blocks[j]!.term⟩).set! j blankBlock)[j] = blankBlock := by
+        simp [Array.set!, ht]
+      rw [hb]
+      exact ⟨by simp [blankBlock], by simp [blankBlock, Term.edges], by simp [blankBlock]⟩
+    · by_cases hjb : j = bi
+      · have hb : ((f.blocks.set! bi
+            ⟨f.blocks[bi]!.params, f.blocks[bi]!.instrs ++ f.blocks[t]!.instrs,
+              f.blocks[t]!.term⟩).set! t blankBlock)[j] =
+            ⟨f.blocks[bi]!.params, f.blocks[bi]!.instrs ++ f.blocks[t]!.instrs,
+              f.blocks[t]!.term⟩ := by
+          simp [Array.set!, hjb, hbi, Array.getElem_setIfInBounds_ne, hne]
+        rw [hb]
+        have hbwfB := hall _ (hmemf bi hbi)
+        have hbwfT := hall _ (hmemf t ht)
+        refine ⟨hbwfT.1, ?_, ?_⟩
+        · intro e he
+          exact edge_ok_transfer hp (hbwfT.2.1 e he)
+        · intro i hi
+          rcases List.mem_append.mp hi with hi | hi
+          · exact hbwfB.2.2 i hi
+          · exact hbwfT.2.2 i hi
+      · have hb : ((f.blocks.set! bi
+            ⟨f.blocks[bi]!.params, f.blocks[bi]!.instrs ++ f.blocks[t]!.instrs,
+              f.blocks[t]!.term⟩).set! t blankBlock)[j] = f.blocks[j]! := by
+          rw [getElem!_eq_getElem hjf]
+          simp only [Array.set!]
+          rw [Array.getElem_setIfInBounds_ne (by simpa using hjf) (Ne.symm hjt),
+            Array.getElem_setIfInBounds_ne hjf (Ne.symm hjb)]
+        rw [hb]
+        have hbwf := hall _ (hmemf j hjf)
+        refine ⟨hbwf.1, ?_, hbwf.2.2⟩
+        intro e he
+        exact edge_ok_transfer hp (hbwf.2.1 e he)
+
+theorem coalesceRaw_wfStruct {f : Func} {n : Nat} (hs : WfStruct f n) :
+    WfStruct (coalesceRaw f) n :=
+  coalesceRaw_induction (motive := fun g => WfStruct g n) f hs
+    (fun _ _ hg hm => mergeOnce_wfStruct hg hm)
+
+/-- **Well-formedness preservation for block coalescing.** The structural
+conjuncts are preserved by every merge; single assignment — the one that
+would otherwise need a permutation argument over two array updates — is read
+off the pass's own guard. -/
+theorem coalesce_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true) :
+    (coalesce f).wfCheck n = true := by
+  obtain ⟨hnd, hentry, hebq, hall⟩ := func_wfCheck_iff.mp hwf
+  rcases coalesce_cases f with ⟨heq, hnd', -⟩ | heq
+  · rw [heq]
+    obtain ⟨he, hebq', hall'⟩ := coalesceRaw_wfStruct (n := n) ⟨hentry, hebq, hall⟩
+    exact func_wfCheck_iff.mpr ⟨hnd', he, hebq', hall'⟩
+  · rw [heq]; exact hwf
 
 end Passes
 
