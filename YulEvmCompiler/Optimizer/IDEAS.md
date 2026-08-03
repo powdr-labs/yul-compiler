@@ -1730,6 +1730,197 @@ compose that result with the existing `Simplify` resolution congruence for the
   trap: it breaks the `agreeSsa factorial` build-time guard and the
   `PassesSound/Inline.lean` proofs, and is worth 11 gas.
 
+## Constant rematerialization and an artifact cost model on `Asm` (2026-08-03)
+
+- 🚧 **This branch.** A new SSA pass that *recomputes* word constants instead of
+  keeping them live, and a cost model that stops the selector throwing the
+  result away for being bigger. Neither is worth anything without the other.
+
+### What the instrumentation said first
+
+  The open question left by the SSA pass rebalance was whether growth-positive
+  inlining could be made to pay by fixing the cost model, and the note there
+  asked for one thing before any model: *instrument which candidate actually
+  wins per fixture*. Doing that refuted the premise and produced this branch's
+  actual subject.
+
+  Forcing each backend and taking the per-row minimum:
+
+  | suite | production | force SSA | force classic | per-row oracle |
+  |---|---:|---:|---:|---:|
+  | uniswap-v4 | 955,925 | 955,848 | 1,041,751 | 955,738 |
+  | aave-v4 | 15,615,072 | 15,615,072 | 16,733,564 | 15,379,194 |
+
+  Backend selection had **187 gas** of headroom on uniswap, and aave's apparent
+  235,878 is **unreachable**: all ten aave rows are scenarios against one code
+  block in one object, so no artifact choice can take classic for
+  `nextContinuousTenThousand` and SSA for the other nine. Selection was already
+  right, and the reverted execution-weighted experiment had been chasing a gap
+  that does not exist.
+
+  Inlining was refuted as directly. With SSA forced — the selector removed from
+  the picture — aave goes 15,615,072 → **17,699,784** at *every* growth budget
+  above zero (32, 128, 512 and 100,000 all land on the same number). The size
+  proxy was not hiding a win; more inlining genuinely cost 2.08M gas. On uniswap
+  the best global budget was worth 1,056 gas and the best per-fixture budget
+  1,377.
+
+  What both refutations share is stack pressure — the same thing that killed
+  CSE. Inlining puts more values in flight inside one 16-deep `DUP`/`SWAP`
+  reach. That points at the opposite transform.
+
+### `rematConsts` — recompute cheap values instead of keeping them live
+
+  CSE lost because a value kept alive for a later reuse has nowhere to live but
+  the operand stack, so it joins the `keep` set of every intervening instruction
+  and every edge shuffle. Run that backwards: **shorten live ranges by
+  recomputing**. A word constant is the extreme case — no operands, so it can be
+  recreated anywhere for one `push`, and nothing else has to stay alive for it.
+
+  The pass gives a constant use its own definition immediately in front of it;
+  the originals lose their readers and `dve`, which runs behind it, deletes them.
+
+  It runs as `rematProg`, a program-level pass *after* `optimizeProg`, not inside
+  `runOnce`. Two reasons: the rewrite has nothing to hand the other passes
+  (shortening live ranges is a code-generator concern), and `runOnce`'s exact
+  output is pinned by the machine-checked dominance counterexample in
+  `PassesSound/Counterexample.lean`, which putting it inside would invalidate for
+  no measured gain — the two placements differ by <100 gas on both suites.
+
+  **Not every use.** Copying *every* use measured as a uniform few-gas tax on
+  small functions — 23 of 44 uniswap rows regressed by 6–30 gas each. A constant
+  already next to its use has a range the block bounds anyway, and the extra
+  `push` only gives the emitter something more to shuffle. A cross-block use is
+  always worth copying: its range crosses every intervening block's entry
+  layout, which is exactly the shape `constFold` (which rewrites a folded `op`
+  into a `const` at the *definition's* position) and `elimTrivialParams` (which
+  substitutes a block parameter away, stretching the range across the edge) keep
+  producing. `rematDistance = 8` — same-block uses only past that distance —
+  against 0, 2 and 24:
+
+  | `rematDistance` | uniswap | aave | rows regressing |
+  |---|---:|---:|---:|
+  | 0 (every use) | 950,457 | 15,497,680 | 25 |
+  | 2 | 950,454 | 15,498,445 | 25 |
+  | **8** | **948,525** | **15,399,528** | **1** |
+  | 24 (cross-block only) | 948,585 | 15,610,650 | 1 |
+
+  (Those figures are from the portfolio configuration below, which did not ship;
+  the ordering is what carried over.) 0 costs 24 extra regressing rows; 24 loses
+  aave's win, which is same-block — its hot loop body is one long block.
+
+### The artifact cost model (`YulEvmCompiler/CostModel.lean`)
+
+  With the pass in, aave *lost* the whole win (16,733,564, the force-classic
+  total) while forcing SSA kept it. Rematerialization trades size for speed and
+  `byteCodeCost`/`instrCost` are size proxies, so the selector discarded the
+  faster artifact. **That** is a cost-model failure worth fixing — unlike the two
+  it was originally proposed for.
+
+  The model is a **Yellow Paper tier sum over the live instructions of one code
+  block, computed on `Asm`**, and it replaces `instrCost` in exactly one place:
+  `compileViaSsa`'s choice among its four candidates. Three things carry it:
+
+  * **`Asm`, not bytecode.** The first version analysed assembled bytes and
+    recovered jumps from `PUSH` immediates landing on a `JUMPDEST`. It found
+    **19 edges in a 5,215-instruction program**: Solidity code is full of small
+    literals that hit a `JUMPDEST` by accident, and an object blob's jump
+    addresses are section-relative and do not match blob offsets at all. On
+    `Asm`, `jump`/`jumpi`/`pushLabel` name their label and `dynJump` is exactly
+    the dynamic edge, so the graph is exact. `pushLabel` is the load-bearing
+    one — it is a call's return address, and it is what carries flow past a call
+    whose return is invisible.
+  * **Exact reachability.** Unreachable code is free, so the SSA backend's dead
+    barriers and the classic backend's dead tails stop being charged for.
+  * **Tiers, not bytes**, with everything state-touching flattened to
+    `W_verylow`. Both candidates execute the same `sload`s and `sstore`s, so
+    their cost cancels — but only while it is *small*. Charging `sstore` even a
+    compressed 200 drowned a difference of a few `SWAP`s and picked an artifact
+    **132,512 gas worse** on `loopInvariantCodeMotion/no_move_state.yul`.
+
+  **The execution-frequency term is refuted, for the third and fourth time.** It
+  was rebuilt here as loop nesting from back-edge spans; again with
+  Cooper/Harvey/Kennedy dominators, after the naive version marked 53% of an SSA
+  artifact loop-resident against 23% for the same program from the classic
+  backend; and as additive call/branch propagation, which is the shape that
+  should in principle correct the bias against inlining:
+
+  | model | uniswap | aave |
+  |---|---:|---:|
+  | tiers over live code | **948,525** | **15,399,528** |
+  | + loop nesting, `8 ^ depth` | 964,615 | 17,699,784 |
+  | + loop nesting, `2 ^ depth` | 961,641 | 15,399,528 |
+  | + call/branch frequency | 966,549 | 16,733,564 |
+
+  Artifacts from different backends differ in block structure, so the
+  estimator's systematic errors do not cancel and a multiplier amplifies them
+  into the deciding term.
+
+### ❌ Two things built, measured, and not shipped
+
+  **A per-code-block artifact portfolio.** Both backends and both stack-layout
+  variants compiling every code block independently, cheapest by the cost model,
+  driving `compileResolvedObjectWith` — so one object could take SSA for its
+  runtime and classic for its constructor. It works, and it is worth **90 gas**
+  on uniswap and **0** on aave, for **1.8x compiler runtime**: the block
+  compiler runs inside the layout planning fixpoint, so every extra candidate is
+  paid once per round per block. Once `compileViaSsa` picks its own candidates by
+  the cost model, the artifact it hands up already wins the ordinary
+  object-level comparison, and the portfolio has nothing left to do. Also
+  measured: on the *block* path it is strictly harmful (24 extra regressing rows
+  on `yulOptimizerTests`, no gas anywhere) — a block-rooted program has exactly
+  one code block, so there the portfolio degenerates to swapping the cost
+  function.
+
+  **Inline growth budget as a candidate.** With rematerialization relieving the
+  pressure, a *fixed* budget flips sign — 128 is worth −3,005 gas on uniswap and
+  4096 is worth −112,000 on aave, and each is a four-figure loss at the other's
+  setting. So `compileViaSsa` was made to emit a candidate per budget and let the
+  cost model choose. Under the shipped model it never picks the inlined one:
+  byte-identical gas on both suites, for 2.4–3.8x compiler runtime. The reason is
+  structural and already known — a flat tier sum counts a shared function body
+  once while it executes once per call site, so it is biased against inlining,
+  and the correction for that bias is the call-frequency term in the table above,
+  which lost 18k gas. **This is the most promising open lead on this file**: the
+  inlining win is real and measurable, and it is one working frequency estimate
+  away. (`inlinable` briefly gained a defaulted `budget` parameter for the
+  experiment; it was reverted with the rest.)
+
+  A related sensitivity worth recording: an early cost model computed
+  reachability by three index-order sweeps rather than a full traversal,
+  under-approximating it, and measured *better* — 948,525/15,399,528 against
+  950,753/15,511,431 — precisely because writing off hard-to-reach code
+  accidentally compensates for the same anti-inlining bias.
+
+### Measured
+
+  | suite | before | after | Δ | solc | gap before → after |
+  |---|---:|---:|---:|---:|---|
+  | uniswap-v4 | 955,925 | **950,753** | −5,172 | 907,063 | +48,862 → **+43,690** (−10.6%) |
+  | aave-v4 | 15,615,072 | **15,511,431** | −103,641 | 18,236,226 | −2,621,154 → **−2,724,795** |
+
+  10 uniswap rows better and 2 worse; 4 aave rows better and none worse. The
+  largest movers are `PositionStatusMap.nextCollateralContinuousTenThousand`
+  −91,334, `PoolSwap.addLiquidityWide` −1,507, `PoolSwap.removeLiquidity` −1,496
+  and `PoolSwap.swapExactInputNoTick` −1,290.
+
+  **Compiler runtime is 1.05x** on both suites (aave 900 → 944 ms, uniswap
+  11,509 → 12,027 ms, same machine, same load). That is the whole reason the two
+  sections above were dropped rather than kept: they cost 1.8x and 2.4–3.8x for
+  90 gas and 0 gas respectively.
+
+### Proof debt
+
+  One lemma, `rematProg_sound` (`SsaCfg/Spec/Backend.lean`). The
+  well-formedness and dominance halves are proved from the pass's own defensive
+  gate, and `compileViaSsa_inv` keeps its original four-case shape — only its
+  optimized candidate changed from `optimizeProg P` to
+  `rematProg (optimizeProg P)`. `rematConsts` should be among the cheapest
+  soundness proofs in the directory: it only ever *adds* `const` definitions,
+  with fresh ids, immediately in front of the use they feed, so no pre-existing
+  value changes, every copy is dominated by construction, and `dve` behind it is
+  already proved.
+
 ### Negative result: execution-weighted candidate cost (tried 2026-08-03, reverted)
 
 Built and measured, then reverted. `SsaCfg.instrCost` ranks candidates by
