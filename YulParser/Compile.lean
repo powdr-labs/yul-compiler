@@ -76,6 +76,12 @@ mutual
   def decodeValueExpr : Expr YulSemantics.EVM.Op → Expr YulSemantics.EVM.Op
     | .lit literal => .lit (decodeValueLiteral literal)
     | .var name => .var name
+    -- Only `setimmutable`'s middle argument names the immutable; the target and
+    -- the stored value are ordinary expressions and must be decoded, or an
+    -- escaped string value would be patched in as its escape spelling.
+    | .call "setimmutable" [base, .lit (.string key), value] =>
+        .call "setimmutable"
+          [decodeValueExpr base, .lit (.string key), decodeValueExpr value]
     | .call name args =>
         if literalNameCall name then .call name args
         else .call name (decodeValueArgs args)
@@ -490,6 +496,12 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
         | none, cb => cb
       return YulEvmCompiler.assemble (← asm)
   | some (.object o) =>
+      -- The root has no parent to copy and patch its code, so a `loadimmutable`
+      -- in the root's *own* code could only ever read the unpatched placeholder,
+      -- however many setters the tree contains. Reject it.
+      let rootReads := match decodeValueObject o with
+        | .mk _ code _ _ => (collectImmutableCallsStmts code).1
+      if !rootReads.isEmpty then none else
       let decoded := decodeValueObject o
       let raw := pruneLinkerObjectTree
         (if libraries.isEmpty then decoded else linkObject libraries decoded)

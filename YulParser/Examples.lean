@@ -136,6 +136,29 @@ fixture for exactly this — so the limit lives in compilation, not parsing. -/
 #guard (parseSource "{ sstore(0, loadimmutable(\"x\")) }").isSome
 #guard (compileSource "{ sstore(0, loadimmutable(\"x\")) }").isNone
 
+/-! The root has no parent to copy and patch its code, so a `loadimmutable` in
+the root's own code could only ever read the unpatched placeholder — however
+many setters the tree contains. -/
+#guard (compileSource
+  ("object \"A\" { code { setimmutable(0, \"x\", caller()) " ++
+   "sstore(0, loadimmutable(\"x\")) stop() } }")).isNone
+
+/-! Only `setimmutable`'s middle argument names the immutable; the target and
+the stored value are ordinary expressions. An escaped string value must be
+patched in as its *bytes*, not as the characters of its escape spelling — so
+`"\\x01"` must compile exactly like `hex"01"`, the same bytes spelled without
+escapes. -/
+def escapedImmutableValue (spelling : String) : String :=
+  "object \"A\" {\n" ++
+  "  code { let s := datasize(\"B\") codecopy(0, dataoffset(\"B\"), s)\n" ++
+  "         setimmutable(0, \"x\", " ++ spelling ++ ") return(0, s) }\n" ++
+  "  object \"B\" { code { sstore(0, loadimmutable(\"x\")) } }\n" ++
+  "}\n"
+
+#guard (compileSource (escapedImmutableValue "\"\\x01\"")).isSome
+#guard (compileSource (escapedImmutableValue "\"\\x01\"")) ==
+       (compileSource (escapedImmutableValue "hex\"01\""))
+
 /-! An immutable is patched by the **parent** of the object that reads it.
 Validation pairs reads with writes only globally, so a setter sitting in an
 unrelated sibling satisfies it while patching nothing — the reader would deploy
