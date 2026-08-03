@@ -67,8 +67,8 @@ How a source state/outcome corresponds to a target state/outcome. The heart of t
 |---|---|---|
 | `YulEvmCompiler.HaltMatch` | [YulEvmCompiler/StateRel.lean#L1252](YulEvmCompiler/StateRel.lean#L1252) | `6557b5faae906a61` |
 | `YulEvmCompiler.HaltedMatch` | [YulEvmCompiler/OpStep.lean#L50](YulEvmCompiler/OpStep.lean#L50) | `bd6cde934ed46ce6` |
-| `YulEvmCompiler.IsCallOp` | [YulEvmCompiler/OpTable.lean#L90](YulEvmCompiler/OpTable.lean#L90) | `93349e44f6cba900` |
-| `YulEvmCompiler.IsCreateOp` | [YulEvmCompiler/OpTable.lean#L98](YulEvmCompiler/OpTable.lean#L98) | `188d5668d6c00b2b` |
+| `YulEvmCompiler.IsCallOp` | [YulEvmCompiler/OpTable.lean#L90](YulEvmCompiler/OpTable.lean#L90) | `4068ec650592c03e` |
+| `YulEvmCompiler.IsCreateOp` | [YulEvmCompiler/OpTable.lean#L98](YulEvmCompiler/OpTable.lean#L98) | `b78befe1df320f16` |
 | `YulEvmCompiler.LogEntryMatch` | [YulEvmCompiler/StateRel.lean#L934](YulEvmCompiler/StateRel.lean#L934) | `44220474a51dc6b6` |
 | `YulEvmCompiler.LogsMatch` | [YulEvmCompiler/StateRel.lean#L942](YulEvmCompiler/StateRel.lean#L942) | `6d1d2dd35bc25e39` |
 | `YulEvmCompiler.MemMatch` | [YulEvmCompiler/StateRel.lean#L32](YulEvmCompiler/StateRel.lean#L32) | `e48211ef54b0d862` |
@@ -84,12 +84,12 @@ The vocabulary the guarantee is phrased in.
 
 | declaration | source | hash |
 |---|---|---|
-| `YulEvmCompiler.CallsRealized` | [YulEvmCompiler/LowerDefs.lean#L308](YulEvmCompiler/LowerDefs.lean#L308) | `60cec34bf4c3cac9` |
-| `YulEvmCompiler.CreatesRealized` | [YulEvmCompiler/LowerDefs.lean#L355](YulEvmCompiler/LowerDefs.lean#L355) | `d608d1effb3509d1` |
+| `YulEvmCompiler.CallsRealized` | [YulEvmCompiler/LowerDefs.lean#L309](YulEvmCompiler/LowerDefs.lean#L309) | `60cec34bf4c3cac9` |
+| `YulEvmCompiler.CreatesRealized` | [YulEvmCompiler/LowerDefs.lean#L356](YulEvmCompiler/LowerDefs.lean#L356) | `d608d1effb3509d1` |
 | `YulEvmCompiler.EnvMatch` | [YulEvmCompiler/StateRel.lean#L429](YulEvmCompiler/StateRel.lean#L429) | `9cea97fa8ae94f99` |
 | `YulEvmCompiler.ExternalCodeMatch` | [YulEvmCompiler/StateRel.lean#L494](YulEvmCompiler/StateRel.lean#L494) | `2d46717e52ff1871` |
 | `YulEvmCompiler.ExternalModel` | [YulEvmCompiler/AsmSem.lean#L34](YulEvmCompiler/AsmSem.lean#L34) | `75bd1eadd7f209e2` |
-| `YulEvmCompiler.ExternalsRealized` | [YulEvmCompiler/LowerDefs.lean#L403](YulEvmCompiler/LowerDefs.lean#L403) | `7fd85ee803561fa8` |
+| `YulEvmCompiler.ExternalsRealized` | [YulEvmCompiler/LowerDefs.lean#L404](YulEvmCompiler/LowerDefs.lean#L404) | `7fd85ee803561fa8` |
 | `YulEvmCompiler.FrameOK` | [YulEvmCompiler/StateRel.lean#L1240](YulEvmCompiler/StateRel.lean#L1240) | `97dc148ae9bebed5` |
 | `YulEvmCompiler.Instr` | [YulEvmCompiler/Instr.lean#L38](YulEvmCompiler/Instr.lean#L38) | `6d2465d1d211750b` |
 | `YulEvmCompiler.Optimizer.LocalPass` | [YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L72](YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L72) | `6b8887154f59257c` |
@@ -107,13 +107,13 @@ Concrete spec-level functions (outcome maps, canonicalisation, byte assembly).
 | `YulEvmCompiler.Instr.opByte` | [YulEvmCompiler/Instr.lean#L52](YulEvmCompiler/Instr.lean#L52) | `1063189e226fb3ef` |
 | `YulEvmCompiler.assemble` | [YulEvmCompiler/Instr.lean#L188](YulEvmCompiler/Instr.lean#L188) | `c1c9c0c9a1ad80c8` |
 | `YulEvmCompiler.assembleBytes` | [YulEvmCompiler/Instr.lean#L176](YulEvmCompiler/Instr.lean#L176) | `29d8e692638cce98` |
-| `YulEvmCompiler.assembleWithPayload` | [YulEvmCompiler/LowerDefs.lean#L143](YulEvmCompiler/LowerDefs.lean#L143) | `55ba5256c2c91c08` |
+| `YulEvmCompiler.assembleWithPayload` | [YulEvmCompiler/LowerDefs.lean#L144](YulEvmCompiler/LowerDefs.lean#L144) | `55ba5256c2c91c08` |
 | `YulEvmCompiler.conv` | [YulEvmCompiler/Value.lean#L29](YulEvmCompiler/Value.lean#L29) | `25e701af8a9ce7bb` |
 | `YulEvmCompiler.mkCode` | [YulEvmCompiler/Decode.lean#L23](YulEvmCompiler/Decode.lean#L23) | `edacb826e56f9571` |
 | `YulEvmCompiler.natToBE` | [YulEvmCompiler/Instr.lean#L26](YulEvmCompiler/Instr.lean#L26) | `d47a19daef761803` |
-| `YulEvmCompiler.opTable` | [YulEvmCompiler/OpTable.lean#L19](YulEvmCompiler/OpTable.lean#L19) | `58d5b129f84835ed` |
+| `YulEvmCompiler.opTable` | [YulEvmCompiler/OpTable.lean#L19](YulEvmCompiler/OpTable.lean#L19) | `d48771ade3ef37b6` |
 | `YulEvmCompiler.resolveForLayoutCases` | [YulEvmCompiler/ObjectResolve.lean#L77](YulEvmCompiler/ObjectResolve.lean#L77) | `a635c809600d2d8a` |
-| `YulEvmCompiler.resolveForLayoutExpr` | [YulEvmCompiler/ObjectResolve.lean#L25](YulEvmCompiler/ObjectResolve.lean#L25) | `15bc9ca915a17f5a` |
+| `YulEvmCompiler.resolveForLayoutExpr` | [YulEvmCompiler/ObjectResolve.lean#L25](YulEvmCompiler/ObjectResolve.lean#L25) | `6e8a6c9691954597` |
 | `YulEvmCompiler.resolveForLayoutExprs` | [YulEvmCompiler/ObjectResolve.lean#L38](YulEvmCompiler/ObjectResolve.lean#L38) | `deee862dd8d61de4` |
 | `YulEvmCompiler.resolveForLayoutStmt` | [YulEvmCompiler/ObjectResolve.lean#L45](YulEvmCompiler/ObjectResolve.lean#L45) | `ef48ed8902b73d01` |
 | `YulEvmCompiler.resolveForLayoutStmts` | [YulEvmCompiler/ObjectResolve.lean#L71](YulEvmCompiler/ObjectResolve.lean#L71) | `e61eedc003fbb530` |
