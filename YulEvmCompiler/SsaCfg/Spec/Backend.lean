@@ -164,6 +164,45 @@ theorem foldl_min_mem {α : Type} (f : α → Nat) {r : α} :
         · exact Or.inl hacc
     · exact Or.inr (List.mem_cons_of_mem _ hmem)
 
+/-! ### Rematerialization
+
+`compileViaSsa` runs `rematProg` behind the pass pipeline, so the optimized
+candidate is `rematProg (optimizeProg P)` rather than `optimizeProg P`.  The
+well-formedness and dominance halves follow from the pass's own defensive gate,
+and the inversion lemma keeps its original four-case shape.
+
+`rematConsts` only ever *adds* `const` definitions, with ids above `maxIdOf f`,
+immediately in front of the use they feed: no pre-existing value changes, every
+copy is dominated by construction, and `dve` behind it is already proved.  The
+simulation is in `SsaCfg/PassesSound/Remat.lean`; no dominance hypothesis is
+needed, so `_hdom` goes unused. -/
+
+/-- **Rematerialization soundness**: rematerializing constants preserves the
+source run. -/
+theorem rematProg_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome}
+    (hwf : P.wfCheck = true) (_hdom : ToAsm.Prog.domCheck P = true)
+    (hrun : Run (model := model) P yst0 yst' o) :
+    Run (model := model) (rematProg P) yst0 yst' o :=
+  rematProg_sound' hwf hrun
+
+omit model in
+/-- `rematProg`'s defensive gate preserves well-formedness. -/
+theorem rematProg_wf {P : Prog} (hwf : P.wfCheck = true) :
+    (rematProg P).wfCheck = true := by
+  rw [rematProg_candidate]
+  split
+  · next h => exact ((Bool.and_eq_true _ _).mp h).1
+  · exact hwf
+
+omit model in
+/-- …and the dominance check. -/
+theorem rematProg_dom {P : Prog} (hdom : ToAsm.Prog.domCheck P = true) :
+    ToAsm.Prog.domCheck (rematProg P) = true := by
+  rw [rematProg_candidate]
+  split
+  · next h => exact ((Bool.and_eq_true _ _).mp h).2
+  · exact hdom
+
 omit model in
 /-- Invert a successful `compileViaSsa`: the construction succeeded, the
 dominance gate passed, and the accepted bytecode is one of the four
@@ -174,9 +213,9 @@ theorem compileViaSsa_inv {prog : YulSemantics.Block Op}
     ∃ (P Q : Prog) (ord : Bool),
       ofBlock prog = some P
       ∧ ToAsm.Prog.domCheck P = true
-      ∧ (Q = optimizeProg P ∨ Q = P)
+      ∧ (Q = rematProg (optimizeProg P) ∨ Q = P)
       ∧ finishProgOrd imm ord Q = some is := by
-  unfold compileViaSsa at h
+  unfold compileViaSsa compileViaSsaAsm at h
   rcases hof : ofBlock prog with _ | P <;> rw [hof] at h
   · exact absurd h (by simp)
   simp only [bind, Option.bind] at h
@@ -187,14 +226,26 @@ theorem compileViaSsa_inv {prog : YulSemantics.Block Op}
     simp at h
   rw [hdom] at h
   simp only [Bool.not_true, Bool.false_eq_true, if_false] at h
-  rcases foldl_min_mem instrCost _ _ h with hinit | hmem
-  · exact absurd hinit (by simp)
-  · simp only [List.mem_cons, List.not_mem_nil, or_false] at hmem
-    rcases hmem with h1 | h2 | h3 | h4
-    · exact ⟨P, optimizeProg P, true, rfl, hdom, Or.inl rfl, h1.symm⟩
-    · exact ⟨P, optimizeProg P, false, rfl, hdom, Or.inl rfl, h2.symm⟩
-    · exact ⟨P, P, true, rfl, hdom, Or.inr rfl, h3.symm⟩
-    · exact ⟨P, P, false, rfl, hdom, Or.inr rfl, h4.symm⟩
+  cases hb : ([finishProgOrdAsm true (rematProg (optimizeProg P)),
+               finishProgOrdAsm false (rematProg (optimizeProg P)),
+               finishProgOrdAsm true P, finishProgOrdAsm false P].foldl
+              (pickMin CostModel.execCostAsm) none) with
+  | none => rw [hb] at h; simp at h
+  | some a =>
+    rw [hb] at h
+    rcases foldl_min_mem CostModel.execCostAsm _ _ hb with hinit | hmem
+    · exact absurd hinit (by simp)
+    · simp only [List.mem_cons, List.not_mem_nil, or_false] at hmem
+      have hlow : (some a).bind (lowerProg imm) = some is := h
+      rcases hmem with h1 | h2 | h3 | h4
+      · exact ⟨P, rematProg (optimizeProg P), true, rfl, hdom, Or.inl rfl,
+          by rw [finishProgOrd_eq, ← h1]; exact hlow⟩
+      · exact ⟨P, rematProg (optimizeProg P), false, rfl, hdom, Or.inl rfl,
+          by rw [finishProgOrd_eq, ← h2]; exact hlow⟩
+      · exact ⟨P, P, true, rfl, hdom, Or.inr rfl,
+          by rw [finishProgOrd_eq, ← h3]; exact hlow⟩
+      · exact ⟨P, P, false, rfl, hdom, Or.inr rfl,
+          by rw [finishProgOrd_eq, ← h4]; exact hlow⟩
 
 /-- **The shared gate composition is correct** for any SSA program whose
 execution matches the source run: transport the Asm trace through the
@@ -284,15 +335,16 @@ theorem compileViaSsa_correct (hexternal : ExternalsRealized model)
   have hPwf : P.wfCheck = true := ofBlock_wfCheck hof
   have hssa : Run (model := model) Q yst0 yst' o := by
     rcases hQ with rfl | rfl
-    · exact optimizeProg_sound hPwf hdom hbase
+    · exact rematProg_sound (optimizeProg_wf hPwf) (optimizeProg_dom hdom)
+        (optimizeProg_sound hPwf hdom hbase)
     · exact hbase
   have hQwf : Q.wfCheck = true := by
     rcases hQ with rfl | rfl
-    · exact optimizeProg_wf hPwf
+    · exact rematProg_wf (optimizeProg_wf hPwf)
     · exact hPwf
   have hQdom : ToAsm.Prog.domCheck Q = true := by
     rcases hQ with rfl | rfl
-    · exact optimizeProg_dom hdom
+    · exact rematProg_dom (optimizeProg_dom hdom)
     · exact hdom
   exact finishProg_correct hexternal hQwf hQdom hfin himm hssa
 
