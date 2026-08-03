@@ -478,6 +478,9 @@ theorem findLabel_elideJumps (l : Label) (p : List Asm) :
 
 omit model in @[simp] theorem elideJumps_push (v : U256) (c : List Asm) :
     elideJumps (Asm.push v :: c) = Asm.push v :: elideJumps c := by simp [elideJumps]
+omit model in @[simp] theorem elideJumps_pushImmutable (key : String) (c : List Asm) :
+    elideJumps (Asm.pushImmutable key :: c) = Asm.pushImmutable key :: elideJumps c := by
+  simp [elideJumps]
 omit model in @[simp] theorem elideJumps_op (yop : Op) (c : List Asm) :
     elideJumps (Asm.op yop :: c) = Asm.op yop :: elideJumps c := by simp [elideJumps]
 omit model in @[simp] theorem elideJumps_dup (n : Fin 16) (c : List Asm) :
@@ -512,6 +515,9 @@ theorem astep_elideJumps {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
   cases h with
   | @push v c σ yst =>
     simp only [elideConf, ToAsm.elideJumps_push]; exact ASteps.single AStep.push
+  | @pushImmutable key c σ yst =>
+    simp only [elideConf, ToAsm.elideJumps_pushImmutable]
+    exact ASteps.single AStep.pushImmutable
   | @op yop args rets c σ yst yst' hb =>
     simp only [elideConf, ToAsm.elideJumps_op]; exact ASteps.single (AStep.op hb)
   | @dup n v τ ρ c yst hlen =>
@@ -587,6 +593,7 @@ theorem AStep.extend {prog : List Asm} {a b : AConf} (below : List AVal)
       ⟨b.code, b.stk ++ below, b.yst⟩ := by
   cases h with
   | push => simpa using AStep.push
+  | pushImmutable => simpa using AStep.pushImmutable
   | op hb => simpa [List.append_assoc] using AStep.op hb
   | @dup n v τ ρ c yst hlen =>
     have := AStep.dup (model := model) (prog := prog) (n := n) (v := v) (τ := τ)

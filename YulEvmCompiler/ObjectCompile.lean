@@ -64,6 +64,9 @@ structure ObjectPlan where
   subObjects : List ObjectPlan
   dataSegs : List (String × Data)
   entries : List ObjectEntry
+  /-- Byte offsets of this object's immutable placeholders, relative to the
+  start of its own bytecode — what a parent's `setimmutable` patches. -/
+  immOffsets : List (String × Nat)
   bytecode : List UInt8
   deriving Repr
 
@@ -140,6 +143,61 @@ mutual
         return (literal, ← resolveObjectStmts resolve body) ::
           (← resolveObjectCases resolve cases)
 end
+
+/-! ### `setimmutable`
+
+`setimmutable(base, name, value)` writes `value` into the in-memory copy of the
+deployed code that the constructor is about to return, at every position where
+that code reads the immutable. Those positions are exactly the placeholder
+offsets the child's plan recorded, so the call is *eliminable*: it expands to one
+ordinary `mstore` per offset and nothing about it survives into the backend.
+
+Yul evaluates arguments right to left, so `value` is bound before `base`; the
+generated names are `$imm$` prefixed, which no source identifier can be. -/
+
+private def immValName : String := "$imm$value"
+private def immBaseName : String := "$imm$base"
+
+/-- The `mstore` for one placeholder offset. -/
+private def setImmutableStore (offset : Nat) : YulSemantics.Stmt Op :=
+  .exprStmt (.builtin .mstore
+    [.builtin .add [.var immBaseName, .lit (.number offset)], .var immValName])
+
+/-- Expand `setimmutable(base, name, value)` against the recorded offsets. -/
+private def expandSetImmutable (offsets : List (String × Nat)) (name : String)
+    (base value : YulSemantics.Expr Op) : YulSemantics.Stmt Op :=
+  .block ((.letDecl [immValName] (some value)) ::
+    (.letDecl [immBaseName] (some base)) ::
+    ((offsets.filter (fun p => p.1 == name)).map (fun p => setImmutableStore p.2)))
+
+/-- Rewrite every `setimmutable` in a code block against the recorded offsets.
+Run *before* layout resolution, so the resolver and its semantic-preservation
+proof never see the extension. -/
+partial def expandSetImmutablesStmts (offsets : List (String × Nat))
+    (ambiguous : List String) :
+    List (YulSemantics.Stmt Op) → List (YulSemantics.Stmt Op)
+  | [] => []
+  | stmt :: rest =>
+      let tail := expandSetImmutablesStmts offsets ambiguous rest
+      match stmt with
+      | .exprStmt (.call "setimmutable" [base, .lit (.string name), value]) =>
+          -- An ambiguous name is left as the raw call, so the backend rejects
+          -- the program. Expanding it to no stores would be just as wrong as
+          -- expanding it to the wrong ones — the immutable would stay zero.
+          if ambiguous.contains name then stmt :: tail
+          else expandSetImmutable offsets name base value :: tail
+      | .block body => .block (expandSetImmutablesStmts offsets ambiguous body) :: tail
+      | .funDef n ps rs body =>
+          .funDef n ps rs (expandSetImmutablesStmts offsets ambiguous body) :: tail
+      | .cond c body => .cond c (expandSetImmutablesStmts offsets ambiguous body) :: tail
+      | .switch c cases dflt =>
+          .switch c (cases.map (fun cb => (cb.1, expandSetImmutablesStmts offsets ambiguous cb.2)))
+            (dflt.map (expandSetImmutablesStmts offsets ambiguous)) :: tail
+      | .forLoop init c post body =>
+          .forLoop (expandSetImmutablesStmts offsets ambiguous init) c
+            (expandSetImmutablesStmts offsets ambiguous post)
+            (expandSetImmutablesStmts offsets ambiguous body) :: tail
+      | other => other :: tail
 
 private def placeholderResolver : RefResolver := fun _ => some (0, 0)
 
@@ -482,16 +540,20 @@ private def planAttempt (name : String) (code : List (YulSemantics.Stmt Op))
     let plan : ObjectPlan := {
       name, codeBlock := code, codeSize := c, size, subObjects := subPlans, dataSegs
       entries := { name, offset := 0, size } :: children ++ dataLayout
+      immOffsets := []
       bytecode := []
     }
     let resolvedCode ← resolveObjectStmts (planResolver plan) code
+    let resolvedAsm ← compileAsm resolvedCode
     let resolvedInstructions ← compile resolvedCode
     let executable := assembleBytes resolvedInstructions
     let c' := executable.length
     if c' == c then
       let childBytecode := (subPlans.map (·.bytecode)).flatten
       let bytecode := executable ++ [0] ++ childBytecode ++ dataRegion dataSegs
-      if bytecode.length == size then some (.inl { plan with bytecode }) else none
+      if bytecode.length == size then
+        some (.inl { plan with bytecode, immOffsets := immutableOffsets resolvedAsm 0 })
+      else none
     else
       some (.inr c')
   else
@@ -555,6 +617,12 @@ private def layoutOfPlan (plan : ObjectPlan) : Layout := {
   dataOffset := entryMap (·.offset) plan.entries
   dataSize := entryMap (·.size) plan.entries
 }
+
+/-- The immutable placeholder offsets of an object's own compiled code, for a
+caller that needs to patch them (`setimmutable`). `none` when the object does
+not plan. -/
+def objectImmutableOffsets (o : Object Op) : Option (List (String × Nat)) :=
+  (planObject o).map (·.immOffsets)
 
 /-- Compile a complete object tree to executable EVM bytecode plus real
 object-layout maps. References are actual offsets/sizes in the emitted bytes,
@@ -689,6 +757,7 @@ private theorem planAttempt_spec
   split at h
   · rename_i hsmall
     obtain ⟨resolvedCode, hresolvedCode, h⟩ := Option.bind_eq_some_iff.mp h
+    obtain ⟨resolvedAsm, -, h⟩ := Option.bind_eq_some_iff.mp h
     obtain ⟨resolvedInstructions, hresolvedInstr, h⟩ := Option.bind_eq_some_iff.mp h
     split at h
     · rename_i hcc
@@ -885,6 +954,7 @@ def planAttemptWith (compileFn : YulSemantics.Block Op → Option (List Instr))
     let plan : ObjectPlan := {
       name, codeBlock := code, codeSize := c, size, subObjects := subPlans, dataSegs
       entries := { name, offset := 0, size } :: children ++ dataLayout
+      immOffsets := []
       bytecode := []
     }
     let resolvedCode ← resolveObjectStmts (planResolver plan) code
@@ -894,7 +964,9 @@ def planAttemptWith (compileFn : YulSemantics.Block Op → Option (List Instr))
     if c' == c then
       let childBytecode := (subPlans.map (·.bytecode)).flatten
       let bytecode := executable ++ [0] ++ childBytecode ++ dataRegion dataSegs
-      if bytecode.length == size then some (.inl { plan with bytecode }) else none
+      if bytecode.length == size then
+        some (.inl { plan with bytecode })
+      else none
     else
       some (.inr c')
   else
@@ -942,6 +1014,19 @@ def compileResolvedObjectWith
   if !(plan.entries.map entryKey).Nodup then none else
   some (layoutOfPlan plan)
 
+/-- The object layer records no immutable values: it compiles placeholders as
+zeros, and the layout it publishes reports the same. The deploying constructor
+is what patches real values into the emitted bytes. -/
+theorem compileObject_immutable {o : Object Op} {L : Layout}
+    (h : compileObject o = some L) : L.immutable = fun _ => 0 := by
+  simp only [compileObject, compileResolvedObject, Option.bind_eq_bind] at h
+  obtain ⟨plan, -, h⟩ := Option.bind_eq_some_iff.mp h
+  split at h
+  · cases h
+  · simp only [Option.some.injEq] at h
+    subst h
+    rfl
+
 /-- Public data-placement theorem for `compileObject`. -/
 theorem compileObject_consistent {o : Object Op} {L : Layout}
     (h : compileObject o = some L) : L.Consistent o :=
@@ -987,7 +1072,13 @@ theorem compileObject_correct (hexternal : ExternalsRealized model)
     rw [hresolved]
     exact hrun
   obtain ⟨bound, hsim⟩ :=
-    compile_correct_withPayload hexternal (payload := payload) hinstructions hrun'
+    compile_correct_withPayload hexternal (payload := payload) hinstructions
+      -- the object layer compiles against the all-zero assignment and records the
+      -- same map on the layout, so the two agree definitionally
+      (fun key => by
+        rw [show L.initState.env.immutable = L.immutable from rfl,
+          compileObject_immutable hcomp]
+        rfl) hrun'
   refine ⟨bound, ?_⟩
   intro s0 hframe hmatch hpc hstack hgas
   apply hsim s0

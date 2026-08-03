@@ -35,16 +35,16 @@ open YulSemantics.EVM (Op)
 /-- Emit one SSA program through the shared final gates: `ToAsm` (in the
 given scheduling mode), `Asm` well-formedness, the peephole, the overflow
 certificate, label resolution. -/
-def finishProgOrd (ord : Bool) (P : Prog) : Option (List YulEvmCompiler.Instr) := do
+def finishProgOrd (imm : String → YulSemantics.EVM.U256) (ord : Bool) (P : Prog) : Option (List YulEvmCompiler.Instr) := do
   let asm ← ToAsm.emitProgOrd ord P
   if !wfCheck asm then none else
   let opt := optimizeAsm asm
-  if stackOK2 opt then lowerProg opt else none
+  if stackOK2 opt then lowerProg imm opt else none
 
 /-- `finishProgOrd` in the default mode (kept for the correctness
 statements' vocabulary). -/
-def finishProg (P : Prog) : Option (List YulEvmCompiler.Instr) :=
-  finishProgOrd false P
+def finishProg (imm : String → YulSemantics.EVM.U256) (P : Prog) : Option (List YulEvmCompiler.Instr) :=
+  finishProgOrd imm false P
 
 /-- `finishProgOrd` stopping one step short of lowering: the peepholed,
 certified labeled assembly the artifact cost model reads.  Kept separate so
@@ -56,8 +56,8 @@ def finishProgOrdAsm (ord : Bool) (P : Prog) : Option (List YulEvmCompiler.Asm) 
   let opt := optimizeAsm asm
   if stackOK2 opt then some opt else none
 
-theorem finishProgOrd_eq (ord : Bool) (P : Prog) :
-    finishProgOrd ord P = (finishProgOrdAsm ord P).bind lowerProg := by
+theorem finishProgOrd_eq (imm : String → YulSemantics.EVM.U256) (ord : Bool) (P : Prog) :
+    finishProgOrd imm ord P = (finishProgOrdAsm ord P).bind (lowerProg imm) := by
   unfold finishProgOrd finishProgOrdAsm
   cases ToAsm.emitProgOrd ord P with
   | none => rfl
@@ -178,8 +178,12 @@ def compileViaSsaAsm (prog : YulSemantics.Block Op) :
                 finishProgOrdAsm true P, finishProgOrdAsm false P]
   cands.foldl (pickMin CostModel.execCostAsm) none
 
-def compileViaSsa (prog : YulSemantics.Block Op) :
+/-- The candidate choice happens on `Asm`, *before* immutable placeholders are
+patched, so it is independent of `imm` — a link-time value cannot change which
+artifact is cheaper. -/
+def compileViaSsa (prog : YulSemantics.Block Op)
+    (imm : String → YulSemantics.EVM.U256 := YulEvmCompiler.unpatchedImmutables) :
     Option (List YulEvmCompiler.Instr) :=
-  (compileViaSsaAsm prog).bind lowerProg
+  (compileViaSsaAsm prog).bind (lowerProg imm)
 
 end YulEvmCompiler.SsaCfg

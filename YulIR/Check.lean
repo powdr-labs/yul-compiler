@@ -111,7 +111,8 @@ def currentOpt (b : YulSemantics.Block EVM.Op) : YulSemantics.Block EVM.Op :=
 /-- Backend: block → bytecode, with the same stack-layout fallback `compileSource` uses. -/
 def blockBytecode (b : YulSemantics.Block EVM.Op) : Option ByteArray :=
   (YulEvmCompiler.compile b
-    <|> YulEvmCompiler.compile (YulEvmCompiler.Optimizer.stackLayoutBlock b)).map
+    <|> YulEvmCompiler.compile
+      (YulEvmCompiler.Optimizer.stackLayoutBlock b)).map
       YulEvmCompiler.assemble
 
 /-- Compiled code size in bytes, or `none` if the backend failed. -/

@@ -76,11 +76,19 @@ mutual
   def decodeValueExpr : Expr YulSemantics.EVM.Op → Expr YulSemantics.EVM.Op
     | .lit literal => .lit (decodeValueLiteral literal)
     | .var name => .var name
+    -- Only `setimmutable`'s middle argument names the immutable; the target and
+    -- the stored value are ordinary expressions and must be decoded, or an
+    -- escaped string value would be patched in as its escape spelling.
+    | .call "setimmutable" [base, .lit (.string key), value] =>
+        .call "setimmutable"
+          [decodeValueExpr base, .lit (.string key), decodeValueExpr value]
     | .call name args =>
         if literalNameCall name then .call name args
         else .call name (decodeValueArgs args)
     | .builtin op args =>
-        if op == .dataoffset || op == .datasize then .builtin op args
+        if op == .dataoffset || op == .datasize || op == .loadimmutable then
+          -- name-valued arguments stay spelling-sensitive
+          .builtin op args
         else .builtin op (decodeValueArgs args)
 
   def decodeValueArgs : List (Expr YulSemantics.EVM.Op) →
@@ -304,6 +312,86 @@ partial def linkObject {Op : Type} (env : LinkEnv) : Object Op → Object Op
   | .mk name code subs segs =>
       .mk name (code.map (linkStmt env)) (subs.map (linkObject env)) segs
 
+/-! ### `setimmutable`
+
+`setimmutable(base, name, value)` writes `value` into the in-memory copy of the
+deployed code the constructor is about to return, at every position where that
+code reads the immutable. Those positions are the placeholder offsets the child
+object's compiled layout records, so the call is **eliminable**: it expands to
+one ordinary `mstore` per offset, before anything else runs.
+
+That keeps the extension entirely in the front end — the object layer, its
+layout-resolution proof and `compileObject_correct` never see it.
+
+**What is proved, and what is not.** The offsets are a theorem:
+`immutableOffsets_correct` shows every offset this expansion patches really does
+locate that immutable's 32-byte immediate in the emitted code, so a wrong offset
+— the silent-miscompilation risk — is ruled out.
+
+What remains unproved is the *meaning*: `setimmutable` has no source semantics
+(it is not an `Op`), so there is no source run to preserve and no
+semantic-preservation theorem relates the original object to the expanded one.
+The correctness theorem covers the **desugared** program, the one that performs
+these `mstore`s. That is a front-end desugaring in the same family as
+`memoryguard`, not a proved `Optimizer.Pass`; closing it would mean modeling
+`setimmutable` upstream. -/
+
+/-- Does this object tree read or write an immutable? -/
+partial def usesImmutablesExpr : Expr YulSemantics.EVM.Op → Bool
+  | .builtin .loadimmutable _ => true
+  | .call "setimmutable" _ => true
+  | .call _ args => args.any usesImmutablesExpr
+  | .builtin _ args => args.any usesImmutablesExpr
+  | _ => false
+
+partial def usesImmutablesStmt : Stmt YulSemantics.EVM.Op → Bool
+  | .block body | .funDef _ _ _ body => body.any usesImmutablesStmt
+  | .letDecl _ v => (v.map usesImmutablesExpr).getD false
+  | .assign _ v | .exprStmt v => usesImmutablesExpr v
+  | .cond c body => usesImmutablesExpr c || body.any usesImmutablesStmt
+  | .switch c cases dflt =>
+      usesImmutablesExpr c || cases.any (fun cb => cb.2.any usesImmutablesStmt) ||
+        ((dflt.map (·.any usesImmutablesStmt)).getD false)
+  | .forLoop init c post body =>
+      init.any usesImmutablesStmt || usesImmutablesExpr c ||
+        post.any usesImmutablesStmt || body.any usesImmutablesStmt
+  | _ => false
+
+partial def usesImmutablesObject : Object YulSemantics.EVM.Op → Bool
+  | .mk _ code subs _ => code.any usesImmutablesStmt || subs.any usesImmutablesObject
+
+/-- Expand every `setimmutable` in an object tree against the placeholder
+offsets of that object's own children, or reject the tree.
+
+An immutable is patched by the **parent** of the object that reads it: the
+parent copies the child's code into memory and stores over the placeholders.
+Validation only pairs reads with writes *globally* across the whole tree, which
+is too weak — a setter in an unrelated sibling patches nothing, and the reader
+would deploy with the placeholder still zero. So the pairing is re-checked here
+per scope, and a tree that fails it is rejected rather than silently
+miscompiled. -/
+partial def expandSetImmutablesObject (o : Object YulSemantics.EVM.Op) :
+    Option (Object YulSemantics.EVM.Op) :=
+  match o with
+  | .mk name code subs segs => do
+      let subs ← subs.mapM expandSetImmutablesObject
+      let perChild := subs.map fun sub =>
+        (YulEvmCompiler.objectImmutableOffsets sub).getD []
+      -- every immutable a direct child reads must be written by *this* object
+      let written := (collectImmutableCallsStmts code).2
+      if !(perChild.flatten.all fun p => written.contains p.1) then none else
+      -- `setimmutable(base, name, value)` names no child, and `base` points at a
+      -- copy of one of them. If two children declare the same immutable the
+      -- offsets are not comparable against a single base, so that name is left
+      -- unexpanded and the backend rejects the program.
+      let declaredBy (n : String) : Nat :=
+        (perChild.filter fun offs => offs.any (fun p => p.1 == n)).length
+      let all := perChild.flatten
+      let ambiguous := (all.map Prod.fst).filter fun n => declaredBy n > 1
+      let offsets := all.filter fun p => declaredBy p.1 == 1
+      return .mk name
+        (YulEvmCompiler.expandSetImmutablesStmts offsets ambiguous code) subs segs
+
 /-- Parse and compile a complete Yul source program to executable EVM bytecode,
 using the documented compatibility parser when the verified parser does not
 apply. Hint builtins (`memoryguard`) are desugared for ordinary candidates and
@@ -327,6 +415,11 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
     Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
+      -- A block-rooted program has no object tree, so nothing could ever patch a
+      -- placeholder: a `loadimmutable` here would compile to a hard-coded zero.
+      -- Reject instead. (The grammar still accepts it — this is a compilation
+      -- limit, not a syntax rule, so the upstream syntax corpus is unaffected.)
+      if !(collectImmutableCallsStmts block).1.isEmpty then none else
       -- The link pass is an expensive identity when no addresses are supplied,
       -- and these inputs are megabytes of generated Yul; skip it entirely.
       let decoded := decodeValueStmts block
@@ -403,6 +496,12 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
         | none, cb => cb
       return YulEvmCompiler.assemble (← asm)
   | some (.object o) =>
+      -- The root has no parent to copy and patch its code, so a `loadimmutable`
+      -- in the root's *own* code could only ever read the unpatched placeholder,
+      -- however many setters the tree contains. Reject it.
+      let rootReads := match decodeValueObject o with
+        | .mk _ code _ _ => (collectImmutableCallsStmts code).1
+      if !rootReads.isEmpty then none else
       let decoded := decodeValueObject o
       let raw := pruneLinkerObjectTree
         (if libraries.isEmpty then decoded else linkObject libraries decoded)
@@ -418,18 +517,27 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
         (calls := YulSemantics.EVM.ExternalCalls.none)
         (creates := YulSemantics.EVM.ExternalCreates.none) o
       let tryLayouts (obj : Object YulSemantics.EVM.Op) :=
-        YulEvmCompiler.compileObject obj
-          <|> YulEvmCompiler.compileObject
-            (YulEvmCompiler.Optimizer.cleanupAfterLayoutObject
-              (calls := YulSemantics.EVM.ExternalCalls.none)
-              (creates := YulSemantics.EVM.ExternalCreates.none)
-              (YulEvmCompiler.Optimizer.stackLayoutObject obj))
-          <|> YulEvmCompiler.compileObject
-            (YulEvmCompiler.Optimizer.stackLayoutObject obj)
+        (expandSetImmutablesObject obj).bind YulEvmCompiler.compileObject
+          <|> (expandSetImmutablesObject
+              (YulEvmCompiler.Optimizer.cleanupAfterLayoutObject
+                (calls := YulSemantics.EVM.ExternalCalls.none)
+                (creates := YulSemantics.EVM.ExternalCreates.none)
+                (YulEvmCompiler.Optimizer.stackLayoutObject obj))).bind
+              YulEvmCompiler.compileObject
+          <|> (expandSetImmutablesObject
+              (YulEvmCompiler.Optimizer.stackLayoutObject obj)).bind
+              YulEvmCompiler.compileObject
       -- SSA-CFG backend on the object path too (same layout fixpoint, SSA
       -- per code block); both artifacts are kept and the cheaper bytecode
       -- (static stack-traffic cost) wins.
-      let ssaLayout := YulEvmCompiler.SsaCfg.compileObjectViaSsa optimized
+      -- The constructor's patch offsets are read off the *classic* plan
+      -- (`objectImmutableOffsets`), but the SSA object path schedules its code
+      -- independently and records no offsets, so a winning SSA artifact could
+      -- be patched at the wrong positions. Withhold that candidate whenever the
+      -- tree touches an immutable.
+      let ssaLayout :=
+        if usesImmutablesObject optimized then none
+        else (expandSetImmutablesObject optimized).bind YulEvmCompiler.SsaCfg.compileObjectViaSsa
       let classicLayout := tryLayouts optimized
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
@@ -437,7 +545,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectLight
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none) o)
-        <|> YulEvmCompiler.compileObject o
+        <|> (expandSetImmutablesObject o).bind YulEvmCompiler.compileObject
         <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback
               raw optimized with
           | some spilled =>
@@ -449,7 +557,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
                 -- without it they never see the optimizer at all. Objects the
                 -- plain spilled form cannot compile (live `gas`, immutables,
                 -- linker symbols) skip the expensive pipeline entirely.
-                match YulEvmCompiler.compileObject spilled.object with
+                match (expandSetImmutablesObject spilled.object).bind YulEvmCompiler.compileObject with
                 | none => none
                 | some plainLayout =>
                     let spilledOpt :=
@@ -461,14 +569,16 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
                             YulSemantics.EVM.ExternalCalls.none
                             YulSemantics.EVM.ExternalCreates.none)
                           spilled.object)
-                    YulEvmCompiler.compileObject spilledOpt
-                      <|> YulEvmCompiler.compileObject
-                        (YulEvmCompiler.Optimizer.cleanupAfterLayoutObject
-                          (calls := YulSemantics.EVM.ExternalCalls.none)
-                          (creates := YulSemantics.EVM.ExternalCreates.none)
-                          (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt))
-                      <|> YulEvmCompiler.compileObject
-                        (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)
+                    (expandSetImmutablesObject spilledOpt).bind YulEvmCompiler.compileObject
+                      <|> (expandSetImmutablesObject
+                          (YulEvmCompiler.Optimizer.cleanupAfterLayoutObject
+                            (calls := YulSemantics.EVM.ExternalCalls.none)
+                            (creates := YulSemantics.EVM.ExternalCreates.none)
+                            (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt))).bind
+                          YulEvmCompiler.compileObject
+                      <|> (expandSetImmutablesObject
+                          (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)).bind
+                          YulEvmCompiler.compileObject
                       <|> some plainLayout
           | none => none)
       let layout ←

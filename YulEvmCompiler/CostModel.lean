@@ -124,6 +124,8 @@ def tier : Asm → Nat
   | .jumpi _ => 3 + 10
   | .pushLabel _ => 3
   | .dynJump => 8
+  -- lowers to a single `PUSH32` of the patched value, whatever it is
+  | .pushImmutable _ => 3
 
 /-- Does this instruction end the frame? -/
 def halts : Asm → Bool

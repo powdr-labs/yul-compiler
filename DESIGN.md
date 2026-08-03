@@ -705,8 +705,10 @@ CI), which must stay in sync as coverage grows.
   the verified smart layout fallback described above, then the guarded memory
   spilling fallback when a safe scratch reservation is available. Irreducible
   frames without that contract still need EIP-8024 activation upstream.
-  Independent unsupported operations such as `gas`, immutables, and live
-  linker-symbol values are not accepted merely because spilling succeeds.
+  Independent unsupported operations such as `gas` are not accepted merely
+  because spilling succeeds. Immutables and supplied linker-symbol values are
+  now handled (see the immutables and library-linking entries), but neither is
+  a consequence of spilling.
 * **Optimizer.** A verified multi-stage pipeline, iterated six times, runs in
   front of the backend for block-rooted `compileSource` inputs (see
   `Optimizer/Implementation/Pipeline.lean` for the current stage list, and

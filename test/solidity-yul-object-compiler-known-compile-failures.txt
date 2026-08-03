@@ -2,7 +2,6 @@
 # Every fixture whose EVMVersion range includes Osaka is compiled. Keep exactly
 # the fixtures that do not parse/compile, including those the stack-overflow gate
 # (StackScalable) rejects as not provably stack-bounded (recursion / cycles).
-immutable_long_name_does_not_end_up_in_bytecode.yul
 leading_and_trailing_dots.yul
 linkersymbol.yul
 prune_unreachable_function_recursion.yul

@@ -142,6 +142,8 @@ theorem compile_spilled_correct
       result.base result.reserved)
     (hcomp : compile (resolveForLayoutStmts L result.block) =
       some instructions)
+    (himm : ∀ key, (0 : YulSemantics.EVM.U256) =
+      L.initState.env.immutable (YulSemantics.EVM.litValue (.string key)))
     {sourceEnv : MemorySpillObjectSound.WordEnv}
     {sourceFinal : EvmState} {out : Outcome}
     (hsource : Run
@@ -167,7 +169,7 @@ theorem compile_spilled_correct
            (out = .halt ∧ HaltedMatch targetFinal s')) :=
   MemorySpillBackendSound.compile_spilled_correct hexternal
     (spillNodeRunSound (calls := model.calls) (creates := model.creates) L)
-    hfacts hguarded hcomp hsource
+    hfacts hguarded hcomp himm hsource
 
 /-- Direct production block-root composition from a successful spill choice
 through ordinary Yul compilation and the verified EVM backend. -/
@@ -177,8 +179,10 @@ theorem compile_memorySpill_correct
     (hspill : spillBlock? raw = some result)
     (hguarded : GuardedExternals model.calls model.creates
       result.base result.reserved)
-    (hcomp : compile result.block = some instructions)
+    (hcomp : compile result.block imm = some instructions)
     {initial sourceFinal : EvmState}
+    (himm : ∀ key, imm key =
+      initial.env.immutable (YulSemantics.EVM.litValue (.string key)))
     {sourceEnv : MemorySpillObjectSound.WordEnv} {out : Outcome}
     (hsource : Run
       (guardedEvm model.calls model.creates result.base result.reserved)
@@ -205,7 +209,7 @@ theorem compile_memorySpill_correct
   have hobs : runObservables initial sourceFinal =
       runObservables initial targetFinal :=
     ScratchRel.runObservables_eq hscratch
-  obtain ⟨bound, hbackend⟩ := compile_correct hexternal hcomp htarget
+  obtain ⟨bound, hbackend⟩ := compile_correct hexternal hcomp himm htarget
   exact ⟨targetEnv, targetFinal, htarget, hscratch, hobs, bound, hbackend⟩
 
 /-- Concrete production object theorem with recursive spill/fallback soundness

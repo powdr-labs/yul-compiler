@@ -88,8 +88,9 @@ callee/init code, nested calls/creations, and reentrant executions are
 included. -/
 theorem compile_correct (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List Instr}
-    (hcomp : compile prog = some is)
+    (hcomp : compile prog imm = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
+    (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     (hrun : YulSemantics.Run yulD prog yst0 V' yst' o) :
     ∃ b : Nat, ∀ s0 : State,
       FrameOK (assemble is) s0 → StateMatch yst0 s0 →
@@ -104,7 +105,7 @@ theorem compile_correct (hexternal : ExternalsRealized model)
     -- extract the stack-overflow check (on the *optimized* Asm) and the lowering from the
     -- gated pipeline
     obtain ⟨hstk, hcomp⟩ :
-        stackOK2 (optimizeAsm asm) = true ∧ lowerProg (optimizeAsm asm) = some is := by
+        stackOK2 (optimizeAsm asm) = true ∧ lowerProg imm (optimizeAsm asm) = some is := by
       split at hcomp
       · next h => exact ⟨h, hcomp⟩
       · exact absurd hcomp (by simp)
@@ -139,8 +140,8 @@ theorem compile_correct (hexternal : ExternalsRealized model)
             (stackOK2_run_bound hstk yst0)
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk0 hgas
-        have hcm0 : ConfMatch (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
-          ⟨by simpa using hf, hm, by rw [hpc]; simp, by rw [hstk0]; simp⟩
+        have hcm0 : ConfMatch imm (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
+          ⟨by simpa using hf, hm, by rw [hpc]; simp, by rw [hstk0]; simp, himm⟩
         obtain ⟨s1, hsteps1, hcm1, -⟩ := Hb s0 hcm0 hgas
         have hpc1 : s1.pc = UInt256.ofNat (assembleBytes is).length := by
           rw [hcm1.pc]; simp [hlen]
@@ -167,8 +168,8 @@ theorem compile_correct (hexternal : ExternalsRealized model)
             (List.suffix_refl (optimizeAsm asm)) (stackOK2_run_bound hstk yst0)
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk0 hgas
-        have hcm0 : ConfMatch (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
-          ⟨by simpa using hf, hm, by rw [hpc]; simp, by rw [hstk0]; simp⟩
+        have hcm0 : ConfMatch imm (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
+          ⟨by simpa using hf, hm, by rw [hpc]; simp, by rw [hstk0]; simp, himm⟩
         obtain ⟨s', hsteps', hsm', hcs', hhm'⟩ := Hb s0 hcm0 hgas
         exact ⟨s', hsteps', hcs', hsm', Or.inr ⟨rfl, hhm'⟩⟩
       | «break» => rcases hout with ⟨lc, hlc, -⟩; exact absurd hlc (by simp)
@@ -183,8 +184,9 @@ seam, while a source halt preserves its exact halt result before reaching the
 payload. -/
 theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List Instr} {payload : List UInt8}
-    (hcomp : compile prog = some is)
+    (hcomp : compile prog imm = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
+    (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     (hrun : YulSemantics.Run yulD prog yst0 V' yst' o) :
     ∃ b : Nat, ∀ s0 : State,
       FrameOK (assembleWithPayload is (0 :: payload)) s0 → StateMatch yst0 s0 →
@@ -196,7 +198,7 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
   · simp [compile, hpa] at hcomp
   · simp only [compile, hpa, bind, Option.bind] at hcomp
     obtain ⟨hstk, hcomp⟩ :
-        stackOK2 (optimizeAsm asm) = true ∧ lowerProg (optimizeAsm asm) = some is := by
+        stackOK2 (optimizeAsm asm) = true ∧ lowerProg imm (optimizeAsm asm) = some is := by
       split at hcomp
       · next h => exact ⟨h, hcomp⟩
       · exact absurd hcomp (by simp)
@@ -226,8 +228,8 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk0 hgas
         have hcm0 : ConfMatch (payload := 0 :: payload)
-            (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
-          ⟨hf, hm, by rw [hpc]; simp, by rw [hstk0]; simp⟩
+            imm (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
+          ⟨hf, hm, by rw [hpc]; simp, by rw [hstk0]; simp, himm⟩
         obtain ⟨s1, hsteps1, hcm1, -⟩ := Hb s0 hcm0 hgas
         have hpc1 : s1.pc = UInt256.ofNat (assembleBytes is).length := by
           rw [hcm1.pc]
@@ -254,8 +256,8 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
         refine ⟨bnd, ?_⟩
         intro s0 hf hm hpc hstk0 hgas
         have hcm0 : ConfMatch (payload := 0 :: payload)
-            (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
-          ⟨hf, hm, by rw [hpc]; simp, by rw [hstk0]; simp⟩
+            imm (optimizeAsm asm) is ⟨optimizeAsm asm, [], yst0⟩ s0 :=
+          ⟨hf, hm, by rw [hpc]; simp, by rw [hstk0]; simp, himm⟩
         obtain ⟨s', hsteps', hsm', hcs', hhm'⟩ := Hb s0 hcm0 hgas
         exact ⟨s', hsteps', hcs', hsm', Or.inr ⟨rfl, hhm'⟩⟩
       | «break» => rcases hout with ⟨lc, hlc, -⟩; exact absurd hlc (by simp)
@@ -267,15 +269,16 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
 that falls through; `resultOf` of the recorded halt otherwise). -/
 theorem compile_correct_eval (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List Instr}
-    (hcomp : compile prog = some is)
+    (hcomp : compile prog imm = some is)
     {yst0 : EvmState} {V' : VEnv yulD} {yst' : EvmState} {o : Outcome}
+    (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     (hrun : YulSemantics.Run yulD prog yst0 V' yst' o) :
     ∃ b : Nat, ∀ s0 : State,
       FrameOK (assemble is) s0 → StateMatch yst0 s0 →
       s0.pc = UInt256.ofNat 0 → s0.stack = [] → b ≤ s0.gasAvailable →
       (o = .normal → Eval s0 .success) ∧
       (o = .halt → ∃ hk, yst'.halted = some hk ∧ Eval s0 (resultOf hk)) := by
-  obtain ⟨b, H⟩ := compile_correct hexternal hcomp hrun
+  obtain ⟨b, H⟩ := compile_correct hexternal hcomp himm hrun
   refine ⟨b, ?_⟩
   intro s0 hf hm hpc hstk hgas
   obtain ⟨s', hsteps, hcs', hm', hres⟩ := H s0 hf hm hpc hstk hgas

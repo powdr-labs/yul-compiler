@@ -189,6 +189,9 @@ def Cert.Bounded (C : Cert) : Prop :=
 /-- Per-instruction step constraint, given current `fl = some S`, `fbMax = some F`, `rl = some R`. -/
 def frameStep (prog : List Asm) (C : Cert) : Asm → List Asm → FLayout → Nat → FLayout → Prop
   | .push _,      c, S, F, R => C.fl c = some (.word :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R
+  -- Same frame effect as `push`; only the lowered width differs.
+  | .pushImmutable _, c, S, F, R =>
+      C.fl c = some (.word :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R
   | .dup n,       c, S, F, R => S[n.val]? = some FSlot.word ∧ C.fl c = some (.word :: S)
       ∧ C.fbMax c = some F ∧ C.rl c = some R
   | .pushLabel l, c, S, F, R => C.fl c = some (.retTo l :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R
@@ -532,6 +535,10 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
       obtain ⟨S, F, R, hfl, hfb, hrl⟩ := hinv.certAt
       obtain ⟨hflc, hfbc, hrlc⟩ := hV _ c S F R hfl hfb hrl
       exact hinv.growWord hfl hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
+  | @pushImmutable key c σ yst =>
+      obtain ⟨S, F, R, hfl, hfb, hrl⟩ := hinv.certAt
+      obtain ⟨hflc, hfbc, hrlc⟩ := hV _ c S F R hfl hfb hrl
+      exact hinv.growWord hfl hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
   | @pushLabel l c σ yst hdef =>
       obtain ⟨S, F, R, hfl, hfb, hrl⟩ := hinv.certAt
       obtain ⟨hflc, hfbc, hrlc⟩ := hV _ c S F R hfl hfb hrl
@@ -769,6 +776,8 @@ conjunction, so soundness is a projection). -/
 def frameStepB (prog : List Asm) (C : Cert) : Asm → List Asm → FLayout → Nat → FLayout → Bool
   | .push _,      c, S, F, R =>
       decide (C.fl c = some (.word :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R)
+  | .pushImmutable _, c, S, F, R =>
+      decide (C.fl c = some (.word :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R)
   | .dup n,       c, S, F, R => match S[n.val]? with
       | some FSlot.word => decide (C.fl c = some (.word :: S) ∧ C.fbMax c = some F ∧ C.rl c = some R)
       | _ => false
@@ -827,6 +836,7 @@ theorem frameStepB_sound {prog : List Asm} {C : Cert} {i : Asm} {c : List Asm} {
     {F : Nat} {R : FLayout} (h : frameStepB prog C i c S F R = true) : frameStep prog C i c S F R := by
   cases i with
   | push v => simp only [frameStepB, decide_eq_true_eq] at h; exact h
+  | pushImmutable key => simp only [frameStepB, decide_eq_true_eq] at h; exact h
   | dup n =>
       revert h; simp only [frameStepB]; split
       · next he => intro h; simp only [decide_eq_true_eq] at h; exact ⟨he, h⟩
@@ -1061,6 +1071,7 @@ looked up once instead of independently through `fl`, `fbMax`, and `rl`. -/
 def frameStepLookupB (prog : List Asm) (lookup : CertLookup) :
     Asm → List Asm → FLayout → Nat → FLayout → Bool
   | .push _,      c, S, F, R => decide (lookup c = some (.word :: S, F, R))
+  | .pushImmutable _, c, S, F, R => decide (lookup c = some (.word :: S, F, R))
   | .dup n,       c, S, F, R => match S[n.val]? with
       | some FSlot.word => decide (lookup c = some (.word :: S, F, R))
       | _ => false
@@ -1133,6 +1144,7 @@ def frameStepLookupFastB (tgts : Std.HashMap Label (List Asm))
     (lookup : CertLookup) :
     Asm → List Asm → FLayout → Nat → FLayout → Bool
   | .push _,      c, S, F, R => decide (lookup c = some (.word :: S, F, R))
+  | .pushImmutable _, c, S, F, R => decide (lookup c = some (.word :: S, F, R))
   | .dup n,       c, S, F, R => match S[n.val]? with
       | some FSlot.word => decide (lookup c = some (.word :: S, F, R))
       | _ => false
@@ -1201,6 +1213,8 @@ def frameStepLookupIdxB (tgts : Std.HashMap Label (List Asm))
     (lookup : CertLookup) (tbl : Array (Option CertEntry)) (kc : Nat) :
     Asm → List Asm → FLayout → Nat → FLayout → Bool
   | .push _,      c, S, F, R => decide (lookupAt tbl kc c = some (.word :: S, F, R))
+  | .pushImmutable _, c, S, F, R =>
+      decide (lookupAt tbl kc c = some (.word :: S, F, R))
   | .dup n,       c, S, F, R => match S[n.val]? with
       | some FSlot.word => decide (lookupAt tbl kc c = some (.word :: S, F, R))
       | _ => false
@@ -1414,6 +1428,7 @@ theorem frameStepLookupB_eq_frameStepB (prog : List Asm) (lookup : CertLookup)
       frameStepB prog lookup.toCert i c S F R := by
   cases i with
   | push => exact lookup.decide_eq_some_fields c (.word :: S) F R
+  | pushImmutable key => exact lookup.decide_eq_some_fields c (.word :: S) F R
   | pushLabel l => exact lookup.decide_eq_some_fields c (.retTo l :: S) F R
   | label => exact lookup.decide_eq_some_fields c S F R
   | jump l =>
@@ -1726,6 +1741,7 @@ def stepSuccs (tgts : Std.HashMap Label (List Asm × Nat)) (pls : Std.HashSet La
     let kc := k - 1
     match i with
     | .push _ => some ([(kc, c, .word :: fl, rl, fe)], [], [], [])
+    | .pushImmutable _ => some ([(kc, c, .word :: fl, rl, fe)], [], [], [])
     | .dup n => match fl[n.val]? with
         | some FSlot.word => some ([(kc, c, .word :: fl, rl, fe)], [], [], []) | _ => none
     | .pop => match fl with | .word :: fl' => some ([(kc, c, fl', rl, fe)], [], [], []) | _ => none

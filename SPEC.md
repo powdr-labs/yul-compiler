@@ -9,8 +9,8 @@ computed by walking each headline theorem's **statement** (never its proof),
 so the hundreds of preservation lemmas are excluded automatically — what
 remains is exactly the specification vocabulary.
 
-**Audited surface: 89 declarations** \
-relations: 12 · structures: 12 · data defs: 51 · statements: 9 · artifact signatures: 4 \
+**Audited surface: 90 declarations** \
+relations: 12 · structures: 12 · data defs: 52 · statements: 9 · artifact signatures: 4 \
 **External boundary: 155 declarations** across the two pinned semantics.
 
 Axioms are pinned separately in `Checks.lean` (only `propext`,
@@ -26,7 +26,7 @@ flowchart TD
     S["Headline theorem statements (9)"]
     R["Match relations & predicates (12)"]
     T["Structures & data types (12)"]
-    D["Data definitions (51)"]
+    D["Data definitions (52)"]
     A["Artifact signatures (4) — type only, bodies free"]
   end
   subgraph external ["trusted ground truth — pinned dependency semantics"]
@@ -49,13 +49,13 @@ The shape of each guarantee. Read these first: the honest scoping lives here.
 
 | declaration | source | hash |
 |---|---|---|
-| `YulEvmCompiler.Optimizer.LocalPass.optimize_then_compile_correct` | [YulEvmCompiler/Optimizer/Spec/Backend.lean#L30](YulEvmCompiler/Optimizer/Spec/Backend.lean#L30) | `b97af54bdbe04c9f` |
-| `YulEvmCompiler.compileObject_consistent` | [YulEvmCompiler/ObjectCompile.lean#L945](YulEvmCompiler/ObjectCompile.lean#L945) | `6772c506631c72d` |
-| `YulEvmCompiler.compileObject_correct` | [YulEvmCompiler/ObjectCompile.lean#L968](YulEvmCompiler/ObjectCompile.lean#L968) | `6c28d636cabfed71` |
-| `YulEvmCompiler.compile_correct` | [YulEvmCompiler/Correctness.lean#L71](YulEvmCompiler/Correctness.lean#L71) | `ec51f1c553a52f8a` |
-| `YulEvmCompiler.compile_correct_eval` | [YulEvmCompiler/Correctness.lean#L265](YulEvmCompiler/Correctness.lean#L265) | `999e96fc09d553b6` |
-| `YulEvmCompiler.compile_correct_withPayload` | [YulEvmCompiler/Correctness.lean#L178](YulEvmCompiler/Correctness.lean#L178) | `50e2c3107c79f9ea` |
-| `YulEvmCompiler.compiled_constructor_returns` | [YulEvmCompiler/ObjectCompile.lean#L1000](YulEvmCompiler/ObjectCompile.lean#L1000) | `9a99d76f5d037853` |
+| `YulEvmCompiler.Optimizer.LocalPass.optimize_then_compile_correct` | [YulEvmCompiler/Optimizer/Spec/Backend.lean#L30](YulEvmCompiler/Optimizer/Spec/Backend.lean#L30) | `d0b206bd07992491` |
+| `YulEvmCompiler.compileObject_consistent` | [YulEvmCompiler/ObjectCompile.lean#L1030](YulEvmCompiler/ObjectCompile.lean#L1030) | `6772c506631c72d` |
+| `YulEvmCompiler.compileObject_correct` | [YulEvmCompiler/ObjectCompile.lean#L1053](YulEvmCompiler/ObjectCompile.lean#L1053) | `6c28d636cabfed71` |
+| `YulEvmCompiler.compile_correct` | [YulEvmCompiler/Correctness.lean#L71](YulEvmCompiler/Correctness.lean#L71) | `5da903b63e70655d` |
+| `YulEvmCompiler.compile_correct_eval` | [YulEvmCompiler/Correctness.lean#L267](YulEvmCompiler/Correctness.lean#L267) | `44f9f79182ec7eda` |
+| `YulEvmCompiler.compile_correct_withPayload` | [YulEvmCompiler/Correctness.lean#L179](YulEvmCompiler/Correctness.lean#L179) | `7fe10d0f9ce8438a` |
+| `YulEvmCompiler.compiled_constructor_returns` | [YulEvmCompiler/ObjectCompile.lean#L1091](YulEvmCompiler/ObjectCompile.lean#L1091) | `9a99d76f5d037853` |
 | `YulParser.parse_canon_block` | [YulParser/Stmt.lean#L313](YulParser/Stmt.lean#L313) | `565944a3acfe55d3` |
 | `YulParser.parse_canon_obj` | [YulParser/Obj.lean#L139](YulParser/Obj.lean#L139) | `f40759b3ea852432` |
 
@@ -67,13 +67,13 @@ How a source state/outcome corresponds to a target state/outcome. The heart of t
 |---|---|---|
 | `YulEvmCompiler.HaltMatch` | [YulEvmCompiler/StateRel.lean#L1252](YulEvmCompiler/StateRel.lean#L1252) | `6557b5faae906a61` |
 | `YulEvmCompiler.HaltedMatch` | [YulEvmCompiler/OpStep.lean#L50](YulEvmCompiler/OpStep.lean#L50) | `bd6cde934ed46ce6` |
-| `YulEvmCompiler.IsCallOp` | [YulEvmCompiler/OpTable.lean#L90](YulEvmCompiler/OpTable.lean#L90) | `93349e44f6cba900` |
-| `YulEvmCompiler.IsCreateOp` | [YulEvmCompiler/OpTable.lean#L98](YulEvmCompiler/OpTable.lean#L98) | `188d5668d6c00b2b` |
+| `YulEvmCompiler.IsCallOp` | [YulEvmCompiler/OpTable.lean#L90](YulEvmCompiler/OpTable.lean#L90) | `4068ec650592c03e` |
+| `YulEvmCompiler.IsCreateOp` | [YulEvmCompiler/OpTable.lean#L98](YulEvmCompiler/OpTable.lean#L98) | `b78befe1df320f16` |
 | `YulEvmCompiler.LogEntryMatch` | [YulEvmCompiler/StateRel.lean#L934](YulEvmCompiler/StateRel.lean#L934) | `44220474a51dc6b6` |
 | `YulEvmCompiler.LogsMatch` | [YulEvmCompiler/StateRel.lean#L942](YulEvmCompiler/StateRel.lean#L942) | `6d1d2dd35bc25e39` |
 | `YulEvmCompiler.MemMatch` | [YulEvmCompiler/StateRel.lean#L32](YulEvmCompiler/StateRel.lean#L32) | `e48211ef54b0d862` |
 | `YulEvmCompiler.Optimizer.Sound` | [YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L64](YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L64) | `d9d7947b1bb2287` |
-| `YulEvmCompiler.RunResolvedObject` | [YulEvmCompiler/ObjectCompile.lean#L962](YulEvmCompiler/ObjectCompile.lean#L962) | `22471129a83f65e3` |
+| `YulEvmCompiler.RunResolvedObject` | [YulEvmCompiler/ObjectCompile.lean#L1047](YulEvmCompiler/ObjectCompile.lean#L1047) | `22471129a83f65e3` |
 | `YulEvmCompiler.SelfdestructEntryMatch` | [YulEvmCompiler/StateRel.lean#L956](YulEvmCompiler/StateRel.lean#L956) | `3b1f6c17c9cc3b3f` |
 | `YulEvmCompiler.SelfdestructsMatch` | [YulEvmCompiler/StateRel.lean#L963](YulEvmCompiler/StateRel.lean#L963) | `8fb6a9b19498848` |
 | `YulParser.Parser` | [YulParser/Core.lean#L13](YulParser/Core.lean#L13) | `c3c38aa9630539e` |
@@ -84,12 +84,12 @@ The vocabulary the guarantee is phrased in.
 
 | declaration | source | hash |
 |---|---|---|
-| `YulEvmCompiler.CallsRealized` | [YulEvmCompiler/LowerDefs.lean#L308](YulEvmCompiler/LowerDefs.lean#L308) | `60cec34bf4c3cac9` |
-| `YulEvmCompiler.CreatesRealized` | [YulEvmCompiler/LowerDefs.lean#L355](YulEvmCompiler/LowerDefs.lean#L355) | `d608d1effb3509d1` |
+| `YulEvmCompiler.CallsRealized` | [YulEvmCompiler/LowerDefs.lean#L329](YulEvmCompiler/LowerDefs.lean#L329) | `60cec34bf4c3cac9` |
+| `YulEvmCompiler.CreatesRealized` | [YulEvmCompiler/LowerDefs.lean#L376](YulEvmCompiler/LowerDefs.lean#L376) | `d608d1effb3509d1` |
 | `YulEvmCompiler.EnvMatch` | [YulEvmCompiler/StateRel.lean#L429](YulEvmCompiler/StateRel.lean#L429) | `9cea97fa8ae94f99` |
 | `YulEvmCompiler.ExternalCodeMatch` | [YulEvmCompiler/StateRel.lean#L494](YulEvmCompiler/StateRel.lean#L494) | `2d46717e52ff1871` |
 | `YulEvmCompiler.ExternalModel` | [YulEvmCompiler/AsmSem.lean#L34](YulEvmCompiler/AsmSem.lean#L34) | `75bd1eadd7f209e2` |
-| `YulEvmCompiler.ExternalsRealized` | [YulEvmCompiler/LowerDefs.lean#L403](YulEvmCompiler/LowerDefs.lean#L403) | `7fd85ee803561fa8` |
+| `YulEvmCompiler.ExternalsRealized` | [YulEvmCompiler/LowerDefs.lean#L424](YulEvmCompiler/LowerDefs.lean#L424) | `7fd85ee803561fa8` |
 | `YulEvmCompiler.FrameOK` | [YulEvmCompiler/StateRel.lean#L1240](YulEvmCompiler/StateRel.lean#L1240) | `97dc148ae9bebed5` |
 | `YulEvmCompiler.Instr` | [YulEvmCompiler/Instr.lean#L38](YulEvmCompiler/Instr.lean#L38) | `6d2465d1d211750b` |
 | `YulEvmCompiler.Optimizer.LocalPass` | [YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L72](YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L72) | `6b8887154f59257c` |
@@ -107,17 +107,18 @@ Concrete spec-level functions (outcome maps, canonicalisation, byte assembly).
 | `YulEvmCompiler.Instr.opByte` | [YulEvmCompiler/Instr.lean#L52](YulEvmCompiler/Instr.lean#L52) | `1063189e226fb3ef` |
 | `YulEvmCompiler.assemble` | [YulEvmCompiler/Instr.lean#L188](YulEvmCompiler/Instr.lean#L188) | `c1c9c0c9a1ad80c8` |
 | `YulEvmCompiler.assembleBytes` | [YulEvmCompiler/Instr.lean#L176](YulEvmCompiler/Instr.lean#L176) | `29d8e692638cce98` |
-| `YulEvmCompiler.assembleWithPayload` | [YulEvmCompiler/LowerDefs.lean#L143](YulEvmCompiler/LowerDefs.lean#L143) | `55ba5256c2c91c08` |
+| `YulEvmCompiler.assembleWithPayload` | [YulEvmCompiler/LowerDefs.lean#L144](YulEvmCompiler/LowerDefs.lean#L144) | `55ba5256c2c91c08` |
 | `YulEvmCompiler.conv` | [YulEvmCompiler/Value.lean#L29](YulEvmCompiler/Value.lean#L29) | `25e701af8a9ce7bb` |
 | `YulEvmCompiler.mkCode` | [YulEvmCompiler/Decode.lean#L23](YulEvmCompiler/Decode.lean#L23) | `edacb826e56f9571` |
 | `YulEvmCompiler.natToBE` | [YulEvmCompiler/Instr.lean#L26](YulEvmCompiler/Instr.lean#L26) | `d47a19daef761803` |
-| `YulEvmCompiler.opTable` | [YulEvmCompiler/OpTable.lean#L19](YulEvmCompiler/OpTable.lean#L19) | `58d5b129f84835ed` |
+| `YulEvmCompiler.opTable` | [YulEvmCompiler/OpTable.lean#L19](YulEvmCompiler/OpTable.lean#L19) | `d48771ade3ef37b6` |
 | `YulEvmCompiler.resolveForLayoutCases` | [YulEvmCompiler/ObjectResolve.lean#L77](YulEvmCompiler/ObjectResolve.lean#L77) | `a635c809600d2d8a` |
-| `YulEvmCompiler.resolveForLayoutExpr` | [YulEvmCompiler/ObjectResolve.lean#L25](YulEvmCompiler/ObjectResolve.lean#L25) | `15bc9ca915a17f5a` |
+| `YulEvmCompiler.resolveForLayoutExpr` | [YulEvmCompiler/ObjectResolve.lean#L25](YulEvmCompiler/ObjectResolve.lean#L25) | `6e8a6c9691954597` |
 | `YulEvmCompiler.resolveForLayoutExprs` | [YulEvmCompiler/ObjectResolve.lean#L38](YulEvmCompiler/ObjectResolve.lean#L38) | `deee862dd8d61de4` |
 | `YulEvmCompiler.resolveForLayoutStmt` | [YulEvmCompiler/ObjectResolve.lean#L45](YulEvmCompiler/ObjectResolve.lean#L45) | `ef48ed8902b73d01` |
 | `YulEvmCompiler.resolveForLayoutStmts` | [YulEvmCompiler/ObjectResolve.lean#L71](YulEvmCompiler/ObjectResolve.lean#L71) | `e61eedc003fbb530` |
 | `YulEvmCompiler.resultOf` | [YulEvmCompiler/StateRel.lean#L1264](YulEvmCompiler/StateRel.lean#L1264) | `9a4fae748007bd7b` |
+| `YulEvmCompiler.unpatchedImmutables` | [YulEvmCompiler/Compile.lean#L342](YulEvmCompiler/Compile.lean#L342) | `4350bdab12d0a1ca` |
 | `YulParser.afterBlockComment` | [YulParser/Tokens.lean#L30](YulParser/Tokens.lean#L30) | `5deac78dd9073c67` |
 | `YulParser.canon` | [YulParser/Canon.lean#L82](YulParser/Canon.lean#L82) | `b2d8eb356dc83a9c` |
 | `YulParser.decDigitVal` | [YulParser/Canon.lean#L52](YulParser/Canon.lean#L52) | `aa9b35f8e24246bf` |
@@ -161,8 +162,8 @@ The code being verified. Only the signatures are frozen; implementations are fre
 
 | declaration | source | hash |
 |---|---|---|
-| `YulEvmCompiler.compile` | [YulEvmCompiler/Compile.lean#L335](YulEvmCompiler/Compile.lean#L335) | `49a8d9e93773bc82` |
-| `YulEvmCompiler.compileObject` | [YulEvmCompiler/ObjectCompile.lean#L858](YulEvmCompiler/ObjectCompile.lean#L858) | `45cacb379f48e375` |
+| `YulEvmCompiler.compile` | [YulEvmCompiler/Compile.lean#L352](YulEvmCompiler/Compile.lean#L352) | `8db82c40ac47d5a6` |
+| `YulEvmCompiler.compileObject` | [YulEvmCompiler/ObjectCompile.lean#L927](YulEvmCompiler/ObjectCompile.lean#L927) | `45cacb379f48e375` |
 | `YulParser.parseBlock` | [YulParser/Stmt.lean#L305](YulParser/Stmt.lean#L305) | `548f44114c0c0376` |
 | `YulParser.parseObject` | [YulParser/Obj.lean#L131](YulParser/Obj.lean#L131) | `7de98252fdadddab` |
 

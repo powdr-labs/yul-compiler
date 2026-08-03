@@ -56,6 +56,8 @@ theorem compile_spilled_correct
       result.base result.reserved)
     (hcomp : compile (resolveForLayoutStmts L result.block) =
       some instructions)
+    (himm : ∀ key, (0 : YulSemantics.EVM.U256) =
+      L.initState.env.immutable (YulSemantics.EVM.litValue (.string key)))
     {sourceEnv : WordEnv} {sourceFinal : EvmState} {out : Outcome}
     (hsource : Run (G result.base result.reserved)
       (resolveForLayoutStmts L
@@ -81,7 +83,7 @@ theorem compile_spilled_correct
   have hobs : runObservables L.initState sourceFinal =
       runObservables L.initState targetFinal :=
     ScratchRel.runObservables_eq hscratch
-  obtain ⟨bound, hbackend⟩ := compile_correct hexternal hcomp htarget
+  obtain ⟨bound, hbackend⟩ := compile_correct hexternal hcomp himm htarget
   exact ⟨targetEnv, targetFinal, htarget, hscratch, hobs, bound, hbackend⟩
 
 /-- Generic object backend composition for an already established plan-node
