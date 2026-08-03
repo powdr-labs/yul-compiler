@@ -1686,3 +1686,29 @@ compose that result with the existing `Simplify` resolution congruence for the
   therefore can essentially never win selection regardless of the threshold.
   Fixing this needs an execution-weighted cost (charge each body by its
   call-site count, ideally loop-weighted), not a different budget.
+
+### Negative result: execution-weighted candidate cost (tried 2026-08-03, reverted)
+
+Built and measured, then reverted. `SsaCfg.instrCost` ranks candidates by
+static *size*; the hypothesis was that its loop-blindness explains the
+remaining regressions (aave `nextContinuousTenThousand` +234,867,
+`loopInvariantCodeMotion/no_move_state` +132,512), since both are
+loop-dominated fixtures where a *smaller* artifact loses on gas.
+
+The replacement scaled each emitted `Asm` instruction by its block's
+estimated execution count: `loopFactor^depth` (back-edges detected as edges
+whose target index ≤ source index — valid because the CFG is reducible and
+laid out in construction order) times a call-graph frequency fixpoint.
+
+**It did not work.** uniswap got slightly *worse* (48,794 vs 48,584, with
+`TickBitmap.nextInitializedTickWithinOneWord` +210) and the aave regression
+was completely unmoved (4,455,802, byte-identical outcome). So the
+loop-blindness hypothesis for those fixtures is **refuted**: the deciding
+comparison is not the one being reweighted. Remaining suspects, in order:
+the SSA-vs-classic comparison in `compileSource` (`byteCodeCost`, which this
+did not touch), or all four SSA candidates genuinely being worse for that
+program, which would make it a *scheduler* problem rather than a selection
+problem.
+
+Worth retrying only after instrumenting which candidate actually wins per
+fixture — do that first next time, before building the model.
