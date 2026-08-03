@@ -7,26 +7,42 @@ set_option linter.unusedSimpArgs false
 /-!
 # YulEvmCompiler.Optimizer.Implementation.InlineCallsCarrySound
 
-Soundness of the call-carrying inliner (`InlineCallsCarry.lean`).
+Soundness of the call-carrying inliner (`InlineCallsCarry.lean`). **Partial:**
+the `carry_transfer` engine below is proved; the full simulation that discharges
+`inlineCallsCarry.sound` is not yet assembled (see the design note).
 
 The architecture mirrors `InlineCallsSound`, with one change concentrated in
 the callee-body transfer at an inline site. `InlineCalls` bodies are call-free,
 so `scoped_transfer` moves the body's execution to *any* function environment
 (it never consults `funs`). Carry bodies bear calls: the transplanted copy runs
 its inner calls under the caller's function environment at the site, whereas the
-original runs them under the callee's defining scope `cenv`. Two facts bridge
-the gap:
+original runs them under the callee's defining scope `cenv`. The move splits in
+two:
 
-* **`carry_transfer`** — the analog of `scoped_transfer` that *permits* calls.
-  It transfers execution to any function environment that **agrees** with the
-  original on the code's (syntactic) call names, and simultaneously weakens the
-  variable environment by an inert suffix. Agreement is exactly what the
-  no-shadowing gate (`carrySurvives`) guarantees between the callee's defining
-  scope and the rewrite site.
-* **`Step.funs_congr`** (`FunCongr.lean`) — the semantic function-environment
-  congruence: once the body runs under the *source* site environment, it runs
-  under the *transformed* site environment with the same result, because the
-  two environments' functions have `EquivBlock`-equivalent bodies.
+1. **defining scope → site source** — `carry_transfer` (below), the analog of
+   `scoped_transfer` that *permits* calls. It transfers execution to any
+   function environment that **agrees** with the original on the code's
+   (syntactic) call names, weakening the variable environment by an inert
+   suffix. Agreement is exactly what the no-shadowing gate (`carrySurvives`)
+   guarantees between the callee's defining scope and the rewrite site. This
+   hop is proved and stays within the *source* function environment.
+
+2. **site source → site target** — the transform rewrites the *rest* of the
+   program too, so the site's target function environment `funs₂` has
+   `cyBlock`-transformed function bodies. This hop is the callee-body's
+   share of the whole-pass simulation and must be discharged the same way
+   `InlineCallsSound` discharges an ordinary call: through the Δ-indexed
+   relation carrying `DeltaCompat Δ cenv` (a *conditional* body equivalence),
+   **not** `FunCongr.Step.funs_congr` — its `FunsRel` demands *unconditional*
+   `EquivBlock` between a source body and its transform, which is **false**
+   (at a `funs` where an inlined callee is undefined the source is stuck while
+   `inlineCore` steps). For an *ordinary* call `InlineCallsSound` gets this from
+   the `Step` induction hypothesis `ihbody`; at an inline **site** no such
+   hypothesis is in scope, so hop 2 needs the simulation applied to the callee
+   body via **structural recursion on program size** (`d.ss` is a strict
+   subterm of the whole program). That size-recursive assembly — mirroring
+   `IcRel`/`IcFunsRel`/`ic_fwd`/`ic_bwd` with the site cases using hop 1 plus
+   the size IH — is the remaining work.
 -/
 
 namespace YulEvmCompiler.Optimizer
