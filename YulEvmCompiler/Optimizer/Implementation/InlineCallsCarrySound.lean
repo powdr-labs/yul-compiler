@@ -43,7 +43,7 @@ two:
 ## Status and the remaining assembly (validated architecture)
 
 Everything up to and including the function-environment relation is proved
-below (sorry-free): the classification inversions, `CarryWF`/`CarryCompat`
+below (fully proven): the classification inversions, `CarryWF`/`CarryCompat`
 with the carried-name lookup-equality invariant and its `carrySurvives`
 preservation, `CyRel` with the transform-inhabits derivation (`cyStmts_rel`),
 reflexivity, and `CyFDeclRel`/`CyScopeRel`/`CyFunsRel` with `lookupFun`
