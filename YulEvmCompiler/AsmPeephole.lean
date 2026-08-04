@@ -12,34 +12,55 @@ branch layout, and its label placement.
 
 ## The rewrites
 
-Six rewrites, each mined from actually-emitted code (the classic
+Eight rewrites, each mined from actually-emitted code (the classic
 `dup;pop` / `push;pop` / `swap n;swap n` peepholes never fire on this
 backend's output):
 
-1. **Return-slot assignment** — `push v ; swap1 ; pop ⟶ pop ; push v`.
+1. **Late constant push** — `push v ; dup n ; swap1 ⟶ dup (n-1) ; push v`
+   (and `push v ; dup1 ; swap1 ⟶ push v ; dup1`, where the `SWAP1` exchanges
+   two copies of `v`). Duplicating a value from below a freshly pushed
+   literal and then exchanging leaves exactly the stack you get by
+   duplicating first and pushing on top: one `SWAP1` (3 gas, 1 byte)
+   cheaper. Both backends emit this window whenever an operation's *topmost*
+   operand is a literal and a lower operand is still live afterwards, which
+   is the dominant shape in shift/mask code — `shr(0x80, x)` keeping `x`
+   compiles to `push 0x80 ; dup2 ; swap1 ; shr` where solc emits
+   `dup1 ; push 0x80 ; shr`. Measured on the executed instruction stream
+   this window is the largest single remaining difference against solc:
+   3,143 executions in `TickMath.getTickAtSqrtPriceSweep` (whose whole gap
+   to solc was 14,506 gas) and 30,168 in
+   `PositionStatusMap.nextContinuousTenThousand`.
+2. **Flipped comparison** — `swap1 ; lt ⟶ gt` and the `gt`/`slt`/`sgt`
+   mirrors, plus `swap1 ; add|mul|and|or|xor|eq ⟶ op` for the commutative
+   ops. The code generator already tries both operand orders for the
+   commutative built-ins; the ordered comparisons have a reversed twin
+   opcode instead, and a `SWAP1` immediately in front of one is always that
+   twin. 3 gas and 1 byte per site, 11,458 executions across the profiled
+   fixtures.
+3. **Return-slot assignment** — `push v ; swap1 ; pop ⟶ pop ; push v`.
    Identical net effect ("replace the top of the stack with the literal
    `v`"), one `SWAP1` (3 gas, 1 byte) cheaper. Emitted whenever a function
    body writes a constant into its top return slot.
-2. **Branch inversion** — `jumpi l ; jump m ; label l ⟶
+4. **Branch inversion** — `jumpi l ; jump m ; label l ⟶
    op iszero ; jumpi m ; label l`. The `if cond {break/continue/leave}`
    shape: enter the guarded body via fall-through instead of a jump. Drops
    one `labelWidth`-byte address push (`labelWidth + 2` bytes total), and
    saves 8 gas whenever the condition is false (the common path for
    guard-style `if`s) at the cost of 3 gas when it is true. The label stays
    (other references may exist); only the local entry becomes fall-through.
-3. **Double-`iszero` elimination** — `op iszero ; op iszero ; jumpi l ⟶
+5. **Double-`iszero` elimination** — `op iszero ; op iszero ; jumpi l ⟶
    jumpi l`. A branch only tests truthiness, which `iszero ∘ iszero`
    preserves; 2 bytes and 6 gas per condition evaluation. Only sound in the
    `jumpi` context (elsewhere the normalized 0/1 value is observable).
    Branch inversion produces these whenever the source condition already
    ended in `iszero`, so iteration matters (below).
-4. **Jump to next** — `jump l ; label l ⟶ label l` and `jumpi l ; label l
+6. **Jump to next** — `jump l ; label l ⟶ label l` and `jumpi l ; label l
    ⟶ pop ; label l`: both branches land at the fall-through anyway.
-5. **Dead label elimination** — drop `label l` when `l` is referenced
+7. **Dead label elimination** — drop `label l` when `l` is referenced
    nowhere in the program (about a quarter of emitted labels: loop-exit and
    return labels nothing jumps to). Saves the 1-byte `JUMPDEST` and 1 gas
    per pass-through.
-6. **Iteration** — `optimizeAsm` runs up to four rounds (`optimizeAsmN`,
+8. **Iteration** — `optimizeAsm` runs up to four rounds (`optimizeAsmN`,
    early-stopping at a fixpoint): removing a double `iszero` uncovers a
    branch-inversion window, and an inverted branch orphans its `jumpi`'s
    label for dead-label elimination.
@@ -67,14 +88,70 @@ open YulSemantics.EVM (U256 Op)
 
 /-! ### The concrete transform -/
 
+/-- One slot shallower: the `dup` index reaching the same value once the
+literal above it is gone (`DUP(n+1) ↦ DUP n`). -/
+def dupPred (n : Fin 16) : Fin 16 :=
+  ⟨n.val - 1, Nat.lt_of_le_of_lt (Nat.sub_le _ _) n.isLt⟩
+
+/-- The late-constant-push replacement for `push v ; dup n ; swap1`.
+
+For `n.val > 0` the `dup` copies a value from *below* the pushed literal and
+the `swap1` then puts the literal back on top: the same two stack cells are
+reached by duplicating one slot shallower and pushing the literal after.
+For `n.val = 0` the `dup` copies the literal itself, so the `swap1` exchanges
+two equal words and is simply dead. -/
+def latePush (v : U256) (n : Fin 16) : List Asm :=
+  if 0 < n.val then [.dup (dupPred n), .push v] else [.push v, .dup n]
+
+/-- The opcode computing the same result on the reversed operand order, when
+one exists: the commutative built-ins are their own mirror and the ordered
+comparisons mirror each other. `sub`/`div`/`shl`/… have no twin. -/
+def flipOp : Op → Option Op
+  | .add => some .add | .mul => some .mul | .and => some .and
+  | .or => some .or | .xor => some .xor | .eq => some .eq
+  | .lt => some .gt | .gt => some .lt
+  | .slt => some .sgt | .sgt => some .slt
+  | _ => none
+
+/-! `latePush` emits two label-free instructions, one byte shorter than the
+three-instruction window it replaces; these are the facts the structural
+lemmas below need about it. -/
+
+@[simp] theorem labelDefs_latePush (v : U256) (n : Fin 16) :
+    labelDefs (latePush v n) = [] := by
+  unfold latePush; split <;> simp [labelDefs, Asm.defines]
+
+@[simp] theorem labelRefs_latePush (v : U256) (n : Fin 16) :
+    labelRefs (latePush v n) = [] := by
+  unfold latePush; split <;> simp [labelRefs, Asm.references]
+
+theorem codeSize_latePush (v : U256) (n : Fin 16) :
+    codeSize (latePush v n) = (Asm.push v).size + 1 := by
+  unfold latePush
+  split
+  · simp only [codeSize_cons, codeSize_nil, Asm.size]; omega
+  · simp only [codeSize_cons, codeSize_nil, Asm.size]
+
+theorem findLabel_latePush {l : Label} (v : U256) (n : Fin 16) (c : List Asm) :
+    findLabel l (latePush v n ++ c) = findLabel l c := by
+  unfold latePush; split <;> simp [findLabel]
+
 /-- The Asm-level peephole scan, relative to the set `R` of labels that may
-be referenced. Rewrites every `push v ; swap1 ; pop` window to `pop ; push
-v`, every `jumpi l ; jump m ; label l` window to `op iszero ; jumpi m ;
-label l`, and drops `label l` when `l ∉ R`. Other instructions pass
-through. -/
+be referenced. Rewrites every `push v ; dup n ; swap1` window to its
+`latePush`, every `swap1 ; op` window whose `op` has a reversed twin to that
+twin, every `push v ; swap1 ; pop` window to `pop ; push v`, every
+`jumpi l ; jump m ; label l` window to `op iszero ; jumpi m ; label l`, and
+drops `label l` when `l ∉ R`. Other instructions pass through. -/
 def peepRun (R : List Label) : List Asm → List Asm
   | .push v :: .swap ⟨0, _⟩ :: .pop :: rest =>
       .pop :: .push v :: peepRun R rest
+  | .push v :: .dup n :: .swap m :: rest =>
+      if m.val = 0 then latePush v n ++ peepRun R rest
+      else .push v :: peepRun R (.dup n :: .swap m :: rest)
+  | .swap n :: .op yop :: rest =>
+      match (if n.val = 0 then flipOp yop else none) with
+      | some yop' => .op yop' :: peepRun R rest
+      | none => .swap n :: peepRun R (.op yop :: rest)
   | .op .iszero :: .op .iszero :: .jumpi l :: rest =>
       .jumpi l :: peepRun R rest
   | .jumpi l :: .jump m :: .label l' :: rest =>
@@ -105,6 +182,13 @@ stays the specification `CodeRel` and the soundness proofs are stated about;
 def peepRunP (mem : Label → Bool) : List Asm → List Asm
   | .push v :: .swap ⟨0, _⟩ :: .pop :: rest =>
       .pop :: .push v :: peepRunP mem rest
+  | .push v :: .dup n :: .swap m :: rest =>
+      if m.val = 0 then latePush v n ++ peepRunP mem rest
+      else .push v :: peepRunP mem (.dup n :: .swap m :: rest)
+  | .swap n :: .op yop :: rest =>
+      match (if n.val = 0 then flipOp yop else none) with
+      | some yop' => .op yop' :: peepRunP mem rest
+      | none => .swap n :: peepRunP mem (.op yop :: rest)
   | .op .iszero :: .op .iszero :: .jumpi l :: rest =>
       .jumpi l :: peepRunP mem rest
   | .jumpi l :: .jump m :: .label l' :: rest =>
@@ -179,6 +263,19 @@ inductive CodeRel (R : List Label) : List Asm → List Asm → Prop
   | window {v : U256} {n : Fin 16} (hn : n.val = 0) {c c' : List Asm} :
       CodeRel R c c' →
       CodeRel R (.push v :: .swap n :: .pop :: c) (.pop :: .push v :: c')
+  /-- Push a literal *after* the duplication it was pushed in front of.
+  `m` is `swap1`; `latePush` covers both the `n.val > 0` case (the `dup`
+  reaches below the literal) and the `n.val = 0` case (the `swap1`
+  exchanges two copies of the literal and just goes away). -/
+  | latePush {v : U256} {n m : Fin 16} (hm : m.val = 0) {c c' : List Asm} :
+      CodeRel R c c' →
+      CodeRel R (.push v :: .dup n :: .swap m :: c) (latePush v n ++ c')
+  /-- Replace `swap1 ; op` by the opcode that reads the operands in the
+  opposite order. -/
+  | flipCmp {n : Fin 16} (hn : n.val = 0) {yop yop' : Op}
+      (hf : flipOp yop = some yop') {c c' : List Asm} :
+      CodeRel R c c' →
+      CodeRel R (.swap n :: .op yop :: c) (.op yop' :: c')
   /-- Invert a `jumpi`-over-`jump` branch whose target is the very next
   label. The label stays in place (other references may exist). -/
   | brInv {l m : Label} {c c' : List Asm} :
@@ -208,17 +305,26 @@ inductive CodeRel (R : List Label) : List Asm → List Asm → Prop
 theorem codeRel_peepRun (R : List Label) (p : List Asm) : CodeRel R p (peepRun R p) := by
   fun_induction peepRun R p with
   | case1 v isLt rest ih => exact CodeRel.window (n := ⟨0, isLt⟩) rfl ih
-  | case2 l rest ih => exact CodeRel.dblIszero ih
-  | case3 m l' rest ih => exact CodeRel.brInv ih
-  | case4 l m l' rest hne ih => exact CodeRel.keep _ ih
-  | case5 l' rest ih => exact CodeRel.jumpiNext ih
-  | case6 l l' rest hne ih => exact CodeRel.keep _ ih
-  | case7 l' rest ih => exact CodeRel.jumpNext ih
-  | case8 l l' rest hne ih => exact CodeRel.keep _ ih
-  | case9 l rest hmem ih => exact CodeRel.keep _ ih
-  | case10 l rest hmem ih => exact CodeRel.dropLabel hmem ih
-  | case11 i rest _ _ _ _ _ _ ih => exact CodeRel.keep i ih
-  | case12 => exact CodeRel.nil
+  | case2 v n m rest hm ih => exact CodeRel.latePush hm ih
+  | case3 v n m rest hm ih => exact CodeRel.keep _ ih
+  | case4 n yop rest yop' hf ih =>
+      have hn : n.val = 0 := by
+        by_cases h : n.val = 0
+        · exact h
+        · simp [h] at hf
+      exact CodeRel.flipCmp hn (by simpa [hn] using hf) ih
+  | case5 n yop rest hf ih => exact CodeRel.keep _ ih
+  | case6 l rest ih => exact CodeRel.dblIszero ih
+  | case7 m l' rest ih => exact CodeRel.brInv ih
+  | case8 l m l' rest hne ih => exact CodeRel.keep _ ih
+  | case9 l' rest ih => exact CodeRel.jumpiNext ih
+  | case10 l l' rest hne ih => exact CodeRel.keep _ ih
+  | case11 l' rest ih => exact CodeRel.jumpNext ih
+  | case12 l l' rest hne ih => exact CodeRel.keep _ ih
+  | case13 l rest hmem ih => exact CodeRel.keep _ ih
+  | case14 l rest hmem ih => exact CodeRel.dropLabel hmem ih
+  | case15 i rest _ _ _ _ _ _ _ _ ih => exact CodeRel.keep i ih
+  | case16 => exact CodeRel.nil
 
 /-- One `optimizeAsmRound` is `CodeRel`-related to its input, relative to the
 program's own reference set. -/
@@ -238,6 +344,12 @@ theorem codeRel_labelDefs_sublist {R : List Label} {P Q : List Asm}
       rw [labelDefs_cons, labelDefs_cons]
       exact ih.append_left i.defines.toList
   | window _ _ ih =>
+      simpa only [labelDefs_cons, Asm.defines, Option.toList_none,
+        List.nil_append] using ih
+  | latePush _ _ ih =>
+      simpa only [labelDefs_append, labelDefs_latePush, labelDefs_cons,
+        Asm.defines, Option.toList_none, List.nil_append] using ih
+  | flipCmp _ _ _ ih =>
       simpa only [labelDefs_cons, Asm.defines, Option.toList_none,
         List.nil_append] using ih
   | brInv _ ih =>
@@ -279,6 +391,21 @@ theorem codeRel_labelDefs_mem {R : List Label} {P Q : List Asm}
           · exact absurd h3 (by simp)
           · exact mem_labelDefs_cons.mpr (Or.inr
               (mem_labelDefs_cons.mpr (Or.inr (ih h3))))
+  | latePush _ _ ih =>
+      rcases mem_labelDefs_cons.mp hl with h' | h'
+      · exact absurd h' (by simp)
+      · rcases mem_labelDefs_cons.mp h' with h'' | h''
+        · exact absurd h'' (by simp)
+        · rcases mem_labelDefs_cons.mp h'' with h3 | h3
+          · exact absurd h3 (by simp)
+          · simpa only [labelDefs_append, labelDefs_latePush,
+              List.nil_append] using ih h3
+  | flipCmp _ _ _ ih =>
+      rcases mem_labelDefs_cons.mp hl with h' | h'
+      · exact absurd h' (by simp)
+      · rcases mem_labelDefs_cons.mp h' with h'' | h''
+        · exact absurd h'' (by simp)
+        · exact mem_labelDefs_cons.mpr (Or.inr (ih h''))
   | brInv _ ih =>
       rcases mem_labelDefs_cons.mp hl with h' | h'
       · exact absurd h' (by simp)
@@ -338,6 +465,16 @@ theorem codeRel_labelRefs_subset {R : List Label} {P Q : List Asm}
         · exact absurd h'' (by simp [Asm.references])
         · exact mem_labelRefs_cons.mpr (Or.inr (mem_labelRefs_cons.mpr (Or.inr
             (mem_labelRefs_cons.mpr (Or.inr (ih l h''))))))
+  | latePush _ _ ih =>
+      intro l' hl'
+      rw [labelRefs_append, labelRefs_latePush, List.nil_append] at hl'
+      exact mem_labelRefs_cons.mpr (Or.inr (mem_labelRefs_cons.mpr (Or.inr
+        (mem_labelRefs_cons.mpr (Or.inr (ih l' hl'))))))
+  | flipCmp _ _ _ ih =>
+      intro l' hl'
+      rcases mem_labelRefs_cons.mp hl' with h' | h'
+      · exact absurd h' (by simp [Asm.references])
+      · exact mem_labelRefs_cons.mpr (Or.inr (mem_labelRefs_cons.mpr (Or.inr (ih l' h'))))
   | brInv _ ih =>
       intro l' hl'
       rcases mem_labelRefs_cons.mp hl' with h' | h'
@@ -381,6 +518,11 @@ theorem codeRel_codeSize_le {R : List Label} {P Q : List Asm}
   | nil => simp
   | keep i _ ih => rw [codeSize_cons, codeSize_cons]; omega
   | window _ _ ih => simp only [codeSize_cons, Asm.size]; omega
+  | @latePush v n m _ c c' _ ih =>
+      have hsz := codeSize_latePush v n
+      simp only [codeSize_append, codeSize_cons, Asm.size, hsz]
+      omega
+  | flipCmp _ _ _ ih => simp only [codeSize_cons, Asm.size]; omega
   | brInv _ ih => simp only [codeSize_cons, Asm.size]; omega
   | dblIszero _ ih => simp only [codeSize_cons, Asm.size]; omega
   | jumpNext _ ih => simp only [codeSize_cons, Asm.size]; omega
@@ -427,6 +569,17 @@ theorem codeRel_findLabel {R : List Label} {P Q : List Asm} (h : CodeRel R P Q)
       exact ⟨otgt, by
         rw [findLabel, if_neg (by simp), findLabel, if_neg (by simp)]
         exact ho, hr⟩
+  | @latePush v n m _ c c' hc ih =>
+      intro tgt hf
+      rw [findLabel, if_neg (by simp), findLabel, if_neg (by simp),
+        findLabel, if_neg (by simp)] at hf
+      obtain ⟨otgt, ho, hr⟩ := ih hf
+      exact ⟨otgt, by rw [findLabel_latePush]; exact ho, hr⟩
+  | flipCmp hn hf' hc ih =>
+      intro tgt hf
+      rw [findLabel, if_neg (by simp), findLabel, if_neg (by simp)] at hf
+      obtain ⟨otgt, ho, hr⟩ := ih hf
+      exact ⟨otgt, by rw [findLabel, if_neg (by simp)]; exact ho, hr⟩
   | dblIszero hc ih =>
       intro tgt hf
       rw [findLabel, if_neg (by simp), findLabel, if_neg (by simp),
