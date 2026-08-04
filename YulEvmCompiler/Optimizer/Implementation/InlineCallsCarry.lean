@@ -1,6 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.InlineCalls
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
-set_option warningAsError false
+set_option warningAsError true
 /-!
 # InlineCallsCarry — call-carrying statement inliner (PROTOTYPE, unproven)
 

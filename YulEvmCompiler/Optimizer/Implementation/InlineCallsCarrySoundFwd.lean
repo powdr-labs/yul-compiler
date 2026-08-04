@@ -1,5 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.InlineCallsCarrySound
-set_option warningAsError false
+set_option warningAsError true
 set_option linter.unusedVariables false
 set_option maxHeartbeats 8000000
 

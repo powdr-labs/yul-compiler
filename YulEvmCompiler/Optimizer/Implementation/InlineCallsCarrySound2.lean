@@ -1,5 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.InlineCallsCarrySoundFwd
-set_option warningAsError false
+set_option warningAsError true
 set_option linter.unusedVariables false
 set_option maxHeartbeats 8000000
 
@@ -2038,9 +2038,6 @@ def inlineCallsCarry : LocalPass D where
     (inlineCallsCarry (calls := calls) (creates := creates)).run b =
       inlineCallsCarryBlock b := rfl
 
-/-- PROTOTYPE: resolution congruence deliberately unproven (parallel deliverable). -/
-theorem resolveInlineCallsCarryBlock_equiv (L : Layout) (b : Block Op) :
-    EquivBlock D (resolveForLayoutStmts L b)
-      (resolveForLayoutStmts L (inlineCallsCarryBlock b)) := sorry
+
 
 end YulEvmCompiler.Optimizer

@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Implementation.InlineCallsCarry
+import YulEvmCompiler.Optimizer.Implementation.InlineCallsCarrySound2
 import YulEvmCompiler.Optimizer.Implementation.InlineCallsResolve
 set_option warningAsError true
 set_option linter.unusedVariables false
@@ -22,7 +22,7 @@ resolution:
     resolveForLayoutStmts L (inlineCallsCarryBlock b)
       = inlineCallsCarryBlock (resolveForLayoutStmts L b).
 
-The payoff `resolveInlineCallsCarryBlock_equiv'` then follows from the pass's
+The payoff `resolveInlineCallsCarryBlock_equiv` then follows from the pass's
 own soundness (`inlineCallsCarry.sound`) applied at the resolved block.
 
 ## House style
@@ -759,7 +759,7 @@ resolving the carry-inlined program are semantically equivalent — the
 object-path bridge for the carry pass. The transform commutes with resolution
 (`cyBlock_resolve`), so the goal reduces to the pass's own soundness at the
 resolved block. -/
-theorem resolveInlineCallsCarryBlock_equiv' (L : Layout) (b : Block Op) :
+theorem resolveInlineCallsCarryBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L (inlineCallsCarryBlock b)) := by
   have hcomm : resolveForLayoutStmts L (inlineCallsCarryBlock b)
