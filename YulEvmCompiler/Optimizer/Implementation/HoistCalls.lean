@@ -547,6 +547,9 @@ theorem hoistBuiltinArgLit_equiv_of (P : String) (op : Op) (c : Literal) (g : Id
   have hcons : ∀ w : U256, restore V ((t, w) :: V) = V := fun w =>
     restore_exact (calls := calls) (creates := creates)
       (W := V) (Y := [(t, w)]) (W' := V) rfl
+  have hzip : ∀ w : U256, restore V ([t].zip [w] ++ V) = V := fun w =>
+    restore_exact (calls := calls) (creates := creates)
+      (W := V) (Y := [t].zip [w]) (W' := V) rfl
   constructor
   · intro h
     cases h with
@@ -663,17 +666,16 @@ theorem hoistBuiltinArgLit_equiv_of (P : String) (op : Op) (c : Literal) (g : Id
                                                         | var hvt =>
                                                             have hvtv : vg = vt := by
                                                               simpa [VEnv.get] using hvt
-                                                            have hargs :=
-                                                              Step.argsCons
+                                                            have hres := Step.exprStmt
+                                                              (Step.builtinOk
                                                                 (Step.argsCons
-                                                                  (Step.argsNil (funs := funs)
-                                                                    (V := V) (st := st))
-                                                                  (hvtv ▸ hcall0))
-                                                                Step.lit
-                                                            have := Step.exprStmt
-                                                              (Step.builtinOk hargs hbb)
-                                                            rw [hcons]
-                                                            exact this
+                                                                  (Step.argsCons
+                                                                    (Step.argsNil (funs := funs)
+                                                                      (V := V) (st := st))
+                                                                    (hvtv ▸ hcall0))
+                                                                  (Step.lit (l := c))) hbb)
+                                                            rw [hzip]
+                                                            exact hres
                         | seqStop hexpr hne =>
                             cases hexpr with
                             | exprStmt _ => exact absurd rfl hne
@@ -692,17 +694,16 @@ theorem hoistBuiltinArgLit_equiv_of (P : String) (op : Op) (c : Literal) (g : Id
                                                     | var hvt =>
                                                         have hvtv : vg = vt := by
                                                           simpa [VEnv.get] using hvt
-                                                        have hargs :=
-                                                          Step.argsCons
+                                                        have hres := Step.exprStmtHalt
+                                                          (Step.builtinHalt
                                                             (Step.argsCons
-                                                              (Step.argsNil (funs := funs)
-                                                                (V := V) (st := st))
-                                                              (hvtv ▸ hcall0))
-                                                            Step.lit
-                                                        have := Step.exprStmtHalt
-                                                          (Step.builtinHalt hargs hbb)
-                                                        rw [hcons]
-                                                        exact this
+                                                              (Step.argsCons
+                                                                (Step.argsNil (funs := funs)
+                                                                  (V := V) (st := st))
+                                                                (hvtv ▸ hcall0))
+                                                              (Step.lit (l := c))) hbb)
+                                                        rw [hzip]
+                                                        exact hres
                                 | builtinArgsHalt hargs2 =>
                                     cases hargs2 with
                                     | argsRestHalt hrp =>
