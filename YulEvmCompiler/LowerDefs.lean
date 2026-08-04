@@ -7,7 +7,7 @@ set_option warningAsError true
 **Phase B**: the generic simulation from the Asm semantics down to the EVM
 semantics of the lowered bytecode.
 
-Fixing a program `prog` with `lowerProg prog = some is`, every reachable
+Fixing a program `prog` with `lowerProg imm prog = some is`, every reachable
 Asm configuration `⟨c, σ, yst⟩` (its code a suffix of `prog`) corresponds
 to EVM states `s` with
 
@@ -107,6 +107,7 @@ theorem AStep.stkOK [model : ExternalModel] {prog : List Asm} {a b : AConf}
     (h : AStep prog a b) (ha : StkOK prog a.stk) : StkOK prog b.stk := by
   cases h with
   | push => exact ha.cons_word
+  | pushImmutable => exact ha.cons_word
   | op _ => exact (ha.append_right).words_append _
   | @dup n v τ ρ c yst _ =>
     intro l hl
@@ -155,18 +156,18 @@ def assembleWithPayload (is : List Instr) (payload : List UInt8) : ByteArray :=
 decompose around `i`'s lowering, with the prefix's byte length equal to the
 suffix's byte position. -/
 theorem locate {prog : List Asm} {is : List Instr}
-    (hlow : lowerProg prog = some is) {i : Asm} {c : List Asm}
+    (hlow : lowerProg imm prog = some is) {i : Asm} {c : List Asm}
     (hsuf : (i :: c) <:+ prog) :
     ∃ (pre : List Asm) (isPre isI isC : List Instr),
       prog = pre ++ i :: c
-      ∧ lowerInstr prog i = some isI
-      ∧ lowerFrag prog c = some isC
+      ∧ lowerInstr imm prog i = some isI
+      ∧ lowerFrag imm prog c = some isC
       ∧ assembleBytes is
         = assembleBytes isPre ++ assembleBytes isI ++ assembleBytes isC
       ∧ (assembleBytes isPre).length = codeSize pre
       ∧ codeSize prog = codeSize pre + i.size + codeSize c := by
   obtain ⟨pre, hpre⟩ := hsuf
-  have hlow' : lowerFrag prog (pre ++ i :: c) = some is := by
+  have hlow' : lowerFrag imm prog (pre ++ i :: c) = some is := by
     rw [hpre]; exact hlow
   obtain ⟨isPre, isRest, h1, h2, rfl⟩ := lowerFrag_append hlow'
   obtain ⟨isI, isC, hI, hC, rfl⟩ := lowerFrag_cons h2
@@ -179,7 +180,7 @@ theorem locate {prog : List Asm} {is : List Instr}
 the position accounts for the suffix, the lowered bytes decompose at the
 label's `JUMPDEST`, and that `JUMPDEST` passes the jumpdest analysis. -/
 theorem locate_label {prog : List Asm} {is : List Instr}
-    (hlow : lowerProg prog = some is) {l : Label} {c' : List Asm}
+    (hlow : lowerProg imm prog = some is) {l : Label} {c' : List Asm}
     (hfind : findLabel l prog = some c') :
     ∃ (a : Nat) (isPreL isC' : List Instr),
       resolve l prog = some a
@@ -217,7 +218,7 @@ theorem locate_label {prog : List Asm} {is : List Instr}
 object bytecode image. Appending a payload cannot change decoding at a label
 inside the lowered executable prefix. -/
 theorem locate_label_withPayload {prog : List Asm} {is : List Instr}
-    (hlow : lowerProg prog = some is) {l : Label} {c' : List Asm}
+    (hlow : lowerProg imm prog = some is) {l : Label} {c' : List Asm}
     (hfind : findLabel l prog = some c') (payload : List UInt8) :
     ∃ (a : Nat) (isPreL isC' : List Instr),
       resolve l prog = some a
@@ -287,12 +288,32 @@ theorem exchange_swap {α : Type} (x y : α) (τ ρ : List α) :
 
 /-- The phase-B invariant between an Asm configuration and an EVM state
 running the lowered bytecode. -/
-structure ConfMatch (prog : List Asm) (is : List Instr) (a : AConf)
-    (s : State) (payload : List UInt8 := []) : Prop where
+structure ConfMatch (imm : String → U256) (prog : List Asm) (is : List Instr)
+    (a : AConf) (s : State) (payload : List UInt8 := []) : Prop where
   frame : FrameOK (assembleWithPayload is payload) s
   smatch : StateMatch a.yst s
   pc : s.pc = UInt256.ofNat (codeSize prog - codeSize a.code)
   stack : s.stack = mapStk prog a.stk
+  /-- The assignment the emitted bytes were lowered against is the one the
+  environment records.
+
+  This is the compiler's *layout-consistency* obligation for immutables — the
+  exact counterpart of `Layout.Consistent` for data segments. Phase A does not
+  carry it (`AStep.pushImmutable` pushes the environment's value, so the source
+  built-in is matched regardless), which keeps the burden here, where the
+  emitted bytes actually exist. It survives a whole run because no step ever
+  writes `env.immutable` (`AStep.immutable_eq`). -/
+  imms : ∀ key, imm key = a.yst.env.immutable (YulSemantics.EVM.litValue (.string key))
+
+/-- Transport the immutable layout-consistency obligation across a step. -/
+theorem ConfMatch.imms_step {imm : String → U256} {prog : List Asm} {is : List Instr}
+    {payload : List UInt8} {a : AConf} {s : State} {yst' : EvmState}
+    (hm : ConfMatch (payload := payload) imm prog is a s)
+    (h : yst'.env.immutable = a.yst.env.immutable) :
+    ∀ key, imm key = yst'.env.immutable (YulSemantics.EVM.litValue (.string key)) := by
+  intro key
+  rw [h]
+  exact hm.imms key
 
 /-! ### Open-world call and creation realization
 
@@ -736,7 +757,7 @@ theorem ExternalsRealized.insufficientBalanceCall :
 /-- The lowered program's byte size is `codeSize prog` (bounded by the
 frame invariant). -/
 theorem codeSize_lt {prog : List Asm} {is : List Instr} {payload : List UInt8}
-    (hlow : lowerProg prog = some is) {s : State}
+    (hlow : lowerProg imm prog = some is) {s : State}
     (hf : FrameOK (assembleWithPayload is payload) s) : codeSize prog < 2 ^ 256 := by
   have h := hf.codeSmall
   rw [assembleWithPayload, size_mkCode, List.length_append,

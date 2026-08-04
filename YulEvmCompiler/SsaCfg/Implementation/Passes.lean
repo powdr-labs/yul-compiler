@@ -654,6 +654,116 @@ def invertBranches (f : Func) : Func :=
 
 /-! ## The pipeline -/
 
+/-! ## Pass 6: constant rematerialization
+
+The dual of the CSE result.  CSE was removed from this pipeline because on a
+stack machine a value that must stay *live* for a later reuse has nowhere to
+live but the operand stack, inside a 16-deep `DUP`/`SWAP` reach: it joins the
+`keep` set of every intervening instruction and every edge shuffle, and that
+traffic (a `DUP`+`SWAP` pair, 6 gas, per intervening operation) costs strictly
+more than the 3-gas arithmetic it saves.
+
+Run that argument backwards and it says something stronger than "do not CSE":
+it says **shorten live ranges by recomputing**.  A word constant is the
+extreme case — it has no operands, so it can be recreated anywhere for one
+`push` (3 gas, or 2 for `PUSH0`), and nothing else has to be alive for it.
+Keeping one live instead costs its slot in every `keepOf`/`shuffle` between
+its definition and its use.
+
+The cross-block case is where this pays.  A constant defined in an entry block
+and used inside a loop has to be threaded through the entry layout of every
+block in between; `elimTrivialParams` and `constFold` both create exactly that
+shape, the first by substituting a block parameter away and the second by
+rewriting a folded `op` into a `const` *at the definition's position* rather
+than at the use.
+
+So: give every use of a constant its own definition, immediately in front of
+it.  Live ranges collapse to a single instruction, the original definitions
+lose their readers, and `dve` — which runs straight after — deletes them.
+Soundness is as cheap as it gets: a `const` reads nothing and writes one
+fresh id, so the copy is dominated by construction and no value that existed
+before changes.  `cse` would undo this, which is one more reason it stays out
+of the pipeline. -/
+
+/-- Every value id mentioned anywhere in a function (defs, uses, params, edge
+arguments).  Local to this pass so it can run before `maxVal` is in scope. -/
+def maxIdOf (f : Func) : ValId :=
+  let mx := fun (acc : Nat) (vs : List ValId) => vs.foldl Nat.max acc
+  f.blocks.foldl (init := mx 0 f.params) fun acc b =>
+    mx (mx (b.instrs.foldl (fun a i => mx (mx a i.defs) i.uses) acc) b.params)
+      b.term.uses
+
+/-- How far a *same-block* constant definition must be from a use before a
+copy is worth making.  Zero would copy every use, which measured as a uniform
+few-gas tax on small functions: a constant already sitting next to its use has
+a live range the block bounds anyway, and the extra `push` only gives the
+emitter something more to shuffle.  A cross-block use is always copied — its
+range crosses every intervening block's entry layout, which is the expensive
+case this pass exists for. -/
+def rematDistance : Nat := 8
+
+/-- Should a use of `a` at position `here` be given its own copy? -/
+def rematValue (constOf : Std.HashMap ValId U256) (localAt : Std.HashMap ValId Nat)
+    (here : Nat) (a : ValId) : Option U256 :=
+  match constOf[a]? with
+  | none => none
+  | some v =>
+    match localAt[a]? with
+    | none => some v                                    -- defined in another block
+    | some at' => if here ≥ at' + rematDistance then some v else none
+
+/-- Rematerialize word constants at their use sites, as described above. -/
+def rematConsts (f : Func) : Func := Id.run do
+  let mut constOf : Std.HashMap ValId U256 := ∅
+  for b in f.blocks do
+    for i in b.instrs do
+      if let .const d v := i then constOf := constOf.insert d v
+  if constOf.isEmpty then return f
+  let mut next := maxIdOf f + 1
+  let mut blocks : Array Block := #[]
+  let remattable := rematValue constOf
+  for b in f.blocks do
+    -- where this block's own constants are defined, for `rematDistance`
+    let mut localAt : Std.HashMap ValId Nat := ∅
+    for (i, k) in b.instrs.zipIdx do
+      if let .const d _ := i then localAt := localAt.insert d k
+    let mut here := 0
+    let mut out : Array Instr := #[]
+    for ins in b.instrs do
+      match ins with
+      | .const _ _ => out := out.push ins
+      | _ =>
+        let mut sub : Std.HashMap ValId ValId := ∅
+        for a in ins.uses do
+          if !sub.contains a then
+            if let some v := remattable localAt here a then
+              out := out.push (.const next v)
+              sub := sub.insert a next
+              next := next + 1
+        let ρ : ValId → ValId := fun a => (sub[a]?).getD a
+        out := out.push (match ins with
+          | .const d v => .const d v
+          | .op ds yop as => .op ds yop (as.map ρ)
+          | .call ds fid as => .call ds fid (as.map ρ))
+      here := here + 1
+    -- terminator uses: the copies go at the end of the block body
+    let mut sub : Std.HashMap ValId ValId := ∅
+    for a in b.term.uses do
+      if !sub.contains a then
+        if let some v := remattable localAt b.instrs.length a then
+          out := out.push (.const next v)
+          sub := sub.insert a next
+          next := next + 1
+    let ρ : ValId → ValId := fun a => (sub[a]?).getD a
+    let term := match b.term with
+      | .jump e => .jump { e with args := e.args.map ρ }
+      | .branch c t g =>
+          .branch (ρ c) { t with args := t.args.map ρ } { g with args := g.args.map ρ }
+      | .ret vs => .ret (vs.map ρ)
+      | .halt yop as => .halt yop (as.map ρ)
+    blocks := blocks.push { b with instrs := out.toList, term }
+  return { f with blocks }
+
 /-- One full pipeline round over a function.
 
 **`cse` is deliberately not in this pipeline.** It is a correct and proved
@@ -872,6 +982,50 @@ def optimizeFunc (f : Func) : Func := Id.run do
   for _ in [0:Passes.pipelineRounds] do
     f := Passes.runOnce f
   return f
+
+namespace Passes
+
+/-- One function's rematerialization: insert the copies, then let `dve` delete
+the definitions they orphaned.
+
+The inner `wfCheck` is the same "make the invariant local by construction"
+device `coalesce` uses for its dominance side condition. `dve` is only proved
+sound for single-assignment input, and the copies' ids are fresh only because
+the pass counts up from `maxIdOf`; rather than re-derive that freshness as a
+global theorem about the counter, the pass simply checks it — and falls back to
+the untouched function otherwise, which is behavior-neutral and never fires in
+practice. (Soundness of `rematConsts` itself needs no such check: its copies
+only have to be *above* `maxIdOf`, not distinct.) -/
+def rematStep (nFuncs : Nat) (g : Func) : Func :=
+  let g' := rematConsts g
+  if g'.wfCheck nFuncs then dve g' else g
+
+end Passes
+
+/-- **Constant rematerialization, program-level.**  Kept out of `runOnce` and
+applied after `optimizeProg` rather than inside its rounds, for two reasons:
+the rewrite has nothing to hand the other passes (it only shortens live ranges,
+which is a *code generator* concern), and `runOnce`'s exact output is pinned by
+the machine-checked dominance counterexample in
+`PassesSound/Counterexample.lean`, which this would otherwise invalidate for no
+gain.
+
+`dve` runs behind it to delete the definitions the copies orphaned — without
+that the pass only adds pushes. The same defensive gate as `optimizeProg`: if
+the result ever failed well-formedness or dominance, keep the input. -/
+def rematCandidate (P : Prog) : Prog :=
+  let step := Passes.rematStep P.funcs.size
+  { main := step P.main, funcs := P.funcs.map step }
+
+def rematProg (P : Prog) : Prog :=
+  if (rematCandidate P).wfCheck && ToAsm.Prog.domCheck (rematCandidate P)
+  then rematCandidate P else P
+
+/-- `rematProg` unfolded to its gate, for the soundness proofs. -/
+theorem rematProg_candidate (P : Prog) :
+    rematProg P =
+      if (rematCandidate P).wfCheck && ToAsm.Prog.domCheck (rematCandidate P)
+      then rematCandidate P else P := rfl
 
 /-- Optimize a whole program, defensively: if the optimized program fails
 `Prog.wfCheck`, return the original — a pass bug is a missed optimization,

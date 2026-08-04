@@ -1,4 +1,5 @@
 import YulEvmCompiler.Instr
+import YulEvmCompiler.CostModel
 import YulEvmCompiler.Value
 import YulEvmCompiler.BytesLemmas
 import YulEvmCompiler.OpTable

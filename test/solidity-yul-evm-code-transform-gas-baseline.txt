@@ -9,7 +9,7 @@ pops_in_reverting_branch.yul	61640	61580
 stackReuse/function_argument_reuse.yul	27344	27464
 stackReuse/function_argument_reuse_without_retparams.yul	25290	25511
 stackReuse/function_call.yul	0	480
-stackReuse/function_many_arguments.yul	1476	1692
+stackReuse/function_many_arguments.yul	1782	1692
 stackReuse/function_params.yul	0	0
 stackReuse/function_params_and_retparams.yul	0	0
 stackReuse/function_params_and_retparams_partly_used.yul	90	432
