@@ -459,9 +459,10 @@ operand-stack scheduler inserted after the verified peephole pass and before the
 separate entry point so `compile`'s correctness proof stays intact; a soundness
 proof for `scheduleAsm` (translation validation) would let this replace
 `compile`. -/
-def compileScheduled (prog : Block Op) : Option (List Instr) := do
+def compileScheduled (prog : Block Op)
+    (imm : String → U256 := unpatchedImmutables) : Option (List Instr) := do
   let asm ← compileProgram prog
   let opt := Schedule.scheduleAsm (optimizeAsm asm)
-  if stackOK2 opt then lowerProg opt else none
+  if stackOK2 opt then lowerProg imm opt else none
 
 end YulEvmCompiler
