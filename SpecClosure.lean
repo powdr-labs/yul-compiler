@@ -518,7 +518,7 @@ SPEC CLOSURE — audited this-repo surface (90 decls)
   struct YulEvmCompiler.ExternalCodeMatch 2d46717e52ff1871
   struct YulEvmCompiler.ExternalModel 75bd1eadd7f209e2
   struct YulEvmCompiler.ExternalsRealized 7fd85ee803561fa8
-  struct YulEvmCompiler.FrameOK 97dc148ae9bebed5
+  struct YulEvmCompiler.FrameOK b3deead0d001f759
   relation YulEvmCompiler.HaltMatch 6557b5faae906a61
   relation YulEvmCompiler.HaltedMatch bd6cde934ed46ce6
   struct YulEvmCompiler.Instr 6d2465d1d211750b
@@ -602,7 +602,7 @@ SPEC CLOSURE — audited this-repo surface (90 decls)
   datadef YulParser.printSubsC 88f936b77e898d85
   datadef YulParser.quotedBody 5e9244808f044035
   datadef YulParser.scanQuoted ad86fca43b5d2cb6
-external boundary: 155 decls, combined hash a8298506639ad1db
+external boundary: 155 decls, combined hash 96f33bf543214a6d
 -/
 #guard_msgs in
 open SpecClosure in
