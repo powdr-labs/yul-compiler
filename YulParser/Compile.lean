@@ -592,4 +592,23 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
       return ByteArray.mk layout.code.toArray
   | none => none
 
+/-- Debug view of the primary object-path pipeline arm: the object exactly as
+`compileSource` preprocesses it (decode, prune, desugar, normalize) paired
+with the fully optimized result. Diagnosis tooling only — not on the compile
+path. -/
+def debugPipelineObject (source : String) :
+    Option (Object YulSemantics.EVM.Op × Object YulSemantics.EVM.Op) := do
+  match parseSource source with
+  | some (.object o) =>
+      let raw := pruneLinkerObjectTree (decodeValueObject o)
+      let o := YulEvmCompiler.Optimizer.Normalize.normalizeObject
+        (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
+          YulSemantics.EVM.ExternalCreates.none)
+        (desugarObject raw)
+      let optimized := YulEvmCompiler.Optimizer.optimizerPipelineObject
+        (calls := YulSemantics.EVM.ExternalCalls.none)
+        (creates := YulSemantics.EVM.ExternalCreates.none) o
+      return (o, optimized)
+  | _ => none
+
 end YulParser

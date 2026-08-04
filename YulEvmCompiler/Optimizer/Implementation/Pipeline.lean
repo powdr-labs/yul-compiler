@@ -2,6 +2,7 @@ import YulEvmCompiler.Optimizer.Implementation.InlineHelpersResolve
 import YulEvmCompiler.Optimizer.Implementation.PropagateResolve
 import YulEvmCompiler.Optimizer.Implementation.DeadLitsResolve
 import YulEvmCompiler.Optimizer.Implementation.InlineCallsResolve
+import YulEvmCompiler.Optimizer.Implementation.InlineCallsCarryResolve
 import YulEvmCompiler.Optimizer.Implementation.DeadPureResolve
 import YulEvmCompiler.Optimizer.Implementation.DeadResultsResolve
 import YulEvmCompiler.Optimizer.Implementation.FreshenCallsResolve
@@ -111,6 +112,7 @@ draining up to three regions per sequence per round instead of spending a
 full round on each. -/
 def blockRound : List (LocalPass D) :=
   [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
+   inlineCallsCarry,
    flatten, fuseDeclAssign,
    storageForward, simplify, coalesceCopies, reuseValues, rejoinPairs, deadPure,
    deadStores, deadResults, deadResults, deadResults, pruneDefs]
@@ -121,6 +123,7 @@ rescue on stack-frontier objects (measured: `PoolLiquidity`); the compile
 fallback chain therefore also retries the full pipeline without it. -/
 def blockRoundNoRejoin : List (LocalPass D) :=
   [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
+   inlineCallsCarry,
    flatten, fuseDeclAssign,
    storageForward, simplify, coalesceCopies, reuseValues, deadPure,
    deadStores, deadResults, deadResults, deadResults, pruneDefs]
@@ -215,6 +218,7 @@ def objectRound : List (RPass calls creates) :=
    ⟨hoistCalls, fun L b => resolveHoistCallsBlock_equiv L b⟩,
    ⟨freshenCalls, fun L b => resolveFreshenCallsBlock_equiv L b⟩,
    ⟨inlineCalls, fun L b => resolveInlineCallsBlock_equiv L b⟩,
+   ⟨inlineCallsCarry, fun L b => resolveInlineCallsCarryBlock_equiv L b⟩,
    ⟨flatten, fun L b => resolveFlattenBlock_equiv L b⟩,
    ⟨fuseDeclAssign, fun L b => resolveFuseDeclAssignBlock_equiv L b⟩,
    ⟨storageForward, fun L b => resolveStorageForwardBlock_equiv L b⟩,
@@ -239,6 +243,7 @@ def objectRoundNoRejoin : List (RPass calls creates) :=
    ⟨hoistCalls, fun L b => resolveHoistCallsBlock_equiv L b⟩,
    ⟨freshenCalls, fun L b => resolveFreshenCallsBlock_equiv L b⟩,
    ⟨inlineCalls, fun L b => resolveInlineCallsBlock_equiv L b⟩,
+   ⟨inlineCallsCarry, fun L b => resolveInlineCallsCarryBlock_equiv L b⟩,
    ⟨flatten, fun L b => resolveFlattenBlock_equiv L b⟩,
    ⟨fuseDeclAssign, fun L b => resolveFuseDeclAssignBlock_equiv L b⟩,
    ⟨storageForward, fun L b => resolveStorageForwardBlock_equiv L b⟩,

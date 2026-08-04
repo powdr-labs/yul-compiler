@@ -890,6 +890,39 @@ frontier; its other 552 rows, all 23 object-compiler rows, and all 40
 EVM-code-transform rows are unchanged. No solc fingerprint moved and no known
 failure baseline changed.
 
+### ❌ Self-eq residue strengthening to `pop(x)` (measured, rejected)
+
+The strengthening the self-equality entry above logged as a follow-up — reduce
+the discard `pop(iszero(eq(x,x)))` to `pop(x)` (the surviving variable), so the
+now-dead `EQ`/`ISZERO` disappear — is **fully proved** in the strong `LocalPass`
+tier (`selfEq_eval`/`selfEq_no_halt`, object-resolution congruence included, no
+sorries, axiom gate clean) but **loses gas** and was rejected.
+
+`pop(x)` keeps the validated variable `x` referenced, which **pins its binding
+live and defeats dead-code elimination** of the value it was cleaned from. When
+that value is otherwise unused (the common case — a validator only *checks* the
+argument), the old `pop(iszero(eq(x,x)))` was a pure discard the downstream
+pure/dead passes removed wholesale, taking the source computation with it;
+`pop(x)` instead anchors the whole cleaned-argument chain and it stays emitted.
+Inside a loop the retained per-iteration cost compounds catastrophically.
+
+**Measured** on current main (solc 0.8.35) against a freshly regenerated
+clean-main baseline: **+346,137 gas on `semanticTests` `various/negative_stack_height.sol`**
+(a hot-loop fixture) alone, with ≈10 `semanticTests` rows regressed overall and
+a net semantic **+~250k gas** — the change is net-negative and trips the
+per-suite ceiling guard. The original branch reported this rewrite as
+`uniswap −405 / gasTests −675`, but that measurement **only covered
+uniswap-v4 + gasTests**; `semanticTests` (where the regression lives) was never
+run for it.
+
+Rework paths (either would recover the win without the DCE hazard): **(a)** fire
+the `pop(x)` form only when `x` has no other use in scope, falling back to the
+proven `pop(iszero(eq(x,x)))` discard otherwise; **(b)** teach `DeadPure` to
+delete a `pop(var)` outright under a unique-names / well-scopedness premise
+(needs a statement-level deletion proof, not just the expression rewrite). Until
+then the shipped form stays the condition-preserving discard from the entry
+above.
+
 ### ✅ Scoped fact export across block exits (`optimizer/propagate-scoped-export`)
 
 Issue #65's 2026-07-25 refresh showed the Aave `PositionStatusMap` hot loops
@@ -1640,6 +1673,36 @@ compose that result with the existing `Simplify` resolution congruence for the
   not imply SSA dominance (a stale-read counterexample; fixed with the
   decidable `domCheck` gate), and codegen genuinely needs single
   assignment + label uniqueness.
+
+- **HoistCalls builtin-argument hoist + measured gate negatives** (branch
+  `agent/uv4-abi-inline`, commit 03ecc40). Root cause of the out-of-line ABI
+  encode chains on small functions: `cleanup_t_bool = iszero(iszero(v))` is a
+  *nested* builtin body that Core `ingest` rejects, so InlineHelpers cannot
+  inline it in place (unlike flat `cleanup_t_uint24 = and(v,mask)`); its sole
+  call site `mstore(pos, cleanup_t_bool(value))` is a call nested in a builtin
+  argument, unreachable by statement-level InlineCalls, pinning the whole
+  `abi_encode_t_bool` chain out of line. Fix (proven, sorry-free): hoist a
+  trailing builtin-argument call into a preceding `let` so InlineCalls consumes
+  it. **Measured negatives on the *unrestricted* hoist** (fires on any
+  `op(var, userCall(callfree_args))`): enabling that much extra statement
+  inlining grows frames and trips the MemorySpill/stack-layout fallback in
+  loop/codec-heavy code — aave `PositionStatusMap.nextContinuousTenThousand`
+  +843,951 gas (a big-loop blowup), semantic array/storage/struct codecs
+  +1k–3.3k on ~28 rows, and the whole aave suite went net-negative. Gating to
+  *pure-total single-expression* callees only (the cleanup shape) removes all
+  those catastrophes (aave net 0, no >100 loop blowups) and keeps the LPFee/
+  ProtocolFee/TickBitmap wins, but (a) loses the broad `dispatch_large` win the
+  unrestricted hoist gave (that win shared the frame-growing mechanism), and
+  (b) leaves ~9 semantic rows >100 gas (e.g. `bool_conversion` +334) that are
+  irreducible with this approach — the same `cleanup_t_bool` inlining that wins
+  LPFee reshapes those via the stack scheduler. The regression-free way to get
+  the bool win is the *root* fix: teach Core `Term`/`ingest` one level of
+  nested pure builtins so `cleanup_t_bool` inlines in place exactly like
+  `cleanup_t_uint24` (which is regression-free), rather than routing through a
+  hoist that also enables broader statement inlining. A loop-depth-aware gate
+  (don't hoist inside `for` bodies) would clear the loop-context semantic rows
+  more cheaply but needs a signature change threaded through the proven
+  traversal.
 
 ## SSA pass-pipeline rebalance: coalescing, branch inversion, CSE off (2026-08-03)
 
