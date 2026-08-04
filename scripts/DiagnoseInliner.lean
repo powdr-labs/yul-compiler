@@ -1,5 +1,6 @@
 import YulParser.Compile
 import YulSemantics.PrettyPrint
+set_option warningAsError true
 /-!
 Inliner gate diagnosis (scratch, untracked). For a solc --ir object file:
 dump the post-pipeline Yul, then for every surviving function report why the
