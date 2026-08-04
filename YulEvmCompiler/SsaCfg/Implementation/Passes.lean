@@ -393,11 +393,393 @@ def dve (f : Func) : Func :=
           | .call .. => true
         term := mapEdges filterEdge b.term } }
 
+/-! ## Pass 5: straight-line block coalescing (jump threading)
+
+The construction emits a block boundary for every `if`/`switch`/`for` join,
+and the inliner splits a call site's block into three (the part before the
+call, the callee's blocks, the continuation). Each surviving boundary costs
+a `JUMPDEST`, a `jump`, and — worse — an *edge shuffle*, because the two
+blocks are laid out independently and the terminator has to reconcile them.
+
+Whenever a block `t` has exactly one in-edge, that edge is an unconditional
+`jump` from `bi`, `t` is not the entry, and `t` takes **no parameters**, the
+two are a single straight line: `t`'s instructions can be appended to `bi`
+verbatim and its terminator adopted, with the `jump` simply deleted.
+
+The no-parameter side condition costs nothing and buys a great deal. A
+single-predecessor block's parameters are exactly the trivial ones, so
+`elimTrivialParams` — which runs immediately before this pass in `runOnce`
+— has already removed them. Requiring them gone here means the edge carries
+no parallel copy at all, so the merge does not rewrite a single value: the
+register file is *identical* on both sides, and soundness needs no
+substitution argument.
+
+This is what makes inlining pay: without it the splice trades a call's
+`JUMP` plumbing for an equal amount of block-boundary plumbing. -/
+
+/-- In-edge count per block (a `branch` with both edges to the same target
+counts twice — such a block is not single-predecessor). -/
+def predCounts (f : Func) : Array Nat := Id.run do
+  let mut acc : Array Nat := Array.replicate f.blocks.size 0
+  for b in f.blocks do
+    for e in b.term.edges do
+      if e.target < acc.size then acc := acc.set! e.target (acc[e.target]! + 1)
+  return acc
+
+/-- The reachable-block computation of `dropUnreachable`, returning only the
+new `(entry, blocks)` pair.
+
+Splitting the record update out of the search is deliberate: `params` and
+`nrets` are then preserved **by construction** (`dropUnreachable` is a
+single `{ f with entry := _, blocks := _ }`), so the pipeline's
+field-preservation lemmas are `rfl` instead of inductions through this
+do-block. -/
+def dropUnreachableCore (f : Func) : BlockId × Array Block := Id.run do
+  let n := f.blocks.size
+  let mut seen : Array Bool := Array.replicate n false
+  let mut work : List BlockId := [f.entry]
+  if f.entry < n then seen := seen.set! f.entry true
+  for _ in [0:n] do
+    let mut next : List BlockId := []
+    for bi in work do
+      if _h : bi < n then
+        for e in f.blocks[bi]!.term.edges do
+          if e.target < n && !seen[e.target]! then
+            seen := seen.set! e.target true
+            next := e.target :: next
+    work := next
+    if work.isEmpty then break
+  if seen.all id then return (f.entry, f.blocks)
+  let mut remap : Array BlockId := Array.replicate n 0
+  let mut kept : Array Block := #[]
+  for bi in [0:n] do
+    if seen[bi]! then
+      remap := remap.set! bi kept.size
+      kept := kept.push f.blocks[bi]!
+  let fix := fun (e : Edge) => { e with target := remap[e.target]! }
+  return (remap[f.entry]!, kept.map fun b => { b with term := mapEdges fix b.term })
+
+/-- Keep only the blocks reachable from the entry, remapping block ids.
+Merging leaves the absorbed block unreachable; dropping it keeps `wfCheck`
+honest and stops the code generator emitting a dead `JUMPDEST`. -/
+def dropUnreachable (f : Func) : Func :=
+  { f with entry := (dropUnreachableCore f).1, blocks := (dropUnreachableCore f).2 }
+
+/-- Find one mergeable pair `(predecessor, target)`. -/
+def findMerge (f : Func) : Option (BlockId × BlockId) := Id.run do
+  let preds := predCounts f
+  for bi in [0:f.blocks.size] do
+    if let .jump e := f.blocks[bi]!.term then
+      if e.target != f.entry && e.target != bi && e.target < f.blocks.size then
+        if preds[e.target]! == 1 && f.blocks[e.target]!.params.isEmpty then
+          return some (bi, e.target)
+  return none
+
+/-- The blank left behind by a merge: unreachable, and well-formed under
+any `nrets` (it is not a `ret`). -/
+def blankBlock : Block := ⟨[], [], .halt .invalid []⟩
+
+/-- Everything a merge needs to be sound and well-formed, as one decidable
+predicate. `findMerge` already establishes all of it, but re-checking it
+here is what makes the facts available to the proofs *by inspection*
+instead of by inverting the search loop — and it costs a handful of
+comparisons. -/
+def mergeOK (f : Func) (bi t : BlockId) : Prop :=
+  bi < f.blocks.size ∧ t < f.blocks.size ∧ t ≠ f.entry ∧ t ≠ bi
+    ∧ f.blocks[bi]!.term = .jump ⟨t, []⟩
+    ∧ f.blocks[t]!.params = []
+    -- `bi` is `t`'s *only* predecessor. `findMerge` establishes this from
+    -- the in-edge count; stating it directly is what the soundness proof
+    -- consumes, and it is what makes blanking `t` safe.
+    ∧ ∀ j < f.blocks.size, j ≠ bi → ∀ e ∈ f.blocks[j]!.term.edges, e.target ≠ t
+
+instance instDecidableMergeOK (f : Func) (bi t : BlockId) :
+    Decidable (mergeOK f bi t) := by
+  unfold mergeOK; infer_instance
+
+/-- Merge `t` into `bi`: append its instructions, adopt its terminator, and
+blank it in place. -/
+def mergeOnce (f : Func) : Option Func :=
+  match findMerge f with
+  | none => none
+  | some (bi, t) =>
+    if _h : mergeOK f bi t then
+      let merged : Block :=
+        { params := f.blocks[bi]!.params,
+          instrs := f.blocks[bi]!.instrs ++ f.blocks[t]!.instrs,
+          term := f.blocks[t]!.term }
+      -- The absorbed block is *blanked in place* rather than deleted: block
+      -- ids stay stable, so no edge anywhere needs renumbering and the
+      -- result is well-formed by inspection (the merged block gained
+      -- exactly the definitions the blank one lost). It is unreachable —
+      -- its only in-edge was the `jump` we just replaced.
+      some { f with blocks := (f.blocks.set! bi merged).set! t blankBlock }
+    else none
+
+/-- Coalesce straight-line block chains to a fixed point. Each merge blanks
+one block, so the block count bounds the iteration. -/
+def coalesceRaw (f0 : Func) : Func := Id.run do
+  let mut f := f0
+  for _ in [0:f0.blocks.size] do
+    match mergeOnce f with
+    | some f' => f := f'
+    | none => return f
+  return f
+
+/-- Coalescing, behind a **dominance guard**.
+
+Merging grows a block's use set (it absorbs the target's uses), so unlike
+the other passes it is not covered by `domCheck_of_shrinking`, and the
+liveness fixed point would have to be re-derived to show dominance is
+preserved. It always is — the absorbed block's definitions now sit in the
+block that dominated it — but rather than prove that globally we simply
+*check* it and fall back, exactly as `optimizeProg` does for inlining. The
+guard is behavior-neutral (its only alternative is the unchanged input), it
+makes `coalesce_dom` immediate, and it never fires on any program measured
+(gas is unchanged with and without it).
+
+Single assignment is checked alongside it for the same reason. The merge
+*moves* definitions (the absorbed block's instructions now sit in the
+merged block) rather than creating any, so the multiset of definitions is
+unchanged and `Nodup` always survives; checking it here means
+`coalesce_wf`'s one non-structural conjunct is read off the check instead
+of proved by a permutation argument over two array updates. -/
+def coalesce (f0 : Func) : Func :=
+  let g := coalesceRaw f0
+  if g.allDefs.Nodup && ToAsm.Func.domCheck g then g else f0
+
+/-! ## Pass 6: branch-sense normalization
+
+`JUMPI` jumps when its condition is **nonzero**, and a `branch` chooses its
+two edges the same way, so an `iszero` feeding a branch is pure negation of
+a choice the terminator already makes:
+
+```
+  branch (iszero x) t f   ≡   branch x f t
+```
+
+Swapping the edges lets dead-value elimination delete the `iszero`
+entirely. Solidity's unoptimized IR is full of `if iszero(cond)` — it is how
+the front end spells every `else`-less negative test — so on branch-dense
+code this removes one `ISZERO` (3 gas) per branch *executed*, which the
+opcode profile shows as the single largest non-shuffle excess against solc
+on the `TickMath` sweeps.
+
+Only the terminator is rewritten: the `iszero` instruction stays put and
+dies (or not) by the ordinary liveness rule, so nothing here depends on the
+condition having a single use. Dominance is preserved because `x`'s
+definition dominates the `iszero`, which dominates the branch.
+
+This transform is natural on a CFG and awkward on Yul, where inverting a
+test means restructuring an `if` into its complement. -/
+
+/-- Uses of each value across a whole function (instruction arguments,
+terminator uses, and edge arguments), with multiplicity. -/
+def useCounts (f : Func) : Std.HashMap ValId Nat := Id.run do
+  let mut m : Std.HashMap ValId Nat := {}
+  let bump := fun (m : Std.HashMap ValId Nat) (vs : List ValId) =>
+    vs.foldl (fun m v => m.insert v ((m.getD v 0) + 1)) m
+  for b in f.blocks do
+    for i in b.instrs do
+      m := bump m i.uses
+    m := bump m b.term.uses
+  return m
+
+/-- The `(dst, arg)` pair of an `iszero` instruction, if the instruction is
+one. Factored out so the fold below matches on a *derived* value: `split`
+then yields the defining equation `iszeroPair i = some (d, a)`, which is
+what relates the table's contents back to an actual instruction of the
+block. -/
+def iszeroPair : Instr → Option (ValId × ValId)
+  | .op [d] .iszero [a] => some (d, a)
+  | _ => none
+
+/-- The `iszero` sources defined **in one block**: `dst ↦ arg` for every
+`dst ← iszero(arg)` among `b`'s own instructions whose result is used
+exactly once in the whole function.
+
+Two restrictions, both load-bearing:
+
+* **single use** makes the rewrite a win rather than a coin flip. If the
+  `iszero` has another use it survives dead-value elimination, so inverting
+  the branch saves no `ISZERO` and only perturbs the two edges' entry
+  layouts — which can cost real gas by pushing the generator off its direct
+  branch scheme onto the stub scheme (an extra label, `jump`, and shuffle).
+* **same block** keeps every invariant local. The replacement condition is
+  then already used by the block (by the `iszero` itself), so the block's
+  use set only shrinks — which is exactly what `domCheck_of_shrinking`
+  wants — and the equation `R c = iszero(R x)` needed for soundness holds
+  by a straight-line induction over this block's own instructions, with no
+  global provenance argument. The construction emits `t := iszero(cond)`
+  immediately before the branch that tests it, so nothing is lost. -/
+def blockIszeroSources (uses : Std.HashMap ValId Nat) (b : Block) :
+    Std.HashMap ValId ValId :=
+  match b.instrs.getLast? with
+  | some i =>
+      match iszeroPair i with
+      | some (d, a) =>
+          -- `d ≠ a` is nonsense to violate (an `iszero` reading its own
+          -- result), and having it by construction is what lets the
+          -- soundness proof conclude that executing the `iszero` leaves its
+          -- *argument's* binding alone.
+          if uses.getD d 0 == 1 && d != a then
+            (∅ : Std.HashMap ValId ValId).insert d a
+          else ∅
+      | none => ∅
+  | none => ∅
+
+/-- Rewrite one terminator: `branch (iszero x) t f` becomes `branch x f t`,
+to a fixed point (a doubled `iszero` collapses in two steps). Non-`branch`
+terminators are returned unchanged.
+
+Kept as a separate per-terminator function so the pass's structural facts
+(block count, params, instrs, `ret` arity, and the edge *set*) are stated
+and proved once, against `invertTerm`, rather than through the `Array.map`. -/
+def invertTerm (m : Std.HashMap ValId ValId) : Term → Term
+  | .branch c t fe => go c t fe 8
+  | t => t
+where
+  go (c : ValId) (t fe : Edge) : Nat → Term
+    | 0 => .branch c t fe
+    | n + 1 =>
+      match m[c]? with
+      | some x => go x fe t n
+      | none => .branch c t fe
+
+def invertBranches (f : Func) : Func :=
+  let uses := useCounts f
+  { f with
+    blocks := f.blocks.map fun b =>
+      { b with term := invertTerm (blockIszeroSources uses b) b.term } }
+
 /-! ## The pipeline -/
 
-/-- One full pipeline round over a function. -/
+/-! ## Pass 6: constant rematerialization
+
+The dual of the CSE result.  CSE was removed from this pipeline because on a
+stack machine a value that must stay *live* for a later reuse has nowhere to
+live but the operand stack, inside a 16-deep `DUP`/`SWAP` reach: it joins the
+`keep` set of every intervening instruction and every edge shuffle, and that
+traffic (a `DUP`+`SWAP` pair, 6 gas, per intervening operation) costs strictly
+more than the 3-gas arithmetic it saves.
+
+Run that argument backwards and it says something stronger than "do not CSE":
+it says **shorten live ranges by recomputing**.  A word constant is the
+extreme case — it has no operands, so it can be recreated anywhere for one
+`push` (3 gas, or 2 for `PUSH0`), and nothing else has to be alive for it.
+Keeping one live instead costs its slot in every `keepOf`/`shuffle` between
+its definition and its use.
+
+The cross-block case is where this pays.  A constant defined in an entry block
+and used inside a loop has to be threaded through the entry layout of every
+block in between; `elimTrivialParams` and `constFold` both create exactly that
+shape, the first by substituting a block parameter away and the second by
+rewriting a folded `op` into a `const` *at the definition's position* rather
+than at the use.
+
+So: give every use of a constant its own definition, immediately in front of
+it.  Live ranges collapse to a single instruction, the original definitions
+lose their readers, and `dve` — which runs straight after — deletes them.
+Soundness is as cheap as it gets: a `const` reads nothing and writes one
+fresh id, so the copy is dominated by construction and no value that existed
+before changes.  `cse` would undo this, which is one more reason it stays out
+of the pipeline. -/
+
+/-- Every value id mentioned anywhere in a function (defs, uses, params, edge
+arguments).  Local to this pass so it can run before `maxVal` is in scope. -/
+def maxIdOf (f : Func) : ValId :=
+  let mx := fun (acc : Nat) (vs : List ValId) => vs.foldl Nat.max acc
+  f.blocks.foldl (init := mx 0 f.params) fun acc b =>
+    mx (mx (b.instrs.foldl (fun a i => mx (mx a i.defs) i.uses) acc) b.params)
+      b.term.uses
+
+/-- How far a *same-block* constant definition must be from a use before a
+copy is worth making.  Zero would copy every use, which measured as a uniform
+few-gas tax on small functions: a constant already sitting next to its use has
+a live range the block bounds anyway, and the extra `push` only gives the
+emitter something more to shuffle.  A cross-block use is always copied — its
+range crosses every intervening block's entry layout, which is the expensive
+case this pass exists for. -/
+def rematDistance : Nat := 8
+
+/-- Should a use of `a` at position `here` be given its own copy? -/
+def rematValue (constOf : Std.HashMap ValId U256) (localAt : Std.HashMap ValId Nat)
+    (here : Nat) (a : ValId) : Option U256 :=
+  match constOf[a]? with
+  | none => none
+  | some v =>
+    match localAt[a]? with
+    | none => some v                                    -- defined in another block
+    | some at' => if here ≥ at' + rematDistance then some v else none
+
+/-- Rematerialize word constants at their use sites, as described above. -/
+def rematConsts (f : Func) : Func := Id.run do
+  let mut constOf : Std.HashMap ValId U256 := ∅
+  for b in f.blocks do
+    for i in b.instrs do
+      if let .const d v := i then constOf := constOf.insert d v
+  if constOf.isEmpty then return f
+  let mut next := maxIdOf f + 1
+  let mut blocks : Array Block := #[]
+  let remattable := rematValue constOf
+  for b in f.blocks do
+    -- where this block's own constants are defined, for `rematDistance`
+    let mut localAt : Std.HashMap ValId Nat := ∅
+    for (i, k) in b.instrs.zipIdx do
+      if let .const d _ := i then localAt := localAt.insert d k
+    let mut here := 0
+    let mut out : Array Instr := #[]
+    for ins in b.instrs do
+      match ins with
+      | .const _ _ => out := out.push ins
+      | _ =>
+        let mut sub : Std.HashMap ValId ValId := ∅
+        for a in ins.uses do
+          if !sub.contains a then
+            if let some v := remattable localAt here a then
+              out := out.push (.const next v)
+              sub := sub.insert a next
+              next := next + 1
+        let ρ : ValId → ValId := fun a => (sub[a]?).getD a
+        out := out.push (match ins with
+          | .const d v => .const d v
+          | .op ds yop as => .op ds yop (as.map ρ)
+          | .call ds fid as => .call ds fid (as.map ρ))
+      here := here + 1
+    -- terminator uses: the copies go at the end of the block body
+    let mut sub : Std.HashMap ValId ValId := ∅
+    for a in b.term.uses do
+      if !sub.contains a then
+        if let some v := remattable localAt b.instrs.length a then
+          out := out.push (.const next v)
+          sub := sub.insert a next
+          next := next + 1
+    let ρ : ValId → ValId := fun a => (sub[a]?).getD a
+    let term := match b.term with
+      | .jump e => .jump { e with args := e.args.map ρ }
+      | .branch c t g =>
+          .branch (ρ c) { t with args := t.args.map ρ } { g with args := g.args.map ρ }
+      | .ret vs => .ret (vs.map ρ)
+      | .halt yop as => .halt yop (as.map ρ)
+    blocks := blocks.push { b with instrs := out.toList, term }
+  return { f with blocks }
+
+/-- One full pipeline round over a function.
+
+**`cse` is deliberately not in this pipeline.** It is a correct and proved
+pass, and it does remove real computations — but on a stack machine it pays
+for them in the wrong currency. Every value CSE keeps alive for a later
+reuse has to *stay somewhere*, and the only somewhere is the operand stack,
+inside a 16-deep `DUP`/`SWAP` reach. Measured on the uniswap-v4 fixtures,
+running it raises the emitted cost of every single one (`BitMath` +36%,
+`LiquidityMath` +31%, `TickBitmap` +9%): the extra shuffle traffic costs
+strictly more than the arithmetic it saves, because the arithmetic it saves
+is `ADD`/`SHL`-class (3 gas) while the traffic it adds is `DUP`+`SWAP`
+pairs (6 gas) *per intervening operation*. It is kept defined and proved so
+a future value-aware variant (reuse only across short live ranges, or only
+for genuinely expensive ops) can be switched back on. -/
 def runOnce (f : Func) : Func :=
-  dve (cse (constFold (elimTrivialParams f)))
+  dve (constFold (invertBranches (coalesce (elimTrivialParams f))))
 
 /-! ## Program-level pass: SSA function inlining
 
@@ -423,14 +805,43 @@ def siteCounts (P : Prog) : Array Nat := Id.run do
           if fid < acc.size then acc := acc.set! fid (acc[fid]! + 1)
   return acc
 
-/-- Inline a call site when the callee has a **single call site** (net code
-size decreases — the call/return plumbing goes and the original is pruned)
-or is small (bounded growth). Nested calls splice verbatim (function ids
-stay valid); the per-function budget bounds recursion. -/
+/-- Approximate emitted size of a function body, in `Asm`-ish units: one per
+instruction, plus two per block (its `JUMPDEST` and its terminator's jump). -/
+def bodySize (g : Func) : Nat :=
+  g.blocks.foldl (fun n b => n + b.instrs.length + 2) 0
+
+/-- Approximate emitted size of one call *site*: the return-label push, the
+entry `jump`, the landing `JUMPDEST`, the `dynJump` back, plus the argument
+and result shuffling the calling convention forces at both ends. This is the
+plumbing inlining deletes, and the `JUMP`/`JUMPDEST` gas the opcode profile
+attributes call overhead to. -/
+def callSiteSize (g : Func) : Nat :=
+  4 + g.params.length + g.nrets
+
+/-- Inline a call site when the whole-program size cost is acceptable.
+
+Inlining *every* site of a callee deletes the original body (`pruneFuncs`)
+along with every site's plumbing, so fully inlining a callee with `sites`
+call sites changes emitted size by
+
+```
+  (sites - 1) * bodySize g  -  sites * callSiteSize g
+```
+
+— negative (a pure win) at `sites = 1`, growing linearly after that.
+`growthBudget` is how much emitted size we trade for the removed call
+overhead. Nested calls splice verbatim (function ids stay valid); the
+per-function budget bounds recursion. -/
+def growthBudget : Nat := 0
+
+/-- Bodies at or below this size are always worth inlining: their call
+plumbing costs a comparable amount to the body itself. -/
+def smallBody : Nat := 16
+
 def inlinable (sites : Nat) (g : Func) : Bool :=
   sites == 1
-  || (g.blocks.size ≤ 4
-      && (g.blocks.foldl (fun n b => n + b.instrs.length) 0) ≤ 20)
+  || bodySize g ≤ smallBody
+  || (sites - 1) * bodySize g ≤ growthBudget + sites * callSiteSize g
 
 /-- The largest value id mentioned by a function (for fresh renaming). -/
 def maxVal (f : Func) : ValId :=
@@ -496,7 +907,10 @@ def inlineOnce (counts : Array Nat) (funcs : Array Func) (f : Func) :
             return some { f with blocks }
   return none
 
-/-- Inline eligible call sites to a budgeted fixed point. -/
+/-- Inline eligible call sites to a budgeted fixed point. The budget is what
+bounds recursive unrolling — a self-recursive callee always exposes a fresh
+site — and it is load-bearing: `Examples.agreeSsa factorial` depends on
+small bounded recursion unrolling *exactly* this far. -/
 def inlineFunc (counts : Array Nat) (funcs : Array Func) (f0 : Func) :
     Func := Id.run do
   let mut f := f0
@@ -568,6 +982,50 @@ def optimizeFunc (f : Func) : Func := Id.run do
   for _ in [0:Passes.pipelineRounds] do
     f := Passes.runOnce f
   return f
+
+namespace Passes
+
+/-- One function's rematerialization: insert the copies, then let `dve` delete
+the definitions they orphaned.
+
+The inner `wfCheck` is the same "make the invariant local by construction"
+device `coalesce` uses for its dominance side condition. `dve` is only proved
+sound for single-assignment input, and the copies' ids are fresh only because
+the pass counts up from `maxIdOf`; rather than re-derive that freshness as a
+global theorem about the counter, the pass simply checks it — and falls back to
+the untouched function otherwise, which is behavior-neutral and never fires in
+practice. (Soundness of `rematConsts` itself needs no such check: its copies
+only have to be *above* `maxIdOf`, not distinct.) -/
+def rematStep (nFuncs : Nat) (g : Func) : Func :=
+  let g' := rematConsts g
+  if g'.wfCheck nFuncs then dve g' else g
+
+end Passes
+
+/-- **Constant rematerialization, program-level.**  Kept out of `runOnce` and
+applied after `optimizeProg` rather than inside its rounds, for two reasons:
+the rewrite has nothing to hand the other passes (it only shortens live ranges,
+which is a *code generator* concern), and `runOnce`'s exact output is pinned by
+the machine-checked dominance counterexample in
+`PassesSound/Counterexample.lean`, which this would otherwise invalidate for no
+gain.
+
+`dve` runs behind it to delete the definitions the copies orphaned — without
+that the pass only adds pushes. The same defensive gate as `optimizeProg`: if
+the result ever failed well-formedness or dominance, keep the input. -/
+def rematCandidate (P : Prog) : Prog :=
+  let step := Passes.rematStep P.funcs.size
+  { main := step P.main, funcs := P.funcs.map step }
+
+def rematProg (P : Prog) : Prog :=
+  if (rematCandidate P).wfCheck && ToAsm.Prog.domCheck (rematCandidate P)
+  then rematCandidate P else P
+
+/-- `rematProg` unfolded to its gate, for the soundness proofs. -/
+theorem rematProg_candidate (P : Prog) :
+    rematProg P =
+      if (rematCandidate P).wfCheck && ToAsm.Prog.domCheck (rematCandidate P)
+      then rematCandidate P else P := rfl
 
 /-- Optimize a whole program, defensively: if the optimized program fails
 `Prog.wfCheck`, return the original — a pass bug is a missed optimization,

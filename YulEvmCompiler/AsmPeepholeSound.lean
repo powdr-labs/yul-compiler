@@ -78,6 +78,11 @@ theorem astep_stkRefs [model : ExternalModel] {R : List Label}
       rcases List.mem_cons.mp hl with h | h
       · cases h
       · exact hσ l h
+  | pushImmutable =>
+      intro l hl
+      rcases List.mem_cons.mp hl with h | h
+      · cases h
+      · exact hσ l h
   | @op yop args rets c σ yst yst' hb =>
       intro l hl
       rcases List.mem_append.mp hl with h | h
@@ -148,6 +153,42 @@ inductive Match (R : List Label) : AConf → AConf → Prop
       CodeRel R sc oc →
       Match R ⟨.jumpi l :: sc, .word (b2w (b2w (v = 0) = 0)) :: σ, y⟩
               ⟨.jumpi l :: oc, .word v :: σ, y⟩
+  /-- Late constant push, deep `dup`: the source has pushed the literal and
+  the optimized side has not started (it cannot `dup` yet — that the slot it
+  reaches exists is exactly what the source's own `dup` is about to
+  witness). -/
+  | lp1 {v : U256} {n m : Fin 16} (hn : 0 < n.val) (hm : m.val = 0)
+      {S : List AVal} {sc oc : List Asm} {y : EvmState} :
+      CodeRel R sc oc →
+      Match R ⟨.dup n :: .swap m :: sc, .word v :: S, y⟩
+              ⟨.dup (dupPred n) :: .push v :: oc, S, y⟩
+  /-- Late constant push, deep `dup`: both sides have duplicated; the source
+  still owes its `swap1` and the optimized side its `push`. -/
+  | lp2 {v : U256} {m : Fin 16} (hm : m.val = 0) {x : AVal} {S : List AVal}
+      {sc oc : List Asm} {y : EvmState} :
+      CodeRel R sc oc →
+      Match R ⟨.swap m :: sc, x :: .word v :: S, y⟩ ⟨.push v :: oc, x :: S, y⟩
+  /-- Late constant push, `dup1`: both sides have pushed the literal. -/
+  | lp0a {v : U256} {n m : Fin 16} (hn : n.val = 0) (hm : m.val = 0)
+      {S : List AVal} {sc oc : List Asm} {y : EvmState} :
+      CodeRel R sc oc →
+      Match R ⟨.dup n :: .swap m :: sc, .word v :: S, y⟩
+              ⟨.dup n :: oc, .word v :: S, y⟩
+  /-- Late constant push, `dup1`: both sides have duplicated the literal, so
+  the source's `swap1` exchanges two equal words and the optimized side is
+  already done with the window. -/
+  | lp0b {v : U256} {m : Fin 16} (hm : m.val = 0) {S : List AVal}
+      {sc oc : List Asm} {y : EvmState} :
+      CodeRel R sc oc →
+      Match R ⟨.swap m :: sc, .word v :: .word v :: S, y⟩
+              ⟨oc, .word v :: .word v :: S, y⟩
+  /-- Flipped comparison: the source has exchanged its two operands, the
+  optimized side still holds the original order and reads it with the mirror
+  opcode. -/
+  | fc1 {yop yop' : Op} (hf : flipOp yop = some yop') {x z : AVal}
+      {S : List AVal} {sc oc : List Asm} {y : EvmState} :
+      CodeRel R sc oc →
+      Match R ⟨.op yop :: sc, x :: z :: S, y⟩ ⟨.op yop' :: oc, z :: x :: S, y⟩
 
 /-- The `iszero` step the optimized side of an inverted branch executes. -/
 theorem iszero_step [model : ExternalModel] {prog' c : List Asm}
@@ -208,6 +249,86 @@ theorem astep_op_inv [model : ExternalModel] {prog : List Asm} {yop : Op}
   cases h with
   | op hb => exact ⟨_, _, _, _, rfl, hb, rfl⟩
 
+/-- Invert a step from a configuration headed by a `dup` (the stack need not
+be in `τ ++ x :: ρ` form syntactically). -/
+theorem astep_dup_inv [model : ExternalModel] {prog : List Asm} {n : Fin 16}
+    {c : List Asm} {σs : List AVal} {y : EvmState} {b : AConf}
+    (h : AStep (model := model) prog ⟨.dup n :: c, σs, y⟩ b) :
+    ∃ x τ ρ, σs = τ ++ x :: ρ ∧ τ.length = n.val ∧ b = ⟨c, x :: σs, y⟩ := by
+  cases h with
+  | dup hτ => exact ⟨_, _, _, rfl, hτ, rfl⟩
+
+/-- Invert a step from a configuration headed by a `swap`. -/
+theorem astep_swap_inv [model : ExternalModel] {prog : List Asm} {n : Fin 16}
+    {c : List Asm} {σs : List AVal} {y : EvmState} {b : AConf}
+    (h : AStep (model := model) prog ⟨.swap n :: c, σs, y⟩ b) :
+    ∃ a bb τ ρ, σs = a :: (τ ++ bb :: ρ) ∧ τ.length = n.val
+      ∧ b = ⟨c, bb :: (τ ++ a :: ρ), y⟩ := by
+  cases h with
+  | swap hτ => exact ⟨_, _, _, _, rfl, hτ, rfl⟩
+
+/-- Invert a successful two-argument value built-in. -/
+theorem bin_inv {f : U256 → U256 → U256} {args rets : List U256}
+    {st st' : EvmState}
+    (h : YulSemantics.EVM.bin f args st = some (.ok rets st')) :
+    ∃ a b, args = [a, b] ∧ rets = [f a b] ∧ st' = st := by
+  match args with
+  | [a, b] =>
+      refine ⟨a, b, rfl, ?_, ?_⟩ <;>
+        · have h' := Option.some.inj h
+          cases h'
+          rfl
+  | [] => exact absurd h (by simp [YulSemantics.EVM.bin])
+  | [_] => exact absurd h (by simp [YulSemantics.EVM.bin])
+  | _ :: _ :: _ :: _ => exact absurd h (by simp [YulSemantics.EVM.bin])
+
+/-- A two-argument value built-in never halts. -/
+theorem bin_no_halt {f : U256 → U256 → U256} {args : List U256}
+    {st sf : EvmState} (h : YulSemantics.EVM.bin f args st = some (.halt sf)) :
+    False := by
+  match args with
+  | [_, _] => exact absurd h (by simp [YulSemantics.EVM.bin])
+  | [] => exact absurd h (by simp [YulSemantics.EVM.bin])
+  | [_] => exact absurd h (by simp [YulSemantics.EVM.bin])
+  | _ :: _ :: _ :: _ => exact absurd h (by simp [YulSemantics.EVM.bin])
+
+/-- A built-in with a reversed twin (`flipOp`) is binary and pure, and the
+twin computes the same result from the operands in the other order. This is
+the whole semantic content of the flipped-comparison rewrite: the commutative
+built-ins are their own twin, and `lt`/`gt` (`slt`/`sgt`) are defined as each
+other's operand swap in the dialect (`b2w (a.ult b)` against
+`b2w (b.ult a)`). -/
+theorem flipOp_inv [model : ExternalModel] {yop yop' : Op}
+    (hf : flipOp yop = some yop') {args rets : List U256} {yst yst' : EvmState}
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates yop args yst
+      (.ok rets yst')) :
+    ∃ a b, args = [a, b] ∧ yst' = yst ∧
+      YulSemantics.EVM.builtinWithExternal model.calls model.creates yop' [b, a] yst
+        (.ok rets yst) := by
+  -- only the ten ops `flipOp` accepts survive; each is a `bin`
+  cases yop <;> simp only [flipOp, Option.some.injEq, reduceCtorEq] at hf
+  all_goals subst hf
+  all_goals
+    simp only [YulSemantics.EVM.builtinWithExternal, YulSemantics.EVM.stepOp] at hb
+    obtain ⟨a, b, rfl, rfl, rfl⟩ := bin_inv hb
+    refine ⟨a, b, rfl, rfl, ?_⟩
+    -- the twin's own definition reads the operands the other way round, so the
+    -- comparisons close by `rfl` and the commutative ops by their `comm` lemma
+    simp only [YulSemantics.EVM.builtinWithExternal, YulSemantics.EVM.stepOp,
+      YulSemantics.EVM.bin, add_comm b a, mul_comm b a,
+      BitVec.and_comm b a, BitVec.or_comm b a, BitVec.xor_comm b a,
+      eq_comm (a := b) (b := a)]
+
+/-- A built-in with a reversed twin never halts. -/
+theorem flipOp_no_halt [model : ExternalModel] {yop yop' : Op}
+    (hf : flipOp yop = some yop') {args : List U256} {yst yf : EvmState}
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates yop args yst
+      (.halt yf)) : False := by
+  cases yop <;> simp only [flipOp, Option.some.injEq, reduceCtorEq] at hf
+  all_goals
+    simp only [YulSemantics.EVM.builtinWithExternal, YulSemantics.EVM.stepOp] at hb
+    exact bin_no_halt hb
+
 /-- Invert a halt from a configuration headed by an operation. -/
 theorem ahalt_op_inv [model : ExternalModel] {prog : List Asm} {yop : Op}
     {c : List Asm} {σs : List AVal} {y yf : EvmState}
@@ -217,6 +338,25 @@ theorem ahalt_op_inv [model : ExternalModel] {prog : List Asm} {yop : Op}
           (.halt yf) := by
   cases h with
   | op hb => exact ⟨_, _, rfl, hb⟩
+
+/-- Entering a late-constant-push window. The two `latePush` shapes need
+different first moves from the optimized side — a stutter when the `dup`
+reaches below the literal (that the slot exists is exactly what the source's
+own `dup` is about to witness) and the literal's `push` when it does not — so
+the case split lives here rather than inline. -/
+theorem latePush_entry [model : ExternalModel] {R : List Label} {prog' : List Asm}
+    {v : U256} {n m : Fin 16} (hm : m.val = 0) {c c' : List Asm}
+    (hc : CodeRel R c c') {σ : List AVal} {y : EvmState} :
+    ∃ b', ASteps (model := model) prog' ⟨latePush v n ++ c', σ, y⟩ b'
+      ∧ Match R ⟨.dup n :: .swap m :: c, .word v :: σ, y⟩ b' := by
+  by_cases hn : 0 < n.val
+  · rw [show latePush v n = [Asm.dup (dupPred n), Asm.push v] from by
+      simp [YulEvmCompiler.latePush, hn]]
+    exact ⟨_, .refl _, Match.lp1 hn hm hc⟩
+  · have hn0 : n.val = 0 := by omega
+    rw [show latePush v n = [Asm.push v, Asm.dup n] from by
+      simp [YulEvmCompiler.latePush, hn]]
+    exact ⟨_, .single .push, Match.lp0a hn0 hm hc⟩
 
 /-! ### The forward simulation -/
 
@@ -235,6 +375,13 @@ theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
       cases hc with
       | keep _ hc' => exact ⟨_, .single .push, .sync hc'⟩
       | window hn hc' => exact ⟨_, .refl _, .mid1 hn hc'⟩
+      | latePush hm hc' => exact latePush_entry hm hc'
+    | @pushImmutable key c σ2 yst =>
+      -- No peephole window ever opens on an immutable placeholder, so the pass
+      -- can only `keep` it — which is exactly what must happen: folding one
+      -- would move the 32 bytes the constructor patches.
+      cases hc with
+      | keep _ hc' => exact ⟨_, .single .pushImmutable, .sync hc'⟩
     | @op yop args rets c σ2 yst yst' hb =>
       cases hc with
       | keep _ hc' => exact ⟨_, .single (.op hb), .sync hc'⟩
@@ -248,6 +395,11 @@ theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
     | @swap n aa bb τ ρ c yst hτ =>
       cases hc with
       | keep _ hc' => exact ⟨_, .single (.swap hτ), .sync hc'⟩
+      | @flipCmp _ hn yop yop' hf c0 c0' hc' =>
+        -- `swap1`, so the exchanged slots are the top two; the optimized side
+        -- holds them the other way round and reads them with the mirror opcode
+        obtain rfl : τ = [] := List.length_eq_zero_iff.mp (hτ.trans hn)
+        exact ⟨_, .refl _, Match.fc1 hf hc'⟩
     | @pop v c σ2 yst =>
       cases hc with
       | keep _ hc' => exact ⟨_, .single .pop, .sync hc'⟩
@@ -357,6 +509,40 @@ theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
     | @jumpiFall _ _ c σ2 yst hv =>
       have hv0 : v = 0 := b2w_dbl_eq_zero_iff.mp hv
       exact ⟨_, .single (.jumpiFall hv0), .sync hc⟩
+  | @lp1 v n m hn hm S sc oc y hc =>
+    obtain ⟨x, τ, ρ, hσeq, hτ, rfl⟩ := astep_dup_inv hstep
+    cases τ with
+    | nil => simp at hτ; omega
+    | cons a τ' =>
+      obtain ⟨rfl, rfl⟩ : AVal.word v = a ∧ S = τ' ++ x :: ρ := by
+        simpa using hσeq
+      have hlen : τ'.length = (dupPred n).val := by
+        simp only [dupPred, List.length_cons] at hτ ⊢; omega
+      exact ⟨_, .single (.dup hlen), Match.lp2 hm hc⟩
+  | @lp2 v m hm x S sc oc y hc =>
+    obtain ⟨a, bb, τ, ρ, hσeq, hτ, rfl⟩ := astep_swap_inv hstep
+    obtain rfl : τ = [] := List.length_eq_zero_iff.mp (hτ.trans hm)
+    obtain ⟨rfl, rfl, rfl⟩ : x = a ∧ AVal.word v = bb ∧ S = ρ := by
+      simpa using hσeq
+    exact ⟨_, .single .push, .sync hc⟩
+  | @lp0a v n m hn hm S sc oc y hc =>
+    obtain ⟨x, τ, ρ, hσeq, hτ, rfl⟩ := astep_dup_inv hstep
+    obtain rfl : τ = [] := List.length_eq_zero_iff.mp (hτ.trans hn)
+    obtain ⟨rfl, rfl⟩ : AVal.word v = x ∧ S = ρ := by simpa using hσeq
+    exact ⟨_, .single (.dup (n := n) (τ := []) (by simpa using hn.symm)),
+      Match.lp0b hm hc⟩
+  | @lp0b v m hm S sc oc y hc =>
+    obtain ⟨a, bb, τ, ρ, hσeq, hτ, rfl⟩ := astep_swap_inv hstep
+    obtain rfl : τ = [] := List.length_eq_zero_iff.mp (hτ.trans hm)
+    obtain ⟨rfl, rfl, rfl⟩ : AVal.word v = a ∧ AVal.word v = bb ∧ S = ρ := by
+      simpa using hσeq
+    exact ⟨_, .refl _, .sync hc⟩
+  | @fc1 yop yop' hf x z S sc oc y hc =>
+    obtain ⟨args, rets, σ', yst', hσeq, hb, rfl⟩ := astep_op_inv hstep
+    obtain ⟨a, b, rfl, rfl, hb'⟩ := flipOp_inv hf hb
+    obtain ⟨rfl, rfl, rfl⟩ : x = AVal.word a ∧ z = AVal.word b ∧ S = σ' := by
+      simpa [words] using hσeq
+    exact ⟨_, .single (.op hb'), .sync hc⟩
 
 /-- Multi-step forward simulation (reflexive-transitive closure), threading
 the suffix and stack invariants along the source run. -/
@@ -392,6 +578,13 @@ theorem halt_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
   | mid1 _ _ => exact absurd hhalt (by intro h; cases h)
   | mid2 _ => exact absurd hhalt (by intro h; cases h)
   | brMid _ _ => exact absurd hhalt (by intro h; cases h)
+  | lp1 _ _ _ => exact absurd hhalt (by intro h; cases h)
+  | lp2 _ _ => exact absurd hhalt (by intro h; cases h)
+  | lp0a _ _ _ => exact absurd hhalt (by intro h; cases h)
+  | lp0b _ _ => exact absurd hhalt (by intro h; cases h)
+  | fc1 hf _ =>
+    obtain ⟨args, σ', -, hb⟩ := ahalt_op_inv hhalt
+    exact (flipOp_no_halt hf hb).elim
   | dz2 _ => exact absurd hhalt (by intro h; cases h)
 
 /-! ### Endpoint inversion and the packaged bridge lemmas -/

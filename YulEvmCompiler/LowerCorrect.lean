@@ -43,12 +43,12 @@ set_option linter.unusedTactic false in
 set_option linter.unreachableTactic false in
 theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
-    (hlow : lowerProg prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
+    (hlow : lowerProg imm prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
     {a b : AConf} (hstep : AStep prog a b) (hsuf : a.code <:+ prog)
     (hcap : a.stk.length ≤ 1023) :
-    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
+    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) imm prog is a s →
       bnd ≤ s.gasAvailable →
-      ∃ s', Steps s s' ∧ ConfMatch (payload := payload) prog is b s'
+      ∃ s', Steps s s' ∧ ConfMatch (payload := payload) imm prog is b s'
         ∧ s.gasAvailable - bnd ≤ s'.gasAvailable := by
   cases hstep with
   | @push v c σ yst =>
@@ -69,13 +69,44 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         hm.stack (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
-    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_⟩, hg'⟩
+    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_, hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩, hg'⟩
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
       exact congrArg UInt256.ofNat (by
         simp only [Asm.size, Instr.widthOf_val] at hsize ⊢
         omega)
     · rw [hstk']
+      rfl
+  | @pushImmutable key c σ yst =>
+    -- Identical to `push` except the width is pinned to 32, which is what makes
+    -- the immediate's byte position independent of the value stored there.
+    obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
+      locate hlow hsuf
+    obtain rfl : [Instr.push ⟨32, by norm_num⟩ (conv (imm key))] = isI := by
+      simpa [lowerInstr] using hI
+    refine ⟨40000, ?_⟩
+    intro s hm hgas
+    have hpos : codeSize prog - codeSize (Asm.pushImmutable key :: c) = codeSize pre := by
+      rw [codeSize_cons]
+      omega
+    obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ :=
+      pushStepU (w := ⟨32, by norm_num⟩) (u := conv (imm key))
+        (hwf := by
+          show (conv (imm key)).toNat < 256 ^ 32
+          rw [conv_toNat, show (256:Nat) ^ 32 = 2 ^ 256 by norm_num]
+          exact (imm key).isLt)
+        (pre := assembleBytes isPre) (post := assembleBytes isC ++ payload)
+        (assembleWithPayload_at₁ hbytes payload)
+        hm.frame hm.smatch
+        (by rw [hm.pc, hpos, hlenPre])
+        hm.stack (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); omega) hgas
+    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_, hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩, hg'⟩
+    · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
+      rw [hpc', hlenPre]
+      exact congrArg UInt256.ofNat (by
+        simp only [Asm.size] at hsize ⊢
+        omega)
+    · rw [hstk', ← hm.imms key]
       rfl
   | @op yop args rets c σ yst yst' hstepOp =>
     obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
@@ -97,7 +128,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
       obtain ⟨s', hsteps, hf', hsm', hpc', hstk', hg'⟩ :=
         H hm.frame hm.smatch hdec (by rw [hm.stack, mapStk_words]) hgas
           (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega))
-      refine ⟨s', hsteps, ⟨hf', hsm', ?_, ?_⟩, hg'⟩
+      refine ⟨s', hsteps, ⟨hf', hsm', ?_, ?_, hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩, hg'⟩
       · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
         rw [hpc', hm.pc, hpos]
         have := hf'.codeSmall
@@ -121,7 +152,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         obtain ⟨s', hsteps, hf', hsm', hpc', hstk', hg'⟩ :=
           H hm.frame hm.smatch hdec (by rw [hm.stack, mapStk_words]) hgas
             (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega))
-        refine ⟨s', hsteps, ⟨hf', hsm', ?_, ?_⟩, hg'⟩
+        refine ⟨s', hsteps, ⟨hf', hsm', ?_, ?_, hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩, hg'⟩
         · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
           rw [hpc', hm.pc, hpos]
           have := hf'.codeSmall
@@ -151,7 +182,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
           (by rw [hm.stack, mapStk_words])
           (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
         obtain ⟨s', hstep, hf', hsm', hpc', hstk', hg'⟩ := hok
-        refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_⟩, hg'⟩
+        refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_, hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩, hg'⟩
         · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
           rw [hpc', hlenPre]
           exact congrArg UInt256.ofNat (by
@@ -180,7 +211,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         hget (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
-    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_⟩, hg'⟩
+    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_, hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩, hg'⟩
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
       exact congrArg UInt256.ofNat (by
@@ -212,7 +243,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         hswap (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
-    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, hstk'⟩, hg'⟩
+    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, hstk', hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩, hg'⟩
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
       exact congrArg UInt256.ofNat (by
@@ -234,7 +265,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         (by rw [hm.stack]; rfl) (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
-    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, hstk'⟩, hg'⟩
+    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, hstk', hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩, hg'⟩
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
       exact congrArg UInt256.ofNat (by
@@ -255,7 +286,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (assembleWithPayload_at₁ hbytes payload)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre]) (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
-    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, by rw [hstk', hm.stack]⟩, hg'⟩
+    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, by rw [hstk', hm.stack], hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩, hg'⟩
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
       exact congrArg UInt256.ofNat (by
@@ -311,7 +342,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (by rw [hpc2, hlenPreL])
         (by simp only [hstk2, hm.stack, mapStk, List.length_map, List.length_cons, Operation.pushArity, Operation.popArity] at hcap ⊢; omega) (by omega)
     refine ⟨s3, .trans st1 (.trans st2 (.trans st3 (.refl _))),
-      ⟨hf3, hsm3, ?_, ?_⟩, gasChain₃' hg1 hg2 hg3⟩
+      ⟨hf3, hsm3, ?_, ?_, hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩, gasChain₃' hg1 hg2 hg3⟩
     · show s3.pc = UInt256.ofNat (codeSize prog - codeSize c')
       rw [hpc3, hlenPreL]
       exact congrArg UInt256.ofNat (by omega)
@@ -373,7 +404,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         (by rw [hpc2, hlenPreL])
         (by simp only [hstk2, hm.stack, mapStk, List.length_map, List.length_cons, Operation.pushArity, Operation.popArity] at hcap ⊢; omega) (by omega)
     refine ⟨s3, .trans st1 (.trans st2 (.trans st3 (.refl _))),
-      ⟨hf3, hsm3, ?_, ?_⟩, gasChain₃' hg1 hg2 hg3⟩
+      ⟨hf3, hsm3, ?_, ?_, hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩, gasChain₃' hg1 hg2 hg3⟩
     · show s3.pc = UInt256.ofNat (codeSize prog - codeSize c')
       rw [hpc3, hlenPreL]
       exact congrArg UInt256.ofNat (by omega)
@@ -419,7 +450,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         hcond
         (by simp only [hstk1, hm.stack, mapStk, List.length_map, List.length_cons, Operation.pushArity, Operation.popArity] at hcap ⊢; omega)
         (by omega)
-    refine ⟨s2, .trans st1 (.trans st2 (.refl _)), ⟨hf2, hsm2, ?_, hstk2⟩,
+    refine ⟨s2, .trans st1 (.trans st2 (.refl _)), ⟨hf2, hsm2, ?_, hstk2, hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩,
       gasChain₂' hg1 hg2⟩
     · show s2.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc2, List.length_append, Instr.length_bytes_push, hlenPre]
@@ -450,7 +481,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         hm.frame hm.smatch
         (by rw [hm.pc, hpos, hlenPre])
         hm.stack (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
-    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_⟩, hg'⟩
+    refine ⟨s', .trans hstep (.refl _), ⟨hf', hsm', ?_, ?_, hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩, hg'⟩
     · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
       rw [hpc', hlenPre]
       exact congrArg UInt256.ofNat (by
@@ -501,7 +532,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
         hf1 hsm1
         (by rw [hpc1, hlenPreL])
         (by simp only [hstk1, hm.stack, mapStk, List.length_map, List.length_cons, Operation.pushArity, Operation.popArity] at hcap ⊢; omega) (by omega)
-    refine ⟨s2, .trans st1 (.trans st2 (.refl _)), ⟨hf2, hsm2, ?_, ?_⟩,
+    refine ⟨s2, .trans st1 (.trans st2 (.refl _)), ⟨hf2, hsm2, ?_, ?_, hm.imms_step (by first | rfl | exact builtinWithExternal_immutable_eq hstepOp)⟩,
       gasChain₂' hg1 hg2⟩
     · show s2.pc = UInt256.ofNat (codeSize prog - codeSize c')
       rw [hpc2, hlenPreL]
@@ -599,10 +630,10 @@ set_option linter.unreachableTactic false in
 step. -/
 theorem ahalt_sim [model : ExternalModel]
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
-    (hlow : lowerProg prog = some is)
+    (hlow : lowerProg imm prog = some is)
     {a : AConf} {yst' : EvmState} (hstep : AHalt prog a yst')
     (hsuf : a.code <:+ prog) (hcap : a.stk.length ≤ 1023) :
-    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
+    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) imm prog is a s →
       bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ StateMatch yst' s' ∧ s'.callStack = []
         ∧ HaltedMatch yst' s' := by
@@ -648,12 +679,12 @@ theorem ahalt_sim [model : ExternalModel]
 /-- **Phase B, many steps**: bounds add along an Asm execution. -/
 theorem asteps_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
-    (hlow : lowerProg prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
+    (hlow : lowerProg imm prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
     {a b : AConf} (hsteps : ASteps prog a b) (hsuf : a.code <:+ prog)
     (hbound : ∀ mid, ASteps prog a mid → mid.stk.length ≤ 1023) :
-    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
+    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) imm prog is a s →
       bnd ≤ s.gasAvailable →
-      ∃ s', Steps s s' ∧ ConfMatch (payload := payload) prog is b s'
+      ∃ s', Steps s s' ∧ ConfMatch (payload := payload) imm prog is b s'
         ∧ s.gasAvailable - bnd ≤ s'.gasAvailable := by
   induction hsteps with
   | refl a =>
@@ -671,12 +702,12 @@ theorem asteps_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
 EVM execution ending in the matching halted state. -/
 theorem arun_halt_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
-    (hlow : lowerProg prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
+    (hlow : lowerProg imm prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
     {a b : AConf} {yst' : EvmState}
     (hsteps : ASteps prog a b) (hhalt : AHalt prog b yst')
     (hsuf : a.code <:+ prog)
     (hbound : ∀ mid, ASteps prog a mid → mid.stk.length ≤ 1023) :
-    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) prog is a s →
+    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) imm prog is a s →
       bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ StateMatch yst' s' ∧ s'.callStack = []
         ∧ HaltedMatch yst' s' := by

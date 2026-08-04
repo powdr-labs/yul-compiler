@@ -1,4 +1,4 @@
-import YulEvmCompiler.SsaCfg.Implementation.PassesSound.Dve
+import YulEvmCompiler.SsaCfg.Implementation.PassesSound.Coalesce
 set_option warningAsError true
 
 /-!
@@ -647,10 +647,51 @@ theorem dve_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true) :
     exact dveBlock_wf hwf hb (hall b (block_mem_of_getElem? hb))
 
 omit model in
+/-- Branch-sense normalization preserves `Func.wfCheck`: only a `branch`'s
+condition and the *order* of its two edges change, so every conjunct is
+preserved componentwise — `allDefs` is untouched, the entry block keeps its
+(empty) parameters, each edge is still an edge of the same block, and `ret`
+terminators are not rewritten at all. -/
+theorem invertBranches_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true) :
+    (invertBranches f).wfCheck n = true := by
+  obtain ⟨hnd, hentry, ⟨eb, heb, hempty⟩, hall⟩ := func_wfCheck_iff.mp hwf
+  apply func_wfCheck_iff.mpr
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · simpa using hnd
+  · simpa using hentry
+  · exact ⟨_, invertBranches_get heb, by simpa using hempty⟩
+  · intro b' hb'
+    have hbmem : b' ∈ (invertBranches f).blocks := by simpa using hb'
+    obtain ⟨i, hi, rfl⟩ := Array.mem_iff_getElem.mp hbmem
+    have hi' : i < f.blocks.size := by simpa using hi
+    have hb : f.blocks[i]? = some f.blocks[i] := Array.getElem?_eq_getElem hi'
+    have hget : (invertBranches f).blocks[i]? = some (invertBranches f).blocks[i] :=
+      Array.getElem?_eq_getElem hi
+    have heq : (invertBranches f).blocks[i] =
+        { f.blocks[i] with
+        term := invertTerm (blockIszeroSources (useCounts f) f.blocks[i]) f.blocks[i].term } :=
+      Option.some.inj (hget.symm.trans (invertBranches_get hb))
+    have hbwf := hall f.blocks[i] (block_mem_of_getElem? hb)
+    rw [heq]
+    refine ⟨?_, ?_, ?_⟩
+    · -- `ret` arity: a `ret` in the image was a `ret` in the source
+      have := hbwf.1
+      rcases ht : invertTerm (blockIszeroSources (useCounts f) f.blocks[i]) f.blocks[i].term with _ | _ | vs | _
+      all_goals simp only []
+      rw [invertTerm_ret ht] at this
+      simpa using this
+    · intro e he
+      obtain ⟨tb, htb, hlen⟩ := hbwf.2.1 e (invertTerm_mem_edges he)
+      refine ⟨{ tb with term := invertTerm (blockIszeroSources (useCounts f) tb) tb.term }, ?_, ?_⟩
+      · exact invertBranches_get htb
+      · simpa using hlen
+    · exact hbwf.2.2
+
+omit model in
 /-- One complete local pipeline round preserves `Func.wfCheck`. -/
 theorem runOnce_wf {f : Func} {n : Nat} (hwf : f.wfCheck n = true) :
     (runOnce f).wfCheck n = true := by
-  exact dve_wf (cse_wf (constFold_wf (elimTrivialParams_wf hwf)))
+  exact dve_wf (constFold_wf (invertBranches_wf (coalesce_wf (elimTrivialParams_wf hwf))))
 
 end Passes
 

@@ -115,6 +115,88 @@ tree compiled before the fix too, so this pins that the fix did not change it. -
    "object \"Pd\" { code { sstore(0, 1) } " ++
    "data \".metadata\" hex\"a2646970667358221220\" } } }")).isSome
 
+/-! Immutables. `loadimmutable` compiles to a fixed-width `PUSH32` placeholder
+in the deployed object, and the constructor's `setimmutable` becomes one
+`mstore` per recorded placeholder offset — so the returned runtime carries the
+value the constructor computed. -/
+def immutablePair : String :=
+  "object \"A\" {\n" ++
+  "  code { let s := datasize(\"A_deployed\") codecopy(0, dataoffset(\"A_deployed\"), s)\n" ++
+  "         setimmutable(0, \"42\", caller()) return(0, s) }\n" ++
+  "  object \"A_deployed\" { code { sstore(0, loadimmutable(\"42\")) } }\n" ++
+  "}\n"
+
+#guard (parseSource immutablePair).isSome
+#guard (compileSource immutablePair).isSome
+
+/-! A block-rooted program has no object tree, so nothing could ever patch a
+placeholder: a `loadimmutable` there is rejected rather than compiled to a
+hard-coded zero. The *grammar* still accepts it — upstream's syntax corpus has a
+fixture for exactly this — so the limit lives in compilation, not parsing. -/
+#guard (parseSource "{ sstore(0, loadimmutable(\"x\")) }").isSome
+#guard (compileSource "{ sstore(0, loadimmutable(\"x\")) }").isNone
+
+/-! The root has no parent to copy and patch its code, so a `loadimmutable` in
+the root's own code could only ever read the unpatched placeholder — however
+many setters the tree contains. -/
+#guard (compileSource
+  ("object \"A\" { code { setimmutable(0, \"x\", caller()) " ++
+   "sstore(0, loadimmutable(\"x\")) stop() } }")).isNone
+
+/-! Only `setimmutable`'s middle argument names the immutable; the target and
+the stored value are ordinary expressions. An escaped string value must be
+patched in as its *bytes*, not as the characters of its escape spelling — so
+`"\\x01"` must compile exactly like `hex"01"`, the same bytes spelled without
+escapes. -/
+def escapedImmutableValue (spelling : String) : String :=
+  "object \"A\" {\n" ++
+  "  code { let s := datasize(\"B\") codecopy(0, dataoffset(\"B\"), s)\n" ++
+  "         setimmutable(0, \"x\", " ++ spelling ++ ") return(0, s) }\n" ++
+  "  object \"B\" { code { sstore(0, loadimmutable(\"x\")) } }\n" ++
+  "}\n"
+
+#guard (compileSource (escapedImmutableValue "\"\\x01\"")).isSome
+#guard (compileSource (escapedImmutableValue "\"\\x01\"")) ==
+       (compileSource (escapedImmutableValue "hex\"01\""))
+
+/-! An immutable is patched by the **parent** of the object that reads it.
+Validation pairs reads with writes only globally, so a setter sitting in an
+unrelated sibling satisfies it while patching nothing — the reader would deploy
+with its placeholder still zero. The pairing is re-checked per scope. -/
+def crossScopeImmutable : String :=
+  "object \"A\" {\n" ++
+  "  code { let s := datasize(\"B\") codecopy(0, dataoffset(\"B\"), s) return(0, s) }\n" ++
+  "  object \"B\" { code { sstore(0, loadimmutable(\"x\")) } }\n" ++
+  "  object \"C\" { code { setimmutable(0, \"x\", caller()) stop() } }\n" ++
+  "}\n"
+
+#guard (parseSource crossScopeImmutable).isSome
+#guard (compileSource crossScopeImmutable).isNone
+
+/-! Two sibling objects declaring the same immutable put its placeholder at
+different offsets, but `setimmutable(base, name, value)` names no child and
+`base` points at a copy of one of them. Patching one at the other's offsets
+would overwrite its code, so the ambiguous name is rejected. -/
+def siblingImmutables : String :=
+  "object \"A\" {\n" ++
+  "  code { let s := datasize(\"B\") codecopy(0, dataoffset(\"B\"), s)\n" ++
+  "         setimmutable(0, \"x\", caller()) return(0, s) }\n" ++
+  "  object \"B\" { code { sstore(0, loadimmutable(\"x\")) } }\n" ++
+  "  object \"C\" { code { sstore(1, 1) sstore(2, 2) sstore(3, loadimmutable(\"x\")) } }\n" ++
+  "}\n"
+
+#guard (parseSource siblingImmutables).isSome
+#guard (compileSource siblingImmutables).isNone
+
+/-! A `loadimmutable` with no matching `setimmutable` is rejected by validation:
+nothing would ever write that placeholder. -/
+#guard (parseSource
+  "object \"A\" { code { sstore(0, loadimmutable(\"42\")) } }").isNone
+
+/-! `setimmutable` alone is fine — it simply patches nothing. -/
+#guard (compileSource
+  "object \"A\" { code { setimmutable(0, \"42\", 7) stop() } }").isSome
+
 /-! The prune is shadowing-proof by over-approximation: if the bound name is
 referenced anywhere in the program — even a write — the binding is kept and the
 program is rejected rather than miscompiled. -/

@@ -1,8 +1,10 @@
 # The `yul-ssa-cfg` dialect — design and plan
 
-> Status: draft under review in the PR that introduces it. Proofs land last
-> (tracked sorrys until then); the code and tests land first so the gas wins
-> are measurable before the proof investment.
+> Status: landed and **sorry-free**. The code and tests landed first so the gas
+> wins were measurable before the proof investment; the proofs have since
+> caught up, and `SsaCfg.compileViaSsa_correct` now checks with the standard
+> `[propext, Classical.choice, Quot.sound]` footprint. The "proof plan" section
+> below is kept as the historical map of how the obligations were carved up.
 
 ## Why a second IR
 
