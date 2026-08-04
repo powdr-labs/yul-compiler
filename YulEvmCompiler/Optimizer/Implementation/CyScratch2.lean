@@ -21,12 +21,12 @@ theorem cyRel_stmts_cons_inv_bwd {Δ : DEnv} {s₂ : Stmt Op} {rest₂ : List (S
     (∃ s rest, pc = .stmts (s :: rest) ∧
         CyRel Δ (.stmt s) (.stmt s₂) ∧ CyRel Δ (.stmts rest) (.stmts rest₂))
   ∨ (∃ (f : Ident) (d : IDecl) (xs : List Ident) (as : List (Expr Op))
-        (rest rest' : List (Stmt Op)),
+        (rest : List (Stmt Op)),
         pc = .stmts (.letDecl xs (some (.call f as)) :: rest) ∧
-        s₂ = .letDecl xs none ∧ rest₂ = inlineCore d xs as :: rest' ∧
+        s₂ = .letDecl xs none ∧
         lookupDelta Δ f = some d ∧ (d.ps ++ d.rs).Nodup ∧
         carryStmts (d.ps ++ d.rs) d.ss = true ∧ siteOK d xs as true = true ∧
-        CyRel Δ (.stmts rest) (.stmts rest'))
+        CyRel Δ (.stmts (.assign xs (.call f as) :: rest)) (.stmts rest₂))
   ∨ (∃ (f : Ident) (d : IDecl) (xs : List Ident) (as : List (Expr Op))
         (rest : List (Stmt Op)),
         pc = .stmts (.assign xs (.call f as) :: rest) ∧
@@ -43,11 +43,82 @@ theorem cyRel_stmts_cons_inv_bwd {Δ : DEnv} {s₂ : Stmt Op} {rest₂ : List (S
   cases hrel with
   | consSS hs hrest => exact Or.inl ⟨_, _, rfl, hs, hrest⟩
   | siteLet hld hnd hsc hok hrest =>
-      exact Or.inr (Or.inl ⟨_, _, _, _, _, _, rfl, rfl, rfl, hld, hnd, hsc, hok, hrest⟩)
+      exact Or.inr (Or.inl ⟨_, _, _, _, _, rfl, rfl, hld, hnd, hsc, hok,
+        CyRel.siteAssign hld hnd hsc (siteOK_weaken hok) hrest⟩)
   | siteAssign hld hnd hsc hok hrest =>
       exact Or.inr (Or.inr (Or.inl ⟨_, _, _, _, _, rfl, rfl, hld, hnd, hsc, hok, hrest⟩))
   | siteExpr hld hnd hsc hok hrest =>
       exact Or.inr (Or.inr (Or.inr ⟨_, _, _, _, rfl, rfl, hld, hnd, hsc, hok, hrest⟩))
+
+/-- Prepend a list of (unevaluated) arguments to a halting `.args` run. -/
+theorem args_prepend_halt {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {suffix : List (Expr Op)} {st1 : EvmState}
+    (h : Step D funs V st (.args suffix) (.eres (.halt st1))) :
+    ∀ (pre : List (Expr Op)),
+      Step D funs V st (.args (pre ++ suffix)) (.eres (.halt st1)) := by
+  intro pre
+  induction pre with
+  | nil => exact h
+  | cons e pre' ih => exact Step.argsRestHalt ih
+
+/-- From a global `argsHaveCall … = false`, an element is call-free. -/
+theorem argsHaveCall_split {a : Expr Op} {post : List (Expr Op)} :
+    ∀ {pre : List (Expr Op)}, argsHaveCall (pre ++ a :: post) = false →
+      exprHasCall a = false := by
+  intro pre
+  induction pre with
+  | nil =>
+      intro h
+      rw [List.nil_append,
+        show argsHaveCall (a :: post) = (exprHasCall a || argsHaveCall post) from rfl,
+        Bool.or_eq_false_iff] at h
+      exact h.1
+  | cons e pre' ih =>
+      intro h
+      rw [List.cons_append,
+        show argsHaveCall (e :: (pre' ++ a :: post)) =
+          (exprHasCall e || argsHaveCall (pre' ++ a :: post)) from rfl,
+        Bool.or_eq_false_iff] at h
+      exact ih h.2
+
+/-- `argsShadowOK` gives that a pair's argument avoids the parameters strictly
+after it. -/
+theorem argsShadowOK_after {rs : List Ident} {p : Ident} {a : Expr Op}
+    {post : List (Ident × Expr Op)} :
+    ∀ {pre : List (Ident × Expr Op)},
+      argsShadowOK rs (pre ++ (p, a) :: post) = true →
+      ∀ y ∈ exprVars a, y ∉ post.map Prod.fst := by
+  intro pre
+  induction pre with
+  | nil =>
+      intro h y hy
+      rw [List.nil_append,
+        show argsShadowOK rs ((p, a) :: post) =
+          ((exprVars a).all (fun v => !(post.map Prod.fst).contains v && !rs.contains v) &&
+            argsShadowOK rs post) from rfl,
+        Bool.and_eq_true] at h
+      have hall := List.all_eq_true.mp h.1 y hy
+      rw [Bool.and_eq_true] at hall
+      simpa using hall.1
+  | cons pr pre' ih =>
+      intro h y hy
+      rcases pr with ⟨q, b⟩
+      rw [List.cons_append,
+        show argsShadowOK rs ((q, b) :: (pre' ++ (p, a) :: post)) =
+          ((exprVars b).all
+              (fun v => !((pre' ++ (p, a) :: post).map Prod.fst).contains v && !rs.contains v) &&
+            argsShadowOK rs (pre' ++ (p, a) :: post)) from rfl,
+        Bool.and_eq_true] at h
+      exact ih h.2 y hy
+
+/-- `letZero` result inversion, returning equations (so no sibling index gets
+refined by a `cases` in the caller's structural recursion). -/
+theorem letZero_inv {funs : FunEnv D} {V : VEnv D} {st : EvmState}
+    {xs : List Ident} {res : Res D}
+    (h : Step D funs V st (.stmt (.letDecl xs none)) res) :
+    res = .sres (bindZeros D xs ++ V) st .normal := by
+  cases h with
+  | letZero => rfl
 
 /-- Invert a `normal` `TResL` from the **target** (second) side. -/
 theorem TResL.norm_inv' {W W' : VEnv D} {post : List Ident} {res₁ : Res D}
@@ -292,7 +363,7 @@ theorem cy_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
       intro funs₁ Δ pc hR hΔ hrel
       rcases cyRel_stmts_cons_inv_bwd hrel with
         ⟨s, rest, rfl, hsrel, hrestrel⟩
-        | ⟨f, d, xs, as, rest, rest', hpc, hs₂eq, hrest₂eq, hld, hnd, hsc, hok, hrestrel⟩
+        | ⟨f, d, xs, as, rest, hpc, hs₂eq, hld, hnd, hsc, hok, hsiteA⟩
         | ⟨f, d, xs, as, rest, hpc, hs₂eq, hld, hnd, hsc, hok, hrestrel⟩
         | ⟨f, d, as, rest, hpc, hs₂eq, hld, hnd, hsc, hok, hrestrel⟩
       · obtain ⟨res₁, hs₁, heq₁⟩ := cy_bwd hs hR hΔ hsrel
@@ -301,22 +372,181 @@ theorem cy_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
         cases hres₂ with
         | refl => exact ⟨_, Step.seqCons hs₁ hs₂, .refl _⟩
         | haltIns Zp => exact ⟨_, Step.seqCons hs₁ hs₂, .haltIns _ _ _⟩
-      · subst hpc; sorry
-      · subst hpc; sorry
-      · subst hpc; sorry
+      · -- siteLet, seqCons: thin wrapper — after letZero re-relate the tail to
+        -- the assign-form site, then convert the source assign run to let form.
+        subst hpc
+        obtain ⟨hlen_as, hlen_xs, hxnd, hnc, hsh, hxout, hxlet⟩ := siteOK_inv hok
+        have hVst : (Res.sres V1 st1 Outcome.normal) =
+            .sres (bindZeros D xs ++ V) st .normal := letZero_inv (hs₂eq ▸ hs)
+        simp only [Res.sres.injEq] at hVst
+        obtain ⟨hV1eq, hst1eq, -⟩ := hVst
+        obtain ⟨res₁', hs₁', hres'⟩ := cy_bwd hrest hR hΔ hsiteA
+        rw [hV1eq, hst1eq] at hs₁'
+        have hNx : ∀ y ∈ varsList as, y ∉ (bindZeros D xs).map Prod.fst := by
+          intro y hy; rw [bindZeros_keys]; exact hxlet rfl y hy
+        rcases res₁' with r | ⟨V₁', st₁', o₁'⟩
+        · cases hres'
+        · cases hs₁' with
+          | @seqCons _ _ _ _ _ Va sta _ _ _ hassign htail₁ =>
+              cases hassign with
+              | @assignVal _ _ _ _ _ vals _ he hlenv =>
+                  have hcall := callExpr_extend_bwd he hnc hNx
+                  have henv : VEnv.setMany (bindZeros D xs ++ V) xs vals =
+                      xs.zip vals ++ V :=
+                    VEnv.setMany_bindZeros hxnd (by omega) V
+                  have hlet : Step D funs₁ V st
+                      (.stmt (.letDecl xs (some (.call f as))))
+                      (.sres (xs.zip vals ++ V) sta .normal) :=
+                    Step.letVal hcall hlenv
+                  rw [henv] at htail₁
+                  cases hres' with
+                  | refl => exact ⟨_, Step.seqCons hlet htail₁, .refl _⟩
+                  | haltIns Zp => exact ⟨_, Step.seqCons hlet htail₁, .haltIns _ _ _⟩
+          | @seqStop _ _ _ _ _ Va sta oa hassign hnea =>
+              cases hassign with
+              | @assignVal _ _ _ _ _ vals _ he hlenv => exact absurd rfl hnea
+              | @assignHalt _ _ _ _ _ _ he =>
+                  have hcall := callExpr_extend_bwd he hnc hNx
+                  have hlet : Step D funs₁ V st
+                      (.stmt (.letDecl xs (some (.call f as))))
+                      (.sres V st₁' .halt) := Step.letHalt hcall
+                  cases hres' with
+                  | refl =>
+                      refine ⟨_, Step.seqStop hlet (by simp), ?_⟩
+                      exact .haltIns (bindZeros D xs) _ _
+                  | haltIns Zp =>
+                      refine ⟨_, Step.seqStop hlet (by simp), ?_⟩
+                      rw [show Zp ++ (bindZeros D xs ++ V) =
+                        (Zp ++ bindZeros D xs) ++ V from
+                        (List.append_assoc _ _ _).symm]
+                      exact .haltIns (Zp ++ bindZeros D xs) _ _
+      · -- siteAssign, seqCons
+        subst hpc
+        obtain ⟨hlen_as, hlen_xs, hxnd, hnc, hsh, hxout, -⟩ := siteOK_inv hok
+        obtain ⟨body₀, cenv₀, hlk₀X, hb₀X, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
+        have hlk₀ : lookupFun funs₁ f = some (⟨d.ps, d.rs, body₀⟩, cenv₀) := hlk₀X
+        have hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave] := hb₀X
+        have hZv : ∀ y ∈ varsList as, y ∉ (([] : VEnv D)).map Prod.fst := by
+          intro y hy; simp
+        rcases peelBody hs (by rw [hs₂eq]) hsc hlen_as hnc hsh hxout hlen_xs hZv
+            funs₁ cenv₀ hagbody hR
+          with ⟨argvals, st1', Vend, hargs, hbody, hV1, -⟩
+            | ⟨argvals, st1', Vend, hargs, hbody, hV1, ho⟩
+            | ⟨hargs, hV1, ho⟩
+        · obtain ⟨oc, hbody', hoc⟩ := body_denormalize_ok hb₀ hbody
+          have hcall : Step D funs₁ V st (.expr (.call f as))
+              (.eres (.vals (d.rs.map (fun r => (VEnv.get Vend r).getD
+                (evmWithExternal calls creates).zero)) st1)) := by
+            refine Step.callOk hargs hlk₀ ?_ hbody' hoc
+            show argvals.length = d.ps.length
+            have := args_length hargs; omega
+          have hassign : Step D funs₁ V st (.stmt (.assign xs (.call f as)))
+              (.sres (VEnv.setMany V xs (d.rs.map (fun r => (VEnv.get Vend r).getD
+                (evmWithExternal calls creates).zero))) st1 .normal) :=
+            Step.assignVal hcall (by simp only [List.length_map]; omega)
+          simp only [List.nil_append] at hV1
+          obtain ⟨res₂', hs₂', hres₂⟩ := cy_bwd hrest hR hΔ hrestrel
+          rw [hV1] at hs₂'
+          cases hres₂ with
+          | refl => exact ⟨_, Step.seqCons hassign hs₂', .refl _⟩
+          | haltIns Zp => exact ⟨_, Step.seqCons hassign hs₂', .haltIns _ _ _⟩
+        · exact absurd ho (by simp)
+        · exact absurd ho (by simp)
+      · -- siteExpr, seqCons
+        subst hpc
+        obtain ⟨hlen_as, hlen_xs, -, hnc, hsh, -, -⟩ := siteOK_inv hok
+        obtain ⟨body₀, cenv₀, hlk₀X, hb₀X, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
+        have hlk₀ : lookupFun funs₁ f = some (⟨d.ps, d.rs, body₀⟩, cenv₀) := hlk₀X
+        have hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave] := hb₀X
+        have hrs0 : d.rs = [] := by
+          cases hrs : d.rs with
+          | nil => rfl
+          | cons r rs' => rw [hrs] at hlen_xs; simp at hlen_xs
+        have hZv : ∀ y ∈ varsList as, y ∉ (([] : VEnv D)).map Prod.fst := by
+          intro y hy; simp
+        rcases peelBody hs (by rw [hs₂eq]) hsc hlen_as hnc hsh
+            (fun x hx => by cases hx) hlen_xs hZv funs₁ cenv₀ hagbody hR
+          with ⟨argvals, st1', Vend, hargs, hbody, hV1, -⟩
+            | ⟨argvals, st1', Vend, hargs, hbody, hV1, ho⟩
+            | ⟨hargs, hV1, ho⟩
+        · obtain ⟨oc, hbody', hoc⟩ := body_denormalize_ok hb₀ hbody
+          have hcall : Step D funs₁ V st (.expr (.call f as)) (.eres (.vals [] st1)) := by
+            have hc := Step.callOk hargs hlk₀ (by
+              show argvals.length = d.ps.length
+              have := args_length hargs; omega) hbody' hoc
+            rw [show (⟨d.ps, d.rs, body₀⟩ : FDecl D).rets = d.rs from rfl, hrs0] at hc
+            exact hc
+          have hstmt : Step D funs₁ V st (.stmt (.exprStmt (.call f as)))
+              (.sres V st1 .normal) := Step.exprStmt hcall
+          have hV1' : V1 = V := by rw [hV1]; rfl
+          obtain ⟨res₂', hs₂', hres₂⟩ := cy_bwd hrest hR hΔ hrestrel
+          rw [hV1'] at hs₂'
+          cases hres₂ with
+          | refl => exact ⟨_, Step.seqCons hstmt hs₂', .refl _⟩
+          | haltIns Zp => exact ⟨_, Step.seqCons hstmt hs₂', .haltIns _ _ _⟩
+        · exact absurd ho (by simp)
+        · exact absurd ho (by simp)
   | @Step.seqStop _ _ _ V st s₂ rest₂ V1 st1 o hs hne =>
       intro funs₁ Δ pc hR hΔ hrel
       rcases cyRel_stmts_cons_inv_bwd hrel with
         ⟨s, rest, rfl, hsrel, hrestrel⟩
-        | ⟨f, d, xs, as, rest, rest', hpc, hs₂eq, hrest₂eq, hld, hnd, hsc, hok, hrestrel⟩
+        | ⟨f, d, xs, as, rest, hpc, hs₂eq, hld, hnd, hsc, hok, hsiteA⟩
         | ⟨f, d, xs, as, rest, hpc, hs₂eq, hld, hnd, hsc, hok, hrestrel⟩
         | ⟨f, d, as, rest, hpc, hs₂eq, hld, hnd, hsc, hok, hrestrel⟩
       · obtain ⟨res₁, hs₁, heq₁⟩ := cy_bwd hs hR hΔ hsrel
         have heq₁X : _ = res₁ := heq₁; rw [← heq₁X] at hs₁
         exact ⟨_, Step.seqStop hs₁ hne, .refl _⟩
       · rw [hs₂eq] at hs; cases hs; exact absurd rfl hne
-      · subst hpc; sorry
-      · subst hpc; sorry
+      · -- siteAssign, seqStop
+        subst hpc
+        obtain ⟨hlen_as, hlen_xs, hxnd, hnc, hsh, hxout, -⟩ := siteOK_inv hok
+        obtain ⟨body₀, cenv₀, hlk₀X, hb₀X, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
+        have hlk₀ : lookupFun funs₁ f = some (⟨d.ps, d.rs, body₀⟩, cenv₀) := hlk₀X
+        have hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave] := hb₀X
+        have hZv : ∀ y ∈ varsList as, y ∉ (([] : VEnv D)).map Prod.fst := by
+          intro y hy; simp
+        rcases peelBody hs (by rw [hs₂eq]) hsc hlen_as hnc hsh hxout hlen_xs hZv
+            funs₁ cenv₀ hagbody hR
+          with ⟨argvals, st1', Vend, hargs, hbody, hV1, ho⟩
+            | ⟨argvals, st1', Vend, hargs, hbody, hV1, ho⟩
+            | ⟨hargs, hV1, ho⟩
+        · exact absurd ho hne
+        · have hbody' := body_denormalize_halt hb₀ hbody
+          have hcall : Step D funs₁ V st (.expr (.call f as)) (.eres (.halt st1)) := by
+            refine Step.callHalt hargs hlk₀ ?_ hbody'
+            show argvals.length = d.ps.length
+            have := args_length hargs; omega
+          subst hV1 ho
+          exact ⟨_, Step.seqStop (Step.assignHalt hcall) (by simp), .refl _⟩
+        · have hcall : Step D funs₁ V st (.expr (.call f as)) (.eres (.halt st1)) :=
+            Step.callArgsHalt hargs
+          subst hV1 ho
+          exact ⟨_, Step.seqStop (Step.assignHalt hcall) (by simp), .refl _⟩
+      · -- siteExpr, seqStop
+        subst hpc
+        obtain ⟨hlen_as, hlen_xs, -, hnc, hsh, -, -⟩ := siteOK_inv hok
+        obtain ⟨body₀, cenv₀, hlk₀X, hb₀X, hagbody⟩ := hΔ (f, d) (lookupDelta_mem hld)
+        have hlk₀ : lookupFun funs₁ f = some (⟨d.ps, d.rs, body₀⟩, cenv₀) := hlk₀X
+        have hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave] := hb₀X
+        have hZv : ∀ y ∈ varsList as, y ∉ (([] : VEnv D)).map Prod.fst := by
+          intro y hy; simp
+        rcases peelBody hs (by rw [hs₂eq]) hsc hlen_as hnc hsh
+            (fun x hx => by cases hx) hlen_xs hZv funs₁ cenv₀ hagbody hR
+          with ⟨argvals, st1', Vend, hargs, hbody, hV1, ho⟩
+            | ⟨argvals, st1', Vend, hargs, hbody, hV1, ho⟩
+            | ⟨hargs, hV1, ho⟩
+        · exact absurd ho hne
+        · have hbody' := body_denormalize_halt hb₀ hbody
+          have hcall : Step D funs₁ V st (.expr (.call f as)) (.eres (.halt st1)) := by
+            refine Step.callHalt hargs hlk₀ ?_ hbody'
+            show argvals.length = d.ps.length
+            have := args_length hargs; omega
+          subst hV1 ho
+          exact ⟨_, Step.seqStop (Step.exprStmtHalt hcall) (by simp), .refl _⟩
+        · have hcall : Step D funs₁ V st (.expr (.call f as)) (.eres (.halt st1)) :=
+            Step.callArgsHalt hargs
+          subst hV1 ho
+          exact ⟨_, Step.seqStop (Step.exprStmtHalt hcall) (by simp), .refl _⟩
   | .loopDone hc hcz =>
       intro funs₁ Δ pc hR hΔ hrel; cases hrel with
       | loopL hpost hbody =>
@@ -919,6 +1149,81 @@ theorem carry_body_bwd {funs₂ : FunEnv D} {V₂ : VEnv D} {st : EvmState}
       intro A W' bound cenv funs₁ W hV hsc hb hag hR
       exact absurd hsc (by simp [carryBodyCode, carryCode])
   termination_by structural h
+
+/-- **Structural inlineCore inversion.** A target run of `inlineCore d xs as`
+dissects into the source call's constituents (argument evaluation, callee body
+run under the *source* callee env `cenv₀`, read-out), with the carry body
+transferred back via `carry_body_bwd`. Structural on the whole block derivation
+(so the callee body stays a genuine subterm). -/
+theorem peelBody {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
+    {funs₂ : FunEnv D} {V Z : VEnv D} {st : EvmState}
+    {codeP : Code Op} {Vr : VEnv D} {str : EvmState} {o : Outcome}
+    (hs : Step D funs₂ (Z ++ V) st codeP (.sres Vr str o))
+    (hcodeP : codeP = .stmt (inlineCore d xs as))
+    (hsc : carryStmts (d.ps ++ d.rs) d.ss = true)
+    (hlen_as : as.length = d.ps.length) (hnc : argsHaveCall as = false)
+    (hsh : argsShadowOK d.rs (d.ps.zip as) = true)
+    (hxout : ∀ x ∈ xs, x ∉ d.ps ++ d.rs) (hlen_xs : xs.length = d.rs.length)
+    (hZ : ∀ y ∈ varsList as, y ∉ Z.map Prod.fst)
+    (funs₁ cenv₀ : FunEnv D)
+    (hagbody : ∀ g ∈ stmtsCallNames d.ss, lookupFun funs₁ g = lookupFun cenv₀ g)
+    (hR : CyFunsRel (calls := calls) (creates := creates) funs₁ funs₂) :
+    (∃ argvals st1 Vend,
+      Step D funs₁ V st (.args as) (.eres (.vals argvals st1)) ∧
+      Step D cenv₀ (d.ps.zip argvals ++ bindZeros D d.rs) st1
+        (.stmt (.block d.ss)) (.sres Vend str .normal) ∧
+      Vr = VEnv.setMany (Z ++ V) xs (d.rs.map
+        (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)) ∧
+      o = .normal) ∨
+    (∃ argvals st1 Vend,
+      Step D funs₁ V st (.args as) (.eres (.vals argvals st1)) ∧
+      Step D cenv₀ (d.ps.zip argvals ++ bindZeros D d.rs) st1
+        (.stmt (.block d.ss)) (.sres Vend str .halt) ∧
+      Vr = Z ++ V ∧ o = .halt) ∨
+    (Step D funs₁ V st (.args as) (.eres (.halt str)) ∧
+      Vr = Z ++ V ∧ o = .halt) := by
+  sorry
+
+/-- The argument-let peel + carry body transfer + read-out, structural on the
+statement-sequence derivation.  `Pfr` are the still-to-peel argument pairs in
+argLets order; `Ppeeled`/`valsDone` the already-peeled ones, threaded via the
+source-side accumulator `hacc`. -/
+theorem peelArgs {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
+    {funs₁ cenv₀ funsI Sfuns : FunEnv D} {V Z : VEnv D} {st : EvmState}
+    {Ecur : VEnv D} {st_cur : EvmState} {Lrem : List (Stmt Op)}
+    {Vinner : VEnv D} {str : EvmState} {o : Outcome}
+    (hseq : Step D Sfuns Ecur st_cur (.stmts Lrem) (.sres Vinner str o))
+    {Pfr Ppeeled : List (Ident × Expr Op)} {valsDone : List U256}
+    (hP : Pfr.reverse ++ Ppeeled = d.ps.zip as)
+    (hLrem : Lrem = Pfr.map (fun pa => Stmt.letDecl [pa.1] (some pa.2))
+      ++ [Stmt.block d.ss] ++ (xs.zip d.rs).map (fun xr => Stmt.assign [xr.1] (Expr.var xr.2)))
+    (hEcur : Ecur = (Ppeeled.map Prod.fst).zip valsDone ++ (bindZeros D d.rs ++ (Z ++ V)))
+    (hacc : Step D funs₁ V st (.args (Ppeeled.map Prod.snd))
+      (.eres (.vals valsDone st_cur)))
+    (hvlen : valsDone.length = Ppeeled.length)
+    (hsc : carryStmts (d.ps ++ d.rs) d.ss = true)
+    (hlen_as : as.length = d.ps.length) (hnc : argsHaveCall as = false)
+    (hsh : argsShadowOK d.rs (d.ps.zip as) = true)
+    (hxout : ∀ x ∈ xs, x ∉ d.ps ++ d.rs) (hlen_xs : xs.length = d.rs.length)
+    (hZ : ∀ y ∈ varsList as, y ∉ Z.map Prod.fst)
+    (hRb : CyFunsRel (calls := calls) (creates := creates) funsI Sfuns)
+    (hag_body : FunsAgree (calls := calls) (creates := creates) cenv₀ funsI
+      (carryCallNames (.stmts d.ss))) :
+    (∃ argvals st1 Vend,
+      Step D funs₁ V st (.args as) (.eres (.vals argvals st1)) ∧
+      Step D cenv₀ (d.ps.zip argvals ++ bindZeros D d.rs) st1
+        (.stmt (.block d.ss)) (.sres Vend str .normal) ∧
+      Vinner = Vend ++ VEnv.setMany (Z ++ V) xs (d.rs.map
+        (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)) ∧
+      o = .normal) ∨
+    (∃ argvals st1 Vend,
+      Step D funs₁ V st (.args as) (.eres (.vals argvals st1)) ∧
+      Step D cenv₀ (d.ps.zip argvals ++ bindZeros D d.rs) st1
+        (.stmt (.block d.ss)) (.sres Vend str .halt) ∧
+      Vinner = Vend ++ (Z ++ V) ∧ o = .halt) ∨
+    (∃ M : VEnv D, Step D funs₁ V st (.args as) (.eres (.halt str)) ∧
+      Vinner = M ++ (Z ++ V) ∧ o = .halt) := by
+  sorry
 
 end
 
