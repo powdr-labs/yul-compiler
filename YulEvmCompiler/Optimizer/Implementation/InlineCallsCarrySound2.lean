@@ -1,4 +1,4 @@
-import YulEvmCompiler.Optimizer.Implementation.CyScratch
+import YulEvmCompiler.Optimizer.Implementation.InlineCallsCarrySoundFwd
 set_option warningAsError false
 set_option linter.unusedVariables false
 set_option maxHeartbeats 8000000
@@ -1334,5 +1334,43 @@ theorem peelArgs {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
   sorry
 
 end
+
+/-- Related blocks are pointwise equivalent (forward via `cy_fwd`, backward via
+`cy_bwd`). -/
+theorem CyRel.equivBlock {b b' : Block Op}
+    (h : CyRel (carryDeltaExtend [] b) (.stmts b) (.stmts b')) :
+    EquivBlock D b b' := by
+  intro funs V st V' st' o
+  constructor
+  · intro hstep
+    obtain ⟨res₂, hs₂, hres⟩ := cy_fwd hstep (CyFunsRel.refl funs)
+      (CarryCompat.nil funs) (CyRel.blockS h)
+    rw [show res₂ = _ from hres] at hs₂
+    exact hs₂
+  · intro hstep
+    obtain ⟨res₁, hs₁, hres⟩ := cy_bwd hstep (CyFunsRel.refl funs)
+      (CarryCompat.nil funs) (CyRel.blockS h)
+    have hresX : _ = res₁ := hres
+    rw [← hresX] at hs₁
+    exact hs₁
+
+/-- The **InlineCallsCarry pass**: call-carrying statement inlining, bundled with
+its soundness proof. -/
+def inlineCallsCarry : LocalPass D where
+  run := inlineCallsCarryBlock
+  sound := fun b => CyRel.equivBlock
+    (by
+      rw [show inlineCallsCarryBlock b = cyStmts (carryDeltaExtend [] b) b by
+        rw [inlineCallsCarryBlock, cyBlock]]
+      exact cyStmts_rel (carryDeltaExtend [] b) (CarryWF.nil.extend b) b)
+
+@[simp] theorem inlineCallsCarry_run (b : Block Op) :
+    (inlineCallsCarry (calls := calls) (creates := creates)).run b =
+      inlineCallsCarryBlock b := rfl
+
+/-- PROTOTYPE: resolution congruence deliberately unproven (parallel deliverable). -/
+theorem resolveInlineCallsCarryBlock_equiv (L : Layout) (b : Block Op) :
+    EquivBlock D (resolveForLayoutStmts L b)
+      (resolveForLayoutStmts L (inlineCallsCarryBlock b)) := sorry
 
 end YulEvmCompiler.Optimizer

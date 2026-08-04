@@ -2,7 +2,7 @@ import YulEvmCompiler.Optimizer.Implementation.InlineHelpersResolve
 import YulEvmCompiler.Optimizer.Implementation.PropagateResolve
 import YulEvmCompiler.Optimizer.Implementation.DeadLitsResolve
 import YulEvmCompiler.Optimizer.Implementation.InlineCallsResolve
-import YulEvmCompiler.Optimizer.Implementation.InlineCallsCarry
+import YulEvmCompiler.Optimizer.Implementation.InlineCallsCarrySound2
 import YulEvmCompiler.Optimizer.Implementation.DeadPureResolve
 import YulEvmCompiler.Optimizer.Implementation.DeadResultsResolve
 import YulEvmCompiler.Optimizer.Implementation.FreshenCallsResolve

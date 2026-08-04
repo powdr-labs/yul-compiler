@@ -258,14 +258,8 @@ end
 /-- Pass entry point. -/
 def inlineCallsCarryBlock (b : Block Op) : Block Op := cyBlock [] b
 
-/-- PROTOTYPE: soundness deliberately unproven (measurement first). -/
-def inlineCallsCarry : LocalPass D where
-  run := inlineCallsCarryBlock
-  sound := sorry
-
-/-- PROTOTYPE: resolution congruence deliberately unproven. -/
-theorem resolveInlineCallsCarryBlock_equiv (L : Layout) (b : Block Op) :
-    EquivBlock D (resolveForLayoutStmts L b)
-      (resolveForLayoutStmts L (inlineCallsCarryBlock b)) := sorry
+-- The `inlineCallsCarry : LocalPass D` bundle and its `resolveInlineCallsCarryBlock_equiv`
+-- resolution congruence live in `InlineCallsCarrySound2` (they require the
+-- `cy_fwd`/`cy_bwd` simulation, which would form an import cycle here).
 
 end YulEvmCompiler.Optimizer
