@@ -9,6 +9,7 @@ import YulEvmCompiler.Optimizer.Implementation.HoistCallsResolve
 import YulEvmCompiler.Optimizer.Implementation.StorageForwardResolve
 import YulEvmCompiler.Optimizer.Implementation.CoalesceCopiesResolve
 import YulEvmCompiler.Optimizer.Implementation.RejoinPairs
+import YulEvmCompiler.Optimizer.Implementation.DispatchTree
 import YulEvmCompiler.Optimizer.Implementation.DeadStores
 import YulEvmCompiler.Optimizer.Implementation.StructurePasses
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
@@ -110,7 +111,7 @@ readback regions dead within a single round — so the stage runs three times,
 draining up to three regions per sequence per round instead of spending a
 full round on each. -/
 def blockRound : List (LocalPass D) :=
-  [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
+  [simplify, dispatchTree, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
    flatten, fuseDeclAssign,
    storageForward, simplify, coalesceCopies, reuseValues, rejoinPairs, deadPure,
    deadStores, deadResults, deadResults, deadResults, pruneDefs]
@@ -120,7 +121,7 @@ the smart stack layout would otherwise re-slot, which can defeat the layout
 rescue on stack-frontier objects (measured: `PoolLiquidity`); the compile
 fallback chain therefore also retries the full pipeline without it. -/
 def blockRoundNoRejoin : List (LocalPass D) :=
-  [simplify, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
+  [simplify, dispatchTree, propagate, inlineHelpersPass true, hoistCalls, freshenCalls, inlineCalls,
    flatten, fuseDeclAssign,
    storageForward, simplify, coalesceCopies, reuseValues, deadPure,
    deadStores, deadResults, deadResults, deadResults, pruneDefs]
@@ -208,6 +209,7 @@ theorem resolveInlineHelpersObjBlock_equiv (L : Layout) (b : Block Op) :
 /-- One object-path round, with each stage's resolution congruence. -/
 def objectRound : List (RPass calls creates) :=
   [⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
+   ⟨dispatchTree, fun L b => resolveDispatchTreeBlock_equiv L b⟩,
    ⟨inlineHelpersObj, fun L b => resolveInlineHelpersObjBlock_equiv L b⟩,
    ⟨propagate, fun L b => by
       have hp := resolvePropagateBlock_equiv (calls := calls) (creates := creates) L b
@@ -232,6 +234,7 @@ def objectRound : List (RPass calls creates) :=
 /-- The object-path round without `rejoinPairs` (see `blockRoundNoRejoin`). -/
 def objectRoundNoRejoin : List (RPass calls creates) :=
   [⟨simplify, fun L b => resolveSimplifyBlock_equiv L b⟩,
+   ⟨dispatchTree, fun L b => resolveDispatchTreeBlock_equiv L b⟩,
    ⟨inlineHelpersObj, fun L b => resolveInlineHelpersObjBlock_equiv L b⟩,
    ⟨propagate, fun L b => by
       have hp := resolvePropagateBlock_equiv (calls := calls) (creates := creates) L b

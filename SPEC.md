@@ -50,12 +50,12 @@ The shape of each guarantee. Read these first: the honest scoping lives here.
 | declaration | source | hash |
 |---|---|---|
 | `YulEvmCompiler.Optimizer.LocalPass.optimize_then_compile_correct` | [YulEvmCompiler/Optimizer/Spec/Backend.lean#L30](YulEvmCompiler/Optimizer/Spec/Backend.lean#L30) | `d0b206bd07992491` |
-| `YulEvmCompiler.compileObject_consistent` | [YulEvmCompiler/ObjectCompile.lean#L1030](YulEvmCompiler/ObjectCompile.lean#L1030) | `6772c506631c72d` |
-| `YulEvmCompiler.compileObject_correct` | [YulEvmCompiler/ObjectCompile.lean#L1053](YulEvmCompiler/ObjectCompile.lean#L1053) | `6c28d636cabfed71` |
+| `YulEvmCompiler.compileObject_consistent` | [YulEvmCompiler/ObjectCompile.lean#L1038](YulEvmCompiler/ObjectCompile.lean#L1038) | `6772c506631c72d` |
+| `YulEvmCompiler.compileObject_correct` | [YulEvmCompiler/ObjectCompile.lean#L1061](YulEvmCompiler/ObjectCompile.lean#L1061) | `6c28d636cabfed71` |
 | `YulEvmCompiler.compile_correct` | [YulEvmCompiler/Correctness.lean#L71](YulEvmCompiler/Correctness.lean#L71) | `5da903b63e70655d` |
 | `YulEvmCompiler.compile_correct_eval` | [YulEvmCompiler/Correctness.lean#L267](YulEvmCompiler/Correctness.lean#L267) | `44f9f79182ec7eda` |
 | `YulEvmCompiler.compile_correct_withPayload` | [YulEvmCompiler/Correctness.lean#L179](YulEvmCompiler/Correctness.lean#L179) | `7fe10d0f9ce8438a` |
-| `YulEvmCompiler.compiled_constructor_returns` | [YulEvmCompiler/ObjectCompile.lean#L1091](YulEvmCompiler/ObjectCompile.lean#L1091) | `9a99d76f5d037853` |
+| `YulEvmCompiler.compiled_constructor_returns` | [YulEvmCompiler/ObjectCompile.lean#L1099](YulEvmCompiler/ObjectCompile.lean#L1099) | `9a99d76f5d037853` |
 | `YulParser.parse_canon_block` | [YulParser/Stmt.lean#L313](YulParser/Stmt.lean#L313) | `565944a3acfe55d3` |
 | `YulParser.parse_canon_obj` | [YulParser/Obj.lean#L139](YulParser/Obj.lean#L139) | `f40759b3ea852432` |
 
@@ -73,7 +73,7 @@ How a source state/outcome corresponds to a target state/outcome. The heart of t
 | `YulEvmCompiler.LogsMatch` | [YulEvmCompiler/StateRel.lean#L942](YulEvmCompiler/StateRel.lean#L942) | `6d1d2dd35bc25e39` |
 | `YulEvmCompiler.MemMatch` | [YulEvmCompiler/StateRel.lean#L32](YulEvmCompiler/StateRel.lean#L32) | `e48211ef54b0d862` |
 | `YulEvmCompiler.Optimizer.Sound` | [YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L64](YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L64) | `d9d7947b1bb2287` |
-| `YulEvmCompiler.RunResolvedObject` | [YulEvmCompiler/ObjectCompile.lean#L1047](YulEvmCompiler/ObjectCompile.lean#L1047) | `22471129a83f65e3` |
+| `YulEvmCompiler.RunResolvedObject` | [YulEvmCompiler/ObjectCompile.lean#L1055](YulEvmCompiler/ObjectCompile.lean#L1055) | `22471129a83f65e3` |
 | `YulEvmCompiler.SelfdestructEntryMatch` | [YulEvmCompiler/StateRel.lean#L956](YulEvmCompiler/StateRel.lean#L956) | `3b1f6c17c9cc3b3f` |
 | `YulEvmCompiler.SelfdestructsMatch` | [YulEvmCompiler/StateRel.lean#L963](YulEvmCompiler/StateRel.lean#L963) | `8fb6a9b19498848` |
 | `YulParser.Parser` | [YulParser/Core.lean#L13](YulParser/Core.lean#L13) | `c3c38aa9630539e` |
@@ -118,7 +118,7 @@ Concrete spec-level functions (outcome maps, canonicalisation, byte assembly).
 | `YulEvmCompiler.resolveForLayoutStmt` | [YulEvmCompiler/ObjectResolve.lean#L45](YulEvmCompiler/ObjectResolve.lean#L45) | `ef48ed8902b73d01` |
 | `YulEvmCompiler.resolveForLayoutStmts` | [YulEvmCompiler/ObjectResolve.lean#L71](YulEvmCompiler/ObjectResolve.lean#L71) | `e61eedc003fbb530` |
 | `YulEvmCompiler.resultOf` | [YulEvmCompiler/StateRel.lean#L1264](YulEvmCompiler/StateRel.lean#L1264) | `9a4fae748007bd7b` |
-| `YulEvmCompiler.unpatchedImmutables` | [YulEvmCompiler/Compile.lean#L342](YulEvmCompiler/Compile.lean#L342) | `4350bdab12d0a1ca` |
+| `YulEvmCompiler.unpatchedImmutables` | [YulEvmCompiler/Compile.lean#L343](YulEvmCompiler/Compile.lean#L343) | `4350bdab12d0a1ca` |
 | `YulParser.afterBlockComment` | [YulParser/Tokens.lean#L30](YulParser/Tokens.lean#L30) | `5deac78dd9073c67` |
 | `YulParser.canon` | [YulParser/Canon.lean#L82](YulParser/Canon.lean#L82) | `b2d8eb356dc83a9c` |
 | `YulParser.decDigitVal` | [YulParser/Canon.lean#L52](YulParser/Canon.lean#L52) | `aa9b35f8e24246bf` |
@@ -162,7 +162,7 @@ The code being verified. Only the signatures are frozen; implementations are fre
 
 | declaration | source | hash |
 |---|---|---|
-| `YulEvmCompiler.compile` | [YulEvmCompiler/Compile.lean#L352](YulEvmCompiler/Compile.lean#L352) | `8db82c40ac47d5a6` |
+| `YulEvmCompiler.compile` | [YulEvmCompiler/Compile.lean#L353](YulEvmCompiler/Compile.lean#L353) | `8db82c40ac47d5a6` |
 | `YulEvmCompiler.compileObject` | [YulEvmCompiler/ObjectCompile.lean#L927](YulEvmCompiler/ObjectCompile.lean#L927) | `45cacb379f48e375` |
 | `YulParser.parseBlock` | [YulParser/Stmt.lean#L305](YulParser/Stmt.lean#L305) | `548f44114c0c0376` |
 | `YulParser.parseObject` | [YulParser/Obj.lean#L131](YulParser/Obj.lean#L131) | `7de98252fdadddab` |

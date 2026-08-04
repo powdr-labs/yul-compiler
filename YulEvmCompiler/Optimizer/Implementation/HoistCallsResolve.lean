@@ -19,6 +19,66 @@ private theorem resolve_hoistUnaryCore (L : Layout) (P : String)
     resolveForLayoutStmt_letDecl, resolveForLayoutStmt_assign,
     resolveForLayoutExpr, resolveForLayoutExprs]
 
+private theorem resolve_hoistBuiltinArg (L : Layout) (P : String) (op : Op)
+    (p g : Ident) (gas : List (Expr Op)) :
+    resolveForLayoutStmt L (hoistBuiltinArg P op p g gas) =
+      hoistBuiltinArg P op p g (resolveForLayoutExprs L gas) := by
+  simp [hoistBuiltinArg, resolveForLayoutStmt_block,
+    resolveForLayoutStmt_letDecl, resolveForLayoutStmt_exprStmt,
+    resolveForLayoutExpr, resolveForLayoutExprs]
+
+private theorem resolve_hoistBuiltinArgLit (L : Layout) (P : String) (op : Op)
+    (c : Literal) (g : Ident) (gas : List (Expr Op)) :
+    resolveForLayoutStmt L (hoistBuiltinArgLit P op c g gas) =
+      hoistBuiltinArgLit P op c g (resolveForLayoutExprs L gas) := by
+  simp [hoistBuiltinArgLit, resolveForLayoutStmt_block,
+    resolveForLayoutStmt_letDecl, resolveForLayoutStmt_exprStmt,
+    resolveForLayoutExpr, resolveForLayoutExprs]
+
+/-- Resolution commutes with the expression-statement dispatch, up to
+`EquivStmt`. -/
+theorem resolveHcExprStmt_equiv (L : Layout) (P : String) (Δ : DEnv) (e : Expr Op) :
+    EquivStmt D (resolveForLayoutStmt L (.exprStmt e))
+      (resolveForLayoutStmt L (hcExprStmt P Δ e)) := by
+  unfold hcExprStmt
+  split
+  · next op p g gas =>
+      split
+      · next inner hlk =>
+          split
+          · next hw =>
+              obtain ⟨hnc, hpt⟩ := hoistBuiltinWanted_inv hw
+              rw [resolveForLayoutStmt_exprStmt, resolve_hoistBuiltinArg,
+                show resolveForLayoutExpr L (.builtin op [.var p, .call g gas])
+                    = .builtin op [.var p, .call g (resolveForLayoutExprs L gas)] from by
+                  simp [resolveForLayoutExpr, resolveForLayoutExprs]]
+              exact hoistBuiltinArg_equiv_of P op p g (resolveForLayoutExprs L gas)
+                (by rw [argsHaveCall_resolve]; exact hnc) hpt
+          · exact EquivStmt.refl _
+      · exact EquivStmt.refl _
+  · next op c g gas =>
+      split
+      · next inner hlk =>
+          split
+          · next hw =>
+              rw [resolveForLayoutStmt_exprStmt, resolve_hoistBuiltinArgLit,
+                show resolveForLayoutExpr L (.builtin op [.lit c, .call g gas])
+                    = .builtin op [.lit c, .call g (resolveForLayoutExprs L gas)] from by
+                  simp [resolveForLayoutExpr, resolveForLayoutExprs]]
+              exact hoistBuiltinArgLit_equiv_of P op c g (resolveForLayoutExprs L gas)
+                (by rw [argsHaveCall_resolve]; exact hoistBuiltinLitWanted_inv hw)
+          · exact EquivStmt.refl _
+      · exact EquivStmt.refl _
+  · exact EquivStmt.refl _
+
+/-- The resolved dispatch is never a `funDef`, so it drops out of `hoist`. -/
+private theorem hoist_cons_resolve_hcExprStmt (L : Layout) (P : String) (Δ : DEnv)
+    (e : Expr Op) (L' : List (Stmt Op)) :
+    hoist D (resolveForLayoutStmt L (hcExprStmt P Δ e) :: L') = hoist D L' := by
+  rcases hcExprStmt_shape P Δ e with ⟨b, hb⟩ | ⟨e', hb⟩ <;> rw [hb]
+  · rw [resolveForLayoutStmt_block]; simp [hoist]
+  · rw [resolveForLayoutStmt_exprStmt]; simp [hoist]
+
 mutual
 
 private theorem resolveHcStmt_equiv (L : Layout) (P : String) (Δ : DEnv) :
@@ -92,7 +152,7 @@ private theorem resolveHcStmt_equiv (L : Layout) (P : String) (Δ : DEnv) :
   | .assign xs (.call f [.var x]) => by simp only [hcStmt]; exact EquivStmt.refl _
   | .assign xs (.call f [.builtin op args]) => by simp only [hcStmt]; exact EquivStmt.refl _
   | .assign xs (.call f (a :: b :: rest)) => by simp only [hcStmt]; exact EquivStmt.refl _
-  | .exprStmt e => by simp only [hcStmt]; exact EquivStmt.refl _
+  | .exprStmt e => by rw [hcStmt]; exact resolveHcExprStmt_equiv L P Δ e
   | .break => by simp only [hcStmt]; exact EquivStmt.refl _
   | .continue => by simp only [hcStmt]; exact EquivStmt.refl _
   | .leave => by simp only [hcStmt]; exact EquivStmt.refl _
@@ -194,8 +254,15 @@ private theorem resolveHcScopeRel (L : Layout) (P : String) (Δ : DEnv) :
       resolveForLayoutStmt, hoist] using resolveHcScopeRel L P Δ rest
   | .forLoop _ _ _ _ :: rest => by simpa [hcStmts, hcStmt, resolveForLayoutStmts,
       resolveForLayoutStmt, hoist] using resolveHcScopeRel L P Δ rest
-  | .exprStmt _ :: rest => by simpa [hcStmts, hcStmt, resolveForLayoutStmts,
-      resolveForLayoutStmt, hoist] using resolveHcScopeRel L P Δ rest
+  | .exprStmt e :: rest => by
+      have hL : hoist D (resolveForLayoutStmts L (.exprStmt e :: rest))
+          = hoist D (resolveForLayoutStmts L rest) := by
+        rw [resolveForLayoutStmts, resolveForLayoutStmt_exprStmt]; simp [hoist]
+      have hR : hoist D (resolveForLayoutStmts L (hcStmts P Δ (.exprStmt e :: rest)))
+          = hoist D (resolveForLayoutStmts L (hcStmts P Δ rest)) := by
+        rw [hcStmts, hcStmt, resolveForLayoutStmts, hoist_cons_resolve_hcExprStmt]
+      rw [hL, hR]
+      exact resolveHcScopeRel L P Δ rest
   | .break :: rest => by simpa [hcStmts, hcStmt, resolveForLayoutStmts,
       resolveForLayoutStmt, hoist] using resolveHcScopeRel L P Δ rest
   | .continue :: rest => by simpa [hcStmts, hcStmt, resolveForLayoutStmts,

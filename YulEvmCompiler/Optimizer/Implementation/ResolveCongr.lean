@@ -299,6 +299,12 @@ theorem resolve_strengthTop_equiv (L : Layout) (e : Expr Op) :
                    | exact strength_div_equiv (by assumption)
                    | exact strength_mul_right_equiv (by assumption)
                    | exact strength_mul_left_equiv (by assumption)
+                   | exact strength_and_idem_equiv
+                   | exact strength_add_chain_equiv
+                   | exact strength_mul_chain_equiv
+                   | exact strength_or_chain_equiv
+                   | exact strength_xor_chain_equiv
+                   | exact strength_byte31_equiv (by assumption)
                    | exact strength_exp_base0_equiv (by assumption)
                    | exact strength_exp_base1_equiv (by assumption)
                    | exact strength_exp_base2_equiv (by assumption)

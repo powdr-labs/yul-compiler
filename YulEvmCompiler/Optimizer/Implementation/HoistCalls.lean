@@ -215,6 +215,581 @@ theorem hoistUnaryCore_equiv_of (P : String) (xs : List Ident) (f g : Ident)
             have hcall0 := Step.callArgsHalt (fn := f) hargs0
             simpa [restore] using (Step.assignHalt (vars := xs) hcall0)
 
+/-! ### Hoisting a call out of a builtin write argument
+
+solc's ABI encoders end at a write `op(pos, cleanup_T(value))` — a bare-variable
+position and a *nested* helper call as the (last) builtin argument. When the
+cleanup body is a single flat built-in (`and(v, mask)`) `InlineHelpers` inlines
+it in place; when it is a *nested* built-in (`cleanup_t_bool = iszero(iszero v)`)
+`InlineHelpers` cannot ingest it, so the call survives in argument position where
+the statement-level `InlineCalls` never reaches it — permanently pinning the whole
+encode chain (`abi_encode_t_bool` → `abi_encode_tuple_t_bool` → external) out of
+line. Hoisting the nested call to a preceding `let` exposes it to
+`FreshenCalls`/`InlineCalls`, collapsing the chain. Yul evaluates arguments
+right-to-left, so the trailing argument is the first sub-expression evaluated;
+lifting it out of the write therefore preserves evaluation order. -/
+
+/-- Reading a variable through a fresh cons is the same as reading it below. -/
+private theorem get_cons_fresh {t p : Ident} (hpt : t ≠ p) (w : U256) (W : VEnv D) :
+    VEnv.get ((t, w) :: W) p = VEnv.get W p := by
+  simp only [VEnv.get, List.find?_cons]
+  by_cases h : ((t, w).fst = p)
+  · exact absurd h hpt
+  · simp [h]
+
+/-- The hoisted form of a binary builtin write whose last argument is a call:
+`op(pos, g(gas))` ⟶ `{ let t := g(gas); op(pos, t) }`. -/
+def hoistBuiltinArg (P : String) (op : Op) (p g : Ident) (gas : List (Expr Op)) :
+    Stmt Op :=
+  let t := hoistedArg P
+  .block [.letDecl [t] (some (.call g gas)),
+    .exprStmt (.builtin op [.var p, .var t])]
+
+/-- Pure, total, state-independent ops (arithmetic/bitwise/comparison) — the
+`pureTotalArity` domain. Used only as a proof-free profitability gate. -/
+def hoistPureOp : Op → Bool
+  | .add | .sub | .mul | .div | .sdiv | .mod | .smod
+  | .signextend | .lt | .gt | .slt | .sgt | .eq
+  | .and | .or | .xor | .byte | .shl | .shr | .sar
+  | .clz | .iszero | .not | .addmod | .mulmod => true
+  | _ => false
+
+mutual
+/-- A pure, total, call-free expression tree over `bound`. Matches the
+`cleanup_t_*` shape (`iszero(iszero(v))`, `and(v, mask)`) `InlineHelpers` would
+inline but for the nested-builtin case. -/
+def hoistPureExpr (bound : List Ident) : Expr Op → Bool
+  | .lit _ => true
+  | .var x => bound.contains x
+  | .builtin op args => hoistPureOp op && hoistPureExprs bound args
+  | .call _ _ => false
+def hoistPureExprs (bound : List Ident) : List (Expr Op) → Bool
+  | [] => true
+  | e :: rest => hoistPureExpr bound e && hoistPureExprs bound rest
+end
+
+/-- The callee body is a single assignment of a pure-total expression over its
+parameters/returns — a "cleanup"-style scalar transform. Excludes effectful or
+multi-statement helpers (storage readers, struct/array copiers, allocators)
+whose inlining grows loop/codec frames (measured: aave `PositionStatusMap`
+loops and semantic array/storage codecs blew up when those were hoisted). -/
+def hoistInnerPure (d : IDecl) : Bool :=
+  match d.ss with
+  | [.assign _ e] => hoistPureExpr (d.ps ++ d.rs) e
+  | _ => false
+
+/-- Fire the builtin-argument hoist only when the freshly bound call is a
+pure-total single-expression cleanup (so `InlineCalls` consumes it next and the
+chain collapses without frame blowups), its arguments are call-free, and the
+fresh temporary is distinct from the position variable. -/
+def hoistBuiltinWanted (P : String) (inner : IDecl) (p : Ident)
+    (gas : List (Expr Op)) : Bool :=
+  let t := hoistedArg P
+  !gas.isEmpty && hoistInnerPure inner &&
+  inlineOK inner && !argsHaveCall gas && siteOK inner [t] gas true && !(p == t)
+
+theorem hoistBuiltinWanted_inv {P : String} {inner : IDecl} {p : Ident}
+    {gas : List (Expr Op)} (h : hoistBuiltinWanted P inner p gas = true) :
+    argsHaveCall gas = false ∧ hoistedArg P ≠ p := by
+  simp only [hoistBuiltinWanted, Bool.and_eq_true] at h
+  obtain ⟨⟨⟨_, hnc⟩, _⟩, hpt⟩ := h
+  refine ⟨by simpa using hnc, ?_⟩
+  intro he
+  simp [← he] at hpt
+
+/-- Soundness of the builtin-argument hoist: the write and its hoisted form
+execute identically from every configuration. -/
+theorem hoistBuiltinArg_equiv_of (P : String) (op : Op) (p g : Ident)
+    (gas : List (Expr Op)) (hnc : argsHaveCall gas = false)
+    (hpt : hoistedArg P ≠ p) :
+    EquivStmt D (.exprStmt (.builtin op [.var p, .call g gas]))
+      (hoistBuiltinArg P op p g gas) := by
+  set t := hoistedArg P with ht
+  intro funs V st V' st' o
+  have hzip : ∀ w : U256, restore V ([t].zip [w] ++ V) = V := fun w =>
+    restore_exact (calls := calls) (creates := creates)
+      (W := V) (Y := [t].zip [w]) (W' := V) rfl
+  have hcons : ∀ w : U256, restore V ((t, w) :: V) = V := fun w =>
+    restore_exact (calls := calls) (creates := creates)
+      (W := V) (Y := [(t, w)]) (W' := V) rfl
+  constructor
+  · intro h
+    cases h with
+    | @exprStmt _ _ _ _ sout hexpr =>
+        cases hexpr with
+        | @builtinOk _ _ _ _ _ argvals sA rets sB hargs hb =>
+            cases hargs with
+            | @argsCons _ _ _ _ _ rvP sMid vP sHead hrestP hheadP =>
+                cases hheadP with
+                | var hvp =>
+                    cases hrestP with
+                    | @argsCons _ _ _ _ _ rvC sInC vC sCall hrestC hcall =>
+                        cases hrestC with
+                        | argsNil =>
+                            have hcall' := call_emptyScope_fwd hcall hnc
+                            have hlet := Step.letVal (vars := [t]) hcall' rfl
+                            have ht_get : VEnv.get ((t, vC) :: V) t = some vC := by
+                              simp [VEnv.get]
+                            have hp_get : VEnv.get ((t, vC) :: V) p = some vP := by
+                              rw [get_cons_fresh hpt]; exact hvp
+                            have hexpr' := Step.exprStmt (Step.builtinOk
+                              (Step.argsCons
+                                (Step.argsCons (Step.argsNil (funs := [] :: funs))
+                                  (Step.var ht_get))
+                                (Step.var hp_get)) hb)
+                            have hseq := Step.seqCons hlet
+                              (Step.seqCons hexpr' Step.seqNil)
+                            have hblk := Step.block (funs := funs)
+                              (body := [.letDecl [t] (some (.call g gas)),
+                                .exprStmt (.builtin op [.var p, .var t])])
+                              (by simpa [hoist] using hseq)
+                            rw [hcons] at hblk
+                            simpa [hoistBuiltinArg, ht] using hblk
+    | @exprStmtHalt _ _ _ _ sout hexpr =>
+        cases hexpr with
+        | @builtinHalt _ _ _ _ _ argvals sA sB hargs hb =>
+            cases hargs with
+            | @argsCons _ _ _ _ _ rvP sMid vP sHead hrestP hheadP =>
+                cases hheadP with
+                | var hvp =>
+                    cases hrestP with
+                    | @argsCons _ _ _ _ _ rvC sInC vC sCall hrestC hcall =>
+                        cases hrestC with
+                        | argsNil =>
+                            have hcall' := call_emptyScope_fwd hcall hnc
+                            have hlet := Step.letVal (vars := [t]) hcall' rfl
+                            have ht_get : VEnv.get ((t, vC) :: V) t = some vC := by
+                              simp [VEnv.get]
+                            have hp_get : VEnv.get ((t, vC) :: V) p = some vP := by
+                              rw [get_cons_fresh hpt]; exact hvp
+                            have hexpr' := Step.exprStmtHalt (Step.builtinHalt
+                              (Step.argsCons
+                                (Step.argsCons (Step.argsNil (funs := [] :: funs))
+                                  (Step.var ht_get))
+                                (Step.var hp_get)) hb)
+                            have hseq := Step.seqCons hlet
+                              (Step.seqStop (rest := []) hexpr' (by decide))
+                            have hblk := Step.block (funs := funs)
+                              (body := [.letDecl [t] (some (.call g gas)),
+                                .exprStmt (.builtin op [.var p, .var t])])
+                              (by simpa [hoist] using hseq)
+                            rw [hcons] at hblk
+                            simpa [hoistBuiltinArg, ht] using hblk
+        | builtinArgsHalt hargs =>
+            cases hargs with
+            | argsRestHalt hrest =>
+                cases hrest with
+                | argsRestHalt hrest2 => cases hrest2
+                | argsHeadHalt hrest2 hcall =>
+                    cases hrest2 with
+                    | argsNil =>
+                        have hcall' := call_emptyScope_fwd hcall hnc
+                        have hlet := Step.letHalt (vars := [t]) hcall'
+                        have hseq := Step.seqStop
+                          (rest := [.exprStmt (.builtin op [.var p, .var t])])
+                          hlet (by decide)
+                        have hblk := Step.block (funs := funs)
+                          (body := [.letDecl [t] (some (.call g gas)),
+                            .exprStmt (.builtin op [.var p, .var t])])
+                          (by simpa [hoist] using hseq)
+                        simpa [hoistBuiltinArg, ht, restore] using hblk
+            | argsHeadHalt hrest hhead => cases hhead
+  · intro h
+    change Step D funs V st (.stmt (.block
+      [.letDecl [t] (some (.call g gas)),
+       .exprStmt (.builtin op [.var p, .var t])])) _ at h
+    cases h with
+    | block hb =>
+        simp only [hoist, List.filterMap_cons, List.filterMap_nil] at hb
+        cases hb with
+        | seqCons hlet hrest =>
+            cases hlet with
+            | @letVal _ _ _ _ _ vals st1 hcall hlen =>
+                cases vals with
+                | nil => simp at hlen
+                | cons vg vals =>
+                    cases vals with
+                    | cons w vals => simp at hlen
+                    | nil =>
+                        have hcall0 := call_emptyScope_bwd hcall hnc
+                        cases hrest with
+                        | seqCons hexpr hnil =>
+                            cases hnil with
+                            | seqNil =>
+                                cases hexpr with
+                                | @exprStmt _ _ _ _ stb hb2 =>
+                                    cases hb2 with
+                                    | @builtinOk _ _ _ _ _ argvals sA rets sB hargs2 hbb =>
+                                        cases hargs2 with
+                                        | @argsCons _ _ _ _ _ rvs2 sM2 vp2 sH2 hrp hhp =>
+                                            cases hhp with
+                                            | var hvp2 =>
+                                                cases hrp with
+                                                | @argsCons _ _ _ _ _ rvs3 sM3 vt sH3 hrt hht =>
+                                                    cases hrt with
+                                                    | argsNil =>
+                                                        cases hht with
+                                                        | var hvt =>
+                                                            have hvtv : vg = vt := by
+                                                              simpa [VEnv.get] using hvt
+                                                            have hvpV :
+                                                                VEnv.get V p = some vp2 := by
+                                                              rw [← get_cons_fresh hpt vg V]
+                                                              exact hvp2
+                                                            have hargs :=
+                                                              Step.argsCons
+                                                                (Step.argsCons
+                                                                  (Step.argsNil (funs := funs)
+                                                                    (V := V) (st := st))
+                                                                  (hvtv ▸ hcall0))
+                                                                (Step.var hvpV)
+                                                            have := Step.exprStmt
+                                                              (Step.builtinOk hargs hbb)
+                                                            rw [hzip]
+                                                            exact this
+                        | seqStop hexpr hne =>
+                            cases hexpr with
+                            | exprStmt _ => exact absurd rfl hne
+                            | @exprStmtHalt _ _ _ _ stb hb2 =>
+                                cases hb2 with
+                                | @builtinHalt _ _ _ _ _ argvals sA sB hargs2 hbb =>
+                                    cases hargs2 with
+                                    | @argsCons _ _ _ _ _ rvs2 sM2 vp2 sH2 hrp hhp =>
+                                        cases hhp with
+                                        | var hvp2 =>
+                                            cases hrp with
+                                            | @argsCons _ _ _ _ _ rvs3 sM3 vt sH3 hrt hht =>
+                                                cases hrt with
+                                                | argsNil =>
+                                                    cases hht with
+                                                    | var hvt =>
+                                                        have hvtv : vg = vt := by
+                                                          simpa [VEnv.get] using hvt
+                                                        have hvpV :
+                                                            VEnv.get V p = some vp2 := by
+                                                          rw [← get_cons_fresh hpt vg V]
+                                                          exact hvp2
+                                                        have hargs :=
+                                                          Step.argsCons
+                                                            (Step.argsCons
+                                                              (Step.argsNil (funs := funs)
+                                                                (V := V) (st := st))
+                                                              (hvtv ▸ hcall0))
+                                                            (Step.var hvpV)
+                                                        have := Step.exprStmtHalt
+                                                          (Step.builtinHalt hargs hbb)
+                                                        rw [hzip]
+                                                        exact this
+                                | builtinArgsHalt hargs2 =>
+                                    cases hargs2 with
+                                    | argsRestHalt hrp =>
+                                        cases hrp with
+                                        | argsRestHalt hrt => cases hrt
+                                        | argsHeadHalt hrt hht => cases hht
+                                    | argsHeadHalt hrp hhp => cases hhp
+        | seqStop hlet hne =>
+            cases hlet with
+            | letVal _ _ => exact absurd rfl hne
+            | @letHalt _ _ _ _ _ st1 hcall =>
+                have hcall0 := call_emptyScope_bwd hcall hnc
+                have hargs :=
+                  Step.argsRestHalt (e := .var p)
+                    (Step.argsHeadHalt
+                      (Step.argsNil (funs := funs) (V := V) (st := st)) hcall0)
+                have hcallhalt := Step.builtinArgsHalt (op := op) hargs
+                simpa [restore] using (Step.exprStmtHalt hcallhalt)
+
+/-! ### Hoisting a call out of a builtin write with a *literal* position
+
+The memory-spill fallback rewrites a statement-level `let x := f(args)` into
+`mstore(<literal slot>, f(args))`, burying the call inside a builtin argument
+whose position operand is a **literal**, not a variable — the shape the
+`.var p` arm above never matches, so the pure-total wrapper (`mul`/`sub`/`and`
+cleanup) stays out of line and is called per spill slot (measured: SwapMath's
+`mul` wrapper called 16×). Yul evaluates arguments right-to-left, so the
+trailing call runs first and the literal contributes only a premise-free
+`Step.lit`; hoisting is order-safe regardless of whether the call's own args
+read memory. -/
+
+/-- The hoisted form of a builtin write whose position is a literal:
+`op(<lit c>, g(gas))` ⟶ `{ let t := g(gas); op(<lit c>, t) }`. -/
+def hoistBuiltinArgLit (P : String) (op : Op) (c : Literal) (g : Ident)
+    (gas : List (Expr Op)) : Stmt Op :=
+  let t := hoistedArg P
+  .block [.letDecl [t] (some (.call g gas)),
+    .exprStmt (.builtin op [.lit c, .var t])]
+
+/-- Same profitability gate as `hoistBuiltinWanted`, minus the position-variable
+distinctness check (the position is a literal, always distinct from the fresh
+temporary). -/
+def hoistBuiltinLitWanted (P : String) (inner : IDecl) (gas : List (Expr Op)) : Bool :=
+  !gas.isEmpty && hoistInnerPure inner &&
+  inlineOK inner && !argsHaveCall gas && siteOK inner [hoistedArg P] gas true
+
+theorem hoistBuiltinLitWanted_inv {P : String} {inner : IDecl}
+    {gas : List (Expr Op)} (h : hoistBuiltinLitWanted P inner gas = true) :
+    argsHaveCall gas = false := by
+  simp only [hoistBuiltinLitWanted, Bool.and_eq_true] at h
+  obtain ⟨⟨⟨⟨_, _⟩, _⟩, hnc⟩, _⟩ := h
+  simpa using hnc
+
+/-- Soundness of the literal-position builtin-argument hoist. Mirrors
+`hoistBuiltinArg_equiv_of` with the position `.var p` replaced by the
+premise-free `.lit c` (no binding lookup, no position-freshness side condition).
+Yul evaluates the trailing call first, so lifting it into a preceding `let` and
+leaving the state-preserving literal in place is order-exact. -/
+theorem hoistBuiltinArgLit_equiv_of (P : String) (op : Op) (c : Literal) (g : Ident)
+    (gas : List (Expr Op)) (hnc : argsHaveCall gas = false) :
+    EquivStmt D (.exprStmt (.builtin op [.lit c, .call g gas]))
+      (hoistBuiltinArgLit P op c g gas) := by
+  set t := hoistedArg P with ht
+  intro funs V st V' st' o
+  have hcons : ∀ w : U256, restore V ((t, w) :: V) = V := fun w =>
+    restore_exact (calls := calls) (creates := creates)
+      (W := V) (Y := [(t, w)]) (W' := V) rfl
+  have hzip : ∀ w : U256, restore V ([t].zip [w] ++ V) = V := fun w =>
+    restore_exact (calls := calls) (creates := creates)
+      (W := V) (Y := [t].zip [w]) (W' := V) rfl
+  constructor
+  · intro h
+    cases h with
+    | @exprStmt _ _ _ _ sout hexpr =>
+        cases hexpr with
+        | @builtinOk _ _ _ _ _ argvals sA rets sB hargs hb =>
+            cases hargs with
+            | @argsCons _ _ _ _ _ rvP sMid vP sHead hrestP hheadP =>
+                cases hheadP with
+                | lit =>
+                    cases hrestP with
+                    | @argsCons _ _ _ _ _ rvC sInC vC sCall hrestC hcall =>
+                        cases hrestC with
+                        | argsNil =>
+                            have hcall' := call_emptyScope_fwd hcall hnc
+                            have hlet := Step.letVal (vars := [t]) hcall' rfl
+                            have ht_get : VEnv.get ((t, vC) :: V) t = some vC := by
+                              simp [VEnv.get]
+                            have hexpr' := Step.exprStmt (Step.builtinOk
+                              (Step.argsCons
+                                (Step.argsCons (Step.argsNil (funs := [] :: funs))
+                                  (Step.var ht_get))
+                                Step.lit) hb)
+                            have hseq := Step.seqCons hlet
+                              (Step.seqCons hexpr' Step.seqNil)
+                            have hblk := Step.block (funs := funs)
+                              (body := [.letDecl [t] (some (.call g gas)),
+                                .exprStmt (.builtin op [.lit c, .var t])])
+                              (by simpa [hoist] using hseq)
+                            rw [hcons] at hblk
+                            simpa [hoistBuiltinArgLit, ht] using hblk
+    | @exprStmtHalt _ _ _ _ sout hexpr =>
+        cases hexpr with
+        | @builtinHalt _ _ _ _ _ argvals sA sB hargs hb =>
+            cases hargs with
+            | @argsCons _ _ _ _ _ rvP sMid vP sHead hrestP hheadP =>
+                cases hheadP with
+                | lit =>
+                    cases hrestP with
+                    | @argsCons _ _ _ _ _ rvC sInC vC sCall hrestC hcall =>
+                        cases hrestC with
+                        | argsNil =>
+                            have hcall' := call_emptyScope_fwd hcall hnc
+                            have hlet := Step.letVal (vars := [t]) hcall' rfl
+                            have ht_get : VEnv.get ((t, vC) :: V) t = some vC := by
+                              simp [VEnv.get]
+                            have hexpr' := Step.exprStmtHalt (Step.builtinHalt
+                              (Step.argsCons
+                                (Step.argsCons (Step.argsNil (funs := [] :: funs))
+                                  (Step.var ht_get))
+                                Step.lit) hb)
+                            have hseq := Step.seqCons hlet
+                              (Step.seqStop (rest := []) hexpr' (by decide))
+                            have hblk := Step.block (funs := funs)
+                              (body := [.letDecl [t] (some (.call g gas)),
+                                .exprStmt (.builtin op [.lit c, .var t])])
+                              (by simpa [hoist] using hseq)
+                            rw [hcons] at hblk
+                            simpa [hoistBuiltinArgLit, ht] using hblk
+        | builtinArgsHalt hargs =>
+            cases hargs with
+            | argsRestHalt hrest =>
+                cases hrest with
+                | argsRestHalt hrest2 => cases hrest2
+                | argsHeadHalt hrest2 hcall =>
+                    cases hrest2 with
+                    | argsNil =>
+                        have hcall' := call_emptyScope_fwd hcall hnc
+                        have hlet := Step.letHalt (vars := [t]) hcall'
+                        have hseq := Step.seqStop
+                          (rest := [.exprStmt (.builtin op [.lit c, .var t])])
+                          hlet (by decide)
+                        have hblk := Step.block (funs := funs)
+                          (body := [.letDecl [t] (some (.call g gas)),
+                            .exprStmt (.builtin op [.lit c, .var t])])
+                          (by simpa [hoist] using hseq)
+                        simpa [hoistBuiltinArgLit, ht, restore] using hblk
+            | argsHeadHalt hrest hhead => cases hhead
+  · intro h
+    change Step D funs V st (.stmt (.block
+      [.letDecl [t] (some (.call g gas)),
+       .exprStmt (.builtin op [.lit c, .var t])])) _ at h
+    cases h with
+    | block hb =>
+        simp only [hoist, List.filterMap_cons, List.filterMap_nil] at hb
+        cases hb with
+        | seqCons hlet hrest =>
+            cases hlet with
+            | @letVal _ _ _ _ _ vals st1 hcall hlen =>
+                cases vals with
+                | nil => simp at hlen
+                | cons vg vals =>
+                    cases vals with
+                    | cons w vals => simp at hlen
+                    | nil =>
+                        have hcall0 := call_emptyScope_bwd hcall hnc
+                        cases hrest with
+                        | seqCons hexpr hnil =>
+                            cases hnil with
+                            | seqNil =>
+                                cases hexpr with
+                                | @exprStmt _ _ _ _ stb hb2 =>
+                                    cases hb2 with
+                                    | @builtinOk _ _ _ _ _ argvals sA rets sB hargs2 hbb =>
+                                        cases hargs2 with
+                                        | @argsCons _ _ _ _ _ rvs2 sM2 vp2 sH2 hrp hhp =>
+                                            cases hhp with
+                                            | lit =>
+                                                cases hrp with
+                                                | @argsCons _ _ _ _ _ rvs3 sM3 vt sH3 hrt hht =>
+                                                    cases hrt with
+                                                    | argsNil =>
+                                                        cases hht with
+                                                        | var hvt =>
+                                                            have hvtv : vg = vt := by
+                                                              simpa [VEnv.get] using hvt
+                                                            have hres := Step.exprStmt
+                                                              (Step.builtinOk
+                                                                (Step.argsCons
+                                                                  (Step.argsCons
+                                                                    (Step.argsNil (funs := funs)
+                                                                      (V := V) (st := st))
+                                                                    (hvtv ▸ hcall0))
+                                                                  (Step.lit (l := c))) hbb)
+                                                            rw [hzip]
+                                                            exact hres
+                        | seqStop hexpr hne =>
+                            cases hexpr with
+                            | exprStmt _ => exact absurd rfl hne
+                            | @exprStmtHalt _ _ _ _ stb hb2 =>
+                                cases hb2 with
+                                | @builtinHalt _ _ _ _ _ argvals sA sB hargs2 hbb =>
+                                    cases hargs2 with
+                                    | @argsCons _ _ _ _ _ rvs2 sM2 vp2 sH2 hrp hhp =>
+                                        cases hhp with
+                                        | lit =>
+                                            cases hrp with
+                                            | @argsCons _ _ _ _ _ rvs3 sM3 vt sH3 hrt hht =>
+                                                cases hrt with
+                                                | argsNil =>
+                                                    cases hht with
+                                                    | var hvt =>
+                                                        have hvtv : vg = vt := by
+                                                          simpa [VEnv.get] using hvt
+                                                        have hres := Step.exprStmtHalt
+                                                          (Step.builtinHalt
+                                                            (Step.argsCons
+                                                              (Step.argsCons
+                                                                (Step.argsNil (funs := funs)
+                                                                  (V := V) (st := st))
+                                                                (hvtv ▸ hcall0))
+                                                              (Step.lit (l := c))) hbb)
+                                                        rw [hzip]
+                                                        exact hres
+                                | builtinArgsHalt hargs2 =>
+                                    cases hargs2 with
+                                    | argsRestHalt hrp =>
+                                        cases hrp with
+                                        | argsRestHalt hrt => cases hrt
+                                        | argsHeadHalt hrt hht => cases hht
+                                    | argsHeadHalt hrp hhp => cases hhp
+        | seqStop hlet hne =>
+            cases hlet with
+            | letVal _ _ => exact absurd rfl hne
+            | @letHalt _ _ _ _ _ st1 hcall =>
+                have hcall0 := call_emptyScope_bwd hcall hnc
+                have hargs :=
+                  Step.argsRestHalt (e := .lit c)
+                    (Step.argsHeadHalt
+                      (Step.argsNil (funs := funs) (V := V) (st := st)) hcall0)
+                have hcallhalt := Step.builtinArgsHalt (op := op) hargs
+                simpa [restore] using (Step.exprStmtHalt hcallhalt)
+
+/-- Dispatch an expression-statement: hoist a trailing builtin-argument call
+when profitable, otherwise leave the statement unchanged. Non-recursive, so
+`hcStmt`'s `exprStmt` equation stays unconditional. -/
+def hcExprStmt (P : String) (Δ : DEnv) : Expr Op → Stmt Op
+  | .builtin op [.var p, .call g gas] =>
+      match lookupDelta Δ g with
+      | some inner =>
+          if hoistBuiltinWanted P inner p gas then hoistBuiltinArg P op p g gas
+          else .exprStmt (.builtin op [.var p, .call g gas])
+      | none => .exprStmt (.builtin op [.var p, .call g gas])
+  | .builtin op [.lit c, .call g gas] =>
+      match lookupDelta Δ g with
+      | some inner =>
+          if hoistBuiltinLitWanted P inner gas then hoistBuiltinArgLit P op c g gas
+          else .exprStmt (.builtin op [.lit c, .call g gas])
+      | none => .exprStmt (.builtin op [.lit c, .call g gas])
+  | e => .exprStmt e
+
+theorem hcExprStmt_equiv (P : String) (Δ : DEnv) (e : Expr Op) :
+    EquivStmt D (.exprStmt e) (hcExprStmt P Δ e) := by
+  unfold hcExprStmt
+  split
+  · next op p g gas =>
+      split
+      · next inner hlk =>
+          split
+          · next hw =>
+              obtain ⟨hnc, hpt⟩ := hoistBuiltinWanted_inv hw
+              exact hoistBuiltinArg_equiv_of P op p g gas hnc hpt
+          · exact EquivStmt.refl _
+      · exact EquivStmt.refl _
+  · next op c g gas =>
+      split
+      · next inner hlk =>
+          split
+          · next hw =>
+              exact hoistBuiltinArgLit_equiv_of P op c g gas (hoistBuiltinLitWanted_inv hw)
+          · exact EquivStmt.refl _
+      · exact EquivStmt.refl _
+  · exact EquivStmt.refl _
+
+theorem hcExprStmt_shape (P : String) (Δ : DEnv) (e : Expr Op) :
+    (∃ b, hcExprStmt P Δ e = .block b) ∨ (∃ e', hcExprStmt P Δ e = .exprStmt e') := by
+  unfold hcExprStmt
+  split
+  · next op p g gas =>
+      split
+      · next inner hlk =>
+          split
+          · next hw => exact Or.inl ⟨_, rfl⟩
+          · exact Or.inr ⟨_, rfl⟩
+      · exact Or.inr ⟨_, rfl⟩
+  · next op c g gas =>
+      split
+      · next inner hlk =>
+          split
+          · next hw => exact Or.inl ⟨_, rfl⟩
+          · exact Or.inr ⟨_, rfl⟩
+      · exact Or.inr ⟨_, rfl⟩
+  · exact Or.inr ⟨_, rfl⟩
+
+theorem hoist_cons_hcExprStmt (P : String) (Δ : DEnv) (e : Expr Op)
+    (L : List (Stmt Op)) :
+    hoist D (hcExprStmt P Δ e :: L) = hoist D L := by
+  rcases hcExprStmt_shape P Δ e with
+    ⟨b, hb⟩ | ⟨e', hb⟩ <;> rw [hb] <;> simp [hoist]
+
 mutual
 
 def hcStmt (P : String) (Δ : DEnv) : Stmt Op → Stmt Op
@@ -241,7 +816,7 @@ def hcStmt (P : String) (Δ : DEnv) : Stmt Op → Stmt Op
   | .assign xs (.call f [.var x]) => .assign xs (.call f [.var x])
   | .assign xs (.call f [.builtin op args]) => .assign xs (.call f [.builtin op args])
   | .assign xs (.call f (a :: b :: rest)) => .assign xs (.call f (a :: b :: rest))
-  | .exprStmt e => .exprStmt e
+  | .exprStmt e => hcExprStmt P Δ e
   | .break => .break
   | .continue => .continue
   | .leave => .leave
@@ -320,7 +895,7 @@ private theorem hcStmt_equiv (P : String) (Δ : DEnv) :
   | .assign xs (.call f [.var x]) => by rw [hcStmt]; exact EquivStmt.refl _
   | .assign xs (.call f [.builtin op args]) => by rw [hcStmt]; exact EquivStmt.refl _
   | .assign xs (.call f (a :: b :: rest)) => by rw [hcStmt]; exact EquivStmt.refl _
-  | .exprStmt e => by rw [hcStmt]; exact EquivStmt.refl _
+  | .exprStmt e => by rw [hcStmt]; exact hcExprStmt_equiv P Δ e
   | .break => by rw [hcStmt]; exact EquivStmt.refl _
   | .continue => by rw [hcStmt]; exact EquivStmt.refl _
   | .leave => by rw [hcStmt]; exact EquivStmt.refl _
@@ -397,7 +972,9 @@ private theorem hcScopeRel (P : String) (Δ : DEnv) :
   | .cond _ _ :: rest => by simpa [hcStmts, hcStmt, hoist] using hcScopeRel P Δ rest
   | .switch _ _ _ :: rest => by simpa [hcStmts, hcStmt, hoist] using hcScopeRel P Δ rest
   | .forLoop _ _ _ _ :: rest => by simpa [hcStmts, hcStmt, hoist] using hcScopeRel P Δ rest
-  | .exprStmt _ :: rest => by simpa [hcStmts, hcStmt, hoist] using hcScopeRel P Δ rest
+  | .exprStmt e :: rest => by
+      rw [hcStmts, hcStmt, hoist_cons_hcExprStmt]
+      simpa [hoist] using hcScopeRel P Δ rest
   | .break :: rest => by simpa [hcStmts, hcStmt, hoist] using hcScopeRel P Δ rest
   | .continue :: rest => by simpa [hcStmts, hcStmt, hoist] using hcScopeRel P Δ rest
   | .leave :: rest => by simpa [hcStmts, hcStmt, hoist] using hcScopeRel P Δ rest
@@ -422,3 +999,4 @@ def hoistCalls : LocalPass D where
     · exact EquivBlock.refl _
 
 end YulEvmCompiler.Optimizer
+

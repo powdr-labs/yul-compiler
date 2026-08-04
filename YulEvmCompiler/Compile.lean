@@ -2,6 +2,7 @@ import YulEvmCompiler.Asm
 import YulEvmCompiler.StackBound
 import YulEvmCompiler.StackScalable
 import YulEvmCompiler.AsmPeephole
+import YulEvmCompiler.AsmSchedule
 set_option warningAsError true
 /-!
 # YulEvmCompiler.Compile
@@ -449,5 +450,19 @@ theorem immutableOffsets_correct {imm : String → U256} {p : List Asm} {is : Li
     ((assembleBytes is).drop off).take 32 = natToBE (conv (imm key)).toNat 32 := by
   have := (immutableOffsets_spec (imm := imm) (prog := p) p 0 is hlow key off hmem).2
   simpa using this
+
+/-- **PROTOTYPE, UNPROVEN.** The verified pipeline with the Asm-level per-window
+operand-stack scheduler inserted after the verified peephole pass and before the
+`stackOK2` overflow gate (so the proven bound still covers the code that runs).
+`scheduleAsm` leaves labels untouched (windows are label-free) and never grows
+`codeSize`, so lowering and `wfCheck` size invariants are preserved. This is a
+separate entry point so `compile`'s correctness proof stays intact; a soundness
+proof for `scheduleAsm` (translation validation) would let this replace
+`compile`. -/
+def compileScheduled (prog : Block Op)
+    (imm : String → U256 := unpatchedImmutables) : Option (List Instr) := do
+  let asm ← compileProgram prog
+  let opt := Schedule.scheduleAsm (optimizeAsm asm)
+  if stackOK2 opt then lowerProg imm opt else none
 
 end YulEvmCompiler

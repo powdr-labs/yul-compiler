@@ -1613,6 +1613,113 @@ compose that result with the existing `Simplify` resolution congruence for the
   iterating the scan (a dropped branch's `jumpi` can orphan its label for a
   second round).
 
+### ❌ Literal-slot memory-load forwarding (`MemoryForward`) (measured, parked)
+
+StorageForward's analogue for memory: thread a per-slot cache through
+left-to-right evaluation, forward `mload(k)` at literal `k` to the last stored
+value (`lit`/`var`/`add(var,lit)`), never delete a store; clobber on any
+possibly-memory-writing op, kill facts on reassignment/scope exit. Fully
+implemented with eval-order-aware invalidation and `#guard` tests (branch
+`agent/uv4-memory-forward`, PR #131), wired experimentally in `compileSource`.
+
+**Result:** −703 uniswap / −10,772 all-suite, 0 regressions — real but an order
+of magnitude under the hypothesis, so parked without the soundness proof
+(~1.5–2.5k lines, ReuseValuesSound-shaped) or pipeline wiring. Diagnosis of the
+miss: PoolSwap-class objects reach the backend via the MemorySpill fallback
+(637 spilled bindings) and the hot residual loads are spilled accumulators
+carried across sibling `if` blocks — branch-dependent memory content no
+forwarding can touch — while the matching MSTORE half is off-limits (final
+nonzero memory is observed). Also roughly doubles object compile time via the
+re-optimize arm. Do not revisit without first shrinking spill counts.
+
+### ❌ Cost-aware memory-spill victim selection (measured, rejected)
+
+Replace `selectSpills`' depth-witness victim policy with a loop-weighted static
+use-count cost model (spill the cheapest binding that still relieves pressure).
+Confirmed first that no `MemorySpill*Sound` proof reads the selection
+(`SpillFacts.selected` is write-only; heuristic rewrites keep the build green),
+so any policy is proof-free. Branch `agent/uv4-spill-select`.
+
+**Result:** rejected on measurement. Aggressive diversion (spill cheap bindings
+above each witness): +46k uniswap, swapExactInputNoTick alone +18,652 — hot
+accumulators sit far below the DUP16 frontier, so keeping one on-stack costs
+many cold spills whose aggregate exceeds the single hot spill. Conservative
+1-for-1 frontier substitution: net −6 (noise). Coordinated shift-block relief
+is correct but needs one-at-a-time processing that times out on 637-spill
+objects. The existing depth policy is near cost-optimal; the actual lever is
+the spill *count* (frame size from unconditional inlining), not the victims.
+
+### ❌ Binary-search dispatch below ~8 cases (measured, rejected; ≥8 merged)
+
+`DispatchTree` at `minTreeCases = 4` on uniswap-v4: net **+270** (17 improved /
+15 regressed). Tracing the unknown-selector probe on PoolSwap showed why: a
+4–6-case dispatcher costs ~18 gas in compares but ~760 gas in block-lowering
+JUMPs, so halving compares is invisible while early-position selectors pay the
+tree's extra depth. The uniswap fixtures top out at 6 dispatcher cases (the
+"~30 selectors" in `solc --hashes` are error selectors and sibling contracts;
+the sole 41-case object, PoolManager, is a known compile failure) — the pass is
+byte-identical there at threshold 8. Kept at `minTreeCases = 8`, where the
+corpus-wide result is gasTests −6,856 (0 regr), semanticTests −14,904 (26/5),
+aave −231.
+
+## Candidate ideas from the solc gap analysis (2026-07-29, uniswap-gas-2 campaign)
+
+Systematic sweep of solc's default via-IR sequence (OptimiserSettings.h /
+Suite.cpp) + backend vs our pipeline. Full table in the campaign PR discussion;
+the five missing ideas worth implementing, ranked by impact × proof cost:
+
+1. **EqualStoreEliminator** — drop `mstore`/`sstore` whose value provably
+   equals the slot's current content (exact-state-preserving by construction;
+   store-of-equal is the identity). Reuse ReuseValues' fact cache; one-line
+   state lemma per store kind. Targets Aave loop scratch + idempotent sstores.
+2. **UnusedStoreEliminator, covered-before-read subset** — a store overwritten
+   by a later same-slot store with no intervening read/call/loop is
+   exact-state-preserving. Start same-block, literal/same-var keys, pure
+   intervening statements. Targets `mstore(0,a); …; mstore(0,b)` scratch pairs.
+3. **Strength-reduction rule expansion in Simplify** — the operand-preserving
+   subset of solc's RuleList: div/mod/mul-by-2^k → shr/and/shl, byte(31,x) →
+   and(x,0xff), and-mask combining, mod(mul(x,y),2^k) → mulmod. Each a single
+   EquivExpr via the Core rule engine; hits the 130-200% small-fixture tail.
+4. **LoopInvariantCodeMotion** — hoist a leading movable `let` whose free vars
+   are loop-invariant out of `for` bodies. Hardest proof (needs a loop
+   congruence + write-set disjointness) but the biggest Aave lever (10k-iter
+   loops recompute identical keccak/sload addresses every iteration).
+5. **Rematerialize-before-spill (StackCompressor analogue)** — before the
+   MemorySpill fallback, re-substitute cheap movable definitions at deep use
+   sites to relieve DUP16 pressure without memory round-trips; spill only the
+   remainder. EquivBlock-level proof (recompute = read), policy proof-free;
+   attacks the Pool* spill-count root cause directly.
+
+Architectural non-goal from the same analysis: adopting solc's
+ExpressionSplitter/SSA backbone — it is the opposite of our
+big-expressions + on-stack-locals design and only pays as enabler
+infrastructure for 2/4 above if their simple forms prove too weak.
+
+### 🅿️ Equal-store elimination (`EqualStoreElim.lean`, measured, parked)
+
+Drop `mstore(k, v)` / `sstore(k, v)` when the value provably already at `k`
+equals `v` (store-of-equal is the identity). Exact-state-preserving; for `sstore`
+also **refund-neutral** — verified in the semantics: `Gas.sstoreRefund` returns
+`0` when `current = new`, and SSTORE uses warm prices throughout (no cold/warm
+access list), so a skipped identical write changes neither storage nor the
+refund counter, only saves the 100-gas charge. A content fact `k ↦ e`
+(pure-total `e`, literal `k`) is recorded by `mstore`/`sstore(k,e)` and by
+`let x := mload/sload(k)`, invalidated by any clobber, aliasing write, var
+reassignment/shadowing, CALL-family value, or control flow (straight-line runs
+only).
+
+**Measured (uniswap, wired def-only in the spill arm): −144 total** — swap −72,
+addLiquidityWide −36, removeLiquidity −36; 0 regressions, canaries untouched.
+All from identity `mstore` (a spilled binding read-unchanged and re-stored to its
+slot); **no identity `sstore` fired** — PoolSwap's sstores are genuine value
+changes. Below the 1k threshold, so **parked** (file kept, builds green, one-line
+`compileSource` wiring removed).
+
+The `sstore` case's real target is aave `PositionStatusMap`'s status-unchanged
+loop writes, which likely compile through the **main** (non-spill) arm — untested
+here (a full aave run exceeded the measurement budget on a cold solc cache). If
+revisited: wire `eqObject` into the main arm too and measure aave; that is where
+the refund-neutral identity-`sstore` elimination could actually pay off.
 ## The `yul-ssa-cfg` dialect (2026-07/08, landed on PR #151, fully proved)
 
 - ✅ **`yul-ssa-cfg`: a second backend dialect below Yul** (PR #151; see
@@ -1641,6 +1748,35 @@ compose that result with the existing `Simplify` resolution congruence for the
   decidable `domCheck` gate), and codegen genuinely needs single
   assignment + label uniqueness.
 
+- **HoistCalls builtin-argument hoist + measured gate negatives** (branch
+  `agent/uv4-abi-inline`, commit 03ecc40). Root cause of the out-of-line ABI
+  encode chains on small functions: `cleanup_t_bool = iszero(iszero(v))` is a
+  *nested* builtin body that Core `ingest` rejects, so InlineHelpers cannot
+  inline it in place (unlike flat `cleanup_t_uint24 = and(v,mask)`); its sole
+  call site `mstore(pos, cleanup_t_bool(value))` is a call nested in a builtin
+  argument, unreachable by statement-level InlineCalls, pinning the whole
+  `abi_encode_t_bool` chain out of line. Fix (proven, sorry-free): hoist a
+  trailing builtin-argument call into a preceding `let` so InlineCalls consumes
+  it. **Measured negatives on the *unrestricted* hoist** (fires on any
+  `op(var, userCall(callfree_args))`): enabling that much extra statement
+  inlining grows frames and trips the MemorySpill/stack-layout fallback in
+  loop/codec-heavy code — aave `PositionStatusMap.nextContinuousTenThousand`
+  +843,951 gas (a big-loop blowup), semantic array/storage/struct codecs
+  +1k–3.3k on ~28 rows, and the whole aave suite went net-negative. Gating to
+  *pure-total single-expression* callees only (the cleanup shape) removes all
+  those catastrophes (aave net 0, no >100 loop blowups) and keeps the LPFee/
+  ProtocolFee/TickBitmap wins, but (a) loses the broad `dispatch_large` win the
+  unrestricted hoist gave (that win shared the frame-growing mechanism), and
+  (b) leaves ~9 semantic rows >100 gas (e.g. `bool_conversion` +334) that are
+  irreducible with this approach — the same `cleanup_t_bool` inlining that wins
+  LPFee reshapes those via the stack scheduler. The regression-free way to get
+  the bool win is the *root* fix: teach Core `Term`/`ingest` one level of
+  nested pure builtins so `cleanup_t_bool` inlines in place exactly like
+  `cleanup_t_uint24` (which is regression-free), rather than routing through a
+  hoist that also enables broader statement inlining. A loop-depth-aware gate
+  (don't hoist inside `for` bodies) would clear the loop-context semantic rows
+  more cheaply but needs a signature change threaded through the proven
+  traversal.
 ## SSA pass-pipeline rebalance: coalescing, branch inversion, CSE off (2026-08-03)
 
 - 🟢 **Ready for review (PR #153) — fully proved, CI green.** Four changes to

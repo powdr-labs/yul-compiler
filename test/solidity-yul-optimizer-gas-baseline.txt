@@ -60,7 +60,7 @@ controlFlowSimplifier/terminating_for_nested_reversed.yul	20	16
 controlFlowSimplifier/terminating_for_revert.yul	215	195
 controlFlowSimplifier/terminating_for_revert_plus_break.yul	250	231
 controlFlowSimplifier/terminating_for_with_continue.yul	20	17
-deadCodeEliminator/conditional_break.yul	4992	3882
+deadCodeEliminator/conditional_break.yul	4512	3882
 deadCodeEliminator/early_break.yul	288	228
 deadCodeEliminator/early_continue.yul	2700	2616
 deadCodeEliminator/early_leave.yul	222	342
@@ -71,7 +71,7 @@ deadCodeEliminator/function_after_revert.yul	44354	44504
 deadCodeEliminator/nested_revert.yul	324	264
 deadCodeEliminator/no_removal.yul	24	30
 deadCodeEliminator/normal_break.yul	288	228
-deadCodeEliminator/normal_continue.yul	2700	2616
+deadCodeEliminator/normal_continue.yul	3252	2616
 deadCodeEliminator/normal_stop.yul	846	870
 disambiguator/for_statement.yul	78	330
 disambiguator/function_call.yul	0	0
@@ -136,7 +136,7 @@ expressionSimplifier/byte_after_shr_non_mul_of_8.yul	27308	27308
 expressionSimplifier/combine_add_and_mod_constant.yul	186	198
 expressionSimplifier/combine_mul_and_mod_constant.yul	198	210
 expressionSimplifier/combine_shift_and_and.yul	76054	76036
-expressionSimplifier/combine_shift_and_and_2.yul	312536	312482
+expressionSimplifier/combine_shift_and_and_2.yul	312476	312482
 expressionSimplifier/combine_shift_and_and_3.yul	537632	537578
 expressionSimplifier/constant_propagation.yul	174	174
 expressionSimplifier/constants.yul	132636	132720
@@ -234,12 +234,12 @@ fullSimplify/signextend.yul	138	228
 fullSimplify/smoke.yul	0	0
 fullSuite/abi2.yul	342	432
 fullSuite/abi_example1.yul	1710	1410
-fullSuite/and_or_combination.yul	143680	144022
+fullSuite/and_or_combination.yul	143602	144022
 fullSuite/call_arguments_with_side_effects.yul	24	30
 fullSuite/call_arguments_without_side_effects.yul	13386	13956
 fullSuite/clear_after_if_continue.yul	354	306
 fullSuite/combine_shift_and_and.yul	76054	76036
-fullSuite/combine_shift_and_and_2.yul	272736	272682
+fullSuite/combine_shift_and_and_2.yul	272676	272682
 fullSuite/combine_shift_and_and_3.yul	537632	537578
 fullSuite/combine_shift_and_and_unsplit.yul	76054	76036
 fullSuite/create2_and_mask.yul	590644260	590644332
@@ -268,10 +268,10 @@ fullSuite/sub_objects.yul	108	108
 fullSuite/switch_inline.yul	13392	13806
 fullSuite/switch_inline_match_default.yul	13392	13656
 fullSuite/transient_storage.yul	4350	3720
-fullSuite/unusedFunctionParameterPruner.yul	70649	70327
+fullSuite/unusedFunctionParameterPruner.yul	70569	70327
 fullSuite/unusedFunctionParameterPruner_loop.yul	46670	46616
-fullSuite/unusedFunctionParameterPruner_return.yul	94178	94366
-fullSuite/unusedFunctionParameterPruner_simple.yul	22765	22702
+fullSuite/unusedFunctionParameterPruner_return.yul	94674	94366
+fullSuite/unusedFunctionParameterPruner_simple.yul	22741	22702
 functionGrouper/already_grouped.yul	0	0
 functionGrouper/empty_block.yul	0	0
 functionGrouper/grouped_but_not_ordered.yul	0	0

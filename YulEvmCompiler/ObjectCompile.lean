@@ -1014,6 +1014,14 @@ def compileResolvedObjectWith
   if !(plan.entries.map entryKey).Nodup then none else
   some (layoutOfPlan plan)
 
+/-- **PROTOTYPE, UNPROVEN.** Object compiler using the Asm window scheduler:
+the backend-parameterized planning chain instantiated with `compileScheduled`
+(the verified pipeline plus `Schedule.scheduleAsm`). A soundness proof for the
+scheduler (translation validation, see `AsmScheduleSound`) collapses this into
+`compileObject`. -/
+def compileObjectScheduled (o : Object Op) : Option Layout :=
+  compileResolvedObjectWith compileScheduled o
+
 /-- The object layer records no immutable values: it compiles placeholders as
 zeros, and the layout it publishes reports the same. The deploying constructor
 is what patches real values into the emitted bytes. -/
