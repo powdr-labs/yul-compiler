@@ -120,6 +120,24 @@ theorem letZero_inv {funs : FunEnv D} {V : VEnv D} {st : EvmState}
   cases h with
   | letZero => rfl
 
+theorem varsList_append (a b : List (Expr Op)) :
+    varsList (a ++ b) = varsList a ++ varsList b := by
+  induction a with
+  | nil => rfl
+  | cons e rest ih =>
+      rw [List.cons_append,
+        show varsList (e :: (rest ++ b)) = exprVars e ++ varsList (rest ++ b) from rfl, ih,
+        show varsList (e :: rest) = exprVars e ++ varsList rest from rfl, List.append_assoc]
+
+/-- Invert a `halt` `TResL` from the **target** (second) side. -/
+theorem TResL.halt_inv' {W W' : VEnv D} {post : List Ident} {res₁ : Res D}
+    {V₂ : VEnv D} {st₂ : EvmState}
+    (h : TResL (calls := calls) (creates := creates) W W' post res₁
+      (.sres V₂ st₂ .halt)) :
+    ∃ A', V₂ = A' ++ W' ∧ res₁ = .sres (A' ++ W) st₂ .halt := by
+  cases h with
+  | halt => exact ⟨_, rfl, rfl⟩
+
 /-- Invert a `normal` `TResL` from the **target** (second) side. -/
 theorem TResL.norm_inv' {W W' : VEnv D} {post : List Ident} {res₁ : Res D}
     {V₂ : VEnv D} {st₂ : EvmState}
@@ -428,7 +446,7 @@ theorem cy_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
         have hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave] := hb₀X
         have hZv : ∀ y ∈ varsList as, y ∉ (([] : VEnv D)).map Prod.fst := by
           intro y hy; simp
-        rcases peelBody hs (by rw [hs₂eq]) hsc hlen_as hnc hsh hxout hlen_xs hZv
+        rcases peelBody hs (List.nil_append V).symm (by rw [hs₂eq]) hsc hlen_as hnc hsh hxout hlen_xs hZv
             funs₁ cenv₀ hagbody hR
           with ⟨argvals, st1', Vend, strp, hargs, hbody, hEq⟩
             | ⟨argvals, st1', Vend, strp, hargs, hbody, hEq⟩
@@ -465,7 +483,7 @@ theorem cy_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
           | cons r rs' => rw [hrs] at hlen_xs; simp at hlen_xs
         have hZv : ∀ y ∈ varsList as, y ∉ (([] : VEnv D)).map Prod.fst := by
           intro y hy; simp
-        rcases peelBody hs (by rw [hs₂eq]) hsc hlen_as hnc hsh
+        rcases peelBody hs (List.nil_append V).symm (by rw [hs₂eq]) hsc hlen_as hnc hsh
             (fun x hx => by cases hx) hlen_xs hZv funs₁ cenv₀ hagbody hR
           with ⟨argvals, st1', Vend, strp, hargs, hbody, hEq⟩
             | ⟨argvals, st1', Vend, strp, hargs, hbody, hEq⟩
@@ -507,7 +525,7 @@ theorem cy_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
         have hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave] := hb₀X
         have hZv : ∀ y ∈ varsList as, y ∉ (([] : VEnv D)).map Prod.fst := by
           intro y hy; simp
-        rcases peelBody hs (by rw [hs₂eq]) hsc hlen_as hnc hsh hxout hlen_xs hZv
+        rcases peelBody hs (List.nil_append V).symm (by rw [hs₂eq]) hsc hlen_as hnc hsh hxout hlen_xs hZv
             funs₁ cenv₀ hagbody hR
           with ⟨argvals, st1', Vend, strp, hargs, hbody, hEq⟩
             | ⟨argvals, st1', Vend, strp, hargs, hbody, hEq⟩
@@ -534,7 +552,7 @@ theorem cy_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
         have hb₀ : body₀ = d.ss ∨ body₀ = d.ss ++ [.leave] := hb₀X
         have hZv : ∀ y ∈ varsList as, y ∉ (([] : VEnv D)).map Prod.fst := by
           intro y hy; simp
-        rcases peelBody hs (by rw [hs₂eq]) hsc hlen_as hnc hsh
+        rcases peelBody hs (List.nil_append V).symm (by rw [hs₂eq]) hsc hlen_as hnc hsh
             (fun x hx => by cases hx) hlen_xs hZv funs₁ cenv₀ hagbody hR
           with ⟨argvals, st1', Vend, strp, hargs, hbody, hEq⟩
             | ⟨argvals, st1', Vend, strp, hargs, hbody, hEq⟩
@@ -1162,9 +1180,10 @@ run under the *source* callee env `cenv₀`, read-out), with the carry body
 transferred back via `carry_body_bwd`. Structural on the whole block derivation
 (so the callee body stays a genuine subterm). -/
 theorem peelBody {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
-    {funs₂ : FunEnv D} {V Z : VEnv D} {st : EvmState}
+    {funs₂ : FunEnv D} {V Z E : VEnv D} {st : EvmState}
     {codeP : Code Op} {res : Res D}
-    (hs : Step D funs₂ (Z ++ V) st codeP res)
+    (hs : Step D funs₂ E st codeP res)
+    (hE : E = Z ++ V)
     (hcodeP : codeP = .stmt (inlineCore d xs as))
     (hsc : carryStmts (d.ps ++ d.rs) d.ss = true)
     (hlen_as : as.length = d.ps.length) (hnc : argsHaveCall as = false)
@@ -1187,9 +1206,11 @@ theorem peelBody {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
       res = .sres (Z ++ V) str .halt) ∨
     (∃ str, Step D funs₁ V st (.args as) (.eres (.halt str)) ∧
       res = .sres (Z ++ V) str .halt) := by
-  subst hcodeP
   match hs with
-  | @Step.block _ _ _ _ _ _ Vb stb ob hb =>
+  | @Step.block _ _ _ _ _ ib Vb stb ob hb =>
+      injection hcodeP with hc1
+      injection hc1 with hinner
+      subst hinner
       have hhoist : hoist D ([Stmt.letDecl d.rs none]
           ++ (d.ps.zip as).reverse.map (fun pa => Stmt.letDecl [pa.1] (some pa.2))
           ++ [Stmt.block d.ss]
@@ -1219,17 +1240,57 @@ theorem peelBody {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
                 rw [hhoist]
                 exact (hagbody g hg).symm
               rcases peelArgs htail (V := V) (Z := Z) (Pfr := (d.ps.zip as).reverse)
-                  (Ppeeled := []) (valsDone := []) (by simp) rfl (by simp)
+                  (Ppeeled := []) (valsDone := []) (by simp) rfl (by rw [hE]; simp)
                   Step.argsNil (by simp) hsc hlen_as hnc hsh hxout hlen_xs hZ hRb hag_body
                 with ⟨argvals, st1, Vend, hargs, hbody, hVb, hoeq⟩
                   | ⟨argvals, st1, Vend, hargs, hbody, hVb, hoeq⟩
                   | ⟨M, hargs, hVb, hoeq⟩
               · refine Or.inl ⟨argvals, st1, Vend, stb, hargs, hbody, ?_⟩
-                rw [hoeq, hVb, restore_exact (VEnv.setMany_length _ _ _)]
+                rw [hoeq, hE, hVb, restore_exact (VEnv.setMany_length _ _ _)]
               · refine Or.inr (Or.inl ⟨argvals, st1, Vend, stb, hargs, hbody, ?_⟩)
-                rw [hoeq, hVb, restore_exact rfl]
+                rw [hoeq, hE, hVb, restore_exact rfl]
               · refine Or.inr (Or.inr ⟨stb, hargs, ?_⟩)
-                rw [hoeq, hVb, restore_exact rfl]
+                rw [hoeq, hE, hVb, restore_exact rfl]
+  | .lit => cases hcodeP
+  | .var .. => cases hcodeP
+  | .builtinOk .. => cases hcodeP
+  | .builtinHalt .. => cases hcodeP
+  | .builtinArgsHalt .. => cases hcodeP
+  | .callOk .. => cases hcodeP
+  | .callHalt .. => cases hcodeP
+  | .callArgsHalt .. => cases hcodeP
+  | .argsNil => cases hcodeP
+  | .argsCons .. => cases hcodeP
+  | .argsRestHalt .. => cases hcodeP
+  | .argsHeadHalt .. => cases hcodeP
+  | .funDef => cases hcodeP
+  | .letZero => cases hcodeP
+  | .letVal .. => cases hcodeP
+  | .letHalt .. => cases hcodeP
+  | .assignVal .. => cases hcodeP
+  | .assignHalt .. => cases hcodeP
+  | .exprStmt .. => cases hcodeP
+  | .exprStmtHalt .. => cases hcodeP
+  | .ifTrue .. => cases hcodeP
+  | .ifFalse .. => cases hcodeP
+  | .ifHalt .. => cases hcodeP
+  | .switchExec .. => cases hcodeP
+  | .switchHalt .. => cases hcodeP
+  | .forLoop .. => cases hcodeP
+  | .forInitHalt .. => cases hcodeP
+  | .«break» => cases hcodeP
+  | .«continue» => cases hcodeP
+  | .«leave» => cases hcodeP
+  | .seqNil => cases hcodeP
+  | .seqCons .. => cases hcodeP
+  | .seqStop .. => cases hcodeP
+  | .loopDone .. => cases hcodeP
+  | .loopCondHalt .. => cases hcodeP
+  | .loopStep .. => cases hcodeP
+  | .loopPostHalt .. => cases hcodeP
+  | .loopBreak .. => cases hcodeP
+  | .loopLeave .. => cases hcodeP
+  | .loopBodyHalt .. => cases hcodeP
   termination_by structural hs
 
 /-- The argument-let peel + carry body transfer + read-out, structural on the
