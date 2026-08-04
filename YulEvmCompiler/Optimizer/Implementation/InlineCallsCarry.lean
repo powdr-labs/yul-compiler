@@ -1,6 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.InlineCalls
 import YulEvmCompiler.Optimizer.Implementation.ObjectPass
-set_option warningAsError false
+set_option warningAsError true
 /-!
 # InlineCallsCarry — call-carrying statement inliner (PROTOTYPE, unproven)
 
@@ -24,10 +24,22 @@ Duplication and pressure gates: body ≤ `carryMaxStmts` statements, at most
 stack bound. Bodies the plain (call-free) classifier already accepts are left
 to `InlineCalls`.
 
-**Soundness is deliberately `sorry`ed** (`set_option warningAsError false`):
-this is a measurement prototype. If it pays, the proof follows the
-`InlineCallsSound` skeleton with a function-environment agreement argument for
-the carried calls.
+## Carried-call function-environment agreement (the soundness side condition)
+
+A transplanted call-bearing body executes its inner (carried) calls under the
+*caller's* function environment at the transplant site, whereas the original
+runs them under the callee's defining scope. These agree unless an intervening
+block between the callee's definition and the rewrite site *shadows* a carried
+call name. The `Δ` threading enforces no such shadow can occur: `carrySurvives`
+prunes a tracked entry `(f, d)` the moment a block (or a `for` init) redefines
+`f` *or any name `d.ss` carries a call to*. Combined with `DeltaCompat` (every
+tracked name resolves at the site to its recorded declaration), this makes the
+invariant "every carried name resolves at the site exactly as at the callee's
+definition" inductive. The carried body is then transported from the defining
+scope to the site by `Step.funs_congr` (`FunCongr.lean`) — the semantic
+function-environment congruence — with a prefix-agreement step for the extra
+scopes the site sits under. solc IR has globally unique function names, so this
+side condition prunes nothing on real input.
 -/
 
 namespace YulEvmCompiler.Optimizer
@@ -87,29 +99,57 @@ end
 
 /-! ### Duplication gates -/
 
+mutual
+
 /-- User calls contained in an expression. -/
-partial def exprCallNames : Expr Op → List Ident
-  | .call f as => f :: (as.flatMap exprCallNames)
-  | .builtin _ as => as.flatMap exprCallNames
-  | _ => []
+def exprCallNames : Expr Op → List Ident
+  | .lit _ => []
+  | .var _ => []
+  | .builtin _ as => argsCallNames as
+  | .call f as => f :: argsCallNames as
+
+/-- User calls contained in an argument list. -/
+def argsCallNames : List (Expr Op) → List Ident
+  | [] => []
+  | e :: rest => exprCallNames e ++ argsCallNames rest
+
+end
+
+mutual
+
+/-- User calls contained in a statement. -/
+def stmtCallNames : Stmt Op → List Ident
+  | .letDecl _ none => []
+  | .letDecl _ (some e) => exprCallNames e
+  | .assign _ e => exprCallNames e
+  | .exprStmt e => exprCallNames e
+  | .block b => stmtsCallNames b
+  | .cond c b => exprCallNames c ++ stmtsCallNames b
+  | .switch c cs d => exprCallNames c ++ casesCallNames cs ++ dfltCallNames d
+  | .funDef _ _ _ _ => []
+  | .forLoop i c p b =>
+      stmtsCallNames i ++ exprCallNames c ++ stmtsCallNames p ++ stmtsCallNames b
+  | .break => []
+  | .continue => []
+  | .leave => []
 
 /-- User calls contained in a statement list (function bodies excluded: a
 carry-classified body contains no `funDef`). -/
-partial def stmtsCallNames : List (Stmt Op) → List Ident
+def stmtsCallNames : List (Stmt Op) → List Ident
   | [] => []
-  | .letDecl _ (some e) :: rest => exprCallNames e ++ stmtsCallNames rest
-  | .letDecl _ none :: rest => stmtsCallNames rest
-  | .assign _ e :: rest => exprCallNames e ++ stmtsCallNames rest
-  | .exprStmt e :: rest => exprCallNames e ++ stmtsCallNames rest
-  | .block b :: rest => stmtsCallNames b ++ stmtsCallNames rest
-  | .cond c b :: rest => exprCallNames c ++ stmtsCallNames b ++ stmtsCallNames rest
-  | .switch c cs d :: rest =>
-      exprCallNames c ++ cs.flatMap (fun cb => stmtsCallNames cb.2)
-        ++ (d.map stmtsCallNames).getD [] ++ stmtsCallNames rest
-  | .forLoop i c p b :: rest =>
-      stmtsCallNames i ++ exprCallNames c ++ stmtsCallNames p ++ stmtsCallNames b
-        ++ stmtsCallNames rest
-  | _ :: rest => stmtsCallNames rest
+  | s :: rest => stmtCallNames s ++ stmtsCallNames rest
+
+/-- User calls contained in `switch` case bodies. -/
+def casesCallNames : List (Literal × Block Op) → List Ident
+  | [] => []
+  | (_, b) :: rest => stmtsCallNames b ++ casesCallNames rest
+
+/-- User calls contained in a `switch` default. -/
+def dfltCallNames : Option (Block Op) → List Ident
+  | none => []
+  | some b => stmtsCallNames b
+
+end
 
 /-- Statement budget for a carried body. -/
 def carryMaxStmts : Nat := 8
@@ -146,9 +186,19 @@ def carryHoistDecls (seen : List Ident) : List (Stmt Op) → DEnv
         | none => carryHoistDecls (f :: seen) rest
   | _ :: rest => carryHoistDecls seen rest
 
-/-- `deltaExtend` with the carry classifier. -/
+/-- A carry entry `(f, d)` **survives** entry into a block whose function
+definitions are `defs` only when that block redefines neither `f` nor any name
+`d.ss` carries a call to. Redefining a carried name would make the transplanted
+copy's inner call resolve to the shadowing definition rather than the one live
+at `f`'s definition — the no-shadowing side condition that keeps the carried
+calls' function-environment agreement inductive (solc IR has globally unique
+function names, so this prunes nothing there). -/
+def carrySurvives (defs : List Ident) (p : Ident × IDecl) : Bool :=
+  !defs.contains p.1 && (stmtsCallNames p.2.ss).all (fun g => !defs.contains g)
+
+/-- `deltaExtend` with the carry classifier and the carried-name shadow prune. -/
 def carryDeltaExtend (Δ : DEnv) (body : List (Stmt Op)) : DEnv :=
-  carryHoistDecls [] body ++ Δ.filter (fun p => !(definedFuns body).contains p.1)
+  carryHoistDecls [] body ++ Δ.filter (carrySurvives (definedFuns body))
 
 /-! ### The transform (mirrors `icStmt`; `inlineCore` and `siteOK` reused) -/
 
@@ -184,7 +234,7 @@ def cyStmt (Δ : DEnv) : Stmt Op → List (Stmt Op)
   | .cond c body => [.cond c (cyBlock Δ body)]
   | .switch c cases dflt => [.switch c (cyCases Δ cases) (cyDflt Δ dflt)]
   | .forLoop init c post body =>
-      let ΔL := Δ.filter (fun p => !(definedFuns init).contains p.1)
+      let ΔL := Δ.filter (carrySurvives (definedFuns init))
       [.forLoop init c (cyBlock ΔL post) (cyBlock ΔL body)]
   | s => [s]
 
@@ -208,14 +258,8 @@ end
 /-- Pass entry point. -/
 def inlineCallsCarryBlock (b : Block Op) : Block Op := cyBlock [] b
 
-/-- PROTOTYPE: soundness deliberately unproven (measurement first). -/
-def inlineCallsCarry : LocalPass D where
-  run := inlineCallsCarryBlock
-  sound := sorry
-
-/-- PROTOTYPE: resolution congruence deliberately unproven. -/
-theorem resolveInlineCallsCarryBlock_equiv (L : Layout) (b : Block Op) :
-    EquivBlock D (resolveForLayoutStmts L b)
-      (resolveForLayoutStmts L (inlineCallsCarryBlock b)) := sorry
+-- The `inlineCallsCarry : LocalPass D` bundle and its `resolveInlineCallsCarryBlock_equiv`
+-- resolution congruence live in `InlineCallsCarrySound2` (they require the
+-- `cy_fwd`/`cy_bwd` simulation, which would form an import cycle here).
 
 end YulEvmCompiler.Optimizer
