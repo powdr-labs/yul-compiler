@@ -38,11 +38,11 @@ def FDeclRel (D : Dialect) [DecidableEq D.Value] (d₁ d₂ : FDecl D) : Prop :=
 /-- Two scopes are related when, pairwise, they bind the same names to
 signature-equal, body-equivalent declarations. -/
 def ScopeRel (D : Dialect) [DecidableEq D.Value] (s₁ s₂ : FScope D) : Prop :=
-  List.Forall₂ (fun p q => p.1 = q.1 ∧ FDeclRel D p.2 q.2) s₁ s₂
+  Forall₂ (fun p q => p.1 = q.1 ∧ FDeclRel D p.2 q.2) s₁ s₂
 
 /-- Two function environments are related scope-by-scope. -/
 def FunsRel (D : Dialect) [DecidableEq D.Value] (f₁ f₂ : FunEnv D) : Prop :=
-  List.Forall₂ (ScopeRel D) f₁ f₂
+  Forall₂ (ScopeRel D) f₁ f₂
 
 theorem FDeclRel.refl (d : FDecl D) : FDeclRel D d d := ⟨rfl, rfl, EquivBlock.refl _⟩
 
@@ -117,7 +117,7 @@ theorem lookupFun_funsRel {f₁ f₂ : FunEnv D} (hR : FunsRel D f₁ f₂) :
         obtain ⟨hd_eq, hcenv_eq⟩ := h
         subst hd_eq; subst hcenv_eq
         refine ⟨q.2, s₂ :: t₂, by rw [lookupFun, hp₂], hd.1.symm, hd.2.1.symm,
-          hd.2.2, List.Forall₂.cons hs hR'⟩
+          hd.2.2, Forall₂.cons hs hR'⟩
 
 /-! ### The congruence -/
 
@@ -212,13 +212,13 @@ theorem EquivBlock.of_stmts_funs {b₁ b₂ : Block D.Op}
     cases h with
     | block hb =>
         refine Step.block ?_
-        have h1 := Step.funs_congr hb (List.Forall₂.cons hR (FunsRel.refl funs))
+        have h1 := Step.funs_congr hb (Forall₂.cons hR (FunsRel.refl funs))
         exact (hstmts (hoist D b₂ :: funs) V st _ _ _).mp h1
   · intro h
     cases h with
     | block hb =>
         refine Step.block ?_
-        have h1 := Step.funs_congr hb (List.Forall₂.cons hR.symm (FunsRel.refl funs))
+        have h1 := Step.funs_congr hb (Forall₂.cons hR.symm (FunsRel.refl funs))
         exact (hstmts (hoist D b₁ :: funs) V st _ _ _).mpr h1
 
 end YulEvmCompiler.Optimizer

@@ -97,7 +97,7 @@ theorem constDef_instr_cases {f : Func} (hnd : f.allDefs.Nodup)
     {d : ValId} (hd : d ∈ i.defs) {v : U256} (hc : Passes.ConstDef f d v) :
     i = .const d v ∨
       ∃ yop as vs, i = .op [d] yop as ∧ Passes.pureOp yop = true ∧
-        List.Forall₂ (Passes.ConstDef f) as vs ∧ Passes.evalPure yop vs = some v := by
+        YulSemantics.Forall₂ (Passes.ConstDef f) as vs ∧ Passes.evalPure yop vs = some v := by
   cases hc with
   | @const b' _ _ hb' hi' =>
     have heq := instr_def_unique hnd hb hb' hi hi' hd (by simp [Instr.defs])
@@ -109,7 +109,7 @@ theorem constDef_instr_cases {f : Func} (hnd : f.allDefs.Nodup)
 omit model in
 theorem constRegs_getMany {f : Func} {R : Regs} (hR : ConstRegs f R)
     {as : List ValId} {vs args : List U256}
-    (hc : List.Forall₂ (Passes.ConstDef f) as vs) (hg : R.getMany as = some args) :
+    (hc : YulSemantics.Forall₂ (Passes.ConstDef f) as vs) (hg : R.getMany as = some args) :
     args = vs := by
   induction hc generalizing args with
   | nil => simp at hg; exact hg

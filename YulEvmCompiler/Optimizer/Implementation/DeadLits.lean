@@ -356,7 +356,7 @@ def dlSound : PCode Op → PCode Op → Prop
           (hoist (evmWithExternal calls creates) [s])
           (hoist (evmWithExternal calls creates) [s'])
   | .cases cs, .cases cs' =>
-      List.Forall₂ (fun p q => p.1 = q.1 ∧
+      Forall₂ (fun p q => p.1 = q.1 ∧
         EquivBlock (evmWithExternal calls creates) p.2 q.2) cs cs'
   | .odflt d, .odflt d' =>
       EquivBlock (evmWithExternal calls creates) (d.getD []) (d'.getD [])
@@ -364,7 +364,7 @@ def dlSound : PCode Op → PCode Op → Prop
 
 /-- Pairwise reflexive `Forall₂` for a common list. -/
 private theorem forall₂_refl_equivStmt (l : List (Stmt Op)) :
-    List.Forall₂ (EquivStmt D) l l := by
+    Forall₂ (EquivStmt D) l l := by
   induction l with
   | nil => exact .nil
   | cons s rest ih => exact .cons (fun _ _ _ _ _ _ => Iff.rfl) ih
@@ -376,8 +376,8 @@ private theorem scopeRel_append {a b c d : FScope D}
   | cons hp _ ih => exact .cons hp ih
 
 private theorem forall₂_append_equivStmt {a b c d : List (Stmt Op)}
-    (h1 : List.Forall₂ (EquivStmt D) a b) (h2 : List.Forall₂ (EquivStmt D) c d) :
-    List.Forall₂ (EquivStmt D) (a ++ c) (b ++ d) := by
+    (h1 : Forall₂ (EquivStmt D) a b) (h2 : Forall₂ (EquivStmt D) c d) :
+    Forall₂ (EquivStmt D) (a ++ c) (b ++ d) := by
   induction h1 with
   | nil => exact h2
   | cons hp _ ih => exact .cons hp ih

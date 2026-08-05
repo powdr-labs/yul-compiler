@@ -1,6 +1,7 @@
 import YulEvmCompiler.AsmSem
 import YulEvmCompiler.SsaCfg.Spec.Sem
 import YulEvmCompiler.SsaCfg.Implementation.ToAsm
+import Mathlib.Data.List.Forall2
 set_option warningAsError true
 /-!
 # YulEvmCompiler.SsaCfg.Implementation.ToAsmSound

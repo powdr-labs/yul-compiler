@@ -2829,7 +2829,7 @@ theorem flStmt_equiv (P : String) : ∀ (s : Stmt Op) (c : Nat),
       exact @EquivStmt.refl (evmWithExternal calls creates) _ _
 
 theorem flEach_forall2 (P : String) : ∀ (ss : List (Stmt Op)) (c : Nat),
-    List.Forall₂ (EquivStmt D) ss (flEach P ss c).1
+    Forall₂ (EquivStmt D) ss (flEach P ss c).1
   | [], _ => by
       unfold flEach
       exact .nil
@@ -2840,7 +2840,7 @@ theorem flEach_forall2 (P : String) : ∀ (ss : List (Stmt Op)) (c : Nat),
 
 theorem flCases_forall2 (P : String) :
     ∀ (cs : List (Literal × Block Op)) (c : Nat),
-    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs
+    Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs
       (flCases P cs c).1
   | [], _ => by
       unfold flCases
@@ -2864,7 +2864,7 @@ theorem flScopeRel (P : String) : ∀ (ss : List (Stmt Op)) (c : Nat),
       rw [flEach_cons, flStmt_funDef]
       dsimp only
       simp only [hoist, List.filterMap_cons]
-      refine List.Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩
+      refine Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩
         (flScopeRel P rest (flStmts P body c).2)
       show EquivBlock D body (flStmts P body c).1
       rw [flStmts_eq]

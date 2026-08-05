@@ -1,6 +1,7 @@
 import YulEvmCompiler.SsaCfg.Spec.Sem
 import YulEvmCompiler.SsaCfg.Implementation.OfYul
 import YulSemantics.BigStep
+import YulSemantics.Equiv
 set_option warningAsError true
 
 /-!
@@ -17,52 +18,47 @@ namespace YulEvmCompiler.SsaCfg
 open YulSemantics (Ident Literal Expr Stmt VEnv Outcome)
 open YulSemantics.EVM (U256 EvmState Op builtinWithExternal evmWithExternal)
 
-/-! ## `List.Forall₂` helpers
+/-! ## `YulSemantics.Forall₂` helpers
 
 Self-contained so this file does not depend on which `Mathlib.Data.List`
 modules happen to be transitively imported. -/
 
-namespace Forall2
+end YulEvmCompiler.SsaCfg
+
+namespace YulSemantics.Forall₂
 
 variable {α β : Type} {r s : α → β → Prop}
 
-theorem imp (h : ∀ a b, r a b → s a b) :
-    ∀ {l₁ : List α} {l₂ : List β}, List.Forall₂ r l₁ l₂ → List.Forall₂ s l₁ l₂ := by
-  intro l₁ l₂ hr
-  induction hr with
-  | nil => exact .nil
-  | cons hh ht ih => exact .cons (h _ _ hh) ih
-
 theorem length_eq : ∀ {l₁ : List α} {l₂ : List β},
-    List.Forall₂ r l₁ l₂ → l₁.length = l₂.length := by
+    YulSemantics.Forall₂ r l₁ l₂ → l₁.length = l₂.length := by
   intro l₁ l₂ hr
   induction hr with
   | nil => rfl
   | cons _ _ ih => simp [ih]
 
 theorem append : ∀ {a : List α} {b : List β} {c : List α} {d : List β},
-    List.Forall₂ r a b → List.Forall₂ r c d → List.Forall₂ r (a ++ c) (b ++ d) := by
+    YulSemantics.Forall₂ r a b → YulSemantics.Forall₂ r c d → YulSemantics.Forall₂ r (a ++ c) (b ++ d) := by
   intro a b c d hab hcd
   induction hab with
   | nil => simpa using hcd
   | cons hh _ ih => exact .cons hh ih
 
 theorem drop : ∀ (n : Nat) {a : List α} {b : List β},
-    List.Forall₂ r a b → List.Forall₂ r (a.drop n) (b.drop n) := by
+    YulSemantics.Forall₂ r a b → YulSemantics.Forall₂ r (a.drop n) (b.drop n) := by
   intro n
   induction n with
   | zero => intro a b h; simpa using h
   | succ n ih =>
     intro a b h
     cases h with
-    | nil => simp
+    | nil => simp only [List.drop_nil]; exact .nil
     | cons hh ht => simpa using ih ht
 
 /-- An all-or-nothing `mapM` succeeds exactly when it succeeds pointwise. Used
 for both `Regs.getMany` (`mapM R`) and `edgeArgs` (`mapM env.get`). -/
 theorem mapM_eq_some_iff {f : α → Option β} :
     ∀ {xs : List α} {ys : List β},
-      xs.mapM f = some ys ↔ List.Forall₂ (fun x y => f x = some y) xs ys := by
+      xs.mapM f = some ys ↔ YulSemantics.Forall₂ (fun x y => f x = some y) xs ys := by
   intro xs ys
   constructor
   · induction xs generalizing ys with
@@ -86,7 +82,7 @@ theorem mapM_eq_some_iff {f : α → Option β} :
     | nil => rfl
     | cons hh _ ih => rw [List.mapM_cons, hh, ih]; simp
 
-theorem refl {r : α → α → Prop} (h : ∀ a, r a a) : ∀ l : List α, List.Forall₂ r l l := by
+theorem refl {r : α → α → Prop} (h : ∀ a, r a a) : ∀ l : List α, YulSemantics.Forall₂ r l l := by
   intro l
   induction l with
   | nil => exact .nil
@@ -95,7 +91,7 @@ theorem refl {r : α → α → Prop} (h : ∀ a, r a a) : ∀ l : List α, List
 theorem trans' {γ : Type} {r : α → β → Prop} {t : β → γ → Prop} {u : α → γ → Prop}
     (hc : ∀ a b c, r a b → t b c → u a c) :
     ∀ {l₁ : List α} {l₂ : List β} {l₃ : List γ},
-      List.Forall₂ r l₁ l₂ → List.Forall₂ t l₂ l₃ → List.Forall₂ u l₁ l₃ := by
+      YulSemantics.Forall₂ r l₁ l₂ → YulSemantics.Forall₂ t l₂ l₃ → YulSemantics.Forall₂ u l₁ l₃ := by
   intro l₁ l₂ l₃ h₁ h₂
   induction h₁ generalizing l₃ with
   | nil => cases h₂; exact .nil
@@ -104,8 +100,8 @@ theorem trans' {γ : Type} {r : α → β → Prop} {t : β → γ → Prop} {u 
     | cons hh2 ht2 => exact .cons (hc _ _ _ hh hh2) (ih ht2)
 
 theorem imp_mem {r s : α → β → Prop} :
-    ∀ {l₁ : List α} {l₂ : List β}, List.Forall₂ r l₁ l₂ →
-      (∀ a ∈ l₁, ∀ b, r a b → s a b) → List.Forall₂ s l₁ l₂ := by
+    ∀ {l₁ : List α} {l₂ : List β}, YulSemantics.Forall₂ r l₁ l₂ →
+      (∀ a ∈ l₁, ∀ b, r a b → s a b) → YulSemantics.Forall₂ s l₁ l₂ := by
   intro l₁ l₂ h
   induction h with
   | nil => intro _; exact .nil
@@ -114,7 +110,11 @@ theorem imp_mem {r s : α → β → Prop} :
     exact .cons (hs a (List.mem_cons_self ..) b hh)
       (ih (fun y hy c hc => hs y (List.mem_cons_of_mem _ hy) c hc))
 
-end Forall2
+end YulSemantics.Forall₂
+
+namespace YulEvmCompiler.SsaCfg
+open YulSemantics (Ident Literal Expr Stmt VEnv Outcome)
+open YulSemantics.EVM (U256 EvmState Op builtinWithExternal evmWithExternal)
 
 theorem lt_size_of_getElem? {α : Type} {a : Array α} {i : Nat} {x : α}
     (h : a[i]? = some x) : i < a.size := by
@@ -184,7 +184,7 @@ theorem Le.setBoth {R R' : Regs} (h : Le R R') (x : ValId) (v : U256) :
 /-! ### `getMany` -/
 
 theorem getMany_eq_some_iff {R : Regs} {xs : List ValId} {vs : List U256} :
-    R.getMany xs = some vs ↔ List.Forall₂ (fun x v => R x = some v) xs vs := by
+    R.getMany xs = some vs ↔ YulSemantics.Forall₂ (fun x v => R x = some v) xs vs := by
   constructor
   · induction xs generalizing vs with
     | nil => intro h; rw [getMany_nil] at h; cases h; exact .nil
@@ -212,11 +212,11 @@ theorem getMany_eq_some_iff {R : Regs} {xs : List ValId} {vs : List U256} :
 theorem getMany_mono {R R' : Regs} (h : Le R R') {xs : List ValId}
     {vs : List U256} (hg : R.getMany xs = some vs) : R'.getMany xs = some vs := by
   rw [getMany_eq_some_iff] at hg ⊢
-  exact Forall2.imp (fun x v hxv => h x v hxv) hg
+  exact YulSemantics.Forall₂.imp (fun x v hxv => h x v hxv) hg
 
 theorem getMany_length {R : Regs} {xs : List ValId} {vs : List U256}
     (h : R.getMany xs = some vs) : xs.length = vs.length :=
-  Forall2.length_eq (getMany_eq_some_iff.mp h)
+  YulSemantics.Forall₂.length_eq (getMany_eq_some_iff.mp h)
 
 /-! ### `setMany` -/
 
@@ -823,7 +823,7 @@ theorem get_append_of_not_mem : ∀ {A : VEnv D} {B : VEnv D} {x : Ident},
 
 /-- `set` only ever changes a position whose name is the one being set. -/
 theorem set_positional : ∀ (V : VEnv D) (x : Ident) (v : D.Value),
-    List.Forall₂ (fun (p q : Ident × D.Value) => p.1 = q.1 ∧ (q.2 = p.2 ∨ p.1 = x))
+    YulSemantics.Forall₂ (fun (p q : Ident × D.Value) => p.1 = q.1 ∧ (q.2 = p.2 ∨ p.1 = x))
       V (YulSemantics.VEnv.set V x v) := by
   intro V
   induction V with
@@ -833,9 +833,9 @@ theorem set_positional : ∀ (V : VEnv D) (x : Ident) (v : D.Value),
     obtain ⟨pn, pv⟩ := p
     rw [YulSemantics.VEnv.set]
     by_cases h : pn = x
-    · exact (if_pos h) ▸ List.Forall₂.cons ⟨h, Or.inr h⟩
-        (Forall2.refl (fun _ => ⟨rfl, Or.inl rfl⟩) V)
-    · exact (if_neg h) ▸ List.Forall₂.cons ⟨rfl, Or.inl rfl⟩ (ih x v)
+    · exact (if_pos h) ▸ YulSemantics.Forall₂.cons ⟨h, Or.inr h⟩
+        (YulSemantics.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) V)
+    · exact (if_neg h) ▸ YulSemantics.Forall₂.cons ⟨rfl, Or.inl rfl⟩ (ih x v)
 
 /-- If the name being set is bound in the first `k` entries, `set` updates *that*
 binding and leaves everything past `k` alone. -/
@@ -883,7 +883,7 @@ theorem set_get_self : ∀ {V : VEnv D} {x : Ident} {v : D.Value},
 /-- Assigning a list of variables their current values is a no-op — the
 `if`-false and loop-exit edges pass exactly these. -/
 theorem setMany_self {V : VEnv D} : ∀ {xs : List Ident} {vs : List D.Value},
-    List.Forall₂ (fun x v => YulSemantics.VEnv.get V x = some v) xs vs →
+    YulSemantics.Forall₂ (fun x v => YulSemantics.VEnv.get V x = some v) xs vs →
     YulSemantics.VEnv.setMany V xs vs = V := by
   intro xs
   induction xs with
@@ -923,7 +923,7 @@ holds the value `V` records. This is the invariant that makes `VMap.get`
 
 /-- The construction-time environment mirrors the runtime one through `R`. -/
 def EnvOK (env : VMap) (V : VEnv yulD) (R : Regs) : Prop :=
-  List.Forall₂ (fun (p : Ident × ValId) (q : Ident × U256) =>
+  YulSemantics.Forall₂ (fun (p : Ident × ValId) (q : Ident × U256) =>
     p.1 = q.1 ∧ R p.2 = some q.2) env V
 
 namespace EnvOK
@@ -944,29 +944,29 @@ theorem unique_names {env : VMap} {V : VEnv yulD} {R : Regs}
 
 theorem length {env : VMap} {V : VEnv yulD} {R : Regs} (h : EnvOK env V R) :
     env.length = V.length :=
-  Forall2.length_eq h
+  YulSemantics.Forall₂.length_eq h
 
 /-- Register-file extension preserves the invariant — the single-assignment
 payoff: nothing the construction does later can invalidate a binding. -/
 theorem mono {env : VMap} {V : VEnv yulD} {R R' : Regs} (h : EnvOK env V R)
     (hle : Regs.Le R R') : EnvOK env V R' :=
-  Forall2.imp (fun _ _ hpq => ⟨hpq.1, hle _ _ hpq.2⟩) h
+  YulSemantics.Forall₂.imp (fun _ _ hpq => ⟨hpq.1, hle _ _ hpq.2⟩) h
 
-theorem nil : EnvOK ([] : VMap) ([] : VEnv yulD) R := List.Forall₂.nil
+theorem nil : EnvOK ([] : VMap) ([] : VEnv yulD) R := YulSemantics.Forall₂.nil
 
 theorem cons {x : Ident} {i : ValId} {v : U256} {env : VMap} {V : VEnv yulD}
     {R : Regs} (hv : R i = some v) (h : EnvOK env V R) :
     EnvOK ((x, i) :: env) ((x, v) :: V) R :=
-  List.Forall₂.cons ⟨rfl, hv⟩ h
+  YulSemantics.Forall₂.cons ⟨rfl, hv⟩ h
 
 theorem append {env₁ env₂ : VMap} {V₁ V₂ : VEnv yulD} {R : Regs}
     (h₁ : EnvOK env₁ V₁ R) (h₂ : EnvOK env₂ V₂ R) :
     EnvOK (env₁ ++ env₂) (V₁ ++ V₂) R :=
-  Forall2.append h₁ h₂
+  YulSemantics.Forall₂.append h₁ h₂
 
 theorem drop {env : VMap} {V : VEnv yulD} {R : Regs} (n : Nat)
     (h : EnvOK env V R) : EnvOK (env.drop n) (V.drop n) R :=
-  Forall2.drop n h
+  YulSemantics.Forall₂.drop n h
 
 /-- Scope exit agrees: the construction's `drop` is the semantics' `restore`. -/
 theorem restore {env : VMap} {V : VEnv yulD} {R : Regs} {env₀ : VMap}
@@ -1014,7 +1014,7 @@ theorem set {env : VMap} {V : VEnv yulD} {R : Regs} (h : EnvOK env V R)
     {x : Ident} {i : ValId} {v : U256} (hv : R i = some v) :
     EnvOK (env.set x i) (YulSemantics.VEnv.set V x v) R := by
   induction h with
-  | nil => exact List.Forall₂.nil
+  | nil => exact YulSemantics.Forall₂.nil
   | @cons p q env' V' hpq htl ih =>
     obtain ⟨py, pi⟩ := p
     obtain ⟨qy, qv⟩ := q
@@ -1022,14 +1022,14 @@ theorem set {env : VMap} {V : VEnv yulD} {R : Regs} (h : EnvOK env V R)
     rw [VMap.set, YulSemantics.VEnv.set]
     by_cases hx : py = x
     · rw [if_pos hx, if_pos hx]
-      exact List.Forall₂.cons ⟨rfl, hv⟩ htl
+      exact YulSemantics.Forall₂.cons ⟨rfl, hv⟩ htl
     · rw [if_neg hx, if_neg hx]
-      exact List.Forall₂.cons ⟨rfl, hqv⟩ ih
+      exact YulSemantics.Forall₂.cons ⟨rfl, hqv⟩ ih
 
 /-- Multi-assignment: `VMap.setMany` tracks `VEnv.setMany` pointwise. -/
 theorem setMany {R : Regs} : ∀ {xs : List Ident} {is : List ValId} {vs : List U256}
     {env : VMap} {V : VEnv yulD}, EnvOK env V R →
-    List.Forall₂ (fun i v => R i = some v) is vs →
+    YulSemantics.Forall₂ (fun i v => R i = some v) is vs →
     EnvOK (env.setMany xs is) (YulSemantics.VEnv.setMany V xs vs) R := by
   intro xs
   induction xs with
@@ -1044,18 +1044,18 @@ theorem setMany {R : Regs} : ∀ {xs : List Ident} {is : List ValId} {vs : List 
 
 /-- A freshly built `zip` of names to just-defined ids. -/
 theorem zip {R : Regs} : ∀ {xs : List Ident} {is : List ValId} {vs : List U256},
-    List.Forall₂ (fun i v => R i = some v) is vs → xs.length = is.length →
+    YulSemantics.Forall₂ (fun i v => R i = some v) is vs → xs.length = is.length →
     EnvOK (xs.zip is) (xs.zip vs) R := by
   intro xs
   induction xs with
-  | nil => intro is vs _ _; exact List.Forall₂.nil
+  | nil => intro is vs _ _; exact YulSemantics.Forall₂.nil
   | cons x xs ih =>
     intro is vs hiv hlen
     cases hiv with
     | nil => exact absurd hlen (by simp)
     | @cons i v is' vs' hh ht =>
       simp only [List.zip_cons_cons]
-      exact List.Forall₂.cons ⟨rfl, hh⟩ (ih ht (by simpa using hlen))
+      exact YulSemantics.Forall₂.cons ⟨rfl, hh⟩ (ih ht (by simpa using hlen))
 
 /-- The `let`-without-value / return-variable case: ids bound to zero mirror
 `bindZeros`. -/
@@ -1064,22 +1064,22 @@ theorem zip_bindZeros {R : Regs} : ∀ {xs : List Ident} {is : List ValId},
     EnvOK (xs.zip is) (YulSemantics.bindZeros yulD xs) R := by
   intro xs
   induction xs with
-  | nil => intro is _ _; exact List.Forall₂.nil
+  | nil => intro is _ _; exact YulSemantics.Forall₂.nil
   | cons x xs ih =>
     intro is hlen hz
     cases is with
     | nil => exact absurd hlen (by simp)
     | cons i is =>
       simp only [List.zip_cons_cons, YulSemantics.bindZeros, List.map_cons]
-      exact List.Forall₂.cons ⟨rfl, hz i (List.mem_cons_self ..)⟩
+      exact YulSemantics.Forall₂.cons ⟨rfl, hz i (List.mem_cons_self ..)⟩
         (ih (by simpa using hlen) (fun j hj => hz j (List.mem_cons_of_mem _ hj)))
 
 /-- Pointwise version of `edgeArgs`' payoff. -/
 theorem edge_vals {env : VMap} {V : VEnv yulD} {R : Regs} (henv : EnvOK env V R) :
     ∀ {xs : List Ident} {ids : List ValId},
-      List.Forall₂ (fun x i => VMap.get env x = some i) xs ids →
+      YulSemantics.Forall₂ (fun x i => VMap.get env x = some i) xs ids →
       ∃ vals, R.getMany ids = some vals
-        ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V x = some v) xs vals := by
+        ∧ YulSemantics.Forall₂ (fun x v => YulSemantics.VEnv.get V x = some v) xs vals := by
   intro xs ids h
   induction h with
   | nil => exact ⟨[], rfl, .nil⟩

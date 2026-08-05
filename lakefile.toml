@@ -6,13 +6,24 @@ defaultTargets = ["YulEvmCompiler", "YulParser", "YulEvmCompilerTests", "YulIR",
 [[require]]
 name = "yul-semantics"
 git = "https://github.com/powdr-labs/yul-semantics"
-rev = "90b33d7475e0c4fb2f67b72f3e151164ae8b4d6f"
+rev = "f19c9fc311bd4c895e5530b644fc5e5bb71c9b28"
+
+# Mathlib is no longer pulled in by the semantics packages (both went
+# Mathlib-free); this repository's own proofs still use Mathlib tactics and
+# lemmas (norm_num/ring/interval_cases, List.Forall₂, Multiset, ...), so it
+# stays a direct requirement until the tracked Mathlib-removal campaign ports
+# them. Pinned to the rev the pre-bump manifest resolved; its batteries pin
+# (fa08db58) is identical to the semantics packages'.
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4"
+rev = "fabf563a7c95a166b8d7b6efca11c8b4dc9d911f"
 
 # Target-language semantics: the EVM small-step/big-step relations.
 [[require]]
 name = "evm_semantics"
 git = "https://github.com/powdr-labs/evm-semantics"
-rev = "26fdf59"
+rev = "192d6111df6bc254372f0af97e64f03262d9d4c1"
 
 [[lean_lib]]
 name = "YulEvmCompiler"

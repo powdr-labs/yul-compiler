@@ -115,7 +115,7 @@ private theorem resolveFcStmt_equiv (L : Layout) (P : String) (Δ : DEnv) :
 
 private theorem resolveFcStmts_forall2 (L : Layout) (P : String) (Δ : DEnv) :
     ∀ ss : List (Stmt Op),
-      List.Forall₂ (EquivStmt D) (resolveForLayoutStmts L ss)
+      Forall₂ (EquivStmt D) (resolveForLayoutStmts L ss)
         (resolveForLayoutStmts L (fcStmts P Δ ss))
   | [] => by rw [resolveForLayoutStmts, fcStmts, resolveForLayoutStmts]; exact .nil
   | s :: rest => by
@@ -125,7 +125,7 @@ private theorem resolveFcStmts_forall2 (L : Layout) (P : String) (Δ : DEnv) :
 
 private theorem resolveFcCases_forall2 (L : Layout) (P : String) (Δ : DEnv) :
     ∀ cs : List (Literal × Block Op),
-      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+      Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
         (resolveForLayoutCases L cs) (resolveForLayoutCases L (fcCases P Δ cs))
   | [] => by rw [resolveForLayoutCases, fcCases, resolveForLayoutCases]; exact .nil
   | (l, b) :: rest => by

@@ -1566,12 +1566,12 @@ theorem rjStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (rjStmt s)
   | .leave => by unfold rjStmt; exact EquivStmt.refl _
 
 theorem rjStmts_forall2 : ∀ ss : List (Stmt Op),
-    List.Forall₂ (EquivStmt D) ss (rjStmts ss)
+    Forall₂ (EquivStmt D) ss (rjStmts ss)
   | [] => .nil
   | s :: rest => .cons (rjStmt_equiv s) (rjStmts_forall2 rest)
 
 theorem rjCases_forall2 : ∀ cs : List (Literal × Block Op),
-    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs (rjCases cs)
+    Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs (rjCases cs)
   | [] => .nil
   | (_l, b) :: rest =>
       .cons ⟨rfl, (EquivBlock.of_stmts_funs
@@ -1585,7 +1585,7 @@ theorem rjScopeRel : ∀ ss : List (Stmt Op),
   | [] => .nil
   | .funDef n ps rs body :: rest => by
       unfold rjStmts rjStmt
-      refine List.Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩ (rjScopeRel rest)
+      refine Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩ (rjScopeRel rest)
       exact (EquivBlock.of_stmts_funs
         (EquivStmts.of_forall₂ (rjStmts_forall2 body))
         (rjScopeRel body)).trans

@@ -1,4 +1,5 @@
 import YulEvmCompiler.SsaCfg.Implementation.PassesSound.DveCert
+import YulSemantics.Equiv
 set_option warningAsError true
 
 /-!
@@ -350,7 +351,7 @@ inductive ConstDef (f : Func) : ValId → U256 → Prop
       b ∈ f.blocks.toList → .const d v ∈ b.instrs → ConstDef f d v
   | op {b : Block} {d : ValId} {yop : Op} {as : List ValId} {vs : List U256} {v : U256} :
       b ∈ f.blocks.toList → .op [d] yop as ∈ b.instrs → pureOp yop = true →
-      List.Forall₂ (ConstDef f) as vs → evalPure yop vs = some v → ConstDef f d v
+      YulSemantics.Forall₂ (ConstDef f) as vs → evalPure yop vs = some v → ConstDef f d v
 
 /-- Every certificate names an actual instruction destination. -/
 theorem ConstDef.site {f : Func} {d : ValId} {v : U256} (h : ConstDef f d v) :
@@ -372,7 +373,7 @@ theorem cfMapSound_empty (f : Func) : CFMapSound f ∅ := by
 certificates. -/
 theorem cfMapSound_mapM {f : Func} {m : Std.HashMap ValId U256}
     (hm : CFMapSound f m) {as : List ValId} {vs : List U256}
-    (h : as.mapM (m[·]?) = some vs) : List.Forall₂ (ConstDef f) as vs := by
+    (h : as.mapM (m[·]?) = some vs) : YulSemantics.Forall₂ (ConstDef f) as vs := by
   induction as generalizing vs with
   | nil => simp at h; subst vs; exact .nil
   | cons a as ih =>

@@ -3496,12 +3496,12 @@ theorem rvFunStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (rvFunStmt s)
   | .leave => EquivStmt.refl _
 
 theorem rvFunStmts_forall2 : ∀ ss : List (Stmt Op),
-    List.Forall₂ (EquivStmt D) ss (rvFunStmts ss)
+    Forall₂ (EquivStmt D) ss (rvFunStmts ss)
   | [] => .nil
   | s :: rest => .cons (rvFunStmt_equiv s) (rvFunStmts_forall2 rest)
 
 theorem rvFunCases_forall2 : ∀ cs : List (Literal × Block Op),
-    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs
+    Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs
       (rvFunCases cs)
   | [] => .nil
   | (l, body) :: rest =>
