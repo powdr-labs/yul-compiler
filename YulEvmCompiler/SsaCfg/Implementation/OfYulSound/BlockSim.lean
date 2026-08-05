@@ -126,7 +126,7 @@ theorem sim_forLoop {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           rwa [hfnA] at hinner
         · obtain ⟨rs, vals, hrs, hvals, hex⟩ := hinner
           refine ⟨rs, vals, hrs, ?_, ?_⟩
-          · exact Forall2.imp_mem hvals (fun x hx v hv => by
+          · exact YulSemantics.Forall₂.imp_mem hvals (fun x hx v hv => by
               rw [get_restore_of_noShadow hnsEnd]
               · exact hv
               · rw [← henv.names]

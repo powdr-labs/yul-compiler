@@ -326,15 +326,15 @@ private theorem hcStmt_equiv (P : String) (Δ : DEnv) :
   | .leave => by rw [hcStmt]; exact EquivStmt.refl _
 
 private theorem hcStmts_forall2 (P : String) (Δ : DEnv) :
-    ∀ ss : List (Stmt Op), List.Forall₂ (EquivStmt D) ss (hcStmts P Δ ss)
+    ∀ ss : List (Stmt Op), Forall₂ (EquivStmt D) ss (hcStmts P Δ ss)
   | [] => by rw [hcStmts]; exact .nil
   | s :: rest => by
-      simpa [hcStmts] using List.Forall₂.cons
+      simpa [hcStmts] using Forall₂.cons
         (hcStmt_equiv P Δ s) (hcStmts_forall2 P Δ rest)
 
 private theorem hcCases_forall2 (P : String) (Δ : DEnv) :
     ∀ cs : List (Literal × Block Op),
-      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+      Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
         cs (hcCases P Δ cs)
   | [] => by rw [hcCases]; exact .nil
   | (l, b) :: rest => by

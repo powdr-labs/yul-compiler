@@ -45,7 +45,7 @@ inductive FEnvOK (P : Prog) : YulSemantics.FunEnv yulD → FMap → Prop
   | nil : FEnvOK P [] []
   | cons {scope : YulSemantics.FScope yulD} {mp : List (Ident × FuncId)}
       {rest : YulSemantics.FunEnv yulD} {restM : FMap} :
-      List.Forall₂ (fun (p : Ident × YulSemantics.FDecl yulD) (q : Ident × FuncId) =>
+      YulSemantics.Forall₂ (fun (p : Ident × YulSemantics.FDecl yulD) (q : Ident × FuncId) =>
         p.1 = q.1 ∧ FuncOK (model := model) P (mp :: restM) p.2 q.2) scope mp →
       FEnvOK P rest restM →
       FEnvOK P (scope :: rest) (mp :: restM)
@@ -53,7 +53,7 @@ inductive FEnvOK (P : Prog) : YulSemantics.FunEnv yulD → FMap → Prop
 /-- The two scope searches agree, entry by entry. -/
 private theorem find?_agree {P : Prog} {fenv : FMap} {x : Ident} :
     ∀ {scope : YulSemantics.FScope yulD} {mp : List (Ident × FuncId)},
-      List.Forall₂ (fun (p : Ident × YulSemantics.FDecl yulD) (q : Ident × FuncId) =>
+      YulSemantics.Forall₂ (fun (p : Ident × YulSemantics.FDecl yulD) (q : Ident × FuncId) =>
         p.1 = q.1 ∧ FuncOK (model := model) P fenv p.2 q.2) scope mp →
       (scope.find? (fun p => p.1 = x) = none ∧ mp.find? (fun q => q.1 = x) = none)
       ∨ (∃ p q, scope.find? (fun p => p.1 = x) = some p
@@ -457,7 +457,7 @@ theorem allocScope_length {ss : List (Stmt Op)} {s s' : BState}
 
 theorem allocScope_forall2 {ss : List (Stmt Op)} {s s' : BState}
     {scope : List (Ident × FuncId)} (h : allocScope ss s = some (scope, s')) :
-    List.Forall₂ (fun (p : Ident × YulSemantics.FDecl yulD)
+    YulSemantics.Forall₂ (fun (p : Ident × YulSemantics.FDecl yulD)
       (q : Ident × FuncId) => p.1 = q.1)
       (YulSemantics.hoist yulD ss) scope := by
   rw [allocScope] at h
@@ -470,7 +470,7 @@ theorem allocScope_forall2 {ss : List (Stmt Op)} {s s' : BState}
             pure (acc ++ [(n, fid)])
         | _ => pure acc) s0 = some (out, s1) →
       ∃ added, out = acc ++ added ∧
-        List.Forall₂ (fun (p : Ident × YulSemantics.FDecl yulD)
+        YulSemantics.Forall₂ (fun (p : Ident × YulSemantics.FDecl yulD)
           (q : Ident × FuncId) => p.1 = q.1)
           (YulSemantics.hoist yulD l) added := by
     intro l
@@ -478,7 +478,7 @@ theorem allocScope_forall2 {ss : List (Stmt Op)} {s s' : BState}
     | nil =>
       intro acc s0 s1 out hl
       obtain ⟨rfl, rfl⟩ := M.pure_inv hl
-      exact ⟨[], by simp [YulSemantics.hoist]⟩
+      exact ⟨[], by simp [YulSemantics.hoist]; exact .nil⟩
     | cons st rest ih =>
       intro acc s0 s1 out hl
       rw [List.foldlM_cons] at hl
@@ -490,7 +490,7 @@ theorem allocScope_forall2 {ss : List (Stmt Op)} {s s' : BState}
         obtain ⟨added, hout, hrel⟩ := ih (acc ++ [(n, fid)]) t s1 out hrest
         refine ⟨(n, fid) :: added, ?_, ?_⟩
         · simpa [List.append_assoc] using hout
-        · have hc : List.Forall₂
+        · have hc : YulSemantics.Forall₂
               (fun (p : Ident × YulSemantics.FDecl yulD)
                 (q : Ident × FuncId) => p.1 = q.1)
               ((n, { params := ps, rets := rs, body := body }) ::
@@ -684,7 +684,7 @@ theorem allocScope_stmtFuncIds_perm {fenv : FMap} {env : VMap}
 theorem forall2_hoist_scope_names
     {as : List (Ident × YulSemantics.FDecl yulD)}
     {bs : List (Ident × FuncId)}
-    (h : List.Forall₂ (fun p q => p.1 = q.1) as bs) :
+    (h : YulSemantics.Forall₂ (fun p q => p.1 = q.1) as bs) :
     as.map Prod.fst = bs.map Prod.fst := by
   induction h with
   | nil => rfl
@@ -720,7 +720,7 @@ theorem trStmts_hoist_owned {P : Prog}
     ∀ (ss : List (Stmt Op)) (rem : List (Ident × FuncId))
       (env : VMap) (lctx : Option LoopCtx) (rets : Option (List Ident))
       (d : Bool) (s s' : BState) (r : Option VMap) (owned : List FuncId),
-      List.Forall₂ (fun (p : Ident × YulSemantics.FDecl yulD)
+      YulSemantics.Forall₂ (fun (p : Ident × YulSemantics.FDecl yulD)
         (q : Ident × FuncId) => p.1 = q.1)
         (YulSemantics.hoist yulD ss) rem →
       rem <:+ top →
@@ -730,7 +730,7 @@ theorem trStmts_hoist_owned {P : Prog}
       (rem.map Prod.snd ++ owned).Nodup →
       FOwned owned s' done →
       trStmts (top :: fenv) env lctx rets d ss s = some (r, s') →
-      List.Forall₂
+      YulSemantics.Forall₂
         (fun (p : Ident × YulSemantics.FDecl yulD) (q : Ident × FuncId) =>
           p.1 = q.1 ∧ FuncOK (model := model) P (top :: fenv) p.2 q.2)
         (YulSemantics.hoist yulD ss) rem
@@ -742,7 +742,7 @@ theorem trStmts_hoist_owned {P : Prog}
     cases hrel
     rw [trStmts] at htr
     obtain ⟨-, rfl⟩ := M.pure_inv htr
-    exact ⟨List.Forall₂.nil, by simpa using ho⟩
+    exact ⟨YulSemantics.Forall₂.nil, by simpa using ho⟩
   | cons st rest ih =>
     intro rem env lctx rets d s s' r owned hrel hsuf hslots hbound hnd ho htr
     cases st with

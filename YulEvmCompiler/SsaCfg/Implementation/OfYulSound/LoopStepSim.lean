@@ -323,7 +323,7 @@ theorem sim_loopStepShared {P : Prog} {f : Func}
             sPostOut = some (renv, s₁) →
         Regs.Le RA RB → Regs.BelowEq sN.fn.nextVal RA RB →
         RegsFresh RB sO.fn →
-        List.Forall₂ (fun x v => YulSemantics.VEnv.get Vb x = some v)
+        YulSemantics.Forall₂ (fun x v => YulSemantics.VEnv.get Vb x = some v)
           (modifiedX env [post, body]) vals →
         (∀ res, JumpTo (model := model) P f postId vals RB stb res →
           ExecFrom (model := model) P f sI.fn R st res) →

@@ -252,7 +252,7 @@ theorem resolveSfFunStmt_equiv (L : Layout) : ∀ s : Stmt Op,
   | .leave => EquivStmt.refl _
 
 theorem resolveSfFunStmts_forall2 (L : Layout) : ∀ ss : List (Stmt Op),
-    List.Forall₂ (EquivStmt D) (resolveForLayoutStmts L ss)
+    Forall₂ (EquivStmt D) (resolveForLayoutStmts L ss)
       (resolveForLayoutStmts L (sfFunStmts ss))
   | [] => by
       rw [resolveForLayoutStmts_nil, sfFunStmts, resolveForLayoutStmts_nil]
@@ -263,7 +263,7 @@ theorem resolveSfFunStmts_forall2 (L : Layout) : ∀ ss : List (Stmt Op),
         (resolveSfFunStmts_forall2 L rest)
 
 theorem resolveSfFunCases_forall2 (L : Layout) : ∀ cs : List (Literal × Block Op),
-    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+    Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
       (resolveForLayoutCases L cs) (resolveForLayoutCases L (sfFunCases cs))
   | [] => by
       rw [resolveForLayoutCases, sfFunCases, resolveForLayoutCases]

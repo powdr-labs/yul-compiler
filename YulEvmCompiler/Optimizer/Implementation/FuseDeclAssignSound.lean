@@ -1884,14 +1884,14 @@ theorem fdStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (fdStmt s)
       exact @EquivStmt.refl (evmWithExternal calls creates) _ _
 
 theorem fdEach_forall2 : ∀ ss : List (Stmt Op),
-    List.Forall₂ (EquivStmt D) ss (fdEach ss)
+    Forall₂ (EquivStmt D) ss (fdEach ss)
   | [] => by unfold fdEach; exact .nil
   | s :: rest => by
       unfold fdEach
       exact .cons (fdStmt_equiv s) (fdEach_forall2 rest)
 
 theorem fdCases_forall2 : ∀ cs : List (Literal × Block Op),
-    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs (fdCases cs)
+    Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs (fdCases cs)
   | [] => by unfold fdCases; exact .nil
   | (l, b) :: rest => by
       unfold fdCases
@@ -1908,7 +1908,7 @@ theorem fdScopeRel : ∀ ss : List (Stmt Op),
   | [] => by unfold fdEach; exact .nil
   | .funDef n ps rs body :: rest => by
       unfold fdEach fdStmt
-      refine List.Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩ (fdScopeRel rest)
+      refine Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩ (fdScopeRel rest)
       show EquivBlock D body (fdStmts body)
       unfold fdStmts
       exact (EquivBlock.of_stmts_funs

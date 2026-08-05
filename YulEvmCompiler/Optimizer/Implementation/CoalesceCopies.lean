@@ -445,13 +445,13 @@ theorem ccStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (ccStmt s)
 
 /-- Sequence version, pairwise. -/
 theorem ccStmts_forall2 : ∀ ss : List (Stmt Op),
-    List.Forall₂ (EquivStmt D) ss (ccStmts ss)
+    Forall₂ (EquivStmt D) ss (ccStmts ss)
   | [] => .nil
   | s :: rest => .cons (ccStmt_equiv s) (ccStmts_forall2 rest)
 
 /-- Case-list version. -/
 theorem ccCases_forall2 : ∀ cs : List (Literal × Block Op),
-    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs (ccCases cs)
+    Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs (ccCases cs)
   | [] => .nil
   | (_l, b) :: rest =>
       .cons ⟨rfl, (EquivBlock.of_stmts_funs
@@ -467,7 +467,7 @@ theorem ccScopeRel : ∀ ss : List (Stmt Op),
   | [] => .nil
   | .funDef n ps rs body :: rest => by
       unfold ccStmts ccStmt
-      refine List.Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩ (ccScopeRel rest)
+      refine Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩ (ccScopeRel rest)
       exact (EquivBlock.of_stmts_funs
         (EquivStmts.of_forall₂ (ccStmts_forall2 body))
         (ccScopeRel body)).trans

@@ -35,7 +35,7 @@ def CasesOut (P : Prog) (f : Func) (lctx : Option LoopCtx)
   match o with
   | .normal => ∃ (R₁ : Regs) (vals : List U256),
       Regs.Le R₀ R₁ ∧ Regs.BelowEq s₀.fn.nextVal R₀ R₁ ∧ RegsFresh R₁ s₁.fn
-        ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) X vals
+        ∧ YulSemantics.Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) X vals
         ∧ ∀ res, JumpTo (model := model) P f joinId vals R₁ yst' res
             → ExecFrom (model := model) P f s₀.fn R₀ yst res
   | o => SOut (model := model) P f lctx rets s₀ s₁ R₀ none V' yst yst' o

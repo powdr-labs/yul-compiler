@@ -1,4 +1,5 @@
 import YulEvmCompiler.SsaCfg.Implementation.OfYulSound.FuncTable
+import YulSemantics.Equiv
 set_option warningAsError true
 
 /-!
@@ -12,7 +13,7 @@ the fact the loop and switch reconstructions need.
 -/
 
 namespace YulEvmCompiler.SsaCfg
-open YulSemantics (Ident Literal Expr Stmt VEnv Outcome)
+open YulSemantics (Ident Literal Expr Stmt VEnv Outcome Forall₂)
 open YulSemantics.EVM (U256 EvmState Op builtinWithExternal evmWithExternal)
 
 section Semantics
@@ -46,18 +47,18 @@ def SOut (P : Prog) (f : Func) (lctx : Option LoopCtx)
   | .break => ∃ (lc : LoopCtx) (R₁ : Regs) (vals : List U256),
       lctx = some lc ∧ Regs.Le R₀ R₁
         ∧ Regs.BelowEq s₀.fn.nextVal R₀ R₁ ∧ RegsFresh R₁ s₁.fn
-        ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) lc.vars vals
+        ∧ Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) lc.vars vals
         ∧ ∀ res, JumpTo (model := model) P f lc.brkTgt vals R₁ yst' res
             → ExecFrom (model := model) P f s₀.fn R₀ yst res
   | .continue => ∃ (lc : LoopCtx) (R₁ : Regs) (vals : List U256),
       lctx = some lc ∧ Regs.Le R₀ R₁
         ∧ Regs.BelowEq s₀.fn.nextVal R₀ R₁ ∧ RegsFresh R₁ s₁.fn
-        ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) lc.vars vals
+        ∧ Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) lc.vars vals
         ∧ ∀ res, JumpTo (model := model) P f lc.contTgt vals R₁ yst' res
             → ExecFrom (model := model) P f s₀.fn R₀ yst res
   | .leave => ∃ (rs : List Ident) (vals : List U256),
       rets = some rs
-        ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) rs vals
+        ∧ Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) rs vals
         ∧ ExecFrom (model := model) P f s₀.fn R₀ yst (.ret vals yst')
 
 /-- **The loop/return context is visible.**  The variables a `break`/`continue`
@@ -184,7 +185,7 @@ depth, specializes to the depth the head's `let`-bindings left. -/
 def ModOut (locals mods : List Ident) (V W : VEnv yulD) : Prop :=
   V.length ≤ W.length
   ∧ ∀ n : Nat, n + locals.length ≤ V.length →
-      List.Forall₂
+      Forall₂
         (fun (p q : Ident × U256) => p.1 = q.1 ∧ (q.2 = p.2 ∨ q.1 ∈ mods))
         (V.drop (V.length - n)) (W.drop (W.length - n))
 
@@ -195,15 +196,15 @@ past `k` only when that name is reported by the analysis — the names that are
 theorem setMany_drop_forall₂ : ∀ {xs : List Ident} {vs : List U256}
     {V : VEnv yulD} {k : Nat} {mods : List Ident},
     (∀ x ∈ xs, x ∈ mods ∨ x ∈ VEnv.names (V.take k)) →
-    List.Forall₂ (fun (p q : Ident × U256) => p.1 = q.1 ∧ (q.2 = p.2 ∨ q.1 ∈ mods))
+    Forall₂ (fun (p q : Ident × U256) => p.1 = q.1 ∧ (q.2 = p.2 ∨ q.1 ∈ mods))
       (V.drop k) ((YulSemantics.VEnv.setMany V xs vs).drop k) := by
   intro xs
   induction xs with
-  | nil => intro vs V k mods _; exact Forall2.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
+  | nil => intro vs V k mods _; exact YulSemantics.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
   | cons x xs ih =>
     intro vs V k mods hall
     cases vs with
-    | nil => exact Forall2.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
+    | nil => exact YulSemantics.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
     | cons v vs =>
       rw [VEnv.setMany_cons]
       have hnames : VEnv.names ((YulSemantics.VEnv.set V x v).take k)
@@ -217,16 +218,16 @@ theorem setMany_drop_forall₂ : ∀ {xs : List Ident} {vs : List U256}
           rcases hall y (List.mem_cons_of_mem _ hy) with hm | hm
           · exact Or.inl hm
           · exact Or.inr (by rw [hnames]; exact hm))
-      have hstep : List.Forall₂
+      have hstep : Forall₂
           (fun (p q : Ident × U256) => p.1 = q.1 ∧ (q.2 = p.2 ∨ q.1 ∈ mods))
           (V.drop k) ((YulSemantics.VEnv.set V x v).drop k) := by
         rcases hall x (List.mem_cons_self ..) with hm | hm
-        · refine Forall2.imp (fun a b hab => ⟨hab.1, hab.2.imp id (fun he => ?_)⟩)
-            (Forall2.drop k (VEnv.set_positional V x v))
+        · refine YulSemantics.Forall₂.imp (fun a b hab => ⟨hab.1, hab.2.imp id (fun he => ?_)⟩)
+            (YulSemantics.Forall₂.drop k (VEnv.set_positional V x v))
           rw [← hab.1, he]; exact hm
         · rw [VEnv.set_drop_of_mem_take V x v k hm]
-          exact Forall2.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
-      refine Forall2.trans' ?_ hstep htail
+          exact YulSemantics.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
+      refine YulSemantics.Forall₂.trans' ?_ hstep htail
       intro a b c hab hbc
       exact ⟨hab.1.trans hbc.1, by
         rcases hbc.2 with h | h
@@ -238,12 +239,12 @@ theorem setMany_drop_forall₂ : ∀ {xs : List Ident} {vs : List U256}
 namespace ModOut
 
 theorem rfl' (locals mods : List Ident) (V : VEnv yulD) : ModOut locals mods V V :=
-  ⟨Nat.le_refl _, fun _ _ => Forall2.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _⟩
+  ⟨Nat.le_refl _, fun _ _ => YulSemantics.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _⟩
 
 theorem mono_mods {locals mods mods' : List Ident} {V W : VEnv yulD}
     (hsub : ∀ x ∈ mods, x ∈ mods') (h : ModOut locals mods V W) :
     ModOut locals mods' V W :=
-  ⟨h.1, fun n hn => Forall2.imp (fun _ _ hpq =>
+  ⟨h.1, fun n hn => YulSemantics.Forall₂.imp (fun _ _ hpq =>
     ⟨hpq.1, hpq.2.imp id (fun hm => hsub _ hm)⟩) (h.2 n hn)⟩
 
 /-- Composition. The side condition says the second fragment's guarantee reaches
@@ -254,7 +255,7 @@ theorem trans {l₁ l₂ m₁ m₂ : List Ident} {V V₁ V₂ : VEnv yulD}
     (hd : ∀ n : Nat, n + l₁.length ≤ V.length → n + l₂.length ≤ V₁.length) :
     ModOut l₁ (m₁ ++ m₂) V V₂ := by
   refine ⟨Nat.le_trans h₁.1 h₂.1, fun n hn => ?_⟩
-  refine Forall2.trans' ?_ (h₁.2 n hn) (h₂.2 n (hd n hn))
+  refine YulSemantics.Forall₂.trans' ?_ (h₁.2 n hn) (h₂.2 n (hd n hn))
   intro a b c hab hbc
   refine ⟨hab.1.trans hbc.1, ?_⟩
   rcases hbc.2 with h | h
@@ -282,7 +283,7 @@ end ModOut
 the same in both environments. -/
 theorem get_congr_of_forall₂ {mods : List Ident} {x : Ident} (hx : x ∉ mods) :
     ∀ {V W : VEnv yulD},
-      List.Forall₂
+      Forall₂
         (fun (p q : Ident × U256) => p.1 = q.1 ∧ (q.2 = p.2 ∨ q.1 ∈ mods)) V W →
       YulSemantics.VEnv.get W x = YulSemantics.VEnv.get V x := by
   intro V W h
@@ -467,7 +468,7 @@ theorem mod_sim {funs : YulSemantics.FunEnv yulD} {V : VEnv yulD}
     rw [show ((YulSemantics.bindZeros yulD vars ++ V).length - n)
         = (YulSemantics.bindZeros yulD vars).length + (V.length - n) from by
       rw [List.length_append, hbl]; omega, drop_append_len]
-    exact Forall2.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
+    exact YulSemantics.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
   | @letVal funs V st vars e vals st1 _ hlen _ =>
     have hbn : VEnv.names (vars.zip vals) = vars := by
       rw [VEnv.names, List.map_fst_zip]
@@ -479,7 +480,7 @@ theorem mod_sim {funs : YulSemantics.FunEnv yulD} {V : VEnv yulD}
     rw [show ((vars.zip vals ++ V).length - n)
         = (vars.zip vals).length + (V.length - n) from by
       rw [List.length_append, hbl]; omega, drop_append_len]
-    exact Forall2.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
+    exact YulSemantics.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
   | @assignVal funs V st vars e vals st1 _ hlen _ =>
     refine ⟨by rw [VEnv.names_setMany]; simp [declsOfStmt], fun locals hloc => ?_⟩
     refine ⟨by rw [VEnv.length_setMany], fun n hn => ?_⟩
@@ -686,7 +687,7 @@ theorem setMany_eq_of_modOut {env : VMap} {R : Regs} {V W : VEnv yulD}
     {mods xs : List Ident} {vals : List U256}
     (henv : EnvOK (model := model) env V R) (huniq : env.Unique)
     (hnames : VEnv.names W = VEnv.names V) (hmod : ModOut [] mods V W)
-    (hvals : List.Forall₂
+    (hvals : Forall₂
       (fun x v => YulSemantics.VEnv.get W x = some v) xs vals)
     (_hxs : ∀ x ∈ xs, x ∈ env.map Prod.fst)
     (hcover : ∀ x ∈ env.map Prod.fst, x ∈ mods → x ∈ xs) :

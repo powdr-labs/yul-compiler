@@ -527,7 +527,7 @@ theorem resolveSimplifyStmt_equiv (L : Layout) : ∀ s : Stmt Op,
 
 /-- Resolution commutes with `simplifyStmts` up to pairwise equivalence. -/
 theorem resolveSimplifyStmts_forall2 (L : Layout) : ∀ ss : List (Stmt Op),
-    List.Forall₂ (EquivStmt D) (resolveForLayoutStmts L ss)
+    Forall₂ (EquivStmt D) (resolveForLayoutStmts L ss)
       (resolveForLayoutStmts L (simplifyStmts ss))
   | [] => by simp only [simplifyStmts, resolveForLayoutStmts]; exact .nil
   | s :: rest => by
@@ -537,7 +537,7 @@ theorem resolveSimplifyStmts_forall2 (L : Layout) : ∀ ss : List (Stmt Op),
 /-- Resolution commutes with `simplifyCases` up to pairwise (label-equal,
 body-equivalent) relation. -/
 theorem resolveSimplifyCases_forall2 (L : Layout) : ∀ cs : List (Literal × Block Op),
-    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+    Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
       (resolveForLayoutCases L cs) (resolveForLayoutCases L (simplifyCases cs))
   | [] => by simp only [simplifyCases, resolveForLayoutCases]; exact .nil
   | (l, b) :: rest => by

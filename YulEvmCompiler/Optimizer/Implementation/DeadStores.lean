@@ -1108,10 +1108,10 @@ theorem dsStmts_bequiv (bound : List Ident) : ∀ ss : List (Stmt Op),
 
 /-- Every `switch` case body stays related. -/
 theorem dsCases_bequiv (bound : List Ident) : ∀ cs : List (Literal × Block Op),
-    List.Forall₂ (fun p q => p.1 = q.1 ∧ BEquivBlock D bound p.2 q.2) cs (dsCases bound cs)
-  | [] => List.Forall₂.nil
+    Forall₂ (fun p q => p.1 = q.1 ∧ BEquivBlock D bound p.2 q.2) cs (dsCases bound cs)
+  | [] => Forall₂.nil
   | (_, b) :: rest =>
-      List.Forall₂.cons
+      Forall₂.cons
         ⟨rfl, dsBody_of bound b (dsStmts_bequiv bound b) (dsStmts_scopeRel bound b)⟩
         (dsCases_bequiv bound rest)
 
@@ -1125,26 +1125,26 @@ theorem dsDflt_bequiv (bound : List Ident) : ∀ d : Option (Block Op),
 theorem dsStmt_scope (bound : List Ident) : ∀ s : Stmt Op,
     SbScopeRel (hoist D [s]) (hoist D [dsStmt bound s])
   | .funDef _ ps rs body =>
-      List.Forall₂.cons
+      Forall₂.cons
         ⟨rfl, rfl, rfl,
           dsBody_of (ps ++ rs) body (dsStmts_bequiv (ps ++ rs) body)
             (dsStmts_scopeRel (ps ++ rs) body)⟩
-        List.Forall₂.nil
-  | .block _ => List.Forall₂.nil
-  | .letDecl _ _ => List.Forall₂.nil
-  | .assign _ _ => List.Forall₂.nil
-  | .cond _ _ => List.Forall₂.nil
-  | .switch _ _ _ => List.Forall₂.nil
-  | .forLoop _ _ _ _ => List.Forall₂.nil
-  | .exprStmt _ => List.Forall₂.nil
-  | .break => List.Forall₂.nil
-  | .continue => List.Forall₂.nil
-  | .leave => List.Forall₂.nil
+        Forall₂.nil
+  | .block _ => Forall₂.nil
+  | .letDecl _ _ => Forall₂.nil
+  | .assign _ _ => Forall₂.nil
+  | .cond _ _ => Forall₂.nil
+  | .switch _ _ _ => Forall₂.nil
+  | .forLoop _ _ _ _ => Forall₂.nil
+  | .exprStmt _ => Forall₂.nil
+  | .break => Forall₂.nil
+  | .continue => Forall₂.nil
+  | .leave => Forall₂.nil
 
 /-- A rewritten sequence hoists a related function scope. -/
 theorem dsStmts_scopeRel (bound : List Ident) : ∀ ss : List (Stmt Op),
     SbScopeRel (hoist D ss) (hoist D (dsStmts bound ss))
-  | [] => List.Forall₂.nil
+  | [] => Forall₂.nil
   | s :: rest => by
       show SbScopeRel (hoist D (s :: rest)) (hoist D (dsStmt bound s :: dsStmts bound rest))
       rw [hoist_cons s rest, hoist_cons (dsStmt bound s) (dsStmts bound rest)]
