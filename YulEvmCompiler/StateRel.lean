@@ -1244,7 +1244,8 @@ structure FrameOK (code : ByteArray) (s : EVM.State) : Prop where
   /-- Positions in the code fit in a word, so `pc` arithmetic never wraps. -/
   codeSmall : code.size < 2 ^ 256
   fork : s.executionEnv.fork = .Osaka
-  noPrecompile : Precompile.isPrecompile s.executionEnv.fork s.executionEnv.codeAddr
+  noPrecompile : Precompile.isPrecompileWithConfig s.executionEnv.precompileConfig
+    s.executionEnv.fork s.executionEnv.codeAddr
     = false
   callStack : s.callStack = []
   running : s.halt = .Running
