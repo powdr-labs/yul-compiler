@@ -252,8 +252,8 @@ fullSuite/mcopy_redundant_overwritten.yul	294	300
 fullSuite/mcopy_redundant_same_area.yul	204	216
 fullSuite/mcopy_redundant_zero_size.yul	222	234
 fullSuite/medium.yul	163242	164112
-fullSuite/name_dependent_cse_bug_part_1.yul	504	378
-fullSuite/name_dependent_cse_bug_part_2.yul	504	378
+fullSuite/name_dependent_cse_bug_part_1.yul	336	378
+fullSuite/name_dependent_cse_bug_part_2.yul	336	378
 fullSuite/no_move_loop_orig.yul	192	120
 fullSuite/remove_redundant_assignments_in_switch.yul	492	402
 fullSuite/reuse_vars_bug_in_simplifier.yul	115608	115974
@@ -380,7 +380,7 @@ ssaAndBack/multi_assign_switch.yul	576	462
 ssaAndBack/simple.yul	162	144
 ssaAndBack/single_assign_if.yul	252	234
 ssaAndBack/single_assign_switch.yul	444	366
-ssaAndBack/ssaReverse.yul	342	432
+ssaAndBack/ssaReverse.yul	318	432
 ssaAndBack/two_vars.yul	192	192
 ssaPlusCleanup/control_structures.yul	0	0
 ssaPlusCleanup/multi_reassign.yul	66	66
@@ -433,7 +433,7 @@ unusedAssignEliminator/for_continue.yul	31	19
 unusedAssignEliminator/for_continue_2.yul	41	37
 unusedAssignEliminator/for_continue_3.yul	26	19
 unusedAssignEliminator/for_decl_inside_break_continue.yul	299	302
-unusedAssignEliminator/for_multi_break.yul	165	138
+unusedAssignEliminator/for_multi_break.yul	167	138
 unusedAssignEliminator/for_nested.yul	50	47
 unusedAssignEliminator/for_rerun.yul	26	22
 unusedAssignEliminator/for_stmnts_after_break_continue.yul	449	374
