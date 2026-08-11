@@ -144,6 +144,61 @@ private partial def traceRun (s : EVM.State) (fuel : Nat) (t : Trace) : Trace :=
         byOp := t.byOp.set! op.toNat (c + 1, g + dg)
         byPc := t.byPc.insert pc (pcC + 1, pcG + dg, op) }
 
+/-- Instruction-aligned disassembly starts: walk the code once, skipping
+PUSH immediates. -/
+private def instrStarts (code : ByteArray) : Array Nat := Id.run do
+  let mut starts : Array Nat := #[]
+  let mut pc := 0
+  while pc < code.size do
+    starts := starts.push pc
+    let n := (code.get! pc).toNat
+    pc := pc + 1 + (if 0x60 ≤ n && n ≤ 0x7f then n - 0x5f else 0)
+  return starts
+
+/-- Whether an opcode is stack shuffle traffic (`POP`/`PUSH*`/`DUP*`/`SWAP*`)
+or a jump. -/
+private def isShuffleOp (b : UInt8) : Bool :=
+  let n := b.toNat
+  n == 0x50 || n == 0x56 || n == 0x57
+    || n == 0x5f || (0x60 ≤ n && n ≤ 0x9f)
+
+/-- Print the instruction window around `pc` with execution counts. -/
+private def disasmWindow (code : ByteArray) (starts : Array Nat)
+    (byPc : Std.HashMap Nat (Nat × Nat × UInt8)) (pc : Nat) (radius : Nat) :
+    IO Unit := do
+  let idx := (starts.findIdx? (· == pc)).getD 0
+  let lo := idx - radius
+  let hi := min (idx + radius + 1) starts.size
+  for i in [lo:hi] do
+    let p := starts[i]!
+    let b := code.get! p
+    let n := b.toNat
+    let imm :=
+      if 0x60 ≤ n && n ≤ 0x7f then
+        let w := n - 0x5f
+        let bytes := (List.range w).map fun j =>
+          if p + 1 + j < code.size then (code.get! (p + 1 + j)).toNat else 0
+        " 0x" ++ String.join (bytes.map fun v =>
+          let hx := Nat.toDigits 16 v
+          (if hx.length == 1 then "0" else "") ++ String.ofList hx)
+      else ""
+    let cnt := (byPc.getD p (0, 0, b)).1
+    let mark := if p == pc then " <==" else ""
+    IO.println s!"      {p}\t{opName b}{imm}\tx{cnt}{mark}"
+
+/-- The top `topPcs` shuffle-op sites by executed count, each with its
+surrounding instruction window — the localization view for stack-layout
+work. -/
+private def reportShuffle (label : String) (t : Trace) (code : ByteArray)
+    (topPcs : Nat) : IO Unit := do
+  IO.println s!"  -- {label}: top {topPcs} shuffle sites by executions:"
+  let starts := instrStarts code
+  let rows := (t.byPc.toArray.filter fun (_, (_, _, op)) => isShuffleOp op)
+    |>.qsort (fun a b => a.2.1 > b.2.1)
+  for (pc, (c, g, op)) in rows.extract 0 topPcs do
+    IO.println s!"    pc={pc}\t{opName op}\tcount={c}\tgas={g}"
+    disasmWindow code starts t.byPc pc 8
+
 private def report (label : String) (t : Trace) (topPcs : Nat) : IO Unit := do
   IO.println s!"== {label}: steps={t.steps} gas={t.gas} halted={t.halted}"
   let mut groups : Std.HashMap String (Nat × Nat) := {}
@@ -175,14 +230,22 @@ private def isHexDigit (c : Char) : Bool :=
 def main (args : List String) : IO UInt32 := do
   let (flags, positional) := args.partition (·.startsWith "--")
   let mut topPcs := 25
+  let mut shuffleTop := 0
+  let mut dumpPrefix : Option String := none
   let mut calldataOverride : Option String := none
   for flag in flags do
     if flag.startsWith "--top=" then
       match (flag.drop "--top=".length).copy.toNat? with
       | some n => topPcs := n
       | none => IO.eprintln usage; return 64
+    else if flag.startsWith "--shuffle=" then
+      match (flag.drop "--shuffle=".length).copy.toNat? with
+      | some n => shuffleTop := n
+      | none => IO.eprintln usage; return 64
     else if flag.startsWith "--calldata=" then
       calldataOverride := some (flag.drop "--calldata=".length).copy
+    else if flag.startsWith "--dump=" then
+      dumpPrefix := some (flag.drop "--dump=".length).copy
     else
       IO.eprintln s!"unknown flag {flag}"; IO.eprintln usage; return 64
   match positional with
@@ -231,6 +294,35 @@ def main (args : List String) : IO UInt32 := do
       let solcT := traceRun (mkCall solcBase) 3000000 {}
       report "ours" ourT topPcs
       report "solc" solcT topPcs
+      if shuffleTop > 0 then
+        reportShuffle "ours" ourT ourBase.executionEnv.code shuffleTop
+        reportShuffle "solc" solcT solcBase.executionEnv.code shuffleTop
+      if let some pre := dumpPrefix then
+        for (label, tr, code) in [("ours", ourT, ourBase.executionEnv.code),
+                                  ("solc", solcT, solcBase.executionEnv.code)] do
+          let mut out := "pc\top\tcount\tgas\n"
+          let rows := tr.byPc.toArray.qsort (fun a b => a.1 < b.1)
+          for (pc, (c, g, op)) in rows do
+            out := out ++ s!"{pc}\t{opName op}\t{c}\t{g}\n"
+          IO.FS.writeFile s!"{pre}-{sel}-{label}.tsv" out
+          -- full disassembly alongside, for region mapping
+          let starts := instrStarts code
+          let mut dis := ""
+          for p in starts do
+            let b := code.get! p
+            let n := b.toNat
+            let imm :=
+              if 0x60 ≤ n && n ≤ 0x7f then
+                let w := n - 0x5f
+                let bytes := (List.range w).map fun j =>
+                  if p + 1 + j < code.size then (code.get! (p + 1 + j)).toNat
+                  else 0
+                " 0x" ++ String.join (bytes.map fun v =>
+                  let hx := Nat.toDigits 16 v
+                  (if hx.length == 1 then "0" else "") ++ String.ofList hx)
+              else ""
+            dis := dis ++ s!"{p}\t{opName b}{imm}\n"
+          IO.FS.writeFile s!"{pre}-{sel}-{label}.dis" dis
       if ourT.halted && solcT.halted then
         IO.println s!"-- ours {ourT.gas} vs solc {solcT.gas} \
           ({if solcT.gas == 0 then "n/a" else toString ((ourT.gas * 100) / solcT.gas)}% of solc)"
