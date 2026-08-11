@@ -2101,3 +2101,61 @@ the 24 gas from dropping the reachability pass.)
   layout choice cannot break `ToAsmSound` — a layout the shuffler cannot reach
   is a rejection, not a miscompilation.
 
+
+## Demand-driven SSA entry layouts: seed hot blocks from their own uses (2026-08-11)
+
+- 🚧 **This branch.** The lever the operand-order peephole entry left on the
+  table, now with its own fresh instrumentation. At current main the uniswap-v4
+  gap is +31,201 (938,264 vs 907,063) and re-profiling the three largest
+  `PoolSwap` rows finds the same signature as before: on
+  `swapExactInputNoTick` we execute **1,830 `SWAP`s to solc's 324** (+4,518 of
+  the +5,618 row gap), `addLiquidityWide` 931 vs 210, `removeLiquidity`
+  755 vs 185 — same `DUP` counts, same arithmetic, our values are simply in
+  the wrong *order* at each use. aave-v4 stands at −3,129,087 below solc, so
+  uniswap's layout traffic is the remaining battleground.
+
+### The plan
+
+  `ToAsm` chooses a block's entry layout in one of two ways today: the first
+  edge to reach it donates its (renamed, filtered) stack
+  (`inheritCandidate`), or the canonical `layoutOf` sorts live-ins by `ValId`
+  — an arbitrary order. Both ignore what the block *does*:
+
+  * a **loop header**'s layout is donated by the cold preheader edge, and the
+    hot back edge then realizes the difference on every iteration;
+  * a **join block**'s layout is donated by whichever arm is emitted first,
+    and every other arm pays the full permutation;
+  * in both cases the block's own body then fishes its operands up from
+    wherever the donor left them.
+
+  The fix (solc's own scheme): compute a block's **ideal entry layout from
+  its own operations** — the canonical slots reordered by next use
+  (`orderByFuture` over the block's flattened use sequence, the Koopman
+  scheduling already used inside blocks) — and **pre-seed** the layout table
+  with it before emission, so every predecessor establishes the layout the
+  block actually wants. Seeding is a table write before the block fold; the
+  emission machinery (consult-or-record) is untouched.
+
+  Three seeding scopes to measure, most conservative first:
+
+  1. back-edge targets (loop headers) only;
+  2. loop headers + join blocks (≥ 2 predecessors);
+  3. every non-entry block (full backward layout assignment; inheritance
+     never fires).
+
+  The shuffler is **checked**, so no seeding choice can miscompile — a layout
+  it cannot realize is a rejection (fallback to the classic backend), and the
+  risk is measured as gas/acceptance, not correctness. The proof surface is
+  correspondingly small: `emitFunc_inv_fresh`'s empty-initial-table clause
+  becomes "seeded layouts are `LayoutsOK` and the entry is unseeded"
+  (membership via the existing `orderByFuture_mem` + `layoutOf_val_mem`), and
+  the downstream consumers (`emitFunc_layoutsOK`, `emitFunc_split_mono`)
+  thread the weakened fact.
+
+### Acceptance gates
+
+  * uniswap-v4 and aave-v4 totals strictly below current main's
+    938,264 / 15,107,139, with per-row regressions individually justified;
+  * no fixture leaves the comparable set (shuffler rejections would show as
+    compile-acceptance changes);
+  * semanticTests / gasTests / yulOptimizerTests re-pinned only downward.
