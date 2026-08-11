@@ -464,29 +464,14 @@ where
          | _, _, _, _ => tbl)
       | _ => tbl
 
-/-- The targets of a branch's **false** (fall-through) edge. The emitter's
-direct branch scheme shuffles the post-`jumpi` stack `τt` onto the false
-edge's layout `τf`, which is only possible when `τf`'s values all sit in
-`τt`; a *recorded* false-target layout can demand values `τt` lost, forcing
-the stub scheme (an extra hop and two shuffles) on every execution. -/
-def falseTargets (f : Func) : List BlockId :=
-  f.blocks.toList.foldl (init := []) fun acc b =>
-    match b.term with
-    | .branch _ _ ef => if acc.contains ef.target then acc else ef.target :: acc
-    | _ => acc
-
 /-- Record the backward-propagated entry layouts before any block or edge is
 emitted. The entry block is never seeded — its layout is pinned by the
-calling convention — and neither are false-edge targets (they inherit from
-the post-`jumpi` stack, keeping the branch's direct scheme available) unless
-they are loop headers, where a demanded layout wins regardless because the
-hot back edge establishes it once per iteration. -/
+calling convention. -/
 def seedLayouts (isFunc : Bool) (f : Func) (liveIn : Array (List ValId)) :
     E Unit :=
   let tbl := backLayouts isFunc f liveIn 3
-  let skip : List BlockId := []
   (List.range f.blocks.size).forM fun bid =>
-    if bid = f.entry || skip.contains bid then pure () else
+    if bid = f.entry then pure () else
     match tbl[bid]? with
     | some lay => setLayout bid lay
     | none => pure ()
