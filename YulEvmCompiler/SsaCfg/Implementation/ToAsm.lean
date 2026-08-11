@@ -340,15 +340,25 @@ where
       if seen.contains s then go rest seen else go rest (s :: seen)
 
 /-- One **backward Koopman step**: the stack an instruction wants *before*
-it, given the stack wanted *after* it — its operands on top (the emitter's
-shuffle target is `args ++ keep`), then the after-layout minus its results.
-An operand still needed afterwards stays in the tail too (the emitter `DUP`s
-it); layouts stay duplicate-free. -/
+it, given the stack wanted *after* it. Only operands that **die** at the
+instruction go on top (the emitter consumes them from the top for free); an
+operand still needed afterwards keeps its after-position — the emitter
+`DUP`s it from wherever it sits at flat cost, so fronting it would force a
+permutation at every predecessor edge for zero benefit (measured as a
+four-`SWAP`-per-iteration loop-header tax on `negative_stack_height.sol`'s
+zeroing loops, +127k gas on that fixture alone). Layouts stay
+duplicate-free. -/
 def backInstr (i : Instr) (cur : List SSlot) : List SSlot :=
   match i with
   | .const d _ => removeVals [d] cur
-  | .op ds _ as => dedupSlots (as.map .val ++ removeVals ds cur)
-  | .call ds _ as => dedupSlots (as.map .val ++ removeVals ds cur)
+  | .op ds _ as =>
+    let keep := removeVals ds cur
+    let dead := as.filter fun a => !keep.contains (.val a)
+    dedupSlots (dead.map .val ++ keep)
+  | .call ds _ as =>
+    let keep := removeVals ds cur
+    let dead := as.filter fun a => !keep.contains (.val a)
+    dedupSlots (dead.map .val ++ keep)
 
 /-- The stack a block's terminator wants, in this block's terms: the chosen
 successor's (recorded or provisional) entry layout pulled through the edge's
