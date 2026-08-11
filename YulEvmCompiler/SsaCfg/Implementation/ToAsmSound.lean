@@ -3472,10 +3472,10 @@ theorem emitBlock_head {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
     exact ⟨body ++ tasm, by rw [← heq]; simp⟩
 
 omit model in
-theorem emitFunc_inv {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
+theorem emitFunc_inv {P : Prog} {L : ToAsm.LabelMap} {ord seed : Bool}
     {fidx : Option Nat} {f : Func} {n : ToAsm.EmitSt} {code : List Asm}
     {n' : ToAsm.EmitSt}
-    (h : ToAsm.emitFunc P L ord fidx f n = some (code, n')) :
+    (h : ToAsm.emitFunc P L ord seed fidx f n = some (code, n')) :
     f.entry = 0 ∧ ∃ (n₀ : ToAsm.EmitSt) (liveIn : Array (List ValId)),
       ToAsm.liveInSets f = some liveIn ∧
       (((List.range f.blocks.size).zip f.blocks.toList).foldlM (init := ([] : List Asm))
@@ -3491,17 +3491,22 @@ theorem emitFunc_inv {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
     obtain ⟨liveIn, hlive, h2⟩ := liftE_bind_inv h1
     split at h2
     · exact absurd h2 (by simp [ToAsm.liftE])
-    · exact ⟨not_ne_iff.mp hne, n₀, liveIn, hlive, h2⟩
+    · -- the do-notation lifts the `seed` test over the block fold, so the
+      -- fold's initial state is on the far side of either branch's bind
+      split at h2
+      all_goals
+        obtain ⟨-, n₁, -, h3⟩ := E_bind_inv h2
+        exact ⟨not_ne_iff.mp hne, n₁, liveIn, hlive, h3⟩
 
 omit model in
-theorem emitProg_inv {P : Prog} {ord : Bool} {asm : List Asm}
-    (h : ToAsm.emitProgOrd ord P = some asm) :
+theorem emitProg_inv {P : Prog} {ord seed : Bool} {asm : List Asm}
+    (h : ToAsm.emitProgOrd ord seed P = some asm) :
     ∃ (asmMain asmFns : List Asm) (n₁ n₂ : ToAsm.EmitSt),
-      ToAsm.emitFunc P (ToAsm.mkLabelMap P) ord none P.main
+      ToAsm.emitFunc P (ToAsm.mkLabelMap P) ord seed none P.main
           ⟨(ToAsm.mkLabelMap P).endLabel + 1, {}⟩ = some (asmMain, n₁)
       ∧ (((List.range P.funcs.size).zip P.funcs.toList).foldlM (init := ([] : List Asm))
           (fun acc (p : Nat × Func) => do
-            let a ← ToAsm.emitFunc P (ToAsm.mkLabelMap P) ord (some p.1) p.2
+            let a ← ToAsm.emitFunc P (ToAsm.mkLabelMap P) ord seed (some p.1) p.2
             pure (acc ++ a))) n₁ = some (asmFns, n₂)
       ∧ asm = ToAsm.elideJumps
           (asmMain ++ asmFns ++ [Asm.label (ToAsm.mkLabelMap P).endLabel]) := by
@@ -3667,16 +3672,313 @@ private theorem placed_of_split (pre : List Asm) {lbl : Label}
   have h2 : asm₀ = pre ++ Asm.label lbl :: (frag ++ post) := by rw [hsplit]; simp
   rw [h2]; exact findLabel_boundary (by rw [← h2]; exact hnd)
 
+/-! ### What the seeding pass leaves in the table
+
+With `seed` on, `emitFunc` pre-records every non-entry block's
+backward-propagated entry layout (`ToAsm.seedLayouts`) before the block fold, so
+the fold no longer starts from an *empty* table. Its two consumers need exactly
+two facts about the state it starts from instead:
+
+* the **entry block's** key is still absent — `seedLayouts` skips `f.entry`
+  and starts from `resetLayouts`'s empty table, and `setLayout` only inserts.
+  That is `emitBlock_mono`'s entry-block side condition in
+  `emitFunc_split_mono`.
+* every recorded layout draws its slots from that block's **canonical** entry
+  layout (`SeedOK`), which gives `LayoutsOK` through `layoutOf_val_mem` and so
+  `foldlM_blocks_ok`'s initial-state obligation in `emitFunc_layoutsOK`.
+
+The second is a chain of "output slots ⊆ input slots" filter facts:
+`demandLayout` reorders `layoutOf` (`orderByFuture_mem`), `backLayout` returns
+filters of the same `canonical := layoutOf …`, and `backLayouts.alignFalse`
+rewrites a block's layout to filters of *its own previous* entry — so the table
+invariant is preserved without any reasoning about `backInstr`/`exitLayout`
+content. -/
+
 omit model in
-/-- `emitFunc` resets the layout table before emitting any block: the state the
-block fold starts from has an empty table. (Additive companion to
-`emitFunc_inv`, which does not record this.) -/
-theorem emitFunc_inv_fresh {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
+private theorem dedupSlots_go_mem {s : SSlot} :
+    ∀ {l seen : List SSlot}, s ∈ ToAsm.dedupSlots.go l seen → s ∈ l ∨ s ∈ seen := by
+  intro l
+  induction l with
+  | nil =>
+    intro seen h
+    rw [ToAsm.dedupSlots.go] at h
+    exact Or.inr (by simpa using h)
+  | cons x rest ih =>
+    intro seen h
+    rw [ToAsm.dedupSlots.go] at h
+    split at h
+    · rcases ih h with h' | h'
+      · exact Or.inl (List.mem_cons_of_mem _ h')
+      · exact Or.inr h'
+    · rcases ih h with h' | h'
+      · exact Or.inl (List.mem_cons_of_mem _ h')
+      · rcases List.mem_cons.mp h' with rfl | h''
+        · exact Or.inl List.mem_cons_self
+        · exact Or.inr h''
+
+omit model in
+private theorem dedupSlots_mem {s : SSlot} {l : List SSlot}
+    (h : s ∈ ToAsm.dedupSlots l) : s ∈ l := by
+  rw [ToAsm.dedupSlots] at h
+  rcases dedupSlots_go_mem h with h' | h'
+  · exact h'
+  · simp at h'
+
+omit model in
+/-- The demand layout is the canonical layout reordered. -/
+private theorem demandLayout_mem {isFunc : Bool} {live : List ValId} {b : Block}
+    {s : SSlot} (h : s ∈ ToAsm.demandLayout isFunc live b) :
+    s ∈ ToAsm.layoutOf isFunc live b := by
+  rw [ToAsm.demandLayout] at h
+  exact orderByFuture_mem h
+
+omit model in
+/-- The backward-computed layout is assembled from filters of the block's
+canonical layout, whatever the body walk produced. -/
+private theorem backLayout_mem {isFunc : Bool} {f : Func}
+    {liveIn : Array (List ValId)} {entryOf : BlockId → Option (List SSlot)}
+    {bid : BlockId} {b : Block} {s : SSlot}
+    (h : s ∈ ToAsm.backLayout isFunc f liveIn entryOf bid b) :
+    s ∈ ToAsm.layoutOf isFunc (liveIn[bid]?.getD []) b := by
+  rw [ToAsm.backLayout] at h
+  simp only [List.mem_append] at h
+  rcases h with (h | h) | h
+  · have h1 := dedupSlots_mem h
+    have h2 := (List.mem_filter.mp h1).1
+    simpa using (List.mem_filter.mp h2).2
+  · exact (List.mem_filter.mp h).1
+  · split at h
+    · rename_i hk
+      rw [List.mem_singleton] at h
+      subst h
+      simpa using hk
+    · simp at h
+
+/-- Every layout in a seeding table draws its slots from that block's canonical
+entry layout. -/
+private def SeedOK (isFunc : Bool) (f : Func) (liveIn : Array (List ValId))
+    (tbl : Std.HashMap BlockId (List SSlot)) : Prop :=
+  ∀ (bid : BlockId) (b : Block) (lay : List SSlot),
+    f.blocks[bid]? = some b → tbl[bid]? = some lay →
+    ∀ s ∈ lay, s ∈ ToAsm.layoutOf isFunc (liveIn[bid]?.getD []) b
+
+omit model in
+private theorem SeedOK.insert {isFunc : Bool} {f : Func}
+    {liveIn : Array (List ValId)} {tbl : Std.HashMap BlockId (List SSlot)}
+    (h : SeedOK isFunc f liveIn tbl) {k : BlockId} {v : List SSlot}
+    (hv : ∀ b, f.blocks[k]? = some b →
+      ∀ s ∈ v, s ∈ ToAsm.layoutOf isFunc (liveIn[k]?.getD []) b) :
+    SeedOK isFunc f liveIn (tbl.insert k v) := by
+  intro bid b lay hb hlay s hs
+  simp only [Std.HashMap.getElem?_insert] at hlay
+  by_cases hk : k = bid
+  · subst hk
+    rw [if_pos (by simp)] at hlay
+    obtain rfl := Option.some.inj hlay
+    exact hv b hb s hs
+  · rw [if_neg (by simpa using hk)] at hlay
+    exact h bid b lay hb hlay s hs
+
+omit model in
+/-- Overwriting an entry with a *sub*-layout of itself preserves the
+invariant — the false-edge alignment step's only write. -/
+private theorem SeedOK.insert_sub {isFunc : Bool} {f : Func}
+    {liveIn : Array (List ValId)} {tbl : Std.HashMap BlockId (List SSlot)}
+    (h : SeedOK isFunc f liveIn tbl) {k : BlockId} {v lv : List SSlot}
+    (hlv : tbl[k]? = some lv) (hsub : ∀ s ∈ v, s ∈ lv) :
+    SeedOK isFunc f liveIn (tbl.insert k v) :=
+  h.insert (fun b hb s hs => h k b lv hb hlv s (hsub s hs))
+
+omit model in
+private theorem SeedOK.foldl {α : Type} {isFunc : Bool} {f : Func}
+    {liveIn : Array (List ValId)}
+    (g : Std.HashMap BlockId (List SSlot) → α → Std.HashMap BlockId (List SSlot))
+    (hstep : ∀ tbl a, SeedOK isFunc f liveIn tbl →
+      SeedOK isFunc f liveIn (g tbl a)) :
+    ∀ (l : List α) (tbl : Std.HashMap BlockId (List SSlot)),
+      SeedOK isFunc f liveIn tbl → SeedOK isFunc f liveIn (l.foldl g tbl) := by
+  intro l
+  induction l with
+  | nil => intro tbl h; simpa using h
+  | cons a rest ih =>
+    intro tbl h
+    rw [List.foldl_cons]
+    exact ih _ (hstep tbl a h)
+
+omit model in
+private theorem SeedOK.empty {isFunc : Bool} {f : Func}
+    {liveIn : Array (List ValId)} :
+    SeedOK isFunc f liveIn (∅ : Std.HashMap BlockId (List SSlot)) := by
+  intro bid b lay hb hlay s hs
+  simp at hlay
+
+omit model in
+private theorem sweep_ok {isFunc : Bool} {f : Func} {liveIn : Array (List ValId)}
+    {tbl : Std.HashMap BlockId (List SSlot)} (h : SeedOK isFunc f liveIn tbl) :
+    SeedOK isFunc f liveIn (ToAsm.backLayouts.sweep isFunc f liveIn tbl) := by
+  rw [ToAsm.backLayouts.sweep]
+  refine SeedOK.foldl _ ?_ _ _ h
+  intro tbl bid hok
+  split
+  · exact hok
+  · split
+    · rename_i b hb
+      refine hok.insert ?_
+      intro b' hb' s hs
+      rw [hb] at hb'
+      obtain rfl := Option.some.inj hb'
+      exact backLayout_mem hs
+    · exact hok
+
+omit model in
+private theorem alignFalse_ok {isFunc : Bool} {f : Func}
+    {liveIn : Array (List ValId)} {tbl : Std.HashMap BlockId (List SSlot)}
+    (h : SeedOK isFunc f liveIn tbl) :
+    SeedOK isFunc f liveIn (ToAsm.backLayouts.alignFalse isFunc f tbl) := by
+  rw [ToAsm.backLayouts.alignFalse]
+  refine SeedOK.foldl _ ?_ _ _ h
+  intro tbl b hok
+  dsimp only
+  split
+  · split
+    · exact hok
+    · split
+      · rename_i tbT tbF layT layF hbT hbF hlayT hlayF
+        refine hok.insert_sub hlayF ?_
+        intro s hs
+        simp only [List.mem_append] at hs
+        rcases hs with (hs | hs) | hs
+        · have hf := (List.mem_filter.mp hs).2
+          simp only [Bool.and_eq_true] at hf
+          simpa using hf.1
+        · exact (List.mem_filter.mp hs).1
+        · split at hs
+          · rename_i hk
+            rw [List.mem_singleton] at hs
+            subst hs
+            simpa using hk
+          · simp at hs
+      · exact hok
+  · exact hok
+
+omit model in
+private theorem seedInit_ok {isFunc : Bool} {f : Func}
+    {liveIn : Array (List ValId)} :
+    SeedOK isFunc f liveIn
+      ((ToAsm.loopHeaders f).foldl (init := (∅ : Std.HashMap BlockId (List SSlot)))
+        fun acc h =>
+          match f.blocks[h]? with
+          | some b => acc.insert h (ToAsm.demandLayout isFunc (liveIn[h]?.getD []) b)
+          | none => acc) := by
+  refine SeedOK.foldl _ ?_ _ _ SeedOK.empty
+  intro tbl h hok
+  split
+  · rename_i b hb
+    refine hok.insert ?_
+    intro b' hb' s hs
+    rw [hb] at hb'
+    obtain rfl := Option.some.inj hb'
+    exact demandLayout_mem hs
+  · exact hok
+
+omit model in
+private theorem seedGo_ok {isFunc : Bool} {f : Func} {liveIn : Array (List ValId)} :
+    ∀ (n : Nat) (tbl : Std.HashMap BlockId (List SSlot)),
+      SeedOK isFunc f liveIn tbl →
+      SeedOK isFunc f liveIn (ToAsm.backLayouts.go isFunc f liveIn n tbl) := by
+  intro n
+  induction n with
+  | zero => intro tbl h; rw [ToAsm.backLayouts.go]; exact h
+  | succ k ih =>
+    intro tbl h
+    rw [ToAsm.backLayouts.go]
+    exact ih _ (alignFalse_ok (sweep_ok h))
+
+omit model in
+/-- **Backward propagation stays inside the canonical layouts**: every entry of
+the computed table is a permutation of a subset of that block's `layoutOf`. -/
+private theorem backLayouts_ok {isFunc : Bool} {f : Func}
+    {liveIn : Array (List ValId)} {sweeps : Nat} :
+    SeedOK isFunc f liveIn (ToAsm.backLayouts isFunc f liveIn sweeps) := by
+  rw [ToAsm.backLayouts]
+  exact seedGo_ok _ _ seedInit_ok
+
+omit model in
+/-- **The seeding pass**: it never writes the entry block's key, and every
+layout it records draws its slots from that block's canonical entry layout. -/
+private theorem seedLayouts_state {isFunc : Bool} {f : Func}
+    {liveIn : Array (List ValId)} {s : ToAsm.EmitSt} {u : Unit}
+    {s' : ToAsm.EmitSt}
+    (hentry : s.layouts[f.entry]? = none)
+    (hok : SeedOK isFunc f liveIn s.layouts)
+    (h : ToAsm.seedLayouts isFunc f liveIn s = some (u, s')) :
+    s'.layouts[f.entry]? = none ∧ SeedOK isFunc f liveIn s'.layouts := by
+  have key : ∀ (l : List BlockId) (s : ToAsm.EmitSt) (u : Unit) (s' : ToAsm.EmitSt),
+      s.layouts[f.entry]? = none → SeedOK isFunc f liveIn s.layouts →
+      (l.forM (fun bid =>
+        if bid = f.entry then pure () else
+        match (ToAsm.backLayouts isFunc f liveIn 3)[bid]? with
+        | some lay => ToAsm.setLayout bid lay
+        | none => pure ())) s = some (u, s') →
+      s'.layouts[f.entry]? = none ∧ SeedOK isFunc f liveIn s'.layouts := by
+    intro l
+    induction l with
+    | nil =>
+      intro s u s' he hs hf
+      simp only [List.forM_eq_forM, List.forM_nil] at hf
+      obtain ⟨-, rfl⟩ := E_pure_inv2 hf
+      exact ⟨he, hs⟩
+    | cons bid rest ih =>
+      intro s u s' he hs hf
+      simp only [List.forM_eq_forM, List.forM_cons] at hf
+      obtain ⟨v0, s1, hstep, htail⟩ := E_bind_inv hf
+      have hs1 : s1.layouts[f.entry]? = none ∧ SeedOK isFunc f liveIn s1.layouts := by
+        by_cases hbe : bid = f.entry
+        · rw [if_pos hbe] at hstep
+          obtain ⟨-, rfl⟩ := E_pure_inv2 hstep
+          exact ⟨he, hs⟩
+        · rw [if_neg hbe] at hstep
+          rcases htbl : (ToAsm.backLayouts isFunc f liveIn 3)[bid]? with _ | lay <;>
+            rw [htbl] at hstep
+          · obtain ⟨-, rfl⟩ := E_pure_inv2 hstep
+            exact ⟨he, hs⟩
+          · have heq : some ((((), { s with layouts := s.layouts.insert bid lay }) :
+                Unit × ToAsm.EmitSt)) = some (v0, s1) := hstep
+            have hins : s1 = { s with layouts := s.layouts.insert bid lay } :=
+              (((Prod.mk.injEq ..).mp (Option.some.inj heq)).2).symm
+            subst hins
+            refine ⟨?_, hs.insert (fun b hb sl hsl =>
+              backLayouts_ok bid b lay hb htbl sl hsl)⟩
+            show (s.layouts.insert bid lay)[f.entry]? = none
+            simp only [Std.HashMap.getElem?_insert]
+            rw [if_neg (by simpa using hbe)]
+            exact he
+      exact ih s1 _ s' hs1.1 hs1.2 htail
+  rw [ToAsm.seedLayouts] at h
+  exact key _ s u s' hentry hok h
+
+omit model in
+/-- Slots drawn from the canonical layout are in scope at that block entry. -/
+private theorem layoutsOK_of_seedOK {isFunc : Bool} {f : Func}
+    {liveIn : Array (List ValId)} {s : ToAsm.EmitSt}
+    (h : SeedOK isFunc f liveIn s.layouts) : LayoutsOK f liveIn s := by
+  intro bid b lay hb hlay v hv
+  rcases layoutOf_val_mem (h bid b lay hb hlay _ hv) with hp | hl
+  · exact Or.inr (Or.inl hp)
+  · exact Or.inr (Or.inr hl)
+
+omit model in
+/-- **The state the block fold starts from**: `emitFunc` resets the layout
+table, so the entry block's key is absent, and whatever the seeding pass
+recorded is canonical (`SeedOK`, hence `LayoutsOK`). (Additive companion to
+`emitFunc_inv`, which records neither.) -/
+theorem emitFunc_inv_fresh {P : Prog} {L : ToAsm.LabelMap} {ord seed : Bool}
     {fidx : Option Nat} {f : Func} {n : ToAsm.EmitSt} {code : List Asm}
     {n' : ToAsm.EmitSt}
-    (h : ToAsm.emitFunc P L ord fidx f n = some (code, n')) :
+    (h : ToAsm.emitFunc P L ord seed fidx f n = some (code, n')) :
     f.entry = 0 ∧ ∃ (n₀ : ToAsm.EmitSt) (liveIn : Array (List ValId)),
-      (∀ bid : BlockId, n₀.layouts[bid]? = none) ∧
+      n₀.layouts[f.entry]? = none ∧
+      LayoutsOK f liveIn n₀ ∧
       ToAsm.liveInSets f = some liveIn ∧
       (((List.range f.blocks.size).zip f.blocks.toList).foldlM (init := ([] : List Asm))
         (fun acc (p : Nat × Block) => do
@@ -3692,23 +3994,34 @@ theorem emitFunc_inv_fresh {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
       have h5 : some ((u, { n with layouts := (∅ : Std.HashMap BlockId (List SSlot)) }) :
           Unit × ToAsm.EmitSt) = some (u, n₀) := hreset
       exact (((Prod.mk.injEq ..).mp (Option.some.inj h5)).2).symm
+    have hempty : n₀.layouts[f.entry]? = none := by rw [hn₀]; simp
     obtain ⟨liveIn, hlive, h2⟩ := liftE_bind_inv h1
+    have hokEmpty : SeedOK fidx.isSome f liveIn n₀.layouts := by
+      intro bid b lay hb hlay s hs
+      rw [hn₀] at hlay
+      simp at hlay
     split at h2
     · exact absurd h2 (by simp [ToAsm.liftE])
-    · refine ⟨not_ne_iff.mp hne, n₀, liveIn, ?_, hlive, h2⟩
-      intro bid
-      rw [hn₀]
-      simp
+    · -- the do-notation lifts the `seed` test over the block fold
+      split at h2
+      · obtain ⟨u1, n₁, hseed, h3⟩ := E_bind_inv h2
+        obtain ⟨hkey1, hkey2⟩ := seedLayouts_state hempty hokEmpty hseed
+        exact ⟨not_ne_iff.mp hne, n₁, liveIn, hkey1,
+          layoutsOK_of_seedOK hkey2, hlive, h3⟩
+      · obtain ⟨u1, n₁, hpure, h3⟩ := E_bind_inv h2
+        obtain ⟨-, rfl⟩ := E_pure_inv2 hpure
+        exact ⟨not_ne_iff.mp hne, n₀, liveIn, hempty,
+          layoutsOK_of_seedOK hokEmpty, hlive, h3⟩
 
 omit model in
 /-- The final layout table produced by `emitFunc` contains only values in
 scope at each block entry. -/
-theorem emitFunc_layoutsOK {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
+theorem emitFunc_layoutsOK {P : Prog} {L : ToAsm.LabelMap} {ord seed : Bool}
     {fidx : Option Nat} {f : Func} {n : ToAsm.EmitSt} {code : List Asm}
     {final : ToAsm.EmitSt}
-    (h : ToAsm.emitFunc P L ord fidx f n = some (code, final)) :
+    (h : ToAsm.emitFunc P L ord seed fidx f n = some (code, final)) :
     ∃ liveIn, ToAsm.liveInSets f = some liveIn ∧ LayoutsOK f liveIn final := by
-  obtain ⟨-, n₀, liveIn, hn₀, hlive, hfold⟩ := emitFunc_inv_fresh h
+  obtain ⟨-, n₀, liveIn, -, hok₀, hlive, hfold⟩ := emitFunc_inv_fresh h
   refine ⟨liveIn, hlive, ?_⟩
   apply foldlM_blocks_ok
     (l := (List.range f.blocks.size).zip f.blocks.toList)
@@ -3716,24 +4029,22 @@ theorem emitFunc_layoutsOK {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
     (fidx := fidx)
   · intro p hp
     exact block_of_zip_range_mem hp
-  · intro bid b lay hb hlay
-    rw [hn₀ bid] at hlay
-    simp at hlay
+  · exact hok₀
   · exact hfold
 
 omit model in
 /-- Locate every block emitted by one function and connect its post-emission
 state to the final state of that function's block fold. -/
-theorem emitFunc_split_mono {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
+theorem emitFunc_split_mono {P : Prog} {L : ToAsm.LabelMap} {ord seed : Bool}
     {fidx : Option Nat} {f : Func} {n : ToAsm.EmitSt} {code : List Asm}
     {final : ToAsm.EmitSt}
-    (h : ToAsm.emitFunc P L ord fidx f n = some (code, final)) :
+    (h : ToAsm.emitFunc P L ord seed fidx f n = some (code, final)) :
     f.entry = 0 ∧ ∃ liveIn, ToAsm.liveInSets f = some liveIn ∧
       ∀ bid b, f.blocks[bid]? = some b →
         ∃ (sp sq : ToAsm.EmitSt) (fr pre post : List Asm),
           ToAsm.emitBlock P L ord fidx f liveIn bid b sp = some (fr, sq)
           ∧ TableSub sq final ∧ code = pre ++ (fr ++ post) := by
-  obtain ⟨hentry, n₀, liveIn, hn₀, hlive, hfold⟩ := emitFunc_inv_fresh h
+  obtain ⟨hentry, n₀, liveIn, hn₀, -, hlive, hfold⟩ := emitFunc_inv_fresh h
   refine ⟨hentry, liveIn, hlive, ?_⟩
   intro bid b hb
   have hbid : bid < f.blocks.size := (Array.getElem?_eq_some_iff.mp hb).1
@@ -3764,7 +4075,8 @@ theorem emitFunc_split_mono {P : Prog} {L : ToAsm.LabelMap} {ord : Bool}
   exact foldlM_split_mono_head
     (fun p => ToAsm.emitBlock P L ord fidx f liveIn p.1 p.2)
     (0, b₀) rest [] n₀ code final
-    (fun r sq he => emitBlock_mono (fun _ => hn₀ 0) he)
+    (fun r sq he => emitBlock_mono
+      (fun _ => by have h0 := hn₀; rw [hentry] at h0; exact h0) he)
     (fun p hp sp r sq he => emitBlock_mono
       (fun hpe => absurd hpe (htailidx p hp)) he)
     hfold (bid, b) hmem
@@ -3775,9 +4087,9 @@ a raw emission in which every block's body sits right after its label, the
 terminal label is last, and `main`'s entry label is first — the `SimAsm.lean`
 Phase-A bookkeeping (fragment concatenation plus `findLabel_boundary` from
 `Nodup`), specialized to one fragment per basic block. -/
-theorem emitProg_placement {P : Prog} {ord : Bool} {asm : List Asm}
+theorem emitProg_placement {P : Prog} {ord seed : Bool} {asm : List Asm}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
-    (hemit : ToAsm.emitProgOrd ord P = some asm) :
+    (hemit : ToAsm.emitProgOrd ord seed P = some asm) :
     ∃ asm₀ : List Asm, asm = ToAsm.elideJumps asm₀ ∧ Placement2 P ord asm₀ := by
   obtain ⟨asmMain, asmFns, n₁, n₂, hmain, hfns, rfl⟩ := emitProg_inv hemit
   have hnd0 : (labelDefs (asmMain ++ asmFns
@@ -3912,10 +4224,10 @@ Both statements need two hypotheses beyond the ones in
   out. `ofBlock_wfCheck` supplies it for the unoptimized candidate, and
   `optimizeProg` re-checks `Prog.wfCheck` on its own output
   (`SsaCfg/Passes.lean`), which is what `optimizeProg_wf` reads off. -/
-theorem emitProg_asteps' {P : Prog} {ord : Bool} {asm : List Asm} {yst0 yst' : EvmState}
+theorem emitProg_asteps' {P : Prog} {ord seed : Bool} {asm : List Asm} {yst0 yst' : EvmState}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
     (hdom : ToAsm.Prog.domCheck P = true)
-    (hemit : ToAsm.emitProgOrd ord P = some asm)
+    (hemit : ToAsm.emitProgOrd ord seed P = some asm)
     (hrun : Run (model := model) P yst0 yst' .normal) :
     ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ := by
   obtain ⟨asm₀, rfl, hpl⟩ := emitProg_placement hnodup hwf hemit
@@ -3932,10 +4244,10 @@ theorem emitProg_asteps' {P : Prog} {ord : Bool} {asm : List Asm} {yst0 yst' : E
     have := asteps_elideJumps hnodup₀ hraw (List.suffix_refl _)
     simpa [elideConf, ToAsm.elideJumps] using this
 
-theorem emitProg_ahalt' {P : Prog} {ord : Bool} {asm : List Asm} {yst0 yst' : EvmState}
+theorem emitProg_ahalt' {P : Prog} {ord seed : Bool} {asm : List Asm} {yst0 yst' : EvmState}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
     (hdom : ToAsm.Prog.domCheck P = true)
-    (hemit : ToAsm.emitProgOrd ord P = some asm)
+    (hemit : ToAsm.emitProgOrd ord seed P = some asm)
     (hrun : Run (model := model) P yst0 yst' .halt) :
     ∃ conf, ASteps (model := model) asm ⟨asm, [], yst0⟩ conf ∧
       AHalt (model := model) asm conf yst' := by
