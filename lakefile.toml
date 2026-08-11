@@ -12,7 +12,12 @@ rev = "90b33d7475e0c4fb2f67b72f3e151164ae8b4d6f"
 [[require]]
 name = "evm_semantics"
 git = "https://github.com/powdr-labs/evm-semantics"
-rev = "26fdf59"
+rev = "137f2a359ffe884e6e236bb19951f23192510d31"
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.33.0"
 
 [[lean_lib]]
 name = "YulEvmCompiler"

@@ -171,19 +171,13 @@ theorem conv_lt (a b : U256) :
     conv (b2w (a.ult b)) = UInt256.lt (conv a) (conv b) := by
   rw [conv_bool]
   unfold UInt256.lt
-  simp only [conv_toNat]
-  by_cases h : a.toNat < b.toNat
-  · rw [if_pos (by simp [BitVec.ult, h]), if_pos h]
-  · rw [if_neg (by simp [BitVec.ult, h]), if_neg h]
+  grind [BitVec.ult, conv_toNat]
 
 theorem conv_gt (a b : U256) :
     conv (b2w (b.ult a)) = UInt256.gt (conv a) (conv b) := by
   rw [conv_bool]
   unfold UInt256.gt
-  simp only [conv_toNat]
-  by_cases h : b.toNat < a.toNat
-  · rw [if_pos (by simp [BitVec.ult, h]), if_pos h]
-  · rw [if_neg (by simp [BitVec.ult, h]), if_neg h]
+  grind [BitVec.ult, conv_toNat]
 
 private theorem toSignedNat_conv (a : U256) :
     (conv a).toSignedNat = a.toInt := by
@@ -198,11 +192,7 @@ private theorem toSignedNat_conv (a : U256) :
     rw [h2]
     omega
   rw [hhalf]
-  by_cases h : a.toNat < 2 ^ 255
-  · rw [if_pos h, if_pos (by rw [h2]; omega)]
-  · rw [if_neg h, if_neg (by rw [h2]; omega)]
-    show (a.toNat : Int) - (EvmSemantics.UInt256.size : Nat) = _
-    rw [show EvmSemantics.UInt256.size = 2 ^ 256 from rfl]
+  grind [show EvmSemantics.UInt256.size = 2 ^ 256 from rfl]
 
 theorem conv_slt (a b : U256) :
     conv (b2w (a.slt b)) = UInt256.slt (conv a) (conv b) := by
@@ -230,19 +220,17 @@ theorem conv_eq (a b : U256) :
     conv (b2w (a = b)) = UInt256.eq (conv a) (conv b) := by
   rw [conv_bool]
   unfold UInt256.eq
-  simp only [conv_toNat]
-  by_cases h : a = b
-  · rw [if_pos (decide_eq_true h), if_pos (congrArg BitVec.toNat h)]
-  · rw [if_neg (by simp [h]), if_neg (fun hc => h (BitVec.toNat_injective hc))]
+  grind [conv_toNat, BitVec.toNat_injective]
 
 theorem conv_iszero (a : U256) :
     conv (b2w (a = 0)) = UInt256.isZero (conv a) := by
   rw [conv_bool]
   unfold UInt256.isZero
-  simp only [conv_toNat]
   by_cases h : a = 0
-  · rw [if_pos (decide_eq_true h), if_pos (by simp [h])]
-  · rw [if_neg (by simpa using h), if_neg (toNat_ne_zero h)]
+  · subst a
+    rfl
+  · have hn := toNat_ne_zero h
+    grind [conv_toNat]
 
 theorem conv_and (a b : U256) :
     conv (a &&& b) = UInt256.land (conv a) (conv b) := by

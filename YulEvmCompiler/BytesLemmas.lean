@@ -69,9 +69,9 @@ private theorem second_fold_mkEmpty_get (le : Array UInt8) (width m cap j : Nat)
 
 private theorem first_fold_mprod_props (n m cap : Nat) :
     let s := (List.range' 0 m).foldl
-      (fun (b : MProd Nat (Array UInt8)) (_a : Nat) =>
-        ⟨b.fst / 256, b.snd.push (UInt8.ofNat (b.fst % 256))⟩)
-      (⟨n, Array.mkEmpty cap⟩ : MProd Nat (Array UInt8))
+      (fun (b : Nat × Array UInt8) (_a : Nat) =>
+        (b.fst / 256, b.snd.push (UInt8.ofNat (b.fst % 256))))
+      (n, Array.mkEmpty cap)
     s.snd.size = m ∧ s.fst = n / 256 ^ m ∧
       ∀ j, j < m → s.snd[j]! = UInt8.ofNat (n / 256 ^ j % 256) := by
   induction m with
@@ -95,15 +95,15 @@ private theorem first_fold_mprod_props (n m cap : Nat) :
           rw [getElem!_pos _ m (by rw [Array.size_push, hsz]; omega)]
           rw [hk]
           have hsz' : (List.foldl
-              (fun (b : MProd Nat (Array UInt8)) (_a : Nat) =>
-                ⟨b.fst / 256, b.snd.push (UInt8.ofNat (b.fst % 256))⟩)
-              (⟨n, #[]⟩ : MProd Nat (Array UInt8)) (List.range' 0 m)).snd.size = m := by
+              (fun (b : Nat × Array UInt8) (_a : Nat) =>
+                (b.fst / 256, b.snd.push (UInt8.ofNat (b.fst % 256))))
+              (n, #[]) (List.range' 0 m)).snd.size = m := by
             simpa using hsz
           have hpush := Array.getElem_push_eq
             (xs := (List.foldl
-              (fun (b : MProd Nat (Array UInt8)) (_a : Nat) =>
-                ⟨b.fst / 256, b.snd.push (UInt8.ofNat (b.fst % 256))⟩)
-              (⟨n, #[]⟩ : MProd Nat (Array UInt8)) (List.range' 0 m)).snd)
+              (fun (b : Nat × Array UInt8) (_a : Nat) =>
+                (b.fst / 256, b.snd.push (UInt8.ofNat (b.fst % 256))))
+              (n, #[]) (List.range' 0 m)).snd)
             (x := UInt8.ofNat (n / 256 ^ m % 256))
           simpa [hsz'] using hpush
 
