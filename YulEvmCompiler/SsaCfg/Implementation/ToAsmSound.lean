@@ -1951,7 +1951,8 @@ grows, entries keeping their value); it is preserved by `edgeTargetLayout`
 (`edgeTargetLayout_mono`), `emitInstr` (`emitInstr_mono`), `emitTerm`
 (`emitTerm_mono`), the instruction fold (`foldlM_instrs_mono`) and `emitBlock`
 (`emitBlock_mono`, whose entry-block case needs its key still absent — true
-because `emitFunc` resets the table and emits block `0` first). The
+because `emitFunc` resets the table and emits block `0` first, and the layout
+seeding pass never writes the entry's key; see `emitFunc_inv_fresh`). The
 state-carrying locator (`foldlM_mono`/`foldlM_split_mono`) then hands each
 block the states before and after its emission plus a `TableSub` to the fold's
 final state, and `layout_agree_early` identifies an edge's `getLayout e.target`
@@ -3905,7 +3906,11 @@ private theorem backLayouts_ok {isFunc : Bool} {f : Func}
 
 omit model in
 /-- **The seeding pass**: it never writes the entry block's key, and every
-layout it records draws its slots from that block's canonical entry layout. -/
+layout it records draws its slots from that block's canonical entry layout.
+
+The recorded table is abstracted (`tbl` with `SeedOK`), so the number of
+Gauss–Seidel sweeps `seedLayouts` asks `backLayouts` for is a free tuning
+constant here. -/
 private theorem seedLayouts_state {isFunc : Bool} {f : Func}
     {liveIn : Array (List ValId)} {s : ToAsm.EmitSt} {u : Unit}
     {s' : ToAsm.EmitSt}
@@ -3913,15 +3918,17 @@ private theorem seedLayouts_state {isFunc : Bool} {f : Func}
     (hok : SeedOK isFunc f liveIn s.layouts)
     (h : ToAsm.seedLayouts isFunc f liveIn s = some (u, s')) :
     s'.layouts[f.entry]? = none ∧ SeedOK isFunc f liveIn s'.layouts := by
-  have key : ∀ (l : List BlockId) (s : ToAsm.EmitSt) (u : Unit) (s' : ToAsm.EmitSt),
+  have key : ∀ (tbl : Std.HashMap BlockId (List SSlot)),
+      SeedOK isFunc f liveIn tbl →
+      ∀ (l : List BlockId) (s : ToAsm.EmitSt) (u : Unit) (s' : ToAsm.EmitSt),
       s.layouts[f.entry]? = none → SeedOK isFunc f liveIn s.layouts →
       (l.forM (fun bid =>
         if bid = f.entry then pure () else
-        match (ToAsm.backLayouts isFunc f liveIn 3)[bid]? with
+        match tbl[bid]? with
         | some lay => ToAsm.setLayout bid lay
         | none => pure ())) s = some (u, s') →
       s'.layouts[f.entry]? = none ∧ SeedOK isFunc f liveIn s'.layouts := by
-    intro l
+    intro tbl htbl l
     induction l with
     | nil =>
       intro s u s' he hs hf
@@ -3938,8 +3945,7 @@ private theorem seedLayouts_state {isFunc : Bool} {f : Func}
           obtain ⟨-, rfl⟩ := E_pure_inv2 hstep
           exact ⟨he, hs⟩
         · rw [if_neg hbe] at hstep
-          rcases htbl : (ToAsm.backLayouts isFunc f liveIn 3)[bid]? with _ | lay <;>
-            rw [htbl] at hstep
+          rcases hlk : tbl[bid]? with _ | lay <;> rw [hlk] at hstep
           · obtain ⟨-, rfl⟩ := E_pure_inv2 hstep
             exact ⟨he, hs⟩
           · have heq : some ((((), { s with layouts := s.layouts.insert bid lay }) :
@@ -3948,14 +3954,14 @@ private theorem seedLayouts_state {isFunc : Bool} {f : Func}
               (((Prod.mk.injEq ..).mp (Option.some.inj heq)).2).symm
             subst hins
             refine ⟨?_, hs.insert (fun b hb sl hsl =>
-              backLayouts_ok bid b lay hb htbl sl hsl)⟩
+              htbl bid b lay hb hlk sl hsl)⟩
             show (s.layouts.insert bid lay)[f.entry]? = none
             simp only [Std.HashMap.getElem?_insert]
             rw [if_neg (by simpa using hbe)]
             exact he
       exact ih s1 _ s' hs1.1 hs1.2 htail
   rw [ToAsm.seedLayouts] at h
-  exact key _ s u s' hentry hok h
+  exact key _ backLayouts_ok _ s u s' hentry hok h
 
 omit model in
 /-- Slots drawn from the canonical layout are in scope at that block entry. -/
