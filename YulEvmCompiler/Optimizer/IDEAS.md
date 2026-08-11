@@ -2102,60 +2102,94 @@ the 24 gas from dropping the reachability pass.)
   is a rejection, not a miscompilation.
 
 
-## Demand-driven SSA entry layouts: seed hot blocks from their own uses (2026-08-11)
+## Backward entry-layout propagation for the SSA backend (2026-08-11)
 
 - 🚧 **This branch.** The lever the operand-order peephole entry left on the
-  table, now with its own fresh instrumentation. At current main the uniswap-v4
-  gap is +31,201 (938,264 vs 907,063) and re-profiling the three largest
-  `PoolSwap` rows finds the same signature as before: on
-  `swapExactInputNoTick` we execute **1,830 `SWAP`s to solc's 324** (+4,518 of
-  the +5,618 row gap), `addLiquidityWide` 931 vs 210, `removeLiquidity`
-  755 vs 185 — same `DUP` counts, same arithmetic, our values are simply in
-  the wrong *order* at each use. aave-v4 stands at −3,129,087 below solc, so
-  uniswap's layout traffic is the remaining battleground.
+  table, now built and measured. At the branch point the uniswap-v4 gap was
+  +31,201 (938,264 vs 907,063) and re-profiling the three largest `PoolSwap`
+  rows found the same signature as before: on `swapExactInputNoTick` we
+  executed **1,830 `SWAP`s to solc's 324** (+4,518 of the +5,618 row gap),
+  `addLiquidityWide` 931 vs 210, `removeLiquidity` 755 vs 185 — same `DUP`
+  counts, same arithmetic, our values simply in the wrong *order* at each
+  use. Splitting the executed `SWAP`s by context (the new
+  `traceSolidityGas --shuffle`/`--dump` views): ~540 sat in edge shuffles
+  before static jumps (5.2 per executed jump), ~350 in block-entry operand
+  fetches, the rest mid-block — i.e. **layouts disagreeing along edges**,
+  not a single hot loop.
 
-### The plan
+### What landed
 
-  `ToAsm` chooses a block's entry layout in one of two ways today: the first
-  edge to reach it donates its (renamed, filtered) stack
-  (`inheritCandidate`), or the canonical `layoutOf` sorts live-ins by `ValId`
-  — an arbitrary order. Both ignore what the block *does*:
+  `ToAsm.backLayouts`: every non-entry block's entry layout is computed from
+  its **own operations**, walked backward from its **exit layout** — the
+  chosen successor's entry layout pulled through the edge's parallel copy
+  (`substLayout`), the condition on top for a branch, `results ++ retAddr`
+  for `ret`. One backward Koopman step per instruction
+  (`before = args ++ (after − defs)`, duplicate-free) makes consecutive
+  shuffle targets *chain*: when the emitter's per-instruction target
+  `args ++ keep` equals the tracked stack, the shuffle is empty. Three
+  Gauss–Seidel sweeps over the reverse block order (forward edges final
+  within a sweep, back edges seeing the previous sweep; loop headers start
+  from their next-use demand layout). The layout table is pre-seeded with
+  the result before the block fold; the emission machinery
+  (consult-or-record) is untouched, and the checked shuffler means no
+  layout choice can miscompile — only reject.
 
-  * a **loop header**'s layout is donated by the cold preheader edge, and the
-    hot back edge then realizes the difference on every iteration;
-  * a **join block**'s layout is donated by whichever arm is emitted first,
-    and every other arm pays the full permutation;
-  * in both cases the block's own body then fishes its operands up from
-    wherever the donor left them.
+  **False-edge alignment, the make-or-break piece.** The emitter's direct
+  branch scheme realizes the false edge as `shuffle τt τf`. With both arm
+  layouts seeded independently this pays a `DUP`/`POP` tax for every
+  value-set/order difference between the arms — measured **+43,287 gas on
+  `TickMath.getTickAtSqrtPriceSweep` alone** (a 10,000-`POP` explosion across
+  the per-iteration diamond chains; at main `τf` was *derived* from `τt`, a
+  filtered rename, nearly free). Each sweep therefore ends by rewriting
+  every branch false-target's layout to follow the true-target's value
+  order (params by the two edges' argument positions, shared live-ins by
+  identity). With alignment the sweeps' TickMath rows land *below* main.
 
-  The fix (solc's own scheme): compute a block's **ideal entry layout from
-  its own operations** — the canonical slots reordered by next use
-  (`orderByFuture` over the block's flattened use sequence, the Koopman
-  scheduling already used inside blocks) — and **pre-seed** the layout table
-  with it before emission, so every predecessor establishes the layout the
-  block actually wants. Seeding is a table write before the block fold; the
-  emission machinery (consult-or-record) is untouched.
+  **Seeding is a candidate, not a mode.** Fully-seeded emission wins big on
+  long-block code (aave loop bodies, `PoolSwap`) and still loses on a few
+  deep-pressure math bodies (`computeSwapStep` +1.5k, `SqrtPriceMath`
+  ~+120/row). `compileViaSsaAsm` now emits **six** candidates —
+  {seeded, inherited} × {next-use, plain} on the optimized program, both
+  plain modes on the raw one — and `CostModel.execCostAsm` arbitrates per
+  program. That keeps every row at its best emission and cost compile time
+  ≈ nothing (uniswap suite 18.2 s → 18.1 s; the pass pipeline, not
+  emission, dominates).
 
-  Three seeding scopes to measure, most conservative first:
+### Measured (uniswap-v4 + aave-v4, solc 0.8.35, Osaka)
 
-  1. back-edge targets (loop headers) only;
-  2. loop headers + join blocks (≥ 2 predecessors);
-  3. every non-entry block (full backward layout assignment; inheritance
-     never fires).
+  | suite | before | after | Δ | solc | gap before → after |
+  |---|---:|---:|---:|---:|---|
+  | uniswap-v4 | 938,264 | **934,142** | −4,122 | 907,063 | +31,201 → **+27,079** (−13.2%) |
+  | aave-v4 | 15,107,139 | **14,971,404** | −135,735 | 18,236,226 | −3,129,087 → **−3,264,822** |
 
-  The shuffler is **checked**, so no seeding choice can miscompile — a layout
-  it cannot realize is a rejection (fallback to the classic backend), and the
-  risk is measured as gas/acceptance, not correctness. The proof surface is
-  correspondingly small: `emitFunc_inv_fresh`'s empty-initial-table clause
-  becomes "seeded layouts are `LayoutsOK` and the entry is unseeded"
-  (membership via the existing `orderByFuture_mem` + `layoutOf_val_mem`), and
-  the downstream consumers (`emitFunc_layoutsOK`, `emitFunc_split_mono`)
-  thread the weakened fact.
+  Largest movers: `nextContinuousTenThousand` −157,276, `flsFullRange`
+  −5,842, `constants` −1,911, `swapExactInputNoTick` −1,530,
+  `addLiquidityWide` −875, both TickMath sweeps −525/−600. One uniswap row
+  rises: `getSqrtPriceAtTick(int24)` +12 (still 224 below solc). Within
+  aave's single artifact four scan rows rise (the two count scans +13,408
+  each) against the six that fall — per-row artifacts don't exist, the
+  object-level winner nets −135,735. `PoolSwap` runtime bytecode
+  24,724 → 23,979 (−3.0%).
 
-### Acceptance gates
+### ❌ Measured and rejected on the way
 
-  * uniswap-v4 and aave-v4 totals strictly below current main's
-    938,264 / 15,107,139, with per-row regressions individually justified;
-  * no fixture leaves the comparable set (shuffler rejections would show as
-    compile-acceptance changes);
-  * semanticTests / gasTests / yulOptimizerTests re-pinned only downward.
+  * **Demand layouts for joins without exit-chaining** (first-use ranking
+    only, no backward walk): uniswap +13,691 — a join's body savings do not
+    pay for making every arriving arm realize an uncoordinated permutation.
+  * **Headers-only demand seeding**: safe but small (uniswap −1,536, aave
+    −84) — the diagnosis said edges-everywhere, and it was right.
+  * **Full seeding without false-edge alignment**: aave −84k but uniswap
+    +58k (the TickMath explosion above). The alignment *is* the pass.
+  * **Skipping false-targets instead of aligning them**: kills the aave win
+    entirely (+119k vs full seeding) — the aave hot-loop bodies are
+    false-edge targets.
+
+### Proof status
+
+  🚧 Sorries/statement churn pending in `ToAsmSound` (`emitFunc` gained the
+  `seed` flag; `emitFunc_inv_fresh`'s empty-initial-table clause becomes
+  "seeded layouts are `LayoutsOK` and the entry is unseeded" — membership
+  follows the existing `orderByFuture_mem`/`layoutOf_val_mem` pattern since
+  every seeded layout is a permutation-subset of `layoutOf`'s slots plus the
+  same normalization tail). The checked shuffler carries the semantic
+  weight, as designed.
