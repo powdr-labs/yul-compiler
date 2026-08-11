@@ -2104,7 +2104,7 @@ the 24 gas from dropping the reachability pass.)
 
 ## Backward entry-layout propagation for the SSA backend (2026-08-11)
 
-- 🚧 **This branch.** The lever the operand-order peephole entry left on the
+- 🟢 **This branch, fully proved.** The lever the operand-order peephole entry left on the
   table, now built and measured. At the branch point the uniswap-v4 gap was
   +31,201 (938,264 vs 907,063) and re-profiling the three largest `PoolSwap`
   rows found the same signature as before: on `swapExactInputNoTick` we
@@ -2124,9 +2124,16 @@ the 24 gas from dropping the reachability pass.)
   chosen successor's entry layout pulled through the edge's parallel copy
   (`substLayout`), the condition on top for a branch, `results ++ retAddr`
   for `ret`. One backward Koopman step per instruction
-  (`before = args ++ (after − defs)`, duplicate-free) makes consecutive
+  (`before = dyingArgs ++ (after − defs)`, duplicate-free) makes consecutive
   shuffle targets *chain*: when the emitter's per-instruction target
-  `args ++ keep` equals the tracked stack, the shuffle is empty. Three
+  `args ++ keep` equals the tracked stack, the shuffle is empty. **Only the
+  operands that die at the instruction go on top** — a surviving operand is
+  `DUP`'d from wherever it sits at flat cost, and the first version, which
+  fronted *every* operand, forced a permutation at every predecessor edge
+  for zero benefit: a four-`SWAP`-per-iteration loop-header tax worth
+  +127k gas on `negative_stack_height.sol`'s zeroing loops alone, and the
+  single change from all-args to dying-args flipped the whole semantic
+  suite from +9k over the previous pin to −515k under main. Three
   Gauss–Seidel sweeps over the reverse block order (forward edges final
   within a sweep, back edges seeing the previous sweep; loop headers start
   from their next-use demand layout). The layout table is pre-seeded with
@@ -2155,21 +2162,28 @@ the 24 gas from dropping the reachability pass.)
   ≈ nothing (uniswap suite 18.2 s → 18.1 s; the pass pipeline, not
   emission, dominates).
 
-### Measured (uniswap-v4 + aave-v4, solc 0.8.35, Osaka)
+### Measured (all suites, solc 0.8.35, Osaka; before = main `8b9c5bb`)
 
   | suite | before | after | Δ | solc | gap before → after |
   |---|---:|---:|---:|---:|---|
-  | uniswap-v4 | 938,264 | **934,142** | −4,122 | 907,063 | +31,201 → **+27,079** (−13.2%) |
-  | aave-v4 | 15,107,139 | **14,971,404** | −135,735 | 18,236,226 | −3,129,087 → **−3,264,822** |
+  | semanticTests | 170,985,673 | **170,470,205** | −515,468 | 170,738,458 | +247,215 → **−268,253** (below solc) |
+  | aave-v4 | 15,107,139 | **14,924,126** | −183,013 | 18,236,226 | −3,129,087 → **−3,312,100** |
+  | uniswap-v4 | 938,264 | **936,635** | −1,629 | 907,063 | +31,201 → +29,572 |
+  | gasTests | 344,766 | **344,612** | −154 | 336,827 | +7,939 → +7,785 |
+  | yulOptimizerTests codegen | 2,406,370,531 | 2,406,370,317 | −214 | 2,406,469,737 | below solc |
 
-  Largest movers: `nextContinuousTenThousand` −157,276, `flsFullRange`
-  −5,842, `constants` −1,911, `swapExactInputNoTick` −1,530,
-  `addLiquidityWide` −875, both TickMath sweeps −525/−600. One uniswap row
-  rises: `getSqrtPriceAtTick(int24)` +12 (still 224 below solc). Within
-  aave's single artifact four scan rows rise (the two count scans +13,408
-  each) against the six that fall — per-row artifacts don't exist, the
-  object-level winner nets −135,735. `PoolSwap` runtime bytecode
-  24,724 → 23,979 (−3.0%).
+  **semanticTests crosses below solc for the first time** (381 rows down,
+  28 up, worst single riser +911). aave: `nextContinuousTenThousand`
+  −157,932, both count scans −9,210 each, `flsFullRange` −5,842,
+  `constants` −3,057, against +1,047 on each of the other two `next*`
+  rows and +36/+72 on three short rows — one artifact serves all ten
+  rows, and the winner nets −183,013. On uniswap the winners split per
+  object: `PoolLiquidity` and the TickMath sweeps take seeded emissions
+  (−186/−53, sweeps −1,413/−600), `PoolSwap` keeps the inherited-layout
+  candidate (rows byte-identical to main), and two rows rise —
+  `SwapMath.computeSwapStep` +641 and `getSqrtPriceAtTick` +12 (still 224
+  below solc) — the static pick trading them for the sweeps; recorded,
+  not chased.
 
 ### ❌ Measured and rejected on the way
 
@@ -2183,13 +2197,33 @@ the 24 gas from dropping the reachability pass.)
   * **Skipping false-targets instead of aligning them**: kills the aave win
     entirely (+119k vs full seeding) — the aave hot-loop bodies are
     false-edge targets.
+  * **Loop-weighted candidate selection, the fourth frequency refutation —
+    now even for same-structure candidates.** The hypothesis that the
+    thrice-refuted execution-frequency term fails only *across* programs
+    (estimator errors not cancelling) and would work *within* one program's
+    emission modes (identical label/back-edge structure) was implemented
+    (`8^depth` over back-edge spans, flat cross-program) and measured:
+    it un-picks the aave seeded win entirely (back to main's 15,107,139)
+    and costs uniswap +1.5k. Frequency weighting cannot rank inter-region
+    tradeoffs (preheader vs body, inner vs outer loop) even when loop
+    membership is exact, because the weight ratios stand in for iteration
+    counts it cannot know. What actually fixed the mis-pick it was built
+    for was repairing the *emission* (the dying-args walk above), not the
+    selection.
+  * **More Gauss–Seidel sweeps** (5 vs 3): byte-identical on the
+    mis-picked fixture — the backward pass converges by 3; the loop-header
+    tax was structural, not an oscillation.
 
-### Proof status
+### Proved
 
-  🚧 Sorries/statement churn pending in `ToAsmSound` (`emitFunc` gained the
-  `seed` flag; `emitFunc_inv_fresh`'s empty-initial-table clause becomes
-  "seeded layouts are `LayoutsOK` and the entry is unseeded" — membership
-  follows the existing `orderByFuture_mem`/`layoutOf_val_mem` pattern since
-  every seeded layout is a permutation-subset of `layoutOf`'s slots plus the
-  same normalization tail). The checked shuffler carries the semantic
-  weight, as designed.
+  All three phase obligations updated and discharged; the repository is
+  sorry-free and `compileViaSsa_correct` checks with only
+  `[propext, Classical.choice, Quot.sound]`. `emitFunc` carries the `seed`
+  flag through the statements; `emitFunc_inv_fresh`'s empty-initial-table
+  clause became "the entry block is unseeded and every seeded layout's
+  values are in scope at its block" — membership follows from every seeded
+  layout being drawn from `layoutOf`'s slots (`demandLayout` via
+  `orderByFuture_mem`; `backLayout`/`alignFalse` filter from the canonical
+  slots by construction), stated independently of the sweep count. The
+  checked shuffler carries the semantic weight, as designed: no layout
+  choice can miscompile, only reject.

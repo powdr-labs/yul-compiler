@@ -244,9 +244,9 @@ fullSuite/combine_shift_and_and_3.yul	537632	537578
 fullSuite/combine_shift_and_and_unsplit.yul	76054	76036
 fullSuite/create2_and_mask.yul	590644260	590644332
 fullSuite/create_and_mask.yul	516816	516972
-fullSuite/devcon_example.yul	27632	27674
+fullSuite/devcon_example.yul	27704	27674
 fullSuite/extcodelength.yul	13138	13258
-fullSuite/loopInvariantCodeMotion.yul	27632	27674
+fullSuite/loopInvariantCodeMotion.yul	27704	27674
 fullSuite/mcopy.yul	444	450
 fullSuite/mcopy_redundant_overwritten.yul	294	300
 fullSuite/mcopy_redundant_same_area.yul	204	216
