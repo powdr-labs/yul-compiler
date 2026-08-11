@@ -12,7 +12,7 @@ rev = "90b33d7475e0c4fb2f67b72f3e151164ae8b4d6f"
 [[require]]
 name = "evm_semantics"
 git = "https://github.com/powdr-labs/evm-semantics"
-rev = "137f2a359ffe884e6e236bb19951f23192510d31"
+rev = "f0c4a8e9aa22f679d825c7f063215a5f195a72e8"
 
 [[require]]
 name = "mathlib"
