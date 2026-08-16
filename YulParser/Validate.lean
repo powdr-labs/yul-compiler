@@ -27,6 +27,7 @@ structure ValidateCtx where
   forbidFunctions : Bool := false
   objectNames : Option (List String) := none
   inactiveBuiltins : List String := []
+  futureBuiltins : List String := []
 
 private def findFunction (name : String) : List FunctionSig → Option FunctionSig
   | [] => none
@@ -53,7 +54,7 @@ private def specialBuiltin (name : String) : Bool :=
 
 private def builtinName (ctx : ValidateCtx) (name : String) : Bool :=
   ((YulSemantics.EVM.parse name).isSome && !ctx.inactiveBuiltins.contains name) ||
-    specialBuiltin name
+    specialBuiltin name || ctx.futureBuiltins.contains name
 
 private def validDeclaredName (ctx : ValidateCtx) (name : String) : Bool :=
   validIdentifier name && !builtinName ctx name && !lowLevelReserved name &&
@@ -215,6 +216,7 @@ private def validateStmt (ctx : ValidateCtx) (stmt : Stmt Op) : Option ValidateC
         inFunction := true
         objectNames := ctx.objectNames
         inactiveBuiltins := ctx.inactiveBuiltins
+        futureBuiltins := ctx.futureBuiltins
       }
       let _ ← validateBlock fnCtx body
       some ctx
@@ -343,6 +345,13 @@ private def inactiveBuiltins (source : String) : List String :=
     ["clz"]
   else []
 
+/-- Builtin names introduced after the latest executable fork still affect
+Solidity's versioned syntax fixtures. Keep them out of the executable `Op`
+table, but reserve their identifiers when the fixture explicitly selects the
+future fork that introduces them. -/
+private def futureBuiltins (source : String) : List String :=
+  if source.contains "EVMVersion: >=amsterdam" then ["slotnum"] else []
+
 /-! ### A one-scan fast path
 
 `String.contains` with a *string* pattern runs a KMP searcher through the generic
@@ -445,7 +454,10 @@ end
 
 def validateBlockSource (source : String) (body : List (Stmt Op)) : Bool :=
   sourceLexWF source &&
-    (validateBlock { inactiveBuiltins := inactiveBuiltins source } body).isSome
+    (validateBlock {
+      inactiveBuiltins := inactiveBuiltins source
+      futureBuiltins := futureBuiltins source
+    } body).isSome
 
 private def withPrefix (prefixName : String) (name : String) : String :=
   prefixName ++ "." ++ name
@@ -471,7 +483,7 @@ private partial def collectImmutableCallsObjects : List (Object Op) → List Str
 end
 
 mutual
-private def validateObjectTree (inactive : List String) : Object Op → Bool
+private def validateObjectTree (inactive future : List String) : Object Op → Bool
   | object@(.mk name code subs datas) =>
       let childNames := subs.map Object.name
       let dataNames := datas.map Prod.fst
@@ -479,19 +491,22 @@ private def validateObjectTree (inactive : List String) : Object Op → Bool
       let objectCtx : ValidateCtx := {
         objectNames := some (accessibleObjectNames object)
         inactiveBuiltins := inactive
+        futureBuiltins := future
       }
       unique allNames && !allNames.contains name &&
         (validateBlock objectCtx code).isSome &&
-        validateObjects inactive subs
+        validateObjects inactive future subs
 
-private def validateObjects (inactive : List String) : List (Object Op) → Bool
+private def validateObjects (inactive future : List String) : List (Object Op) → Bool
   | [] => true
-  | object :: objects => validateObjectTree inactive object && validateObjects inactive objects
+  | object :: objects =>
+      validateObjectTree inactive future object && validateObjects inactive future objects
 end
 
 def validateObjectSource (source : String) (object : Object Op) : Bool :=
   let immutableCalls := collectImmutableCallsObject object
-  sourceLexWF source && validateObjectTree (inactiveBuiltins source) object &&
+  sourceLexWF source &&
+    validateObjectTree (inactiveBuiltins source) (futureBuiltins source) object &&
     immutableCalls.1.all immutableCalls.2.contains
 
 end YulParser
