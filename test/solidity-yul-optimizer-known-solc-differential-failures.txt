@@ -24,7 +24,6 @@ fullInliner/no_inline_into_big_global_context.yul
 fullInliner/recursion.yul
 fullSuite/ackermann_function.yul
 fullSuite/ackermann_function_if.yul
-fullSuite/aztec.yul
 fullSuite/fibonacci.yul
 fullSuite/name_cleaner_reserved.yul
 fullSuite/reserved_identifiers.yul

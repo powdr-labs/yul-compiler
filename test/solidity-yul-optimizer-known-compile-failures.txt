@@ -17,7 +17,6 @@ fullInliner/multi_fun_callback.yul
 fullInliner/recursion.yul
 fullSuite/ackermann_function.yul
 fullSuite/ackermann_function_if.yul
-fullSuite/aztec.yul
 fullSuite/fibonacci.yul
 fullSuite/name_cleaner_reserved.yul
 fullSuite/reserved_identifiers.yul

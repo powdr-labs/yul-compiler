@@ -2,6 +2,5 @@
 # Every fixture whose EVMVersion range includes Osaka is compiled. Keep exactly
 # the fixtures that do not parse/compile, including those the stack-overflow gate
 # (StackScalable) rejects as not provably stack-bounded (recursion / cycles).
-early_push_on_deep_swap.yul
 stackReuse/reuse_too_deep_slot.yul
 unassigned_return_variable.yul

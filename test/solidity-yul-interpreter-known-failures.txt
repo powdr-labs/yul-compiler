@@ -15,11 +15,6 @@ datacopy.yul
 dataoffset.yul
 datasize.yul
 expr_nesting_depth_exceeded.yul
-external_call_to_self.yul
-external_call_unexecuted.yul
-external_callcode_unexecuted.yul
-external_delegatecall_unexecuted.yul
-external_staticcall_unexecuted.yul
 infinite_recursion.yul
 infinite_recursion_tracelimit.yul
 isoltestTesting/linkersymbol.yul
