@@ -277,7 +277,7 @@ theorem finishProg_correct (hexternal : ExternalsRealized model)
     have hsteps0 : ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ :=
       emitProg_asteps hnodup hQwf hQdom hemit (.normal heb hexec)
     have hstepsO := Peephole.optimizeAsm_asteps hnodup hsteps0
-    obtain ⟨bnd, Hb⟩ :=
+    obtain ⟨bnd, _tx, Hb⟩ :=
       asteps_sim hexternal hlow hsmallO hstepsO
         (List.suffix_refl (optimizeAsm asm)) (stackOK2_run_bound hstk yst0)
     refine ⟨bnd, ?_⟩
