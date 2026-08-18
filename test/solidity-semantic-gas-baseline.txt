@@ -712,6 +712,7 @@ inlineAssembly/selfbalance.sol	157	129
 inlineAssembly/shadowing_local_function_opcode.sol	225	190
 inlineAssembly/slot_access.sol	14362	13892
 inlineAssembly/slot_access_via_mapping_pointer.sol	822	631
+inlineAssembly/slotnum_pre_amsterdam_function.sol	368	320
 inlineAssembly/transient_storage_multiple_transactions.sol	1631	1494
 inlineAssembly/transient_storage_reset_between_creation_runtime.sol	260	230
 inlineAssembly/transient_storage_sanity_checks.sol	24977	24858

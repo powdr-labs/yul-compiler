@@ -41,6 +41,7 @@ private def evmVersionRank : String → Option Nat
   | "cancun" => some 12
   | "prague" => some 13
   | "osaka" | "current" => some 14
+  | "amsterdam" => some 15
   | _ => none
 
 private def latestEvmVersionRank : Nat := 14
@@ -87,6 +88,7 @@ def fixtureSource (contents : String) : String :=
 
 example : runsOnLatestFork "// EVMVersion: <paris" = .ok false := by native_decide
 example : runsOnLatestFork "// EVMVersion: >=cancun" = .ok true := by native_decide
+example : runsOnLatestFork "// EVMVersion: >=amsterdam" = .ok false := by native_decide
 example : runsOnLatestFork "// EVMVersion: =current" = .ok true := by native_decide
 example : fixtureSource "{}\n// ====\n// EVMVersion: =current\n// ----\n// stop" = "{}" := by
   native_decide

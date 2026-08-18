@@ -28,6 +28,13 @@ def solidityLoop : String :=
 #guard (parseSource solidityLoop).isSome
 #guard (compileSource solidityLoop).isSome
 
+/-! `slotnum` is introduced after Osaka. It remains a legal identifier for
+pre-Amsterdam syntax fixtures, but is reserved when Amsterdam is selected. -/
+#guard (parseSource
+  "{ function slotnum() {} }\n// ====\n// EVMVersion: <amsterdam\n// ----\n").isSome
+#guard (parseSource
+  "{ function slotnum() {} }\n// ====\n// EVMVersion: >=amsterdam\n// ----\n").isNone
+
 /-- An object-rooted Solidity interpreter fixture shape, including nested
 objects, a dotted data path, and trailing expectation comments. -/
 def solidityObject : String :=
