@@ -46,12 +46,27 @@ cannot be bolted onto our own fused instruction:
   removes those derivations from the dialect instead of leaving them
   unmatched.
 
-**Status.** yul-semantics#41 has since landed: `builtinWithExternal` now
-takes an `ExternalGas` oracle, and the compiler's `AStep.op` currently pins
-it to the maximally permissive `ExternalGas.any`. The facts below are stated
-at `.any` — the regime whose derivations a fused instruction would have to
-match while the compiler stays there. Swapping the compiler onto a
-constrained oracle is exactly what dissolves obstacle 1.
+**Status.** Every prerequisite this module identified has since landed:
+
+1. yul-semantics#41's `ExternalGas` is pinned, and the compiler's
+   `ExternalModel` carries the oracle (`AStep.op` uses `model.gas`,
+   defaulting to the historical `.any`);
+2. phase B's gas bookkeeping is generalized to monotone, unbounded
+   transformers (`GasTx`), whose `callLoss` shape is exactly what
+   `no_additive_bound_under_eip150` below shows the additive form cannot
+   express;
+3. the fused instruction exists (`Asm.gasCall`, produced by the peephole's
+   `CodeRel.gasFuse` window), and its phase-B obligation
+   (`GasCallsRealized`) confronts the allowance swap head-on: the machine
+   forwards its own `GAS` word, so a client discharges the obligation via a
+   `GasThreshold`-style environment with an at-or-above-threshold oracle,
+   or an allowance-independent response.
+
+The facts below are stated at `.any` (hence the `hgas` hypotheses): they
+exhibit the derivations that make a fused rule *false* in that regime, which
+is why `AStep.gasCall` packages the oracle admission instead of constraining
+the allowance itself, and why a *bare* `gas()` — one not consumed by a
+call — still lowers to `none`.
 
 ## A second, independent obstacle
 

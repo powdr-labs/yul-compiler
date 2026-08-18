@@ -21,7 +21,11 @@ the built-in is not (yet) in the verified fragment.
 
 Deliberately *not* covered so far:
 * `gas` — modeled by yul-semantics as a nondeterministic open-world oracle,
-  so it cannot use the deterministic single-opcode proof;
+  so it cannot use the deterministic single-opcode proof. A `gas()` read
+  *directly consumed as a call's gas argument* is nevertheless compiled: the
+  Asm peephole fuses the pair into `Asm.gasCall` (see
+  `YulEvmCompiler.GasOracle` for why only the fused form is realizable);
+  only a bare `gas()` still lowers to `none`;
 * calls and creations are relational and are discharged by endpoint-realization
   assumptions rather than the deterministic single-step proof for local built-ins. -/
 def opTable : Op → Option Operation
