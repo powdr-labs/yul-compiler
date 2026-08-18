@@ -727,6 +727,17 @@ def strengthReduce : Op → List (Expr Op) → Option (Expr Op)
       if litValue c = 0 then some (.builtin .iszero [e]) else none
   | .iszero, [.builtin .iszero [.builtin .iszero [e]]] =>
       some (.builtin .iszero [e])
+  -- Nested literal chains of one associative op fold to a single op at compile
+  -- time (the `and`-mask rule below, generalized to add/mul/or/xor). `mul` must
+  -- precede the power-of-two `mul` arms so this shape is reached.
+  | .add, [.builtin .add [e, .lit c1], .lit c2] =>
+      some (.builtin .add [e, .lit (.number (litValue c1 + litValue c2).toNat)])
+  | .mul, [.builtin .mul [e, .lit c1], .lit c2] =>
+      some (.builtin .mul [e, .lit (.number (litValue c1 * litValue c2).toNat)])
+  | .or, [.builtin .or [e, .lit c1], .lit c2] =>
+      some (.builtin .or [e, .lit (.number (litValue c1 ||| litValue c2).toNat)])
+  | .xor, [.builtin .xor [e, .lit c1], .lit c2] =>
+      some (.builtin .xor [e, .lit (.number (litValue c1 ^^^ litValue c2).toNat)])
   | .mod, [e, .lit c] =>
       if litValue c = 0 then some (.builtin .and [e, .lit (.number 0)])
       else match pow2Exp? c with
@@ -759,6 +770,16 @@ def strengthReduce : Op → List (Expr Op) → Option (Expr Op)
       if litValue c = 0 then some (.builtin .and [e, .lit (.number 0)]) else none
   | .smod, [.lit c, e] =>
       if litValue c = 0 then some (.builtin .and [e, .lit (.number 0)]) else none
+  | .and, [.builtin .and [e, .lit c1], .lit c2] =>
+      -- Nested literal masks combine: (e & c1) & c2 = e & (c1 & c2); the folded
+      -- literal is computed now, removing one PUSH + AND per redundant cleanup.
+      some (.builtin .and [e, .lit (.number (litValue c1 &&& litValue c2).toNat)])
+  | .byte, [.lit c, e] =>
+      -- byte(31, e) extracts the low byte, which is exactly `and(e, 0xff)`; the
+      -- rewrite canonicalises to `and`, enabling the mask-combining rule above.
+      if litValue c = (BitVec.ofNat 256 31) then
+        some (.builtin .and [e, .lit (.number 0xff)])
+      else none
   | .exp, [.lit c, e] =>
       if litValue c = 0 then some (.builtin .iszero [e])
       else if litValue c = 1 then
@@ -1021,6 +1042,37 @@ theorem builtin_left_lit_eval_iff_comp {op : Op} {e' e : Expr Op} {c : Literal} 
           Step D funs V st (.expr e) (.eres (.vals [v] st'))) ∨
        (∃ st', r = .halt st' ∧ Step D funs V st (.expr e) (.eres (.halt st')))) := by
   refine (builtin_left_lit_eval_iff hf funs V st r).trans ?_
+  constructor
+  · rintro (⟨w, st', rfl, he⟩ | ⟨st', rfl, he⟩)
+    · rcases (hg funs V st _).1 he with ⟨v, st'', hval, hev⟩ | ⟨st'', hval, _⟩
+      · obtain ⟨hw, hst⟩ : w = g v ∧ st' = st'' := by simpa using hval
+        subst hw; subst hst
+        exact Or.inl ⟨v, st', rfl, hev⟩
+      · exact absurd hval (by simp)
+    · rcases (hg funs V st _).1 he with ⟨v, st'', hval, _⟩ | ⟨st'', hval, hev⟩
+      · exact absurd hval (by simp)
+      · obtain rfl : st' = st'' := by simpa using hval
+        exact Or.inr ⟨st', rfl, hev⟩
+  · rintro (⟨v, st', rfl, he⟩ | ⟨st', rfl, he⟩)
+    · exact Or.inl ⟨g v, st', rfl, (hg funs V st _).2 (Or.inl ⟨v, st', rfl, he⟩)⟩
+    · exact Or.inr ⟨st', rfl, (hg funs V st _).2 (Or.inr ⟨st', rfl, he⟩)⟩
+
+/-- Wrapping a characterised skeleton in one more pure binary op with a literal
+right operand (`op(e', c)`). The right-operand analogue of
+`builtin_left_lit_eval_iff_comp`; used to fold nested `and`-mask chains. -/
+theorem builtin_right_lit_eval_iff_comp {op : Op} {e' e : Expr Op} {c : Literal} {f g : U256 → U256}
+    (hf : ∀ w : U256, pureFn op [w, litValue c] = some (f w))
+    (hg : ∀ (funs : FunEnv D) (V : VEnv D) (st : EvmState) (r : EResult D),
+      Step D funs V st (.expr e') (.eres r) ↔
+        ((∃ v st', r = .vals [g v] st' ∧
+            Step D funs V st (.expr e) (.eres (.vals [v] st'))) ∨
+         (∃ st', r = .halt st' ∧ Step D funs V st (.expr e) (.eres (.halt st')))))
+    (funs : FunEnv D) (V : VEnv D) (st : EvmState) (r : EResult D) :
+    Step D funs V st (.expr (.builtin op [e', .lit c])) (.eres r) ↔
+      ((∃ v st', r = .vals [f (g v)] st' ∧
+          Step D funs V st (.expr e) (.eres (.vals [v] st'))) ∨
+       (∃ st', r = .halt st' ∧ Step D funs V st (.expr e) (.eres (.halt st')))) := by
+  refine (builtin_right_lit_eval_iff hf funs V st r).trans ?_
   constructor
   · rintro (⟨w, st', rfl, he⟩ | ⟨st', rfl, he⟩)
     · rcases (hg funs V st _).1 he with ⟨v, st'', hval, hev⟩ | ⟨st'', hval, _⟩
@@ -1346,6 +1398,101 @@ theorem strength_absorb_left_equiv {op : Op} {e : Expr Op} {c : Literal}
     (builtin_right_lit_eval_iff (f := fun w => w &&& litValue (.number 0)) (fun _ => rfl))
   intro v; rw [litValue_number]; simp
 
+/-- **Nested `and`-mask combining**: `and(and(e, c1), c2) ≈ and(e, c1 & c2)`.
+Both sides evaluate `e` exactly once; the two literal masks fold to one at
+compile time, removing a `PUSH` + `AND` per redundant cleanup layer. Sound for
+*arbitrary* literals `c1`, `c2` (idempotent double cleanup is the `c1 = c2`
+special case). -/
+theorem strength_and_idem_equiv {e : Expr Op} {c1 c2 : Literal} :
+    EquivExpr D (.builtin .and [.builtin .and [e, .lit c1], .lit c2])
+      (.builtin .and [e, .lit (.number (litValue c1 &&& litValue c2).toNat)]) := by
+  refine equiv_of_eval_iff
+    (g₁ := fun w => (w &&& litValue c1) &&& litValue c2)
+    (g₂ := fun w => w &&& litValue (.number (litValue c1 &&& litValue c2).toNat)) ?_
+    (builtin_right_lit_eval_iff_comp (c := c2) (f := fun x => x &&& litValue c2)
+      (g := fun w => w &&& litValue c1) (fun _ => rfl)
+      (builtin_right_lit_eval_iff (f := fun w => w &&& litValue c1) (fun _ => rfl)))
+    (builtin_right_lit_eval_iff
+      (f := fun w => w &&& litValue (.number (litValue c1 &&& litValue c2).toNat)) (fun _ => rfl))
+  intro v
+  rw [litValue_number_toNat]
+  apply BitVec.eq_of_toNat_eq
+  simp [BitVec.toNat_and, Nat.and_assoc]
+
+/-- **Generic nested literal-chain combining**: for any pure binary op whose
+value is a total associative function `bin` of its two operands,
+`op(op(e, c1), c2) ≈ op(e, bin c1 c2)`. Both sides evaluate `e` exactly once
+(the operand is kept on the RHS, so both require the same bindings) and the two
+literal operands fold to one at compile time — removing a `PUSH` + the op per
+redundant layer. The `and`-mask rule above is the `bin = (· &&& ·)` instance;
+this generalizes it to `add`/`mul`/`or`/`xor`. -/
+theorem strength_binlit_chain_equiv {op : Op} {e : Expr Op} {c1 c2 : Literal}
+    {bin : U256 → U256 → U256}
+    (hpure : ∀ a b : U256, pureFn op [a, b] = some (bin a b))
+    (hassoc : ∀ a b c : U256, bin (bin a b) c = bin a (bin b c)) :
+    EquivExpr D (.builtin op [.builtin op [e, .lit c1], .lit c2])
+      (.builtin op [e, .lit (.number (bin (litValue c1) (litValue c2)).toNat)]) := by
+  refine equiv_of_eval_iff
+    (g₁ := fun w => bin (bin w (litValue c1)) (litValue c2))
+    (g₂ := fun w => bin w (litValue (.number (bin (litValue c1) (litValue c2)).toNat))) ?_
+    (builtin_right_lit_eval_iff_comp (c := c2) (f := fun x => bin x (litValue c2))
+      (g := fun w => bin w (litValue c1)) (fun w => hpure w (litValue c2))
+      (builtin_right_lit_eval_iff (f := fun w => bin w (litValue c1))
+        (fun w => hpure w (litValue c1))))
+    (builtin_right_lit_eval_iff
+      (f := fun w => bin w (litValue (.number (bin (litValue c1) (litValue c2)).toNat)))
+      (fun w => hpure w _))
+  intro v
+  rw [litValue_number_toNat]
+  exact hassoc v (litValue c1) (litValue c2)
+
+/-- `add(add(e, c1), c2) ≈ add(e, c1 + c2)` — nested constant offsets fold
+(EVM `ADD` wraps mod 2²⁵⁶; `+` on `U256` is that wrapping add). -/
+theorem strength_add_chain_equiv {e : Expr Op} {c1 c2 : Literal} :
+    EquivExpr D (.builtin .add [.builtin .add [e, .lit c1], .lit c2])
+      (.builtin .add [e, .lit (.number (litValue c1 + litValue c2).toNat)]) :=
+  strength_binlit_chain_equiv (fun _ _ => rfl) (fun a b c => add_assoc a b c)
+
+/-- `mul(mul(e, c1), c2) ≈ mul(e, c1 * c2)` — nested constant factors fold. -/
+theorem strength_mul_chain_equiv {e : Expr Op} {c1 c2 : Literal} :
+    EquivExpr D (.builtin .mul [.builtin .mul [e, .lit c1], .lit c2])
+      (.builtin .mul [e, .lit (.number (litValue c1 * litValue c2).toNat)]) :=
+  strength_binlit_chain_equiv (fun _ _ => rfl) (fun a b c => mul_assoc a b c)
+
+/-- `or(or(e, c1), c2) ≈ or(e, c1 | c2)` — nested constant bit-sets fold. -/
+theorem strength_or_chain_equiv {e : Expr Op} {c1 c2 : Literal} :
+    EquivExpr D (.builtin .or [.builtin .or [e, .lit c1], .lit c2])
+      (.builtin .or [e, .lit (.number (litValue c1 ||| litValue c2).toNat)]) :=
+  strength_binlit_chain_equiv (fun _ _ => rfl)
+    (fun a b c => by apply BitVec.eq_of_toNat_eq; simp [BitVec.toNat_or, Nat.or_assoc])
+
+/-- `xor(xor(e, c1), c2) ≈ xor(e, c1 ^ c2)` — nested constant flips fold. -/
+theorem strength_xor_chain_equiv {e : Expr Op} {c1 c2 : Literal} :
+    EquivExpr D (.builtin .xor [.builtin .xor [e, .lit c1], .lit c2])
+      (.builtin .xor [e, .lit (.number (litValue c1 ^^^ litValue c2).toNat)]) :=
+  strength_binlit_chain_equiv (fun _ _ => rfl)
+    (fun a b c => by apply BitVec.eq_of_toNat_eq; simp [BitVec.toNat_xor, Nat.xor_assoc])
+
+/-- **`byte(31, e) ≈ and(e, 0xff)`**: extracting the low byte is masking with
+`0xff`. Both evaluate `e` once and apply the same total function; the rewrite
+canonicalises `byte` to `and`, feeding the mask-combining rule. -/
+theorem strength_byte31_equiv {e : Expr Op} {c : Literal}
+    (hc : litValue c = BitVec.ofNat 256 31) :
+    EquivExpr D (.builtin .byte [.lit c, e]) (.builtin .and [e, .lit (.number 0xff)]) := by
+  have hct : (litValue c).toNat = 31 := by
+    rw [hc, BitVec.toNat_ofNat]
+  refine equiv_of_eval_iff
+    (g₁ := fun w => if 32 ≤ (litValue c).toNat then (0 : U256)
+      else (w >>> (248 - 8 * (litValue c).toNat)) &&& 0xff)
+    (g₂ := fun w => w &&& litValue (.number 0xff)) ?_
+    (builtin_left_lit_eval_iff (f := fun w => if 32 ≤ (litValue c).toNat then (0 : U256)
+      else (w >>> (248 - 8 * (litValue c).toNat)) &&& 0xff) (fun _ => rfl))
+    (builtin_right_lit_eval_iff (f := fun w => w &&& litValue (.number 0xff)) (fun _ => rfl))
+  intro v
+  rw [hct, if_neg (by omega), show 248 - 8 * 31 = 0 from by omega, litValue_number]
+  apply BitVec.eq_of_toNat_eq
+  simp [BitVec.toNat_and]
+
 /-- Every strength reduction is a sound pointwise equivalence. -/
 theorem strengthReduce_equiv {op : Op} {args : List (Expr Op)} {e : Expr Op}
     (h : strengthReduce op args = some e) :
@@ -1363,6 +1510,12 @@ theorem strengthReduce_equiv {op : Op} {args : List (Expr Op)} {e : Expr Op}
            | exact strength_div_equiv (by assumption)
            | exact strength_mul_right_equiv (by assumption)
            | exact strength_mul_left_equiv (by assumption)
+           | exact strength_and_idem_equiv
+           | exact strength_add_chain_equiv
+           | exact strength_mul_chain_equiv
+           | exact strength_or_chain_equiv
+           | exact strength_xor_chain_equiv
+           | exact strength_byte31_equiv (by assumption)
            | exact strength_exp_base0_equiv (by assumption)
            | exact strength_exp_base1_equiv (by assumption)
            | exact strength_exp_base2_equiv (by assumption)

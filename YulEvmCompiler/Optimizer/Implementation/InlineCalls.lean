@@ -243,9 +243,12 @@ transform declines); they gate *when* inlining pays.
 -- `liveMax*` (the live-local analysis) lives in `Frame.lean`, shared with
 -- the propagation depth gate.
 
-/-- Profitability + stack-pressure gate (see the section notes). -/
+/-- Profitability + stack-pressure gate (see the section notes). The return
+bound admits solc's three-slot `abi_decode_tuple_*` shapes (measured: the
+static `24 − 7·|rs|` estimate is pessimistic — post-inline propagation and
+dead-result pruning reclaim the readback residue). -/
 def inlineOK (d : IDecl) : Bool :=
-  d.rs.length ≤ 2 &&
+  d.rs.length ≤ 3 &&
   liveMaxStmts (d.ps.length + d.rs.length) d.ss ≤ 13
 
 /-! ### The site rewrite -/

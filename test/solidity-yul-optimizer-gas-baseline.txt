@@ -455,8 +455,8 @@ unusedAssignEliminator/switch_overwrite_in_one.yul	315	270
 unusedAssignEliminator/switch_overwrite_use_combination.yul	360	305
 unusedAssignEliminator/switch_unused.yul	219	167
 unusedFunctionParameterPruner/LiteralRematerialiser.yul	204	366
-unusedFunctionParameterPruner/multiple_param.yul	27482	27602
-unusedFunctionParameterPruner/multiple_return.yul	27506	27584
+unusedFunctionParameterPruner/multiple_param.yul	27374	27602
+unusedFunctionParameterPruner/multiple_return.yul	27374	27584
 unusedFunctionParameterPruner/nested_function.yul	29422	30148
 unusedFunctionParameterPruner/nested_function_name_collision.yul	61692	62364
 unusedFunctionParameterPruner/no_return.yul	16030	16282
