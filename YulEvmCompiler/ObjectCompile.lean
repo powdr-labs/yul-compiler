@@ -1038,7 +1038,8 @@ open EvmSemantics
 open EvmSemantics.EVM
 open YulSemantics (VEnv Run Outcome)
 open YulSemantics.EVM
-  (EvmState evm evmWithExternal constructorCode constructorCode_returns_of_consistent)
+  (EvmState evm evmWithExternal ExternalGas constructorCode
+    constructorCode_returns_of_consistent)
 
 variable [model : ExternalModel]
 local notation "yulD" => evmWithExternal model.calls model.creates ExternalGas.any
