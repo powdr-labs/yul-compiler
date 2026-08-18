@@ -69,6 +69,24 @@ def popArity : GasCallKind → Nat
   | .delegatecall | .staticcall => 5
 end GasCallKind
 
+/-- The fused-call kind wrapping a call built-in, if any — the peephole's
+test for the second instruction of a `gas(); call` window. -/
+def gasCallKind? : YulSemantics.EVM.Op → Option GasCallKind
+  | .call => some .call
+  | .callcode => some .callcode
+  | .delegatecall => some .delegatecall
+  | .staticcall => some .staticcall
+  | _ => none
+
+@[simp] theorem gasCallKind?_op (k : GasCallKind) : gasCallKind? k.op = some k := by
+  cases k <;> rfl
+
+theorem eq_op_of_gasCallKind? {yop : YulSemantics.EVM.Op} {k : GasCallKind}
+    (h : gasCallKind? yop = some k) : yop = k.op := by
+  cases yop <;>
+    simp only [gasCallKind?, reduceCtorEq, Option.some.injEq] at h <;>
+    (subst h; rfl)
+
 /-- The fused call's Yul op lowers, via `opTable`, to its EVM call opcode. -/
 @[simp] theorem GasCallKind.opTable_op (k : GasCallKind) :
     opTable k.op = some k.target := by cases k <;> rfl
