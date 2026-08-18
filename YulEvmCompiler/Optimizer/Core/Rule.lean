@@ -1,5 +1,5 @@
 import YulEvmCompiler.Optimizer.Core.Basic
-import YulSemantics.Equiv
+import YulEvmCompiler.Optimizer.Core.Equiv
 
 set_option warningAsError true
 

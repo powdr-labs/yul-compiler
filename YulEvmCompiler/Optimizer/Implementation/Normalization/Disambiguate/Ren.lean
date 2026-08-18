@@ -1,6 +1,6 @@
 import YulEvmCompiler.Optimizer.Implementation.Normalization.Disambiguate.Alpha
 import YulEvmCompiler.Optimizer.Implementation.Frame
-import YulSemantics.Equiv
+import YulEvmCompiler.Optimizer.Core.Equiv
 import Mathlib.Data.List.Nodup
 set_option warningAsError true
 /-!

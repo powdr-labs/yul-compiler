@@ -6,7 +6,11 @@ defaultTargets = ["YulEvmCompiler", "YulParser", "YulEvmCompilerTests", "YulIR",
 [[require]]
 name = "yul-semantics"
 git = "https://github.com/powdr-labs/yul-semantics"
-rev = "d557aacbf4937ee1f7d08e32f8569108d7045eea"
+# Trimmed rev on the v4.31 toolchain (the parent of upstream's merge of the
+# trim PR #47): upstream main moved to Lean 4.33 right before that merge, and
+# tracking it requires a whole-project toolchain migration (Mathlib bump) that
+# is deliberately not part of this change.
+rev = "a0afc3f73295339d756dab1b3dc86479f1fa8436"
 
 # Mathlib is no longer pulled in by the semantics packages (both went
 # Mathlib-free); this repository's own proofs still use Mathlib tactics and

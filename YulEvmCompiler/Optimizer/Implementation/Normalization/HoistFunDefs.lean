@@ -1,4 +1,4 @@
-import YulSemantics.Equiv
+import YulEvmCompiler.Optimizer.Core.Equiv
 
 set_option warningAsError true
 

@@ -1,7 +1,7 @@
 import YulEvmCompiler.SsaCfg.Spec.Sem
 import YulEvmCompiler.SsaCfg.Implementation.OfYul
 import YulSemantics.BigStep
-import YulSemantics.Equiv
+import YulEvmCompiler.Optimizer.Core.Equiv
 set_option warningAsError true
 
 /-!
