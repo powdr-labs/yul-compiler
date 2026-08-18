@@ -154,6 +154,15 @@ def stepConstraint (prog : List Asm) (H : LayoutMap) : Asm → List Asm → StkL
   | .jumpi l,     c, S => ∃ S', S = .word :: S' ∧
       (∃ c', findLabel l prog = some c' ∧ S' ∈ H c') ∧ S' ∈ H c
   | .dynJump,     _, S => ∃ c' S', S = .code c' :: S' ∧ S' ∈ H c'
+  -- Fused `GAS; call`: consumes `k.popArity` args, pushes the result flag. The
+  -- lowered `GAS` transiently pushes one extra word before the call opcode
+  -- consumes it (peak = entry + 1); the entry length is ≤ 1023 by `Inv`, so the
+  -- peak stays within the 1024 EVM limit — the framework's standing
+  -- 1023-vs-1024 slack absorbs it. Only the *result* layout is constrained here,
+  -- exactly as for `.op`.
+  | .gasCall k,   c, S => k.popArity ≤ S.length ∧
+      (Slot.word :: S.drop k.popArity).length ≤ 1023 ∧
+      (Slot.word :: S.drop k.popArity) ∈ H c
 
 /-- A layout map is **valid** for `prog` when every reaching layout at every analysed position
 satisfies its step constraint. -/
@@ -405,6 +414,10 @@ def stepOK (prog : List Asm) (H : LayoutMap) : Asm → List Asm → StkLayout �
           && decide (S' ∈ H c)
       | _ => false
   | .dynJump,     _, S => match S with | .code c' :: S' => decide (S' ∈ H c') | _ => false
+  -- Fused `GAS; call`: see `stepConstraint`'s `.gasCall` arm for the +1 slack.
+  | .gasCall k,   c, S => decide (k.popArity ≤ S.length)
+      && decide ((Slot.word :: S.drop k.popArity).length ≤ 1023)
+      && decide ((Slot.word :: S.drop k.popArity) ∈ H c)
 
 omit model in
 set_option linter.unusedTactic false in
@@ -467,6 +480,9 @@ theorem stepOK_sound {prog : List Asm} {H : LayoutMap} {i : Asm} {c : List Asm} 
       revert h; simp only [stepOK]; split
       · next c' S' => intro h; simp only [decide_eq_true_eq] at h; exact ⟨c', S', rfl, h⟩
       · intro h; simp at h
+  | gasCall k =>
+      simp only [stepOK, Bool.and_eq_true, decide_eq_true_eq] at h
+      exact ⟨h.1.1, h.1.2, h.2⟩
 
 /-- The verifier: at every suffix position, *every* reaching layout satisfies the step constraint. -/
 def checkValid (prog : List Asm) (H : LayoutMap) : Bool :=
@@ -518,6 +534,9 @@ def succsOf (prog : List Asm) : Asm → List Asm → StkLayout → Option (List 
                        | some tgt => some [(tgt, S'), (c, S')] | none => none
       | _ => none
   | .dynJump,     _, S => match S with | .code tgt :: S' => some [(tgt, S')] | _ => none
+  -- Fused `GAS; call`: consumes `k.popArity` args, pushes the result flag.
+  | .gasCall k,   c, S => if k.popArity ≤ S.length then
+        some [(c, Slot.word :: S.drop k.popArity)] else none
 
 /-- Forward worklist accumulating, per position, the *set* of reaching layouts. Fuel-bounded: a
 program whose reachable layouts do not stabilise (recursion / stack-growing loop) exhausts the fuel

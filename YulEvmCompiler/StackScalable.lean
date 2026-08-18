@@ -219,6 +219,11 @@ def frameStep (prog : List Asm) (C : Cert) : Asm → List Asm → FLayout → Na
       (∃ t, findLabel l prog = some t ∧ C.fl t = some S' ∧ C.fbMax t = some F ∧ C.rl t = some R) ∧
       C.fl c = some S' ∧ C.fbMax c = some F ∧ C.rl c = some R
   | .dynJump,     _, S, _F, R => ∃ S', S = .ret :: S' ∧ R = S' ∧ (∀ s ∈ S', s = FSlot.word)
+  -- Fused `GAS; call`: consumes `k.popArity` args, pushes the result flag (frame
+  -- effect identical to a `.op` of arity `k.popArity → 1`).
+  | .gasCall k,   c, S, F, R => k.popArity ≤ S.length ∧
+      C.fl c = some (FSlot.word :: S.drop k.popArity)
+      ∧ C.fbMax c = some F ∧ C.rl c = some R
 
 def Cert.Valid (prog : List Asm) (C : Cert) : Prop :=
   ∀ i c S F R, C.fl (i :: c) = some S → C.fbMax (i :: c) = some F → C.rl (i :: c) = some R →
@@ -828,6 +833,10 @@ def frameStepB (prog : List Asm) (C : Cert) : Asm → List Asm → FLayout → N
   | .dynJump,     _, S, _F, R => match S with
       | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
       | _ => false
+  -- Fused `GAS; call`: see `frameStep`'s `.gasCall` arm.
+  | .gasCall k,   c, S, F, R => decide (k.popArity ≤ S.length ∧
+      C.fl c = some (FSlot.word :: S.drop k.popArity)
+      ∧ C.fbMax c = some F ∧ C.rl c = some R)
 
 omit model in
 set_option linter.unusedTactic false in
@@ -903,6 +912,7 @@ theorem frameStepB_sound {prog : List Asm} {C : Cert} {i : Asm} {c : List Asm} {
       revert h; simp only [frameStepB]; split
       · next S' => intro h; simp only [decide_eq_true_eq] at h; exact ⟨S', rfl, h.1, h.2⟩
       · intro h; simp at h
+  | gasCall k => simp only [frameStepB, decide_eq_true_eq] at h; exact h
 
 /-- Equality of two certificate positions, with a pointer-equality fast path.
 
@@ -1124,6 +1134,9 @@ def frameStepLookupB (prog : List Asm) (lookup : CertLookup) :
   | .dynJump,     _, S, _F, R => match S with
       | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
       | _ => false
+  -- Fused `GAS; call`: see `frameStep`'s `.gasCall` arm.
+  | .gasCall k,   c, S, F, R => decide (k.popArity ≤ S.length ∧
+      lookup c = some (FSlot.word :: S.drop k.popArity, F, R))
 
 /-- Intermediate step relation, proved equal to `frameStepLookupB` by
 `frameStepLookupFastB_eq_frameStepLookupB`. Nothing calls this at run time any
@@ -1197,6 +1210,9 @@ def frameStepLookupFastB (tgts : Std.HashMap Label (List Asm))
   | .dynJump,     _, S, _F, R => match S with
       | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
       | _ => false
+  -- Fused `GAS; call`: see `frameStep`'s `.gasCall` arm.
+  | .gasCall k,   c, S, F, R => decide (k.popArity ≤ S.length ∧
+      lookup c = some (FSlot.word :: S.drop k.popArity, F, R))
 
 
 
@@ -1267,6 +1283,9 @@ def frameStepLookupIdxB (tgts : Std.HashMap Label (List Asm))
   | .dynJump,     _, S, _F, R => match S with
       | .ret :: S' => decide (R = S' ∧ (∀ s ∈ S', s = FSlot.word))
       | _ => false
+  -- Fused `GAS; call`: see `frameStep`'s `.gasCall` arm.
+  | .gasCall k,   c, S, F, R => decide (k.popArity ≤ S.length ∧
+      lookupAt tbl kc c = some (FSlot.word :: S.drop k.popArity, F, R))
 
 
 
@@ -1448,6 +1467,8 @@ theorem frameStepLookupB_eq_frameStepB (prog : List Asm) (lookup : CertLookup)
   | dup | pop | swap | op | jumpi | dynJump =>
       simp only [frameStepLookupB, frameStepB]
       repeat' split <;> simp_all
+  | gasCall k =>
+      simp only [frameStepLookupB, frameStepB, CertLookup.eq_some_iff_fields]
 
 /-- Does an entry's stored position really *are* the program suffix at its claimed
 key? `n` is the program length, so the length-`key` suffix sits at index
@@ -1788,6 +1809,9 @@ def stepSuccs (tgts : Std.HashMap Label (List Asm × Nat)) (pls : Std.HashSet La
         match fl with
         | .ret :: S' => some ([], [], [], [(fe, S'.length)])
         | _ => some ([], [], [], [])
+    -- Fused `GAS; call`: consumes `k.popArity` args, pushes the result flag
+    -- (frame effect identical to a `.op` of arity `k.popArity → 1`).
+    | .gasCall k => some ([(kc, c, .word :: fl.drop k.popArity, rl, fe)], [], [], [])
 
 /-- Phase 1: explore every reachable position once, deduping by `position.length` in `vis`; collect
 call edges. Returns `none` on an unrepresentable instruction (rejected downstream). -/

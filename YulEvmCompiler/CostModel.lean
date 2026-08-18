@@ -126,6 +126,8 @@ def tier : Asm → Nat
   | .dynJump => 8
   -- lowers to a single `PUSH32` of the patched value, whatever it is
   | .pushImmutable _ => 3
+  -- lowers to `GAS` (a `W_base` 2) followed by the call opcode's tier
+  | .gasCall k => 2 + opTier k.target
 
 /-- Does this instruction end the frame? -/
 def halts : Asm → Bool
