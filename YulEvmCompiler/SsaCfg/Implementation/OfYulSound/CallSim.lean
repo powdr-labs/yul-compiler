@@ -95,11 +95,7 @@ theorem sim_callEntry {P : Prog} {funs cenv : YulSemantics.FunEnv yulD}
       obtain ⟨u7, s7, h7, -⟩ := M.bind_inv htrF
       exact absurd h7 (by simp [reject])
     rw [if_neg hgate] at htrF
-    obtain ⟨u7, s7, h7, htrF⟩ := M.bind_inv htrF
     obtain ⟨renvC, sY, h8, htail⟩ := M.bind_inv htrF
-    obtain ⟨hu7, hs7⟩ := M.pure_inv h7
-    subst u7
-    subst s7
     have htrBody : trStmt fenv'
         (decl.params.zip pids ++ decl.rets.zip rids) none (some decl.rets)
         (.block decl.body) sX = some (renvC, sY) := by
@@ -262,10 +258,6 @@ theorem sim_callEntry {P : Prog} {funs cenv : YulSemantics.FunEnv yulD}
       exact ⟨rfl, rfl, rfl, rfl, rfl⟩
     cases renvC with
     | none =>
-      obtain ⟨ua, sa, ha, htail⟩ := M.bind_inv htail
-      obtain ⟨hua, hsa⟩ := M.pure_inv ha
-      subst ua
-      subst sa
       obtain ⟨hgparams, hgnrets, hgentry, hgblocks, hsq⟩ := finish_inv sY htail
       have hcomplY : Completes g sY.fn :=
         ⟨fun _ _ _ _ hi => by rwa [hgblocks],

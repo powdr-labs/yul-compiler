@@ -171,10 +171,7 @@ theorem sim_ifTrue {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       ProtectedAt.forward hpG gbody
     cases bodyEnv with
     | none =>
-      obtain ⟨ua, sa, ha, htr⟩ := M.bind_inv htr
       obtain ⟨ub, sb, hb, hc'⟩ := M.bind_inv htr
-      obtain ⟨-, hsa⟩ := M.pure_inv ha
-      subst sa
       obtain ⟨hrenv, hs₁⟩ := M.pure_inv hc'
       subst sb
       have htail : SGrowsAt sA.fn.blocks.size sH s₁ :=
@@ -528,11 +525,8 @@ theorem sim_ifFalse {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         ∧ renv = some (env.setMany (modifiedX env [body]) joinParams) := by
       cases bodyEnv with
       | none =>
-        obtain ⟨ua, sa, ha, htr⟩ := M.bind_inv htr
         obtain ⟨ub, sb, hb, hc'⟩ := M.bind_inv htr
-        obtain ⟨-, hsa⟩ := M.pure_inv ha
         obtain ⟨hrenv, hs₁⟩ := M.pure_inv hc'
-        subst hsa
         subst hs₁
         refine ⟨SGrowsAt.trans (gbody.mono
           (Nat.le_trans aAE.size
@@ -695,9 +689,7 @@ theorem sim_ifHalt {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
     have gsuffix : SGrowsAt sA.fn.blocks.size sG s₁ := by
       cases bodyEnv with
       | none =>
-        obtain ⟨ua, sa, ha, htr⟩ := M.bind_inv htr
         obtain ⟨ub, sb, hb, hc'⟩ := M.bind_inv htr
-        obtain ⟨-, rfl⟩ := M.pure_inv ha
         obtain ⟨rfl, rfl⟩ := M.pure_inv hc'
         exact SGrowsAt.trans (gbody.mono aAG.size)
           (SGrowsAt.of_moveTo (N := sA.fn.blocks.size) (Or.inl hjoinBase) hb)

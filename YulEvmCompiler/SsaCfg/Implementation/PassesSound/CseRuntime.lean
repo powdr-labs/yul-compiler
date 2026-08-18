@@ -357,7 +357,8 @@ theorem cseInstrFold_defs_source (l : List Instr) (acc : List Instr)
       rw [List.foldl_cons] at hx
       rcases ih _ _ _ _ _ _ hx with hold | htail
       · rcases cseInstrStep_out (i := i) (acc := acc) (tab := tab)
-          (used := used) (σ := σ) with hs | hs
+          (used := used) (σ := σ) (defined := defined)
+          (blockDefs := blockDefs) with hs | hs
         · change x ∈ (cseInstrStep i
             ⟨acc, tab, used, σ, defined, blockDefs⟩).1.flatMap Instr.defs at hold
           rw [hs] at hold

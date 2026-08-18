@@ -105,18 +105,18 @@ def cseInstrStep (ins0 : Instr) (st : CSEInner) : CSEInner :=
   | ins =>
     ⟨ins :: st.1, st.2.1, used, st.2.2.2.1, defined, st.2.2.2.2.2⟩
 
-/-- The implementation keeps `definedSoFar` first because it is declared before
-the mutable instruction/table state.  The proof model keeps the historical
-four projections first and appends the two new guard accumulators. -/
+/-- The do-elaborator's loop state: the mutable variables in scope order —
+`σ`, `tab`, `instrs`, `definedSoFar`, `usedSoFar` — packed as a `Prod`.  The
+proof model keeps the historical four projections first and appends the two
+guard accumulators. -/
 abbrev CSEImplInner :=
-  MProd (Std.HashSet ValId)
-    (MProd (List Instr) (MProd CseTab (MProd (Std.HashSet ValId) Subst)))
+  Subst × CseTab × List Instr × Std.HashSet ValId × Std.HashSet ValId
 
 def cseImplToModel (blockDefs : Std.HashSet ValId) (st : CSEImplInner) : CSEInner :=
-  ⟨st.2.1, st.2.2.1, st.2.2.2.1, st.2.2.2.2, st.1, blockDefs⟩
+  ⟨st.2.2.1, st.2.1, st.2.2.2.2, st.1, st.2.2.2.1, blockDefs⟩
 
 def cseModelToImpl (st : CSEInner) : CSEImplInner :=
-  ⟨st.2.2.2.2.1, st.1, st.2.1, st.2.2.1, st.2.2.2.1⟩
+  (st.2.2.2.1, st.2.1, st.1, st.2.2.2.2.1, st.2.2.1)
 
 def cseImplInstrStep (blockDefs : Std.HashSet ValId) (ins : Instr)
     (st : CSEImplInner) : CSEImplInner :=
@@ -127,7 +127,7 @@ def cseImplInstrStep (blockDefs : Std.HashSet ValId) (ins : Instr)
     cseImplToModel blockDefs (cseImplInstrStep blockDefs ins st) =
       cseInstrStep ins (cseImplToModel blockDefs st) := by
   unfold cseImplInstrStep cseImplToModel cseModelToImpl cseInstrStep
-  cases hs : substInstr st.2.2.2.2 ins with
+  cases hs : substInstr st.1 ins with
   | const d v => simp only []; split <;> rfl
   | op ds yop args =>
       cases ds with
@@ -231,6 +231,25 @@ def cseBlockStep (f : Func) (srcs : Array (List BlockId))
   ⟨st.1.push { b with instrs := r.1.reverse },
     st.2.1.setIfInBounds bi r.2.1, r.2.2.2.1⟩
 
+/-- The block fold over the do-elaborator's (rotated) `Prod` state agrees with
+the `CSEOuter` fold, componentwise. -/
+theorem cseOuter_fold_prod (f : Func) (srcs : Array (List BlockId))
+    (l : List BlockId) (tabs : Array CseTab) (σ : Subst) (bs : Array Block) :
+    l.foldl (fun st bi =>
+        ((cseBlockStep f srcs bi ⟨st.2.2, st.1, st.2.1⟩).2.1,
+          (cseBlockStep f srcs bi ⟨st.2.2, st.1, st.2.1⟩).2.2,
+          (cseBlockStep f srcs bi ⟨st.2.2, st.1, st.2.1⟩).1)) (tabs, σ, bs) =
+      ((l.foldl (fun st bi => cseBlockStep f srcs bi st) ⟨bs, tabs, σ⟩).2.1,
+        (l.foldl (fun st bi => cseBlockStep f srcs bi st) ⟨bs, tabs, σ⟩).2.2,
+        (l.foldl (fun st bi => cseBlockStep f srcs bi st) ⟨bs, tabs, σ⟩).1) := by
+  induction l generalizing tabs σ bs with
+  | nil => rfl
+  | cons bi bis ih =>
+    rw [List.foldl_cons, List.foldl_cons]
+    exact ih (cseBlockStep f srcs bi ⟨bs, tabs, σ⟩).2.1
+      (cseBlockStep f srcs bi ⟨bs, tabs, σ⟩).2.2
+      (cseBlockStep f srcs bi ⟨bs, tabs, σ⟩).1
+
 theorem cse_eq (f : Func) :
     cse f =
       let srcs := inEdgeSources f
@@ -241,7 +260,11 @@ theorem cse_eq (f : Func) :
   unfold cse
   dsimp only
   simp only [Std.Legacy.Range.forIn_eq_forIn_range', Std.Legacy.Range.size]
-  rw [Id.forIn_eq_foldl (g := fun bi st => cseBlockStep f (inEdgeSources f) bi st)
+  rw [Id.forIn_eq_foldl
+    (g := fun bi (st : Array CseTab × Subst × Array Block) =>
+      ((cseBlockStep f (inEdgeSources f) bi ⟨st.2.2, st.1, st.2.1⟩).2.1,
+        (cseBlockStep f (inEdgeSources f) bi ⟨st.2.2, st.1, st.2.1⟩).2.2,
+        (cseBlockStep f (inEdgeSources f) bi ⟨st.2.2, st.1, st.2.1⟩).1))
     (h := by
       intro bi st
       dsimp only [cseBlockStep, cseEntryTab]
@@ -253,11 +276,11 @@ theorem cse_eq (f : Func) :
         (g := fun ins s => cseImplInstrStep bdefs ins s) (h := by
         intro i s
         dsimp only [bdefs, cseBlockDefs]
-        cases hs : substInstr s.2.2.2.2 i with
+        cases hs : substInstr s.1 i with
         | const d v =>
           simp only [cseImplInstrStep, cseImplToModel, cseModelToImpl,
             cseInstrStep, hs]
-          split <;> rename_i hfind <;> simp only [hfind] <;> rfl
+          split <;> rename_i hfind <;> simp only [hfind]
         | op ds yop args =>
           cases ds with
           | nil => simp [cseImplInstrStep, cseImplToModel, cseModelToImpl,
@@ -269,28 +292,29 @@ theorem cse_eq (f : Func) :
                 cseInstrStep, hs]
               split
               · split <;> rename_i hfind <;> simp only [hfind]
-                · split <;> rfl
-                · split <;> rfl
+                · split <;> simp [*]
+                · split <;> simp [*]
               · rfl
             | cons e es => simp [cseImplInstrStep, cseImplToModel,
                 cseModelToImpl, cseInstrStep, hs]
         | call ds fid args => simp [cseImplInstrStep, cseImplToModel,
             cseModelToImpl, cseInstrStep, hs])]
       have hc := cseImplFold_toModel bdefs f.blocks[bi]!.instrs
-        ⟨∅, [],
+        (st.2.1,
           if bi == f.entry then {}
           else match (inEdgeSources f)[bi]! with
             | [p] => if p < bi then
-                Passes.inheritTab st.2.1[p]! f.blocks[bi]!.params
+                Passes.inheritTab st.1[p]! f.blocks[bi]!.params
               else {}
             | _ => {},
-          ∅, st.2.2⟩
+          [], ∅, ∅)
       dsimp only [cseImplToModel] at hc
       have hbdefs : bdefs = cseBlockDefs f.blocks[bi]! := by
         simp [bdefs, cseBlockDefs]
       rw [← hbdefs]
       rw [← hc]
       rfl)]
+  rw [cseOuter_fold_prod]
   simp [Id.run, bind, pure]
 
 def csePrefix (f : Func) (n : Nat) : CSEOuter :=

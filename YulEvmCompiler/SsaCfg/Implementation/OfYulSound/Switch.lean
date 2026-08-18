@@ -446,16 +446,15 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         (newBlock_target_get h5)
       cases renv with
       | none =>
-        obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-        obtain ⟨ub, sb, hb, hc⟩ := M.bind_inv h
-        have gT1 : SGrows sb s₁ :=
-          trCases_grows fenv env lctx rets sv X joinId rest dflt sv X joinId sb u
+        obtain ⟨ua, sa, ha, hc⟩ := M.bind_inv h
+        have gT1 : SGrows sa s₁ :=
+          trCases_grows fenv env lctx rets sv X joinId rest dflt sv X joinId sa u
             s₁ hc
-        have aP : SGrowsAt nextId s8 sa :=
-          (gbody.mono hnextLe8).trans (SGrowsAt.of_pure ha)
-        have aPT : SGrowsAt nextId sa sb :=
-          SGrowsAt.of_moveTo (Or.inl (Nat.le_refl _)) hb
-        have hnextLtT : nextId < sb.fn.blocks.size :=
+        have aP : SGrowsAt nextId s8 s9 :=
+          gbody.mono hnextLe8
+        have aPT : SGrowsAt nextId s9 sa :=
+          SGrowsAt.of_moveTo (Or.inl (Nat.le_refl _)) ha
+        have hnextLtT : nextId < sa.fn.blocks.size :=
           Nat.lt_of_lt_of_le (Nat.lt_of_lt_of_le hnextLt8 aP.size) aPT.size
         have a81 : SGrowsAt nextId s8 s₁ :=
           (aP.trans aPT).trans (gT1.mono (Nat.le_of_lt hnextLtT))
@@ -464,18 +463,11 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
         have hbranch : CurOK f s6.fn
             ⟨[], .branch e ⟨caseId, []⟩ ⟨nextId, []⟩⟩ :=
           curOK_of_sealCur hfin7 h7
-        have hcomplb : Completes f sb.fn joins := SGrowsAt.completes_of gT1 hcompl
-        have hcompla : Completes f sa.fn (nextId :: joins) :=
-          Completes.of_moveTo_protected (by simp) hb (hcomplb.protect nextId)
+        have hcomplb : Completes f sa.fn joins := SGrowsAt.completes_of gT1 hcompl
         have hcompl9 : Completes f s9.fn (nextId :: joins) :=
-          SGrowsAt.completes_of (SGrowsAt.of_pure ha) hcompla
-        have hcura : sa.fn.curId = s9.fn.curId := by
-          obtain ⟨-, rfl⟩ := M.pure_inv ha; rfl
-        have hfina : CurFinal f sa.fn :=
-          curFinal_of_move_grows hb (by rw [hcura]; exact hne9next)
-            (by rw [hcura]; exact hprot9) gT1 hcompl
-        have hfin9 : CurFinal f s9.fn := by
-          obtain ⟨-, hq⟩ := M.pure_inv ha; rw [← hq]; exact hfina
+          Completes.of_moveTo_protected (by simp) ha (hcomplb.protect nextId)
+        have hfin9 : CurFinal f s9.fn :=
+          curFinal_of_move_grows ha hne9next hprot9 gT1 hcompl
         have hcur9nil : s9.fn.cur = [] :=
           trScope_none_cur_nil fenv env lctx rets cbody s8 s9 h9
         have hcp9 : CurPlaced f s9.fn :=
@@ -484,14 +476,13 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           simS_branchTrue_body hcompl9 hbranch hE1 (by decide) hbb hbp hid8 hcur8
         have hsimPre : SimS (model := model) P f s₀.fn R st1 s8.fn R4 st1 :=
           hsim4.trans (hsim46.trans hsimTrue)
-        have p9a : FPrefix s9.funcs.size s9 sa := FPrefix.of_pure ha
-        have p9b : FPrefix s9.funcs.size sa sb := FPrefix.of_moveTo hb
-        have p9rest : FPrefix s9.funcs.size sb s₁ :=
+        have p9a : FPrefix s9.funcs.size s9 sa := FPrefix.of_moveTo ha
+        have p9rest : FPrefix s9.funcs.size sa s₁ :=
           trCases_fprefix fenv env lctx rets sv X joinId rest dflt
-            sv X joinId s9.funcs.size sb u s₁
-              ((p9a.trans p9b).size (Nat.le_refl _)) hc
+            sv X joinId s9.funcs.size sa u s₁
+              (p9a.size (Nat.le_refl _)) hc
         have hown9 : FOwned owned s9 done :=
-          FOwned.back_fprefix ((p9a.trans p9b).trans p9rest) hbound9 hown
+          FOwned.back_fprefix (p9a.trans p9rest) hbound9 hown
         have hout := ihs fenv env R4 lctx rets s8 s9 none (nextId :: joins) hfe
           (henv.mono hle4) huniq hctx hfr8 hvalid8 hp8 hcompl9 hcp9
           (fun _ => hfin9)
@@ -499,8 +490,7 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           (fun i hi => Nat.lt_of_lt_of_le (hbound i hi) a08.funcsSize)
           hown9 h9'
         have a91 : SGrowsAt 0 s9 s₁ :=
-          ((SGrowsAt.of_pure (N := 0) ha).trans
-            (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) hb)).trans
+          (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) ha).trans
             (gT1.mono (Nat.zero_le _))
         cases o with
         | normal =>
@@ -658,10 +648,8 @@ theorem trCases_sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
           (hsim4.trans (hsim46.trans hsimBr)) hres
       cases renv with
       | none =>
-        obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-        obtain ⟨ub, sb, hb, hc⟩ := M.bind_inv h
-        exact hkey sa sb ub ((gbody.mono hnextLe8).trans (SGrowsAt.of_pure ha))
-          hb hc
+        obtain ⟨ua, sa, ha, hc⟩ := M.bind_inv h
+        exact hkey s9 sa ua (gbody.mono hnextLe8) ha hc
       | some envB =>
         obtain ⟨xv, sa, ha, h⟩ := M.bind_inv h
         obtain ⟨ub, sb, hb, h⟩ := M.bind_inv h

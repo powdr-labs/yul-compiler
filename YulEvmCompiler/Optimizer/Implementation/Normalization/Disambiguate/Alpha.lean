@@ -510,9 +510,14 @@ theorem funNames_eq_funDefNames : ∀ ss : List (Stmt Op),
     funNames ss = NormalForm.funDefNames ss
   | [] => rfl
   | s :: rest => by
-      cases s <;>
-        simp [funNames, NormalForm.funDefNames, NormalForm.funDefName?,
-          funNames_eq_funDefNames rest]
+      cases s with
+      | funDef fn params rets body =>
+          change fn :: funNames rest = fn :: NormalForm.funDefNames rest
+          exact congrArg (List.cons fn) (funNames_eq_funDefNames rest)
+      | block | letDecl | assign | cond | switch | forLoop | exprStmt |
+          «break» | «continue» | leave =>
+          change funNames rest = NormalForm.funDefNames rest
+          exact funNames_eq_funDefNames rest
 
 set_option maxHeartbeats 1600000 in
 mutual

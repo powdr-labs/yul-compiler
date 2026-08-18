@@ -5410,6 +5410,7 @@ mutual
         addCasesMentionPositions_getD, addOptExprMentionPositions_getD,
         addOptBlockMentionPositions_getD, addNamesMentionPositions_getD] <;>
       repeat' split <;> simp_all
+    all_goals grind
 
   theorem addStmtsMentionPositions_getD (position : Nat)
       (seen : StackV2.MentionPositions) (x : Ident) : ∀ body : Block Op,

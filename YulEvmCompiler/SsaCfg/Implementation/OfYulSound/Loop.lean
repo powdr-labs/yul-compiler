@@ -146,16 +146,10 @@ theorem loopTail_drop_inv {fenv : FMap} {env envI : VMap}
         ((envI.setMany (modifiedX envI [post, body]) exitParams).length - env.length)) := by
   cases bodyEnv with
   | none =>
-      obtain ⟨uP, sP, h16, h⟩ := M.bind_inv h
-      obtain ⟨-, hsP⟩ := M.pure_inv h16
-      subst sP
       obtain ⟨uQ, sQ, h17, h⟩ := M.bind_inv h
       obtain ⟨postEnv, sR, h18, h⟩ := M.bind_inv h
       cases postEnv with
       | none =>
-          obtain ⟨uS, sS, h19, h⟩ := M.bind_inv h
-          obtain ⟨-, hsS⟩ := M.pure_inv h19
-          subst sS
           obtain ⟨uT, sT, h20, h⟩ := M.bind_inv h
           obtain ⟨hrenv, hs₁⟩ := M.pure_inv h
           subst s₁
@@ -180,9 +174,6 @@ theorem loopTail_drop_inv {fenv : FMap} {env envI : VMap}
       obtain ⟨postEnv, sS, h19, h⟩ := M.bind_inv h
       cases postEnv with
       | none =>
-          obtain ⟨uT, sT, h20, h⟩ := M.bind_inv h
-          obtain ⟨-, hsT⟩ := M.pure_inv h20
-          subst sT
           obtain ⟨uU, sU, h21, h⟩ := M.bind_inv h
           obtain ⟨hrenv, hs₁⟩ := M.pure_inv h
           subst s₁
@@ -287,8 +278,6 @@ theorem LoopLayout.tail_fprefix {fenv : FMap} {env : VMap}
       | none =>
           obtain ⟨uR, sR, h18, htail⟩ := M.bind_inv htail
           obtain ⟨-, rfl⟩ := M.pure_inv h18
-          obtain ⟨uT, sT, h19, htail⟩ := M.bind_inv htail
-          obtain ⟨-, rfl⟩ := M.pure_inv h19
           obtain ⟨-, rfl⟩ := M.pure_inv htail
           exact pOQ
       | some envP =>
@@ -314,8 +303,6 @@ theorem LoopLayout.tail_fprefix {fenv : FMap} {env : VMap}
       | none =>
           obtain ⟨uT, sT, h20, htail⟩ := M.bind_inv htail
           obtain ⟨-, rfl⟩ := M.pure_inv h20
-          obtain ⟨uU, sU, h21, htail⟩ := M.bind_inv htail
-          obtain ⟨-, rfl⟩ := M.pure_inv h21
           obtain ⟨-, rfl⟩ := M.pure_inv htail
           exact pOS
       | some envP =>
@@ -436,9 +423,8 @@ theorem LoopLayout.header_tail_sgrows {fenv : FMap} {env : VMap}
       cases postEnv with
       | none =>
           obtain ⟨uR, sR, h18, htail⟩ := M.bind_inv htail
-          obtain ⟨uT, sT, h19, htail⟩ := M.bind_inv htail
-          exact ((aIQ.trans (SGrowsAt.of_pure h18)).trans
-            (SGrowsAt.of_moveTo (Or.inl hexit) h19)).trans
+          exact (aIQ.trans
+            (SGrowsAt.of_moveTo (Or.inl hexit) h18)).trans
               (SGrowsAt.of_pure htail)
       | some envP =>
           obtain ⟨xvP, sR, h18, htail⟩ := M.bind_inv htail
@@ -463,9 +449,8 @@ theorem LoopLayout.header_tail_sgrows {fenv : FMap} {env : VMap}
       cases postEnv with
       | none =>
           obtain ⟨uT, sT, h20, htail⟩ := M.bind_inv htail
-          obtain ⟨uU, sU, h21, htail⟩ := M.bind_inv htail
-          exact ((aIS.trans (SGrowsAt.of_pure h20)).trans
-            (SGrowsAt.of_moveTo (Or.inl hexit) h21)).trans
+          exact (aIS.trans
+            (SGrowsAt.of_moveTo (Or.inl hexit) h20)).trans
               (SGrowsAt.of_pure htail)
       | some envP =>
           obtain ⟨xvP, sT, h20, htail⟩ := M.bind_inv htail
@@ -565,10 +550,8 @@ theorem loopPostTail_fprefix {envP : Option VMap} {X : List Ident}
   cases envP with
   | none =>
       obtain ⟨u, s1, h1, h2⟩ := M.bind_inv h
-      obtain ⟨-, rfl⟩ := M.pure_inv h1
-      obtain ⟨u', s2, h2, h3⟩ := M.bind_inv h2
-      obtain ⟨-, rfl⟩ := M.pure_inv h3
-      exact FPrefix.of_moveTo h2
+      obtain ⟨-, rfl⟩ := M.pure_inv h2
+      exact FPrefix.of_moveTo h1
   | some envP' =>
       obtain ⟨xv, s1, h1, h⟩ := M.bind_inv h
       obtain ⟨u, s2, h2, h⟩ := M.bind_inv h

@@ -1444,6 +1444,7 @@ theorem frameStepLookupB_eq_frameStepB (prog : List Asm) (lookup : CertLookup)
               | nil => simp [CertLookup.toCert, ht]
               | cons head c' =>
                   cases head <;> simp [CertLookup.toCert, ht]
+                  all_goals grind [Bool.decide_and]
   | dup | pop | swap | op | jumpi | dynJump =>
       simp only [frameStepLookupB, frameStepB]
       repeat' split <;> simp_all
