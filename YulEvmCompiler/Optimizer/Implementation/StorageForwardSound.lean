@@ -18,7 +18,7 @@ open YulSemantics
 open YulSemantics.EVM
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 def StorageVal.denote (V : VEnv D) : StorageVal → Option U256
   | .lit n => some (litValue (.number n))

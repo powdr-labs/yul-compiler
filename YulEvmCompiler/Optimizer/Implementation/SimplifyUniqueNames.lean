@@ -169,7 +169,7 @@ variable {calls : ExternalCalls} {creates : ExternalCreates}
 never introduces a declared name (`declaredNamesStmts_simplifyStmts_sublist`), the
 output's declared-name list is a sublist of the input's, so `Nodup` transports. -/
 theorem simplify_preserves_uniqueNames :
-    Optimizer.Preserves (D := evmWithExternal calls creates)
+    Optimizer.Preserves (D := evmWithExternal calls creates .any)
       NormalForm.UniqueNames (simplify (calls := calls) (creates := creates)).run :=
   fun b hb => (declaredNamesStmts_simplifyStmts_sublist b).nodup hb
 

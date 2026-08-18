@@ -190,7 +190,7 @@ big-step judgment avoids a second, manually mirrored semantics. -/
   litValue := litValue
   litWF := litWF
   Builtin := fun op args st result =>
-    builtinWithExternal calls creates op args st result ∧
+    builtinWithExternal calls creates .any op args st result ∧
       OpMemorySafe base reserved op args
   effects := effects
 

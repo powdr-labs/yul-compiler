@@ -513,7 +513,7 @@ toolchain. -/
 /-- info:
 SPEC CLOSURE — audited this-repo surface (90 decls)
   struct YulEvmCompiler.CallsRealized 60cec34bf4c3cac9
-  struct YulEvmCompiler.CreatesRealized d608d1effb3509d1
+  struct YulEvmCompiler.CreatesRealized cb44fa308aa28243
   struct YulEvmCompiler.EnvMatch 9cea97fa8ae94f99
   struct YulEvmCompiler.ExternalCodeMatch 2d46717e52ff1871
   struct YulEvmCompiler.ExternalModel 75bd1eadd7f209e2
@@ -530,9 +530,9 @@ SPEC CLOSURE — audited this-repo surface (90 decls)
   relation YulEvmCompiler.LogsMatch 6d1d2dd35bc25e39
   relation YulEvmCompiler.MemMatch e48211ef54b0d862
   struct YulEvmCompiler.Optimizer.LocalPass 6b8887154f59257c
-  statement YulEvmCompiler.Optimizer.LocalPass.optimize_then_compile_correct d0b206bd07992491
+  statement YulEvmCompiler.Optimizer.LocalPass.optimize_then_compile_correct ce2ede250076a364
   relation YulEvmCompiler.Optimizer.Sound d9d7947b1bb2287
-  relation YulEvmCompiler.RunResolvedObject 22471129a83f65e3
+  relation YulEvmCompiler.RunResolvedObject cfe34db617b17185
   relation YulEvmCompiler.SelfdestructEntryMatch 3b1f6c17c9cc3b3f
   relation YulEvmCompiler.SelfdestructsMatch 8fb6a9b19498848
   struct YulEvmCompiler.StateMatch 79c6c401a5fb18ee
@@ -542,10 +542,10 @@ SPEC CLOSURE — audited this-repo surface (90 decls)
   artifact YulEvmCompiler.compile 8db82c40ac47d5a6
   artifact YulEvmCompiler.compileObject 45cacb379f48e375
   statement YulEvmCompiler.compileObject_consistent 6772c506631c72d
-  statement YulEvmCompiler.compileObject_correct 6c28d636cabfed71
-  statement YulEvmCompiler.compile_correct 5da903b63e70655d
-  statement YulEvmCompiler.compile_correct_eval 44f9f79182ec7eda
-  statement YulEvmCompiler.compile_correct_withPayload 7fe10d0f9ce8438a
+  statement YulEvmCompiler.compileObject_correct 50dfc92d2391f347
+  statement YulEvmCompiler.compile_correct a644e1d096214b1f
+  statement YulEvmCompiler.compile_correct_eval a55d21753450fde8
+  statement YulEvmCompiler.compile_correct_withPayload 84c35158d70f1272
   statement YulEvmCompiler.compiled_constructor_returns 9a99d76f5d037853
   datadef YulEvmCompiler.conv 25e701af8a9ce7bb
   datadef YulEvmCompiler.mkCode edacb826e56f9571
@@ -602,7 +602,7 @@ SPEC CLOSURE — audited this-repo surface (90 decls)
   datadef YulParser.printSubsC 88f936b77e898d85
   datadef YulParser.quotedBody 5e9244808f044035
   datadef YulParser.scanQuoted ad86fca43b5d2cb6
-external boundary: 155 decls, combined hash 96f33bf543214a6d
+external boundary: 156 decls, combined hash a9e6df71f7a8a501
 -/
 #guard_msgs in
 open SpecClosure in

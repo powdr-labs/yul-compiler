@@ -27,7 +27,7 @@ variable {base reserved : Nat}
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
 local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ## Lookup and exact frame selection -/
 
@@ -566,7 +566,7 @@ private theorem callEnv_keys {params returns : List Ident}
       rw [ih]
 
 private theorem target_zero :
-    Dialect.zero (evmWithExternal calls creates) = (0 : U256) := by
+    Dialect.zero (evmWithExternal calls creates .any) = (0 : U256) := by
   change litValue (.number 0) = (0 : U256)
   decide
 

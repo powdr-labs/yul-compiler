@@ -382,7 +382,7 @@ structure CreatesRealized (external : YulSemantics.EVM.ExternalCreates) : Prop w
       (hop : opTable yop = some o) {args rets : List U256}
       {yst yst' : EvmState}
       (hsource : YulSemantics.EVM.builtinWithExternal
-        YulSemantics.EVM.ExternalCalls.none external yop args yst (.ok rets yst')) :
+        YulSemantics.EVM.ExternalCalls.none external .any yop args yst (.ok rets yst')) :
       ∃ bnd : Nat, ∀ {code : ByteArray} {s : State} {σ : List UInt256},
         FrameOK code s → StateMatch yst s →
         s.decodedOp = some o → s.stack = args.map conv ++ σ →
@@ -399,7 +399,7 @@ theorem CreatesRealized.complete_allows_initcode_reentrancy
     {yop : Op} (hcreate : IsCreateOp yop) {o : Operation}
     (hop : opTable yop = some o) {args rets : List U256} {yst yst' : EvmState}
     (hsource : YulSemantics.EVM.builtinWithExternal
-      YulSemantics.EVM.ExternalCalls.none external yop args yst (.ok rets yst')) :
+      YulSemantics.EVM.ExternalCalls.none external .any yop args yst (.ok rets yst')) :
     ∃ bnd : Nat, ∀ {code : ByteArray} {s : State} {σ : List UInt256},
       FrameOK code s → StateMatch yst s →
       s.decodedOp = some o → s.stack = args.map conv ++ σ →

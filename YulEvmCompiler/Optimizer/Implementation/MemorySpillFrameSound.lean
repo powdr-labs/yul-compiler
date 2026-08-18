@@ -23,7 +23,7 @@ variable {base reserved : Nat}
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
 local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-- Concrete target state after copying the selected parameters in order. -/
 def afterInitParams (slots : SlotMap) (owner : Owner) (target : WordEnv) :

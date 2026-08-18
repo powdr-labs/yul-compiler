@@ -38,7 +38,7 @@ variable {base reserved : Nat}
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
 local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-- Executed code corresponding to policy code in direct and object modes. -/
 def execCode : OriginMode → Code Op → Code Op

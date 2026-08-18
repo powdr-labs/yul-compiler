@@ -119,7 +119,7 @@ theorem builtinWithExternal_iff_stepOp_of_not_external
     {op : Op} (hlocal : ¬ IsExternalOp op) {args : List YulSemantics.EVM.U256}
     {st : YulSemantics.EVM.EvmState}
     {r : YulSemantics.BuiltinResult YulSemantics.EVM.U256 YulSemantics.EVM.EvmState} :
-    YulSemantics.EVM.builtinWithExternal calls creates op args st r ↔
+    YulSemantics.EVM.builtinWithExternal calls creates .any op args st r ↔
       YulSemantics.EVM.stepOp op args st = some r := by
   cases op <;> simp_all [IsExternalOp, IsCallOp, IsCreateOp,
     YulSemantics.EVM.builtinWithExternal]
@@ -131,7 +131,7 @@ theorem builtinWithExternal_iff_builtin_of_call
     {op : Op} (hcall : IsCallOp op) {args : List YulSemantics.EVM.U256}
     {st : YulSemantics.EVM.EvmState}
     {r : YulSemantics.BuiltinResult YulSemantics.EVM.U256 YulSemantics.EVM.EvmState} :
-    YulSemantics.EVM.builtinWithExternal calls creates op args st r ↔
+    YulSemantics.EVM.builtinWithExternal calls creates .any op args st r ↔
       YulSemantics.EVM.builtin calls op args st r := by
   cases op <;> simp_all [IsCallOp, YulSemantics.EVM.builtin,
     YulSemantics.EVM.builtinWithExternal]
@@ -143,9 +143,9 @@ theorem builtinWithExternal_iff_createOnly_of_create
     {op : Op} (hcreate : IsCreateOp op) {args : List YulSemantics.EVM.U256}
     {st : YulSemantics.EVM.EvmState}
     {r : YulSemantics.BuiltinResult YulSemantics.EVM.U256 YulSemantics.EVM.EvmState} :
-    YulSemantics.EVM.builtinWithExternal calls creates op args st r ↔
+    YulSemantics.EVM.builtinWithExternal calls creates .any op args st r ↔
       YulSemantics.EVM.builtinWithExternal YulSemantics.EVM.ExternalCalls.none
-        creates op args st r := by
+        creates .any op args st r := by
   cases op <;> simp_all [IsCreateOp, YulSemantics.EVM.builtinWithExternal]
 
 /-- Away from calls, creations, and `gas()`, the compatibility call-only
@@ -169,7 +169,7 @@ theorem builtinWithExternal_halt_iff_stepOp_of_not_external
     {creates : YulSemantics.EVM.ExternalCreates}
     {op : Op} (hlocal : ¬ IsExternalOp op) {args : List YulSemantics.EVM.U256}
     {st st' : YulSemantics.EVM.EvmState} :
-    YulSemantics.EVM.builtinWithExternal calls creates op args st (.halt st') ↔
+    YulSemantics.EVM.builtinWithExternal calls creates .any op args st (.halt st') ↔
       YulSemantics.EVM.stepOp op args st = some (.halt st') := by
   exact builtinWithExternal_iff_stepOp_of_not_external hlocal
 
@@ -182,7 +182,7 @@ theorem builtinWithExternal_halt_external_imp_static
     {op : Op} (hexternal : IsExternalOp op)
     {args : List YulSemantics.EVM.U256}
     {st st' : YulSemantics.EVM.EvmState}
-    (hhalt : YulSemantics.EVM.builtinWithExternal calls creates op args st (.halt st')) :
+    (hhalt : YulSemantics.EVM.builtinWithExternal calls creates .any op args st (.halt st')) :
     st.env.static = true := by
   cases op <;>
     simp_all [IsExternalOp, IsCallOp, IsCreateOp,

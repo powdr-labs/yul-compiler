@@ -18,7 +18,7 @@ open YulSemantics.EVM (U256 EvmState Op builtinWithExternal evmWithExternal)
 
 section Semantics
 variable [model : ExternalModel]
-local notation "yulD" => evmWithExternal model.calls model.creates
+local notation "yulD" => evmWithExternal model.calls model.creates YulSemantics.EVM.ExternalGas.any
 
 /-! ## The simulation motive
 

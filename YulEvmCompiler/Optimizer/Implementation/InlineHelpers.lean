@@ -53,7 +53,7 @@ open YulEvmCompiler.Optimizer.Core (Ctx Term Value Var Args PureOp ingest ingest
   isValueExpr valueEval valuesEval)
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ## Classification -/
 
@@ -1972,7 +1972,7 @@ theorem Step.inlineHelpers_reverse {litOK : Bool} {funsT : FunEnv D} {V st codeT
                 (.expr (.call fn args0))
                 (.eres (.vals
                   (sdecl.rets.map (fun r => (VEnv.get Vend r).getD
-                    (evmWithExternal calls creates).zero)) st2)) :=
+                    (evmWithExternal calls creates .any).zero)) st2)) :=
               Step.callOk hargs0
                 (lookupFun_append_of_some (outer := outer) hs)
                 (by simpa [inlineHelpersDecl] using hlen) hb0 hout

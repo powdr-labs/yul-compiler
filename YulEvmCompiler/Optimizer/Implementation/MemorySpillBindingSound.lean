@@ -22,7 +22,7 @@ variable {base reserved : Nat}
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
 local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 theorem coupledGroup_dichotomy {raw : Block Op} {result : Result}
     {guards : List Nat} (hfacts : SpillFacts raw result guards)

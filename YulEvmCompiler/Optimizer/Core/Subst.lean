@@ -33,7 +33,7 @@ open YulSemantics
 open YulSemantics.EVM
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ## Syntax: variables read by a term, substitution, string-freeness -/
 
@@ -126,7 +126,7 @@ theorem isVarExpr_value {e : Expr Op} (h : isVarExpr e = true) :
 environment alone. -/
 def valueEval (V : VEnv D) : Expr Op → Option U256
   | .var x => VEnv.get V x
-  | .lit literal => some ((evmWithExternal calls creates).litValue literal)
+  | .lit literal => some ((evmWithExternal calls creates .any).litValue literal)
   | _ => none
 
 /-- Reflection of `Step` on a value-shaped expression into `valueEval`: the

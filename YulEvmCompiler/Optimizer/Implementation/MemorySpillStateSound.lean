@@ -888,7 +888,7 @@ def OrdinaryLocal : Op → Prop
 theorem builtinWithExternal_local_iff {calls : ExternalCalls}
     {creates : ExternalCreates} {op : Op} {args : List U256} {st : EvmState}
     {result : BuiltinResult U256 EvmState} (hlocal : OrdinaryLocal op) :
-    builtinWithExternal calls creates op args st result ↔
+    builtinWithExternal calls creates .any op args st result ↔
       stepOp op args st = some result := by
   cases op <;> simp_all [OrdinaryLocal, builtinWithExternal]
 
@@ -934,8 +934,8 @@ theorem guarded_builtin_transport {calls : ExternalCalls}
       rcases args with _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, _ | ⟨e, _ | ⟨f, _ | ⟨g, rest⟩⟩⟩⟩⟩⟩⟩ <;>
       simp_all [OrdinaryLocal, builtinWithExternal, OpMemorySafe]
     case neg.gas.nil =>
-      rcases hbuiltin with ⟨gas, rfl⟩
-      exact ⟨gas, ResultRel.ok_refl_values hrel⟩
+      rcases hbuiltin with ⟨gas, -, rfl⟩
+      exact ⟨gas, trivial, ResultRel.ok_refl_values hrel⟩
     case neg.call.cons.cons.cons.cons.cons.cons.cons =>
       cases rest <;> simp_all
       have hstatic : left.env.static = right.env.static :=
@@ -1016,7 +1016,7 @@ theorem guarded_builtin_reserved {calls : ExternalCalls}
       rcases args with _ | ⟨a, _ | ⟨b, _ | ⟨c, _ | ⟨d, _ | ⟨e, _ | ⟨f, _ | ⟨g, rest⟩⟩⟩⟩⟩⟩⟩ <;>
       simp_all [OrdinaryLocal, builtinWithExternal, OpMemorySafe]
     case neg.gas.nil =>
-      rcases hbuiltin with ⟨gas, rfl⟩
+      rcases hbuiltin with ⟨gas, -, rfl⟩
       exact ReservedUnchanged.refl base reserved st
     case neg.call.cons.cons.cons.cons.cons.cons.cons =>
       cases rest <;> simp_all

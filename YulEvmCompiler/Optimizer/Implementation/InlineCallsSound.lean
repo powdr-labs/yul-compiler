@@ -38,7 +38,7 @@ open YulSemantics.EVM
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### Environment splitting lemmas
 
@@ -188,7 +188,7 @@ theorem scoped_selectSwitch {bound : List Ident} {cv : U256}
       rcases hd' with ⟨l, b⟩
       unfold scopedCases at hc
       rw [Bool.and_eq_true] at hc
-      by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+      by_cases hcv : cv = (evmWithExternal calls creates .any).litValue l
       · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
         exact hc.1
       · rw [selectSwitch, List.find?_cons_of_neg (by simp [hcv])]
@@ -769,12 +769,12 @@ theorem VEnv.setMany_bindZeros {xs : List Ident} (hnd : xs.Nodup)
           have hx : x ∉ rest := (List.nodup_cons.mp hnd).1
           have hnd' : rest.Nodup := (List.nodup_cons.mp hnd).2
           show VEnv.setMany
-              ((x, (evmWithExternal calls creates).zero) :: (bindZeros D rest ++ V))
+              ((x, (evmWithExternal calls creates .any).zero) :: (bindZeros D rest ++ V))
               (x :: rest) (v :: vrest) = (x, v) :: rest.zip vrest ++ V
           unfold VEnv.setMany
           simp only [List.zip_cons_cons, List.foldl_cons]
           rw [show VEnv.set
-              ((x, (evmWithExternal calls creates).zero) :: (bindZeros D rest ++ V)) x v =
+              ((x, (evmWithExternal calls creates .any).zero) :: (bindZeros D rest ++ V)) x v =
             (x, v) :: (bindZeros D rest ++ V) by simp [VEnv.set]]
           have := VEnv.setMany_cons_not_mem (calls := calls) (creates := creates)
             (x := x) (v := v) (R := bindZeros D rest ++ V) hx vrest
@@ -968,7 +968,7 @@ theorem assigns_fwd {A' : VEnv D} :
       Step D funs (A' ++ Wb) st
         (.stmts ((xs.zip rs).map (fun xr => .assign [xr.1] (.var xr.2))))
         (.sres (A' ++ VEnv.setMany Wb xs (rs.map
-          (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)))
+          (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates .any).zero)))
           st .normal) := by
   intro xs
   induction xs with
@@ -1002,9 +1002,9 @@ theorem assigns_fwd {A' : VEnv D} :
             (fun x' hx' => hx x' (List.mem_cons_of_mem _ hx'))
             (by simpa using hlen) funs (VEnv.set Wb x v) st
           have hmany : VEnv.setMany Wb (x :: xs') ((r :: rs').map
-              (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) =
+              (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates .any).zero)) =
               VEnv.setMany (VEnv.set Wb x v) xs' (rs'.map
-                (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) := by
+                (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates .any).zero)) := by
             rw [List.map_cons, hv]
             rfl
           rw [hmany]
@@ -1136,7 +1136,7 @@ theorem inlineCore_fwd_normal {d : IDecl} {xs : List Ident} {as : List (Expr Op)
     (funs₂ : FunEnv D) :
     Step D funs₂ (Z ++ V) st (.stmt (inlineCore d xs as))
       (.sres (VEnv.setMany (Z ++ V) xs (d.rs.map
-        (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)))
+        (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates .any).zero)))
         st2 .normal) := by
   have hvlen : argvals.length = as.length := args_length hargs
   have hpslen : d.ps.length ≤ argvals.length := by omega
@@ -1226,22 +1226,22 @@ theorem inlineCore_fwd_normal {d : IDecl} {xs : List Ident} {as : List (Expr Op)
   have c4 : Step D funs' (Z ++ V) st
       (.stmts ((([Stmt.letDecl d.rs none] ++ argLets) ++ [Stmt.block d.ss]) ++ assignsL))
       (.sres (A'' ++ VEnv.setMany (Z ++ V) xs (d.rs.map
-        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero)))
+        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates .any).zero)))
         st2 .normal) :=
     stmts_append_normal c3 s4
   have hchain : Step D (hoist D ([Stmt.letDecl d.rs none] ++ argLets
       ++ [Stmt.block d.ss] ++ assignsL) :: funs₂) (Z ++ V) st
       (.stmts ([Stmt.letDecl d.rs none] ++ argLets ++ [Stmt.block d.ss] ++ assignsL))
       (.sres (A'' ++ VEnv.setMany (Z ++ V) xs (d.rs.map
-        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero)))
+        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates .any).zero)))
         st2 .normal) := by
     rw [hfuns'] at c4
     exact c4
   have hfinal := Step.block (funs := funs₂) hchain
   have hlast : restore (Z ++ V) (A'' ++ VEnv.setMany (Z ++ V) xs (d.rs.map
-      (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero))) =
+      (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates .any).zero))) =
       VEnv.setMany (Z ++ V) xs (d.rs.map
-        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates).zero)) :=
+        (fun r => (VEnv.get A'' r).getD (evmWithExternal calls creates .any).zero)) :=
     restore_exact (VEnv.setMany_length _ _ _)
   rw [hlast] at hfinal
   rw [hVend']
@@ -1516,7 +1516,7 @@ theorem assigns_bwd {A' : VEnv D} :
       (∀ x ∈ xs, x ∉ A'.map Prod.fst) →
       xs.length = rs.length →
       Vr = A' ++ VEnv.setMany Wb xs (rs.map
-        (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) ∧
+        (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates .any).zero)) ∧
       str = st ∧ o = .normal := by
   intro xs
   induction xs with
@@ -1539,9 +1539,9 @@ theorem assigns_bwd {A' : VEnv D} :
             obtain ⟨p, hp⟩ := Option.isSome_iff_exists.mp this
             exact ⟨p.2, by unfold VEnv.get; rw [hp]; rfl⟩
           have hmany : VEnv.setMany Wb (x :: xs') ((r :: rs').map
-              (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) =
+              (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates .any).zero)) =
               VEnv.setMany (VEnv.set Wb x v) xs' (rs'.map
-                (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates).zero)) := by
+                (fun r => (VEnv.get A' r).getD (evmWithExternal calls creates .any).zero)) := by
             rw [List.map_cons, hv]
             rfl
           cases h with
@@ -1592,7 +1592,7 @@ theorem inlineCore_bwd {d : IDecl} {xs : List Ident} {as : List (Expr Op)}
       Step D cenv (d.ps.zip argvals ++ bindZeros D d.rs) st1
         (.stmt (.block d.ss)) (.sres Vend str .normal) ∧
       Vr = VEnv.setMany (Z ++ V) xs (d.rs.map
-        (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)) ∧
+        (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates .any).zero)) ∧
       o = .normal) ∨
     (∃ argvals st1 Vend,
       Step D funs₁ V st (.args as) (.eres (.vals argvals st1)) ∧
@@ -2492,7 +2492,7 @@ theorem IcRel.selectRel {Δ : DEnv} {cases cases' : List (Literal × Block Op)}
       rcases head with ⟨l, b⟩
       cases hcs with
       | casesCons hb hrest =>
-          by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+          by_cases hcv : cv = (evmWithExternal calls creates .any).litValue l
           · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv]),
                 selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
             exact .blockS hb
@@ -2854,9 +2854,9 @@ theorem ic_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
                     hxout hlen_xs ha hbody' hZvars funs₂
                   have hsm : VEnv.setMany (bindZeros D xs ++ V) xs
                       (d.rs.map (fun r => (VEnv.get Vend r).getD
-                        (evmWithExternal calls creates).zero)) =
+                        (evmWithExternal calls creates .any).zero)) =
                       xs.zip (d.rs.map (fun r => (VEnv.get Vend r).getD
-                        (evmWithExternal calls creates).zero)) ++ V :=
+                        (evmWithExternal calls creates .any).zero)) ++ V :=
                     VEnv.setMany_bindZeros hxnd
                       (by simp only [List.length_map]; omega) V
                   rw [hsm] at hcore
@@ -2938,7 +2938,7 @@ theorem ic_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
                       (.stmt (inlineCore d [] as)) (.sres V st1 .normal) := by
                     have hsm : VEnv.setMany (([] : VEnv D) ++ V) []
                         (d.rs.map (fun r => (VEnv.get Vend r).getD
-                          (evmWithExternal calls creates).zero)) = V := rfl
+                          (evmWithExternal calls creates .any).zero)) = V := rfl
                     rw [hsm] at hcore
                     exact hcore
                   cases hres₂ with
@@ -3541,7 +3541,7 @@ theorem ic_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
           · obtain ⟨oc, hbody', hoc⟩ := body_denormalize_ok hb₀ hbody
             have hcall : Step D funs₁ V st (.expr (.call f as))
                 (.eres (.vals (d.rs.map (fun r => (VEnv.get Vend r).getD
-                  (evmWithExternal calls creates).zero)) st1)) := by
+                  (evmWithExternal calls creates .any).zero)) st1)) := by
               refine Step.callOk hargs hlk₀ ?_ hbody' hoc
               show argvals.length = d.ps.length
               have := args_length hargs
@@ -3549,11 +3549,11 @@ theorem ic_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
             have hassign : Step D funs₁ V st
                 (.stmt (.assign xs (.call f as)))
                 (.sres (VEnv.setMany V xs (d.rs.map (fun r => (VEnv.get Vend r).getD
-                  (evmWithExternal calls creates).zero))) st1 .normal) :=
+                  (evmWithExternal calls creates .any).zero))) st1 .normal) :=
               Step.assignVal hcall (by simp only [List.length_map]; omega)
             have hV1' : V1 = VEnv.setMany V xs (d.rs.map
                 (fun r => (VEnv.get Vend r).getD
-                  (evmWithExternal calls creates).zero)) := hV1
+                  (evmWithExternal calls creates .any).zero)) := hV1
             obtain ⟨res₂', hs₂, hres₂⟩ := ihrest hR hΔ hrestrel
             rw [hV1'] at hs₂
             cases hres₂ with

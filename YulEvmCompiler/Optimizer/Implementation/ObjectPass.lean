@@ -38,7 +38,7 @@ open YulSemantics (VEnv Run Outcome Block Object)
 open YulSemantics.EVM (EvmState evmWithExternal Op Layout)
 
 variable [model : ExternalModel]
-local notation "yulD" => evmWithExternal model.calls model.creates
+local notation "yulD" => evmWithExternal model.calls model.creates YulSemantics.EVM.ExternalGas.any
 
 /-- Apply a pass to an object's **top** code block, leaving sub-objects and data
 segments byte-identical (so their compiled lengths — and hence every layout

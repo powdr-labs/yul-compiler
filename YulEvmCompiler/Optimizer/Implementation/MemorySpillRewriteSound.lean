@@ -27,7 +27,7 @@ variable {base reserved : Nat}
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
 local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 abbrev WordEnv := List (Ident × U256)
 
@@ -230,7 +230,7 @@ theorem envSet_eq {calls : ExternalCalls} {creates : ExternalCreates}
 theorem envSet_eq_ordinary {calls : ExternalCalls} {creates : ExternalCreates}
     (vars : WordEnv) (name : Ident) (value : U256) :
     envSet vars name value =
-      @VEnv.set (evmWithExternal calls creates) vars name value := by
+      @VEnv.set (evmWithExternal calls creates .any) vars name value := by
   induction vars with
   | nil => rfl
   | cons item rest ih =>
@@ -1224,7 +1224,7 @@ theorem guardedBuiltin_sim {slots : SlotMap} {owner : Owner}
       base ≤ slot ∧ slot + 32 ≤ reserved)
     {cutoff : Nat} (hcutoff : base ≤ cutoff) :
     ∃ rightResult,
-      (evmWithExternal calls creates).Builtin op args right rightResult ∧
+      (evmWithExternal calls creates .any).Builtin op args right rightResult ∧
       ResultRel base reserved leftResult rightResult ∧
       ResultSlotsLoaded slots owner source rightResult ∧
       ResultAboveUnchanged cutoff reserved right rightResult := by

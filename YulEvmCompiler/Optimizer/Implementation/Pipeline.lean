@@ -66,7 +66,7 @@ open YulSemantics.EVM
 open YulEvmCompiler
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### Resolution-congruent passes -/
 
@@ -75,9 +75,9 @@ pass before resolution is equivalent (pointwise) to not running it, *on the
 resolved code*. This is the per-stage fact `optimizerPipelineObject_correct`
 composes over the whole pipeline. -/
 structure RPass (calls : ExternalCalls) (creates : ExternalCreates) where
-  pass : LocalPass (evmWithExternal calls creates)
+  pass : LocalPass (evmWithExternal calls creates .any)
   resolve_equiv : ∀ (L : Layout) (b : Block Op),
-    EquivBlock (evmWithExternal calls creates)
+    EquivBlock (evmWithExternal calls creates .any)
       (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L (pass.run b))
 
@@ -349,7 +349,7 @@ theorem optimizerPipelineObjectRounds_compileObject_correct
     (hcomp : compileObject
       (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) n o)
         = some L)
-    {V : VEnv (evmWithExternal model.calls model.creates)}
+    {V : VEnv (evmWithExternal model.calls model.creates .any)}
     {yst : EvmState} {out : Outcome}
     (hrun : RunResolvedObject
       (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) n o)
@@ -370,7 +370,7 @@ theorem optimizerPipelineObject_compileObject_correct
     (hcomp : compileObject
       (optimizerPipelineObject (calls := model.calls) (creates := model.creates) o)
         = some L)
-    {V : VEnv (evmWithExternal model.calls model.creates)}
+    {V : VEnv (evmWithExternal model.calls model.creates .any)}
     {yst : EvmState} {out : Outcome}
     (hrun : RunResolvedObject
       (optimizerPipelineObject (calls := model.calls) (creates := model.creates) o)
@@ -406,7 +406,7 @@ theorem optimizerPipelineObjectRounds_correct
     (hcomp : compileObject
       (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) n o)
         = some L)
-    {V : VEnv (evmWithExternal model.calls model.creates)}
+    {V : VEnv (evmWithExternal model.calls model.creates .any)}
     {yst : EvmState} {out : Outcome}
     (hrun : RunResolvedObject o L V yst out) :
     ∃ b : Nat, ∀ s0 : State,
@@ -420,7 +420,7 @@ theorem optimizerPipelineObjectRounds_correct
   have hrun' : RunResolvedObject
       (optimizerPipelineObjectRounds (calls := model.calls) (creates := model.creates) n o)
       L V yst out := by
-    show Run (evmWithExternal model.calls model.creates)
+    show Run (evmWithExternal model.calls model.creates .any)
       (resolveForLayoutStmts L
         (optimizerPipelineObjectRounds (calls := model.calls)
           (creates := model.creates) n o).codeBlock)
@@ -437,7 +437,7 @@ theorem optimizerPipelineObject_correct
     (hcomp : compileObject
       (optimizerPipelineObject (calls := model.calls) (creates := model.creates) o)
         = some L)
-    {V : VEnv (evmWithExternal model.calls model.creates)}
+    {V : VEnv (evmWithExternal model.calls model.creates .any)}
     {yst : EvmState} {out : Outcome}
     (hrun : RunResolvedObject o L V yst out) :
     ∃ b : Nat, ∀ s0 : State,
@@ -467,11 +467,11 @@ for **every** block: normalization is now an unconditionally-sound guarded pass
 theorem normalize_optimizerPipelineRounds_runEquiv (n : Nat) (b : Block Op) :
     RunEquivBlock D b
       ((optimizerPipelineRounds (calls := calls) (creates := creates) n).run
-        (@Normalize.normalize (evmWithExternal calls creates) b)) :=
-  (@Normalize.normalize_runEquivBlock (evmWithExternal calls creates) _ b).trans
+        (@Normalize.normalize (evmWithExternal calls creates .any) b)) :=
+  (@Normalize.normalize_runEquivBlock (evmWithExternal calls creates .any) _ b).trans
     (RunEquivBlock.of_equivBlock
       ((optimizerPipelineRounds (calls := calls) (creates := creates) n).sound
-        (@Normalize.normalize (evmWithExternal calls creates) b)))
+        (@Normalize.normalize (evmWithExternal calls creates .any) b)))
 
 /-- **Normalize-then-optimize preserves whole-program behaviour** (object path,
 at the top code block — the `RunObject`/`RunResolvedObject` interface), for
@@ -479,9 +479,9 @@ at the top code block — the `RunObject`/`RunResolvedObject` interface), for
 theorem normalize_optimizerPipelineObjectRounds_topRunEquiv (n : Nat) (o : Object Op) :
     RunEquivBlock D o.codeBlock
       (optimizerPipelineObjectRounds (calls := calls) (creates := creates) n
-        (@Normalize.normalizeObject (evmWithExternal calls creates) _ o)).codeBlock :=
-  (@Normalize.normalizeObject_topRunEquiv (evmWithExternal calls creates) _ o).trans
+        (@Normalize.normalizeObject (evmWithExternal calls creates .any) _ o)).codeBlock :=
+  (@Normalize.normalizeObject_topRunEquiv (evmWithExternal calls creates .any) _ o).trans
     (RunEquivBlock.of_equivBlock
-      (optimizerPipelineObjectRounds_topEquiv n (@Normalize.normalizeObject (evmWithExternal calls creates) _ o)))
+      (optimizerPipelineObjectRounds_topEquiv n (@Normalize.normalizeObject (evmWithExternal calls creates .any) _ o)))
 
 end YulEvmCompiler.Optimizer

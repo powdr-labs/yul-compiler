@@ -56,7 +56,7 @@ open YulSemantics.EVM
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### The always-evaluating right-hand-side fragment -/
 
@@ -211,7 +211,7 @@ theorem selectSwitch_callFree {cv : U256} {cases : List (Literal × Block Op)}
   | cons p rest ih =>
       obtain ⟨l, body⟩ := p
       simp only [casesCallFree, Bool.and_eq_true] at hc
-      by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+      by_cases hcv : cv = (evmWithExternal calls creates .any).litValue l
       · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
         exact hc.1
       · rw [selectSwitch, List.find?_cons_of_neg (by simp [hcv])]
@@ -881,10 +881,10 @@ theorem discardStmt_inv {sink : Ident} {ctx ctx' : DrCtx} {s : Stmt Op}
                     cases hstep with
                     | letZero =>
                         have hframe' : DrFrame base (x :: ctx.owned)
-                            ((x, (evmWithExternal calls creates).zero) :: V) :=
-                          hframe.cons x (evmWithExternal calls creates).zero
+                            ((x, (evmWithExternal calls creates .any).zero) :: V) :=
+                          hframe.cons x (evmWithExternal calls creates .any).zero
                         have hb' : BoundOK
-                            ((x, (evmWithExternal calls creates).zero) :: V)
+                            ((x, (evmWithExternal calls creates .any).zero) :: V)
                             (x :: ctx.bound) := by
                           intro z hz
                           simp only [List.mem_cons] at hz
@@ -982,7 +982,7 @@ has exactly one possible observable shape. -/
 theorem discardBlock_run {bound : List Ident} {sink : Ident} {body : Block Op}
     (hcheck : (discardStmts sink ⟨sink :: bound, [sink]⟩ body).isSome = true)
     {V : VEnv D} (hb : BoundOK V bound) (funs : FunEnv D) (st : EvmState) :
-    ∃ v, Step D funs ((sink, (evmWithExternal calls creates).zero) :: V) st
+    ∃ v, Step D funs ((sink, (evmWithExternal calls creates .any).zero) :: V) st
       (.stmt (.block body))
       (.sres ((sink, v) :: V) st .normal) := by
   cases hc : discardStmts sink ⟨sink :: bound, [sink]⟩ body with
@@ -999,7 +999,7 @@ theorem discardBlock_run {bound : List Ident} {sink : Ident} {body : Block Op}
           some ⟨sink :: bound, [sink]⟩ := by simp [discardStmt, hc]
       obtain ⟨V', hrun, hframe, -⟩ :=
         discardStmt_run hstmt (DrFrame.cons (DrFrame.nil V) sink
-          (evmWithExternal calls creates).zero)
+          (evmWithExternal calls creates .any).zero)
           hbound funs st
       obtain ⟨A, hV', hkeys⟩ := hframe
       cases A with
@@ -1015,7 +1015,7 @@ theorem discardBlock_run {bound : List Ident} {sink : Ident} {body : Block Op}
 theorem discardBlock_inv {bound : List Ident} {sink : Ident} {body : Block Op}
     (hcheck : (discardStmts sink ⟨sink :: bound, [sink]⟩ body).isSome = true)
     {V : VEnv D} (hb : BoundOK V bound) {funs : FunEnv D} {st V' st' o}
-    (hstep : Step D funs ((sink, (evmWithExternal calls creates).zero) :: V) st
+    (hstep : Step D funs ((sink, (evmWithExternal calls creates .any).zero) :: V) st
       (.stmt (.block body))
       (.sres V' st' o)) :
     ∃ v, V' = (sink, v) :: V ∧ st' = st ∧ o = .normal := by
@@ -1033,7 +1033,7 @@ theorem discardBlock_inv {bound : List Ident} {sink : Ident} {body : Block Op}
           some ⟨sink :: bound, [sink]⟩ := by simp [discardStmt, hc]
       obtain ⟨rfl, rfl, hframe, -⟩ :=
         discardStmt_inv hstmt (DrFrame.cons (DrFrame.nil V) sink
-          (evmWithExternal calls creates).zero)
+          (evmWithExternal calls creates .any).zero)
           hbound hstep
       obtain ⟨A, hV', hkeys⟩ := hframe
       cases A with
@@ -1805,7 +1805,7 @@ theorem DcRel.selectRel {bound b2 bd : List Ident}
       rcases head with ⟨l, b⟩
       cases hcs with
       | casesCons hb hrest =>
-          by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+          by_cases hcv : cv = (evmWithExternal calls creates .any).litValue l
           · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv]),
                 selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
             exact ⟨_, hb⟩

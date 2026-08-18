@@ -28,7 +28,7 @@ open YulSemantics
 open YulSemantics.EVM
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### Expression-pressure scheduling -/
 
@@ -396,7 +396,7 @@ private theorem takeCopyBack_spec : ∀ {ts : List Ident} {rest ds suffix},
 private theorem copy_zip_gets {ts : List Ident} (hnd : ts.Nodup) :
     ∀ {vals : List U256}, vals.length = ts.length →
       ts.map (fun t => (VEnv.get (ts.zip vals : VEnv D) t).getD
-        (evmWithExternal calls creates).zero) = vals := by
+        (evmWithExternal calls creates .any).zero) = vals := by
   induction ts with
   | nil =>
       intro vals hlen
@@ -417,9 +417,9 @@ private theorem copy_zip_gets {ts : List Ident} (hnd : ts.Nodup) :
           congr 1
           calc
             ts.map (fun u => (VEnv.get ((t, v) :: ts.zip vals) u).getD
-                (evmWithExternal calls creates).zero) =
+                (evmWithExternal calls creates .any).zero) =
                 ts.map (fun u => (VEnv.get (ts.zip vals) u).getD
-                  (evmWithExternal calls creates).zero) := by
+                  (evmWithExternal calls creates .any).zero) := by
               apply List.map_congr_left
               intro u hu
               have htu : t ≠ u := fun h => ht (h ▸ hu)
@@ -774,13 +774,13 @@ theorem stageCore_equiv_of (P : String) (xs : List Ident) (f : Ident)
               [.assign xs (.call f (names.map Expr.var))])))
             (.sres (restore V (VEnv.setMany (names.zip argvals ++ V) xs
               (decl.rets.map fun r => (VEnv.get Vend r).getD
-                (evmWithExternal calls creates).zero))) st' .normal) := by
+                (evmWithExternal calls creates .any).zero))) st' .normal) := by
           apply Step.block
           simpa [stageDecls, hoist] using hseq
         have hm0 := zip_mins (calls := calls) (creates := creates) V hvals
         have hmins := MIns.setMany
           (decl.rets.map fun r => (VEnv.get Vend r).getD
-            (evmWithExternal calls creates).zero) hm0
+            (evmWithExternal calls creates .any).zero) hm0
           (fun p hp => by
             have hpname := tempIns_names hp
             intro hx
@@ -789,13 +789,13 @@ theorem stageCore_equiv_of (P : String) (xs : List Ident) (f : Ident)
           (fun p hp => tempIns_depth hp)
         have hsmall : restore V (VEnv.setMany V xs
             (decl.rets.map fun r => (VEnv.get Vend r).getD
-              (evmWithExternal calls creates).zero)) =
+              (evmWithExternal calls creates .any).zero)) =
             VEnv.setMany V xs (decl.rets.map fun r => (VEnv.get Vend r).getD
-              (evmWithExternal calls creates).zero) :=
+              (evmWithExternal calls creates .any).zero) :=
           restore_exact (W := V) (Y := [])
             (W' := VEnv.setMany V xs
               (decl.rets.map fun r => (VEnv.get Vend r).getD
-                (evmWithExternal calls creates).zero))
+                (evmWithExternal calls creates .any).zero))
             (VEnv.setMany_length _ _ _)
         rw [herase, hsmall] at hb
         simpa [stageCore, names] using hb
@@ -884,7 +884,7 @@ theorem stageCore_equiv_of (P : String) (xs : List Ident) (f : Ident)
                   (by simpa [lookupFun] using hlookup) harglen hbody hout
                 have hout0 := Step.assignVal hcall0 hxs
                 let retvals := decl.rets.map fun r =>
-                  (VEnv.get Vend r).getD (evmWithExternal calls creates).zero
+                  (VEnv.get Vend r).getD (evmWithExternal calls creates .any).zero
                 have hm0 := zip_mins (calls := calls) (creates := creates) V
                   (args_length hargs |>.trans hnames.symm)
                 have hmins := MIns.setMany retvals hm0 (fun p hp => by
@@ -1583,7 +1583,7 @@ theorem stmt_normal_keys {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       rw [zip_keys hlen.symm.le]
   | assignVal _ _ =>
       simp only [stmtBinds, List.nil_append]
-      exact @VEnv.setMany_keys (evmWithExternal calls creates) inferInstance _ _ _
+      exact @VEnv.setMany_keys (evmWithExternal calls creates .any) inferInstance _ _ _
   | exprStmt _ => rfl
   | ifTrue _ _ hbody =>
       simpa [stmtBinds] using (block_stmt_shape hbody).1
@@ -2733,7 +2733,7 @@ theorem reuseSlot_equivBlock {pre rest : Block Op} {x y : Ident}
           cases hlet with
           | letZero =>
             have hslot := SlotRel.initial (y := y)
-              (value := (evmWithExternal calls creates).zero) hxlocal
+              (value := (evmWithExternal calls creates .any).zero) hxlocal
             obtain ⟨rt, htarget, hrel⟩ := slot_fwd hrest hslot
               (by simpa [codeMentions] using hmx)
               (by simpa [codeDeclares] using hdy)
@@ -2741,7 +2741,7 @@ theorem reuseSlot_equivBlock {pre rest : Block Op} {x y : Ident}
             have hassign : Step D (hoist D (pre ++
                 .assign [x] (.lit (.number 0)) :: renameStmts [(y, x)] rest) :: funs)
                 Vp stp (.stmt (.assign [x] (.lit (.number 0))))
-                (.sres (VEnv.set Vp x (evmWithExternal calls creates).zero)
+                (.sres (VEnv.set Vp x (evmWithExternal calls creates .any).zero)
                   stp .normal) :=
               Step.assignVal Step.lit («D» := D) rfl
             have hjoin := stmts_append_normal hpre
@@ -2807,7 +2807,7 @@ theorem reuseSlot_equivBlock {pre rest : Block Op} {x y : Ident}
                   cases hexpr
                   have hlet : Step D (hoist D (pre ++ .letDecl [y] none :: rest) :: funs)
                       Vp stp (.stmt (.letDecl [y] none))
-                      (.sres ((y, (evmWithExternal calls creates).zero) :: Vp)
+                      (.sres ((y, (evmWithExternal calls creates .any).zero) :: Vp)
                         stp .normal) := Step.letZero
                   have hjoin := stmts_append_normal hpre (Step.seqCons hlet hsource)
                   have hr := hslot'.restore_eq hxbase
@@ -3694,7 +3694,7 @@ theorem scopeTail_equivBlock {pre middle : Block Op} {carrier result : Ident}
           cases hlet with
           | letZero =>
             let Vc : VEnv D :=
-              (carrier, (evmWithExternal calls creates).zero) :: Vp
+              (carrier, (evmWithExternal calls creates .any).zero) :: Vp
             have htail' := htail
             simp only [bindZeros, List.map_cons, List.map_nil,
               List.cons_append, List.nil_append] at htail'
@@ -3918,7 +3918,7 @@ theorem scopeTail_equivBlock {pre middle : Block Op} {carrier result : Ident}
         | seqCons hlet hrest =>
           cases hlet
           let Vc : VEnv D :=
-            (carrier, (evmWithExternal calls creates).zero) :: Vp
+            (carrier, (evmWithExternal calls creates .any).zero) :: Vp
           have hrest' := hrest
           simp only [bindZeros, List.map_cons, List.map_nil,
             List.cons_append, List.nil_append] at hrest'
@@ -4170,11 +4170,11 @@ theorem splitLet_equivBlock {pre rest : Block Op} {x : Ident} {e : Expr Op} :
               | cons value' values => simp at hlen
               | nil =>
                 have hzero : Step D F Vp stp (.stmt (.letDecl [x] none))
-                    (.sres ((x, (evmWithExternal calls creates).zero) :: Vp)
+                    (.sres ((x, (evmWithExternal calls creates .any).zero) :: Vp)
                       stp .normal) := Step.letZero (funs := F)
                 have hins : InsAt Vp.length x
-                    (evmWithExternal calls creates).zero Vp
-                    ((x, (evmWithExternal calls creates).zero) :: Vp) :=
+                    (evmWithExternal calls creates .any).zero Vp
+                    ((x, (evmWithExternal calls creates .any).zero) :: Vp) :=
                   ⟨[], Vp, by simp, by simp, rfl⟩
                 obtain ⟨_, hexpr', hrel⟩ := frameAdd hexpr hins
                   (by simpa [codeMentions] using hx)
@@ -4193,13 +4193,13 @@ theorem splitLet_equivBlock {pre rest : Block Op} {x : Ident} {e : Expr Op} :
           | letVal _ _ => exact absurd rfl hne
           | letHalt hexpr =>
             let Vx : VEnv D :=
-              (x, (evmWithExternal calls creates).zero) :: Vp0
+              (x, (evmWithExternal calls creates .any).zero) :: Vp0
             have hzero : Step D F Vp0 stp0 (.stmt (.letDecl [x] none))
                 (.sres Vx stp0 .normal) := by simpa [Vx, Vp0, bindZeros] using
                   (Step.letZero (funs := F) (V := Vp0) (st := stp0)
                     (vars := [x]))
             have hins : InsAt Vp0.length x
-                (evmWithExternal calls creates).zero Vp0 Vx := by
+                (evmWithExternal calls creates .any).zero Vp0 Vx := by
               exact ⟨[], Vp0, by simp, by simp [Vx], rfl⟩
             obtain ⟨_, hexpr', hrel⟩ := frameAdd hexpr hins
               (by simpa [codeMentions] using hx)
@@ -4210,7 +4210,7 @@ theorem splitLet_equivBlock {pre rest : Block Op} {x : Ident} {e : Expr Op} :
             have hfinal := Step.block (stmts_append_normal hpre htarget)
             have hlenVp : V.length ≤ Vp0.length := by
               simpa [Vp0] using venvLen_mono hpre rfl
-            rw [restore_cons_of_le (evmWithExternal calls creates).zero hlenVp]
+            rw [restore_cons_of_le (evmWithExternal calls creates .any).zero hlenVp]
               at hfinal
             exact hfinal
       · exact Step.block (stmts_append_early hpre hne)
@@ -4236,8 +4236,8 @@ theorem splitLet_equivBlock {pre rest : Block Op} {x : Ident} {e : Expr Op} :
                 | cons value' values => simp at hlen
                 | nil =>
                   have hins : InsAt Vp.length x
-                      (evmWithExternal calls creates).zero Vp
-                      ((x, (evmWithExternal calls creates).zero) :: Vp) :=
+                      (evmWithExternal calls creates .any).zero Vp
+                      ((x, (evmWithExternal calls creates .any).zero) :: Vp) :=
                     ⟨[], Vp, by simp, by simp, rfl⟩
                   obtain ⟨_, hexpr', hrel⟩ := frameRemove hexpr hins
                     (by simpa [codeMentions] using hx)
@@ -4253,8 +4253,8 @@ theorem splitLet_equivBlock {pre rest : Block Op} {x : Ident} {e : Expr Op} :
             | assignVal _ _ => exact absurd rfl hneAssign
             | assignHalt hexpr =>
               have hins : InsAt Vp.length x
-                  (evmWithExternal calls creates).zero Vp
-                  ((x, (evmWithExternal calls creates).zero) :: Vp) :=
+                  (evmWithExternal calls creates .any).zero Vp
+                  ((x, (evmWithExternal calls creates .any).zero) :: Vp) :=
                 ⟨[], Vp, by simp, by simp, rfl⟩
               obtain ⟨_, hexpr', hrel⟩ := frameRemove hexpr hins
                 (by simpa [codeMentions] using hx)
@@ -4264,7 +4264,7 @@ theorem splitLet_equivBlock {pre rest : Block Op} {x : Ident} {e : Expr Op} :
               have hfinal := Step.block (stmts_append_normal hpre hsource)
               have hlenVp : V.length ≤ Vp.length := venvLen_mono hpre rfl
               rw [← restore_cons_of_le
-                (evmWithExternal calls creates).zero hlenVp] at hfinal
+                (evmWithExternal calls creates .any).zero hlenVp] at hfinal
               exact hfinal
         | seqStop hzero hne =>
           cases hzero
@@ -4554,7 +4554,7 @@ private theorem selectSwitch_size_lt (c : Expr Op)
       sizeOf c + sizeOf cases + sizeOf dflt := by
   unfold selectSwitch
   cases hfind : cases.find? (fun p =>
-      decide (cv = (evmWithExternal calls creates).litValue p.1)) with
+      decide (cv = (evmWithExternal calls creates .any).litValue p.1)) with
   | some p =>
       simp only
       have hm : p ∈ cases := List.mem_of_find?_eq_some hfind
@@ -6455,7 +6455,7 @@ theorem scopeDeadFunctionStmts_equiv (b : Block Op) :
 
 private def LayoutEquivStmts (calls' : ExternalCalls) (creates' : ExternalCreates)
     (bound : List Ident) (b₁ b₂ : Block Op) : Prop :=
-  let D' := evmWithExternal calls' creates'
+  let D' := evmWithExternal calls' creates' .any
   ∀ (funs : FunEnv D') (V : VEnv D') (st : EvmState),
     YulEvmCompiler.Optimizer.BoundOK (calls := calls') (creates := creates')
       V bound → ∀ V' st' o,

@@ -91,7 +91,7 @@ inductive ExecN (P : Prog) [model : ExternalModel] :
       {yop : Op} {as : List ValId} {args rets : List U256} {is : List Instr}
       {t : Term} {res : FRes} :
       R.getMany as = some args →
-      builtinWithExternal model.calls model.creates yop args st (.ok rets st') →
+      builtinWithExternal model.calls model.creates .any yop args st (.ok rets st') →
       ds.length = rets.length →
       ExecN P n f (R.setMany ds rets) st' ⟨is, t⟩ res →
       ExecN P n f R st ⟨.op ds yop as :: is, t⟩ res
@@ -99,7 +99,7 @@ inductive ExecN (P : Prog) [model : ExternalModel] :
       {ds : List ValId} {yop : Op} {as : List ValId} {args : List U256}
       {is : List Instr} {t : Term} :
       R.getMany as = some args →
-      builtinWithExternal model.calls model.creates yop args st (.halt st') →
+      builtinWithExternal model.calls model.creates .any yop args st (.halt st') →
       ExecN P n f R st ⟨.op ds yop as :: is, t⟩ (.halt st')
   | call {n : Nat} {f g : Func} {R : Regs} {st st' : EvmState}
       {ds as : List ValId} {fid : FuncId} {args rvals : List U256} {eb : Block}
@@ -154,7 +154,7 @@ inductive ExecN (P : Prog) [model : ExternalModel] :
   | halt {n : Nat} {f : Func} {R : Regs} {st st' : EvmState} {yop : Op}
       {as : List ValId} {args : List U256} :
       R.getMany as = some args →
-      builtinWithExternal model.calls model.creates yop args st (.halt st') →
+      builtinWithExternal model.calls model.creates .any yop args st (.halt st') →
       ExecN P n f R st ⟨[], .halt yop as⟩ (.halt st')
 
 /-- A call-depth bound can always be enlarged. -/
