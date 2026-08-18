@@ -52,18 +52,51 @@ def cfBlockStep (b : Block) (st : CFOuter) : CFOuter :=
   let r := b.instrs.foldl (fun s i => cfInstrStep i s) ⟨st.2, []⟩
   ⟨st.1.push { b with instrs := r.2.reverse, term := cfTerm b r.1 }, r.1⟩
 
-/-- **`constFold`'s loop, as a fold.** The `do`-block's mutable state is an
-`MProd`, and both loop bodies are pure-`yield`, so the bridge applies twice:
-once under the outer body's binder (for the instruction loop) and once at the
-top level. -/
+/-- The instruction fold over the do-elaborator's `Prod` state agrees with the
+`CFInner` fold, componentwise. -/
+theorem cfInstr_fold_prod (l : List Instr) (m : Std.HashMap ValId U256)
+    (acc : List Instr) :
+    l.foldl (fun st i =>
+        ((cfInstrStep i ⟨st.1, st.2⟩).1, (cfInstrStep i ⟨st.1, st.2⟩).2)) (m, acc) =
+      ((l.foldl (fun s i => cfInstrStep i s) ⟨m, acc⟩).1,
+        (l.foldl (fun s i => cfInstrStep i s) ⟨m, acc⟩).2) := by
+  induction l generalizing m acc with
+  | nil => rfl
+  | cons i is ih =>
+    rw [List.foldl_cons, List.foldl_cons]
+    exact ih (cfInstrStep i ⟨m, acc⟩).1 (cfInstrStep i ⟨m, acc⟩).2
+
+/-- The block fold over the do-elaborator's (swapped) `Prod` state agrees with
+the `CFOuter` fold, componentwise. -/
+theorem cfBlock_fold_prod (l : List Block) (m : Std.HashMap ValId U256)
+    (a : Array Block) :
+    l.foldl (fun st b =>
+        ((cfBlockStep b ⟨st.2, st.1⟩).2, (cfBlockStep b ⟨st.2, st.1⟩).1)) (m, a) =
+      ((l.foldl (fun st b => cfBlockStep b st) ⟨a, m⟩).2,
+        (l.foldl (fun st b => cfBlockStep b st) ⟨a, m⟩).1) := by
+  induction l generalizing m a with
+  | nil => rfl
+  | cons b bs ih =>
+    rw [List.foldl_cons, List.foldl_cons]
+    exact ih (cfBlockStep b ⟨a, m⟩).2 (cfBlockStep b ⟨a, m⟩).1
+
+/-- **`constFold`'s loop, as a fold.** The `do`-block's mutable state is a
+`Prod` (with the outer components swapped relative to `CFOuter`), and both
+loop bodies are pure-`yield`, so the bridge applies twice — once under the
+outer body's binder (for the instruction loop) and once at the top level —
+with the two `*_fold_prod` lemmas repacking the state. -/
 theorem constFold_blocks_eq (f : Func) :
     (constFold f).blocks = (f.blocks.toList.foldl (fun st b => cfBlockStep b st) ⟨#[], ∅⟩).1 := by
   unfold constFold
   dsimp only
-  rw [Id.forIn_array_eq_foldl (g := cfBlockStep) (h := by
+  rw [Id.forIn_array_eq_foldl
+    (g := fun b (st : Std.HashMap ValId U256 × Array Block) =>
+      ((cfBlockStep b ⟨st.2, st.1⟩).2, (cfBlockStep b ⟨st.2, st.1⟩).1)) (h := by
     intro b st
     dsimp only [cfBlockStep]
-    rw [Id.forIn_eq_foldl (g := cfInstrStep) (h := by
+    rw [Id.forIn_eq_foldl
+      (g := fun i (st : Std.HashMap ValId U256 × List Instr) =>
+        ((cfInstrStep i ⟨st.1, st.2⟩).1, (cfInstrStep i ⟨st.1, st.2⟩).2)) (h := by
       intro i s
       cases i with
       | const d v => rfl
@@ -76,7 +109,9 @@ theorem constFold_blocks_eq (f : Func) :
             split <;> split <;> grind
           | cons e es => rfl
       | call ds fid args => rfl)]
+    rw [cfInstr_fold_prod]
     rfl)]
+  rw [cfBlock_fold_prod]
   rfl
 
 

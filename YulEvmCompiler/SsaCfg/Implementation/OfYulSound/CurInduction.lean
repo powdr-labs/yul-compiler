@@ -139,10 +139,9 @@ theorem trStmts_cur : ∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
   case letNone =>
     intro fenv env lctx rets vars hgate s r s' hv h
     rw [trStmt, if_neg hgate] at h
-    obtain ⟨u, s₁, h1, h⟩ := M.bind_inv h
-    obtain ⟨ids, s₂, h2, h3⟩ := M.bind_inv h
-    obtain ⟨rfl, rfl⟩ := M.pure_inv h3
-    have hg := (Grows.of_pure h1).trans (Grows.of_mapM_constZero h2)
+    obtain ⟨ids, s₁, h1, h2⟩ := M.bind_inv h
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h2
+    have hg := Grows.of_mapM_constZero h1
     exact ⟨hv.of_grows hg, Or.inl (CurSame.of_grows hg)⟩
   case letSomeBad =>
     intro fenv env lctx rets vars e hgate s r s' hv h
@@ -152,10 +151,9 @@ theorem trStmts_cur : ∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
   case letSome =>
     intro fenv env lctx rets vars e hgate s r s' hv h
     rw [trStmt, if_neg hgate] at h
-    obtain ⟨u, s₁, h1, h⟩ := M.bind_inv h
-    obtain ⟨ids, s₂, h2, h3⟩ := M.bind_inv h
-    obtain ⟨rfl, rfl⟩ := M.pure_inv h3
-    have hg := (Grows.of_pure h1).trans (trExprN_grows h2)
+    obtain ⟨ids, s₁, h1, h2⟩ := M.bind_inv h
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h2
+    have hg := trExprN_grows h1
     exact ⟨hv.of_grows hg, Or.inl (CurSame.of_grows hg)⟩
   case assignBad =>
     intro fenv env lctx rets vars e hgate s r s' hv h
@@ -165,10 +163,9 @@ theorem trStmts_cur : ∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
   case assign =>
     intro fenv env lctx rets vars e hgate s r s' hv h
     rw [trStmt, if_neg hgate] at h
-    obtain ⟨u, s₁, h1, h⟩ := M.bind_inv h
-    obtain ⟨ids, s₂, h2, h3⟩ := M.bind_inv h
-    obtain ⟨rfl, rfl⟩ := M.pure_inv h3
-    have hg := (Grows.of_pure h1).trans (trExprN_grows h2)
+    obtain ⟨ids, s₁, h1, h2⟩ := M.bind_inv h
+    obtain ⟨rfl, rfl⟩ := M.pure_inv h2
+    have hg := trExprN_grows h1
     exact ⟨hv.of_grows hg, Or.inl (CurSame.of_grows hg)⟩
   case cond =>
     intro fenv env lctx rets c body ih s r s' hv h
@@ -214,18 +211,16 @@ theorem trStmts_cur : ∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
       exact a4.size
     cases renv with
     | none =>
-      obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-      obtain ⟨ub, sb, hb2, hc2⟩ := M.bind_inv h
-      obtain ⟨-, rfl⟩ := M.pure_inv ha
+      obtain ⟨ua, sa, ha, hc2⟩ := M.bind_inv h
       obtain ⟨rfl, rfl⟩ := M.pure_inv hc2
-      have g5a : SGrowsAt 0 s5 sa := ((SGrowsAt.of_sealCur h6).trans
+      have g5a : SGrowsAt 0 s5 s8 := ((SGrowsAt.of_sealCur h6).trans
         (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h7)).trans
           (gbody.mono (Nat.zero_le _))
-      have hjoinLt : joinId < sa.fn.blocks.size :=
+      have hjoinLt : joinId < s8.fn.blocks.size :=
         Nat.lt_of_lt_of_le (newBlock_target_lt h5) g5a.size
-      have hv' := CurValid.of_moveTo hjoinLt hb2
+      have hv' := CurValid.of_moveTo hjoinLt ha
       have gb : SGrowsAt s.fn.blocks.size s7 s' :=
-        (gbody.mono a7.size).trans (SGrowsAt.of_moveTo (Or.inl hjoinBase) hb2)
+        (gbody.mono a7.size).trans (SGrowsAt.of_moveTo (Or.inl hjoinBase) ha)
       exact ⟨hv', Or.inr (hm.forward hv a7 gb)⟩
     | some env' =>
       obtain ⟨xv, sa, ha, h⟩ := M.bind_inv h
@@ -403,35 +398,31 @@ theorem trStmts_cur : ∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
       cases renvB with
       | none =>
         obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-        obtain ⟨ub, sb, hb2, h⟩ := M.bind_inv h
         obtain ⟨renvP, sc, hc2, h⟩ := M.bind_inv h
-        obtain ⟨-, rfl⟩ := M.pure_inv ha
         have g9s11 : SGrowsAt 0 s9 s11 := (SGrowsAt.of_sealCur h10).trans
           (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h11)
-        have g9sa : SGrowsAt 0 s9 sa := (g9s11.trans g11s16z).trans
+        have g9s17 : SGrowsAt 0 s9 s17 := (g9s11.trans g11s16z).trans
           (gBody.mono (Nat.zero_le _))
-        have hpostLt : postId < sa.fn.blocks.size :=
-          Nat.lt_of_lt_of_le (newBlock_target_lt h9) g9sa.size
-        have hvb := CurValid.of_moveTo hpostLt hb2
-        obtain ⟨hvc, hkc⟩ := ihPost scope envI postParams sb renvP sc hvb hc2
+        have hpostLt : postId < s17.fn.blocks.size :=
+          Nat.lt_of_lt_of_le (newBlock_target_lt h9) g9s17.size
+        have hvb := CurValid.of_moveTo hpostLt ha
+        obtain ⟨hvc, hkc⟩ := ihPost scope envI postParams sa renvP sc hvb hc2
         have gPost := trScope_grows (scope :: fenv) _ none rets post
-          sb renvP sc hc2
-        have qBody : SGrowsAt s.fn.blocks.size s16 sa :=
+          sa renvP sc hc2
+        have qBody : SGrowsAt s.fn.blocks.size s16 s17 :=
           gBody.mono a16.size
-        have qPostIn : SGrowsAt s.fn.blocks.size s11 sb :=
-          (q16.trans qBody).trans (SGrowsAt.of_moveTo (Or.inl hpostBase) hb2)
+        have qPostIn : SGrowsAt s.fn.blocks.size s11 sa :=
+          (q16.trans qBody).trans (SGrowsAt.of_moveTo (Or.inl hpostBase) ha)
         cases renvP with
         | none =>
-          obtain ⟨ud, sd, hd, h⟩ := M.bind_inv h
           obtain ⟨ue, se, he, hf⟩ := M.bind_inv h
-          obtain ⟨-, rfl⟩ := M.pure_inv hd
           obtain ⟨rfl, rfl⟩ := M.pure_inv hf
-          have g7sd : SGrowsAt 0 s7 sd := (g7s11.trans g11s16z).trans
+          have g7sc : SGrowsAt 0 s7 sc := (g7s11.trans g11s16z).trans
             (((gBody.mono (Nat.zero_le _)).trans
-              (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) hb2)).trans
+              (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) ha)).trans
                 (gPost.mono (Nat.zero_le _)))
-          have hexitLt : exitId < sd.fn.blocks.size :=
-            Nat.lt_of_lt_of_le (newBlock_target_lt h7) g7sd.size
+          have hexitLt : exitId < sc.fn.blocks.size :=
+            Nat.lt_of_lt_of_le (newBlock_target_lt h7) g7sc.size
           have hv' := CurValid.of_moveTo hexitLt he
           have qFinal := (qPostIn.trans (gPost.mono
             (Nat.le_trans a11.size qPostIn.size))).trans
@@ -443,7 +434,7 @@ theorem trStmts_cur : ∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
           obtain ⟨uf, sf, hf, hg2⟩ := M.bind_inv h
           obtain ⟨rfl, rfl⟩ := M.pure_inv hg2
           have g16se : SGrowsAt 0 s16 se := ((((gBody.mono (Nat.zero_le _)).trans
-            (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) hb2)).trans
+            (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) ha)).trans
               (gPost.mono (Nat.zero_le _))).trans
                 (SGrowsAt.of_edgeArgs hd)).trans (SGrowsAt.of_sealCur he)
           have g7se : SGrowsAt 0 s7 se := (g7s11.trans g11s16z).trans g16se
@@ -480,16 +471,14 @@ theorem trStmts_cur : ∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
             (SGrowsAt.of_moveTo (Or.inl hpostBase) hb2))
         cases renvP with
         | none =>
-          obtain ⟨ud, sd, hd, h⟩ := M.bind_inv h
           obtain ⟨ue, se, he, hf⟩ := M.bind_inv h
-          obtain ⟨-, rfl⟩ := M.pure_inv hd
           obtain ⟨rfl, rfl⟩ := M.pure_inv hf
-          have g7sd : SGrowsAt 0 s7 sd := (g7s11.trans g11s16z).trans
+          have g7sc : SGrowsAt 0 s7 sc := (g7s11.trans g11s16z).trans
             ((gBodyClosed0.trans
               (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) hb2)).trans
                 (gPost.mono (Nat.zero_le _)))
-          have hexitLt : exitId < sd.fn.blocks.size :=
-            Nat.lt_of_lt_of_le (newBlock_target_lt h7) g7sd.size
+          have hexitLt : exitId < sc.fn.blocks.size :=
+            Nat.lt_of_lt_of_le (newBlock_target_lt h7) g7sc.size
           have hv' := CurValid.of_moveTo hexitLt he
           have qFinal := (qPostIn.trans (gPost.mono
             (Nat.le_trans a11.size qPostIn.size))).trans
@@ -699,24 +688,22 @@ theorem trStmts_cur : ∀ (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
     have gbody := trScope_grows fenv env lctx rets cbody s8 renv s9 h9
     cases renv with
     | none =>
-      obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-      obtain ⟨ub, sb, hb2, hc2⟩ := M.bind_inv h
-      obtain ⟨-, rfl⟩ := M.pure_inv ha
-      have g6a : SGrowsAt 0 s6 sa := ((SGrowsAt.of_sealCur h7).trans
+      obtain ⟨ua, sa, ha, hc2⟩ := M.bind_inv h
+      have g6a : SGrowsAt 0 s6 s9 := ((SGrowsAt.of_sealCur h7).trans
         (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h8)).trans
           (gbody.mono (Nat.zero_le _))
-      have hnextLt : nextId < sa.fn.blocks.size :=
+      have hnextLt : nextId < s9.fn.blocks.size :=
         Nat.lt_of_lt_of_le (newBlock_target_lt h6) g6a.size
-      have hvb : CurValid sb := CurValid.of_moveTo hnextLt hb2
-      obtain ⟨hv', hkrest⟩ := ihr sv X joinId sb u s' hvb hc2
+      have hvb : CurValid sa := CurValid.of_moveTo hnextLt ha
+      obtain ⟨hv', hkrest⟩ := ihr sv X joinId sa u s' hvb hc2
       have hnextBase : s.fn.blocks.size ≤ nextId := by
         rw [SGrowsAt.newBlock_id h6]
         exact a5.size
-      have gb : SGrowsAt s.fn.blocks.size s8 sb :=
+      have gb : SGrowsAt s.fn.blocks.size s8 sa :=
         (gbody.mono a8.size).trans
-          (SGrowsAt.of_moveTo (Or.inl hnextBase) hb2)
+          (SGrowsAt.of_moveTo (Or.inl hnextBase) ha)
       have gr := trCases_grows fenv env lctx rets sv X joinId restCases dflt
-        sv X joinId sb u s' hc2
+        sv X joinId sa u s' hc2
       exact ⟨hv', Or.inl (hm.forward hv a8
         (gb.trans (gr.mono (Nat.le_trans a8.size gb.size))))⟩
     | some env' =>
@@ -839,9 +826,8 @@ theorem trScope_none_cur_nil : ∀ (fenv : FMap) (env : VMap)
     case letNone =>
       intro fenv env lctx rets vars hgate s s' h
       rw [trStmt, if_neg hgate] at h
-      obtain ⟨u, s1, h1, h⟩ := M.bind_inv h
-      obtain ⟨ids, s2, h2, h3⟩ := M.bind_inv h
-      exact absurd h3 (by simp)
+      obtain ⟨ids, s1, h1, h2⟩ := M.bind_inv h
+      exact absurd h2 (by simp)
     case letSomeBad =>
       intro fenv env lctx rets vars e hgate s s' h
       rw [trStmt, if_pos hgate] at h
@@ -850,9 +836,8 @@ theorem trScope_none_cur_nil : ∀ (fenv : FMap) (env : VMap)
     case letSome =>
       intro fenv env lctx rets vars e hgate s s' h
       rw [trStmt, if_neg hgate] at h
-      obtain ⟨u, s1, h1, h⟩ := M.bind_inv h
-      obtain ⟨ids, s2, h2, h3⟩ := M.bind_inv h
-      exact absurd h3 (by simp)
+      obtain ⟨ids, s1, h1, h2⟩ := M.bind_inv h
+      exact absurd h2 (by simp)
     case assignBad =>
       intro fenv env lctx rets vars e hgate s s' h
       rw [trStmt, if_pos hgate] at h
@@ -861,9 +846,8 @@ theorem trScope_none_cur_nil : ∀ (fenv : FMap) (env : VMap)
     case assign =>
       intro fenv env lctx rets vars e hgate s s' h
       rw [trStmt, if_neg hgate] at h
-      obtain ⟨u, s1, h1, h⟩ := M.bind_inv h
-      obtain ⟨ids, s2, h2, h3⟩ := M.bind_inv h
-      exact absurd h3 (by simp)
+      obtain ⟨ids, s1, h1, h2⟩ := M.bind_inv h
+      exact absurd h2 (by simp)
     case cond =>
       intro fenv env lctx rets c body ih s s' h
       rw [trStmt] at h
@@ -878,8 +862,7 @@ theorem trScope_none_cur_nil : ∀ (fenv : FMap) (env : VMap)
       cases renv with
       | none =>
         obtain ⟨u9, s9, h9, h10⟩ := M.bind_inv h
-        obtain ⟨u10, s10, hmove, hpure⟩ := M.bind_inv h10
-        exact absurd hpure (by simp)
+        exact absurd h10 (by simp)
       | some env' =>
         obtain ⟨xv, s9, h9, h⟩ := M.bind_inv h
         obtain ⟨u10, s10, h10, h⟩ := M.bind_inv h
@@ -923,13 +906,11 @@ theorem trScope_none_cur_nil : ∀ (fenv : FMap) (env : VMap)
         cases renvB with
         | none =>
           obtain ⟨u18, s18, h18, h⟩ := M.bind_inv h
-          obtain ⟨u19, s19, h19, h⟩ := M.bind_inv h
           obtain ⟨renvP, s20, h20, h⟩ := M.bind_inv h
           cases renvP with
           | none =>
-            obtain ⟨u21, s21, h21, h⟩ := M.bind_inv h
-            obtain ⟨u22, s22, h22, h23⟩ := M.bind_inv h
-            exact absurd h23 (by simp)
+            obtain ⟨u21, s21, h21, h22⟩ := M.bind_inv h
+            exact absurd h22 (by simp)
           | some envP =>
             obtain ⟨xvP, s21, h21, h⟩ := M.bind_inv h
             obtain ⟨u22, s22, h22, h⟩ := M.bind_inv h
@@ -942,9 +923,8 @@ theorem trScope_none_cur_nil : ∀ (fenv : FMap) (env : VMap)
           obtain ⟨renvP, s21, h21, h⟩ := M.bind_inv h
           cases renvP with
           | none =>
-            obtain ⟨u22, s22, h22, h⟩ := M.bind_inv h
-            obtain ⟨u23, s23, h23, h24⟩ := M.bind_inv h
-            exact absurd h24 (by simp)
+            obtain ⟨u22, s22, h22, h23⟩ := M.bind_inv h
+            exact absurd h23 (by simp)
           | some envP =>
             obtain ⟨xvP, s22, h22, h⟩ := M.bind_inv h
             obtain ⟨u23, s23, h23, h⟩ := M.bind_inv h
@@ -1062,8 +1042,7 @@ theorem trCases_cur_nil (fenv : FMap) (env : VMap) (lctx : Option LoopCtx)
     cases renv with
     | none =>
       obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-      obtain ⟨ub, sb, hb, hc⟩ := M.bind_inv h
-      exact ih sb hc
+      exact ih sa h
     | some env' =>
       obtain ⟨xv, sa, ha, h⟩ := M.bind_inv h
       obtain ⟨ub, sb, hb, h⟩ := M.bind_inv h
@@ -1234,24 +1213,22 @@ theorem trCases_cur_closed (fenv : FMap) (env : VMap)
     have gbody := trScope_grows fenv env lctx rets cbody s8 renv s9 h9
     cases renv with
     | none =>
-      obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-      obtain ⟨ub, sb, hb2, hc2⟩ := M.bind_inv h
-      obtain ⟨-, rfl⟩ := M.pure_inv ha
-      have g6a : SGrowsAt 0 s6 sa := ((SGrowsAt.of_sealCur h7).trans
+      obtain ⟨ua, sa, ha, hc2⟩ := M.bind_inv h
+      have g6a : SGrowsAt 0 s6 s9 := ((SGrowsAt.of_sealCur h7).trans
         (SGrowsAt.of_moveTo (Or.inl (Nat.zero_le _)) h8)).trans
           (gbody.mono (Nat.zero_le _))
-      have hnextLt : nextId < sa.fn.blocks.size :=
+      have hnextLt : nextId < s9.fn.blocks.size :=
         Nat.lt_of_lt_of_le (newBlock_target_lt h6) g6a.size
-      have hvb : CurValid sb := CurValid.of_moveTo hnextLt hb2
-      obtain ⟨hv', -⟩ := ih sb hvb hc2
+      have hvb : CurValid sa := CurValid.of_moveTo hnextLt ha
+      obtain ⟨hv', -⟩ := ih sa hvb hc2
       have hnextBase : s.fn.blocks.size ≤ nextId := by
         rw [SGrowsAt.newBlock_id h6]
         exact a5.size
-      have gb : SGrowsAt s.fn.blocks.size s8 sb :=
+      have gb : SGrowsAt s.fn.blocks.size s8 sa :=
         (gbody.mono a8.size).trans
-          (SGrowsAt.of_moveTo (Or.inl hnextBase) hb2)
+          (SGrowsAt.of_moveTo (Or.inl hnextBase) ha)
       have gr := trCases_grows fenv env lctx rets sv X joinId rest df
-        sv X joinId sb u s' hc2
+        sv X joinId sa u s' hc2
       exact ⟨hv', Or.inl (hm.forward hv a8
         (gb.trans (gr.mono (Nat.le_trans a8.size gb.size))))⟩
     | some env' =>
@@ -1400,9 +1377,6 @@ theorem sim_letDecl_some {P : Prog} {f : Func} {fenv : FMap} {env : VMap}
     obtain ⟨u, sX, h1, -⟩ := M.bind_inv htr
     exact absurd h1 (by simp [reject])
   rw [if_neg hgate] at htr
-  obtain ⟨u, sX, h1, htr⟩ := M.bind_inv htr
-  obtain ⟨-, hsX⟩ := M.pure_inv h1
-  rw [hsX] at htr
   obtain ⟨ids', sA', h2, h3⟩ := M.bind_inv htr
   obtain ⟨rfl, rfl⟩ : ids' = ids ∧ sA' = sA := by
     have he := h2.symm.trans htrN
@@ -1447,9 +1421,6 @@ theorem sim_assign {P : Prog} {f : Func} {fenv : FMap} {env : VMap}
     obtain ⟨u, sX, h1, -⟩ := M.bind_inv htr
     exact absurd h1 (by simp [reject])
   rw [if_neg hgate] at htr
-  obtain ⟨u, sX, h1, htr⟩ := M.bind_inv htr
-  obtain ⟨-, hsX⟩ := M.pure_inv h1
-  rw [hsX] at htr
   obtain ⟨ids', sA', h2, h3⟩ := M.bind_inv htr
   obtain ⟨rfl, rfl⟩ : ids' = ids ∧ sA' = sA := by
     have he := h2.symm.trans htrN
@@ -1545,9 +1516,6 @@ theorem sim_letDecl_none {P : Prog} {f : Func} {fenv : FMap} {env : VMap}
     obtain ⟨u, sA, h1, -⟩ := M.bind_inv htr
     exact absurd h1 (by simp [reject])
   rw [if_neg hgate] at htr
-  obtain ⟨u, sA, h1, htr⟩ := M.bind_inv htr
-  obtain ⟨-, hsA⟩ := M.pure_inv h1
-  rw [hsA] at htr
   obtain ⟨ids, sB, h2, h3⟩ := M.bind_inv htr
   rw [mapM_constZero_spec] at h2
   obtain ⟨hids, hsB⟩ := M.some_pair_inj h2

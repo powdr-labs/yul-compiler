@@ -148,6 +148,69 @@ theorem rematUse_body (rv : ValId → Option U256) (a : ValId) (s : RUState) :
   · rfl
 
 omit model in
+/-- The body of the loop over one instruction's uses, over the do-elaborator's
+`Prod` state, with the `if`/`match` pulled out of the `ForInStep`. -/
+theorem rematUse_body_prod (rv : ValId → Option U256) (a : ValId)
+    (st : ValId × Array Instr × Subst) :
+    (if (!st.2.2.contains a) = true then
+       (match rv a with
+        | some v => pure (ForInStep.yield
+            (st.1 + 1, st.2.1.push (Instr.const st.1 v), st.2.2.insert a st.1))
+        | _ => pure (ForInStep.yield (st.1, st.2.1, st.2.2)))
+     else pure (ForInStep.yield (st.1, st.2.1, st.2.2))
+      : Id (ForInStep (ValId × Array Instr × Subst)))
+      = pure (ForInStep.yield
+          ((rematUseStep rv a ⟨st.1, st.2.1, st.2.2⟩).1,
+            (rematUseStep rv a ⟨st.1, st.2.1, st.2.2⟩).2.1,
+            (rematUseStep rv a ⟨st.1, st.2.1, st.2.2⟩).2.2)) := by
+  simp only [rematUseStep]
+  split
+  · split <;> rfl
+  · rfl
+
+omit model in
+/-- The use-list fold over the do-elaborator's `Prod` state agrees with the
+`RUState` fold, componentwise. -/
+theorem rematUses_fold_prod (rv : ValId → Option U256) (as : List ValId)
+    (next : ValId) (out : Array Instr) (sub : Subst) :
+    as.foldl (fun (st : ValId × Array Instr × Subst) a =>
+        ((rematUseStep rv a ⟨st.1, st.2.1, st.2.2⟩).1,
+          (rematUseStep rv a ⟨st.1, st.2.1, st.2.2⟩).2.1,
+          (rematUseStep rv a ⟨st.1, st.2.1, st.2.2⟩).2.2)) (next, out, sub) =
+      ((rematCopiesFold rv as ⟨next, out, sub⟩).1,
+        (rematCopiesFold rv as ⟨next, out, sub⟩).2.1,
+        (rematCopiesFold rv as ⟨next, out, sub⟩).2.2) := by
+  unfold rematCopiesFold
+  induction as generalizing next out sub with
+  | nil => rfl
+  | cons a as ih =>
+    rw [List.foldl_cons, List.foldl_cons]
+    exact ih (rematUseStep rv a ⟨next, out, sub⟩).1
+      (rematUseStep rv a ⟨next, out, sub⟩).2.1
+      (rematUseStep rv a ⟨next, out, sub⟩).2.2
+
+omit model in
+/-- The instruction fold over the do-elaborator's (rotated) `Prod` state agrees
+with the `RIState` fold, componentwise. -/
+theorem rematSeq_fold_prod (rv : Nat → ValId → Option U256) (is : List Instr)
+    (next : ValId) (here : Nat) (out : Array Instr) :
+    is.foldl (fun (st : ValId × Nat × Array Instr) ins =>
+        ((rematInstrStep rv ins ⟨st.2.1, st.1, st.2.2⟩).2.1,
+          (rematInstrStep rv ins ⟨st.2.1, st.1, st.2.2⟩).1,
+          (rematInstrStep rv ins ⟨st.2.1, st.1, st.2.2⟩).2.2)) (next, here, out) =
+      ((rematSeqFold rv is ⟨here, next, out⟩).2.1,
+        (rematSeqFold rv is ⟨here, next, out⟩).1,
+        (rematSeqFold rv is ⟨here, next, out⟩).2.2) := by
+  unfold rematSeqFold
+  induction is generalizing next here out with
+  | nil => rfl
+  | cons i is ih =>
+    rw [List.foldl_cons, List.foldl_cons]
+    exact ih (rematInstrStep rv i ⟨here, next, out⟩).2.1
+      (rematInstrStep rv i ⟨here, next, out⟩).1
+      (rematInstrStep rv i ⟨here, next, out⟩).2.2
+
+omit model in
 /-- The pass's nested `for` loops, as folds. -/
 theorem rematConsts_eq_fold (f : Func) :
     rematConsts f =
@@ -163,33 +226,77 @@ theorem rematConsts_eq_fold (f : Func) :
       cases i <;> rfl)]
     rfl)]
   dsimp only [Id.bind_apply]
-  rw [Id.forIn_array_eq_foldl (g := fun b s => rematBlockStep (rematConstMap f) b s) (h := by
+  rw [Id.forIn_array_eq_foldl
+    (g := fun b (st : ValId × Array Block) =>
+      ((rematBlockStep (rematConstMap f) b ⟨st.2, st.1⟩).2,
+        (rematBlockStep (rematConstMap f) b ⟨st.2, st.1⟩).1)) (h := by
     intro b s
     rw [Id.forIn_eq_foldl (g := fun x m => rematLocalStep m x) (h := by
       rintro ⟨i, k⟩ m
       cases i <;> rfl)]
-    rw [Id.forIn_eq_foldl (g := fun ins s => rematInstrStep (fun here a =>
-      rematValue (rematConstMap f) (rematLocalAt b) here a) ins s) (h := by
+    rw [Id.forIn_eq_foldl
+      (g := fun ins (st : ValId × Nat × Array Instr) =>
+        ((rematInstrStep (fun here a =>
+            rematValue (rematConstMap f) (rematLocalAt b) here a) ins
+              ⟨st.2.1, st.1, st.2.2⟩).2.1,
+          (rematInstrStep (fun here a =>
+            rematValue (rematConstMap f) (rematLocalAt b) here a) ins
+              ⟨st.2.1, st.1, st.2.2⟩).1,
+          (rematInstrStep (fun here a =>
+            rematValue (rematConstMap f) (rematLocalAt b) here a) ins
+              ⟨st.2.1, st.1, st.2.2⟩).2.2)) (h := by
       intro ins s
       cases ins with
       | const d v => rfl
       | op ds yop as =>
-        rw [Id.forIn_eq_foldl (g := fun a st => rematUseStep
-          (fun a' => rematValue (rematConstMap f) (rematLocalAt b) s.1 a') a st) (h := by
+        rw [Id.forIn_eq_foldl
+          (g := fun a (st : ValId × Array Instr × Subst) =>
+            ((rematUseStep (fun a' =>
+                rematValue (rematConstMap f) (rematLocalAt b) s.2.1 a') a
+                  ⟨st.1, st.2.1, st.2.2⟩).1,
+              (rematUseStep (fun a' =>
+                rematValue (rematConstMap f) (rematLocalAt b) s.2.1 a') a
+                  ⟨st.1, st.2.1, st.2.2⟩).2.1,
+              (rematUseStep (fun a' =>
+                rematValue (rematConstMap f) (rematLocalAt b) s.2.1 a') a
+                  ⟨st.1, st.2.1, st.2.2⟩).2.2)) (h := by
           intro a st
-          exact rematUse_body _ a st)]
+          exact rematUse_body_prod _ a st)]
+        rw [rematUses_fold_prod]
         rfl
       | call ds fid as =>
-        rw [Id.forIn_eq_foldl (g := fun a st => rematUseStep
-          (fun a' => rematValue (rematConstMap f) (rematLocalAt b) s.1 a') a st) (h := by
+        rw [Id.forIn_eq_foldl
+          (g := fun a (st : ValId × Array Instr × Subst) =>
+            ((rematUseStep (fun a' =>
+                rematValue (rematConstMap f) (rematLocalAt b) s.2.1 a') a
+                  ⟨st.1, st.2.1, st.2.2⟩).1,
+              (rematUseStep (fun a' =>
+                rematValue (rematConstMap f) (rematLocalAt b) s.2.1 a') a
+                  ⟨st.1, st.2.1, st.2.2⟩).2.1,
+              (rematUseStep (fun a' =>
+                rematValue (rematConstMap f) (rematLocalAt b) s.2.1 a') a
+                  ⟨st.1, st.2.1, st.2.2⟩).2.2)) (h := by
           intro a st
-          exact rematUse_body _ a st)]
+          exact rematUse_body_prod _ a st)]
+        rw [rematUses_fold_prod]
         rfl)]
-    rw [Id.forIn_eq_foldl (g := fun a st => rematUseStep
-      (fun a' => rematValue (rematConstMap f) (rematLocalAt b) b.instrs.length a') a st) (h := by
+    rw [rematSeq_fold_prod]
+    rw [Id.forIn_eq_foldl
+      (g := fun a (st : ValId × Array Instr × Subst) =>
+        ((rematUseStep (fun a' =>
+            rematValue (rematConstMap f) (rematLocalAt b) b.instrs.length a') a
+              ⟨st.1, st.2.1, st.2.2⟩).1,
+          (rematUseStep (fun a' =>
+            rematValue (rematConstMap f) (rematLocalAt b) b.instrs.length a') a
+              ⟨st.1, st.2.1, st.2.2⟩).2.1,
+          (rematUseStep (fun a' =>
+            rematValue (rematConstMap f) (rematLocalAt b) b.instrs.length a') a
+              ⟨st.1, st.2.1, st.2.2⟩).2.2)) (h := by
       intro a st
-      exact rematUse_body _ a st)]
+      exact rematUse_body_prod _ a st)]
+    rw [rematUses_fold_prod]
     rfl)]
+  rw [foldl_prodSwap]
   rfl
 
 

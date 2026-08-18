@@ -28,7 +28,7 @@ step, and unfolding that step gives the complete splice equation. -/
 
 namespace Passes
 
-abbrev InlineState := MProd (Option (Option Func)) PUnit
+abbrev InlineState := Option (Option Func) × PUnit
 
 theorem loopWith_inline_done {α : Type} {g : α → InlineState →
     ForInStep InlineState} {xs : List α} {f : Func}
@@ -126,7 +126,6 @@ theorem inlineOnce_eq_loop (counts : Array Nat) (funcs : Array Func) (f : Func) 
     unfold inlineBlockStep
     rw [Id.forIn_eq_loopWith (g := inlineInstrStep counts funcs f bi) (h := by
       intro ci s
-      simp only [LawfulMonad.pure_bind]
       cases hi : f.blocks[bi]!.instrs[ci]! with
       | const d v => simp [inlineInstrStep, hi]
       | op ds yop as => simp [inlineInstrStep, hi]
@@ -1459,7 +1458,7 @@ def Passes.inlineFuncStep (counts : Array Nat) (funcs : Array Func)
   | none => .done f
 
 def Passes.inlineFuncRawStep (counts : Array Nat) (funcs : Array Func)
-    (_ : Nat) (s : MProd (Option Func) Func) : ForInStep (MProd (Option Func) Func) :=
+    (_ : Nat) (s : Option Func × Func) : ForInStep (Option Func × Func) :=
   match inlineOnce counts funcs s.2 with
   | some f' => .yield ⟨none, f'⟩
   | none => .done ⟨some s.2, s.2⟩
@@ -1502,16 +1501,12 @@ theorem Passes.inlineFunc_eq_inlineN (counts : Array Nat) (funcs : Array Func) (
     cases hio : inlineOnce counts funcs s.2 <;>
       simp [inlineFuncRawStep, hio])]
   simp only [Id.run, bind, pure]
-  let l := List.range' 0 ((8 - 0 + 1 - 1) / 1) 1
-  let r := loopWith (inlineFuncRawStep counts funcs) l ⟨none, f⟩
-  change (match r.1 with | none => r.2 | some a => a) = _
-  have hm : (match r.1 with | none => r.2 | some a => a) = r.1.getD r.2 := by
-    cases r.1 <;> rfl
-  rw [hm]
-  have hr := inlineFuncRaw_loop counts funcs l f
-  change r.1.getD r.2 = _ at hr
-  rw [hr, inlineFuncStep_loop]
-  rfl
+  rcases hres : loopWith (inlineFuncRawStep counts funcs)
+      (List.range' 0 ((8 - 0 + 1 - 1) / 1) 1) (none, f) with ⟨o, g⟩
+  have hr := inlineFuncRaw_loop counts funcs
+    (List.range' 0 ((8 - 0 + 1 - 1) / 1) 1) f
+  rw [inlineFuncStep_loop, hres] at hr
+  cases o <;> simpa using hr
 
 omit model in
 theorem Passes.inlineN_nrets (counts : Array Nat) (funcs : Array Func)
@@ -1926,33 +1921,85 @@ def Passes.pruneModel (P : Prog) : Prog :=
     let remap := (pruneKeep P used).2
     { main := pruneFix remap P.main, funcs := kept.map (pruneFix remap) }
 
+/-- Run a step over the model's `MProd` state from the do-elaborator's `Prod`
+state, repacking the result. -/
+def prodStep {α β γ : Type} (g : α → MProd β γ → ForInStep (MProd β γ))
+    (a : α) (st : β × γ) : ForInStep (β × γ) :=
+  match g a ⟨st.1, st.2⟩ with
+  | .done x => .done (x.1, x.2)
+  | .yield x => .yield (x.1, x.2)
+
+omit model in
+/-- A `loopWith` over the do-elaborator's `Prod` state agrees with the same
+loop over the model's `MProd` state, componentwise. -/
+theorem loopWith_prodMap {α β γ : Type} (g : α → MProd β γ → ForInStep (MProd β γ))
+    (l : List α) (b : β) (c : γ) :
+    loopWith (prodStep g) l (b, c) =
+      ((loopWith g l ⟨b, c⟩).1, (loopWith g l ⟨b, c⟩).2) := by
+  induction l generalizing b c with
+  | nil => rfl
+  | cons a as ih =>
+    rw [loopWith_cons, loopWith_cons]
+    cases hg : g a ⟨b, c⟩ with
+    | done x => simp [prodStep, hg]
+    | yield x => simpa [prodStep, hg] using ih x.1 x.2
+
+omit model in
+/-- A `foldl` over the do-elaborator's (swapped) `Prod` state agrees with the
+model's `MProd` fold, componentwise. -/
+theorem foldl_prodSwap {α β γ : Type} (g : α → MProd β γ → MProd β γ)
+    (l : List α) (c : γ) (b : β) :
+    l.foldl (fun (st : γ × β) a =>
+        ((g a ⟨st.2, st.1⟩).2, (g a ⟨st.2, st.1⟩).1)) (c, b) =
+      ((l.foldl (fun st a => g a st) ⟨b, c⟩).2,
+        (l.foldl (fun st a => g a st) ⟨b, c⟩).1) := by
+  induction l generalizing c b with
+  | nil => rfl
+  | cons a as ih =>
+    rw [List.foldl_cons, List.foldl_cons]
+    exact ih (g a ⟨b, c⟩).2 (g a ⟨b, c⟩).1
+
 omit model in
 theorem Passes.pruneFuncs_eq_model (P : Prog) : pruneFuncs P = pruneModel P := by
   unfold pruneFuncs pruneModel pruneState
   dsimp only
   simp only [Std.Legacy.Range.forIn_eq_forIn_range', Std.Legacy.Range.size]
-  rw [Id.forIn_eq_loopWith (g := pruneRound P P.funcs.size) (h := by
-    intro i s
-    rw [Id.forIn_eq_foldl (g := pruneWorkOne P P.funcs.size) (h := by
-      intro fid r
-      simp only [pruneWorkOne]
-      split <;> rename_i hlt
-      · split <;> rfl
-      · rfl)]
-    simp only [pruneRound]
-    rfl)]
+  rw [Id.forIn_eq_loopWith
+    (g := prodStep (pruneRound P P.funcs.size))
+    (h := by
+      intro i s
+      rw [Id.forIn_eq_foldl
+        (g := fun fid (st : Array Bool × List FuncId) =>
+          ((pruneWorkOne P P.funcs.size fid ⟨st.2, st.1⟩).2,
+            (pruneWorkOne P P.funcs.size fid ⟨st.2, st.1⟩).1))
+        (h := by
+          intro fid r
+          simp only [pruneWorkOne]
+          split <;> rename_i hlt
+          · split <;> rfl
+          · rfl)]
+      rw [foldl_prodSwap]
+      simp only [prodStep, pruneRound, bind, pure]
+      split <;> rfl)]
+  rw [loopWith_prodMap]
   simp only [Id.run, bind, pure]
   simp only [Nat.sub_zero, Nat.add_sub_cancel, Nat.div_one]
-  rw [Id.forIn_eq_foldl (g := pruneKeepOne P (pruneState P).1) (h := by
-    intro fid r
-    simp only [pruneState, pruneKeepOne]
-    split <;> rename_i hc
-    · change ForInStep.yield _ = ForInStep.yield _
-      congr 1
-      exact (if_pos hc).symm
-    · change ForInStep.yield _ = ForInStep.yield _
-      congr 1
-      exact (if_neg hc).symm)]
+  rw [Id.forIn_eq_foldl
+    (g := fun fid (st : Array (Option FuncId) × Array Func) =>
+      ((pruneKeepOne P (pruneState P).1 fid ⟨st.2, st.1⟩).2,
+        (pruneKeepOne P (pruneState P).1 fid ⟨st.2, st.1⟩).1))
+    (h := by
+      intro fid r
+      split <;> rename_i hc
+      · change ForInStep.yield _ = ForInStep.yield _
+        congr 1
+        simp only [pruneKeepOne,
+          if_pos (show (pruneState P).1[fid]! = true from hc)]
+      · change ForInStep.yield _ = ForInStep.yield _
+        congr 1
+        simp only [pruneKeepOne,
+          if_neg (show ¬ (pruneState P).1[fid]! = true from hc)])]
+  rw [foldl_prodSwap]
   rfl
 
 omit model in
@@ -2967,7 +3014,7 @@ theorem Passes.pruneFuncs_wf {P : Prog} (hwf : P.wfCheck = true) :
     simp only [Prog.wfCheck, Bool.and_eq_true] at hparts ⊢
     refine ⟨⟨⟨?_, ?_⟩, ?_⟩, ?_⟩
     · simpa [pruneFix, kept, remap] using hparts.1.1.1
-    · simpa [pruneFix, kept, remap] using hparts.1.1.2
+    · exact decide_eq_true (by simpa [pruneFix, kept, remap] using hparts.1.1.2)
     · have hm := pruneFix_wf_reach hwf husedSize hmarks
           (f := P.main) (Or.inl rfl) hparts.1.2
       simpa [kept, remap] using hm
@@ -3047,7 +3094,7 @@ def Passes.inlineProgStep (_ : Nat) (P : Prog) : ForInStep Prog :=
   if inlineSame P Q then .done Q else .yield Q
 
 def Passes.inlineProgRawStep (_ : Nat)
-    (s : MProd (Option Prog) Prog) : ForInStep (MProd (Option Prog) Prog) :=
+    (s : Option Prog × Prog) : ForInStep (Option Prog × Prog) :=
   let Q := inlineRound s.2
   if inlineSame s.2 Q then .done ⟨some Q, Q⟩ else .yield ⟨none, Q⟩
 
@@ -3083,18 +3130,16 @@ theorem Passes.inlineProg_eq_inlineProgN (P : Prog) :
   rw [Id.forIn_eq_loopWith (g := inlineProgRawStep) (h := by
     intro i s
     simp only [inlineProgRawStep, inlineRound, inlineMap, inlineSame]
-    split <;> rfl)]
+    split <;> rename_i hc
+    · exact congrArg pure (if_pos hc).symm
+    · exact congrArg pure (if_neg hc).symm)]
   simp only [Id.run, bind, pure]
-  let l := List.range' 0 ((3 - 0 + 1 - 1) / 1) 1
-  let r := loopWith inlineProgRawStep l ⟨none, P⟩
-  change (match r.1 with | none => r.2 | some a => a) = _
-  have hm : (match r.1 with | none => r.2 | some a => a) = r.1.getD r.2 := by
-    cases r.1 <;> rfl
-  rw [hm]
-  have hr := inlineProgRaw_loop l P
-  change r.1.getD r.2 = _ at hr
-  rw [hr, inlineProgStep_loop]
-  rfl
+  rcases hres : loopWith inlineProgRawStep
+      (List.range' 0 ((3 - 0 + 1 - 1) / 1) 1) (none, P) with ⟨o, Q⟩
+  have hr := inlineProgRaw_loop
+    (List.range' 0 ((3 - 0 + 1 - 1) / 1) 1) P
+  rw [inlineProgStep_loop, hres] at hr
+  cases o <;> simpa using hr
 
 theorem inlineProgN_sound {P : Prog} {yst0 yst' : EvmState} {o : Outcome} :
     ∀ n, P.wfCheck = true → Run (model := model) P yst0 yst' o →

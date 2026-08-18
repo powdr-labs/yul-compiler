@@ -288,10 +288,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       obtain ⟨u, sX, hx, -⟩ := M.bind_inv htr
       exact absurd hx (by simp [reject])
     rw [if_neg hgate] at htr
-    obtain ⟨u, sX, hx, htr'⟩ := M.bind_inv htr
-    obtain ⟨-, hsX⟩ := M.pure_inv hx
-    rw [hsX] at htr'
-    obtain ⟨ids, sA, h1, h2⟩ := M.bind_inv htr'
+    obtain ⟨ids, sA, h1, h2⟩ := M.bind_inv htr
     obtain ⟨-, rfl⟩ := M.pure_inv h2
     exact sim_letDecl_some henv huniq hlen h1
       (ihe.2.1 fenv env R s₀ s₁ vars.length ids joins hfe henv hfr hp hcompl hcp hlen h1) htr0
@@ -304,10 +301,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       obtain ⟨u, sX, hx, -⟩ := M.bind_inv htr
       exact absurd hx (by simp [reject])
     rw [if_neg hgate] at htr
-    obtain ⟨u, sX, hx, htr'⟩ := M.bind_inv htr
-    obtain ⟨-, hsX⟩ := M.pure_inv hx
-    rw [hsX] at htr'
-    obtain ⟨ids, sA, h1, h2⟩ := M.bind_inv htr'
+    obtain ⟨ids, sA, h1, h2⟩ := M.bind_inv htr
     obtain ⟨-, rfl⟩ := M.pure_inv h2
     exact SOut.ofExprHalt
       (ihe.2.1 fenv env R s₀ s₁ vars.length ids joins hfe henv hfr hp hcompl hcp h1)
@@ -321,10 +315,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       obtain ⟨u, sX, hx, -⟩ := M.bind_inv htr
       exact absurd hx (by simp [reject])
     rw [if_neg hgate] at htr
-    obtain ⟨u, sX, hx, htr'⟩ := M.bind_inv htr
-    obtain ⟨-, hsX⟩ := M.pure_inv hx
-    rw [hsX] at htr'
-    obtain ⟨ids, sA, h1, h2⟩ := M.bind_inv htr'
+    obtain ⟨ids, sA, h1, h2⟩ := M.bind_inv htr
     obtain ⟨-, rfl⟩ := M.pure_inv h2
     exact sim_assign henv huniq h1
       (ihe.2.1 fenv env R s₀ s₁ vars.length ids joins hfe henv hfr hp hcompl hcp hlen h1) htr0
@@ -337,10 +328,7 @@ theorem sim {P : Prog} {f : Func} {funs : YulSemantics.FunEnv yulD}
       obtain ⟨u, sX, hx, -⟩ := M.bind_inv htr
       exact absurd hx (by simp [reject])
     rw [if_neg hgate] at htr
-    obtain ⟨u, sX, hx, htr'⟩ := M.bind_inv htr
-    obtain ⟨-, hsX⟩ := M.pure_inv hx
-    rw [hsX] at htr'
-    obtain ⟨ids, sA, h1, h2⟩ := M.bind_inv htr'
+    obtain ⟨ids, sA, h1, h2⟩ := M.bind_inv htr
     obtain ⟨-, rfl⟩ := M.pure_inv h2
     exact SOut.ofExprHalt
       (ihe.2.1 fenv env R s₀ s₁ vars.length ids joins hfe henv hfr hp hcompl hcp h1)

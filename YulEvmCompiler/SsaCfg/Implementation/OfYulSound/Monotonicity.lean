@@ -137,15 +137,12 @@ theorem trAll_grows :
       obtain ⟨u7, s7, h7, -⟩ := M.bind_inv h
       exact absurd h7 (by simp [reject])
     · rw [if_neg hg] at h
-      obtain ⟨u7, s7, h7, h⟩ := M.bind_inv h
-      obtain ⟨renv, s8, h8, h⟩ := M.bind_inv h
-      have f4 : FGrows s s8 :=
-        FGrows.trans f3 (FGrows.trans (FGrows.of_pure h7)
-          ((ih pids rids s7 renv s8 h8).funcsSize))
+      obtain ⟨renv, s7, h7, h⟩ := M.bind_inv h
+      have f4 : FGrows s s7 :=
+        FGrows.trans f3 ((ih pids rids s6 renv s7 h7).funcsSize)
       cases renv with
       | none =>
-        obtain ⟨ua, sa, ha, hh⟩ := M.bind_inv h
-        exact hfin sa (FGrows.trans f4 (FGrows.of_pure ha)) hh
+        exact hfin s7 f4 h
       | some envEnd =>
         obtain ⟨vals, sa, ha, hh⟩ := M.bind_inv h
         obtain ⟨ub, sb, hb2, hh⟩ := M.bind_inv hh
@@ -212,11 +209,9 @@ theorem trAll_grows :
     intro fenv env lctx rets vars hgate s r s' h
     rw [trStmt] at h
     rw [if_neg hgate] at h
-    obtain ⟨u, s₁, h1, h⟩ := M.bind_inv h
-    obtain ⟨ids, s₂, h2, h3⟩ := M.bind_inv h
-    exact SGrows.trans (SGrowsAt.of_pure h1)
-      (SGrows.trans (SGrows.of_grows (Grows.of_mapM_constZero h2))
-        (SGrowsAt.of_pure h3))
+    obtain ⟨ids, s₁, h1, h2⟩ := M.bind_inv h
+    exact SGrows.trans (SGrows.of_grows (Grows.of_mapM_constZero h1))
+      (SGrowsAt.of_pure h2)
   case letSomeBad =>
     intro fenv env lctx rets vars e hgate s r s' h
     rw [trStmt] at h
@@ -227,10 +222,8 @@ theorem trAll_grows :
     intro fenv env lctx rets vars e hgate s r s' h
     rw [trStmt] at h
     rw [if_neg hgate] at h
-    obtain ⟨u, s₁, h1, h⟩ := M.bind_inv h
-    obtain ⟨ids, s₂, h2, h3⟩ := M.bind_inv h
-    exact SGrows.trans (SGrowsAt.of_pure h1)
-      (SGrows.trans (SGrows.of_grows (trExprN_grows h2)) (SGrowsAt.of_pure h3))
+    obtain ⟨ids, s₁, h1, h2⟩ := M.bind_inv h
+    exact SGrows.trans (SGrows.of_grows (trExprN_grows h1)) (SGrowsAt.of_pure h2)
   case assignBad =>
     intro fenv env lctx rets vars e hgate s r s' h
     rw [trStmt] at h
@@ -241,10 +234,8 @@ theorem trAll_grows :
     intro fenv env lctx rets vars e hgate s r s' h
     rw [trStmt] at h
     rw [if_neg hgate] at h
-    obtain ⟨u, s₁, h1, h⟩ := M.bind_inv h
-    obtain ⟨ids, s₂, h2, h3⟩ := M.bind_inv h
-    exact SGrows.trans (SGrowsAt.of_pure h1)
-      (SGrows.trans (SGrows.of_grows (trExprN_grows h2)) (SGrowsAt.of_pure h3))
+    obtain ⟨ids, s₁, h1, h2⟩ := M.bind_inv h
+    exact SGrows.trans (SGrows.of_grows (trExprN_grows h1)) (SGrowsAt.of_pure h2)
   case cond =>
     intro fenv env lctx rets c body ih s r s' h
     rw [trStmt] at h
@@ -272,10 +263,8 @@ theorem trAll_grows :
     refine a8.trans ?_
     cases renv with
     | none =>
-      obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-      obtain ⟨ub, sb, hb2, hc2⟩ := M.bind_inv h
-      exact (SGrowsAt.of_pure ha).trans
-        ((SGrowsAt.of_moveTo (Or.inl hjoin) hb2).trans (SGrowsAt.of_pure hc2))
+      obtain ⟨ua, sa, ha, hc2⟩ := M.bind_inv h
+      exact (SGrowsAt.of_moveTo (Or.inl hjoin) ha).trans (SGrowsAt.of_pure hc2)
     | some env' =>
       obtain ⟨xv, sa, ha, h⟩ := M.bind_inv h
       obtain ⟨ub, sb, hb2, h⟩ := M.bind_inv h
@@ -354,17 +343,14 @@ theorem trAll_grows :
       cases renvB with
       | none =>
         obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-        obtain ⟨ub, sb, hb2, h⟩ := M.bind_inv h
         obtain ⟨renvP, sc, hc2, h⟩ := M.bind_inv h
-        have b1 := a17.trans (SGrowsAt.of_pure ha)
-        have b2 := b1.trans (SGrowsAt.of_moveTo (Or.inl hpost) hb2)
+        have b2 := a17.trans (SGrowsAt.of_moveTo (Or.inl hpost) ha)
         have b3 := b2.trans
-          ((ihPost scope envI postParams sb renvP sc hc2).mono b2.size)
+          ((ihPost scope envI postParams sa renvP sc hc2).mono b2.size)
         cases renvP with
         | none =>
-          obtain ⟨ud, sd, hd, h⟩ := M.bind_inv h
           obtain ⟨ue, se, he, hf⟩ := M.bind_inv h
-          exact ((b3.trans (SGrowsAt.of_pure hd)).trans
+          exact (b3.trans
             (SGrowsAt.of_moveTo (Or.inl hexit) he)).trans (SGrowsAt.of_pure hf)
         | some envP' =>
           obtain ⟨xvP, sd, hd, h⟩ := M.bind_inv h
@@ -385,9 +371,8 @@ theorem trAll_grows :
           ((ihPost scope envI postParams sb renvP sc hc2).mono b2.size)
         cases renvP with
         | none =>
-          obtain ⟨ud, sd, hd, h⟩ := M.bind_inv h
           obtain ⟨ue, se, he, hf⟩ := M.bind_inv h
-          exact ((b3.trans (SGrowsAt.of_pure hd)).trans
+          exact (b3.trans
             (SGrowsAt.of_moveTo (Or.inl hexit) he)).trans (SGrowsAt.of_pure hf)
         | some envP' =>
           obtain ⟨xvP, sd, hd, h⟩ := M.bind_inv h
@@ -502,12 +487,10 @@ theorem trAll_grows :
     cases renv with
     | none =>
       obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-      obtain ⟨ub, sb, hb2, hc2⟩ := M.bind_inv h
-      refine (SGrowsAt.of_pure ha).trans
-        ((SGrowsAt.of_moveTo (Or.inl hnext) hb2).trans ?_)
-      exact ((ihr sv X joinId sb u s' hc2).mono
-        (Nat.le_trans (Nat.le_trans a9.size (SGrowsAt.of_pure (N := 0) ha).size)
-          (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) hb2).size))
+      refine (SGrowsAt.of_moveTo (Or.inl hnext) ha).trans ?_
+      exact ((ihr sv X joinId sa u s' h).mono
+        (Nat.le_trans a9.size
+          (SGrowsAt.of_moveTo (N := 0) (Or.inl (Nat.zero_le _)) ha).size))
     | some env' =>
       obtain ⟨xv, sa, ha, h⟩ := M.bind_inv h
       obtain ⟨ub, sb, hb2, h⟩ := M.bind_inv h
@@ -659,11 +642,9 @@ theorem trFrames_fprefix :
       obtain ⟨u7, s7, h7, -⟩ := M.bind_inv h
       exact absurd h7 (by simp [reject])
     · rw [if_neg hg] at h
-      obtain ⟨u7, s7, h7, h⟩ := M.bind_inv h
-      obtain ⟨renv, s8, h8, h⟩ := M.bind_inv h
-      have p7 := p6.trans (FPrefix.of_pure h7)
-      have p8 : FPrefix N s s8 := p7.trans
-        (ih pids rids N s7 renv s8 (p7.size hN) h8)
+      obtain ⟨renv, s7, h7, h⟩ := M.bind_inv h
+      have p8 : FPrefix N s s7 := p6.trans
+        (ih pids rids N s6 renv s7 (p6.size hN) h7)
       have finish : ∀ (sk : BState), FPrefix N s sk →
           (getFn >>= fun done => setFn saved >>= fun _ =>
           (pure { params := pids, nrets := rs.length, entry := entry,
@@ -676,8 +657,7 @@ theorem trFrames_fprefix :
           (FPrefix.of_setFn hb)).trans (FPrefix.of_pure hc)
       cases renv with
       | none =>
-          obtain ⟨ua, sa, ha, hh⟩ := M.bind_inv h
-          exact finish sa (p8.trans (FPrefix.of_pure ha)) hh
+          exact finish s7 p8 h
       | some envEnd =>
           obtain ⟨vals, sa, ha, h⟩ := M.bind_inv h
           obtain ⟨ub, sb, hb, hh⟩ := M.bind_inv h
@@ -745,11 +725,9 @@ theorem trFrames_fprefix :
   case letNone =>
     intro fenv env lctx rets vars hg N s r s' hN h
     rw [trStmt, if_neg hg] at h
-    obtain ⟨u, s1, h1, h⟩ := M.bind_inv h
-    obtain ⟨ids, s2, h2, h3⟩ := M.bind_inv h
-    exact ((FPrefix.of_pure h1).trans
-      (FPrefix.of_grows (Grows.of_mapM_constZero h2))).trans
-      (FPrefix.of_pure h3)
+    obtain ⟨ids, s1, h1, h2⟩ := M.bind_inv h
+    exact (FPrefix.of_grows (Grows.of_mapM_constZero h1)).trans
+      (FPrefix.of_pure h2)
   case letSomeBad =>
     intro fenv env lctx rets vars e hg N s r s' hN h
     rw [trStmt, if_pos hg] at h
@@ -758,10 +736,8 @@ theorem trFrames_fprefix :
   case letSome =>
     intro fenv env lctx rets vars e hg N s r s' hN h
     rw [trStmt, if_neg hg] at h
-    obtain ⟨u, s1, h1, h⟩ := M.bind_inv h
-    obtain ⟨ids, s2, h2, h3⟩ := M.bind_inv h
-    exact ((FPrefix.of_pure h1).trans
-      (FPrefix.of_grows (trExprN_grows h2))).trans (FPrefix.of_pure h3)
+    obtain ⟨ids, s1, h1, h2⟩ := M.bind_inv h
+    exact (FPrefix.of_grows (trExprN_grows h1)).trans (FPrefix.of_pure h2)
   case assignBad =>
     intro fenv env lctx rets vars e hg N s r s' hN h
     rw [trStmt, if_pos hg] at h
@@ -770,10 +746,8 @@ theorem trFrames_fprefix :
   case assign =>
     intro fenv env lctx rets vars e hg N s r s' hN h
     rw [trStmt, if_neg hg] at h
-    obtain ⟨u, s1, h1, h⟩ := M.bind_inv h
-    obtain ⟨ids, s2, h2, h3⟩ := M.bind_inv h
-    exact ((FPrefix.of_pure h1).trans
-      (FPrefix.of_grows (trExprN_grows h2))).trans (FPrefix.of_pure h3)
+    obtain ⟨ids, s1, h1, h2⟩ := M.bind_inv h
+    exact (FPrefix.of_grows (trExprN_grows h1)).trans (FPrefix.of_pure h2)
   case cond =>
     intro fenv env lctx rets c body ih N s r s' hN h
     rw [trStmt] at h
@@ -795,10 +769,8 @@ theorem trFrames_fprefix :
       (ih N s7 renv s8 (p7.size hN) h8)
     cases renv with
     | none =>
-        obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-        obtain ⟨ub, sb, hb, hc⟩ := M.bind_inv h
-        exact ((p8.trans (FPrefix.of_pure ha)).trans
-          (FPrefix.of_moveTo hb)).trans (FPrefix.of_pure hc)
+        obtain ⟨ua, sa, ha, hc⟩ := M.bind_inv h
+        exact (p8.trans (FPrefix.of_moveTo ha)).trans (FPrefix.of_pure hc)
     | some env' =>
         obtain ⟨xa, sa, ha, h⟩ := M.bind_inv h
         obtain ⟨ub, sb, hb, h⟩ := M.bind_inv h
@@ -869,18 +841,14 @@ theorem trFrames_fprefix :
       cases rb with
       | none =>
         obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-        obtain ⟨ub, sb, hb, h⟩ := M.bind_inv h
         obtain ⟨rp, sc, hc, h⟩ := M.bind_inv h
-        have pp := (p17.trans (FPrefix.of_pure ha)).trans
-          (FPrefix.of_moveTo hb)
+        have pp := p17.trans (FPrefix.of_moveTo ha)
         have pc := pp.trans
-          (ihP scope envI pps N sb rp sc (pp.size hN) hc)
+          (ihP scope envI pps N sa rp sc (pp.size hN) hc)
         cases rp with
         | none =>
-          obtain ⟨ud, sd, hd, h⟩ := M.bind_inv h
           obtain ⟨ue, se, he, hf⟩ := M.bind_inv h
-          exact ((pc.trans (FPrefix.of_pure hd)).trans
-            (FPrefix.of_moveTo he)).trans (FPrefix.of_pure hf)
+          exact (pc.trans (FPrefix.of_moveTo he)).trans (FPrefix.of_pure hf)
         | some ep =>
           obtain ⟨xd, sd, hd, h⟩ := M.bind_inv h
           obtain ⟨ue, se, he, h⟩ := M.bind_inv h
@@ -899,10 +867,8 @@ theorem trFrames_fprefix :
           (ihP scope envI pps N sc rp sd (pp.size hN) hd)
         cases rp with
         | none =>
-          obtain ⟨ue, se, he, h⟩ := M.bind_inv h
-          obtain ⟨uf, sf, hf, hg⟩ := M.bind_inv h
-          exact ((pd.trans (FPrefix.of_pure he)).trans
-            (FPrefix.of_moveTo hf)).trans (FPrefix.of_pure hg)
+          obtain ⟨ue, se, he, hg⟩ := M.bind_inv h
+          exact (pd.trans (FPrefix.of_moveTo he)).trans (FPrefix.of_pure hg)
         | some ep =>
           obtain ⟨xe, se, he, h⟩ := M.bind_inv h
           obtain ⟨uf, sf, hf, h⟩ := M.bind_inv h
@@ -1013,10 +979,8 @@ theorem trFrames_fprefix :
     cases renv with
     | none =>
       obtain ⟨ua, sa, ha, h⟩ := M.bind_inv h
-      obtain ⟨ub, sb, hb, hc⟩ := M.bind_inv h
-      have pp := (p9.trans (FPrefix.of_pure ha)).trans
-        (FPrefix.of_moveTo hb)
-      exact pp.trans (ihR sv X jid N sb u s' (pp.size hN) hc)
+      have pp := p9.trans (FPrefix.of_moveTo ha)
+      exact pp.trans (ihR sv X jid N sa u s' (pp.size hN) h)
     | some env' =>
       obtain ⟨xv, sa, ha, h⟩ := M.bind_inv h
       obtain ⟨ub, sb, hb, h⟩ := M.bind_inv h

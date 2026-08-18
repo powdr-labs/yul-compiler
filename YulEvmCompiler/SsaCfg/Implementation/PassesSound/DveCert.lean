@@ -262,7 +262,6 @@ theorem dveLiveInstrLoop_eq (is : List Instr) (live : Std.HashSet ValId) :
           do pure PUnit.unit; pure (.yield (args.foldl (fun s a => s.insert a) live))) :
         Id (Std.HashSet ValId)) =
       pure (is.foldl (fun live ins => dveLiveInstrStep ins live) live) := by
-  simp only [LawfulMonad.pure_bind]
   apply Eq.trans (Id.forIn_eq_foldl (g := dveLiveInstrStep) (h := by
     intro ins live
     cases ins with
@@ -528,7 +527,7 @@ def dveFuel (f : Func) : Nat :=
   f.blocks.foldl (init := f.allDefs.length + 2) fun n b =>
     n + b.instrs.foldl (fun m i => m + i.uses.length) b.term.uses.length
 
-abbrev DVELoopState := MProd (Option (Std.HashSet ValId)) (Std.HashSet ValId)
+abbrev DVELoopState := Option (Std.HashSet ValId) × Std.HashSet ValId
 
 def dveLoopStep (f : Func) (_ : Nat) (r : DVELoopState) : ForInStep DVELoopState :=
   let next := liveStep f r.2
@@ -541,11 +540,9 @@ theorem dveLoopFinish_eq (r : Id DVELoopState) :
     Id.run (do
       let s ← r
       match s.1 with
-      | none => do
-          pure PUnit.unit
-          pure s.2
-      | some live => pure live) = dveLoopResult (Id.run r) := by
-  change (match r.1 with | none => r.2 | some live => live) = r.1.getD r.2
+      | some live => pure live
+      | none => pure s.2) = dveLoopResult (Id.run r) := by
+  change (match r.1 with | some live => live | none => r.2) = r.1.getD r.2
   cases r.1 <;> rfl
 
 theorem liveSet_eq_loop (f : Func) :
@@ -561,8 +558,12 @@ theorem liveSet_eq_loop (f : Func) :
   dsimp only [Id.run, Id.instMonad, Id.hasBind]
   simp only [Std.Legacy.Range.size, dveLoopResult]
   simp only [Nat.sub_zero, Nat.add_sub_cancel, Nat.div_one]
-  exact dveLoopFinish_eq
-    (loopWith (dveLoopStep f) (List.range' 0 (dveFuel f) 1) ⟨none, ∅⟩)
+  rcases hres : loopWith (dveLoopStep f)
+      (List.range' 0
+        (Array.foldl (fun n b => n + List.foldl (fun m i => m + i.uses.length)
+          b.term.uses.length b.instrs) (f.allDefs.length + 2) f.blocks) 1)
+      (none, ∅) with ⟨o, live⟩
+  cases o <;> rfl
 
 theorem instrUseFuel_eq (is : List Instr) (n : Nat) :
     is.foldl (fun m i => m + i.uses.length) n =

@@ -161,7 +161,7 @@ theorem inEdgeArgs_mem_of_edge {f : Func} {b : Block} (hb : b ∈ f.blocks.toLis
   exact inEdgeArgsBlockFold_of_mem (by simpa using het) hb he
 
 abbrev TrivialCandidate := BlockId × Nat × ValId × ValId
-abbrev FindTrivialState := MProd (Option (Option TrivialCandidate)) PUnit
+abbrev FindTrivialState := Option (Option TrivialCandidate) × PUnit
 
 def findTrivialParamStep (f : Func) (bi i : Nat) (_ : FindTrivialState) :
     ForInStep FindTrivialState :=
@@ -207,12 +207,11 @@ theorem findTrivialParam_eq_loop (f : Func) :
     · split
       · rw [Id.forIn_eq_loopWith (g := findTrivialParamStep f bi) (h := by
           intro i s
-          simp only [LawfulMonad.pure_bind]
           rfl)]
         simp_all [bind, pure]
         split <;> simp_all
-      · simp_all [bind, pure]
-    · simp_all [bind, pure])]
+      · simp_all [pure]
+    · simp_all [pure])]
   simp [Id.run, bind, pure, Option.getD]
   split <;> simp_all
 
@@ -406,7 +405,7 @@ theorem findTrivialParam_edge {f : Func} {bi i p v : Nat}
       · exact absurd het htarget
       · exact absurd (ha.trans (congrArg some hap)) harg
 
-abbrev ElimTrivialLoopState := MProd (Option Func) Func
+abbrev ElimTrivialLoopState := Option Func × Func
 
 def elimTrivialStep (_ : Nat) (r : ElimTrivialLoopState) :
     ForInStep ElimTrivialLoopState :=

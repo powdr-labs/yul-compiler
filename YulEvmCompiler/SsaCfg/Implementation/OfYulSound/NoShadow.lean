@@ -173,9 +173,6 @@ theorem ns_sim {funs : YulSemantics.FunEnv yulD} {V : VEnv yulD}
       obtain ⟨u, sA, h1, -⟩ := M.bind_inv htr
       exact absurd h1 (by simp [reject])
     rw [if_neg hgate] at htr
-    obtain ⟨u, sA, h1, htr⟩ := M.bind_inv htr
-    obtain ⟨-, hsA⟩ := M.pure_inv h1
-    rw [hsA] at htr
     obtain ⟨ids, sB, h2, h3⟩ := M.bind_inv htr
     rw [mapM_constZero_spec] at h2
     obtain ⟨hids, -⟩ := M.some_pair_inj h2
@@ -211,9 +208,6 @@ theorem ns_sim {funs : YulSemantics.FunEnv yulD} {V : VEnv yulD}
       obtain ⟨u, sA, h1, -⟩ := M.bind_inv htr
       exact absurd h1 (by simp [reject])
     rw [if_neg hgate] at htr
-    obtain ⟨u, sA, h1, htr⟩ := M.bind_inv htr
-    obtain ⟨-, hsA⟩ := M.pure_inv h1
-    rw [hsA] at htr
     obtain ⟨ids, sB, h2, h3⟩ := M.bind_inv htr
     obtain ⟨hrenv, -⟩ := M.pure_inv h3
     have hidlen : ids.length = vars.length := trExprN_length h2
@@ -248,9 +242,6 @@ theorem ns_sim {funs : YulSemantics.FunEnv yulD} {V : VEnv yulD}
       obtain ⟨u, sA, h1, -⟩ := M.bind_inv htr
       exact absurd h1 (by simp [reject])
     rw [if_neg hgate] at htr
-    obtain ⟨u, sA, h1, htr⟩ := M.bind_inv htr
-    obtain ⟨-, hsA⟩ := M.pure_inv h1
-    rw [hsA] at htr
     obtain ⟨ids, sB, h2, h3⟩ := M.bind_inv htr
     obtain ⟨hrenv, -⟩ := M.pure_inv h3
     have hnamesV' : VEnv.names (YulSemantics.VEnv.setMany V vars vals)
@@ -317,8 +308,7 @@ theorem ns_sim {funs : YulSemantics.FunEnv yulD} {V : VEnv yulD}
     obtain ⟨bodyEnv, sH, h8, htr⟩ := M.bind_inv htr
     cases bodyEnv with
     | none =>
-      obtain ⟨ua, sa, ha, htr⟩ := M.bind_inv htr
-      obtain ⟨ub, sb, hbb, hc'⟩ := M.bind_inv htr
+      obtain ⟨ua, sa, ha, hc'⟩ := M.bind_inv htr
       obtain ⟨hrenv, -⟩ := M.pure_inv hc'
       exact ⟨_, hrenv, by rw [VMap.names_setMany, hnames, hnamesV']⟩
     | some envB =>
@@ -342,8 +332,7 @@ theorem ns_sim {funs : YulSemantics.FunEnv yulD} {V : VEnv yulD}
     obtain ⟨bodyEnv, sH, h8, htr⟩ := M.bind_inv htr
     cases bodyEnv with
     | none =>
-      obtain ⟨ua, sa, ha, htr⟩ := M.bind_inv htr
-      obtain ⟨ub, sb, hbb, hc'⟩ := M.bind_inv htr
+      obtain ⟨ua, sa, ha, hc'⟩ := M.bind_inv htr
       obtain ⟨hrenv, -⟩ := M.pure_inv hc'
       exact ⟨_, hrenv, by rw [VMap.names_setMany, hnames]⟩
     | some envB =>
@@ -424,12 +413,10 @@ theorem ns_sim {funs : YulSemantics.FunEnv yulD} {V : VEnv yulD}
     cases renvB with
     | none =>
       obtain ⟨u16, s16, hx16, htr⟩ := M.bind_inv htr
-      obtain ⟨u17, s17, hx17, htr⟩ := M.bind_inv htr
       obtain ⟨renvP, s18, hx18, htr⟩ := M.bind_inv htr
       cases renvP with
       | none =>
         obtain ⟨u19, s19, hx19, htr⟩ := M.bind_inv htr
-        obtain ⟨u20, s20, hx20, htr⟩ := M.bind_inv htr
         obtain ⟨hrenv, -⟩ := M.pure_inv htr
         exact ⟨_, hrenv, key _ (hkeyI _)⟩
       | some envP' =>
@@ -446,7 +433,6 @@ theorem ns_sim {funs : YulSemantics.FunEnv yulD} {V : VEnv yulD}
       cases renvP with
       | none =>
         obtain ⟨u20, s20, hx20, htr⟩ := M.bind_inv htr
-        obtain ⟨u21, s21, hx21, htr⟩ := M.bind_inv htr
         obtain ⟨hrenv, -⟩ := M.pure_inv htr
         exact ⟨_, hrenv, key _ (hkeyI _)⟩
       | some envP' =>
