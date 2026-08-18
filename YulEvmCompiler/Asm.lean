@@ -139,10 +139,12 @@ inductive Asm
   placeholder landed. -/
   | pushImmutable (key : String)
   /-- A fused gas-forwarding call `k.op(gas(), …)`: consumes the call's
-  arguments except the gas word and pushes the result flag. Produced only by
-  the Asm peephole (fusing `.op .gas :: .op k.op`); lowers to `GAS` followed
-  by the call opcode, realizing the source's `gas()` read as the target
-  machine's own remaining gas. -/
+  arguments except the gas word and pushes the result flag. Lowers to `GAS`
+  followed by the call opcode, realizing the source's `gas()` read as the
+  target machine's own remaining gas. Produced only by the Asm peephole
+  (`CodeRel.gasFuse`, fusing `.op .gas :: .op k.op`); the compilers never
+  emit it directly, and the SSA-CFG backend does not produce it at all, so
+  gas-forwarding programs compile through the classic backend candidate. -/
   | gasCall (k : GasCallKind)
   deriving Repr, DecidableEq
 

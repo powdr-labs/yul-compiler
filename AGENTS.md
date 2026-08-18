@@ -32,7 +32,16 @@ Important files:
 - `YulEvmCompiler/Compile.lean`: Yul AST to labeled `Asm`; stack layout, label allocation, function and loop contexts.
 - `YulEvmCompiler/Asm.lean`: labeled IR, fixed byte widths, label well-formedness, label resolution, and lowering to `Instr`.
 - `YulEvmCompiler/AsmSem.lean`: gas-free semantics for `Asm`, using the Yul dialect's own `stepOp` for built-ins.
-- `YulEvmCompiler/AsmPeephole.lean`: verified Asm→Asm peephole pass (`optimizeAsm`, run by `compile` between `compileProgram` and `lowerProg`) and its `CodeRel` spec relation with label-structure/`WFProg` preservation.
+- `YulEvmCompiler/AsmPeephole.lean`: verified Asm→Asm peephole pass (`optimizeAsm`, run by `compile` between `compileProgram` and `lowerProg`) and its `CodeRel` spec relation with label-structure/`WFProg` preservation. The peephole is also the *only* producer of the fused gas-forwarding call
+  `Asm.gasCall` (rewriting adjacent `.op .gas :: .op <call-op>` windows), which is what lets
+  solc's `call(gas(), …)` pattern compile: the classic backend's right-to-left argument
+  evaluation guarantees the adjacency, and if a future pass ever breaks it the fusion simply
+  does not fire and the bare `gas()` is rejected at lowering — the failure mode is rejection,
+  never miscompilation. The SSA-CFG backend does not emit `gasCall`, so gas-forwarding
+  programs currently compile through the classic candidate only (the `compileSource` race
+  falls back to it); teaching `SsaCfg` `toAsm` to emit the fused instruction is a
+  self-contained follow-up if its stack quality is wanted on external-call contracts.
+  See `YulEvmCompiler/GasOracle.lean` for why only the fused form is realizable.
 - `YulEvmCompiler/AsmPeepholeSound.lean`: the pass's whole-program forward simulation over `AStep` (`Peephole.Match`, `step_sim`, and the `optimizeAsm_asteps`/`optimizeAsm_ahalt` bridges consumed by `Correctness.lean`).
 - `YulEvmCompiler/SimAsm.lean`: Phase A proof. Its `Motive` mirrors the source big-step derivation and its accepted compile equations.
 - `YulEvmCompiler/Instr.lean`: minimal byte-level IR and assembler.

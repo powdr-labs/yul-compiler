@@ -143,7 +143,15 @@ twin, every `push v ; swap1 ; pop` window to `pop ; push v`, every
 `jumpi l ; jump m ; label l` window to `op iszero ; jumpi m ; label l`,
 every `op gas ; op call-op` window to the fused `gasCall` (realizing the
 `gas()` read as the target's own `GAS` instruction), and
-drops `label l` when `l ∉ R`. Other instructions pass through. -/
+drops `label l` when `l ∉ R`. Other instructions pass through.
+
+The `gasCall` fusion is the *only* entry of the fused instruction into a
+program, and it relies on adjacency: the classic backend evaluates call
+arguments right-to-left, so a `gas()` first argument is pushed immediately
+before its call. If a transformation ever separates the pair, the fusion
+does not fire and the surviving bare `.op .gas` is rejected at lowering
+(`opTable .gas = none`) — the failure mode is a compile rejection, never a
+miscompilation. -/
 def peepRun (R : List Label) : List Asm → List Asm
   | .push v :: .swap ⟨0, _⟩ :: .pop :: rest =>
       .pop :: .push v :: peepRun R rest
