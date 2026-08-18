@@ -88,6 +88,11 @@ theorem astep_stkRefs [model : ExternalModel] {R : List Label}
       rcases List.mem_append.mp hl with h | h
       · exact absurd h code_not_mem_words
       · exact hσ l (List.mem_append.mpr (Or.inr h))
+  | @gasCall k g args rets c σ yst yst' hg hb =>
+      intro l hl
+      rcases List.mem_append.mp hl with h | h
+      · exact absurd h code_not_mem_words
+      · exact hσ l (List.mem_append.mpr (Or.inr h))
   | @dup n v τ ρ c yst hτ =>
       intro l hl
       rcases List.mem_cons.mp hl with h | h
@@ -389,6 +394,9 @@ theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
         -- first `iszero` of a doomed pair: the optimized side stutters
         obtain ⟨v, rfl, rfl, rfl⟩ := iszero_inv hb
         exact ⟨_, .refl _, .dz1 hc'⟩
+    | @gasCall k g args rets c σ2 yst yst' hg hb =>
+      cases hc with
+      | keep _ hc' => exact ⟨_, .single (.gasCall hg hb), .sync hc'⟩
     | @dup n v τ ρ c yst hτ =>
       cases hc with
       | keep _ hc' => exact ⟨_, .single (.dup hτ), .sync hc'⟩
@@ -572,6 +580,9 @@ theorem halt_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
       cases hc with
       | keep _ hc' => exact .op hb
       | dblIszero _ => exact absurd hb iszero_no_halt
+    | @gasCall k g args c σ yst yst' hg hb =>
+      cases hc with
+      | keep _ hc' => exact .gasCall hg hb
   | dz1 hc =>
     obtain ⟨args, σ', -, hb⟩ := ahalt_op_inv hhalt
     exact absurd hb iszero_no_halt

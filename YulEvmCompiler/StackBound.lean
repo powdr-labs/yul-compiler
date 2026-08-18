@@ -251,6 +251,27 @@ theorem Inv.step {prog : List Asm} {H : LayoutMap} (hV : ValidHeights prog H)
         simp only [List.length_append, List.length_replicate, words_length] at hbnd ⊢; omega
       · rw [hdrop, ← hrets]
         exact (StkMatch.replicate_word rets).append hMσ
+  | @gasCall k g args rets c σ yst yst' hg hstepOp =>
+      obtain ⟨hpop, hbnd, hHc⟩ := hV (.gasCall k) c hsuf _ hHa
+      obtain ⟨hargs, hrets⟩ := builtin_arity k.opTable_op hstepOp
+      simp only [List.length_cons, GasCallKind.popArity_target] at hargs
+      simp only [GasCallKind.pushArity_target] at hrets
+      have hargs' : args.length = k.popArity := by omega
+      obtain ⟨Sargs, Sσ, rfl, hMargs, hMσ⟩ := hm.append_inv
+      have hSargs : Sargs = List.replicate args.length .word := hMargs.eq_replicate
+      have hdrop : (Sargs ++ Sσ).drop k.popArity = Sσ := by
+        rw [hSargs, hargs']; exact drop_replicate_append _ _ _
+      have hL : σ.length = Sσ.length := hMσ.length_eq
+      obtain ⟨r, rfl⟩ : ∃ r, rets = [r] := List.length_eq_one_iff.mp hrets
+      refine ⟨?_, _, hHc, ?_⟩
+      · show (words [r] ++ σ).length ≤ 1023
+        rw [hdrop] at hbnd
+        simp only [List.length_cons] at hbnd
+        simp only [List.length_append, words_length, List.length_cons,
+          List.length_nil]
+        omega
+      · rw [hdrop]
+        exact .word hMσ
   | @dup n v τ ρ c yst hτ =>
       obtain ⟨sl, hidx, hHc, hlen⟩ := hV (.dup n) c hsuf _ hHa
       -- the cell at depth n is v's slot

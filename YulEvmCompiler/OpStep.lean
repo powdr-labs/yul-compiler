@@ -188,6 +188,43 @@ theorem decoded_op {code : ByteArray} {s : State} {pre post : List UInt8}
     simp [Option.bind, hfork, havail]
   exact State.decoded_to_op hdec
 
+/-- Executing an embedded `GAS`: pushes the machine's own post-charge
+remaining gas and advances the pc by one. Realizing the *source's* oracle
+read as this machine word is the caller's concern (see `GasCallsRealized`);
+this lemma only performs the target step. -/
+theorem gasOpStep {code : ByteArray} {pre post : List UInt8}
+    {yst : EvmState} {σ : List UInt256} {s : State}
+    (hcode : code = mkCode (pre ++ (Instr.op .GAS).bytes ++ post))
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat pre.length)
+    (hstk : s.stack = σ)
+    (hcap : s.stack.length < 1024)
+    (hgas : 2 ≤ s.gasAvailable) :
+    ∃ s', EVM.Step s s' ∧ FrameOK code s' ∧ StateMatch yst s'
+      ∧ s'.pc = UInt256.ofNat (pre.length + 1)
+      ∧ s'.stack = UInt256.ofNat (s.gasAvailable - 2) :: σ
+      ∧ s'.gasAvailable = s.gasAvailable - 2 := by
+  have hsz : code.size = pre.length + 1 + post.length := by
+    subst hcode; simp [Instr.bytes]; omega
+  have hdec : s.decodedOp = some .GAS :=
+    decoded_op hf hcode hpc (by decide) trivial (by decide)
+  have hfork : s.fork = .Osaka := hf.fork
+  have hbase : Gas.baseCost s.fork .GAS = 2 := by rw [hfork]; rfl
+  have hgas' : Gas.baseCost s.fork .GAS ≤ s.gasAvailable := by rw [hbase]; exact hgas
+  refine ⟨_, EVM.Step.running hf.running hf.noPrecompile
+    (StepRunning.gas s hdec hgas' hcap),
+    ⟨hf.hcode, hf.codeSmall, hf.fork, hf.noPrecompile, hf.callStack, hf.running⟩,
+    ⟨hm.mem, hm.stor, hm.tstor, hm.cd, hm.env, hm.codeBytes, hm.codeLen,
+      hm.selfBalance, hm.balanceOf, hm.activeWords, hm.retData, hm.retDataLen,
+      hm.externalCode, hm.logs, hm.selfdestructs, hm.createdThisTx⟩, ?_, ?_, ?_⟩
+  · show s.pc.succ = _
+    rw [hpc]
+    exact succ_ofNat (by have := hf.codeSmall; omega)
+  · show UInt256.ofNat (s.gasAvailable - Gas.baseCost s.fork .GAS) :: s.stack = _
+    rw [hstk, hbase]
+  · show s.gasAvailable - Gas.baseCost s.fork .GAS = s.gasAvailable - 2
+    rw [hbase]
+
 theorem decoded_push {code : ByteArray} {s : State} {pre post : List UInt8}
     {w : Fin 33} {v : UInt256}
     (hf : FrameOK code s)

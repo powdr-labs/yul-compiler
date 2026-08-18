@@ -1,5 +1,6 @@
 import YulEvmCompiler.AsmSem
 import YulEvmCompiler.OpStep
+import YulEvmCompiler.GasTx
 set_option warningAsError true
 /-!
 # YulEvmCompiler.LowerDefs
@@ -109,6 +110,7 @@ theorem AStep.stkOK [model : ExternalModel] {prog : List Asm} {a b : AConf}
   | push => exact ha.cons_word
   | pushImmutable => exact ha.cons_word
   | op _ => exact (ha.append_right).words_append _
+  | gasCall _ _ => exact (ha.append_right).words_append _
   | @dup n v τ ρ c yst _ =>
     intro l hl
     rcases List.mem_cons.mp hl with hc | hc
@@ -421,19 +423,74 @@ theorem CreatesRealized.none :
       YulSemantics.EVM.ExternalCreates.none] at hcreate hsource
   all_goals split at hsource <;> contradiction
 
+/-- Target realization of the **fused gas-forwarding call** (`Asm.gasCall`):
+for every response the source relation admits at an *oracle-admitted*
+allowance, the lowered `GAS ; call-opcode` pair runs to a matching endpoint.
+
+Unlike `CallsRealized`, the machine's forwarded allowance is its own `GAS`
+word, not the source's — the obligation is dischargeable exactly when the
+source oracle and environment together make the response insensitive to that
+swap (e.g. a `GasOracle.GasThreshold` environment with an oracle reporting
+only at-or-above-threshold words, or an allowance-independent response such
+as the insufficient-balance failure). The residual is transformer-shaped:
+under EIP-150 a spending callee leaves the caller only the reserved 64th of
+its gas (`GasTx.callLoss`), a loss `GasOracle.no_additive_bound_under_eip150`
+proves no additive bound covers. The two-instruction window is located by
+its byte layout, from which the client derives both decodes. -/
+structure GasCallsRealized (gasOracle : YulSemantics.EVM.ExternalGas)
+    (external : YulSemantics.EVM.ExternalCalls) : Prop where
+  gasCall {k : GasCallKind} {g : U256} {args rets : List U256}
+      {yst yst' : EvmState}
+      (hg : gasOracle.Gas yst g)
+      (hsource : YulSemantics.EVM.builtin external k.op (g :: args) yst
+        (.ok rets yst')) :
+      ∃ (bnd : Nat) (tx : GasTx),
+        ∀ {code : ByteArray} {pre post : List UInt8} {s : State} {σ : List UInt256},
+        code = mkCode (pre ++ (Instr.op .GAS).bytes
+          ++ ((Instr.op k.target).bytes ++ post)) →
+        s.pc = UInt256.ofNat pre.length →
+        FrameOK code s → StateMatch yst s →
+        s.stack = args.map conv ++ σ →
+        bnd ≤ s.gasAvailable →
+        s.stack.length + 1 ≤ 1024 →
+        ∃ s', Steps s s' ∧ FrameOK code s' ∧ StateMatch yst' s' ∧
+          s'.pc = UInt256.ofNat (pre.length + 2) ∧ s'.stack = rets.map conv ++ σ ∧
+          tx.f s.gasAvailable ≤ s'.gasAvailable
+
+/-- No fused-call response can be selected from the empty call relation,
+whatever the oracle. -/
+theorem GasCallsRealized.none (gasOracle : YulSemantics.EVM.ExternalGas) :
+    GasCallsRealized gasOracle YulSemantics.EVM.ExternalCalls.none := by
+  constructor
+  intro k g args rets yst yst' hg hsource
+  cases k <;>
+    simp [GasCallKind.op, YulSemantics.EVM.builtin,
+      YulSemantics.EVM.builtinWithExternal, YulSemantics.EVM.externalCall,
+      YulSemantics.EVM.ExternalCalls.none] at hsource
+  all_goals split at hsource <;> contradiction
+
+/-- A closed gas oracle admits no `gas()` reading, so the fused instruction
+never steps: realization is vacuous for any environment. -/
+theorem GasCallsRealized.noneOracle (external : YulSemantics.EVM.ExternalCalls) :
+    GasCallsRealized YulSemantics.EVM.ExternalGas.none external := by
+  constructor
+  intro k g args rets yst yst' hg _
+  exact absurd hg (fun h => h)
+
 /-- The complete open-world obligations used by compiler correctness. Calls
 and creations are separated so clients can instantiate either relation
 independently while the compiler theorem quantifies over both. -/
 structure ExternalsRealized (model : ExternalModel) : Prop where
   calls : CallsRealized model.calls
   creates : CreatesRealized model.creates
+  gasCalls : GasCallsRealized model.gas model.calls
 
 /-- The fully closed executable model has no external transitions. -/
 theorem ExternalsRealized.none :
     ExternalsRealized
       { calls := YulSemantics.EVM.ExternalCalls.none
         creates := YulSemantics.EVM.ExternalCreates.none } :=
-  ⟨CallsRealized.none, CreatesRealized.none⟩
+  ⟨CallsRealized.none, CreatesRealized.none, GasCallsRealized.none _⟩
 
 /-! ### A non-trivial realized model: the insufficient-balance CALL failure
 
@@ -532,10 +589,16 @@ def insufficientBalanceCalls : YulSemantics.EVM.ExternalCalls where
     resp.world = YulSemantics.EVM.CallWorld.ofState st
 
 /-- The non-trivial model: the insufficient-balance CALL failure relation for
-calls, and no creations. -/
+calls, and no creations. The gas oracle is closed (`.none`), so the model
+admits no `gas()` readings and the fused-call obligation is discharged
+vacuously; the natural strengthening — this failure response is
+allowance-independent, so it is realizable at *any* admitted allowance — is
+future work (`GasCallsRealized` at `.any`, replaying `StepRunning.callFail`
+behind a leading `GAS` step). -/
 @[reducible] def insufficientBalanceModel : ExternalModel where
   calls := insufficientBalanceCalls
   creates := YulSemantics.EVM.ExternalCreates.none
+  gas := YulSemantics.EVM.ExternalGas.none
 
 /-- `conv` is strictly monotone (it preserves `toNat`). -/
 private theorem conv_lt_of_toNat {a b : U256} (h : a.toNat < b.toNat) :
@@ -752,7 +815,8 @@ relation is realized by a real EVM `callFail` trace, and it has no creations.
 This exhibits a demonstrably inhabited (non-vacuous) `ExternalsRealized`. -/
 theorem ExternalsRealized.insufficientBalanceCall :
     ExternalsRealized insufficientBalanceModel :=
-  ⟨CallsRealized.insufficientBalance, CreatesRealized.none⟩
+  ⟨CallsRealized.insufficientBalance, CreatesRealized.none,
+    GasCallsRealized.noneOracle _⟩
 
 /-- The lowered program's byte size is `codeSize prog` (bounded by the
 frame invariant). -/

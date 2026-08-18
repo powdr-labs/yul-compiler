@@ -94,6 +94,21 @@ inductive AStep (prog : List Asm) [model : ExternalModel] :
       builtinWithExternal model.calls model.creates model.gas yop args yst (.ok rets yst') →
       AStep (model := model) prog ⟨.op yop :: c, words args ++ σ, yst⟩
         ⟨c, words rets ++ σ, yst'⟩
+  /-- A fused gas-forwarding call `k.op(gas(), …)`: read a word `g` the gas
+  oracle admits at the current state, then perform the call built-in with `g`
+  as its gas argument — exactly the composite of the two source steps
+  `op gas ; op k.op` this instruction is fused from. Keeping the composite
+  as the rule makes the peephole fusion a plain simulation (the fused step
+  reproduces whichever admitted word the source read); realizing the read as
+  the target machine's own `GAS` word is phase B's concern
+  (`GasCallsRealized`). -/
+  | gasCall {k : GasCallKind} {g : U256} {args rets : List U256} {c : List Asm}
+      {σ : List AVal} {yst yst' : EvmState} :
+      model.gas.Gas yst g →
+      builtinWithExternal model.calls model.creates model.gas k.op (g :: args) yst
+        (.ok rets yst') →
+      AStep (model := model) prog ⟨.gasCall k :: c, words args ++ σ, yst⟩
+        ⟨c, words rets ++ σ, yst'⟩
   /-- `DUP(n+1)`: copy the value `n` deep onto the top. -/
   | dup {n : Fin 16} {v : AVal} {τ ρ : List AVal} {c : List Asm}
       {yst : EvmState} :
@@ -145,6 +160,15 @@ inductive AHalt (prog : List Asm) [model : ExternalModel] :
       {yst yst' : EvmState} :
       builtinWithExternal model.calls model.creates model.gas yop args yst (.halt yst') →
       AHalt (model := model) prog ⟨.op yop :: c, words args ++ σ, yst⟩ yst'
+  /-- A fused gas-forwarding call halting relationally: only a value-bearing
+  `call` attempted in a static frame does (the source's static-context write
+  gate); the halt payload does not depend on the read gas word. -/
+  | gasCall {k : GasCallKind} {g : U256} {args : List U256} {c : List Asm}
+      {σ : List AVal} {yst yst' : EvmState} :
+      model.gas.Gas yst g →
+      builtinWithExternal model.calls model.creates model.gas k.op (g :: args) yst
+        (.halt yst') →
+      AHalt (model := model) prog ⟨.gasCall k :: c, words args ++ σ, yst⟩ yst'
 
 /-- Finitely many Asm steps (reflexive-transitive closure of `AStep`). -/
 inductive ASteps (prog : List Asm) [model : ExternalModel] :
@@ -190,6 +214,7 @@ theorem AStep.suffix [model : ExternalModel]
   | push => exact tail_suffix ha
   | pushImmutable => exact tail_suffix ha
   | op _ => exact tail_suffix ha
+  | gasCall _ _ => exact tail_suffix ha
   | dup _ => exact tail_suffix ha
   | swap _ => exact tail_suffix ha
   | pop => exact tail_suffix ha

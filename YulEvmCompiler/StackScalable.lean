@@ -678,6 +678,14 @@ theorem GoodStack.step {prog : List Asm} {C : Cert} (hV : C.Valid prog)
       obtain ⟨o, hop, hple, hflc, hfbc, hrlc⟩ := hV _ c S F R hfl hfb hrl
       obtain ⟨hargs, hrets⟩ := builtin_arity hop hstepOp
       exact hinv.opFrame hfl hple hargs hrets hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
+  | @gasCall k g args rets c σ yst yst' hg hstepOp =>
+      obtain ⟨S, F, R, hfl, hfb, hrl⟩ := hinv.certAt
+      obtain ⟨hple, hflc, hfbc, hrlc⟩ := hV _ c S F R hfl hfb hrl
+      obtain ⟨hargs, hrets⟩ := builtin_arity k.opTable_op hstepOp
+      simp only [List.length_cons, GasCallKind.popArity_target] at hargs
+      simp only [GasCallKind.pushArity_target] at hrets
+      have hargs' : args.length = k.popArity := by omega
+      exact hinv.opFrame hfl hple hargs' hrets hflc (by rw [hfbc, hfb]) (by rw [hrlc, hrl])
   | @dup n v τ ρ c yst hτ =>
       obtain ⟨S, F, R, hfl, hfb, hrl⟩ := hinv.certAt
       obtain ⟨hidx, hflc, hfbc, hrlc⟩ := hV _ c S F R hfl hfb hrl

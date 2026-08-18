@@ -484,6 +484,8 @@ omit model in @[simp] theorem elideJumps_pushImmutable (key : String) (c : List 
   simp [elideJumps]
 omit model in @[simp] theorem elideJumps_op (yop : Op) (c : List Asm) :
     elideJumps (Asm.op yop :: c) = Asm.op yop :: elideJumps c := by simp [elideJumps]
+omit model in @[simp] theorem elideJumps_gasCall (k : GasCallKind) (c : List Asm) :
+    elideJumps (Asm.gasCall k :: c) = Asm.gasCall k :: elideJumps c := by simp [elideJumps]
 omit model in @[simp] theorem elideJumps_dup (n : Fin 16) (c : List Asm) :
     elideJumps (Asm.dup n :: c) = Asm.dup n :: elideJumps c := by simp [elideJumps]
 omit model in @[simp] theorem elideJumps_swapOp (n : Fin 16) (c : List Asm) :
@@ -521,6 +523,9 @@ theorem astep_elideJumps {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     exact ASteps.single AStep.pushImmutable
   | @op yop args rets c σ yst yst' hb =>
     simp only [elideConf, ToAsm.elideJumps_op]; exact ASteps.single (AStep.op hb)
+  | @gasCall k g args rets c σ yst yst' hg hb =>
+    simp only [elideConf, ToAsm.elideJumps_gasCall]
+    exact ASteps.single (AStep.gasCall hg hb)
   | @dup n v τ ρ c yst hlen =>
     simp only [elideConf, ToAsm.elideJumps_dup]
     exact ASteps.single (AStep.dup hlen)
@@ -581,6 +586,8 @@ theorem ahalt_elideJumps {prog : List Asm} {a : AConf} {yst' : EvmState}
   cases h with
   | @op yop args c σ yst _ hb =>
     simp only [elideConf, ToAsm.elideJumps_op]; exact AHalt.op hb
+  | @gasCall k g args c σ yst _ hg hb =>
+    simp only [elideConf, ToAsm.elideJumps_gasCall]; exact AHalt.gasCall hg hb
 
 /-! ## Stack extension
 
@@ -596,6 +603,7 @@ theorem AStep.extend {prog : List Asm} {a b : AConf} (below : List AVal)
   | push => simpa using AStep.push
   | pushImmutable => simpa using AStep.pushImmutable
   | op hb => simpa [List.append_assoc] using AStep.op hb
+  | gasCall hg hb => simpa [List.append_assoc] using AStep.gasCall hg hb
   | @dup n v τ ρ c yst hlen =>
     have := AStep.dup (model := model) (prog := prog) (n := n) (v := v) (τ := τ)
       (ρ := ρ ++ below) (c := c) (yst := yst) hlen
@@ -625,6 +633,7 @@ theorem AHalt.extend {prog : List Asm} {a : AConf} {yst' : EvmState}
     AHalt (model := model) prog ⟨a.code, a.stk ++ below, a.yst⟩ yst' := by
   cases h with
   | op hb => simpa [List.append_assoc] using AHalt.op hb
+  | gasCall hg hb => simpa [List.append_assoc] using AHalt.gasCall hg hb
 
 /-- The epilogue rotation `SWAP(m+1) … SWAP(m+r+1)`. -/
 def rotOps (m r : Nat) : List Asm :=
