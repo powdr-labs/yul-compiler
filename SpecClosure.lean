@@ -518,7 +518,7 @@ SPEC CLOSURE — audited this-repo surface (92 decls)
   struct YulEvmCompiler.ExternalCodeMatch 2d46717e52ff1871
   struct YulEvmCompiler.ExternalModel 75bd1eadd7f209e2
   struct YulEvmCompiler.ExternalsRealized 7fd85ee803561fa8
-  struct YulEvmCompiler.FrameOK b3deead0d001f759
+  struct YulEvmCompiler.FrameOK ec23d54b6e97193
   relation YulEvmCompiler.HaltMatch 6557b5faae906a61
   relation YulEvmCompiler.HaltedMatch bd6cde934ed46ce6
   struct YulEvmCompiler.Instr 6d2465d1d211750b
@@ -546,7 +546,7 @@ SPEC CLOSURE — audited this-repo surface (92 decls)
   statement YulEvmCompiler.compile_correct a644e1d096214b1f
   statement YulEvmCompiler.compile_correct_eval a55d21753450fde8
   statement YulEvmCompiler.compile_correct_withPayload 84c35158d70f1272
-  statement YulEvmCompiler.compiled_constructor_returns 9a99d76f5d037853
+  statement YulEvmCompiler.compiled_constructor_returns d5431dd9cd59acf8
   datadef YulEvmCompiler.conv 25e701af8a9ce7bb
   datadef YulEvmCompiler.mkCode edacb826e56f9571
   datadef YulEvmCompiler.natToBE d47a19daef761803
