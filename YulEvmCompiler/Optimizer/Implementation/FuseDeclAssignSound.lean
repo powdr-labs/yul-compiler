@@ -26,14 +26,14 @@ namespace YulEvmCompiler.Optimizer.FuseDeclAssign
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates ExternalGas.any
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### `VEnv.set` distributes over append by key location -/
 
 theorem set_append_of_found {V W : VEnv D} {y : Ident}
     (h : (V.find? (fun p => p.1 = y)).isSome)
-    (w : (evmWithExternal calls creates .any).Value) :
+    (w : (evmWithExternal calls creates gasOracle).Value) :
     VEnv.set (V ++ W) y w = VEnv.set V y w ++ W := by
   induction V with
   | nil => simp at h
@@ -51,7 +51,7 @@ theorem set_append_of_found {V W : VEnv D} {y : Ident}
 
 theorem set_append_of_none {V W : VEnv D} {y : Ident}
     (h : V.find? (fun p => p.1 = y) = none)
-    (w : (evmWithExternal calls creates .any).Value) :
+    (w : (evmWithExternal calls creates gasOracle).Value) :
     VEnv.set (V ++ W) y w = V ++ VEnv.set W y w := by
   induction V with
   | nil => simp
@@ -66,7 +66,7 @@ theorem set_append_of_none {V W : VEnv D} {y : Ident}
 
 /-- Keys of an environment survive `VEnv.set` (membership form). -/
 theorem mem_set_key {V : VEnv D} {y : Ident}
-    {w : (evmWithExternal calls creates .any).Value} {p : Ident × U256}
+    {w : (evmWithExternal calls creates gasOracle).Value} {p : Ident × U256}
     (hp : p ∈ VEnv.set V y w) : ∃ q ∈ V, q.1 = p.1 := by
   induction V with
   | nil => cases hp
@@ -91,7 +91,7 @@ both sides); it may be bound by `C` (an identical shadow on both sides).
 The indices pin the region lengths so `restore` compatibility is derivable:
 execution below never changes them. -/
 inductive MvRel (x : Ident) (dA dB : Nat) : VEnv D → VEnv D → Prop
-  | mk (C A B : VEnv D) (v : (evmWithExternal calls creates .any).Value)
+  | mk (C A B : VEnv D) (v : (evmWithExternal calls creates gasOracle).Value)
       (hA : ∀ p ∈ A, p.1 ≠ x) (hdA : A.length = dA) (hdB : B.length = dB) :
       MvRel x dA dB (C ++ (A ++ (x, v) :: B)) (C ++ ((x, v) :: (A ++ B)))
 
@@ -104,7 +104,7 @@ theorem MvRel.length {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
 /-- Push a common binding on top. -/
 theorem MvRel.push {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
     (h : MvRel x dA dB V₁ V₂)
-    (p : Ident × (evmWithExternal calls creates .any).Value) :
+    (p : Ident × (evmWithExternal calls creates gasOracle).Value) :
     MvRel x dA dB (p :: V₁) (p :: V₂) := by
   cases h with
   | mk C A B v hA hdA hdB => exact MvRel.mk (p :: C) A B v hA hdA hdB
@@ -115,7 +115,7 @@ theorem MvRel.pushMany {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
     (ps : VEnv D) : MvRel x dA dB (ps ++ V₁) (ps ++ V₂) := by
   cases h with
   | mk C A B v hA hdA hdB =>
-      have := MvRel.mk (calls := calls) (creates := creates)
+      have := MvRel.mk (calls := calls) (creates := creates) (gasOracle := gasOracle)
         (ps ++ C) A B v hA hdA hdB
       simpa [List.append_assoc] using this
 
@@ -148,7 +148,7 @@ theorem MvRel.get {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
 /-- Updates preserve the relation. -/
 theorem MvRel.set {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
     (h : MvRel x dA dB V₁ V₂)
-    (y : Ident) (w : (evmWithExternal calls creates .any).Value) :
+    (y : Ident) (w : (evmWithExternal calls creates gasOracle).Value) :
     MvRel x dA dB (VEnv.set V₁ y w) (VEnv.set V₂ y w) := by
   cases h with
   | mk C A B v hA hdA hdB =>
@@ -204,7 +204,7 @@ theorem MvRel.set {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
 /-- `setMany` preserves the relation. -/
 theorem MvRel.setMany {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D}
     (h : MvRel x dA dB V₁ V₂)
-    (ys : List Ident) (ws : List (evmWithExternal calls creates .any).Value) :
+    (ys : List Ident) (ws : List (evmWithExternal calls creates gasOracle).Value) :
     MvRel x dA dB (VEnv.setMany V₁ ys ws) (VEnv.setMany V₂ ys ws) := by
   unfold VEnv.setMany
   induction (ys.zip ws) generalizing V₁ V₂ with
@@ -221,7 +221,7 @@ results. -/
 /-- The workable form: exits whose moved region sits below the entry cut.
 `dA`/`dB` name the region lengths; the cut keeps at least the region. -/
 theorem restore_mvRel {x : Ident} {Ve₁ Ve₂ : VEnv D}
-    {C A B : VEnv D} {v : (evmWithExternal calls creates .any).Value}
+    {C A B : VEnv D} {v : (evmWithExternal calls creates gasOracle).Value}
     (hA : ∀ p ∈ A, p.1 ≠ x)
     (hentry_len : A.length + 1 + B.length ≤ Ve₁.length)
     (hlen : Ve₁.length = Ve₂.length)
@@ -254,7 +254,7 @@ theorem drop_to_base (X B : VEnv D) {n : Nat} (h : n ≤ B.length) :
 
 /-- Restoring to a base at or below `B` yields equal environments. -/
 theorem restore_mv_eq {x : Ident} {V₀ : VEnv D}
-    {C A B : VEnv D} {v : (evmWithExternal calls creates .any).Value}
+    {C A B : VEnv D} {v : (evmWithExternal calls creates gasOracle).Value}
     (hbase : V₀.length ≤ B.length) :
     restore V₀ (C ++ (A ++ (x, v) :: B)) =
       restore V₀ (C ++ ((x, v) :: (A ++ B))) := by
@@ -277,7 +277,7 @@ theorem MvRel.restore_compat {x : Ident} {dA dB : Nat}
         | mk C' A' B' v' hA' hdA' hdB' =>
             simp only [List.length_append, List.length_cons]
             omega
-      have := restore_mvRel (calls := calls) (creates := creates)
+      have := restore_mvRel (calls := calls) (creates := creates) (gasOracle := gasOracle)
         (Ve₁ := Ve₁) (Ve₂ := Ve₂) (C := C) (A := A) (B := B) (v := v) hA
         (by omega) hentry.length hgrow
       rw [hdA, hdB] at this
@@ -1119,7 +1119,7 @@ theorem sink_inv {x : Ident} {ss ss' : List (Stmt Op)}
 entries: an extra dead binding on the source side (a halt inside a rewritten
 site), or one moved binding (the normal path through a sink). -/
 inductive FuseStep (n : Nat) : VEnv D → VEnv D → Prop
-  | ins {d : Nat} {x : Ident} {v : (evmWithExternal calls creates .any).Value}
+  | ins {d : Nat} {x : Ident} {v : (evmWithExternal calls creates gasOracle).Value}
       {V₁ V₂ : VEnv D} :
       InsAt d x v V₂ V₁ → n ≤ d → FuseStep n V₁ V₂
   | mv {x : Ident} {dA dB : Nat} {V₁ V₂ : VEnv D} :
@@ -1242,8 +1242,8 @@ theorem sink_site_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
   | seqCons hs htail0 =>
       cases hs
       -- `htail0` runs `mid ++ assign :: tail` over `(x, 0) :: V`.
-      have hins0 : InsAt V.length x (evmWithExternal calls creates .any).zero
-          V ((x, (evmWithExternal calls creates .any).zero) :: V) :=
+      have hins0 : InsAt V.length x (evmWithExternal calls creates gasOracle).zero
+          V ((x, (evmWithExternal calls creates gasOracle).zero) :: V) :=
         ⟨[], V, rfl, rfl, rfl⟩
       rcases stmts_append_fwd (by simpa [bindZeros] using htail0) with
         ⟨Vm₁, stm, hmidrun, hrest⟩ | ⟨hno, hmidrun⟩
@@ -1269,7 +1269,7 @@ theorem sink_site_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
               subst hrese
               -- The source assignment hits the inserted binding.
               have hsrcset : VEnv.set
-                  (A ++ (x, (evmWithExternal calls creates .any).zero) :: B)
+                  (A ++ (x, (evmWithExternal calls creates gasOracle).zero) :: B)
                   x val = A ++ (x, val) :: B := by
                 rw [set_append_of_none hAfind]
                 congr 1
@@ -1349,8 +1349,8 @@ theorem sink_site_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
     show stmtsMentions x mid = false
     exact mentionsStmts_bridge (mentionsStmts_of_forall (fun s hs => hmid s hs))
   have heM : exprMentions x e = false := mentionsExpr_bridge he
-  have hins0 : InsAt V.length x (evmWithExternal calls creates .any).zero
-      V ((x, (evmWithExternal calls creates .any).zero) :: V) :=
+  have hins0 : InsAt V.length x (evmWithExternal calls creates gasOracle).zero
+      V ((x, (evmWithExternal calls creates gasOracle).zero) :: V) :=
     ⟨[], V, rfl, rfl, rfl⟩
   rcases stmts_append_fwd h with
     ⟨Vm₂, stm, hmidrun, hrest⟩ | ⟨hno, hmidrun⟩
@@ -1375,7 +1375,7 @@ theorem sink_site_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
           subst hrese
           -- The source assignment hits the inserted binding.
           have hsrcset : VEnv.set
-              (A ++ (x, (evmWithExternal calls creates .any).zero) :: B)
+              (A ++ (x, (evmWithExternal calls creates gasOracle).zero) :: B)
               x val = A ++ (x, val) :: B := by
             rw [set_append_of_none hAfind]
             congr 1
@@ -1390,13 +1390,13 @@ theorem sink_site_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
           subst hres₁
           refine ⟨V₁, ?_, FuseChain.single (.mv hrelV (by omega))⟩
           refine Step.seqCons Step.letZero ?_
-          show Step D funs ((x, (evmWithExternal calls creates .any).zero) :: V)
+          show Step D funs ((x, (evmWithExternal calls creates gasOracle).zero) :: V)
             st (.stmts (mid ++ .assign [x] e :: tail)) _
           refine stmts_append_normal hmid₁ ?_
           refine Step.seqCons ?_ htail₁
           have := Step.assignVal (vars := [x]) hev₁ (by simp)
           rwa [show VEnv.setMany
-            (A ++ (x, (evmWithExternal calls creates .any).zero) :: B) [x] [val] =
+            (A ++ (x, (evmWithExternal calls creates gasOracle).zero) :: B) [x] [val] =
             A ++ (x, val) :: B from hsrcset] at this
         · exact absurd hno.symm (by simp)
     | seqStop ha hne =>
@@ -1406,10 +1406,10 @@ theorem sink_site_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
             ⟨A, B, rfl, rfl, hBd⟩ (by simpa [codeMentions] using heM)
           have hrese := ResRelAt.eres hrele
           subst hrese
-          refine ⟨A ++ (x, (evmWithExternal calls creates .any).zero) :: B, ?_,
+          refine ⟨A ++ (x, (evmWithExternal calls creates gasOracle).zero) :: B, ?_,
             FuseChain.single (.ins ⟨A, B, rfl, rfl, hBd⟩ (by omega))⟩
           refine Step.seqCons Step.letZero ?_
-          show Step D funs ((x, (evmWithExternal calls creates .any).zero) :: V)
+          show Step D funs ((x, (evmWithExternal calls creates gasOracle).zero) :: V)
             st (.stmts (mid ++ .assign [x] e :: tail)) _
           refine stmts_append_normal hmid₁ ?_
           exact Step.seqStop (Step.assignHalt (vars := [x]) hev₁)
@@ -1422,7 +1422,7 @@ theorem sink_site_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       obtain ⟨A, B, _, _, hBd⟩ := hinsm
       omega))⟩
     refine Step.seqCons Step.letZero ?_
-    show Step D funs ((x, (evmWithExternal calls creates .any).zero) :: V)
+    show Step D funs ((x, (evmWithExternal calls creates gasOracle).zero) :: V)
       st (.stmts (mid ++ .assign [x] e :: tail)) _
     exact stmts_append_early hmid₁ hno
 
@@ -1441,8 +1441,8 @@ theorem fuse_site_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
     ∃ V₂, Step D funs V st (.stmts (.letDecl [x] (some e) :: rest))
       (.sres V₂ st₁ o) ∧ FuseChain V.length V₁ V₂ := by
   have heM : exprMentions x e = false := mentionsExpr_bridge he
-  have hins : InsAt V.length x ((evmWithExternal calls creates .any).litValue l)
-      V ((x, (evmWithExternal calls creates .any).litValue l) :: V) :=
+  have hins : InsAt V.length x ((evmWithExternal calls creates gasOracle).litValue l)
+      V ((x, (evmWithExternal calls creates gasOracle).litValue l) :: V) :=
     ⟨[], V, rfl, rfl, rfl⟩
   cases h with
   | seqStop hlet hne =>
@@ -1464,7 +1464,7 @@ theorem fuse_site_fwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
                 have hrese := ResRelAt.eres_right hrele
                 subst hrese
                 have hseteq : VEnv.set
-                    ((x, (evmWithExternal calls creates .any).litValue l) :: V)
+                    ((x, (evmWithExternal calls creates gasOracle).litValue l) :: V)
                     x val' = (x, val') :: V := by
                   simp [VEnv.set]
                 rw [hset, hseteq] at htail
@@ -1496,11 +1496,11 @@ theorem fuse_site_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       (.stmts (.letDecl [x] (some (.lit l)) :: .assign [x] e :: rest))
       (.sres V₁ st₁ o) ∧ FuseChain V.length V₁ V₂ := by
   have heM : exprMentions x e = false := mentionsExpr_bridge he
-  have hins : InsAt V.length x ((evmWithExternal calls creates .any).litValue l)
-      V ((x, (evmWithExternal calls creates .any).litValue l) :: V) :=
+  have hins : InsAt V.length x ((evmWithExternal calls creates gasOracle).litValue l)
+      V ((x, (evmWithExternal calls creates gasOracle).litValue l) :: V) :=
     ⟨[], V, rfl, rfl, rfl⟩
   have hlet1 : ∀ st2, Step D funs V st2 (.stmt (.letDecl [x] (some (.lit l))))
-      (.sres ((x, (evmWithExternal calls creates .any).litValue l) :: V) st2 .normal) :=
+      (.sres ((x, (evmWithExternal calls creates gasOracle).litValue l) :: V) st2 .normal) :=
     fun st2 => by simpa using Step.letVal («D» := D) (vars := [x]) Step.lit (by simp)
   cases h with
   | seqStop hlet hne =>
@@ -1523,12 +1523,12 @@ theorem fuse_site_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
         subst hrese
         refine ⟨V₂, Step.seqCons (hlet1 st) (Step.seqCons ?_ htail), .refl _⟩
         have hseteq : VEnv.set
-            ((x, (evmWithExternal calls creates .any).litValue l) :: V)
+            ((x, (evmWithExternal calls creates gasOracle).litValue l) :: V)
             x val = (x, val) :: V := by
           simp [VEnv.set]
         have := Step.assignVal (vars := [x]) hev₁ (by simp)
         rw [show VEnv.setMany
-          ((x, (evmWithExternal calls creates .any).litValue l) :: V) [x] [val] =
+          ((x, (evmWithExternal calls creates gasOracle).litValue l) :: V) [x] [val] =
           (x, val) :: V from hseteq] at this
         exact this
       · nomatch hno.symm
@@ -1824,7 +1824,7 @@ theorem fdStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (fdStmt s)
   | .cond c body => by
       unfold fdStmt
       refine EquivStmt.cond_congr
-        (@EquivExpr.refl (evmWithExternal calls creates .any) _ c) ?_
+        (@EquivExpr.refl (evmWithExternal calls creates gasOracle) _ c) ?_
       show EquivBlock D body (fdStmts body)
       unfold fdStmts
       exact (EquivBlock.of_stmts_funs
@@ -1834,12 +1834,12 @@ theorem fdStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (fdStmt s)
   | .switch c cases dflt => by
       unfold fdStmt
       refine EquivStmt.switch_congr
-        (@EquivExpr.refl (evmWithExternal calls creates .any) _ c)
+        (@EquivExpr.refl (evmWithExternal calls creates gasOracle) _ c)
         (fdCases_forall2 cases) ?_
       cases dflt with
       | none =>
           unfold fdDflt
-          exact @EquivBlock.refl (evmWithExternal calls creates .any) _ _
+          exact @EquivBlock.refl (evmWithExternal calls creates gasOracle) _ _
       | some b =>
           unfold fdDflt
           show EquivBlock D b (fdStmts b)
@@ -1851,7 +1851,7 @@ theorem fdStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (fdStmt s)
   | .forLoop init c post body => by
       unfold fdStmt
       refine EquivStmt.forLoop_congr init
-        (@EquivExpr.refl (evmWithExternal calls creates .any) _ c) ?_ ?_
+        (@EquivExpr.refl (evmWithExternal calls creates gasOracle) _ c) ?_ ?_
       · show EquivBlock D post (fdStmts post)
         unfold fdStmts
         exact (EquivBlock.of_stmts_funs
@@ -1866,22 +1866,22 @@ theorem fdStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (fdStmt s)
           (fuseSeq_blockEquiv (fdEach body))
   | .letDecl xs v => by
       unfold fdStmt
-      exact @EquivStmt.refl (evmWithExternal calls creates .any) _ _
+      exact @EquivStmt.refl (evmWithExternal calls creates gasOracle) _ _
   | .assign xs e => by
       unfold fdStmt
-      exact @EquivStmt.refl (evmWithExternal calls creates .any) _ _
+      exact @EquivStmt.refl (evmWithExternal calls creates gasOracle) _ _
   | .exprStmt e => by
       unfold fdStmt
-      exact @EquivStmt.refl (evmWithExternal calls creates .any) _ _
+      exact @EquivStmt.refl (evmWithExternal calls creates gasOracle) _ _
   | .break => by
       unfold fdStmt
-      exact @EquivStmt.refl (evmWithExternal calls creates .any) _ _
+      exact @EquivStmt.refl (evmWithExternal calls creates gasOracle) _ _
   | .continue => by
       unfold fdStmt
-      exact @EquivStmt.refl (evmWithExternal calls creates .any) _ _
+      exact @EquivStmt.refl (evmWithExternal calls creates gasOracle) _ _
   | .leave => by
       unfold fdStmt
-      exact @EquivStmt.refl (evmWithExternal calls creates .any) _ _
+      exact @EquivStmt.refl (evmWithExternal calls creates gasOracle) _ _
 
 theorem fdEach_forall2 : ∀ ss : List (Stmt Op),
     Forall₂ (EquivStmt D) ss (fdEach ss)

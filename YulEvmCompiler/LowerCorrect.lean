@@ -561,7 +561,7 @@ theorem externalStaticHaltStep [model : ExternalModel]
     {yop : Op} {o : Operation} (hop : opTable yop = some o)
     (hexternal : IsExternalOp yop)
     {args : List U256} {yst yst' : EvmState}
-    (hhalt : builtinWithExternal model.calls model.creates .any yop args yst (.halt yst'))
+    (hhalt : builtinWithExternal model.calls model.creates model.gas yop args yst (.halt yst'))
     {code : ByteArray} {pre post : List UInt8} {σ : List UInt256} {s : State}
     (hcode : code = mkCode (pre ++ (Instr.op o).bytes ++ post))
     (hf : FrameOK code s) (hm : StateMatch yst s)

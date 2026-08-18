@@ -1042,7 +1042,7 @@ open YulSemantics.EVM
     constructorCode_returns_of_consistent)
 
 variable [model : ExternalModel]
-local notation "yulD" => evmWithExternal model.calls model.creates ExternalGas.any
+local notation "yulD" => evmWithExternal model.calls model.creates model.gas
 set_option linter.unusedSectionVars false
 
 /-- Object execution after layout references have been resolved, using

@@ -24,9 +24,9 @@ open YulSemantics
 open YulSemantics.EVM
 open YulEvmCompiler
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates ExternalGas.any
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### Resolution invariance of the syntactic conditions -/
 
@@ -855,7 +855,7 @@ theorem resolveInlineCallsBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L (inlineCallsBlock b)) := by
   have h := (icStmts_rel (deltaExtend [] b) (DeltaWF.nil.extend b) b).resolve L
-  apply IcRel.equivBlock (calls := calls) (creates := creates)
+  apply IcRel.equivBlock (calls := calls) (creates := creates) (gasOracle := gasOracle)
   rw [show deltaExtend [] (resolveForLayoutStmts L b) =
     resolveDelta L (deltaExtend [] b) from deltaExtend_resolve L [] b]
   rw [show resolveForLayoutStmts L (inlineCallsBlock b) =

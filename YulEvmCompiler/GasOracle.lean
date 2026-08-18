@@ -179,25 +179,29 @@ theorem thresholdCalls_no_admissible_allowance :
 /-- The two source `AStep`s the peephole must fuse, in the witness model:
 `op gas` reads `0`, then `op call` consumes it and the environment reports
 failure. Both are instances of `AStep.op`, i.e. of the pinned source
-relation — the derivation the fused rule would have to match. -/
+relation — the derivation the fused rule would have to match. The model's
+oracle is required to be the permissive `.any`: under a constrained oracle
+this below-threshold reading is exactly the derivation that disappears. -/
 theorem thresholdCalls_source_asteps
     {prog c : List Asm} {σ : List AVal}
     [model : ExternalModel] (hcalls : model.calls = thresholdCalls)
-    (hcreates : model.creates = ExternalCreates.none) :
+    (hcreates : model.creates = ExternalCreates.none)
+    (hgas : model.gas = YulSemantics.EVM.ExternalGas.any) :
     ASteps (model := model) prog
       ⟨.op .gas :: .op .call :: c, words gasWitnessArgs ++ σ, EvmState.init⟩
       ⟨c, words [(0 : U256)] ++ σ, gasWitnessPost⟩ := by
   refine .head (b := ⟨.op .call :: c, words ((0 : U256) :: gasWitnessArgs) ++ σ,
     EvmState.init⟩) ?_ (.single ?_)
-  · have h : builtinWithExternal model.calls model.creates .any .gas [] EvmState.init
-        (.ok [(0 : U256)] EvmState.init) := ⟨0, trivial, rfl⟩
+  · have h : builtinWithExternal model.calls model.creates model.gas .gas [] EvmState.init
+        (.ok [(0 : U256)] EvmState.init) := by
+      rw [hgas]; exact ⟨0, trivial, rfl⟩
     simpa using AStep.op (model := model) (prog := prog) (yop := .gas)
       (args := []) (rets := [(0 : U256)]) (c := .op .call :: c)
       (σ := words gasWitnessArgs ++ σ) h
-  · have h : builtinWithExternal model.calls model.creates .any .call
+  · have h : builtinWithExternal model.calls model.creates model.gas .call
         ((0 : U256) :: gasWitnessArgs) EvmState.init
         (.ok [(0 : U256)] gasWitnessPost) := by
-      rw [hcalls, hcreates]; exact thresholdCalls_source_step
+      rw [hcalls, hcreates, hgas]; exact thresholdCalls_source_step
     simpa [words_append] using AStep.op (model := model) (prog := prog) (yop := .call)
       (args := (0 : U256) :: gasWitnessArgs) (rets := [(0 : U256)]) (c := c) (σ := σ) h
 

@@ -135,6 +135,7 @@ variable [model : ExternalModel]
 /-- Concrete one-block backend theorem with the spill callback discharged. -/
 theorem compile_spilled_correct
     (hexternal : ExternalsRealized model)
+    (hgas : model.gas = YulSemantics.EVM.ExternalGas.any)
     {L : EVM.Layout} {raw : Block Op} {result : Result}
     {guards : List Nat} {instructions : List Instr}
     (hfacts : SpillFacts raw result guards)
@@ -167,7 +168,7 @@ theorem compile_spilled_correct
           StateMatch targetFinal s' ∧
           ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
            (out = .halt ∧ HaltedMatch targetFinal s')) :=
-  MemorySpillBackendSound.compile_spilled_correct hexternal
+  MemorySpillBackendSound.compile_spilled_correct hexternal hgas
     (spillNodeRunSound (calls := model.calls) (creates := model.creates) L)
     hfacts hguarded hcomp himm hsource
 
@@ -175,6 +176,7 @@ theorem compile_spilled_correct
 through ordinary Yul compilation and the verified EVM backend. -/
 theorem compile_memorySpill_correct
     (hexternal : ExternalsRealized model)
+    (hgas : model.gas = YulSemantics.EVM.ExternalGas.any)
     {raw : Block Op} {result : Result} {instructions : List Instr}
     (hspill : spillBlock? raw = some result)
     (hguarded : GuardedExternals model.calls model.creates
@@ -209,18 +211,20 @@ theorem compile_memorySpill_correct
   have hobs : runObservables initial sourceFinal =
       runObservables initial targetFinal :=
     ScratchRel.runObservables_eq hscratch
-  obtain ⟨bound, hbackend⟩ := compile_correct hexternal hcomp himm htarget
+  obtain ⟨bound, hbackend⟩ :=
+    compile_correct hexternal hcomp himm (by rw [hgas]; exact htarget)
   exact ⟨targetEnv, targetFinal, htarget, hscratch, hobs, bound, hbackend⟩
 
 /-- Concrete production object theorem with recursive spill/fallback soundness
 and the block simulation callback both discharged. -/
 theorem compileObject_memorySpill_correct
     (hexternal : ExternalsRealized model)
+    (hgas : model.gas = YulSemantics.EVM.ExternalGas.any)
     {raw output : Object Op} {plan : MemorySpillSelect.ObjectPlan}
     {selected : Nat} {L : EVM.Layout}
     (hbuild : spillObjectWithFallback raw
       (optimizerPipelineObject (calls := model.calls) (creates := model.creates)
-        (eraseMemoryGuardObject raw)) =
+        (gasOracle := .any) (eraseMemoryGuardObject raw)) =
         some { «object» := output, plan := plan, selected := selected })
     (hcomp : compileObject output = some L)
     {sourceEnv : MemorySpillObjectSound.WordEnv}
@@ -240,7 +244,7 @@ theorem compileObject_memorySpill_correct
           StateMatch targetFinal s' ∧
           ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
            (out = .halt ∧ HaltedMatch targetFinal s')) :=
-  MemorySpillBackendSound.compileObject_memorySpill_correct hexternal hbuild
+  MemorySpillBackendSound.compileObject_memorySpill_correct hexternal hgas hbuild
     (spillNodeRunSound (calls := model.calls) (creates := model.creates) L)
     hcomp hsource
 

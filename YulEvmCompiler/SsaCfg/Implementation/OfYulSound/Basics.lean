@@ -905,7 +905,7 @@ end VEnv
 section Correspondence
 
 variable [model : ExternalModel]
-local notation "yulD" => evmWithExternal model.calls model.creates YulSemantics.EVM.ExternalGas.any
+local notation "yulD" => evmWithExternal model.calls model.creates model.gas
 
 /-! ## The environment invariant
 

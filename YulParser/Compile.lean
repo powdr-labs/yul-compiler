@@ -451,7 +451,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
           <|> YulEvmCompiler.compile
             (YulEvmCompiler.Optimizer.cleanupAfterLayoutBlock
               (calls := YulSemantics.EVM.ExternalCalls.none)
-              (creates := YulSemantics.EVM.ExternalCreates.none)
+              (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)
               (YulEvmCompiler.Optimizer.stackLayoutBlock blk))
           <|> YulEvmCompiler.compile
             (YulEvmCompiler.Optimizer.stackLayoutBlock blk)
@@ -462,15 +462,15 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
       -- depth, certificate) simply leaves the classic chain's result.
       let pipelined := (YulEvmCompiler.Optimizer.optimizerPipeline
           (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none)).run b
+          (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)).run b
       let ssa := YulEvmCompiler.SsaCfg.compileViaSsa pipelined
       let classic := tryLayouts pipelined
         <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
+          (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)).run b)
         <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineLight
           (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none)).run b)
+          (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)).run b)
         <|> YulEvmCompiler.compile b
         <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillBlock? raw with
           | some spilled =>
@@ -478,7 +478,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
               -- chance before compiling it verbatim.
               let spilledOpt := (YulEvmCompiler.Optimizer.optimizerPipeline
                 (calls := YulSemantics.EVM.ExternalCalls.none)
-                (creates := YulSemantics.EVM.ExternalCreates.none)).run
+                (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)).run
                   (YulEvmCompiler.Optimizer.Normalize.normalize
                     (D := YulSemantics.EVM.evmWithExternal
                       YulSemantics.EVM.ExternalCalls.none
@@ -515,13 +515,13 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
       -- pays for them (see the block path above).
       let optimized := YulEvmCompiler.Optimizer.optimizerPipelineObject
         (calls := YulSemantics.EVM.ExternalCalls.none)
-        (creates := YulSemantics.EVM.ExternalCreates.none) o
+        (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any) o
       let tryLayouts (obj : Object YulSemantics.EVM.Op) :=
         (expandSetImmutablesObject obj).bind YulEvmCompiler.compileObject
           <|> (expandSetImmutablesObject
               (YulEvmCompiler.Optimizer.cleanupAfterLayoutObject
                 (calls := YulSemantics.EVM.ExternalCalls.none)
-                (creates := YulSemantics.EVM.ExternalCreates.none)
+                (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)
                 (YulEvmCompiler.Optimizer.stackLayoutObject obj))).bind
               YulEvmCompiler.compileObject
           <|> (expandSetImmutablesObject
@@ -541,10 +541,10 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
       let classicLayout := tryLayouts optimized
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
           (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none) o)
+          (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any) o)
         <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectLight
           (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none) o)
+          (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any) o)
         <|> (expandSetImmutablesObject o).bind YulEvmCompiler.compileObject
         <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback
               raw optimized with
@@ -563,7 +563,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
                     let spilledOpt :=
                       YulEvmCompiler.Optimizer.optimizerPipelineObject
                         (calls := YulSemantics.EVM.ExternalCalls.none)
-                        (creates := YulSemantics.EVM.ExternalCreates.none)
+                        (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)
                         (YulEvmCompiler.Optimizer.Normalize.normalizeObject
                           (D := YulSemantics.EVM.evmWithExternal
                             YulSemantics.EVM.ExternalCalls.none
@@ -573,7 +573,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
                       <|> (expandSetImmutablesObject
                           (YulEvmCompiler.Optimizer.cleanupAfterLayoutObject
                             (calls := YulSemantics.EVM.ExternalCalls.none)
-                            (creates := YulSemantics.EVM.ExternalCreates.none)
+                            (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)
                             (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt))).bind
                           YulEvmCompiler.compileObject
                       <|> (expandSetImmutablesObject

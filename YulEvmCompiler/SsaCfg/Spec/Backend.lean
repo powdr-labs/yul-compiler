@@ -43,7 +43,7 @@ open YulSemantics (Outcome VEnv)
 open YulEvmCompiler
 
 variable [model : ExternalModel] {imm : String → YulSemantics.EVM.U256}
-local notation "yulD" => evmWithExternal model.calls model.creates YulSemantics.EVM.ExternalGas.any
+local notation "yulD" => evmWithExternal model.calls model.creates model.gas
 
 /-- **Construction soundness**: if the construction accepts `prog` and the
 Yul semantics runs it, the SSA program runs to the same final state and

@@ -189,7 +189,7 @@ successfully to `.ok rets`, its actual argument and result counts match the `Ope
 `popArity`/`pushArity`. Ties the abstract `AStep.op` stack effect to the layout arithmetic. -/
 theorem builtin_arity {yop : Op} {o : Operation} (hop : opTable yop = some o)
     {args rets : List U256} {yst yst' : EvmState}
-    (h : builtinWithExternal model.calls model.creates .any yop args yst (.ok rets yst')) :
+    (h : builtinWithExternal model.calls model.creates model.gas yop args yst (.ok rets yst')) :
     args.length = Operation.popArity o ∧ rets.length = Operation.pushArity o := by
   cases yop <;>
     simp only [opTable, Option.some.injEq, reduceCtorEq] at hop <;>

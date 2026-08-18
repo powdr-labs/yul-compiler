@@ -28,9 +28,9 @@ open YulSemantics
 open YulSemantics.EVM
 open YulEvmCompiler
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates ExternalGas.any
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### Resolution preserves the pattern shapes -/
 
@@ -199,8 +199,8 @@ pointwise equivalent to not running it, on the resolved code. -/
 theorem resolveCoalesceCopiesBlock_equiv (L : Layout) (b : Block Op) :
     EquivBlock D (resolveForLayoutStmts L b)
       (resolveForLayoutStmts L
-        ((coalesceCopies (calls := calls) (creates := creates)).run b)) := by
-  have h := (coalesceCopies (calls := calls) (creates := creates)).sound
+        ((coalesceCopies (calls := calls) (creates := creates) (gasOracle := gasOracle)).run b)) := by
+  have h := (coalesceCopies (calls := calls) (creates := creates) (gasOracle := gasOracle)).sound
     (resolveForLayoutStmts L b)
   show EquivBlock D (resolveForLayoutStmts L b)
     (resolveForLayoutStmts L (coalesceCopiesBlock b))

@@ -43,7 +43,7 @@ def IszeroPending (m : Std.HashMap ValId ValId) (R : Regs) (is : List Instr) : P
 /-- Inverting the `iszero` built-in: it consumes one word and produces its
 zero-test. -/
 theorem iszero_ok {args rets : List U256} {st st' : EvmState}
-    (h : builtinWithExternal model.calls model.creates .any .iszero args st (.ok rets st')) :
+    (h : builtinWithExternal model.calls model.creates model.gas .iszero args st (.ok rets st')) :
     ∃ v, args = [v] ∧ rets = [b2w (v = 0)] := by
   rw [builtin_of_pure (by decide)] at h
   match args with

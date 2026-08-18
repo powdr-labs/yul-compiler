@@ -203,7 +203,7 @@ theorem iszero_step [model : ExternalModel] {prog' c : List Asm}
 result, unchanged state. -/
 theorem iszero_inv [model : ExternalModel] {args rets : List U256}
     {yst yst' : EvmState}
-    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates .any
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas
       .iszero args yst (.ok rets yst')) :
     ∃ v, args = [v] ∧ rets = [b2w (v = 0)] ∧ yst' = yst := by
   match args with
@@ -222,7 +222,7 @@ theorem iszero_inv [model : ExternalModel] {args rets : List U256}
 /-- `iszero` never halts. -/
 theorem iszero_no_halt [model : ExternalModel] {args : List U256}
     {yst yf : EvmState}
-    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates .any
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas
       .iszero args yst (.halt yf)) : False := by
   match args with
   | [] => exact absurd hb (by simp [YulSemantics.EVM.builtinWithExternal,
@@ -243,7 +243,7 @@ theorem astep_op_inv [model : ExternalModel] {prog : List Asm} {yop : Op}
     {c : List Asm} {σs : List AVal} {y : EvmState} {b : AConf}
     (h : AStep (model := model) prog ⟨.op yop :: c, σs, y⟩ b) :
     ∃ args rets σ' yst', σs = words args ++ σ'
-      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates .any yop args y
+      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas yop args y
           (.ok rets yst')
       ∧ b = ⟨c, words rets ++ σ', yst'⟩ := by
   cases h with
@@ -300,10 +300,10 @@ other's operand swap in the dialect (`b2w (a.ult b)` against
 `b2w (b.ult a)`). -/
 theorem flipOp_inv [model : ExternalModel] {yop yop' : Op}
     (hf : flipOp yop = some yop') {args rets : List U256} {yst yst' : EvmState}
-    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates .any yop args yst
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas yop args yst
       (.ok rets yst')) :
     ∃ a b, args = [a, b] ∧ yst' = yst ∧
-      YulSemantics.EVM.builtinWithExternal model.calls model.creates .any yop' [b, a] yst
+      YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas yop' [b, a] yst
         (.ok rets yst) := by
   -- only the ten ops `flipOp` accepts survive; each is a `bin`
   cases yop <;> simp only [flipOp, Option.some.injEq, reduceCtorEq] at hf
@@ -322,7 +322,7 @@ theorem flipOp_inv [model : ExternalModel] {yop yop' : Op}
 /-- A built-in with a reversed twin never halts. -/
 theorem flipOp_no_halt [model : ExternalModel] {yop yop' : Op}
     (hf : flipOp yop = some yop') {args : List U256} {yst yf : EvmState}
-    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates .any yop args yst
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas yop args yst
       (.halt yf)) : False := by
   cases yop <;> simp only [flipOp, Option.some.injEq, reduceCtorEq] at hf
   all_goals
@@ -334,7 +334,7 @@ theorem ahalt_op_inv [model : ExternalModel] {prog : List Asm} {yop : Op}
     {c : List Asm} {σs : List AVal} {y yf : EvmState}
     (h : AHalt (model := model) prog ⟨.op yop :: c, σs, y⟩ yf) :
     ∃ args σ', σs = words args ++ σ'
-      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates .any yop args y
+      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas yop args y
           (.halt yf) := by
   cases h with
   | op hb => exact ⟨_, _, rfl, hb⟩

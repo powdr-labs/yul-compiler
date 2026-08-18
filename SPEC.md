@@ -11,7 +11,7 @@ remains is exactly the specification vocabulary.
 
 **Audited surface: 92 declarations** \
 relations: 14 · structures: 12 · data defs: 52 · statements: 9 · artifact signatures: 4 \
-**External boundary: 157 declarations** across the two pinned semantics.
+**External boundary: 158 declarations** across the two pinned semantics.
 
 Axioms are pinned separately in `Checks.lean` (only `propext`,
 `Classical.choice`, `Quot.sound`). Anti-vacuity (that the accepted-program
@@ -30,7 +30,7 @@ flowchart TD
     A["Artifact signatures (4) — type only, bodies free"]
   end
   subgraph external ["trusted ground truth — pinned dependency semantics"]
-    YUL["yul-semantics entry points (39)"]
+    YUL["yul-semantics entry points (40)"]
     EVM["evm-semantics entry points (118)"]
   end
   AX["Axiom base: propext, Classical.choice, Quot.sound (Checks.lean)"]
@@ -49,12 +49,12 @@ The shape of each guarantee. Read these first: the honest scoping lives here.
 
 | declaration | source | hash |
 |---|---|---|
-| `YulEvmCompiler.Optimizer.LocalPass.optimize_then_compile_correct` | [YulEvmCompiler/Optimizer/Spec/Backend.lean#L30](YulEvmCompiler/Optimizer/Spec/Backend.lean#L30) | `ce2ede250076a364` |
+| `YulEvmCompiler.Optimizer.LocalPass.optimize_then_compile_correct` | [YulEvmCompiler/Optimizer/Spec/Backend.lean#L30](YulEvmCompiler/Optimizer/Spec/Backend.lean#L30) | `ca06364cd86fad12` |
 | `YulEvmCompiler.compileObject_consistent` | [YulEvmCompiler/ObjectCompile.lean#L1030](YulEvmCompiler/ObjectCompile.lean#L1030) | `6772c506631c72d` |
-| `YulEvmCompiler.compileObject_correct` | [YulEvmCompiler/ObjectCompile.lean#L1054](YulEvmCompiler/ObjectCompile.lean#L1054) | `50dfc92d2391f347` |
-| `YulEvmCompiler.compile_correct` | [YulEvmCompiler/Correctness.lean#L71](YulEvmCompiler/Correctness.lean#L71) | `a644e1d096214b1f` |
-| `YulEvmCompiler.compile_correct_eval` | [YulEvmCompiler/Correctness.lean#L267](YulEvmCompiler/Correctness.lean#L267) | `a55d21753450fde8` |
-| `YulEvmCompiler.compile_correct_withPayload` | [YulEvmCompiler/Correctness.lean#L179](YulEvmCompiler/Correctness.lean#L179) | `84c35158d70f1272` |
+| `YulEvmCompiler.compileObject_correct` | [YulEvmCompiler/ObjectCompile.lean#L1054](YulEvmCompiler/ObjectCompile.lean#L1054) | `312e35bb55a5c0cc` |
+| `YulEvmCompiler.compile_correct` | [YulEvmCompiler/Correctness.lean#L71](YulEvmCompiler/Correctness.lean#L71) | `68f0c53fdb065a6e` |
+| `YulEvmCompiler.compile_correct_eval` | [YulEvmCompiler/Correctness.lean#L267](YulEvmCompiler/Correctness.lean#L267) | `674290481d8d91f2` |
+| `YulEvmCompiler.compile_correct_withPayload` | [YulEvmCompiler/Correctness.lean#L179](YulEvmCompiler/Correctness.lean#L179) | `3730e65a4306017` |
 | `YulEvmCompiler.compiled_constructor_returns` | [YulEvmCompiler/ObjectCompile.lean#L1092](YulEvmCompiler/ObjectCompile.lean#L1092) | `d5431dd9cd59acf8` |
 | `YulParser.parse_canon_block` | [YulParser/Stmt.lean#L313](YulParser/Stmt.lean#L313) | `565944a3acfe55d3` |
 | `YulParser.parse_canon_obj` | [YulParser/Obj.lean#L139](YulParser/Obj.lean#L139) | `f40759b3ea852432` |
@@ -73,7 +73,7 @@ How a source state/outcome corresponds to a target state/outcome. The heart of t
 | `YulEvmCompiler.LogsMatch` | [YulEvmCompiler/StateRel.lean#L940](YulEvmCompiler/StateRel.lean#L940) | `6d1d2dd35bc25e39` |
 | `YulEvmCompiler.MemMatch` | [YulEvmCompiler/StateRel.lean#L33](YulEvmCompiler/StateRel.lean#L33) | `e48211ef54b0d862` |
 | `YulEvmCompiler.Optimizer.Sound` | [YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L64](YulEvmCompiler/Optimizer/Spec/LocalPass.lean#L64) | `d9d7947b1bb2287` |
-| `YulEvmCompiler.RunResolvedObject` | [YulEvmCompiler/ObjectCompile.lean#L1048](YulEvmCompiler/ObjectCompile.lean#L1048) | `cfe34db617b17185` |
+| `YulEvmCompiler.RunResolvedObject` | [YulEvmCompiler/ObjectCompile.lean#L1048](YulEvmCompiler/ObjectCompile.lean#L1048) | `89c18e71e0b698d9` |
 | `YulEvmCompiler.SelfdestructEntryMatch` | [YulEvmCompiler/StateRel.lean#L954](YulEvmCompiler/StateRel.lean#L954) | `3b1f6c17c9cc3b3f` |
 | `YulEvmCompiler.SelfdestructsMatch` | [YulEvmCompiler/StateRel.lean#L961](YulEvmCompiler/StateRel.lean#L961) | `8fb6a9b19498848` |
 | `YulParser.Parser` | [YulParser/Core.lean#L13](YulParser/Core.lean#L13) | `c3c38aa9630539e` |
@@ -90,7 +90,7 @@ The vocabulary the guarantee is phrased in.
 | `YulEvmCompiler.CreatesRealized` | [YulEvmCompiler/LowerDefs.lean#L376](YulEvmCompiler/LowerDefs.lean#L376) | `cb44fa308aa28243` |
 | `YulEvmCompiler.EnvMatch` | [YulEvmCompiler/StateRel.lean#L427](YulEvmCompiler/StateRel.lean#L427) | `9cea97fa8ae94f99` |
 | `YulEvmCompiler.ExternalCodeMatch` | [YulEvmCompiler/StateRel.lean#L492](YulEvmCompiler/StateRel.lean#L492) | `2d46717e52ff1871` |
-| `YulEvmCompiler.ExternalModel` | [YulEvmCompiler/AsmSem.lean#L34](YulEvmCompiler/AsmSem.lean#L34) | `75bd1eadd7f209e2` |
+| `YulEvmCompiler.ExternalModel` | [YulEvmCompiler/AsmSem.lean#L34](YulEvmCompiler/AsmSem.lean#L34) | `10fd9bffb845ea09` |
 | `YulEvmCompiler.ExternalsRealized` | [YulEvmCompiler/LowerDefs.lean#L424](YulEvmCompiler/LowerDefs.lean#L424) | `7fd85ee803561fa8` |
 | `YulEvmCompiler.FrameOK` | [YulEvmCompiler/StateRel.lean#L1238](YulEvmCompiler/StateRel.lean#L1238) | `ec23d54b6e97193` |
 | `YulEvmCompiler.Instr` | [YulEvmCompiler/Instr.lean#L38](YulEvmCompiler/Instr.lean#L38) | `6d2465d1d211750b` |
@@ -177,15 +177,15 @@ Recursors/auxiliary constants reached through a type.
 |---|---|---|
 | `YulParser.pQuotedChars_rest_lt` | [YulParser/Lexer.lean#L53](YulParser/Lexer.lean#L53) | `bf5ffe92f6739f95` |
 
-## External-semantics boundary (157 decls, combined hash `c7b93fbae3a78394`)
+## External-semantics boundary (158 decls, combined hash `c0a611823e332601`)
 
 The entry points of the two pinned semantics the guarantee is stated against.
 These are trusted ground truth (auditing them = believing they model real Yul
 and real EVM); they are recorded but not unfolded.
 
-### yul-sem (39)
+### yul-sem (40)
 
-`YulSemantics.Block`, `YulSemantics.Data`, `YulSemantics.Data.bytes`, `YulSemantics.Data.size`, `YulSemantics.Dialect`, `YulSemantics.EVM.EvmState`, `YulSemantics.EVM.ExecEnv`, `YulSemantics.EVM.ExternalCalls`, `YulSemantics.EVM.ExternalCalls.none`, `YulSemantics.EVM.ExternalCreates`, `YulSemantics.EVM.ExternalGas.any`, `YulSemantics.EVM.HaltKind`, `YulSemantics.EVM.Layout`, `YulSemantics.EVM.Layout.Consistent`, `YulSemantics.EVM.Layout.initState`, `YulSemantics.EVM.LogEntry`, `YulSemantics.EVM.Op`, `YulSemantics.EVM.U256`, `YulSemantics.EVM.builtin`, `YulSemantics.EVM.builtinWithExternal`, `YulSemantics.EVM.byteFrom`, `YulSemantics.EVM.constructorCode`, `YulSemantics.EVM.evm`, `YulSemantics.EVM.evmWithExternal`, `YulSemantics.EVM.litValue`, `YulSemantics.EVM.opName`, `YulSemantics.EVM.projectedCodeHash`, `YulSemantics.ExecStmt`, `YulSemantics.Expr`, `YulSemantics.FunEnv`, `YulSemantics.Ident`, `YulSemantics.Literal`, `YulSemantics.Object`, `YulSemantics.Object.codeBlock`, `YulSemantics.Object.dataSegs`, `YulSemantics.Outcome`, `YulSemantics.Run`, `YulSemantics.Stmt`, `YulSemantics.VEnv`
+`YulSemantics.Block`, `YulSemantics.Data`, `YulSemantics.Data.bytes`, `YulSemantics.Data.size`, `YulSemantics.Dialect`, `YulSemantics.EVM.EvmState`, `YulSemantics.EVM.ExecEnv`, `YulSemantics.EVM.ExternalCalls`, `YulSemantics.EVM.ExternalCalls.none`, `YulSemantics.EVM.ExternalCreates`, `YulSemantics.EVM.ExternalGas`, `YulSemantics.EVM.ExternalGas.any`, `YulSemantics.EVM.HaltKind`, `YulSemantics.EVM.Layout`, `YulSemantics.EVM.Layout.Consistent`, `YulSemantics.EVM.Layout.initState`, `YulSemantics.EVM.LogEntry`, `YulSemantics.EVM.Op`, `YulSemantics.EVM.U256`, `YulSemantics.EVM.builtin`, `YulSemantics.EVM.builtinWithExternal`, `YulSemantics.EVM.byteFrom`, `YulSemantics.EVM.constructorCode`, `YulSemantics.EVM.evm`, `YulSemantics.EVM.evmWithExternal`, `YulSemantics.EVM.litValue`, `YulSemantics.EVM.opName`, `YulSemantics.EVM.projectedCodeHash`, `YulSemantics.ExecStmt`, `YulSemantics.Expr`, `YulSemantics.FunEnv`, `YulSemantics.Ident`, `YulSemantics.Literal`, `YulSemantics.Object`, `YulSemantics.Object.codeBlock`, `YulSemantics.Object.dataSegs`, `YulSemantics.Outcome`, `YulSemantics.Run`, `YulSemantics.Stmt`, `YulSemantics.VEnv`
 
 ### evm-sem (118)
 

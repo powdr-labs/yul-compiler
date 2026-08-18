@@ -35,7 +35,7 @@ open YulSemantics.EVM (U256 EvmState Op stepOp evmWithExternal)
 open YulSemantics (Outcome Ident VEnv)
 
 variable [model : ExternalModel]
-local notation "yulD" => evmWithExternal model.calls model.creates YulSemantics.EVM.ExternalGas.any
+local notation "yulD" => evmWithExternal model.calls model.creates model.gas
 
 /-- Invert a successful `compileProgram`: it hoisted the top scope,
 checked its names `Nodup`, compiled the statements, and passed `wfCheck`. -/

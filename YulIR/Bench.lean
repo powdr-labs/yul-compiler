@@ -34,7 +34,8 @@ open YulEvmCompilerTests.SolcDifferential (measureGas compareBytecode)
 def currentOpt (b : YulSemantics.Block EVM.Op) : YulSemantics.Block EVM.Op :=
   (YulEvmCompiler.Optimizer.optimizerPipeline
     (calls := YulSemantics.EVM.ExternalCalls.none)
-    (creates := YulSemantics.EVM.ExternalCreates.none)).run b
+    (creates := YulSemantics.EVM.ExternalCreates.none)
+    (gasOracle := YulSemantics.EVM.ExternalGas.any)).run b
 
 /-- The IR round-trip (no optimizations yet). -/
 def irRoundTrip (b : YulSemantics.Block EVM.Op) : YulSemantics.Block EVM.Op :=

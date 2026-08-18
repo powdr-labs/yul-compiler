@@ -58,9 +58,9 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates ExternalGas.any
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### Known-binding environments -/
 
@@ -931,7 +931,7 @@ theorem selectSwitch_writeSet_subset (cv : U256) (cases : List (Literal × Block
   | cons head rest ih =>
       rcases head with ⟨l, b⟩
       intro x hx
-      by_cases hcv : cv = (evmWithExternal calls creates .any).litValue l
+      by_cases hcv : cv = (evmWithExternal calls creates gasOracle).litValue l
       · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv])] at hx
         simp only [writeSetCases, List.append_assoc, List.mem_append]
         exact Or.inl hx
@@ -1497,11 +1497,11 @@ def PFDeclRel (d₁ d₂ : FDecl D) : Prop :=
 
 /-- Scopes related pairwise: equal names, `PFDeclRel` declarations. -/
 def PScopeRel (s₁ s₂ : FScope D) : Prop :=
-  List.Forall₂ (fun p q => p.1 = q.1 ∧ PFDeclRel (calls := calls) (creates := creates) p.2 q.2) s₁ s₂
+  List.Forall₂ (fun p q => p.1 = q.1 ∧ PFDeclRel (calls := calls) (creates := creates) (gasOracle := gasOracle) p.2 q.2) s₁ s₂
 
 /-- Function environments related scope-by-scope. -/
 def PFunsRel (f₁ f₂ : FunEnv D) : Prop :=
-  List.Forall₂ (PScopeRel (calls := calls) (creates := creates)) f₁ f₂
+  List.Forall₂ (PScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle)) f₁ f₂
 
 /-! #### The identity derivation (reflexivity at the empty environment) -/
 
@@ -1571,15 +1571,15 @@ theorem PropRel.reflDflt : ∀ d : Option (Block Op),
 
 end
 
-theorem PFDeclRel.refl (d : FDecl D) : PFDeclRel (calls := calls) (creates := creates) d d :=
+theorem PFDeclRel.refl (d : FDecl D) : PFDeclRel (calls := calls) (creates := creates) (gasOracle := gasOracle) d d :=
   ⟨rfl, rfl, [], PropRel.reflStmts d.body⟩
 
-theorem PScopeRel.refl (s : FScope D) : PScopeRel (calls := calls) (creates := creates) s s := by
+theorem PScopeRel.refl (s : FScope D) : PScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle) s s := by
   induction s with
   | nil => exact .nil
   | cons p t ih => exact .cons ⟨rfl, PFDeclRel.refl _⟩ ih
 
-theorem PFunsRel.refl (f : FunEnv D) : PFunsRel (calls := calls) (creates := creates) f f := by
+theorem PFunsRel.refl (f : FunEnv D) : PFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) f f := by
   induction f with
   | nil => exact .nil
   | cons s t ih => exact .cons (PScopeRel.refl _) ih
@@ -1591,7 +1591,7 @@ statement constructors, so `hoist` collects pairwise-related declarations. -/
 theorem PropRel.hoist_scopeRel {σ σ' : PEnv} {pc pc' : PCode Op}
     (h : PropRel σ σ' pc pc') :
     ∀ {ss ss' : List (Stmt Op)}, pc = .stmts ss → pc' = .stmts ss' →
-      PScopeRel (calls := calls) (creates := creates) (hoist D ss) (hoist D ss') := by
+      PScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle) (hoist D ss) (hoist D ss') := by
   induction h with
   | nilSS =>
       intro ss ss' hss hss'
@@ -1641,10 +1641,10 @@ theorem PropRel.hoist_scopeRel {σ σ' : PEnv} {pc pc' : PCode Op}
 
 /-- A scope lookup transports across `PScopeRel` (both directions at once). -/
 theorem pScopeRel_find {s₁ s₂ : FScope D}
-    (h : PScopeRel (calls := calls) (creates := creates) s₁ s₂) (fn : Ident) :
+    (h : PScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle) s₁ s₂) (fn : Ident) :
     (s₁.find? (fun p => p.1 = fn) = none ∧ s₂.find? (fun p => p.1 = fn) = none) ∨
     (∃ p q, s₁.find? (fun p => p.1 = fn) = some p ∧ s₂.find? (fun p => p.1 = fn) = some q ∧
-      p.1 = q.1 ∧ PFDeclRel (calls := calls) (creates := creates) p.2 q.2) := by
+      p.1 = q.1 ∧ PFDeclRel (calls := calls) (creates := creates) (gasOracle := gasOracle) p.2 q.2) := by
   induction h with
   | nil => left; simp
   | @cons p q u₁ u₂ hpq _ ih =>
@@ -1659,14 +1659,14 @@ theorem pScopeRel_find {s₁ s₂ : FScope D}
 
 /-- `lookupFun` transports forward across `PFunsRel`. -/
 theorem lookupFun_pFunsRel {f₁ f₂ : FunEnv D}
-    (hR : PFunsRel (calls := calls) (creates := creates) f₁ f₂) :
+    (hR : PFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) f₁ f₂) :
     ∀ {fn : Ident} {decl : FDecl D} {cenv : FunEnv D},
       lookupFun f₁ fn = some (decl, cenv) →
       ∃ decl' cenv', lookupFun f₂ fn = some (decl', cenv') ∧
         decl'.params = decl.params ∧ decl'.rets = decl.rets ∧
         (∃ σ', PropRel [] σ'
           (.stmts decl.body) (.stmts decl'.body)) ∧
-        PFunsRel (calls := calls) (creates := creates) cenv cenv' := by
+        PFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) cenv cenv' := by
   induction hR with
   | nil => intro fn decl cenv h; simp [lookupFun] at h
   | @cons s₁ s₂ t₁ t₂ hs hR' ih =>
@@ -1685,14 +1685,14 @@ theorem lookupFun_pFunsRel {f₁ f₂ : FunEnv D}
 /-- `lookupFun` transports backward across `PFunsRel` (the relation's
 orientation on bodies is kept source→target). -/
 theorem lookupFun_pFunsRel_bwd {f₁ f₂ : FunEnv D}
-    (hR : PFunsRel (calls := calls) (creates := creates) f₁ f₂) :
+    (hR : PFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) f₁ f₂) :
     ∀ {fn : Ident} {decl' : FDecl D} {cenv' : FunEnv D},
       lookupFun f₂ fn = some (decl', cenv') →
       ∃ decl cenv, lookupFun f₁ fn = some (decl, cenv) ∧
         decl'.params = decl.params ∧ decl'.rets = decl.rets ∧
         (∃ σ', PropRel [] σ'
           (.stmts decl.body) (.stmts decl'.body)) ∧
-        PFunsRel (calls := calls) (creates := creates) cenv cenv' := by
+        PFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) cenv cenv' := by
   induction hR with
   | nil => intro fn decl' cenv' h; simp [lookupFun] at h
   | @cons s₁ s₂ t₁ t₂ hs hR' ih =>
@@ -1807,7 +1807,7 @@ theorem PropRel.selectRel {σ τc τd : PEnv} {cases cases' : List (Literal × B
       rcases head with ⟨l, b⟩
       cases hcs with
       | casesCons hb hrest =>
-          by_cases hcv : cv = (evmWithExternal calls creates .any).litValue l
+          by_cases hcv : cv = (evmWithExternal calls creates gasOracle).litValue l
           · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv]),
                 selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
             exact ⟨_, hb⟩
@@ -1937,7 +1937,7 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
           rw [hret] at hres
           have hsub : Step D funs₂ V st (.expr (substExpr σ (.call fn args)))
               (.eres (.vals (decl.rets.map
-                (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates .any).zero)) st2)) := by
+                (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates gasOracle).zero)) st2)) := by
             rw [substExpr]
             exact hres
           cases hrhs with
@@ -2065,7 +2065,7 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
               intro p hp
               rcases List.mem_cons.mp hp with hp | hp
               · subst hp
-                show VEnv.get (((_ : Ident), (evmWithExternal calls creates .any).zero) :: V) _
+                show VEnv.get (((_ : Ident), (evmWithExternal calls creates gasOracle).zero) :: V) _
                   = some (litValue (.number 0))
                 rw [VEnv.get_cons, if_pos rfl]
                 rfl
@@ -2710,7 +2710,7 @@ theorem prop_bwd {funs₂ : FunEnv D} {V : VEnv D} {st : EvmState}
                 (.eres (.vals (lits.map litValue) st)) :=
               substArgs_lits_eval hc funs₁ st (asLits_map hlits)
             have hstep := Step.builtinOk hargs
-              (pureFn_builtin (calls := calls) (creates := creates) hw st)
+              (pureFn_builtin (calls := calls) (creates := creates) (gasOracle := gasOracle) hw st)
             have hlv : litValue (.number w.toNat) = w := litValue_number_toNat w
             rw [← hlv] at hstep
             exact hstep
@@ -3025,7 +3025,7 @@ def propagate : LocalPass D where
   sound := fun b => PropRel.equivBlock (propStmts_rel (copyGate 0 b) [] b)
 
 @[simp] theorem propagate_run (b : Block Op) :
-    (propagate (calls := calls) (creates := creates)).run b =
+    (propagate (calls := calls) (creates := creates) (gasOracle := gasOracle)).run b =
       (propStmts (copyGate 0 b) [] b).1 := rfl
 
 /-! ### Regression examples (checked at build time) -/

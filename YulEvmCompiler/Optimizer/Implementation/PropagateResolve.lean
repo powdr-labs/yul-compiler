@@ -28,9 +28,9 @@ open YulSemantics
 open YulSemantics.EVM
 open YulEvmCompiler
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates ExternalGas.any
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### Resolution commutes with substitution -/
 

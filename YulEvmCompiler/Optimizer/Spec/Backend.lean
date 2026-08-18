@@ -25,7 +25,7 @@ open YulSemantics.EVM (U256 EvmState Op evmWithExternal)
 open YulSemantics (Outcome VEnv Run Block)
 
 variable [model : ExternalModel]
-local notation "yulD" => evmWithExternal model.calls model.creates YulSemantics.EVM.ExternalGas.any
+local notation "yulD" => evmWithExternal model.calls model.creates model.gas
 
 /-- **A sound optimizer pass is safe in front of the verified backend.** If `P`
 is any verified `LocalPass`, the compiler accepts the optimized program
