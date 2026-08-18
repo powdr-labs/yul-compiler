@@ -200,11 +200,11 @@ theorem setMany_drop_forall₂ : ∀ {xs : List Ident} {vs : List U256}
       (V.drop k) ((YulSemantics.VEnv.setMany V xs vs).drop k) := by
   intro xs
   induction xs with
-  | nil => intro vs V k mods _; exact YulSemantics.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
+  | nil => intro vs V k mods _; exact List.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
   | cons x xs ih =>
     intro vs V k mods hall
     cases vs with
-    | nil => exact YulSemantics.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
+    | nil => exact List.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
     | cons v vs =>
       rw [VEnv.setMany_cons]
       have hnames : VEnv.names ((YulSemantics.VEnv.set V x v).take k)
@@ -222,12 +222,12 @@ theorem setMany_drop_forall₂ : ∀ {xs : List Ident} {vs : List U256}
           (fun (p q : Ident × U256) => p.1 = q.1 ∧ (q.2 = p.2 ∨ q.1 ∈ mods))
           (V.drop k) ((YulSemantics.VEnv.set V x v).drop k) := by
         rcases hall x (List.mem_cons_self ..) with hm | hm
-        · refine YulSemantics.Forall₂.imp (fun a b hab => ⟨hab.1, hab.2.imp id (fun he => ?_)⟩)
-            (YulSemantics.Forall₂.drop k (VEnv.set_positional V x v))
+        · refine List.Forall₂.imp (fun a b hab => ⟨hab.1, hab.2.imp id (fun he => ?_)⟩)
+            (List.Forall₂.drop k (VEnv.set_positional V x v))
           rw [← hab.1, he]; exact hm
         · rw [VEnv.set_drop_of_mem_take V x v k hm]
-          exact YulSemantics.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
-      refine YulSemantics.Forall₂.trans' ?_ hstep htail
+          exact List.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
+      refine List.Forall₂.trans' ?_ hstep htail
       intro a b c hab hbc
       exact ⟨hab.1.trans hbc.1, by
         rcases hbc.2 with h | h
@@ -239,12 +239,12 @@ theorem setMany_drop_forall₂ : ∀ {xs : List Ident} {vs : List U256}
 namespace ModOut
 
 theorem rfl' (locals mods : List Ident) (V : VEnv yulD) : ModOut locals mods V V :=
-  ⟨Nat.le_refl _, fun _ _ => YulSemantics.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _⟩
+  ⟨Nat.le_refl _, fun _ _ => List.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _⟩
 
 theorem mono_mods {locals mods mods' : List Ident} {V W : VEnv yulD}
     (hsub : ∀ x ∈ mods, x ∈ mods') (h : ModOut locals mods V W) :
     ModOut locals mods' V W :=
-  ⟨h.1, fun n hn => YulSemantics.Forall₂.imp (fun _ _ hpq =>
+  ⟨h.1, fun n hn => List.Forall₂.imp (fun _ _ hpq =>
     ⟨hpq.1, hpq.2.imp id (fun hm => hsub _ hm)⟩) (h.2 n hn)⟩
 
 /-- Composition. The side condition says the second fragment's guarantee reaches
@@ -255,7 +255,7 @@ theorem trans {l₁ l₂ m₁ m₂ : List Ident} {V V₁ V₂ : VEnv yulD}
     (hd : ∀ n : Nat, n + l₁.length ≤ V.length → n + l₂.length ≤ V₁.length) :
     ModOut l₁ (m₁ ++ m₂) V V₂ := by
   refine ⟨Nat.le_trans h₁.1 h₂.1, fun n hn => ?_⟩
-  refine YulSemantics.Forall₂.trans' ?_ (h₁.2 n hn) (h₂.2 n (hd n hn))
+  refine List.Forall₂.trans' ?_ (h₁.2 n hn) (h₂.2 n (hd n hn))
   intro a b c hab hbc
   refine ⟨hab.1.trans hbc.1, ?_⟩
   rcases hbc.2 with h | h
@@ -468,7 +468,7 @@ theorem mod_sim {funs : YulSemantics.FunEnv yulD} {V : VEnv yulD}
     rw [show ((YulSemantics.bindZeros yulD vars ++ V).length - n)
         = (YulSemantics.bindZeros yulD vars).length + (V.length - n) from by
       rw [List.length_append, hbl]; omega, drop_append_len]
-    exact YulSemantics.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
+    exact List.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
   | @letVal funs V st vars e vals st1 _ hlen _ =>
     have hbn : VEnv.names (vars.zip vals) = vars := by
       rw [VEnv.names, List.map_fst_zip]
@@ -480,7 +480,7 @@ theorem mod_sim {funs : YulSemantics.FunEnv yulD} {V : VEnv yulD}
     rw [show ((vars.zip vals ++ V).length - n)
         = (vars.zip vals).length + (V.length - n) from by
       rw [List.length_append, hbl]; omega, drop_append_len]
-    exact YulSemantics.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
+    exact List.Forall₂.refl (fun _ => ⟨rfl, Or.inl rfl⟩) _
   | @assignVal funs V st vars e vals st1 _ hlen _ =>
     refine ⟨by rw [VEnv.names_setMany]; simp [declsOfStmt], fun locals hloc => ?_⟩
     refine ⟨by rw [VEnv.length_setMany], fun n hn => ?_⟩

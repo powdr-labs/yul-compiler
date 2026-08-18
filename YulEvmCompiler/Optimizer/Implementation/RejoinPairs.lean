@@ -1585,7 +1585,7 @@ theorem rjScopeRel : ∀ ss : List (Stmt Op),
   | [] => .nil
   | .funDef n ps rs body :: rest => by
       unfold rjStmts rjStmt
-      refine Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩ (rjScopeRel rest)
+      refine List.Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩ (rjScopeRel rest)
       exact (EquivBlock.of_stmts_funs
         (EquivStmts.of_forall₂ (rjStmts_forall2 body))
         (rjScopeRel body)).trans

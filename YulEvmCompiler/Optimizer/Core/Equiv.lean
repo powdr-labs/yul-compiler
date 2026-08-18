@@ -1,4 +1,5 @@
 import YulSemantics.BigStep
+import Mathlib.Data.List.Forall2
 set_option warningAsError true
 
 /-!
@@ -44,20 +45,11 @@ For whole programs, equivalence of the top-level blocks gives identical `Run` re
 
 namespace YulSemantics
 
-/-- Pointwise lifting of a relation to lists: `Forall₂ R l₁ l₂` holds when `l₁` and `l₂` have the
-same length and `R` relates their elements position-wise. (A local stand-in for Mathlib's
-`List.Forall₂` — the congruence lemmas below need nothing more than the inductive and `imp`.) -/
-inductive Forall₂ (R : α → β → Prop) : List α → List β → Prop
-  /-- Two empty lists are pointwise related. -/
-  | nil : Forall₂ R [] []
-  /-- Related heads on pointwise-related tails give pointwise-related lists. -/
-  | cons : R a b → Forall₂ R l₁ l₂ → Forall₂ R (a :: l₁) (b :: l₂)
-
-/-- `Forall₂` is monotone in the relation. -/
-theorem Forall₂.imp {R S : α → β → Prop} (H : ∀ a b, R a b → S a b) :
-    ∀ {l₁ l₂}, Forall₂ R l₁ l₂ → Forall₂ S l₁ l₂
-  | _, _, .nil => .nil
-  | _, _, .cons h t => .cons (H _ _ h) (t.imp H)
+/-! Pointwise lifting of a relation to lists. Upstream yul-semantics carried its own `Forall₂`
+inductive to stay Mathlib-free; this repo depends on Mathlib, so the alias below deduplicates it to
+`List.Forall₂` (same constructors `nil`/`cons`, and `List.Forall₂.imp` comes from Mathlib) while keeping
+the `YulSemantics.Forall₂` name every call site uses. -/
+export List (Forall₂)
 
 variable {D : Dialect} [DecidableEq D.Value]
 
