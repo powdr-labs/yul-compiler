@@ -24,10 +24,7 @@ rev = "v4.33.0"
 [[require]]
 name = "evm_semantics"
 git = "https://github.com/powdr-labs/evm-semantics"
-# Head of powdr-labs/evm-semantics#144 (Lean 4.33 upgrade, based on 192d611).
-# Temporarily omits main's two Checks-layer commits (10aabc0, 95b8da0 — nothing
-# this repo references); re-pin to main once #144 is rebased and merged.
-rev = "f0c4a8e9aa22f679d825c7f063215a5f195a72e8"
+rev = "2f8714d6ba960a3de67720019b54513f5bc1a2e3"
 
 [[lean_lib]]
 name = "YulEvmCompiler"
