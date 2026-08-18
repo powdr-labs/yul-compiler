@@ -304,17 +304,17 @@ theorem SOut.scope {P : Prog} {f : Func} {lctx : Option LoopCtx}
   | «break» =>
     obtain ⟨lc, R₁, vals, hlc, hle, hbelow, hfr, hforall, hcont⟩ := h
     exact ⟨lc, R₁, vals, hlc, hle, hbelow, hfr,
-      YulSemantics.Forall₂.imp_mem hforall (fun x hx v hv => by
+      List.Forall₂.imp_mem hforall (fun x hx v hv => by
         rw [get_restore_of_noShadow hns (hvars lc hlc x hx)]; exact hv), hcont⟩
   | «continue» =>
     obtain ⟨lc, R₁, vals, hlc, hle, hbelow, hfr, hforall, hcont⟩ := h
     exact ⟨lc, R₁, vals, hlc, hle, hbelow, hfr,
-      YulSemantics.Forall₂.imp_mem hforall (fun x hx v hv => by
+      List.Forall₂.imp_mem hforall (fun x hx v hv => by
         rw [get_restore_of_noShadow hns (hvars lc hlc x hx)]; exact hv), hcont⟩
   | leave =>
     obtain ⟨rs, vals, hrs, hforall, hex⟩ := h
     exact ⟨rs, vals, hrs,
-      YulSemantics.Forall₂.imp_mem hforall (fun x hx v hv => by
+      List.Forall₂.imp_mem hforall (fun x hx v hv => by
         rw [get_restore_of_noShadow hns (hrets rs hrs x hx)]; exact hv), hex⟩
 
 /-- **`seqNil`** — the empty live statement list emits nothing. -/

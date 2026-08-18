@@ -457,7 +457,7 @@ private theorem fcStmts_forall2 (P : String) (Δ : DEnv) :
     ∀ ss : List (Stmt Op), Forall₂ (EquivStmt D) ss (fcStmts P Δ ss)
   | [] => by rw [fcStmts]; exact .nil
   | s :: rest => by
-      simpa [fcStmts] using Forall₂.cons
+      simpa [fcStmts] using List.Forall₂.cons
         (fcStmt_equiv P Δ s) (fcStmts_forall2 P Δ rest)
 
 private theorem fcCases_forall2 (P : String) (Δ : DEnv) :
@@ -472,7 +472,7 @@ private theorem fcCases_forall2 (P : String) (Δ : DEnv) :
           (EquivBlock.of_stmts_funs
             (EquivStmts.of_forall₂ (fcStmts_forall2 P (deltaExtend Δ b) b))
             (fcScopeRel P (deltaExtend Δ b) b))
-      exact Forall₂.cons ⟨rfl, hb⟩ (fcCases_forall2 P Δ rest)
+      exact List.Forall₂.cons ⟨rfl, hb⟩ (fcCases_forall2 P Δ rest)
 
 private theorem fcDflt_equiv (P : String) (Δ : DEnv) :
     ∀ dflt : Option (Block Op), EquivBlock D (dflt.getD []) ((fcDflt P Δ dflt).getD [])

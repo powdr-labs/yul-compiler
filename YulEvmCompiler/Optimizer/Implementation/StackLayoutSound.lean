@@ -4987,7 +4987,7 @@ private theorem mapFunBodies_stmts
   | cons s rest ih =>
       cases s with
       | funDef n ps rs body =>
-          apply Forall₂.cons
+          apply List.Forall₂.cons
           · intro funs V st V' st' o
             constructor <;> intro h <;> cases h <;> exact Step.funDef
           · exact ih

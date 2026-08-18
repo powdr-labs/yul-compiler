@@ -467,7 +467,7 @@ theorem ccScopeRel : ∀ ss : List (Stmt Op),
   | [] => .nil
   | .funDef n ps rs body :: rest => by
       unfold ccStmts ccStmt
-      refine Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩ (ccScopeRel rest)
+      refine List.Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩ (ccScopeRel rest)
       exact (EquivBlock.of_stmts_funs
         (EquivStmts.of_forall₂ (ccStmts_forall2 body))
         (ccScopeRel body)).trans

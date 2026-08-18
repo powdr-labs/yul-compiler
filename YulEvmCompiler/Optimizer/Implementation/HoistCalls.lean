@@ -329,7 +329,7 @@ private theorem hcStmts_forall2 (P : String) (Δ : DEnv) :
     ∀ ss : List (Stmt Op), Forall₂ (EquivStmt D) ss (hcStmts P Δ ss)
   | [] => by rw [hcStmts]; exact .nil
   | s :: rest => by
-      simpa [hcStmts] using Forall₂.cons
+      simpa [hcStmts] using List.Forall₂.cons
         (hcStmt_equiv P Δ s) (hcStmts_forall2 P Δ rest)
 
 private theorem hcCases_forall2 (P : String) (Δ : DEnv) :

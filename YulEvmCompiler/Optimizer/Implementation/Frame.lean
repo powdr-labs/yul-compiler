@@ -1,4 +1,4 @@
-import YulSemantics.Equiv
+import YulEvmCompiler.Optimizer.Core.Equiv
 set_option warningAsError true
 -- Salvaged verbatim from the PR #52 branch (predates the strict linters); the
 -- proofs are untouched, so the two style linters are disabled file-locally.

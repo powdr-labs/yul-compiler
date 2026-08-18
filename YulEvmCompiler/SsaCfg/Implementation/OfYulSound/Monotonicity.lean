@@ -1333,7 +1333,7 @@ theorem edgeArgs_ok {env : VMap} {V : VEnv yulD} {R : Regs} {xs : List Ident}
     s' = s ∧ ∃ vals, R.getMany ids = some vals
       ∧ YulSemantics.Forall₂ (fun x v => YulSemantics.VEnv.get V x = some v) xs vals := by
   obtain ⟨hm, rfl⟩ := M.edgeArgs_inv h
-  exact ⟨rfl, EnvOK.edge_vals henv (YulSemantics.Forall₂.mapM_eq_some_iff.mp hm)⟩
+  exact ⟨rfl, EnvOK.edge_vals henv (List.Forall₂.mapM_eq_some_iff.mp hm)⟩
 
 end Semantics
 end YulEvmCompiler.SsaCfg

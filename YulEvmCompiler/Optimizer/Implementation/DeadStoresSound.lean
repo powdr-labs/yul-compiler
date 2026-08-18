@@ -1248,7 +1248,7 @@ theorem sbLookupFun {f₁ f₂ : FunEnv D} (hR : SbFunsRel (D := D) f₁ f₂) :
         obtain ⟨hd_eq, hcenv_eq⟩ := h
         subst hd_eq; subst hcenv_eq
         exact ⟨q.2, s₂ :: t₂, by rw [lookupFun, hp₂], hd.1.symm, hd.2.1.symm,
-          hd.2.2, Forall₂.cons hs hR'⟩
+          hd.2.2, List.Forall₂.cons hs hR'⟩
 
 omit [DecidableEq D.Value] in
 /-- The callee environment binds exactly the callee's parameters and returns. -/
@@ -1351,13 +1351,13 @@ theorem BEquivBlock.of_stmts_funs {bound : List Ident} {b₁ b₂ : Block D.Op}
     cases h with
     | block hbd =>
         refine Step.block ?_
-        have h1 := Step.sbFunsCongr hbd (Forall₂.cons hR (SbFunsRel.refl funs))
+        have h1 := Step.sbFunsCongr hbd (List.Forall₂.cons hR (SbFunsRel.refl funs))
         exact (hss (hoist D b₂ :: funs) V st _ _ _ hb).mp h1
   · intro h
     cases h with
     | block hbd =>
         refine Step.block ?_
-        have h1 := Step.sbFunsCongr hbd (Forall₂.cons hR.symm (SbFunsRel.refl funs))
+        have h1 := Step.sbFunsCongr hbd (List.Forall₂.cons hR.symm (SbFunsRel.refl funs))
         exact (hss (hoist D b₁ :: funs) V st _ _ _ hb).mpr h1
 
 end BoundEquiv

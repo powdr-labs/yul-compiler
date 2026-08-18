@@ -478,7 +478,7 @@ theorem allocScope_forall2 {ss : List (Stmt Op)} {s s' : BState}
     | nil =>
       intro acc s0 s1 out hl
       obtain ⟨rfl, rfl⟩ := M.pure_inv hl
-      exact ⟨[], by simp [YulSemantics.hoist]; exact .nil⟩
+      exact ⟨[], by simp [YulSemantics.hoist]⟩
     | cons st rest ih =>
       intro acc s0 s1 out hl
       rw [List.foldlM_cons] at hl
@@ -742,7 +742,7 @@ theorem trStmts_hoist_owned {P : Prog}
     cases hrel
     rw [trStmts] at htr
     obtain ⟨-, rfl⟩ := M.pure_inv htr
-    exact ⟨YulSemantics.Forall₂.nil, by simpa using ho⟩
+    exact ⟨List.Forall₂.nil, by simpa using ho⟩
   | cons st rest ih =>
     intro rem env lctx rets d s s' r owned hrel hsuf hslots hbound hnd ho htr
     cases st with

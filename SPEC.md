@@ -9,9 +9,9 @@ computed by walking each headline theorem's **statement** (never its proof),
 so the hundreds of preservation lemmas are excluded automatically — what
 remains is exactly the specification vocabulary.
 
-**Audited surface: 90 declarations** \
-relations: 12 · structures: 12 · data defs: 52 · statements: 9 · artifact signatures: 4 \
-**External boundary: 156 declarations** across the two pinned semantics.
+**Audited surface: 92 declarations** \
+relations: 14 · structures: 12 · data defs: 52 · statements: 9 · artifact signatures: 4 \
+**External boundary: 157 declarations** across the two pinned semantics.
 
 Axioms are pinned separately in `Checks.lean` (only `propext`,
 `Classical.choice`, `Quot.sound`). Anti-vacuity (that the accepted-program
@@ -24,13 +24,13 @@ coverage never shrinks) is enforced by the differential corpora in CI; see
 flowchart TD
   subgraph audited ["audited this-repo surface — a human signs off on these"]
     S["Headline theorem statements (9)"]
-    R["Match relations & predicates (12)"]
+    R["Match relations & predicates (14)"]
     T["Structures & data types (12)"]
     D["Data definitions (52)"]
     A["Artifact signatures (4) — type only, bodies free"]
   end
   subgraph external ["trusted ground truth — pinned dependency semantics"]
-    YUL["yul-semantics entry points (38)"]
+    YUL["yul-semantics entry points (39)"]
     EVM["evm-semantics entry points (118)"]
   end
   AX["Axiom base: propext, Classical.choice, Quot.sound (Checks.lean)"]
@@ -77,6 +77,8 @@ How a source state/outcome corresponds to a target state/outcome. The heart of t
 | `YulEvmCompiler.SelfdestructEntryMatch` | [YulEvmCompiler/StateRel.lean#L956](YulEvmCompiler/StateRel.lean#L956) | `3b1f6c17c9cc3b3f` |
 | `YulEvmCompiler.SelfdestructsMatch` | [YulEvmCompiler/StateRel.lean#L963](YulEvmCompiler/StateRel.lean#L963) | `8fb6a9b19498848` |
 | `YulParser.Parser` | [YulParser/Core.lean#L13](YulParser/Core.lean#L13) | `c3c38aa9630539e` |
+| `YulSemantics.EquivBlock` | [YulEvmCompiler/Optimizer/Core/Equiv.lean#L76](YulEvmCompiler/Optimizer/Core/Equiv.lean#L76) | `821fd724d2ff58a6` |
+| `YulSemantics.EquivStmt` | [YulEvmCompiler/Optimizer/Core/Equiv.lean#L67](YulEvmCompiler/Optimizer/Core/Equiv.lean#L67) | `495eaf71400d48` |
 
 ### Structures & data types (fields audited)
 
@@ -175,15 +177,15 @@ Recursors/auxiliary constants reached through a type.
 |---|---|---|
 | `YulParser.pQuotedChars_rest_lt` | [YulParser/Lexer.lean#L53](YulParser/Lexer.lean#L53) | `bf5ffe92f6739f95` |
 
-## External-semantics boundary (156 decls, combined hash `a9e6df71f7a8a501`)
+## External-semantics boundary (157 decls, combined hash `c7b93fbae3a78394`)
 
 The entry points of the two pinned semantics the guarantee is stated against.
 These are trusted ground truth (auditing them = believing they model real Yul
 and real EVM); they are recorded but not unfolded.
 
-### yul-sem (38)
+### yul-sem (39)
 
-`YulSemantics.Block`, `YulSemantics.Data`, `YulSemantics.Data.bytes`, `YulSemantics.Data.size`, `YulSemantics.Dialect`, `YulSemantics.EVM.EvmState`, `YulSemantics.EVM.ExecEnv`, `YulSemantics.EVM.ExternalCalls`, `YulSemantics.EVM.ExternalCalls.none`, `YulSemantics.EVM.ExternalCreates`, `YulSemantics.EVM.ExternalGas.any`, `YulSemantics.EVM.HaltKind`, `YulSemantics.EVM.Layout`, `YulSemantics.EVM.Layout.Consistent`, `YulSemantics.EVM.Layout.initState`, `YulSemantics.EVM.LogEntry`, `YulSemantics.EVM.Op`, `YulSemantics.EVM.U256`, `YulSemantics.EVM.builtin`, `YulSemantics.EVM.builtinWithExternal`, `YulSemantics.EVM.byteFrom`, `YulSemantics.EVM.constructorCode`, `YulSemantics.EVM.evm`, `YulSemantics.EVM.evmWithExternal`, `YulSemantics.EVM.litValue`, `YulSemantics.EVM.opName`, `YulSemantics.EVM.projectedCodeHash`, `YulSemantics.EquivBlock`, `YulSemantics.Expr`, `YulSemantics.Ident`, `YulSemantics.Literal`, `YulSemantics.Object`, `YulSemantics.Object.codeBlock`, `YulSemantics.Object.dataSegs`, `YulSemantics.Outcome`, `YulSemantics.Run`, `YulSemantics.Stmt`, `YulSemantics.VEnv`
+`YulSemantics.Block`, `YulSemantics.Data`, `YulSemantics.Data.bytes`, `YulSemantics.Data.size`, `YulSemantics.Dialect`, `YulSemantics.EVM.EvmState`, `YulSemantics.EVM.ExecEnv`, `YulSemantics.EVM.ExternalCalls`, `YulSemantics.EVM.ExternalCalls.none`, `YulSemantics.EVM.ExternalCreates`, `YulSemantics.EVM.ExternalGas.any`, `YulSemantics.EVM.HaltKind`, `YulSemantics.EVM.Layout`, `YulSemantics.EVM.Layout.Consistent`, `YulSemantics.EVM.Layout.initState`, `YulSemantics.EVM.LogEntry`, `YulSemantics.EVM.Op`, `YulSemantics.EVM.U256`, `YulSemantics.EVM.builtin`, `YulSemantics.EVM.builtinWithExternal`, `YulSemantics.EVM.byteFrom`, `YulSemantics.EVM.constructorCode`, `YulSemantics.EVM.evm`, `YulSemantics.EVM.evmWithExternal`, `YulSemantics.EVM.litValue`, `YulSemantics.EVM.opName`, `YulSemantics.EVM.projectedCodeHash`, `YulSemantics.ExecStmt`, `YulSemantics.Expr`, `YulSemantics.FunEnv`, `YulSemantics.Ident`, `YulSemantics.Literal`, `YulSemantics.Object`, `YulSemantics.Object.codeBlock`, `YulSemantics.Object.dataSegs`, `YulSemantics.Outcome`, `YulSemantics.Run`, `YulSemantics.Stmt`, `YulSemantics.VEnv`
 
 ### evm-sem (118)
 

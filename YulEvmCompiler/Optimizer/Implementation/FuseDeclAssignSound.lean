@@ -1908,7 +1908,7 @@ theorem fdScopeRel : ∀ ss : List (Stmt Op),
   | [] => by unfold fdEach; exact .nil
   | .funDef n ps rs body :: rest => by
       unfold fdEach fdStmt
-      refine Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩ (fdScopeRel rest)
+      refine List.Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩ (fdScopeRel rest)
       show EquivBlock D body (fdStmts body)
       unfold fdStmts
       exact (EquivBlock.of_stmts_funs

@@ -2864,7 +2864,7 @@ theorem flScopeRel (P : String) : ∀ (ss : List (Stmt Op)) (c : Nat),
       rw [flEach_cons, flStmt_funDef]
       dsimp only
       simp only [hoist, List.filterMap_cons]
-      refine Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩
+      refine List.Forall₂.cons ⟨rfl, rfl, rfl, ?_⟩
         (flScopeRel P rest (flStmts P body c).2)
       show EquivBlock D body (flStmts P body c).1
       rw [flStmts_eq]
