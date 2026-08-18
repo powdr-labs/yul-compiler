@@ -38,7 +38,7 @@ variable {base reserved : Nat}
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
 local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-- The result package produced by every branch of the `Step` induction. -/
 def StepSimResult (globalDeclared : List Ident) (selected : SpillSet)

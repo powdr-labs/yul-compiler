@@ -37,7 +37,7 @@ open YulEvmCompiler.Optimizer.FuseDeclAssign (set_append_of_found
   set_append_of_none)
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### Keyed renaming of an environment segment -/
 
@@ -49,7 +49,7 @@ def renKeys (x x' : Ident) (V : VEnv D) : VEnv D :=
     renKeys (calls := calls) (creates := creates) x x' [] = [] := rfl
 
 @[simp] theorem renKeys_cons (x x' : Ident)
-    (p : Ident × (evmWithExternal calls creates).Value) (V : VEnv D) :
+    (p : Ident × (evmWithExternal calls creates .any).Value) (V : VEnv D) :
     renKeys x x' (p :: V) = (renVar x x' p.1, p.2) :: renKeys x x' V := rfl
 
 @[simp] theorem renKeys_append (x x' : Ident) (V W : VEnv D) :
@@ -79,7 +79,7 @@ theorem RnRel.length {x x' : Ident} {n : Nat} {V₁ V₂ : VEnv D}
 theorem RnRel.push {x x' : Ident} {n : Nat} {V₁ V₂ : VEnv D}
     (h : RnRel x x' n V₁ V₂)
     {y : Ident} (hyx : y ≠ x) (hyx' : y ≠ x')
-    (v : (evmWithExternal calls creates).Value) :
+    (v : (evmWithExternal calls creates .any).Value) :
     RnRel x x' n ((y, v) :: V₁) ((y, v) :: V₂) := by
   cases h with
   | mk C base hx hx' hn =>
@@ -113,7 +113,7 @@ theorem RnRel.pushMany {x x' : Ident} {n : Nat} {V₁ V₂ : VEnv D}
 theorem RnRel.pushDecl {x x' : Ident} (hxx' : x ≠ x') {n : Nat}
     {C base : VEnv D}
     (hx' : ∀ p ∈ C, p.1 ≠ x') (hn : base.length = n)
-    (v : (evmWithExternal calls creates).Value) :
+    (v : (evmWithExternal calls creates .any).Value) :
     RnRel x x' n ((x, v) :: (C ++ base))
       ((x', v) :: (renKeys x x' C ++ base)) := by
   have : (x', v) :: (renKeys x x' C ++ base) =
@@ -131,7 +131,7 @@ theorem RnRel.pushDecl {x x' : Ident} (hxx' : x ≠ x') {n : Nat}
 /-! ### `find?` facts about the keyed rename -/
 
 theorem renKeys_find_x' {x x' : Ident} : ∀ {C : VEnv D}
-    {p : Ident × (evmWithExternal calls creates).Value},
+    {p : Ident × (evmWithExternal calls creates .any).Value},
     C.find? (fun q => q.1 = x) = some p →
     (∀ q ∈ C, q.1 ≠ x') →
     (renKeys x x' C).find? (fun q => q.1 = x') = some (x', p.2)
@@ -209,7 +209,7 @@ theorem find_key_isSome_iff {x : Ident} : ∀ {C : VEnv D},
 /-- Keyed `find?` success survives `VEnv.set`. -/
 theorem find_isSome_set {x y : Ident} {C : VEnv D}
     (hx : (C.find? (fun p => p.1 = x)).isSome)
-    (v : (evmWithExternal calls creates).Value) :
+    (v : (evmWithExternal calls creates .any).Value) :
     ((VEnv.set C y v).find? (fun p => p.1 = x)).isSome := by
   rw [find_key_isSome_iff, VEnv.set_keys («D» := D)]
   exact find_key_isSome_iff.mp hx
@@ -217,7 +217,7 @@ theorem find_isSome_set {x y : Ident} {C : VEnv D}
 /-- Renaming commutes with an update to `x`/`x'` (the segment never binds
 `x'`, so the target's first `x'` is the rename of the source's first `x`). -/
 theorem renKeys_set_x {x x' : Ident}
-    (v : (evmWithExternal calls creates).Value) : ∀ {C : VEnv D},
+    (v : (evmWithExternal calls creates .any).Value) : ∀ {C : VEnv D},
     (∀ q ∈ C, q.1 ≠ x') →
     VEnv.set (renKeys x x' C) x' v = renKeys x x' (VEnv.set C x v)
   | [], _ => rfl
@@ -239,7 +239,7 @@ theorem renKeys_set_x {x x' : Ident}
 
 /-- Renaming commutes with an update to an unrelated name. -/
 theorem renKeys_set_other {x x' y : Ident} (hyx : y ≠ x) (hyx' : y ≠ x')
-    (v : (evmWithExternal calls creates).Value) : ∀ {C : VEnv D},
+    (v : (evmWithExternal calls creates .any).Value) : ∀ {C : VEnv D},
     (∀ q ∈ C, q.1 ≠ x') →
     VEnv.set (renKeys x x' C) y v = renKeys x x' (VEnv.set C y v)
   | [], _ => rfl
@@ -314,7 +314,7 @@ theorem RnRel.get_ren {x x' : Ident} {n : Nat} {V₁ V₂ : VEnv D}
 (`y ≠ x'`: the source never mentions `x'`). -/
 theorem RnRel.set_ren {x x' : Ident} {n : Nat} {V₁ V₂ : VEnv D}
     (h : RnRel x x' n V₁ V₂) {y : Ident} (hyx' : y ≠ x')
-    (v : (evmWithExternal calls creates).Value) :
+    (v : (evmWithExternal calls creates .any).Value) :
     RnRel x x' n (VEnv.set V₁ y v) (VEnv.set V₂ (renVar x x' y) v) := by
   cases h with
   | mk C base hx hx' hn =>
@@ -355,7 +355,7 @@ theorem RnRel.setMany_ren {x x' : Ident} {n : Nat} :
     ∀ {ys : List Ident} {V₁ V₂ : VEnv D},
     RnRel x x' n V₁ V₂ →
     (∀ y ∈ ys, y ≠ x') →
-    ∀ (vs : List (evmWithExternal calls creates).Value),
+    ∀ (vs : List (evmWithExternal calls creates .any).Value),
     RnRel x x' n (VEnv.setMany V₁ ys vs)
       (VEnv.setMany V₂ (ys.map (renVar x x')) vs)
   | [], V₁, V₂, h, _, vs => by
@@ -1847,7 +1847,7 @@ theorem InsRes.refl (n : Nat) : ∀ res : Res D, InsRes n res res
   | .sres _ _ _ => ⟨.refl _, rfl, rfl⟩
 
 theorem InsRes.of_relAt {n d : Nat} {x : Ident}
-    {v : (evmWithExternal calls creates).Value} {res₁ res₂ res₃ : Res D}
+    {v : (evmWithExternal calls creates .any).Value} {res₁ res₂ res₃ : Res D}
     (h₁ : InsRes n res₁ res₂) (h₂ : ResRelAt d x v res₂ res₃) (hd : n ≤ d) :
     InsRes n res₁ res₃ := by
   cases res₂ with
@@ -2067,7 +2067,7 @@ theorem renStmts_append (x x' : Ident) : ∀ (a b : List (Stmt Op)),
 
 /-- Renaming binder lists commutes with `zip`. -/
 theorem renKeys_zip (x x' : Ident) : ∀ (xs : List Ident)
-    (vals : List (evmWithExternal calls creates).Value),
+    (vals : List (evmWithExternal calls creates .any).Value),
     renKeys (calls := calls) (creates := creates) x x' (xs.zip vals) =
       (xs.map (renVar x x')).zip vals
   | [], _ => rfl
@@ -2766,7 +2766,7 @@ theorem flStmt_equiv (P : String) : ∀ (s : Stmt Op) (c : Nat),
   | .cond e body, c => by
       rw [flStmt_cond]
       refine EquivStmt.cond_congr
-        (@EquivExpr.refl (evmWithExternal calls creates) _ e) ?_
+        (@EquivExpr.refl (evmWithExternal calls creates .any) _ e) ?_
       rw [flStmts_eq]
       exact (EquivBlock.of_stmts_funs
         (EquivStmts.of_forall₂ (flEach_forall2 P body c))
@@ -2775,12 +2775,12 @@ theorem flStmt_equiv (P : String) : ∀ (s : Stmt Op) (c : Nat),
   | .switch e cases dflt, c => by
       rw [flStmt_switch]
       refine EquivStmt.switch_congr
-        (@EquivExpr.refl (evmWithExternal calls creates) _ e)
+        (@EquivExpr.refl (evmWithExternal calls creates .any) _ e)
         (flCases_forall2 P cases c) ?_
       cases dflt with
       | none =>
           rw [flDflt_none]
-          exact @EquivBlock.refl (evmWithExternal calls creates) _ _
+          exact @EquivBlock.refl (evmWithExternal calls creates .any) _ _
       | some b =>
           rw [flDflt_some]
           show EquivBlock D b (flStmts P b (flCases P cases c).2).1
@@ -2795,7 +2795,7 @@ theorem flStmt_equiv (P : String) : ∀ (s : Stmt Op) (c : Nat),
   | .forLoop init e post body, c => by
       rw [flStmt_forLoop]
       refine EquivStmt.forLoop_congr init
-        (@EquivExpr.refl (evmWithExternal calls creates) _ e) ?_ ?_
+        (@EquivExpr.refl (evmWithExternal calls creates .any) _ e) ?_ ?_
       · rw [flStmts_eq]
         exact (EquivBlock.of_stmts_funs
           (EquivStmts.of_forall₂ (flEach_forall2 P post c))
@@ -2811,22 +2811,22 @@ theorem flStmt_equiv (P : String) : ∀ (s : Stmt Op) (c : Nat),
             (flEach P body (flStmts P post c).2).2)
   | .letDecl xs v, c => by
       unfold flStmt
-      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+      exact @EquivStmt.refl (evmWithExternal calls creates .any) _ _
   | .assign xs e, c => by
       unfold flStmt
-      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+      exact @EquivStmt.refl (evmWithExternal calls creates .any) _ _
   | .exprStmt e, c => by
       unfold flStmt
-      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+      exact @EquivStmt.refl (evmWithExternal calls creates .any) _ _
   | .«break», c => by
       unfold flStmt
-      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+      exact @EquivStmt.refl (evmWithExternal calls creates .any) _ _
   | .«continue», c => by
       unfold flStmt
-      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+      exact @EquivStmt.refl (evmWithExternal calls creates .any) _ _
   | .leave, c => by
       unfold flStmt
-      exact @EquivStmt.refl (evmWithExternal calls creates) _ _
+      exact @EquivStmt.refl (evmWithExternal calls creates .any) _ _
 
 theorem flEach_forall2 (P : String) : ∀ (ss : List (Stmt Op)) (c : Nat),
     Forall₂ (EquivStmt D) ss (flEach P ss c).1

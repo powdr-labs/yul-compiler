@@ -120,7 +120,7 @@ open YulSemantics.EVM
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### The deadness test -/
 
@@ -335,7 +335,7 @@ theorem setMany_single (V : VEnv D) (x : Ident) (v : U256) :
 
 /-- A zero-initialising singleton `let` pushes one binding. -/
 theorem bindZeros_single (x : Ident) (V : VEnv D) :
-    bindZeros D [x] ++ V = (x, (evmWithExternal calls creates).zero) :: V := rfl
+    bindZeros D [x] ++ V = (x, (evmWithExternal calls creates .any).zero) :: V := rfl
 
 /-- A normally-terminating `let` prepends exactly its declared names. -/
 theorem letStep_keys {xs : List Ident} {val : Option (Expr Op)} {funs : FunEnv D}
@@ -562,7 +562,7 @@ theorem sweepLetDrop_fwd {x : Ident} {e : Expr Op} {rest : List (Stmt Op)}
             hrel.grow_seen (extra := fun y => y = x)
               (fun y hy hc2 => (dsDead_letSome (hd y hy)).2.1 (by simp [hc2]))
           have hnew : VChg (fun y => dsDead y rest = true) k (fun _ => False)
-              ((x, v) :: V1) ((x, (evmWithExternal calls creates).zero) :: V2) :=
+              ((x, v) :: V1) ((x, (evmWithExternal calls creates .any).zero) :: V2) :=
             VChg.diff hdead (fun h => h)
               (hgrow.mono_seen (fun y _ hy => (dsDead_letSome (hd y hy)).2.2))
           obtain ⟨V2', dead', hstep2, hrel2⟩ := ih
@@ -873,7 +873,7 @@ theorem sweepLetDrop_bwd {x : Ident} {e : Expr Op} {rest : List (Stmt Op)}
     hrel.grow_seen (extra := fun y => y = x)
       (fun y hy hc2 => (dsDead_letSome (hd y hy)).2.1 (by simp [hc2]))
   have hnew : VChg (fun y => dsDead y rest = true) k (fun _ => False)
-      ((x, v) :: V1) ((x, (evmWithExternal calls creates).zero) :: V2) :=
+      ((x, v) :: V1) ((x, (evmWithExternal calls creates .any).zero) :: V2) :=
     VChg.diff hdead (fun h => h)
       (hgrow.mono_seen (fun y _ hy => (dsDead_letSome (hd y hy)).2.2))
   cases hstep with
@@ -1273,7 +1273,7 @@ theorem deadStoresBlock_equiv (b : Block Op) : EquivBlock D b (deadStoresBlock b
   · rw [if_pos hlf]
     exact (dsBody_of [] b (dsStmts_bequiv [] b) (dsStmts_scopeRel [] b)).toEquiv
   · rw [if_neg hlf]
-    exact @EquivBlock.refl (evmWithExternal calls creates) _ b
+    exact @EquivBlock.refl (evmWithExternal calls creates .any) _ b
 
 /-- **Resolution congruence.** `deadStoresBlock` guards on
 `storageLayoutFreeStmts` and preserves it, so on layout-free input resolution is
@@ -1288,7 +1288,7 @@ theorem resolveDeadStoresBlock_equiv (L : Layout) (b : Block Op) :
       resolve_storageLayoutFreeStmts L _ (dsOnce_layoutFree b hlf)]
     exact (dsBody_of [] b (dsStmts_bequiv [] b) (dsStmts_scopeRel [] b)).toEquiv
   · rw [if_neg hlf]
-    exact @EquivBlock.refl (evmWithExternal calls creates) _ _
+    exact @EquivBlock.refl (evmWithExternal calls creates .any) _ _
 
 /-! ### The pass -/
 

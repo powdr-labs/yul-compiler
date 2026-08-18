@@ -70,7 +70,7 @@ variable {calls : ExternalCalls} {creates : ExternalCreates}
 /-- The open-world EVM dialect this pass is a `LocalPass` over — the dialect the
 verified backend theorem (`LocalPass.optimize_then_compile_correct`) is stated
 against. Its `Builtin` reduces to `stepOp` on every non-external op. -/
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### The pure operation kernel
 
@@ -182,7 +182,7 @@ theorem pureFn_stepOp {op : Op} {vs : List U256} {w : U256}
 only the external `call`/`create`/`gas` family specially) is exactly `stepOp`. -/
 theorem pureFn_builtin {op : Op} {vs : List U256} {w : U256}
     (h : pureFn op vs = some w) (st : EvmState) :
-    (evmWithExternal calls creates).Builtin op vs st (.ok [w] st) := by
+    (evmWithExternal calls creates .any).Builtin op vs st (.ok [w] st) := by
   have hs := pureFn_stepOp h st
   cases op <;> simp_all [builtinWithExternal, pureFn]
 
@@ -190,7 +190,7 @@ theorem pureFn_builtin {op : Op} {vs : List U256} {w : U256}
 the state unchanged. -/
 theorem pureFn_builtin_inv {op : Op} {vs : List U256} {w : U256} {st : EvmState}
     {r : BuiltinResult U256 EvmState}
-    (h : pureFn op vs = some w) (hb : (evmWithExternal calls creates).Builtin op vs st r) :
+    (h : pureFn op vs = some w) (hb : (evmWithExternal calls creates .any).Builtin op vs st r) :
     r = .ok [w] st := by
   have hs := pureFn_stepOp h st
   cases op <;> simp_all [builtinWithExternal, pureFn]
@@ -265,7 +265,7 @@ theorem fold_equiv {op : Op} {lits : List Literal} {l : Literal}
     EquivExpr D (.builtin op (lits.map Expr.lit)) (.lit l) := by
   rw [pureFold, Option.map_eq_some_iff] at h
   obtain ⟨w, hw, rfl⟩ := h
-  have hlv : (evmWithExternal calls creates).litValue (Literal.number w.toNat) = w :=
+  have hlv : (evmWithExternal calls creates .any).litValue (Literal.number w.toNat) = w :=
     litValue_number_toNat w
   intro funs V st r
   constructor
@@ -1620,8 +1620,8 @@ theorem cond_selfEq_equiv (x : Ident) (body : Block Op) :
 
 /-- A false literal `if` is exactly an empty block. -/
 theorem cond_lit_zero_equiv (l : Literal) (body : Block Op)
-    (hz : (evmWithExternal calls creates).litValue l =
-      (evmWithExternal calls creates).zero) :
+    (hz : (evmWithExternal calls creates .any).litValue l =
+      (evmWithExternal calls creates .any).zero) :
     EquivStmt D (.cond (.lit l) body) (.block []) := by
   intro funs V st V' st' o
   constructor
@@ -1642,8 +1642,8 @@ theorem cond_lit_zero_equiv (l : Literal) (body : Block Op)
 
 /-- A true literal `if` is exactly its body block. -/
 theorem cond_lit_nonzero_equiv (l : Literal) (body : Block Op)
-    (hnz : (evmWithExternal calls creates).litValue l ≠
-      (evmWithExternal calls creates).zero) :
+    (hnz : (evmWithExternal calls creates .any).litValue l ≠
+      (evmWithExternal calls creates .any).zero) :
     EquivStmt D (.cond (.lit l) body) (.block body) := by
   intro funs V st V' st' o
   constructor
@@ -1659,7 +1659,7 @@ theorem cond_lit_nonzero_equiv (l : Literal) (body : Block Op)
 semantics (including first-match behavior). -/
 theorem selectSwitch_open_eq (value : U256) (cases : List (Literal × Block Op))
     (dflt : Option (Block Op)) :
-    selectSwitch (evmWithExternal calls creates) value cases dflt =
+    selectSwitch (evmWithExternal calls creates .any) value cases dflt =
       selectSwitch evm value cases dflt := by
   induction cases with
   | nil => simp [selectSwitch]

@@ -641,12 +641,12 @@ theorem guardedLookup_root_frame (calls : ExternalCalls)
   (guardedRootFunsCovered calls creates base reserved body).lookup hlookup |>.1
 
 private def externalDeclToEvm {calls : ExternalCalls} {creates : ExternalCreates}
-    (decl : FDecl (evmWithExternal calls creates)) : FDecl evm :=
+    (decl : FDecl (evmWithExternal calls creates .any)) : FDecl evm :=
   { params := decl.params, rets := decl.rets, body := decl.body }
 
 private theorem externalHoist_toEvm (calls : ExternalCalls)
     (creates : ExternalCreates) : ∀ body : Block Op,
-    (hoist (evmWithExternal calls creates) body).map
+    (hoist (evmWithExternal calls creates .any) body).map
       (fun item => (item.1, externalDeclToEvm item.2)) = hoist evm body
   | [] => rfl
   | statement :: rest => by
@@ -655,22 +655,22 @@ private theorem externalHoist_toEvm (calls : ExternalCalls)
           externalDeclToEvm]
       case funDef =>
         congr 1
-        change (hoist (evmWithExternal calls creates) rest).map
+        change (hoist (evmWithExternal calls creates .any) rest).map
           (fun item => (item.1, externalDeclToEvm item.2)) = hoist evm rest
         exact externalHoist_toEvm calls creates rest
       all_goals
-        change (hoist (evmWithExternal calls creates) rest).map
+        change (hoist (evmWithExternal calls creates .any) rest).map
           (fun item => (item.1, externalDeclToEvm item.2)) = hoist evm rest
         exact externalHoist_toEvm calls creates rest
 
 theorem externalScopeCovered (calls : ExternalCalls) (creates : ExternalCreates)
     (body : Block Op) :
-    ScopeCovered (evmWithExternal calls creates) (fun executed => executed)
-      (frames body) (hoist (evmWithExternal calls creates) body) := by
+    ScopeCovered (evmWithExternal calls creates .any) (fun executed => executed)
+      (frames body) (hoist (evmWithExternal calls creates .any) body) := by
   intro name decl hmem
   let ordinary := externalDeclToEvm decl
   have hmapped : (name, ordinary) ∈
-      (hoist (evmWithExternal calls creates) body).map
+      (hoist (evmWithExternal calls creates .any) body).map
         (fun item => (item.1, externalDeclToEvm item.2)) :=
     List.mem_map.mpr ⟨(name, decl), hmem, rfl⟩
   have hordinary : (name, ordinary) ∈ hoist evm body := by
@@ -682,10 +682,10 @@ theorem externalScopeCovered (calls : ExternalCalls) (creates : ExternalCreates)
 
 theorem externalRootFunsCovered (calls : ExternalCalls)
     (creates : ExternalCreates) (body : Block Op) :
-    FunsCovered (evmWithExternal calls creates) (fun executed => executed)
-      (frames body) [hoist (evmWithExternal calls creates) body] :=
+    FunsCovered (evmWithExternal calls creates .any) (fun executed => executed)
+      (frames body) [hoist (evmWithExternal calls creates .any) body] :=
   FunsCovered.cons (externalScopeCovered calls creates body)
-    (FunsCovered.nil (evmWithExternal calls creates)
+    (FunsCovered.nil (evmWithExternal calls creates .any)
       (fun executed => executed) (frames body))
 
 /-- Target-dialect coverage indexed by the original policy frames.  This is
@@ -693,29 +693,29 @@ the constructor consumed by the rewrite simulation in both direct and
 object-layout-resolved modes. -/
 theorem externalExecutedScopeCovered (calls : ExternalCalls)
     (creates : ExternalCreates) (mode : OriginMode) (body : Block Op) :
-    ScopeCovered (evmWithExternal calls creates) (fun executed => executed)
+    ScopeCovered (evmWithExternal calls creates .any) (fun executed => executed)
       ((frames body).map mode.execFrame)
-      (hoist (evmWithExternal calls creates) (mode.execBlock body)) := by
+      (hoist (evmWithExternal calls creates .any) (mode.execBlock body)) := by
   rw [← frames_execBlock]
   exact externalScopeCovered calls creates (mode.execBlock body)
 
 theorem externalExecutedRootFunsCovered (calls : ExternalCalls)
     (creates : ExternalCreates) (mode : OriginMode) (body : Block Op) :
-    FunsCovered (evmWithExternal calls creates) (fun executed => executed)
+    FunsCovered (evmWithExternal calls creates .any) (fun executed => executed)
       ((frames body).map mode.execFrame)
-      [hoist (evmWithExternal calls creates) (mode.execBlock body)] :=
+      [hoist (evmWithExternal calls creates .any) (mode.execBlock body)] :=
   FunsCovered.cons (externalExecutedScopeCovered calls creates mode body)
-    (FunsCovered.nil (evmWithExternal calls creates)
+    (FunsCovered.nil (evmWithExternal calls creates .any)
       (fun executed => executed) ((frames body).map mode.execFrame))
 
 theorem externalExecutedLookup_root_frame (calls : ExternalCalls)
     (creates : ExternalCreates) (mode : OriginMode) {body : Block Op}
-    {name : Ident} {decl : FDecl (evmWithExternal calls creates)}
-    {closure : FunEnv (evmWithExternal calls creates)}
+    {name : Ident} {decl : FDecl (evmWithExternal calls creates .any)}
+    {closure : FunEnv (evmWithExternal calls creates .any)}
     (hlookup : lookupFun
-      [hoist (evmWithExternal calls creates) (mode.execBlock body)] name =
+      [hoist (evmWithExternal calls creates .any) (mode.execBlock body)] name =
         some (decl, closure)) :
-    DeclCovered (evmWithExternal calls creates) (fun executed => executed)
+    DeclCovered (evmWithExternal calls creates .any) (fun executed => executed)
       ((frames body).map mode.execFrame) name decl :=
   (externalExecutedRootFunsCovered calls creates mode body).lookup hlookup |>.1
 

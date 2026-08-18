@@ -22,7 +22,7 @@ open MemorySpillSelect
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 local notation "G" => guardedEvm calls creates
 abbrev WordEnv := List (Ident × U256)
 

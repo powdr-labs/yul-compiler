@@ -108,7 +108,7 @@ inductive Exec (P : Prog) [model : ExternalModel] :
       {as : List ValId} {args rets : List U256} {is : List Instr} {t : Term}
       {res : FRes} :
       R.getMany as = some args →
-      builtinWithExternal model.calls model.creates yop args st (.ok rets st') →
+      builtinWithExternal model.calls model.creates .any yop args st (.ok rets st') →
       ds.length = rets.length →
       Exec P f (R.setMany ds rets) st' ⟨is, t⟩ res →
       Exec P f R st ⟨.op ds yop as :: is, t⟩ res
@@ -118,7 +118,7 @@ inductive Exec (P : Prog) [model : ExternalModel] :
       {yop : Op} {as : List ValId} {args : List U256} {is : List Instr}
       {t : Term} :
       R.getMany as = some args →
-      builtinWithExternal model.calls model.creates yop args st (.halt st') →
+      builtinWithExternal model.calls model.creates .any yop args st (.halt st') →
       Exec P f R st ⟨.op ds yop as :: is, t⟩ (.halt st')
   /-- A user-function call that returns: execute the callee's entry block
   from a fresh register file binding its parameters. -/
@@ -181,7 +181,7 @@ inductive Exec (P : Prog) [model : ExternalModel] :
   | halt {f : Func} {R : Regs} {st st' : EvmState} {yop : Op}
       {as : List ValId} {args : List U256} :
       R.getMany as = some args →
-      builtinWithExternal model.calls model.creates yop args st (.halt st') →
+      builtinWithExternal model.calls model.creates .any yop args st (.halt st') →
       Exec P f R st ⟨[], .halt yop as⟩ (.halt st')
 
 /-- Whole-program execution: run `main` from an empty register file. The

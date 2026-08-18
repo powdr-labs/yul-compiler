@@ -26,7 +26,7 @@ open YulEvmCompiler
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### Resolution invariance of the syntactic conditions -/
 

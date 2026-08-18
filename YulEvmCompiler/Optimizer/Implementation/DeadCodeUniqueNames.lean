@@ -402,7 +402,7 @@ end DeadPure
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-- The dead read-only result-region elimination pass preserves
 `NormalForm.UniqueNames`: it only removes declarations, so the declared-name

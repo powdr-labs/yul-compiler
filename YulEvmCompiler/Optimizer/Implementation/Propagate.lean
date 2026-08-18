@@ -60,7 +60,7 @@ open YulSemantics.EVM
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### Known-binding environments -/
 
@@ -931,7 +931,7 @@ theorem selectSwitch_writeSet_subset (cv : U256) (cases : List (Literal × Block
   | cons head rest ih =>
       rcases head with ⟨l, b⟩
       intro x hx
-      by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+      by_cases hcv : cv = (evmWithExternal calls creates .any).litValue l
       · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv])] at hx
         simp only [writeSetCases, List.append_assoc, List.mem_append]
         exact Or.inl hx
@@ -1807,7 +1807,7 @@ theorem PropRel.selectRel {σ τc τd : PEnv} {cases cases' : List (Literal × B
       rcases head with ⟨l, b⟩
       cases hcs with
       | casesCons hb hrest =>
-          by_cases hcv : cv = (evmWithExternal calls creates).litValue l
+          by_cases hcv : cv = (evmWithExternal calls creates .any).litValue l
           · rw [selectSwitch, List.find?_cons_of_pos (by simp [hcv]),
                 selectSwitch, List.find?_cons_of_pos (by simp [hcv])]
             exact ⟨_, hb⟩
@@ -1937,7 +1937,7 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
           rw [hret] at hres
           have hsub : Step D funs₂ V st (.expr (substExpr σ (.call fn args)))
               (.eres (.vals (decl.rets.map
-                (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates).zero)) st2)) := by
+                (fun r => (VEnv.get Vend r).getD (evmWithExternal calls creates .any).zero)) st2)) := by
             rw [substExpr]
             exact hres
           cases hrhs with
@@ -2065,7 +2065,7 @@ theorem prop_fwd {funs₁ : FunEnv D} {V : VEnv D} {st : EvmState}
               intro p hp
               rcases List.mem_cons.mp hp with hp | hp
               · subst hp
-                show VEnv.get (((_ : Ident), (evmWithExternal calls creates).zero) :: V) _
+                show VEnv.get (((_ : Ident), (evmWithExternal calls creates .any).zero) :: V) _
                   = some (litValue (.number 0))
                 rw [VEnv.get_cons, if_pos rfl]
                 rfl

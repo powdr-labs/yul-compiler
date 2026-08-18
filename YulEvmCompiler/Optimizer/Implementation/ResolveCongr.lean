@@ -29,7 +29,7 @@ open YulEvmCompiler (resolveForLayoutExpr resolveForLayoutExprs resolveForLayout
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### Resolution leaves the pass's Core rewrite targets alone -/
 

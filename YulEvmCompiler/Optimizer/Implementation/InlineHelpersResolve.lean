@@ -29,7 +29,7 @@ open YulEvmCompiler.Optimizer.Core (Ctx Term Value Var Args PureOp
   isValueExpr isVarExpr)
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ## Resolving declarations and scope stacks -/
 

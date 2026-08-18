@@ -6,7 +6,7 @@ defaultTargets = ["YulEvmCompiler", "YulParser", "YulEvmCompilerTests", "YulIR",
 [[require]]
 name = "yul-semantics"
 git = "https://github.com/powdr-labs/yul-semantics"
-rev = "f19c9fc311bd4c895e5530b644fc5e5bb71c9b28"
+rev = "d557aacbf4937ee1f7d08e32f8569108d7045eea"
 
 # Mathlib is no longer pulled in by the semantics packages (both went
 # Mathlib-free); this repository's own proofs still use Mathlib tactics and
@@ -23,7 +23,7 @@ rev = "fabf563a7c95a166b8d7b6efca11c8b4dc9d911f"
 [[require]]
 name = "evm_semantics"
 git = "https://github.com/powdr-labs/evm-semantics"
-rev = "192d6111df6bc254372f0af97e64f03262d9d4c1"
+rev = "10aabc00a789c57b8be260d7c56055783af729e8"
 
 [[lean_lib]]
 name = "YulEvmCompiler"

@@ -30,7 +30,7 @@ open MemorySpillBackendSound
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-- Direct block-root simulation, before any object-layout resolution. -/
 theorem spillBlockRunSound {raw : Block Op} {result : Result}
@@ -152,7 +152,7 @@ theorem compile_spilled_correct
         (resolveMemoryGuardStmts result.base result.reserved raw))
       L.initState sourceEnv sourceFinal out) :
     ∃ targetEnv targetFinal,
-      Run (evmWithExternal model.calls model.creates)
+      Run (evmWithExternal model.calls model.creates .any)
         (resolveForLayoutStmts L result.block)
         L.initState targetEnv targetFinal out ∧
       ScratchRel result.base result.reserved sourceFinal targetFinal ∧
@@ -189,7 +189,7 @@ theorem compile_memorySpill_correct
       (resolveMemoryGuardStmts result.base result.reserved raw)
       initial sourceEnv sourceFinal out) :
     ∃ targetEnv targetFinal,
-      Run (evmWithExternal model.calls model.creates) result.block
+      Run (evmWithExternal model.calls model.creates .any) result.block
         initial targetEnv targetFinal out ∧
       ScratchRel result.base result.reserved sourceFinal targetFinal ∧
       runObservables initial sourceFinal = runObservables initial targetFinal ∧

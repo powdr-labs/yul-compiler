@@ -58,7 +58,7 @@ open YulSemantics.EVM
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### The transform -/
 
@@ -120,7 +120,7 @@ inserted at depth `≥ n`. -/
 inductive InsChain (n : Nat) : VEnv D → VEnv D → Prop
   | refl (V : VEnv D) : InsChain n V V
   | snoc {V₂ V₁ V₀ : VEnv D} {d : Nat} {x : Ident}
-      {v : (evmWithExternal calls creates).Value} :
+      {v : (evmWithExternal calls creates .any).Value} :
       InsChain n V₂ V₁ → InsAt d x v V₁ V₀ → n ≤ d →
       InsChain n V₂ V₀
 
@@ -132,7 +132,7 @@ theorem InsChain.mono {m n : Nat} {V₂ V₁ : VEnv D} (hmn : m ≤ n)
 
 /-- One insertion at depth `≥ |V|` is invisible to `restore V`. -/
 theorem insertion_restore_high {d : Nat} {x : Ident}
-    {v : (evmWithExternal calls creates).Value}
+    {v : (evmWithExternal calls creates .any).Value}
     {V V₁ V₀ : VEnv D} (h : InsAt d x v V₁ V₀) (hd : V.length ≤ d) :
     restore V V₀ = restore V V₁ := by
   obtain ⟨above, below, rfl, rfl, rfl⟩ := h
@@ -174,7 +174,7 @@ private theorem letStep_inv {funs : FunEnv D} {V : VEnv D} {st : EvmState}
     {x : Ident} {rhs : Option (Expr Op)} {V' : VEnv D} {st' : EvmState} {o : Outcome}
     (h : Step D funs V st (.stmt (.letDecl [x] rhs)) (.sres V' st' o)) :
     (∃ v, V' = (x, v) :: V ∧ o = .normal ∧
-      ((rhs = none ∧ v = (evmWithExternal calls creates).zero ∧ st' = st) ∨
+      ((rhs = none ∧ v = (evmWithExternal calls creates .any).zero ∧ st' = st) ∨
        (∃ e, rhs = some e ∧
          Step D funs V st (.expr e) (.eres (.vals [v] st'))))) ∨
     (∃ e, rhs = some e ∧ V' = V ∧ o = .halt ∧
@@ -409,14 +409,14 @@ theorem ccStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (ccStmt s)
       · intro h; cases h; exact Step.funDef
   | .cond c body => by
       unfold ccStmt
-      refine EquivStmt.cond_congr (@EquivExpr.refl (evmWithExternal calls creates) _ c) ?_
+      refine EquivStmt.cond_congr (@EquivExpr.refl (evmWithExternal calls creates .any) _ c) ?_
       exact (EquivBlock.of_stmts_funs
         (EquivStmts.of_forall₂ (ccStmts_forall2 body))
         (ccScopeRel body)).trans
         (ccPairs_blockEquiv (ccStmts body))
   | .switch c cases dflt => by
       unfold ccStmt
-      refine EquivStmt.switch_congr (@EquivExpr.refl (evmWithExternal calls creates) _ c) (ccCases_forall2 cases) ?_
+      refine EquivStmt.switch_congr (@EquivExpr.refl (evmWithExternal calls creates .any) _ c) (ccCases_forall2 cases) ?_
       cases dflt with
       | none => exact EquivBlock.refl _
       | some b =>
@@ -427,7 +427,7 @@ theorem ccStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (ccStmt s)
             (ccPairs_blockEquiv (ccStmts b))
   | .forLoop init c post body => by
       unfold ccStmt
-      refine EquivStmt.forLoop_congr init (@EquivExpr.refl (evmWithExternal calls creates) _ c) ?_ ?_
+      refine EquivStmt.forLoop_congr init (@EquivExpr.refl (evmWithExternal calls creates .any) _ c) ?_ ?_
       · exact (EquivBlock.of_stmts_funs
           (EquivStmts.of_forall₂ (ccStmts_forall2 post))
           (ccScopeRel post)).trans

@@ -53,7 +53,7 @@ open YulSemantics.EVM
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### Identifier collection and the fresh prefix -/
 
@@ -202,7 +202,7 @@ theorem call_emptyScope_bwd {funs : FunEnv D} {V : VEnv D} {st : EvmState}
 private theorem zip_gets_eq {xs : List Ident} (hnd : xs.Nodup) :
     ∀ {vs : List U256}, vs.length = xs.length →
       xs.map (fun x => (VEnv.get (xs.zip vs : VEnv D) x).getD
-        (evmWithExternal calls creates).zero) = vs := by
+        (evmWithExternal calls creates .any).zero) = vs := by
   induction xs with
   | nil =>
       intro vs hlen
@@ -222,9 +222,9 @@ private theorem zip_gets_eq {xs : List Ident} (hnd : xs.Nodup) :
             simp [VEnv.get], Option.getD_some]
           have htail : rest.map
               (fun y => (VEnv.get (((x, v) :: rest.zip vrest) : VEnv D) y).getD
-                (evmWithExternal calls creates).zero) =
+                (evmWithExternal calls creates .any).zero) =
               rest.map (fun y => (VEnv.get (rest.zip vrest : VEnv D) y).getD
-                (evmWithExternal calls creates).zero) := by
+                (evmWithExternal calls creates .any).zero) := by
             apply List.map_congr_left
             intro y hy
             have hxy : x ≠ y := fun h => hx (h ▸ hy)

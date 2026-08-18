@@ -19,7 +19,7 @@ open YulSemantics.EVM
 open YulEvmCompiler
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 @[simp] theorem stackLayoutObject_codeBlock (o : Object Op) :
     (stackLayoutObject o).codeBlock = stackLayoutBlock o.codeBlock := by
@@ -39,7 +39,7 @@ theorem stackLayoutObject_compileObject_correct
     [model : ExternalModel] (hexternal : ExternalsRealized model)
     {o : Object Op} {L : Layout}
     (hcomp : compileObject (stackLayoutObject o) = some L)
-    {V : VEnv (evmWithExternal model.calls model.creates)}
+    {V : VEnv (evmWithExternal model.calls model.creates .any)}
     {yst : EvmState} {out : Outcome}
     (hrun : RunResolvedObject (stackLayoutObject o) L V yst out) :
     ∃ b : Nat, ∀ s0 : State,

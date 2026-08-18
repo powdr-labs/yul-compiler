@@ -46,7 +46,7 @@ open YulSemantics.EVM
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
 
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### Sequence splitting and joining -/
 
@@ -349,17 +349,17 @@ end
 def dlSound : PCode Op → PCode Op → Prop
   | .stmts ss, .stmts ss' =>
       ∀ pre : List (Stmt Op),
-        EquivBlock (evmWithExternal calls creates) (pre ++ ss) (pre ++ ss')
+        EquivBlock (evmWithExternal calls creates .any) (pre ++ ss) (pre ++ ss')
   | .stmt s, .stmt s' =>
-      EquivStmt (evmWithExternal calls creates) s s' ∧
-        ScopeRel (evmWithExternal calls creates)
-          (hoist (evmWithExternal calls creates) [s])
-          (hoist (evmWithExternal calls creates) [s'])
+      EquivStmt (evmWithExternal calls creates .any) s s' ∧
+        ScopeRel (evmWithExternal calls creates .any)
+          (hoist (evmWithExternal calls creates .any) [s])
+          (hoist (evmWithExternal calls creates .any) [s'])
   | .cases cs, .cases cs' =>
       Forall₂ (fun p q => p.1 = q.1 ∧
-        EquivBlock (evmWithExternal calls creates) p.2 q.2) cs cs'
+        EquivBlock (evmWithExternal calls creates .any) p.2 q.2) cs cs'
   | .odflt d, .odflt d' =>
-      EquivBlock (evmWithExternal calls creates) (d.getD []) (d'.getD [])
+      EquivBlock (evmWithExternal calls creates .any) (d.getD []) (d'.getD [])
   | _, _ => True
 
 /-- Pairwise reflexive `Forall₂` for a common list. -/

@@ -34,7 +34,7 @@ open YulEvmCompiler.Optimizer (pureTotalArity pureFn pureFn_builtin
   scopeFrame_stmts_normal stmtsNoNormal_sound stmtNoNormal_sound)
 
 variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 /-! ### A functional evaluator for the canonical pure fragment -/
 
@@ -795,7 +795,7 @@ theorem rvNeutral_builtin_result {op : Op} {args : List (Expr Op)}
     (hn : rvNeutralExpr (.builtin op args) = true)
     {argvals : List U256} (hlen : argvals.length = args.length)
     {st : EvmState} {r : BuiltinResult U256 EvmState}
-    (hop : (evmWithExternal calls creates).Builtin op argvals st r) :
+    (hop : (evmWithExternal calls creates .any).Builtin op argvals st r) :
     ∃ rets st', r = .ok rets st' ∧ MemNeutral st st' := by
   cases op
   case sload =>
@@ -1491,14 +1491,14 @@ theorem RvOk.update_xfree {x : Ident} {C : RvCache} {V V' : VEnv D}
 
 /-- `get` after prepending one binding. -/
 theorem get_cons_ne {V : VEnv D} {x z : Ident}
-    {v : (evmWithExternal calls creates).Value} (h : z ≠ x) :
+    {v : (evmWithExternal calls creates .any).Value} (h : z ≠ x) :
     VEnv.get ((x, v) :: V) z = VEnv.get V z := by
   unfold VEnv.get
   rw [List.find?_cons_of_neg
     (by simpa using fun hc : x = z => h hc.symm)]
 
 theorem get_cons_self {V : VEnv D} {x : Ident}
-    {v : (evmWithExternal calls creates).Value} :
+    {v : (evmWithExternal calls creates .any).Value} :
     VEnv.get ((x, v) :: V) x = some v := by
   unfold VEnv.get
   rw [List.find?_cons_of_pos (by simp)]
@@ -3457,7 +3457,7 @@ theorem reuseValuesShallow_sound (b : Block Op) :
   · have hfalse : storageLayoutFreeStmts b = false :=
       Bool.eq_false_of_not_eq_true hfree
     simpa [reuseValuesShallowBlock, hfalse] using
-      (@EquivBlock.refl (evmWithExternal calls creates) _ b)
+      (@EquivBlock.refl (evmWithExternal calls creates .any) _ b)
 
 set_option linter.unusedVariables false in
 mutual

@@ -98,8 +98,8 @@ with the same control outcome and the same run observables. The final variable
 environment and the raw (memory-carrying) final state may differ. -/
 def ObsRefines (calls : ExternalCalls) (creates : ExternalCreates)
     (b₁ b₂ : Block Op) : Prop :=
-  ∀ st0 V' st' o, Run (evmWithExternal calls creates) b₁ st0 V' st' o →
-    ∃ V'' st'', Run (evmWithExternal calls creates) b₂ st0 V'' st'' o ∧
+  ∀ st0 V' st' o, Run (evmWithExternal calls creates .any) b₁ st0 V' st' o →
+    ∃ V'' st'', Run (evmWithExternal calls creates .any) b₂ st0 V'' st'' o ∧
       runObservables st0 st'' = runObservables st0 st'
 
 /-- Observational equivalence of top-level blocks: mutual observational
@@ -140,7 +140,7 @@ theorem trans {b₁ b₂ b₃ : Block Op} (h₁ : ObsEquivBlock calls creates b�
 run, so the observables agree definitionally. Every `Optimizer.LocalPass` is in
 particular observationally sound. -/
 theorem ofEquiv {b₁ b₂ : Block Op}
-    (h : EquivBlock (evmWithExternal calls creates) b₁ b₂) :
+    (h : EquivBlock (evmWithExternal calls creates .any) b₁ b₂) :
     ObsEquivBlock calls creates b₁ b₂ :=
   ⟨fun _ V' st' _ hrun => ⟨V', st', h.run_iff.mp hrun, rfl⟩,
    fun _ V' st' _ hrun => ⟨V', st', h.run_iff.mpr hrun, rfl⟩⟩
@@ -189,7 +189,7 @@ def comp (P Q : ObsPass) : ObsPass where
 `EquivBlock` soundness family) to an observational pass. -/
 def ofSound (run : Block Op → Block Op)
     (sound : ∀ (calls : ExternalCalls) (creates : ExternalCreates),
-      Optimizer.Sound (evmWithExternal calls creates) run) : ObsPass where
+      Optimizer.Sound (evmWithExternal calls creates .any) run) : ObsPass where
   run := run
   sound := fun calls creates b => ObsEquivBlock.ofEquiv (sound calls creates b)
 
@@ -213,12 +213,12 @@ theorem optimize_then_compile_correct
     [model : ExternalModel] (hexternal : ExternalsRealized model)
     (P : ObsPass) {prog : Block Op} {is : List Instr}
     (hcomp : compile (P.run prog) imm = some is)
-    {yst0 : EvmState} {V' : VEnv (evmWithExternal model.calls model.creates)}
+    {yst0 : EvmState} {V' : VEnv (evmWithExternal model.calls model.creates .any)}
     (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     {yst' : EvmState} {o : Outcome}
-    (hrun : Run (evmWithExternal model.calls model.creates) prog yst0 V' yst' o) :
+    (hrun : Run (evmWithExternal model.calls model.creates .any) prog yst0 V' yst' o) :
     ∃ V₂ yst₂,
-      Run (evmWithExternal model.calls model.creates) (P.run prog) yst0 V₂ yst₂ o ∧
+      Run (evmWithExternal model.calls model.creates .any) (P.run prog) yst0 V₂ yst₂ o ∧
       runObservables yst0 yst₂ = runObservables yst0 yst' ∧
       ∃ b : Nat, ∀ s0 : State,
         FrameOK (assemble is) s0 → StateMatch yst0 s0 →

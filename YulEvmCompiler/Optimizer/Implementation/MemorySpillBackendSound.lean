@@ -24,7 +24,7 @@ open MemorySpillObjectSound
 
 variable [model : ExternalModel]
 
-local notation "D" => evmWithExternal model.calls model.creates
+local notation "D" => evmWithExternal model.calls model.creates ExternalGas.any
 local notation "G" => guardedEvm model.calls model.creates
 
 omit model in

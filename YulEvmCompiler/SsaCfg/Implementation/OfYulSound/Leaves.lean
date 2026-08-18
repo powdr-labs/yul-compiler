@@ -18,7 +18,7 @@ open YulSemantics.EVM (U256 EvmState Op builtinWithExternal evmWithExternal)
 
 section Semantics
 variable [model : ExternalModel]
-local notation "yulD" => evmWithExternal model.calls model.creates
+local notation "yulD" => evmWithExternal model.calls model.creates YulSemantics.EVM.ExternalGas.any
 
 /-! ## Dialect facts the construction relies on -/
 
@@ -31,7 +31,7 @@ set_option linter.unnecessarySeqFocus false in
 behavior. This is the fact that makes `trStmt`'s `exprStmt` case correct. -/
 theorem isHaltingOp_halts {op : Op} (hop : isHaltingOp op = true)
     {args : List U256} {st : EvmState} {r : YulSemantics.BuiltinResult U256 EvmState}
-    (hb : builtinWithExternal model.calls model.creates op args st r) :
+    (hb : builtinWithExternal model.calls model.creates .any op args st r) :
     ∃ st', r = .halt st' := by
   -- the five halting ops are outside the CALL/CREATE/GAS families, so the
   -- open-world relation is `stepOp`, whose result for them is always a `.halt`
@@ -55,7 +55,7 @@ theorem isHaltingOp_halts {op : Op} (hop : isHaltingOp op = true)
 
 /-- The `eq` test the switch chain emits. -/
 theorem builtin_eq (a b : U256) (st : EvmState) :
-    builtinWithExternal model.calls model.creates .eq [a, b] st
+    builtinWithExternal model.calls model.creates .any .eq [a, b] st
       (.ok [YulSemantics.EVM.b2w (a = b)] st) := rfl
 
 /-! ## The simulation shapes
@@ -178,7 +178,7 @@ theorem simS_op {P : Prog} {f : Func} {fn : FnState} {R : Regs}
     {st st' : EvmState} {ds : List ValId} {yop : Op} {as : List ValId}
     {args rets : List U256}
     (hargs : R.getMany as = some args)
-    (hb : builtinWithExternal model.calls model.creates yop args st (.ok rets st'))
+    (hb : builtinWithExternal model.calls model.creates .any yop args st (.ok rets st'))
     (hlen : ds.length = rets.length)
     {fn' : FnState} (hc : fn'.curId = fn.curId)
     (hcur : fn'.cur = .op ds yop as :: fn.cur) :
@@ -197,7 +197,7 @@ theorem execFrom_opHalt {P : Prog} {f : Func} {fn : FnState} {R : Regs}
     {args : List U256} {rest : Rest}
     (hcur : CurOK f { fn with cur := .op ds yop as :: fn.cur } rest)
     (hargs : R.getMany as = some args)
-    (hb : builtinWithExternal model.calls model.creates yop args st (.halt st')) :
+    (hb : builtinWithExternal model.calls model.creates .any yop args st (.halt st')) :
     ExecFrom (model := model) P f fn R st (.halt st') := by
   obtain ⟨b, hbl, hinstrs, hterm⟩ := hcur
   exact ⟨⟨.op ds yop as :: rest.instrs, rest.term⟩, ⟨b, hbl, by simpa using hinstrs, hterm⟩,
@@ -284,7 +284,7 @@ theorem execFrom_ret {P : Prog} {f : Func} {fn : FnState} {R : Regs}
 theorem execFrom_halt {P : Prog} {f : Func} {fn : FnState} {R : Regs}
     {st st' : EvmState} {yop : Op} {as : List ValId} {args : List U256}
     (hcur : CurOK f fn ⟨[], .halt yop as⟩) (hg : R.getMany as = some args)
-    (hb : builtinWithExternal model.calls model.creates yop args st (.halt st')) :
+    (hb : builtinWithExternal model.calls model.creates .any yop args st (.halt st')) :
     ExecFrom (model := model) P f fn R st (.halt st') :=
   ⟨⟨[], .halt yop as⟩, hcur, .halt hg hb⟩
 

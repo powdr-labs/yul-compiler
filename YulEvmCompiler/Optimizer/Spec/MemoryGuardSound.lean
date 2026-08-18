@@ -18,7 +18,7 @@ variable {calls : ExternalCalls} {creates : ExternalCreates}
 variable {base reserved : Nat}
 
 local notation "G" => guardedEvm calls creates base reserved
-local notation "D" => evmWithExternal calls creates
+local notation "D" => evmWithExternal calls creates ExternalGas.any
 
 def eraseGuardedEResult : EResult G → EResult D
   | .vals values state => .vals values state

@@ -45,10 +45,10 @@ def EvmBackend.Correct
       {prog : YulSemantics.Block Op} {is : List Instr},
       compileFn prog imm = some is →
       ∀ {yst0 : EvmState}
-        {V' : VEnv (evmWithExternal model.calls model.creates)}
+        {V' : VEnv (evmWithExternal model.calls model.creates .any)}
         {yst' : EvmState} {o : Outcome},
         (∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key))) →
-        Run (evmWithExternal model.calls model.creates) prog yst0 V' yst' o →
+        Run (evmWithExternal model.calls model.creates .any) prog yst0 V' yst' o →
         ∃ b : Nat, ∀ s0 : State,
           FrameOK (assemble is) s0 → StateMatch yst0 s0 →
           s0.pc = UInt256.ofNat 0 → s0.stack = [] → b ≤ s0.gasAvailable →
@@ -78,7 +78,7 @@ def EvmBackend.classic : EvmBackend where
 section Compose
 
 variable [model : ExternalModel]
-local notation "yulD" => evmWithExternal model.calls model.creates
+local notation "yulD" => evmWithExternal model.calls model.creates YulSemantics.EVM.ExternalGas.any
 
 /-- **A sound Yul→Yul pass is safe in front of any verified backend** — the
 generalization of `LocalPass.optimize_then_compile_correct` from the classic

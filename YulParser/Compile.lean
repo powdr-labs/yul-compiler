@@ -427,7 +427,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
         (if libraries.isEmpty then decoded else decoded.map (linkStmt libraries))
       let b := YulEvmCompiler.Optimizer.Normalize.normalize
         (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
-          YulSemantics.EVM.ExternalCreates.none)
+          YulSemantics.EVM.ExternalCreates.none .any)
         (raw.map desugarStmt)
       -- Preserve bytecode stability for programs the full pipeline can already
       -- compile. On stack pressure, first retry its verified smart layout;
@@ -482,7 +482,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
                   (YulEvmCompiler.Optimizer.Normalize.normalize
                     (D := YulSemantics.EVM.evmWithExternal
                       YulSemantics.EVM.ExternalCalls.none
-                      YulSemantics.EVM.ExternalCreates.none)
+                      YulSemantics.EVM.ExternalCreates.none .any)
                     spilled.block)
               YulEvmCompiler.compile spilledOpt
                 <|> YulEvmCompiler.compile spilled.block
@@ -507,7 +507,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
         (if libraries.isEmpty then decoded else linkObject libraries decoded)
       let o := YulEvmCompiler.Optimizer.Normalize.normalizeObject
         (D := YulSemantics.EVM.evmWithExternal YulSemantics.EVM.ExternalCalls.none
-          YulSemantics.EVM.ExternalCreates.none)
+          YulSemantics.EVM.ExternalCreates.none .any)
         (desugarObject raw)
       -- `optimized` stays a named binding (the spill fallback below also
       -- consumes it); the no-rejoin and light pipelines are computed inside
@@ -567,7 +567,7 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
                         (YulEvmCompiler.Optimizer.Normalize.normalizeObject
                           (D := YulSemantics.EVM.evmWithExternal
                             YulSemantics.EVM.ExternalCalls.none
-                            YulSemantics.EVM.ExternalCreates.none)
+                            YulSemantics.EVM.ExternalCreates.none .any)
                           spilled.object)
                     (expandSetImmutablesObject spilledOpt).bind YulEvmCompiler.compileObject
                       <|> (expandSetImmutablesObject
