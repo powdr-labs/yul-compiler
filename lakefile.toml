@@ -6,28 +6,28 @@ defaultTargets = ["YulEvmCompiler", "YulParser", "YulEvmCompilerTests", "YulIR",
 [[require]]
 name = "yul-semantics"
 git = "https://github.com/powdr-labs/yul-semantics"
-# Trimmed rev on the v4.31 toolchain (the parent of upstream's merge of the
-# trim PR #47): upstream main moved to Lean 4.33 right before that merge, and
-# tracking it requires a whole-project toolchain migration (Mathlib bump) that
-# is deliberately not part of this change.
-rev = "a0afc3f73295339d756dab1b3dc86479f1fa8436"
+# Upstream main: the trimmed (optimizer meta-theory moved here) repo on the
+# Lean 4.33 toolchain.
+rev = "7acf6cfec4a0a8a3518f4d9c91f204daf31fc456"
 
 # Mathlib is no longer pulled in by the semantics packages (both went
 # Mathlib-free); this repository's own proofs still use Mathlib tactics and
 # lemmas (norm_num/ring/interval_cases, List.Forall₂, Multiset, ...), so it
 # stays a direct requirement until the tracked Mathlib-removal campaign ports
-# them. Pinned to the rev the pre-bump manifest resolved; its batteries pin
-# (fa08db58) is identical to the semantics packages'.
+# them. Pinned to the release tag matching the toolchain.
 [[require]]
 name = "mathlib"
 git = "https://github.com/leanprover-community/mathlib4"
-rev = "fabf563a7c95a166b8d7b6efca11c8b4dc9d911f"
+rev = "v4.33.0"
 
 # Target-language semantics: the EVM small-step/big-step relations.
 [[require]]
 name = "evm_semantics"
 git = "https://github.com/powdr-labs/evm-semantics"
-rev = "10aabc00a789c57b8be260d7c56055783af729e8"
+# Head of powdr-labs/evm-semantics#144 (Lean 4.33 upgrade, based on 192d611).
+# Temporarily omits main's two Checks-layer commits (10aabc0, 95b8da0 — nothing
+# this repo references); re-pin to main once #144 is rebased and merged.
+rev = "f0c4a8e9aa22f679d825c7f063215a5f195a72e8"
 
 [[lean_lib]]
 name = "YulEvmCompiler"

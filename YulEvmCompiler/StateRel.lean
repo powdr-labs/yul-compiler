@@ -2,6 +2,7 @@ import YulEvmCompiler.Decode
 import YulEvmCompiler.Value
 import YulEvmCompiler.BytesLemmas
 import EvmSemantics.EVM.BigStep
+import Init.Data.Fin.Lemmas
 set_option warningAsError true
 /-!
 # YulEvmCompiler.StateRel
@@ -145,9 +146,6 @@ theorem MemMatch.mkCode_eq {bytes : List UInt8} {code : ByteArray}
     convert hm using 1 <;>
       simp [YulSemantics.EVM.byteFrom, List.getD, hi,
         ByteArray.toList_eq_data, ByteArray.getElem_eq_getElem_data]
-    all_goals
-      apply congrArg (fun proof => code.data[i]'proof)
-      apply Subsingleton.elim
 
 /-! ### `MLOAD` agreement -/
 
@@ -517,12 +515,12 @@ theorem accountAddress_eq_iff_accountKey (a b : YulSemantics.EVM.U256) :
   constructor
   · intro h
     have hv := congrArg Fin.val h
-    simpa [AccountAddress.ofUInt256, AccountAddress.size,
-      YulSemantics.EVM.accountKey] using hv
+    simp only [AccountAddress.ofUInt256, Fin.val_ofNat, Nat.mod_mod] at hv
+    simpa [AccountAddress.size, YulSemantics.EVM.accountKey] using hv
   · intro h
     apply Fin.ext
-    simpa [AccountAddress.ofUInt256, AccountAddress.size,
-      YulSemantics.EVM.accountKey] using h
+    simp only [AccountAddress.ofUInt256, Fin.val_ofNat, Nat.mod_mod]
+    simpa [AccountAddress.size, YulSemantics.EVM.accountKey] using h
 
 @[simp] theorem accountAddress_ofUInt256_toUInt256 (a : AccountAddress) :
     AccountAddress.ofUInt256 a.toUInt256 = a := by
