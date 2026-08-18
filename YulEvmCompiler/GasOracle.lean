@@ -46,6 +46,13 @@ cannot be bolted onto our own fused instruction:
   removes those derivations from the dialect instead of leaving them
   unmatched.
 
+**Status.** yul-semantics#41 has since landed: `builtinWithExternal` now
+takes an `ExternalGas` oracle, and the compiler's `AStep.op` currently pins
+it to the maximally permissive `ExternalGas.any`. The facts below are stated
+at `.any` — the regime whose derivations a fused instruction would have to
+match while the compiler stays there. Swapping the compiler onto a
+constrained oracle is exactly what dissolves obstacle 1.
+
 ## A second, independent obstacle
 
 Phase B's gas bookkeeping is additive: `astep_sim` proves
@@ -141,7 +148,7 @@ def gasWitnessPost : EvmState :=
 `gas()` oracle may report `0`; the environment then reports failure and the
 call pushes `0`. Nothing in yul-semantics rules this run out. -/
 theorem thresholdCalls_source_step :
-    builtinWithExternal thresholdCalls ExternalCreates.none .call
+    builtinWithExternal thresholdCalls ExternalCreates.none .any .call
       ((0 : U256) :: gasWitnessArgs) EvmState.init
       (.ok [(0 : U256)] gasWitnessPost) := by
   refine ⟨gasWitnessFail, ⟨?_, rfl, rfl⟩, rfl⟩
@@ -159,7 +166,7 @@ our own instruction cannot work; the constraint has to remove the offending
 `gas()` reading at its source. -/
 theorem thresholdCalls_no_admissible_allowance :
     ¬ ∃ g : U256, 1000 ≤ g.toNat ∧
-      builtinWithExternal thresholdCalls ExternalCreates.none .call
+      builtinWithExternal thresholdCalls ExternalCreates.none .any .call
         (g :: gasWitnessArgs) EvmState.init (.ok [(0 : U256)] gasWitnessPost) := by
   rintro ⟨g, hg, resp, ⟨hiff, -, -⟩, heq⟩
   have hsucc : resp.success = true := hiff.mp hg
@@ -182,12 +189,12 @@ theorem thresholdCalls_source_asteps
       ⟨c, words [(0 : U256)] ++ σ, gasWitnessPost⟩ := by
   refine .head (b := ⟨.op .call :: c, words ((0 : U256) :: gasWitnessArgs) ++ σ,
     EvmState.init⟩) ?_ (.single ?_)
-  · have h : builtinWithExternal model.calls model.creates .gas [] EvmState.init
-        (.ok [(0 : U256)] EvmState.init) := ⟨0, rfl⟩
+  · have h : builtinWithExternal model.calls model.creates .any .gas [] EvmState.init
+        (.ok [(0 : U256)] EvmState.init) := ⟨0, trivial, rfl⟩
     simpa using AStep.op (model := model) (prog := prog) (yop := .gas)
       (args := []) (rets := [(0 : U256)]) (c := .op .call :: c)
       (σ := words gasWitnessArgs ++ σ) h
-  · have h : builtinWithExternal model.calls model.creates .call
+  · have h : builtinWithExternal model.calls model.creates .any .call
         ((0 : U256) :: gasWitnessArgs) EvmState.init
         (.ok [(0 : U256)] gasWitnessPost) := by
       rw [hcalls, hcreates]; exact thresholdCalls_source_step
