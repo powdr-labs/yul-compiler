@@ -1,4 +1,5 @@
 import YulEvmCompiler.Optimizer.Implementation.Frame
+import Mathlib.Tactic.Tauto
 set_option warningAsError true
 /-!
 # YulEvmCompiler.Optimizer.Implementation.DeadStoresSound
@@ -1017,7 +1018,7 @@ theorem BEquivStmt.cond_congr {bound : List Ident} (c : Expr D.Op) {b₁ b₂ : 
 /-- `selectSwitch` respects pairwise-related cases: equal labels, related blocks. -/
 theorem selectSwitch_bcongr {bound : List Ident} {cv : D.Value}
     {cs₁ cs₂ : List (Literal × Block D.Op)} {dflt₁ dflt₂ : Option (Block D.Op)}
-    (hcases : List.Forall₂ (fun p q => p.1 = q.1 ∧ BEquivBlock D bound p.2 q.2) cs₁ cs₂)
+    (hcases : Forall₂ (fun p q => p.1 = q.1 ∧ BEquivBlock D bound p.2 q.2) cs₁ cs₂)
     (hdflt : BEquivBlock D bound (dflt₁.getD []) (dflt₂.getD [])) :
     BEquivBlock D bound (selectSwitch D cv cs₁ dflt₁) (selectSwitch D cv cs₂ dflt₂) := by
   induction hcases with
@@ -1051,10 +1052,10 @@ private theorem bswitchImp {bound : List Ident} {c : Expr D.Op} {cs₁ cs₂ dfl
 /-- Congruence: `switch` with pairwise-related cases and defaults. -/
 theorem BEquivStmt.switch_congr {bound : List Ident} (c : Expr D.Op)
     {cs₁ cs₂ : List (Literal × Block D.Op)} {dflt₁ dflt₂ : Option (Block D.Op)}
-    (hcases : List.Forall₂ (fun p q => p.1 = q.1 ∧ BEquivBlock D bound p.2 q.2) cs₁ cs₂)
+    (hcases : Forall₂ (fun p q => p.1 = q.1 ∧ BEquivBlock D bound p.2 q.2) cs₁ cs₂)
     (hdflt : BEquivBlock D bound (dflt₁.getD []) (dflt₂.getD [])) :
     BEquivStmt D bound (.switch c cs₁ dflt₁) (.switch c cs₂ dflt₂) := by
-  have hsym : List.Forall₂
+  have hsym : Forall₂
       (fun (p q : Literal × Block D.Op) => p.1 = q.1 ∧ BEquivBlock D bound p.2 q.2)
       cs₂ cs₁ := by
     induction hcases with
@@ -1158,11 +1159,11 @@ def SbFDeclRel (d₁ d₂ : FDecl D) : Prop :=
 
 /-- Scopes related pairwise: equal names, related declarations. -/
 def SbScopeRel (s₁ s₂ : FScope D) : Prop :=
-  List.Forall₂ (fun p q => p.1 = q.1 ∧ SbFDeclRel (D := D) p.2 q.2) s₁ s₂
+  Forall₂ (fun p q => p.1 = q.1 ∧ SbFDeclRel (D := D) p.2 q.2) s₁ s₂
 
 /-- Function environments related scope-by-scope. -/
 def SbFunsRel (f₁ f₂ : FunEnv D) : Prop :=
-  List.Forall₂ (SbScopeRel (D := D)) f₁ f₂
+  Forall₂ (SbScopeRel (D := D)) f₁ f₂
 
 theorem SbFDeclRel.refl (d : FDecl D) : SbFDeclRel (D := D) d d :=
   ⟨rfl, rfl, BEquivBlock.refl _ _⟩
@@ -1247,7 +1248,7 @@ theorem sbLookupFun {f₁ f₂ : FunEnv D} (hR : SbFunsRel (D := D) f₁ f₂) :
         obtain ⟨hd_eq, hcenv_eq⟩ := h
         subst hd_eq; subst hcenv_eq
         exact ⟨q.2, s₂ :: t₂, by rw [lookupFun, hp₂], hd.1.symm, hd.2.1.symm,
-          hd.2.2, List.Forall₂.cons hs hR'⟩
+          hd.2.2, Forall₂.cons hs hR'⟩
 
 omit [DecidableEq D.Value] in
 /-- The callee environment binds exactly the callee's parameters and returns. -/
@@ -1350,13 +1351,13 @@ theorem BEquivBlock.of_stmts_funs {bound : List Ident} {b₁ b₂ : Block D.Op}
     cases h with
     | block hbd =>
         refine Step.block ?_
-        have h1 := Step.sbFunsCongr hbd (List.Forall₂.cons hR (SbFunsRel.refl funs))
+        have h1 := Step.sbFunsCongr hbd (Forall₂.cons hR (SbFunsRel.refl funs))
         exact (hss (hoist D b₂ :: funs) V st _ _ _ hb).mp h1
   · intro h
     cases h with
     | block hbd =>
         refine Step.block ?_
-        have h1 := Step.sbFunsCongr hbd (List.Forall₂.cons hR.symm (SbFunsRel.refl funs))
+        have h1 := Step.sbFunsCongr hbd (Forall₂.cons hR.symm (SbFunsRel.refl funs))
         exact (hss (hoist D b₁ :: funs) V st _ _ _ hb).mpr h1
 
 end BoundEquiv

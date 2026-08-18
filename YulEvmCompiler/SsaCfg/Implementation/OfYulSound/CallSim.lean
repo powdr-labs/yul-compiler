@@ -37,7 +37,7 @@ local notation "yulD" => evmWithExternal model.calls model.creates
 /-- Read the return values a `leave`-free callee leaves in its environment
 off the `VEnv` lookups the source derivation supplies. -/
 theorem retvals_eq {Vend : VEnv yulD} {rs : List Ident} {vals : List U256}
-    (hv : List.Forall₂ (fun x v => YulSemantics.VEnv.get Vend x = some v)
+    (hv : YulSemantics.Forall₂ (fun x v => YulSemantics.VEnv.get Vend x = some v)
       rs vals) :
     vals = rs.map (fun r => (YulSemantics.VEnv.get Vend r).getD
       (YulSemantics.Dialect.zero yulD)) := by

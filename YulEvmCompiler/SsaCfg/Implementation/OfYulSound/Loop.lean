@@ -593,7 +593,7 @@ def LHOut (P : Prog) (f : Func) (rets : Option (List Ident)) (base : Nat)
   | .halt => ExecFrom (model := model) P f sH.fn RH yst (.halt yst')
   | .leave => ∃ (rs : List Ident) (vals : List U256),
       rets = some rs
-        ∧ List.Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) rs vals
+        ∧ YulSemantics.Forall₂ (fun x v => YulSemantics.VEnv.get V' x = some v) rs vals
         ∧ ExecFrom (model := model) P f sH.fn RH yst (.ret vals yst')
   | .break | .continue => False
 

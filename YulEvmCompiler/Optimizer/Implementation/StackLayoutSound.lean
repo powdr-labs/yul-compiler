@@ -193,7 +193,7 @@ mutual
         EquivExpr.call_congr f (EquivArgs.of_forall₂ (scheduleArgs_forall2 args))
 
   theorem scheduleArgs_forall2 : ∀ args : List (Expr Op),
-      List.Forall₂ (EquivExpr D) args (scheduleArgs args)
+      Forall₂ (EquivExpr D) args (scheduleArgs args)
     | [] => .nil
     | e :: rest => .cons (scheduleExpr_equiv e) (scheduleArgs_forall2 rest)
 end
@@ -243,14 +243,14 @@ mutual
     | .leave => by simp only [scheduleStmt]; exact EquivStmt.refl _
 
   theorem scheduleStmts_forall2 : ∀ ss : Block Op,
-      List.Forall₂ (EquivStmt D) ss (scheduleStmts ss)
+      Forall₂ (EquivStmt D) ss (scheduleStmts ss)
     | [] => by rw [scheduleStmts]; exact .nil
     | s :: rest => by
         rw [scheduleStmts]
         exact .cons (scheduleStmt_equiv s) (scheduleStmts_forall2 rest)
 
   theorem scheduleCases_forall2 : ∀ cases : List (Literal × Block Op),
-      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+      Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
         cases (scheduleCases cases)
     | [] => by rw [scheduleCases]; exact .nil
     | (l, body) :: rest => by
@@ -2857,13 +2857,13 @@ theorem stmtsBinds_append (a b : Block Op) :
   | cons s rest ih => simp [stmtsBinds, ih, List.append_assoc]
 
 private theorem forall₂_refl_equivStmt (ss : Block Op) :
-    List.Forall₂ (EquivStmt D) ss ss := by
+    Forall₂ (EquivStmt D) ss ss := by
   induction ss with
   | nil => exact .nil
   | cons s rest ih => exact .cons (fun _ _ _ _ _ _ => Iff.rfl) ih
 
 private theorem forall₂_refl_cases (cases : List (Literal × Block Op)) :
-    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cases cases := by
+    Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cases cases := by
   induction cases with
   | nil => exact .nil
   | cons p rest ih => exact .cons ⟨rfl, EquivBlock.refl _⟩ ih
@@ -2876,9 +2876,9 @@ private theorem scopeRel_append' {a b c d : FScope D}
   | cons hp _ ih => exact .cons hp ih
 
 private theorem forall₂_append_equivStmt {a b c d : Block Op}
-    (h₁ : List.Forall₂ (EquivStmt D) a b)
-    (h₂ : List.Forall₂ (EquivStmt D) c d) :
-    List.Forall₂ (EquivStmt D) (a ++ c) (b ++ d) := by
+    (h₁ : Forall₂ (EquivStmt D) a b)
+    (h₂ : Forall₂ (EquivStmt D) c d) :
+    Forall₂ (EquivStmt D) (a ++ c) (b ++ d) := by
   induction h₁ with
   | nil => exact h₂
   | cons hp _ ih => exact .cons hp ih
@@ -3012,7 +3012,7 @@ mutual
   theorem stageOneCases_sound : ∀ (P : String) (Phi : FMap)
       (layout : List Ident) (cases cases' : List (Literal × Block Op)),
       stageOneCases P Phi layout cases = some cases' →
-      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cases cases'
+      Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cases cases'
     | _, _, _, [], _, h => by simp [stageOneCases] at h
     | P, Phi, layout, (l, body) :: rest, cases', h => by
         unfold stageOneCases at h
@@ -3166,7 +3166,7 @@ mutual
   theorem copyOneCases_sound : ∀ (layout : List Ident)
       (cases cases' : List (Literal × Block Op)),
       copyOneCases layout cases = some cases' →
-      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cases cases'
+      Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cases cases'
     | _, [], _, h => by simp [copyOneCases] at h
     | layout, (l, body) :: rest, cases', h => by
         unfold copyOneCases at h
@@ -3400,7 +3400,7 @@ mutual
   theorem reuseOneCases_sound : ∀ (layout : List Ident)
       (cases cases' : List (Literal × Block Op)),
       reuseOneCases layout cases = some cases' →
-      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cases cases'
+      Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cases cases'
     | _, [], _, h => by simp [reuseOneCases] at h
     | layout, (l, body) :: rest, cases', h => by
         unfold reuseOneCases at h
@@ -4367,7 +4367,7 @@ theorem scopeTailHere_sound {layout : List Ident} {ss ss' : Block Op}
 
 private theorem tail_forall₂_refl_cases
     (cases : List (Literal × Block Op)) :
-    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+    Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
       cases cases := by
   induction cases with
   | nil => exact .nil
@@ -4481,7 +4481,7 @@ mutual
   theorem scopeOneCases_sound : ∀ (layout : List Ident)
       (cases cases' : List (Literal × Block Op)),
       scopeOneCases layout cases = some cases' →
-      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cases cases'
+      Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cases cases'
     | _, [], _, h => by simp [scopeOneCases] at h
     | layout, (l, body) :: rest, cases', h => by
         unfold scopeOneCases at h
@@ -4987,7 +4987,7 @@ private theorem mapFunBodies_stmts
   | cons s rest ih =>
       cases s with
       | funDef n ps rs body =>
-          apply List.Forall₂.cons
+          apply Forall₂.cons
           · intro funs V st V' st' o
             constructor <;> intro h <;> cases h <;> exact Step.funDef
           · exact ih
@@ -6082,7 +6082,7 @@ mutual
   theorem scopeOneDeadPrefixCases_sound : ∀
       (cases cases' : List (Literal × Block Op)),
       StackV2.scopeOneDeadPrefixCases cases = some cases' →
-      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+      Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
         cases cases'
     | [], _, h => by simp [StackV2.scopeOneDeadPrefixCases] at h
     | (l, body) :: rest, cases', h => by
@@ -6124,7 +6124,7 @@ private theorem scopeDeadCases_of
     (H : ∀ body : Block Op,
       EquivBlock D body (StackV2.scopeDeadPrefixesStmts n body)) :
     ∀ cases : List (Literal × Block Op),
-      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+      Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
         cases (StackV2.scopeDeadPrefixesCases n cases) := by
   intro cases
   cases n with
@@ -6218,8 +6218,8 @@ theorem scopeDeadPrefixesStmts_equiv_old (n : Nat) (body : Block Op) :
 
 private theorem forall₂_append {α β : Type} {R : α → β → Prop}
     {a b : List α} {c d : List β}
-    (h₁ : List.Forall₂ R a c) (h₂ : List.Forall₂ R b d) :
-    List.Forall₂ R (a ++ b) (c ++ d) := by
+    (h₁ : Forall₂ R a c) (h₂ : Forall₂ R b d) :
+    Forall₂ R (a ++ b) (c ++ d) := by
   induction h₁ with
   | nil => exact h₂
   | cons hp _ ih => exact .cons hp ih
@@ -6293,7 +6293,7 @@ mutual
 
   theorem scopeDeadPrefixesCases_equiv : ∀ (n : Nat)
       (cases : List (Literal × Block Op)),
-      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+      Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
         cases (StackV2.scopeDeadPrefixesCases n cases)
     | 0, cases => tail_forall₂_refl_cases cases
     | _n + 1, [] => .nil

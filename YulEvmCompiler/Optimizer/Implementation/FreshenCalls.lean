@@ -454,15 +454,15 @@ private theorem fcStmt_equiv (P : String) (Δ : DEnv) :
   | .leave => by simpa [fcStmt] using (EquivStmt.refl .leave : EquivStmt D _ _)
 
 private theorem fcStmts_forall2 (P : String) (Δ : DEnv) :
-    ∀ ss : List (Stmt Op), List.Forall₂ (EquivStmt D) ss (fcStmts P Δ ss)
+    ∀ ss : List (Stmt Op), Forall₂ (EquivStmt D) ss (fcStmts P Δ ss)
   | [] => by rw [fcStmts]; exact .nil
   | s :: rest => by
-      simpa [fcStmts] using List.Forall₂.cons
+      simpa [fcStmts] using Forall₂.cons
         (fcStmt_equiv P Δ s) (fcStmts_forall2 P Δ rest)
 
 private theorem fcCases_forall2 (P : String) (Δ : DEnv) :
     ∀ cs : List (Literal × Block Op),
-      List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
+      Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2)
         cs (fcCases P Δ cs)
   | [] => by rw [fcCases]; exact .nil
   | (l, b) :: rest => by
@@ -472,7 +472,7 @@ private theorem fcCases_forall2 (P : String) (Δ : DEnv) :
           (EquivBlock.of_stmts_funs
             (EquivStmts.of_forall₂ (fcStmts_forall2 P (deltaExtend Δ b) b))
             (fcScopeRel P (deltaExtend Δ b) b))
-      exact List.Forall₂.cons ⟨rfl, hb⟩ (fcCases_forall2 P Δ rest)
+      exact Forall₂.cons ⟨rfl, hb⟩ (fcCases_forall2 P Δ rest)
 
 private theorem fcDflt_equiv (P : String) (Δ : DEnv) :
     ∀ dflt : Option (Block Op), EquivBlock D (dflt.getD []) ((fcDflt P Δ dflt).getD [])

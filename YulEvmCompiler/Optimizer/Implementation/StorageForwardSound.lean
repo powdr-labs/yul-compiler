@@ -1724,12 +1724,12 @@ theorem sfFunStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (sfFunStmt s)
   | .leave => EquivStmt.refl _
 
 theorem sfFunStmts_forall2 : ∀ ss : List (Stmt Op),
-    List.Forall₂ (EquivStmt D) ss (sfFunStmts ss)
+    Forall₂ (EquivStmt D) ss (sfFunStmts ss)
   | [] => .nil
   | s :: rest => .cons (sfFunStmt_equiv s) (sfFunStmts_forall2 rest)
 
 theorem sfFunCases_forall2 : ∀ cs : List (Literal × Block Op),
-    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs (sfFunCases cs)
+    Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs (sfFunCases cs)
   | [] => .nil
   | (l, body) :: rest =>
       .cons ⟨rfl, EquivBlock.of_stmts_funs

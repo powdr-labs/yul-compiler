@@ -2047,13 +2047,13 @@ theorem simplifyStmt_equiv : ∀ s : Stmt Op, EquivStmt D s (simplifyStmt s)
 
 /-- Each statement of a sequence is equivalent to its simplification, pairwise. -/
 theorem simplifyStmts_forall2 : ∀ ss : List (Stmt Op),
-    List.Forall₂ (EquivStmt D) ss (simplifyStmts ss)
+    Forall₂ (EquivStmt D) ss (simplifyStmts ss)
   | [] => .nil
   | s :: rest => .cons (simplifyStmt_equiv s) (simplifyStmts_forall2 rest)
 
 /-- Each `switch` case is label-equal and body-equivalent to its simplification. -/
 theorem simplifyCases_forall2 : ∀ cs : List (Literal × Block Op),
-    List.Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs (simplifyCases cs)
+    Forall₂ (fun p q => p.1 = q.1 ∧ EquivBlock D p.2 q.2) cs (simplifyCases cs)
   | [] => .nil
   | (_, b) :: rest =>
       .cons ⟨rfl, EquivBlock.of_stmts_funs (EquivStmts.of_forall₂ (simplifyStmts_forall2 b))
