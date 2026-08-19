@@ -685,6 +685,9 @@ functionTypes/ternary_contract_internal_function.sol	640	492
 functionTypes/ternary_contract_library_internal_function.sol	640	492
 functionTypes/ternary_contract_public_function.sol	730	558
 functionTypes/uninitialized_internal_storage_function_call.sol	2264	134
+functionTypes/uninitialized_internal_storage_function_pointer_comparison.sol	4763	4703
+functionTypes/uninitialized_internal_storage_function_pointer_slot_edges.sol	4706	4646
+functionTypes/uninitialized_internal_transient_storage_function_pointer_comparison.sol	1843	1611
 getters/array_mapping_struct.sol	45624	44596
 getters/arrays.sol	11894	11441
 getters/bytes.sol	2727	2625
