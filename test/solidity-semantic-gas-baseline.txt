@@ -591,8 +591,12 @@ expressions/tuple_from_ternary_expression.sol	169	142
 expressions/unary_too_long_literal.sol	169	142
 expressions/uncalled_address_transfer_send.sol	147	100
 externalContracts/FixedFeeRegistrar.sol	243976	239633
+externalContracts/base64.sol	45070	43182
 externalContracts/deposit_contract.sol	511995	477905
+externalContracts/prbmath_unsigned.sol	38577	38531
+externalContracts/ramanujan_pi.sol	41432	33972
 externalContracts/snark.sol	1263808	1083620
+externalContracts/strings.sol	1939127	1968167
 fallback/call_forward_bytes.sol	41953	41497
 fallback/falback_return.sol	9108	8960
 fallback/fallback_argument.sol	27699	27493
