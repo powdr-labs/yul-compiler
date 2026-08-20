@@ -5,7 +5,7 @@
 # columns: fixture<TAB>ours<TAB>solc
 after_terminating_function.yul	24	30
 nonempty_initial_layout.yul	0	210
-pops_in_reverting_branch.yul	61640	61580
+pops_in_reverting_branch.yul	61610	61580
 stackReuse/function_argument_reuse.yul	27344	27464
 stackReuse/function_argument_reuse_without_retparams.yul	25290	25511
 stackReuse/function_call.yul	0	480

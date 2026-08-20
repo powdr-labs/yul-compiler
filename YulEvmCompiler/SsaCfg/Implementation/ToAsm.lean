@@ -294,6 +294,198 @@ where
       else go rest keepVals (.retAddr :: seen)
     | .code l :: rest, keepVals, seen => go rest keepVals (.code l :: seen)
 
+/-- The blocks targeted by a **back edge** (`target ≤ source` in the
+construction's reducible, index-ordered CFG): loop headers. The entry block
+is excluded — its layout is pinned by the calling convention. (Seeding
+*join* blocks too was measured and lost: +13,691 on uniswap-v4 — a join's
+body savings do not pay for making every arriving arm realize a demanded
+permutation, while a loop header's do, because its body and back edge run
+once per iteration.) -/
+def loopHeaders (f : Func) : List BlockId :=
+  (List.range f.blocks.size).foldl (init := []) fun acc i =>
+    match f.blocks[i]? with
+    | some b =>
+      b.term.edges.foldl (init := acc) fun acc e =>
+        if e.target ≤ i && e.target ≠ f.entry && !acc.contains e.target then
+          e.target :: acc
+        else acc
+    | none => acc
+
+/-- The **demand layout** of a block, from its own operations: the canonical
+slots (`layoutOf`) reordered by next use inside the block (the same Koopman
+ordering `orderByFuture` applies between instructions), so the values the
+body consumes first sit on top and pass-through values sink. Used to
+pre-seed loop headers: their donated layout would otherwise come from the
+cold preheader edge (the first edge to reach them) while the hot back edge
+realizes the difference on every iteration. -/
+def demandLayout (isFunc : Bool) (liveIn : List ValId) (b : Block) :
+    List SSlot :=
+  orderByFuture (layoutOf isFunc liveIn b)
+    (b.instrs.flatMap Instr.uses ++ b.term.uses)
+
+/-- Remove every `.val` slot naming one of `ds`. -/
+def removeVals (ds : List ValId) (lay : List SSlot) : List SSlot :=
+  lay.filter fun s =>
+    match s with
+    | .val v => !ds.contains v
+    | _ => true
+
+/-- Keep the first occurrence of each slot. -/
+def dedupSlots (lay : List SSlot) : List SSlot :=
+  go lay []
+where
+  go : List SSlot → List SSlot → List SSlot
+    | [], seen => seen.reverse
+    | s :: rest, seen =>
+      if seen.contains s then go rest seen else go rest (s :: seen)
+
+/-- One **backward Koopman step**: the stack an instruction wants *before*
+it, given the stack wanted *after* it. Only operands that **die** at the
+instruction go on top (the emitter consumes them from the top for free); an
+operand still needed afterwards keeps its after-position — the emitter
+`DUP`s it from wherever it sits at flat cost, so fronting it would force a
+permutation at every predecessor edge for zero benefit (measured as a
+four-`SWAP`-per-iteration loop-header tax on `negative_stack_height.sol`'s
+zeroing loops, +127k gas on that fixture alone). Layouts stay
+duplicate-free. -/
+def backInstr (i : Instr) (cur : List SSlot) : List SSlot :=
+  match i with
+  | .const d _ => removeVals [d] cur
+  | .op ds _ as =>
+    let keep := removeVals ds cur
+    let dead := as.filter fun a => !keep.contains (.val a)
+    dedupSlots (dead.map .val ++ keep)
+  | .call ds _ as =>
+    let keep := removeVals ds cur
+    let dead := as.filter fun a => !keep.contains (.val a)
+    dedupSlots (dead.map .val ++ keep)
+
+/-- The stack a block's terminator wants, in this block's terms: the chosen
+successor's (recorded or provisional) entry layout pulled through the edge's
+parallel copy, the condition on top for a branch (the emitter's direct
+scheme lands on the true edge's layout), results-then-return-address for
+`ret`, arguments for `halt`. -/
+def exitLayout (isFunc : Bool) (f : Func) (liveIn : Array (List ValId))
+    (entryOf : BlockId → Option (List SSlot)) (b : Block) : List SSlot :=
+  match b.term with
+  | .jump e => edgeLayout e
+  | .branch c et _ => .val c :: edgeLayout et
+  | .ret xs => xs.map .val ++ (if isFunc then [SSlot.retAddr] else [])
+  | .halt _ as => as.map .val
+where
+  edgeLayout (e : Edge) : List SSlot :=
+    match f.blocks[e.target]? with
+    | some tb =>
+      let lay := (entryOf e.target).getD
+        (demandLayout isFunc (liveIn[e.target]?.getD []) tb)
+      dedupSlots (substLayout lay tb.params e.args)
+    | none => []
+
+/-- The **backward-computed entry layout** of one block: walk the body last
+instruction to first from the terminator's wanted stack, then normalize to
+exactly the block's entry values — the walk's order first, the never-used
+pass-through values below in canonical order, the return address at the
+bottom (the emitter's shuffles never move it). -/
+def backLayout (isFunc : Bool) (f : Func) (liveIn : Array (List ValId))
+    (entryOf : BlockId → Option (List SSlot)) (bid : BlockId) (b : Block) :
+    List SSlot :=
+  let cur := b.instrs.foldr backInstr (exitLayout isFunc f liveIn entryOf b)
+  let canonical := layoutOf isFunc (liveIn[bid]?.getD []) b
+  let ranked := (cur.filter (canonical.contains ·)).filter fun s =>
+    match s with
+    | .val _ => true
+    | _ => false
+  let ranked := dedupSlots ranked
+  let rest := canonical.filter fun s =>
+    !ranked.contains s && s != .retAddr
+  ranked ++ rest ++ (if canonical.contains .retAddr then [.retAddr] else [])
+
+/-- Compute every non-entry block's entry layout by **backward propagation**
+(solc's scheme): blocks are visited in reverse index order so a forward
+edge's target is already final within a sweep; back edges (loop headers) see
+the previous sweep's answer — headers are seeded with their demand layout
+first, and `sweeps` Gauss–Seidel rounds let the loop body and its header
+converge. Predecessors then *establish* the layout each block wants instead
+of the first-arriving edge donating whatever it happened to hold.
+
+A final **false-edge alignment** step then rewrites every branch's
+false-target layout to follow the true-target's value order: the emitter's
+direct scheme realizes the false edge as `shuffle τt τf`, so an
+independently demanded `τf` pays a `DUP`/`POP`/`SWAP` tax against `τt` on
+every execution of the fall-through path — measured as a 10,000-`POP`
+explosion on the TickMath diamond chains. Alignment makes `τf` a filtered
+rename of `τt` again (inheritance's shape), while long-block bodies keep
+their backward-computed layouts. -/
+def backLayouts (isFunc : Bool) (f : Func) (liveIn : Array (List ValId))
+    (sweeps : Nat) : Std.HashMap BlockId (List SSlot) :=
+  let init : Std.HashMap BlockId (List SSlot) :=
+    (loopHeaders f).foldl (init := {}) fun acc h =>
+      match f.blocks[h]? with
+      | some b => acc.insert h (demandLayout isFunc (liveIn[h]?.getD []) b)
+      | none => acc
+  go sweeps init
+where
+  entryLayout (tbl : Std.HashMap BlockId (List SSlot)) (bid : BlockId) :
+      Option (List SSlot) :=
+    if bid = f.entry then
+      some (f.params.map .val ++ (if isFunc then [SSlot.retAddr] else []))
+    else tbl[bid]?
+  sweep (tbl : Std.HashMap BlockId (List SSlot)) :
+      Std.HashMap BlockId (List SSlot) :=
+    (List.range f.blocks.size).reverse.foldl (init := tbl) fun tbl bid =>
+      if bid = f.entry then tbl else
+      match f.blocks[bid]? with
+      | some b => tbl.insert bid (backLayout isFunc f liveIn (entryLayout tbl) bid b)
+      | none => tbl
+  go : Nat → Std.HashMap BlockId (List SSlot) →
+      Std.HashMap BlockId (List SSlot)
+    | 0, tbl => tbl
+    | n + 1, tbl => go n (alignFalse (sweep tbl))
+  alignFalse (tbl : Std.HashMap BlockId (List SSlot)) :
+      Std.HashMap BlockId (List SSlot) :=
+    f.blocks.toList.foldl (init := tbl) fun tbl b =>
+      match b.term with
+      | .branch _ et ef =>
+        if ef.target = f.entry || ef.target = et.target then tbl else
+        (match f.blocks[et.target]?, f.blocks[ef.target]?,
+               entryLayout tbl et.target, tbl[ef.target]? with
+         | some tbT, some tbF, some layT, some layF =>
+           -- the true-target layout in branch-side value terms
+           let τt := substLayout layT tbT.params et.args
+           -- branch-side value → false-target slot (params by position,
+           -- shared live-ins by identity)
+           let ren := tbF.params.zip ef.args
+           let template := τt.filterMap fun s =>
+             match s with
+             | .val a =>
+               match ren.find? (·.2 = a) with
+               | some pa => some (SSlot.val pa.1)
+               | none => if layF.contains (.val a) then some (.val a) else none
+             | .retAddr => some .retAddr
+             | .code _ => none
+           let template := dedupSlots template
+           let ranked := template.filter fun s =>
+             layF.contains s && s != .retAddr
+           let rest := layF.filter fun s =>
+             !ranked.contains s && s != .retAddr
+           tbl.insert ef.target
+             (ranked ++ rest
+               ++ (if layF.contains .retAddr then [.retAddr] else []))
+         | _, _, _, _ => tbl)
+      | _ => tbl
+
+/-- Record the backward-propagated entry layouts before any block or edge is
+emitted. The entry block is never seeded — its layout is pinned by the
+calling convention. -/
+def seedLayouts (isFunc : Bool) (f : Func) (liveIn : Array (List ValId)) :
+    E Unit :=
+  let tbl := backLayouts isFunc f liveIn 3
+  (List.range f.blocks.size).forM fun bid =>
+    if bid = f.entry then pure () else
+    match tbl[bid]? with
+    | some lay => setLayout bid lay
+    | none => pure ()
+
 /-- The layout a control-flow edge must establish, in *source-side* terms —
 **consulting or recording** the target's entry layout: the first edge to
 reach a block donates its (filtered, renamed) stack as the block's inherited
@@ -486,14 +678,19 @@ def emitBlock (P : Prog) (L : LabelMap) (ord : Bool) (fidx : Option Nat)
   pure (.label (blkLabel L fidx bid) :: body ++ tasm)
 
 /-- Emit a whole function (blocks in index order; the entry must be block 0,
-which both construction entry points guarantee). -/
-def emitFunc (P : Prog) (L : LabelMap) (ord : Bool) (fidx : Option Nat)
+which both construction entry points guarantee). With `seed` on, every
+non-entry block's layout is pre-recorded by backward propagation
+(`seedLayouts`) before the block fold; with it off, layouts arise from
+first-edge inheritance exactly as before — both are candidates and the
+statically cheaper artifact wins in `compileViaSsaAsm`. -/
+def emitFunc (P : Prog) (L : LabelMap) (ord seed : Bool) (fidx : Option Nat)
     (f : Func) : E (List Asm) := do
   if f.entry ≠ 0 then liftE none else
   resetLayouts
   let liveIn ← liftE (liveInSets f)
   -- entry live-ins must be covered by the parameters
   if diffS (liveIn[0]?.getD []) f.params ≠ [] then liftE none else
+  if seed then seedLayouts fidx.isSome f liveIn else pure ()
   let idxBlocks := (List.range f.blocks.size).zip f.blocks.toList
   idxBlocks.foldlM (init := []) fun acc (bid, b) => do
     let asm ← emitBlock P L ord fidx f liveIn bid b
@@ -512,23 +709,24 @@ def elideJumps : List Asm → List Asm
 every function's, then the terminal label — so `main`'s `ret []` runs off
 the end of the code (the implicit `STOP`), exactly like the classic
 backend's `.normal` fall-through. -/
-def emitProgOrd (ord : Bool) (P : Prog) : Option (List Asm) := do
+def emitProgOrd (ord seed : Bool) (P : Prog) : Option (List Asm) := do
   if !(P.main.params.isEmpty && P.main.nrets = 0) then none else
   let L := mkLabelMap P
   let build : E (List Asm) := do
-    let asmMain ← emitFunc P L ord none P.main
+    let asmMain ← emitFunc P L ord seed none P.main
     let idxFuncs := (List.range P.funcs.size).zip P.funcs.toList
     let asmFns ← idxFuncs.foldlM (init := []) fun acc (i, f) => do
-      let a ← emitFunc P L ord (some i) f
+      let a ← emitFunc P L ord seed (some i) f
       pure (acc ++ a)
     pure (asmMain ++ asmFns ++ [.label L.endLabel])
   let (asm, _) ← build ⟨L.endLabel + 1, {}⟩
   some (elideJumps asm)
 
-/-- The default emission (next-use ordering off); `compileViaSsa` tries both
-modes and keeps the statically cheaper artifact. -/
+/-- The default emission (next-use ordering and layout seeding off);
+`compileViaSsa` tries the modes and keeps the statically cheapest
+artifact. -/
 def emitProg (P : Prog) : Option (List Asm) :=
-  emitProgOrd false P
+  emitProgOrd false false P
 
 end ToAsm
 

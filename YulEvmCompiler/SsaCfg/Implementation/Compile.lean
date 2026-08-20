@@ -35,8 +35,8 @@ open YulSemantics.EVM (Op)
 /-- Emit one SSA program through the shared final gates: `ToAsm` (in the
 given scheduling mode), `Asm` well-formedness, the peephole, the overflow
 certificate, label resolution. -/
-def finishProgOrd (imm : String → YulSemantics.EVM.U256) (ord : Bool) (P : Prog) : Option (List YulEvmCompiler.Instr) := do
-  let asm ← ToAsm.emitProgOrd ord P
+def finishProgOrd (imm : String → YulSemantics.EVM.U256) (ord seed : Bool) (P : Prog) : Option (List YulEvmCompiler.Instr) := do
+  let asm ← ToAsm.emitProgOrd ord seed P
   if !wfCheck asm then none else
   let opt := optimizeAsm asm
   if stackOK2 opt then lowerProg imm opt else none
@@ -44,22 +44,22 @@ def finishProgOrd (imm : String → YulSemantics.EVM.U256) (ord : Bool) (P : Pro
 /-- `finishProgOrd` in the default mode (kept for the correctness
 statements' vocabulary). -/
 def finishProg (imm : String → YulSemantics.EVM.U256) (P : Prog) : Option (List YulEvmCompiler.Instr) :=
-  finishProgOrd imm false P
+  finishProgOrd imm false false P
 
 /-- `finishProgOrd` stopping one step short of lowering: the peepholed,
 certified labeled assembly the artifact cost model reads.  Kept separate so
 `finishProgOrd` — and the correctness statements phrased on it — are
 untouched. -/
-def finishProgOrdAsm (ord : Bool) (P : Prog) : Option (List YulEvmCompiler.Asm) := do
-  let asm ← ToAsm.emitProgOrd ord P
+def finishProgOrdAsm (ord seed : Bool) (P : Prog) : Option (List YulEvmCompiler.Asm) := do
+  let asm ← ToAsm.emitProgOrd ord seed P
   if !wfCheck asm then none else
   let opt := optimizeAsm asm
   if stackOK2 opt then some opt else none
 
-theorem finishProgOrd_eq (imm : String → YulSemantics.EVM.U256) (ord : Bool) (P : Prog) :
-    finishProgOrd imm ord P = (finishProgOrdAsm ord P).bind (lowerProg imm) := by
+theorem finishProgOrd_eq (imm : String → YulSemantics.EVM.U256) (ord seed : Bool) (P : Prog) :
+    finishProgOrd imm ord seed P = (finishProgOrdAsm ord seed P).bind (lowerProg imm) := by
   unfold finishProgOrd finishProgOrdAsm
-  cases ToAsm.emitProgOrd ord P with
+  cases ToAsm.emitProgOrd ord seed P with
   | none => rfl
   | some asm =>
     by_cases hw : wfCheck asm
@@ -174,8 +174,12 @@ def compileViaSsaAsm (prog : YulSemantics.Block Op) :
   -- against inlining, and the correction for that bias is the very
   -- call-frequency term the same measurements refuted.
   let Q := rematProg (optimizeProg P)
-  let cands := [finishProgOrdAsm true Q, finishProgOrdAsm false Q,
-                finishProgOrdAsm true P, finishProgOrdAsm false P]
+  -- {next-use scheduling} × {seeded entry layouts} on the optimized program,
+  -- both plain modes on the raw one (seeding depends on the pass pipeline's
+  -- coalescing/param elimination to be worth emitting there)
+  let cands := [finishProgOrdAsm true true Q, finishProgOrdAsm false true Q,
+                finishProgOrdAsm true false Q, finishProgOrdAsm false false Q,
+                finishProgOrdAsm true false P, finishProgOrdAsm false false P]
   cands.foldl (pickMin CostModel.execCostAsm) none
 
 /-- The candidate choice happens on `Asm`, *before* immutable placeholders are

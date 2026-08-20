@@ -75,21 +75,21 @@ stack. Delegated to `SsaCfg/ToAsmSound.lean` (modulo its declared frontier).
 Single assignment (`P.wfCheck`) and label uniqueness are genuinely
 required — that file records the counterexample without them; the
 dominance hypothesis covers the layout-table binding at jump targets. -/
-theorem emitProg_asteps {ord : Bool} {P : Prog} {asm : List Asm}
+theorem emitProg_asteps {ord seed : Bool} {P : Prog} {asm : List Asm}
     {yst0 yst' : EvmState}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
     (hdom : ToAsm.Prog.domCheck P = true)
-    (hemit : ToAsm.emitProgOrd ord P = some asm)
+    (hemit : ToAsm.emitProgOrd ord seed P = some asm)
     (hrun : Run (model := model) P yst0 yst' .normal) :
     ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ :=
   emitProg_asteps' hnodup hwf hdom hemit hrun
 
 /-- **Codegen simulation, halting outcome** (see `emitProg_asteps`). -/
-theorem emitProg_ahalt {ord : Bool} {P : Prog} {asm : List Asm}
+theorem emitProg_ahalt {ord seed : Bool} {P : Prog} {asm : List Asm}
     {yst0 yst' : EvmState}
     (hnodup : (labelDefs asm).Nodup) (hwf : P.wfCheck = true)
     (hdom : ToAsm.Prog.domCheck P = true)
-    (hemit : ToAsm.emitProgOrd ord P = some asm)
+    (hemit : ToAsm.emitProgOrd ord seed P = some asm)
     (hrun : Run (model := model) P yst0 yst' .halt) :
     ∃ conf, ASteps (model := model) asm ⟨asm, [], yst0⟩ conf ∧
       AHalt (model := model) asm conf yst' :=
@@ -121,15 +121,15 @@ theorem optimizeProg_dom {P : Prog} (hdom : ToAsm.Prog.domCheck P = true) :
 
 omit model in
 /-- Invert a successful `finishProgOrd` into the shared final gates. -/
-theorem finishProg_inv {ord : Bool} {P : Prog} {is : List YulEvmCompiler.Instr}
-    (h : finishProgOrd imm ord P = some is) :
+theorem finishProg_inv {ord seed : Bool} {P : Prog} {is : List YulEvmCompiler.Instr}
+    (h : finishProgOrd imm ord seed P = some is) :
     ∃ asm : List Asm,
-      ToAsm.emitProgOrd ord P = some asm
+      ToAsm.emitProgOrd ord seed P = some asm
       ∧ wfCheck asm = true
       ∧ stackOK2 (optimizeAsm asm) = true
       ∧ lowerProg imm (optimizeAsm asm) = some is := by
   unfold finishProgOrd at h
-  rcases hemit : ToAsm.emitProgOrd ord P with _ | asm <;> rw [hemit] at h
+  rcases hemit : ToAsm.emitProgOrd ord seed P with _ | asm <;> rw [hemit] at h
   · exact absurd h (by simp)
   simp only [bind, Option.bind] at h
   by_cases hwf : wfCheck asm
@@ -205,16 +205,17 @@ theorem rematProg_dom {P : Prog} (hdom : ToAsm.Prog.domCheck P = true) :
 
 omit model in
 /-- Invert a successful `compileViaSsa`: the construction succeeded, the
-dominance gate passed, and the accepted bytecode is one of the four
-independently gated candidates ({optimized, raw} × {scheduling modes}). -/
+dominance gate passed, and the accepted bytecode is one of the six
+independently gated candidates ({optimized} × {scheduling modes} ×
+{layout seeding} plus {raw} × {scheduling modes}). -/
 theorem compileViaSsa_inv {prog : YulSemantics.Block Op}
     {is : List YulEvmCompiler.Instr}
     (h : compileViaSsa prog imm = some is) :
-    ∃ (P Q : Prog) (ord : Bool),
+    ∃ (P Q : Prog) (ord seed : Bool),
       ofBlock prog = some P
       ∧ ToAsm.Prog.domCheck P = true
       ∧ (Q = rematProg (optimizeProg P) ∨ Q = P)
-      ∧ finishProgOrd imm ord Q = some is := by
+      ∧ finishProgOrd imm ord seed Q = some is := by
   unfold compileViaSsa compileViaSsaAsm at h
   rcases hof : ofBlock prog with _ | P <;> rw [hof] at h
   · exact absurd h (by simp)
@@ -226,35 +227,51 @@ theorem compileViaSsa_inv {prog : YulSemantics.Block Op}
     simp at h
   rw [hdom] at h
   simp only [Bool.not_true, Bool.false_eq_true, if_false] at h
-  cases hb : ([finishProgOrdAsm true (rematProg (optimizeProg P)),
-               finishProgOrdAsm false (rematProg (optimizeProg P)),
-               finishProgOrdAsm true P, finishProgOrdAsm false P].foldl
+  -- name the candidate fold once (the accepted artifact is what gets lowered)
+  have hfold : ([finishProgOrdAsm true true (rematProg (optimizeProg P)),
+                 finishProgOrdAsm false true (rematProg (optimizeProg P)),
+                 finishProgOrdAsm true false (rematProg (optimizeProg P)),
+                 finishProgOrdAsm false false (rematProg (optimizeProg P)),
+                 finishProgOrdAsm true false P,
+                 finishProgOrdAsm false false P].foldl
+                (pickMin CostModel.execCostAsm) none).bind (lowerProg imm)
+      = some is := h
+  cases hb : ([finishProgOrdAsm true true (rematProg (optimizeProg P)),
+               finishProgOrdAsm false true (rematProg (optimizeProg P)),
+               finishProgOrdAsm true false (rematProg (optimizeProg P)),
+               finishProgOrdAsm false false (rematProg (optimizeProg P)),
+               finishProgOrdAsm true false P,
+               finishProgOrdAsm false false P].foldl
               (pickMin CostModel.execCostAsm) none) with
-  | none => rw [hb] at h; simp at h
+  | none => rw [hb] at hfold; simp at hfold
   | some a =>
-    rw [hb] at h
+    rw [hb] at hfold
     rcases foldl_min_mem CostModel.execCostAsm _ _ hb with hinit | hmem
     · exact absurd hinit (by simp)
     · simp only [List.mem_cons, List.not_mem_nil, or_false] at hmem
-      have hlow : (some a).bind (lowerProg imm) = some is := h
-      rcases hmem with h1 | h2 | h3 | h4
-      · exact ⟨P, rematProg (optimizeProg P), true, rfl, hdom, Or.inl rfl,
+      have hlow : (some a).bind (lowerProg imm) = some is := hfold
+      rcases hmem with h1 | h2 | h3 | h4 | h5 | h6
+      · exact ⟨P, rematProg (optimizeProg P), true, true, rfl, hdom, Or.inl rfl,
           by rw [finishProgOrd_eq, ← h1]; exact hlow⟩
-      · exact ⟨P, rematProg (optimizeProg P), false, rfl, hdom, Or.inl rfl,
+      · exact ⟨P, rematProg (optimizeProg P), false, true, rfl, hdom, Or.inl rfl,
           by rw [finishProgOrd_eq, ← h2]; exact hlow⟩
-      · exact ⟨P, P, true, rfl, hdom, Or.inr rfl,
+      · exact ⟨P, rematProg (optimizeProg P), true, false, rfl, hdom, Or.inl rfl,
           by rw [finishProgOrd_eq, ← h3]; exact hlow⟩
-      · exact ⟨P, P, false, rfl, hdom, Or.inr rfl,
+      · exact ⟨P, rematProg (optimizeProg P), false, false, rfl, hdom, Or.inl rfl,
           by rw [finishProgOrd_eq, ← h4]; exact hlow⟩
+      · exact ⟨P, P, true, false, rfl, hdom, Or.inr rfl,
+          by rw [finishProgOrd_eq, ← h5]; exact hlow⟩
+      · exact ⟨P, P, false, false, rfl, hdom, Or.inr rfl,
+          by rw [finishProgOrd_eq, ← h6]; exact hlow⟩
 
 /-- **The shared gate composition is correct** for any SSA program whose
 execution matches the source run: transport the Asm trace through the
 verified peephole and Phase B, exactly as `compile_correct` does. This part
 is fully proved — it rests on the codegen simulation lemmas above. -/
 theorem finishProg_correct (hexternal : ExternalsRealized model)
-    {ord : Bool} {Q : Prog} {is : List YulEvmCompiler.Instr}
+    {ord seed : Bool} {Q : Prog} {is : List YulEvmCompiler.Instr}
     (hQwf : Q.wfCheck = true) (hQdom : ToAsm.Prog.domCheck Q = true)
-    (hfin : finishProgOrd imm ord Q = some is)
+    (hfin : finishProgOrd imm ord seed Q = some is)
     {yst0 yst' : EvmState} {o : Outcome}
     (himm : ∀ key, imm key = yst0.env.immutable (YulSemantics.EVM.litValue (.string key)))
     (hssa : Run (model := model) Q yst0 yst' o) :
@@ -315,9 +332,11 @@ theorem finishProg_correct (hexternal : ExternalsRealized model)
     exact ⟨s', hsteps', hcs', hsm', Or.inr ⟨rfl, hhm'⟩⟩
 
 /-- **SSA backend correctness** — the exact `compile_correct` statement for
-`compileViaSsa`. The best-of-two emission dispatches to `finishProg_correct`
+`compileViaSsa`. The best-of-six emission dispatches to `finishProg_correct`
 on either the optimized program (through the pass-soundness lemma) or the
-original construction (which needs no pass soundness at all). -/
+original construction (which needs no pass soundness at all); the emission
+modes (`ord`, `seed`) are universally quantified there, so every candidate
+goes through the same obligation. -/
 theorem compileViaSsa_correct (hexternal : ExternalsRealized model)
     {prog : YulSemantics.Block Op} {is : List YulEvmCompiler.Instr}
     (hcomp : compileViaSsa prog imm = some is)
@@ -330,7 +349,7 @@ theorem compileViaSsa_correct (hexternal : ExternalsRealized model)
       ∃ s', Steps s0 s' ∧ s'.callStack = [] ∧ StateMatch yst' s' ∧
         ((o = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
          (o = .halt ∧ HaltedMatch yst' s')) := by
-  obtain ⟨P, Q, ord, hof, hdom, hQ, hfin⟩ := compileViaSsa_inv hcomp
+  obtain ⟨P, Q, ord, seed, hof, hdom, hQ, hfin⟩ := compileViaSsa_inv hcomp
   have hbase : Run (model := model) P yst0 yst' o := ofBlock_sound hof hrun
   have hPwf : P.wfCheck = true := ofBlock_wfCheck hof
   have hssa : Run (model := model) Q yst0 yst' o := by
