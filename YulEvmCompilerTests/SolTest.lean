@@ -179,6 +179,11 @@ structure Spec where
   ctorValue : Nat := 0
   declaredCalls : Nat := 0
   calls : Array Call := #[]
+  /-- Libraries the fixture declares with `// library: NAME`, in directive order.
+  Only bare single-source identifiers are recorded; quoted `"file":NAME` forms
+  (which occur only in unsupported multi-source fixtures) are dropped, so those
+  fixtures still fail gracefully at IR generation / linking. -/
+  libraries : Array String := #[]
 
 /-- Parse one call/constructor line (already stripped of its `// ` prefix and
 trailing `# … #` comment). `header` is everything before `:` (a signature and an
@@ -216,6 +221,14 @@ def parseSpec (source : String) : Spec := Id.run do
     -- Drop trailing `# … #` inline comments.
     let content := (content.splitOn "#")[0]!.trimAscii.copy
     if content.isEmpty || content == "----" then continue
+    -- `// library: NAME` declares a deployable/linkable library. Record bare
+    -- identifiers in directive order; quoted or empty spellings are skipped so
+    -- unsupported multi-source fixtures keep failing at IR generation.
+    if let some rest := stripPrefix content "library:" then
+      let name := rest.trimAscii.copy
+      if !name.isEmpty && name.toList.all (fun c => c.isAlphanum || c == '_') then
+        spec := { spec with libraries := spec.libraries.push name }
+      continue
     if content.startsWith "gas " || content.startsWith "storage" ||
         content.startsWith "~ " || content.startsWith "left(" then continue
     let hasResult := content.contains " ->"

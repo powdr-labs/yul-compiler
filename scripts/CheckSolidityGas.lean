@@ -119,6 +119,13 @@ private def parseSpecSkipsExplicitOutOfGasCalls : Bool :=
     "// ----\n// f(uint256): 1 -> 1\n// f(uint256): 0xffff -> FAILURE # Out-of-gas #"
   spec.declaredCalls == 1 && spec.calls.size == 1
 
+private def parseSpecRecordsLibrariesInOrder : Bool :=
+  let spec := parseSpec "// ----\n// library: L1\n// library: L2\n// f() -> 1"
+  spec.libraries == #["L1", "L2"] && spec.declaredCalls == 1 && spec.calls.size == 1
+
+private def parseSpecDropsQuotedLibrary : Bool :=
+  (parseSpec "// ----\n// library: \"a.sol\":L\n// f() -> 1").libraries.isEmpty
+
 #guard sameOutcomeIgnoresTransientMemory
 #guard sameOutcomeStillChecksOutput
 #guard parseSpecCountsUnsupportedDeclaredCalls
@@ -126,6 +133,8 @@ private def parseSpecSkipsExplicitOutOfGasCalls : Bool :=
 #guard parseSpecEncodesAlignedValues
 #guard parseSpecAcceptsOddNibbleHex
 #guard parseSpecSkipsExplicitOutOfGasCalls
+#guard parseSpecRecordsLibrariesInOrder
+#guard parseSpecDropsQuotedLibrary
 
 private structure Deployment where
   state : Option EVM.State
@@ -137,10 +146,17 @@ a state ready for calls: the returned top-level runtime is installed directly,
 and the constructor's complete final account world is retained. The direct
 installation deliberately omits a transaction-level EIP-170 check; CREATEs
 executed by the constructor still enforce the normal target semantics. -/
-private def deployForCalls (creation ctorArgs : ByteArray) (ctorValue : Nat) : Deployment :=
+private def deployForCalls (creation ctorArgs : ByteArray) (ctorValue : Nat)
+    (extra : List (AccountAddress × Account) := []) : Deployment :=
   let base := initialState (creation ++ ctorArgs)
+  -- Seed any pre-deployed library accounts (with their runtime code and the
+  -- balance/nonce their deploy left) so constructor-time library delegatecalls
+  -- resolve and SSTORE gas starts from the correct original world.
+  let seeded := extra.foldl (fun m (a, acct) => m.set a acct) base.accountMap
   let start := { base with
-    executionEnv := { base.executionEnv with weiValue := UInt256.ofNat ctorValue } }
+    accountMap := seeded
+    executionEnv := { base.executionEnv with weiValue := UInt256.ofNat ctorValue }
+    substate := { base.substate with originalAccountMap := seeded } }
   let fin := runEvm 3000000 start
   if !fin.isDone || fin.hReturn.size == 0 then {
     state := none
@@ -224,7 +240,7 @@ behavior when absent: the live path below is left untouched. -/
 
 /-- Bump when the cache line format or the observation normalization below
 changes, so caches written by an older harness are treated as stale. -/
-private def solcCacheFormatVersion : Nat := 1
+private def solcCacheFormatVersion : Nat := 2
 
 /-- The single observation normalization used for BOTH sides of the gas
 comparison. It hashes exactly what `sameOutcome` compares — the observation with
@@ -498,6 +514,174 @@ private def chargeCompilePair (clock : IO.Ref Timing) (solcPath ir : String)
   else
     clock.modify fun t => { t with unpairedNs := oursNs, unpaired := true }
 
+/-! ## Library linking (`// library:` fixtures)
+
+A fixture with `// library: NAME` directives declares libraries that must be
+deployed and whose addresses must be linked into both compilers' output before
+the main contract is deployed. Each library is placed at a deterministic address
+(`0x11113331`, `0x11113332`, …, chosen to avoid `initialState`'s `0x11111111`
+executing account and its `0x11111112` probe account). The link map is supplied
+to this compiler as a `LinkEnv` and to solc as `--libraries`; the resulting
+library accounts are seeded into the main contract's deploy on each side. Library
+deploy work never contributes to the per-call gas rows. Multi-source fixtures
+declare no bare-name libraries (`Spec.parseSpec` drops quoted forms), so they
+still fail gracefully at solc IR generation as before. -/
+
+/-- 40-hex-digit (20-byte, big-endian) rendering of an address, without `0x`. -/
+private def addr40Hex (n : Nat) : String :=
+  Hex.bytesToHex (ByteArray.mk
+    ((List.range 20).map (fun i => UInt8.ofNat ((n >>> (8 * (19 - i))) % 256))).toArray)
+
+/-- Contract names declared with the `contract` keyword, in source order. The
+identifier immediately after each `contract` token is a contract name; `//` line
+comments are stripped first. Solidity's semantic-test harness deploys the LAST
+such contract, which is how the main contract is chosen for a multi-contract
+fixture (e.g. helper contracts `A`/`B` before the tested `C`). -/
+private def sourceContractNames (source : String) : List String := Id.run do
+  let stripped := String.intercalate "\n"
+    ((source.splitOn "\n").map fun line => (line.splitOn "//")[0]!)
+  let mut names : List String := []
+  let mut cur : String := ""
+  let mut prev : String := ""
+  for c in stripped.toList ++ ['\n'] do
+    if c.isAlphanum || c == '_' then
+      cur := cur.push c
+    else if !cur.isEmpty then
+      if prev == "contract" then names := names ++ [cur]
+      prev := cur
+      cur := ""
+  return names
+
+/-- Deploy one library's creation bytecode at `addr` and return the installed
+account (runtime code plus the balance/nonce the deploy leaves). Mirrors
+`deployForCalls`' direct top-level install, but relocates the executing account
+to `addr` — so the library's runtime bakes `addr` as its `ADDRESS`-based
+self-call guard — and uses zero call value (libraries revert on nonzero value at
+construction). `none` if construction does not return runtime. -/
+private def deployLibraryAt (creation : ByteArray) (addr : Nat) : Option Account :=
+  let acctAddr := AccountAddress.ofNat addr
+  let base := initialState creation
+  let self := base.accountMap base.executionEnv.address
+  let accounts := base.accountMap.set acctAddr self
+  let start := { base with
+    accountMap := accounts
+    executionEnv := { base.executionEnv with
+      address := acctAddr, codeAddr := acctAddr, weiValue := UInt256.ofNat 0 }
+    substate := { base.substate with originalAccountMap := accounts } }
+  let fin := runEvm 3000000 start
+  if !fin.isDone || fin.hReturn.size == 0 then none
+  else some { (fin.accountMap acctAddr) with code := fin.hReturn }
+
+/-- Everything the main-contract measurement needs once libraries are resolved:
+the main contract's IR (for this compiler, with its `LinkEnv`), solc's linked
+creation for the main contract, and the pre-deployed library accounts to seed on
+each side. -/
+private structure Prepared where
+  mainIR : String
+  linkEnv : List (String × Nat)
+  ourExtra : List (AccountAddress × Account)
+  solcExtra : List (AccountAddress × Account)
+  mainSolcCreation : ByteArray
+
+/-- Resolve, compile, and deploy every declared library, then locate the main
+contract's IR and solc creation. Any failure (missing section, this compiler
+rejecting a library, a library construction that reverts) is reported as a
+distinct `library deploy failed: …` / section error rather than crashing. -/
+private def prepareLibraries (solcPath source : String) (libraries : Array String)
+    : IO (Except String Prepared) := do
+  let libList := libraries.toList
+  let libAddrs : List (String × Nat) :=
+    ((List.range libList.length).zip libList).map (fun (i, nm) => (nm, 0x11113331 + i))
+  let linkEnv : List (String × Nat) := libAddrs.map (fun (nm, a) => ("<stdin>:" ++ nm, a))
+  let solcLibs : List (String × String) :=
+    libAddrs.map (fun (nm, a) => ("<stdin>:" ++ nm, addr40Hex a))
+  match ← solcIRSections solcPath source with
+  | .error message => return .error message
+  | .ok irSecs =>
+  match ← solcCreationSections solcPath source solcLibs with
+  | .error message => return .error message
+  | .ok binSecs =>
+    let irNames := irSecs.map (·.1)
+    let candidates := (sourceContractNames source).filter
+      (fun n => irNames.contains n && !libList.contains n)
+    match candidates.reverse.head? with
+    | none => return .error "no main (non-library) contract section in solc --ir output"
+    | some mainName =>
+    match irSecs.lookup mainName with
+    | none => return .error s!"main contract IR section missing: {mainName}"
+    | some mainIR =>
+    match binSecs.lookup mainName with
+    | none => return .error s!"main contract Binary section missing: {mainName}"
+    | some mainHex =>
+    match decodeSolcBinary mainHex with
+    | .error message => return .error message
+    | .ok mainSolcCreation => do
+      let mut ourExtra : List (AccountAddress × Account) := []
+      let mut solcExtra : List (AccountAddress × Account) := []
+      for (nm, a) in libAddrs do
+        let acctAddr := AccountAddress.ofNat a
+        let some libIR := irSecs.lookup nm
+          | return .error s!"library deploy failed: {nm} (no IR section)"
+        let some ourCreation := compileSource libIR linkEnv
+          | return .error s!"library deploy failed: {nm} (this compiler rejected its IR)"
+        let some ourAcct := deployLibraryAt ourCreation a
+          | return .error s!"library deploy failed: {nm} (our creation produced no runtime)"
+        let some solcHex := binSecs.lookup nm
+          | return .error s!"library deploy failed: {nm} (no Binary section)"
+        let .ok solcCreation := decodeSolcBinary solcHex
+          | return .error s!"library deploy failed: {nm} (malformed/unlinked Binary)"
+        let some solcAcct := deployLibraryAt solcCreation a
+          | return .error s!"library deploy failed: {nm} (solc creation produced no runtime)"
+        ourExtra := ourExtra ++ [(acctAddr, ourAcct)]
+        solcExtra := solcExtra ++ [(acctAddr, solcAcct)]
+      return .ok { mainIR, linkEnv, ourExtra, solcExtra, mainSolcCreation }
+
+/-- The library-fixture analogue of the live measurement path: deploy each
+library, link both compilers' main-contract output against the library
+addresses, seed the library accounts, and replay the declared calls. The
+solc-side execution cache is intentionally bypassed here — a library fixture
+must invoke solc regardless (its IR sections drive this compiler's own library
+compilation), so the cache's replay savings do not apply, and the format-version
+bump invalidates any stale caches. -/
+private def processLibraryFixture (clock : IO.Ref Timing) (solcPath : String)
+    (perScenario : Bool) (name source : String) (spec : Spec) : IO GasOutcome := do
+  if spec.calls.size != spec.declaredCalls then
+    return { measurementFailure := some (name,
+      s!"only {spec.calls.size}/{spec.declaredCalls} declared calls could be parsed") }
+  let (prep, frontendNs) ← timedIO (prepareLibraries solcPath source spec.libraries)
+  clock.modify ({ · with frontendNs })
+  match prep with
+  | .error message => return { compileFailure := some (name, message) }
+  | .ok prep =>
+    let compileStart ← IO.monoNanosNow
+    match compileSource prep.mainIR prep.linkEnv with
+    | none =>
+        clock.modify ({ · with rejectedNs := ← since compileStart, rejected := true })
+        return { compileFailure := some (name, "this compiler rejected solc's unoptimized IR") }
+    | some creation =>
+        chargeCompilePair clock solcPath prep.mainIR (← since compileStart)
+        let calls := spec.calls
+        let ourDeployment :=
+          deployForCalls creation spec.ctorArgs spec.ctorValue prep.ourExtra
+        let solcDeployment :=
+          deployForCalls prep.mainSolcCreation spec.ctorArgs spec.ctorValue prep.solcExtra
+        match ourDeployment.state, solcDeployment.state with
+        | some ourBase, some solcBase =>
+            let (callGas, replayFailure) := replayCalls ourBase solcBase calls 3000000
+            if spec.declaredCalls != 0 && callGas.size != calls.size then
+              return { measurementFailure := some (name,
+                s!"only {callGas.size}/{calls.size} declared calls reached matching observable behavior" ++
+                  (replayFailure.map fun detail => s!"; {detail}").getD "") }
+            else if callGas.isEmpty then return {}
+            else if perScenario then return { measured := perScenarioRows name callGas }
+            else return { measured := #[totalRow name callGas] }
+        | _, _ =>
+            if spec.declaredCalls == 0 then return {}
+            else return { measurementFailure := some (name,
+              s!"deployment did not produce runtime for declared calls " ++
+                s!"(ours={ourDeployment.halt}/{ourDeployment.returnSize}, " ++
+                s!"solc={solcDeployment.halt}/{solcDeployment.returnSize})") }
+
 /-- Compile one contract through solc's unoptimized `--via-ir` Yul, deploy both
 this compiler's and solc's optimized bytecode, replay the fixture's calls, and
 measure gas — the body of the old loop, extracted as an independent unit of
@@ -512,6 +696,11 @@ private def processContractIn (clock : IO.Ref Timing) (dir : FilePath) (solcPath
   | .ok false => return { skipped := true }
   | .ok true =>
       let source := fixtureSource contents
+      -- Library fixtures take a dedicated linking path; everything else keeps
+      -- the original single-contract flow byte-for-byte.
+      let librarySpec := parseSpec contents
+      if !librarySpec.libraries.isEmpty then
+        return ← processLibraryFixture clock solcPath perScenario name source librarySpec
       let (irResult, frontendNs) ← timedIO (solcUnoptimizedIR solcPath source)
       clock.modify ({ · with frontendNs })
       match irResult with
