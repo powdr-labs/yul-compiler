@@ -72,6 +72,31 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(data["gas_rows"]["optimizer"]["shared.yul"]["ours"], 100)
         self.assertEqual(data["gas"]["optimizer"]["ours"], 260)
 
+    def test_renders_corpus_pin_and_drift(self):
+        rendered = summary.build_comment(
+            summary.parse(HEAD_LINES), {}, sha="a" * 40,
+            corpus={"pin": "f" * 40, "behind": 14, "base_pin": "f" * 40})
+        self.assertIn("corpus `fffffffff`", rendered)
+        self.assertIn("**14 commits behind** argotorg/solidity develop", rendered)
+        self.assertNotIn("moves the corpus pin", rendered)
+
+    def test_renders_up_to_date_corpus_pin(self):
+        rendered = summary.build_comment(
+            summary.parse(HEAD_LINES), {}, sha="a" * 40,
+            corpus={"pin": "f" * 40, "behind": 0, "base_pin": ""})
+        self.assertIn("up to date with argotorg/solidity develop", rendered)
+
+    def test_warns_when_pr_moves_the_corpus_pin(self):
+        rendered = summary.build_comment(
+            summary.parse(HEAD_LINES), {}, sha="a" * 40,
+            corpus={"pin": "f" * 40, "behind": None, "base_pin": "e" * 40})
+        self.assertIn("moves the corpus pin (main: `eeeeeeeee`)", rendered)
+        self.assertNotIn("behind** argotorg/solidity develop", rendered)
+
+    def test_omits_corpus_line_without_a_pin(self):
+        rendered = summary.build_comment(summary.parse(HEAD_LINES), {}, sha="a" * 40)
+        self.assertNotIn("corpus", rendered.split("###")[0])
+
     def test_renders_deltas_against_main(self):
         head = summary.parse(HEAD_LINES)
         main = summary.parse(MAIN_LINES)

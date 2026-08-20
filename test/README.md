@@ -1,5 +1,15 @@
 # Upstream Yul tests
 
+`solidity-corpus.pin` holds the single `argotorg/solidity` commit every CI job
+fetches its upstream corpora at (syntax, interpreter, optimizer, object
+compiler, EVM code transform, gasTests, semanticTests). Pinning it in-repo
+makes CI hermetic: upstream pushing to `develop` can never change what a run
+tests, and a corpus move always lands in the same reviewed commit as the
+matching baseline updates. Bump it with `scripts/bump-corpus.sh` (defaults to
+`develop` HEAD), refresh the gas baselines (`scripts/update-gas.sh`), and
+commit both together; the PR summary comment reports how many commits the pin
+is behind `develop`.
+
 `solidity-yul-syntax-known-mismatches.txt` records expected differences between
 this parser/validator and Solidity's complete Yul syntax corpus. It is currently
 empty: every upstream success is accepted and every fixture containing an
