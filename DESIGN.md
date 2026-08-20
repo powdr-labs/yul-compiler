@@ -45,6 +45,12 @@ the headline theorem `compile_correct` (`YulEvmCompiler/Correctness.lean`) says:
 result-level big-step judgment (`Eval s0 .success`, resp. `Eval s0 (resultOf hk)`);
 `compile_correct_withPayload` exposes the returned/reverted payload bytes.
 
+`ContractCorrectness.lean` adds the proof-facing relational boundary. Given any source
+`RunContract program pre post`, `compile_runContract` preserves the original `post` and packages
+the target trace as `CompiledRun`; `compile_runContract_eval` does the same for result-level
+`CompiledEval`. The exact source run remains available internally to `compile_correct`, but does
+not escape into a downstream functional theorem unless the caller explicitly asks for it.
+
 ### Remaining preconditions of the statement
 
 The theorem holds under these frame-level side conditions (`FrameOK`), all of
@@ -187,6 +193,7 @@ YulEvmCompiler/
   OpStep.lean       -- per-op EVM simulation lemmas and gas bounds
   BytesLemmas.lean  -- local natToBytesPadded byte-indexing facts
   Correctness.lean  -- end-to-end compile_correct / compile_correct_eval
+  ContractCorrectness.lean -- relational source-contract transport
   ObjectCompile.lean -- object/data layout + consistency and execution proofs
   ObjectResolve.lean -- dataoffset/datasize resolution preserves derivations
   Examples.lean     -- compile-time and differential execution checks
@@ -443,6 +450,8 @@ genuine theorems. `Checks.lean` pins that exact set for each theorem in CI:
 * `compile_correct`, `compile_correct_withPayload`, `compile_correct_eval`
   (`Correctness.lean`) — end-to-end compiler correctness for the supported
   fragment;
+* `compile_runContract`, `compile_runContract_eval` (`ContractCorrectness.lean`) — transport of
+  arbitrary relational source postconditions to target execution;
 * `compileObject_correct`, `compileObject_consistent`,
   `compiled_constructor_returns` (`ObjectCompile.lean`) — object execution,
   data-segment consistency, and the canonical `datacopy`/`return` constructor;

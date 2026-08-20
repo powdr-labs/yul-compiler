@@ -8,7 +8,7 @@ name = "yul-semantics"
 git = "https://github.com/powdr-labs/yul-semantics"
 # Upstream main: the trimmed (optimizer meta-theory moved here) repo on the
 # Lean 4.33 toolchain.
-rev = "7acf6cfec4a0a8a3518f4d9c91f204daf31fc456"
+rev = "95cabb3936dd3eba6357dbc1cab53ff62f216e2f"
 
 # Mathlib is no longer pulled in by the semantics packages (both went
 # Mathlib-free); this repository's own proofs still use Mathlib tactics and

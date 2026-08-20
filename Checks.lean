@@ -1,4 +1,5 @@
 import YulEvmCompiler.Correctness
+import YulEvmCompiler.ContractCorrectness
 import YulEvmCompiler.ObjectCompile
 import YulEvmCompiler.Optimizer.Implementation.Normalization.NormalizeNormalForm
 import YulParser
@@ -34,6 +35,14 @@ modulo only the standard classical axioms. -/
 /-- info: 'YulEvmCompiler.compile_correct_eval' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms YulEvmCompiler.compile_correct_eval
+
+/-- info: 'YulEvmCompiler.compile_runContract' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms YulEvmCompiler.compile_runContract
+
+/-- info: 'YulEvmCompiler.compile_runContract_eval' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in
+#print axioms YulEvmCompiler.compile_runContract_eval
 
 /-- info: 'YulEvmCompiler.compile_correct_withPayload' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
