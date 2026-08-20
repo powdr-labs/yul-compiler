@@ -366,7 +366,8 @@ def gas_table(out, suites, compile_stats=None, base_suites=None,
     return tot_regr
 
 
-def build_comment(data, results, sha, base=None, base_sha="", base_results=None):
+def build_comment(data, results, sha, base=None, base_sha="", base_results=None,
+                  corpus=None):
     out = []
     problems = []
 
@@ -409,7 +410,27 @@ def build_comment(data, results, sha, base=None, base_sha="", base_results=None)
         revision = f"head `{sha[:9]}`"
         if base_sha:
             revision += f" · main `{base_sha[:9]}`"
+        if corpus and corpus.get("pin"):
+            revision += f" · corpus `{corpus['pin'][:9]}`"
         out.append(f"<sub>{revision}</sub>")
+    if corpus and corpus.get("pin"):
+        behind = corpus.get("behind")
+        if behind is not None:
+            if behind > 0:
+                s = "s" if behind != 1 else ""
+                out.append(f"<sub>corpus pin is **{behind} commit{s} behind** "
+                           "argotorg/solidity develop — bump with "
+                           "`scripts/bump-corpus.sh` and refresh the gas baselines "
+                           "in the same commit.</sub>")
+            else:
+                out.append("<sub>corpus pin is up to date with "
+                           "argotorg/solidity develop.</sub>")
+        base_pin = corpus.get("base_pin")
+        if base_pin and base_pin != corpus["pin"]:
+            out.append("")
+            out.append(f"> 🟠 This PR moves the corpus pin (main: `{base_pin[:9]}`): "
+                       "gas and correctness deltas vs main compare different corpus "
+                       "revisions until it merges.")
     if base and base_results:
         incomplete = [name.replace("_", " ") for name, result in base_results.items()
                       if result and result != "success"]
@@ -604,11 +625,24 @@ def main():
     parser.add_argument("--sha", default="")
     parser.add_argument("--base-summary-dir")
     parser.add_argument("--base-sha", default="")
+    parser.add_argument("--corpus-pin", default="",
+                        help="pinned Solidity corpus sha (test/solidity-corpus.pin)")
+    parser.add_argument("--corpus-behind", default="",
+                        help="commits the pin is behind argotorg/solidity develop "
+                             "(empty when unknown)")
+    parser.add_argument("--base-corpus-pin", default="",
+                        help="main's corpus pin, to flag pin-moving PRs")
     args = parser.parse_args()
     data = parse(read_lines(args.summary_dir))
     base = parse(read_lines(args.base_summary_dir)) if args.base_summary_dir else None
+    corpus = None
+    if args.corpus_pin:
+        corpus = {"pin": args.corpus_pin,
+                  "behind": int(args.corpus_behind) if args.corpus_behind.strip().isdigit()
+                            else None,
+                  "base_pin": args.base_corpus_pin}
     sys.stdout.write(build_comment(data, results_env(), args.sha, base, args.base_sha,
-                                   results_env("MAIN_")))
+                                   results_env("MAIN_"), corpus))
 
 
 if __name__ == "__main__":
