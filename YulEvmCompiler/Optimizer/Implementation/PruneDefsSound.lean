@@ -30,8 +30,8 @@ namespace YulEvmCompiler.Optimizer.PruneDefs
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates ExternalGas.any
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### The code invariant -/
 
@@ -734,7 +734,7 @@ theorem rootDefs_of_hoist : ∀ {ss : List (Stmt Op)} {p : Ident × FDecl D},
 /-- A hoisted entry's name is a defined name. -/
 theorem hoist_name_defined {ss : List (Stmt Op)} {p : Ident × FDecl D}
     (hp : p ∈ hoist D ss) : (rootDefs ss).any (fun d => d.1 = p.1) := by
-  have := rootDefs_of_hoist (calls := calls) (creates := creates) hp
+  have := rootDefs_of_hoist (calls := calls) (creates := creates) (gasOracle := gasOracle) hp
   exact List.any_eq_true.mpr ⟨_, this, by simp⟩
 
 /-- Hoisting the pruned root is filtering the hoisted scope by liveness. -/
@@ -866,7 +866,7 @@ theorem good_pruneRoot (b : Block Op) :
 
 /-- The hoisted-scope obligations of `PScopeRel` at the root. -/
 theorem pscope_root (b : Block Op) :
-    PScopeRel (calls := calls) (creates := creates) (deadSet b)
+    PScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle) (deadSet b)
       (hoist D b) (hoist D (pruneRoot (liveDefs b) b)) := by
   constructor
   · left
@@ -878,14 +878,14 @@ theorem pscope_root (b : Block Op) :
       simp [not_deadSet_of_live hl]
     · have hdead : p.1 ∈ deadSet b := by
         refine List.mem_filter.mpr ⟨?_, by simpa using hl⟩
-        have := hoist_name_defined (calls := calls) (creates := creates) hp
+        have := hoist_name_defined (calls := calls) (creates := creates) (gasOracle := gasOracle) hp
         obtain ⟨d, hd, he⟩ := List.any_eq_true.mp this
         exact List.mem_map.mpr ⟨d, hd, by simpa using he.symm⟩
       simp only [hl, List.contains_eq_mem]
       simp [hdead]
   · intro p hp hnr
-    have hdefined := hoist_name_defined (calls := calls) (creates := creates) hp
-    have hdef := rootDefs_of_hoist (calls := calls) (creates := creates) hp
+    have hdefined := hoist_name_defined (calls := calls) (creates := creates) (gasOracle := gasOracle) hp
+    have hdef := rootDefs_of_hoist (calls := calls) (creates := creates) (gasOracle := gasOracle) hp
     have hlive : (liveDefs b).contains p.1 := by
       refine live_of_not_deadSet ?_ (by simpa [List.contains_eq_mem] using hnr)
       obtain ⟨d, hd, he⟩ := List.any_eq_true.mp hdefined
@@ -898,7 +898,7 @@ set_option maxHeartbeats 800000 in
 theorem pruneDefsBlock_sound (b : Block Op) :
     EquivBlock D b (pruneDefsBlock b) := by
   intro funs V st V' st' o
-  have hrel : PFunsRel (calls := calls) (creates := creates) (deadSet b)
+  have hrel : PFunsRel (calls := calls) (creates := creates) (gasOracle := gasOracle) (deadSet b)
       (hoist D b :: funs) (hoist D (pruneRoot (liveDefs b) b) :: funs) :=
     ⟨[hoist D b], [hoist D (pruneRoot (liveDefs b) b)], funs, rfl, rfl,
       .cons (pscope_root b) .nil⟩

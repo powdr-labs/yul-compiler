@@ -159,7 +159,7 @@ theorem constRegs_op {f : Func} (hwf : f.wfCheck n = true) (hnd : f.allDefs.Nodu
     {b : Block} (hb : b ∈ f.blocks.toList) {ds : List ValId} {yop : Op}
     {as : List ValId} (hi : .op ds yop as ∈ b.instrs) {R : Regs} (hR : ConstRegs f R)
     {st st' : EvmState} {args rets : List U256} (hg : R.getMany as = some args)
-    (hbi : builtinWithExternal model.calls model.creates .any yop args st (.ok rets st'))
+    (hbi : builtinWithExternal model.calls model.creates model.gas yop args st (.ok rets st'))
     (hlen : ds.length = rets.length) : ConstRegs f (R.setMany ds rets) := by
   have harity := wfCheck_op_arity hwf hb hi
   cases ds with
@@ -195,8 +195,8 @@ theorem constRegs_op {f : Func} (hwf : f.wfCheck n = true) (hnd : f.allDefs.Nodu
 
 theorem Passes.pure_no_halt {yop : Op} (hp : pureOp yop = true) {args : List U256}
     {st st' : EvmState}
-    (h : builtinWithExternal model.calls model.creates .any yop args st (.halt st')) : False := by
-  have hn := (YulSemantics.EVM.effects_sound_withExternal model.calls model.creates .any).halt yop
+    (h : builtinWithExternal model.calls model.creates model.gas yop args st (.halt st')) : False := by
+  have hn := (YulSemantics.EVM.effects_sound_withExternal model.calls model.creates model.gas).halt yop
     (pureOp_flags hp).2.2.2 args st (.halt st') h
   simp [YulSemantics.BuiltinResult.isHalt] at hn
 

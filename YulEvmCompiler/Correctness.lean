@@ -35,7 +35,7 @@ open YulSemantics.EVM (U256 EvmState Op stepOp evmWithExternal)
 open YulSemantics (Outcome Ident VEnv)
 
 variable [model : ExternalModel]
-local notation "yulD" => evmWithExternal model.calls model.creates YulSemantics.EVM.ExternalGas.any
+local notation "yulD" => evmWithExternal model.calls model.creates model.gas
 
 /-- Invert a successful `compileProgram`: it hoisted the top scope,
 checked its names `Nodup`, compiled the statements, and passed `wfCheck`. -/
@@ -135,7 +135,7 @@ theorem compile_correct (hexternal : ExternalsRealized model)
         simp only [List.append_nil] at hsteps0
         -- Asm peephole: transport the source run to the optimized program
         have hstepsO := Peephole.optimizeAsm_asteps hnodup hsteps0
-        obtain ⟨bnd, Hb⟩ :=
+        obtain ⟨bnd, _tx, Hb⟩ :=
           asteps_sim hexternal hcomp hsmallO hstepsO (List.suffix_refl (optimizeAsm asm))
             (stackOK2_run_bound hstk yst0)
         refine ⟨bnd, ?_⟩
@@ -222,7 +222,7 @@ theorem compile_correct_withPayload (hexternal : ExternalsRealized model)
         have hsteps0 := (hsimS hΦ0) [] [] [] (by simp)
         simp only [List.append_nil] at hsteps0
         have hstepsO := Peephole.optimizeAsm_asteps hnodup hsteps0
-        obtain ⟨bnd, Hb⟩ :=
+        obtain ⟨bnd, _tx, Hb⟩ :=
           asteps_sim hexternal (payload := 0 :: payload) hcomp hsmallO hstepsO
             (List.suffix_refl (optimizeAsm asm)) (stackOK2_run_bound hstk yst0)
         refine ⟨bnd, ?_⟩

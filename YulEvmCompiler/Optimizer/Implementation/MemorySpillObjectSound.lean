@@ -366,7 +366,7 @@ end
 mutual
   theorem erasedPipelineFallback_runSound (L : EVM.Layout) (raw : Object Op) :
       FallbackTreeRunSound (calls := calls) (creates := creates) L raw
-        (optimizerPipelineObject (calls := calls) (creates := creates)
+        (optimizerPipelineObject (calls := calls) (creates := creates) (gasOracle := .any)
           (eraseMemoryGuardObject raw)) := by
     cases raw with
     | mk name code children segments =>
@@ -383,7 +383,7 @@ mutual
   theorem erasedPipelineFallbacks_runSound (L : EVM.Layout)
       (raws : List (Object Op)) :
       FallbackTreesRunSound (calls := calls) (creates := creates) L raws
-        (optimizerPipelineObjectsRounds (calls := calls) (creates := creates)
+        (optimizerPipelineObjectsRounds (calls := calls) (creates := creates) (gasOracle := .any)
           pipelineRounds (eraseMemoryGuardObjects raws)) := by
     cases raws with
     | nil => exact .nil
@@ -498,7 +498,7 @@ theorem spillObjectWithErasedPipelineFallback_all_runs
     {raw output : Object Op} {plan : MemorySpillSelect.ObjectPlan}
     {selected : Nat} {L : EVM.Layout}
     (hbuild : spillObjectWithFallback raw
-      (optimizerPipelineObject (calls := calls) (creates := creates)
+      (optimizerPipelineObject (calls := calls) (creates := creates) (gasOracle := .any)
         (eraseMemoryGuardObject raw)) =
         some { «object» := output, plan := plan, selected := selected })
     (hspillSound : SpillNodeRunSound
@@ -515,7 +515,7 @@ theorem spillObjectWithErasedPipelineFallback_top_run
     {raw output : Object Op} {plan : MemorySpillSelect.ObjectPlan}
     {selected : Nat} {L : EVM.Layout}
     (hbuild : spillObjectWithFallback raw
-      (optimizerPipelineObject (calls := calls) (creates := creates)
+      (optimizerPipelineObject (calls := calls) (creates := creates) (gasOracle := .any)
         (eraseMemoryGuardObject raw)) =
         some { «object» := output, plan := plan, selected := selected })
     (hspillSound : SpillNodeRunSound

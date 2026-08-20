@@ -27,8 +27,8 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates ExternalGas.any
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### Expression-pressure scheduling -/
 
@@ -396,7 +396,7 @@ private theorem takeCopyBack_spec : ∀ {ts : List Ident} {rest ds suffix},
 private theorem copy_zip_gets {ts : List Ident} (hnd : ts.Nodup) :
     ∀ {vals : List U256}, vals.length = ts.length →
       ts.map (fun t => (VEnv.get (ts.zip vals : VEnv D) t).getD
-        (evmWithExternal calls creates .any).zero) = vals := by
+        (evmWithExternal calls creates gasOracle).zero) = vals := by
   induction ts with
   | nil =>
       intro vals hlen
@@ -417,9 +417,9 @@ private theorem copy_zip_gets {ts : List Ident} (hnd : ts.Nodup) :
           congr 1
           calc
             ts.map (fun u => (VEnv.get ((t, v) :: ts.zip vals) u).getD
-                (evmWithExternal calls creates .any).zero) =
+                (evmWithExternal calls creates gasOracle).zero) =
                 ts.map (fun u => (VEnv.get (ts.zip vals) u).getD
-                  (evmWithExternal calls creates .any).zero) := by
+                  (evmWithExternal calls creates gasOracle).zero) := by
               apply List.map_congr_left
               intro u hu
               have htu : t ≠ u := fun h => ht (h ▸ hu)
@@ -486,7 +486,7 @@ theorem copyBackSite_equivBlock {pre suffix : Block Op} {ts ds : List Ident}
               have hm : MIns (tempIns Vp.length ts)
                   (ts.zip vals ++ VEnv.setMany Vp ds vals)
                   (VEnv.setMany Vp ds vals) := by
-                have hm0 := zip_mins (calls := calls) (creates := creates)
+                have hm0 := zip_mins (calls := calls) (creates := creates) (gasOracle := gasOracle)
                   (VEnv.setMany Vp ds vals) hvals'
                 rw [VEnv.setMany_length («D» := D)] at hm0
                 exact hm0
@@ -531,7 +531,7 @@ theorem copyBackSite_equivBlock {pre suffix : Block Op} {ts ds : List Ident}
             have hm : MIns (tempIns Vp.length ts)
                 (ts.zip vals ++ VEnv.setMany Vp ds vals)
                 (VEnv.setMany Vp ds vals) := by
-              have hm0 := zip_mins (calls := calls) (creates := creates)
+              have hm0 := zip_mins (calls := calls) (creates := creates) (gasOracle := gasOracle)
                 (VEnv.setMany Vp ds vals) hvals'
               rw [VEnv.setMany_length («D» := D)] at hm0
               exact hm0
@@ -603,7 +603,7 @@ theorem copyBackHere_sound {layout : List Ident} {ss ss' : Block Op}
                 simp only [Bool.and_eq_true, Bool.not_eq_true] at this
                 simpa using this.2
               simpa [List.append_assoc] using copyBackSite_equivBlock
-                (calls := calls) (creates := creates) (pre := pre)
+                (calls := calls) (creates := creates) (gasOracle := gasOracle) (pre := pre)
                 (call := .call f args) hlen hnodup hdisj hfree
             · simp at hafter
         | lit _ => simp [copyBackHere] at h
@@ -762,7 +762,7 @@ theorem stageCore_equiv_of (P : String) (xs : List Ident) (f : Ident)
           (args_length hargs).trans hnames.symm
         have hlets := argLets_fwd (rs := []) hargs hnames hnc hshadow
           (N := []) (by simp) ([] :: funs)
-        have hvargs := varArgs_eval (calls := calls) (creates := creates)
+        have hvargs := varArgs_eval (calls := calls) (creates := creates) (gasOracle := gasOracle)
           hnd hvals ([] :: funs) V stArgs
         have hcall' := Step.callOk hvargs
           (by simpa [lookupFun] using hlookup) harglen hbody hout
@@ -774,13 +774,13 @@ theorem stageCore_equiv_of (P : String) (xs : List Ident) (f : Ident)
               [.assign xs (.call f (names.map Expr.var))])))
             (.sres (restore V (VEnv.setMany (names.zip argvals ++ V) xs
               (decl.rets.map fun r => (VEnv.get Vend r).getD
-                (evmWithExternal calls creates .any).zero))) st' .normal) := by
+                (evmWithExternal calls creates gasOracle).zero))) st' .normal) := by
           apply Step.block
           simpa [stageDecls, hoist] using hseq
-        have hm0 := zip_mins (calls := calls) (creates := creates) V hvals
+        have hm0 := zip_mins (calls := calls) (creates := creates) (gasOracle := gasOracle) V hvals
         have hmins := MIns.setMany
           (decl.rets.map fun r => (VEnv.get Vend r).getD
-            (evmWithExternal calls creates .any).zero) hm0
+            (evmWithExternal calls creates gasOracle).zero) hm0
           (fun p hp => by
             have hpname := tempIns_names hp
             intro hx
@@ -789,13 +789,13 @@ theorem stageCore_equiv_of (P : String) (xs : List Ident) (f : Ident)
           (fun p hp => tempIns_depth hp)
         have hsmall : restore V (VEnv.setMany V xs
             (decl.rets.map fun r => (VEnv.get Vend r).getD
-              (evmWithExternal calls creates .any).zero)) =
+              (evmWithExternal calls creates gasOracle).zero)) =
             VEnv.setMany V xs (decl.rets.map fun r => (VEnv.get Vend r).getD
-              (evmWithExternal calls creates .any).zero) :=
+              (evmWithExternal calls creates gasOracle).zero) :=
           restore_exact (W := V) (Y := [])
             (W' := VEnv.setMany V xs
               (decl.rets.map fun r => (VEnv.get Vend r).getD
-                (evmWithExternal calls creates .any).zero))
+                (evmWithExternal calls creates gasOracle).zero))
             (VEnv.setMany_length _ _ _)
         rw [herase, hsmall] at hb
         simpa [stageCore, names] using hb
@@ -807,7 +807,7 @@ theorem stageCore_equiv_of (P : String) (xs : List Ident) (f : Ident)
           (args_length hargs).trans hnames.symm
         have hlets := argLets_fwd (rs := []) hargs hnames hnc hshadow
           (N := []) (by simp) ([] :: funs)
-        have hvargs := varArgs_eval (calls := calls) (creates := creates)
+        have hvargs := varArgs_eval (calls := calls) (creates := creates) (gasOracle := gasOracle)
           hnd hvals ([] :: funs) V stArgs
         have hcall' := Step.callHalt hvargs
           (by simpa [lookupFun] using hlookup) harglen hbody
@@ -825,7 +825,7 @@ theorem stageCore_equiv_of (P : String) (xs : List Ident) (f : Ident)
             simp [hoist]
           rw [hhoist]
           simpa [stageDecls] using hseq
-        have hm0 := zip_mins (calls := calls) (creates := creates) V hvals
+        have hm0 := zip_mins (calls := calls) (creates := creates) (gasOracle := gasOracle) V hvals
         have herase := restore_mins_le (base := V) hm0
           (fun p hp => tempIns_depth hp)
         have hself : restore V V = V := restore_exact (Y := []) rfl
@@ -875,7 +875,7 @@ theorem stageCore_equiv_of (P : String) (xs : List Ident) (f : Ident)
               cases hcall with
               | callOk hvargs hlookup harglen hbody hout =>
                 rename_i callVals callSt decl cenv Vend bodyOut
-                have hinv := varArgs_inv (calls := calls) (creates := creates)
+                have hinv := varArgs_inv (calls := calls) (creates := creates) (gasOracle := gasOracle)
                   hnd (args_length hargs |>.trans hnames.symm) hvargs
                 injection hinv with hvals hstate
                 subst hvals
@@ -884,8 +884,8 @@ theorem stageCore_equiv_of (P : String) (xs : List Ident) (f : Ident)
                   (by simpa [lookupFun] using hlookup) harglen hbody hout
                 have hout0 := Step.assignVal hcall0 hxs
                 let retvals := decl.rets.map fun r =>
-                  (VEnv.get Vend r).getD (evmWithExternal calls creates .any).zero
-                have hm0 := zip_mins (calls := calls) (creates := creates) V
+                  (VEnv.get Vend r).getD (evmWithExternal calls creates gasOracle).zero
+                have hm0 := zip_mins (calls := calls) (creates := creates) (gasOracle := gasOracle) V
                   (args_length hargs |>.trans hnames.symm)
                 have hmins := MIns.setMany retvals hm0 (fun p hp => by
                   intro hx
@@ -905,14 +905,14 @@ theorem stageCore_equiv_of (P : String) (xs : List Ident) (f : Ident)
             | assignHalt hcall =>
               cases hcall with
               | callHalt hvargs hlookup harglen hbody =>
-                have hinv := varArgs_inv (calls := calls) (creates := creates)
+                have hinv := varArgs_inv (calls := calls) (creates := creates) (gasOracle := gasOracle)
                   hnd (args_length hargs |>.trans hnames.symm) hvargs
                 injection hinv with hvals hstate
                 subst hvals
                 subst hstate
                 have hcall0 := Step.callHalt hargs
                   (by simpa [lookupFun] using hlookup) harglen hbody
-                have hm0 := zip_mins (calls := calls) (creates := creates) V
+                have hm0 := zip_mins (calls := calls) (creates := creates) (gasOracle := gasOracle) V
                   (args_length hargs |>.trans hnames.symm)
                 have herase := restore_mins_le (base := V) hm0
                   (fun p hp => tempIns_depth hp)
@@ -921,7 +921,7 @@ theorem stageCore_equiv_of (P : String) (xs : List Ident) (f : Ident)
                 rw [herase, hself]
                 exact Step.assignHalt hcall0
               | callArgsHalt hvargs =>
-                have hinv := varArgs_inv (calls := calls) (creates := creates)
+                have hinv := varArgs_inv (calls := calls) (creates := creates) (gasOracle := gasOracle)
                   hnd (args_length hargs |>.trans hnames.symm) hvargs
                 contradiction
         · exact absurd ho (by simp)
@@ -1201,7 +1201,7 @@ theorem restore_eq {d dx : Nat} {x y : Ident} {V₁ V₂ base : VEnv D}
     rw [VEnv.set_append_not_mem hxmiddle]
     simp [VEnv.set]
   rw [hset]
-  have heq := restore_prefixes (calls := calls) (creates := creates)
+  have heq := restore_prefixes (calls := calls) (creates := creates) (gasOracle := gasOracle)
     (base := base)
     (left := above ++ [(y, value)] ++ middle ++ [(x, old)])
     (right := above ++ middle ++ [(x, value)])
@@ -1577,13 +1577,13 @@ theorem stmt_normal_keys {funs : FunEnv D} {V : VEnv D} {st : EvmState}
       simpa [stmtBinds] using (block_stmt_shape (Step.block hb)).1
   | @letZero _ _ _ vars =>
       simpa [stmtBinds] using
-        (bindZeros_keys (calls := calls) (creates := creates) vars)
+        (bindZeros_keys (calls := calls) (creates := creates) (gasOracle := gasOracle) vars)
   | letVal hexpr hlen =>
       simp only [stmtBinds, List.map_append]
       rw [zip_keys hlen.symm.le]
   | assignVal _ _ =>
       simp only [stmtBinds, List.nil_append]
-      exact @VEnv.setMany_keys (evmWithExternal calls creates .any) inferInstance _ _ _
+      exact @VEnv.setMany_keys (evmWithExternal calls creates gasOracle) inferInstance _ _ _
   | exprStmt _ => rfl
   | ifTrue _ _ hbody =>
       simpa [stmtBinds] using (block_stmt_shape hbody).1
@@ -2718,7 +2718,7 @@ theorem reuseSlot_equivBlock {pre rest : Block Op} {x y : Ident}
         renameStmts [(y, x)] rest) := by
     simp only [hoist_append]
     have htail : hoist D rest = hoist D (renameStmts [(y, x)] rest) :=
-      (hoist_renameStmts (calls := calls) (creates := creates) [(y, x)] rest).symm
+      (hoist_renameStmts (calls := calls) (creates := creates) (gasOracle := gasOracle) [(y, x)] rest).symm
     simpa [hoist] using congrArg (fun tail => hoist D pre ++ tail) htail
   intro funs V st V' st' o
   constructor
@@ -2733,7 +2733,7 @@ theorem reuseSlot_equivBlock {pre rest : Block Op} {x y : Ident}
           cases hlet with
           | letZero =>
             have hslot := SlotRel.initial (y := y)
-              (value := (evmWithExternal calls creates .any).zero) hxlocal
+              (value := (evmWithExternal calls creates gasOracle).zero) hxlocal
             obtain ⟨rt, htarget, hrel⟩ := slot_fwd hrest hslot
               (by simpa [codeMentions] using hmx)
               (by simpa [codeDeclares] using hdy)
@@ -2741,7 +2741,7 @@ theorem reuseSlot_equivBlock {pre rest : Block Op} {x y : Ident}
             have hassign : Step D (hoist D (pre ++
                 .assign [x] (.lit (.number 0)) :: renameStmts [(y, x)] rest) :: funs)
                 Vp stp (.stmt (.assign [x] (.lit (.number 0))))
-                (.sres (VEnv.set Vp x (evmWithExternal calls creates .any).zero)
+                (.sres (VEnv.set Vp x (evmWithExternal calls creates gasOracle).zero)
                   stp .normal) :=
               Step.assignVal Step.lit («D» := D) rfl
             have hjoin := stmts_append_normal hpre
@@ -2807,7 +2807,7 @@ theorem reuseSlot_equivBlock {pre rest : Block Op} {x y : Ident}
                   cases hexpr
                   have hlet : Step D (hoist D (pre ++ .letDecl [y] none :: rest) :: funs)
                       Vp stp (.stmt (.letDecl [y] none))
-                      (.sres ((y, (evmWithExternal calls creates .any).zero) :: Vp)
+                      (.sres ((y, (evmWithExternal calls creates gasOracle).zero) :: Vp)
                         stp .normal) := Step.letZero
                   have hjoin := stmts_append_normal hpre (Step.seqCons hlet hsource)
                   have hr := hslot'.restore_eq hxbase
@@ -2909,7 +2909,7 @@ mutual
         split at h
         · next hw =>
           cases h
-          exact ⟨stageWanted_equiv (calls := calls) (creates := creates) hw,
+          exact ⟨stageWanted_equiv (calls := calls) (creates := creates) (gasOracle := gasOracle) hw,
             ScopeRel.refl _⟩
         · simp at h
     | _, _, _, .assign _ (.lit _), _, h => by simp [stageOneStmt] at h
@@ -3137,7 +3137,7 @@ mutual
         | some target =>
           simp only [ht] at h
           cases h
-          exact copyBackHere_sound (calls := calls) (creates := creates) ht
+          exact copyBackHere_sound (calls := calls) (creates := creates) (gasOracle := gasOracle) ht
         | none =>
           simp only [ht] at h
           cases ss with
@@ -3694,7 +3694,7 @@ theorem scopeTail_equivBlock {pre middle : Block Op} {carrier result : Ident}
           cases hlet with
           | letZero =>
             let Vc : VEnv D :=
-              (carrier, (evmWithExternal calls creates .any).zero) :: Vp
+              (carrier, (evmWithExternal calls creates gasOracle).zero) :: Vp
             have htail' := htail
             simp only [bindZeros, List.map_cons, List.map_nil,
               List.cons_append, List.nil_append] at htail'
@@ -3918,7 +3918,7 @@ theorem scopeTail_equivBlock {pre middle : Block Op} {carrier result : Ident}
         | seqCons hlet hrest =>
           cases hlet
           let Vc : VEnv D :=
-            (carrier, (evmWithExternal calls creates .any).zero) :: Vp
+            (carrier, (evmWithExternal calls creates gasOracle).zero) :: Vp
           have hrest' := hrest
           simp only [bindZeros, List.map_cons, List.map_nil,
             List.cons_append, List.nil_append] at hrest'
@@ -4170,11 +4170,11 @@ theorem splitLet_equivBlock {pre rest : Block Op} {x : Ident} {e : Expr Op} :
               | cons value' values => simp at hlen
               | nil =>
                 have hzero : Step D F Vp stp (.stmt (.letDecl [x] none))
-                    (.sres ((x, (evmWithExternal calls creates .any).zero) :: Vp)
+                    (.sres ((x, (evmWithExternal calls creates gasOracle).zero) :: Vp)
                       stp .normal) := Step.letZero (funs := F)
                 have hins : InsAt Vp.length x
-                    (evmWithExternal calls creates .any).zero Vp
-                    ((x, (evmWithExternal calls creates .any).zero) :: Vp) :=
+                    (evmWithExternal calls creates gasOracle).zero Vp
+                    ((x, (evmWithExternal calls creates gasOracle).zero) :: Vp) :=
                   ⟨[], Vp, by simp, by simp, rfl⟩
                 obtain ⟨_, hexpr', hrel⟩ := frameAdd hexpr hins
                   (by simpa [codeMentions] using hx)
@@ -4193,13 +4193,13 @@ theorem splitLet_equivBlock {pre rest : Block Op} {x : Ident} {e : Expr Op} :
           | letVal _ _ => exact absurd rfl hne
           | letHalt hexpr =>
             let Vx : VEnv D :=
-              (x, (evmWithExternal calls creates .any).zero) :: Vp0
+              (x, (evmWithExternal calls creates gasOracle).zero) :: Vp0
             have hzero : Step D F Vp0 stp0 (.stmt (.letDecl [x] none))
                 (.sres Vx stp0 .normal) := by simpa [Vx, Vp0, bindZeros] using
                   (Step.letZero (funs := F) (V := Vp0) (st := stp0)
                     (vars := [x]))
             have hins : InsAt Vp0.length x
-                (evmWithExternal calls creates .any).zero Vp0 Vx := by
+                (evmWithExternal calls creates gasOracle).zero Vp0 Vx := by
               exact ⟨[], Vp0, by simp, by simp [Vx], rfl⟩
             obtain ⟨_, hexpr', hrel⟩ := frameAdd hexpr hins
               (by simpa [codeMentions] using hx)
@@ -4210,7 +4210,7 @@ theorem splitLet_equivBlock {pre rest : Block Op} {x : Ident} {e : Expr Op} :
             have hfinal := Step.block (stmts_append_normal hpre htarget)
             have hlenVp : V.length ≤ Vp0.length := by
               simpa [Vp0] using venvLen_mono hpre rfl
-            rw [restore_cons_of_le (evmWithExternal calls creates .any).zero hlenVp]
+            rw [restore_cons_of_le (evmWithExternal calls creates gasOracle).zero hlenVp]
               at hfinal
             exact hfinal
       · exact Step.block (stmts_append_early hpre hne)
@@ -4236,8 +4236,8 @@ theorem splitLet_equivBlock {pre rest : Block Op} {x : Ident} {e : Expr Op} :
                 | cons value' values => simp at hlen
                 | nil =>
                   have hins : InsAt Vp.length x
-                      (evmWithExternal calls creates .any).zero Vp
-                      ((x, (evmWithExternal calls creates .any).zero) :: Vp) :=
+                      (evmWithExternal calls creates gasOracle).zero Vp
+                      ((x, (evmWithExternal calls creates gasOracle).zero) :: Vp) :=
                     ⟨[], Vp, by simp, by simp, rfl⟩
                   obtain ⟨_, hexpr', hrel⟩ := frameRemove hexpr hins
                     (by simpa [codeMentions] using hx)
@@ -4253,8 +4253,8 @@ theorem splitLet_equivBlock {pre rest : Block Op} {x : Ident} {e : Expr Op} :
             | assignVal _ _ => exact absurd rfl hneAssign
             | assignHalt hexpr =>
               have hins : InsAt Vp.length x
-                  (evmWithExternal calls creates .any).zero Vp
-                  ((x, (evmWithExternal calls creates .any).zero) :: Vp) :=
+                  (evmWithExternal calls creates gasOracle).zero Vp
+                  ((x, (evmWithExternal calls creates gasOracle).zero) :: Vp) :=
                 ⟨[], Vp, by simp, by simp, rfl⟩
               obtain ⟨_, hexpr', hrel⟩ := frameRemove hexpr hins
                 (by simpa [codeMentions] using hx)
@@ -4264,7 +4264,7 @@ theorem splitLet_equivBlock {pre rest : Block Op} {x : Ident} {e : Expr Op} :
               have hfinal := Step.block (stmts_append_normal hpre hsource)
               have hlenVp : V.length ≤ Vp.length := venvLen_mono hpre rfl
               rw [← restore_cons_of_le
-                (evmWithExternal calls creates .any).zero hlenVp] at hfinal
+                (evmWithExternal calls creates gasOracle).zero hlenVp] at hfinal
               exact hfinal
         | seqStop hzero hne =>
           cases hzero
@@ -4291,10 +4291,10 @@ theorem scopeTailVal_equivBlock {pre middle : Block Op}
   | some init =>
       simp only [carrierInitSafe] at hinit
       have hinit' : exprMentions carrier init = false := by simpa using hinit
-      have hsplit := splitLet_equivBlock (calls := calls) (creates := creates)
+      have hsplit := splitLet_equivBlock (calls := calls) (creates := creates) (gasOracle := gasOracle)
         (pre := pre)
         (rest := middle ++ [.assign [result] e, .leave]) hinit'
-      have hscope := scopeTail_equivBlock (calls := calls) (creates := creates)
+      have hscope := scopeTail_equivBlock (calls := calls) (creates := creates) (gasOracle := gasOracle)
         (pre := pre) (carrier := carrier) (result := result) (e := e)
         (middle := .assign [carrier] init :: middle) hcr
         (by simpa [stmtsDeclare, stmtDeclares] using hcarrier)
@@ -4350,7 +4350,7 @@ theorem scopeTailHere_sound {layout : List Ident} {ss ss' : Block Op}
               have hshape := splitAssignLeave_inv hs
               subst rest
               simpa [List.append_assoc] using
-                scopeTailVal_equivBlock (calls := calls) (creates := creates)
+                scopeTailVal_equivBlock (calls := calls) (creates := creates) (gasOracle := gasOracle)
                   (pre := pre) (middle := middle) (carrier := carrier)
                   (result := result) (val := val) (e := e)
                   hcr hinit hc hr hf
@@ -4452,7 +4452,7 @@ mutual
         | some target =>
           simp only [ht] at h
           cases h
-          exact scopeTailHere_sound (calls := calls) (creates := creates) ht
+          exact scopeTailHere_sound (calls := calls) (creates := creates) (gasOracle := gasOracle) ht
         | none =>
           simp only [ht] at h
           cases ss with
@@ -4532,7 +4532,7 @@ private theorem forwardAliasStmts_hoist (source copy : Ident) :
       obtain ⟨s', keep, changed⟩ := r
       dsimp only
       have hh := forwardAliasStmt_hoist
-        (calls := calls) (creates := creates) source copy s
+        (calls := calls) (creates := creates) (gasOracle := gasOracle) source copy s
       rw [hr] at hh
       change hoist D [s'] = hoist D [s] at hh
       cases keep with
@@ -4554,7 +4554,7 @@ private theorem selectSwitch_size_lt (c : Expr Op)
       sizeOf c + sizeOf cases + sizeOf dflt := by
   unfold selectSwitch
   cases hfind : cases.find? (fun p =>
-      decide (cv = (evmWithExternal calls creates .any).litValue p.1)) with
+      decide (cv = (evmWithExternal calls creates gasOracle).litValue p.1)) with
   | some p =>
       simp only
       have hm : p ∈ cases := List.mem_of_find?_eq_some hfind
@@ -4783,7 +4783,7 @@ mutual
     | .block body, funs, st, V', st', o => by
         simp only [StackV2.forwardAliasStmt]
         have hh := forwardAliasStmts_hoist
-          (calls := calls) (creates := creates) source copy body
+          (calls := calls) (creates := creates) (gasOracle := gasOracle) source copy body
         constructor
         · intro h
           cases h with
@@ -4842,7 +4842,7 @@ mutual
     | .cond c body, funs, st, V', st', o => by
         simp only [StackV2.forwardAliasStmt]
         have hh := forwardAliasStmts_hoist
-          (calls := calls) (creates := creates) source copy body
+          (calls := calls) (creates := creates) (gasOracle := gasOracle) source copy body
         constructor
         · intro h
           cases h with
@@ -5032,9 +5032,9 @@ theorem seededProp_bound (bound : List Ident) (body : Block Op) :
   let body' := (propStmts true σ body).1
   have hrel : PropRel σ (propStmts true σ body).2
       (.stmts body) (.stmts body') := propStmts_rel true σ body
-  have hscope : PScopeRel (calls := calls) (creates := creates)
+  have hscope : PScopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle)
       (hoist D body) (hoist D body') :=
-    PropRel.hoist_scopeRel (calls := calls) (creates := creates) hrel rfl rfl
+    PropRel.hoist_scopeRel (calls := calls) (creates := creates) (gasOracle := gasOracle) hrel rfl rfl
   have hbmem : YulEvmCompiler.Optimizer.BoundOK V bound := by
     intro x hx
     change V.map Prod.fst = bound at hb
@@ -5951,7 +5951,7 @@ theorem deadPrefixSearchSlow_sound : ∀ outer pre rest out,
           have hxall := List.all_eq_true.mp hall x hx'
           simpa using hxall
         simpa [pre', List.append_assoc] using
-          scopePrefix_after_equivBlock (calls := calls) (creates := creates)
+          scopePrefix_after_equivBlock (calls := calls) (creates := creates) (gasOracle := gasOracle)
             (outer := outer) hfun hfree
       · next hcond =>
         have ih := deadPrefixSearchSlow_sound outer pre' rest out h
@@ -6210,7 +6210,7 @@ theorem scopeDeadPrefixesStmts_equiv_old (n : Nat) (body : Block Op) :
   | succ n ih =>
       rw [StackV2.scopeDeadPrefixesStmts]
       let split := StackV2.iterateDeadPrefixesHere 64 body
-      have hs := iterateDeadPrefixesHere_equiv (calls := calls) (creates := creates) 64 body
+      have hs := iterateDeadPrefixesHere_equiv (calls := calls) (creates := creates) (gasOracle := gasOracle) 64 body
       apply hs.trans
       exact EquivBlock.of_stmts_funs
         (scopeDeadMapStmts_of n ih split)
@@ -6267,7 +6267,7 @@ mutual
         rw [StackV2.scopeDeadPrefixesStmts]
         let split := StackV2.iterateDeadPrefixes 64 body
         have hs := iterateDeadPrefixes_equiv
-          (calls := calls) (creates := creates) 64 body
+          (calls := calls) (creates := creates) (gasOracle := gasOracle) 64 body
         apply hs.trans
         change EquivBlock D split
           (split.map (StackV2.scopeDeadPrefixesStmt n))
@@ -6455,8 +6455,9 @@ theorem scopeDeadFunctionStmts_equiv (b : Block Op) :
     BoundEquivBlock.of_equiv (scopeDeadPrefixesStmts_equiv 64 body)) b
 
 private def LayoutEquivStmts (calls' : ExternalCalls) (creates' : ExternalCreates)
+    (gasOracle' : ExternalGas)
     (bound : List Ident) (b₁ b₂ : Block Op) : Prop :=
-  let D' := evmWithExternal calls' creates' .any
+  let D' := evmWithExternal calls' creates' gasOracle'
   ∀ (funs : FunEnv D') (V : VEnv D') (st : EvmState),
     YulEvmCompiler.Optimizer.BoundOK (calls := calls') (creates := creates')
       V bound → ∀ V' st' o,
@@ -6464,7 +6465,7 @@ private def LayoutEquivStmts (calls' : ExternalCalls) (creates' : ExternalCreate
       ExecStmts D' funs V st b₂ V' st' o
 
 private theorem LayoutEquivStmts.refl (bound : List Ident) (b : Block Op) :
-    LayoutEquivStmts calls creates bound b b :=
+    LayoutEquivStmts calls creates gasOracle bound b b :=
   fun _ _ _ _ _ _ _ => Iff.rfl
 
 private theorem LayoutEquivStmts.cons {bound bound' : List Ident}
@@ -6472,8 +6473,8 @@ private theorem LayoutEquivStmts.cons {bound bound' : List Ident}
     (hbound : ∀ {funs V st V' st'}, YulEvmCompiler.Optimizer.BoundOK V bound →
       ExecStmt D funs V st s V' st' .normal →
         YulEvmCompiler.Optimizer.BoundOK V' bound')
-    (hrest : LayoutEquivStmts calls creates bound' rest rest') :
-    LayoutEquivStmts calls creates bound (s :: rest) (s :: rest') := by
+    (hrest : LayoutEquivStmts calls creates gasOracle bound' rest rest') :
+    LayoutEquivStmts calls creates gasOracle bound (s :: rest) (s :: rest') := by
   intro funs V st hb V' st' o
   constructor
   · intro h
@@ -6527,7 +6528,7 @@ private theorem assignAlias_establishes {source copy : Ident}
 private theorem aliasLetStmts_equiv {layout : List Ident}
     {source copy : Ident} {rest : Block Op}
     (hne : copy ≠ source) :
-    LayoutEquivStmts calls creates layout
+    LayoutEquivStmts calls creates gasOracle layout
       (.letDecl [copy] (some (.var source)) :: rest)
       (.letDecl [copy] (some (.var source)) ::
         (StackV2.forwardAliasStmts source copy rest).1) := by
@@ -6551,7 +6552,7 @@ private theorem aliasLetStmts_equiv {layout : List Ident}
 private theorem aliasAssignStmts_equiv {layout : List Ident}
     {source copy : Ident} {rest : Block Op}
     (hne : copy ≠ source) (hcopy : copy ∈ layout) :
-    LayoutEquivStmts calls creates layout
+    LayoutEquivStmts calls creates gasOracle layout
       (.assign [copy] (.var source) :: rest)
       (.assign [copy] (.var source) ::
         (StackV2.forwardAliasStmts source copy rest).1) := by
@@ -6575,7 +6576,7 @@ private theorem aliasAssignStmts_equiv {layout : List Ident}
 private theorem aliasAssignStmts_equiv_rev {layout : List Ident}
     {source copy : Ident} {rest : Block Op}
     (hne : copy ≠ source) (hcopy : copy ∈ layout) :
-    LayoutEquivStmts calls creates layout
+    LayoutEquivStmts calls creates gasOracle layout
       (.assign [copy] (.var source) :: rest)
       (.assign [copy] (.var source) ::
         (StackV2.forwardAliasStmts copy source rest).1) := by
@@ -6622,15 +6623,15 @@ private theorem aliasBound_after {layout : List Ident} {s : Stmt Op}
 
 private theorem aliasFallback {layout layout' : List Ident}
     {s : Stmt Op} {rest rest' : Block Op}
-    (hrest : LayoutEquivStmts calls creates layout' rest rest')
+    (hrest : LayoutEquivStmts calls creates gasOracle layout' rest rest')
     (hlayout : layout' = aliasLayoutAfter layout s) :
-    LayoutEquivStmts calls creates layout (s :: rest) (s :: rest') := by
+    LayoutEquivStmts calls creates gasOracle layout (s :: rest) (s :: rest') := by
   subst layout'
   exact LayoutEquivStmts.cons (fun hb hs => aliasBound_after hb hs) hrest
 
 private theorem aliasOneStmts_sound : ∀ (layout : List Ident)
     (body out : Block Op), StackV2.aliasOneStmts layout body = some out →
-    LayoutEquivStmts calls creates layout body out
+    LayoutEquivStmts calls creates gasOracle layout body out
   | _, [], _, h => by simp [StackV2.aliasOneStmts] at h
   | layout, s :: rest, out, h => by
       cases s with
@@ -6875,7 +6876,7 @@ private theorem hoist_forward_result {source copy : Ident}
       (body', keep, changed)) :
     hoist D body' = hoist D body := by
   have hf := forwardAliasStmts_hoist
-    (calls := calls) (creates := creates) source copy body
+    (calls := calls) (creates := creates) (gasOracle := gasOracle) source copy body
   rw [h] at hf
   exact hf
 
@@ -6897,17 +6898,17 @@ private theorem aliasOneStmts_hoist {layout : List Ident}
   all_goals intro out h
   all_goals
     first
-    | (apply hoist_map_cons (calls := calls) (creates := creates) <;> assumption)
-    | (apply hoist_some_forward (calls := calls) (creates := creates) <;>
+    | (apply hoist_map_cons (calls := calls) (creates := creates) (gasOracle := gasOracle) <;> assumption)
+    | (apply hoist_some_forward (calls := calls) (creates := creates) (gasOracle := gasOracle) <;>
         assumption)
     | contradiction
 
 private theorem aliasOneStmts_bound {layout : List Ident}
     {body out : Block Op} (h : StackV2.aliasOneStmts layout body = some out) :
     BoundEquivBlock D layout body out := by
-  have hs := aliasOneStmts_sound (calls := calls) (creates := creates)
+  have hs := aliasOneStmts_sound (calls := calls) (creates := creates) (gasOracle := gasOracle)
     layout body out h
-  have hh := aliasOneStmts_hoist (calls := calls) (creates := creates) h
+  have hh := aliasOneStmts_hoist (calls := calls) (creates := creates) (gasOracle := gasOracle) h
   intro funs V st hb
   have hbmem : YulEvmCompiler.Optimizer.BoundOK V layout := by
     intro x hx
@@ -7161,7 +7162,7 @@ mutual
         | block hbody =>
           simp only [StackV2.shadowStraightStmt, Bool.and_eq_true] at hs
           have hsize := selectSwitch_size_lt_stmt (calls := calls)
-            (creates := creates) c cv cases dflt
+            (creates := creates) (gasOracle := gasOracle) c cv cases dflt
           exact straight_outcome (selectSwitch D cv cases dflt) _ _ _ _ _ _
             (straight_selectSwitch _ _ _ hs.1 hs.2) hbody
     | forLoop => simp [StackV2.shadowStraightStmt] at hs
@@ -7857,6 +7858,6 @@ def stackLayout : LocalPass D where
       · exact legacyStackLayoutBlock_equiv b
 
 @[simp] theorem stackLayout_run (b : Block Op) :
-    (stackLayout (calls := calls) (creates := creates)).run b = stackLayoutBlock b := rfl
+    (stackLayout (calls := calls) (creates := creates) (gasOracle := gasOracle)).run b = stackLayoutBlock b := rfl
 
 end YulEvmCompiler.Optimizer

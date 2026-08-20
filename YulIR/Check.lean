@@ -106,7 +106,7 @@ def sourceStatus (prog : YulSemantics.Block EVM.Op) : String :=
 def currentOpt (b : YulSemantics.Block EVM.Op) : YulSemantics.Block EVM.Op :=
   (YulEvmCompiler.Optimizer.optimizerPipeline
     (calls := YulSemantics.EVM.ExternalCalls.none)
-    (creates := YulSemantics.EVM.ExternalCreates.none)).run b
+    (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)).run b
 
 /-- Backend: block → bytecode, with the same stack-layout fallback `compileSource` uses. -/
 def blockBytecode (b : YulSemantics.Block EVM.Op) : Option ByteArray :=

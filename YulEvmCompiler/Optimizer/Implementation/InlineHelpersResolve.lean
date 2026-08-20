@@ -28,8 +28,8 @@ open YulEvmCompiler
 open YulEvmCompiler.Optimizer.Core (Ctx Term Value Var Args PureOp
   isValueExpr isVarExpr)
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates ExternalGas.any
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ## Resolving declarations and scope stacks -/
 
@@ -197,9 +197,9 @@ private theorem resolveForLayoutStmts_eq_assign_iff (L : Layout)
 /-- Helper classification (resolution-stable mode) commutes with resolving
 the declaration body. -/
 theorem helper?_resolve (L : Layout) (decl : FDecl D) :
-    helper? (calls := calls) (creates := creates) false (resolveLayoutDecl L decl) =
-      helper? (calls := calls) (creates := creates) false decl := by
-  cases hcl : helper? (calls := calls) (creates := creates) false decl with
+    helper? (calls := calls) (creates := creates) (gasOracle := gasOracle) false (resolveLayoutDecl L decl) =
+      helper? (calls := calls) (creates := creates) (gasOracle := gasOracle) false decl := by
+  cases hcl : helper? (calls := calls) (creates := creates) (gasOracle := gasOracle) false decl with
   | some h =>
       obtain ⟨hdecl, hvars⟩ := helper?_shape hcl
       have hvars' : h.term.argsVarsOnly = true := by simpa using hvars
@@ -213,7 +213,7 @@ theorem helper?_resolve (L : Layout) (decl : FDecl D) :
           ⟨h.term.emit, rfl, emit_resolve_fixed L hvars'⟩]
       rw [hfix, hcl]
   | none =>
-      cases hcl' : helper? (calls := calls) (creates := creates) false
+      cases hcl' : helper? (calls := calls) (creates := creates) (gasOracle := gasOracle) false
           (resolveLayoutDecl L decl) with
       | none => rfl
       | some h' =>
@@ -276,9 +276,9 @@ theorem lookupFun_resolveLayoutFuns (L : Layout) (static : FunEnv D)
 
 theorem resolveHelper_resolveLayoutFuns (L : Layout) (static : FunEnv D)
     (fn : Ident) :
-    resolveHelper (calls := calls) (creates := creates) false
+    resolveHelper (calls := calls) (creates := creates) (gasOracle := gasOracle) false
         (resolveLayoutFuns L static) fn =
-      resolveHelper (calls := calls) (creates := creates) false static fn := by
+      resolveHelper (calls := calls) (creates := creates) (gasOracle := gasOracle) false static fn := by
   unfold resolveHelper
   rw [lookupFun_resolveLayoutFuns]
   cases lookupFun static fn with
@@ -461,7 +461,7 @@ mutual
         have hargs := resolve_inlineHelpersArgs L static args
         rw [inlineHelpersExpr, resolveForLayoutExpr, inlineHelpersExpr,
           resolveHelper_resolveLayoutFuns]
-        cases hres : resolveHelper (calls := calls) (creates := creates)
+        cases hres : resolveHelper (calls := calls) (creates := creates) (gasOracle := gasOracle)
             false static fn with
         | none =>
             show resolveForLayoutExpr L

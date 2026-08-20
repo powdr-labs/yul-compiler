@@ -29,14 +29,21 @@ what each step records, and phase A discharges the premises once via
 namespace YulEvmCompiler
 
 open YulSemantics.EVM
-  (U256 EvmState Op ExternalCalls ExternalCreates builtinWithExternal)
+  (U256 EvmState Op ExternalCalls ExternalCreates ExternalGas builtinWithExternal)
 
 /-- Packages the external call/create relations used by an Asm execution. Keeping it
 as an inferred model lets structural Phase-A lemmas carry the relation without
-adding an explicit parameter to every intermediate simulation predicate. -/
+adding an explicit parameter to every intermediate simulation predicate.
+
+The `gas` oracle defaults to the maximally permissive `ExternalGas.any` —
+the historical behavior, under which `gas()` may report any word and is
+therefore unrealizable by the target `GAS` instruction (see
+`YulEvmCompiler.GasOracle`). A model that constrains the oracle is what a
+fused gas-forwarding call needs. -/
 class ExternalModel where
   calls : ExternalCalls
   creates : ExternalCreates := ExternalCreates.none
+  gas : ExternalGas := ExternalGas.any
 
 /-- An Asm-level stack value: a word, or the code address of label `l`. -/
 inductive AVal
@@ -84,8 +91,23 @@ inductive AStep (prog : List Asm) [model : ExternalModel] :
   step the machine state — all by the Yul dialect's own relation. -/
   | op {yop : Op} {args rets : List U256} {c : List Asm} {σ : List AVal}
       {yst yst' : EvmState} :
-      builtinWithExternal model.calls model.creates .any yop args yst (.ok rets yst') →
+      builtinWithExternal model.calls model.creates model.gas yop args yst (.ok rets yst') →
       AStep (model := model) prog ⟨.op yop :: c, words args ++ σ, yst⟩
+        ⟨c, words rets ++ σ, yst'⟩
+  /-- A fused gas-forwarding call `k.op(gas(), …)`: read a word `g` the gas
+  oracle admits at the current state, then perform the call built-in with `g`
+  as its gas argument — exactly the composite of the two source steps
+  `op gas ; op k.op` this instruction is fused from. Keeping the composite
+  as the rule makes the peephole fusion a plain simulation (the fused step
+  reproduces whichever admitted word the source read); realizing the read as
+  the target machine's own `GAS` word is phase B's concern
+  (`GasCallsRealized`). -/
+  | gasCall {k : GasCallKind} {g : U256} {args rets : List U256} {c : List Asm}
+      {σ : List AVal} {yst yst' : EvmState} :
+      model.gas.Gas yst g →
+      builtinWithExternal model.calls model.creates model.gas k.op (g :: args) yst
+        (.ok rets yst') →
+      AStep (model := model) prog ⟨.gasCall k :: c, words args ++ σ, yst⟩
         ⟨c, words rets ++ σ, yst'⟩
   /-- `DUP(n+1)`: copy the value `n` deep onto the top. -/
   | dup {n : Fin 16} {v : AVal} {τ ρ : List AVal} {c : List Asm}
@@ -136,8 +158,17 @@ inductive AHalt (prog : List Asm) [model : ExternalModel] :
     AConf → EvmState → Prop
   | op {yop : Op} {args : List U256} {c : List Asm} {σ : List AVal}
       {yst yst' : EvmState} :
-      builtinWithExternal model.calls model.creates .any yop args yst (.halt yst') →
+      builtinWithExternal model.calls model.creates model.gas yop args yst (.halt yst') →
       AHalt (model := model) prog ⟨.op yop :: c, words args ++ σ, yst⟩ yst'
+  /-- A fused gas-forwarding call halting relationally: only a value-bearing
+  `call` attempted in a static frame does (the source's static-context write
+  gate); the halt payload does not depend on the read gas word. -/
+  | gasCall {k : GasCallKind} {g : U256} {args : List U256} {c : List Asm}
+      {σ : List AVal} {yst yst' : EvmState} :
+      model.gas.Gas yst g →
+      builtinWithExternal model.calls model.creates model.gas k.op (g :: args) yst
+        (.halt yst') →
+      AHalt (model := model) prog ⟨.gasCall k :: c, words args ++ σ, yst⟩ yst'
 
 /-- Finitely many Asm steps (reflexive-transitive closure of `AStep`). -/
 inductive ASteps (prog : List Asm) [model : ExternalModel] :
@@ -183,6 +214,7 @@ theorem AStep.suffix [model : ExternalModel]
   | push => exact tail_suffix ha
   | pushImmutable => exact tail_suffix ha
   | op _ => exact tail_suffix ha
+  | gasCall _ _ => exact tail_suffix ha
   | dup _ => exact tail_suffix ha
   | swap _ => exact tail_suffix ha
   | pop => exact tail_suffix ha
@@ -236,9 +268,9 @@ end ImmutablePreserved
 layout-consistency obligation for immutables be stated once and carried along a
 whole run. -/
 theorem builtinWithExternal_immutable_eq
-    {calls : ExternalCalls} {creates : ExternalCreates} {yop : Op}
+    {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas} {yop : Op}
     {args rets : List U256} {yst yst' : EvmState}
-    (hb : builtinWithExternal calls creates .any yop args yst (.ok rets yst')) :
+    (hb : builtinWithExternal calls creates gasOracle yop args yst (.ok rets yst')) :
     yst'.env.immutable = yst.env.immutable := by
   cases yop <;>
         rcases args with _ | ⟨x, _ | ⟨y, _ | ⟨z, _ | ⟨w, _ | ⟨u, _ | ⟨t, _ | ⟨r, args⟩⟩⟩⟩⟩⟩⟩ <;>

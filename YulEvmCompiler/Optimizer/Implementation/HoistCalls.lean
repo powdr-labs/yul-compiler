@@ -15,8 +15,8 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates ExternalGas.any
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 def hoistedArg (P : String) : Ident := s!"{P}a"
 
@@ -79,15 +79,15 @@ theorem hoistUnaryCore_equiv_of (P : String) (xs : List Ident) (f g : Ident)
                 have hrestore : restore V
                     ((t, v) :: VEnv.setMany V xs
                       (decl.rets.map (fun r => (VEnv.get Vend r).getD
-                        (evmWithExternal calls creates .any).zero))) =
+                        (evmWithExternal calls creates gasOracle).zero))) =
                     VEnv.setMany V xs
                       (decl.rets.map (fun r => (VEnv.get Vend r).getD
-                        (evmWithExternal calls creates .any).zero)) := by
-                  simpa using (restore_exact (calls := calls) (creates := creates)
+                        (evmWithExternal calls creates gasOracle).zero)) := by
+                  simpa using (restore_exact (calls := calls) (creates := creates) (gasOracle := gasOracle)
                     (W := V) (Y := [(t, v)])
                     (W' := VEnv.setMany V xs
                       (decl.rets.map (fun r => (VEnv.get Vend r).getD
-                        (evmWithExternal calls creates .any).zero)))
+                        (evmWithExternal calls creates gasOracle).zero)))
                     (VEnv.setMany_length _ _ _))
                 rw [hrestore] at hb
                 simpa [hoistUnaryCore, t] using hb
@@ -168,15 +168,15 @@ theorem hoistUnaryCore_equiv_of (P : String) (xs : List Ident) (f g : Ident)
                           have hrestore : restore V
                               ((t, v) :: VEnv.setMany V xs
                                 (List.map (fun r => (VEnv.get Vend r).getD
-                                  (evmWithExternal calls creates .any).zero) decl.rets)) =
+                                  (evmWithExternal calls creates gasOracle).zero) decl.rets)) =
                               VEnv.setMany V xs
                                 (List.map (fun r => (VEnv.get Vend r).getD
-                                  (evmWithExternal calls creates .any).zero) decl.rets) := by
+                                  (evmWithExternal calls creates gasOracle).zero) decl.rets) := by
                             simpa using (restore_exact (calls := calls)
-                              (creates := creates) (W := V) (Y := [(t, v)])
+                              (creates := creates) (gasOracle := gasOracle) (W := V) (Y := [(t, v)])
                               (W' := VEnv.setMany V xs
                                 (decl.rets.map (fun r => (VEnv.get Vend r).getD
-                                  (evmWithExternal calls creates .any).zero)))
+                                  (evmWithExternal calls creates gasOracle).zero)))
                               (VEnv.setMany_length _ _ _))
                           simp only [List.zip, List.zipWith_cons_cons,
                             List.zipWith_nil_left, List.singleton_append]

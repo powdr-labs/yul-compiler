@@ -18,7 +18,7 @@ open YulSemantics.EVM (U256 EvmState Op builtinWithExternal evmWithExternal)
 
 section Semantics
 variable [model : ExternalModel]
-local notation "yulD" => evmWithExternal model.calls model.creates YulSemantics.EVM.ExternalGas.any
+local notation "yulD" => evmWithExternal model.calls model.creates model.gas
 
 /-- The statement-expression entry point needs its own expression induction
 clause: unlike `trExpr`, it deliberately emits no destination for zero-result

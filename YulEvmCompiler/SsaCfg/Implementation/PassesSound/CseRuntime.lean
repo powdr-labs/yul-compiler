@@ -32,7 +32,7 @@ def CseExprRuntime (τ : Passes.Subst) (R : Regs) :
   | .op yop as, d =>
       ∃ vals w s s',
         R.getMany (Passes.substVs τ as) = some vals ∧
-        builtinWithExternal model.calls model.creates .any yop vals s (.ok [w] s') ∧
+        builtinWithExternal model.calls model.creates model.gas yop vals s (.ok [w] s') ∧
         R d = some w
 
 /-- Every entry in the currently available CSE table has its advertised
@@ -197,7 +197,7 @@ theorem CseTabRuntime.addOp {τ : Passes.Subst} {R : Regs}
     {s s' : EvmState}
     (hvals : d ∉ Passes.cseTabVals tab) (huses : d ∉ cseTabRuntimeUses τ tab)
     (hg : (R.set d w).getMany (Passes.substVs τ as) = some vals)
-    (hb : builtinWithExternal model.calls model.creates .any yop vals s (.ok [w] s')) :
+    (hb : builtinWithExternal model.calls model.creates model.gas yop vals s (.ok [w] s')) :
     CseTabRuntime τ (R.set d w) { tab with ops := ((yop, as), d) :: tab.ops } := by
   have hold := h.set_of_fresh hvals huses (w := w)
   refine ⟨?_, hold.2⟩
@@ -241,7 +241,7 @@ theorem CseExprRuntime.op_result {τ : Passes.Subst} {R : Regs}
     (hr : CseExprRuntime τ R (.op yop as) d)
     (hp : Passes.pureOp yop = true) {vals rets : List U256} {st st' : EvmState}
     (hg : R.getMany (Passes.substVs τ as) = some vals)
-    (hb : builtinWithExternal model.calls model.creates .any yop vals st (.ok rets st')) :
+    (hb : builtinWithExternal model.calls model.creates model.gas yop vals st (.ok rets st')) :
     ∃ w, rets = [w] ∧ R d = some w := by
   obtain ⟨vals0, w0, s, s', hg0, hb0, hd⟩ := hr
   have hvals : vals0 = vals := Option.some.inj (hg0.symm.trans hg)

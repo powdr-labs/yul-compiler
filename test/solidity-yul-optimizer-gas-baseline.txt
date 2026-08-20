@@ -235,6 +235,7 @@ fullSimplify/smoke.yul	0	0
 fullSuite/abi2.yul	342	432
 fullSuite/abi_example1.yul	1710	1410
 fullSuite/and_or_combination.yul	143680	144022
+fullSuite/aztec.yul	2866	2672
 fullSuite/call_arguments_with_side_effects.yul	24	30
 fullSuite/call_arguments_without_side_effects.yul	13386	13956
 fullSuite/clear_after_if_continue.yul	354	306

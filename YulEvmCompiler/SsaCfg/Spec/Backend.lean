@@ -43,7 +43,7 @@ open YulSemantics (Outcome VEnv)
 open YulEvmCompiler
 
 variable [model : ExternalModel] {imm : String → YulSemantics.EVM.U256}
-local notation "yulD" => evmWithExternal model.calls model.creates YulSemantics.EVM.ExternalGas.any
+local notation "yulD" => evmWithExternal model.calls model.creates model.gas
 
 /-- **Construction soundness**: if the construction accepts `prog` and the
 Yul semantics runs it, the SSA program runs to the same final state and
@@ -277,7 +277,7 @@ theorem finishProg_correct (hexternal : ExternalsRealized model)
     have hsteps0 : ASteps (model := model) asm ⟨asm, [], yst0⟩ ⟨[], [], yst'⟩ :=
       emitProg_asteps hnodup hQwf hQdom hemit (.normal heb hexec)
     have hstepsO := Peephole.optimizeAsm_asteps hnodup hsteps0
-    obtain ⟨bnd, Hb⟩ :=
+    obtain ⟨bnd, _tx, Hb⟩ :=
       asteps_sim hexternal hlow hsmallO hstepsO
         (List.suffix_refl (optimizeAsm asm)) (stackOK2_run_bound hstk yst0)
     refine ⟨bnd, ?_⟩

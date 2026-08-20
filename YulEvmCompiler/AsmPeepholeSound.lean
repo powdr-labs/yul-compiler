@@ -88,6 +88,11 @@ theorem astep_stkRefs [model : ExternalModel] {R : List Label}
       rcases List.mem_append.mp hl with h | h
       · exact absurd h code_not_mem_words
       · exact hσ l (List.mem_append.mpr (Or.inr h))
+  | @gasCall k g args rets c σ yst yst' hg hb =>
+      intro l hl
+      rcases List.mem_append.mp hl with h | h
+      · exact absurd h code_not_mem_words
+      · exact hσ l (List.mem_append.mpr (Or.inr h))
   | @dup n v τ ρ c yst hτ =>
       intro l hl
       rcases List.mem_cons.mp hl with h | h
@@ -129,7 +134,7 @@ in-flight states of a return-slot window. `brMid` captures the in-flight
 state of an inverted branch: the source is about to take the `jump m` while
 the optimized side holds the (nonzero) `iszero`d condition for its
 `jumpi m`. -/
-inductive Match (R : List Label) : AConf → AConf → Prop
+inductive Match [model : ExternalModel] (R : List Label) : AConf → AConf → Prop
   | sync {sc oc : List Asm} {σ : List AVal} {y : EvmState} :
       CodeRel R sc oc → Match R ⟨sc, σ, y⟩ ⟨oc, σ, y⟩
   | mid1 {v : U256} {n : Fin 16} (hn : n.val = 0) {S : List AVal}
@@ -189,6 +194,15 @@ inductive Match (R : List Label) : AConf → AConf → Prop
       {S : List AVal} {sc oc : List Asm} {y : EvmState} :
       CodeRel R sc oc →
       Match R ⟨.op yop :: sc, x :: z :: S, y⟩ ⟨.op yop' :: oc, z :: x :: S, y⟩
+  /-- Fused gas-forwarding call window: the source has read its oracle-
+  admitted gas word (remembered here — `gas()` leaves the state unchanged, so
+  the admission still speaks about `y`); the optimized side is about to
+  execute the fused instruction, which packages that admission with the
+  call. -/
+  | gasWin {k : GasCallKind} {g : U256} {σ : List AVal} {sc oc : List Asm}
+      {y : EvmState} (hg : ExternalModel.gas.Gas y g) :
+      CodeRel R sc oc →
+      Match R ⟨.op k.op :: sc, .word g :: σ, y⟩ ⟨.gasCall k :: oc, σ, y⟩
 
 /-- The `iszero` step the optimized side of an inverted branch executes. -/
 theorem iszero_step [model : ExternalModel] {prog' c : List Asm}
@@ -203,7 +217,7 @@ theorem iszero_step [model : ExternalModel] {prog' c : List Asm}
 result, unchanged state. -/
 theorem iszero_inv [model : ExternalModel] {args rets : List U256}
     {yst yst' : EvmState}
-    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates .any
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas
       .iszero args yst (.ok rets yst')) :
     ∃ v, args = [v] ∧ rets = [b2w (v = 0)] ∧ yst' = yst := by
   match args with
@@ -219,10 +233,42 @@ theorem iszero_inv [model : ExternalModel] {args rets : List U256}
   | _ :: _ :: _ => exact absurd hb (by simp [YulSemantics.EVM.builtinWithExternal,
       YulSemantics.EVM.stepOp, YulSemantics.EVM.un])
 
+/-- Invert a successful `gas()` built-in step: no arguments, one
+oracle-admitted result word, unchanged state. -/
+theorem gas_inv [model : ExternalModel] {args rets : List U256}
+    {yst yst' : EvmState}
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas
+      .gas args yst (.ok rets yst')) :
+    ∃ g, args = [] ∧ rets = [g] ∧ yst' = yst ∧ ExternalModel.gas.Gas yst g := by
+  match args with
+  | [] =>
+      obtain ⟨g, hg, heq⟩ := hb
+      injection heq with h1 h2
+      exact ⟨g, rfl, h1, h2, hg⟩
+  | _ :: _ => exact absurd hb (by simp [YulSemantics.EVM.builtinWithExternal])
+
+/-- `gas()` never halts. -/
+theorem gas_no_halt [model : ExternalModel] {args : List U256}
+    {yst yf : EvmState}
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas
+      .gas args yst (.halt yf)) : False := by
+  match args with
+  | [] => obtain ⟨g, -, heq⟩ := hb; cases heq
+  | _ :: _ => exact hb
+
+/-- A fused call's built-in relation is empty at the argument count without
+the gas word: every call op insists on its full arity. -/
+theorem gasCall_arity_absurd [model : ExternalModel] {k : GasCallKind}
+    {yst : EvmState}
+    {r : YulSemantics.BuiltinResult YulSemantics.EVM.U256 EvmState}
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas
+      k.op [] yst r) : False := by
+  cases k <;> exact hb
+
 /-- `iszero` never halts. -/
 theorem iszero_no_halt [model : ExternalModel] {args : List U256}
     {yst yf : EvmState}
-    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates .any
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas
       .iszero args yst (.halt yf)) : False := by
   match args with
   | [] => exact absurd hb (by simp [YulSemantics.EVM.builtinWithExternal,
@@ -243,7 +289,7 @@ theorem astep_op_inv [model : ExternalModel] {prog : List Asm} {yop : Op}
     {c : List Asm} {σs : List AVal} {y : EvmState} {b : AConf}
     (h : AStep (model := model) prog ⟨.op yop :: c, σs, y⟩ b) :
     ∃ args rets σ' yst', σs = words args ++ σ'
-      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates .any yop args y
+      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas yop args y
           (.ok rets yst')
       ∧ b = ⟨c, words rets ++ σ', yst'⟩ := by
   cases h with
@@ -300,10 +346,10 @@ other's operand swap in the dialect (`b2w (a.ult b)` against
 `b2w (b.ult a)`). -/
 theorem flipOp_inv [model : ExternalModel] {yop yop' : Op}
     (hf : flipOp yop = some yop') {args rets : List U256} {yst yst' : EvmState}
-    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates .any yop args yst
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas yop args yst
       (.ok rets yst')) :
     ∃ a b, args = [a, b] ∧ yst' = yst ∧
-      YulSemantics.EVM.builtinWithExternal model.calls model.creates .any yop' [b, a] yst
+      YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas yop' [b, a] yst
         (.ok rets yst) := by
   -- only the ten ops `flipOp` accepts survive; each is a `bin`
   cases yop <;> simp only [flipOp, Option.some.injEq, reduceCtorEq] at hf
@@ -322,7 +368,7 @@ theorem flipOp_inv [model : ExternalModel] {yop yop' : Op}
 /-- A built-in with a reversed twin never halts. -/
 theorem flipOp_no_halt [model : ExternalModel] {yop yop' : Op}
     (hf : flipOp yop = some yop') {args : List U256} {yst yf : EvmState}
-    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates .any yop args yst
+    (hb : YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas yop args yst
       (.halt yf)) : False := by
   cases yop <;> simp only [flipOp, Option.some.injEq, reduceCtorEq] at hf
   all_goals
@@ -334,7 +380,7 @@ theorem ahalt_op_inv [model : ExternalModel] {prog : List Asm} {yop : Op}
     {c : List Asm} {σs : List AVal} {y yf : EvmState}
     (h : AHalt (model := model) prog ⟨.op yop :: c, σs, y⟩ yf) :
     ∃ args σ', σs = words args ++ σ'
-      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates .any yop args y
+      ∧ YulSemantics.EVM.builtinWithExternal model.calls model.creates model.gas yop args y
           (.halt yf) := by
   cases h with
   | op hb => exact ⟨_, _, rfl, hb⟩
@@ -389,6 +435,14 @@ theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
         -- first `iszero` of a doomed pair: the optimized side stutters
         obtain ⟨v, rfl, rfl, rfl⟩ := iszero_inv hb
         exact ⟨_, .refl _, .dz1 hc'⟩
+      | gasFuse hc' =>
+        -- window entry: the source reads its gas word, the optimized side
+        -- stutters, remembering the oracle admission for the fused step
+        obtain ⟨g, rfl, rfl, rfl, hg⟩ := gas_inv hb
+        exact ⟨_, .refl _, .gasWin hg hc'⟩
+    | @gasCall k g args rets c σ2 yst yst' hg hb =>
+      cases hc with
+      | keep _ hc' => exact ⟨_, .single (.gasCall hg hb), .sync hc'⟩
     | @dup n v τ ρ c yst hτ =>
       cases hc with
       | keep _ hc' => exact ⟨_, .single (.dup hτ), .sync hc'⟩
@@ -543,6 +597,16 @@ theorem step_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
     obtain ⟨rfl, rfl, rfl⟩ : x = AVal.word a ∧ z = AVal.word b ∧ S = σ' := by
       simpa [words] using hσeq
     exact ⟨_, .single (.op hb'), .sync hc⟩
+  | @gasWin k g σ2 sc oc y hg hc =>
+    -- window exit: the source performs the call at its read word; the fused
+    -- step reproduces it from the remembered admission
+    obtain ⟨args, rets, σ', yst', hσeq, hb, rfl⟩ := astep_op_inv hstep
+    rcases args with _ | ⟨a, args'⟩
+    · exact absurd hb (gasCall_arity_absurd (k := k))
+    · obtain ⟨rfl, hσ2⟩ : g = a ∧ σ2 = words args' ++ σ' := by
+        simpa [words] using hσeq
+      subst hσ2
+      exact ⟨_, .single (.gasCall hg hb), .sync hc⟩
 
 /-- Multi-step forward simulation (reflexive-transitive closure), threading
 the suffix and stack invariants along the source run. -/
@@ -572,6 +636,10 @@ theorem halt_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
       cases hc with
       | keep _ hc' => exact .op hb
       | dblIszero _ => exact absurd hb iszero_no_halt
+      | gasFuse _ => exact absurd hb gas_no_halt
+    | @gasCall k g args c σ yst yst' hg hb =>
+      cases hc with
+      | keep _ hc' => exact .gasCall hg hb
   | dz1 hc =>
     obtain ⟨args, σ', -, hb⟩ := ahalt_op_inv hhalt
     exact absurd hb iszero_no_halt
@@ -586,13 +654,21 @@ theorem halt_sim [model : ExternalModel] {R : List Label} {prog prog' : List Asm
     obtain ⟨args, σ', -, hb⟩ := ahalt_op_inv hhalt
     exact (flipOp_no_halt hf hb).elim
   | dz2 _ => exact absurd hhalt (by intro h; cases h)
+  | @gasWin k g σ2 sc oc y hg hc =>
+    obtain ⟨args, σ', hσeq, hb⟩ := ahalt_op_inv hhalt
+    rcases args with _ | ⟨a, args'⟩
+    · exact absurd hb (gasCall_arity_absurd (k := k))
+    · obtain ⟨rfl, hσ2⟩ : g = a ∧ σ2 = words args' ++ σ' := by
+        simpa [words] using hσeq
+      subst hσ2
+      exact .gasCall hg hb
 
 /-! ### Endpoint inversion and the packaged bridge lemmas -/
 
 /-- With empty source code, `Match` forces the optimized configuration to be
 identical (same empty code, stack, and state). -/
-theorem match_empty_left {R : List Label} {σ : List AVal} {y : EvmState}
-    {a' : AConf} (hm : Match R ⟨[], σ, y⟩ a') :
+theorem match_empty_left [model : ExternalModel] {R : List Label} {σ : List AVal} {y : EvmState}
+    {a' : AConf} (hm : Match (model := model) R ⟨[], σ, y⟩ a') :
     a' = ⟨[], σ, y⟩ := by
   cases hm with
   | sync hc => rw [codeRel_nil_left hc]

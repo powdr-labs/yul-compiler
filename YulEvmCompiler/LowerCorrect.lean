@@ -1,4 +1,5 @@
 import YulEvmCompiler.LowerDefs
+import YulEvmCompiler.GasTx
 set_option warningAsError true
 /-! # YulEvmCompiler.LowerCorrect
 
@@ -8,8 +9,18 @@ arbitrary finite EVM trace supplied by `ExternalsRealized`; placing no
 invariant on its intermediate states admits arbitrary init/callee code,
 nested calls and creations, and reentrancy. Both cases
 preserve the configuration correspondence (`ConfMatch`, see
-`YulEvmCompiler.LowerDefs`) and have existential gas bounds that add along
-executions.
+`YulEvmCompiler.LowerDefs`).
+
+Gas is tracked by an existential threshold (nothing is claimed for
+underfunded runs) together with a residual lower bound given by a monotone,
+unbounded transformer (`GasTx`): a step funded with `bnd` gas finishes with
+at least `tx.f s.gasAvailable` gas. Every step of the current instruction
+set instantiates the additive transformer `GasTx.sub` (lose at most a
+constant), but composition (`asteps_sim`) is stated and proved for the
+general class, so a step whose loss is proportional to the starting gas — an
+EIP-150 gas-forwarding call, `GasTx.callLoss` — composes without changing
+any statement again (`GasOracle.no_additive_bound_under_eip150` is why the
+additive special case cannot express it).
 -/
 
 namespace YulEvmCompiler
@@ -46,17 +57,17 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     (hlow : lowerProg imm prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
     {a b : AConf} (hstep : AStep prog a b) (hsuf : a.code <:+ prog)
     (hcap : a.stk.length ≤ 1023) :
-    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) imm prog is a s →
+    ∃ (bnd : Nat) (tx : GasTx), ∀ s : State, ConfMatch (payload := payload) imm prog is a s →
       bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ ConfMatch (payload := payload) imm prog is b s'
-        ∧ s.gasAvailable - bnd ≤ s'.gasAvailable := by
+        ∧ tx.f s.gasAvailable ≤ s'.gasAvailable := by
   cases hstep with
   | @push v c σ yst =>
     obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
       locate hlow hsuf
     obtain rfl : [Instr.pushMin (conv v)] = isI := by
       simpa [lowerInstr] using hI
-    refine ⟨40000, ?_⟩
+    refine ⟨40000, .sub (40000), ?_⟩
     intro s hm hgas
     have hpos : codeSize prog - codeSize (Asm.push v :: c) = codeSize pre := by
       rw [codeSize_cons]
@@ -84,7 +95,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
       locate hlow hsuf
     obtain rfl : [Instr.push ⟨32, by norm_num⟩ (conv (imm key))] = isI := by
       simpa [lowerInstr] using hI
-    refine ⟨40000, ?_⟩
+    refine ⟨40000, .sub (40000), ?_⟩
     intro s hm hgas
     have hpos : codeSize prog - codeSize (Asm.pushImmutable key :: c) = codeSize pre := by
       rw [codeSize_cons]
@@ -119,7 +130,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     by_cases hcall : IsCallOp yop
     · have hsource := (builtinWithExternal_iff_builtin_of_call hcall).mp hstepOp
       obtain ⟨bnd, H⟩ := hexternal.calls.call hcall hop hsource
-      refine ⟨bnd, ?_⟩
+      refine ⟨bnd, .sub (bnd), ?_⟩
       intro s hm hgas
       have hdec := decoded_op hm.frame (assembleWithPayload_at₁ hbytes payload)
         (by rw [hm.pc, hpos, hlenPre])
@@ -143,7 +154,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
       · have hsource :=
           (builtinWithExternal_iff_createOnly_of_create hcreate).mp hstepOp
         obtain ⟨bnd, H⟩ := hexternal.creates.create hcreate hop hsource
-        refine ⟨bnd, ?_⟩
+        refine ⟨bnd, .sub (bnd), ?_⟩
         intro s hm hgas
         have hdec := decoded_op hm.frame (assembleWithPayload_at₁ hbytes payload)
           (by rw [hm.pc, hpos, hlenPre])
@@ -172,7 +183,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
             simp [opTable] at hop
         have hlocal :=
           (builtinWithExternal_iff_stepOp_of_not_external hnotExternal).mp hstepOp
-        refine ⟨opBound yop args, ?_⟩
+        refine ⟨opBound yop args, .sub (opBound yop args), ?_⟩
         intro s hm hgas
         have hok := opStep hop hlocal
           (σ := mapStk prog σ)
@@ -189,12 +200,38 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
             simp only [Asm.size] at hsize
             omega)
         · rw [hstk', mapStk_words]
+  | @gasCall k g args rets c σ yst yst' hg hstepOp =>
+    obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
+      locate hlow hsuf
+    obtain rfl : [Instr.op .GAS, Instr.op k.target] = isI := by
+      simpa [lowerInstr] using hI
+    have hsource := (builtinWithExternal_iff_builtin_of_call k.isCallOp).mp hstepOp
+    obtain ⟨bnd, tx, H⟩ := hexternal.gasCalls.gasCall hg hsource
+    refine ⟨bnd, tx, ?_⟩
+    intro s hm hgas
+    have hpos : codeSize prog - codeSize (Asm.gasCall k :: c) = codeSize pre := by
+      rw [codeSize_cons]
+      omega
+    obtain ⟨s', hsteps, hf', hsm', hpc', hstk', hg'⟩ :=
+      H (by simpa only [List.append_assoc] using assembleWithPayload_at₂ hbytes payload)
+        (by rw [hm.pc, hpos, hlenPre])
+        hm.frame hm.smatch
+        (by rw [hm.stack, mapStk_words])
+        hgas
+        (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); omega)
+    refine ⟨s', hsteps, ⟨hf', hsm', ?_, ?_, hm.imms_step (builtinWithExternal_immutable_eq hstepOp)⟩, hg'⟩
+    · show s'.pc = UInt256.ofNat (codeSize prog - codeSize c)
+      rw [hpc', hlenPre]
+      exact congrArg UInt256.ofNat (by
+        simp only [Asm.size] at hsize
+        omega)
+    · rw [hstk', mapStk_words]
   | @dup n v τ ρ c yst hτ =>
     obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
       locate hlow hsuf
     obtain rfl : [Instr.op (.Dup ⟨n⟩)] = isI := by
       simpa [lowerInstr] using hI
-    refine ⟨40000, ?_⟩
+    refine ⟨40000, .sub (40000), ?_⟩
     intro s hm hgas
     have hpos : codeSize prog - codeSize (Asm.dup n :: c) = codeSize pre := by
       rw [codeSize_cons]
@@ -224,7 +261,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
       locate hlow hsuf
     obtain rfl : [Instr.op (.Swap ⟨n⟩)] = isI := by
       simpa [lowerInstr] using hI
-    refine ⟨40000, ?_⟩
+    refine ⟨40000, .sub (40000), ?_⟩
     intro s hm hgas
     have hpos : codeSize prog - codeSize (Asm.swap n :: c) = codeSize pre := by
       rw [codeSize_cons]
@@ -254,7 +291,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
       locate hlow hsuf
     obtain rfl : [Instr.op .POP] = isI := by
       simpa [lowerInstr] using hI
-    refine ⟨40000, ?_⟩
+    refine ⟨40000, .sub (40000), ?_⟩
     intro s hm hgas
     have hpos : codeSize prog - codeSize (Asm.pop :: c) = codeSize pre := by
       rw [codeSize_cons]
@@ -276,7 +313,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
       locate hlow hsuf
     obtain rfl : [Instr.op .JUMPDEST] = isI := by
       simpa [lowerInstr] using hI
-    refine ⟨40000, ?_⟩
+    refine ⟨40000, .sub (40000), ?_⟩
     intro s hm hgas
     have hpos : codeSize prog - codeSize (Asm.label l :: c) = codeSize pre := by
       rw [codeSize_cons]
@@ -300,7 +337,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     simp only [lowerInstr, hres] at hI
     obtain rfl : [Instr.push labelWidthFin (UInt256.ofNat aL), Instr.op .JUMP] = isI := by
       simpa using hI
-    refine ⟨40000 + 40000 + 40000, ?_⟩
+    refine ⟨40000 + 40000 + 40000, .sub (40000 + 40000 + 40000), ?_⟩
     intro s hm hgas
     have hpos : codeSize prog - codeSize (Asm.jump l :: c) = codeSize pre := by
       rw [codeSize_cons]
@@ -355,7 +392,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     simp only [lowerInstr, hres] at hI
     obtain rfl : [Instr.push labelWidthFin (UInt256.ofNat aL), Instr.op .JUMPI] = isI := by
       simpa using hI
-    refine ⟨40000 + 40000 + 40000, ?_⟩
+    refine ⟨40000 + 40000 + 40000, .sub (40000 + 40000 + 40000), ?_⟩
     intro s hm hgas
     have hpos : codeSize prog - codeSize (Asm.jumpi l :: c) = codeSize pre := by
       rw [codeSize_cons]
@@ -415,7 +452,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
       locate hlow hsuf
     simp only [lowerInstr] at hI
     obtain ⟨aL, hres, rfl⟩ := Option.map_eq_some_iff.mp hI
-    refine ⟨40000 + 40000, ?_⟩
+    refine ⟨40000 + 40000, .sub (40000 + 40000), ?_⟩
     intro s hm hgas
     have hpos : codeSize prog - codeSize (Asm.jumpi l :: c) = codeSize pre := by
       rw [codeSize_cons]
@@ -462,7 +499,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
       locate hlow hsuf
     simp only [lowerInstr] at hI
     obtain ⟨aL, hres, rfl⟩ := Option.map_eq_some_iff.mp hI
-    refine ⟨40000, ?_⟩
+    refine ⟨40000, .sub (40000), ?_⟩
     intro s hm hgas
     have hpos : codeSize prog - codeSize (Asm.pushLabel l :: c) = codeSize pre := by
       rw [codeSize_cons]
@@ -499,7 +536,7 @@ theorem astep_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
       locate_label_withPayload hlow hfind payload
     obtain rfl : [Instr.op .JUMP] = isI := by
       simpa [lowerInstr] using hI
-    refine ⟨40000 + 40000, ?_⟩
+    refine ⟨40000 + 40000, .sub (40000 + 40000), ?_⟩
     intro s hm hgas
     have hpos : codeSize prog - codeSize (Asm.dynJump :: c) = codeSize pre := by
       rw [codeSize_cons]
@@ -550,7 +587,7 @@ theorem externalStaticHaltStep [model : ExternalModel]
     {yop : Op} {o : Operation} (hop : opTable yop = some o)
     (hexternal : IsExternalOp yop)
     {args : List U256} {yst yst' : EvmState}
-    (hhalt : builtinWithExternal model.calls model.creates .any yop args yst (.halt yst'))
+    (hhalt : builtinWithExternal model.calls model.creates model.gas yop args yst (.halt yst'))
     {code : ByteArray} {pre post : List UInt8} {σ : List UInt256} {s : State}
     (hcode : code = mkCode (pre ++ (Instr.op o).bytes ++ post))
     (hf : FrameOK code s) (hm : StateMatch yst s)
@@ -623,6 +660,68 @@ theorem externalStaticHaltStep [model : ExternalModel]
   case gas => simp [opTable] at hop
   all_goals exact absurd hexternal (by decide)
 
+/-- **Phase B, fused-call static halt (call half)**: the static-context halt
+of a fused gas-forwarding call, with an *arbitrary* machine word `w` in the
+gas slot — the target's `GAS` result rather than the source's oracle word.
+The halt is value-driven, so the slot's content is irrelevant: only a
+value-bearing `call` in a static frame halts; the other three kinds never
+produce a relational halt. -/
+theorem gasCallStaticHaltStep [model : ExternalModel]
+    {k : GasCallKind} {g : U256} {args : List U256} {yst yst' : EvmState}
+    (hhalt : builtinWithExternal model.calls model.creates model.gas k.op
+      (g :: args) yst (.halt yst'))
+    {code : ByteArray} {pre post : List UInt8} {w : UInt256} {σ : List UInt256}
+    {s : State}
+    (hcode : code = mkCode (pre ++ (Instr.op k.target).bytes ++ post))
+    (hf : FrameOK code s) (hm : StateMatch yst s)
+    (hpc : s.pc = UInt256.ofNat pre.length)
+    (hstk : s.stack = w :: (args.map conv ++ σ))
+    (hcap : s.stack.length + (k.target).pushArity ≤ 1024 + (k.target).popArity)
+    (hgas : Gas.baseCost s.fork k.target ≤ s.gasAvailable) :
+    HaltStep s yst' := by
+  have hstatic : yst.env.static = true :=
+    builtinWithExternal_halt_external_imp_static (Or.inl k.isCallOp) hhalt
+  have hperm : s.executionEnv.permitStateMutation = false :=
+    hm.perm_of_static_true hstatic
+  have hdec : s.decodedOp = some k.target :=
+    decoded_op hf hcode hpc (opTable_roundtrip k.opTable_op).1
+      (opTable_roundtrip k.opTable_op).2 (opTable_available k.opTable_op)
+  cases k
+  case call =>
+    rcases args with _|⟨t,_|⟨val,_|⟨ao,_|⟨al,_|⟨ro,_|⟨rl,_|⟨e,rest⟩⟩⟩⟩⟩⟩⟩ <;>
+      simp only [GasCallKind.op, GasCallKind.target, builtinWithExternal,
+        hstatic, true_and] at hhalt hdec ⊢
+    split at hhalt
+    · rename_i hval
+      obtain rfl : yst' = { yst with halted := some (.staticViolation, []) } := by
+        simpa using hhalt
+      have hstk7 : s.stack = w :: conv t :: conv val :: conv ao :: conv al ::
+          conv ro :: conv rl :: σ := by simpa using hstk
+      exact staticHaltStepGen hm hf.callStack
+        (EVM.Step.running hf.running hf.noPrecompile
+          (StepRunning.callStatic s w (conv t) (conv val) (conv ao) (conv al)
+            (conv ro) (conv rl) σ hdec hstk7 hperm
+            (by rw [conv_toNat]; intro h; exact hval (BitVec.toNat_injective (by simpa using h)))
+            hgas hcap))
+    · exfalso
+      obtain ⟨resp, -, heq⟩ := hhalt
+      simp at heq
+  case callcode =>
+    exfalso
+    rcases args with _|⟨t,_|⟨val,_|⟨ao,_|⟨al,_|⟨ro,_|⟨rl,_|⟨e,rest⟩⟩⟩⟩⟩⟩⟩ <;>
+      simp [GasCallKind.op, builtinWithExternal,
+        YulSemantics.EVM.externalCall] at hhalt
+  case delegatecall =>
+    exfalso
+    rcases args with _|⟨t,_|⟨io,_|⟨isz,_|⟨oo,_|⟨ol,_|⟨e,rest⟩⟩⟩⟩⟩⟩ <;>
+      simp [GasCallKind.op, builtinWithExternal,
+        YulSemantics.EVM.externalCall] at hhalt
+  case staticcall =>
+    exfalso
+    rcases args with _|⟨t,_|⟨io,_|⟨isz,_|⟨oo,_|⟨ol,_|⟨e,rest⟩⟩⟩⟩⟩⟩ <;>
+      simp [GasCallKind.op, builtinWithExternal,
+        YulSemantics.EVM.externalCall] at hhalt
+
 set_option linter.unusedSimpArgs false in
 set_option linter.unusedTactic false in
 set_option linter.unreachableTactic false in
@@ -675,28 +774,74 @@ theorem ahalt_sim [model : ExternalModel]
         (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); first | ((try simp only [Operation.pushArity, Operation.popArity]); omega) | (have := op_arity_bound o; omega)) hgas
       obtain ⟨s', hstep, hsm', hcs', hhm'⟩ := hhalt
       exact ⟨s', .trans hstep (.refl _), hsm', hcs', hhm'⟩
+  | @gasCall k g args c σ yst yst2 hg hstepOp =>
+    obtain ⟨pre, isPre, isI, isC, hsplit, hI, hC, hbytes, hlenPre, hsize⟩ :=
+      locate hlow hsuf
+    obtain rfl : [Instr.op .GAS, Instr.op k.target] = isI := by
+      simpa [lowerInstr] using hI
+    refine ⟨40000 + 40000, ?_⟩
+    intro s hm hgas
+    have hpos : codeSize prog - codeSize (Asm.gasCall k :: c) = codeSize pre := by
+      rw [codeSize_cons]
+      omega
+    obtain ⟨s1, hstep1, hf1, hsm1, hpc1, hstk1, hg1⟩ :=
+      gasOpStep (post := (Instr.op k.target).bytes ++ assembleBytes isC ++ payload)
+        (assembleWithPayload_at₂ hbytes payload)
+        hm.frame hm.smatch
+        (by rw [hm.pc, hpos, hlenPre])
+        rfl
+        (by have hlen : s.stack.length ≤ 1023 := (by rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap); omega)
+        (by omega)
+    have hhalt2 : HaltStep s1 yst' :=
+      gasCallStaticHaltStep hstepOp
+        (pre := assembleBytes isPre ++ (Instr.op .GAS).bytes)
+        (post := assembleBytes isC ++ payload)
+        (w := UInt256.ofNat (s.gasAvailable - 2))
+        (σ := mapStk prog σ)
+        (assembleWithPayload_at₂' hbytes payload)
+        hf1 hsm1
+        (by rw [hpc1]
+            exact congrArg UInt256.ofNat (by simp [Instr.bytes]))
+        (by rw [hstk1, hm.stack, mapStk_words])
+        (by
+          have hlen : s.stack.length ≤ 1023 := by
+            rw [hm.stack]; simp only [mapStk, List.length_map]; exact hcap
+          rw [hstk1]
+          simp only [List.length_cons, GasCallKind.pushArity_target,
+            GasCallKind.popArity_target]
+          omega)
+        (by
+          have hfork : s1.fork = .Osaka := hf1.fork
+          rw [hfork, hg1]
+          have := baseCost_le_40000 k.target
+          omega)
+    obtain ⟨s2, hstep2, hsm2, hcs2, hhm2⟩ := hhalt2
+    exact ⟨s2, .trans hstep1 (.trans hstep2 (.refl _)), hsm2, hcs2, hhm2⟩
 
-/-- **Phase B, many steps**: bounds add along an Asm execution. -/
+/-- **Phase B, many steps**: transformers compose along an Asm execution —
+each step's threshold is pushed back through the transformers before it
+(`GasTx.exists_threshold`), and the residuals chain by monotonicity. -/
 theorem asteps_sim [model : ExternalModel] (hexternal : ExternalsRealized model)
     {prog : List Asm} {is : List Instr} {payload : List UInt8}
     (hlow : lowerProg imm prog = some is) (hsmall : codeSize prog < 256 ^ labelWidth)
     {a b : AConf} (hsteps : ASteps prog a b) (hsuf : a.code <:+ prog)
     (hbound : ∀ mid, ASteps prog a mid → mid.stk.length ≤ 1023) :
-    ∃ bnd : Nat, ∀ s : State, ConfMatch (payload := payload) imm prog is a s →
+    ∃ (bnd : Nat) (tx : GasTx), ∀ s : State, ConfMatch (payload := payload) imm prog is a s →
       bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ ConfMatch (payload := payload) imm prog is b s'
-        ∧ s.gasAvailable - bnd ≤ s'.gasAvailable := by
+        ∧ tx.f s.gasAvailable ≤ s'.gasAvailable := by
   induction hsteps with
   | refl a =>
-    exact ⟨0, fun s hm _ => ⟨s, .refl _, hm, by omega⟩⟩
+    exact ⟨0, .sub 0, fun s hm _ => ⟨s, .refl _, hm, Nat.sub_le _ _⟩⟩
   | @head a₁ a₂ a₃ hstep hrest ih =>
-    obtain ⟨b1, H1⟩ := astep_sim hexternal hlow hsmall hstep hsuf (hbound a₁ (ASteps.refl a₁))
-    obtain ⟨b2, H2⟩ := ih (hstep.suffix hsuf) (fun mid h => hbound mid (ASteps.head hstep h))
-    refine ⟨b1 + b2, ?_⟩
+    obtain ⟨b1, t1, H1⟩ := astep_sim hexternal hlow hsmall hstep hsuf (hbound a₁ (ASteps.refl a₁))
+    obtain ⟨b2, t2, H2⟩ := ih (hstep.suffix hsuf) (fun mid h => hbound mid (ASteps.head hstep h))
+    obtain ⟨b0, hb1, hb2⟩ := t1.exists_threshold b1 b2
+    refine ⟨b0, t2.comp t1, ?_⟩
     intro s hm hgas
-    obtain ⟨s1, st1, hm1, hg1⟩ := H1 s hm (by omega)
-    obtain ⟨s2, st2, hm2, hg2⟩ := H2 s1 hm1 (by omega)
-    exact ⟨s2, st1.append st2, hm2, by omega⟩
+    obtain ⟨s1, st1, hm1, hg1⟩ := H1 s hm (Nat.le_trans hb1 hgas)
+    obtain ⟨s2, st2, hm2, hg2⟩ := H2 s1 hm1 (Nat.le_trans (hb2 _ hgas) hg1)
+    exact ⟨s2, st1.append st2, hm2, Nat.le_trans (t2.mono hg1) hg2⟩
 
 /-- **Phase B, halting run**: an Asm execution ending in a halt maps to an
 EVM execution ending in the matching halted state. -/
@@ -711,12 +856,13 @@ theorem arun_halt_sim [model : ExternalModel] (hexternal : ExternalsRealized mod
       bnd ≤ s.gasAvailable →
       ∃ s', Steps s s' ∧ StateMatch yst' s' ∧ s'.callStack = []
         ∧ HaltedMatch yst' s' := by
-  obtain ⟨b1, H1⟩ := asteps_sim hexternal hlow hsmall hsteps hsuf hbound
+  obtain ⟨b1, t1, H1⟩ := asteps_sim hexternal hlow hsmall hsteps hsuf hbound
   obtain ⟨b2, H2⟩ := ahalt_sim hlow hhalt (hsteps.suffix hsuf) (hbound b hsteps)
-  refine ⟨b1 + b2, ?_⟩
+  obtain ⟨b0, hb1, hb2⟩ := t1.exists_threshold b1 b2
+  refine ⟨b0, ?_⟩
   intro s hm hgas
-  obtain ⟨s1, st1, hm1, hg1⟩ := H1 s hm (by omega)
-  obtain ⟨s2, st2, hsm2, hcs2, hhm2⟩ := H2 s1 hm1 (by omega)
+  obtain ⟨s1, st1, hm1, hg1⟩ := H1 s hm (Nat.le_trans hb1 hgas)
+  obtain ⟨s2, st2, hsm2, hcs2, hhm2⟩ := H2 s1 hm1 (Nat.le_trans (hb2 _ hgas) hg1)
   exact ⟨s2, st1.append st2, hsm2, hcs2, hhm2⟩
 
 end YulEvmCompiler

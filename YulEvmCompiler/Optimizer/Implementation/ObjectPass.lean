@@ -38,7 +38,7 @@ open YulSemantics (VEnv Run Outcome Block Object)
 open YulSemantics.EVM (EvmState evmWithExternal Op Layout)
 
 variable [model : ExternalModel]
-local notation "yulD" => evmWithExternal model.calls model.creates YulSemantics.EVM.ExternalGas.any
+local notation "yulD" => evmWithExternal model.calls model.creates model.gas
 
 /-- Apply a pass to an object's **top** code block, leaving sub-objects and data
 segments byte-identical (so their compiled lengths — and hence every layout
@@ -177,7 +177,7 @@ theorem simplifyObject_correct (hexternal : ExternalsRealized model)
         ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
          (out = .halt ∧ HaltedMatch yst s')) := by
   have hb := resolveSimplifyBlock_equiv (calls := model.calls) (creates := model.creates)
-    L o.codeBlock
+    (gasOracle := model.gas) L o.codeBlock
   have hrun' : RunResolvedObject (simplifyObject o) L V yst out := by
     show Run yulD (resolveForLayoutStmts L (simplifyObject o).codeBlock) L.initState V yst out
     rw [simplifyObject_codeBlock]

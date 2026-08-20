@@ -21,9 +21,10 @@ open YulSemantics.EVM
 open-world call/create model. -/
 structure Rule where
   rewrite : {Γ : Ctx} → Term Γ 1 → Option (Term Γ 1)
-  sound : ∀ {calls : ExternalCalls} {creates : ExternalCreates} {Γ : Ctx}
+  sound : ∀ {calls : ExternalCalls} {creates : ExternalCreates}
+      {gasOracle : ExternalGas} {Γ : Ctx}
       {input output : Term Γ 1}, rewrite input = some output →
-      EquivExpr (evmWithExternal calls creates .any) input.emit output.emit
+      EquivExpr (evmWithExternal calls creates gasOracle) input.emit output.emit
 
 /-- Apply the first matching rule. -/
 def first (rules : List Rule) (input : Term Γ 1) : Option (Term Γ 1) :=
@@ -38,7 +39,7 @@ def first (rules : List Rule) (input : Term Γ 1) : Option (Term Γ 1) :=
 rules. -/
 theorem first_sound {rules : List Rule} {input output : Term Γ 1}
     (h : first rules input = some output) :
-    EquivExpr (evmWithExternal calls creates .any) input.emit output.emit := by
+    EquivExpr (evmWithExternal calls creates gasOracle) input.emit output.emit := by
   induction rules with
   | nil => simp [first] at h
   | cons rule rest ih =>
@@ -57,11 +58,11 @@ def run (rules : List Rule) (input : Term Γ 1) : Term Γ 1 :=
 
 /-- Running a proof-carrying rule set is semantics-preserving. -/
 theorem run_sound (rules : List Rule) (input : Term Γ 1) :
-    EquivExpr (evmWithExternal calls creates .any) input.emit (run rules input).emit := by
+    EquivExpr (evmWithExternal calls creates gasOracle) input.emit (run rules input).emit := by
   cases h : first rules input with
   | none => simp [run, h, EquivExpr.refl]
   | some output =>
       simpa [run, h] using
-        (first_sound (calls := calls) (creates := creates) h)
+        (first_sound (calls := calls) (creates := creates) (gasOracle := gasOracle) h)
 
 end YulEvmCompiler.Optimizer.Core

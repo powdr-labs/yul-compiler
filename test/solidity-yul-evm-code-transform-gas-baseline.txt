@@ -4,6 +4,7 @@
 # CI fails if this compiler's total rises above it while solc's is unchanged.
 # columns: fixture<TAB>ours<TAB>solc
 after_terminating_function.yul	24	30
+early_push_on_deep_swap.yul	282	1002
 nonempty_initial_layout.yul	0	210
 pops_in_reverting_branch.yul	61640	61580
 stackReuse/function_argument_reuse.yul	27344	27464

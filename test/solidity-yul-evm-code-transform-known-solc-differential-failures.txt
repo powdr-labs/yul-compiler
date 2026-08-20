@@ -4,7 +4,6 @@
 # Current reasons are unsupported/deep-stack constructs, returned compiler
 # bytecode whose encoding is intentionally different, and one recursive program
 # where our return stack overflows while solc remains running at the fuel bound.
-early_push_on_deep_swap.yul
 literal_loop.yul
 stackReuse/reuse_too_deep_slot.yul
 unassigned_return_variable.yul

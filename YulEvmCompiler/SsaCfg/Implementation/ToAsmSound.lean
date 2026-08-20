@@ -484,6 +484,8 @@ omit model in @[simp] theorem elideJumps_pushImmutable (key : String) (c : List 
   simp [elideJumps]
 omit model in @[simp] theorem elideJumps_op (yop : Op) (c : List Asm) :
     elideJumps (Asm.op yop :: c) = Asm.op yop :: elideJumps c := by simp [elideJumps]
+omit model in @[simp] theorem elideJumps_gasCall (k : GasCallKind) (c : List Asm) :
+    elideJumps (Asm.gasCall k :: c) = Asm.gasCall k :: elideJumps c := by simp [elideJumps]
 omit model in @[simp] theorem elideJumps_dup (n : Fin 16) (c : List Asm) :
     elideJumps (Asm.dup n :: c) = Asm.dup n :: elideJumps c := by simp [elideJumps]
 omit model in @[simp] theorem elideJumps_swapOp (n : Fin 16) (c : List Asm) :
@@ -521,6 +523,9 @@ theorem astep_elideJumps {prog : List Asm} (hnodup : (labelDefs prog).Nodup)
     exact ASteps.single AStep.pushImmutable
   | @op yop args rets c σ yst yst' hb =>
     simp only [elideConf, ToAsm.elideJumps_op]; exact ASteps.single (AStep.op hb)
+  | @gasCall k g args rets c σ yst yst' hg hb =>
+    simp only [elideConf, ToAsm.elideJumps_gasCall]
+    exact ASteps.single (AStep.gasCall hg hb)
   | @dup n v τ ρ c yst hlen =>
     simp only [elideConf, ToAsm.elideJumps_dup]
     exact ASteps.single (AStep.dup hlen)
@@ -581,6 +586,8 @@ theorem ahalt_elideJumps {prog : List Asm} {a : AConf} {yst' : EvmState}
   cases h with
   | @op yop args c σ yst _ hb =>
     simp only [elideConf, ToAsm.elideJumps_op]; exact AHalt.op hb
+  | @gasCall k g args c σ yst _ hg hb =>
+    simp only [elideConf, ToAsm.elideJumps_gasCall]; exact AHalt.gasCall hg hb
 
 /-! ## Stack extension
 
@@ -596,6 +603,7 @@ theorem AStep.extend {prog : List Asm} {a b : AConf} (below : List AVal)
   | push => simpa using AStep.push
   | pushImmutable => simpa using AStep.pushImmutable
   | op hb => simpa [List.append_assoc] using AStep.op hb
+  | gasCall hg hb => simpa [List.append_assoc] using AStep.gasCall hg hb
   | @dup n v τ ρ c yst hlen =>
     have := AStep.dup (model := model) (prog := prog) (n := n) (v := v) (τ := τ)
       (ρ := ρ ++ below) (c := c) (yst := yst) hlen
@@ -625,6 +633,7 @@ theorem AHalt.extend {prog : List Asm} {a : AConf} {yst' : EvmState}
     AHalt (model := model) prog ⟨a.code, a.stk ++ below, a.yst⟩ yst' := by
   cases h with
   | op hb => simpa [List.append_assoc] using AHalt.op hb
+  | gasCall hg hb => simpa [List.append_assoc] using AHalt.gasCall hg hb
 
 /-- The epilogue rotation `SWAP(m+1) … SWAP(m+r+1)`. -/
 def rotOps (m r : Nat) : List Asm :=
@@ -951,7 +960,7 @@ theorem shuffle_op_sim {sym keep : List SSlot} {args ds : List ValId} {yop : Op}
     {st st' : EvmState}
     (hsh : ToAsm.shuffle sym (args.map SSlot.val ++ keep) = some ops)
     (hget : R.getMany args = some vals)
-    (hb : builtinWithExternal model.calls model.creates .any yop vals st (.ok rets st'))
+    (hb : builtinWithExternal model.calls model.creates model.gas yop vals st (.ok rets st'))
     (hlen : ds.length = rets.length) (hnd : ds.Nodup)
     (hfresh : AgreeOn R (R.setMany ds rets) keep) :
     SimInstr (model := model) R (R.setMany ds rets) retLab (ops ++ [Asm.op yop])
@@ -991,8 +1000,8 @@ in the combined local/external relation (they are pure `stepOp` binaries, and
 `BitVec` `+`/`*`/`&&&`/`|||`/`^^^` commute, `eq` is symmetric). -/
 theorem builtin_comm {yop : Op} (hc : CommOp yop) {a b : U256} {st : EvmState}
     {res : YulSemantics.BuiltinResult U256 YulSemantics.EVM.EvmState}
-    (h : builtinWithExternal model.calls model.creates .any yop [a, b] st res) :
-    builtinWithExternal model.calls model.creates .any yop [b, a] st res := by
+    (h : builtinWithExternal model.calls model.creates model.gas yop [a, b] st res) :
+    builtinWithExternal model.calls model.creates model.gas yop [b, a] st res := by
   rcases hc with rfl | rfl | rfl | rfl | rfl | rfl <;>
     simp only [builtinWithExternal, YulSemantics.EVM.stepOp] at h ⊢
   · rw [bin_comm (fun x y => BitVec.add_comm x y)]; exact h
@@ -1179,7 +1188,7 @@ theorem emitTerm_halt_sim {isFunc : Bool} {f : Func} {L : ToAsm.LabelMap}
     (hemit : ToAsm.emitTerm isFunc f L fidx liveIn sym (.halt yop as) n
       = some (asmf, n'))
     (hget : R.getMany as = some args)
-    (hb : builtinWithExternal model.calls model.creates .any yop args st (.halt st'))
+    (hb : builtinWithExternal model.calls model.creates model.gas yop args st (.halt st'))
     (hmatch : StkMatch R retLab sym σr) :
     ∀ (prog c : List Asm), ∃ conf,
       ASteps (model := model) prog ⟨asmf ++ c, σr, st⟩ conf ∧
@@ -2829,7 +2838,7 @@ theorem exec_sim {P : Prog} {ord : Bool} {asm : List Asm}
     rw [hdefs] at hfresh hndefs
     obtain ⟨hndds, hndrest, hdisj⟩ := List.nodup_append.mp hndefs
     obtain ⟨vals, hget', hb'⟩ : ∃ vals, R₀.getMany args' = some vals ∧
-        builtinWithExternal model.calls model.creates .any yop vals st₀ (.ok rets st₁) := by
+        builtinWithExternal model.calls model.creates model.gas yop vals st₀ (.ok rets st₁) := by
       rcases hargs with rfl | ⟨hc, a, b, rfl, rfl⟩
       · exact ⟨args, hget, hb⟩
       · obtain ⟨va, vb, rfl, hswap⟩ := getMany_pair hget
@@ -2868,7 +2877,7 @@ theorem exec_sim {P : Prog} {ord : Bool} {asm : List Asm}
     obtain ⟨args', ops, keep, hkeep, hargs, hsh, ha1, -, -⟩ := emitInstr_op_shape hei
     subst ha1
     obtain ⟨vals, hget', hb'⟩ : ∃ vals, R₀.getMany args' = some vals ∧
-        builtinWithExternal model.calls model.creates .any yop vals st₀ (.halt st₁) := by
+        builtinWithExternal model.calls model.creates model.gas yop vals st₀ (.halt st₁) := by
       rcases hargs with rfl | ⟨hc, a, b, rfl, rfl⟩
       · exact ⟨args, hget, hb⟩
       · obtain ⟨va, vb, rfl, hswap⟩ := getMany_pair hget

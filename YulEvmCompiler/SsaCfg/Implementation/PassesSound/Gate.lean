@@ -14,7 +14,7 @@ inliner's soundness proof is stated against.
 
 namespace YulEvmCompiler.SsaCfg
 open YulSemantics.EVM (U256 EvmState Op builtinWithExternal stepOp ExternalCalls
-  ExternalCreates)
+  ExternalCreates ExternalGas)
 open YulSemantics (Outcome)
 
 /-! ## Purity leaves
@@ -42,30 +42,33 @@ theorem pureOp_flags {yop : Op} (h : pureOp yop = true) :
 /-- A pure built-in is never one of the open-world operations (`call`-family,
 `create`-family, `gas`), so its combined local/external relation is exactly the
 executable `stepOp` graph — which is what `evalPure` folds with. -/
-theorem builtin_of_pure {calls : ExternalCalls} {creates : ExternalCreates} {yop : Op}
+theorem builtin_of_pure {calls : ExternalCalls} {creates : ExternalCreates}
+    {gasOracle : ExternalGas} {yop : Op}
     (h : pureOp yop = true) {args : List U256} {st : EvmState}
     {r : YulSemantics.BuiltinResult U256 EvmState} :
-    builtinWithExternal calls creates .any yop args st r ↔ stepOp yop args st = some r := by
+    builtinWithExternal calls creates gasOracle yop args st r ↔ stepOp yop args st = some r := by
   cases yop <;> first
     | exact Iff.rfl
     | (exfalso; revert h; decide)
 
 /-- A pure built-in leaves the machine state untouched. -/
-theorem pure_state_eq {calls : ExternalCalls} {creates : ExternalCreates} {yop : Op}
+theorem pure_state_eq {calls : ExternalCalls} {creates : ExternalCreates}
+    {gasOracle : ExternalGas} {yop : Op}
     (hp : pureOp yop = true) {args : List U256} {st st' : EvmState} {rets : List U256}
-    (hb : builtinWithExternal calls creates .any yop args st (.ok rets st')) : st' = st :=
-  (YulSemantics.EVM.effects_sound_withExternal calls creates .any).write yop
+    (hb : builtinWithExternal calls creates gasOracle yop args st (.ok rets st')) : st' = st :=
+  (YulSemantics.EVM.effects_sound_withExternal calls creates gasOracle).write yop
     (pureOp_flags hp).2.2.1 args st (.ok rets st') hb
 
 /-- **CSE leaf**: a pure built-in's results are a function of its arguments
 alone, so two evaluations of the same `(op, args)` — in *any* two states, hence
 at any two program points — return the same values. -/
-theorem pure_rets_eq {calls : ExternalCalls} {creates : ExternalCreates} {yop : Op}
+theorem pure_rets_eq {calls : ExternalCalls} {creates : ExternalCreates}
+    {gasOracle : ExternalGas} {yop : Op}
     (hp : pureOp yop = true) {args : List U256} {st1 st2 st1' st2' : EvmState}
     {rets1 rets2 : List U256}
-    (h1 : builtinWithExternal calls creates .any yop args st1 (.ok rets1 st1'))
-    (h2 : builtinWithExternal calls creates .any yop args st2 (.ok rets2 st2')) : rets1 = rets2 :=
-  (YulSemantics.EVM.effects_sound_withExternal calls creates .any).read yop
+    (h1 : builtinWithExternal calls creates gasOracle yop args st1 (.ok rets1 st1'))
+    (h2 : builtinWithExternal calls creates gasOracle yop args st2 (.ok rets2 st2')) : rets1 = rets2 :=
+  (YulSemantics.EVM.effects_sound_withExternal calls creates gasOracle).read yop
     (pureOp_flags hp).2.1 args st1 st2 rets1 st1' rets2 st2' h1 h2
 
 /-- Invert a successful `evalPure`: the folder saw a clean single-value return
@@ -87,13 +90,14 @@ theorem evalPure_stepOp {yop : Op} {args : List U256} {v : U256}
 /-- **Constant-folding leaf**: whatever the folder computed on `EvmState.init` is
 what the built-in returns in *any* state, and the state is untouched. This is the
 transport that lets `constFold` replace `.op [d] yop args` by `.const d v`. -/
-theorem evalPure_transport {calls : ExternalCalls} {creates : ExternalCreates} {yop : Op}
+theorem evalPure_transport {calls : ExternalCalls} {creates : ExternalCreates}
+    {gasOracle : ExternalGas} {yop : Op}
     (hp : pureOp yop = true) {args : List U256} {v : U256}
     (he : evalPure yop args = some v) {st st' : EvmState} {rets : List U256}
-    (hb : builtinWithExternal calls creates .any yop args st (.ok rets st')) :
+    (hb : builtinWithExternal calls creates gasOracle yop args st (.ok rets st')) :
     rets = [v] ∧ st' = st := by
   obtain ⟨s0, hstep⟩ := evalPure_stepOp he
-  have hb0 : builtinWithExternal calls creates .any yop args YulSemantics.EVM.EvmState.init
+  have hb0 : builtinWithExternal calls creates gasOracle yop args YulSemantics.EVM.EvmState.init
       (.ok [v] s0) := (builtin_of_pure hp).mpr hstep
   exact ⟨pure_rets_eq hp hb hb0, pure_state_eq hp hb⟩
 

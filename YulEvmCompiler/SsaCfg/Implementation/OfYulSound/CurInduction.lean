@@ -18,7 +18,7 @@ open YulSemantics.EVM (U256 EvmState Op builtinWithExternal evmWithExternal)
 
 section Semantics
 variable [model : ExternalModel]
-local notation "yulD" => evmWithExternal model.calls model.creates YulSemantics.EVM.ExternalGas.any
+local notation "yulD" => evmWithExternal model.calls model.creates model.gas
 
 omit model in
 /-- A successful translation preserves current-id validity and records whether
@@ -1444,7 +1444,7 @@ theorem sim_exprStmt_halt {P : Prog} {f : Func} {fenv : FMap} {env : VMap}
     (hfin : CurFinal f s₁.fn)
     (htrA : trArgs fenv env args s₀ = some (ids, sA))
     (hA : EOutL (model := model) P f s₀ sA R ids argvals yst yst1)
-    (hb : builtinWithExternal model.calls model.creates .any op argvals yst1 (.halt yst'))
+    (hb : builtinWithExternal model.calls model.creates model.gas op argvals yst1 (.halt yst'))
     (htr : trStmt fenv env lctx rets (.exprStmt (.builtin op args)) s₀
         = some (renv, s₁)) :
     SOut (model := model) P f lctx rets s₀ s₁ R renv V yst yst' .halt := by
@@ -1473,7 +1473,7 @@ theorem sim_exprStmt_op {P : Prog} {f : Func} {fenv : FMap} {env : VMap}
     (huniq : env.Unique)
     (htrA : trArgs fenv env args s₀ = some (ids, sA))
     (hA : EOutL (model := model) P f s₀ sA R ids argvals yst yst1)
-    (hb : builtinWithExternal model.calls model.creates .any op argvals yst1
+    (hb : builtinWithExternal model.calls model.creates model.gas op argvals yst1
       (.ok [] yst'))
     (htr : trStmt fenv env lctx rets (.exprStmt (.builtin op args)) s₀
         = some (renv, s₁)) :

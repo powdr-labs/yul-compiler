@@ -52,8 +52,8 @@ open YulSemantics.EVM
 open YulEvmCompiler.Optimizer.Core (Ctx Term Value Var Args PureOp ingest ingest_emit
   isValueExpr valueEval valuesEval)
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates ExternalGas.any
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ## Classification -/
 
@@ -101,7 +101,7 @@ def helper? (litOK : Bool) (decl : FDecl D) : Option Helper :=
 assignment of the classified term's erasure (by the Core boundary theorem),
 and under the resolution-stable mode the term reads variables only. -/
 theorem helper?_shape {litOK : Bool} {decl : FDecl D} {h : Helper}
-    (hcl : helper? (calls := calls) (creates := creates) litOK decl = some h) :
+    (hcl : helper? (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK decl = some h) :
     decl = ⟨h.params, [h.ret], [.assign [h.ret] h.term.emit]⟩ ∧
       (litOK || h.term.argsVarsOnly) = true := by
   unfold helper? at hcl
@@ -257,7 +257,7 @@ def inlineHelpersExpr (litOK : Bool) (static : FunEnv D) : Expr Op → Expr Op
   | .builtin op args => .builtin op (inlineHelpersArgs litOK static args)
   | .call fn args =>
       let args' := inlineHelpersArgs litOK static args
-      match resolveHelper (calls := calls) (creates := creates) litOK static fn with
+      match resolveHelper (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK static fn with
       | some h => rewriteCall litOK h fn args'
       | none => .call fn args'
 
@@ -352,14 +352,14 @@ def inlineHelpersCode (litOK : Bool) (static : FunEnv D) : Code Op → Code Op
 
 theorem inlineHelpersExpr_call_none {litOK : Bool} (static : FunEnv D) (fn : Ident)
     (args : List (Expr Op))
-    (h : resolveHelper (calls := calls) (creates := creates) litOK static fn = none) :
+    (h : resolveHelper (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK static fn = none) :
     inlineHelpersExpr litOK static (.call fn args) =
       .call fn (inlineHelpersArgs litOK static args) := by
   rw [inlineHelpersExpr, h]
 
 theorem inlineHelpersExpr_call_some {litOK : Bool} (static : FunEnv D) (fn : Ident)
     (args : List (Expr Op)) {h : Helper}
-    (hres : resolveHelper (calls := calls) (creates := creates) litOK static fn = some h) :
+    (hres : resolveHelper (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK static fn = some h) :
     inlineHelpersExpr litOK static (.call fn args) =
       rewriteCall litOK h fn (inlineHelpersArgs litOK static args) := by
   rw [inlineHelpersExpr, hres]
@@ -508,11 +508,11 @@ static scope. This is what lets a call site's rewrite consult the *original*
 body shape after the pass has run over every declaration. -/
 theorem inlineHelpersDecl_helper {litOK litOK' : Bool} (static : FunEnv D) {decl : FDecl D}
     {h : Helper}
-    (hcl : helper? (calls := calls) (creates := creates) litOK' decl = some h) :
+    (hcl : helper? (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK' decl = some h) :
     inlineHelpersDecl litOK static decl = decl := by
   obtain ⟨hdecl, -⟩ := helper?_shape hcl
   subst hdecl
-  have hbody : inlineHelpersBlock (calls := calls) (creates := creates) litOK static
+  have hbody : inlineHelpersBlock (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK static
       [Stmt.assign [h.ret] h.term.emit] = [Stmt.assign [h.ret] h.term.emit] := by
     rw [inlineHelpersBlock, inlineHelpersStmts, inlineHelpersStmt,
       inlineHelpersExpr_emit_fixed _ _ h.stringFree, inlineHelpersStmts]
@@ -776,7 +776,7 @@ theorem identity_call_add_iff {funs cenv : FunEnv D} {V st fn e}
         simp only [List.map_cons, List.map_nil] at *
         rw [hret] at *
         exact Step.builtinOk (args_add_zero_value he)
-          (pureFn_builtin (calls := calls) (creates := creates) (by simp [pureFn]) _)
+          (pureFn_builtin (calls := calls) (creates := creates) (gasOracle := gasOracle) (by simp [pureFn]) _)
     | callHalt hargs hlookup _ hbody =>
         obtain ⟨v, rfl, he⟩ := args_singleton_value_inv hargs
         rw [hl] at hlookup
@@ -790,14 +790,14 @@ theorem identity_call_add_iff {funs cenv : FunEnv D} {V st fn e}
     cases hadd with
     | builtinOk hargs hb =>
         obtain ⟨v, rfl, he⟩ := args_add_zero_value_inv hargs
-        have hr := pureFn_builtin_inv (calls := calls) (creates := creates) (w := v)
+        have hr := pureFn_builtin_inv (calls := calls) (creates := creates) (gasOracle := gasOracle) (w := v)
           (h := by simp [pureFn]) hb
         injection hr with hvals hst
         subst hvals; subst hst
         exact identity_call_value he hl
     | builtinHalt hargs hb =>
         obtain ⟨v, rfl, he⟩ := args_add_zero_value_inv hargs
-        have hr := pureFn_builtin_inv (calls := calls) (creates := creates) (w := v)
+        have hr := pureFn_builtin_inv (calls := calls) (creates := creates) (gasOracle := gasOracle) (w := v)
           (h := by simp [pureFn]) hb
         simp at hr
     | builtinArgsHalt hargs =>
@@ -823,11 +823,11 @@ theorem term_emit_eval {funs : FunEnv D} {V : VEnv D} {st : EvmState} {Γ : Ctx}
     {arity : Nat} {op : PureOp arity} {targs : Args Γ arity}
     (hsf : (Term.builtin op targs).stringFree = true)
     {ws : List U256} {w : U256}
-    (hvals : valuesEval (calls := calls) (creates := creates) V
+    (hvals : valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V
       (targs.values.map Value.emit) = some ws)
     (hop : pureFn op.toOp ws = some w) :
     Step D funs V st (.expr (Term.builtin op targs).emit) (.eres (.vals [w] st)) := by
-  refine Step.builtinOk ?_ (pureFn_builtin (calls := calls) (creates := creates) hop st)
+  refine Step.builtinOk ?_ (pureFn_builtin (calls := calls) (creates := creates) (gasOracle := gasOracle) hop st)
   show Step D funs V st (.args (targs.values.map Value.emit)) _
   exact (Core.valuesEval_args_iff (fun e he => by
     obtain ⟨value, hvmem, rfl⟩ := List.mem_map.mp he
@@ -842,7 +842,7 @@ theorem term_emit_eval_inv {funs : FunEnv D} {V : VEnv D} {st : EvmState} {Γ : 
     {arity : Nat} {op : PureOp arity} {targs : Args Γ arity}
     (hsf : (Term.builtin op targs).stringFree = true) {r : EResult D}
     (h : Step D funs V st (.expr (Term.builtin op targs).emit) (.eres r)) :
-    ∃ ws w, valuesEval (calls := calls) (creates := creates) V
+    ∃ ws w, valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V
         (targs.values.map Value.emit) = some ws ∧
       pureFn op.toOp ws = some w ∧ r = .vals [w] st := by
   have hval : ∀ e ∈ targs.values.map Value.emit, isValueExpr e = true := by
@@ -860,7 +860,7 @@ theorem term_emit_eval_inv {funs : FunEnv D} {V : VEnv D} {st : EvmState} {Γ : 
         rw [Core.valuesEval_length hws, List.length_map, targs.length_eq]
       obtain ⟨w, hw⟩ := pureOp_pureFn op hlen
       rw [hvals] at hb
-      have hres := pureFn_builtin_inv (calls := calls) (creates := creates) hw hb
+      have hres := pureFn_builtin_inv (calls := calls) (creates := creates) (gasOracle := gasOracle) hw hb
       injection hres with hrets hst2
       subst hrets
       subst hst2
@@ -873,7 +873,7 @@ theorem term_emit_eval_inv {funs : FunEnv D} {V : VEnv D} {st : EvmState} {Γ : 
         rw [Core.valuesEval_length hws, List.length_map, targs.length_eq]
       obtain ⟨w, hw⟩ := pureOp_pureFn op hlen
       rw [hvals] at hb
-      have hres := pureFn_builtin_inv (calls := calls) (creates := creates) hw hb
+      have hres := pureFn_builtin_inv (calls := calls) (creates := creates) (gasOracle := gasOracle) hw hb
       cases hres
   | builtinArgsHalt hargs =>
       obtain ⟨ws, _, hr⟩ := (Core.valuesEval_args_iff hval).mp hargs
@@ -888,7 +888,7 @@ theorem term_subst_eval_inv {funs : FunEnv D} {V : VEnv D} {st : EvmState} {Γ :
     {args : List (Expr Op)} (hargs : ∀ e ∈ args, isValueExpr e = true)
     {r : EResult D}
     (h : Step D funs V st (.expr ((Term.builtin op targs).substEmit args)) (.eres r)) :
-    ∃ ws w, valuesEval (calls := calls) (creates := creates) V
+    ∃ ws w, valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V
         (targs.values.map (Value.substEmit args)) = some ws ∧
       pureFn op.toOp ws = some w ∧ r = .vals [w] st := by
   have hval : ∀ e ∈ targs.values.map (Value.substEmit args), isValueExpr e = true := by
@@ -907,7 +907,7 @@ theorem term_subst_eval_inv {funs : FunEnv D} {V : VEnv D} {st : EvmState} {Γ :
         rw [Core.valuesEval_length hws, List.length_map, targs.length_eq]
       obtain ⟨w, hw⟩ := pureOp_pureFn op hlen
       rw [hvals] at hb
-      have hres := pureFn_builtin_inv (calls := calls) (creates := creates) hw hb
+      have hres := pureFn_builtin_inv (calls := calls) (creates := creates) (gasOracle := gasOracle) hw hb
       injection hres with hrets hst2
       subst hrets
       subst hst2
@@ -920,7 +920,7 @@ theorem term_subst_eval_inv {funs : FunEnv D} {V : VEnv D} {st : EvmState} {Γ :
         rw [Core.valuesEval_length hws, List.length_map, targs.length_eq]
       obtain ⟨w, hw⟩ := pureOp_pureFn op hlen
       rw [hvals] at hb
-      have hres := pureFn_builtin_inv (calls := calls) (creates := creates) hw hb
+      have hres := pureFn_builtin_inv (calls := calls) (creates := creates) (gasOracle := gasOracle) hw hb
       cases hres
   | builtinArgsHalt hargs' =>
       obtain ⟨ws, _, hr⟩ := (Core.valuesEval_args_iff hval).mp hargs'
@@ -997,7 +997,7 @@ none. -/
 theorem helper_call_subst_iff {litOK : Bool} {funs funs' cenv : FunEnv D} {V st fn}
     {decl : FDecl D} {h : Helper}
     (hl : lookupFun funs fn = some (decl, cenv))
-    (hcl : helper? (calls := calls) (creates := creates) litOK decl = some h)
+    (hcl : helper? (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK decl = some h)
     {arity : Nat} {op : PureOp arity} {targs : Args h.params arity}
     (hterm : h.term = .builtin op targs)
     {args : List (Expr Op)}
@@ -1040,7 +1040,7 @@ theorem helper_call_subst_iff {litOK : Bool} {funs funs' cenv : FunEnv D} {V st 
           Term.substEmit]
         exact Step.builtinOk
           ((Core.valuesEval_args_iff hval).mpr ⟨ws, by rw [hcorr]; exact hws, rfl⟩)
-          (pureFn_builtin (calls := calls) (creates := creates) hw' _)
+          (pureFn_builtin (calls := calls) (creates := creates) (gasOracle := gasOracle) hw' _)
     | callHalt hargsE hlookup hlen' hbody =>
         rw [hl] at hlookup
         injection hlookup with heq
@@ -1062,7 +1062,7 @@ theorem helper_call_subst_iff {litOK : Bool} {funs funs' cenv : FunEnv D} {V st 
     subst hr
     -- recover the functional evaluation of *all* arguments
     have hall : ∀ e ∈ args,
-        (valueEval (calls := calls) (creates := creates) V e).isSome := by
+        (valueEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V e).isSome := by
       intro e hemem
       obtain ⟨p, hp⟩ := Core.exists_zip_left hlen hemem
       have hpmem : p ∈ h.params := (List.of_mem_zip hp).1
@@ -1147,7 +1147,7 @@ theorem Step.inlineHelpers_forward {litOK : Bool} {funs : FunEnv D} {V st code r
           have hlookup' : lookupFun outer fn = some (decl, cenv) := by
             simpa [lookupFun_append_of_none hs] using hlookup
           have htarget : lookupFun
-              (inlineHelpersFuns (calls := calls) (creates := creates) litOK static
+              (inlineHelpersFuns (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK static
                 ++ outer) fn = some (decl, cenv) := by
             simpa [lookupFun_inline_append_of_none hs] using hlookup'
           have hc := Step.callOk hargs' htarget hlen hbody hout
@@ -1172,7 +1172,7 @@ theorem Step.inlineHelpers_forward {litOK : Bool} {funs : FunEnv D} {V st code r
               inlineHelpersBlock] using hbody'
           have hc := Step.callOk hargs' htarget
             (by simpa [inlineHelpersDecl] using hlen) hbody'' hout
-          cases hh : helper? (calls := calls) (creates := creates) litOK sdecl with
+          cases hh : helper? (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK sdecl with
           | none =>
               rw [inlineHelpersCode, inlineHelpersExpr_call_none static fn args
                 (by simp [resolveHelper, hs, hh])]
@@ -1209,7 +1209,7 @@ theorem Step.inlineHelpers_forward {litOK : Bool} {funs : FunEnv D} {V st code r
                   have hlenargs : args.length = hp.params.length := by
                     rw [← hcond.1, hfixargs]
                   have hi := (helper_call_subst_iff
-                    (funs' := inlineHelpersFuns (calls := calls) (creates := creates)
+                    (funs' := inlineHelpersFuns (calls := calls) (creates := creates) (gasOracle := gasOracle)
                       litOK static ++ outer)
                     (hl := htarget) (hcl := hh) (hterm := hterm)
                     hlenargs hargsval).mp (by rw [hfixargs] at hc; exact hc)
@@ -1228,7 +1228,7 @@ theorem Step.inlineHelpers_forward {litOK : Bool} {funs : FunEnv D} {V st code r
           have hlookup' : lookupFun outer fn = some (decl, cenv) := by
             simpa [lookupFun_append_of_none hs] using hlookup
           have htarget : lookupFun
-              (inlineHelpersFuns (calls := calls) (creates := creates) litOK static
+              (inlineHelpersFuns (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK static
                 ++ outer) fn = some (decl, cenv) := by
             simpa [lookupFun_inline_append_of_none hs] using hlookup'
           have hc := Step.callHalt hargs' htarget hlen hbody
@@ -1253,7 +1253,7 @@ theorem Step.inlineHelpers_forward {litOK : Bool} {funs : FunEnv D} {V st code r
               inlineHelpersBlock] using hbody'
           have hc := Step.callHalt hargs' htarget
             (by simpa [inlineHelpersDecl] using hlen) hbody''
-          cases hh : helper? (calls := calls) (creates := creates) litOK sdecl with
+          cases hh : helper? (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK sdecl with
           | none =>
               rw [inlineHelpersCode, inlineHelpersExpr_call_none static fn args
                 (by simp [resolveHelper, hs, hh])]
@@ -1290,7 +1290,7 @@ theorem Step.inlineHelpers_forward {litOK : Bool} {funs : FunEnv D} {V st code r
                   have hlenargs : args.length = hp.params.length := by
                     rw [← hcond.1, hfixargs]
                   have hi := (helper_call_subst_iff
-                    (funs' := inlineHelpersFuns (calls := calls) (creates := creates)
+                    (funs' := inlineHelpersFuns (calls := calls) (creates := creates) (gasOracle := gasOracle)
                       litOK static ++ outer)
                     (hl := htarget) (hcl := hh) (hterm := hterm)
                     hlenargs hargsval).mp (by rw [hfixargs] at hc; exact hc)
@@ -1314,7 +1314,7 @@ theorem Step.inlineHelpers_forward {litOK : Bool} {funs : FunEnv D} {V st code r
           exact hc
       | some found =>
           rcases found with ⟨sdecl, closure⟩
-          cases hh : helper? (calls := calls) (creates := creates) litOK sdecl with
+          cases hh : helper? (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK sdecl with
           | none =>
               rw [inlineHelpersCode, inlineHelpersExpr_call_none static fn args
                 (by simp [resolveHelper, hs, hh])]
@@ -1353,7 +1353,7 @@ theorem Step.inlineHelpers_forward {litOK : Bool} {funs : FunEnv D} {V st code r
                   have hlenargs : args.length = hp.params.length := by
                     rw [← hcond.1, hfixargs]
                   have hi := (helper_call_subst_iff
-                    (funs' := inlineHelpersFuns (calls := calls) (creates := creates)
+                    (funs' := inlineHelpersFuns (calls := calls) (creates := creates) (gasOracle := gasOracle)
                       litOK static ++ outer)
                     (hl := htarget) (hcl := hh) (hterm := hterm)
                     hlenargs hargsval).mp (by rw [hfixargs] at hc; exact hc)
@@ -1595,9 +1595,9 @@ theorem rewriteCall_shape {litOK : Bool} (h : Helper) (fn : Ident) (args : List 
     · exact Or.inr rfl
 
 theorem resolveHelper_some {litOK : Bool} {static : FunEnv D} {fn : Ident} {h : Helper}
-    (hres : resolveHelper (calls := calls) (creates := creates) litOK static fn = some h) :
+    (hres : resolveHelper (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK static fn = some h) :
     ∃ decl closure, lookupFun static fn = some (decl, closure) ∧
-      helper? (calls := calls) (creates := creates) litOK decl = some h := by
+      helper? (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK decl = some h := by
   unfold resolveHelper at hres
   split at hres
   next decl closure heq => exact ⟨decl, closure, heq, hres⟩
@@ -1657,7 +1657,7 @@ theorem inlineHelpersExpr_eq_builtin {litOK : Bool} {static : FunEnv D} {e : Exp
     (h : inlineHelpersExpr litOK static e = .builtin op argsT) :
     (∃ args, e = .builtin op args ∧ argsT = inlineHelpersArgs litOK static args) ∨
     (∃ fn args hp, e = .call fn args ∧
-      resolveHelper (calls := calls) (creates := creates) litOK static fn = some hp ∧
+      resolveHelper (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK static fn = some hp ∧
       rewriteCall litOK hp fn (inlineHelpersArgs litOK static args) = .builtin op argsT) := by
   cases e with
   | lit l0 => simp [inlineHelpersExpr] at h
@@ -1972,7 +1972,7 @@ theorem Step.inlineHelpers_reverse {litOK : Bool} {funsT : FunEnv D} {V st codeT
                 (.expr (.call fn args0))
                 (.eres (.vals
                   (sdecl.rets.map (fun r => (VEnv.get Vend r).getD
-                    (evmWithExternal calls creates .any).zero)) st2)) :=
+                    (evmWithExternal calls creates gasOracle).zero)) st2)) :=
               Step.callOk hargs0
                 (lookupFun_append_of_some (outer := outer) hs)
                 (by simpa [inlineHelpersDecl] using hlen) hb0 hout
@@ -2528,7 +2528,7 @@ theorem Step.inlineHelpers_reverse {litOK : Bool} {funsT : FunEnv D} {V st codeT
 
 
 theorem inlineHelpersBlock_equiv {litOK : Bool} (b : Block Op) :
-    EquivBlock D b (inlineHelpersBlock (calls := calls) (creates := creates) litOK
+    EquivBlock D b (inlineHelpersBlock (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK
       ([] : FunEnv D) b) := by
   intro funs V st V' st' o
   constructor
@@ -2547,7 +2547,7 @@ theorem inlineHelpersBlock_equiv {litOK : Bool} (b : Block Op) :
 the block-pipeline classification; `litOK := false` restricts to the
 resolution-stable fragment used by the object pipeline. -/
 def inlineHelpersPass (litOK : Bool) : LocalPass D where
-  run := inlineHelpersBlock (calls := calls) (creates := creates) litOK []
+  run := inlineHelpersBlock (calls := calls) (creates := creates) (gasOracle := gasOracle) litOK []
   sound := inlineHelpersBlock_equiv
 
 end YulEvmCompiler.Optimizer

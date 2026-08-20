@@ -154,6 +154,15 @@ def stepConstraint (prog : List Asm) (H : LayoutMap) : Asm → List Asm → StkL
   | .jumpi l,     c, S => ∃ S', S = .word :: S' ∧
       (∃ c', findLabel l prog = some c' ∧ S' ∈ H c') ∧ S' ∈ H c
   | .dynJump,     _, S => ∃ c' S', S = .code c' :: S' ∧ S' ∈ H c'
+  -- Fused `GAS; call`: consumes `k.popArity` args, pushes the result flag. The
+  -- lowered `GAS` transiently pushes one extra word before the call opcode
+  -- consumes it (peak = entry + 1); the entry length is ≤ 1023 by `Inv`, so the
+  -- peak stays within the 1024 EVM limit — the framework's standing
+  -- 1023-vs-1024 slack absorbs it. Only the *result* layout is constrained here,
+  -- exactly as for `.op`.
+  | .gasCall k,   c, S => k.popArity ≤ S.length ∧
+      (Slot.word :: S.drop k.popArity).length ≤ 1023 ∧
+      (Slot.word :: S.drop k.popArity) ∈ H c
 
 /-- A layout map is **valid** for `prog` when every reaching layout at every analysed position
 satisfies its step constraint. -/
@@ -189,7 +198,7 @@ successfully to `.ok rets`, its actual argument and result counts match the `Ope
 `popArity`/`pushArity`. Ties the abstract `AStep.op` stack effect to the layout arithmetic. -/
 theorem builtin_arity {yop : Op} {o : Operation} (hop : opTable yop = some o)
     {args rets : List U256} {yst yst' : EvmState}
-    (h : builtinWithExternal model.calls model.creates .any yop args yst (.ok rets yst')) :
+    (h : builtinWithExternal model.calls model.creates model.gas yop args yst (.ok rets yst')) :
     args.length = Operation.popArity o ∧ rets.length = Operation.pushArity o := by
   cases yop <;>
     simp only [opTable, Option.some.injEq, reduceCtorEq] at hop <;>
@@ -242,6 +251,27 @@ theorem Inv.step {prog : List Asm} {H : LayoutMap} (hV : ValidHeights prog H)
         simp only [List.length_append, List.length_replicate, words_length] at hbnd ⊢; omega
       · rw [hdrop, ← hrets]
         exact (StkMatch.replicate_word rets).append hMσ
+  | @gasCall k g args rets c σ yst yst' hg hstepOp =>
+      obtain ⟨hpop, hbnd, hHc⟩ := hV (.gasCall k) c hsuf _ hHa
+      obtain ⟨hargs, hrets⟩ := builtin_arity k.opTable_op hstepOp
+      simp only [List.length_cons, GasCallKind.popArity_target] at hargs
+      simp only [GasCallKind.pushArity_target] at hrets
+      have hargs' : args.length = k.popArity := by omega
+      obtain ⟨Sargs, Sσ, rfl, hMargs, hMσ⟩ := hm.append_inv
+      have hSargs : Sargs = List.replicate args.length .word := hMargs.eq_replicate
+      have hdrop : (Sargs ++ Sσ).drop k.popArity = Sσ := by
+        rw [hSargs, hargs']; exact drop_replicate_append _ _ _
+      have hL : σ.length = Sσ.length := hMσ.length_eq
+      obtain ⟨r, rfl⟩ : ∃ r, rets = [r] := List.length_eq_one_iff.mp hrets
+      refine ⟨?_, _, hHc, ?_⟩
+      · show (words [r] ++ σ).length ≤ 1023
+        rw [hdrop] at hbnd
+        simp only [List.length_cons] at hbnd
+        simp only [List.length_append, words_length, List.length_cons,
+          List.length_nil]
+        omega
+      · rw [hdrop]
+        exact .word hMσ
   | @dup n v τ ρ c yst hτ =>
       obtain ⟨sl, hidx, hHc, hlen⟩ := hV (.dup n) c hsuf _ hHa
       -- the cell at depth n is v's slot
@@ -405,6 +435,10 @@ def stepOK (prog : List Asm) (H : LayoutMap) : Asm → List Asm → StkLayout �
           && decide (S' ∈ H c)
       | _ => false
   | .dynJump,     _, S => match S with | .code c' :: S' => decide (S' ∈ H c') | _ => false
+  -- Fused `GAS; call`: see `stepConstraint`'s `.gasCall` arm for the +1 slack.
+  | .gasCall k,   c, S => decide (k.popArity ≤ S.length)
+      && decide ((Slot.word :: S.drop k.popArity).length ≤ 1023)
+      && decide ((Slot.word :: S.drop k.popArity) ∈ H c)
 
 omit model in
 set_option linter.unusedTactic false in
@@ -467,6 +501,9 @@ theorem stepOK_sound {prog : List Asm} {H : LayoutMap} {i : Asm} {c : List Asm} 
       revert h; simp only [stepOK]; split
       · next c' S' => intro h; simp only [decide_eq_true_eq] at h; exact ⟨c', S', rfl, h⟩
       · intro h; simp at h
+  | gasCall k =>
+      simp only [stepOK, Bool.and_eq_true, decide_eq_true_eq] at h
+      exact ⟨h.1.1, h.1.2, h.2⟩
 
 /-- The verifier: at every suffix position, *every* reaching layout satisfies the step constraint. -/
 def checkValid (prog : List Asm) (H : LayoutMap) : Bool :=
@@ -518,6 +555,9 @@ def succsOf (prog : List Asm) : Asm → List Asm → StkLayout → Option (List 
                        | some tgt => some [(tgt, S'), (c, S')] | none => none
       | _ => none
   | .dynJump,     _, S => match S with | .code tgt :: S' => some [(tgt, S')] | _ => none
+  -- Fused `GAS; call`: consumes `k.popArity` args, pushes the result flag.
+  | .gasCall k,   c, S => if k.popArity ≤ S.length then
+        some [(c, Slot.word :: S.drop k.popArity)] else none
 
 /-- Forward worklist accumulating, per position, the *set* of reaching layouts. Fuel-bounded: a
 program whose reachable layouts do not stabilise (recursion / stack-growing loop) exhausts the fuel

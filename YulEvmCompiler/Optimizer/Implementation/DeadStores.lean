@@ -118,9 +118,9 @@ namespace YulEvmCompiler.Optimizer
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
 
-local notation "D" => evmWithExternal calls creates ExternalGas.any
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ### The deadness test -/
 
@@ -335,7 +335,7 @@ theorem setMany_single (V : VEnv D) (x : Ident) (v : U256) :
 
 /-- A zero-initialising singleton `let` pushes one binding. -/
 theorem bindZeros_single (x : Ident) (V : VEnv D) :
-    bindZeros D [x] ++ V = (x, (evmWithExternal calls creates .any).zero) :: V := rfl
+    bindZeros D [x] ++ V = (x, (evmWithExternal calls creates gasOracle).zero) :: V := rfl
 
 /-- A normally-terminating `let` prepends exactly its declared names. -/
 theorem letStep_keys {xs : List Ident} {val : Option (Expr Op)} {funs : FunEnv D}
@@ -365,7 +365,7 @@ def SweepFwd (ss : List (Stmt Op)) : Prop :=
 /-- A statement the sweep passes through that changes neither `bound` nor
 `owned`: transport it with the value-change frame lemma. -/
 theorem sweepKeep_fwd {s : Stmt Op} {rest : List (Stmt Op)}
-    (ih : SweepFwd (calls := calls) (creates := creates) rest)
+    (ih : SweepFwd (calls := calls) (creates := creates) (gasOracle := gasOracle) rest)
     {bound owned : List Ident} {funs : FunEnv D} {dead : Ident → Prop} {k : Nat}
     {V1 V2 : VEnv D} {st : EvmState} {V1' : VEnv D} {st' : EvmState} {o : Outcome}
     (hsweep : dsSweep bound owned (s :: rest) = s :: dsSweep bound owned rest)
@@ -395,7 +395,7 @@ theorem sweepKeep_fwd {s : Stmt Op} {rest : List (Stmt Op)}
 /-- A `let` the sweep keeps: same as `sweepKeep_fwd`, but the declared names join
 `bound` and `owned`. -/
 theorem sweepLetKeep_fwd {xs : List Ident} {val : Option (Expr Op)} {rest : List (Stmt Op)}
-    (ih : SweepFwd (calls := calls) (creates := creates) rest)
+    (ih : SweepFwd (calls := calls) (creates := creates) (gasOracle := gasOracle) rest)
     {bound owned : List Ident} {funs : FunEnv D} {dead : Ident → Prop} {k : Nat}
     {V1 V2 : VEnv D} {st : EvmState} {V1' : VEnv D} {st' : EvmState} {o : Outcome}
     (hsweep : dsSweep bound owned (.letDecl xs val :: rest)
@@ -439,7 +439,7 @@ theorem sweepLetKeep_fwd {xs : List Ident} {val : Option (Expr Op)} {rest : List
 it evaluates identically on both sides; the write then kills every dead name it
 targets. -/
 theorem sweepAssignKeep_fwd {ys : List Ident} {e : Expr Op} {rest : List (Stmt Op)}
-    (ih : SweepFwd (calls := calls) (creates := creates) rest)
+    (ih : SweepFwd (calls := calls) (creates := creates) (gasOracle := gasOracle) rest)
     {bound owned : List Ident} {funs : FunEnv D} {dead : Ident → Prop} {k : Nat}
     {V1 V2 : VEnv D} {st : EvmState} {V1' : VEnv D} {st' : EvmState} {o : Outcome}
     (hsweep : dsSweep bound owned (.assign ys e :: rest)
@@ -481,7 +481,7 @@ theorem sweepAssignKeep_fwd {ys : List Ident} {e : Expr Op} {rest : List (Stmt O
 `alwaysEval` makes the right-hand side total and state-preserving, and `owned`
 puts the target above the tail the enclosing block restores to. -/
 theorem sweepAssignDrop_fwd {x : Ident} {e : Expr Op} {rest : List (Stmt Op)}
-    (ih : SweepFwd (calls := calls) (creates := creates) rest)
+    (ih : SweepFwd (calls := calls) (creates := creates) (gasOracle := gasOracle) rest)
     {bound owned : List Ident} {funs : FunEnv D} {dead : Ident → Prop} {k : Nat}
     {V1 V2 : VEnv D} {st : EvmState} {V1' : VEnv D} {st' : EvmState} {o : Outcome}
     (hcond : (owned.contains x && alwaysEval bound e && dsDead x rest) = true)
@@ -531,7 +531,7 @@ theorem sweepAssignDrop_fwd {x : Ident} {e : Expr Op} {rest : List (Stmt Op)}
 the right-hand side's value, the target binds zero, and the name is unread until
 its next write or the sequence's exit. -/
 theorem sweepLetDrop_fwd {x : Ident} {e : Expr Op} {rest : List (Stmt Op)}
-    (ih : SweepFwd (calls := calls) (creates := creates) rest)
+    (ih : SweepFwd (calls := calls) (creates := creates) (gasOracle := gasOracle) rest)
     {bound owned : List Ident} {funs : FunEnv D} {dead : Ident → Prop} {k : Nat}
     {V1 V2 : VEnv D} {st : EvmState} {V1' : VEnv D} {st' : EvmState} {o : Outcome}
     (hcond : (alwaysEval bound e && dsDead x rest) = true)
@@ -562,7 +562,7 @@ theorem sweepLetDrop_fwd {x : Ident} {e : Expr Op} {rest : List (Stmt Op)}
             hrel.grow_seen (extra := fun y => y = x)
               (fun y hy hc2 => (dsDead_letSome (hd y hy)).2.1 (by simp [hc2]))
           have hnew : VChg (fun y => dsDead y rest = true) k (fun _ => False)
-              ((x, v) :: V1) ((x, (evmWithExternal calls creates .any).zero) :: V2) :=
+              ((x, v) :: V1) ((x, (evmWithExternal calls creates gasOracle).zero) :: V2) :=
             VChg.diff hdead (fun h => h)
               (hgrow.mono_seen (fun y _ hy => (dsDead_letSome (hd y hy)).2.2))
           obtain ⟨V2', dead', hstep2, hrel2⟩ := ih
@@ -587,7 +587,7 @@ theorem sweepLetDrop_fwd {x : Ident} {e : Expr Op} {rest : List (Stmt Op)}
 /-- **Forward simulation of one sweep.** Every source derivation of the sequence
 has a target derivation of the swept sequence with the same state and outcome,
 and environments that still differ only at dead names above the tail. -/
-theorem dsSweep_fwd : ∀ ss : List (Stmt Op), SweepFwd (calls := calls) (creates := creates) ss := by
+theorem dsSweep_fwd : ∀ ss : List (Stmt Op), SweepFwd (calls := calls) (creates := creates) (gasOracle := gasOracle) ss := by
   intro ss
   induction ss with
   | nil =>
@@ -699,7 +699,7 @@ def SweepBwd (ss : List (Stmt Op)) : Prop :=
 
 /-- Backward counterpart of `sweepKeep_fwd`. -/
 theorem sweepKeep_bwd {s : Stmt Op} {rest : List (Stmt Op)}
-    (ih : SweepBwd (calls := calls) (creates := creates) rest)
+    (ih : SweepBwd (calls := calls) (creates := creates) (gasOracle := gasOracle) rest)
     {bound owned : List Ident} {funs : FunEnv D} {dead : Ident → Prop} {k : Nat}
     {V1 V2 : VEnv D} {st : EvmState} {V2' : VEnv D} {st' : EvmState} {o : Outcome}
     (hsweep : dsSweep bound owned (s :: rest) = s :: dsSweep bound owned rest)
@@ -728,7 +728,7 @@ theorem sweepKeep_bwd {s : Stmt Op} {rest : List (Stmt Op)}
 
 /-- Backward counterpart of `sweepLetKeep_fwd`. -/
 theorem sweepLetKeep_bwd {xs : List Ident} {val : Option (Expr Op)} {rest : List (Stmt Op)}
-    (ih : SweepBwd (calls := calls) (creates := creates) rest)
+    (ih : SweepBwd (calls := calls) (creates := creates) (gasOracle := gasOracle) rest)
     {bound owned : List Ident} {funs : FunEnv D} {dead : Ident → Prop} {k : Nat}
     {V1 V2 : VEnv D} {st : EvmState} {V2' : VEnv D} {st' : EvmState} {o : Outcome}
     (hsweep : dsSweep bound owned (.letDecl xs val :: rest)
@@ -770,7 +770,7 @@ theorem sweepLetKeep_bwd {xs : List Ident} {val : Option (Expr Op)} {rest : List
 
 /-- Backward counterpart of `sweepAssignKeep_fwd`. -/
 theorem sweepAssignKeep_bwd {ys : List Ident} {e : Expr Op} {rest : List (Stmt Op)}
-    (ih : SweepBwd (calls := calls) (creates := creates) rest)
+    (ih : SweepBwd (calls := calls) (creates := creates) (gasOracle := gasOracle) rest)
     {bound owned : List Ident} {funs : FunEnv D} {dead : Ident → Prop} {k : Nat}
     {V1 V2 : VEnv D} {st : EvmState} {V2' : VEnv D} {st' : EvmState} {o : Outcome}
     (hsweep : dsSweep bound owned (.assign ys e :: rest)
@@ -811,7 +811,7 @@ theorem sweepAssignKeep_bwd {ys : List Ident} {e : Expr Op} {rest : List (Stmt O
 /-- Backward counterpart of `sweepAssignDrop_fwd` (**R1**): the deleted store is
 put back, which `alwaysEval` and `BoundOK` make possible. -/
 theorem sweepAssignDrop_bwd {x : Ident} {e : Expr Op} {rest : List (Stmt Op)}
-    (ih : SweepBwd (calls := calls) (creates := creates) rest)
+    (ih : SweepBwd (calls := calls) (creates := creates) (gasOracle := gasOracle) rest)
     {bound owned : List Ident} {funs : FunEnv D} {dead : Ident → Prop} {k : Nat}
     {V1 V2 : VEnv D} {st : EvmState} {V2' : VEnv D} {st' : EvmState} {o : Outcome}
     (hcond : (owned.contains x && alwaysEval bound e && dsDead x rest) = true)
@@ -848,7 +848,7 @@ theorem sweepAssignDrop_bwd {x : Ident} {e : Expr Op} {rest : List (Stmt Op)}
 /-- Backward counterpart of `sweepLetDrop_fwd` (**R2**): the dropped initialiser
 is put back. -/
 theorem sweepLetDrop_bwd {x : Ident} {e : Expr Op} {rest : List (Stmt Op)}
-    (ih : SweepBwd (calls := calls) (creates := creates) rest)
+    (ih : SweepBwd (calls := calls) (creates := creates) (gasOracle := gasOracle) rest)
     {bound owned : List Ident} {funs : FunEnv D} {dead : Ident → Prop} {k : Nat}
     {V1 V2 : VEnv D} {st : EvmState} {V2' : VEnv D} {st' : EvmState} {o : Outcome}
     (hcond : (alwaysEval bound e && dsDead x rest) = true)
@@ -873,7 +873,7 @@ theorem sweepLetDrop_bwd {x : Ident} {e : Expr Op} {rest : List (Stmt Op)}
     hrel.grow_seen (extra := fun y => y = x)
       (fun y hy hc2 => (dsDead_letSome (hd y hy)).2.1 (by simp [hc2]))
   have hnew : VChg (fun y => dsDead y rest = true) k (fun _ => False)
-      ((x, v) :: V1) ((x, (evmWithExternal calls creates .any).zero) :: V2) :=
+      ((x, v) :: V1) ((x, (evmWithExternal calls creates gasOracle).zero) :: V2) :=
     VChg.diff hdead (fun h => h)
       (hgrow.mono_seen (fun y _ hy => (dsDead_letSome (hd y hy)).2.2))
   cases hstep with
@@ -897,7 +897,7 @@ theorem sweepLetDrop_bwd {x : Ident} {e : Expr Op} {rest : List (Stmt Op)}
       | letZero => exact absurd rfl hne
 
 /-- **Backward simulation of one sweep.** -/
-theorem dsSweep_bwd : ∀ ss : List (Stmt Op), SweepBwd (calls := calls) (creates := creates) ss := by
+theorem dsSweep_bwd : ∀ ss : List (Stmt Op), SweepBwd (calls := calls) (creates := creates) (gasOracle := gasOracle) ss := by
   intro ss
   induction ss with
   | nil =>
@@ -1273,7 +1273,7 @@ theorem deadStoresBlock_equiv (b : Block Op) : EquivBlock D b (deadStoresBlock b
   · rw [if_pos hlf]
     exact (dsBody_of [] b (dsStmts_bequiv [] b) (dsStmts_scopeRel [] b)).toEquiv
   · rw [if_neg hlf]
-    exact @EquivBlock.refl (evmWithExternal calls creates .any) _ b
+    exact @EquivBlock.refl (evmWithExternal calls creates gasOracle) _ b
 
 /-- **Resolution congruence.** `deadStoresBlock` guards on
 `storageLayoutFreeStmts` and preserves it, so on layout-free input resolution is
@@ -1288,17 +1288,17 @@ theorem resolveDeadStoresBlock_equiv (L : Layout) (b : Block Op) :
       resolve_storageLayoutFreeStmts L _ (dsOnce_layoutFree b hlf)]
     exact (dsBody_of [] b (dsStmts_bequiv [] b) (dsStmts_scopeRel [] b)).toEquiv
   · rw [if_neg hlf]
-    exact @EquivBlock.refl (evmWithExternal calls creates .any) _ _
+    exact @EquivBlock.refl (evmWithExternal calls creates gasOracle) _ _
 
 /-! ### The pass -/
 
 /-- The **DeadStores pass**: dead assignment and dead initialiser elimination. -/
 def deadStores : LocalPass D where
   run := deadStoresBlock
-  sound := fun b => deadStoresBlock_equiv (calls := calls) (creates := creates) b
+  sound := fun b => deadStoresBlock_equiv (calls := calls) (creates := creates) (gasOracle := gasOracle) b
 
 @[simp] theorem deadStores_run (b : Block Op) :
-    (deadStores (calls := calls) (creates := creates)).run b = deadStoresBlock b := rfl
+    (deadStores (calls := calls) (creates := creates) (gasOracle := gasOracle)).run b = deadStoresBlock b := rfl
 
 /-! ### The post-layout cleanup
 
@@ -1326,13 +1326,13 @@ def cleanupAfterLayout : LocalPass D :=
 
 /-- `cleanupAfterLayout` on a block. -/
 def cleanupAfterLayoutBlock (b : Block Op) : Block Op :=
-  (cleanupAfterLayout (calls := calls) (creates := creates)).run b
+  (cleanupAfterLayout (calls := calls) (creates := creates) (gasOracle := gasOracle)).run b
 
 mutual
   /-- `cleanupAfterLayout` on every code block of an object tree. -/
   def cleanupAfterLayoutObject : Object Op → Object Op
     | .mk name code subs segs =>
-        .mk name (cleanupAfterLayoutBlock (calls := calls) (creates := creates) code)
+        .mk name (cleanupAfterLayoutBlock (calls := calls) (creates := creates) (gasOracle := gasOracle) code)
           (cleanupAfterLayoutObjects subs) segs
 
   def cleanupAfterLayoutObjects : List (Object Op) → List (Object Op)

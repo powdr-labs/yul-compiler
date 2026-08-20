@@ -140,8 +140,18 @@ theorem findLabel_latePush {l : Label} (v : U256) (n : Fin 16) (c : List Asm) :
 be referenced. Rewrites every `push v ; dup n ; swap1` window to its
 `latePush`, every `swap1 ; op` window whose `op` has a reversed twin to that
 twin, every `push v ; swap1 ; pop` window to `pop ; push v`, every
-`jumpi l ; jump m ; label l` window to `op iszero ; jumpi m ; label l`, and
-drops `label l` when `l ∉ R`. Other instructions pass through. -/
+`jumpi l ; jump m ; label l` window to `op iszero ; jumpi m ; label l`,
+every `op gas ; op call-op` window to the fused `gasCall` (realizing the
+`gas()` read as the target's own `GAS` instruction), and
+drops `label l` when `l ∉ R`. Other instructions pass through.
+
+The `gasCall` fusion is the *only* entry of the fused instruction into a
+program, and it relies on adjacency: the classic backend evaluates call
+arguments right-to-left, so a `gas()` first argument is pushed immediately
+before its call. If a transformation ever separates the pair, the fusion
+does not fire and the surviving bare `.op .gas` is rejected at lowering
+(`opTable .gas = none`) — the failure mode is a compile rejection, never a
+miscompilation. -/
 def peepRun (R : List Label) : List Asm → List Asm
   | .push v :: .swap ⟨0, _⟩ :: .pop :: rest =>
       .pop :: .push v :: peepRun R rest
@@ -154,6 +164,10 @@ def peepRun (R : List Label) : List Asm → List Asm
       | none => .swap n :: peepRun R (.op yop :: rest)
   | .op .iszero :: .op .iszero :: .jumpi l :: rest =>
       .jumpi l :: peepRun R rest
+  | .op .gas :: .op yop :: rest =>
+      match gasCallKind? yop with
+      | some k => .gasCall k :: peepRun R rest
+      | none => .op .gas :: peepRun R (.op yop :: rest)
   | .jumpi l :: .jump m :: .label l' :: rest =>
       if l = l' then .op .iszero :: .jumpi m :: .label l' :: peepRun R rest
       else .jumpi l :: peepRun R (.jump m :: .label l' :: rest)
@@ -191,6 +205,10 @@ def peepRunP (mem : Label → Bool) : List Asm → List Asm
       | none => .swap n :: peepRunP mem (.op yop :: rest)
   | .op .iszero :: .op .iszero :: .jumpi l :: rest =>
       .jumpi l :: peepRunP mem rest
+  | .op .gas :: .op yop :: rest =>
+      match gasCallKind? yop with
+      | some k => .gasCall k :: peepRunP mem rest
+      | none => .op .gas :: peepRunP mem (.op yop :: rest)
   | .jumpi l :: .jump m :: .label l' :: rest =>
       if l = l' then .op .iszero :: .jumpi m :: .label l' :: peepRunP mem rest
       else .jumpi l :: peepRunP mem (.jump m :: .label l' :: rest)
@@ -288,6 +306,13 @@ inductive CodeRel (R : List Label) : List Asm → List Asm → Prop
   | dblIszero {l : Label} {c c' : List Asm} :
       CodeRel R c c' →
       CodeRel R (.op .iszero :: .op .iszero :: .jumpi l :: c) (.jumpi l :: c')
+  /-- Fuse a `gas()` read directly consumed as a call's gas argument into
+  the fused instruction. The fused step's rule is exactly the composite of
+  the two source steps, so the simulation reproduces whichever admitted
+  word the source read. -/
+  | gasFuse {k : GasCallKind} {c c' : List Asm} :
+      CodeRel R c c' →
+      CodeRel R (.op .gas :: .op k.op :: c) (.gasCall k :: c')
   /-- Drop a `jump` to the immediately following label. -/
   | jumpNext {l : Label} {c c' : List Asm} :
       CodeRel R c c' →
@@ -315,16 +340,20 @@ theorem codeRel_peepRun (R : List Label) (p : List Asm) : CodeRel R p (peepRun R
       exact CodeRel.flipCmp hn (by simpa [hn] using hf) ih
   | case5 n yop rest hf ih => exact CodeRel.keep _ ih
   | case6 l rest ih => exact CodeRel.dblIszero ih
-  | case7 m l' rest ih => exact CodeRel.brInv ih
-  | case8 l m l' rest hne ih => exact CodeRel.keep _ ih
-  | case9 l' rest ih => exact CodeRel.jumpiNext ih
-  | case10 l l' rest hne ih => exact CodeRel.keep _ ih
-  | case11 l' rest ih => exact CodeRel.jumpNext ih
+  | case7 yop rest k heq ih =>
+      obtain rfl := eq_op_of_gasCallKind? heq
+      exact CodeRel.gasFuse ih
+  | case8 yop rest heq ih => exact CodeRel.keep _ ih
+  | case9 m l' rest ih => exact CodeRel.brInv ih
+  | case10 l m l' rest hne ih => exact CodeRel.keep _ ih
+  | case11 l' rest ih => exact CodeRel.jumpiNext ih
   | case12 l l' rest hne ih => exact CodeRel.keep _ ih
-  | case13 l rest hmem ih => exact CodeRel.keep _ ih
-  | case14 l rest hmem ih => exact CodeRel.dropLabel hmem ih
-  | case15 i rest _ _ _ _ _ _ _ _ ih => exact CodeRel.keep i ih
-  | case16 => exact CodeRel.nil
+  | case13 l' rest ih => exact CodeRel.jumpNext ih
+  | case14 l l' rest hne ih => exact CodeRel.keep _ ih
+  | case15 l rest hmem ih => exact CodeRel.keep _ ih
+  | case16 l rest hmem ih => exact CodeRel.dropLabel hmem ih
+  | case17 i rest _ _ _ _ _ _ _ _ _ ih => exact CodeRel.keep i ih
+  | case18 => exact CodeRel.nil
 
 /-- One `optimizeAsmRound` is `CodeRel`-related to its input, relative to the
 program's own reference set. -/
@@ -357,6 +386,9 @@ theorem codeRel_labelDefs_sublist {R : List Label} {P Q : List Asm}
         Option.toList_some, List.nil_append, List.singleton_append]
       exact ih.cons_cons _
   | dblIszero _ ih =>
+      simpa only [labelDefs_cons, Asm.defines, Option.toList_none,
+        List.nil_append] using ih
+  | gasFuse _ ih =>
       simpa only [labelDefs_cons, Asm.defines, Option.toList_none,
         List.nil_append] using ih
   | jumpNext _ ih =>
@@ -424,6 +456,12 @@ theorem codeRel_labelDefs_mem {R : List Label} {P Q : List Asm}
         · rcases mem_labelDefs_cons.mp h'' with h3 | h3
           · exact absurd h3 (by simp)
           · exact mem_labelDefs_cons.mpr (Or.inr (ih h3))
+  | gasFuse _ ih =>
+      rcases mem_labelDefs_cons.mp hl with h' | h'
+      · exact absurd h' (by simp)
+      · rcases mem_labelDefs_cons.mp h' with h'' | h''
+        · exact absurd h'' (by simp)
+        · exact mem_labelDefs_cons.mpr (Or.inr (ih h''))
   | jumpNext _ ih =>
       rcases mem_labelDefs_cons.mp hl with h' | h'
       · exact absurd h' (by simp)
@@ -495,6 +533,12 @@ theorem codeRel_labelRefs_subset {R : List Label} {P Q : List Asm}
           (mem_labelRefs_cons.mpr (Or.inl h')))))
       · exact mem_labelRefs_cons.mpr (Or.inr (mem_labelRefs_cons.mpr (Or.inr
           (mem_labelRefs_cons.mpr (Or.inr (ih l' h'))))))
+  | gasFuse _ ih =>
+      intro l' hl'
+      rcases mem_labelRefs_cons.mp hl' with h' | h'
+      · exact absurd h' (by simp [Asm.references])
+      · exact mem_labelRefs_cons.mpr (Or.inr (mem_labelRefs_cons.mpr (Or.inr
+          (ih l' h'))))
   | jumpNext _ ih =>
       intro l' hl'
       rcases mem_labelRefs_cons.mp hl' with h' | h'
@@ -525,6 +569,7 @@ theorem codeRel_codeSize_le {R : List Label} {P Q : List Asm}
   | flipCmp _ _ _ ih => simp only [codeSize_cons, Asm.size]; omega
   | brInv _ ih => simp only [codeSize_cons, Asm.size]; omega
   | dblIszero _ ih => simp only [codeSize_cons, Asm.size]; omega
+  | gasFuse _ ih => simp only [codeSize_cons, Asm.size]; omega
   | jumpNext _ ih => simp only [codeSize_cons, Asm.size]; omega
   | jumpiNext _ ih => simp only [codeSize_cons, Asm.size]; omega
   | dropLabel _ _ ih => simp only [codeSize_cons, Asm.size]; omega
@@ -584,6 +629,11 @@ theorem codeRel_findLabel {R : List Label} {P Q : List Asm} (h : CodeRel R P Q)
       intro tgt hf
       rw [findLabel, if_neg (by simp), findLabel, if_neg (by simp),
         findLabel, if_neg (by simp)] at hf
+      obtain ⟨otgt, ho, hr⟩ := ih hf
+      exact ⟨otgt, by rw [findLabel, if_neg (by simp)]; exact ho, hr⟩
+  | gasFuse hc ih =>
+      intro tgt hf
+      rw [findLabel, if_neg (by simp), findLabel, if_neg (by simp)] at hf
       obtain ⟨otgt, ho, hr⟩ := ih hf
       exact ⟨otgt, by rw [findLabel, if_neg (by simp)]; exact ho, hr⟩
   | @jumpNext l0 c c' hc ih =>

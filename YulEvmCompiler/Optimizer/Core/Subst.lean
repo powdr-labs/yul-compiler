@@ -32,8 +32,8 @@ namespace YulEvmCompiler.Optimizer.Core
 open YulSemantics
 open YulSemantics.EVM
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates ExternalGas.any
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 /-! ## Syntax: variables read by a term, substitution, string-freeness -/
 
@@ -126,7 +126,7 @@ theorem isVarExpr_value {e : Expr Op} (h : isVarExpr e = true) :
 environment alone. -/
 def valueEval (V : VEnv D) : Expr Op → Option U256
   | .var x => VEnv.get V x
-  | .lit literal => some ((evmWithExternal calls creates .any).litValue literal)
+  | .lit literal => some ((evmWithExternal calls creates gasOracle).litValue literal)
   | _ => none
 
 /-- Reflection of `Step` on a value-shaped expression into `valueEval`: the
@@ -135,7 +135,7 @@ untouched, and cannot halt. -/
 theorem valueEval_eval_iff {funs : FunEnv D} {V : VEnv D} {st : EvmState}
     {e : Expr Op} (he : isValueExpr e = true) {r : EResult D} :
     Step D funs V st (.expr e) (.eres r) ↔
-      ∃ w, valueEval (calls := calls) (creates := creates) V e = some w ∧
+      ∃ w, valueEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V e = some w ∧
         r = .vals [w] st := by
   cases e with
   | var x =>
@@ -166,20 +166,20 @@ theorem valueExpr_funs_iff {funs funs' : FunEnv D} {V : VEnv D} {st : EvmState}
 
 /-- Evaluate a list of value-shaped expressions functionally. -/
 def valuesEval (V : VEnv D) (es : List (Expr Op)) : Option (List U256) :=
-  es.mapM (valueEval (calls := calls) (creates := creates) V)
+  es.mapM (valueEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V)
 
 @[simp] theorem valuesEval_nil {V : VEnv D} :
-    valuesEval (calls := calls) (creates := creates) V [] = some [] := rfl
+    valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V [] = some [] := rfl
 
 @[simp] theorem valuesEval_cons {V : VEnv D} {e : Expr Op} {es : List (Expr Op)} :
-    valuesEval (calls := calls) (creates := creates) V (e :: es) =
-      (valueEval (calls := calls) (creates := creates) V e).bind fun w =>
-        (valuesEval (calls := calls) (creates := creates) V es).map (w :: ·) := by
+    valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V (e :: es) =
+      (valueEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V e).bind fun w =>
+        (valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V es).map (w :: ·) := by
   simp only [valuesEval, List.mapM_cons, Option.pure_def, Option.bind_eq_bind]
-  cases valueEval (calls := calls) (creates := creates) V e with
+  cases valueEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V e with
   | none => rfl
   | some w =>
-      cases List.mapM (valueEval (calls := calls) (creates := creates) V) es <;> rfl
+      cases List.mapM (valueEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V) es <;> rfl
 
 /-- Reflection of the `args` judgment on value-shaped expressions: the list
 evaluates exactly to its functional values with the state untouched, and
@@ -187,7 +187,7 @@ cannot halt. -/
 theorem valuesEval_args_iff {funs : FunEnv D} {V : VEnv D} {st : EvmState}
     {es : List (Expr Op)} (hes : ∀ e ∈ es, isValueExpr e = true) {r : EResult D} :
     Step D funs V st (.args es) (.eres r) ↔
-      ∃ ws, valuesEval (calls := calls) (creates := creates) V es = some ws ∧
+      ∃ ws, valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V es = some ws ∧
         r = .vals ws st := by
   induction es generalizing r with
   | nil =>
@@ -231,9 +231,9 @@ theorem valuesEval_args_iff {funs : FunEnv D} {V : VEnv D} {st : EvmState}
 
 /-- Every element of a functionally evaluated list evaluates. -/
 theorem valuesEval_mem_isSome {V : VEnv D} {es : List (Expr Op)} {ws : List U256}
-    (h : valuesEval (calls := calls) (creates := creates) V es = some ws)
+    (h : valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V es = some ws)
     {e : Expr Op} (he : e ∈ es) :
-    (valueEval (calls := calls) (creates := creates) V e).isSome := by
+    (valueEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V e).isSome := by
   induction es generalizing ws with
   | nil => cases he
   | cons e' rest ih =>
@@ -245,7 +245,7 @@ theorem valuesEval_mem_isSome {V : VEnv D} {es : List (Expr Op)} {ws : List U256
 
 /-- Functional evaluation preserves list length. -/
 theorem valuesEval_length {V : VEnv D} {es : List (Expr Op)} {ws : List U256}
-    (h : valuesEval (calls := calls) (creates := creates) V es = some ws) :
+    (h : valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V es = some ws) :
     ws.length = es.length := by
   induction es generalizing ws with
   | nil =>
@@ -259,8 +259,8 @@ theorem valuesEval_length {V : VEnv D} {es : List (Expr Op)} {ws : List U256}
 
 /-- A list whose elements all evaluate, evaluates. -/
 theorem valuesEval_isSome_of_forall {V : VEnv D} {es : List (Expr Op)}
-    (h : ∀ e ∈ es, (valueEval (calls := calls) (creates := creates) V e).isSome) :
-    (valuesEval (calls := calls) (creates := creates) V es).isSome := by
+    (h : ∀ e ∈ es, (valueEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V e).isSome) :
+    (valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V es).isSome := by
   induction es with
   | nil => simp
   | cons e rest ih =>
@@ -345,11 +345,11 @@ arguments evaluate to `argvals`, the value chosen for a parameter is the
 evaluation of the argument chosen for it. -/
 theorem zip_find_valuesEval {params : Ctx} {args : List (Expr Op)}
     {argvals : List U256} {V : VEnv D}
-    (hvals : valuesEval (calls := calls) (creates := creates) V args = some argvals)
+    (hvals : valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V args = some argvals)
     {x : Ident} {e : Expr Op}
     (hfind : (params.zip args).find? (fun entry => entry.1 = x) = some (x, e)) :
     ∃ w, (params.zip argvals).find? (fun entry => entry.1 = x) = some (x, w) ∧
-      valueEval (calls := calls) (creates := creates) V e = some w := by
+      valueEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V e = some w := by
   induction params generalizing args argvals with
   | nil => simp at hfind
   | cons p rest ih =>
@@ -392,10 +392,10 @@ arguments functionally evaluate to `argvals`, a substituted value evaluates in
 theorem substEmit_value_correspond {params : Ctx} {args : List (Expr Op)}
     {argvals : List U256} {V : VEnv D} {suffix : VEnv D}
     (hlen : args.length = params.length)
-    (hvals : valuesEval (calls := calls) (creates := creates) V args = some argvals)
+    (hvals : valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V args = some argvals)
     (value : Value params) :
-    valueEval (calls := calls) (creates := creates) V (value.substEmit args) =
-      valueEval (calls := calls) (creates := creates)
+    valueEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V (value.substEmit args) =
+      valueEval (calls := calls) (creates := creates) (gasOracle := gasOracle)
         ((params.zip argvals : VEnv D) ++ suffix) value.emit := by
   cases value with
   | lit literal => rfl
@@ -415,11 +415,11 @@ frame. -/
 theorem substEmit_values_correspond {params : Ctx} {args : List (Expr Op)}
     {argvals : List U256} {V : VEnv D} {suffix : VEnv D}
     (hlen : args.length = params.length)
-    (hvals : valuesEval (calls := calls) (creates := creates) V args = some argvals)
+    (hvals : valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V args = some argvals)
     (values : List (Value params)) :
-    valuesEval (calls := calls) (creates := creates) V
+    valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle) V
         (values.map (Value.substEmit args)) =
-      valuesEval (calls := calls) (creates := creates)
+      valuesEval (calls := calls) (creates := creates) (gasOracle := gasOracle)
         ((params.zip argvals : VEnv D) ++ suffix) (values.map Value.emit) := by
   induction values with
   | nil => rfl

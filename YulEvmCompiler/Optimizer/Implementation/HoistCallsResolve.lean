@@ -8,8 +8,8 @@ open YulSemantics
 open YulSemantics.EVM
 open YulEvmCompiler
 
-variable {calls : ExternalCalls} {creates : ExternalCreates}
-local notation "D" => evmWithExternal calls creates ExternalGas.any
+variable {calls : ExternalCalls} {creates : ExternalCreates} {gasOracle : ExternalGas}
+local notation "D" => evmWithExternal calls creates gasOracle
 
 private theorem resolve_hoistUnaryCore (L : Layout) (P : String)
     (xs : List Ident) (f g : Ident) (gas : List (Expr Op)) :

@@ -47,6 +47,7 @@ state may differ in the reserved spill interval but has the same committed
 observable result. -/
 theorem compile_spilled_correct
     (hexternal : ExternalsRealized model)
+    (hgas : model.gas = YulSemantics.EVM.ExternalGas.any)
     {L : EVM.Layout} {raw : Block Op} {result : Result}
     {guards : List Nat} {instructions : List Instr}
     (hspillSound : SpillNodeRunSound
@@ -83,7 +84,8 @@ theorem compile_spilled_correct
   have hobs : runObservables L.initState sourceFinal =
       runObservables L.initState targetFinal :=
     ScratchRel.runObservables_eq hscratch
-  obtain ⟨bound, hbackend⟩ := compile_correct hexternal hcomp himm htarget
+  obtain ⟨bound, hbackend⟩ :=
+    compile_correct hexternal hcomp himm (by rw [hgas]; exact htarget)
   exact ⟨targetEnv, targetFinal, htarget, hscratch, hobs, bound, hbackend⟩
 
 /-- Generic object backend composition for an already established plan-node
@@ -91,6 +93,7 @@ run transformer.  This form is useful independently of the production object
 constructor and exposes the emitted target-Yul final state explicitly. -/
 theorem compileObject_planned_correct
     (hexternal : ExternalsRealized model)
+    (hgas : model.gas = YulSemantics.EVM.ExternalGas.any)
     {L : EVM.Layout} {raw output : Object Op}
     {plan : MemorySpillSelect.ObjectPlan}
     (hplanSound : PlannedNodeRunSound
@@ -115,8 +118,12 @@ theorem compileObject_planned_correct
   obtain ⟨targetEnv, targetFinal, htarget, hfinal⟩ := hplanSound hsource
   have hobs := PlannedFinalRel.runObservables_eq
     (initial := L.initState) hfinal
-  obtain ⟨bound, hbackend⟩ := compileObject_correct hexternal hcomp htarget
-  exact ⟨targetEnv, targetFinal, htarget, hfinal, hobs, bound, hbackend⟩
+  have htarget' : RunResolvedObject output L targetEnv targetFinal out := by
+    show Run (evmWithExternal model.calls model.creates model.gas)
+      (resolveForLayoutStmts L output.codeBlock) L.initState targetEnv targetFinal out
+    rw [hgas]; exact htarget
+  obtain ⟨bound, hbackend⟩ := compileObject_correct hexternal hcomp htarget'
+  exact ⟨targetEnv, targetFinal, htarget', hfinal, hobs, bound, hbackend⟩
 
 /-- Final parameterized production composition.  Object recursion, fallback
 pipeline preservation, Yul-to-EVM compilation, outcome discipline, and
@@ -124,11 +131,12 @@ observable source/target agreement are all discharged here; ControlSound only
 has to provide `SpillNodeRunSound`. -/
 theorem compileObject_memorySpill_correct
     (hexternal : ExternalsRealized model)
+    (hgas : model.gas = YulSemantics.EVM.ExternalGas.any)
     {raw output : Object Op} {plan : MemorySpillSelect.ObjectPlan}
     {selected : Nat} {L : EVM.Layout}
     (hbuild : spillObjectWithFallback raw
       (optimizerPipelineObject (calls := model.calls) (creates := model.creates)
-        (eraseMemoryGuardObject raw)) =
+        (gasOracle := .any) (eraseMemoryGuardObject raw)) =
         some { «object» := output, plan := plan, selected := selected })
     (hspillSound : SpillNodeRunSound
       (calls := model.calls) (creates := model.creates) L)
@@ -149,7 +157,7 @@ theorem compileObject_memorySpill_correct
           StateMatch targetFinal s' ∧
           ((out = .normal ∧ s'.halt = .Success ∧ s'.hReturn = .empty) ∨
            (out = .halt ∧ HaltedMatch targetFinal s')) := by
-  exact compileObject_planned_correct hexternal
+  exact compileObject_planned_correct hexternal hgas
     (spillObjectWithErasedPipelineFallback_top_run hbuild hspillSound)
     hcomp hsource
 

@@ -46,6 +46,61 @@ open YulSemantics.EVM (U256 Op)
 uniqueness is *checked* at the end (`wfCheck`), not tracked by proofs. -/
 abbrev Label := Nat
 
+/-- The call family a fused gas-forwarding call can wrap. -/
+inductive GasCallKind
+  | call | callcode | delegatecall | staticcall
+  deriving Repr, DecidableEq
+
+namespace GasCallKind
+/-- The Yul call built-in the fused instruction performs. -/
+def op : GasCallKind → YulSemantics.EVM.Op
+  | .call => .call | .callcode => .callcode
+  | .delegatecall => .delegatecall | .staticcall => .staticcall
+/-- The EVM call opcode the fused instruction lowers to (after GAS). -/
+def target : GasCallKind → EvmSemantics.Operation
+  | .call => .CALL | .callcode => .CALLCODE
+  | .delegatecall => .DELEGATECALL | .staticcall => .STATICCALL
+/-- Asm-level arguments consumed: the call op's arity minus the gas word.
+`CALL`/`CALLCODE` pop 7 words, `DELEGATECALL`/`STATICCALL` pop 6; the fused
+instruction supplies the gas word itself (from the target machine's `GAS`), so
+it consumes one fewer than the underlying opcode. -/
+def popArity : GasCallKind → Nat
+  | .call | .callcode => 6
+  | .delegatecall | .staticcall => 5
+end GasCallKind
+
+/-- The fused-call kind wrapping a call built-in, if any — the peephole's
+test for the second instruction of a `gas(); call` window. -/
+def gasCallKind? : YulSemantics.EVM.Op → Option GasCallKind
+  | .call => some .call
+  | .callcode => some .callcode
+  | .delegatecall => some .delegatecall
+  | .staticcall => some .staticcall
+  | _ => none
+
+@[simp] theorem gasCallKind?_op (k : GasCallKind) : gasCallKind? k.op = some k := by
+  cases k <;> rfl
+
+theorem eq_op_of_gasCallKind? {yop : YulSemantics.EVM.Op} {k : GasCallKind}
+    (h : gasCallKind? yop = some k) : yop = k.op := by
+  cases yop <;>
+    simp only [gasCallKind?, reduceCtorEq, Option.some.injEq] at h <;>
+    (subst h; rfl)
+
+/-- The fused call's Yul op lowers, via `opTable`, to its EVM call opcode. -/
+@[simp] theorem GasCallKind.opTable_op (k : GasCallKind) :
+    opTable k.op = some k.target := by cases k <;> rfl
+/-- The fused call's Yul op is a call op. -/
+@[simp] theorem GasCallKind.isCallOp (k : GasCallKind) : IsCallOp k.op := by
+  cases k <;> trivial
+/-- The underlying call opcode pops one more word than the fused instruction
+consumes — the extra word is the gas supplied by the lowered `GAS`. -/
+@[simp] theorem GasCallKind.popArity_target (k : GasCallKind) :
+    Operation.popArity k.target = k.popArity + 1 := by cases k <;> rfl
+/-- Every call opcode pushes exactly the result flag. -/
+@[simp] theorem GasCallKind.pushArity_target (k : GasCallKind) :
+    Operation.pushArity k.target = 1 := by cases k <;> rfl
+
 /-- The labeled assembly IR. -/
 inductive Asm
   /-- Push a (Yul-side) word: lowers to the minimal-width `PUSHk (conv v)`
@@ -83,6 +138,14 @@ inductive Asm
   no runtime meaning — it exists so the object layer can report where each
   placeholder landed. -/
   | pushImmutable (key : String)
+  /-- A fused gas-forwarding call `k.op(gas(), …)`: consumes the call's
+  arguments except the gas word and pushes the result flag. Lowers to `GAS`
+  followed by the call opcode, realizing the source's `gas()` read as the
+  target machine's own remaining gas. Produced only by the Asm peephole
+  (`CodeRel.gasFuse`, fusing `.op .gas :: .op k.op`); the compilers never
+  emit it directly, and the SSA-CFG backend does not produce it at all, so
+  gas-forwarding programs compile through the classic backend candidate. -/
+  | gasCall (k : GasCallKind)
   deriving Repr, DecidableEq
 
 /-- The uniform number of address bytes emitted for a label push (`jump`,
@@ -117,6 +180,8 @@ def size : Asm → Nat
   | dynJump => 1
   -- `PUSH32` opcode byte plus 32 immediate bytes, independent of `v`.
   | pushImmutable _ => 33
+  -- Two 1-byte opcodes: `GAS` then the call opcode.
+  | gasCall _ => 2
 
 theorem size_pos (i : Asm) : 1 ≤ i.size := by
   cases i <;> simp only [size] <;> omega
@@ -458,6 +523,7 @@ def lowerInstr (imm : String → U256) (prog : List Asm) : Asm → Option (List 
   | .dynJump     => some [.op .JUMP]
   -- Always the full 32-byte immediate, so the value's byte position is fixed.
   | .pushImmutable key => some [.push ⟨32, by norm_num⟩ (conv (imm key))]
+  | .gasCall k   => some [.op .GAS, .op k.target]
 
 /-- Lower a fragment (against the whole program `prog`). -/
 def lowerFrag (imm : String → U256) (prog : List Asm) : List Asm → Option (List Instr)
@@ -640,6 +706,7 @@ def lowerInstrWith (imm : String → U256) (addrs : Std.HashMap Label Nat) :
       (fun a => [.push labelWidthFin (UInt256.ofNat a)])
   | .dynJump     => some [.op .JUMP]
   | .pushImmutable key => some [.push ⟨32, by norm_num⟩ (conv (imm key))]
+  | .gasCall k   => some [.op .GAS, .op k.target]
 
 theorem lowerInstrWith_eq (imm : String → U256) (p : List Asm) (i : Asm) :
     lowerInstrWith imm (labelAddrs p) i = lowerInstr imm p i := by
@@ -714,6 +781,9 @@ theorem lowerInstr_length {imm : String → U256} {prog : List Asm} {i : Asm}
     omega
   case dynJump =>
     obtain rfl : [Instr.op .JUMP] = is := by simpa using h
+    simp [Asm.size]
+  case gasCall k =>
+    obtain rfl : [Instr.op .GAS, Instr.op k.target] = is := by simpa using h
     simp [Asm.size]
 
 @[simp] theorem lowerFrag_nil (prog : List Asm) : lowerFrag imm prog [] = some [] := rfl
