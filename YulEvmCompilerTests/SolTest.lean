@@ -179,6 +179,17 @@ structure Spec where
   ctorValue : Nat := 0
   declaredCalls : Nat := 0
   calls : Array Call := #[]
+  /-- Libraries the fixture declares with a bare `// library: NAME`, in directive
+  order. Only bare single-source identifiers land here; the quoted
+  `"file":NAME` form is recorded separately in `qualifiedLibraries` (it appears
+  only in multi-source fixtures, which the harness links against solc's
+  `<file>:<name>` fully-qualified names). -/
+  libraries : Array String := #[]
+  /-- Libraries the fixture declares with the quoted `// library: "SRC":NAME`
+  form, as `(SRC, NAME)` pairs in directive order. These occur only in
+  multi-source fixtures; the harness links them under solc's fully-qualified
+  `SRC:NAME` and deploys the library from source `SRC`. -/
+  qualifiedLibraries : Array (String × String) := #[]
 
 /-- Parse one call/constructor line (already stripped of its `// ` prefix and
 trailing `# … #` comment). `header` is everything before `:` (a signature and an
@@ -216,6 +227,26 @@ def parseSpec (source : String) : Spec := Id.run do
     -- Drop trailing `# … #` inline comments.
     let content := (content.splitOn "#")[0]!.trimAscii.copy
     if content.isEmpty || content == "----" then continue
+    -- `// library: NAME` declares a deployable/linkable library. A bare
+    -- identifier is recorded in `libraries` (single-source fixtures); the quoted
+    -- `"SRC":NAME` form is recorded in `qualifiedLibraries` (multi-source
+    -- fixtures). Any other spelling is skipped.
+    if let some rest := stripPrefix content "library:" then
+      let name := rest.trimAscii.copy
+      if !name.isEmpty && name.toList.all (fun c => c.isAlphanum || c == '_') then
+        spec := { spec with libraries := spec.libraries.push name }
+      else if name.startsWith "\"" then
+        -- `"SRC":NAME` → source name between the quotes, library name after `":`.
+        match (dropN name 1).splitOn "\"" with
+        | src :: afterQuote :: _ =>
+            if let some qual := stripPrefix (afterQuote.trimAscii.copy) ":" then
+              let qual := qual.trimAscii.copy
+              if !src.isEmpty && !qual.isEmpty &&
+                  qual.toList.all (fun c => c.isAlphanum || c == '_') then
+                spec := { spec with
+                  qualifiedLibraries := spec.qualifiedLibraries.push (src, qual) }
+        | _ => pure ()
+      continue
     if content.startsWith "gas " || content.startsWith "storage" ||
         content.startsWith "~ " || content.startsWith "left(" then continue
     let hasResult := content.contains " ->"
