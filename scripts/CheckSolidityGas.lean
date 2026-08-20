@@ -126,6 +126,11 @@ private def parseSpecRecordsLibrariesInOrder : Bool :=
 private def parseSpecDropsQuotedLibrary : Bool :=
   (parseSpec "// ----\n// library: \"a.sol\":L\n// f() -> 1").libraries.isEmpty
 
+private def parseSpecRecordsQualifiedLibrary : Bool :=
+  let spec := parseSpec "// ----\n// library: \"a.sol\":L\n// f() -> 1"
+  spec.libraries.isEmpty && spec.qualifiedLibraries == #[("a.sol", "L")] &&
+    spec.declaredCalls == 1
+
 #guard sameOutcomeIgnoresTransientMemory
 #guard sameOutcomeStillChecksOutput
 #guard parseSpecCountsUnsupportedDeclaredCalls
@@ -135,6 +140,7 @@ private def parseSpecDropsQuotedLibrary : Bool :=
 #guard parseSpecSkipsExplicitOutOfGasCalls
 #guard parseSpecRecordsLibrariesInOrder
 #guard parseSpecDropsQuotedLibrary
+#guard parseSpecRecordsQualifiedLibrary
 
 private structure Deployment where
   state : Option EVM.State
@@ -583,10 +589,48 @@ private structure Prepared where
   solcExtra : List (AccountAddress × Account)
   mainSolcCreation : ByteArray
 
-/-- Resolve, compile, and deploy every declared library, then locate the main
-contract's IR and solc creation. Any failure (missing section, this compiler
-rejecting a library, a library construction that reverts) is reported as a
-distinct `library deploy failed: …` / section error rather than crashing. -/
+/-- Resolve, compile, and deploy every declared library from already-fetched
+solc sections, then locate the main contract's IR and solc creation. `irSecs`
+and `binSecs` must be keyed consistently (bare contract names for single-source,
+solc's fully-qualified `SRC:Contract` for multi-source); `libAddrs` uses those
+same keys, `mainName` is one of them, and `linkEnv` carries the exact
+`linkersymbol` spellings this compiler must resolve. Any failure (missing
+section, this compiler rejecting a library, a library construction that reverts)
+is a distinct `library deploy failed: …` / section error rather than a crash. -/
+private def resolveAndDeploy (irSecs binSecs : List (String × String))
+    (libAddrs : List (String × Nat)) (linkEnv : List (String × Nat))
+    (mainName : String) : Except String Prepared := do
+  let mainIR ← match irSecs.lookup mainName with
+    | some ir => pure ir
+    | none => throw s!"main contract IR section missing: {mainName}"
+  let mainHex ← match binSecs.lookup mainName with
+    | some h => pure h
+    | none => throw s!"main contract Binary section missing: {mainName}"
+  let mainSolcCreation ← decodeSolcBinary mainHex
+  let mut ourExtra : List (AccountAddress × Account) := []
+  let mut solcExtra : List (AccountAddress × Account) := []
+  for (nm, a) in libAddrs do
+    let acctAddr := AccountAddress.ofNat a
+    let some libIR := irSecs.lookup nm
+      | throw s!"library deploy failed: {nm} (no IR section)"
+    let some ourCreation := compileSource libIR linkEnv
+      | throw s!"library deploy failed: {nm} (this compiler rejected its IR)"
+    let some ourAcct := deployLibraryAt ourCreation a
+      | throw s!"library deploy failed: {nm} (our creation produced no runtime)"
+    let some solcHex := binSecs.lookup nm
+      | throw s!"library deploy failed: {nm} (no Binary section)"
+    let .ok solcCreation := decodeSolcBinary solcHex
+      | throw s!"library deploy failed: {nm} (malformed/unlinked Binary)"
+    let some solcAcct := deployLibraryAt solcCreation a
+      | throw s!"library deploy failed: {nm} (solc creation produced no runtime)"
+    ourExtra := ourExtra ++ [(acctAddr, ourAcct)]
+    solcExtra := solcExtra ++ [(acctAddr, solcAcct)]
+  return { mainIR, linkEnv, ourExtra, solcExtra, mainSolcCreation }
+
+/-- Single-source `// library:` fixtures: fetch solc's per-contract sections
+(keyed by bare contract name, linked under `<stdin>:NAME`), select the last
+non-library contract as the main one, and resolve/deploy through
+`resolveAndDeploy`. Behaviour is unchanged from the original inline version. -/
 private def prepareLibraries (solcPath source : String) (libraries : Array String)
     : IO (Except String Prepared) := do
   let libList := libraries.toList
@@ -606,35 +650,41 @@ private def prepareLibraries (solcPath source : String) (libraries : Array Strin
       (fun n => irNames.contains n && !libList.contains n)
     match candidates.reverse.head? with
     | none => return .error "no main (non-library) contract section in solc --ir output"
-    | some mainName =>
-    match irSecs.lookup mainName with
-    | none => return .error s!"main contract IR section missing: {mainName}"
-    | some mainIR =>
-    match binSecs.lookup mainName with
-    | none => return .error s!"main contract Binary section missing: {mainName}"
-    | some mainHex =>
-    match decodeSolcBinary mainHex with
-    | .error message => return .error message
-    | .ok mainSolcCreation => do
-      let mut ourExtra : List (AccountAddress × Account) := []
-      let mut solcExtra : List (AccountAddress × Account) := []
-      for (nm, a) in libAddrs do
-        let acctAddr := AccountAddress.ofNat a
-        let some libIR := irSecs.lookup nm
-          | return .error s!"library deploy failed: {nm} (no IR section)"
-        let some ourCreation := compileSource libIR linkEnv
-          | return .error s!"library deploy failed: {nm} (this compiler rejected its IR)"
-        let some ourAcct := deployLibraryAt ourCreation a
-          | return .error s!"library deploy failed: {nm} (our creation produced no runtime)"
-        let some solcHex := binSecs.lookup nm
-          | return .error s!"library deploy failed: {nm} (no Binary section)"
-        let .ok solcCreation := decodeSolcBinary solcHex
-          | return .error s!"library deploy failed: {nm} (malformed/unlinked Binary)"
-        let some solcAcct := deployLibraryAt solcCreation a
-          | return .error s!"library deploy failed: {nm} (solc creation produced no runtime)"
-        ourExtra := ourExtra ++ [(acctAddr, ourAcct)]
-        solcExtra := solcExtra ++ [(acctAddr, solcAcct)]
-      return .ok { mainIR, linkEnv, ourExtra, solcExtra, mainSolcCreation }
+    | some mainName => return resolveAndDeploy irSecs binSecs libAddrs linkEnv mainName
+
+/-- The measurement tail shared by every library/multi-source fixture: compile
+the main contract's IR with its `LinkEnv`, charge the compile pair, deploy both
+sides with their seeded library accounts, and replay the declared calls. -/
+private def measurePrepared (clock : IO.Ref Timing) (solcPath : String)
+    (perScenario : Bool) (name : String) (spec : Spec) (prep : Prepared) : IO GasOutcome := do
+  let compileStart ← IO.monoNanosNow
+  match compileSource prep.mainIR prep.linkEnv with
+  | none =>
+      clock.modify ({ · with rejectedNs := ← since compileStart, rejected := true })
+      return { compileFailure := some (name, "this compiler rejected solc's unoptimized IR") }
+  | some creation =>
+      chargeCompilePair clock solcPath prep.mainIR (← since compileStart)
+      let calls := spec.calls
+      let ourDeployment :=
+        deployForCalls creation spec.ctorArgs spec.ctorValue prep.ourExtra
+      let solcDeployment :=
+        deployForCalls prep.mainSolcCreation spec.ctorArgs spec.ctorValue prep.solcExtra
+      match ourDeployment.state, solcDeployment.state with
+      | some ourBase, some solcBase =>
+          let (callGas, replayFailure) := replayCalls ourBase solcBase calls 3000000
+          if spec.declaredCalls != 0 && callGas.size != calls.size then
+            return { measurementFailure := some (name,
+              s!"only {callGas.size}/{calls.size} declared calls reached matching observable behavior" ++
+                (replayFailure.map fun detail => s!"; {detail}").getD "") }
+          else if callGas.isEmpty then return {}
+          else if perScenario then return { measured := perScenarioRows name callGas }
+          else return { measured := #[totalRow name callGas] }
+      | _, _ =>
+          if spec.declaredCalls == 0 then return {}
+          else return { measurementFailure := some (name,
+            s!"deployment did not produce runtime for declared calls " ++
+              s!"(ours={ourDeployment.halt}/{ourDeployment.returnSize}, " ++
+              s!"solc={solcDeployment.halt}/{solcDeployment.returnSize})") }
 
 /-- The library-fixture analogue of the live measurement path: deploy each
 library, link both compilers' main-contract output against the library
@@ -652,35 +702,133 @@ private def processLibraryFixture (clock : IO.Ref Timing) (solcPath : String)
   clock.modify ({ · with frontendNs })
   match prep with
   | .error message => return { compileFailure := some (name, message) }
-  | .ok prep =>
-    let compileStart ← IO.monoNanosNow
-    match compileSource prep.mainIR prep.linkEnv with
-    | none =>
-        clock.modify ({ · with rejectedNs := ← since compileStart, rejected := true })
-        return { compileFailure := some (name, "this compiler rejected solc's unoptimized IR") }
-    | some creation =>
-        chargeCompilePair clock solcPath prep.mainIR (← since compileStart)
-        let calls := spec.calls
-        let ourDeployment :=
-          deployForCalls creation spec.ctorArgs spec.ctorValue prep.ourExtra
-        let solcDeployment :=
-          deployForCalls prep.mainSolcCreation spec.ctorArgs spec.ctorValue prep.solcExtra
-        match ourDeployment.state, solcDeployment.state with
-        | some ourBase, some solcBase =>
-            let (callGas, replayFailure) := replayCalls ourBase solcBase calls 3000000
-            if spec.declaredCalls != 0 && callGas.size != calls.size then
-              return { measurementFailure := some (name,
-                s!"only {callGas.size}/{calls.size} declared calls reached matching observable behavior" ++
-                  (replayFailure.map fun detail => s!"; {detail}").getD "") }
-            else if callGas.isEmpty then return {}
-            else if perScenario then return { measured := perScenarioRows name callGas }
-            else return { measured := #[totalRow name callGas] }
-        | _, _ =>
-            if spec.declaredCalls == 0 then return {}
-            else return { measurementFailure := some (name,
-              s!"deployment did not produce runtime for declared calls " ++
-                s!"(ours={ourDeployment.halt}/{ourDeployment.returnSize}, " ++
-                s!"solc={solcDeployment.halt}/{solcDeployment.returnSize})") }
+  | .ok prep => measurePrepared clock solcPath perScenario name spec prep
+
+/-! ## Multi-source fixtures (`==== Source: NAME ====`)
+
+A `semanticTests` fixture may declare several named sources, each introduced by a
+`==== Source: NAME ====` line, and use `import` to reference across them. solc
+cannot take these on stdin, so each section is written to a file named `NAME`
+inside a fresh, per-fixture temporary directory (`IO.FS.withTempDir`, which uses
+`mkdtemp` — race-free and unique across the parallel CI shards, cleaned up on
+exit), and solc is invoked with cwd set there and the bare file names as
+arguments. solc then heads its output sections with the fully-qualified
+`NAME:Contract`, and `linkersymbol("NAME:Lib")` / `--libraries "NAME:Lib=…"` link
+against that same spelling. The library set comes from the quoted
+`// library: "SRC":NAME` directives (`Spec.qualifiedLibraries`); a bare
+`// library: NAME` inside a multi-source fixture is unsupported and reported as a
+compile failure. Any non-`Source` section marker (e.g. `==== ExternalSource: … ====`)
+is likewise reported as an unsupported compile failure rather than crashing. -/
+
+/-- Whether a fixture's source carries any `==== … ====` section marker, i.e. it
+is a multi-source fixture (or uses an unsupported marker the multi-source path
+then rejects with a clear message). -/
+private def isMultiSource (source : String) : Bool :=
+  (source.splitOn "\n").any fun raw =>
+    let line := raw.trimAscii.copy
+    line.startsWith "==== " && line.endsWith " ===="
+
+/-- The contract-name part of a fully-qualified `SRC:Contract` (`"a.sol:C" ↦
+"C"`). Used to pair solc's unqualified `--ir` object names with the qualified
+`--bin` section names. -/
+private def contractPart (qualified : String) : String :=
+  match (qualified.splitOn ":").reverse with
+  | c :: _ => c
+  | [] => qualified
+
+/-- Split a multi-source fixture body into `(NAME, content)` sections in file
+order. Each `==== Source: NAME ====` line starts a section; any other
+`==== … ====` marker (e.g. `ExternalSource`) is unsupported and yields an
+error. -/
+private def splitSources (source : String) : Except String (List (String × String)) := Id.run do
+  let mut sections : Array (String × String) := #[]
+  let mut curName : Option String := none
+  let mut buf : Array String := #[]
+  for raw in source.splitOn "\n" do
+    let line := raw.trimAscii.copy
+    if line.startsWith "==== " && line.endsWith " ====" then
+      if let some nm := curName then
+        sections := sections.push (nm, String.intercalate "\n" buf.toList)
+        buf := #[]
+        curName := none
+      -- Strip the 5-char `==== ` prefix and 5-char ` ====` suffix.
+      let inner := String.ofList ((line.toList.take (line.length - 5)).drop 5)
+      if inner.startsWith "Source:" then
+        let nm := String.ofList (inner.toList.drop "Source:".length)
+        curName := some nm.trimAscii.copy
+      else
+        return .error s!"unsupported section marker: {line}"
+    else if curName.isSome then
+      buf := buf.push raw
+  if let some nm := curName then
+    sections := sections.push (nm, String.intercalate "\n" buf.toList)
+  return .ok sections.toList
+
+/-- Every `contract`-declared name across all sections in file order, each
+qualified `SRC:Contract`. Solidity's semantic-test framework deploys the LAST
+contract of the fixture, so the main contract under test is the last entry here
+(libraries/interfaces use other keywords and are excluded by
+`sourceContractNames`). -/
+private def qualifiedContractNames (sections : List (String × String)) : List String :=
+  (sections.map fun (src, content) =>
+    (sourceContractNames content).map (fun c => src ++ ":" ++ c)).flatten
+
+/-- Resolve a multi-source fixture: write its sections to a temp dir, run solc
+(`--ir` and linked `--bin`) with cwd there and the bare file names as arguments,
+re-key the unqualified `--ir` objects to solc's fully-qualified `--bin` names by
+matching contract name, choose the last non-library contract as the main one,
+and resolve/deploy through `resolveAndDeploy`. -/
+private def prepareMultiSource (solcPath : String)
+    (sections : List (String × String)) (spec : Spec) : IO (Except String Prepared) :=
+  IO.FS.withTempDir fun tmp => do
+    for (nm, content) in sections do
+      let path := tmp / nm
+      if let some parent := path.parent then IO.FS.createDirAll parent
+      IO.FS.writeFile path content
+    let files := sections.map (·.1)
+    let libList : List String :=
+      spec.qualifiedLibraries.toList.map (fun (src, nm) => src ++ ":" ++ nm)
+    let libAddrs : List (String × Nat) :=
+      ((List.range libList.length).zip libList).map (fun (i, q) => (q, 0x11113331 + i))
+    let solcLibs : List (String × String) :=
+      libAddrs.map (fun (q, a) => (q, addr40Hex a))
+    match ← solcIRSectionsMulti solcPath tmp.toString files with
+    | .error message => return .error message
+    | .ok irSecs =>
+    match ← solcCreationSectionsMulti solcPath tmp.toString files solcLibs with
+    | .error message => return .error message
+    | .ok binSecs =>
+      -- solc's `--ir` object names are unqualified; re-key each to the
+      -- fully-qualified `--bin` name that shares its contract name.
+      let irQualified : List (String × String) := binSecs.filterMap fun (q, _) =>
+        (irSecs.lookup (contractPart q)).map (fun ir => (q, ir))
+      let binNames := binSecs.map (·.1)
+      let candidates := (qualifiedContractNames sections).filter
+        (fun q => binNames.contains q && !libList.contains q)
+      match candidates.reverse.head? with
+      | none => return .error "no main (non-library) contract section in solc --bin output"
+      | some mainName => return resolveAndDeploy irQualified binSecs libAddrs libAddrs mainName
+
+/-- Multi-source analogue of `processLibraryFixture`: split the fixture into its
+named sources, reject unsupported markers and bare in-fixture `// library:`
+directives, then resolve and measure through the shared library path. -/
+private def processMultiSourceFixture (clock : IO.Ref Timing) (solcPath : String)
+    (perScenario : Bool) (name source : String) (spec : Spec) : IO GasOutcome := do
+  if spec.calls.size != spec.declaredCalls then
+    return { measurementFailure := some (name,
+      s!"only {spec.calls.size}/{spec.declaredCalls} declared calls could be parsed") }
+  if !spec.libraries.isEmpty then
+    return { compileFailure := some (name,
+      "bare `// library:` directive in a multi-source fixture is unsupported "
+        ++ "(only the quoted `\"SRC\":NAME` form is linkable across sources)") }
+  match splitSources source with
+  | .error message => return { compileFailure := some (name, message) }
+  | .ok sections =>
+    let (prep, frontendNs) ← timedIO (prepareMultiSource solcPath sections spec)
+    clock.modify ({ · with frontendNs })
+    match prep with
+    | .error message => return { compileFailure := some (name, message) }
+    | .ok prep => measurePrepared clock solcPath perScenario name spec prep
 
 /-- Compile one contract through solc's unoptimized `--via-ir` Yul, deploy both
 this compiler's and solc's optimized bytecode, replay the fixture's calls, and
@@ -696,9 +844,12 @@ private def processContractIn (clock : IO.Ref Timing) (dir : FilePath) (solcPath
   | .ok false => return { skipped := true }
   | .ok true =>
       let source := fixtureSource contents
-      -- Library fixtures take a dedicated linking path; everything else keeps
-      -- the original single-contract flow byte-for-byte.
+      -- Multi-source fixtures (`==== Source: … ====`) and single-source
+      -- `// library:` fixtures take dedicated paths; everything else keeps the
+      -- original single-contract flow byte-for-byte.
       let librarySpec := parseSpec contents
+      if isMultiSource source then
+        return ← processMultiSourceFixture clock solcPath perScenario name source librarySpec
       if !librarySpec.libraries.isEmpty then
         return ← processLibraryFixture clock solcPath perScenario name source librarySpec
       let (irResult, frontendNs) ← timedIO (solcUnoptimizedIR solcPath source)

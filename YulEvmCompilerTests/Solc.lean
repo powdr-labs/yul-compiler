@@ -190,6 +190,35 @@ def binSections (stdout : String) : List (String × String) := Id.run do
       i := i + 1
   return sections.toList
 
+/-- Like `binSections`, but preserves solc's *fully-qualified* section name
+(`A:L`, `a.sol:C`, …) instead of stripping the leading `<stdin>:`/`<file>:`
+qualifier. Multi-source fixtures link by the qualified name (`--libraries
+"A:L=…"`, `linkersymbol("A:L")`), so the qualifier must survive. -/
+def binSectionsQualified (stdout : String) : List (String × String) := Id.run do
+  let lines := (stdout.splitOn "\n").toArray
+  let mut sections : Array (String × String) := #[]
+  let mut i := 0
+  while h : i < lines.size do
+    let line := lines[i].trimAscii.copy
+    if line.startsWith "======= " && line.endsWith " =======" then
+      let chars := line.toList
+      let name := String.ofList
+        ((chars.take (chars.length - " =======".length)).drop "======= ".length)
+      let mut j := i + 1
+      let mut hex : Option String := none
+      let mut sawBinary := false
+      while hj : j < lines.size do
+        let l := lines[j].trimAscii.copy
+        if l.startsWith "======= " && l.endsWith " =======" then break
+        else if l == "Binary:" then sawBinary := true; j := j + 1
+        else if sawBinary && !l.isEmpty then hex := some l; break
+        else j := j + 1
+      if let some h := hex then sections := sections.push (name, h)
+      i := j
+    else
+      i := i + 1
+  return sections.toList
+
 /-- Decode one solc `Binary:` hex line, rejecting empty/odd/placeholder output
 (an unlinked binary still contains `__$…$__`, which fails the hex-digit test). -/
 def decodeSolcBinary (encoded : String) : Except String ByteArray :=
@@ -231,6 +260,45 @@ def solcCreationSections (solcPath source : String) (libs : List (String × Stri
   if output.exitCode != 0 then
     return .error s!"solc --bin failed: {output.stderr.trimAscii.copy}"
   return .ok (binSections output.stdout)
+
+/-! ## Multi-source fixtures (`==== Source: NAME ====`)
+
+A `semanticTests` fixture may hold several named sources. solc cannot read those
+from stdin — each section is written to a file named `NAME` under a working
+directory, and solc is invoked with the *bare file names* as arguments and its
+cwd set to that directory, so `import "A" as M;` and friends resolve. Output
+sections are then headed by solc's fully-qualified `NAME:Contract` (no `<stdin>:`
+prefix), which the harness links and selects against. -/
+
+/-- All `--ir` sections (unoptimized Yul) for a multi-source fixture, keyed by
+solc's object base name (`objectBaseName`), in emission order. `files` are bare
+names resolved relative to `workdir`. -/
+def solcIRSectionsMulti (solcPath : String) (workdir : String) (files : List String)
+    : IO (Except String (List (String × String))) := do
+  let output ← IO.Process.output {
+    cmd := solcPath
+    args := #["--ir", "--evm-version", "osaka"] ++ files.toArray
+    cwd := some workdir
+  }
+  if output.exitCode != 0 then
+    return .error s!"solc --ir failed: {output.stderr.trimAscii.copy}"
+  return .ok (irSections output.stdout)
+
+/-- All optimized creation `Binary:` sections (`--bin --optimize --via-ir`) for a
+multi-source fixture, keyed by solc's *fully-qualified* `NAME:Contract`, with
+`--libraries` linking applied. -/
+def solcCreationSectionsMulti (solcPath : String) (workdir : String)
+    (files : List String) (libs : List (String × String))
+    : IO (Except String (List (String × String))) := do
+  let output ← IO.Process.output {
+    cmd := solcPath
+    args := #["--bin", "--optimize", "--via-ir", "--evm-version", "osaka"]
+      ++ librariesArg libs ++ files.toArray
+    cwd := some workdir
+  }
+  if output.exitCode != 0 then
+    return .error s!"solc --bin failed: {output.stderr.trimAscii.copy}"
+  return .ok (binSectionsQualified output.stdout)
 
 /-- Reject any `solc` other than the pinned version, so every checked-in gas
 figure and every differential result reproduces from a single toolchain. -/
