@@ -33,6 +33,8 @@ abicoder/abi_encode_memory_dynamic_array_and_calldata_bytes_v1.sol	3381	2523
 abicoder/abi_encode_rational.sol	478	364
 abicoder/abi_encode_storage_array_v2.sol	249394	248221
 abicoder/abi_encode_v2.sol	95593	93611
+abicoder/abi_encode_v2_in_function_inherited_in_v1_contract.sol	214088	101681
+abicoder/abi_encode_v2_in_modifier_used_in_v1_contract.sol	143274	80995
 abicoder/abi_encode_with_selector_v1.sol	2399	2100
 abicoder/abi_encode_with_selector_v2.sol	3779	3264
 abicoder/abi_encode_with_signature_v1.sol	28087	26672
@@ -432,8 +434,10 @@ constants/asm_constant_file_level.sol	171	142
 constants/assign_type_info.sol	22	5
 constants/constant_string.sol	1706	1260
 constants/constant_string_at_file_level.sol	2052	1513
+constants/constants_at_file_level_referencing.sol	1935	1702
 constants/consteval_array_length.sol	352	286
 constants/function_unreferenced.sol	89	60
+constants/same_constants_different_files.sol	232	196
 constants/simple_constant_variables_test.sol	171	142
 constructor/base_constructor_arguments.sol	22	5
 constructor/bytes_in_constructors_unpacker.sol	11676	11479
@@ -460,6 +464,8 @@ conversions/string_to_bytes.sol	684	519
 deployedCodeExclusion/bound_function.sol	2363	2312
 deployedCodeExclusion/library_function.sol	2363	2312
 deployedCodeExclusion/library_function_deployed.sol	58049	57875
+deployedCodeExclusion/module_function.sol	2363	2312
+deployedCodeExclusion/module_function_deployed.sol	58049	57875
 deployedCodeExclusion/static_base_function.sol	2363	2312
 deployedCodeExclusion/static_base_function_deployed.sol	58049	57875
 deployedCodeExclusion/subassembly_deduplication.sol	109	63
@@ -485,9 +491,11 @@ enums/using_inherited_enum_excplicitly.sol	22	5
 errors/error_in_library_and_interface.sol	561	540
 errors/error_selector.sol	3276	2838
 errors/error_static_calldata_uint_array_and_dynamic_array.sol	946	722
+errors/error_throw_from_module_via_member_access.sol	813	721
 errors/errors_by_parameter_type.sol	1981	1688
 errors/named_error_args.sol	160	155
 errors/named_parameters_shadowing_types.sol	741	569
+errors/panic_via_import.sol	328	317
 errors/require_custom_error_and_string_literal_revert_strings_strip.sol	516	455
 errors/require_custom_error_constructor_side_effect.sol	24790	24620
 errors/require_custom_error_constructor_side_effect_revert_strings_strip.sol	24790	24620
@@ -516,6 +524,7 @@ errors/simple.sol	160	155
 errors/small_error_optimization.sol	187590	168147
 errors/using_structs.sol	45942	45755
 errors/via_contract_type.sol	66	15
+errors/via_import.sol	531	474
 errors/weird_name.sol	151	134
 events/emit_three_identical_events.sol	2460	2374
 events/emit_two_identical_events.sol	1689	1616
@@ -535,6 +544,7 @@ events/event_emit.sol	1975	1897
 events/event_emit_file_level.sol	1975	1897
 events/event_emit_from_a_foreign_contract.sol	22	5
 events/event_emit_from_a_foreign_contract_same_name.sol	22	5
+events/event_emit_from_module_via_member_access.sol	5556	5473
 events/event_emit_from_other_contract.sol	7388	6975
 events/event_emit_interface_event_via_library.sol	918	858
 events/event_emit_via_interface.sol	1611	1532
@@ -576,6 +586,7 @@ expressions/exp_operator_const.sol	171	142
 expressions/exp_operator_const_signed.sol	171	145
 expressions/exp_zero_literal.sol	171	142
 expressions/inc_dec_operators.sol	23208	22251
+expressions/module_from_ternary_expression.sol	169	142
 expressions/tuple_from_ternary_expression.sol	169	142
 expressions/unary_too_long_literal.sol	169	142
 expressions/uncalled_address_transfer_send.sol	147	100
@@ -595,6 +606,7 @@ fallback/inherited.sol	26799	26679
 fallback/short_data_calls_fallback.sol	11480	11235
 freeFunctions/easy.sol	227	180
 freeFunctions/free_runtimecode.sol	97	81
+freeFunctions/import.sol	22809	22300
 freeFunctions/libraries_from_free.sol	3523	3115
 freeFunctions/new_operator.sol	97	81
 freeFunctions/overloads.sol	308	242
@@ -637,6 +649,7 @@ functionCall/external_call_to_nonexisting_debugstrings.sol	32295	30556
 functionCall/external_call_value.sol	10814	10191
 functionCall/external_function.sol	293	234
 functionCall/external_public_override.sol	260	223
+functionCall/file_level_call_via_module.sol	320	242
 functionCall/inheritance/base_base_overload.sol	21488	20955
 functionCall/inheritance/base_overload.sol	14215	13879
 functionCall/inheritance/call_base.sol	89	81
@@ -872,6 +885,7 @@ libraries/internal_library_function_return_var_size.sol	881	578
 libraries/internal_types_in_library.sol	103815	90355
 libraries/library_address.sol	61359	51503
 libraries/library_address_homestead.sol	28977	26519
+libraries/library_address_via_module.sol	61359	51503
 libraries/library_call_in_homestead.sol	28016	27610
 libraries/library_delegatecall_guard_pure.sol	12159	10016
 libraries/library_delegatecall_guard_view_needed.sol	18468	16325
@@ -915,6 +929,7 @@ memoryManagement/return_variable.sol	1880	1779
 memoryManagement/static_memory_array_allocation.sol	1322	1095
 memoryManagement/struct_allocation.sol	751	711
 modifiers/access_through_contract_name.sol	9399	9207
+modifiers/access_through_module_name.sol	43072	41701
 modifiers/break_in_modifier.sol	27564	27124
 modifiers/continue_in_modifier.sol	29333	28547
 modifiers/function_modifier.sol	361	288
@@ -938,6 +953,21 @@ modifiers/return_does_not_skip_modifier.sol	26912	26771
 modifiers/return_in_modifier.sol	28500	27834
 modifiers/stacked_return_with_modifiers.sol	28412	27710
 modifiers/transient_state_variable_value_type.sol	1203	971
+multiSource/circular_import.sol	171	142
+multiSource/circular_import_2.sol	171	145
+multiSource/circular_reimport.sol	171	142
+multiSource/circular_reimport_2.sol	171	145
+multiSource/free_different_interger_types.sol	199	160
+multiSource/free_function_resolution_base_contract.sol	171	148
+multiSource/free_function_resolution_override_virtual.sol	171	142
+multiSource/free_function_resolution_override_virtual_super.sol	171	142
+multiSource/free_function_resolution_override_virtual_transitive.sol	171	142
+multiSource/free_function_transitive_import.sol	223	206
+multiSource/import.sol	445	365
+multiSource/import_overloaded_function.sol	229	160
+multiSource/imported_free_function_via_alias.sol	171	142
+multiSource/imported_free_function_via_alias_direct_call.sol	171	142
+multiSource/reimport_imported_function.sol	171	142
 operators/compound_assign.sol	120240	115296
 operators/compound_assign_transient_storage.sol	64484	61092
 operators/shifts/bitwise_shifting_constantinople.sol	2520	2441
@@ -1292,6 +1322,8 @@ userDefinedValueType/immutable_signed.sol	759	385
 userDefinedValueType/in_parenthesis.sol	229	160
 userDefinedValueType/mapping_key.sol	34834	34579
 userDefinedValueType/memory_to_storage.sol	143279	140329
+userDefinedValueType/multisource.sol	471	380
+userDefinedValueType/multisource_module.sol	410	328
 userDefinedValueType/ownable.sol	16484	16024
 userDefinedValueType/parameter.sol	4078	4149
 userDefinedValueType/simple.sol	425	337
@@ -1305,9 +1337,17 @@ using/calldata_memory_copy.sol	1364	957
 using/free_function_braces.sol	818	648
 using/free_function_multi.sol	818	648
 using/free_functions_individual.sol	818	648
+using/imported_functions.sol	576	604
 using/library_functions_inside_contract.sol	7352	6669
 using/library_on_interface.sol	3595	3147
+using/library_through_module.sol	7458	6610
+using/module_renamed.sol	310	238
 using/private_library_function.sol	163	127
+using/recursive_import.sol	171	142
+using/using_global_all_the_types.sol	319	236
+using/using_global_for_global.sol	262	211
+using/using_global_invisible.sol	65123	59442
+using/using_global_library.sol	3572	3173
 variables/delete_local.sol	170	141
 variables/delete_locals.sol	229	160
 variables/delete_transient_state_variable.sol	746	451
