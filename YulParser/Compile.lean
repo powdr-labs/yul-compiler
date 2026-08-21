@@ -20,6 +20,14 @@ namespace YulParser
 
 open YulSemantics (Expr Stmt Object)
 
+/-- Backend policy for source compilation. `automatic` preserves the production
+behavior of compiling both verified backends and selecting the lower-cost
+artifact; `classic` selects only the complete classic fallback chain. -/
+inductive BackendSelection where
+  | automatic
+  | classic
+deriving BEq, DecidableEq, Repr
+
 /-
 The canonical parser retains string escape spelling so its printer can round
 trip the exact token. Source execution needs the bytes denoted by that spelling
@@ -392,7 +400,8 @@ partial def expandSetImmutablesObject (o : Object YulSemantics.EVM.Op) :
       return .mk name
         (YulEvmCompiler.expandSetImmutablesStmts offsets ambiguous code) subs segs
 
-/-- Parse and compile a complete Yul source program to executable EVM bytecode,
+/-- Parse and compile a complete Yul source program to executable EVM bytecode
+using `backend`,
 using the documented compatibility parser when the verified parser does not
 apply. Hint builtins (`memoryguard`) are desugared for ordinary candidates and
 retained as reservation authority for the final spilling fallback. `linkersymbol`
@@ -411,7 +420,8 @@ simplification and propagation, bounded helper/call inlining with the
 normalization needed to expose it, then dead pure/result-region elimination.
 The object path applies the pipeline's resolution-stable mode to every code
 block in the tree. -/
-def compileSource (source : String) (libraries : LinkEnv := []) :
+def compileSourceWithBackend (source : String) (libraries : LinkEnv)
+    (backend : BackendSelection) :
     Option ByteArray := do
   match parseSource source with
   | some (.block block) =>
@@ -463,37 +473,41 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
       let pipelined := (YulEvmCompiler.Optimizer.optimizerPipeline
           (calls := YulSemantics.EVM.ExternalCalls.none)
           (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)).run b
-      let ssa := YulEvmCompiler.SsaCfg.compileViaSsa pipelined
-      let classic := tryLayouts pipelined
-        <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineNoRejoin
-          (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)).run b)
-        <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineLight
-          (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)).run b)
-        <|> YulEvmCompiler.compile b
-        <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillBlock? raw with
-          | some spilled =>
-              -- The spilled program is ordinary Yul; give the optimizer a
-              -- chance before compiling it verbatim.
-              let spilledOpt := (YulEvmCompiler.Optimizer.optimizerPipeline
-                (calls := YulSemantics.EVM.ExternalCalls.none)
-                (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)).run
-                  (YulEvmCompiler.Optimizer.Normalize.normalize
-                    (D := YulSemantics.EVM.evmWithExternal
-                      YulSemantics.EVM.ExternalCalls.none
-                      YulSemantics.EVM.ExternalCreates.none .any)
-                    spilled.block)
-              YulEvmCompiler.compile spilledOpt
-                <|> YulEvmCompiler.compile spilled.block
-          | none => none)
+      let compileClassic (_ : Unit) :=
+        tryLayouts pipelined
+          <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineNoRejoin
+            (calls := YulSemantics.EVM.ExternalCalls.none)
+            (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)).run b)
+          <|> tryLayouts ((YulEvmCompiler.Optimizer.optimizerPipelineLight
+            (calls := YulSemantics.EVM.ExternalCalls.none)
+            (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)).run b)
+          <|> YulEvmCompiler.compile b
+          <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillBlock? raw with
+            | some spilled =>
+                -- The spilled program is ordinary Yul; give the optimizer a
+                -- chance before compiling it verbatim.
+                let spilledOpt := (YulEvmCompiler.Optimizer.optimizerPipeline
+                  (calls := YulSemantics.EVM.ExternalCalls.none)
+                  (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)).run
+                    (YulEvmCompiler.Optimizer.Normalize.normalize
+                      (D := YulSemantics.EVM.evmWithExternal
+                        YulSemantics.EVM.ExternalCalls.none
+                        YulSemantics.EVM.ExternalCreates.none .any)
+                      spilled.block)
+                YulEvmCompiler.compile spilledOpt
+                  <|> YulEvmCompiler.compile spilled.block
+            | none => none)
       let asm :=
-        match ssa, classic with
-        | some a, some b =>
-            if YulEvmCompiler.SsaCfg.instrCost a ≤ YulEvmCompiler.SsaCfg.instrCost b
-            then some a else some b
-        | some a, none => some a
-        | none, cb => cb
+        match backend with
+        | .classic => compileClassic ()
+        | .automatic =>
+            let ssa := YulEvmCompiler.SsaCfg.compileViaSsa pipelined
+            match ssa, compileClassic () with
+            | some a, some b =>
+                if YulEvmCompiler.SsaCfg.instrCost a ≤ YulEvmCompiler.SsaCfg.instrCost b
+                then some a else some b
+            | some a, none => some a
+            | none, cb => cb
       return YulEvmCompiler.assemble (← asm)
   | some (.object o) =>
       -- The root has no parent to copy and patch its code, so a `loadimmutable`
@@ -535,61 +549,72 @@ def compileSource (source : String) (libraries : LinkEnv := []) :
       -- independently and records no offsets, so a winning SSA artifact could
       -- be patched at the wrong positions. Withhold that candidate whenever the
       -- tree touches an immutable.
-      let ssaLayout :=
-        if usesImmutablesObject optimized then none
-        else (expandSetImmutablesObject optimized).bind YulEvmCompiler.SsaCfg.compileObjectViaSsa
-      let classicLayout := tryLayouts optimized
-        <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
-          (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any) o)
-        <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectLight
-          (calls := YulSemantics.EVM.ExternalCalls.none)
-          (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any) o)
-        <|> (expandSetImmutablesObject o).bind YulEvmCompiler.compileObject
-        <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback
-              raw optimized with
-          | some spilled =>
-              if spilled.selected = 0 then none
-              else
-                -- The spilled tree is ordinary Yul (guards resolved); give the
-                -- optimizer a chance before compiling it verbatim. This is the
-                -- only path large spill-only objects (PoolSwap) reach, so
-                -- without it they never see the optimizer at all. Objects the
-                -- plain spilled form cannot compile (live `gas`, immutables,
-                -- linker symbols) skip the expensive pipeline entirely.
-                match (expandSetImmutablesObject spilled.object).bind YulEvmCompiler.compileObject with
-                | none => none
-                | some plainLayout =>
-                    let spilledOpt :=
-                      YulEvmCompiler.Optimizer.optimizerPipelineObject
-                        (calls := YulSemantics.EVM.ExternalCalls.none)
-                        (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)
-                        (YulEvmCompiler.Optimizer.Normalize.normalizeObject
-                          (D := YulSemantics.EVM.evmWithExternal
-                            YulSemantics.EVM.ExternalCalls.none
-                            YulSemantics.EVM.ExternalCreates.none .any)
-                          spilled.object)
-                    (expandSetImmutablesObject spilledOpt).bind YulEvmCompiler.compileObject
-                      <|> (expandSetImmutablesObject
-                          (YulEvmCompiler.Optimizer.cleanupAfterLayoutObject
-                            (calls := YulSemantics.EVM.ExternalCalls.none)
-                            (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)
-                            (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt))).bind
-                          YulEvmCompiler.compileObject
-                      <|> (expandSetImmutablesObject
-                          (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)).bind
-                          YulEvmCompiler.compileObject
-                      <|> some plainLayout
-          | none => none)
+      let compileClassic (_ : Unit) :=
+        tryLayouts optimized
+          <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectNoRejoin
+            (calls := YulSemantics.EVM.ExternalCalls.none)
+            (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any) o)
+          <|> tryLayouts (YulEvmCompiler.Optimizer.optimizerPipelineObjectLight
+            (calls := YulSemantics.EVM.ExternalCalls.none)
+            (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any) o)
+          <|> (expandSetImmutablesObject o).bind YulEvmCompiler.compileObject
+          <|> (match YulEvmCompiler.Optimizer.MemorySpillSelect.spillObjectWithFallback
+                raw optimized with
+            | some spilled =>
+                if spilled.selected = 0 then none
+                else
+                  -- The spilled tree is ordinary Yul (guards resolved); give the
+                  -- optimizer a chance before compiling it verbatim. This is the
+                  -- only path large spill-only objects (PoolSwap) reach, so
+                  -- without it they never see the optimizer at all. Objects the
+                  -- plain spilled form cannot compile (live `gas`, immutables,
+                  -- linker symbols) skip the expensive pipeline entirely.
+                  match (expandSetImmutablesObject spilled.object).bind YulEvmCompiler.compileObject with
+                  | none => none
+                  | some plainLayout =>
+                      let spilledOpt :=
+                        YulEvmCompiler.Optimizer.optimizerPipelineObject
+                          (calls := YulSemantics.EVM.ExternalCalls.none)
+                          (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)
+                          (YulEvmCompiler.Optimizer.Normalize.normalizeObject
+                            (D := YulSemantics.EVM.evmWithExternal
+                              YulSemantics.EVM.ExternalCalls.none
+                              YulSemantics.EVM.ExternalCreates.none .any)
+                            spilled.object)
+                      (expandSetImmutablesObject spilledOpt).bind YulEvmCompiler.compileObject
+                        <|> (expandSetImmutablesObject
+                            (YulEvmCompiler.Optimizer.cleanupAfterLayoutObject
+                              (calls := YulSemantics.EVM.ExternalCalls.none)
+                              (creates := YulSemantics.EVM.ExternalCreates.none) (gasOracle := YulSemantics.EVM.ExternalGas.any)
+                              (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt))).bind
+                            YulEvmCompiler.compileObject
+                        <|> (expandSetImmutablesObject
+                            (YulEvmCompiler.Optimizer.stackLayoutObject spilledOpt)).bind
+                            YulEvmCompiler.compileObject
+                        <|> some plainLayout
+            | none => none)
       let layout ←
-        match ssaLayout, classicLayout with
-        | some a, some b =>
-            if YulEvmCompiler.SsaCfg.byteCodeCost a.code
-                ≤ YulEvmCompiler.SsaCfg.byteCodeCost b.code
-            then some a else some b
-        | some a, none => some a
-        | none, cb => cb
+        match backend with
+        | .classic => compileClassic ()
+        | .automatic =>
+            let ssaLayout :=
+              if usesImmutablesObject optimized then none
+              else (expandSetImmutablesObject optimized).bind
+                YulEvmCompiler.SsaCfg.compileObjectViaSsa
+            match ssaLayout, compileClassic () with
+            | some a, some b =>
+                if YulEvmCompiler.SsaCfg.byteCodeCost a.code
+                    ≤ YulEvmCompiler.SsaCfg.byteCodeCost b.code
+                then some a else some b
+            | some a, none => some a
+            | none, cb => cb
       return ByteArray.mk layout.code.toArray
   | none => none
+
+/-- Parse and compile source using the production automatic backend policy.
+Use `compileSourceWithBackend` when reproducible tooling requires classic
+backend output rather than automatic cost-based selection. -/
+def compileSource (source : String) (libraries : LinkEnv := []) : Option ByteArray :=
+  compileSourceWithBackend source libraries .automatic
 
 end YulParser
