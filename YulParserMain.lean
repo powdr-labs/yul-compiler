@@ -23,7 +23,8 @@ private def codeHex (code : ByteArray) : String :=
   String.join (code.data.toList.map byteHex)
 
 private def usage : String :=
-  "usage: yulc [--parse-only] [--libraries=NAME=ADDR[,NAME=ADDR…]] <file.yul>"
+  "usage: yulc [--parse-only] [--backend=auto|classic] " ++
+    "[--libraries=NAME=ADDR[,NAME=ADDR…]] <file.yul>"
 
 private def hexDigit? (c : Char) : Option Nat :=
   if '0' ≤ c && c ≤ '9' then some (c.toNat - '0'.toNat)
@@ -55,7 +56,7 @@ private def parseLibraries? (spec : String) : Option LinkEnv :=
     | _ => none) (some [])
 
 private def runFile (path : String) (parseOnly : Bool)
-    (libraries : LinkEnv := []) : IO UInt32 := do
+    (libraries : LinkEnv := []) (backend : BackendSelection := .automatic) : IO UInt32 := do
   let source ← IO.FS.readFile path
   if parseOnly then
     if (parseSource source).isSome then
@@ -63,7 +64,7 @@ private def runFile (path : String) (parseOnly : Bool)
     else
       IO.eprintln s!"{path}: parse failed"
       return 1
-  match compileSource source libraries with
+  match compileSourceWithBackend source libraries backend with
   | none =>
       match parseSource source with
       | none =>
@@ -82,12 +83,24 @@ def main (args : List String) : IO UInt32 := do
     if arg.startsWith "--libraries=" then
       some (arg.drop "--libraries=".length).copy
     else none
+  let backendSpecs := args.filterMap fun arg =>
+    if arg.startsWith "--backend=" then
+      some (arg.drop "--backend=".length).copy
+    else none
+  let backend := match backendSpecs with
+    | [] => some BackendSelection.automatic
+    | ["auto"] => some .automatic
+    | ["classic"] => some .classic
+    | _ => none
   let positional := args.filter fun arg => !arg.startsWith "--"
-  match positional, libSpecs.mapM parseLibraries? with
-  | [path], some libraries => runFile path parseOnly libraries.flatten
-  | _, none => do
+  match positional, libSpecs.mapM parseLibraries?, backend with
+  | [path], some libraries, some backend => runFile path parseOnly libraries.flatten backend
+  | _, none, _ => do
       IO.eprintln "yulc: malformed --libraries (expected NAME=0xADDR[,…])"
       return 64
-  | _, _ => do
+  | _, _, none => do
+      IO.eprintln "yulc: malformed --backend (expected auto or classic)"
+      return 64
+  | _, _, _ => do
       IO.eprintln usage
       return 64
