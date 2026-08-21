@@ -432,6 +432,12 @@ frames are both covered (see "Full static support" above).
 result-level big-step judgment; `compile_correct_withPayload` exposes the
 returned/reverted payload bytes.
 
+`compile_runContract` and `compile_runContract_eval` (in
+`YulEvmCompiler/ContractCorrectness.lean`) lift these theorems to an arbitrary
+`YulSemantics.RunContract`. They return the caller's source postcondition together with a
+`CompiledRun` or `CompiledEval` target relation, so functional proofs can transport selected
+observations without naming or unfolding complete source and target final states.
+
 `YulEvmCompiler.compileObject_correct` lifts the same guarantee to recursively
 compiled objects.
 

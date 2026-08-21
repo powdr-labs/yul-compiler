@@ -17,6 +17,7 @@ import YulEvmCompiler.LowerCorrect
 import YulEvmCompiler.GasOracle
 import YulEvmCompiler.SimAsm
 import YulEvmCompiler.Correctness
+import YulEvmCompiler.ContractCorrectness
 import YulEvmCompiler.ObjectCompile
 import YulEvmCompiler.Optimizer.Core.RewriteExamples
 import YulEvmCompiler.Optimizer.Spec.LocalPass
