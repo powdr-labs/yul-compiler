@@ -27,6 +27,18 @@ def solidityLoop : String :=
 #guard (parseBlock solidityLoop).isSome
 #guard (parseSource solidityLoop).isSome
 #guard (compileSource solidityLoop).isSome
+#guard compileSource solidityLoop ==
+  compileSourceWithBackend solidityLoop [] .automatic
+#guard (compileSourceWithBackend solidityLoop [] .classic).isSome
+
+/-- A small program for which automatic selection prefers SSA. Keep the two
+outputs distinct so the explicit classic policy cannot become a no-op. -/
+def backendSelectionProbe : String :=
+  "{ let a := calldataload(0) let b := calldataload(32) " ++
+  "let c := add(a, b) mstore(0, c) return(0, 32) }"
+
+#guard compileSourceWithBackend backendSelectionProbe [] .automatic !=
+  compileSourceWithBackend backendSelectionProbe [] .classic
 
 /-! `slotnum` is introduced after Osaka. It remains a legal identifier for
 pre-Amsterdam syntax fixtures, but is reserved when Amsterdam is selected. -/
@@ -46,6 +58,7 @@ def solidityObject : String :=
 
 #guard (parseSource solidityObject).isSome
 #guard (compileSource solidityObject).isSome
+#guard (compileSourceWithBackend solidityObject [] .classic).isSome
 
 /-- Hex expression literals use Solidity's byte-string left alignment and can
 be compiled through the source entry point. -/

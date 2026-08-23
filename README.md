@@ -40,7 +40,13 @@ lake build           # builds both semantics deps + the compiler + proofs
 lake env lean Checks.lean         # re-checks the axiom footprint
 lake env lean --run YulParserMain.lean --parse-only program.yul
 lake build yulc                   # CLI that emits compiled bytecode
+lake exe yulc --backend=classic program.yul  # explicitly select classic output
 ```
+
+The CLI defaults to `--backend=auto`, which compiles with both verified
+backends and selects the lower-cost artifact. Reproducibility-sensitive callers
+can select `--backend=classic`; the corresponding Lean API is
+`YulParser.compileSourceWithBackend source libraries .classic`.
 
 `lake build` treats warnings in every project Lean module as errors, and also
 executes the `#guard`/`#eval` differential checks in `Examples.lean`. CI rejects
