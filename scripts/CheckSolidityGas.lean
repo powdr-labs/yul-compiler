@@ -773,18 +773,129 @@ private def qualifiedContractNames (sections : List (String × String)) : List S
   (sections.map fun (src, content) =>
     (sourceContractNames content).map (fun c => src ++ ":" ++ c)).flatten
 
-/-- Resolve a multi-source fixture: write its sections to a temp dir, run solc
-(`--ir` and linked `--bin`) with cwd there and the bare file names as arguments,
-re-key the unqualified `--ir` objects to solc's fully-qualified `--bin` names by
-matching contract name, choose the last non-library contract as the main one,
-and resolve/deploy through `resolveAndDeploy`. -/
-private def prepareMultiSource (solcPath : String)
-    (sections : List (String × String)) (spec : Spec) : IO (Except String Prepared) :=
+/-! ## External-source markers (`==== ExternalSource: … ====`)
+
+A `semanticTests` fixture may precede its `Source` sections (or its single
+unnamed body) with `==== ExternalSource: … ====` markers, each making a file
+from the corpus available under a chosen source name so the fixture's `import`s
+resolve. Two spellings:
+
+* `==== ExternalSource: PATH ====` — the file at `PATH` (relative to the
+  *fixture's own directory* in the corpus) is registered under the source name
+  `PATH`.
+* `==== ExternalSource: ALIAS=REST ====` — split at the FIRST `=`; the file at
+  `REST` (fixture-dir-relative, and itself allowed to contain `=`) is registered
+  under the source name `ALIAS`.
+
+These files are import-resolved from cwd, exactly like the multi-source `Source`
+sections, and are copied into the same per-fixture temp dir at their registered
+name — but they are NOT passed to solc as compile targets (only the fixture's own
+`Source` sections, or its single unnamed body, are). Registered names that are
+not clean relative paths (leading `/`, `./`, `../`, or containing `//`, `/./`,
+`/../`) are solc VFS path-normalization stress tests that a real on-disk layout
+cannot faithfully reproduce; those fixtures are rejected with a clear message,
+as is any referenced file missing from the corpus. -/
+
+/-- One `==== ExternalSource: … ====` entry: the corpus file at `path` (relative
+to the fixture's directory) is materialized under source `name`. -/
+private structure ExtSrc where
+  name : String
+  path : String
+
+/-- Whether `s` occurs as a substring of the (implicit) subject; used for the
+`//`, `/./`, `/../` path-normalization checks below. -/
+private def hasSubstr (s pat : String) : Bool := (s.splitOn pat).length ≥ 2
+
+/-- A clean relative path a real on-disk layout can reproduce: non-empty, not
+absolute, not dot/dot-dot-anchored, and free of the non-normalized `//`, `/./`,
+`/../` segments solc's VFS collapses but a file tree cannot. -/
+private def isCleanRelPath (s : String) : Bool :=
+  !s.isEmpty && !s.startsWith "/" && !s.startsWith "./" && !s.startsWith "../" &&
+    !hasSubstr s "//" && !hasSubstr s "/./" && !hasSubstr s "/../"
+
+/-- Strip `==== ExternalSource: … ====` markers off the front of a fixture,
+returning the parsed entries plus the source with those marker lines removed
+(the remainder is either `Source` sections or a single unnamed body). Each
+entry's registered name is validated as a clean relative path; an exotic one
+yields `unsupported external-source alias: …`. Non-`ExternalSource` markers
+(e.g. `Source`) are left in place for `splitSources`. -/
+private def parseExternalSources (source : String)
+    : Except String (List ExtSrc × String) := Id.run do
+  let mut exts : Array ExtSrc := #[]
+  let mut kept : Array String := #[]
+  for raw in source.splitOn "\n" do
+    let line := raw.trimAscii.copy
+    if line.startsWith "==== " && line.endsWith " ====" then
+      let inner := (String.ofList ((line.toList.take (line.length - 5)).drop 5)).trimAscii.copy
+      if inner.startsWith "ExternalSource:" then
+        let spec := (String.ofList (inner.toList.drop "ExternalSource:".length)).trimAscii.copy
+        let (name, path) := match spec.splitOn "=" with
+          | [] => ("", "")
+          | [only] => (only, only)
+          | first :: rest => (first, String.intercalate "=" rest)
+        if !isCleanRelPath name then
+          return .error s!"unsupported external-source alias: {name}"
+        exts := exts.push { name, path }
+      else
+        kept := kept.push raw
+    else
+      kept := kept.push raw
+  return .ok (exts.toList, String.intercalate "\n" kept.toList)
+
+private def parseExternalSourcesSplitsAtFirstEquals : Bool :=
+  match parseExternalSources "==== ExternalSource: a=_external/external.sol=sol ====\n{}" with
+  | .ok ([e], body) => e.name == "a" && e.path == "_external/external.sol=sol" && body == "{}"
+  | _ => false
+
+private def parseExternalSourcesRegistersBarePath : Bool :=
+  match parseExternalSources "==== ExternalSource: _external/external.sol ====\n{}" with
+  | .ok ([e], _) => e.name == "_external/external.sol" && e.path == "_external/external.sol"
+  | _ => false
+
+private def parseExternalSourcesRejectsExoticAlias : Bool :=
+  (parseExternalSources "==== ExternalSource: /ExtSource.sol=_external/x.sol ====") matches .error _
+
+private def parseExternalSourcesKeepsSourceMarkers : Bool :=
+  match parseExternalSources
+      "==== ExternalSource: _external/e.sol ====\n==== Source: s1.sol ====\n{}" with
+  | .ok ([_], body) => body == "==== Source: s1.sol ====\n{}"
+  | _ => false
+
+#guard parseExternalSourcesSplitsAtFirstEquals
+#guard parseExternalSourcesRegistersBarePath
+#guard parseExternalSourcesRejectsExoticAlias
+#guard parseExternalSourcesKeepsSourceMarkers
+#guard isCleanRelPath "_external/external.sol" && isCleanRelPath "subdir/import.sol"
+#guard !isCleanRelPath "./a.sol" && !isCleanRelPath "../b.sol" && !isCleanRelPath "/x.sol"
+#guard !isCleanRelPath "a//b" && !isCleanRelPath "a/./b" && !isCleanRelPath "a/../b"
+
+/-- Resolve a multi-source fixture: write its sections to a temp dir, copy any
+external-source files from the corpus (fixture-dir-relative) into that same dir
+at their registered names, run solc (`--ir` and linked `--bin`) with cwd there
+and the bare compile-target file names as arguments (external files are
+import-resolved from cwd, not compiled), re-key the unqualified `--ir` objects to
+solc's fully-qualified `--bin` names by matching contract name, choose the last
+non-library contract as the main one, and resolve/deploy through
+`resolveAndDeploy`. -/
+private def prepareMultiSource (solcPath : String) (fixtureDir : FilePath)
+    (externals : List ExtSrc) (sections : List (String × String)) (spec : Spec)
+    : IO (Except String Prepared) :=
   IO.FS.withTempDir fun tmp => do
     for (nm, content) in sections do
       let path := tmp / nm
       if let some parent := path.parent then IO.FS.createDirAll parent
       IO.FS.writeFile path content
+    -- Copy each external-source file from the corpus into the temp dir at its
+    -- registered name. They are resolved from cwd like the sections but are not
+    -- compile targets. A missing file is a graceful reject, not a crash.
+    for ext in externals do
+      let srcPath := fixtureDir / ext.path
+      if !(← srcPath.pathExists) then
+        return .error s!"external-source file not found: {ext.path}"
+      let content ← IO.FS.readFile srcPath
+      let dst := tmp / ext.name
+      if let some parent := dst.parent then IO.FS.createDirAll parent
+      IO.FS.writeFile dst content
     let files := sections.map (·.1)
     let libList : List String :=
       spec.qualifiedLibraries.toList.map (fun (src, nm) => src ++ ":" ++ nm)
@@ -809,11 +920,16 @@ private def prepareMultiSource (solcPath : String)
       | none => return .error "no main (non-library) contract section in solc --bin output"
       | some mainName => return resolveAndDeploy irQualified binSecs libAddrs libAddrs mainName
 
-/-- Multi-source analogue of `processLibraryFixture`: split the fixture into its
-named sources, reject unsupported markers and bare in-fixture `// library:`
-directives, then resolve and measure through the shared library path. -/
+/-- Multi-source analogue of `processLibraryFixture`: strip any
+`ExternalSource` markers (rejecting exotic aliases), split the remainder into its
+named `Source` sections — or treat it as a single unnamed body named after the
+fixture file when there are none — reject unsupported markers and bare in-fixture
+`// library:` directives, then resolve and measure through the shared library
+path. `path` is the fixture's corpus path; its directory anchors the
+external-source files and its base name names a single unnamed body. -/
 private def processMultiSourceFixture (clock : IO.Ref Timing) (solcPath : String)
-    (perScenario : Bool) (name source : String) (spec : Spec) : IO GasOutcome := do
+    (perScenario : Bool) (path : FilePath) (name source : String) (spec : Spec)
+    : IO GasOutcome := do
   if spec.calls.size != spec.declaredCalls then
     return { measurementFailure := some (name,
       s!"only {spec.calls.size}/{spec.declaredCalls} declared calls could be parsed") }
@@ -821,10 +937,23 @@ private def processMultiSourceFixture (clock : IO.Ref Timing) (solcPath : String
     return { compileFailure := some (name,
       "bare `// library:` directive in a multi-source fixture is unsupported "
         ++ "(only the quoted `\"SRC\":NAME` form is linkable across sources)") }
-  match splitSources source with
+  match parseExternalSources source with
   | .error message => return { compileFailure := some (name, message) }
-  | .ok sections =>
-    let (prep, frontendNs) ← timedIO (prepareMultiSource solcPath sections spec)
+  | .ok (externals, residual) =>
+  match splitSources residual with
+  | .error message => return { compileFailure := some (name, message) }
+  | .ok secs =>
+    -- With no `Source` markers the remainder is a single unnamed body; give it a
+    -- file name (the fixture's own, unless an external already claims it) so solc
+    -- can compile it and its imports resolve against the copied external files.
+    let sections :=
+      if secs.isEmpty then
+        let bodyName0 := (path.fileName).getD "source.sol"
+        let bodyName := if externals.any (·.name == bodyName0) then "__main__" ++ bodyName0 else bodyName0
+        [(bodyName, residual)]
+      else secs
+    let fixtureDir := (path.parent).getD (FilePath.mk ".")
+    let (prep, frontendNs) ← timedIO (prepareMultiSource solcPath fixtureDir externals sections spec)
     clock.modify ({ · with frontendNs })
     match prep with
     | .error message => return { compileFailure := some (name, message) }
@@ -849,7 +978,7 @@ private def processContractIn (clock : IO.Ref Timing) (dir : FilePath) (solcPath
       -- original single-contract flow byte-for-byte.
       let librarySpec := parseSpec contents
       if isMultiSource source then
-        return ← processMultiSourceFixture clock solcPath perScenario name source librarySpec
+        return ← processMultiSourceFixture clock solcPath perScenario path name source librarySpec
       if !librarySpec.libraries.isEmpty then
         return ← processLibraryFixture clock solcPath perScenario name source librarySpec
       let (irResult, frontendNs) ← timedIO (solcUnoptimizedIR solcPath source)
