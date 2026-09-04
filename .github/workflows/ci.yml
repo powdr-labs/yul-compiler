@@ -10,8 +10,9 @@ on:
   workflow_dispatch:
   # Refresh the reusable main result bundle when Solidity's moving develop
   # corpus changes even if this repository has no main push that day.
-  schedule:
-    - cron: "17 3 * * *"
+  # Disabled for now; the bundle is still republished on every main push.
+  # schedule:
+  #   - cron: "17 3 * * *"
 
 # Keep only the latest run per branch/PR; cancel superseded ones.
 concurrency:
